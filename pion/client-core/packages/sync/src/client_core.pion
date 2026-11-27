@@ -62,6 +62,7 @@ pub struct ClientCore {
   pub local_outbox : LocalOutbox
   pub sync : SyncScheduler
   pub auth : AuthGenTracker
+  pub membership : MembershipAuthority
   pub doing : DoingTracker
   pub composers : ComposerManager
   extra_events : Map[String, StationEvents]
@@ -78,6 +79,12 @@ pub struct ClientCore {
   lock_digest_by_ws : Map[String, String]
   lock_sec_digest_by_ws : Map[String, String]
   mut on_runtime_boundary : Option[(AuthBoundaryEvent) -> Unit]
+  mut on_credential_refresh : Option[(String) -> Unit]
+  mut on_workspace_refresh : Option[(String) -> Unit]
+  mut on_runtime_open_chats : Option[(String) -> Array[(String, Option[Int], Option[String])]]
+  mut on_workspace_dropped : Option[(String, Array[String]) -> Unit]
+  mut on_accounts_persisted : Option[(base_codec::Json) -> Result[Unit, String]]
+  mut on_confirmation_refresh : Option[(String) -> Unit]
   pub lock_pending : views::LockPendingQueue
   pub auth_store : views::AccountStore
   pub login_flow : views::LoginFlowMachine
@@ -153,6 +160,11 @@ pub fn ClientCore::new(
     None => AuthGenTracker::open_with_db(db)
   }
   auth.ensure_workspace(workspace)
+  let membership = MembershipAuthority::new()
+  membership.load_from_db(db)
+  if workspace.length() > 0 && workspace != "ws-default" && station.length() > 0 {
+    let _ = membership.bind_station(workspace, station)
+  }
   let router = protocol::Slice1Router::new(db, md_store, workspace=workspace)
   let core = ClientCore::{
     workspace: workspace,
@@ -165,6 +177,7 @@ pub fn ClientCore::new(
     local_outbox: local_outbox,
     sync: sync,
     auth: auth,
+    membership: membership,
     doing: DoingTracker::new(),
     composers: ComposerManager::new(db),
     extra_events: Map::new(),
@@ -181,6 +194,12 @@ pub fn ClientCore::new(
     lock_digest_by_ws: Map::new(),
     lock_sec_digest_by_ws: Map::new(),
     on_runtime_boundary: None,
+    on_credential_refresh: None,
+    on_workspace_refresh: None,
+    on_runtime_open_chats: None,
+    on_workspace_dropped: None,
+    on_accounts_persisted: None,
+    on_confirmation_refresh: None,
     lock_pending: views::LockPendingQueue::new(),
     auth_store: views::AccountStore::new(),
     login_flow: views::LoginFlowMachine::new(),
@@ -244,6 +263,9 @@ pub fn ClientCore::new(
   }
   router.set_topic_evaluator(fn(id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
     core.evaluate_view_topic(id, topic)
+  })
+  auth.set_station_ws_resolver(fn(st : String) -> String {
+    core.membership.station_workspace(st, fallback_ws=core.workspace)
   })
   let _ = auth.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
     core.handle_auth_boundary(ev)
@@ -377,6 +399,36 @@ fn ClientCore::wire_station_hooks(
         k(effect::Exit::Succeeded(()))
       })
     })
+  })
+  // Post-downgrade confirmation hooks (NEVER confirm on disconnect!):
+  // 1. `GET /chats` snapshot confirms ONLY the `chats` list & station-level snapshots,
+  //    NEVER auto-confirming individual `chat` / `chatJobs` views.
+  sync.set_snapshot_confirmed_hook(fn() -> Unit {
+    self.membership.confirm_station_chats_list(target_ws, station)
+    self.notify_confirmation_refresh("chats")
+    self.notify_confirmation_refresh("stations")
+  })
+  // 2. Individual thread fetch confirms BOTH `{station, thread}` AND `{station, session}`.
+  sync.set_thread_confirmed_hook(fn(th : Int) -> Unit {
+    let mut sess_opt : Option[String] = None
+    match store::get_chat_by_thread(self.db, station, th) {
+      sql::SqlResult::Ok(Some(rec)) => {
+        if rec.id.length() > 0 {
+          sess_opt = Some(rec.id)
+        }
+        match base_codec::json_parse(rec.json) {
+          base_codec::JsonParseResult::Ok(cj) => match proto_str(cj, "session") {
+            Some(sk) => if sk.length() > 0 { sess_opt = Some(sk) }
+            None => ()
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+      _ => ()
+    }
+    self.membership.confirm_chat(target_ws, station, thread=Some(th), session=sess_opt)
+    self.notify_confirmation_refresh("chat")
+    self.notify_confirmation_refresh("chatJobs")
   })
 }
 
@@ -724,17 +776,13 @@ fn ClientCore::resolve_station_workspace(
   if explicit_ws.length() > 0 {
     return explicit_ws
   }
-  let pref = station_workspace_prefix(station)
-  if pref.length() > 0 {
-    return pref
-  }
-  self.workspace
+  self.membership.station_workspace(station, fallback_ws=self.workspace)
 }
 
 /// Attach a station-specific `StationTransport` to `local_outbox`, `StationEvents`, and `SyncScheduler`,
-/// binding extra stations to their own workspace (explicit `workspace` -> `station_workspace_prefix` ->
-/// `self.workspace`), restarting SSE + sync on the new transport, and automatically flushing any queued
-/// or transiently `unreached` backlog targeting that station.
+/// binding extra stations to their own workspace (explicit `workspace` -> `MembershipAuthority` ->
+/// `self.workspace`), persisting canonical station bindings, enforcing the unified read gate, restarting
+/// SSE + sync on the new transport, and automatically flushing any queued backlog targeting that station.
 pub fn ClientCore::attach_station_transport(
   self : ClientCore,
   station : String,
@@ -742,6 +790,11 @@ pub fn ClientCore::attach_station_transport(
   workspace : String = "",
 ) -> Unit {
   let target_ws = self.resolve_station_workspace(station, explicit_ws=workspace)
+  if !self.membership.is_workspace_readable(target_ws) {
+    return
+  }
+  let _ = self.membership.bind_station(target_ws, station)
+  let _ = self.membership.persist_station_bindings(self.db)
   self.auth.ensure_workspace(target_ws)
   self.local_outbox.register_station_transport(station, transport)
   if station == self.station {
@@ -1110,6 +1163,7 @@ pub fn ClientCore::set_viewer(
     if self.db_account_sub.is_none() {
       self.db_account_sub = Some(sub)
     }
+    self.membership.set_account_sub(sub, db=Some(self.db))
   }
   if role.length() > 0 {
     self.viewer_role = role
@@ -1128,8 +1182,12 @@ pub fn ClientCore::set_viewer(
 /// Build `views::StationBrief` list for `ws_scope`, bootstrapping from persisted Cloud
 /// `workspace.json` (`list_workspace_stations`) and merging live `station(addr, "overview")`
 /// fields without leaking `self.station` across workspace boundaries.
+/// Enforces the single unified `MembershipAuthority` read gate and per-record downgrade confirmation.
 pub fn ClientCore::station_briefs_for_scope(self : ClientCore, ws_scope : String) -> Array[views::StationBrief] {
   let out : Array[views::StationBrief] = []
+  if ws_scope.length() > 0 && !self.can_read_workspace(ws_scope) {
+    return out
+  }
   let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
   let is_own_scope = ws_scope.length() == 0 || ws_scope == self.workspace
 
@@ -1152,6 +1210,9 @@ pub fn ClientCore::station_briefs_for_scope(self : ClientCore, ws_scope : String
         if !matches_scope {
           continue
         }
+        if !self.can_read_station_list(r.address) {
+          continue
+        }
         let doc = match base_codec::json_parse(r.json) {
           base_codec::JsonParseResult::Ok(j) => j
           base_codec::JsonParseResult::Err(_) => base_codec::json_null()
@@ -1172,7 +1233,10 @@ pub fn ClientCore::station_briefs_for_scope(self : ClientCore, ws_scope : String
   let cloud_stations = list_workspace_stations(self.db, ws_scope)
   for i in 0..<cloud_stations.length() {
     let cs = cloud_stations[i]
-    let addr = if prefix.length() > 0 { prefix + cs.id } else { cs.id }
+    let addr = canonical_station(ws_scope, cs.id)
+    if !self.can_read_station_list(addr) {
+      continue
+    }
     seen_addrs.set(addr, true)
     if addr == self.station {
       has_self = true
@@ -1270,7 +1334,7 @@ pub fn ClientCore::station_briefs_for_scope(self : ClientCore, ws_scope : String
   }
 
   // 4. Fallback to `self.station` ONLY for this workspace's own scope (never inject into another workspace!).
-  if is_own_scope && !has_self {
+  if is_own_scope && !has_self && self.can_read_station_list(self.station) {
     let self_in_scope = !self.station.contains("/") || prefix.length() == 0 || self.station.starts_with(prefix)
     if self_in_scope {
       out.push(views::StationBrief::{
@@ -1416,11 +1480,747 @@ pub fn ClientCore::switch_workspace(self : ClientCore, ws : String) -> Unit {
   }
 }
 
-/// Record the primary account `sub` whose SQLite database is currently open in `self.db`.
-pub fn ClientCore::set_db_account_sub(self : ClientCore, sub : String) -> Unit {
+/// Record the primary account `sub` whose SQLite database is currently open in `self.db`,
+/// binding `MembershipAuthority` to that account's isolated purge scope.
+pub fn ClientCore::set_db_account_sub(
+  self : ClientCore,
+  sub : String,
+  host_purges_doc : Option[base_codec::Json] = None,
+) -> Unit {
   if sub.length() > 0 {
     self.db_account_sub = Some(sub)
+    self.membership.set_account_sub(sub, db=Some(self.db), host_purges_doc=host_purges_doc)
   }
+}
+
+// ── Single Authoritative Membership & Lifecycle Coordination (`MembershipAuthority`) ──
+
+pub fn ClientCore::set_on_credential_refresh(self : ClientCore, cb : (String) -> Unit) -> Unit {
+  self.on_credential_refresh = Some(cb)
+}
+
+pub fn ClientCore::set_on_workspace_refresh(self : ClientCore, cb : (String) -> Unit) -> Unit {
+  self.on_workspace_refresh = Some(cb)
+}
+
+pub fn ClientCore::set_on_runtime_open_chats(
+  self : ClientCore,
+  cb : (String) -> Array[(String, Option[Int], Option[String])],
+) -> Unit {
+  self.on_runtime_open_chats = Some(cb)
+}
+
+pub fn ClientCore::set_on_workspace_dropped(
+  self : ClientCore,
+  cb : (String, Array[String]) -> Unit,
+) -> Unit {
+  self.on_workspace_dropped = Some(cb)
+}
+
+pub fn ClientCore::set_on_accounts_persisted(
+  self : ClientCore,
+  cb : (base_codec::Json) -> Result[Unit, String],
+) -> Unit {
+  self.on_accounts_persisted = Some(cb)
+}
+
+pub fn ClientCore::set_on_confirmation_refresh(self : ClientCore, cb : (String) -> Unit) -> Unit {
+  self.on_confirmation_refresh = Some(cb)
+}
+
+pub fn ClientCore::can_read_workspace(self : ClientCore, ws : String) -> Bool {
+  self.membership.is_workspace_readable(ws)
+}
+
+pub fn ClientCore::can_read_station(self : ClientCore, st : String) -> Bool {
+  self.membership.is_station_readable(st, fallback_ws=self.workspace)
+}
+
+pub fn ClientCore::can_read_station_list(self : ClientCore, st : String) -> Bool {
+  self.membership.is_station_list_confirmed(st, fallback_ws=self.workspace)
+}
+
+/// Unified per-chat read & post-downgrade confirmation check supporting BOTH
+/// `{station, session}` (`apps/mbui/src/sfbase/chat_model.mbt:1295`) and `{station, thread}`.
+pub fn ClientCore::can_read_chat(
+  self : ClientCore,
+  st : String,
+  thread : Option[Int],
+  session : Option[String],
+) -> Bool {
+  if !self.can_read_station(st) {
+    return false
+  }
+  if self.membership.is_chat_confirmed(st, thread=thread, session=session, fallback_ws=self.workspace) {
+    return true
+  }
+  // Cross-resolve `{station, session} <-> {station, thread}` when one key was confirmed and the caller passed the other.
+  let mut resolved_th = thread
+  let mut resolved_sess = session
+  if resolved_th.is_none() {
+    match session {
+      Some(sk) => if sk.length() > 0 {
+        let rec_opt = match store::get_chat_by_session(self.db, st, sk) {
+          sql::SqlResult::Ok(Some(r)) => Some(r)
+          _ => match store::get_chat_by_key(self.db, st, 0, sk) {
+            sql::SqlResult::Ok(Some(r)) => Some(r)
+            _ => None
+          }
+        }
+        match rec_opt {
+          Some(rec) => match base_codec::json_parse(rec.json) {
+            base_codec::JsonParseResult::Ok(cj) => { resolved_th = proto_int(cj, "thread") }
+            base_codec::JsonParseResult::Err(_) => ()
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  if resolved_sess.is_none() {
+    match thread {
+      Some(th) => match store::get_chat_by_thread(self.db, st, th) {
+        sql::SqlResult::Ok(Some(rec)) => {
+          if rec.id.length() > 0 {
+            resolved_sess = Some(rec.id)
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+  }
+  self.membership.is_chat_confirmed(st, thread=resolved_th, session=resolved_sess, fallback_ws=self.workspace)
+}
+
+fn ClientCore::notify_confirmation_refresh(self : ClientCore, topic_name : String) -> Unit {
+  let pairs = self.router.refresh_topic_with_topics(topic_name)
+  for i in 0..<pairs.length() {
+    let (topic, ev) = pairs[i]
+    let (j, b) = self.encode_sub_event(topic, ev)
+    self.emit_wire_out(j, bytes=b)
+  }
+  match self.on_confirmation_refresh {
+    Some(cb) => cb(topic_name)
+    None => ()
+  }
+}
+
+fn ClientCore::collect_attached_stations_for_workspace(self : ClientCore, ws : String) -> Array[String] {
+  let out : Array[String] = []
+  if self.events.workspace == ws && self.station.length() > 0 {
+    push_unique_str_cc(out, self.station)
+  }
+  let eks = self.extra_events.keys()
+  for i in 0..<eks.length() {
+    let st = eks[i]
+    match self.extra_events.get(st) {
+      Some(ev) => if ev.workspace == ws { push_unique_str_cc(out, st) }
+      None => ()
+    }
+  }
+  out
+}
+
+/// Complete revocation & purge of workspace `ws` aligned with real TS DDL (`schema.pion` / `schema.ts`):
+/// 1. Latches `revoked[ws]` and persists `(account_sub, ws)` in `pending_purges` FIRST;
+/// 2. Purges ALL in-memory caches (`MdStore`, `LocalOutbox`, `StationEvents`, `SyncScheduler`,
+///    `ComposerManager`, `extra_locks`/primary lock, `rows_memo`, `viewer_marks`, `chat_windows`,
+///    `chat_places`, notices/prompts) and advances `authGen` + `aggregate` + `vaultGen` + `cred_epoch`;
+/// 3. Executes `exec_drop_workspace_sql` atomically across all 19 real TS DDL tables;
+/// 4. On SQLite `Ok`: clears `pending_purges[ws]` (keeping `revoked[ws]=true` until rejoin).
+///    On SQLite `Err`: keeps BOTH `revoked[ws]` AND persisted `(account_sub, ws)` pending purge latched!
+pub fn ClientCore::drop_workspace(self : ClientCore, ws : String) -> Result[Unit, String] {
+  if ws.length() == 0 {
+    return Ok(())
+  }
+  let stations = self.membership.stations_to_purge(ws, db=Some(self.db))
+  let attached = self.collect_attached_stations_for_workspace(ws)
+  for i in 0..<attached.length() {
+    let st = attached[i]
+    if st.contains("/") {
+      if st.starts_with(ws + "/") {
+        push_unique_str_cc(stations, st)
+      }
+    } else if self.membership.is_bare_station_exclusive_to(ws, st) {
+      push_unique_str_cc(stations, st)
+    }
+    let canon = canonical_station(ws, st)
+    push_unique_str_cc(stations, canon)
+  }
+
+  // 1. Latch revocation + account-scoped pending purge BEFORE touching SQLite or memory.
+  self.membership.latch_purge(ws, stations)
+  let _ = self.membership.persist_pending_purges(self.db)
+
+  // 2. Purge all in-memory state immediately so 0 stale rows can ever be projected.
+  if self.events.workspace == ws {
+    self.md_store.clear()
+    self.events.stop()
+    self.events.reset_state()
+    let off = core_offline_transport()
+    self.events.set_transport(off)
+    self.sync.bump_epoch()
+    self.sync.set_transport(off)
+  }
+  let eks = self.extra_events.keys()
+  for i in 0..<eks.length() {
+    let st = eks[i]
+    let belongs = match self.extra_events.get(st) {
+      Some(ev) => ev.workspace == ws
+      None => false
+    }
+    if belongs {
+      match self.extra_events.get(st) {
+        Some(ev) => {
+          ev.stop()
+          ev.reset_state()
+        }
+        None => ()
+      }
+      self.extra_events.remove(st)
+      match self.extra_sync.get(st) {
+        Some(sy) => {
+          sy.bump_epoch()
+          sy.set_transport(core_offline_transport())
+        }
+        None => ()
+      }
+      self.extra_sync.remove(st)
+    }
+  }
+  for i in 0..<stations.length() {
+    let st = stations[i]
+    self.local_outbox.clear_station(st)
+    self.composers.clear_station(st)
+    self.marks_wanted.remove(st)
+    // Scrub viewer_marks for this station.
+    let spref = st + ":"
+    let rks = self.viewer_marks.reads.keys()
+    for k in 0..<rks.length() { if rks[k].starts_with(spref) { self.viewer_marks.reads.remove(rks[k]) } }
+    let pks = self.viewer_marks.pins.keys()
+    for k in 0..<pks.length() { if pks[k].starts_with(spref) { self.viewer_marks.pins.remove(pks[k]) } }
+    let kks = self.viewer_marks.kept.keys()
+    for k in 0..<kks.length() { if kks[k].starts_with(spref) { self.viewer_marks.kept.remove(kks[k]) } }
+    let hks = self.viewer_marks.hidden.keys()
+    for k in 0..<hks.length() { if hks[k].starts_with(spref) { self.viewer_marks.hidden.remove(hks[k]) } }
+    let mks = self.viewer_marks.muted.keys()
+    for k in 0..<mks.length() { if mks[k].starts_with(spref) { self.viewer_marks.muted.remove(mks[k]) } }
+    let dks = self.viewer_marks.dismissed.keys()
+    for k in 0..<dks.length() { if dks[k].starts_with(spref) { self.viewer_marks.dismissed.remove(dks[k]) } }
+    let qks = self.viewer_marks.quoted_threads.keys()
+    for k in 0..<qks.length() { if qks[k].starts_with(spref) { self.viewer_marks.quoted_threads.remove(qks[k]) } }
+    // Scrub chat_windows & chat_places for this station.
+    let w_t = st + ":t:"
+    let w_s = st + ":s:"
+    let cwks = self.chat_windows.keys()
+    for k in 0..<cwks.length() {
+      if cwks[k].starts_with(w_t) || cwks[k].starts_with(w_s) {
+        self.chat_windows.remove(cwks[k])
+      }
+    }
+    let cp_pref = st + "\u{01}"
+    let cpks = self.chat_places.keys()
+    for k in 0..<cpks.length() {
+      if cpks[k].starts_with(cp_pref) {
+        self.chat_places.remove(cpks[k])
+      }
+    }
+  }
+  self.rows_memo = views::RowsMemo::new()
+  self.pending_dirty_rows.clear()
+  // Reset lock slots & digests for `ws`.
+  self.extra_locks.remove(ws)
+  self.lock_digest_by_ws.remove(ws)
+  self.lock_sec_digest_by_ws.remove(ws)
+  if self.workspace == ws {
+    self.lock_state = None
+    self.lock_root = None
+    self.lock_kept_entries = []
+    self.lock_kept_aside = []
+    self.lock_seen = None
+    self.lock_corrupt = false
+    self.lock_read_pending = false
+    self.lock_effective = None
+  }
+  // Filter workspace-scoped held notices/prompts.
+  let kept_notices : Array[views::NoticeItemInput] = []
+  for i in 0..<self.notices_held.length() {
+    if self.notices_held[i].workspace != ws {
+      kept_notices.push(self.notices_held[i])
+    }
+  }
+  self.notices_held.clear()
+  for i in 0..<kept_notices.length() { self.notices_held.push(kept_notices[i]) }
+  let kept_prompts : Array[views::LockPairingPromptInput] = []
+  for i in 0..<self.lock_pairing_prompts.length() {
+    let pr = self.lock_pairing_prompts[i]
+    let mut targets_dropped = false
+    for j in 0..<pr.workspaces.length() {
+      let wj = pr.workspaces[j]
+      let wid = match wj {
+        base_codec::Json::Str(s) => s
+        _ => j_str(wj, "id")
+      }
+      if wid == ws {
+        targets_dropped = true
+        break
+      }
+    }
+    if !targets_dropped {
+      kept_prompts.push(pr)
+    }
+  }
+  self.lock_pairing_prompts.clear()
+  for i in 0..<kept_prompts.length() { self.lock_pairing_prompts.push(kept_prompts[i]) }
+  let kept_asks : Array[views::VaultKeyAskInput] = []
+  for i in 0..<self.vault_key_asks.length() {
+    if self.vault_key_asks[i].workspace != ws {
+      kept_asks.push(self.vault_key_asks[i])
+    }
+  }
+  self.vault_key_asks.clear()
+  for i in 0..<kept_asks.length() { self.vault_key_asks.push(kept_asks[i]) }
+
+  // Advance credential epoch & auth generations (workspace + aggregate + vault_workspace).
+  let _ = self.membership.bump_cred_epoch(ws)
+  self.membership.clear_role(ws)
+  let _ = self.auth.bump_workspace_and_vault(ws)
+  match self.on_workspace_dropped {
+    Some(cb) => cb(ws, stations)
+    None => ()
+  }
+
+  // 3. Execute atomic SQLite purge across all real TS DDL tables.
+  match exec_drop_workspace_sql(self.db, ws, stations) {
+    sql::SqlResult::Err(e) => {
+      // Keep `revoked[ws]` AND persisted `(account_sub, ws)` pending purge latched for retry!
+      return Err(e.to_string())
+    }
+    sql::SqlResult::Ok(_) => {
+      // Best-effort cleanup of optional `shared_mark` rows (may not exist on bare minimal schemas).
+      for i in 0..<stations.length() {
+        let _ = self.db.run("DELETE FROM shared_mark WHERE station = ?", params=[base_codec::json_str(stations[i])])
+      }
+      self.membership.clear_pending_purge(ws)
+      let _ = self.membership.persist_pending_purges(self.db)
+      Ok(())
+    }
+  }
+}
+
+/// Retry all persisted `(account_sub, ws)` pending purges on startup or before Cloud sync.
+pub fn ClientCore::retry_pending_purges(self : ClientCore) -> Result[Int, String] {
+  let pending = self.membership.pending_purge_workspaces()
+  let mut cleared = 0
+  let mut first_err : Option[String] = None
+  for i in 0..<pending.length() {
+    match self.drop_workspace(pending[i]) {
+      Ok(_) => { cleared += 1 }
+      Err(msg) => {
+        if first_err.is_none() {
+          first_err = Some(msg)
+        }
+      }
+    }
+  }
+  match first_err {
+    Some(e) => Err(e)
+    None => Ok(cleared)
+  }
+}
+
+/// Handle a Cloud membership role downgrade (`owner`/`admin` -> `member`):
+/// 1. Mark all workspace stations unconfirmed (per-record list + per-chat) & bump `cred_epoch`;
+/// 2. Bump `workspace` + `aggregate` authGen (re-anchoring subs and scrubbing `kept`);
+/// 3. Trigger `fresh=true` mesh credential refresh & workspace refresh;
+/// 4. Proactively refresh station snapshots (`GET /chats`) and currently open chats (`GET /threads/<t>`).
+pub fn ClientCore::handle_role_downgrade(
+  self : ClientCore,
+  ws : String,
+  old_role : String,
+  new_role : String,
+) -> Unit {
+  let _ = old_role
+  let _ = new_role
+  let attached = self.collect_attached_stations_for_workspace(ws)
+  let _ = self.membership.mark_downgraded(ws, extra_stations=attached)
+  let _ = self.auth.bump_workspace(ws)
+  match self.on_credential_refresh {
+    Some(cb) => cb(ws)
+    None => ()
+  }
+  match self.on_workspace_refresh {
+    Some(cb) => cb(ws)
+    None => ()
+  }
+  // Proactively refresh `GET /chats` snapshots on every attached station of `ws`.
+  for i in 0..<attached.length() {
+    let st = attached[i]
+    match self.station_sync(st) {
+      Some(sy) => {
+        let _ = self.rt.fork_quiet_named("downgrade-snapshot:" + st, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+          sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+            k(effect::Exit::Succeeded(()))
+          })
+        })
+      }
+      None => ()
+    }
+  }
+  // Collect currently open chats in `ws` from both `self.router` and `core_runtime` (`on_runtime_open_chats`),
+  // supporting BOTH `{station, thread}` AND `{station, session}` (`chat_model.mbt:1295`).
+  let open_chats : Array[(String, Option[Int], Option[String])] = []
+  let subs = self.router.active_subs_snapshot()
+  for i in 0..<subs.length() {
+    let (_, topic) = subs[i]
+    if topic.name == "chat" || topic.name == "chatJobs" {
+      let st = match topic.param("station") {
+        Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
+        _ => self.station
+      }
+      if self.membership.station_workspace(st, fallback_ws=self.workspace) == ws {
+        let th_opt : Option[Int] = match topic.param("thread") {
+          Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+          _ => None
+        }
+        let sess_opt : Option[String] = match topic.param("session") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+          _ => match topic.param("key") {
+            Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+            _ => None
+          }
+        }
+        open_chats.push((st, th_opt, sess_opt))
+      }
+    }
+  }
+  match self.on_runtime_open_chats {
+    Some(cb) => {
+      let rt_chats = cb(ws)
+      for i in 0..<rt_chats.length() {
+        open_chats.push(rt_chats[i])
+      }
+    }
+    None => ()
+  }
+  let fetched_keys : Map[String, Bool] = Map::new()
+  for i in 0..<open_chats.length() {
+    let (st, th_opt, sess_opt) = open_chats[i]
+    let resolved_th : Option[Int] = match th_opt {
+      Some(th) => Some(th)
+      None => match sess_opt {
+        Some(sk) => {
+          let rec_opt = match store::get_chat_by_session(self.db, st, sk) {
+            sql::SqlResult::Ok(Some(r)) => Some(r)
+            _ => match store::get_chat_by_key(self.db, st, 0, sk) {
+              sql::SqlResult::Ok(Some(r)) => Some(r)
+              _ => None
+            }
+          }
+          match rec_opt {
+            Some(rec) => match base_codec::json_parse(rec.json) {
+              base_codec::JsonParseResult::Ok(cj) => proto_int(cj, "thread")
+              base_codec::JsonParseResult::Err(_) => None
+            }
+            None => None
+          }
+        }
+        None => None
+      }
+    }
+    match resolved_th {
+      Some(th) => {
+        let fk = st + ":" + th.to_string()
+        if fetched_keys.get(fk).is_none() {
+          fetched_keys.set(fk, true)
+          match self.station_sync(st) {
+            Some(sy) => {
+              let _ = self.rt.fork_quiet_named("downgrade-thread:" + fk, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+                sy.fetch_thread_k(th, effect::priority_focused(), true, fn(_ : effect::Exit[Int]) -> Unit {
+                  k(effect::Exit::Succeeded(()))
+                })
+              })
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+/// Single atomic Cloud `/v1/me` commit point:
+/// - Rejects stale out-of-order responses (`req_seq < cloud_commit_seq`).
+/// - Separates `raw_me_ws_ids` (`retain()` diff against DB + memory) from gated commits.
+/// - Strictly executes the 5-step rejoin order so `account_doc("me")` is NEVER wiped by a second `drop_workspace`:
+///   1. For any rejoined `ws` in `pending_purges`: run `drop_workspace(ws)` FIRST (abort on Err without writing `me`);
+///   2. Write `account_doc("me")` in a `sql::Burst`;
+///   3. Clear persisted `(account_sub, ws)` pending purge marker for rejoined workspaces;
+///   4. Clear `revoked[ws]`, advance `authGen`/`vaultGen` + `cred_epoch`, trigger `fresh=true` cred refresh;
+///   5. Advance `cloud_commit_seq` / `ws_commit_seq[ws]` and detect role downgrades.
+pub fn ClientCore::commit_cloud_me(
+  self : ClientCore,
+  me : CloudMe,
+  req_seq : Int64 = 0L,
+  now_ms : Int64 = 0L,
+) -> Result[Bool, String] {
+  if !self.membership.can_commit_cloud_me(req_seq) {
+    return Ok(false)
+  }
+  if me.sub.length() > 0 {
+    self.set_db_account_sub(me.sub)
+  }
+  let raw_me_ws_ids : Map[String, CloudWorkspaceRef] = Map::new()
+  for i in 0..<me.workspaces.length() {
+    raw_me_ws_ids.set(me.workspaces[i].id, me.workspaces[i])
+  }
+
+  // Detect removed workspaces (`retain`) from both SQLite `workspace` table and in-memory authority.
+  let existing_ws : Array[String] = self.membership.known_workspaces()
+  match store::list_workspaces(self.db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        push_unique_str_cc(existing_ws, rows[i].id)
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  let mut drop_err : Option[String] = None
+  for i in 0..<existing_ws.length() {
+    let wid = existing_ws[i]
+    if raw_me_ws_ids.get(wid).is_none() {
+      match self.drop_workspace(wid) {
+        Ok(_) => ()
+        Err(msg) => {
+          if drop_err.is_none() {
+            drop_err = Some(msg)
+          }
+        }
+      }
+    }
+  }
+
+  // Step 1 (rejoin): Any workspace present in `raw_me_ws_ids` that still has a `pending_purge`
+  // MUST finish `drop_workspace(wid)` BEFORE writing `account_doc("me")`.
+  // On failure, abort immediately (keep latched, do NOT write `me`, do NOT clear marker).
+  let rejoined : Array[String] = []
+  for i in 0..<me.workspaces.length() {
+    let wid = me.workspaces[i].id
+    let was_pending = self.membership.has_pending_purge(wid)
+    let was_revoked = self.membership.is_revoked(wid)
+    if was_pending {
+      match self.drop_workspace(wid) {
+        Err(msg) => return Err(msg)
+        Ok(_) => ()
+      }
+    }
+    if was_pending || was_revoked {
+      rejoined.push(wid)
+    }
+  }
+
+  // Step 2: Persist `account_doc("me")` atomically.
+  let eff_now = if now_ms > 0L { now_ms } else { self.rt.now() }
+  let raw_json = base_codec::json_stringify(me.raw)
+  let burst = sql::Burst::new(self.db)
+  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    match b.run(sql_account_doc_put(), params=[
+      base_codec::json_str("me"),
+      base_codec::json_str(raw_json),
+      base_codec::json_int64(eff_now),
+    ]) {
+      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+    }
+  }) {
+    sql::SqlResult::Err(e) => return Err(e.to_string())
+    sql::SqlResult::Ok(_) => ()
+  }
+
+  // Step 3 & Step 4: Clear persisted purge markers & `revoked[wid]` for rejoined workspaces,
+  // bump `authGen`/`vaultGen` + `cred_epoch`, and trigger `fresh=true` credential refresh.
+  if rejoined.length() > 0 {
+    for i in 0..<rejoined.length() {
+      let wid = rejoined[i]
+      self.membership.clear_pending_purge(wid)
+      self.membership.clear_revoked(wid)
+      let _ = self.membership.bump_cred_epoch(wid)
+      let _ = self.auth.bump_workspace_and_vault(wid)
+      match self.on_credential_refresh {
+        Some(cb) => cb(wid)
+        None => ()
+      }
+    }
+    let _ = self.membership.persist_pending_purges(self.db)
+  }
+
+  // Detect role downgrades and update recorded roles.
+  for i in 0..<me.workspaces.length() {
+    let wref = me.workspaces[i]
+    let was_rejoined = contains_str_ma(rejoined, wref.id)
+    if !was_rejoined {
+      match self.membership.role_of(wref.id) {
+        Some(prev_role) => {
+          if is_role_downgrade(prev_role, wref.role) {
+            self.membership.set_role(wref.id, wref.role)
+            self.handle_role_downgrade(wref.id, prev_role, wref.role)
+          } else if wref.role.length() > 0 {
+            self.membership.set_role(wref.id, wref.role)
+          }
+        }
+        None => if wref.role.length() > 0 { self.membership.set_role(wref.id, wref.role) }
+      }
+    } else if wref.role.length() > 0 {
+      self.membership.set_role(wref.id, wref.role)
+    }
+  }
+
+  // Step 5: Advance monotonic `cloud_commit_seq` (and `ws_commit_seq` for rejoined workspaces).
+  self.membership.advance_cloud_me_seq(req_seq)
+  for i in 0..<rejoined.length() {
+    self.membership.advance_workspace_seq(rejoined[i], req_seq)
+  }
+  match drop_err {
+    Some(e) => Err(e)
+    None => Ok(true)
+  }
+}
+
+/// Single atomic Cloud `/v1/workspaces/<id>` commit point:
+/// - Rejects stale out-of-order responses (`req_seq < ws_commit_seq[ws.id]`).
+/// - Refuses writes into revoked or pending-purge-failed workspaces (0 resurrection of stale data).
+/// - Persists `workspace(id)` row without touching `station(address, "overview")`, binds all
+///   stations canonically, persists bindings, advances `ws_commit_seq`, and detects role downgrades.
+pub fn ClientCore::commit_cloud_workspace(
+  self : ClientCore,
+  ws : CloudWorkspace,
+  req_seq : Int64 = 0L,
+  now_ms : Int64 = 0L,
+) -> Result[Bool, String] {
+  if !self.membership.can_commit_workspace(ws.id, req_seq) {
+    return Ok(false)
+  }
+  if self.membership.has_pending_purge(ws.id) {
+    match self.drop_workspace(ws.id) {
+      Err(msg) => return Err(msg)
+      Ok(_) => ()
+    }
+  }
+  if self.membership.is_revoked(ws.id) {
+    // Workspace is revoked until `/v1/me` re-authorizes rejoin: discard stale workspace fetch.
+    return Ok(false)
+  }
+  let eff_now = if now_ms > 0L { now_ms } else { self.rt.now() }
+  let raw_json = base_codec::json_stringify(ws.raw)
+  let burst = sql::Burst::new(self.db)
+  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    match b.run(sql_workspace_put(), params=[
+      base_codec::json_str(ws.id),
+      base_codec::json_str(raw_json),
+      base_codec::json_int64(eff_now),
+    ]) {
+      sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+    }
+  }) {
+    sql::SqlResult::Err(e) => return Err(e.to_string())
+    sql::SqlResult::Ok(_) => ()
+  }
+  for i in 0..<ws.stations.length() {
+    let _ = self.membership.bind_station(ws.id, ws.stations[i].id)
+  }
+  let _ = self.membership.persist_station_bindings(self.db)
+  self.membership.advance_workspace_seq(ws.id, req_seq)
+
+  // Determine viewer's role from `ws.raw.role` or matching member entry and detect downgrade.
+  let mut new_role = j_str(ws.raw, "role")
+  if new_role.length() == 0 {
+    for i in 0..<ws.members.length() {
+      let m = ws.members[i]
+      let sub_match = self.viewer_sub.length() > 0 && m.sub == self.viewer_sub
+      let email_match = self.viewer_marks.me.length() > 0 && m.email == self.viewer_marks.me
+      if sub_match || email_match {
+        new_role = m.role
+        break
+      }
+    }
+  }
+  if new_role.length() > 0 {
+    match self.membership.role_of(ws.id) {
+      Some(prev_role) => {
+        if is_role_downgrade(prev_role, new_role) {
+          self.membership.set_role(ws.id, new_role)
+          self.handle_role_downgrade(ws.id, prev_role, new_role)
+        } else {
+          self.membership.set_role(ws.id, new_role)
+        }
+      }
+      None => self.membership.set_role(ws.id, new_role)
+    }
+  }
+  Ok(true)
+}
+
+/// Apply rotated OAuth tokens for `sub`, persisting accounts strictly with TS `accounts.ts:50`
+/// `"access_expires"` (NEVER `"accessExpires"`) and advancing credential epochs.
+pub fn ClientCore::apply_refreshed_tokens(
+  self : ClientCore,
+  sub : String,
+  tokens : RefreshedTokens,
+) -> Result[String, String] {
+  match self.auth_store.complete_refresh(
+    sub,
+    tokens.access,
+    tokens.refresh,
+    tokens.access_expires,
+    new_name=tokens.name,
+  ) {
+    Err(e) => Err(e)
+    Ok(access) => {
+      // Advance `cred_epoch` across all known workspaces so reconnects never reuse old static mesh creds.
+      let known = self.membership.known_workspaces()
+      for i in 0..<known.length() {
+        let _ = self.membership.bump_cred_epoch(known[i])
+      }
+      let persisted = serialize_stored_accounts(self.auth_store.accounts)
+      match self.on_accounts_persisted {
+        Some(hook) => match hook(persisted) {
+          Err(msg) => return Err(msg)
+          Ok(_) => ()
+        }
+        None => ()
+      }
+      let _ = store::put_account_doc(
+        self.db,
+        "accounts",
+        base_codec::json_stringify(views::project_accounts_topic(self.auth_store)),
+      )
+      Ok(access)
+    }
+  }
+}
+
+/// Handle permanent refresh failure (`401` / `invalid_grant` / session expired):
+/// sign out `sub`, mark session invalidated (blocking all workspace/station reads),
+/// bump global `authGen`, stop all sync loops, and persist the updated accounts list (`access_expires`).
+pub fn ClientCore::invalidate_session(self : ClientCore, sub : String) -> Unit {
+  let _ = self.auth_store.fail_refresh(sub, 401)
+  self.membership.mark_session_invalidated()
+  self.stop()
+  let _ = self.auth.bump_all()
+  let persisted = serialize_stored_accounts(self.auth_store.accounts)
+  match self.on_accounts_persisted {
+    Some(hook) => { let _ = hook(persisted) }
+    None => ()
+  }
+  let _ = store::put_account_doc(
+    self.db,
+    "accounts",
+    base_codec::json_stringify(views::project_accounts_topic(self.auth_store)),
+  )
 }
 
 pub fn station_workspace_prefix(addr : String) -> String {
@@ -1789,7 +2589,13 @@ pub fn ClientCore::set_cloud_origin(self : ClientCore, origin : String) -> Unit 
   }
 }
 
-fn ClientCore::open_jobs_json_list(self : ClientCore) -> Array[base_codec::Json] {
+fn ClientCore::open_jobs_json_list_for_scope(self : ClientCore, ws_scope : String) -> Array[base_codec::Json] {
+  if ws_scope.length() > 0 && !self.can_read_workspace(ws_scope) {
+    return []
+  }
+  if !self.can_read_station_list(self.station) {
+    return []
+  }
   let open_list = self.events.open_jobs()
   let out : Array[base_codec::Json] = []
   for i in 0..<open_list.length() {
@@ -1809,8 +2615,14 @@ fn ClientCore::open_jobs_json_list(self : ClientCore) -> Array[base_codec::Json]
   out
 }
 
+fn ClientCore::open_jobs_json_list(self : ClientCore) -> Array[base_codec::Json] {
+  self.open_jobs_json_list_for_scope(self.workspace)
+}
+
 /// Evaluate subscription topics through `packages/views` projections so `Slice1Router`
 /// delivers `shapes/`-conforming payloads and ≤ 4 KB keyed deltas.
+/// Enforces the single unified `MembershipAuthority` O(1) read gate and per-record
+/// post-downgrade confirmation across EVERY topic and aggregate.
 fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
   if topic.name == "chats" {
     match chats_unsupported_param(topic) {
@@ -1880,16 +2692,14 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     if th_opt.is_none() && sess_opt.is_none() {
       return Some(protocol::CoreEvent::Waiting(id))
     }
+    if !self.can_read_chat(st, th_opt, sess_opt) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
     let compact = match topic.param("compact") {
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
     let rows_lim = self.chat_sub_window_rows_for(id, st, th_opt, sess_opt)
-    // Do not anchor `project_chat_by_params` at a persisted `chat.place` (`at` / `at_offset`) in Part 1:
-    // `views/chat_view.pion` currently hardcodes `newer: false` and Pion has not yet implemented
-    // `chat.newer` / `chat.latest` window extension, so opening mid-thread would hide newer tail
-    // messages with no way to load them. Wire place-anchored opening together with live `newer`
-    // computation and `chat.newer` / `chat.latest` as one cohesive abstraction in a follow-up PR.
     match views::project_chat_by_params(
       self.db,
       st,
@@ -1914,6 +2724,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       accounts=self.auth_store.accounts,
       viewer_sub=self.viewer_sub,
       viewer_email=self.viewer_marks.me,
+      allow_workspace=Some(fn(w : String) -> Bool { self.can_read_workspace(w) }),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -1923,6 +2734,9 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     let ws = match topic.param("workspace") {
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
+    }
+    if !self.can_read_workspace(ws) {
+      return Some(protocol::CoreEvent::Waiting(id))
     }
     match views::project_workspace(self.db, ws) {
       sql::SqlResult::Ok(Some(j)) => return Some(protocol::CoreEvent::Value(id, j, None))
@@ -1935,7 +2749,12 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    match views::project_stations(self.db, ws_scope) {
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
+    match views::project_stations(
+      self.db,
+      ws_scope,
+      allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_list(st) }),
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -1958,7 +2777,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
         _ => self.workspace
       }
     }
-    if req_ws.length() > 0 && req_ws != self.workspace {
+    if !self.can_read_workspace(req_ws) || (req_ws.length() > 0 && req_ws != self.workspace) {
       let empty_inp = views::SafeModeInput::{
         available: self.lock_available,
         viewer_sub: "",
@@ -1985,6 +2804,9 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
+    if !self.can_read_workspace(ws) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
     let sm = if ws.length() > 0 && ws != self.workspace {
       let empty_inp = views::SafeModeInput::{
         available: self.lock_available,
@@ -2009,6 +2831,16 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
+  }
+  if topic.name == "vaultItems" || topic.name == "vaultUses" || topic.name == "vaultSecrets" {
+    let ws = match topic.param("workspace") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => self.workspace
+    }
+    if !self.can_read_workspace(ws) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
+    return Some(protocol::CoreEvent::Waiting(id))
   }
   // ── Batch 2 view topics ──
   if topic.name == "presets" {
@@ -2040,6 +2872,9 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
+    if !self.can_read_workspace(ws) {
+      return Some(protocol::CoreEvent::Value(id, base_codec::json_obj([("pending", base_codec::json_arr([]))]), None))
+    }
     return Some(protocol::CoreEvent::Value(id, views::project_vault_approvals(self.vault_approvals, ws), None))
   }
   // ── Batch 3 view topics ──
@@ -2048,7 +2883,13 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    match views::project_models(self.db, ws_scope, self.stars_held) {
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
+    match views::project_models(
+      self.db,
+      ws_scope,
+      self.stars_held,
+      allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_list(st) }),
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2058,7 +2899,12 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    match views::project_profiles(self.db, ws_scope) {
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
+    match views::project_profiles(
+      self.db,
+      ws_scope,
+      allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_list(st) }),
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2068,7 +2914,13 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    match views::project_profiles_overview(self.db, ws_scope, self.rt.now()) {
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
+    match views::project_profiles_overview(
+      self.db,
+      ws_scope,
+      self.rt.now(),
+      allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_list(st) }),
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2086,8 +2938,9 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Num(n, _)) => n.to_int()
       _ => 20
     }
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
     let briefs = self.station_briefs_for_scope(ws_scope)
-    match views::project_search(self.db, ws_scope, briefs, q, limit=lim) {
+    match views::project_search(self.db, ws_scope, briefs, q, limit=lim, include_workspace_doc=scope_ok) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2105,8 +2958,9 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Num(n, _)) => n.to_int()
       _ => 20
     }
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
     let briefs = self.station_briefs_for_scope(ws_scope)
-    match views::project_chat_search(self.db, ws_scope, briefs, q, limit=lim) {
+    match views::project_chat_search(self.db, ws_scope, briefs, q, limit=lim, include_workspace_doc=scope_ok) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2116,7 +2970,14 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    match views::project_settings(self.db, ws_scope, viewer_sub=self.viewer_sub) {
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
+    match views::project_settings(
+      self.db,
+      ws_scope,
+      viewer_sub=self.viewer_sub,
+      allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_list(st) }),
+      include_workspace_doc=scope_ok,
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2126,7 +2987,13 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    match views::project_station_updates(self.db, ws_scope, self.rt.now()) {
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
+    match views::project_station_updates(
+      self.db,
+      ws_scope,
+      self.rt.now(),
+      allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_list(st) }),
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2155,14 +3022,18 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
     let briefs = self.station_briefs_for_scope(ws_scope)
+    let running = if scope_ok && self.can_read_station_list(self.station) { self.running_session_count() } else { 0 }
     match views::project_fleet(
       self.db,
       ws_scope,
       briefs,
       self.rt.now(),
-      running_chats=self.running_session_count(),
-      open_jobs=self.open_jobs_json_list(),
+      running_chats=running,
+      open_jobs=self.open_jobs_json_list_for_scope(ws_scope),
+      include_workspace_doc=scope_ok,
+      allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_list(st) }),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -2181,8 +3052,18 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => Some(s)
       _ => None
     }
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
     let briefs = self.station_briefs_for_scope(ws_scope)
-    match views::project_usage(self.db, ws_scope, briefs, self.rt.now(), days_asked=days, split=split) {
+    match views::project_usage(
+      self.db,
+      ws_scope,
+      briefs,
+      self.rt.now(),
+      days_asked=days,
+      split=split,
+      include_workspace_doc=scope_ok,
+      allow_station=Some(fn(st : String) -> Bool { scope_ok && self.can_read_station_list(st) }),
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2207,13 +3088,15 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => "chats"
     }
+    let scope_ok = ws_scope.length() == 0 || self.can_read_workspace(ws_scope)
     let briefs = self.station_briefs_for_scope(ws_scope)
+    let running = if scope_ok && self.can_read_station_list(self.station) { self.running_session_count() } else { 0 }
     match views::project_rail_card(
       self.db,
       ws_scope,
       place,
       briefs,
-      self.running_session_count(),
+      running,
       self.viewer_marks,
       self.rt.now(),
     ) {
@@ -2230,11 +3113,14 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Num(n, _)) => n.to_int()
       _ => return Some(protocol::CoreEvent::Waiting(id))
     }
+    if !self.can_read_chat(st, Some(th), None) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
     let summary = match topic.param("summary") {
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    match views::project_chat_jobs(self.db, st, th, self.open_jobs_json_list(), self.rt.now(), summary=summary) {
+    match views::project_chat_jobs(self.db, st, th, self.open_jobs_json_list_for_scope(self.membership.station_workspace(st, fallback_ws=self.workspace)), self.rt.now(), summary=summary) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2245,7 +3131,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       _ => self.workspace
     }
     let briefs = self.station_briefs_for_scope(ws_scope)
-    match views::project_long_jobs(self.db, ws_scope, briefs, self.open_jobs_json_list(), self.rt.now()) {
+    match views::project_long_jobs(self.db, ws_scope, briefs, self.open_jobs_json_list_for_scope(ws_scope), self.rt.now()) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2264,7 +3150,32 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     return Some(protocol::CoreEvent::Value(id, j, None))
   }
   if topic.name == "lockPrompts" {
-    let j = views::project_lock_prompts(self.lock_pairing_prompts, self.vault_key_asks, self.rt.now())
+    let filt_prompts : Array[views::LockPairingPromptInput] = []
+    for i in 0..<self.lock_pairing_prompts.length() {
+      let pr = self.lock_pairing_prompts[i]
+      let mut all_ok = true
+      for j in 0..<pr.workspaces.length() {
+        let wj = pr.workspaces[j]
+        let wid = match wj {
+          base_codec::Json::Str(s) => s
+          _ => j_str(wj, "id")
+        }
+        if wid.length() > 0 && !self.can_read_workspace(wid) {
+          all_ok = false
+          break
+        }
+      }
+      if all_ok {
+        filt_prompts.push(pr)
+      }
+    }
+    let filt_asks : Array[views::VaultKeyAskInput] = []
+    for i in 0..<self.vault_key_asks.length() {
+      if self.can_read_workspace(self.vault_key_asks[i].workspace) {
+        filt_asks.push(self.vault_key_asks[i])
+      }
+    }
+    let j = views::project_lock_prompts(filt_prompts, filt_asks, self.rt.now())
     return Some(protocol::CoreEvent::Value(id, j, None))
   }
   if topic.name == "notices" {
@@ -2272,11 +3183,23 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
       _ => None
     }
-    let j = views::project_notices(self.notices_held, workspace_filter=ws_filter, lang=self.lang)
+    let filt_notices : Array[views::NoticeItemInput] = []
+    for i in 0..<self.notices_held.length() {
+      if self.can_read_workspace(self.notices_held[i].workspace) {
+        filt_notices.push(self.notices_held[i])
+      }
+    }
+    let j = views::project_notices(filt_notices, workspace_filter=ws_filter, lang=self.lang)
     return Some(protocol::CoreEvent::Value(id, j, None))
   }
   if topic.name == "notify" {
-    match views::project_notify(self.db, self.current_notify_state(), self.notices_held, lang=self.lang) {
+    let filt_notices : Array[views::NoticeItemInput] = []
+    for i in 0..<self.notices_held.length() {
+      if self.can_read_workspace(self.notices_held[i].workspace) {
+        filt_notices.push(self.notices_held[i])
+      }
+    }
+    match views::project_notify(self.db, self.current_notify_state(), filt_notices, lang=self.lang) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -2315,6 +3238,8 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       viewer_id=self.viewer_sub,
       lang=self.lang,
       prefs=prefs_opt,
+      allow_workspace=Some(fn(w : String) -> Bool { self.can_read_workspace(w) }),
+      allow_station=Some(fn(st : String) -> Bool { self.can_read_station_list(st) }),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -2325,18 +3250,37 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => ""
     }
+    match draft_at_key(key) {
+      Some((st, _)) => if !self.can_read_station(st) {
+        return Some(protocol::CoreEvent::Waiting(id))
+      }
+      None => ()
+    }
     return Some(protocol::CoreEvent::Value(id, self.composers.value(key), None))
+  }
+  if topic.name == "draft" {
+    let st = match topic.param("station") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
+      _ => self.station
+    }
+    if !self.can_read_station(st) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
+    return None
   }
   if topic.name == "chatRow" {
     let st = match topic.param("station") {
       Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
       _ => self.station
     }
+    if !self.can_read_station_list(st) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
     let sess = match topic.param("session") {
       Some(base_codec::Json::Str(s)) => s
       _ => ""
     }
-    let ws_of_st = station_workspace_prefix(st)
+    let ws_of_st = self.membership.station_workspace(st, fallback_ws=self.workspace)
     let briefs = self.station_briefs_for_scope(ws_of_st)
     match views::project_chat_row(self.db, st, sess, briefs, self.viewer_marks, self.rt.now(), lang=self.lang) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
@@ -3291,11 +4235,17 @@ pub fn ClientCore::current_lock(self : ClientCore) -> Option[lock::LockState] {
 }
 
 /// Build the structured `lock.status` JSON payload for `workspace` (defaulting to `self.workspace`).
-/// Law 3 (workspace isolation): requesting a different workspace MUST NOT leak another workspace's lock state.
+/// Law 3 (workspace isolation) + MembershipAuthority read gate: never leaks gated or foreign lock state.
 pub fn ClientCore::lock_status_json(self : ClientCore, workspace : Option[String] = None) -> base_codec::Json {
   let target_ws = match workspace {
     Some(ws) => if ws.length() > 0 { ws } else { self.workspace }
     None => self.workspace
+  }
+  if !self.can_read_workspace(target_ws) {
+    return base_codec::json_obj([
+      ("workspace", base_codec::json_str(target_ws)),
+      ("locked", base_codec::json_bool(false)),
+    ])
   }
   let state_opt = if target_ws == self.workspace {
     self.lock_state
@@ -3474,9 +4424,343 @@ fn proto_int(j : base_codec::Json, k : String) -> Option[Int] {
 }
 
 /// Handle a `protocol::CoreRequest` across both Slice 1 read-only queries and Slice 2 sync/outbox commands.
+/// Enforces the single unified `MembershipAuthority` O(1) read gate on ALL direct-read and mutation RPCs.
 pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest) -> Option[protocol::CoreEvent] {
   match req {
     protocol::CoreRequest::Call(id, call_name, params, bytes) => {
+      // Unified O(1) read gate for `composer.*` RPCs (`key` = `<station>/<chat>` or `params.station`).
+      if call_name.starts_with("composer.") {
+        let comp_st_opt : Option[String] = match proto_str(params, "station") {
+          Some(s) => if s.length() > 0 { Some(s) } else { None }
+          None => match proto_str(params, "key") {
+            Some(k) => match draft_at_key(k) {
+              Some((st, _)) => Some(st)
+              None => None
+            }
+            None => None
+          }
+        }
+        match comp_st_opt {
+          Some(st) => if !self.can_read_station(st) {
+            return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
+          }
+          None => if self.membership.is_session_invalidated() {
+            return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "session invalidated" }))
+          }
+        }
+      }
+      if call_name == "workspace.get" {
+        let ws = match proto_str(params, "workspace") {
+          Some(s) => if s.length() > 0 { s } else { self.workspace }
+          None => match proto_str(params, "id") {
+            Some(s) => if s.length() > 0 { s } else { self.workspace }
+            None => match proto_str(params, "scope") {
+              Some(s) => if s.length() > 0 { s } else { self.workspace }
+              None => self.workspace
+            }
+          }
+        }
+        if !self.can_read_workspace(ws) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
+        }
+        match store::get_workspace(self.db, ws) {
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+          sql::SqlResult::Ok(None) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+          sql::SqlResult::Ok(Some(row)) => {
+            let doc = match base_codec::json_parse(row.json) {
+              base_codec::JsonParseResult::Ok(j) => j
+              base_codec::JsonParseResult::Err(_) => base_codec::json_str(row.json)
+            }
+            let conf = match row.confirmed {
+              Some(ts) => base_codec::json_int64(ts)
+              None => base_codec::json_null()
+            }
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+              ("id", base_codec::json_str(row.id)),
+              ("doc", doc),
+              ("confirmed", conf),
+            ]), None))
+          }
+        }
+      }
+      if call_name == "workspaces.list" {
+        match store::list_workspaces(self.db) {
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+          sql::SqlResult::Ok(rows) => {
+            let items : Array[base_codec::Json] = []
+            for i in 0..<rows.length() {
+              let r = rows[i]
+              if !self.can_read_workspace(r.id) {
+                continue
+              }
+              let doc = match base_codec::json_parse(r.json) {
+                base_codec::JsonParseResult::Ok(j) => j
+                base_codec::JsonParseResult::Err(_) => base_codec::json_str(r.json)
+              }
+              let conf = match r.confirmed {
+                Some(ts) => base_codec::json_int64(ts)
+                None => base_codec::json_null()
+              }
+              items.push(base_codec::json_obj([
+                ("id", base_codec::json_str(r.id)),
+                ("doc", doc),
+                ("confirmed", conf),
+              ]))
+            }
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("workspaces", base_codec::json_arr(items))]), None))
+          }
+        }
+      }
+      if call_name == "chat.open" {
+        let req_st = match proto_str(params, "station") {
+          Some(s) => if s.length() > 0 { s } else { self.station }
+          None => self.station
+        }
+        let req_th = proto_int(params, "thread")
+        let req_sess = proto_str(params, "session")
+        if !self.can_read_station(req_st) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
+        }
+        if !self.can_read_chat(req_st, req_th, req_sess) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unconfirmed", message: "chat awaiting post-downgrade confirmation" }))
+        }
+      }
+      if call_name == "chats.window" {
+        let allowed_sts : Array[base_codec::Json] = []
+        match base_codec::json_get(params, "stations") {
+          Some(base_codec::Json::Arr(arr)) => {
+            for i in 0..<arr.length() {
+              match arr[i] {
+                base_codec::Json::Str(s) => if self.can_read_station_list(s) {
+                  allowed_sts.push(base_codec::json_str(s))
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => {
+            if self.can_read_station_list(self.station) {
+              allowed_sts.push(base_codec::json_str(self.station))
+            }
+          }
+        }
+        if allowed_sts.length() == 0 {
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("rows", base_codec::json_arr([]))]), None))
+        }
+        let gated_params = j_set_field(params, "stations", base_codec::json_arr(allowed_sts))
+        return self.router.handle(protocol::CoreRequest::Call(id, call_name, gated_params, bytes))
+      }
+      if call_name == "stations.list" {
+        let ws_scope = match proto_str(params, "workspace") {
+          Some(w) => w
+          None => match proto_str(params, "scope") {
+            Some(sc) => sc
+            None => ""
+          }
+        }
+        if ws_scope.length() > 0 && !self.can_read_workspace(ws_scope) {
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("stations", base_codec::json_arr([]))]), None))
+        }
+        match self.router.handle(req) {
+          Some(protocol::CoreEvent::Ok(_, payload, b)) => {
+            let filtered : Array[base_codec::Json] = []
+            match base_codec::json_get(payload, "stations") {
+              Some(base_codec::Json::Arr(xs)) => {
+                for i in 0..<xs.length() {
+                  let addr = j_str(xs[i], "address")
+                  if self.can_read_station_list(addr) {
+                    filtered.push(xs[i])
+                  }
+                }
+              }
+              _ => ()
+            }
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("stations", base_codec::json_arr(filtered))]), b))
+          }
+          other => return other
+        }
+      }
+      if call_name == "vault.secrets" {
+        let explicit_ws = proto_str(params, "workspace")
+        match explicit_ws {
+          Some(ws) => if ws.length() > 0 && !self.can_read_workspace(ws) {
+            return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
+          }
+          None => if self.membership.is_session_invalidated() {
+            return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "session invalidated" }))
+          }
+        }
+        match self.router.handle(req) {
+          Some(protocol::CoreEvent::Ok(_, payload, b)) => {
+            let filtered : Array[base_codec::Json] = []
+            match base_codec::json_get(payload, "secrets") {
+              Some(base_codec::Json::Arr(xs)) => {
+                for i in 0..<xs.length() {
+                  let item = xs[i]
+                  let item_ws = match proto_str(item, "workspace") {
+                    Some(w) => if w.length() > 0 { w } else { self.workspace }
+                    None => self.workspace
+                  }
+                  if self.can_read_workspace(item_ws) {
+                    match explicit_ws {
+                      Some(want_w) => if want_w.length() == 0 || item_ws == want_w { filtered.push(item) }
+                      None => filtered.push(item)
+                    }
+                  }
+                }
+              }
+              _ => ()
+            }
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("secrets", base_codec::json_arr(filtered))]), b))
+          }
+          other => return other
+        }
+      }
+      if call_name == "account.doc" {
+        if self.membership.is_session_invalidated() {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "session invalidated" }))
+        }
+        let doc_name = match proto_str(params, "name") {
+          Some(s) => s
+          None => ""
+        }
+        if doc_name.starts_with("usage:") {
+          let ws = doc_name.slice(6, doc_name.length())
+          if !self.can_read_workspace(ws) {
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+          }
+        } else if doc_name.starts_with("vaults:") {
+          let ws = doc_name.slice(7, doc_name.length())
+          if !self.can_read_workspace(ws) {
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+          }
+        } else if doc_name == "vault_secrets" {
+          if !self.can_read_workspace(self.workspace) {
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+          }
+        } else if doc_name == "me" {
+          match store::get_account_doc(self.db, "me") {
+            sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+            sql::SqlResult::Ok(None) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+            sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+              base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => {
+                let out_fs : Array[(String, base_codec::Json)] = []
+                for i in 0..<fs.length() {
+                  let (k, v) = fs[i]
+                  if k == "workspaces" {
+                    match v {
+                      base_codec::Json::Arr(xs) => {
+                        let kept_ws : Array[base_codec::Json] = []
+                        for j in 0..<xs.length() {
+                          let wid = j_str(xs[j], "id")
+                          if wid.length() == 0 || self.can_read_workspace(wid) {
+                            kept_ws.push(xs[j])
+                          }
+                        }
+                        out_fs.push((k, base_codec::json_arr(kept_ws)))
+                      }
+                      _ => out_fs.push((k, v))
+                    }
+                  } else {
+                    out_fs.push((k, v))
+                  }
+                }
+                return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj(out_fs), None))
+              }
+              base_codec::JsonParseResult::Ok(other) => return Some(protocol::CoreEvent::Ok(id, other, None))
+              base_codec::JsonParseResult::Err(_) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_str(raw), None))
+            }
+          }
+        }
+      }
+      if call_name == "chat.draft" {
+        let raw_st = match proto_str(params, "station") {
+          Some(s) => if s.length() > 0 { s } else { self.station }
+          None => self.station
+        }
+        let st = self.membership.canonicalize(raw_st, fallback_ws=self.workspace)
+        if !self.can_read_station(st) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
+        }
+      }
+      if call_name == "settings.get" || call_name == "settings.set" {
+        let ws = match proto_str(params, "workspace") {
+          Some(w) => if w.length() > 0 { w } else { self.workspace }
+          None => match proto_str(params, "scope") {
+            Some(sc) => if sc.length() > 0 { sc } else { self.workspace }
+            None => self.workspace
+          }
+        }
+        if !self.can_read_workspace(ws) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
+        }
+      }
+      if call_name == "search.chats" {
+        let allowed_sts : Array[base_codec::Json] = []
+        match base_codec::json_get(params, "stations") {
+          Some(base_codec::Json::Arr(arr)) => {
+            for i in 0..<arr.length() {
+              match arr[i] {
+                base_codec::Json::Str(s) => if self.can_read_station_list(s) {
+                  allowed_sts.push(base_codec::json_str(s))
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => {
+            let st = match proto_str(params, "station") {
+              Some(s) => if s.length() > 0 { s } else { self.station }
+              None => self.station
+            }
+            if self.can_read_station_list(st) {
+              allowed_sts.push(base_codec::json_str(st))
+            }
+          }
+        }
+        if allowed_sts.length() == 0 {
+          let q = match proto_str(params, "query") { Some(s) => s; None => match proto_str(params, "q") { Some(s) => s; None => "" } }
+          return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+            ("query", base_codec::json_str(q)),
+            ("items", base_codec::json_arr([])),
+          ]), None))
+        }
+        let gated_params = j_set_field(params, "stations", base_codec::json_arr(allowed_sts))
+        return self.router.handle(protocol::CoreRequest::Call(id, call_name, gated_params, bytes))
+      }
+      if call_name == "search.messages" {
+        match proto_str(params, "station") {
+          Some(st) => if st.length() > 0 && !self.can_read_station_list(st) {
+            let q = match proto_str(params, "query") { Some(s) => s; None => match proto_str(params, "q") { Some(s) => s; None => "" } }
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+              ("query", base_codec::json_str(q)),
+              ("messages", base_codec::json_arr([])),
+            ]), None))
+          }
+          None => ()
+        }
+        match self.router.handle(req) {
+          Some(protocol::CoreEvent::Ok(_, payload, b)) => {
+            let q = j_str(payload, "query")
+            let filtered : Array[base_codec::Json] = []
+            match base_codec::json_get(payload, "messages") {
+              Some(base_codec::Json::Arr(xs)) => {
+                for i in 0..<xs.length() {
+                  if self.can_read_station_list(j_str(xs[i], "station")) {
+                    filtered.push(xs[i])
+                  }
+                }
+              }
+              _ => ()
+            }
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([
+              ("query", base_codec::json_str(q)),
+              ("messages", base_codec::json_arr(filtered)),
+            ]), b))
+          }
+          other => return other
+        }
+      }
       if call_name == "client.focus" {
         match proto_int(params, "thread") {
           Some(th) => {
@@ -3493,6 +4777,9 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         let target_st = match proto_str(params, "station") {
           Some(s) => if s.length() > 0 { s } else { self.station }
           None => self.station
+        }
+        if !self.can_read_station(target_st) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
         }
         let th = match proto_int(params, "thread") {
           Some(t) => t
@@ -3813,9 +5100,12 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           let picture = match proto_str(params, "picture") { Some(s) => s; None => "" }
           let access = match proto_str(params, "access") { Some(s) => s; None => "" }
           let refresh = match proto_str(params, "refresh") { Some(s) => s; None => "" }
-          let exp = match base_codec::json_get(params, "accessExpires") {
+          let exp = match base_codec::json_get(params, "access_expires") {
             Some(base_codec::Json::Num(n, _)) => n.to_int64()
-            _ => (self.rt.now() / 1000.to_int64()) + 3600.to_int64()
+            _ => match base_codec::json_get(params, "accessExpires") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => self.rt.now() + 3600000L
+            }
           }
           self.auth_store.register_account(views::StoredAccount::{
             sub: sub,
@@ -4402,7 +5692,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
       }
       if call_name == "draft.get" {
         // 1:1 with `client/core-ts/src/core/calls.ts:901-913`: accepts `{ key }` OR `{ station, chat }`.
-        let (st, chat) = match proto_str(params, "key") {
+        let (raw_st, chat) = match proto_str(params, "key") {
           Some(k) => match draft_at_key(k) {
             Some(pair) => pair
             None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid draft key" }))
@@ -4422,11 +5712,23 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
             (s, c)
           }
         }
-        return Some(protocol::CoreEvent::Ok(id, self.composers.read_draft(st, chat), None))
+        let st = self.membership.canonicalize(raw_st, fallback_ws=self.workspace)
+        if !self.can_read_station(st) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
+        }
+        // Try canonical station first; fall back to raw legacy bare station if present and readable.
+        let res = self.composers.read_draft(st, chat)
+        match res {
+          base_codec::Json::Null => if st != raw_st {
+            return Some(protocol::CoreEvent::Ok(id, self.composers.read_draft(raw_st, chat), None))
+          }
+          _ => ()
+        }
+        return Some(protocol::CoreEvent::Ok(id, res, None))
       }
       if call_name == "draft.put" {
         // 1:1 with `client/core-ts/src/core/calls.ts:901-921`: accepts `{ key }` OR `{ station, chat }`.
-        let (st, chat) = match proto_str(params, "key") {
+        let (raw_st, chat) = match proto_str(params, "key") {
           Some(k) => match draft_at_key(k) {
             Some(pair) => pair
             None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid draft key" }))
@@ -4445,6 +5747,10 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
             }
             (s, c)
           }
+        }
+        let st = self.membership.canonicalize(raw_st, fallback_ws=self.workspace)
+        if !self.can_read_station(st) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "access_revoked", message: "workspace access revoked" }))
         }
         let draft_val = match base_codec::json_get(params, "value") {
           Some(v) => v

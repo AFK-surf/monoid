@@ -176,6 +176,8 @@ pub fn project_workspace_marks(
   viewer_id : String = "",
   lang : String = "zh",
   prefs : Option[base_codec::Json] = None,
+  allow_workspace : Option[(String) -> Bool] = None,
+  allow_station : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   let ws_rows = match store::list_workspaces(db) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
@@ -203,6 +205,10 @@ pub fn project_workspace_marks(
     let wr = ws_rows[wi]
     let wj = parse_json_or_null(wr.json)
     let ws_id = wr.id
+    match allow_workspace {
+      Some(pred) => if !pred(ws_id) { continue }
+      None => ()
+    }
     let ws_name = match j_opt_str(wj, "name") {
       Some(nm) => nm
       None => ws_id
@@ -213,6 +219,10 @@ pub fn project_workspace_marks(
     let st_names : Map[String, String] = Map::new()
     for si in 0..<st_rows.length() {
       let sr = st_rows[si]
+      match allow_station {
+        Some(pred) => if !pred(sr.address) { continue }
+        None => ()
+      }
       st_addrs.push(sr.address)
       let sj = parse_json_or_null(sr.json)
       let sname = match j_opt_str(sj, "name") {

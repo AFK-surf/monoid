@@ -89,11 +89,29 @@ pub struct MemberCredential {
   pub relay_url : String
 }
 
+pub struct RefreshedTokens {
+  pub access : String
+  pub refresh : String
+  pub access_expires : Int64
+  pub name : Option[String]
+}
+
+pub enum RefreshTokenError {
+  InvalidSession(Int, String)
+  Transient(String)
+}
+
+/// Real `AccountEvent` variants strictly matching `cloud/src/types.ts:49-63`
+/// (`workspaces`, `workspace`, `release`, `relays`, `admin`, `feedback`),
+/// plus legacy `station` and `Other` fallback. NEVER fabricates nonexistent event names.
 pub enum CloudEvent {
   WorkspacesChanged(base_codec::Json)
   WorkspaceChanged(String, base_codec::Json)
   StationStatusChanged(String, String, Bool)
   Release
+  Relays
+  Admin(base_codec::Json)
+  Feedback(base_codec::Json)
   Other(String, base_codec::Json)
 }
 
@@ -120,30 +138,58 @@ fn parse_cloud_error(status : Int, body : Bytes) -> String {
   }
 }
 
-fn parse_cloud_me(j : base_codec::Json) -> CloudMe {
+/// Strictly validate `/v1/me` payload before any membership diff or persistence:
+/// - Root MUST be a JSON object.
+/// - `workspaces` MUST be a JSON array.
+/// - EVERY element of `workspaces` MUST be a JSON object with a non-empty string `id`
+///   (and valid string `name`/`role` if present and non-null).
+/// Returns `Err` on ANY malformed element — NEVER silently skips malformed elements
+/// (skipping would falsely mark a valid workspace as removed and trigger destructive purge!).
+pub fn parse_cloud_me_strict(j : base_codec::Json) -> Result[CloudMe, String] {
+  match j {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("malformed /v1/me: root must be object")
+  }
   let user = match base_codec::json_get(j, "user") {
-    Some(u) => u
-    None => j
+    Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+    Some(base_codec::Json::Null) | None => j
+    Some(_) => return Err("malformed /v1/me: user must be object")
   }
   let sub = j_str(user, "sub")
   let email = j_str(user, "email")
   let name = j_str(user, "name")
+  let ws_arr = match base_codec::json_get(j, "workspaces") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return Err("malformed /v1/me: workspaces must be array")
+  }
   let workspaces : Array[CloudWorkspaceRef] = []
-  match base_codec::json_get(j, "workspaces") {
-    Some(base_codec::Json::Arr(xs)) => {
-      for i in 0..<xs.length() {
-        let w = xs[i]
-        let wid = j_str(w, "id")
-        if wid.length() > 0 {
-          workspaces.push(CloudWorkspaceRef::{
-            id: wid,
-            name: j_str(w, "name"),
-            role: j_str(w, "role"),
-          })
-        }
-      }
+  for i in 0..<ws_arr.length() {
+    let w = ws_arr[i]
+    match w {
+      base_codec::Json::Obj(_) => ()
+      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "] must be object")
     }
-    _ => ()
+    let wid = match base_codec::json_get(w, "id") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else {
+        return Err("malformed /v1/me: workspaces[" + i.to_string() + "].id is empty")
+      }
+      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].id must be non-empty string")
+    }
+    let wname = match base_codec::json_get(w, "name") {
+      None | Some(base_codec::Json::Null) => ""
+      Some(base_codec::Json::Str(s)) => s
+      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].name must be string")
+    }
+    let wrole = match base_codec::json_get(w, "role") {
+      None | Some(base_codec::Json::Null) => ""
+      Some(base_codec::Json::Str(s)) => s
+      _ => return Err("malformed /v1/me: workspaces[" + i.to_string() + "].role must be string")
+    }
+    workspaces.push(CloudWorkspaceRef::{
+      id: wid,
+      name: wname,
+      role: wrole,
+    })
   }
   let relays : Array[String] = []
   match base_codec::json_get(j, "relay_urls") {
@@ -176,28 +222,54 @@ fn parse_cloud_me(j : base_codec::Json) -> CloudMe {
       None => ()
     }
   }
-  CloudMe::{
+  Ok(CloudMe::{
     sub: sub,
     email: email,
     name: name,
     workspaces: workspaces,
     relays: relays,
     raw: j,
-  }
+  })
 }
 
-fn parse_cloud_workspace(ws_id : String, j : base_codec::Json) -> CloudWorkspace {
-  let id = {
-    let parsed_id = j_str(j, "id")
-    if parsed_id.length() > 0 { parsed_id } else { ws_id }
+/// Strictly validate `/v1/workspaces/<requested_ws>` payload:
+/// - Root MUST be a JSON object.
+/// - `id` MUST be a non-empty string AND MUST equal `requested_ws` when `requested_ws` is non-empty
+///   (preventing cross-workspace spoofing / mixup).
+/// - `stations` and `members`, if present and non-null, MUST be arrays of objects (every station having non-empty string `id`).
+pub fn parse_cloud_workspace_strict(
+  j : base_codec::Json,
+  requested_ws : String,
+) -> Result[CloudWorkspace, String] {
+  match j {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("malformed workspace: root must be object")
   }
-  let name = j_str(j, "name")
+  let parsed_id = match base_codec::json_get(j, "id") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else {
+      return Err("malformed workspace: id is empty")
+    }
+    _ => return Err("malformed workspace: missing string id")
+  }
+  if requested_ws.length() > 0 && parsed_id != requested_ws {
+    return Err("workspace id mismatch: expected " + requested_ws + ", got " + parsed_id)
+  }
+  let name = match base_codec::json_get(j, "name") {
+    None | Some(base_codec::Json::Null) => ""
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("malformed workspace: name must be string")
+  }
   let rev = j_int(j, "rev")
   let members : Array[CloudMember] = []
   match base_codec::json_get(j, "members") {
+    None | Some(base_codec::Json::Null) => ()
     Some(base_codec::Json::Arr(xs)) => {
       for i in 0..<xs.length() {
         let m = xs[i]
+        match m {
+          base_codec::Json::Obj(_) => ()
+          _ => return Err("malformed workspace: members[" + i.to_string() + "] must be object")
+        }
         members.push(CloudMember::{
           sub: j_str(m, "sub"),
           email: j_str(m, "email"),
@@ -205,65 +277,119 @@ fn parse_cloud_workspace(ws_id : String, j : base_codec::Json) -> CloudWorkspace
         })
       }
     }
-    _ => ()
+    _ => return Err("malformed workspace: members must be array")
   }
   let stations : Array[CloudStation] = []
   match base_codec::json_get(j, "stations") {
+    None | Some(base_codec::Json::Null) => ()
     Some(base_codec::Json::Arr(xs)) => {
       for i in 0..<xs.length() {
         let s = xs[i]
-        let sid = j_str(s, "id")
-        if sid.length() > 0 {
-          let endpoint_id = match j_opt_str(s, "endpoint_id") {
-            Some(v) => Some(v)
-            None => j_opt_str(s, "endpointId")
+        match s {
+          base_codec::Json::Obj(_) => ()
+          _ => return Err("malformed workspace: stations[" + i.to_string() + "] must be object")
+        }
+        let sid = match base_codec::json_get(s, "id") {
+          Some(base_codec::Json::Str(v)) => if v.length() > 0 { v } else {
+            return Err("malformed workspace: stations[" + i.to_string() + "].id is empty")
           }
-          let relay = match j_opt_str(s, "relay") {
+          _ => return Err("malformed workspace: stations[" + i.to_string() + "].id must be non-empty string")
+        }
+        let endpoint_id = match j_opt_str(s, "endpoint_id") {
+          Some(v) => Some(v)
+          None => j_opt_str(s, "endpointId")
+        }
+        let relay = match j_opt_str(s, "relay") {
+          Some(v) => Some(v)
+          None =>
+          match j_opt_str(s, "relay_url") {
             Some(v) => Some(v)
-            None =>
-            match j_opt_str(s, "relay_url") {
-              Some(v) => Some(v)
-              None => j_opt_str(s, "relayUrl")
-            }
+            None => j_opt_str(s, "relayUrl")
           }
-          let ips : Array[String] = []
-          match base_codec::json_get(s, "ips") {
-            Some(base_codec::Json::Arr(ip_xs)) => {
-              for k in 0..<ip_xs.length() {
-                match ip_xs[k] {
-                  base_codec::Json::Str(ip) => if ip.length() > 0 { ips.push(ip) }
-                  _ => ()
-                }
+        }
+        let ips : Array[String] = []
+        match base_codec::json_get(s, "ips") {
+          Some(base_codec::Json::Arr(ip_xs)) => {
+            for k in 0..<ip_xs.length() {
+              match ip_xs[k] {
+                base_codec::Json::Str(ip) => if ip.length() > 0 { ips.push(ip) }
+                _ => ()
               }
             }
-            _ => ()
           }
-          stations.push(CloudStation::{
-            id: sid,
-            name: j_str(s, "name"),
-            online: j_bool(s, "online"),
-            url: j_opt_str(s, "url"),
-            endpoint_id: endpoint_id,
-            relay: relay,
-            ips: ips,
-            mode: j_opt_str(s, "mode"),
-            emoji: j_opt_str(s, "emoji"),
-            icon: j_opt_str(s, "icon"),
-            version: j_opt_str(s, "version"),
-            joined: j_bool(s, "joined"),
-          })
+          _ => ()
         }
+        stations.push(CloudStation::{
+          id: sid,
+          name: j_str(s, "name"),
+          online: j_bool(s, "online"),
+          url: j_opt_str(s, "url"),
+          endpoint_id: endpoint_id,
+          relay: relay,
+          ips: ips,
+          mode: j_opt_str(s, "mode"),
+          emoji: j_opt_str(s, "emoji"),
+          icon: j_opt_str(s, "icon"),
+          version: j_opt_str(s, "version"),
+          joined: j_bool(s, "joined"),
+        })
       }
     }
-    _ => ()
+    _ => return Err("malformed workspace: stations must be array")
   }
-  CloudWorkspace::{
-    id: id,
+  Ok(CloudWorkspace::{
+    id: parsed_id,
     name: name,
     rev: rev,
     members: members,
     stations: stations,
     raw: j,
+  })
+}
+
+fn parse_cloud_workspace(ws_id : String, j : base_codec::Json) -> CloudWorkspace {
+  match parse_cloud_workspace_strict(j, ws_id) {
+    Ok(ws) => ws
+    Err(_) => {
+      let id = {
+        let parsed_id = j_str(j, "id")
+        if parsed_id.length() > 0 { parsed_id } else { ws_id }
+      }
+      let stations : Array[CloudStation] = []
+      match base_codec::json_get(j, "stations") {
+        Some(base_codec::Json::Arr(xs)) => {
+          for i in 0..<xs.length() {
+            let s = xs[i]
+            let sid = j_str(s, "id")
+            if sid.length() > 0 {
+              stations.push(CloudStation::{
+                id: sid,
+                name: j_str(s, "name"),
+                online: j_bool(s, "online"),
+                url: j_opt_str(s, "url"),
+                endpoint_id: match j_opt_str(s, "endpoint_id") { Some(v) => Some(v); None => j_opt_str(s, "endpointId") },
+                relay: match j_opt_str(s, "relay") { Some(v) => Some(v); None => match j_opt_str(s, "relay_url") { Some(v) => Some(v); None => j_opt_str(s, "relayUrl") } },
+                ips: [],
+                mode: j_opt_str(s, "mode"),
+                emoji: j_opt_str(s, "emoji"),
+                icon: j_opt_str(s, "icon"),
+                version: j_opt_str(s, "version"),
+                joined: j_bool(s, "joined"),
+              })
+            }
+          }
+        }
+        _ => ()
+      }
+      CloudWorkspace::{
+        id: id,
+        name: j_str(j, "name"),
+        rev: j_int(j, "rev"),
+        members: [],
+        stations: stations,
+        raw: j,
+      }
+    }
   }
 }
 
@@ -307,7 +433,7 @@ fn parse_member_credential(j : base_codec::Json) -> Result[MemberCredential, Str
   })
 }
 
-fn parse_cloud_event(text : String) -> Option[CloudEvent] {
+pub fn parse_cloud_event(text : String) -> Option[CloudEvent] {
   if text == "pong" || text.length() == 0 {
     return None
   }
@@ -335,6 +461,12 @@ fn parse_cloud_event(text : String) -> Option[CloudEvent] {
     }
   } else if ev_type == "release" {
     Some(CloudEvent::Release)
+  } else if ev_type == "relays" {
+    Some(CloudEvent::Relays)
+  } else if ev_type == "admin" {
+    Some(CloudEvent::Admin(j))
+  } else if ev_type == "feedback" {
+    Some(CloudEvent::Feedback(j))
   } else if ev_type.length() > 0 {
     Some(CloudEvent::Other(ev_type, j))
   } else {
@@ -342,13 +474,15 @@ fn parse_cloud_event(text : String) -> Option[CloudEvent] {
   }
 }
 
-/// Fetch `GET <origin>/v1/me`, parse account/workspaces/relays, and persist to SQLite `account_doc`.
+/// Fetch `GET <origin>/v1/me`, strictly validate with `parse_cloud_me_strict`, and optionally persist
+/// (`persist=false` lets `ClientCore::commit_cloud_me` execute the atomic 5-step commit order).
 pub fn fetch_me_k(
   sh : shell::Shell,
   origin : String,
   token : String,
   db : sql::Sql,
   k : (effect::Exit[CloudMe]) -> Unit,
+  persist : Bool = true,
 ) -> Unit {
   let url = join_base_url(origin, "/v1/me")
   sh.fetch_k("GET", url, cloud_auth_headers(token), None, fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
@@ -368,7 +502,17 @@ pub fn fetch_me_k(
             return
           }
         }
-        let me = parse_cloud_me(j)
+        let me = match parse_cloud_me_strict(j) {
+          Ok(m) => m
+          Err(msg) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+            return
+          }
+        }
+        if !persist {
+          k(effect::Exit::Succeeded(me))
+          return
+        }
         let raw_json = base_codec::json_stringify(j)
         let now_ms = sh.rt.now()
         let burst = sql::Burst::new(db)
@@ -390,7 +534,7 @@ pub fn fetch_me_k(
   })
 }
 
-/// Fetch `GET <origin>/v1/workspaces/<ws_id>`, parse members & stations, and persist to SQLite `workspace`.
+/// Fetch `GET <origin>/v1/workspaces/<ws_id>`, strictly validate `id == ws_id`, and optionally persist.
 pub fn fetch_workspace_k(
   sh : shell::Shell,
   origin : String,
@@ -398,6 +542,7 @@ pub fn fetch_workspace_k(
   ws_id : String,
   db : sql::Sql,
   k : (effect::Exit[CloudWorkspace]) -> Unit,
+  persist : Bool = true,
 ) -> Unit {
   let url = join_base_url(origin, "/v1/workspaces/" + ws_id)
   sh.fetch_k("GET", url, cloud_auth_headers(token), None, fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
@@ -417,7 +562,17 @@ pub fn fetch_workspace_k(
             return
           }
         }
-        let ws = parse_cloud_workspace(ws_id, j)
+        let ws = match parse_cloud_workspace_strict(j, ws_id) {
+          Ok(w) => w
+          Err(msg) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+            return
+          }
+        }
+        if !persist {
+          k(effect::Exit::Succeeded(ws))
+          return
+        }
         let raw_json = base_codec::json_stringify(j)
         let now_ms = sh.rt.now()
         let burst = sql::Burst::new(db)
@@ -436,6 +591,99 @@ pub fn fetch_workspace_k(
           sql::SqlResult::Err(e) => k(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
           sql::SqlResult::Ok(_) => k(effect::Exit::Succeeded(ws))
         }
+      }
+    }
+  })
+}
+
+/// Rotate OAuth tokens via `POST <origin>/v1/auth/refresh` carrying a valid 26-char Crockford Base32
+/// ULID `request_id` (`client/core-ts/src/accounts.ts:711-723`), strictly distinguishing permanent
+/// `401` / `invalid_grant` session invalidation from transient network/5xx errors.
+pub fn refresh_token_k(
+  sh : shell::Shell,
+  origin : String,
+  refresh_token : String,
+  now_ms : Int64,
+  k : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit,
+) -> Unit {
+  let url = join_base_url(origin, "/v1/auth/refresh")
+  let req_id = generate_ulid(now_ms, sh.random(16))
+  let body = base_codec::json_stringify(base_codec::json_obj([
+    ("request_id", base_codec::json_str(req_id)),
+    ("refresh_token", base_codec::json_str(refresh_token)),
+  ])).to_bytes()
+  sh.fetch_k("POST", url, cloud_auth_headers(refresh_token, json_body=true), Some(body), fn(ex : effect::Exit[shell::FetchResponse]) -> Unit {
+    match ex {
+      effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+      effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+      effect::Exit::Succeeded(resp) => {
+        let err_text = bytes_to_str(resp.body)
+        if resp.status < 200 || resp.status >= 300 {
+          let err_code = match base_codec::json_parse(err_text) {
+            base_codec::JsonParseResult::Ok(ej) => match j_opt_str(ej, "error") {
+              Some(c) => c
+              None => ""
+            }
+            base_codec::JsonParseResult::Err(_) => ""
+          }
+          let is_invalid = resp.status == 401 ||
+          err_code == "invalid_grant" ||
+          err_code == "invalid_token" ||
+          err_code == "session_expired" ||
+          err_code == "unauthorized"
+          let msg = parse_cloud_error(resp.status, resp.body)
+          if is_invalid {
+            k(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(resp.status, msg))))
+          } else {
+            k(effect::Exit::Succeeded(Err(RefreshTokenError::Transient(msg))))
+          }
+          return
+        }
+        let j = match base_codec::json_parse(err_text) {
+          base_codec::JsonParseResult::Ok(v) => v
+          base_codec::JsonParseResult::Err(e) => {
+            k(effect::Exit::Succeeded(Err(RefreshTokenError::Transient("malformed refresh json: " + e))))
+            return
+          }
+        }
+        let access = match j_opt_str(j, "access") {
+          Some(s) => s
+          None => match j_opt_str(j, "access_token") {
+            Some(s) => s
+            None => ""
+          }
+        }
+        if access.length() == 0 {
+          k(effect::Exit::Succeeded(Err(RefreshTokenError::Transient("refresh response missing access token"))))
+          return
+        }
+        let next_refresh = match j_opt_str(j, "refresh") {
+          Some(s) => if s.length() > 0 { s } else { refresh_token }
+          None => match j_opt_str(j, "refresh_token") {
+            Some(s) => if s.length() > 0 { s } else { refresh_token }
+            None => refresh_token
+          }
+        }
+        let access_expires = match j_opt_int64(j, "access_expires") {
+          Some(v) => v
+          None => match j_opt_int64(j, "expires_at") {
+            Some(v) => v
+            None => match j_opt_int64(j, "expires_in") {
+              Some(sec) => now_ms + sec * 1000L
+              None => now_ms + 3600000L
+            }
+          }
+        }
+        let name_opt = match base_codec::json_get(j, "user") {
+          Some(u) => j_opt_str(u, "name")
+          None => j_opt_str(j, "name")
+        }
+        k(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+          access: access,
+          refresh: next_refresh,
+          access_expires: access_expires,
+          name: name_opt,
+        })))
       }
     }
   })
@@ -526,6 +774,8 @@ fn events_ws_loop_k(
   token : String,
   on_event : (CloudEvent) -> Unit,
   attempt : Int,
+  has_opened : Bool,
+  on_reconnect : Option[() -> Unit],
   k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
   if effect::is_interrupted() {
@@ -557,11 +807,17 @@ fn events_ws_loop_k(
           effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
             match sex {
               effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-              _ => events_ws_loop_k(sh, origin, token, on_event, attempt + 1, k)
+              _ => events_ws_loop_k(sh, origin, token, on_event, attempt + 1, has_opened, on_reconnect, k)
             }
           })
         }
         effect::Exit::Succeeded(ws_id) => {
+          if has_opened {
+            match on_reconnect {
+              Some(cb) => cb()
+              None => ()
+            }
+          }
           let opened_at = sh.rt.now()
           ws_read_loop_k(sh, ws_id, on_event, fn(rex : effect::Exit[Unit]) -> Unit {
             match rex {
@@ -574,7 +830,7 @@ fn events_ws_loop_k(
                 effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
                   match sex {
                     effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                    _ => events_ws_loop_k(sh, origin, token, on_event, next_attempt + 1, k)
+                    _ => events_ws_loop_k(sh, origin, token, on_event, next_attempt + 1, true, on_reconnect, k)
                   }
                 })
               }
@@ -593,9 +849,10 @@ pub fn start_events_ws(
   origin : String,
   token : String,
   on_event : (CloudEvent) -> Unit,
+  on_reconnect : Option[() -> Unit] = None,
 ) -> effect::Fiber[Unit] {
   sh.rt.fork_quiet_named("cloud-events-ws", fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    events_ws_loop_k(sh, origin, token, on_event, 0, k)
+    events_ws_loop_k(sh, origin, token, on_event, 0, false, on_reconnect, k)
   })
 }
 
@@ -607,6 +864,9 @@ pub struct CloudSync {
   mut token : String
   cred_cache : Map[String, MemberCredential]
   mut ws_fiber : Option[effect::Fiber[Unit]]
+  mut on_me_fetched : Option[(CloudMe) -> Unit]
+  mut on_workspace_fetched : Option[(CloudWorkspace) -> Unit]
+  mut on_workspace_revoked_err : Option[(String, String) -> Unit]
 }
 
 pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token : String = "") -> CloudSync {
@@ -617,7 +877,21 @@ pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token :
     token: token,
     cred_cache: Map::new(),
     ws_fiber: None,
+    on_me_fetched: None,
+    on_workspace_fetched: None,
+    on_workspace_revoked_err: None,
   }
+}
+
+pub fn CloudSync::set_commit_hooks(
+  self : CloudSync,
+  on_me_fetched : Option[(CloudMe) -> Unit] = None,
+  on_workspace_fetched : Option[(CloudWorkspace) -> Unit] = None,
+  on_workspace_revoked_err : Option[(String, String) -> Unit] = None,
+) -> Unit {
+  self.on_me_fetched = on_me_fetched
+  self.on_workspace_fetched = on_workspace_fetched
+  self.on_workspace_revoked_err = on_workspace_revoked_err
 }
 
 pub fn CloudSync::set_origin_and_token(self : CloudSync, origin : String, token : String) -> Unit {
@@ -633,16 +907,46 @@ pub fn CloudSync::origin(self : CloudSync) -> String {
   self.origin
 }
 
-pub fn CloudSync::fetch_me_k(self : CloudSync, k : (effect::Exit[CloudMe]) -> Unit) -> Unit {
-  fetch_me_k(self.sh, self.origin, self.token, self.db, k)
+/// Evict cached member credentials for workspace `ws_id` so the next connection fetches a fresh one.
+pub fn CloudSync::invalidate_workspace_credential(self : CloudSync, ws_id : String) -> Unit {
+  let prefix = ws_id + "/"
+  let ks = self.cred_cache.keys()
+  for i in 0..<ks.length() {
+    if ks[i].starts_with(prefix) {
+      self.cred_cache.remove(ks[i])
+    }
+  }
+}
+
+/// Evict all cached member credentials (e.g. on session invalidation / sign-out).
+pub fn CloudSync::clear_all_credentials(self : CloudSync) -> Unit {
+  self.cred_cache.clear()
+}
+
+pub fn CloudSync::fetch_me_k(
+  self : CloudSync,
+  k : (effect::Exit[CloudMe]) -> Unit,
+  persist : Bool = true,
+) -> Unit {
+  fetch_me_k(self.sh, self.origin, self.token, self.db, k, persist=persist)
 }
 
 pub fn CloudSync::fetch_workspace_k(
   self : CloudSync,
   ws_id : String,
   k : (effect::Exit[CloudWorkspace]) -> Unit,
+  persist : Bool = true,
 ) -> Unit {
-  fetch_workspace_k(self.sh, self.origin, self.token, ws_id, self.db, k)
+  fetch_workspace_k(self.sh, self.origin, self.token, ws_id, self.db, k, persist=persist)
+}
+
+pub fn CloudSync::refresh_token_k(
+  self : CloudSync,
+  refresh_token : String,
+  now_ms : Int64,
+  k : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit,
+) -> Unit {
+  refresh_token_k(self.sh, self.origin, refresh_token, now_ms, k)
 }
 
 /// Get a cached member credential or fetch & cache a fresh one when missing/expired (`expires_at <= now_sec + 60`).
@@ -655,7 +959,9 @@ pub fn CloudSync::fetch_member_credential_k(
   fresh : Bool = false,
 ) -> Unit {
   let cache_key = ws_id + "/" + device
-  if !fresh {
+  if fresh {
+    self.cred_cache.remove(cache_key)
+  } else {
     match self.cred_cache.get(cache_key) {
       Some(c) => {
         if c.expires_at > now_sec + 60.to_int64() {
@@ -678,28 +984,85 @@ pub fn CloudSync::fetch_member_credential_k(
   })
 }
 
-/// Start `/v1/events` WebSocket; automatically refreshes `/v1/me` or `/v1/workspaces/<ws>` on change events.
-pub fn CloudSync::start_events_ws(self : CloudSync, on_event : (CloudEvent) -> Unit) -> Unit {
+fn CloudSync::trigger_me_reconcile(self : CloudSync) -> Unit {
+  let use_hook = self.on_me_fetched.is_some()
+  let _ = self.sh.rt.fork_quiet_named("cloud-refresh-me", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    self.fetch_me_k(
+      fn(ex : effect::Exit[CloudMe]) -> Unit {
+        match (ex, self.on_me_fetched) {
+          (effect::Exit::Succeeded(me), Some(cb)) => cb(me)
+          _ => ()
+        }
+        fk(effect::Exit::Succeeded(()))
+      },
+      persist=!use_hook,
+    )
+  })
+}
+
+/// Start `/v1/events` WebSocket; automatically refreshes `/v1/me` on `workspaces` events and on
+/// WS reconnect (reconciling missed membership changes), and `/v1/workspaces/<ws>` on `workspace` events.
+pub fn CloudSync::start_events_ws(
+  self : CloudSync,
+  on_event : (CloudEvent) -> Unit,
+  on_reconnect : Option[() -> Unit] = None,
+) -> Unit {
   match self.ws_fiber {
     Some(_) => return
     None => ()
   }
-  let fiber = start_events_ws(self.sh, self.origin, self.token, fn(ev : CloudEvent) -> Unit {
-    match ev {
-      CloudEvent::WorkspacesChanged(_) => {
-        let _ = self.sh.rt.fork_quiet_named("cloud-refresh-me", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-          self.fetch_me_k(fn(_ : effect::Exit[CloudMe]) -> Unit { fk(effect::Exit::Succeeded(())) })
-        })
+  let fiber = start_events_ws(
+    self.sh,
+    self.origin,
+    self.token,
+    fn(ev : CloudEvent) -> Unit {
+      match ev {
+        CloudEvent::WorkspacesChanged(_) => {
+          self.trigger_me_reconcile()
+        }
+        CloudEvent::WorkspaceChanged(wid, _) => {
+          let use_hook = self.on_workspace_fetched.is_some()
+          let _ = self.sh.rt.fork_quiet_named("cloud-refresh-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            self.fetch_workspace_k(
+              wid,
+              fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+                match ex {
+                  effect::Exit::Succeeded(ws) => match self.on_workspace_fetched {
+                    Some(cb) => cb(ws)
+                    None => ()
+                  }
+                  effect::Exit::Failed(e) => match self.on_workspace_revoked_err {
+                    Some(cb) => {
+                      let msg = match e {
+                        effect::EffectError::Custom(s) => s
+                        _ => ""
+                      }
+                      if msg.contains("(403)") || msg.contains("(404)") || msg.contains("http_403") || msg.contains("http_404") {
+                        cb(wid, msg)
+                      }
+                    }
+                    None => ()
+                  }
+                  effect::Exit::Interrupted => ()
+                }
+                fk(effect::Exit::Succeeded(()))
+              },
+              persist=!use_hook,
+            )
+          })
+        }
+        _ => ()
       }
-      CloudEvent::WorkspaceChanged(wid, _) => {
-        let _ = self.sh.rt.fork_quiet_named("cloud-refresh-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-          self.fetch_workspace_k(wid, fn(_ : effect::Exit[CloudWorkspace]) -> Unit { fk(effect::Exit::Succeeded(())) })
-        })
+      on_event(ev)
+    },
+    on_reconnect=Some(fn() -> Unit {
+      self.trigger_me_reconcile()
+      match on_reconnect {
+        Some(cb) => cb()
+        None => ()
       }
-      _ => ()
-    }
-    on_event(ev)
-  })
+    }),
+  )
   self.ws_fiber = Some(fiber)
 }
 

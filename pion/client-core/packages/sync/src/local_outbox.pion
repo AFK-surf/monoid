@@ -85,6 +85,7 @@ pub struct LocalOutbox {
   in_flight_threads : Map[String, String]
   in_flight_pending : Map[String, Bool]
   in_flight_overlays : Map[String, Bool]
+  station_epochs : Map[String, Int64]
   mut on_error : (String, String) -> Unit
 }
 
@@ -146,6 +147,7 @@ pub fn LocalOutbox::new(
     in_flight_threads: Map::new(),
     in_flight_pending: Map::new(),
     in_flight_overlays: Map::new(),
+    station_epochs: Map::new(),
     on_error: fn(_code : String, _msg : String) -> Unit {},
   }
   let _ = ob.load_from_db()
@@ -201,6 +203,72 @@ pub fn LocalOutbox::register_station_transport(
 pub fn LocalOutbox::unregister_station_transport(self : LocalOutbox, station : String) -> Unit {
   if station.length() > 0 {
     self.station_transports.remove(station)
+  }
+}
+
+pub fn LocalOutbox::station_epoch(self : LocalOutbox, station : String) -> Int64 {
+  match self.station_epochs.get(station) {
+    Some(e) => e
+    None => 1L
+  }
+}
+
+/// Clear all queued messages, pending chats, overlays, in-flight markers, and transport for
+/// `station`, advancing its epoch so late HTTP replies from before `drop_workspace` are discarded.
+pub fn LocalOutbox::clear_station(self : LocalOutbox, station : String) -> Unit {
+  if station.length() == 0 {
+    return
+  }
+  self.station_epochs.set(station, self.station_epoch(station) + 1L)
+  self.station_transports.remove(station)
+  let kept_msgs : Array[OutboxMessage] = []
+  for i in 0..<self.queued_messages.length() {
+    if self.queued_messages[i].station != station {
+      kept_msgs.push(self.queued_messages[i])
+    }
+  }
+  self.queued_messages.clear()
+  for i in 0..<kept_msgs.length() {
+    self.queued_messages.push(kept_msgs[i])
+  }
+  let kept_pend : Array[PendingChatOp] = []
+  for i in 0..<self.queued_pending.length() {
+    if self.queued_pending[i].station != station {
+      kept_pend.push(self.queued_pending[i])
+    }
+  }
+  self.queued_pending.clear()
+  for i in 0..<kept_pend.length() {
+    self.queued_pending.push(kept_pend[i])
+  }
+  let kept_ovs : Array[ChangingOverlay] = []
+  for i in 0..<self.queued_overlays.length() {
+    if self.queued_overlays[i].station != station {
+      kept_ovs.push(self.queued_overlays[i])
+    }
+  }
+  self.queued_overlays.clear()
+  for i in 0..<kept_ovs.length() {
+    self.queued_overlays.push(kept_ovs[i])
+  }
+  let pref = station + "\u{01}"
+  let tks = self.in_flight_threads.keys()
+  for i in 0..<tks.length() {
+    if tks[i].starts_with(pref) {
+      self.in_flight_threads.remove(tks[i])
+    }
+  }
+  let pks = self.in_flight_pending.keys()
+  for i in 0..<pks.length() {
+    if pks[i].starts_with(pref) {
+      self.in_flight_pending.remove(pks[i])
+    }
+  }
+  let oks = self.in_flight_overlays.keys()
+  for i in 0..<oks.length() {
+    if oks[i].starts_with(pref) {
+      self.in_flight_overlays.remove(oks[i])
+    }
   }
 }
 
@@ -804,6 +872,7 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
     }
   }
   let req_fn = transport.request_k
+  let send_epoch = self.station_epoch(msg.station)
   let body = build_send_http_body(msg)
   let path = "/threads/" + msg.thread.to_string() + "/messages"
   let headers = [
@@ -813,6 +882,10 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
   let _ = rt.fork_quiet_named("outbox-send:" + msg.station + ":" + msg.client_key, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     req_fn("POST", path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
       self.in_flight_threads.remove(fk)
+      if self.station_epoch(msg.station) != send_epoch {
+        k(effect::Exit::Succeeded(()))
+        return
+      }
       match ex {
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Failed(_) => {
@@ -946,6 +1019,7 @@ fn LocalOutbox::dispatch_pending_chat(self : LocalOutbox, rt : effect::Runtime, 
   }
   self.in_flight_pending.set(pk, true)
   let req_fn = transport.request_k
+  let send_epoch = self.station_epoch(op.station)
   let body = base_codec::json_stringify(base_codec::json_obj([
     ("clientKey", base_codec::json_str(op.client_key)),
     ("title", base_codec::json_str(op.title)),
@@ -957,6 +1031,10 @@ fn LocalOutbox::dispatch_pending_chat(self : LocalOutbox, rt : effect::Runtime, 
   let _ = rt.fork_quiet_named("pending-chat:" + op.station + ":" + op.client_key, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     req_fn("POST", "/sessions", headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
       self.in_flight_pending.remove(pk)
+      if self.station_epoch(op.station) != send_epoch {
+        k(effect::Exit::Succeeded(()))
+        return
+      }
       match ex {
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
         effect::Exit::Failed(_) => k(effect::Exit::Succeeded(()))
@@ -1148,12 +1226,18 @@ fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : 
   }
   self.in_flight_overlays.set(ok_key, true)
   let req_fn = transport.request_k
+  let send_epoch = self.station_epoch(ov.station)
   let (headers, body) = match ov.body_json {
     Some(bj) => ([("content-type", "application/json")], base_codec::json_stringify(bj).to_bytes())
     None => ([], Bytes::new(0))
   }
   let _ = rt.fork_quiet_named("op:" + ov.station + ":" + ov.op_kind + ":" + ov.op_id.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     req_fn(ov.http_method, ov.http_path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+      if self.station_epoch(ov.station) != send_epoch {
+        self.in_flight_overlays.remove(ok_key)
+        k(effect::Exit::Succeeded(()))
+        return
+      }
       match ex {
         effect::Exit::Interrupted => {
           self.in_flight_overlays.remove(ok_key)
@@ -1169,6 +1253,10 @@ fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : 
               (Some(fm), Some(fp)) => {
                 req_fn(fm, fp, headers, body, fn(fex : effect::Exit[HttpReply]) -> Unit {
                   self.in_flight_overlays.remove(ok_key)
+                  if self.station_epoch(ov.station) != send_epoch {
+                    k(effect::Exit::Succeeded(()))
+                    return
+                  }
                   match fex {
                     effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                     effect::Exit::Failed(_) => k(effect::Exit::Succeeded(()))

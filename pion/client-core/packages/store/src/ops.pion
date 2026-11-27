@@ -38,6 +38,18 @@ pub fn sql_pref_delete() -> String {
   "DELETE FROM workspace_pref WHERE workspace = ? AND key = ?"
 }
 
+pub fn sql_meta_get() -> String {
+  "SELECT value FROM meta WHERE key = ?"
+}
+
+pub fn sql_meta_put() -> String {
+  "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)"
+}
+
+pub fn sql_meta_delete() -> String {
+  "DELETE FROM meta WHERE key = ?"
+}
+
 pub fn sql_search_messages_station() -> String {
   "SELECT station, thread, seq, n, at, text FROM said WHERE station = ? AND instr(lower(text), lower(?)) > 0 ORDER BY at DESC, seq DESC LIMIT ?"
 }
@@ -184,6 +196,36 @@ pub fn delete_workspace_pref(db : sql::Sql, workspace : String, key : String) ->
     base_codec::json_str(workspace),
     base_codec::json_str(key),
   ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Read one metadata entry from `meta` (`key TEXT PRIMARY KEY, value TEXT NOT NULL`).
+pub fn get_meta(db : sql::Sql, key : String) -> sql::SqlResult[Option[String]] {
+  match db.all(sql_meta_get(), params=[base_codec::json_str(key)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() > 0 {
+        sql::SqlResult::Ok(Some(sql::col_text(rows[0], 0)))
+      } else {
+        sql::SqlResult::Ok(None)
+      }
+    }
+  }
+}
+
+/// Persist one metadata entry in `meta`.
+pub fn put_meta(db : sql::Sql, key : String, value : String) -> sql::SqlResult[Unit] {
+  match db.run(sql_meta_put(), params=[base_codec::json_str(key), base_codec::json_str(value)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Delete one metadata entry from `meta`.
+pub fn delete_meta(db : sql::Sql, key : String) -> sql::SqlResult[Unit] {
+  match db.run(sql_meta_delete(), params=[base_codec::json_str(key)]) {
     sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
     sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
   }

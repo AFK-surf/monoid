@@ -662,6 +662,9 @@ fn is_station_online(sess : RuntimeSession, addr : String) -> Bool {
 
 fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views::StationBrief] {
   let out : Array[views::StationBrief] = []
+  if ws_scope.length() > 0 && !sess.core.can_read_workspace(ws_scope) {
+    return out
+  }
   let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
   let lang = sess_lang(sess)
   let overview_by_addr : Map[String, base_codec::Json] = Map::new()
@@ -670,8 +673,11 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
     sql::SqlResult::Ok(rows) => {
       for i in 0..<rows.length() {
         let r = rows[i]
-        // Strict workspace isolation: never leak stations from another workspace (Red-Team Gate #9).
+        // Strict workspace isolation + unified MembershipAuthority per-record confirmation gate.
         if prefix.length() > 0 && !r.address.starts_with(prefix) {
+          continue
+        }
+        if !sess.core.can_read_station_list(r.address) {
           continue
         }
         let doc = match base_codec::json_parse(r.json) {
@@ -690,7 +696,10 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
     let cloud_sts = sync::list_workspace_stations(sess.db, ws_scope)
     for i in 0..<cloud_sts.length() {
       let cs = cloud_sts[i]
-      let addr = ws_scope + "/" + cs.id
+      let addr = sync::canonical_station(ws_scope, cs.id)
+      if !sess.core.can_read_station_list(addr) {
+        continue
+      }
       seen.set(addr, true)
       let doc = match overview_by_addr.get(addr) {
         Some(d) => d
@@ -1219,12 +1228,19 @@ pub extern "C" fn pion_core_runtime_start(
   core.set_on_prefs_saved(fn(next_prefs : base_codec::Json) -> Result[Unit, String] {
     write_storage_json(sh, "device/prefs", base_codec::json_obj([("device", next_prefs)]))
   })
+  core.set_on_accounts_persisted(fn(accounts_doc : base_codec::Json) -> Result[Unit, String] {
+    write_storage_json(sh, "accounts", accounts_doc)
+  })
+  core.membership.set_host_pending_purges_hook(fn(key : String, doc : base_codec::Json) -> Result[Unit, String] {
+    write_storage_json(sh, key, doc)
+  })
+  let host_purges_opt = read_storage_json(sh, sync::HOST_PENDING_PURGES_KEY)
   if origin.length() > 0 {
     core.set_cloud_origin(origin)
   }
   if accounts.length() > 0 {
     let a0 = accounts[0]
-    core.set_db_account_sub(a0.sub)
+    core.set_db_account_sub(a0.sub, host_purges_doc=host_purges_opt)
     core.set_viewer(a0.email, sub=a0.sub, role="owner")
     match read_storage_json(sh, sync::person_lock_storage_key(a0.sub)) {
       Some(pjson) => {
@@ -1244,7 +1260,14 @@ pub extern "C" fn pion_core_runtime_start(
         access_expires: 0.to_int64(),
       })
     }
+  } else {
+    match host_purges_opt {
+      Some(hp) => core.membership.merge_host_pending_purges_doc(hp)
+      None => ()
+    }
   }
+  // Retry any persisted `(account_sub, ws)` pending purges on startup before serving views.
+  let _ = core.retry_pending_purges()
   let sess = RuntimeSession::{
     sh: sh,
     db: acct.db,
@@ -1269,6 +1292,130 @@ pub extern "C" fn pion_core_runtime_start(
   })
   core.set_on_runtime_boundary(fn(ev : sync::AuthBoundaryEvent) -> Unit {
     handle_runtime_auth_boundary(sess, ev)
+  })
+  core.set_on_confirmation_refresh(fn(tname : String) -> Unit {
+    emit_topic_refresh(sess, tname)
+  })
+  core.set_on_workspace_dropped(fn(_ws : String, stations : Array[String]) -> Unit {
+    for i in 0..<stations.length() {
+      let st = stations[i]
+      match sess.mesh_transports.get(st) {
+        Some(ctrl) => {
+          sess.mesh_transports.remove(st)
+          ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+        }
+        None => ()
+      }
+      match sess.md_stores.get(st) {
+        Some(ms) => {
+          ms.clear()
+          sess.md_stores.remove(st)
+        }
+        None => ()
+      }
+      sess.station_online.remove(st)
+    }
+  })
+  core.set_on_runtime_open_chats(fn(ws : String) -> Array[(String, Option[Int], Option[String])] {
+    let out : Array[(String, Option[Int], Option[String])] = []
+    for i in 0..<sess.runtime_subs.length() {
+      let topic = sess.runtime_subs[i].topic
+      if topic.name == "chat" || topic.name == "chatJobs" {
+        let st = match topic.param("station") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { sess.core.station }
+          _ => sess.core.station
+        }
+        if sess.core.membership.station_workspace(st, fallback_ws=sess.core.workspace) == ws {
+          let th_opt : Option[Int] = match topic.param("thread") {
+            Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+            _ => None
+          }
+          let sess_opt : Option[String] = match topic.param("session") {
+            Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+            _ => match topic.param("key") {
+              Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+              _ => None
+            }
+          }
+          out.push((st, th_opt, sess_opt))
+        }
+      }
+    }
+    out
+  })
+  core.set_on_credential_refresh(fn(ws : String) -> Unit {
+    match sess.cloud {
+      Some(cs) => {
+        cs.invalidate_workspace_credential(ws)
+        let mkeys = sess.mesh_transports.keys()
+        for i in 0..<mkeys.length() {
+          let st = mkeys[i]
+          if sess.core.membership.station_workspace(st, fallback_ws=sess.core.workspace) == ws {
+            match sess.mesh_transports.get(st) {
+              Some(ctrl) => {
+                let dev_id = match ctrl.device_id() { Some(d) => d; None => "" }
+                if dev_id.length() > 0 {
+                  let _ = sess.core.rt.fork_quiet_named("cred-refresh:" + st, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                    cs.fetch_member_credential_k(
+                      ws,
+                      dev_id,
+                      pion_core_wall_now_ms() / 1000L,
+                      fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+                        match ex {
+                          effect::Exit::Succeeded(mc) => {
+                            ctrl.refresh_credential_k(mc.credential, fn(rex : effect::Exit[sync::MeshAdmission]) -> Unit {
+                              match rex {
+                                effect::Exit::Succeeded(_) => ()
+                                _ => ctrl.drop_link(reason="cred_refresh")
+                              }
+                              fk(effect::Exit::Succeeded(()))
+                            })
+                          }
+                          _ => {
+                            ctrl.drop_link(reason="cred_refresh_failed")
+                            fk(effect::Exit::Succeeded(()))
+                          }
+                        }
+                      },
+                      fresh=true,
+                    )
+                  })
+                } else {
+                  ctrl.drop_link(reason="cred_refresh")
+                }
+              }
+              None => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  })
+  core.set_on_workspace_refresh(fn(ws : String) -> Unit {
+    match sess.cloud {
+      Some(cs) => {
+        let req_seq = sess.core.membership.next_cloud_seq()
+        let _ = sess.core.rt.fork_quiet_named("ws-refresh:" + ws, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          cs.fetch_workspace_k(
+            ws,
+            fn(ex : effect::Exit[sync::CloudWorkspace]) -> Unit {
+              match ex {
+                effect::Exit::Succeeded(cws) => {
+                  let _ = sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms())
+                  emit_topic_refresh(sess, "workspace")
+                  emit_topic_refresh(sess, "stations")
+                }
+                _ => ()
+              }
+              fk(effect::Exit::Succeeded(()))
+            },
+            persist=false,
+          )
+        })
+      }
+      None => ()
+    }
   })
   g_session[0] = Some(sess)
   // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
@@ -1342,73 +1489,102 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
       created
     }
   }
+  let me_seq = sess.core.membership.next_cloud_seq()
   let _ = sess.core.rt.fork_quiet_named("runtime:cloud.sync", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    cs.fetch_me_k(fn(ex : effect::Exit[sync::CloudMe]) -> Unit {
-      match ex {
-        effect::Exit::Failed(e) => {
-          let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
-          let (out_j, out_b) = protocol::encode_core_event(ev)
-          emit_wire(out_j, payload=out_b)
-          fk(effect::Exit::Succeeded(()))
-        }
-        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
-        effect::Exit::Succeeded(me) => {
-          let viewer_role = if me.workspaces.length() > 0 && me.workspaces[0].role.length() > 0 {
-            me.workspaces[0].role
-          } else {
-            "member"
+    cs.fetch_me_k(
+      fn(ex : effect::Exit[sync::CloudMe]) -> Unit {
+        match ex {
+          effect::Exit::Failed(e) => {
+            let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
+            let (out_j, out_b) = protocol::encode_core_event(ev)
+            emit_wire(out_j, payload=out_b)
+            fk(effect::Exit::Succeeded(()))
           }
-          sess.core.set_viewer(me.email, sub=me.sub, role=viewer_role)
-          let ws_target : Option[String] = match want_ws {
-            Some(w) => Some(w)
-            None => if me.workspaces.length() > 0 { Some(me.workspaces[0].id) } else { None }
-          }
-          match ws_target {
-            None => {
-              let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
-                ("sub", base_codec::json_str(me.sub)),
-                ("email", base_codec::json_str(me.email)),
-                ("workspaces", base_codec::json_int(me.workspaces.length())),
-                ("relays", base_codec::json_int(me.relays.length())),
-              ]), None)
-              let (out_j, out_b) = protocol::encode_core_event(ok_ev)
-              emit_wire(out_j, payload=out_b)
-              fk(effect::Exit::Succeeded(()))
-            }
-            Some(wid) => {
-              cs.fetch_workspace_k(wid, fn(wex : effect::Exit[sync::CloudWorkspace]) -> Unit {
-                match wex {
-                  effect::Exit::Failed(e) => {
-                    let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
-                    let (out_j, out_b) = protocol::encode_core_event(ev)
-                    emit_wire(out_j, payload=out_b)
-                  }
-                  effect::Exit::Interrupted => ()
-                  effect::Exit::Succeeded(ws) => {
-                    let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
-                      ("sub", base_codec::json_str(me.sub)),
-                      ("email", base_codec::json_str(me.email)),
-                      ("workspaces", base_codec::json_int(me.workspaces.length())),
-                      ("relays", base_codec::json_int(me.relays.length())),
-                      ("workspace", base_codec::json_str(ws.id)),
-                      ("members", base_codec::json_int(ws.members.length())),
-                      ("stations", base_codec::json_int(ws.stations.length())),
-                    ]), None)
-                    let (out_j, out_b) = protocol::encode_core_event(ok_ev)
-                    emit_wire(out_j, payload=out_b)
-                    emit_topic_refresh(sess, "workspaces")
-                    emit_topic_refresh(sess, "workspace")
-                    emit_topic_refresh(sess, "stations")
-                    emit_topic_refresh(sess, "chats")
-                  }
-                }
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(me) => {
+            match sess.core.commit_cloud_me(me, req_seq=me_seq, now_ms=pion_core_wall_now_ms()) {
+              Err(msg) => {
+                let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: msg })
+                let (out_j, out_b) = protocol::encode_core_event(ev)
+                emit_wire(out_j, payload=out_b)
                 fk(effect::Exit::Succeeded(()))
-              })
+                return
+              }
+              Ok(_) => ()
+            }
+            let viewer_role = if me.workspaces.length() > 0 && me.workspaces[0].role.length() > 0 {
+              me.workspaces[0].role
+            } else {
+              "member"
+            }
+            sess.core.set_viewer(me.email, sub=me.sub, role=viewer_role)
+            let ws_target : Option[String] = match want_ws {
+              Some(w) => Some(w)
+              None => if me.workspaces.length() > 0 { Some(me.workspaces[0].id) } else { None }
+            }
+            match ws_target {
+              None => {
+                let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+                  ("sub", base_codec::json_str(me.sub)),
+                  ("email", base_codec::json_str(me.email)),
+                  ("workspaces", base_codec::json_int(me.workspaces.length())),
+                  ("relays", base_codec::json_int(me.relays.length())),
+                ]), None)
+                let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                emit_wire(out_j, payload=out_b)
+                emit_topic_refresh(sess, "workspaces")
+                fk(effect::Exit::Succeeded(()))
+              }
+              Some(wid) => {
+                let ws_seq = sess.core.membership.next_cloud_seq()
+                cs.fetch_workspace_k(
+                  wid,
+                  fn(wex : effect::Exit[sync::CloudWorkspace]) -> Unit {
+                    match wex {
+                      effect::Exit::Failed(e) => {
+                        let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
+                        let (out_j, out_b) = protocol::encode_core_event(ev)
+                        emit_wire(out_j, payload=out_b)
+                      }
+                      effect::Exit::Interrupted => ()
+                      effect::Exit::Succeeded(ws) => {
+                        match sess.core.commit_cloud_workspace(ws, req_seq=ws_seq, now_ms=pion_core_wall_now_ms()) {
+                          Err(msg) => {
+                            let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: msg })
+                            let (out_j, out_b) = protocol::encode_core_event(ev)
+                            emit_wire(out_j, payload=out_b)
+                          }
+                          Ok(_) => {
+                            let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+                              ("sub", base_codec::json_str(me.sub)),
+                              ("email", base_codec::json_str(me.email)),
+                              ("workspaces", base_codec::json_int(me.workspaces.length())),
+                              ("relays", base_codec::json_int(me.relays.length())),
+                              ("workspace", base_codec::json_str(ws.id)),
+                              ("members", base_codec::json_int(ws.members.length())),
+                              ("stations", base_codec::json_int(ws.stations.length())),
+                            ]), None)
+                            let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                            emit_wire(out_j, payload=out_b)
+                            emit_topic_refresh(sess, "workspaces")
+                            emit_topic_refresh(sess, "workspace")
+                            emit_topic_refresh(sess, "stations")
+                            emit_topic_refresh(sess, "chats")
+                          }
+                        }
+                      }
+                    }
+                    fk(effect::Exit::Succeeded(()))
+                  },
+                  persist=false,
+                )
+              }
             }
           }
         }
-      }
-    })
+      },
+      persist=false,
+    )
   })
 }
 
@@ -1482,11 +1658,14 @@ fn evaluate_runtime_topic(
     if th_param.is_none() && sess_param.is_none() {
       return Some(protocol::CoreEvent::Waiting(id))
     }
+    let (resolved_st, resolved_th, chat_meta) = resolve_thread_and_chat_meta(sess, st, th_param, sess_param)
+    if !sess.core.can_read_chat(resolved_st, resolved_th, sess_param) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
     let compact = match topic.param("compact") {
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    let (resolved_st, resolved_th, chat_meta) = resolve_thread_and_chat_meta(sess, st, th_param, sess_param)
     let online = is_station_online(sess, resolved_st)
     let ws_of_st = match resolved_st.index_of("/") {
       idx if idx > 0 => resolved_st.slice(0, idx)
@@ -1532,6 +1711,9 @@ fn evaluate_runtime_topic(
       Some(base_codec::Json::Str(s)) => s
       _ => sess.core.workspace
     }
+    if ws_scope.length() > 0 && !sess.core.can_read_workspace(ws_scope) {
+      return Some(protocol::CoreEvent::Value(id, base_codec::json_arr([]), None))
+    }
     let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
     let overview_by_addr : Map[String, base_codec::Json] = Map::new()
     let overview_addrs : Array[String] = []
@@ -1540,6 +1722,9 @@ fn evaluate_runtime_topic(
         for i in 0..<rows.length() {
           let r = rows[i]
           if prefix.length() > 0 && !r.address.starts_with(prefix) {
+            continue
+          }
+          if !sess.core.can_read_station_list(r.address) {
             continue
           }
           let doc = match base_codec::json_parse(r.json) {
@@ -1593,7 +1778,10 @@ fn evaluate_runtime_topic(
       let cloud_sts = sync::list_workspace_stations(sess.db, ws_scope)
       for i in 0..<cloud_sts.length() {
         let cs = cloud_sts[i]
-        let addr = ws_scope + "/" + cs.id
+        let addr = sync::canonical_station(ws_scope, cs.id)
+        if !sess.core.can_read_station_list(addr) {
+          continue
+        }
         seen.set(addr, true)
         let doc = match overview_by_addr.get(addr) { Some(d) => d; None => base_codec::json_null() }
         push_station_item(addr, cs.id, cs.name, doc)
@@ -1785,7 +1973,7 @@ pub extern "C" fn pion_core_runtime_send(
             return
           }
           if call_name == "station.connect" {
-            let target_st = match opt_str_param(params, "station") {
+            let raw_target_st = match opt_str_param(params, "station") {
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
               None => sess.core.station
             }
@@ -1796,9 +1984,19 @@ pub extern "C" fn pion_core_runtime_send(
             let target_ws = if explicit_ws.length() > 0 {
               explicit_ws
             } else {
-              let pref = sync::station_workspace_prefix(target_st)
-              if pref.length() > 0 { pref } else { sess.core.workspace }
+              sess.core.membership.station_workspace(raw_target_st, fallback_ws=sess.core.workspace)
             }
+            if !sess.core.can_read_workspace(target_ws) {
+              let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+                code: "access_revoked",
+                message: "workspace access revoked",
+              })
+              let (out_j, out_b) = protocol::encode_core_event(err_ev)
+              emit_wire(out_j, payload=out_b)
+              return
+            }
+            let target_st = sess.core.membership.bind_station(target_ws, raw_target_st)
+            let _ = sess.core.membership.persist_station_bindings(sess.db)
             let peer_opt = match opt_str_param(params, "peerId") {
               Some(p) => if p.length() > 0 { Some(p) } else { None }
               None => match opt_str_param(params, "endpointId") {
@@ -1825,24 +2023,44 @@ pub extern "C" fn pion_core_runtime_send(
                   Some(c) => c
                   None => ""
                 }
+                if static_cred.length() > 0 {
+                  sess.core.membership.set_static_credential(target_ws, static_cred)
+                }
                 let cloud_ref = sess.cloud
-                let get_cred = fn(dev_id : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
-                  if static_cred.length() > 0 {
-                    ck(effect::Exit::Succeeded(static_cred))
+                let core_ref = sess.core
+                let get_cred = fn(dev_id : String, fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+                  if !core_ref.can_read_workspace(target_ws) {
+                    ck(effect::Exit::Failed(effect::EffectError::Custom("workspace access revoked")))
                     return
                   }
-                  match cloud_ref {
-                    Some(cs) => cs.fetch_member_credential_k(target_ws, dev_id, pion_core_wall_now_ms() / 1000.to_int64(), fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
-                      match ex {
-                        effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
-                        effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
-                        effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                  if fresh {
+                    let _ = core_ref.membership.bump_cred_epoch(target_ws)
+                  } else {
+                    match core_ref.membership.get_valid_static_credential(target_ws) {
+                      Some(sc) => {
+                        ck(effect::Exit::Succeeded(sc))
+                        return
                       }
-                    })
+                      None => ()
+                    }
+                  }
+                  match cloud_ref {
+                    Some(cs) => cs.fetch_member_credential_k(
+                      target_ws,
+                      dev_id,
+                      pion_core_wall_now_ms() / 1000.to_int64(),
+                      fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+                        match ex {
+                          effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
+                          effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                        }
+                      },
+                      fresh=fresh,
+                    )
                     None => ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
                   }
                 }
-                let core_ref = sess.core
                 let cfg = sync::MeshStationConfig::new(
                   target_ws,
                   peer_id,
@@ -1885,21 +2103,23 @@ pub extern "C" fn pion_core_runtime_send(
             return
           }
           if call_name == "station.disconnect" {
-            let target_st = match opt_str_param(params, "station") {
+            let raw_target_st = match opt_str_param(params, "station") {
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
               None => sess.core.station
             }
-            match sess.mesh_transports.get(target_st) {
+            let target_st = sess.core.membership.canonicalize(raw_target_st, fallback_ws=sess.core.workspace)
+            let lookup_st = if sess.mesh_transports.get(target_st).is_some() { target_st } else { raw_target_st }
+            match sess.mesh_transports.get(lookup_st) {
               Some(ctrl) => {
-                sess.core.detach_station_transport(target_st)
-                sess.mesh_transports.remove(target_st)
+                sess.core.detach_station_transport(lookup_st)
+                sess.mesh_transports.remove(lookup_st)
                 ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
               }
               None => ()
             }
             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
               ("disconnected", base_codec::json_bool(true)),
-              ("station", base_codec::json_str(target_st)),
+              ("station", base_codec::json_str(lookup_st)),
             ]), None)
             let (out_j, out_b) = protocol::encode_core_event(ok_ev)
             emit_wire(out_j, payload=out_b)

@@ -85,6 +85,32 @@ pub fn ComposerManager::new(db : sql::Sql) -> ComposerManager {
   }
 }
 
+/// Remove all cached in-memory composer states belonging to `station` (`drop_workspace`).
+pub fn ComposerManager::clear_station(self : ComposerManager, station : String) -> Unit {
+  if station.length() == 0 {
+    return
+  }
+  let pref = station + ":"
+  let pref_slash = station + "/"
+  let next_order : Array[String] = []
+  for i in 0..<self.state_order.length() {
+    let k = self.state_order[i]
+    let matches = match draft_at_key(k) {
+      Some((st, _)) => st == station
+      None => k.starts_with(pref) || k.starts_with(pref_slash) || k == station
+    }
+    if matches {
+      self.states.remove(k)
+    } else {
+      next_order.push(k)
+    }
+  }
+  self.state_order.clear()
+  for i in 0..<next_order.length() {
+    self.state_order.push(next_order[i])
+  }
+}
+
 fn ComposerManager::touch_state_lru(self : ComposerManager, key : String) -> Unit {
   let next : Array[String] = []
   for i in 0..<self.state_order.length() {

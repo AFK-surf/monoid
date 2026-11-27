@@ -1,0 +1,1343 @@
+// Single authoritative `MembershipAuthority` governing workspace membership, revocation,
+// account-scoped persistent pending purge queues, canonical `ws/st` station addressing,
+// atomic Cloud commit sequencing, unified O(1) read gating, post-downgrade per-record &
+// per-chat (`{station, session}` / `{station, thread}`) confirmation, credential epochs,
+// and TS-compatible `accounts.ts:50` `StoredAccount` (`access_expires`) + ULID utilities.
+//
+// Strictly aligned with:
+// - `pion/client-core/packages/store/src/schema.pion` / `client/core-ts/src/db/schema.ts`
+// - `client/core-ts/src/accounts.ts:50-69, 711-723`
+// - `cloud/src/types.ts:49-63`
+// - `apps/mbui/src/sfbase/chat_model.mbt:1295`
+
+import "base_codec"
+import "sql"
+import "store"
+import "views"
+
+pub let META_PENDING_PURGES_KEY : String = "membership:pending_purges"
+pub let META_STATION_BINDINGS_KEY : String = "membership:station_bindings"
+pub let HOST_PENDING_PURGES_KEY : String = "device/pending_purges"
+
+let ULID_ALPHABET : String = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+/// Canonicalize a station address against workspace `ws`:
+/// - If `raw_station` already contains `/`, keep it as canonical (`<ws>/<st>`).
+/// - Otherwise, prefix it as `<ws>/<raw_station>` when `ws` is non-empty.
+pub fn canonical_station(ws : String, raw_station : String) -> String {
+  if raw_station.length() == 0 {
+    return ""
+  }
+  if raw_station.contains("/") {
+    return raw_station
+  }
+  if ws.length() > 0 {
+    ws + "/" + raw_station
+  } else {
+    raw_station
+  }
+}
+
+/// Extract the bare station id from a canonical `ws/st` or bare `st` string.
+pub fn bare_station_id(raw_station : String) -> String {
+  match raw_station.index_of("/") {
+    idx if idx >= 0 => raw_station.slice(idx + 1, raw_station.length())
+    _ => raw_station
+  }
+}
+
+/// Numeric privilege rank for Cloud workspace roles (`owner > admin > member`).
+pub fn role_rank(role : String) -> Int {
+  if role == "owner" {
+    3
+  } else if role == "admin" {
+    2
+  } else if role == "member" {
+    1
+  } else {
+    0
+  }
+}
+
+/// Whether transitioning from `old_role` to `new_role` is a privilege downgrade.
+pub fn is_role_downgrade(old_role : String, new_role : String) -> Bool {
+  let old_r = role_rank(old_role)
+  let new_r = role_rank(new_role)
+  old_r > 0 && new_r > 0 && new_r < old_r
+}
+
+fn push_unique_str_ma(xs : Array[String], v : String) -> Unit {
+  if v.length() == 0 {
+    return
+  }
+  for i in 0..<xs.length() {
+    if xs[i] == v {
+      return
+    }
+  }
+  xs.push(v)
+}
+
+fn remove_str_ma(xs : Array[String], v : String) -> Unit {
+  let kept : Array[String] = []
+  for i in 0..<xs.length() {
+    if xs[i] != v {
+      kept.push(xs[i])
+    }
+  }
+  xs.clear()
+  for i in 0..<kept.length() {
+    xs.push(kept[i])
+  }
+}
+
+fn contains_str_ma(xs : Array[String], v : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == v {
+      return true
+    }
+  }
+  false
+}
+
+/// Generate a valid 26-character Crockford Base32 ULID matching `client/core-ts/src/accounts.ts:711-723`.
+pub fn generate_ulid(now_ms : Int64, rand_bytes : Bytes) -> String {
+  let alpha = ULID_ALPHABET.to_bytes()
+  let mut time = if now_ms >= 0L { now_ms } else { 0L }
+  let ts_chars : Array[Byte] = [
+    48 as Byte, 48 as Byte, 48 as Byte, 48 as Byte, 48 as Byte,
+    48 as Byte, 48 as Byte, 48 as Byte, 48 as Byte, 48 as Byte,
+  ]
+  let mut i = 9
+  while i >= 0 {
+    let rem = (time % 32L).to_int()
+    ts_chars[i] = alpha[rem]
+    time = time / 32L
+    i -= 1
+  }
+  let sb = StringBuilder::new()
+  for j in 0..<10 {
+    sb.write_byte(ts_chars[j])
+  }
+  for j in 0..<16 {
+    let b = if j < rand_bytes.length() { rand_bytes[j].to_int() & 0xFF } else { 0 }
+    sb.write_byte(alpha[b % 32])
+  }
+  sb.to_string()
+}
+
+/// Validate a 26-character Crockford Base32 ULID (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`).
+pub fn is_valid_ulid(s : String) -> Bool {
+  let bs = s.to_bytes()
+  if bs.length() != 26 {
+    return false
+  }
+  let alpha = ULID_ALPHABET.to_bytes()
+  for i in 0..<26 {
+    let c = bs[i]
+    let mut found = false
+    for j in 0..<alpha.length() {
+      if alpha[j] == c {
+        found = true
+        break
+      }
+    }
+    if !found {
+      return false
+    }
+  }
+  true
+}
+
+/// Serialize `StoredAccount` array strictly matching `client/core-ts/src/accounts.ts:50-69`:
+/// MUST write `"access_expires"` (numeric), NEVER `"accessExpires"` (which causes TS `readStored()`
+/// to discard the entire accounts list).
+pub fn serialize_stored_accounts(
+  accounts : Array[views::StoredAccount],
+  sessions : Option[Map[String, String]] = None,
+) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<accounts.length() {
+    let a = accounts[i]
+    let fields : Array[(String, base_codec::Json)] = [
+      ("sub", base_codec::json_str(a.sub)),
+      ("email", base_codec::json_str(a.email)),
+      ("name", base_codec::json_str(a.name)),
+      ("picture", base_codec::json_str(a.picture)),
+      ("access", base_codec::json_str(a.access)),
+      ("refresh", base_codec::json_str(a.refresh)),
+      ("access_expires", base_codec::json_int64(a.access_expires)),
+    ]
+    match sessions {
+      Some(smap) => match smap.get(a.sub) {
+        Some(sid) => if sid.length() > 0 { fields.push(("session", base_codec::json_str(sid))) }
+        None => ()
+      }
+      None => ()
+    }
+    out.push(base_codec::json_obj(fields))
+  }
+  base_codec::json_arr(out)
+}
+
+/// Strictly parse persisted `accounts` JSON 1:1 with TS `client/core-ts/src/accounts.ts:50-63` `readStored`.
+/// Returns `None` if `raw` is not an array or ANY element is missing a required string field
+/// (`sub`, `email`, `name`, `picture`, `access`, `refresh`) or numeric `access_expires`.
+pub fn parse_stored_accounts_strict(raw : base_codec::Json) -> Option[Array[views::StoredAccount]] {
+  let xs = match raw {
+    base_codec::Json::Arr(a) => a
+    _ => return None
+  }
+  let out : Array[views::StoredAccount] = []
+  for i in 0..<xs.length() {
+    let item = xs[i]
+    match item {
+      base_codec::Json::Obj(_) => ()
+      _ => return None
+    }
+    let sub = match base_codec::json_get(item, "sub") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let email = match base_codec::json_get(item, "email") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let name = match base_codec::json_get(item, "name") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let picture = match base_codec::json_get(item, "picture") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let access = match base_codec::json_get(item, "access") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let refresh = match base_codec::json_get(item, "refresh") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let access_expires = match base_codec::json_get(item, "access_expires") {
+      Some(base_codec::Json::Num(n, repr)) => {
+        if repr.length() > 0 && !repr.contains(".") && !repr.contains("e") && !repr.contains("E") {
+          match base_codec::parse_int64_str(repr) {
+            Some(v) => v
+            None => n.to_int64()
+          }
+        } else {
+          n.to_int64()
+        }
+      }
+      _ => return None
+    }
+    match base_codec::json_get(item, "session") {
+      None => ()
+      Some(base_codec::Json::Str(_)) => ()
+      _ => return None
+    }
+    out.push(views::StoredAccount::{
+      sub: sub,
+      email: email,
+      name: name,
+      picture: picture,
+      access: access,
+      refresh: refresh,
+      access_expires: access_expires,
+    })
+  }
+  Some(out)
+}
+
+/// Station-scoped tables whose station key column is `station` in `schema.pion` / `schema.ts`.
+pub fn drop_workspace_station_tables() -> Array[String] {
+  [
+    "slack_app",
+    "list",
+    "chat",
+    "session",
+    "thread",
+    "thread_member",
+    "entry",
+    "transcript",
+    "job",
+    "outbox",
+    "pending",
+    "first",
+    "changing",
+    "draft",
+    "said",
+  ]
+}
+
+/// Build the exact SQLite `DELETE` statement plan for `drop_workspace(ws, stations)`,
+/// strictly aligned with `pion/client-core/packages/store/src/schema.pion` and `client/core-ts/src/db/schema.ts`:
+/// - `workspace` (`WHERE id = ?`)
+/// - `workspace_pref` (`WHERE workspace = ?`)
+/// - `account_doc` (`WHERE name = 'usage:' || ?` and `'vaults:' || ?`)
+/// - `station` (`WHERE address = ?`, NEVER `station`!)
+/// - `slack_app`, `list`, `chat`, `session`, `thread`, `thread_member`, `entry`, `transcript`,
+///   `job`, `outbox`, `pending`, `first`, `changing`, `draft`, `said` (`WHERE station = ?`)
+/// - Plus exact non-wildcard prefix cleanup (`substr(col, 1, length(?)) = ?` for `ws + "/"`)
+///   so any canonical `ws/*` rows are purged even if absent from `stations`, without ever touching
+///   other workspaces (including ones sharing `_` or `%` characters or same bare station names).
+pub fn drop_workspace_sql_plan(
+  ws : String,
+  stations : Array[String],
+) -> Array[(String, Array[base_codec::Json])] {
+  let plan : Array[(String, Array[base_codec::Json])] = []
+  if ws.length() == 0 {
+    return plan
+  }
+  let tables = drop_workspace_station_tables()
+  let dedup_stations : Array[String] = []
+  for i in 0..<stations.length() {
+    push_unique_str_ma(dedup_stations, stations[i])
+  }
+  plan.push(("DELETE FROM workspace WHERE id = ?", [base_codec::json_str(ws)]))
+  plan.push(("DELETE FROM workspace_pref WHERE workspace = ?", [base_codec::json_str(ws)]))
+  plan.push(("DELETE FROM account_doc WHERE name = ?", [base_codec::json_str("usage:" + ws)]))
+  plan.push(("DELETE FROM account_doc WHERE name = ?", [base_codec::json_str("vaults:" + ws)]))
+
+  let prefix = ws + "/"
+  plan.push((
+    "DELETE FROM station WHERE substr(address, 1, length(?)) = ?",
+    [base_codec::json_str(prefix), base_codec::json_str(prefix)],
+  ))
+  for ti in 0..<tables.length() {
+    let tbl = tables[ti]
+    plan.push((
+      "DELETE FROM " + tbl + " WHERE substr(station, 1, length(?)) = ?",
+      [base_codec::json_str(prefix), base_codec::json_str(prefix)],
+    ))
+  }
+
+  for si in 0..<dedup_stations.length() {
+    let st = dedup_stations[si]
+    plan.push(("DELETE FROM station WHERE address = ?", [base_codec::json_str(st)]))
+    for ti in 0..<tables.length() {
+      let tbl = tables[ti]
+      plan.push(("DELETE FROM " + tbl + " WHERE station = ?", [base_codec::json_str(st)]))
+    }
+  }
+  plan
+}
+
+/// Execute `drop_workspace_sql_plan` atomically inside a single `sql::Burst` transaction.
+pub fn exec_drop_workspace_sql(
+  db : sql::Sql,
+  ws : String,
+  stations : Array[String],
+) -> sql::SqlResult[Unit] {
+  let plan = drop_workspace_sql_plan(ws, stations)
+  if plan.length() == 0 {
+    return sql::SqlResult::Ok(())
+  }
+  let burst = sql::Burst::new(db)
+  burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    for i in 0..<plan.length() {
+      let (stmt, params) = plan[i]
+      match b.run(stmt, params=params) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+    }
+    sql::SqlResult::Ok(())
+  })
+}
+
+/// Encode `{ "<ws>": ["ws/st1", ...] }` for one account.
+fn encode_account_purges_obj(purges : Map[String, Array[String]]) -> base_codec::Json {
+  let ws_keys = purges.keys()
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<ws_keys.length() {
+    let ws = ws_keys[i]
+    match purges.get(ws) {
+      Some(sts) => {
+        let arr : Array[base_codec::Json] = []
+        for j in 0..<sts.length() {
+          arr.push(base_codec::json_str(sts[j]))
+        }
+        fields.push((ws, base_codec::json_arr(arr)))
+      }
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Merge one account's pending purges into the account-scoped host document
+/// `{ "<sub1>": { "<ws>": ["ws/st1", ...] }, "<sub2>": ... }`, strictly preserving all other accounts.
+pub fn merge_host_pending_purges(
+  existing_doc : Option[base_codec::Json],
+  account_sub : String,
+  purges : Map[String, Array[String]],
+) -> base_codec::Json {
+  let eff_sub = if account_sub.length() > 0 { account_sub } else { "__default__" }
+  let out_fields : Array[(String, base_codec::Json)] = []
+  match existing_doc {
+    Some(base_codec::Json::Obj(pairs)) => {
+      for i in 0..<pairs.length() {
+        let (k, v) = pairs[i]
+        // Preserve only valid nested per-account objects for other accounts; never preserve flat arrays.
+        if k != eff_sub {
+          match v {
+            base_codec::Json::Obj(_) => out_fields.push((k, v))
+            _ => ()
+          }
+        }
+      }
+    }
+    _ => ()
+  }
+  if purges.keys().length() > 0 {
+    out_fields.push((eff_sub, encode_account_purges_obj(purges)))
+  }
+  base_codec::json_obj(out_fields)
+}
+
+/// Extract ONLY `account_sub`'s pending purges from `{ "<sub1>": { "<ws>": [...] } }`.
+/// Strictly ignores other accounts AND ignores flat non-account-scoped structures.
+pub fn extract_account_pending_purges(
+  doc : base_codec::Json,
+  account_sub : String,
+) -> Map[String, Array[String]] {
+  let out : Map[String, Array[String]] = Map::new()
+  let eff_sub = if account_sub.length() > 0 { account_sub } else { "__default__" }
+  match doc {
+    base_codec::Json::Obj(_) =>
+    match base_codec::json_get(doc, eff_sub) {
+      Some(base_codec::Json::Obj(ws_pairs)) => {
+        for i in 0..<ws_pairs.length() {
+          let (ws, entry_v) = ws_pairs[i]
+          if ws.length() == 0 {
+            continue
+          }
+          match entry_v {
+            base_codec::Json::Arr(xs) => {
+              let sts : Array[String] = []
+              for j in 0..<xs.length() {
+                match xs[j] {
+                  base_codec::Json::Str(s) => push_unique_str_ma(sts, s)
+                  _ => ()
+                }
+              }
+              out.set(ws, sts)
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Single authoritative membership, purge-latch, station-binding, read-gate, and
+/// post-downgrade confirmation controller owned uniquely by `ClientCore`.
+pub struct MembershipAuthority {
+  pub mut account_sub : String
+  revoked : Map[String, Bool]
+  pending_purges : Map[String, Array[String]]
+  station_ws : Map[String, String]
+  ws_stations : Map[String, Array[String]]
+  ws_bare_stations : Map[String, Array[String]]
+  bare_station_owners : Map[String, Array[String]]
+  unconfirmed_stations : Map[String, Bool]
+  chat_unconfirmed_stations : Map[String, Bool]
+  confirmed_chats : Map[String, Bool]
+  cred_epoch : Map[String, Int64]
+  static_creds : Map[String, (String, Int64)]
+  ws_roles : Map[String, String]
+  mut next_seq : Int64
+  mut cloud_commit_seq : Int64
+  ws_commit_seq : Map[String, Int64]
+  mut session_invalidated : Bool
+  mut host_purges_snapshot : Option[base_codec::Json]
+  mut on_host_pending_purges_save : Option[(String, base_codec::Json) -> Result[Unit, String]]
+}
+
+pub fn MembershipAuthority::new(account_sub : String = "") -> MembershipAuthority {
+  MembershipAuthority::{
+    account_sub: account_sub,
+    revoked: Map::new(),
+    pending_purges: Map::new(),
+    station_ws: Map::new(),
+    ws_stations: Map::new(),
+    ws_bare_stations: Map::new(),
+    bare_station_owners: Map::new(),
+    unconfirmed_stations: Map::new(),
+    chat_unconfirmed_stations: Map::new(),
+    confirmed_chats: Map::new(),
+    cred_epoch: Map::new(),
+    static_creds: Map::new(),
+    ws_roles: Map::new(),
+    next_seq: 1L,
+    cloud_commit_seq: 0L,
+    ws_commit_seq: Map::new(),
+    session_invalidated: false,
+    host_purges_snapshot: None,
+    on_host_pending_purges_save: None,
+  }
+}
+
+pub fn MembershipAuthority::effective_sub(self : MembershipAuthority) -> String {
+  if self.account_sub.length() > 0 { self.account_sub } else { "__default__" }
+}
+
+pub fn MembershipAuthority::set_host_pending_purges_hook(
+  self : MembershipAuthority,
+  hook : (String, base_codec::Json) -> Result[Unit, String],
+) -> Unit {
+  self.on_host_pending_purges_save = Some(hook)
+}
+
+/// Bind `raw_station` to workspace `ws`, recording both its canonical `ws/st` address and
+/// (when bare) its workspace ownership so offline restarts and `drop_workspace` never lose
+/// bindings and never cross-delete another workspace's same-named bare station.
+pub fn MembershipAuthority::bind_station(
+  self : MembershipAuthority,
+  ws : String,
+  raw_station : String,
+) -> String {
+  if raw_station.length() == 0 {
+    return ""
+  }
+  let eff_ws = if ws.length() > 0 {
+    ws
+  } else {
+    match raw_station.index_of("/") {
+      idx if idx > 0 => raw_station.slice(0, idx)
+      _ => ""
+    }
+  }
+  let canon = canonical_station(eff_ws, raw_station)
+  if eff_ws.length() == 0 {
+    return canon
+  }
+  self.station_ws.set(canon, eff_ws)
+  let ws_list = match self.ws_stations.get(eff_ws) {
+    Some(xs) => xs
+    None => {
+      let xs : Array[String] = []
+      self.ws_stations.set(eff_ws, xs)
+      xs
+    }
+  }
+  push_unique_str_ma(ws_list, canon)
+  if !raw_station.contains("/") {
+    let bare_list = match self.ws_bare_stations.get(eff_ws) {
+      Some(xs) => xs
+      None => {
+        let xs : Array[String] = []
+        self.ws_bare_stations.set(eff_ws, xs)
+        xs
+      }
+    }
+    push_unique_str_ma(bare_list, raw_station)
+    let owners = match self.bare_station_owners.get(raw_station) {
+      Some(xs) => xs
+      None => {
+        let xs : Array[String] = []
+        self.bare_station_owners.set(raw_station, xs)
+        xs
+      }
+    }
+    push_unique_str_ma(owners, eff_ws)
+    if owners.length() == 1 {
+      self.station_ws.set(raw_station, eff_ws)
+    } else {
+      // Ambiguous bare station shared by multiple workspaces: do not guess a single owner in `station_ws`.
+      self.station_ws.remove(raw_station)
+    }
+  }
+  canon
+}
+
+/// Resolve the workspace id of `raw_station` (canonical prefix -> explicit binding -> `fallback_ws`).
+pub fn MembershipAuthority::station_workspace(
+  self : MembershipAuthority,
+  raw_station : String,
+  fallback_ws : String = "",
+) -> String {
+  if raw_station.length() == 0 {
+    return fallback_ws
+  }
+  match raw_station.index_of("/") {
+    idx if idx > 0 => return raw_station.slice(0, idx)
+    _ => ()
+  }
+  match self.station_ws.get(raw_station) {
+    Some(ws) => if ws.length() > 0 { return ws }
+    None => ()
+  }
+  // If `raw_station` is a bare station with one owner (or one active non-revoked owner), resolve to it.
+  match self.bare_station_owners.get(raw_station) {
+    Some(owners) => {
+      if owners.length() == 1 {
+        return owners[0]
+      }
+      if fallback_ws.length() > 0 && contains_str_ma(owners, fallback_ws) && self.is_workspace_readable(fallback_ws) {
+        return fallback_ws
+      }
+      let readable_owners : Array[String] = []
+      for i in 0..<owners.length() {
+        if self.is_workspace_readable(owners[i]) {
+          readable_owners.push(owners[i])
+        }
+      }
+      if readable_owners.length() == 1 {
+        return readable_owners[0]
+      }
+      if fallback_ws.length() > 0 && contains_str_ma(owners, fallback_ws) {
+        return fallback_ws
+      }
+    }
+    None => ()
+  }
+  fallback_ws
+}
+
+/// Canonicalize `raw_station` using known station bindings or `fallback_ws`.
+pub fn MembershipAuthority::canonicalize(
+  self : MembershipAuthority,
+  raw_station : String,
+  fallback_ws : String = "",
+) -> String {
+  if raw_station.length() == 0 {
+    return ""
+  }
+  if raw_station.contains("/") {
+    return raw_station
+  }
+  let ws = self.station_workspace(raw_station, fallback_ws=fallback_ws)
+  canonical_station(ws, raw_station)
+}
+
+/// Return all canonical `ws/st` stations currently known for `ws`.
+pub fn MembershipAuthority::canonical_stations_for(
+  self : MembershipAuthority,
+  ws : String,
+) -> Array[String] {
+  let out : Array[String] = []
+  match self.ws_stations.get(ws) {
+    Some(xs) => {
+      for i in 0..<xs.length() {
+        push_unique_str_ma(out, xs[i])
+      }
+    }
+    None => ()
+  }
+  match self.pending_purges.get(ws) {
+    Some(xs) => {
+      for i in 0..<xs.length() {
+        if xs[i].contains("/") {
+          push_unique_str_ma(out, xs[i])
+        }
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+/// Whether bare station name `bare` is unambiguously owned by `ws` (no other active non-revoked workspace owns it).
+pub fn MembershipAuthority::is_bare_station_exclusive_to(
+  self : MembershipAuthority,
+  ws : String,
+  bare : String,
+) -> Bool {
+  if bare.length() == 0 || bare.contains("/") {
+    return false
+  }
+  match self.bare_station_owners.get(bare) {
+    Some(owners) => {
+      let mut has_ws = false
+      for i in 0..<owners.length() {
+        let o = owners[i]
+        if o == ws {
+          has_ws = true
+        } else if self.is_workspace_readable(o) {
+          // Another active workspace owns a bare station with the same name: MUST NOT delete it!
+          return false
+        }
+      }
+      has_ws
+    }
+    None => {
+      match self.ws_bare_stations.get(ws) {
+        Some(xs) => contains_str_ma(xs, bare)
+        None => false
+      }
+    }
+  }
+}
+
+/// Collect all station keys to purge for `ws`:
+/// - All canonical `ws/st` addresses from memory, `pending_purges`, and SQLite `workspace` row;
+/// - Plus ONLY legacy bare station names explicitly owned by `ws` and NOT owned by another active workspace.
+pub fn MembershipAuthority::stations_to_purge(
+  self : MembershipAuthority,
+  ws : String,
+  db : Option[sql::Sql] = None,
+) -> Array[String] {
+  let out : Array[String] = []
+  match self.ws_stations.get(ws) {
+    Some(xs) => {
+      for i in 0..<xs.length() {
+        push_unique_str_ma(out, xs[i])
+      }
+    }
+    None => ()
+  }
+  match self.pending_purges.get(ws) {
+    Some(xs) => {
+      for i in 0..<xs.length() {
+        let s = xs[i]
+        if s.contains("/") {
+          if s.starts_with(ws + "/") {
+            push_unique_str_ma(out, s)
+          }
+        } else if self.is_bare_station_exclusive_to(ws, s) {
+          push_unique_str_ma(out, s)
+        }
+      }
+    }
+    None => ()
+  }
+  match self.ws_bare_stations.get(ws) {
+    Some(xs) => {
+      for i in 0..<xs.length() {
+        if self.is_bare_station_exclusive_to(ws, xs[i]) {
+          push_unique_str_ma(out, xs[i])
+        }
+      }
+    }
+    None => ()
+  }
+  match db {
+    Some(d) => {
+      let cloud_sts = list_workspace_stations(d, ws)
+      for i in 0..<cloud_sts.length() {
+        let canon = canonical_station(ws, cloud_sts[i].id)
+        push_unique_str_ma(out, canon)
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+/// Persist `(ws -> { canonical, bare })` bindings into SQLite `meta` so offline restarts
+/// never lose bare/prefixed station-to-workspace ownership.
+pub fn MembershipAuthority::persist_station_bindings(
+  self : MembershipAuthority,
+  db : sql::Sql,
+) -> sql::SqlResult[Unit] {
+  let all_ws : Array[String] = []
+  let cks = self.ws_stations.keys()
+  for i in 0..<cks.length() {
+    push_unique_str_ma(all_ws, cks[i])
+  }
+  let bks = self.ws_bare_stations.keys()
+  for i in 0..<bks.length() {
+    push_unique_str_ma(all_ws, bks[i])
+  }
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<all_ws.length() {
+    let ws = all_ws[i]
+    let canon_j : Array[base_codec::Json] = []
+    match self.ws_stations.get(ws) {
+      Some(xs) => {
+        for j in 0..<xs.length() {
+          canon_j.push(base_codec::json_str(xs[j]))
+        }
+      }
+      None => ()
+    }
+    let bare_j : Array[base_codec::Json] = []
+    match self.ws_bare_stations.get(ws) {
+      Some(xs) => {
+        for j in 0..<xs.length() {
+          bare_j.push(base_codec::json_str(xs[j]))
+        }
+      }
+      None => ()
+    }
+    fields.push((
+      ws,
+      base_codec::json_obj([
+        ("canonical", base_codec::json_arr(canon_j)),
+        ("bare", base_codec::json_arr(bare_j)),
+      ]),
+    ))
+  }
+  store::put_meta(db, META_STATION_BINDINGS_KEY, base_codec::json_stringify(base_codec::json_obj(fields)))
+}
+
+/// Persist account-scoped `pending_purges` to SQLite `meta` AND optional host `device/pending_purges`.
+pub fn MembershipAuthority::persist_pending_purges(
+  self : MembershipAuthority,
+  db : sql::Sql,
+) -> Result[Unit, String] {
+  let eff_sub = self.effective_sub()
+  let existing_db_doc : Option[base_codec::Json] = match store::get_meta(db, META_PENDING_PURGES_KEY) {
+    sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => Some(j)
+      base_codec::JsonParseResult::Err(_) => None
+    }
+    _ => None
+  }
+  let merged_db = merge_host_pending_purges(existing_db_doc, eff_sub, self.pending_purges)
+  let mut err_opt : Option[String] = None
+  match store::put_meta(db, META_PENDING_PURGES_KEY, base_codec::json_stringify(merged_db)) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      err_opt = Some("meta pending_purges persist failed: " + e.to_string())
+    }
+  }
+  let merged_host = merge_host_pending_purges(self.host_purges_snapshot, eff_sub, self.pending_purges)
+  self.host_purges_snapshot = Some(merged_host)
+  match self.on_host_pending_purges_save {
+    Some(hook) =>
+    match hook(HOST_PENDING_PURGES_KEY, merged_host) {
+      Ok(_) => ()
+      Err(msg) => {
+        if err_opt.is_none() {
+          err_opt = Some(msg)
+        }
+      }
+    }
+    None => ()
+  }
+  match err_opt {
+    Some(e) => Err(e)
+    None => Ok(())
+  }
+}
+
+/// Load persisted station bindings and account-scoped `pending_purges` from SQLite (`meta` + `workspace`)
+/// into O(1) memory mirrors (called once at startup / account bind, NEVER on topic projections).
+pub fn MembershipAuthority::load_from_db(self : MembershipAuthority, db : sql::Sql) -> Unit {
+  // 1. Hydrate `(ws -> stations)` from persisted `workspace` rows.
+  match store::list_workspaces(db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => {
+            let role = j_str(j, "role")
+            if role.length() > 0 && self.ws_roles.get(r.id).is_none() {
+              self.ws_roles.set(r.id, role)
+            }
+            let parsed = parse_cloud_workspace(r.id, j)
+            for si in 0..<parsed.stations.length() {
+              let _ = self.bind_station(r.id, parsed.stations[si].id)
+            }
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  // 2. Hydrate persisted station bindings (`meta("membership:station_bindings")`).
+  match store::get_meta(db, META_STATION_BINDINGS_KEY) {
+    sql::SqlResult::Ok(Some(raw)) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(ws_pairs)) => {
+        for i in 0..<ws_pairs.length() {
+          let (ws, entry_v) = ws_pairs[i]
+          match base_codec::json_get(entry_v, "canonical") {
+            Some(base_codec::Json::Arr(xs)) => {
+              for j in 0..<xs.length() {
+                match xs[j] {
+                  base_codec::Json::Str(s) => { let _ = self.bind_station(ws, s) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
+          match base_codec::json_get(entry_v, "bare") {
+            Some(base_codec::Json::Arr(xs)) => {
+              for j in 0..<xs.length() {
+                match xs[j] {
+                  base_codec::Json::Str(s) => { let _ = self.bind_station(ws, s) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    _ => ()
+  }
+  // 3. Hydrate account-scoped `pending_purges` strictly for `self.effective_sub()`.
+  match store::get_meta(db, META_PENDING_PURGES_KEY) {
+    sql::SqlResult::Ok(Some(raw)) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(doc) => {
+        self.merge_host_pending_purges_doc(doc)
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
+    _ => ()
+  }
+}
+
+/// Merge a host `device/pending_purges` document into this authority, loading ONLY entries
+/// under `self.effective_sub()` so another account's failed purge NEVER affects this account.
+pub fn MembershipAuthority::merge_host_pending_purges_doc(
+  self : MembershipAuthority,
+  doc : base_codec::Json,
+) -> Unit {
+  self.host_purges_snapshot = Some(doc)
+  let mine = extract_account_pending_purges(doc, self.effective_sub())
+  let ws_keys = mine.keys()
+  for i in 0..<ws_keys.length() {
+    let ws = ws_keys[i]
+    match mine.get(ws) {
+      Some(sts) => {
+        let merged = match self.pending_purges.get(ws) {
+          Some(existing) => existing
+          None => {
+            let xs : Array[String] = []
+            self.pending_purges.set(ws, xs)
+            xs
+          }
+        }
+        for j in 0..<sts.length() {
+          push_unique_str_ma(merged, sts[j])
+          let _ = self.bind_station(ws, sts[j])
+        }
+        self.revoked.set(ws, true)
+      }
+      None => ()
+    }
+  }
+}
+
+/// Switch or bind the active account `sub`, strictly isolating `pending_purges` and `revoked`
+/// between accounts (`sub_a` != `sub_b`).
+pub fn MembershipAuthority::set_account_sub(
+  self : MembershipAuthority,
+  sub : String,
+  db : Option[sql::Sql] = None,
+  host_purges_doc : Option[base_codec::Json] = None,
+) -> Unit {
+  if sub.length() == 0 {
+    return
+  }
+  let switched_account = self.account_sub.length() > 0 && self.account_sub != sub
+  self.account_sub = sub
+  if switched_account {
+    self.revoked.clear()
+    self.pending_purges.clear()
+    self.unconfirmed_stations.clear()
+    self.chat_unconfirmed_stations.clear()
+    self.confirmed_chats.clear()
+    self.ws_roles.clear()
+    self.cred_epoch.clear()
+    self.static_creds.clear()
+    self.ws_commit_seq.clear()
+    self.cloud_commit_seq = 0L
+    self.session_invalidated = false
+  }
+  match host_purges_doc {
+    Some(doc) => self.merge_host_pending_purges_doc(doc)
+    None =>
+    match self.host_purges_snapshot {
+      Some(doc) => self.merge_host_pending_purges_doc(doc)
+      None => ()
+    }
+  }
+  match db {
+    Some(d) => self.load_from_db(d)
+    None => ()
+  }
+}
+
+// ── Unified O(1) Read Gate (NEVER queries SQLite!) ──
+
+/// O(1) read gate for workspace `ws`: true iff session is valid AND `ws` is neither revoked
+/// nor awaiting a pending purge.
+pub fn MembershipAuthority::is_workspace_readable(self : MembershipAuthority, ws : String) -> Bool {
+  if self.session_invalidated {
+    return false
+  }
+  if ws.length() == 0 {
+    return true
+  }
+  match self.revoked.get(ws) {
+    Some(true) => return false
+    _ => ()
+  }
+  if self.pending_purges.get(ws).is_some() {
+    return false
+  }
+  true
+}
+
+/// O(1) read gate for station `raw_station` (canonical `ws/st` or bound bare `st`).
+pub fn MembershipAuthority::is_station_readable(
+  self : MembershipAuthority,
+  raw_station : String,
+  fallback_ws : String = "",
+) -> Bool {
+  if self.session_invalidated {
+    return false
+  }
+  let ws = self.station_workspace(raw_station, fallback_ws=fallback_ws)
+  if ws.length() == 0 {
+    return true
+  }
+  self.is_workspace_readable(ws)
+}
+
+pub fn MembershipAuthority::is_revoked(self : MembershipAuthority, ws : String) -> Bool {
+  match self.revoked.get(ws) {
+    Some(true) => true
+    _ => false
+  }
+}
+
+pub fn MembershipAuthority::has_pending_purge(self : MembershipAuthority, ws : String) -> Bool {
+  self.pending_purges.get(ws).is_some()
+}
+
+pub fn MembershipAuthority::pending_purge_workspaces(self : MembershipAuthority) -> Array[String] {
+  self.pending_purges.keys()
+}
+
+/// Record `ws` as revoked and latched in `pending_purges` (with its canonical/owned stations).
+pub fn MembershipAuthority::latch_purge(
+  self : MembershipAuthority,
+  ws : String,
+  stations : Array[String],
+) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  self.revoked.set(ws, true)
+  let copy : Array[String] = []
+  for i in 0..<stations.length() {
+    push_unique_str_ma(copy, stations[i])
+  }
+  self.pending_purges.set(ws, copy)
+  // Drop any post-downgrade confirmation state for the revoked workspace.
+  self.clear_confirmation_for_workspace(ws)
+}
+
+/// Clear `ws` from `pending_purges` AFTER SQLite cleanup succeeded.
+pub fn MembershipAuthority::clear_pending_purge(self : MembershipAuthority, ws : String) -> Unit {
+  self.pending_purges.remove(ws)
+}
+
+/// Clear `revoked[ws]` AFTER rejoin wrote fresh rows and cleared the purge marker.
+pub fn MembershipAuthority::clear_revoked(self : MembershipAuthority, ws : String) -> Unit {
+  self.revoked.remove(ws)
+}
+
+/// Known workspace IDs tracked in memory (for `retain()` detection).
+pub fn MembershipAuthority::known_workspaces(self : MembershipAuthority) -> Array[String] {
+  let out : Array[String] = []
+  let ks1 = self.ws_stations.keys()
+  for i in 0..<ks1.length() { push_unique_str_ma(out, ks1[i]) }
+  let ks2 = self.ws_roles.keys()
+  for i in 0..<ks2.length() { push_unique_str_ma(out, ks2[i]) }
+  let ks3 = self.pending_purges.keys()
+  for i in 0..<ks3.length() { push_unique_str_ma(out, ks3[i]) }
+  let ks4 = self.ws_bare_stations.keys()
+  for i in 0..<ks4.length() { push_unique_str_ma(out, ks4[i]) }
+  out
+}
+
+// ── Role tracking & Post-Downgrade Per-Record / Per-Chat Confirmation ──
+
+pub fn MembershipAuthority::role_of(self : MembershipAuthority, ws : String) -> Option[String] {
+  self.ws_roles.get(ws)
+}
+
+pub fn MembershipAuthority::set_role(self : MembershipAuthority, ws : String, role : String) -> Unit {
+  if ws.length() > 0 && role.length() > 0 {
+    self.ws_roles.set(ws, role)
+  }
+}
+
+pub fn MembershipAuthority::clear_role(self : MembershipAuthority, ws : String) -> Unit {
+  self.ws_roles.remove(ws)
+}
+
+fn MembershipAuthority::clear_confirmation_for_workspace(self : MembershipAuthority, ws : String) -> Unit {
+  let prefix = ws + "/"
+  let uks = self.unconfirmed_stations.keys()
+  for i in 0..<uks.length() {
+    if uks[i].starts_with(prefix) || self.station_workspace(uks[i]) == ws {
+      self.unconfirmed_stations.remove(uks[i])
+    }
+  }
+  let cks = self.chat_unconfirmed_stations.keys()
+  for i in 0..<cks.length() {
+    if cks[i].starts_with(prefix) || self.station_workspace(cks[i]) == ws {
+      self.chat_unconfirmed_stations.remove(cks[i])
+    }
+  }
+  let cc = self.confirmed_chats.keys()
+  for i in 0..<cc.length() {
+    if cc[i].starts_with(prefix) {
+      self.confirmed_chats.remove(cc[i])
+    }
+  }
+}
+
+/// Mark all stations of `ws` as unconfirmed (both list-level AND per-chat) after a role downgrade,
+/// wiping any prior `confirmed_chats` for `ws` and bumping `cred_epoch[ws]`.
+pub fn MembershipAuthority::mark_downgraded(
+  self : MembershipAuthority,
+  ws : String,
+  extra_stations : Array[String] = [],
+) -> Int64 {
+  self.clear_confirmation_for_workspace(ws)
+  let targets = self.canonical_stations_for(ws)
+  for i in 0..<extra_stations.length() {
+    let canon = self.bind_station(ws, extra_stations[i])
+    push_unique_str_ma(targets, canon)
+  }
+  for i in 0..<targets.length() {
+    self.unconfirmed_stations.set(targets[i], true)
+    self.chat_unconfirmed_stations.set(targets[i], true)
+  }
+  self.bump_cred_epoch(ws)
+}
+
+/// Mark one station explicitly unconfirmed (for late-discovered stations of a downgraded workspace).
+pub fn MembershipAuthority::mark_station_unconfirmed(
+  self : MembershipAuthority,
+  ws : String,
+  raw_station : String,
+) -> Unit {
+  let canon = self.bind_station(ws, raw_station)
+  if canon.length() > 0 {
+    self.unconfirmed_stations.set(canon, true)
+    self.chat_unconfirmed_stations.set(canon, true)
+  }
+}
+
+/// Per-record confirmation check for station-level / list-level views (`chats`, `stations`,
+/// `profiles`, `search`, `usage`, `fleet`, `workspaceMarks`, `longJobs`):
+/// returns `false` ONLY for stations in `unconfirmed_stations`; other confirmed stations pass!
+pub fn MembershipAuthority::is_station_list_confirmed(
+  self : MembershipAuthority,
+  raw_station : String,
+  fallback_ws : String = "",
+) -> Bool {
+  if !self.is_station_readable(raw_station, fallback_ws=fallback_ws) {
+    return false
+  }
+  let canon = self.canonicalize(raw_station, fallback_ws=fallback_ws)
+  match self.unconfirmed_stations.get(canon) {
+    Some(true) => false
+    _ => true
+  }
+}
+
+/// Confirm ONLY the `chats` list (and station-level snapshot) for `raw_station` after a
+/// post-downgrade `GET /chats` snapshot succeeds.
+/// NEVER auto-confirms individual `chat` / `chatJobs` views (`chat_unconfirmed_stations` stays latched!).
+pub fn MembershipAuthority::confirm_station_chats_list(
+  self : MembershipAuthority,
+  ws : String,
+  raw_station : String,
+) -> Unit {
+  let canon = canonical_station(ws, raw_station)
+  self.unconfirmed_stations.remove(canon)
+  if !raw_station.contains("/") {
+    self.unconfirmed_stations.remove(raw_station)
+  }
+}
+
+/// Confirm a specific single chat after its own post-downgrade fetch succeeds, indexing BOTH
+/// `{station, thread}` AND `{station, session}` (`apps/mbui/src/sfbase/chat_model.mbt:1295`).
+pub fn MembershipAuthority::confirm_chat(
+  self : MembershipAuthority,
+  ws : String,
+  raw_station : String,
+  thread : Option[Int] = None,
+  session : Option[String] = None,
+) -> Unit {
+  let canon = canonical_station(ws, raw_station)
+  if canon.length() == 0 {
+    return
+  }
+  match thread {
+    Some(th) => self.confirmed_chats.set(canon + ":t:" + th.to_string(), true)
+    None => ()
+  }
+  match session {
+    Some(s) => if s.length() > 0 { self.confirmed_chats.set(canon + ":s:" + s, true) }
+    None => ()
+  }
+}
+
+/// Check whether an individual `chat` or `chatJobs` view for `(raw_station, thread?, session?)`
+/// is confirmed post-downgrade. Requires BOTH `is_station_readable` AND either:
+/// - the station is not in `chat_unconfirmed_stations`, OR
+/// - this specific chat was confirmed via `{station, session}` OR `{station, thread}`.
+pub fn MembershipAuthority::is_chat_confirmed(
+  self : MembershipAuthority,
+  raw_station : String,
+  thread : Option[Int] = None,
+  session : Option[String] = None,
+  fallback_ws : String = "",
+) -> Bool {
+  if !self.is_station_readable(raw_station, fallback_ws=fallback_ws) {
+    return false
+  }
+  let canon = self.canonicalize(raw_station, fallback_ws=fallback_ws)
+  match self.chat_unconfirmed_stations.get(canon) {
+    Some(true) => {
+      match session {
+        Some(s) => if s.length() > 0 && self.confirmed_chats.get(canon + ":s:" + s).is_some() {
+          return true
+        }
+        None => ()
+      }
+      match thread {
+        Some(th) => if self.confirmed_chats.get(canon + ":t:" + th.to_string()).is_some() {
+          return true
+        }
+        None => ()
+      }
+      false
+    }
+    _ => true
+  }
+}
+
+pub fn MembershipAuthority::is_station_unconfirmed(
+  self : MembershipAuthority,
+  ws : String,
+  raw_station : String,
+) -> Bool {
+  let canon = canonical_station(ws, raw_station)
+  match self.unconfirmed_stations.get(canon) {
+    Some(true) => true
+    _ => false
+  }
+}
+
+// ── Credential Epoch & Static Mesh Credential Replacement ──
+
+pub fn MembershipAuthority::cred_epoch_of(self : MembershipAuthority, ws : String) -> Int64 {
+  match self.cred_epoch.get(ws) {
+    Some(v) => v
+    None => 1L
+  }
+}
+
+/// Advance `cred_epoch[ws]` and purge any static mesh credential captured under an older epoch,
+/// guaranteeing reconnects NEVER reuse stale static credentials after refresh/downgrade/403/rejoin.
+pub fn MembershipAuthority::bump_cred_epoch(self : MembershipAuthority, ws : String) -> Int64 {
+  let next = self.cred_epoch_of(ws) + 1L
+  self.cred_epoch.set(ws, next)
+  self.static_creds.remove(ws)
+  next
+}
+
+pub fn MembershipAuthority::set_static_credential(
+  self : MembershipAuthority,
+  ws : String,
+  credential : String,
+) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  if credential.length() == 0 {
+    self.static_creds.remove(ws)
+  } else {
+    self.static_creds.set(ws, (credential, self.cred_epoch_of(ws)))
+  }
+}
+
+pub fn MembershipAuthority::clear_static_credential(self : MembershipAuthority, ws : String) -> Unit {
+  self.static_creds.remove(ws)
+}
+
+/// Return a static mesh credential ONLY if it matches the current `cred_epoch[ws]`.
+pub fn MembershipAuthority::get_valid_static_credential(
+  self : MembershipAuthority,
+  ws : String,
+) -> Option[String] {
+  match self.static_creds.get(ws) {
+    Some((cred, ep)) => if ep == self.cred_epoch_of(ws) && cred.length() > 0 { Some(cred) } else { None }
+    None => None
+  }
+}
+
+// ── Monotonic Cloud Commit Sequencing & Session Invalidation ──
+
+pub fn MembershipAuthority::next_cloud_seq(self : MembershipAuthority) -> Int64 {
+  let s = self.next_seq
+  self.next_seq += 1L
+  s
+}
+
+pub fn MembershipAuthority::cloud_commit_seq(self : MembershipAuthority) -> Int64 {
+  self.cloud_commit_seq
+}
+
+pub fn MembershipAuthority::ws_commit_seq_of(self : MembershipAuthority, ws : String) -> Int64 {
+  match self.ws_commit_seq.get(ws) {
+    Some(v) => v
+    None => 0L
+  }
+}
+
+pub fn MembershipAuthority::can_commit_cloud_me(self : MembershipAuthority, req_seq : Int64) -> Bool {
+  req_seq <= 0L || req_seq >= self.cloud_commit_seq
+}
+
+pub fn MembershipAuthority::can_commit_workspace(
+  self : MembershipAuthority,
+  ws : String,
+  req_seq : Int64,
+) -> Bool {
+  req_seq <= 0L || req_seq >= self.ws_commit_seq_of(ws)
+}
+
+pub fn MembershipAuthority::advance_cloud_me_seq(self : MembershipAuthority, req_seq : Int64) -> Unit {
+  if req_seq > self.cloud_commit_seq {
+    self.cloud_commit_seq = req_seq
+  } else if req_seq <= 0L {
+    self.cloud_commit_seq += 1L
+  }
+}
+
+pub fn MembershipAuthority::advance_workspace_seq(
+  self : MembershipAuthority,
+  ws : String,
+  req_seq : Int64,
+) -> Unit {
+  let cur = self.ws_commit_seq_of(ws)
+  if req_seq > cur {
+    self.ws_commit_seq.set(ws, req_seq)
+  } else if req_seq <= 0L {
+    self.ws_commit_seq.set(ws, cur + 1L)
+  }
+}
+
+pub fn MembershipAuthority::mark_session_invalidated(self : MembershipAuthority) -> Unit {
+  self.session_invalidated = true
+  self.static_creds.clear()
+}
+
+pub fn MembershipAuthority::is_session_invalidated(self : MembershipAuthority) -> Bool {
+  self.session_invalidated
+}

@@ -21,6 +21,8 @@ pub struct SyncScheduler {
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
+  mut on_snapshot_confirmed : Option[() -> Unit]
+  mut on_thread_confirmed : Option[(Int) -> Unit]
 }
 
 pub fn SyncScheduler::new(
@@ -45,12 +47,22 @@ pub fn SyncScheduler::new(
     focused_thread: None,
     idle_preempted_count: 0,
     completed_order: [],
+    on_snapshot_confirmed: None,
+    on_thread_confirmed: None,
   }
 }
 
 /// Bind an `AuthGenTracker` so non-lock station reads run through fail-open `guarded_read_k`.
 pub fn SyncScheduler::set_auth_tracker(self : SyncScheduler, tracker : AuthGenTracker) -> Unit {
   self.auth = Some(tracker)
+}
+
+pub fn SyncScheduler::set_snapshot_confirmed_hook(self : SyncScheduler, cb : () -> Unit) -> Unit {
+  self.on_snapshot_confirmed = Some(cb)
+}
+
+pub fn SyncScheduler::set_thread_confirmed_hook(self : SyncScheduler, cb : (Int) -> Unit) -> Unit {
+  self.on_thread_confirmed = Some(cb)
 }
 
 fn SyncScheduler::task_key(self : SyncScheduler, resource : String) -> String {
@@ -553,6 +565,10 @@ pub fn SyncScheduler::fetch_snapshot_k(
           sql::SqlResult::Ok(n) => {
             self.pending_refresh.remove(key)
             self.completed_order.push("snapshot")
+            match self.on_snapshot_confirmed {
+              Some(cb) => cb()
+              None => ()
+            }
             Ok(n)
           }
         }
@@ -671,6 +687,10 @@ pub fn SyncScheduler::fetch_thread_k(
           sql::SqlResult::Ok(n) => {
             self.pending_refresh.remove(key)
             self.completed_order.push("thread:" + thread.to_string())
+            match self.on_thread_confirmed {
+              Some(cb) => cb(thread)
+              None => ()
+            }
             Ok(n)
           }
         }

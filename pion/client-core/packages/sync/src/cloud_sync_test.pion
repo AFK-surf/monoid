@@ -246,6 +246,9 @@ test "CloudSync /v1/events WebSocket event refresh and virtual-clock exponential
       CloudEvent::StationStatusChanged(wid, sid, on) => seen_events.push("st:" + wid + "/" + sid + ":" + on.to_string())
       CloudEvent::WorkspacesChanged(_) => seen_events.push("workspaces")
       CloudEvent::Release => seen_events.push("release")
+      CloudEvent::Relays => seen_events.push("relays")
+      CloudEvent::Admin(_) => seen_events.push("admin")
+      CloudEvent::Feedback(_) => seen_events.push("feedback")
       CloudEvent::Other(t, _) => seen_events.push("other:" + t)
     }
   })
