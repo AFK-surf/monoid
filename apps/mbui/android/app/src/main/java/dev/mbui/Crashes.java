@@ -546,9 +546,17 @@ final class Crashes {
         }
     }
 
-    /** Killed for one of {@link #killed}'s reasons while on screen (killed in the background is how Android works). */
+    /** Killed for one of {@link #killed}'s reasons while on screen (killed in the background is how Android works).
+     *  Must match IMPORTANCE_FOREGROUND (100) or IMPORTANCE_VISIBLE (200) explicitly rather than <= IMPORTANCE_VISIBLE,
+     *  because IMPORTANCE_FOREGROUND_SERVICE (125) lies between them and would misreport OEM background kills while a
+     *  foreground service such as AdbShareService keeps the process alive off-screen. */
+    static boolean killedInSight(int reason, int importance) {
+        return killed(reason) != null && (importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND
+                || importance == ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE);
+    }
+
     private static boolean killedInSight(ApplicationExitInfo exit) {
-        return killed(exit.getReason()) != null && exit.getImportance() <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE;
+        return killedInSight(exit.getReason(), exit.getImportance());
     }
 
     private static Report of(ApplicationExitInfo exit, File kept) {
