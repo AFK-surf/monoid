@@ -264,6 +264,9 @@ function oneByKey<T>(hub: Hub, id: string, f: () => Promise<T>): Promise<T> {
   return run;
 }
 
+/// A call to another station over the mesh (`peersOf`).
+type PeerCall = (station: string, request: Json) => Promise<Json>;
+
 /// chat_create from session `key`.
 export async function chatCreate(hub: Hub, key: string, args: Args): Promise<string> {
   const k = keyOr(args);
@@ -321,6 +324,19 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
     await postFrom(hub, thread, key, from, fromLink, text, [child], kept, true);
   });
 
+  // Its first message there, with its files, unless it has come already (`said`, as the station there answers).
+  const sendThere = async (call: PeerCall, made: Json, child: string, link: string | null) => {
+    if (made?.said === true) return;
+    try {
+      const message: Json = { method: "session.message", session: key, to: child, text, from: { title: from, link: fromLink }, opened: true };
+      if (files.length > 0) message.files = await sendAlong(call, there!, key, child, files);
+      await call(there!, message);
+    } catch (error) {
+      throw new Error(`opened ${link ?? child} on station ${there}, but its first message was not sent: ${(error as Error).message}. Call chat_create again with the same key: it sends it once, if it has not arrived`);
+    }
+    await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link, led);
+  };
+
   const before = hub.store.openedWith("", key, k, there ?? "");
   if (before !== null) {
     let thread = before.child;
@@ -328,6 +344,19 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
       const chat = sessionThreadOf(hub, before.child);
       await sendHere(before.child, chat);
       thread = addressOf(chat);
+    }
+    if (there !== null) {
+      // Recorded before its first message went (a notice of its turn may come back before that message's answer
+      // does): asked again by its key whether that message came, and sent if not.
+      const call = peersOf(hub, key)!;
+      let made: Json;
+      try {
+        made = await call(there, { method: CREATE, session: key, key: k, ...choice, choose: model === null, runtimeGiven: runtime !== null, createdBy, from: { title: from, link: fromLink }, led });
+      } catch (error) {
+        throw new Error(`opened ${before.link ?? before.child} on station ${there}, but whether its first message came was not learned: ${(error as Error).message}. Call chat_create again with the same key: it sends it once, if it has not arrived`);
+      }
+      if (typeof made?.thread === "string") thread = made.thread;
+      await sendThere(call, made, before.child, before.link);
     }
     return opened({ session: before.child, link: before.link, thread }, there, true, before.led !== false);
   }
@@ -443,18 +472,12 @@ async function chatCreateNow(hub: Hub, key: string, args: Args): Promise<string>
   if (child === "") throw new Error(`station ${there} answered without the chat it opened`);
   const link = typeof made?.link === "string" ? made.link : null;
   const result: Made = { session: child, link, thread: typeof made?.thread === "string" ? made.thread : child };
-  // Its first message, unless it already came (an earlier call with this key opened the chat and sent it).
-  if (made?.said !== true) {
-    try {
-      const message: Json = { method: "session.message", session: key, to: child, text, from: { title: from, link: fromLink }, opened: true };
-      if (files.length > 0) message.files = await sendAlong(call, there, key, child, files);
-      await call(there, message);
-    } catch (error) {
-      throw new Error(`opened ${link ?? child} on station ${there}, but its first message was not sent: ${(error as Error).message}. Call chat_create again with the same key: it sends it once, if it has not arrived`);
-    }
-  }
+  // Recorded before its first message goes: its agent may end its turn there, and that station tell this one
+  // (`noticeForPeer`, which finds it by this record), before the message's own answer comes back here.
   hub.store.insertOpened({ childStation: there, child, parentStation: "", parent: key, key: k, title, link, led });
-  await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link, led);
+  // Its first message, unless it already came (an earlier call with this key opened the chat and sent it).
+  if (made?.said !== true) await sendThere(call, made, child, link);
+  else await sayOpened(hub, key, title ?? text.split("\n")[0]!.slice(0, 60), link, led);
   return opened(result, there, false, led);
 }
 
