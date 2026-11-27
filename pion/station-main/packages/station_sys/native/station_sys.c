@@ -2206,6 +2206,36 @@ void *sts_lstat(const char *path, int64_t *out_len) {
     return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
 }
 
+void *sts_stat(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return NULL;
+    HANDLE h = CreateFileW(
+        w, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL, OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) return NULL;
+    BY_HANDLE_FILE_INFORMATION bi;
+    if (!GetFileInformationByHandle(h, &bi)) {
+        CloseHandle(h);
+        return NULL;
+    }
+    CloseHandle(h);
+    const char *kind = (bi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? "dir" : "file";
+    uint64_t fsz = ((uint64_t)bi.nFileSizeHigh << 32) | (uint64_t)bi.nFileSizeLow;
+    uint64_t ft = ((uint64_t)bi.ftLastWriteTime.dwHighDateTime << 32) | (uint64_t)bi.ftLastWriteTime.dwLowDateTime;
+    int64_t mtime_ms = (ft >= 116444736000000000ULL) ? (int64_t)((ft - 116444736000000000ULL) / 10000ULL) : 0;
+    uint64_t dev = (uint64_t)bi.dwVolumeSerialNumber;
+    uint64_t ino = ((uint64_t)bi.nFileIndexHigh << 32) | (uint64_t)bi.nFileIndexLow;
+    char buf[192];
+    int n = snprintf(
+        buf, sizeof(buf), "%s|%llu|0|%lld|%llu|%llu|420",
+        kind, (unsigned long long)fsz, (long long)mtime_ms,
+        (unsigned long long)dev, (unsigned long long)ino);
+    return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+}
+
 int32_t sts_chmod(const char *path, int32_t mode) {
     if (path == NULL || path[0] == '\0') return 0;
     wchar_t *w = utf8_to_wide(path);
@@ -2266,6 +2296,188 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
     CloseHandle(h);
     if (out_len != NULL) *out_len = total;
     return buf;
+}
+
+static int32_t sts_win_map_err(DWORD err) {
+    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND) return -2;
+    if (err == ERROR_ACCESS_DENIED || err == ERROR_SHARING_VIOLATION) return -3;
+    return -1;
+}
+
+void *sts_read_range_meta(
+    const char *path,
+    int64_t offset,
+    int64_t len,
+    int64_t *out_len,
+    int64_t *out_total_size,
+    int64_t *out_mtime_ms,
+    int32_t *out_err) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_total_size != NULL) *out_total_size = 0;
+    if (out_mtime_ms != NULL) *out_mtime_ms = 0;
+    if (out_err != NULL) *out_err = -1;
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return NULL;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return NULL;
+    HANDLE h = CreateFileW(
+        w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_BACKUP_SEMANTICS, NULL);
+    DWORD open_err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (out_err != NULL) *out_err = sts_win_map_err(open_err);
+        return NULL;
+    }
+    BY_HANDLE_FILE_INFORMATION bi;
+    if (!GetFileInformationByHandle(h, &bi)) {
+        DWORD e = GetLastError();
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = sts_win_map_err(e);
+        return NULL;
+    }
+    if (bi.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = -4;
+        return NULL;
+    }
+    uint64_t fsz = ((uint64_t)bi.nFileSizeHigh << 32) | (uint64_t)bi.nFileSizeLow;
+    uint64_t ft = ((uint64_t)bi.ftLastWriteTime.dwHighDateTime << 32) | (uint64_t)bi.ftLastWriteTime.dwLowDateTime;
+    int64_t mtime_ms = (ft >= 116444736000000000ULL) ? (int64_t)((ft - 116444736000000000ULL) / 10000ULL) : 0;
+    if (out_total_size != NULL) *out_total_size = (int64_t)fsz;
+    if (out_mtime_ms != NULL) *out_mtime_ms = mtime_ms;
+    if (len == 0 || (uint64_t)offset >= fsz) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = 0;
+        return dup_bytes("", 0, out_len);
+    }
+    uint64_t avail = fsz - (uint64_t)offset;
+    int64_t want = (uint64_t)len < avail ? len : (int64_t)avail;
+    uint8_t *buf = (uint8_t *)malloc((size_t)(want > 0 ? want : 1));
+    if (buf == NULL) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t total = 0;
+    while (total < want) {
+        uint64_t cur = (uint64_t)offset + (uint64_t)total;
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof(ov));
+        ov.Offset = (DWORD)(cur & 0xFFFFFFFFULL);
+        ov.OffsetHigh = (DWORD)((cur >> 32) & 0xFFFFFFFFULL);
+        DWORD chunk = (DWORD)((want - total) > 0x7fffffffLL ? 0x7fffffffLL : (want - total));
+        DWORD got = 0;
+        if (!ReadFile(h, buf + total, chunk, &got, &ov)) {
+            DWORD e = GetLastError();
+            if (e == ERROR_HANDLE_EOF) break;
+            free(buf);
+            CloseHandle(h);
+            if (out_err != NULL) *out_err = sts_win_map_err(e);
+            return NULL;
+        }
+        if (got == 0) break;
+        total += (int64_t)got;
+    }
+    CloseHandle(h);
+    if (out_len != NULL) *out_len = total;
+    if (out_err != NULL) *out_err = 0;
+    return buf;
+}
+
+int32_t sts_write_at(
+    const char *path,
+    int64_t offset,
+    const uint8_t *data,
+    int64_t len,
+    int32_t create,
+    int32_t has_at_least,
+    int64_t at_least,
+    int32_t has_truncate,
+    int64_t truncate_to,
+    int32_t do_sync,
+    int64_t *out_size,
+    int32_t *out_short) {
+    if (out_size != NULL) *out_size = 0;
+    if (out_short != NULL) *out_short = 0;
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return -1;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return -1;
+    DWORD disp = create ? CREATE_ALWAYS : OPEN_EXISTING;
+    HANDLE h = CreateFileW(
+        w, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, disp, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD open_err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        return sts_win_map_err(open_err);
+    }
+    LARGE_INTEGER cur_sz;
+    if (!GetFileSizeEx(h, &cur_sz)) {
+        DWORD e = GetLastError();
+        CloseHandle(h);
+        return sts_win_map_err(e);
+    }
+    if (has_at_least && (int64_t)cur_sz.QuadPart < at_least) {
+        if (out_size != NULL) *out_size = (int64_t)cur_sz.QuadPart;
+        if (out_short != NULL) *out_short = 1;
+        CloseHandle(h);
+        return 0;
+    }
+    int64_t written = 0;
+    while (written < len) {
+        uint64_t cur = (uint64_t)offset + (uint64_t)written;
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof(ov));
+        ov.Offset = (DWORD)(cur & 0xFFFFFFFFULL);
+        ov.OffsetHigh = (DWORD)((cur >> 32) & 0xFFFFFFFFULL);
+        DWORD chunk = (DWORD)((len - written) > 0x7fffffffLL ? 0x7fffffffLL : (len - written));
+        DWORD put = 0;
+        if (!WriteFile(h, data + written, chunk, &put, &ov)) {
+            DWORD e = GetLastError();
+            CloseHandle(h);
+            return sts_win_map_err(e);
+        }
+        written += (int64_t)put;
+    }
+    if (has_truncate && truncate_to >= 0) {
+        LARGE_INTEGER li;
+        li.QuadPart = truncate_to;
+        if (!SetFilePointerEx(h, li, NULL, FILE_BEGIN) || !SetEndOfFile(h)) {
+            DWORD e = GetLastError();
+            CloseHandle(h);
+            return sts_win_map_err(e);
+        }
+    }
+    if (do_sync) {
+        if (!FlushFileBuffers(h)) {
+            DWORD e = GetLastError();
+            CloseHandle(h);
+            return sts_win_map_err(e);
+        }
+    }
+    LARGE_INTEGER end_sz;
+    if (GetFileSizeEx(h, &end_sz)) {
+        if (out_size != NULL) *out_size = (int64_t)end_sz.QuadPart;
+    }
+    CloseHandle(h);
+    return 0;
+}
+
+int32_t sts_sync_file(const char *path) {
+    if (path == NULL || path[0] == '\0') return -1;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return -1;
+    HANDLE h = CreateFileW(
+        w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD open_err = GetLastError();
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        return sts_win_map_err(open_err);
+    }
+    BOOL ok = FlushFileBuffers(h);
+    DWORD ferr = GetLastError();
+    CloseHandle(h);
+    return ok ? 0 : sts_win_map_err(ferr);
 }
 
 static int sts_win_rel_safe(const char *rel) {
@@ -5715,6 +5927,33 @@ void *sts_lstat(const char *path, int64_t *out_len) {
     return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
 }
 
+void *sts_stat(const char *path, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (path == NULL || path[0] == '\0') return NULL;
+    struct stat st;
+    if (stat(path, &st) != 0) return NULL;
+    const char *kind = S_ISREG(st.st_mode) ? "file"
+                     : S_ISDIR(st.st_mode) ? "dir"
+                     : S_ISLNK(st.st_mode) ? "link"
+                     : "other";
+#ifdef __APPLE__
+    int64_t mtime_ms = (int64_t)st.st_mtimespec.tv_sec * 1000LL + (int64_t)(st.st_mtimespec.tv_nsec / 1000000L);
+#else
+    int64_t mtime_ms = (int64_t)st.st_mtim.tv_sec * 1000LL + (int64_t)(st.st_mtim.tv_nsec / 1000000L);
+#endif
+    char buf[192];
+    int n = snprintf(
+        buf, sizeof(buf), "%s|%lld|%d|%lld|%llu|%llu|%u",
+        kind,
+        (long long)st.st_size,
+        (st.st_mode & 0111) != 0 ? 1 : 0,
+        (long long)mtime_ms,
+        (unsigned long long)st.st_dev,
+        (unsigned long long)st.st_ino,
+        (unsigned int)(st.st_mode & 07777));
+    return n > 0 ? dup_bytes(buf, (size_t)n, out_len) : NULL;
+}
+
 int32_t sts_chmod(const char *path, int32_t mode) {
     if (path == NULL || path[0] == '\0') return 0;
     return chmod(path, (mode_t)mode) == 0 ? 1 : 0;
@@ -5758,6 +5997,180 @@ void *sts_read_range(const char *path, int64_t offset, int64_t len, int64_t *out
     close(fd);
     if (out_len != NULL) *out_len = total;
     return buf;
+}
+
+static int32_t sts_posix_map_errno(int e) {
+    if (e == ENOENT || e == ENOTDIR) return -2;
+    if (e == EACCES || e == EPERM || e == EROFS) return -3;
+    if (e == EISDIR) return -4;
+    return -1;
+}
+
+void *sts_read_range_meta(
+    const char *path,
+    int64_t offset,
+    int64_t len,
+    int64_t *out_len,
+    int64_t *out_total_size,
+    int64_t *out_mtime_ms,
+    int32_t *out_err) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_total_size != NULL) *out_total_size = 0;
+    if (out_mtime_ms != NULL) *out_mtime_ms = 0;
+    if (out_err != NULL) *out_err = -1;
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return NULL;
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        if (out_err != NULL) *out_err = sts_posix_map_errno(errno);
+        return NULL;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        int e = errno;
+        close(fd);
+        if (out_err != NULL) *out_err = sts_posix_map_errno(e);
+        return NULL;
+    }
+    if (S_ISDIR(st.st_mode)) {
+        close(fd);
+        if (out_err != NULL) *out_err = -4;
+        return NULL;
+    }
+#ifdef __APPLE__
+    int64_t mtime_ms = (int64_t)st.st_mtimespec.tv_sec * 1000LL + (int64_t)(st.st_mtimespec.tv_nsec / 1000000L);
+#else
+    int64_t mtime_ms = (int64_t)st.st_mtim.tv_sec * 1000LL + (int64_t)(st.st_mtim.tv_nsec / 1000000L);
+#endif
+    int64_t fsz = (int64_t)st.st_size;
+    if (out_total_size != NULL) *out_total_size = fsz;
+    if (out_mtime_ms != NULL) *out_mtime_ms = mtime_ms;
+    if (len == 0 || offset >= fsz) {
+        close(fd);
+        if (out_err != NULL) *out_err = 0;
+        return dup_bytes("", 0, out_len);
+    }
+    int64_t avail = fsz - offset;
+    int64_t want = len < avail ? len : avail;
+    uint8_t *buf = (uint8_t *)malloc((size_t)(want > 0 ? want : 1));
+    if (buf == NULL) {
+        close(fd);
+        return NULL;
+    }
+    int64_t total = 0;
+    while (total < want) {
+        ssize_t got = pread(fd, buf + total, (size_t)(want - total), (off_t)(offset + total));
+        if (got < 0) {
+            if (errno == EINTR) continue;
+            int e = errno;
+            free(buf);
+            close(fd);
+            if (out_err != NULL) *out_err = sts_posix_map_errno(e);
+            return NULL;
+        }
+        if (got == 0) break;
+        total += (int64_t)got;
+    }
+    close(fd);
+    if (out_len != NULL) *out_len = total;
+    if (out_err != NULL) *out_err = 0;
+    return buf;
+}
+
+int32_t sts_write_at(
+    const char *path,
+    int64_t offset,
+    const uint8_t *data,
+    int64_t len,
+    int32_t create,
+    int32_t has_at_least,
+    int64_t at_least,
+    int32_t has_truncate,
+    int64_t truncate_to,
+    int32_t do_sync,
+    int64_t *out_size,
+    int32_t *out_short) {
+    if (out_size != NULL) *out_size = 0;
+    if (out_short != NULL) *out_short = 0;
+    if (path == NULL || path[0] == '\0' || offset < 0 || len < 0) return -1;
+    int flags = O_RDWR | O_CLOEXEC | (create ? (O_CREAT | O_TRUNC) : 0);
+    int fd = open(path, flags, (mode_t)0644);
+    if (fd < 0) {
+        return sts_posix_map_errno(errno);
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0) {
+        int e = errno;
+        close(fd);
+        return sts_posix_map_errno(e);
+    }
+    if (S_ISDIR(st.st_mode)) {
+        close(fd);
+        return -4;
+    }
+    if (has_at_least && (int64_t)st.st_size < at_least) {
+        if (out_size != NULL) *out_size = (int64_t)st.st_size;
+        if (out_short != NULL) *out_short = 1;
+        close(fd);
+        return 0;
+    }
+    int64_t written = 0;
+    while (written < len) {
+        ssize_t put = pwrite(fd, data + written, (size_t)(len - written), (off_t)(offset + written));
+        if (put < 0) {
+            if (errno == EINTR) continue;
+            int e = errno;
+            close(fd);
+            return sts_posix_map_errno(e);
+        }
+        written += (int64_t)put;
+    }
+    if (has_truncate && truncate_to >= 0) {
+        int trc;
+        do {
+            trc = ftruncate(fd, (off_t)truncate_to);
+        } while (trc < 0 && errno == EINTR);
+        if (trc != 0) {
+            int e = errno;
+            close(fd);
+            return sts_posix_map_errno(e);
+        }
+    }
+    if (do_sync) {
+        int src;
+        do {
+            src = fsync(fd);
+        } while (src < 0 && errno == EINTR);
+        if (src != 0) {
+            int e = errno;
+            close(fd);
+            return sts_posix_map_errno(e);
+        }
+    }
+    if (fstat(fd, &st) == 0) {
+        if (out_size != NULL) *out_size = (int64_t)st.st_size;
+    }
+    if (close(fd) != 0) {
+        return sts_posix_map_errno(errno);
+    }
+    return 0;
+}
+
+int32_t sts_sync_file(const char *path) {
+    if (path == NULL || path[0] == '\0') return -1;
+    int fd = open(path, O_RDWR | O_CLOEXEC);
+    if (fd < 0 && (errno == EACCES || errno == EROFS)) {
+        fd = open(path, O_RDONLY | O_CLOEXEC);
+    }
+    if (fd < 0) {
+        return sts_posix_map_errno(errno);
+    }
+    int rc;
+    do {
+        rc = fsync(fd);
+    } while (rc < 0 && errno == EINTR);
+    int e = errno;
+    close(fd);
+    return rc == 0 ? 0 : sts_posix_map_errno(e);
 }
 
 int32_t sts_write_file_mode(

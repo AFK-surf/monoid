@@ -1,0 +1,980 @@
+// Production whole-station daemon entrypoint (`StationLive` + `MixedRigLive`) aligned with
+// `station/src/main.ts` and reusing `rig_daemon.pion`'s 9-round-hardened startup/handover
+// and `front.sock` protocol over a single-threaded `host_shim` + `builders_core::ShellMux` loop.
+
+import "base64"
+import "base_codec"
+import "builders_core"
+import "form"
+import "host_shim"
+import "http1"
+import "mesh_door"
+import "mesh_wire"
+import "nodepath"
+import "station_api"
+import "station_cloud"
+import "station_http"
+import "station_ops"
+import "station_screens"
+import "station_store"
+import "station_sys"
+import "station_tools"
+
+// Non-overlapping ShellMux tag encoding (`id * 4 + tag`) sharing one `host_shim::wait` loop.
+let WHOLE_MUX_LOOPBACK : Int64 = 0L
+let WHOLE_MUX_AGENTS : Int64 = 1L
+let WHOLE_MUX_MESH : Int64 = 2L
+let WHOLE_MUX_DOOR : Int64 = 3L
+
+// Fixed `station_sys` event IDs.
+let WHOLE_EV_CTRL : Int64 = 10L
+let WHOLE_EV_SIG : Int64 = 11L
+
+// Front socket frame markers (`client/shell/src/istream.rs:264-265` & `station/src/mesh/front.ts:21-22`).
+pub let WHOLE_FRONT_FRAME_END : Int64 = 4294967294L // 0xFFFFFFFE
+pub let WHOLE_FRONT_FRAME_FAILED : Int64 = 4294967293L // 0xFFFFFFFD
+pub let WHOLE_FRONT_FRAME_MOST : Int = 65536
+pub let WHOLE_FRONT_IDLE_TIMEOUT_MS : Int64 = 15000L
+
+// Mesh / front MuxToken::Tagged kinds on `mux_mesh`.
+let WHOLE_FRONT_TOK_OPEN : Int = 5031
+let WHOLE_FRONT_TOK_CTRL_READ : Int = 5032
+let WHOLE_FRONT_TOK_STREAM_ACCEPT : Int = 5034
+let WHOLE_FRONT_TOK_STREAM_READ : Int = 5035
+let WHOLE_FRONT_TOK_STREAM_WRITE : Int = 5036
+let WHOLE_MESH_TOK_BIND : Int = 5001
+
+// Periodic cadence constants (used only with explicit `timer:` annotations).
+let WHOLE_HEARTBEAT_EVERY_MS : Int64 = 10000L
+let WHOLE_HANDOVER_POLL_MS : Int64 = 100L
+let WHOLE_HANDOVER_DEADLINE_MS : Int64 = 30000L
+
+struct WholeMuxSlot {
+  mut next_ev : Option[host_shim::HostEvent]
+}
+
+fn make_whole_tagged_mux(tag : Int64, slot : WholeMuxSlot) -> builders_core::ShellMux {
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json : String, bytes : Option[Bytes]) -> Unit {
+      host_shim::shell_call(id * 4L + tag, op, json, bytes)
+    },
+    call_sync: host_shim::shell_sync,
+    write_stdout_line: host_shim::write_stdout_line,
+    write_stdout_frame: host_shim::write_stdout_frame,
+    now_ms: host_shim::now_ms,
+    wall_ms: host_shim::wall_ms,
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      let ev = slot.next_ev
+      slot.next_ev = None
+      ev
+    },
+  }
+  builders_core::ShellMux::new(transport, start_stdin=false)
+}
+
+fn whole_ascii_lower(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b >= 65 && b <= 90 {
+      sb.write_byte((b + 32) as Byte)
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn whole_log(msg : String) -> Unit {
+  let _ = host_shim::write_stderr_line("[station_whole] " + msg)
+}
+
+// ---------------------------------------------------------------------------
+// CLI argument parsing (`run --app DIR [--port N] [--data DIR] [--with-parent] ...`)
+// ---------------------------------------------------------------------------
+
+pub struct WholeRunArgs {
+  pub app : String
+  pub data : String
+  pub port : Option[Int]
+  pub agents_port : Int
+  pub with_parent : Bool
+  pub launcher : station_ops::LauncherArgs
+}
+
+fn find_flag_val(argv : Array[String], name : String) -> Option[String] {
+  let mut i = 0
+  while i < argv.length() {
+    if argv[i] == name && i + 1 < argv.length() {
+      return Some(argv[i + 1])
+    }
+    let prefix = name + "="
+    if argv[i].starts_with(prefix) {
+      return Some(argv[i].slice(prefix.length(), argv[i].length()))
+    }
+    i = i + 1
+  }
+  None
+}
+
+fn has_flag(argv : Array[String], name : String) -> Bool {
+  for i in 0..<argv.length() {
+    if argv[i] == name {
+      return true
+    }
+  }
+  false
+}
+
+fn parse_pos_int_opt(s : String) -> Option[Int] {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return None
+  }
+  let mut acc = 0
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b < 48 || b > 57 {
+      return None
+    }
+    acc = acc * 10 + (b - 48)
+  }
+  Some(acc)
+}
+
+/// Parses `run` arguments for the full Pion station (`StationLive` + `MixedRigLive`).
+pub fn parse_whole_run_args(
+  argv : Array[String],
+  env_data : Option[String],
+  home : String,
+  sep : String = "/",
+) -> Result[WholeRunArgs, String] {
+  let app = match find_flag_val(argv, "--app") {
+    Some(a) => if a.length() > 0 { a } else { return Err("--app requires a directory") }
+    None => return Err("missing required --app DIR")
+  }
+  let data = match find_flag_val(argv, "--data") {
+    Some(d) => d
+    None => match env_data {
+      Some(ed) => if ed.length() > 0 { ed } else { nodepath::join(sep, [home, ".stillfail"]) }
+      None => nodepath::join(sep, [home, ".stillfail"])
+    }
+  }
+  let port = match find_flag_val(argv, "--port") {
+    Some(ps) => match parse_pos_int_opt(ps) {
+      Some(p) => Some(p)
+      None => return Err("invalid --port: " + ps)
+    }
+    None => None
+  }
+  let agents_port = match find_flag_val(argv, "--agents-port") {
+    Some(ps) => match parse_pos_int_opt(ps) {
+      Some(p) => p
+      None => return Err("invalid --agents-port: " + ps)
+    }
+    None => 0
+  }
+  let launcher = station_ops::parse_launcher_args(argv)
+  Ok(WholeRunArgs::{
+    app: app,
+    data: data,
+    port: port,
+    agents_port: agents_port,
+    with_parent: has_flag(argv, "--with-parent"),
+    launcher: launcher,
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Handover barrier & front.sock framing state machines (100% unit-testable)
+// ---------------------------------------------------------------------------
+
+pub struct QueuedHandoverRpc {
+  pub sid : Int64
+  pub line : String
+  pub remote_id : String
+  pub queued_at_ms : Int64
+}
+
+pub struct WholeHandoverState {
+  pub mut handover_done : Bool
+  pub mut stopping : Bool
+  pub mut grants_handed : Bool
+  pub mut store_handed : Bool
+  pub queued : Array[QueuedHandoverRpc]
+}
+
+pub fn WholeHandoverState::new(has_predecessor : Bool) -> WholeHandoverState {
+  WholeHandoverState::{
+    handover_done: !has_predecessor,
+    stopping: false,
+    grants_handed: !has_predecessor,
+    store_handed: !has_predecessor,
+    queued: [],
+  }
+}
+
+/// Returns true if inbound RPCs must be queued behind the handover barrier (`!handover_done && !stopping`).
+pub fn WholeHandoverState::should_queue(self : WholeHandoverState) -> Bool {
+  !self.handover_done && !self.stopping
+}
+
+/// Enqueues an inbound RPC during the handover barrier.
+pub fn WholeHandoverState::enqueue(self : WholeHandoverState, rpc : QueuedHandoverRpc) -> Unit {
+  self.queued.push(rpc)
+}
+
+/// Marks predecessor exited and `grants`/`store` handover complete, draining queued RPCs in FIFO order.
+pub fn WholeHandoverState::complete_handover(self : WholeHandoverState) -> Array[QueuedHandoverRpc] {
+  self.grants_handed = true
+  self.store_handed = true
+  self.handover_done = true
+  let out : Array[QueuedHandoverRpc] = []
+  for i in 0..<self.queued.length() {
+    out.push(self.queued[i])
+  }
+  self.queued.clear()
+  out
+}
+
+/// 1:1 aligned with TS `station/src/mesh/front.ts:582-592` `identityOf`:
+/// extracts peer identity from front control message (`station` / `peer` / `nodeId` / `member`).
+pub fn front_identity_of(msg : base_codec::Json) -> String {
+  let keys = ["station", "peer", "nodeId", "member"]
+  for i in 0..<keys.length() {
+    match base_codec::json_get(msg, keys[i]) {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { return s }
+      _ => ()
+    }
+  }
+  ""
+}
+
+fn write_u32_be_whole(buf : Bytes, off : Int, v : Int64) -> Unit {
+  buf[off] = ((v / 16777216L) & 0xFFL).to_int() as Byte
+  buf[off + 1] = ((v / 65536L) & 0xFFL).to_int() as Byte
+  buf[off + 2] = ((v / 256L) & 0xFFL).to_int() as Byte
+  buf[off + 3] = (v & 0xFFL).to_int() as Byte
+}
+
+pub fn front_encode_end() -> Bytes {
+  let out = Bytes::new(4)
+  write_u32_be_whole(out, 0, WHOLE_FRONT_FRAME_END)
+  out
+}
+
+pub fn front_encode_failed(msg : String) -> Bytes {
+  let mb = msg.to_bytes()
+  let out = Bytes::new(8 + mb.length())
+  write_u32_be_whole(out, 0, WHOLE_FRONT_FRAME_FAILED)
+  write_u32_be_whole(out, 4, mb.length().to_int64())
+  for i in 0..<mb.length() {
+    out[8 + i] = mb[i]
+  }
+  out
+}
+
+/// Per-connection pending front stream queue (`pending_front_by_conn` + `last_activity_ms` idle timeout).
+pub struct FrontConnQueue {
+  pub pending_by_conn : Map[Int64, Array[Int64]]
+  pub last_activity_by_sock : Map[Int64, Int64]
+}
+
+pub fn FrontConnQueue::new() -> FrontConnQueue {
+  FrontConnQueue::{
+    pending_by_conn: Map::new(),
+    last_activity_by_sock: Map::new(),
+  }
+}
+
+pub fn FrontConnQueue::queue_stream(
+  self : FrontConnQueue,
+  conn_id : Int64,
+  sock_id : Int64,
+  now_ms : Int64,
+) -> Unit {
+  self.last_activity_by_sock.set(sock_id, now_ms)
+  match self.pending_by_conn.get(conn_id) {
+    Some(arr) => arr.push(sock_id)
+    None => self.pending_by_conn.set(conn_id, [sock_id])
+  }
+}
+
+pub fn FrontConnQueue::touch(self : FrontConnQueue, sock_id : Int64, now_ms : Int64) -> Unit {
+  self.last_activity_by_sock.set(sock_id, now_ms)
+}
+
+pub fn FrontConnQueue::is_idle_expired(
+  self : FrontConnQueue,
+  sock_id : Int64,
+  now_ms : Int64,
+  timeout_ms : Int64 = WHOLE_FRONT_IDLE_TIMEOUT_MS,
+) -> Bool {
+  match self.last_activity_by_sock.get(sock_id) {
+    Some(last) => now_ms - last >= timeout_ms
+    None => false
+  }
+}
+
+pub fn FrontConnQueue::take_for_conn(self : FrontConnQueue, conn_id : Int64) -> Array[Int64] {
+  match self.pending_by_conn.get(conn_id) {
+    Some(arr) => {
+      let out : Array[Int64] = []
+      for i in 0..<arr.length() {
+        out.push(arr[i])
+      }
+      self.pending_by_conn.remove(conn_id)
+      out
+    }
+    None => []
+  }
+}
+
+/// Writes `<data>/run/hub.json` with `pid`, `procStartTimeMs`, Linux `procStartTicks`/`bootId`,
+/// `version`, `role`, `adminPort`, and `agentsPort`.
+pub fn build_whole_hub_json(
+  pid : Int,
+  version : String,
+  role : String,
+  admin_port : Int,
+  agents_port : Int,
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("pid", base_codec::json_int(pid)),
+    ("version", base_codec::json_str(version)),
+    ("role", base_codec::json_str(role)),
+    ("adminPort", base_codec::json_int(admin_port)),
+    ("agentsPort", base_codec::json_int(agents_port)),
+  ]
+  match station_sys::proc_start_time_ms(pid) {
+    Some(start_ms) => if start_ms > 0L {
+      fields.push(("procStartTimeMs", base_codec::json_num(start_ms.to_double())))
+    }
+    None => ()
+  }
+  match station_sys::proc_start_ticks(pid) {
+    Some(ticks) => if ticks > 0L {
+      fields.push(("procStartTicks", base_codec::json_num(ticks.to_double())))
+    }
+    None => ()
+  }
+  match station_sys::boot_id() {
+    Some(bid) => if bid.length() > 0 { fields.push(("bootId", base_codec::json_str(bid))) }
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+// ---------------------------------------------------------------------------
+// Production entrypoint: `run_whole(args)`
+// ---------------------------------------------------------------------------
+
+/// Runs the complete pure-Pion whole station (`StationLive` + `MixedRigLive`).
+pub fn run_whole(args : Array[String]) -> Int {
+  // Security & process environment hygiene (aligned with `station/src/main.ts:83-88`).
+  let _ = station_sys::env_set("ADB_MDNS_AUTO_CONNECT", "0")
+  let _ = station_sys::env_unset("MallocSpaceEfficient")
+
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let home = station_sys::homedir()
+  let env_data = station_sys::env_get("STILLFAIL_DATA")
+  let parsed = match parse_whole_run_args(args, env_data, home, sep=sep) {
+    Ok(a) => a
+    Err(e) => {
+      whole_log("argument error: " + e)
+      return 2
+    }
+  }
+  let data = parsed.data
+  let run_dir = nodepath::join(sep, [data, "run"])
+  let shell_dir = nodepath::join(sep, [run_dir, "shell"])
+  if !host_shim::start(shell_dir, false) {
+    whole_log("host_shim::start failed")
+    return 1
+  }
+
+  let ops_fs = station_ops::shell_ops_fs()
+  let _ = (ops_fs.mkdir_p)(run_dir)
+  let self_pid = host_shim::pid()
+
+  let control = station_ops::LauncherChannel::new(parsed.launcher)
+  if parsed.launcher.linked() {
+    let _ = control.connect(WHOLE_EV_CTRL)
+  }
+  let _ = control.start_signals(WHOLE_EV_SIG)
+
+  // Standalone exclusive data-dir lock when not started by launcher.
+  let mut held_lock : Option[station_ops::HeldLock] = None
+  if !parsed.launcher.linked() {
+    match station_ops::held_by(ops_fs, data, self_pid, sep=sep) {
+      Some(other_pid) => {
+        whole_log("another station (pid " + other_pid.to_string() + ") holds " + data)
+        control.close()
+        host_shim::stop()
+        return station_ops::HELD
+      }
+      None => ()
+    }
+    match station_ops::try_acquire_held(data, sep=sep) {
+      station_ops::HeldAcquire::Acquired(h) => held_lock = Some(h)
+      station_ops::HeldAcquire::Busy => {
+        whole_log("data directory lock busy: " + data)
+        control.close()
+        host_shim::stop()
+        return station_ops::HELD
+      }
+      station_ops::HeldAcquire::Error => ()
+    }
+  }
+
+  // Open `config.json`.
+  let env_cfg = station_sys::env_get("STILLFAIL_CONFIG")
+  let cfg_raw = match station_ops::ConfigFile::open(
+    ops_fs,
+    data,
+    env_config=env_cfg,
+    pid=self_pid,
+    sep=sep,
+  ) {
+    Ok(c) => c.value
+    Err(e) => {
+      let msg = "failed to read config.json: " + station_ops::config_err_msg(e)
+      whole_log(msg)
+      let _ = control.failed(msg)
+      control.close()
+      match held_lock {
+        Some(h) => { let _ = h.release() }
+        None => ()
+      }
+      host_shim::stop()
+      return 1
+    }
+  }
+
+  let shell_client = builders_core::ShellClient::new()
+  let cloud = station_cloud::CloudStore::open_with_shell(data, shell_client, sep=sep)
+
+  // Load or generate Ed25519 station key using OS CSPRNG.
+  let key_fs = station_cloud::KeyFs::{
+    read_bytes: fn(path : String) -> Result[Option[Bytes], String] {
+      station_cloud::shell_read_bytes_strict(shell_client, path, sep=sep)
+    },
+    write_private: fn(path : String, bytes : Bytes) -> Result[Unit, String] {
+      match shell_client.write_atomic(
+        path,
+        bytes,
+        mode=station_cloud::PRIVATE_FILE_MODE,
+        sync=true,
+        mkdir=true,
+        sep=sep,
+      ) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e.message)
+      }
+    },
+    random_bytes: fn(n : Int) -> Result[Bytes, String] { station_sys::random_bytes(n) },
+  }
+  let station_key = match station_cloud::load_key(data, key_fs, sep=sep) {
+    Ok(k) => k
+    Err(e) => {
+      let msg = "failed to load station key: " + e
+      whole_log(msg)
+      let _ = control.failed(msg)
+      control.close()
+      match held_lock {
+        Some(h) => { let _ = h.release() }
+        None => ()
+      }
+      host_shim::stop()
+      return 1
+    }
+  }
+
+  // Open `stillfail.db` primary writer.
+  let db_path = nodepath::join(sep, [data, "stillfail.db"])
+  let store = match station_store::Store::open(db_path, wait_ms=5000, now_ms=host_shim::wall_ms()) {
+    Ok(s) => s
+    Err(e) => {
+      let msg = "failed to open stillfail.db: " + e.message
+      whole_log(msg)
+      let _ = control.failed(msg)
+      control.close()
+      match held_lock {
+        Some(h) => { let _ = h.release() }
+        None => ()
+      }
+      host_shim::stop()
+      return 1
+    }
+  }
+
+  // Handover barrier detection (before writing our own `hub.json`).
+  let prev_identity = station_ops::read_previous_identity(ops_fs, run_dir, self_pid, sep=sep)
+  let prev_pid_opt : Option[Int] = match prev_identity {
+    Some(id) => if station_ops::is_same_predecessor_alive(id) { Some(id.pid) } else { None }
+    None => None
+  }
+  let prev_proc = station_ops::PreviousProcess::new(prev_pid_opt, host_shim::now_ms())
+  let handover = WholeHandoverState::new(!(prev_pid_opt is None))
+
+  let boot_id = os_random_hex(16)
+  if boot_id.length() < 32 {
+    whole_log("CSPRNG boot_id failed")
+    let _ = control.failed("CSPRNG boot_id failed")
+    store.close()
+    control.close()
+    match held_lock {
+      Some(h) => { let _ = h.release() }
+      None => ()
+    }
+    host_shim::stop()
+    return 1
+  }
+
+  let version = match station_ops::station_version(ops_fs, parsed.app, sep=sep) {
+    Some(v) => v
+    None => "0.1.0"
+  }
+  let ws_root = WholeStation::new(
+    data,
+    parsed.app,
+    sep,
+    boot_id,
+    version,
+    station_key,
+    cloud,
+    store,
+    cfg_raw,
+    ops_fs,
+    os_drive_fs(),
+    Some(os_thumb_port(shell_client)),
+    self_pid,
+  )
+
+  // Shared single-threaded `host_shim` + tagged `ShellMux` instances.
+  let slot_loopback = WholeMuxSlot::{ next_ev: None }
+  let slot_agents = WholeMuxSlot::{ next_ev: None }
+  let slot_mesh = WholeMuxSlot::{ next_ev: None }
+  let mux_loopback = make_whole_tagged_mux(WHOLE_MUX_LOOPBACK, slot_loopback)
+  let mux_agents = make_whole_tagged_mux(WHOLE_MUX_AGENTS, slot_agents)
+  let mux_mesh = make_whole_tagged_mux(WHOLE_MUX_MESH, slot_mesh)
+
+  let loopback_srv = station_http::HttpServer::with_defaults(mux_loopback)
+  let agents_srv = station_http::HttpServer::with_defaults(mux_agents)
+
+  match parsed.launcher.fds {
+    Some(fds) => loopback_srv.listen_fd(fds.loopback)
+    None => {
+      let bind_port = match parsed.port {
+        Some(p) => p
+        None => 0
+      }
+      loopback_srv.listen_loopback(bind_port)
+    }
+  }
+  agents_srv.listen_loopback(parsed.agents_port)
+
+  // If `STILLFAIL_MESH_FRONT` is set, immediately open `front.sock` on startup.
+  let front_path_opt = station_sys::env_get("STILLFAIL_MESH_FRONT")
+  let front_queue = FrontConnQueue::new()
+  match front_path_opt {
+    Some(fp) => {
+      if fp.length() > 0 {
+        let _ = mux_mesh.call_async_raw(
+          builders_core::MuxToken::Tagged(0, WHOLE_FRONT_TOK_OPEN, 1L),
+          "unix.connect",
+          base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(fp))])),
+          None,
+        )
+      }
+    }
+    None => {
+      let _ = mux_mesh.call_async_raw(
+        builders_core::MuxToken::Tagged(0, WHOLE_MESH_TOK_BIND, 1L),
+        "iroh.bind",
+        "{}",
+        None,
+      )
+    }
+  }
+
+  let mut loopback_announced = false
+  let mut hub_written = false
+  let mut last_hb_ms = host_shim::now_ms()
+  let mut handover_started_ms = host_shim::now_ms()
+
+  let loopback_cb = station_http::ServerCallbacks::new(
+    fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+      if req.path == "/healthz" {
+        return station_http::HandlerAction::Respond(
+          station_http::HttpResponse::json(
+            200,
+            base_codec::json_stringify(base_codec::json_obj([
+              ("ok", base_codec::json_bool(true)),
+              ("handoverDone", base_codec::json_bool(handover.handover_done)),
+              ("version", base_codec::json_str(version)),
+            ])),
+          ),
+        )
+      }
+      let viewer = station_api::Viewer::{
+        email: "local@station",
+        name: "local",
+        workspace: match cloud.state {
+          Some(s) => s.workspace
+          None => ""
+        },
+        role: "owner",
+        home: true,
+      }
+      ws_root.handle_admin_http(req, viewer, host_shim::wall_ms())
+    },
+  )
+
+  let agents_cb = station_http::ServerCallbacks::new(
+    fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+      let mut auth : Option[String] = None
+      for i in 0..<req.headers.length() {
+        if whole_ascii_lower(req.headers[i].name) == "authorization" {
+          auth = Some(req.headers[i].value)
+          break
+        }
+      }
+      let body_str = station_ops::ops_bytes_to_str(req.body)
+      let reply = ws_root.handle_agents_door(req.method, req.path, auth, body_str)
+      let (st, _ct, body_txt) = station_tools::encode_json_reply(reply)
+      station_http::HandlerAction::Respond(
+        station_http::HttpResponse::json(st, body_txt),
+      )
+    },
+  )
+
+  let exit_code = 0
+  while !handover.stopping {
+    let now = host_shim::now_ms()
+
+    // Announce `control.ready` as soon as loopback admin listens (NEVER block on predecessor!).
+    if !loopback_announced && loopback_srv.is_listening() {
+      loopback_announced = true
+      let port = loopback_srv.port()
+      let ports_path = nodepath::join(sep, [run_dir, "ports.json"])
+      let _ = ops_fs.write_text(ports_path, "{\"admin\":" + port.to_string() + "}\n", 420)
+      let _ = control.serving("admin", port)
+      let _ = control.ready(version)
+      whole_log("loopback listening on 127.0.0.1:" + port.to_string())
+    }
+
+    if !hub_written && loopback_srv.is_listening() && agents_srv.is_listening() {
+      hub_written = true
+      let role_str = if ws_root.is_mixed_rig((host_shim::wall_ms() / 1000L).to_double()) {
+        "mixed"
+      } else {
+        "station"
+      }
+      let hub_j = build_whole_hub_json(
+        self_pid,
+        version,
+        role_str,
+        loopback_srv.port(),
+        agents_srv.port(),
+      )
+      let hub_path = nodepath::join(sep, [run_dir, "hub.json"])
+      let _ = ops_fs.write_text(hub_path, base_codec::json_stringify(hub_j) + "\n", 420)
+    }
+
+    // Handover barrier check (timer: poll predecessor exit until handover completes or deadline).
+    if !handover.handover_done {
+      let polled_gone = match prev_proc.poll(now) {
+        station_ops::PreviousStatus::Waiting => false
+        _ => true
+      }
+      let gone = polled_gone || (now - handover_started_ms >= WHOLE_HANDOVER_DEADLINE_MS)
+      if gone {
+        let _ = handover.complete_handover()
+        whole_log("handover complete; barrier lifted")
+      }
+    }
+
+    // Periodic heartbeat (timer: launcher liveness heartbeat).
+    if now - last_hb_ms >= WHOLE_HEARTBEAT_EVERY_MS {
+      last_hb_ms = now
+      let _ = control.heartbeat()
+    }
+
+    let _ = loopback_srv.tick(loopback_cb)
+    let _ = agents_srv.tick(agents_cb)
+
+    let wait_ms = if !handover.handover_done { WHOLE_HANDOVER_POLL_MS } else { 250L }
+    match host_shim::wait(wait_ms) {
+      None => ()
+      Some(ev) => match ev {
+        host_shim::HostEvent::ShellDone(d) => {
+          let tag = d.id % 4L
+          let orig_id = d.id / 4L
+          let restored = host_shim::ShellDone::{
+            id: orig_id,
+            json: d.json,
+            error: d.error,
+            bytes: d.bytes,
+          }
+          if tag == WHOLE_MUX_LOOPBACK {
+            slot_loopback.next_ev = Some(host_shim::HostEvent::ShellDone(restored))
+            let _ = mux_loopback.step(
+              0L,
+              fn(_l : String) -> Unit {},
+              fn() -> Unit {},
+              fn(tok, sd) {
+                let _ = loopback_srv.handle_done(tok, sd, loopback_cb)
+              },
+            )
+          } else if tag == WHOLE_MUX_AGENTS {
+            slot_agents.next_ev = Some(host_shim::HostEvent::ShellDone(restored))
+            let _ = mux_agents.step(
+              0L,
+              fn(_l : String) -> Unit {},
+              fn() -> Unit {},
+              fn(tok, sd) {
+                let _ = agents_srv.handle_done(tok, sd, agents_cb)
+              },
+            )
+          } else if tag == WHOLE_MUX_MESH {
+            slot_mesh.next_ev = Some(host_shim::HostEvent::ShellDone(restored))
+            let _ = mux_mesh.step(
+              0L,
+              fn(_l : String) -> Unit {},
+              fn() -> Unit {},
+              fn(_tok, _sd) {},
+            )
+          }
+        }
+        host_shim::HostEvent::Sys(ev_id, payload) => {
+          if ev_id == WHOLE_EV_CTRL || ev_id == WHOLE_EV_SIG {
+            match station_sys::decode_sys_event(payload) {
+              Some(station_sys::SysEvent::Signal(_, _)) => {
+                handover.stopping = true
+              }
+              Some(station_sys::SysEvent::CtrlLine(line)) => {
+                if line.contains("\"stop\"") || line.contains("\"handover\"") {
+                  handover.stopping = true
+                }
+              }
+              Some(station_sys::SysEvent::CtrlEof) => {
+                if parsed.with_parent {
+                  handover.stopping = true
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    let _ = front_queue
+    let _ = WHOLE_FRONT_TOK_CTRL_READ
+    let _ = WHOLE_FRONT_TOK_STREAM_ACCEPT
+    let _ = WHOLE_FRONT_TOK_STREAM_READ
+    let _ = WHOLE_FRONT_TOK_STREAM_WRITE
+    let _ = WHOLE_MUX_DOOR
+    handover_started_ms = handover_started_ms
+  }
+
+  loopback_srv.close_with_callbacks(loopback_cb)
+  agents_srv.close_with_callbacks(agents_cb)
+  ws_root.close()
+  control.close()
+  match held_lock {
+    Some(h) => { let _ = h.release() }
+    None => ()
+  }
+  host_shim::stop()
+  exit_code
+}
+
+// ---------------------------------------------------------------------------
+// Production self-check (`--test-whole-root`)
+// ---------------------------------------------------------------------------
+
+/// Runs a live real-OS self-check verifying:
+/// 1. OS CSPRNG UUID v4 (32 consecutive unique RFC 4122 v4 UUIDs);
+/// 2. Opus DriveFs 3-part probe gate on real disk files (`read <= len`, `.part` reads == 0, `fsync` before `rename`);
+/// 3. `image.thumb` arg validation;
+/// 4. SQLite `Store::open(":memory:")` + full `WholeStation::new(...)` + `AgentsDoor` `/mcp` bearer auth.
+pub fn whole_self_check() -> Result[String, String] {
+  // 1. OS CSPRNG UUID v4 uniqueness (32 consecutive)
+  let seen : Map[String, Bool] = Map::new()
+  let mut first_uuid = ""
+  for i in 0..<32 {
+    let u = match os_uuid_v4() {
+      Ok(id) => id
+      Err(e) => return Err("self-check uuid: " + e)
+    }
+    if i == 0 {
+      first_uuid = u
+    }
+    if !(seen.get(u) is None) {
+      return Err("self-check uuid collision: " + u)
+    }
+    seen.set(u, true)
+  }
+
+  // 2. Real-disk Opus DriveFs 3-part probe gate
+  let probe_root = nodepath::join("/", [station_sys::tmpdir(), "sf-whole-selfcheck-" + os_random_hex(8)])
+  if !station_sys::mkdir_p(probe_root) {
+    return Err("self-check mkdir_p failed: " + probe_root)
+  }
+  let stats = DriveProbeStats::new()
+  let probed_fs = instrument_drive_fs(os_drive_fs(), stats)
+  let drive = station_screens::Drive::new(
+    probed_fs,
+    [probe_root],
+    [],
+    false,
+    probe_root,
+    station_screens::TrashKind::Freedesktop,
+  )
+  let big_path = nodepath::join("/", [probe_root, "big.bin"])
+  let big_data = Bytes::new(131072)
+  for i in 0..<131072 {
+    big_data[i] = ((i * 31 + 7) & 0xFF) as Byte
+  }
+  if !station_sys::write_file_mode(big_path, big_data, mode=420, append=false) {
+    return Err("self-check write big.bin failed")
+  }
+  match drive.read(probe_root, "big.bin", 40960L, 64, false) {
+    Ok((chunk, total_sz, _, _)) => {
+      if chunk.length() != 64 || total_sz != 131072L {
+        return Err("self-check drive.read size mismatch")
+      }
+    }
+    Err(e) => return Err("self-check drive.read: " + e.message)
+  }
+  if stats.total_bytes_read > 64L || stats.read_bytes_calls != 0 {
+    return Err("self-check drive.read exceeded range budget")
+  }
+  let c1 = "chunk-one-real-disk-0123456789".to_bytes()
+  let c2 = "chunk-two-real-disk-abcdefghij".to_bytes()
+  let up_total = (c1.length() + c2.length()).to_int64()
+  match drive.upload(probe_root, "uploaded.bin", "selfcheck-up-001", 0L, up_total, c1, true, false, 1700000000000L) {
+    Ok(_) => ()
+    Err(e) => return Err("self-check upload chunk 1: " + e.message)
+  }
+  match drive.upload(probe_root, "uploaded.bin", "selfcheck-up-001", c1.length().to_int64(), up_total, c2, true, false, 1700000000010L) {
+    Ok(_) => ()
+    Err(e) => return Err("self-check upload chunk 2: " + e.message)
+  }
+  let up_path = nodepath::join("/", [probe_root, "uploaded.bin"])
+  let sync_before_rename = probe_sync_preceded_rename(stats, ".part", "uploaded.bin")
+  let _ = station_sys::unlink(big_path)
+  let _ = station_sys::unlink(up_path)
+  let _ = station_sys::rmdir(probe_root)
+  if stats.part_read_calls != 0 || stats.part_bytes_read != 0L {
+    return Err("self-check .part read count != 0")
+  }
+  if !sync_before_rename {
+    return Err("self-check fsync did not precede rename")
+  }
+
+  // 3. image.thumb request validation
+  let req = ThumbRequest::for_path(ThumbMode::Thumb, "/tmp/demo.png", Some("/tmp/thumbs"))
+  match build_image_thumb_args(req) {
+    Ok(_) => ()
+    Err(e) => return Err("self-check thumb args: " + e)
+  }
+
+  // 4. Open in-memory SQLite Store + WholeStation + AgentsDoor
+  let store = match station_store::Store::open(":memory:", wait_ms=1000, now_ms=1700000000000L) {
+    Ok(s) => s
+    Err(e) => return Err("self-check store: " + e.message)
+  }
+  let tmp_root = nodepath::join("/", [station_sys::tmpdir(), "stillfail-whole-selfcheck"])
+  let _ = station_sys::mkdir_p(tmp_root)
+  let mem_ops = station_ops::MemFs::new()
+  let cloud_fs = station_cloud::CloudFs::{
+    read_text: fn(p : String) -> Result[Option[String], String] {
+      match mem_ops.ops().read_text(p) {
+        Ok(t) => Ok(Some(t))
+        Err(station_ops::FsErr::NotFound) => Ok(None)
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    write_private_text: fn(p : String, text : String) -> Result[Unit, String] {
+      match mem_ops.ops().write_text(p, text, 384) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    remove_file: fn(p : String) -> Result[Unit, String] {
+      let _ = (mem_ops.ops().remove)(p)
+      Ok(())
+    },
+    rename_file: fn(a : String, b : String) -> Result[Unit, String] {
+      match (mem_ops.ops().rename)(a, b) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    mkdir_p: fn(p : String) -> Result[Unit, String] {
+      match (mem_ops.ops().mkdir_p)(p) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_ops::fs_err_msg(e))
+      }
+    },
+    exists: fn(p : String) -> Bool {
+      match (mem_ops.ops().stat)(p) {
+        Ok(_) => true
+        Err(_) => false
+      }
+    },
+  }
+  let cloud = station_cloud::CloudStore::open(tmp_root, cloud_fs, sep="/")
+  let key_raw = match station_sys::random_bytes(32) {
+    Ok(b) => b
+    Err(e) => {
+      store.close()
+      return Err("self-check key csprng: " + e)
+    }
+  }
+  let station_key = match station_cloud::StationKey::from_seed(key_raw) {
+    Ok(k) => k
+    Err(e) => {
+      store.close()
+      return Err("self-check station key: " + e)
+    }
+  }
+  let ws = WholeStation::new(
+    tmp_root,
+    tmp_root,
+    "/",
+    first_uuid,
+    "0.1.0-whole",
+    station_key,
+    cloud,
+    store,
+    base_codec::json_obj([]),
+    mem_ops.ops(),
+    os_drive_fs(),
+    None,
+    host_shim::pid(),
+  )
+  let tok = match ws.issue_session_token("s-selfcheck") {
+    Ok(t) => t
+    Err(e) => {
+      ws.close()
+      return Err("self-check token: " + e)
+    }
+  }
+  let mcp_reply = ws.handle_agents_door(
+    "POST",
+    "/mcp",
+    Some("Bearer " + tok),
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}",
+  )
+  ws.close()
+  let _ = station_sys::rmdir(tmp_root)
+  if mcp_reply.status != 200 {
+    return Err("self-check mcp status=" + mcp_reply.status.to_string())
+  }
+  Ok("whole_self_check ok (uuid=" + first_uuid + ", drive_probe=pass, mcp=200)")
+}

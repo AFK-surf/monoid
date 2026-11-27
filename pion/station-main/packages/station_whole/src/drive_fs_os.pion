@@ -1,0 +1,353 @@
+// Production OS `DriveFs` adapter over `station_sys` positioned I/O (`pread` / `pwrite` / `fsync`
+// on POSIX; `ReadFile`+`OVERLAPPED` / `WriteFile`+`OVERLAPPED`+`SetEndOfFile`+`FlushFileBuffers`
+// on Windows) plus an instrumenting probe wrapper for Opus gate verification.
+
+import "nodepath"
+import "station_ops"
+import "station_screens"
+import "station_sys"
+
+fn map_sys_err(code : Int) -> station_ops::FsErr {
+  if code == -2 {
+    station_ops::FsErr::NotFound
+  } else if code == -3 {
+    station_ops::FsErr::PermissionDenied("EACCES")
+  } else if code == -4 {
+    station_ops::FsErr::Other("EISDIR")
+  } else {
+    station_ops::FsErr::Other("EIO")
+  }
+}
+
+fn split_pipe_fields(s : String) -> Array[String] {
+  let out : Array[String] = []
+  let raw = s.to_bytes()
+  let mut start = 0
+  for i in 0..<raw.length() {
+    if (raw[i].to_int() & 0xFF) == 124 {
+      out.push(slice_ascii_str(raw, start, i))
+      start = i + 1
+    }
+  }
+  out.push(slice_ascii_str(raw, start, raw.length()))
+  out
+}
+
+fn slice_ascii_str(raw : Bytes, start : Int, end : Int) -> String {
+  let sb = StringBuilder::new()
+  for i in start..<end {
+    sb.write_byte(raw[i])
+  }
+  sb.to_string()
+}
+
+fn parse_i64_dec(s : String) -> Int64 {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return 0.to_int64()
+  }
+  let mut neg = false
+  let mut idx = 0
+  if (raw[0].to_int() & 0xFF) == 45 {
+    neg = true
+    idx = 1
+  }
+  let mut acc = 0.to_int64()
+  for i in idx..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b >= 48 && b <= 57 {
+      acc = acc * 10.to_int64() + (b - 48).to_int64()
+    } else {
+      break
+    }
+  }
+  if neg { 0.to_int64() - acc } else { acc }
+}
+
+fn parse_stat_meta(raw : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+  let parts = split_pipe_fields(raw)
+  if parts.length() < 6 {
+    return Err(station_ops::FsErr::Other("invalid stat format"))
+  }
+  let kind = parts[0]
+  let size = parse_i64_dec(parts[1])
+  let mtime_ms = parse_i64_dec(parts[3])
+  let ino = parse_i64_dec(parts[5])
+  let mode = if parts.length() >= 7 { parse_i64_dec(parts[6]).to_int() } else { 420 }
+  Ok(station_ops::FileMeta::{
+    size: size,
+    mtime_ms: mtime_ms,
+    mtime_exact: parts[3],
+    ino: ino,
+    mode: mode,
+    is_dir: kind == "dir",
+    is_file: kind == "file",
+    is_link: kind == "link",
+  })
+}
+
+/// Real OS `DriveFs` backed by `station_sys` positioned `pread`/`pwrite`/`fsync`.
+pub fn os_drive_fs() -> station_screens::DriveFs {
+  station_screens::DriveFs::{
+    read_range: fn(path : String, offset : Int64, length : Int) -> Result[(Bytes, Int64, Int64), station_ops::FsErr] {
+      match station_sys::read_range_meta(path, offset, length.to_int64()) {
+        Ok((bytes, total, mtime)) => Ok((bytes, total, mtime))
+        Err(code) => Err(map_sys_err(code))
+      }
+    },
+    write_at: fn(
+      path : String,
+      offset : Int64,
+      data : Bytes,
+      create : Bool,
+      at_least : Option[Int64],
+      truncate_to : Option[Int64],
+      sync : Bool,
+    ) -> Result[(Int64, Bool), station_ops::FsErr] {
+      match station_sys::write_at(path, offset, data, create, at_least, truncate_to, sync) {
+        Ok((sz, is_short)) => Ok((sz, is_short))
+        Err(code) => Err(map_sys_err(code))
+      }
+    },
+    truncate: fn(path : String, size : Int64) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::truncate_in_place(path, size) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::Other("truncate failed"))
+      }
+    },
+    sync_file: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      match station_sys::sync_file(path) {
+        Ok(_) => Ok(())
+        Err(code) => Err(map_sys_err(code))
+      }
+    },
+    read_bytes: fn(path : String) -> Result[Bytes, station_ops::FsErr] {
+      let meta = match station_sys::stat_raw(path) {
+        Some(raw) => match parse_stat_meta(raw) {
+          Ok(m) => m
+          Err(e) => return Err(e)
+        }
+        None => return Err(station_ops::FsErr::NotFound)
+      }
+      if meta.is_dir {
+        return Err(station_ops::FsErr::Other("EISDIR"))
+      }
+      if meta.size <= 0.to_int64() {
+        return Ok(Bytes::new(0))
+      }
+      match station_sys::read_range_meta(path, 0.to_int64(), meta.size) {
+        Ok((bytes, _, _)) => Ok(bytes)
+        Err(code) => Err(map_sys_err(code))
+      }
+    },
+    write_bytes: fn(path : String, data : Bytes, mode : Int) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::write_file_mode(path, data, mode=mode, append=false) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::Other("write_bytes failed"))
+      }
+    },
+    stat: fn(path : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+      match station_sys::stat_raw(path) {
+        Some(raw) => parse_stat_meta(raw)
+        None => Err(station_ops::FsErr::NotFound)
+      }
+    },
+    lstat: fn(path : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+      match station_sys::lstat_raw(path) {
+        Some(raw) => parse_stat_meta(raw)
+        None => Err(station_ops::FsErr::NotFound)
+      }
+    },
+    realpath: fn(path : String) -> Result[String, station_ops::FsErr] {
+      match station_sys::realpath(path) {
+        Some(p) => Ok(p)
+        None => Err(station_ops::FsErr::NotFound)
+      }
+    },
+    mkdir_p: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::mkdir_p(path) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::Other("mkdir_p failed"))
+      }
+    },
+    rename: fn(src : String, dst : String) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::rename(src, dst) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::Other("rename failed"))
+      }
+    },
+    remove: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::unlink(path) || station_sys::rmdir(path) {
+        Ok(())
+      } else {
+        match station_sys::lstat_raw(path) {
+          None => Err(station_ops::FsErr::NotFound)
+          Some(_) => Err(station_ops::FsErr::Other("remove failed"))
+        }
+      }
+    },
+    readdir: fn(path : String) -> Result[Array[String], station_ops::FsErr] {
+      match station_sys::read_dir(path) {
+        Some(list) => Ok(list)
+        None => Err(station_ops::FsErr::NotFound)
+      }
+    },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Instrumented DriveFs probe wrapper (Opus gate: byte count + op sequence)
+// ---------------------------------------------------------------------------
+
+pub struct DriveProbeStats {
+  pub mut total_bytes_read : Int64
+  pub mut read_range_calls : Int
+  pub mut read_bytes_calls : Int
+  pub mut part_read_calls : Int
+  pub mut part_bytes_read : Int64
+  pub mut write_at_calls : Int
+  pub mut sync_calls : Int
+  pub mut rename_calls : Int
+  pub ops_log : Array[String]
+}
+
+pub fn DriveProbeStats::new() -> DriveProbeStats {
+  DriveProbeStats::{
+    total_bytes_read: 0.to_int64(),
+    read_range_calls: 0,
+    read_bytes_calls: 0,
+    part_read_calls: 0,
+    part_bytes_read: 0.to_int64(),
+    write_at_calls: 0,
+    sync_calls: 0,
+    rename_calls: 0,
+    ops_log: [],
+  }
+}
+
+fn is_part_file_path(path : String) -> Bool {
+  let base = nodepath::basename("/", path)
+  station_screens::is_upload_part_name(base) || base.ends_with(".part")
+}
+
+/// Wraps any `DriveFs` (typically `os_drive_fs()`) to record exact bytes read,
+/// `.part` read count, and ordered `sync`/`rename` operation sequences.
+pub fn instrument_drive_fs(
+  inner : station_screens::DriveFs,
+  stats : DriveProbeStats,
+) -> station_screens::DriveFs {
+  station_screens::DriveFs::{
+    read_range: fn(path : String, offset : Int64, length : Int) -> Result[(Bytes, Int64, Int64), station_ops::FsErr] {
+      stats.read_range_calls = stats.read_range_calls + 1
+      let is_part = is_part_file_path(path)
+      if is_part {
+        stats.part_read_calls = stats.part_read_calls + 1
+      }
+      let res = (inner.read_range)(path, offset, length)
+      match res {
+        Ok((b, _, _)) => {
+          stats.total_bytes_read = stats.total_bytes_read + b.length().to_int64()
+          if is_part {
+            stats.part_bytes_read = stats.part_bytes_read + b.length().to_int64()
+          }
+          stats.ops_log.push("read_range:" + path + ":" + b.length().to_string())
+        }
+        Err(_) => ()
+      }
+      res
+    },
+    write_at: fn(
+      path : String,
+      offset : Int64,
+      data : Bytes,
+      create : Bool,
+      at_least : Option[Int64],
+      truncate_to : Option[Int64],
+      sync : Bool,
+    ) -> Result[(Int64, Bool), station_ops::FsErr] {
+      stats.write_at_calls = stats.write_at_calls + 1
+      let res = (inner.write_at)(path, offset, data, create, at_least, truncate_to, sync)
+      match res {
+        Ok((_, is_short)) => {
+          stats.ops_log.push("write_at:" + path)
+          if sync && !is_short {
+            stats.sync_calls = stats.sync_calls + 1
+            stats.ops_log.push("sync:" + path)
+          }
+        }
+        Err(_) => ()
+      }
+      res
+    },
+    truncate: inner.truncate,
+    sync_file: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      let res = (inner.sync_file)(path)
+      match res {
+        Ok(_) => {
+          stats.sync_calls = stats.sync_calls + 1
+          stats.ops_log.push("sync:" + path)
+        }
+        Err(_) => ()
+      }
+      res
+    },
+    read_bytes: fn(path : String) -> Result[Bytes, station_ops::FsErr] {
+      stats.read_bytes_calls = stats.read_bytes_calls + 1
+      let is_part = is_part_file_path(path)
+      if is_part {
+        stats.part_read_calls = stats.part_read_calls + 1
+      }
+      let res = (inner.read_bytes)(path)
+      match res {
+        Ok(b) => {
+          stats.total_bytes_read = stats.total_bytes_read + b.length().to_int64()
+          if is_part {
+            stats.part_bytes_read = stats.part_bytes_read + b.length().to_int64()
+          }
+          stats.ops_log.push("read_bytes:" + path + ":" + b.length().to_string())
+        }
+        Err(_) => ()
+      }
+      res
+    },
+    write_bytes: inner.write_bytes,
+    stat: inner.stat,
+    lstat: inner.lstat,
+    realpath: inner.realpath,
+    mkdir_p: inner.mkdir_p,
+    rename: fn(src : String, dst : String) -> Result[Unit, station_ops::FsErr] {
+      let res = (inner.rename)(src, dst)
+      match res {
+        Ok(_) => {
+          stats.rename_calls = stats.rename_calls + 1
+          stats.ops_log.push("rename:" + src + "->" + dst)
+        }
+        Err(_) => ()
+      }
+      res
+    },
+    remove: inner.remove,
+    readdir: inner.readdir,
+  }
+}
+
+/// Checks whether a `sync:<src>` occurred strictly before `rename:<src>-><dst>` in `ops_log`.
+pub fn probe_sync_preceded_rename(stats : DriveProbeStats, src_contains : String, dst_contains : String) -> Bool {
+  let mut last_sync_idx = -1
+  let mut rename_idx = -1
+  for i in 0..<stats.ops_log.length() {
+    let entry = stats.ops_log[i]
+    if entry.starts_with("sync:") && entry.contains(src_contains) {
+      last_sync_idx = i
+    }
+    if entry.starts_with("rename:") && entry.contains(src_contains) && entry.contains(dst_contains) {
+      rename_idx = i
+      break
+    }
+  }
+  last_sync_idx >= 0 && rename_idx > last_sync_idx
+}

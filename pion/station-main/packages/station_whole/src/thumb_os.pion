@@ -1,0 +1,305 @@
+// Production `image.thumb` adapter over `client/shell`'s native `image.thumb` command
+// (`client/shell/src/image_thumb.rs`), providing full parameter encoding, error propagation,
+// and a `station_screens::ThumbPort` implementation.
+
+import "base_codec"
+import "builders_core"
+import "station_screens"
+
+pub enum ThumbMode {
+  Thumb
+  Box
+  Preview
+  Hash
+  Custom
+}
+
+pub fn thumb_mode_name(m : ThumbMode) -> String {
+  match m {
+    ThumbMode::Thumb => "thumb"
+    ThumbMode::Box => "box"
+    ThumbMode::Preview => "preview"
+    ThumbMode::Hash => "hash"
+    ThumbMode::Custom => "custom"
+  }
+}
+
+pub struct ThumbRequest {
+  pub mode : ThumbMode
+  pub path : Option[String]
+  pub bytes : Option[Bytes]
+  pub dir : Option[String]
+  pub max_width : Option[Int]
+  pub max_height : Option[Int]
+  pub min_short : Option[Int]
+  pub max_long : Option[Int]
+  pub quality : Option[Int]
+  pub lossless : Option[Bool]
+  pub ratio : Option[Int]
+  pub small_bytes : Option[Int64]
+  pub thumbhash : Option[Bool]
+}
+
+pub fn ThumbRequest::for_path(mode : ThumbMode, path : String, dir : Option[String]) -> ThumbRequest {
+  ThumbRequest::{
+    mode: mode,
+    path: Some(path),
+    bytes: None,
+    dir: dir,
+    max_width: None,
+    max_height: None,
+    min_short: None,
+    max_long: None,
+    quality: None,
+    lossless: None,
+    ratio: None,
+    small_bytes: None,
+    thumbhash: None,
+  }
+}
+
+pub fn ThumbRequest::for_bytes(mode : ThumbMode, bytes : Bytes) -> ThumbRequest {
+  ThumbRequest::{
+    mode: mode,
+    path: None,
+    bytes: Some(bytes),
+    dir: None,
+    max_width: None,
+    max_height: None,
+    min_short: None,
+    max_long: None,
+    quality: None,
+    lossless: None,
+    ratio: None,
+    small_bytes: None,
+    thumbhash: None,
+  }
+}
+
+pub struct ThumbResponse {
+  pub skipped : Bool
+  pub reason : Option[String]
+  pub write_error : Option[String]
+  pub cached : Bool
+  pub path : Option[String]
+  pub mime : Option[String]
+  pub width : Option[Int]
+  pub height : Option[Int]
+  pub original_width : Option[Int]
+  pub original_height : Option[Int]
+  pub size : Option[Int64]
+  pub thumbhash : Option[String]
+  pub bytes : Option[Bytes]
+}
+
+/// Validates and encodes `ThumbRequest` into the exact JSON schema expected by `client/shell` `image.thumb`.
+pub fn build_image_thumb_args(req : ThumbRequest) -> Result[base_codec::Json, String] {
+  match req.path {
+    Some(p) => {
+      if !(req.bytes is None) {
+        return Err("image.thumb: provide either path or bytes, not both")
+      }
+      if p.length() == 0 {
+        return Err("image.thumb: path must not be empty")
+      }
+    }
+    None => match req.bytes {
+      Some(b) => {
+        if b.length() == 0 {
+          return Err("image.thumb: input bytes must not be empty")
+        }
+      }
+      None => return Err("image.thumb: missing path or bytes")
+    }
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("mode", base_codec::json_str(thumb_mode_name(req.mode))),
+  ]
+  match req.path {
+    Some(p) => fields.push(("path", base_codec::json_str(p)))
+    None => ()
+  }
+  match req.dir {
+    Some(d) => {
+      if d.length() == 0 {
+        return Err("image.thumb: dir must not be empty")
+      }
+      fields.push(("dir", base_codec::json_str(d)))
+    }
+    None => ()
+  }
+  match req.max_width {
+    Some(v) => fields.push(("maxWidth", base_codec::json_int(v)))
+    None => ()
+  }
+  match req.max_height {
+    Some(v) => fields.push(("maxHeight", base_codec::json_int(v)))
+    None => ()
+  }
+  match req.min_short {
+    Some(v) => fields.push(("minShort", base_codec::json_int(v)))
+    None => ()
+  }
+  match req.max_long {
+    Some(v) => fields.push(("maxLong", base_codec::json_int(v)))
+    None => ()
+  }
+  match req.quality {
+    Some(v) => fields.push(("quality", base_codec::json_int(v)))
+    None => ()
+  }
+  match req.lossless {
+    Some(v) => fields.push(("lossless", base_codec::json_bool(v)))
+    None => ()
+  }
+  match req.ratio {
+    Some(v) => fields.push(("ratio", base_codec::json_int(v)))
+    None => ()
+  }
+  match req.small_bytes {
+    Some(v) => fields.push(("smallBytes", base_codec::json_int(v.to_int())))
+    None => ()
+  }
+  match req.thumbhash {
+    Some(v) => fields.push(("thumbhash", base_codec::json_bool(v)))
+    None => ()
+  }
+  Ok(base_codec::json_obj(fields))
+}
+
+fn json_opt_str(obj : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn json_opt_bool(obj : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn json_opt_int(obj : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+}
+
+fn json_opt_i64(obj : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+    _ => None
+  }
+}
+
+/// Decodes a `client/shell` `image.thumb` JSON response + optional binary payload.
+pub fn parse_image_thumb_response(
+  raw_json : String,
+  raw_bytes : Option[Bytes],
+) -> Result[ThumbResponse, String] {
+  let j = match base_codec::json_parse(raw_json) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(e) => return Err("image.thumb: invalid JSON response: " + e)
+  }
+  match json_opt_str(j, "error") {
+    Some(err_msg) => return Err("image.thumb: " + err_msg)
+    None => ()
+  }
+  Ok(ThumbResponse::{
+    skipped: match json_opt_bool(j, "skipped") {
+      Some(b) => b
+      None => false
+    },
+    reason: json_opt_str(j, "reason"),
+    write_error: json_opt_str(j, "writeError"),
+    cached: match json_opt_bool(j, "cached") {
+      Some(b) => b
+      None => false
+    },
+    path: json_opt_str(j, "path"),
+    mime: json_opt_str(j, "mime"),
+    width: json_opt_int(j, "width"),
+    height: json_opt_int(j, "height"),
+    original_width: json_opt_int(j, "originalWidth"),
+    original_height: json_opt_int(j, "originalHeight"),
+    size: json_opt_i64(j, "size"),
+    thumbhash: json_opt_str(j, "thumbhash"),
+    bytes: raw_bytes,
+  })
+}
+
+/// Calls `client/shell`'s native `image.thumb` command via `builders_core::ShellClient`.
+pub fn invoke_image_thumb(
+  shell : builders_core::ShellClient,
+  req : ThumbRequest,
+) -> Result[ThumbResponse, String] {
+  let args = match build_image_thumb_args(req) {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+  // sync: image.thumb runs on client/shell's bounded spawn_blocking pool and returns a single thumbnail/hash result
+  let res = match shell.shell_call_wait("image.thumb", args, req.bytes) {
+    Ok(r) => r
+    Err(e) => return Err("image.thumb shell error: " + e.message)
+  }
+  let (json_opt, raw_bytes) = res
+  let raw_json = match json_opt {
+    Some(j) => base_codec::json_stringify(j)
+    None => "{}"
+  }
+  parse_image_thumb_response(raw_json, raw_bytes)
+}
+
+/// Production `station_screens::ThumbPort` backed by `client/shell` `image.thumb`.
+pub fn os_thumb_port(shell : builders_core::ShellClient) -> station_screens::ThumbPort {
+  station_screens::ThumbPort::{
+    thumbnail: fn(image_path : String, thumbs_dir : String, boxed : Bool) -> Option[station_screens::Thumbnail] {
+      let mode = if boxed { ThumbMode::Box } else { ThumbMode::Thumb }
+      let req = ThumbRequest::for_path(mode, image_path, Some(thumbs_dir))
+      match invoke_image_thumb(shell, req) {
+        Ok(resp) => {
+          if resp.skipped {
+            return None
+          }
+          match (resp.path, resp.mime) {
+            (Some(p), Some(m)) => Some(station_screens::Thumbnail::{ path: p, mime: m })
+            _ => None
+          }
+        }
+        Err(_) => None
+      }
+    },
+    preview: fn(image_path : String, thumbs_dir : String) -> Option[station_screens::Thumbnail] {
+      let req = ThumbRequest::for_path(ThumbMode::Preview, image_path, Some(thumbs_dir))
+      match invoke_image_thumb(shell, req) {
+        Ok(resp) => {
+          if resp.skipped {
+            return None
+          }
+          match (resp.path, resp.mime) {
+            (Some(p), Some(m)) => Some(station_screens::Thumbnail::{ path: p, mime: m })
+            _ => None
+          }
+        }
+        Err(_) => None
+      }
+    },
+    thumbhash: fn(image_path : String, _mime : Option[String]) -> Option[station_screens::ThumbHashInfo] {
+      let req = ThumbRequest::for_path(ThumbMode::Hash, image_path, None)
+      match invoke_image_thumb(shell, req) {
+        Ok(resp) => {
+          match (resp.thumbhash, resp.original_width, resp.original_height) {
+            (Some(h), Some(w), Some(ht)) => {
+              Some(station_screens::ThumbHashInfo::{ hash: h, width: w, height: ht })
+            }
+            _ => None
+          }
+        }
+        Err(_) => None
+      }
+    },
+  }
+}

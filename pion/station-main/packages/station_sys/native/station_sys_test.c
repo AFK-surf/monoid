@@ -1638,6 +1638,42 @@ int main(void) {
         rmdir(root_dir);
     }
 
+    // Positioned DriveFs primitives: `sts_stat`, `sts_read_range_meta`, `sts_write_at`, `sts_sync_file`.
+    {
+        char drv_file[256];
+        snprintf(drv_file, sizeof(drv_file), "/tmp/sts-drive-io-%d.bin", (int)getpid());
+        unlink(drv_file);
+        int64_t sz = 0;
+        int32_t is_short = 0;
+        // Missing file without create -> -2 (ENOENT)
+        assert(sts_write_at(drv_file, 0, (const uint8_t *)"abc", 3, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -2);
+        // Create + write at offset 0
+        assert(sts_write_at(drv_file, 0, (const uint8_t *)"0123456789", 10, 1, 0, 0, 0, 0, 1, &sz, &is_short) == 0);
+        assert(sz == 10 && is_short == 0);
+        // at_least > current size -> short == 1, no write
+        assert(sts_write_at(drv_file, 10, (const uint8_t *)"ZZ", 2, 0, 1, 20, 0, 0, 0, &sz, &is_short) == 0);
+        assert(sz == 10 && is_short == 1);
+        // pwrite middle + truncate + fsync
+        assert(sts_write_at(drv_file, 4, (const uint8_t *)"ABCD", 4, 0, 1, 10, 1, 9, 1, &sz, &is_short) == 0);
+        assert(sz == 9 && is_short == 0);
+        assert(sts_sync_file(drv_file) == 0);
+        assert(sts_sync_file("/tmp/sts-drive-io-nonexistent-999999") == -2);
+        // sts_stat + sts_read_range_meta
+        int64_t st_len = 0;
+        void *st_s = sts_stat(drv_file, &st_len);
+        assert(st_s != NULL && st_len > 0 && contains_substr((const char *)st_s, (size_t)st_len, "file|9|"));
+        sts_free(st_s);
+        int64_t rlen = 0, rtot = 0, rmtime = 0;
+        int32_t rerr = -1;
+        void *r = sts_read_range_meta(drv_file, 3, 5, &rlen, &rtot, &rmtime, &rerr);
+        assert(r != NULL && rerr == 0 && rlen == 5 && rtot == 9 && rmtime > 0);
+        assert(memcmp(r, "3ABCD", 5) == 0);
+        sts_free(r);
+        // Directory rejected with -4 (EISDIR)
+        assert(sts_read_range_meta("/tmp", 0, 4, &rlen, &rtot, &rmtime, &rerr) == NULL && rerr == -4);
+        unlink(drv_file);
+    }
+
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
 
