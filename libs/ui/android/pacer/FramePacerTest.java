@@ -2333,30 +2333,17 @@ public final class FramePacerTest {
         negPacer.wantFrame();
         boolean okNeg = negReqs[0] == 0 && negPosts[0] == 1 && negPacer.appWanted.get();
 
-        // (c) Lock-ordering proof: ask() acquires scheduler lock BEFORE calling Platform.nanoTime().
-        final boolean[] bCalledNanoWhileBlocked = {false};
-        final boolean[] bWasBlockedBeforeNano = {false};
-        final Thread[] threadBRef = new Thread[1];
+        // (c) Deterministic single-thread lock-holding proof: both ask() (when ahead == true) and frameNow()
+        //     must sample Platform.nanoTime() while holding FrameScheduler's lock (Thread.holdsLock(lock) == true).
+        final int[] nanoCalls = {0};
+        final boolean[] allHeldLock = {true};
         final FramePacer[] lockPacerRef = new FramePacer[1];
         final long[] lockClock = {100_000_000L};
-        final boolean[] insideA = {false};
         lockPacerRef[0] = new FramePacer(new FramePacer.Platform() {
             @Override public long nanoTime() {
-                if (insideA[0] && Thread.currentThread() != threadBRef[0]) {
-                    insideA[0] = false;
-                    Thread b = new Thread(() -> lockPacerRef[0].wantFrame());
-                    threadBRef[0] = b;
-                    b.start();
-                    // Wait until B blocks on FrameScheduler.lock (proves B did not call nanoTime before lock).
-                    long spins = 0;
-                    while (b.getState() != Thread.State.BLOCKED && spins++ < 5_000_000L) {
-                        Thread.yield();
-                    }
-                    bWasBlockedBeforeNano[0] = (b.getState() == Thread.State.BLOCKED) && !bCalledNanoWhileBlocked[0];
-                    // Advance clock past 1 period while A still holds the lock.
-                    lockClock[0] += 20_000_000L;
-                } else if (Thread.currentThread() == threadBRef[0]) {
-                    bCalledNanoWhileBlocked[0] = true;
+                nanoCalls[0]++;
+                if (!lockPacerRef[0].scheduler.holdsLockForTest()) {
+                    allHeldLock[0] = false;
                 }
                 return lockClock[0];
             }
@@ -2370,22 +2357,23 @@ public final class FramePacerTest {
             @Override public boolean typing() { return false; }
         });
         lockPacerRef[0].framePeriod = 8_333_333L;
-        insideA[0] = true;
+        // Drive ask() with ahead == true:
+        lockPacerRef[0].vsyncCame(lockClock[0], lockClock[0] + 2 * lockPacerRef[0].framePeriod);
+        int beforeAsk = nanoCalls[0];
+        lockPacerRef[0].wantFrame();
+        int askNanoCalls = nanoCalls[0] - beforeAsk;
+        // Drive frameNow():
+        int beforeFrameNow = nanoCalls[0];
         lockPacerRef[0].frameNow();
-        if (threadBRef[0] != null) {
-            try {
-                threadBRef[0].join(2_000L);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-        }
-        boolean okLockOrder = bWasBlockedBeforeNano[0];
+        int frameNowNanoCalls = nanoCalls[0] - beforeFrameNow;
+        boolean okLockOrder = askNanoCalls >= 1 && frameNowNanoCalls >= 1 && allHeldLock[0];
 
         check("ask() samples nanoTime() inside lock and rejects stale or negative-age ahead",
                 okStale && okNeg && okLockOrder,
                 "stale=" + okStale + " (reqs=" + staleReqs[0] + ", posts=" + stalePosts[0] + ", drawn=" + phStale.drawn.size()
                         + "), neg=" + okNeg + " (reqs=" + negReqs[0] + ", posts=" + negPosts[0]
-                        + "), lockOrder=" + okLockOrder);
+                        + "), lockOrder=" + okLockOrder + " (askCalls=" + askNanoCalls
+                        + ", frameNowCalls=" + frameNowNanoCalls + ", allHeld=" + allHeldLock[0] + ")");
     }
 
     public static void main(String[] args) throws IOException {

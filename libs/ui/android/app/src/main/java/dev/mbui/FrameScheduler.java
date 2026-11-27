@@ -55,14 +55,16 @@ final class FrameScheduler {
     private long externalForVsync;
 
     /**
-     * The vsync the next frame is drawn for and when the system is to show it (ns; 0: not said).
+     * The vsync the next frame is drawn for and when the system is to show it (ns, the system's clock; 0: not said): since
+     * Android 13, the expected presentation of the vsync's preferred frame timeline (Choreographer.FrameData), the
+     * refresh a frame of the system's own drawn for that vsync is shown at.
      * Written under {@link #lock}; volatile for lock-free reads by {@link #vsyncAt()}.
      */
     private volatile long[] vsyncAt = {0L, 0L};
 
     /**
-     * A vsync asked for ahead arrived with no pending demand: the next frame wanted within one
-     * display period is drawn immediately for it.
+     * A vsync asked for ahead came and no frame was drawn for it (vsyncCame): the next frame wanted is drawn at once,
+     * for it, while it is the latest vsync (a frame later than that is the next vsync's).
      */
     private boolean ahead;
     /** Whether the current vsyncAt has been dispatched for an app frame (prevents stealing T+1's appWanted). */
@@ -219,8 +221,10 @@ final class FrameScheduler {
     }
 
     /**
-     * Evaluates a scheduled wake at Choreographer {@code doFrame(vsyncNs)} / {@code onVsync(vsyncNs, shows)}:
+     * Evaluates a scheduled wake at Choreographer {@code doFrame(vsyncNs)} / {@code onVsync(vsyncNs, shows)} (main thread):
      * 0 = stale/replaced, 1 = not yet due (re-post next vsync), 2 = delivered on this vsync.
+     * Fires strictly on the first vsync with {@code vsyncNs / 1e6 >= req.at}, avoiding early-tolerance or
+     * predicted-period pre-arming that would render a wasted early frame near a boundary or across LTPO rate changes.
      */
     int fireWake(FramePacer.WakeReq req, long vsyncNs, long shows) {
         long act;
@@ -248,7 +252,11 @@ final class FrameScheduler {
         finishAction(act);
     }
 
-    /** Generation-tagged {@code vsyncCame} paired with {@link FramePacer.Platform#postVsync(long)}. */
+    /**
+     * A vsync asked for came (main thread), at {@code t}, its frame shown at {@code shows} (vsyncAt): drawn for, where a
+     * frame is wanted; where only the frame drawing now asked for it ahead (askAhead), kept for that frame to take as it
+     * ends (ask), should it want one. Paired with {@link FramePacer.Platform#postVsync(long)} via {@code gen}.
+     */
     void vsyncCame(long t, long shows, long gen) {
         long act;
         synchronized (lock) {
@@ -521,7 +529,11 @@ final class FrameScheduler {
         else p.postMain(() -> p.postVsync(gen));
     }
 
-    // ---- package-private state inspection for property tests ----
+    // ---- package-private state inspection for tests ----
+
+    boolean holdsLockForTest() {
+        return Thread.holdsLock(lock);
+    }
 
     long activeVsyncGen() {
         synchronized (lock) {

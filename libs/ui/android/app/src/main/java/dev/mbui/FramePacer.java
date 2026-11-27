@@ -138,11 +138,14 @@ final class FramePacer {
     static final class AdpfState extends FrameTelemetry.AdpfController {
     }
 
-    /** Display frame period (ns), updated on display change and Android 13+ vsync timelines. */
+    /**
+     * The display's frame (ns), read as the view is shown and as the display changes its rate, and since Android 13 from
+     * each vsync's timelines (main thread).
+     */
     volatile long framePeriod = 16_666_667L;
-    /** Display's highest refresh rate at its current size. */
+    /** The display's highest rate at its size now (MBView's readFramePeriod). */
     volatile float topRate;
-    /** Whether a finger is currently on the screen (written on main thread). */
+    /** Whether a finger is on the screen (main thread writes it, from its touches). */
     volatile boolean touching;
 
     final FrameTelemetry telemetry;
@@ -219,6 +222,11 @@ final class FramePacer {
         return scheduler.vsyncAt();
     }
 
+    /**
+     * A vsync asked for came (main thread), at {@code t}, its frame shown at {@code shows} (vsyncAt): drawn for, where a
+     * frame is wanted; where only the frame drawing now asked for it ahead (askAhead), kept for that frame to take as it
+     * ends (ask), should it want one.
+     */
     void vsyncCame(long t, long shows) {
         scheduler.vsyncCame(t, shows, 0L);
     }
@@ -292,6 +300,13 @@ final class FramePacer {
 
     // ---- rate voting delegation ----
 
+    /**
+     * The app's frame ended (drawing thread): whether it asks for another ({@code more}, what it said; {@code later}, a
+     * back said for a later vsync), whether it followed the one before (Begun's), and the rate what moves on by the
+     * clock alone needs where the frame said one ({@code paced}, MBView.framesPaced: its next woken for, not asked for
+     * here; 0 none): the rate said, the next asked for. Paced, what moves is said at its rate, the display free to
+     * refresh as slowly; anything else moving, at the display's highest.
+     */
     void ended(boolean more, boolean later, boolean following, float paced) {
         ended(more, later, following, paced, false);
     }

@@ -16,6 +16,8 @@ final class FrameTelemetry {
     // Drawing-thread frame-history state.
     private long seenContinuityGen;
     private double lastFrame;
+    // the frame before's vsync (0: none, or it had none), and whether it asked for this one (askAhead: the vsync after
+    // its own, or where its work went past that one, the first after its work)
     private long lastVsync;
     private boolean askedAtEnd;
 
