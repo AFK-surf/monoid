@@ -204,14 +204,14 @@ export const CHAT_READS = {
   namedMany: {
     name: "$chat-named-many", bound: "one", records: true,
     // (each pair's rows found by the primary key and through `chat_session`, as `named` finds one's)
+    // (CROSS JOIN: the pairs walked, each looked up in `chat`, never the other way)
     sql: `SELECT c.station, c.archived, c.id, json_extract(k.value, '$[1]') AS req_id, c.ord
-        FROM json_each(?) AS k JOIN chat AS c ON c.station = json_extract(k.value, '$[0]') AND c.archived IN (0, 1) AND c.id = json_extract(k.value, '$[1]')
+        FROM json_each(?1) AS k CROSS JOIN chat AS c WHERE c.station = json_extract(k.value, '$[0]') AND c.archived IN (0, 1) AND c.id = json_extract(k.value, '$[1]')
       UNION ALL SELECT c.station, c.archived, c.id, json_extract(k.value, '$[1]') AS req_id, c.ord
-        FROM json_each(?) AS k JOIN chat AS c ON c.station = json_extract(k.value, '$[0]') AND c.session = json_extract(k.value, '$[1]')`,
+        FROM json_each(?1) AS k CROSS JOIN chat AS c WHERE c.station = json_extract(k.value, '$[0]') AND c.session = json_extract(k.value, '$[1]')`,
     params: (p: NamedMany) => {
       const allowed = new Set(p.stations);
-      const json = JSON.stringify(p.pairs.filter(([station]) => allowed.has(station)));
-      return [json, json];
+      return [JSON.stringify(p.pairs.filter(([station]) => allowed.has(station)))];
     },
     keys: (p: NamedMany): ReadKey[] => p.pairs.map(([station, id]) => [station, id] as ReadKey),
     of: (c: ChatKeys): ReadKey[] => [[c.station, c.id], ...(c.session !== null && c.session !== c.id ? [[c.station, c.session] as ReadKey] : [])],

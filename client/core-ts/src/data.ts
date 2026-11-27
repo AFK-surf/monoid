@@ -2038,7 +2038,13 @@ export class Data {
       const db = this.of(s);
       if (db) by.set(db, [...(by.get(db) ?? []), s]);
     }
-    return [...by].map(([db, stations]) => [db, this.#chatRows(db, read, { ...p, stations }, topics)]);
+    // (each database's answer kept by the keys of its own stations: another's written tells it nothing; one with no
+    // key of its own kept by them all, never by none)
+    return [...by].map(([db, stations]) => {
+      const own = new Set(stations);
+      const mine = by.size === 1 ? topics : topics.filter((t) => own.has(String(t.station)));
+      return [db, this.#chatRows(db, read, { ...p, stations }, mine.length > 0 ? mine : topics)];
+    });
   }
 
   /// A declared read's answer in one database: as its statement gave it while its keys' revisions (and their stations'
