@@ -174,12 +174,40 @@ pub fn window_text(p : Page) -> String? {
 ///|
 /// Creation owner parsed from `MBUI_WINDOW` for a child-process standalone screen window (`Run(what)`).
 /// `None` for the normal primary app window; `Some(owner)` (possibly `""` if missing) for a child-process screen
-/// window, evaluated fail-closed by `window_here_owner_matches`.
+/// window, evaluated fail-closed by `window_here_owner_state`.
 // kept across runs: put back by pages.mbt's reset
 let startup_window_owner : Ref[String?] = Ref(None)
 
 ///|
-/// The page a window of its own was started to show (window_text's), None when it names none.
+/// Transient owner held ONLY across the synchronous first-frame render inside `@ui.window_open_here(what)` before
+/// `windows_here_owner[wid]` is populated. Cleared immediately on return.
+// kept across runs: put back by pages.mbt's reset
+let windows_here_opening_owner : Ref[String?] = Ref(None)
+
+///|
+/// Set the creation owner for a child-process standalone screen window (called only at real startup entrypoints).
+pub fn set_startup_window_owner(owner : String?) -> Unit {
+  startup_window_owner.val = owner
+}
+
+///|
+/// Pure parser: extract the creation `owner` field from a `window_text` JSON payload when it describes a `screen`
+/// window (`Some(owner)` with `""` if missing; `None` for non-screen payloads or invalid JSON). Has no side effects.
+pub fn window_page_owner_of(s : String) -> String? {
+  let v = @json.parse(s) catch { _ => return None }
+  guard v is Object(m) else { return None }
+  match m.get("screen") {
+    Some(Object(at)) =>
+      match at.get("owner") {
+        Some(String(o)) => Some(o)
+        _ => Some("")
+      }
+    _ => None
+  }
+}
+
+///|
+/// The page a window of its own was started to show (window_text's), None when it names none. Pure function (no side effects).
 pub fn window_page(s : String) -> Page? {
   let v = @json.parse(s) catch { _ => return None }
   guard v is Object(m) else { return None }
@@ -191,11 +219,6 @@ pub fn window_page(s : String) -> Page? {
         Some(String(t)) => t
         _ => ""
       }
-      let owner = match at.get("owner") {
-        Some(String(o)) => o
-        _ => ""
-      }
-      startup_window_owner.val = Some(owner)
       Some(Screen({ station, screen, title, until_gone: false }))
     }
     _ =>
@@ -253,9 +276,11 @@ pub fn open_window(p : Page) -> Bool {
           SideTab(f) => tab_viewer_moves(f.chat.station + ":" + f.chat.session, f.tab)
           _ => ()
         }
+        let owner = window_page_owner(p)
+        windows_here_opening_owner.val = Some(owner)
         let wid = @ui.window_open_here(what)
+        windows_here_opening_owner.val = None
         if wid > 0 {
-          let owner = window_page_owner(p)
           windows_open[key] = Here(wid)
           windows_here_show[wid] = p
           windows_here_owner[wid] = owner
@@ -447,28 +472,54 @@ pub fn window_has_screen_for_owner(owner : String, station : String, screen : St
 }
 
 ///|
-/// Whether standalone window `wid`'s creation owner still matches `station`'s current active workspace owner
-/// (fail-closed):
-/// - `wid > 0` (secondary in-process window): requires recorded `windows_here_owner[wid]` matching active owner;
-/// - `wid <= 0` with `startup_window_owner` set (`Run(what)` child-process screen window): requires non-empty owner
-///   matching active owner;
-/// - normal primary app window (`wid <= 0`, `startup_window_owner == None`): returns `true`.
-pub fn window_here_owner_matches(wid : Int, station : String) -> Bool {
+/// Tri-state ownership verification for standalone screen windows:
+/// - `Matched`: creation owner verified against active workspace owner; safe to mount `screen_node`.
+/// - `Waiting`: child-process standalone screen window waiting for the first complete `workspaces` snapshot (never
+///   falls back to `subs[0]` and never opens `screen.view` while waiting).
+/// - `Denied`: owner missing, revoked, or mismatched; must not mount `screen_node`.
+#derive(Eq)
+pub(all) enum WindowOwnerState {
+  Matched
+  Waiting
+  Denied
+}
+
+///|
+/// Evaluate tri-state ownership for window `wid` showing a screen on `station`.
+pub fn window_here_owner_state(wid : Int, station : String) -> WindowOwnerState {
   let ws = match station.find("/") {
     Some(i) => station.exact_view(end=i).to_owned()
     None => ""
   }
   if wid > 0 {
-    match windows_here_owner.get(wid) {
-      Some(owner) => !workspace_is_revoked(ws) && owner != "" && workspace_owner_of(ws) == owner
-      None => false
+    let expected = match windows_here_owner.get(wid) {
+      Some(o) => Some(o)
+      None => windows_here_opening_owner.val
+    }
+    match expected {
+      Some(owner) if !workspace_is_revoked(ws) && workspace_owner_of(ws) == owner => Matched
+      _ => Denied
     }
   } else {
     match startup_window_owner.val {
-      Some(owner) => !workspace_is_revoked(ws) && owner != "" && workspace_owner_of(ws) == owner
-      None => true
+      None => Matched
+      Some(expected) => {
+        if expected == "" || workspace_is_revoked(ws) {
+          return Denied
+        }
+        match workspace_explicit_owner_of(ws) {
+          Some(actual) => if actual == expected { Matched } else { Denied }
+          None => if workspace_owners_synced() { Denied } else { Waiting }
+        }
+      }
     }
   }
+}
+
+///|
+/// Convenience predicate returning `true` iff `window_here_owner_state(wid, station) == Matched`.
+pub fn window_here_owner_matches(wid : Int, station : String) -> Bool {
+  window_here_owner_state(wid, station) == Matched
 }
 
 ///|

@@ -454,6 +454,36 @@ let last_accounts : Ref[Json?] = Ref(None)
 let workspace_owners : Map[String, String] = Map([])
 
 ///|
+/// Whether at least one complete `workspaces` snapshot has been synced in this run.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_owners_seen_snapshot : Ref[Bool] = Ref(false)
+
+///|
+/// Monotonic reactive version bumped whenever workspace ownership or active account list changes,
+/// allowing `lone_tree` and standalone windows to re-evaluate ownership reactively.
+// kept across runs: put back as a run begins (last_reset)
+pub let workspace_owners_version : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Whether at least one complete `workspaces` snapshot has been synced in this run.
+pub fn workspace_owners_synced() -> Bool {
+  workspace_owners_seen_snapshot.val
+}
+
+///|
+/// Explicit owning account of workspace `ws` without falling back to `account_principal_sig`.
+/// Returns `None` if `ws` is revoked or has no explicit owner entry yet.
+pub fn workspace_explicit_owner_of(ws : String) -> String? {
+  if ws == "" || workspace_is_revoked(ws) {
+    return None
+  }
+  match workspace_owners.get(ws) {
+    Some(owner) if owner != "" => Some(owner)
+    _ => None
+  }
+}
+
+///|
 /// Workspaces that disappeared from a complete `workspaces` snapshot (no signed-in account still has access).
 /// Distinguished from "snapshot not yet received" so `workspace_owner_of` never falls back to `account_principal_sig`.
 // kept across runs: put back as a run begins (last_reset)
@@ -513,12 +543,14 @@ pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
     Some(prev) =>
       if prev != owner {
         workspace_owners[ws] = owner
+        workspace_owners_version.set(workspace_owners_version.untracked() + 1)
         for f in workspace_owner_change_listeners {
           f(ws, prev, owner)
         }
       }
     None => {
       workspace_owners[ws] = owner
+      workspace_owners_version.set(workspace_owners_version.untracked() + 1)
       let fallback = account_principal_sig.untracked()
       if fallback != "" && fallback != owner {
         for f in workspace_owner_change_listeners {
@@ -535,6 +567,7 @@ pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
 /// synchronously stripped of their previous owner's resources without falling back to the first signed-in account.
 pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   guard v is Some(Array(accounts)) else { return }
+  workspace_owners_seen_snapshot.val = true
   let seen : Map[String, String] = Map([])
   for a in accounts {
     let s = Some(a)
@@ -573,6 +606,7 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
       workspace_owner_set(ws, owner)
     }
   }
+  workspace_owners_version.set(workspace_owners_version.untracked() + 1)
 }
 
 ///|
@@ -594,6 +628,7 @@ pub fn accounts_subs_sync(subs : Array[String]) -> Unit {
   if prev_fallback != next_fallback {
     account_principal_sig.set(next_fallback)
   }
+  workspace_owners_version.set(workspace_owners_version.untracked() + 1)
   if orphan_empty {
     for f in account_revoke_listeners {
       f("")
@@ -656,6 +691,8 @@ fn last_reset() -> Unit {
   last_said.val = []
   last_accounts.val = None
   workspace_owners.clear()
+  workspace_owners_seen_snapshot.val = false
+  workspace_owners_version.set(0)
   workspace_revoked.clear()
   active_account_subs.val = []
   account_principal_sig.set("")

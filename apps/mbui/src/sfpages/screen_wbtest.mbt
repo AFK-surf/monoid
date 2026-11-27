@@ -3403,7 +3403,7 @@ test "screen lease table preserves equivalence without remote_shelf_pause_node a
 }
 
 ///|
-test "passkey_muted revokes native Stream::route audio and suppresses audio packets during keepalive-only cover" {
+test "passkey_muted revokes native Stream::route audio and suppresses 3840-byte PCM packets through hidden passkey release" {
   @sfbase.reset()
   reset()
   @settings.reset()
@@ -3415,26 +3415,132 @@ test "passkey_muted revokes native Stream::route audio and suppresses audio pack
   let s = screen_sess(base, "ws-1/st-1", "browser:mute-1")
   let t = @ui.Tester::tree(fn(_) {  }, w=400.0, h=300.0)
   t.draw()
+  let h = @hostapi.host()
+  let orig_audio_here = h.st_audio_here
+  let orig_audio = h.st_audio
+  let orig_direct = h.st_direct
+  let audio_packets = Ref(0)
+  let audio_flushes = Ref(0)
+  let routed_audio_true = Ref(0)
+  let routed_audio_false = Ref(0)
+  h.st_audio_here = fn() { 1 }
+  h.st_audio = fn(id, data) {
+    if data.length() > 0 {
+      audio_packets.val += 1
+    } else {
+      audio_flushes.val += 1
+    }
+    orig_audio(id, data)
+  }
+  h.st_direct = fn(id, route, after, what) {
+    if (what & 2) != 0 {
+      routed_audio_true.val += 1
+    } else {
+      routed_audio_false.val += 1
+    }
+    orig_direct(id, route, after, what)
+  }
   s.own_stream()
   s.call = 7
   s.heard = true
-  // Deliver audioConfig + sequenced audio packet while unmuted -> audio_ready=true, audio routed.
+  let pcm_3840 = Bytes::make(3840, b'\x01')
+  // Deliver audioConfig + valid 3840-byte sequenced PCM packet while unmuted -> 1 audio packet + 1 audio=true route.
   s.take({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000.0, "channels": 2.0 } }, None)
-  s.take({ "audio": { "n": 10.0 } }, Some(Bytes::make(16, b'\x01')))
+  s.take({ "audio": { "n": 10.0 } }, Some(pcm_3840))
   assert_true(s.audio_ready.untracked())
-  assert_false(s.passkey_muted)
-  // Enable passkey keepalive mute -> sets passkey_muted=true, refreshes route(audio=false), and subsequent sequenced
-  // packets keep passkey_muted=true without routing or delivering audio.
+  assert_eq(audio_packets.val, 1, msg="unmuted 3840-byte PCM must deliver to host")
+  assert_true(routed_audio_true.val >= 1, msg="unmuted sequenced audio must route audio=true")
+  // Enable passkey keepalive mute -> flushes audio and immediately revokes native audio route (audio=false).
+  audio_packets.val = 0
+  routed_audio_true.val = 0
+  routed_audio_false.val = 0
   s.set_passkey_muted(true)
   assert_true(s.passkey_muted)
-  let views_before = t.views().length()
-  s.take({ "audio": { "n": 11.0 } }, Some(Bytes::make(16, b'\x02')))
-  assert_true(s.passkey_muted)
-  assert_eq(s.route_seq, 11.0)
-  // No audio frames queued to host while passkey_muted is true (route refreshed with audio=false).
-  assert_true(t.views().length() >= views_before)
-  s.set_passkey_muted(false)
-  assert_false(s.passkey_muted)
+  assert_true(audio_flushes.val >= 1, msg="muting must flush native audio buffer")
+  assert_true(routed_audio_false.val >= 1, msg="muting must immediately refresh native route with audio=false")
+  // Subsequent 3840-byte sequenced PCM while passkey_muted == true -> 0 native audio deliveries and 0 audio=true routes!
+  s.take({ "audio": { "n": 11.0 } }, Some(pcm_3840))
+  assert_eq(audio_packets.val, 0, msg="passkey_muted must drop all 3840-byte PCM packets")
+  assert_eq(routed_audio_true.val, 0, msg="passkey_muted must never route audio=true")
+  // Releasing passkey keepalive while still hidden (before settle) MUST keep passkey_muted == true!
+  s.passkey_keepalive_key = screen_key(s.station, s.screen)
+  s.passkey_release_keepalive()
+  assert_true(s.passkey_muted, msg="passkey_release_keepalive must keep session muted until settle")
+  s.take({ "audio": { "n": 12.0 } }, Some(pcm_3840))
+  assert_eq(audio_packets.val, 0, msg="hidden session after passkey_release_keepalive must still deliver 0 audio")
+  assert_eq(routed_audio_true.val, 0, msg="hidden session after passkey_release_keepalive must still route 0 audio=true")
+  h.st_audio_here = orig_audio_here
+  h.st_audio = orig_audio
+  h.st_direct = orig_direct
+  @ui.run_let_go()
+}
+
+///|
+test "child-process standalone screen waits for workspaces snapshot with 0 screen.view RPCs and auto-wakes on matching snapshot" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.reset()
+  reset()
+  @sfbase.accounts_subs_sync(["acct-a"])
+  @sfbase.set_startup_window_owner(Some("acct-a"))
+  let opens = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:child-1", title: "Child", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick(
+        at_once=true,
+        fn() {
+          screen_revokes_now() |> ignore
+          @sfbase.workspace_owners_version.get() |> ignore
+          @sfbase.window_here_owner_state(0, at.station)
+        },
+        fn(slot, st) {
+          if st == Matched {
+            slot.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            screen_node(slot, src, at, fn() { @sf.no_frame })
+          }
+        },
+      )
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  // Before workspaces snapshot arrives: Waiting, 0 screen.view RPCs!
+  assert_true(@sfbase.window_here_owner_state(0, at.station) == Waiting)
+  assert_eq(opens.val, 0, msg="Waiting child-process screen must emit 0 screen.view RPCs")
+  // Snapshot arrives with ws-1 -> acct-a: reactively wakes and opens screen.view!
+  let snap_a : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a))
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station) == Matched)
+  assert_eq(opens.val, 1, msg="child-process screen must auto-wake and open once matching snapshot arrives")
   @ui.run_let_go()
 }
 

@@ -111,23 +111,54 @@ test "Source::owned_by auto-parks on deep park, faults on parked Raw read, and n
 }
 
 ///|
-test "window_text -> window_page round-trip preserves owner and child-process screen window fails closed on owner mismatch or missing owner" {
+test "window_text -> window_page is pure, preserves owner, and child-process screen window tri-state Waiting/Matched/Denied" {
   reset()
   accounts_subs_sync(["acct-a", "acct-b"])
   workspace_owner_set("ws-1", "acct-a")
   let page = Page::Screen({ station: "ws-1/st-1", screen: "browser:win-1", title: "Win", until_gone: false })
   let encoded = window_text(page).unwrap()
   assert_true(encoded.contains("\"owner\":\"acct-a\""), msg="window_text must serialize creation owner")
+  // Pure parser: calling window_page does not mutate startup_window_owner.
   assert_true(window_page(encoded) == Some(page))
-  assert_true(window_here_owner_matches(0, "ws-1/st-1"), msg="child-process screen window matches active owner acct-a")
-  // Workspace switches to acct-b -> child-process screen window fails closed.
+  assert_true(startup_window_owner.val is None, msg="window_page must be pure with no global side effects")
+  assert_eq(window_page_owner_of(encoded), Some("acct-a"))
+  // Simulate child-process cold start: accounts_subs_sync has acct-a, but NO workspaces snapshot yet -> Waiting!
+  reset()
+  accounts_subs_sync(["acct-a"])
+  set_startup_window_owner(window_page_owner_of(encoded))
+  assert_true(window_here_owner_state(0, "ws-1/st-1") == Waiting, msg="child-process window must Wait before workspaces snapshot, never fallback to subs[0]")
+  assert_false(window_here_owner_matches(0, "ws-1/st-1"))
+  // Complete workspaces snapshot arrives containing ws-1 -> acct-a: transitions to Matched!
+  let snap_a : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_a))
+  assert_true(window_here_owner_state(0, "ws-1/st-1") == Matched, msg="child-process window must Match once snapshot confirms ws-1 -> acct-a")
+  assert_true(window_here_owner_matches(0, "ws-1/st-1"))
+  // Workspace switches to acct-b -> Denied!
   workspace_owner_set("ws-1", "acct-b")
-  assert_false(window_here_owner_matches(0, "ws-1/st-1"), msg="child-process screen window must reject mismatched owner")
-  // Missing owner field in MBUI_WINDOW payload -> fails closed.
+  assert_true(window_here_owner_state(0, "ws-1/st-1") == Denied, msg="child-process window must be Denied on owner mismatch")
+  // First complete snapshot arrives WITHOUT ws-1 -> Denied!
+  reset()
+  accounts_subs_sync(["acct-a"])
+  set_startup_window_owner(Some("acct-a"))
+  let snap_empty : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_empty))
+  assert_true(window_here_owner_state(0, "ws-1/st-1") == Denied, msg="complete snapshot missing ws-1 must Deny child-process window")
+  // Missing owner field in MBUI_WINDOW payload -> Denied!
   let no_owner = "{\"screen\":{\"station\":\"ws-1/st-1\",\"screen\":\"browser:win-1\",\"title\":\"Win\"}}"
-  assert_true(window_page(no_owner) is Some(_))
-  assert_false(window_here_owner_matches(0, "ws-1/st-1"), msg="child-process screen window with missing owner must fail closed")
-  // Unknown secondary window id (`wid > 0`) -> fails closed.
-  assert_false(window_here_owner_matches(999, "ws-1/st-1"), msg="unknown secondary window id must fail closed")
+  assert_eq(window_page_owner_of(no_owner), Some(""))
+  set_startup_window_owner(window_page_owner_of(no_owner))
+  assert_true(window_here_owner_state(0, "ws-1/st-1") == Denied, msg="missing owner must Deny child-process window")
+  // Unknown secondary window id (`wid > 0`) -> Denied!
+  assert_true(window_here_owner_state(999, "ws-1/st-1") == Denied, msg="unknown secondary window id must be Denied")
   reset()
 }

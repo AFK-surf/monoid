@@ -211,7 +211,7 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
   let (ws, _) = screen_workspace_and_station(station)
   let expected_principal = screen_principal_for(station)
   let expected_key = screen_key(station, screen)
-  let had_session = screens_open.contains(expected_key)
+  let orig_sess = screens_open.get(expected_key)
   if @sfbase.workspace_is_revoked(ws) {
     return
   }
@@ -226,11 +226,10 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
     if @sfbase.workspace_is_revoked(ws) || screen_principal_for(station) != expected_principal {
       return
     }
-    if had_session {
-      match screens_open.get(expected_key) {
-        Some(s) if s.is_active_principal() => ()
-        _ => return
-      }
+    match (orig_sess, screens_open.get(expected_key)) {
+      (Some(orig), Some(cur)) => if !physical_equal(orig, cur) || !cur.is_active_principal() { return }
+      (Some(_), None) => return
+      (None, _) => ()
     }
     guard r is Ok(v) else { return }
     let got = Some(v)

@@ -1024,22 +1024,23 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     at_once=true,
     fn() {
       @sfpages.screen_revokes_now() |> ignore
+      @sfbase.workspace_owners_version.get() |> ignore
       match shown.get() {
         Some(Screen(at)) =>
-          if @sfbase.window_here_owner_matches(wid, at.station) {
-            Some(@sfbase.Page::Screen(at))
-          } else {
-            None
+          match @sfbase.window_here_owner_state(wid, at.station) {
+            Matched => Some((@sfbase.Page::Screen(at), 0))
+            Waiting => Some((@sfbase.Page::Screen(at), 1))
+            Denied => Some((@sfbase.Page::Screen(at), 2))
           }
-        Some(Terminal(at)) => Some(@sfbase.Page::Terminal(at))
-        Some(SideTab(f)) => Some(@sfbase.Page::SideTab(f))
+        Some(Terminal(at)) => Some((@sfbase.Page::Terminal(at), 0))
+        Some(SideTab(f)) => Some((@sfbase.Page::SideTab(f), 0))
         _ => None
       }
     },
     fn(q, shown) {
       q.over(Is(true)) |> ignore
       match shown {
-        Some(Screen(at)) => {
+        Some((Screen(at), 0)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           // (its frame the window's top, no band over it at any width: the band is a phone's laid out Small, never a
           // window of its own's)
@@ -1051,7 +1052,15 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
             on_close=fn() { lone_closed(q) },
           )
         }
-        Some(Terminal(at)) =>
+        Some((Screen(_), 1)) => {
+          q.grow(Is(1.0)).min_height(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
+          @sf.waiting_node(q, fn(_) {  })
+        }
+        Some((Screen(_), _)) => {
+          q.grow(Is(1.0)).min_height(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
+          q.words(By(fn() { @sf.t("android-misc.screen.denied") })).ink(By(fn() { @sf.theme().p.muted })) |> ignore
+        }
+        Some((Terminal(at), _)) =>
           @sfpages.terminal_pane_node(
             q,
             src,
@@ -1065,7 +1074,7 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
         // (a chat's tab: drawn as over the whole window, its bar the window's top row, clear of the window's buttons as
         // that bar keeps itself (sf's viewer_bar_node), its 移到侧边 putting it back beside the chat and closing the
         // window: sfdesk's tab_window_node)
-        Some(SideTab(f)) => @sfdesk.tab_window_node(q, src, f, top=fn() { 0.0 }, on_close=fn() { lone_closed(q) })
+        Some((SideTab(f), _)) => @sfdesk.tab_window_node(q, src, f, top=fn() { 0.0 }, on_close=fn() { lone_closed(q) })
         Some(_) => ()
         None => ()
       }

@@ -77,9 +77,9 @@ fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// Release the request-level keepalive flag if active.
+/// Release the request-level keepalive flag if active. Does NOT clear `passkey_muted` here: while hidden, the session
+/// must stay muted until `screen_leases_settle` either restores visibility or pauses the stream.
 fn ScreenSess::passkey_release_keepalive(self : ScreenSess) -> Unit {
-  self.set_passkey_muted(false)
   if self.passkey_keepalive_key != "" {
     let key = self.passkey_keepalive_key
     self.passkey_keepalive_key = ""
