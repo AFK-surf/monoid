@@ -3917,6 +3917,11 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      const startWsVaultGen = inner.store.authGen.vaultWorkspaceGen(self.ws);
+      const initialVaultId = targetVault ?? held(inner, self.ws).requests[id]?.vault;
+      const initialVaultGen = initialVaultId && initialVaultId !== PLAIN ? inner.store.authGen.vaultGen(self.ws, initialVaultId) : undefined;
       const asked = yield* self.#request(id);
       if (asked.r.browse !== undefined) return yield* self.#approveBrowse(asked.r, asked.station, selectedItems);
       if (!["once", "hour", "chat"].includes(scope)) return yield* Effect.fail(CoreError.invalid("scope: once, hour or chat"));
@@ -3948,14 +3953,21 @@ class Vaults {
       let item: Item = found;
       if (!allows(item.listing?.lasts ?? v.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
       // (this device's box key, as it was unsealed for it: a sign-in's newer cookies the request carries are opened with it)
-      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
-      const startVaultGen = inner.store.authGen.vaultGen(self.ws, v.id);
-      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      let startVaultGen: number;
+      if (initialVaultId === v.id && initialVaultGen !== undefined) {
+        startVaultGen = initialVaultGen;
+      } else {
+        if (inner.store.authGen.vaultWorkspaceGen(self.ws) !== startWsVaultGen) {
+          return yield* fail("auth_stale", t("core-misc.auth.stale"));
+        }
+        startVaultGen = inner.store.authGen.vaultGen(self.ws, v.id);
+      }
       const expected = { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen };
       const approveStale = () =>
         inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
         inner.store.authGen.vaultGen(self.ws, v.id) !== startVaultGen ||
         inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
+      if (approveStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const unsealed: { priv?: Uint8Array } = {};
       const key = yield* self.#key(v, who, true, t("core-misc.vault.reason.approve", { name: item.listing?.name ?? v.name }), true, (p) => (unsealed.priv = p), expected);
       // Still under the earlier key (its keying anew stopped half-way): carried on to the vault's key first, with the

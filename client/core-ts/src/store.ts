@@ -253,6 +253,12 @@ export class Store {
     this.runner.fork(Effect.yieldNow.pipe(Effect.andThen(Effect.sync(() => this.#flushAuthSnapshot(client)))));
   }
 
+  /// Updates `client`'s `connId` before `markClientAuthReady` (e.g., if reloading `device/auth` discovered a higher persisted `connSeq`).
+  updateClientConn(client: ClientId, connId: number): void {
+    if (!this.#connIds.has(client)) return;
+    this.#connIds.set(client, connId);
+  }
+
   /// Marks `client`'s `connId` as durably persisted, emits the authoritative `{ id: 0, auth }` snapshot, and drains any deferred emissions.
   markClientAuthReady(client: ClientId): void {
     if (!this.#connIds.has(client)) return;
@@ -262,6 +268,29 @@ export class Store {
     if (queued) {
       this.#deferredEmits.delete(client);
       for (const msg of queued) this.host.emit(client, msg);
+    }
+  }
+
+  /// Aborts an unpersisted handshake for `client`: never emits the unpersisted `connId`, fails any queued RPCs
+  /// explicitly without `conn` (preventing hangs/leaks), and clears handshake state so a subsequent `syncAuth` can recover.
+  failClientAuth(client: ClientId, err: unknown): void {
+    const message = err instanceof Error ? err.message : String(err);
+    const queued = this.#deferredEmits.get(client);
+    this.#deferredEmits.delete(client);
+    this.#connIds.delete(client);
+    this.#pendingSnapshots.delete(client);
+    this.#authNotReady.delete(client);
+    if (queued) {
+      const seenRpc = new Set<number>();
+      for (const msg of queued) {
+        if ("id" in msg && typeof msg.id === "number" && msg.id > 0 && !seenRpc.has(msg.id)) {
+          // Only emit an explicit error for deferred RPC answers/progress (never leak unpersisted `conn`).
+          if ("ok" in msg || "error" in msg || "value" in msg) {
+            seenRpc.add(msg.id);
+            this.host.emit(client, { id: msg.id, error: new CoreError("storage_failed", message) });
+          }
+        }
+      }
     }
   }
 
@@ -278,7 +307,8 @@ export class Store {
     this.host.emit(client, { id: 0, auth: this.authGen.snapshot(connId) });
   }
 
-  #emitClient(client: ClientId, msg: CoreMessage): void {
+  /// Emits `msg` to `client`, deferring until `device/auth` persistence completes if `client` is awaiting handshake persistence.
+  emitClient(client: ClientId, msg: CoreMessage): void {
     if (this.#authNotReady.has(client)) {
       let q = this.#deferredEmits.get(client);
       if (!q) this.#deferredEmits.set(client, (q = []));
@@ -535,11 +565,11 @@ export class Store {
     }
     if (cached !== undefined) {
       const gen = this.#wireGen(client, topic);
-      this.#emitClient(client, this.#first(client, id, topic, keyed, cached, gen) ?? to(whole(cached), id, gen));
+      this.emitClient(client, this.#first(client, id, topic, keyed, cached, gen) ?? to(whole(cached), id, gen));
     } else {
       if (entry.waiting === true) {
         const gen = this.#wireGen(client, topic);
-        this.#emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true });
+        this.emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true });
       }
       if (entry.opening === undefined && this.#tracer !== null && OPENED.has(topic.topic)) {
         const span = this.#tracer.root(`${topic.topic}.open`, Kind.Internal);
@@ -648,7 +678,7 @@ export class Store {
       const gen = this.#wireGen(client, topic);
       if ((policy !== null && (policy.sensitive || policy.retention === "live" || policy.keep <= 0)) || !this.#isAuthorized(topic)) {
         // Unconditional security ceiling: sensitive/live topics never retain kept values; still complete unsubscribe.
-        this.#emitClient(client, gen ? { id, v: null, ...gen } : { id, v: null });
+        this.emitClient(client, gen ? { id, v: null, ...gen } : { id, v: null });
       } else {
         // (what went to it last: the value it holds, every message to it going out in order; none, where none went)
         const curAuthGen = this.authGen.authGenOf(topic);
@@ -661,7 +691,7 @@ export class Store {
           this.#keep(client, topicKey(topic), topic, sanitized, v, curAuthGen, curVaultGen);
           this.#recordTokenScope(client, topic, v, curAuthGen, curVaultGen);
         }
-        this.#emitClient(client, gen ? { id, v, ...gen } : { id, v });
+        this.emitClient(client, gen ? { id, v, ...gen } : { id, v });
       }
     }
     if (!entry) return;
@@ -1190,7 +1220,7 @@ export class Store {
         now.waiting = true;
         for (const [client, id] of now.subscribers) {
           const gen = this.#wireGen(client, topic);
-          this.#emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true });
+          this.emitClient(client, gen ? { id, waiting: true, ...gen } : { id, waiting: true });
         }
         now.opening?.span.set("stillfail.waiting", true);
       }
@@ -1264,8 +1294,8 @@ export class Store {
       const gen = this.#wireGen(client, topic);
       // (its first value: `same`, or what changed from what the client holds, where it says so)
       const first = sent === undefined ? this.#first(client, id, topic, keyed, value, gen) : null;
-      if (first) this.#emitClient(client, first);
-      else if (o) this.#emitClient(client, to(o, id, gen));
+      if (first) this.emitClient(client, first);
+      else if (o) this.emitClient(client, to(o, id, gen));
     }
     if (topic.topic === "chats" && !("err" in value) && this.onFirstChats !== null && subscribers.length > 0) {
       if (this.onFirstChats(String(topic.scope ?? ""))) this.onFirstChats = null;

@@ -316,6 +316,7 @@ export class CoreClient {
   #left = false;
   /** Authoritative connection & generation state from Core `{ id: 0, auth }` handshake/boundary messages. */
   #authConn = 0;
+  #minAuthConn = 0;
   #everHandshaked = false;
   #authGlobal = 1;
   #authAggregate = 1;
@@ -590,6 +591,7 @@ export class CoreClient {
   #takeAuth(auth: Record<string, unknown>): void {
     const conn = typeof auth.conn === "number" ? auth.conn : 0;
     if (conn <= 0 || conn < this.#authConn) return;
+    if (this.#authConn === 0 && conn <= this.#minAuthConn) return;
     const hasSnapshot = typeof auth.scopes === "object" && auth.scopes !== null && typeof auth.vaults === "object" && auth.vaults !== null;
     if (hasSnapshot) {
       const sameConn = conn === this.#authConn;
@@ -822,6 +824,7 @@ export class CoreClient {
 
   /** Resets connection auth state and clears all non-device-global subscribers synchronously on reconnect/resume/rejoin. */
   #invalidateConnectionState(): void {
+    if (this.#authConn > this.#minAuthConn) this.#minAuthConn = this.#authConn;
     this.#authConn = 0;
     this.#pendingAuthCalls = [];
     for (const sub of this.#subs.values()) {

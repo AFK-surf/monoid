@@ -391,4 +391,24 @@ test("device-global topics, self-triggered write ok, missing-gen sensitive read,
   assert.equal(wsWaiting, waitingBeforeRejoin + 1, "rejoin must clear non-device-global subscriber and notify onWaiting");
   const blockedAfterRejoin = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/x" });
   await assert.rejects(blockedAfterRejoin, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+
+  // Retired conn=6 snapshot and values must be rejected while awaiting a strictly newer conn (> 6).
+  const seenBeforeStale = wsSeen.length;
+  workers.last.replyRaw({ id: 0, auth: { conn: 6, global: 10, aggregate: 10, scopes: { ws1: 10 }, vaultGlobal: 1, vaults: {} } });
+  workers.last.replyRaw({ id: wsSub.id, value: { stale: "conn-6-after-rejoin" }, conn: 6, authGen: 10 });
+  assert.equal(wsSeen.length, seenBeforeStale, "retired conn=6 value must be ignored after rejoin");
+  const stillBlocked = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/x" });
+  await assert.rejects(stillBlocked, (e: unknown) => e instanceof CoreError && e.code === "auth_stale");
+
+  // Strictly newer conn=7 full snapshot restores connection and accepts values/writes.
+  workers.last.replyRaw({ id: 0, auth: { conn: 7, global: 10, aggregate: 10, scopes: { ws1: 10 }, vaultGlobal: 1, vaults: {} } });
+  const wsSubAfter = (workers.last.sent as { id?: number; subscribe?: { topic?: string } }[]).findLast((m) => m.subscribe?.topic === "overview");
+  assert.ok(wsSubAfter?.id !== undefined);
+  workers.last.replyRaw({ id: wsSubAfter.id, value: { fresh: "conn-7" }, conn: 7, authGen: 10 });
+  assert.deepEqual(wsSeen.at(-1), { fresh: "conn-7" });
+  const recoveredWrite = client.call("station.request", { station: "ws1/s1", method: "POST", path: "/ok" });
+  const recoveredReq = (workers.last.sent as { id?: number; call?: string; auth?: { conn?: number } }[]).findLast((m) => m.call === "station.request");
+  assert.equal(recoveredReq?.auth?.conn, 7);
+  workers.last.replyRaw({ id: recoveredReq!.id, ok: { done: true }, conn: 7, authGen: 10 });
+  assert.deepEqual(await recoveredWrite, { done: true });
 });

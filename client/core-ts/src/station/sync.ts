@@ -440,8 +440,8 @@ export class StationsSync {
   }
 
   /// Opens the station's stream for what it is wanted for now, unless the one open gives that (or `anew`).
-  openEvents(address: string, anew: boolean): void {
-    this.#links.openEvents(address, anew);
+  openEvents(address: string, anew: boolean, keepHandover = false): void {
+    this.#links.openEvents(address, anew, keepHandover);
   }
 
   /// Whether live events for unopened chats are spared for `address` (cellular network, phone device, or a workspace
@@ -2063,6 +2063,7 @@ export class StationsSync {
     const data = parseJson(raw);
     if (data === undefined) return;
     const core = this.#core;
+    if (streamReadGen !== undefined && core.store.authGen.workspaceAuthGen(ofAddress(address)) !== streamReadGen) return;
     if (SEARCHED.has(name)) this.#searchStale(address);
     if ((name === "overview" || name === "usage") && core.store.inUse({ topic: "profilePace", station: address })) this.paceShown(address);
     // An archive and restore can be coalesced: there may be no second removal in the shared-row stream.
@@ -2087,7 +2088,6 @@ export class StationsSync {
       }
     }
     if (RETOLD.has(name)) {
-      if (streamReadGen !== undefined && core.store.authGen.workspaceAuthGen(ofAddress(address)) !== streamReadGen) return;
       this.#retold.told(address, name, data, streamReadGen);
       this.#held(address, name, data, true, streamReadGen);
       return;
@@ -2116,8 +2116,8 @@ export class StationsSync {
           }
         }
         // Its rows, as what was said makes them (told again on top of a read asked before it, as the station's own were).
-        this.#retold.told(address, "said", data);
-        this.#held(address, "said", data);
+        this.#retold.told(address, "said", data, streamReadGen);
+        this.#held(address, "said", data, true, streamReadGen);
         // Into its channel: the thread goes that far at once (the rest of its summary is read below), and a gap what
         // was told left is read. A chat let go for room (and not opened since) is not kept current: what it said is
         // read when it is opened. History older than what is held comes with the station's (#history).
@@ -3213,6 +3213,8 @@ export class StationsSync {
     for (const link of this.#links.values()) {
       const address = link.addr.toString();
       if (ofAddress(address) !== ws || !this.reachable(address)) continue;
+      // Rebuild active SSE stream under the new workspaceAuthGen (keeping handover so it doesn't trigger cold-connect side effects).
+      this.openEvents(address, true, true);
       this.#enqueue(address, "overview", Priority.shown, this.#read(address, { topic: "overview", station: address }, "/overview"));
       this.#enqueue(address, "shared", Priority.shown, this.#sharedWhole(address, null, undefined, 0, true));
       this.#enqueue(address, "sessions", Priority.shown, this.#read(address, { topic: "sessions", station: address }, "/sessions"));

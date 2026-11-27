@@ -878,6 +878,40 @@ export class Core {
     this.inner.store.setClock();
   }
 
+  /// Persists a monotonic `connId` in `device/auth` before allowing any `{ id: 0, auth }` snapshot or conn-tagged
+  /// message to be emitted to `client`. Recovers from cold-start `#unloaded` `device/auth` via `reload("auth")` and
+  /// fails explicitly (without leaking unpersisted `connId` or hanging callers) if persistence fails.
+  #persistClientAuth(client: ClientId, initialConnId: number): void {
+    this.inner.store.registerClient(client, initialConnId, false, false);
+    const failPersist = (err: unknown) => {
+      this.inner.store.failClientAuth(client, err);
+      this.inner.runner.onDefect(err);
+    };
+    try {
+      this.inner.runner.fork(
+        Effect.gen({ self: this }, function* () {
+          const device = this.inner.data.device;
+          if (device.isUnloaded("auth")) {
+            const loaded = yield* device.reload("auth");
+            if (!loaded) return yield* Effect.fail(new HostError("device/auth has not been read"));
+          }
+          const diskSeq = Number(device.get("auth", "connSeq") ?? 0);
+          let finalConnId = initialConnId;
+          if (Number.isFinite(diskSeq) && diskSeq >= finalConnId) {
+            nextConnSeq = Math.max(nextConnSeq, Math.floor(diskSeq) + 1);
+            finalConnId = nextConnSeq;
+            this.inner.store.updateClientConn(client, finalConnId);
+          }
+          device.put("auth", "connSeq", finalConnId);
+          yield* device.flushTable("auth");
+          this.inner.store.markClientAuthReady(client);
+        }).pipe(Effect.catch((err) => Effect.sync(() => failPersist(err)))),
+      );
+    } catch (err) {
+      failPersist(err);
+    }
+  }
+
   /// A UI connected; its messages and emissions use this id.
   /// When `options.authHandshake` is true (all production hosts), registers the connection with a strictly
   /// monotonic cross-restart `connId` and schedules the initial `{ id: 0, auth }` snapshot.
@@ -885,27 +919,10 @@ export class Core {
     const client = this.#nextClient++;
     if (options?.authHandshake === true) {
       const connId = ++nextConnSeq;
-      this.inner.store.registerClient(client, connId, false, false);
       if (options?.requireCallAuth === true) {
         this.inner.store.setAuthEnforced(client);
       }
-      try {
-        this.inner.data.device.put("auth", "connSeq", connId);
-        // Strictly persist `connSeq` to device storage BEFORE publishing any `{ id: 0, auth }` snapshot or conn-tagged message.
-        this.inner.runner.fork(
-          this.inner.data.device.flushTable("auth").pipe(
-            Effect.andThen(Effect.sync(() => this.inner.store.markClientAuthReady(client))),
-            Effect.catch((err) =>
-              Effect.sync(() => {
-                // Storage persistence failed: never publish an unpersisted `connId`.
-                void err;
-              }),
-            ),
-          ),
-        );
-      } catch {
-        // Device storage or runner already closed: never publish an unpersisted `connId`.
-      }
+      this.#persistClientAuth(client, connId);
     }
     return client;
   }
@@ -913,24 +930,13 @@ export class Core {
   /// Immediately flushes the authoritative `{ id: 0, auth }` snapshot for `client` (or registers it if unregistered)
   /// and enforces explicit `CallAuth` on protected write RPCs from this client.
   syncAuth(client: ClientId): void {
+    this.inner.store.setAuthEnforced(client);
     if (this.inner.store.connOf(client) === 0) {
       const connId = ++nextConnSeq;
-      this.inner.store.registerClient(client, connId, false, false);
-      try {
-        this.inner.data.device.put("auth", "connSeq", connId);
-        this.inner.runner.fork(
-          this.inner.data.device.flushTable("auth").pipe(
-            Effect.andThen(Effect.sync(() => this.inner.store.markClientAuthReady(client))),
-            Effect.catch(() => Effect.void),
-          ),
-        );
-      } catch {
-        // Storage unavailable: do not publish an unpersisted `connId`.
-      }
+      this.#persistClientAuth(client, connId);
     } else {
       this.inner.store.flushAuthSnapshot(client);
     }
-    this.inner.store.setAuthEnforced(client);
   }
 
   /// A UI went away: its subscriptions end, its calls that hold something open for it stop.
@@ -1074,7 +1080,7 @@ export class Core {
         const stream = Array.isArray(head.headers) && head.headers.some((h) => Array.isArray(h) && typeof h[0] === "string" && h[0].toLowerCase() === "content-type" && typeof h[1] === "string" && h[1].startsWith("text/event-stream"));
         if (stream) loads.end(resource, inner.host.nowMs(), null);
       }
-      inner.host.emit(
+      inner.store.emitClient(
         client,
         bytes === undefined
           ? callGen
@@ -1124,7 +1130,7 @@ export class Core {
           if (doing !== null) {
             inner.doing.end(doing);
           }
-          inner.host.emit(client, answer(id, { err: cancelled }, callGen));
+          inner.store.emitClient(client, answer(id, { err: cancelled }, callGen));
         }),
       ),
       Effect.exit,
@@ -1148,7 +1154,7 @@ export class Core {
               failed = doing;
             } else inner.doing.end(doing);
           }
-          inner.host.emit(client, answer(id, result, callGen));
+          inner.store.emitClient(client, answer(id, result, callGen));
           if (failed !== null) {
             yield* Effect.sleep(FAILED_SHOWN_MS);
             inner.doing.end(failed);

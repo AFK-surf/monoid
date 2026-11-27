@@ -605,7 +605,7 @@ export class Links {
   /// Opens the station's stream for what it is wanted for now, unless the one open gives that (or `anew`): the new one
   /// opens first, and the old one goes once it has. An agent starting or ending its turn opens none (the station follows
   /// the sessions at work itself): only what a page shows of the host, a job's log or a login does.
-  openEvents(address: string, anew: boolean): void {
+  openEvents(address: string, anew: boolean, keepHandover = false): void {
     const link = this.#links.get(address);
     if (!link || !this.reachable(address)) return;
     const wants = this.#wants(address);
@@ -613,7 +613,7 @@ export class Links {
     // Handed over from a stream that is open and heard lately (wanted for more or less now): it kept the records
     // current until the new one opens, so the new one reads nothing again. One quiet past a keepalive may have died
     // unnoticed (the device asleep): what it may have missed is read.
-    const handover = !anew && link.events !== null && link.heard !== null && this.#core.host.nowMs() - link.heard < STREAM_QUIET_MS;
+    const handover = (!anew || keepHandover) && link.events !== null && link.heard !== null && this.#core.host.nowMs() - link.heard < STREAM_QUIET_MS;
     if (link.events) {
       link.replaced?.pipe((f) => this.#core.runner.interrupt(f as Fiber.Fiber<unknown, unknown>));
       link.replaced = link.events.fiber;
@@ -843,7 +843,12 @@ export class Links {
               link.back?.heard();
               read += chunk.length;
               if (link.state.state === "reconnecting") self.setLink(address, { state: "online" });
+              let authStale = false;
               for (const [name, data, id] of parser.feed(chunk)) {
+                if (core.store.authGen.workspaceAuthGen(ofAddress(address)) !== streamReadGen) {
+                  authStale = true;
+                  break;
+                }
                 events++;
                 if (recording(core.host)) recordInbound(core.host, `${stationTag(address)} sse:${name || "ping"}`, data.length, 1);
                 // Where the station's log is: nothing to tell, the next stream goes on from it.
@@ -861,6 +866,10 @@ export class Links {
                   link.back?.end("event");
                   link.back = null;
                 }
+              }
+              if (authStale) {
+                why = "auth_gen_changed";
+                break;
               }
               if (!snapshotted && link.catching?.tallied === false) self.#told.toldMissed(address);
               // Written down in the same write as what the events changed: a core after this one takes up from it.

@@ -17,6 +17,7 @@ import { HostError } from "../src/host.ts";
 import { parseClientMessage, type CoreMessage, type Topic } from "../src/protocol.ts";
 import { Runner } from "../src/runtime.ts";
 import { Retold } from "../src/station/retold.ts";
+import { logKey } from "../src/station/link.ts";
 import { COALESCE_MS, EVICT_AFTER_MS, Store } from "../src/store.ts";
 import { DEVICE_GLOBAL_TOPIC_SET, sanitizeKeptValue } from "../src/topic-policy.ts";
 import { FakeHost } from "../src/testing.ts";
@@ -633,17 +634,161 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
 
     const failHost = new FakeHost();
     const coreFail = await Core.create(failHost, { iroh: null });
+    const failGate = Effect.runSync(Deferred.make<void, HostError>());
     failHost.storageSet = (key: string, value: Uint8Array) =>
       key === "device/auth"
-        ? Effect.fail(new HostError("disk full"))
+        ? Deferred.await(failGate)
         : FakeHost.prototype.storageSet.call(failHost, key, value);
+    const defects: unknown[] = [];
+    coreFail.inner.runner.onDefect = (err) => defects.push(err);
     const cFail = coreFail.connect({ authHandshake: true, requireCallAuth: true });
+    // Send an exempt RPC while persistence is pending so it queues in #deferredEmits, then fail storageSet
+    coreFail.receiveRaw(cFail, { id: 77, call: "commands.find", params: { query: "", offered: [] } });
+    await failHost.time.pass(10);
+    Effect.runSync(Deferred.fail(failGate, new HostError("disk full")));
+    await failHost.time.pass(20);
+    const failEmitted = failHost.takeEmitted().filter(([c]) => c === cFail).map(([, m]) => m);
+    assert.equal(
+      failEmitted.some((m) => "auth" in m || ("conn" in m && typeof (m as { conn?: unknown }).conn === "number")),
+      false,
+      "handshake snapshot and conn-tagged messages must NOT be emitted when device/auth persistence fails",
+    );
+    const rpcErr = failEmitted.find((m) => "id" in m && m.id === 77) as { error?: { code?: string }; conn?: number } | undefined;
+    assert.equal(rpcErr?.error?.code, "storage_failed", "deferred RPC must receive explicit storage_failed error rather than hanging");
+    assert.equal(rpcErr?.conn, undefined, "storage_failed error must not leak unpersisted conn");
+    assert.ok(defects.length >= 1, "persistence failure must report defect");
+    // Once storage recovers, syncAuth(cFail) succeeds and emits a fresh persisted conn snapshot
+    failHost.storageSet = FakeHost.prototype.storageSet.bind(failHost);
+    coreFail.syncAuth(cFail);
     await failHost.time.pass(20);
     assert.equal(
       failHost.takeEmitted().some(([c, m]) => c === cFail && "auth" in m),
-      false,
-      "handshake snapshot must NOT be emitted when device/auth persistence fails",
+      true,
+      "after storage recovers, syncAuth must succeed and emit handshake snapshot",
     );
     await coreFail.close().catch(() => undefined);
+  });
+
+  it("Astra r12: P0-1 approve start gen, P0-2 thread/job-log streamReadGen gate, P0-3 cloud delta/joined reread, P1-1 unloaded reload & exempt RPC gating", async () => {
+    // 1. Astra P1-1: Delayed persistence gates BOTH `{ id: 0, auth }` AND exempt RPC answers, releasing them in order
+    const gateHost = new FakeHost();
+    const coreGate = await Core.create(gateHost, { iroh: null });
+    const gate = Effect.runSync(Deferred.make<void>());
+    const origSetGate = gateHost.storageSet.bind(gateHost);
+    gateHost.storageSet = (key: string, value: Uint8Array) =>
+      key === "device/auth"
+        ? Deferred.await(gate).pipe(Effect.andThen(origSetGate(key, value)))
+        : origSetGate(key, value);
+    const cGate = coreGate.connect({ authHandshake: true, requireCallAuth: true });
+    coreGate.receiveRaw(cGate, { id: 88, call: "commands.find", params: { query: "", offered: [] } });
+    await gateHost.time.pass(20);
+    assert.equal(
+      gateHost.takeEmitted().filter(([c]) => c === cGate).length,
+      0,
+      "neither handshake nor exempt RPC answer may emit while device/auth write is pending",
+    );
+    Effect.runSync(Deferred.succeed(gate, undefined));
+    await gateHost.time.pass(20);
+    const released = gateHost.takeEmitted().filter(([c]) => c === cGate).map(([, m]) => m);
+    assert.ok(released.length >= 2, "both handshake and deferred exempt RPC must release after persistence");
+    assert.ok("auth" in released[0]!, "handshake snapshot must emit before deferred RPC answer");
+    assert.equal((released[1] as { id?: number }).id, 88);
+    await coreGate.close();
+
+    // 2. Astra P1-1: `#unloaded` device/auth recovers via reload("auth") and advances connId strictly above diskSeq
+    const unloadHost = new FakeHost();
+    let failGetOnce = true;
+    const origGet = unloadHost.storageGet.bind(unloadHost);
+    unloadHost.storageGet = (key: string) => {
+      if (key === "device/auth" && failGetOnce) {
+        failGetOnce = false;
+        return Effect.fail(new HostError("transient read fail"));
+      }
+      if (key === "device/auth") {
+        return Effect.succeed(new TextEncoder().encode(JSON.stringify({ connSeq: 9000 })));
+      }
+      return origGet(key);
+    };
+    const coreUnload = await Core.create(unloadHost, { iroh: null });
+    assert.equal(coreUnload.inner.data.device.isUnloaded("auth"), true);
+    const cUnload = coreUnload.connect({ authHandshake: true, requireCallAuth: true });
+    await unloadHost.time.pass(20);
+    const unloadSnap = unloadHost.takeEmitted().find(([c, m]) => c === cUnload && "auth" in m) as [number, { auth: { conn: number } }] | undefined;
+    assert.ok(unloadSnap && unloadSnap[1].auth.conn > 9000, "reloaded device/auth must advance conn strictly above diskSeq 9000");
+    await coreUnload.close();
+
+    // 3. Astra P0-2: Real thread (channel + summary) and job-log (link.memory + onChange) gated by streamReadGen
+    const stHost = new FakeHost();
+    const coreSt = await Core.create(stHost, { iroh: null });
+    const addr = "ws-sse/s1";
+    await coreSt.inner.runner.run(coreSt.inner.data.accounts(["acct-sse"]));
+    coreSt.inner.workspaces.setOwners(new Map([["ws-sse", "acct-sse"]]));
+    coreSt.inner.data.set({ topic: "workspace", workspace: "ws-sse" }, { id: "ws-sse", stations: [{ id: "s1", online: true }] }, false);
+    coreSt.inner.stations.reconcile();
+    const link = coreSt.inner.stations.link(addr);
+    assert.ok(link, "reconcile must create station link for ws-sse/s1");
+    let logChangeCount = 0;
+    const origOnChange = coreSt.inner.stations.onChange.bind(coreSt.inner.stations);
+    coreSt.inner.stations.onChange = (a, kind, key) => {
+      if (a === addr && kind === "log") logChangeCount++;
+      origOnChange(a, kind, key);
+    };
+    let toldCount = 0;
+    const origOnTold = coreSt.inner.stations.onTold.bind(coreSt.inner.stations);
+    coreSt.inner.stations.onTold = (a, tid, entries) => {
+      if (a === addr && tid === 7) toldCount += entries.length;
+      origOnTold(a, tid, entries);
+    };
+    coreSt.inner.store.authGen.bumpWorkspace("ws-sse");
+    const curWsGen = coreSt.inner.store.authGen.workspaceAuthGen("ws-sse");
+    // Stale streamReadGen (curWsGen - 1) must NOT mutate thread channel, onTold, job-log memory, or onChange
+    coreSt.inner.stations.onEvent(addr, "thread", JSON.stringify({ id: 7, entries: [{ n: 1, text: "stale" }] }), false, curWsGen - 1);
+    coreSt.inner.stations.onEvent(addr, "job-log", JSON.stringify({ id: "j1", lines: 50, text: "stale-log\n", outputAt: 100 }), false, curWsGen - 1);
+    assert.equal(toldCount, 0, "stale streamReadGen thread event must NOT invoke onTold");
+    assert.equal(logChangeCount, 0, "stale streamReadGen job-log event must NOT invoke onChange");
+    assert.equal(link?.memory.get(logKey("j1", 50)), undefined, "stale streamReadGen job-log event must NOT mutate link.memory");
+    // Current streamReadGen updates both thread & job-log normally
+    coreSt.inner.stations.onEvent(addr, "thread", JSON.stringify({ id: 7, entries: [{ n: 1, text: "fresh" }] }), false, curWsGen);
+    coreSt.inner.stations.onEvent(addr, "job-log", JSON.stringify({ id: "j1", lines: 50, text: "fresh-log\n", outputAt: 200 }), false, curWsGen);
+    assert.equal(toldCount, 1, "current streamReadGen thread event must invoke onTold");
+    assert.equal(logChangeCount, 1, "current streamReadGen job-log event must invoke onChange");
+    assert.notEqual(link.memory.get(logKey("j1", 50)), undefined, "current streamReadGen job-log event must update link.memory");
+
+    // 4. Astra P0-3: CloudSync joined afterWrite (viewOf !== id) enqueues full workspace reread rather than direct #took
+    const enqueuedKeys: string[] = [];
+    const origEnqueue = coreSt.inner.scheduler.enqueue.bind(coreSt.inner.scheduler);
+    const origAsk = coreSt.inner.scheduler.ask.bind(coreSt.inner.scheduler);
+    coreSt.inner.scheduler.enqueue = (lane, key, priority, effect) => {
+      enqueuedKeys.push(key);
+      return origEnqueue(lane, key, priority, effect);
+    };
+    coreSt.inner.scheduler.ask = (lane, key, priority, effect) => {
+      enqueuedKeys.push(key);
+      return origAsk(lane, key, priority, effect);
+    };
+    coreSt.inner.workspaces.setOwners(new Map([["ws-sse", "acct-sse"], ["ws-joined", "acct-sse"]]));
+    enqueuedKeys.length = 0;
+    await coreSt.inner.runner.run(
+      coreSt.inner.cloudSync.afterWrite("acct-sse", "POST", "/v1/invitations/inv-1/accept", {
+        view: { id: "ws-joined", name: "Joined", role: "member", members: [], stations: [] },
+      }),
+    );
+    assert.ok(enqueuedKeys.includes("workspace/ws-joined"), "joined afterWrite (viewOf !== id) must enqueue full workspace reread");
+
+    // 5. Astra P0-1: vault.approve rejects with auth_stale and issues 0 POST /vault/grants if workspaceAuthGen bumps during #request
+    let grantPosts = 0;
+    const origCall = coreSt.inner.stations.requests.call.bind(coreSt.inner.stations.requests);
+    coreSt.inner.stations.requests.call = (station, method, path, body, ...rest) => {
+      if (method === "POST" && path === "/vault/grants") grantPosts++;
+      if (method === "GET" && path === "/vault") {
+        coreSt.inner.store.authGen.bumpWorkspace("ws-sse");
+      }
+      return origCall(station, method, path, body, ...rest);
+    };
+    const cApp = coreSt.connect({ authHandshake: false });
+    coreSt.receiveRaw(cApp, { id: 91, call: "vault.approve", params: { workspace: "ws-sse", id: "req-1", scope: "once" } });
+    await stHost.time.pass(50);
+    assert.equal(grantPosts, 0, "stale approve must never POST /vault/grants");
+    await coreSt.close();
   });
 });
