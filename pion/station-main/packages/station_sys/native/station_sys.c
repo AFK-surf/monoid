@@ -1535,7 +1535,23 @@ int64_t sts_proc_spawn(
             copy_err(err_buf, err_cap, msg);
             return -1;
         }
-        ResumeThread(pi.hThread);
+        if (ResumeThread(pi.hThread) == (DWORD)-1) {
+            DWORD rerr = GetLastError();
+            if (h_job != NULL) {
+                TerminateJobObject(h_job, 1);
+                CloseHandle(h_job);
+            }
+            TerminateProcess(pi.hProcess, 1);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            for (int i = 0; i < 3; i++) {
+                if (mine_h[i] != NULL) CloseHandle(mine_h[i]);
+            }
+            char msg[256];
+            win_err_str(rerr ? rerr : ERROR_ACCESS_DENIED, msg, sizeof(msg));
+            copy_err(err_buf, err_cap, msg);
+            return -1;
+        }
     }
     CloseHandle(pi.hThread);
 
@@ -1622,6 +1638,9 @@ int64_t sts_proc_spawn(
     if (id < 0) {
         AcquireSRWLockExclusive(&p->kill_lock);
         atomic_store_explicit(&p->closing, 1, memory_order_release);
+        if (p->h_job != NULL) {
+            TerminateJobObject(p->h_job, 1);
+        }
         TerminateProcess(p->h_proc, 1);
         ReleaseSRWLockExclusive(&p->kill_lock);
         if (p->h_stop != NULL) SetEvent(p->h_stop);
@@ -3811,7 +3830,21 @@ int64_t sts_pty_spawn(
         copy_err(err_buf, err_cap, msg);
         return -1;
     }
-    ResumeThread(pi.hThread);
+    if (ResumeThread(pi.hThread) == (DWORD)-1) {
+        DWORD rerr = GetLastError();
+        TerminateJobObject(h_job, 1);
+        CloseHandle(h_job);
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(in_w);
+        CloseHandle(out_r);
+        p_close(hpc);
+        char msg[256];
+        win_err_str(rerr ? rerr : ERROR_ACCESS_DENIED, msg, sizeof(msg));
+        copy_err(err_buf, err_cap, msg);
+        return -1;
+    }
     CloseHandle(pi.hThread);
 
     win_pty_t *pt = (win_pty_t *)calloc(1, sizeof(*pt));
@@ -3870,6 +3903,9 @@ int64_t sts_pty_spawn(
         pt->write_aborted = 1;
         WakeConditionVariable(&pt->write_cond);
         ReleaseSRWLockExclusive(&pt->write_lock);
+        if (pt->h_job != NULL) {
+            TerminateJobObject(pt->h_job, 1);
+        }
         TerminateProcess(pt->h_proc, 1);
         if (pt->h_stop != NULL) SetEvent(pt->h_stop);
         win_pty_unref(pt);

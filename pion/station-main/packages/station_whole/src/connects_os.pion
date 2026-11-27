@@ -1029,7 +1029,7 @@ pub fn ConnectMuxBridge::ws_send_async(
   self : ConnectMuxBridge,
   handle : Int64,
   frame : station_connects::WsFrame,
-  discard : Bool = true,
+  discard : Bool = false,
 ) -> Result[Int64, String] {
   if !self.open_ws.contains(handle) {
     return Err("websocket handle not open")
@@ -1130,7 +1130,7 @@ pub fn ConnectMuxBridge::transport(
     },
     ws_send: fn(h : Int64, f : station_connects::WsFrame) -> Result[Unit, String] {
       if async_ws_writes {
-        match self.ws_send_async(h, f) {
+        match self.ws_send_async(h, f, discard=true) {
           Ok(_) => Ok(())
           Err(e) => Err(e)
         }
@@ -1140,7 +1140,7 @@ pub fn ConnectMuxBridge::transport(
     },
     ws_ping: fn(h : Int64) -> Result[Unit, String] {
       if async_ws_writes {
-        match self.ws_send_async(h, station_connects::WsFrame::Ping) {
+        match self.ws_send_async(h, station_connects::WsFrame::Ping, discard=true) {
           Ok(_) => Ok(())
           Err(e) => Err(e)
         }
@@ -1874,7 +1874,7 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
           station_connects::SocketAction::SendPing => {
             match s.ws_handle {
               Some(h) => {
-                let _ = self.bridge.ws_send_async(h, station_connects::WsFrame::Ping)
+                let _ = self.bridge.ws_send_async(h, station_connects::WsFrame::Ping, discard=true)
                 actions.push(cid + ":ping")
               }
               None => ()
@@ -1924,7 +1924,11 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
             match f.ws_handle {
               Some(h) => {
                 let ping_bytes = station_connects::build_feishu_ping_frame(f.service_id)
-                let _ = self.bridge.ws_send_async(h, station_connects::WsFrame::Binary(ping_bytes))
+                let _ = self.bridge.ws_send_async(
+                  h,
+                  station_connects::WsFrame::Binary(ping_bytes),
+                  discard=true,
+                )
                 actions.push(cid + ":ping")
               }
               None => ()
@@ -1955,7 +1959,7 @@ pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Arra
           station_connects::SocketAction::SendPing => {
             match c.ws_handle {
               Some(h) => {
-                let _ = self.bridge.ws_send_async(h, station_connects::WsFrame::Ping)
+                let _ = self.bridge.ws_send_async(h, station_connects::WsFrame::Ping, discard=true)
                 actions.push(cid + ":ping")
               }
               None => ()

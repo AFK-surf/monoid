@@ -50,6 +50,7 @@ static void assert_js_lower_str(const char *in, const char *expected) {
         (const uint8_t *)expected, strlen(expected));
 }
 
+#ifndef _WIN32
 static void *ro_pread_worker(void *arg) {
     int64_t fh = *(int64_t *)arg;
     for (int i = 0; i < 64; i++) {
@@ -69,6 +70,7 @@ static void *ro_pread_worker(void *arg) {
     }
     return NULL;
 }
+#endif
 
 static void test_js_lower_utf8(void) {
     // 1. Empty & ASCII fast paths

@@ -779,3 +779,52 @@ test "devices_os_terminals_logins_adb_runner_and_aggregated_sources" {
   edge_assert(encode_android_tv_key_frame("home", 3) is Ok(_))
   edge_assert(encode_android_tv_key_frame("invalid_key_xyz", 3) is Err(_))
 }
+
+test "connects_os_ws_send_async_two_arg_default_awaitable" {
+  let mem = station_ops::MemFs::new()
+  let h = MockMuxHarness::new(
+    1000L,
+    fn(id : Int64, op : String, _json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "ws.open" {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"id\":42}", error: "", bytes: None },
+          ),
+        )
+      } else if op == "ws.send" || op == "ws.ping" {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None },
+          ),
+        )
+      }
+    },
+  )
+  let bridge = ConnectMuxBridge::with_hub(h.hub, mem.ops())
+  let ws_h = match bridge.ws_open(station_connects::WsOpenRequest::{ url: "wss://example.com/ws", headers: [] }) {
+    Ok(id) => id
+    Err(e) => panic("ws_open failed: " + e)
+  }
+  edge_assert(ws_h == 42L)
+
+  // Two-argument ws_send_async defaults to discard=false so callers can await its returned cid
+  // even after the shared event loop has already consumed the Done event into deferred_done.
+  let cid = match bridge.ws_send_async(ws_h, station_connects::WsFrame::Text("hello")) {
+    Ok(id) => id
+    Err(e) => panic("ws_send_async failed: " + e)
+  }
+  edge_assert(cid > 0L)
+  let _ = h.hub.pump_one(0L)
+  match h.hub.await_call(cid, 1000L, cancel_on_timeout=false) {
+    Ok(done) => {
+      edge_assert(done.id == cid)
+      edge_assert(done.error == "")
+    }
+    Err(e) => panic("expected 2-arg ws_send_async cid to resolve, got: " + e)
+  }
+
+  // Explicit discard=true fire-and-forget does not accumulate in deferred_done.
+  let _ = bridge.ws_send_async(ws_h, station_connects::WsFrame::Ping, discard=true)
+  let _ = h.hub.pump_one(0L)
+  edge_assert(h.hub.deferred_done_count() == 0)
+}
