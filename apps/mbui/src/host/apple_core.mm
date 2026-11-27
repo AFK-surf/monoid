@@ -1516,6 +1516,10 @@ void mb_core_start(const char *data_dir, const char *cloud_origin, int beta, mb_
       C.ctx = ctx;
       C.on_message.store(on_message, std::memory_order_release);
       C.alone = false;
+      // The push-started core may already have emitted its `{ id: 0, auth }` handshake while
+      // `on_message` was nullptr; request a fresh authoritative snapshot now that the UI is attached.
+      static const char sync_auth[] = "{\"id\":0,\"call\":\"client.syncAuth\",\"params\":{}}";
+      mb_core_send(sync_auth, sizeof sync_auth - 1, nullptr, 0);
       return;
     }
   }

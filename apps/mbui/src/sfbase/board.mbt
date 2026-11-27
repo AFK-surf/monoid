@@ -544,7 +544,7 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
               Err(e) => {
                 let why = text(Some(e), "message")
                 // Refused before the outbox took it: put the files and words back in the created chat's composer.
-                if ["invalid_params", "core_restarted", "closed"].contains(text(Some(e), "code")) {
+                if send_refused_code(text(Some(e), "code")) {
                   match w {
                     Some(w) => {
                       let chat_draft = d.station + ":" + key

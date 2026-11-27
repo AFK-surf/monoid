@@ -191,3 +191,270 @@ test "drafts kept beyond 32 let go of, the least lately asked for first, never o
   assert_eq(again.text.get(), "第一份")
   assert_eq(again.field.text(), "第一份")
 }
+
+///|
+test "writing_take restores local draft and surfaces error when composer.take fails with auth_stale" {
+  fresh_app()
+  let base = fixture("chat")
+  let key = "ws1/st1:s-c1"
+  let take_done : Ref[((Result[Json, Json]) -> Unit)?] = Ref(None)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "composer.take" {
+        take_done.val = Some(done)
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let w = @sfbase.writing(src, key)
+  @sfbase.writing_text(src, w, "不能被吞的消息")
+  let took : Ref[Json?] = Ref(Some(Json::null()))
+  let err_seen : Ref[String] = Ref("")
+  @sfbase.writing_take(src, w, on_error=fn(e) { err_seen.val = e }, fn(a) { took.val = a })
+  assert_eq(w.text.get(), "")
+  assert_eq(w.field.text(), "")
+  // Core rejects composer.take with auth_stale
+  match take_done.val {
+    Some(done) => done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+    None => fail("composer.take was not called")
+  }
+  assert_true(took.val is None)
+  assert_eq(err_seen.val, "授权或锁定状态已变化，请重试")
+  assert_eq(w.text.get(), "不能被吞的消息", msg="failed composer.take must restore draft text")
+  assert_eq(w.field.text(), "不能被吞的消息", msg="failed composer.take must restore field text")
+  assert_true(w.ready.get(), msg="failed composer.take must restore ready state")
+}
+
+///|
+test "writing_take failure does not overwrite newer text typed while composer.take was in flight" {
+  fresh_app()
+  let base = fixture("chat")
+  let key = "ws1/st1:s-c1"
+  let take_done : Ref[((Result[Json, Json]) -> Unit)?] = Ref(None)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "composer.take" {
+        take_done.val = Some(done)
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let w = @sfbase.writing(src, key)
+  @sfbase.writing_text(src, w, "旧草稿")
+  @sfbase.writing_take(src, w, fn(_) {  })
+  // User types new text before composer.take fails
+  w.field.set("新写的话")
+  @sfbase.writing_text(src, w, "新写的话")
+  match take_done.val {
+    Some(done) => done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+    None => fail("composer.take was not called")
+  }
+  assert_eq(w.text.get(), "新写的话")
+  assert_eq(w.field.text(), "新写的话")
+}
+
+///|
+test "writing_back_or_said restores local backup when composer.restore itself fails with auth_stale and resyncs core on retry" {
+  fresh_app()
+  let base = fixture("chat")
+  let key = "ws1/st1:s-c1"
+  let fail_restore = Ref(true)
+  let drop_taken = Ref(false)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "composer.restore" {
+        if fail_restore.val {
+          done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+        } else if drop_taken.val {
+          done(Ok({ "version": 99, "back": false }))
+        } else {
+          (base.call)(name, params, done)
+        }
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let w = @sfbase.writing(src, key)
+  @sfbase.writing_text(src, w, "恢复兜底测试")
+  @sfbase.writing_take(src, w, fn(_) {  })
+  assert_eq(w.text.get(), "")
+  @sfbase.writing_back_or_said(src, w, "发送失败：授权或锁定状态已变化，请重试")
+  assert_eq(w.text.get(), "恢复兜底测试", msg="failed composer.restore must fall back to local taken snapshot")
+  assert_eq(w.field.text(), "恢复兜底测试")
+  // Even if Core later reports back=false (e.g. Core restarted and lost s.taken), retrying writing_take
+  // resyncs text via composer.text before taking so it never sends an empty message.
+  fail_restore.val = false
+  drop_taken.val = true
+  let retaken : Ref[Json?] = Ref(None)
+  @sfbase.writing_take(src, w, fn(v) { retaken.val = v })
+  assert_eq(text(retaken.val, "text"), "恢复兜底测试", msg="retry after local fallback must deliver original text, never empty")
+}
+
+///|
+test "an in-flight composer.text answering Ok after writing_take starts must not clear w.taken" {
+  fresh_app()
+  let base = fixture("chat")
+  let key = "ws1/st1:s-c1"
+  let text_done : Ref[((Result[Json, Json]) -> Unit)?] = Ref(None)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "composer.text" {
+        text_done.val = Some(done)
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let w = @sfbase.writing(src, key)
+  @sfbase.writing_text(src, w, "快速发送")
+  @sfbase.writing_take(src, w, fn(_) {  })
+  assert_true(w.taken is Some(_))
+  match text_done.val {
+    Some(done) => done(Ok({ "version": 1 }))
+    None => fail("composer.text was not called")
+  }
+  assert_true(w.taken is Some(_), msg="normal in-flight composer.text Ok must not clear w.taken")
+}
+
+///|
+test "desynced draft with attachment preserves attachment and updated text when user edits before retrying Send" {
+  fresh_app()
+  let base = fixture("chat")
+  let key = "ws1/st1:s-c1"
+  let fail_restore = Ref(true)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "composer.restore" && fail_restore.val {
+        done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let w = @sfbase.writing(src, key)
+  @sfbase.writing_text(src, w, "带附件的原文")
+  @sfbase.writing_add(src, w, "ws1/st1", "a.txt", b"hello")
+  @sfbase.writing_take(src, w, fn(_) {  })
+  assert_eq(w.text.get(), "")
+  // composer.restore fails -> local fallback rescues both text and attachment and sets core_desynced
+  @sfbase.writing_back_or_said(src, w, "发送失败：授权或锁定状态已变化，请重试")
+  assert_eq(w.text.get(), "带附件的原文")
+  assert_eq(w.files.get().length(), 1)
+  // Auth recovers; user edits text before tapping Send again
+  fail_restore.val = false
+  w.field.set("带附件的新文")
+  @sfbase.writing_text(src, w, "带附件的新文")
+  assert_eq(w.files.get().length(), 1, msg="editing text while desynced must keep rescued attachment")
+  // Retry Send -> force-restores attachment (`unlessWritten: false`), then applies edited text before take
+  let retaken : Ref[Json?] = Ref(None)
+  @sfbase.writing_take(src, w, fn(v) { retaken.val = v })
+  assert_eq(text(retaken.val, "text"), "带附件的新文")
+  assert_eq(
+    items(retaken.val, "attachments").length() + items(retaken.val, "uploads").length(),
+    1,
+    msg="edited retry after desync must still carry the rescued attachment",
+  )
+}
+
+///|
+test "partial desync retry (composer.restore succeeds then composer.text fails) advances to NeedText so next retry succeeds without hitting back:false" {
+  fresh_app()
+  let base = fixture("chat")
+  let key = "ws1/st1:s-c1"
+  let fail_restore = Ref(true)
+  let fail_text = Ref(false)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "composer.restore" && fail_restore.val {
+        done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+      } else if name == "composer.text" && fail_text.val {
+        done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let w = @sfbase.writing(src, key)
+  @sfbase.writing_text(src, w, "半截重试测试")
+  @sfbase.writing_add(src, w, "ws1/st1", "b.txt", b"hello")
+  @sfbase.writing_take(src, w, fn(_) {  })
+  // Double failure: composer.restore fails -> NeedRestore
+  @sfbase.writing_back_or_said(src, w, "发送失败：授权或锁定状态已变化，请重试")
+  assert_eq(w.text.get(), "半截重试测试")
+  assert_eq(w.files.get().length(), 1)
+  // First retry: composer.restore succeeds (consumes s.taken in core!), then composer.text fails!
+  fail_restore.val = false
+  fail_text.val = true
+  let err1 : Ref[String] = Ref("")
+  let took1 : Ref[Json?] = Ref(None)
+  @sfbase.writing_take(src, w, on_error=fn(e) { err1.val = e }, fn(v) { took1.val = v })
+  assert_true(took1.val is None)
+  assert_eq(err1.val, "授权或锁定状态已变化，请重试")
+  assert_eq(w.text.get(), "半截重试测试")
+  assert_eq(w.files.get().length(), 1)
+  // Second retry once auth recovers: must NOT re-call composer.restore (which would return back:false);
+  // advances directly to composer.text -> composer.take and delivers BOTH text and attachment!
+  fail_text.val = false
+  let took2 : Ref[Json?] = Ref(None)
+  @sfbase.writing_take(src, w, fn(v) { took2.val = v })
+  assert_eq(text(took2.val, "text"), "半截重试测试")
+  assert_eq(
+    items(took2.val, "attachments").length() + items(took2.val, "uploads").length(),
+    1,
+    msg="second retry after partial restore must deliver both text and attachment",
+  )
+}
+
+///|
+test "NeedRestore receiving back:false drops unrecoverable attachments, preserves text, and lets next retry send cleanly" {
+  fresh_app()
+  let base = fixture("chat")
+  let key = "ws1/st1:s-c1"
+  let fail_restore = Ref(true)
+  let lost_taken = Ref(false)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "composer.restore" {
+        if fail_restore.val {
+          done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+        } else if lost_taken.val {
+          done(Ok({ "version": 99, "back": false }))
+        } else {
+          (base.call)(name, params, done)
+        }
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let w = @sfbase.writing(src, key)
+  @sfbase.writing_text(src, w, "重启后不卡死")
+  @sfbase.writing_add(src, w, "ws1/st1", "c.txt", b"hello")
+  @sfbase.writing_take(src, w, fn(_) {  })
+  @sfbase.writing_back_or_said(src, w, "发送失败：授权或锁定状态已变化，请重试")
+  assert_eq(w.files.get().length(), 1)
+  // Core lost s.taken -> back:false drops dead attachment, keeps text, downgrades to NeedText
+  fail_restore.val = false
+  lost_taken.val = true
+  let err1 : Ref[String] = Ref("")
+  let took1 : Ref[Json?] = Ref(None)
+  @sfbase.writing_take(src, w, on_error=fn(e) { err1.val = e }, fn(v) { took1.val = v })
+  assert_true(took1.val is None)
+  assert_true(err1.val != "")
+  assert_eq(w.text.get(), "重启后不卡死")
+  assert_eq(w.files.get().length(), 0, msg="unrecoverable attachment dropped so UI matches core")
+  // Retrying Send now succeeds directly via NeedText -> composer.text -> composer.take
+  let took2 : Ref[Json?] = Ref(None)
+  @sfbase.writing_take(src, w, fn(v) { took2.val = v })
+  assert_eq(text(took2.val, "text"), "重启后不卡死")
+}

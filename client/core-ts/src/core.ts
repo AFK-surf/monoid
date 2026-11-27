@@ -1011,7 +1011,7 @@ export class Core {
       const connId = ++nextConnSeq;
       this.#persistClientAuth(client, connId);
     } else {
-      this.inner.store.flushAuthSnapshot(client);
+      this.inner.store.flushAuthSnapshot(client, true);
     }
   }
 
@@ -1093,6 +1093,11 @@ export class Core {
       call = parseCall(name, aimed, bytes);
     } catch (e) {
       inner.host.emit(client, answer(id, { err: asCoreError(e) }));
+      return;
+    }
+    if (call.kind === "clientSyncAuth") {
+      this.syncAuth(client);
+      if (id > 0) inner.host.emit(client, answer(id, { ok: null }));
       return;
     }
     const target = callAuthTarget(inner, client, call, name);
@@ -1184,7 +1189,16 @@ export class Core {
       return Effect.try({ try: () => parseCall(name, there, bytes), catch: asCoreError }).pipe(
         Effect.flatMap((c) => {
           const redirectedErr = verifyFor(callAuthTarget(inner, client, c, name));
-          if (redirectedErr !== null) return Effect.fail(redirectedErr);
+          if (redirectedErr !== null) {
+            // For `chat.send`/`chat.sendTo`, the first attempt already persisted the message to the outbox
+            // before returning `MOVED`; do not surface `auth_stale` here or the UI would also restore a
+            // duplicate draft beside the failed outbox row.
+            return Effect.fail(
+              call.kind === "chatSend" || call.kind === "chatSendTo"
+                ? new CoreError("outbox_kept", redirectedErr.message)
+                : redirectedErr,
+            );
+          }
           return execute(inner, c, progress, [client, id], span.context);
         }),
         Effect.mapError(asCoreError),

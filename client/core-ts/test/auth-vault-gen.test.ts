@@ -1564,4 +1564,86 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     await runWriteSuspendCase("head-to-body");
     await runWriteSuspendCase("chunked");
   });
+
+  it("client.syncAuth re-emits full { id: 0, auth } snapshot after dropped pre-attach handshake (coreAhead / startAlone) and respects #authNotReady", async () => {
+    // 1. Simulate coreAhead/startAlone: connect emits initial snapshot while UI has no on_message yet (dropped),
+    //    workspace authGen advances, then UI attaches and sends `{ id: 0, call: "client.syncAuth", params: {} }`.
+    const host = new FakeHost();
+    const core = await Core.create(host, { iroh: null });
+    const c = core.connect({ authHandshake: true, requireCallAuth: true });
+    await host.time.pass(20);
+    // Drop the initial handshake emitted while UI was not yet attached
+    const dropped = host.takeEmitted().filter(([cl, m]) => cl === c && "auth" in m);
+    assert.equal(dropped.length, 1, "initial connect must emit handshake snapshot");
+    const connId = (dropped[0]![1] as { auth: { conn: number } }).auth.conn;
+    // Advance workspace ws-ahead while UI is still detached (also dropped)
+    core.inner.store.authGen.bumpWorkspace("ws-ahead");
+    host.takeEmitted();
+
+    // Without auth, protected write `composer.take` is rejected with `auth_stale`
+    core.receiveRaw(c, { id: 10, call: "composer.take", params: { key: "ws-ahead/s1:c1" } });
+    await host.time.pass(10);
+    const rejected = host.takeEmitted().find(([cl, m]) => cl === c && "id" in m && m.id === 10) as [number, { error?: { code?: string } }] | undefined;
+    assert.equal(rejected?.[1].error?.code, "auth_stale", "protected write without CallAuth must fail auth_stale");
+
+    // UI attaches and requests fresh snapshot with id=0 (native host adoption path)
+    core.receiveRaw(c, { id: 0, call: "client.syncAuth", params: {} });
+    await host.time.pass(10);
+    const resynced = host.takeEmitted().filter(([cl]) => cl === c).map(([, m]) => m);
+    const authSnap = resynced.find((m) => "auth" in m) as { id: number; auth: { conn: number; global: number; scopes: Record<string, number> } } | undefined;
+    assert.ok(authSnap, "client.syncAuth must re-emit authoritative { id: 0, auth } snapshot");
+    assert.equal(authSnap.id, 0);
+    assert.equal(authSnap.auth.conn, connId, "re-emitted snapshot must keep active connId");
+    assert.equal(authSnap.auth.scopes["ws-ahead"], 2, "re-emitted snapshot must include post-connect workspace authGen bumps");
+    assert.equal(
+      resynced.some((m) => "ok" in m && m.id === 0),
+      false,
+      "id=0 client.syncAuth must not emit a spurious { id: 0, ok: null } reply",
+    );
+
+    // Now composer.take with the synced auth succeeds
+    core.receiveRaw(c, {
+      id: 11,
+      call: "composer.take",
+      params: { key: "ws-ahead/s1:c1" },
+      auth: { conn: connId, workspace: "ws-ahead", authGen: 2 },
+    });
+    await host.time.pass(10);
+    const okTake = host.takeEmitted().find(([cl, m]) => cl === c && "id" in m && m.id === 11) as [number, { ok?: unknown }] | undefined;
+    assert.ok(okTake && "ok" in okTake[1], "composer.take must succeed after client.syncAuth resync");
+
+    // Calling client.syncAuth with id > 0 emits both snapshot and { id, ok: null }
+    core.receiveRaw(c, { id: 12, call: "client.syncAuth", params: {} });
+    await host.time.pass(10);
+    const explicit = host.takeEmitted().filter(([cl]) => cl === c).map(([, m]) => m);
+    assert.ok(explicit.some((m) => "auth" in m), "id > 0 client.syncAuth must emit auth snapshot");
+    assert.ok(explicit.some((m) => "id" in m && m.id === 12 && "ok" in m), "id > 0 client.syncAuth must answer ok");
+    await core.close();
+
+    // 2. client.syncAuth arriving while device/auth persistence is still pending must NOT emit before persistence completes
+    const delayedHost = new FakeHost();
+    const coreDelayed = await Core.create(delayedHost, { iroh: null });
+    const gate = Effect.runSync(Deferred.make<void>());
+    const origSet = delayedHost.storageSet.bind(delayedHost);
+    delayedHost.storageSet = (key: string, value: Uint8Array) =>
+      key === "device/auth"
+        ? Deferred.await(gate).pipe(Effect.andThen(origSet(key, value)))
+        : origSet(key, value);
+    const cDelayed = coreDelayed.connect({ authHandshake: true, requireCallAuth: true });
+    coreDelayed.receiveRaw(cDelayed, { id: 0, call: "client.syncAuth", params: {} });
+    await delayedHost.time.pass(20);
+    assert.equal(
+      delayedHost.takeEmitted().some(([cl, m]) => cl === cDelayed && "auth" in m),
+      false,
+      "client.syncAuth must not bypass #authNotReady persistence gate",
+    );
+    Effect.runSync(Deferred.succeed(gate, undefined));
+    await delayedHost.time.pass(20);
+    assert.equal(
+      delayedHost.takeEmitted().some(([cl, m]) => cl === cDelayed && "auth" in m),
+      true,
+      "snapshot must emit once device/auth persistence finishes",
+    );
+    await coreDelayed.close();
+  });
 });

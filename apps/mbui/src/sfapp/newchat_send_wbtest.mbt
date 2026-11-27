@@ -349,6 +349,11 @@ fn failing_core(held : Map[String, () -> Unit], fails : Map[String, Json]) -> (@
             Some(e) => held[name] = fn() { done(Err(e)) }
             None => (base.call)(name, params, fn(r) { held[name] = fn() { done(r) } })
           }
+        "composer.take" | "composer.restore" | "composer.carry" =>
+          match fails.get(name) {
+            Some(e) => held[name] = fn() { done(Err(e)) }
+            None => (base.call)(name, params, done)
+          }
         _ => (base.call)(name, params, done)
       }
     },
@@ -434,6 +439,96 @@ test "a new chat's first message refused by the core: its words back in the chat
     // back in the chat's composer, as the core has it (not only as the page last drew it)
     assert_eq(@sfbase.writing(src, r.station + ":" + r.session).text.get(), words)
     assert_eq(@sfbase.writing(src, "new:ws1").text.get(), "")
+  })
+}
+
+///|
+test "a new chat's first message rejected with auth_stale restores words in composer instead of swallowing them" {
+  both_pages(fn() raise {
+    let held : Map[String, () -> Unit] = Map([])
+    let (t, src) = failing_core(held, {
+      "chat.send": { "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" },
+    })
+    let words = "把发布说明写一下"
+    new_chat_sent(t, words) |> ignore
+    guard app.nav.top() is Chat(r) else { fail("not become the chat") }
+    give_held(held, "newChat.create")
+    t.draw()
+    give_held(held, "chat.send")
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() is Chat(_))
+    assert_eq(@sfbase.writing(src, r.station + ":" + r.session).text.get(), words)
+  })
+}
+
+///|
+test "newChat.create and composer.restore both failing with auth_stale still restore words in new chat composer" {
+  both_pages(fn() raise {
+    let held : Map[String, () -> Unit] = Map([])
+    let (t, _) = failing_core(held, {
+      "newChat.create": { "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" },
+      "composer.restore": { "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" },
+    })
+    let words = "把发布说明写一下"
+    new_chat_sent(t, words) |> ignore
+    guard app.nav.top() is Chat(_) else { fail("not become the chat") }
+    give_held(held, "newChat.create")
+    t.run_for(@ui.move_most_ms)
+    give_held(held, "composer.restore")
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() is NewChat)
+    let (_, back, _, _) = t.ime()
+    assert_eq(back, words)
+    seen_once(t, "发送失败：授权或锁定状态已变化，请重试") |> ignore
+  })
+}
+
+///|
+test "composer.take failing with auth_stale on new chat returns to NewChat with words intact (even if newChat.create succeeds)" {
+  both_pages(fn() raise {
+    let held : Map[String, () -> Unit] = Map([])
+    let (t, _) = failing_core(held, {
+      "composer.take": { "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" },
+      "composer.carry": { "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" },
+    })
+    let words = "把发布说明写一下"
+    new_chat_sent(t, words) |> ignore
+    guard app.nav.top() is Chat(r) else { fail("not become the chat") }
+    give_held(held, "composer.take")
+    t.run_for(@ui.move_most_ms)
+    give_held(held, "newChat.create")
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() is NewChat, msg="must return to NewChat so restored draft is visible")
+    let (_, back, _, _) = t.ime()
+    assert_eq(back, words)
+    // `fresh.made` is preserved so retrying Send reuses the created chat rather than leaking an empty one.
+    assert_eq(@sfbase.fresh.made.get(), r.session)
+    seen_once(t, "发送失败：授权或锁定状态已变化，请重试") |> ignore
+  })
+}
+
+///|
+test "composer.take and newChat.create both failing with auth_stale return to NewChat with words intact and a single toast" {
+  both_pages(fn() raise {
+    let held : Map[String, () -> Unit] = Map([])
+    let (t, _) = failing_core(held, {
+      "composer.take": { "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" },
+      "composer.carry": { "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" },
+      "newChat.create": { "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" },
+    })
+    let words = "把发布说明写一下"
+    new_chat_sent(t, words) |> ignore
+    guard app.nav.top() is Chat(_) else { fail("not become the chat") }
+    give_held(held, "composer.take")
+    t.run_for(@ui.move_most_ms)
+    let toast_n_after_take = app.toast.get().n
+    give_held(held, "newChat.create")
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() is NewChat)
+    let (_, back, _, _) = t.ime()
+    assert_eq(back, words)
+    assert_eq(@sfbase.fresh.made.get(), "", msg="failed newChat.create must clear fresh.made")
+    assert_eq(app.toast.get().n, toast_n_after_take, msg="must not show duplicate toast when both fail")
   })
 }
 

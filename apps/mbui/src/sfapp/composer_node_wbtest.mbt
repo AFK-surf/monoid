@@ -348,3 +348,106 @@ test "made as nodes, offline chat: pasting a file or image into composer is refu
   assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.files.get().length() }), Some(0))
   assert_true(t.find(@sf.t("web-main.composer.filesOffline")) is Some(_), msg="offline paste toast shown")
 }
+
+///|
+test "made as nodes: composer.take failing with auth_stale restores draft, shows error toast, and allows retry once auth recovers" {
+  new_run()
+  let calls : Array[Made] = []
+  let fail_take = Ref(true)
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      if name == "composer.take" && fail_take.val {
+        done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+        return
+      }
+      if name == "chat.send" {
+        return
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  assert_true(composed_field_made(t))
+  t.tap_text("发消息")
+  t.type_text("第一行")
+  tap_send(t)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "chat.send").length(), 0)
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some("第一行"))
+  let (_, kept_after_fail, _, _) = t.ime()
+  assert_eq(kept_after_fail, "第一行")
+  assert_true(t.haptics().contains(@ui.Reject))
+  assert_true(
+    t.words().iter().any(fn(w) { w.0.contains("授权或锁定状态已变化") }),
+    msg="error toast must be visible when composer.take fails: \{Repr(t.words())}",
+  )
+  // Once auth resyncs, retrying Send actually sends the preserved draft
+  fail_take.val = false
+  tap_send(t)
+  let sent = named(calls, "chat.send")
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0].params), "text"), "第一行")
+}
+
+///|
+test "made as nodes: chat.send failing with auth_stale restores draft (even when composer.restore also fails) and resending delivers original text" {
+  new_run()
+  let calls : Array[Made] = []
+  let fail_send = Ref(true)
+  let fail_restore = Ref(false)
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      if name == "chat.send" {
+        if fail_send.val {
+          done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+        }
+        return
+      }
+      if name == "composer.restore" && fail_restore.val {
+        done(Err({ "code": "auth_stale", "message": "授权或锁定状态已变化，请重试" }))
+        return
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  assert_true(composed_field_made(t))
+  t.tap_text("发消息")
+  t.type_text("第一行")
+  // 1. chat.send fails with auth_stale, composer.restore succeeds -> draft restored via SentRefused
+  tap_send(t)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "composer.restore").length(), 1)
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some("第一行"))
+  let (_, kept1, _, _) = t.ime()
+  assert_eq(kept1, "第一行")
+  assert_true(t.words().iter().any(fn(w) { w.0.contains("授权或锁定状态已变化") }))
+  // 2. chat.send AND composer.restore both fail with auth_stale -> local fallback preserves draft across frames
+  fail_restore.val = true
+  tap_send(t)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(named(calls, "composer.restore").length(), 2)
+  assert_eq(@sfbase.writings.get(draft_key(r)).map(fn(d) { d.text.get() }), Some("第一行"))
+  let (_, kept2, _, _) = t.ime()
+  assert_eq(kept2, "第一行")
+  // 3. Auth recovers; tapping Send WITHOUT editing resyncs core and sends the original text (not empty!)
+  fail_send.val = false
+  fail_restore.val = false
+  tap_send(t)
+  t.run_for(@ui.move_most_ms)
+  let sends = named(calls, "chat.send")
+  assert_eq(sends.length(), 3)
+  assert_eq(text(Some(sends[2].params), "text"), "第一行")
+}

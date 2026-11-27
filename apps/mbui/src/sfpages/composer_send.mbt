@@ -13,8 +13,8 @@ priv enum SendTo {
 
 ///|
 /// What the core said of a message sent (`chat.send`): taken; refused before its chat's outbox had it (`why`: the core's
-/// words; invalid_params, core_restarted, closed); kept in the outbox, which says it did not go yet and sends it once its
-/// station is reached (`why`).
+/// words; `@sfbase.send_refused_code`: invalid_params, core_restarted, closed, auth_stale, storage_failed, bad_message);
+/// kept in the outbox, which says it did not go yet and sends it once its station is reached (`why`).
 priv enum SendAnswer {
   SentTaken
   SentRefused(String)
@@ -45,9 +45,10 @@ fn send_taken(src : Source, station : String, to : SendTo, taken : Json, done : 
       Ok(_) => done(SentTaken)
       Err(e) => {
         let why = text(Some(e), "message")
-        match text(Some(e), "code") {
-          "invalid_params" | "core_restarted" | "closed" => done(SentRefused(why))
-          _ => done(SentKept(why))
+        if @sfbase.send_refused_code(text(Some(e), "code")) {
+          done(SentRefused(why))
+        } else {
+          done(SentKept(why))
         }
       }
     }

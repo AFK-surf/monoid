@@ -187,6 +187,8 @@ export function execute(inner: Inner, call: Call, progress: Progress, at: [Clien
       case "clientNetwork":
         inner.stations.spare(call.cellular);
         return Effect.succeed({});
+      case "clientSyncAuth":
+        return Effect.succeed(null);
       case "signOut":
         return Effect.as(inner.accounts.signOut(call.account), null);
       // The account deleted in the cloud (DELETE /v1/me), then forgotten here as signing out does.

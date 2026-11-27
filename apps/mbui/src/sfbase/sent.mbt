@@ -592,3 +592,20 @@ pub fn sent_quote_ids_take(key : String) -> Array[String] {
   sent_quote_ids_at.remove(key)
   ids
 }
+
+///|
+/// Whether a `chat.send` error `code` means the core refused the call before putting the message in
+/// the chat's outbox, so the composer must restore the taken draft rather than discarding it.
+/// `"cancelled"` is intentionally excluded because `Core.close()` interrupts in-flight sends after
+/// they are already persisted in the outbox.
+pub fn send_refused_code(code : String) -> Bool {
+  match code {
+    "invalid_params"
+    | "core_restarted"
+    | "closed"
+    | "auth_stale"
+    | "storage_failed"
+    | "bad_message" => true
+    _ => false
+  }
+}

@@ -43,6 +43,7 @@ export type Call =
   | { kind: "clientReports"; on: boolean }
   | { kind: "clientShown"; page: string }
   | { kind: "clientNetwork"; cellular: boolean }
+  | { kind: "clientSyncAuth" }
   | { kind: "wake"; away: number; network: boolean; retry: boolean }
   | { kind: "authBegin"; redirectUri: string; returnTo: string; deviceName: string | null }
   | { kind: "authComplete"; query: string }
@@ -572,6 +573,8 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
     // whether the device's default network is cellular (station/sync.ts `spare`)
     case "client.network":
       return { kind: "clientNetwork", cellular: read(params, [["cellular", "bool", "req"]]).cellular as boolean };
+    case "client.syncAuth":
+      return { kind: "clientSyncAuth" };
     case "client.wake": {
       const p = read(params, [
         ["away", "f64", "default"],

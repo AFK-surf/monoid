@@ -29,6 +29,7 @@
 #include <jni.h>
 #include <dlfcn.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <android/log.h>
 #include <errno.h>
 #include <stdio.h>
@@ -53,7 +54,8 @@ static struct {
   jstring utf8_name;
   jobject listener;  // this core's CoreHost
   sf_engine *engine;
-  mb_core_message_fn on_message;
+  _Atomic mb_core_message_fn on_message;
+  _Atomic int dead;  // set on fatal while running; stops mb_core_start from adopting a dead coreAhead engine
   void *ctx;
   int alone;  // started for a push or ahead of the app (StillfailApp), no app's yet
   char origin[512];  // the still.fail cloud it was started with, and its channel
@@ -174,15 +176,19 @@ static void engine_say(void *ctx, const char *json, size_t len, const uint8_t *b
   (void)ctx;
   static const uint8_t none = 0;
   if (!bytes && tracing()) CORE_LOG("core says %.*s%s", len < 400 ? (int)len : 400, json, len > 400 ? "…" : "");
+  if (!bytes && len >= 9 && memcmp(json, "{\"fatal\":", 9) == 0) {
+    atomic_store_explicit(&A.dead, 1, memory_order_release);
+  }
   if (java_said(json, len)) {
     to_java(json, len, bytes, blen);
     return;
   }
+  mb_core_message_fn fn = atomic_load_explicit(&A.on_message, memory_order_acquire);
   if (bytes) {
-    if (A.on_message) A.on_message(json, len, blen ? bytes : &none, blen, A.ctx);
+    if (fn) fn(json, len, blen ? bytes : &none, blen, A.ctx);
     return;
   }
-  if (A.on_message) A.on_message(json, len, NULL, 0, A.ctx);
+  if (fn) fn(json, len, NULL, 0, A.ctx);
 }
 
 // A tapped remote screen's message for the app, from the shell's threads (sf_engine_tap), as the core's would be said.
@@ -190,7 +196,8 @@ static void shell_say(void *ctx, const uint8_t *json, size_t len, const uint8_t 
   (void)ctx;
   static const uint8_t none = 0;
   pthread_mutex_lock(&T_lock);
-  if (tap_open && A.on_message) A.on_message((const char *)json, len, bytes ? (blen ? bytes : &none) : NULL, blen, A.ctx);
+  mb_core_message_fn fn = atomic_load_explicit(&A.on_message, memory_order_acquire);
+  if (tap_open && fn) fn((const char *)json, len, bytes ? (blen ? bytes : &none) : NULL, blen, A.ctx);
   pthread_mutex_unlock(&T_lock);
 }
 
@@ -201,7 +208,7 @@ static uint8_t shell_media(void *ctx, uint64_t call, uint8_t kind, uint8_t key, 
   int took = 0;
   pthread_mutex_lock(&T_lock);
   mb_core_media_fn take = media_take;
-  if (tap_open && take && A.on_message) took = take(call, kind, key, seq, ts, bytes, len);
+  if (tap_open && take && atomic_load_explicit(&A.on_message, memory_order_acquire)) took = take(call, kind, key, seq, ts, bytes, len);
   pthread_mutex_unlock(&T_lock);
   return took ? 1 : 0;
 }
@@ -430,10 +437,12 @@ static int core_init(JNIEnv *env) {
 }
 
 static void say_fatal(const char *why) {
+  atomic_store_explicit(&A.dead, 1, memory_order_release);
   char buf[512];
   int n = snprintf(buf, sizeof buf, "{\"fatal\":\"%s\"}", why);
   CORE_LOG("core: %s", why);
-  if (A.on_message) A.on_message(buf, (size_t)n, NULL, 0, A.ctx);
+  mb_core_message_fn fn = atomic_load_explicit(&A.on_message, memory_order_acquire);
+  if (fn) fn(buf, (size_t)n, NULL, 0, A.ctx);
 }
 
 /// The app's files' `core` directory (engine->data_dir in core_client.h): kept once asked.
@@ -452,8 +461,9 @@ const char *mb_core_data_dir(void) {
 }
 
 static void core_start(const char *data_dir, const char *cloud_origin, int beta, mb_core_message_fn on_message, void *ctx) {
-  A.on_message = on_message;
+  atomic_store_explicit(&A.dead, 0, memory_order_release);
   A.ctx = ctx;
+  atomic_store_explicit(&A.on_message, on_message, memory_order_release);
   JNIEnv *env = core_env();
   if (!core_init(env)) {
     say_fatal("the app has no dev.mbui.CoreHost");
@@ -504,20 +514,25 @@ static void probe_taps(void);
 void mb_core_start(const char *data_dir, const char *cloud_origin, int beta, mb_core_message_fn on_message, void *ctx) {
   probe_taps();
   pthread_mutex_lock(&A_lock);
-  // one started ahead with another still.fail cloud or channel than the app's (a run given its own): not the app's
-  if (A.engine && !A.on_message && (strcmp(A.origin, cloud_origin) != 0 || A.beta != beta)) {
-    CORE_LOG("core: the one started with %s%s stopped, the app's is %s%s", A.origin, A.beta ? " (beta)" : "",
-             cloud_origin, beta ? " (beta)" : "");
+  // one started ahead that died before the app attached, or with another still.fail cloud/channel: not the app's
+  if (A.engine && !atomic_load_explicit(&A.on_message, memory_order_acquire) &&
+      (atomic_load_explicit(&A.dead, memory_order_acquire) || strcmp(A.origin, cloud_origin) != 0 || A.beta != beta)) {
+    CORE_LOG("core: the one started with %s%s stopped (dead=%d), the app's is %s%s", A.origin, A.beta ? " (beta)" : "",
+             atomic_load_explicit(&A.dead, memory_order_acquire), cloud_origin, beta ? " (beta)" : "");
     core_stop();
     A.alone = 0;
   }
   if (!A.engine) {
     core_start(data_dir, cloud_origin, beta, on_message, ctx);
-  } else if (!A.on_message) {
-    // one started for a push, or ahead of the app (StillfailApp coreAhead): the app's from now on
-    A.on_message = on_message;
+  } else if (!atomic_load_explicit(&A.on_message, memory_order_acquire)) {
+    // one started for a push, or ahead of the app (StillfailApp coreAhead): the app's from now on.
+    // Request a fresh `{ id: 0, auth }` snapshot now that `on_message` is attached, because any
+    // handshake or early auth boundary emitted while `on_message` was NULL was dropped.
     A.ctx = ctx;
+    atomic_store_explicit(&A.on_message, on_message, memory_order_release);
     A.alone = 0;
+    static const char sync_auth[] = "{\"id\":0,\"call\":\"client.syncAuth\",\"params\":{}}";
+    sf_engine_receive(A.engine, sync_auth, sizeof sync_auth - 1, NULL, 0);
     CORE_LOG("core: the one started already (ahead, or for a push) taken by the app");
   }
   pthread_mutex_unlock(&A_lock);
@@ -538,7 +553,8 @@ static void core_stop(void) {
   cleared(env);
   sf_engine_stop(A.engine);  // joins the core's thread
   A.engine = NULL;
-  A.on_message = NULL;
+  atomic_store_explicit(&A.dead, 0, memory_order_release);
+  atomic_store_explicit(&A.on_message, NULL, memory_order_release);
   (*env)->DeleteGlobalRef(env, A.listener);
   A.listener = NULL;
   CORE_LOG("core: stopped");
@@ -572,7 +588,7 @@ JNIEXPORT jboolean JNICALL Java_dev_mbui_CoreHost_startAlone(JNIEnv *env, jclass
 // The push handled: the core started for it stopped, unless the app has taken it.
 JNIEXPORT void JNICALL Java_dev_mbui_CoreHost_stopAlone(JNIEnv *env, jclass c) {
   pthread_mutex_lock(&A_lock);
-  if (A.engine && A.alone && !A.on_message) core_stop();
+  if (A.engine && A.alone && !atomic_load_explicit(&A.on_message, memory_order_acquire)) core_stop();
   A.alone = 0;
   pthread_mutex_unlock(&A_lock);
 }

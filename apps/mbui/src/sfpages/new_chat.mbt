@@ -24,6 +24,7 @@
 /// What the page keeps of its own: which of its picks is asked open as it is next drawn (a fixture's: new_chat_ask).
 priv struct NewChatPage {
   mut asked : String
+  mut send_seq : Int
 }
 
 ///|
@@ -31,7 +32,7 @@ priv struct NewChatPage {
 pub let new_chat_drafts : String = "new:"
 
 ///|
-let new_chat_state : NewChatPage = { asked: "" }
+let new_chat_state : NewChatPage = { asked: "", send_seq: 0 }
 
 ///|
 fn new_chat_reset() -> Unit {
@@ -155,9 +156,19 @@ fn new_send_go(
   let taken : Ref[Json?] = Ref(None)
   let made = Ref(!make)
   let sending = Ref(true)
+  let toasted = Ref(false)
+  let navigated = Ref(false)
+  new_chat_state.send_seq += 1
+  let send_seq = new_chat_state.send_seq
+  let toast_once = fn(msg : String) {
+    if !toasted.val && msg != "" {
+      toasted.val = true
+      toast_later(msg)
+    }
+  }
   // (this send still the page's: the new chat not begun anew since, nor this one sent again under its key; what the
   // core answers late of one that is not touches nothing of what the page is now)
-  let ours = fn() { fresh.made.get() == key }
+  let ours = fn() { fresh.made.get() == key && new_chat_state.send_seq == send_seq }
   // (not sent after all: its row gone from the list, its words back in the chat's composer, saying why, unless
   // something is written there by now: then said so, as send_in_chat's)
   let not_sent = fn(why : String) {
@@ -169,10 +180,36 @@ fn new_send_go(
     sent_refuse(rk, row)
     @sfbase.flight_carry_gone(draft)
     @sfbase.writing_starting(src, d, false)
+    let kept_taken = d.taken
     d.taken = None
     // (what was taken went with the words into the chat's draft: composer.carry; nothing taken, nothing to put back)
     if why != "" {
-      @sfbase.writing_back_or_said(src, @sfbase.writing(src, draft), @sf.t("web-main.draft.notSent", args=[("error", why)]))
+      let chat_w = @sfbase.writing(src, draft)
+      if chat_w.taken is None && kept_taken is Some(_) {
+        chat_w.taken = kept_taken
+      }
+      @sfbase.writing_back_or_said(src, chat_w, @sf.t("web-main.draft.notSent", args=[("error", why)]))
+    }
+  }
+  let return_to_new_chat = fn(clear_made : Bool) {
+    let had_cursor = @ui.field_has_focus()
+    let here = ours() && app.nav.top() is @sfbase.Page::Chat(top) && top == r
+    if ours() {
+      if clear_made {
+        fresh.made.set("")
+      }
+      fresh.starting.set(false)
+      fresh.became.set(None)
+    }
+    if here {
+      // (the cursor in the chat's composer, as it was taken over from the new chat's (`became`): back with the
+      // words in the new chat's, its keyboard as it was; the chat's composer made as nodes is a field of its own,
+      // its cursor let go with its page, so asked for there: composer_take_focus; `had_cursor`)
+      if had_cursor {
+        composer_take_focus()
+      }
+      back()
+      app.nav.become(NewChat)
     }
   }
   let send = fn() {
@@ -195,7 +232,7 @@ fn new_send_go(
               @sfbase.sent_local_gone(rk, row)
               // (never put back: what it took of the draft, its files' bytes, let go of as one taken)
               @sfbase.writing_committed(d)
-              toast_later(@sf.t("web-main.draft.notSent", args=[("error", why)]))
+              toast_once(@sf.t("web-main.draft.notSent", args=[("error", why)]))
             }
             SentTaken => {
               if ours() {
@@ -210,16 +247,51 @@ fn new_send_go(
       _ => ()
     }
   }
-  writing_take(src, d, station~, fn(t) {
-    match t {
-      Some(_) => {
-        taken.val = t
-        send()
+  let take_err : Ref[String] = Ref("")
+  let take_failed = Ref(false)
+  writing_take(
+    src,
+    d,
+    station~,
+    on_error=fn(err) { take_err.val = err },
+    fn(t) {
+      match t {
+        Some(_) => {
+          taken.val = t
+          send()
+        }
+        // (nothing taken: writing_take already restored local draft in `d`; return to NewChat so the
+        // restored draft stays visible instead of stranding the user on an empty Chat page)
+        None => {
+          take_failed.val = true
+          if sending.val {
+            not_sent("")
+            if navigated.val {
+              @sfbase.writing_carry(src, draft, d.key)
+              // Keep `fresh.made` intact (if `!make` or `newChat.create` succeeds, retrying Send reuses
+              // the created chat; if `newChat.create` later fails, its Err branch clears `fresh.made`).
+              return_to_new_chat(false)
+            } else if ours() {
+              if make {
+                fresh.made.set("")
+              }
+              fresh.starting.set(false)
+              fresh.became.set(None)
+              back()
+            }
+            if take_err.val != "" {
+              toast_once(@sf.t("web-main.draft.notSent", args=[("error", take_err.val)]))
+            }
+          }
+        }
       }
-      // (nothing taken: nothing to put back but what it held)
-      None => if sending.val { not_sent("") }
-    }
-  })
+    },
+  )
+  // If `composer.take` already failed synchronously before we started `newChat.create` or navigated,
+  // stay on NewChat with the restored draft without creating an orphan chat.
+  if take_failed.val {
+    return
+  }
   if make {
     (src.call)("newChat.create", { "station": Json::string(station), "key": Json::string(key) }, fn(res) {
       match res {
@@ -232,40 +304,27 @@ fn new_send_go(
           // something is written there by now: then said so); the page the new chat again, its scene back, only
           // while it is still the chat it became: a page come on top since, or a new chat begun anew, is left as it
           // is (Nav::become changes whatever is on top)
-          // (whether the cursor is in a field as it is now, on the chat's page its composer's: its draft carried back from
-          // here)
-          let had_cursor = @ui.field_has_focus()
           sending.val = false
           sent_refuse(rk, row)
           @sfbase.flight_carry_gone(draft)
           @sfbase.writing_carry(src, draft, d.key)
           @sfbase.writing_starting(src, d, false)
           let why = @sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))])
-          let here = ours() && app.nav.top() is @sfbase.Page::Chat(top) && top == r
-          if ours() {
-            fresh.made.set("")
-            fresh.starting.set(false)
-            fresh.became.set(None)
+          return_to_new_chat(true)
+          if take_failed.val {
+            // `composer.take` already failed and restored `d` locally (and toasted if it had an error).
+            toast_once(why)
+          } else {
+            // (what was taken comes back with what is written meanwhile: composer.carry; keep d.taken for local fallback)
+            @sfbase.writing_back_or_said(src, d, why)
           }
-          if here {
-            // (the cursor in the chat's composer, as it was taken over from the new chat's (`became`): back with the
-            // words in the new chat's, its keyboard as it was; the chat's composer made as nodes is a field of its own,
-            // its cursor let go with its page, so asked for there: composer_take_focus; `had_cursor`)
-            if had_cursor {
-              composer_take_focus()
-            }
-            back()
-            app.nav.become(NewChat)
-          }
-          // (what was taken comes back with what is written meanwhile: composer.carry)
-          d.taken = None
-          @sfbase.writing_back_or_said(src, d, why)
         }
       }
     })
   }
   // what is written meanwhile goes on in the chat's draft
   @sfbase.writing_carry(src, d.key, draft)
+  navigated.val = true
   @view.transition(fn() {
     new_chat_reset()
     sent(r)

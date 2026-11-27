@@ -28,6 +28,18 @@ pub(all) struct Writing {
 }
 
 ///|
+/// Monotonic recovery state when a local fallback rescued a taken draft after `composer.restore`
+/// failed: `NeedRestore` -> `NeedText` -> `Synced`. Keeping restore and text sync distinct ensures
+/// a partial retry (`composer.restore` succeeds, `composer.text` fails) never re-runs `restore` and
+/// gets stuck on `back: false`.
+#derive(Eq)
+priv enum CoreSync {
+  Synced
+  NeedText
+  NeedRestore
+}
+
+///|
 priv struct WritingState {
   field : @ui.Field
   text : @signals.Signal[String]
@@ -47,6 +59,9 @@ priv struct WritingState {
   mut composing_base : String?
   mut moves_by_user : Bool
   mut seen_user_seq : Int
+  /// Blocks `writing_adopt` from overwriting a locally rescued draft and tells `writing_take` which
+  /// core sync step is still needed before taking again.
+  mut core_sync : CoreSync
 }
 
 ///|
@@ -241,6 +256,7 @@ fn writing_cached(src : Source, key : String) -> Writing {
         composing_base: None,
         moves_by_user: false,
         seen_user_seq: writing_user_seq.get(key).unwrap_or(0),
+        core_sync: Synced,
       }
       let topic = src.topic("composer", { "key": Json::string(key) })
       // (the draft's own reactions, held while a field of it is read, stopped as the last reader leaves: the
@@ -298,6 +314,7 @@ fn writing_cache_trim(kept : Writing) -> Unit {
         if physical_equal(w, kept) ||
           w.following.watched() ||
           w.taken is Some(_) ||
+          w.state.core_sync != Synced ||
           w.pending.untracked() != 0 ||
           w.field.focused() {
           continue
@@ -354,7 +371,7 @@ fn writing_adopt(key : String, w : WritingState, v : Json?, version : Int, gener
     w.adopted = -1
   }
   guard v is Some(Object(_)) else { return }
-  if w.pending.get() > 0 || number(v, "version") < w.acked ||
+  if w.core_sync != Synced || w.pending.get() > 0 || number(v, "version") < w.acked ||
     (w.adopted == version && (composing || w.composing_base is None)) {
     return
   }
@@ -507,9 +524,18 @@ pub fn writing_text(src : Source, w : Writing, words : String) -> Unit {
   if words == w.text.get() {
     return
   }
+  let was_need_text = w.state.core_sync == NeedText
   @signals.start_batch()
   w.state.text.set(words)
-  writing_act(src, w, "text", { "text": Json::string(words) })
+  writing_act(src, w, "text", { "text": Json::string(words) }, done=fn(r) {
+    // Only clear local-fallback sync state when this edit started in `NeedText` (no rescued
+    // attachments/quotes still waiting for core restore). Never touch `w.taken` during normal
+    // typing (an in-flight `composer.text` answering after `writing_take` starts must not clear
+    // `w.taken` and leak `writing_pictures` / break restore).
+    if was_need_text && w.state.core_sync == NeedText && r is Ok(_) {
+      set_core_sync_for_key(w, Synced, clear_taken=true)
+    }
+  })
   @signals.end_batch()
 }
 
@@ -908,37 +934,222 @@ pub fn writing_starting(src : Source, w : Writing, on : Bool) -> Unit {
 }
 
 ///|
+/// Updates `core_sync` (and optionally `taken`) across `w` and every cached `Writing` handle for
+/// `w.key` across wrapped `Source` instances (e.g. a remounted `NewChat` page after `newChat.create`
+/// fails while `new_send_go` still holds the previous page's `Writing`).
+fn set_core_sync_for_key(
+  w : Writing,
+  next : CoreSync,
+  kept? : (String, Array[Json], Array[Json]),
+  clear_taken? : Bool = false,
+) -> Unit {
+  let apply = fn(t : Writing) {
+    t.state.core_sync = next
+    if clear_taken {
+      t.taken = None
+    } else if kept is Some(_) {
+      t.taken = kept
+    }
+  }
+  apply(w)
+  for cached in writing_cache.val {
+    if cached.key == w.key && !physical_equal(cached.value, w) {
+      apply(cached.value)
+    }
+  }
+}
+
+///|
+/// Restores a taken draft snapshot locally when nothing new has been written in `w` (syncing every
+/// cached `Writing` handle for `w.key` across wrapped `Source` instances).
+/// Returns true if the local draft was restored.
+fn writing_restore_local(w : Writing, kept : (String, Array[Json], Array[Json])?) -> Bool {
+  guard kept is Some((words, quotes, files)) else { return false }
+  let apply_if_empty = fn(t : Writing) -> Bool {
+    guard t.state.text.untracked().trim(chars=" \n\t").to_owned() == "" &&
+      t.state.files.untracked().is_empty() &&
+      t.state.quotes.untracked().is_empty() else {
+      return false
+    }
+    t.state.text.set(words)
+    t.field.set(words)
+    t.state.quotes.set(quotes)
+    t.state.files.set(files)
+    t.state.ready.set(words.trim(chars=" \n\t").to_owned() != "" || !quotes.is_empty() || !files.is_empty())
+    true
+  }
+  let mut restored = apply_if_empty(w)
+  for cached in writing_cache.val {
+    if cached.key == w.key && !physical_equal(cached.value, w) {
+      if apply_if_empty(cached.value) {
+        restored = true
+      }
+    }
+  }
+  restored
+}
+
+///|
+/// Marks `w` (and any cached `Writing` handle for `w.key`) as needing core resync after
+/// `composer.restore` failed, preserving `kept` on `taken`.
+fn mark_core_desynced(w : Writing, kept : (String, Array[Json], Array[Json])?) -> Unit {
+  let next = if !w.state.files.untracked().is_empty() || !w.state.quotes.untracked().is_empty() {
+    NeedRestore
+  } else if w.state.text.untracked().trim(chars=" \n\t").to_owned() != "" {
+    NeedText
+  } else {
+    Synced
+  }
+  if next != Synced {
+    match kept {
+      Some(k) => set_core_sync_for_key(w, next, kept=k)
+      None => set_core_sync_for_key(w, next)
+    }
+  }
+}
+
+///|
 /// What is written taken away to be sent (`composer.take`): the draft empty at once; `done` gets what the core took,
 /// as it goes (its words with the links and the paths named after them, the files that are up, the quotes, those still
 /// going up), sent as it says: its files as they were when it took them, not as this page last drew them. `station`:
-/// the one it goes to, where a new chat's files go up now.
-pub fn writing_take(src : Source, w : Writing, station? : String = "", done : (Json?) -> Unit) -> Unit {
-  w.taken = Some((w.state.text.get(), w.state.quotes.get(), w.state.files.get()))
+/// the one it goes to, where a new chat's files go up now. If `composer.take` itself fails, the local draft is
+/// restored (unless something new was typed meanwhile) and `on_error` is told why. When the local draft was rescued
+/// after a failed `composer.restore` (`core_sync != Synced`), monotonically resyncs the core
+/// (`NeedRestore -> NeedText -> Synced`) before taking so retrying Send never dispatches an empty message or repeats
+/// an already-completed restore.
+pub fn writing_take(
+  src : Source,
+  w : Writing,
+  station? : String = "",
+  on_error? : (String) -> Unit,
+  done : (Json?) -> Unit,
+) -> Unit {
+  let snap = (w.state.text.get(), w.state.quotes.get(), w.state.files.get())
+  w.taken = Some(snap)
   let params : Map[String, Json] = Map([])
   if station != "" {
     params["station"] = Json::string(station)
   }
-  writing_act(
-    src,
-    w,
-    "take",
-    params,
-    show=fn(w) {
-      w.state.text.set("")
-      w.field.set("")
-      w.state.quotes.set([])
-      w.state.files.set([])
-      w.state.focus.set("")
-      w.state.error.set("")
-      w.state.ready.set(false)
-    },
-    done=fn(r) {
-      match r {
-        Ok(v) => done(Some(v))
-        Err(_) => done(None)
+  let clear_local = fn(w : Writing) {
+    w.state.text.set("")
+    w.field.set("")
+    w.state.quotes.set([])
+    w.state.files.set([])
+    w.state.focus.set("")
+    w.state.error.set("")
+    w.state.ready.set(false)
+  }
+  let fail_take = fn(msg : String, next_sync : CoreSync, keep_attachments : Bool) {
+    let restored = if keep_attachments { snap } else { (snap.0, [], []) }
+    if !keep_attachments {
+      // Release picture/upload state for dropped unrecoverable attachments and quotes.
+      w.taken = Some(snap)
+      writing_committed(w)
+    }
+    let has_text = restored.0.trim(chars=" \n\t").to_owned() != ""
+    let eff_sync = if !keep_attachments && !has_text { Synced } else { next_sync }
+    if eff_sync != Synced {
+      set_core_sync_for_key(w, eff_sync, kept=restored)
+    } else {
+      set_core_sync_for_key(w, Synced, clear_taken=true)
+    }
+    writing_restore_local(w, Some(restored)) |> ignore
+    match on_error {
+      Some(f) => f(msg)
+      None => ()
+    }
+    done(None)
+  }
+  let do_take = fn(clear_ui : Bool) {
+    writing_act(
+      src,
+      w,
+      "take",
+      params,
+      show=if clear_ui { clear_local } else { fn(_) {  } },
+      done=fn(r) {
+        match r {
+          Ok(v) => done(Some(v))
+          Err(e) => fail_take(text(Some(e), "message"), Synced, true)
+        }
+      },
+    )
+  }
+  if w.state.core_sync != Synced {
+    if src.read_only {
+      toast_later(read_only_words)
+      done(None)
+      return
+    }
+    let start_sync = w.state.core_sync
+    @signals.start_batch()
+    w.pending.set(w.pending.get() + 1)
+    clear_local(w)
+    @signals.end_batch()
+    let finish_sync = fn(ok : Result[Unit, String], err_sync : CoreSync, keep_attachments : Bool) {
+      match ok {
+        Ok(_) => {
+          // Keep `pending > 0` across clearing `core_sync` and starting `composer.take` so
+          // `writing_adopt` never flashes the restored text back into the cleared input field.
+          @signals.start_batch()
+          set_core_sync_for_key(w, Synced)
+          do_take(true)
+          w.pending.set(w.pending.get() - 1)
+          @signals.end_batch()
+        }
+        Err(msg) => {
+          @signals.start_batch()
+          w.pending.set(w.pending.get() - 1)
+          fail_take(msg, err_sync, keep_attachments)
+          @signals.end_batch()
+        }
       }
-    },
-  )
+    }
+    let sync_text_then_take = fn() {
+      if snap.0 != "" {
+        (src.call)(
+          "composer.text",
+          { "key": Json::string(w.key), "text": Json::string(snap.0) },
+          fn(tr) {
+            match tr {
+              Ok(_) => finish_sync(Ok(()), Synced, true)
+              Err(e) => finish_sync(Err(text(Some(e), "message")), NeedText, true)
+            }
+          },
+        )
+      } else {
+        finish_sync(Ok(()), Synced, true)
+      }
+    }
+    match start_sync {
+      NeedRestore =>
+        (src.call)(
+          "composer.restore",
+          { "key": Json::string(w.key), "error": Json::null(), "unlessWritten": Json::boolean(false) },
+          fn(rr) {
+            match rr {
+              Err(e) => finish_sync(Err(text(Some(e), "message")), NeedRestore, true)
+              Ok(v) =>
+                if field(Some(v), "back") is Some(False) {
+                  // Core lost `s.taken` (e.g. core restarted): drop unrecoverable attachments/quotes
+                  // from local UI and downgrade to `NeedText` (or `Synced`) so the draft never sticks.
+                  let next_sync = if snap.0.trim(chars=" \n\t").to_owned() != "" { NeedText } else { Synced }
+                  finish_sync(Err(@sf.t("android-misc.core.restarted")), next_sync, false)
+                } else {
+                  // Core now holds the restored attachments/quotes; advance monotonically to `NeedText`
+                  // so a failure in `composer.text` never re-runs `composer.restore` on the next retry.
+                  set_core_sync_for_key(w, NeedText)
+                  sync_text_then_take()
+                }
+            }
+          },
+        )
+      NeedText => sync_text_then_take()
+      Synced => finish_sync(Ok(()), Synced, true)
+    }
+  } else {
+    do_take(true)
+  }
 }
 
 ///|
@@ -1007,10 +1218,22 @@ pub fn writing_restore(src : Source, w : Writing, error : String, unless_written
           w.field.set(words)
           w.state.quotes.set(quotes)
           w.state.files.set(files)
+          w.state.ready.set(words.trim(chars=" \n\t").to_owned() != "" || !quotes.is_empty() || !files.is_empty())
         }
         None => ()
       }
       w.state.error.set(error)
+    },
+    done=fn(r) {
+      if r is Err(_) {
+        // Core rejected `composer.restore` (e.g. `auth_stale`): keep the optimistically restored
+        // local draft protected from `writing_adopt` and mark `core_sync` so retrying Send
+        // resyncs the core before taking.
+        mark_core_desynced(w, kept)
+        if error != "" {
+          toast_later(error)
+        }
+      }
     },
   )
 }
@@ -1020,8 +1243,10 @@ pub fn writing_restore(src : Source, w : Writing, error : String, unless_written
 /// there by now: then that stays, and why it did not go is said as a toast, so that it is never lost unsaid (a chat's
 /// message refused, a new chat's first one whose chat could not be made). Whether something is written there is the
 /// core's to say, as it has the draft then (what the page last drew of it may be another page's, or not yet carried
-/// there): so nothing is shown before it answers, its words come back as it puts them back.
+/// there): so nothing is shown before it answers, its words come back as it puts them back. If `composer.restore`
+/// itself fails (e.g. `auth_stale`), restores the local backup when empty so the message is never swallowed.
 pub fn writing_back_or_said(src : Source, w : Writing, why : String) -> Unit {
+  let kept = w.taken
   w.taken = None
   writing_act(
     src,
@@ -1032,7 +1257,12 @@ pub fn writing_back_or_said(src : Source, w : Writing, why : String) -> Unit {
       match r {
         // (a core from before, which does not say, put it back)
         Ok(v) => if field(Some(v), "back") is Some(False) { toast_later(why) }
-        Err(_) => toast_later(why)
+        Err(_) => {
+          if writing_restore_local(w, kept) {
+            mark_core_desynced(w, kept)
+          }
+          toast_later(why)
+        }
       }
     },
   )

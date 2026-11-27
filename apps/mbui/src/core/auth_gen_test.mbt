@@ -389,3 +389,43 @@ test "PR-B2s: unconditional sensitive ceiling and station sanitized SWR first fr
   assert_false(first_frame.contains("machineLogins"), msg="station first-frame SWR must contain 0 machineLogins")
   assert_false(first_frame.contains("\"logins\""), msg="station first-frame SWR must contain 0 logins")
 }
+
+///|
+test "first_handshake completes on incremental boundary and subsequent full syncAuth snapshot merges missing scopes" {
+  let (c, sent) = auth_client()
+  // Pre-handshake subscription receives an untrusted value before any {auth} arrives
+  let s = c.subscribe("station", params={ "scope": "wsA", "station": "wsA/st1" })
+  assert_true(c.receive("{\"id\":1,\"value\":{\"station\":\"wsA/st1\",\"name\":\"PRE\"}}"))
+  assert_true(s.value is Some(_))
+  let sent_before = sent.length()
+
+  // Suppose an incremental workspace boundary arrives first (e.g. while UI just attached to coreAhead)
+  assert_true(c.receive("{\"auth\":{\"conn\":100,\"global\":1,\"aggregate\":2,\"workspace\":\"wsB\",\"authGen\":2}}"))
+  assert_eq(c.conn_id(), 100L)
+  assert_eq(c.auth_gen_of(workspace="wsB"), 2)
+  assert_true(s.value is None, msg="first_handshake on incremental boundary must still clear pre-handshake sub values")
+  assert_true(sent.length() > sent_before, msg="first_handshake on incremental boundary must re-ask pre-handshake subs")
+
+  // A protected read call started for wsA in the window between the incremental boundary and the
+  // first full syncAuth snapshot must NOT be spuriously failed with auth_stale when wsA's baseline arrives.
+  let read_got : Ref[String] = Ref("")
+  let read_id = c.call("drive.list", params={ "station": "wsA/st1", "path": "/" }, on_done=fn(r) {
+    match r {
+      Ok(v) => read_got.val = "ok:" + v.stringify()
+      Err(e) => read_got.val = "err:" + e.stringify()
+    }
+  })
+
+  // Full snapshot from client.syncAuth arrives right after on same conn=100, bringing wsA's missed bump (authGen=3)
+  assert_true(
+    c.receive(
+      "{\"auth\":{\"conn\":100,\"global\":1,\"aggregate\":3,\"vaultGlobal\":1,\"scopes\":{\"wsA\":3,\"wsB\":2},\"vaults\":{}}}",
+    ),
+  )
+  assert_eq(c.conn_id(), 100L)
+  assert_eq(c.auth_gen_of(workspace="wsA"), 3, msg="syncAuth snapshot must populate workspace authGen missed before attach")
+  assert_eq(c.auth_gen_of(workspace="wsB"), 2)
+  assert_eq(read_got.val, "", msg="first full syncAuth baseline for wsA (prev==0) must not spuriously fail pending read")
+  assert_true(c.receive("{\"id\":" + read_id.to_string() + ",\"ok\":{\"entries\":[]},\"conn\":100,\"authGen\":3}"))
+  assert_true(read_got.val.has_prefix("ok:"), msg="pending read completes normally once core answers")
+}

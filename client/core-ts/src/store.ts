@@ -329,8 +329,13 @@ export class Store {
     }
   }
 
-  /// Emits the pending initial `{ id: 0, auth }` snapshot for `client` if ready and not yet sent.
-  flushAuthSnapshot(client: ClientId): void {
+  /// Emits the `{ id: 0, auth }` snapshot for `client` if ready (`force` re-emits even when an
+  /// earlier snapshot was already sent, e.g. when a UI attaches to a pre-started core).
+  flushAuthSnapshot(client: ClientId, force = false): void {
+    if (force) {
+      if (this.#authFailed.has(client)) return;
+      if (this.#connIds.has(client)) this.#pendingSnapshots.add(client);
+    }
     this.#flushAuthSnapshot(client);
   }
 

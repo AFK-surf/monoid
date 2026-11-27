@@ -575,11 +575,20 @@ fn flying_key(v : Json?, going : Bool, pictured : Bool) -> String {
 /// composer. Not taken in at all (the core refused it, or went away with it): back in the composer unless something new
 /// is written there, saying why; one the station did not take waits in the outbox, which says so.
 fn sent_into_chat(src : Source, r : ChatRef, v : ChatView, w : Writing, rk : String, row : String) -> Unit {
-  writing_take(src, w, fn(taken) {
-    guard taken is Some(_) else {
-      sent_refuse(rk, row)
-      return
-    }
+  writing_take(
+    src,
+    w,
+    on_error=fn(err) {
+      @ui.haptic(Reject)
+      if err != "" {
+        toast_later(@sf.t("web-main.draft.notSent", args=[("error", err)]))
+      }
+    },
+    fn(taken) {
+      guard taken is Some(_) else {
+        sent_refuse(rk, row)
+        return
+      }
     let to = match v.thread {
       Some(th) => ToThread(th)
       None => ToSession(r.session)

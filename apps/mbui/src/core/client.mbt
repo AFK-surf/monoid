@@ -422,6 +422,10 @@ pub struct Client {
   priv mut kept_sanitizer : (String, Json) -> Json
   /// Authoritative connection instance id from Core (`{ auth: { conn, ... } }`); 0L until synced.
   priv mut conn_id : Int64
+  /// Whether a full `{ auth: { scopes, vaults, ... } }` snapshot has been processed for the current `conn_id`.
+  /// When an incremental auth boundary arrives before the first full snapshot, baseline `prev == 0` entries in
+  /// that first full snapshot are recorded without spuriously invalidating pending protected reads.
+  priv mut full_handshake_done : Bool
   /// Previous connection id saved on `restarted()`; restart snapshot must satisfy `conn > min_restart_conn`.
   priv mut min_restart_conn : Int64
   /// Monotonic global/account authorization generation.
@@ -504,6 +508,7 @@ pub fn Client::new(
     device_global_policy: is_device_global_topic,
     kept_sanitizer: fn(_, v) { v },
     conn_id: 0L,
+    full_handshake_done: false,
     min_restart_conn: 0L,
     global_auth_gen: 0,
     aggregate_auth_gen: 1,
@@ -2158,6 +2163,7 @@ fn Client::take_auth(self : Client, auth : Map[String, Json]) -> Unit {
       _ => 1
     }
     self.conn_id = conn
+    self.full_handshake_done = auth.get("scopes") is Some(_)
     self.min_restart_conn = 0L
     self.global_auth_gen = global
     self.aggregate_auth_gen = if agg > global { agg } else { global }
@@ -2250,7 +2256,12 @@ fn Client::take_auth(self : Client, auth : Map[String, Json]) -> Unit {
           self.masked_vault_global_gen = 0
         }
         self.masked_vault_gen.clear()
-        self.invalidate_scope(VaultAll)
+        if !first_handshake {
+          self.invalidate_scope(VaultAll)
+        }
+      }
+      if first_handshake {
+        self.finish_first_handshake()
       }
       return
     }
@@ -2297,6 +2308,9 @@ fn Client::take_auth(self : Client, auth : Map[String, Json]) -> Unit {
             }
           _ => ()
         }
+      }
+      if first_handshake {
+        self.finish_first_handshake()
       }
       return
     }
@@ -2349,9 +2363,16 @@ fn Client::take_auth(self : Client, auth : Map[String, Json]) -> Unit {
             }
           }
       }
+      if first_handshake {
+        self.finish_first_handshake()
+      }
       return
     }
     _ => ()
+  }
+  let first_full = !self.full_handshake_done
+  if auth.get("scopes") is Some(_) || auth.get("vaults") is Some(_) {
+    self.full_handshake_done = true
   }
   match auth.get("scopes") {
     Some(Object(scopes)) =>
@@ -2365,7 +2386,7 @@ fn Client::take_auth(self : Client, auth : Map[String, Json]) -> Unit {
               if ag > self.masked_ws_gen.get(ws).unwrap_or(0) {
                 self.masked_ws_gen.remove(ws)
               }
-              if !first_handshake && !global_bumped {
+              if !first_handshake && !global_bumped && !(first_full && prev == 0) {
                 self.invalidate_scope(Workspace(ws))
               }
             }
@@ -2387,7 +2408,7 @@ fn Client::take_auth(self : Client, auth : Map[String, Json]) -> Unit {
               if vg > self.masked_vault_gen.get(k).unwrap_or(0) {
                 self.masked_vault_gen.remove(k)
               }
-              if !first_handshake {
+              if !first_handshake && !(first_full && prev == 0) {
                 match k.find("/") {
                   Some(i) => self.invalidate_scope(Vault(k[:i].to_owned(), k[i + 1:].to_owned()))
                   None => self.invalidate_scope(VaultWorkspace(k))
@@ -2401,29 +2422,34 @@ fn Client::take_auth(self : Client, auth : Map[String, Json]) -> Unit {
     _ => ()
   }
   if first_handshake {
-    // First handshake records baseline connection/generations; for any non-device-global sub that already
-    // holds a non-kept (`version != -2`) pre-handshake value, clear and re-ask it under the authoritative
-    // `conn_id` rather than silently stamping untrusted pre-handshake data as belonging to this connection.
-    for _, s in self.subs {
-      if !s.ending {
-        s.sub_conn = self.conn_id
-        s.sub_auth_gen = self.current_auth_gen(s.topic)
-        s.sub_vault_gen = self.current_vault_gen(s.topic)
-        let name = topic_name(s.topic)
-        if !(self.device_global_policy)(name) && s.value is Some(_) && !(name == "draft" && s.version == -2) {
-          s.value = None
-          s.held = None
-          s.told = None
-          s.later = None
-          s.version = 0
-          s.changed()
-          self.ask(s)
-        }
+    self.finish_first_handshake()
+  }
+}
+
+///|
+fn Client::finish_first_handshake(self : Client) -> Unit {
+  // First handshake records baseline connection/generations; for any non-device-global sub that already
+  // holds a non-kept (`version != -2`) pre-handshake value, clear and re-ask it under the authoritative
+  // `conn_id` rather than silently stamping untrusted pre-handshake data as belonging to this connection.
+  for _, s in self.subs {
+    if !s.ending {
+      s.sub_conn = self.conn_id
+      s.sub_auth_gen = self.current_auth_gen(s.topic)
+      s.sub_vault_gen = self.current_vault_gen(s.topic)
+      let name = topic_name(s.topic)
+      if !(self.device_global_policy)(name) && s.value is Some(_) && !(name == "draft" && s.version == -2) {
+        s.value = None
+        s.held = None
+        s.told = None
+        s.later = None
+        s.version = 0
+        s.changed()
+        self.ask(s)
       }
     }
-    for entry in self.auth_listeners.copy() {
-      (entry.1)(Global)
-    }
+  }
+  for entry in self.auth_listeners.copy() {
+    (entry.1)(Global)
   }
 }
 
