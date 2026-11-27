@@ -69,6 +69,7 @@ test("what_a_station_said_beyond_the_tables_shows_after_a_restart_before_any_net
   assert.equal(v(values, 6).rttMs, 40);
   assert.equal((first.core.inner.stations.link(S)?.memory.get("host") as { identity?: string } | undefined)?.identity, "studio");
   await run(first.core.inner.data.written);
+  await run(first.core.inner.data.device.flushTable("auth"));
   first.core.close();
   // Opened again, nothing answering yet: each shows as it was.
   const host = first.host;

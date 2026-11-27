@@ -1413,10 +1413,18 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let sval = ss.value
       let t_confirmed = ts.is_confirmed_known()
       let s_confirmed = ss.is_confirmed_known()
+      let stop_watch : Ref[(() -> Unit)?] = Ref(None)
       let released = Ref(false)
       let release_once = fn() {
         if !released.val {
           released.val = true
+          match stop_watch.val {
+            Some(stop) => {
+              stop_watch.val = None
+              stop()
+            }
+            None => ()
+          }
           @sfbase.let_go(s.src, scope)
         }
       }
@@ -1550,12 +1558,18 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       }
       if !menu_items.is_empty() {
         @sf.menu(menu_items, from=@sf.Beside::Node(from), title=label, along=End, gone=release_once)
+        stop_watch.val = Some(
+          @sfbase.watch_while_open(
+            fn() { flag(sub_s.get().value, "denied") || flag(sub_t.get().value, "denied") },
+            fn() { @sf.close_presented() },
+          ),
+        )
       } else {
         release_once()
       }
     },
     let_go=fn() { @sfbase.let_go(s.src, scope) },
-    most=@sf.open_hold_ms,
+    most=5000.0,
   )
   |> ignore
 }

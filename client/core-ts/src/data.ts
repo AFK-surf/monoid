@@ -195,6 +195,18 @@ class Device {
           const diskVal = Number(merged[key] ?? 0);
           const memVal = Number(cur[key] ?? 0);
           merged[key] = frozen(Math.max(Number.isFinite(diskVal) ? diskVal : 0, Number.isFinite(memVal) ? memVal : 0));
+        } else if (table === "auth" && key.startsWith("capRev:")) {
+          const dRec = isObject(merged[key]) ? (merged[key] as Record<string, unknown>) : undefined;
+          const mRec = isObject(cur[key]) ? (cur[key] as Record<string, unknown>) : undefined;
+          const dRevRaw = Number(dRec?.rev ?? 0);
+          const mRevRaw = Number(mRec?.rev ?? 0);
+          const dRev = Number.isFinite(dRevRaw) ? dRevRaw : 0;
+          const mRev = Number.isFinite(mRevRaw) ? mRevRaw : 0;
+          if (mRec?.denied === true) {
+            merged[key] = frozen({ rev: Math.max(dRev, mRev) + 1, denied: true });
+          } else {
+            merged[key] = mRev >= dRev ? cur[key] : merged[key];
+          }
         } else {
           merged[key] = cur[key];
         }

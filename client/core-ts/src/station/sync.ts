@@ -800,6 +800,19 @@ export class StationsSync {
     return n;
   }
 
+  #capRevKey(address: string, key: "screens" | "terminals"): string {
+    return `capRev:${address}:${key}`;
+  }
+
+  #capRevRecord(address: string, key: "screens" | "terminals"): { rev: number; denied: boolean } | undefined {
+    if (this.#core.data.device.isUnloaded("auth")) return undefined;
+    const raw = this.#core.data.device.get("auth", this.#capRevKey(address, key));
+    if (!isObject(raw)) return undefined;
+    const rev = Number(raw.rev);
+    if (!Number.isFinite(rev) || rev < 0 || typeof raw.denied !== "boolean") return undefined;
+    return { rev, denied: raw.denied };
+  }
+
   /// Whether station `address` explicitly refused `screens` or `terminals` (401/403) in the current auth generation.
   isDenied(key: "screens" | "terminals", address: string): boolean {
     const map = key === "screens" ? this.#screensDeniedGen : this.#terminalsDeniedGen;
@@ -823,6 +836,11 @@ export class StationsSync {
       if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       if (answer._tag === "Failure" && (answer.failure.status === 401 || answer.failure.status === 403)) {
         if ((this.#screensConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
+        if (this.#core.data.device.isUnloaded("auth")) yield* Effect.ignore(this.#core.data.device.reload("auth"));
+        const prevRev = this.#capRevRecord(address, "screens")?.rev ?? 0;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev: prevRev + 1, denied: true });
+        yield* Effect.ignore(this.#core.data.device.flushTable("auth"));
+        if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen || (this.#screensConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
         this.#screensDeniedGen.set(address, startGen);
         link.memory.clearKey("screens");
         this.onChange(address, "screens");
@@ -837,12 +855,12 @@ export class StationsSync {
 
   /// What is held of a station's screens but `screen` (closed from here), or but its view `view` (ended from here).
   /// Always advances `#screensSeq` (never `#screensConfirmSeq`) so an older in-flight 200 cannot re-add a just-closed
-  /// screen while an in-flight 401/403 still takes effect, and never promotes an unconfirmed baseline or restamps `authDigest`.
+  /// screen while an in-flight 401/403 still takes effect, and never promotes an unconfirmed baseline or restamps `authDigest`/`capRev`.
   #screensWithout(address: string, screen: string, view: string | null, gen: number): void {
     this.#nextSeq(this.#screensSeq, address);
     const link = this.#links.get(address);
     if (!link || !link.memory.confirmedIn("screens", gen)) return;
-    const held = link.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string } | undefined;
+    const held = link.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string; capRev?: number } | undefined;
     if (held === undefined) return;
     let changed = false;
     const screens = held.screens.flatMap((s) => {
@@ -868,7 +886,17 @@ export class StationsSync {
     this.#screensDeniedGen.delete(address);
     this.#nextSeq(this.#screensConfirmSeq, address);
     const digest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
-    const stamped = digest !== undefined ? { ...held, authDigest: digest } : held;
+    let capRev: number | undefined;
+    if (!this.#core.data.device.isUnloaded("auth")) {
+      const nextRev = (this.#capRevRecord(address, "screens")?.rev ?? 0) + 1;
+      this.#core.data.device.put("auth", this.#capRevKey(address, "screens"), { rev: nextRev, denied: false });
+      capRev = nextRev;
+    }
+    const stamped = {
+      ...held,
+      ...(digest !== undefined ? { authDigest: digest } : {}),
+      ...(capRev !== undefined ? { capRev } : {}),
+    };
     link.memory.setConfirmed("screens", stamped, confirmedGen);
     this.onChange(address, "screens");
   }
@@ -888,6 +916,11 @@ export class StationsSync {
       if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       if (answer._tag === "Failure" && (answer.failure.status === 401 || answer.failure.status === 403)) {
         if ((this.#terminalsConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
+        if (this.#core.data.device.isUnloaded("auth")) yield* Effect.ignore(this.#core.data.device.reload("auth"));
+        const prevRev = this.#capRevRecord(address, "terminals")?.rev ?? 0;
+        this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev: prevRev + 1, denied: true });
+        yield* Effect.ignore(this.#core.data.device.flushTable("auth"));
+        if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen || (this.#terminalsConfirmSeq.get(address) ?? 0) !== confirmAtStart) return;
         this.#terminalsDeniedGen.set(address, startGen);
         link.memory.clearKey("terminals");
         this.onChange(address, "terminals");
@@ -906,7 +939,17 @@ export class StationsSync {
     this.#terminalsDeniedGen.delete(address);
     this.#nextSeq(this.#terminalsConfirmSeq, address);
     const digest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
-    const stamped = digest !== undefined ? { ...held, authDigest: digest } : held;
+    let capRev: number | undefined;
+    if (!this.#core.data.device.isUnloaded("auth")) {
+      const nextRev = (this.#capRevRecord(address, "terminals")?.rev ?? 0) + 1;
+      this.#core.data.device.put("auth", this.#capRevKey(address, "terminals"), { rev: nextRev, denied: false });
+      capRev = nextRev;
+    }
+    const stamped = {
+      ...held,
+      ...(digest !== undefined ? { authDigest: digest } : {}),
+      ...(capRev !== undefined ? { capRev } : {}),
+    };
     link.memory.setConfirmed("terminals", stamped, confirmedGen);
     this.onChange(address, "terminals");
   }
@@ -919,27 +962,45 @@ export class StationsSync {
   }
 
   /// What is held of the station's terminals; confirmed in current authGen, or cold-start keeper cache only when
-  /// the owning DB is writable and its `authDigest` matches the current workspace digest.
+  /// the owning DB is writable, `device/auth` is loaded, `authDigest` matches, and `capRev` matches the non-denied watermark.
   terminals(address: string): { terminals: unknown[]; outdated: boolean } | undefined {
     if (this.isDenied("terminals", address)) return undefined;
-    const held = this.#links.get(address)?.memory.get("terminals") as { terminals: unknown[]; outdated: boolean; authDigest?: string } | undefined;
+    const held = this.#links.get(address)?.memory.get("terminals") as { terminals: unknown[]; outdated: boolean; authDigest?: string; capRev?: number } | undefined;
     if (held === undefined) return undefined;
     if (this.isConfirmed("terminals", address)) return held;
     const curDigest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
-    if (!this.#core.data.isStationWritable(address) || curDigest === undefined || held.authDigest !== curDigest) return undefined;
+    const rec = this.#capRevRecord(address, "terminals");
+    if (
+      !this.#core.data.isStationWritable(address) ||
+      curDigest === undefined ||
+      held.authDigest !== curDigest ||
+      rec === undefined ||
+      rec.denied !== false ||
+      typeof held.capRev !== "number" ||
+      held.capRev !== rec.rev
+    ) return undefined;
     return held;
   }
 
   /// What is held of the station's screens; confirmed in current authGen, or cold-start keeper cache only when
-  /// the owning DB is writable and its `authDigest` matches the current workspace digest.
+  /// the owning DB is writable, `device/auth` is loaded, `authDigest` matches, and `capRev` matches the non-denied watermark.
   /// A tab this device is opening (`#openingTabs`) is among them until the station lists it, said `opening`.
   screens(address: string): { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined {
     if (this.isDenied("screens", address)) return undefined;
-    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string } | undefined;
+    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean; authDigest?: string; capRev?: number } | undefined;
     if (held === undefined) return undefined;
     if (!this.isConfirmed("screens", address)) {
       const curDigest = this.#core.store.authGen.workspaceDigest(ofAddress(address));
-      if (!this.#core.data.isStationWritable(address) || curDigest === undefined || held.authDigest !== curDigest) return undefined;
+      const rec = this.#capRevRecord(address, "screens");
+      if (
+        !this.#core.data.isStationWritable(address) ||
+        curDigest === undefined ||
+        held.authDigest !== curDigest ||
+        rec === undefined ||
+        rec.denied !== false ||
+        typeof held.capRev !== "number" ||
+        held.capRev !== rec.rev
+      ) return undefined;
     }
     const opening = this.#openingTabs.get(address);
     if (opening === undefined || opening.size === 0) return held;

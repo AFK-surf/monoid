@@ -5,13 +5,14 @@ import { test } from "node:test";
 import { Deferred, Effect, Queue } from "effect";
 import { apply as applyOps } from "../src/delta.ts";
 import { answers, apply, call, readsOf, subscribe, v } from "./helpers.ts";
+import { Core } from "../src/core.ts";
 import { base, overview, started, stationLater, stationReplies } from "./station-fixture.ts";
 import type { HttpRequest } from "../src/host.ts";
 import { CoreError } from "../src/error.ts";
 import type { StationAddr } from "../src/station/addr.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
 import { logKey, PRESETS } from "../src/station/link.ts";
-import { Memory, type Keeper } from "../src/station/memory.ts";
+import { KEEP_MS, Memory, type Keeper } from "../src/station/memory.ts";
 import { jsonResponse, type FakeHost } from "../src/testing.ts";
 import { work } from "../src/work.ts";
 
@@ -542,11 +543,15 @@ test("ephemeral_jobLog_presets_and_coldstart_screens_terminals_authDigest_readon
   const curDigest = core.inner.store.authGen.workspaceDigest("ws");
   assert.ok(typeof curDigest === "string" && curDigest.length > 0);
 
-  // Matching authDigest on writable DB -> known:true, confirmed:false.
+  // Matching authDigest + matching non-denied capRev on writable DB -> known:true, confirmed:false.
+  const sRev = ((core.inner.data.device.get("auth", `capRev:${S}:screens`) as { rev?: number } | undefined)?.rev ?? 0) + 1;
+  const tRev = ((core.inner.data.device.get("auth", `capRev:${S}:terminals`) as { rev?: number } | undefined)?.rev ?? 0) + 1;
+  core.inner.data.device.put("auth", `capRev:${S}:screens`, { rev: sRev, denied: false });
+  core.inner.data.device.put("auth", `capRev:${S}:terminals`, { rev: tRev, denied: false });
   link.memory.deletePrefix("screens");
   link.memory.deletePrefix("terminals");
-  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Cached", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: curDigest });
-  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-cached", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false, authDigest: curDigest });
+  core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Cached", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: curDigest, capRev: sRev });
+  core.inner.data.keepStationMemory(S, "terminals", { terminals: [{ id: "t-cached", by: "a@x.com", cwd: "/old", at: 1, looking: [] }], outdated: false, authDigest: curDigest, capRev: tRev });
   assert.equal(core.inner.stations.isConfirmed("screens", S), false);
   assert.equal(core.inner.stations.isConfirmed("terminals", S), false);
   assert.equal((core.inner.stations.screens(S)?.screens[0] as { title?: string })?.title, "Cached");
@@ -637,10 +642,12 @@ test("ephemeral_jobLog_presets_and_coldstart_screens_terminals_authDigest_readon
   assert.equal(lateAuth.syncWorkspace("ws-late2", "owner:a@x.com:role:admin"), false);
   // Seeded workspace with no links does not emit spurious onChange for S:
   assert.equal(onChangeHits.filter((x) => x.startsWith(`${S}:`)).length, 0);
-  // Restore and verify link2 with matching digest after seed computes known:true, confirmed:false:
+  // Restore and verify link2 with matching digest + capRev after seed computes known:true, confirmed:false:
   c2.inner.stations.onChange = origOnChange;
+  const sRev2 = ((c2.inner.data.device.get("auth", `capRev:${S}:screens`) as { rev?: number } | undefined)?.rev ?? 0) + 1;
+  c2.inner.data.device.put("auth", `capRev:${S}:screens`, { rev: sRev2, denied: false });
   link2.memory.deletePrefix("screens");
-  c2.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "LateSeed", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: c2.inner.store.authGen.workspaceDigest("ws") });
+  c2.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "LateSeed", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: c2.inner.store.authGen.workspaceDigest("ws"), capRev: sRev2 });
   subscribe(c2, ui2, 1, { topic: "screens", station: S });
   await h2.settle();
   apply(h2, vals2);
@@ -980,4 +987,151 @@ test("screenGone_does_not_swallow_inflight_403_and_inflight_handshakes_abort_cle
   await host.settle();
   assert.equal(Deferred !== undefined, true);
   core.close();
+});
+
+test("r11_capRev_survives_readonly_403_restart_and_500_deeplink_and_tap_abort_and_live_digest_seed", async () => {
+  // 1. Live active subscription transitions automatically from known:false -> known:true, confirmed:false when workspaceDigest is seeded late.
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile] },
+    "GET /screens": { screens: [{ id: "desktop", kind: "desktop", title: "DiskCached", width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true },
+    "GET /terminals": { terminals: [{ id: "t-disk", by: "a@x.com", cwd: "/tmp", at: 1, looking: [] }] },
+  };
+  const first = await started(said as never);
+  const firstDigest = first.core.inner.store.authGen.workspaceDigest("ws");
+  assert.ok(firstDigest);
+  await first.host.time.pass(KEEP_MS + 1_000, 1_000);
+  await Effect.runPromise(first.core.inner.data.written);
+  await Effect.runPromise(first.core.inner.data.device.flushTable("auth"));
+  first.core.close();
+
+  // Restart with network blocked so workspaceDigest is NOT seeded yet on initial subscribe, then seed it manually.
+  const host = first.host;
+  host.onFetch(() => new Promise(() => {}));
+  host.onFetchStream(() => Effect.never);
+  host.takeEmitted();
+  const cold = await Core.create(host, { clock: host.time.clock, sample: 0 });
+  // Ensure digest is not yet seeded for "ws" on cold start before cloud replies:
+  const coldUi = cold.connect();
+  const coldVals = new Map<number, unknown>();
+  subscribe(cold, coldUi, 1, { topic: "screens", station: S });
+  subscribe(cold, coldUi, 2, { topic: "terminals", station: S });
+  await host.time.pass(100, 10);
+  apply(host, coldVals);
+  if (!cold.inner.store.authGen.hasWorkspaceDigest("ws")) {
+    assert.equal(v(coldVals, 1).known, false, "unseeded workspaceDigest starts as known: false");
+    assert.equal(v(coldVals, 2).known, false, "unseeded workspaceDigest starts as known: false");
+    cold.inner.store.authGen.syncWorkspace("ws", firstDigest);
+    await host.settle();
+    apply(host, coldVals);
+  }
+  assert.equal(v(coldVals, 1).known, true, "once workspaceDigest is seeded, active screens subscription auto-recomputes to known: true");
+  assert.equal(v(coldVals, 1).confirmed, false);
+  assert.equal(v(coldVals, 2).known, true, "once workspaceDigest is seeded, active terminals subscription auto-recomputes to known: true");
+  assert.equal(v(coldVals, 2).confirmed, false);
+  cold.close();
+
+  // 2. Read-only DB receives 403 -> capRev watermark flushed to device/auth -> reopen same DB as WRITABLE -> still known: false (no resurrection!).
+  const roRun = await started(said as never);
+  await roRun.host.time.pass(KEEP_MS + 1_000, 1_000);
+  await Effect.runPromise(roRun.core.inner.data.written);
+  await Effect.runPromise(roRun.core.inner.data.device.flushTable("auth"));
+  const roDb = roRun.core.inner.data.of(S);
+  assert.ok(roDb);
+  // Flip account DB readOnly during 403 so AccountDb cannot delete the row, while device/auth records capRev denied:true.
+  (roDb as { readOnly: boolean }).readOnly = true;
+  let force403 = true;
+  stationLater(roRun.host, (req) => {
+    if (force403 && req.method === "GET" && req.url.endsWith("/admin/api/screens")) {
+      return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+    }
+    return undefined;
+  });
+  roRun.core.inner.runner.fork(roRun.core.inner.stations.readScreens(S));
+  await roRun.host.settle();
+  assert.equal(roRun.core.inner.stations.isDenied("screens", S), true);
+  force403 = false;
+  (roDb as { readOnly: boolean }).readOnly = false;
+  roRun.core.close();
+
+  // Reopen a brand new Core on the SAME host (writable AccountDb still has the old row on disk, device/auth has capRev denied:true):
+  roRun.host.onFetch(() => new Promise(() => {}));
+  roRun.host.onFetchStream(() => Effect.never);
+  roRun.host.takeEmitted();
+  const reopened = await Core.create(roRun.host, { clock: roRun.host.time.clock, sample: 0 });
+  const rUi = reopened.connect();
+  const rVals = new Map<number, unknown>();
+  subscribe(reopened, rUi, 1, { topic: "screens", station: S });
+  await roRun.host.time.pass(200, 10);
+  apply(roRun.host, rVals);
+  assert.equal(v(rVals, 1).known, false, "writable restart after read-only 403 must NOT resurrect screens because device/auth capRev is denied");
+  assert.equal(v(rVals, 1).confirmed, false);
+  reopened.close();
+
+  // 3. Deep-link screen.view on cold-start cached screen + GET /screens returns 500 -> reconnecting with 0 screenView calls.
+  let svCalls = 0;
+  let tapCanceled = 0;
+  let wireMode: "count" | "hang-tap" = "count";
+  const wireFactory = (h: FakeHost): StationWire =>
+    Object.assign(new HostWire(h), {
+      screen: () => {
+        svCalls++;
+        if (wireMode === "hang-tap") {
+          return Effect.gen(function* () {
+            yield* Effect.addFinalizer(() => Effect.sync(() => { tapCanceled++; }));
+            const q = yield* Queue.unbounded<Uint8Array | null>();
+            return {
+              reply: { status: 200, headers: [["content-type", "application/x-stillfail-screen"]] as [string, string][], body: { take: Queue.take(q) }, via: null },
+              send: { write: () => Effect.void, finish: () => {} },
+              tap: () => Effect.never,
+            };
+          });
+        }
+        return Effect.fail(new CoreError("network", "should not be called"));
+      },
+    });
+  const dl = await started(said as never, 0, wireFactory);
+  const dlLink = dl.core.inner.stations.link(S);
+  assert.ok(dlLink);
+  const dlDigest = dl.core.inner.store.authGen.workspaceDigest("ws");
+  const dlRev = ((dl.core.inner.data.device.get("auth", `capRev:${S}:screens`) as { rev?: number } | undefined)?.rev ?? 0) + 1;
+  dl.core.inner.data.device.put("auth", `capRev:${S}:screens`, { rev: dlRev, denied: false });
+  dlLink.memory.deletePrefix("screens");
+  dl.core.inner.data.keepStationMemory(S, "screens", { screens: [{ id: "desktop", kind: "desktop", title: "Cached500", width: 800, height: 600, viewers: [], controlledBy: [] }], outdated: false, authDigest: dlDigest, capRev: dlRev });
+  let screensStatus: 500 | 403 | 200 = 500;
+  stationLater(dl.host, (req) => {
+    if (req.method === "GET" && req.url.endsWith("/admin/api/screens")) {
+      if (screensStatus === 500) return Promise.resolve(jsonResponse(500, { error: "temp error" }));
+      if (screensStatus === 403) return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+    }
+    return undefined;
+  });
+  const dlUi = dl.core.connect();
+  dl.host.takeEmitted();
+  call(dl.core, dlUi, 81, "screen.view", { station: S, screen: "desktop", view: "v-500", codecs: ["jpeg"] });
+  await dl.host.settle();
+  const msgs500 = dl.host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(msgs500.some((m) => m.id === 81 && m.value?.state?.phase === "reconnecting"), `500 on unconfirmed deep-link must enter reconnecting, got: ${JSON.stringify(msgs500)}`);
+  assert.equal(svCalls, 0, "must never call requests.screenView while GET /screens fails with 500");
+  dl.core.receive(dlUi, { kind: "cancel", id: 81, cancel: true });
+  await dl.host.settle();
+
+  // 4. Astra P1-3: socket.tap hanging when GET /screens returns 403 -> immediately interrupts runBody, closes socket scope, enters phase: "denied".
+  screensStatus = 200;
+  dl.core.inner.runner.fork(dl.core.inner.stations.readScreens(S));
+  await dl.host.settle();
+  assert.equal(dl.core.inner.stations.isConfirmed("screens", S), true);
+  wireMode = "hang-tap";
+  dl.host.takeEmitted();
+  call(dl.core, dlUi, 82, "screen.view", { station: S, screen: "desktop", view: "v-tap", codecs: ["jpeg"] });
+  await dl.host.settle();
+  assert.equal(svCalls, 1, "screenView opened and now hanging inside socket.tap");
+  assert.equal(tapCanceled, 0);
+  screensStatus = 403;
+  dl.core.inner.runner.fork(dl.core.inner.stations.readScreens(S));
+  await dl.host.settle();
+  const msgsTap = dl.host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string } } });
+  assert.ok(msgsTap.some((m) => m.id === 82 && m.value?.state?.phase === "denied"), `403 during socket.tap must enter phase: denied, got: ${JSON.stringify(msgsTap)}`);
+  assert.equal(tapCanceled, 1, "socket scope must be closed immediately when 403 interrupts socket.tap");
+  dl.core.close();
 });
