@@ -65,7 +65,7 @@ fn home_node(
     // (in view while it is the page on top: what changes under another page is as it is as it is come back to)
     watched,
     section_rows: fn() { (0, 0) },
-    section_chrome_bottom: fn() { nav_foot() + 22.0 + bar_track + 10.0 },
+    section_chrome_bottom: fn() { bar_top_from_foot() + 10.0 },
     section_chrome_suppress: fn() {
       @sfpages.search_on_lists() ||
       @sf.presenter_visible() ||

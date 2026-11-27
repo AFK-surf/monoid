@@ -37,6 +37,8 @@ pub(all) struct SectionChrome[K] {
   bot_edge_key : K?
   active_bottom : Double
   next_top : Double
+  viewport_h : Double
+  visible_heads : Array[(Double, Double)]
 }
 
 ///|
@@ -99,6 +101,8 @@ priv struct SectionSolved {
   bot_edge_idx : Int
   active_bottom : Double
   next_top : Double
+  viewport_h : Double
+  visible_heads : Array[(Double, Double)]
 }
 
 ///|
@@ -132,6 +136,8 @@ fn SectionSolved::empty(top_edge : Double, bottom_edge : Double) -> SectionSolve
     bot_edge_idx: -1,
     active_bottom: 0.0,
     next_top: @double.infinity,
+    viewport_h: 0.0,
+    visible_heads: [],
   }
 }
 
@@ -505,6 +511,14 @@ fn solve_sections(
   } else {
     @double.infinity
   }
+  let visible_heads : Array[(Double, Double)] = []
+  for j in 0..<g {
+    let hy0 = ps[j] - x
+    let hy1 = hy0 + rs[j]
+    if hy1 > 0.0 && hy0 < vh {
+      visible_heads.push((hy0, hy1))
+    }
+  }
   {
     keys,
     ps,
@@ -534,6 +548,8 @@ fn solve_sections(
     bot_edge_idx,
     active_bottom,
     next_top,
+    viewport_h: vh,
+    visible_heads,
   }
 }
 
@@ -579,6 +595,8 @@ pub fn[K] ListPlace::set_sections(
           bot_edge_key: c.bot_edge_key.map(key_of),
           active_bottom: c.active_bottom,
           next_top: c.next_top,
+          viewport_h: c.viewport_h,
+          visible_heads: c.visible_heads,
         }
       })
     }
@@ -1113,6 +1131,8 @@ fn SectionWindowHost::sync_chrome(
             bot_edge_key: if solved.bot_edge_idx >= 0 { Some(solved.keys[solved.bot_edge_idx]) } else { None },
             active_bottom: solved.active_bottom,
             next_top: solved.next_top,
+            viewport_h: solved.viewport_h,
+            visible_heads: solved.visible_heads,
           }
         }
         make_chrome(host, read_chrome)

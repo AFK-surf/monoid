@@ -1024,7 +1024,16 @@ fn chats_pane_node(
       @sf.style_node(line, fn() { @sf.list_line(frame.at) })
       match k {
         "top" => line.height(By(fn() { Some((frame.top)() + @sf.theme().chat_list.top_in) })) |> ignore
-        "foot" => line.height(By(fn() { Some((frame.foot)() + @sf.list_foot_in(frame.at)) })) |> ignore
+        "foot" =>
+          line.height(By(fn() {
+            let base = (frame.foot)() + @sf.list_foot_in(frame.at)
+            if pane_grouped && frame.at == Whole {
+              Some(dmax(base, (frame.section_chrome_bottom)() + 52.0))
+            } else {
+              Some(base)
+            }
+          }))
+          |> ignore
         "search" => {
           let tucked = @signals.computed(fn(_) { search_tucked(read().0) })
           let reveal_at = fn(cover : () -> Double) {
@@ -1542,7 +1551,10 @@ fn section_chrome_node(
       let pill_left_inset = 22.0
       let pill_min_h = 44.0
       let pill_vpad = 8.0
+      let pill_line_h_1x = 19.0
       let pill_fade_in_px = 20.0
+      let pill_head_gap = 8.0
+      let pill_head_fade = 16.0
       let menu_serial : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
       let own_menu_drawn = fn() {
         let s = menu_serial.get()
@@ -1560,7 +1572,26 @@ fn section_chrome_node(
         } else {
           clamp01((c.next_top - c.top_edge - 12.0) / pill_fade_in_px)
         }
-        dmin(enter, exit)
+        let mut head_clear = 1.0
+        if c.viewport_h > 0.0 && !c.visible_heads.is_empty() {
+          let pill_h = dmax(pill_min_h, (pill_line_h_1x * host.words_scale()).ceil() + pill_vpad * 2.0)
+          let pill_bot = c.viewport_h - dmax(0.0, (frame.section_chrome_bottom)())
+          let pill_top = pill_bot - pill_h
+          let band_top = pill_top - pill_head_gap
+          let band_bot = pill_bot + pill_head_gap
+          for h in c.visible_heads {
+            let (hy0, hy1) = h
+            let dist = if hy1 <= band_top {
+              band_top - hy1
+            } else if hy0 >= band_bot {
+              hy0 - band_bot
+            } else {
+              0.0
+            }
+            head_clear = dmin(head_clear, clamp01(dist / pill_head_fade))
+          }
+        }
+        dmin(dmin(enter, exit), head_clear)
       })
       host
       .lies_along(Is(End))

@@ -82,9 +82,20 @@ let closes : Double = 16.0
 let bar_hold_ms : Double = 200.0
 
 ///|
+/// Horizontal and bottom outer margin of the small-screen Liquid Glass bottom tab bar (also used to align
+/// bottom-left floating overlays flush with the bar and its scroll-collapsed orb).
+let bar_inset_edge : Double = 22.0
+
+///|
+/// Distance from the bottom of the window to the top edge of the small-screen Liquid Glass bottom tab bar.
+fn bar_top_from_foot() -> Double {
+  nav_foot() + bar_inset_edge + bar_track
+}
+
+///|
 /// What a place's top page keeps clear at its foot for the bar (Places.kt BAR_ROOM: the bar, its 22 from the foot, a
 /// little air, and the action standing 32 over it).
-let bar_room : Double = 50.0 + 22.0 + 16.0 + 32.0
+let bar_room : Double = bar_track + bar_inset_edge + 16.0 + 32.0
 
 ///|
 /// The chats' family of places, whose pages have 令 in the notch.
@@ -1975,7 +1986,7 @@ fn bar_glass_node(v : @view.View, src : Source, ws : () -> Workspace?) -> Unit {
     .over(Is(true))
     .alpha(By(fn() { if @sfbase.first_page_waits.get() { 0.0 } else { 1.0 } }))
     .hides(By(fn() { @sfbase.first_page_waits.get() }))
-    .padding(By(fn() { (22.0, 0.0, 22.0, 22.0 + nav_foot()) }))
+    .padding(By(fn() { (bar_inset_edge, 0.0, bar_inset_edge, bar_inset_edge + nav_foot()) }))
     .presses(By(fn() {
       !@sfbase.first_page_waits.get() &&
       (match told() {

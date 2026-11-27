@@ -182,18 +182,63 @@ test "small screen (Whole 390x844): bottom-left Liquid Glass group pill above ta
     !s.hidden && s.role is Button && s.expanded is Some(_) && s.rect.1 > 700.0
   })
   assert_eq(bot_group_heads.length(), 0, msg="small screen must have 0 bottom stacked headers")
-  // Compact left-aligned Liquid Glass floating pill sits cleanly above the bottom tab bar (bar top = 844 - 72 = 772)
+  // Compact left-aligned Liquid Glass floating pill sits cleanly above the bottom tab bar
   let pill = sticky_find_floating_pill(t, "board")
   assert_true(pill is Some(_), msg="expected bottom-left floating Liquid Glass group pill for 'board'")
   let pr = pill.unwrap()
-  assert_true((pr.0 - 22.0).abs() <= 1.0, msg="floating pill must align flush with bottom tab bar left=22: x=\{pr.0}")
+  assert_true((pr.0 - bar_inset_edge).abs() <= 1.0, msg="floating pill must align flush with bottom tab bar left: x=\{pr.0}")
   assert_true(pr.3 >= 44.0, msg="floating pill touch target must be >= 44pt tall: h=\{pr.3}")
-  let bar_top = 844.0 - 22.0 - bar_track
+  let bar_top = 844.0 - bar_top_from_foot()
   assert_true(
     pr.1 + pr.3 <= bar_top - 4.0 && pr.1 + pr.3 >= bar_top - 16.0,
     msg="floating pill must sit cleanly above bottom tab bar (bar_top=\{bar_top}): y=\{pr.1} h=\{pr.3}",
   )
   assert_eq(t.audit(), [])
+
+  // Sweep scrolling through subsequent groups: whenever an in-flow group heading crosses the bottom-left pill band
+  // `[pill_top - 8, pill_bot + 8]`, the floating pill must fade out so two group headings never collide visually.
+  let pill_band_top = pr.1 - 8.0
+  let pill_band_bot = pr.1 + pr.3 + 8.0
+  let mut saw_crossing = false
+  let mut saw_visible_between = false
+  for _ in 0..<24 {
+    sticky_scroll_by(t, 195.0, 400.0, 45.0)
+    let any_pill = t.semantics().iter().find_first(fn(s) {
+      !s.hidden &&
+      s.role is Button &&
+      s.expanded is None &&
+      s.rect.0 >= 16.0 &&
+      s.rect.0 <= 32.0 &&
+      s.rect.1 >= 500.0 &&
+      s.rect.2 <= 230.0 &&
+      s.label.contains(" ")
+    })
+    let mut heading_in_band = false
+    for s in t.semantics() {
+      if !s.hidden && s.role is Button && s.expanded is Some(_) {
+        let hy0 = s.rect.1
+        let hy1 = hy0 + s.rect.3
+        if hy1 > pill_band_top && hy0 < pill_band_bot {
+          heading_in_band = true
+        }
+      }
+    }
+    if heading_in_band {
+      saw_crossing = true
+      assert_true(any_pill is None, msg="bottom-left pill must hide while an in-flow group heading crosses its vertical band")
+    } else if any_pill is Some(_) {
+      saw_visible_between = true
+    }
+  }
+  assert_true(saw_crossing, msg="expected sweep to exercise >= 1 in-flow heading crossing the bottom-left pill band")
+  assert_true(saw_visible_between, msg="expected bottom-left pill to reappear cleanly between heading crossings")
+
+  // Scroll back to "board" for touch & jump assertions
+  sticky_scroll_by(t, 195.0, 400.0, -2000.0)
+  sticky_scroll_by(t, 195.0, 400.0, 360.0)
+  let pill = sticky_find_floating_pill(t, "board")
+  assert_true(pill is Some(_), msg="expected bottom-left floating pill restored for 'board'")
+  let pr = pill.unwrap()
 
   // Verify real finger touches across the entire 44pt vertical span (top edge, center, bottom edge) hit the pill
   // and open the native group-jump sheet cleanly (never falling through to underlying chat rows or bottom bar).
@@ -246,8 +291,8 @@ test "small screen Android system_bars (380x872, top=44, bottom=28): bottom-left
   let pill = sticky_find_floating_pill(t, "board")
   assert_true(pill is Some(_), msg="expected bottom-left floating pill with realistic Android system_bars")
   let pr = pill.unwrap()
-  let bar_top = 872.0 - 28.0 - 22.0 - bar_track
-  assert_true((pr.0 - 22.0).abs() <= 1.0, msg="pill left aligns flush with tab bar left=22: x=\{pr.0}")
+  let bar_top = 872.0 - bar_top_from_foot()
+  assert_true((pr.0 - bar_inset_edge).abs() <= 1.0, msg="pill left aligns flush with tab bar left: x=\{pr.0}")
   assert_true(pr.3 >= 44.0, msg="pill touch height >= 44pt: h=\{pr.3}")
   assert_true(
     pr.1 + pr.3 <= bar_top - 4.0 && pr.1 + pr.3 >= bar_top - 16.0,
