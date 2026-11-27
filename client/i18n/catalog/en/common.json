@@ -63,5 +63,7 @@
   "common.report.sends": "This sends the error, why the turn failed, the agent and station versions, the names (not values) of the agents' environment variables, this chat's station log lines, and your name and email.",
   "common.login.openInStation": "Open in {station}'s browser",
   "common.login.backToStation": "Back to {station}'s browser",
-  "common.login.otherWays": "Other ways"
+  "common.login.otherWays": "Other ways",
+  "common.sort.asc": "ascending",
+  "common.sort.desc": "descending"
 }

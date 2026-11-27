@@ -756,6 +756,8 @@ let zh : Map[String, String] = {
   "common.retry": "重试",
   "common.save": "保存",
   "common.search": "搜索",
+  "common.sort.asc": "升序",
+  "common.sort.desc": "降序",
   "common.telemetry.note": "不会包含你的聊天内容",
   "common.telemetry.title": "发送使用统计和错误报告",
   "common.uploadConfirming": "等待 station 确认收到",

@@ -1612,7 +1612,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide newchat-preset-theirs-long newChat/down": 28,
   "wide newchat-preset-theirs-long newChat/carried": 28,
   "phone profiles-manage profiles/quota": 9,
-  "phone profiles-manage profiles/down": 47,
+  "phone profiles-manage profiles/down": 66,
   "wide profiles-manage profiles/quota": 6,
-  "wide profiles-manage profiles/down": 143,
+  "wide profiles-manage profiles/down": 125,
 }

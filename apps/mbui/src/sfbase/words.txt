@@ -748,6 +748,8 @@ common.reassignAccount
 common.retry
 common.save
 common.search
+common.sort.asc
+common.sort.desc
 common.telemetry.note
 common.telemetry.title
 common.uploadConfirming

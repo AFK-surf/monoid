@@ -63,5 +63,7 @@
   "common.report.sends": "将发送此报错、出错这一轮的原因、agent 和 station 的版本、agent 环境变量的名称（不含值）、此对话相关的 station 日志，以及你的名字和邮箱。",
   "common.login.openInStation": "在 {station} 的浏览器中打开",
   "common.login.backToStation": "回到 {station} 的浏览器",
-  "common.login.otherWays": "其他方式"
+  "common.login.otherWays": "其他方式",
+  "common.sort.asc": "升序",
+  "common.sort.desc": "降序"
 }

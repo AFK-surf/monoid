@@ -50,3 +50,33 @@ pub fn GridTable::row(
 pub fn GridRow::head(self : GridRow, parent : @view.View, look : (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View {
   self.tr.header(made_for=loc, parent, look)
 }
+
+///|
+/// A sortable column header cell of `self` in `parent`, announcing `label()` together with `sort()` in `ColumnHeader`
+/// semantics. Its node.
+#callsite(autofill(loc))
+pub fn GridRow::sort_head(
+  self : GridRow,
+  parent : @view.View,
+  label : () -> String,
+  sort : () -> @headless.TableSortDir?,
+  look : (@view.View) -> Unit,
+  sort_label? : (@headless.TableSortDir) -> String,
+  in_node? : Bool = false,
+  loc~ : SourceLoc,
+) -> @view.View {
+  self.tr.sort_header(made_for=loc, parent, label, sort, look, sort_label?, in_node~)
+}
+
+///|
+/// A data cell of `self` in `parent`, read by the words `look` puts in it. Its node.
+#callsite(autofill(loc))
+pub fn GridRow::cell(
+  self : GridRow,
+  parent : @view.View,
+  look : (@view.View) -> Unit,
+  in_node? : Bool = false,
+  loc~ : SourceLoc,
+) -> @view.View {
+  self.tr.cell(made_for=loc, parent, in_node~, look)
+}

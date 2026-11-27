@@ -1796,6 +1796,8 @@ test "批量管理 shares several accounts, sets stations at once, stops sharing
       assert_eq(text(Some(a.1), "station"), "ws1/st1", msg=at)
       assert_eq(field(Some(a.1), "allowAuto"), Some(Json::boolean(true)), msg=at)
     }
+    // Wide batch dock is a flow child (`ComeGroup` collapse animation); wait for collapse before checking DOM removal.
+    t.run_for(@ui.move_most_ms)
     assert_true(t.find("已选 ") is None, msg="\{at}: selection cleared after batch update")
     // 5. Batch stop sharing via ⋯ more menu asks confirmation and only stops shared rows.
     t.click(Checkbox, label="Claude 主账号")
@@ -2364,13 +2366,14 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
       assert_true(t.find("已选 1 项") is Some(_), msg=at)
       let share_btn = t.get(Button, label="共享")
       let move_btn = t.get(Button, label="迁移")
-      // Card sits at the bottom of the viewport
-      let bar_glass = t.drawn_glass().filter(fn(g) { g.1 + g.3 > 450.0 && g.2 > 200.0 })
+      // Card sits below the table (wide flow-child) or at the bottom of the viewport (narrow floating dock)
+      let min_bottom = if w <= 390.0 { 450.0 } else { 200.0 }
+      let bar_glass = t.drawn_glass().filter(fn(g) { g.1 + g.3 > min_bottom && g.2 > 200.0 })
       let bar_liquid = bar_glass.filter(fn(g) { g.4 == 6 })
       let bar_shadow = t
         .drawn_instances()
         .iter()
-        .any(fn(a) { a.length() > 12 && a[5] == 2.0 && a[12] == 1.0 && a[1] + a[3] > 450.0 && a[2] > 200.0 })
+        .any(fn(a) { a.length() > 12 && a[5] == 2.0 && a[12] == 1.0 && a[1] + a[3] > min_bottom && a[2] > 200.0 })
       assert_eq((at, bar_glass.length(), bar_liquid.length(), bar_shadow), (at, 1, 1, true))
       assert_eq(t.corner_faults(), [], msg="\{at}: corner faults")
       let g = bar_liquid[0]
@@ -2406,7 +2409,7 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
           t.wheel(w / 2.0, 200.0, 200.0)
         }
         t.run_for(@ui.move_most_ms)
-        let wide_bar_top = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 450.0 && gl.2 > 200.0 })[0].1
+        let wide_bar_top = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 200.0 && gl.2 > 200.0 })[0].1
         guard t.query(Checkbox, label="备用 key") is Some(last_cb) else {
           fail("\{at}: wide last row (备用 key) not found after scrolling")
         }
@@ -2420,10 +2423,10 @@ test "profiles_batch_foot_node (page=true): liquid glass card with outside shado
       t.draw()
       t.run_for(@ui.move_most_ms)
       assert_eq(@sf.theme().dark, dark, msg="\{at}: solid theme().dark must match")
-      let solid_glass = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > 450.0 && gl.2 > 200.0 })
+      let solid_glass = t.drawn_glass().filter(fn(gl) { gl.1 + gl.3 > min_bottom && gl.2 > 200.0 })
       let solid_edges = t
         .boxes_held()
-        .filter(fn(b) { b.border_w >= 0.9 && b.y + b.h > 450.0 && b.w > 200.0 })
+        .filter(fn(b) { b.border_w >= 0.9 && b.y + b.h > min_bottom && b.w > 200.0 })
         .map(fn(b) { b.border_w })
       assert_eq((at, solid_glass.length(), solid_edges), (at, 0, [1.0]))
       assert_eq(t.corner_faults(), [], msg="\{at}: solid corner faults")
@@ -2600,8 +2603,14 @@ test "profiles_manage table: master checkbox, filter-empty, conditional whitelis
   assert_true(t.find("状态") is Some(_), msg="wide table header shows 状态 column")
   assert_true(t.find("共享") is Some(_), msg="table header shows 共享 column")
   assert_true(t.find("白名单暂无 station") is None, msg="whitelist-empty hint hidden by default when no whitelist accounts exist")
+  let tbl_h_before = t.get(Table).rect.3
   t.click(Checkbox, label="全选")
   t.run_for(@ui.move_most_ms)
+  let tbl_h_selected = t.get(Table).rect.3
+  assert_true(
+    (tbl_h_before - tbl_h_selected).abs() < 0.5,
+    msg="floating glass dock must not change table height: \{tbl_h_before} -> \{tbl_h_selected}",
+  )
   assert_true(t.query(Checkbox, label="取消全选") is Some(_), msg="master checkbox label flips to 取消全选 when all selectable rows picked")
   assert_true(t.query(Button, label="共享") is Some(_), msg="floating batch dock appears with 共享 after select-all")
   assert_true(t.query(Button, label="刷新") is Some(_), msg="floating batch dock shows direct 刷新 button")
@@ -2749,6 +2758,27 @@ test "批量管理 status column (pm_status_of), health/type filters, and group 
   ])
   assert_eq(pm_status_of(Some(empty_ws)), ("正常", "ok"))
   assert_false(pm_row_has_issue(empty_ws))
+
+  // API key with creditsText displays credits rather than generic 正常.
+  let with_credits = obj([
+    ("usable", Json::boolean(true)),
+    ("group", str("key")),
+    ("profile", obj([("quota", obj([("state", str("ok")), ("windows", Json::array([])), ("creditsText", str("余额 $42.80"))]))])),
+  ])
+  assert_eq(pm_status_of(Some(with_credits)), ("余额 $42.80", "ok"))
+  assert_false(pm_row_has_issue(with_credits))
+
+  // Grouping keeps provider groups in order while sorting rows within each group.
+  let g_claude_b = obj([("key", str("c2")), ("group", str("claude")), ("groupTitle", str("Claude 订阅")), ("profile", obj([("name", str("Claude 团队"))]))])
+  let g_claude_a = obj([("key", str("c1")), ("group", str("claude")), ("groupTitle", str("Claude 订阅")), ("profile", obj([("name", str("Claude 主账号"))]))])
+  let g_key_a = obj([("key", str("k1")), ("group", str("key")), ("groupTitle", str("API key")), ("profile", obj([("name", str("Anthropic API"))]))])
+  let grouped_sorted = pm_grouped_rows([g_claude_b, g_key_a, g_claude_a], Some({ col: "account", dir: Asc }), [])
+  assert_eq(grouped_sorted.length(), 2)
+  assert_eq(grouped_sorted[0].0, "claude")
+  assert_eq(grouped_sorted[0].1, "Claude 订阅")
+  assert_eq(grouped_sorted[0].2.map(fn(r) { text(Some(r), "key") }), ["c1", "c2"])
+  assert_eq(grouped_sorted[1].0, "key")
+  assert_eq(grouped_sorted[1].2.map(fn(r) { text(Some(r), "key") }), ["k1"])
 
   // 2. Live UI: type dropdown filters by group and auto-resets to 全部类型 when that group disappears; status dropdown filters 正常 vs 需关注.
   let drop_codex : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
@@ -2935,6 +2965,8 @@ test "批量管理 set_max_sessions_many validation, skip, partial failure, stil
   assert_eq(text(Some(asked[0].1), "id"), "cc")
   assert_eq(field(field(Some(asked[0].1), "input"), "maxConcurrentSessions"), Some(Json::number(5.0)))
   assert_true(@sfbase.toast_words().contains("跳过 1 个不支持的账号"), msg="completion toast mentions skipped count: " + @sfbase.toast_words())
+  // Wide batch dock is a flow child (`ComeGroup` collapse animation); wait for collapse before checking DOM removal.
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("已选 ") is None, msg="selection clears after full success")
 
   // 2d. Input "0" clears to null, and partial failure keeps only the failed row ticked.

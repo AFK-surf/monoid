@@ -220,5 +220,15 @@ test "wave3 detail-page, count-section, capsule-words-button and quota-chips-act
     assert_true(tq.find("复制工作站 ID") is Some(_), msg="quota-chips-actions menu opened at \{w}")
     let tq_faults = page_faults(tq)
     assert_true(tq_faults.is_empty(), msg="quota-chips-actions menu at \{w}: " + tq_faults.join("\n"))
+
+    let tdt = coverage_tester("data-table", w)
+    tdt.click(Button, label="按 剩余额度 排序")
+    tdt.run_for(@ui.move_most_ms)
+    assert_true(tdt.query(ColumnHeader, label="剩余额度, 升序") is Some(_), msg="data-table sorted at \{w}")
+    tdt.click(Button, label="显示空态")
+    tdt.run_for(@ui.move_most_ms)
+    assert_true(tdt.find("没有匹配的工作站") is Some(_), msg="data-table empty state shown at \{w}")
+    let tdt_faults = page_faults(tdt)
+    assert_true(tdt_faults.is_empty(), msg="data-table at \{w}: " + tdt_faults.join("\n"))
   }
 }

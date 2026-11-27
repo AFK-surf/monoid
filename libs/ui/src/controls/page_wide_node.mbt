@@ -151,16 +151,58 @@ fn wide_page_node(
 let desk_first_top : Double = 16.0
 
 ///|
+/// Maximum lane width lent by `page_fixed_node` to its subtree (defaults to `desk_lane_most`).
+// kept across runs: lent by page_fixed_node, let go with it
+let lane_most_lent : @view.Lent[Double] = @view.Lent::new()
+
+///|
+/// Maximum lane width in `v`'s subtree (`desk_lane_most` unless overridden by `page_fixed_node`).
+fn lane_most_of(v : @view.View) -> Double {
+  v.lent(lane_most_lent).unwrap_or(desk_lane_most)
+}
+
+///|
 /// A lane across the page (desk_lane: 24 from its sides at least), its column in the middle (desk_lane_column: 792 at
-/// most), `make` making what is in the column.
+/// most, or `lane_most_lent`), `make` making what is in the column.
 #callsite(autofill(loc))
 fn lane_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(lane) {
     // (in a panel of its own none in from its sides, its blocks' own 16 there its cards' panel_card_in)
     let side = if in_pane_node(parent) { 0.0 } else { desk_lane_in }
+    let most = lane_most_of(parent)
     lane.row(Is(true)).padding(Is((side, 0.0, side, 0.0))).lies_along(Is(Middle)) |> ignore
     lane.box(fn(col) {
-      col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).max_width(Is(Some(desk_lane_most))) |> ignore
+      col.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).max_width(Is(Some(most))) |> ignore
+      make(col)
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A growing, non-scrolling lane across a fixed-head wide page: fills remaining height and lets children shrink.
+#callsite(autofill(loc))
+fn lane_grow_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  parent.box(made_for=loc, fn(lane) {
+    let side = if in_pane_node(parent) { 0.0 } else { desk_lane_in }
+    let most = lane_most_of(parent)
+    lane
+    .row(Is(true))
+    .grow(Is(1.0))
+    .shrink(Is(1.0))
+    .min_height(Is(Some(0.0)))
+    .padding(Is((side, 0.0, side, 0.0)))
+    .lies_along(Is(Middle))
+    |> ignore
+    lane.box(fn(col) {
+      col
+      .grow(Is(1.0))
+      .shrink(Is(1.0))
+      .min_width(Is(Some(0.0)))
+      .max_width(Is(Some(most)))
+      .min_height(Is(Some(0.0)))
+      |> ignore
       make(col)
     })
     |> ignore

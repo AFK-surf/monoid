@@ -653,8 +653,183 @@ fn stories_wave3(tips : @sf.TipLayer, layer? : () -> @view.View? = fn() { None }
         ),
       ],
     },
+    {
+      key: "data-table",
+      group: "数据",
+      name: "可排序表格 DataTable",
+      file: "data_table_node.mbt",
+      api: [
+        ("data_table_node.mbt", "data_table_node"),
+        ("data_table_node.mbt", "toggle_table_sort"),
+        ("page_fixed_node.mbt", "page_fixed_node"),
+      ],
+      play: None,
+      about: "通用可滚动、可排序数据表格：支持 Card 与 Plain 两种表面、固定表头与 1px 分割线、常驻 12pt 排序图标槽（切换排序不抖动）、前导勾选与空态。",
+      cases: [
+        (
+          "Card 表面 · 点击列头排序 · 前导勾选",
+          fn(card) {
+            let sort : @signals.Signal[@sf.TableSort?] = kept(None)
+            let picked : @signals.Signal[Array[String]] = kept(["a"])
+            let items = [("a", "Claude 主账号", "92%"), ("b", "Codex 团队", "45%"), ("c", "Gemini 备用", "18%")]
+            let ordered_keys = fn() -> Array[String] {
+              let out = items.copy()
+              match sort.get() {
+                Some(ts) => {
+                  let asc = ts.dir is Asc
+                  out.sort_by(fn(x, y) {
+                    let c = if ts.col == "quota" { x.2.compare(y.2) } else { x.1.compare(y.1) }
+                    if asc { c } else { -c }
+                  })
+                }
+                None => ()
+              }
+              out.map(fn(x) { x.0 })
+            }
+            let by_key = fn(k : String) -> (String, String, String) {
+              items.iter().find_first(fn(x) { x.0 == k }).unwrap_or(("", "", ""))
+            }
+            let on_sort = fn(c : String) { @sf.toggle_table_sort(sort, c, allow_clear=true) }
+            @sf.data_table_node(card, surface=Card, max_height=fn() { 260.0 }, fn(dt) {
+              dt.head(fn(h) {
+                h.lead(fn(l) {
+                  let all = fn() { picked.get().length() == items.length() }
+                  @sf.check_node_of(
+                    l,
+                    all,
+                    fn(on) { picked.set(if on { ["a", "b", "c"] } else { [] }) },
+                    fn() { if all() { "取消全选" } else { "全选" } },
+                  )
+                  |> ignore
+                })
+                h.col(fn() { "账号" }, sort_key="name", sort=fn() { sort.get() }, on_sort~)
+                h.col(
+                  fn() { "剩余额度" },
+                  width=fn() { Some(88.0) },
+                  align=End,
+                  sort_key="quota",
+                  sort=fn() { sort.get() },
+                  on_sort~,
+                )
+              })
+              dt.virtual_rows(
+                ordered_keys,
+                fn(tr, k) {
+                  let entry = by_key(k)
+                  tr.lead(fn(l) {
+                    let is_on = fn() { picked.get().contains(k) }
+                    @sf.check_node_of(
+                      l,
+                      is_on,
+                      fn(on) {
+                        let cur = picked.untracked().filter(fn(x) { x != k })
+                        if on {
+                          cur.push(k)
+                        }
+                        picked.set(cur)
+                      },
+                      fn() { entry.1 },
+                    )
+                    |> ignore
+                  })
+                  tr.cell(fn(c) {
+                    @sf.words_node(c, fn() { entry.1 }, fn() { @sf.theme().rows.title })
+                    .shrink(Is(1.0))
+                    .min_width(Is(Some(0.0)))
+                    |> ignore
+                  })
+                  tr.cell(
+                    width=fn() { Some(88.0) },
+                    align=End,
+                    fn(c) { @sf.words_node(c, fn() { entry.2 }, fn() { story_dt_num_words }) |> ignore },
+                  )
+                },
+                est=44.0,
+              )
+            })
+            |> ignore
+          },
+        ),
+        (
+          "Plain 表面 · 空态切换",
+          fn(card) {
+            let show_empty = kept(false)
+            let sort : @signals.Signal[@sf.TableSort?] = kept(None)
+            let rows = [("s1", "tokyo-mac-studio-0", "38 ms"), ("s2", "pvg-office-2", "12 ms")]
+            let keys = fn() -> Array[String] {
+              if show_empty.get() {
+                []
+              } else {
+                let out = rows.copy()
+                match sort.get() {
+                  Some(ts) => {
+                    let asc = ts.dir is Asc
+                    out.sort_by(fn(x, y) {
+                      let c = if ts.col == "rtt" { x.2.compare(y.2) } else { x.1.compare(y.1) }
+                      if asc { c } else { -c }
+                    })
+                  }
+                  None => ()
+                }
+                out.map(fn(x) { x.0 })
+              }
+            }
+            side_by_side(card, fn(r) {
+              @sf.button_node(
+                r,
+                fn() { if show_empty.get() { "恢复数据" } else { "显示空态" } },
+                fn() { show_empty.set(!show_empty.get()) },
+                tone=Ghost,
+              )
+              |> ignore
+            })
+            @sf.data_table_node(card, surface=Plain, max_height=fn() { 180.0 }, fn(dt) {
+              dt.head(fn(h) {
+                h.col(fn() { "工作站" }, sort_key="name", sort=fn() { sort.get() }, on_sort=fn(c) {
+                  @sf.toggle_table_sort(sort, c)
+                })
+                h.col(
+                  fn() { "延迟" },
+                  width=fn() { Some(76.0) },
+                  align=End,
+                  sort_key="rtt",
+                  sort=fn() { sort.get() },
+                  on_sort=fn(c) { @sf.toggle_table_sort(sort, c) },
+                )
+              })
+              dt.empty(fn(em) {
+                em.padding(Is((0.0, 16.0, 0.0, 16.0))) |> ignore
+                @sf.words_node(em, fn() { "没有匹配的工作站" }, fn() { @sf.caption }) |> ignore
+              })
+              dt.rows(keys, fn(tr, k) {
+                let entry = rows.iter().find_first(fn(x) { x.0 == k }).unwrap_or(("", "", ""))
+                tr.view().row(Is(true)).padding(Is((8.0, 8.0, 8.0, 8.0))).gap(Is(8.0)).lines_up(Is(Some(Middle)))
+                |> ignore
+                tr.cell(fn(c) {
+                  @sf.words_node(c, fn() { entry.1 }, fn() { @sf.theme().rows.title })
+                  .shrink(Is(1.0))
+                  .min_width(Is(Some(0.0)))
+                  |> ignore
+                })
+                tr.cell(
+                  width=fn() { Some(76.0) },
+                  align=End,
+                  fn(c) { @sf.words_node(c, fn() { entry.2 }, fn() { story_dt_num_words }) |> ignore },
+                )
+              })
+            })
+            |> ignore
+          },
+        ),
+      ],
+    },
   ]
 }
+
+///|
+/// Tabular metadata words inside the DataTable story.
+// kept across runs: a value (no field of it changes)
+let story_dt_num_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=Hug, tabular=true)
 
 ///|
 /// Tabular metadata words inside a capsule words button.

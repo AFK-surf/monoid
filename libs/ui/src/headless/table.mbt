@@ -102,6 +102,14 @@ pub fn Table::row(
 }
 
 ///|
+/// Sort direction announced on a sortable column header (`TableRow::sort_header`).
+#derive(Eq, Debug)
+pub(all) enum TableSortDir {
+  Asc
+  Desc
+}
+
+///|
 /// A cell of the head's row of `self`'s table, naming its column, in `parent` (`parent` itself where `in_node`), called
 /// `label` where it is given one (none: read by the words it holds). `look` is given its node once as it is made. Its
 /// node.
@@ -117,6 +125,41 @@ pub fn TableRow::header(
 ) -> @view.View {
   ignore(self)
   table_part(parent, ColumnHeader, label, in_node, made_for, loc, look)
+}
+
+///|
+/// A sortable column header cell of `self`'s table in `parent` (`parent` itself where `in_node`), announcing `label()`
+/// together with its current `sort()` direction in `ColumnHeader` semantics. `look` is given its node once as it is
+/// made; this headless layer draws and lays out nothing and knows no theme.
+#callsite(autofill(loc))
+pub fn TableRow::sort_header(
+  self : TableRow,
+  parent : @view.View,
+  label : () -> String,
+  sort : () -> TableSortDir?,
+  look : (@view.View) -> Unit,
+  sort_label? : (TableSortDir) -> String = fn(d) {
+    match d {
+      Asc => "ascending"
+      Desc => "descending"
+    }
+  },
+  in_node? : Bool = false,
+  made_for? : SourceLoc,
+  loc~ : SourceLoc,
+) -> @view.View {
+  ignore(self)
+  let full_label = fn() {
+    let base = label()
+    match sort() {
+      Some(dir) => {
+        let suffix = sort_label(dir)
+        if suffix == "" { base } else { base + ", " + suffix }
+      }
+      None => base
+    }
+  }
+  table_part(parent, ColumnHeader, Some(full_label), in_node, made_for, loc, look)
 }
 
 ///|

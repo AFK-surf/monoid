@@ -766,6 +766,8 @@ let en : Map[String, String] = {
   "common.retry": "Retry",
   "common.save": "Save",
   "common.search": "Search",
+  "common.sort.asc": "ascending",
+  "common.sort.desc": "descending",
   "common.telemetry.note": "Never includes your chats.",
   "common.telemetry.title": "Send usage and error reports",
   "common.uploadConfirming": "Waiting for the station to confirm",

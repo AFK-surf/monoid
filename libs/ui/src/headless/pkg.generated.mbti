@@ -742,6 +742,14 @@ pub fn TableRow::cell(Self, @view.View, (@view.View) -> Unit, label? : () -> Str
 #callsite(autofill(loc))
 pub fn TableRow::header(Self, @view.View, (@view.View) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 pub fn TableRow::node(Self) -> @view.View
+#callsite(autofill(loc))
+pub fn TableRow::sort_header(Self, @view.View, () -> String, () -> TableSortDir?, (@view.View) -> Unit, sort_label? : (TableSortDir) -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+#derive(Eq, @debug.Debug)
+pub(all) enum TableSortDir {
+  Asc
+  Desc
+}
 
 pub struct Tabs[K] {
   // private fields

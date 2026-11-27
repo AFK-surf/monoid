@@ -710,3 +710,93 @@ pub fn nav_quota_chips_node(
     }
   })
 }
+
+///|
+/// Whether `q`'s windows split into multiple lines in `quota_compact_node` (multi-pool allowances such as Google).
+pub fn quota_is_pooled(q : Json?) -> Bool {
+  guard has_quota(q) else { return false }
+  let windows = match @sf.chip_field(q, "windows") {
+    Some(Array(a)) => a
+    _ => []
+  }
+  let parts = quota_parts(windows)
+  parts.length() > 1 && parts.iter().any(fn(p) { p.0 != "" })
+}
+
+///|
+/// Compact quota chips for table cells and narrow rows: renders every window as a `small=true` `fill_chip_node`
+/// (matching the sidebar's `nav_quota_chips_node`), wrapping cleanly when space is tight and rendering multi-pool
+/// allowances (such as Google subscriptions) with aligned pool-name columns. Uses zero per-row `by_room` passes.
+pub fn quota_compact_node(
+  parent : @view.View,
+  q : () -> Json?,
+  tips? : @sf.TipLayer,
+) -> Unit {
+  let chips = fn(r : @view.View, ws : () -> Array[Json], group : () -> String) {
+    r.each(fn() { Array::makei(ws().length(), fn(i) { i }) }, fn(i) { i }, fn(c, i) {
+      let k = i.untracked()
+      let held = @signals.computed(fn(_) { ws().get(k) })
+      let w = fn() { held.get() }
+      @sf.fill_chip_node(
+        c,
+        fn() { @sf.chip_left(w()) },
+        fn() { @sf.chip_str(w(), "level") },
+        fn() { quota_part_mark(group(), w()) },
+        fn() { quota_figure(w()) },
+        small=true,
+        label_muted=true,
+        refill=fn() { quota_is_refill(w()) },
+        said=fn() { quota_said(w()) },
+        tips?,
+      )
+      |> ignore
+    })
+  }
+  parent.show(at_once=true, fn() { has_quota(q()) }, fn(x) {
+    let windows_sig = @signals.computed(fn(_) {
+      match @sf.chip_field(q(), "windows") {
+        Some(Array(a)) => a
+        _ => []
+      }
+    })
+    let windows = fn() { windows_sig.get() }
+    let parts_sig = @signals.computed(fn(_) { quota_parts(windows()) })
+    let parts = fn() { parts_sig.get() }
+    let part = fn(k : Int) { parts().get(k).unwrap_or(("", [])) }
+    let part_keys = fn() { Array::makei(parts().length(), fn(k) { k }) }
+    let label_w_sig = @signals.computed(fn(_) {
+      let _ = @sf.theme()
+      let _ = x.words_scale()
+      nav_quota_label_w(x, parts())
+    })
+    let label_w = fn() { label_w_sig.get() }
+    x.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    x.pick(at_once=true, fn() { label_w() > 0.0 }, fn(b, pooled) {
+      b.width_share(Is(1.0)) |> ignore
+      if pooled {
+        b.gap(Is(@ui.Space::S1.px())) |> ignore
+        b.each(part_keys, fn(k) { k }, fn(p, k) {
+          let k = k.untracked()
+          p.row(Is(true)).width_share(Is(1.0)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1_5.px())) |> ignore
+          p.show(at_once=true, fn() { part(k).0 != "" }, fn(l) {
+            l.width(By(fn() { Some(label_w()) })).shrink(Is(0.0)) |> ignore
+            @sf.words_node(l, fn() { part(k).0 }, fn() { nav_quota_group }) |> ignore
+          })
+          p.box(fn(r) {
+            @sf.style_node(r, fn() { quota_chips_row.then(@ui.style(gap=S1)) }, in_row=true)
+            r.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).wraps(Is(Some(@ui.Space::S1.px()))) |> ignore
+            chips(r, fn() { part(k).1 }, fn() { part(k).0 })
+          })
+          |> ignore
+        })
+      } else {
+        b.box(fn(r) {
+          @sf.style_node(r, fn() { quota_chips_part.then(@ui.style(gap=S1)) })
+          r.wraps(Is(Some(@ui.Space::S1.px()))) |> ignore
+          chips(r, windows, fn() { "" })
+        })
+        |> ignore
+      }
+    })
+  })
+}

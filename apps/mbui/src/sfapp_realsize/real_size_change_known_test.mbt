@@ -3781,9 +3781,9 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide settings-profiles-station profiles/quota": (0, 0, 0, 0, 0, 0),
   "wide settings-profiles-station profiles/down": (0, 0, 22, 2, 0, 0),
   "phone profiles-manage profiles/quota": (0, 0, 0, 0, 0, 0),
-  "phone profiles-manage profiles/down": (4, 12, 59, 9, 0, 0),
+  "phone profiles-manage profiles/down": (30, 41, 70, 9, 0, 0),
   "wide profiles-manage profiles/quota": (0, 0, 0, 0, 0, 0),
-  "wide profiles-manage profiles/down": (15, 20, 130, 29, 0, 0),
+  "wide profiles-manage profiles/down": (18, 97, 111, 30, 0, 0),
   "wide profiles-manage connects/session": (0, 0, 0, 0, 0, 0),
   "wide profiles-manage vaults/item": (0, 0, 0, 0, 0, 0),
 }

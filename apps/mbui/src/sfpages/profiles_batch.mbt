@@ -373,8 +373,39 @@ pub fn profiles_batch_room(narrow? : Bool = false) -> Double {
 }
 
 ///|
-/// Centered compact floating liquid-glass batch action dock over the foot of `v`, shown whenever at least one
-/// selectable row in `rows()` is selected.
+/// Centered compact liquid-glass batch action dock capsule inside `parent`.
+fn profiles_batch_dock_box_node(
+  parent : @view.View,
+  core : Core,
+  batch : ProfilesBatch,
+  rows : () -> Array[Json],
+  stations : () -> Array[Json],
+  on_edit_one~ : (Json) -> Unit,
+  width? : () -> Double,
+  still_here? : () -> Bool = fn() { true },
+) -> Unit {
+  let wide = fn() { @sf.width_is_wide(width) }
+  parent.row(Is(true)).lies_along(Is(Middle)) |> ignore
+  parent.box(fn(dock) {
+    let bh = @sf.button_height()
+    let pad = @sf.card_foot_in(bh)
+    dock
+    .grow(By(fn() { if wide() { 0.0 } else { 1.0 } }))
+    .shrink(Is(1.0))
+    .min_width(Is(Some(0.0)))
+    .padding(Is((pad, pad, pad, pad)))
+    .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
+    |> ignore
+    @sf.panel_surface_decorate(dock, solid=@sf.panel_ground, clips=false) |> ignore
+    @sf.floating_host_lend(dock)
+    profiles_batch_bar_node(dock, core, batch, rows, stations, on_edit_one~, width?, still_here~)
+  })
+  |> ignore
+}
+
+///|
+/// Centered compact floating liquid-glass batch action dock over the foot of `v` (all screen sizes), shown whenever
+/// at least one selectable row in `rows()` is selected without changing the table's height.
 pub fn profiles_batch_foot_node(
   v : @view.View,
   core : Core,
@@ -391,23 +422,7 @@ pub fn profiles_batch_foot_node(
     w.padding(By(fn() { (0.0, pb_gap, 0.0, pb_gap + foot()) })) |> ignore
     w.over(Is(true), edges=(Some(0.0), None, Some(0.0), Some(0.0))) |> ignore
     @sf.page_lane_node(w, width, fn(c) {
-      let wide = fn() { @sf.width_is_wide(width) }
-      c.row(Is(true)).lies_along(Is(Middle)) |> ignore
-      c.box(fn(dock) {
-        let bh = @sf.button_height()
-        let pad = @sf.card_foot_in(bh)
-        dock
-        .grow(By(fn() { if wide() { 0.0 } else { 1.0 } }))
-        .shrink(Is(1.0))
-        .min_width(Is(Some(0.0)))
-        .padding(Is((pad, pad, pad, pad)))
-        .radius(By(fn() { @ui.tree_theme().corner(Xl3) }))
-        |> ignore
-        @sf.panel_surface_decorate(dock, solid=@sf.panel_ground, clips=false) |> ignore
-        @sf.floating_host_lend(dock)
-        profiles_batch_bar_node(dock, core, batch, rows, stations, on_edit_one~, width?, still_here~)
-      })
-      |> ignore
+      profiles_batch_dock_box_node(c, core, batch, rows, stations, on_edit_one~, width?, still_here~)
     })
   })
 }

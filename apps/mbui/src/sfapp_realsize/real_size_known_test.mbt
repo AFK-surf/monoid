@@ -1048,8 +1048,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide terminal-taken": (481, 368, 53),
   "wide settings-profile-account": (612, 489, 77),
   "wide settings-profiles-station": (844, 654, 108),
-  "phone profiles-manage": (828, 638, 112),
+  "phone profiles-manage": (973, 736, 142),
   "phone profiles-manage-station": (766, 498, 52),
-  "wide profiles-manage": (952, 774, 143),
+  "wide profiles-manage": (1298, 1016, 220),
   "wide profiles-manage-station": (1360, 889, 85),
 }

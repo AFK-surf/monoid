@@ -593,6 +593,9 @@ pub fn dashed_vector(Double, Double, Double, Double, Int64) -> @pixels.Vector
 pub fn data_image(String) -> String
 
 #callsite(autofill(loc))
+pub fn data_table_node(@view.View, (DataTableScope) -> Unit, surface? : DataTableSurface, max_height? : () -> Double, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
 pub fn day_change_node(@view.View, () -> CardPiece, () -> Array[ChangeLine], () -> String, () -> String, () -> Bool, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
@@ -1494,6 +1497,8 @@ pub let media_came_share : Double
 
 pub let media_dark_ground : Int64
 
+pub fn media_dark_ink() -> MediaInk
+
 pub let media_dark_muted : Int64
 
 pub let media_dark_stage : Int64
@@ -1818,6 +1823,9 @@ pub let page_find_key_side : Double
 
 #callsite(autofill(loc))
 pub fn page_find_node(@view.View, () -> String, (Int32) -> Unit, (Int32) -> Bool, () -> Unit, field? : @ui.Field, placeholder_by? : () -> String, edited? : (String) -> Unit, frame? : (@view.View) -> Unit, said_look? : () -> @ui.TextStyle, field_size? : Double, field_line? : Double, colors_by? : () -> (Int64, Int64, Int64), ink? : () -> Int64, tips? : TipLayer, key_side? : Double, prev_label? : () -> String, next_label? : () -> String, close_label? : () -> String, field_in? : Double, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn page_fixed_node(@view.View, () -> String, (PageFixedScope) -> Unit, on_back~ : () -> Unit, frame? : () -> PageFrame, width? : () -> Double, max_width? : Double, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn page_foot_bar_node(@view.View, (@view.View) -> Unit, wrap_gap? : Double, loc~ : SourceLoc) -> Unit
@@ -2810,6 +2818,9 @@ pub let small_radius : @ui.Radius
 
 pub fn soft_keyboard() -> Bool
 
+#callsite(autofill(loc))
+pub fn sort_head_button_node(@view.View, () -> String, String, () -> TableSort?, (String) -> Unit, align? : ColAlign, plain? : Bool, loc~ : SourceLoc) -> @view.View
+
 pub fn sought_part(Array[@text.Run], Array[@view.RunsMark], String) -> (Int32, Int32)?
 
 pub let space_5 : @ui.Space
@@ -3069,6 +3080,8 @@ pub fn toggle_chip_node(@view.View, () -> String, () -> Bool, () -> Unit, icon? 
 pub fn[K] toggle_group_node(@view.View, () -> String, Array[ToggleItem[K]], (K) -> Bool, (K, Bool) -> Unit, kind? : @headless.ToggleGroupKind, size? : ToggleGroupSize, shape? : ToggleGroupShape, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn[K] toggle_item(K, () -> String, icon? : String, icon_only? : Bool, disabled? : () -> Bool) -> ToggleItem[K]
+
+pub fn toggle_table_sort(@signals.Signal[TableSort?], String, default_dir? : SortDir, allow_clear? : Bool) -> Unit
 
 pub fn tone_ground(Int64) -> Int64
 
@@ -3562,6 +3575,12 @@ pub(all) enum ChoiceMark {
   Drawn(String)
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) enum ColAlign {
+  Start
+  End
+}
+
 pub(all) struct Columns {
   model_control : Double
   avatar : Double
@@ -3590,6 +3609,39 @@ pub(all) enum CountLook {
 pub(all) enum CountTone {
   CountRed
   CountAccent
+}
+
+pub struct DataTableHead {
+  // private fields
+}
+#callsite(autofill(loc))
+pub fn DataTableHead::col(Self, () -> String, width? : () -> Double?, align? : ColAlign, sort_key? : String, sort? : () -> TableSort?, on_sort? : (String) -> Unit, loc~ : SourceLoc) -> Unit
+pub fn DataTableHead::lead(Self, (@view.View) -> Unit) -> Unit
+
+pub struct DataTableRow {
+  // private fields
+}
+#callsite(autofill(loc))
+pub fn DataTableRow::cell(Self, (@view.View) -> Unit, width? : () -> Double?, align? : ColAlign, loc~ : SourceLoc) -> Unit
+pub fn DataTableRow::lead(Self, (@view.View) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn DataTableRow::mark_cell(Self, @view.View, loc~ : SourceLoc) -> Unit
+pub fn DataTableRow::view(Self) -> @view.View
+
+pub struct DataTableScope {
+  // private fields
+}
+pub fn DataTableScope::empty(Self, (@view.View) -> Unit) -> Unit
+pub fn DataTableScope::head(Self, (DataTableHead) -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn DataTableScope::rows(Self, () -> Array[String], (DataTableRow, String) -> Unit, loc~ : SourceLoc) -> Unit
+#callsite(autofill(loc))
+pub fn DataTableScope::virtual_rows(Self, () -> Array[String], (DataTableRow, String) -> Unit, est? : Double, reused? : (String) -> Int32?, make_reused? : (DataTableRow, Int32, () -> String) -> Unit, end_room? : () -> Double, loc~ : SourceLoc) -> Unit
+
+#derive(Eq, @debug.Debug)
+pub(all) enum DataTableSurface {
+  Card
+  Plain
 }
 
 #derive(Eq)
@@ -3704,7 +3756,11 @@ pub struct GridRow {
   // private fields
 }
 #callsite(autofill(loc))
+pub fn GridRow::cell(Self, @view.View, (@view.View) -> Unit, in_node? : Bool, loc~ : SourceLoc) -> @view.View
+#callsite(autofill(loc))
 pub fn GridRow::head(Self, @view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
+#callsite(autofill(loc))
+pub fn GridRow::sort_head(Self, @view.View, () -> String, () -> @headless.TableSortDir?, (@view.View) -> Unit, sort_label? : (@headless.TableSortDir) -> String, in_node? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub struct GridTable {
   // private fields
@@ -4037,6 +4093,17 @@ pub(all) struct PageBar {
   own_head : Bool
   actions : (() -> Unit)?
 }
+
+pub struct PageFixedScope {
+  // private fields
+}
+pub fn PageFixedScope::about(Self, () -> String) -> Unit
+pub fn PageFixedScope::actions(Self, (@view.View) -> Unit) -> Unit
+pub fn PageFixedScope::lead(Self, () -> String) -> Unit
+pub fn PageFixedScope::narrow_blocks(Self, () -> Array[String], (@view.View, String) -> Unit, reused? : (String) -> Int32?, make_reused? : (@view.View, Int32, () -> String) -> Unit) -> Unit
+pub fn PageFixedScope::said(Self, (PageSaid) -> Unit) -> Unit
+pub fn PageFixedScope::tips(Self, TipLayer) -> Unit
+pub fn PageFixedScope::wide_body(Self, (@view.View) -> Unit) -> Unit
 
 pub(all) struct PageFrame {
   back : String?
@@ -4377,6 +4444,12 @@ pub(all) struct SheetAction {
   on_pick : () -> Unit
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) enum SortDir {
+  Asc
+  Desc
+}
+
 pub(all) struct StackFace {
   id : String
   name : String
@@ -4453,6 +4526,12 @@ pub(all) struct TabStripSpec {
   words_front : @ui.TextStyle
   words_lit : @ui.TextStyle
   words_rest : @ui.TextStyle
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct TableSort {
+  col : String
+  dir : SortDir
 }
 
 #derive(Eq, @debug.Debug)

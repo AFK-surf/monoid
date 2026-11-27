@@ -839,7 +839,7 @@ fn lint_reused_untracked_key(f : MbtFile, given : Map[Int, (Call, String?)], out
   let toks = f.toks
   let seen : Map[Int, Bool] = Map([])
   for c in f.calls {
-    let listed = c.kind == "method" && c.name == "scrolls_window"
+    let listed = c.kind == "method" && (c.name == "scrolls_window" || c.name == "virtual_rows" || c.name == "narrow_blocks")
     let paged = c.name == "page_node" && (c.kind == "pkg" || c.kind == "bare")
     if !(listed || paged) || c.is_def || f.in_test(c.at) {
       continue

@@ -116,3 +116,43 @@ test "a table's rows and cells made by View::each, the row and the cell it made 
   ])
   assert_eq(one, ["Table ", "  Row 名称 价格", "    ColumnHeader 名称", "    ColumnHeader 价格"])
 }
+
+///|
+test "a sortable column header reflects sort direction reactively in ColumnHeader semantics" {
+  let dir : @signals.Signal[@headless.TableSortDir?] = @signals.signal(None)
+  let t = window(fn(root) {
+    @headless.table(root, fn(v, tb) {
+      v.width(Is(Some(160.0))) |> ignore
+      tb.row(v, fn(line, tr) {
+        line.row(Is(true)) |> ignore
+        tr.sort_header(line, fn() { "名称" }, fn() { dir.get() }, fn(c) { table_cell_look(c, fn() { "名称" }) })
+        |> ignore
+        tr.sort_header(
+          line,
+          fn() { "价格" },
+          fn() { None },
+          fn(c) { table_cell_look(c, fn() { "价格" }) },
+          sort_label=fn(d) {
+            match d {
+              Asc => "升序"
+              Desc => "降序"
+            }
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  assert_true(t.query(ColumnHeader, label="名称") is Some(_))
+  dir.set(Some(Asc))
+  t.frame()
+  assert_true(t.query(ColumnHeader, label="名称, ascending") is Some(_))
+  dir.set(Some(Desc))
+  t.frame()
+  assert_true(t.query(ColumnHeader, label="名称, descending") is Some(_))
+  dir.set(None)
+  t.frame()
+  assert_true(t.query(ColumnHeader, label="名称") is Some(_))
+}
