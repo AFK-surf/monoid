@@ -4774,3 +4774,202 @@ test "r14 two-pass order independence ([B, A]) and two-step explicit_loss preser
   assert_eq(opens.val, 2, msg="Snap 3 must open 2nd screen.view once B is loaded=true")
   @ui.run_let_go()
 }
+
+///|
+test "r15 sign-out order independence (both accounts-first and workspaces-first keep offline B Waiting) and legitimate re-election while A remains member immediately opens offline B" {
+  let base = @sffixture.fixture("settings")
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:r15-1", title: "R15", until_gone: false }
+  let snap_ab_a_owns : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  let snap_b_offline_only : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  let snap_b_loaded_only : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  // Run both sign-out notification orders: accounts_first=true and accounts_first=false
+  for accounts_first in [true, false] {
+    @sfbase.reset()
+    reset()
+    @settings.reset()
+    @sf.presenters_reset()
+    @sf.set_words(@sfbase.fill)
+    @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+    @sfbase.workspace_owners_sync_json(Some(snap_ab_a_owns))
+    let opens = Ref(0)
+    let cancelled = Ref(0)
+    let src : Source = {
+      ..base,
+      stream: fn(name, _params, _bytes, _on_val, _done) {
+        if name == "screen.view" {
+          opens.val += 1
+          opens.val
+        } else {
+          0
+        }
+      },
+      cancel: fn(_) { cancelled.val += 1 },
+    }
+    let t = @ui.Tester::tree(
+      fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        screen_node(root, src, at, fn() { @sf.no_frame })
+      },
+      w=900.0,
+      h=600.0,
+      platform=0,
+      keeps_sources=true,
+    )
+    let h = @hostapi.host()
+    let orig_audio_here = h.st_audio_here
+    let orig_audio = h.st_audio
+    let audio_flushes = Ref(0)
+    h.st_audio_here = fn() { 1 }
+    h.st_audio = fn(id, data) {
+      if data.length() == 0 {
+        audio_flushes.val += 1
+      }
+      orig_audio(id, data)
+    }
+    t.draw()
+    t.draw()
+    let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+    let sess_a = screens_open.get(key_a).unwrap()
+    sess_a.own_stream()
+    sess_a.heard = true
+    sess_a.take({ "audioConfig": { "codec": "pcm_s16le", "sampleRate": 48000.0, "channels": 2.0 } }, None)
+    sess_a.take({ "audio": { "n": 1.0 } }, Some(Bytes::make(3840, b'\x01')))
+    assert_eq(opens.val, 1)
+    audio_flushes.val = 0
+    if accounts_first {
+      @sfbase.accounts_subs_sync(["acct-b"])
+      @sfbase.workspace_owners_sync_json(Some(snap_b_offline_only))
+    } else {
+      @sfbase.workspace_owners_sync_json(Some(snap_b_offline_only))
+      @sfbase.accounts_subs_sync(["acct-b"])
+    }
+    t.draw()
+    t.draw()
+    assert_true(cancelled.val >= 1, msg="A stream must be cancelled on sign-out")
+    assert_true(audio_flushes.val >= 1, msg="A audio must be flushed on sign-out")
+    assert_true(@sfbase.workspace_is_pending("ws-1"), msg="ws-1 must stay Pending while B is loaded=false after A signs out")
+    @sfbase.set_startup_window_owner(Some("acct-b"))
+    assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
+    assert_eq(opens.val, 1, msg="offline B must emit 0 additional screen.view RPCs after A signs out")
+    @sfbase.workspace_owners_sync_json(Some(snap_b_loaded_only))
+    t.draw()
+    t.draw()
+    assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
+    assert_eq(opens.val, 2, msg="B confirmation must open 2nd screen.view")
+    h.st_audio_here = orig_audio_here
+    h.st_audio = orig_audio
+    @ui.run_let_go()
+  }
+  // Legitimate re-election while A is still a loaded member of ws-1: offline B opens immediately!
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-b", "acct-a"])
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(false),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  let opens = Ref(0)
+  let cancelled = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(_) { cancelled.val += 1 },
+  }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      screen_node(root, src, at, fn() { @sf.no_frame })
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1)
+  assert_true(screens_open.contains(key_a))
+  // Core re-elects offline B while A is STILL a loaded member of ws-1 -> immediate Owned(B), A closed, B opens offline!
+  @sfbase.workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  t.draw()
+  t.draw()
+  let key_b = screen_key_for_owner("acct-b", at.station, at.screen)
+  assert_false(@sfbase.workspace_is_pending("ws-1"), msg="legitimate re-election must not set Pending")
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  assert_false(screens_open.contains(key_a), msg="old A session must be closed on owner switch")
+  assert_true(cancelled.val >= 1)
+  assert_true(screens_open.contains(key_b), msg="offline B must immediately open screen session")
+  assert_eq(opens.val, 2, msg="offline B must immediately open 2nd screen.view without waiting for /v1/me")
+  @ui.run_let_go()
+}

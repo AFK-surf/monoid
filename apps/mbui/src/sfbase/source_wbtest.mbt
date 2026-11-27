@@ -661,5 +661,127 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"))
   assert_false(workspace_is_pending("ws-1"))
   assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched)
+  // r15 (1a) Sign-out notification order ①: accounts_subs_sync(["acct-b"]) arrives BEFORE workspaces snapshot!
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  accounts_subs_sync(["acct-b"])
+  assert_true(workspace_is_pending("ws-1"), msg="accounts_subs_sync removal must preserve explicit_loss pending")
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+      ]),
+    ),
+  )
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="order 1: offline B must wait after A signed out")
+  assert_true(workspace_is_pending("ws-1"))
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting)
+  // r15 (1b) Sign-out notification order ②: workspaces snapshot (without A) arrives BEFORE accounts_subs_sync!
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+      ]),
+    ),
+  )
+  accounts_subs_sync(["acct-b"])
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="order 2: offline B must wait after A signed out")
+  assert_true(workspace_is_pending("ws-1"))
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting)
+  // r15 (2) A is STILL a loaded member of ws-1, and Core legitimately re-elects higher-priority offline B:
+  // NOT an explicit loss -> immediately Owned(B)/Matched for offline mesh!
+  reset()
+  accounts_subs_sync(["acct-b", "acct-a"])
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(false),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-a"))
+  workspace_owners_sync_json(
+    Some(
+      Json::array([
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-b") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([Json::string("ws-1")]),
+          "loaded": Json::boolean(false),
+        }),
+        Json::object({
+          "account": Json::object({ "sub": Json::string("acct-a") }),
+          "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+          "ownedWorkspaces": Json::array([]),
+          "loaded": Json::boolean(true),
+        }),
+      ]),
+    ),
+  )
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"), msg="legitimate re-election while A is still loaded member must immediately promote Owned(B)")
+  assert_false(workspace_is_pending("ws-1"))
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched)
   reset()
 }

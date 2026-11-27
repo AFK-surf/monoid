@@ -595,6 +595,8 @@ pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
   guard ws != "" else { return }
   if owner != "" {
     workspace_revoked.remove(ws)
+    workspace_pending_ws.remove(ws)
+    workspace_pending_explicit_loss.remove(ws)
   }
   match workspace_owners.get(ws) {
     Some(prev) =>
@@ -698,10 +700,17 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
       }
     }
   }
-  // Pass 2: decide Owned / Pending / Revoked with complete present_owners & loaded_owners sets.
+  // Pass 2: decide Owned / Pending / Revoked with complete present_owners, loaded_owners & loaded_members sets.
+  let is_loaded_member = fn(id : String, owner : String) -> Bool {
+    match loaded_members.get(id) {
+      Some(m) => m.contains(owner)
+      None => false
+    }
+  }
   let prev_owner_lost = fn(id : String, candidate : String) -> Bool {
     match workspace_owners.get(id) {
-      Some(p) if p != candidate && (loaded_owners.contains(p) || !present_owners.contains(p)) => true
+      Some(p) if p != candidate =>
+        !present_owners.contains(p) || (loaded_owners.contains(p) && !is_loaded_member(id, p))
       _ => false
     }
   }
@@ -867,6 +876,8 @@ pub fn accounts_subs_sync(subs : Array[String]) -> Unit {
     for ws in workspace_owners.keys().collect() {
       if workspace_owners.get(ws) == Some(old) {
         workspace_owners.remove(ws)
+        workspace_pending_ws[ws] = true
+        workspace_pending_explicit_loss[ws] = true
       }
     }
     for f in account_revoke_listeners {
@@ -895,6 +906,8 @@ pub fn account_principal_set(who : String) -> Unit {
     for ws in workspace_owners.keys().collect() {
       if workspace_owners.get(ws) == Some(prev) {
         workspace_owners.remove(ws)
+        workspace_pending_ws[ws] = true
+        workspace_pending_explicit_loss[ws] = true
       }
     }
     for f in account_revoke_listeners {
