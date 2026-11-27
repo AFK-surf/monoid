@@ -89,6 +89,7 @@ extern "C" fn sts_write_file_mode(
 ) -> Int
 extern "C" fn sts_read_dir(path : Ptr, out_len : Ptr) -> Ptr
 extern "C" fn sts_mkdir_p(path : Ptr) -> Int
+extern "C" fn sts_mkdir_exclusive(path : Ptr) -> Int
 extern "C" fn sts_rename(old_path : Ptr, new_path : Ptr) -> Int
 extern "C" fn sts_random_bytes(buf : Ptr, len : Int64) -> Int
 
@@ -834,6 +835,12 @@ pub fn read_dir(path : String) -> Option[Array[String]] {
 
 pub fn mkdir_p(path : String) -> Bool {
   let ok = sts_mkdir_p(path.as_cstr())
+  let _ = path.length()
+  ok != 0
+}
+
+pub fn mkdir_exclusive(path : String) -> Bool {
+  let ok = sts_mkdir_exclusive(path.as_cstr())
   let _ = path.length()
   ok != 0
 }

@@ -2451,18 +2451,37 @@ int32_t sts_write_at(
         len > (int64_t)INT32_MAX || offset > INT64_MAX - len) return -6;
     wchar_t *w = utf8_to_wide(path);
     if (w == NULL) return -1;
-    DWORD disp = create ? CREATE_ALWAYS : OPEN_EXISTING;
+    DWORD disp = create ? OPEN_ALWAYS : OPEN_EXISTING;
     HANDLE h = CreateFileW(
         w, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, disp, FILE_ATTRIBUTE_NORMAL, NULL);
+        NULL, disp, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     DWORD open_err = GetLastError();
     free(w);
     if (h == INVALID_HANDLE_VALUE) {
         return sts_win_map_err(open_err);
     }
+    FILE_ATTRIBUTE_TAG_INFO ati;
+    if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati))) {
+        DWORD e = GetLastError();
+        CloseHandle(h);
+        return sts_win_map_err(e);
+    }
+    if ((ati.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        CloseHandle(h);
+        return -5;
+    }
     if (GetFileType(h) != FILE_TYPE_DISK) {
         CloseHandle(h);
         return -5;
+    }
+    if (create) {
+        LARGE_INTEGER zero;
+        zero.QuadPart = 0;
+        if (!SetFilePointerEx(h, zero, NULL, FILE_BEGIN) || !SetEndOfFile(h)) {
+            DWORD e = GetLastError();
+            CloseHandle(h);
+            return sts_win_map_err(e);
+        }
     }
     LARGE_INTEGER cur_sz;
     if (!GetFileSizeEx(h, &cur_sz)) {
@@ -2485,10 +2504,14 @@ int32_t sts_write_at(
         ov.OffsetHigh = (DWORD)((cur >> 32) & 0xFFFFFFFFULL);
         DWORD chunk = (DWORD)((len - written) > 0x7fffffffLL ? 0x7fffffffLL : (len - written));
         DWORD put = 0;
-        if (!WriteFile(h, data + written, chunk, &put, &ov) || put == 0) {
+        if (!WriteFile(h, data + written, chunk, &put, &ov)) {
             DWORD e = GetLastError();
             CloseHandle(h);
-            return put == 0 ? -1 : sts_win_map_err(e);
+            return sts_win_map_err(e);
+        }
+        if (put == 0) {
+            CloseHandle(h);
+            return -1;
         }
         written += (int64_t)put;
     }
@@ -2525,11 +2548,21 @@ int32_t sts_sync_file(const char *path) {
     if (w == NULL) return -1;
     HANDLE h = CreateFileW(
         w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     DWORD open_err = GetLastError();
     free(w);
     if (h == INVALID_HANDLE_VALUE) {
         return sts_win_map_err(open_err);
+    }
+    FILE_ATTRIBUTE_TAG_INFO ati;
+    if (!GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati))) {
+        DWORD e = GetLastError();
+        CloseHandle(h);
+        return sts_win_map_err(e);
+    }
+    if ((ati.FileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0) {
+        CloseHandle(h);
+        return -5;
     }
     if (GetFileType(h) != FILE_TYPE_DISK) {
         CloseHandle(h);
@@ -2539,6 +2572,15 @@ int32_t sts_sync_file(const char *path) {
     DWORD ferr = GetLastError();
     CloseHandle(h);
     return ok ? 0 : sts_win_map_err(ferr);
+}
+
+int32_t sts_mkdir_exclusive(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    BOOL ok = CreateDirectoryW(w, NULL);
+    free(w);
+    return ok ? 1 : 0;
 }
 
 int32_t sts_getuid(void) { return -1; }
@@ -6317,6 +6359,11 @@ int32_t sts_sync_file(const char *path) {
     int e = errno;
     close(fd);
     return rc == 0 ? 0 : sts_posix_map_errno(e);
+}
+
+int32_t sts_mkdir_exclusive(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    return mkdir(path, (mode_t)0700) == 0 ? 1 : 0;
 }
 
 int32_t sts_getuid(void) { return (int32_t)getuid(); }

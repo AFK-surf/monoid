@@ -246,23 +246,31 @@ pub fn parse_image_thumb_response(
 }
 
 /// Extracts `ThumbHashInfo` from a `ThumbResponse`.
-/// Per `client/shell/src/image_thumb.rs:715-721`, `mode: "hash"` returns `width` and `height`
-/// (while `thumb`/`preview` modes with `thumbhash: true` return `originalWidth`/`originalHeight`).
+/// Prefers the complete `(originalWidth, originalHeight)` pair when both are positive (so resized
+/// modes like `custom`/`thumb`/`preview` with `thumbhash: true` report the source image's natural
+/// aspect ratio rather than the thumbnail's resized dimensions), and falls back to `(width, height)`
+/// for `mode: "hash"` responses which only return `width` and `height`.
 pub fn extract_thumbhash_info(resp : ThumbResponse) -> Option[station_screens::ThumbHashInfo] {
   let h = match resp.thumbhash {
     Some(v) => v
     None => return None
   }
-  let w_opt = match resp.width {
-    Some(w) => Some(w)
-    None => resp.original_width
+  match (resp.original_width, resp.original_height) {
+    (Some(ow), Some(oh)) => {
+      if ow > 0 && oh > 0 {
+        return Some(station_screens::ThumbHashInfo::{ hash: h, width: ow, height: oh })
+      }
+    }
+    _ => ()
   }
-  let h_opt = match resp.height {
-    Some(ht) => Some(ht)
-    None => resp.original_height
-  }
-  match (w_opt, h_opt) {
-    (Some(w), Some(ht)) => Some(station_screens::ThumbHashInfo::{ hash: h, width: w, height: ht })
+  match (resp.width, resp.height) {
+    (Some(w), Some(ht)) => {
+      if w > 0 && ht > 0 {
+        Some(station_screens::ThumbHashInfo::{ hash: h, width: w, height: ht })
+      } else {
+        None
+      }
+    }
     _ => None
   }
 }

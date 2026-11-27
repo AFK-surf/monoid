@@ -182,6 +182,7 @@ int32_t sts_write_file_mode(
     int32_t append);
 void *sts_read_dir(const char *path, int64_t *out_len);
 int32_t sts_mkdir_p(const char *path);
+int32_t sts_mkdir_exclusive(const char *path);
 int32_t sts_rename(const char *old_path, const char *new_path);
 int32_t sts_random_bytes(uint8_t *buf, int64_t len);
 

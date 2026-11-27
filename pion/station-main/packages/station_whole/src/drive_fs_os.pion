@@ -75,26 +75,22 @@ fn parse_i64_dec(s : String) -> Int64 {
   if neg { 0L - acc } else { acc }
 }
 
-/// Safely parses an unsigned 64-bit decimal inode string without signed overflow wraparound.
-/// Values exceeding `Int64` max are folded cleanly into `[0, INT64_MAX]` via bit-masking.
+/// Safely parses an unsigned 64-bit decimal inode string using full `UInt64` arithmetic
+/// without signed overflow wraparound, then masks the high sign bit (`& 0x7FFFFFFFFFFFFFFF`)
+/// so `UINT64_MAX` maps to `9223372036854775807L` and `INT64_MAX + 1` maps to `0L`.
 pub fn parse_ino_safe(s : String) -> Int64 {
   let raw = s.to_bytes()
-  let mut acc = 0L
-  let max_div10 = 922337203685477580L
+  let mut acc : UInt64 = 0L.to_uint64()
+  let ten : UInt64 = 10L.to_uint64()
   for i in 0..<raw.length() {
     let b = raw[i].to_int() & 0xFF
     if b < 48 || b > 57 {
       break
     }
-    let d = (b - 48).to_int64()
-    if acc > max_div10 || (acc == max_div10 && d > 7L) {
-      // Fold high bit rather than wrapping negative.
-      acc = ((acc & 0x0FFFFFFFFFFFFFFFL) * 10L + d) & 0x7FFFFFFFFFFFFFFFL
-    } else {
-      acc = acc * 10L + d
-    }
+    let d : UInt64 = (b - 48).to_int64().to_uint64()
+    acc = acc * ten + d
   }
-  acc
+  (acc & 0x7FFFFFFFFFFFFFFFL.to_uint64()).to_int64()
 }
 
 fn parse_stat_meta(raw : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
@@ -173,13 +169,11 @@ pub fn os_drive_fs() -> station_screens::DriveFs {
       if !meta.is_file {
         return Err(station_ops::FsErr::Other("non-regular file"))
       }
-      if meta.size <= 0L {
-        return Ok(Bytes::new(0))
-      }
       if meta.size > 2147483647L {
         return Err(station_ops::FsErr::Other("file too large for read_bytes"))
       }
-      match station_sys::read_range_meta(path, 0L, meta.size) {
+      let read_len = if meta.size < 0L { 0L } else { meta.size }
+      match station_sys::read_range_meta(path, 0L, read_len) {
         Ok((bytes, _, _)) => Ok(bytes)
         Err(code) => Err(map_sys_err(code))
       }
@@ -409,79 +403,97 @@ pub fn probe_sync_preceded_rename(
 
 /// Real-disk self-test verifying all three Opus DriveFs probes (`read <= len`, `.part` reads == 0,
 /// `fsync` strictly before `rename`) against live OS files via `os_drive_fs()`.
+/// Always creates an exclusive CSPRNG-named subdirectory `<root>/.sf-drive-probe-<16hex>` via
+/// `mkdir_exclusive` and cleans up only its own files and that subdirectory — never modifying
+/// or deleting the caller-provided `root`.
 pub fn run_drive_fs_os_probe_selftest(root : String) -> Result[String, String] {
-  if !station_sys::mkdir_p(root) {
-    return Err("mkdir_p failed: " + root)
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let suffix = match station_sys::random_hex(8) {
+    Ok(h) => h
+    Err(e) => return Err("random_hex failed: " + e)
   }
+  let probe_dir = nodepath::join(sep, [root, ".sf-drive-probe-" + suffix])
+  if !station_sys::mkdir_exclusive(probe_dir) {
+    return Err("mkdir_exclusive failed: " + probe_dir)
+  }
+  let big_path = nodepath::join(sep, [probe_dir, "big.bin"])
+  let up_id = "os-probe-upload-01"
+  let cleanup = fn() -> Unit {
+    match station_sys::read_dir(probe_dir) {
+      Some(entries) => {
+        for i in 0..<entries.length() {
+          let _ = station_sys::unlink(nodepath::join(sep, [probe_dir, entries[i]]))
+        }
+      }
+      None => {
+        let _ = station_sys::unlink(big_path)
+        let _ = station_sys::unlink(nodepath::join(sep, [probe_dir, "uploaded.bin"]))
+      }
+    }
+    let _ = station_sys::rmdir(probe_dir)
+  }
+
   let stats = DriveProbeStats::new()
   let probed_fs = instrument_drive_fs(os_drive_fs(), stats)
   let drive = station_screens::Drive::new(
     probed_fs,
-    [root],
+    [probe_dir],
     [],
     station_sys::os_name() == "win32",
-    root,
+    probe_dir,
     station_screens::TrashKind::Freedesktop,
   )
 
-  let big_path = nodepath::join("/", [root, "big.bin"])
   let big_data = Bytes::new(131072)
   for i in 0..<131072 {
     big_data[i] = ((i * 31 + 7) & 0xFF) as Byte
   }
   if !station_sys::write_file_mode(big_path, big_data, mode=420, append=false) {
+    cleanup()
     return Err("write big.bin failed")
   }
-  match drive.read(root, "big.bin", 40960L, 64, false) {
+  match drive.read(probe_dir, "big.bin", 40960L, 64, false) {
     Ok((chunk, total_sz, _, _)) => {
       if chunk.length() != 64 || total_sz != 131072L {
-        let _ = station_sys::unlink(big_path)
-        let _ = station_sys::rmdir(root)
+        cleanup()
         return Err("drive.read size mismatch")
       }
       for i in 0..<64 {
         if chunk[i] != big_data[40960 + i] {
-          let _ = station_sys::unlink(big_path)
-          let _ = station_sys::rmdir(root)
+          cleanup()
           return Err("drive.read byte mismatch")
         }
       }
     }
     Err(e) => {
-      let _ = station_sys::unlink(big_path)
-      let _ = station_sys::rmdir(root)
+      cleanup()
       return Err("drive.read failed: " + e.message)
     }
   }
   if stats.total_bytes_read > 64L || stats.read_bytes_calls != 0 {
-    let _ = station_sys::unlink(big_path)
-    let _ = station_sys::rmdir(root)
+    cleanup()
     return Err("drive.read exceeded range budget")
   }
 
   let c1 = "chunk-one-real-disk-0123456789".to_bytes()
   let c2 = "chunk-two-real-disk-abcdefghij".to_bytes()
   let up_total = (c1.length() + c2.length()).to_int64()
-  let up_id = "os-probe-upload-01"
-  match drive.upload(root, "uploaded.bin", up_id, 0L, up_total, c1, true, false, 1700000000000L) {
+  match drive.upload(probe_dir, "uploaded.bin", up_id, 0L, up_total, c1, true, false, 1700000000000L) {
     Ok(_) => ()
     Err(e) => {
-      let _ = station_sys::unlink(big_path)
+      cleanup()
       return Err("upload chunk 1 failed: " + e.message)
     }
   }
-  match drive.upload(root, "uploaded.bin", up_id, c1.length().to_int64(), up_total, c2, true, false, 1700000000010L) {
+  match drive.upload(probe_dir, "uploaded.bin", up_id, c1.length().to_int64(), up_total, c2, true, false, 1700000000010L) {
     Ok(_) => ()
     Err(e) => {
-      let _ = station_sys::unlink(big_path)
+      cleanup()
       return Err("upload chunk 2 failed: " + e.message)
     }
   }
-  let up_path = nodepath::join("/", [root, "uploaded.bin"])
   let sync_ok = probe_sync_preceded_rename(stats, ".part", "uploaded.bin")
-  let _ = station_sys::unlink(big_path)
-  let _ = station_sys::unlink(up_path)
-  let _ = station_sys::rmdir(root)
+  cleanup()
   if stats.part_read_calls != 0 || stats.part_bytes_read != 0L {
     return Err(".part read count != 0")
   }

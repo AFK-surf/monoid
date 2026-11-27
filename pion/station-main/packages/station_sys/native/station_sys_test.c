@@ -379,12 +379,81 @@ static void test_win_udp_and_info(void) {
     printf("  [PASS] win udp + env + machine/ifaces/usage + signals\n");
 }
 
+static void test_win_drive_io_and_reparse(void) {
+    char dir[256];
+    win_make_temp_dir(dir, sizeof(dir));
+
+    // Exclusive directory creation: succeeds once, fails on duplicate.
+    char ex_dir[320];
+    snprintf(ex_dir, sizeof(ex_dir), "%s\\excl", dir);
+    assert(sts_mkdir_exclusive(ex_dir) == 1);
+    assert(sts_mkdir_exclusive(ex_dir) == 0);
+
+    // Target regular file for `.part` symlink reparse-point test.
+    char target_path[384], part_sym[384];
+    snprintf(target_path, sizeof(target_path), "%s\\target.bin", ex_dir);
+    snprintf(part_sym, sizeof(part_sym), "%s\\evil.part", ex_dir);
+    const char *keep = "KEEP_ME_INTACT_12345";
+    int64_t sz = 0;
+    int32_t is_short = 0;
+    assert(sts_write_at(target_path, 0, (const uint8_t *)keep, 20, 1, 0, 0, 0, 0, 1, &sz, &is_short) == 0);
+    assert(sz == 20 && is_short == 0);
+    assert(sts_sync_file(target_path) == 0);
+
+    // Attempt to create a Windows symlink `evil.part -> target.bin`.
+    int wt_n = MultiByteToWideChar(CP_UTF8, 0, target_path, -1, NULL, 0);
+    int wl_n = MultiByteToWideChar(CP_UTF8, 0, part_sym, -1, NULL, 0);
+    assert(wt_n > 0 && wl_n > 0);
+    wchar_t *wtarget = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wt_n);
+    wchar_t *wlink = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wl_n);
+    assert(wtarget != NULL && wlink != NULL);
+    assert(MultiByteToWideChar(CP_UTF8, 0, target_path, -1, wtarget, wt_n) > 0);
+    assert(MultiByteToWideChar(CP_UTF8, 0, part_sym, -1, wlink, wl_n) > 0);
+
+    DWORD sym_flags = 0x2; /* SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE */
+    BOOLEAN sym_ok = CreateSymbolicLinkW(wlink, wtarget, sym_flags);
+    DWORD sym_err = sym_ok ? 0 : GetLastError();
+    if (!sym_ok && sym_err == ERROR_INVALID_PARAMETER) {
+        sym_ok = CreateSymbolicLinkW(wlink, wtarget, 0);
+        sym_err = sym_ok ? 0 : GetLastError();
+    }
+    if (sym_ok) {
+        // create_new != 0 MUST NOT follow or truncate target_path; must return -5.
+        assert(sts_write_at(part_sym, 0, (const uint8_t *)"X", 1, 1, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
+        // create_new == 0 MUST also reject reparse point with -5.
+        assert(sts_write_at(part_sym, 0, (const uint8_t *)"X", 1, 0, 0, 0, 0, 0, 0, &sz, &is_short) == -5);
+        // sts_sync_file MUST also reject reparse point with -5.
+        assert(sts_sync_file(part_sym) == -5);
+        // Verify target_path was NOT truncated or modified.
+        int64_t rlen = 0, rtot = 0, rmtime = 0;
+        int32_t rerr = -1;
+        void *rbuf = sts_read_range_meta(target_path, 0, 32, &rlen, &rtot, &rmtime, &rerr);
+        assert(rbuf != NULL && rerr == 0 && rlen == 20 && rtot == 20);
+        assert(memcmp(rbuf, keep, 20) == 0);
+        sts_free(rbuf);
+        assert(DeleteFileW(wlink) != 0);
+        printf("  [PASS] win drive_io + reparse-point .part anti-truncate (-5)\n");
+    } else if (sym_err == ERROR_PRIVILEGE_NOT_HELD) {
+        printf("  [SKIP] win reparse-point symlink test (ERROR_PRIVILEGE_NOT_HELD)\n");
+    } else {
+        fprintf(stderr, "CreateSymbolicLinkW failed unexpectedly: err=%lu\n", (unsigned long)sym_err);
+        assert(sym_ok != 0);
+    }
+    free(wtarget);
+    free(wlink);
+
+    assert(sts_unlink(target_path) == 1);
+    assert(sts_rmdir(ex_dir) == 1);
+    assert(sts_rmdir(dir) == 1);
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     test_win_fs_watch();
     test_win_flock();
     test_win_proc_and_pty();
     test_win_udp_and_info();
+    test_win_drive_io_and_reparse();
     assert(sts_wait_detached_for_test(5000) == 1);
     printf("station_sys_test (windows): ALL PASSED\n");
     return 0;
@@ -1717,8 +1786,13 @@ int main(void) {
             unlink(locked_child);
             rmdir(locked_dir);
         }
-        // POSIX uid / euid
+        // POSIX uid / euid & sts_mkdir_exclusive
         assert(sts_getuid() >= 0 && sts_geteuid() >= 0);
+        char excl_dir[256];
+        snprintf(excl_dir, sizeof(excl_dir), "/tmp/sts-excl-%d-%lld", (int)getpid(), (long long)sth_now_ms());
+        assert(sts_mkdir_exclusive(excl_dir) == 1);
+        assert(sts_mkdir_exclusive(excl_dir) == 0);
+        assert(sts_rmdir(excl_dir) == 1);
         unlink(drv_file);
     }
 

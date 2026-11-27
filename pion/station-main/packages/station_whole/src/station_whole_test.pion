@@ -103,10 +103,11 @@ test "drive_fs_os_opus_three_probe_gates_and_safe_ino_parsing" {
   assert(stats.rename_calls >= 1)
   assert(probe_sync_preceded_rename(stats, ".part", "uploaded.bin"))
 
-  // Safe unsigned 64-bit inode parsing (never wraps negative for > INT64_MAX).
+  // Safe unsigned 64-bit inode parsing (exact bit-masking via full UInt64 arithmetic).
   assert(parse_ino_safe("123456789") == 123456789L)
   assert(parse_ino_safe("9223372036854775807") == 9223372036854775807L)
-  assert(parse_ino_safe("18446744073709551615") >= 0L)
+  assert(parse_ino_safe("9223372036854775808") == 0L)
+  assert(parse_ino_safe("18446744073709551615") == 9223372036854775807L)
 
   // Error code mapping distinguishes ENOENT, EACCES, EISDIR, non-regular FIFO, EINVAL.
   assert(match map_sys_err(-2) { station_ops::FsErr::NotFound => true _ => false })
@@ -291,18 +292,33 @@ test "thumb_os_modes_hash_width_height_int64_small_bytes_and_async_mux" {
     Err(e) => panic("custom thumb args failed: " + e)
   }
 
-  // P1 fix: `mode: "hash"` response from `client/shell` returns `width` and `height` (NOT `originalWidth`).
-  let hash_json = "{\"thumbhash\":\"1QcSHQRnh493V4dIh4eXh1h4kJUI\",\"width\":640,\"height\":480}"
+  // `mode: "hash"` response from `client/shell` returns `width` and `height` (no `originalWidth`).
+  let hash_json = "{\"thumbhash\":\"1QcSHQRnh493V4dIh4eXh1h4kJUI\",\"width\":768,\"height\":320}"
   match parse_image_thumb_response(hash_json, None) {
     Ok(r) => match extract_thumbhash_info(r) {
       Some(info) => {
         assert(info.hash == "1QcSHQRnh493V4dIh4eXh1h4kJUI")
-        assert(info.width == 640)
-        assert(info.height == 480)
+        assert(info.width == 768)
+        assert(info.height == 320)
       }
       None => panic("extract_thumbhash_info returned None for Mode::Hash response")
     }
     Err(e) => panic("parse hash response failed: " + e)
+  }
+
+  // `mode: "custom"` + `thumbhash: true` returns BOTH resized `width`/`height` AND
+  // `originalWidth`/`originalHeight`: `extract_thumbhash_info` MUST prefer `originalWidth`/`originalHeight`.
+  let custom_hash_json = "{\"width\":16,\"height\":16,\"originalWidth\":768,\"originalHeight\":320,\"thumbhash\":\"1QcSHQRnh493V4dIh4eXh1h4kJUI\"}"
+  match parse_image_thumb_response(custom_hash_json, None) {
+    Ok(r) => match extract_thumbhash_info(r) {
+      Some(info) => {
+        assert(info.hash == "1QcSHQRnh493V4dIh4eXh1h4kJUI")
+        assert(info.width == 768)
+        assert(info.height == 320)
+      }
+      None => panic("extract_thumbhash_info returned None for Mode::Custom+thumbhash response")
+    }
+    Err(e) => panic("parse custom+hash response failed: " + e)
   }
 
   // `write_failed` preserves thumbhash + `originalWidth`/`originalHeight` fallback
@@ -353,7 +369,7 @@ test "thumb_os_modes_hash_width_height_int64_small_bytes_and_async_mux" {
   }
   match decode_image_thumb_done(done_ok) {
     Ok(r) => match extract_thumbhash_info(r) {
-      Some(info) => assert(info.width == 640 && info.height == 480)
+      Some(info) => assert(info.width == 768 && info.height == 320)
       None => panic("decode_image_thumb_done missing thumbhash info")
     }
     Err(e) => panic("decode_image_thumb_done failed: " + e)
