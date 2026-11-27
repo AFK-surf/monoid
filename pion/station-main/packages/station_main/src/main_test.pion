@@ -813,3 +813,30 @@ test "decide_connect_inbound covers full multi/single-session, requireMention, e
   assert_true(decide_connect_inbound(false, true, false, true, stop) is ConnectInboundDecision::RefuseNoAck, "Stop fails closed")
   assert_true(decide_connect_inbound(false, true, false, true, login) is ConnectInboundDecision::RefuseNoAck, "LoginCode fails closed")
 }
+
+test "enabled_external_connects_in_config detects all enabled Slack/Feishu/Comma/Group entries and ignores disabled/empty" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => panic(e)
+    }
+  }
+  // Empty / missing connects -> empty list
+  assert_true(enabled_external_connects_in_config(parse("{}")).length() == 0, "missing connects")
+  assert_true(enabled_external_connects_in_config(parse("{\"connects\":[]}")).length() == 0, "empty connects")
+
+  // Disabled external connects + non-external kind -> empty list
+  let disabled_cfg = parse("{\"connects\":[{\"id\":\"s0\",\"enabled\":false,\"slack\":{\"appToken\":\"xapp-1\",\"botToken\":\"xoxb-1\"}},{\"id\":\"f0\",\"kind\":\"feishu\",\"enabled\":false},{\"id\":\"c0\",\"kind\":\"comma\",\"enabled\":false},{\"id\":\"g0\",\"kind\":\"group\",\"enabled\":false},{\"id\":\"web0\",\"kind\":\"chat\"}]}")
+  assert_true(enabled_external_connects_in_config(disabled_cfg).length() == 0, "disabled and non-external ignored")
+
+  // Omitted kind, null kind, explicit slack/feishu/comma/group -> all detected!
+  let enabled_cfg = parse("{\"connects\":[{\"id\":\"s-omit\"},{\"id\":\"s-null\",\"kind\":null},{\"id\":\"s-exp\",\"kind\":\"slack\",\"enabled\":true},{\"id\":\"f1\",\"kind\":\"feishu\"},{\"id\":\"cm1\",\"kind\":\"comma\"},{\"id\":\"g1\",\"kind\":\"group\",\"group\":{\"server\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}},{\"id\":\"s-off\",\"kind\":\"slack\",\"enabled\":false}]}")
+  let found = enabled_external_connects_in_config(enabled_cfg)
+  assert_true(found.length() == 6, "expected 6 enabled external connects")
+  assert_str_eq(found[0], "slack:s-omit")
+  assert_str_eq(found[1], "slack:s-null")
+  assert_str_eq(found[2], "slack:s-exp")
+  assert_str_eq(found[3], "feishu:f1")
+  assert_str_eq(found[4], "comma:cm1")
+  assert_str_eq(found[5], "group:g1")
+}

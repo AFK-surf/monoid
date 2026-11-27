@@ -1755,38 +1755,26 @@ test("W17A.6: Node takeBackSoon vs Pion differential parity (complete, notEmpty,
   }
 });
 
-test("W17A.7: ConnectsOsRuntime runtime auth.test team_id + single-session + multi-edit + thread_sessions + Node Store parity", async () => {
-  const { grantKeys } = makeGrantKeysAndSigner();
+test("W17A.7: External connects fail-closed entry gate (running Node zero-disruption on SIGUSR2, cold refusal, disabled connects clean Pion boot & handover)", async () => {
+  const mesh = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
 
-  // Local mock Slack HTTP (`auth.test`, `apps.connections.open`) + Socket Mode WS server.
-  let wsConnections = 0;
-  const ackedEnvelopes: string[] = [];
-  const dbRowsAtAck: number[] = [];
-  const edit1RowsAtAck: number[] = [];
-  const edit2RowsAtAck: number[] = [];
-  let dataDirRef = "";
-
+  // Mock Slack HTTP + Socket Mode WS server to verify 0 Pion connections and 0 ACKs!
+  let slackHttpHits = 0;
+  let slackWsConns = 0;
+  const slackAcks: string[] = [];
   const slackSrv = createHttpServer((req, res) => {
-    const auth = String(req.headers.authorization ?? "");
-    const isSingle = auth.includes("single");
+    slackHttpHits++;
     if (req.url?.includes("auth.test")) {
       res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({
-          ok: true,
-          team_id: isSingle ? "T_SINGLE_AUTH" : "T_RT_AUTH",
-          team: isSingle ? "SingleTeam" : "RuntimeTeam",
-          user_id: isSingle ? "UBOT_SINGLE" : "UBOT_MAIN",
-          bot_id: isSingle ? "BBOT_SINGLE" : "BBOT_MAIN",
-          user: isSingle ? "bot-single" : "bot-main",
-        }),
+        JSON.stringify({ ok: true, team_id: "T_GATE", team: "GateTeam", user_id: "UBOT", bot_id: "BBOT", user: "bot" }),
       );
       return;
     }
     if (req.url?.includes("apps.connections.open")) {
       const port = (slackSrv.address() as AddressInfo).port;
-      const tag = isSingle ? "single" : "main";
       res.writeHead(200, { "content-type": "application/json" }).end(
-        JSON.stringify({ ok: true, url: `ws://127.0.0.1:${port}/slack-ws?c=${tag}` }),
+        JSON.stringify({ ok: true, url: `ws://127.0.0.1:${port}/slack-ws` }),
       );
       return;
     }
@@ -1794,313 +1782,262 @@ test("W17A.7: ConnectsOsRuntime runtime auth.test team_id + single-session + mul
   });
   const slackWss = new WebSocketServer({ noServer: true });
   servers.push(slackWss, slackSrv);
-  let mainConns = 0;
-  let singleConns = 0;
   slackSrv.on("upgrade", (req, socket, head) => {
-    const isSingle = String(req.url ?? "").includes("c=single");
     slackWss.handleUpgrade(req, socket, head, (ws) => {
-      wsConnections++;
-      if (isSingle) singleConns++;
-      else mainConns++;
-      ws.send(JSON.stringify({ type: "hello", num_connections: wsConnections }));
+      slackWsConns++;
+      ws.send(JSON.stringify({ type: "hello", num_connections: slackWsConns }));
       ws.on("message", (raw) => {
         try {
           const msg = JSON.parse(String(raw));
-          if (typeof msg.envelope_id === "string") {
-            ackedEnvelopes.push(msg.envelope_id);
-            if (dataDirRef && existsSync(join(dataDirRef, "stillfail.db"))) {
-              const db = new DatabaseSync(join(dataDirRef, "stillfail.db"), { readOnly: true });
-              if (msg.envelope_id === "env-w17a-slack-1") {
-                const row = db
-                  .prepare("SELECT COUNT(*) AS cnt FROM entries WHERE text = 'hello-slack-db-before-ack'")
-                  .get() as { cnt: number };
-                dbRowsAtAck.push(row.cnt);
-              } else if (msg.envelope_id === "env-w17a-slack-edit1") {
-                const row = db
-                  .prepare("SELECT COUNT(*) AS cnt FROM entries WHERE kind = 'edit' AND text = 'edited-v1'")
-                  .get() as { cnt: number };
-                edit1RowsAtAck.push(row.cnt);
-              } else if (msg.envelope_id === "env-w17a-slack-edit2") {
-                const row = db
-                  .prepare("SELECT COUNT(*) AS cnt FROM entries WHERE kind = 'edit' AND text = 'edited-v2'")
-                  .get() as { cnt: number };
-                edit2RowsAtAck.push(row.cnt);
-              }
-              db.close();
-            }
-          }
+          if (typeof msg.envelope_id === "string") slackAcks.push(msg.envelope_id);
         } catch {}
       });
-      if (!isSingle && mainConns === 1) {
-        // 1) Unaddressed chatter in C_RANDOM -> ignored (0 threads/entries).
-        ws.send(
-          JSON.stringify({
-            envelope_id: "env-w17a-slack-unaddr",
-            type: "events_api",
-            payload: {
-              event_id: "EvUnaddr",
-              event: {
-                type: "message",
-                channel: "C_RANDOM",
-                ts: "1795780000.000050",
-                user: "U_BOB",
-                text: "random chatter not addressed to bot",
-              },
-            },
-          }),
-        );
-        // 2) Addressed `app_mention` -> persisted under runtime `auth.test` surface `"slack:T_RT_AUTH"` + session joined.
-        ws.send(
-          JSON.stringify({
-            envelope_id: "env-w17a-slack-1",
-            type: "events_api",
-            payload: {
-              event_id: "EvMsg1",
-              event: {
-                type: "app_mention",
-                channel: "C_W17A",
-                ts: "1795780000.000100",
-                thread_ts: "1795780000.000100",
-                user: "U_ALICE",
-                text: "hello-slack-db-before-ack",
-              },
-            },
-          }),
-        );
-        // 3) Edit #1 on same message -> persisted BEFORE ACK.
-        ws.send(
-          JSON.stringify({
-            envelope_id: "env-w17a-slack-edit1",
-            type: "events_api",
-            payload: {
-              event_id: "EvEdit1",
-              event: {
-                type: "message",
-                subtype: "message_changed",
-                channel: "C_W17A",
-                event_ts: "1795780000.000200",
-                message: {
-                  type: "message",
-                  user: "U_ALICE",
-                  ts: "1795780000.000100",
-                  thread_ts: "1795780000.000100",
-                  text: "edited-v1",
-                },
-              },
-            },
-          }),
-        );
-        // 4) Edit #2 on SAME message with distinct event_id/event_ts -> MUST ALSO persist BEFORE ACK!
-        ws.send(
-          JSON.stringify({
-            envelope_id: "env-w17a-slack-edit2",
-            type: "events_api",
-            payload: {
-              event_id: "EvEdit2",
-              event: {
-                type: "message",
-                subtype: "message_changed",
-                channel: "C_W17A",
-                event_ts: "1795780000.000300",
-                message: {
-                  type: "message",
-                  user: "U_ALICE",
-                  ts: "1795780000.000100",
-                  thread_ts: "1795780000.000100",
-                  text: "edited-v2",
-                },
-              },
-            },
-          }),
-        );
-        // 5) Redelivery of Edit #2 with SAME event_id -> deduplicated (still only 1 row for `edited-v2`).
-        ws.send(
-          JSON.stringify({
-            envelope_id: "env-w17a-slack-edit2-dup",
-            type: "events_api",
-            payload: {
-              event_id: "EvEdit2",
-              event: {
-                type: "message",
-                subtype: "message_changed",
-                channel: "C_W17A",
-                event_ts: "1795780000.000300",
-                message: {
-                  type: "message",
-                  user: "U_ALICE",
-                  ts: "1795780000.000100",
-                  thread_ts: "1795780000.000100",
-                  text: "edited-v2",
-                },
-              },
-            },
-          }),
-        );
-      } else if (isSingle && singleConns === 1) {
-        // Single-session + `requireMention: false`: unaddressed message MUST persist & bind session!
-        ws.send(
-          JSON.stringify({
-            envelope_id: "env-w17a-single-unaddr",
-            type: "events_api",
-            payload: {
-              event_id: "EvSingle1",
-              event: {
-                type: "message",
-                channel: "C_SINGLE",
-                ts: "1795780000.000400",
-                user: "U_CAROL",
-                text: "hello-single-session-no-mention",
-              },
-            },
-          }),
-        );
-      }
     });
   });
   await new Promise<void>((resolve) => slackSrv.listen(0, "127.0.0.1", () => resolve()));
   const slackPort = (slackSrv.address() as AddressInfo).port;
 
-  const dir = freshDir("slack-connect");
-  const appDir = join(dir, "app");
-  const dataDir = join(dir, "data");
-  dataDirRef = dataDir;
-  installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
-  mkdirSync(join(dataDir, "mesh"), { recursive: true });
+  // --- Scenario 1: Running real Node station with enabled Slack connect -> switch `engine: "pion"` + `SIGUSR2` ---
+  // Pion MUST refuse BEFORE `ready`/DB/sockets; original Node station MUST stay alive with ZERO interruption!
+  {
+    const dir = freshDir("ext-gate-live-node");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, true);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
 
-  const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
-  assert.equal(idRes.status, 0, idRes.stderr);
-  const stationId = idRes.stdout.trim();
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
 
-  // `slack-main`: omitted `kind` (defaults to "slack"), NO `team.id` (must get `"T_RT_AUTH"` from runtime `auth.test`!).
-  // `slack-single`: `mode: "single-session"`, `requireMention: false` (unaddressed message persists + binds session).
-  writeFileSync(
-    join(dataDir, "config.json"),
-    JSON.stringify({
-      engine: "pion",
+    const enabledSlackCfg = {
+      engine: "node",
       connects: [
         {
           id: "slack-main",
           bind: { runtime: "claude" },
           slack: {
-            appToken: "xapp-1-w17a-main",
-            botToken: "xoxb-w17a-main",
-            baseUrl: `http://127.0.0.1:${slackPort}`,
-          },
-        },
-        {
-          id: "slack-single",
-          kind: "slack",
-          mode: "single-session",
-          requireMention: false,
-          bind: { runtime: "claude" },
-          slack: {
-            appToken: "xapp-1-w17a-single",
-            botToken: "xoxb-w17a-single",
+            appToken: "xapp-1-w17a-gate",
+            botToken: "xoxb-w17a-gate",
             baseUrl: `http://127.0.0.1:${slackPort}`,
           },
         },
       ],
-    }),
-  );
-  writeFileSync(
-    join(dataDir, "mesh", "cloud.json"),
-    JSON.stringify({
-      workspace: "ws-slack",
-      workspace_name: "SlackWS",
-      station: stationId,
-      name: "slack-station",
-      peers: [],
-      relay_urls: [],
-      grant_keys: grantKeys,
-    }),
-  );
-
-  const udpPort = await pickFreeUdpPort();
-  const slackLogs: string[] = [];
-  const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
-    env: {
-      ...process.env,
-      STILLFAIL_NO_DISCOVERY: "1",
-      STILLFAIL_NO_DHT: "1",
-      STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
-    },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  children.push(launcher);
-  launcher.stdout.on("data", (d) => slackLogs.push(String(d)));
-  launcher.stderr.on("data", (d) => slackLogs.push(String(d)));
-
-  const pid1 = await until("slack pion pid1", () => {
-    const p = readHubPid(dataDir);
-    return p > 0 && isAlive(p) ? p : null;
-  });
-
-  // Verify all envelopes persisted BEFORE ACK!
-  try {
-    await until(
-      "slack envelopes ACKed",
-      () =>
-        ackedEnvelopes.includes("env-w17a-slack-unaddr") &&
-        ackedEnvelopes.includes("env-w17a-slack-1") &&
-        ackedEnvelopes.includes("env-w17a-slack-edit1") &&
-        ackedEnvelopes.includes("env-w17a-slack-edit2") &&
-        ackedEnvelopes.includes("env-w17a-slack-edit2-dup") &&
-        ackedEnvelopes.includes("env-w17a-single-unaddr"),
-      10_000,
+    };
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify(enabledSlackCfg));
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: "ws-gate",
+        workspace_name: "GateWS",
+        station: stationId,
+        name: "gate-station",
+        peers: [],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
     );
-  } catch (e) {
-    const logPath = join(dataDir, "stillfail.log");
-    const logTail = existsSync(logPath) ? readFileSync(logPath, "utf8").slice(-1000) : "(no stillfail.log)";
-    throw new Error(`${(e as Error).message} | wsConnections=${wsConnections} | acked=${JSON.stringify(ackedEnvelopes)} | slackLogs=${slackLogs.join("").slice(-300)} | stillfail.log=${logTail}`);
+
+    const udpPort = await pickFreeUdpPort();
+    const logs: string[] = [];
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: {
+        ...process.env,
+        STILLFAIL_NO_DISCOVERY: "1",
+        STILLFAIL_NO_DHT: "1",
+        STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+        STILLFAIL_READER_ENGINE: "mb",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    children.push(launcher);
+    launcher.stdout.on("data", (d) => logs.push(String(d)));
+    launcher.stderr.on("data", (d) => logs.push(String(d)));
+
+    const nodePid = await until(
+      "running Node station pid + loopback",
+      () => {
+        const p = readHubPid(dataDir);
+        if (p > 0 && isAlive(p) && existsSync(join(dataDir, "stillfail.db"))) {
+          const port = readPorts(dataDir).admin ?? 0;
+          if (port > 0) return p;
+        }
+        return null;
+      },
+      30_000,
+    );
+    const nodePort = readPorts(dataDir).admin!;
+    assert.equal((await httpCall(nodePort, "GET", "/healthz")).status, 200);
+
+    // Record DB state + mock Slack hit baseline BEFORE attempting cutover to Pion.
+    const dbCheck1 = new DatabaseSync(join(dataDir, "stillfail.db"), { readOnly: true });
+    const threadsBefore = (dbCheck1.prepare("SELECT COUNT(*) AS cnt FROM threads").get() as { cnt: number }).cnt;
+    const entriesBefore = (dbCheck1.prepare("SELECT COUNT(*) AS cnt FROM entries").get() as { cnt: number }).cnt;
+    dbCheck1.close();
+    const hitsBefore = slackHttpHits;
+    const wsBefore = slackWsConns;
+
+    // Flip config to `"engine": "pion"` (keeping enabled Slack connect) and trigger `SIGUSR2`!
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ ...enabledSlackCfg, engine: "pion" }));
+    launcher.kill("SIGUSR2");
+
+    // Wait for Pion refusal message in launcher logs.
+    await until(
+      "Pion fail-closed refusal logged on SIGUSR2",
+      () => logs.join("").includes("does not yet support enabled external connects (slack:slack-main)"),
+      15_000,
+    );
+
+    // Verify original Node station is STILL the exact same live PID serving `/healthz` + `/status` with ZERO interruption!
+    assert.equal(readHubPid(dataDir), nodePid, "original Node PID must remain active after Pion refusal");
+    assert.equal(isAlive(nodePid), true, "original Node process must remain alive");
+    assert.equal((await httpCall(nodePort, "GET", "/healthz")).status, 200);
+
+    const clientEp = await bindClientEp(mesh);
+    const jwt = signMemberJwt({ ws: "ws-gate", device: clientEp.id(), sub: "u-gate", email: "g@example.com", name: "Gate", role: "owner" });
+    const { conn } = await until("Node admin /admin/api/ways still serving", () =>
+      openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
+    );
+    const waysResp = await adminRequest(conn, "GET", "/admin/api/ways");
+    assert.equal(waysResp.status, 200);
+    conn.close(0, "done");
+
+    // 0 Pion Slack connections, 0 ACKs, 0 DB tampering!
+    assert.equal(slackHttpHits, hitsBefore, "Pion must NOT open any HTTP call to Slack when refused");
+    assert.equal(slackWsConns, wsBefore, "Pion must NOT open any WS to Slack when refused");
+    assert.equal(slackAcks.length, 0, "Pion must NOT send any Slack ACK");
+    const dbCheck2 = new DatabaseSync(join(dataDir, "stillfail.db"), { readOnly: true });
+    assert.equal((dbCheck2.prepare("SELECT COUNT(*) AS cnt FROM threads").get() as { cnt: number }).cnt, threadsBefore);
+    assert.equal((dbCheck2.prepare("SELECT COUNT(*) AS cnt FROM entries").get() as { cnt: number }).cnt, entriesBefore);
+    dbCheck2.close();
+
+    launcher.kill("SIGTERM");
+    await until("gate live-node launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
   }
-  assert.ok(dbRowsAtAck.length >= 1 && dbRowsAtAck[0] >= 1, `DB row not persisted before ACK: ${JSON.stringify(dbRowsAtAck)}`);
-  assert.ok(edit1RowsAtAck.length >= 1 && edit1RowsAtAck[0] >= 1, `Edit 1 not persisted before ACK: ${JSON.stringify(edit1RowsAtAck)}`);
-  assert.ok(edit2RowsAtAck.length >= 1 && edit2RowsAtAck[0] >= 1, `Edit 2 not persisted before ACK: ${JSON.stringify(edit2RowsAtAck)}`);
 
-  // Trigger `SIGUSR2` handover while Slack connectors are live -> old Pion exits cleanly, new Pion reconnects!
-  const fdBefore = openFdCount(pid1);
-  launcher.kill("SIGUSR2");
-  const pid2 = await until("slack pion pid2 after SIGUSR2", () => {
-    const p = readHubPid(dataDir);
-    return p > 0 && p !== pid1 && isAlive(p) ? p : null;
-  });
-  await until("old pion pid1 exited after handover", () => !isAlive(pid1), 10_000);
-  await until("new pion reconnected to mock Slack WS", () => mainConns >= 2 && singleConns >= 2, 15_000);
-  const fdAfter = openFdCount(pid2);
-  if (fdBefore > 0 && fdAfter > 0) {
-    assert.ok(Math.abs(fdAfter - fdBefore) <= 12, `unexpected FD delta across handover: before=${fdBefore} after=${fdAfter}`);
+  // --- Scenario 2: Cold start with enabled external connects (Slack omitted kind / Feishu / Comma / Group 64-hex) ---
+  {
+    const coldDir = freshDir("ext-gate-cold");
+    mkdirSync(join(coldDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", coldDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const coldId = idRes.stdout.trim();
+    writeFileSync(
+      join(coldDir, "config.json"),
+      JSON.stringify({
+        engine: "pion",
+        connects: [
+          { id: "sl-omit", slack: { appToken: "xapp-1-t", botToken: "xoxb-t", baseUrl: `http://127.0.0.1:${slackPort}` } },
+          { id: "fs-1", kind: "feishu", feishu: { appId: "cli_1", appSecret: "sec_1" } },
+          { id: "cm-1", kind: "comma", comma: { server: "http://127.0.0.1:9", token: "tok" } },
+          { id: "gr-1", kind: "group", group: { server: HEX32, key: HEX32, memberId: "m1" } },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(coldDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: "ws-cold",
+        workspace_name: "ColdWS",
+        station: coldId,
+        name: "cold-station",
+        peers: [],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    const hitsBefore = slackHttpHits;
+    const wsBefore = slackWsConns;
+    const coldRun = spawnSync(pionBin, ["run", "--data", coldDir, "--port", "0"], {
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+      encoding: "utf8",
+      timeout: 15_000,
+    });
+    assert.notEqual(coldRun.status, 0, "cold start with enabled external connects must exit non-zero");
+    const combined = `${coldRun.stdout}\n${coldRun.stderr}`;
+    assert.ok(
+      combined.includes("slack:sl-omit, feishu:fs-1, comma:cm-1, group:gr-1"),
+      `expected clear refusal naming all 4 connects, got: ${combined}`,
+    );
+    assert.equal(existsSync(join(coldDir, "stillfail.db")), false, "cold refusal must NOT create stillfail.db");
+    assert.equal(slackHttpHits, hitsBefore, "cold refusal must NOT contact mock Slack HTTP");
+    assert.equal(slackWsConns, wsBefore, "cold refusal must NOT open mock Slack WS");
   }
 
-  // Graceful `SIGTERM` shutdown: launcher + pion exit cleanly with zero orphans!
-  launcher.kill("SIGTERM");
-  await until("slack launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
-  await until("slack pion pid2 exited", () => !isAlive(pid2));
+  // --- Scenario 3: Same station with external connects `enabled: false` -> clean Pion boot, handover & shutdown ---
+  {
+    const dir = freshDir("ext-gate-disabled");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+    writeFileSync(
+      join(dataDir, "config.json"),
+      JSON.stringify({
+        engine: "pion",
+        connects: [
+          { id: "slack-off", enabled: false, slack: { appToken: "xapp-1-t", botToken: "xoxb-t", baseUrl: `http://127.0.0.1:${slackPort}` } },
+          { id: "feishu-off", kind: "feishu", enabled: false },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: "ws-dis",
+        workspace_name: "DisWS",
+        station: stationId,
+        name: "dis-station",
+        peers: [],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
 
-  // Verify 1:1 Node `Store.open` readback parity:
-  const nodeVerifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archive"));
-  try {
-    // 1. Runtime `auth.test` team_id -> surface `"slack:T_RT_AUTH"`, thread + session joined!
-    const th = nodeVerifyStore.threadAt("slack:T_RT_AUTH", "C_W17A", "1795780000.000100");
-    assert.ok(th !== null && th !== undefined, "Node Store.threadAt('slack:T_RT_AUTH', 'C_W17A', ...) must find Pion-written thread");
-    const thSessions = nodeVerifyStore.threadSessions(th.id);
-    assert.ok(thSessions.length >= 1, `expected >= 1 joined session for mentioned thread, got ${thSessions.length}`);
+    const udpPort = await pickFreeUdpPort();
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
+      stdio: "ignore",
+    });
+    children.push(launcher);
 
-    // 2. Unaddressed multi-session chatter in C_RANDOM -> 0 threads.
-    assert.equal(nodeVerifyStore.threadAt("slack:T_RT_AUTH", "C_RANDOM", "1795780000.000050"), null);
+    const pid1 = await until("disabled-connects pion pid1", () => {
+      const p = readHubPid(dataDir);
+      return p > 0 && isAlive(p) ? p : null;
+    });
 
-    // 3. Multi-edit + redelivery dedupe: Node `Store.editedText(th.id, 1)` reads v2 ("edited-v2"), exactly 1 v2 row!
-    assert.equal(nodeVerifyStore.editedText(th.id, 1), "edited-v2");
-    const v2Count = nodeVerifyStore.db
-      .prepare("SELECT COUNT(*) AS cnt FROM entries WHERE thread = ? AND kind = 'edit' AND text = 'edited-v2'")
-      .get(th.id) as { cnt: number };
-    assert.equal(v2Count.cnt, 1, "redelivered edit #2 must be deduplicated to 1 row");
+    const clientEp = await bindClientEp(mesh);
+    const jwt = signMemberJwt({ ws: "ws-dis", device: clientEp.id(), sub: "u-dis", email: "d@example.com", name: "Dis", role: "owner" });
+    const { conn } = await until("disabled-connects admin connect", () =>
+      openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt),
+    );
+    const stResp = await adminRequest(conn, "GET", "/status");
+    assert.equal(stResp.status, 200);
+    const stJson = JSON.parse(stResp.body.toString("utf8"));
+    assert.equal(stJson.edge?.connects?.enabledInConfig, 0);
+    assert.equal(stJson.edge?.connects?.total, 0);
+    assert.equal(stJson.edge?.connects?.running, 0);
+    conn.close(0, "done");
 
-    // 4. `single-session` + `requireMention: false`: unaddressed message persisted + session joined + binding recorded!
-    const singleTh = nodeVerifyStore.threadAt("slack:T_SINGLE_AUTH", "C_SINGLE", "1795780000.000400");
-    assert.ok(singleTh !== null && singleTh !== undefined, "single-session requireMention=false message must persist");
-    assert.ok(nodeVerifyStore.threadSessions(singleTh.id).length >= 1, "single-session thread must have joined session");
-    assert.ok(nodeVerifyStore.binding("slack-single") !== null, "single-session binding must be recorded in bindings table");
-  } finally {
-    nodeVerifyStore.close();
+    // `SIGUSR2` handover + `SIGTERM` clean shutdown with 0 orphans & 0 FD leak!
+    const fdBefore = openFdCount(pid1);
+    launcher.kill("SIGUSR2");
+    const pid2 = await until("disabled-connects pion pid2 after SIGUSR2", () => {
+      const p = readHubPid(dataDir);
+      return p > 0 && p !== pid1 && isAlive(p) ? p : null;
+    });
+    await until("old pion pid1 exited", () => !isAlive(pid1), 10_000);
+    const fdAfter = openFdCount(pid2);
+    if (fdBefore > 0 && fdAfter > 0) {
+      assert.ok(Math.abs(fdAfter - fdBefore) <= 12, `unexpected FD delta across handover: before=${fdBefore} after=${fdAfter}`);
+    }
+
+    launcher.kill("SIGTERM");
+    await until("disabled-connects launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+    await until("disabled-connects pion pid2 exited", () => !isAlive(pid2));
   }
 });
