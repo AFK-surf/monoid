@@ -7,7 +7,7 @@ import { needsKey, runtimesOf } from "../src/accounts/profiles.ts";
 import { accessEnv, billedPerUse, codexOverrides, dshRoute, OPENCODE, piRoute, profileEnv, profileRuntimes, vertexAccount, vertexKeyFile } from "../src/agents/profiles.ts";
 import { groupOf } from "../src/agents/providers.ts";
 import type { Profile } from "../src/agents/runtime.ts";
-import { hubConfig } from "../src/sessions/config.ts";
+import { hubConfig, profilesFor } from "../src/sessions/config.ts";
 import { ConfigFile } from "../src/ops/config.ts";
 import { temp } from "./accounts-fakes.ts";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -41,6 +41,21 @@ test("a config is filled in from what it says", () => {
   assert.equal(profileEnv(og, "codex").X, "1");
   assert.equal(profileEnv(og, "codex").OPENCODE_GO_KEY, "k");
   assert.equal(config.warmMs, 300_000);
+});
+
+test("old borrowed Copilot copies cannot be selected while local profiles and borrowed Codex remain available", () => {
+  const config = hubConfig({
+    profiles: [
+      { id: "old-copy", runtime: "copilot", home: "homes/old", access: { kind: "subscription" }, share: { borrowed: true, workspaces: ["w"] } },
+      { id: "local", runtime: "copilot", home: "homes/local", access: { kind: "subscription" } },
+      { id: "hosted", runtime: "copilot", home: "homes/hosted", access: { kind: "subscription" }, share: { id: "sh-hosted" } },
+      { id: "codex-copy", runtime: "codex", home: "homes/codex", access: { kind: "subscription" }, share: { borrowed: true, workspaces: ["w"] } },
+    ],
+    connects: [{ id: "chat", bind: { runtime: "copilot" }, workspace: "w" }],
+  }, "/data");
+  assert.equal(config.profiles.find((p) => p.id === "old-copy")?.enabled, false);
+  assert.equal(config.profiles.find((p) => p.id === "codex-copy")?.enabled, true);
+  assert.deepEqual(profilesFor(config, config.connects[0]!, "w").map((p) => p.id), ["local", "hosted"]);
 });
 
 test("maxConcurrentTurns defaults to 0 (unlimited) and honors explicit positive override", () => {

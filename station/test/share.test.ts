@@ -102,6 +102,103 @@ const settle = async (...stations: Station[]) => {
 
 const KEY = { id: "deepseek", name: "DeepSeek", access: { kind: "api-provider", provider: "deepseek", key: "sk-secret" }, home: "homes/deepseek", env: {} };
 const SUB = { id: "max", name: "Claude Max", runtime: "claude", access: { kind: "subscription" }, home: "homes/max", env: {} };
+const COPILOT = { id: "copilot", name: "Copilot", runtime: "copilot", access: { kind: "subscription" }, home: "homes/copilot", env: {} };
+
+test("Copilot profiles cannot be shared, including when a peer asks to borrow one", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all, [COPILOT]);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  assert.match(String(shareRefusal(COPILOT)), /cannot be shared/);
+  assert.match(String(shareRefusal({ ...COPILOT, access: { kind: "env" } })), /cannot be shared/);
+  await assert.rejects(a.sharing.shareProfile("copilot", true, null), /cannot be shared/);
+  await assert.rejects(b.sharing.handle(A, { method: "share.borrow", id: "sh-1234567890", profile: COPILOT }, "w"), /cannot be shared/);
+  assert.equal(b.config.raw().profiles.length, 0);
+});
+
+test("an old hosted Copilot share is stopped and its copy is removed", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all, [{ ...SUB, id: "copilot" }]);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  await a.sharing.shareProfile("copilot", true, null);
+  await settle(a, b);
+  assert.equal(b.config.raw().profiles.length, 1);
+  a.config.update((raw) => { raw.profiles[0].runtime = "copilot"; });
+  await settle(a, b);
+  assert.equal(a.config.raw().profiles[0].runtime, "copilot");
+  assert.equal(a.config.raw().profiles[0].share, undefined, "the host keeps its local profile");
+  assert.equal(b.config.raw().profiles.length, 0, "the borrower is told the share ended");
+});
+
+test("an old borrowed Copilot copy is removed even when its host is offline", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const gone: string[] = [];
+  const copy = { ...COPILOT, id: "sh-1234567890", share: { id: "sh-1234567890", borrowed: true, host: A, workspaces: ["w"] } };
+  const b = station(cloud, B, () => all, [copy], undefined, { profileGone: async (id) => { gone.push(id); } });
+  all.set(B, b);
+  await b.sharing.reconcile();
+  assert.equal(b.config.raw().profiles.length, 0);
+  assert.deepEqual(gone, [copy.id]);
+});
+
+test("an older host cannot recreate a borrowed Copilot profile", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  const handle = a.sharing.handle.bind(a.sharing);
+  a.sharing.handle = async (peer, request, ws) => {
+    if (request.method === "share.get") return { profile: COPILOT, version: 1, workspaces: ["w"], allow: null };
+    if (request.method === "share.version") return { version: 1 };
+    return handle(peer, request, ws);
+  };
+  for (const version of [1, 2]) {
+    await b.sharing.handle(A, { method: "share.changed", id: "sh-1234567890", kind: "profile", name: "Copilot", version, allow: null }, "w");
+    await settle(b);
+    assert.equal(b.config.raw().profiles.length, 0);
+  }
+});
+
+test("moving a Copilot subscription transfers its login only to an updated station", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all, [COPILOT]);
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  const token = join(a.data, "homes", "copilot", "copilot", "github-token");
+  mkdirSync(join(a.data, "homes", "copilot", "copilot"), { recursive: true });
+  writeFileSync(token, "test-login");
+  const handle = b.sharing.handle.bind(b.sharing);
+  b.sharing.handle = async (peer, request, ws) => {
+    if (request.method === "share.copilotMove") throw new Error("unknown share request");
+    return handle(peer, request, ws);
+  };
+  await assert.rejects(a.sharing.moveProfile("copilot", B, "en"));
+  assert.equal(readFileSync(token, "utf8"), "test-login");
+  assert.equal(a.config.raw().profiles.length, 1);
+  assert.equal(b.config.raw().profiles.length, 0);
+  b.sharing.handle = handle;
+  assert.deepEqual(await a.sharing.moveProfile("copilot", B, "en"), { id: "copilot" });
+  assert.equal(readFileSync(join(b.data, "homes", "copilot", "copilot", "github-token"), "utf8"), "test-login");
+  assert.equal(existsSync(token), false);
+  assert.equal(a.config.raw().profiles.length, 0);
+  assert.equal(b.config.raw().profiles[0].share, undefined);
+});
+
+test("an updated station refuses a Copilot move from an older sender", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const b = station(cloud, B, () => all);
+  all.set(B, b);
+  await assert.rejects(b.sharing.handle(A, { method: "share.take", own: true, profileId: "copilot", profile: COPILOT, credentials: {} }, "w"), /Update both stations/);
+  await assert.rejects(b.sharing.handle(A, { method: "share.take", own: false, id: "sh-1234567890", profile: COPILOT, copilotMove: true }, "w"), /cannot be shared/);
+  assert.equal(b.config.raw().profiles.length, 0);
+});
 
 test("a shared machine login carries its account to existing and returning borrowers", async () => {
   const cloud = new FakeCloud();

@@ -2,7 +2,7 @@
 // (`share:<id>`), the key it runs with (`key:<hash>`) or, a login of this station's own, its profile here
 // (`own:<profile>@<station>`); this machine's own login (`machine:<id>`) cannot go. Moved by share/index.ts
 // `moveProfile`, so that the chats still here go on (`usableHere`): one shared is borrowed here after it; one not
-// shared whose login can be (share/index.ts `shareRefusal`: not a SuperGrok, Cursor, Devin or Kimi
+// shared whose login can be (share/index.ts `shareRefusal`: not a SuperGrok, Cursor, Devin, Copilot or Kimi
 // sign-in) is shared first, with this station and the one it goes to alone, and moved as a shared one, borrowed here
 // after it too (not one shared with stations this one is not among: no copy is kept here of that) (the owner, 2026-11-14: while a migration goes on both stations keep working, logins lent between them);
 // one that cannot be is gone from here, and what needs it here is stopped first. Moved back by the same, asked of the

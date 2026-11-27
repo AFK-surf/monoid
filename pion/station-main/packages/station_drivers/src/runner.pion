@@ -565,7 +565,16 @@ pub fn effective_sandboxes(configured : Array[Sandbox], colab_account_count : In
 /// 1:1 aligned with `station/src/sessions/config.ts` `allowedIn`:
 /// - Borrowed profiles are restricted strictly to `share_workspaces` (empty => allowed NOWHERE).
 /// - Sessions of the home workspace (`ws == None` or `ws == home`) are never blocked by `withheld`.
+pub fn borrowed_copilot(p : Profile) -> Bool {
+  if !p.borrowed { return false }
+  match p.runtime {
+    Some(runtime) => runtime_kind_eq(runtime, RuntimeKind::Copilot)
+    None => false
+  }
+}
+
 pub fn allowed_in(p : Profile, ws : Option[String], home : Option[String]) -> Bool {
+  if borrowed_copilot(p) { return false }
   let at = match ws {
     Some(w) => Some(w)
     None => home
@@ -587,6 +596,7 @@ pub fn allowed_in(p : Profile, ws : Option[String], home : Option[String]) -> Bo
 
 /// 1:1 aligned with `station/src/agents/sandbox.ts` `profileServes`.
 pub fn profile_serves_workspace(p : Profile, workspace : Option[String], home_workspace : Option[String]) -> Bool {
+  if borrowed_copilot(p) { return false }
   let ws = match workspace {
     Some(w) => if w != "" { Some(w) } else { None }
     None => None

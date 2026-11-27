@@ -195,6 +195,9 @@ export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
   }
 
   async open(options: OpenOptions, events: Events): Promise<CopilotSession> {
+    if ((options.profile.share as { borrowed?: unknown } | undefined)?.borrowed === true) {
+      throw new Error("GitHub Copilot cannot use a profile shared from another station. Sign in on this station.");
+    }
     const sessions = join(copilotHome(options.profile.home), SESSIONS);
     await mkdir(sessions, { recursive: true });
     const sdk = this.sdk ?? (await findSdk(this.data));

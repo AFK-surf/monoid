@@ -923,6 +923,9 @@ pub fn copilot_chat_models(body : base_codec::Json) -> Array[String] {
 }
 
 pub fn build_copilot_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, String] {
+  if opts.profile.borrowed {
+    return Err("GitHub Copilot cannot use a profile shared from another station. Sign in on this station.")
+  }
   if !is_local_mcp_url(opts.mcp_url) {
     return Err("copilot: mcp_url must be a local loopback address")
   }

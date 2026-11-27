@@ -156,7 +156,8 @@ export function hubConfig(raw: any, dataDir: string, found: (id: string) => read
       named: models,
       model: nonEmpty(p.model),
       backgroundOnMessage: p.backgroundOnMessage !== false,
-      enabled: p.enabled !== false,
+      // Ignore old Copilot copies before the sharing service removes them.
+      enabled: p.enabled !== false && !(p.runtime === "copilot" && p.share?.borrowed === true),
       ...(Array.isArray(p.withheld) ? { withheld: p.withheld.filter((w: unknown): w is string => typeof w === "string" && w !== "") } : {}),
       ...(maxConcurrentSessions !== undefined ? { maxConcurrentSessions } : {}),
       ...(p.newAccountProtection === true && maxConcurrentSessions !== undefined ? { newAccountProtection: true } : {}),

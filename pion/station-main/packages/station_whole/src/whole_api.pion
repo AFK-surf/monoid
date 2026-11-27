@@ -460,6 +460,7 @@ fn profile_allowed_in_ws(prof : base_codec::Json, ws : Option[String], home_ws :
         _ => false
       }
       if is_borrowed {
+        if json_field_str(prof, "runtime") == Some("copilot") { return false }
         match base_codec::json_get(share, "workspaces") {
           Some(base_codec::Json::Arr(only)) => {
             match eff_ws {

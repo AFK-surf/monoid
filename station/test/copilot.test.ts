@@ -80,6 +80,14 @@ const live = (events: RuntimeEvent[]) => events.flatMap((e) => (e.type === "live
 const said = (events: RuntimeEvent[]) => live(events).flatMap((e) => (e.kind === "delta" && e.field === "text" ? [e.text] : [])).join("");
 
 describe("the Copilot driver's rules", () => {
+  test("a borrowed profile cannot start even when its home contains a token", async () => {
+    const o = options();
+    o.profile.share = { borrowed: true };
+    const driver = new CopilotDriver({ data });
+    drivers.push(driver);
+    await assert.rejects(driver.open(o, () => {}), /cannot use a profile shared from another station/);
+  });
+
   test("its instructions name the station's tools as Copilot does, not mcp__stillfail__", () => {
     const rules = copilotRules("Be brief.");
     assert.match(rules, /^Be brief\./);
