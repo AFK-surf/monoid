@@ -17,6 +17,7 @@ import "sql_db"
 import "station_api"
 import "station_drivers"
 import "station_jobs"
+import "station_ops"
 import "station_sessions"
 import "station_store"
 import "station_sys"
@@ -366,6 +367,23 @@ pub fn WholeAgents::is_runtime_disabled(self : WholeAgents, runtime : String) ->
   }
 }
 
+/// Check whether `runtime` is allowed to run on this station, returning a localized
+/// `station.runtime.disabled` refusal message via `station_ops::tr` when disabled.
+pub fn WholeAgents::check_runtime_enabled_tr(
+  self : WholeAgents,
+  runtime : String,
+  lang : station_ops::Lang = station_ops::Lang::Zh,
+) -> Result[Unit, String] {
+  if self.is_runtime_disabled(runtime) {
+    let label = match station_drivers::runtime_kind_from_str(runtime) {
+      Some(rk) => station_drivers::runtime_label(rk)
+      None => runtime
+    }
+    return Err(station_ops::tr(lang, "station.runtime.disabled", [("runtime", label)]))
+  }
+  Ok(())
+}
+
 fn WholeAgents::generate_token_hex(self : WholeAgents) -> Result[String, String] {
   let raw = match (self.random_bytes_fn)(32) {
     Ok(b) => b
@@ -605,12 +623,9 @@ pub fn WholeAgents::create_session(
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  if self.is_runtime_disabled(runtime) {
-    let label = match station_drivers::runtime_kind_from_str(runtime) {
-      Some(rk) => station_drivers::runtime_label(rk)
-      None => runtime
-    }
-    return Err("station.runtime.disabled:" + label)
+  match self.check_runtime_enabled_tr(runtime) {
+    Ok(_) => ()
+    Err(msg) => return Err(msg)
   }
   let token = match self.generate_token_hex() {
     Ok(t) => t
@@ -2140,9 +2155,10 @@ fn WholeAgents::build_domain_handlers(
         Some(rt) => {
           match station_drivers::runtime_kind_from_str(rt) {
             None => return station_tools::error_reply("unsupported runtime: " + rt)
-            Some(rk) => {
-              if station_drivers::is_runtime_disabled(rk, self.disabled_runtimes) {
-                return station_tools::error_reply("station.runtime.disabled:" + station_drivers::runtime_label(rk))
+            Some(_) => {
+              match self.check_runtime_enabled_tr(rt) {
+                Ok(_) => ()
+                Err(msg) => return station_tools::error_reply(msg)
               }
             }
           }

@@ -21,6 +21,7 @@ import "station_api"
 import "station_drivers"
 import "station_http"
 import "station_jobs"
+import "station_ops"
 import "station_rig"
 import "station_rules_bridge"
 import "station_screens"
@@ -332,6 +333,7 @@ fn mirror_to_form(m : station_jobs::MirrorRecord) -> form::Json {
 /// `RemoteManager` + isolated `MixedRig`).
 pub struct WholeCore {
   pub config : WholeCoreConfig
+  pub config_file : Option[station_ops::ConfigFile]
   pub store : WholeStore
   pub agents : WholeAgents
   pub api : WholeApi
@@ -454,6 +456,7 @@ pub fn WholeCore::init_pre_handover_with_deps(
   verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
   clock_ms : () -> Int64,
   held_rig : Bool = false,
+  config_fs : Option[station_ops::OpsFs] = None,
 ) -> WholeCore {
   let store = WholeStore::new_pre_handover_with_sep(config.data_dir, "/")
   let agents_cfg = WholeAgentsConfig::{
@@ -464,6 +467,17 @@ pub fn WholeCore::init_pre_handover_with_deps(
     home_ws: config.home_workspace,
   }
   let agents = WholeAgents::new_with_deps(agents_cfg, job_fs, job_backend, rng)
+  let eff_cfg_fs = match config_fs {
+    Some(f) => f
+    None => station_ops::MemFs::new().ops()
+  }
+  let (cfg_opt, cfg_err) = match station_ops::ConfigFile::open(eff_cfg_fs, config.data_dir, sep="/") {
+    Ok(c) => {
+      bind_config_file_disabled_runtimes(c, agents)
+      (Some(c), None)
+    }
+    Err(e) => (None, Some(e))
+  }
   let remote = station_jobs::RemoteManager::new(
     config.data_dir,
     job_fs,
@@ -528,32 +542,32 @@ pub fn WholeCore::init_pre_handover_with_deps(
       if op == "accounts.runtimes.put" {
         return handle_accounts_runtimes_put_with(
           agents,
+          cfg_opt,
+          cfg_err,
           body,
           req.viewer,
           req.lang,
-          "/",
-          job_fs.read_file,
-          job_fs.write_file,
           di_overview_fn,
         )
       }
       if op == "hub.session.create" {
-        let runtime = match base_codec::json_get(body, "runtime") {
-          Some(base_codec::Json::Str(r)) => if r.length() > 0 { r } else { "claude" }
-          _ => "claude"
-        }
-        if agents.is_runtime_disabled(runtime) {
-          let label = match station_drivers::runtime_kind_from_str(runtime) {
-            Some(rk) => station_drivers::runtime_label(rk)
-            None => runtime
-          }
-          return Err(station_api::ApiError::new(400, "station.runtime.disabled:" + label))
-        }
-        let key = match base_codec::json_get(body, "key") {
-          Some(base_codec::Json::Str(k)) => if k.length() > 0 { k } else { "c-di" }
-          _ => "c-di"
-        }
-        return Ok(base_codec::json_obj([("key", base_codec::json_str(key)), ("thread", base_codec::json_int(1))]))
+        return handle_hub_session_create_with(
+          agents,
+          body,
+          req,
+          clock_ms(),
+          fn(
+            key : String,
+            _connect : String,
+            _title : Option[String],
+            _runtime : String,
+            _profile : String,
+            _model : Option[String],
+            _workspace_dir : String,
+          ) -> Result[(String, Int64), String] {
+            Ok((key, 1L))
+          },
+        )
       }
       (api_host_stub.call)(op, req, params, body)
     },
@@ -581,6 +595,7 @@ pub fn WholeCore::init_pre_handover_with_deps(
   )
   WholeCore::{
     config: config,
+    config_file: cfg_opt,
     store: store,
     agents: agents,
     api: api,
@@ -659,6 +674,13 @@ pub fn WholeCore::init_pre_handover(
     allowed_workspaces: config.allowed_workspaces,
     verify_fn: verify_fn,
   }
+  let (cfg_opt, cfg_err) = match station_ops::ConfigFile::open(os_ops_fs(), config.data_dir, sep=sep) {
+    Ok(c) => {
+      bind_config_file_disabled_runtimes(c, agents)
+      (Some(c), None)
+    }
+    Err(e) => (None, Some(e))
+  }
   let api = WholeApi::new(
     store,
     agents,
@@ -667,6 +689,8 @@ pub fn WholeCore::init_pre_handover(
     drive_protected=config.drive_protected,
     drive_fs=drive_fs,
     thumb_port=thumb_port,
+    config_file=cfg_opt,
+    config_open_err=cfg_err,
   )
   let grants_path = nodepath::join(sep, [config.data_dir, "rig-grants.json"])
   let log_path = nodepath::join(sep, [config.data_dir, "rig-commands.jsonl"])
@@ -700,6 +724,7 @@ pub fn WholeCore::init_pre_handover(
   )
   WholeCore::{
     config: config,
+    config_file: cfg_opt,
     store: store,
     agents: agents,
     api: api,
@@ -712,26 +737,10 @@ pub fn WholeCore::init_pre_handover(
   }
 }
 
-/// Pure DI reader for `disabledRuntimes` from `<data_dir>/config.json` (`56d3d84e5b` #8793).
-pub fn read_disabled_runtimes_from_config_with(
-  data_dir : String,
-  sep : String,
-  read_file : (String) -> Option[String],
-) -> Array[String] {
-  if data_dir.length() == 0 {
-    return []
-  }
-  let cfg_path = nodepath::join(sep, [data_dir, "config.json"])
-  let raw_str = match read_file(cfg_path) {
-    Some(s) => s
-    None => return []
-  }
-  let parsed = match base_codec::json_parse(raw_str) {
-    base_codec::JsonParseResult::Ok(v) => v
-    base_codec::JsonParseResult::Err(_) => return []
-  }
+/// Extract and normalize `disabledRuntimes` from a parsed `config.json` value (`56d3d84e5b` #8793).
+pub fn disabled_runtimes_from_json(raw : base_codec::Json) -> Array[String] {
   let raw_list : Array[String] = []
-  match base_codec::json_get(parsed, "disabledRuntimes") {
+  match base_codec::json_get(raw, "disabledRuntimes") {
     Some(base_codec::Json::Arr(items)) => {
       for i in 0..<items.length() {
         match items[i] {
@@ -745,99 +754,115 @@ pub fn read_disabled_runtimes_from_config_with(
   station_drivers::normalize_disabled_runtime_names(raw_list)
 }
 
-/// Pure DI atomic writer for `disabledRuntimes` into `<data_dir>/config.json`, preserving all other
-/// top-level keys and removing `"disabledRuntimes"` when `disabled` is empty (`56d3d84e5b` #8793).
-pub fn write_disabled_runtimes_to_config_with(
-  data_dir : String,
-  disabled : Array[String],
-  sep : String,
-  read_file : (String) -> Option[String],
-  write_file : (String, String) -> Bool,
-) -> Result[Unit, String] {
-  if data_dir.length() == 0 {
-    return Ok(())
-  }
-  let cfg_path = nodepath::join(sep, [data_dir, "config.json"])
-  let entries : Array[(String, base_codec::Json)] = []
-  match read_file(cfg_path) {
-    Some(s) => match base_codec::json_parse(s) {
-      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(existing)) => {
-        for i in 0..<existing.length() {
-          if existing[i].0 != "disabledRuntimes" {
-            entries.push(existing[i])
-          }
-        }
-      }
-      _ => ()
-    }
-    None => ()
-  }
-  let norm = station_drivers::normalize_disabled_runtime_names(disabled)
-  if norm.length() > 0 {
-    let arr : Array[base_codec::Json] = []
-    for i in 0..<norm.length() {
-      arr.push(base_codec::json_str(norm[i]))
-    }
-    entries.push(("disabledRuntimes", base_codec::json_arr(arr)))
-  }
-  let payload = base_codec::json_stringify(base_codec::json_obj(entries)) + "\n"
-  if !write_file(cfg_path, payload) {
-    return Err("failed to write config.json atomically")
-  }
-  Ok(())
-}
-
-/// Read and normalize `disabledRuntimes` from `<data_dir>/config.json` (`56d3d84e5b` #8793).
-pub fn read_disabled_runtimes_from_config(data_dir : String) -> Array[String] {
-  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
-  read_disabled_runtimes_from_config_with(data_dir, sep, fn(p : String) -> Option[String] {
-    match station_sys::read_file_strict(p) {
-      Ok(b) => Some(b.to_string())
-      Err(_) => None
-    }
+/// Bind `agents.disabled_runtimes` to `cfg` on initial load and subscribe to `cfg.listen`
+/// for hot-reloading whenever `config.json` changes externally (`56d3d84e5b` #8793).
+pub fn bind_config_file_disabled_runtimes(cfg : station_ops::ConfigFile, agents : WholeAgents) -> Unit {
+  agents.set_disabled_runtimes(disabled_runtimes_from_json(cfg.raw()))
+  let _ = cfg.listen(fn(raw : base_codec::Json) -> Unit {
+    agents.set_disabled_runtimes(disabled_runtimes_from_json(raw))
   })
 }
 
-/// Atomically persist `disabledRuntimes` into `<data_dir>/config.json`, preserving all other
-/// top-level keys and removing `"disabledRuntimes"` when `disabled` is empty (`56d3d84e5b` #8793).
-pub fn write_disabled_runtimes_to_config(
-  data_dir : String,
-  disabled : Array[String],
-) -> Result[Unit, String] {
-  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
-  write_disabled_runtimes_to_config_with(
-    data_dir,
-    disabled,
-    sep,
-    fn(p : String) -> Option[String] {
-      match station_sys::read_file_strict(p) {
-        Ok(b) => Some(b.to_string())
-        Err(_) => None
+fn parse_sys_stat_meta(raw : String) -> station_ops::FileMeta {
+  let parts = split_pipe_fields(raw)
+  let kind = if parts.length() >= 1 { parts[0] } else { "file" }
+  let size = if parts.length() >= 2 { parse_i64_dec(parts[1]) } else { 0L }
+  let mtime = if parts.length() >= 3 { parse_i64_dec(parts[2]) } else { 0L }
+  let mode = if parts.length() >= 4 { parse_i64_dec(parts[3]).to_int() } else { 384 }
+  station_ops::FileMeta::{
+    size: size,
+    mtime_ms: mtime,
+    mtime_exact: mtime.to_string(),
+    ino: 0L,
+    mode: mode,
+    is_dir: kind == "dir",
+    is_file: kind == "file",
+    is_link: kind == "symlink",
+  }
+}
+
+/// Production `station_ops::OpsFs` backed directly by `station_sys` (zero blocking shell calls).
+pub fn os_ops_fs() -> station_ops::OpsFs {
+  station_ops::OpsFs::{
+    read_bytes: fn(path : String) -> Result[Bytes, station_ops::FsErr] {
+      match station_sys::read_file_strict(path) {
+        Ok(b) => Ok(b)
+        Err(station_sys::StrictReadErr::NotFound) => Err(station_ops::FsErr::NotFound)
+        Err(station_sys::StrictReadErr::PermissionDenied) => Err(station_ops::FsErr::PermissionDenied("EACCES"))
+        Err(_) => Err(station_ops::FsErr::Other("read failed"))
       }
     },
-    fn(p : String, payload : String) -> Bool {
-      let _ = station_sys::mkdir_p(data_dir)
-      station_sys::write_file_atomic(p, payload.to_bytes(), mode=384)
+    write_bytes: fn(path : String, data : Bytes, mode : Int) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::write_file_mode(path, data, mode=mode, append=false) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::Other("write failed"))
+      }
     },
-  )
+    stat: fn(path : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+      match station_sys::stat_raw(path) {
+        Some(raw) => Ok(parse_sys_stat_meta(raw))
+        None => Err(station_ops::FsErr::NotFound)
+      }
+    },
+    lstat: fn(path : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+      match station_sys::lstat_raw(path) {
+        Some(raw) => Ok(parse_sys_stat_meta(raw))
+        None => Err(station_ops::FsErr::NotFound)
+      }
+    },
+    readlink: fn(path : String) -> Result[String, station_ops::FsErr] {
+      match station_sys::readlink(path) {
+        Some(s) => Ok(s)
+        None => Err(station_ops::FsErr::NotFound)
+      }
+    },
+    realpath: fn(path : String) -> Result[String, station_ops::FsErr] {
+      match station_sys::realpath(path) {
+        Some(s) => Ok(s)
+        None => Err(station_ops::FsErr::NotFound)
+      }
+    },
+    mkdir_p: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::mkdir_p(path) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::Other("mkdir_p failed"))
+      }
+    },
+    rename: fn(from : String, to : String) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::rename(from, to) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::Other("rename failed"))
+      }
+    },
+    remove: fn(path : String) -> Result[Unit, station_ops::FsErr] {
+      if station_sys::unlink(path) {
+        Ok(())
+      } else {
+        Err(station_ops::FsErr::NotFound)
+      }
+    },
+    truncate: fn(_path : String, _len : Int64) -> Result[Unit, station_ops::FsErr] {
+      Err(station_ops::FsErr::Other("truncate unsupported"))
+    },
+    readdir: fn(_path : String) -> Result[Array[String], station_ops::FsErr] {
+      Ok([])
+    },
+    rotate_in_place_native: None,
+  }
 }
 
-/// Pure DI reload of `disabledRuntimes` from `<data_dir>/config.json` into `agents`.
-pub fn WholeCore::reload_config_with(
-  self : WholeCore,
-  sep : String,
-  read_file : (String) -> Option[String],
-) -> Array[String] {
-  let disabled = read_disabled_runtimes_from_config_with(self.config.data_dir, sep, read_file)
-  self.agents.set_disabled_runtimes(disabled)
-  disabled
-}
-
-/// Reload station configuration (`disabledRuntimes`) from `<data_dir>/config.json` into `agents`.
+/// Reload station configuration (`disabledRuntimes`) from `ConfigFile`, firing `listen` callbacks.
 pub fn WholeCore::reload_config(self : WholeCore) -> Array[String] {
-  let disabled = read_disabled_runtimes_from_config(self.config.data_dir)
-  self.agents.set_disabled_runtimes(disabled)
-  disabled
+  match self.config_file {
+    Some(cfg) => {
+      let _ = cfg.reload_now()
+      self.agents.disabled_runtimes
+    }
+    None => self.agents.disabled_runtimes
+  }
 }
 
 /// Atomically transition `WholeCore` from pre-handover to live primary writer ONLY after
