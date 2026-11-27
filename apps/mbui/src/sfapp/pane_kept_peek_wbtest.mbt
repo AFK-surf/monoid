@@ -22,7 +22,7 @@ test "大屏: the sidebar shown a while while the chat put in place waits for it
   t.run_for(@ui.move_most_ms)
   let kept_rest = page_word_x(t, "发消息")
   assert_true(kept_rest > 0.0 && page_word_x(t, "做完了：") > 0.0)
-  // (hover on the folded bar up to just before the 500 ms peek threshold so switching chats happens before peek opens)
+  // (hover on the folded bar up to just before the 300 ms peek threshold so switching chats happens before peek opens)
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   let lead = @sfdesk.peek_enter_ms / 20.0
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
@@ -35,7 +35,7 @@ test "大屏: the sidebar shown a while while the chat put in place waits for it
   assert_eq(page_word_x(t, "发消息"), kept_rest)
   assert_true(page_word_x(t, "做完了：") > 0.0)
   assert_eq(page_word_x(t, "好的，我来处理。"), -1.0)
-  // (shown a while, the pointer on the folded bar finishing its 500 ms dwell: what is kept moved aside)
+  // (shown a while, the pointer on the folded bar finishing its 300 ms dwell: what is kept moved aside)
   t.run_for(lead)
   t.run_for(@ui.move_most_ms)
   assert_true(@sfdesk.wide.peeking.get())

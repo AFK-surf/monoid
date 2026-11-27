@@ -19,7 +19,7 @@ fn sidebar_kept(calls : Array[Made], key : String) -> Json? {
 }
 
 ///|
-test "wide: ⌘\\ folds the sidebar to the rail's bar of its own; resting on it for 500 ms shows the list a while over the page (passing over does not), folded again 400 ms after it left; kept (prefs.set sidebars)" {
+test "wide: ⌘\\ folds the sidebar to the rail's bar of its own; resting on it for 300 ms shows the list a while over the page (passing over does not), folded again 400 ms after it left; kept (prefs.set sidebars)" {
   let calls : Array[Made] = []
   let t = wide_tester(calls)
   assert_true(t.find("新建对话") is Some(_))
@@ -30,21 +30,21 @@ test "wide: ⌘\\ folds the sidebar to the rail's bar of its own; resting on it 
   // the bar's rail, 6 from the window's edge: its places 2 in
   let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
   assert_eq(rx, @sfdesk.closed_bar_in + 2.0)
-  // sweeping across the folded rail briefly does not expand it, and leaving resets the 500 ms dwell
+  // sweeping across the folded rail briefly does not expand it, and leaving resets the 300 ms dwell
   let step = @sfdesk.peek_enter_ms / 5.0
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
   t.run_for(@sfdesk.peek_enter_ms - step)
   assert_false(@sfdesk.wide.peeking.get(), msg="brief hover does not peek")
-  assert_true(t.find("新建对话") is None, msg="still folded before 500 ms")
+  assert_true(t.find("新建对话") is None, msg="still folded before 300 ms")
   t.move_to(1000.0, 400.0)
   t.run_for(step)
-  // re-entering starts a fresh 500 ms dwell
+  // re-entering starts a fresh 300 ms dwell
   t.move_to(rx + rw / 2.0, ry + rh / 2.0)
   t.run_for(@sfdesk.peek_enter_ms - step)
   assert_false(@sfdesk.wide.peeking.get(), msg="timer reset after leaving")
   t.run_for(step)
   t.frame()
-  assert_true(@sfdesk.wide.peeking.get(), msg="peeks after 500 ms dwell")
+  assert_true(@sfdesk.wide.peeking.get(), msg="peeks after 300 ms dwell")
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("新建对话") is Some(_), msg="shown a while")
   // off it: still there for a moment, then folded again

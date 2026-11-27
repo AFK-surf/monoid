@@ -1251,7 +1251,7 @@ fn whole_of(s : String) -> Int? {
 
 ///|
 /// Folded, the sidebar shown a while over the page once the pointer rests on the rail's closed bar (peek_enter_ms,
-/// 500 ms), until the pointer has been off it a moment (PEEK_LEAVE, 400 ms) and nothing from it is open (a row's
+/// 300 ms), until the pointer has been off it a moment (PEEK_LEAVE, 400 ms) and nothing from it is open (a row's
 /// menu, the filter's, a row renamed in place, the workspaces' ＋); to a finger, from its press on the bar until a tap
 /// off them.
 fn side_peek(c : @ui.Ctx, bar_x : Double, bar_y : Double, bar_r : Double, bar_b : Double) -> Unit {
@@ -1341,7 +1341,7 @@ fn side_crowded() -> Unit {
 
 ///|
 /// How long the pointer must rest on the folded rail before the sidebar shows over the page.
-pub let peek_enter_ms : Double = 500.0
+pub let peek_enter_ms : Double = 300.0
 
 ///|
 /// How long the pointer is off the sidebar shown a while before it folds again.
