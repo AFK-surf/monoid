@@ -968,6 +968,19 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
   }
   sort_strings_ac(persons_list)
 
+  let sign_keys_list : Array[String] = []
+  let sks = st.sign_keys.entries()
+  for i in 0..<sks.length() {
+    let (dev_id, keys) = sks[i]
+    let kcopy : Array[String] = []
+    for j in 0..<keys.length() {
+      kcopy.push(keys[j])
+    }
+    sort_strings_ac(kcopy)
+    sign_keys_list.push(dev_id + ":[" + join_arr(kcopy) + "]")
+  }
+  sort_strings_ac(sign_keys_list)
+
   let gateways_list : Array[String] = []
   let gws = st.gateways.entries()
   for i in 0..<gws.length() {
@@ -994,7 +1007,7 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
     Some(m) => m
     None => ""
   }
-  let sec_digest = "d=" + dis_s + "|m=" + join_arr(members_list) + "|v=" + join_arr(devices_list) + "|p=" + join_arr(passkeys_list) + "|pr=" + join_arr(persons_list) + "|gw=" + join_arr(gateways_list) + "|ck=" + cloud_keys_s + "|mv=" + moved_s
+  let sec_digest = "d=" + dis_s + "|m=" + join_arr(members_list) + "|v=" + join_arr(devices_list) + "|sk=" + join_arr(sign_keys_list) + "|p=" + join_arr(passkeys_list) + "|pr=" + join_arr(persons_list) + "|gw=" + join_arr(gateways_list) + "|ck=" + cloud_keys_s + "|mv=" + moved_s
   let full_digest = sec_digest + "|s=" + join_arr(stations_list)
   (full_digest, sec_digest)
 }

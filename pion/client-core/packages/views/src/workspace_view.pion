@@ -108,7 +108,11 @@ pub fn project_workspaces(
 }
 
 /// Project one workspace detail topic (`workspace`).
-pub fn project_workspace(db : sql::Sql, workspace_id : String) -> sql::SqlResult[Option[base_codec::Json]] {
+pub fn project_workspace(
+  db : sql::Sql,
+  workspace_id : String,
+  allow_station : Option[(String) -> Bool] = None,
+) -> sql::SqlResult[Option[base_codec::Json]] {
   let row = match store::get_workspace(db, workspace_id) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(Some(r)) => r
@@ -137,7 +141,7 @@ pub fn project_workspace(db : sql::Sql, workspace_id : String) -> sql::SqlResult
     push_opt_str(mf, "picture", j_opt_str(m, "picture"))
     members_out.push(base_codec::json_obj(mf))
   }
-  let stations_out = match project_stations(db, workspace_id) {
+  let stations_out = match project_stations(db, workspace_id, allow_station=allow_station) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(s) => s
   }
@@ -186,7 +190,11 @@ fn project_overview_row(ov : base_codec::Json) -> base_codec::Json {
 /// Project `stations` list topic (`Array[StationRow]`, strictly conforming to `shapes/station.ts`).
 /// Strips detail-only heavy fields (`runtimes`, `models`, `apiProviders`, `profiles`, `connects`,
 /// `slackUsers`, `slackTeams`, `logins`, `updates`, `agentEnv`).
-pub fn project_stations(db : sql::Sql, workspace_id : String) -> sql::SqlResult[base_codec::Json] {
+pub fn project_stations(
+  db : sql::Sql,
+  workspace_id : String,
+  allow_station : Option[(String) -> Bool] = None,
+) -> sql::SqlResult[base_codec::Json] {
   let rows = match store::list_workspace_stations_merged(db, workspace_id) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(rs) => rs
@@ -197,6 +205,10 @@ pub fn project_stations(db : sql::Sql, workspace_id : String) -> sql::SqlResult[
     let r = rows[i]
     if workspace_id.length() > 0 && !r.address.starts_with(prefix) {
       continue
+    }
+    match allow_station {
+      Some(pred) => if !pred(r.address) { continue }
+      None => ()
     }
     let j = parse_json_or_null(r.json)
     let id = match j_opt_str(j, "id") {

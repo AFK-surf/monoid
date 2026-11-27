@@ -346,6 +346,7 @@ pub fn project_settings(
   db : sql::Sql,
   ws_scope : String,
   viewer_sub : String = "",
+  allow_station : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   let st_rows = match store::list_workspace_stations_merged(db, ws_scope) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
@@ -363,6 +364,10 @@ pub fn project_settings(
     let r = st_rows[i]
     if prefix.length() > 0 && !r.address.starts_with(prefix) {
       continue
+    }
+    match allow_station {
+      Some(pred) => if !pred(r.address) { continue }
+      None => ()
     }
     let doc = parse_json_or_null(r.json)
     let online = match base_codec::json_get(doc, "online") {
@@ -518,6 +523,7 @@ pub fn project_station_updates(
   db : sql::Sql,
   ws_scope : String,
   now_ms : Int64,
+  allow_station : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   let st_rows = match store::list_workspace_stations_merged(db, ws_scope) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
@@ -533,6 +539,10 @@ pub fn project_station_updates(
     let r = st_rows[i]
     if prefix.length() > 0 && !r.address.starts_with(prefix) {
       continue
+    }
+    match allow_station {
+      Some(pred) => if !pred(r.address) { continue }
+      None => ()
     }
     let doc = parse_json_or_null(r.json)
     let sname = match j_opt_str(doc, "name") {

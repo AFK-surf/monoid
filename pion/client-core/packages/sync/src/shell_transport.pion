@@ -635,14 +635,14 @@ pub fn MeshStationTransport::connect_k(
             let get_cred = self.config.get_credential_k
             let cred_source = fn(device_id : String, fresh : Bool, ck : (effect::Exit[mesh::Presented]) -> Unit) -> Unit {
               let want_fresh = fresh || self.force_fresh_cred
-              if self.force_fresh_cred {
-                self.force_fresh_cred = false
-              }
               get_cred(device_id, want_fresh, fn(cex : effect::Exit[String]) -> Unit {
                 match cex {
                   effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
                   effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
                   effect::Exit::Succeeded(cred) => {
+                    if want_fresh {
+                      self.force_fresh_cred = false
+                    }
                     let carry = match get_carry {
                       Some(fetch_carry) => fetch_carry()
                       None => MeshLockCarry::{ entries: fallback_entries, person: None }

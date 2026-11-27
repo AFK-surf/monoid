@@ -1158,6 +1158,8 @@ pub struct Slice1Router {
   kept_token_order : Array[String]
   mut topic_evaluator : Option[(Int64, Topic) -> Option[CoreEvent]]
   mut topic_authorizer : Option[(Topic) -> Bool]
+  mut workspace_excluded : Option[(String) -> Bool]
+  mut station_workspace_resolver : Option[(String) -> String]
 }
 
 pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : String = "default") -> Slice1Router {
@@ -1173,6 +1175,8 @@ pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : S
     kept_token_order: [],
     topic_evaluator: None,
     topic_authorizer: None,
+    workspace_excluded: None,
+    station_workspace_resolver: None,
   }
 }
 
@@ -1192,11 +1196,64 @@ pub fn Slice1Router::set_topic_authorizer(
   self.topic_authorizer = Some(auth)
 }
 
+/// Install a workspace exclusion predicate (revoked or pending-drop workspaces) guarding ALL direct RPC/read paths.
+pub fn Slice1Router::set_workspace_excluded(
+  self : Slice1Router,
+  pred : (String) -> Bool,
+) -> Unit {
+  self.workspace_excluded = Some(pred)
+}
+
+/// Install a station -> workspace resolver so explicitly bound bare station addresses are guarded identically to `<ws>/<st>`.
+pub fn Slice1Router::set_station_workspace_resolver(
+  self : Slice1Router,
+  resolver : (String) -> String,
+) -> Unit {
+  self.station_workspace_resolver = Some(resolver)
+}
+
 fn Slice1Router::is_topic_authorized(self : Slice1Router, topic : Topic) -> Bool {
   match self.topic_authorizer {
     Some(f) => f(topic)
     None => true
   }
+}
+
+fn Slice1Router::is_workspace_blocked(self : Slice1Router, ws : String) -> Bool {
+  if ws.length() == 0 || ws == "all" || ws == "*" {
+    return false
+  }
+  match self.workspace_excluded {
+    Some(pred) => pred(ws)
+    None => false
+  }
+}
+
+fn Slice1Router::resolve_station_workspace(self : Slice1Router, station : String) -> String {
+  if station.length() == 0 {
+    return ""
+  }
+  match self.station_workspace_resolver {
+    Some(f) => {
+      let resolved = f(station)
+      if resolved.length() > 0 {
+        return resolved
+      }
+    }
+    None => ()
+  }
+  match station.index_of("/") {
+    idx if idx > 0 => station.slice(0, idx)
+    _ => if station == self.md_store.station { self.workspace } else { "" }
+  }
+}
+
+fn Slice1Router::is_station_blocked(self : Slice1Router, station : String) -> Bool {
+  if station.length() == 0 {
+    return false
+  }
+  let ws = self.resolve_station_workspace(station)
+  self.is_workspace_blocked(ws)
 }
 
 pub fn Slice1Router::active_sub(self : Slice1Router, id : Int64) -> Option[String] {
@@ -1548,17 +1605,23 @@ fn Slice1Router::handle_search_chats(self : Slice1Router, id : Int64, params : b
     Some(base_codec::Json::Arr(arr)) => {
       for i in 0..<arr.length() {
         match arr[i] {
-          base_codec::Json::Str(s) => stations.push(s)
+          base_codec::Json::Str(s) => if !self.is_station_blocked(s) { stations.push(s) }
           _ => ()
         }
       }
     }
     _ => {
       match opt_str_field(params, "station") {
-        Some(st) => stations.push(st)
-        None => stations.push(self.md_store.station)
+        Some(st) => if !self.is_station_blocked(st) { stations.push(st) }
+        None => if !self.is_station_blocked(self.md_store.station) { stations.push(self.md_store.station) }
       }
     }
+  }
+  if stations.length() == 0 {
+    return CoreEvent::Ok(id, base_codec::json_obj([
+      ("query", base_codec::json_str(query)),
+      ("items", base_codec::json_arr([])),
+    ]), None)
   }
   let limit = match opt_nonneg_int64(params, "limit") {
     Some(l) => l.to_int()
@@ -1601,6 +1664,12 @@ fn Slice1Router::handle_search_messages(self : Slice1Router, id : Int64, params 
     }
   }
   let station = opt_str_field(params, "station")
+  match station {
+    Some(st) => if self.is_station_blocked(st) {
+      return CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" })
+    }
+    None => ()
+  }
   let limit = match opt_nonneg_int64(params, "limit") {
     Some(l) => l.to_int()
     None => 50
@@ -1611,6 +1680,9 @@ fn Slice1Router::handle_search_messages(self : Slice1Router, id : Int64, params 
       let items : Array[base_codec::Json] = []
       for i in 0..<hits.length() {
         let h = hits[i]
+        if self.is_station_blocked(h.station) {
+          continue
+        }
         let at_j = match h.at {
           Some(ts) => base_codec::json_int64(ts)
           None => base_codec::json_null()
@@ -1640,6 +1712,9 @@ fn Slice1Router::handle_settings_get(self : Slice1Router, id : Int64, params : b
       Some(sc) => sc
       None => self.workspace
     }
+  }
+  if self.is_workspace_blocked(ws) {
+    return if is_sub { CoreEvent::Waiting(id) } else { CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" }) }
   }
   match opt_str_field(params, "key") {
     Some(k) =>
@@ -1689,6 +1764,9 @@ fn Slice1Router::handle_settings_set(self : Slice1Router, id : Int64, params : b
       None => self.workspace
     }
   }
+  if self.is_workspace_blocked(ws) {
+    return CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" })
+  }
   let k = match opt_str_field(params, "key") {
     Some(s) => s
     None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing key" })
@@ -1714,6 +1792,9 @@ fn Slice1Router::handle_chat_draft(self : Slice1Router, id : Int64, params : bas
   let st = match opt_str_field(params, "station") {
     Some(s) => s
     None => self.md_store.station
+  }
+  if self.is_station_blocked(st) {
+    return if is_sub { CoreEvent::Waiting(id) } else { CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" }) }
   }
   let chat_key = match opt_str_field(params, "chat") {
     Some(c) => c
@@ -1995,6 +2076,9 @@ fn Slice1Router::handle_chat_open(self : Slice1Router, id : Int64, params : base
     Some(s) => if s.length() > 0 { s } else { self.md_store.station }
     None => self.md_store.station
   }
+  if self.is_station_blocked(req_station) {
+    return if is_sub { CoreEvent::Waiting(id) } else { CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" }) }
+  }
   let req_thread = match opt_nonneg_int64(params, "thread") {
     Some(t) => Some(t.to_int())
     None => None
@@ -2093,6 +2177,9 @@ fn Slice1Router::handle_chat_open(self : Slice1Router, id : Int64, params : base
     }
   }
 
+  if self.is_station_blocked(eff_station) {
+    return if is_sub { CoreEvent::Waiting(id) } else { CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" }) }
+  }
   let thread = match eff_thread {
     Some(t) => t
     None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing thread or session" })
@@ -2141,19 +2228,32 @@ fn Slice1Router::handle_chat_open(self : Slice1Router, id : Int64, params : base
 }
 
 fn Slice1Router::handle_chats_window(self : Slice1Router, id : Int64, params : base_codec::Json, is_sub : Bool) -> CoreEvent {
-  let stations : Array[String] = []
+  let raw_stations : Array[String] = []
   match base_codec::json_get(params, "stations") {
     Some(base_codec::Json::Arr(arr)) => {
       for i in 0..<arr.length() {
         match arr[i] {
-          base_codec::Json::Str(s) => stations.push(s)
+          base_codec::Json::Str(s) => raw_stations.push(s)
           _ => ()
         }
       }
     }
     _ => {
-      stations.push(self.md_store.station)
+      raw_stations.push(self.md_store.station)
     }
+  }
+  let stations : Array[String] = []
+  for i in 0..<raw_stations.length() {
+    if !self.is_station_blocked(raw_stations[i]) {
+      stations.push(raw_stations[i])
+    }
+  }
+  if raw_stations.length() > 0 && stations.length() == 0 {
+    return if is_sub { CoreEvent::Waiting(id) } else { CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" }) }
+  }
+  if stations.length() == 0 {
+    let payload = encode_window_rows([])
+    return if is_sub { CoreEvent::Value(id, payload, None) } else { CoreEvent::Ok(id, payload, None) }
   }
   let mine = match opt_bool_field(params, "mine") {
     Some(b) => b
@@ -2193,10 +2293,36 @@ fn Slice1Router::handle_chats_window(self : Slice1Router, id : Int64, params : b
   }
 }
 
+fn account_doc_workspace_scope(name : String) -> String {
+  let extract = fn(rest : String) -> String {
+    match rest.index_of("/") {
+      idx if idx > 0 => rest.slice(0, idx)
+      _ => rest
+    }
+  }
+  if name.starts_with("vaults:") {
+    return extract(name.slice(7, name.length()))
+  }
+  if name.starts_with("vault:") {
+    return extract(name.slice(6, name.length()))
+  }
+  if name.starts_with("usage:") {
+    return extract(name.slice(6, name.length()))
+  }
+  if name.starts_with("revoked_pending:") {
+    return extract(name.slice(16, name.length()))
+  }
+  ""
+}
+
 fn Slice1Router::handle_account_doc(self : Slice1Router, id : Int64, params : base_codec::Json) -> CoreEvent {
   let name = match opt_str_field(params, "name") {
     Some(s) => s
     None => return CoreEvent::Err(id, CoreError::{ code: "bad_params", message: "missing name" })
+  }
+  let doc_ws = account_doc_workspace_scope(name)
+  if doc_ws.length() > 0 && self.is_workspace_blocked(doc_ws) {
+    return CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" })
   }
   match store::get_account_doc(self.db, name) {
     sql::SqlResult::Err(e) => CoreEvent::Err(id, CoreError::{ code: "sql_error", message: e.to_string() })
@@ -2218,6 +2344,9 @@ fn Slice1Router::handle_workspaces_list(self : Slice1Router, id : Int64, is_sub 
       let items : Array[base_codec::Json] = []
       for i in 0..<rows.length() {
         let r = rows[i]
+        if self.is_workspace_blocked(r.id) {
+          continue
+        }
         let doc = match base_codec::json_parse(r.json) {
           base_codec::JsonParseResult::Ok(j) => j
           base_codec::JsonParseResult::Err(_) => base_codec::json_str(r.json)
@@ -2254,6 +2383,9 @@ fn Slice1Router::handle_stations_list(self : Slice1Router, id : Int64, params : 
       None => ""
     }
   }
+  if self.is_workspace_blocked(ws_scope) {
+    return if is_sub { CoreEvent::Waiting(id) } else { CoreEvent::Err(id, CoreError::{ code: "workspace_revoked", message: "workspace revoked" }) }
+  }
   let rows_res = if kind == "overview" {
     store::list_workspace_stations_merged(self.db, ws_scope)
   } else {
@@ -2265,6 +2397,9 @@ fn Slice1Router::handle_stations_list(self : Slice1Router, id : Int64, params : 
       let items : Array[base_codec::Json] = []
       for i in 0..<rows.length() {
         let r = rows[i]
+        if self.is_station_blocked(r.address) {
+          continue
+        }
         let doc = match base_codec::json_parse(r.json) {
           base_codec::JsonParseResult::Ok(j) => j
           base_codec::JsonParseResult::Err(_) => base_codec::json_str(r.json)

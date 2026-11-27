@@ -618,51 +618,64 @@ test "auth_lifecycle 5: real AccountEvent downgrade updates workspace.json.role,
   let _ = env.rt.run_ready()
 
   // Stale `overview` carrying pre-downgrade `stream_auth_gen = 1` MUST be rejected!
+  // With per-station record filtering, workspace-wide `profiles` is unblocked once workspace doc confirms
+  // (`manages: false`), while unconfirmed `st-1`/`st-2` stale profiles (`p1`, `p2`) are strictly excluded!
   let stale_ev = wire::Event::{
     name: "overview",
-    data: "{\"id\":\"st-1\",\"name\":\"St1 Stale\"}",
+    data: "{\"id\":\"st-1\",\"name\":\"St1 Stale\",\"profiles\":[{\"name\":\"p1-stale\",\"provider\":\"anthropic\"}]}",
     id: Some("e-stale"),
   }
   let _ = core.events.apply_sse_batch([stale_ev], stream_auth_gen=Some(1))
+  debug_assert(!core.is_station_confirmed_for_projection("ws-role", "ws-role/st-1", "overview"), "pre-downgrade SSE overview (gen=1) MUST NOT confirm st-1")
   match core.handle_wire("{\"id\":63,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-role\"},\"keyed\":true}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true"), "pre-downgrade SSE overview (gen=1) MUST NOT unlock profiles")
-    None => debug_assert(false, "expected Waiting")
+    Some((txt, _)) => {
+      debug_assert(txt.contains("\"manages\":false"), "confirmed workspace doc shows manages:false")
+      debug_assert(!txt.contains("p1") && !txt.contains("p2") && !txt.contains("p1-stale"), "unconfirmed stations' stale profiles MUST be excluded at projection time")
+    }
+    None => debug_assert(false, "expected filtered profiles Value")
   }
 
   // Now advance virtual clock so st-1's actively triggered snapshot finishes AND st-1 pushes fresh post-downgrade `overview` (gen=2):
-  // `st-1` (#61) unlocks, while workspace-wide `profiles` (#60) MUST STAY Waiting while online `st-2` has not yet pushed its post-downgrade `overview`!
+  // `st-1` (#61) unlocks AND workspace-wide `profiles` (#60) updates incrementally with ONLY `p1` (ZERO stale `p2` from unconfirmed `st-2`)!
   let before_st1 = frames.length()
   env.rt.advance(100)
   st1.push_sse("id: e-post-1\nevent: overview\ndata: {\"id\":\"st-1\",\"name\":\"St1 Post\",\"profiles\":[{\"name\":\"p1\",\"provider\":\"anthropic\"}]}\n\n")
   let _ = env.rt.run_ready()
   let mut st1_released = false
-  let mut prof_premature = false
+  let mut prof_has_p1_only = false
+  let mut prof_leaked_p2 = false
   for i in before_st1..<frames.length() {
     let f = frames[i]
     if json_int_eq(f, "id", 61) && json_int_eq(f, "authGen", 2) && f.contains("\"value\"") {
       st1_released = true
     }
-    if json_int_eq(f, "id", 60) && f.contains("\"value\"") {
-      prof_premature = true
+    if json_int_eq(f, "id", 60) && json_int_eq(f, "authGen", 2) {
+      if f.contains("\"p1\"") {
+        prof_has_p1_only = true
+      }
+      if f.contains("\"p2\"") {
+        prof_leaked_p2 = true
+      }
     }
   }
   debug_assert(st1_released, "st-1 auto-unlocked after post-downgrade snapshot at gen=2")
-  debug_assert(!prof_premature, "st-1 alone MUST NOT release workspace-wide profiles while online st-2 overview is unconfirmed")
+  debug_assert(prof_has_p1_only && !prof_leaked_p2, "st-1 confirmation emits ONLY st-1's p1 while excluding unconfirmed st-2's stale p2")
 
   // Now online st-2 pushes its post-downgrade `overview`:
-  // Workspace-wide `profiles` (#60) auto-unlocks with `manages: false` (ZERO manual confirm calls)!
+  // Workspace-wide `profiles` (#60) incrementally emits `p2` via Delta/Value at `authGen: 2` (ZERO Waiting flicker)!
   let before_st2 = frames.length()
   st2.push_sse("id: e-post-2\nevent: overview\ndata: {\"id\":\"st-2\",\"name\":\"St2 Post\",\"profiles\":[{\"name\":\"p2\",\"provider\":\"openai\"}]}\n\n")
   env.rt.advance(100)
   let _ = env.rt.run_ready()
-  let mut prof_released = false
+  let mut prof_added_p2 = false
   for i in before_st2..<frames.length() {
     let f = frames[i]
-    if json_int_eq(f, "id", 60) && json_int_eq(f, "authGen", 2) && f.contains("\"manages\":false") {
-      prof_released = true
+    if json_int_eq(f, "id", 60) && json_int_eq(f, "authGen", 2) && f.contains("\"p2\"") {
+      debug_assert(!f.contains("\"waiting\":true"), "st-2 confirmation MUST NOT flicker Waiting")
+      prof_added_p2 = true
     }
   }
-  debug_assert(prof_released, "profiles auto-unlocked with manages:false once workspace doc + both online stations confirmed")
+  debug_assert(prof_added_p2, "profiles incrementally added st-2's p2 once st-2 confirmed at gen=2")
   cs.stop()
   core.stop()
 }
@@ -1287,8 +1300,15 @@ test "auth_lifecycle 13: cross-workspace attach_station_transport binds true wor
   core.start()
   let _ = env.rt.run_ready()
 
+  // Seed stale overview for ws-A/st-a before downgrade
+  let _ = env.db.run(store::sql_station_doc_put(), params=[
+    base_codec::json_str("ws-A/st-a"),
+    base_codec::json_str("overview"),
+    base_codec::json_str("{\"id\":\"st-a\",\"name\":\"St A\",\"profiles\":[{\"name\":\"stale-prof-a\"}]}"),
+    base_codec::json_int64(1000L),
+  ])
   // Downgrade ws-A (`owner -> member`) while ws-B/st-b sends fresh `overview` at high authGen:
-  // ws-B/st-b reads MUST NOT unlock ws-A's downgrade latch!
+  // ws-B/st-b reads MUST NOT confirm ws-A/st-a or unlock ws-A's single-station latch!
   let _ = core.update_workspace_role("ws-A", "member", confirm_workspace_doc=true)
   debug_assert(core.is_workspace_downgrade_gated("ws-A"), "ws-A latch active")
   match core.extra_events.get("ws-B/st-b") {
@@ -1299,9 +1319,14 @@ test "auth_lifecycle 13: cross-workspace attach_station_transport binds true wor
     }
     None => debug_assert(false, "expected ws-B/st-b extra_events")
   }
+  debug_assert(!core.is_station_confirmed_for_projection("ws-A", "ws-A/st-a", "overview"), "ws-B/st-b overview MUST NOT confirm ws-A/st-a")
   match core.handle_wire("{\"id\":301,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-A\"},\"keyed\":true}") {
-    Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true"), "ws-B/st-b overview MUST NOT unlock ws-A latch")
-    None => debug_assert(false, "expected Waiting")
+    Some((txt, _)) => debug_assert(!txt.contains("stale-prof-a"), "ws-B/st-b overview MUST NOT expose stale ws-A/st-a profiles")
+    None => debug_assert(false, "expected filtered profiles")
+  }
+  match core.handle_wire("{\"id\":302,\"subscribe\":{\"topic\":\"chatRow\",\"station\":\"ws-A/st-a\",\"session\":\"s-a\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true"), "ws-B/st-b overview MUST NOT unlock ws-A/st-a single-station topic")
+    None => debug_assert(false, "expected Waiting for ws-A/st-a chatRow")
   }
 
   // Revoke ws-B -> blocks ws-B/st-b writes immediately while leaving ws-A completely intact!
@@ -1894,5 +1919,857 @@ test "auth_lifecycle 20: same-ms connSeq strictly monotonic even on write failur
   debug_assert(sec_ep != sec_base, "device.endpoints change MUST alter canonical_lock_digest")
   debug_assert(sec_gw != sec_base, "gateways change MUST alter canonical_lock_digest")
   debug_assert(sec_ck != sec_base, "cloud_keys change MUST alter canonical_lock_digest")
+  core.stop()
+}
+
+// ── Test 21 (R4 Fix 1): Per-station record filtering during downgrade projection + single-chat precision ──
+
+test "auth_lifecycle 21: post-downgrade offline/reconnecting station rows excluded from profiles/stations/chats, confirmed station renders without wedge, and GET /chats never unlocks unread chat" {
+  let env = AuthSimEnv::new()
+  let st1 = SimStation::new(env.rt)
+  let st2 = SimStation::new(env.rt)
+  st1.snapshot_json = base_codec::json_obj([
+    ("chats", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("c-fresh-1")),
+        ("title", base_codec::json_str("Fresh St1 Chat")),
+        ("thread", base_codec::json_int(11)),
+        ("lastActive", base_codec::json_int64(6000L)),
+      ]),
+    ])),
+  ])
+  st2.snapshot_json = base_codec::json_obj([
+    ("chats", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("c-fresh-2")),
+        ("title", base_codec::json_str("Fresh St2 Chat")),
+        ("thread", base_codec::json_int(22)),
+        ("lastActive", base_codec::json_int64(7000L)),
+      ]),
+    ])),
+  ])
+
+  let _ = env.db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-r4"),
+    base_codec::json_str("{\"id\":\"ws-r4\",\"name\":\"R4 Team\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"St1\",\"online\":true},{\"id\":\"st-2\",\"name\":\"St2\",\"online\":false}]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = env.db.run(store::sql_station_doc_put(), params=[
+    base_codec::json_str("ws-r4/st-1"),
+    base_codec::json_str("overview"),
+    base_codec::json_str("{\"id\":\"st-1\",\"name\":\"St1 Stale\",\"profiles\":[{\"name\":\"p-stale-1\"}]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = env.db.run(store::sql_station_doc_put(), params=[
+    base_codec::json_str("ws-r4/st-2"),
+    base_codec::json_str("overview"),
+    base_codec::json_str("{\"id\":\"st-2\",\"name\":\"St2 Stale\",\"profiles\":[{\"name\":\"p-stale-2\"}]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = env.db.run(sql_chat_upsert(), params=[
+    base_codec::json_str("ws-r4/st-1"), base_codec::json_str("c-stale-1"), base_codec::json_int(0),
+    base_codec::json_num(1.0), base_codec::json_int(11), base_codec::json_str("s-11"),
+    base_codec::json_int(1), base_codec::json_int64(4000L), base_codec::json_null(),
+    base_codec::json_int(0), base_codec::json_int(0), base_codec::json_null(),
+    base_codec::json_null(), base_codec::json_int(0), base_codec::json_int(0),
+    base_codec::json_str("{\"id\":\"c-stale-1\",\"title\":\"STALE_CHAT_ST1\",\"thread\":11,\"lastActive\":4000}"),
+  ])
+  let _ = env.db.run(sql_chat_upsert(), params=[
+    base_codec::json_str("ws-r4/st-2"), base_codec::json_str("c-stale-2"), base_codec::json_int(0),
+    base_codec::json_num(1.0), base_codec::json_int(22), base_codec::json_str("s-22"),
+    base_codec::json_int(1), base_codec::json_int64(4000L), base_codec::json_null(),
+    base_codec::json_int(0), base_codec::json_int(0), base_codec::json_null(),
+    base_codec::json_null(), base_codec::json_int(0), base_codec::json_int(0),
+    base_codec::json_str("{\"id\":\"c-stale-2\",\"title\":\"STALE_CHAT_ST2\",\"thread\":22,\"lastActive\":4000}"),
+  ])
+  let _ = env.db.run(sql_entry_put(), params=[
+    base_codec::json_str("ws-r4/st-1"), base_codec::json_int(11), base_codec::json_int(1),
+    base_codec::json_str("{\"n\":1,\"thread\":11,\"kind\":\"message\",\"author\":\"alice\",\"text\":\"PRIVATE_THREAD_11\",\"at\":4000}"),
+  ])
+  let _ = store::put_account_doc(env.db, "usage:ws-r4", "{\"days\":[{\"day\":\"2026-11-27\",\"cost\":99.5}]}")
+
+  let core = ClientCore::new("ws-r4", "ws-r4/st-1", env.rt, env.db, st1.transport(), fn() -> Unit {})
+  core.attach_station_transport("ws-r4/st-2", st2.transport(), workspace="ws-r4")
+  core.events.start(env.rt) // ONLY st-1 online; st-2 stays OFFLINE
+  let _ = env.rt.run_ready()
+
+  let frames : Array[String] = []
+  core.set_wire_sink(fn(j : String, _b : Option[Bytes]) -> Unit { frames.push(j) })
+  let _ = core.handle_wire("{\"id\":801,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-r4\"},\"keyed\":true}")
+  let _ = core.handle_wire("{\"id\":802,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"ws-r4\"},\"keyed\":true}")
+  let _ = core.handle_wire("{\"id\":803,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-r4\"},\"keyed\":true}")
+  let _ = core.handle_wire("{\"id\":804,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-r4/st-1\",\"thread\":11},\"keyed\":true}")
+
+  // Downgrade ws-r4 (`owner -> member`) with workspace doc confirmed (`authGen = 2`).
+  let before_dg = frames.length()
+  let _ = core.update_workspace_role("ws-r4", "member", confirm_workspace_doc=true)
+  let _ = env.rt.run_ready()
+  debug_assert(core.auth.workspace_auth_gen("ws-r4") == 2, "downgrade bumped authGen to 2")
+
+  // Immediately after downgrade (before any station confirms): ZERO stale pre-downgrade station data leaked!
+  for i in before_dg..<frames.length() {
+    let f = frames[i]
+    debug_assert(!f.contains("p-stale-1") && !f.contains("p-stale-2"), "profiles MUST NOT leak unconfirmed stale profiles under authGen:2")
+    debug_assert(!f.contains("St1 Stale") && !f.contains("St2 Stale"), "stations MUST NOT leak unconfirmed stale stations under authGen:2")
+    debug_assert(!f.contains("STALE_CHAT_ST1") && !f.contains("STALE_CHAT_ST2"), "chats MUST NOT leak unconfirmed stale chats under authGen:2")
+    debug_assert(!f.contains("PRIVATE_THREAD_11"), "single-chat MUST NOT leak thread 11 before per-thread confirmation")
+  }
+  match core.handle_wire("{\"id\":805,\"subscribe\":{\"topic\":\"usage\",\"scope\":\"ws-r4\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(!txt.contains("99.5"), "usage MUST exclude stale account_doc usage:<ws> while downgrade gated")
+    None => debug_assert(false, "expected usage value")
+  }
+
+  // Now online `st-1` confirms fresh `overview` AND fresh `GET /chats` snapshot at `authGen = 2`,
+  // while `st-2` stays OFFLINE:
+  // - `profiles`/`stations`/`chats` render `st-1` cleanly (NO wedge!) and STILL exclude `st-2` (NO stale leak!).
+  // - Single-chat `{ topic: "chat", station: "ws-r4/st-1", thread: 11 }` MUST STAY `Waiting`!
+  let before_st1 = frames.length()
+  st1.push_sse("id: r4-ov-1\nevent: overview\ndata: {\"id\":\"st-1\",\"name\":\"St1 Fresh\",\"profiles\":[{\"name\":\"p-fresh-1\"}]}\n\n")
+  env.rt.advance(100)
+  let _ = env.rt.run_ready()
+  debug_assert(core.is_station_confirmed_for_projection("ws-r4", "ws-r4/st-1", "overview"), "st-1 overview confirmed")
+  debug_assert(core.is_station_confirmed_for_projection("ws-r4", "ws-r4/st-1", "snapshot"), "st-1 snapshot confirmed")
+  debug_assert(!core.is_station_confirmed_for_projection("ws-r4", "ws-r4/st-2", "overview"), "offline st-2 overview stays unconfirmed")
+  debug_assert(!core.is_station_confirmed_for_projection("ws-r4", "ws-r4/st-2", "snapshot"), "offline st-2 snapshot stays unconfirmed")
+
+  match core.handle_wire("{\"id\":811,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-r4\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("p-fresh-1") && !txt.contains("p-stale-2") && txt.contains("\"manages\":false"), "profiles includes fresh st-1 ONLY")
+    None => debug_assert(false, "expected profiles")
+  }
+  match core.handle_wire("{\"id\":812,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"ws-r4\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("St1 Fresh") && !txt.contains("St2 Stale"), "stations includes fresh st-1 ONLY")
+    None => debug_assert(false, "expected stations")
+  }
+  match core.handle_wire("{\"id\":813,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-r4\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("Fresh St1 Chat") && !txt.contains("STALE_CHAT_ST2"), "chats includes fresh st-1 ONLY")
+    None => debug_assert(false, "expected chats")
+  }
+  // CRITICAL: `GET /chats` snapshot MUST NEVER unlock single-chat `chat` thread 11!
+  debug_assert(!core.is_topic_authorized(protocol::Topic::{ name: "chat", params: [("station", base_codec::json_str("ws-r4/st-1")), ("thread", base_codec::json_int(11))] }), "GET /chats snapshot MUST NEVER unlock unread single-chat thread 11")
+  match core.handle_wire("{\"id\":814,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-r4/st-1\",\"thread\":11},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true") && !txt.contains("PRIVATE_THREAD_11"), "single-chat stays Waiting until GET /threads/11/entries confirms")
+    None => debug_assert(false, "expected Waiting for thread 11")
+  }
+  // Confirming exact thread 11 at authGen=2 unlocks thread 11!
+  core.handle_confirmed_station_read("ws-r4", "ws-r4/st-1", "thread", 2, Some(11))
+  debug_assert(core.is_topic_authorized(protocol::Topic::{ name: "chat", params: [("station", base_codec::json_str("ws-r4/st-1")), ("thread", base_codec::json_int(11))] }), "exact thread 11 confirmation unlocks chat")
+
+  // Finally, `st-2` comes online and confirms fresh overview + snapshot -> incremental deltas appear with ZERO Waiting flicker!
+  let before_st2 = frames.length()
+  match core.extra_events.get("ws-r4/st-2") {
+    Some(ev2) => ev2.start(env.rt)
+    None => debug_assert(false, "expected st-2 events")
+  }
+  let _ = env.rt.run_ready()
+  st2.push_sse("id: r4-ov-2\nevent: overview\ndata: {\"id\":\"st-2\",\"name\":\"St2 Fresh\",\"profiles\":[{\"name\":\"p-fresh-2\"}]}\n\n")
+  env.rt.advance(100)
+  let _ = env.rt.run_ready()
+  let mut saw_p2 = false
+  let mut saw_c2 = false
+  for i in before_st2..<frames.length() {
+    let f = frames[i]
+    if json_int_eq(f, "id", 801) {
+      debug_assert(!f.contains("\"waiting\":true"), "no Waiting flicker on profiles when st-2 confirms")
+      if f.contains("p-fresh-2") { saw_p2 = true }
+    }
+    if json_int_eq(f, "id", 803) {
+      debug_assert(!f.contains("\"waiting\":true"), "no Waiting flicker on chats when st-2 confirms")
+      if f.contains("Fresh St2 Chat") { saw_c2 = true }
+    }
+  }
+  debug_assert(saw_p2 && saw_c2, "st-2 rows appeared via incremental updates after reconnect confirmation")
+  let _ = before_st1
+  core.stop()
+}
+
+// ── Test 22 (R4 Fix 2): Bare station purge + ALL direct read/RPC guards ──
+
+test "auth_lifecycle 22: explicitly bound bare station is purged by drop_workspace (incl. draft) and ALL direct RPCs block revoked workspace with 0 leaks" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let fail_drops : Array[Bool] = [false]
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if fail_drops[0] && op == "sql.run" && j_str(args, "sql").starts_with("DELETE FROM workspace ") {
+        return shell::AskResult::Err(shell::ShellError::{ message: "simulated SQLITE_BUSY" })
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-bare") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("open failed: " + e.to_string())
+  }
+  let st_main = SimStation::new(rt)
+  let st_bare = SimStation::new(rt)
+  let core = ClientCore::new("ws-main", "ws-main/st-main", rt, db, st_main.transport(), fn() -> Unit {})
+  // Bind a BARE station name (`"bare-st-99"`, NO `<ws>/` prefix!) explicitly to `"ws-bare"`
+  core.attach_station_transport("bare-st-99", st_bare.transport(), workspace="ws-bare")
+  debug_assert(core.station_workspace_of("bare-st-99") == "ws-bare", "bare station resolves to explicit ws-bare")
+
+  // Seed ws-bare + bare-st-99 data across workspace, station, chat, entry, draft, composer, pref, account_doc
+  let _ = db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-bare"),
+    base_codec::json_str("{\"id\":\"ws-bare\",\"name\":\"BARE_SECRET_WS\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-main"),
+    base_codec::json_str("{\"id\":\"ws-main\",\"name\":\"MAIN_OK_WS\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = db.run(store::sql_station_doc_put(), params=[
+    base_codec::json_str("bare-st-99"),
+    base_codec::json_str("overview"),
+    base_codec::json_str("{\"id\":\"bare-st-99\",\"name\":\"BARE_SECRET_ST\"}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = db.run(sql_chat_upsert(), params=[
+    base_codec::json_str("bare-st-99"), base_codec::json_str("c-55"), base_codec::json_int(0),
+    base_codec::json_num(1.0), base_codec::json_int(55), base_codec::json_str("sess-55"),
+    base_codec::json_int(1), base_codec::json_int64(5000L), base_codec::json_null(),
+    base_codec::json_int(0), base_codec::json_int(0), base_codec::json_null(),
+    base_codec::json_null(), base_codec::json_int(0), base_codec::json_int(0),
+    base_codec::json_str("{\"id\":\"c-55\",\"title\":\"BARE_SECRET_CHAT\",\"thread\":55,\"lastActive\":5000}"),
+  ])
+  let _ = db.run(sql_entry_put(), params=[
+    base_codec::json_str("bare-st-99"), base_codec::json_int(55), base_codec::json_int(1),
+    base_codec::json_str("{\"n\":1,\"thread\":55,\"kind\":\"message\",\"author\":\"alice\",\"text\":\"BARE_SECRET_MSG\",\"at\":5000}"),
+  ])
+  let _ = store::put_draft(db, "bare-st-99", "c-55", "{\"text\":\"BARE_SECRET_DRAFT\"}")
+  let _ = store::put_workspace_pref(db, "ws-bare", "theme", "\"BARE_SECRET_PREF\"")
+  let _ = store::put_account_doc(db, "vaults:ws-bare", "[{\"id\":\"v-b\",\"name\":\"BARE_SECRET_VAULT\"}]")
+  let _ = core.handle_wire("{\"id\":1,\"call\":\"composer.text\",\"params\":{\"key\":\"bare-st-99:c-55\",\"text\":\"BARE_SECRET_COMP\"}}")
+
+  // Phase A: fail `drop_workspace` so SQLite rows STILL exist, then revoke `ws-bare` -> ALL direct RPCs MUST have 0 leaks!
+  fail_drops[0] = true
+  core.revoke_workspace("ws-bare")
+  let assert_no_bare_leak = fn(label : String, req : String, expect_err : Bool) -> Unit {
+    match core.handle_wire(req) {
+      Some((txt, _)) => {
+        if expect_err {
+          debug_assert(txt.contains("\"error\"") && txt.contains("workspace_revoked"), label + " must fail with workspace_revoked")
+        }
+        debug_assert(!txt.contains("BARE_SECRET"), label + " leaked bare station/workspace secret: " + txt)
+      }
+      None => debug_assert(false, label + " returned None")
+    }
+  }
+  assert_no_bare_leak("chat.open", "{\"id\":10,\"call\":\"chat.open\",\"params\":{\"station\":\"bare-st-99\",\"thread\":55}}", true)
+  assert_no_bare_leak("chats.window", "{\"id\":11,\"call\":\"chats.window\",\"params\":{\"stations\":[\"bare-st-99\"]}}", true)
+  assert_no_bare_leak("workspaces.list", "{\"id\":12,\"call\":\"workspaces.list\",\"params\":{}}", false)
+  assert_no_bare_leak("stations.list", "{\"id\":13,\"call\":\"stations.list\",\"params\":{\"workspace\":\"ws-bare\"}}", true)
+  assert_no_bare_leak("draft.get", "{\"id\":14,\"call\":\"draft.get\",\"params\":{\"station\":\"bare-st-99\",\"chat\":\"c-55\"}}", true)
+  assert_no_bare_leak("draft.put", "{\"id\":15,\"call\":\"draft.put\",\"params\":{\"station\":\"bare-st-99\",\"chat\":\"c-55\",\"value\":{\"text\":\"x\"}}}", true)
+  assert_no_bare_leak("chat.draft", "{\"id\":16,\"call\":\"chat.draft\",\"params\":{\"station\":\"bare-st-99\",\"chat\":\"c-55\"}}", true)
+  assert_no_bare_leak("composer.text", "{\"id\":17,\"call\":\"composer.text\",\"params\":{\"key\":\"bare-st-99:c-55\",\"text\":\"x\"}}", true)
+  assert_no_bare_leak("composer.take", "{\"id\":18,\"call\":\"composer.take\",\"params\":{\"key\":\"bare-st-99:c-55\"}}", true)
+  assert_no_bare_leak("settings.get", "{\"id\":19,\"call\":\"settings.get\",\"params\":{\"workspace\":\"ws-bare\",\"key\":\"theme\"}}", true)
+  assert_no_bare_leak("settings.set", "{\"id\":20,\"call\":\"settings.set\",\"params\":{\"workspace\":\"ws-bare\",\"key\":\"theme\",\"value\":\"x\"}}", true)
+  assert_no_bare_leak("search.chats", "{\"id\":21,\"call\":\"search.chats\",\"params\":{\"station\":\"bare-st-99\",\"query\":\"BARE\"}}", false)
+  assert_no_bare_leak("search.messages", "{\"id\":22,\"call\":\"search.messages\",\"params\":{\"station\":\"bare-st-99\",\"query\":\"BARE\"}}", true)
+  assert_no_bare_leak("account.doc", "{\"id\":23,\"call\":\"account.doc\",\"params\":{\"name\":\"vaults:ws-bare\"}}", true)
+
+  // Phase B: heal DB and run revoke/drop -> verify EVERY SQLite row for bare-st-99 (incl. draft!) is purged!
+  fail_drops[0] = false
+  core.revoke_workspace("ws-bare")
+  match store::get_workspace(db, "ws-bare") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "ws-bare workspace row must be dropped")
+  }
+  match store::get_draft(db, "bare-st-99", "c-55") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "bare-st-99 draft row must be dropped")
+  }
+  match store::get_chat_by_thread(db, "bare-st-99", 55) {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "bare-st-99 chat row must be dropped")
+  }
+  match store::get_station_doc(db, "bare-st-99", "overview") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "bare-st-99 overview row must be dropped")
+  }
+  core.stop()
+}
+
+// ── Test 23 (R4 Fix 2): SQLite marker write failure + drop failure -> device fallback blocks offline restart & retries purge ──
+
+test "auth_lifecycle 23: SQLite pending-marker write failure + drop_workspace failure still blocks offline restart via device fallback and retries purge" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let fail_sql_writes : Array[Bool] = [false]
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if fail_sql_writes[0] && op == "sql.run" {
+        let q = j_str(args, "sql")
+        if q.contains("account_doc") || q.starts_with("DELETE FROM workspace ") {
+          return shell::AskResult::Err(shell::ShellError::{ message: "simulated SQLITE_FULL" })
+        }
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-devfb") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("open failed: " + e.to_string())
+  }
+  let device_pending : Array[String] = []
+  let save_device_pending = fn(wss : Array[String]) -> Result[Unit, String] {
+    device_pending.clear()
+    for i in 0..<wss.length() {
+      device_pending.push(wss[i])
+    }
+    Ok(())
+  }
+  let st = SimStation::new(rt)
+  let core = ClientCore::new(
+    "ws-devfb",
+    "ws-devfb/st-1",
+    rt,
+    db,
+    st.transport(),
+    fn() -> Unit {},
+    initial_pending_revocations=[],
+    save_pending_revocations=Some(save_device_pending),
+  )
+  let _ = db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-devfb"),
+    base_codec::json_str("{\"id\":\"ws-devfb\",\"name\":\"DEVFB_SECRET\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = store::put_draft(db, "ws-devfb/st-1", "c-1", "{\"text\":\"DEVFB_DRAFT\"}")
+
+  // Fail BOTH SQLite `account_doc` pending-marker write AND `drop_workspace`!
+  fail_sql_writes[0] = true
+  core.revoke_workspace("ws-devfb")
+  debug_assert(device_pending.length() == 1 && device_pending[0] == "ws-devfb", "device fallback stored ws-devfb even though SQLite marker write failed")
+  debug_assert(core.is_workspace_revoked_or_pending("ws-devfb"), "O(1) memory mirror flags ws-devfb pending")
+  core.stop()
+
+  // Offline restart #1 (DB STILL failing): device fallback MUST block stale cache!
+  let restart1 = ClientCore::new(
+    "ws-devfb",
+    "ws-devfb/st-1",
+    rt,
+    db,
+    core_offline_transport(),
+    fn() -> Unit {},
+    initial_pending_revocations=device_pending,
+    save_pending_revocations=Some(save_device_pending),
+  )
+  debug_assert(restart1.is_workspace_revoked_or_pending("ws-devfb"), "restart1 blocked ws-devfb from device fallback")
+  match restart1.handle_wire("{\"id\":1,\"call\":\"workspaces.list\",\"params\":{}}") {
+    Some((txt, _)) => debug_assert(!txt.contains("DEVFB_SECRET"), "restart1 workspaces.list has 0 leaks")
+    None => debug_assert(false, "expected workspaces.list")
+  }
+  match restart1.handle_wire("{\"id\":2,\"call\":\"draft.get\",\"params\":{\"station\":\"ws-devfb/st-1\",\"chat\":\"c-1\"}}") {
+    Some((txt, _)) => debug_assert(txt.contains("workspace_revoked") && !txt.contains("DEVFB_DRAFT"), "restart1 draft.get refused")
+    None => debug_assert(false, "expected draft.get err")
+  }
+  debug_assert(device_pending.length() == 1, "device fallback marker retained while drop still fails")
+  restart1.stop()
+
+  // Offline restart #2 (DB healed): startup recovery retries & completes drop_workspace AND clears device fallback!
+  fail_sql_writes[0] = false
+  let restart2 = ClientCore::new(
+    "ws-devfb",
+    "ws-devfb/st-1",
+    rt,
+    db,
+    core_offline_transport(),
+    fn() -> Unit {},
+    initial_pending_revocations=device_pending,
+    save_pending_revocations=Some(save_device_pending),
+  )
+  debug_assert(device_pending.length() == 0, "device fallback cleared once drop_workspace succeeded on restart2")
+  match store::get_workspace(db, "ws-devfb") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "ws-devfb workspace row purged on restart2")
+  }
+  match store::get_draft(db, "ws-devfb/st-1", "c-1") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "ws-devfb draft row purged on restart2")
+  }
+  restart2.stop()
+}
+
+// ── Test 24 (R4 Fix 3): Mesh force_fresh_cred preserved on first failure + downgrade cred_epoch rejects in-flight /credential 200 ──
+
+test "auth_lifecycle 24: force_fresh_cred persists across first get_cred failure and downgrade bumps cred_epoch rejecting in-flight /credential 200" {
+  // 24a. Mesh `force_fresh_cred` MUST NOT clear before `get_cred` succeeds!
+  let rt = effect::Runtime::new()
+  let storage : Map[String, Bytes] = Map::new()
+  let local_ep = hex_64("c")
+  let holder : Array[shell::Shell] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, bytes : Option[Bytes]) -> Unit {
+      let s = holder[0]
+      if op == "storage.get" {
+        s.answer(id, base_codec::json_obj([]), bytes=storage.get(j_str(args, "key")))
+        return
+      }
+      if op == "storage.set" {
+        match bytes {
+          Some(b) => storage.set(j_str(args, "key"), b)
+          None => ()
+        }
+        s.answer(id, base_codec::json_obj([]))
+        return
+      }
+      if op == "iroh.bind" {
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(10))]))
+        return
+      }
+      if op == "iroh.connect" {
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(20))]))
+        return
+      }
+      if op == "conn.openBi" {
+        s.answer(id, base_codec::json_obj([("id", base_codec::json_int(30))]))
+        return
+      }
+      if op == "conn.closed" {
+        return
+      }
+      if op == "istream.write" {
+        s.refuse(id, "stream_reset_after_cred")
+        return
+      }
+      s.answer(id, base_codec::json_obj([]))
+    },
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "iroh.endpointId" {
+        return shell::AskResult::Ok(base_codec::json_str(local_ep))
+      }
+      if op == "iroh.relayStatus" {
+        return shell::AskResult::Ok(base_codec::json_arr([
+          base_codec::json_obj([("url", base_codec::json_str("https://relay.still.fail/")), ("connected", base_codec::json_bool(true))]),
+        ]))
+      }
+      if op == "conn.closeReason" {
+        return shell::AskResult::Ok(base_codec::json_null())
+      }
+      if op == "conn.paths" {
+        return shell::AskResult::Ok(base_codec::json_arr([
+          base_codec::json_obj([("selected", base_codec::json_bool(true)), ("relay", base_codec::json_str("https://relay.still.fail/"))]),
+        ]))
+      }
+      if op == "conn.stats" {
+        return shell::AskResult::Ok(base_codec::json_obj([("rxBytes", base_codec::json_int(0)), ("txBytes", base_codec::json_int(0))]))
+      }
+      shell::AskResult::Err(shell::ShellError::{ message: "unused: " + op })
+    },
+    fn(n : Int) -> Bytes {
+      let b = Bytes::new(n)
+      for i in 0..<n {
+        b[i] = ((i * 19 + 7) & 255) as Byte
+      }
+      b
+    },
+  )
+  holder.push(sh)
+  let fresh_calls : Array[Bool] = []
+  let fail_first : Array[Bool] = [true]
+  let cfg = MeshStationConfig::new(
+    "ws-m",
+    hex_64("b"),
+    ["https://relay.still.fail/"],
+    fn(_dev : String, fresh : Bool, k : (effect::Exit[String]) -> Unit) -> Unit {
+      fresh_calls.push(fresh)
+      if fail_first[0] {
+        fail_first[0] = false
+        k(effect::Exit::Failed(effect::EffectError::Custom("transient_cloud_503")))
+      } else {
+        k(effect::Exit::Succeeded("fresh-jwt-ok"))
+      }
+    },
+  )
+  let (ctrl, tr) = shell_mesh_transport(sh, cfg)
+  ctrl.reconnect_with_fresh_cred()
+  // Call #1 fails during `get_cred` -> `force_fresh_cred` MUST stay true!
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (tr.request_k)("GET", "/overview", [], Bytes::new(0), fn(_ : effect::Exit[HttpReply]) -> Unit { fk(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(fresh_calls.length() == 1 && fresh_calls[0] == true, "attempt #1 passed fresh=true")
+  // Call #2 retries -> MUST STILL pass fresh=true (and succeeds get_cred, clearing force_fresh_cred)!
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (tr.request_k)("GET", "/overview", [], Bytes::new(0), fn(_ : effect::Exit[HttpReply]) -> Unit { fk(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(fresh_calls.length() == 2 && fresh_calls[1] == true, "retry attempt #2 MUST STILL pass fresh=true after attempt #1 failed")
+  // Call #3 after `get_cred` succeeded -> `force_fresh_cred` is now cleared (`fresh=false`)!
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (tr.request_k)("GET", "/overview", [], Bytes::new(0), fn(_ : effect::Exit[HttpReply]) -> Unit { fk(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  debug_assert(fresh_calls.length() == 3 && fresh_calls[2] == false, "attempt #3 reverts to fresh=false after get_cred succeeded")
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { fk(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+
+  // 24b. Downgrade bumps `cred_epoch` on `CloudSync`, rejecting pre-downgrade in-flight `/credential` 200!
+  let env = AuthSimEnv::new()
+  let station = SimStation::new(env.rt)
+  let _ = env.db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-ce"),
+    base_codec::json_str("{\"id\":\"ws-ce\",\"name\":\"CE WS\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let core = ClientCore::new("ws-ce", "ws-ce/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  let cs = CloudSync::new(env.sh, env.db, "https://cloud.example", token="tok-ce")
+  core.bind_cloud_sync(cs)
+
+  // Start pre-downgrade `/credential` fetch
+  let cred1_failed : Array[Bool] = [false]
+  let _ = env.rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_member_credential_k("ws-ce", "dev-1", 1000L, fn(ex : effect::Exit[MemberCredential]) -> Unit {
+      match ex {
+        effect::Exit::Failed(_) => { cred1_failed[0] = true }
+        _ => ()
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = env.rt.run_ready()
+  let cred1_req = env.pending[0].0
+
+  // Trigger role downgrade `owner -> member` BEFORE pre-downgrade `/credential` responds!
+  let _ = core.update_workspace_role("ws-ce", "member", confirm_workspace_doc=true)
+  let _ = env.rt.run_ready()
+
+  // Pre-downgrade `/credential` 200 arrives late -> MUST fail by `cred_epoch` mismatch & MUST NOT populate cache!
+  env.answer_http(cred1_req, 200, "{\"credential\":\"stale-owner-jwt\",\"issued_at\":1000,\"expires_at\":999999,\"relay_url\":\"\"}")
+  let _ = env.rt.run_ready()
+  debug_assert(cred1_failed[0], "pre-downgrade in-flight /credential 200 MUST be rejected after downgrade bumped cred_epoch")
+
+  // Next credential fetch MUST issue a fresh HTTP request (not hit poisoned cache)!
+  let before_c2 = env.pending.length()
+  let _ = env.rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_member_credential_k("ws-ce", "dev-1", 1000L, fn(_ : effect::Exit[MemberCredential]) -> Unit { fk(effect::Exit::Succeeded(())) })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(env.pending.length() == before_c2 + 1, "stale pre-downgrade credential did NOT poison cred_cache")
+  core.stop()
+}
+
+// ── Test 25 (R4 Fix 4): Rotated refresh_token persisted across restart ──
+
+test "auth_lifecycle 25: rotated refresh_token from /v1/auth/refresh is persisted via hook and reused after restart" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let pending : Array[(Int64, String, base_codec::Json)] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      pending.push((id, op, args))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult { sim_db.answer(op, args) },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-rot") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("open failed: " + e.to_string())
+  }
+  let persisted_access : Array[String] = ["expired-a1"]
+  let persisted_refresh : Array[String] = ["rt-1"]
+  let persisted_exp : Array[Int64] = [0L]
+
+  let cs1 = CloudSync::new(sh, db, "https://cloud.example", token=persisted_access[0])
+  cs1.set_refresh_token(persisted_refresh[0])
+  cs1.set_token_refreshed_hook(fn(a : String, r : String, exp : Int64) -> Unit {
+    persisted_access[0] = a
+    persisted_refresh[0] = r
+    persisted_exp[0] = exp
+  })
+
+  let me_ok : Array[Bool] = [false]
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs1.fetch_me_k(fn(ex : effect::Exit[CloudMe]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => { me_ok[0] = true }
+        _ => ()
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  // Answer /v1/me with 401 -> triggers /v1/auth/refresh with rt-1
+  sh.answer(pending[0].0, base_codec::json_obj([("status", base_codec::json_int(401))]), bytes=Some("{\"error\":\"expired\"}".to_bytes()))
+  let _ = rt.run_ready()
+  debug_assert(pending.length() == 2 && j_str(pending[1].2, "url").ends_with("/v1/auth/refresh"), "401 triggered refresh")
+  sh.answer(
+    pending[1].0,
+    base_codec::json_obj([("status", base_codec::json_int(200))]),
+    bytes=Some("{\"access_token\":\"access-2\",\"refresh_token\":\"rt-2\",\"expires_in\":3600}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(persisted_access[0] == "access-2" && persisted_refresh[0] == "rt-2" && persisted_exp[0] > 0L, "rotated tokens persisted via hook")
+  sh.answer(
+    pending[2].0,
+    base_codec::json_obj([("status", base_codec::json_int(200))]),
+    bytes=Some("{\"user\":{\"sub\":\"u1\",\"email\":\"a@b.c\"},\"workspaces\":[]}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(me_ok[0], "retry /v1/me succeeded with rotated access-2")
+
+  // Simulate restart: new CloudSync initialized from persisted tokens -> next 401 refresh MUST send `Bearer rt-2`!
+  let cs2 = CloudSync::new(sh, db, "https://cloud.example", token=persisted_access[0])
+  cs2.set_refresh_token(persisted_refresh[0])
+  let mark2 = pending.length()
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs2.fetch_me_k(fn(_ : effect::Exit[CloudMe]) -> Unit { fk(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  sh.answer(pending[mark2].0, base_codec::json_obj([("status", base_codec::json_int(401))]), bytes=Some("{\"error\":\"expired\"}".to_bytes()))
+  let _ = rt.run_ready()
+  let ref2_json = base_codec::json_stringify(pending[mark2 + 1].2)
+  debug_assert(ref2_json.contains("Bearer rt-2") && !ref2_json.contains("Bearer rt-1"), "restarted CloudSync MUST use rotated rt-2, never stale rt-1")
+}
+
+// ── Test 26 (R4 Fix 5): Malformed Cloud responses rejected + Atomic 4-step Rejoin ordering ──
+
+test "auth_lifecycle 26: malformed /v1/me & mismatched /v1/workspaces rejected with 0 deletes/writes/watermark-advance, and rejoin enforces atomic 4-step order" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let fail_marker_del : Array[Bool] = [false]
+  let fail_drop : Array[Bool] = [false]
+  let pending : Array[(Int64, String, base_codec::Json)] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      pending.push((id, op, args))
+    },
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if op == "sql.run" {
+        let q = j_str(args, "sql")
+        if fail_drop[0] && q.starts_with("DELETE FROM workspace ") {
+          return shell::AskResult::Err(shell::ShellError::{ message: "simulated drop fail" })
+        }
+        if fail_marker_del[0] && q.starts_with("DELETE FROM account_doc ") {
+          return shell::AskResult::Err(shell::ShellError::{ message: "simulated marker delete fail" })
+        }
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-strict") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("open failed: " + e.to_string())
+  }
+  let st = SimStation::new(rt)
+  let core = ClientCore::new("ws-good", "ws-good/st-1", rt, db, st.transport(), fn() -> Unit {})
+  let cs = CloudSync::new(sh, db, "https://cloud.example", token="tok-strict")
+  core.bind_cloud_sync(cs)
+
+  let _ = db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-good"),
+    base_codec::json_str("{\"id\":\"ws-good\",\"name\":\"Good WS\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+
+  // 26a. Malformed `/v1/me` missing `workspaces` array -> MUST fail, 0 deletes, 0 watermark advance!
+  let me_err : Array[Bool] = [false]
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_me_k(fn(ex : effect::Exit[CloudMe]) -> Unit {
+      match ex {
+        effect::Exit::Failed(_) => { me_err[0] = true }
+        _ => ()
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  sh.answer(pending[0].0, base_codec::json_obj([("status", base_codec::json_int(200))]), bytes=Some("{\"user\":{\"sub\":\"u1\"}}".to_bytes()))
+  let _ = rt.run_ready()
+  debug_assert(me_err[0], "malformed /v1/me missing workspaces MUST fail")
+  debug_assert(!core.auth.is_revoked("ws-good"), "malformed /v1/me MUST NOT revoke ws-good")
+  debug_assert(cs.last_applied_seq("ws-good") == 0L, "malformed /v1/me MUST NOT advance watermark")
+  match store::get_workspace(db, "ws-good") {
+    sql::SqlResult::Ok(Some(_)) => ()
+    _ => debug_assert(false, "ws-good row preserved after malformed /v1/me")
+  }
+
+  // 26b. Mismatched `/v1/workspaces/ws-good` returning `id: "ws-other"` -> MUST fail, 0 writes, 0 watermark advance!
+  let ws_err : Array[Bool] = [false]
+  let idx_b = pending.length()
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k("ws-good", fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+      match ex {
+        effect::Exit::Failed(_) => { ws_err[0] = true }
+        _ => ()
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  sh.answer(
+    pending[idx_b].0,
+    base_codec::json_obj([("status", base_codec::json_int(200))]),
+    bytes=Some("{\"id\":\"ws-other\",\"name\":\"Wrong WS\",\"role\":\"owner\",\"stations\":[]}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(ws_err[0], "mismatched workspace id MUST fail")
+  debug_assert(cs.last_applied_seq("ws-good") == 0L, "mismatched workspace MUST NOT advance ws-good watermark")
+  match store::get_workspace(db, "ws-other") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "mismatched ws-other MUST NOT be written to SQLite")
+  }
+
+  // 26c. Atomic Rejoin Ordering: marker delete failure keeps workspace revoked & does NOT advance watermark!
+  fail_drop[0] = true
+  core.revoke_workspace("ws-good")
+  fail_drop[0] = false
+  fail_marker_del[0] = true
+  let seq_before_rej = cs.last_applied_seq("ws-good")
+  let rej1_failed : Array[Bool] = [false]
+  let idx_c = pending.length()
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k("ws-good", fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+      match ex {
+        effect::Exit::Failed(_) => { rej1_failed[0] = true }
+        _ => ()
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  sh.answer(
+    pending[idx_c].0,
+    base_codec::json_obj([("status", base_codec::json_int(200))]),
+    bytes=Some("{\"id\":\"ws-good\",\"name\":\"Rejoined Good\",\"role\":\"member\",\"members\":[],\"stations\":[]}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(rej1_failed[0] && core.is_workspace_revoked_or_pending("ws-good"), "failed marker delete keeps ws-good revoked/pending")
+  debug_assert(cs.last_applied_seq("ws-good") == seq_before_rej, "failed marker delete MUST NOT advance watermark")
+
+  // Heal marker delete -> next rejoin succeeds atomically and advances watermark!
+  fail_marker_del[0] = false
+  let idx_c2 = pending.length()
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k("ws-good", fn(_ : effect::Exit[CloudWorkspace]) -> Unit { fk(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  sh.answer(
+    pending[idx_c2].0,
+    base_codec::json_obj([("status", base_codec::json_int(200))]),
+    bytes=Some("{\"id\":\"ws-good\",\"name\":\"Rejoined Good\",\"role\":\"member\",\"members\":[],\"stations\":[]}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(!core.is_workspace_revoked_or_pending("ws-good"), "healed rejoin clears revoked & pending")
+  debug_assert(cs.last_applied_seq("ws-good") > seq_before_rej, "healed rejoin advances watermark")
+
+  // 26d. `/v1/me` rejoin on previously revoked workspace writes minimal row AND forks `/v1/workspaces/<ws>`!
+  core.revoke_workspace("ws-good")
+  match store::get_workspace(db, "ws-good") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "ws-good dropped before /v1/me rejoin")
+  }
+  let idx_d = pending.length()
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_me_k(fn(_ : effect::Exit[CloudMe]) -> Unit { fk(effect::Exit::Succeeded(())) })
+  })
+  let _ = rt.run_ready()
+  sh.answer(
+    pending[idx_d].0,
+    base_codec::json_obj([("status", base_codec::json_int(200))]),
+    bytes=Some("{\"user\":{\"sub\":\"u1\",\"email\":\"a@b.c\"},\"workspaces\":[{\"id\":\"ws-good\",\"name\":\"Me Rejoined\",\"role\":\"member\"}]}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(!core.is_workspace_revoked_or_pending("ws-good"), "/v1/me rejoin cleared revoked")
+  match store::get_workspace(db, "ws-good") {
+    sql::SqlResult::Ok(Some(rec)) => debug_assert(rec.json.contains("Me Rejoined"), "/v1/me rejoin wrote minimal workspace row")
+    _ => debug_assert(false, "/v1/me rejoin MUST create minimal workspace row")
+  }
+  let mut forked_ws_fetch = false
+  for i in (idx_d + 1)..<pending.length() {
+    if pending[i].1 == "fetch" && j_str(pending[i].2, "url").ends_with("/v1/workspaces/ws-good") {
+      forked_ws_fetch = true
+    }
+  }
+  debug_assert(forked_ws_fetch, "/v1/me rejoin automatically forked GET /v1/workspaces/ws-good")
+  core.stop()
+}
+
+// ── Test 27 (R4 Fix 5 P2s): AuthBoundaryEvent::Global re-arms active downgrade latch + LockState.sign_keys in canonical_lock_digest ──
+
+test "auth_lifecycle 27: AuthBoundaryEvent::Global(new_gen, _) re-arms active downgrade latch and sign_keys mutation changes canonical_lock_digest" {
+  // 27a. `AuthBoundaryEvent::Global` (`bump_all`) re-arms active downgrade latch & triggers fresh `/v1/workspaces/<ws>`
+  let env = AuthSimEnv::new()
+  let st = SimStation::new(env.rt)
+  let _ = env.db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-glob"),
+    base_codec::json_str("{\"id\":\"ws-glob\",\"name\":\"Global WS\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let core = ClientCore::new("ws-glob", "ws-glob/st-1", env.rt, env.db, st.transport(), fn() -> Unit {})
+  let cs = CloudSync::new(env.sh, env.db, "https://cloud.example", token="tok-glob")
+  core.bind_cloud_sync(cs)
+
+  let _ = core.update_workspace_role("ws-glob", "member", confirm_workspace_doc=false)
+  let _ = env.rt.run_ready()
+  debug_assert(core.auth.workspace_auth_gen("ws-glob") == 2, "downgrade bumped authGen to 2")
+
+  let pend_before = env.pending.length()
+  let _ = core.auth.bump_all()
+  let _ = env.rt.run_ready()
+  debug_assert(core.auth.workspace_auth_gen("ws-glob") == 3, "bump_all advanced authGen to 3")
+  let mut rearm_req = 0L
+  for i in pend_before..<env.pending.length() {
+    if env.pending[i].1 == "fetch" && j_str(env.pending[i].2, "url").ends_with("/v1/workspaces/ws-glob") {
+      rearm_req = env.pending[i].0
+    }
+  }
+  debug_assert(rearm_req > 0L, "AuthBoundaryEvent::Global re-armed active downgrade latch and triggered fresh workspace refetch")
+
+  // 27b. `LockState.sign_keys` mutation changes BOTH `full_digest` and `sec_digest` of `canonical_lock_digest`
+  let alice_seed = make_seed(81)
+  let alice_key = ed25519_key_id(alice_seed)
+  let g = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-sk")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      ("body", form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([
+          ("id", form::Json::Str(hex_64("a"))),
+          ("sub", form::Json::Str("alice")),
+          ("kind", form::Json::Str("app")),
+          ("label", form::Json::Str("Mac")),
+          ("sign_key", form::Json::Str(alice_key)),
+        ])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ])),
+    ]),
+  ) {
+    Ok(e) => e
+    Err(e) => panic("sign: " + e)
+  }
+  let root = match lock::entry_hash(g, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root") }
+  let st_base = match verify_workspace_lock([g], root) { Ok(v) => v.state; Err(e) => panic("verify: " + e) }
+  let (full1, sec1) = canonical_lock_digest(st_base)
+  st_base.sign_keys.set("alice", [alice_key, "ed25519:extra-sign-key-r4"])
+  let (full2, sec2) = canonical_lock_digest(st_base)
+  debug_assert(full2 != full1 && sec2 != sec1, "LockState.sign_keys mutation MUST change canonical_lock_digest")
   core.stop()
 }

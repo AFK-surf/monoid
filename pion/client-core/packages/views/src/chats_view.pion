@@ -1179,18 +1179,24 @@ pub fn project_chats(
   }
 
   // Indexed bounded window query (`chat_recent`), asking for `window_limit + 1` to detect `more`.
+  // When `station_addrs` is empty (e.g. all stations filtered out during downgrade/revocation),
+  // skip SQLite query altogether so unconfirmed/revoked rows are NEVER read.
   let query_limit = if window_limit > 0 { window_limit + 1 } else { 0 }
-  let win_rows = match store::query_chat_window(db, store::ChatWindowQuery::{
-    stations: station_addrs,
-    mine: mine_only,
-    hidden: hidden_mode,
-    watching: watching_only,
-    apart_threads: [],
-    apart_sessions: apart_sessions,
-    limit: query_limit,
-  }) {
-    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-    sql::SqlResult::Ok(rs) => rs
+  let win_rows : Array[store::ChatWindowRow] = if station_addrs.length() == 0 {
+    []
+  } else {
+    match store::query_chat_window(db, store::ChatWindowQuery::{
+      stations: station_addrs,
+      mine: mine_only,
+      hidden: hidden_mode,
+      watching: watching_only,
+      apart_threads: [],
+      apart_sessions: apart_sessions,
+      limit: query_limit,
+    }) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(rs) => rs
+    }
   }
 
   let has_more = window_limit > 0 && win_rows.length() > window_limit

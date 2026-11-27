@@ -122,6 +122,33 @@ fn parse_cloud_error(status : Int, body : Bytes) -> String {
   }
 }
 
+fn parse_cloud_me_strict(j : base_codec::Json) -> Result[CloudMe, String] {
+  match j {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("malformed /v1/me: expected JSON object")
+  }
+  match base_codec::json_get(j, "workspaces") {
+    Some(base_codec::Json::Arr(_)) => ()
+    _ => return Err("malformed /v1/me: missing workspaces array")
+  }
+  Ok(parse_cloud_me(j))
+}
+
+fn parse_cloud_workspace_strict(ws_id : String, j : base_codec::Json) -> Result[CloudWorkspace, String] {
+  match j {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err("malformed /v1/workspaces: expected JSON object")
+  }
+  let parsed_id = j_str(j, "id")
+  if parsed_id.length() == 0 {
+    return Err("malformed /v1/workspaces: missing id")
+  }
+  if ws_id.length() > 0 && parsed_id != ws_id {
+    return Err("malformed /v1/workspaces: id mismatch (expected " + ws_id + ", got " + parsed_id + ")")
+  }
+  Ok(parse_cloud_workspace(ws_id, j))
+}
+
 fn parse_cloud_me(j : base_codec::Json) -> CloudMe {
   let user = match base_codec::json_get(j, "user") {
     Some(u) => u
@@ -376,7 +403,13 @@ pub fn fetch_me_k(
             return
           }
         }
-        let me = parse_cloud_me(j)
+        let me = match parse_cloud_me_strict(j) {
+          Ok(m) => m
+          Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom(e)))
+            return
+          }
+        }
         let raw_json = base_codec::json_stringify(j)
         let now_ms = sh.rt.now()
         let burst = sql::Burst::new(db)
@@ -425,7 +458,13 @@ pub fn fetch_workspace_k(
             return
           }
         }
-        let ws = parse_cloud_workspace(ws_id, j)
+        let ws = match parse_cloud_workspace_strict(ws_id, j) {
+          Ok(w) => w
+          Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom(e)))
+            return
+          }
+        }
         let raw_json = base_codec::json_stringify(j)
         let now_ms = sh.rt.now()
         let burst = sql::Burst::new(db)
@@ -696,10 +735,11 @@ pub struct CloudSync {
   mut me_last_applied_seq : Int64
   known_workspaces : Map[String, Bool]
   mut is_workspace_revoked : Option[(String) -> Bool]
-  mut on_me_fetched : Option[(CloudMe) -> Unit]
-  mut on_workspace_fetched : Option[(String, CloudWorkspace) -> Unit]
+  mut before_workspace_rejoin : Option[(String) -> Result[Unit, String]]
+  mut on_me_fetched : Option[(CloudMe) -> Array[String]]
+  mut on_workspace_fetched : Option[(String, CloudWorkspace) -> Result[Unit, String]]
   mut on_workspace_revoked : Option[(String, Int) -> Unit]
-  mut on_token_refreshed : Option[(String, String) -> Unit]
+  mut on_token_refreshed : Option[(String, String, Int64) -> Unit]
 }
 
 pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token : String = "") -> CloudSync {
@@ -729,6 +769,7 @@ pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token :
     me_last_applied_seq: 0L,
     known_workspaces: known,
     is_workspace_revoked: None,
+    before_workspace_rejoin: None,
     on_me_fetched: None,
     on_workspace_fetched: None,
     on_workspace_revoked: None,
@@ -749,7 +790,7 @@ pub fn CloudSync::set_refresh_token(self : CloudSync, refresh_token : String) ->
   self.refresh_token = refresh_token
 }
 
-pub fn CloudSync::set_token_refreshed_hook(self : CloudSync, cb : (String, String) -> Unit) -> Unit {
+pub fn CloudSync::set_token_refreshed_hook(self : CloudSync, cb : (String, String, Int64) -> Unit) -> Unit {
   self.on_token_refreshed = Some(cb)
 }
 
@@ -761,14 +802,25 @@ pub fn CloudSync::token(self : CloudSync) -> String {
   self.token
 }
 
+pub fn CloudSync::refresh_token_value(self : CloudSync) -> String {
+  self.refresh_token
+}
+
 pub fn CloudSync::is_events_ws_running(self : CloudSync) -> Bool {
   self.ws_fiber.is_some()
 }
 
+pub fn CloudSync::set_before_workspace_rejoin(
+  self : CloudSync,
+  cb : (String) -> Result[Unit, String],
+) -> Unit {
+  self.before_workspace_rejoin = Some(cb)
+}
+
 pub fn CloudSync::set_authority_hooks(
   self : CloudSync,
-  on_me : (CloudMe) -> Unit,
-  on_workspace : (String, CloudWorkspace) -> Unit,
+  on_me : (CloudMe) -> Array[String],
+  on_workspace : (String, CloudWorkspace) -> Result[Unit, String],
   on_revoked : (String, Int) -> Unit,
 ) -> Unit {
   self.on_me_fetched = Some(on_me)
@@ -780,6 +832,9 @@ pub fn CloudSync::clear_workspace_credentials(self : CloudSync, ws_id : String) 
   if ws_id.length() == 0 {
     return
   }
+  // Bump per-workspace credential epoch so any pre-downgrade or pre-revocation in-flight
+  // `/credential` 200 response is deterministically rejected on arrival.
+  let _ = self.bump_ws_epoch(ws_id)
   let prefix = ws_id + "/"
   let ks = self.cred_cache.keys()
   for i in 0..<ks.length() {
@@ -902,8 +957,15 @@ fn CloudSync::refresh_access_token_k(self : CloudSync, k : (effect::Exit[Bool]) 
             if new_refresh.length() > 0 {
               self.refresh_token = new_refresh
             }
+            let expires_at = match j_opt_int64(j, "expires_at") {
+              Some(v) => v
+              None => match j_opt_int64(j, "expires_in") {
+                Some(secs) => (self.sh.rt.now() / 1000L) + secs
+                None => 0L
+              }
+            }
             match self.on_token_refreshed {
-              Some(cb) => cb(self.token, self.refresh_token)
+              Some(cb) => cb(self.token, self.refresh_token, expires_at)
               None => ()
             }
             k(effect::Exit::Succeeded(true))
@@ -972,7 +1034,13 @@ pub fn CloudSync::fetch_me_k(
             return
           }
         }
-        let parsed_me = parse_cloud_me(j)
+        let parsed_me = match parse_cloud_me_strict(j) {
+          Ok(m) => m
+          Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom(e)))
+            return
+          }
+        }
         // Collect all existing workspaces from BOTH in-memory `known_workspaces` and SQLite `workspace`
         // (1:1 TS `Data.retain(me_ws_ids)` so offline-revoked workspaces are purged on first `/v1/me`).
         let existing_set : Map[String, Bool] = Map::new()
@@ -991,17 +1059,36 @@ pub fn CloudSync::fetch_me_k(
           sql::SqlResult::Err(_) => ()
         }
         // Separate `raw_workspace_ids` (all workspaces returned by `/v1/me`) from `accepted_workspaces`
-        // (subset not superseded by a newer `/v1/workspaces/<ws>` response). Do NOT advance watermarks
-        // or `known_workspaces` until SQLite `Burst::in_tx` succeeds!
+        // (subset not superseded by a newer `/v1/workspaces/<ws>` response).
+        // Atomic Rejoin Ordering: for any accepted revoked/pending workspace, run `before_workspace_rejoin`
+        // (completing `drop_workspace`) BEFORE writing new rows, clearing pending markers, or advancing watermarks!
         let raw_workspace_ids : Array[String] = []
         let accepted_workspaces : Array[CloudWorkspaceRef] = []
+        let rejoined_ws_refs : Array[CloudWorkspaceRef] = []
         let present_in_me : Map[String, Bool] = Map::new()
         let scrub_from_me_doc : Map[String, Bool] = Map::new()
+        let failed_rejoin_set : Map[String, Bool] = Map::new()
         for i in 0..<parsed_me.workspaces.length() {
           let wref = parsed_me.workspaces[i]
           raw_workspace_ids.push(wref.id)
           present_in_me.set(wref.id, true)
           if req_seq >= self.last_applied_seq(wref.id) {
+            let was_revoked = self.is_ws_revoked(wref.id)
+            if was_revoked {
+              let drop_ok = match self.before_workspace_rejoin {
+                Some(cb) => match cb(wref.id) {
+                  Ok(_) => true
+                  Err(_) => false
+                }
+                None => true
+              }
+              if !drop_ok {
+                failed_rejoin_set.set(wref.id, true)
+                scrub_from_me_doc.set(wref.id, true)
+                continue
+              }
+              rejoined_ws_refs.push(wref)
+            }
             accepted_workspaces.push(wref)
           } else {
             // Superseded by a newer `/v1/workspaces/<ws>` response.
@@ -1023,22 +1110,35 @@ pub fn CloudSync::fetch_me_k(
             base_codec::json_str(raw_json),
             base_codec::json_int64(now_ms),
           ]) {
-            sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-            sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => ()
           }
+          // Step 2 of Atomic Rejoin for `/v1/me`: ensure each rejoined workspace has a minimal
+          // `workspace` row written BEFORE clearing `revoked_pending` / un-revoking.
+          for i in 0..<rejoined_ws_refs.length() {
+            let rw = rejoined_ws_refs[i]
+            let min_doc = base_codec::json_obj([
+              ("id", base_codec::json_str(rw.id)),
+              ("name", base_codec::json_str(if rw.name.length() > 0 { rw.name } else { rw.id })),
+              ("role", base_codec::json_str(if rw.role.length() > 0 { rw.role } else { "member" })),
+              ("stations", base_codec::json_arr([])),
+            ])
+            match b.run(sql_workspace_put(), params=[
+              base_codec::json_str(rw.id),
+              base_codec::json_str(base_codec::json_stringify(min_doc)),
+              base_codec::json_int64(now_ms),
+            ]) {
+              sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+              sql::SqlResult::Ok(_) => ()
+            }
+          }
+          sql::SqlResult::Ok(())
         }) {
           sql::SqlResult::Err(e) => {
             k(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
             return
           }
           sql::SqlResult::Ok(_) => ()
-        }
-        // Commit watermarks ONLY AFTER SQLite transaction succeeded.
-        self.me_last_applied_seq = req_seq
-        for i in 0..<accepted_workspaces.length() {
-          let wref = accepted_workspaces[i]
-          self.ws_last_applied_seq.set(wref.id, req_seq)
-          self.known_workspaces.set(wref.id, true)
         }
         // Any existing/DB workspace absent from `raw_workspace_ids` (`present_in_me`) is revoked
         // ONLY if `try_apply_ws_seq(wid, req_seq)` succeeds (a newer `/v1/workspaces/<ws>` 200 wins).
@@ -1061,9 +1161,36 @@ pub fn CloudSync::fetch_me_k(
           relays: parsed_me.relays,
           raw: clean_j,
         }
+        // Step 3 of Atomic Rejoin: `on_me_fetched` clears pending markers & un-revokes, reporting any
+        // workspace whose marker deletion failed so its watermark is NOT advanced.
         match self.on_me_fetched {
-          Some(cb) => cb(effective_me)
+          Some(cb) => {
+            let hook_failed = cb(effective_me)
+            for i in 0..<hook_failed.length() {
+              failed_rejoin_set.set(hook_failed[i], true)
+            }
+          }
           None => ()
+        }
+        // Step 4: Advance watermarks ONLY AFTER drop + write + marker clear ALL succeeded!
+        if failed_rejoin_set.keys().length() == 0 {
+          self.me_last_applied_seq = req_seq
+        }
+        for i in 0..<accepted_workspaces.length() {
+          let wref = accepted_workspaces[i]
+          if failed_rejoin_set.get(wref.id).is_none() {
+            self.ws_last_applied_seq.set(wref.id, req_seq)
+            self.known_workspaces.set(wref.id, true)
+          }
+        }
+        // Trigger full workspace hydration for any workspace rejoined via `/v1/me`.
+        for i in 0..<rejoined_ws_refs.length() {
+          let wid = rejoined_ws_refs[i].id
+          if failed_rejoin_set.get(wid).is_none() {
+            let _ = self.sh.rt.fork_quiet_named("cloud-rejoin-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              self.fetch_workspace_k(wid, fn(_ : effect::Exit[CloudWorkspace]) -> Unit { fk(effect::Exit::Succeeded(())) })
+            })
+          }
         }
         k(effect::Exit::Succeeded(effective_me))
       }
@@ -1119,7 +1246,28 @@ pub fn CloudSync::fetch_workspace_k(
             return
           }
         }
-        let ws = parse_cloud_workspace(ws_id, j)
+        let ws = match parse_cloud_workspace_strict(ws_id, j) {
+          Ok(w) => w
+          Err(e) => {
+            k(effect::Exit::Failed(effect::EffectError::Custom(e)))
+            return
+          }
+        }
+        // Step 1 of Atomic Rejoin: if `ws_id` is revoked/pending-drop, MUST complete `drop_workspace`
+        // BEFORE writing the new workspace row or advancing any watermark!
+        if self.is_ws_revoked(ws_id) {
+          match self.before_workspace_rejoin {
+            Some(cb) => match cb(ws_id) {
+              Ok(_) => ()
+              Err(msg) => {
+                k(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+                return
+              }
+            }
+            None => ()
+          }
+        }
+        // Step 2: Persist new `workspace` row atomically.
         let raw_json = base_codec::json_stringify(j)
         let now_ms = self.sh.rt.now()
         let burst = sql::Burst::new(self.db)
@@ -1139,13 +1287,20 @@ pub fn CloudSync::fetch_workspace_k(
           }
           sql::SqlResult::Ok(_) => ()
         }
-        // Advance watermark ONLY AFTER JSON parse and SQLite commit succeed.
-        self.ws_last_applied_seq.set(ws_id, req_seq)
-        self.known_workspaces.set(ws.id, true)
+        // Step 3: Clear pending marker, un-revoke, bump `authGen` / check downgrade via authority hook.
         match self.on_workspace_fetched {
-          Some(cb) => cb(ws.id, ws)
+          Some(cb) => match cb(ws.id, ws) {
+            Ok(_) => ()
+            Err(msg) => {
+              k(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+              return
+            }
+          }
           None => ()
         }
+        // Step 4: Advance watermark ONLY AFTER drop + SQLite write + marker clear ALL succeeded.
+        self.ws_last_applied_seq.set(ws_id, req_seq)
+        self.known_workspaces.set(ws.id, true)
         k(effect::Exit::Succeeded(ws))
       }
     }

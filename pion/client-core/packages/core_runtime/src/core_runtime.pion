@@ -464,7 +464,8 @@ fn handle_runtime_auth_boundary(sess : RuntimeSession, ev : sync::AuthBoundaryEv
 fn handle_runtime_topic_confirmed(sess : RuntimeSession, ws : String, topic_name : String) -> Unit {
   for i in 0..<sess.runtime_subs.length() {
     let sub = sess.runtime_subs[i]
-    if !sub.waiting_auth {
+    let is_ws_aggregate = protocol::topic_target_station(sub.topic).is_none() && (sub.topic.name == "stations" || sub.topic.name == "chats")
+    if !sub.waiting_auth && !is_ws_aggregate {
       continue
     }
     if topic_name != "*" && sub.topic.name != topic_name {
@@ -472,23 +473,49 @@ fn handle_runtime_topic_confirmed(sess : RuntimeSession, ws : String, topic_name
     }
     let matches_ws = match protocol::topic_workspace(sub.topic) {
       Some(tws) => tws == ws
-      None => false
-    }
-    if matches_ws && sess.core.is_topic_authorized(sub.topic) {
-      sub.waiting_auth = false
-      sub.last_val = None
-      match evaluate_runtime_topic(sess, sub.id, sub.topic) {
-        Some(sev) => {
-          match sev {
-            protocol::CoreEvent::Value(_, new_val, _) => { sub.last_val = Some(new_val) }
-            protocol::CoreEvent::Waiting(_) => { sub.waiting_auth = !sess.core.is_topic_authorized(sub.topic) }
-            _ => ()
-          }
-          let (j, b) = sess.core.encode_sub_event(sub.topic, sev)
-          emit_wire(j, payload=b)
-        }
-        None => ()
+      None => match protocol::topic_target_station(sub.topic) {
+        Some(st) => sess.core.station_workspace_of(st) == ws
+        None => false
       }
+    }
+    if !matches_ws || !sess.core.is_topic_authorized(sub.topic) {
+      continue
+    }
+    match evaluate_runtime_topic(sess, sub.id, sub.topic) {
+      Some(protocol::CoreEvent::Value(_, new_val, _)) => {
+        sub.waiting_auth = false
+        match sub.last_val {
+          Some(prev_val) => {
+            if !protocol::json_equal(prev_val, new_val) {
+              sub.last_val = Some(new_val)
+              if sub.keyed {
+                let ops = protocol::diff_keyed(prev_val, new_val, protocol::spec_for_topic(sub.topic.name))
+                if ops.length() > 0 {
+                  let (dj, db) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Delta(sub.id, ops, None, false))
+                  emit_wire(dj, payload=db)
+                }
+              } else {
+                let (vj, vb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Value(sub.id, new_val, None))
+                emit_wire(vj, payload=vb)
+              }
+            }
+          }
+          None => {
+            sub.last_val = Some(new_val)
+            let (vj, vb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Value(sub.id, new_val, None))
+            emit_wire(vj, payload=vb)
+          }
+        }
+      }
+      Some(protocol::CoreEvent::Waiting(wid)) => {
+        sub.waiting_auth = !sess.core.is_topic_authorized(sub.topic)
+        if sub.last_val.is_some() {
+          sub.last_val = None
+          let (wj, wb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Waiting(wid))
+          emit_wire(wj, payload=wb)
+        }
+      }
+      _ => ()
     }
   }
 }
@@ -590,6 +617,7 @@ fn resolve_station_connect_workspace(sess : RuntimeSession, target_st : String, 
 fn connect_runtime_station(sess : RuntimeSession, target_st : String, params : base_codec::Json) -> String {
   let target_ws = resolve_station_connect_workspace(sess, target_st, params)
   sess.station_ws.set(target_st, target_ws)
+  sess.core.register_station_workspace(target_st, target_ws)
   sess.station_rejoin_params.set(target_st, strip_rejoin_credential(params))
   let peer_opt = match opt_str_param(params, "peerId") {
     Some(p) => if p.length() > 0 { Some(p) } else { None }
@@ -909,9 +937,19 @@ fn is_station_online(sess : RuntimeSession, addr : String) -> Bool {
   }
 }
 
-fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views::StationBrief] {
-  if ws_scope.length() > 0 && sess.core.auth.is_revoked(ws_scope) {
+fn station_briefs_live(
+  sess : RuntimeSession,
+  ws_scope : String,
+  confirm_kind : String = "overview",
+) -> Array[views::StationBrief] {
+  if ws_scope.length() > 0 && sess.core.is_workspace_revoked_or_pending(ws_scope) {
     return []
+  }
+  let station_allowed = fn(addr : String) -> Bool {
+    if confirm_kind.length() == 0 {
+      return !sess.core.is_workspace_revoked_or_pending(sess.core.station_workspace_of(addr))
+    }
+    sess.core.is_station_confirmed_for_projection(ws_scope, addr, confirm_kind)
   }
   let out : Array[views::StationBrief] = []
   let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
@@ -923,7 +961,10 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
       for i in 0..<rows.length() {
         let r = rows[i]
         // Strict workspace isolation: never leak stations from another workspace (Red-Team Gate #9).
-        if prefix.length() > 0 && !r.address.starts_with(prefix) {
+        if prefix.length() > 0 && !r.address.starts_with(prefix) && sess.core.station_workspace_of(r.address) != ws_scope {
+          continue
+        }
+        if !station_allowed(r.address) {
           continue
         }
         let doc = match base_codec::json_parse(r.json) {
@@ -943,6 +984,9 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
     for i in 0..<cloud_sts.length() {
       let cs = cloud_sts[i]
       let addr = ws_scope + "/" + cs.id
+      if !station_allowed(addr) {
+        continue
+      }
       seen.set(addr, true)
       let doc = match overview_by_addr.get(addr) {
         Some(d) => d
@@ -1118,6 +1162,136 @@ fn build_new_chat_view() -> base_codec::Json {
     ("autoStation", base_codec::json_bool(false)),
     ("autoPoolCount", base_codec::json_int(0)),
   ])
+}
+
+fn parse_stored_pending_revocations(raw : base_codec::Json) -> Array[String] {
+  let out : Array[String] = []
+  match raw {
+    base_codec::Json::Arr(xs) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => if s.length() > 0 { out.push(s) }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn json_obj_set_rt(obj : base_codec::Json, key : String, jv : base_codec::Json) -> base_codec::Json {
+  match obj {
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut replaced = false
+      for i in 0..<fs.length() {
+        if fs[i].0 == key {
+          out.push((key, jv))
+          replaced = true
+        } else {
+          out.push(fs[i])
+        }
+      }
+      if !replaced {
+        out.push((key, jv))
+      }
+      base_codec::json_obj(out)
+    }
+    _ => base_codec::json_obj([(key, jv)])
+  }
+}
+
+/// Persist rotated OAuth `access_token` / `refresh_token` / `expires_at` back to host `storage("accounts")`
+/// and update in-memory `sess.accounts` + `sess.core.auth_store` so subsequent restarts NEVER reuse a
+/// revoked single-use refresh token.
+fn persist_refreshed_tokens(
+  sess : RuntimeSession,
+  new_access : String,
+  new_refresh : String,
+  expires_at : Int64,
+) -> Unit {
+  if new_access.length() == 0 && new_refresh.length() == 0 {
+    return
+  }
+  let mut target_sub = ""
+  if sess.accounts.length() > 0 {
+    let a0 = sess.accounts[0]
+    target_sub = a0.sub
+    let eff_access = if new_access.length() > 0 { new_access } else { a0.access }
+    let eff_refresh = if new_refresh.length() > 0 { new_refresh } else { a0.refresh }
+    sess.accounts[0] = AccountInfo::{
+      sub: a0.sub,
+      email: a0.email,
+      name: a0.name,
+      picture: a0.picture,
+      access: eff_access,
+      refresh: eff_refresh,
+    }
+    sess.core.auth_store.register_account(views::StoredAccount::{
+      sub: a0.sub,
+      email: a0.email,
+      name: a0.name,
+      picture: a0.picture,
+      access: eff_access,
+      refresh: eff_refresh,
+      access_expires: expires_at,
+    })
+  }
+  let updated_json = match read_storage_json(sess.sh, "accounts") {
+    Some(base_codec::Json::Arr(xs)) => {
+      let next_arr : Array[base_codec::Json] = []
+      for i in 0..<xs.length() {
+        let item = xs[i]
+        let isub = match opt_str_param(item, "sub") {
+          Some(s) => s
+          None => match opt_str_param(item, "id") {
+            Some(s) => s
+            None => ""
+          }
+        }
+        let is_target = (target_sub.length() > 0 && isub == target_sub) || (target_sub.length() == 0 && i == 0)
+        if is_target {
+          let mut obj = item
+          if new_access.length() > 0 {
+            obj = json_obj_set_rt(obj, "access", base_codec::json_str(new_access))
+          }
+          if new_refresh.length() > 0 {
+            obj = json_obj_set_rt(obj, "refresh", base_codec::json_str(new_refresh))
+            obj = json_obj_set_rt(obj, "refresh_token", base_codec::json_str(new_refresh))
+          }
+          if expires_at > 0L {
+            obj = json_obj_set_rt(obj, "accessExpires", base_codec::json_int64(expires_at))
+          }
+          next_arr.push(obj)
+        } else {
+          next_arr.push(item)
+        }
+      }
+      base_codec::json_arr(next_arr)
+    }
+    _ => {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<sess.accounts.length() {
+        let ai = sess.accounts[i]
+        let fields : Array[(String, base_codec::Json)] = [
+          ("sub", base_codec::json_str(ai.sub)),
+          ("email", base_codec::json_str(ai.email)),
+          ("name", base_codec::json_str(ai.name)),
+          ("picture", base_codec::json_str(ai.picture)),
+          ("access", base_codec::json_str(ai.access)),
+          ("refresh", base_codec::json_str(ai.refresh)),
+          ("refresh_token", base_codec::json_str(ai.refresh)),
+        ]
+        if i == 0 && expires_at > 0L {
+          fields.push(("accessExpires", base_codec::json_int64(expires_at)))
+        }
+        arr.push(base_codec::json_obj(fields))
+      }
+      base_codec::json_arr(arr)
+    }
+  }
+  let _ = write_storage_json(sess.sh, "accounts", updated_json)
 }
 
 /// Start the Pion `ClientCore` + real Rust `stillfail-shell` on `data_dir` (called on core thread).
@@ -1299,8 +1473,9 @@ pub extern "C" fn pion_core_runtime_start(
     None
   }
   // Device-level strictly monotonic `connSeq` stored outside per-account SQLite via atomic
-  // Rust Shell `storage.set("device/conn_seq")`, with wall-clock lower bound fallback (`now_ms * 1000`).
-  let prev_device_conn : Int64 = match read_storage_json(sh, "device/conn_seq") {
+  // Rust Shell `storage.set("device/conn_seq")`, with SQLite `account_doc("conn_seq")` durable
+  // fallback and wall-clock lower bound (`now_ms * 1000`).
+  let storage_device_conn : Int64 = match read_storage_json(sh, "device/conn_seq") {
     Some(j) =>
     match base_codec::json_get(j, "conn") {
       Some(base_codec::Json::Num(n, repr)) =>
@@ -1316,9 +1491,28 @@ pub extern "C" fn pion_core_runtime_start(
     }
     None => 0L
   }
+  let db_conn : Int64 = match store::get_account_doc(acct.db, "conn_seq") {
+    sql::SqlResult::Ok(Some(raw)) => match base_codec::parse_int64_str(raw.trim()) {
+      Some(v) => v
+      None => 0L
+    }
+    _ => 0L
+  }
+  let prev_device_conn = if storage_device_conn >= db_conn { storage_device_conn } else { db_conn }
   let device_conn_seq = store::next_monotonic_conn_seq(prev_device_conn, now_ms=pion_core_wall_now_ms(), floor=g_last_device_conn_seq[0])
   g_last_device_conn_seq[0] = device_conn_seq
-  let _ = write_storage_json(sh, "device/conn_seq", base_codec::json_obj([("conn", base_codec::json_int64(device_conn_seq))]))
+  match write_storage_json(sh, "device/conn_seq", base_codec::json_obj([("conn", base_codec::json_int64(device_conn_seq))])) {
+    Ok(_) => {
+      let _ = store::put_account_doc(acct.db, "conn_seq", device_conn_seq.to_string())
+    }
+    Err(_) => {
+      let _ = store::put_account_doc(acct.db, "conn_seq", device_conn_seq.to_string())
+    }
+  }
+  let init_pending_revocations : Array[String] = match read_storage_json(sh, "device/revoked_pending") {
+    Some(j) => parse_stored_pending_revocations(j)
+    None => []
+  }
   let core = sync::ClientCore::new(
     default_ws,
     default_st,
@@ -1328,6 +1522,14 @@ pub extern "C" fn pion_core_runtime_start(
     fn() -> Unit {},
     conn_seq=Some(device_conn_seq),
     has_live_transport=is_loopback_http_url(origin),
+    initial_pending_revocations=init_pending_revocations,
+    save_pending_revocations=Some(fn(wss : Array[String]) -> Result[Unit, String] {
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<wss.length() {
+        arr.push(base_codec::json_str(wss[i]))
+      }
+      write_storage_json(sh, "device/revoked_pending", base_codec::json_arr(arr))
+    }),
   )
   core.utc_offset_min = pion_core_utc_offset_min(pion_core_wall_now_ms())
   // Seed SQLite `account_doc("prefs")` from host `device/prefs` on first boot if SQLite prefs are empty.
@@ -1431,6 +1633,9 @@ pub extern "C" fn pion_core_runtime_start(
   match cloud_opt {
     Some(cs) => {
       core.bind_cloud_sync(cs)
+      cs.set_token_refreshed_hook(fn(new_access : String, new_refresh : String, exp : Int64) -> Unit {
+        persist_refreshed_tokens(sess, new_access, new_refresh, exp)
+      })
       if origin.length() > 0 && accounts.length() > 0 {
         if accounts[0].refresh.length() > 0 {
           cs.set_refresh_token(accounts[0].refresh)
@@ -1529,6 +1734,9 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
   }
   sess.origin = req_origin
   sess.core.bind_cloud_sync(cs)
+  cs.set_token_refreshed_hook(fn(new_access : String, new_refresh : String, exp : Int64) -> Unit {
+    persist_refreshed_tokens(sess, new_access, new_refresh, exp)
+  })
   if token.length() > 0 {
     start_cloud_events_ws(sess, cs)
   }
@@ -1642,7 +1850,7 @@ fn evaluate_runtime_topic(
       Some(base_codec::Json::Bool(true)) => 1
       _ => 0
     }
-    let briefs = station_briefs_live(sess, ws_scope)
+    let briefs = station_briefs_live(sess, ws_scope, confirm_kind="snapshot")
     match views::project_chats(
       sess.db,
       ws_scope,
@@ -1731,13 +1939,19 @@ fn evaluate_runtime_topic(
       _ => sess.core.workspace
     }
     let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+    let station_allowed = fn(addr : String) -> Bool {
+      sess.core.is_station_confirmed_for_projection(ws_scope, addr, "overview")
+    }
     let overview_by_addr : Map[String, base_codec::Json] = Map::new()
     let overview_addrs : Array[String] = []
     match store::list_stations(sess.db, kind="overview") {
       sql::SqlResult::Ok(rows) => {
         for i in 0..<rows.length() {
           let r = rows[i]
-          if prefix.length() > 0 && !r.address.starts_with(prefix) {
+          if prefix.length() > 0 && !r.address.starts_with(prefix) && sess.core.station_workspace_of(r.address) != ws_scope {
+            continue
+          }
+          if !station_allowed(r.address) {
             continue
           }
           let doc = match base_codec::json_parse(r.json) {
@@ -1792,6 +2006,9 @@ fn evaluate_runtime_topic(
       for i in 0..<cloud_sts.length() {
         let cs = cloud_sts[i]
         let addr = ws_scope + "/" + cs.id
+        if !station_allowed(addr) {
+          continue
+        }
         seen.set(addr, true)
         let doc = match overview_by_addr.get(addr) { Some(d) => d; None => base_codec::json_null() }
         push_station_item(addr, cs.id, cs.name, doc)
@@ -1799,7 +2016,7 @@ fn evaluate_runtime_topic(
     }
     for i in 0..<overview_addrs.length() {
       let addr = overview_addrs[i]
-      if seen.get(addr).is_some() {
+      if seen.get(addr).is_some() || !station_allowed(addr) {
         continue
       }
       let doc = match overview_by_addr.get(addr) { Some(d) => d; None => base_codec::json_null() }
