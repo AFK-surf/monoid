@@ -239,7 +239,7 @@ export const CHAT_SHAPES: Record<string, Shape> = {
     ["author", "String"],
     ["text", "String"],
     ["md", opt("Value"), { doc: "An agent's words read as Markdown (markdown.ts), its runs of words in `text`: what the clients draw. Absent for a\nperson's, drawn as they wrote it, and for still.fail's notice (its `notice` has its words')." }],
-    ["words", opt("Value"), { doc: "A person's words in runs (refLinks.ts personWords: as written, a bare web address `link`, a reference to a chat\n`ref`): what the clients draw. Absent for others' and from a core from before." }],
+    ["words", opt("Value"), { doc: "A person's words in runs (refLinks.ts personWords: as written, a bare web address `link`, a reference to a chat\n`ref`, the few of Markdown's marks they wrote read as how a run is set: `b`, `i`, `s`, `code`, `pre`): what the clients draw. Absent for others' and from a core from before." }],
     ["attachments", vec("Attachment")],
     ["quotes", vec("Quote")],
     ["ending", opt("String"), { doc: "all_done, need_decision, need_help: how the post ended its agent's turn. A station yet to update says nothing." }],

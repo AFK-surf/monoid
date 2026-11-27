@@ -2735,7 +2735,7 @@ export interface ChatMessage {
 	md?: unknown;
 	/**
 	 * A person's words in runs (refLinks.ts personWords: as written, a bare web address `link`, a reference to a chat
-	 * `ref`): what the clients draw. Absent for others' and from a core from before.
+	 * `ref`, the few of Markdown's marks they wrote read as how a run is set: `b`, `i`, `s`, `code`, `pre`): what the clients draw. Absent for others' and from a core from before.
 	 */
 	words?: unknown;
 	attachments: Attachment[];

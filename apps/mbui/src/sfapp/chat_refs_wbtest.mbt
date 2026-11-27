@@ -196,6 +196,36 @@ test "words sent with a mark draw it as the field did, as their message will: ne
 }
 
 ///|
+test "words sent with Markdown's marks are set as their message will be from the frame they are sent: the marks gone" {
+  let calls : Array[Made] = []
+  let t = fake_core(calls)
+  t.tap_text("发消息")
+  t.type_text("这是**重点**和`code`")
+  t.draw()
+  t.draw()
+  // (read for their runs as they are written: words_may_link says they may be set otherwise than plain)
+  assert_eq(named(calls, "ref.words").filter(fn(m) { text(Some(m.params), "text") == "这是**重点**和`code`" }).length(), 1)
+  tap_send(t)
+  t.draw()
+  // sent as written, drawn in the core's runs of them
+  assert_eq(text(Some(named(calls, "chat.send")[0].params), "text"), "这是**重点**和`code`")
+  match sending_of("ws1/st1\u{1}s-c1") {
+    [l] =>
+      match l.row.words {
+        Some(Array(parts)) => {
+          let runs = words_runs(parts, 0L)
+          assert_eq(runs.map(fn(r) { (r.text, r.weight, r.code) }), [("这是", 0, false), ("重点", 700, false), ("和", 0, false), ("code", 0, true)])
+        }
+        _ => fail("no runs")
+      }
+    _ => fail("not in the list")
+  }
+  t.run_for(flight_ms)
+  assert_true(t.find("**重点**") is None)
+  assert_true(t.find("重点") is Some(_))
+}
+
+///|
 test "the same words with a mark sent again are read again: their row draws the mark, not its brackets" {
   let calls : Array[Made] = []
   let t = fake_core(calls)
