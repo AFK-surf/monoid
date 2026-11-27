@@ -315,7 +315,7 @@ export function render(tpl, cfg, loc, dict) {
     .replace(/href="(?:\/en)?(\/[a-z]+)" data-legal/g, (_, p) => `href="${loc.legal}${p}" data-legal`);
   // Device 3D studio renders ship in English and Chinese; Chinese locales use the Chinese screen captures.
   if (loc.code.startsWith("zh")) {
-    html = html.replace(/assets\/shots\/([a-z0-9-]+)-en((?:-1x)?\.webp)/g, "assets/shots/$1-zh$2");
+    html = html.replace(/assets\/shots\/([a-z0-9-]+)-en((?:-1x|-1920)?\.webp)/g, "assets/shots/$1-zh$2");
   }
   return { html, missing: [...missing] };
 }

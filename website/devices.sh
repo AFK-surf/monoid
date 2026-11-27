@@ -3,8 +3,8 @@
 # OS chrome (website/devices-chrome.mjs), downloads the device models, renders each device in Blender Cycles
 # (website/render-devices.py) at 3840x2880 and encodes 3840x2880 (2x) + 1280x960 (1x) WebPs into website/assets/shots/.
 #
-# Slots: duo = iPhone 18 Pro Max, android = Galaxy S25+, desk = MacBook Air 15" (desktop app),
-# web = a Windows laptop with the web app in a browser on the Windows 11 desktop.
+# Slots: duo = iPhone 18 Pro Max, android = Galaxy S25+, desk = the desktop app maximized on a Windows laptop,
+# web = the web app in a full-screen browser on a MacBook Air 15".
 #
 # Usage:
 #   bash website/devices.sh
@@ -69,12 +69,12 @@ for loc_tag in "en:en" "zh:zh-CN"; do
     bash "$MBUI/scripts/media.sh" picture "$RAW/android-${tag}.png" "$WORK/drive" >/dev/null
 
   env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="place-stations-site" MBUI_DARK="0" MBUI_LOCALE="$loc" \
-    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="980x612" MBUI_FILM_SCALE="3" \
+    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1440x880" MBUI_FILM_SCALE="3" \
     MBUI_FILM_PLATFORM="0" MBUI_NATIVE_INPUT="mouse" \
     bash "$MBUI/scripts/media.sh" picture "$RAW/desk-${tag}.png" "$WORK/drive" >/dev/null
 
   env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-web" MBUI_DARK="0" MBUI_LOCALE="$loc" \
-    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1440x730" MBUI_FILM_SCALE="3" \
+    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1470x882" MBUI_FILM_SCALE="2" \
     MBUI_FILM_PLATFORM="0" MBUI_NATIVE_INPUT="mouse" \
     bash "$MBUI/scripts/media.sh" picture "$RAW/web-${tag}.png" "$WORK/drive" >/dev/null
 done
@@ -107,21 +107,24 @@ render() {
 for lang in en zh; do
   render --device iphone --screen "$SCREENS/duo-$lang.png" --out "$RENDERS/duo-$lang.png" --fr 0.18 --k 1.4 --dist 51
   render --device android --screen "$SCREENS/android-$lang.png" --out "$RENDERS/android-$lang.png" --dist 51
-  render --device mac --screen "$SCREENS/desk-$lang.png" --out "$RENDERS/desk-$lang.png" --dist 86 --tz -2 --ty -2
-  render --device windows --screen "$SCREENS/web-$lang.png" --out "$RENDERS/web-$lang.png" --dist 84 --tz -2 --ty -2
+  render --device windows --screen "$SCREENS/desk-$lang.png" --out "$RENDERS/desk-$lang.png" --dist 90 --tz -3.5 --ty -2
+  render --device mac --screen "$SCREENS/web-$lang.png" --out "$RENDERS/web-$lang.png" --dist 92 --tz -3.5 --ty -2
 done
 
-# 5. Encode 3840x2880 (2x / 4K) + 1280x960 (1x) WebPs and record website/shots-sizes.txt
+# 5. Encode 3840x2880 (4K), 1920x1440 and 1280x960 (1x) WebPs (Lanczos, so the browser never shrinks the 4K plate
+#    by 2-3x itself, which steps the edges) and record website/shots-sizes.txt
 rm -f "$SIZES_TXT"
 for dev in duo android desk web; do
   for lang in en zh; do
     name="${dev}-${lang}"
     src="$RENDERS/${name}.png"
     ffmpeg -nostdin -v error -y -i "$src" -c:v libwebp -quality 90 -compression_level 6 "$OUT/${name}.webp"
+    ffmpeg -nostdin -v error -y -i "$src" -vf "scale=1920:1440:flags=lanczos" -c:v libwebp -quality 90 -compression_level 6 "$OUT/${name}-1920.webp"
     ffmpeg -nostdin -v error -y -i "$src" -vf "scale=1280:960:flags=lanczos" -c:v libwebp -quality 90 -compression_level 6 "$OUT/${name}-1x.webp"
-    b2="$(wc -c < "$OUT/${name}.webp" | tr -d ' ')"
+    b4="$(wc -c < "$OUT/${name}.webp" | tr -d ' ')"
+    b2="$(wc -c < "$OUT/${name}-1920.webp" | tr -d ' ')"
     b1="$(wc -c < "$OUT/${name}-1x.webp" | tr -d ' ')"
-    printf "%-14s 3840x2880  4k=%7dB  1x=%7dB\n" "$name" "$b2" "$b1" | tee -a "$SIZES_TXT"
+    printf "%-14s 4k=%7dB  1920=%7dB  1x=%7dB\n" "$name" "$b4" "$b2" "$b1" | tee -a "$SIZES_TXT"
   done
 done
 

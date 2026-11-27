@@ -49,15 +49,17 @@ def setup_scene():
             pass
     print("[render] device", sc.cycles.device)
     sc.cycles.samples = SAMPLES
-    sc.cycles.use_adaptive_sampling = True
-    sc.cycles.adaptive_threshold = 0.01
+    # every pixel takes every sample: adaptive sampling stops early on the flat screen and leaves its
+    # glyph and bezel edges under-sampled (stair steps)
+    sc.cycles.use_adaptive_sampling = False
     sc.cycles.use_denoising = False
     sc.cycles.max_bounces = 12
     sc.cycles.glossy_bounces = 8
     sc.cycles.transmission_bounces = 8
     sc.cycles.transparent_max_bounces = 16
     sc.cycles.sample_clamp_indirect = 3.0
-    sc.cycles.filter_width = 1.0
+    sc.cycles.pixel_filter_type = "BLACKMAN_HARRIS"
+    sc.cycles.filter_width = 1.5
     sc.render.resolution_x, sc.render.resolution_y = W, H
     sc.render.resolution_percentage = 100
     sc.render.film_transparent = False
@@ -167,6 +169,8 @@ def area(name, loc, target, power, sx, sy, color=(1, 1, 1), u=1.0, spread=180, c
 
 
 def camera(loc, target, lens=85.0, fstop=None):
+    """Scenes are modelled in centimetres but Blender reads them as metres, so the f-stop only
+    softens the far floor and backdrop a little; the device and its screen stay sharp."""
     cd = bpy.data.cameras.new("Cam"); cd.lens = lens; cd.sensor_width = 36
     cd.clip_start = 0.1; cd.clip_end = 1e5
     c = bpy.data.objects.new("Cam", cd); bpy.context.collection.objects.link(c)
@@ -178,6 +182,9 @@ def camera(loc, target, lens=85.0, fstop=None):
     return c
 
 
+GLOW = float(arg("--glow", "4"))
+
+
 def screen_material(path, name="Screen", sheen=0.035):
     """The app's pixels as emission, plus a faint mirror reflection like a cover glass."""
     m = bpy.data.materials.new(name); m.use_nodes = True
@@ -185,9 +192,17 @@ def screen_material(path, name="Screen", sheen=0.035):
     n.clear()
     out = n.new("ShaderNodeOutputMaterial")
     tex = n.new("ShaderNodeTexImage"); tex.image = bpy.data.images.load(path)
-    tex.interpolation = "Cubic"; tex.extension = "EXTEND"
-    em = n.new("ShaderNodeEmission"); em.inputs["Strength"].default_value = 1.0
+    tex.interpolation = "Linear"; tex.extension = "EXTEND"
+    em = n.new("ShaderNodeEmission")
     l.new(tex.outputs["Color"], em.inputs["Color"])
+    # the camera sees the exact pixels (strength 1); every other ray sees a brighter screen, so it is
+    # the light that falls on the keyboard, the bezel and the floor
+    lp = n.new("ShaderNodeLightPath")
+    st = n.new("ShaderNodeMapRange")
+    st.inputs["From Min"].default_value = 0.0; st.inputs["From Max"].default_value = 1.0
+    st.inputs["To Min"].default_value = GLOW; st.inputs["To Max"].default_value = 1.0
+    l.new(lp.outputs["Is Camera Ray"], st.inputs["Value"])
+    l.new(st.outputs["Result"], em.inputs["Strength"])
     gl = n.new("ShaderNodeBsdfGlossy"); gl.inputs["Roughness"].default_value = 0.02
     none = n.new("ShaderNodeEmission"); none.inputs["Strength"].default_value = 0.0
     glass = n.new("ShaderNodeMixShader"); glass.inputs["Fac"].default_value = sheen
@@ -333,7 +348,7 @@ def iphone():
     tint_textured(objs, skip=("EHjrGDHNHzgNjtE",))
     scr = bpy.data.objects["EHjrGDHNHzgNjtE"]
     scr.data.materials.clear(); scr.data.materials.append(screen_material(SCREEN))
-    root.rotation_euler = (math.radians(8), math.radians(-6), math.radians(-28))
+    root.rotation_euler = (math.radians(4), 0, math.radians(-float(arg("--yaw", "14"))))
     lo, hi = bbox(objs)
     root.location -= (lo + hi) / 2
     lo, hi = bbox(objs)
@@ -345,15 +360,8 @@ def iphone():
     area("RimL", (-30, 35, 0), (0, 0, 0), 1.6e4 * k, 3, 70, (1, 0.98, 0.96))
     area("RimR", (32, 30, 8), (0, 0, 0), 1.8e4 * k, 3, 70, (0.95, 0.97, 1))
     area("Top", (5, 15, 45), (0, 0, 0), 5e3 * k, 40, 4)
-    camera((c.x + 2, c.y - float(arg("--dist", "58")), c.z + 3), (c.x, c.y, c.z - 0.2), lens=70, fstop=float(arg("--f", "2.8")))
+    camera((c.x + 2, c.y - float(arg("--dist", "58")), c.z + 3), (c.x, c.y, c.z + float(arg("--tz", "0.8"))), lens=70, fstop=float(arg("--f", "2.8")))
     render()
-
-
-def lights_phone(k):
-    area("Key", (-40, -50, 45), (0, 0, 0), 9e3 * k, 50, 35, (1, 0.985, 0.97))
-    area("RimL", (-30, 35, 0), (0, 0, 0), 1.6e4 * k, 3, 70, (1, 0.98, 0.96))
-    area("RimR", (32, 30, 8), (0, 0, 0), 1.8e4 * k, 3, 70, (0.95, 0.97, 1))
-    area("Top", (5, 15, 45), (0, 0, 0), 5e3 * k, 40, 4)
 
 
 def android():
@@ -369,7 +377,7 @@ def android():
             if b and m.name in ("Rearcase", "Antenna_Plastic", "BackCam_Frame_2"):
                 b.inputs["Base Color"].default_value = (0.018, 0.026, 0.055, 1)
                 b.inputs["Roughness"].default_value = 0.22
-    root.rotation_euler = (math.radians(8), math.radians(6), math.radians(28 + float(arg("--yaw", "0"))))
+    root.rotation_euler = (math.radians(4), 0, math.radians(float(arg("--yaw", "14"))))
     lo, hi = bbox(objs)
     root.location -= (lo + hi) / 2
     lo, hi = bbox(objs)
@@ -380,16 +388,16 @@ def android():
     area("RimL", (-32, 30, 8), (0, 0, 0), 1.8e4 * k, 3, 70, (1, 0.98, 0.96))
     area("RimR", (30, 35, 0), (0, 0, 0), 1.6e4 * k, 3, 70, (0.95, 0.97, 1))
     area("Top", (-5, 15, 45), (0, 0, 0), 5e3 * k, 40, 4)
-    camera((c.x - 2, c.y - float(arg("--dist", "54")), c.z + 3), (c.x, c.y, c.z - 0.2), lens=70, fstop=float(arg("--f", "2.8")))
+    camera((c.x - 2, c.y - float(arg("--dist", "54")), c.z + 3), (c.x, c.y, c.z + float(arg("--tz", "0.8"))), lens=70, fstop=float(arg("--f", "2.8")))
     render()
 
 
-def floor(color=(0.0035, 0.0035, 0.004), rough=0.42):
+def floor(color=(0.0, 0.0, 0.0), rough=0.12):
     m = bpy.data.materials.new("Floor"); m.use_nodes = True
     b = principled(m)
     b.inputs["Base Color"].default_value = (*color, 1)
     b.inputs["Roughness"].default_value = rough
-    b.inputs["Specular IOR Level"].default_value = float(arg("--fspec", "0.25"))
+    b.inputs["Specular IOR Level"].default_value = float(arg("--fspec", "0.5"))
     # fade the floor out radially so it melts into the black backdrop (no horizon)
     n, l = m.node_tree.nodes, m.node_tree.links
     out = next(x for x in n if x.type == "OUTPUT_MATERIAL")
@@ -430,18 +438,17 @@ def place_on_floor(root, objs, yaw):
     return bbox(objs)
 
 
-def lights_laptop(k, mirror=1):
-    area("Key", (-60 * mirror, -70, 90), (0, 5, 8), 4.0e4 * k, 90, 60, (1, 0.985, 0.97))
-    rims = [area("RimL", (-70 * mirror, 60, 25), (0, 10, 8), 3.0e4 * k, 6, 90, (1, 0.98, 0.96)),
-            area("RimR", (75 * mirror, 50, 30), (0, 10, 8), 3.4e4 * k, 6, 90, (0.95, 0.97, 1))]
-    # rims light the device only: on the floor they would draw bright streaks
+def lights_laptop(k, floor_obj, mirror=1):
+    """The screen is the key light. A dim soft fill from the front keeps the deck readable and one
+    thin strip high behind draws the lid and deck edges; neither lights the floor."""
+    lights = [area("Fill", (-50 * mirror, -80, 60), (0, 5, 5), 6e3 * k, 90, 60, (1, 0.985, 0.97)),
+              area("Rim", (30 * mirror, 70, 60), (0, 5, 5), 2.2e4 * k, 90, 4, (1, 0.98, 0.96))]
     coll = bpy.data.collections.new("Device")
     for o in bpy.data.objects:
-        if o.type == "MESH" and o.name != "Plane":
+        if o.type == "MESH" and o is not floor_obj:
             coll.objects.link(o)
-    for r in rims:
+    for r in lights:
         r.light_linking.receiver_collection = coll
-    area("Top", (0, 30, 100), (0, 10, 0), 1.2e4 * k, 90, 10)
 
 
 def mac():
@@ -456,13 +463,13 @@ def mac():
             set_mat(o, (0.003, 0.003, 0.004), 0.05, coat=1.0)
         elif o.name == "czojSFNuFKxNgsc":  # key legends
             set_mat(o, (0.55, 0.55, 0.56), 0.5)
-    lo, hi = place_on_floor(root, objs, float(arg("--yaw", "-22")))
+    lo, hi = place_on_floor(root, objs, -float(arg("--yaw", "14")))
     c = (lo + hi) / 2
-    floor()
-    world(1, hdri_strength=float(arg("--hdri", "0.15")), hdri_rot=float(arg("--hrot", "120")), bg=(0.010, 0.010, 0.011), bg_edge=(0.0, 0.0, 0.0))
-    lights_laptop(float(arg("--k", "1")))
+    fl = floor()
+    world(1, hdri_strength=float(arg("--hdri", "0")), hdri_rot=float(arg("--hrot", "120")), bg=(0.010, 0.010, 0.011), bg_edge=(0.0, 0.0, 0.0))
+    lights_laptop(float(arg("--k", "1")), fl)
     d = float(arg("--dist", "120"))
-    camera((c.x - d * 0.18, c.y - d, c.z + d * 0.32), (c.x, c.y + float(arg("--ty", "1")), c.z + float(arg("--tz", "1.5"))), lens=float(arg("--lens", "60")), fstop=float(arg("--f", "5.6")))
+    camera((c.x - d * 0.18, c.y - d, c.z + d * float(arg("--el", "0.16"))), (c.x, c.y + float(arg("--ty", "1")), c.z + float(arg("--tz", "1.5"))), lens=float(arg("--lens", "60")), fstop=float(arg("--f", "5.6")))
     render()
 
 
@@ -504,13 +511,13 @@ def windows():
                 b.inputs["Coat Weight"].default_value = 1.0
             elif m.name == "Lights":
                 b.inputs["Base Color"].default_value = (0.02, 0.02, 0.022, 1)
-    lo, hi = place_on_floor(root, objs, float(arg("--yaw", "22")))
+    lo, hi = place_on_floor(root, objs, float(arg("--yaw", "14")))
     c = (lo + hi) / 2
-    floor()
-    world(1, hdri_strength=float(arg("--hdri", "0.15")), hdri_rot=float(arg("--hrot", "60")), bg=(0.010, 0.010, 0.011), bg_edge=(0.0, 0.0, 0.0))
-    lights_laptop(float(arg("--k", "1")), mirror=-1)
+    fl = floor()
+    world(1, hdri_strength=float(arg("--hdri", "0")), hdri_rot=float(arg("--hrot", "60")), bg=(0.010, 0.010, 0.011), bg_edge=(0.0, 0.0, 0.0))
+    lights_laptop(float(arg("--k", "1")), fl, mirror=-1)
     d = float(arg("--dist", "100"))
-    camera((c.x + d * 0.18, c.y - d, c.z + d * 0.32), (c.x, c.y + float(arg("--ty", "1")), c.z + float(arg("--tz", "1.5"))), lens=float(arg("--lens", "60")), fstop=float(arg("--f", "5.6")))
+    camera((c.x + d * 0.18, c.y - d, c.z + d * float(arg("--el", "0.16"))), (c.x, c.y + float(arg("--ty", "1")), c.z + float(arg("--tz", "1.5"))), lens=float(arg("--lens", "60")), fstop=float(arg("--f", "5.6")))
     render()
 
 

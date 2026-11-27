@@ -387,8 +387,8 @@
   // ---- Every device, as one scene played by scrolling (large screens with motion allowed: html.scrolly, set in the head) ----
   // The stage stays on screen with CSS (position: sticky in a tall track, sized from the first paint, so nothing moves
   // when the script arrives); GSAP's ScrollTrigger scrubs one timeline through it and snaps to each step. One device a
-  // step, upright and whole in the middle of the picture side: iPhone, Android, the desktop app on a Mac, the
-  // web app on a Windows laptop; between steps the words and the device cross-fade. GSAP is fetched only as the section comes near.
+  // step, upright and whole in the middle of the picture side: iPhone, Android, the desktop app on a Windows laptop, the
+  // web app on a Mac; between steps the words and the device cross-fade. GSAP is fetched only as the section comes near.
   const loadScript = (src) => new Promise((ok, fail) => {
     const s = document.createElement("script");
     s.src = src; s.onload = ok; s.onerror = fail;

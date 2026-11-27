@@ -2,8 +2,8 @@
 // Composite 3x native OS chrome onto pure apps/mbui 3x captures before mapping onto official 3D CAD meshes:
 //   - duo:     Apple iPhone 18 Pro Max (1170x2544 @3x = 390x848; Apple USDZ provides real 3D Dynamic Island)
 //   - android: Samsung Galaxy S25+ (1170x2532 @3x = 390x844; status bar + gesture pill, pure apps/mbui)
-//   - desk:    Apple MacBook Air 15" (2940x1908 @3x = 980x636; seamless macOS full-screen notch band)
-//   - web:     Windows 11 laptop, 3:2 (4320x2880 @3x = 1440x960; browser window on the desktop + taskbar)
+//   - desk:    the desktop app maximized on a Windows 11 laptop, 3:2 (4320x2880 @3x = 1440x960; title bar + taskbar)
+//   - web:     the web app in a full-screen browser on a MacBook Air 15" (2940x1908 @2x = 1470x954; notch band + bar)
 // Usage: node website/devices-chrome.mjs <raw-screens-dir> <out-screens-dir> [keys...]
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -81,50 +81,29 @@ function makeHtml(key) {
     };
   }
 
-  if (dev === "desk") {
-    // Apple MacBook Air 15" Silver: 980x636 @3x = 2940x1908 (exact 1.5409 matching OQzaQDtbMVhhlAr).
-    return {
-      w: 980, h: 636, dpr: 3,
-      html: `<!doctype html><html><body style="margin:0;width:980px;height:636px;overflow:hidden;position:relative;font-family:${font};background:#070709;">
-        <div style="height:24px;background:#070709;"></div>
-        <img src="${imgUrl}" style="display:block;width:980px;height:612px;">
-      </body></html>`
-    };
-  }
-
-  // web: a Windows 11 laptop desktop (3:2, 1440x960 @3x = 4320x2880): the browser window (40px bar + 730px apps/mbui)
-  // floats on a wallpaper above the 40px taskbar, scaled to 1392px wide so the desktop shows around it
   const searchLabel = isZh ? "搜索" : "Search";
   const timeStr = "09:41";
   const dateStr = isZh ? "2026/11/28" : "11/28/2026";
-  return {
-    w: 1440, h: 960, dpr: 3,
-    html: `<!doctype html><html><body style="margin:0;width:1440px;height:960px;overflow:hidden;position:relative;font-family:${font};background:#0d2b5c;">
-      <div style="position:absolute;inset:0;background:
-        radial-gradient(ellipse 60% 55% at 62% 58%, rgba(120,170,255,0.95) 0%, rgba(60,110,220,0.55) 35%, rgba(20,50,120,0) 70%),
-        radial-gradient(ellipse 45% 40% at 30% 30%, rgba(90,200,255,0.55) 0%, rgba(40,90,200,0) 70%),
-        radial-gradient(ellipse 80% 70% at 80% 100%, rgba(150,110,255,0.45) 0%, rgba(40,30,120,0) 70%),
-        linear-gradient(160deg,#0d2b5c 0%,#1a4a9a 45%,#0e2350 100%);"></div>
-      <div style="position:absolute;left:24px;top:86px;width:1440px;height:770px;transform:scale(0.966667);transform-origin:0 0;border-radius:8.3px;overflow:hidden;background:#F5F3EF;box-shadow:0 18px 50px rgba(0,0,0,0.45),0 0 0 1px rgba(0,0,0,0.25);">
-      <div style="height:40px;background:#EBE8E1;border-bottom:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 16px;position:relative;">
-        <div style="display:flex;align-items:center;gap:14px;color:rgba(28,27,26,0.55);">
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3.5 6 8l4.5 4.5"/></svg>
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5 10 8l-4.5 4.5"/></svg>
-          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"><path d="M12.8 8a4.8 4.8 0 1 1-1.2-3.2"/><path d="M12.8 2.6v2.6h-2.6"/></svg>
+
+  if (dev === "desk") {
+    // The desktop app on a Windows 11 laptop (3:2, 1440x960 @3x = 4320x2880), maximized: a 32px title bar, the
+    // 1440x880 apps/mbui capture 1:1, and the 48px taskbar with the app running.
+    return {
+      w: 1440, h: 960, dpr: 3,
+      html: `<!doctype html><html><body style="margin:0;width:1440px;height:960px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
+      <div style="height:32px;background:#EBE8E1;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 12px;color:#2B2926;">
+        <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8.5" fill="#1C1B1A"/><circle cx="7.4" cy="9.6" r="1.25" fill="#FFFFFF"/><circle cx="12.6" cy="9.6" r="1.25" fill="#FFFFFF"/><path d="M7.5 12.8h5" stroke="#EF6334" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <span>monoid</span>
         </div>
-        <div style="position:absolute;left:50%;transform:translateX(-50%);width:480px;height:26px;border-radius:13px;background:#FFFFFF;border:1px solid rgba(28,27,26,0.09);display:flex;align-items:center;justify-content:center;gap:6px;font-size:12.5px;font-weight:500;color:#2E2D2A;">
-          <svg width="9.5" height="10.5" viewBox="0 0 12 14" fill="none"><rect x="1.5" y="6" width="9" height="6.8" rx="1.6" fill="#6F6B64"/><path d="M3.5 6V4.3a2.5 2.5 0 0 1 5 0V6" stroke="#6F6B64" stroke-width="1.5" stroke-linecap="round"/></svg>
-          <span>app.monoid.build</span>
-        </div>
-        <div style="display:flex;align-items:center;height:100%;color:#2B2926;">
-          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1.1"/></svg></div>
-          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="0.8" fill="none" stroke="currentColor" stroke-width="1.1"/></svg></div>
-          <div style="width:48px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1.15" stroke-linecap="round"/></svg></div>
+        <div style="display:flex;align-items:center;height:100%;">
+          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1"/></svg></div>
+          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="0.8" fill="none" stroke="currentColor" stroke-width="1"/></svg></div>
+          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></div>
         </div>
       </div>
-      <img src="${imgUrl}" style="display:block;width:1440px;height:730px;">
-      </div>
-      <div style="position:absolute;left:0;right:0;bottom:0;height:40px;background:rgba(238,236,232,0.96);border-top:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:0 16px;">
+      <img src="${imgUrl}" style="display:block;width:1440px;height:880px;">
+      <div style="position:absolute;left:0;right:0;bottom:0;height:48px;background:rgba(238,236,232,0.96);border-top:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:0 16px;">
         <div style="display:flex;align-items:center;gap:10px;">
           <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
@@ -153,6 +132,7 @@ function makeHtml(key) {
           <div style="display:flex;align-items:center;gap:7px;">
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M7.2 12a1 1 0 1 1 1.6 0 1 1 0 0 1-1.6 0ZM5.2 9.8a4 4 0 0 1 5.6 0M3 7.6a7 7 0 0 1 10 0" stroke="#1C1B1A" stroke-width="1.35" stroke-linecap="round"/></svg>
             <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2.5 6.2h2.6l3.4-2.7v9l-3.4-2.7H2.5V6.2Z" stroke="#1C1B1A" stroke-width="1.25" stroke-linejoin="round"/><path d="M11 5.8a3.2 3.2 0 0 1 0 4.4" stroke="#1C1B1A" stroke-width="1.25" stroke-linecap="round"/></svg>
+            <svg width="18" height="14" viewBox="0 0 20 16" fill="none"><rect x="1.5" y="4" width="15" height="8" rx="2" stroke="#1C1B1A" stroke-width="1.2"/><rect x="3.2" y="5.7" width="9" height="4.6" rx="0.9" fill="#1C1B1A"/><path d="M18 6.6v2.8" stroke="#1C1B1A" stroke-width="1.4" stroke-linecap="round"/></svg>
           </div>
           <div style="text-align:right;line-height:1.18;font-size:10.5px;font-weight:500;">
             <div>${timeStr}</div>
@@ -160,6 +140,28 @@ function makeHtml(key) {
           </div>
         </div>
       </div>
+    </body></html>`
+    };
+  }
+
+  // web: the web app in a full-screen browser on a MacBook Air 15" (1470x954 @2x = 2940x1908): the black band the notch
+  // sits in, a 40px browser bar, and the top 1470x878 of the apps/mbui capture 1:1.
+  return {
+    w: 1470, h: 954, dpr: 2,
+    html: `<!doctype html><html><body style="margin:0;width:1470px;height:954px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
+      <div style="height:36px;background:#070709;"></div>
+      <div style="height:40px;background:#EBE8E1;border-bottom:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 16px;position:relative;">
+        <div style="display:flex;align-items:center;gap:14px;color:rgba(28,27,26,0.55);">
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 3.5 6 8l4.5 4.5"/></svg>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 3.5 10 8l-4.5 4.5"/></svg>
+          <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.55" stroke-linecap="round"><path d="M12.8 8a4.8 4.8 0 1 1-1.2-3.2"/><path d="M12.8 2.6v2.6h-2.6"/></svg>
+        </div>
+        <div style="position:absolute;left:50%;transform:translateX(-50%);width:480px;height:26px;border-radius:13px;background:#FFFFFF;border:1px solid rgba(28,27,26,0.09);display:flex;align-items:center;justify-content:center;gap:6px;font-size:12.5px;font-weight:500;color:#2E2D2A;">
+          <svg width="9.5" height="10.5" viewBox="0 0 12 14" fill="none"><rect x="1.5" y="6" width="9" height="6.8" rx="1.6" fill="#6F6B64"/><path d="M3.5 6V4.3a2.5 2.5 0 0 1 5 0V6" stroke="#6F6B64" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <span>app.monoid.build</span>
+        </div>
+      </div>
+      <img src="${imgUrl}" style="display:block;width:1470px;height:878px;object-fit:cover;object-position:top;">
     </body></html>`
   };
 }
