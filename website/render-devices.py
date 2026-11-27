@@ -348,7 +348,7 @@ def iphone():
     tint_textured(objs, skip=("EHjrGDHNHzgNjtE",))
     scr = bpy.data.objects["EHjrGDHNHzgNjtE"]
     scr.data.materials.clear(); scr.data.materials.append(screen_material(SCREEN))
-    root.rotation_euler = (math.radians(4), 0, math.radians(-float(arg("--yaw", "14"))))
+    root.rotation_euler = (math.radians(-float(arg("--tilt", "5"))), 0, math.radians(-float(arg("--yaw", "6"))))
     lo, hi = bbox(objs)
     root.location -= (lo + hi) / 2
     lo, hi = bbox(objs)
@@ -377,7 +377,7 @@ def android():
             if b and m.name in ("Rearcase", "Antenna_Plastic", "BackCam_Frame_2"):
                 b.inputs["Base Color"].default_value = (0.018, 0.026, 0.055, 1)
                 b.inputs["Roughness"].default_value = 0.22
-    root.rotation_euler = (math.radians(4), 0, math.radians(float(arg("--yaw", "14"))))
+    root.rotation_euler = (math.radians(-float(arg("--tilt", "5"))), 0, math.radians(float(arg("--yaw", "6"))))
     lo, hi = bbox(objs)
     root.location -= (lo + hi) / 2
     lo, hi = bbox(objs)
@@ -463,7 +463,7 @@ def mac():
             set_mat(o, (0.003, 0.003, 0.004), 0.05, coat=1.0)
         elif o.name == "czojSFNuFKxNgsc":  # key legends
             set_mat(o, (0.55, 0.55, 0.56), 0.5)
-    lo, hi = place_on_floor(root, objs, -float(arg("--yaw", "14")))
+    lo, hi = place_on_floor(root, objs, -float(arg("--yaw", "6")))
     c = (lo + hi) / 2
     fl = floor()
     world(1, hdri_strength=float(arg("--hdri", "0")), hdri_rot=float(arg("--hrot", "120")), bg=(0.010, 0.010, 0.011), bg_edge=(0.0, 0.0, 0.0))
@@ -511,7 +511,7 @@ def windows():
                 b.inputs["Coat Weight"].default_value = 1.0
             elif m.name == "Lights":
                 b.inputs["Base Color"].default_value = (0.02, 0.02, 0.022, 1)
-    lo, hi = place_on_floor(root, objs, float(arg("--yaw", "14")))
+    lo, hi = place_on_floor(root, objs, float(arg("--yaw", "6")))
     c = (lo + hi) / 2
     fl = floor()
     world(1, hdri_strength=float(arg("--hdri", "0")), hdri_rot=float(arg("--hrot", "60")), bg=(0.010, 0.010, 0.011), bg_edge=(0.0, 0.0, 0.0))

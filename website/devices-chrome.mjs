@@ -86,7 +86,7 @@ function makeHtml(key) {
   const dateStr = isZh ? "2026/11/28" : "11/28/2026";
 
   if (dev === "desk") {
-    // The desktop app in a window on a Windows 11 laptop's desktop (3:2, 1920x1280 @2x = 3840x2560): the 1440x900
+    // The desktop app in a window on a Windows 11 laptop's desktop (3:2, 1920x1280 @2x = 3840x2560): the 1520x980
     // apps/mbui capture 1:1, filmed as Windows with an inset window (the app draws its own minimize/maximize/close in
     // its top row, as the Windows app does), with the corners and shadow Windows 11 gives a window, over the
     // wallpaper and the 48px taskbar with the app (its icon: assets/mark.svg) running.
@@ -100,7 +100,7 @@ function makeHtml(key) {
         radial-gradient(ellipse 45% 40% at 30% 30%, rgba(90,200,255,0.55) 0%, rgba(40,90,200,0) 70%),
         radial-gradient(ellipse 80% 70% at 80% 100%, rgba(150,110,255,0.45) 0%, rgba(40,30,120,0) 70%),
         linear-gradient(160deg,#0d2b5c 0%,#1a4a9a 45%,#0e2350 100%);"></div>
-      <img src="${imgUrl}" style="position:absolute;left:240px;top:166px;width:1440px;height:900px;border-radius:8px;box-shadow:0 0 0 1px rgba(0,0,0,0.18),0 24px 64px rgba(0,0,0,0.45),0 8px 20px rgba(0,0,0,0.25);">
+      <img src="${imgUrl}" style="position:absolute;left:200px;top:126px;width:1520px;height:980px;border-radius:8px;box-shadow:0 0 0 1px rgba(0,0,0,0.18),0 24px 64px rgba(0,0,0,0.45),0 8px 20px rgba(0,0,0,0.25);">
       <div style="position:absolute;left:0;right:0;bottom:0;height:48px;background:rgba(238,236,232,0.96);border-top:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:0 16px;">
         <div style="display:flex;align-items:center;gap:10px;">
           <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">

@@ -69,7 +69,7 @@ for loc_tag in "en:en" "zh:zh-CN"; do
     bash "$MBUI/scripts/media.sh" picture "$RAW/android-${tag}.png" "$WORK/drive" >/dev/null
 
   env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-web" MBUI_DARK="0" MBUI_LOCALE="$loc" \
-    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1440x900" MBUI_FILM_SCALE="2" \
+    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1520x980" MBUI_FILM_SCALE="2" \
     MBUI_FILM_PLATFORM="3" MBUI_FILM_INSET="1" MBUI_FILM_WINDOW_CORNER="8" MBUI_NATIVE_INPUT="mouse" \
     bash "$MBUI/scripts/media.sh" picture "$RAW/desk-${tag}.png" "$WORK/drive" >/dev/null
 
