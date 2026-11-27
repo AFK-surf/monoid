@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pasted, PASTE_RESTORE_LIMIT, PASTE_THRESHOLD } from "../src/pasted.ts";
-import { markBefore, marksIn, pastedRefs, refAt } from "../src/refLinks.ts";
+import { markBefore, marksIn, pastedRefs, refAt, skillAt } from "../src/refLinks.ts";
 import { wordsAnswer } from "../src/words.ts";
 
 test("long_words_pasted_go_as_a_file_that_says_how_they_begin_and_how_many", () => {
@@ -39,5 +39,16 @@ test("a_chats_link_pasted_as_copied_is_a_reference_when_it_is_of_this_workspace"
 test("clients_without_the_js_ask_the_same_reading_and_the_bound_a_paste_goes_as_a_file_from", () => {
   assert.deepEqual(wordsAnswer("paste.info", "", 0, ""), { file: false, info: null, threshold: PASTE_THRESHOLD });
   assert.deepEqual(wordsAnswer("ref.at", "看 @首", 4, ""), { at: { start: 2, query: "首" } });
+  assert.deepEqual(wordsAnswer("skill.at", "/sw", 3, ""), { at: { start: 0, query: "sw" } });
   assert.deepEqual(wordsAnswer("ref.marks", "@[甲] 和 @[乙]", 0, ""), { marks: marksIn("@[甲] 和 @[乙]") });
+});
+
+test("slash_words_ask_for_a_skill_without_matching_paths_or_urls", () => {
+  assert.deepEqual(skillAt("/", 1), { start: 0, query: "" });
+  assert.deepEqual(skillAt("/swarm", 6), { start: 0, query: "swarm" });
+  assert.deepEqual(skillAt("帮我 /run-w", 9), { start: 3, query: "run-w" });
+  assert.deepEqual(skillAt("第一行\n/team:rev", 13), { start: 4, query: "team:rev" });
+  assert.equal(skillAt("a/b", 3), null);
+  assert.equal(skillAt("https://example.com/foo", 23), null);
+  assert.equal(skillAt("/swarm 后面的字", 11), null);
 });

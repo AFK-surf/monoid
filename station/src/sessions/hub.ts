@@ -74,6 +74,7 @@ import { CHAT_KEY, INTERNAL_CONNECT, type InternalChat, nextTsAt } from "./inter
 import { LiveHub } from "./live.ts";
 import type { Jobs } from "./neighbours.ts";
 import { agentHomePaths, workspaceAgentHome, workspaceAgentHomePath } from "./agent-home.ts";
+import { skillsForSession } from "./skills.ts";
 import { Presets, RepoIndex } from "./presets.ts";
 import { BoardDrafts } from "./board-drafts.ts";
 import { Clones } from "./clones.ts";
@@ -2549,6 +2550,7 @@ export class Hub {
         await workspaceAgentHome(this.config().agentHome, this.wsOf(row.key), this.workspaces()[0] ?? null);
         return this.skillsLinker ? this.skillsLinker(row, person) : linkSkills(row, this.deps, person);
       },
+      sessionSkills: async (key) => (await skillsForSession(this, key)).resolved,
       pendingDeliveries: async (key, signal) => this.pendingDeliveries
         ? this.pendingDeliveries(key, signal) : this.store.pendingMessages(key),
       deliveryCardState: async (thread, n, signal) => {

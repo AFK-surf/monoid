@@ -246,8 +246,9 @@ fn writing_cached(src : Source, key : String) -> Writing {
       // (the draft's own reactions, held while a field of it is read, stopped as the last reader leaves: the
       // field's words followed for what the core reads of them, and the core's composer topic adopted)
       let following = @signals.held_while_read(fn() {
-        // (what the core reads of its field's words: its marks, its `@` words, refs.mbt)
+        // (what the core reads of its field's words: its marks, its `@` words, refs.mbt; its `/` skills, skills.mbt)
         refs_follow(src, key, state.field)
+        skills_follow(key, state.field)
         @signals.effect(fn() {
           let t = topic.get()
           state.pending.get() |> ignore
@@ -491,7 +492,7 @@ fn writing_act(
 /// set with the signals the menu reads). Taken as they come, what read those is built again, nothing else: not a page
 /// whose field had a word typed in it built whole for each.
 pub fn calls_said() -> Array[String] {
-  ["composer.text", "ref.at"]
+  ["composer.text", "ref.at", "skill.at"]
 }
 
 ///|
