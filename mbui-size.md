@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3a31c8796](https://github.com/AFK-surf/monoid/commit/3a31c8796523bf1ee9d4c22cf80bfcd88c01757f) feat(mbui): scrollable share stage preview and pro | 2.73 | 3.69 | 15.34 | 38.46 | 59.4 | 33.71 | 68.95 | 103.56 | 130.28 |
 | [258f2f96e](https://github.com/AFK-surf/monoid/commit/258f2f96e4cc82a91fdc578190efb53113224bb5) feat(station-main): enable roles:rig,whole cutover | 2.73 | 3.69 | 15.34 | 38.46 | 59.4 | 33.71 | 68.95 | 103.56 | 130.28 |
 | [4c56e21bb](https://github.com/AFK-surf/monoid/commit/4c56e21bb0e0a81d9dbdf39a1dbdc76d1d9bd3da) chore(station): enforce pion/station-main sync gua | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
 | [7f2cea20e](https://github.com/AFK-surf/monoid/commit/7f2cea20e10288114056b9331748c6d14497f522) fix(mbui): pin sidebar layout and window position  | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e032c1f68](https://github.com/AFK-surf/monoid/commit/e032c1f68a1a0a5895d3fa156354cccb22f93f70) style(mbui): refine media progress and video corne | 2.7 | 3.66 | 15.19 | 38.23 | 58.9 | 33.5 | 68.52 | 102.99 | 134.59 |
 | [f871f191f](https://github.com/AFK-surf/monoid/commit/f871f191fb6b70898b646b5c585d76e25d04dd03) fix(mbui): drop the hover ring on the rail's works | 2.7 | 3.66 | 15.18 | 38.23 | 58.89 | 33.49 | 68.5 | 103.11 | 107.15 |
 | [b0dccfbe3](https://github.com/AFK-surf/monoid/commit/b0dccfbe3fd70202888515630bb6f93fd5c4b99a) fix(core): force vault readStation after direct RP | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.32 | 125.98 |
-| [0abb12bcc](https://github.com/AFK-surf/monoid/commit/0abb12bcc4aa6372df8ff881fe936ba9c8cd241f) fix(ui,mbui): tighten filter pill to 28pt capsule  | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.32 | 125.98 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [3a31c8796](https://github.com/AFK-surf/monoid/commit/3a31c8796523bf1ee9d4c22cf80bfcd88c01757f) feat(mbui): scrollable share stage preview and pro | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.97 |
 | [258f2f96e](https://github.com/AFK-surf/monoid/commit/258f2f96e4cc82a91fdc578190efb53113224bb5) feat(station-main): enable roles:rig,whole cutover | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.69 |
 | [4c56e21bb](https://github.com/AFK-surf/monoid/commit/4c56e21bb0e0a81d9dbdf39a1dbdc76d1d9bd3da) chore(station): enforce pion/station-main sync gua | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.72 |
 | [7f2cea20e](https://github.com/AFK-surf/monoid/commit/7f2cea20e10288114056b9331748c6d14497f522) fix(mbui): pin sidebar layout and window position  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.79 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e032c1f68](https://github.com/AFK-surf/monoid/commit/e032c1f68a1a0a5895d3fa156354cccb22f93f70) style(mbui): refine media progress and video corne | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.75 |
 | [f871f191f](https://github.com/AFK-surf/monoid/commit/f871f191fb6b70898b646b5c585d76e25d04dd03) fix(mbui): drop the hover ring on the rail's works | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.69 |
 | [b0dccfbe3](https://github.com/AFK-surf/monoid/commit/b0dccfbe3fd70202888515630bb6f93fd5c4b99a) fix(core): force vault readStation after direct RP | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
-| [0abb12bcc](https://github.com/AFK-surf/monoid/commit/0abb12bcc4aa6372df8ff881fe936ba9c8cd241f) fix(ui,mbui): tighten filter pill to 28pt capsule  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
