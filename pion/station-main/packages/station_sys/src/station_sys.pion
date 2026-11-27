@@ -135,6 +135,7 @@ extern "C" fn sts_udp_send_once(addr : Ptr, port : Int, data : Ptr, len : Int64)
 
 extern "C" fn sts_os_kind() -> Int
 extern "C" fn sts_arch_kind() -> Int
+extern "C" fn sts_register_sqlite_js_lower() -> Int
 extern "C" fn sts_hostname(out_len : Ptr) -> Ptr
 extern "C" fn sts_homedir(out_len : Ptr) -> Ptr
 extern "C" fn sts_tmpdir(out_len : Ptr) -> Ptr
@@ -1470,5 +1471,16 @@ pub fn network_interfaces_json() -> String {
   match take_owned_string(p, n) {
     Some(s) => s
     None => "[]"
+  }
+}
+
+/// Idempotently register deterministic SQLite scalar function `js_lower(x)` (1:1 with `jscase::lower`)
+/// via `sqlite3_auto_extension` before opening SQLite connections.
+pub fn register_sqlite_js_lower() -> Result[Unit, String] {
+  let rc = sts_register_sqlite_js_lower()
+  if rc == 0 {
+    Ok(())
+  } else {
+    Err("sqlite3_auto_extension(js_lower) failed with rc=" + rc.to_string())
   }
 }

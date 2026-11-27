@@ -550,9 +550,9 @@ test "whole_core_r3_bounded_sql_like_strict_snapshot_idempotent_adopt_drive_mcp_
     "escape_sql_like must escape %, _, \\ and lowercase ASCII",
   )
   let (like_sql, like_params) = build_like_clauses("COALESCE(t.title, '')", ["Alpha", "Beta_100%"], 3)
-  wc_assert(like_sql.contains("LIKE ?3 ESCAPE '\\'"), "first LIKE clause bound at ?3")
-  wc_assert(like_sql.contains("LIKE ?4 ESCAPE '\\'"), "second LIKE clause bound at ?4")
-  wc_assert(like_params.length() == 2, "expected 2 bound LIKE parameters")
+  wc_assert(like_sql.contains("instr(js_lower(COALESCE(t.title, '')), ?3) > 0"), "first js_lower instr clause bound at ?3")
+  wc_assert(like_sql.contains("instr(js_lower(COALESCE(t.title, '')), ?4) > 0"), "second js_lower instr clause bound at ?4")
+  wc_assert(like_params.length() == 2, "expected 2 bound search parameters")
 
   // 2. Strict `WholeHandoverSnapshot::from_json` rejects non-integer version (1.5) & malformed arrays.
   wc_assert(
@@ -785,7 +785,7 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   wc_assert(utf8_codepoint_len(hanzi_120) == 120, "120 hanzi must count as 120 code points")
   wc_assert(utf8_codepoint_len(hanzi_120 + "字") == 121, "121 hanzi must count as 121 code points")
   let (ft_sql, ft_params) = build_first_title_like_clauses("t.title", "t.title || e.text", ["First", "Second"], 3)
-  wc_assert(ft_sql.contains("lower(t.title) LIKE ?3") && ft_sql.contains("lower(t.title || e.text) LIKE ?4"), "first term must target title, rest target all")
+  wc_assert(ft_sql.contains("instr(js_lower(t.title), ?3) > 0") && ft_sql.contains("instr(js_lower(t.title || e.text), ?4) > 0"), "first term must target title, rest target all")
   wc_assert(ft_params.length() == 2, "expected 2 params")
 
   // 5. R5: `measure_dir_bytes` truncation sets `complete == false`.
@@ -821,92 +821,28 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   let (_, trunc_complete) = measure_dir_bytes(trunc_fs, "/root", max_dirs=5)
   wc_assert(!trunc_complete, "truncated directory walk MUST report complete == false")
 
-  // 6. R9: Exact SQL LIKE expansion (ASCII <= 2 ambig, caseless CJK) + necessary non-ASCII prefilters.
-  wc_assert(is_sql_like_exact_term("hello_100%"), "ASCII without k/trailing-i is SQL-exact")
-  wc_assert(is_sql_like_exact_term("old"), "old is SQL-exact")
-  wc_assert(is_sql_like_exact_term("anchor"), "anchor is SQL-exact")
-  wc_assert(is_sql_like_exact_term("mix"), "mix (non-trailing i) is SQL-exact")
-  wc_assert(is_sql_like_exact_term("300k"), "300k (1 ambig) is SQL-exact 2-way OR")
-  wc_assert(is_sql_like_exact_term("mi"), "mi (1 trailing-i ambig) is SQL-exact 2-way OR")
-  wc_assert(is_sql_like_exact_term("wiki"), "wiki (2 ambig) is SQL-exact 4-way OR")
-  wc_assert(!is_sql_like_exact_term("kkk"), "kkk (3 ambig) triggers keyset scan")
-  wc_assert(is_sql_like_exact_term("工资"), "CJK term is SQL-exact")
-  wc_assert(is_sql_like_exact_term("例会纪要"), "CJK term is SQL-exact")
-  wc_assert(!is_sql_like_exact_term("Санкт-Петербург"), "Cyrillic triggers keyset scan with prefilter")
-  wc_assert(!is_sql_like_exact_term("Άννα"), "Greek triggers keyset scan with prefilter")
-  wc_assert(!is_sql_like_exact_term("äRGÉR"), "German accented triggers keyset scan with prefilter")
-  wc_assert(!is_sql_like_exact_term("İ"), "Turkish İ triggers keyset scan with prefilter")
-  wc_assert(!has_unicode_case_term(["old", "工资", "300k", "mi"]), "exact SQL terms stay off keyset scan")
-  wc_assert(has_unicode_case_term(["old", "Санкт-Петербург"]), "Cyrillic triggers keyset scan")
-
-  let (k_sql, k_params) = build_like_clauses("e.text", ["300k"], 3)
-  wc_assert(k_sql.contains(" OR ") && k_params.length() == 2, "300k expands to 2-way OR (300k / 300K)")
-  let (mi_sql, mi_params) = build_like_clauses("e.text", ["mi"], 3)
-  wc_assert(mi_sql.contains(" OR ") && mi_params.length() == 2, "mi expands to 2-way OR (mi / mİ)")
-  let (mix_sql, mix_params) = build_like_clauses("e.text", ["mix"], 3)
-  wc_assert(!mix_sql.contains(" OR ") && mix_params.length() == 1, "mix is single exact LIKE (non-trailing i)")
-  let (wiki_sql, wiki_params) = build_like_clauses("e.text", ["wiki"], 3)
-  wc_assert(wiki_sql.contains(" OR ") && wiki_params.length() == 4, "wiki expands to 4-way OR")
-  let (ru_sql, ru_params) = build_like_clauses("e.text", ["Санкт-Петербург"], 3)
-  wc_assert(ru_sql.contains(" OR ") && ru_params.length() == 6, "Cyrillic pushes 3 distinct char OR prefilters (6 params)")
-  let (miss_sql, miss_params) = build_like_clauses("e.text", ["Ärgerxyzmiss"], 3)
-  wc_assert(miss_sql.contains("LIKE ?3 ESCAPE '\\'") && miss_params.length() == 3, "Ärgerxyzmiss pushes unambiguous substring + ä/Ä OR")
+  // 6. R10: Exact SQL `instr(js_lower(col), ?k) > 0` pushdown for all terms (ASCII, `%`/`_`/`\` literals,
+  // CJK, Cyrillic, Greek, Turkish `İ`, Kelvin `K`), zero LIKE escaping and zero decoy scan.
+  let (s_sql, s_params) = build_like_clauses("e.text", ["100%_a\\b", "Санкт-Петербург", "300K", "İZMİR", "工资"], 3)
+  wc_assert(
+    s_sql.contains("instr(js_lower(e.text), ?3) > 0") &&
+    s_sql.contains("instr(js_lower(e.text), ?7) > 0") &&
+    !s_sql.contains("LIKE") &&
+    s_params.length() == 5,
+    "all terms must emit exact instr(js_lower(...), ?k) > 0 clauses",
+  )
+  match s_params[0] {
+    base_codec::Json::Str(v) => wc_assert(v == "100%_a\\b", "special LIKE chars must remain literal for instr()")
+    _ => wc_assert(false, "expected string param 0")
+  }
+  match s_params[2] {
+    base_codec::Json::Str(v) => wc_assert(v == "300k", "300K must lower to 300k via jscase::lower")
+    _ => wc_assert(false, "expected string param 2")
+  }
+  match s_params[3] {
+    base_codec::Json::Str(v) => wc_assert(v == jscase::lower("İZMİR"), "İZMİR must lower via jscase::lower")
+    _ => wc_assert(false, "expected string param 3")
+  }
 
   core.shutdown_pre_handover()
-}
-
-test "whole_core_r9_exhaustive_unicode_preimages_and_prefilter_soundness" {
-  // Machine-exhaustive proof over all scalar values 0x0080..=0x1E950 (skipping surrogates 0xD800..=0xDFFF):
-  // For every non-ASCII scalar `c`, every code point `t != c` emitted by `jscase::lower(encode_utf8_cp(c))`
-  // MUST appear in `non_ascii_preimages(t)`.
-  let mut checked = 0
-  let mut mapped = 0
-  for cp in 0x0080..<0x1E951 {
-    if cp >= 0xD800 && cp <= 0xDFFF {
-      continue
-    }
-    checked = checked + 1
-    let low = jscase::lower(encode_utf8_cp(cp))
-    let out_pts = decode_utf8_points(low)
-    for j in 0..<out_pts.length() {
-      let t = out_pts[j]
-      if t != cp {
-        mapped = mapped + 1
-        let pre = non_ascii_preimages(t)
-        let mut found = false
-        for pi in 0..<pre.length() {
-          if pre[pi] == cp {
-            found = true
-            break
-          }
-        }
-        wc_assert(
-          found,
-          "non_ascii_preimages(" + t.to_string() + ") missing source cp=" + cp.to_string(),
-        )
-      }
-    }
-  }
-  // Also explicitly verify final sigma U+03C2 <- U+03A3, U+00E5 <- [U+00C5, U+212B],
-  // U+03C9 <- [U+03A9, U+2126], U+006B <- [U+212A], U+0069 & U+0307 <- [U+0130].
-  let check_has = fn(t : Int, f : Int) -> Unit {
-    let pre = non_ascii_preimages(t)
-    let mut ok = false
-    for i in 0..<pre.length() {
-      if pre[i] == f {
-        ok = true
-      }
-    }
-    wc_assert(ok, "missing expected preimage " + f.to_string() + " -> " + t.to_string())
-  }
-  check_has(0x03C2, 0x03A3)
-  check_has(0x03C3, 0x03A3)
-  check_has(0x00E5, 0x00C5)
-  check_has(0x00E5, 0x212B)
-  check_has(0x03C9, 0x03A9)
-  check_has(0x03C9, 0x2126)
-  check_has(0x006B, 0x212A)
-  check_has(0x0069, 0x0130)
-  check_has(0x0307, 0x0130)
-  wc_assert(checked > 120000 && mapped > 1400, "exhaustive loop must cover full Unicode lower table")
 }

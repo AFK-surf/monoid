@@ -895,9 +895,6 @@ pub fn WholeApi::new(
       ok
     }
     let arch_clause = if archived { "" } else { " AND t.archived_at IS NULL" }
-    let need_unicode_scan = has_unicode_case_term(words)
-    let batch_size = 500
-    let first_word_arr : Array[String] = [words[0]]
     let docs : Array[station_api::SearchDoc] = []
     if want_chat {
       let seen_tids : Map[String, Bool] = Map::new()
@@ -905,159 +902,65 @@ pub fn WholeApi::new(
       let run_chat_q = fn(
         t_like_sql : String,
         t_like_params : Array[base_codec::Json],
-        require_first_title : Bool,
       ) -> Result[Unit, station_api::ApiError] {
         if chat_collected >= sql_limit {
           return Ok(())
         }
-        if !need_unicode_scan {
-          let t_params : Array[base_codec::Json] = [
-            base_codec::json_str(home_ws_str),
-            base_codec::json_str(asker.workspace),
-          ]
-          for pi in 0..<t_like_params.length() {
-            t_params.push(t_like_params[pi])
-          }
-          let t_lim_idx = 3 + t_like_params.length()
-          t_params.push(base_codec::json_int(sql_limit))
-          return match st.db.all(
-            "SELECT t.id, t.title, t.project, t.created_at," +
-            " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
-            "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
-            " FROM threads t LEFT JOIN sessions h ON h.key = t.home" +
-            " WHERE CASE" +
-            "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
-            "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
-            "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
-            arch_clause +
-            t_like_sql +
-            " ORDER BY t.created_at DESC, t.id DESC LIMIT ?" + t_lim_idx.to_string(),
-            t_params,
-          ) {
-            Ok(rows) => {
-              for i in 0..<rows.length() {
-                if chat_collected >= sql_limit {
-                  break
-                }
-                let r = rows[i]
-                let tid = match r.get("id") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
-                let dkey = "thread:" + tid.to_string()
-                if seen_tids.get(dkey).is_some() {
-                  continue
-                }
-                seen_tids.set(dkey, true)
-                let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let proj = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let at = match r.get("created_at") { Some(base_codec::Json::Num(n, _)) => Some(n.to_int64()), _ => None }
-                let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
-                docs.push(station_api::SearchDoc::{
-                  key: dkey,
-                  kind: "chat",
-                  ws: doc_ws,
-                  req_scope: None,
-                  title: title,
-                  body: title + " " + proj,
-                  at: at,
-                  ref_fields: [("thread", base_codec::json_int64(tid))],
-                })
-                chat_collected = chat_collected + 1
-              }
-              Ok(())
-            }
-            Err(e) => Err(station_api::ApiError::new(500, e.message))
-          }
+        let t_params : Array[base_codec::Json] = [
+          base_codec::json_str(home_ws_str),
+          base_codec::json_str(asker.workspace),
+        ]
+        for pi in 0..<t_like_params.length() {
+          t_params.push(t_like_params[pi])
         }
-        // Bounded keyset-paginated batch scan (`LIMIT 500`, hard cap `MAX_UNICODE_SCAN_ROWS`) + exact `jscase::lower` filtering.
-        let mut has_cursor = false
-        let mut cur_at : Int64 = 0L
-        let mut cur_id : Int64 = 0L
-        let mut scanned_rows = 0
-        while chat_collected < sql_limit && scanned_rows < MAX_UNICODE_SCAN_ROWS {
-          let t_params : Array[base_codec::Json] = [
-            base_codec::json_str(home_ws_str),
-            base_codec::json_str(asker.workspace),
-          ]
-          for pi in 0..<t_like_params.length() {
-            t_params.push(t_like_params[pi])
-          }
-          let mut cursor_sql = ""
-          let mut next_idx = 3 + t_like_params.length()
-          if has_cursor {
-            let c1 = next_idx.to_string()
-            let c2 = (next_idx + 1).to_string()
-            cursor_sql = " AND (t.created_at < ?" + c1 + " OR (t.created_at = ?" + c1 + " AND t.id < ?" + c2 + "))"
-            t_params.push(base_codec::json_int64(cur_at))
-            t_params.push(base_codec::json_int64(cur_id))
-            next_idx = next_idx + 2
-          }
-          t_params.push(base_codec::json_int(batch_size))
-          match st.db.all(
-            "SELECT t.id, t.title, t.project, t.created_at," +
-            " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
-            "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
-            " FROM threads t LEFT JOIN sessions h ON h.key = t.home" +
-            " WHERE CASE" +
-            "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
-            "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
-            "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
-            arch_clause +
-            t_like_sql +
-            cursor_sql +
-            " ORDER BY t.created_at DESC, t.id DESC LIMIT ?" + next_idx.to_string(),
-            t_params,
-          ) {
-            Ok(rows) => {
-              if rows.length() == 0 {
+        let t_lim_idx = 3 + t_like_params.length()
+        t_params.push(base_codec::json_int(sql_limit))
+        match st.db.all(
+          "SELECT t.id, t.title, t.project, t.created_at," +
+          " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
+          "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
+          " FROM threads t LEFT JOIN sessions h ON h.key = t.home" +
+          " WHERE CASE" +
+          "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+          "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+          "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+          arch_clause +
+          t_like_sql +
+          " ORDER BY t.created_at DESC, t.id DESC LIMIT ?" + t_lim_idx.to_string(),
+          t_params,
+        ) {
+          Ok(rows) => {
+            for i in 0..<rows.length() {
+              if chat_collected >= sql_limit {
                 break
               }
-              scanned_rows = scanned_rows + rows.length()
-              for i in 0..<rows.length() {
-                let r = rows[i]
-                let tid = match r.get("id") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
-                let at_val = match r.get("created_at") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
-                cur_at = at_val
-                cur_id = tid
-                has_cursor = true
-                if chat_collected >= sql_limit {
-                  continue
-                }
-                let dkey = "thread:" + tid.to_string()
-                if seen_tids.get(dkey).is_some() {
-                  continue
-                }
-                let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let proj = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let full_text = title + " " + proj
-                let matched = if require_first_title {
-                  station_api::has_all_terms(title, first_word_arr) && station_api::has_all_terms(full_text, words)
-                } else {
-                  station_api::has_all_terms(full_text, words)
-                }
-                if !matched {
-                  continue
-                }
-                seen_tids.set(dkey, true)
-                let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
-                docs.push(station_api::SearchDoc::{
-                  key: dkey,
-                  kind: "chat",
-                  ws: doc_ws,
-                  req_scope: None,
-                  title: title,
-                  body: full_text,
-                  at: Some(at_val),
-                  ref_fields: [("thread", base_codec::json_int64(tid))],
-                })
-                chat_collected = chat_collected + 1
+              let r = rows[i]
+              let tid = match r.get("id") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+              let dkey = "thread:" + tid.to_string()
+              if seen_tids.get(dkey).is_some() {
+                continue
               }
-              if rows.length() < batch_size {
-                break
-              }
+              seen_tids.set(dkey, true)
+              let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let proj = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let at = match r.get("created_at") { Some(base_codec::Json::Num(n, _)) => Some(n.to_int64()), _ => None }
+              let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
+              docs.push(station_api::SearchDoc::{
+                key: dkey,
+                kind: "chat",
+                ws: doc_ws,
+                req_scope: None,
+                title: title,
+                body: title + " " + proj,
+                at: at,
+                ref_fields: [("thread", base_codec::json_int64(tid))],
+              })
+              chat_collected = chat_collected + 1
             }
-            Err(e) => return Err(station_api::ApiError::new(500, e.message))
+            Ok(())
           }
+          Err(e) => Err(station_api::ApiError::new(500, e.message))
         }
-        Ok(())
       }
       // First-term title-hit query first (aligned with `search_pick` `titled` ranking), then full title+project query.
       let (t1_sql, t1_params) = build_first_title_like_clauses(
@@ -1066,7 +969,7 @@ pub fn WholeApi::new(
         words,
         3,
       )
-      match run_chat_q(t1_sql, t1_params, true) {
+      match run_chat_q(t1_sql, t1_params) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
@@ -1075,7 +978,7 @@ pub fn WholeApi::new(
         words,
         3,
       )
-      match run_chat_q(t2_sql, t2_params, false) {
+      match run_chat_q(t2_sql, t2_params) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
@@ -1086,168 +989,69 @@ pub fn WholeApi::new(
       let run_msg_q = fn(
         e_like_sql : String,
         e_like_params : Array[base_codec::Json],
-        require_first_title : Bool,
       ) -> Result[Unit, station_api::ApiError] {
         if msg_collected >= sql_limit {
           return Ok(())
         }
-        if !need_unicode_scan {
-          let e_params : Array[base_codec::Json] = [
-            base_codec::json_str(home_ws_str),
-            base_codec::json_str(asker.workspace),
-          ]
-          for pi in 0..<e_like_params.length() {
-            e_params.push(e_like_params[pi])
-          }
-          let e_lim_idx = 3 + e_like_params.length()
-          e_params.push(base_codec::json_int(sql_limit))
-          return match st.db.all(
-            "SELECT e.rowid AS rid, e.thread, e.n, e.text, e.at, t.title," +
-            " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
-            "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
-            " FROM entries e JOIN threads t ON t.id = e.thread LEFT JOIN sessions h ON h.key = t.home" +
-            " WHERE e.kind = 'message' AND CASE" +
-            "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
-            "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
-            "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
-            arch_clause +
-            e_like_sql +
-            " ORDER BY e.at DESC, e.rowid DESC LIMIT ?" + e_lim_idx.to_string(),
-            e_params,
-          ) {
-            Ok(rows) => {
-              for i in 0..<rows.length() {
-                if msg_collected >= sql_limit {
-                  break
-                }
-                let r = rows[i]
-                let tid = match r.get("thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
-                let n = match r.get("n") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }
-                let dkey = "msg:" + tid.to_string() + ":" + n.to_string()
-                if seen_msgs.get(dkey).is_some() {
-                  continue
-                }
-                seen_msgs.set(dkey, true)
-                let txt = match r.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let at = match r.get("at") { Some(base_codec::Json::Num(v, _)) => Some(v.to_int64()), _ => None }
-                let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
-                docs.push(station_api::SearchDoc::{
-                  key: dkey,
-                  kind: "message",
-                  ws: doc_ws,
-                  req_scope: None,
-                  title: title,
-                  body: txt,
-                  at: at,
-                  ref_fields: [
-                    ("thread", base_codec::json_int64(tid)),
-                    ("n", base_codec::json_int64(n)),
-                  ],
-                })
-                msg_collected = msg_collected + 1
-              }
-              Ok(())
-            }
-            Err(e) => Err(station_api::ApiError::new(500, e.message))
-          }
+        let e_params : Array[base_codec::Json] = [
+          base_codec::json_str(home_ws_str),
+          base_codec::json_str(asker.workspace),
+        ]
+        for pi in 0..<e_like_params.length() {
+          e_params.push(e_like_params[pi])
         }
-        // Bounded keyset-paginated batch scan (`LIMIT 500`, hard cap `MAX_UNICODE_SCAN_ROWS`) + exact `jscase::lower` filtering.
-        let mut has_cursor = false
-        let mut cur_at : Int64 = 0L
-        let mut cur_rid : Int64 = 0L
-        let mut scanned_rows = 0
-        while msg_collected < sql_limit && scanned_rows < MAX_UNICODE_SCAN_ROWS {
-          let e_params : Array[base_codec::Json] = [
-            base_codec::json_str(home_ws_str),
-            base_codec::json_str(asker.workspace),
-          ]
-          for pi in 0..<e_like_params.length() {
-            e_params.push(e_like_params[pi])
-          }
-          let mut cursor_sql = ""
-          let mut next_idx = 3 + e_like_params.length()
-          if has_cursor {
-            let c1 = next_idx.to_string()
-            let c2 = (next_idx + 1).to_string()
-            cursor_sql = " AND (e.at < ?" + c1 + " OR (e.at = ?" + c1 + " AND e.rowid < ?" + c2 + "))"
-            e_params.push(base_codec::json_int64(cur_at))
-            e_params.push(base_codec::json_int64(cur_rid))
-            next_idx = next_idx + 2
-          }
-          e_params.push(base_codec::json_int(batch_size))
-          match st.db.all(
-            "SELECT e.rowid AS rid, e.thread, e.n, e.text, e.at, t.title," +
-            " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
-            "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
-            " FROM entries e JOIN threads t ON t.id = e.thread LEFT JOIN sessions h ON h.key = t.home" +
-            " WHERE e.kind = 'message' AND CASE" +
-            "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
-            "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
-            "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
-            arch_clause +
-            e_like_sql +
-            cursor_sql +
-            " ORDER BY e.at DESC, e.rowid DESC LIMIT ?" + next_idx.to_string(),
-            e_params,
-          ) {
-            Ok(rows) => {
-              if rows.length() == 0 {
+        let e_lim_idx = 3 + e_like_params.length()
+        e_params.push(base_codec::json_int(sql_limit))
+        match st.db.all(
+          "SELECT e.thread, e.n, e.text, e.at, t.title," +
+          " CASE WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1)" +
+          "  ELSE COALESCE((SELECT a.ws FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2 LIMIT 1), ?1) END AS eff_ws" +
+          " FROM entries e JOIN threads t ON t.id = e.thread LEFT JOIN sessions h ON h.key = t.home" +
+          " WHERE e.kind = 'message' AND CASE" +
+          "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+          "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+          "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+          arch_clause +
+          e_like_sql +
+          " ORDER BY e.at DESC, e.rowid DESC LIMIT ?" + e_lim_idx.to_string(),
+          e_params,
+        ) {
+          Ok(rows) => {
+            for i in 0..<rows.length() {
+              if msg_collected >= sql_limit {
                 break
               }
-              scanned_rows = scanned_rows + rows.length()
-              for i in 0..<rows.length() {
-                let r = rows[i]
-                let rid = match r.get("rid") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }
-                let at_val = match r.get("at") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }
-                cur_at = at_val
-                cur_rid = rid
-                has_cursor = true
-                if msg_collected >= sql_limit {
-                  continue
-                }
-                let tid = match r.get("thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
-                let n = match r.get("n") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }
-                let dkey = "msg:" + tid.to_string() + ":" + n.to_string()
-                if seen_msgs.get(dkey).is_some() {
-                  continue
-                }
-                let txt = match r.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let full_text = title + " " + txt
-                let matched = if require_first_title {
-                  station_api::has_all_terms(title, first_word_arr) && station_api::has_all_terms(full_text, words)
-                } else {
-                  station_api::has_all_terms(full_text, words)
-                }
-                if !matched {
-                  continue
-                }
-                seen_msgs.set(dkey, true)
-                let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
-                docs.push(station_api::SearchDoc::{
-                  key: dkey,
-                  kind: "message",
-                  ws: doc_ws,
-                  req_scope: None,
-                  title: title,
-                  body: txt,
-                  at: Some(at_val),
-                  ref_fields: [
-                    ("thread", base_codec::json_int64(tid)),
-                    ("n", base_codec::json_int64(n)),
-                  ],
-                })
-                msg_collected = msg_collected + 1
+              let r = rows[i]
+              let tid = match r.get("thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+              let n = match r.get("n") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L }
+              let dkey = "msg:" + tid.to_string() + ":" + n.to_string()
+              if seen_msgs.get(dkey).is_some() {
+                continue
               }
-              if rows.length() < batch_size {
-                break
-              }
+              seen_msgs.set(dkey, true)
+              let txt = match r.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let title = match r.get("title") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+              let at = match r.get("at") { Some(base_codec::Json::Num(v, _)) => Some(v.to_int64()), _ => None }
+              let doc_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => Some(s), _ => Some(home_ws_str) }
+              docs.push(station_api::SearchDoc::{
+                key: dkey,
+                kind: "message",
+                ws: doc_ws,
+                req_scope: None,
+                title: title,
+                body: txt,
+                at: at,
+                ref_fields: [
+                  ("thread", base_codec::json_int64(tid)),
+                  ("n", base_codec::json_int64(n)),
+                ],
+              })
+              msg_collected = msg_collected + 1
             }
-            Err(e) => return Err(station_api::ApiError::new(500, e.message))
+            Ok(())
           }
+          Err(e) => Err(station_api::ApiError::new(500, e.message))
         }
-        Ok(())
       }
       // First-term title-hit query first (aligned with `search_pick` `titled` ranking), then full title+body query.
       let (e1_sql, e1_params) = build_first_title_like_clauses(
@@ -1256,7 +1060,7 @@ pub fn WholeApi::new(
         words,
         3,
       )
-      match run_msg_q(e1_sql, e1_params, true) {
+      match run_msg_q(e1_sql, e1_params) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }
@@ -1265,7 +1069,7 @@ pub fn WholeApi::new(
         words,
         3,
       )
-      match run_msg_q(e2_sql, e2_params, false) {
+      match run_msg_q(e2_sql, e2_params) {
         Ok(_) => ()
         Err(e) => return Err(e)
       }

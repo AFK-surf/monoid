@@ -318,9 +318,8 @@ fn decode_utf8_points(s : String) -> Array[Int] {
   out
 }
 
-/// Build SQL `AND lower(col_expr) LIKE ?k ESCAPE '\'` clauses and bound `%term%` parameters
-/// using `append_term_prefilter_clauses` (exact for ASCII `<= 2` ambig & caseless CJK; necessary
-/// zero-false-negative prefilter for cased non-ASCII terms).
+/// Build exact SQL `AND instr(js_lower(col_expr), ?k) > 0` clauses and bound `jscase::lower(t)`
+/// parameters (1:1 byte-for-byte equivalent to `jscase::lower`, zero escaping needed, zero decoy scan).
 pub fn build_like_clauses(
   col_expr : String,
   terms : Array[String],
@@ -331,20 +330,19 @@ pub fn build_like_clauses(
   let max_terms = if terms.length() > 16 { 16 } else { terms.length() }
   let mut idx = start_param
   for i in 0..<max_terms {
-    let t = terms[i]
+    let t = jscase::lower(terms[i])
     if t.length() == 0 {
       continue
     }
-    let (c, next_idx) = append_term_prefilter_clauses(col_expr, t, idx, params)
-    sql = sql + c
-    idx = next_idx
+    sql = sql + " AND instr(js_lower(" + col_expr + "), ?" + idx.to_string() + ") > 0"
+    params.push(base_codec::json_str(t))
+    idx = idx + 1
   }
   (sql, params)
 }
 
-/// Build SQL clauses requiring the FIRST term's prefilter to match `title_expr` and remaining
-/// terms' prefilters to match `all_expr` (1:1 aligned with `station_api::search_pick`'s `titled`
-/// ranking rule; zero false negatives via `append_term_prefilter_clauses`).
+/// Build exact SQL clauses requiring the FIRST term to match `title_expr` via `instr(js_lower(...), ?k) > 0`
+/// and all remaining terms to match `all_expr` (1:1 aligned with `station_api::search_pick`'s `titled` ranking).
 pub fn build_first_title_like_clauses(
   title_expr : String,
   all_expr : String,
@@ -357,15 +355,15 @@ pub fn build_first_title_like_clauses(
   let mut idx = start_param
   let mut is_first = true
   for i in 0..<max_terms {
-    let t = terms[i]
+    let t = jscase::lower(terms[i])
     if t.length() == 0 {
       continue
     }
     let target_expr = if is_first { title_expr } else { all_expr }
     is_first = false
-    let (c, next_idx) = append_term_prefilter_clauses(target_expr, t, idx, params)
-    sql = sql + c
-    idx = next_idx
+    sql = sql + " AND instr(js_lower(" + target_expr + "), ?" + idx.to_string() + ") > 0"
+    params.push(base_codec::json_str(t))
+    idx = idx + 1
   }
   (sql, params)
 }
@@ -548,6 +546,11 @@ pub fn WholeStore::check_open_guard(
   Ok(true)
 }
 
+/// Idempotently register deterministic SQLite scalar function `js_lower(x)` before opening SQLite.
+pub fn WholeStore::ensure_sqlite_js_lower() -> Result[Unit, String] {
+  station_sys::register_sqlite_js_lower()
+}
+
 /// Strictly opens `<data_dir>/stillfail.db` ONLY after the caller confirms the predecessor process
 /// has exited (`predecessor_gone == true`), running `before_store(data_dir)` once (reserved for
 /// `station_replica` restore) and then `station_store::Store::open(...)` with schema migrations.
@@ -564,6 +567,10 @@ pub fn WholeStore::open_primary_after_predecessor_gone(
   }
   if !should_open {
     return Ok(())
+  }
+  match WholeStore::ensure_sqlite_js_lower() {
+    Ok(_) => ()
+    Err(e) => return Err("failed to register SQLite js_lower extension: " + e)
   }
   if !station_sys::mkdir_p(self.data_dir) {
     return Err("failed to create station data directory: " + self.data_dir)
