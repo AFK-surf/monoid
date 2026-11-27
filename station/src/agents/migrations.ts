@@ -198,6 +198,7 @@ export const NOTES: [number, string][] = [
   [191, "skills/people/<person-tag>.md (the tag is the person's email in lower case) of the person a session is for is now auto-injected at session start as <person-memory> (4 KB cap): keep personal preferences, approval habits and personal machine details there, not in MEMORY.md."],
   [192, "device_list now includes AirPlay devices (kind: \"airplay\", Apple TV / HomePod / AirPlay speakers) and new tool device_control runs standard AirPlay actions (status, power, remote, apps, launch, playing, seek, volume, keyboard, play_url, stream_audio) over the device tunnel (see skill stillfail-jobs)."],
   [193, "station_tool called with no name lists every tool it reaches (with what each does): call it so first when its description names no tools."],
+  [194, "When choosing a specific model with chat_create, pass both its full model ID and its runtime, because passing only model uses the opening chat's runtime."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only
