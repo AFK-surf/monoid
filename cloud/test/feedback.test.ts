@@ -837,9 +837,15 @@ test("ServiceStatus RPC errors fall back to direct R2 reads and never block /v1/
       .setIssuedAt()
       .setExpirationTime("10 years")
       .sign(privateKey);
+    // Clearing and both channels' prewarm all failing: still 200 and the broadcast.
+    await h.fetch("/__test/lose-status", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ times: 3, overloaded: true }) });
     const told = await h.fetch("/v1/releases/out", { method: "POST", headers: { authorization: `Bearer ${oidcToken}` } });
     assert.equal(told.status, 200);
     assert.deepEqual(await events.take(), [{ type: "release" }]);
+    // (all three were asked and failed: ServiceStatus answers again after them)
+    await h.fetch("/__test/changelog-stats");
+    assert.equal((await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } })).status, 200);
+    assert.equal(((await (await h.fetch("/__test/changelog-stats")).json()) as any).calls, 1);
     events.ws.close(1000);
   } finally {
     await h.close();
@@ -1085,6 +1091,94 @@ test("a cold isolate serves the changelog this place keeps once ServiceStatus sa
     assert.equal(stable.status, 200);
     assert.notEqual(stable.headers.get("etag"), etag2);
     assert.deepEqual(await stats(), { calls: 1, notModified: 0, full: 1 });
+  } finally {
+    await h.close();
+  }
+});
+
+test("this place keeps the changelog under the origin the request reached this Worker on, a guest's forwarded one too", async () => {
+  const SECRET = "s".repeat(40);
+  const h = await harness({ changelogCacheSeconds: 30, origin: "https://app.monoid.build", guests: [{ origin: "https://app.still.fail" }], forwardSecret: SECRET });
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1392, commit: "z", at: 12, text: ["zone"], fixes: [], parts: ["web"] }]));
+    const pop = ((await h.mf.getCaches()) as unknown as { default: { match(url: string): Promise<Response | undefined> } }).default;
+    const kept = (origin: string, channel: string) => pop.match(`${origin}/__internal/changelog-cache/${channel}?upstream=`);
+    const guest = { "x-stillfail-forwarded-origin": "https://app.still.fail", "x-stillfail-forward-secret": SECRET, "x-stillfail-forwarded-for": "203.0.113.7" };
+    const got = await h.fetch("/v1/changelog", { headers: { ...guest, "x-stillfail-channel": "beta" } });
+    assert.equal(got.status, 200);
+    const etag = got.headers.get("etag")!;
+    await got.text();
+    const here = await kept("https://app.monoid.build", "beta");
+    assert.ok(here, "kept under this Worker's own zone");
+    assert.equal(here.headers.get("x-stillfail-changelog-etag"), etag);
+    await here.text();
+    assert.equal(await kept("https://app.still.fail", "beta"), undefined, "never under the guest's origin, another zone");
+    assert.equal(await pop.match(`https://changelog-cache.internal/beta?upstream=`), undefined);
+  } finally {
+    await h.close();
+  }
+});
+
+test("POST /v1/releases/out builds both channels' changelogs before telling devices, so the herd it wakes reads none", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const h = await harness({
+    changelogCacheSeconds: 30,
+    statusRepoId: "42",
+    push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }),
+  });
+  try {
+    const { aliceTokens } = await workspace(h);
+    const beta = { "x-stillfail-channel": "beta" };
+    const cold = () => h.fetch("/__test/cold-changelog", { method: "POST" });
+    const stats = async () => (await (await h.fetch("/__test/changelog-stats")).json()) as { calls: number; notModified: number; full: number };
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1393, commit: "p", at: 13, text: ["warm v1"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1393 }));
+    const old = await h.fetch("/v1/changelog", { headers: beta });
+    const etag1 = old.headers.get("etag")!;
+    await old.text();
+    await (await h.fetch("/v1/changelog")).text();
+
+    await bucket.put("changelog.json", JSON.stringify([{ version: 1394, commit: "q", at: 14, text: ["warm v2"], fixes: [], parts: ["web"] }]));
+    await bucket.put("web-beta.json", JSON.stringify({ build: 1394 }));
+    const events = await listen(h, aliceTokens.access_token);
+    await events.take();
+    const oidcToken = await new SignJWT({
+      repository: "o/r",
+      repository_id: "42",
+      workflow_ref: "o/r/.github/workflows/pipeline.yml@refs/heads/main",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "actions" })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience(h.origin)
+      .setIssuedAt()
+      .setExpirationTime("10 years")
+      .sign(privateKey);
+    await h.failBucket({});
+    assert.equal((await h.fetch("/v1/releases/out", { method: "POST", headers: { authorization: `Bearer ${oidcToken}` } })).status, 200);
+    assert.deepEqual(await events.take(), [{ type: "release" }]);
+    // One round for both channels (the beta's six files, the stable's own changelog and five feeds; changelog.json shared).
+    const built = await h.failBucket({ get: 12 });
+    assert.equal(built.filter((c) => c === "get changelog.json").length, 1, built.join(", "));
+    assert.equal(built.length, 12, built.join(", "));
+    await stats();
+
+    // Every device told asks at once from cold isolates, with the ETag it had: the new body, no R2 read.
+    const herd = await Promise.all(
+      Array.from({ length: 6 }, async (_, i) => {
+        await cold();
+        return h.fetch("/v1/changelog", { headers: i % 2 ? { "if-none-match": etag1 } : { ...beta, "if-none-match": etag1 } });
+      }),
+    );
+    for (const r of herd) {
+      assert.equal(r.status, 200);
+      assert.equal(((await r.json()) as any).entries[0].text[0], "warm v2");
+    }
+    assert.deepEqual(await h.failBucket(), []);
+    assert.equal((await stats()).calls, 6);
+    events.ws.close(1000);
   } finally {
     await h.close();
   }

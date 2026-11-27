@@ -348,6 +348,7 @@ export class AuthGenTracker {
   readonly #vaultWsGens = new Map<string, number>();
   #vaultGlobalGen = 1;
   readonly #listeners: ((event: AuthBoundaryEvent) => void)[] = [];
+  readonly #seededListeners: ((ws: string) => void)[] = [];
 
   get globalGen(): number {
     return this.#globalGen;
@@ -366,6 +367,14 @@ export class AuthGenTracker {
     return () => {
       const idx = this.#listeners.indexOf(listener);
       if (idx >= 0) this.#listeners.splice(idx, 1);
+    };
+  }
+
+  onWorkspaceDigestSeeded(fn: (ws: string) => void): () => void {
+    this.#seededListeners.push(fn);
+    return () => {
+      const idx = this.#seededListeners.indexOf(fn);
+      if (idx >= 0) this.#seededListeners.splice(idx, 1);
     };
   }
 
@@ -490,6 +499,7 @@ export class AuthGenTracker {
     const prev = this.#workspaceDigests.get(workspace);
     if (prev === undefined) {
       this.#workspaceDigests.set(workspace, digest);
+      for (const fn of [...this.#seededListeners]) fn(workspace);
       return false;
     }
     if (prev === digest) return false;

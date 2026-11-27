@@ -108,7 +108,7 @@ pub fn sha512(data : Bytes) -> Bytes {
     h[7] = h[7] + hh
     at += 128
   }
-  Bytes::makei(64, fn(i) { ((h[i / 8] >> (56 - 8 * (i % 8))) & 0xFFUL).to_byte() })
+  Bytes::makei(64, fn(i : Int) { ((h[i / 8] >> (56 - 8 * (i % 8))) & 0xFFUL).to_byte() })
 }
 
 ///|
@@ -207,10 +207,10 @@ fn ed_add(a : EdPoint, b : EdPoint, p : @bigint.BigInt, d2 : @bigint.BigInt) -> 
   let g = ed_mod(dd + cc, p)
   let h = ed_mod(bb + aa, p)
   {
-    x: e * f % p,
-    y: g * h % p,
-    z: f * g % p,
-    t: e * h % p,
+    x: ed_mod(e * f, p),
+    y: ed_mod(g * h, p),
+    z: ed_mod(f * g, p),
+    t: ed_mod(e * h, p),
   }
 }
 

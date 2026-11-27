@@ -310,7 +310,7 @@ fn page_faults(mode : String) -> Array[String] {
 ///|
 /// Whether the rect `r` is wholly in view in the panel: inside the part seen of every box of the panel's laid out round
 /// it (a scroller's, the panel's own), so nothing over its foot or past a scroller's edge hides any of it.
-fn wholly_in_view(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool raise {
+fn wholly_in_view(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool {
   let (x, y, w, h) = r
   let (dx, _, dw, _) = t.get(@ui.Role::Dialog).rect
   t
@@ -410,8 +410,8 @@ test "wide, few models: the configurations used most under 常用搭配, one mod
   let calls = []
   let t = model_pop_calls("newchat-model", calls, liked=["claude-sonnet-5"])
   let head = t.find("常用搭配").unwrap()
-  let combos = ["Opus 5.5 · 高", "GPT-6 · 中", "Opus 5.5 · 高 · 300K", "Sonnet 5 · 低"].map(fn(l) raise { (l, t.get(Button, label=l).rect) })
-  let models = ["Opus 5.5", "GPT-6", "Sonnet 5"].map(fn(l) raise { (l, t.get(Button, label=l).rect) })
+  let combos = ["Opus 5.5 · 高", "GPT-6 · 中", "Opus 5.5 · 高 · 300K", "Sonnet 5 · 低"].map(fn(l) { (l, t.get(Button, label=l).rect) })
+  let models = ["Opus 5.5", "GPT-6", "Sonnet 5"].map(fn(l) { (l, t.get(Button, label=l).rect) })
   let effort = t.get(Radio, label="高").rect
   // (three models: no way to all of them a step further)
   assert_true(t.query(Button, label="全部模型") is None)
@@ -457,7 +457,7 @@ test "wide, few models: each configuration used most has what takes it out where
   let calls = []
   let t = model_pop_calls("newchat-model", calls, liked=["claude-sonnet-5"])
   let combos = ["Opus 5.5 · 高", "GPT-6 · 中", "Opus 5.5 · 高 · 300K", "Sonnet 5 · 低"]
-  let rects = combos.map(fn(l) raise { t.get(Button, label=l).rect })
+  let rects = combos.map(fn(l) { t.get(Button, label=l).rect })
   for i, l in combos {
     let forget = t.get(Button, label="从常用搭配移除 " + l).rect
     assert_true(!starred_beside(t, rects[i]), msg="\{l} has a star")
@@ -581,7 +581,7 @@ test "wide, many models and Codex's efforts and speeds: the models, how hard it 
   let all = t.get(Button, label="SWE-2").rect
   // how hard it thinks, its levels one under another at the panel's right, beside the models (2026-11-02 用户「思考深度
   // 放在整个面板的右边」「模型跟思考深度的并排的」)
-  let levels = ["最低", "低", "中", "高", "很高", "最高", "Ultra"].map(fn(l) raise { t.get(Radio, label=l).rect })
+  let levels = ["最低", "低", "中", "高", "很高", "最高", "Ultra"].map(fn(l) { t.get(Radio, label=l).rect })
   for i, r in levels {
     assert_true(r.0 == levels[0].0 && r.0 >= all.0 + all.2, msg="\{Repr(levels)}, beside \{Repr(all)}")
     assert_true(i == 0 || r.1 > levels[i - 1].1, msg="\{Repr(levels)}")
@@ -621,7 +621,7 @@ test "wide: how much context sits in the right column under effort; one click ap
   let context = t.get(Radio, label="完整 · 1M").rect
   assert_true(context.0 == high.0 && context.1 > high.1 + high.3 && context.1 + context.3 <= py + ph && context.0 + context.2 <= px + pw, msg="\{Repr(context)}, effort \{Repr(high)}, the panel \{Repr((px, py, pw, ph))}")
   assert_true(t.words().iter().any(fn(w) { w.0 == "上下文" }), msg="no name before it")
-  let steps = ["完整 · 1M", "500K", "300K", "200K"].map(fn(l) raise { (l, t.get(Radio, label=l).check) })
+  let steps = ["完整 · 1M", "500K", "300K", "200K"].map(fn(l) { (l, t.get(Radio, label=l).check) })
   assert_eq(steps, [("完整 · 1M", Some(On)), ("500K", Some(Off)), ("300K", Some(Off)), ("200K", Some(Off))])
   t.click(Radio, label="300K")
   t.run_for(squeeze_opening)
@@ -904,7 +904,7 @@ fn panel_lines(
   Array[(Double, Double, Double, Double)],
   Array[(Double, Double, Double, Double)],
   (Double, Double, Double, Double),
-) raise {
+) {
   let (px, py, pw, ph) = t.get(@ui.Role::Dialog).rect
   let line = @ui.alpha(@sf.theme().p.line, 0.6)
   let inside = t

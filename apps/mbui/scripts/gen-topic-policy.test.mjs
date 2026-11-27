@@ -53,13 +53,17 @@ describe("gen-topic-policy fail-fast validation and byParam codegen", () => {
     );
   });
 
-  it("rejects sensitive and live topics with keep / lasting / showKept / keepBeforeViews", () => {
+  it("rejects sensitive and live topics with keep / lasting / showKept / topicPolicy / keepBeforeViews", () => {
     assert.throws(
       () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "sensitive", keep: 4 } }),
       /sensitive topic cannot set/,
     );
     assert.throws(
       () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "sensitive", lasting: true } }),
+      /sensitive topic cannot set/,
+    );
+    assert.throws(
+      () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "sensitive", topicPolicy: true } }),
       /sensitive topic cannot set/,
     );
     assert.throws(
@@ -70,6 +74,28 @@ describe("gen-topic-policy fail-fast validation and byParam codegen", () => {
       () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "live", lasting: true } }),
       /live topic cannot set/,
     );
+    assert.throws(
+      () => generateTopicPolicyMbt(baseTopics, { ...basePolicy, a: { retention: "live", topicPolicy: true } }),
+      /live topic cannot set/,
+    );
+  });
+
+  it("generates policy-gated byParam branches when topicPolicy is true", () => {
+    const out = generateTopicPolicyMbt(baseTopics, {
+      ...basePolicy,
+      a: {
+        retention: "live",
+        byParam: {
+          key: "part",
+          values: {
+            logins: { retention: "sensitive" },
+            gated: { retention: "swr", keep: 8, showKept: true, topicPolicy: true },
+          },
+        },
+      },
+    });
+    assert.match(out, /Some\("gated"\) => if views && policy && !topic_policy_typed\(params\) \{ 8 \} else \{ 0 \}/);
+    assert.match(out, /Some\("gated"\) => policy/);
   });
 
   it("rejects lasting combined with showKept or keep or query param", () => {

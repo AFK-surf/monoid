@@ -75,7 +75,12 @@ priv enum TabAct {
 /// Tab action `act` done (in a press's handler): `close` closes the viewer where its last tab closes.
 fn tab_do(s : ScreenSess, u : ScreenUi, act : TabAct, close : () -> Unit) -> Unit {
   match act {
-    Show(id, title) => if id != s.screen { switch_screen_to(s, u, id, title, false) }
+    Show(id, title) => {
+      let sr = @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get() })
+      if id != s.screen && @sfbase.live_screen_confirmed(sr, id) {
+        switch_screen_to(s, u, id, title, false)
+      }
+    }
     Window(window) => {
       let p : Map[String, Json] = { "t": Json::string("window") }
       match window {
@@ -96,9 +101,12 @@ fn tab_do(s : ScreenSess, u : ScreenUi, act : TabAct, close : () -> Unit) -> Uni
 /// shown alone; else none (a simulator: its name in their place).
 fn view_tabs(s : ScreenSess) -> (Array[ViewTab], Bool) {
   if browser_shown(s) {
-    let (sc, listed) = browser_tabs_of(s)
+    let sr = s.src.topic("screens", { "station": Json::string(s.station) }).get()
+    let sc = sr.value
     guard sc is Some(_) else { return ([], false) }
-    let can_add = flag(sc, "browser") && flag(sc, "control")
+    let confirmed = sr.is_confirmed_known()
+    let listed = items(sc, "screens").filter(fn(item) { is_browser_screen(Some(item)) })
+    let can_add = confirmed && flag(sc, "browser") && flag(sc, "control")
     let tabs = listed.map(fn(item) {
       let id = text(Some(item), "id")
       let current = id == s.screen
@@ -116,12 +124,12 @@ fn view_tabs(s : ScreenSess) -> (Array[ViewTab], Bool) {
         note: text(Some(item), "site"),
         current,
         press: Show(id, title),
-        close: if flag(Some(item), "closable") { Some(Close(id)) } else { None },
+        close: if confirmed && !flag(Some(item), "opening") && flag(Some(item), "closable") { Some(Close(id)) } else { None },
       }
     })
     if !tabs.iter().any(fn(t) { t.current }) {
       let title = opt_text(s.state, "title").unwrap_or("")
-      let closable = (s.user_tab() || s.opens_url()) && flag(sc, "control")
+      let closable = confirmed && (s.user_tab() || s.opens_url()) && flag(sc, "control")
       tabs.push({
         key: s.screen,
         words: tab_words(title),
@@ -557,7 +565,13 @@ fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
   if !s.is_active_principal() {
     return
   }
-  let listed = browser_tabs_of(s).1.map(fn(t) { text(Some(t), "id") })
+  let sr = @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get() })
+  if !sr.is_confirmed_known() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
+    return
+  }
+  let listed = items(sr.value, "screens")
+    .filter(fn(item) { is_browser_screen(Some(item)) })
+    .map(fn(t) { text(Some(t), "id") })
   let next = @settings.new_browser_tab(s.src.call, s.station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
   let nu = screen_ui(screen_key(s.station, next))
   nu.address_asked.set(nu.address_asked.untracked() + 1)
@@ -571,19 +585,32 @@ fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], clos
   if !s.is_active_principal() {
     return
   }
+  let sr = @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get() })
+  if !sr.is_confirmed_known() {
+    return
+  }
+  let fresh_tabs = items(sr.value, "screens").filter(fn(item) { is_browser_screen(Some(item)) })
+  let can_close = match fresh_tabs.iter().find_first(fn(t) { text(Some(t), "id") == id }) {
+    Some(item) => !flag(Some(item), "opening") && flag(Some(item), "closable")
+    None => false
+  }
+  if !can_close {
+    return
+  }
   let p : Map[String, Json] = { "station": Json::string(s.station), "screen": Json::string(id) }
   (s.src.call)("screen.close", Json::object(p), failed_said(@sf.t("web-pages.screen.closeTabWhat")))
   if id != s.screen {
     return
   }
+  let use_tabs = if fresh_tabs.is_empty() { tabs } else { fresh_tabs }
   let mut at = -1
-  for i = 0; i < tabs.length(); i = i + 1 {
-    if text(Some(tabs[i]), "id") == id {
+  for i = 0; i < use_tabs.length(); i = i + 1 {
+    if text(Some(use_tabs[i]), "id") == id {
       at = i
       break
     }
   }
-  let rest = tabs.filter(fn(t) { text(Some(t), "id") != id })
+  let rest = use_tabs.filter(fn(t) { text(Some(t), "id") != id && !flag(Some(t), "opening") })
   if rest.is_empty() {
     close()
     return

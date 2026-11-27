@@ -162,6 +162,17 @@ fn fake_parse_int(s : StringView) -> Int {
 }
 
 ///|
+fn fake_parse_int_str(s : String) -> Int {
+  let mut v = 0
+  for c in s {
+    if c >= '0' && c <= '9' {
+      v = v * 10 + (c.to_int() - '0'.to_int())
+    }
+  }
+  v
+}
+
+///|
 fn fake_hex_val(c : Char) -> Int {
   if c >= '0' && c <= '9' {
     c.to_int() - '0'.to_int()
@@ -567,7 +578,11 @@ fn FakeHost::tm_write(_ : FakeHost, id : Int, data : Bytes) -> Unit {
           }
           if i < cs.length() {
             let final_ch = cs[i]
-            let raw = String::from_array(cs[start:i].to_owned())
+            let raw_chars : Array[Char] = Array(capacity=i - start)
+            for k in start..<i {
+              raw_chars.push(cs[k])
+            }
+            let raw = String::from_array(raw_chars)
             match final_ch {
               'm' => fake_apply_sgr(t, raw)
               'h' | 'l' => {
@@ -613,27 +628,27 @@ fn FakeHost::tm_write(_ : FakeHost, id : Int, data : Bytes) -> Unit {
                 t.cx = col.clamp(min=0, max=t.cols - 1)
               }
               'A' => {
-                let n = if raw == "" { 1 } else { dmax(1.0, fake_parse_int(raw[:]).to_double()).to_int() }
+                let n = if raw == "" { 1 } else { dmax(1.0, fake_parse_int_str(raw).to_double()).to_int() }
                 t.cy = (t.cy - n).clamp(min=0, max=t.rows - 1)
               }
               'B' => {
-                let n = if raw == "" { 1 } else { dmax(1.0, fake_parse_int(raw[:]).to_double()).to_int() }
+                let n = if raw == "" { 1 } else { dmax(1.0, fake_parse_int_str(raw).to_double()).to_int() }
                 t.cy = (t.cy + n).clamp(min=0, max=t.rows - 1)
               }
               'C' => {
-                let n = if raw == "" { 1 } else { dmax(1.0, fake_parse_int(raw[:]).to_double()).to_int() }
+                let n = if raw == "" { 1 } else { dmax(1.0, fake_parse_int_str(raw).to_double()).to_int() }
                 t.cx = (t.cx + n).clamp(min=0, max=t.cols - 1)
               }
               'D' => {
-                let n = if raw == "" { 1 } else { dmax(1.0, fake_parse_int(raw[:]).to_double()).to_int() }
+                let n = if raw == "" { 1 } else { dmax(1.0, fake_parse_int_str(raw).to_double()).to_int() }
                 t.cx = (t.cx - n).clamp(min=0, max=t.cols - 1)
               }
               'G' => {
-                let n = if raw == "" { 1 } else { fake_parse_int(raw[:]) }
+                let n = if raw == "" { 1 } else { fake_parse_int_str(raw) }
                 t.cx = (n - 1).clamp(min=0, max=t.cols - 1)
               }
               'J' => {
-                let mode = if raw == "" { 0 } else { fake_parse_int(raw[:]) }
+                let mode = if raw == "" { 0 } else { fake_parse_int_str(raw) }
                 let g = fake_active_grid(t)
                 let top = fake_active_top(t)
                 if mode == 2 || mode == 3 {
@@ -660,7 +675,7 @@ fn FakeHost::tm_write(_ : FakeHost, id : Int, data : Bytes) -> Unit {
                 }
               }
               'K' => {
-                let mode = if raw == "" { 0 } else { fake_parse_int(raw[:]) }
+                let mode = if raw == "" { 0 } else { fake_parse_int_str(raw) }
                 let g = fake_active_grid(t)
                 let abs_y = fake_active_top(t) + t.cy
                 if abs_y < g.length() {
@@ -676,14 +691,32 @@ fn FakeHost::tm_write(_ : FakeHost, id : Int, data : Bytes) -> Unit {
                 }
               }
               'q' if raw.has_suffix(" ") => {
-                let n = fake_parse_int(raw.unsafe_substring(start=0, end=raw.length() - 1)[:])
+                let n = fake_parse_int_str(raw.unsafe_substring(start=0, end=raw.length() - 1))
                 match n {
-                  0 | 1 => { t.cur_style = 1; t.cur_blink = true }
-                  2 => { t.cur_style = 1; t.cur_blink = false }
-                  3 => { t.cur_style = 2; t.cur_blink = true }
-                  4 => { t.cur_style = 2; t.cur_blink = false }
-                  5 => { t.cur_style = 0; t.cur_blink = true }
-                  6 => { t.cur_style = 0; t.cur_blink = false }
+                  0 | 1 => {
+                    t.cur_style = 1
+                    t.cur_blink = true
+                  }
+                  2 => {
+                    t.cur_style = 1
+                    t.cur_blink = false
+                  }
+                  3 => {
+                    t.cur_style = 2
+                    t.cur_blink = true
+                  }
+                  4 => {
+                    t.cur_style = 2
+                    t.cur_blink = false
+                  }
+                  5 => {
+                    t.cur_style = 0
+                    t.cur_blink = true
+                  }
+                  6 => {
+                    t.cur_style = 0
+                    t.cur_blink = false
+                  }
                   _ => ()
                 }
               }
@@ -728,7 +761,11 @@ fn FakeHost::tm_resize(_ : FakeHost, id : Int, cols : Int, rows : Int, _cw : Int
     if r.length() == cols {
       r
     } else if r.length() > cols {
-      r[:cols].to_owned()
+      let next : Array[FakeCell] = Array(capacity=cols)
+      for k in 0..<cols {
+        next.push(r[k])
+      }
+      next
     } else {
       let next = fake_make_row(cols)
       for k in 0..<r.length() {
@@ -898,7 +935,11 @@ fn fake_row_slice_trimmed(row : Array[FakeCell], a : Int, b : Int) -> String {
   while n > 0 && cs[n - 1] == ' ' {
     n -= 1
   }
-  String::from_array(cs[:n].to_owned())
+  let trimmed : Array[Char] = Array(capacity=n)
+  for k in 0..<n {
+    trimmed.push(cs[k])
+  }
+  String::from_array(trimmed)
 }
 
 ///|

@@ -92,7 +92,15 @@ fn stories_u17() -> Array[Story] {
             let all = [("claude", "subscription", ""), ("codex", "subscription", ""), ("claude", "api-provider", "kimi"), ("claude", "opencode-go", "")]
             side_by_side(card, fn(r) {
               for size in [16.0, 18.0, 24.0] {
-                @sfbase.provider_mark_node(r, fn() { all[at.get() % all.length()] }, size)
+                @sfbase.provider_mark_node(
+                  r,
+                  fn() {
+                    let idx : Int = at.get()
+                    let len : Int = all.length()
+                    all[idx % len]
+                  },
+                  size,
+                )
               }
               @sf.button_node(r, fn() { "换一个" }, fn() { at.set(at.get() + 1) }) |> ignore
             })

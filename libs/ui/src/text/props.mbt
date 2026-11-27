@@ -7,6 +7,9 @@ priv struct RangeTable {
   starts : FixedArray[Int]
   vals : FixedArray[Int]
   low : FixedArray[Int]
+  /// Uniform table value for CJK Unified Ideographs (`0x4E00..=0x9FFF`) and Extension A (`0x3400..=0x4DBF`),
+  /// verified at decode time against the generated Unicode range table; `-1` if either range is non-uniform.
+  cjk_val : Int
 }
 
 ///|
@@ -64,11 +67,42 @@ fn RangeTable::decode(data : String) -> RangeTable {
   }
   let st = FixedArray::from_array(starts)
   let vs = FixedArray::from_array(vals)
-  let t = { starts: st, vals: vs, low: FixedArray::make(256, 0) }
+  let t = { starts: st, vals: vs, low: FixedArray::make(256, 0), cjk_val: -1 }
   for c in 0..<256 {
     t.low[c] = t.search(c)
   }
-  t
+  let cjk = t.search(0x4E00)
+  if t.range_uniform(0x4E00, 0x9FFF, cjk) && t.range_uniform(0x3400, 0x4DBF, cjk) {
+    { ..t, cjk_val: cjk }
+  } else {
+    t
+  }
+}
+
+///|
+fn RangeTable::range_uniform(self : RangeTable, lo_cp : Int, hi_cp : Int, want : Int) -> Bool {
+  let starts = self.starts
+  let mut lo = 0
+  let mut hi = starts.length() - 1
+  while lo < hi {
+    let mid = (lo + hi + 1) / 2
+    if starts[mid] <= lo_cp {
+      lo = mid
+    } else {
+      hi = mid - 1
+    }
+  }
+  if self.vals[lo] != want {
+    return false
+  }
+  let mut idx = lo + 1
+  while idx < starts.length() && starts[idx] <= hi_cp {
+    if self.vals[idx] != want {
+      return false
+    }
+    idx = idx + 1
+  }
+  true
 }
 
 ///|
@@ -91,6 +125,8 @@ fn RangeTable::search(self : RangeTable, c : Int) -> Int {
 fn RangeTable::get(self : RangeTable, c : Int) -> Int {
   if c < 256 {
     self.low[c]
+  } else if self.cjk_val >= 0 && ((c >= 0x4E00 && c <= 0x9FFF) || (c >= 0x3400 && c <= 0x4DBF)) {
+    self.cjk_val
   } else {
     self.search(c)
   }

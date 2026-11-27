@@ -186,7 +186,7 @@ test "a finger that moves scrolls the pages; one held picks the word under it" {
 
 ///|
 /// A note made on the first page's words, from a drag to 完成 (its words written first where `said`).
-fn pdf_note_made(t : @ui.Tester, x : Double, y : Double, w : Double, h : Double, said? : String = "") -> Unit raise {
+fn pdf_note_made(t : @ui.Tester, x : Double, y : Double, w : Double, h : Double, said? : String = "") -> Unit {
   t.drag(x + 100.5 / 600.0 * w, y + 100.0 / 800.0 * h, x + 199.5 / 600.0 * w, y + 100.0 / 800.0 * h)
   t.tap_text("批注")
   if said != "" {

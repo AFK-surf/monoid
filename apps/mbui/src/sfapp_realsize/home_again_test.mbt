@@ -187,8 +187,11 @@ test "home again: a place of the bar tapped from Home at rest, and Home tapped a
         home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
         // (three-tier list replaces inline 多选 + 账号|概览 segment with 概览/批量管理 collection card -> made=546, laid=419;
-        // PR-B4 fill_chip_node + quota_chips_node flattening lowers profiles further -> made=522, laid=395)
-        assert_eq(home_again_peak.val, if place == "profiles" { (522, 0, 395) } else { (366, 0, 257) }, msg="\{tag} home→\{place}")
+        // PR-B4 fill_chip_node + quota_chips_node flattening lowers profiles further -> made=522, laid=395;
+        // compact grouped Profiles & Connects rows fit more visible rows with equal-width fill_chip_node(small=true)
+        // micro-capsules & inline session counts: phone home→profiles (522→560 +7.3% made, 395→405 +2.5% laid),
+        // phone home→connects (366→475 +29.8% made, 257→329 +28.0% laid))
+        assert_eq(home_again_peak.val, if place == "profiles" { (560, 0, 405) } else { (475, 0, 329) }, msg="\{tag} home→\{place}")
         t.run_for(@sfapptest.kept_switch_over_ms)
         home_again_measure(t, "\{tag} \{place}→home", fn() { t.tap(xs[0], y) })
         println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked chats)")
@@ -362,12 +365,16 @@ test "home again: Home come back to in a taller phone's window, and from a page 
       home_again_measure(t, "\{tag} home→\{place}", fn() { t.tap(xs[i], y) })
       println("home-again \{tag}: on \{Repr(@sfapp.place_of(@sfbase.app.nav.top()))} (asked \{place})")
       // (three-tier list replaces inline 多选 + 账号|概览 segment with 概览/批量管理 collection card -> made=686, laid=527;
-      // PR-B4 fill_chip_node + quota_chips_node flattening lowers tall profiles further -> made=654, laid=495)
+      // PR-B4 fill_chip_node + quota_chips_node flattening lowers tall profiles further -> made=654, laid=495;
+      // compact grouped Profiles & Connects rows fit more visible rows in tall viewport:
+      // tall home→profiles (654→747 +14.2% made, 495→538 +8.7% laid),
+      // tall home→connects (440→648 +47.3% made, 308→448 +45.5% laid))
       let first = if place == "profiles" {
-        (654, 0, 495)
+        (747, 0, 538)
       } else if place == "connects" {
-        // (-2 made/-1 laid: a page's room under its last block its list's end_room, no block of it)
-        (440, 0, 308)
+        // (-2 made/-1 laid: a page's room under its last block its list's end_room, no block of it;
+        // compact grouped Connects rows with inline session counts & metadata slots: 440→648 +47.3% made, 308→448 +45.5% laid)
+        (648, 0, 448)
       } else {
         // (用量's controls that are a button only while they filter, its rank rows and its legend, each over
         // action_box_while_node's pick; 3 seg_fill_nodes -> made unchanged, +9 initial laid; -1 structure-box in usage_node;

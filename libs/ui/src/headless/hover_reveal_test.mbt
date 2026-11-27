@@ -103,7 +103,7 @@ fn RevealCase::shown(self : RevealCase) -> Bool {
 
 ///|
 /// The middle of what is called `name`.
-fn RevealCase::middle(self : RevealCase, name : String) -> (Double, Double) raise {
+fn RevealCase::middle(self : RevealCase, name : String) -> (Double, Double) {
   let (x, y, w, h) = self.t.get(Button, label=name).rect
   (x + w / 2.0, y + h / 2.0)
 }

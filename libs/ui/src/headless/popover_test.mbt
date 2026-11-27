@@ -49,7 +49,7 @@ fn pop_case() -> PopCase raise {
 
 ///|
 /// The middle of the button called `name`.
-fn pop_middle(t : @ui.Tester, name : String) -> (Double, Double) raise {
+fn pop_middle(t : @ui.Tester, name : String) -> (Double, Double) {
   let (x, y, w, h) = t.get(Button, label=name).rect
   (x + w / 2.0, y + h / 2.0)
 }

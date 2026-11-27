@@ -29,8 +29,8 @@ function fixture() {
     get(target, prop) {
       if (prop === "prepare") {
         return (sql: string) => target.prepare(sql.replace(
-          "SELECT body FROM vault_asks WHERE ws = ?",
-          "SELECT body, ask_seen(device) AS seen FROM vault_asks WHERE ws = ?",
+          "SELECT at, device, body FROM vault_asks WHERE ws = ?",
+          "SELECT at, device, body, ask_seen(device) AS seen FROM vault_asks WHERE ws = ?",
         ));
       }
       const value = Reflect.get(target, prop, target);
@@ -49,8 +49,8 @@ function fixture() {
     const otherVault = `v_01HZZZZZZZZZZZZZZZZZZZZ${String(i).padStart(3, "0").replace(/[^0-9A-HJKMNP-TV-Z]/g, "0")}`;
     vaults.putAsk(signAsk(otherVault, i.toString(16).padStart(64, "0"), 1000 + i));
   }
-  // Seed 80 asks for revoked devices in Alice's own vault with higher `at` — active device filter must keep Alice's ask visible!
-  for (let i = 0; i < 80; i++) {
+  // Seed 500 asks for revoked devices in Alice's own vault with higher `at` — PK active-device probe must skip all 500!
+  for (let i = 0; i < 500; i++) {
     vaults.putAsk(signAsk(myVaultId, `f${i.toString(16).padStart(63, "0")}`, 5000 + i));
   }
   const myAsk = signAsk(myVaultId, v.device.id, 2000);
@@ -119,6 +119,70 @@ test("GET /vault/asks scans only the viewer's vaults via vault_asks_vault_at ind
     assert.equal(answer2.status, 200);
     assert.equal(answer2.body.asks.filter((a: KeyAsk) => a.vault === secondVaultId).length, 5, "empty vaults must not cap active vault below its 5 asks");
     assert.equal(answer2.body.asks.filter((a: KeyAsk) => a.vault === f.myVaultId).length, 1);
+
+    // Keyset scan past 68 stale/invalid-signature rows in one vault still reaches the valid ask underneath (bounded <= perVaultScan).
+    const thirdVaultId = "v_01HZZZZZZZZZZZZZZZZZZZZZZ3";
+    f.vaults.putVault({
+      v: 1, ws: f.myAsk.ws, id: thirdVaultId, seq: 0, owner: "alice", name: "Third", members: ["alice"], epoch: 0,
+      keys: [], at: 1000, sig: f.myAsk.sig,
+    });
+    for (let i = 0; i < 68; i++) {
+      const devId = `e${i.toString(16).padStart(63, "0")}`;
+      const bad = f.signAsk(thirdVaultId, devId, 9000 + i);
+      // Corrupt signature (simulating rotated signing key) while keeping device active in lock.
+      f.vaults.putAsk({ ...bad, sig: { ...bad.sig, sig: "00".repeat(64) } });
+    }
+    const validUnderStale = f.signAsk(thirdVaultId, f.myAsk.device, 1500);
+    f.vaults.putAsk(validUnderStale);
+    const answer3 = await f.read();
+    assert.equal(answer3.status, 200);
+    assert.deepEqual(
+      answer3.body.asks.filter((a: KeyAsk) => a.vault === thirdVaultId),
+      [validUnderStale],
+      "bounded keyset cursor must advance past 68 stale rotated-key rows to find valid ask",
+    );
+
+    // Split cursor queries must both seek on vault_asks_vault_at with 0 TEMP B-TREE (no rescan of earlier pages).
+    const planSame = f.db.prepare(
+      "EXPLAIN QUERY PLAN SELECT at, device, body FROM vault_asks INDEXED BY vault_asks_vault_at WHERE ws = ? AND vault = ? AND at = ? AND device > ? ORDER BY at DESC, device ASC LIMIT 64",
+    ).all(f.myAsk.ws, thirdVaultId, 9000, "e0") as { detail: string }[];
+    assert.ok(planSame.some((p) => p.detail.includes("USING INDEX vault_asks_vault_at") && p.detail.includes("at=?") && p.detail.includes("device>?")), `expected same-at index seek: ${JSON.stringify(planSame)}`);
+    assert.ok(!planSame.some((p) => p.detail.includes("TEMP B-TREE")), `unexpected temp sort: ${JSON.stringify(planSame)}`);
+    const planOlder = f.db.prepare(
+      "EXPLAIN QUERY PLAN SELECT at, device, body FROM vault_asks WHERE ws = ? AND vault = ? AND at < ? ORDER BY at DESC, device ASC LIMIT 64",
+    ).all(f.myAsk.ws, thirdVaultId, 9000) as { detail: string }[];
+    assert.ok(planOlder.some((p) => p.detail.includes("USING INDEX vault_asks_vault_at") && p.detail.includes("at<?")), `expected older-at index seek: ${JSON.stringify(planOlder)}`);
+    assert.ok(!planOlder.some((p) => p.detail.includes("TEMP B-TREE")), `unexpected temp sort: ${JSON.stringify(planOlder)}`);
+
+    // Above 256 active devices (e.g. 300 active devices), batched PK probes must STILL ignore thousands of revoked
+    // historical asks (no cliff back to scanning revoked rows on vault_asks_vault_at).
+    const bigVaultId = "v_01HZZZZZZZZZZZZZZZZZZZZZZ4";
+    f.vaults.putVault({
+      v: 1, ws: f.myAsk.ws, id: bigVaultId, seq: 0, owner: "alice", name: "Big", members: ["alice"], epoch: 0,
+      keys: [], at: 1000, sig: f.myAsk.sig,
+    });
+    for (let i = 0; i < 2000; i++) {
+      f.vaults.putAsk(f.signAsk(bigVaultId, `d${i.toString(16).padStart(63, "0")}`, 20000 + i));
+    }
+    const bigAsk = f.signAsk(bigVaultId, f.myAsk.device, 1200);
+    f.vaults.putAsk(bigAsk);
+    const active300 = [f.myAsk.device];
+    for (let i = 0; i < 299; i++) active300.push(`c${i.toString(16).padStart(63, "0")}`);
+    const before200 = f.vaults.asksForVaults(f.myAsk.ws, [bigVaultId], 64, { devices: active300.slice(0, 200) });
+    assert.deepEqual(before200, [bigAsk]);
+    const above256 = f.vaults.asksForVaults(f.myAsk.ws, [bigVaultId], 64, { devices: active300 });
+    assert.deepEqual(above256, [bigAsk]);
+    // Verify via GET /vault/asks with 300 active devices in LockState that inspected rows stays strictly bounded (0 revoked rows scanned).
+    for (const id of active300) {
+      if (!f.state.devices.has(id)) {
+        f.state.devices.set(id, { id, sub: "alice", kind: "app", label: id.slice(0, 8), own: true, sign_key: f.myAsk.sig.key });
+      }
+    }
+    const answerBig = await f.read();
+    assert.equal(answerBig.status, 200);
+    assert.ok(answerBig.body.asks.some((a: KeyAsk) => a.vault === bigVaultId && a.device === f.myAsk.device));
+    // Total inspected rows across ALL vaults (1 + 5 + 69 + 1 = 76) — NONE of the 2,500 revoked asks were touched!
+    assert.ok(answerBig.inspected < 100, `expected batched PK probes to skip all 2,500 revoked asks, but inspected ${answerBig.inspected} rows`);
   } finally {
     f.db.close();
   }

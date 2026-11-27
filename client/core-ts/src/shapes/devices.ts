@@ -205,6 +205,7 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["drop", opt("ScreenDrop"), { doc: "Where a file dropped into a view of it is put on the station's machine; none from a station before files." }],
     ["peek", "bool", { default: true, doc: "It can be previewed (`screen.view` with `peek`): a tab of the station's browser; none from a station before previews." }],
     ["userTab", opt("bool"), { doc: "A page a person opened on the station (`screen.openBrowser`), kept in its browser's own profile and put to sleep while idle." }],
+    ["opening", opt("bool"), { doc: "Optimistic browser tab currently being opened on the station (not yet confirmed in the station's list)." }],
     ["farview", opt("bool"), { doc: "A Farview tab: the app draws it itself in Farview's own protocol (`farview.view`), not as a screen's pictures; none from a station before it." }],
     ["sleeping", opt("bool"), { doc: "Its browser tab is put to sleep (`screen.sleep` or idle): opening a view wakes it at its saved address." }],
     ["site", opt("String"), { doc: "The site's host (`mail.proton.me`), when its address is an http(s) page." }],
@@ -292,6 +293,8 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["outdated", "bool", { doc: "The station is from before screens: it has none to show until it is updated." }],
     ["control", "bool", { doc: "The viewer may drive them (a read-only member only sees)." }],
     ["known", "bool", { doc: "The station said which it has (false while it has not been reached since the core started)." }],
+    ["confirmed", "bool", { doc: "The station replied in the current auth generation (false while showing keeper cache from before)." }],
+    ["denied", opt("bool"), { doc: "The station explicitly refused access (401/403) in the current auth generation." }],
     ["note", opt("String"), { said: true, doc: "Why there are none to show, when there is a reason (the station needs an update, is offline)." }],
   ], { doc: "A station's screens (the `screens` topic, client/core-ts/src/screens.ts)." }),
   TerminalItem: struct([
@@ -310,6 +313,8 @@ export const DEVICE_SHAPES: Record<string, Shape> = {
     ["outdated", "bool", { doc: "The station is from before terminals: it has none until it is updated." }],
     ["open", "bool", { doc: "The viewer may open one and type (a read-only member only looks)." }],
     ["known", "bool", { doc: "The station said which it has (false while it has not been reached since the core started)." }],
+    ["confirmed", "bool", { doc: "The station replied in the current auth generation (false while showing keeper cache from before)." }],
+    ["denied", opt("bool"), { doc: "The station explicitly refused access (401/403) in the current auth generation." }],
   ], { doc: "A station's terminals (the `terminals` topic, client/core-ts/src/terminals.ts)." }),
   ScreenCard: struct([
     ["kind", "String", { doc: "`desktop` or `browser`, as the screen is (or, not in its station's list, as its id says)." }],

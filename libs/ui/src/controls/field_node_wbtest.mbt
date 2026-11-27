@@ -35,7 +35,7 @@ fn field_node_case(make : (@view.View) -> Unit, platform? : Int = 0) -> @ui.Test
 
 ///|
 /// The middle of what says it is a field to type in, labelled `label`.
-fn field_middle(t : @ui.Tester, label : String) -> (Double, Double) raise {
+fn field_middle(t : @ui.Tester, label : String) -> (Double, Double) {
   let (x, y, w, h) = t.get(TextField, label~).rect
   (x + w / 2.0, y + h / 2.0)
 }

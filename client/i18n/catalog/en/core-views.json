@@ -691,6 +691,7 @@
   "core-views.terminal.gone": "This terminal has ended",
   "core-views.terminal.outdated": "Update this station to open a terminal",
   "core-views.terminal.remote": "Remote terminal",
+  "core-views.terminal.denied": "Can't open this terminal right now",
   "core-views.terminal.typing": "{name} typing",
   "core-views.permissions.capture.name": "Screen Recording",
   "core-views.permissions.capture.line": "See this screen remotely; agents take screenshots",

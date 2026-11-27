@@ -382,8 +382,11 @@ test("routes: a version out of order is a conflict, sent the one held; a bad one
   assert.deepEqual(again.body.vault, v0);
   const gap = await s.ask("PUT", "/vault/vaults", "alice", vaultOf(w, { seq: 2 }));
   assert.equal(gap.body.code, "vault_conflict");
-  // Signed by someone else than the owner: refused, and nothing changes.
-  const bobs = await s.ask("PUT", "/vault/vaults", "bob", vaultOf(w, { seq: 1, by: w.bob }));
+  // Non-member cannot probe vault existence via PUT; member submitting a vault signed by someone else is refused 400.
+  const bobsProbe = await s.ask("PUT", "/vault/vaults", "bob", vaultOf(w, { seq: 1, by: w.bob }));
+  assert.equal(bobsProbe.status, 404);
+  assert.equal(bobsProbe.body.code, "vault_unknown");
+  const bobs = await s.ask("PUT", "/vault/vaults", "alice", vaultOf(w, { seq: 1, by: w.bob }));
   assert.equal(bobs.status, 400);
   assert.equal(bobs.body.code, "vault_invalid");
   assert.match(bobs.body.error, /owner's devices/);

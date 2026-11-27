@@ -166,7 +166,7 @@ fn Case::ground(self : Case) -> Int64 {
 
 ///|
 /// The middle of the button.
-fn Case::middle(self : Case) -> (Double, Double) raise {
+fn Case::middle(self : Case) -> (Double, Double) {
   let (x, y, w, h) = self.t.get(Button, label="保存").rect
   (x + w / 2.0, y + h / 2.0)
 }

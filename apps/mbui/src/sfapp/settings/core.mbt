@@ -19,6 +19,27 @@ pub impl Eq for Read with equal(a, b) {
 }
 
 ///|
+/// Whether this read is unconfirmed (`version < 0`: `-1` unheld placeholder, `-2` `Client::show_kept`,
+/// or `<= -3` `LastSaid`) rather than a fresh value confirmed by the core (`version >= 0`).
+pub fn Read::is_retained(self : Read) -> Bool {
+  self.version < 0
+}
+
+///|
+/// Whether this read is a fresh, confirmed value from the core (`version >= 0 && value is Some(_)`)
+/// rather than an unconfirmed empty subscription (`version == 0, value == None`) or a retained/placeholder value (`version < 0`).
+pub fn Read::is_confirmed(self : Read) -> Bool {
+  self.version >= 0 && self.value is Some(_)
+}
+
+///|
+/// Whether a station capability read (`screens` or `terminals`) is freshly confirmed by the station itself
+/// in the current auth generation (`version >= 0`, `value is Some(_)`, `known == true`, `confirmed == true`, and `!outdated`).
+pub fn Read::is_confirmed_known(self : Read) -> Bool {
+  self.is_confirmed() && flag(self.value, "known") && flag(self.value, "confirmed") && !flag(self.value, "outdated")
+}
+
+///|
 /// What the pages need of the app around them.
 pub(all) struct Core {
   /// the topic `name` with its params (the core's `subscribe`)
@@ -811,4 +832,4 @@ pub let answer_unread : (Result[Json, Json]) -> Unit = fn(_) { () }
 /// it makes its cores (sfbase's settings_core), not a field of `Core`, whose shape every unit that reads one is
 /// compiled by.
 // kept across runs: the app's, said once as it starts
-pub let open_terminal_of : Ref[(String, String, String) -> Unit] = Ref(fn(_, _, _) {  })
+pub let open_terminal_of : Ref[(String, String, String, Bool) -> Unit] = Ref(fn(_, _, _, _) {  })

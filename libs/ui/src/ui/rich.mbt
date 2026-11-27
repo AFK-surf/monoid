@@ -455,20 +455,28 @@ priv struct RichPrep {
   base_desc : Double
   extra : Double
   bidi : @text.Bidi?
+  one_shape : Shaped?
 }
 
 ///|
-/// UAX #14 line-break opportunities before each cluster of `self`, computed once on demand and kept on `self`.
+/// UAX #14 line-break opportunities before each cluster of `self`, computed once on demand and kept on `self`
+/// (reusing the shared `Shaped.brk` cache for single-run paragraphs).
 fn RichPrep::breaks(self : RichPrep) -> Array[Int] {
   let n = self.starts.length()
   if self.brk.length() == n {
     return self.brk
   }
-  let brk = Array::make(n, 0)
-  if n > 1 {
-    let b = @text.line_breaks(self.text)
-    for i in 1..<n {
-      brk[i] = b[self.starts[i]]
+  let brk = match self.one_shape {
+    Some(s) => s.breaks(self.text)
+    None => {
+      let arr = Array::make(n, 0)
+      if n > 1 {
+        let b = @text.line_breaks(self.text)
+        for i in 1..<n {
+          arr[i] = b[self.starts[i]]
+        }
+      }
+      arr
     }
   }
   self.brk = brk
@@ -690,24 +698,29 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
   if one && r.runs.length() == 1 && r.runs[0].drawing is None {
     return rich_prep_one(r, r.runs[0], cjk, lh, sc, px, base_asc, base_desc, extra)
   }
-  let sb = StringBuilder()
-  let run_start = []
-  let run_c0 = []
-  let run_c1 = []
-  let run_size = []
-  let run_a = []
-  let run_d = []
-  let run_lasc = []
-  let run_ldesc = []
-  let run_extra = []
-  let drawings = []
-  let starts = []
-  let lens = []
-  let adv = []
-  let pre = []
-  let keys = []
-  let cu = []
-  let run_of = []
+  let total_runs = r.runs.length()
+  let mut est_clusters = 0
+  for run in r.runs {
+    est_clusters = est_clusters + run.text.length()
+  }
+  let sb = StringBuilder(capacity=est_clusters)
+  let run_start = Array(capacity=total_runs)
+  let run_c0 = Array(capacity=total_runs)
+  let run_c1 = Array(capacity=total_runs)
+  let run_size = Array(capacity=total_runs)
+  let run_a = Array(capacity=total_runs)
+  let run_d = Array(capacity=total_runs)
+  let run_lasc = Array(capacity=total_runs)
+  let run_ldesc = Array(capacity=total_runs)
+  let run_extra = Array(capacity=total_runs)
+  let drawings = Array(capacity=total_runs)
+  let starts = Array(capacity=est_clusters)
+  let lens = Array(capacity=est_clusters)
+  let adv = Array(capacity=est_clusters)
+  let pre = Array(capacity=est_clusters)
+  let keys = Array(capacity=est_clusters)
+  let cu = Array(capacity=est_clusters)
+  let run_of = Array(capacity=est_clusters)
   let mut off = 0
   let mut all_simple_ltr = true
   // 1-slot per-run metrics cache for push_single: (size, weight, style, ov, run_cjk, a, d, lasc, ldesc, rx_val)
@@ -792,7 +805,6 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
     off = off + run.text.length()
   }
 
-  let total_runs = r.runs.length()
   let mut k = 0
   while k < total_runs {
     let run = r.runs[k]
@@ -991,19 +1003,9 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
     k = k + 1
   }
   let text = sb.to_string()
-  let n = starts.length()
-  let brk = if r.wrap {
-    let brk = Array::make(n, 0)
-    if n > 1 {
-      let b = @text.line_breaks(text)
-      for i in 1..<n {
-        brk[i] = b[starts[i]]
-      }
-    }
-    brk
-  } else {
-    []
-  }
+  // Defer UAX #14 line_breaks until rich_lines actually overflows a line or rich_least_w asks for it (RichPrep::breaks),
+  // avoiding line-break analysis for every single-line or hard-newline-only `wrap=true` rich paragraph.
+  let brk : Array[Int] = []
   // a label (a run on a ground of its own shape) is one thing, as CSS's inline-block is: a line breaks before it
   // (right to left: each line's clusters put in their visual order, rich_lines)
   let bd = if all_simple_ltr { None } else { @text.bidi_mixed(text) }
@@ -1032,6 +1034,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
     base_desc,
     extra,
     bidi: bd,
+    one_shape: None,
   }
 }
 
@@ -1094,13 +1097,14 @@ fn rich_prep_one(
     pre,
     keys: s.keys,
     cu: s.cu,
-    brk: if r.wrap { s.breaks(run.text) } else { [] },
+    brk: [],
     run_of: Array::make(n, 0),
     len: run.text.length(),
     base_asc,
     base_desc,
     extra,
     bidi: s.bidi,
+    one_shape: Some(s),
   }
 }
 
@@ -1124,14 +1128,15 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
   let pre = p.pre
   let keys = p.keys
   let cu = p.cu
-  let brk = if r.wrap { p.breaks() } else { [] }
+  let n = starts.length()
+  // Defer UAX #14 line_breaks until wrapping actually overflows a line (reusing cached p.brk if already populated).
+  let mut brk : Array[Int] = if r.wrap && p.brk.length() == n { p.brk } else { [] }
   let run_of = p.run_of
   let base_asc = p.base_asc
   let base_desc = p.base_desc
   let extra = p.extra
-  let n = starts.length()
   // rather than within it, unless it is wider than a whole line; each cluster in one kept whole: where it starts
-  let whole = Array::make(n, -1)
+  let mut whole : Array[Int] = []
   if r.wrap {
     for k, run in r.runs {
       let c0 = run_c0[k]
@@ -1144,6 +1149,9 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
         w = w + adv[c]
       }
       if w <= max_w + 0.01 {
+        if whole.is_empty() {
+          whole = Array::make(n, -1)
+        }
         for c in (c0 + 1)..<c1 {
           whole[c] = c0
         }
@@ -1233,13 +1241,24 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
     if !hang_at.is_empty() && hang_at.contains(i) && x < max_w / 2.0 {
       hang = x
     }
-    if r.wrap && i > ls && brk[i] != 0 {
+    if r.wrap && i > ls && !brk.is_empty() && brk[i] != 0 {
       last_break = i
     }
     let a = adv[i]
     if r.wrap && x + a > max_w + 0.01 && i > ls && c != 32 {
+      if brk.is_empty() {
+        brk = p.breaks()
+        let mut j = i
+        while j > ls {
+          if brk[j] != 0 {
+            last_break = j
+            break
+          }
+          j = j - 1
+        }
+      }
       let b = if last_break > ls { last_break } else { i }
-      let b = if whole[b] > ls { whole[b] } else { b }
+      let b = if !whole.is_empty() && whole[b] > ls { whole[b] } else { b }
       finish(ls, b)
       ls = b
       i = b
@@ -1276,25 +1295,64 @@ fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
   // each line as high as its tallest run needs, its baseline shared
   let mut y = 0.0
   let mut last_extra = extra
-  let last_line = line_start.length() - 1
-  for l in 0..<line_start.length() {
-    let mut asc = base_asc
-    let mut desc = base_desc
-    let is_last = l == last_line
-    for c in line_start[l]..<line_end[l] {
-      let k = run_of[c]
-      asc = dmax(asc, run_lasc[k])
-      desc = dmax(desc, run_ldesc[k])
-      if is_last {
-        last_extra = dmax(last_extra, run_extra[k])
-      }
+  let line_n = line_start.length()
+  let last_line = line_n - 1
+  // Fast path when all non-empty runs share uniform effective line metrics (single-run paragraphs and uniform prose).
+  let mut uniform = true
+  let mut uni_asc = base_asc
+  let mut uni_desc = base_desc
+  let mut uni_extra = extra
+  let mut seen_nonempty = false
+  for k in 0..<run_lasc.length() {
+    if run_c1[k] <= run_c0[k] {
+      continue
     }
-    lay.line_y.push(y)
-    lay.line_h.push(asc + desc)
-    lay.line_base.push(asc)
-    y = y + asc + desc
+    let ra = dmax(base_asc, run_lasc[k])
+    let rd = dmax(base_desc, run_ldesc[k])
+    let rx = dmax(extra, run_extra[k])
+    if !seen_nonempty {
+      seen_nonempty = true
+      uni_asc = ra
+      uni_desc = rd
+      uni_extra = rx
+    } else if ra != uni_asc || rd != uni_desc || rx != uni_extra {
+      uniform = false
+      break
+    }
   }
-  { ..lay, w: w_max, h: y + last_extra }
+  if uniform {
+    for l in 0..<line_n {
+      let empty = line_start[l] >= line_end[l]
+      let asc = if empty { base_asc } else { uni_asc }
+      let desc = if empty { base_desc } else { uni_desc }
+      if l == last_line && !empty {
+        last_extra = uni_extra
+      }
+      lay.line_y.push(y)
+      lay.line_h.push(asc + desc)
+      lay.line_base.push(asc)
+      y = y + asc + desc
+    }
+  } else {
+    for l in 0..<line_n {
+      let mut asc = base_asc
+      let mut desc = base_desc
+      let is_last = l == last_line
+      for c in line_start[l]..<line_end[l] {
+        let k = run_of[c]
+        asc = dmax(asc, run_lasc[k])
+        desc = dmax(desc, run_ldesc[k])
+        if is_last {
+          last_extra = dmax(last_extra, run_extra[k])
+        }
+      }
+      lay.line_y.push(y)
+      lay.line_h.push(asc + desc)
+      lay.line_base.push(asc)
+      y = y + asc + desc
+    }
+  }
+  { ..lay, brk, w: w_max, h: y + last_extra }
 }
 
 ///|

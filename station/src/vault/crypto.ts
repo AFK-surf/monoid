@@ -14,6 +14,41 @@ export type BoxCert = { v: 1; ws: string; device: string; box: string; recovery?
 /// A device's explicit per-vault key authorization request (`vault.ask`), signed separately from `BoxCert` so
 /// automatic box-certificate publishing never triggers prompts and asks never bloat `Vault.keys`.
 export type KeyAsk = { v: 1; ws: string; vault: string; device: string; box: string; at: number; sig: Sig };
+/// A non-member workspace user's explicit request to join (or withdraw from requesting) a shared workspace vault,
+/// structurally isolated from `KeyAsk` so join requests never trigger global `lockPrompts` popups.
+export type JoinAsk = {
+  v: 1;
+  ws: string;
+  vault: string;
+  sub: string;
+  device: string;
+  box: string;
+  state: "pending" | "cancelled";
+  at: number;
+  sig: Sig;
+};
+/// A workspace vault admin's signed dismissal watermark for a member's join requests up to `upTo`, converging
+/// monotonically across stations. Under current-role verification, a demoted admin's signature becomes inactive.
+export type JoinDismiss = {
+  v: 1;
+  ws: string;
+  vault: string;
+  sub: string;
+  upTo: number;
+  at: number;
+  sig: Sig;
+};
+/// Minimal non-secret summary of a shared workspace vault shown to unjoined workspace members for discovery.
+export type DiscoverableVault = {
+  id: string;
+  ws: string;
+  name: string;
+  scope: "workspace";
+  owner: string;
+  memberCount: number;
+  seq: number;
+  at: number;
+};
 export type Vault = {
   v: 1; ws: string; id: string; seq: number; owner: string; name: string; members: string[]; epoch: number;
   keys: { cert: BoxCert; wrapped: string }[]; recovery?: string; at: number; sig: Sig;
@@ -116,6 +151,8 @@ export type Deny = { v: 1; ws: string; request: string; at: number; sig: Sig };
 export const TAG = {
   box: "stillfail-vault-box/1",
   ask: "stillfail-vault-ask/1",
+  join: "stillfail-vault-join/1",
+  joinDismiss: "stillfail-vault-join-dismiss/1",
   vault: "stillfail-vault/1",
   item: "stillfail-vault-item/1",
   grant: "stillfail-vault-grant/1",
@@ -260,7 +297,56 @@ const ED_KEY = /^ed25519:[0-9a-f]{64}$/;
 const ED_SIG = /^[0-9a-f]{128}$/;
 const B64URL = /^[A-Za-z0-9_-]+$/;
 const ASK_KEYS = new Set(["v", "ws", "vault", "device", "box", "at", "sig"]);
+const JOIN_KEYS = new Set(["v", "ws", "vault", "sub", "device", "box", "state", "at", "sig"]);
+const JOIN_DISMISS_KEYS = new Set(["v", "ws", "vault", "sub", "upTo", "at", "sig"]);
 const SIG_KEYS = new Set(["key", "alg", "sig"]);
+const PROBE_X25519 = privateX25519(Buffer.alloc(32, 9));
+
+function sigShapeOk(sig: unknown): sig is Sig {
+  if (sig === null || typeof sig !== "object" || Array.isArray(sig)) return false;
+  const sigKeys = Object.keys(sig);
+  if (sigKeys.length !== SIG_KEYS.size || !sigKeys.every((k) => SIG_KEYS.has(k))) return false;
+  const s = sig as Partial<Sig>;
+  if (typeof s.key !== "string" || s.key.length > 200 || typeof s.sig !== "string" || s.sig.length > 256) return false;
+  if (s.alg === "Ed25519") {
+    return ED_KEY.test(s.key) && ED_SIG.test(s.sig);
+  }
+  if (s.alg === "ES256") {
+    return s.key.startsWith("p256:") && B64URL.test(s.key.slice(5)) && s.key.slice(5).length % 4 !== 1 && B64URL.test(s.sig) && s.sig.length % 4 !== 1;
+  }
+  return false;
+}
+
+/// Whether a 32-byte little-endian X25519 u-coordinate is in canonical range `[0, 2^255 - 19)`.
+function isCanonicalX25519(raw: Uint8Array): boolean {
+  if (raw.length !== 32) return false;
+  if ((raw[31]! & 0x80) !== 0) return false;
+  if (raw[31] === 0x7f) {
+    let allFF = true;
+    for (let i = 1; i <= 30; i++) {
+      if (raw[i] !== 0xff) {
+        allFF = false;
+        break;
+      }
+    }
+    if (allFF && raw[0]! >= 0xed) return false;
+  }
+  return true;
+}
+
+/// Whether `pub` is a usable canonical X25519 box public key (rejecting malformed or non-canonical encodings and
+/// low-order/all-zero shared secrets so HKDF binds the exact public key bytes used by `openSeal`).
+export function usableBoxKey(pub: string): boolean {
+  if (!BOX.test(pub)) return false;
+  const raw = Buffer.from(pub.slice(7), "hex");
+  if (!isCanonicalX25519(raw)) return false;
+  try {
+    const shared = diffieHellman({ privateKey: PROBE_X25519, publicKey: publicX25519(raw) });
+    return shared.some((b) => b !== 0);
+  } catch {
+    return false;
+  }
+}
 
 /// Why a standalone per-vault key ask record is invalid for `lock`, or null when valid: exact fixed shape
 /// `{v: 1, ws, vault, device, box, at, sig}` with no extra fields, canonical signature encoding matching core-ts,
@@ -277,21 +363,7 @@ export function askOk(lock: LockState, raw: unknown, ever = false): string | nul
   if (typeof a.device !== "string" || !HEX32.test(a.device)) return "a key ask's device is a 32-byte hex id";
   if (typeof a.box !== "string" || !BOX.test(a.box)) return "a key ask's box is an x25519 key";
   if (typeof a.at !== "number" || !Number.isSafeInteger(a.at) || a.at < 0) return "a key ask's at is a whole number";
-  if (a.sig === null || typeof a.sig !== "object" || Array.isArray(a.sig)) return "a key ask's sig is invalid";
-  const sigKeys = Object.keys(a.sig);
-  if (sigKeys.length !== SIG_KEYS.size || !sigKeys.every((k) => SIG_KEYS.has(k))) return "a key ask's sig is invalid";
-  if (typeof a.sig.key !== "string" || a.sig.key.length > 200 || typeof a.sig.sig !== "string" || a.sig.sig.length > 256) {
-    return "a key ask's sig is invalid";
-  }
-  if (a.sig.alg === "Ed25519") {
-    if (!ED_KEY.test(a.sig.key) || !ED_SIG.test(a.sig.sig)) return "a key ask's sig is invalid";
-  } else if (a.sig.alg === "ES256") {
-    if (!a.sig.key.startsWith("p256:") || !B64URL.test(a.sig.key.slice(5)) || a.sig.key.slice(5).length % 4 === 1 || !B64URL.test(a.sig.sig) || a.sig.sig.length % 4 === 1) {
-      return "a key ask's sig is invalid";
-    }
-  } else {
-    return "a key ask's sig is invalid";
-  }
+  if (!sigShapeOk(a.sig)) return "a key ask's sig is invalid";
   const d = lock.devices.get(a.device);
   if (d === undefined || d.kind !== "app" || !lock.members.has(d.sub)) {
     return "the key ask's device is not an app device in the lock";
@@ -302,6 +374,60 @@ export function askOk(lock: LockState, raw: unknown, ever = false): string | nul
     return "a key ask is signed by its own device's key";
   }
   if (!signedOk(a as KeyAsk, TAG.ask)) return "the key ask's signature is invalid";
+  return null;
+}
+
+/// Why a standalone workspace-vault join ask record is invalid for `lock`, or null when valid: exact fixed shape
+/// `{v: 1, ws, vault, sub, device, box, state, at, sig}` signed under `TAG.join` by the applicant's own app device.
+export function joinAskOk(lock: LockState, raw: unknown, ever = false): string | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return "a join ask is an object";
+  const keys = Object.keys(raw);
+  if (keys.length !== JOIN_KEYS.size || !keys.every((k) => JOIN_KEYS.has(k))) {
+    return "a join ask is {v: 1, ws, vault, sub, device, box, state, at, sig}";
+  }
+  const a = raw as Partial<JoinAsk>;
+  if (a.v !== 1 || a.ws !== lock.ws) return "a join ask is of this workspace";
+  if (typeof a.vault !== "string" || !VAULT_ID.test(a.vault)) return "a join ask's vault is v_<ULID>";
+  if (typeof a.sub !== "string" || a.sub === "" || a.sub.length > 200) return "a join ask's sub is invalid";
+  if (typeof a.device !== "string" || !HEX32.test(a.device)) return "a join ask's device is a 32-byte hex id";
+  if (typeof a.box !== "string" || !usableBoxKey(a.box)) return "a join ask's box is a usable x25519 key";
+  if (a.state !== "pending" && a.state !== "cancelled") return "a join ask's state is pending or cancelled";
+  if (typeof a.at !== "number" || !Number.isSafeInteger(a.at) || a.at < 0) return "a join ask's at is a whole number";
+  if (!sigShapeOk(a.sig)) return "a join ask's sig is invalid";
+  const d = lock.devices.get(a.device);
+  if (d === undefined || d.kind !== "app" || d.sub !== a.sub || !lock.members.has(d.sub)) {
+    return "the join ask's device is not an app device of that member in the lock";
+  }
+  if (!ever && !d.own) return "the join ask's device was put in the lock by someone else, not its person";
+  const had = ever ? (lock.signKeys.get(a.device) ?? []) : [];
+  if (d.sign_key !== a.sig.key && !(ever && had.includes(a.sig.key))) {
+    return "a join ask is signed by its own device's key";
+  }
+  if (!signedOk(a as JoinAsk, TAG.join)) return "the join ask's signature is invalid";
+  return null;
+}
+
+/// Why an admin's signed join-request dismissal is invalid for `lock` and `vault`, or null when valid.
+/// Note: checks the signer's *current* admin/owner role in `lock` and membership in `vault`; if that admin is later
+/// demoted or removed from `vault`, their previously signed dismissal becomes inactive on subsequent verification.
+export function joinDismissOk(lock: LockState, vault: Vault, raw: unknown): string | null {
+  if (vault.scope !== "workspace" || vault.deleted) return "join dismiss applies only to active workspace vaults";
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return "a join dismiss is an object";
+  const keys = Object.keys(raw);
+  if (keys.length !== JOIN_DISMISS_KEYS.size || !keys.every((k) => JOIN_DISMISS_KEYS.has(k))) {
+    return "a join dismiss is {v: 1, ws, vault, sub, upTo, at, sig}";
+  }
+  const d = raw as Partial<JoinDismiss>;
+  if (d.v !== 1 || d.ws !== lock.ws || d.vault !== vault.id) return "a join dismiss is for this workspace vault";
+  if (typeof d.sub !== "string" || d.sub === "" || d.sub.length > 200) return "a join dismiss's sub is invalid";
+  if (typeof d.upTo !== "number" || !Number.isSafeInteger(d.upTo) || d.upTo < 0) return "a join dismiss's upTo is a whole number";
+  if (typeof d.at !== "number" || !Number.isSafeInteger(d.at) || d.at < 0) return "a join dismiss's at is a whole number";
+  if (!sigShapeOk(d.sig)) return "a join dismiss's sig is invalid";
+  const signer = signerOf(lock, d.sig.key);
+  if (signer === null || !vault.members.includes(signer.sub)) return "only a managing member of the vault may dismiss join requests";
+  const role = lock.members.get(signer.sub)?.role;
+  if (role !== "owner" && role !== "admin") return "only a workspace owner or admin may dismiss join requests";
+  if (!signedOk(d as JoinDismiss, TAG.joinDismiss)) return "the join dismiss's signature is invalid";
   return null;
 }
 

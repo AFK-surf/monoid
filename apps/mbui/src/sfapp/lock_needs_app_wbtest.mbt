@@ -95,7 +95,7 @@ fn scroll_seen(t : @ui.Tester, win : (String, Double, Double, Int, String), word
 
 ///|
 /// Presses the button `words` in `t` (a screen of `win`), the page scrolled first till it stands clear of its edges.
-fn tap_seen(t : @ui.Tester, win : (String, Double, Double, Int, String), words : String) -> Unit raise {
+fn tap_seen(t : @ui.Tester, win : (String, Double, Double, Int, String), words : String) -> Unit {
   scroll_seen(t, win, words)
   t.click(Button, label=words)
 }

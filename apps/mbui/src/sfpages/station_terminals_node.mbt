@@ -98,7 +98,8 @@ fn terminals_to_show(core : Core, address : String, s : Json?) -> Bool {
 fn station_terminal_rows_node(g : @view.View, core : Core, address : String, s : () -> Json?) -> Unit {
   // (not in a replay of a run from before the app asked for them: @sfcore's MBUI_TERMINALS)
   guard (core.terminals_on)() else { return }
-  let v = fn() { (core.topic)("terminals", { "station": str(address) }).get().value }
+  let tr = fn() { (core.topic)("terminals", { "station": str(address) }).get() }
+  let v = fn() { tr().value }
   let shown = fn() { terminals_offered(core, s()) && flag(s(), "online") && terminals_shown(s(), v()) }
   let terminals = fn() { if shown() { items(v(), "terminals") } else { [] } }
   g.each(terminals, fn(t) { text(Some(t), "id") }, fn(row, t) {
@@ -108,7 +109,11 @@ fn station_terminal_rows_node(g : @view.View, core : Core, address : String, s :
       row,
       fn() { terminal_title(tv()) },
       fn() {
-        @sfbase.open_page(Terminal({ station: address, terminal: id, watch: !flag(v(), "open"), cwd: text(@signals.untracked(tv), "cwd") }))
+        let cur = @signals.untracked(tr)
+        if cur.is_confirmed_known() &&
+          items(cur.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == id && !flag(Some(x), "ended") }) {
+          @sfbase.open_page(Terminal({ station: address, terminal: id, watch: !flag(cur.value, "open"), cwd: text(@signals.untracked(tv), "cwd") }))
+        }
       },
       note=fn() { terminal_note(tv()) },
       goes=!flag(@signals.untracked(tv), "ended"),
@@ -119,7 +124,12 @@ fn station_terminal_rows_node(g : @view.View, core : Core, address : String, s :
     @sf.link_row_node(
       n,
       fn() { @sf.t("web-pages.terminal.openRow") },
-      fn() { @sfbase.open_page(Terminal({ station: address, terminal: "new", watch: false, cwd: "" })) },
+      fn() {
+        let cur = @signals.untracked(tr)
+        if cur.is_confirmed_known() && flag(cur.value, "open") {
+          @sfbase.open_page(Terminal({ station: address, terminal: "new", watch: false, cwd: "" }))
+        }
+      },
       lead=LeadLine(fn(l) { st_mark_node(l, fn() { "terminal" }) }),
     )
   })

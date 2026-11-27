@@ -866,3 +866,39 @@ pub fn writing_paste_again(src : Source, w : Writing, id : String) -> Unit {
     _ => ()
   }
 }
+
+///|
+/// Asks the core for the `@[title]` reference mark of chat `(station, id, title)` for workspace `into` (`chat.ref`),
+/// keeps it in `refs_kept` so `refs_here_only` recognizes it as in-workspace, and passes the mark to `done`.
+pub fn refs_make_mark(
+  src : Source,
+  into : String,
+  station : String,
+  id : String,
+  title : String,
+  done : (String) -> Unit,
+  failed : (String) -> Unit,
+) -> Unit {
+  (src.call)(
+    "chat.ref",
+    {
+      "station": Json::string(station),
+      "id": Json::string(id),
+      "title": Json::string(title),
+      "base": Json::string(link_origin()),
+      "into": Json::string(into),
+    },
+    fn(res) {
+      match res {
+        Ok(v) => {
+          let mark = text(Some(v), "mark")
+          if mark != "" {
+            refs_kept_put(mark, station, into~)
+          }
+          done(mark)
+        }
+        Err(e) => failed(text(Some(e), "message"))
+      }
+    },
+  )
+}

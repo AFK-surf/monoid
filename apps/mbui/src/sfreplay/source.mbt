@@ -723,6 +723,7 @@ fn init {
   @core.auth_stale_message.val = fn() { @sf.t("core-misc.auth.stale") }
   @sfbase.mask_vault_all.val = fn() { @core.client.mask_scope(@core.AuthScope::VaultAll) }
   @sfbase.mask_global.val = fn() { @core.client.mask_scope(@core.AuthScope::Global) }
+  @sfbase.topic_policy_enabled.val = fn() { @sfcore.trace_switch("MBUI_TOPIC_POLICY") }
   @core.client.keep(replay_kept, most=replay_kept_most)
   @core.client.show_kept_params(replay_shown_kept_params)
   @core.client.tells_before(replay_tells)
@@ -751,17 +752,21 @@ fn replay_kept(name : String, params : Json) -> Int {
   if @sfbase.topic_policy_sensitive(name, params) {
     return 0
   }
+  let views = @sfcore.trace_switch("MBUI_SWR_VIEWS")
+  let policy = @sfcore.trace_switch("MBUI_TOPIC_POLICY")
   let on = if name == "chat" {
     @sfcore.trace_switch("MBUI_KEEP_CHAT")
   } else if @sfbase.home_lasting_of(name) {
     @sfcore.trace_switch("MBUI_HOME_SAME")
-  } else if @sfbase.topic_shown_kept_params(name, params) {
-    @sfcore.trace_switch("MBUI_SWR_VIEWS")
-  } else {
+  } else if @sfbase.topic_policy_show_kept_by(name, params, views, policy) {
+    views
+  } else if @sfbase.topic_policy_lasting_by(name, params, policy) {
     @sfcore.trace_switch("MBUI_HAVE_SAME")
+  } else {
+    policy
   }
   if on {
-    @sfbase.topic_kept_by(name, params, @sfcore.trace_switch("MBUI_SWR_VIEWS"))
+    @sfbase.topic_policy_keep_by(name, params, views, policy)
   } else {
     0
   }
@@ -777,7 +782,13 @@ fn replay_kept_most() -> Int {
 /// Which topics' values kept are shown at once as they are asked again, as the run's app did: none before
 /// MBUI_SWR_VIEWS (sfbase's topic_shown_kept_params), and never sensitive topics.
 fn replay_shown_kept_params(name : String, params : Json) -> Bool {
-  !@sfbase.topic_policy_sensitive(name, params) && @sfcore.trace_switch("MBUI_SWR_VIEWS") && @sfbase.topic_shown_kept_params(name, params)
+  !@sfbase.topic_policy_sensitive(name, params) &&
+  @sfbase.topic_policy_show_kept_by(
+    name,
+    params,
+    @sfcore.trace_switch("MBUI_SWR_VIEWS"),
+    @sfcore.trace_switch("MBUI_TOPIC_POLICY"),
+  )
 }
 
 ///|

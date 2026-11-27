@@ -952,7 +952,9 @@ test "workspace_view: workspaces, stations, accounts, and vaults strictly strip 
     sql::SqlResult::Ok(v) => v
     sql::SqlResult::Err(e) => panic(e.message)
   }
-  let w0 = j_arr(ws_list, "workspaces")[0]
+  let ws_grp0 = match ws_list { base_codec::Json::Arr(xs) => xs[0]; _ => panic("expected workspaces array") }
+  assert(j_bool(ws_grp0, "loaded"))
+  let w0 = j_arr(ws_grp0, "workspaces")[0]
   assert_eq(j_str(w0, "name"), "Core Team")
   assert(base_codec::json_get(w0, "cloud_keys").is_none())
   assert(base_codec::json_get(w0, "members").is_none())
@@ -974,9 +976,9 @@ test "workspace_view: workspaces, stations, accounts, and vaults strictly strip 
     sql::SqlResult::Ok(v) => v
     sql::SqlResult::Err(e) => panic(e.message)
   }
-  let a0 = j_arr(accts, "accounts")[0]
+  let a0 = match accts { base_codec::Json::Arr(xs) => xs[0]; _ => panic("expected accounts array") }
+  assert_eq(j_str(a0, "sub"), "a1")
   assert_eq(j_str(a0, "email"), "a@b.com")
-  assert(j_bool(a0, "active"))
   assert(base_codec::json_get(a0, "accessToken").is_none())
   assert(base_codec::json_get(a0, "refreshToken").is_none())
 

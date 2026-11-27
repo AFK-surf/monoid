@@ -132,16 +132,18 @@ fn still_after(t : @ui.Tester, act : () -> Unit, anims? : Array[String] = still_
 ///|
 /// A row of the sidebar's list named `title` pressed.
 fn still_pick(t : @ui.Tester, title : String) -> Unit {
-  t.click(Link, label=title) catch {
-    e => @halt.saying("no row 「\{title}」: \{e}")
+  match t.try_click(Link, label=title) {
+    Ok(_) => ()
+    Err(e) => @halt.saying("no row 「\{title}」: \{e}")
   }
 }
 
 ///|
 /// The sidebar's 新建对话 pressed.
 fn still_new_chat(t : @ui.Tester) -> Unit {
-  t.click(Button, label="新建对话") catch {
-    e => @halt.saying("no 新建对话: \{e}")
+  match t.try_click(Button, label="新建对话") {
+    Ok(_) => ()
+    Err(e) => @halt.saying("no 新建对话: \{e}")
   }
 }
 

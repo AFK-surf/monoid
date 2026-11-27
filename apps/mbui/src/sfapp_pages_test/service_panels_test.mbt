@@ -67,7 +67,7 @@ fn svc_page(
 ///|
 /// The panel `title` opened from its key in the bar where the bar holds it (named so, or saying so as its value: how far
 /// the resources came, named 资源加载), else from the ⋯'s line; at the frame that opened it.
-fn svc_open(t : @ui.Tester, title : String) -> Unit raise {
+fn svc_open(t : @ui.Tester, title : String) -> Unit {
   let by_value = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == @ui.Role::Button && s.value == title })
   match (t.query(Button, label=title), by_value) {
     (Some(_), _) => t.click(Button, label=title)
@@ -411,7 +411,7 @@ test "the sizes as big as the preview, closed by a preset pressed: on their way 
     svc_open(t, "页面尺寸")
     t.run_for(@ui.move_most_ms)
     assert_true(t.query(Switch, label="移动页面") is None, msg="\{at}: fitting the preview, no 移动页面")
-    svc_leaving(t, at, fn() raise { t.click(Button, label="手机 390 × 844") }, seen=["自适应"], unseen=["移动页面"])
+    svc_leaving(t, at, fn() { t.click(Button, label="手机 390 × 844") }, seen=["自适应"], unseen=["移动页面"])
     t.run_for(@ui.move_most_ms)
     assert_eq(svc_size(), "390×844", msg=at)
   }
@@ -426,7 +426,7 @@ test "the sizes of a page laid out at a size and fitted, closed by another prese
     svc_open(t, "页面尺寸")
     t.run_for(@ui.move_most_ms)
     assert_true(t.query(Button, label="适应") is None, msg="\{at}: fitted, no 适应")
-    svc_leaving(t, at, fn() raise { t.click(Button, label="平板 820 × 1180") }, seen=["移动页面"], unseen=["适应"])
+    svc_leaving(t, at, fn() { t.click(Button, label="平板 820 × 1180") }, seen=["移动页面"], unseen=["适应"])
     t.run_for(@ui.move_most_ms)
     assert_eq(svc_size(), "820×1180", msg=at)
   }
@@ -440,7 +440,7 @@ test "the sizes of a page laid out at a size, closed by 自适应 pressed: on th
     let t = svc_page(platform~, wide~, sized=true, corners_held=!wide)
     svc_open(t, "页面尺寸")
     t.run_for(@ui.move_most_ms)
-    svc_leaving(t, at, fn() raise { t.click(Button, label="自适应 跟随预览区") }, seen=["移动页面"], unseen=[])
+    svc_leaving(t, at, fn() { t.click(Button, label="自适应 跟随预览区") }, seen=["移动页面"], unseen=[])
     t.run_for(@ui.move_most_ms)
     assert_eq(svc_size(), "fit", msg=at)
   }

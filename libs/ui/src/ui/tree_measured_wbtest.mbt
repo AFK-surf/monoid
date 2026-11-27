@@ -57,7 +57,7 @@ fn measured_at(id : Ref[@view.NodeId?]) -> (Double, Double, Double, Double) {
 ///|
 /// The holder's height, where the one under it is drawn from, and how tall the field is read out: each where the frame
 /// just drawn has it.
-fn measured_now(t : Tester, holder : Ref[@view.NodeId?], under : Ref[@view.NodeId?]) -> (Double, Double, Double) raise {
+fn measured_now(t : Tester, holder : Ref[@view.NodeId?], under : Ref[@view.NodeId?]) -> (Double, Double, Double) {
   let (_, _, _, h) = measured_at(holder)
   let (_, uy, _, _) = measured_at(under)
   let (_, _, _, rh) = t.get(TextField).rect
@@ -243,7 +243,7 @@ test "a node as tall as a plain field with no line said in the old view it hosts
 /// lines at most) in all the room the row leaves (as an old view's Fill: no width of its own before it is shared out,
 /// growing, giving way), its node as tall as the field lays out, a key 36 across: where the node is and how big, where
 /// the key after it is, how tall the field is read out.
-fn measured_between(text : String) -> ((Double, Double, Double, Double), Double, Double) raise {
+fn measured_between(text : String) -> ((Double, Double, Double, Double), Double, Double) {
   let field = Field::new(text~)
   let t = Tester::new(fn(_c) {  }, w=300.0, h=400.0, platform=0)
   let holder : Ref[@view.NodeId?] = Ref(None)

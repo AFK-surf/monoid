@@ -377,7 +377,7 @@ fn local_with(ws : Json, runner? : String = "none", doing? : String = "") -> Str
 
 ///|
 /// The 添加 station sheet opened over `src` with the host saying `said` of this machine.
-fn add_sheet_over(src : Source, said : String, platform? : Int = 0) -> @ui.Tester raise {
+fn add_sheet_over(src : Source, said : String, platform? : Int = 0) -> @ui.Tester {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform~)
   t.set_app_said("local_station", said)
   app.nav.replace(Place("stations"))

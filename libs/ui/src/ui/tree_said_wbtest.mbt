@@ -226,7 +226,7 @@ test "what can be done to a node of the tree's: Activate where a press does some
 /// A button read out, then (no frame drawn) kept from being read out by `how` at `flip_ms` (0 its own hides by a
 /// signal, 1 what holds it hidden by a moment of its own, 2 its saying none): whether a screen reader's press of the id
 /// it was read out by at `ask_ms` pressed it, and whether one did once it is read out again.
-fn asked_unsaid(how : Int) -> (Int, Int) raise {
+fn asked_unsaid(how : Int) -> (Int, Int) {
   let hidden = @signals.signal(false, same=fn(a, b) { a == b })
   let pressed = Ref(0)
   let t = Tester::new(fn(_c) {  }, w=400.0, h=200.0)

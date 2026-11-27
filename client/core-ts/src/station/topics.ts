@@ -21,7 +21,7 @@ import { PAGE, TRANSCRIPT_PAGE, entriesOf, lettersOf, transcriptOf } from "./cha
 import { type StationsSync, retryAfter, stepShown } from "./sync.ts";
 import type { LinkNet } from "./wire.ts";
 import { screenCard, screensChanged, screensView } from "../screens.ts";
-import { terminalCard, terminalsView } from "../terminals.ts";
+import { terminalCard, terminalsChanged, terminalsView } from "../terminals.ts";
 import { isStationAuthor } from "../titles.ts";
 import { down, downWords, isLetter, members } from "../views/views.ts";
 import { type Link, MEMORY, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
@@ -123,6 +123,7 @@ export class StationTopics implements Owner {
     sync.wanted = (address) => this.#wanted(address);
     sync.onTouched = (address, what) => {
       if (what === "screens") screensChanged(core, address);
+      if (what === "terminals") terminalsChanged(core, address);
     };
     sync.onTold = (address, id, entries) => this.tell(address, id, entries);
   }
@@ -369,11 +370,11 @@ export class StationTopics implements Owner {
       case "screens":
         seen.read(station, "screens");
         // As the station said them last (kept: there as the app opens again, while it is reached anew); none while it
-        // is down.
-        return { ok: screensView(this.#core, station, this.#sync.screens(station), link !== undefined && !down(link.state)) };
+        // is down. `confirmed` is true only once the station replied in the current auth generation.
+        return { ok: screensView(this.#core, station, this.#sync.screens(station), link !== undefined && !down(link.state), this.#sync.isConfirmed("screens", station), this.#sync.isDenied("screens", station)) };
       case "terminals":
         seen.read(station, "terminals");
-        return { ok: terminalsView(this.#core, station, this.#sync.terminals(station)) };
+        return { ok: terminalsView(this.#core, station, this.#sync.terminals(station), this.#sync.isConfirmed("terminals", station), this.#sync.isDenied("terminals", station)) };
       case "screenCard": {
         seen.read(station, "screens");
         if (typeof topic.screen !== "string" || topic.screen === "") return { err: CoreError.invalid(t("core-misc.params.missing", { field: "screen" })) };
@@ -385,6 +386,7 @@ export class StationTopics implements Owner {
         return { ok: terminalCard(this.#core, station, topic.terminal, this.#sync.terminals(station), link?.state.state === "online") };
       }
       case "jobLog": {
+        if (error) return { err: error };
         const v = link?.memory.get(logKey(topic.job as string, topic.lines as number));
         return v === undefined ? undefined : { ok: v };
       }
@@ -431,10 +433,11 @@ export class StationTopics implements Owner {
         if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
         return error ? { err: error } : undefined;
       case "presets": {
+        if (error) return { err: error };
         const v = this.#sync.presets(station);
         if (v !== undefined) return { ok: structuredClone(v) as never };
         if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
-        return error ? { err: error } : undefined;
+        return undefined;
       }
       case "profilePace": {
         // As the station said them last; none while a station is down or has not said (the overview draws what it

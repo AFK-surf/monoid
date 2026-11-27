@@ -152,7 +152,7 @@ fn ws_opened(screen : (String, Int, Double, Double), words : String, over : (Sou
 
 ///|
 /// Presses the one of `role` named `label`, in its middle.
-fn ws_press(t : @ui.Tester, role : @view.Role, label : String) -> Unit raise {
+fn ws_press(t : @ui.Tester, role : @view.Role, label : String) -> Unit {
   let (x, y, w, h) = t.get(role, label~).rect
   t.tap(x + w / 2.0, y + h / 2.0)
 }

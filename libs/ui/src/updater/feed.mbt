@@ -1,14 +1,14 @@
 // Release feed parsing, Ed25519 signature verification, URL resolution, and delta selection.
 
 ///|
-#derive(Eq, @debug.Debug)
+#derive(Eq, Debug)
 pub(all) struct RawArtifact {
   sha256 : String
   size : Int64
 }
 
 ///|
-#derive(Eq, @debug.Debug)
+#derive(Eq, Debug)
 pub(all) struct FeedDelta {
   from : Int
   file : String
@@ -17,7 +17,7 @@ pub(all) struct FeedDelta {
 }
 
 ///|
-#derive(Eq, @debug.Debug)
+#derive(Eq, Debug)
 pub(all) struct SignedBlock {
   key : String
   release : String
@@ -25,7 +25,7 @@ pub(all) struct SignedBlock {
 }
 
 ///|
-#derive(Eq, @debug.Debug)
+#derive(Eq, Debug)
 pub(all) struct ReleaseFeed {
   version : String
   version_code : Int

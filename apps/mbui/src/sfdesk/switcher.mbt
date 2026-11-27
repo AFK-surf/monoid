@@ -274,7 +274,7 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
       match view {
         Some(v) => {
           if chat_has_remote(v) {
-            offer(action_offered("chat.screen", "monitor", fn() { chat_remote_first(r, v.screens, v.can_terminal()) }))
+            offer(action_offered("chat.screen", "monitor", fn() { chat_remote_first(r, v.screens, v.can_terminal(), src=Some(src)) }))
           }
           if v.can_terminal() && @sfpages.terminals_here() && (src.asks_terminals)() {
             all.push({
@@ -287,11 +287,10 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
               typed: true,
               version: "",
               station: "",
-              run: fn() { @sfbase.open_terminal(r.station, "new", "", r.session) },
+              run: fn() { chat_remote_first(r, [], true, src=Some(src)) },
             })
           }
           if v.can_browser() {
-            let listed = v.screens.filter(fn(s) { s.id.has_prefix("browser:u_") }).map(fn(s) { s.id })
             all.push({
               id: "chat.browser",
               group: "chat",
@@ -302,7 +301,39 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
               typed: true,
               version: "",
               station: "",
-              run: fn() { @sfbase.open_remote_browser(src, r.station, listed) },
+              run: fn() {
+                let go = fn(sr : @sfbase.TopicState) {
+                  if !sr.is_confirmed_known() {
+                    return
+                  }
+                  let cur_listed = @sfbase.confirmed_user_browser_ids(sr)
+                  match @settings.browser_tab_to_open(r.station, cur_listed) {
+                    Some(to) => @sfbase.open_screen(r.station, to, None)
+                    None =>
+                      if flag(sr.value, "browser") && flag(sr.value, "control") {
+                        @sfbase.open_remote_browser(src, r.station, cur_listed)
+                      }
+                  }
+                }
+                let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(r.station) }).get() })
+                if @sfbase.cap_settled(sr) {
+                  go(sr)
+                } else {
+                  let scope = "chat-switcher-browser/" + r.station
+                  let ssub = @sfbase.hold(src, scope, "screens", { "station": Json::string(r.station) })
+                  @sfbase.press_wait(
+                    fn() { @sfbase.cap_settled(ssub.get()) },
+                    fn() {
+                      let cur = ssub.untracked()
+                      @sfbase.let_go(src, scope)
+                      go(cur)
+                    },
+                    let_go=fn() { @sfbase.let_go(src, scope) },
+                    most=5000.0,
+                  )
+                  |> ignore
+                }
+              },
             })
           }
           let chat = src.topic("chat", chat_params(r)).get().value

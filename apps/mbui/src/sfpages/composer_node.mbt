@@ -954,6 +954,16 @@ fn composer_box_node(
   let scale = stand.scale
   // (send pressed, or Enter: a chat's into its chat, a new chat's as `own` says, else as `spec` says, once ready)
   let submit = fn() {
+    if own is None &&
+      spec.chat &&
+      !@signals.untracked(locked) &&
+      @signals.untracked(fn() { parse_btw_command(w.field.composed_said()) }) is Some(_) {
+      let committed = w.field.commit_composing()
+      if parse_btw_command(committed) is Some(question) {
+        open_btw_new_chat(src, r, @signals.untracked(head), w, question)
+        return
+      }
+    }
     // (a chat's: the cursor kept in its field where it was there as send was pressed (its box still held as the press
     // took the focus off it), as the old composer's send kept it, so it does not go to a capsule a moment after)
     if own is None && spec.chat && @signals.untracked(fn() { focused() || held() }) && !w.field.focused() {
@@ -4157,4 +4167,80 @@ fn sent_words(w : Writing) -> String {
     }
   }
   parts.join("\n")
+}
+
+///|
+/// Recognizes a `/btw` command at the start of a chat composer message (case-insensitive `/btw`, alone or followed by
+/// ASCII whitespace and optional question text). Non-boundary prefixes like `/btwx` return None.
+pub fn parse_btw_command(raw : String) -> String? {
+  let trimmed = raw.trim(chars=" \t\n\r").to_owned()
+  if trimmed.length() < 4 {
+    return None
+  }
+  let c0 = trimmed.unsafe_get(0).to_int()
+  let c1 = trimmed.unsafe_get(1).to_int()
+  let c2 = trimmed.unsafe_get(2).to_int()
+  let c3 = trimmed.unsafe_get(3).to_int()
+  if c0 != 47 || (c1 != 98 && c1 != 66) || (c2 != 116 && c2 != 84) || (c3 != 119 && c3 != 87) {
+    return None
+  }
+  if trimmed.length() == 4 {
+    return Some("")
+  }
+  let c4 = trimmed.unsafe_get(4).to_int()
+  if c4 != 32 && c4 != 9 && c4 != 10 && c4 != 13 {
+    return None
+  }
+  Some(trimmed.exact_view(start=4).trim(chars=" \t\n\r").to_owned())
+}
+
+///|
+/// Handles `/btw [question]` from an existing chat's composer: clears the current draft, jumps to NewChat, and prefills
+/// the workspace's new-chat draft with an `@[title]` reference to the current chat (plus any question text), without
+/// sending. Preserves any existing new-chat draft on a following line.
+fn open_btw_new_chat(src : Source, r : ChatRef, v : ChatView?, w : Writing, question : String) -> Unit {
+  if src.read_only {
+    toast_later(read_only_words)
+    return
+  }
+  let ws = workspace_of(r.station)
+  let title = match v {
+    Some(cv) if cv.title != "" => cv.title
+    _ => r.title
+  }
+  @sfbase.refs_put(w.key, w.field, "")
+  writing_text(src, w, "")
+  @sfbase.fresh_reset()
+  composer_take_focus(drafts=new_chat_drafts)
+  @sfbase.open_page(NewChat)
+  let target = @signals.untracked(fn() { @sfbase.writing(src, new_chat_drafts + ws) })
+  let prefill = fn(mark : String) {
+    let lead = if mark != "" {
+      if question == "" { mark + " " } else { mark + " " + question }
+    } else {
+      question
+    }
+    if lead == "" {
+      return
+    }
+    // Read `target.text.get()` first so `writing_adopt` loads any persisted core draft before we prepend `lead`.
+    let adopted = @signals.untracked(fn() { target.text.get() })
+    let prev = if target.field.text() != "" { target.field.text() } else { adopted }
+    let next = if prev.trim(chars=" \t\n\r") == "" { lead } else { lead + "\n" + prev }
+    @sfbase.writing_set_text(src, target.key, next, caret=lead.length())
+  }
+  @sfbase.refs_make_mark(
+    src,
+    ws,
+    r.station,
+    r.session,
+    title,
+    fn(mark) { prefill(mark) },
+    fn(why) {
+      prefill("")
+      if why != "" {
+        toast_later(why)
+      }
+    },
+  )
 }

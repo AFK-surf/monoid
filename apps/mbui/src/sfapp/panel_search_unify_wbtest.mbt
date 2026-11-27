@@ -31,7 +31,7 @@ fn panel_search_lang_src(base : Source, lang : @signals.Signal[String]) -> Sourc
 
 ///|
 /// Whether the button named `label` currently has a visible hover/highlight background fill covering its rect.
-fn panel_row_highlighted(t : @ui.Tester, label : String) -> Bool raise {
+fn panel_row_highlighted(t : @ui.Tester, label : String) -> Bool {
   let (rx, ry, rw, rh) = t.get(Button, label~).rect
   t
   .drawn_rects()

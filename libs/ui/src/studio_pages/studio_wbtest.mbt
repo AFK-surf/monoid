@@ -26,7 +26,7 @@ fn studio_case(
 }
 
 ///|
-fn mid(t : @ui.Tester, role : @view.Role, label : String) -> (Double, Double) raise {
+fn mid(t : @ui.Tester, role : @view.Role, label : String) -> (Double, Double) {
   let (x, y, w, h) = t.get(role, label~).rect
   (x + w / 2.0, y + h / 2.0)
 }
@@ -171,10 +171,10 @@ test "Overlays scene menu and confirm dialog work cleanly" {
 ///|
 /// Snapshot of scene switches (Controls -> Glass -> Tokens -> Overlays), accent switches, and dark/light toggles —
 /// must be identical at 60/120/24/7 fps.
-fn studio_run_snapshot() -> Array[String] raise {
+fn studio_run_snapshot() -> Array[String] {
   let t = studio_case(w=1120.0, h=690.0)
   let out : Array[String] = []
-  let snap = fn(tag : String) raise {
+  let snap = fn(tag : String) {
     let r = t.get(RadioGroup, label="Stage Scene").rect
     let rx = (r.0 * 100.0).round() / 100.0
     let ry = (r.1 * 100.0).round() / 100.0

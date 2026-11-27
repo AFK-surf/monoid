@@ -75,6 +75,12 @@ priv struct SettingsFixture {
   mut vault_workspace : String
   /// members of the workspace vault in the fixture
   vault_workspace_members : Array[String]
+  /// pending join-request member subs on the workspace vault in the fixture
+  vault_workspace_requests : Array[String]
+  /// whether extra unjoined workspace members (u4/u5) appear in the fixture roster
+  mut vault_workspace_roster_extra : Bool
+  /// discoverable workspace vault fixture mode: "" none, "unjoined" not requested, "requested" pending request
+  mut vault_discover : String
   /// the skills shared (true) or no longer (false) since the run started (`skill.share`), by name
   skills_shared : Map[String, Bool]
   /// the quota's resets used on ChatGPT 团队 (`profile.resetQuota`)
@@ -241,6 +247,9 @@ let fx : SettingsFixture = {
   vault_own: "",
   vault_workspace: "",
   vault_workspace_members: ["u1", "u2", "u3"],
+  vault_workspace_requests: [],
+  vault_workspace_roster_extra: false,
+  vault_discover: "",
   skills_shared: {},
   resets_used: 0,
   reset_expiry: false,
@@ -416,7 +425,30 @@ fn fx_workspace_vault_row() -> Json {
   } else {
     [pending_dev]
   }
-  obj([
+  let join_requests = fx.vault_workspace_requests.map(fn(s) {
+    let (name, email, dev_text, code) = match s {
+      "u4" => ("陈雨", "chen@example.com", "陈雨的 MacBook Air · still.fail", "P3Q-8RT")
+      _ => (s, s + "@example.com", "MacBook Pro · still.fail", "X9Y-2ZW")
+    }
+    obj([
+      ("sub", str(s)),
+      ("name", str(name)),
+      ("email", str(email)),
+      ("device", str("d-" + s)),
+      ("deviceText", str(dev_text)),
+      ("deviceCode", str(code)),
+      ("box", str("x25519:1111111111111111111111111111111111111111111111111111111111111111")),
+      ("at", Json::number(1700000100.0)),
+      ("atText", str("2 分钟前")),
+    ])
+  })
+  let total_ws = if fx.vault_workspace_roster_extra { 5 } else { 3 }
+  let unjoined_count = if total_ws > fx.vault_workspace_members.length() {
+    total_ws - fx.vault_workspace_members.length()
+  } else {
+    0
+  }
+  let row : Array[(String, Json)] = [
     ("id", str("v-ws")),
     ("name", str("Workspace 密钥库")),
     ("scope", str("workspace")),
@@ -428,13 +460,15 @@ fn fx_workspace_vault_row() -> Json {
       "members",
       Json::array(
         fx.vault_workspace_members.map(fn(s) {
-          let name = match s {
-            "u1" => "林"
-            "u2" => "Ana"
-            "u3" => "周"
-            _ => s
+          let (name, is_keyed) = match s {
+            "u1" => ("林", true)
+            "u2" => ("Ana", true)
+            "u3" => ("周", false)
+            "u4" => ("陈雨", true)
+            "u5" => ("赵敏", false)
+            _ => (s, false)
           }
-          obj([("sub", str(s)), ("name", str(name))])
+          obj([("sub", str(s)), ("name", str(name)), ("keyed", Json::boolean(is_keyed))])
         }),
       ),
     ),
@@ -449,7 +483,12 @@ fn fx_workspace_vault_row() -> Json {
     ("lasts", str("chat")),
     ("authorizedDevices", Json::array(authorized)),
     ("pendingDevices", Json::array(pending)),
-  ])
+    ("unjoinedCount", Json::number(unjoined_count.to_double())),
+  ]
+  if !join_requests.is_empty() {
+    row.push(("joinRequests", Json::array(join_requests)))
+  }
+  obj(row)
 }
 
 ///|
@@ -639,6 +678,9 @@ fn fixture_reset() -> Unit {
   fx.vault_workspace = ""
   fx.vault_workspace_members.clear()
   fx.vault_workspace_members.append(["u1", "u2", "u3"])
+  fx.vault_workspace_requests.clear()
+  fx.vault_workspace_roster_extra = false
+  fx.vault_discover = ""
   fx.pairing = false
   fx.pairing_personal = false
   fx.pairing_more = false
@@ -707,6 +749,10 @@ fn fx_members(me : Json) -> Json {
     obj([("sub", str("u2")), ("email", str("ana@example.com")), ("name", str("Ana")), ("role", str("admin"))]),
     obj([("sub", str("u3")), ("email", str("zhou@example.com")), ("name", str("周")), ("role", str("member"))]),
   ]
+  if fx.vault_workspace_roster_extra {
+    all.push(obj([("sub", str("u4")), ("email", str("chen@example.com")), ("name", str("陈雨")), ("role", str("member"))]))
+    all.push(obj([("sub", str("u5")), ("email", str("zhao@example.com")), ("name", str("赵敏")), ("role", str("member"))]))
+  }
   if fx.motion >= 1 {
     all.push(obj([("sub", str("u5")), ("email", str("lin2@example.com")), ("name", str("林")), ("role", str("member"))]))
   }
@@ -1344,7 +1390,22 @@ pub fn fixture_page(mode : String) -> String {
     }
     "settings-vault-workspace-members" => {
       fx.vault_workspace = "has"
+      fx.vault_workspace_roster_extra = true
+      fx.vault_workspace_requests.append(["u4"])
       fixture_open.desk = "vault-workspace-members"
+    }
+    "settings-vault-workspace-requests" => {
+      fx.vault_workspace = "has"
+      fx.vault_workspace_roster_extra = true
+      fx.vault_workspace_requests.append(["u4"])
+    }
+    "settings-vault-discover" => {
+      fx.vault_off = true
+      fx.vault_discover = "unjoined"
+    }
+    "settings-vault-discover-pending" => {
+      fx.vault_off = false
+      fx.vault_discover = "requested"
     }
     "settings-vault-workspace-editor" => {
       fx.vault_workspace = "has"
@@ -1434,7 +1495,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
     | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-elsewhere" | "settings-vault-no-key-code" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits"
-    | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-save-picked" | "settings-vault-workspace-members" | "settings-vault-devices-dialog"
+    | "settings-vault-workspace-create" | "settings-vault-workspace" | "settings-vault-workspace-save-picked" | "settings-vault-workspace-members" | "settings-vault-workspace-requests" | "settings-vault-discover" | "settings-vault-discover-pending" | "settings-vault-devices-dialog"
     | "settings-vault-own-off" | "settings-vault-own-on" | "settings-vault-own-outside" | "settings-vault-own-finding" | "settings-vault-own-code" | "settings-vault-own-replaced"
     | "settings-vault-confirm" | "settings-vault-syncing" | "settings-vault-waiting" | "settings-vault-waiting-was" | "settings-vault-replaced"
     | "settings-vault-replaced-was" => "vault"
@@ -2361,7 +2422,7 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
     ("statusText", str(status)),
     ("presence", str(presence)),
     ("modeText", str(if mode == "multi-session" { "每个 thread 一个会话" } else { "所有 thread 共用一个会话" })),
-    ("modeShort", str("")),
+    ("modeShort", str(if mode == "multi-session" { "多会话" } else { "单会话" })),
     ("runtimeText", str("Claude Code")),
     ("runText", str("")),
     ("modelName", str("Opus 5.5")),
@@ -3842,11 +3903,12 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ("outdated", Json::boolean(false)),
           ("control", Json::boolean(true)),
           ("known", Json::boolean(true)),
+          ("confirmed", Json::boolean(true)),
         ]),
       )
     // (Willow's: Maple is away, none of its own known)
     "screens" if text(Some(Json::object(params)), "station") == "ws1/st2" =>
-      Some(obj([("screens", Json::array([])), ("outdated", Json::boolean(false)), ("control", Json::boolean(false)), ("known", Json::boolean(true))]))
+      Some(obj([("screens", Json::array([])), ("outdated", Json::boolean(false)), ("control", Json::boolean(false)), ("known", Json::boolean(true)), ("confirmed", Json::boolean(true))]))
     "screens" => {
       let m = if mode.has_suffix("-dark") { mode.unsafe_substring(start=0, end=mode.length() - 5) } else { mode }
       if m == "settings-station-pages" || m == "screen-pages" || m == "screen-user-pages" || m == "screen-user-tabs" {
@@ -3865,6 +3927,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             ("outdated", Json::boolean(false)),
             ("control", Json::boolean(true)),
             ("known", Json::boolean(true)),
+            ("confirmed", Json::boolean(true)),
           ]),
         )
       } else if m.has_prefix("place-remote") {
@@ -3884,6 +3947,24 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             ("outdated", Json::boolean(false)),
             ("control", Json::boolean(true)),
             ("known", Json::boolean(true)),
+            ("confirmed", Json::boolean(true)),
+          ]),
+        )
+      } else if m == "chat-station-screens" || m == "chat-agent-screens" || m.has_prefix("chat-remote") {
+        Some(
+          obj([
+            (
+              "screens",
+              [
+                obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Willow 的屏幕")), ("width", Json::number(3024.0)), ("height", Json::number(1964.0)), ("line", str("3024 × 1964 · 无人在看")), ("link", str(""))]),
+                obj([("id", str("browser:T1")), ("kind", str("browser")), ("agent", Json::boolean(true)), ("title", str("登录 - GitHub")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("浏览器标签页 · 1280×800 · 由「整理发布清单」打开")), ("link", str(""))]),
+              ],
+            ),
+            ("browser", Json::boolean(m.has_prefix("chat-remote"))),
+            ("outdated", Json::boolean(false)),
+            ("control", Json::boolean(true)),
+            ("known", Json::boolean(true)),
+            ("confirmed", Json::boolean(true)),
           ]),
         )
       } else {
@@ -3899,6 +3980,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             ("outdated", Json::boolean(false)),
             ("control", Json::boolean(true)),
             ("known", Json::boolean(true)),
+            ("confirmed", Json::boolean(true)),
           ]),
         )
       }
@@ -4280,7 +4362,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           (
             "vaults",
             // (none where it is on nowhere: settings-vault-off in safe mode too)
-            if fx.vault_own == "off" || fx.vault_own == "outside" || (fx.vault_off && !fx.vault_elsewhere) {
+            if fx.vault_own == "off" || fx.vault_own == "outside" || fx.vault_discover != "" || (fx.vault_off && !fx.vault_elsewhere) {
               []
             } else if fx.vault_workspace == "has" {
               [fx_vault_row(), fx_workspace_vault_row()]
@@ -4290,7 +4372,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
           (
             "requests",
-            if fx.vault_own == "off" || fx.vault_own == "outside" {
+            if fx.vault_own == "off" || fx.vault_own == "outside" || fx.vault_discover != "" {
               []
             } else {
               let reqs = [
@@ -4335,9 +4417,25 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
           ("refused", []),
           // (the core's words of it: its requests wait; none where no vault of theirs is kept)
-          ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" { "" } else if fx.vault_workspace == "has" { "2 个待批准" } else { "1 个待批准" })),
-          ("statusBad", Json::boolean(!(fx.vault_own == "off" || fx.vault_own == "outside"))),
+          ("statusText", str(if fx.vault_own == "off" || fx.vault_own == "outside" || fx.vault_discover != "" { "" } else if fx.vault_workspace == "has" { "2 个待批准" } else { "1 个待批准" })),
+          ("statusBad", Json::boolean(!(fx.vault_own == "off" || fx.vault_own == "outside" || fx.vault_discover != ""))),
         ] +
+        (if fx.vault_discover != "" {
+          let disc_fields : Array[(String, Json)] = [
+            ("id", str("v-ws")),
+            ("name", str("Workspace 密钥库")),
+            ("ownerName", str("林")),
+            ("memberCount", Json::number(3.0)),
+            ("requested", Json::boolean(fx.vault_discover == "requested")),
+          ]
+          if fx.vault_discover == "requested" {
+            disc_fields.push(("requestedAt", Json::number(1700000100.0)))
+            disc_fields.push(("requestedAtText", str("刚刚")))
+          }
+          [("availableWorkspaceVaults", Json::array([obj(disc_fields)])), ("hasRecovery", Json::boolean(false))]
+        } else {
+          [("hasRecovery", Json::boolean(!fx.vault_off))]
+        }) +
         (if fx.this_device_code != "" { [("thisDeviceCode", str(fx.this_device_code))] } else { [] }) +
         (match fx.lock_case {
           // (not signing for a reason of its own: the core's words, and 验证 where a press ends it)
@@ -4721,6 +4819,45 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
       fx.vault_workspace_members.append(strings(p, "members"))
       fx_changed()
       Some(Ok(obj([])))
+    }
+    "vault.addMember" => {
+      let sub = text(p, "sub")
+      let kept_reqs = fx.vault_workspace_requests.filter(fn(s) { s != sub })
+      fx.vault_workspace_requests.clear()
+      fx.vault_workspace_requests.append(kept_reqs)
+      if sub != "" && !fx.vault_workspace_members.contains(sub) {
+        fx.vault_workspace_members.push(sub)
+      }
+      fx_changed()
+      let keyed_n = if sub == "u4" { 1.0 } else { 0.0 }
+      Some(Ok(obj([("id", str("v-ws")), ("added", Json::boolean(true)), ("keyedDevices", Json::number(keyed_n))])))
+    }
+    "vault.removeMember" => {
+      let sub = text(p, "sub")
+      let kept_m = fx.vault_workspace_members.filter(fn(s) { s != sub })
+      fx.vault_workspace_members.clear()
+      fx.vault_workspace_members.append(kept_m)
+      fx_changed()
+      Some(Ok(obj([("id", str("v-ws")), ("removed", Json::boolean(true)), ("rekeyed", Json::boolean(true))])))
+    }
+    "vault.dismissJoin" => {
+      let sub = text(p, "sub")
+      let kept_reqs = fx.vault_workspace_requests.filter(fn(s) { s != sub })
+      fx.vault_workspace_requests.clear()
+      fx.vault_workspace_requests.append(kept_reqs)
+      fx_changed()
+      Some(Ok(obj([("dismissed", Json::boolean(true))])))
+    }
+    "vault.requestJoin" => {
+      fx.vault_off = false
+      fx.vault_discover = "requested"
+      fx_changed()
+      Some(Ok(obj([("asked", Json::number(1.0)), ("alreadyMember", Json::boolean(false))])))
+    }
+    "vault.cancelJoin" => {
+      fx.vault_discover = "unjoined"
+      fx_changed()
+      Some(Ok(obj([("cancelled", Json::boolean(true))])))
     }
     "vault.putItem" => Some(Ok(obj([("id", str("it-new"))])))
     // the new device turned away, or its prompt closed: no longer shown

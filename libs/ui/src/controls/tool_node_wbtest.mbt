@@ -249,7 +249,7 @@ test "a tool as a node pressed at each way in's moment, no frame drawn: a click,
 ///|
 /// Tool "复制 new" saying `s`: what it draws (within its square) at rest, with the pointer over it, and with the
 /// keyboard's focus on it the pointer away; whether the focus came to it; what it draws once the focus is let go.
-fn hovered_focused(s : ToolSaid) -> (Array[String], Array[String], Array[String], Bool, Array[String]) raise {
+fn hovered_focused(s : ToolSaid) -> (Array[String], Array[String], Array[String], Bool, Array[String]) {
   let said = @signals.signal(s, same=fn(a, b) { a == b })
   let t = tools_tester(said, @signals.signal(page_viewer_ink()), {})
   let n = t.get(Button, label=s.label + " new")
@@ -536,7 +536,7 @@ fn tip_alphas(t : @ui.Tester) -> (Double, Double) {
 /// A tip rested on and shown, then: left at 40 into its coming in, rested on again 40 after (within the skip: at once).
 /// How opaque it is drawn (tip_alphas) at each of `looks` (from its showing), frames drawn all along (`dense`) or none
 /// but at those moments; and at each turn, just before it and just after.
-fn tip_turns(dense : Bool, looks : Array[Double]) -> Array[(Double, Double)] raise {
+fn tip_turns(dense : Bool, looks : Array[Double]) -> Array[(Double, Double)] {
   let said = @signals.signal({ icon: "copy", label: "复制", on: false, disabled: false }, same=fn(a, b) { a == b })
   let t = tools_tester(said, @signals.signal(page_viewer_ink()), {})
   let n = t.get(Button, label="复制 new")
@@ -596,7 +596,7 @@ test "a tip coming in and going as kit's does: its ground the first half of the 
 /// Where the tip of tool `which` ("new", tools_tester's) is drawn and how big, as its ground is drawn (the
 /// biggest box drawn under its tool, beside it), in its tool's terms: at each turn of the hand on it and away (shown
 /// whole; half way gone; back on it a moment; whole again; most of the way gone).
-fn tip_drawn_turns(which : String) -> Array[String] raise {
+fn tip_drawn_turns(which : String) -> Array[String] {
   let said = @signals.signal({ icon: "copy", label: "复制", on: false, disabled: false }, same=fn(a, b) { a == b })
   let t = tools_tester(said, @signals.signal(page_viewer_ink()), {})
   let b = t.get(Button, label="复制 " + which)
@@ -659,7 +659,7 @@ test "a tip going fades out symmetrically without shrinking, matching its restin
 /// A finger held on tool "复制 new" long_press_ms and let go there, frames drawn only as asked (none but the ones after
 /// each event); then `after`: whether its tip was read out shown as it was held, just after it was let go, `wait` after
 /// that, and how many times it was pressed.
-fn finger_held_tip(wait : Double, then_press : Bool) -> (Bool, Bool, Bool, Int) raise {
+fn finger_held_tip(wait : Double, then_press : Bool) -> (Bool, Bool, Bool, Int) {
   let said = @signals.signal({ icon: "copy", label: "复制", on: false, disabled: false }, same=fn(a, b) { a == b })
   let pressed : Map[String, Int] = Map([])
   // (a touch screen's app: the hand a finger's)
@@ -733,7 +733,7 @@ test "a tool as a node pressed only as it is let go on it, its room round it its
 ///|
 /// A finger held on tool "复制 new" long_press_ms, its tip shown, then `then` done (to the tester, what it says, how
 /// it is said): whether the tip shows pop_out_ms twice after that, and again `again` later (after `after`).
-fn held_then(then : (@ui.Tester, @signals.Signal[ToolSaid], Double, Double) -> Unit, after : (@ui.Tester, @signals.Signal[ToolSaid]) -> Unit) -> (Bool, Bool, Bool) raise {
+fn held_then(then : (@ui.Tester, @signals.Signal[ToolSaid], Double, Double) -> Unit, after : (@ui.Tester, @signals.Signal[ToolSaid]) -> Unit) -> (Bool, Bool, Bool) {
   let said = @signals.signal({ icon: "copy", label: "复制", on: false, disabled: false }, same=fn(a, b) { a == b })
   let t = tools_tester(said, @signals.signal(page_viewer_ink()), {}, platform=1)
   let shown = fn() { t.semantics().any(fn(s) { s.role == Tooltip && s.label == "复制 new" && !s.hidden }) }

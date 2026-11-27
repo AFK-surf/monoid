@@ -49,7 +49,7 @@ fn claude_row(installed~ : Bool = true, uninstallable~ : Bool? = Some(true)) -> 
 
 ///|
 /// The runtime's ⋯ pressed and its menu at rest: the labels of its items, top to bottom.
-fn uninstall_menu(t : @ui.Tester) -> Array[String] raise {
+fn uninstall_menu(t : @ui.Tester) -> Array[String] {
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="更多")
   t.draw()

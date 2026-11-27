@@ -370,7 +370,7 @@ fn rg_each_case(in_node : Bool) -> (Array[String], Int) raise {
     |> ignore
   })
   let seen : Array[String] = []
-  let note = fn(what : String) raise {
+  let note = fn(what : String) {
     let focus = t.focused().map(fn(s) { s.label }).unwrap_or("")
     let checks = StringBuilder()
     for k in ["a", "b", "c", "d"] {

@@ -130,10 +130,24 @@ export function forgetEdgeChangelog(): void {
 /**
  * Where this place (the PoP) keeps a channel's changelog, for isolates that do not have it yet: the body is still
  * served only once ServiceStatus says its ETag is the one out (so `/v1/releases/out` is seen at once), but it does not
- * cross from the object again (~1.2 MB on the beta, 2026-11-27).
+ * cross from the object again (~1.2 MB on the beta, 2026-11-27). `origin` is the one the request reached this Worker
+ * on (`reachedOrigin`): Cloudflare's `caches.default` keeps only URLs of the Worker's own zone, so a made-up host
+ * (`.internal`, which Miniflare keeps) is never kept there.
  */
-function popChangelogKey(channel: Channel, upstream: string): string {
-  return `https://changelog-cache.internal/${encodeURIComponent(channel)}?upstream=${encodeURIComponent(upstream)}`;
+export function popChangelogKey(origin: string, channel: Channel, upstream: string): string {
+  return `${origin}/__internal/changelog-cache/${encodeURIComponent(channel)}?upstream=${encodeURIComponent(upstream)}`;
+}
+
+/** The origin each request reached this Worker on, before a guest's forwarded origin took its place (guests.ts `served`). */
+const reached = new WeakMap<Request, string>();
+
+/** Notes that `request` reached this Worker on `origin` (index.ts, before `served`). */
+export function reachedAt(request: Request, origin: string): void {
+  reached.set(request, origin);
+}
+
+function reachedOrigin(request: Request): string {
+  return reached.get(request) ?? new URL(request.url).origin;
 }
 
 /** The kept body's ETag as it was put (a cache may weaken its own `etag`). */
@@ -279,7 +293,7 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
     const upstream = env.RELEASES_UPSTREAM ?? "";
     const cacheKey = `${channel}\0${upstream}`;
     const pop = popCache();
-    const popKey = popChangelogKey(channel, upstream);
+    const popKey = popChangelogKey(reachedOrigin(request), channel, upstream);
     // A body this place keeps, read only once ServiceStatus says its ETag is the one out; cancelled otherwise.
     let popMatch: Response | undefined;
     let popUsed = false;

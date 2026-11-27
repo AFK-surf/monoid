@@ -30,8 +30,8 @@ test "the semantics tree: widgets with their state, words named by what holds th
   )
   assert_eq(t.get(Switch, label="Wi-Fi").check, Some(On))
   // none, and more than one, fail
-  assert_true((try Some(t.get(Button, label="Cancel")) catch { _ => None }) is None)
-  assert_true((try Some(t.get(Text)) catch { _ => None }) is None)
+  assert_true(t.try_get(Button, label="Cancel") is Err(_))
+  assert_true(t.try_get(Text) is Err(_))
   assert_eq(t.all(Text).length(), 2)
 }
 

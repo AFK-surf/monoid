@@ -59,7 +59,7 @@ test "a secret's field: masked till its eye shows it, its name over its line, co
 ///|
 /// A secret's field shown in a column `w` wide, its `value` on as many lines as it takes, its eye and 复制 at its end:
 /// the Tester, then the value's rectangle and the eye's.
-fn u15_shown(value : String, w : Double) -> (@ui.Tester, (Double, Double, Double, Double), (Double, Double, Double, Double)) raise {
+fn u15_shown(value : String, w : Double) -> (@ui.Tester, (Double, Double, Double, Double), (Double, Double, Double, Double)) {
   let t = u15_case(w~, fn(b) {
     b.box(fn(row) {
       secret_value_row_node(row, fn() { "私钥" }, fn() { value }, mono=fn() { true }, fn(l) {

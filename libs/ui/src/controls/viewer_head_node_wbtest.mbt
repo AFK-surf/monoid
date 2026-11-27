@@ -67,7 +67,7 @@ fn head_tester(s : HeadState, w? : Double = 390.0) -> @ui.Tester {
 
 ///|
 /// What the head draws (all of the window but its foot), and where its × is read out.
-fn head_drawn(tt : @ui.Tester) -> (Array[String], (Double, Double, Double, Double)) raise {
+fn head_drawn(tt : @ui.Tester) -> (Array[String], (Double, Double, Double, Double)) {
   let x = tt.get(Button, label=t("web-main.preview.closeKey"))
   // (its numbers to a millionth: the same fade worked out by another way ending a last digit apart)
   let even = fn(line : String) {
@@ -98,7 +98,7 @@ fn head_run(
   tools : Array[String],
   steps : Array[(String, (HeadState) -> Unit, Double)],
   w? : Double = 390.0,
-) -> Array[(String, Array[String], (Double, Double, Double, Double))] raise {
+) -> Array[(String, Array[String], (Double, Double, Double, Double))] {
   let s = HeadState::new(name, tools)
   let t = head_tester(s, w~)
   let out = []
@@ -240,7 +240,7 @@ fn glyph_clips_right(t : @ui.Tester, top : Double, bottom : Double) -> Array[(Do
 /// A head 196 wide with three tools and a long name as nodes: each tool's (and ×'s) rect and what
 /// is drawn within it; the name's words read out, and the glyphs drawn of it with how far right each is cut to, and
 /// where the first tool begins.
-fn narrow_head() -> (Array[((Double, Double, Double, Double), Array[String])], Bool, Array[(Double, Double)], Double) raise {
+fn narrow_head() -> (Array[((Double, Double, Double, Double), Array[String])], Bool, Array[(Double, Double)], Double) {
   let name = "a-very-long-name-of-a-picture.png"
   let tools = ["edit", "copy", "download"]
   let tt = head_tester(HeadState::new(name, tools), w=190.0)
@@ -280,7 +280,7 @@ test "the floating head as nodes with next to no room for its name: what is draw
 ///|
 /// A head as nodes in a window of its own, the system's size of words `scale` after it is first drawn:
 /// what it draws then.
-fn head_scaled(scale : Double) -> Array[String] raise {
+fn head_scaled(scale : Double) -> Array[String] {
   let t = head_tester(HeadState::new("photo.png", ["copy"]))
   t.set_font_scale(scale)
   t.draw()

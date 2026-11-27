@@ -494,9 +494,14 @@ export class DirectoryWorkspaces {
     return this.view(sub, id);
   }
 
-  /** Fails unless the caller manages the workspace (before a picture it sends is kept: api.ts). */
-  manages(sub: string, id: string): void {
-    this.#db.role(sub, id, MANAGERS);
+  /** Fails unless the caller manages the workspace, or owns the named rig (before a picture it sends is kept: api.ts). */
+  manages(sub: string, id: string, station?: string): void {
+    if (
+      !MANAGERS.includes(this.#db.role(sub, id))
+      && (!station || !this.#db.one("SELECT 1 AS x FROM station_members WHERE station = ? AND workspace = ? AND rig = 1 AND enrolled_by = ?", station, id, sub))
+    ) {
+      fail(403, "forbidden");
+    }
   }
 
   /** A new name, a new emoji, a new icon (null or "" takes either away; a station's, cleanIcon), or several; what is not given stays. */

@@ -35,9 +35,15 @@ fn stories_u12(_tips : @sf.TipLayer) -> Array[Story] {
               @sfbase.peek_change_node(
                 b,
                 true,
-                fn() { states[state.get() % states.length()] },
                 fn() {
-                  ["已打开", "草稿", "已合并", "已关闭"][state.get() % states.length()]
+                  let idx : Int = state.get()
+                  let len : Int = states.length()
+                  states[idx % len]
+                },
+                fn() {
+                  let idx : Int = state.get()
+                  let len : Int = states.length()
+                  ["已打开", "草稿", "已合并", "已关闭"][idx % len]
                 },
                 fn() { "AFK-surf/monoid #7279" },
                 fn() { "5 分钟前" },

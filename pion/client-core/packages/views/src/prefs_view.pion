@@ -1,0 +1,267 @@
+// Device preferences view projection (`prefs` topic & `prefs.get`), aligned with
+// `client/core-ts/src/prefs.ts` and `client/core-ts/src/shapes/prefs.ts`.
+// Reads persisted preferences from SQLite `account_doc("prefs")` via `store::get_device_prefs`
+// and projects normalized `reader`, `bars`, `badgeKinds`, `device`, and `railView`.
+
+import "base_codec"
+import "sql"
+import "store"
+
+pub fn build_rail_view(lang : String) -> base_codec::Json {
+  let en = lang == "en"
+  let place_j = fn(id : String, zh_label : String, en_label : String, kind : String, list_opt : Option[String]) -> base_codec::Json {
+    let fs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(id)),
+      ("label", base_codec::json_str(if en { en_label } else { zh_label })),
+      ("kind", base_codec::json_str(kind)),
+    ]
+    match list_opt {
+      Some(l) => fs.push(("list", base_codec::json_str(l)))
+      None => ()
+    }
+    base_codec::json_obj(fs)
+  }
+  let places = base_codec::json_arr([
+    place_j("chats", "对话", "Chats", "lists", Some("all")),
+    place_j("mine", "我参与的", "Mine", "lists", Some("mine")),
+    place_j("watching", "监控中", "Watching", "lists", Some("watching")),
+    place_j("hidden", "已隐藏", "Hidden", "lists", Some("hidden")),
+    place_j("archive", "已归档", "Archived", "lists", Some("archive")),
+    place_j("attention", "待处理", "Attention", "attention", None),
+    place_j("files", "文件", "Files", "places", None),
+    place_j("remote", "远程", "Remote", "places", None),
+    place_j("stations", "Station", "Station", "places", None),
+    place_j("profiles", "Profile", "Profile", "places", None),
+    place_j("connects", "连接", "Connects", "places", None),
+    place_j("usage", "用量", "Usage", "places", None),
+  ])
+  let strs = fn(xs : Array[String]) -> base_codec::Json {
+    let arr : Array[base_codec::Json] = []
+    for i in 0..<xs.length() {
+      arr.push(base_codec::json_str(xs[i]))
+    }
+    base_codec::json_arr(arr)
+  }
+  let groups = base_codec::json_arr([
+    base_codec::json_obj([
+      ("kind", base_codec::json_str("places")),
+      ("label", base_codec::json_str(if en { "Pages" } else { "页面" })),
+      ("places", strs(["files", "remote", "stations", "profiles", "connects", "usage"])),
+    ]),
+    base_codec::json_obj([
+      ("kind", base_codec::json_str("lists")),
+      ("label", base_codec::json_str(if en { "Chat lists" } else { "对话列表" })),
+      ("places", strs(["chats", "mine", "watching", "hidden", "archive"])),
+    ]),
+    base_codec::json_obj([
+      ("kind", base_codec::json_str("attention")),
+      ("label", base_codec::json_str(if en { "Attention" } else { "待处理" })),
+      ("places", strs(["attention"])),
+    ]),
+  ])
+  let def_items = ["attention", "chats", "files", "remote", "stations", "profiles", "connects", "usage"]
+  let hidden_items = ["mine", "watching", "hidden", "archive"]
+  base_codec::json_obj([
+    ("places", places),
+    ("groups", groups),
+    ("default", strs(def_items)),
+    (
+      "all",
+      base_codec::json_obj([
+        ("items", strs(def_items)),
+        ("hidden", strs(hidden_items)),
+        ("changed", base_codec::json_bool(false)),
+      ]),
+    ),
+    ("by", base_codec::json_obj([])),
+  ])
+}
+
+/// Project full `PrefsView` from SQLite `account_doc("prefs")` + device metadata.
+pub fn project_prefs(
+  db : sql::Sql,
+  default_workspace : String = "",
+  device_app : String = "desktop",
+  device_locale : String = "",
+  device_phone : Bool = false,
+) -> sql::SqlResult[base_codec::Json] {
+  let stored = match store::get_device_prefs(db) {
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(j) => j
+  }
+  let prefs_m : Map[String, base_codec::Json] = Map::new()
+  match stored {
+    base_codec::Json::Obj(fs) => {
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        prefs_m.set(k, v)
+      }
+    }
+    _ => ()
+  }
+  let lang_val = match prefs_m.get("language") {
+    Some(base_codec::Json::Str(s)) => if s == "en" { "en" } else { "zh" }
+    _ => match prefs_m.get("lang") {
+      Some(base_codec::Json::Str(s)) => if s == "en" { "en" } else { "zh" }
+      _ => if device_locale.length() > 0 && !device_locale.starts_with("zh") && !device_locale.starts_with("ZH") && !device_locale.starts_with("Zh") {
+        "en"
+      } else {
+        "zh"
+      }
+    }
+  }
+  let app_kind = if device_app.length() > 0 { device_app } else { "desktop" }
+  let device_val = match prefs_m.get("device") {
+    Some(base_codec::Json::Obj(stored_dev)) => {
+      if stored_dev.length() > 0 {
+        base_codec::json_obj(stored_dev)
+      } else {
+        let dev_fields : Array[(String, base_codec::Json)] = [
+          ("app", base_codec::json_str(app_kind)),
+          ("phone", base_codec::json_bool(device_phone)),
+          ("handoff", base_codec::json_bool(app_kind == "web" && !device_phone)),
+        ]
+        if device_locale.length() > 0 {
+          dev_fields.push(("locale", base_codec::json_str(device_locale)))
+        }
+        base_codec::json_obj(dev_fields)
+      }
+    }
+    _ => {
+      let dev_fields : Array[(String, base_codec::Json)] = [
+        ("app", base_codec::json_str(app_kind)),
+        ("phone", base_codec::json_bool(device_phone)),
+        ("handoff", base_codec::json_bool(app_kind == "web" && !device_phone)),
+      ]
+      if device_locale.length() > 0 {
+        dev_fields.push(("locale", base_codec::json_str(device_locale)))
+      }
+      base_codec::json_obj(dev_fields)
+    }
+  }
+  let empty_face = fn(mono : Bool) -> base_codec::Json {
+    base_codec::json_obj([
+      ("id", base_codec::json_str("")),
+      ("name", base_codec::json_str("")),
+      ("mono", base_codec::json_bool(mono)),
+      ("family", base_codec::json_str("")),
+      ("files", base_codec::json_arr([])),
+      ("bytes", base_codec::json_int(0)),
+    ])
+  }
+  let appearance_val = match prefs_m.get("appearance") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => "system"
+  }
+  let reader_norm = match prefs_m.get("reader") {
+    Some(r) => store::reader_of(r)
+    None => store::reader_of(base_codec::json_obj([]))
+  }
+  let bars_norm = match prefs_m.get("bars") {
+    Some(b) => store::bars_of(b)
+    None => store::bars_of(base_codec::json_obj([]))
+  }
+  let badge_kinds_norm = match prefs_m.get("badgeKinds") {
+    Some(bk) => store::badge_kinds_of(prefs_m, bk)
+    None => store::badge_kinds_of(prefs_m, base_codec::json_obj([]))
+  }
+
+  let fields : Array[(String, base_codec::Json)] = [
+    ("onlyMine", base_codec::json_bool(false)),
+    ("onlyWatching", base_codec::json_bool(false)),
+    ("boardViews", base_codec::json_obj([])),
+    ("boardGroups", base_codec::json_obj([])),
+    ("boardShowEmpty", base_codec::json_obj([])),
+    ("boardDrafts", base_codec::json_obj([])),
+    ("listFilter", base_codec::json_obj([])),
+    ("appearance", base_codec::json_str(appearance_val)),
+    ("rowPicture", base_codec::json_str("auto")),
+    ("absoluteTime", base_codec::json_bool(false)),
+    ("lang", base_codec::json_str(lang_val)),
+    ("keys", base_codec::json_obj([])),
+    ("lastChat", base_codec::json_obj([])),
+    ("moveTo", base_codec::json_obj([])),
+    ("openChat", base_codec::json_obj([])),
+    ("chatTabs", base_codec::json_obj([])),
+    ("dropFiles", base_codec::json_obj([])),
+    ("driveViews", base_codec::json_obj([])),
+    ("filesTabs", base_codec::json_obj([])),
+    ("remoteTabs", base_codec::json_obj([])),
+    ("driveFavorites", base_codec::json_obj([])),
+    ("driveFavoritesHidden", base_codec::json_obj([])),
+    ("previewSizes", base_codec::json_obj([])),
+    ("sidebars", base_codec::json_obj([])),
+    ("trouble", base_codec::json_obj([])),
+    ("jobsSeen", base_codec::json_obj([])),
+    ("failsGone", base_codec::json_obj([])),
+    ("resume", base_codec::json_obj([])),
+    ("stationUpdatesDismissed", base_codec::json_obj([])),
+    ("device", device_val),
+    ("productName", base_codec::json_str("still.fail")),
+    ("product", base_codec::json_str("still.fail")),
+    ("reader", reader_norm),
+    ("badgeKinds", badge_kinds_norm),
+    ("rails", base_codec::json_obj([])),
+    ("bars", bars_norm),
+    ("barsBy", base_codec::json_obj([])),
+    ("fonts", base_codec::json_obj([])),
+    (
+      "faces",
+      base_codec::json_obj([
+        ("ui", empty_face(false)),
+        ("text", empty_face(false)),
+        ("code", empty_face(true)),
+        ("list", base_codec::json_arr([])),
+      ]),
+    ),
+    ("railView", build_rail_view(lang_val)),
+    ("experimental", base_codec::json_obj([])),
+    ("features", base_codec::json_obj([])),
+    ("experimentalItems", base_codec::json_arr([])),
+  ]
+
+  let merged : Map[String, base_codec::Json] = Map::new()
+  let order : Array[String] = []
+  for i in 0..<fields.length() {
+    let (k, v) = fields[i]
+    if merged.get(k).is_none() {
+      order.push(k)
+    }
+    merged.set(k, v)
+  }
+  match prefs_m.get("workspace") {
+    Some(base_codec::Json::Str(ws)) => if ws.length() > 0 {
+      if merged.get("workspace").is_none() { order.push("workspace") }
+      merged.set("workspace", base_codec::json_str(ws))
+    }
+    _ => if default_workspace.length() > 0 && default_workspace != "ws-default" {
+      if merged.get("workspace").is_none() { order.push("workspace") }
+      merged.set("workspace", base_codec::json_str(default_workspace))
+    }
+  }
+  let pkeys = prefs_m.keys()
+  for i in 0..<pkeys.length() {
+    let k = pkeys[i]
+    if k == "workspace" || k == "reader" || k == "bars" || k == "badgeKinds" || k == "lang" || k == "device" {
+      continue
+    }
+    match prefs_m.get(k) {
+      Some(v) => {
+        if merged.get(k).is_none() {
+          order.push(k)
+        }
+        merged.set(k, v)
+      }
+      None => ()
+    }
+  }
+  let out_fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<order.length() {
+    let k = order[i]
+    match merged.get(k) {
+      Some(v) => out_fields.push((k, v))
+      None => ()
+    }
+  }
+  sql::SqlResult::Ok(base_codec::json_obj(out_fields))
+}

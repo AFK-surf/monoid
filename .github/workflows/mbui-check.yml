@@ -142,12 +142,12 @@ jobs:
       # (each file an mtime of its content: moon builds again only what changed since that build, not all of it after
       # the checkout's new mtimes: the replay's 170 tasks over main's last build, 0b0e29e8, 41381222307, 2026-11-02)
       - run: bash apps/mbui/scripts/moon-mtimes.sh
-      # The app and replay builds reach the store only after moonc, so restore it while moonc runs.
-      # (ended 35 s before the job, main's 25: a branch's queues its units after it, 25-30 s; main's only saves its two
-      # caches, 11 s, and its test program, 5, 135321359511, 2026-11-19)
+      # The build jobs reach the store only after moonc, so restore it while moonc runs.
+      # (ended 35 s before the job, main's 25 except replay's 35: a branch's queues its units after it, 25-30 s; main's
+      # only saves its caches and its test program, 135321359511, 2026-11-19)
       - name: Start the build
         id: app-start
-        if: (env.PART == 'app' || env.PART == 'replay') && env.GROUP == 'build'
+        if: env.GROUP == 'build'
         run: |
           mkdir -p "$RUNNER_TEMP/app-live"
           : > "$RUNNER_TEMP/app-store-pending"
@@ -159,6 +159,8 @@ jobs:
           export MBC_STORE="$RUNNER_TEMP/app-live/mbc-store" MBC_STORE_WAIT="$RUNNER_TEMP/app-store-pending"
           export TIMES=1 MBC_REAL_CC=clang TARGETS=native PARTS=${{ env.PART }} APP_GROUP=1/4
           export APP_BUILD_OUT=${{ env.PART == 'app' && format('{0}/app-test', runner.temp) || '' }}
+          export REALSIZE_BUILD_OUT=${{ env.PART == 'realsize' && format('{0}/realsize-test', runner.temp) || '' }}
+          export PAGES_TEST_BUILD_OUT=${{ env.PART == 'pages_test' && format('{0}/pages-test', runner.temp) || '' }}
           export REPLAY_BUILD_OUT=${{ env.PART == 'replay' && format('{0}/replay-test', runner.temp) || '' }}
           export SFAPP_SHARDS=${{ github.event_name == 'schedule' && 1 || 4 }} LINES_OUT=40
           nohup bash -c 'set +e; bash scripts/with-timeout.sh @$((JOB_END - ${{ env.OWN == 'm-' && env.PART != 'replay' && 25 || 35 }})) bash apps/mbui/scripts/test.sh > "$RUNNER_TEMP/mbui-test.log" 2>&1; code=$?; printf "%s\n" "$code" > "$RUNNER_TEMP/app-status.tmp"; mv "$RUNNER_TEMP/app-status.tmp" "$RUNNER_TEMP/app-status"; exit "$code"' > "$RUNNER_TEMP/app-worker.log" 2>&1 < /dev/null &

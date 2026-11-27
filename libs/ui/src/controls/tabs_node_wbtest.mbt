@@ -53,7 +53,7 @@ fn tabs2_said(t : @ui.Tester) -> (Array[String], Array[String]) {
 ///|
 /// The bar's or the capsule's place along the list and its width, as drawn: the rectangle drawn `h` high (within half
 /// a point) in the tab list's band.
-fn tabs2_mark(t : @ui.Tester, h : Double) -> (Int, Int) raise {
+fn tabs2_mark(t : @ui.Tester, h : Double) -> (Int, Int) {
   let list = t.get(TabList, label="页面")
   match
     t
@@ -72,7 +72,7 @@ test "tabs: the chosen one read out selected, its panel the one read out and sho
   let k = tabs2()
   assert_eq(tabs2_said(k.t), (["对话"], ["对话"]))
   assert_true(k.t.rect_of("对话面板") is Some(_))
-  let tab = fn(name : String) raise {
+  let tab = fn(name : String) {
     let r = k.t.get(Tab, label=name).rect
     (r.0.round().to_int(), r.2.round().to_int())
   }
@@ -92,7 +92,7 @@ test "tabs, the pill look: the lifted capsule under the chosen tab, sliding to a
   for dark in [false, true] {
     set_dark(Some(dark))
     let k = tabs2(look=Pill)
-    let tab = fn(name : String) raise {
+    let tab = fn(name : String) {
       let r = k.t.get(Tab, label=name).rect
       (r.0.round().to_int(), r.2.round().to_int())
     }

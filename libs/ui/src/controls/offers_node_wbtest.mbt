@@ -96,7 +96,7 @@ fn offers_window(x : OffersAt, n : Int) -> (@view.View) -> Unit {
 ///|
 /// offers_window in a Tester's window, its field given the focus: open from the start where `open`; the window's tree
 /// one where a change outside a transition settles at once where `transitions_only` (as Tester::tree's and an app's).
-fn offers_window_tester(n : Int, open : Bool, transitions_only : Bool) -> OffersAt raise {
+fn offers_window_tester(n : Int, open : Bool, transitions_only : Bool) -> OffersAt {
   let t = @ui.Tester::new(fn(_c) {  }, w=800.0, h=600.0, platform=0)
   let x : OffersAt = {
     t,
@@ -127,7 +127,7 @@ fn offers_window_tester(n : Int, open : Bool, transitions_only : Bool) -> Offers
 
 ///|
 /// offers_window in a Tester's window, opened once the field has the focus.
-fn offers_tester(n? : Int = 3) -> OffersAt raise {
+fn offers_tester(n? : Int = 3) -> OffersAt {
   let x = offers_window_tester(n, false, false)
   x.open.set(true)
   x.t.draw()

@@ -82,7 +82,7 @@ test "settings search follows the language and keeps its words when the list mov
 ///|
 /// The words typed into the settings' search of `t`, what was there emptied first, looked at once the list is what
 /// they find.
-fn settings_search_for(t : @ui.Tester, words : String) -> Unit raise {
+fn settings_search_for(t : @ui.Tester, words : String) -> Unit {
   let clear = @sf.t("android-misc.drive.pick.filterClear")
   if t.all(Button).iter().any(fn(s) { s.label == clear }) {
     // (cleared, the whole list back, as a person sees it before typing again: not typed into in the moment it is

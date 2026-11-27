@@ -116,7 +116,7 @@ fn stories_wave3(tips : @sf.TipLayer, layer? : () -> @view.View? = fn() { None }
                   })
                 },
                 on_back=fn() { back_hits.set(back_hits.get() + 1) },
-                frame=fn() { { ..@sf.no_frame, back: Some("工作站") } },
+                frame=fn() { @sf.PageFrame::{ ..@sf.no_frame, back: Some("工作站") } },
                 width=fn() { frame.window_w() },
                 actions=fn(a) {
                   @sf.button_node(a, fn() { "刷新" }, fn() { refresh_hits.set(refresh_hits.get() + 1) }, tone=Ghost, icon="refresh")

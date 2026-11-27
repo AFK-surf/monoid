@@ -27,7 +27,7 @@ fn exp_set(t : @ui.Tester, src : Source, ids : Array[String], on : Bool) -> Unit
 
 ///|
 /// 实验性功能 opened over what is shown, `label`'s switch pressed, and back to what was shown.
-fn exp_pressed(t : @ui.Tester, label : String) -> Unit raise {
+fn exp_pressed(t : @ui.Tester, label : String) -> Unit {
   app.nav.push(Settings)
   app.nav.push(Setting(@settings.Route::Experimental))
   t.draw()
@@ -127,7 +127,7 @@ test "看板 off by default on 小屏, 中屏 and 大屏: no key to it (none in 
     assert_true(t.query(Button, label="看板") is None, msg="\{at}: no 看板 by default")
     // (on 小屏 by its switch in 实验性功能; on the wide frames as the core keeps the switch pressed there, the settings
     // there a page of the pane's of their own: exp_pressed's)
-    let turn = fn(on : Bool) raise {
+    let turn = fn(on : Bool) {
       if platform == 2 {
         exp_pressed(t, "对话列表看板视图")
       } else {

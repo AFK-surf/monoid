@@ -5,6 +5,11 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Raised once, 2026-11-27: the workspace of real size's `vaults` topic now weighs a shared workspace vault with a
+// pending join request and a discoverable workspace vault card (client/core-ts/test/real-size.ts `WORKSPACE_VAULT`
+// and `DISC_VAULT`): wide `settings-vault*` screens make, lay out and measure those two new cards once on open
+// (+63 made, +33 laid, +11 measured), nothing else changed.
+
 // Raised once, 2026-11-26: a station's 软件与更新 gives each runtime an 启用 switch (sfpages station_node.mbt
 // software_row_node, the station's `disabledRuntimes`), the workspace of real size's station listing a dozen runtimes:
 // every settings-station screen showing that list makes, lays out and measures their switches, nothing else changed.
@@ -246,7 +251,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone files-tree": (844, 689, 81),
   // (raised once, 2026-11-25: each station's CPU, memory, disk and network shown as icons in fixed places, every row)
   "phone place-stations": (475, 338, 45),
-  "phone place-profiles": (649, 486, 76),
+  "phone place-profiles": (663, 472, 86),
   "phone place-remote": (355, 291, 29),
   "phone place-remote-tabs": (355, 291, 29),
   "phone chat-remote": (1029, 663, 80),
@@ -409,12 +414,12 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-adb-failed": (461, 322, 38),
   "phone settings-adb-chats": (503, 356, 45),
   "phone settings-adb-chats-long": (507, 354, 45),
-  "phone settings-profiles": (851, 611, 95),
-  "phone settings-profiles-monthly": (851, 611, 95),
-  "phone settings-profiles-fable": (851, 611, 95),
-  "phone settings-profiles-own3": (851, 611, 95),
-  "phone settings-profiles-week-fable": (851, 611, 95),
-  "phone settings-profiles-several": (851, 611, 95),
+  "phone settings-profiles": (872, 606, 105),
+  "phone settings-profiles-monthly": (872, 606, 105),
+  "phone settings-profiles-fable": (872, 606, 105),
+  "phone settings-profiles-own3": (872, 606, 105),
+  "phone settings-profiles-week-fable": (872, 606, 105),
+  "phone settings-profiles-several": (872, 606, 105),
   "phone settings-profile": (730, 485, 79),
   "phone settings-profile-fable": (730, 485, 79),
   "phone settings-profile-own3": (730, 485, 79),
@@ -433,20 +438,20 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-new-profile": (540, 380, 43),
   "phone settings-new-profile-key": (464, 324, 39),
   "phone settings-new-profile-stations": (540, 380, 43),
-  "phone settings-connects": (698, 471, 80),
+  "phone settings-connects": (835, 563, 107),
   "phone settings-connect": (610, 436, 126),
   "phone settings-connect-menu": (610, 436, 126),
   "phone settings-connect-mode": (708, 503, 135),
   "phone settings-connect-run": (610, 436, 126),
-  "phone settings-new-connect": (845, 582, 97),
-  "phone settings-new-connect-platform": (801, 553, 84),
-  "phone settings-new-connect-scan": (779, 530, 81),
-  "phone settings-new-connect-app": (871, 603, 94),
-  "phone settings-new-connect-comma": (800, 541, 86),
+  "phone settings-new-connect": (954, 654, 122),
+  "phone settings-new-connect-platform": (924, 635, 116),
+  "phone settings-new-connect-scan": (902, 612, 113),
+  "phone settings-new-connect-app": (980, 675, 119),
+  "phone settings-new-connect-comma": (923, 623, 118),
   "phone settings-connect-comma": (610, 436, 126),
   "phone settings-connect-feishu": (610, 436, 126),
-  "phone settings-new-connect-platform-group": (831, 579, 88),
-  "phone settings-new-connect-group": (798, 547, 91),
+  "phone settings-new-connect-platform-group": (954, 661, 120),
+  "phone settings-new-connect-group": (921, 629, 123),
   "phone settings-connect-group": (611, 436, 126),
   "phone settings-slack-app": (610, 436, 126),
   "phone settings-memory": (477, 343, 95),
@@ -782,7 +787,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-me-reading": (616, 477, 74),
   "wide settings-workspace": (764, 572, 110),
   "wide settings-security": (666, 514, 76),
-  "wide settings-vault": (732, 554, 92),
+  "wide settings-vault": (795, 587, 103),
   "wide settings-vault-items": (796, 608, 82),
   "wide settings-vault-item": (507, 401, 52),
   "wide settings-stations": (822, 593, 103),
@@ -865,7 +870,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-connect-run": (694, 541, 110),
   "wide settings-new-connect": (1136, 828, 169),
   "wide settings-new-connect-platform": (1143, 833, 163),
-  "wide settings-new-connect-scan": (1038, 785, 160),
+  "wide settings-new-connect-scan": (1163, 840, 165),
   "wide settings-new-connect-app": (1161, 849, 166),
   "wide settings-new-connect-comma": (1142, 821, 165),
   "wide settings-connect-comma": (694, 541, 110),
@@ -885,15 +890,15 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-archive": (829, 607, 96),
   "wide settings-kept": (627, 503, 75),
   "wide settings-kept-many": (738, 571, 83),
-  "wide settings-vault-off": (732, 554, 92),
-  "wide settings-vault-plain": (732, 554, 92),
-  "wide settings-vault-waits": (732, 554, 92),
-  "wide settings-vault-syncing": (732, 554, 92),
-  "wide settings-vault-confirm": (732, 554, 92),
+  "wide settings-vault-off": (795, 587, 103),
+  "wide settings-vault-plain": (795, 587, 103),
+  "wide settings-vault-waits": (795, 587, 103),
+  "wide settings-vault-syncing": (795, 587, 103),
+  "wide settings-vault-confirm": (795, 587, 103),
   "wide settings-vault-words": (628, 521, 113),
   "wide settings-vault-add": (891, 683, 115),
   "wide settings-vault-editor": (902, 693, 111),
-  "wide settings-vault-recover": (780, 595, 99),
+  "wide settings-vault-recover": (843, 628, 110),
   // (raised once, 2026-11-17: the device asking's panel put up by a reaction of the shell as the workspace is in view
   // (sfapp's signed_in_prompts), in the frame the screen opens in, not by the old view over the pages a frame after it:
   // its nodes made, laid out and measured in that frame's count, nothing more shown)
@@ -1043,7 +1048,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide terminal-taken": (481, 368, 53),
   "wide settings-profile-account": (612, 489, 77),
   "wide settings-profiles-station": (844, 654, 108),
-  "phone profiles-manage": (828, 638, 112),
+  "phone profiles-manage": (895, 663, 125),
   "phone profiles-manage-station": (766, 498, 52),
   "wide profiles-manage": (952, 774, 143),
   "wide profiles-manage-station": (1360, 889, 85),

@@ -7,7 +7,7 @@
 ///|
 priv struct ColdStartSession {
   tester : @ui.Tester
-  outbox : Array[String]
+  outbox : Ref[Array[String]]
 }
 
 ///|
@@ -16,7 +16,7 @@ let session : Ref[ColdStartSession?] = Ref(None)
 ///|
 pub fn cold_start_init() -> Unit {
   @sfapp.new_run()
-  let outbox : Array[String] = []
+  let outbox : Ref[Array[String]] = Ref([])
   let src = @sfapp.core_base_source()
   let inner_tree = @sfapp.app_tree(src)
   let mut served = false
@@ -28,7 +28,7 @@ pub fn cold_start_init() -> Unit {
     tree=fn(root) {
       if !served {
         served = true
-        @core.serve(fn(msg) { outbox.push(msg) }) |> ignore
+        @core.serve(fn(msg) { outbox.val.push(msg) }) |> ignore
         @sfapp.wire_core_client(@core.client, src) |> ignore
       }
       inner_tree(root)
@@ -44,9 +44,8 @@ pub fn cold_start_init() -> Unit {
 pub fn cold_start_take_outbox() -> String {
   match session.val {
     Some(s) => {
-      let items = s.outbox.map(Json::string)
-      s.outbox.clear()
-      s.outbox.shrink_to_fit()
+      let items = s.outbox.val.map(Json::string)
+      s.outbox.val = []
       Json::array(items).stringify()
     }
     None => "[]"

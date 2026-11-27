@@ -423,7 +423,7 @@ test "a video's ‹ and › go to a frame's very start, a frame on from the one 
   let t = preview_tester("video")
   assert_true(t.view_said("{\"view\":{\"view\":1,\"what\":1,\"text\":\"0,33.333,66.667\"}}"))
   t.draw()
-  let tap_button = fn(label : String) raise { t.click(@ui.Role::Button, label~) }
+  let tap_button = fn(label : String) { t.click(@ui.Role::Button, label~) }
   // (paused, the player's ±15 s are its frames' keys)
   // › from the first: to the second's start, as the file has it (no ms rounded up: past it is the third's)
   tap_button("下一帧")

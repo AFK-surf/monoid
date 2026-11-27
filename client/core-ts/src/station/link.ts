@@ -479,7 +479,12 @@ export class Links {
       now: () => core.host.nowMs(),
       later: (ms, run) => void core.runner.fork(Effect.andThen(laterSleep(ms), Effect.sync(run)), scoped),
     };
-    const link = new Link(address, addr, scoped, new Memory(keeper, [[LOG_KEY, LOGS_KEPT], [LINK_PREVIEW_KEY, LINK_PREVIEWS_KEPT], [FILE_PEEK_KEY, FILE_PEEKS_KEPT], [MESSAGE_PEEK_KEY, MESSAGE_PEEKS_KEPT]]));
+    const memory = new Memory(
+      keeper,
+      [[LOG_KEY, LOGS_KEPT], [LINK_PREVIEW_KEY, LINK_PREVIEWS_KEPT], [FILE_PEEK_KEY, FILE_PEEKS_KEPT], [MESSAGE_PEEK_KEY, MESSAGE_PEEKS_KEPT]],
+      [PRESETS, LOG_KEY],
+    );
+    const link = new Link(address, addr, scoped, memory);
     this.#links.set(address, link);
     // The last event it told a core before this one, written down with what it told: the first stream asks what came
     // after it, and nothing is read again when the station still has that (the app started again within the hour). Not

@@ -406,7 +406,7 @@ function listing(inner: Inner, ws: string, held: Held, id: string): string[] {
 /// What others' presets were read of each station of a workspace, while the `otherPresets` topic is shown or since.
 /// `reading`: the stations still waited for, each by the read it is waited for in (a later read's is not let go by an
 /// earlier one's deadline).
-type OthersRead = { at: Map<string, PresetRecord[]>; reading: Map<string, number> };
+type OthersRead = { at: Map<string, PresetRecord[]>; reading: Map<string, number>; dirty: Set<string> };
 
 /// How long others' presets wait for a station as a press reads them (`otherPresets`'s `reading`): one linked but slow
 /// or hung no longer holds the press past it; what it says later still comes into the list while it is held.
@@ -416,10 +416,24 @@ export class PresetViews implements Owner {
   readonly #inner: Inner;
   readonly #marks = new Marks();
   readonly #others = new Map<string, OthersRead>();
+  readonly #activeOthers = new Set<string>();
   #reads = 0;
 
   constructor(inner: Inner) {
     this.#inner = inner;
+    inner.store?.authGen?.onBoundary((event) => {
+      if (event.kind === "global") {
+        const scopes = new Set([...this.#others.keys(), ...this.#activeOthers]);
+        this.#others.clear();
+        for (const ws of scopes) this.#marks.touch(ws);
+        for (const ws of this.#activeOthers) this.readOthers(ws);
+      } else if (event.kind === "workspace") {
+        const had = this.#others.delete(event.workspace);
+        const active = this.#activeOthers.has(event.workspace);
+        if (had || active) this.#marks.touch(event.workspace);
+        if (active) this.readOthers(event.workspace);
+      }
+    });
   }
 
   owns(topic: Topic): boolean {
@@ -427,7 +441,17 @@ export class PresetViews implements Owner {
   }
 
   start(topic: Topic): void {
-    if (topic.topic === "otherPresets") this.readOthers(topic.scope as string);
+    if (topic.topic === "otherPresets") {
+      const ws = topic.scope as string;
+      this.#activeOthers.add(ws);
+      this.readOthers(ws);
+    }
+  }
+
+  stop(topic: Topic): void {
+    if (topic.topic === "otherPresets") {
+      this.#activeOthers.delete(topic.scope as string);
+    }
   }
 
   compute(topic: Topic): Value | undefined {
@@ -445,45 +469,112 @@ export class PresetViews implements Owner {
   /// Others' presets read again of every station of `ws` reached now, each as it answers.
   readOthers(ws: string): void {
     const inner = this.#inner;
-    const read = this.#others.get(ws) ?? { at: new Map(), reading: new Map() };
-    this.#others.set(ws, read);
-    const n = ++this.#reads;
-    const done = (address: string) =>
-      Effect.sync(() => {
-        if (read.reading.get(address) !== n) return;
-        read.reading.delete(address);
+    const startGen = inner.store?.authGen?.workspaceAuthGen(ws) ?? 0;
+    const startOwner = whoIn(inner, ws);
+    // Keep existing `at` across routine refreshes within the same auth generation (only onBoundary clears `#others`).
+    let read = this.#others.get(ws);
+    if (!read) {
+      read = { at: new Map(), reading: new Map(), dirty: new Set() };
+      this.#others.set(ws, read);
+    }
+    const slot = read;
+    const stations = stationsOf(inner, ws);
+    const valid = new Set(stations.map((s) => s.address));
+    // Prune stations that have left `ws` so stale entries never linger in `at`.
+    for (const addr of [...slot.at.keys()]) if (!valid.has(addr)) slot.at.delete(addr);
+    for (const addr of [...slot.reading.keys()]) if (!valid.has(addr)) slot.reading.delete(addr);
+    for (const addr of [...slot.dirty]) if (!valid.has(addr)) slot.dirty.delete(addr);
+
+    const scheduleOne = (address: string) => {
+      const n = ++this.#reads;
+      const done = Effect.sync(() => {
+        if (this.#others.get(ws) !== slot) return;
+        if (slot.reading.get(address) !== n) return;
+        slot.reading.delete(address);
         this.#marks.touch(ws);
+        // Consume dirty flag if a routine refresh arrived while this station was in flight.
+        if (slot.dirty.delete(address)) {
+          if (stationsOf(inner, ws).some((x) => x.address === address) && reached(inner, address)) {
+            scheduleOne(address);
+          }
+        }
       });
-    for (const s of stationsOf(inner, ws)) {
+      slot.reading.set(address, n);
+      inner.scheduler.enqueue(
+        address,
+        `otherPresets/${startGen}/${address}`,
+        Priority.shown,
+        Effect.ensuring(Effect.ignore(this.#readOthersOf(ws, address, startGen, startOwner, slot)), done),
+      );
+      inner.runner.fork(Effect.andThen(Effect.sleep(OTHERS_WAIT_MS), done)); // timer: a deadline on a station's answer
+    };
+
+    for (const s of stations) {
       if (!reached(inner, s.address)) continue;
-      read.reading.set(s.address, n);
-      inner.scheduler.enqueue(s.address, `otherPresets/${s.address}`, Priority.shown, Effect.ensuring(Effect.ignore(this.#readOthersOf(ws, s.address)), done(s.address)));
-      inner.runner.fork(Effect.andThen(Effect.sleep(OTHERS_WAIT_MS), done(s.address))); // timer: a deadline on a station's answer
+      if (slot.reading.has(s.address)) {
+        slot.dirty.add(s.address);
+        continue;
+      }
+      scheduleOne(s.address);
     }
     this.#marks.touch(ws);
   }
 
-  #readOthersOf(ws: string, address: string): Effect.Effect<void, CoreError> {
+  #readOthersOf(
+    ws: string,
+    address: string,
+    startGen: number,
+    startOwner: Who | null,
+    read: OthersRead,
+  ): Effect.Effect<void, CoreError> {
     const self = this;
     const inner = this.#inner;
+    const ownerSame = () => {
+      const cur = whoIn(inner, ws);
+      return cur !== null && startOwner !== null && cur.sub === startOwner.sub && cur.email === startOwner.email;
+    };
     return Effect.gen(function* () {
-      const who = whoIn(inner, ws);
-      if (who === null) return;
+      if (startOwner === null) return;
       const said = yield* Effect.result(ask(inner, address, "GET", "/presets/others"));
+      // Verify generation, owner, and active read slot before applying any response.
+      if (
+        (inner.store?.authGen?.workspaceAuthGen(ws) ?? 0) !== startGen ||
+        !ownerSame() ||
+        self.#others.get(ws) !== read
+      ) {
+        return;
+      }
       let found: PresetRecord[];
-      if (said._tag === "Success") found = recordsOf(get(said.success, "records")).filter((r): r is PresetRecord => !isGone(r) && !theirs(r, who));
-      else if (fromBeforeRoute(said.failure)) {
+      if (said._tag === "Success") {
+        found = recordsOf(get(said.success, "records")).filter((r): r is PresetRecord => !isGone(r) && !theirs(r, startOwner));
+      } else if (fromBeforeRoute(said.failure)) {
         const listed = yield* Effect.result(ask(inner, address, "GET", "/presets"));
-        if (listed._tag === "Failure") return;
-        found = arr(get(listed.success, "presets")).flatMap((p) => fromBefore(p, address) ?? []).filter((r) => !theirs(r, who));
-      } else return;
+        if (
+          (inner.store?.authGen?.workspaceAuthGen(ws) ?? 0) !== startGen ||
+          !ownerSame() ||
+          self.#others.get(ws) !== read
+        ) {
+          return;
+        }
+        if (listed._tag === "Failure") {
+          read.at.delete(address);
+          self.#marks.touch(ws);
+          return;
+        }
+        found = arr(get(listed.success, "presets")).flatMap((p) => fromBefore(p, address) ?? []).filter((r) => !theirs(r, startOwner));
+      } else {
+        read.at.delete(address);
+        self.#marks.touch(ws);
+        return;
+      }
+      if (!stationsOf(inner, ws).some((s) => s.address === address)) return;
       self.heard(ws, address, found);
     });
   }
 
   /// Others' presets as station `address` of `ws` said them now.
   heard(ws: string, address: string, found: PresetRecord[]): void {
-    const read = this.#others.get(ws) ?? { at: new Map(), reading: new Map() };
+    const read = this.#others.get(ws) ?? { at: new Map(), reading: new Map(), dirty: new Set() };
     this.#others.set(ws, read);
     read.at.set(address, found);
     this.#refreshPicked(ws, found);
@@ -503,8 +594,10 @@ export class PresetViews implements Owner {
 
   /// Someone else's preset `id` as last read of `ws`'s stations (the newer of each station's): undefined for none.
   othersFound(ws: string, id: string): PresetRecord | undefined {
+    const valid = new Set(stationsOf(this.#inner, ws).map((s) => s.address));
     let out: PresetRecord | undefined;
-    for (const list of this.#others.get(ws)?.at.values() ?? []) {
+    for (const [addr, list] of this.#others.get(ws)?.at.entries() ?? []) {
+      if (!valid.has(addr)) continue;
       for (const r of list) if (r.id === id) out = out === undefined ? r : newerRecord(out, r);
     }
     return out;
@@ -515,8 +608,11 @@ export class PresetViews implements Owner {
     const inner = this.#inner;
     const read = this.#others.get(ws);
     const held = heldOf(inner.data, ws);
+    const stations = stationsOf(inner, ws);
+    const valid = new Set(stations.map((s) => s.address));
     const all = new Map<string, PresetRecord>();
-    for (const list of read?.at.values() ?? []) {
+    for (const [addr, list] of read?.at.entries() ?? []) {
+      if (!valid.has(addr)) continue;
       for (const r of list) {
         if (held.records[r.id] !== undefined) continue;
         const was = all.get(r.id);
@@ -524,7 +620,7 @@ export class PresetViews implements Owner {
       }
     }
     const names = new Map<string, string>();
-    for (const s of stationsOf(inner, ws)) {
+    for (const s of stations) {
       names.set(s.id, s.name);
       names.set(s.address, s.name);
     }

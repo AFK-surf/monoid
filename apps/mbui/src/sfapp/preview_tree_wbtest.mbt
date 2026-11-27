@@ -376,7 +376,7 @@ fn display_frame(t : @ui.Tester) -> Unit {
 ///|
 /// A host's finger tapping the control said `label` (`role`), where it is drawn, then the frames the app asks for after
 /// it (the one that takes it, the one after: what the input changed), nothing more.
-fn pressed(t : @ui.Tester, role : @ui.Role, label : String) -> Unit raise {
+fn pressed(t : @ui.Tester, role : @ui.Role, label : String) -> Unit {
   let (x, y, w, h) = t.get(role, label~).rect
   let at = t.time() + tap_step_ms
   t.advance(tap_step_ms)
@@ -2494,7 +2494,7 @@ test "viewer on the tree, a wide window, marking: a box drawn, what to say of it
 fn wide_marking_cancel(frames : Bool) -> (Bool, Bool) raise {
   let t = preview_tester("image", w=1280.0, platform=0)
   t.host_says_finger(Some(false))
-  let click = fn(label : String) raise {
+  let click = fn(label : String) {
     let (x, y, w, h) = t.get(Button, label~).rect
     t.touch(0, x + w / 2.0, y + h / 2.0)
     t.touch(2, x + w / 2.0, y + h / 2.0)
@@ -2544,10 +2544,10 @@ test "viewer on the tree, a wide window, marking: its top bar the tree's; 取消
 ///|
 /// A picture opened in a wide window (a mouse), marking: the tester, the viewer, and a click at a labelled button's
 /// middle (pressed and let go, no frame after).
-fn wide_marking() -> (@ui.Tester, Viewer, (String) -> Unit raise) raise {
+fn wide_marking() -> (@ui.Tester, Viewer, (String) -> Unit) raise {
   let t = preview_tester("image", w=1280.0, platform=0)
   t.host_says_finger(Some(false))
-  let click = fn(label : String) raise {
+  let click = fn(label : String) {
     let (x, y, w, h) = t.get(Button, label~).rect
     t.touch(0, x + w / 2.0, y + h / 2.0)
     t.touch(2, x + w / 2.0, y + h / 2.0)
@@ -2619,7 +2619,7 @@ test "viewer on the tree, a wide window, a picture of a chat's marked: 添加到
   let (a, _) = preview_files().iter().find_first(fn(f) { f.0.name == "界面草图.png" }).unwrap()
   open_preview("ws1/st1", "s-c1", a, steps=InChat(Some(1.0), "s-c1"))
   t.run_for(@ui.move_most_ms)
-  let click = fn(label : String) raise {
+  let click = fn(label : String) {
     let (x, y, w, h) = t.get(Button, label~).rect
     t.touch(0, x + w / 2.0, y + h / 2.0)
     t.touch(2, x + w / 2.0, y + h / 2.0)
@@ -2651,7 +2651,7 @@ test "viewer on the tree, a wide window, a picture of a chat's marked: 添加到
 ///|
 /// Marking on a wide window, a box drawn: its note asked for at once, what is said of it written (no frame between):
 /// the tester, the viewer, the clicker, the box's id.
-fn wide_box_noted(said : String) -> (@ui.Tester, Viewer, (String) -> Unit raise, Int) raise {
+fn wide_box_noted(said : String) -> (@ui.Tester, Viewer, (String) -> Unit, Int) raise {
   let (t, v, click) = wide_marking()
   let (rx, ry, rw, rh) = v.zoom.rect_at(t.time()).unwrap()
   let (px, py) = (rx + rw / 3.0, ry + rh / 3.0)
@@ -2812,7 +2812,7 @@ test "viewer on the tree, a wide window, marking: a note done (its card drawn), 
 ///|
 /// Marking on a wide window `w` across, `k` boxes drawn one after another on the picture, each note done with nothing
 /// said: the tester, its clicker, the marks' ids in their order.
-fn wide_notes(k : Int, w? : Double = 1280.0) -> (@ui.Tester, (String) -> Unit raise, Array[Int]) raise {
+fn wide_notes(k : Int, w? : Double = 1280.0) -> (@ui.Tester, (String) -> Unit, Array[Int]) raise {
   let (t, v, click) = wide_marking()
   if w != 1280.0 {
     t.resize(w, 844.0)
@@ -2935,7 +2935,7 @@ fn card_label(label : String) -> Bool {
 /// window's tree's own buttons said 取消 there were while it marked.
 fn narrow_marking_cancel(frames : Bool) -> (Bool, Bool, Int) raise {
   let t = preview_tester("image", w=390.0, platform=2)
-  let tap = fn(label : String) raise {
+  let tap = fn(label : String) {
     let (x, y, w, h) = t.get(Button, label~).rect
     t.touch(0, x + w / 2.0, y + h / 2.0)
     t.touch(2, x + w / 2.0, y + h / 2.0)
@@ -2971,12 +2971,12 @@ test "viewer on the tree, a phone, marking: its floating bar the tree's; 取消 
 ///|
 test "viewer on the tree, a phone, marking: its floating bar never narrower, marking's actions in its tools' place and back: as wide after 取消 as while it marked" {
   let t = preview_tester("image", w=390.0, platform=2)
-  let tap = fn(label : String) raise {
+  let tap = fn(label : String) {
     let (x, y, w, h) = t.get(Button, label~).rect
     t.touch(0, x + w / 2.0, y + h / 2.0)
     t.touch(2, x + w / 2.0, y + h / 2.0)
   }
-  let close = fn() raise { t.get(Button, label=@sf.t("web-main.preview.closeKey")).rect.0 }
+  let close = fn() { t.get(Button, label=@sf.t("web-main.preview.closeKey")).rect.0 }
   let plain = close()
   tap(@sf.t("web-main.annotate.image"))
   t.draw()
@@ -3042,7 +3042,7 @@ test "viewer on the tree, a phone, marking: its floating bar wider as what marki
   t.touch(0, x + w / 2.0, y + h / 2.0)
   t.touch(2, x + w / 2.0, y + h / 2.0)
   t.draw()
-  let close = fn() raise { t.get(Button, label=@sf.t("web-main.preview.closeKey")).rect.0 }
+  let close = fn() { t.get(Button, label=@sf.t("web-main.preview.closeKey")).rect.0 }
   let marked = close()
   marking.error = pv("android-chat.file.drawFailed")
   @sfbase.marks_changed()
@@ -3066,7 +3066,7 @@ test "viewer on the tree, a phone: its floating bar's tools and × as far apart 
     @sf.t("android-misc.drive.share"),
     @sf.t("web-main.preview.download"),
     @sf.t("web-main.preview.closeKey"),
-  ].map(fn(label) raise { t.get(Button, label~).rect })
+  ].map(fn(label) { t.get(Button, label~).rect })
   keys.sort_by(fn(a, b) { a.0.compare(b.0) })
   assert_true(keys.length() >= 3, msg="its tools and ×: \{Repr(keys)}")
   for i in 1..<keys.length() {
@@ -3142,7 +3142,7 @@ let pin_glide_done_ms : Double = 2000.0
 ///|
 /// Mark 1's pin pressed in `t` where it is at the tester's moment (its press and its let go, no frame between): its
 /// rect then.
-fn pin_pressed(t : @ui.Tester) -> (Double, Double, Double, Double) raise {
+fn pin_pressed(t : @ui.Tester) -> (Double, Double, Double, Double) {
   let label = pv_fill("android-chat.marks.pin", [("n", "1")])
   let (x, y, w, h) = t.get(Button, label~).rect
   t.touch(0, x + w / 2.0, y + h / 2.0)

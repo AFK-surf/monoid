@@ -53,6 +53,7 @@ pub fn card_piece_node(
   wide_gap? : Double = 0.0,
   wide_group? : Bool = false,
   wide_group_foot? : Bool = true,
+  wide_group_ends_pad? : Bool = false,
   wide_piece? : () -> CardPiece,
   loc~ : SourceLoc,
 ) -> Unit {
@@ -180,7 +181,7 @@ pub fn card_piece_node(
       room.box(fn(card) {
         // (as wide_group_node's card: its rows `pad` in from its sides, its ends' rooms over its first and under its
         // last, the list's gap under each but the last, so that laid out one under another they are that card)
-        let ends = if in_pane_node(card) { card_pad - wide_row_over } else { pad }
+        let ends = if in_pane_node(card) && !wide_group_ends_pad { card_pad - wide_row_over } else { pad }
         card
         .grow(Is(1.0))
         .padding(Is((pad, 0.0, pad, 0.0)))

@@ -56,9 +56,25 @@ pub fn profiles_list_node(
     fn() {
       let out : Array[(String, PlPart)] = []
       for g in pl_groups(rows_now.get()) {
+        let grp = @sfbase.quota_compact_group(
+          v,
+          g.2.map(fn(r) {
+            if only == "" {
+              if flag(Some(r), "usable") {
+                field(field(Some(r), "profile"), "quota")
+              } else {
+                None
+              }
+            } else {
+              field(Some(r), "quota")
+            }
+          }),
+        )
         out.push(("g/" + g.0, PlGroup(g.1)))
         for i, e in g.2 {
-          out.push(("p/" + g.0 + "/" + pl_key(only, e), PlRow(e, @sf.card_piece_of(i, g.2.length()))))
+          let k = "p/" + g.0 + "/" + pl_key(only, e)
+          let prev = if i > 0 { Some("p/" + g.0 + "/" + pl_key(only, g.2[i - 1])) } else { None }
+          out.push((k, PlRow(e, @sf.card_piece_of(i, g.2.length()), prev, grp)))
         }
       }
       out
@@ -66,6 +82,7 @@ pub fn profiles_list_node(
     fn(e) { e.0 },
     same=pl_entry_same,
   )
+  let row_lit = @sf.CardRowLit::new()
   // the machines' own logins not used yet, a block a station up that offers one: the workspace's by station, each
   // block reading its own
   let offers : @signals.KeyedList[String, (Json, Array[Json])] = v.keyed_by(
@@ -189,9 +206,14 @@ pub fn profiles_list_node(
             b,
             fn(s) {
               @sf.section_heading_node(s, fn() { @sf.sample_words(4) })
-              @sf.group_node(s, fn(g) {
-                g.each(fn() { profiles_sample }, fn(e) { text(Some(e), "key") }, fn(r, e) {
-                  pl_account_row_node(r, core.quiet(), fn() { Some(e.get()) }, tips, width?)
+              let n = profiles_sample.length()
+              s.each(fn() { Array::makei(n, fn(i) { i }) }, fn(i) { i }, fn(row, i) {
+                let idx = i.untracked()
+                let e = profiles_sample[idx]
+                let piece = fn() { @sf.card_piece_of(idx, n) }
+                @sf.card_piece_node(row, piece, wide_group=true, wide_group_ends_pad=true, fn(card) {
+                  @sf.card_sep_node(card, piece)
+                  pl_account_row_node(card, core.quiet(), fn() { Some(e) }, tips, sample=true)
                 })
               })
             },
@@ -311,7 +333,7 @@ pub fn profiles_list_node(
           // workspace's: a group of keys holds several vendors'; the user, 2026-11-14 and 2026-11-26)
           @sf.section_heading_node(b, title)
         }
-        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k }, width?)
+        k if k.has_prefix("p/") => pl_row_block(b, core, only, parts, tips, fn() { k }, row_lit)
         k if k.has_prefix("o/") => {
           let station = k.exact_view(start=2).to_owned()
           let sv = @signals.computed(fn(_) {
@@ -343,17 +365,18 @@ pub fn profiles_list_node(
     back_as=fn() { if only == "" { "" } else { text(one(), "name") } },
     // (an account's row put by as it leaves what shows and taken by the next, reading the key it shows now)
     reused=fn(k) { if k.has_prefix("p/") { Some(0) } else { None } },
-    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key, width?) },
+    make_reused=fn(b, _, key) { pl_row_block(b, core, only, parts, tips, key, row_lit) },
   )
 }
 
 ///|
-/// What a block of the profiles' list is: a section's heading (its title), or an account's row (its JSON and which
-/// piece of its section's card it is).
+/// What a block of the profiles' list is: a section's heading (its title), or an account's row (its JSON, which
+/// piece of its section's card it is, the key of the row immediately preceding it in its section, and its
+/// section's dynamically-measured compact quota group layout).
 #derive(Eq)
 priv enum PlPart {
   PlGroup(String)
-  PlRow(Json, @sf.CardPiece)
+  PlRow(Json, @sf.CardPiece, String?, @sfbase.QuotaCompactGroup)
 }
 
 ///|
@@ -362,7 +385,8 @@ fn pl_entry_same(a : (String, PlPart), b : (String, PlPart)) -> Bool {
   a.0 == b.0 &&
   (match (a.1, b.1) {
     (PlGroup(x), PlGroup(y)) => x == y
-    (PlRow(x, px), PlRow(y, py)) => px == py && json_same(x, y)
+    (PlRow(x, px, prevx, grpx), PlRow(y, py, prevy, grpy)) =>
+      px == py && prevx == prevy && grpx == grpy && json_same(x, y)
     _ => false
   })
 }
@@ -408,107 +432,83 @@ fn pl_row_block(
   parts : @signals.KeyedList[String, (String, PlPart)],
   tips : @sf.TipLayer,
   key : () -> String,
-  width? : () -> Double,
+  row_lit : @sf.CardRowLit,
 ) -> Unit {
-  let last : Ref[(Json, @sf.CardPiece)?] = Ref(None)
+  let last : Ref[(Json, @sf.CardPiece, String?, @sfbase.QuotaCompactGroup)?] = Ref(None)
   let now = @signals.computed(fn(_) {
     match parts.get(key()) {
-      Some((_, PlRow(e, piece))) => last.val = Some((e, piece))
+      Some((_, PlRow(e, piece, prev, grp))) => last.val = Some((e, piece, prev, grp))
       _ => ()
     }
     last.val
   }, same=fn(a, b) {
     match (a, b) {
-      (Some((x, px)), Some((y, py))) => px == py && json_same(x, y)
+      (Some((x, px, prevx, grpx)), Some((y, py, prevy, grpy))) =>
+        px == py && prevx == prevy && grpx == grpy && json_same(x, y)
       (None, None) => true
       _ => false
     }
   })
   let row_now = @signals.computed(fn(_) { now.get().map(fn(n) { n.0 }) }, same=json_opt_same)
+  let piece = fn() { now.get().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }
+  let prev_key = fn() { now.get().bind(fn(n) { n.2 }) }
+  let group_sig = @signals.computed(fn(_) { now.get().map(fn(n) { n.3 }).unwrap_or(@sfbase.QuotaCompactGroup::empty()) }, same=fn(a, b) {
+    a == b
+  })
+  let group = fn() { group_sig.get() }
   b.grow(Is(1.0)) |> ignore
-  // (wide, a piece of its section's list card as wide_group_node's: workspace_page's, a station's screens')
-  @sf.card_piece_node(b, fn() { now.get().map(fn(n) { n.1 }).unwrap_or(@sf.CardPiece::CardWhole) }, wide_group=true, fn(card) {
+  // (wide, a piece of its section's list card as wide_group_node's: symmetric `pad` ends keep row_corner concentric in panes)
+  @sf.card_piece_node(b, piece, wide_group=true, wide_group_ends_pad=true, fn(card) {
+    @sf.card_sep_node(card, piece, lit=row_lit, key_now=key, prev_key~)
     if only == "" {
-      pl_account_row_node(card, core, fn() { row_now.get() }, tips, width?)
+      pl_account_row_node(card, core, fn() { row_now.get() }, tips, group~, lit=row_lit, key_now=key)
     } else {
-      pl_station_row_node(card, core, only, fn() { row_now.get() }, tips)
+      pl_station_row_node(card, core, only, fn() { row_now.get() }, tips, group~, lit=row_lit, key_now=key)
     }
   })
 }
 
 ///|
-/// The inner width available to `quota_worded_node` inside `pl_account_row_node`, derived from `page_w()` along
-/// `page_node` -> `card_piece_node(..., wide_group=true)` -> `link_row_node(..., lines_from_lead=true)` so each row
-/// avoids a per-row `View::by_room` second layout pass.
-fn pl_account_quota_room_w(w : @view.View, page_w : () -> Double) -> () -> Double {
-  let in_pane = w.lent(@sf.pane_lent).unwrap_or(false)
-  let wide = @sf.look_node(w) == @sf.look_for(@sf.narrow_most)
-  let card_pad = if in_pane { @sf.corner_inset } else { @sf.list_pad }
-  fn() {
-    let block_w = if wide {
-      let lane_side = if in_pane { 0.0 } else { @sf.desk_lane_in }
-      let avail = page_w() - 2.0 * lane_side
-      let col_w = if avail < @sf.desk_lane_most { avail } else { @sf.desk_lane_most }
-      col_w - 2.0 * @sf.desk_column_in
-    } else {
-      let room_side = if in_pane { @sf.panel_card_in } else { 12.0 }
-      page_w() - 2.0 * room_side
-    }
-    let row_w = block_w - 2.0 * card_pad
-    // link_row_node(lines_from_lead=true): r padding_x = text_in*2, words margin_left = corner_inset - text_in
-    let avail = row_w - @sf.text_in - @sf.corner_inset
-    if avail > 0.0 { avail } else { 0.0 }
+/// Plan tag for an account row: `planText`, or `kindText` for `service` access.
+fn pl_plan_tag(p : Json?) -> String {
+  match text(p, "planText") {
+    "" => if text(field(p, "access"), "kind") == "service" { text(p, "kindText") } else { "" }
+    s => s
   }
 }
 
 ///|
-/// The workspace's account in a row (profile_list_blocks' row), `ev` its entry as it is now: its vendor's mark by its
-/// first line, its name (a subscription's account, a key's name) and its plan after it; under them what needs a look,
-/// in its tone, or what its allowance lacks; its allowance's windows in words a line of their own. One whose station is
-/// away dimmed. Pressed, its page.
+/// Compact workspace account row (`only == ""`):
+/// - Line 1: 20x20 mark box (18pt provider mark), single-line account name + droppable plan tag,
+///   and a silent compact state dot at the right end only when abnormal or unusable.
+/// - Line 2 (flush left under the mark, full width): fixed-column compact quota slots when usable with quota
+///   (plus single-line cut alert underneath if `state.text` is also present), or a single-line compact fallback
+///   for state alert, credits + detail (separate nodes, no `·`), API key usage/kind, or unchecked/detail/unknown.
 fn pl_account_row_node(
   r : @view.View,
   core : Core,
   ev : () -> Json?,
   tips : @sf.TipLayer,
-  width? : () -> Double,
+  sample? : Bool = false,
+  group? : () -> @sfbase.QuotaCompactGroup,
+  lit? : @sf.CardRowLit,
+  key_now? : () -> String,
 ) -> Unit {
   let p = fn() { field(ev(), "profile") }
   let usable = fn() { flag(ev(), "usable") }
   let state = fn() { field(ev(), "state") }
   let quota = fn() { field(p(), "quota") }
-  let windows = fn() { usable() && text(quota(), "state") == "ok" && items(quota(), "windows").length() > 0 }
-  let sub_line = fn() {
-    let no_windows = !(text(quota(), "state") == "ok" && items(quota(), "windows").length() > 0)
-    if text(state(), "text") != "" {
-      text(state(), "text")
-    } else if usable() && no_windows && text(quota(), "state") == "ok" && text(quota(), "creditsText") != "" {
-      let detail = text(quota(), "detail")
-      if detail != "" {
-        text(quota(), "creditsText") + " · " + detail
-      } else {
-        text(quota(), "creditsText")
-      }
-    } else if usable() && no_windows && text(ev(), "group") != "key" {
-      if quota() is (None | Some(Null)) {
-        @sf.t("web-main.quota.unchecked")
-      } else if text(quota(), "detail") != "" {
-        text(quota(), "detail")
-      } else if text(quota(), "state") == "unsupported" {
-        @sf.t("android-settings.quota.none")
-      } else if text(quota(), "state") != "ok" {
-        @sf.t("web-main.quota.unknown")
-      } else {
-        ""
-      }
-    } else {
-      ""
+  let windows = fn() { usable() && @sfbase.has_quota(quota()) }
+  let name = fn() {
+    match text(p(), "name") {
+      "" => text(ev(), "title")
+      n => n
     }
   }
-  // (its line's tone: what needs a look in red or amber as the core says it, else quiet; the row made again only as it
-  // comes to be amber or no longer, its words what they say now)
-  let tone = fn() {
-    if text(state(), "text") == "" {
+  let plan_tag = fn() { pl_plan_tag(p()) }
+  let state_text = fn() { text(state(), "text") }
+  let state_tone = fn() {
+    if state_text() == "" {
       0
     } else {
       match text(state(), "tone") {
@@ -518,154 +518,262 @@ fn pl_account_row_node(
       }
     }
   }
-  r.box(fn(d) {
-    d.alpha(By(fn() { if usable() { 1.0 } else { pl_away } })) |> ignore
-    // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
-    d.on_menu(fn(m) {
-      let e = @signals.untracked(ev)
-      let name = match text(field(e, "profile"), "name") {
-        "" => text(e, "title")
-        n => n
+  let state_style = fn() {
+    match state_tone() {
+      2 => pl_meta_red_cut
+      1 => pl_meta_amber_cut
+      _ => pl_meta_muted_cut
+    }
+  }
+  let fallback_text = fn() {
+    if !usable() {
+      ""
+    } else if text(ev(), "group") == "key" {
+      match text(p(), "usesText") {
+        "" => text(p(), "kindText")
+        u => u
       }
-      pl_menu(fn() { (core.push)(Profile(text(e, "station"), text(field(e, "profile"), "id"))) }, name, m)
+    } else if quota() is (None | Some(Null)) {
+      @sf.t("web-main.quota.unchecked")
+    } else if text(quota(), "detail") != "" {
+      text(quota(), "detail")
+    } else if text(quota(), "state") == "unsupported" {
+      @sf.t("android-settings.quota.none")
+    } else if text(quota(), "state") != "ok" {
+      @sf.t("web-main.quota.unknown")
+    } else {
+      ""
+    }
+  }
+  let press = fn() {
+    let e = @signals.untracked(ev)
+    (core.push)(Profile(text(e, "station"), text(field(e, "profile"), "id")))
+  }
+  r.box(fn(row) {
+    row.transitions_only() |> ignore
+    @sf.style_node(row, fn() { pl_row_multi })
+    row.radius(Is(@sf.row_corner)) |> ignore
+    row.alpha(By(fn() { if usable() { 1.0 } else { pl_away } })) |> ignore
+    if !sample {
+      match (lit, key_now) {
+        (Some(g), Some(k)) => g.bind_top_now(k, row)
+        _ => ()
+      }
+      @sf.hover_ground_node(row)
+      @sf.rippled_node(row, press, @sf.row_corner, name)
+      row.on_menu(fn(m) {
+        let e = @signals.untracked(ev)
+        let named = match text(field(e, "profile"), "name") {
+          "" => text(e, "title")
+          n => n
+        }
+        pl_menu(fn() { (core.push)(Profile(text(e, "station"), text(field(e, "profile"), "id"))) }, named, m)
+      })
+      |> ignore
+    }
+    // Line 1: 20x20 mark box, name + droppable plan tag, and silent right status dot only when abnormal/unusable
+    row.box(fn(head) {
+      @sf.style_node(head, fn() { pl_head })
+      head.box(fn(m) {
+        @sf.style_node(m, fn() { pl_mark_box }, in_row=true)
+        @sfbase.provider_mark_node(m, fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, pl_logo)
+      })
+      |> ignore
+      head.box(fn(n) {
+        @sf.style_node(n, fn() { pl_name_row })
+        n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fits(Is(true)) |> ignore
+        @sf.words_node(n, name, fn() { if usable() { pl_name } else { pl_name_off } })
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        |> ignore
+        n.show(at_once=true, fn() { plan_tag() != "" }, fn(a) {
+          a.drops(Is(pl_drop_plan)) |> ignore
+          @sf.row_tag_node(a, plan_tag)
+        })
+      })
+      |> ignore
+      if !sample {
+        head.show(at_once=true, fn() { state_tone() >= 1 || !usable() }, fn(dot) {
+          @sf.state_dot_node(
+            dot,
+            fn() {
+              if state_tone() == 2 {
+                "error"
+              } else if state_tone() == 1 {
+                "busy"
+              } else {
+                "offline"
+              }
+            },
+            size=pl_dot_side,
+          )
+        })
+      }
     })
     |> ignore
-    d.pick(fn() { tone() == 1 }, fn(x, amber) {
-      @sf.link_row_node(
-        x,
-        fn() {
-          match text(p(), "name") {
-            "" => text(ev(), "title")
-            n => n
+    // Line 2: compact quota slots (when available & usable) or compact single-line status/credits/key/fallback
+    row.pick(
+      fn() {
+        if windows() {
+          0
+        } else if state_text() != "" {
+          1
+        } else if usable() && text(quota(), "state") == "ok" && text(quota(), "creditsText") != "" {
+          2
+        } else {
+          3
+        }
+      },
+      at_once=true,
+      fn(sub, mode) {
+        match mode {
+          0 => {
+            sub.width_share(Is(1.0)).gap(Is(@ui.Space::S0_5.px())) |> ignore
+            @sfbase.quota_compact_node(sub, quota, group?, at_foot=fn() { state_text() == "" }, tips~)
+            sub.show(at_once=true, fn() { state_text() != "" }, fn(al) {
+              @sf.words_node(al, state_text, state_style) |> ignore
+            })
           }
-        },
-        fn() {
-          let e = @signals.untracked(ev)
-          (core.push)(Profile(text(e, "station"), text(field(e, "profile"), "id")))
-        },
-        note=fn() { if tone() == 2 { "" } else { sub_line() } },
-        trouble=fn() { if tone() == 2 { sub_line() } else { "" } },
-        lacks=amber,
-        note_cut=true,
-        lead=LeadLine(fn(l) {
-          @sfbase.provider_mark_node(l, fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, pl_logo)
-        }),
-        title_cut=true,
-        title_after=fn(a) {
-          a.drops(Is(pl_drop_plan)) |> ignore
-          @sf.row_tag_node(a, fn() {
-            match text(p(), "planText") {
-              "" => if text(field(p(), "access"), "kind") == "service" { text(p(), "kindText") } else { "" }
-              s => s
-            }
-          })
-        },
-        title_after_shown=fn() {
-          text(p(), "planText") != "" || (text(field(p(), "access"), "kind") == "service" && text(p(), "kindText") != "")
-        },
-        below=fn(q) {
-          q.show(windows, fn(w) {
-            let room_w = width.map(fn(page_w) { pl_account_quota_room_w(w, page_w) })
-            pl_quota_node(w, quota, tips, room_w?)
-          })
-        },
-        below_open=fn() { if windows() { 1.0 } else { 0.0 } },
-        // (what is under its name from its vendor's mark: its allowance's chips the room to be each said whole, the
-        // same way on every row of the card, in its row's corner concentric round their own; #6417's)
-        lines_from_lead=true,
-      )
-    })
+          1 => @sf.words_node(sub, state_text, state_style) |> ignore
+          2 => {
+            @sf.style_node(sub, fn() { pl_sub_row })
+            @sf.words_node(sub, fn() { text(quota(), "creditsText") }, fn() { pl_meta_muted })
+            .shrink(Is(0.0))
+            |> ignore
+            sub.show(at_once=true, fn() { text(quota(), "detail") != "" }, fn(dt) {
+              dt.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(dt, fn() { text(quota(), "detail") }, fn() { pl_meta_muted_cut }) |> ignore
+            })
+          }
+          _ =>
+            sub.show(at_once=true, fn() { fallback_text() != "" }, fn(fb) {
+              @sf.words_node(fb, fallback_text, fn() { pl_meta_muted_cut }) |> ignore
+            })
+        }
+      },
+    )
   })
   |> ignore
 }
 
 ///|
-/// Allowance chips at the row's foot, inset so their corner follows the row's.
-fn pl_quota_node(
-  w : @view.View,
-  quota : () -> Json?,
+/// Compact station profile row (`only != ""`), matching `pl_account_row_node`:
+/// - Line 1: 20x20 mark box, account name + droppable plan tag, right-aligned doing/error mark.
+/// - Line 2: compact quota slots when available, else independent silent metadata nodes (no `·`).
+/// - Optional trouble + `seeFix` block underneath only when a trouble/quota block exists.
+fn pl_station_row_node(
+  r : @view.View,
+  core : Core,
+  station : String,
+  pv : () -> Json?,
   tips : @sf.TipLayer,
-  room_w? : () -> Double,
+  group? : () -> @sfbase.QuotaCompactGroup,
+  lit? : @sf.CardRowLit,
+  key_now? : () -> String,
 ) -> Unit {
-  @sf.style_node(w, fn() { pl_quota_line })
-  let (_, _, _, foot) = @sf.row_below_inset(w)
-  w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
-  @sfbase.quota_worded_node(w, quota, tips~, room_w?)
-}
-
-///|
-/// A station's profile in a row (profile_row's), as the workspace's rows are (pl_account_row_node): its vendor's mark by
-/// its first line, its name, its tier, check and models under it, its allowance's windows in words a line of their own.
-/// Pressing the row opens the profile's page.
-fn pl_station_row_node(r : @view.View, core : Core, station : String, pv : () -> Json?, tips : @sf.TipLayer) -> Unit {
   let id = fn() { text(pv(), "id") }
+  let name = fn() { text(pv(), "name") }
+  let plan_tag = fn() { pl_plan_tag(pv()) }
   let on = fn() { [("station", station), ("id", id())] }
   let calls = ["profile.check", "profile.quota"]
   let quota = fn() { field(pv(), "quota") }
-  let trouble = fn() { pl_trouble_of(pv()) }
-  // (its menu where the pointer's other button is pressed on it: its page opened, its name copied)
-  r.on_menu(fn(m) { pl_menu(fn() { (core.push)(Profile(station, @signals.untracked(id))) }, text(@signals.untracked(pv), "name"), m) })
-  |> ignore
-  @sf.link_row_node(
-    r,
-    fn() { text(pv(), "name") },
-    fn() { (core.push)(Profile(station, @signals.untracked(id))) },
-    // (its tier first on the line under its name, not after the name: beside the title its allowance's chips already
-    // stand, and a tier there too cut a phone's name short, ChatGPT 团队 to ChatGPT…)
-    note=fn() {
-      join(
-        [
-          match text(pv(), "planText") {
-            "" => if text(field(pv(), "access"), "kind") == "service" { text(pv(), "kindText") } else { "" }
-            s => s
-          },
-          text(pv(), "checkText"),
-          if flag(pv(), "machine") {
-            text(pv(), "kindText")
-          } else {
-            match text(pv(), "usesText") {
-              "" => text(pv(), "kindText")
-              u => u
-            }
-          },
-          text(pv(), "modelsText"),
-        ],
-        " · ",
-      )
-    },
-    // (its vendor's mark, as the workspace's rows have it: a group of keys holds several vendors' (pl_account_row_node))
-    lead=LeadLine(fn(l) {
-      @sfbase.provider_mark_node(l, fn() { (text(pv(), "runtime"), text(field(pv(), "access"), "kind"), text(pv(), "providerMark")) }, pl_logo)
-    }),
-    title_cut=true,
-    // (why its provider refuses it, quiet as the line over it, and where that is the station's trouble, how to mend it
-    // in the link's ink: profile_row's)
-    below=fn(q) {
-      q.show(fn() { trouble() != "" }, fn(c) {
-        @sf.style_node(c, fn() { pl_trouble })
-        // (the next lines of the row's words, as close under its note as its note is under its title: not below's 6)
-        c.grow(Is(1.0)).min_width(Is(Some(0.0))).margin(Is((0.0, -6.0, 0.0, 0.0))) |> ignore
-        @sf.words_node(c, trouble, fn() { pl_offer_note }) |> ignore
-        c.show(fn() { field(pv(), "trouble") is Some(Object(_)) }, fn(f) {
-          @sf.words_node(f, fn() { @sf.t("android-settings.profile.seeFix") }, fn() { pl_see_fix }) |> ignore
-        })
-      })
-      // (its allowance's windows in words a line of their own, as the workspace's rows have them: their names where
-      // they fit, else their marks, quota_worded_node's)
-      q.show(fn() { @sfbase.has_quota(quota()) }, fn(w) { pl_quota_node(w, quota, tips) })
-    },
-    below_open=fn() { if trouble() != "" || @sfbase.has_quota(quota()) { 1.0 } else { 0.0 } },
-    tail=fn(t) {
-      t.box(fn(e) {
-        @sf.style_node(e, fn() { pl_tail }, in_row=true)
-        doing_mark_node(e, fn() { is_doing(core, calls, on()) }, fn() { failed_of(core, calls, on()) }, tips~)
+  let has_trouble_obj = fn() { field(pv(), "trouble") is Some(Object(_)) }
+  let trouble_title = fn() {
+    match field(pv(), "trouble") {
+      Some(Object(_)) as t => text(t, "title")
+      _ => ""
+    }
+  }
+  let trouble_detail = fn() {
+    match field(pv(), "trouble") {
+      Some(Object(_)) as t => text(t, "detail")
+      _ =>
+        match text(quota(), "state") {
+          "blocked" | "unavailable" | "unsupported" => text(quota(), "detail")
+          _ => ""
+        }
+    }
+  }
+  let uses_or_kind = fn() {
+    if flag(pv(), "machine") {
+      text(pv(), "kindText")
+    } else {
+      match text(pv(), "usesText") {
+        "" => text(pv(), "kindText")
+        u => u
+      }
+    }
+  }
+  let press = fn() { (core.push)(Profile(station, @signals.untracked(id))) }
+  r.box(fn(row) {
+    row.transitions_only() |> ignore
+    @sf.style_node(row, fn() { pl_row_multi })
+    row.radius(Is(@sf.row_corner)) |> ignore
+    match (lit, key_now) {
+      (Some(g), Some(k)) => g.bind_top_now(k, row)
+      _ => ()
+    }
+    @sf.hover_ground_node(row)
+    @sf.rippled_node(row, press, @sf.row_corner, name)
+    row.on_menu(fn(m) { pl_menu(press, text(@signals.untracked(pv), "name"), m) }) |> ignore
+    // Line 1: mark, name + droppable plan tag, right-aligned doing mark
+    row.box(fn(head) {
+      @sf.style_node(head, fn() { pl_head })
+      head.box(fn(m) {
+        @sf.style_node(m, fn() { pl_mark_box }, in_row=true)
+        @sfbase.provider_mark_node(m, fn() { (text(pv(), "runtime"), text(field(pv(), "access"), "kind"), text(pv(), "providerMark")) }, pl_logo)
       })
       |> ignore
-    },
-    // (its tail's room only while it holds something: what is under way)
-    tail_shown=fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) },
-    lines_from_lead=true,
-  )
+      head.box(fn(n) {
+        @sf.style_node(n, fn() { pl_name_row })
+        n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fits(Is(true)) |> ignore
+        @sf.words_node(n, name, fn() { pl_name }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        n.show(at_once=true, fn() { plan_tag() != "" }, fn(a) {
+          a.drops(Is(pl_drop_plan)) |> ignore
+          @sf.row_tag_node(a, plan_tag)
+        })
+      })
+      |> ignore
+      head.show(at_once=true, fn() { is_doing(core, calls, on()) || failed_of(core, calls, on()) is Some(_) }, fn(t) {
+        @sf.style_node(t, fn() { pl_tail }, in_row=true)
+        doing_mark_node(t, fn() { is_doing(core, calls, on()) }, fn() { failed_of(core, calls, on()) }, tips~)
+      })
+    })
+    |> ignore
+    // Line 2: compact quota slots if available, else independent silent metadata nodes (no `·`)
+    row.pick(fn() { @sfbase.has_quota(quota()) }, at_once=true, fn(sub, has_q) {
+      if has_q {
+        @sfbase.quota_compact_node(sub, quota, group?, at_foot=fn() { trouble_title() == "" && trouble_detail() == "" }, tips~)
+      } else {
+        @sf.style_node(sub, fn() { pl_sub_row })
+        sub.show(at_once=true, fn() { text(pv(), "checkText") != "" }, fn(x) {
+          @sf.words_node(x, fn() { text(pv(), "checkText") }, fn() { pl_meta_muted }).shrink(Is(0.0)) |> ignore
+        })
+        sub.show(at_once=true, fn() { uses_or_kind() != "" }, fn(x) {
+          x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.words_node(x, uses_or_kind, fn() { pl_meta_muted_cut }) |> ignore
+        })
+        sub.show(at_once=true, fn() { text(pv(), "modelsText") != "" }, fn(x) {
+          x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.words_node(x, fn() { text(pv(), "modelsText") }, fn() { pl_meta_muted_cut }) |> ignore
+        })
+      }
+    })
+    // Trouble + seeFix when present
+    row.show(at_once=true, fn() { trouble_title() != "" || trouble_detail() != "" }, fn(c) {
+      @sf.style_node(c, fn() { pl_trouble })
+      c.show(at_once=true, fn() { trouble_title() != "" }, fn(tt) {
+        @sf.words_node(tt, trouble_title, fn() { pl_offer_note }) |> ignore
+      })
+      c.show(at_once=true, fn() { trouble_detail() != "" }, fn(td) {
+        @sf.words_node(td, trouble_detail, fn() { pl_offer_note }) |> ignore
+      })
+      c.show(at_once=true, has_trouble_obj, fn(f) {
+        @sf.words_node(f, fn() { @sf.t("android-settings.profile.seeFix") }, fn() { pl_see_fix }) |> ignore
+      })
+    })
+  })
+  |> ignore
 }
 
 ///|
@@ -678,20 +786,6 @@ fn pl_menu(open : () -> Unit, name : String, m : @view.Menu) -> Unit {
     ].filter(fn(i) { i is Some(_) }),
     from=@sf.at_point(m.wx, m.wy),
   )
-}
-
-///|
-/// Why a station's profile cannot be used, as profile_row says it: the station's trouble with it (its title and what it
-/// says), else why its allowance could not be read.
-fn pl_trouble_of(pv : Json?) -> String {
-  match field(pv, "trouble") {
-    Some(Object(_)) as t => text(t, "title") + " · " + text(t, "detail")
-    _ =>
-      match text(field(pv, "quota"), "state") {
-        "blocked" | "unavailable" | "unsupported" => text(field(pv, "quota"), "detail")
-        _ => ""
-      }
-  }
 }
 
 ///|
@@ -793,19 +887,24 @@ fn pl_machine_offers_node(
             q.box(fn(c) {
               @sf.style_node(c, fn() { pl_offer_under })
               c.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-              // (how it is signed in: a dot in its tone, then whose)
+              // (how it is signed in: a dot in its tone, then status and email as separate nodes, no `·`)
               c.box(fn(line) {
                 @sf.style_node(line, fn() { pl_offer_signed })
                 @sf.state_dot_node(line, fn() { if blocked() { "error" } else { "online" } }, size=pl_offer_dot)
                 @sf.words_node(line, fn() {
-                  let how = @sf.t(if blocked() { "android-settings.quota.blocked" } else { "android-settings.machine.signedIn" })
-                  how +
-                  " · " +
-                  (match text(lv(), "email") {
+                  @sf.t(if blocked() { "android-settings.quota.blocked" } else { "android-settings.machine.signedIn" })
+                }, fn() { if blocked() { pl_offer_bad_status } else { pl_offer_status } })
+                .shrink(Is(0.0))
+                |> ignore
+                @sf.words_node(line, fn() {
+                  match text(lv(), "email") {
                     "" => @sf.t("android-settings.machine.someone")
                     e => e
-                  })
+                  }
                 }, fn() { if blocked() { pl_offer_bad_line } else { pl_offer_line } })
+                .grow(Is(1.0))
+                .shrink(Is(1.0))
+                .min_width(Is(Some(0.0)))
                 |> ignore
               })
               |> ignore
@@ -1033,13 +1132,63 @@ let pl_away : Double = 0.55
 let pl_logo : Double = 18.0
 
 ///|
+/// Compact status dot size on an account row (matches `station_dot_side`).
+let pl_dot_side : Double = 6.0
+
+///|
 /// Its plan after its name leaves its line before the name is cut short under four of its size.
 let pl_drop_plan : Int = 1
 
 ///|
-/// Its allowance's windows, a line of their own 6 under its words.
+/// Its allowance's windows, a line of their own 6 under its words (used by share_quota.mbt).
 // kept across runs: a value (no field of it changes)
 let pl_quota_line : @ui.Style = @ui.css("w=Full pt=S1_5")
+
+///|
+/// Compact two-line account row: symmetric 12pt horizontal and 10pt vertical padding, 4pt line gap, >= 44pt height.
+// kept across runs: a value (no field of it changes)
+let pl_row_multi : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 gap=S1 min_h=S11")
+
+///|
+/// Line 1 of an account row: mark, name + plan tag, optional right state dot.
+// kept across runs: a value (no field of it changes)
+let pl_head : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_mark_box : @ui.Style = @ui.css("w=S5 h=S5 align=ACenter justify=JCenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_name_row : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_name : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, color=Subtle, wrap=false, w=Cut)
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_name_off : @ui.TextStyle = @ui.text_style(size=Body, weight=Medium, color=Muted, wrap=false, w=Cut)
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_sub_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_meta_muted : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_meta_muted_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false, w=Cut)
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_meta_amber_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=WarnInk, wrap=false, w=Cut)
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_meta_red_cut : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Danger, wrap=false, w=Cut)
 
 ///|
 /// What is under way with a station's profile and its unscoped allowance at its row's end, 8 apart.
@@ -1057,13 +1206,21 @@ let pl_offers : @ui.Style = @ui.css("w=Full")
 let pl_offer_under : @ui.Style = @ui.css("w=Full gap=S0_5")
 
 ///|
-/// How a machine's login is signed in: its dot and its words, 5 apart across their middle.
+/// How a machine's login is signed in: its dot, status, and email as separate nodes, 6 apart.
 // kept across runs: a value (no field of it changes)
-let pl_offer_signed : @ui.Style = @ui.css("row w=Full gap=S1_25 align=ACenter")
+let pl_offer_signed : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
 
 ///|
 /// How a machine's login is signed in, its dot across.
 let pl_offer_dot : Double = 6.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_offer_status : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
+
+///|
+// kept across runs: a value (no field of it changes)
+let pl_offer_bad_status : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Danger, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)

@@ -756,7 +756,7 @@ test "a phone's Home: its search tucked under the top bar out of sight takes no 
 ///|
 /// ⌘K's panel where it is drawn (x, y, w, h): the dialog of the window's tree's its search names (sfdesk switcher.mbt's
 /// switcher_node, read out as a dialog named 搜索全部内容和操作).
-fn switcher_panel_rect(t : @ui.Tester) -> (Double, Double, Double, Double) raise {
+fn switcher_panel_rect(t : @ui.Tester) -> (Double, Double, Double, Double) {
   t.get(Dialog, label=@sf.t("web-main.switcher.search")).rect
 }
 

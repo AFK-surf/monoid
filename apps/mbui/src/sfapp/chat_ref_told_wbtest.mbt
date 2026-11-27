@@ -279,3 +279,145 @@ test "desk composer: its menu for an @ with words after it, the caret moved into
     assert_eq((named(calls, "chat.ref").length(), desk_words(src)), (0, "看 @首页 后文"))
   })
 }
+
+///|
+fn btw_app_tester(
+  calls : Array[Made],
+  w : Double,
+  h : Double,
+  platform : Int,
+  chat_ref_answer? : Result[Json, Json]? = None,
+) -> (@ui.Tester, Source) {
+  new_run()
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      match (name, chat_ref_answer) {
+        ("chat.ref", Some(ans)) => done(ans)
+        _ => (base.call)(name, params, done)
+      }
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  t.run_for(@ui.move_most_ms)
+  (t, src)
+}
+
+///|
+test "parse_btw_command: recognizes /btw with optional question case-insensitively and ignores non-boundary prefixes" {
+  assert_eq(@sfpages.parse_btw_command("/btw"), Some(""))
+  assert_eq(@sfpages.parse_btw_command("  /btw  "), Some(""))
+  assert_eq(@sfpages.parse_btw_command("/btw 帮我查一下这个报错"), Some("帮我查一下这个报错"))
+  assert_eq(@sfpages.parse_btw_command("/BTW check this"), Some("check this"))
+  assert_eq(@sfpages.parse_btw_command("/Btw\tmulti\nline "), Some("multi\nline"))
+  assert_eq(@sfpages.parse_btw_command("/btwx"), None)
+  assert_eq(@sfpages.parse_btw_command("/btwx hello"), None)
+  assert_eq(@sfpages.parse_btw_command("/btw-1"), None)
+  assert_eq(@sfpages.parse_btw_command("hello /btw"), None)
+  assert_eq(@sfpages.parse_btw_command(""), None)
+}
+
+///|
+test "/btw in chat composer jumps to NewChat with current chat @ref and optional question without calling chat.send" {
+  for scene in [("大屏", 1280.0, 800.0, 0), ("小屏", 390.0, 844.0, 2)] {
+    let (name, w, h, platform) = scene
+    for case_ in [
+      ("/btw", "@[整理发布清单] "),
+      ("/btw 帮我查一下这个报错", "@[整理发布清单] 帮我查一下这个报错"),
+      ("/BTW 大小写也生效", "@[整理发布清单] 大小写也生效"),
+    ] {
+      let (typed, expected) = case_
+      let calls : Array[Made] = []
+      let (t, src) = btw_app_tester(calls, w, h, platform)
+      assert_true(app.nav.top() is Chat(_), msg="\{name}: starts on chat")
+      desk_field_tap(t)
+      t.type_text(typed)
+      t.draw()
+      tap_send(t)
+      t.run_for(@ui.move_most_ms)
+      assert_true(app.nav.top() is NewChat, msg="\{name} \{typed}: jumped to NewChat")
+      assert_eq(named(calls, "chat.send").length(), 0, msg="\{name} \{typed}: chat.send not called")
+      assert_eq(named(calls, "chat.ref").length(), 1, msg="\{name} \{typed}: chat.ref called once")
+      assert_eq(@sfbase.writing(src, "ws1/st1:s-c1").field.text(), "", msg="\{name} \{typed}: chat draft cleared")
+      assert_eq(
+        @sfbase.writing(src, @sfpages.new_chat_drafts + "ws1").field.text(),
+        expected,
+        msg="\{name} \{typed}: new chat draft prefilled",
+      )
+    }
+  }
+}
+
+///|
+test "/btw preserves an existing NewChat draft on a following line" {
+  let calls : Array[Made] = []
+  let (t, src) = btw_app_tester(calls, 1280.0, 800.0, 0)
+  let new_draft = @sfbase.writing(src, @sfpages.new_chat_drafts + "ws1")
+  @sfbase.refs_put(new_draft.key, new_draft.field, "已有草稿")
+  @sfbase.writing_text(src, new_draft, "已有草稿")
+  desk_field_tap(t)
+  t.type_text("/btw 顺便看下")
+  t.draw()
+  tap_send(t)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is NewChat)
+  assert_eq(named(calls, "chat.send").length(), 0)
+  assert_eq(
+    @sfbase.writing(src, @sfpages.new_chat_drafts + "ws1").field.text(),
+    "@[整理发布清单] 顺便看下\n已有草稿",
+  )
+}
+
+///|
+test "/btwx does not trigger /btw and sends normally through chat.send" {
+  let calls : Array[Made] = []
+  let (t, src) = btw_app_tester(calls, 1280.0, 800.0, 0)
+  desk_field_tap(t)
+  t.type_text("/btwx 普通消息")
+  t.draw()
+  tap_send(t)
+  t.draw()
+  t.draw()
+  assert_true(app.nav.top() is Chat(_), msg="stays on chat")
+  assert_eq(named(calls, "chat.ref").length(), 0, msg="chat.ref not called")
+  assert_eq(named(calls, "chat.send").length(), 1, msg="chat.send called normally")
+  assert_eq(@sfbase.writing(src, @sfpages.new_chat_drafts + "ws1").field.text(), "")
+}
+
+///|
+test "/btw keeps question text and existing NewChat draft when chat.ref fails" {
+  let calls : Array[Made] = []
+  let (t, src) = btw_app_tester(calls, 1280.0, 800.0, 0, chat_ref_answer=Some(Err({ "message": "ref failed" })))
+  let new_draft = @sfbase.writing(src, @sfpages.new_chat_drafts + "ws1")
+  @sfbase.refs_put(new_draft.key, new_draft.field, "已有草稿")
+  @sfbase.writing_text(src, new_draft, "已有草稿")
+  desk_field_tap(t)
+  t.type_text("/btw 顺便看下")
+  t.draw()
+  tap_send(t)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is NewChat)
+  assert_eq(named(calls, "chat.send").length(), 0)
+  assert_eq(@sfbase.writing(src, @sfpages.new_chat_drafts + "ws1").field.text(), "顺便看下\n已有草稿")
+  assert_true(t.find("ref failed") is Some(_), msg="failure toast shown")
+}
+
+///|
+test "/btw keeps question text and existing NewChat draft when chat.ref returns empty mark" {
+  let calls : Array[Made] = []
+  let (t, src) = btw_app_tester(calls, 1280.0, 800.0, 0, chat_ref_answer=Some(Ok({ "mark": "" })))
+  let new_draft = @sfbase.writing(src, @sfpages.new_chat_drafts + "ws1")
+  @sfbase.refs_put(new_draft.key, new_draft.field, "已有草稿")
+  @sfbase.writing_text(src, new_draft, "已有草稿")
+  desk_field_tap(t)
+  t.type_text("/btw 帮我查一下这个报错")
+  t.draw()
+  tap_send(t)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is NewChat)
+  assert_eq(named(calls, "chat.send").length(), 0)
+  assert_eq(@sfbase.writing(src, @sfpages.new_chat_drafts + "ws1").field.text(), "帮我查一下这个报错\n已有草稿")
+}

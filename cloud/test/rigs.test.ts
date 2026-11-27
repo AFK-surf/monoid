@@ -371,3 +371,42 @@ test("the installers pass a rig's command on: `rig:<person>` after the token (an
   assert.match(ps, /if \(\$Lock -like 'rig:\*'\) \{ \$Rig = \$Lock; \$Lock = '' \}/);
   assert.match(ps, /if \(\$Rig\) \{ \$pin \+= @\('--rig', \$Rig\.Substring\(4\)\) \}/);
 });
+
+test("a rig's owner uploads a custom station icon while unauthorized or invalid uploads keep R2 clean", async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const bob = h.as(await h.login("bob"));
+    const dave = h.as(await h.login("dave"));
+    const home = ((await (await alice("POST", "/v1/workspaces", { name: "Home" })).json()) as any).id as string;
+    assert.equal((await alice("POST", `/v1/workspaces/${home}/members`, { role: "member", emails: ["bob@example.test", "dave@example.test"] })).status, 200);
+    const station = await key();
+    const rig = await key();
+    const stationToken = ((await (await alice("POST", `/v1/workspaces/${home}/enrollments`, { name: "willow" })).json()) as any).token as string;
+    assert.equal((await enroll(h, station, stationToken)).status, 200);
+    const rigMade = (await (await bob("POST", `/v1/workspaces/${home}/rigs/enrollments`, { name: "build-box" })).json()) as any;
+    assert.equal((await enroll(h, rig, rigMade.token, { rig: true })).status, 200);
+
+    const gif = Uint8Array.from([..."GIF89a"].map((c) => c.charCodeAt(0)).concat([1, 0, 1, 0, 0, 0, 0, 59]));
+    const gifUrl = `data:image/gif;base64,${Buffer.from(gif).toString("base64")}`;
+    const pngUrl = "data:image/png;base64,iVBORw0KGgo=";
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { list(o: { prefix: string }): Promise<{ objects: unknown[] }> };
+
+    // Non-owner, non-rig station, and invalid sibling fields must fail before storing PNG in R2.
+    assert.equal((await dave("PATCH", `/v1/workspaces/${home}/stations/${rig.id}`, { icon: pngUrl })).status, 403);
+    assert.equal((await bob("PATCH", `/v1/workspaces/${home}/stations/${station.id}`, { icon: pngUrl })).status, 403);
+    assert.equal((await bob("PATCH", `/v1/workspaces/${home}/stations/${rig.id}`, { name: "   ", icon: pngUrl })).status, 400);
+    assert.equal((await bucket.list({ prefix: "icons/" })).objects.length, 0);
+
+    // Rig owner's valid upload succeeds, writes once to R2, and serves the exact uploaded bytes.
+    const updated = await bob("PATCH", `/v1/workspaces/${home}/stations/${rig.id}`, { icon: gifUrl });
+    assert.equal(updated.status, 200);
+    const listed = (await bucket.list({ prefix: "icons/" })).objects as { key: string }[];
+    assert.equal(listed.length, 1);
+    const served = await h.fetch(`/v1/${listed[0]!.key}`);
+    assert.equal(served.status, 200);
+    assert.deepEqual(new Uint8Array(await served.arrayBuffer()), gif);
+  } finally {
+    await h.close();
+  }
+});

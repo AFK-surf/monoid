@@ -38,7 +38,7 @@ test "a file waiting in the composer: its ✎ and ↻ pressed whether it opens o
     |> ignore
   })
   tt.draw()
-  let press_all = fn() raise {
+  let press_all = fn() {
     pressed.clear()
     let (x, y) = tt.find("12 KB").unwrap()
     tt.tap(x, y)

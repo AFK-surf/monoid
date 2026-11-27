@@ -130,7 +130,8 @@ fn site_check_page_open() -> Unit {
         if w == "page-hello" {
           p.script("__ping('two')")
         } else if w == "page-pong two" {
-          let big = @string.parse_int(@ui.env("MBUI_SITECHECK_BIG")) catch { _ => 0 }
+          let raw_big = @ui.env("MBUI_SITECHECK_BIG")
+          let big = @string.parse_int(raw_big) catch { _ => 0 }
           if big > 0 {
             site_check_big_open(big)
           } else {
