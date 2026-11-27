@@ -1573,7 +1573,7 @@ fn composer_box_node(
           0.0
         }
       },
-      with_edge=false,
+      with_edge=true,
       with_shadow=true,
       clips=false,
     )

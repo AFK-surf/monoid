@@ -100,7 +100,7 @@ pub fn switch_look_of(
         // (held, the knob a lens: wider and larger about its middle, the knob fading under it; where glass is drawn
         // solid, the knob as it is)
         let held = match lens {
-          Some(_) if !c.glass_solid() => s.held
+          Some(_) if !c.glass_solid() && @ui.glass_material() == Liquid => s.held
           _ => 0.0
         }
         let knob_at = c.box(

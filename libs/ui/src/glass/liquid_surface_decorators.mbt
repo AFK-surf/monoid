@@ -549,14 +549,17 @@ pub fn liquid_tab_bar_surface_decorate(
   v : @view.View,
   glass_spec : () -> ((Double, Double)?, Double),
   share_when_unmerged? : Bool = false,
+  solid_edge? : () -> (Double, Int64) = liquid_solid_edge,
 ) -> @view.View {
-  v.glass(
+  v
+  .glass(
     By(fn() {
       let (spot, merge) = glass_spec()
       let g = liquid_tab_bar_glass(spot~, merge~, adaptive=true)
       Some(if share_when_unmerged && !(merge > 0.0) { g.sharing() } else { g })
     }),
   )
+  .edge(By(fn() { if v.glass_solid() { solid_edge() } else { (0.0, clear) } }))
 }
 
 ///|

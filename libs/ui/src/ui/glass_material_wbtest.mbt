@@ -31,23 +31,26 @@ test "material_glass: frosted makes liquid glass flat frosted glass, none of its
   )
   let out = material_glass(liq, Frosted)
   assert_false(out.liquid)
-  assert_eq(out.blur, 24.0)
-  // alpha 0.10 -> 0.10 + (0.94 - 0.10) * 0.5 = 0.52 (133); red a quarter toward the solid's: 255 + (28 - 255) * 0.25
-  assert_eq((out.tint & 0xFFL).to_int(), 133)
-  assert_eq(((out.tint >> 24) & 0xFFL).to_int(), 198)
+  assert_eq(out.blur, 14.0)
+  assert_eq(out.saturation, 1.65)
+  // alpha 0.102 -> 0.102 + (0.90 - 0.102) * 0.22 = 0.278 (71); red 0.11 toward the solid's: 255 + (28 - 255) * 0.11 = 230
+  assert_eq((out.tint & 0xFFL).to_int(), 71)
+  assert_eq(((out.tint >> 24) & 0xFFL).to_int(), 230)
   assert_eq((out.rim, out.bezel, out.refraction, out.chroma, out.merge), (0.0, 0.0, 0.0, 0.0, 0.0))
   assert_eq((out.adaptive, out.spot, out.droplet_role, out.layer), (false, None, 0, 0))
   assert_eq(out.rim_edge, 0.0)
   assert_eq(out.solid, liq.solid)
-  // a deeper blur kept
-  let panel = Glass::liquid(blur=30.0, tint=0xFDFCFD80L, solid=0xF7F7FAFFL, refraction=16.0)
-  assert_eq(material_glass(panel, Frosted).blur, 30.0)
+  // a deeper blur kept, and desaturated media viewer recipes keep their low saturation
+  let panel = Glass::liquid(blur=30.0, tint=0xFDFCFD80L, solid=0xF7F7FAFFL, saturation=0.55, refraction=16.0)
+  let panel_out = material_glass(panel, Frosted)
+  assert_eq(panel_out.blur, 30.0)
+  assert_eq(panel_out.saturation, 0.55)
   // a clear droplet takes its solid ground's colour, frosted as the rest
   let drop = Glass::liquid(blur=0.0, tint=0xFFFFFF00L, solid=0x1C1C1EFFL, refraction=9.0, droplet_role=2)
   let d = material_glass(drop, Frosted)
   assert_false(d.liquid)
   assert_eq(d.droplet_role, 0)
-  assert_eq(d.tint, 0x1C1C1E78L)
+  assert_eq(d.tint, 0x1C1C1E32L)
 }
 
 ///|
@@ -76,7 +79,7 @@ test "effective_glass: increase contrast boosts tint alpha and rim/rim_edge high
   let both = effective_glass(frosted, true)
   assert_true((both.tint & 0xFFL) > (frosted.tint & 0xFFL))
   assert_true(both.rim_edge > frosted.rim_edge)
-  assert_eq(both.blur, 24.0)
+  assert_eq(both.blur, 14.0)
 }
 
 ///|
@@ -122,15 +125,15 @@ test "glass_material: blocks made again as the material and contrast change, Sol
   assert_eq(glass_material(), Frosted)
   guard find_glass() is Some((kind_f, blur_f, alpha_f, rim_f)) else { fail("expected frosted glass instance") }
   assert_eq(kind_f, 5.0)
-  assert_true((blur_f - 24.0).abs() < 0.01, msg="frosted blur=\{blur_f}")
-  assert_true(alpha_f > alpha0 + 0.3, msg="alpha did not rise: \{alpha0} -> \{alpha_f}")
+  assert_true((blur_f - 14.0).abs() < 0.01, msg="frosted blur=\{blur_f}")
+  assert_true(alpha_f > alpha0 + 0.15, msg="alpha did not rise: \{alpha0} -> \{alpha_f}")
   assert_eq(rim_f, 0.0)
   // its hairline round it: a ring of no fill over its edge, dark round light glass
   let ring = the_ctx.val.inst
   let mut ringed = false
   for i in 0..<the_ctx.val.ninst {
     let b = i * inst_size
-    if ring[b + 5] == 0.0 && ring[b + 6] == frosted_ring_w && ring[b + 2] == 120.0 && ring[b + 12] == 0.0 && ring[b + 15] > 0.1 {
+    if ring[b + 5] == 0.0 && ring[b + 6] == frosted_ring_w && ring[b + 2] == 120.0 && ring[b + 12] == 0.0 && ring[b + 15] > 0.08 {
       ringed = true
     }
   }
@@ -243,13 +246,13 @@ test "droplet_role: liquid keeps the clear switch lens (slot7=-32), frosted make
   guard find_glass() is Some((slot7_0, alpha_0, _)) else { fail("expected switch glass") }
   assert_true((slot7_0 - -32.0).abs() < 0.001, msg="liquid must keep slot7=-32.0, got \{slot7_0}")
   assert_true(alpha_0 < 0.001, msg="liquid must keep clear alpha=0, got \{alpha_0}")
-  // Frosted: a flat frosted pill (kind 5) like every other surface, blur 24 in slot 7, denser tint
+  // Frosted: a flat frosted pill (kind 5) like every other surface, blur 14 in slot 7, denser tint
   set_glass_material(Frosted)
   t.draw()
   guard find_glass() is Some((slot7_f, alpha_f, kind_f)) else { fail("expected frosted switch glass") }
   assert_eq(kind_f, 5.0)
-  assert_true((slot7_f - 24.0).abs() < 0.001, msg="frosted slot7=\{slot7_f}")
-  assert_true(alpha_f > 0.4, msg="frosted alpha=\{alpha_f}")
+  assert_true((slot7_f - 14.0).abs() < 0.01, msg="frosted slot7=\{slot7_f}")
+  assert_true(alpha_f > 0.15, msg="frosted alpha=\{alpha_f}")
   // back to Liquid: the crystal droplet again
   set_glass_material(Liquid)
   t.draw()
@@ -327,5 +330,53 @@ test "material_lens: a morphing surface's content lens kept whole in liquid glas
   t.draw()
   assert_eq(lenses(), 0, msg="solid draws what it holds as it is")
   assert_eq(material_lens(lens), @paint.ContentLens::none())
+  set_glass_material(Liquid)
+}
+
+///|
+test "material_glass: frosted shares local unblocked captures (same blur, dy_gap <= 64) while isolating separated or overlapping layers" {
+  let shared_liq = Glass::liquid(blur=1.1, tint=0xF7F7FA66L, solid=0xF7F7FAFFL, refraction=20.0).sharing()
+  let t = Tester::tree(w=400.0, h=600.0, fn(root) {
+    root.box(fn(top_row) {
+      top_row.row(Is(true)).gap(Is(12.0)) |> ignore
+      top_row.box(fn(p1) {
+        p1.width(Is(Some(100.0))).height(Is(Some(40.0))).glass(Is(Some(shared_liq))) |> ignore
+        p1.box(fn(w) { w.words(Is("Left"), ink=0x111111FFL) |> ignore }) |> ignore
+      })
+      |> ignore
+      top_row.box(fn(p2) {
+        p2.width(Is(Some(100.0))).height(Is(Some(40.0))).glass(Is(Some(shared_liq))) |> ignore
+        p2.box(fn(w) { w.words(Is("Right"), ink=0x111111FFL) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    root.box(fn(overlay) {
+      overlay
+      .over(Is(true))
+      .offset(Is((0.0, 0.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(60.0)))
+      .glass(Is(Some(shared_liq)))
+      |> ignore
+    })
+    |> ignore
+    root.box(fn(mid) {
+      mid.width(Is(Some(400.0))).height(Is(Some(300.0))).ground(Is(0x3366CCFFL)) |> ignore
+    })
+    |> ignore
+    root.box(fn(bot) {
+      bot.width(Is(Some(120.0))).height(Is(Some(40.0))).glass(Is(Some(shared_liq))) |> ignore
+    })
+    |> ignore
+  })
+  set_glass_material(Frosted)
+  t.draw()
+  let gs = t.drawn_glass()
+  assert_eq(gs.length(), 4, msg="expected 4 frosted glass surfaces")
+  assert_eq((gs[0].4, gs[1].4, gs[2].4, gs[3].4), (5, 5, 5, 5))
+  assert_eq(gs[0].5, gs[1].5, msg="adjacent top-bar frosted pills should share 1 capture: \{gs[0].5} vs \{gs[1].5}")
+  assert_true(gs[2].5 != gs[0].5, msg="overlapping frosted overlay must not share capture at dy_gap=0: \{gs[2].5} vs \{gs[0].5}")
+  assert_true(gs[3].5 != gs[0].5 && gs[3].5 != gs[2].5, msg="separated bottom frosted surface must take its own capture")
   set_glass_material(Liquid)
 }

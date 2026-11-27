@@ -82,7 +82,12 @@ pub fn tab_bar_surface_decorate(
   glass_spec : () -> ((Double, Double)?, Double),
   share_when_unmerged? : Bool = false,
 ) -> @view.View {
-  @glass.liquid_tab_bar_surface_decorate(v, glass_spec, share_when_unmerged~)
+  @glass.liquid_tab_bar_surface_decorate(
+    v,
+    glass_spec,
+    share_when_unmerged~,
+    solid_edge=fn() { (control_edge_w, panel_edge()) },
+  )
 }
 
 ///|
@@ -156,14 +161,14 @@ pub fn glass_sheet() -> @ui.Glass {
 
 ///|
 /// Thin `@sf` floating capsule surface decorator delegating to `@glass.liquid_capsule_decorate` with `glass_floating`
-/// optics (supports dynamic `tint`, `extra_blur`, `sharing`, and opt-in `with_edge`/`with_shadow`/`clips`).
+/// optics (supports dynamic `tint`, `extra_blur`, `sharing`, `with_edge` / `with_shadow` on by default, and opt-in `clips`).
 pub fn floating_capsule_decorate(
   v : @view.View,
   sharing? : Bool = false,
   tint? : () -> Int64?,
   extra_blur? : () -> Double,
   active? : () -> Bool,
-  with_edge? : Bool = false,
+  with_edge? : Bool = true,
   with_shadow? : Bool = true,
   clips? : Bool = false,
 ) -> @view.View {
@@ -186,7 +191,7 @@ pub fn floating_capsule_decorate(
     extra_blur?,
     active?,
     shadow=glass_control_shadow,
-    solid_edge=@glass.liquid_solid_edge,
+    solid_edge=fn() { (control_edge_w, panel_edge()) },
     with_edge~,
     with_shadow~,
     clips~,

@@ -67,7 +67,9 @@ pub fn liquid_toggle_node(
   let from_fraction = Ref(0.0)
   @headless.toggle(made_for=loc, parent, Switch, label, on, turn, disabled~, fn(v, sw) {
     dd.attach(v)
-    let no_lens = fn() { v.glass_solid() || (finger_only_lens && !(@ui.pointing() is Finger)) }
+    let no_lens = fn() {
+      v.glass_solid() || @ui.glass_material() != Liquid || (finger_only_lens && !(@ui.pointing() is Finger))
+    }
     let lens = fn(n : @view.View) -> Double { if no_lens() { 0.0 } else { dd.pressed(n) } }
     v.width(Is(Some(width))).height(Is(Some(height))).shrink(Is(0.0)).alpha(By(fn() { if sw.disabled() { 0.5 } else { 1.0 } })) |> ignore
     // (turned by what is no hand: the keys, a screen reader, its caller; slides cleanly with 0 lens)

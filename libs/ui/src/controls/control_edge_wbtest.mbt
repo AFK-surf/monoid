@@ -198,6 +198,37 @@ test "float_button_node and pick_bar_node use hairline control_edge_w (0.5pt) in
 }
 
 ///|
+test "tab_bar_surface_decorate uses hairline panel_edge() in solid mode and no extra border on liquid glass" {
+  for dark in [false, true] {
+    let tg = edge_case(dark, fn(root) {
+      root.box(fn(bar) {
+        bar.width(Is(Some(240.0))).height(Is(Some(54.0))).radius(Is(27.0)) |> ignore
+        tab_bar_surface_decorate(bar, fn() { (None, 0.0) }) |> ignore
+      })
+      |> ignore
+    })
+    assert_eq(edged(tg, w=20.0).length(), 0, msg="liquid tab bar dark=\{dark}: \{edges_said(tg)}")
+
+    let ts = edge_case(
+      dark,
+      fn(root) {
+        root.box(fn(bar) {
+          bar.width(Is(Some(240.0))).height(Is(Some(54.0))).radius(Is(27.0)) |> ignore
+          tab_bar_surface_decorate(bar, fn() { (None, 0.0) }) |> ignore
+        })
+        |> ignore
+      },
+      solid=true,
+    )
+    let bs = edged(ts, w=20.0)
+    assert_eq(bs.length(), 1, msg="solid tab bar dark=\{dark}: \{edges_said(ts)}")
+    assert_eq(edge_of(bs[0]), (control_edge_w, panel_edge()), msg="solid tab bar edge dark=\{dark}")
+  }
+  @ui.set_glass_solid(None)
+  set_dark(None)
+}
+
+///|
 test "control_edge keeps Line/Border for non-form parts while field_edge uses delicate form hairlines and field_placeholder_ink keeps >= 4.5:1 across all accents" {
   for acc in accents {
     set_accent(acc.key)

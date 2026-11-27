@@ -64,7 +64,7 @@ pub fn liquid_segmented_thumb_look(
   look? : SegThumbLook = SegThumbLook::default(),
   loc~ : SourceLoc,
 ) -> () -> Unit {
-  let no_lens = fn(v : @view.View) { v.glass_solid() }
+  let no_lens = fn(v : @view.View) { v.glass_solid() || @ui.glass_material() != Liquid }
   let lens_of = fn(v : @view.View) {
     if no_lens(v) {
       0.0
@@ -275,7 +275,7 @@ pub fn liquid_segmented_node(
         let n = count_fn()
         if n > 1 { (n - 1).to_double() } else { 0.0 }
       }
-      let g_no_lens = fn() { g.glass_solid() }
+      let g_no_lens = fn() { g.glass_solid() || @ui.glass_material() != Liquid }
       let clear_press_state = fn() {
         felt.val = None
         pressing_here.val = false
@@ -485,7 +485,7 @@ pub fn liquid_segmented_node(
           }
           (n - 1).to_double()
         }
-        let no_lens = fn() { host.glass_solid() }
+        let no_lens = fn() { host.glass_solid() || @ui.glass_material() != Liquid }
         let thumb_rect = fn(v : @view.View) -> (Double, Double, Double, Double)? {
           let (rx, rw) = rect_at(dd.value(v))
           let ih = inner_h()

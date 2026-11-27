@@ -777,7 +777,8 @@ fn bar_ball_capsule(
         },
         fn(t) {
           bar_part_said(Notch)
-          let (cx, cy, _, _) = bar_ball_frame(bar_ball_at(t), bar_laid_now(), lens, solid=b.glass_solid())
+          let no_lens = b.glass_solid() || @ui.glass_material() != Liquid
+          let (cx, cy, _, _) = bar_ball_frame(bar_ball_at(t), bar_laid_now(), lens, solid=no_lens)
           (cx - bar.ball_x.to, cy - bar.ball_y.to)
         },
       )
@@ -788,7 +789,8 @@ fn bar_ball_capsule(
         .ground_drawn(
           By(fn() {
             let a = at(s)
-            let (_, _, sw0, sh0) = bar_ball_frame(a, bar_laid_now(), lens, solid=s.glass_solid())
+            let no_lens = s.glass_solid() || @ui.glass_material() != Liquid
+            let (_, _, sw0, sh0) = bar_ball_frame(a, bar_laid_now(), lens, solid=no_lens)
             let sw = sw0 * a.scale
             let sh = sh0 * a.scale
             let r = dmin(sw, sh) / 2.0
@@ -821,7 +823,7 @@ fn bar_ball_node(holder : @view.View) -> Unit {
     holder,
     false,
     fn(n, b) {
-      let lensed = if n.glass_solid() { 0.0 } else { dclamp(b.held, 0.0, 1.0) }
+      let lensed = if n.glass_solid() || @ui.glass_material() != Liquid { 0.0 } else { dclamp(b.held, 0.0, 1.0) }
       let pill_vis = 1.0 - bar_smoothstep(0.15, 0.70, lensed)
       let fade = dclamp(1.0 - b.collapse / 0.25, 0.0, 1.0)
       b.alpha * pill_vis * fade
@@ -832,12 +834,12 @@ fn bar_ball_node(holder : @view.View) -> Unit {
 
 ///|
 /// The ball in the finger: a lens of clear liquid glass lifted out of the pill as it is held (TabBarLens.kt's), taller
-/// than the bar and wider than a place, what is under its rim bent; gone as it is let go. Where glass is solid there is
-/// nothing to bend: the pill alone.
+/// than the bar and wider than a place, what is under its rim bent; gone as it is let go. Where glass is not liquid
+/// (Frosted or Solid) there is nothing to bend: the pill alone.
 fn bar_lens_node(holder : @view.View) -> Unit {
   holder.box(fn(b) {
     b.over(Is(true)) |> ignore
-    b.show(at_once=true, fn() { !b.glass_solid() }, fn(on) {
+    b.show(at_once=true, fn() { !b.glass_solid() && @ui.glass_material() == Liquid }, fn(on) {
       on.over(Is(true)) |> ignore
       let held = fn(n : @view.View) {
         bar.held_at(bar_moment(n, Ball, dmax(bar.ball_held.ends_at(), bar.tap_lens.ends_at())))

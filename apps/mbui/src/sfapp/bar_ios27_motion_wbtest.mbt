@@ -279,9 +279,31 @@ test "bar ios27: reduced_motion suppresses tap droplet/held lift, and glass_soli
   )
   let saw_lens = ts.drawn_instances().iter().any(fn(inst) { inst[5] == 6.0 && (inst[7] - -64.0).abs() < 0.01 })
   assert_false(saw_lens, msg="glass_solid must not emit clear lens glass instance")
+  // Solid tab bar capsule and action disc both draw hairline control_edge_w borders
+  let solid_bordered = ts.drawn_instances().filter(fn(inst) {
+    inst.length() > 15 && inst[5] == 0.0 && (inst[6] - @sf.control_edge_w).abs() < 0.01 && inst[15] > 0.05
+  })
+  assert_true(solid_bordered.length() >= 2, msg="solid tab bar capsule and action disc must draw hairline borders, got \{solid_bordered.length()}")
   ts.release(xs2[0], y2)
   to_bar_rest(ts)
   @ui.set_glass_solid(None)
+  // 3. Frosted material: bar uses kind==5 frosted glass, held pill stays uninflated with zero lens glass (no blurry blob over icons)
+  new_run()
+  let fsrc = fixture("home")
+  (fsrc.call)("prefs.set", Json::object({ "glass": Json::string("frosted") }), @sfbase.answer_unread)
+  let tf = @ui.Tester::new(fn(c) { view(c, fsrc) }, tree=app_tree(fsrc), w=390.0, h=844.0, platform=2)
+  to_bar_rest(tf)
+  let rest_glass_n = tf.drawn_glass().length()
+  assert_true(rest_glass_n >= 1 && tf.drawn_glass().iter().all(fn(g) { g.4 == 5 }), msg="frosted bar must use kind==5 frosted glass")
+  let (xs3, y3) = bar_places_at()
+  tf.press_at(xs3[0], y3)
+  tf.run_for(bar_hold_ms)
+  tf.frame()
+  to_bar_rest(tf)
+  assert_eq(tf.drawn_glass().length(), rest_glass_n, msg="frosted held bar must not mount an extra lens glass blob over icons")
+  assert_true(tf.drawn_glass().iter().all(fn(g) { g.4 == 5 }), msg="frosted held bar must emit zero kind==6 liquid glass")
+  tf.release(xs3[0], y3)
+  to_bar_rest(tf)
 }
 
 ///|

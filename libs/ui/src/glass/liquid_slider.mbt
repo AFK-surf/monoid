@@ -166,7 +166,7 @@ fn liquid_slider_look_core(
   parent.by_room(loc~, fn(inner, room) {
     inner.alpha(By(fn() { if (look.disabled)() { 0.5 } else { 1.0 } })) |> ignore
     let w = fn() { room.width() }
-    let glass_on = fn() { look.lens_enabled && !inner.glass_solid() }
+    let glass_on = fn() { look.lens_enabled && !inner.glass_solid() && @ui.glass_material() == Liquid }
     let lens = fn(n : @view.View) -> Double { if glass_on() { clamp(pressed(n), 0.0, 1.0) } else { 0.0 } }
     let vel_of = fn(n : @view.View) -> Double {
       match velocity {
@@ -594,7 +594,7 @@ pub fn liquid_slider_node(
         if !h.alive() {
           return
         }
-        h.glass_solid()
+        h.glass_solid() || @ui.glass_material() != Liquid
       }
       None => false
     }
@@ -607,7 +607,7 @@ pub fn liquid_slider_node(
   }
   let hand = fn(d : @view.Drag) {
     let no_lens = match dd.host_node() {
-      Some(h) => h.glass_solid()
+      Some(h) => h.glass_solid() || @ui.glass_material() != Liquid
       None => false
     }
     if d.kind == Off {

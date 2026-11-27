@@ -213,7 +213,7 @@ pub fn toggle_group(
         }
         if slide {
           let glass = match lens {
-            Some(g) if !c.glass_solid() => Some(g)
+            Some(g) if !c.glass_solid() && @ui.glass_material() == Liquid => Some(g)
             _ => None
           }
           // (read as it is built: the lens's shadow grows with it from none, which no look draws)

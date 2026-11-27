@@ -3873,7 +3873,7 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     glass_layer,
     glass_merge,
     glass_break_gap,
-    shares: c.glass.map_or(false, fn(g) { g.shares_capture }),
+    shares: eff_glass.map_or(false, fn(g) { g.shares_capture }),
     solid,
     glass_material,
     glass_contrast,

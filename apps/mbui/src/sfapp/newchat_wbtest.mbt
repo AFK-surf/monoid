@@ -912,3 +912,36 @@ test "long station name shows full-name tooltip on hover in picker and on closed
     assert_true(t.words().iter().any(fn(w) { w.0 == long_name && w.5 > 0.0 }), msg="expected full-name tooltip on closed station capsule")
   })
 }
+
+///|
+test "new chat in Solid material draws uniform hairline borders on model capsule, sibling capsules, and composer" {
+  both_pages(fn() raise {
+    new_run()
+    let src = fixture("home")
+    (src.call)("prefs.set", Json::object({ "glass": Json::string("solid") }), @sfbase.answer_unread)
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    let (_, y) = bar_places_at()
+    t.tap(bar_action_x, y)
+    t.run_for(@ui.move_most_ms)
+    t.draw()
+    assert_eq(t.drawn_glass().length(), 0, msg="Solid new chat must draw 0 glass")
+    let has_border_around = fn(rx : Double, ry : Double, rw : Double, rh : Double) -> Bool {
+      let cx = rx + rw / 2.0
+      let cy = ry + rh / 2.0
+      t.drawn_instances().iter().any(fn(inst) {
+        inst.length() > 15 &&
+        inst[5] == 0.0 &&
+        (inst[6] - @sf.control_edge_w).abs() < 0.01 &&
+        inst[15] > 0.05 &&
+        inst[0] <= cx && cx <= inst[0] + inst[2] &&
+        inst[1] <= cy && cy <= inst[1] + inst[3] &&
+        inst[2] >= rw && inst[3] >= rh &&
+        inst[2] <= 380.0
+      })
+    }
+    guard t.rect_of("Opus 5.5") is Some((mx, my, mw, mh)) else { fail("missing model capsule text") }
+    assert_true(has_border_around(mx, my, mw, mh), msg="Solid model capsule must draw a 0.5pt hairline border")
+    guard t.rect_of("做任何事") is Some((fx, fy, fw, fh)) else { fail("missing composer field") }
+    assert_true(has_border_around(fx, fy, fw, fh), msg="Solid composer box must draw a 0.5pt hairline border")
+  })
+}

@@ -41,6 +41,10 @@ priv struct GlassPaint {
   mut run : Int
   // the last capture of frosted glass (0 none): what glass `shares_capture` takes
   mut frost_run : Int
+  mut frost_blur : Double
+  mut frost_first : Int
+  mut frost_y0 : Double
+  mut frost_y1 : Double
   // the last capture of unmerged liquid glass (merge <= 0, 0 none): what `shares_capture` takes (same blur)
   mut liquid_run : Int
   mut liquid_blur : Double
@@ -138,6 +142,10 @@ fn bare_text_who(id : @view.NodeId) -> Double {
 let glass_paint : GlassPaint = {
   run: 0,
   frost_run: 0,
+  frost_blur: 0.0,
+  frost_first: -1,
+  frost_y0: 0.0,
+  frost_y1: 0.0,
   liquid_run: 0,
   liquid_blur: 0.0,
   liquid_first: -1,
@@ -191,6 +199,10 @@ let glass_material_said : Ref[@signals.Signal[GlassMaterial]] = Ref(
 fn reset_glass() -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
+  glass_paint.frost_blur = 0.0
+  glass_paint.frost_first = -1
+  glass_paint.frost_y0 = 0.0
+  glass_paint.frost_y1 = 0.0
   glass_paint.liquid_run = 0
   glass_paint.liquid_blur = 0.0
   glass_paint.liquid_first = -1
@@ -269,6 +281,10 @@ pub fn Ctx::glass_solid(self : Ctx) -> Bool {
 fn Ctx::glass_frame(self : Ctx) -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
+  glass_paint.frost_blur = 0.0
+  glass_paint.frost_first = -1
+  glass_paint.frost_y0 = 0.0
+  glass_paint.frost_y1 = 0.0
   glass_paint.liquid_run = 0
   glass_paint.liquid_blur = 0.0
   glass_paint.liquid_first = -1
@@ -286,13 +302,17 @@ fn Ctx::glass_frame(self : Ctx) -> Unit {
 }
 
 ///|
-/// How far frosted glass takes a liquid surface's tint toward its solid ground (its alpha toward 0.94, its colour half
+/// How far frosted glass takes a liquid surface's tint toward its solid ground (its alpha toward 0.90, its colour half
 /// as far).
-let frosted_frost : Double = 0.5
+let frosted_frost : Double = 0.22
 
 ///|
 /// The least blur frosted glass gives what is under it (CSS blur()'s deviation, logical px).
-let frosted_blur : Double = 24.0
+let frosted_blur : Double = 14.0
+
+///|
+/// The least colour vibrancy frosted glass gives neutral blurred backdrops (matching frosted vibrancy materials).
+let frosted_saturation : Double = 1.65
 
 ///|
 /// How wide the hairline round frosted glass made of liquid glass is (frosted_ring), in points: the controls' hairline.
@@ -307,9 +327,9 @@ fn frosted_ring(gl : Glass) -> Int64 {
   let g = ((gl.solid >> 16) & 0xFFL).to_int().to_double()
   let b = ((gl.solid >> 8) & 0xFFL).to_int().to_double()
   if 0.2126 * r + 0.7152 * g + 0.0722 * b < 128.0 {
-    0xFFFFFF2AL
+    0xFFFFFF24L
   } else {
-    0x00000020L
+    0x00000018L
   }
 }
 
@@ -324,9 +344,11 @@ fn frosted_made(gl : Glass, made : Glass) -> Bool {
 /// A glass surface as the window's material makes it, before anything reads whether it is liquid. Liquid glass and
 /// Solid glass are the surface's own (Solid is drawn as its solid ground: Ctx::glass_solid). Frosted glass is liquid
 /// glass made flat frosted glass (kind 5): none of liquid glass's shading (no bezel, rim light, refraction, colours
-/// split, pointer light, merging or adaptive ink), what is under it blurred at least `frosted_blur` behind its tint
-/// taken `frosted_frost` of the way to its solid ground, a hairline round it (frosted_ring, drawn by its painter). Glass already frosted stays as
-/// it is, and a clear magnifying lens (`tint alpha == 0 && zoom > 1`, a drag loupe) stays liquid to keep magnifying.
+/// split, pointer light, merging or adaptive ink), what is under it blurred at least `frosted_blur` with vibrancy
+/// `frosted_saturation` behind its tint taken `frosted_frost` of the way to its solid ground, and a hairline round it
+/// (frosted_ring, drawn by its painter). `shares_capture` is kept for local proximity sharing in `glass_capture` (same
+/// blur, within 64pt vertically, unblocked by intervening geometry). Glass already frosted stays as it is, and a clear
+/// magnifying lens (`tint alpha == 0, zoom > 1`) keeps magnifying.
 fn material_glass(gl : Glass, material : GlassMaterial) -> Glass {
   if material != Frosted || !gl.liquid || ((gl.tint & 0xFFL) == 0L && gl.zoom > 1.0001) {
     return gl
@@ -345,11 +367,13 @@ fn material_glass(gl : Glass, material : GlassMaterial) -> Glass {
   let r = dclamp((tr + (sr - tr) * mix).round(), 0.0, 255.0).to_int().to_int64()
   let g = dclamp((tg + (sg - tg) * mix).round(), 0.0, 255.0).to_int().to_int64()
   let b = dclamp((tb + (sb - tb) * mix).round(), 0.0, 255.0).to_int().to_int64()
-  let a = dclamp(((ta + (0.94 - ta) * f) * 255.0).round(), 0.0, 255.0).to_int().to_int64()
+  let a = dclamp(((ta + (0.90 - ta) * f) * 255.0).round(), 0.0, 255.0).to_int().to_int64()
+  let saturation = if gl.saturation >= 0.99 { dmax(gl.saturation, frosted_saturation) } else { gl.saturation }
   {
     ..gl,
     liquid: false,
     blur: dmax(gl.blur, frosted_blur),
+    saturation,
     tint: (r << 24) | (g << 16) | (b << 8) | a,
     rim_edge: 0.0,
     rim_lit: 0.0,
@@ -581,6 +605,62 @@ fn glass_ride_blocks(
 }
 
 ///|
+/// Whether glass instance `k` can safely reuse an earlier capture run starting at `first` (tagged `run_tag`, spanning
+/// vertical range `[y0, y1]`): within 64pt vertically and not occluded by any non-shadow geometry drawn between `first`
+/// and `k`.
+fn glass_local_share_ok(
+  a : FixedArray[Double],
+  k : Int,
+  first : Int,
+  run_tag : Double,
+  y0 : Double,
+  y1 : Double,
+) -> Bool {
+  let b = k * inst_size
+  let kx0 = a[b]
+  let ky0 = a[b + 1]
+  let kx1 = kx0 + a[b + 2]
+  let ky1 = ky0 + a[b + 3]
+  let dy_gap = dmax(0.0, dmax(ky0 - y1, y0 - ky1))
+  if dy_gap > 64.0 {
+    return false
+  }
+  let mut j = first
+  while j < k {
+    let pj = j * inst_size
+    let jk = a[pj + 5]
+    if jk == 13.0 {
+      let sub_n = a[pj + 14].to_int()
+      if glass_ride_blocks(
+          a[pj + 12].to_int(),
+          a[pj + 13].to_int(),
+          sub_n,
+          a[pj],
+          a[pj + 1],
+          kx0,
+          ky0,
+          kx1,
+          ky1,
+        ) {
+        return false
+      }
+      j = j + (if sub_n > 0 { sub_n } else { 1 })
+      continue
+    }
+    if jk != 2.0 &&
+      jk != 12.0 &&
+      a[pj + 20] != run_tag &&
+      a[pj + 2] > 0.0 &&
+      a[pj + 3] > 0.0 &&
+      rects_meet_by(j, k, a, 0.0) {
+      return false
+    }
+    j = j + 1
+  }
+  true
+}
+
+///|
 /// The capture glass instance `k` (just put into the frame, its kind and blur said) takes, as the frame is composed: the
 /// last frosted capture's where it `shares` one; else that of the glass just before it, where it may share it; else one
 /// of its own. Told of each glass as it goes into the frame, whoever made it (a node of the old view's as it is painted,
@@ -595,9 +675,23 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   let is_single_liquid = liquid && a[b + 23] <= 0.0
   let is_progressive = !liquid && a[b + 22] < -0.5
   if shares && !liquid && !is_progressive && glass_paint.frost_run != 0 {
-    // the last frosted capture's (liquid glass's is no frost, and only of what is under its shapes), the run as it was
-    a[b + 20] = -glass_paint.frost_run.to_double()
-    return
+    if glass_paint.material == Frosted {
+      if eff_blur >= 0.0 &&
+        glass_paint.frost_blur == eff_blur &&
+        glass_paint.frost_first >= 0 {
+        let run_tag = -glass_paint.frost_run.to_double()
+        if glass_local_share_ok(a, k, glass_paint.frost_first, run_tag, glass_paint.frost_y0, glass_paint.frost_y1) {
+          a[b + 20] = run_tag
+          glass_paint.frost_y0 = dmin(glass_paint.frost_y0, a[b + 1])
+          glass_paint.frost_y1 = dmax(glass_paint.frost_y1, a[b + 1] + a[b + 3])
+          return
+        }
+      }
+    } else {
+      // explicit Glass::frosted().sharing() in Liquid mode: takes the last frosted capture as before
+      a[b + 20] = -glass_paint.frost_run.to_double()
+      return
+    }
   }
   if shares &&
     is_single_liquid &&
@@ -605,54 +699,12 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
     glass_paint.liquid_run != 0 &&
     glass_paint.liquid_blur == eff_blur &&
     glass_paint.liquid_first >= 0 {
-    let kx0 = a[b]
-    let ky0 = a[b + 1]
-    let kx1 = kx0 + a[b + 2]
-    let ky1 = ky0 + a[b + 3]
-    let dy_gap = dmax(0.0, dmax(ky0 - glass_paint.liquid_y1, glass_paint.liquid_y0 - ky1))
-    if dy_gap <= 64.0 {
-      let run_tag = -glass_paint.liquid_run.to_double()
-      let mut blocked = false
-      let mut j = glass_paint.liquid_first
-      while j < k {
-        let pj = j * inst_size
-        let jk = a[pj + 5]
-        if jk == 13.0 {
-          let sub_n = a[pj + 14].to_int()
-          if glass_ride_blocks(
-              a[pj + 12].to_int(),
-              a[pj + 13].to_int(),
-              sub_n,
-              a[pj],
-              a[pj + 1],
-              kx0,
-              ky0,
-              kx1,
-              ky1,
-            ) {
-            blocked = true
-            break
-          }
-          j = j + (if sub_n > 0 { sub_n } else { 1 })
-          continue
-        }
-        if jk != 2.0 &&
-          jk != 12.0 &&
-          a[pj + 20] != run_tag &&
-          a[pj + 2] > 0.0 &&
-          a[pj + 3] > 0.0 &&
-          rects_meet_by(j, k, a, 0.0) {
-          blocked = true
-          break
-        }
-        j = j + 1
-      }
-      if !blocked {
-        a[b + 20] = run_tag
-        glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, ky0)
-        glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, ky1)
-        return
-      }
+    let run_tag = -glass_paint.liquid_run.to_double()
+    if glass_local_share_ok(a, k, glass_paint.liquid_first, run_tag, glass_paint.liquid_y0, glass_paint.liquid_y1) {
+      a[b + 20] = run_tag
+      glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, a[b + 1])
+      glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, a[b + 1] + a[b + 3])
+      return
     }
   }
   // one capture with the glass just before it: right after it, as it is,
@@ -698,6 +750,10 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
   }
   if same {
     glass_paint.run_len = glass_paint.run_len + 1
+    if !liquid && !is_progressive && glass_paint.frost_run == glass_paint.run {
+      glass_paint.frost_y0 = dmin(glass_paint.frost_y0, a[b + 1])
+      glass_paint.frost_y1 = dmax(glass_paint.frost_y1, a[b + 1] + a[b + 3])
+    }
     if is_single_liquid && glass_paint.liquid_run == glass_paint.run {
       glass_paint.liquid_y0 = dmin(glass_paint.liquid_y0, a[b + 1])
       glass_paint.liquid_y1 = dmax(glass_paint.liquid_y1, a[b + 1] + a[b + 3])
@@ -708,6 +764,10 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
     glass_paint.run_len = 1
     if !liquid && !is_progressive {
       glass_paint.frost_run = glass_paint.run
+      glass_paint.frost_blur = eff_blur
+      glass_paint.frost_first = k
+      glass_paint.frost_y0 = a[b + 1]
+      glass_paint.frost_y1 = a[b + 1] + a[b + 3]
       glass_paint.liquid_run = 0
       glass_paint.liquid_first = -1
     } else if is_single_liquid && eff_blur >= 0.0 {

@@ -153,7 +153,7 @@ pub fn[K : Eq] tabs_node(
               panel_way.go_from(strip, 0.0, 1.0, @motion.tween(180.0, ease=Out))
             }
           })
-          let no_lens = fn() { !(look is Pill) || strip.glass_solid() }
+          let no_lens = fn() { !(look is Pill) || strip.glass_solid() || @ui.glass_material() != Liquid }
           let press_on_selected = Ref(false)
           let clear_press_state = fn() {
             felt.val = None

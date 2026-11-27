@@ -501,14 +501,11 @@ test "real liquid_toggle_node held: liquid keeps slot 7 (-32), frosted frosts it
   assert_true(alpha_0 < 0.001, msg="liquid alpha=\{alpha_0}")
   assert_true(refr_0 > 7.5 && refr_0 <= 9.01, msg="liquid slot21=\{refr_0}")
 
-  // frosted: the held droplet flat frosted glass (kind 5) as every surface is, no liquid glass left
+  // frosted: no refraction droplet glass (neither kind 6 nor an opaque frosted blob over the knob)
   @ui.set_glass_material(Frosted)
   t.draw()
   assert_true(find_glass() is None, msg="frosted must draw no liquid glass")
-  assert_true(
-    t.drawn_instances().iter().any(fn(inst) { inst[5] == 5.0 && (inst[7] - 24.0).abs() < 0.01 && inst[11] > 0.4 }),
-    msg="frosted must draw the droplet as frosted glass",
-  )
+  assert_eq(t.drawn_glass().length(), 0, msg="frosted held toggle must not mount a frosted blob over the solid knob")
 
   // back to liquid: the crystal droplet again
   @ui.set_glass_material(Liquid)
@@ -962,5 +959,56 @@ test "liquid_slider_node: remote track tap to both ends travels smoothly without
     let actual_right = rects[0].0 + rects[0].2
     assert_true((actual_right - expected_right).abs() <= 0.1, msg="non-flush fill right at \{at}: \{actual_right} vs \{expected_right}")
   }
+  set_dark(None)
+}
+
+///|
+test "frosted material suppresses pressed droplet blobs on segmented control and slider while keeping crisp solid thumbs" {
+  // 1. Segmented control (embedded glass_track=false): 0 glass at rest and while held; lifted solid pill stays opaque.
+  {
+    let idx = @signals.signal(0)
+    let t = glass_case(true, false, fn(page) {
+      liquid_segmented_node(
+        page,
+        fn() { ["Liquid", "Frosted", "Solid"] },
+        fn() { idx.get() },
+        fn(i) { idx.set(i) },
+        width=320.0,
+        height=36.0,
+        glass_track=false,
+      )
+      |> ignore
+    })
+    @ui.set_glass_material(Frosted)
+    t.run_for(glass_springs_out)
+    let r = t.get(Tab, label="Liquid").rect
+    t.press_at(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+    t.run_for(glass_ctrl_hold_ms)
+    assert_eq(t.drawn_glass().length(), 0, msg="frosted held segmented control must draw 0 droplet glass")
+    let pills = t.drawn_rects().filter(fn(rc) { rc.4 == @ui.tree_theme().lifted && rc.2 > 80.0 })
+    assert_eq(pills.length(), 1, msg="frosted held segmented control must keep crisp solid pill")
+    t.release(r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+    t.run_for(glass_springs_out)
+  }
+  // 2. Slider: 0 glass while held/dragged; solid knob stays drawn.
+  {
+    let v = @signals.signal(45.0)
+    let t = glass_case(false, false, fn(page) {
+      page.box(fn(s) {
+        s.width(Is(Some(300.0))) |> ignore
+        liquid_slider_node(s, fn() { v.get() }, fn(x) { v.set(x) }, fn() { "Brightness" }) |> ignore
+      })
+      |> ignore
+    })
+    @ui.set_glass_material(Frosted)
+    t.run_for(glass_springs_out)
+    let r = t.get(Slider, label="Brightness").rect
+    t.press_at(r.0 + r.2 * 0.45, r.1 + r.3 / 2.0)
+    t.run_for(glass_ctrl_hold_ms)
+    assert_eq(t.drawn_glass().length(), 0, msg="frosted held slider must draw 0 droplet glass")
+    t.release(r.0 + r.2 * 0.45, r.1 + r.3 / 2.0)
+    t.run_for(glass_springs_out)
+  }
+  @ui.set_glass_material(Liquid)
   set_dark(None)
 }

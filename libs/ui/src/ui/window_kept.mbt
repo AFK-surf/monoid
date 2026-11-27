@@ -334,6 +334,10 @@ fn window_kept_ui_3() -> Array[WindowKept] {
     kept_struct(fn() { let held = { ..glass_paint }; fn() { glass_paint.window_put(held) } }, fn() { glass_paint.window_put({
   run: 0,
   frost_run: 0,
+  frost_blur: 0.0,
+  frost_first: -1,
+  frost_y0: 0.0,
+  frost_y1: 0.0,
   liquid_run: 0,
   liquid_blur: 0.0,
   liquid_first: -1,
@@ -864,6 +868,10 @@ fn GapsSteady::window_put(self : GapsSteady, o : GapsSteady) -> Unit {
 fn GlassPaint::window_put(self : GlassPaint, o : GlassPaint) -> Unit {
   self.run = o.run
   self.frost_run = o.frost_run
+  self.frost_blur = o.frost_blur
+  self.frost_first = o.frost_first
+  self.frost_y0 = o.frost_y0
+  self.frost_y1 = o.frost_y1
   self.liquid_run = o.liquid_run
   self.liquid_blur = o.liquid_blur
   self.liquid_first = o.liquid_first

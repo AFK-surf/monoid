@@ -141,7 +141,7 @@ pub fn liquid_solid_edge() -> (Double, Int64)
 
 pub fn liquid_tab_bar_glass(spot? : (Double, Double)?, merge? : Double, solid? : Int64, sharing? : Bool, adaptive? : Bool) -> @paint.Glass
 
-pub fn liquid_tab_bar_surface_decorate(@view.View, () -> ((Double, Double)?, Double), share_when_unmerged? : Bool) -> @view.View
+pub fn liquid_tab_bar_surface_decorate(@view.View, () -> ((Double, Double)?, Double), share_when_unmerged? : Bool, solid_edge? : () -> (Double, Int64)) -> @view.View
 
 pub fn liquid_tab_lens_glass(Double, solid? : Int64, sharing? : Bool, droplet_role? : Int32) -> @paint.Glass
 

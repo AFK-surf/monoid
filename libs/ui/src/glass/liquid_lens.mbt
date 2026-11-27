@@ -45,7 +45,7 @@ pub fn liquid_lens_overlay_node(
     .radius(Is(radius))
     .glass(By(fn() {
       let p = full()
-      if p > 0.001 {
+      if p > 0.001 && !l.glass_solid() && @ui.glass_material() == Liquid {
         let sol = match solid {
           Some(f) => f()
           None => clear
@@ -61,7 +61,7 @@ pub fn liquid_lens_overlay_node(
     }))
     .shadow(By(fn() {
       let p = full()
-      if p > 0.001 {
+      if p > 0.001 && !l.glass_solid() && @ui.glass_material() == Liquid {
         if overhang_y > 0.0 {
           seg_lens_shadow(p)
         } else if shadow_blur > 0.0 || shadow_y > 0.0 {
@@ -221,10 +221,17 @@ pub fn liquid_loupe_node(
           .radius(Is(height / 2.0))
           .ground_drawn(By(fn() { drawn(lens) }))
           .glass(By(fn() {
-            if lens.glass_solid() || follow.held_shown(lens) <= 0.001 {
+            if lens.glass_solid() || @ui.glass_material() != Liquid || follow.held_shown(lens) <= 0.001 {
               None
             } else {
               Some(liquid_knob_glass(solid=solid()))
+            }
+          }))
+          .edge(By(fn() {
+            if (lens.glass_solid() || @ui.glass_material() != Liquid) && follow.held_shown(lens) > 0.001 {
+              liquid_solid_edge()
+            } else {
+              (0.0, clear)
             }
           }))
           .shadow(By(fn() {

@@ -198,3 +198,30 @@ test "sf/glass toggle, slider, segmented, pill_group, decorators active gating, 
   assert_eq(merge_ctrl.is_bonded(), true)
   assert_eq(t.audit(), [])
 }
+
+///|
+test "liquid_tab_bar_surface_decorate draws hairline solid border in Solid mode and no extra border in Liquid" {
+  for dark in [false, true] {
+    let t = glass_case(dark, true, fn(page) {
+      page.box(fn(bar) {
+        bar.width(Is(Some(240.0))).height(Is(Some(54.0))).radius(Is(27.0)) |> ignore
+        liquid_tab_bar_surface_decorate(bar, fn() { (None, 0.0) }) |> ignore
+      })
+      |> ignore
+    })
+    t.draw()
+    assert_eq(t.drawn_glass().length(), 0, msg="dark=\{dark}: solid tab bar must emit 0 glass")
+    let (exp_w, _) = liquid_solid_edge()
+    let bordered = t.drawn_instances().filter(fn(a) {
+      a.length() > 15 && a[5] == 0.0 && (a[2] - 240.0).abs() < 0.5 && (a[3] - 54.0).abs() < 0.5 && (a[6] - exp_w).abs() < 0.01 && a[15] > 0.05
+    })
+    assert_eq(bordered.length(), 1, msg="dark=\{dark}: solid tab bar must draw 1 hairline border")
+    @ui.set_glass_solid(None)
+    t.draw()
+    let liquid_bordered = t.drawn_instances().filter(fn(a) {
+      a.length() > 15 && a[5] == 0.0 && (a[2] - 240.0).abs() < 0.5 && (a[3] - 54.0).abs() < 0.5 && a[6] > 0.0
+    })
+    assert_eq(liquid_bordered.length(), 0, msg="dark=\{dark}: liquid tab bar must draw 0 solid border")
+  }
+  set_dark(None)
+}
