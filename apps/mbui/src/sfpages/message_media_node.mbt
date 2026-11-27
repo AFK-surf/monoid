@@ -212,7 +212,7 @@ fn message_image_node(
               letterbox_room_waiting
             }
           })
-          @sf.breathe_node(s, waits=asked)
+          @sf.breathe_node(s, waits=asked, low=image_breath_low)
           let picture = fn(v : @view.View) {
             @sf.image_reveal_node(
               v,
@@ -396,6 +396,11 @@ fn coming_pill_high(scale : Double) -> Double {
     coming_pill_h
   }
 }
+
+///|
+/// How faint a waiting message picture breathes (`@sf.breathe_node`'s `low`): narrower than a skeleton bone's 0.5
+/// because a full-colour ThumbHash likeness pulsing to half opacity flashes noticeably against the page ground.
+let image_breath_low : Double = 0.85
 
 ///|
 /// What a pill of how far holds, along it (coming_pill's row: its ring and its words 4 apart, in its middle).

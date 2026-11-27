@@ -3,7 +3,7 @@
 // checked before (crypto.ts). Its tables beside the store's, in the same database (`CREATE TABLE IF NOT EXISTS`: a
 // station from before has none, and one from before opens this one's database as it was).
 import type { DatabaseSync } from "node:sqlite";
-import type { BoxCert, Item, Vault } from "./crypto.ts";
+import type { BoxCert, Item, KeyAsk, Vault } from "./crypto.ts";
 import { hasInvalidVaultMembers, initializeVaultMembers, vaultMembersComplete } from "./member-index.ts";
 
 const DELETED_WRITE = "vault was deleted during the write";
@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS vault_boxes (
   body TEXT NOT NULL,
   PRIMARY KEY (ws, device)
 );
+CREATE TABLE IF NOT EXISTS vault_asks (
+  ws TEXT NOT NULL,
+  vault TEXT NOT NULL,
+  device TEXT NOT NULL,
+  box TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  body TEXT NOT NULL,
+  PRIMARY KEY (ws, vault, device)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS vault_asks_vault_at ON vault_asks (ws, vault, at DESC, device);
 -- A previous station can have validated a write before this station commits a deletion. These checks also apply to
 -- its already-prepared UPSERT statements when it resumes, without scanning old rows during installation.
 CREATE TRIGGER IF NOT EXISTS vault_item_deleted_insert BEFORE INSERT ON vault_items
@@ -62,6 +72,12 @@ CREATE TRIGGER IF NOT EXISTS vault_deleted_items_insert AFTER INSERT ON vaults
 CREATE TRIGGER IF NOT EXISTS vault_deleted_items_update AFTER UPDATE OF body ON vaults
   WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END
   BEGIN DELETE FROM vault_items WHERE ws = NEW.ws AND vault = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS vault_deleted_asks_insert AFTER INSERT ON vaults
+  WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END
+  BEGIN DELETE FROM vault_asks WHERE ws = NEW.ws AND vault = NEW.id; END;
+CREATE TRIGGER IF NOT EXISTS vault_deleted_asks_update AFTER UPDATE OF body ON vaults
+  WHEN CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') = 'true' ELSE 0 END
+  BEGIN DELETE FROM vault_asks WHERE ws = NEW.ws AND vault = NEW.id; END;
 `;
 
 const parse = <T>(rows: unknown[]): T[] => rows.map((r) => JSON.parse((r as { body: string }).body) as T);
@@ -143,6 +159,7 @@ export class VaultStore {
     try {
       save.run(v.ws, v.id, v.seq, JSON.stringify(v));
       this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
       this.#db.exec("RELEASE vault_delete");
     } catch (error) {
       try { this.#db.exec("ROLLBACK TO vault_delete; RELEASE vault_delete"); } catch { /* SQLite may already have rolled back. */ }
@@ -164,7 +181,10 @@ export class VaultStore {
     this.#db.exec("SAVEPOINT vault_delete_if");
     try {
       const saved = save();
-      if (saved) this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      if (saved) {
+        this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+        this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(v.ws, v.id);
+      }
       this.#db.exec("RELEASE vault_delete_if");
       return saved;
     } catch (error) {
@@ -203,6 +223,7 @@ export class VaultStore {
   forgetVault(ws: string, id: string): void {
     this.#version++;
     this.#db.prepare("DELETE FROM vault_items WHERE ws = ? AND vault = ?").run(ws, id);
+    this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ?").run(ws, id);
     this.#db.prepare("DELETE FROM vaults WHERE ws = ? AND id = ?").run(ws, id);
   }
 
@@ -260,6 +281,81 @@ export class VaultStore {
       .run(cert.ws, cert.device, body, cert.ws, cert.device).changes > 0;
     return this.#db.prepare("UPDATE vault_boxes SET body = ? WHERE ws = ? AND device = ? AND body = ?")
       .run(body, cert.ws, cert.device, previous).changes > 0;
+  }
+
+  /// Explicit per-vault key asks for these vaults, newest first per vault via `vault_asks_vault_at`, bounded per vault
+  /// and in total, filtered to active lock devices and optional caller predicate so empty vaults and invalid rows never
+  /// consume budget slots.
+  asksForVaults(
+    ws: string,
+    vaultIds: readonly string[],
+    limit: number,
+    opts?: { devices?: readonly string[]; perVault?: number; accept?: (a: KeyAsk) => boolean },
+  ): KeyAsk[] {
+    if (vaultIds.length === 0 || limit <= 0) return [];
+    const devices = opts?.devices;
+    if (devices !== undefined && devices.length === 0) return [];
+    const perVault = Math.min(opts?.perVault ?? 64, limit);
+    const accept = opts?.accept;
+    const out: KeyAsk[] = [];
+    const devicesJson = devices !== undefined ? JSON.stringify(devices) : null;
+    const stmt = devicesJson !== null
+      ? this.#db.prepare(
+        "SELECT body FROM vault_asks WHERE ws = ? AND vault = ? AND device IN (SELECT value FROM json_each(?)) ORDER BY at DESC, device ASC LIMIT ?",
+      )
+      : this.#db.prepare(
+        "SELECT body FROM vault_asks WHERE ws = ? AND vault = ? ORDER BY at DESC, device ASC LIMIT ?",
+      );
+    for (const vault of vaultIds) {
+      const remain = limit - out.length;
+      if (remain <= 0) break;
+      const take = Math.min(perVault, remain);
+      const rows = devicesJson !== null ? stmt.all(ws, vault, devicesJson, take) : stmt.all(ws, vault, take);
+      for (const a of parse<KeyAsk>(rows)) {
+        if (accept !== undefined && !accept(a)) continue;
+        out.push(a);
+        if (out.length >= limit) break;
+      }
+    }
+    return out;
+  }
+
+  askSnapshot(ws: string, vault: string, device: string): { value: KeyAsk; body: string } | null {
+    const row = this.#db.prepare("SELECT body FROM vault_asks WHERE ws = ? AND vault = ? AND device = ?").get(ws, vault, device) as { body: string } | undefined;
+    return row ? { value: JSON.parse(row.body) as KeyAsk, body: row.body } : null;
+  }
+
+  putAsk(ask: KeyAsk): void {
+    this.#db.prepare(
+      "INSERT INTO vault_asks (ws, vault, device, box, at, body) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (ws, vault, device) DO UPDATE SET box = excluded.box, at = excluded.at, body = excluded.body",
+    ).run(ask.ws, ask.vault, ask.device, ask.box, ask.at, JSON.stringify(ask));
+  }
+
+  /// Save a key ask only if the parent vault and the previous ask are still the exact bodies the caller checked.
+  putAskIf(ask: KeyAsk, vaultBody: string, previous: string | null): boolean {
+    const body = JSON.stringify(ask);
+    if (previous === null) {
+      return this.#db.prepare(`INSERT INTO vault_asks (ws, vault, device, box, at, body)
+        SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)
+          AND NOT EXISTS (SELECT 1 FROM vault_asks WHERE ws = ? AND vault = ? AND device = ?)`)
+        .run(ask.ws, ask.vault, ask.device, ask.box, ask.at, body, ask.ws, ask.vault, vaultBody, ask.ws, ask.vault, ask.device).changes > 0;
+    }
+    return this.#db.prepare(`UPDATE vault_asks SET box = ?, at = ?, body = ?
+      WHERE ws = ? AND vault = ? AND device = ? AND body = ?
+        AND EXISTS (SELECT 1 FROM vaults WHERE ws = ? AND id = ? AND body = ?)`)
+      .run(ask.box, ask.at, body, ask.ws, ask.vault, ask.device, previous, ask.ws, ask.vault, vaultBody).changes > 0;
+  }
+
+  /// Remove stored asks that are now satisfied by `keys` (matching `device` and `box`) or belong to removed devices.
+  pruneAsks(ws: string, vault: string, keys: readonly { cert: { device: string; box: string } }[], removedDevices: readonly string[] = []): void {
+    if (keys.length > 0) {
+      const del = this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ? AND device = ? AND box = ?");
+      for (const k of keys) del.run(ws, vault, k.cert.device, k.cert.box);
+    }
+    if (removedDevices.length > 0) {
+      const delDev = this.#db.prepare("DELETE FROM vault_asks WHERE ws = ? AND vault = ? AND device = ?");
+      for (const d of removedDevices) delDev.run(ws, vault, d);
+    }
   }
 }
 

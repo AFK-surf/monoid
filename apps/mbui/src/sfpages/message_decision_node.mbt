@@ -431,11 +431,10 @@ fn decision_reply_card_node(v : @view.View, src : Source, here : MessageNodeHere
       f
     }
   }
-  let written = @signals.signal(field.text())
   let doing = "decision.reply:" + key
   let busy = fn() { @sfbase.doing(doing) }
   let send = fn() {
-    let words = field.text().trim(chars=" \n\t").to_owned()
+    let words = field.commit_composing().trim(chars=" \n\t").to_owned()
     let now = @signals.untracked(m)
     guard words != "" && !busy() && decision_thread(here) is Some(thread) else { return }
     // sent, felt as something done (a no as something refused: act)
@@ -469,7 +468,6 @@ fn decision_reply_card_node(v : @view.View, src : Source, here : MessageNodeHere
         disabled=busy,
         solid=true,
         card_words=true,
-        edited=fn(w) { written.set(w) },
       )
       |> ignore
     })
@@ -481,7 +479,7 @@ fn decision_reply_card_node(v : @view.View, src : Source, here : MessageNodeHere
         send,
         tone=Primary,
         busy~,
-        disabled=fn() { busy() || written.get().trim(chars=" \n\t") == "" },
+        disabled=fn() { busy() || field.composed_said().trim(chars=" \n\t") == "" },
         card_words=true,
       )
       |> ignore

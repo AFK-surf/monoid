@@ -7,6 +7,7 @@ import { presetCopyOf, presetInstructions } from "./presets.ts";
 import { RenewRefused } from "../accounts/console.ts";
 import { markNotice } from "./chat.ts";
 import { sessionSkills } from "./agent-home.ts";
+import { extractSlashInvocations, formatSkillInvocations, type ResolvedSkill } from "./skills.ts";
 import { writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { Clock } from "effect";
@@ -147,6 +148,8 @@ export type SessionDeps = {
   /// What its process opening needs read first: its workspace's skills linked where it runs, its memory given back
   /// (`linkSkills`), with `person`'s own memory (`personOf`) where one is given.
   linkSkills(row: any, person?: string): Promise<string>;
+  /// Slash-invocable skills resolved for session `key`'s attached runtime, used when a person's message invokes `/<skill>`.
+  sessionSkills?(key: string): Promise<readonly ResolvedSkill[]>;
   /// Pending messages and letters, merged as they are now, read off the station thread.
   pendingDeliveries(key: string, signal?: AbortSignal): Promise<PendingMessage[]>;
   /// Card state for a person's delivery, read off the station thread.
@@ -646,7 +649,18 @@ export async function formatDelivery(deps: SessionDeps, key: string, said: any[]
       : null;
     cards.set(m, { ended: state.ended, current: state.current, special });
   }
-  const text = formatInbound(said, newThreads, names, selves, posts, cards, key);
+  let text = formatInbound(said, newThreads, names, selves, posts, cards, key);
+  if (deps.sessionSkills) {
+    const humanTexts = said
+      .filter((m) => m.message?.authorKind === "person" && typeof m.message?.text === "string")
+      .map((m) => m.message.text as string);
+    if (humanTexts.some((t) => extractSlashInvocations(t).length > 0)) {
+      if (signal.aborted) throw new Error("delivery cancelled");
+      const resolved = await deps.sessionSkills(key).catch(() => [] as readonly ResolvedSkill[]);
+      const hint = formatSkillInvocations(humanTexts, resolved);
+      if (hint !== "") text = text === "" ? hint : `${text}\n\n${hint}`;
+    }
+  }
   let models: any[];
   for (;;) {
     if (signal.aborted) throw new Error("delivery cancelled");

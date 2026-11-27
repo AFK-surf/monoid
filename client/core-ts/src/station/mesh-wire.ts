@@ -144,7 +144,7 @@ export class MeshWire implements StationWire {
     });
   }
 
-  request(station: StationAddr, head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void): Effect.Effect<WireReply, CoreError, import("effect").Scope.Scope> {
+  request(station: StationAddr, head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void, guard?: () => boolean): Effect.Effect<WireReply, CoreError, import("effect").Scope.Scope> {
     const env = this.#env;
     const self = this;
     const idempotent = this.#idempotent;
@@ -182,7 +182,11 @@ export class MeshWire implements StationWire {
           : bulk && typeof mesh.bulkLink === "function"
             ? mesh.bulkLink(key, credentials, theirs, off, asker)
             : mesh.link(key, credentials, theirs, off, asker);
+      const checkGuard = (): Effect.Effect<void, CoreError> =>
+        guard && !guard() ? Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale"))) : Effect.void;
+      yield* checkGuard();
       const link = yield* waiting(status, address, t("station.core.connecting"), pickLink());
+      yield* checkGuard();
       const repeats = mayRepeat(head, idempotent.has(key));
       // Asked on more than one way (or again), the body is told of as far as the furthest has gone.
       let furthest = 0;
@@ -191,7 +195,8 @@ export class MeshWire implements StationWire {
       // and a part uploaded is answered in a few bytes): a way found slow while a part is still on it is told at once
       // (`Mesh.noteSpeed`, once each time it is asked), so the next part goes on a faster way rather than minutes on it.
       const timesBody = body.length >= SPEED_MIN_BYTES && typeof mesh.noteSpeed === "function";
-      const ask = (l: Link) => {
+      const ask = (l: Link) => Effect.suspend(() => {
+        if (guard && !guard()) return Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
         const askedAt = mesh.now();
         const wayKey = timesBody ? (typeof l.speedKey === "function" ? l.speedKey() : l.path() === "relay" ? l.via() : null) : null;
         let early = false;
@@ -206,8 +211,8 @@ export class MeshWire implements StationWire {
               mesh.noteSpeed(key, wayKey, n, elapsed);
             }
           };
-        return Effect.map(l.request(sent, body, onSent), (reply) => [l, reply, askedAt] as [Link, Reply, number]);
-      };
+        return Effect.map(l.request(sent, body, onSent, guard), (reply) => [l, reply, askedAt] as [Link, Reply, number]);
+      });
       let answered: [Link, Reply, number];
       if (repeats) {
         // Asked on its link; on another way as well if not answered within what its way is expected to take

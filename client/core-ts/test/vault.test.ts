@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock, test } from "node:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
-import { Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import { Core } from "../src/core.ts";
 import { apply as applyOps } from "../src/delta.ts";
 import { CoreError, HostError } from "../src/error.ts";
@@ -22,14 +22,14 @@ import { type Entry, Signer, entryHash, next, signedBytes } from "../src/lock.ts
 import { bodyHash, wsTag } from "../src/lock-moved.ts";
 import { base64url, hex, utf8 } from "../src/util.ts";
 import {
-  type BoxCert, type Item, type Request, type Vault, TAG, boxPublic, decrypt, encryptWith, fromWords, grantContext, itemContext, keyContext,
+  type BoxCert, type Item, type KeyAsk, type Request, type Vault, TAG, boxPublic, decrypt, encryptWith, fromWords, grantContext, itemContext, keyContext,
   openSeal, recoveryPair, rulesCrypto, saveContext, sealWith, sign, signedOk, toWords, verifies,
 } from "../src/vault/crypto.ts";
 import { checkLock } from "../src/vault/lock-check.ts";
 import { OAUTH_WAIT_MS, SLACK, handedTo, stateOf as oauthState } from "../src/vault/oauth.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { checkWith, forgetVerifiedHere, keepVerified } from "../src/vault/verified.ts";
-import { BOX_KEY, BOX_PUB, UNLOCK_MS, askAnswers, levelVaults, pairBoxCerts, readStation, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
+import { BOX_KEY, BOX_PUB, UNLOCK_MS, askAnswers, levelVaults, pairBoxCerts, readStation, spread, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
 import { handOver, inForceOf, leftIn, pairs, pendingHeld, read as readLock, roster, signerKnown } from "../src/views/lock.ts";
 import { type Duplex, dialer, personalBegin, personalProve, serveTrusted } from "../src/views/pair.ts";
 import { PERSONAL_KEY } from "../src/personal-lock.ts";
@@ -179,6 +179,7 @@ function fakeStation() {
   const vaults = new Map<string, Vault>();
   const items = new Map<string, Item>();
   const boxes = new Map<string, BoxCert>();
+  const asks = new Map<string, KeyAsk>();
   const requests: Request[] = [];
   const grants: unknown[] = [];
   const denials: unknown[] = [];
@@ -276,6 +277,19 @@ function fakeStation() {
         if (!signedOk(body, TAG.box)) return status(400, { error: "signature", code: "vault_invalid" });
         boxes.set(body.device, body);
         return { box: body };
+      case "GET /vault/asks":
+        return { asks: [...asks.values()] };
+      case "PUT /vault/asks": {
+        if (!signedOk(body, TAG.ask)) return status(400, { error: "signature", code: "vault_invalid" });
+        const v = vaults.get(body.vault);
+        if (!v || v.deleted) return status(404, { error: "no vault", code: "vault_unknown" });
+        if (v.keys.some((k) => k.cert.device === body.device && k.cert.box === body.box)) return { ask: body };
+        const askKey = `${body.vault}/${body.device}`;
+        const prev = asks.get(askKey);
+        if (prev && prev.at >= body.at) return { ask: prev };
+        asks.set(askKey, body);
+        return { ask: body };
+      }
       case "GET /vault/requests":
         return { requests };
       case "POST /vault/grants": {
@@ -323,7 +337,7 @@ function fakeStation() {
     }
     return status(404, { error: `no route ${key}` });
   };
-  return { vaults, items, boxes, requests, grants, denials, keepers, locked, plain, plainGrants, plainLasts, uses, plainLock, saves, described, removed, plainSaves, readsOff, down, reply };
+  return { vaults, items, boxes, asks, requests, grants, denials, keepers, locked, plain, plainGrants, plainLasts, uses, plainLock, saves, described, removed, plainSaves, readsOff, down, reply };
 }
 
 /// A core on an app's host (keys kept, secure storage), reaching `ws/st` (the fake station); its lock put in place.
@@ -408,7 +422,7 @@ async function rig(web = false, two = false, more: Answers = {}, also?: Record<s
     ui = s.core.connect();
     r.core = s.core;
   };
-  const r = { ...s, st, st2, phone, other, lock, me, ask, watch, take, restart, putLock: () => s.core.inner.data.put("lock", "ws", lock) };
+  const r = { ...s, st, st2, phone, other, lock, me, ask, watch, take, restart, putLock: () => { s.core.inner.data.put("lock", "ws", lock); s.core.inner.syncWorkspaceAuth?.("ws"); } };
   return r;
 }
 
@@ -420,7 +434,7 @@ function grow(r: Awaited<ReturnType<typeof rig>>, kind: string, body: unknown, b
   const entry: Entry = { ...e, sig: { key: signer.id, alg: "Ed25519", sig: signer.signBytes(new Uint8Array([...utf8("stillfail-lock/1 sig\0"), ...unhex(entryHash(e))])) } };
   r.lock.entries.push(entry);
   r.lock.head = { seq: entry.seq, hash: entryHash(entry), genesis: r.lock.head.genesis };
-  r.putLock();
+  r.core.inner.data.put("lock", "ws", r.lock);
 }
 
 const fails = async (p: Promise<unknown>, code: string) => {
@@ -1316,25 +1330,31 @@ test("one vault of one's own: a device set up later makes none, and is given its
   await r.host.time.pass(500);
   r.take();
   assert.deepEqual([vaults().vaults[0].missing, r.st.vaults.get(id)!.seq, prompts().asks.length], [0, 2, 0], "another member's device: no key of this vault for it");
-  // The phone installed anew with a new box key: no key, waiting on this device.
+  // The phone installed anew with a new box key, published by itself (`autoBox`: nobody pressed 申请授权 there): no
+  // key, and nothing put up here (only a person's press asks).
   const phoneBox3 = fill(9);
-  const phoneCert3 = sign({ v: 1 as const, ws: "ws", device: r.phone.hex, box: boxPublic(phoneBox3), at: 2200 }, TAG.box, phone2);
-  r.st.boxes.set(r.phone.hex, phoneCert3);
-  r.push("vault-box", phoneCert3);
+  const phoneAuto = sign({ v: 1 as const, ws: "ws", device: r.phone.hex, box: boxPublic(phoneBox3), at: 2150 }, TAG.box, phone2);
+  r.st.boxes.set(r.phone.hex, phoneAuto);
+  r.push("vault-box", phoneAuto);
+  await r.host.time.pass(500);
+  r.take();
+  assert.deepEqual([vaults().vaults[0].missing, prompts().asks.length], [1, 0], "set up by itself: no prompt for it");
+  // 申请授权 pressed there (`vault.ask`: standalone signed `KeyAsk` under TAG.ask): waiting on this device.
+  const phoneAsk1 = sign({ v: 1 as const, ws: "ws", vault: id, device: r.phone.hex, box: boxPublic(phoneBox3), at: 2200 }, TAG.ask, phone2);
+  r.st.asks.set(`${id}/${r.phone.hex}`, phoneAsk1);
+  r.push("vault-ask", phoneAsk1);
   await r.host.time.pass(500);
   r.take();
   assert.deepEqual([vaults().vaults[0].missing, r.st.vaults.get(id)!.seq], [1, 2]);
   assert.equal(prompts().asks.length, 1);
   const ask = prompts().asks[0];
   assert.deepEqual([ask.workspace, ask.vault, ask.device, ask.deviceText, ask.at], ["ws", id, r.phone.hex, "phone again", 2200]);
-  // Put away (the one shown, by its date): shown no more, till the phone asks again (its certificate published anew,
-  // dated later).
-  await r.ask("vault.hidePrompt", { device: r.phone.hex, at: ask.at });
+  // Put away (the one shown, by its vault and date): shown no more, till the phone asks for this vault again.
+  await r.ask("vault.hidePrompt", { vault: id, device: r.phone.hex, at: ask.at });
   assert.equal(prompts().asks.length, 0);
-  const { sig: _q, ...phoneRest3 } = phoneCert3;
-  const phoneCert4 = sign({ ...phoneRest3, at: 2300 }, TAG.box, phone2);
-  r.st.boxes.set(r.phone.hex, phoneCert4);
-  r.push("vault-box", phoneCert4);
+  const phoneAsk2 = sign({ v: 1 as const, ws: "ws", vault: id, device: r.phone.hex, box: boxPublic(phoneBox3), at: 2300 }, TAG.ask, phone2);
+  r.st.asks.set(`${id}/${r.phone.hex}`, phoneAsk2);
+  r.push("vault-ask", phoneAsk2);
   await r.host.time.pass(500);
   r.take();
   assert.equal(prompts().asks.length, 1);
@@ -1354,11 +1374,12 @@ test("one vault of one's own: a device set up later makes none, and is given its
   await r.ask("vault.lock", {});
   const again = await r.ask("vault.setup", {});
   assert.deepEqual([again.made, r.st.vaults.size], [null, 1]);
-  // Asking for the key (`vault.ask`): this device's certificate published anew, dated later, so that the owner's
-  // devices hearing of it give the key or prompt for it again.
+  // Asking for the key (`vault.ask`): standalone KeyAsk published for the unkeyed vault, without altering BoxCert.
   const at = r.st.boxes.get("ab".repeat(32))!.at;
   assert.deepEqual(await r.ask("vault.ask", {}), { asked: 1 });
-  assert.ok(r.st.boxes.get("ab".repeat(32))!.at > at);
+  assert.equal(r.st.boxes.get("ab".repeat(32))!.at, at, "BoxCert stays untouched on vault.ask");
+  const sentAsk = r.st.asks.get(`${id}/${"ab".repeat(32)}`)!;
+  assert.ok(sentAsk !== undefined && signedOk(sentAsk, TAG.ask), "standalone KeyAsk published and signed under TAG.ask");
   const box = r.st.boxes.get("ab".repeat(32))!.box;
   const rid = "r_k";
   const save: Request = {
@@ -1430,21 +1451,57 @@ test("a device let in after another of the person's turned the vault on is set u
   d2.core.close();
 });
 
-test("a device let in after another of the person's turned the vault on, that one's key locked away: set up by itself all the same, and waiting on it there (`lockPrompts` `asks`)", async () => {
+test("a device let in after another of the person's turned the vault on, that one's key locked away: set up by itself all the same, prompting nobody there till its person presses 申请授权 (`lockPrompts` `asks`)", async () => {
   const d1 = await rig();
   d1.putLock();
   const setup = await d1.ask("vault.setup", {});
+  const second = await d1.ask("vault.create", { name: "Second vault" });
   await d1.ask("vault.lock", {});
   const prompts = await d1.watch(2, { topic: "lockPrompts" });
   const d2 = await secondDevice(d1);
   const vaults = await d2.watch(1, { topic: "vaults", workspace: "ws" });
   assert.equal(vaults().setUp, true, "never 密钥库未开启");
   const cert = d2.st.boxes.get(d1.phone.hex)!;
+  assert.equal("asks" in cert, false, "BoxCert carries no asks field");
   d1.push("vault-box", cert);
+  await d1.host.time.pass(500);
+  d1.take();
+  assert.deepEqual(prompts().asks, [], "set up by itself: nothing put up on the other device");
+  // Its person presses 申请授权 for vault A only: standalone KeyAsk recorded for A; vault B must NOT prompt.
+  await d2.ask("vault.ask", { vault: setup.made });
+  assert.equal(d2.st.boxes.get(d1.phone.hex)!.at, cert.at, "vault.ask leaves BoxCert pure and untouched");
+  const asked = d2.st.asks.get(`${setup.made}/${d1.phone.hex}`)!;
+  assert.ok(asked !== undefined && signedOk(asked, TAG.ask));
+  assert.equal(d2.st.asks.get(`${second.id}/${d1.phone.hex}`), undefined, "asking for A does not mark B");
+  d1.push("vault-ask", asked);
   await d1.host.time.pass(500);
   d1.take();
   assert.deepEqual(prompts().asks.map((a: any) => [a.vault, a.device]), [[setup.made, d1.phone.hex]]);
   assert.equal(d1.st.vaults.get(setup.made)!.seq, 0, "no key given: none in hand there");
+
+  // Dismissing A (`hidePrompt {vault: A}`) hides A only; asking for B prompts B without re-opening A.
+  const askA = prompts().asks[0];
+  await d1.ask("vault.hidePrompt", { vault: setup.made, device: d1.phone.hex, at: askA.at });
+  assert.deepEqual(prompts().asks, [], "A hidden");
+  await d2.ask("vault.ask", { vault: second.id });
+  const askedB = d2.st.asks.get(`${second.id}/${d1.phone.hex}`)!;
+  assert.ok(askedB !== undefined && signedOk(askedB, TAG.ask));
+  assert.equal(d2.st.asks.get(`${setup.made}/${d1.phone.hex}`)!.at, asked.at, "A ask untouched when asking for B");
+  d1.push("vault-ask", askedB);
+  await d1.host.time.pass(500);
+  d1.take();
+  assert.deepEqual(prompts().asks.map((a: any) => a.vault), [second.id], "only B prompts; A stays hidden");
+
+  // Giving A's key embeds pure BoxCert (no asks field) and prunes A's satisfied ask on client.
+  await d1.ask("vault.addDevice", { vault: setup.made, device: d1.phone.hex });
+  const keyedA = d1.st.vaults.get(setup.made)!;
+  assert.ok(keyedA.keys.every((k) => !("asks" in k.cert)), "Vault.keys embeds pure BoxCert with zero asks");
+  d2.push("vault", keyedA);
+  await d2.host.time.pass(500);
+  assert.equal((d2.core.inner.data.record("vault", "ws") as { asks?: Record<string, Record<string, KeyAsk>> }).asks?.[setup.made]?.[d1.phone.hex], undefined, "satisfied ask pruned on client when keyed");
+
+  // Invalid vault id rejected cleanly.
+  await fails(d2.ask("vault.ask", { vault: "v_01JANOTAVALIDVAULT00000000" }), "invalid_params");
   d1.core.close();
   d2.core.close();
 });
@@ -4905,4 +4962,537 @@ test("vault calls r18: recover with startSnap allows newly-discovered vault when
     }
     r.core.close();
   }
+});
+
+test("Direction 2A R3 P1-2: expired old-epoch key after rekey does not bumpVault or lock live new-epoch key", async () => {
+  const r = await rig();
+  r.putLock();
+  const { made: id } = await r.ask("vault.setup", {});
+  const put = await r.ask("vault.putItem", {
+    vault: id,
+    plain: { kind: "token", name: "GitHub", fields: { value: "ghp_x" } },
+    listing: { name: "gh", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] },
+  });
+  const phoneCert = sign({ v: 1 as const, ws: "ws", device: r.phone.hex, box: boxPublic(fill(7)), at: 2000 }, TAG.box, r.phone);
+  r.st.boxes.set(r.phone.hex, phoneCert);
+  r.push("vault-box", phoneCert);
+  await r.host.time.pass(500);
+  r.take();
+  assert.equal(r.st.vaults.get(id)!.seq, 1, "phone given key");
+
+  stationReplies(r.host, (req) => (req.url.includes("/v1/workspaces/ws/lock") ? r.lock : r.st.reply(req)));
+  grow(r, "device.remove", { id: r.phone.hex });
+  await r.core.inner.runner.run(readLock(r.core.inner, "ws"));
+  await r.host.time.pass(500, 10);
+  r.take();
+  assert.equal(r.st.vaults.get(id)!.epoch, 1, "vault rekeyed to epoch 1 (epoch 0 + epoch 1 keys live)");
+
+  // Advance half of UNLOCK_MS, then add and remove a second device so a second rekey produces epoch 2
+  // (extending epoch 1 + epoch 2 TTLs to t + UNLOCK_MS while epoch 0 still expires at the original UNLOCK_MS).
+  await r.host.time.pass(UNLOCK_MS / 2, 1000);
+  const peer2 = key(fill(99));
+  grow(r, "device", { id: peer2.hex, sub: "s1", kind: "app", label: "ipad", sign_key: peer2.id });
+  await r.core.inner.runner.run(readLock(r.core.inner, "ws"));
+  const peer2Cert = sign({ v: 1 as const, ws: "ws", device: peer2.hex, box: boxPublic(fill(98)), at: 3000 }, TAG.box, peer2);
+  r.st.boxes.set(peer2.hex, peer2Cert);
+  r.push("vault-box", peer2Cert);
+  await r.host.time.pass(500);
+  r.take();
+  grow(r, "device.remove", { id: peer2.hex });
+  await r.core.inner.runner.run(readLock(r.core.inner, "ws"));
+  await r.host.time.pass(500, 10);
+  r.take();
+  assert.equal(r.st.vaults.get(id)!.epoch, 2, "vault rekeyed to epoch 2");
+
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.equal(vaults().vaults.find((v: any) => v.id === id)?.open, true, "epoch 2 key unlocked after second rekey");
+
+  const genBeforeOldExpiry = r.core.inner.store.authGen.vaultGen("ws", id);
+  const askedBeforeOldExpiry = r.host.secureAsked.length;
+
+  // Advance past old epoch 0 expiry (UNLOCK_MS / 2 + 2000 ms) while new epoch 2 still has ~half UNLOCK_MS left.
+  await r.host.time.pass(UNLOCK_MS / 2 + 2000, 1000);
+  assert.equal(
+    r.core.inner.store.authGen.vaultGen("ws", id),
+    genBeforeOldExpiry,
+    "expiring historical epoch 0 key must NOT bumpVault and invalidate live epoch 2 key",
+  );
+  assert.equal(
+    vaults().vaults.find((v: any) => v.id === id)?.open,
+    true,
+    "vault must remain unlocked under live epoch 2 key after old epoch 0 expires",
+  );
+  const openedAfter = await r.ask("vault.open", { item: put.id, vault: id });
+  assert.equal(openedAfter.plain.fields.value, "ghp_x");
+  assert.equal(r.host.secureAsked.length, askedBeforeOldExpiry, "live epoch 2 key must stay usable without re-prompting");
+  r.core.close();
+});
+
+test("Direction 2A R3 P1-4: #describe strictly targets declared r.vault when two vaults share the same item ID", async () => {
+  const r = await rig();
+  r.putLock();
+  // Fake station stores items by `${vault}/${id}` so colliding item IDs across two vaults can coexist.
+  const perVaultItems = new Map<string, Item>();
+  stationReplies(r.host, (httpReq) => {
+    if (httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      const body = JSON.parse(new TextDecoder().decode(httpReq.body ?? new Uint8Array())) as Item;
+      perVaultItems.set(`${body.vault}/${body.id}`, body);
+      r.st.items.set(body.id, body);
+      return { item: body };
+    }
+    return r.st.reply(httpReq);
+  });
+  const { made: v1 } = await r.ask("vault.setup", {});
+  const { id: v2 } = await r.ask("vault.create", { name: "Second" });
+  const sharedId = "i_01M4871X3MTC0903ZX5CPB8J99";
+  await r.ask("vault.putItem", {
+    vault: v1,
+    id: sharedId,
+    plain: { kind: "token", name: "Alpha", fields: { value: "tok_v1" }, notes: "v1-note" },
+    listing: { name: "Alpha", kind: "token", modes: ["proxy"], hosts: ["a.example.com"], about: "v1-note" },
+  });
+  await r.ask("vault.putItem", {
+    vault: v2,
+    id: sharedId,
+    plain: { kind: "token", name: "Beta", fields: { value: "tok_v2" }, notes: "v2-note" },
+    listing: { name: "Beta", kind: "token", modes: ["proxy"], hosts: ["b.example.com"], about: "v2-note" },
+  });
+
+  const req: Request = {
+    id: "r_desc_collide",
+    ws: "ws",
+    vault: v2,
+    item: sharedId,
+    session: "s-desc",
+    chat: "Desc Test",
+    mode: "proxy",
+    hosts: ["b.example.com"],
+    reason: "rename beta",
+    box: "",
+    at: 3000,
+    status: "pending",
+    describe: { name: "BetaRenamed", about: "v2-updated", was: { name: "Beta", about: "v2-note" } },
+  };
+  r.st.requests.push(req);
+  r.push("vault-request", req);
+  await r.host.time.pass(200);
+  r.take();
+
+  await r.ask("vault.approve", { request: "r_desc_collide", scope: "once" });
+
+  const openedV2 = await r.ask("vault.open", { item: sharedId, vault: v2 });
+  assert.equal(openedV2.vault, v2);
+  assert.equal(openedV2.plain.name, "BetaRenamed");
+  assert.equal(openedV2.plain.notes, "v2-updated");
+  assert.equal(openedV2.version, 1, "declared target vault v2 item must be updated to version 1");
+
+  const openedV1 = await r.ask("vault.open", { item: sharedId, vault: v1 });
+  assert.equal(openedV1.vault, v1);
+  assert.equal(openedV1.plain.name, "Alpha", "other vault v1 item with colliding ID must remain untouched");
+  assert.equal(openedV1.plain.notes, "v1-note");
+  assert.equal(openedV1.version, 0, "other vault v1 item must remain at version 0");
+  r.core.close();
+});
+
+test("Direction 2A R4 P1-2: current epoch expiring while older migration key is still in mem.keys immediately bumps vaultGen and evicts old slot", async () => {
+  const r = await rig();
+  const { id, item: oldItem } = await keyedAnewHalfWay(r);
+  // Restart so no keys are in memory, then unlock current epoch 1 at t=0 via a new item write,
+  // while leaving `oldItem` at epoch 0.
+  await r.restart();
+  const putNew = await r.ask("vault.putItem", {
+    vault: id,
+    plain: { kind: "token", name: "Fresh", fields: { value: "fresh_1" } },
+    listing: { name: "fresh", kind: "token", modes: ["proxy"], hosts: ["f.example.com"] },
+  });
+  assert.ok(putNew.id);
+
+  // Capture an entry capability at t=0 and watch vaults view.
+  const entryCap = r.core.inner.store.authGen.vaultCapability("ws", id);
+  const genAtUnlock = r.core.inner.store.authGen.vaultGen("ws", id);
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.equal(vaults().vaults.find((v: any) => v.id === id)?.open, true, "current epoch 1 unlocked at t=0");
+
+  // At t = UNLOCK_MS / 2, open the epoch-0 item -> #carryNow unseals & caches epoch 0 key with TTL until 1.5 * UNLOCK_MS.
+  await r.host.time.pass(UNLOCK_MS / 2, 1000);
+  const openedOld = await r.ask("vault.open", { item: oldItem, vault: id });
+  assert.equal(openedOld.plain.fields.value, "ghp_x");
+  assert.equal(entryCap.isValid(), true, "entryCap still valid before current epoch expires");
+
+  // Advance to t = UNLOCK_MS + 2000: current epoch 1 expires FIRST while older migration epoch 0 still has ~0.5 * UNLOCK_MS left.
+  await r.host.time.pass(UNLOCK_MS / 2 + 2000, 1000);
+  assert.ok(
+    r.core.inner.store.authGen.vaultGen("ws", id) > genAtUnlock,
+    "expiring current epoch must immediately bump vaultGen even when an older migration epoch key has a later TTL",
+  );
+  assert.equal(entryCap.isValid(), false, "in-flight entry capability must be invalidated immediately on current epoch expiry");
+  const guardedRes = await Effect.runPromise(Effect.result(entryCap.assertValid()));
+  assert.equal(guardedRes._tag, "Failure");
+  assert.equal(guardedRes.failure.code, "auth_stale");
+  assert.equal(vaults().vaults.find((v: any) => v.id === id)?.open, false, "vault must be locked once current epoch expires");
+
+  // Advance past 1.5 * UNLOCK_MS (old migration key's original expiry): remains locked with no error.
+  const genAfterLock = r.core.inner.store.authGen.vaultGen("ws", id);
+  await r.host.time.pass(UNLOCK_MS / 2 + 2000, 1000);
+  assert.equal(vaults().vaults.find((v: any) => v.id === id)?.open, false, "vault remains locked after old timer fires");
+  assert.equal(r.core.inner.store.authGen.vaultGen("ws", id), genAfterLock, "evicted old migration slot must not double-bump");
+  r.core.close();
+});
+
+test("Direction 2A R4 P1-3: background spread pre-captures per-vault caps (branch A: global/ws bump halts v2; branch B: v1-only lock allows v2)", async () => {
+  for (const branch of ["ws-bump", "v1-only-lock"] as const) {
+    const r = await rig(false, true);
+    r.putLock();
+    const { made: v1 } = await r.ask("vault.setup", {});
+    const { id: v2 } = await r.ask("vault.create", { name: "Second" });
+    await r.host.time.pass(500);
+    r.take();
+
+    // Mark st2 as holding neither v1 nor v2 (so lacks() plans both v1 and v2 for st2).
+    const h0 = r.core.inner.data.record("vault", "ws") as {
+      on: Record<string, Record<string, unknown>>;
+      keeps: string[];
+    };
+    const nextOn = structuredClone(h0.on);
+    if (nextOn[v1]) delete nextOn[v1].st2;
+    if (nextOn[v2]) delete nextOn[v2].st2;
+    r.core.inner.data.put("vault", "ws", { ...h0, on: nextOn, keeps: ["st", "st2"] });
+    r.st2.vaults.delete(v1);
+    r.st2.vaults.delete(v2);
+
+    const enteredV1 = Deferred.makeUnsafe<void>();
+    const releaseV1 = Deferred.makeUnsafe<void>();
+    const st2CopyVaultPuts: string[] = [];
+    stationLater(r.host, (req) => {
+      const target = req.headers.find(([k]) => k === "x-test-station")?.[1];
+      if (target !== "st2" || req.method !== "PUT" || !req.url.includes("/vault/vaults?copy=1")) return undefined;
+      const body = JSON.parse(new TextDecoder().decode(req.body ?? new Uint8Array())) as Vault;
+      st2CopyVaultPuts.push(body.id);
+      if (body.id === v1) {
+        Effect.runSync(Deferred.succeed(enteredV1, undefined));
+        return Effect.runPromise(Deferred.await(releaseV1)).then(() => jsonResponse(200, r.st2.reply(req)));
+      }
+      return undefined;
+    });
+
+    const spreadPromise = r.core.inner.runner.run(spread(r.core.inner, "ws/st2"));
+    await Effect.runPromise(Deferred.await(enteredV1));
+
+    if (branch === "ws-bump") {
+      r.core.inner.store.authGen.bumpWorkspace("ws");
+    } else {
+      r.core.inner.store.authGen.bumpVault("ws", v1);
+    }
+
+    Effect.runSync(Deferred.succeed(releaseV1, undefined));
+    await spreadPromise;
+    stationLater(r.host, () => undefined);
+
+    const hAfter = r.core.inner.data.record("vault", "ws") as { on: Record<string, Record<string, unknown>> };
+    assert.equal(hAfter.on[v1]?.st2, undefined, `${branch}: stale v1 ACK must NOT write back h.on[v1].st2`);
+
+    if (branch === "ws-bump") {
+      assert.deepEqual(st2CopyVaultPuts, [v1], "ws-bump: v2 must have 0 ?copy=1 PUTs once wsAuthGen advanced");
+      assert.equal(hAfter.on[v2]?.st2, undefined, "ws-bump: v2 must have 0 ACK write-backs");
+    } else {
+      assert.deepEqual(st2CopyVaultPuts, [v1, v2], "v1-only-lock: v2 must still execute ?copy=1 PUT");
+      assert.ok(hAfter.on[v2]?.st2 !== undefined, "v1-only-lock: v2 must still commit its ACK to h.on[v2].st2");
+    }
+    r.core.close();
+  }
+});
+
+test("Direction 2A R4 P1-3: migrate() re-checks ownCap after spread and never calls deletePlain when capability expires mid-spread", async () => {
+  const r = await rig();
+  r.putLock();
+  const { made: ownId } = await r.ask("vault.setup", {});
+  // Pre-populate the exact same secret in ownId so migrate() hits `had.has(sig)` and skips putItem,
+  // ensuring the intercepted `?copy=1` PUT comes strictly from migrate()'s own spread() call.
+  await r.ask("vault.putItem", {
+    vault: ownId,
+    plain: { kind: "token", name: "PlainTok", fields: { value: "plain_val" } },
+    listing: { name: "plain_tok", kind: "token", modes: ["proxy"], hosts: ["p.example.com"] },
+  });
+  const plainId = "i_01JAPLAIN000000000000MIG1";
+  r.st.plain.set(plainId, {
+    id: plainId,
+    version: 0,
+    kind: "token",
+    name: "PlainTok",
+    fields: { value: "plain_val" },
+    notes: "",
+    listing: { name: "plain_tok", kind: "token", modes: ["proxy"], hosts: ["p.example.com"] },
+    at: 1000,
+    owner: "a@x.com",
+  });
+  await r.core.inner.runner.run(readStation(r.core.inner, "ws/st"));
+  await r.host.time.pass(200);
+  r.take();
+
+  // Force spread() to perform a ?copy=1 PUT to `st` during migrate() by clearing `st` from h.on[ownId].
+  const h0 = r.core.inner.data.record("vault", "ws") as {
+    on: Record<string, Record<string, unknown>>;
+    keeps: string[];
+  };
+  const nextOn = structuredClone(h0.on);
+  if (nextOn[ownId]) delete nextOn[ownId].st;
+  r.core.inner.data.put("vault", "ws", { ...h0, on: nextOn, keeps: ["st"] });
+
+  const enteredSpread = Deferred.makeUnsafe<void>();
+  const releaseSpread = Deferred.makeUnsafe<void>();
+  let plainDeletes = 0;
+  let itemPuts = 0;
+  stationLater(r.host, (req) => {
+    if (req.method === "PUT" && req.url.includes("/vault/items") && !req.url.includes("?copy=1")) {
+      itemPuts++;
+      return undefined;
+    }
+    if (req.method === "PUT" && req.url.includes("/vault/plain")) {
+      const body = JSON.parse(new TextDecoder().decode(req.body ?? new Uint8Array())) as { deleted?: boolean };
+      if (body.deleted) plainDeletes++;
+      return undefined;
+    }
+    if (req.method === "PUT" && req.url.includes("?copy=1")) {
+      Effect.runSync(Deferred.succeed(enteredSpread, undefined));
+      return Effect.runPromise(Deferred.await(releaseSpread)).then(() => jsonResponse(200, r.st.reply(req)));
+    }
+    return undefined;
+  });
+
+  const migratePromise = r.ask("vault.migrate", {});
+  await Effect.runPromise(Deferred.await(enteredSpread));
+  // Revoke ownCap while migrate()'s own spread() is in flight.
+  r.core.inner.store.authGen.bumpVault("ws", ownId);
+  Effect.runSync(Deferred.succeed(releaseSpread, undefined));
+
+  await fails(migratePromise, "auth_stale");
+  assert.equal(itemPuts, 0, "putItem must have been skipped via dedup so ?copy=1 came strictly from migrate()'s spread()");
+  assert.equal(plainDeletes, 0, "migrate() must NOT call deletePlain after ownCap becomes stale during spread()");
+  assert.equal(r.st.plain.get(plainId).deleted, undefined, "plain item on station must remain undeleted");
+  r.core.close();
+});
+
+test("Direction 2A R5: migrate() threads entry snapshot into unsealOwn so mid-unseal revocation fails auth_stale with 0 key caching or writes", async () => {
+  const r = await rig();
+  r.putLock();
+  const { made: ownId } = await r.ask("vault.setup", {});
+  await r.ask("vault.putItem", {
+    vault: ownId,
+    plain: { kind: "token", name: "Existing", fields: { value: "existing_val" } },
+    listing: { name: "existing", kind: "token", modes: ["proxy"], hosts: ["e.example.com"] },
+  });
+  const plainId = "i_01JAPLAIN000000000000MIG2";
+  r.st.plain.set(plainId, {
+    id: plainId,
+    version: 0,
+    kind: "token",
+    name: "PlainTwo",
+    fields: { value: "plain_val_2" },
+    notes: "",
+    listing: { name: "plain_two", kind: "token", modes: ["proxy"], hosts: ["p2.example.com"] },
+    at: 1000,
+    owner: "a@x.com",
+  });
+  // Restart so mem.keys is cold and unsealOwn must read BOX_KEY via secureGet.
+  await r.restart();
+  await r.core.inner.runner.run(readStation(r.core.inner, "ws/st"));
+  await r.host.time.pass(200);
+  r.take();
+
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.equal(vaults().vaults.find((v: any) => v.id === ownId)?.open, false, "vault starts locked after restart");
+
+  const enteredBoxKey = Deferred.makeUnsafe<void>();
+  const releaseBoxKey = Deferred.makeUnsafe<void>();
+  const origSecGet = r.host.secureGet!.bind(r.host);
+  r.host.secureGet = (k, reason) => {
+    if (k === BOX_KEY) {
+      return Effect.gen(function* () {
+        yield* Deferred.succeed(enteredBoxKey, undefined);
+        yield* Deferred.await(releaseBoxKey);
+        return yield* origSecGet(k, reason);
+      });
+    }
+    return origSecGet(k, reason);
+  };
+
+  let itemWrites = 0;
+  let plainDeletes = 0;
+  stationReplies(r.host, (req) => {
+    if (req.method === "PUT" && req.url.includes("/vault/items")) itemWrites++;
+    if (req.method === "PUT" && req.url.includes("/vault/plain")) {
+      const body = JSON.parse(new TextDecoder().decode(req.body ?? new Uint8Array())) as { deleted?: boolean };
+      if (body.deleted) plainDeletes++;
+    }
+    return r.st.reply(req);
+  });
+
+  const migratePromise = r.ask("vault.migrate", {});
+  await Effect.runPromise(Deferred.await(enteredBoxKey));
+  // Revoke vault capability while unsealOwn is awaiting BOX_KEY.
+  r.core.inner.store.authGen.bumpVault("ws", ownId);
+  Effect.runSync(Deferred.succeed(releaseBoxKey, undefined));
+
+  await fails(migratePromise, "auth_stale");
+  assert.equal(vaults().vaults.find((v: any) => v.id === ownId)?.open, false, "stale unsealOwn must NOT populate mem.keys via #keep");
+  assert.equal(itemWrites, 0, "stale unsealOwn must perform 0 item/carryOn writes");
+  assert.equal(plainDeletes, 0, "stale unsealOwn must perform 0 deletePlain writes");
+  assert.equal(r.st.plain.get(plainId).deleted, undefined, "plain item on station must remain undeleted");
+  r.core.close();
+});
+
+test("vault.ask & standalone KeyAsk hardening: concurrent asks independent, clock rollback monotonic, already-keyed skipped, invalid/multi-vault omitted rejected, unverified cache & far-future guarded", async () => {
+  const d1 = await rig();
+  d1.putLock();
+  const setup = await d1.ask("vault.setup", {});
+  const second = await d1.ask("vault.create", { name: "Second vault" });
+  const third = await d1.ask("vault.create", { name: "Third vault" });
+  await d1.ask("vault.lock", {});
+  const prompts = await d1.watch(2, { topic: "lockPrompts" });
+
+  const d2 = await secondDevice(d1);
+  await d2.watch(1, { topic: "vaults", workspace: "ws" });
+  const d2Cert = d2.st.boxes.get(d1.phone.hex)!;
+  d1.push("vault-box", d2Cert);
+  await d1.host.time.pass(200);
+  d1.take();
+
+  // 1. Invalid vault params rejected, including prototype keys and omitting vault when multiple vaults lack keys.
+  await fails(d2.ask("vault.ask", { vault: "" }), "invalid_params");
+  await fails(d2.ask("vault.ask", { vault: 123 as never }), "invalid_params");
+  await fails(d2.ask("vault.ask", { vault: "toString" }), "invalid_params");
+  await fails(d2.ask("vault.ask", { vault: "__proto__" }), "invalid_params");
+  await fails(d2.ask("vault.ask", {}), "invalid_params");
+
+  // 2. Concurrent ask(A) + ask(B) with delayed first PUT /vault/asks preserves BOTH independent KeyAsk records.
+  const gate: { hold: boolean; letGo: (() => void) | null } = { hold: true, letGo: null };
+  stationLater(d2.host, (req) => {
+    if (gate.hold && req.method === "PUT" && req.url.includes("/vault/asks")) {
+      gate.hold = false;
+      return new Promise((resolve) => {
+        gate.letGo = () => resolve(jsonResponse(200, d2.st.reply(req)));
+      });
+    }
+    return undefined;
+  });
+  const pA = d2.ask("vault.ask", { vault: setup.made });
+  const pB = d2.ask("vault.ask", { vault: second.id });
+  await d2.host.time.pass(50);
+  assert.ok(gate.letGo !== null, "first PUT /vault/asks held in flight");
+  gate.letGo!();
+  stationLater(d2.host, () => undefined);
+  await Promise.all([pA, pB]);
+  const askA = d2.st.asks.get(`${setup.made}/${d1.phone.hex}`)!;
+  const askB = d2.st.asks.get(`${second.id}/${d1.phone.hex}`)!;
+  assert.ok(askA !== undefined && signedOk(askA, TAG.ask), "A preserved after concurrent ask(A)+ask(B)");
+  assert.ok(askB !== undefined && signedOk(askB, TAG.ask), "B preserved after concurrent ask(A)+ask(B)");
+  assert.equal(d2.st.asks.get(`${third.id}/${d1.phone.hex}`), undefined, "C not asked");
+  assert.equal(d2.st.boxes.get(d1.phone.hex)!.at, d2Cert.at, "BoxCert untouched by vault.ask");
+
+  // 3. Clock rollback: even if host clock moves backward before previous ask.at, KeyAsk.at advances monotonically.
+  const prevSecondAsk = askB.at;
+  d2.host.nowMs = () => 1_000;
+  await d2.ask("vault.ask", { vault: second.id });
+  const rolledAsk = d2.st.asks.get(`${second.id}/${d1.phone.hex}`)!;
+  assert.ok(rolledAsk.at > prevSecondAsk, "KeyAsk.at strictly increases despite clock rollback");
+
+  // 4. Legacy per-device hidden[device] (vault omitted) hides prompts dated <= hiddenAt, and a newer ask re-shows them.
+  d1.push("vault-ask", askA);
+  d1.push("vault-ask", rolledAsk);
+  await d1.host.time.pass(500);
+  d1.take();
+  assert.deepEqual(prompts().asks.map((a: any) => a.vault).sort(), [setup.made, second.id].sort());
+  const hideAt = Math.max(askA.at, rolledAsk.at);
+  await d1.ask("vault.hidePrompt", { device: d1.phone.hex, at: hideAt });
+  assert.deepEqual(prompts().asks, [], "legacy per-device hidden[device] suppresses all vaults up to hiddenAt");
+  await d2.ask("vault.ask", { vault: second.id });
+  const newerAskB = d2.st.asks.get(`${second.id}/${d1.phone.hex}`)!;
+  d1.push("vault-ask", newerAskB);
+  await d1.host.time.pass(500);
+  d1.take();
+  assert.deepEqual(prompts().asks.map((a: any) => a.vault), [second.id], "only re-asked vault B reappears above legacy hiddenAt");
+
+  // 5. Already-keyed target vault: calling vault.ask({vault}) is a no-op (asked: 0) and writes no KeyAsk.
+  await d1.ask("vault.addDevice", { vault: setup.made, device: d1.phone.hex });
+  d2.st.asks.delete(`${setup.made}/${d1.phone.hex}`);
+  d2.push("vault", d1.st.vaults.get(setup.made)!);
+  await d2.host.time.pass(500);
+  assert.deepEqual(await d2.ask("vault.ask", { vault: setup.made }), { asked: 0 });
+  assert.equal(d2.st.asks.get(`${setup.made}/${d1.phone.hex}`), undefined, "already-keyed vault writes no KeyAsk");
+
+  // 6. Malformed/forged KeyAsk (extra fields, wrong tag, invalid sig) is never cached; unverified cached ask with BOTH
+  // normal-range high `at` (< MAX_SAFE_INTEGER) and `MAX_SAFE_INTEGER` does NOT poison Vaults.ask() signing timestamp.
+  const badExtra = sign({ v: 1 as const, ws: "ws", vault: third.id, device: d1.phone.hex, box: d2Cert.box, extra: "junk", at: newerAskB.at + 10 }, TAG.ask, d1.phone);
+  const badTag = sign({ v: 1 as const, ws: "ws", vault: third.id, device: d1.phone.hex, box: d2Cert.box, at: newerAskB.at + 10 }, TAG.box, d1.phone);
+  d1.push("vault-ask", badExtra);
+  d1.push("vault-ask", badTag);
+  await d1.host.time.pass(200);
+  d1.take();
+  assert.equal((d1.core.inner.data.record("vault", "ws") as { asks?: Record<string, Record<string, KeyAsk>> }).asks?.[third.id]?.[d1.phone.hex], undefined, "malformed/wrong-tag KeyAsk never cached");
+  const h2Asks = d2.core.inner.data.record("vault", "ws") as { asks?: Record<string, Record<string, KeyAsk>> };
+  const forgedNormalAt = newerAskB.at + 500_000;
+  const forgedNormal = { ...newerAskB, at: forgedNormalAt, sig: { key: "ed25519:00", alg: "Ed25519" as const, sig: "00" } };
+  d2.core.inner.data.put("vault", "ws", { ...h2Asks, asks: { ...(h2Asks.asks ?? {}), [second.id]: { [d1.phone.hex]: forgedNormal } } });
+  await d2.ask("vault.ask", { vault: second.id });
+  assert.ok(d2.st.asks.get(`${second.id}/${d1.phone.hex}`)!.at < forgedNormalAt, "unverified cached ask with normal-range high `at` must be ignored by signature check");
+  const forgedMax = { ...newerAskB, at: Number.MAX_SAFE_INTEGER, sig: { key: "ed25519:00", alg: "Ed25519" as const, sig: "00" } };
+  const h2Asks2 = d2.core.inner.data.record("vault", "ws") as { asks?: Record<string, Record<string, KeyAsk>> };
+  d2.core.inner.data.put("vault", "ws", { ...h2Asks2, asks: { ...(h2Asks2.asks ?? {}), [second.id]: { [d1.phone.hex]: forgedMax } } });
+  await d2.ask("vault.ask", { vault: second.id });
+  assert.ok(Number.isSafeInteger(d2.st.asks.get(`${second.id}/${d1.phone.hex}`)!.at) && d2.st.asks.get(`${second.id}/${d1.phone.hex}`)!.at < Number.MAX_SAFE_INTEGER, "unverified cached ask at MAX_SAFE_INTEGER must not poison next signed `at`");
+
+  // 7. Explicit ask({vault: B}) is not disrupted by an unrelated malformed vault entry missing `members` in h.vaults.
+  const h2 = d2.core.inner.data.record("vault", "ws") as { vaults: Record<string, unknown> };
+  d2.core.inner.data.put("vault", "ws", { ...h2, vaults: { ...h2.vaults, v_01JAMALFORMED0000000000001: { id: "v_01JAMALFORMED0000000000001" } } });
+  await d2.ask("vault.ask", { vault: second.id });
+  assert.equal(typeof d2.st.asks.get(`${second.id}/${d1.phone.hex}`)?.at, "number");
+
+  // 8. Far-future KeyAsk timestamp sorts strictly BEHIND a real past ask (nowSec - 60), while preserving exact `at` for hidePrompt.
+  await d1.host.time.pass(120_000, 10_000);
+  const nowSec = Math.floor(d1.host.nowMs() / 1000);
+  const pastAt = nowSec - 60;
+  const futureAt = nowSec + 86_400;
+  const skewedFuture = sign({ v: 1 as const, ws: "ws", vault: second.id, device: d1.phone.hex, box: d2Cert.box, at: futureAt }, TAG.ask, d1.phone);
+  const realPast = sign({ v: 1 as const, ws: "ws", vault: third.id, device: d1.phone.hex, box: d2Cert.box, at: pastAt }, TAG.ask, d1.phone);
+  d1.push("vault-ask", skewedFuture);
+  d1.push("vault-ask", realPast);
+  await d1.host.time.pass(200);
+  d1.take();
+  assert.deepEqual(
+    prompts().asks.map((a: any) => [a.vault, a.at]),
+    [[third.id, pastAt], [second.id, futureAt]],
+    "far-future ask sorts strictly behind real past ask (sortAt = 0), while exact signed `at` is preserved",
+  );
+  await d1.ask("vault.hidePrompt", { vault: second.id, device: d1.phone.hex, at: futureAt });
+  assert.deepEqual(prompts().asks.map((a: any) => a.vault), [third.id], "hidePrompt matches exact signed `at` of far-future ask");
+
+  // 9. Distinguish pre-/vault/asks 404 (vault_station_old) from 404 vault_unknown & offline 503 (vault_ask_unsent).
+  stationLater(d2.host, (req) => {
+    if (req.method === "PUT" && req.url.includes("/vault/asks")) return Promise.resolve(jsonResponse(404, { error: "not found" }));
+    return undefined;
+  });
+  await fails(d2.ask("vault.ask", { vault: third.id }), "vault_station_old");
+  stationLater(d2.host, (req) => {
+    if (req.method === "PUT" && req.url.includes("/vault/asks")) return Promise.resolve(jsonResponse(404, { error: "no vault", code: "vault_unknown" }));
+    return undefined;
+  });
+  await fails(d2.ask("vault.ask", { vault: third.id }), "vault_ask_unsent");
+  stationLater(d2.host, () => undefined);
+  d2.st.down.on = true;
+  await fails(d2.ask("vault.ask", { vault: third.id }), "vault_ask_unsent");
+  d2.st.down.on = false;
+
+  // 10. Short-disconnect SSE `resumed` hook backfills already-accepted KeyAsk to a station that missed it.
+  await d2.ask("vault.ask", { vault: third.id });
+  const thirdAsk = d2.st.asks.get(`${third.id}/${d1.phone.hex}`)!;
+  assert.ok(thirdAsk !== undefined);
+  d2.st.asks.delete(`${third.id}/${d1.phone.hex}`);
+  for (const hook of d2.core.inner.stations.also) {
+    if (hook.resumed) d2.core.inner.runner.fork(Effect.ignore(hook.resumed("ws/st")));
+  }
+  await d2.host.time.pass(300);
+  assert.deepEqual(d2.st.asks.get(`${third.id}/${d1.phone.hex}`), thirdAsk, "resumed hook backfills accepted KeyAsk after short disconnect");
+
+  d1.core.close();
+  d2.core.close();
 });

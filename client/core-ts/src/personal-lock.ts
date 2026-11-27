@@ -1331,10 +1331,31 @@ export class PersonalLock {
 
   /// A lock begun here, this device its first (one the cloud has already gives way to it: `restart`).
   begin(sub: string, reason: string): Effect.Effect<Uint8Array, CoreError> {
+    return Effect.map(this.#beginWith(sub, reason, []), (r) => r.seed);
+  }
+
+  /// Like `begin`, also reading `extraKeys` in the same single biometric prompt (`#unsealWith`) when the personal
+  /// signer key already exists (`made === null`), or reading `extraKeys` as the single prompt when generating it anew.
+  #beginWith(sub: string, reason: string, extraKeys: readonly string[]): Effect.Effect<{ seed: Uint8Array; extra: (Uint8Array | null)[] }, CoreError> {
+    const { host } = this.#env;
     return Effect.gen({ self: this }, function* () {
-      const { id: key, seed: made } = yield* this.#madeKey(reason);
+      const hasExtraRead = extraKeys.length > 0 && (host.secureGetMany !== undefined || host.secureGet !== undefined);
+      const { id: key, seed: made } = yield* this.#madeKey(hasExtraRead ? null : reason);
       const id = yield* this.#env.device();
-      const seed = made ?? (yield* this.#unseal(reason));
+      let seed: Uint8Array;
+      let extra: (Uint8Array | null)[] = [];
+      if (made === null) {
+        const unsealed = yield* this.#unsealWith(reason, extraKeys);
+        seed = unsealed.seed;
+        extra = unsealed.extra;
+      } else {
+        seed = made;
+        if (extraKeys.length > 0 && host.secureGetMany) {
+          extra = [...(yield* Effect.mapError(host.secureGetMany(extraKeys, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key")))];
+        } else if (extraKeys.length > 0 && host.secureGet) {
+          for (const k of extraKeys) extra.push(yield* Effect.mapError(host.secureGet(k, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key")));
+        }
+      }
       // The chains it leaves behind: the one pinned, and one seen where this device was outside it (a station that
       // refused this device keeps it still, and is to be brought the new one, not taken for a lock begun elsewhere).
       // (the one pinned let go of in the turn, as the genesis is signed: `#signHere`)
@@ -1351,7 +1372,7 @@ export class PersonalLock {
       // one. A device still on the one left goes on hearing it was replaced, `#heard`.)
       this.#seen.delete(sub);
       this.#env.changed();
-      return seed;
+      return { seed, extra };
     });
   }
 
@@ -1504,23 +1525,15 @@ export class PersonalLock {
     return Effect.map(this.seedForWith(sub, reason, []), (r) => r.seed);
   }
 
-  /// Like `seedFor`, also reading `extraKeys` in the same prompt (`secureGetMany`) when this device is already a member.
+  /// Like `seedFor`, also reading `extraKeys` in the same prompt (`secureGetMany`) whether already a member or beginning the lock.
   seedForWith(sub: string, reason: string, extraKeys: readonly string[]): Effect.Effect<{ seed: Uint8Array; extra: (Uint8Array | null)[] }, CoreError> {
-    const { host } = this.#env;
     return Effect.gen({ self: this }, function* () {
       if (this.standing(sub) === "none" && this.#env.begins?.(sub) === true) {
         const read = yield* Effect.result(this.refresh(sub, undefined, this.asked()));
         if (this.standing(sub) === "none") {
           if (read._tag === "Failure") return yield* Effect.fail(read.failure);
           if (!(this.mayBeginQuietly(sub) && (yield* this.beginQuietly(sub, true)))) {
-            const seed = yield* this.begin(sub, reason);
-            const extra: (Uint8Array | null)[] = [];
-            if (extraKeys.length > 0 && host.secureGetMany) {
-              extra.push(...(yield* Effect.mapError(host.secureGetMany(extraKeys, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key"))));
-            } else if (extraKeys.length > 0 && host.secureGet) {
-              for (const k of extraKeys) extra.push(yield* Effect.mapError(host.secureGet(k, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key")));
-            }
-            return { seed, extra };
+            return yield* this.#beginWith(sub, reason, extraKeys);
           }
         }
       }

@@ -116,6 +116,7 @@ export const PARAMS: Record<string, string> = {
   "chat.relayPlaces": "thread:number",
   "chat.relay": "thread:number connect?:string channel?:string link?:string note?:string join?:boolean",
   "chat.relayPeople": "thread:number connect?:string channel?:string link?:string",
+  "chat.skills": "session?:string runtime?:string preset?:string",
   "decision.dismiss": "thread:number seq:number",
   "decision.close": "thread:number seq:number option:string",
   "chat.report": "thread:number seq:number",
@@ -540,6 +541,13 @@ function stationOp(name: string, params: unknown): Request | null {
       const thread = p.u64("thread");
       const query = ["connect", "channel", "link"].flatMap((k) => (p.word(k) !== null ? [`${k}=${encode(p.word(k)!)}`] : [])).join("&");
       return op("GET", () => `/threads/${thread}/relay/people?${query}`, null, NONE);
+    }
+    // The skills available for a session or a new chat's runtime/preset, for composer `/` autocomplete.
+    case "chat.skills": {
+      const session = p.word("session");
+      if (session !== null) return op("GET", () => `/sessions/${encode(session)}/skills`, null, NONE);
+      const query = ["runtime", "preset"].flatMap((k) => (p.word(k) !== null ? [`${k}=${encode(p.word(k)!)}`] : [])).join("&");
+      return op("GET", () => (query === "" ? "/skills" : `/skills?${query}`), null, NONE);
     }
     case "decision.dismiss": {
       const thread = p.u64("thread");

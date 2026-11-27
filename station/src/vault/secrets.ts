@@ -995,9 +995,10 @@ export class Secrets {
     return r.owner === undefined ? null : { workspace: r.ws, email: r.owner };
   }
 
-  /// Whether `viewer` is a member of that vault of their workspace now: whom its requests are told to (`tells`).
+  /// Whether `viewer` is a member of that active (non-deleted) vault of their workspace now: whom its events are told to.
   inVault(viewer: { sub: string; workspace: string }, vault: string): boolean {
-    return this.#d.vaults.vault(viewer.workspace, vault)?.members.includes(viewer.sub) === true;
+    const v = this.#d.vaults.vault(viewer.workspace, vault);
+    return v !== null && !v.deleted && v.members.includes(viewer.sub);
   }
 
   /// Fill this workspace's old pending lookup before its request list is read.

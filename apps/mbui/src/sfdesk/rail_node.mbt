@@ -524,9 +524,9 @@ fn rail_place_node(
       }
     } else {
       rail_go_told(src, w, place, fn(_, g) { g() })
-      // (pressed into a place whose sidebar is folded for the page's room: shown a while from the start, as the web's
-      // pressed into a folded one)
-      wide.peek_next.set(wide.crowded && !place_bare_now(place) && place != "attention" && place != "board")
+      // (pressed into a place whose sidebar is folded: shown a while from the start, as an explicit press on the rail
+      // should not wait for hover dwell)
+      wide.peek_next.set(!place_bare_now(place) && place != "attention" && place != "board")
     }
   }
   // what wants the person in a list, as its rows' marks: while the sidebar is folded (open, the rows show it;

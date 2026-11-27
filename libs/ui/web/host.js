@@ -570,12 +570,16 @@
   uniform int u_ad_n;
   uniform int u_ad_cur;
   uniform highp sampler2D u_veil;
+  uniform float u_through;
+  vec4 vs_backdrop4(vec2 p) {
+    return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0);
+  }
   vec3 vs_backdrop(vec2 p) {
-    return textureLod(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw), 0.0).rgb;
+    return vs_backdrop4(p).rgb;
   }
   float vs_luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   float vs_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }
-  float vs_backdrop_luma_rect(vec2 c, vec2 h) {
+  float vs_backdrop_luma_rect(vec2 c, vec2 h, float hole_y) {
     float sum = 0.0;
     float mx1 = -1.0, mx2 = -1.0;
     float mn1 = 2.0, mn2 = 2.0;
@@ -583,7 +587,9 @@
       float py = c.y + float(iy) * (h.y * 0.60);
       for (int ix = -2; ix <= 2; ix++) {
         float px = c.x + float(ix) * (h.x * 0.38);
-        float y = vs_ink_luma(vs_backdrop(vec2(px, py)));
+        vec4 smp = vs_backdrop4(vec2(px, py));
+        float a = (u_through > 0.5) ? clamp(smp.a, 0.0, 1.0) : 1.0;
+        float y = vs_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));
         sum += y;
         if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
@@ -648,7 +654,7 @@
     }
     capCenter = ac;
     capHalf = vec2(0.0);
-    float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
+    float bgL = vs_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)), prefer_dark ? 0.0 : 1.0);
     return vec3(1.0 - smoothstep(0.12, 0.21, bgL), bgL, 0.0);
   }
   ${BARE_INK_GLSL}
@@ -1253,7 +1259,7 @@
   float mb_ink_luma(vec3 c) { return dot(c * c, vec3(0.2126, 0.7152, 0.0722)); }
   #endif
   #if MB_HAS_ADAPTIVE
-  float mb_backdrop_luma_rect(vec2 c, vec2 h) {
+  float mb_backdrop_luma_rect(vec2 c, vec2 h, float hole_y) {
     float sum = 0.0;
     float mx1 = -1.0, mx2 = -1.0;
     float mn1 = 2.0, mn2 = 2.0;
@@ -1261,7 +1267,9 @@
       float py = c.y + float(iy) * (h.y * 0.60);
       for (int ix = -2; ix <= 2; ix++) {
         float px = c.x + float(ix) * (h.x * 0.38);
-        float y = mb_ink_luma(backdrop(vec2(px, py)));
+        vec4 smp = backdrop4(vec2(px, py));
+        float a = (u_through > 0.5) ? clamp(smp.a, 0.0, 1.0) : 1.0;
+        float y = mb_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));
         sum += y;
         if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
@@ -1315,7 +1323,7 @@
         return mb_unpack16(px.rg);
       }
     }
-    float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)));
+    float bgL = mb_backdrop_luma_rect(ac, vec2(max(fallback_r, 1.0)), is_dark_glass ? 0.0 : 1.0);
     if (is_dark_glass) return smoothstep(0.20, 0.26, bgL);
     float baseDens = mix(0.404, tint_a, smoothstep(0.405, 0.46, tint_a));
     float extra = clamp((baseDens - 0.404) / (1.0 - 0.404), 0.0, 1.0);
@@ -1790,7 +1798,7 @@
           }
         }
       }
-      float tintDarkEnv = 1.0 - smoothstep(0.18, 0.55, luma(refractColor));
+      float tintDarkEnv = (1.0 - smoothstep(0.18, 0.55, luma(refractColor))) * bgA;
       float regDarkContour = tintDarkEnv * max(is_dark ? 1.0 : darkMixSaved, smoothstep(0.08, 0.16, colChroma));
       float regExtContour = mix(0.34, 0.85, regDarkContour) * solidFade;
       contourStr = mix(contourStr, regExtContour, regMix);
@@ -2600,6 +2608,11 @@
     return vec2(hi / 255.0, lo / 255.0);
   }
   void main() {
+    float is_dark = u_param.x;
+    bool is_through = u_param.y > 1.5;
+    float is_new = u_param.y - (is_through ? 2.0 : 0.0);
+    float dt = u_param.z;
+    float hole_y = (is_dark > 0.5) ? 0.0 : 1.0;
     vec2 c = u_box.xy, h = u_box.zw;
     float sum = 0.0, mx1 = -1.0, mx2 = -1.0, mn1 = 2.0, mn2 = 2.0;
     for (int iy = -1; iy <= 1; iy++) {
@@ -2607,7 +2620,9 @@
       for (int ix = -2; ix <= 2; ix++) {
         float px = c.x + float(ix) * (h.x * 0.38);
         vec2 uv = clamp(vec2(px, py) * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw);
-        float y = mb_ink_luma(texture(u_bd, uv).rgb);
+        vec4 smp = texture(u_bd, uv);
+        float a = is_through ? clamp(smp.a, 0.0, 1.0) : 1.0;
+        float y = mb_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));
         sum += y;
         if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
@@ -2617,7 +2632,6 @@
     int sid = int(u_param.w + 0.5);
     vec4 prev = texelFetch(u_prev, ivec2(sid, 0), 0);
     float prevT = mb_unpack16(prev.rg);
-    float is_dark = u_param.x, is_new = u_param.y, dt = u_param.z;
     float latch, target;
     if (is_dark > 1.5) {
       target = 0.0;
@@ -2957,7 +2971,7 @@
   const AD_MAX = 16, AD_SETTLE_SEC = 0.42, AD_MATCH_DIST = 64.0;
   function makeAdSlots() {
     const arr = [];
-    for (let i = 0; i < AD_MAX; i++) arr.push({ active: false, cx: 0, cy: 0, hx: 0, hy: 0, isDark: 0, tintA: 0, settleLeft: 0, updatedSerial: 0, seenSerial: 0 });
+    for (let i = 0; i < AD_MAX; i++) arr.push({ active: false, cx: 0, cy: 0, hx: 0, hy: 0, isDark: 0, through: 0, tintA: 0, settleLeft: 0, updatedSerial: 0, seenSerial: 0 });
     return arr;
   }
   let adProg = null, ADU = {};
@@ -3179,6 +3193,7 @@
         });
       }
     }
+    const curThrough = m && m.through ? 1 : 0;
     const pend = [];
     for (const it of items) {
       let sid = -1, isNew = 0, modeChanged = false;
@@ -3186,7 +3201,9 @@
         const s = adSlots[i];
         if (s.active && s.seenSerial === serial && ((s.isDark > 0) === (it.isDark > 0)) && Math.hypot(it.cx - s.cx, it.cy - s.cy) <= 2.0) {
           sid = i;
-          if (s.isDark !== it.isDark || Math.abs(s.tintA - it.tintA) > 0.002) { s.isDark = it.isDark; s.tintA = it.tintA; modeChanged = true; }
+          if (s.isDark !== it.isDark || Math.abs(s.tintA - it.tintA) > 0.002 || s.through !== curThrough) {
+            s.isDark = it.isDark; s.tintA = it.tintA; s.through = curThrough; modeChanged = true;
+          }
           break;
         }
       }
@@ -3211,9 +3228,10 @@
           }
           isNew = 1;
           const s = adSlots[sid];
-          s.active = true; s.isDark = it.isDark; s.tintA = it.tintA; s.lastBd = null; s.settleLeft = 0; s.updatedSerial = 0;
-        } else if (adSlots[sid].isDark !== it.isDark || Math.abs(adSlots[sid].tintA - it.tintA) > 0.002) {
+          s.active = true; s.isDark = it.isDark; s.through = curThrough; s.tintA = it.tintA; s.lastBd = null; s.settleLeft = 0; s.updatedSerial = 0;
+        } else if (adSlots[sid].isDark !== it.isDark || Math.abs(adSlots[sid].tintA - it.tintA) > 0.002 || adSlots[sid].through !== curThrough) {
           adSlots[sid].isDark = it.isDark;
+          adSlots[sid].through = curThrough;
           adSlots[sid].tintA = it.tintA;
           modeChanged = true;
         }
@@ -3229,7 +3247,7 @@
         else s.settleLeft = Math.max(0, s.settleLeft - dt);
         s.lastBd = curBd;
         s.updatedSerial = serial;
-        pend.push({ sid, isNew, isDark: s.isDark, tintA: s.tintA, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
+        pend.push({ sid, isNew, isDark: s.isDark, through: s.through, tintA: s.tintA, cx: s.cx, cy: s.cy, hx: s.hx, hy: s.hy });
       }
     }
     return pend;
@@ -3302,7 +3320,7 @@
     for (const p of pend) {
       gl.scissor(p.sid, 0, 1, 1);
       gl.uniform4f(ADU.u_box, p.cx, p.cy, p.hx, p.hy);
-      gl.uniform4f(ADU.u_param, p.isDark > 0 ? p.isDark : -p.tintA, p.isNew, dt, p.sid);
+      gl.uniform4f(ADU.u_param, p.isDark > 0 ? p.isDark : -p.tintA, p.isNew + (p.through ? 2.0 : 0.0), dt, p.sid);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
     }
     adCur = nxt;

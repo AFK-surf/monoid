@@ -545,10 +545,16 @@ test "runner: frames, single-shot adoption, and orphan detection" {
   let wr = encode_runner_write("hi\n")
   expect(str_contains(wr, "\"op\":\"write\""), "write frame")
   match decode_runner_frame("{\"op\":\"attached\",\"out\":100,\"keep\":150}") {
-    Some(RunnerFrame::Attached(out_off, Some(keep))) => {
-      expect(out_off == 100L && keep == 100L, "keep clamped to out_off")
+    Some(RunnerFrame::Attached(out_off, err_off, Some(keep))) => {
+      expect(out_off == 100L && err_off == 0L && keep == 100L, "keep clamped to out_off and err defaults to 0")
     }
     _ => panic("expected Attached")
+  }
+  match decode_runner_frame("{\"op\":\"attached\",\"out\":23,\"err\":7,\"keep\":0}") {
+    Some(RunnerFrame::Attached(out_off, err_off, Some(keep))) => {
+      expect(out_off == 23L && err_off == 7L && keep == 0L, "attached parses out, err, and keep")
+    }
+    _ => panic("expected Attached with err")
   }
 
   let r1 = RunnerInfo::{ id: "claude-chat_1", runner_pid: 100, pid: 101, pgid: 101, started_at: 1000L, program: "claude", args: [], socket: "/tmp/r1.sock", keeps: true, pty: false }

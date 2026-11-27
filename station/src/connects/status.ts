@@ -10,7 +10,8 @@ export type Run = (effect: Effect.Effect<void>) => Promise<void>;
 export abstract class StatusLine {
   private readonly run: Run;
   private readonly interval: number;
-  /// The message that started the work, and the session's page in still.fail (where there is one), as last said.
+  /// The message the turn now works for (none once it ended: a turn woken by none must not pass for the last one's),
+  /// and the session's page in still.fail (where there is one), as last said.
   protected messageTs: string | null = null;
   protected page: string | null = null;
   private shown = "";
@@ -29,7 +30,7 @@ export abstract class StatusLine {
   protected abstract show(status: string, now: number): Promise<boolean>;
 
   say(status: string, messageTs: string | null = null, page: string | null = null) {
-    if (messageTs !== null) this.messageTs = messageTs;
+    this.messageTs = status === "" ? null : messageTs ?? this.messageTs;
     if (page !== null) this.page = page;
     this.wanted = status;
     if (this.timer) return;

@@ -22,7 +22,8 @@ import type { Stream } from "../src/mesh/native.ts";
 import { DGRAM_HEADER, FrameIn, KIND, MAX_CLIP_IN, MAX_IN, SCREEN_TYPE, answerScreen, asked, clipPayload, cursorPayload, frame, parseClip, parseInput, parseWindowPick, revealAllowed } from "../src/mesh/screens.ts";
 import { ALPN, Reader, writeLine } from "../src/mesh/serve.ts";
 import { HELPER_APP, HelperApp, install as installHelper } from "../src/helper/app.ts";
-import { Desktop, HelperView, MAX_HELPER_FRAME, TO_HELPER, helperClip, helperMessage } from "../src/screens/desktop.ts";
+import { HelperGrants } from "../src/helper/grants.ts";
+import { Desktop, HelperView, MAX_HELPER_FRAME, OPEN_GRANTS_TTL_MS, TO_HELPER, helperClip, helperMessage } from "../src/screens/desktop.ts";
 import { dropFolder } from "../src/drive/drive.ts";
 import { ScreenHub, ScreenRefused } from "../src/screens/hub.ts";
 import { described, letGo } from "../src/tools/screen.ts";
@@ -2001,6 +2002,8 @@ class FakeHelperApp {
   copy: ((payload: Buffer) => void) | null = null;
   asking = false;
   restartOnce = false;
+  failing = false;
+  viewError: { error: string; code: string } | null = null;
   status: any;
   /// The display's mode (`resolution`) and the sizes it has; null: a helper from before it, which knows no such op.
   resolution: { width: number; height: number; modeID: number } | null = null;
@@ -2024,6 +2027,7 @@ class FakeHelperApp {
     // Closed with the test: a station still watching it must not have it listen again (the test would never end).
     if (this.#closed) throw new Error("the test's helper is closed");
     this.launches++;
+    if (this.failing) throw new Error("LSOpenURLsWithRole() failed");
     assert.equal(env.STILLFAIL_HELPER_TOKEN, undefined, "token must not be passed in launch env");
     const token = readFileSync(join(dirname(app), "token"), "utf8").trim();
     this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token };
@@ -2115,6 +2119,10 @@ class FakeHelperApp {
             conn.end(helperMessage(1, Buffer.from(JSON.stringify({ error: "restarting", code: "restart" }))));
             this.#stop();
             setImmediate(() => void this.#listen());
+            return;
+          }
+          if (this.viewError !== null) {
+            conn.end(helperMessage(1, Buffer.from(JSON.stringify(this.viewError))));
             return;
           }
           conn.write(helperMessage(1, Buffer.from(JSON.stringify({ width: 64, height: 36, encoder: "fake", ...(ask.audio === true ? { audio: true } : {}) }))));
@@ -2482,6 +2490,149 @@ test("the helper watched: ended by itself it is started again, once, its window 
   await settle();
   assert.equal(fake.launches, 2);
   fake.close();
+});
+
+test("Desktop.open skips blocking status refresh while granted HelperGrants are within OPEN_GRANTS_TTL_MS", { skip: WINDOWS }, async () => {
+  const { app, dir } = helperRelease();
+  const fake = new FakeHelperApp({ capture: true, control: true, display, responsible: responsible(dir), live: { capture: true, control: true } });
+  let now = 1_000_000;
+  let reaches = 0;
+  const helper = new HelperApp({ app, dir, launch: fake.launch });
+  const grants = new HelperGrants({ helper, now: () => now, reach: async () => (reaches++, null) });
+  const desktop = new Desktop({ supported: true, helper, grants, changed: () => {} });
+  const statusCalls = () => fake.asked.filter((a) => a.op === "status").length;
+  try {
+    // Background refresh warms grants (e.g. GET /screens or overview).
+    await desktop.refresh(true);
+    assert.equal(statusCalls(), 1);
+    assert.equal(reaches, 1);
+
+    // First open within TTL skips status/lanReach completely.
+    const v1 = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    v1.close();
+    assert.equal(statusCalls(), 1);
+    assert.equal(reaches, 1);
+
+    // Still fresh 1 ms before TTL expires.
+    now += OPEN_GRANTS_TTL_MS - 1;
+    const v2 = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    v2.close();
+    assert.equal(statusCalls(), 1);
+    assert.equal(reaches, 1);
+
+    // Exact TTL boundary triggers one forced status refresh, then caches again.
+    now += 1;
+    const v3 = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    v3.close();
+    assert.equal(statusCalls(), 2);
+    assert.equal(reaches, 2);
+
+    now += OPEN_GRANTS_TTL_MS - 1;
+    const v4 = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    v4.close();
+    assert.equal(statusCalls(), 2);
+    assert.equal(reaches, 2);
+  } finally {
+    await desktop.close();
+    fake.close();
+  }
+});
+
+test("Desktop.open refreshes and prompts on optimistic capture refusal, and never skips refresh when a grant is missing", { skip: WINDOWS }, async () => {
+  const { app, dir } = helperRelease();
+  const fake = new FakeHelperApp({ capture: true, control: true, display, responsible: responsible(dir), live: { capture: true, control: true } });
+  let now = 1_000_000;
+  const helper = new HelperApp({ app, dir, launch: fake.launch });
+  const grants = new HelperGrants({ helper, now: () => now, reach: async () => null });
+  const desktop = new Desktop({ supported: true, helper, grants, changed: () => {}, lang: () => "en" });
+  const statusCalls = () => fake.asked.filter((a) => a.op === "status").length;
+  try {
+    await desktop.refresh(true);
+    assert.equal(statusCalls(), 1);
+
+    // Capture gets revoked inside the TTL window: optimistic stream hits code="capture", then refreshes and shows the prompt.
+    fake.status = { ...fake.status, capture: false };
+    fake.viewError = { error: "Screen Recording is not granted", code: "capture" };
+    await assert.rejects(
+      desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] }),
+      (e: ScreenRefused) => e.status === 503 && e.key === "station.screen.captureOff" && e.access?.capture === false && e.access?.asking === true,
+    );
+    assert.equal(fake.views.length, 1);
+    assert.equal(fake.shown.length, 1);
+    assert.ok(statusCalls() >= 2);
+
+    // Next open while capture is false refreshes before connecting (does not issue another speculative screen.view).
+    await assert.rejects(
+      desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] }),
+      (e: ScreenRefused) => e.status === 503 && e.key === "station.screen.captureOff",
+    );
+    assert.equal(fake.views.length, 1);
+    assert.equal(fake.shown.length, 2);
+
+    // When capture is granted but control is still missing inside TTL, open() still refreshes and prompts.
+    fake.status = { ...fake.status, capture: true, control: false };
+    fake.asking = false;
+    fake.viewError = null;
+    await desktop.refresh(true);
+    const beforeStatuses = statusCalls();
+    now += 1_000;
+    const watchOnly = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    watchOnly.close();
+    assert.ok(statusCalls() > beforeStatuses, "missing control must never take optimistic no-refresh path");
+    assert.equal(fake.shown.length, 3);
+
+    // Re-granted after closing window: once refreshed, optimistic path resumes.
+    fake.status = { ...fake.status, capture: true, control: true };
+    fake.asking = false;
+    const afterGrantStatuses = statusCalls();
+    const full = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    full.close();
+    assert.ok(statusCalls() > afterGrantStatuses, "first open after grant missing refreshes");
+    assert.equal(fake.shown.length, 3);
+    const cachedStatuses = statusCalls();
+    now += 1_000;
+    const cached = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    cached.close();
+    assert.equal(statusCalls(), cachedStatuses, "subsequent open within TTL skips status");
+
+    // Optimistic open hitting code="restart" invalidates grants, waits for helper.back(), and retries once cleanly.
+    fake.restartOnce = true;
+    const restarted = await desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] });
+    restarted.close();
+    assert.equal(statusCalls(), cachedStatuses, "optimistic restart retry did not force status refresh on success");
+    assert.equal(grants.fresh(OPEN_GRANTS_TTL_MS), false, "restart invalidates prior cached grant state");
+  } finally {
+    await desktop.close();
+    fake.close();
+  }
+});
+
+test("Desktop.open invalidates cached grants when optimistic helper.connect fails", { skip: WINDOWS }, async () => {
+  const { app, dir } = helperRelease();
+  const fake = new FakeHelperApp({ capture: true, control: true, display, responsible: responsible(dir), live: { capture: true, control: true } });
+  const time = testClock();
+  let now = 1_000_000;
+  const helper = new HelperApp({ app, dir, launch: fake.launch, clock: time.clock });
+  const grants = new HelperGrants({ helper, now: () => now, reach: async () => null });
+  const desktop = new Desktop({ supported: true, helper, grants, changed: () => {} });
+  try {
+    await desktop.refresh(true);
+    assert.equal(grants.fresh(OPEN_GRANTS_TTL_MS), true);
+    assert.equal(fake.launches, 1);
+
+    // Helper dies and relaunch fails inside the TTL window.
+    fake.crash();
+    fake.failing = true;
+    await assert.rejects(
+      desktop.open({ maxWidth: 1280, maxHeight: 720, codecs: ["h264"] }),
+      (e: ScreenRefused) => e.status === 503 && e.key === "station.screen.failed",
+    );
+    assert.equal(fake.launches, 2, "only one launch attempt on optimistic failure");
+    assert.equal(grants.fresh(OPEN_GRANTS_TTL_MS), false, "failed optimistic connect invalidates stale grants");
+  } finally {
+    fake.close();
+    await desktop.close();
+  }
 });
 
 // ── the clipboard and files dropped ──

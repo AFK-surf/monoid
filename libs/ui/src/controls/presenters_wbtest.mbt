@@ -584,6 +584,21 @@ test "a question with a mouse at Large: a dialog with its line; Enter says it" {
 }
 
 ///|
+test "a question commits an Android underlined composing word when its action is tapped (sheet and dialog)" {
+  for screen in [phone, desk] {
+    let said : Array[String] = []
+    let t = presenting_tester(screen, fn(from) {
+      ask("重命名", "保存", fn(line) { said.push(line) }, placeholder="名字", from~)
+    })
+    open_it(t)
+    t.ime_state("hello", 5, 5, ca=0, cb=5)
+    t.tap_text("保存")
+    assert_eq(said, ["hello"])
+    assert_true(!presenting())
+  }
+}
+
+///|
 test "one over another: a confirm from a menu's item comes when the menu has gone; back closes the topmost first" {
   let said : Array[String] = []
   let t = presenting_tester(phone, fn(from) {

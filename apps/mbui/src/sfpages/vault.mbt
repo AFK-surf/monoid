@@ -590,8 +590,8 @@ fn vault_delete_row_node(row : @view.View, core : Core, ws : () -> String, rv : 
 
 ///|
 /// A vault this device has no key to (VaultSection's; `rv`, as it is now), under its name, in `b`: that it has none,
-/// how to get one; 申请授权 (`vault.ask`: this device's certificate published anew, so the owner's devices are prompted for
-/// the key, or give it at once where one holds it unsealed) and the recovery words typed where they can give it one.
+/// how to get one; 申请授权 (`vault.ask`: sends a standalone signed `KeyAsk` for this vault so managing devices are
+/// prompted for the key) and the recovery words typed where they can give it one.
 fn vault_no_key_node(b : @view.View, core : Core, ws : () -> String, rv : () -> Json?) -> Unit {
   let this_code = fn() { text((core.topic)("vaults", { "workspace": str(ws()) }).get().value, "thisDeviceCode") }
   @sf.section_node(b, fn() { text(rv(), "name") }, fn(s) {
@@ -613,16 +613,27 @@ fn vault_no_key_node(b : @view.View, core : Core, ws : () -> String, rv : () -> 
         |> ignore
       })
       @sf.card_foot_node(k, fn(f) {
+        let vid = fn() { text(rv(), "id") }
         @sf.button_node(
           f,
           fn() { @sf.t("web-pages.vault.ask") },
           fn() {
-            @settings.act(core, @sf.t("web-pages.vault.askWhat"), "vault.ask", obj([("workspace", str(@signals.untracked(ws)))]), done=@sf.t(
-              "web-pages.vault.asked",
-            ))
+            let v = @signals.untracked(rv)
+            let done = if vault_is_workspace(v) {
+              @sf.t("web-pages.vault.askedAdmins")
+            } else {
+              @sf.t("web-pages.vault.asked")
+            }
+            @settings.act(
+              core,
+              @sf.t("web-pages.vault.askWhat"),
+              "vault.ask",
+              obj([("workspace", str(@signals.untracked(ws))), ("vault", str(text(v, "id")))]),
+              done~,
+            )
           },
           tone=Primary,
-          busy=fn() { is_doing(core, ["vault.ask"], [("workspace", ws())]) },
+          busy=fn() { is_doing(core, ["vault.ask"], [("workspace", ws()), ("vault", vid())]) },
           card_words=true,
         )
         |> ignore

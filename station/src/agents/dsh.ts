@@ -335,10 +335,8 @@ export class DshSession extends OwnProcessSession<Turn> {
     return true;
   }
 
-  async abort() {
-    if (this.turn.closed || !this.busy() || this.turn.aborting) return;
-    this.turn.aborting = true;
-    this.proc.tell("aborting");
+  /// Asked to stop its running turn (own-process.ts `abort`).
+  protected cancel() {
     this.send("cancel");
   }
 
