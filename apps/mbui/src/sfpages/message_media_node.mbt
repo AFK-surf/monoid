@@ -241,7 +241,7 @@ fn message_image_node(
 }
 
 ///|
-/// How far a message's picture has come, in a pill at its box's foot's end (image_coming's): while the core downloads
+/// How far a message's picture has come, in a pill at its box's foot's start (matching video_capsule_node): while the core downloads
 /// it, how much of it is here; while it is asked of its station, how far that has come as the core says it (its size
 /// not known, the spinner and the bytes so far); nothing heard yet, nothing. Shown from coming_after_ms after it was
 /// first said to be on its way (ChatImages::coming_since: its picture's, or its download's), fading in
@@ -344,7 +344,8 @@ fn image_coming_node(
         if h == coming_pill_h {
           coming_pill
         } else {
-          coming_pill.then(@ui.style(h=Fixed(h)))
+          let (pl, pr) = @sf.media_badge_pad_for(h)
+          coming_pill.then(@ui.style(h=Fixed(h), pl~, pr~))
         }
       })
       pill.alpha(By(fn() { fade.shown(pill) })) |> ignore
@@ -358,10 +359,15 @@ fn image_coming_node(
               _ => 0.0
             }
           }
-          @sf.progress_ring_node(q, coming_ring, part, fn() { @sf.white }) |> ignore
+          @sf.media_ring_node(q, part) |> ignore
           @sf.words_node(q, fn() { "\{(part() * 100.0).floor().to_int()}%" }, fn() { coming_words }) |> ignore
         } else {
-          @sf.spinner_node(q, size=coming_ring, ring=fn() { coming_track }, arc=fn() { @sf.white }) |> ignore
+          // Keep the transparent full-circle ring line so `spinner_node`'s `turn(drawn=true)` pivots about the
+          // full ring bbox center while the visible translucent track is drawn bead-free via the SDF circle edge.
+          @sf.spinner_node(q, size=coming_ring, stroke=@sf.media_badge_stroke, ring=fn() { 0L }, arc=fn() { @sf.white })
+          .radius(Is(coming_ring / 2.0))
+          .edge(Is((@sf.media_badge_stroke, coming_track)))
+          |> ignore
           @sf.words_node(q, fn() { @sf.file_size(how_far().map_or(0.0, fn(c) { c.0 })) }, fn() { coming_words })
           |> ignore
         }

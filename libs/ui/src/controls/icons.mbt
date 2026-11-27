@@ -95,10 +95,11 @@ pub fn play_mark_node(parent : @view.View, side : Double, shade : @ui.Color, loc
 
 ///|
 /// A video's capsule (as a node) laid over `parent`, in its foot's start corner concentric with a
-/// message's file's (or `corner`, a quote's picture's): a small play mark and how long it is (`duration`, none where that
-/// is not known) on the video's shade; while `coming` says how far the core has brought it here, a ring of that share
-/// and the share in words in their place, each one in the other's place along the capsule's row (never both seen, the
-/// capsule's width making its way between them); told nothing of its coming (a tile's), nothing made for that. Not yet: the one going out faded before the other comes in, as
+/// message's file's (or `corner`, a quote's picture's): a filled play mark and how long it is (`duration`, none
+/// where that is not known) on `video_shade`; while `coming` says how far the core has brought it here, a
+/// round-capped progress ring and the share in words in their place, each one in the other's place along the
+/// capsule's row (never both seen, the capsule's width making its way between them); told nothing of its coming
+/// (a tile's), nothing made for that. Not yet: the one going out faded before the other comes in, as
 /// video_capsule's (View::pick's `leave` reads the time in its fader's binding, View::going: a clock read here).
 #callsite(autofill(loc))
 pub fn video_capsule_node(
@@ -109,25 +110,56 @@ pub fn video_capsule_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let length = if duration > 0.0 { clock(duration) } else { "" }
+  let has_words = fn() {
+    length != "" ||
+    (match coming {
+      Some(f) => f() is Some(_)
+      None => false
+    })
+  }
+  let capsule_h_at = fn(scale : Double) {
+    if has_words() {
+      words_box_high(video_capsule_h, video_capsule_words, scale)
+    } else {
+      video_capsule_h
+    }
+  }
   parent.box(made_for=loc, fn(foot) {
     foot.over(Is(true)) |> ignore
-    // (concentric with its corner as high as it is drawn: higher than said where its words' line is, box_at)
-    style_node(foot, fn() { video_capsule_foot_at(corner, words_box_high(video_capsule_h, video_capsule_words, foot.words_scale())) })
+    // (concentric with its corner as high as it is drawn: fixed 24pt when icon-only, higher than said where words grow)
+    style_node(foot, fn() { video_capsule_foot_at(corner, capsule_h_at(foot.words_scale())) })
     foot.box(fn(b) {
       // (a mark over the picture, the capsule itself (its foot is all of the picture, to lay it in its corner): where the
       // picture flies (View::shared), carried at its own size by its corner, gone halfway, as the old page's thumbnail
       // drew it over its flight: View::flight_mark)
       b.flight_mark() |> ignore
-      // (as high as its words' line where the system's size of words draws it higher than the capsule: box_at)
-      style_node(b, fn() { box_at(video_capsule_kept, video_capsule_box, video_capsule_h, video_capsule_words, b.words_scale()) })
+      // (icon-only stays a 24x24 circle at any font scale; with words grows with line height while keeping the
+      // leading mark concentric with the left semicircle; the words slot carries its own leading gap and +1pt
+      // optical right margin so a duration-0 download finishing eases smoothly to 24x24 without a jump)
+      style_node(b, fn() {
+        let scale = b.words_scale()
+        let h = capsule_h_at(scale)
+        if !has_words() {
+          video_capsule_box
+        } else if h == video_capsule_h {
+          box_at(video_capsule_kept, video_capsule_box, video_capsule_h, video_capsule_words, scale)
+        } else {
+          let (pl, _) = media_badge_pad_for(h)
+          video_capsule_box.then(@ui.style(h=Fixed(h), px=pl))
+        }
+      })
       b.box(fn(row) {
         style_node(row, fn() { video_capsule_row })
         match coming {
           // (told nothing of its coming, a tile's: its mark and its length, nothing made to choose)
           None => {
-            icon_node(row, "play", video_capsule_mark, Is(white)) |> ignore
+            icon_node(row, "play-mark", video_capsule_mark, Is(white)) |> ignore
             if length != "" {
-              words_node(row, fn() { length }, fn() { video_capsule_words }) |> ignore
+              row.box(fn(w) {
+                style_node(w, fn() { video_capsule_words_slot })
+                words_node(w, fn() { length }, fn() { video_capsule_words }) |> ignore
+              })
+              |> ignore
             }
           }
           Some(coming) => {
@@ -146,17 +178,25 @@ pub fn video_capsule_node(
             // its mark and its words each a pick of its own, so each has the other beside it to make its way along
             row.pick(along_row=true, shown, fn(m, on) {
               if on {
-                progress_ring_node(m, video_capsule_ring, part, fn() { white }) |> ignore
+                media_ring_node(m, part) |> ignore
               } else {
-                icon_node(m, "play", video_capsule_mark, Is(white)) |> ignore
+                icon_node(m, "play-mark", video_capsule_mark, Is(white)) |> ignore
               }
             })
             row.pick(along_row=true, shown, fn(m, on) {
               if on {
-                words_node(m, fn() { "\{(dmin(1.0, dmax(0.0, part())) * 100.0).floor().to_int()}%" }, fn() { video_capsule_words })
+                m.box(fn(w) {
+                  style_node(w, fn() { video_capsule_words_slot })
+                  words_node(w, fn() { "\{(dmin(1.0, dmax(0.0, part())) * 100.0).floor().to_int()}%" }, fn() { video_capsule_words })
+                  |> ignore
+                })
                 |> ignore
               } else if length != "" {
-                words_node(m, fn() { length }, fn() { video_capsule_words }) |> ignore
+                m.box(fn(w) {
+                  style_node(w, fn() { video_capsule_words_slot })
+                  words_node(w, fn() { length }, fn() { video_capsule_words }) |> ignore
+                })
+                |> ignore
               }
             })
           }
@@ -188,14 +228,11 @@ fn video_capsule_foot_at(corner : Double, h : Double) -> @ui.Style {
 let video_capsule_kept : Ref[WordsBoxKept?] = Ref(None)
 
 ///|
-/// The capsule's height, its play mark's and its ring's.
-pub let video_capsule_h : Double = 18.0
+/// The capsule's height, its play mark's and its ring's (shared with image_coming_node via media_badge_*).
+pub let video_capsule_h : Double = media_badge_h
 
 ///|
-let video_capsule_mark : Double = 10.0
-
-///|
-let video_capsule_ring : Double = 14.0
+let video_capsule_mark : Double = media_badge_ring
 
 ///|
 /// How far the capsule is from the picture's sides and foot where its corner is too square to lead it (a quote's
@@ -217,7 +254,7 @@ let video_capsule_foot : @ui.Style = @ui.style(
 let video_capsule_box : @ui.Style = @ui.style(
   row=true,
   h=Fixed(video_capsule_h),
-  px=S1_5,
+  px=media_badge_pl,
   radius=Full,
   bg=video_shade,
   align=ACenter,
@@ -225,11 +262,15 @@ let video_capsule_box : @ui.Style = @ui.style(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let video_capsule_row : @ui.Style = @ui.css("row gap=S1 align=ACenter")
+let video_capsule_row : @ui.Style = @ui.css("row align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let video_capsule_words : @ui.TextStyle = @ui.text_style(size=Caption, color=white_ink, wrap=false)
+let video_capsule_words_slot : @ui.Style = @ui.style(pl=S1, pr=media_badge_optical_pr)
+
+///|
+// kept across runs: a value (no field of it changes)
+let video_capsule_words : @ui.TextStyle = media_badge_words
 
 ///|
 /// Of icon `name`, its parts `parts` `size` across in `ink` (none where there is no such icon): made once for each, the
