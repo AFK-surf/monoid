@@ -270,52 +270,94 @@ pub fn search_chats(
   }
 }
 
-/// Read `account_doc("conn_seq")`, increment monotonically (`1 -> 2 -> ...`), persist back, and return it.
-pub fn load_and_bump_conn_seq(db : sql::Sql) -> Int64 {
-  let prev : Int64 = match get_account_doc(db, "conn_seq") {
-    sql::SqlResult::Ok(Some(raw)) => {
-      let trimmed = raw.trim()
-      match base_codec::parse_int64_str(trimmed) {
-        Some(v) => if v > 0L { v } else { 0L }
-        None =>
-        match base_codec::json_parse(trimmed) {
-          base_codec::JsonParseResult::Ok(base_codec::Json::Num(n, repr)) => {
-            if repr.length() > 0 {
-              match base_codec::parse_int64_str(repr) {
-                Some(v) => if v > 0L { v } else { 0L }
-                None => if n > 0.0 { n.to_int64() } else { 0L }
-              }
-            } else if n > 0.0 {
-              n.to_int64()
-            } else {
-              0L
-            }
+/// Compute the next strictly monotonic `conn_seq`:
+/// `max(persisted + 1, now_ms * 1000)` when `now_ms > 0`, or `persisted + 1` in deterministic
+/// virtual-clock tests (`now_ms == 0`), guaranteeing cross-restart strict monotonicity even if
+/// storage is read-only or restarts occur within the same millisecond (`core.ts:406-414`).
+pub fn next_monotonic_conn_seq(persisted : Int64, now_ms : Int64 = 0L) -> Int64 {
+  let base = if persisted > 0L { persisted } else { 0L }
+  let next_persisted = base + 1L
+  let floor_conn = if now_ms > 0L { now_ms * 1000L } else { 0L }
+  if floor_conn > next_persisted { floor_conn } else { next_persisted }
+}
+
+/// Parse a stored `conn_seq` JSON/integer string (`"42"` or `{"conn": 42}`).
+pub fn parse_conn_seq_raw(raw : String) -> Int64 {
+  let trimmed = raw.trim()
+  match base_codec::parse_int64_str(trimmed) {
+    Some(v) => if v > 0L { v } else { 0L }
+    None =>
+    match base_codec::json_parse(trimmed) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Num(n, repr)) => {
+        if repr.length() > 0 {
+          match base_codec::parse_int64_str(repr) {
+            Some(v) => if v > 0L { v } else { 0L }
+            None => if n > 0.0 { n.to_int64() } else { 0L }
           }
-          base_codec::JsonParseResult::Ok(j) =>
-          match base_codec::json_get(j, "conn") {
-            Some(base_codec::Json::Num(n, repr)) => {
-              if repr.length() > 0 {
-                match base_codec::parse_int64_str(repr) {
-                  Some(v) => if v > 0L { v } else { 0L }
-                  None => if n > 0.0 { n.to_int64() } else { 0L }
-                }
-              } else if n > 0.0 {
-                n.to_int64()
-              } else {
-                0L
-              }
-            }
-            _ => 0L
-          }
-          _ => 0L
+        } else if n > 0.0 {
+          n.to_int64()
+        } else {
+          0L
         }
       }
+      base_codec::JsonParseResult::Ok(j) =>
+      match base_codec::json_get(j, "conn") {
+        Some(base_codec::Json::Num(n, repr)) => {
+          if repr.length() > 0 {
+            match base_codec::parse_int64_str(repr) {
+              Some(v) => if v > 0L { v } else { 0L }
+              None => if n > 0.0 { n.to_int64() } else { 0L }
+            }
+          } else if n > 0.0 {
+            n.to_int64()
+          } else {
+            0L
+          }
+        }
+        _ => 0L
+      }
+      _ => 0L
     }
+  }
+}
+
+/// Read `account_doc("conn_seq")`, compute strictly monotonic next `conn_seq`, persist back, and return it.
+pub fn load_and_bump_conn_seq(db : sql::Sql, now_ms : Int64 = 0L) -> Int64 {
+  let prev : Int64 = match get_account_doc(db, "conn_seq") {
+    sql::SqlResult::Ok(Some(raw)) => parse_conn_seq_raw(raw)
     _ => 0L
   }
-  let next = prev + 1L
+  let next = next_monotonic_conn_seq(prev, now_ms=now_ms)
   let _ = put_account_doc(db, "conn_seq", next.to_string())
   next
+}
+
+pub fn sql_account_doc_delete() -> String {
+  "DELETE FROM account_doc WHERE name = ?"
+}
+
+pub fn sql_account_doc_keys_prefix() -> String {
+  "SELECT name FROM account_doc WHERE substr(name, 1, length(?1)) = ?1"
+}
+
+pub fn delete_account_doc(db : sql::Sql, name : String) -> sql::SqlResult[Int] {
+  db.run(sql_account_doc_delete(), params=[base_codec::json_str(name)])
+}
+
+pub fn list_account_doc_keys_with_prefix(db : sql::Sql, prefix : String) -> sql::SqlResult[Array[String]] {
+  match db.all(sql_account_doc_keys_prefix(), params=[base_codec::json_str(prefix)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      let out : Array[String] = []
+      for i in 0..<rows.length() {
+        let k = sql::col_text(rows[i], 0)
+        if k.length() > 0 {
+          out.push(k)
+        }
+      }
+      sql::SqlResult::Ok(out)
+    }
+  }
 }
 
 pub fn sql_drop_workspace_row() -> String {
@@ -388,8 +430,7 @@ pub fn drop_workspace(
     return sql::SqlResult::Ok(())
   }
   let ws_prefix = ws + "/"
-  // Discover existing tables so optional ensured tables (`md_kept`, `shared_sidecar`, etc.)
-  // never fail the atomic transaction on minimal DBs.
+  // Discover existing tables so optional ensured / TS-shared tables never fail the atomic transaction.
   let existing_tables : Map[String, Bool] = Map::new()
   let mut has_sqlite_master = false
   match db.all("SELECT name FROM sqlite_master WHERE type = 'table'") {
@@ -410,80 +451,8 @@ pub fn drop_workspace(
       existing_tables.get(name).is_some()
     }
   }
-
-  // Pre-read `account_doc` documents that may embed workspace entries (`me`, `vault_status`, `vault_secrets`)
-  // so scrubbing happens inside the exact same transaction.
-  let next_me_raw : Option[String] = match get_account_doc(db, "me") {
-    sql::SqlResult::Ok(Some(raw)) =>
-    match base_codec::json_parse(raw) {
-      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => {
-        let mut changed = false
-        let next_fs : Array[(String, base_codec::Json)] = []
-        for i in 0..<fs.length() {
-          let (k, v) = fs[i]
-          if k == "workspaces" {
-            match v {
-              base_codec::Json::Arr(xs) => {
-                let kept : Array[base_codec::Json] = []
-                for j in 0..<xs.length() {
-                  let wid = match base_codec::json_get(xs[j], "id") {
-                    Some(base_codec::Json::Str(s)) => s
-                    _ => ""
-                  }
-                  if wid == ws {
-                    changed = true
-                  } else {
-                    kept.push(xs[j])
-                  }
-                }
-                next_fs.push((k, base_codec::json_arr(kept)))
-              }
-              _ => next_fs.push((k, v))
-            }
-          } else {
-            next_fs.push((k, v))
-          }
-        }
-        if changed { Some(base_codec::json_stringify(base_codec::json_obj(next_fs))) } else { None }
-      }
-      _ => None
-    }
-    _ => None
-  }
-  let drop_vault_status = match get_account_doc(db, "vault_status") {
-    sql::SqlResult::Ok(Some(raw)) =>
-    match base_codec::json_parse(raw) {
-      base_codec::JsonParseResult::Ok(j) =>
-      match base_codec::json_get(j, "workspace") {
-        Some(base_codec::Json::Str(w)) => w == ws
-        _ => false
-      }
-      _ => false
-    }
-    _ => false
-  }
-  let next_vault_secrets_raw : Option[String] = match get_account_doc(db, "vault_secrets") {
-    sql::SqlResult::Ok(Some(raw)) =>
-    match base_codec::json_parse(raw) {
-      base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
-        let mut changed = false
-        let kept : Array[base_codec::Json] = []
-        for i in 0..<xs.length() {
-          let item_ws = match base_codec::json_get(xs[i], "workspace") {
-            Some(base_codec::Json::Str(s)) => s
-            _ => ""
-          }
-          if item_ws == ws {
-            changed = true
-          } else {
-            kept.push(xs[i])
-          }
-        }
-        if changed { Some(base_codec::json_stringify(base_codec::json_arr(kept))) } else { None }
-      }
-      _ => None
-    }
-    _ => None
+  let ts_shared_table_exists = fn(name : String) -> Bool {
+    has_sqlite_master && existing_tables.get(name).is_some()
   }
 
   let burst = sql::Burst::new(db)
@@ -551,6 +520,25 @@ pub fn drop_workspace(
         }
       }
     }
+    // Also clean any TS-shared optional tables if present in `sqlite_master` (`station_part`, `chat_agent`, `chat_tag`, `log_bytes`).
+    let ts_shared_station_tables = [
+      "station_part",
+      "station_parts",
+      "chat_agent",
+      "chat_tag",
+      "log_bytes",
+      "log_bytes_entry",
+      "log_bytes_transcript",
+    ]
+    for i in 0..<ts_shared_station_tables.length() {
+      let tbl = ts_shared_station_tables[i]
+      if ts_shared_table_exists(tbl) {
+        match delete_station_scoped_in_burst(b, tbl, "station", ws, ws_prefix, extra_stations) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+    }
     if table_exists("moved") {
       match b.run(sql_drop_moved_by_ws(), params=[
         base_codec::json_str(ws),
@@ -569,8 +557,9 @@ pub fn drop_workspace(
         }
       }
     }
-    // 4. Workspace-scoped `account_doc` vault documents and `me` workspace entry
+    // 4. Workspace-scoped `account_doc` rows (read + scrubbed INSIDE the same tx to eliminate TOCTOU!)
     if table_exists("account_doc") {
+      // Delete `vaults:<ws>`, `vault:<ws>/*`, `vaults:<ws>/*`, AND `usage:<ws>` (`fleet_usage_view.pion:175`).
       match b.run(sql_drop_workspace_vault_docs(), params=[
         base_codec::json_str("vaults:" + ws),
         base_codec::json_str("vault:" + ws + "/"),
@@ -579,33 +568,109 @@ pub fn drop_workspace(
         sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
         sql::SqlResult::Ok(_) => ()
       }
-      if drop_vault_status {
-        match b.run("DELETE FROM account_doc WHERE name = ?", params=[base_codec::json_str("vault_status")]) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => ()
+      match b.run(sql_account_doc_delete(), params=[base_codec::json_str("usage:" + ws)]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      let read_doc_in_tx = fn(name : String) -> Option[String] {
+        match b.all(sql_account_doc_one(), params=[base_codec::json_str(name)]) {
+          sql::SqlResult::Ok(rs) => if rs.length() > 0 { Some(sql::col_text(rs[0], 0)) } else { None }
+          sql::SqlResult::Err(_) => None
         }
       }
-      match next_vault_secrets_raw {
+      match read_doc_in_tx("vault_status") {
         Some(raw) =>
-        match b.run(sql_account_doc_put(), params=[
-          base_codec::json_str("vault_secrets"),
-          base_codec::json_str(raw),
-          base_codec::json_null(),
-        ]) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => ()
+        match base_codec::json_parse(raw) {
+          base_codec::JsonParseResult::Ok(j) =>
+          match base_codec::json_get(j, "workspace") {
+            Some(base_codec::Json::Str(w)) =>
+            if w == ws {
+              match b.run(sql_account_doc_delete(), params=[base_codec::json_str("vault_status")]) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+            }
+            _ => ()
+          }
+          _ => ()
         }
         None => ()
       }
-      match next_me_raw {
+      match read_doc_in_tx("vault_secrets") {
         Some(raw) =>
-        match b.run(sql_account_doc_put(), params=[
-          base_codec::json_str("me"),
-          base_codec::json_str(raw),
-          base_codec::json_null(),
-        ]) {
-          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-          sql::SqlResult::Ok(_) => ()
+        match base_codec::json_parse(raw) {
+          base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
+            let mut changed = false
+            let kept : Array[base_codec::Json] = []
+            for i in 0..<xs.length() {
+              let item_ws = match base_codec::json_get(xs[i], "workspace") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => ""
+              }
+              if item_ws == ws {
+                changed = true
+              } else {
+                kept.push(xs[i])
+              }
+            }
+            if changed {
+              match b.run(sql_account_doc_put(), params=[
+                base_codec::json_str("vault_secrets"),
+                base_codec::json_str(base_codec::json_stringify(base_codec::json_arr(kept))),
+                base_codec::json_null(),
+              ]) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        None => ()
+      }
+      match read_doc_in_tx("me") {
+        Some(raw) =>
+        match base_codec::json_parse(raw) {
+          base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => {
+            let mut changed = false
+            let next_fs : Array[(String, base_codec::Json)] = []
+            for i in 0..<fs.length() {
+              let (k, v) = fs[i]
+              if k == "workspaces" {
+                match v {
+                  base_codec::Json::Arr(xs) => {
+                    let kept : Array[base_codec::Json] = []
+                    for j in 0..<xs.length() {
+                      let wid = match base_codec::json_get(xs[j], "id") {
+                        Some(base_codec::Json::Str(s)) => s
+                        _ => ""
+                      }
+                      if wid == ws {
+                        changed = true
+                      } else {
+                        kept.push(xs[j])
+                      }
+                    }
+                    next_fs.push((k, base_codec::json_arr(kept)))
+                  }
+                  _ => next_fs.push((k, v))
+                }
+              } else {
+                next_fs.push((k, v))
+              }
+            }
+            if changed {
+              match b.run(sql_account_doc_put(), params=[
+                base_codec::json_str("me"),
+                base_codec::json_str(base_codec::json_stringify(base_codec::json_obj(next_fs))),
+                base_codec::json_null(),
+              ]) {
+                sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+                sql::SqlResult::Ok(_) => ()
+              }
+            }
+          }
+          _ => ()
         }
         None => ()
       }

@@ -7,6 +7,7 @@
 import "base_codec"
 import "effect"
 import "outbox"
+import "shell"
 import "sql"
 import "store"
 
@@ -76,6 +77,9 @@ pub struct LocalOutbox {
   pub outbox : outbox::FrameOutbox[CoreEvent]
   pub transport : StationTransport
   station_transports : Map[String, StationTransport]
+  station_epochs : Map[String, Int64]
+  mut auth : Option[AuthGenTracker]
+  mut default_workspace : String
   mut online : Bool
   mut next_msg_seq : Int
   mut next_change_id : Int
@@ -86,6 +90,13 @@ pub struct LocalOutbox {
   in_flight_pending : Map[String, Bool]
   in_flight_overlays : Map[String, Bool]
   mut on_error : (String, String) -> Unit
+}
+
+fn outbox_station_workspace(station : String, fallback_ws : String) -> String {
+  match station.index_of("/") {
+    idx if idx > 0 => station.slice(0, idx)
+    _ => fallback_ws
+  }
 }
 
 fn thread_flight_key(station : String, thread : Int) -> String {
@@ -137,6 +148,9 @@ pub fn LocalOutbox::new(
     outbox: frame_outbox,
     transport: transport,
     station_transports: Map::new(),
+    station_epochs: Map::new(),
+    auth: None,
+    default_workspace: outbox_station_workspace(station, ""),
     online: false,
     next_msg_seq: 1,
     next_change_id: 1,
@@ -150,6 +164,51 @@ pub fn LocalOutbox::new(
   }
   let _ = ob.load_from_db()
   ob
+}
+
+pub fn LocalOutbox::set_auth_tracker(
+  self : LocalOutbox,
+  tracker : AuthGenTracker,
+  default_workspace : String,
+) -> Unit {
+  self.auth = Some(tracker)
+  if default_workspace.length() > 0 {
+    self.default_workspace = default_workspace
+  }
+}
+
+pub fn LocalOutbox::station_epoch(self : LocalOutbox, station : String) -> Int64 {
+  match self.station_epochs.get(station) {
+    Some(ep) => ep
+    None => 0L
+  }
+}
+
+pub fn LocalOutbox::bump_station_epoch(self : LocalOutbox, station : String) -> Int64 {
+  let next = self.station_epoch(station) + 1L
+  self.station_epochs.set(station, next)
+  next
+}
+
+fn LocalOutbox::is_station_revoked(self : LocalOutbox, station : String) -> Bool {
+  match self.auth {
+    Some(t) => {
+      let ws = outbox_station_workspace(station, self.default_workspace)
+      ws.length() > 0 && t.is_revoked(ws)
+    }
+    None => false
+  }
+}
+
+fn LocalOutbox::is_station_write_allowed(
+  self : LocalOutbox,
+  station : String,
+  captured_epoch : Int64,
+) -> Bool {
+  if self.station_epoch(station) != captured_epoch {
+    return false
+  }
+  !self.is_station_revoked(station)
 }
 
 pub fn LocalOutbox::set_error_hook(self : LocalOutbox, cb : (String, String) -> Unit) -> Unit {
@@ -193,6 +252,7 @@ pub fn LocalOutbox::register_station_transport(
   transport : StationTransport,
 ) -> Unit {
   if station.length() > 0 {
+    let _ = self.bump_station_epoch(station)
     self.station_transports.set(station, transport)
   }
 }
@@ -200,6 +260,7 @@ pub fn LocalOutbox::register_station_transport(
 /// Remove a station-specific `StationTransport` when that station disconnects or goes offline.
 pub fn LocalOutbox::unregister_station_transport(self : LocalOutbox, station : String) -> Unit {
   if station.length() > 0 {
+    let _ = self.bump_station_epoch(station)
     self.station_transports.remove(station)
   }
 }
@@ -219,6 +280,9 @@ pub fn LocalOutbox::purge_workspace(
     if st == ws || st.starts_with(ws_prefix) {
       return true
     }
+    if outbox_station_workspace(st, self.default_workspace) == ws {
+      return true
+    }
     for i in 0..<extra_stations.length() {
       if extra_stations[i].length() > 0 && st == extra_stations[i] {
         return true
@@ -226,9 +290,27 @@ pub fn LocalOutbox::purge_workspace(
     }
     false
   }
+  // Bump station epochs for every matching station so any late HTTP reply from before revocation
+  // is silently dropped with zero SQLite writes or outbox notifications.
+  if matches_station(self.station) {
+    let _ = self.bump_station_epoch(self.station)
+  }
+  for i in 0..<extra_stations.length() {
+    if extra_stations[i].length() > 0 {
+      let _ = self.bump_station_epoch(extra_stations[i])
+    }
+  }
+  let ep_keys = self.station_epochs.keys()
+  for i in 0..<ep_keys.length() {
+    if matches_station(ep_keys[i]) {
+      let _ = self.bump_station_epoch(ep_keys[i])
+    }
+  }
   let kept_msgs : Array[OutboxMessage] = []
   for i in 0..<self.queued_messages.length() {
-    if !matches_station(self.queued_messages[i].station) {
+    if matches_station(self.queued_messages[i].station) {
+      let _ = self.bump_station_epoch(self.queued_messages[i].station)
+    } else {
       kept_msgs.push(self.queued_messages[i])
     }
   }
@@ -239,7 +321,9 @@ pub fn LocalOutbox::purge_workspace(
 
   let kept_pend : Array[PendingChatOp] = []
   for i in 0..<self.queued_pending.length() {
-    if !matches_station(self.queued_pending[i].station) {
+    if matches_station(self.queued_pending[i].station) {
+      let _ = self.bump_station_epoch(self.queued_pending[i].station)
+    } else {
       kept_pend.push(self.queued_pending[i])
     }
   }
@@ -250,7 +334,9 @@ pub fn LocalOutbox::purge_workspace(
 
   let kept_ov : Array[ChangingOverlay] = []
   for i in 0..<self.queued_overlays.length() {
-    if !matches_station(self.queued_overlays[i].station) {
+    if matches_station(self.queued_overlays[i].station) {
+      let _ = self.bump_station_epoch(self.queued_overlays[i].station)
+    } else {
       kept_ov.push(self.queued_overlays[i])
     }
   }
@@ -262,6 +348,7 @@ pub fn LocalOutbox::purge_workspace(
   let st_keys = self.station_transports.keys()
   for i in 0..<st_keys.length() {
     if matches_station(st_keys[i]) {
+      let _ = self.bump_station_epoch(st_keys[i])
       self.station_transports.remove(st_keys[i])
     }
   }
@@ -687,6 +774,9 @@ pub fn LocalOutbox::reconcile_entry_in_burst(
   station : Option[String] = None,
 ) -> Unit {
   let st = resolve_station(self.station, station)
+  if self.is_station_revoked(st) {
+    return
+  }
   match self.remove_queued_message(st, client_key) {
     Some(_) => {
       let _ = self.write_thread_outbox_in_burst(b, st, thread)
@@ -705,6 +795,9 @@ pub fn LocalOutbox::reconcile_pending_chat_in_burst(
   station : Option[String] = None,
 ) -> Unit {
   let st = resolve_station(self.station, station)
+  if self.is_station_revoked(st) {
+    return
+  }
   match self.remove_queued_pending(st, client_key) {
     Some(_) => {
       let _ = b.run(sql_pending_delete(), params=[base_codec::json_str(client_key), base_codec::json_str(st)])
@@ -731,6 +824,9 @@ pub fn LocalOutbox::send_message(
   cc : Option[base_codec::Json] = None,
 ) -> sql::SqlResult[Unit] {
   let st = resolve_station(self.station, station)
+  if self.is_station_revoked(st) {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "workspace_revoked" })
+  }
   let msg_id = if client_key.length() > 0 {
     client_key
   } else {
@@ -876,6 +972,11 @@ fn LocalOutbox::mark_message_transient_failed(
 
 fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg : OutboxMessage) -> Unit {
   let fk = thread_flight_key(msg.station, msg.thread)
+  let ep = self.station_epoch(msg.station)
+  if !self.is_station_write_allowed(msg.station, ep) {
+    self.in_flight_threads.remove(fk)
+    return
+  }
   let transport = match self.transport_for(msg.station) {
     Some(t) => t
     None => {
@@ -897,6 +998,12 @@ fn LocalOutbox::dispatch_message(self : LocalOutbox, rt : effect::Runtime, msg :
   ]
   let _ = rt.fork_quiet_named("outbox-send:" + msg.station + ":" + msg.client_key, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     req_fn("POST", path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+      if !self.is_station_write_allowed(msg.station, ep) {
+        // Workspace revoked or station transport epoch changed while request was in flight:
+        // silently drop with ZERO SQLite writes and ZERO outbox notifications.
+        k(effect::Exit::Succeeded(()))
+        return
+      }
       self.in_flight_threads.remove(fk)
       match ex {
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -984,6 +1091,9 @@ pub fn LocalOutbox::create_pending_chat(
   station : Option[String] = None,
 ) -> sql::SqlResult[Unit] {
   let st = resolve_station(self.station, station)
+  if self.is_station_revoked(st) {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "workspace_revoked" })
+  }
   let op = PendingChatOp::{ station: st, client_key: client_key, title: title, created_at: now }
   self.queued_pending.push(op)
   let raw = base_codec::json_stringify(base_codec::json_obj([
@@ -1013,6 +1123,10 @@ pub fn LocalOutbox::create_pending_chat(
 
 fn LocalOutbox::dispatch_pending_chat(self : LocalOutbox, rt : effect::Runtime, op : PendingChatOp) -> Unit {
   let pk = station_item_key(op.station, op.client_key)
+  let ep = self.station_epoch(op.station)
+  if !self.is_station_write_allowed(op.station, ep) {
+    return
+  }
   if self.in_flight_pending.get(pk).is_some() {
     return
   }
@@ -1041,6 +1155,10 @@ fn LocalOutbox::dispatch_pending_chat(self : LocalOutbox, rt : effect::Runtime, 
   ]
   let _ = rt.fork_quiet_named("pending-chat:" + op.station + ":" + op.client_key, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     req_fn("POST", "/sessions", headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+      if !self.is_station_write_allowed(op.station, ep) {
+        k(effect::Exit::Succeeded(()))
+        return
+      }
       self.in_flight_pending.remove(pk)
       match ex {
         effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -1102,6 +1220,9 @@ pub fn LocalOutbox::apply_op(
   let st = match station {
     Some(s) => if s.length() > 0 { s } else { resolve_station(self.station, req_st) }
     None => resolve_station(self.station, req_st)
+  }
+  if self.is_station_revoked(st) {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "workspace_revoked" })
   }
   let prev = if chat_id.length() > 0 {
     match store::get_chat_by_key(self.db, st, 0, chat_id) {
@@ -1171,7 +1292,17 @@ pub fn LocalOutbox::apply_op(
   sql::SqlResult::Ok(op_id)
 }
 
-fn LocalOutbox::settle_overlay_reply(self : LocalOutbox, ov : ChangingOverlay, reply : HttpReply) -> Unit {
+fn LocalOutbox::settle_overlay_reply(
+  self : LocalOutbox,
+  ov : ChangingOverlay,
+  reply : HttpReply,
+  captured_epoch : Int64,
+) -> Unit {
+  if !self.is_station_write_allowed(ov.station, captured_epoch) {
+    // Late HTTP reply (including 4xx `previous_chat_json` rollback!) after revocation or epoch swap:
+    // MUST NOT write back to SQLite `chat`/`changing` or notify UI.
+    return
+  }
   if reply.status >= 200 && reply.status < 300 {
     let _ = self.remove_queued_overlay(ov.station, ov.op_id)
     let burst = sql::Burst::new(self.db)
@@ -1215,6 +1346,10 @@ fn LocalOutbox::settle_overlay_reply(self : LocalOutbox, ov : ChangingOverlay, r
 
 fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : ChangingOverlay) -> Unit {
   let ok_key = station_item_key(ov.station, ov.op_id.to_string())
+  let ep = self.station_epoch(ov.station)
+  if !self.is_station_write_allowed(ov.station, ep) {
+    return
+  }
   if self.in_flight_overlays.get(ok_key).is_some() {
     return
   }
@@ -1239,6 +1374,10 @@ fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : 
   }
   let _ = rt.fork_quiet_named("op:" + ov.station + ":" + ov.op_kind + ":" + ov.op_id.to_string(), fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     req_fn(ov.http_method, ov.http_path, headers, body, fn(ex : effect::Exit[HttpReply]) -> Unit {
+      if !self.is_station_write_allowed(ov.station, ep) {
+        k(effect::Exit::Succeeded(()))
+        return
+      }
       match ex {
         effect::Exit::Interrupted => {
           self.in_flight_overlays.remove(ok_key)
@@ -1253,12 +1392,16 @@ fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : 
             match (ov.fallback_method, ov.fallback_path) {
               (Some(fm), Some(fp)) => {
                 req_fn(fm, fp, headers, body, fn(fex : effect::Exit[HttpReply]) -> Unit {
+                  if !self.is_station_write_allowed(ov.station, ep) {
+                    k(effect::Exit::Succeeded(()))
+                    return
+                  }
                   self.in_flight_overlays.remove(ok_key)
                   match fex {
                     effect::Exit::Interrupted => k(effect::Exit::Interrupted)
                     effect::Exit::Failed(_) => k(effect::Exit::Succeeded(()))
                     effect::Exit::Succeeded(freply) => {
-                      self.settle_overlay_reply(ov, freply)
+                      self.settle_overlay_reply(ov, freply, ep)
                       k(effect::Exit::Succeeded(()))
                     }
                   }
@@ -1269,7 +1412,7 @@ fn LocalOutbox::dispatch_overlay(self : LocalOutbox, rt : effect::Runtime, ov : 
             }
           }
           self.in_flight_overlays.remove(ok_key)
-          self.settle_overlay_reply(ov, reply)
+          self.settle_overlay_reply(ov, reply, ep)
           k(effect::Exit::Succeeded(()))
         }
       }
@@ -1428,6 +1571,9 @@ pub fn LocalOutbox::mark_read(
   station : Option[String] = None,
 ) -> sql::SqlResult[Unit] {
   let st = resolve_station(self.station, station)
+  if self.is_station_revoked(st) {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "workspace_revoked" })
+  }
   match store::update_thread_read(self.db, st, thread, read_seq, unread_count) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(_) => ()

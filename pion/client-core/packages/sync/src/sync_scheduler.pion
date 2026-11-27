@@ -12,8 +12,9 @@ pub struct SyncScheduler {
   pub lane : effect::Scheduler
   pub events : StationEvents
   pub mut transport : StationTransport
+  mut transport_epoch : Int64
   mut auth : Option[AuthGenTracker]
-  mut on_confirmed_read : Option[(String, String, Int) -> Unit]
+  mut on_confirmed_read : Option[(String, String, String, Int) -> Unit]
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
@@ -33,6 +34,7 @@ pub fn SyncScheduler::new(
     lane: effect::Scheduler::new(width=width, urgent_room=urgent_room),
     events: events,
     transport: transport,
+    transport_epoch: 1L,
     auth: None,
     on_confirmed_read: None,
     focused_thread: None,
@@ -46,17 +48,17 @@ pub fn SyncScheduler::set_auth_tracker(self : SyncScheduler, tracker : AuthGenTr
   self.auth = Some(tracker)
 }
 
-/// Register a callback `(workspace, kind, auth_gen)` invoked after a guarded read commits to SQLite.
+/// Register a callback `(workspace, station, kind, auth_gen)` invoked after a guarded read commits to SQLite.
 pub fn SyncScheduler::set_on_confirmed_read(
   self : SyncScheduler,
-  cb : (String, String, Int) -> Unit,
+  cb : (String, String, String, Int) -> Unit,
 ) -> Unit {
   self.on_confirmed_read = Some(cb)
 }
 
 fn SyncScheduler::notify_confirmed(self : SyncScheduler, kind : String, auth_gen : Int) -> Unit {
   match self.on_confirmed_read {
-    Some(cb) => cb(self.workspace, kind, auth_gen)
+    Some(cb) => cb(self.workspace, self.station, kind, auth_gen)
     None => ()
   }
 }
@@ -73,9 +75,22 @@ pub fn SyncScheduler::completed_tasks(self : SyncScheduler) -> Array[String] {
   self.completed_order
 }
 
+/// Bump the transport epoch so any in-flight reads from a prior transport or revoked session are discarded.
+pub fn SyncScheduler::bump_epoch(self : SyncScheduler) -> Unit {
+  self.transport_epoch += 1L
+}
+
 /// Swap the underlying `StationTransport` for all scheduled sync reads (`GET /chats`, `GET /lock`, etc.).
 pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTransport) -> Unit {
+  self.transport_epoch += 1L
   self.transport = transport
+}
+
+fn SyncScheduler::is_workspace_revoked(self : SyncScheduler) -> Bool {
+  match self.auth {
+    Some(t) => t.is_revoked(self.workspace)
+    None => false
+  }
 }
 
 /// Raise priority for the currently focused chat/thread (`client.focus`),
@@ -97,6 +112,7 @@ pub fn SyncScheduler::focus_thread(self : SyncScheduler, thread : Option[Int]) -
 /// Parses `{ head, entries, aside? }` and forwards it to `StationEvents::notify_lock_payload`
 /// (`ClientCore::handle_lock_event` -> `ClientCore::apply_lock_chain`), preserving Gate #2
 /// genesis pinning, anti-rollback, and SQLite `workspace_pref(ws, "lock")` persistence.
+/// Never blocked by `authGen` (lock itself updates `authGen`), but guarded by `!revoked` + `transport_epoch`.
 pub fn SyncScheduler::fetch_lock_k(
   self : SyncScheduler,
   priority : Int,
@@ -107,8 +123,21 @@ pub fn SyncScheduler::fetch_lock_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Bool]) -> Unit) -> Unit {
+      let ep = self.transport_epoch
+      if self.is_workspace_revoked() {
+        tk(effect::Exit::Failed(effect::EffectError::Custom("workspace_revoked")))
+        return
+      }
       let req_fn = self.transport.request_k
       req_fn("GET", "/lock", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        if self.transport_epoch != ep {
+          tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          return
+        }
+        if self.is_workspace_revoked() {
+          tk(effect::Exit::Failed(effect::EffectError::Custom("workspace_revoked")))
+          return
+        }
         match ex {
           effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
           effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
@@ -125,6 +154,10 @@ pub fn SyncScheduler::fetch_lock_k(
             match base_codec::json_parse(bytes_to_str(reply.body)) {
               base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
               base_codec::JsonParseResult::Ok(j) => {
+                if self.transport_epoch != ep || self.is_workspace_revoked() {
+                  tk(effect::Exit::Failed(effect::EffectError::Custom("workspace_revoked")))
+                  return
+                }
                 let has_entries = match base_codec::json_get(j, "entries") {
                   Some(base_codec::Json::Arr(xs)) => xs.length() > 0
                   _ => false
@@ -154,6 +187,7 @@ pub fn SyncScheduler::fetch_marks_k(
   k : (effect::Exit[Array[String]]) -> Unit,
   sessions : Array[String] = [],
   threads : Array[Int] = [],
+  allow_stale_reschedule : Bool = true,
 ) -> Unit {
   let is_whole = sessions.length() == 0 && threads.length() == 0
   let key = self.task_key(if is_whole { "marks:whole" } else { "marks:scoped" })
@@ -174,9 +208,14 @@ pub fn SyncScheduler::fetch_marks_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Array[String]]) -> Unit) -> Unit {
+      let ep = self.transport_epoch
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
         let req_fn = self.transport.request_k
         req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+          if self.transport_epoch != ep {
+            fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+            return
+          }
           match ex {
             effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
             effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
@@ -194,6 +233,9 @@ pub fn SyncScheduler::fetch_marks_k(
         })
       }
       let apply_json = fn(j : base_codec::Json, confirmed_gen : Option[Int]) -> Result[Array[String], String] {
+        if self.transport_epoch != ep {
+          return Err("transport_epoch_changed")
+        }
         match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
           sql::SqlResult::Err(e) => Err(e.to_string())
           sql::SqlResult::Ok(affected) => {
@@ -207,18 +249,29 @@ pub fn SyncScheduler::fetch_marks_k(
         }
       }
       match self.auth {
-        Some(tracker) =>
-        guarded_read_k(
-          tracker,
-          self.workspace,
-          fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-            do_fetch_io(io_done)
-          },
-          fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Array[String], String] {
-            apply_json(j, Some(cap.auth_gen))
-          },
-          tk,
-        )
+        Some(tracker) => {
+          let on_stale = if allow_stale_reschedule {
+            Some(fn() -> Unit {
+              if self.transport_epoch == ep && !tracker.is_revoked(self.workspace) {
+                self.fetch_marks_k(priority, fn(_ : effect::Exit[Array[String]]) -> Unit {}, sessions=sessions, threads=threads, allow_stale_reschedule=false)
+              }
+            })
+          } else {
+            None
+          }
+          guarded_read_k(
+            tracker,
+            self.workspace,
+            fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+              do_fetch_io(io_done)
+            },
+            fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Array[String], String] {
+              apply_json(j, Some(cap.auth_gen))
+            },
+            tk,
+            on_exhausted_stale=on_stale,
+          )
+        }
         None =>
         do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
           match ex {
@@ -242,15 +295,21 @@ pub fn SyncScheduler::fetch_snapshot_k(
   self : SyncScheduler,
   priority : Int,
   k : (effect::Exit[Int]) -> Unit,
+  allow_stale_reschedule : Bool = true,
 ) -> Unit {
   let key = self.task_key("snapshot")
   self.lane.run_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
+      let ep = self.transport_epoch
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
         let req_fn = self.transport.request_k
         req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+          if self.transport_epoch != ep {
+            fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+            return
+          }
           match ex {
             effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
             effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
@@ -268,6 +327,9 @@ pub fn SyncScheduler::fetch_snapshot_k(
         })
       }
       let apply_json = fn(j : base_codec::Json, confirmed_gen : Option[Int]) -> Result[Int, String] {
+        if self.transport_epoch != ep {
+          return Err("transport_epoch_changed")
+        }
         match self.events.apply_snapshot(j) {
           sql::SqlResult::Err(e) => Err(e.to_string())
           sql::SqlResult::Ok(n) => {
@@ -281,18 +343,29 @@ pub fn SyncScheduler::fetch_snapshot_k(
         }
       }
       match self.auth {
-        Some(tracker) =>
-        guarded_read_k(
-          tracker,
-          self.workspace,
-          fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-            do_fetch_io(io_done)
-          },
-          fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
-            apply_json(j, Some(cap.auth_gen))
-          },
-          tk,
-        )
+        Some(tracker) => {
+          let on_stale = if allow_stale_reschedule {
+            Some(fn() -> Unit {
+              if self.transport_epoch == ep && !tracker.is_revoked(self.workspace) {
+                self.fetch_snapshot_k(priority, fn(_ : effect::Exit[Int]) -> Unit {}, allow_stale_reschedule=false)
+              }
+            })
+          } else {
+            None
+          }
+          guarded_read_k(
+            tracker,
+            self.workspace,
+            fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+              do_fetch_io(io_done)
+            },
+            fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+              apply_json(j, Some(cap.auth_gen))
+            },
+            tk,
+            on_exhausted_stale=on_stale,
+          )
+        }
         None =>
         do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
           match ex {
@@ -319,6 +392,7 @@ pub fn SyncScheduler::fetch_thread_k(
   priority : Int,
   is_foreground : Bool,
   k : (effect::Exit[Int]) -> Unit,
+  allow_stale_reschedule : Bool = true,
 ) -> Unit {
   let key = self.task_key("thread:" + thread.to_string())
   let end_fg = if is_foreground {
@@ -330,10 +404,15 @@ pub fn SyncScheduler::fetch_thread_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
+      let ep = self.transport_epoch
       let path = "/threads/" + thread.to_string() + "/entries"
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
         let req_fn = self.transport.request_k
         req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+          if self.transport_epoch != ep {
+            fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+            return
+          }
           match ex {
             effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
             effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
@@ -351,6 +430,9 @@ pub fn SyncScheduler::fetch_thread_k(
         })
       }
       let apply_json = fn(j : base_codec::Json, confirmed_gen : Option[Int]) -> Result[Int, String] {
+        if self.transport_epoch != ep {
+          return Err("transport_epoch_changed")
+        }
         match self.events.apply_snapshot(j) {
           sql::SqlResult::Err(e) => Err(e.to_string())
           sql::SqlResult::Ok(n) => {
@@ -364,18 +446,29 @@ pub fn SyncScheduler::fetch_thread_k(
         }
       }
       match self.auth {
-        Some(tracker) =>
-        guarded_read_k(
-          tracker,
-          self.workspace,
-          fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-            do_fetch_io(io_done)
-          },
-          fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
-            apply_json(j, Some(cap.auth_gen))
-          },
-          tk,
-        )
+        Some(tracker) => {
+          let on_stale = if allow_stale_reschedule {
+            Some(fn() -> Unit {
+              if self.transport_epoch == ep && !tracker.is_revoked(self.workspace) {
+                self.fetch_thread_k(thread, priority, false, fn(_ : effect::Exit[Int]) -> Unit {}, allow_stale_reschedule=false)
+              }
+            })
+          } else {
+            None
+          }
+          guarded_read_k(
+            tracker,
+            self.workspace,
+            fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+              do_fetch_io(io_done)
+            },
+            fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+              apply_json(j, Some(cap.auth_gen))
+            },
+            tk,
+            on_exhausted_stale=on_stale,
+          )
+        }
         None =>
         do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
           match ex {
@@ -400,9 +493,8 @@ pub fn SyncScheduler::fetch_thread_k(
   )
 }
 
-/// Schedule an `idle` prefetch task for `thread` that cooperates with `Preempt`:
-/// if foreground `client.focus` arrives while the request is in flight, it yields immediately
-/// (recording a preemption) and reschedules itself at `priority_idle()` behind foreground work.
+/// Schedule an `idle` prefetch task for `thread` that cooperates with `Preempt` AND routes
+/// through fail-open `guarded_read_k` + `transport_epoch` (preventing stale authGen or revoked write-backs).
 pub fn SyncScheduler::prefetch_idle_k(
   self : SyncScheduler,
   thread : Int,
@@ -418,65 +510,93 @@ pub fn SyncScheduler::prefetch_idle_k(
         tk(effect::Exit::Failed(effect::EffectError::Custom("preempted")))
         return
       }
-      let req_fn = self.transport.request_k
+      let ep = self.transport_epoch
       let path = "/threads/" + thread.to_string() + "/entries"
-      effect::race_first_k(
-        fn(rk : (effect::Exit[Option[HttpReply]]) -> Unit) -> Unit {
-          req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-            match ex {
-              effect::Exit::Succeeded(r) => rk(effect::Exit::Succeeded(Some(r)))
-              effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
-              effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
-            }
-          })
-        },
-        fn(rk : (effect::Exit[Option[HttpReply]]) -> Unit) -> Unit {
-          preempt.wait_k(fn(pex : effect::Exit[Unit]) -> Unit {
-            match pex {
-              effect::Exit::Succeeded(_) => rk(effect::Exit::Succeeded(None))
-              effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
-              effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
-            }
-          })
-        },
-        fn(rex : effect::Exit[Option[HttpReply]]) -> Unit {
-          match rex {
-            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-            effect::Exit::Succeeded(None) => {
-              self.idle_preempted_count += 1
-              tk(effect::Exit::Failed(effect::EffectError::Custom("preempted")))
-            }
-            effect::Exit::Succeeded(Some(reply)) => {
-              if reply.status < 200 || reply.status >= 300 {
-                tk(effect::Exit::Failed(effect::EffectError::Custom("idle fetch status " + reply.status.to_string())))
-                return
+      let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        let req_fn = self.transport.request_k
+        effect::race_first_k(
+          fn(rk : (effect::Exit[Option[HttpReply]]) -> Unit) -> Unit {
+            req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+              match ex {
+                effect::Exit::Succeeded(r) => rk(effect::Exit::Succeeded(Some(r)))
+                effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
               }
-              match base_codec::json_parse(bytes_to_str(reply.body)) {
-                base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-                base_codec::JsonParseResult::Ok(j) => {
-                  match self.auth {
-                    Some(tracker) => {
-                      if tracker.is_revoked(self.workspace) {
-                        tk(effect::Exit::Failed(effect::EffectError::Custom("workspace_revoked")))
-                        return
-                      }
-                    }
-                    None => ()
-                  }
-                  match self.events.apply_snapshot(j) {
-                    sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                    sql::SqlResult::Ok(n) => {
-                      self.completed_order.push("idle:" + thread.to_string())
-                      tk(effect::Exit::Succeeded(n))
-                    }
-                  }
+            })
+          },
+          fn(rk : (effect::Exit[Option[HttpReply]]) -> Unit) -> Unit {
+            preempt.wait_k(fn(pex : effect::Exit[Unit]) -> Unit {
+              match pex {
+                effect::Exit::Succeeded(_) => rk(effect::Exit::Succeeded(None))
+                effect::Exit::Failed(e) => rk(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
+              }
+            })
+          },
+          fn(rex : effect::Exit[Option[HttpReply]]) -> Unit {
+            if self.transport_epoch != ep {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+              return
+            }
+            match rex {
+              effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(None) => {
+                self.idle_preempted_count += 1
+                fk(effect::Exit::Failed(effect::EffectError::Custom("preempted")))
+              }
+              effect::Exit::Succeeded(Some(reply)) => {
+                if reply.status < 200 || reply.status >= 300 {
+                  fk(effect::Exit::Failed(effect::EffectError::Custom("idle fetch status " + reply.status.to_string())))
+                  return
+                }
+                match base_codec::json_parse(bytes_to_str(reply.body)) {
+                  base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                  base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
                 }
               }
             }
+          },
+        )
+      }
+      let apply_idle = fn(j : base_codec::Json) -> Result[Int, String] {
+        if self.transport_epoch != ep {
+          return Err("transport_epoch_changed")
+        }
+        match self.events.apply_snapshot(j) {
+          sql::SqlResult::Err(e) => Err(e.to_string())
+          sql::SqlResult::Ok(n) => {
+            self.completed_order.push("idle:" + thread.to_string())
+            Ok(n)
           }
-        },
-      )
+        }
+      }
+      match self.auth {
+        Some(tracker) =>
+        guarded_read_k(
+          tracker,
+          self.workspace,
+          fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+            do_fetch_io(io_done)
+          },
+          fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+            apply_idle(j)
+          },
+          tk,
+        )
+        None =>
+        do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+          match ex {
+            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+            effect::Exit::Succeeded(j) =>
+            match apply_idle(j) {
+              Ok(n) => tk(effect::Exit::Succeeded(n))
+              Err(msg) => tk(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+            }
+          }
+        })
+      }
     },
     fn(ex : effect::Exit[Int]) -> Unit {
       match ex {

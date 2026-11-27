@@ -85,6 +85,14 @@ static void send_json(const char *s) {
     mb_core_send(s, strlen(s), NULL, 0);
 }
 
+static long long extract_conn_seq(const char *json) {
+    const char *p = strstr(json, "\"conn\":");
+    if (p == NULL) {
+        return -1;
+    }
+    return strtoll(p + 7, NULL, 10);
+}
+
 static int extract_v_token(const char *json, char *out, size_t out_cap) {
     const char *p = strstr(json, "\"v\":\"");
     if (p == NULL) {
@@ -141,12 +149,16 @@ int main(void) {
     int next_idx = 0;
     recorded_msg_t *m = NULL;
 
-    // 0. Startup authoritative auth handshake (`{"id":0,"auth":{"conn":1,"scopes":{...},"workspaces":{...},"vaults":{...}}}`)
+    // 0. Startup authoritative auth handshake (`{"id":0,"auth":{"conn":N,"scopes":{...},"workspaces":{...},"vaults":{...}}}`)
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #0 startup auth handshake -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":0") != NULL);
     assert(strstr(m->json, "\"auth\":{") != NULL);
-    assert(strstr(m->json, "\"conn\":1") != NULL);
+    long long conn1 = extract_conn_seq(m->json);
+    assert(conn1 > 0);
+    char conn1_kv[64];
+    snprintf(conn1_kv, sizeof(conn1_kv), "\"conn\":%lld", conn1);
+    assert(strstr(m->json, conn1_kv) != NULL);
     assert(strstr(m->json, "\"scopes\":{") != NULL);
     assert(strstr(m->json, "\"workspaces\":{") != NULL);
     assert(strstr(m->json, "\"vaults\":{") != NULL);
@@ -201,11 +213,11 @@ int main(void) {
     assert(strstr(m->json, "\"queued\":true") != NULL && strstr(m->json, "ck-e2e-1") != NULL);
 
     // Verify `rt.now()` persisted real Unix epoch milliseconds (> 1700000000000) into outbox `createdAt` (never monotonic uptime)!
-    // Also verify `WireOutGen`: workspace-scoped `chat` carries `conn:1` + `authGen:1` (no `vaultGen`).
+    // Also verify `WireOutGen`: non-device-global `chat` carries `conn:<conn1>` + `authGen:1` (no `vaultGen`).
     send_json("{\"id\":19,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #19 subscribe chat (outbox epoch check) -> %s\n", m->json);
-    assert(strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
     const char *ca = strstr(m->json, "\"createdAt\":");
     assert(ca != NULL);
     long long created_at_ms = strtoll(ca + 12, NULL, 10);
@@ -262,12 +274,12 @@ int main(void) {
     assert(strstr(m->json, "\"id\":12") != NULL && strstr(m->json, "\"read\":5") != NULL);
 
     // 5. Subscription keyed delta + keep/have token (`v` -> `same: true` -> `delta + kept: true`)
-    // Verify `WireOutGen` on device-global topic `prefs`: MUST carry `conn:1` and MUST NOT carry `authGen` or `vaultGen`.
+    // Verify `WireOutGen` on device-global topic `prefs`: MUST carry `conn:<conn1>` and MUST NOT carry `authGen` or `vaultGen`.
     send_json("{\"id\":20,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #20 subscribe prefs -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":20") != NULL && strstr(m->json, "\"value\"") != NULL);
-    assert(strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\"") == NULL && strstr(m->json, "\"vaultGen\"") == NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL && strstr(m->json, "\"vaultGen\"") == NULL);
 
     // Mutate while subscribed -> expect Call OK + live pushed Delta on sub 20!
     send_json("{\"id\":21,\"call\":\"prefs.set\",\"params\":{\"reader\":{\"size\":18}}}");
@@ -276,23 +288,23 @@ int main(void) {
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #20 live delta -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":20") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "18") != NULL);
-    assert(strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\"") == NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
 
-    // Unsubscribe with keep: true -> receive `v` token (stamped with `conn:1`)
+    // Unsubscribe with keep: true -> receive `v` token (stamped with `conn:<conn1>`)
     send_json("{\"id\":20,\"unsubscribe\":true,\"keep\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #20 unsubscribe keep -> %s\n", m->json);
-    assert(strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\"") == NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
     char token[128];
     assert(extract_v_token(m->json, token, sizeof(token)));
 
-    // Re-subscribe with `have: token` when unchanged -> expect `same: true` + `conn:1`
+    // Re-subscribe with `have: token` when unchanged -> expect `same: true` + `conn:<conn1>`
     char resub_same[256];
     snprintf(resub_same, sizeof(resub_same), "{\"id\":22,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true,\"have\":\"%s\"}", token);
     send_json(resub_same);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #22 resubscribe have (unchanged) -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":22") != NULL && strstr(m->json, "\"same\":true") != NULL && strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\"") == NULL);
+    assert(strstr(m->json, "\"id\":22") != NULL && strstr(m->json, "\"same\":true") != NULL && strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
 
     // Unsubscribe 22 without keep, mutate, then re-subscribe with old `have: token` -> expect `delta` + `kept: true`
     send_json("{\"id\":22,\"unsubscribe\":true}");
@@ -313,17 +325,17 @@ int main(void) {
     send_json("{\"id\":24,\"unsubscribe\":true}");
 
     // 5b. Runtime-evaluated topic (`workspaceMarks`) live subscription + keep/have -> same + live delta on prefs.set
-    // Verify `WireOutGen`: aggregate `workspaceMarks` carries `conn:1` + `authGen:1` (no `vaultGen`).
+    // Verify `WireOutGen`: aggregate `workspaceMarks` carries `conn:<conn1>` + `authGen:1` (no `vaultGen`).
     send_json("{\"id\":25,\"subscribe\":{\"topic\":\"workspaceMarks\"},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #25 subscribe workspaceMarks -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":25") != NULL && strstr(m->json, "\"value\"") != NULL && strstr(m->json, "\"badgeKinds\"") != NULL);
-    assert(strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
 
     send_json("{\"id\":25,\"unsubscribe\":true,\"keep\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #25 unsubscribe workspaceMarks keep -> %s\n", m->json);
-    assert(strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\":1") != NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL);
     char wm_token[128];
     assert(extract_v_token(m->json, wm_token, sizeof(wm_token)));
 
@@ -332,7 +344,7 @@ int main(void) {
     send_json(wm_resub);
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #26 resubscribe workspaceMarks have (unchanged) -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"same\":true") != NULL && strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\":1") != NULL);
+    assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"same\":true") != NULL && strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL);
 
     // Mutate prefs (`badgeKinds.on = false`) while subscribed to workspaceMarks -> expect Call OK + live delta on id 26!
     send_json("{\"id\":27,\"call\":\"prefs.set\",\"params\":{\"badgeKinds\":{\"on\":false}}}");
@@ -341,16 +353,28 @@ int main(void) {
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #26 workspaceMarks live delta -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":26") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "\"badgeKinds\"") != NULL && strstr(m->json, "\"set\":false") != NULL);
-    assert(strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\":1") != NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL);
     send_json("{\"id\":26,\"unsubscribe\":true}");
 
-    // 5b2. Vault topic `vaults` MUST carry `conn:1` + `authGen:1` + `vaultGen:1`!
+    // 5b2. Vault topic `vaults` MUST carry `conn:<conn1>` + `authGen:1` + `vaultGen:1`!
     send_json("{\"id\":28,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-default\"},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #28 subscribe vaults -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":28") != NULL && strstr(m->json, "\"value\"") != NULL);
-    assert(strstr(m->json, "\"conn\":1") != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\":1") != NULL);
+    assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\":1") != NULL);
     send_json("{\"id\":28,\"unsubscribe\":true}");
+
+    // 5b3. Real `ws/st` address subscription + invalid subscribe error frame (both stamped with `conn:<conn1>`)
+    send_json("{\"id\":29,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-default/st-local\",\"thread\":42},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #29 subscribe chat (real ws/st) -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":29") != NULL && strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
+    send_json("{\"id\":29,\"unsubscribe\":true}");
+
+    send_json("{\"id\":98,\"subscribe\":123}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #98 invalid subscribe error -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":98") != NULL && strstr(m->json, "\"error\"") != NULL && strstr(m->json, conn1_kv) != NULL);
 
     // 5c. W28a real runtime topic projectors (status, lockPrompts, notices, notify, doing, lock),
     // `chat {session, compact}`, and `auth.complete {query}` (zero verifier/code/error_description leak)
@@ -450,10 +474,15 @@ int main(void) {
 
     atomic_store(&g_ctx.stopped, 0);
     mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
-    // Restart handshake MUST strictly increment persisted `conn_seq` in SQLite (`1 -> 2`)!
+    // Restart handshake MUST strictly increment device-level `connSeq` (`conn2 > conn1`)!
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] restart auth handshake -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL && strstr(m->json, "\"conn\":2") != NULL);
+    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn2 = extract_conn_seq(m->json);
+    assert(conn2 > conn1);
+    char conn2_kv[64];
+    snprintf(conn2_kv, sizeof(conn2_kv), "\"conn\":%lld", conn2);
+    assert(strstr(m->json, conn2_kv) != NULL);
 
     send_json("{\"id\":40,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
@@ -465,11 +494,11 @@ int main(void) {
     printf("[core_runtime_e2e] #41 prefs.get after restart -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":41") != NULL && strstr(m->json, "\"appearance\":\"light\"") != NULL && strstr(m->json, "\"size\":18") != NULL);
 
-    // Post-restart subscription MUST carry `conn:2` (never hardcoded `1`)!
+    // Post-restart subscription MUST carry `conn:<conn2>` (strictly monotonic across restarts)!
     send_json("{\"id\":42,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #42 subscribe prefs after restart -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":42") != NULL && strstr(m->json, "\"conn\":2") != NULL && strstr(m->json, "\"authGen\"") == NULL);
+    assert(strstr(m->json, "\"id\":42") != NULL && strstr(m->json, conn2_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
     send_json("{\"id\":42,\"unsubscribe\":true}");
 
     mb_core_stop();

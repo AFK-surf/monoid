@@ -702,8 +702,9 @@ pub struct StationEvents {
   mut on_marks_dirty : (String, base_codec::Json) -> Unit
   mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
   mut on_thread_dirty : (Int) -> Unit
-  mut on_overview_applied : (String, Int) -> Unit
+  mut on_overview_applied : (String, String, Int) -> Unit
   mut auth : Option[AuthGenTracker]
+  mut stream_epoch : Int64
   mut stream_fiber : Option[effect::Fiber[Unit]]
   mut active_stream_fiber : Option[effect::Fiber[Unit]]
   mut active_cancel : Option[() -> Unit]
@@ -743,8 +744,9 @@ pub fn StationEvents::new(
     on_marks_dirty: fn(_ev : String, _j : base_codec::Json) -> Unit {},
     on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
     on_thread_dirty: fn(_th : Int) -> Unit {},
-    on_overview_applied: fn(_ws : String, _gen : Int) -> Unit {},
+    on_overview_applied: fn(_ws : String, _st : String, _gen : Int) -> Unit {},
     auth: None,
+    stream_epoch: 1L,
     stream_fiber: None,
     active_stream_fiber: None,
     active_cancel: None,
@@ -755,8 +757,38 @@ pub fn StationEvents::set_auth_tracker(self : StationEvents, tracker : AuthGenTr
   self.auth = Some(tracker)
 }
 
-pub fn StationEvents::set_overview_applied_hook(self : StationEvents, cb : (String, Int) -> Unit) -> Unit {
+pub fn StationEvents::set_overview_applied_hook(self : StationEvents, cb : (String, String, Int) -> Unit) -> Unit {
   self.on_overview_applied = cb
+}
+
+/// Reset all in-memory stream state (`sessions`, `jobs`, `dirty_threads`, `last_event_id`)
+/// and bump `stream_epoch` so late callbacks from prior streams are discarded.
+pub fn StationEvents::reset_state(self : StationEvents) -> Unit {
+  self.stream_epoch += 1L
+  self.last_event_id = None
+  self.attempts = 0
+  self.sessions.clear()
+  self.session_order.clear()
+  self.jobs.clear()
+  self.job_order.clear()
+  self.dirty_threads.clear()
+  self.resync_needed = 0
+  self.marks_dirty_count = 0
+}
+
+/// Reconnect an active SSE stream after an auth boundary (e.g. role downgrade) so the new stream
+/// binds the updated `authGen` and rejects any events from pre-downgrade streams.
+pub fn StationEvents::reconnect_for_auth(self : StationEvents, rt : effect::Runtime) -> Unit {
+  if self.is_workspace_revoked() {
+    self.stop()
+    return
+  }
+  if self.stream_fiber.is_some() {
+    self.stop()
+    self.last_event_id = None
+    self.attempts = 0
+    self.start(rt)
+  }
 }
 
 fn StationEvents::is_workspace_revoked(self : StationEvents) -> Bool {
@@ -2777,7 +2809,11 @@ pub fn StationEvents::apply_marks_to_db(
 /// Apply a batch of parsed real Station SSE events in a SINGLE `sql::Burst` transaction,
 /// matching `client/core-ts/src/station/sync.ts:1848-2164`.
 /// Advances `self.last_event_id` ONLY after the SQLite transaction commits successfully.
-pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire::Event]) -> sql::SqlResult[Int] {
+pub fn StationEvents::apply_sse_batch(
+  self : StationEvents,
+  events : Array[wire::Event],
+  stream_auth_gen : Option[Int] = None,
+) -> sql::SqlResult[Int] {
   if events.length() == 0 || self.is_workspace_revoked() {
     return sql::SqlResult::Ok(0)
   }
@@ -2785,6 +2821,10 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
   let cap_gen = match self.auth {
     Some(t) => t.workspace_auth_gen(self.workspace)
     None => 0
+  }
+  let overview_gen = match stream_auth_gen {
+    Some(g) => g
+    None => cap_gen
   }
   let changed_chats : Array[String] = []
   let pending_events : Array[CoreEvent] = []
@@ -2840,7 +2880,7 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
       }
       if saw_overview {
         let cb = self.on_overview_applied
-        cb(self.workspace, cap_gen)
+        cb(self.workspace, self.station, overview_gen)
       }
       if changed_chats.length() > 0 {
         self.outbox.tell(CoreEvent::ChatsChanged(self.station, changed_chats))
@@ -2900,7 +2940,7 @@ fn StationEvents::schedule_reconnect_k(self : StationEvents, rt : effect::Runtim
 }
 
 fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : (effect::Exit[Unit]) -> Unit) -> Unit {
-  if self.stopped || effect::is_interrupted() {
+  if self.stopped || effect::is_interrupted() || self.is_workspace_revoked() {
     self.set_state(ConnectionState::Disconnected("stopped"))
     k(effect::Exit::Interrupted)
     return
@@ -2912,6 +2952,11 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     Some(eid) => "/events?since=" + encode_uri_component(eid)
     None => "/events"
   }
+  let opened_auth_gen = match self.auth {
+    Some(t) => t.workspace_auth_gen(self.workspace)
+    None => 0
+  }
+  let my_epoch = self.stream_epoch
   let parser = wire::Sse::new()
   let mut marked_connected = false
   let aborted : Array[Bool] = [false]
@@ -2922,7 +2967,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
       path,
       headers,
       fn(chunk : Bytes) -> Unit {
-        if aborted[0] || self.stopped {
+        if aborted[0] || self.stopped || self.stream_epoch != my_epoch || self.is_workspace_revoked() {
           return
         }
         if !marked_connected {
@@ -2934,7 +2979,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
         }
         match parser.feed(chunk) {
           wire::FeedResult::Ok(evs) => {
-            match self.apply_sse_batch(evs) {
+            match self.apply_sse_batch(evs, stream_auth_gen=Some(opened_auth_gen)) {
               sql::SqlResult::Ok(_) => ()
               sql::SqlResult::Err(_) => {
                 // Immediately cancel the underlying old stream so no further chunks arrive or advance
@@ -3009,6 +3054,7 @@ pub fn StationEvents::set_transport(
   if was_running {
     self.stop()
   }
+  self.stream_epoch += 1L
   self.transport = transport
   self.attempts = 0
   if was_running {
@@ -3035,6 +3081,7 @@ pub fn StationEvents::start(self : StationEvents, rt : effect::Runtime) -> Unit 
 /// Stop the `/events` stream fiber and immediately cancel any active underlying stream & backoff sleep.
 pub fn StationEvents::stop(self : StationEvents) -> Unit {
   self.stopped = true
+  self.stream_epoch += 1L
   self.cancel_active_stream()
   match self.stream_fiber {
     Some(f) => {

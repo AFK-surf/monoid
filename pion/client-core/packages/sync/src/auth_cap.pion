@@ -79,6 +79,7 @@ pub struct AuthGenTracker {
   mut vault_global_gen : Int
   ws_gens : Map[String, Int]
   vault_ws_gens : Map[String, Int]
+  vault_ws_all_gens : Map[String, Int]
   vault_item_gens : Map[String, Int]
   locked_vaults : Map[String, Bool]
   revoked_ws : Map[String, Bool]
@@ -96,6 +97,7 @@ pub fn AuthGenTracker::new(conn_seq : Int64 = 1L) -> AuthGenTracker {
     vault_global_gen: 1,
     ws_gens: Map::new(),
     vault_ws_gens: Map::new(),
+    vault_ws_all_gens: Map::new(),
     vault_item_gens: Map::new(),
     locked_vaults: Map::new(),
     revoked_ws: Map::new(),
@@ -105,10 +107,23 @@ pub fn AuthGenTracker::new(conn_seq : Int64 = 1L) -> AuthGenTracker {
 }
 
 /// Construct an `AuthGenTracker` whose `conn_seq` is durably read from and incremented in
-/// SQLite `account_doc("conn_seq")` (`1 -> 2 -> ...` across restarts).
-pub fn AuthGenTracker::open_with_db(db : sql::Sql) -> AuthGenTracker {
-  let conn = store::load_and_bump_conn_seq(db)
+/// SQLite `account_doc("conn_seq")` (`max(persisted + 1, now_ms * 1000)` when `now_ms > 0`).
+pub fn AuthGenTracker::open_with_db(db : sql::Sql, now_ms : Int64 = 0L) -> AuthGenTracker {
+  let conn = store::load_and_bump_conn_seq(db, now_ms=now_ms)
   AuthGenTracker::new(conn_seq=conn)
+}
+
+/// Construct an `AuthGenTracker` backed by device-level monotonic `conn_seq` storage
+/// (independent of any per-account SQLite DB, resilient to account switches and read-only DBs).
+pub fn AuthGenTracker::open_with_device(
+  load_persisted : () -> Int64,
+  save_persisted : (Int64) -> Unit,
+  now_ms : Int64 = 0L,
+) -> AuthGenTracker {
+  let prev = load_persisted()
+  let next = store::next_monotonic_conn_seq(prev, now_ms=now_ms)
+  save_persisted(next)
+  AuthGenTracker::new(conn_seq=next)
 }
 
 pub fn AuthGenTracker::global_gen(self : AuthGenTracker) -> Int {
@@ -153,20 +168,33 @@ pub fn AuthGenTracker::vault_workspace_gen(self : AuthGenTracker, ws : String) -
     Some(v) => v
     None => 1
   }
-  if g > self.vault_global_gen { g } else { self.vault_global_gen }
+  let all_g = match self.vault_ws_all_gens.get(ws) {
+    Some(v) => v
+    None => 1
+  }
+  let max_ws = if g > all_g { g } else { all_g }
+  if max_ws > self.vault_global_gen { max_ws } else { self.vault_global_gen }
 }
 
+/// Vault generation for one `(ws, vault_id)` (`auth-gen.ts:539-554`):
+/// Single-vault bumps (`bump_vault(ws, v1)`) advance ONLY `vault_item_gens[ws/v1]` and `vault_ws_gens[ws]`
+/// (for the `vaults` summary topic) WITHOUT falsely invalidating unaffected sibling vault `v2`!
+/// Whole-workspace vault bumps (`bump_vault(ws)` / `bump_workspace_and_vault(ws)`) advance `vault_ws_all_gens[ws]`.
 pub fn AuthGenTracker::vault_gen(self : AuthGenTracker, ws : String, vault_id : String) -> Int {
-  let ws_g = self.vault_workspace_gen(ws)
   if vault_id.length() == 0 {
-    return ws_g
+    return self.vault_workspace_gen(ws)
   }
+  let all_g = match self.vault_ws_all_gens.get(ws) {
+    Some(v) => v
+    None => 1
+  }
+  let floor_g = if all_g > self.vault_global_gen { all_g } else { self.vault_global_gen }
   let key = ws + "/" + vault_id
   let item_g = match self.vault_item_gens.get(key) {
     Some(v) => v
     None => 1
   }
-  if item_g > ws_g { item_g } else { ws_g }
+  if item_g > floor_g { item_g } else { floor_g }
 }
 
 pub fn AuthGenTracker::set_revoked(self : AuthGenTracker, ws : String, revoked : Bool) -> Unit {
@@ -256,7 +284,8 @@ pub fn AuthGenTracker::bump_workspace(self : AuthGenTracker, ws : String) -> Int
 }
 
 /// Advance `vaultGen` for one vault (`ws/vault_id`) or all vaults of `ws` without bumping
-/// non-vault workspace `authGen`.
+/// non-vault workspace `authGen`. Single-vault bump advances `ws/vault_id` and `vaults` aggregate
+/// `ws` WITHOUT touching sibling vaults (`ws/v2`) (`client/core-ts/src/auth-gen.ts:539-554`).
 pub fn AuthGenTracker::bump_vault(
   self : AuthGenTracker,
   ws : String,
@@ -264,12 +293,12 @@ pub fn AuthGenTracker::bump_vault(
 ) -> Int {
   if vault_id.length() > 0 {
     let key = ws + "/" + vault_id
-    let next = self.vault_gen(ws, vault_id) + 1
-    self.vault_item_gens.set(key, next)
+    let cur_item = self.vault_gen(ws, vault_id)
     let cur_ws = self.vault_workspace_gen(ws)
-    if next > cur_ws {
-      self.vault_ws_gens.set(ws, next)
-    }
+    let max_seen = if cur_item > cur_ws { cur_item } else { cur_ws }
+    let next = max_seen + 1
+    self.vault_item_gens.set(key, next)
+    self.vault_ws_gens.set(ws, next)
     self.notify(AuthBoundaryEvent::Vault(ws, vault_id, next))
     next
   } else {
@@ -286,6 +315,7 @@ pub fn AuthGenTracker::bump_vault(
     }
     let next = max_g + 1
     self.vault_ws_gens.set(ws, next)
+    self.vault_ws_all_gens.set(ws, next)
     for i in 0..<ks.length() {
       if ks[i].starts_with(prefix) {
         self.vault_item_gens.set(ks[i], next)
@@ -320,6 +350,7 @@ pub fn AuthGenTracker::bump_workspace_and_vault(
   }
   let next_vg = max_vg + 1
   self.vault_ws_gens.set(ws, next_vg)
+  self.vault_ws_all_gens.set(ws, next_vg)
   for i in 0..<vks.length() {
     if vks[i].starts_with(prefix) {
       self.vault_item_gens.set(vks[i], next_vg)
@@ -412,16 +443,22 @@ fn is_all_scope_topic(topic : protocol::Topic) -> Bool {
   }
 }
 
-/// Effective `authGen` for `topic` (`0` for device-global topics).
+/// Effective `authGen` for `topic` (`0` for device-global topics),
+/// 1:1 with `apps/mbui/src/core/client.mbt:556-571` (`current_auth_gen`).
 pub fn AuthGenTracker::auth_gen_of(self : AuthGenTracker, topic : protocol::Topic) -> Int {
   if is_device_global_topic(topic.name) {
     return 0
   }
-  if is_aggregate_topic(topic.name) || is_all_scope_topic(topic) {
+  if is_aggregate_topic(topic.name) {
     return self.aggregate_auth_gen()
   }
   match protocol::topic_workspace(topic) {
-    Some(ws) => self.workspace_auth_gen(ws)
+    Some(ws) =>
+    if ws == "all" || ws == "*" {
+      self.global_gen
+    } else {
+      self.workspace_auth_gen(ws)
+    }
     None => self.global_gen
   }
 }
@@ -484,7 +521,7 @@ pub fn AuthGenTracker::matches_topic(
       if is_aggregate_topic(topic.name) || topic.name == "workspaceMarks" || is_all_scope_topic(topic) {
         return true
       }
-      match protocol::topic_workspace(topic) {
+      match protocol::topic_revocation_workspace(topic) {
         Some(tws) => tws == ws
         None => false
       }
@@ -511,7 +548,7 @@ pub fn AuthGenTracker::matches_topic(
         } else {
           match protocol::topic_vault(topic) {
             Some(tv) => tv == vid
-            None => true
+            None => false
           }
         }
         None => false
@@ -709,6 +746,7 @@ pub struct AuthCapability {
   pub vault_global_gen : Int
   ws_gens : Map[String, Int]
   vault_ws_gens : Map[String, Int]
+  vault_ws_all_gens : Map[String, Int]
   vault_item_gens : Map[String, Int]
 }
 
@@ -724,6 +762,15 @@ pub fn AuthCapability::capture(tracker : AuthGenTracker) -> AuthCapability {
   for i in 0..<vwks.length() {
     let k = vwks[i]
     vws_copy.set(k, tracker.vault_workspace_gen(k))
+  }
+  let vws_all_copy : Map[String, Int] = Map::new()
+  let vwak = tracker.vault_ws_all_gens.keys()
+  for i in 0..<vwak.length() {
+    let k = vwak[i]
+    match tracker.vault_ws_all_gens.get(k) {
+      Some(v) => vws_all_copy.set(k, if v > tracker.vault_global_gen { v } else { tracker.vault_global_gen })
+      None => ()
+    }
   }
   let vi_copy : Map[String, Int] = Map::new()
   let viks = tracker.vault_item_gens.keys()
@@ -741,6 +788,7 @@ pub fn AuthCapability::capture(tracker : AuthGenTracker) -> AuthCapability {
     vault_global_gen: tracker.vault_global_gen,
     ws_gens: ws_copy,
     vault_ws_gens: vws_copy,
+    vault_ws_all_gens: vws_all_copy,
     vault_item_gens: vi_copy,
   }
 }
@@ -786,13 +834,13 @@ pub fn AuthCapability::vault(
     Some(v) => if v > self.global_gen { v } else { self.global_gen }
     None => self.global_gen
   }
-  let ws_vg = match self.vault_ws_gens.get(ws) {
+  let ws_all_vg = match self.vault_ws_all_gens.get(ws) {
     Some(v) => if v > self.vault_global_gen { v } else { self.vault_global_gen }
     None => self.vault_global_gen
   }
   let item_vg = match self.vault_item_gens.get(ws + "/" + vault_id) {
-    Some(v) => if v > ws_vg { v } else { ws_vg }
-    None => ws_vg
+    Some(v) => if v > ws_all_vg { v } else { ws_all_vg }
+    None => ws_all_vg
   }
   VaultCapability::{
     owner_id: self.owner_id,
@@ -872,7 +920,11 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
       None => ""
     }
     let own_s = if d.own { "1" } else { "0" }
-    devices_list.push(id + ":" + d.sub + ":" + d.kind + ":" + sk + ":" + own_s)
+    let exp_s = match d.exp {
+      Some(e) => e.to_int64().to_string()
+      None => ""
+    }
+    devices_list.push(id + ":" + d.sub + ":" + d.kind + ":" + sk + ":" + own_s + ":" + exp_s)
   }
   sort_strings_ac(devices_list)
 
@@ -880,9 +932,18 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
   let ps = st.passkeys.entries()
   for i in 0..<ps.length() {
     let (id, p) = ps[i]
-    passkeys_list.push(id + ":" + p.sub + ":" + p.key)
+    let p_own = if p.own { "1" } else { "0" }
+    passkeys_list.push(id + ":" + p.sub + ":" + p.key + ":" + p_own)
   }
   sort_strings_ac(passkeys_list)
+
+  let persons_list : Array[String] = []
+  let prs = st.persons.entries()
+  for i in 0..<prs.length() {
+    let (sub, person_hash) = prs[i]
+    persons_list.push(sub + ":" + person_hash)
+  }
+  sort_strings_ac(persons_list)
 
   let stations_list : Array[String] = []
   let ss = st.stations.entries()
@@ -907,7 +968,7 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
     Some(m) => m
     None => ""
   }
-  let sec_digest = "d=" + dis_s + "|m=" + join_arr(members_list) + "|v=" + join_arr(devices_list) + "|p=" + join_arr(passkeys_list) + "|mv=" + moved_s
+  let sec_digest = "d=" + dis_s + "|m=" + join_arr(members_list) + "|v=" + join_arr(devices_list) + "|p=" + join_arr(passkeys_list) + "|pr=" + join_arr(persons_list) + "|mv=" + moved_s
   let full_digest = sec_digest + "|s=" + join_arr(stations_list)
   (full_digest, sec_digest)
 }
@@ -923,6 +984,7 @@ fn guarded_read_attempt_k[T, R](
   attempt : Int,
   max_retries : Int,
   on_stale_retry : Option[(Int) -> Unit],
+  on_exhausted_stale : Option[() -> Unit],
 ) -> Unit {
   if tracker.is_revoked(workspace) {
     k(effect::Exit::Failed(effect::EffectError::Custom("workspace_revoked")))
@@ -957,8 +1019,13 @@ fn guarded_read_attempt_k[T, R](
               attempt + 1,
               max_retries,
               on_stale_retry,
+              on_exhausted_stale,
             )
             return
+          }
+          match on_exhausted_stale {
+            Some(resched) => if !tracker.is_revoked(workspace) { resched() }
+            None => ()
           }
           k(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
           return
@@ -976,7 +1043,8 @@ fn guarded_read_attempt_k[T, R](
 /// 1. Checks `!revoked` and captures a fresh `WorkspaceCapability` before entering I/O.
 /// 2. Re-validates `cap.is_valid(tracker)` and `!revoked` AFTER I/O returns, before `commit`.
 /// 3. On concurrent `authGen` change (`auth_stale`) while `!revoked`, retries up to `max_retries`
-///    (default `2`) with a fresh capability so sync pipelines never freeze permanently.
+///    (default `2`) with a fresh capability and invokes `on_exhausted_stale` if retries exhaust so
+///    sync pipelines never freeze permanently.
 /// 4. On `revoked`, aborts cleanly immediately with zero writes and zero retries.
 pub fn guarded_read_k[T, R](
   tracker : AuthGenTracker,
@@ -986,6 +1054,7 @@ pub fn guarded_read_k[T, R](
   k : (effect::Exit[R]) -> Unit,
   max_retries : Int = 2,
   on_stale_retry : Option[(Int) -> Unit] = None,
+  on_exhausted_stale : Option[() -> Unit] = None,
 ) -> Unit {
   guarded_read_attempt_k(
     tracker,
@@ -996,5 +1065,6 @@ pub fn guarded_read_k[T, R](
     0,
     if max_retries < 0 { 0 } else { max_retries },
     on_stale_retry,
+    on_exhausted_stale,
   )
 }

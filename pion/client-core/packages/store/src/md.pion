@@ -237,6 +237,21 @@ pub fn MdStore::pending(self : MdStore) -> Bool {
   self.put_order.length() > 0 || self.touch_order.length() > 0 || self.use_order.length() > 0
 }
 
+/// Discard all buffered in-memory reads and pending `md_kept` / `log_use` writes so a subsequent
+/// `flush_turn()` after workspace revocation writes zero SQLite rows.
+pub fn MdStore::clear_pending(self : MdStore) -> Unit {
+  self.read.clear()
+  self.puts.clear()
+  self.put_order = []
+  self.touches.clear()
+  self.touch_order = []
+  self.opened_at.clear()
+  self.uses.clear()
+  self.use_order = []
+  self.size = None
+  self.asked_later = false
+}
+
 fn MdStore::kept_one(self : MdStore, key : String) -> Option[Kept] {
   if !self.kept_there {
     return None

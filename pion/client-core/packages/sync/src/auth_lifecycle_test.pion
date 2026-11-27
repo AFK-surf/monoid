@@ -470,32 +470,52 @@ test "auth_lifecycle 4: per-workspace monotonic cloud_req_seq drops stale 403 af
   core.stop()
 }
 
-// ── Test 5: Role downgrade per-(workspace, topic) confirmation latch (owner -> member) ──
+// ── Test 5: Real AccountEvent-driven role downgrade auto-unlock + per-station isolation + non-held topics unblocked ──
 
-test "auth_lifecycle 5: role downgrade confirmation latch holds stale privileged views at Waiting until confirmed under new authGen" {
+test "auth_lifecycle 5: real AccountEvent downgrade updates workspace.json.role, isolates two stations, rejects pre-downgrade SSE overview, never stalls non-held topics, and auto-unlocks" {
   let env = AuthSimEnv::new()
-  let station = SimStation::new(env.rt)
-  // Seed owner workspace + privileged overview BEFORE ClientCore initializes so `ws_roles` seeds "owner"
+  let st1 = SimStation::new(env.rt)
+  let st2 = SimStation::new(env.rt)
+  st1.snapshot_json = base_codec::json_obj([("chats", base_codec::json_arr([]))])
+  st2.snapshot_json = base_codec::json_obj([("chats", base_codec::json_arr([]))])
+
+  // Seed owner workspace + two stations' overviews BEFORE ClientCore initializes
   let _ = env.db.run(sql_workspace_put(), params=[
     base_codec::json_str("ws-role"),
-    base_codec::json_str("{\"id\":\"ws-role\",\"name\":\"Team\",\"role\":\"owner\",\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"St1\",\"online\":true}]}"),
+    base_codec::json_str("{\"id\":\"ws-role\",\"name\":\"Team\",\"role\":\"owner\",\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"St1\",\"online\":true},{\"id\":\"st-2\",\"name\":\"St2\",\"online\":true}]}"),
     base_codec::json_int64(1000L),
   ])
   let _ = env.db.run(store::sql_station_doc_put(), params=[
     base_codec::json_str("ws-role/st-1"),
     base_codec::json_str("overview"),
-    base_codec::json_str("{\"id\":\"st-1\",\"name\":\"St1\",\"profiles\":[{\"name\":\"default\",\"provider\":\"anthropic\"}]}"),
+    base_codec::json_str("{\"id\":\"st-1\",\"name\":\"St1\",\"profiles\":[{\"name\":\"p1\",\"provider\":\"anthropic\"}]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = env.db.run(store::sql_station_doc_put(), params=[
+    base_codec::json_str("ws-role/st-2"),
+    base_codec::json_str("overview"),
+    base_codec::json_str("{\"id\":\"st-2\",\"name\":\"St2\",\"profiles\":[{\"name\":\"p2\",\"provider\":\"openai\"}]}"),
     base_codec::json_int64(1000L),
   ])
 
-  let core = ClientCore::new("ws-role", "ws-role/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  let core = ClientCore::new("ws-role", "ws-role/st-1", env.rt, env.db, st1.transport(), fn() -> Unit {})
   core.set_viewer("alice@still.fail", sub="u1", role="owner")
+  core.attach_station_transport("ws-role/st-2", st2.transport(), workspace="ws-role")
+  core.start()
+  let _ = env.rt.run_ready()
+  // Open pre-downgrade SSE streams on both stations (`opened_auth_gen = 1`)
+  st1.push_sse("id: e1\nevent: overview\ndata: {\"id\":\"st-1\",\"name\":\"St1\",\"profiles\":[{\"name\":\"p1\",\"provider\":\"anthropic\"}]}\n\n")
+  st2.push_sse("id: e2\nevent: overview\ndata: {\"id\":\"st-2\",\"name\":\"St2\",\"profiles\":[{\"name\":\"p2\",\"provider\":\"openai\"}]}\n\n")
+  let _ = env.rt.run_ready()
+
+  let cs = CloudSync::new(env.sh, env.db, "https://cloud.example", token="tok-role")
+  core.bind_cloud_sync(cs)
   let frames : Array[String] = []
   core.set_wire_sink(fn(j : String, _b : Option[Bytes]) -> Unit {
     frames.push(j)
   })
 
-  // Before downgrade: subscribe to `profiles` -> receives `manages: true` with `authGen: 1`
+  // Before downgrade: subscribe to `profiles` (workspace-wide) and per-station `chatRow` for st-1 and st-2
   match core.handle_wire("{\"id\":60,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-role\"},\"keyed\":true}") {
     Some((txt, _)) => {
       debug_assert(json_int_eq(txt, "authGen", 1), "initial profiles at authGen:1")
@@ -503,58 +523,159 @@ test "auth_lifecycle 5: role downgrade confirmation latch holds stale privileged
     }
     None => debug_assert(false, "expected profiles Value")
   }
+  match core.handle_wire("{\"id\":61,\"subscribe\":{\"topic\":\"chatRow\",\"station\":\"ws-role/st-1\",\"session\":\"s1\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(json_int_eq(txt, "authGen", 1) && txt.contains("\"value\""), "initial st-1 chatRow")
+    None => debug_assert(false, "expected st-1 chatRow")
+  }
+  match core.handle_wire("{\"id\":62,\"subscribe\":{\"topic\":\"chatRow\",\"station\":\"ws-role/st-2\",\"session\":\"s2\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(json_int_eq(txt, "authGen", 1) && txt.contains("\"value\""), "initial st-2 chatRow")
+    None => debug_assert(false, "expected st-2 chatRow")
+  }
 
-  // Trigger role downgrade (`owner -> member`) while SQLite still holds the pre-downgrade workspace JSON!
+  // Start real `/v1/events` WebSocket and deliver real AccountEvent `{"type":"workspaces"}`
+  cs.start_events_ws(fn(_ev : CloudEvent) -> Unit {})
+  let _ = env.rt.run_ready()
+  let ws_open_id = env.pending[0].0
+  env.sh.answer(ws_open_id, base_codec::json_obj([("id", base_codec::json_int(88))]))
+  let _ = env.rt.run_ready()
+  // Answer the automatic `on_open` `/v1/me` reconciliation with current owner role first
+  let mut ws_next_id = 0L
+  for i in 1..<env.pending.length() {
+    if env.pending[i].1 == "ws.next" { ws_next_id = env.pending[i].0 }
+    if env.pending[i].1 == "fetch" && j_str(env.pending[i].2, "url").ends_with("/v1/me") {
+      env.answer_http(env.pending[i].0, 200, "{\"user\":{\"sub\":\"u1\",\"email\":\"alice@still.fail\"},\"workspaces\":[{\"id\":\"ws-role\",\"name\":\"Team\",\"role\":\"owner\"}]}")
+    }
+  }
+  let _ = env.rt.run_ready()
+  debug_assert(ws_next_id > 0L, "ws.next active")
+
+  // Hold st-2 offline during initial downgrade refresh so st-1 confirms first while st-2 is still unconfirmed
+  st2.offline = true
+  // Deliver real `AccountEvent` `{"type":"workspaces"}` -> CloudSync fetches `/v1/me` -> downgraded to `member`!
   let before_down = frames.length()
-  let changed = core.update_workspace_role("ws-role", "member")
-  debug_assert(changed, "role downgrade detected")
-  debug_assert(core.auth.workspace_auth_gen("ws-role") == 2, "downgrade bumped authGen 1 -> 2")
-  debug_assert(core.is_workspace_downgrade_gated("ws-role"), "downgrade confirmation latch is active")
+  let pend_mark = env.pending.length()
+  env.sh.answer(ws_next_id, base_codec::json_obj([("text", base_codec::json_str("{\"type\":\"workspaces\"}"))]))
+  let _ = env.rt.run_ready()
+  let mut me_down_id = 0L
+  for i in pend_mark..<env.pending.length() {
+    if env.pending[i].1 == "fetch" && j_str(env.pending[i].2, "url").ends_with("/v1/me") {
+      me_down_id = env.pending[i].0
+    }
+  }
+  debug_assert(me_down_id > 0L, "AccountEvent workspaces triggered /v1/me")
+  env.answer_http(me_down_id, 200, "{\"user\":{\"sub\":\"u1\",\"email\":\"alice@still.fail\"},\"workspaces\":[{\"id\":\"ws-role\",\"name\":\"Team\",\"role\":\"member\"}]}")
+  let _ = env.rt.run_ready()
 
-  // CRITICAL INVARIANT 5: boundary refresh on active sub #60 MUST emit `waiting: true` (NEVER `manages: true` with `authGen: 2`!)
-  let mut saw_waiting_g2 = false
+  // Verify SQLite `workspace.json.role` was updated immediately BEFORE releasing views
+  match store::get_workspace(env.db, "ws-role") {
+    sql::SqlResult::Ok(Some(row)) => debug_assert(row.json.contains("\"role\":\"member\""), "apply_cloud_me updated workspace.json.role to member")
+    _ => debug_assert(false, "workspace row should exist")
+  }
+  debug_assert(core.auth.workspace_auth_gen("ws-role") == 2, "downgrade bumped authGen 1 -> 2")
+  debug_assert(core.is_workspace_downgrade_gated("ws-role"), "downgrade latch active")
+
+  // Active sub #60 MUST emit Waiting at authGen:2 and NEVER leak manages:true!
+  let mut saw_waiting_60 = false
   for i in before_down..<frames.length() {
     let f = frames[i]
     if json_int_eq(f, "id", 60) {
-      debug_assert(!f.contains("\"manages\":true"), "MUST NEVER re-stamp stale manages:true with new authGen:2!")
+      debug_assert(!f.contains("\"manages\":true"), "MUST NEVER leak stale manages:true with authGen:2")
       if f.contains("\"waiting\":true") && json_int_eq(f, "authGen", 2) {
-        saw_waiting_g2 = true
+        saw_waiting_60 = true
       }
     }
   }
-  debug_assert(saw_waiting_g2, "downgrade emitted Waiting at authGen:2 for unconfirmed profiles sub")
+  debug_assert(saw_waiting_60, "downgrade emitted Waiting at authGen:2")
 
-  // Fresh subscription to `profiles` while unconfirmed MUST also stay at `waiting: true`!
-  match core.handle_wire("{\"id\":61,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-role\"},\"keyed\":true}") {
-    Some((txt, _)) => {
-      debug_assert(txt.contains("\"waiting\":true") && json_int_eq(txt, "authGen", 2), "fresh unconfirmed profiles sub returns Waiting")
-      debug_assert(!txt.contains("\"manages\":true"), "fresh sub never leaks stale manages:true")
+  // Parameterless & non-held topics MUST NOT be stalled by downgrade latch!
+  let unblocked = [
+    "{\"id\":70,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}",
+    "{\"id\":71,\"subscribe\":{\"topic\":\"workspaces\"},\"keyed\":true}",
+    "{\"id\":72,\"subscribe\":{\"topic\":\"workspaceMarks\"},\"keyed\":true}",
+    "{\"id\":73,\"subscribe\":{\"topic\":\"status\"},\"keyed\":true}",
+    "{\"id\":74,\"subscribe\":{\"topic\":\"notices\"},\"keyed\":true}",
+    "{\"id\":75,\"subscribe\":{\"topic\":\"notify\"},\"keyed\":true}",
+    "{\"id\":76,\"subscribe\":{\"topic\":\"presets\"},\"keyed\":true}",
+    "{\"id\":77,\"subscribe\":{\"topic\":\"lock\",\"workspace\":\"ws-role\"},\"keyed\":true}",
+    "{\"id\":78,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-role\"},\"keyed\":true}",
+  ]
+  for i in 0..<unblocked.length() {
+    match core.handle_wire(unblocked[i]) {
+      Some((txt, _)) => debug_assert(!txt.contains("\"waiting\":true"), "non-held topic must NOT be stalled by downgrade: " + unblocked[i])
+      None => debug_assert(false, "expected Value for non-held topic")
     }
+  }
+
+  // Answer the actively triggered `/v1/workspaces/ws-role` refetch so workspace doc is confirmed
+  let mut ws_refetch_id = 0L
+  for i in pend_mark..<env.pending.length() {
+    if env.pending[i].1 == "fetch" && j_str(env.pending[i].2, "url").ends_with("/v1/workspaces/ws-role") {
+      ws_refetch_id = env.pending[i].0
+    }
+  }
+  debug_assert(ws_refetch_id > 0L, "downgrade actively triggered GET /v1/workspaces/ws-role")
+  env.answer_http(ws_refetch_id, 200, "{\"id\":\"ws-role\",\"name\":\"Team\",\"role\":\"member\",\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"member\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"St1\",\"online\":true},{\"id\":\"st-2\",\"name\":\"St2\",\"online\":true}]}")
+  let _ = env.rt.run_ready()
+
+  // Stale `overview` carrying pre-downgrade `stream_auth_gen = 1` MUST be rejected!
+  let stale_ev = wire::Event::{
+    name: "overview",
+    data: "{\"id\":\"st-1\",\"name\":\"St1 Stale\"}",
+    id: Some("e-stale"),
+  }
+  let _ = core.events.apply_sse_batch([stale_ev], stream_auth_gen=Some(1))
+  match core.handle_wire("{\"id\":63,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-role\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true"), "pre-downgrade SSE overview (gen=1) MUST NOT unlock profiles")
     None => debug_assert(false, "expected Waiting")
   }
 
-  // Now persist the post-downgrade workspace role (`member`) and confirm `profiles` under `authGen: 2`!
-  let _ = env.db.run(sql_workspace_put(), params=[
-    base_codec::json_str("ws-role"),
-    base_codec::json_str("{\"id\":\"ws-role\",\"name\":\"Team\",\"role\":\"member\",\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"member\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"St1\",\"online\":true}]}"),
-    base_codec::json_int64(2000L),
-  ])
-  let before_confirm = frames.length()
-  core.confirm_workspace_topic_name_auth("ws-role", "profiles", 2)
-
-  // Both waiting subs (#60 and #61) immediately release with `authGen: 2` and `manages: false`!
-  let mut released_60 = false
-  let mut released_61 = false
-  for i in before_confirm..<frames.length() {
+  // Now advance virtual clock so st-1's actively triggered snapshot finishes AND st-1 pushes fresh post-downgrade `overview` (gen=2):
+  // `st-1` (#61) unlocks, while `st-2` (#62) AND workspace-wide `profiles` (#60) MUST STAY Waiting!
+  let before_st1 = frames.length()
+  env.rt.advance(100)
+  st1.push_sse("id: e-post-1\nevent: overview\ndata: {\"id\":\"st-1\",\"name\":\"St1 Post\",\"profiles\":[{\"name\":\"p1\",\"provider\":\"anthropic\"}]}\n\n")
+  let _ = env.rt.run_ready()
+  let mut st1_released = false
+  let mut st2_premature = false
+  let mut prof_premature = false
+  for i in before_st1..<frames.length() {
     let f = frames[i]
-    if json_int_eq(f, "id", 60) && json_int_eq(f, "authGen", 2) && f.contains("\"manages\":false") {
-      released_60 = true
+    if json_int_eq(f, "id", 61) && json_int_eq(f, "authGen", 2) && f.contains("\"value\"") {
+      st1_released = true
     }
-    if json_int_eq(f, "id", 61) && json_int_eq(f, "authGen", 2) && f.contains("\"manages\":false") {
-      released_61 = true
+    if json_int_eq(f, "id", 62) && f.contains("\"value\"") {
+      st2_premature = true
+    }
+    if json_int_eq(f, "id", 60) && f.contains("\"value\"") {
+      prof_premature = true
     }
   }
-  debug_assert(released_60 && released_61, "confirmed post-downgrade profiles released with authGen:2 and manages:false")
+  debug_assert(st1_released, "st-1 auto-unlocked after post-downgrade snapshot at gen=2")
+  debug_assert(!st2_premature, "st-1 confirmation MUST NEVER release st-2")
+  debug_assert(!prof_premature, "st-1 alone MUST NOT release workspace-wide profiles while st-2 is unconfirmed")
+
+  // Bring st-2 back online: its SSE reconnects (`opened_auth_gen = 2`), fetches snapshot, and receives post-downgrade `overview`:
+  // BOTH `st-2` (#62) AND workspace-wide `profiles` (#60) auto-unlock with `manages: false` (ZERO manual confirm calls)!
+  let before_st2 = frames.length()
+  st2.offline = false
+  env.rt.advance(3000)
+  st2.push_sse("id: e-post-2\nevent: overview\ndata: {\"id\":\"st-2\",\"name\":\"St2 Post\",\"profiles\":[{\"name\":\"p2\",\"provider\":\"openai\"}]}\n\n")
+  env.rt.advance(100)
+  let _ = env.rt.run_ready()
+  let mut st2_released = false
+  let mut prof_released = false
+  for i in before_st2..<frames.length() {
+    let f = frames[i]
+    if json_int_eq(f, "id", 62) && json_int_eq(f, "authGen", 2) && f.contains("\"value\"") {
+      st2_released = true
+    }
+    if json_int_eq(f, "id", 60) && json_int_eq(f, "authGen", 2) && f.contains("\"manages\":false") {
+      prof_released = true
+    }
+  }
+  debug_assert(st2_released, "st-2 auto-unlocked after its own post-downgrade snapshot")
+  debug_assert(prof_released, "profiles auto-unlocked with manages:false once workspace doc + both stations confirmed")
+  cs.stop()
   core.stop()
 }
 
@@ -810,25 +931,23 @@ test "auth_lifecycle 7: guarded_read_k retries bounded on auth_stale and converg
   debug_assert(pre_io[0] == 0, "pre-revoked guarded_read_k executes 0 I/O")
 }
 
-// ── Test 8: Cloud `/v1/events` WebSocket real-time event drives revocation to ClientCore ──
+// ── Test 8: Real Cloud `/v1/events` WebSocket AccountEvent (`workspace`) drives revocation to ClientCore ──
 
-test "auth_lifecycle 8: CloudSync /v1/events WebSocket delivers workspace_revoked -> triggers atomic drop_workspace in ClientCore" {
+test "auth_lifecycle 8: CloudSync /v1/events WebSocket delivers real AccountEvent workspace -> 403 triggers atomic drop_workspace" {
   let env = AuthSimEnv::new()
   let station = SimStation::new(env.rt)
-  let core = ClientCore::new("ws-ws", "ws-ws/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
-  let cs = CloudSync::new(env.sh, env.db, "https://cloud.example", token="tok-ws")
-  core.bind_cloud_sync(cs)
-
   let _ = env.db.run(sql_workspace_put(), params=[
     base_codec::json_str("ws-ws"),
     base_codec::json_str("{\"id\":\"ws-ws\",\"name\":\"Live WS\",\"role\":\"owner\",\"stations\":[]}"),
     base_codec::json_int64(1000L),
   ])
+  let core = ClientCore::new("ws-ws", "ws-ws/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  let cs = CloudSync::new(env.sh, env.db, "https://cloud.example", token="tok-ws")
+  core.bind_cloud_sync(cs)
 
   let ws_events_seen : Array[String] = []
   cs.start_events_ws(fn(ev : CloudEvent) -> Unit {
     match ev {
-      CloudEvent::Other(name, _) => ws_events_seen.push(name)
       CloudEvent::WorkspaceChanged(wid, _) => ws_events_seen.push("ws:" + wid)
       CloudEvent::WorkspacesChanged(_) => ws_events_seen.push("workspaces")
       _ => ()
@@ -838,26 +957,35 @@ test "auth_lifecycle 8: CloudSync /v1/events WebSocket delivers workspace_revoke
   debug_assert(cs.is_events_ws_running(), "events WS loop active")
   debug_assert(env.pending.length() == 1 && env.pending[0].1 == "ws.open", "opened /v1/events WebSocket")
 
-  // Complete ws.open -> receives ws.next
+  // Complete ws.open -> triggers automatic `on_open` `/v1/me` reconciliation + `ws.next`
   env.sh.answer(env.pending[0].0, base_codec::json_obj([("id", base_codec::json_int(77))]))
   let _ = env.rt.run_ready()
-  debug_assert(env.pending.length() == 2 && env.pending[1].1 == "ws.next", "issued ws.next")
+  let mut ws_next_id = 0L
+  let mut open_me_id = 0L
+  for i in 1..<env.pending.length() {
+    if env.pending[i].1 == "ws.next" { ws_next_id = env.pending[i].0 }
+    if env.pending[i].1 == "fetch" && j_str(env.pending[i].2, "url") == "https://cloud.example/v1/me" { open_me_id = env.pending[i].0 }
+  }
+  debug_assert(ws_next_id > 0L && open_me_id > 0L, "ws.open triggered both ws.next and /v1/me reconciliation")
+  env.answer_http(open_me_id, 200, "{\"user\":{\"sub\":\"u1\",\"email\":\"a@b.c\"},\"workspaces\":[{\"id\":\"ws-ws\",\"name\":\"Live WS\",\"role\":\"owner\"}]}")
+  let _ = env.rt.run_ready()
 
-  // Push real-time `workspace_revoked` frame over `/v1/events` WebSocket -> triggers monotonic `GET /v1/workspaces/ws-ws`
+  // Push REAL `AccountEvent` `{"type":"workspace","id":"ws-ws"}` (cloud/src/types.ts:49-63) -> triggers GET /v1/workspaces/ws-ws -> 403!
+  let pend_mark = env.pending.length()
   env.sh.answer(
-    env.pending[1].0,
-    base_codec::json_obj([("text", base_codec::json_str("{\"type\":\"workspace_revoked\",\"workspace\":\"ws-ws\"}"))]),
+    ws_next_id,
+    base_codec::json_obj([("text", base_codec::json_str("{\"type\":\"workspace\",\"id\":\"ws-ws\"}"))]),
   )
   let _ = env.rt.run_ready()
-  debug_assert(ws_events_seen.length() == 1 && ws_events_seen[0] == "workspace_revoked", "WS event callback invoked")
+  debug_assert(ws_events_seen.length() == 1 && ws_events_seen[0] == "ws:ws-ws", "WS real workspace event callback invoked")
   let mut fetch_id = 0L
-  for i in 2..<env.pending.length() {
+  for i in pend_mark..<env.pending.length() {
     if env.pending[i].1 == "fetch" && j_str(env.pending[i].2, "url") == "https://cloud.example/v1/workspaces/ws-ws" {
       fetch_id = env.pending[i].0
       break
     }
   }
-  debug_assert(fetch_id > 0L, "WS revocation event triggered authoritative GET /v1/workspaces/ws-ws")
+  debug_assert(fetch_id > 0L, "WS workspace event triggered authoritative GET /v1/workspaces/ws-ws")
   env.answer_http(fetch_id, 403, "{\"error\":\"forbidden\"}")
   let _ = env.rt.run_ready()
   debug_assert(core.auth.is_revoked("ws-ws"), "Cloud /v1/events WS -> 403 revoked ws-ws in real time")
@@ -866,5 +994,424 @@ test "auth_lifecycle 8: CloudSync /v1/events WebSocket delivers workspace_revoke
     _ => debug_assert(false, "WS revocation atomically dropped ws-ws from SQLite")
   }
   cs.stop()
+  core.stop()
+}
+
+// ── Test 9 (Block 6 #1): Revocation vs late LocalOutbox 4xx rollback, late fetch_lock_k, MdStore pending, usage:<ws> ──
+
+test "auth_lifecycle 9: revocation seals late LocalOutbox 4xx overlay rollback, late fetch_lock_k, MdStore pending writes, and usage:<ws>" {
+  let env = AuthSimEnv::new()
+  let mut held_overlay_k : Option[(effect::Exit[HttpReply]) -> Unit] = None
+  let mut held_lock_k : Option[(effect::Exit[HttpReply]) -> Unit] = None
+  let held_transport = StationTransport::{
+    request_k: fn(
+      _m : String,
+      path : String,
+      _h : Array[(String, String)],
+      _b : Bytes,
+      k : (effect::Exit[HttpReply]) -> Unit,
+    ) -> Unit {
+      if path == "/lock" {
+        held_lock_k = Some(k)
+      } else {
+        held_overlay_k = Some(k)
+      }
+    },
+    stream_k: fn(_p : String, _h : Array[(String, String)], _cb : (Bytes) -> Unit, _k : (effect::Exit[Unit]) -> Unit) -> Unit {},
+  }
+  let core = ClientCore::new("ws-late", "ws-late/st-1", env.rt, env.db, held_transport, fn() -> Unit {})
+  core.local_outbox.set_online(true)
+
+  // Seed chat, usage:<ws>, and pending MdStore write for ws-late
+  let _ = env.db.run(sql_chat_upsert(), params=[
+    base_codec::json_str("ws-late/st-1"), base_codec::json_str("c-late"), base_codec::json_int(0),
+    base_codec::json_num(1.0), base_codec::json_int(11), base_codec::json_str("s-late"),
+    base_codec::json_int(1), base_codec::json_int64(1000L), base_codec::json_null(),
+    base_codec::json_int(0), base_codec::json_int(0), base_codec::json_null(),
+    base_codec::json_null(), base_codec::json_int(0), base_codec::json_int(0),
+    base_codec::json_str("{\"id\":\"c-late\",\"title\":\"Original Secret\",\"thread\":11}"),
+  ])
+  let _ = store::put_account_doc(env.db, "usage:ws-late", "{\"tokens\":99999}")
+  core.md_store.put_prepared("md-k1", "{\"text\":\"secret md\"}", "chat", 1000L)
+
+  // Fire an optimistic overlay (captures previous_chat_json!) AND an in-flight `fetch_lock_k`
+  let req = OpRequest::{
+    target: OpTarget::Station("ws-late/st-1"),
+    method: "PATCH",
+    path: "/threads/11",
+    body: Some(base_codec::json_obj([("title", base_codec::json_str("Renamed"))])),
+    fallback: None,
+  }
+  match core.local_outbox.apply_op(env.rt, req, "c-late", "chat.rename", station=Some("ws-late/st-1")) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => panic("apply_op failed: " + e.to_string())
+  }
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_lock_k(effect::priority_shown(), fn(_ : effect::Exit[Bool]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(held_overlay_k.is_some() && held_lock_k.is_some(), "both overlay HTTP and lock HTTP in flight")
+
+  // Revoke ws-late while BOTH requests are in flight!
+  core.revoke_workspace("ws-late")
+  debug_assert(core.auth.is_revoked("ws-late"), "ws-late revoked")
+  match store::get_account_doc(env.db, "usage:ws-late") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "usage:ws-late MUST be purged by drop_workspace")
+  }
+
+  // Deliver late 403 overlay reply (which would normally roll back `previous_chat_json` into SQLite `chat`!),
+  // late 200 lock reply, and `md_store.flush()` -> ZERO SQLite write-backs allowed!
+  let ran_before = env.sim_db.ran.length()
+  match held_overlay_k {
+    Some(cb) => cb(effect::Exit::Succeeded(HttpReply::{ status: 403, headers: [], body: "{\"error\":\"denied\"}".to_bytes() }))
+    None => ()
+  }
+  match held_lock_k {
+    Some(cb) => cb(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"entries\":[{\"seq\":0}]}".to_bytes() }))
+    None => ()
+  }
+  let _ = core.md_store.flush_turn()
+  let _ = env.rt.run_ready()
+  debug_assert(env.sim_db.ran.length() == ran_before, "late overlay 4xx + late lock + cleared MdStore must execute ZERO SQL statements")
+  match store::get_chat_by_key(env.db, "ws-late/st-1", 0, "c-late") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "late 4xx overlay rollback MUST NOT resurrect chat row in SQLite")
+  }
+  core.stop()
+}
+
+// ── Test 10 (Block 6 #2): Failed drop_workspace -> immediate refusal + persistent revoked_pending:<ws> -> startup retry ──
+
+test "auth_lifecycle 10: failed drop_workspace refuses reads immediately, persists revoked_pending marker, and auto-retries drop on restart" {
+  let env = AuthSimEnv::new()
+  let station = SimStation::new(env.rt)
+  let _ = env.db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-fail"),
+    base_codec::json_str("{\"id\":\"ws-fail\",\"name\":\"FailDrop WS\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = env.db.run(sql_chat_upsert(), params=[
+    base_codec::json_str("ws-fail/st-1"), base_codec::json_str("c-fail"), base_codec::json_int(0),
+    base_codec::json_num(1.0), base_codec::json_int(55), base_codec::json_str("s-fail"),
+    base_codec::json_int(1), base_codec::json_int64(1000L), base_codec::json_null(),
+    base_codec::json_int(0), base_codec::json_int(0), base_codec::json_null(),
+    base_codec::json_null(), base_codec::json_int(0), base_codec::json_int(0),
+    base_codec::json_str("{\"id\":\"c-fail\",\"title\":\"STILL_IN_DB_SECRET\",\"thread\":55}"),
+  ])
+  let core = ClientCore::new("ws-fail", "ws-fail/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+
+  // Inject one SQLite failure during `drop_workspace`
+  env.sim_db.fail_drop_once = true
+  core.revoke_workspace("ws-fail")
+  debug_assert(core.auth.is_revoked("ws-fail"), "ws-fail marked revoked even when drop_workspace fails")
+
+  // Marker MUST remain in SQLite because drop_workspace failed
+  match store::get_account_doc(env.db, "revoked_pending:ws-fail") {
+    sql::SqlResult::Ok(Some(_)) => ()
+    _ => debug_assert(false, "revoked_pending:ws-fail MUST remain persisted after failed drop_workspace")
+  }
+  // Even though SQLite still has rows, EVERY topic for ws-fail MUST refuse immediately (`waiting:true`, 0 secret leak)!
+  let blocked_subs = [
+    "{\"id\":201,\"subscribe\":{\"topic\":\"workspace\",\"workspace\":\"ws-fail\"},\"keyed\":true}",
+    "{\"id\":202,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-fail\"},\"keyed\":true}",
+    "{\"id\":203,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-fail/st-1\",\"thread\":55},\"keyed\":true}",
+    "{\"id\":204,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-fail\"},\"keyed\":true}",
+    "{\"id\":205,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-fail\"},\"keyed\":true}",
+  ]
+  for i in 0..<blocked_subs.length() {
+    match core.handle_wire(blocked_subs[i]) {
+      Some((txt, _)) => {
+        debug_assert(txt.contains("\"waiting\":true"), "revoked ws-fail must return Waiting even if DB drop failed")
+        debug_assert(!txt.contains("FailDrop WS") && !txt.contains("STILL_IN_DB_SECRET"), "0 secret leak on failed drop")
+      }
+      None => debug_assert(false, "expected Waiting")
+    }
+  }
+  core.stop()
+
+  // Restart ClientCore on same DB (now DB succeeds): startup scans `revoked_pending:ws-fail`,
+  // retries `drop_workspace`, purges all rows, and deletes the marker!
+  let restarted = ClientCore::new("ws-fail", "ws-fail/st-1", env.rt, env.db, core_offline_transport(), fn() -> Unit {})
+  debug_assert(restarted.auth.is_revoked("ws-fail"), "startup recovery marks ws-fail revoked")
+  match store::get_account_doc(env.db, "revoked_pending:ws-fail") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "revoked_pending:ws-fail deleted once retry drop_workspace succeeded")
+  }
+  match store::get_workspace(env.db, "ws-fail") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "ws-fail workspace row dropped on startup retry")
+  }
+  match store::get_chat_by_key(env.db, "ws-fail/st-1", 0, "c-fail") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "ws-fail chat row dropped on startup retry")
+  }
+  restarted.stop()
+}
+
+// ── Test 11 (Block 6 #3): Offline revocation + restart Data.retain() reconciliation ──
+
+test "auth_lifecycle 11: offline revocation purged on restart by CloudSync /v1/me retain() against SQLite workspaces" {
+  let env = AuthSimEnv::new()
+  // Seed two workspaces in SQLite before restart
+  let _ = env.db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-keep"),
+    base_codec::json_str("{\"id\":\"ws-keep\",\"name\":\"Keep WS\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = env.db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-gone"),
+    base_codec::json_str("{\"id\":\"ws-gone\",\"name\":\"Offline Revoked WS\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = store::put_account_doc(env.db, "usage:ws-gone", "{\"cost\":42}")
+  let _ = store::put_workspace_pref(env.db, "ws-gone", "theme", "\"secret\"")
+
+  // Cold restart: fresh ClientCore + fresh CloudSync (seeds `known_workspaces` from SQLite!)
+  let core = ClientCore::new("ws-keep", "ws-keep/st-1", env.rt, env.db, core_offline_transport(), fn() -> Unit {}, has_live_transport=false)
+  let cs = CloudSync::new(env.sh, env.db, "https://cloud.example", token="tok-retain")
+  core.bind_cloud_sync(cs)
+
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_me_k(fn(_ : effect::Exit[CloudMe]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = env.rt.run_ready()
+  debug_assert(env.pending.length() == 1, "fetched /v1/me")
+  // Server returns ONLY ws-keep (ws-gone was revoked while client was offline!)
+  env.answer_http(env.pending[0].0, 200, "{\"user\":{\"sub\":\"u1\",\"email\":\"a@b.c\"},\"workspaces\":[{\"id\":\"ws-keep\",\"name\":\"Keep WS\",\"role\":\"owner\"}]}")
+  let _ = env.rt.run_ready()
+
+  debug_assert(core.auth.is_revoked("ws-gone"), "retain() revoked offline-removed ws-gone")
+  debug_assert(!core.auth.is_revoked("ws-keep"), "ws-keep remains active")
+  match store::get_workspace(env.db, "ws-gone") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "ws-gone dropped from SQLite")
+  }
+  match store::get_account_doc(env.db, "usage:ws-gone") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "usage:ws-gone dropped from SQLite")
+  }
+  match store::get_workspace(env.db, "ws-keep") {
+    sql::SqlResult::Ok(Some(_)) => ()
+    _ => debug_assert(false, "ws-keep preserved")
+  }
+  core.stop()
+}
+
+// ── Test 12 (Block 6 #4): Bidirectional /v1/me vs /v1/workspaces out-of-order + credential 403 indirect check ──
+
+test "auth_lifecycle 12: unified monotonic cloud_req_seq blocks bidirectional /v1/me vs /v1/workspaces inversions & cred 403 delegates to workspace GET" {
+  let env = AuthSimEnv::new()
+  let station = SimStation::new(env.rt)
+  let core = ClientCore::new("ws-bi", "ws-bi/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  let cs = CloudSync::new(env.sh, env.db, "https://cloud.example", token="tok-bi")
+  core.bind_cloud_sync(cs)
+
+  // Subcase A: `/v1/workspaces/ws-bi` (seq 1) and `/v1/me` (seq 2) in flight concurrently.
+  // `/v1/me` (seq 2) returns 200 with `ws-bi` FIRST -> stale `/v1/workspaces/ws-bi` (seq 1) 403 MUST be dropped!
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k("ws-bi", fn(_ : effect::Exit[CloudWorkspace]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_me_k(fn(_ : effect::Exit[CloudMe]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = env.rt.run_ready()
+  let ws_req1 = env.pending[0].0
+  let me_req2 = env.pending[1].0
+
+  env.answer_http(me_req2, 200, "{\"user\":{\"sub\":\"u1\",\"email\":\"a@b.c\"},\"workspaces\":[{\"id\":\"ws-bi\",\"name\":\"Bi WS\",\"role\":\"owner\"}]}")
+  let _ = env.rt.run_ready()
+  env.answer_http(ws_req1, 403, "{\"error\":\"stale_403\"}")
+  let _ = env.rt.run_ready()
+  debug_assert(!core.auth.is_revoked("ws-bi"), "stale seq-1 workspace 403 MUST NOT override newer seq-2 /v1/me 200")
+
+  // Subcase B: `/v1/me` (seq 3) and `/v1/workspaces/ws-bi` (seq 4) in flight concurrently.
+  // `/v1/workspaces/ws-bi` (seq 4) returns 403 FIRST (revokes ws-bi!) -> stale `/v1/me` (seq 3) 200 listing ws-bi MUST NOT resurrect it!
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_me_k(fn(_ : effect::Exit[CloudMe]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k("ws-bi", fn(_ : effect::Exit[CloudWorkspace]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = env.rt.run_ready()
+  let me_req3 = env.pending[2].0
+  let ws_req4 = env.pending[3].0
+
+  env.answer_http(ws_req4, 403, "{\"error\":\"revoked_now\"}")
+  let _ = env.rt.run_ready()
+  debug_assert(core.auth.is_revoked("ws-bi"), "seq-4 workspace 403 revoked ws-bi")
+
+  env.answer_http(me_req3, 200, "{\"user\":{\"sub\":\"u1\",\"email\":\"a@b.c\"},\"workspaces\":[{\"id\":\"ws-bi\",\"name\":\"Zombie Bi WS\",\"role\":\"owner\"}]}")
+  let _ = env.rt.run_ready()
+  debug_assert(core.auth.is_revoked("ws-bi"), "stale seq-3 /v1/me 200 MUST NOT un-revoke ws-bi")
+  match store::get_account_doc(env.db, "me") {
+    sql::SqlResult::Ok(Some(me_raw)) => debug_assert(!me_raw.contains("ws-bi"), "stale ws-bi scrubbed from persisted account_doc(me)")
+    _ => debug_assert(false, "me doc expected")
+  }
+
+  // Subcase C: `fetch_member_credential_k` 403 NEVER directly revokes; it clears cred cache & triggers GET /v1/workspaces/<ws>
+  let pend_c = env.pending.length()
+  let _ = env.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_member_credential_k("ws-cred", "dev-1", 1000L, fn(_ : effect::Exit[MemberCredential]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = env.rt.run_ready()
+  let cred_req = env.pending[pend_c].0
+  env.answer_http(cred_req, 403, "{\"error\":\"cred_denied\"}")
+  let _ = env.rt.run_ready()
+  debug_assert(!core.auth.is_revoked("ws-cred"), "cred 403 alone MUST NOT directly revoke ws-cred")
+  let mut verify_ws_req = 0L
+  for i in (pend_c + 1)..<env.pending.length() {
+    if env.pending[i].1 == "fetch" && j_str(env.pending[i].2, "url").ends_with("/v1/workspaces/ws-cred") {
+      verify_ws_req = env.pending[i].0
+    }
+  }
+  debug_assert(verify_ws_req > 0L, "cred 403 triggered authoritative GET /v1/workspaces/ws-cred")
+  env.answer_http(verify_ws_req, 403, "{\"error\":\"confirmed_revoked\"}")
+  let _ = env.rt.run_ready()
+  debug_assert(core.auth.is_revoked("ws-cred"), "authoritative workspace GET 403 revoked ws-cred")
+  core.stop()
+}
+
+// ── Test 13 (Block 6 #6): Cross-workspace attached station isolation ──
+
+test "auth_lifecycle 13: cross-workspace attach_station_transport binds true workspace, isolates revocation, and never unlocks another workspace latch" {
+  let env = AuthSimEnv::new()
+  let st_a = SimStation::new(env.rt)
+  let st_b = SimStation::new(env.rt)
+  st_a.snapshot_json = base_codec::json_obj([("chats", base_codec::json_arr([]))])
+  st_b.snapshot_json = base_codec::json_obj([("chats", base_codec::json_arr([]))])
+
+  let _ = env.db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-A"),
+    base_codec::json_str("{\"id\":\"ws-A\",\"name\":\"WS A\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+  let _ = env.db.run(sql_workspace_put(), params=[
+    base_codec::json_str("ws-B"),
+    base_codec::json_str("{\"id\":\"ws-B\",\"name\":\"WS B\",\"role\":\"owner\",\"stations\":[]}"),
+    base_codec::json_int64(1000L),
+  ])
+
+  let core = ClientCore::new("ws-A", "ws-A/st-a", env.rt, env.db, st_a.transport(), fn() -> Unit {})
+  core.attach_station_transport("ws-B/st-b", st_b.transport())
+
+  // Downgrade ws-A (`owner -> member`) while ws-B/st-b sends fresh `overview` at high authGen:
+  // ws-B/st-b reads MUST NOT unlock ws-A's downgrade latch!
+  let _ = core.update_workspace_role("ws-A", "member", confirm_workspace_doc=true)
+  debug_assert(core.is_workspace_downgrade_gated("ws-A"), "ws-A latch active")
+  match core.extra_events.get("ws-B/st-b") {
+    Some(ev_b) => {
+      debug_assert(ev_b.workspace == "ws-B", "extra_events bound to true workspace ws-B (NOT self.workspace ws-A!)")
+      let ov = wire::Event::{ name: "overview", data: "{\"id\":\"st-b\",\"name\":\"St B\"}", id: Some("eb1") }
+      let _ = ev_b.apply_sse_batch([ov], stream_auth_gen=Some(core.auth.workspace_auth_gen("ws-A")))
+    }
+    None => debug_assert(false, "expected ws-B/st-b extra_events")
+  }
+  match core.handle_wire("{\"id\":301,\"subscribe\":{\"topic\":\"profiles\",\"scope\":\"ws-A\"},\"keyed\":true}") {
+    Some((txt, _)) => debug_assert(txt.contains("\"waiting\":true"), "ws-B/st-b overview MUST NOT unlock ws-A latch")
+    None => debug_assert(false, "expected Waiting")
+  }
+
+  // Revoke ws-B -> blocks ws-B/st-b writes immediately while leaving ws-A completely intact!
+  core.revoke_workspace("ws-B")
+  debug_assert(core.auth.is_revoked("ws-B"), "ws-B revoked")
+  debug_assert(!core.auth.is_revoked("ws-A"), "ws-A unaffected by ws-B revocation")
+  match core.local_outbox.send_message(env.rt, 9, "ck-b1", "alice", "blocked", 2000L, station=Some("ws-B/st-b")) {
+    sql::SqlResult::Err(_) => ()
+    sql::SqlResult::Ok(_) => debug_assert(false, "revoked ws-B/st-b must refuse send_message")
+  }
+  core.stop()
+}
+
+// ── Test 14 (Block 6 #7 + Block 5): Device-level monotonic connSeq, single-vault isolation, headless handshake preservation, cold-start lock ──
+
+test "auth_lifecycle 14: device-level monotonic connSeq across accounts & read-only DB, single-vault isolation, handshake eviction guard, and cold-start lock" {
+  // 14a. Device-level connSeq strictly monotonic across different account DBs AND when persistence is read-only
+  let persisted = [0L]
+  let d1 = AuthGenTracker::open_with_device(
+    fn() -> Int64 { persisted[0] },
+    fn(v : Int64) -> Unit { persisted[0] = v },
+    now_ms=1700000001000L,
+  )
+  let d2 = AuthGenTracker::open_with_device(
+    fn() -> Int64 { persisted[0] },
+    fn(v : Int64) -> Unit { persisted[0] = v },
+    now_ms=1700000001000L,
+  )
+  // Simulate read-only persistence failure (save no-ops) with advancing wall clock -> STILL strictly monotonic!
+  let d3 = AuthGenTracker::open_with_device(
+    fn() -> Int64 { persisted[0] },
+    fn(_v : Int64) -> Unit {},
+    now_ms=1700000002000L,
+  )
+  debug_assert(d1.conn_seq >= 1700000001000000L, "d1 anchored at wall-clock microseconds")
+  debug_assert(d2.conn_seq > d1.conn_seq, "d2 strictly > d1 even within same ms")
+  debug_assert(d3.conn_seq > d2.conn_seq, "d3 strictly > d2 even if persistence is read-only")
+
+  // 14b. Single-vault `bump_vault(ws, "v1")` does NOT invalidate sibling vault `"v2"`
+  d1.ensure_workspace("ws-v")
+  let snap = AuthCapability::capture(d1)
+  let cap_v1 = snap.vault("ws-v", "v1")
+  let cap_v2 = snap.vault("ws-v", "v2")
+  let _ = d1.bump_vault("ws-v", vault_id="v1")
+  debug_assert(!cap_v1.is_valid(d1), "v1 invalidated by bump_vault(v1)")
+  debug_assert(cap_v2.is_valid(d1), "sibling vault v2 MUST NOT be invalidated by bump_vault(v1)")
+
+  // 14c. Headless `pending_wire_events` (>256) NEVER evicts the latest `{"id":0,"auth":...}` handshake
+  let env = AuthSimEnv::new()
+  let station = SimStation::new(env.rt)
+  let core = ClientCore::new("ws-evict", "ws-evict/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  let hs = core.emit_auth_handshake()
+  for i in 0..<280 {
+    core.emit_wire_out("{\"id\":" + (i + 1).to_string() + ",\"delta\":[]}")
+  }
+  let drained = core.drain_pending_wire_events()
+  debug_assert(drained.length() == 256, "pending_wire_events bounded to 256")
+  let mut kept_hs = false
+  for i in 0..<drained.length() {
+    if drained[i].0 == hs {
+      kept_hs = true
+      break
+    }
+  }
+  debug_assert(kept_hs, "latest {id:0, auth} handshake MUST NEVER be evicted from pending_wire_events")
+
+  // 14d. Cold-start first verified lock chain seeds digest WITHOUT spuriously bumping authGen/vaultGen
+  let alice_seed = make_seed(33)
+  let alice_key = ed25519_key_id(alice_seed)
+  let g_cold = match sign_lock_entry(
+    alice_seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-evict")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      ("body", form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("d"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(alice_key))])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ])),
+    ]),
+  ) {
+    Ok(e) => e
+    Err(e) => panic("cold genesis sign: " + e)
+  }
+  let cold_root = match lock::entry_hash(g_cold, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("cold root") }
+  match core.apply_lock_chain([g_cold], cold_root) {
+    Ok(_) => ()
+    Err(e) => panic("cold apply_lock_chain: " + e)
+  }
+  debug_assert(core.auth.workspace_auth_gen("ws-evict") == 1, "cold-start first lock MUST NOT spuriously bump authGen")
+  debug_assert(core.auth.vault_workspace_gen("ws-evict") == 1, "cold-start first lock MUST NOT spuriously bump vaultGen")
   core.stop()
 }

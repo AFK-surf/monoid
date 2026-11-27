@@ -422,20 +422,7 @@ fn runtime_topic_matches_boundary(
   topic : protocol::Topic,
   ev : sync::AuthBoundaryEvent,
 ) -> Bool {
-  if sess.core.auth.matches_topic(topic, ev) {
-    return true
-  }
-  if sync::is_device_global_topic(topic.name) || sync::is_aggregate_topic(topic.name) {
-    return false
-  }
-  match ev {
-    sync::AuthBoundaryEvent::Workspace(ws, _) | sync::AuthBoundaryEvent::WorkspaceAndVault(ws, _, _) =>
-    match protocol::topic_workspace(topic) {
-      Some(tws) => tws == ws
-      None => ws == sess.core.workspace
-    }
-    _ => false
-  }
+  sess.core.auth.matches_topic(topic, ev)
 }
 
 fn handle_runtime_auth_boundary(sess : RuntimeSession, ev : sync::AuthBoundaryEvent) -> Unit {
@@ -464,14 +451,14 @@ fn handle_runtime_auth_boundary(sess : RuntimeSession, ev : sync::AuthBoundaryEv
 fn handle_runtime_topic_confirmed(sess : RuntimeSession, ws : String, topic_name : String) -> Unit {
   for i in 0..<sess.runtime_subs.length() {
     let sub = sess.runtime_subs[i]
-    if sub.topic.name != topic_name {
+    if topic_name != "*" && sub.topic.name != topic_name {
       continue
     }
     let matches_ws = match protocol::topic_workspace(sub.topic) {
       Some(tws) => tws == ws
-      None => ws == sess.core.workspace
+      None => false
     }
-    if matches_ws {
+    if matches_ws && sess.core.is_topic_authorized(sub.topic) {
       sub.last_val = None
       match evaluate_runtime_topic(sess, sub.id, sub.topic) {
         Some(sev) => {
@@ -507,6 +494,19 @@ fn handle_runtime_workspace_revoked(sess : RuntimeSession, ws : String) -> Unit 
       }
     }
   }
+  // Clear pending MdStore writes and drop cached station MdStores belonging to `ws`
+  // so `flush_session_md_stores` can never write revoked markdown rows back into SQLite.
+  let md_keys = sess.md_stores.keys()
+  for i in 0..<md_keys.length() {
+    let st = md_keys[i]
+    if matches_st(st) {
+      match sess.md_stores.get(st) {
+        Some(ms) => ms.clear_pending()
+        None => ()
+      }
+      sess.md_stores.remove(st)
+    }
+  }
   let okeys = sess.station_online.keys()
   for i in 0..<okeys.length() {
     if matches_st(okeys[i]) {
@@ -514,75 +514,33 @@ fn handle_runtime_workspace_revoked(sess : RuntimeSession, ws : String) -> Unit 
     }
   }
   kept_purge_where(sess, fn(t : protocol::Topic) -> Bool {
-    match protocol::topic_workspace(t) {
+    match protocol::topic_revocation_workspace(t) {
       Some(tws) => tws == ws
-      None => !sync::is_device_global_topic(t.name)
+      None => false
     }
   })
+}
+
+fn handle_runtime_cloud_applied(sess : RuntimeSession, kind : String) -> Unit {
+  emit_topic_refresh(sess, "workspaces")
+  emit_topic_refresh(sess, "workspace")
+  emit_topic_refresh(sess, "stations")
+  emit_topic_refresh(sess, "chats")
+  emit_topic_refresh(sess, "workspaceMarks")
+  if kind == "workspace" {
+    emit_topic_refresh(sess, "profiles")
+    emit_topic_refresh(sess, "settings")
+  }
 }
 
 fn start_cloud_events_ws(sess : RuntimeSession, cs : sync::CloudSync) -> Unit {
   if cs.is_events_ws_running() {
     return
   }
-  cs.start_events_ws(fn(ev : sync::CloudEvent) -> Unit {
-    match ev {
-      sync::CloudEvent::WorkspacesChanged(_) => {
-        let _ = sess.core.rt.fork_quiet_named("cloud-ws:fetch-me", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-          cs.fetch_me_k(fn(ex : effect::Exit[sync::CloudMe]) -> Unit {
-            match ex {
-              effect::Exit::Succeeded(_) => {
-                emit_topic_refresh(sess, "workspaces")
-                emit_topic_refresh(sess, "workspace")
-                emit_topic_refresh(sess, "stations")
-                emit_topic_refresh(sess, "chats")
-                emit_topic_refresh(sess, "workspaceMarks")
-              }
-              _ => ()
-            }
-            fk(effect::Exit::Succeeded(()))
-          })
-        })
-      }
-      sync::CloudEvent::WorkspaceChanged(wid, _) => {
-        let _ = sess.core.rt.fork_quiet_named("cloud-ws:fetch-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-          cs.fetch_workspace_k(wid, fn(wex : effect::Exit[sync::CloudWorkspace]) -> Unit {
-            match wex {
-              effect::Exit::Succeeded(_) => {
-                emit_topic_refresh(sess, "workspaces")
-                emit_topic_refresh(sess, "workspace")
-                emit_topic_refresh(sess, "stations")
-                emit_topic_refresh(sess, "chats")
-                emit_topic_refresh(sess, "profiles")
-                emit_topic_refresh(sess, "settings")
-                emit_topic_refresh(sess, "workspaceMarks")
-              }
-              _ => ()
-            }
-            fk(effect::Exit::Succeeded(()))
-          })
-        })
-      }
-      sync::CloudEvent::Other(name, payload) => {
-        if name == "workspace_revoked" || name == "revoked" || name == "member_removed" {
-          let wid = match opt_str_param(payload, "workspace") {
-            Some(s) => if s.length() > 0 { s } else {
-              match opt_str_param(payload, "workspaceId") { Some(w) => w; None => "" }
-            }
-            None => match opt_str_param(payload, "workspaceId") { Some(w) => w; None => "" }
-          }
-          if wid.length() > 0 {
-            let _ = sess.core.rt.fork_quiet_named("cloud-ws:verify-revoke:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-              cs.fetch_workspace_k(wid, fn(_ : effect::Exit[sync::CloudWorkspace]) -> Unit {
-                fk(effect::Exit::Succeeded(()))
-              })
-            })
-          }
-        }
-      }
-      _ => ()
-    }
-  })
+  // `CloudSync::start_events_ws` is the single owner of `/v1/events` WebSocket reconciliation
+  // (`WorkspacesChanged` -> `fetch_me_k`, `WorkspaceChanged` -> `fetch_workspace_k`, `on_open` -> `fetch_me_k`).
+  // Runtime refreshes view subscriptions via `ClientCore::set_on_cloud_applied` (zero duplicate HTTP fetches).
+  cs.start_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
 }
 
 fn remove_runtime_sub(sess : RuntimeSession, id : Int64) -> Option[RuntimeSub] {
@@ -1157,7 +1115,36 @@ pub extern "C" fn pion_core_runtime_start(
   } else {
     None
   }
-  let core = sync::ClientCore::new(default_ws, default_st, rt, acct.db, transport, fn() -> Unit {})
+  // Device-level strictly monotonic `connSeq` stored outside per-account SQLite via atomic
+  // Rust Shell `storage.set("device/conn_seq")`, with wall-clock lower bound fallback (`now_ms * 1000`).
+  let prev_device_conn : Int64 = match read_storage_json(sh, "device/conn_seq") {
+    Some(j) =>
+    match base_codec::json_get(j, "conn") {
+      Some(base_codec::Json::Num(n, repr)) =>
+      if repr.length() > 0 && !repr.contains(".") {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => v
+          None => n.to_int64()
+        }
+      } else {
+        n.to_int64()
+      }
+      _ => 0L
+    }
+    None => 0L
+  }
+  let device_conn_seq = store::next_monotonic_conn_seq(prev_device_conn, now_ms=pion_core_wall_now_ms())
+  let _ = write_storage_json(sh, "device/conn_seq", base_codec::json_obj([("conn", base_codec::json_int64(device_conn_seq))]))
+  let core = sync::ClientCore::new(
+    default_ws,
+    default_st,
+    rt,
+    acct.db,
+    transport,
+    fn() -> Unit {},
+    conn_seq=Some(device_conn_seq),
+    has_live_transport=is_loopback_http_url(origin),
+  )
   core.utc_offset_min = pion_core_utc_offset_min(pion_core_wall_now_ms())
   // Seed SQLite `account_doc("prefs")` from host `device/prefs` on first boot if SQLite prefs are empty.
   match store::get_device_prefs(acct.db) {
@@ -1243,6 +1230,9 @@ pub extern "C" fn pion_core_runtime_start(
   core.set_on_topic_confirmed(fn(ws : String, topic_name : String) -> Unit {
     handle_runtime_topic_confirmed(sess, ws, topic_name)
   })
+  core.set_on_cloud_applied(fn(kind : String) -> Unit {
+    handle_runtime_cloud_applied(sess, kind)
+  })
   g_session[0] = Some(sess)
   // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
   let _ = core.emit_auth_handshake()
@@ -1307,6 +1297,10 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
     Some(t) => t
     None => ""
   }
+  let refresh_tok = match opt_str_param(params, "refreshToken") {
+    Some(t) => t
+    None => ""
+  }
   let want_ws = opt_str_param(params, "workspace")
   if req_origin.length() == 0 {
     let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing cloud_origin" })
@@ -1316,14 +1310,22 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
   }
   let cs = match sess.cloud {
     Some(existing) => {
-      if req_origin != sess.origin && existing.is_events_ws_running() {
+      let origin_changed = req_origin != sess.origin
+      let token_changed = token.length() > 0 && token != existing.token()
+      if (origin_changed || token_changed) && existing.is_events_ws_running() {
         existing.stop()
       }
       existing.set_origin_and_token(req_origin, token)
+      if refresh_tok.length() > 0 {
+        existing.set_refresh_token(refresh_tok)
+      }
       existing
     }
     None => {
       let created = sync::CloudSync::new(sess.sh, sess.db, req_origin, token=token)
+      if refresh_tok.length() > 0 {
+        created.set_refresh_token(refresh_tok)
+      }
       sess.cloud = Some(created)
       created
     }
@@ -1682,7 +1684,11 @@ pub extern "C" fn pion_core_runtime_send(
       match protocol::wire_error_id(raw) {
         Some(err_id) => {
           let ev = protocol::CoreEvent::Err(err_id, protocol::CoreError::{ code: "bad_message", message: msg })
-          let (out_j, out_b) = protocol::encode_core_event(ev)
+          let (out_j, out_b) = if base_codec::json_get(raw, "subscribe").is_some() {
+            protocol::encode_sub_event_with_auth(ev, protocol::WireOutGen::{ conn: sess.core.auth.conn_seq, auth_gen: None, vault_gen: None })
+          } else {
+            protocol::encode_core_event(ev)
+          }
           emit_wire(out_j, payload=out_b)
         }
         None => ()
@@ -1815,20 +1821,30 @@ pub extern "C" fn pion_core_runtime_send(
                   None => ""
                 }
                 let cloud_ref = sess.cloud
-                let get_cred = fn(dev_id : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
-                  if static_cred.length() > 0 {
+                let get_cred = fn(dev_id : String, fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+                  if static_cred.length() > 0 && !fresh {
                     ck(effect::Exit::Succeeded(static_cred))
                     return
                   }
                   match cloud_ref {
-                    Some(cs) => cs.fetch_member_credential_k(target_ws, dev_id, pion_core_wall_now_ms() / 1000.to_int64(), fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
-                      match ex {
-                        effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
-                        effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
-                        effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
-                      }
-                    })
-                    None => ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
+                    Some(cs) => cs.fetch_member_credential_k(
+                      target_ws,
+                      dev_id,
+                      pion_core_wall_now_ms() / 1000.to_int64(),
+                      fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+                        match ex {
+                          effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
+                          effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                        }
+                      },
+                      fresh=fresh,
+                    )
+                    None => if static_cred.length() > 0 {
+                      ck(effect::Exit::Succeeded(static_cred))
+                    } else {
+                      ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
+                    }
                   }
                 }
                 let core_ref = sess.core
@@ -1850,7 +1866,7 @@ pub extern "C" fn pion_core_runtime_send(
                 }
                 let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
                 sess.mesh_transports.set(target_st, ctrl)
-                sess.core.attach_station_transport(target_st, tr)
+                sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
                 mode = "mesh"
               }
               None => {

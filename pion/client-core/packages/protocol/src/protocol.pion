@@ -678,7 +678,64 @@ pub fn is_aggregate_topic(name : String) -> Bool {
   name == "workspaces" || name == "lockPrompts" || name == "downloads"
 }
 
-/// Extract the workspace id a topic belongs to (`apps/mbui/src/core/client.mbt:81-102` + `composer` key).
+/// Held Data & role-sensitive workspace views gated by the role-downgrade confirmation latch
+/// (`client/core-ts/src/core.ts:421-437` `holds(topic)` + Pion role-dependent projections).
+/// Control-plane, derived non-held, and pure local topics (`accounts`, `workspaces`, `workspaceMarks`,
+/// `status`, `notices`, `notify`, `presets`, `otherPresets`, `stars`, `boardDrafts`, `decisions`,
+/// `newChat`, `driveTransfers`, `lock`, `lockPrompts`, `vaults`, `vaultItems`, `vaultUses`,
+/// `vaultApprovals`, `downloads`, `draft`, `composer`, `drivePlace`, and device-global topics)
+/// are intentionally excluded so role downgrades never stall them.
+pub fn is_held_or_role_gated_topic(name : String) -> Bool {
+  // TS `data.ts:51` HELD (excluding `draft`, `prefs`, `drivePlace`)
+  name == "workspace" ||
+  name == "overview" ||
+  name == "session" ||
+  name == "chatRows" ||
+  name == "sessions" ||
+  name == "threads" ||
+  name == "archivedRows" ||
+  name == "jobs" ||
+  name == "job" ||
+  name == "slackApp" ||
+  name == "stationUsage" ||
+  name == "loginSessions" ||
+  name == "admin" ||
+  name == "drive" ||
+  // Role-sensitive & station-backed workspace views in Pion
+  name == "profiles" ||
+  name == "profilesOverview" ||
+  name == "profile" ||
+  name == "settings" ||
+  name == "station" ||
+  name == "stationPart" ||
+  name == "stations" ||
+  name == "machineLogins" ||
+  name == "machineLogin" ||
+  name == "machineLoginScreen" ||
+  name == "adminList" ||
+  name == "adminItem" ||
+  name == "adminOverview" ||
+  name == "adminRelays" ||
+  name == "models" ||
+  name == "fleet" ||
+  name == "usage" ||
+  name == "agentRates" ||
+  name == "stationUpdates" ||
+  name == "chats" ||
+  name == "chat" ||
+  name == "chatRow" ||
+  name == "archive" ||
+  name == "search" ||
+  name == "chatSearch" ||
+  name == "railCard" ||
+  name == "chatJobs" ||
+  name == "longJobs" ||
+  name == "chatOutline"
+}
+
+/// Extract the workspace id a topic belongs to, 1:1 with `apps/mbui/src/core/client.mbt:81-102`
+/// and `client/core-ts/src/auth-gen.ts:31-55` (`topicScopeOf`).
+/// Never guesses a workspace for parameterless topics or `composer` (`key` only).
 pub fn topic_workspace(t : Topic) -> Option[String] {
   match t.param("workspace") {
     Some(base_codec::Json::Str(w)) => if w.length() > 0 { return Some(w) }
@@ -698,31 +755,61 @@ pub fn topic_workspace(t : Topic) -> Option[String] {
     }
     _ => ()
   }
+  None
+}
+
+/// Extract the explicit station address targeted by `t` (for any topic, including view/composer topics).
+pub fn topic_target_station(t : Topic) -> Option[String] {
+  match t.param("station") {
+    Some(base_codec::Json::Str(st)) => if st.length() > 0 { return Some(st) }
+    _ => ()
+  }
   if t.name == "composer" {
     match t.param("key") {
-      Some(base_codec::Json::Str(k)) => {
-        if k.starts_with("new:") {
-          let rest = k.slice(4, k.length())
-          if rest.length() > 0 {
-            return Some(rest)
+      Some(base_codec::Json::Str(k)) =>
+      if !k.starts_with("new:") {
+        match k.index_of(":") {
+          cidx if cidx > 0 => {
+            let st = k.slice(0, cidx)
+            if st.length() > 0 { return Some(st) }
           }
-        } else {
-          match k.index_of(":") {
-            cidx if cidx > 0 => {
-              let st = k.slice(0, cidx)
-              match st.index_of("/") {
-                sidx if sidx > 0 => return Some(st.slice(0, sidx))
-                _ => if st.length() > 0 { return Some(st) }
-              }
-            }
-            _ => ()
-          }
+          _ => ()
         }
       }
       _ => ()
     }
   }
   None
+}
+
+/// Extract workspace ownership for revocation checks & kept-cache purging (also inspecting `composer` key).
+pub fn topic_revocation_workspace(t : Topic) -> Option[String] {
+  match topic_workspace(t) {
+    Some(w) => if w == "all" || w == "*" { None } else { Some(w) }
+    None =>
+    if t.name == "composer" {
+      match t.param("key") {
+        Some(base_codec::Json::Str(k)) =>
+        if !k.starts_with("new:") {
+          match k.index_of(":") {
+            cidx if cidx > 0 => {
+              let st = k.slice(0, cidx)
+              match st.index_of("/") {
+                sidx if sidx > 0 => Some(st.slice(0, sidx))
+                _ => if st.length() > 0 { Some(st) } else { None }
+              }
+            }
+            _ => None
+          }
+        } else {
+          None
+        }
+        _ => None
+      }
+    } else {
+      None
+    }
+  }
 }
 
 /// Extract the vault id a vault topic belongs to (`apps/mbui/src/core/client.mbt:105-114`).
@@ -1209,7 +1296,7 @@ pub fn Slice1Router::purge_workspace_kept(
     if is_aggregate_topic(t.name) || t.name == "workspaceMarks" {
       return true
     }
-    match topic_workspace(t) {
+    match topic_revocation_workspace(t) {
       Some(w) => {
         if w == ws {
           return true
