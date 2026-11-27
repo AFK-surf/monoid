@@ -10,8 +10,17 @@ pub let COMMA_TASK_CHANNEL : String = "TASK"
 pub let COMMA_PING_MS : Int64 = 15000.to_int64()
 pub let COMMA_STALE_MS : Int64 = 45000.to_int64()
 pub let COMMA_FILE_PART_BYTES : Int = 262144
+pub let COMMA_READ_FILE_MAX_BYTES : Int64 = 52428800.to_int64()
 pub let COMMA_POST_FILES_MAX : Int = 20
 pub let COMMA_TASKS_VERSION : Int = 2
+pub let COMMA_ASK_DEFAULT_TIMEOUT_MS : Int64 = 30000.to_int64()
+pub let COMMA_FAST_SETTLE_MS : Int64 = 1000.to_int64()
+pub let COMMA_UNREAD_RETRY_MS : Int64 = 5000.to_int64()
+pub let COMMA_UNREAD_RETRY_MAX_MS : Int64 = 60000.to_int64()
+pub let COMMA_UNREAD_RETRY_MAX_ATTEMPTS : Int = 6
+pub let COMMA_PEER_READ_FILE : String = "comma.read_file"
+pub let COMMA_PEER_CHANGED : String = "comma.changed"
+pub let COMMA_PEER_SAY : String = "comma.say"
 
 // ---------------------------------------------------------------------------
 // URL (origin-only, matching `new URL("/v1/connect", server)`), Auth & Helpers
@@ -226,6 +235,20 @@ pub struct CommaPutBatch {
 // Comma Connector (WS JSON-RPC state machine + task registry + file sync)
 // ---------------------------------------------------------------------------
 
+pub struct CommaPendingAsk {
+  pub id : String
+  pub method : String
+  pub deadline_ms : Int64
+}
+
+pub struct CommaReadFileReq {
+  pub req_id : String
+  pub task : String
+  pub seq : Int64
+  pub file : String
+  pub offset : Int64
+}
+
 pub struct CommaConnector {
   pub connect_id : String
   pub server : String
@@ -237,10 +260,13 @@ pub struct CommaConnector {
   pub mut ws_handle : Option[Int64]
   pub mut machine : SocketMachine
   pub mut dedupe : InboundDedupe
+  pub mut unread_retry : CommaUnreadRetry
+  pub mut supports_read_file : Bool
   mut tasks : Map[String, CommaTaskState]
   mut task_order : Array[String]
   mut by_thread : Map[String, String]
   mut posted_files : Map[String, PostedEntry]
+  mut pending_asks : Map[String, CommaPendingAsk]
   mut next_req_id : Int64
 }
 
@@ -266,10 +292,13 @@ pub fn CommaConnector::new(
     ws_handle: None,
     machine: SocketMachine::new("comma", ReconnectPolicy::new(ping_ms, stale_ms)),
     dedupe: InboundDedupe::new(),
+    unread_retry: CommaUnreadRetry::new(),
+    supports_read_file: true,
     tasks: Map::new(),
     task_order: [],
     by_thread: Map::new(),
     posted_files: Map::new(),
+    pending_asks: Map::new(),
     next_req_id: 1.to_int64(),
   }
 }
@@ -431,11 +460,18 @@ fn comma_build_hello(self : CommaConnector) -> base_codec::Json {
   }
   let req_id = "req-" + self.next_req_id.to_string()
   self.next_req_id = self.next_req_id + 1.to_int64()
+  let hello_params : Array[(String, base_codec::Json)] = [
+    ("tasks", base_codec::json_arr(list)),
+    ("task_say_cas", base_codec::json_int(1)),
+  ]
+  if self.supports_read_file {
+    hello_params.push(("task_read_file", base_codec::json_int(1)))
+  }
   base_codec::json_obj([
     ("id", base_codec::json_str(req_id)),
     ("type", base_codec::json_str("request")),
     ("method", base_codec::json_str("task.hello")),
-    ("params", base_codec::json_obj([("tasks", base_codec::json_arr(list))])),
+    ("params", base_codec::json_obj(hello_params)),
   ])
 }
 
@@ -446,6 +482,8 @@ pub enum CommaStep {
   TaskInvited(String, String)
   /// Caller MUST process `batch.events` and then call `commit_put(transport, batch)`.
   TaskPut(CommaPutBatch)
+  /// Caller reads bounded chunk of recorded chat upload and replies via `respond_read_file`.
+  TaskReadFile(CommaReadFileReq)
   TaskLeft(String)
   Response(String, base_codec::Json)
   ErrorResponse(String, String)
@@ -471,6 +509,7 @@ pub fn CommaConnector::handle_frame(
         }
         None => {}
       }
+      let _ = self.close_asks()
       let err = if reason != "" { Some(reason) } else { None }
       self.machine.on_close(now, err)
       CommaStep::Closed(err)
@@ -502,11 +541,13 @@ pub fn CommaConnector::handle_frame(
           }
           None => {}
         }
+        let _ = self.close_asks()
         self.machine.on_close(now, None)
         return CommaStep::Closed(None)
       }
       if ftype == "response" {
         let id = json_str_field(j, "id")
+        let _ = self.settle_ask(id)
         let res = match base_codec::json_get(j, "result") {
           Some(r) => r
           None => base_codec::json_null()
@@ -515,6 +556,7 @@ pub fn CommaConnector::handle_frame(
       }
       if ftype == "error" {
         let id = json_str_field(j, "id")
+        let _ = self.settle_ask(id)
         let err = json_str_field(j, "error")
         return CommaStep::ErrorResponse(id, if err != "" { err } else { "Comma refused it" })
       }
@@ -914,6 +956,91 @@ pub fn CommaConnector::handle_frame(
         return CommaStep::NoOp
       }
 
+      if method == "task.read_file" {
+        if !self.supports_read_file {
+          comma_send_json(
+            self,
+            transport,
+            base_codec::json_obj([
+              ("id", base_codec::json_str(id)),
+              ("type", base_codec::json_str("error")),
+              ("error", base_codec::json_str("task.read_file is not something this station does in this workspace")),
+            ]),
+          )
+          return CommaStep::NoOp
+        }
+        let seq = match json_safe_count_field(params, "seq") {
+          Some(v) => {
+            if v <= 0.to_int64() {
+              comma_send_json(
+                self,
+                transport,
+                base_codec::json_obj([
+                  ("id", base_codec::json_str(id)),
+                  ("type", base_codec::json_str("error")),
+                  ("error", base_codec::json_str("seq must be a positive integer")),
+                ]),
+              )
+              return CommaStep::NoOp
+            }
+            v
+          }
+          None => {
+            comma_send_json(
+              self,
+              transport,
+              base_codec::json_obj([
+                ("id", base_codec::json_str(id)),
+                ("type", base_codec::json_str("error")),
+                ("error", base_codec::json_str("seq must be a positive integer")),
+              ]),
+            )
+            return CommaStep::NoOp
+          }
+        }
+        let file = json_str_field(params, "file")
+        if str_trim(file) == "" {
+          comma_send_json(
+            self,
+            transport,
+            base_codec::json_obj([
+              ("id", base_codec::json_str(id)),
+              ("type", base_codec::json_str("error")),
+              ("error", base_codec::json_str("file is required")),
+            ]),
+          )
+          return CommaStep::NoOp
+        }
+        let offset = match base_codec::json_get(params, "offset") {
+          None | Some(base_codec::Json::Null) => 0.to_int64()
+          Some(raw_off) => match json_safe_count(raw_off) {
+            Some(v) => v
+            None => {
+              comma_send_json(
+                self,
+                transport,
+                base_codec::json_obj([
+                  ("id", base_codec::json_str(id)),
+                  ("type", base_codec::json_str("error")),
+                  ("error", base_codec::json_str("offset must be a non-negative integer")),
+                ]),
+              )
+              return CommaStep::NoOp
+            }
+          }
+        }
+        let task = json_str_field(params, "task")
+        return CommaStep::TaskReadFile(
+          CommaReadFileReq::{
+            req_id: id,
+            task: task,
+            seq: seq,
+            file: file,
+            offset: offset,
+          },
+        )
+      }
+
       comma_send_json(
         self,
         transport,
@@ -993,6 +1120,7 @@ pub fn CommaConnector::send_post(
   }
   let req_id = "req-" + self.next_req_id.to_string()
   self.next_req_id = self.next_req_id + 1.to_int64()
+  self.register_ask(req_id, "task.post", (transport.now_ms)(), COMMA_ASK_DEFAULT_TIMEOUT_MS)
   comma_send_json(
     self,
     transport,
@@ -1004,4 +1132,366 @@ pub fn CommaConnector::send_post(
     ]),
   )
   Ok(req_id)
+}
+
+// ---------------------------------------------------------------------------
+// Outbound RPC Ask Timeout Cancellation (`#8908`) & `task.read_file` Reply (`#9001`)
+// ---------------------------------------------------------------------------
+
+pub fn CommaConnector::register_ask(
+  self : CommaConnector,
+  req_id : String,
+  method : String,
+  now_ms : Int64,
+  timeout_ms : Int64 = COMMA_ASK_DEFAULT_TIMEOUT_MS,
+) -> Unit {
+  if req_id == "" {
+    return
+  }
+  let eff_ms = if timeout_ms > 0.to_int64() { timeout_ms } else { COMMA_ASK_DEFAULT_TIMEOUT_MS }
+  self.pending_asks.set(
+    req_id,
+    CommaPendingAsk::{
+      id: req_id,
+      method: method,
+      deadline_ms: now_ms + eff_ms,
+    },
+  )
+}
+
+/// Immediately cancels the timeout entry for `req_id` upon settlement (`#8908`).
+pub fn CommaConnector::settle_ask(self : CommaConnector, req_id : String) -> Bool {
+  if self.pending_asks.contains(req_id) {
+    self.pending_asks.remove(req_id)
+    true
+  } else {
+    false
+  }
+}
+
+/// Cancels all in-flight ask timers immediately on socket close (`#8908`).
+pub fn CommaConnector::close_asks(self : CommaConnector) -> Array[CommaPendingAsk] {
+  let out : Array[CommaPendingAsk] = []
+  let keys = self.pending_asks.keys()
+  for i in 0..<keys.length() {
+    match self.pending_asks.get(keys[i]) {
+      Some(a) => out.push(a)
+      None => ()
+    }
+  }
+  self.pending_asks.clear()
+  out
+}
+
+pub fn CommaConnector::pending_ask_count(self : CommaConnector) -> Int {
+  self.pending_asks.length()
+}
+
+/// Returns and removes any asks whose timeout expired at `now_ms`.
+pub fn CommaConnector::poll_expired_asks(
+  self : CommaConnector,
+  now_ms : Int64,
+) -> Array[(String, String)] {
+  let expired : Array[(String, String)] = []
+  let keys = self.pending_asks.keys()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match self.pending_asks.get(k) {
+      Some(a) => {
+        if now_ms >= a.deadline_ms {
+          self.pending_asks.remove(k)
+          expired.push((a.id, "Comma did not answer " + a.method + " in time"))
+        }
+      }
+      None => ()
+    }
+  }
+  expired
+}
+
+pub fn CommaConnector::respond_read_file(
+  self : CommaConnector,
+  transport : ConnectTransport,
+  req_id : String,
+  result : base_codec::Json,
+) -> Unit {
+  comma_send_json(
+    self,
+    transport,
+    base_codec::json_obj([
+      ("id", base_codec::json_str(req_id)),
+      ("type", base_codec::json_str("response")),
+      ("result", result),
+    ]),
+  )
+}
+
+pub fn CommaConnector::respond_error(
+  self : CommaConnector,
+  transport : ConnectTransport,
+  req_id : String,
+  message : String,
+) -> Unit {
+  comma_send_json(
+    self,
+    transport,
+    base_codec::json_obj([
+      ("id", base_codec::json_str(req_id)),
+      ("type", base_codec::json_str("error")),
+      ("error", base_codec::json_str(message)),
+    ]),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Cross-Station Comma Sync Retry State Machines (`#8886`)
+// ---------------------------------------------------------------------------
+
+pub fn comma_peer_change_retry_ms() -> Array[Int64] {
+  [2000.to_int64(), 5000.to_int64(), 15000.to_int64()]
+}
+
+pub struct PeerChangeDispatch {
+  pub workspace : String
+  pub generation : Int64
+  pub targets : Option[Array[String]]
+  pub attempt : Int
+}
+
+struct PeerChangeRetryEntry {
+  generation : Int64
+  targets : Option[Array[String]]
+  attempt : Int
+  due_ms : Int64
+}
+
+/// Coalesces local chat changes over `settle_ms` and retries failed `comma.changed`
+/// peer notifications or roster lookups with bounded backoff `[2s, 5s, 15s]`
+/// (1:1 with `station/src/comma/peer.ts` `peerChangeNotifier`, `#8886`).
+pub struct PeerChangeNotifier {
+  pub settle_ms : Int64
+  pub retry_ms : Array[Int64]
+  mut closed : Bool
+  mut generation : Int64
+  mut settle_due_ms : Option[Int64]
+  retries : Map[String, PeerChangeRetryEntry]
+}
+
+pub fn PeerChangeNotifier::new(
+  settle_ms : Int64 = COMMA_FAST_SETTLE_MS,
+  retry_ms : Array[Int64] = [],
+) -> PeerChangeNotifier {
+  let eff_retries = if retry_ms.length() > 0 { retry_ms } else { comma_peer_change_retry_ms() }
+  PeerChangeNotifier::{
+    settle_ms: if settle_ms >= 0.to_int64() { settle_ms } else { COMMA_FAST_SETTLE_MS },
+    retry_ms: eff_retries,
+    closed: false,
+    generation: 0.to_int64(),
+    settle_due_ms: None,
+    retries: Map::new(),
+  }
+}
+
+pub fn PeerChangeNotifier::nudge(self : PeerChangeNotifier, now_ms : Int64) -> Unit {
+  if self.closed || self.settle_due_ms is Some(_) {
+    return
+  }
+  self.settle_due_ms = Some(now_ms + self.settle_ms)
+}
+
+pub fn PeerChangeNotifier::poll_due(
+  self : PeerChangeNotifier,
+  now_ms : Int64,
+  workspaces : Array[String],
+) -> Array[PeerChangeDispatch] {
+  let out : Array[PeerChangeDispatch] = []
+  if self.closed {
+    return out
+  }
+  match self.settle_due_ms {
+    Some(due) => {
+      if now_ms >= due {
+        self.settle_due_ms = None
+        self.generation = self.generation + 1.to_int64()
+        self.retries.clear()
+        let seen : Map[String, Bool] = Map::new()
+        for i in 0..<workspaces.length() {
+          let ws = workspaces[i]
+          if ws == "" || seen.contains(ws) {
+            continue
+          }
+          seen.set(ws, true)
+          out.push(
+            PeerChangeDispatch::{
+              workspace: ws,
+              generation: self.generation,
+              targets: None,
+              attempt: 0,
+            },
+          )
+        }
+        return out
+      }
+    }
+    None => ()
+  }
+  let keys = self.retries.keys()
+  for i in 0..<keys.length() {
+    let ws = keys[i]
+    match self.retries.get(ws) {
+      Some(r) => {
+        if r.generation != self.generation {
+          self.retries.remove(ws)
+        } else if now_ms >= r.due_ms {
+          self.retries.remove(ws)
+          out.push(
+            PeerChangeDispatch::{
+              workspace: ws,
+              generation: r.generation,
+              targets: r.targets,
+              attempt: r.attempt,
+            },
+          )
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn PeerChangeNotifier::schedule_retry(
+  self : PeerChangeNotifier,
+  workspace : String,
+  targets : Option[Array[String]],
+  attempt : Int,
+  generation : Int64,
+  now_ms : Int64,
+) -> Bool {
+  if self.closed || generation != self.generation {
+    return false
+  }
+  if attempt < 0 || attempt >= self.retry_ms.length() {
+    return false
+  }
+  let delay = self.retry_ms[attempt]
+  self.retries.set(
+    workspace,
+    PeerChangeRetryEntry::{
+      generation: generation,
+      targets: targets,
+      attempt: attempt + 1,
+      due_ms: now_ms + delay,
+    },
+  )
+  true
+}
+
+pub fn PeerChangeNotifier::close(self : PeerChangeNotifier) -> Unit {
+  if self.closed {
+    return
+  }
+  self.closed = true
+  self.generation = self.generation + 1.to_int64()
+  self.settle_due_ms = None
+  self.retries.clear()
+}
+
+pub fn PeerChangeNotifier::pending_retry_count(self : PeerChangeNotifier) -> Int {
+  self.retries.length()
+}
+
+/// Bounded exponential backoff retry for unread workspace peers in `CommaStats`
+/// (`5s` up to `60s`, max 6 attempts) + immediate `rebuild_if_unread` on reconnect
+/// (1:1 with `station/src/comma/stats.ts` & `workspace-index.ts`, `#8886`).
+pub struct CommaUnreadRetry {
+  pub base_ms : Int64
+  pub max_ms : Int64
+  pub max_attempts : Int
+  pub mut attempts : Int
+  pub mut has_unread : Bool
+  pub mut next_retry_ms : Option[Int64]
+  pub mut closed : Bool
+}
+
+pub fn CommaUnreadRetry::new(
+  base_ms : Int64 = COMMA_UNREAD_RETRY_MS,
+  max_ms : Int64 = COMMA_UNREAD_RETRY_MAX_MS,
+  max_attempts : Int = COMMA_UNREAD_RETRY_MAX_ATTEMPTS,
+) -> CommaUnreadRetry {
+  CommaUnreadRetry::{
+    base_ms: if base_ms > 0.to_int64() { base_ms } else { COMMA_UNREAD_RETRY_MS },
+    max_ms: if max_ms > 0.to_int64() { max_ms } else { COMMA_UNREAD_RETRY_MAX_MS },
+    max_attempts: if max_attempts > 0 { max_attempts } else { COMMA_UNREAD_RETRY_MAX_ATTEMPTS },
+    attempts: 0,
+    has_unread: false,
+    next_retry_ms: None,
+    closed: false,
+  }
+}
+
+pub fn CommaUnreadRetry::on_fresh_event(self : CommaUnreadRetry) -> Unit {
+  self.attempts = 0
+}
+
+pub fn CommaUnreadRetry::on_build_result(
+  self : CommaUnreadRetry,
+  unread_count : Int,
+  read_failed : Bool,
+  now_ms : Int64,
+) -> Option[Int64] {
+  self.next_retry_ms = None
+  if self.closed {
+    return None
+  }
+  if unread_count > 0 || read_failed {
+    self.has_unread = true
+    if self.attempts >= self.max_attempts {
+      return None
+    }
+    let mut factor = 1.to_int64()
+    for _ in 0..<self.attempts {
+      factor = factor * 2.to_int64()
+    }
+    let raw_delay = self.base_ms * factor
+    let delay = if raw_delay > self.max_ms { self.max_ms } else { raw_delay }
+    self.attempts = self.attempts + 1
+    self.next_retry_ms = Some(now_ms + delay)
+    Some(delay)
+  } else {
+    self.has_unread = false
+    self.attempts = 0
+    None
+  }
+}
+
+pub fn CommaUnreadRetry::is_due(self : CommaUnreadRetry, now_ms : Int64) -> Bool {
+  if self.closed {
+    return false
+  }
+  match self.next_retry_ms {
+    Some(due) => {
+      if now_ms >= due {
+        self.next_retry_ms = None
+        true
+      } else {
+        false
+      }
+    }
+    None => false
+  }
+}
+
+pub fn CommaUnreadRetry::rebuild_if_unread(self : CommaUnreadRetry) -> Bool {
+  if self.closed || !self.has_unread {
+    return false
+  }
+  self.attempts = 0
+  self.next_retry_ms = None
+  true
+}
+
+pub fn CommaUnreadRetry::close(self : CommaUnreadRetry) -> Unit {
+  self.closed = true
+  self.next_retry_ms = None
 }

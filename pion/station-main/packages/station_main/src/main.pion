@@ -732,17 +732,49 @@ fn run_internal_replica_restore(argv : Array[String]) -> Int {
     return 2
   }
   // 1:1 with Node `--builder replica-restore`:
-  // Metadata-only existence check (never reads whole `stillfail.db` into memory);
-  // initialize empty schema if target DB does not exist yet, then hand sole ownership of
-  // `<data>/restore/` and `<data>/replica/restored.json` to `builders_replica::take_back`.
-  if station_sys::lstat_raw(db) is None {
-    let _ = station_sys::register_sqlite_js_lower()
-    match station_store::Store::open(db) {
-      Ok(st_init) => st_init.close()
-      Err(se) => {
-        let _ = host_shim::write_stderr_line("internal-replica-restore: failed to init target db: " + se.message)
+  // Guard against orphan WAL / zero-byte DB with nonempty WAL, ensure target schema via
+  // `ensure_restore_target_schema` (handles empty DB & v12->v13 upgrades with WAL/busy_timeout),
+  // then hand sole ownership of `<data>/restore/` and `<data>/replica/restored.json` to
+  // `builders_replica::take_back`.
+  let db_stat = station_sys::lstat_raw(db)
+  let wal_nonempty = file_is_nonempty(db + "-wal")
+  match db_stat {
+    None =>
+    if wal_nonempty {
+      let _ = host_shim::write_stderr_line("internal-replica-restore: orphan_wal_without_db, preserving restore/ready.json")
+      return 1
+    }
+    Some(raw) =>
+    match parse_stat_file_size(raw) {
+      Some(sz) =>
+      if sz == 0L && wal_nonempty {
+        let _ = host_shim::write_stderr_line("internal-replica-restore: zero_byte_db_with_nonempty_wal, preserving restore/ready.json")
         return 1
       }
+      None => ()
+    }
+  }
+  let existed_before = db_stat is Some(_)
+  let _ = station_sys::register_sqlite_js_lower()
+  match station_store::ensure_restore_target_schema(db, wait_ms=2000, now_ms=now_ms) {
+    Ok(()) => ()
+    Err(se) => {
+      if !existed_before && se.code != 5 && se.code != 6 {
+        match station_sys::lstat_raw(db) {
+          Some(after_raw) =>
+          match parse_stat_file_size(after_raw) {
+            Some(sz) =>
+            if sz == 0L && !file_is_nonempty(db + "-wal") {
+              let _ = station_sys::unlink(db)
+              let _ = station_sys::unlink(db + "-journal")
+            }
+            None => ()
+          }
+          None => ()
+        }
+      }
+      let _ = host_shim::write_stderr_line("internal-replica-restore: failed to prepare target db: " + se.message)
+      return 1
     }
   }
 
@@ -1019,7 +1051,13 @@ fn file_is_nonempty(path : String) -> Bool {
 /// FDs (3/4/5), and BEFORE opening `stillfail.db` for writes: if this whole station has any enabled
 /// local external connects or cross-station remote-connect dependencies, either fail closed
 /// (`STILLFAIL_STATION_ENGINE_STRICT=1`) or seamlessly `exec_replace` in-place into Node `main.js`.
+/// Kept active until Wave 17C-1 wires live `stillfail-runner` process spawning to consume
+/// `started_prompts` (bypassed only in explicit E2E tests via `STILLFAIL_PION_NATIVE_CONNECTS_TEST=1`).
 fn maybe_handoff_external_connects_to_node(argv : Array[String]) -> Option[Int] {
+  match station_sys::env_get("STILLFAIL_PION_NATIVE_CONNECTS_TEST") {
+    Some("1") => return None
+    _ => ()
+  }
   let os_name = station_sys::os_name()
   let sep = if os_name == "win32" { "\\" } else { "/" }
   let home = station_sys::homedir()
@@ -1217,6 +1255,9 @@ fn main(_world : World) -> Unit {
     }
     match find_main_subcommand(cli_args) {
       Some("run") => {
+        // Wave 17B-5: external connects protocol & Hub routing are ready in Pion `whole_daemon`,
+        // while the Wave 17A Node `exec_replace` entry gate remains active until Wave 17C-1
+        // wires live `stillfail-runner` process spawning to consume `started_prompts`.
         let rc = if should_run_whole_daemon(argv) {
           match maybe_handoff_external_connects_to_node(argv) {
             Some(handoff_rc) => handoff_rc

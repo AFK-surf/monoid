@@ -523,10 +523,15 @@ pub fn platform_eq(a : ConnectPlatform, b : ConnectPlatform) -> Bool {
 pub struct ThreadRef {
   pub channel : String
   pub thread_ts : String
+  pub reply_to : Option[String]
 }
 
-pub fn ThreadRef::new(channel : String, thread_ts : String) -> ThreadRef {
-  ThreadRef::{ channel: channel, thread_ts: thread_ts }
+pub fn ThreadRef::new(
+  channel : String,
+  thread_ts : String,
+  reply_to : Option[String] = None,
+) -> ThreadRef {
+  ThreadRef::{ channel: channel, thread_ts: thread_ts, reply_to: reply_to }
 }
 
 pub fn format_thread_address(t : ThreadRef) -> String {
@@ -1180,4 +1185,48 @@ pub fn OutboundThrottle::on_rate_limited(
   let wait = if raw_ms > self.max_wait_ms { self.max_wait_ms } else { raw_ms }
   self.ready_at_ms = now_ms + wait
   Some(wait)
+}
+
+// ---------------------------------------------------------------------------
+// Turn Status Line State Machine (`station/src/connects/status.ts`, #9052)
+// ---------------------------------------------------------------------------
+
+/// Tracks the active turn's status line and originating `message_ts`.
+/// Clearing `status == ""` MUST clear `message_ts` so a later turn woken by
+/// a sub-chat letter or station notice never inherits an earlier mention.
+pub struct StatusLineState {
+  pub mut message_ts : Option[String]
+  pub mut page : Option[String]
+  pub mut shown : String
+  pub mut wanted : String
+}
+
+pub fn StatusLineState::new() -> StatusLineState {
+  StatusLineState::{
+    message_ts: None,
+    page: None,
+    shown: "",
+    wanted: "",
+  }
+}
+
+pub fn StatusLineState::say(
+  self : StatusLineState,
+  status : String,
+  message_ts : Option[String] = None,
+  page : Option[String] = None,
+) -> Unit {
+  if status == "" {
+    self.message_ts = None
+  } else {
+    match message_ts {
+      Some(ts) => self.message_ts = Some(ts)
+      None => ()
+    }
+  }
+  match page {
+    Some(p) => self.page = Some(p)
+    None => ()
+  }
+  self.wanted = status
 }

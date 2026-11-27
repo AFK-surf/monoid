@@ -952,3 +952,155 @@ test "slack multi-edit dedupe: distinct edits deliver, same edit redelivery dedu
     _ => debug_assert(false, "second edit without uid must not be transport-deduped")
   }
 }
+
+test "W17B-5 #6911: FeishuThreadsState keeps failed message in reconnect window and bounded catch_up" {
+  let th = FeishuThreadsState::new()
+  // Delivery 1 at t=1000 fails (never committed); Delivery 2 at t=2000 succeeds -> cursor MUST stay at 999!
+  let h1 = th.taking("fs1", "oc_1", "om_1", i64(1000))
+  let h2 = th.taking("fs1", "oc_1", "om_2", i64(2000))
+  th.commit_taking(h2)
+  debug_assert(th.seen_of("fs1", "oc_1") == i64(999), "failed older message holds reconnect cursor at 999")
+  // Once h1 commits, cursor advances to 2000 (max of latest).
+  th.commit_taking(h1)
+  debug_assert(th.seen_of("fs1", "oc_1") == i64(2000), "committing failed message releases cursor to 2000")
+
+  // Catch-up hold prevents live messages from advancing cursor past incomplete history scan.
+  let cu = th.catching_up("fs1", "oc_1", i64(2000))
+  let h3 = th.taking("fs1", "oc_1", "om_3", i64(5000))
+  th.commit_taking(h3)
+  debug_assert(th.seen_of("fs1", "oc_1") == i64(2000), "active catch_up holds cursor at 2000")
+  th.finish_catching_up(cu, i64(3500), false)
+  debug_assert(th.seen_of("fs1", "oc_1") == i64(3499), "incomplete catch_up keeps cursor at through - 1")
+  let cu2 = th.catching_up("fs1", "oc_1", i64(3499))
+  th.finish_catching_up(cu2, i64(4500), true)
+  debug_assert(th.seen_of("fs1", "oc_1") == i64(5000), "complete catch_up supersedes ended hold and advances to 5000")
+}
+
+test "W17B-5 #9045 & #9052: Feishu reply_to validation/routing and status card skip without chat message" {
+  // #9045 reply_to validation
+  debug_assert(feishu_validate_reply_to("feishu:fs1", "oc_1/om_1", "om_2", true) is Ok("om_2"), "valid reply_to")
+  debug_assert(feishu_validate_reply_to("slack:T1", "C1/1.1", "1.2", true) is Err(_), "non-feishu rejected")
+  debug_assert(feishu_validate_reply_to("feishu:fs1", "oc_1/om_1", "om_missing", false) is Err(_), "missing ts rejected")
+  debug_assert(feishu_validate_reply_to("feishu:fs1", "oc_1/om_1", "card-ev1", true) is Err(_), "card-* answer rejected")
+
+  // #9045 resolve_reply_root prefers explicit reply_to over topic_root
+  let fc = match FeishuConnector::new("cli_1", "sec_1", FeishuDomain::Feishu, Some("https://feishu.test")) {
+    Ok(c) => c
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  match fc.resolve_reply_root("omt_1", Some("om_target")) {
+    Some(r) => debug_assert(r == "om_target", "reply_to overrides topic_root")
+    None => debug_assert(false, "expected om_target")
+  }
+
+  // #9052 StatusLineState clears message_ts on empty status, and Feishu skips card on unheard/no-message turns
+  fc.was_said("om_heard")
+  fc.was_called("om_called")
+  fc.was_said("om_called")
+  let st = StatusLineState::new()
+  st.say("working", Some("om_called"), None)
+  debug_assert(
+    feishu_should_open_status_card("working", true, st, fn(ts) { fc.is_called(ts) }, fn(ts) { fc.is_heard(ts) }),
+    "called message opens card immediately",
+  )
+  // Turn ends -> clears message_ts
+  st.say("", None, None)
+  debug_assert(st.message_ts is None, "empty status clears message_ts")
+  // Next turn woken by sub-chat letter / station notice (no message_ts) -> MUST NOT open card
+  st.say("running tools", None, None)
+  debug_assert(
+    !feishu_should_open_status_card("running tools", false, st, fn(ts) { fc.is_called(ts) }, fn(ts) { fc.is_heard(ts) }),
+    "turn without chat message skips Feishu status card",
+  )
+  // Turn with unheard ts (e.g. letter id) -> MUST NOT open card
+  st.say("running tools", Some("letter-1"), None)
+  debug_assert(
+    !feishu_should_open_status_card("running tools", false, st, fn(ts) { fc.is_called(ts) }, fn(ts) { fc.is_heard(ts) }),
+    "unheard ts skips Feishu status card",
+  )
+  // Heard but uncalled message: idle -> skip, non-idle -> open
+  st.say("thinking", Some("om_heard"), None)
+  debug_assert(
+    !feishu_should_open_status_card("thinking", true, st, fn(ts) { fc.is_called(ts) }, fn(ts) { fc.is_heard(ts) }),
+    "heard uncalled idle skips card",
+  )
+  debug_assert(
+    feishu_should_open_status_card("editing", false, st, fn(ts) { fc.is_called(ts) }, fn(ts) { fc.is_heard(ts) }),
+    "heard uncalled non-idle opens card",
+  )
+}
+
+test "W17B-5 #8886, #8908, #9001: Comma retry state machines, ask timer cancel, and task.read_file" {
+  // #8886 PeerChangeNotifier coalescing + [2s, 5s, 15s] retry backoff
+  let notifier = PeerChangeNotifier::new(settle_ms=i64(1000))
+  notifier.nudge(i64(100))
+  notifier.nudge(i64(200)) // coalesced
+  debug_assert(notifier.poll_due(i64(1099), ["ws1"]).length() == 0, "not due before settle")
+  let d0 = notifier.poll_due(i64(1100), ["ws1", "ws1"])
+  debug_assert(d0.length() == 1 && d0[0].workspace == "ws1" && d0[0].attempt == 0, "deduped initial dispatch")
+  debug_assert(notifier.schedule_retry("ws1", Some(["peer-a"]), 0, d0[0].generation, i64(1100)), "retry 0 scheduled (+2s)")
+  debug_assert(notifier.poll_due(i64(3099), ["ws1"]).length() == 0, "retry 0 not due yet")
+  let d1 = notifier.poll_due(i64(3100), ["ws1"])
+  debug_assert(d1.length() == 1 && d1[0].attempt == 1, "retry 0 fires at +2s")
+  notifier.close()
+  debug_assert(notifier.pending_retry_count() == 0, "close clears retries")
+
+  // #8886 CommaUnreadRetry exponential backoff (5s, 10s, 20s, 40s, 60s, 60s) + rebuild_if_unread
+  let ur = CommaUnreadRetry::new()
+  match ur.on_build_result(2, false, i64(1000)) {
+    Some(ms) => debug_assert(ms == i64(5000), "1st unread retry 5s")
+    None => debug_assert(false, "expected 5s retry")
+  }
+  debug_assert(ur.is_due(i64(6000)), "due at +5s")
+  match ur.on_build_result(1, false, i64(6000)) {
+    Some(ms) => debug_assert(ms == i64(10000), "2nd unread retry 10s")
+    None => debug_assert(false, "expected 10s retry")
+  }
+  debug_assert(ur.rebuild_if_unread(), "reconnect triggers rebuild_if_unread")
+  debug_assert(ur.attempts == 0, "rebuild_if_unread resets attempts")
+  let _ = ur.on_build_result(0, false, i64(7000))
+  debug_assert(!ur.rebuild_if_unread(), "clean recovery clears has_unread")
+
+  // #8908 CommaConnector.ask timeout cancelled immediately on settle or close
+  let comma = CommaConnector::new("cm1", "https://comma.example.com", "tok", "mac", "inst-1")
+  let cmock = MockNet::new(i64(1000))
+  let ctr = cmock.transport()
+  let _ = comma.connect(ctr)
+  let _ = comma.handle_frame(ctr, WsFrame::Text("{\"id\":\"i1\",\"type\":\"request\",\"method\":\"task.invite\",\"params\":{\"task\":\"t/1\",\"start\":{\"requester\":\"u1\"}}}"))
+  let tts = comma_thread_ts("t/1")
+  let req_id = match comma.send_post(ctr, ThreadRef::new(COMMA_TASK_CHANNEL, tts), "hi", "k1") {
+    Ok(id) => id
+    Err(e) => {
+      debug_assert(false, e)
+      return
+    }
+  }
+  debug_assert(comma.pending_ask_count() == 1, "send_post registers pending ask timer")
+  let _ = comma.handle_frame(ctr, WsFrame::Text("{\"id\":\"" + req_id + "\",\"type\":\"response\",\"result\":{\"seq\":1}}"))
+  debug_assert(comma.pending_ask_count() == 0, "response settles and cancels ask timer immediately")
+
+  // Register another ask and close socket -> cancels all pending asks immediately
+  comma.register_ask("req-99", "task.post", i64(1000), i64(30000))
+  debug_assert(comma.pending_ask_count() == 1, "registered ask 99")
+  let _ = comma.handle_frame(ctr, WsFrame::Text("{\"type\":\"close\"}"))
+  debug_assert(comma.pending_ask_count() == 0, "close cancels pending ask timers")
+
+  // #9001 task.read_file validation & dispatch
+  let _ = comma.connect(ctr)
+  let rf_ok = "{\"id\":\"rf1\",\"type\":\"request\",\"method\":\"task.read_file\",\"params\":{\"task\":\"42\",\"seq\":3,\"file\":\"shot.png\",\"offset\":0}}"
+  match comma.handle_frame(ctr, WsFrame::Text(rf_ok)) {
+    CommaStep::TaskReadFile(req) => {
+      debug_assert(req.req_id == "rf1" && req.task == "42" && req.seq == i64(3) && req.file == "shot.png" && req.offset == i64(0), "valid task.read_file parsed")
+      comma.respond_read_file(ctr, req.req_id, base_codec::json_obj([("name", base_codec::json_str("shot.png"))]))
+    }
+    _ => debug_assert(false, "expected CommaStep::TaskReadFile")
+  }
+  let rf_bad_seq = "{\"id\":\"rf2\",\"type\":\"request\",\"method\":\"task.read_file\",\"params\":{\"task\":\"42\",\"seq\":0,\"file\":\"shot.png\"}}"
+  match comma.handle_frame(ctr, WsFrame::Text(rf_bad_seq)) {
+    CommaStep::NoOp => {}
+    _ => debug_assert(false, "invalid seq=0 must return error response and NoOp")
+  }
+}

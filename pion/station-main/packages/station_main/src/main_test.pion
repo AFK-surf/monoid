@@ -999,3 +999,192 @@ test "whole_daemon EV_CONFIG_WATCH routes FsChange to ConfigFile::on_fs_event an
   core.shutdown_pre_handover()
   assert_true(!cfg_file.watching, "shutdown must unwatch config_file")
 }
+
+test "W17B-5 parse_wire_chat_event decodes message, changed, ownNotice, and stop events" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => panic(e)
+    }
+  }
+  match parse_wire_chat_event(parse("{\"type\":\"changed\",\"channel\":\"C1\",\"threadTs\":\"1.1\",\"ts\":\"1.1\",\"text\":\"edited\"}")) {
+    Some(station_connects::ChatEvent::Changed(ch, tts, ts, txt)) => {
+      assert_str_eq(ch, "C1")
+      assert_str_eq(tts, "1.1")
+      assert_str_eq(ts, "1.1")
+      assert_str_eq(txt, "edited")
+    }
+    _ => panic("expected Changed event")
+  }
+  match parse_wire_chat_event(parse("{\"type\":\"message\",\"message\":{\"channel\":\"C2\",\"threadTs\":\"2.1\",\"ts\":\"2.2\",\"user\":\"U1\",\"text\":\"hi\",\"addressed\":true}}")) {
+    Some(station_connects::ChatEvent::Message(m)) => {
+      assert_str_eq(m.channel, "C2")
+      assert_str_eq(m.thread_ts, "2.1")
+      assert_str_eq(m.ts, "2.2")
+      assert_str_eq(m.user, "U1")
+      assert_str_eq(m.text, "hi")
+      assert_true(m.addressed, "expected addressed=true")
+    }
+    _ => panic("expected Message event")
+  }
+  assert_true(parse_wire_chat_event(parse("{\"type\":\"unknown\"}")) is None, "unknown type returns None")
+}
+
+test "W17B-5 P0-3 adversarial connect.event taken() validation & bind.cwd immunity" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => panic(e)
+    }
+  }
+  let has_local = fn(id : String) -> Bool { id == "slack-local" }
+  let local_ws = fn(id : String) -> Option[String] { if id == "slack-local" { Some("ws-1") } else { None } }
+
+  // (a) Spoofing origin=here for a locally running connect MUST be rejected with exact TS error.
+  let spoof_req = parse(
+    "{\"connect\":{\"id\":\"slack-local\",\"origin\":\"st-here\"},\"described\":{\"kind\":\"slack\",\"workspace\":\"ws-1\",\"bind\":{\"runtime\":\"claude\",\"cwd\":\"/etc\"}}}",
+  )
+  match validate_connect_event(spoof_req, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::Reject(msg) => assert_str_eq(msg, "that connect runs on this station")
+    _ => panic("expected Reject for spoofed local connect")
+  }
+
+  // (b) Missing or empty origin MUST be rejected (never fall back to peer id).
+  let no_origin_req = parse(
+    "{\"connect\":{\"id\":\"slack-remote\"},\"described\":{\"kind\":\"slack\",\"workspace\":\"ws-1\"}}",
+  )
+  match validate_connect_event(no_origin_req, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::Reject(msg) => assert_str_eq(msg, "no such connect")
+    _ => panic("expected Reject for missing origin")
+  }
+
+  // (c) Mismatched described.workspace != request ws MUST be rejected.
+  let wrong_ws_req = parse(
+    "{\"connect\":{\"id\":\"slack-remote\",\"origin\":\"st-peer\"},\"described\":{\"kind\":\"slack\",\"workspace\":\"ws-other\"}}",
+  )
+  match validate_connect_event(wrong_ws_req, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::Reject(msg) => assert_str_eq(msg, "no such connect")
+    _ => panic("expected Reject for workspace mismatch")
+  }
+
+  // (d) Valid remote connect learns `<id>@<origin>` and NEVER trusts remote `bind.cwd`.
+  let ok_req = parse(
+    "{\"connect\":{\"id\":\"slack-remote\",\"origin\":\"st-peer\"},\"described\":{\"kind\":\"slack\",\"workspace\":\"ws-1\",\"bind\":{\"runtime\":\"codex\",\"cwd\":\"/etc/shadow\"}}}",
+  )
+  match validate_connect_event(ok_req, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::LearnAndDeliver(cid, desc) => {
+      assert_str_eq(cid, "slack-remote@st-peer")
+      let meta = connect_meta_from_described(cid, desc, "ws-1")
+      assert_true(meta.cwd is None, "remote bind.cwd must NEVER be trusted")
+      assert_str_eq(meta.runtime, "codex")
+    }
+    _ => panic("expected LearnAndDeliver for valid remote connect")
+  }
+
+  // (e) `kept: true` delivers only for local connect in same workspace; rejects unknown/cross-ws.
+  let kept_ok = parse("{\"kept\":true,\"connect\":{\"id\":\"slack-local\",\"origin\":\"st-here\"}}")
+  match validate_connect_event(kept_ok, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::DeliverKept(cid) => assert_str_eq(cid, "slack-local")
+    _ => panic("expected DeliverKept for valid kept event")
+  }
+  let kept_wrong_ws = parse("{\"kept\":true,\"connect\":{\"id\":\"slack-local\",\"origin\":\"st-here\"}}")
+  match validate_connect_event(kept_wrong_ws, "ws-2", "st-here", has_local, local_ws) {
+    ConnectEventValidation::Reject(msg) => assert_str_eq(msg, "no such connect")
+    _ => panic("expected Reject for cross-ws kept event")
+  }
+
+  // (f) `parse_comma_chat_ref` supports local `"42"` and remote `"42@st-peer"`.
+  match parse_comma_chat_ref("42") {
+    Some((tid, None)) => assert_true(tid == 42L, "local tid 42")
+    _ => panic("expected local chatRef")
+  }
+  match parse_comma_chat_ref("42@st-peer") {
+    Some((tid, Some(st))) => {
+      assert_true(tid == 42L, "remote tid 42")
+      assert_str_eq(st, "st-peer")
+    }
+    _ => panic("expected remote chatRef")
+  }
+  assert_true(parse_comma_chat_ref("42@") is None, "trailing @ rejected")
+  assert_true(parse_comma_chat_ref("0@st-peer") is None, "non-positive tid rejected")
+}
+
+test "W17B-5 Opus R2 regressions: P0-A runtime connect.event gate, P0-B connect.call wire parity, P1-C card-only chat_post & chat_state, P1-D Feishu create_time cursor" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => panic(e)
+    }
+  }
+  let has_local = fn(id : String) -> Bool { id == "slack-local" }
+  let local_ws = fn(id : String) -> Option[String] { if id == "slack-local" { Some("ws-1") } else { None } }
+
+  // P0-A: With native gate disabled (default), BOTH `LearnAndDeliver` and `kept: true` MUST be rejected.
+  let valid_remote = parse(
+    "{\"connect\":{\"id\":\"slack-remote\",\"origin\":\"st-peer\"},\"described\":{\"kind\":\"slack\",\"workspace\":\"ws-1\",\"bind\":{\"runtime\":\"claude\"}}}",
+  )
+  match validate_connect_event_with_gate(false, valid_remote, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::Reject(msg) => assert_str_eq(msg, "native connects disabled until runner cutover")
+    _ => panic("P0-A: expected Reject when native gate is disabled")
+  }
+  let valid_kept = parse("{\"kept\":true,\"connect\":{\"id\":\"slack-local\",\"origin\":\"st-here\"}}")
+  match validate_connect_event_with_gate(false, valid_kept, "ws-1", "st-here", has_local, local_ws) {
+    ConnectEventValidation::Reject(msg) => assert_str_eq(msg, "native connects disabled until runner cutover")
+    _ => panic("P0-A: expected Reject for kept when native gate is disabled")
+  }
+
+  // P0-B: `build_connect_call_post_request` MUST match TS `remote.ts` `answerCall` 1:1:
+  // `op: "post"` (NOT `call`) and 4-element `args: [thread, text, [], card]`.
+  let sample_card = parse("{\"type\":\"options\",\"options\":[{\"label\":\"Approve\"}]}")
+  let req = build_connect_call_post_request(
+    "ws-1",
+    "slack-1",
+    "st-origin",
+    "C123",
+    "1700.001",
+    Some("om_reply_1"),
+    "hello remote",
+    Some(sample_card),
+  )
+  match base_codec::json_get(req, "op") {
+    Some(base_codec::Json::Str(s)) => assert_str_eq(s, "post")
+    _ => panic("P0-B: missing op: 'post'")
+  }
+  assert_true(base_codec::json_get(req, "call") is None, "P0-B: must not send legacy 'call' key")
+  match base_codec::json_get(req, "args") {
+    Some(base_codec::Json::Arr(args)) => {
+      assert_true(args.length() == 4, "P0-B: args must have 4 elements [thread, message, files, card]")
+      match base_codec::json_get(args[0], "channel") {
+        Some(base_codec::Json::Str(s)) => assert_str_eq(s, "C123")
+        _ => panic("P0-B: args[0].channel mismatch")
+      }
+      match base_codec::json_get(args[0], "replyTo") {
+        Some(base_codec::Json::Str(s)) => assert_str_eq(s, "om_reply_1")
+        _ => panic("P0-B: args[0].replyTo mismatch")
+      }
+      match args[1] {
+        base_codec::Json::Str(s) => assert_str_eq(s, "hello remote")
+        _ => panic("P0-B: args[1] must be message text")
+      }
+      match args[2] {
+        base_codec::Json::Arr(files) => assert_true(files.length() == 0, "P0-B: args[2] must be files array")
+        _ => panic("P0-B: args[2] must be files array")
+      }
+      match base_codec::json_get(args[3], "type") {
+        Some(base_codec::Json::Str(s)) => assert_str_eq(s, "options")
+        _ => panic("P0-B: args[3] must carry card JSON")
+      }
+    }
+    _ => panic("P0-B: args must be array")
+  }
+
+  // P1-D: Feishu reconnect cursor MUST use message `create_time_ms` (not skewed local `now_ms`).
+  let fstate = station_connects::FeishuThreadsState::new()
+  let msg_create_ms = 1700000001000L
+  let local_now_ms = 1700000099000L
+  let _ = local_now_ms
+  let hold = fstate.taking("feishu-1", "oc_chat1", "om_msg1", msg_create_ms)
+  assert_true(fstate.seen_of("feishu-1", "oc_chat1") == msg_create_ms - 1L, "P1-D: taking holds create_time - 1")
+  fstate.commit_taking(hold)
+  assert_true(fstate.seen_of("feishu-1", "oc_chat1") == msg_create_ms, "P1-D: commit advances to create_time, not local now")
+}

@@ -1385,3 +1385,33 @@ test "w17b4_devices_os_airplay_android_tv_serial_tunnel_creds_and_control" {
   let (expired_pairs, _) = devs.tick_expiry_with(1000L, 40000L, fn(_pk : PendingProcKill) -> Unit {})
   edge_assert(expired_pairs == 2)
 }
+
+test "W17B-5 Opus R2 P1-C & P1-D: ConnectsOsRuntime feishu_apply_status_line gating & Feishu create_time cursor" {
+  let mem = station_ops::MemFs::new()
+  let h = MockMuxHarness::new(
+    1700000099000L,
+    fn(_id : Int64, _op : String, _json : String, _payload : Option[Bytes], _q : Array[host_shim::HostEvent]) -> Unit {},
+  )
+  let bridge = ConnectMuxBridge::with_hub(h.hub, mem.ops())
+  let crt = ConnectsOsRuntime::new(bridge, "st-p1cd", ConnectsCallbacks::noop())
+  edge_assert(crt.register_feishu("feishu-1", "cli_app", "cli_sec") is Ok(_))
+
+  // P1-C (`#9052`): `feishu_apply_status_line` skips opening a status card on turns without
+  // a chat message (both idle and non-idle), and clears cleanly on empty status.
+  edge_assert(!crt.feishu_apply_status_line("feishu-1", "oc_1/om_1", "idle", true))
+  edge_assert(!crt.feishu_apply_status_line("feishu-1", "oc_1/om_1", "running build", false))
+  edge_assert(!crt.feishu_apply_status_line("feishu-1", "oc_1/om_1", "", true))
+
+  // P1-D: `FeishuConnector` records message `create_time_ms` from inbound frame so reconnect
+  // cursor advances to `create_time_ms` instead of skewed local `now_ms`.
+  let f = match station_connects::FeishuConnector::new("cli_app", "cli_sec") {
+    Ok(c) => c
+    Err(e) => panic(e)
+  }
+  let create_ms = 1700000001000L
+  let hold = f.threads.taking("feishu-1", "oc_chat1", "om_msg1", create_ms)
+  edge_assert(f.threads.seen_of("feishu-1", "oc_chat1") == create_ms - 1L)
+  f.threads.commit_taking(hold)
+  edge_assert(f.threads.seen_of("feishu-1", "oc_chat1") == create_ms)
+  edge_assert(f.threads.seen_of("feishu-1", "oc_chat1") != 1700000099000L)
+}

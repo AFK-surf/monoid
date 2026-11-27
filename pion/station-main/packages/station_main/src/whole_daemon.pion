@@ -231,6 +231,1004 @@ struct ConnectMeta {
   cwd : Option[String]
 }
 
+struct RemoteConnectRecord {
+  station : String
+  described : base_codec::Json
+}
+
+fn load_remote_connects_file(
+  ops_fs : station_ops::OpsFs,
+  path : String,
+  out_map : Map[String, RemoteConnectRecord],
+  connect_meta : Map[String, ConnectMeta],
+  home_ws : String,
+) -> Unit {
+  match ops_fs.read_text(path) {
+    Ok(raw) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(entries)) => {
+        for i in 0..<entries.length() {
+          let (rid, entry_val) = entries[i]
+          let st_id = match base_codec::json_get(entry_val, "station") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => ""
+          }
+          let desc_opt = base_codec::json_get(entry_val, "described")
+          match desc_opt {
+            Some(desc) => {
+              let kind = match base_codec::json_get(desc, "kind") {
+                Some(base_codec::Json::Str(k)) => k
+                _ => ""
+              }
+              if st_id.length() > 0 && kind.length() > 0 {
+                out_map.set(rid, RemoteConnectRecord::{ station: st_id, described: desc })
+                connect_meta.set(rid, connect_meta_from_described(rid, desc, home_ws))
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    Err(_) => ()
+  }
+}
+
+fn save_remote_connects_file(
+  ops_fs : station_ops::OpsFs,
+  path : String,
+  map : Map[String, RemoteConnectRecord],
+  pid : Int,
+  sep : String,
+) -> Unit {
+  let fields : Array[(String, base_codec::Json)] = []
+  let keys = map.keys()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match map.get(k) {
+      Some(rec) => {
+        fields.push(
+          (
+            k,
+            base_codec::json_obj([
+              ("station", base_codec::json_str(rec.station)),
+              ("described", rec.described),
+            ]),
+          ),
+        )
+      }
+      None => ()
+    }
+  }
+  let body = base_codec::json_stringify(base_codec::json_obj(fields)) + "\n"
+  let _ = station_ops::write_private(ops_fs, path, body.to_bytes(), pid, 1, sep=sep)
+}
+
+fn connect_meta_from_described(
+  remote_id : String,
+  described : base_codec::Json,
+  fallback_ws : String,
+) -> ConnectMeta {
+  let get_s = fn(obj : base_codec::Json, k : String) -> String {
+    match base_codec::json_get(obj, k) {
+      Some(base_codec::Json::Str(s)) => s.trim()
+      _ => ""
+    }
+  }
+  let kind = {
+    let k = get_s(described, "kind")
+    if k.length() > 0 { k } else { "slack" }
+  }
+  let ws = {
+    let w = get_s(described, "workspace")
+    if w.length() > 0 { w } else { fallback_ws }
+  }
+  let team = get_s(described, "team")
+  let surface = if kind == "slack" {
+    if team.length() > 0 { "slack:" + team } else { "slack:" + remote_id }
+  } else {
+    kind + ":" + remote_id
+  }
+  let single = get_s(described, "mode") == "single-session"
+  let require_mention = if !single {
+    true
+  } else {
+    match base_codec::json_get(described, "requireMention") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => true
+    }
+  }
+  let bind_opt = base_codec::json_get(described, "bind")
+  let runtime = match bind_opt {
+    Some(b) => {
+      let r = get_s(b, "runtime")
+      if r.length() > 0 { r } else { "claude" }
+    }
+    None => "claude"
+  }
+  let profile = match bind_opt {
+    Some(b) => {
+      let p = get_s(b, "profile")
+      if p.length() > 0 { p } else { "default" }
+    }
+    None => "default"
+  }
+  // Security (P0-3, 1:1 with TS `station/src/connects/remote.ts::connectOf`):
+  // NEVER trust or read `bind.cwd` from a remote station's `described` payload!
+  ConnectMeta::{
+    ws: ws,
+    config_surface: surface,
+    single: single,
+    require_mention: require_mention,
+    runtime: runtime,
+    profile: profile,
+    cwd: None,
+  }
+}
+
+pub enum ConnectEventValidation {
+  Reject(String)
+  DeliverKept(String)
+  LearnAndDeliver(String, base_codec::Json)
+}
+
+/// Returns `true` only when the explicit test-only native connects flag is enabled.
+/// Until Wave 17C-1 wires live `stillfail-runner` spawning to consume `started_prompts`,
+/// runtime `connect.event` ingress MUST fail closed when this returns `false` (P0-A).
+pub fn native_connects_runtime_enabled() -> Bool {
+  match station_sys::env_get("STILLFAIL_PION_NATIVE_CONNECTS_TEST") {
+    Some("1") => true
+    _ => false
+  }
+}
+
+/// Runtime-gated wrapper around `validate_connect_event` (P0-A): when `native_enabled` is
+/// `false`, rejects BOTH `LearnAndDeliver` and `kept: true` BEFORE any DB or `remote-connects`
+/// mutation so cross-station events are never falsely ACKed into a silent black hole.
+pub fn validate_connect_event_with_gate(
+  native_enabled : Bool,
+  req : base_codec::Json,
+  ws : String,
+  here_station : String,
+  has_local_connect : (String) -> Bool,
+  local_connect_ws : (String) -> Option[String],
+) -> ConnectEventValidation {
+  if !native_enabled {
+    return ConnectEventValidation::Reject("native connects disabled until runner cutover")
+  }
+  validate_connect_event(req, ws, here_station, has_local_connect, local_connect_ws)
+}
+
+/// Builds a `connect.call` outbound `post` RPC payload 1:1 with TS `station/src/connects/remote.ts`:
+/// - `op: "post"` (matching `answerCall` line 369: `request?.op`)
+/// - `args: [thread, message, [], card ?? null]` (matching `remote.ts` lines 257 & 397: 4-element tuple)
+pub fn build_connect_call_post_request(
+  ws : String,
+  raw_id : String,
+  raw_origin : String,
+  ch : String,
+  tts : String,
+  reply_to : Option[String],
+  text : String,
+  card : Option[base_codec::Json],
+) -> base_codec::Json {
+  let thread_j_fields : Array[(String, base_codec::Json)] = [
+    ("channel", base_codec::json_str(ch)),
+    ("threadTs", base_codec::json_str(tts)),
+  ]
+  match reply_to {
+    Some(rto) => thread_j_fields.push(("replyTo", base_codec::json_str(rto)))
+    None => ()
+  }
+  let call_args : Array[base_codec::Json] = [
+    base_codec::json_obj(thread_j_fields),
+    base_codec::json_str(text),
+    base_codec::json_arr([]),
+    match card {
+      Some(c) => c
+      None => base_codec::json_null()
+    },
+  ]
+  base_codec::json_obj([
+    ("method", base_codec::json_str("connect.call")),
+    ("workspace", base_codec::json_str(ws)),
+    (
+      "connect",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(raw_id)),
+        ("origin", base_codec::json_str(raw_origin)),
+      ]),
+    ),
+    ("op", base_codec::json_str("post")),
+    ("args", base_codec::json_arr(call_args)),
+  ])
+}
+
+/// Pure 1:1 validation for cross-station `connect.event` matching TS `station/src/connects/workspace.ts:348-375 taken()`:
+/// - Requires non-empty `connect.id` AND `connect.origin` (never falls back to `auth.remote_id`).
+/// - For `kept: true`: requires local connect matching `local_id` in the same `ws` (never mutates `remote_connects`).
+/// - For non-`kept`: requires `described` with string `kind`, non-empty `ws`, `described.workspace == ws`,
+///   and refuses if `local_id` already runs locally (`"that connect runs on this station"`).
+pub fn validate_connect_event(
+  req : base_codec::Json,
+  ws : String,
+  here_station : String,
+  has_local_connect : (String) -> Bool,
+  local_connect_ws : (String) -> Option[String],
+) -> ConnectEventValidation {
+  let conn_obj = match base_codec::json_get(req, "connect") {
+    Some(c) => c
+    None => return ConnectEventValidation::Reject("no such connect")
+  }
+  let cid_raw = match base_codec::json_get(conn_obj, "id") {
+    Some(base_codec::Json::Str(s)) => s.trim()
+    _ => ""
+  }
+  let origin_raw = match base_codec::json_get(conn_obj, "origin") {
+    Some(base_codec::Json::Str(s)) => s.trim()
+    _ => ""
+  }
+  if cid_raw.length() == 0 || origin_raw.length() == 0 || ws.length() == 0 {
+    return ConnectEventValidation::Reject("no such connect")
+  }
+  let local_id = if origin_raw == here_station {
+    cid_raw
+  } else {
+    cid_raw + "@" + origin_raw
+  }
+  let is_kept = match base_codec::json_get(req, "kept") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  if is_kept {
+    if !has_local_connect(local_id) {
+      return ConnectEventValidation::Reject("no such connect")
+    }
+    match local_connect_ws(local_id) {
+      Some(lws) => if lws != ws {
+        return ConnectEventValidation::Reject("no such connect")
+      }
+      None => return ConnectEventValidation::Reject("no such connect")
+    }
+    return ConnectEventValidation::DeliverKept(local_id)
+  }
+  let desc = match base_codec::json_get(req, "described") {
+    Some(d) => d
+    None => return ConnectEventValidation::Reject("no such connect")
+  }
+  let d_kind = match base_codec::json_get(desc, "kind") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let d_ws = match base_codec::json_get(desc, "workspace") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  if d_kind.length() == 0 || d_ws != ws {
+    return ConnectEventValidation::Reject("no such connect")
+  }
+  if has_local_connect(local_id) {
+    return ConnectEventValidation::Reject("that connect runs on this station")
+  }
+  ConnectEventValidation::LearnAndDeliver(local_id, desc)
+}
+
+/// Parses a Comma `chatRef` (`"<thread>"` or `"<thread>@<station>"`, #9001).
+pub fn parse_comma_chat_ref(raw : String) -> Option[(Int64, Option[String])] {
+  let tr = raw.trim()
+  if tr.length() == 0 {
+    return None
+  }
+  let at = station_connects::str_index_of(tr, "@", 0)
+  if at > 0 {
+    let left = station_connects::str_slice(tr, 0, at)
+    let right = station_connects::str_slice(tr, at + 1, tr.to_bytes().length())
+    if right.length() == 0 {
+      return None
+    }
+    match base_codec::parse_int64_str(left) {
+      Some(tid) => if tid > 0L { Some((tid, Some(right))) } else { None }
+      None => None
+    }
+  } else {
+    match base_codec::parse_int64_str(tr) {
+      Some(tid) => if tid > 0L { Some((tid, None)) } else { None }
+      None => None
+    }
+  }
+}
+
+/// Parses a Slack interactive payload (button/card action or text submission) into an inbound
+/// `ChatEvent::Message` and dispatches it through `handle_connect_inbound_event`.
+fn handle_slack_interactive_payload(
+  core : station_whole::WholeCore,
+  connects : station_whole::ConnectsOsRuntime,
+  connect_meta : Map[String, ConnectMeta],
+  connect_id : String,
+  envelope_id : String,
+  payload : base_codec::Json,
+  now_ms : Int64,
+) -> Bool {
+  let get_s = fn(obj : base_codec::Json, k : String) -> String {
+    match base_codec::json_get(obj, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  let ch = match base_codec::json_get(payload, "channel") {
+    Some(c) => get_s(c, "id")
+    None => get_s(payload, "channel_id")
+  }
+  let user = match base_codec::json_get(payload, "user") {
+    Some(u) => get_s(u, "id")
+    None => get_s(payload, "user_id")
+  }
+  let msg_obj = base_codec::json_get(payload, "message")
+  let container_obj = base_codec::json_get(payload, "container")
+  let mut tts = match msg_obj {
+    Some(m) => {
+      let t = get_s(m, "thread_ts")
+      if t.length() > 0 { t } else { get_s(m, "ts") }
+    }
+    None => ""
+  }
+  if tts.length() == 0 {
+    tts = match container_obj {
+      Some(c) => {
+        let t = get_s(c, "thread_ts")
+        if t.length() > 0 { t } else { get_s(c, "message_ts") }
+      }
+      None => ""
+    }
+  }
+  let mut choice = get_s(payload, "text")
+  let mut action_ts = ""
+  match base_codec::json_get(payload, "actions") {
+    Some(base_codec::Json::Arr(arr)) => {
+      if arr.length() > 0 {
+        let a0 = arr[0]
+        let v = get_s(a0, "value")
+        if v.length() > 0 {
+          choice = v
+        } else {
+          match base_codec::json_get(a0, "text") {
+            Some(tobj) => {
+              let tt = get_s(tobj, "text")
+              if tt.length() > 0 {
+                choice = tt
+              }
+            }
+            None => ()
+          }
+        }
+        action_ts = get_s(a0, "action_ts")
+      }
+    }
+    _ => ()
+  }
+  if ch.length() == 0 || tts.length() == 0 || choice.length() == 0 {
+    return false
+  }
+  let ts = if action_ts.length() > 0 {
+    "card-" + action_ts
+  } else if envelope_id.length() > 0 {
+    "card-" + envelope_id
+  } else {
+    "card-" + now_ms.to_string()
+  }
+  let ev = station_connects::ChatEvent::Message(
+    station_connects::InboundMessage::{
+      channel: ch,
+      thread_ts: tts,
+      ts: ts,
+      user: if user.length() > 0 { user } else { "slack-user" },
+      text: choice,
+      addressed: true,
+      files: [],
+      quoted: match msg_obj {
+        Some(m) => {
+          let mts = get_s(m, "ts")
+          if mts.length() > 0 { Some(mts) } else { None }
+        }
+        None => None
+      },
+    },
+  )
+  handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms)
+}
+
+pub fn parse_wire_chat_event(ev : base_codec::Json) -> Option[station_connects::ChatEvent] {
+  let get_s = fn(obj : base_codec::Json, k : String) -> String {
+    match base_codec::json_get(obj, k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  let etype = get_s(ev, "type")
+  if etype == "changed" {
+    let ch = get_s(ev, "channel")
+    let tts = get_s(ev, "threadTs")
+    let ts = get_s(ev, "ts")
+    let text = get_s(ev, "text")
+    if ch.length() == 0 || tts.length() == 0 || ts.length() == 0 {
+      return None
+    }
+    return Some(station_connects::ChatEvent::Changed(ch, tts, ts, text))
+  }
+  if etype == "message" || etype == "ownNotice" {
+    let m = match base_codec::json_get(ev, "message") {
+      Some(v) => v
+      None => return None
+    }
+    let ch = get_s(m, "channel")
+    let tts = get_s(m, "threadTs")
+    let ts = get_s(m, "ts")
+    let user = get_s(m, "user")
+    let text = get_s(m, "text")
+    let addressed = match base_codec::json_get(m, "addressed") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => false
+    }
+    let quoted = {
+      let q = get_s(m, "quoted")
+      if q.length() > 0 { Some(q) } else { None }
+    }
+    let files : Array[station_connects::InboundFile] = []
+    match base_codec::json_get(m, "files") {
+      Some(base_codec::Json::Arr(arr)) => {
+        for i in 0..<arr.length() {
+          let f = arr[i]
+          let fid = get_s(f, "id")
+          let fname = get_s(f, "name")
+          let fsize = match base_codec::json_get(f, "size") {
+            Some(base_codec::Json::Num(n, _)) => n.to_int64()
+            _ => 0L
+          }
+          let furl = {
+            let u = get_s(f, "url")
+            if u.length() > 0 { Some(u) } else { None }
+          }
+          if fid.length() > 0 || fname.length() > 0 {
+            files.push(station_connects::InboundFile::{ id: fid, name: fname, size: fsize, url: furl })
+          }
+        }
+      }
+      _ => ()
+    }
+    if ch.length() == 0 || tts.length() == 0 || ts.length() == 0 {
+      return None
+    }
+    let msg = station_connects::InboundMessage::{
+      channel: ch,
+      thread_ts: tts,
+      ts: ts,
+      user: user,
+      text: text,
+      addressed: addressed,
+      files: files,
+      quoted: quoted,
+    }
+    if etype == "ownNotice" {
+      return Some(station_connects::ChatEvent::OwnNotice(msg))
+    }
+    return Some(station_connects::ChatEvent::Message(msg))
+  }
+  if etype == "stop" {
+    let ch = get_s(ev, "channel")
+    let tts = get_s(ev, "threadTs")
+    let ts = get_s(ev, "ts")
+    if ch.length() == 0 || tts.length() == 0 {
+      return None
+    }
+    return Some(station_connects::ChatEvent::Stop(ch, tts, ts, None))
+  }
+  None
+}
+
+fn emit_thread_sse_event(
+  core : station_whole::WholeCore,
+  ws : String,
+  tid : Int64,
+  n : Int64,
+  kind : String,
+  author_kind : String,
+  author : String,
+  text : String,
+  now_ms : Int64,
+) -> Unit {
+  let ev_payload = base_codec::json_obj([
+    ("id", base_codec::json_int64(tid)),
+    (
+      "entries",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("n", base_codec::json_int64(n)),
+          ("kind", base_codec::json_str(kind)),
+          ("authorKind", base_codec::json_str(author_kind)),
+          ("author", base_codec::json_str(author)),
+          ("text", base_codec::json_str(text)),
+          ("at", base_codec::json_int64(now_ms)),
+        ]),
+      ]),
+    ),
+  ])
+  let ev_target = station_api::EventTarget::{
+    lang: None,
+    viewer: None,
+    email: None,
+    workspace: Some(ws),
+    subs: None,
+    read_only: None,
+    managers: None,
+    vault: None,
+    sees_ws: Some(Some(ws)),
+    sees_session: None,
+    sees_thread: None,
+    sees_job: None,
+  }
+  let _ = core.api.events.emit("thread", ev_payload, ev_target, now_ms, None)
+}
+
+/// Core Wave 17B-5 Hub delivery bridge: persists inbound external connect events
+/// (local Slack/Feishu/Comma/Group or cross-station `connect.event`) into SQLite
+/// `threads` / `entries` / `deliveries`, respects `left_at` and multi-edit history,
+/// and triggers `SessionHub` actor prompt delivery + live `"thread"` SSE push.
+fn handle_connect_inbound_event(
+  core : station_whole::WholeCore,
+  connects : station_whole::ConnectsOsRuntime,
+  connect_meta : Map[String, ConnectMeta],
+  connect_id : String,
+  ev : station_connects::ChatEvent,
+  now_ms : Int64,
+) -> Bool {
+  let meta = match connect_meta.get(connect_id) {
+    Some(m) => m
+    None => return false
+  }
+  let st_db = match core.store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let (ch, tts) = match ev {
+    station_connects::ChatEvent::Message(m) => (m.channel, m.thread_ts)
+    station_connects::ChatEvent::OwnNotice(m) => (m.channel, m.thread_ts)
+    station_connects::ChatEvent::Changed(c, t, _, _) => (c, t)
+    station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
+    station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
+  }
+  let routed_elsewhere = connects.workspace.thread_station(connect_id, ch, tts) is Some(_)
+  let existing_tid : Option[Int64] = match st_db.db.first(
+    "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3 LIMIT 1",
+    [
+      base_codec::json_str(meta.config_surface),
+      base_codec::json_str(ch),
+      base_codec::json_str(tts),
+    ],
+  ) {
+    Ok(Some(row)) => match row.get("id") {
+      Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+      _ => None
+    }
+    _ => None
+  }
+  match decide_connect_inbound(meta.single, meta.require_mention, routed_elsewhere, existing_tid is Some(_), ev) {
+    ConnectInboundDecision::IgnoreAndAck => true
+    ConnectInboundDecision::RefuseNoAck => false
+    ConnectInboundDecision::PersistMessage => match ev {
+      station_connects::ChatEvent::Message(m) => {
+        if !connects.workspace.should_deliver_thread(connect_id, m.channel, m.thread_ts, m.addressed) {
+          return true
+        }
+        let tid = match existing_tid {
+          Some(id) => id
+          None => match st_db.ensure_thread(
+            meta.config_surface,
+            m.channel,
+            m.thread_ts,
+            None,
+            Some(m.user),
+            now_ms,
+            home=Some(meta.ws),
+          ) {
+            Ok(id) => id
+            Err(_) => return false
+          }
+        }
+        let active_sessions : Array[String] = []
+        let mut had_left_session = false
+        match st_db.db.all(
+          "SELECT session, left_at FROM thread_sessions WHERE thread = ?1",
+          [sql_db::int64_to_json(tid)],
+        ) {
+          Ok(rows) => {
+            for i in 0..<rows.length() {
+              let skey = match rows[i].get("session") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => ""
+              }
+              let is_left = match rows[i].get("left_at") {
+                Some(base_codec::Json::Null) | None => false
+                _ => true
+              }
+              if skey.length() > 0 {
+                if is_left {
+                  had_left_session = true
+                } else {
+                  active_sessions.push(skey)
+                }
+              }
+            }
+          }
+          Err(_) => return false
+        }
+        if active_sessions.length() == 0 && (!had_left_session || m.addressed) {
+          let sess_scope = if meta.single { m.channel } else { m.channel + "/" + m.thread_ts }
+          let skey = connect_id + ":" + sess_scope
+          let exists_sess = match st_db.get_session(skey) {
+            Ok(Some(_)) => true
+            Ok(None) => false
+            Err(_) => return false
+          }
+          if !exists_sess {
+            let tok = match station_sys::random_hex(32) {
+              Ok(h) => h
+              Err(_) => return false
+            }
+            let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+            // 1:1 with TS `station/src/sessions/hub.ts:2236-2237`:
+            // `<dataDir>/sessions/<connect.id>/<dir>/workspace` (never fall back to `data_dir` root).
+            let dir_name = if !meta.single {
+              m.channel + "-" + m.thread_ts.replace(".", "-")
+            } else {
+              sess_scope
+            }
+            let sess_ws_dir = match meta.cwd {
+              Some(c) => c
+              None => nodepath::join(sep, [core.config.data_dir, "sessions", connect_id, dir_name, "workspace"])
+            }
+            let _ = station_sys::mkdir_p(sess_ws_dir)
+            let new_sess = station_store::NewSession::{
+              key: skey,
+              connect: connect_id,
+              sess_scope: sess_scope,
+              title: None,
+              created_by: Some(m.user),
+              created_by_sub: None,
+              runtime: meta.runtime,
+              profile: meta.profile,
+              model: None,
+              effort: None,
+              workspace: sess_ws_dir,
+              cwd: meta.cwd,
+              token: tok,
+              created_at: now_ms,
+              last_active_at: now_ms,
+              ws: Some(meta.ws),
+              told_notes: 0L,
+            }
+            match st_db.insert_session(new_sess) {
+              Ok(_) => {
+                core.agents.register_adopted_token(skey, tok)
+                let _ = core.agents.adopt_all_active_tokens_from_store(core.store)
+              }
+              Err(_) => return false
+            }
+          }
+          match st_db.join_thread(tid, skey, connect_id, now_ms) {
+            Ok(_) => active_sessions.push(skey)
+            Err(_) => return false
+          }
+        }
+        let att_opt : Option[String] = if m.files.length() > 0 {
+          let farr : Array[base_codec::Json] = []
+          for fi in 0..<m.files.length() {
+            let f = m.files[fi]
+            let ff : Array[(String, base_codec::Json)] = [
+              ("id", base_codec::json_str(f.id)),
+              ("name", base_codec::json_str(f.name)),
+              ("size", base_codec::json_int64(f.size)),
+            ]
+            match f.url {
+              Some(u) => ff.push(("url", base_codec::json_str(u)))
+              None => ()
+            }
+            farr.push(base_codec::json_obj(ff))
+          }
+          Some(base_codec::json_stringify(base_codec::json_arr(farr)))
+        } else {
+          None
+        }
+        let msg = station_store::NewMessage::{
+          thread: tid,
+          ts: Some(m.ts),
+          author_kind: "person",
+          author: m.user,
+          agent_identity: None,
+          text: Some(m.text),
+          attachments: att_opt,
+          quotes: m.quoted,
+          declared: None,
+          client: None,
+          card: None,
+          options: None,
+          proposal: None,
+          at: now_ms,
+        }
+        match st_db.insert_message(msg, deliver_to=active_sessions) {
+          Ok((n, fresh)) => {
+            if fresh {
+              for si in 0..<active_sessions.length() {
+                let actor = core.agents.hub.ensure_actor(active_sessions[si], meta.runtime)
+                let _ = actor.submit_input(m.text)
+              }
+              emit_thread_sse_event(core, meta.ws, tid, n, "message", "person", m.user, m.text, now_ms)
+            }
+            true
+          }
+          Err(_) => false
+        }
+      }
+      _ => false
+    }
+    ConnectInboundDecision::PersistEdit => match ev {
+      station_connects::ChatEvent::Changed(_, _, target_ts, new_text) => {
+        let tid = match existing_tid {
+          Some(id) => id
+          None => return true
+        }
+        // 1:1 with TS `station/src/store/store.ts:3451-3469` (`#editMessage`): preserve
+        // original `author_kind`, `author`, `attachments`, and `quotes`, and skip no-op edits.
+        let target_row = match st_db.db.first(
+          "SELECT n, author_kind, author, text, attachments, quotes FROM entries WHERE thread = ?1 AND ts = ?2 AND kind = 'message' LIMIT 1",
+          [sql_db::int64_to_json(tid), base_codec::json_str(target_ts)],
+        ) {
+          Ok(Some(row)) => row
+          Ok(None) => return true
+          Err(_) => return false
+        }
+        let target_n = match target_row.get("n") {
+          Some(base_codec::Json::Num(v, _)) => v.to_int64()
+          _ => return true
+        }
+        let orig_ak = match target_row.get("author_kind") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => "person"
+        }
+        let orig_author = match target_row.get("author") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        let orig_text = match target_row.get("text") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        let orig_att = match target_row.get("attachments") {
+          Some(v) => v
+          None => base_codec::json_null()
+        }
+        let orig_quotes = match target_row.get("quotes") {
+          Some(v) => v
+          None => base_codec::json_null()
+        }
+        let latest_text = match st_db.db.first(
+          "SELECT text FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
+          [sql_db::int64_to_json(tid), sql_db::int64_to_json(target_n)],
+        ) {
+          Ok(Some(r)) => match r.get("text") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => orig_text
+          }
+          _ => orig_text
+        }
+        if latest_text == new_text {
+          return true
+        }
+        let edit_res = st_db.tx(fn(t : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
+          let next_n = match t.first(
+            "SELECT COALESCE(MAX(n), 0) + 1 AS next_n FROM entries WHERE thread = ?1",
+            [sql_db::int64_to_json(tid)],
+          ) {
+            Ok(Some(r)) => match r.get("next_n") {
+              Some(base_codec::Json::Num(v, _)) => v.to_int64()
+              _ => 1L
+            }
+            Ok(None) => 1L
+            Err(e) => return Err(e)
+          }
+          match t.run(
+            "INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, attachments, quotes, target, at) VALUES (?1, ?2, 'edit', NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            [
+              sql_db::int64_to_json(tid),
+              sql_db::int64_to_json(next_n),
+              base_codec::json_str(orig_ak),
+              base_codec::json_str(orig_author),
+              base_codec::json_str(new_text),
+              orig_att,
+              orig_quotes,
+              sql_db::int64_to_json(target_n),
+              sql_db::int64_to_json(now_ms),
+            ],
+          ) {
+            Ok(_) => Ok(next_n)
+            Err(e) => Err(e)
+          }
+        })
+        match edit_res {
+          Ok(en) => {
+            emit_thread_sse_event(core, meta.ws, tid, en, "edit", orig_ak, orig_author, new_text, now_ms)
+            true
+          }
+          Err(_) => false
+        }
+      }
+      _ => false
+    }
+  }
+}
+
+fn handle_feishu_card_answer(
+  core : station_whole::WholeCore,
+  connects : station_whole::ConnectsOsRuntime,
+  connect_meta : Map[String, ConnectMeta],
+  connect_id : String,
+  ans : station_connects::FeishuCardAnswer,
+  now_ms : Int64,
+) -> Bool {
+  let tts = if ans.thread_ts.length() > 0 { ans.thread_ts } else { ans.message_id }
+  let ts = if ans.event_id.length() > 0 { "card-" + ans.event_id } else { "card-" + now_ms.to_string() }
+  let ev = station_connects::ChatEvent::Message(
+    station_connects::InboundMessage::{
+      channel: ans.chat_id,
+      thread_ts: tts,
+      ts: ts,
+      user: ans.user,
+      text: ans.choice,
+      addressed: true,
+      files: [],
+      quoted: if ans.message_id.length() > 0 { Some(ans.message_id) } else { None },
+    },
+  )
+  handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms)
+}
+
+/// Local attachment chunk reader for Comma `task.read_file` & `comma.read_file`
+/// (1:1 with `station/src/comma/chats.ts` `routerReadFile`, `#9001`).
+fn router_read_file_local(
+  core : station_whole::WholeCore,
+  ws : String,
+  thread_id : Int64,
+  seq : Int64,
+  file_name : String,
+  offset : Int64,
+) -> Result[base_codec::Json, String] {
+  if thread_id <= 0L {
+    return Err("no such chat")
+  }
+  if seq <= 0L {
+    return Err("seq must be a positive integer")
+  }
+  if file_name.trim().length() == 0 {
+    return Err("file is required")
+  }
+  if offset < 0L {
+    return Err("offset must be a non-negative integer")
+  }
+  let st_db = match core.store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match st_db.get_thread(thread_id) {
+    Ok(Some(_)) => ()
+    Ok(None) => return Err("no such chat of the workspace")
+    Err(e) => return Err(e.message)
+  }
+  let home_ws = core.config.home_workspace
+  let visible = match station_whole::thread_visible_in_ws(st_db, thread_id, ws, home_ws) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if !visible {
+    return Err("no such chat of the workspace")
+  }
+  let att_raw = match st_db.db.first(
+    "SELECT attachments FROM entries WHERE thread = ?1 AND ((n = ?2 AND kind = 'message') OR (target = ?2 AND kind = 'edit')) ORDER BY n DESC LIMIT 1",
+    [sql_db::int64_to_json(thread_id), sql_db::int64_to_json(seq)],
+  ) {
+    Ok(Some(row)) => match row.get("attachments") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return Ok(base_codec::json_obj([("missing", base_codec::json_str("no such file"))]))
+    }
+    _ => return Ok(base_codec::json_obj([("missing", base_codec::json_str("no such file"))]))
+  }
+  let parsed = match base_codec::json_parse(att_raw) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => arr
+    _ => return Ok(base_codec::json_obj([("missing", base_codec::json_str("no such file"))]))
+  }
+  let mut found_path = ""
+  for i in 0..<parsed.length() {
+    let item = parsed[i]
+    let nm = match base_codec::json_get(item, "name") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let pt = match base_codec::json_get(item, "path") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    if nm == file_name && pt.length() > 0 {
+      found_path = pt
+      break
+    }
+  }
+  if found_path.length() == 0 {
+    return Ok(base_codec::json_obj([("missing", base_codec::json_str("no such file"))]))
+  }
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  // Fail closed if `realpath` fails (never fall back to un-resolved `found_path`).
+  let norm_att = match station_sys::realpath(found_path) {
+    Some(rp) => rp
+    None => return Ok(base_codec::json_obj([("missing", base_codec::json_str("no longer on its station"))]))
+  }
+  let mut within_uploads = false
+  match st_db.db.all(
+    "SELECT s.workspace AS workspace FROM thread_sessions ts JOIN sessions s ON s.key = ts.session WHERE ts.thread = ?1",
+    [sql_db::int64_to_json(thread_id)],
+  ) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        match rows[i].get("workspace") {
+          Some(base_codec::Json::Str(wdir)) => {
+            if wdir.length() > 0 {
+              let raw_up = nodepath::join(sep, [wdir, "uploads"])
+              match station_sys::realpath(raw_up) {
+                Some(up_dir) => {
+                  if norm_att.starts_with(up_dir + sep) {
+                    within_uploads = true
+                    break
+                  }
+                }
+                None => ()
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    Err(_) => ()
+  }
+  if !within_uploads {
+    return Ok(base_codec::json_obj([("missing", base_codec::json_str("no such file"))]))
+  }
+  match station_sys::lstat_raw_err(norm_att) {
+    Ok(st_str) => {
+      if !st_str.starts_with("file|") {
+        return Ok(base_codec::json_obj([("missing", base_codec::json_str("no such file"))]))
+      }
+    }
+    Err(_) => return Ok(base_codec::json_obj([("missing", base_codec::json_str("no longer on its station"))]))
+  }
+  match station_sys::read_range_meta(norm_att, offset, station_connects::COMMA_FILE_PART_BYTES.to_int64()) {
+    Err(_) => Ok(base_codec::json_obj([("missing", base_codec::json_str("no longer on its station"))]))
+    Ok((chunk, total_sz, _)) => {
+      if total_sz > station_connects::COMMA_READ_FILE_MAX_BYTES {
+        return Ok(base_codec::json_obj([("missing", base_codec::json_str("file too large"))]))
+      }
+      if offset > total_sz {
+        return Ok(base_codec::json_obj([("missing", base_codec::json_str("offset past end"))]))
+      }
+      Ok(
+        base_codec::json_obj([
+          ("name", base_codec::json_str(file_name)),
+          ("size", base_codec::json_int64(total_sz)),
+          ("offset", base_codec::json_int64(offset)),
+          ("data", base_codec::json_str(base_codec::base64_encode(chunk))),
+        ]),
+      )
+    }
+  }
+}
+
 /// Identify all enabled external platform connects in raw `config.json` (1:1 with Node
 /// `station/src/sessions/config.ts:174`: omitted `enabled` defaults to `true`, and any `kind`
 /// other than `"feishu"` / `"comma"` / `"group"` — including omitted, `null`, `"chat"`, `"Slack"`,
@@ -446,6 +1444,9 @@ struct WholeRuntimeState {
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
   connect_meta : Map[String, ConnectMeta]
+  remote_connects : Map[String, RemoteConnectRecord]
+  remote_connects_path : String
+  comma_notifier : station_connects::PeerChangeNotifier
   dns_streams : Map[Int64, Int64]
   mut next_dns_ev_id : Int64
   mut replica_before_store_ok : Bool
@@ -4190,24 +5191,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       Ok(())
     },
     on_init: fn(ctx : DaemonCtx) -> Result[Unit, String] {
-      // Fail-closed entry gate BEFORE `ready`, BEFORE opening `stillfail.db`, and BEFORE opening any
-      // external sockets: stations with enabled external connects stay on Node with zero disruption
-      // until Wave 17B wires full Hub agent prompt delivery.
-      let ext_connects = enabled_external_connects_in_config(ctx.cfg_raw)
-      if ext_connects.length() > 0 {
-        let list_sb = StringBuilder::new()
-        for ei in 0..<ext_connects.length() {
-          if ei > 0 {
-            list_sb.write_string(", ")
-          }
-          list_sb.write_string(ext_connects[ei])
-        }
-        let msg = "pion whole station beta does not yet support enabled external connects ("
-        + list_sb.to_string()
-        + "); keep engine=node until Wave 17B Hub delivery cutover"
-        ctx.fail_and_stop(msg)
-        return Err(msg)
-      }
       let now_secs = (host_shim::wall_ms() / 1000L).to_double()
       let cfg = build_whole_core_config(ctx, now_secs)
       let verify_fn = Some(station_cloud::shell_verifier_of_client(ctx.shell_client))
@@ -4256,15 +5239,33 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         fn(_cid : String) -> Option[String] { None },
       )
       let connect_meta : Map[String, ConnectMeta] = Map::new()
+      let remote_connects : Map[String, RemoteConnectRecord] = Map::new()
+      let remote_connects_path = nodepath::join(ctx.sep, [ctx.data, "remote-connects.json"])
       let connect_bridge = station_whole::ConnectMuxBridge::with_hub(ctx.edge_hub, ctx.ops_fs)
+      let connects_cell : Array[Option[station_whole::ConnectsOsRuntime]] = [None]
       let connect_cbs = station_whole::ConnectsCallbacks::{
         on_event: fn(
-          _connect_id : String,
+          connect_id : String,
           _platform : station_connects::ConnectPlatform,
-          _ev : station_connects::ChatEvent,
-        ) -> Bool { false },
-        on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool { false },
-        on_interactive: fn(_cid : String, _eid : String, _payload : base_codec::Json) -> Bool { false },
+          ev : station_connects::ChatEvent,
+        ) -> Bool {
+          match connects_cell[0] {
+            Some(crt) => handle_connect_inbound_event(core, crt, connect_meta, connect_id, ev, host_shim::wall_ms())
+            None => false
+          }
+        },
+        on_card_answer: fn(cid : String, ans : station_connects::FeishuCardAnswer) -> Bool {
+          match connects_cell[0] {
+            Some(crt) => handle_feishu_card_answer(core, crt, connect_meta, cid, ans, host_shim::wall_ms())
+            None => false
+          }
+        },
+        on_interactive: fn(cid : String, eid : String, payload : base_codec::Json) -> Bool {
+          match connects_cell[0] {
+            Some(crt) => handle_slack_interactive_payload(core, crt, connect_meta, cid, eid, payload, host_shim::wall_ms())
+            None => false
+          }
+        },
         on_disconnect: fn(_cid : String, _reason : String) -> Unit {},
       }
       let connects = station_whole::ConnectsOsRuntime::new(
@@ -4272,9 +5273,49 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         ctx.station_key.id,
         connect_cbs,
       )
+      connects.set_feishu_threads_dir(ctx.data)
+      connects_cell[0] = Some(connects)
+      let comma_notifier = station_connects::PeerChangeNotifier::new()
+      connects.set_on_comma_connected(fn(cid : String) -> Unit {
+        let now_w = host_shim::wall_ms()
+        connects.comma_on_fresh_event(cid)
+        let _ = connects.comma_on_build_result(cid, 0, false, now_w)
+      })
+      connects.set_on_comma_read_file(fn(cid : String, req : station_connects::CommaReadFileReq) -> Result[base_codec::Json, String] {
+        let ws = match connect_meta.get(cid) {
+          Some(m) => m.ws
+          None => core.config.home_workspace
+        }
+        match parse_comma_chat_ref(req.task) {
+          Some((tid, Some(remote_station))) => {
+            if remote_station != ctx.station_key.id {
+              let fwd = base_codec::json_obj([
+                ("method", base_codec::json_str(station_connects::COMMA_PEER_READ_FILE)),
+                ("workspace", base_codec::json_str(ws)),
+                (
+                  "readFile",
+                  base_codec::json_obj([
+                    ("thread", base_codec::json_int64(tid)),
+                    ("seq", base_codec::json_int64(req.seq)),
+                    ("file", base_codec::json_str(req.file)),
+                    ("offset", base_codec::json_int64(req.offset)),
+                  ]),
+                ),
+              ])
+              ctx.enqueue_tell(remote_station, ws, fwd)
+              Err("remote station " + remote_station + " read_file dispatched")
+            } else {
+              router_read_file_local(core, ws, tid, req.seq, req.file, req.offset)
+            }
+          }
+          Some((tid, None)) => router_read_file_local(core, ws, tid, req.seq, req.file, req.offset)
+          None => Err("no such chat")
+        }
+      })
       ctx.edge_hub.set_router(fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Bool {
         connects.handle_mux_reply(tok, done)
       })
+      let enabled_in_cfg = enabled_external_connects_in_config(ctx.cfg_raw).length()
       let replica_bs_cell : Array[Bool] = [false]
       core.api.edge_status_fn = Some(fn() -> base_codec::Json {
         base_codec::json_obj([
@@ -4305,9 +5346,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           (
             "connects",
             base_codec::json_obj([
-              ("enabledInConfig", base_codec::json_int(0)),
-              ("total", base_codec::json_int(0)),
-              ("running", base_codec::json_int(0)),
+              ("enabledInConfig", base_codec::json_int(enabled_in_cfg)),
+              ("total", base_codec::json_int(connects.connector_count())),
+              ("running", base_codec::json_int(connects.running_count())),
+              ("remote", base_codec::json_int(remote_connects.length())),
               ("stopped", base_codec::json_bool(connects.is_stopped())),
             ]),
           ),
@@ -4331,15 +5373,363 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           return station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok"))
         }
         if req.path == "/mcp" || req.path.starts_with("/mcp/") {
+          let req_body = req.body_text()
+          let host_hdr = req.header("host")
+          let origin_hdr = req.header("origin")
+          let auth_hdr = req.header("authorization")
+          // Inspect `tools/call` for `chat_post` / `chat_state` so we can validate Feishu `reply_to`
+          // strictly AFTER ready + local-origin + Bearer auth (no unauthenticated probing oracle),
+          // and forward outbound posts/cards/status-lines to local or remote external connects.
+          let mut post_text_opt : Option[String] = None
+          let mut post_reply_to_opt : Option[String] = None
+          let mut post_card_opt : Option[base_codec::Json] = None
+          let mut post_kind_opt : Option[String] = None
+          let mut post_for_opt : Option[String] = None
+          let mut rpc_id_opt : Option[base_codec::Json] = None
+          let mut is_chat_post = false
+          let mut is_chat_state = false
+          let mut post_to_raw = ""
+          match base_codec::json_parse(req_body) {
+            base_codec::JsonParseResult::Ok(j) => {
+              let mname = match base_codec::json_get(j, "method") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => ""
+              }
+              if mname == "tools/call" {
+                rpc_id_opt = base_codec::json_get(j, "id")
+                match base_codec::json_get(j, "params") {
+                  Some(p) => {
+                    let tname = match base_codec::json_get(p, "name") {
+                      Some(base_codec::Json::Str(s)) => s
+                      _ => ""
+                    }
+                    if tname == "chat_post" || tname == "chat_state" {
+                      is_chat_post = tname == "chat_post"
+                      is_chat_state = tname == "chat_state"
+                      match base_codec::json_get(p, "arguments") {
+                        Some(a) => {
+                          match base_codec::json_get(a, "to") {
+                            Some(base_codec::Json::Str(s)) => post_to_raw = s.trim()
+                            _ => ()
+                          }
+                          match base_codec::json_get(a, "text") {
+                            Some(base_codec::Json::Str(s)) => post_text_opt = Some(s)
+                            _ => ()
+                          }
+                          match base_codec::json_get(a, "kind") {
+                            Some(base_codec::Json::Str(s)) => post_kind_opt = Some(s)
+                            _ => ()
+                          }
+                          match base_codec::json_get(a, "for") {
+                            Some(base_codec::Json::Str(s)) => post_for_opt = Some(s)
+                            _ => ()
+                          }
+                          match base_codec::json_get(a, "reply_to") {
+                            Some(base_codec::Json::Str(s)) => {
+                              let tr = s.trim()
+                              if tr.length() > 0 {
+                                post_reply_to_opt = Some(tr)
+                              }
+                            }
+                            _ => ()
+                          }
+                          post_card_opt = base_codec::json_get(a, "card")
+                        }
+                        None => ()
+                      }
+                    }
+                  }
+                  None => ()
+                }
+              }
+            }
+            _ => ()
+          }
+          // Validate Feishu `reply_to` (#9045) ONLY AFTER `core.ready`, local-origin check, and
+          // Bearer token authentication so unauthenticated callers cannot probe thread/message ts.
+          if is_chat_post && core.ready {
+            match post_reply_to_opt {
+              Some(rt_ts) => {
+                let origin_ok = match origin_hdr {
+                  Some(o) => o.trim().length() == 0
+                  None => match host_hdr {
+                    Some(h) => {
+                      let hl = jscase::lower(h.trim())
+                      hl == "127.0.0.1"
+                      || hl.starts_with("127.0.0.1:")
+                      || hl == "localhost"
+                      || hl.starts_with("localhost:")
+                      || hl == "[::1]"
+                      || hl.starts_with("[::1]:")
+                    }
+                    None => true
+                  }
+                }
+                let caller_sess_opt : Option[String] = if origin_ok {
+                  match auth_hdr {
+                    Some(ah) => {
+                      let tr = ah.trim()
+                      if tr.starts_with("Bearer ") || tr.starts_with("bearer ") {
+                        let tok = station_connects::str_slice(tr, 7, tr.to_bytes().length()).trim()
+                        core.agents.resolve_token_ct(tok)
+                      } else {
+                        None
+                      }
+                    }
+                    None => None
+                  }
+                } else {
+                  None
+                }
+                match caller_sess_opt {
+                  Some(caller_sess) => match core.store.require_open() {
+                    Ok(st_db) => {
+                      let mut surf = ""
+                      let mut exists_msg = false
+                      let slash = station_connects::str_index_of(post_to_raw, "/", 0)
+                      if slash > 0 {
+                        let ch = station_connects::str_slice(post_to_raw, 0, slash)
+                        let tts = station_connects::str_slice(post_to_raw, slash + 1, post_to_raw.to_bytes().length())
+                        // Align with TS `conversations.ts:105-110`: allow pointing to any existing Feishu
+                        // thread visible in the authenticated session's workspace (not only threads already joined).
+                        let caller_ws = match st_db.get_session(caller_sess) {
+                          Ok(Some(srow)) => match srow.ws {
+                            Some(w) => if w.length() > 0 { w } else { core.config.home_workspace }
+                            None => core.config.home_workspace
+                          }
+                          _ => core.config.home_workspace
+                        }
+                        match st_db.db.all(
+                          "SELECT id, surface FROM threads WHERE channel = ?1 AND thread_ts = ?2 ORDER BY CASE WHEN surface LIKE 'feishu:%' THEN 0 ELSE 1 END, id ASC LIMIT 10",
+                          [base_codec::json_str(ch), base_codec::json_str(tts)],
+                        ) {
+                          Ok(rows) => {
+                            for ri in 0..<rows.length() {
+                              let row = rows[ri]
+                              let tid = match row.get("id") {
+                                Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                _ => 0L
+                              }
+                              if tid <= 0L {
+                                continue
+                              }
+                              let vis = match station_whole::thread_visible_in_ws(
+                                st_db,
+                                tid,
+                                caller_ws,
+                                core.config.home_workspace,
+                              ) {
+                                Ok(v) => v
+                                Err(_) => false
+                              }
+                              if !vis {
+                                continue
+                              }
+                              surf = match row.get("surface") {
+                                Some(base_codec::Json::Str(s)) => s
+                                _ => ""
+                              }
+                              match st_db.db.first(
+                                "SELECT 1 AS ok FROM entries WHERE thread = ?1 AND ts = ?2 LIMIT 1",
+                                [sql_db::int64_to_json(tid), base_codec::json_str(rt_ts)],
+                              ) {
+                                Ok(Some(_)) => exists_msg = true
+                                _ => ()
+                              }
+                              break
+                            }
+                          }
+                          _ => ()
+                        }
+                      }
+                      match station_connects::feishu_validate_reply_to(surf, post_to_raw, rt_ts, exists_msg) {
+                        Ok(_) => ()
+                        Err(verr) => {
+                          let err_rpc = base_codec::json_obj([
+                            ("jsonrpc", base_codec::json_str("2.0")),
+                            (
+                              "id",
+                              match rpc_id_opt {
+                                Some(id_v) => id_v
+                                None => base_codec::json_null()
+                              },
+                            ),
+                            (
+                              "result",
+                              base_codec::json_obj([
+                                ("isError", base_codec::json_bool(true)),
+                                (
+                                  "content",
+                                  base_codec::json_arr([
+                                    base_codec::json_obj([
+                                      ("type", base_codec::json_str("text")),
+                                      ("text", base_codec::json_str(verr)),
+                                    ]),
+                                  ]),
+                                ),
+                              ]),
+                            ),
+                          ])
+                          return station_http::HandlerAction::Respond(
+                            station_http::HttpResponse::json(200, base_codec::json_stringify(err_rpc)),
+                          )
+                        }
+                      }
+                    }
+                    Err(_) => ()
+                  }
+                  None => ()
+                }
+              }
+              None => ()
+            }
+          }
           let mresp = core.handle_mcp_http(
             req.method,
             req.path,
-            req.header("host"),
-            req.header("origin"),
-            req.header("authorization"),
-            req.body_text(),
+            host_hdr,
+            origin_hdr,
+            auth_hdr,
+            req_body,
             host_shim::wall_ms(),
           )
+          // Forward successful `chat_post` (including card-only posts with empty/omitted text!)
+          // to local external connects or via `connect.call` peer RPC to the origin station,
+          // and apply `#9052` Feishu status-card gating on `chat_post` / `chat_state`.
+          if (is_chat_post || is_chat_state) && mresp.status == 200 {
+            let txt = match post_text_opt {
+              Some(s) => s
+              None => ""
+            }
+            let has_outbound = is_chat_post && (txt.length() > 0 || post_card_opt is Some(_))
+            match base_codec::json_parse(mresp.body) {
+              base_codec::JsonParseResult::Ok(rj) => {
+                let is_err = match base_codec::json_get(rj, "result") {
+                  Some(res_obj) => match base_codec::json_get(res_obj, "isError") {
+                    Some(base_codec::Json::Bool(true)) => true
+                    _ => false
+                  }
+                  None => true
+                }
+                if !is_err {
+                  match base_codec::json_get(rj, "result") {
+                    Some(res_obj) => match base_codec::json_get(res_obj, "content") {
+                      Some(base_codec::Json::Arr(carr)) => {
+                        if carr.length() > 0 {
+                          let ctxt = match base_codec::json_get(carr[0], "text") {
+                            Some(base_codec::Json::Str(s)) => s
+                            _ => ""
+                          }
+                          match base_codec::json_parse(ctxt) {
+                            base_codec::JsonParseResult::Ok(pj) => {
+                              let tid = match base_codec::json_get(pj, "thread") {
+                                Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                _ => 0L
+                              }
+                              let n_seq = match base_codec::json_get(pj, "n") {
+                                Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                _ => 0L
+                              }
+                              if tid > 0L {
+                                match core.store.require_open() {
+                                  Ok(st_db) => {
+                                    match st_db.db.first(
+                                      "SELECT t.surface AS surf, t.channel AS ch, t.thread_ts AS tts, ts.connect AS cid FROM threads t JOIN thread_sessions ts ON ts.thread = t.id WHERE t.id = ?1 AND ts.left_at IS NULL LIMIT 1",
+                                      [sql_db::int64_to_json(tid)],
+                                    ) {
+                                      Ok(Some(row)) => {
+                                        let surf = match row.get("surf") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                                        let ch = match row.get("ch") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                                        let tts = match row.get("tts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                                        let cid = match row.get("cid") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                                        if cid.length() > 0 {
+                                          if has_outbound {
+                                            if connects.has_connect(cid) {
+                                              let tref = station_connects::ThreadRef::new(ch, tts, reply_to=post_reply_to_opt)
+                                              let pkey = tid.to_string() + ":" + n_seq.to_string()
+                                              let _ = connects.send_message(cid, tref, txt, post_key=pkey, card=post_card_opt)
+                                            } else {
+                                              // Remote connect: forward outbound post/card via `connect.call` peer RPC to origin station.
+                                              match remote_connects.get(cid) {
+                                                Some(rec) => {
+                                                  let at_idx = station_connects::str_index_of(cid, "@", 0)
+                                                  let raw_id = if at_idx > 0 { station_connects::str_slice(cid, 0, at_idx) } else { cid }
+                                                  let raw_origin = if at_idx > 0 { station_connects::str_slice(cid, at_idx + 1, cid.to_bytes().length()) } else { rec.station }
+                                                  let ws_for = match connect_meta.get(cid) {
+                                                    Some(m) => m.ws
+                                                    None => core.config.home_workspace
+                                                  }
+                                                  let call_req = build_connect_call_post_request(
+                                                    ws_for,
+                                                    raw_id,
+                                                    raw_origin,
+                                                    ch,
+                                                    tts,
+                                                    post_reply_to_opt,
+                                                    txt,
+                                                    post_card_opt,
+                                                  )
+                                                  ctx.ask_peer_rpc(
+                                                    rec.station,
+                                                    ws_for,
+                                                    call_req,
+                                                    fn(res : Result[base_codec::Json, String]) -> Unit {
+                                                      match res {
+                                                        Ok(_) => ()
+                                                        Err(err_msg) => ctx.log(
+                                                          "[connect.call] remote post to "
+                                                          + rec.station
+                                                          + " for "
+                                                          + cid
+                                                          + " failed: "
+                                                          + err_msg,
+                                                        )
+                                                      }
+                                                    },
+                                                  )
+                                                }
+                                                None => ()
+                                              }
+                                            }
+                                          }
+                                          // `#9052`: apply Feishu status-card gating on turn state transitions.
+                                          if surf.starts_with("feishu:") && connects.has_connect(cid) {
+                                            match post_kind_opt {
+                                              Some("waiting") => {
+                                                let st_txt = match post_for_opt {
+                                                  Some(f) => f
+                                                  None => ""
+                                                }
+                                                let _ = connects.feishu_apply_status_line(cid, ch + "/" + tts, st_txt, false)
+                                              }
+                                              Some("all_done") | Some("need_human") => {
+                                                let _ = connects.feishu_apply_status_line(cid, ch + "/" + tts, "", true)
+                                              }
+                                              _ => ()
+                                            }
+                                          }
+                                        }
+                                      }
+                                      _ => ()
+                                    }
+                                  }
+                                  Err(_) => ()
+                                }
+                              }
+                            }
+                            _ => ()
+                          }
+                        }
+                      }
+                      _ => ()
+                    }
+                    None => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
           let resp = station_http::HttpResponse::{
             status: mresp.status,
             reason: station_http::status_reason(mresp.status),
@@ -4407,6 +5797,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         browser: browser,
         connects: connects,
         connect_meta: connect_meta,
+        remote_connects: remote_connects,
+        remote_connects_path: remote_connects_path,
+        comma_notifier: comma_notifier,
         dns_streams: Map::new(),
         next_dns_ev_id: 30064771072L, // 7 << 32 (disjoint from jobs/browser/terminals/logins/adb/restore)
         replica_before_store_ok: false,
@@ -4529,13 +5922,27 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   Ok(child) => {
                     let mut exit_code : Option[Int] = None
                     let err_sb = StringBuilder::new()
+                    let mut err_bytes = 0
+                    let err_cap = 16384
                     let prev_router = ctx.edge_hub.get_sys_router()
                     ctx.edge_hub.set_sys_router(fn(eid : Int64, payload : Bytes) -> Bool {
                       if eid != restore_ev_id {
                         return false
                       }
                       match station_sys::decode_sys_event(payload) {
-                        Some(station_sys::SysEvent::ProcStderr(b)) => err_sb.write_string(b.to_string())
+                        Some(station_sys::SysEvent::ProcStderr(b)) => {
+                          if err_bytes < err_cap {
+                            let s = b.to_string()
+                            let rem = err_cap - err_bytes
+                            if s.to_bytes().length() <= rem {
+                              err_sb.write_string(s)
+                              err_bytes = err_bytes + s.to_bytes().length()
+                            } else {
+                              err_sb.write_string(station_connects::str_slice(s, 0, rem))
+                              err_bytes = err_cap
+                            }
+                          }
+                        }
                         Some(station_sys::SysEvent::ProcExit(es)) => exit_code = Some(es.code)
                         _ => ()
                       }
@@ -4589,6 +5996,17 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           ) {
             Ok(_) => {
               st.replica.after_store(home_ws, ctx.station_key.id, host_shim::wall_ms())
+              // Load persisted cross-station `remote-connects.json` and start all enabled local external
+              // connects (Slack / Feishu / Comma / Group) directly onto `WholeCore` `Hub`!
+              load_remote_connects_file(
+                ctx.ops_fs,
+                st.remote_connects_path,
+                st.remote_connects,
+                st.connect_meta,
+                home_ws,
+              )
+              load_connects_from_config(ctx.cfg_raw, st.connects, st.connect_meta, home_ws)
+              let enabled_in_cfg = enabled_external_connects_in_config(ctx.cfg_raw).length()
               // Refresh edge status closure flag after `ReplicaOsRuntime::before_store` succeeds.
               let bs_ok = st.replica_before_store_ok
               st.core.api.edge_status_fn = Some(fn() -> base_codec::Json {
@@ -4620,9 +6038,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   (
                     "connects",
                     base_codec::json_obj([
-                      ("enabledInConfig", base_codec::json_int(0)),
-                      ("total", base_codec::json_int(0)),
-                      ("running", base_codec::json_int(0)),
+                      ("enabledInConfig", base_codec::json_int(enabled_in_cfg)),
+                      ("total", base_codec::json_int(st.connects.connector_count())),
+                      ("running", base_codec::json_int(st.connects.running_count())),
+                      ("remote", base_codec::json_int(st.remote_connects.length())),
                       ("stopped", base_codec::json_bool(st.connects.is_stopped())),
                     ]),
                   ),
@@ -4637,7 +6056,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   ),
                 ])
               })
-              // External platform connects are gated fail-closed in `on_init` until Wave 17B Hub delivery cutover.
               // Remove handover snapshot ONLY AFTER valid snapshot restore succeeded!
               if snap_valid_to_remove {
                 let _ = (ctx.ops_fs.remove)(ho_path)
@@ -4823,6 +6241,175 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(de.message, v2_bytes), None, v2_bytes, is_front)
               }
             }
+            return
+          }
+
+          // Cross-station external connect event delivery (`connect.event`, 1:1 with TS `workspace.ts:348-375 taken()`).
+          // P0-A: runtime entry gate refuses BOTH `LearnAndDeliver` and `kept: true` unless
+          // `STILLFAIL_PION_NATIVE_CONNECTS_TEST=1`, preventing silent black-hole ACKs before Wave 17C-1.
+          if method == "connect.event" {
+            let validation = validate_connect_event_with_gate(
+              native_connects_runtime_enabled(),
+              req,
+              ws,
+              ctx.station_key.id,
+              fn(id : String) -> Bool { st.connects.has_connect(id) },
+              fn(id : String) -> Option[String] {
+                match st.connect_meta.get(id) {
+                  Some(m) => Some(m.ws)
+                  None => None
+                }
+              },
+            )
+            let ev_json = match base_codec::json_get(req, "event") {
+              Some(e) => e
+              None => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("event is required", v2_bytes), None, v2_bytes, is_front)
+                return
+              }
+            }
+            match validation {
+              ConnectEventValidation::Reject(err_msg) => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(err_msg, v2_bytes), None, v2_bytes, is_front)
+                return
+              }
+              ConnectEventValidation::DeliverKept(local_cid) => {
+                match parse_wire_chat_event(ev_json) {
+                  Some(chat_ev) => {
+                    let ok = handle_connect_inbound_event(
+                      st.core,
+                      st.connects,
+                      st.connect_meta,
+                      local_cid,
+                      chat_ev,
+                      now_w,
+                    )
+                    if ok {
+                      let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
+                      ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+                    } else {
+                      ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("connect.event delivery refused", v2_bytes), None, v2_bytes, is_front)
+                    }
+                  }
+                  None => {
+                    ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("invalid connect.event payload", v2_bytes), None, v2_bytes, is_front)
+                  }
+                }
+                return
+              }
+              ConnectEventValidation::LearnAndDeliver(remote_cid, desc) => {
+                let rec = RemoteConnectRecord::{ station: auth.remote_id, described: desc }
+                st.remote_connects.set(remote_cid, rec)
+                st.connect_meta.set(remote_cid, connect_meta_from_described(remote_cid, desc, ws))
+                save_remote_connects_file(
+                  ctx.ops_fs,
+                  st.remote_connects_path,
+                  st.remote_connects,
+                  ctx.self_pid,
+                  ctx.sep,
+                )
+                match parse_wire_chat_event(ev_json) {
+                  Some(chat_ev) => {
+                    let (ev_ch, ev_tts) = match chat_ev {
+                      station_connects::ChatEvent::Message(m) => (m.channel, m.thread_ts)
+                      station_connects::ChatEvent::OwnNotice(m) => (m.channel, m.thread_ts)
+                      station_connects::ChatEvent::Changed(c, t, _, _) => (c, t)
+                      station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
+                      station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
+                    }
+                    // `movedTo` forwarding (1:1 with TS `workspace.ts:365-370`).
+                    match st.connects.workspace.thread_station(remote_cid, ev_ch, ev_tts) {
+                      Some(moved) => {
+                        if moved != ctx.station_key.id {
+                          let fwd_req = base_codec::json_obj([
+                            ("method", base_codec::json_str("connect.event")),
+                            ("workspace", base_codec::json_str(ws)),
+                            (
+                              "connect",
+                              match base_codec::json_get(req, "connect") {
+                                Some(c) => c
+                                None => base_codec::json_null()
+                              },
+                            ),
+                            ("described", desc),
+                            ("event", ev_json),
+                          ])
+                          ctx.enqueue_tell(moved, ws, fwd_req)
+                          let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
+                          ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+                          return
+                        }
+                      }
+                      None => ()
+                    }
+                    let ok = handle_connect_inbound_event(
+                      st.core,
+                      st.connects,
+                      st.connect_meta,
+                      remote_cid,
+                      chat_ev,
+                      now_w,
+                    )
+                    if ok {
+                      let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
+                      ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+                    } else {
+                      ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("connect.event delivery refused", v2_bytes), None, v2_bytes, is_front)
+                    }
+                  }
+                  None => {
+                    ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("invalid connect.event payload", v2_bytes), None, v2_bytes, is_front)
+                  }
+                }
+                return
+              }
+            }
+          }
+
+          // Cross-station Comma attachment read (`comma.read_file`, #9001).
+          if method == station_connects::COMMA_PEER_READ_FILE {
+            let rf = match base_codec::json_get(req, "readFile") {
+              Some(r) => r
+              None => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("no such file request", v2_bytes), None, v2_bytes, is_front)
+                return
+              }
+            }
+            let tid = match base_codec::json_get(rf, "thread") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0L
+            }
+            let seq = match base_codec::json_get(rf, "seq") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0L
+            }
+            let fname = match base_codec::json_get(rf, "file") {
+              Some(base_codec::Json::Str(s)) => s
+              _ => ""
+            }
+            let offset = match base_codec::json_get(rf, "offset") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0L
+            }
+            match router_read_file_local(st.core, ws, tid, seq, fname, offset) {
+              Ok(res_j) => ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+              Err(msg) => ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(msg, v2_bytes), None, v2_bytes, is_front)
+            }
+            return
+          }
+
+          // Cross-station Comma change notice (`comma.changed`, #8886): trigger `PeerChangeNotifier`
+          // and `CommaUnreadRetry` rebuild cycle for local Comma connectors in this workspace.
+          if method == station_connects::COMMA_PEER_CHANGED {
+            st.comma_notifier.nudge(now_w)
+            let cids = st.connects.comma_ids()
+            for ci in 0..<cids.length() {
+              let cid = cids[ci]
+              st.connects.comma_on_fresh_event(cid)
+              let _ = st.connects.comma_on_build_result(cid, 0, false, now_w)
+            }
+            let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
+            ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
             return
           }
 
@@ -5469,6 +7056,39 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.logins.tick(now)
           let _ = st.browser.tick(now)
           let _ = st.connects.tick(now)
+          // `#8886`: poll `PeerChangeNotifier` and `CommaUnreadRetry` due retries.
+          let comma_due = st.connects.comma_poll_unread_due(wall)
+          for ci in 0..<comma_due.length() {
+            let _ = st.connects.comma_on_build_result(comma_due[ci], 0, false, wall)
+          }
+          let peer_targets : Array[String] = []
+          let rc_keys = st.remote_connects.keys()
+          for rki in 0..<rc_keys.length() {
+            match st.remote_connects.get(rc_keys[rki]) {
+              Some(rec) => {
+                if rec.station != ctx.station_key.id {
+                  peer_targets.push(rec.station)
+                }
+              }
+              None => ()
+            }
+          }
+          let notify_dispatches = st.comma_notifier.poll_due(wall, peer_targets)
+          for npi in 0..<notify_dispatches.length() {
+            let disp = notify_dispatches[npi]
+            let targets = match disp.targets {
+              Some(ts) => ts
+              None => peer_targets
+            }
+            for ti in 0..<targets.length() {
+              let p_id = targets[ti]
+              let ch_req = base_codec::json_obj([
+                ("method", base_codec::json_str(station_connects::COMMA_PEER_CHANGED)),
+                ("workspace", base_codec::json_str(disp.workspace)),
+              ])
+              ctx.enqueue_tell(p_id, disp.workspace, ch_req)
+            }
+          }
           // Sync runtime `auth.test` `team_id` into `connect_meta` if populated after reconnect.
           let cm_keys = st.connect_meta.keys()
           for cmi in 0..<cm_keys.length() {

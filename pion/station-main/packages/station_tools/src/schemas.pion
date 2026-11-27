@@ -238,6 +238,7 @@ fn chat_post_decl() -> ToolDecl {
         ("done", s_str("For all_done (required): why nothing in the chat is left, in their language: what was finished and where it landed or how it was confirmed, naming the evidence (已合进 main 82f108a5，测试版 1389 已发). Not just 做完了 or done: that is refused.")),
         ("files", s_str_arr("Absolute paths of files on this machine to attach (up to 10, 50 MB each), shown below the text unless it places one by name (Formatting in your instructions).")),
         ("title", s_str("The conversation's name in still.fail lists (nothing is renamed in Slack): a few words on what it is about, in their language, at most 30 characters. Another only when the chat has moved to something else, not to reword it; never over a name people gave.")),
+        ("reply_to", s_str("Feishu: a message ts to answer in its thread.")),
         ("card", card_prop),
       ],
       ["to"],

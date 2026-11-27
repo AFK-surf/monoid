@@ -1215,9 +1215,16 @@ pub struct FeishuConnector {
   pub mut machine : SocketMachine
   pub mut dedupe : InboundDedupe
   pub mut throttle : OutboundThrottle
+  pub mut threads : FeishuThreadsState
+  pub mut last_event_create_time_ms : Int64
   mut chat_topics : Map[String, Bool]
   mut current_threads : Map[String, String]
   mut topic_roots : Map[String, String]
+  mut called : Map[String, Bool]
+  mut called_order : Array[String]
+  mut said : Map[String, Bool]
+  mut said_order : Array[String]
+  mut catch_ups : Map[String, FeishuCatchUpCursor]
 }
 
 pub fn FeishuConnector::new(
@@ -1246,9 +1253,16 @@ pub fn FeishuConnector::new(
       machine: SocketMachine::new("feishu", ReconnectPolicy::new(ping_ms, stale_ms)),
       dedupe: InboundDedupe::new(),
       throttle: OutboundThrottle::new(4, 30000.to_int64()),
+      threads: FeishuThreadsState::new(),
+      last_event_create_time_ms: 0.to_int64(),
       chat_topics: Map::new(),
       current_threads: Map::new(),
       topic_roots: Map::new(),
+      called: Map::new(),
+      called_order: [],
+      said: Map::new(),
+      said_order: [],
+      catch_ups: Map::new(),
     },
   )
 }
@@ -1491,6 +1505,11 @@ pub fn FeishuConnector::handle_frame(
             if self.dedupe.is_duplicate(dedupe_key, now) {
               return FeishuStep::DuplicateIgnored(pb, dedupe_key)
             }
+            self.was_said(m.message_id)
+            if m.addressed {
+              self.was_called(m.message_id)
+            }
+            self.last_event_create_time_ms = m.create_time_ms
             let thread_ts = resolve_feishu_thread(self, m)
             FeishuStep::Event(
               pb,
@@ -1655,5 +1674,886 @@ pub fn FeishuConnector::post_text(
     FeishuPostOutcome::Posted(id) => Ok(id)
     FeishuPostOutcome::RateLimited(w) => Err("feishu rate_limited; retry in " + w.to_string() + "ms")
     FeishuPostOutcome::Failed(e) => Err(e)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Feishu `reply_to` Validation & Thread Root Resolution (#9045)
+// ---------------------------------------------------------------------------
+
+/// Validates `chat_post.reply_to` 1:1 with `station/src/sessions/conversations.ts:105-110`.
+pub fn feishu_validate_reply_to(
+  surface : String,
+  thread_addr : String,
+  reply_to_raw : String,
+  message_exists : Bool,
+) -> Result[String, String] {
+  let reply_to = str_trim(reply_to_raw)
+  if reply_to == "" {
+    return Err("reply_to is empty")
+  }
+  if !str_starts_with(surface, "feishu:") {
+    return Err("reply_to is for an existing Feishu conversation: the ts of a message in it")
+  }
+  if !message_exists {
+    return Err("reply_to must be the ts of a message in " + thread_addr + ", got " + reply_to)
+  }
+  if str_starts_with(reply_to, "card-") {
+    return Err("reply_to cannot be a card's answer, which Feishu keeps as no message of its own: give the ts of the message with the card")
+  }
+  Ok(reply_to)
+}
+
+/// Resolves the Feishu message id to reply under: explicit `reply_to` takes
+/// precedence over `topic_root(thread_ts)` (1:1 with `feishu/surface.ts:375`).
+pub fn FeishuConnector::resolve_reply_root(
+  self : FeishuConnector,
+  thread_ts : String,
+  reply_to : Option[String],
+) -> Option[String] {
+  match reply_to {
+    Some(r) => {
+      let t = str_trim(r)
+      if t != "" {
+        return Some(t)
+      }
+    }
+    None => ()
+  }
+  self.topic_root(thread_ts)
+}
+
+fn feishu_build_interactive_card_json(
+  markdown : String,
+  card : base_codec::Json,
+  thread : ThreadRef,
+) -> String {
+  let elements : Array[base_codec::Json] = []
+  if markdown.trim().length() > 0 {
+    elements.push(
+      base_codec::json_obj([
+        ("tag", base_codec::json_str("markdown")),
+        ("content", base_codec::json_str(markdown)),
+      ]),
+    )
+  }
+  let ctype = json_str_field(card, "type")
+  if ctype == "options" {
+    let actions : Array[base_codec::Json] = []
+    match base_codec::json_get(card, "options") {
+      Some(base_codec::Json::Arr(opts)) => {
+        for i in 0..<opts.length() {
+          let label = json_str_field(opts[i], "label")
+          if label.length() > 0 {
+            actions.push(
+              base_codec::json_obj([
+                ("tag", base_codec::json_str("button")),
+                (
+                  "text",
+                  base_codec::json_obj([
+                    ("tag", base_codec::json_str("plain_text")),
+                    ("content", base_codec::json_str(label)),
+                  ]),
+                ),
+                ("type", base_codec::json_str("default")),
+                (
+                  "value",
+                  base_codec::json_obj([
+                    ("choice", base_codec::json_str(label)),
+                    ("chat_id", base_codec::json_str(thread.channel)),
+                    ("thread_ts", base_codec::json_str(thread.thread_ts)),
+                  ]),
+                ),
+              ]),
+            )
+          }
+        }
+      }
+      _ => ()
+    }
+    if actions.length() > 0 {
+      elements.push(
+        base_codec::json_obj([
+          ("tag", base_codec::json_str("action")),
+          ("actions", base_codec::json_arr(actions)),
+        ]),
+      )
+    }
+  } else if ctype == "text" {
+    let ph = json_str_field(card, "placeholder")
+    let hint = if ph.length() > 0 { ph } else { "Reply in thread" }
+    elements.push(
+      base_codec::json_obj([
+        ("tag", base_codec::json_str("markdown")),
+        ("content", base_codec::json_str("*" + hint + "*")),
+      ]),
+    )
+  } else if ctype == "login" {
+    let lid = json_str_field(card, "login")
+    let label = if lid.length() > 0 { "Login required: `" + lid + "`" } else { "Login required" }
+    elements.push(
+      base_codec::json_obj([
+        ("tag", base_codec::json_str("markdown")),
+        ("content", base_codec::json_str(label)),
+      ]),
+    )
+  }
+  base_codec::json_stringify(
+    base_codec::json_obj([
+      ("schema", base_codec::json_str("2.0")),
+      (
+        "body",
+        base_codec::json_obj([
+          ("elements", base_codec::json_arr(elements)),
+        ]),
+      ),
+    ]),
+  )
+}
+
+pub fn FeishuConnector::post_card(
+  self : FeishuConnector,
+  transport : ConnectTransport,
+  chat_id : String,
+  reply_root : Option[String],
+  card_json : String,
+) -> Result[String, String] {
+  let now = (transport.now_ms)()
+  if !self.throttle.can_send(now) {
+    return Err("feishu rate_limited; retry in " + self.throttle.wait_ms(now).to_string() + "ms")
+  }
+  for attempt in 0..<2 {
+    let tok = match self.tokens.get_or_refresh(transport) {
+      Ok(t) => t
+      Err(e) => return Err(e)
+    }
+    let resp = (transport.fetch)(
+      feishu_send_message_request(self.tokens.base_url, tok, chat_id, reply_root, "interactive", card_json),
+    )
+    match resp.error {
+      Some(e) => return Err("feishu send card: " + e)
+      None => ()
+    }
+    if resp.status == 429 {
+      let sec = feishu_ratelimit_sec(resp.headers)
+      match self.throttle.on_rate_limited(now, sec) {
+        Some(w) => return Err("feishu rate_limited; retry in " + w.to_string() + "ms")
+        None => return Err("feishu send card: rate_limited (429 retries exhausted)")
+      }
+    }
+    let parsed = match base_codec::json_parse(bytes_to_string(resp.body)) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(e) => return Err("feishu send card: " + e)
+    }
+    let code = match json_int64_field(parsed, "code") {
+      Some(c) => c
+      None => 0.to_int64()
+    }
+    if code == 0.to_int64() {
+      self.throttle.on_success()
+      let data = match base_codec::json_get(parsed, "data") {
+        Some(d) => d
+        None => base_codec::json_null()
+      }
+      let msg_id = json_str_field(data, "message_id")
+      if msg_id == "" {
+        return Err("feishu gave no message_id")
+      }
+      self.was_said(msg_id)
+      return Ok(msg_id)
+    }
+    if is_feishu_token_expired_code(code) && attempt == 0 {
+      self.tokens.invalidate()
+      continue
+    }
+    if is_feishu_rate_limited_code(code) {
+      let sec = feishu_ratelimit_sec(resp.headers)
+      match self.throttle.on_rate_limited(now, sec) {
+        Some(w) => return Err("feishu rate_limited; retry in " + w.to_string() + "ms")
+        None => return Err("feishu send card: rate_limited (" + code.to_string() + ")")
+      }
+    }
+    return Err("feishu send card: " + code.to_string() + " " + json_str_field(parsed, "msg"))
+  }
+  Err("feishu send card: failed after token refresh")
+}
+
+pub fn FeishuConnector::post_thread_text(
+  self : FeishuConnector,
+  transport : ConnectTransport,
+  thread : ThreadRef,
+  markdown : String,
+  card : Option[base_codec::Json] = None,
+) -> Result[String, String] {
+  let root = self.resolve_reply_root(thread.thread_ts, thread.reply_to)
+  match card {
+    Some(c) => {
+      let card_json = feishu_build_interactive_card_json(markdown, c, thread)
+      self.post_card(transport, thread.channel, root, card_json)
+    }
+    None => {
+      match self.post_text(transport, thread.channel, root, markdown) {
+        Ok(id) => {
+          self.was_said(id)
+          Ok(id)
+        }
+        Err(e) => Err(e)
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Feishu `called` / `said` Tracking & Status Card Gating (#9052)
+// ---------------------------------------------------------------------------
+
+pub let FEISHU_RECENT_TRACK_CAP : Int = 500
+
+pub fn FeishuConnector::was_called(self : FeishuConnector, ts : String) -> Unit {
+  if ts == "" {
+    return
+  }
+  if !self.called.contains(ts) {
+    self.called_order.push(ts)
+  }
+  self.called.set(ts, true)
+  while self.called_order.length() > FEISHU_RECENT_TRACK_CAP {
+    let oldest = self.called_order[0]
+    let next : Array[String] = []
+    for i in 1..<self.called_order.length() {
+      next.push(self.called_order[i])
+    }
+    self.called_order = next
+    self.called.remove(oldest)
+  }
+}
+
+pub fn FeishuConnector::was_said(self : FeishuConnector, ts : String) -> Unit {
+  if ts == "" {
+    return
+  }
+  if !self.said.contains(ts) {
+    self.said_order.push(ts)
+  }
+  self.said.set(ts, true)
+  while self.said_order.length() > FEISHU_RECENT_TRACK_CAP {
+    let oldest = self.said_order[0]
+    let next : Array[String] = []
+    for i in 1..<self.said_order.length() {
+      next.push(self.said_order[i])
+    }
+    self.said_order = next
+    self.said.remove(oldest)
+  }
+}
+
+pub fn FeishuConnector::is_called(self : FeishuConnector, ts : String) -> Bool {
+  match self.called.get(ts) {
+    Some(v) => v
+    None => false
+  }
+}
+
+pub fn FeishuConnector::is_heard(self : FeishuConnector, ts : String) -> Bool {
+  match self.said.get(ts) {
+    Some(v) => v
+    None => false
+  }
+}
+
+/// 1:1 with `station/src/feishu/status.ts` (`FeishuStatus.show` open gate):
+/// A turn woken without a chat message (`message_ts == None`) or by a message
+/// not heard from a person in this chat (a sub-chat letter or station notice)
+/// MUST NOT open a Feishu status card (avoids 「消息已撤回」 spam, FB-61).
+pub fn feishu_should_open_status_card(
+  status : String,
+  is_idle : Bool,
+  state : StatusLineState,
+  is_called : (String) -> Bool,
+  is_heard : (String) -> Bool,
+) -> Bool {
+  if status == "" {
+    return false
+  }
+  match state.message_ts {
+    None => false
+    Some(ts) => {
+      if is_called(ts) {
+        return true
+      }
+      if !is_heard(ts) || is_idle {
+        return false
+      }
+      true
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Feishu Reconnect Checkpoint & Bounded Catch-Up (`feishu/threads.ts`, #6911)
+// ---------------------------------------------------------------------------
+
+struct FeishuPendingHold {
+  id : String
+  is_catchup : Bool
+  mut before : Int64
+  mut reading : Bool
+}
+
+struct FeishuReceivingChat {
+  mut latest : Int64
+  pending : Array[FeishuPendingHold]
+}
+
+pub struct FeishuHoldToken {
+  pub connect : String
+  pub chat : String
+  pub id : String
+  pub when_ms : Int64
+  pub valid : Bool
+}
+
+pub struct FeishuCatchUpToken {
+  pub connect : String
+  pub chat : String
+  pub id : String
+  pub since_ms : Int64
+  ended_ids : Array[String]
+}
+
+pub struct FeishuCatchUpCursor {
+  pub since : Int64
+  pub mut through : Int64
+  pub mut token : String
+}
+
+/// Tracks safe per-chat reconnect cursors with delivery and catch-up holds
+/// 1:1 with `station/src/feishu/threads.ts` (`#6911`).
+pub struct FeishuThreadsState {
+  seen : Map[String, Int64]
+  seen_order : Array[(String, String)]
+  receiving : Map[String, FeishuReceivingChat]
+  mut next_catchup_id : Int64
+}
+
+pub fn FeishuThreadsState::new() -> FeishuThreadsState {
+  FeishuThreadsState::{
+    seen: Map::new(),
+    seen_order: [],
+    receiving: Map::new(),
+    next_catchup_id: 1.to_int64(),
+  }
+}
+
+fn feishu_chat_key(connect : String, chat : String) -> String {
+  connect + "\u{0}" + chat
+}
+
+pub fn FeishuThreadsState::seen_of(
+  self : FeishuThreadsState,
+  connect : String,
+  chat : String,
+) -> Int64 {
+  match self.seen.get(feishu_chat_key(connect, chat)) {
+    Some(v) => v
+    None => 0.to_int64()
+  }
+}
+
+pub fn FeishuThreadsState::set_seen(
+  self : FeishuThreadsState,
+  connect : String,
+  chat : String,
+  when_ms : Int64,
+) -> Unit {
+  let k = feishu_chat_key(connect, chat)
+  if !self.seen.contains(k) {
+    self.seen_order.push((connect, chat))
+  }
+  self.seen.set(k, when_ms)
+}
+
+pub fn FeishuThreadsState::conversations(
+  self : FeishuThreadsState,
+  connect : String,
+) -> Array[(String, Int64)] {
+  let out : Array[(String, Int64)] = []
+  for i in 0..<self.seen_order.length() {
+    let (c, chat) = self.seen_order[i]
+    if c == connect {
+      out.push((chat, self.seen_of(connect, chat)))
+    }
+  }
+  out
+}
+
+fn FeishuThreadsState::checkpoint(
+  self : FeishuThreadsState,
+  connect : String,
+  chat : String,
+) -> Unit {
+  let k = feishu_chat_key(connect, chat)
+  match self.receiving.get(k) {
+    None => ()
+    Some(at) => {
+      let mut safe = at.latest
+      for i in 0..<at.pending.length() {
+        if at.pending[i].before < safe {
+          safe = at.pending[i].before
+        }
+      }
+      if self.seen_of(connect, chat) != safe {
+        self.set_seen(connect, chat, safe)
+      }
+      if at.pending.length() == 0 {
+        self.receiving.remove(k)
+      }
+    }
+  }
+}
+
+pub fn FeishuThreadsState::to_json_string(self : FeishuThreadsState) -> String {
+  let pairs : Array[(String, base_codec::Json)] = []
+  let keys = self.seen.keys()
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    match self.seen.get(k) {
+      Some(v) => pairs.push((k, base_codec::json_int64(v)))
+      None => ()
+    }
+  }
+  base_codec::json_stringify(base_codec::json_obj(pairs))
+}
+
+pub fn FeishuThreadsState::load_json_string(self : FeishuThreadsState, raw : String) -> Unit {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Obj(entries)) => {
+      for i in 0..<entries.length() {
+        let (k, v) = entries[i]
+        match v {
+          base_codec::Json::Num(n, _) => {
+            let ms = n.to_int64()
+            if ms > 0L {
+              self.seen.set(k, ms)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+}
+
+/// Holds the reconnect cursor before `when_ms` (`when_ms - 1`) until the hub
+/// commits the delivery via `commit_taking`.
+pub fn FeishuThreadsState::taking(
+  self : FeishuThreadsState,
+  connect : String,
+  chat : String,
+  message_id : String,
+  when_ms : Int64,
+) -> FeishuHoldToken {
+  if when_ms <= 0.to_int64() {
+    return FeishuHoldToken::{
+      connect: connect,
+      chat: chat,
+      id: message_id,
+      when_ms: when_ms,
+      valid: false,
+    }
+  }
+  let k = feishu_chat_key(connect, chat)
+  let before = when_ms - 1.to_int64()
+  let at = match self.receiving.get(k) {
+    Some(r) => r
+    None => {
+      let init_latest = match self.seen.get(k) {
+        Some(v) => v
+        None => before
+      }
+      let r = FeishuReceivingChat::{ latest: init_latest, pending: [] }
+      self.receiving.set(k, r)
+      r
+    }
+  }
+  let mut exists = false
+  for i in 0..<at.pending.length() {
+    if !at.pending[i].is_catchup && at.pending[i].id == message_id {
+      exists = true
+      break
+    }
+  }
+  if !exists {
+    at.pending.push(
+      FeishuPendingHold::{
+        id: message_id,
+        is_catchup: false,
+        before: before,
+        reading: false,
+      },
+    )
+  }
+  self.checkpoint(connect, chat)
+  FeishuHoldToken::{
+    connect: connect,
+    chat: chat,
+    id: message_id,
+    when_ms: when_ms,
+    valid: true,
+  }
+}
+
+pub fn FeishuThreadsState::commit_taking(
+  self : FeishuThreadsState,
+  token : FeishuHoldToken,
+) -> Unit {
+  if !token.valid {
+    return
+  }
+  let k = feishu_chat_key(token.connect, token.chat)
+  match self.receiving.get(k) {
+    None => ()
+    Some(at) => {
+      let mut found = false
+      let keep : Array[FeishuPendingHold] = []
+      for i in 0..<at.pending.length() {
+        let p = at.pending[i]
+        if !p.is_catchup && p.id == token.id {
+          found = true
+        } else {
+          keep.push(p)
+        }
+      }
+      if !found {
+        return
+      }
+      if token.when_ms > at.latest {
+        at.latest = token.when_ms
+      }
+      at.pending.clear()
+      for i in 0..<keep.length() {
+        at.pending.push(keep[i])
+      }
+      self.checkpoint(token.connect, token.chat)
+    }
+  }
+}
+
+/// Holds the cursor at `since_ms` while a bounded catch-up run reads history.
+/// Never releases another catch-up that was still reading when this one began.
+pub fn FeishuThreadsState::catching_up(
+  self : FeishuThreadsState,
+  connect : String,
+  chat : String,
+  since_ms : Int64,
+) -> FeishuCatchUpToken {
+  let k = feishu_chat_key(connect, chat)
+  let at = match self.receiving.get(k) {
+    Some(r) => r
+    None => {
+      let init_latest = match self.seen.get(k) {
+        Some(v) => v
+        None => since_ms
+      }
+      let r = FeishuReceivingChat::{ latest: init_latest, pending: [] }
+      self.receiving.set(k, r)
+      r
+    }
+  }
+  let ended_ids : Array[String] = []
+  for i in 0..<at.pending.length() {
+    if at.pending[i].is_catchup && !at.pending[i].reading {
+      ended_ids.push(at.pending[i].id)
+    }
+  }
+  let cid = "cu-" + self.next_catchup_id.to_string()
+  self.next_catchup_id = self.next_catchup_id + 1.to_int64()
+  at.pending.push(
+    FeishuPendingHold::{
+      id: cid,
+      is_catchup: true,
+      before: since_ms,
+      reading: true,
+    },
+  )
+  self.checkpoint(connect, chat)
+  FeishuCatchUpToken::{
+    connect: connect,
+    chat: chat,
+    id: cid,
+    since_ms: since_ms,
+    ended_ids: ended_ids,
+  }
+}
+
+pub fn FeishuThreadsState::finish_catching_up(
+  self : FeishuThreadsState,
+  token : FeishuCatchUpToken,
+  through_ms : Int64,
+  complete : Bool,
+) -> Unit {
+  let k = feishu_chat_key(token.connect, token.chat)
+  match self.receiving.get(k) {
+    None => ()
+    Some(at) => {
+      let mut found = false
+      for i in 0..<at.pending.length() {
+        if at.pending[i].is_catchup && at.pending[i].id == token.id {
+          found = true
+          break
+        }
+      }
+      if !found {
+        return
+      }
+      if through_ms > at.latest {
+        at.latest = through_ms
+      }
+      let keep_before = if complete {
+        None
+      } else {
+        let t_minus_1 = through_ms - 1.to_int64()
+        Some(if t_minus_1 > token.since_ms { t_minus_1 } else { token.since_ms })
+      }
+      let keep : Array[FeishuPendingHold] = []
+      for i in 0..<at.pending.length() {
+        let p = at.pending[i]
+        let mut is_ended_old = false
+        for j in 0..<token.ended_ids.length() {
+          if p.is_catchup && p.id == token.ended_ids[j] {
+            is_ended_old = true
+            break
+          }
+        }
+        if is_ended_old {
+          continue
+        }
+        if p.is_catchup && p.id == token.id {
+          p.reading = false
+          match keep_before {
+            None => continue
+            Some(kb) => {
+              if kb > p.before {
+                p.before = kb
+              }
+              keep.push(p)
+            }
+          }
+        } else {
+          keep.push(p)
+        }
+      }
+      at.pending.clear()
+      for i in 0..<keep.length() {
+        at.pending.push(keep[i])
+      }
+      self.checkpoint(token.connect, token.chat)
+    }
+  }
+}
+
+/// Bounded reconnect catch-up (1:1 with `station/src/feishu/surface.ts:262-304`, #6911):
+/// holds every chat before the first request, resumes bounded 10-page traversal
+/// independently of failed-message safe cursor, forgets expired page tokens on
+/// API error, and releases every catch-up hold on exit.
+pub fn FeishuConnector::catch_up(
+  self : FeishuConnector,
+  connect_id : String,
+  transport : ConnectTransport,
+  on_message : (ChatEvent) -> Bool,
+) -> Result[Int, String] {
+  let convs = self.threads.conversations(connect_id)
+  let runs : Array[(String, FeishuCatchUpCursor, FeishuCatchUpToken)] = []
+  let completes : Array[Bool] = []
+  for i in 0..<convs.length() {
+    let (chat, since) = convs[i]
+    if since <= 0.to_int64() {
+      continue
+    }
+    let read = match self.catch_ups.get(chat) {
+      Some(prev) => FeishuCatchUpCursor::{ since: prev.since, through: prev.through, token: prev.token }
+      None => FeishuCatchUpCursor::{ since: since, through: since, token: "" }
+    }
+    self.catch_ups.set(chat, read)
+    let cu_tok = self.threads.catching_up(connect_id, chat, since)
+    runs.push((chat, read, cu_tok))
+    completes.push(false)
+  }
+  let mut delivered = 0
+  let mut err_out : Option[String] = None
+  for r_idx in 0..<runs.length() {
+    let (chat, read, _) = runs[r_idx]
+    let mut failed = false
+    for _page in 0..<10 {
+      let tok = match self.tokens.get_or_refresh(transport) {
+        Ok(t) => t
+        Err(e) => {
+          self.catch_ups.remove(chat)
+          err_out = Some(e)
+          failed = true
+          break
+        }
+      }
+      let q_params : Array[(String, String)] = [
+        ("container_id_type", "chat"),
+        ("container_id", chat),
+        ("start_time", (read.since / 1000.to_int64()).to_string()),
+        ("sort_type", "ByCreateTimeAsc"),
+        ("page_size", "50"),
+      ]
+      if read.token != "" {
+        q_params.push(("page_token", read.token))
+      }
+      let url = self.tokens.base_url + "/open-apis/im/v1/messages?" + encode_form_params(q_params)
+      let resp = (transport.fetch)(
+        HttpRequest::new("GET", url, [("authorization", "Bearer " + tok)], None, 30000.to_int64()),
+      )
+      match resp.error {
+        Some(e) => {
+          self.catch_ups.remove(chat)
+          err_out = Some("feishu catch_up: " + e)
+          failed = true
+          break
+        }
+        None => ()
+      }
+      if resp.status < 200 || resp.status >= 300 {
+        self.catch_ups.remove(chat)
+        err_out = Some("feishu catch_up: HTTP " + resp.status.to_string())
+        failed = true
+        break
+      }
+      let parsed = match base_codec::json_parse(bytes_to_string(resp.body)) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(e) => {
+          self.catch_ups.remove(chat)
+          err_out = Some("feishu catch_up: " + e)
+          failed = true
+          break
+        }
+      }
+      let code = match json_int64_field(parsed, "code") {
+        Some(c) => c
+        None => 0.to_int64()
+      }
+      if code != 0.to_int64() {
+        self.catch_ups.remove(chat)
+        err_out = Some("feishu catch_up: " + code.to_string() + " " + json_str_field(parsed, "msg"))
+        failed = true
+        break
+      }
+      let data = match base_codec::json_get(parsed, "data") {
+        Some(d) => d
+        None => base_codec::json_obj([])
+      }
+      match base_codec::json_get(data, "items") {
+        Some(base_codec::Json::Arr(items)) => {
+          for ii in 0..<items.length() {
+            let item = items[ii]
+            let sender = match base_codec::json_get(item, "sender") {
+              Some(s) => s
+              None => base_codec::json_obj([])
+            }
+            let sender_id = json_str_field(sender, "id")
+            let body_obj = match base_codec::json_get(item, "body") {
+              Some(b) => b
+              None => base_codec::json_obj([])
+            }
+            let ev_body = base_codec::json_obj([
+              (
+                "sender",
+                base_codec::json_obj([
+                  ("sender_type", base_codec::json_str(json_str_field(sender, "sender_type"))),
+                  ("sender_id", base_codec::json_obj([("open_id", base_codec::json_str(sender_id))])),
+                ]),
+              ),
+              (
+                "message",
+                base_codec::json_obj([
+                  ("message_id", base_codec::json_str(json_str_field(item, "message_id"))),
+                  ("chat_id", base_codec::json_str(chat)),
+                  ("message_type", base_codec::json_str(json_str_field(item, "msg_type"))),
+                  ("content", base_codec::json_str(json_str_field(body_obj, "content"))),
+                  ("create_time", base_codec::json_str(json_str_field(item, "create_time"))),
+                  ("thread_id", base_codec::json_str(json_str_field(item, "thread_id"))),
+                  ("root_id", base_codec::json_str(json_str_field(item, "root_id"))),
+                  ("parent_id", base_codec::json_str(json_str_field(item, "parent_id"))),
+                  (
+                    "mentions",
+                    match base_codec::json_get(item, "mentions") {
+                      Some(m_arr) => m_arr
+                      None => base_codec::json_arr([])
+                    },
+                  ),
+                ]),
+              ),
+            ])
+            match feishu_parse_message(ev_body, self.bot_open_id) {
+              Some(m) => {
+                if m.create_time_ms > read.since {
+                  self.was_said(m.message_id)
+                  if m.addressed {
+                    self.was_called(m.message_id)
+                  }
+                  let hold = self.threads.taking(connect_id, m.chat_id, m.message_id, m.create_time_ms)
+                  let thread_ts = resolve_feishu_thread(self, m)
+                  let ev = ChatEvent::Message(
+                    InboundMessage::{
+                      channel: m.chat_id,
+                      thread_ts: thread_ts,
+                      ts: m.message_id,
+                      user: m.user,
+                      text: m.text,
+                      addressed: m.addressed,
+                      files: m.files,
+                      quoted: m.parent_id,
+                    },
+                  )
+                  if on_message(ev) {
+                    self.threads.commit_taking(hold)
+                    delivered = delivered + 1
+                    if m.create_time_ms > read.through {
+                      read.through = m.create_time_ms
+                    }
+                  } else {
+                    err_out = Some("feishu catch_up: handler refused message " + m.message_id)
+                    failed = true
+                    break
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      if failed {
+        break
+      }
+      if !json_bool_field(data, "has_more") {
+        completes[r_idx] = true
+        self.catch_ups.remove(chat)
+        break
+      }
+      let next_tok = json_str_field(data, "page_token")
+      if next_tok == "" {
+        self.catch_ups.remove(chat)
+        break
+      }
+      read.token = next_tok
+    }
+    if failed {
+      break
+    }
+  }
+  for r_idx in 0..<runs.length() {
+    let (_, read, cu_tok) = runs[r_idx]
+    self.threads.finish_catching_up(cu_tok, read.through, completes[r_idx])
+  }
+  match err_out {
+    Some(e) => Err(e)
+    None => Ok(delivered)
   }
 }

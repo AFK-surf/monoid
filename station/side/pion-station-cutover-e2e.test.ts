@@ -3666,3 +3666,636 @@ test("W17A.7: External connects entry gate & in-place exec_replace fallback (liv
     }
   }
 });
+
+test("W17B-5.7: Pure Pion native external connects (Slack + Comma + cross-station connect.event + comma.read_file + native replica restore, zero Node fallback)", async () => {
+  const mesh = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+
+  async function peerRpc(
+    ep: Endpoint,
+    stationId: string,
+    addr: string,
+    workspace: string,
+    request: Record<string, unknown>,
+  ): Promise<any> {
+    const conn = await ep.connect({ id: stationId, relays: [], ips: [addr] }, PEER_BYTES_ALPN);
+    try {
+      const stream = await conn.openBi();
+      await stream.write(Buffer.from(JSON.stringify({ workspace, request }) + "\n"));
+      await stream.finish();
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const c = await stream.read();
+        if (c === null) break;
+        chunks.push(c);
+      }
+      const all = Buffer.concat(chunks);
+      const nl = all.indexOf(10);
+      const headerStr = (nl >= 0 ? all.subarray(0, nl) : all).toString("utf8").trim();
+      const parsed = JSON.parse(headerStr);
+      if ("error" in parsed) throw new Error(String(parsed.error));
+      return parsed;
+    } finally {
+      await conn.close(0, "done");
+    }
+  }
+
+  // --- Scenario 1: Pure Pion Slack Socket Mode + Comma WS end-to-end (withRealNodeMain = false!) ---
+  {
+    const slackPosted: string[] = [];
+    const slackAcked: string[] = [];
+    let slackClientWs: any = null;
+    const slackSrv = createHttpServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const bodyStr = Buffer.concat(chunks).toString("utf8");
+        if (req.url?.includes("auth.test")) {
+          res.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({ ok: true, team_id: "T_W17B5", team: "W17B5Team", user_id: "UBOT_B5", bot_id: "BBOT_B5", user: "b5bot" }),
+          );
+          return;
+        }
+        if (req.url?.includes("apps.connections.open")) {
+          const port = (slackSrv.address() as AddressInfo).port;
+          res.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({ ok: true, url: `ws://127.0.0.1:${port}/slack-ws` }),
+          );
+          return;
+        }
+        if (req.url?.includes("chat.postMessage")) {
+          slackPosted.push(bodyStr);
+          res.writeHead(200, { "content-type": "application/json" }).end(
+            JSON.stringify({ ok: true, ts: "1700.999" }),
+          );
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ ok: true }));
+      });
+    });
+    const slackWss = new WebSocketServer({ noServer: true });
+    servers.push(slackWss, slackSrv);
+    slackSrv.on("upgrade", (req, socket, head) => {
+      slackWss.handleUpgrade(req, socket, head, (ws) => {
+        slackClientWs = ws;
+        ws.on("message", (d) => {
+          try {
+            const msg = JSON.parse(String(d));
+            if (typeof msg.envelope_id === "string") slackAcked.push(msg.envelope_id);
+          } catch {}
+        });
+        ws.send(JSON.stringify({ type: "hello", num_connections: 1 }));
+      });
+    });
+    await new Promise<void>((resolve) => slackSrv.listen(0, "127.0.0.1", () => resolve()));
+    const slackPort = (slackSrv.address() as AddressInfo).port;
+
+    // Mock Comma WS server
+    let commaClientWs: any = null;
+    const commaFrames: any[] = [];
+    const commaSrv = createHttpServer((_req, res) => { res.writeHead(404).end(); });
+    const commaWss = new WebSocketServer({ server: commaSrv });
+    servers.push(commaWss, commaSrv);
+    commaWss.on("connection", (ws) => {
+      commaClientWs = ws;
+      ws.on("message", (d) => {
+        try { commaFrames.push(JSON.parse(String(d))); } catch {}
+      });
+      ws.send(JSON.stringify({ type: "connected", device_id: "dev-b5" }));
+    });
+    await new Promise<void>((resolve) => commaSrv.listen(0, "127.0.0.1", () => resolve()));
+    const commaPort = (commaSrv.address() as AddressInfo).port;
+
+    const dir = freshDir("w17b5-native-connects");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    // withRealNodeMain = false: main.js exits 99 -> PROVES 100% pure Pion!
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+
+    writeFileSync(
+      join(dataDir, "config.json"),
+      JSON.stringify({
+        engine: "pion",
+        connects: [
+          {
+            id: "slack-b5",
+            bind: { runtime: "claude" },
+            slack: { appToken: "xapp-1-b5", botToken: "xoxb-b5", baseUrl: `http://127.0.0.1:${slackPort}` },
+          },
+          {
+            id: "comma-b5",
+            kind: "comma",
+            bind: { runtime: "claude" },
+            comma: { server: `http://127.0.0.1:${commaPort}`, token: "tok-b5", name: "b5-mac", instanceId: "inst-b5" },
+          },
+        ],
+      }),
+    );
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: "ws-b5",
+        workspace_name: "B5WS",
+        station: stationId,
+        name: "b5-station",
+        peers: [],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    const udpPort = await pickFreeUdpPort();
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_PION_NATIVE_CONNECTS_TEST: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
+      stdio: "ignore",
+    });
+    children.push(launcher);
+
+    const pionPid = await until("W17B-5 pure Pion pid", () => {
+      const p = readHubPid(dataDir);
+      return p > 0 && isAlive(p) && readProcCmdline(p).includes("stillfail-station-pion") ? p : null;
+    }, 25_000);
+    assert.match(readProcCmdline(pionPid), /stillfail-station-pion/);
+
+    await until("Slack & Comma WS connected to pure Pion", () => slackClientWs && commaClientWs ? true : null, 15_000);
+    await until("Comma task.hello with task_read_file: 1", () =>
+      commaFrames.find((f) => f.method === "task.hello" && f.params?.task_read_file === 1) ?? null,
+    10_000);
+
+    // Check /status reports live connects
+    const clientEp = await bindClientEp(mesh);
+    const jwt = signMemberJwt({ ws: "ws-b5", device: clientEp.id(), sub: "u-b5", email: "b5@example.com", name: "B5", role: "owner" });
+    const { conn } = await until("W17B-5 admin connect", () => openAdminConn(clientEp, stationId, `127.0.0.1:${udpPort}`, jwt));
+    const stJson = JSON.parse((await adminRequest(conn, "GET", "/status")).body.toString("utf8"));
+    assert.equal(stJson.edge?.connects?.enabledInConfig, 2);
+    assert.equal(stJson.edge?.connects?.total, 2);
+    assert.equal(stJson.edge?.connects?.running, 2);
+    conn.close(0, "done");
+
+    // 1a. Push inbound Slack @bot message -> verify ACK + SQLite entries/deliveries + outbound MCP chat_post!
+    slackClientWs.send(JSON.stringify({
+      type: "events_api",
+      envelope_id: "env-b5-1",
+      payload: {
+        event_id: "EvB5_1",
+        event: { type: "app_mention", channel: "C_B5", ts: "1700.100", thread_ts: "1700.100", user: "U_ALICE", text: "<@UBOT_B5> hello pion hub" },
+      },
+    }));
+    await until("Slack envelope env-b5-1 ACKed", () => slackAcked.includes("env-b5-1") ? true : null, 10_000);
+
+    // Push Slack message_changed edit
+    slackClientWs.send(JSON.stringify({
+      type: "events_api",
+      envelope_id: "env-b5-2",
+      payload: {
+        event_id: "EvB5_2",
+        event: {
+          type: "message",
+          subtype: "message_changed",
+          channel: "C_B5",
+          event_ts: "1700.101",
+          message: { type: "message", user: "U_ALICE", ts: "1700.100", thread_ts: "1700.100", text: "<@UBOT_B5> hello pion hub edited" },
+        },
+      },
+    }));
+    await until("Slack edit envelope env-b5-2 ACKed", () => slackAcked.includes("env-b5-2") ? true : null, 10_000);
+
+    // Call /mcp chat_post using the created Slack session token -> verify outbound Slack chat.postMessage!
+    const mcpPort = await until("W17B-5 mcp port", () => readMcpPort(dataDir) || null, 10_000);
+    const slackSessRow = await until("Slack session row in stillfail.db", () => {
+      const ro = new DatabaseSync(join(dataDir, "stillfail.db"), { readOnly: true });
+      try {
+        return ro.prepare("SELECT key, token FROM sessions WHERE connect = ? LIMIT 1").get("slack-b5") as { key: string; token: string } | undefined;
+      } finally {
+        ro.close();
+      }
+    }, 10_000);
+    const mcpRes = await httpCall(
+      mcpPort,
+      "POST",
+      "/mcp",
+      { "content-type": "application/json", authorization: `Bearer ${slackSessRow.token}` },
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "chat_post", arguments: { to: "C_B5/1700.100", text: "reply-from-pion-mcp" } },
+      }),
+    );
+    assert.equal(mcpRes.status, 200, mcpRes.body);
+    await until("Outbound Slack chat.postMessage received", () =>
+      slackPosted.some((b) => b.includes("reply-from-pion-mcp")) ? true : null,
+    10_000);
+
+    // 1a-ii (Opus R2 P1-C): Pure-card `chat_post` (no `text`, only `card`) persists `entries.card`
+    // in SQLite, returns structured JSON with `thread`, and forwards Block Kit card to Slack;
+    // `chat_state` returns structured JSON with `thread` so status-line gating executes.
+    const cardPostRes = await httpCall(
+      mcpPort,
+      "POST",
+      "/mcp",
+      { "content-type": "application/json", authorization: `Bearer ${slackSessRow.token}` },
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 2,
+        method: "tools/call",
+        params: {
+          name: "chat_post",
+          arguments: {
+            to: "C_B5/1700.100",
+            card: { type: "options", options: [{ label: "ApproveCard" }] },
+          },
+        },
+      }),
+    );
+    assert.equal(cardPostRes.status, 200, cardPostRes.body);
+    const cardPostParsed = JSON.parse(JSON.parse(cardPostRes.body).result.content[0].text);
+    assert.ok(cardPostParsed.thread > 0 && cardPostParsed.n > 0, `P1-C card-only chat_post must return structured thread/n, got: ${cardPostRes.body}`);
+    await until("P1-C outbound Slack card-only post received", () =>
+      slackPosted.some((b) => b.includes("ApproveCard")) ? true : null,
+    10_000);
+    {
+      const roCard = new DatabaseSync(join(dataDir, "stillfail.db"), { open: true, readOnly: true });
+      const cardRow = roCard.prepare("SELECT card FROM entries WHERE thread = ? AND n = ?").get(cardPostParsed.thread, cardPostParsed.n) as { card: string | null } | undefined;
+      roCard.close();
+      assert.ok(cardRow?.card && cardRow.card.includes("ApproveCard"), `P1-C card must be persisted in entries.card, got: ${JSON.stringify(cardRow)}`);
+    }
+    const stateRes = await httpCall(
+      mcpPort,
+      "POST",
+      "/mcp",
+      { "content-type": "application/json", authorization: `Bearer ${slackSessRow.token}` },
+      JSON.stringify({
+        jsonrpc: "2.0",
+        id: 3,
+        method: "tools/call",
+        params: { name: "chat_state", arguments: { kind: "waiting", for: "checking", seconds: 30 } },
+      }),
+    );
+    assert.equal(stateRes.status, 200, stateRes.body);
+    const stateParsed = JSON.parse(JSON.parse(stateRes.body).result.content[0].text);
+    assert.equal(stateParsed.ok, true);
+    assert.equal(stateParsed.thread, cardPostParsed.thread);
+
+    // 1b. Comma task.invite + task.put -> verify response {through: 1} & SQLite persistence!
+    commaClientWs.send(JSON.stringify({
+      id: "inv-1",
+      type: "request",
+      method: "task.invite",
+      params: { task: "task-b5", start: { requester: "u-comma" } },
+    }));
+    await until("Comma task.invite response", () => commaFrames.find((f) => f.id === "inv-1" && f.type === "response") ?? null, 10_000);
+    commaClientWs.send(JSON.stringify({
+      id: "put-1",
+      type: "request",
+      method: "task.put",
+      params: { task: "task-b5", through: 1, answered: 0, messages: [{ seq: 1, author: { kind: "person", id: "u-comma" }, text: "hello comma pion" }] },
+    }));
+    await until("Comma task.put committed with through=1", () =>
+      commaFrames.find((f) => f.id === "put-1" && f.type === "response" && f.result?.through === 1) ?? null,
+    10_000);
+
+    launcher.kill("SIGTERM");
+    await until("W17B-5 Scenario 1 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+    const checkDb = new DatabaseSync(join(dataDir, "stillfail.db"), { readOnly: true });
+    const msgRows = checkDb.prepare("SELECT kind, text FROM entries ORDER BY thread, n").all() as { kind: string; text: string | null }[];
+    const delivCount = (checkDb.prepare("SELECT COUNT(*) AS c FROM deliveries").get() as { c: number }).c;
+    checkDb.close();
+    assert.ok(msgRows.some((r) => r.kind === "message" && (r.text ?? "").includes("hello pion hub")), "Slack inbound message persisted");
+    assert.ok(msgRows.some((r) => r.kind === "edit" && (r.text ?? "").includes("hello pion hub edited")), "Slack edit persisted");
+    assert.ok(msgRows.some((r) => r.kind === "message" && (r.text ?? "").includes("hello comma pion")), "Comma inbound message persisted");
+    assert.ok(delivCount >= 2, `expected >= 2 deliveries rows, got ${delivCount}`);
+  }
+
+  // --- Scenario 2: Pure Pion cross-station connect.event + remote-connects.json + comma.read_file (zero Node!) ---
+  {
+    const dir = freshDir("w17b5-remote-connects");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+
+    const peerEp = await bindClientEp(mesh);
+    const peerId = peerEp.id();
+
+    // Seed an upload file inside a session workspace for comma.read_file
+    const uploadDir = join(dir, "sess-ws", "uploads");
+    mkdirSync(uploadDir, { recursive: true });
+    const uploadPath = join(uploadDir, "shot.png");
+    const uploadBytes = Buffer.from("PNG-W17B5-PAYLOAD");
+    writeFileSync(uploadPath, uploadBytes);
+    {
+      const seed = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archive"));
+      const now = Date.now();
+      seed.db.prepare("INSERT INTO sessions (key, connect, scope, title, runtime, profile, workspace, token, created_at, last_active_at, cwd, ws) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("s-rf", "chat", "s-rf", "RF", "claude", "default", join(dir, "sess-ws"), randomBytes(32).toString("hex"), now, now, join(dir, "sess-ws"), "ws-rem-b5");
+      seed.db.prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at, home) VALUES (10, 'web', 'CHAT', '10.001', 'RFThread', ?, 'ws-rem-b5')").run(now);
+      seed.db.prepare("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (10, 's-rf', 'chat', ?)").run(now);
+      seed.db.prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, attachments, at) VALUES (10, 1, 'message', '10.001', 'person', 'u1', 'see file', ?, ?)").run(JSON.stringify([{ name: "shot.png", path: uploadPath }]), now);
+      seed.close();
+    }
+
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: "ws-rem-b5",
+        workspace_name: "RemB5WS",
+        station: stationId,
+        name: "rem-b5-station",
+        peers: [{ id: peerId, name: "peer-b5", relay: null }],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    const udpPort = await pickFreeUdpPort();
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_PION_NATIVE_CONNECTS_TEST: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
+      stdio: "ignore",
+    });
+    children.push(launcher);
+
+    const pionPid = await until("Scenario 2 pure Pion pid", () => {
+      const p = readHubPid(dataDir);
+      return p > 0 && isAlive(p) && readProcCmdline(p).includes("stillfail-station-pion") ? p : null;
+    }, 25_000);
+    assert.match(readProcCmdline(pionPid), /stillfail-station-pion/);
+
+    const described = {
+      kind: "slack",
+      workspace: "ws-rem-b5",
+      mode: "multi-session",
+      requireMention: false,
+      bind: { runtime: "claude" },
+      team: "T_REMB5",
+    };
+    const ev1 = await until("Scenario 2 connect.event message on pure Pion", async () => {
+      try {
+        return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, "ws-rem-b5", {
+          method: "connect.event",
+          workspace: "ws-rem-b5",
+          connect: { id: "slack-rem", origin: peerId },
+          described,
+          event: {
+            type: "message",
+            message: { channel: "C_REM", threadTs: "500.001", ts: "500.001", user: "U_REM", text: "remote-msg-on-pion", addressed: true },
+          },
+        });
+      } catch { return null; }
+    }, 15_000);
+    assert.deepEqual(ev1.result, { ok: true });
+
+    const ev2 = await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, "ws-rem-b5", {
+      method: "connect.event",
+      workspace: "ws-rem-b5",
+      connect: { id: "slack-rem", origin: peerId },
+      described,
+      event: { type: "changed", channel: "C_REM", threadTs: "500.001", ts: "500.001", text: "remote-msg-edited-on-pion" },
+    });
+    assert.deepEqual(ev2.result, { ok: true });
+
+    // Verify comma.read_file peer RPC returns exact base64 bytes of upload
+    const rfRes = await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, "ws-rem-b5", {
+      method: "comma.read_file",
+      workspace: "ws-rem-b5",
+      readFile: { thread: 10, seq: 1, file: "shot.png", offset: 0 },
+    });
+    assert.equal(rfRes.result.name, "shot.png");
+    assert.equal(rfRes.result.size, uploadBytes.length);
+    assert.equal(Buffer.from(rfRes.result.data, "base64").toString("utf8"), "PNG-W17B5-PAYLOAD");
+
+    assert.equal(existsSync(join(dataDir, "remote-connects.json")), true, "Pion must persist remote-connects.json");
+
+    launcher.kill("SIGTERM");
+    await until("Scenario 2 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+    const ro = new DatabaseSync(join(dataDir, "stillfail.db"), { readOnly: true });
+    const rows = ro.prepare("SELECT kind, text FROM entries WHERE text LIKE ?").all("%remote-msg%") as { kind: string; text: string }[];
+    ro.close();
+    assert.ok(rows.some((r) => r.kind === "message" && r.text === "remote-msg-on-pion"));
+    assert.ok(rows.some((r) => r.kind === "edit" && r.text === "remote-msg-edited-on-pion"));
+  }
+
+  // --- Scenario 3: Pure Pion native <data>/restore/ready.json cold restore (zero Node!) ---
+  {
+    const srcDir = freshDir("w17b5-rest-src");
+    const srcDb = join(srcDir, "stillfail.db");
+    const ws = "ws-b5-rest";
+    const nowMs = Date.now();
+    const peerEp = await bindClientEp(mesh);
+    const peerId = peerEp.id();
+    const remoteConnectId = `slack-b5@${peerId}`;
+    const r13OpId = "op-b5-uuid-5678";
+
+    const srcStore = Store.open(srcDb, join(srcDir, "archives"));
+    srcStore.db.prepare("INSERT INTO sessions (key, connect, scope, title, runtime, profile, workspace, token, created_at, last_active_at, cwd, ws) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run("s:b5-rem", remoteConnectId, "s:b5-rem", "RestoredB5", "claude", "default", srcDir, randomBytes(32).toString("hex"), nowMs, nowMs, srcDir, ws);
+    srcStore.db.prepare("INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (1, 'slack:T_B5', 'C_B5', '200.001', 'RestoredB5Thread', ?)").run(nowMs);
+    srcStore.db.prepare("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (1, 's:b5-rem', ?, ?)").run(remoteConnectId, nowMs);
+    srcStore.db.prepare("INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (1, 1, 'message', '200.001', 'person', 'U_B5', 'before-b5-restore', ?)").run(nowMs);
+    srcStore.db.prepare("INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, thread) VALUES (?, ?, 'turn', ?, ?, 'completed', 1)").run("b5-saved-turn", "s:b5-rem", nowMs - 1000, nowMs);
+    srcStore.db.prepare("INSERT INTO proposal_outcomes (thread, n, status, project, resolved_by, resolved_at, info_note, info_refs, info_synced, info_op_id) VALUES (1, 1, 'accepted', 'ProjB5', 'alice@example.com', ?, 'note-b5', '[]', 0, ?)").run(nowMs, r13OpId);
+
+    const originId = "b".repeat(64);
+    const exp = new Exporter({ db: srcDb, replica: join(srcDir, "replica"), dataDir: srcDir, origin: originId, now: () => nowMs });
+    exp.setPlaces({ home: ws, workspaces: [{ workspace: ws, name: "src-b5" }] });
+    let passRes = exp.pass(nothingTold());
+    while (passRes.more) passRes = exp.pass(nothingTold());
+    const head = passRes.heads[ws];
+    assert.ok(head, "expected Exporter head");
+    const genPath = genDir(ownDir(join(srcDir, "replica")), ws, head.gen);
+    const filesSrcDir = join(srcDir, "exported-files");
+    mkdirSync(filesSrcDir, { recursive: true });
+    for (const hash of Object.keys(head.files)) {
+      const p = exp.sourceOf(hash);
+      if (p) copyFileSync(p, join(filesSrcDir, hash));
+    }
+    exp.close();
+    srcStore.close();
+
+    const dir = freshDir("w17b5-rest-dst");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+
+    const copyDir = join(dataDir, "restore", "copy");
+    mkdirSync(copyDir, { recursive: true });
+    cpSync(genPath, join(copyDir, head.gen), { recursive: true });
+    cpSync(filesSrcDir, join(copyDir, "files"), { recursive: true });
+    writeFileSync(join(dataDir, "restore", "ready.json"), JSON.stringify({ origin: originId, workspace: ws, gen: head.gen, name: "src-b5", from: peerId }));
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: ws,
+        workspace_name: "B5RestWS",
+        station: stationId,
+        name: "b5-rest-station",
+        peers: [{ id: peerId, name: "peer-b5", relay: null }],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+
+    const udpPort = await pickFreeUdpPort();
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1",
+          STILLFAIL_PION_NATIVE_CONNECTS_TEST: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
+      stdio: "ignore",
+    });
+    children.push(launcher);
+
+    const pionPid = await until("Scenario 3 pure Pion pid after native restore", async () => {
+      const p = readHubPid(dataDir);
+      const port = readPorts(dataDir).admin ?? 0;
+      if (p > 0 && isAlive(p) && port > 0 && readProcCmdline(p).includes("stillfail-station-pion")) {
+        try {
+          if ((await httpCall(port, "GET", "/healthz")).status === 200) return p;
+        } catch {}
+      }
+      return null;
+    }, 25_000);
+    assert.match(readProcCmdline(pionPid), /stillfail-station-pion/);
+
+    await until("Scenario 3 native Pion replica restore completed", () => existsSync(join(dataDir, "replica", "restored.json")) ? true : null, 15_000);
+    const restoredOut = JSON.parse(readFileSync(join(dataDir, "replica", "restored.json"), "utf8"));
+    assert.equal(restoredOut.error, null, `expected restored.json error === null, got: ${JSON.stringify(restoredOut)}`);
+    assert.equal(existsSync(join(dataDir, "restore")), false, "native Pion restore must clean restore/");
+
+    launcher.kill("SIGTERM");
+    await until("Scenario 3 launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+
+    const verifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archive"));
+    const sessRow = verifyStore.getSession("s:b5-rem");
+    assert.ok(sessRow !== null && sessRow.connect === remoteConnectId, "native restore recovered s:b5-rem");
+    const turnRow = verifyStore.db.prepare("SELECT outcome FROM turns WHERE id = ?").get("b5-saved-turn") as { outcome: string } | undefined;
+    assert.equal(turnRow?.outcome, "completed");
+    const outcome = verifyStore.getUnsyncedAcceptOutcome(1, 1);
+    verifyStore.close();
+    assert.ok(outcome !== null && outcome.opId === r13OpId && outcome.project === "ProjB5");
+
+    // Schema version parity guard
+    const pionSchemaSrc = readFileSync(join(root, "pion", "station-main", "packages", "station_store", "src", "schema.pion"), "utf8");
+    const m = pionSchemaSrc.match(/pub let SCHEMA_VERSION\s*:\s*Int\s*=\s*(\d+)/);
+    assert.ok(m, "expected SCHEMA_VERSION constant");
+    assert.equal(Number(m[1]), SCHEMA_VERSION);
+  }
+
+  // --- Scenario 4 (Opus R2 P0-A + P0-B): Runtime connect.event gate fail-closed + TS answerCall wire parity ---
+  {
+    // (a) P0-B: Pion `build_connect_call_post_request` wire shape vs real TS `answerCall`
+    const { answerCall } = await import("../src/connects/remote.ts");
+    let capturedPost: any = null;
+    const fakeSurface: any = {
+      post: async (thread: any, message: string, files: any[], card: any) => {
+        capturedPost = { thread, message, files, card };
+        return "ts-posted-1";
+      },
+    };
+    const handler = answerCall((known, ws) => (known.id === "slack-1" && known.origin === "st-origin" && ws === "ws-b5" ? fakeSurface : undefined), join(freshDir("answer-call-up"), "up"));
+    const pionWirePayload = {
+      method: "connect.call",
+      workspace: "ws-b5",
+      connect: { id: "slack-1", origin: "st-origin" },
+      op: "post",
+      args: [
+        { channel: "C_REM", threadTs: "100.1", replyTo: "om_1" },
+        "hello from pion",
+        [],
+        { type: "options", options: [{ label: "Ship" }] },
+      ],
+    };
+    const ans = await handler("peer-pion", pionWirePayload, "ws-b5");
+    assert.deepEqual(ans, { result: "ts-posted-1" });
+    assert.deepEqual(capturedPost, {
+      thread: { channel: "C_REM", threadTs: "100.1", replyTo: "om_1" },
+      message: "hello from pion",
+      files: [],
+      card: { type: "options", options: [{ label: "Ship" }] },
+    });
+
+    // (b) P0-A: Clean Pion whole station WITHOUT `STILLFAIL_PION_NATIVE_CONNECTS_TEST=1` MUST reject
+    // runtime `connect.event` with zero DB/remote-connects writes (never false-ACK into black hole).
+    const dir = freshDir("w17b5-p0a-runtime-gate");
+    const appDir = join(dir, "app");
+    const dataDir = join(dir, "data");
+    installReleaseDir(appDir, pionBin, readerBin, runnerBin, false);
+    mkdirSync(join(dataDir, "mesh"), { recursive: true });
+    const idRes = spawnSync(pionBin, ["id", "--data", dataDir], { encoding: "utf8" });
+    assert.equal(idRes.status, 0, idRes.stderr);
+    const stationId = idRes.stdout.trim();
+    const peerEp = await bindClientEp(mesh);
+    const peerId = peerEp.id();
+    const ws = "ws-p0a-gate";
+    writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", connects: [] }));
+    writeFileSync(
+      join(dataDir, "mesh", "cloud.json"),
+      JSON.stringify({
+        workspace: ws,
+        workspace_name: "P0AGateWS",
+        station: stationId,
+        name: "p0a-gate-station",
+        peers: [{ id: peerId, name: "peer-sender", relay: null }],
+        relay_urls: [],
+        grant_keys: grantKeys,
+      }),
+    );
+    const udpPort = await pickFreeUdpPort();
+    const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
+      env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1", STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}` },
+      stdio: "ignore",
+    });
+    children.push(launcher);
+    await until("P0-A gate station ready", async () => {
+      const p = readHubPid(dataDir);
+      const port = readPorts(dataDir).admin ?? 0;
+      if (p > 0 && isAlive(p) && port > 0 && readProcCmdline(p).includes("stillfail-station-pion")) {
+        try {
+          if ((await httpCall(port, "GET", "/healthz")).status === 200) return p;
+        } catch {}
+      }
+      return null;
+    }, 20_000);
+    const gateResp = await until("P0-A connect.event rejected", async () => {
+      try {
+        return await peerRpc(peerEp, stationId, `127.0.0.1:${udpPort}`, ws, {
+          method: "connect.event",
+          workspace: ws,
+          connect: { id: "slack-peer", origin: peerId },
+          described: { kind: "slack", workspace: ws, mode: "per-thread", requireMention: true, bind: { runtime: "claude" } },
+          event: { type: "message", message: { channel: "C1", threadTs: "1.1", ts: "1.1", user: "U1", text: "should be rejected", addressed: true } },
+        });
+      } catch (err: any) {
+        const msg = String(err?.message ?? err);
+        if (msg.includes("native connects disabled")) return { error: msg };
+        return null;
+      }
+    }, 15_000);
+    assert.ok(
+      typeof gateResp?.error === "string" && gateResp.error.includes("native connects disabled until runner cutover"),
+      `P0-A expected rejection error, got: ${JSON.stringify(gateResp)}`,
+    );
+    assert.equal(existsSync(join(dataDir, "remote-connects.json")), false, "P0-A must not write remote-connects.json");
+    launcher.kill("SIGTERM");
+    await until("P0-A launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
+    const checkDb = new DatabaseSync(join(dataDir, "stillfail.db"), { open: true, readOnly: true });
+    const sessCnt = (checkDb.prepare("SELECT COUNT(*) AS n FROM sessions").get() as { n: number }).n;
+    const entryCnt = (checkDb.prepare("SELECT COUNT(*) AS n FROM entries").get() as { n: number }).n;
+    checkDb.close();
+    assert.equal(sessCnt, 0, "P0-A must create zero sessions");
+    assert.equal(entryCnt, 0, "P0-A must insert zero entries");
+  }
+});

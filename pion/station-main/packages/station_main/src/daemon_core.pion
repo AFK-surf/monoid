@@ -303,6 +303,7 @@ pub struct OutboundTell {
   pub attempts : Int
   pub next_at_ms : Int64
   pub created_at_ms : Int64
+  pub on_ask_done : Option[(Result[base_codec::Json, String]) -> Unit]
 }
 
 pub struct ActiveOutbound {
@@ -318,6 +319,7 @@ pub struct ActiveOutbound {
   pub mut stream_id : Option[Int64]
   pub mut sock_id : Option[Int64]
   pub mut reply_buf : Bytes
+  pub on_ask_done : Option[(Result[base_codec::Json, String]) -> Unit]
 }
 
 struct PendingZstdTask {
@@ -815,6 +817,7 @@ pub struct DaemonCtx {
   shown_loopback_port_fn : () -> Int
   announce_mcp_port_fn : (Int) -> Unit
   enqueue_tell_fn : (String, String, base_codec::Json) -> Unit
+  ask_peer_rpc_fn : (String, String, base_codec::Json, (Result[base_codec::Json, String]) -> Unit) -> Unit
   reply_peer_rpc_fn : (Int64, Bytes, Option[DaemonFileStreamPlan], Bool, Bool) -> Unit
   unpack_zstd_fn : (Int64, Bytes, Int, (Result[Bytes, String]) -> Unit) -> Unit
   write_peer_http_chunk_fn : (Int64, Bytes) -> Unit
@@ -915,6 +918,18 @@ pub fn DaemonCtx::enqueue_tell(
   request : base_codec::Json,
 ) -> Unit {
   (self.enqueue_tell_fn)(peer, ws, request)
+}
+
+/// Send an outbound peer RPC (`ask`) over direct iroh or `front.sock` and invoke `on_done` with
+/// the parsed `{ ok }` result or explicit error (never silently drops failures).
+pub fn DaemonCtx::ask_peer_rpc(
+  self : DaemonCtx,
+  peer : String,
+  ws : String,
+  request : base_codec::Json,
+  on_done : (Result[base_codec::Json, String]) -> Unit,
+) -> Unit {
+  (self.ask_peer_rpc_fn)(peer, ws, request, on_done)
 }
 
 /// Write a reply (and optional streaming file download plan) back to an inbound peer RPC stream.
@@ -1325,11 +1340,44 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let mux_mesh = make_tagged_mux_on(hub_transport, MUX_TAG_MESH, slot_mesh)
   let mux_role = make_tagged_mux_on(hub_transport, MUX_TAG_ROLE, slot_role)
 
-  let enqueue_tell = fn(peer : String, ws : String, request : base_codec::Json) -> Unit {
+  let parse_ask_reply = fn(reply_str : String) -> Result[base_codec::Json, String] {
+    let trimmed = reply_str.trim()
+    if trimmed.length() == 0 {
+      return Err("empty peer RPC reply")
+    }
+    match base_codec::json_parse(trimmed) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match base_codec::json_get(j, "error") {
+          Some(base_codec::Json::Str(e)) => if e.length() > 0 { return Err(e) }
+          _ => ()
+        }
+        match base_codec::json_get(j, "ok") {
+          Some(v) => Ok(v)
+          None => Ok(j)
+        }
+      }
+      base_codec::JsonParseResult::Err(e) => Err("invalid peer RPC reply JSON: " + e)
+    }
+  }
+
+  let enqueue_outbound_inner = fn(
+    peer : String,
+    ws : String,
+    request : base_codec::Json,
+    on_ask_done : Option[(Result[base_codec::Json, String]) -> Unit],
+  ) -> Unit {
     if peer.length() == 0 || peer == station_key.id {
+      match on_ask_done {
+        Some(cb) => cb(Err("invalid peer station id"))
+        None => ()
+      }
       return
     }
     if outbound_queue.length() >= MAX_OUTBOUND_TELLS {
+      match on_ask_done {
+        Some(cb) => cb(Err("outbound peer queue full"))
+        None => ()
+      }
       return
     }
     let method = match base_codec::json_get(request, "method") {
@@ -1354,12 +1402,30 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       attempts: 0,
       next_at_ms: now_t,
       created_at_ms: now_t,
+      on_ask_done: on_ask_done,
     })
+  }
+
+  let enqueue_tell = fn(peer : String, ws : String, request : base_codec::Json) -> Unit {
+    enqueue_outbound_inner(peer, ws, request, None)
+  }
+
+  let ask_peer_rpc = fn(
+    peer : String,
+    ws : String,
+    request : base_codec::Json,
+    on_done : (Result[base_codec::Json, String]) -> Unit,
+  ) -> Unit {
+    enqueue_outbound_inner(peer, ws, request, Some(on_done))
   }
 
   let requeue_outbound = fn(ob : ActiveOutbound) -> Unit {
     let now_t = host_shim::now_ms()
     if now_t - ob.created_at_ms >= TELL_RETRY_MAX_MS || outbound_queue.length() >= MAX_OUTBOUND_TELLS {
+      match ob.on_ask_done {
+        Some(cb) => cb(Err("peer RPC " + ob.method + " to " + ob.peer + " failed after retries"))
+        None => ()
+      }
       return
     }
     let delay = tell_backoff_ms(ob.attempts)
@@ -1371,6 +1437,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       attempts: ob.attempts + 1,
       next_at_ms: now_t + delay,
       created_at_ms: ob.created_at_ms,
+      on_ask_done: ob.on_ask_done,
     })
   }
 
@@ -1903,6 +1970,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       let _ = control.serving("mcp", dport)
     },
     enqueue_tell_fn: enqueue_tell,
+    ask_peer_rpc_fn: ask_peer_rpc,
     reply_peer_rpc_fn: write_peer_reply_to_stream,
     unpack_zstd_fn: unpack_zstd_async,
     write_peer_http_chunk_fn: write_peer_http_chunk_impl,
@@ -2532,6 +2600,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
               stream_id: None,
               sock_id: None,
               reply_buf: Bytes::new(0),
+              on_ask_done: tell.on_ask_done,
             },
           )
           let ips = match peer_ips.get(tell.peer) {
@@ -3441,13 +3510,18 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                           }
                         }
                         if done_read {
+                          let reply_str = bytes_to_str_local(ob.reply_buf, ob.reply_buf.length())
                           let (should_retry, until_opt) = if read_err {
                             (true, None)
                           } else {
-                            parse_tell_reply(bytes_to_str_local(ob.reply_buf, ob.reply_buf.length()))
+                            parse_tell_reply(reply_str)
                           }
                           if !should_retry {
                             (hooks.on_outbound_reply)(ctx, ob.method, ob.ref_id, until_opt)
+                            match ob.on_ask_done {
+                              Some(cb) => cb(parse_ask_reply(reply_str))
+                              None => ()
+                            }
                           }
                           match ob.conn_id {
                             Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
@@ -4263,13 +4337,18 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                     front_out_by_sock.remove(sock_id)
                                     match active_outbounds.get(oid) {
                                       Some(ob) => {
+                                        let reply_str = bytes_to_str_local(fs.payload_buf, fs.payload_buf.length())
                                         let (should_retry, until_opt) = if stream_failed {
                                           (true, None)
                                         } else {
-                                          parse_tell_reply(bytes_to_str_local(fs.payload_buf, fs.payload_buf.length()))
+                                          parse_tell_reply(reply_str)
                                         }
                                         if !should_retry {
                                           (hooks.on_outbound_reply)(ctx, ob.method, ob.ref_id, until_opt)
+                                          match ob.on_ask_done {
+                                            Some(cb) => cb(parse_ask_reply(reply_str))
+                                            None => ()
+                                          }
                                         }
                                         match ob.conn_id {
                                           Some(fconn) => {
