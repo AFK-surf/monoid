@@ -3546,6 +3546,7 @@ let zh : Map[String, String] = {
   "web-pages.stations.network.what": "修改网络设置",
   "web-pages.stations.offline": "离线",
   "web-pages.stations.online": "在线",
+  "web-pages.stations.versionLabel": "Station {version}",
   "web-pages.stations.page.cpuBusy": "CPU 占用率",
   "web-pages.stations.page.cpuBusyChip": "占用 {percent}%",
   "web-pages.stations.page.cpuBusyShort": "CPU 占用",

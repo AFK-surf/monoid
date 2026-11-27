@@ -25,6 +25,7 @@ pub fn confirm_node(
   confirm : () -> Unit,
   warning? : String = "",
   facts? : Array[(String, String)] = [],
+  body? : (@view.View) -> Unit,
   shown? : () -> Unit = fn() {  },
   gone? : () -> Unit = fn() {  },
   dims? : () -> Bool = fn() { true },
@@ -32,7 +33,7 @@ pub fn confirm_node(
 ) -> Unit {
   // (a press outside an alert does not close it: confirm_dialog's outside=false)
   dialog_layer_node(parent, open, cancel, shown~, gone~, dims~, covered~, fn(across, layer, look, veil) {
-    confirm_panel(across, layer, look, veil, title, words, warning, facts, action, danger, cancel, confirm) |> ignore
+    confirm_panel(across, layer, look, veil, title, words, warning, facts, body, action, danger, cancel, confirm) |> ignore
     // (the focus on its own ground as it opens, as confirm_dialog's (an overlay that traps it, with no stop of its own:
     // the layer's own), Space doing nothing there, Enter its default's: its action unless `danger`; back to what had it
     // as it goes)
@@ -233,6 +234,7 @@ fn confirm_panel(
   words : () -> String,
   warning : String,
   facts : Array[(String, String)],
+  body : ((@view.View) -> Unit)?,
   action : () -> String,
   danger : Bool,
   cancel : () -> Unit,
@@ -267,7 +269,17 @@ fn confirm_panel(
       |> ignore
     })
     |> ignore
-    confirm_facts_card_node(d, facts, panel_card_in - dialog_pad, dialog_card_corner, words_in, top_gap=true)
+    match body {
+      Some(draw) =>
+        d.box(fn(wrap) {
+          let mx = panel_card_in - dialog_pad
+          wrap.margin(Is((mx, @ui.Space::px(S1), mx, 0.0))).alpha(By(words_in)) |> ignore
+          draw(wrap)
+        })
+        |> ignore
+      None =>
+        confirm_facts_card_node(d, facts, panel_card_in - dialog_pad, dialog_card_corner, words_in, top_gap=true)
+    }
     d.show(fn() { words() != "" }, at_once=true, fn(t) {
       t
       .words(By(words), look=toast_words_look(Meta, L6, 400, true))

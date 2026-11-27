@@ -3575,6 +3575,7 @@ let en : Map[String, String] = {
   "web-pages.stations.network.what": "change network settings",
   "web-pages.stations.offline": "Offline",
   "web-pages.stations.online": "Online",
+  "web-pages.stations.versionLabel": "Station {version}",
   "web-pages.stations.page.cpuBusy": "CPU busy",
   "web-pages.stations.page.cpuBusyChip": "{percent}% busy",
   "web-pages.stations.page.cpuBusyShort": "CPU busy",

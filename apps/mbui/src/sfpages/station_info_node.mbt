@@ -203,7 +203,7 @@ fn station_info_spec_text(row : Json?, show : StationInfoShow, online : Bool, ne
   if show.version {
     let ver = text(row, "version")
     if ver != "" {
-      parts.push("Station " + ver)
+      parts.push(@sf.t("web-pages.stations.versionLabel", args=[("version", ver)]))
     }
   }
   if online && show.state && net_in_head {
@@ -219,22 +219,25 @@ fn station_info_spec_text(row : Json?, show : StationInfoShow, online : Bool, ne
 /// Renders one station block inside `station_info_card_node`.
 #callsite(autofill(loc))
 fn station_info_item_node(parent : @view.View, item : StationInfoItem, loc~ : SourceLoc) -> Unit {
-  let row = item.row
+  let row_sig = @signals.computed(fn(_) { (item.row)() })
+  let row = fn() { row_sig.get() }
   let has_row = fn() { row() is Some(Object(_)) }
-  let online = fn() { flag(row(), "online") }
+  let online_sig = @signals.computed(fn(_) { flag(row(), "online") })
+  let online = fn() { online_sig.get() }
   let display_name = fn() {
     match text(row(), "name") {
       "" => item.name
       n => n
     }
   }
-  let net_text = fn() {
+  let net_sig = @signals.computed(fn(_) {
     if item.show.net && online() {
       station_info_net_text(row(), item.net)
     } else {
       ""
     }
-  }
+  })
+  let net_text = fn() { net_sig.get() }
   let state_text = fn() {
     if !has_row() {
       ""
@@ -279,9 +282,10 @@ fn station_info_item_node(parent : @view.View, item : StationInfoItem, loc~ : So
     }
     block.box(made_for=loc, fn(head) {
       @sf.style_node(head, fn() { si_head_row })
+      head.wraps(Is(Some(@ui.Space::px(S1)))) |> ignore
       head.box(made_for=loc, fn(left) {
         @sf.style_node(left, fn() { si_identity_row })
-        left.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        left.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         @sfbase.station_mark_at_node(
           loc~,
           left,
@@ -300,8 +304,6 @@ fn station_info_item_node(parent : @view.View, item : StationInfoItem, loc~ : So
         @sf.words_node(loc~, left, display_name, fn() { si_name_words })
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
-        .cuts(Is(true))
-        .allow_ellipsis(Is(true))
         |> ignore
       })
       |> ignore
@@ -408,7 +410,7 @@ let si_role_words : @ui.TextStyle = @ui.text_style(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let si_name_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, color=Fg, wrap=false)
+let si_name_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Semibold, color=Fg)
 
 ///|
 // kept across runs: a value (no field of it changes)

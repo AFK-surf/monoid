@@ -3508,6 +3508,7 @@ web-pages.stations.network.saved
 web-pages.stations.network.what
 web-pages.stations.offline
 web-pages.stations.online
+web-pages.stations.versionLabel
 web-pages.stations.page.cpuBusy
 web-pages.stations.page.cpuBusyChip
 web-pages.stations.page.cpuBusyShort

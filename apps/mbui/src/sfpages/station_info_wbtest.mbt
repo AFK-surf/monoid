@@ -131,6 +131,65 @@ test "station_info_card_node adapts shown facets per scenario and passes audit, 
   assert_true(t_brief.find("Mac Studio") is None)
   assert_true(t_brief.find("CPU") is None)
   assert_eq(t_brief.audit(), [])
+  // Long station names on 小屏: status wraps to next line so names aren't truncated, and multi-word names wrap cleanly
+  let long_name = "tokyo-mac-studio-build-01"
+  let long_multi = "Tokyo Mac Studio Production Build Host"
+  let long_row : Json = {
+    "station": "ws1/st3",
+    "id": "st3",
+    "name": long_name,
+    "icon": "glyph:desktop",
+    "online": true,
+    "host": { "identity": "Mac Studio · Apple M2 Ultra" },
+    "net": { "via": "direct", "path": "直连", "rtt": { "text": "24 ms", "level": "ok" } },
+  }
+  let long_multi_row : Json = {
+    "station": "ws1/st4",
+    "id": "st4",
+    "name": long_multi,
+    "icon": "glyph:desktop",
+    "online": true,
+    "host": { "identity": "Mac Studio · Apple M2 Ultra" },
+    "net": { "via": "direct", "path": "直连", "rtt": { "text": "24 ms", "level": "ok" } },
+  }
+  @sf.presenters_reset()
+  let t_long = @ui.Tester::new(
+    fn(c) { @sf.begin(c) |> ignore },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.ground(By(fn() { @sf.theme().p.bg })) |> ignore
+      @sf.presented_nodes(root)
+    },
+    w=390.0,
+    h=844.0,
+    dark=true,
+    platform=2,
+  )
+  @sf.set_dark(Some(true))
+  @sf.confirm(
+    "全部迁移",
+    "9 项 · 1 项无法迁移",
+    "全部迁移",
+    fn() {  },
+    facts=[("来源 Station", long_name), ("目标 Station", long_multi)],
+    body=fn(w) {
+      station_info_card_node(
+        w,
+        [
+          make_item("来源 Station", "ws1/st3", long_name, long_row, StationInfoShow::target(), ""),
+          make_item("目标 Station", "ws1/st4", long_multi, long_multi_row, StationInfoShow::target(), ""),
+        ],
+        inset_out=false,
+      )
+    },
+  )
+  t_long.run_for(@ui.move_most_ms)
+  assert_true(t_long.find(long_name) is Some(_))
+  assert_true(t_long.find(long_multi) is Some(_))
+  assert_true(t_long.find("直连 · 24 ms") is Some(_))
+  assert_eq(t_long.audit(), [])
+  assert_eq(t_long.corner_faults(), [])
+  assert_eq(t_long.contrast_faults(), [])
   @sf.presenters_reset()
   @sf.set_dark(None)
 }

@@ -552,9 +552,32 @@ pub fn station_move_all_confirm(core : Core, address : String, v : Json?, back :
     n => n
   }
   let to_addr = if to.contains("/") || to == "" { to } else { @sfbase.workspace_of(address) + "/" + to }
-  let from_name = @settings.station_name(address)
+  let from_name = {
+    let ws = @sfbase.workspace_of(address)
+    let live = if ws == "" {
+      None
+    } else {
+      let (_, params) = @sfbase.station_rows_ask(ws)
+      find_station_row((core.topic)("stations", params).get().value, address)
+    }
+    match text(live, "name") {
+      "" => @settings.station_name(address)
+      n => n
+    }
+  }
   let action = @sf.t(if back { "web-pages.stations.move.allBack" } else { "web-pages.stations.move.all" })
   let summary = text(all, "text")
+  let facts = if back {
+    [
+      (@sf.t("common.confirmFact.sourceStation"), to_name),
+      (@sf.t("common.confirmFact.targetStation"), from_name),
+    ]
+  } else {
+    [
+      (@sf.t("common.confirmFact.sourceStation"), from_name),
+      (@sf.t("common.confirmFact.targetStation"), to_name),
+    ]
+  }
   let stations = if back {
     [
       station_info_from_core(core, to_addr, to_name, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),
@@ -566,26 +589,19 @@ pub fn station_move_all_confirm(core : Core, address : String, v : Json?, back :
       station_info_from_core(core, to_addr, to_name, role=@sf.t("common.confirmFact.targetStation"), show=StationInfoShow::target()),
     ]
   }
-  open_dialog_nodes(
+  @sf.confirm(
     action,
-    fn(body, _) {
-      station_info_card_node(body, stations)
-      if summary != "" {
-        @sf.words_node(body, fn() { summary }, fn() { st_memory }) |> ignore
+    summary,
+    action,
+    fn() {
+      if back {
+        @settings.act(core, @sf.t("web-pages.stations.move.allBack"), "move.back", obj([("station", str(address)), ("from", str(to)), ("all", Json::boolean(true))]))
+      } else {
+        @settings.act(core, @sf.t("web-pages.stations.move.all"), "move.start", obj([("station", str(address)), ("to", str(to)), ("all", Json::boolean(true))]))
       }
     },
-    fn(foot, shut) {
-      @sf.button_node(foot, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
-      @sf.button_node(foot, fn() { action }, fn() {
-        shut()
-        if back {
-          @settings.act(core, @sf.t("web-pages.stations.move.allBack"), "move.back", obj([("station", str(address)), ("from", str(to)), ("all", Json::boolean(true))]))
-        } else {
-          @settings.act(core, @sf.t("web-pages.stations.move.all"), "move.start", obj([("station", str(address)), ("to", str(to)), ("all", Json::boolean(true))]))
-        }
-      }, tone=Primary)
-      |> ignore
-    },
+    facts~,
+    body=fn(w) { station_info_card_node(w, stations, inset_out=false) },
   )
 }
 
