@@ -5,8 +5,8 @@
 //    `channel`, `enroll` (Ed25519 enroll signature + `--lock`), `update` (signed feed + tamper rejection +
 //    `--replace-prepare` `.tar.gz` extraction + verbatim-symlink `copy_dir` + executable mode bits),
 //    `heap`, and `admin` (self-signed CA TLS rejection without CA and acceptance with `SSL_CERT_FILE`/`NODE_EXTRA_CA_CERTS`).
-// 3. Real Rust launcher (`STILLFAIL_LAUNCHER`) routing all 8 commands under `config.json` `"engine": "pion"`
-//    to `stillfail-station-pion` without invoking Node, plus unknown-command strict error vs non-strict Node fallback.
+// 3. Real Rust launcher (`STILLFAIL_LAUNCHER`) routing the 7 launcher-routed subcommands (+ direct `admin`)
+//    under `config.json` `"engine": "pion"` to `stillfail-station-pion` without invoking Node, plus unknown-command strict error vs non-strict Node fallback.
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync, type ChildProcess, type SpawnSyncReturns } from "node:child_process";
 import { createHash, createPublicKey, generateKeyPairSync, sign as nodeSign, verify as nodeVerify } from "node:crypto";
@@ -710,7 +710,7 @@ test("8. admin: real self-signed CA TLS rejection without CA and acceptance with
   assert.equal(JSON.parse(pJson.stdout).key.id, "ak_123");
 });
 
-test("9. Real Rust launcher routes all 8 commands to stillfail-station-pion under engine=pion and enforces strict vs fallback for unknown commands", () => {
+test("9. Real Rust launcher routes the 7 launcher-routed subcommands (+ direct admin) to stillfail-station-pion under engine=pion and enforces strict vs fallback for unknown commands", () => {
   const bin = resolvePionBinary();
   const launcher = resolveLauncherBinary();
   const dir = freshDir("launcher-routing");
@@ -763,7 +763,8 @@ const end = Date.now() + 8000;
 const tick = () => {
   if (fs.existsSync(req)) {
     fs.rmSync(req, { force: true });
-    fs.writeFileSync(ans, JSON.stringify({ path: "/tmp/h.pion-heap.json", bytes: 1048576, ms: 5 }));
+    fs.writeFileSync(ans + ".tmp", JSON.stringify({ path: "/tmp/h.pion-heap.json", bytes: 1048576, ms: 5 }));
+    fs.renameSync(ans + ".tmp", ans);
     process.exit(0);
   }
   if (Date.now() > end) process.exit(1);
@@ -1048,4 +1049,46 @@ test("13. admin does not follow 302 redirects (matches Node bin/admin-cli.ts)", 
   assert.equal(pRes.status, 1, `pion admin must reject 302 with exit 1, got stdout=${pRes.stdout}`);
   assert.equal(nRes.status, 1, `node admin must reject 302 with exit 1, got stdout=${nRes.stdout}`);
   assert.match(pRes.stderr, /302/, `pion admin stderr must report 302: ${pRes.stderr}`);
+});
+
+test("14. update --replace-prepare handles 240-byte regular filenames identically to Node (no ENAMETOOLONG)", { skip: process.platform === "win32" }, () => {
+  const bin = resolvePionBinary();
+  const base = freshDir("update-long-name");
+  const app = join(base, "app");
+  const data = join(base, "data");
+  mkdirSync(join(app, "bin"), { recursive: true });
+  mkdirSync(join(app, "station"), { recursive: true });
+  mkdirSync(data, { recursive: true });
+  writeFileSync(join(app, "bin", "stillfail"), "#!/bin/sh\necho ok\n");
+  writeFileSync(join(app, "station", "main.js"), "// base\n");
+  writeFileSync(join(app, "VERSION"), "1.0.0\n");
+  writeFileSync(join(app, "CHANNEL"), "stable\n");
+
+  const longName = "a".repeat(236) + ".txt";
+  assert.equal(longName.length, 240);
+  const longPayload = Buffer.from("long-filename-atomic-write-parity-payload\n");
+
+  const srcBundle = join(base, "bundle-src");
+  mkdirSync(join(srcBundle, "stillfail", "bin"), { recursive: true });
+  mkdirSync(join(srcBundle, "stillfail", "station"), { recursive: true });
+  writeFileSync(join(srcBundle, "stillfail", "bin", "stillfail"), "#!/bin/sh\necho new\n");
+  chmodSync(join(srcBundle, "stillfail", "bin", "stillfail"), 0o755);
+  writeFileSync(join(srcBundle, "stillfail", "station", "main.js"), "// updated\n");
+  writeFileSync(join(srcBundle, "stillfail", "VERSION"), "1.0.1\n");
+  writeFileSync(join(srcBundle, "stillfail", "station", longName), longPayload);
+
+  const tarPath = join(base, "bundle-long.tar.gz");
+  execFileSync("tar", ["-czf", tarPath, "-C", srcBundle, "stillfail"]);
+
+  const stageP = join(base, "stage-pion");
+  const stageN = join(base, "stage-node");
+  const pRes = runBin(bin, ["update", "--replace-prepare", "--app", app, "--data", data, "--stage", stageP, "--source", tarPath]);
+  const nRes = runNodeCli(["update", "--replace-prepare", "--app", app, "--data", data, "--stage", stageN, "--source", tarPath]);
+  assert.equal(pRes.status, 0, `pion replace-prepare 240B filename failed: ${pRes.stderr}`);
+  assert.equal(nRes.status, 0, `node replace-prepare 240B filename failed: ${nRes.stderr}`);
+
+  const pStaged = readFileSync(join(stageP, "station", longName));
+  const nStaged = readFileSync(join(stageN, "station", longName));
+  assert.deepEqual(pStaged, longPayload);
+  assert.deepEqual(pStaged, nStaged);
 });

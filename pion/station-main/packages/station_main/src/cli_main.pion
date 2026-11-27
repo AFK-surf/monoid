@@ -222,8 +222,7 @@ fn build_cli_ops_fs(_os : station_ops::PlatformOs, sep : String) -> station_ops:
       if dir != "" && dir != "." && dir != path {
         let _ = (base.mkdir_p)(dir)
       }
-      let effective_mode = if mode > 0 { mode } else { 420 }
-      if !station_sys::write_file_atomic(path, data, effective_mode) {
+      if !station_sys::write_file_atomic(path, data, mode) {
         return Err(station_ops::FsErr::Other("atomic write failed: " + path))
       }
       Ok(())
@@ -268,10 +267,7 @@ fn cli_copy_dir_verbatim(
       Ok(t) => t
       Err(e) => return Err("readlink failed for " + src + ": " + station_ops::fs_err_msg(e))
     }
-    let target_is_dir = match (ops_fs.stat)(src) {
-      Ok(tm) => tm.is_dir
-      Err(_) => false
-    }
+    let target_is_dir = station_sys::is_dir_symlink(src)
     let parent = nodepath::dirname(sep, dst)
     if parent != "" && parent != "." && parent != dst {
       match (ops_fs.mkdir_p)(parent) {

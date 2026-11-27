@@ -112,7 +112,7 @@ pub fn cloud_fs_from_ops(fs : station_ops::OpsFs, sep : String = "/") -> station
       if dir != "" && dir != "." && dir != p {
         let _ = (fs.mkdir_p)(dir)
       }
-      match fs.write_text(p, text, 384) {
+      match fs.write_text(p, text, -1) {
         Ok(_) => Ok(())
         Err(e) => Err(station_ops::fs_err_msg(e))
       }

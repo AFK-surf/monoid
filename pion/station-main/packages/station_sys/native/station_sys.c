@@ -2692,6 +2692,16 @@ int32_t sts_symlink(const char *target, const char *link_path, int32_t is_dir) {
     return ok ? 1 : 0;
 }
 
+int32_t sts_is_dir_symlink(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    DWORD attr = GetFileAttributesW(w);
+    free(w);
+    if (attr == INVALID_FILE_ATTRIBUTES) return 0;
+    return ((attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) ? 1 : 0;
+}
+
 void *sts_getcwd(int64_t *out_len) {
     if (out_len != NULL) *out_len = 0;
     DWORD need = GetCurrentDirectoryW(0, NULL);
@@ -2770,29 +2780,53 @@ void *sts_read_file_strict(const char *path, int64_t *out_len, int32_t *out_err)
 int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len, int32_t mode) {
     (void)mode;
     if (path == NULL || path[0] == '\0' || len < 0) return 0;
-    uint8_t rnd[8];
-    if (!sts_random_bytes(rnd, 8)) return 0;
-    static const char hx[] = "0123456789abcdef";
-    char hex[17];
-    for (int i = 0; i < 8; i++) {
-        hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
-        hex[i * 2 + 1] = hx[rnd[i] & 0xF];
+    const char *last_sep = NULL;
+    for (const char *p = path; *p != '\0'; p++) {
+        if (*p == '/' || *p == '\\') last_sep = p;
     }
-    hex[16] = '\0';
-    size_t plen = strlen(path);
-    char *tmp = (char *)malloc(plen + 48);
-    if (tmp == NULL) return 0;
-    snprintf(tmp, plen + 48, "%s.tmp.%lu.%s", path, (unsigned long)GetCurrentProcessId(), hex);
-    wchar_t *wtmp = utf8_to_wide(tmp);
+    size_t dir_len = last_sep != NULL ? (size_t)(last_sep - path) + 1 : 0;
     wchar_t *wdst = utf8_to_wide(path);
-    free(tmp);
-    if (wtmp == NULL || wdst == NULL) {
+    if (wdst == NULL) return 0;
+
+    static const char hx[] = "0123456789abcdef";
+    HANDLE h = INVALID_HANDLE_VALUE;
+    wchar_t *wtmp = NULL;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            free(wdst);
+            return 0;
+        }
+        char hex[17];
+        for (int i = 0; i < 8; i++) {
+            hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
+            hex[i * 2 + 1] = hx[rnd[i] & 0xF];
+        }
+        hex[16] = '\0';
+        size_t tmp_cap = dir_len + 64;
+        char *tmp = (char *)malloc(tmp_cap);
+        if (tmp == NULL) {
+            free(wdst);
+            return 0;
+        }
+        snprintf(tmp, tmp_cap, "%.*s.sf-tmp.%lu.%s", (int)dir_len, path, (unsigned long)GetCurrentProcessId(), hex);
+        wtmp = utf8_to_wide(tmp);
+        free(tmp);
+        if (wtmp == NULL) {
+            free(wdst);
+            return 0;
+        }
+        h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h != INVALID_HANDLE_VALUE) break;
+        DWORD gle = GetLastError();
         free(wtmp);
-        free(wdst);
-        return 0;
+        wtmp = NULL;
+        if (gle != ERROR_FILE_EXISTS) {
+            free(wdst);
+            return 0;
+        }
     }
-    HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (h == INVALID_HANDLE_VALUE) {
+    if (h == INVALID_HANDLE_VALUE || wtmp == NULL) {
         free(wtmp);
         free(wdst);
         return 0;
@@ -6192,6 +6226,11 @@ int32_t sts_symlink(const char *target, const char *link_path, int32_t is_dir) {
     return symlink(target, link_path) == 0 ? 1 : 0;
 }
 
+int32_t sts_is_dir_symlink(const char *path) {
+    (void)path;
+    return 0;
+}
+
 void *sts_getcwd(int64_t *out_len) {
     if (out_len != NULL) *out_len = 0;
     char buf[4096];
@@ -6257,26 +6296,41 @@ void *sts_read_file_strict(const char *path, int64_t *out_len, int32_t *out_err)
 
 int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len, int32_t mode) {
     if (path == NULL || path[0] == '\0' || len < 0) return 0;
-    uint8_t rnd[8];
-    if (!sts_random_bytes(rnd, 8)) return 0;
+    const char *slash = strrchr(path, '/');
+    size_t dir_len = slash != NULL ? (size_t)(slash - path) + 1 : 0;
+    int enforce_mode = mode >= 0;
+    mode_t open_mode = enforce_mode ? (mode_t)(mode & 0777) : (mode_t)0666;
+
     static const char hx[] = "0123456789abcdef";
-    char hex[17];
-    for (int i = 0; i < 8; i++) {
-        hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
-        hex[i * 2 + 1] = hx[rnd[i] & 0xF];
-    }
-    hex[16] = '\0';
-    size_t plen = strlen(path);
-    char *tmp = (char *)malloc(plen + 48);
+    size_t tmp_cap = dir_len + 64;
+    char *tmp = (char *)malloc(tmp_cap);
     if (tmp == NULL) return 0;
-    snprintf(tmp, plen + 48, "%s.tmp.%ld.%s", path, (long)getpid(), hex);
-    mode_t m = mode > 0 ? (mode_t)(mode & 0777) : (mode_t)0600;
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, m);
+    int fd = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            free(tmp);
+            return 0;
+        }
+        char hex[17];
+        for (int i = 0; i < 8; i++) {
+            hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
+            hex[i * 2 + 1] = hx[rnd[i] & 0xF];
+        }
+        hex[16] = '\0';
+        snprintf(tmp, tmp_cap, "%.*s.sf-tmp.%ld.%s", (int)dir_len, path, (long)getpid(), hex);
+        fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, open_mode);
+        if (fd >= 0) break;
+        if (errno != EEXIST) {
+            free(tmp);
+            return 0;
+        }
+    }
     if (fd < 0) {
         free(tmp);
         return 0;
     }
-    if (fchmod(fd, m) != 0) {
+    if (enforce_mode && fchmod(fd, open_mode) != 0) {
         close(fd);
         unlink(tmp);
         free(tmp);
