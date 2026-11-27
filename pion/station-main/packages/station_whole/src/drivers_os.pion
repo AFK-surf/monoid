@@ -150,6 +150,7 @@ pub fn open_options_with_deps(
     mcp_url: base.mcp_url,
     route: base.route,
     text_only: base.text_only,
+    probe: base.probe,
     is_root: is_root,
     has_keychain: os == "darwin",
     os_name: os,

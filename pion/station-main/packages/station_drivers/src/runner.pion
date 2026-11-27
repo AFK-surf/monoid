@@ -314,7 +314,8 @@ pub fn RunnerPaths::for_id(data : String, id : String, sep : String) -> RunnerPa
   }
 }
 
-/// Remove `.out`, `.err`, and `.sock` strictly BEFORE removing the `.json` ownership sentinel
+/// Reference contract port of `station/native/runner/src/main.rs` (`Paths::remove_with`):
+/// remove `.out`, `.err`, and `.sock` strictly BEFORE removing the `.json` ownership sentinel
 /// checked by `live_runner` (`6d2dde849a` #8954), so a successor runner started under the same
 /// id never has its freshly created `.out`/`.err` unlinked out from under it.
 pub fn RunnerPaths::remove_with(self : RunnerPaths, unlink : (String, Bool) -> Unit) -> Unit {
@@ -397,6 +398,8 @@ pub fn end_runner_with(
     if !sock_closed && (ops.group_alive)(info.pgid) {
       (ops.send_signal)("KILL", true)
       sent_kill = true
+    }
+    if !sock_closed {
       (ops.wait_kill_or_close)()
     }
     (ops.send_done)()

@@ -25,6 +25,113 @@ import "station_sessions"
 import "station_store"
 import "station_sys"
 
+/// Pure DI handler for `PUT /runtimes` (`accounts.runtimes.put`, `56d3d84e5b` #8793):
+/// enforces manager role (403 `station.runtimes.managersOnly`), validates `{ runtime, enabled: bool }`
+/// (400 `station.runtimes.badSettings`), updates `agents.disabled_runtimes`, atomically persists
+/// `config.json` (deleting `disabledRuntimes` when empty), and returns the updated overview.
+pub fn handle_accounts_runtimes_put_with(
+  agents : WholeAgents,
+  body : base_codec::Json,
+  viewer : station_api::Viewer,
+  lang : station_api::Lang,
+  sep : String,
+  read_file : (String) -> Option[String],
+  write_file : (String, String) -> Bool,
+  build_ov : (station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError],
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let is_manager = viewer.role == "owner" || viewer.role == "admin"
+  if !is_manager {
+    return Err(station_api::ApiError::new(403, "station.runtimes.managersOnly"))
+  }
+  let rt_opt = json_field_str(body, "runtime")
+  let en_opt = json_field_bool(body, "enabled")
+  let (rt, en) = match (rt_opt, en_opt) {
+    (Some(r), Some(b)) => (r, b)
+    _ => return Err(station_api::ApiError::new(400, "station.runtimes.badSettings"))
+  }
+  let next = match agents.put_disabled_runtime(rt, en) {
+    Ok(v) => v
+    Err(e) => return Err(station_api::ApiError::new(400, e))
+  }
+  match write_disabled_runtimes_to_config_with(agents.config.data_dir, next, sep, read_file, write_file) {
+    Ok(_) => ()
+    Err(e) => return Err(station_api::ApiError::new(500, e))
+  }
+  build_ov(viewer, lang)
+}
+
+fn build_whole_overview(
+  whole_store : WholeStore,
+  agents : WholeAgents,
+  station_id_str : String,
+  home_ws_str : String,
+  viewer_drive_roots : Array[String],
+  viewer : station_api::Viewer,
+  lang : station_api::Lang,
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let mut total_sess = 0
+  let mut running_sess = 0
+  let mut warm_sess = 0
+  match whole_store.require_open() {
+    Ok(st) => {
+      match st.db.all(
+        "SELECT key, running FROM sessions WHERE archived_at IS NULL AND COALESCE(ws, ?1) = ?2",
+        [base_codec::json_str(home_ws_str), base_codec::json_str(viewer.workspace)],
+      ) {
+        Ok(rows) => {
+          total_sess = rows.length()
+          for i in 0..<rows.length() {
+            let k = match rows[i].get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let is_run = match rows[i].get("running") { Some(base_codec::Json::Num(n, _)) => n.to_int() != 0, _ => false }
+            if is_run {
+              running_sess = running_sess + 1
+            } else if agents.hub.actors.get(k).is_some() {
+              warm_sess = warm_sess + 1
+            }
+          }
+        }
+        Err(e) => return Err(station_api::ApiError::new(500, "overview query failed: " + e.message))
+      }
+    }
+    Err(_) => ()
+  }
+  let base_in = station_api::OverviewInput::minimal()
+  let input = station_api::OverviewInput::{
+    cloud: Some(station_api::StatusCloudState::{
+      origin: None,
+      workspace: Some(viewer.workspace),
+      workspace_name: Some(viewer.workspace),
+      station: Some(station_id_str),
+      removed_at: None,
+    }),
+    reached: true,
+    built_at: base_in.built_at,
+    connects: base_in.connects,
+    profiles: base_in.profiles,
+    mcp_servers: base_in.mcp_servers,
+    backup_s3: base_in.backup_s3,
+    agent_env: base_in.agent_env,
+    total_sessions: total_sess,
+    running_sessions: running_sess,
+    warm_sessions: warm_sess,
+    auto_archive_days: base_in.auto_archive_days,
+    slack_archive_days: base_in.slack_archive_days,
+    auto_archive_reviewed: base_in.auto_archive_reviewed,
+    accept_auto_chats: base_in.accept_auto_chats,
+    disabled_runtimes: agents.disabled_runtimes,
+    disk_free_bytes: base_in.disk_free_bytes,
+    disk_total_bytes: base_in.disk_total_bytes,
+    afresh_when_cold: base_in.afresh_when_cold,
+    afresh_above: base_in.afresh_above,
+    diagnostics_logs: base_in.diagnostics_logs,
+    search_personal: base_in.search_personal,
+    has_spotlight: base_in.has_spotlight,
+    drive_roots: viewer_drive_roots,
+    drive_home: base_in.drive_home,
+  }
+  Ok(station_api::build_overview(input, viewer, lang))
+}
+
 /// Authenticated caller identity established by the transport/mesh layer.
 pub enum PeerIdentity {
   Unknown
@@ -813,8 +920,34 @@ pub fn WholeApi::new(
             ("thread", base_codec::json_int64(tid)),
           ]),
         )
-        Err(e) => return Err(station_api::ApiError::new(500, e))
+        Err(e) => {
+          let code = if e.starts_with("station.runtime.disabled:") { 400 } else { 500 }
+          return Err(station_api::ApiError::new(code, e))
+        }
       }
+    }
+    if op == "accounts.runtimes.put" {
+      let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+      return handle_accounts_runtimes_put_with(
+        agents,
+        body,
+        req.viewer,
+        req.lang,
+        sep,
+        fn(p : String) -> Option[String] {
+          match station_sys::read_file_strict(p) {
+            Ok(b) => Some(b.to_string())
+            Err(_) => None
+          }
+        },
+        fn(p : String, payload : String) -> Bool {
+          let _ = station_sys::mkdir_p(agents.config.data_dir)
+          station_sys::write_file_atomic(p, payload.to_bytes(), mode=384)
+        },
+        fn(v : station_api::Viewer, l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+          build_whole_overview(whole_store, agents, station_id_str, home_ws_str, drive_roots, v, l)
+        },
+      )
     }
     if op == "hub.session.archive.POST" && params.length() >= 1 {
       let key = params[0]
@@ -849,71 +982,11 @@ pub fn WholeApi::new(
   ws_roots.set(auth_policy.home_workspace, drive_roots)
 
   let overview_fn = fn(viewer : station_api::Viewer, lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
-    let mut total_sess = 0
-    let mut running_sess = 0
-    let mut warm_sess = 0
-    match whole_store.require_open() {
-      Ok(st) => {
-        match st.db.all(
-          "SELECT key, running FROM sessions WHERE archived_at IS NULL AND COALESCE(ws, ?1) = ?2",
-          [base_codec::json_str(home_ws_str), base_codec::json_str(viewer.workspace)],
-        ) {
-          Ok(rows) => {
-            total_sess = rows.length()
-            for i in 0..<rows.length() {
-              let k = match rows[i].get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-              let is_run = match rows[i].get("running") { Some(base_codec::Json::Num(n, _)) => n.to_int() != 0, _ => false }
-              if is_run {
-                running_sess = running_sess + 1
-              } else if agents.hub.actors.get(k).is_some() {
-                warm_sess = warm_sess + 1
-              }
-            }
-          }
-          Err(e) => return Err(station_api::ApiError::new(500, "overview query failed: " + e.message))
-        }
-      }
-      Err(_) => ()
-    }
     let viewer_drive_roots = match ws_roots.get(viewer.workspace) {
       Some(r) => r
       None => []
     }
-    let base_in = station_api::OverviewInput::minimal()
-    let input = station_api::OverviewInput::{
-      cloud: Some(station_api::StatusCloudState::{
-        origin: None,
-        workspace: Some(viewer.workspace),
-        workspace_name: Some(viewer.workspace),
-        station: Some(station_id_str),
-        removed_at: None,
-      }),
-      reached: true,
-      built_at: base_in.built_at,
-      connects: base_in.connects,
-      profiles: base_in.profiles,
-      mcp_servers: base_in.mcp_servers,
-      backup_s3: base_in.backup_s3,
-      agent_env: base_in.agent_env,
-      total_sessions: total_sess,
-      running_sessions: running_sess,
-      warm_sessions: warm_sess,
-      auto_archive_days: base_in.auto_archive_days,
-      slack_archive_days: base_in.slack_archive_days,
-      auto_archive_reviewed: base_in.auto_archive_reviewed,
-      accept_auto_chats: base_in.accept_auto_chats,
-      disabled_runtimes: base_in.disabled_runtimes,
-      disk_free_bytes: base_in.disk_free_bytes,
-      disk_total_bytes: base_in.disk_total_bytes,
-      afresh_when_cold: base_in.afresh_when_cold,
-      afresh_above: base_in.afresh_above,
-      diagnostics_logs: base_in.diagnostics_logs,
-      search_personal: base_in.search_personal,
-      has_spotlight: base_in.has_spotlight,
-      drive_roots: viewer_drive_roots,
-      drive_home: base_in.drive_home,
-    }
-    Ok(station_api::build_overview(input, viewer, lang))
+    build_whole_overview(whole_store, agents, station_id_str, home_ws_str, viewer_drive_roots, viewer, lang)
   }
 
   let host_sample_fn = fn(_lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {

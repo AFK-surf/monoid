@@ -247,6 +247,7 @@ pub struct OpenOptions {
   pub mcp_url : String
   pub route : String
   pub text_only : Bool
+  pub probe : Bool
   pub is_root : Bool
   pub has_keychain : Bool
   pub os_name : String
@@ -348,6 +349,7 @@ pub fn OpenOptions::new(
     mcp_url: mcp_url,
     route: "route-1",
     text_only: false,
+    probe: false,
     is_root: false,
     has_keychain: false,
     os_name: "linux",

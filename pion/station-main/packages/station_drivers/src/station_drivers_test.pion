@@ -104,6 +104,7 @@ fn make_opts(
     mcp_url: mcp_url,
     route: "route-1",
     text_only: false,
+    probe: false,
     is_root: is_root,
     has_keychain: false,
     os_name: "linux",
@@ -1417,7 +1418,50 @@ test "wave17b3: runner json sentinel removed last and endRunner waits on exiting
       poll_sleep_step: fn() -> Unit { () },
     },
   )
-  expect(listen_res.ended_listening && listen_res.sent_term && !listen_res.sent_kill && listen_res.sent_done, "socket close skips KILL and sends done")
+  // Case 4: Live listening runner with !sock_closed and !group_alive still waits up to 1s without sending KILL
+  let mut wait_kill_called = false
+  let listen_no_kill = end_runner_with(
+    Some(info),
+    "agy-chat1",
+    Some((4242, 10000L)),
+    EndRunnerOps::{
+      pid_alive: fn(_pid : Int) -> Bool { false },
+      os_start_time_ms: fn(_pid : Int) -> Option[Int64] { Some(10000L) },
+      listening_soon: fn(_r : RunnerInfo) -> Bool { true },
+      group_alive: fn(_pg : Int) -> Bool { false },
+      send_signal: fn(_s : String, _g : Bool) -> Unit { () },
+      wait_term_or_close: fn() -> Bool { false },
+      wait_kill_or_close: fn() -> Unit { wait_kill_called = true },
+      send_done: fn() -> Unit { () },
+      poll_sleep_step: fn() -> Unit { () },
+    },
+  )
+  // Note: pid_alive returned false above; test with pid_alive true on live check then false on poll
+  let _ = listen_no_kill
+  let mut p_calls = 0
+  let listen_wait_only = end_runner_with(
+    Some(info),
+    "agy-chat1",
+    Some((4242, 10000L)),
+    EndRunnerOps::{
+      pid_alive: fn(_pid : Int) -> Bool {
+        p_calls = p_calls + 1
+        p_calls <= 1
+      },
+      os_start_time_ms: fn(_pid : Int) -> Option[Int64] { Some(10000L) },
+      listening_soon: fn(_r : RunnerInfo) -> Bool { true },
+      group_alive: fn(_pg : Int) -> Bool { false },
+      send_signal: fn(_s : String, _g : Bool) -> Unit { () },
+      wait_term_or_close: fn() -> Bool { false },
+      wait_kill_or_close: fn() -> Unit { wait_kill_called = true },
+      send_done: fn() -> Unit { () },
+      poll_sleep_step: fn() -> Unit { () },
+    },
+  )
+  expect(
+    listen_wait_only.ended_listening && listen_wait_only.sent_term && !listen_wait_only.sent_kill && wait_kill_called && listen_wait_only.sent_done,
+    "!sock_closed must still wait up to 1s even when group_alive is false",
+  )
 }
 
 test "wave17b3: stuck process stop-grace and ACP silent-turn stall guard (#9057)" {
@@ -1508,10 +1552,35 @@ test "wave17b3: Agy Stop hook, background eviction guard, and stateDir removal r
     Err(e) => panic(e)
   }
   expect(env_get(spec_text.env, "STILLFAIL_AGY_STATE_DIR").is_none(), "text_only agy omits STILLFAIL_AGY_STATE_DIR")
+  let opts_probe = OpenOptions::{ ..opts_norm, probe: true }
+  let spec_probe = match build_agy_launch(opts_probe) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  expect(env_get(spec_probe.env, "STILLFAIL_AGY_STATE_DIR").is_none(), "probe agy omits STILLFAIL_AGY_STATE_DIR")
 
-  // 2. agy_hooks_json includes Stop hook alongside PostToolUse and PostInvocation
-  let hooks_str = json_stringify(agy_hooks_json("/opt/node", "/opt/repo-rules-hook.mjs", "/opt/agy-stop-hook.mjs", "linux"))
-  expect(str_contains(hooks_str, "\"Stop\"") && str_contains(hooks_str, "agy-stop-hook.mjs"), "hooks.json includes Stop hook")
+  // 2. agy_stillfail_hooks_json matches Node JSON.stringify(next.stillfail) byte-for-byte (flat PostInvocation & Stop),
+  //    and merge_agy_hooks_json preserves unrelated top-level keys in hooks.json.
+  let got_stillfail = json_stringify(
+    agy_stillfail_hooks_json("/opt/node", "/opt/repo-rules-hook.mjs", "/opt/agy-stop-hook.mjs", "linux"),
+  )
+  let expected_stillfail = "{\"PostToolUse\":[{\"matcher\":\"run_command|read_file|write_file|edit_file|view_file|grep_search|find_by_name|list_dir\",\"hooks\":[{\"type\":\"command\",\"command\":\"'/opt/node' '/opt/repo-rules-hook.mjs' 2>/dev/null || printf '{}'\",\"timeout\":10}]}],\"PostInvocation\":[{\"type\":\"command\",\"command\":\"'/opt/node' '/opt/repo-rules-hook.mjs' 2>/dev/null || printf '{}'\",\"timeout\":10}],\"Stop\":[{\"type\":\"command\",\"command\":\"'/opt/node' '/opt/agy-stop-hook.mjs' 2>/dev/null || printf '{}'\",\"timeout\":10}]}"
+  expect(got_stillfail == expected_stillfail, "stillfail hooks JSON must match Node agy.ts:539-543 byte-for-byte, got: " + got_stillfail)
+  let merged_hooks = merge_agy_hooks_json(
+    Some("{\"customHook\":{\"foo\":1},\"stillfail\":{\"old\":true}}"),
+    "/opt/node",
+    "/opt/repo-rules-hook.mjs",
+    "/opt/agy-stop-hook.mjs",
+    "linux",
+  )
+  expect(json_get_field(merged_hooks, "customHook").is_some(), "merge_agy_hooks_json preserves existing non-stillfail keys")
+  expect(
+    match json_get_field(merged_hooks, "stillfail") {
+      Some(sf) => json_stringify(sf) == expected_stillfail
+      None => false
+    },
+    "merge_agy_hooks_json replaces stillfail key with exact Node structure",
+  )
 
   // 3. parse_agy_stop_hook_payload validates hookEventName, conversationId, fullyIdle
   match parse_agy_stop_hook_payload("{\"hookEventName\":\"Stop\",\"conversationId\":\"conv_123\",\"fullyIdle\":false}") {
