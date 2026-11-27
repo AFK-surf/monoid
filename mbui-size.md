@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [deaa0f205](https://github.com/AFK-surf/monoid/commit/deaa0f205acec647467c79c8f9addb3baca1ee74) chore(mbui): clean up mbt2pion publish diagnostics | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
 | [a3fbb3cea](https://github.com/AFK-surf/monoid/commit/a3fbb3cea7aec57ad9595b3b3da2e5d58984ebcf) feat(mbui): add grouped '+' tab picker to the righ | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.11 | 130.82 |
 | [e37478849](https://github.com/AFK-surf/monoid/commit/e374788490f89c16fd776c274863811a7f9e49d5) perf(ui/gles): batch independent glass captures, d | 2.7 | 3.66 | 15.2 | 38.24 | 58.88 | 33.5 | 68.53 | 103.14 | 128.79 |
 | [f31d101b1](https://github.com/AFK-surf/monoid/commit/f31d101b1b113d4a520d6bc2a1c07b42a99dea61) perf(changelog): ask with If-None-Match and keep t | 2.7 | 3.66 | 15.2 | 38.24 | 58.88 | 33.5 | 68.53 | 103.14 | 128.79 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5c55be6c3](https://github.com/AFK-surf/monoid/commit/5c55be6c385421c96872ae6997880fe41b09e4ea) refactor(android): split FramePacer into FrameSche | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 103.12 | 126.04 |
 | [33c0e85b8](https://github.com/AFK-surf/monoid/commit/33c0e85b896bd85449de49c6c8c2667e2346b492) fix(ui): keep a rounded clip's corners when a cut  | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.39 | 68.22 | 103.12 | 126.04 |
 | [65c90e3d0](https://github.com/AFK-surf/monoid/commit/65c90e3d052ca3e3e269e01353a7ca4c543f5283) feat(mbui): park passive side-panel tabs via pick_ | 2.68 | 3.63 | 15.07 | 38.1 | 58.51 | 33.33 | 68.02 | 103.14 | 138.02 |
-| [555d9fa17](https://github.com/AFK-surf/monoid/commit/555d9fa172a1c020ecf7717c42dac9607a22e1c4) fix(core,e2e): track Node CallAuth boundaries and  | 2.67 | 3.62 | 14.99 | 38.03 | 58.26 | 33.33 | 68.02 | 103.14 | 137.95 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [deaa0f205](https://github.com/AFK-surf/monoid/commit/deaa0f205acec647467c79c8f9addb3baca1ee74) chore(mbui): clean up mbt2pion publish diagnostics | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
 | [a3fbb3cea](https://github.com/AFK-surf/monoid/commit/a3fbb3cea7aec57ad9595b3b3da2e5d58984ebcf) feat(mbui): add grouped '+' tab picker to the righ | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 58 |
 | [e37478849](https://github.com/AFK-surf/monoid/commit/e374788490f89c16fd776c274863811a7f9e49d5) perf(ui/gles): batch independent glass captures, d | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
 | [f31d101b1](https://github.com/AFK-surf/monoid/commit/f31d101b1b113d4a520d6bc2a1c07b42a99dea61) perf(changelog): ask with If-None-Match and keep t | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.77 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [5c55be6c3](https://github.com/AFK-surf/monoid/commit/5c55be6c385421c96872ae6997880fe41b09e4ea) refactor(android): split FramePacer into FrameSche | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.49 |
 | [33c0e85b8](https://github.com/AFK-surf/monoid/commit/33c0e85b896bd85449de49c6c8c2667e2346b492) fix(ui): keep a rounded clip's corners when a cut  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 58.31 |
 | [65c90e3d0](https://github.com/AFK-surf/monoid/commit/65c90e3d052ca3e3e269e01353a7ca4c543f5283) feat(mbui): park passive side-panel tabs via pick_ | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.18 |
-| [555d9fa17](https://github.com/AFK-surf/monoid/commit/555d9fa172a1c020ecf7717c42dac9607a22e1c4) fix(core,e2e): track Node CallAuth boundaries and  | 0.59 | 0.78 | 3.02 | 4.04 | 7.5 | 2.22 | 6.28 | 57.53 |
