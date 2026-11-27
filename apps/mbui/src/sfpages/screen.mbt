@@ -291,7 +291,10 @@ pub fn screen_key_of(station : String, screen : String) -> String {
 /// owner/auth_gen unchanged).
 fn ScreenSess::is_active_principal(self : ScreenSess) -> Bool {
   !self.revoked &&
+  self.account != "\u{3}revoked" &&
+  self.account != "\u{3}pending" &&
   !@sfbase.workspace_is_revoked(self.workspace) &&
+  !@sfbase.workspace_is_pending(self.workspace) &&
   self.principal == screen_principal_for(self.station)
 }
 

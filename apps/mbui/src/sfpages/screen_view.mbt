@@ -354,8 +354,19 @@ pub fn screen_pane_node(
   let screen = at.screen
   v.pick(at_once=true, loc~, fn() {
     screen_revokes.get() |> ignore
+    @sfbase.workspace_owners_version.get() |> ignore
     screen_key(station, screen)
   }, fn(root, key) {
+    let (ws, _) = screen_workspace_and_station(station)
+    let owner = @sfbase.workspace_owner_of(ws)
+    if owner == "\u{3}pending" {
+      root.grow(Is(1.0)).min_height(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
+      @sf.waiting_node(root, fn(_) {  })
+      return
+    }
+    if owner == "\u{3}revoked" {
+      return
+    }
     let s = screen_sess(src, station, screen)
     let u = screen_ui(key)
     u.in_tab = in_tab

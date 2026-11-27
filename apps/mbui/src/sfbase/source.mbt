@@ -490,9 +490,14 @@ pub fn workspace_explicit_owner_of(ws : String) -> String? {
 let workspace_revoked : Map[String, Bool] = Map([])
 
 ///|
-/// Workspaces currently listed in the stale cache of at least one still-loading (`loaded=false`) account.
+/// Workspaces currently pending resolution under at least one still-loading (`loaded=false`) account.
 // kept across runs: put back as a run begins (last_reset)
 let workspace_pending_ws : Map[String, Bool] = Map([])
+
+///|
+/// Accounts whose latest `workspaces` snapshot entry has `loaded=false`.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_pending_owners : Map[String, Bool] = Map([])
 
 ///|
 /// Accounts whose latest `workspaces` snapshot entry has `loaded=true`.
@@ -506,11 +511,18 @@ let workspace_loaded_owners : Map[String, Bool] = Map([])
 let workspace_loaded_members : Map[String, Map[String, Bool]] = Map([])
 
 ///|
+/// Whether workspace `ws` is currently pending under an unloaded account (no definitive owner confirmed yet).
+pub fn workspace_is_pending(ws : String) -> Bool {
+  ws != "" && workspace_pending_ws.contains(ws)
+}
+
+///|
 /// Whether workspace `ws` is currently pending under an unloaded account and `expected` has not been proven
-/// to have lost access (either `expected` is still unloaded, or `expected` is loaded and still lists `ws`).
+/// to have lost access (either `expected` is itself still loading, or `expected` is loaded and still lists `ws`).
+/// Signed-out accounts (absent from both `workspace_pending_owners` and `workspace_loaded_members`) return `false`.
 pub fn workspace_owner_pending_for(ws : String, expected : String) -> Bool {
   guard ws != "" && expected != "" && workspace_pending_ws.contains(ws) else { return false }
-  if !workspace_loaded_owners.contains(expected) {
+  if workspace_pending_owners.contains(expected) {
     return true
   }
   match workspace_loaded_members.get(ws) {
@@ -546,8 +558,9 @@ let account_revoke_listeners : Array[(String) -> Unit] = []
 let workspace_owner_change_listeners : Array[(String, String, String) -> Unit] = []
 
 ///|
-/// Owning account of workspace `ws` (`workspace_owners[ws]`, falling back to `account_principal_sig` only when
-/// `ws` has not been revoked).
+/// Owning account of workspace `ws`: explicit owner when confirmed, `"\u{3}revoked"` when revoked or missing
+/// from a complete snapshot, `"\u{3}pending"` while awaiting an unloaded higher-priority/candidate account, and
+/// falling back to `account_principal_sig` only before any `workspaces` snapshot has been synced.
 pub fn workspace_owner_of(ws : String) -> String {
   if ws != "" {
     if workspace_revoked.get(ws) == Some(true) {
@@ -556,6 +569,12 @@ pub fn workspace_owner_of(ws : String) -> String {
     match workspace_owners.get(ws) {
       Some(owner) if owner != "" => return owner
       _ => ()
+    }
+    if workspace_pending_ws.contains(ws) {
+      return "\u{3}pending"
+    }
+    if workspace_owners_seen_snapshot.val {
+      return "\u{3}revoked"
     }
   }
   account_principal_sig.untracked()
@@ -598,6 +617,7 @@ pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
 pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   guard v is Some(Array(accounts)) else { return }
   let mut all_loaded = true
+  let mut earlier_unloaded = false
   let seen : Map[String, String] = Map([])
   let pending_owners : Map[String, Bool] = Map([])
   let pending_ws : Map[String, Bool] = Map([])
@@ -617,10 +637,11 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
     }
     if !acc_loaded {
       all_loaded = false
+      earlier_unloaded = true
       pending_owners[owner] = true
       for w in items(s, "workspaces") {
         let id = text(Some(w), "id")
-        if id != "" {
+        if id != "" && !seen.contains(id) {
           pending_ws[id] = true
         }
       }
@@ -638,7 +659,11 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
             loaded_members[id] = m
           }
         }
-        if !pending_ws.contains(id) && !seen.contains(id) {
+        if earlier_unloaded || pending_ws.contains(id) {
+          if !seen.contains(id) {
+            pending_ws[id] = true
+          }
+        } else if !seen.contains(id) {
           seen[id] = owner
         }
       }
@@ -647,7 +672,13 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
   let prev_pending_ws = workspace_pending_ws.keys().collect()
   workspace_pending_ws.clear()
   for id, _ in pending_ws {
-    workspace_pending_ws[id] = true
+    if !seen.contains(id) {
+      workspace_pending_ws[id] = true
+    }
+  }
+  workspace_pending_owners.clear()
+  for owner, _ in pending_owners {
+    workspace_pending_owners[owner] = true
   }
   workspace_loaded_owners.clear()
   for owner, _ in loaded_owners {
@@ -781,6 +812,7 @@ fn last_reset() -> Unit {
   workspace_owners_version.set(0)
   workspace_revoked.clear()
   workspace_pending_ws.clear()
+  workspace_pending_owners.clear()
   workspace_loaded_owners.clear()
   workspace_loaded_members.clear()
   active_account_subs.val = []

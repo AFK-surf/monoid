@@ -595,6 +595,7 @@ test "debug_lines_node clears timeline when parked and preserves chained after-a
   @sf.set_words(@sfbase.fill)
   let log_calls : Array[(Result[Json, Json]) -> Unit] = []
   let base = @sffixture.fixture("settings")
+  @sfbase.workspace_owner_set("ws-1", "u1")
   let src : Source = {
     ..base,
     call: fn(name, _params, done) {

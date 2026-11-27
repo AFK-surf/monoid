@@ -273,5 +273,75 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="A must remain Denied after B loads ws-1")
   set_startup_window_owner(Some("acct-b"))
   assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="B must transition to Matched after loading ws-1")
+  // Astra P1-2: earlier unloaded account A with EMPTY cache ([]) + later loaded account B with ws-1:
+  // B must NOT hijack ws-1 until A finishes loading; once A loads without ws-1, B transitions to Matched.
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  set_startup_window_owner(Some("acct-b"))
+  let snap_earlier_empty : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(false),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_earlier_empty))
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="earlier unloaded A with empty cache must prevent B from claiming ws-1")
+  assert_eq(workspace_owner_of("ws-1"), "\u{3}pending", msg="ws-1 under earlier_unloaded must report pending sentinel")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="B child-process window must Wait while earlier A is unloaded")
+  workspace_owners_sync_json(Some(snap_b_loaded))
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="B must Match once earlier A finishes loading without ws-1")
+  // Astra P2: signed-out account A (absent from accounts) while B is loaded=false caching ws-1 -> A is Denied (not Waiting)!
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  workspace_owners_sync_json(Some(snap_full))
+  let snap_b_only_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_b_only_pending))
+  set_startup_window_owner(Some("acct-a"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="signed-out A must be Denied even while B is pending")
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="pending B must remain Waiting")
+  // Opus P2: [A(loaded=true, ws-1), B(loaded=false, ws-1)] (A precedes B) -> A owns ws-1 with 0 revocations and !pending!
+  reset()
+  accounts_subs_sync(["acct-a", "acct-b"])
+  workspace_owners_sync_json(Some(snap_full))
+  let revokes = Ref(0)
+  let base_listeners = workspace_owner_change_listeners.length()
+  on_workspace_owner_change(fn(ws, _old, _new) {
+    if ws == "ws-1" {
+      revokes.val += 1
+    }
+  })
+  let snap_a_first_b_unloaded : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_a_first_b_unloaded))
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-a"), msg="higher-priority loaded A must keep ws-1 when lower-priority B is unloaded")
+  assert_false(workspace_is_pending("ws-1"), msg="confirmed ws-1 owned by higher-priority A must not be pending")
+  assert_eq(revokes.val, 0, msg="0 owner-change revocations when higher-priority A keeps ws-1")
+  while workspace_owner_change_listeners.length() > base_listeners {
+    workspace_owner_change_listeners.pop() |> ignore
+  }
   reset()
 }

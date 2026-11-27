@@ -2304,7 +2304,10 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
           "account": account,
           "workspaces": if f.mode == "webdemo" {
             [{ "id": "ws1", "name": "Acme", "stations": 1, "members": 3 }]
-          } else if f.mode == "chat-screen-tab" || f.mode == "chat-browser-tab" || f.mode == "chat-browser-agent-driving" {
+          } else if f.mode == "chat-screen-tab" ||
+            f.mode == "chat-browser-tab" ||
+            f.mode == "chat-browser-agent-driving" ||
+            f.mode.has_prefix("screen-") {
             [
               { "id": "ws1", "name": "星火工作室", "stations": 2, "members": 3 },
               { "id": "ws-1", "name": "星火工作室", "stations": 1, "members": 3 },

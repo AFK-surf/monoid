@@ -527,6 +527,9 @@ pub fn window_here_owner_state(wid : Int, station : String, screen? : String = "
   if expected == "" || workspace_is_revoked(ws) {
     return Denied
   }
+  if wid <= 0 && !workspace_owners_synced() {
+    return Waiting
+  }
   match workspace_explicit_owner_of(ws) {
     Some(actual) => if actual == expected { Matched } else { Denied }
     None =>
