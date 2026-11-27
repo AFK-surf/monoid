@@ -10,8 +10,14 @@
 pub let keys_recording : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
 
 ///|
+/// Window id owning `keys_recording` so recording in one window never suppresses shortcuts in another window.
+// kept across runs: put back as a run begins (keymap_reset)
+pub let keys_recording_window : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+
+///|
 fn keymap_reset() -> Unit {
   keys_recording.set("")
+  keys_recording_window.set(0)
 }
 
 ///|
@@ -46,7 +52,7 @@ pub fn key_label(prefs : Json?, action : String) -> String {
 /// bound/mappable, or no bound key can currently reach `target`). Uses the core's `labels` at the matching index when
 /// present, falling back to `binding_label`.
 pub fn reachable_key_label(prefs : Json?, action : String, target : @view.View) -> String {
-  if keys_recording.get() != "" {
+  if keys_recording.get() != "" && keys_recording_window.get() == @ui.current_window_id() {
     return ""
   }
   let a = key_action(prefs, action)
@@ -216,7 +222,7 @@ pub fn binding_label(binding : String) -> String {
 /// `workspace.1` … `workspace.9`, a player's, a reader's and the files' keys where they are up: @sf.player_bindings,
 /// reader_bindings, files_bindings). None while the 快捷键 page records new keys: the next key is its.
 pub fn keymap_of(prefs : Json?) -> @view.Keymap {
-  if keys_recording.get() != "" {
+  if keys_recording.get() != "" && keys_recording_window.get() == @ui.current_window_id() {
     return @view.Keymap::new([])
   }
   let bindings : Array[@view.Binding] = []

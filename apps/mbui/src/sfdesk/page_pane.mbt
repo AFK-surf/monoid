@@ -129,7 +129,7 @@ fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
       None => None
     }
   })
-  @sfbase.configure_wide_kept_left_limits()
+  @sfbase.configure_wide_kept_left_limits(src)
   @ui.nav_flat_view(
     v,
     app.nav,
@@ -171,8 +171,14 @@ fn pane_made(
       (
         kind,
         fn(v : @view.View, page : () -> Page, under : Page?, stint : () -> Int, k : Int) {
-          v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+          v.switch_by(
+            fn() {
+              @sfbase.workspace_owners_version.get() |> ignore
+              @sfbase.workspace_in_view(src).0.map(fn(w) { (w.id, @sfbase.workspace_owner_of(w.id)) })
+            },
+            fn(p, _id) {
             guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+            @sfbase.record_entry_identity(k, w.id)
             let core = settings_core(src, w)
             let here = fn() { @settings.here_of(core, w.id, w.name) }
             @settings.frame(core, @signals.untracked(here))
@@ -524,6 +530,15 @@ fn pane_made(
             // (beside it its side panel, the tree's, reading by the page's source, let go with it: side_panel_node)
             v.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
             let page_src : Ref[Source] = Ref(src)
+            match @signals.untracked(fn() {
+              match app.nav.page_of(k) {
+                Some((Chat(r), _)) => Some(@sfbase.workspace_of(r.station))
+                _ => @sfbase.workspace_in_view(src).0.map(fn(w) { w.id })
+              }
+            }) {
+              Some(ws) if ws != "" => @sfbase.record_entry_identity(k, ws)
+              _ => ()
+            }
             v.box(fn(p) {
               p.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))) |> ignore
               // (its bar the tree's, over the page: chat_bar_wide_node, keeping clear of the window's corner)

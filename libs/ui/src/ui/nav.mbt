@@ -241,6 +241,34 @@ priv struct NavKeptLeftLimits {
 let nav_kept_left_limits : Array[(@signals.Signal[Int], NavKeptLeftLimits)] = []
 
 ///|
+// kept across runs: per-Nav side table filtering which `made` kinds may enter the root shelf
+let nav_shelf_kind_filters : Array[(@signals.Signal[Int], (String) -> Bool)] = []
+
+///|
+// kept across runs: per-Nav side table guarding `(serial, key, kind)` before parking into `kept_left`
+let nav_kept_left_guards : Array[(@signals.Signal[Int], (Int, String, String) -> Bool)] = []
+
+///|
+fn nav_shelf_kind_allows(said : @signals.Signal[Int], kind : String) -> Bool {
+  for entry in nav_shelf_kind_filters {
+    if physical_equal(entry.0, said) {
+      return (entry.1)(kind)
+    }
+  }
+  true
+}
+
+///|
+fn nav_kept_left_guard_allows(said : @signals.Signal[Int], serial : Int, key : String, kind : String) -> Bool {
+  for entry in nav_kept_left_guards {
+    if physical_equal(entry.0, said) {
+      return (entry.1)(serial, key, kind)
+    }
+  }
+  true
+}
+
+///|
 fn nav_limits_get(said : @signals.Signal[Int]) -> NavKeptLeftLimits? {
   for entry in nav_kept_left_limits {
     if physical_equal(entry.0, said) {
@@ -383,6 +411,74 @@ pub fn[P] Nav::set_kept_left_limits(
 }
 
 ///|
+/// Restrict which `made` page kinds may enter `self`'s root `shelf` (`None` clears the filter).
+pub fn[P] Nav::set_shelf_kind_filter(self : Nav[P], allow : ((String) -> Bool)?) -> Unit {
+  match nav_shelf_kind_filters.search_by(fn(e) { physical_equal(e.0, self.said) }) {
+    Some(i) => {
+      nav_shelf_kind_filters.remove(i) |> ignore
+      if nav_shelf_kind_filters.is_empty() {
+        nav_shelf_kind_filters.shrink_to_fit()
+      }
+    }
+    None => ()
+  }
+  match allow {
+    Some(f) => nav_shelf_kind_filters.push((self.said, f))
+    None => ()
+  }
+}
+
+///|
+/// Guard `(serial, key, kind)` before parking an entry into `kept_left` (`None` clears the guard).
+pub fn[P] Nav::set_kept_left_guard(self : Nav[P], allow : ((Int, String, String) -> Bool)?) -> Unit {
+  match nav_kept_left_guards.search_by(fn(e) { physical_equal(e.0, self.said) }) {
+    Some(i) => {
+      nav_kept_left_guards.remove(i) |> ignore
+      if nav_kept_left_guards.is_empty() {
+        nav_kept_left_guards.shrink_to_fit()
+      }
+    }
+    None => ()
+  }
+  match allow {
+    Some(f) => nav_kept_left_guards.push((self.said, f))
+    None => ()
+  }
+}
+
+///|
+/// Evict only `kept_left` entries matching `drop(key, kind)`, leaving other parked entries untouched.
+pub fn[P] Nav::evict_kept_left(self : Nav[P], drop : (String, String) -> Bool) -> Unit {
+  let mut removed = false
+  let mut i = 0
+  while i < self.kept_left.length() {
+    let (key, kind, e) = self.kept_left[i]
+    if drop(key, kind) {
+      self.kept_left.remove(i) |> ignore
+      self.gone.push(e)
+      removed = true
+    } else {
+      i += 1
+    }
+  }
+  if self.kept_left.is_empty() {
+    self.kept_left.shrink_to_fit()
+  }
+  if removed {
+    self.told()
+    wake()
+  }
+}
+
+///|
+/// Remove `self` from all global per-Nav side tables (call before discarding a `Nav` on app reset).
+pub fn[P] Nav::clear_side_tables(self : Nav[P]) -> Unit {
+  nav_limits_set(self.said, None, nav_kept_left_most)
+  self.set_shelf_kind_filter(None)
+  self.set_kept_left_guard(None)
+}
+
+///|
 /// Whether entry `serial` is put by on the stack's kept left (Nav's `kept_left`), read as that changes.
 pub fn[P] Nav::is_kept_left(self : Nav[P], serial : Int) -> Bool {
   self.said.get() |> ignore
@@ -400,7 +496,14 @@ fn[P] Nav::parks_soon(self : Nav[P], serial : Int) -> NavPage[P]? {
   self.gone
   .iter()
   .find_first(fn(e) {
-    e.serial == serial && e.shown_once && !e.ended && !e.told_left && keeps(e.page) is Some(_)
+    e.serial == serial &&
+    e.shown_once &&
+    !e.ended &&
+    !e.told_left &&
+    (match keeps(e.page) {
+      Some((key, kind)) => nav_kept_left_guard_allows(self.said, e.serial, key, kind)
+      None => false
+    })
   })
 }
 
@@ -415,6 +518,9 @@ fn[P] Nav::try_park_left(self : Nav[P], e : NavPage[P]) -> Bool {
     return false
   }
   guard self.keeps_left is Some(keeps) && keeps(e.page) is Some((key, kind)) else { return false }
+  if !nav_kept_left_guard_allows(self.said, e.serial, key, kind) {
+    return false
+  }
   match self.kept_left.search_by(fn(x) { x.0 == key }) {
     Some(i) => self.gone.push(self.kept_left.remove(i).2)
     None => ()

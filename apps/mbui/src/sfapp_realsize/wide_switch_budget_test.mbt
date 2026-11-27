@@ -698,6 +698,11 @@ test "wide switch budget (PR-B3c): allowlisted settings hot return builds 0 node
   for win in wide_windows {
     let (label, w, h, platform) = win
     let (t, _c, _src, _ws, chat_ref) = wide_budget_open(w, h, platform, a11y=true)
+    if label == "medium-600x900" {
+      // On Medium Tape, bring the Page panel into view from Side by tapping its peeking strip on the right.
+      t.tap(w - 20.0, h / 2.0)
+      t.run_for(@sfapptest.kept_switch_over_ms)
+    }
     let tree = @ui.view_tree().unwrap()
     // Cold open About, Changelog, and Shortcuts (allowlisted wide settings).
     let c_about = wide_budget_step(t, fn() { @sfbase.nav_over_home([Setting(About)]) })

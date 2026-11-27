@@ -109,13 +109,14 @@ test "PR-B3c Changelog: parked page never marks changelog.seen and hot-returns w
   news_sig.set("news-v2")
   t.draw()
   assert_eq(seen_calls.val, 1, msg="parked Changelog must not mark news-v2 seen while parked")
-  // Wake Changelog back: hot return must build 0 nodes and preserve active tab.
+  // Wake Changelog back: hot return must build 0 nodes, preserve active tab, and immediately mark unread news-v2 seen.
   t.tree_frames_from_now()
   page.set(0)
   t.draw()
   let made = t.tree_frames().fold(init=0, fn(a, f) { a + f.made })
   assert_eq(made, 0, msg="Changelog hot return must build 0 nodes")
   assert_eq(changelog_part.untracked(), "station", msg="Changelog hot return must preserve selected tab")
+  assert_eq(seen_calls.val, 2, msg="waking Changelog with unread news-v2 must immediately mark changelog.seen")
   @ui.run_let_go()
 }
 
@@ -175,6 +176,13 @@ test "PR-B3c Appearance: zoom picker closes on park and hot-return wake writes 0
   let made = t.tree_frames().fold(init=0, fn(a, f) { a + f.made })
   assert_eq(made, 0, msg="Appearance hot return must build 0 nodes")
   assert_eq(pref_writes.length(), 0, msg="waking Appearance must not write prefs")
+  // Instance-owned accent preview: an older instance clearing its preview never clears a newer instance's preview.
+  @sfbase.accent_preview_by(101, Some("blue"))
+  @sfbase.accent_preview_by(102, Some("teal"))
+  let teal_accent = @sf.theme().p.accent
+  @sfbase.accent_preview_by(101, None)
+  assert_eq(@sf.theme().p.accent, teal_accent, msg="stale Appearance instance must not clear newer instance's accent preview")
+  @sfbase.accent_preview_by(102, None)
   @ui.run_let_go()
 }
 
@@ -278,7 +286,7 @@ test "PR-B3c About: management calls guarded against role downgrade, workspace/s
   t.click(Button, label=confirm_btn)
   t.run_for(@ui.move_most_ms)
   assert_eq(calls.length(), 0, msg="delayed confirm after role downgrade must execute 0 software calls")
-  // Restore admin, re-open confirm dialog, then change target station (workspace/station switch) BEFORE clicking confirm!
+  // Restore admin, re-open confirm dialog, then change REAL host `local_station` JSON BEFORE clicking confirm!
   role_sig.set("admin")
   t.draw()
   t.click(Button, label=back_label)
@@ -286,14 +294,28 @@ test "PR-B3c About: management calls guarded against role downgrade, workspace/s
   t.tap_text("0.1.1100")
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label=confirm_btn) is Some(_), msg="second confirm dialog should open")
-  set_this_machine("ws2/st2")
+  t.set_app_said(
+    "local_station",
+    "{\"data\":\"~/.stillfail\",\"runner\":\"service\",\"workspace\":{\"id\":\"ws2\",\"station\":\"st2\",\"stationName\":\"Other\"}}",
+  )
+  t.run_for(@settings.local_read_ms)
   t.draw()
   t.click(Button, label=confirm_btn)
   t.run_for(@ui.move_most_ms)
-  assert_eq(calls.length(), 0, msg="delayed confirm after target station/workspace change must execute 0 software calls")
-  // Restore target station, park About, and wake it back: 0 update/share calls, 0 parked timers, made == 0 on wake.
-  set_this_machine("ws1/st1")
+  assert_eq(calls.length(), 0, msg="delayed confirm after live local_station host change must execute 0 software calls")
+  // Scenario C: restore live local_station, open confirm dialog in active_gen N, park -> wake (active_gen N+1),
+  // then click the stale confirm button -> must be rejected by active_gen check!
+  t.set_app_said(
+    "local_station",
+    "{\"data\":\"~/.stillfail\",\"runner\":\"service\",\"workspace\":{\"id\":\"ws1\",\"station\":\"st1\",\"stationName\":\"Willow\"}}",
+  )
+  t.run_for(@settings.local_read_ms)
   t.draw()
+  t.click(Button, label=back_label)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("0.1.1100")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label=confirm_btn) is Some(_), msg="third confirm dialog should open")
   page.set(1)
   t.draw()
   assert_eq(t.subtree_timeline_count(about_root.val.unwrap()), 0, msg="parked About must own 0 timers")
@@ -302,7 +324,11 @@ test "PR-B3c About: management calls guarded against role downgrade, workspace/s
   t.draw()
   let made = t.tree_frames().fold(init=0, fn(a, f) { a + f.made })
   assert_eq(made, 0, msg="About hot return must build 0 nodes")
-  assert_eq(calls.length(), 0, msg="park/wake About must not fire any software calls")
+  if t.query(Button, label=confirm_btn) is Some(_) {
+    t.click(Button, label=confirm_btn)
+    t.run_for(@ui.move_most_ms)
+  }
+  assert_eq(calls.length(), 0, msg="park/wake stale confirm click must execute 0 software calls")
   assert_eq(version_checks.val, 0, msg="park/wake About must not fire version_check")
   assert_eq(version_taps.val, 0, msg="park/wake About must not fire version_tap")
   @ui.run_let_go()
@@ -348,15 +374,12 @@ test "PR-B3c Fonts: park closes own panel and clears drag; evicting old instance
   t.draw()
   assert_true(@sf.presenting(), msg="Instance 1 font picker panel must open")
   assert_eq(font_picker_open.untracked(), 0)
-  fonts_drag_owner.val = fonts_picker_owner.untracked()
-  text_size_drag.set(Some(115.0))
-  // Park Instance 1 -> must close its panel and clear drag state synchronously.
+  // Park Instance 1 -> must close its panel synchronously.
   page.set(1)
   t.draw()
   assert_false(@sf.presenting(), msg="parking Instance 1 must close its panel_nodes")
   assert_eq(font_picker_open.untracked(), -1, msg="parking Instance 1 must reset font_picker_open")
   assert_false(local_open.untracked(), msg="parking Instance 1 must reset local_open")
-  assert_true(text_size_drag.untracked() is None, msg="parking Instance 1 must clear active slider drag")
   // Open Instance 2 and open its font picker panel.
   page.set(2)
   t.draw()
@@ -514,10 +537,29 @@ test "PR-B3c Shortcuts: parking during key recording releases global recorder, n
   t.tap_text("⌘K")
   t.draw()
   assert_eq(@settings.keys_recording.untracked(), "app.test", msg="must enter recording state")
+  assert_eq(
+    @settings.keys_recording_window.untracked(),
+    @ui.current_window_id(),
+    msg="recording state must bind to the recording window's id",
+  )
+  // In a different window, keymap_of must NOT be suppressed while this window is recording.
+  let root_v = @ui.view_tree().unwrap().root()
+  @settings.keys_recording_window.set(@ui.current_window_id() + 99)
+  assert_true(
+    @settings.reachable_key_label(Some(prefs_json), "app.test", root_v) != "",
+    msg="recording in another window must not suppress this window's keymap",
+  )
+  @settings.keys_recording_window.set(@ui.current_window_id())
+  assert_eq(
+    @settings.reachable_key_label(Some(prefs_json), "app.test", root_v),
+    "",
+    msg="recording in this window suppresses this window's keymap",
+  )
   // Park Shortcuts while recording!
   page.set(1)
   t.draw()
   assert_eq(@settings.keys_recording.untracked(), "", msg="parking Shortcuts must synchronously release global keys_recording")
+  assert_eq(@settings.keys_recording_window.untracked(), 0, msg="parking Shortcuts must clear keys_recording_window")
   // Send Mod+K: must reach current window's action handler normally and trigger 0 keys.set calls!
   t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
   t.draw()

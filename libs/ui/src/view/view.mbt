@@ -10424,6 +10424,33 @@ pub fn View::on_rest(
 }
 
 ///|
+/// Put child `target` into `covered` rest (`drop_holds=false`) whenever `covered()` is true, and wake it when
+/// `covered()` becomes false. The reactive watcher is owned by `self` (outside `target`'s sleep subtree) so it never
+/// freezes itself while `target` is covered.
+pub fn View::cover_child_while(self : View, target : View, covered : () -> Bool) -> Unit {
+  let wake : Ref[(() -> Unit)?] = Ref(None)
+  let release = fn() {
+    match wake.val {
+      Some(w) => {
+        wake.val = None
+        w()
+      }
+      None => ()
+    }
+  }
+  self.reacts(covered, fn(on) {
+    if on {
+      if wake.val is None && target.alive() {
+        wake.val = Some(target.tree.rest_begin(target.at, drop_holds=false))
+      }
+    } else {
+      release()
+    }
+  })
+  self.owns(release) |> ignore
+}
+
+///|
 /// Declarative active-state resource lifecycle primitive: runs `enter` while `self` is active and calls its returned
 /// `leave` closure once on rest or disposal (strict 1:1 pairing, including synchronous park/evict/dispose inside `enter`
 /// and registration while already asleep).

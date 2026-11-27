@@ -46,13 +46,16 @@ pub fn shortcuts_node(
   // (what this page records, while it is the one that does: another made of the same page its own)
   keys_recorders.val += 1
   let me = keys_recorders.val
+  let win_id = @ui.current_window_id()
   let record = fn(action : String) {
     keys_recorder.val = me
+    @settings.keys_recording_window.set(win_id)
     keys_recording.set(action)
   }
   let stop = fn() {
     if keys_recorder.val == me {
       keys_recorder.val = 0
+      @settings.keys_recording_window.set(0)
       keys_recording.set("")
     }
   }
@@ -175,6 +178,7 @@ pub fn shortcuts_node(
               stop()
             } else {
               keys_recorder.val = me
+              @settings.keys_recording_window.set(win_id)
               keys_recording.set(keys_searching)
             }
           })

@@ -2275,6 +2275,7 @@ fn software_row_node(
   // (a runtime's: whether its station says which runtimes it has turned off, and whether this one is)
   supports_disable~ : () -> Bool = fn() { false },
   disabled~ : () -> Bool = fn() { false },
+  active_token? : () -> Int,
 ) -> Unit {
   let id = text(@signals.untracked(v), "id")
   let own = id == "station"
@@ -2294,7 +2295,26 @@ fn software_row_node(
     is_doing(core, ["software.uninstall"], [("station", station), ("id", id)])
   }
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
-  let set_enabled = fn(now : Bool) { call("runtime.setEnabled", [("runtime", str(id)), ("enabled", Json::boolean(now))]) }
+  let call_for_token = fn(token : Int) {
+    fn(name : String, params : Array[(String, Json)]) {
+      let ok = match active_token {
+        Some(f) => token > 0 && f() == token
+        None => true
+      }
+      if ok {
+        call(name, params)
+      }
+    }
+  }
+  let take_token = fn() {
+    match active_token {
+      Some(f) => f()
+      None => 0
+    }
+  }
+  let set_enabled_with = fn(c : (String, Array[(String, Json)]) -> Unit, now : Bool) {
+    c("runtime.setEnabled", [("runtime", str(id)), ("enabled", Json::boolean(now))])
+  }
   @sf.item_row_node(row, fn(r) {
     // (its first line: its mark small and bare, its name, its version after it, and a runtime's ⋯ at the line's end;
     // under it, starting where the mark does, what an update has to say and do (有新版本 0.1.1300 更新), then the rest)
@@ -2341,11 +2361,13 @@ fn software_row_node(
         @sf.style_node(m, fn() { sw_rest })
         m.show(switching, fn(sp) { @sf.spinner_node(sp, size=@sf.spinner_inline) |> ignore })
         @sf.icon_action_opens_node(m, "more", fn() { @sf.t("common.more") }, disabled=fn() { busy() || switching() }, fn(at) {
+          let token = take_token()
+          let scoped_call = call_for_token(token)
           let name = text(@signals.untracked(v), "name")
           let switch_item = if !@signals.untracked(runtime_switch) {
             None
           } else if @signals.untracked(disabled) {
-            Some(@sf.menu_item_of(@sf.t("web-main.versions.runtimeEnable"), fn() { set_enabled(true) }))
+            Some(@sf.menu_item_of(@sf.t("web-main.versions.runtimeEnable"), fn() { set_enabled_with(scoped_call, true) }))
           } else {
             Some(
               @sf.menu_item_of(@sf.t("web-main.versions.runtimeDisable"), danger=true, fn() {
@@ -2353,7 +2375,7 @@ fn software_row_node(
                   @sf.t("web-main.versions.runtimeDisableAsk", args=[("name", name)]),
                   @sf.t("web-main.versions.runtimeDisableNote", args=[("name", name)]),
                   @sf.t("web-main.versions.runtimeDisable"),
-                  fn() { set_enabled(false) },
+                  fn() { set_enabled_with(scoped_call, false) },
                 )
               }),
             )
@@ -2365,7 +2387,7 @@ fn software_row_node(
                   @sf.t("web-main.versions.runtimeUninstallAsk", args=[("name", name)]),
                   @sf.t("web-main.versions.runtimeUninstallNote", args=[("name", name)]),
                   @sf.t("web-main.versions.runtimeUninstall"),
-                  fn() { call("software.uninstall", [("id", str(id))]) },
+                  fn() { scoped_call("software.uninstall", [("id", str(id))]) },
                   danger=true,
                 )
               }),
@@ -2382,7 +2404,7 @@ fn software_row_node(
       u.pick(fn() { (software_end(v()), online()) }, fn(e, state) {
         let (end, is_online) = state
         @sf.style_node(e, fn() { sw_end_line })
-        software_end_node(e, end, v, manager && is_online, busy, call)
+        software_end_node(e, end, v, manager && is_online, busy, call, take_token~, call_for_token~)
       })
       // what it says of an update under way or done: a sentence, on a line of its own under its version, never beside
       // its name, which it would squeeze there on a narrow page
@@ -2441,10 +2463,12 @@ fn software_row_node(
         sw.show(fn() { own && software_earlier(v()).length() > 0 }, fn(l) {
           // (its chevron in the words' own ink: the link's default, the theme's blue, is not the Link words' colour here)
           @sf.link_opens_node(l, fn() { @sf.t("web-main.versions.back") }, chevron=true, ink=fn() { @ui.style_ink(@sf.link) }, on=fn() { !busy() }, fn(b) {
+            let token = take_token()
+            let scoped_call = call_for_token(token)
             let now = @signals.untracked(v)
             @sf.menu(
               software_earlier(now).map(fn(version) {
-                Some(@sf.menu_item_of(version, further=true, fn() { software_back_ask(now, version, call) }))
+                Some(@sf.menu_item_of(version, further=true, fn() { software_back_ask(now, version, scoped_call) }))
               }),
               from=Node(b),
               title=@sf.t("web-main.versions.backTo"),
@@ -2571,6 +2595,8 @@ fn software_end_node(
   manager : Bool,
   busy : () -> Bool,
   call : (String, Array[(String, Json)]) -> Unit,
+  take_token~ : () -> Int = fn() { 0 },
+  call_for_token~ : (Int) -> (String, Array[(String, Json)]) -> Unit = fn(_) { call },
 ) -> Unit {
   let id = text(@signals.untracked(v), "id")
   let button = fn(label : () -> String) {
@@ -2605,7 +2631,8 @@ fn software_end_node(
     "restore" =>
       if manager && flag(@signals.untracked(v), "updatable") {
         software_action_node(e, fn() { @sf.t("web-main.versions.restoreOfficial") }, fn() {
-          software_restore_ask(@signals.untracked(v), call)
+          let token = take_token()
+          software_restore_ask(@signals.untracked(v), call_for_token(token))
         }, busy)
       }
     "repair" => repair(fn() { @sf.t("web-main.versions.repairNpm") })

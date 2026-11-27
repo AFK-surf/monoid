@@ -73,24 +73,31 @@ pub fn changelog_node(
   )
   let topic = fn() { read(shown()) }
   let value = fn() { topic().value }
+  let news_now = fn() {
+    match field(value(), "news") {
+      Some(Null) | None => ""
+      Some(n) => n.stringify()
+    }
+  }
+  let mark_seen = fn(news : String) {
+    if news != "" && news != changelog_seen.val {
+      changelog_seen.val = news
+      (core.call)("changelog.seen", obj([]), @sfbase.answer_unread)
+    }
+  }
   let page_active = Ref(false)
   v.when_active(while_covered=true, fn() {
     page_active.val = true
+    mark_seen(@signals.untracked(news_now))
     fn() { page_active.val = false }
   })
   |> ignore
   // opened: what the update brought is read, once each news (as it is said), never while parked or covered
   v.reacts(
-    fn() {
-      match field(value(), "news") {
-        Some(Null) | None => ""
-        Some(n) => n.stringify()
-      }
-    },
+    news_now,
     fn(news) {
-      if page_active.val && news != "" && news != changelog_seen.val {
-        changelog_seen.val = news
-        (core.call)("changelog.seen", obj([]), @sfbase.answer_unread)
+      if page_active.val {
+        mark_seen(news)
       }
     },
   )

@@ -231,6 +231,12 @@ pub fn rainbow_seed_once(now_ms : Double) -> Unit {
 }
 
 ///|
+/// Owner instance id of the active accent hover preview (0 = none), so resting/disposing an old Appearance instance
+/// never clears a newer instance's preview.
+// kept across runs: reset in accent_preview_reset
+let accent_preview_owner : Ref[Int] = Ref(0)
+
+///|
 /// The window shown a moment in the colour theme `key` (its dot pointed at in 外观), over the one set, till
 /// accent_preview_end; or, None, back to the one set.
 pub fn accent_preview(key : String?) -> Unit {
@@ -239,8 +245,26 @@ pub fn accent_preview(key : String?) -> Unit {
 }
 
 ///|
+/// Instance-owned variant of `accent_preview`: `Some(k)` claims ownership for `owner`, and `None` clears the preview
+/// only when `owner` is still the active preview owner.
+pub fn accent_preview_by(owner : Int, key : String?) -> Unit {
+  match key {
+    Some(_) => {
+      accent_preview_owner.val = owner
+      accent_preview(key)
+    }
+    None =>
+      if accent_preview_owner.val == owner {
+        accent_preview_owner.val = 0
+        accent_preview(None)
+      }
+  }
+}
+
+///|
 /// A colour theme chosen while one was shown a moment: shown as chosen at once, what the prefs say then taking over.
 pub fn accent_chosen(key : String) -> Unit {
+  accent_preview_owner.val = 0
   accent_shown.val = None
   @sf.set_accent(key)
 }
@@ -250,6 +274,7 @@ pub fn accent_chosen(key : String) -> Unit {
 pub fn accent_preview_reset() -> Unit {
   accent_set_here.val = ""
   accent_shown.val = None
+  accent_preview_owner.val = 0
   rainbow_seeded.val = false
 }
 

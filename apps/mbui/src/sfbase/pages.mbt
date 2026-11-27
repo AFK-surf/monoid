@@ -1331,11 +1331,33 @@ fn page_entry_parked(serial : Int, p : Page) -> Unit {
 }
 
 ///|
+/// Enqueue `(serial, p)` into `left_pages`, cancelling any earlier pending entry for the same `serial` so a serial
+/// parked and then permanently evicted before `pages_left` runs is processed at most once.
+fn enqueue_left_page(serial : Int, p : Page, chat : LeftPageChat?) -> Unit {
+  for prev_idx, prev_serial in left_page_serials {
+    if prev_serial == serial && !left_page_cancelled(prev_idx) {
+      left_pages_cancelled[prev_idx] = true
+      left_page_sources.remove(prev_idx)
+    }
+  }
+  let index = left_pages.length()
+  left_page_serials[index] = serial
+  left_pages_cancelled.remove(index)
+  match p {
+    Chat(_) => left_page_sources[index] = chat
+    _ => ()
+  }
+  left_pages.push(p)
+  left_said.set(serial)
+}
+
+///|
 /// Entry `serial` let go for good (Nav's on_entry_gone): what was kept for it as it was put by let go (none, where it
 /// left without being put by: page_entry_left let go of all of it then).
 fn page_entry_gone(serial : Int, p : Page) -> Unit {
   let was_parked = entries_kept.contains(serial)
   entries_kept.remove(serial)
+  entry_identities.remove(serial)
   page_sources.remove(serial)
   // (its chat's reader let go by the entry it is bound to as that goes in the frame after (page_chat_reader's
   // bind_to), never here: Nav tells it gone before then, the original read still asked till that frame)
@@ -1361,11 +1383,7 @@ fn page_entry_gone(serial : Int, p : Page) -> Unit {
   // A non-chat page that was parked on kept_left skipped terminal release in pages_left while parked;
   // now that it is permanently evicted, enqueue it for terminal cleanup in pages_left.
   if was_parked && !(p is Chat(_)) {
-    let index = left_pages.length()
-    left_page_serials[index] = serial
-    left_pages_cancelled.remove(index)
-    left_pages.push(p)
-    left_said.set(serial)
+    enqueue_left_page(serial, p, None)
   }
 }
 
@@ -1436,15 +1454,25 @@ fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
     }
     None => ()
   }
-  let index = left_pages.length()
-  left_page_serials[index] = serial
-  left_pages_cancelled.remove(index)
-  match p {
-    Chat(_) => left_page_sources[index] = chat
-    _ => ()
-  }
-  left_pages.push(p)
-  left_said.set(serial)
+  enqueue_left_page(serial, p, chat)
+}
+
+///|
+/// Whether a root-tab page `kind` may be parked on the root `shelf` when switching tabs.
+/// Sensitive routes (Vault, Security, Permissions, MCP, ADB, ProfileAccount, NewProfile) are never shelved.
+fn shelf_kind_allowed(kind : String) -> Bool {
+  !(kind == "place/vault" ||
+    kind == "vault" ||
+    kind == "vault-items" ||
+    kind.has_prefix("vault-item/") ||
+    kind == "security" ||
+    kind == "security-open" ||
+    kind == "place/security" ||
+    kind == "permissions" ||
+    kind == "mcp" ||
+    kind.has_prefix("adb/") ||
+    kind.has_prefix("profile-account/") ||
+    kind.has_prefix("new-profile/"))
 }
 
 ///|
@@ -1461,7 +1489,15 @@ pub fn nav_root_kept(page : Page) -> Unit {
 pub fn new_nav() -> @ui.Nav[Page] {
   // what its own back comes to, back's in the history (app_history.mbt went_back); settings' gear is at the right of
   // every top bar, so it comes in from the right like any page
-  @ui.Nav::new(Home, went_back~, on_entry_leave=page_entry_left, on_entry_park=page_entry_parked, on_entry_gone=page_entry_gone)
+  let nav = @ui.Nav::new(
+    Home,
+    went_back~,
+    on_entry_leave=page_entry_left,
+    on_entry_park=page_entry_parked,
+    on_entry_gone=page_entry_gone,
+  )
+  nav.set_shelf_kind_filter(Some(shelf_kind_allowed))
+  nav
 }
 
 ///|
@@ -1606,6 +1642,7 @@ pub let restart_interrupted_gone : @sf.LiveMap[String, Bool] = @sf.LiveMap::new(
 /// toast's count goes on, as before it was here).
 pub fn reset() -> Unit {
   restart_interrupted_gone.clear()
+  app.nav.clear_side_tables()
   app.nav = new_nav()
   chat_remote_caps_reset()
   // (the core given no mermaid: a run's core is a new one)
@@ -1635,7 +1672,9 @@ pub fn reset() -> Unit {
   // (none said; which saying was last kept: the next a new one, as ever)
   app.toast.set({ ..toast_none, n: @signals.untracked(fn() { app.toast.get().n }) })
   left_pages_clear()
-  kept_left_auth_gen.val = 0
+  kept_left_global_gen.val = 0
+  kept_left_ws_gen.clear()
+  entry_identities.clear()
   active_chat_readers.clear()
   entry_parks.clear()
   entries_kept.clear()
@@ -1813,14 +1852,118 @@ pub fn place_key(ws : String, place : String) -> String {
 }
 
 ///|
-/// Auth generation mixed into wide-layout parked setting keys; bumped on logout or any auth boundary.
-let kept_left_auth_gen : Ref[Int] = Ref(0)
+/// Creation-time identity bound to a navigation entry's `serial` when constructed in a wide layout.
+/// Checked on leave (`wide_entry_can_park`) so an entry built under an unconfirmed/old owner can never park under a new one.
+priv struct EntryIdentity {
+  ws : String
+  owner : String
+  global_gen : Int
+  ws_gen : Int
+}
 
 ///|
-/// Advance `kept_left_auth_gen` and immediately empty `app.nav`'s parked shelf and `kept_left` pool.
-pub fn kept_left_auth_gen_bump() -> Unit {
-  kept_left_auth_gen.val += 1
+/// Global auth generation mixed into wide-layout parked keys; bumped on logout or `AuthScope::Global`.
+let kept_left_global_gen : Ref[Int] = Ref(0)
+
+///|
+/// Per-workspace auth generation mixed into wide-layout parked keys; bumped on `AuthScope::Workspace(ws)`.
+let kept_left_ws_gen : Map[String, Int] = Map([])
+
+///|
+/// Creation-time identity of each wide-layout navigation entry, keyed by `serial`.
+let entry_identities : Map[Int, EntryIdentity] = Map([])
+
+///|
+fn kept_left_ws_gen_of(ws : String) -> Int {
+  kept_left_ws_gen.get(ws).unwrap_or(0)
+}
+
+///|
+fn owner_is_confirmed(owner : String) -> Bool {
+  owner != "" && owner != "\u{3}pending" && owner != "\u{3}revoked"
+}
+
+///|
+fn kept_left_key_field(key : String, index : Int) -> String {
+  let mut cur = 0
+  for part in key.split("\u{1}") {
+    if cur == index {
+      return part.to_owned()
+    }
+    cur += 1
+  }
+  ""
+}
+
+///|
+fn kept_left_key_matches_ws(key : String, ws : String) -> Bool {
+  let f0 = kept_left_key_field(key, 0)
+  if f0 == "chat" || f0 == "setting" {
+    kept_left_key_field(key, 1) == ws
+  } else {
+    workspace_of(f0) == ws
+  }
+}
+
+///|
+/// Bind creation-time `(ws, owner, global_gen, ws_gen)` to navigation entry `serial`.
+/// Fail-closed: if `ws == ""` or `workspace_owner_of(ws)` is unconfirmed (`""` / `"\u{3}pending"` / `"\u{3}revoked"`),
+/// clears any prior binding so the entry cannot park into `kept_left`.
+pub fn record_entry_identity(serial : Int, ws : String) -> Unit {
+  // Never re-stamp an entry that has already left the active stack (in nav.gone / kept_left):
+  // prevents a late switch_by flush during leave from stamping the new owner onto a leaving entry.
+  if @signals.untracked(fn() { app.nav.page_of(serial) }) is None {
+    return
+  }
+  if ws == "" {
+    entry_identities.remove(serial)
+    return
+  }
+  let owner = workspace_owner_of(ws)
+  if !owner_is_confirmed(owner) {
+    entry_identities.remove(serial)
+    return
+  }
+  entry_identities[serial] = {
+    ws,
+    owner,
+    global_gen: kept_left_global_gen.val,
+    ws_gen: kept_left_ws_gen_of(ws),
+  }
+}
+
+///|
+/// Global auth invalidation (`SignedOut`, `AuthScope::Global`): bump global generation, drop all recorded entry
+/// identities, and immediately empty `app.nav`'s root shelf and `kept_left` pool.
+pub fn kept_left_invalidate_global() -> Unit {
+  kept_left_global_gen.val += 1
+  entry_identities.clear()
   app.nav.shelf_empty()
+}
+
+///|
+/// Workspace-scoped auth invalidation (`AuthScope::Workspace(ws)`): bump only `ws`'s generation, drop recorded
+/// identities belonging to `ws`, and evict only `ws`'s entries from `kept_left` without touching other workspaces or
+/// the root shelf.
+pub fn kept_left_invalidate_workspace(ws : String) -> Unit {
+  guard ws != "" else { return }
+  kept_left_ws_gen[ws] = kept_left_ws_gen_of(ws) + 1
+  let gone : Array[Int] = []
+  for serial, id in entry_identities {
+    if id.ws == ws {
+      gone.push(serial)
+    }
+  }
+  for serial in gone {
+    entry_identities.remove(serial)
+  }
+  app.nav.evict_kept_left(fn(key, _kind) { kept_left_key_matches_ws(key, ws) })
+}
+
+///|
+/// Advance global auth generation and empty `app.nav`'s parked shelf and `kept_left` pool.
+pub fn kept_left_auth_gen_bump() -> Unit {
+  kept_left_invalidate_global()
 }
 
 ///|
@@ -1830,16 +1973,40 @@ pub fn setting_page_kind() -> String {
 }
 
 ///|
+fn wide_chat_left_key(r : ChatRef) -> (String, String)? {
+  let ws = workspace_of(r.station)
+  guard ws != "" else { return None }
+  let owner = workspace_owner_of(ws)
+  guard owner_is_confirmed(owner) else { return None }
+  let key = "chat\u{1}" +
+    ws +
+    "\u{1}" +
+    owner +
+    "\u{1}" +
+    kept_left_global_gen.val.to_string() +
+    "\u{1}" +
+    kept_left_ws_gen_of(ws).to_string() +
+    "\u{1}" +
+    r.station +
+    "\u{1}" +
+    r.session
+  Some((key, chat_page_kind()))
+}
+
+///|
 fn wide_setting_left_key(src : Source, route_name : String) -> (String, String)? {
   let ws = @signals.untracked(fn() { workspace_in_view(src).0 })
   guard ws is Some(w) else { return None }
   let owner = workspace_owner_of(w.id)
+  guard owner_is_confirmed(owner) else { return None }
   let key = "setting\u{1}" +
     w.id +
     "\u{1}" +
     owner +
     "\u{1}" +
-    kept_left_auth_gen.val.to_string() +
+    kept_left_global_gen.val.to_string() +
+    "\u{1}" +
+    kept_left_ws_gen_of(w.id).to_string() +
     "\u{1}" +
     route_name
   Some((key, setting_page_kind()))
@@ -1848,10 +2015,11 @@ fn wide_setting_left_key(src : Source, route_name : String) -> (String, String)?
 ///|
 /// Explicit allowlist for wide-layout (`Paned` / `Taped`) `keeps_left` parking.
 /// Only `Chat(r)` and the 5 audited low-risk setting routes (`Changelog`, `Appearance`, `About`, `Fonts`, `Shortcuts`)
-/// may park; every sensitive/other route and any future route returns `None` (destroyed immediately on leave).
+/// may park, and only when the workspace owner is confirmed (fail-closed on empty/`pending`/`revoked`);
+/// every sensitive/other route and any future route returns `None` (destroyed immediately on leave).
 pub fn wide_page_left_key(src : Source, p : Page) -> (String, String)? {
   match p {
-    Chat(r) => chat_page_left_key(Chat(r))
+    Chat(r) => wide_chat_left_key(r)
     Setting(Changelog) => wide_setting_left_key(src, "Changelog")
     Setting(Appearance) => wide_setting_left_key(src, "Appearance")
     Setting(About) => wide_setting_left_key(src, "About")
@@ -1862,8 +2030,23 @@ pub fn wide_page_left_key(src : Source, p : Page) -> (String, String)? {
 }
 
 ///|
-/// Configure wide-layout `kept_left` per-kind quotas: `chat <= 3`, `setting <= 3`, total `<= 6`, any other kind `0`.
-pub fn configure_wide_kept_left_limits() -> Unit {
+fn wide_entry_can_park(_src : Source, serial : Int, key : String, _kind : String) -> Bool {
+  match entry_identities.get(serial) {
+    None => false
+    Some(id) =>
+      owner_is_confirmed(id.owner) &&
+      id.global_gen == kept_left_global_gen.val &&
+      id.ws_gen == kept_left_ws_gen_of(id.ws) &&
+      workspace_owner_of(id.ws) == id.owner &&
+      kept_left_key_field(key, 1) == id.ws &&
+      kept_left_key_field(key, 2) == id.owner
+  }
+}
+
+///|
+/// Configure wide-layout `kept_left` per-kind quotas (`chat <= 3`, `setting <= 3`, total `<= 6`, any other kind `0`)
+/// and creation-time identity guard.
+pub fn configure_wide_kept_left_limits(src : Source) -> Unit {
   app.nav.set_kept_left_limits(
     most_of=fn(kind) {
       if kind == chat_page_kind() {
@@ -1876,4 +2059,14 @@ pub fn configure_wide_kept_left_limits() -> Unit {
     },
     total=6,
   )
+  app.nav.set_kept_left_guard(Some(fn(serial, key, kind) { wide_entry_can_park(src, serial, key, kind) }))
+}
+
+///|
+/// Restore narrow-layout `kept_left` defaults (chat-only, default pool size, no wide guard) and immediately evict any
+/// non-chat entries left over from a wide layout before resizing down to narrow.
+pub fn configure_narrow_kept_left() -> Unit {
+  app.nav.set_kept_left_limits()
+  app.nav.set_kept_left_guard(None)
+  app.nav.evict_kept_left(fn(_key, kind) { kind != chat_page_kind() })
 }

@@ -110,6 +110,7 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     fwd_hint.clear()
   })
   |> ignore
+  @sfbase.configure_narrow_kept_left()
   @ui.nav_view(
     v,
     app.nav,

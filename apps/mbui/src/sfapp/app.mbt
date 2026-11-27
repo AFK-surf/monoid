@@ -905,7 +905,7 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
           // (a first page come after signing in waited for the person too: not told, first_page_timing)
           first_page_timing.val = None
           @sfbase.note_workspace_pref("")
-          @sfbase.kept_left_auth_gen_bump()
+          @sfbase.kept_left_invalidate_global()
           signed_out_tree(v, src)
         }
         SignedIn => {

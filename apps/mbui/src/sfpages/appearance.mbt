@@ -33,6 +33,8 @@ pub fn appearance_node(
     }
     k
   }
+  appearance_instances.val += 1
+  let me = appearance_instances.val
   let page_active = Ref(false)
   let zoom_presented = Ref(0)
   let close_popups = fn() {
@@ -40,7 +42,7 @@ pub fn appearance_node(
       @sf.close_presented_of(zoom_presented.val)
     }
     zoom_presented.val = 0
-    @sfbase.accent_preview(None)
+    @sfbase.accent_preview_by(me, None)
   }
   v.when_active(while_covered=true, fn() {
     page_active.val = true
@@ -63,11 +65,11 @@ pub fn appearance_node(
       if key == "settings" {
         @sf.group_node(b, fn(g) {
           g.each(keys, fn(k) { k }, fn(r, k) {
-            appearance_setting(r, core, k.untracked(), page_active, zoom_presented)
+            appearance_setting(r, core, k.untracked(), me, page_active, zoom_presented)
           })
         })
       } else {
-        appearance_setting(b, core, key, page_active, zoom_presented)
+        appearance_setting(b, core, key, me, page_active, zoom_presented)
       }
     },
   )
@@ -80,6 +82,7 @@ fn appearance_setting(
   v : @view.View,
   core : Core,
   key : String,
+  me : Int,
   page_active : Ref[Bool],
   zoom_presented : Ref[Int],
 ) -> Unit {
@@ -151,7 +154,7 @@ fn appearance_setting(
               }
             },
             // (a dot pointed at: the window in its colours a moment; off it, or the page let go, the one set again)
-            preview=@sfbase.accent_preview,
+            preview=fn(k) { @sfbase.accent_preview_by(me, k) },
           )
         },
       )
@@ -293,6 +296,12 @@ pub fn fonts_node(
 ) -> Unit {
   fonts_page_v4_node(v, core, on_back~, frame~, said?, width?)
 }
+
+///|
+/// Monotonic instance counter for Appearance pages so an older parked/evicted instance never clears a newer instance's
+/// live accent hover preview.
+// kept across runs: monotonic instance counter, never reused across runs
+let appearance_instances : Ref[Int] = Ref(0)
 
 ///|
 /// The accents' names, as @sf.accents has them.
