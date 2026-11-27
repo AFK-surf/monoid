@@ -49,8 +49,8 @@ function fixture() {
     const otherVault = `v_01HZZZZZZZZZZZZZZZZZZZZ${String(i).padStart(3, "0").replace(/[^0-9A-HJKMNP-TV-Z]/g, "0")}`;
     vaults.putAsk(signAsk(otherVault, i.toString(16).padStart(64, "0"), 1000 + i));
   }
-  // Seed 80 asks for revoked devices in Alice's own vault with higher `at` — active device filter must keep Alice's ask visible!
-  for (let i = 0; i < 80; i++) {
+  // Seed 500 asks for revoked devices in Alice's own vault with higher `at` — PK active-device probe must skip all 500!
+  for (let i = 0; i < 500; i++) {
     vaults.putAsk(signAsk(myVaultId, `f${i.toString(16).padStart(63, "0")}`, 5000 + i));
   }
   const myAsk = signAsk(myVaultId, v.device.id, 2000);

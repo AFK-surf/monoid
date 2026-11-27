@@ -174,6 +174,42 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     assert.equal(probeCarolLatest.status, 200);
     assert.deepEqual(probeCarolLatest.body.vaults, [], "unjoined admin forged witness must not read workspace vault via /latest");
 
+    // Cross-scope witness (personal witness claiming wsVaultId) must be rejected by /latest.
+    const crossScopeWitness = r.admin.doSign(
+      { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 0, owner: "alice", name: "Fake Personal", members: ["alice", "bob"], epoch: 0, keys: [], at: 100 },
+      TAG.vault,
+    );
+    const probeCrossScope = await r.call("POST", "/vault/vaults/latest", "bob", r.bob.deviceId, { held: [crossScopeWitness] });
+    assert.equal(probeCrossScope.status, 200);
+    assert.deepEqual(probeCrossScope.body.vaults, [], "personal witness must not return a workspace vault via /latest");
+
+    // Lagging station catchup: if Carol was added at seq 1 elsewhere and signed seq 2, a station lagging at seq 0
+    // MUST accept `?copy=1` at seq 2 (while still rejecting contiguous seq 1 self-insertion from unjoined Carol above).
+    const lagDb = new DatabaseSync(":memory:");
+    try {
+      const lagVaults = new VaultStore(lagDb);
+      lagVaults.putVault(r.wsVault);
+      const lagRoutes = routes({ vaults: lagVaults, lock: () => r.state });
+      const putRoute = lagRoutes.find((x) => x.method === "PUT" && x.pattern.test("/vault/vaults"))!;
+      const carolSeq2: Vault = r.unjoinedAdmin.doSign(
+        { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 2, owner: "alice", name: "Team Vault", scope: "workspace" as const, members: ["alice", "carol", "bob"], epoch: 0, keys: [], at: 120 },
+        TAG.vault,
+      );
+      const lagRes = await putRoute.handle(
+        {
+          method: "PUT", path: "/vault/vaults", query: [["copy", "1"]], headers: {},
+          body: Buffer.from(JSON.stringify(carolSeq2), "utf8"),
+          viewer: { sub: "carol", workspace: r.ws, email: "carol@x.test", name: "carol", role: "admin", device: r.unjoinedAdmin.deviceId },
+          lang: "en",
+        },
+        [],
+      );
+      assert.equal(lagRes.status, 200, "lagging station must catch up on skipped-seq ?copy=1 signed by newly-added admin");
+      assert.equal(lagVaults.vault(r.ws, r.wsVaultId)!.seq, 2);
+    } finally {
+      lagDb.close();
+    }
+
     // Non-canonical X25519 box keys (high bit set or >= 2^255 - 19) are rejected by usableBoxKey, PUT /vault/boxes, and PUT /vault/joins.
     const canonRaw = Buffer.from(r.bob.box.pub.slice(7), "hex");
     const highBitRaw = Buffer.from(canonRaw);
@@ -240,13 +276,27 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     assert.equal(staleApprove.status, 409);
     assert.equal(staleApprove.body.code, "join_cancelled");
 
-    // 6. Bob re-applies with a faster client clock (at=999999 > vault.at=150); Alice approves atomically -> joined_up_to bumped using applicant's clock (999999)!
+    // 6. Bob re-applies with a faster client clock (at=999999 > vault.at=150); explicit approval with approveJoinDevice/Box
+    //    must reject a vault missing Bob's wrapped key (400), and succeed once Bob's key is wrapped -> joined_up_to = 999999!
     const bobJoinFast: JoinAsk = r.bob.doSign(
       { v: 1 as const, ws: r.ws, vault: r.wsVaultId, sub: "bob", device: r.bob.deviceId, box: r.bob.box.pub, state: "pending" as const, at: 999999 },
       TAG.join,
     );
     assert.equal((await r.call("PUT", "/vault/joins", "bob", r.bob.deviceId, bobJoinFast)).status, 200);
-    const okApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobV1, [["approveJoinSub", "bob"], ["approveJoinAt", "999999"]]);
+    const missingKeyApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobV1, [
+      ["approveJoinSub", "bob"], ["approveJoinAt", "999999"], ["approveJoinDevice", r.bob.deviceId], ["approveJoinBox", r.bob.box.pub],
+    ]);
+    assert.equal(missingKeyApprove.status, 400, "explicit device/box approval must require next.keys to wrap that device and box");
+    const addBobKeyedV1: Vault = r.admin.doSign(
+      {
+        v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 1, owner: "alice", name: "Team Vault", scope: "workspace" as const,
+        members: ["alice", "bob"], epoch: 0, keys: [{ cert: bobCert, wrapped: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }], at: 150,
+      },
+      TAG.vault,
+    );
+    const okApprove = await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, addBobKeyedV1, [
+      ["approveJoinSub", "bob"], ["approveJoinAt", "999999"], ["approveJoinDevice", r.bob.deviceId], ["approveJoinBox", r.bob.box.pub],
+    ]);
     assert.equal(okApprove.status, 200);
 
     // 7. Alice later removes Bob: old pre-join ask (at=999999) MUST NOT resurrect even though vault.at (150) < 999999!
@@ -256,6 +306,12 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     );
     r.emitted.length = 0;
     assert.equal((await r.call("PUT", "/vault/vaults", "alice", r.admin.deviceId, removeBobV2)).status, 200);
+    // Double-removal offline Bob test: even if Carol removes Alice too (vault members = ["carol"]), Bob presenting
+    // Alice's earlier signed witness (`addBobKeyedV1`) STILL receives the latest vault proving Bob was removed!
+    const bobLatestValid = await r.call("POST", "/vault/vaults/latest", "bob", r.bob.deviceId, { held: [addBobKeyedV1] });
+    assert.equal(bobLatestValid.status, 200);
+    assert.equal(bobLatestValid.body.vaults.length, 1);
+    assert.equal(bobLatestValid.body.vaults[0].seq, 2);
     // Verify vault-discover is emitted AFTER vault-gone!
     const goneIdx = r.emitted.findIndex((e) => e.event === "vault-gone");
     const discIdx = r.emitted.findIndex((e) => e.event === "vault-discover");
@@ -265,7 +321,8 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     const bobAfterRemove = await r.call("GET", "/vault/joins", "bob", r.bob.deviceId);
     assert.deepEqual(bobAfterRemove.body.joins, [], "pre-join ask suppressed by joined_up_to is not returned as active to bob");
 
-    // 8. Demoted admin's dismiss stops suppressing Bob's ask, AND a remaining admin can re-dismiss at the exact same upTo (200 OK, not 503)!
+    // 8. Demoted admin's dismiss (upTo=2000000) stops suppressing Bob's ask, AND a remaining admin can replace it
+    //    even with a LOWER upTo (1000001 < 2000000) — persisted in SQLite, not silently dropped!
     const addCarolV3: Vault = r.admin.doSign(
       { v: 1 as const, ws: r.ws, id: r.wsVaultId, seq: 3, owner: "alice", name: "Team Vault", scope: "workspace" as const, members: ["alice", "carol"], epoch: 1, keys: [], at: 170 },
       TAG.vault,
@@ -277,12 +334,12 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     );
     assert.equal((await r.call("PUT", "/vault/joins", "bob", r.bob.deviceId, bobJoin3)).status, 200);
     const carolDismiss: JoinDismiss = r.unjoinedAdmin.doSign(
-      { v: 1 as const, ws: r.ws, vault: r.wsVaultId, sub: "bob", upTo: 1000001, at: 1000001 },
+      { v: 1 as const, ws: r.ws, vault: r.wsVaultId, sub: "bob", upTo: 2000000, at: 2000000 },
       TAG.joinDismiss,
     );
     assert.equal((await r.call("PUT", "/vault/joins/dismiss", "carol", r.unjoinedAdmin.deviceId, carolDismiss)).status, 200);
     assert.deepEqual((await r.call("GET", "/vault/joins", "alice", r.admin.deviceId)).body.joins, []);
-    // Demote Carol -> her dismiss is now inactive; Alice sees Bob's ask again AND can re-dismiss at the same upTo!
+    // Demote Carol -> her dismiss is now inactive; Alice sees Bob's ask again AND can replace it at lower upTo=1000001!
     r.state.members.set("carol", { sub: "carol", email: "carol@x.test", role: "member" });
     assert.deepEqual((await r.call("GET", "/vault/joins", "alice", r.admin.deviceId)).body.joins, [bobJoin3]);
     const aliceReDismiss: JoinDismiss = r.admin.doSign(
@@ -290,8 +347,32 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
       TAG.joinDismiss,
     );
     const reDismissRes = await r.call("PUT", "/vault/joins/dismiss", "alice", r.admin.deviceId, aliceReDismiss);
-    assert.equal(reDismissRes.status, 200, "re-dismissing after previous admin demotion at same upTo must succeed (not 503)");
+    assert.equal(reDismissRes.status, 200, "re-dismissing after previous admin demotion at lower upTo must persist");
+    assert.equal(r.vaults.joinSnapshot(r.ws, r.wsVaultId, "bob")!.dismissUpTo, 1000001);
     assert.deepEqual((await r.call("GET", "/vault/joins", "alice", r.admin.deviceId)).body.joins, []);
+
+    // 8b. 70 newer cancelled rows must NEVER starve an older pending join ask (separate per-state quotas)!
+    const bobPendingUnderCancels: JoinAsk = r.bob.doSign(
+      { v: 1 as const, ws: r.ws, vault: r.wsVaultId, sub: "bob", device: r.bob.deviceId, box: r.bob.box.pub, state: "pending" as const, at: 1000005 },
+      TAG.join,
+    );
+    assert.equal((await r.call("PUT", "/vault/joins", "bob", r.bob.deviceId, bobPendingUnderCancels)).status, 200);
+    for (let i = 0; i < 70; i++) {
+      const s = makeSigner(50 + i);
+      const sub = `canc_${String(i).padStart(3, "0")}`;
+      r.state.members.set(sub, { sub, email: `${sub}@x.test`, role: "member" });
+      r.state.devices.set(s.deviceId, { id: s.deviceId, sub, kind: "app", label: sub, own: true, sign_key: s.keyId, endpoints: [s.deviceId] } as never);
+      const cAsk: JoinAsk = s.doSign(
+        { v: 1 as const, ws: r.ws, vault: r.wsVaultId, sub, device: s.deviceId, box: s.box.pub, state: "cancelled" as const, at: 2000000 + i },
+        TAG.join,
+      );
+      assert.equal((await r.call("PUT", "/vault/joins", sub, s.deviceId, cAsk)).status, 200);
+    }
+    const underCancels = await r.call("GET", "/vault/joins", "alice", r.admin.deviceId);
+    assert.ok(
+      underCancels.body.joins.some((j: JoinAsk) => j.sub === "bob" && j.state === "pending" && j.at === 1000005),
+      "70 newer cancelled tombstones must not starve older pending join ask",
+    );
 
     // 9. Discovery ignores 80 personal vaults and returns newest active workspace vaults via partial index (0 TEMP B-TREE).
     for (let i = 0; i < 80; i++) {
@@ -330,6 +411,14 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     ]);
     assert.ok(page2.body.dismisses.length >= 5, "second page must deliver remaining dismisses past 64");
 
+    // 10b. Scan-budget exhaustion on filtered dismisses still returns a nextCursor so subsequent pages find valid dismisses!
+    const scanBudget = r.vaults.joinDismissesForVaults(r.ws, [r.wsVaultId], 64, {
+      maxScan: 10,
+      accept: () => false,
+    });
+    assert.equal(scanBudget.dismisses.length, 0);
+    assert.ok(scanBudget.nextCursor !== undefined, "exhausting maxScan on filtered rows must still return nextCursor");
+
     // 11. Query plan checks: 0 TEMP B-TREE across workspace discovery, join cursor seeks, and dismiss partial index.
     const planDisc = r.db.prepare(
       "EXPLAIN QUERY PLAN SELECT id, body FROM vaults WHERE ws = ? AND json_valid(body) AND json_extract(body, '$.scope') = 'workspace' AND json_type(body, '$.deleted') IS NOT 'true' ORDER BY id DESC LIMIT 16",
@@ -338,15 +427,15 @@ test("workspace vault discovery exposes minimal metadata only, blocks pre-existi
     assert.ok(!planDisc.some((p) => p.detail.includes("TEMP B-TREE")), `unexpected temp sort in discovery: ${JSON.stringify(planDisc)}`);
 
     const planSameAt = r.db.prepare(
-      "EXPLAIN QUERY PLAN SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_body_at WHERE ws = ? AND vault = ? AND body IS NOT NULL AND at = ? AND sub > ? ORDER BY at DESC, sub ASC LIMIT 64",
+      "EXPLAIN QUERY PLAN SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = 'pending' AND at = ? AND sub > ? ORDER BY at DESC, sub ASC LIMIT 64",
     ).all(r.ws, r.wsVaultId, 1000, "bob") as { detail: string }[];
-    assert.ok(planSameAt.some((p) => p.detail.includes("USING INDEX vault_joins_vault_body_at") && p.detail.includes("at=?") && p.detail.includes("sub>?")), `expected split same-at index seek: ${JSON.stringify(planSameAt)}`);
+    assert.ok(planSameAt.some((p) => p.detail.includes("USING INDEX vault_joins_vault_at") && p.detail.includes("at=?") && p.detail.includes("sub>?")), `expected split same-at index seek: ${JSON.stringify(planSameAt)}`);
     assert.ok(!planSameAt.some((p) => p.detail.includes("TEMP B-TREE")), `unexpected temp sort: ${JSON.stringify(planSameAt)}`);
 
     const planOlder = r.db.prepare(
-      "EXPLAIN QUERY PLAN SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins WHERE ws = ? AND vault = ? AND body IS NOT NULL AND at < ? ORDER BY at DESC, sub ASC LIMIT 64",
+      "EXPLAIN QUERY PLAN SELECT at, sub, body, joined_up_to, dismiss_body FROM vault_joins INDEXED BY vault_joins_vault_at WHERE ws = ? AND vault = ? AND state = 'pending' AND at < ? ORDER BY at DESC, sub ASC LIMIT 64",
     ).all(r.ws, r.wsVaultId, 1000) as { detail: string }[];
-    assert.ok(planOlder.some((p) => p.detail.includes("USING INDEX vault_joins_vault_body_at") && p.detail.includes("at<?")), `expected split older-at index seek: ${JSON.stringify(planOlder)}`);
+    assert.ok(planOlder.some((p) => p.detail.includes("USING INDEX vault_joins_vault_at") && p.detail.includes("at<?")), `expected split older-at index seek: ${JSON.stringify(planOlder)}`);
     assert.ok(!planOlder.some((p) => p.detail.includes("TEMP B-TREE")), `unexpected temp sort: ${JSON.stringify(planOlder)}`);
 
     const planDismiss = r.db.prepare(

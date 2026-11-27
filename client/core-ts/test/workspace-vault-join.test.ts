@@ -105,10 +105,20 @@ function joinStation(opts: { roles: Record<string, string>; chains?: Record<stri
         if (!signedOk(body, TAG.vault)) return status(400, { error: "signature", code: "vault_invalid" });
         const approveSub = qs.get("approveJoinSub");
         const approveAt = qs.get("approveJoinAt");
+        const approveDev = qs.get("approveJoinDevice");
+        const approveBox = qs.get("approveJoinBox");
         if (approveSub && approveAt !== null) {
           const row = joins.get(jk(body.id, approveSub));
-          if (!row || !row.ask || row.ask.state !== "pending" || row.ask.at !== Number(approveAt) || row.ask.at <= row.joinedUpTo || row.ask.at <= row.dismissUpTo) {
+          if (
+            !row || !row.ask || row.ask.state !== "pending" || row.ask.at !== Number(approveAt)
+            || row.ask.at <= row.joinedUpTo || row.ask.at <= row.dismissUpTo
+            || (approveDev && row.ask.device !== approveDev)
+            || (approveBox && row.ask.box !== approveBox)
+          ) {
             return status(409, { error: "join cancelled", code: "join_cancelled" });
+          }
+          if (approveDev && approveBox && !(body.keys as { cert: BoxCert }[]).some((k) => k.cert.device === approveDev && k.cert.box === approveBox)) {
+            return status(400, { error: "missing approved key", code: "vault_invalid" });
           }
         }
         const added = (body.members as string[]).filter((m) => !(prev?.members ?? []).includes(m));

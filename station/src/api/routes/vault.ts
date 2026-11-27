@@ -170,10 +170,12 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           if (isWs ? !isAdminRole(role) : signer.sub !== h.owner) continue;
           const v = vaults.vault(l.ws, h.id);
           if (v === null) continue;
+          if ((v.scope ?? null) !== (h.scope ?? null)) continue;
+          if (!Number.isSafeInteger(h.seq) || h.seq > v.seq) continue;
           if (isWs) {
-            if (v.scope !== "workspace") continue;
-            if (!v.members.includes(signer.sub) && signer.sub !== v.owner) continue;
-            if (!Number.isSafeInteger(h.seq) || h.seq > v.seq) continue;
+            // Block self-forged witnesses by an unjoined workspace admin (`signer.sub === r.viewer.sub` not in `v`),
+            // while still allowing an offline removed member whose witness was signed by another workspace admin.
+            if (!v.members.includes(signer.sub) && signer.sub !== v.owner && signer.sub === r.viewer.sub) continue;
           } else if (v.owner !== h.owner) {
             continue;
           }
@@ -196,13 +198,25 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
         const copy = param(r, "copy") === "1";
         const approveSub = param(r, "approveJoinSub");
         const approveAtRaw = param(r, "approveJoinAt");
-        let approveJoin: { sub: string; at: number } | undefined;
-        if (approveSub !== undefined || approveAtRaw !== undefined) {
+        const approveDevice = param(r, "approveJoinDevice");
+        const approveBox = param(r, "approveJoinBox");
+        let approveJoin: { sub: string; at: number; device?: string; box?: string } | undefined;
+        if (approveSub !== undefined || approveAtRaw !== undefined || approveDevice !== undefined || approveBox !== undefined) {
           const atNum = Number(approveAtRaw);
           if (!approveSub || approveSub.length > 200 || !Number.isSafeInteger(atNum) || atNum < 0 || copy) {
             return refuse(400, "vault_invalid", "approveJoinSub and approveJoinAt must both be valid");
           }
-          approveJoin = { sub: approveSub, at: atNum };
+          if ((approveDevice !== undefined) !== (approveBox !== undefined)) {
+            return refuse(400, "vault_invalid", "approveJoinDevice and approveJoinBox must be supplied together");
+          }
+          if (approveDevice !== undefined && (approveDevice === "" || approveDevice.length > 128 || !approveBox || !usableBoxKey(approveBox))) {
+            return refuse(400, "vault_invalid", "approveJoinDevice and approveJoinBox must be valid");
+          }
+          approveJoin = {
+            sub: approveSub,
+            at: atNum,
+            ...(approveDevice !== undefined ? { device: approveDevice, box: approveBox } : {}),
+          };
         }
         for (let attempt = 0; attempt < 3; attempt++) {
           const held = vaults.vaultSnapshot(l.ws, next.id), prev = held?.value ?? null;
@@ -216,7 +230,12 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
               return refuse(404, "vault_unknown", "no such vault here, or not one of yours");
             }
           }
-          if (prev !== null && prev.scope === "workspace") {
+          // For non-copy writes and contiguous/sibling copies (`next.seq <= prev.seq + 1`), `prev` is the direct
+          // predecessor (or sibling), so require the signer to already be in `prev.members` and hold a workspace admin
+          // role. For skipped-seq copies (`copy && next.seq > prev.seq + 1`), `VaultStore` holds only one latest
+          // snapshot with no intermediate history, so delegate to `vaultOk`'s current workspace-admin check so lagging
+          // stations catch up cleanly after a new admin is added and signs a subsequent version.
+          if (prev !== null && prev.scope === "workspace" && (!copy || !Number.isSafeInteger(next.seq) || next.seq <= prev.seq + 1)) {
             const signer = typeof next.sig?.key === "string" ? signerOf(checkLock, next.sig.key) : null;
             if (signer === null || !prev.members.includes(signer.sub) || !isAdminRole(l.members.get(signer.sub)?.role)) {
               return viewerSeesPrev
@@ -248,6 +267,13 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           if (approveJoin !== undefined && (!next.members.includes(approveJoin.sub) || next.scope !== "workspace" || next.deleted)) {
             return refuse(400, "vault_invalid", "approveJoinSub must be included in an active workspace vault's members");
           }
+          if (
+            approveJoin?.device !== undefined
+            && approveJoin.box !== undefined
+            && !next.keys.some((k) => k.cert.device === approveJoin.device && k.cert.box === approveJoin.box)
+          ) {
+            return refuse(400, "vault_invalid", "explicit join approval must wrap the vault key for the approved device and box");
+          }
           let writeRes: "saved" | "conflict" | "join_cancelled";
           try {
             if (approveJoin !== undefined || addedSubs.length > 0) {
@@ -255,6 +281,7 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
               writeRes = vaults.putVaultChecked(next, held?.body ?? null, {
                 addedSubs,
                 approveJoin,
+                isValidAsk: (a) => joinAskOk(l, a) === null,
                 isActiveDismiss: (d) => joinDismissOk(l, targetVault, d) === null,
               });
             } else {
@@ -593,10 +620,7 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           if (hadValid && snap.dismissUpTo >= next.upTo) {
             return json(200, JSON.stringify({ dismiss: snap.dismiss }));
           }
-          if (snap !== null && snap.dismissUpTo > next.upTo) {
-            return json(200, JSON.stringify({ dismiss: hadValid ? snap.dismiss : next }));
-          }
-          const allowReplaceInvalid = snap !== null && snap.dismiss !== null && !hadValid && next.upTo === snap.dismissUpTo;
+          const allowReplaceInvalid = snap !== null && snap.dismiss !== null && !hadValid;
           if (!vaults.putJoinDismissIf(next, heldVault!.body, snap === null ? null : snap.dismissUpTo, snap?.dismissBody ?? null, allowReplaceInvalid)) continue;
           const notifySubs = [...new Set([...adminSubsOf(l, vault), next.sub])];
           tell("vault-joins-changed", { vault: vault.id }, `vault-joins-changed\0${vault.ws}\0${vault.id}`, { workspace: vault.ws, subs: notifySubs });

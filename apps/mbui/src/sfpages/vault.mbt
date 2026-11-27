@@ -367,7 +367,13 @@ fn vault_discover_node(b : @view.View, core : Core, ws : () -> String, id : Stri
                   "cancelJoin",
                   [("vault", str(id))],
                   @sf.t("web-pages.vault.discover.cancelWhat"),
-                  done=@sf.t("web-pages.vault.discover.cancelled"),
+                  then=fn(said) {
+                    if flag(Some(said), "alreadyMember") {
+                      (core.say)(@sf.t("web-pages.vault.discover.alreadyMember"))
+                    } else if flag(Some(said), "cancelled") {
+                      (core.say)(@sf.t("web-pages.vault.discover.cancelled"))
+                    }
+                  },
                 )
               },
               tone=Ghost,
