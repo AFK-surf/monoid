@@ -964,11 +964,18 @@ pub fn ComposerManager::add(
       })
       continue
     }
+    let top_mode = match cm_opt_str(fj, "mode") { Some(m) => m; None => "" }
+    if top_mode == "file" {
+      return Err("station file upload (mode=file) is not yet wired in Pion core")
+    }
     let ref_opt : Option[ComposerRef] = match base_codec::json_get(fj, "ref") {
       Some(rj) => match (cm_nonempty_str(rj, "station"), cm_nonempty_str(rj, "path")) {
         (Some(rst), Some(rpath)) => {
           let sname = match cm_nonempty_str(rj, "stationName") { Some(n) => n; None => rst }
           let mode = match cm_opt_str(rj, "mode") { Some("file") => "file"; _ => "path" }
+          if mode == "file" {
+            return Err("station file upload (mode=file) is not yet wired in Pion core")
+          }
           Some(ComposerRef::{
             station: rst,
             station_name: sname,
@@ -1036,10 +1043,13 @@ pub fn ComposerManager::add(
   Ok(self.changed(key, s, count=true))
 }
 
-/// `composer.mode`
-pub fn ComposerManager::mode(self : ComposerManager, key : String, id : String, mode : String) -> Int {
+/// `composer.mode` (explicitly refuses `mode == "file"` until station file upload is wired).
+pub fn ComposerManager::mode(self : ComposerManager, key : String, id : String, mode : String) -> Result[Int, String] {
+  if mode == "file" {
+    return Err("station file upload (mode=file) is not yet wired in Pion core")
+  }
   let s = self.state_for(key)
-  let next_mode = if mode == "file" { "file" } else { "path" }
+  let next_mode = "path"
   let mut updated = false
   for i in 0..<s.files.length() {
     let f = s.files[i]
@@ -1053,7 +1063,6 @@ pub fn ComposerManager::mode(self : ComposerManager, key : String, id : String, 
             dir: r.dir,
             mode: next_mode,
           }
-          let waits_now = if next_mode == "file" && is_fresh_key(key) { true } else { false }
           s.files[i] = ComposerFile::{
             id: f.id,
             name: f.name,
@@ -1062,8 +1071,8 @@ pub fn ComposerManager::mode(self : ComposerManager, key : String, id : String, 
             width: f.width,
             height: f.height,
             done: f.done,
-            error: if next_mode == "file" && f.size > COMPOSER_MAX_FILE_BYTES { Some("File exceeds 1 GiB limit") } else { None },
-            waits: waits_now,
+            error: None,
+            waits: false,
             pasted: f.pasted,
             ref_: Some(nr),
             link: f.link,
@@ -1076,9 +1085,9 @@ pub fn ComposerManager::mode(self : ComposerManager, key : String, id : String, 
     }
   }
   if !updated {
-    return s.version
+    return Ok(s.version)
   }
-  self.changed(key, s, count=true)
+  Ok(self.changed(key, s, count=true))
 }
 
 /// `composer.remove`

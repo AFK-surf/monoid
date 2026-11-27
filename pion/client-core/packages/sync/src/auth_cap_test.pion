@@ -301,23 +301,53 @@ test "auth_cap: P0-1 regression — boundary re-anchors affected live subs and p
     wire_evs.push(ev)
   })
 
-  // Subscribe to ws-a chats (10), ws-b chats (20), ws-a vaults (30), ws-b vaults (31) via wire JSON.
-  let _ = core.handle_wire("{\"id\":10,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-a\"},\"conn\":3,\"authGen\":1}")
-  let _ = core.handle_wire("{\"id\":20,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-b\"},\"conn\":3,\"authGen\":1}")
-  let _ = core.handle_wire("{\"id\":30,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-a\"},\"conn\":3,\"authGen\":1,\"vaultGen\":1}")
+  // Seed a pre-revocation chat in ws-a so we prove revocation clears/gates it BEFORE boundary re-push!
+  insert_test_chat_ac(
+    db,
+    "ws-a/st1",
+    "chat-pre-revoke",
+    1,
+    "{\"id\":\"chat-pre-revoke\",\"title\":\"Pre-Revoke Secret\",\"at\":1730000000500}",
+    1730000000500L,
+  )
+
+  // Subscribe to ws-a chats (10), ws-b chats (20), ws-a vaults (30), ws-b vaults (31), and device-global prefs (35).
+  let sub10_raw = wire_str(core.handle_wire("{\"id\":10,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-a\"},\"conn\":3,\"authGen\":1}"))
+  debug_assert(sub10_raw.contains("\"conn\":3") && sub10_raw.contains("\"authGen\":1"), "chats wire reply must stamp conn+authGen: " + sub10_raw)
+  debug_assert(sub10_raw.contains("Pre-Revoke Secret"), "ws-a chats must initially show pre-revocation chat")
+  let sub20_raw = wire_str(core.handle_wire("{\"id\":20,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-b\"},\"conn\":3,\"authGen\":1}"))
+  debug_assert(sub20_raw.contains("\"conn\":3") && sub20_raw.contains("\"authGen\":1"), "ws-b chats must stamp conn+authGen: " + sub20_raw)
+  let sub30_raw = wire_str(core.handle_wire("{\"id\":30,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-a\"},\"conn\":3,\"authGen\":1,\"vaultGen\":1}"))
+  debug_assert(sub30_raw.contains("\"conn\":3") && sub30_raw.contains("\"authGen\":1") && sub30_raw.contains("\"vaultGen\":1"), "vaults wire reply must stamp conn+authGen+vaultGen: " + sub30_raw)
   let _ = core.handle_wire("{\"id\":31,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-b\"},\"conn\":3,\"authGen\":1,\"vaultGen\":1}")
+  let sub35_raw = wire_str(core.handle_wire("{\"id\":35,\"subscribe\":{\"topic\":\"prefs\"},\"conn\":3}"))
+  debug_assert(sub35_raw.contains("\"conn\":3") && !sub35_raw.contains("\"authGen\""), "device-global prefs must stamp conn without authGen: " + sub35_raw)
   wire_evs.clear()
 
   // Revoke ws-a -> on_auth_boundary must:
   // 1. emit `{id: 0, auth}` boundary notification
-  // 2. re-anchor sub 10 (ws-a chats) & sub 30 (ws-a vaults) and push full `Value` snapshots
-  // 3. leave sub 20 (ws-b chats) & sub 31 (ws-b vaults) untouched (no spurious push)
+  // 2. clear/gate pre-revocation ws-a data BEFORE pushing the boundary Value snapshot!
+  // 3. re-anchor sub 10 (ws-a chats) & sub 30 (ws-a vaults) and push full `Value` snapshots
+  // 4. leave sub 20 (ws-b chats) & sub 31 (ws-b vaults) untouched (no spurious push)
+  // 5. NOT grow `pending_wire_events` when `on_wire_event` sink is registered (P1-2).
   let _ = core.revoke_workspace("ws-a")
+  debug_assert(core.pending_wire_events.length() == 0, "pending_wire_events must stay 0 when on_wire_event sink is registered")
   debug_assert(has_auth_event(wire_evs), "workspace boundary must emit {id:0, auth} event")
   debug_assert(has_value_for_sub(wire_evs, 10L), "ws-a chats sub 10 must receive full Value snapshot on boundary")
+  for i in 0..<wire_evs.length() {
+    match wire_evs[i] {
+      protocol::CoreEvent::Value(sid, v, _) => if sid == 10L {
+        let s = base_codec::json_stringify(v)
+        debug_assert(!s.contains("Pre-Revoke Secret"), "boundary re-push MUST NOT leak pre-revocation ws-a data: " + s)
+      }
+      _ => ()
+    }
+  }
   debug_assert(!has_any_for_sub(wire_evs, 20L), "unrelated ws-b chats sub 20 must NOT be disturbed")
 
-  // Verify sub 10 is NOT frozen: mutating ws-a chat data and refreshing still emits updates!
+  // Once auth is re-confirmed (CloudSync lifts revocation gate), verify sub 10 is NOT frozen:
+  // mutating ws-a chat data and refreshing still emits updates!
+  core.clear_workspace_revoked("ws-a")
   insert_test_chat_ac(
     db,
     "ws-a/st1",
@@ -341,9 +371,10 @@ test "auth_cap: P0-1 regression — boundary re-anchors affected live subs and p
   debug_assert(!has_any_for_sub(wire_evs, 31L), "unrelated ws-b vaults sub 31 must NOT be disturbed by ws-a v1 lock")
   debug_assert(!has_any_for_sub(wire_evs, 10L), "non-vault ws-a chats sub 10 must NOT be disturbed by v1 lock")
 
-  // Stale client subscribe carrying old authGen=1 + `have` token on ws-a (now at 2)
+  // Stale client subscribe carrying old authGen=1 OR wrong conn=2 + `have` token on ws-a (now at conn=3, authGen=2)
   // MUST ignore `have`/`kept` and emit a full fresh `value` snapshot (never `same: true` or `delta`).
   let unsub_sub10 = wire_str(core.handle_wire("{\"id\":10,\"unsubscribe\":true,\"keep\":true}"))
+  debug_assert(unsub_sub10.contains("\"conn\":3") && unsub_sub10.contains("\"authGen\":2"), "unsubscribed must stamp conn+authGen: " + unsub_sub10)
   let sub10_tok = match base_codec::json_parse(unsub_sub10) {
     base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "v") {
       Some(base_codec::Json::Str(s)) => s
@@ -354,6 +385,16 @@ test "auth_cap: P0-1 regression — boundary re-anchors affected live subs and p
   let raw_stale_sub = wire_str(core.handle_wire("{\"id\":50,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-a\"},\"conn\":3,\"authGen\":1,\"have\":\"" + sub10_tok + "\"}"))
   debug_assert(!raw_stale_sub.contains("\"same\":true"), "stale subscribe authGen must NEVER return same:true: " + raw_stale_sub)
   debug_assert(raw_stale_sub.contains("\"value\""), "stale subscribe authGen must emit full fresh value snapshot: " + raw_stale_sub)
+  debug_assert(raw_stale_sub.contains("\"conn\":3") && raw_stale_sub.contains("\"authGen\":2"), "stale sub reply must carry authoritative conn+authGen: " + raw_stale_sub)
+
+  // Stale `conn: 2` (even with matching `authGen: 2`) MUST also force full `value`, never `same: true`!
+  let raw_stale_conn = wire_str(core.handle_wire("{\"id\":51,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-a\"},\"conn\":2,\"authGen\":2,\"have\":\"" + sub10_tok + "\"}"))
+  debug_assert(!raw_stale_conn.contains("\"same\":true"), "stale subscribe conn must NEVER return same:true: " + raw_stale_conn)
+  debug_assert(raw_stale_conn.contains("\"value\""), "stale subscribe conn must emit full fresh value snapshot: " + raw_stale_conn)
+
+  // Cross-workspace `from` isolation: ws-a sub (id=50) MUST NEVER be used as delta baseline for ws-b!
+  let raw_cross_from = wire_str(core.handle_wire("{\"id\":52,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-b\"},\"from\":50,\"keyed\":true,\"conn\":3,\"authGen\":1}"))
+  debug_assert(raw_cross_from.contains("\"value\"") && !raw_cross_from.contains("\"delta\""), "cross-workspace from must emit full value, never delta: " + raw_cross_from)
 }
 
 test "auth_cap: sensitive topics never enter kept/have cache; non-sensitive kept purged on boundary" {
@@ -475,4 +516,177 @@ test "auth_cap: CloudSync fetch_workspace_k drops stale SQLite write-back when w
 
   debug_assert(got_auth_stale, "fetch_workspace_k must reject stale mid-flight completion with auth_stale")
   debug_assert(workspace_writes == 0, "stale CloudSync response must NEVER be written to SQLite!")
+}
+
+test "auth_cap: Cloud + Lock digest slots never collide; 403/404 CloudSync bumps authGen" {
+  let tracker = AuthGenTracker::new()
+  // Alternating Cloud and Lock digests with unchanged authorization content MUST produce 0 spurious bumps!
+  debug_assert(!tracker.sync_workspace_part("ws-a", "cloud", "ws:ws-a|role:owner|locked:0"), "initial cloud sync")
+  debug_assert(!tracker.sync_workspace_part("ws-a", "lock", "lock:ws-a|dis:0|m:1|d:1|s:1"), "initial lock sync")
+  debug_assert(!tracker.sync_workspace_part("ws-a", "cloud", "ws:ws-a|role:owner|locked:0"), "repeat cloud sync must not bump")
+  debug_assert(!tracker.sync_workspace_part("ws-a", "lock", "lock:ws-a|dis:0|m:1|d:1|s:1"), "repeat lock sync must not bump")
+  debug_assert(tracker.workspace_auth_gen("ws-a") == 1, "alternating cloud/lock digests must keep authGen=1")
+
+  // Real lock change bumps authGen once; subsequent cloud sync with unchanged cloud digest does NOT bump again!
+  debug_assert(tracker.sync_workspace_part("ws-a", "lock", "lock:ws-a|dis:1|m:1|d:1|s:1"), "lock disable must bump")
+  debug_assert(tracker.workspace_auth_gen("ws-a") == 2, "lock change bumps authGen to 2")
+  debug_assert(!tracker.sync_workspace_part("ws-a", "cloud", "ws:ws-a|role:owner|locked:0"), "unchanged cloud digest after lock bump must not bump")
+  debug_assert(tracker.workspace_auth_gen("ws-a") == 2, "authGen remains 2")
+
+  // CloudSync 403 revocation MUST advance authGen(ws)!
+  let rt = effect::Runtime::new()
+  let pending_http : Array[Int64] = []
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(id : Int64, op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {
+      if op == "fetch" { pending_http.push(id) }
+    },
+    fn(op : String, _args : base_codec::Json) -> shell::AskResult {
+      if op == "sql.open" { return shell::AskResult::Ok(base_codec::json_obj([("id", base_codec::json_int(1))])) }
+      shell::AskResult::Ok(base_codec::json_arr([]))
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "cloud-403-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let cs = CloudSync::new(sh, db, "https://cloud.example", token="tok-1")
+  let mut got_err = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k(
+      "ws-a",
+      fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+        match ex {
+          effect::Exit::Failed(_) => { got_err = true }
+          _ => ()
+        }
+        k(effect::Exit::Succeeded(()))
+      },
+      auth_gen=Some(tracker),
+    )
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_http.length() == 1, "expected 1 fetch")
+  sh.answer(
+    pending_http[0],
+    base_codec::json_obj([
+      ("status", base_codec::json_int(403)),
+      ("headers", base_codec::json_arr([])),
+      ("redirected", base_codec::json_bool(false)),
+    ]),
+    bytes=Some("{\"error\":\"forbidden\"}".to_bytes()),
+  )
+  let _ = rt.run_ready()
+  debug_assert(got_err, "403 must fail fetch_workspace_k")
+  debug_assert(tracker.workspace_auth_gen("ws-a") == 3, "403 revocation must advance authGen to 3")
+}
+
+test "auth_cap: SyncScheduler fetch_snapshot_k & fetch_lock_k enforce capability BEFORE SQLite/lock write-back" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, "sync-cap-test") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic(e.to_string())
+  }
+  let tracker = AuthGenTracker::new()
+  let pending_req : Array[(String, (effect::Exit[HttpReply]) -> Unit)] = []
+  let tr = StationTransport::{
+    request_k: fn(_m : String, path : String, _h : Array[(String, String)], _b : Bytes, k : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      pending_req.push((path, k))
+    },
+    stream_k: fn(_p : String, _h : Array[(String, String)], _on_chunk : (Bytes) -> Unit, k : (effect::Exit[Unit]) -> Unit) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    },
+  }
+  let outbox : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+  let events = StationEvents::new("ws-a", "ws-a/st1", db, outbox, tr)
+  let mut lock_callbacks = 0
+  events.set_hooks(
+    fn(_b, _t, _n, _ck) -> Unit {},
+    fn(_b, _c, _ck) -> Unit {},
+    fn() -> Unit {},
+    fn(_lp : base_codec::Json) -> Unit { lock_callbacks += 1 },
+  )
+  let sync = SyncScheduler::new("ws-a", "ws-a/st1", events, tr)
+
+  let cap = tracker.workspace_capability("ws-a")
+  let mut snap_stale = false
+  let mut lock_stale = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sync.fetch_snapshot_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom(m)) => if m.contains("auth_stale") { snap_stale = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    }, cap=Some(cap))
+  })
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sync.fetch_lock_k(effect::priority_shown(), fn(ex : effect::Exit[Bool]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom(m)) => if m.contains("auth_stale") { lock_stale = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    }, cap=Some(cap))
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_req.length() == 2, "expected 2 in-flight station fetches")
+
+  // Revoke ws-a mid-flight BEFORE station replies arrive!
+  let _ = tracker.bump_workspace("ws-a")
+
+  // Deliver station snapshot + lock responses after revocation.
+  let snap_body = "{\"chats\":[{\"id\":\"leaked-chat\",\"title\":\"Should Never Land\",\"at\":1730000000000}]}".to_bytes()
+  let lock_body = "{\"entries\":[{\"seq\":0}]}".to_bytes()
+  for i in 0..<pending_req.length() {
+    let (path, cb) = pending_req[i]
+    if path.contains("/lock") {
+      cb(effect::Exit::Succeeded(HttpReply::{ status: 200, body: lock_body }))
+    } else {
+      cb(effect::Exit::Succeeded(HttpReply::{ status: 200, body: snap_body }))
+    }
+  }
+  let _ = rt.run_ready()
+
+  debug_assert(snap_stale, "fetch_snapshot_k must fail with auth_stale when revoked mid-flight")
+  debug_assert(lock_stale, "fetch_lock_k must fail with auth_stale when revoked mid-flight")
+  debug_assert(sim_db.chats.keys().length() == 0, "stale snapshot MUST write 0 rows to SQLite!")
+  debug_assert(lock_callbacks == 0, "stale lock fetch MUST NOT invoke lock callback!")
+}
+
+test "auth_cap: all composer.* & draft.put write calls reject stale auth before mutating state" {
+  let rt = effect::Runtime::new()
+  let db = open_auth_cap_db(rt)
+  let core = ClientCore::new("ws-a", "ws-a/st1", rt, db, core_offline_transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
+  core.register_workspace_owner("ws-a", "sub-alice")
+  core.active_conn = 5
+  core.auth_enforced = true
+  let _ = core.revoke_workspace("ws-a")
+  core.clear_workspace_revoked("ws-a")
+  // Current authGen for ws-a is 2; send stale authGen=1 to every composer/draft write call!
+  let stale_auth = "\"auth\":{\"conn\":5,\"account\":\"sub-alice\",\"workspace\":\"ws-a\",\"authGen\":1}"
+  let calls = [
+    "{\"id\":201,\"call\":\"composer.text\",\"params\":{\"key\":\"ws-a/st1:s1\",\"text\":\"stale\"}," + stale_auth + "}",
+    "{\"id\":202,\"call\":\"composer.append\",\"params\":{\"key\":\"ws-a/st1:s1\",\"words\":\"stale\"}," + stale_auth + "}",
+    "{\"id\":203,\"call\":\"composer.add\",\"params\":{\"key\":\"ws-a/st1:s1\",\"station\":\"ws-a/st1\",\"files\":[]}," + stale_auth + "}",
+    "{\"id\":204,\"call\":\"composer.mode\",\"params\":{\"key\":\"ws-a/st1:s1\",\"id\":\"f1\",\"mode\":\"path\"}," + stale_auth + "}",
+    "{\"id\":205,\"call\":\"composer.quote\",\"params\":{\"key\":\"ws-a/st1:s1\",\"id\":\"q1\",\"quote\":{\"text\":\"x\"}}," + stale_auth + "}",
+    "{\"id\":206,\"call\":\"composer.comment\",\"params\":{\"key\":\"ws-a/st1:s1\",\"id\":\"q1\",\"comment\":\"c\"}," + stale_auth + "}",
+    "{\"id\":207,\"call\":\"composer.unquote\",\"params\":{\"key\":\"ws-a/st1:s1\",\"id\":\"q1\"}," + stale_auth + "}",
+    "{\"id\":208,\"call\":\"composer.remove\",\"params\":{\"key\":\"ws-a/st1:s1\",\"id\":\"f1\"}," + stale_auth + "}",
+    "{\"id\":209,\"call\":\"draft.put\",\"params\":{\"key\":\"ws-a/st1:s1\",\"value\":{\"text\":\"stale\"}}," + stale_auth + "}",
+  ]
+  for i in 0..<calls.length() {
+    let r = wire_str(core.handle_wire(calls[i]))
+    debug_assert(r.contains("\"auth_stale\""), "expected auth_stale for call #" + i.to_string() + ": " + r)
+  }
+  // Confirm zero state mutation happened
+  let v = core.composers.value("ws-a/st1:s1")
+  match base_codec::json_get(v, "text") {
+    Some(base_codec::Json::Str(s)) => debug_assert(s == "", "composer text must remain empty after stale rejections")
+    _ => ()
+  }
 }

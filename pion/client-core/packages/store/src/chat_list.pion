@@ -612,6 +612,45 @@ pub fn put_account_doc(
   }
 }
 
+pub fn sql_account_doc_delete() -> String {
+  "DELETE FROM account_doc WHERE name = ?"
+}
+
+pub fn delete_account_doc(db : sql::Sql, name : String) -> sql::SqlResult[Unit] {
+  match db.run(sql_account_doc_delete(), params=[base_codec::json_str(name)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+pub fn sql_meta_get() -> String {
+  "SELECT value FROM meta WHERE key = ?"
+}
+
+pub fn sql_meta_put() -> String {
+  "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)"
+}
+
+pub fn get_meta(db : sql::Sql, key : String) -> sql::SqlResult[Option[String]] {
+  match db.all(sql_meta_get(), params=[base_codec::json_str(key)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(rows) => {
+      if rows.length() == 0 {
+        sql::SqlResult::Ok(None)
+      } else {
+        sql::SqlResult::Ok(Some(sql::col_text(rows[0], 0)))
+      }
+    }
+  }
+}
+
+pub fn put_meta(db : sql::Sql, key : String, value : String) -> sql::SqlResult[Unit] {
+  match db.run(sql_meta_put(), params=[base_codec::json_str(key), base_codec::json_str(value)]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
 /// Upsert a workspace roster record (`workspace` table).
 pub fn upsert_workspace(
   db : sql::Sql,

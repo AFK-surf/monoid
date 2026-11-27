@@ -40,7 +40,7 @@ fn is_workspace_aggregate_topic(name : String) -> Bool {
 
 /// Single source of truth for device-global & transport-only topics exempt from `(account, workspace)` `authGen`,
 /// 1:1 with `client/core-ts/src/topic-policy.ts:238-250` (`DEVICE_GLOBAL_TOPICS`).
-fn is_device_global_topic(name : String) -> Bool {
+pub fn is_device_global_topic_name(name : String) -> Bool {
   name == "releases" ||
   name == "fonts" ||
   name == "changelog" ||
@@ -51,6 +51,14 @@ fn is_device_global_topic(name : String) -> Bool {
   name == "connection" ||
   name == "way" ||
   name == "net"
+}
+
+pub fn is_vault_topic_name(name : String) -> Bool {
+  name == "vaults" || name == "vaultItems" || name == "vaultUses"
+}
+
+fn is_device_global_topic(name : String) -> Bool {
+  is_device_global_topic_name(name)
 }
 
 pub fn workspace_of_station_addr(addr : String) -> String {
@@ -303,6 +311,7 @@ pub struct AuthGenTracker {
   mut accounts_digest : Option[String]
   workspace_gens : Map[String, Int]
   workspace_digests : Map[String, String]
+  workspace_part_digests : Map[String, String]
   vault_gens : Map[String, Int]
   vault_ws_gens : Map[String, Int]
   mut vault_global_gen : Int
@@ -317,6 +326,7 @@ pub fn AuthGenTracker::new() -> AuthGenTracker {
     accounts_digest: None,
     workspace_gens: Map::new(),
     workspace_digests: Map::new(),
+    workspace_part_digests: Map::new(),
     vault_gens: Map::new(),
     vault_ws_gens: Map::new(),
     vault_global_gen: 1,
@@ -514,6 +524,33 @@ fn AuthGenTracker::bump_dependent_vault_ws(
     out.set(dep, next)
   }
   out
+}
+
+/// Synchronizes one named authoritative source slot (`part`: `"cloud"` or `"lock"`) for `workspace`.
+/// Each source keeps its own slot so alternating Cloud and Lock refreshes with unchanged content
+/// NEVER collide or trigger spurious `authGen` bumps.
+pub fn AuthGenTracker::sync_workspace_part(
+  self : AuthGenTracker,
+  workspace : String,
+  part : String,
+  digest : String,
+  dependent_workspaces : Array[String] = [],
+) -> Bool {
+  let slot_key = workspace + "\u{01}" + part
+  match self.workspace_part_digests.get(slot_key) {
+    None => {
+      self.workspace_part_digests.set(slot_key, digest)
+      false
+    }
+    Some(prev) => {
+      if prev == digest {
+        return false
+      }
+      self.workspace_part_digests.set(slot_key, digest)
+      let _ = self.bump_workspace(workspace, dependent_workspaces=dependent_workspaces)
+      true
+    }
+  }
 }
 
 /// Synchronizes authoritative authorization summary for a workspace. Advances `authGen(workspace)`

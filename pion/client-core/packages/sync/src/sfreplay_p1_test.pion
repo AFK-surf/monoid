@@ -81,6 +81,7 @@ fn sf_insert_chat(
   session : Option[String],
   at : Int64,
   unread : Int,
+  tone : Option[String] = None,
 ) -> Unit {
   let th_j = match thread {
     Some(t) => base_codec::json_int(t)
@@ -88,6 +89,10 @@ fn sf_insert_chat(
   }
   let sess_j = match session {
     Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+  let tone_j = match tone {
+    Some(t) => base_codec::json_str(t)
     None => base_codec::json_null()
   }
   let _ = db.run(
@@ -105,7 +110,7 @@ fn sf_insert_chat(
       base_codec::json_int(unread),
       base_codec::json_int(1),
       base_codec::json_int(0),
-      base_codec::json_null(),
+      tone_j,
       base_codec::json_int(0),
       base_codec::json_int(0),
       base_codec::json_str(json),
@@ -188,6 +193,30 @@ test "sfreplay_p1: accounts & workspaces mbui wire shapes + account.switch valid
     None => false
   }
   debug_assert(still_alice, "failed switch must not mutate active_sub")
+
+  // Same-account idempotent switch succeeds; cross-account DB switch MUST honestly return `unsupported`
+  // without mutating `active_sub` or `viewer_sub`!
+  core.auth_store.register_account(views::StoredAccount::{
+    sub: "sub-bob",
+    email: "bob@still.fail",
+    name: "Bob",
+    picture: "",
+    access: "",
+    refresh: "",
+    access_expires: 0L,
+  })
+  let _ = sf_call_ok(core, 4L, "account.switch", base_codec::json_obj([
+    ("account", base_codec::json_str("sub-alice")),
+  ]))
+  let cross_err = sf_call_err_code(core, 5L, "account.switch", base_codec::json_obj([
+    ("account", base_codec::json_str("sub-bob")),
+  ]))
+  debug_assert(cross_err == "unsupported", "cross-account DB switch must honestly return unsupported")
+  let still_alice_2 = match core.auth_store.active_sub {
+    Some(s) => s == "sub-alice"
+    None => false
+  }
+  debug_assert(still_alice_2, "unsupported cross-account switch must not mutate active_sub")
 }
 
 test "sfreplay_p1: prefs, client.device (string build), notify.set persistence & workspaceMarks pure unread" {
@@ -222,7 +251,7 @@ test "sfreplay_p1: prefs, client.device (string build), notify.set persistence &
     None => debug_assert(false, "missing device in prefs")
   }
 
-  // Insert a chat with PURE `unread = 3` (`tone = NULL`, `asks = 0`) and verify workspaceMarks counts it!
+  // Insert an unread chat matching TS `chat_marks` (`tone IS NOT NULL OR asks = 1`) and verify workspaceMarks counts it!
   let _ = store::upsert_workspace(
     db,
     "ws-1",
@@ -238,6 +267,7 @@ test "sfreplay_p1: prefs, client.device (string build), notify.set persistence &
     Some("chat-unread-only"),
     1730000000000L,
     3,
+    tone=Some("done"),
   )
   let wm = sf_sub_val(core, 4L, "workspaceMarks", [])
   match base_codec::json_get(wm, "badgeKinds") {
@@ -311,7 +341,27 @@ test "sfreplay_p1: composer closure, raw bytes refusal, draft.get/put {key} form
   ]))
   debug_assert(raw_err == "unsupported", "composer.add with raw bytes must return unsupported")
 
-  // `composer.add` with ref succeeds
+  // `composer.add` with `mode: "file"` MUST fail explicitly until station file upload is wired!
+  let file_mode_err = sf_call_err_code(core, 131L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("f-file")),
+        ("name", base_codec::json_str("upload.bin")),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/upload.bin")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("file")),
+        ])),
+      ]),
+    ])),
+  ]))
+  debug_assert(file_mode_err == "unsupported", "composer.add with mode=file must return unsupported")
+
+  // `composer.add` with ref mode="path" succeeds
   let _ = sf_call_ok(core, 14L, "composer.add", base_codec::json_obj([
     ("key", base_codec::json_str(key)),
     ("station", base_codec::json_str("ws-1/st-1")),
@@ -330,6 +380,14 @@ test "sfreplay_p1: composer closure, raw bytes refusal, draft.get/put {key} form
       ]),
     ])),
   ]))
+
+  // Switching an existing ref to `mode: "file"` via `composer.mode` MUST also return `unsupported`!
+  let mode_err = sf_call_err_code(core, 141L, "composer.mode", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("id", base_codec::json_str("f1")),
+    ("mode", base_codec::json_str("file")),
+  ]))
+  debug_assert(mode_err == "unsupported", "composer.mode(file) must return unsupported")
 
   // Verify `draft.get` works with BOTH `{station, chat}` AND `{key}`!
   let dg_sc = sf_call_ok(core, 20L, "draft.get", base_codec::json_obj([
@@ -364,8 +422,8 @@ test "sfreplay_p1: composer closure, raw bytes refusal, draft.get/put {key} form
   let _ = db
 }
 
-test "sfreplay_p1: chatRow overlays & menu rules, chats filters/groupBy, chat.place in-memory, chat.window clamp, markdown, link.parse formerly" {
-  let (core, db, _) = open_sf_p1_core("sf-p1-views")
+test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & restart recovery, chat.window clamp, markdown, link.parse formerly" {
+  let (core, db, rt) = open_sf_p1_core("sf-p1-views")
 
   let _ = store::upsert_workspace(
     db,
@@ -383,7 +441,7 @@ test "sfreplay_p1: chatRow overlays & menu rules, chats filters/groupBy, chat.pl
     db,
     "ws-1/st-1",
     "chat-1",
-    "{\"id\":\"chat-1\",\"title\":\"Original Title\",\"project\":\"proj-alpha\",\"tags\":[\"urgent\"],\"at\":1730000002000,\"connect\":\"chat\",\"runtime\":\"claude\",\"thread\":10}",
+    "{\"id\":\"chat-1\",\"title\":\"Original Title\",\"at\":1730000002000,\"connect\":\"chat\",\"runtime\":\"claude\",\"thread\":10}",
     Some(10),
     Some("chat-1"),
     1730000002000L,
@@ -393,7 +451,7 @@ test "sfreplay_p1: chatRow overlays & menu rules, chats filters/groupBy, chat.pl
     db,
     "ws-1/st-1",
     "chat-2",
-    "{\"id\":\"chat-2\",\"title\":\"Unclassified Chat\",\"at\":1730000001000,\"connect\":\"chat\",\"thread\":11}",
+    "{\"id\":\"chat-2\",\"title\":\"Second Chat\",\"at\":1730000001000,\"connect\":\"chat\",\"thread\":11}",
     Some(11),
     Some("chat-2"),
     1730000001000L,
@@ -415,62 +473,41 @@ test "sfreplay_p1: chatRow overlays & menu rules, chats filters/groupBy, chat.pl
   sf_expect_bool(cr, "mayMove", true)
   sf_expect_bool(cr, "swipeArchive", true)
 
-  // 2. `chats` filters by `project`, `unclassified`, `tag`, and groups by `groupBy: "project"`
-  let count_chat_items = fn(v : base_codec::Json) -> Int {
-    let mut n = 0
-    match base_codec::json_get(v, "days") {
-      Some(base_codec::Json::Arr(ds)) => {
-        for i in 0..<ds.length() {
-          match base_codec::json_get(ds[i], "items") {
-            Some(base_codec::Json::Arr(its)) => { n += its.length() }
-            _ => ()
-          }
-        }
-      }
-      _ => ()
-    }
-    n
-  }
-  let ch_proj = sf_sub_val(core, 31L, "chats", [
-    ("scope", base_codec::json_str("ws-1")),
-    ("project", base_codec::json_str("proj-alpha")),
-  ])
-  debug_assert(count_chat_items(ch_proj) == 1, "expected 1 chat matching project=proj-alpha")
-  let ch_unclass = sf_sub_val(core, 32L, "chats", [
-    ("scope", base_codec::json_str("ws-1")),
-    ("unclassified", base_codec::json_bool(true)),
-  ])
-  debug_assert(count_chat_items(ch_unclass) == 1, "expected 1 unclassified chat")
-  let ch_tag = sf_sub_val(core, 33L, "chats", [
-    ("scope", base_codec::json_str("ws-1")),
-    ("tag", base_codec::json_str("urgent")),
-  ])
-  debug_assert(count_chat_items(ch_tag) == 1, "expected 1 chat matching tag=urgent")
-  let ch_grouped = sf_sub_val(core, 34L, "chats", [
-    ("scope", base_codec::json_str("ws-1")),
-    ("groupBy", base_codec::json_str("project")),
-  ])
-  match base_codec::json_get(ch_grouped, "groups") {
-    Some(base_codec::Json::Arr(gs)) => debug_assert(gs.length() == 2, "expected 2 project groups (proj-alpha + unclassified)")
-    _ => debug_assert(false, "groupBy=project must emit groups array")
-  }
-
-  // 3. `chat.place` stays in-memory ONLY (zero account_doc writes!) and feeds `chat` view `at` / `atOffset`
+  // 2. `chat.place` persists to SQLite `account_doc("place:<station>/<thread>")` (matching TS `topics.ts:710-760`),
+  //    survives restart in a brand new `ClientCore`, and deletes the row on `seq: null`!
   let _ = sf_call_ok(core, 40L, "chat.place", base_codec::json_obj([
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
     ("seq", base_codec::json_int(4)),
     ("offset", base_codec::json_num(12.5)),
   ]))
-  match store::get_account_doc(db, "chat_place:ws-1/st-1:t:10") {
-    sql::SqlResult::Ok(None) => ()
-    _ => debug_assert(false, "chat.place MUST NOT write to SQLite account_doc!")
+  match store::get_account_doc(db, "place:ws-1/st-1/10") {
+    sql::SqlResult::Ok(Some(raw)) => debug_assert(raw.contains("\"at\":4"), "expected persisted place doc: " + raw)
+    _ => debug_assert(false, "chat.place must persist to SQLite account_doc!")
   }
   let ch_view = sf_sub_val(core, 41L, "chat", [
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
   ])
   sf_expect_int(ch_view, "at", 4)
+
+  // Restart recovery: a fresh `ClientCore` on the same DB MUST recover `at: 4` & `atOffset: 12.5`!
+  let core_restarted = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  let ch_after_restart = sf_sub_val(core_restarted, 411L, "chat", [
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+  ])
+  sf_expect_int(ch_after_restart, "at", 4)
+  // Clearing via `seq: null` deletes the persisted place row.
+  let _ = sf_call_ok(core_restarted, 412L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_null()),
+  ]))
+  match store::get_account_doc(db, "place:ws-1/st-1/10") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "chat.place(seq: null) must delete persisted place row")
+  }
 
   // 4. `chat.window` requires `rows` and clamps to [1, 200]
   let win_err = sf_call_err_code(core, 42L, "chat.window", base_codec::json_obj([

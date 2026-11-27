@@ -801,8 +801,36 @@ pub fn decode_client_message(json_text : String, bytes : Option[Bytes] = None) -
   parse_client_message(raw, bytes=bytes)
 }
 
+/// Outbound wire generation metadata stamped onto subscription responses (`apps/mbui/src/core/client.mbt:2376-2446`,
+/// `client/core-ts/src/store.ts:416-426`): `conn` on all subscriptions, `authGen` on non-device-global topics,
+/// and `vaultGen` on vault topics.
+pub struct WireOutGen {
+  pub conn : Int
+  pub auth_gen : Option[Int]
+  pub vault_gen : Option[Int]
+}
+
+fn append_wire_out_gen(fields : Array[(String, base_codec::Json)], wg_opt : Option[WireOutGen]) -> Unit {
+  match wg_opt {
+    None => ()
+    Some(wg) => {
+      if wg.conn > 0 {
+        fields.push(("conn", base_codec::json_int(wg.conn)))
+        match wg.auth_gen {
+          Some(ag) => fields.push(("authGen", base_codec::json_int(ag)))
+          None => ()
+        }
+        match wg.vault_gen {
+          Some(vg) => fields.push(("vaultGen", base_codec::json_int(vg)))
+          None => ()
+        }
+      }
+    }
+  }
+}
+
 /// Thin JSON wire encoder matching `client/core-ts/src/protocol.ts CoreMessage`.
-pub fn encode_core_event(ev : CoreEvent) -> (String, Option[Bytes]) {
+pub fn encode_core_event(ev : CoreEvent, wire_gen : Option[WireOutGen] = None) -> (String, Option[Bytes]) {
   match ev {
     CoreEvent::Ok(id, v, bytes) => {
       let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("ok", v)])
@@ -810,12 +838,14 @@ pub fn encode_core_event(ev : CoreEvent) -> (String, Option[Bytes]) {
     }
     CoreEvent::Err(id, err) => {
       let ej = base_codec::json_obj([("code", base_codec::json_str(err.code)), ("message", base_codec::json_str(err.message))])
-      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("error", ej)])
-      (base_codec::json_stringify(j), None)
+      let fields : Array[(String, base_codec::Json)] = [("id", base_codec::json_int64(id)), ("error", ej)]
+      append_wire_out_gen(fields, wire_gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
     }
     CoreEvent::Value(id, v, bytes) => {
-      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("value", v)])
-      (base_codec::json_stringify(j), bytes)
+      let fields : Array[(String, base_codec::Json)] = [("id", base_codec::json_int64(id)), ("value", v)]
+      append_wire_out_gen(fields, wire_gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), bytes)
     }
     CoreEvent::Delta(id, ops, from_id, kept) => {
       let fields : Array[(String, base_codec::Json)] = [
@@ -829,23 +859,27 @@ pub fn encode_core_event(ev : CoreEvent) -> (String, Option[Bytes]) {
       if kept {
         fields.push(("kept", base_codec::json_bool(true)))
       }
+      append_wire_out_gen(fields, wire_gen)
       (base_codec::json_stringify(base_codec::json_obj(fields)), None)
     }
     CoreEvent::Waiting(id) => {
-      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("waiting", base_codec::json_bool(true))])
-      (base_codec::json_stringify(j), None)
+      let fields : Array[(String, base_codec::Json)] = [("id", base_codec::json_int64(id)), ("waiting", base_codec::json_bool(true))]
+      append_wire_out_gen(fields, wire_gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
     }
     CoreEvent::Same(id) => {
-      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("same", base_codec::json_bool(true))])
-      (base_codec::json_stringify(j), None)
+      let fields : Array[(String, base_codec::Json)] = [("id", base_codec::json_int64(id)), ("same", base_codec::json_bool(true))]
+      append_wire_out_gen(fields, wire_gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
     }
     CoreEvent::Unsubscribed(id, token) => {
       let v = match token {
         Some(t) => base_codec::json_str(t)
         None => base_codec::json_null()
       }
-      let j = base_codec::json_obj([("id", base_codec::json_int64(id)), ("v", v)])
-      (base_codec::json_stringify(j), None)
+      let fields : Array[(String, base_codec::Json)] = [("id", base_codec::json_int64(id)), ("v", v)]
+      append_wire_out_gen(fields, wire_gen)
+      (base_codec::json_stringify(base_codec::json_obj(fields)), None)
     }
     CoreEvent::Auth(auth_json) => {
       let j = base_codec::json_obj([("id", base_codec::json_int64(0L)), ("auth", auth_json)])
@@ -933,6 +967,7 @@ pub struct ActiveSub {
   pub topic : Topic
   pub topic_key : String
   pub keyed : Bool
+  pub mut conn : Int
   pub mut auth_gen : Int
   pub mut vault_gen : Int
   pub mut last_value : Option[base_codec::Json]
@@ -961,6 +996,7 @@ pub struct Slice1Router {
   mut topic_evaluator : Option[(Int64, Topic) -> Option[CoreEvent]]
   mut sub_auth_guard : Option[(Int64, Topic) -> Bool]
   mut sub_gen_provider : Option[(Topic) -> (Int, Int)]
+  mut sub_conn_provider : Option[() -> Int]
 }
 
 pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : String = "default") -> Slice1Router {
@@ -977,6 +1013,7 @@ pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : S
     topic_evaluator: None,
     sub_auth_guard: None,
     sub_gen_provider: None,
+    sub_conn_provider: None,
   }
 }
 
@@ -1004,10 +1041,32 @@ pub fn Slice1Router::set_sub_gen_provider(
   self.sub_gen_provider = Some(provider)
 }
 
+/// Install a provider returning current active connection id (`conn`).
+pub fn Slice1Router::set_sub_conn_provider(
+  self : Slice1Router,
+  provider : () -> Int,
+) -> Unit {
+  self.sub_conn_provider = Some(provider)
+}
+
 fn Slice1Router::current_topic_gen(self : Slice1Router, topic : Topic) -> (Int, Int) {
   match self.sub_gen_provider {
     Some(f) => f(topic)
     None => (0, 0)
+  }
+}
+
+fn Slice1Router::current_conn(self : Slice1Router) -> Int {
+  match self.sub_conn_provider {
+    Some(f) => f()
+    None => 0
+  }
+}
+
+pub fn Slice1Router::sub_topic(self : Slice1Router, id : Int64) -> Option[Topic] {
+  match self.subs.get(id) {
+    Some(s) => Some(s.topic)
+    None => None
   }
 }
 
@@ -2101,14 +2160,16 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
     }
     CoreRequest::Subscribe(id, topic, keyed, from_id, have, sub_gen) => {
       let tk = topic_key(topic)
+      let cur_conn = self.current_conn()
       let (cur_auth, cur_vault) = self.current_topic_gen(topic)
       let sensitive = is_sensitive_topic(topic)
       let gen_mismatch = match sub_gen {
         None => false
         Some(sg) => {
+          let conn_bad = match sg.conn { Some(c) => cur_conn > 0 && c != cur_conn; None => false }
           let ag_bad = match sg.auth_gen { Some(ag) => cur_auth > 0 && ag != cur_auth; None => false }
           let vg_bad = match sg.vault_gen { Some(vg) => cur_vault > 0 && vg != cur_vault; None => false }
-          ag_bad || vg_bad
+          conn_bad || ag_bad || vg_bad
         }
       }
       let ev = self.evaluate_topic_value(id, topic)
@@ -2123,6 +2184,7 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             topic: topic,
             topic_key: tk,
             keyed: keyed,
+            conn: cur_conn,
             auth_gen: cur_auth,
             vault_gen: cur_vault,
             last_value: Some(payload),
@@ -2176,13 +2238,15 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             }
             None => ()
           }
-          // 3. `from` negotiation (keyed delta from another live subscription of same topic & current auth/vault gen).
+          // 3. `from` negotiation: require exact `topic_key` (including workspace/station params) + `(conn, auth_gen, vault_gen)`
+          // so two workspaces sharing the same numeric `authGen` can NEVER cross-diff baselines.
           match from_id {
             Some(fid) => {
               if keyed {
                 match self.subs.get(fid) {
                   Some(base_sub) =>
-                  if base_sub.topic.name == topic.name &&
+                  if base_sub.topic_key == tk &&
+                  base_sub.conn == cur_conn &&
                   base_sub.auth_gen == cur_auth &&
                   base_sub.vault_gen == cur_vault {
                     match base_sub.last_value {
@@ -2226,6 +2290,7 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
             topic: topic,
             topic_key: tk,
             keyed: keyed,
+            conn: cur_conn,
             auth_gen: cur_auth,
             vault_gen: cur_vault,
             last_value: None,

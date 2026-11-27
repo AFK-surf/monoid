@@ -452,6 +452,20 @@ pub fn fetch_workspace_k(
       effect::Exit::Interrupted => k(effect::Exit::Interrupted)
       effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
       effect::Exit::Succeeded(resp) => {
+        if resp.status == 403 || resp.status == 404 {
+          // Revocation / membership removal: advance workspace `authGen` rather than silently returning.
+          match auth_gen {
+            Some(tracker) => {
+              let bumped = tracker.sync_workspace_part(ws_id, "cloud", "revoked:" + resp.status.to_string())
+              if !bumped {
+                let _ = tracker.bump_workspace(ws_id)
+              }
+            }
+            None => ()
+          }
+          k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
+          return
+        }
         if resp.status < 200 || resp.status >= 300 {
           k(effect::Exit::Failed(effect::EffectError::Custom(parse_cloud_error(resp.status, resp.body))))
           return
@@ -497,7 +511,7 @@ pub fn fetch_workspace_k(
           sql::SqlResult::Ok(_) => {
             match auth_gen {
               Some(tracker) => {
-                let _ = tracker.sync_workspace(ws.id, workspace_auth_digest(ws, owner_sub=owner_sub))
+                let _ = tracker.sync_workspace_part(ws.id, "cloud", workspace_auth_digest(ws, owner_sub=owner_sub))
               }
               None => ()
             }
@@ -675,6 +689,8 @@ pub struct CloudSync {
   mut token : String
   cred_cache : Map[String, MemberCredential]
   mut ws_fiber : Option[effect::Fiber[Unit]]
+  mut auth_gen : Option[AuthGenTracker]
+  mut owner_sub : String
 }
 
 pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token : String = "") -> CloudSync {
@@ -685,6 +701,15 @@ pub fn CloudSync::new(sh : shell::Shell, db : sql::Sql, origin : String, token :
     token: token,
     cred_cache: Map::new(),
     ws_fiber: None,
+    auth_gen: None,
+    owner_sub: "",
+  }
+}
+
+pub fn CloudSync::set_auth_gen(self : CloudSync, tracker : AuthGenTracker, owner_sub : String = "") -> Unit {
+  self.auth_gen = Some(tracker)
+  if owner_sub.length() > 0 {
+    self.owner_sub = owner_sub
   }
 }
 
@@ -773,8 +798,20 @@ pub fn CloudSync::start_events_ws(self : CloudSync, on_event : (CloudEvent) -> U
         })
       }
       CloudEvent::WorkspaceChanged(wid, _) => {
+        let cap_opt : Option[WorkspaceCapability] = match self.auth_gen {
+          Some(tracker) => Some(tracker.workspace_capability(wid))
+          None => None
+        }
+        let ag_opt = self.auth_gen
+        let osub = self.owner_sub
         let _ = self.sh.rt.fork_quiet_named("cloud-refresh-ws:" + wid, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-          self.fetch_workspace_k(wid, fn(_ : effect::Exit[CloudWorkspace]) -> Unit { fk(effect::Exit::Succeeded(())) })
+          self.fetch_workspace_k(
+            wid,
+            fn(_ : effect::Exit[CloudWorkspace]) -> Unit { fk(effect::Exit::Succeeded(())) },
+            cap=cap_opt,
+            auth_gen=ag_opt,
+            owner_sub=osub,
+          )
         })
       }
       _ => ()

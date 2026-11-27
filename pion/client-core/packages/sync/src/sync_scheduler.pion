@@ -77,6 +77,7 @@ pub fn SyncScheduler::fetch_lock_k(
   self : SyncScheduler,
   priority : Int,
   k : (effect::Exit[Bool]) -> Unit,
+  cap : Option[WorkspaceCapability] = None,
 ) -> Unit {
   let key = self.task_key("lock")
   self.lane.run_k(
@@ -105,8 +106,20 @@ pub fn SyncScheduler::fetch_lock_k(
                   Some(base_codec::Json::Arr(xs)) => xs.length() > 0
                   _ => false
                 }
-                if has_entries {
-                  self.events.notify_lock_payload(j)
+                let do_apply = fn() -> Unit {
+                  if has_entries {
+                    self.events.notify_lock_payload(j)
+                  }
+                }
+                match cap {
+                  Some(c) => match c.commit(do_apply) {
+                    None => {
+                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
+                      return
+                    }
+                    Some(_) => ()
+                  }
+                  None => do_apply()
                 }
                 self.completed_order.push("lock")
                 tk(effect::Exit::Succeeded(has_entries))
@@ -130,6 +143,7 @@ pub fn SyncScheduler::fetch_marks_k(
   k : (effect::Exit[Array[String]]) -> Unit,
   sessions : Array[String] = [],
   threads : Array[Int] = [],
+  cap : Option[WorkspaceCapability] = None,
 ) -> Unit {
   let is_whole = sessions.length() == 0 && threads.length() == 0
   let key = self.task_key(if is_whole { "marks:whole" } else { "marks:scoped" })
@@ -162,12 +176,26 @@ pub fn SyncScheduler::fetch_marks_k(
             }
             match base_codec::json_parse(bytes_to_str(reply.body)) {
               base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) =>
-              match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
-                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                sql::SqlResult::Ok(affected) => {
-                  self.completed_order.push("marks")
-                  tk(effect::Exit::Succeeded(affected))
+              base_codec::JsonParseResult::Ok(j) => {
+                let apply_fn = fn() -> sql::SqlResult[Array[String]] {
+                  self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads)
+                }
+                let applied = match cap {
+                  Some(c) => match c.commit(apply_fn) {
+                    None => {
+                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
+                      return
+                    }
+                    Some(r) => r
+                  }
+                  None => apply_fn()
+                }
+                match applied {
+                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                  sql::SqlResult::Ok(affected) => {
+                    self.completed_order.push("marks")
+                    tk(effect::Exit::Succeeded(affected))
+                  }
                 }
               }
             }
@@ -184,6 +212,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
   self : SyncScheduler,
   priority : Int,
   k : (effect::Exit[Int]) -> Unit,
+  cap : Option[WorkspaceCapability] = None,
 ) -> Unit {
   let key = self.task_key("snapshot")
   self.lane.run_k(
@@ -202,12 +231,24 @@ pub fn SyncScheduler::fetch_snapshot_k(
             }
             match base_codec::json_parse(bytes_to_str(reply.body)) {
               base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) =>
-              match self.events.apply_snapshot(j) {
-                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                sql::SqlResult::Ok(n) => {
-                  self.completed_order.push("snapshot")
-                  tk(effect::Exit::Succeeded(n))
+              base_codec::JsonParseResult::Ok(j) => {
+                let apply_fn = fn() -> sql::SqlResult[Int] { self.events.apply_snapshot(j) }
+                let applied = match cap {
+                  Some(c) => match c.commit(apply_fn) {
+                    None => {
+                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
+                      return
+                    }
+                    Some(r) => r
+                  }
+                  None => apply_fn()
+                }
+                match applied {
+                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                  sql::SqlResult::Ok(n) => {
+                    self.completed_order.push("snapshot")
+                    tk(effect::Exit::Succeeded(n))
+                  }
                 }
               }
             }
@@ -227,6 +268,7 @@ pub fn SyncScheduler::fetch_thread_k(
   priority : Int,
   is_foreground : Bool,
   k : (effect::Exit[Int]) -> Unit,
+  cap : Option[WorkspaceCapability] = None,
 ) -> Unit {
   let key = self.task_key("thread:" + thread.to_string())
   let end_fg = if is_foreground {
@@ -251,12 +293,24 @@ pub fn SyncScheduler::fetch_thread_k(
             }
             match base_codec::json_parse(bytes_to_str(reply.body)) {
               base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) =>
-              match self.events.apply_snapshot(j) {
-                sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                sql::SqlResult::Ok(n) => {
-                  self.completed_order.push("thread:" + thread.to_string())
-                  tk(effect::Exit::Succeeded(n))
+              base_codec::JsonParseResult::Ok(j) => {
+                let apply_fn = fn() -> sql::SqlResult[Int] { self.events.apply_snapshot(j) }
+                let applied = match cap {
+                  Some(c) => match c.commit(apply_fn) {
+                    None => {
+                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
+                      return
+                    }
+                    Some(r) => r
+                  }
+                  None => apply_fn()
+                }
+                match applied {
+                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                  sql::SqlResult::Ok(n) => {
+                    self.completed_order.push("thread:" + thread.to_string())
+                    tk(effect::Exit::Succeeded(n))
+                  }
                 }
               }
             }
