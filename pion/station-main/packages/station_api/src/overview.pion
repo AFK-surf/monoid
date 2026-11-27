@@ -441,155 +441,218 @@ pub fn OverviewInput::minimal() -> OverviewInput {
   }
 }
 
-/// Build the viewer-scoped `/overview` JSON payload with all secrets masked.
-pub fn build_overview(
+/// Per-broadcast scratch cache shared across all viewers of one overview flush round (`#9013`),
+/// avoiding rebuilding identical station-wide and workspace-scoped subtrees once per device.
+pub struct OverviewRound {
+  pub cache : Map[String, base_codec::Json]
+}
+
+pub fn OverviewRound::new() -> OverviewRound {
+  OverviewRound::{ cache: Map::new() }
+}
+
+pub fn round_cached(
+  round : Option[OverviewRound],
+  key : String,
+  make : () -> base_codec::Json,
+) -> base_codec::Json {
+  match round {
+    None => make()
+    Some(r) => match r.cache.get(key) {
+      Some(v) => v
+      None => {
+        let v = make()
+        r.cache.set(key, v)
+        v
+      }
+    }
+  }
+}
+
+/// Build the viewer-scoped `/overview` JSON payload with all secrets masked, optionally sharing
+/// station-wide and workspace-scoped subtrees across viewers within one `OverviewRound` (`#9013`).
+pub fn build_overview_in_round(
   input : OverviewInput,
   viewer : Viewer,
   _lang : Lang,
+  round : Option[OverviewRound],
 ) -> base_codec::Json {
-  let mesh_json = match input.cloud {
-    None => {
-      base_codec::json_obj([
-        ("state", base_codec::json_str("off")),
-        ("origin", base_codec::json_null()),
-        ("station", base_codec::json_null()),
-        ("workspace", base_codec::json_null()),
-        ("workspaceId", base_codec::json_null()),
-        ("name", base_codec::json_null()),
-      ])
-    }
-    Some(c) => {
-      let state_str = match c.removed_at {
-        Some(_) => "removed"
-        None => "running"
+  let ws_scope = viewer.workspace + "\u{0}" + (if viewer.home { "1" } else { "0" })
+  let mgr_scope = if viewer.manages_station() { "1" } else { "0" }
+  let ro_scope = if viewer.is_read_only() { "1" } else { "0" }
+
+  let mesh_json = round_cached(round, "ws:mesh:" + viewer.workspace, fn() -> base_codec::Json {
+    match input.cloud {
+      None => {
+        base_codec::json_obj([
+          ("state", base_codec::json_str("off")),
+          ("origin", base_codec::json_null()),
+          ("station", base_codec::json_null()),
+          ("workspace", base_codec::json_null()),
+          ("workspaceId", base_codec::json_null()),
+          ("name", base_codec::json_null()),
+        ])
       }
-      let mf : Array[(String, base_codec::Json)] = [
-        ("state", base_codec::json_str(state_str)),
-        ("origin", opt_str_json(c.origin)),
-        ("station", opt_str_json(c.station)),
-        ("workspace", opt_str_json(c.workspace_name)),
-        ("workspaceId", opt_str_json(c.workspace)),
-        ("name", opt_str_json(c.station)),
-        ("reached", base_codec::json_bool(input.reached)),
-      ]
-      match c.removed_at {
-        Some(ra) => mf.push(("removedAt", base_codec::json_int64(ra)))
-        None => ()
+      Some(c) => {
+        let state_str = match c.removed_at {
+          Some(_) => "removed"
+          None => "running"
+        }
+        let mf : Array[(String, base_codec::Json)] = [
+          ("state", base_codec::json_str(state_str)),
+          ("origin", opt_str_json(c.origin)),
+          ("station", opt_str_json(c.station)),
+          ("workspace", opt_str_json(c.workspace_name)),
+          ("workspaceId", opt_str_json(c.workspace)),
+          ("name", opt_str_json(c.station)),
+          ("reached", base_codec::json_bool(input.reached)),
+        ]
+        match c.removed_at {
+          Some(ra) => mf.push(("removedAt", base_codec::json_int64(ra)))
+          None => ()
+        }
+        base_codec::json_obj(mf)
       }
-      base_codec::json_obj(mf)
     }
-  }
+  })
 
-  let visible_connects : Array[base_codec::Json] = []
-  let mut ci = 0
-  while ci < input.connects.length() {
-    let c = input.connects[ci]
-    if sees_workspace(viewer, c.workspace) {
-      visible_connects.push(sanitize_connect(c))
+  let visible_connects_json = round_cached(round, "ws:connects:" + ws_scope, fn() -> base_codec::Json {
+    let visible_connects : Array[base_codec::Json] = []
+    let mut ci = 0
+    while ci < input.connects.length() {
+      let c = input.connects[ci]
+      if sees_workspace(viewer, c.workspace) {
+        visible_connects.push(sanitize_connect(c))
+      }
+      ci = ci + 1
     }
-    ci = ci + 1
-  }
+    base_codec::json_arr(visible_connects)
+  })
 
-  let disabled_arr : Array[base_codec::Json] = []
-  let mut di = 0
-  while di < input.disabled_runtimes.length() {
-    disabled_arr.push(base_codec::json_str(input.disabled_runtimes[di]))
-    di = di + 1
-  }
-
-  let disk_json = match (input.disk_free_bytes, input.disk_total_bytes) {
-    (Some(free), Some(total)) => {
-      base_codec::json_obj([
-        ("freeBytes", base_codec::json_int64(free)),
-        ("totalBytes", base_codec::json_int64(total)),
-      ])
+  let disabled_json = round_cached(round, "st:disabledRuntimes", fn() -> base_codec::Json {
+    let disabled_arr : Array[base_codec::Json] = []
+    let mut di = 0
+    while di < input.disabled_runtimes.length() {
+      disabled_arr.push(base_codec::json_str(input.disabled_runtimes[di]))
+      di = di + 1
     }
-    _ => base_codec::json_null()
-  }
+    base_codec::json_arr(disabled_arr)
+  })
 
-  let roots_arr : Array[base_codec::Json] = []
-  let mut ri = 0
-  while ri < input.drive_roots.length() {
-    roots_arr.push(base_codec::json_obj([("path", base_codec::json_str(input.drive_roots[ri]))]))
-    ri = ri + 1
-  }
-  let drive_fields : Array[(String, base_codec::Json)] = [("roots", base_codec::json_arr(roots_arr))]
-  if !viewer.is_read_only() && viewer.home {
-    drive_fields.push(("anywhere", base_codec::json_bool(true)))
-    drive_fields.push(("home", base_codec::json_str(input.drive_home)))
+  let disk_json = round_cached(round, "st:disk", fn() -> base_codec::Json {
+    match (input.disk_free_bytes, input.disk_total_bytes) {
+      (Some(free), Some(total)) => {
+        base_codec::json_obj([
+          ("freeBytes", base_codec::json_int64(free)),
+          ("totalBytes", base_codec::json_int64(total)),
+        ])
+      }
+      _ => base_codec::json_null()
+    }
+  })
+
+  let drive_json = round_cached(round, "drv:view:" + ws_scope + "\u{0}" + ro_scope, fn() -> base_codec::Json {
+    let roots_arr : Array[base_codec::Json] = []
+    let mut ri = 0
+    while ri < input.drive_roots.length() {
+      roots_arr.push(base_codec::json_obj([("path", base_codec::json_str(input.drive_roots[ri]))]))
+      ri = ri + 1
+    }
+    let drive_fields : Array[(String, base_codec::Json)] = [("roots", base_codec::json_arr(roots_arr))]
+    if !viewer.is_read_only() && viewer.home {
+      drive_fields.push(("anywhere", base_codec::json_bool(true)))
+      drive_fields.push(("home", base_codec::json_str(input.drive_home)))
+    }
+    base_codec::json_obj(drive_fields)
+  })
+
+  let profiles_json = round_cached(round, "ws:profiles:" + ws_scope, fn() -> base_codec::Json {
+    sanitize_profiles(input.profiles)
+  })
+  let archiving_json = round_cached(round, "mgr:archiving:" + mgr_scope, fn() -> base_codec::Json {
+    base_codec::json_obj([
+      ("days", base_codec::json_int(input.auto_archive_days)),
+      ("slackDays", base_codec::json_int(input.slack_archive_days)),
+      ("reviewed", base_codec::json_bool(input.auto_archive_reviewed)),
+      ("canEdit", base_codec::json_bool(viewer.manages_station())),
+    ])
+  })
+  let auto_chats_json = round_cached(round, "mgr:autoChats:" + mgr_scope, fn() -> base_codec::Json {
+    base_codec::json_obj([
+      ("enabled", base_codec::json_bool(input.accept_auto_chats)),
+      ("canEdit", base_codec::json_bool(viewer.manages_station())),
+    ])
+  })
+  let agent_env_json = round_cached(round, "st:agentEnv", fn() -> base_codec::Json {
+    agent_env_view(input.agent_env)
+  })
+  let mcp_servers_json = round_cached(round, "st:mcpServers", fn() -> base_codec::Json {
+    sanitize_mcp_servers(input.mcp_servers)
+  })
+  let copies_json = round_cached(round, "st:copies", fn() -> base_codec::Json {
+    base_codec::json_obj([
+      ("backup", base_codec::json_obj([("s3", sanitize_backup_s3(input.backup_s3))])),
+    ])
+  })
+  let context_json = round_cached(round, "st:context", fn() -> base_codec::Json {
+    base_codec::json_obj([
+      ("afreshWhenCold", base_codec::json_bool(input.afresh_when_cold)),
+      ("afreshAbove", base_codec::json_num(input.afresh_above)),
+    ])
+  })
+  let diagnostics_json = round_cached(round, "st:diagnostics", fn() -> base_codec::Json {
+    base_codec::json_obj([("logs", base_codec::json_bool(input.diagnostics_logs))])
+  })
+  let search_json = round_cached(round, "st:search", fn() -> base_codec::Json {
+    base_codec::json_obj([
+      ("files", base_codec::json_str(if input.has_spotlight { "spotlight" } else { "walk" })),
+      ("personal", base_codec::json_bool(input.search_personal)),
+    ])
+  })
+  let counts_json = round_cached(round, "ws:counts:" + ws_scope, fn() -> base_codec::Json {
+    base_codec::json_obj([
+      ("sessions", base_codec::json_int(input.total_sessions)),
+      ("running", base_codec::json_int(input.running_sessions)),
+      ("warm", base_codec::json_int(input.warm_sessions)),
+    ])
+  })
+
+  let viewer_fields : Array[(String, base_codec::Json)] = [
+    ("via", base_codec::json_str("mesh")),
+    ("email", base_codec::json_str(viewer.email)),
+    ("sub", base_codec::json_str(viewer.sub)),
+    ("name", base_codec::json_str(viewer.name)),
+    ("workspace", base_codec::json_str(viewer.workspace)),
+    ("home", base_codec::json_bool(viewer.home)),
+    ("role", base_codec::json_str(viewer.role)),
+  ]
+  match viewer.device {
+    Some(d) => viewer_fields.push(("device", base_codec::json_str(d)))
+    None => ()
   }
 
   let fields : Array[(String, base_codec::Json)] = [
-    (
-      "viewer",
-      base_codec::json_obj([
-        ("via", base_codec::json_str("mesh")),
-        ("email", base_codec::json_str(viewer.email)),
-        ("sub", base_codec::json_str(viewer.sub)),
-        ("name", base_codec::json_str(viewer.name)),
-        ("workspace", base_codec::json_str(viewer.workspace)),
-        ("home", base_codec::json_bool(viewer.home)),
-        ("role", base_codec::json_str(viewer.role)),
-      ]),
-    ),
+    ("viewer", base_codec::json_obj(viewer_fields)),
     ("mesh", mesh_json),
-    ("connects", base_codec::json_arr(visible_connects)),
-    ("profiles", sanitize_profiles(input.profiles)),
+    ("connects", visible_connects_json),
+    ("profiles", profiles_json),
     ("sessionRuntimeChange", base_codec::json_bool(true)),
     ("connectRuntimeChange", base_codec::json_bool(true)),
     ("accountSubsets", base_codec::json_bool(true)),
     ("modelSpeeds", base_codec::json_bool(true)),
     ("claudeTui", base_codec::json_bool(true)),
-    (
-      "counts",
-      base_codec::json_obj([
-        ("sessions", base_codec::json_int(input.total_sessions)),
-        ("running", base_codec::json_int(input.running_sessions)),
-        ("warm", base_codec::json_int(input.warm_sessions)),
-      ]),
-    ),
-    (
-      "archiving",
-      base_codec::json_obj([
-        ("days", base_codec::json_int(input.auto_archive_days)),
-        ("slackDays", base_codec::json_int(input.slack_archive_days)),
-        ("reviewed", base_codec::json_bool(input.auto_archive_reviewed)),
-        ("canEdit", base_codec::json_bool(viewer.manages_station())),
-      ]),
-    ),
-    (
-      "autoChats",
-      base_codec::json_obj([
-        ("enabled", base_codec::json_bool(input.accept_auto_chats)),
-        ("canEdit", base_codec::json_bool(viewer.manages_station())),
-      ]),
-    ),
-    ("disabledRuntimes", base_codec::json_arr(disabled_arr)),
+    ("counts", counts_json),
+    ("archiving", archiving_json),
+    ("autoChats", auto_chats_json),
+    ("disabledRuntimes", disabled_json),
     ("disk", disk_json),
-    ("agentEnv", agent_env_view(input.agent_env)),
-    ("mcpServers", sanitize_mcp_servers(input.mcp_servers)),
-    (
-      "copies",
-      base_codec::json_obj([
-        ("backup", base_codec::json_obj([("s3", sanitize_backup_s3(input.backup_s3))])),
-      ]),
-    ),
-    (
-      "context",
-      base_codec::json_obj([
-        ("afreshWhenCold", base_codec::json_bool(input.afresh_when_cold)),
-        ("afreshAbove", base_codec::json_num(input.afresh_above)),
-      ]),
-    ),
-    ("diagnostics", base_codec::json_obj([("logs", base_codec::json_bool(input.diagnostics_logs))])),
-    ("drive", base_codec::json_obj(drive_fields)),
-    (
-      "search",
-      base_codec::json_obj([
-        ("files", base_codec::json_str(if input.has_spotlight { "spotlight" } else { "walk" })),
-        ("personal", base_codec::json_bool(input.search_personal)),
-      ]),
-    ),
+    ("agentEnv", agent_env_json),
+    ("mcpServers", mcp_servers_json),
+    ("copies", copies_json),
+    ("context", context_json),
+    ("diagnostics", diagnostics_json),
+    ("drive", drive_json),
+    ("search", search_json),
   ]
   match input.built_at {
     Some(b) => {
@@ -600,4 +663,13 @@ pub fn build_overview(
     None => ()
   }
   base_codec::json_obj(fields)
+}
+
+/// Build the viewer-scoped `/overview` JSON payload with all secrets masked.
+pub fn build_overview(
+  input : OverviewInput,
+  viewer : Viewer,
+  lang : Lang,
+) -> base_codec::Json {
+  build_overview_in_round(input, viewer, lang, None)
 }

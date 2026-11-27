@@ -905,6 +905,7 @@ fn map_fs_err(e : station_ops::FsErr) -> DriveError {
     station_ops::FsErr::NotFound => DriveError::new(DriveCode::NotFound, "no such file or folder")
     station_ops::FsErr::PermissionDenied(_) => DriveError::new(DriveCode::Permission, "the station may not do that here")
     station_ops::FsErr::Busy(m) => DriveError::new(DriveCode::Io, m)
+    station_ops::FsErr::CrossDevice(m) => DriveError::new(DriveCode::Io, m)
     station_ops::FsErr::Other(m) => {
       if m == "EISDIR" {
         DriveError::new(DriveCode::IsADirectory, "that is a folder")
@@ -1450,7 +1451,8 @@ pub fn move_to_trash(
         let candidate = trash + "/" + (if n == 1 { name } else { with_number(name, n) })
         let occupied = match (fs.lstat)(candidate) {
           Ok(_) => true
-          Err(_) => false
+          Err(station_ops::FsErr::NotFound) => false
+          Err(_) => true
         }
         if !occupied {
           match (fs.rename)(entry, candidate) {
@@ -1482,10 +1484,12 @@ pub fn move_to_trash(
         let dest = files_dir + "/" + as_name
         let occupied = match (fs.lstat)(info_path) {
           Ok(_) => true
-          Err(_) => match (fs.lstat)(dest) {
+          Err(station_ops::FsErr::NotFound) => match (fs.lstat)(dest) {
             Ok(_) => true
-            Err(_) => false
+            Err(station_ops::FsErr::NotFound) => false
+            Err(_) => true
           }
+          Err(_) => true
         }
         if !occupied {
           match fs.write_text(info_path, format_trashinfo(entry, now_ms), 384) {

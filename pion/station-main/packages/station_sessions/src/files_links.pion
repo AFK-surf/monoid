@@ -943,6 +943,114 @@ pub fn format_attachment_path(dir : String, name : String, now_ms : Int64, attem
   nodepath::join(path_sep_of(dir), [dir, file_name])
 }
 
+/// Copies an attachment into `dir` using exclusive creation (`COPYFILE_EXCL`), incrementing `-2`, `-3`, ...
+/// when colliding filenames arrive in the same second (`station/src/sessions/attachment-copy.ts`, `#6947`).
+/// `copy_excl(source, dest)` returns `Ok(())`, `Err("EEXIST")` on collision, or `Err(other)`.
+pub fn copy_attachment(
+  source : String,
+  dir : String,
+  name : String,
+  now_ms : Int64,
+  copy_excl : (String, String) -> Result[Unit, String],
+) -> Result[String, String] {
+  let mut attempt = 1
+  while attempt <= 10000 {
+    let into = format_attachment_path(dir, name, now_ms, attempt)
+    match copy_excl(source, into) {
+      Ok(_) => return Ok(into)
+      Err(code) => {
+        if code == "EEXIST" {
+          attempt = attempt + 1
+          continue
+        }
+        return Err(code)
+      }
+    }
+  }
+  Err("EEXIST")
+}
+
+// ── Public session & login page origins (`station/src/sessions/page.ts`, `#9051`) ──
+
+pub struct PageBase {
+  pub origin : String
+  pub workspace : String
+  pub station : String
+}
+
+fn public_product_origin(origin : String) -> Option[String] {
+  let mut end = origin.length()
+  while end > 0 && (origin.code_unit_at(end - 1) & 0xFF) == 47 {
+    end = end - 1
+  }
+  let clean = origin.slice(0, end)
+  if clean == "https://app.still.fail" || clean == "https://app.youdid.wtf" {
+    Some("https://app.still.fail")
+  } else if clean == "https://app.monoid.build" || clean == "https://app.monoid.zone" {
+    Some("https://app.monoid.build")
+  } else {
+    None
+  }
+}
+
+/// Public app origin for session/login links (`station/src/sessions/page.ts` `pageOrigin`, `#9051`):
+/// maps test hosts (`app.youdid.wtf` / `app.monoid.zone`) to their public product origin, prefers the
+/// first public origin declared in the workspace's `LockState.origins`, and preserves custom origins.
+pub fn page_origin(origin : String, lock_origins : Array[String]) -> String {
+  let own = match public_product_origin(origin) {
+    Some(p) => p
+    None => return origin
+  }
+  for i in 0..<lock_origins.length() {
+    match public_product_origin(lock_origins[i]) {
+      Some(said) => return said
+      None => ()
+    }
+  }
+  own
+}
+
+fn encode_uri_component_ascii(s : String) -> String {
+  let b = js_json::utf8_bytes(s)
+  let hex = "0123456789ABCDEF"
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let unreserved = (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 45 ||
+    c == 95 ||
+    c == 46 ||
+    c == 33 ||
+    c == 126 ||
+    c == 42 ||
+    c == 39 ||
+    c == 40 ||
+    c == 41
+    if unreserved {
+      sb.write_byte(b[i])
+    } else {
+      sb.write_string("%")
+      let hi = (c >> 4) & 0xF
+      let lo = c & 0xF
+      sb.write_string(hex.slice(hi, hi + 1))
+      sb.write_string(hex.slice(lo, lo + 1))
+    }
+  }
+  sb.to_string()
+}
+
+/// `<origin>/o/<workspace>/<station>/<session key>` (`station/src/sessions/page.ts` `sessionPage`).
+pub fn session_page(at : PageBase, workspace : String, key : String) -> String {
+  at.origin + "/o/" + encode_uri_component_ascii(workspace) + "/" + encode_uri_component_ascii(at.station) + "/" + encode_uri_component_ascii(key)
+}
+
+/// `<origin>/w/<workspace>/s/<station>/login/<id>` (`station/src/logins/module.ts` `loginLink`, `#9051`).
+pub fn login_page(at : PageBase, workspace : String, login_id : String) -> String {
+  at.origin + "/w/" + encode_uri_component_ascii(workspace) + "/s/" + encode_uri_component_ascii(at.station) + "/login/" + encode_uri_component_ascii(login_id)
+}
+
 // ── Peer files & live-location protocol (`peer-files.ts`, `live-location-protocol.ts`) ──
 
 pub let PEER_FILE_METHOD : String = "session.file"

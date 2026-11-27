@@ -373,3 +373,262 @@ pub fn status_router(get_status : () -> Result[LocalStatus, String]) -> station_
   })
   router
 }
+
+pub let WAITING_DIRTY_CAP : Int = 64
+
+/// Store port consumed by `WaitingTracker` (`station/src/api/status.ts` `WaitingStore`, `#9038`).
+pub struct WaitingStorePort {
+  pub waiting_for_people : (Int64, Int) -> Array[WaitingSessionInfo]
+  pub waiting_for_person_of : Option[(String, Int64) -> Option[WaitingSessionInfo]]
+}
+
+/// Incremental cache of `waitingForPeople(since, limit)` for the local status socket (`#9038`):
+/// seeds once on first read, then updates only changed sessions via O(1) `waiting_for_person_of(key, since)`
+/// PK seeks. Re-seeds only if the top-`limit` set was truncated and shrinks below `limit` or loses more
+/// slots than gained strictly above `floor_ended_at`, or if > `WAITING_DIRTY_CAP` distinct keys accumulated.
+pub struct WaitingTracker {
+  store : WaitingStorePort
+  mut known_keys : Option[Array[String]]
+  mut known_vals : Map[String, WaitingSessionInfo]
+  mut truncated : Bool
+  mut floor_ended_at : Int64
+  mut last_since : Int64
+  mut last_limit : Int
+  dirty : Array[String]
+  removed : Array[String]
+}
+
+pub fn WaitingTracker::new(store : WaitingStorePort) -> WaitingTracker {
+  WaitingTracker::{
+    store: store,
+    known_keys: None,
+    known_vals: Map::new(),
+    truncated: false,
+    floor_ended_at: 0L,
+    last_since: 0L,
+    last_limit: 0,
+    dirty: [],
+    removed: [],
+  }
+}
+
+fn remove_str_from(arr : Array[String], target : String) -> Bool {
+  let mut i = 0
+  while i < arr.length() {
+    if arr[i] == target {
+      let mut j = i
+      while j + 1 < arr.length() {
+        arr[j] = arr[j + 1]
+        j = j + 1
+      }
+      let _ = arr.pop()
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+pub fn WaitingTracker::reset(self : WaitingTracker) -> Unit {
+  self.known_keys = None
+  self.known_vals = Map::new()
+  self.truncated = false
+  self.floor_ended_at = 0L
+  self.dirty.clear()
+  self.removed.clear()
+}
+
+/// Record a store change event (`"session"` or `"sessionRemoved"`).
+pub fn WaitingTracker::note(self : WaitingTracker, change_type : String, key : Option[String]) -> Unit {
+  if self.known_keys is None {
+    return ()
+  }
+  let k = match key {
+    Some(s) => s
+    None => return ()
+  }
+  if change_type == "session" {
+    let _ = remove_str_from(self.removed, k)
+    push_unique_str(self.dirty, k)
+    if self.dirty.length() > WAITING_DIRTY_CAP {
+      self.reset()
+    }
+  } else if change_type == "sessionRemoved" {
+    let _ = remove_str_from(self.dirty, k)
+    if self.known_vals.contains(k) {
+      push_unique_str(self.removed, k)
+    }
+  }
+}
+
+fn sort_waiting_desc(rows : Array[WaitingSessionInfo]) -> Array[WaitingSessionInfo] {
+  let out : Array[WaitingSessionInfo] = []
+  let mut i = 0
+  while i < rows.length() {
+    out.push(rows[i])
+    i = i + 1
+  }
+  let mut si = 1
+  while si < out.length() {
+    let cur = out[si]
+    let mut pos = si
+    while pos > 0 && out[pos - 1].ended_at < cur.ended_at {
+      out[pos] = out[pos - 1]
+      pos = pos - 1
+    }
+    out[pos] = cur
+    si = si + 1
+  }
+  out
+}
+
+pub fn WaitingTracker::read(self : WaitingTracker, since : Int64, limit : Int) -> Array[WaitingSessionInfo] {
+  let single_fn = match self.store.waiting_for_person_of {
+    Some(f) => f
+    None => return (self.store.waiting_for_people)(since, limit)
+  }
+  if limit <= 0 {
+    return (self.store.waiting_for_people)(since, limit)
+  }
+  if !(self.known_keys is None) && (since < self.last_since || (limit > self.last_limit && self.truncated)) {
+    self.reset()
+  }
+  if self.known_keys is None {
+    let rows = (self.store.waiting_for_people)(since, limit + 1)
+    self.truncated = rows.length() > limit
+    let kept : Array[WaitingSessionInfo] = []
+    let keys : Array[String] = []
+    let vals : Map[String, WaitingSessionInfo] = Map::new()
+    let mut i = 0
+    while i < rows.length() && i < limit {
+      let r = rows[i]
+      kept.push(r)
+      keys.push(r.key)
+      vals.set(r.key, r)
+      i = i + 1
+    }
+    self.known_keys = Some(keys)
+    self.known_vals = vals
+    self.floor_ended_at = if self.truncated && kept.length() > 0 { kept[kept.length() - 1].ended_at } else { 0L }
+    self.last_since = since
+    self.last_limit = limit
+    self.dirty.clear()
+    self.removed.clear()
+    return kept
+  }
+
+  let keys = match self.known_keys {
+    Some(ks) => ks
+    None => []
+  }
+  let floor = self.floor_ended_at
+  let mut lost = 0
+  let mut gained_above_floor = 0
+
+  let mut ri = 0
+  while ri < self.removed.length() {
+    let k = self.removed[ri]
+    if self.known_vals.contains(k) {
+      let _ = self.known_vals.remove(k)
+      let _ = remove_str_from(keys, k)
+      lost = lost + 1
+    }
+    ri = ri + 1
+  }
+  self.removed.clear()
+
+  let mut di = 0
+  while di < self.dirty.length() {
+    let k = self.dirty[di]
+    let prev = self.known_vals.get(k)
+    let row = single_fn(k, since)
+    match row {
+      Some(r) => {
+        match prev {
+          None => {
+            if r.ended_at > floor {
+              gained_above_floor = gained_above_floor + 1
+            }
+            keys.push(k)
+          }
+          Some(p) => {
+            if r.ended_at < p.ended_at {
+              lost = lost + 1
+            }
+          }
+        }
+        self.known_vals.set(k, r)
+      }
+      None => {
+        if !(prev is None) {
+          let _ = self.known_vals.remove(k)
+          let _ = remove_str_from(keys, k)
+          lost = lost + 1
+        }
+      }
+    }
+    di = di + 1
+  }
+  self.dirty.clear()
+
+  let kept_keys : Array[String] = []
+  let mut ki = 0
+  while ki < keys.length() {
+    let k = keys[ki]
+    match self.known_vals.get(k) {
+      Some(r) => {
+        if r.ended_at < since {
+          let _ = self.known_vals.remove(k)
+          lost = lost + 1
+        } else {
+          kept_keys.push(k)
+        }
+      }
+      None => ()
+    }
+    ki = ki + 1
+  }
+  self.known_keys = Some(kept_keys)
+
+  if self.truncated && (kept_keys.length() < limit || lost > gained_above_floor) {
+    self.reset()
+    return self.read(since, limit)
+  }
+
+  let rows : Array[WaitingSessionInfo] = []
+  let mut vi = 0
+  while vi < kept_keys.length() {
+    match self.known_vals.get(kept_keys[vi]) {
+      Some(r) => rows.push(r)
+      None => ()
+    }
+    vi = vi + 1
+  }
+  let sorted = sort_waiting_desc(rows)
+  if sorted.length() > limit {
+    let kept : Array[WaitingSessionInfo] = []
+    let next_keys : Array[String] = []
+    let next_vals : Map[String, WaitingSessionInfo] = Map::new()
+    let mut j = 0
+    while j < limit {
+      let r = sorted[j]
+      kept.push(r)
+      next_keys.push(r.key)
+      next_vals.set(r.key, r)
+      j = j + 1
+    }
+    self.known_keys = Some(next_keys)
+    self.known_vals = next_vals
+    self.truncated = true
+    self.floor_ended_at = kept[kept.length() - 1].ended_at
+    self.last_since = since
+    self.last_limit = limit
+    return kept
+  }
+  if self.truncated && sorted.length() == limit && sorted.length() > 0 {
+    self.floor_ended_at = sorted[sorted.length() - 1].ended_at
+  }
+  self.last_since = since
+  self.last_limit = limit
+  sorted
+}

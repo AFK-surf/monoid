@@ -22,6 +22,7 @@ pub fn EventKeeps::default() -> EventKeeps {
 pub struct EventTarget {
   pub lang : Option[String]
   pub viewer : Option[String]
+  pub device : Option[String]
   pub email : Option[String]
   pub workspace : Option[String]
   pub subs : Option[Array[String]]
@@ -38,6 +39,7 @@ pub fn EventTarget::everyone() -> EventTarget {
   EventTarget::{
     lang: None,
     viewer: None,
+    device: None,
     email: None,
     workspace: None,
     subs: None,
@@ -59,6 +61,10 @@ pub fn EventTarget::to_json(self : EventTarget) -> base_codec::Json {
   }
   match self.viewer {
     Some(v) => fields.push(("viewer", base_codec::json_str(v)))
+    None => ()
+  }
+  match self.device {
+    Some(d) => fields.push(("device", base_codec::json_str(d)))
     None => ()
   }
   match self.email {
@@ -157,6 +163,7 @@ pub fn EventTarget::from_json(j : base_codec::Json) -> EventTarget {
   EventTarget::{
     lang: json_str_field(j, "lang"),
     viewer: json_str_field(j, "viewer"),
+    device: json_str_field(j, "device"),
     email: json_str_field(j, "email"),
     workspace: json_str_field(j, "workspace"),
     subs: subs,
@@ -318,9 +325,21 @@ pub fn EventLog::append(
   now : Int64,
   of_key : Option[String],
 ) -> LoggedEvent {
+  self.append_serialized(event, base_codec::json_stringify(data), to, now, of_key)
+}
+
+/// Appends an event whose `data` is already JSON-serialized, avoiding redundant `json_stringify` (`#9013`).
+pub fn EventLog::append_serialized(
+  self : EventLog,
+  event : String,
+  data_json : String,
+  to : EventTarget,
+  now : Int64,
+  of_key : Option[String],
+) -> LoggedEvent {
   self.seq = self.seq + 1L
   let n = self.seq
-  let text = "id: " + self.run + "." + n.to_string() + "\nevent: " + event + "\ndata: " + base_codec::json_stringify(data) + "\n\n"
+  let text = "id: " + self.run + "." + n.to_string() + "\nevent: " + event + "\ndata: " + data_json + "\n\n"
   let logged = LoggedEvent::{ n: n, to: to, text: text, at: now, of_key: of_key }
   let new_idx = self.kept.length()
   match of_key {
@@ -341,6 +360,18 @@ pub fn EventLog::append(
   self.bytes = self.bytes + logged.text.length()
   self.let_go(now)
   logged
+}
+
+/// Advances the log sequence for an event kept outside `kept` (such as per-device overviews rebuilt on resume),
+/// keeping event ids strictly monotonic without pinning megabytes of snapshots against `KEPT_BYTES` (`#9013`).
+pub fn EventLog::next_seq(self : EventLog) -> Int64 {
+  self.seq = self.seq + 1L
+  self.seq
+}
+
+/// The sequence number of a resumable `since` id, or `None` when it cannot be resumed from (`#9013`).
+pub fn EventLog::seq_of(self : EventLog, since : String) -> Option[Int64] {
+  self.parse_since(since)
 }
 
 fn EventLog::parse_since(self : EventLog, since : String) -> Option[Int64] {

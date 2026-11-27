@@ -339,3 +339,122 @@ pub fn select_review_messages(
   }
   (kept, older_left_out)
 }
+
+// ── Remote chat_create ordering & retry (`station/src/sessions/opened.ts`, `#9055`) ──
+
+pub struct OpenedChatRecord {
+  pub child : String
+  pub link : Option[String]
+  pub led : Bool
+  pub state : Option[String]
+}
+
+pub struct RemoteCreateReply {
+  pub child : String
+  pub link : Option[String]
+  pub thread : Option[String]
+  pub said : Bool
+}
+
+pub enum RemoteCallErr {
+  Refused(String)
+  Transport(String)
+}
+
+pub struct RemoteOpenOutcome {
+  pub session : String
+  pub link : Option[String]
+  pub thread : String
+  pub again : Bool
+  pub led : Bool
+}
+
+/// Executes remote `chat_create` with the exact `#9055` ordering:
+/// - New remote chat: calls `create_there`, then IMMEDIATELY records `insert_opened` and `say_opened`
+///   BEFORE calling `send_first_message` (so fast turn-end notices from the remote station find the record).
+/// - Retry with existing `before`: skips remote query if `before.state` is already `Some(_)`; otherwise
+///   re-queries `create_there` to check `made.said` and sends the first message only if `!made.said`
+///   (returning `again = made.said`, and refusing without `"call again with the same key"` on `Refused`).
+pub fn execute_remote_chat_create(
+  there : String,
+  before : Option[OpenedChatRecord],
+  led : Bool,
+  create_there : () -> Result[RemoteCreateReply, RemoteCallErr],
+  insert_opened : (String, Option[String], Bool) -> Unit,
+  say_opened : (String, Option[String], Bool) -> Unit,
+  send_first_message : (String, Option[String]) -> Result[Unit, String],
+) -> Result[RemoteOpenOutcome, String] {
+  match before {
+    Some(rec) => {
+      let mut thread = rec.child
+      let mut again = true
+      if rec.state is None {
+        let made = match create_there() {
+          Ok(m) => m
+          Err(RemoteCallErr::Refused(why)) => {
+            let label = match rec.link { Some(l) => l, None => rec.child }
+            return Err("opened " + label + " on station " + there + ", but that station now answers: " + why)
+          }
+          Err(RemoteCallErr::Transport(why)) => {
+            let label = match rec.link { Some(l) => l, None => rec.child }
+            return Err("opened " + label + " on station " + there + ", but whether its first message came was not learned: " + why + ". Call chat_create again with the same key: it sends it once, if it has not arrived")
+          }
+        }
+        match made.thread {
+          Some(t) => if t.length() > 0 { thread = t }
+          None => ()
+        }
+        again = made.said
+        if !made.said {
+          match send_first_message(rec.child, rec.link) {
+            Ok(_) => ()
+            Err(why) => {
+              let label = match rec.link { Some(l) => l, None => rec.child }
+              return Err("opened " + label + " on station " + there + ", but its first message was not sent: " + why + ". Call chat_create again with the same key: it sends it once, if it has not arrived")
+            }
+          }
+        }
+      }
+      Ok(RemoteOpenOutcome::{
+        session: rec.child,
+        link: rec.link,
+        thread: thread,
+        again: again,
+        led: rec.led,
+      })
+    }
+    None => {
+      let made = match create_there() {
+        Ok(m) => m
+        Err(RemoteCallErr::Refused(why)) => return Err(why)
+        Err(RemoteCallErr::Transport(why)) => return Err(why)
+      }
+      if made.child.length() == 0 {
+        return Err("station " + there + " answered without the chat it opened")
+      }
+      let thread = match made.thread {
+        Some(t) => if t.length() > 0 { t } else { made.child }
+        None => made.child
+      }
+      // Record & announce BEFORE sending first message (`#9055`).
+      insert_opened(made.child, made.link, led)
+      say_opened(made.child, made.link, led)
+      if !made.said {
+        match send_first_message(made.child, made.link) {
+          Ok(_) => ()
+          Err(why) => {
+            let label = match made.link { Some(l) => l, None => made.child }
+            return Err("opened " + label + " on station " + there + ", but its first message was not sent: " + why + ". Call chat_create again with the same key: it sends it once, if it has not arrived")
+          }
+        }
+      }
+      Ok(RemoteOpenOutcome::{
+        session: made.child,
+        link: made.link,
+        thread: thread,
+        again: false,
+        led: led,
+      })
+    }
+  }
+}

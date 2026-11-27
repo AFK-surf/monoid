@@ -822,3 +822,179 @@ test "SessionHub ensure_actor, set_actor_runtime, and adopt sync actor.runtime a
     None => panic("missing s-cold actor")
   }
 }
+
+test "w17b2_composer_skills_frontmatter_discovery_and_invocations" {
+  let raw = "---\nname: my-skill\ndescription: >\n  Line one\n  line two\nuser-invocable: true\n---\n# Body"
+  let (fm, _) = parse_skill_frontmatter(raw)
+  expect(match fm.name { Some(n) => n == "my-skill", None => false }, "parsed skill name")
+  expect(match fm.description { Some(d) => d == "Line one line two", None => false }, "folded description")
+
+  // Slash extraction ignores fenced code blocks and URLs, handles CJK punctuation.
+  let tokens = extract_slash_invocations("Use /My-Skill，not https://a.com/foo or ```\n/ignored\n``` and /second!")
+  expect(tokens.length() == 2 && tokens[0] == "my-skill" && tokens[1] == "second", "extracted 2 slash tokens")
+
+  let resolved = [
+    ResolvedSkill::{ name: "my-skill", description: "desc", source: SkillSource::Session, path: "/ws/.agent/skills/my-skill/SKILL.md" },
+  ]
+  let hint = format_skill_invocations(["Please run /my-skill now"], resolved)
+  expect(hint.contains("<skill-invocation name=\"my-skill\""), "xml hint formatted")
+  let listed = to_listed_skills(resolved, "monoid")
+  expect(listed.length() == 1 && match listed[0].place { Some(p) => p == "monoid", None => false }, "place set on session skill")
+  expect(claude_disabled_skills().length() == 13, "13 claude disabled skills")
+}
+
+test "w17b2_actor_stop_before_turn_and_steer_silent_hung" {
+  // #8915: stop before turn start clears queued prompts & signals mark_delivered
+  let a = SessionActor::new("s-stop", "claude")
+  a.begin_start()
+  let _ = a.submit_input("queued msg")
+  let res = a.stop_with_pending(true, false)
+  expect(res.cleared_queued == 1 && res.mark_delivered && res.post_stopped_notice, "cleared queued on pre-turn stop")
+  expect(a.queue.length() == 0, "queue empty")
+
+  // 36bef9f96a: steer_silent ends hung turn after 15m unless live event or post-steer open tool
+  let b = SessionActor::new("s-hung", "agy")
+  b.has_process = true
+  let _ = b.submit_input("start")
+  // Pre-existing steer queued BEFORE mid-wait silence deadline must survive hung cleanup
+  let _ = b.submit_input("pre-existing steer")
+  b.on_tool_call_started("old-bg-tool")
+  b.on_mid_wait_steered(1000L)
+  // Old tool call was cleared at steer time
+  expect(b.open_tools.length() == 0, "old open tools cleared at steer")
+  expect(match b.check_steer_silent(1000L + STEER_SILENT_MS - 1L, false) { SteerSilentOutcome::NotDue => true, _ => false }, "not due yet")
+  // Live event pushes deadline forward
+  b.on_live_event(5000L)
+  expect(match b.check_steer_silent(1000L + STEER_SILENT_MS, false) { SteerSilentOutcome::NotDue => true, _ => false }, "pushed by live event")
+  // Handover snapshot & restore clamps to [0, STEER_SILENT_MS]
+  let rem = b.snapshot_steer_silent_ms(5000L + 60000L)
+  expect(match rem { Some(r) => r == STEER_SILENT_MS - 60000L, None => false }, "snapshot remaining ms")
+  // Steer a message during silence -> must be returned as undelivered when hung ends
+  let _ = b.submit_input("follow-up during silence")
+  let notified = [false]
+  // After silence window expires with no open tools, ends as EndHung with failed+hung+undelivered_steers
+  let hung_ok = match b.check_steer_silent(
+    5000L + STEER_SILENT_MS,
+    false,
+    Some(fn(r : SteerHungResult) -> Unit {
+      notified[0] = r.failed && r.hung && r.turn_end_notified
+    }),
+  ) {
+    SteerSilentOutcome::EndHung(r) =>
+    r.failed && r.hung && r.turn_end_notified && r.undelivered_steers.length() == 1 && r.undelivered_steers[0] == "follow-up during silence"
+    _ => false
+  }
+  expect(hung_ok, "ended as hung with failed+undelivered steers")
+  expect(notified[0], "on_turn_ended callback notified")
+  expect(!b.has_process, "process cleared on hung end")
+  expect(
+    b.queue.length() == 1 && match b.queue[0] { ActorWork::Steer(s) => s == "pre-existing steer", _ => false },
+    "pre-existing steer queued before silence deadline preserved",
+  )
+}
+
+test "w17b2_r1_skills_unicode_ws_frontmatter_and_runtime_homes" {
+  // Unicode whitespace (U+3000 fullwidth space and U+00A0 NBSP) before/after slash tokens
+  let inv = extract_slash_invocations("　/deploy\u{00A0}and\u{00A0}/review　ok")
+  expect(inv.length() == 2 && inv[0] == "deploy" && inv[1] == "review", "unicode whitespace around /skill")
+
+  // Indented frontmatter keys are rejected (must start at column 0)
+  let (fm, _) = parse_skill_frontmatter("---\nname: top\n  nested: should-ignore\ndescription: real desc\n---\n")
+  expect(fm.name == Some("top") && fm.description == Some("real desc"), "frontmatter rejects indented keys")
+
+  // Workspace isolation path helper
+  expect(workspace_skills_dir("/data/agent", None, Some("home-ws")) == Ok("/data/agent/skills"), "home ws")
+  expect(workspace_skills_dir("/data/agent", Some("home-ws"), Some("home-ws")) == Ok("/data/agent/skills"), "explicit home ws")
+  expect(workspace_skills_dir("/data/agent", Some("other-ws"), Some("home-ws")) == Ok("/data/agent/workspaces/other-ws/skills"), "non-home ws isolated")
+  expect(workspace_skills_dir("/data/agent", Some("../escape"), Some("home-ws")) is Err(_), "invalid ws rejected")
+
+  // Runtime normalization rejects unknown values
+  expect(normalize_skill_runtime(Some("claude")) == Some("claude"), "known runtime")
+  expect(normalize_skill_runtime(Some("unknown-rt")) is None, "unknown runtime -> None")
+
+  // Non-dot runtime homes (copilot, cursor, grok, devin, hermes) and agy/.gemini
+  let files : Map[String, String] = Map::new()
+  let dirs : Map[String, Array[String]] = Map::new()
+  dirs.set("/ph/copilot/skills", ["c-skill"])
+  dirs.set("/ph/copilot/skills/c-skill", ["SKILL.md"])
+  files.set("/ph/copilot/skills/c-skill/SKILL.md", "---\nname: c-skill\ndescription: copilot skill\n---\n")
+  dirs.set("/ph/agy/.gemini/config/skills", ["a-skill"])
+  dirs.set("/ph/agy/.gemini/config/skills/a-skill", ["SKILL.md"])
+  files.set("/ph/agy/.gemini/config/skills/a-skill/SKILL.md", "---\nname: a-skill\ndescription: agy skill\n---\n")
+  dirs.set("/ph/agy/.gemini/config/plugins", ["p1"])
+  dirs.set("/ph/agy/.gemini/config/plugins/p1/skills", ["p-skill"])
+  dirs.set("/ph/agy/.gemini/config/plugins/p1/skills/p-skill", ["SKILL.md"])
+  files.set("/ph/agy/.gemini/config/plugins/p1/skills/p-skill/SKILL.md", "---\nname: p-skill\ndescription: agy plugin skill\n---\n")
+  let sfs = SkillFs::{
+    list_dir: fn(d : String) -> Array[String] { match dirs.get(d) { Some(a) => a, None => [] } },
+    is_file: fn(p : String) -> Bool { files.contains(p) },
+    is_dir: fn(p : String) -> Bool { dirs.contains(p) },
+    read_head: fn(p : String, _lim : Int) -> Option[String] { files.get(p) },
+    canonical: fn(p : String) -> String { p },
+  }
+  let copilot_res = collect_skills(sfs, CollectSkillsOptions::{
+    runtime: Some("copilot"),
+    profile_home: Some("/ph"),
+    profile_is_machine: false,
+    fallback_agy_homes: [],
+    cwd: None,
+    workspace_skills_dir: None,
+    preset_dirs: [],
+    site_skills_dir: None,
+    home_dir: "/home",
+  })
+  expect(copilot_res.length() == 1 && copilot_res[0].name == "c-skill", "copilot non-dot home")
+
+  let agy_res = collect_skills(sfs, CollectSkillsOptions::{
+    runtime: Some("agy"),
+    profile_home: Some("/ph"),
+    profile_is_machine: false,
+    fallback_agy_homes: [],
+    cwd: None,
+    workspace_skills_dir: None,
+    preset_dirs: [],
+    site_skills_dir: None,
+    home_dir: "/home",
+  })
+  expect(agy_res.length() == 2 && agy_res[0].name == "a-skill" && agy_res[1].name == "p-skill", "agy/.gemini home + plugins")
+}
+
+test "w17b2_attachment_collision_page_origin_and_remote_create" {
+  // #6947: colliding filenames increment -2, -3 via EEXIST retry
+  let taken : Map[String, Bool] = Map::new()
+  let p1 = match copy_attachment("/src/a.png", "/dir", "a.png", 1700000000000L, fn(_s : String, d : String) -> Result[Unit, String] {
+    if taken.contains(d) { Err("EEXIST") } else { taken.set(d, true); Ok(()) }
+  }) { Ok(p) => p, Err(e) => panic(e) }
+  let p2 = match copy_attachment("/src/a.png", "/dir", "a.png", 1700000000000L, fn(_s : String, d : String) -> Result[Unit, String] {
+    if taken.contains(d) { Err("EEXIST") } else { taken.set(d, true); Ok(()) }
+  }) { Ok(p) => p, Err(e) => panic(e) }
+  expect(p1 != p2 && p2.contains("-2-a.png"), "colliding attachment gets -2 suffix")
+
+  // #9051: page_origin maps beta hosts to public product origin & respects LockState.origins
+  expect(page_origin("https://app.youdid.wtf", []) == "https://app.still.fail", "youdid -> still.fail")
+  expect(page_origin("https://app.monoid.zone", []) == "https://app.monoid.build", "monoid.zone -> monoid.build")
+  expect(page_origin("https://app.still.fail", ["https://app.monoid.build/"]) == "https://app.monoid.build", "lock origin wins")
+  expect(page_origin("https://self.example.com", ["https://app.still.fail"]) == "https://self.example.com", "custom origin kept")
+
+  // #9055: record remote chat BEFORE sending first message
+  let order : Array[String] = []
+  let out = execute_remote_chat_create(
+    "peer-1",
+    None,
+    true,
+    fn() -> Result[RemoteCreateReply, RemoteCallErr] {
+      order.push("create")
+      Ok(RemoteCreateReply::{ child: "c-remote", link: Some("https://app.still.fail/o/w/s/c-remote"), thread: None, said: false })
+    },
+    fn(_c : String, _l : Option[String], _led : Bool) -> Unit { order.push("insert") },
+    fn(_c : String, _l : Option[String], _led : Bool) -> Unit { order.push("say") },
+    fn(_c : String, _l : Option[String]) -> Result[Unit, String] { order.push("send"); Ok(()) },
+  )
+  expect(out is Ok(_), "remote create ok")
+  expect(order.length() == 4 && order[0] == "create" && order[1] == "insert" && order[2] == "say" && order[3] == "send", "recorded before first message")
+
+  // #8900/#8901: shared clone git args include all 3 anti-auto-repack flags
+  let argv = shared_clone_git_args("https://example.com/repo.git", ".cloning-1")
+  let joined = argv.join(" ")
+  expect(joined.contains("maintenance.auto=false") && joined.contains("gc.auto=0") && joined.contains("gc.autoDetach=false"), "shared clone config args")
+}

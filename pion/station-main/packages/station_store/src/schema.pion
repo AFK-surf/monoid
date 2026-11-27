@@ -93,6 +93,7 @@ pub fn core_schema_ddl() -> String {
   "  cwd TEXT, original_runtime TEXT, conv TEXT, told_notes INTEGER, ws TEXT, came_from TEXT, began_on TEXT" +
   ");" +
   "CREATE INDEX IF NOT EXISTS sessions_live ON sessions (last_active_at) WHERE archived_at IS NULL;" +
+  "CREATE INDEX IF NOT EXISTS sessions_live_profile ON sessions (profile, key) WHERE archived_at IS NULL;" +
   "CREATE INDEX IF NOT EXISTS sessions_running ON sessions (key) WHERE running = 1;" +
   "CREATE INDEX IF NOT EXISTS sessions_by_creator ON sessions (created_by, created_at);" +
   "CREATE TABLE IF NOT EXISTS threads (" +

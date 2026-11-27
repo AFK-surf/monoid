@@ -141,6 +141,427 @@ fn drive_error_response(e : station_screens::DriveError) -> station_http::HttpRe
   station_api::json_status(status, base_codec::json_obj(fields))
 }
 
+struct WholeSkillsContext {
+  workspace_skills_dir : Option[String]
+  profile_home : Option[String]
+  profile_is_machine : Bool
+  fallback_agy_homes : Array[String]
+  preset_dirs : Array[String]
+  preset_name : String
+  site_skills_dir : Option[String]
+}
+
+fn build_whole_skill_fs(agents : WholeAgents) -> station_sessions::SkillFs {
+  station_sessions::SkillFs::{
+    list_dir: fn(d : String) -> Array[String] {
+      match (agents.jobs.fs.read_dir)(d) {
+        Some(items) => items
+        None => []
+      }
+    },
+    is_file: fn(p : String) -> Bool {
+      match (agents.jobs.fs.stat)(p) {
+        Some(st) => st.is_file()
+        None => false
+      }
+    },
+    is_dir: fn(p : String) -> Bool {
+      match (agents.jobs.fs.stat)(p) {
+        Some(st) => st.is_dir()
+        None => false
+      }
+    },
+    read_head: fn(p : String, limit : Int) -> Option[String] {
+      match (agents.jobs.fs.read_range)(p, 0L, limit.to_int64()) {
+        Some(b) => Some(b.to_string())
+        None => None
+      }
+    },
+    canonical: fn(p : String) -> String {
+      match (agents.jobs.fs.realpath)(p) {
+        Some(r) => r
+        None => p
+      }
+    },
+  }
+}
+
+fn under_data_dir(data_dir : String, raw : String) -> String {
+  if raw.length() == 0 {
+    return data_dir
+  }
+  if raw.starts_with("/") || raw.starts_with("\\") {
+    return raw
+  }
+  if raw.length() >= 3 {
+    let c0 = raw.code_unit_at(0)
+    let c1 = raw.code_unit_at(1)
+    let c2 = raw.code_unit_at(2)
+    let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
+    if is_alpha && c1 == 58 && (c2 == 47 || c2 == 92) {
+      return raw
+    }
+  }
+  nodepath::join("/", [data_dir, raw])
+}
+
+fn json_str_arr_has(arr : Array[base_codec::Json], target : String) -> Bool {
+  for i in 0..<arr.length() {
+    match arr[i] {
+      base_codec::Json::Str(s) => if s == target { return true }
+      _ => ()
+    }
+  }
+  false
+}
+
+/// 1:1 with Node `station/src/sessions/config.ts` `allowedIn(profile, ws, home)`:
+/// - Borrowed profiles (`share.borrowed === true` with `share.workspaces` array) are allowed ONLY in `share.workspaces`.
+/// - All other profiles are allowed in EVERY workspace by default, except those explicitly listed in `withheld`.
+fn profile_allowed_in_ws(prof : base_codec::Json, ws : Option[String], home_ws : Option[String]) -> Bool {
+  let eff_ws : Option[String] = match ws {
+    Some(w) => if w.length() > 0 { Some(w) } else { home_ws }
+    None => home_ws
+  }
+  match base_codec::json_get(prof, "share") {
+    Some(share) => {
+      let is_borrowed = match json_field_bool(share, "borrowed") {
+        Some(true) => true
+        _ => false
+      }
+      if is_borrowed {
+        match base_codec::json_get(share, "workspaces") {
+          Some(base_codec::Json::Arr(only)) => {
+            match eff_ws {
+              Some(at) => if !json_str_arr_has(only, at) { return false }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    None => ()
+  }
+  let ws_str = match ws {
+    Some(w) => if w.length() > 0 { Some(w) } else { None }
+    None => None
+  }
+  match (ws_str, home_ws) {
+    (None, _) => true
+    (_, None) => true
+    (Some(w), Some(h)) => {
+      if w == h {
+        return true
+      }
+      match base_codec::json_get(prof, "withheld") {
+        Some(base_codec::Json::Arr(wh)) => !json_str_arr_has(wh, w)
+        _ => true
+      }
+    }
+  }
+}
+
+fn profile_has_runtime(prof : base_codec::Json, rt : String) -> Bool {
+  match base_codec::json_get(prof, "runtimes") {
+    Some(base_codec::Json::Arr(rts)) => json_str_arr_has(rts, rt)
+    _ => false
+  }
+}
+
+/// Extract local preset directory paths from a JSON `dirs` array, excluding entries with non-empty `elsewhere` or empty `path`.
+fn parse_preset_dirs(dirs_json : Option[base_codec::Json]) -> Array[String] {
+  let out : Array[String] = []
+  match dirs_json {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        let d = arr[i]
+        let elsewhere = match json_field_str(d, "elsewhere") {
+          Some(e) => e
+          None => ""
+        }
+        if elsewhere.length() > 0 {
+          continue
+        }
+        match json_field_str(d, "path") {
+          Some(p) => if p.length() > 0 { out.push(p) }
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Parse `<workspace>/.stillfail-preset.json` (1:1 with Node `presetCopyOf` in `station/src/sessions/presets.ts`).
+/// Returns `Some((name, local_dirs))` when valid `{id, name, dirs}`.
+fn parse_preset_copy_json(raw : String) -> Option[(String, Array[String])] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match (json_field_str(j, "id"), json_field_str(j, "name")) {
+        (Some(_), Some(name)) => Some((name, parse_preset_dirs(base_codec::json_get(j, "dirs"))))
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+/// Look up preset `wanted_id` in `<agentHome(ws)>/presets.json` (1:1 with Node `Presets.get` in `station/src/sessions/presets.ts`).
+/// Returns `Some((name, local_dirs))` on exact `id` match.
+fn lookup_preset_in_file_json(raw : String, wanted_id : String) -> Option[(String, Array[String])] {
+  if wanted_id.length() == 0 {
+    return None
+  }
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => {
+      match base_codec::json_get(j, "presets") {
+        Some(base_codec::Json::Arr(arr)) => {
+          for i in 0..<arr.length() {
+            let p = arr[i]
+            match (json_field_str(p, "id"), json_field_str(p, "name")) {
+              (Some(id), Some(name)) => {
+                if id == wanted_id {
+                  return Some((name, parse_preset_dirs(base_codec::json_get(p, "dirs"))))
+                }
+              }
+              _ => ()
+            }
+          }
+          None
+        }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+fn resolve_skills_context_from_json(
+  data_dir : String,
+  assets_dir : String,
+  config_raw : Option[String],
+  ws : Option[String],
+  home_ws : String,
+  runtime : Option[String],
+  profile_id : Option[String],
+  presets_file_raw : Option[String],
+  preset_id : Option[String],
+  preset_copy_raw : Option[String],
+) -> WholeSkillsContext {
+  let home_opt : Option[String] = if home_ws.length() > 0 { Some(home_ws) } else { None }
+  let mut agent_home = under_data_dir(data_dir, "agent")
+  let mut profile_home : Option[String] = None
+  let mut profile_is_machine = false
+  let fallback_agy_homes : Array[String] = []
+  let preset_dirs : Array[String] = []
+  let mut preset_name = ""
+
+  match config_raw {
+    Some(raw) => {
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(cfg) => {
+          match json_field_str(cfg, "agentHome") {
+            Some(ah) => if ah.length() > 0 { agent_home = under_data_dir(data_dir, ah) }
+            None => ()
+          }
+          match base_codec::json_get(cfg, "profiles") {
+            Some(base_codec::Json::Arr(profs)) => {
+              // 1:1 with Node `pickProfileFor`:
+              // 1) `allowed` = enabled !== false && allowedIn(p, ws, home)
+              let allowed : Array[base_codec::Json] = []
+              for i in 0..<profs.length() {
+                let prof = profs[i]
+                let enabled = match base_codec::json_get(prof, "enabled") {
+                  Some(base_codec::Json::Bool(false)) => false
+                  _ => true
+                }
+                if enabled && profile_allowed_in_ws(prof, ws, home_opt) {
+                  allowed.push(prof)
+                }
+              }
+              // 2) `fallbackAgyHomes` only when runtime === "agy", filtered to runtimes.includes("agy")
+              if runtime == Some("agy") {
+                for i in 0..<allowed.length() {
+                  let prof = allowed[i]
+                  if profile_has_runtime(prof, "agy") {
+                    let h = match json_field_str(prof, "home") {
+                      Some(s) => s
+                      None => ""
+                    }
+                    fallback_agy_homes.push(under_data_dir(data_dir, h))
+                  }
+                }
+              }
+              // 3) Exact `profileId` match across all profiles passing `allowedIn`, else first in `allowed` matching `runtime`
+              let mut picked : Option[base_codec::Json] = None
+              match profile_id {
+                Some(pid) => {
+                  if pid.length() > 0 {
+                    for i in 0..<profs.length() {
+                      let prof = profs[i]
+                      match json_field_str(prof, "id") {
+                        Some(id) => {
+                          if id == pid && profile_allowed_in_ws(prof, ws, home_opt) {
+                            picked = Some(prof)
+                            break
+                          }
+                        }
+                        None => ()
+                      }
+                    }
+                  }
+                }
+                None => ()
+              }
+              if picked is None {
+                match runtime {
+                  Some(rt) => {
+                    for i in 0..<allowed.length() {
+                      let prof = allowed[i]
+                      if profile_has_runtime(prof, rt) {
+                        picked = Some(prof)
+                        break
+                      }
+                    }
+                  }
+                  None => ()
+                }
+              }
+              match picked {
+                Some(prof) => {
+                  let h = match json_field_str(prof, "home") {
+                    Some(s) => s
+                    None => ""
+                  }
+                  profile_home = Some(under_data_dir(data_dir, h))
+                  profile_is_machine = match json_field_bool(prof, "machine") {
+                    Some(b) => b
+                    None => false
+                  }
+                }
+                None => ()
+              }
+            }
+            _ => ()
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+
+  // Preset resolution: session copy (`.stillfail-preset.json`) takes precedence when supplied;
+  // otherwise look up `preset_id` inside `<agentHome(ws)>/presets.json`.
+  match preset_copy_raw {
+    Some(raw) => {
+      match parse_preset_copy_json(raw) {
+        Some((name, dirs)) => {
+          preset_name = name
+          for i in 0..<dirs.length() {
+            preset_dirs.push(dirs[i])
+          }
+        }
+        None => ()
+      }
+    }
+    None => {
+      match (presets_file_raw, preset_id) {
+        (Some(raw), Some(wanted)) => {
+          match lookup_preset_in_file_json(raw, wanted) {
+            Some((name, dirs)) => {
+              preset_name = name
+              for i in 0..<dirs.length() {
+                preset_dirs.push(dirs[i])
+              }
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+
+  let ws_skills_dir : Option[String] = match station_sessions::workspace_skills_dir(agent_home, ws, home_opt) {
+    Ok(d) => Some(d)
+    Err(_) => None
+  }
+  let site_skills_dir : Option[String] = if assets_dir.length() > 0 {
+    Some(assets_dir + "/skills")
+  } else {
+    None
+  }
+  WholeSkillsContext::{
+    workspace_skills_dir: ws_skills_dir,
+    profile_home: profile_home,
+    profile_is_machine: profile_is_machine,
+    fallback_agy_homes: fallback_agy_homes,
+    preset_dirs: preset_dirs,
+    preset_name: preset_name,
+    site_skills_dir: site_skills_dir,
+  }
+}
+
+fn resolve_skills_context(
+  agents : WholeAgents,
+  ws : Option[String],
+  home_ws : String,
+  runtime : Option[String],
+  profile_id : Option[String],
+  preset_id : Option[String],
+  session_workspace_for_preset : Option[String],
+) -> WholeSkillsContext {
+  let config_raw = (agents.jobs.fs.read_file)(agents.config.data_dir + "/config.json")
+  let home_opt : Option[String] = if home_ws.length() > 0 { Some(home_ws) } else { None }
+  let mut agent_home = under_data_dir(agents.config.data_dir, "agent")
+  match config_raw {
+    Some(raw) => {
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(cfg) => {
+          match json_field_str(cfg, "agentHome") {
+            Some(ah) => if ah.length() > 0 { agent_home = under_data_dir(agents.config.data_dir, ah) }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  let preset_copy_raw : Option[String] = match session_workspace_for_preset {
+    Some(sw) => if sw.length() > 0 { (agents.jobs.fs.read_file)(sw + "/.stillfail-preset.json") } else { None }
+    None => None
+  }
+  let presets_file_raw : Option[String] = match preset_id {
+    Some(pid) => {
+      if pid.length() > 0 && preset_copy_raw is None {
+        match station_sessions::workspace_agent_home_path(agent_home, ws, home_opt) {
+          Ok(ws_ah) => (agents.jobs.fs.read_file)(ws_ah + "/presets.json")
+          Err(_) => None
+        }
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  resolve_skills_context_from_json(
+    agents.config.data_dir,
+    agents.config.assets_dir,
+    config_raw,
+    ws,
+    home_ws,
+    runtime,
+    profile_id,
+    presets_file_raw,
+    preset_id,
+    preset_copy_raw,
+  )
+}
+
 /// Build a real `station_api::SeenStore` backed directly by `WholeStore`'s SQLite database.
 pub fn build_real_seen_store(whole_store : WholeStore) -> station_api::SeenStore {
   station_api::SeenStore::{
@@ -545,6 +966,109 @@ pub fn WholeApi::new(
         None => return Err(station_api::ApiError::new(404, "no job " + id))
       }
     }
+    if op == "skills" {
+      let rt = station_sessions::normalize_skill_runtime(req.param("runtime"))
+      let viewer_ws : Option[String] = if req.viewer.workspace.length() > 0 {
+        Some(req.viewer.workspace)
+      } else {
+        None
+      }
+      let preset_arg = req.param("preset")
+      let profile_arg = req.param("profile")
+      let ctx = resolve_skills_context(agents, viewer_ws, home_ws_str, rt, profile_arg, preset_arg, None)
+      let skill_fs = build_whole_skill_fs(agents)
+      let resolved = station_sessions::collect_skills(
+        skill_fs,
+        station_sessions::CollectSkillsOptions::{
+          runtime: rt,
+          profile_home: ctx.profile_home,
+          profile_is_machine: ctx.profile_is_machine,
+          fallback_agy_homes: ctx.fallback_agy_homes,
+          cwd: None,
+          workspace_skills_dir: ctx.workspace_skills_dir,
+          preset_dirs: ctx.preset_dirs,
+          site_skills_dir: ctx.site_skills_dir,
+          home_dir: agents.config.data_dir,
+        },
+      )
+      let listed = station_sessions::ListedSkills::{
+        runtime: rt,
+        skills: station_sessions::to_listed_skills(resolved, ctx.preset_name),
+      }
+      return Ok(listed.to_json())
+    }
+    if op == "session.skills" {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let key = match json_field_str(args, "key") {
+        Some(k) => k
+        None => return Err(station_api::ApiError::new(400, "missing session key"))
+      }
+      let row = match st.get_session(key) {
+        Ok(Some(r)) => r
+        Ok(None) => return Err(station_api::ApiError::new(404, "unknown session " + key))
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+      if !station_api::sees_workspace(req.viewer, row.ws) {
+        return Err(station_api::ApiError::new(404, "unknown session " + key))
+      }
+      let skill_fs = build_whole_skill_fs(agents)
+      let has_custom_cwd = match row.cwd {
+        Some(c) => c.length() > 0
+        None => false
+      }
+      let cwd = match row.cwd {
+        Some(c) => if c.length() > 0 { c } else { row.workspace }
+        None => row.workspace
+      }
+      let rt = station_sessions::normalize_skill_runtime(Some(row.runtime))
+      let row_profile : Option[String] = if row.profile.length() > 0 { Some(row.profile) } else { None }
+      let preset_ws : Option[String] = if has_custom_cwd { None } else { Some(row.workspace) }
+      let ctx = resolve_skills_context(agents, row.ws, home_ws_str, rt, row_profile, None, preset_ws)
+      let ws_skills_dir : Option[String] = if has_custom_cwd { None } else { ctx.workspace_skills_dir }
+      let resolved = station_sessions::collect_skills(
+        skill_fs,
+        station_sessions::CollectSkillsOptions::{
+          runtime: rt,
+          profile_home: ctx.profile_home,
+          profile_is_machine: ctx.profile_is_machine,
+          fallback_agy_homes: ctx.fallback_agy_homes,
+          cwd: Some(cwd),
+          workspace_skills_dir: ws_skills_dir,
+          preset_dirs: ctx.preset_dirs,
+          site_skills_dir: ctx.site_skills_dir,
+          home_dir: agents.config.data_dir,
+        },
+      )
+      let mut place = ctx.preset_name
+      if place.length() == 0 {
+        match st.db.first(
+          "SELECT t.project FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ?1 ORDER BY ts.joined_at DESC LIMIT 1",
+          [base_codec::json_str(key)],
+        ) {
+          Ok(Some(proj_row)) => {
+            match proj_row.get("project") {
+              Some(base_codec::Json::Str(p)) => if p.length() > 0 { place = p }
+              _ => ()
+            }
+          }
+          _ => ()
+        }
+      }
+      if place.length() == 0 {
+        match row.cwd {
+          Some(c) => if c.length() > 0 { place = nodepath::basename("/", c) }
+          None => ()
+        }
+      }
+      let listed = station_sessions::ListedSkills::{
+        runtime: rt,
+        skills: station_sessions::to_listed_skills(resolved, place),
+      }
+      return Ok(listed.to_json())
+    }
     Err(station_api::ApiError::new(404, "unsupported read op: " + op))
   }
 
@@ -716,6 +1240,7 @@ pub fn WholeApi::new(
           let ev_target = station_api::EventTarget::{
             lang: None,
             viewer: None,
+            device: None,
             email: None,
             workspace: Some(req.viewer.workspace),
             subs: None,

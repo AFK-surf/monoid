@@ -211,3 +211,22 @@ test "rewrite_attachments_json and remap_profiles_json rewrite paths and profile
   let remapped = remap_profiles_json("[\"old-p\",\"keep-p\"]", profs)
   expect(str_contains(remapped, "\"new-p\"") && str_contains(remapped, "\"keep-p\""), "remapped profiles")
 }
+
+test "w17b2_schema_indexes_and_sql_constants" {
+  let ddl = core_schema_ddl()
+  expect(str_contains(ddl, "sessions_live_profile"), "sessions_live_profile index present")
+  expect(str_contains(WAITING_FOR_PEOPLE_SQL, "FROM sessions s INDEXED BY sessions_live"), "WAITING_FOR_PEOPLE_SQL uses sessions_live index")
+  expect(str_contains(WAITING_FOR_PERSON_OF_SQL, "WHERE s.key = ?1"), "O(1) waiting_for_person_of PK seek")
+  expect(str_contains(LIVE_ON_PROFILE_SQL, "sessions_live_profile"), "LIVE_ON_PROFILE uses covering index")
+  expect(str_contains(LIVE_WITNESSES_ON_PROFILES_SQL, "json_each"), "LIVE_WITNESSES_ON_PROFILES batched")
+  expect(str_contains(LIVE_PROFILE_OF_SESSION_SQL, "WHERE s.key = ?1"), "LIVE_PROFILE_OF_SESSION O(1)")
+  expect(str_contains(PENDING_HANDED_MESSAGES_SQL, "deliveries_pending"), "PENDING_HANDED_MESSAGES indexed")
+  expect(str_contains(PENDING_HANDED_LETTERS_SQL, "letter_deliveries_pending"), "PENDING_HANDED_LETTERS indexed")
+
+  let tracker = BorrowedProfileTracker::new()
+  // Pending-only session update is ignored (#9025)
+  tracker.note_change("session", "s1", true)
+  expect(tracker.witness_of("p1") is None, "initial witness is None")
+  let tok = HandedToken::{ thread: 1L, n: 2L, apart: false }
+  expect(tok.thread == 1L && tok.n == 2L && !tok.apart, "HandedToken fields")
+}

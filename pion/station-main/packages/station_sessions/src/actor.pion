@@ -60,6 +60,31 @@ pub struct SessionsExitDecision {
 /// the next station adopts live `stillfail-runner` children once.
 pub let SESSIONS_CRASH_EXIT_CODE : Int = 70
 
+/// How long a turn steered to check its wait may stay silent before ending as hung (`36bef9f96a`, 15 min).
+pub let STEER_SILENT_MS : Int64 = 900000L
+
+/// Result of stopping a session before a turn starts (`#8915`).
+pub struct StopBeforeTurnResult {
+  pub cleared_queued : Int
+  pub mark_delivered : Bool
+  pub post_stopped_notice : Bool
+}
+
+/// Details when a mid-wait-steered silent turn is ended as hung (`36bef9f96a`).
+pub struct SteerHungResult {
+  pub failed : Bool
+  pub hung : Bool
+  pub undelivered_steers : Array[String]
+  pub turn_end_notified : Bool
+}
+
+/// Result of evaluating the post-wait-steer silence deadline (`36bef9f96a`).
+pub enum SteerSilentOutcome {
+  NotDue
+  StillActive
+  EndHung(SteerHungResult)
+}
+
 /// Evaluates how the station handles `--sessions` exit:
 /// - Unplanned exit (`planned_shutdown == false`): exit with code 70, skip `hub_shutdown`,
 ///   and leave `stillfail-runner` child processes alive for single-pass adoption on restart.
@@ -177,6 +202,19 @@ pub struct SessionActor {
   pub mut completed_barriers : Array[Int]
   pub mut running_history : Array[Bool]
   pub mut started_prompts : Array[String]
+  /// Tool calls begun and not ended since the turn started (or since a mid-wait steer cleared them, `36bef9f96a`).
+  pub mut open_tools : Array[String]
+  /// Deadline timestamp when a mid-wait-steered silent turn is ended as hung (`36bef9f96a`).
+  pub mut steer_silent_due_at : Option[Int64]
+  /// Timestamp of last runtime live event during the current turn (`36bef9f96a`).
+  pub mut last_live_event_at : Option[Int64]
+  /// Messages steered into the turn while waiting under `steer_silent_due_at` (`36bef9f96a`).
+  pub steered_during_silence : Array[String]
+  /// Last hung turn end result recorded by `check_steer_silent` (`36bef9f96a`).
+  pub mut last_hung_end : Option[SteerHungResult]
+  pub mut compacting : Bool
+  pub mut archived : Bool
+  pub mut active_watch_job : Bool
 }
 
 pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
@@ -200,6 +238,14 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
     completed_barriers: [],
     running_history: [],
     started_prompts: [],
+    open_tools: [],
+    steer_silent_due_at: None,
+    last_live_event_at: None,
+    steered_during_silence: [],
+    last_hung_end: None,
+    compacting: false,
+    archived: false,
+    active_watch_job: false,
   }
 }
 
@@ -269,6 +315,10 @@ fn SessionActor::start_prompt_now(self : SessionActor, text : String) -> Unit {
   self.posted_in_turn = false
   self.posted_after_terminal = false
   self.declared = TurnDeclared::None
+  self.open_tools = []
+  self.steer_silent_due_at = None
+  self.last_live_event_at = None
+  self.steered_during_silence.clear()
   self.running_history.push(true)
   self.started_prompts.push(text)
 }
@@ -292,6 +342,9 @@ pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRo
       }
     }
     InputRoute::Steer => {
+      if !(self.steer_silent_due_at is None) {
+        self.steered_during_silence.push(text)
+      }
       self.queue.push(ActorWork::Steer(text))
       InputRoute::Steer
     }
@@ -344,6 +397,7 @@ pub fn SessionActor::record_post(self : SessionActor, kind : TurnDeclared) -> Un
     _ => {
       self.declared = kind
       self.posted_after_terminal = false
+      self.steer_silent_due_at = None
     }
   }
 }
@@ -352,6 +406,7 @@ pub fn SessionActor::record_post(self : SessionActor, kind : TurnDeclared) -> Un
 pub fn SessionActor::record_state(self : SessionActor, kind : TurnDeclared) -> Unit {
   self.declared = kind
   self.posted_after_terminal = false
+  self.steer_silent_due_at = None
 }
 
 /// Handles turn completion using the `goesOn` contract.
@@ -379,6 +434,9 @@ pub fn SessionActor::on_turn_ended(
     }
     _ => {
       self.phase = ActorPhase::Idle
+      self.steer_silent_due_at = None
+      self.open_tools = []
+      self.steered_during_silence.clear()
       if self.has_process {
         self.idle_since_ms = Some(now_ms)
       }
@@ -447,4 +505,232 @@ pub fn SessionActor::drain_barriers(self : SessionActor) -> Array[Int] {
   }
   self.queue = remaining
   done
+}
+
+/// Stop the actor when called with a snapshot of whether pending deliveries exist (`#8915`).
+/// Outside active turns, recovery, and pure failed-start retries, clears queued prompts/steers
+/// and instructs the caller to mark snapshotted pending deliveries delivered + post stopped notice.
+/// When a turn IS running, preserves `steer_silent_due_at` so a runtime that ignores abort still
+/// times out after 15 minutes (`36bef9f96a`).
+pub fn SessionActor::stop_with_pending(
+  self : SessionActor,
+  has_pending : Bool,
+  in_recovery : Bool,
+) -> StopBeforeTurnResult {
+  match self.phase {
+    ActorPhase::Running => {
+      // Active turn: keep `steer_silent_due_at` armed in case runtime ignores abort (`36bef9f96a`).
+      StopBeforeTurnResult::{
+        cleared_queued: 0,
+        mark_delivered: false,
+        post_stopped_notice: false,
+      }
+    }
+    ActorPhase::Closed => StopBeforeTurnResult::{
+      cleared_queued: 0,
+      mark_delivered: false,
+      post_stopped_notice: false,
+    }
+    _ => {
+      if in_recovery || (self.start_failed && !self.in_flight_start && self.queue.length() == 0) {
+        return StopBeforeTurnResult::{
+          cleared_queued: 0,
+          mark_delivered: false,
+          post_stopped_notice: false,
+        }
+      }
+      let remaining : Array[ActorWork] = []
+      let mut cleared = 0
+      for i in 0..<self.queue.length() {
+        match self.queue[i] {
+          ActorWork::Prompt(_) => cleared = cleared + 1
+          ActorWork::Deliver(_) => cleared = cleared + 1
+          ActorWork::Steer(_) => cleared = cleared + 1
+          other => remaining.push(other)
+        }
+      }
+      self.queue = remaining
+      self.in_flight_start = false
+      self.start_failed = false
+      self.phase = ActorPhase::Idle
+      StopBeforeTurnResult::{
+        cleared_queued: cleared,
+        mark_delivered: has_pending,
+        post_stopped_notice: has_pending || cleared > 0,
+      }
+    }
+  }
+}
+
+/// Arm the 15-minute `steer_silent` deadline when a waiting turn is steered to check (`36bef9f96a`).
+/// Clears `open_tools` so older backgrounded tool calls do not suppress the hung deadline forever.
+pub fn SessionActor::on_mid_wait_steered(self : SessionActor, now_ms : Int64) -> Unit {
+  self.open_tools = []
+  self.steered_during_silence.clear()
+  self.last_live_event_at = Some(now_ms)
+  self.steer_silent_due_at = Some(now_ms + STEER_SILENT_MS)
+}
+
+pub fn SessionActor::on_tool_call_started(self : SessionActor, tool_id : String) -> Unit {
+  for i in 0..<self.open_tools.length() {
+    if self.open_tools[i] == tool_id {
+      return ()
+    }
+  }
+  self.open_tools.push(tool_id)
+}
+
+pub fn SessionActor::on_tool_call_ended(self : SessionActor, tool_id : String) -> Unit {
+  let next : Array[String] = []
+  for i in 0..<self.open_tools.length() {
+    if self.open_tools[i] != tool_id {
+      next.push(self.open_tools[i])
+    }
+  }
+  self.open_tools = next
+}
+
+/// Record a runtime live event: advances `last_live_event_at` and pushes `steer_silent_due_at` forward (`36bef9f96a`).
+pub fn SessionActor::on_live_event(self : SessionActor, now_ms : Int64) -> Unit {
+  self.last_live_event_at = Some(now_ms)
+  if !(self.steer_silent_due_at is None) {
+    self.steer_silent_due_at = Some(now_ms + STEER_SILENT_MS)
+  }
+}
+
+/// Evaluate whether a mid-wait-steered silent turn should end as `EndHung` at `now_ms` (`36bef9f96a`).
+/// On hung completion, ends the turn with `failed = true`, `hung = true`, returns any messages
+/// steered during the silence so the caller marks them undelivered again, and invokes `on_turn_ended`.
+pub fn SessionActor::check_steer_silent(
+  self : SessionActor,
+  now_ms : Int64,
+  is_held : Bool,
+  on_turn_ended : Option[(SteerHungResult) -> Unit] = None,
+) -> SteerSilentOutcome {
+  let due = match self.steer_silent_due_at {
+    Some(d) => d
+    None => return SteerSilentOutcome::NotDue
+  }
+  if now_ms < due {
+    return SteerSilentOutcome::NotDue
+  }
+  match self.phase {
+    ActorPhase::Running => ()
+    _ => {
+      self.steer_silent_due_at = None
+      self.steered_during_silence.clear()
+      return SteerSilentOutcome::StillActive
+    }
+  }
+  if is_held || self.archived || self.compacting || self.active_watch_job || self.open_tools.length() > 0 {
+    return SteerSilentOutcome::StillActive
+  }
+  match self.last_live_event_at {
+    Some(last) => {
+      if now_ms - last < STEER_SILENT_MS {
+        self.steer_silent_due_at = Some(last + STEER_SILENT_MS)
+        return SteerSilentOutcome::NotDue
+      }
+    }
+    None => ()
+  }
+  // End turn as failed+hung: terminate process, collect messages steered during silence
+  // so they can be marked undelivered again, notify on_turn_ended, and return to Idle.
+  let undelivered : Array[String] = []
+  for i in 0..<self.steered_during_silence.length() {
+    undelivered.push(self.steered_during_silence[i])
+  }
+  self.steered_during_silence.clear()
+  // Drop only the steers added during silence (walking from the back so any pre-existing
+  // `ActorWork::Steer` queued before the silence deadline was armed is preserved).
+  let drop_counts : Map[String, Int] = Map::new()
+  for i in 0..<undelivered.length() {
+    let s = undelivered[i]
+    match drop_counts.get(s) {
+      Some(c) => drop_counts.set(s, c + 1)
+      None => drop_counts.set(s, 1)
+    }
+  }
+  let keep_flags : Array[Bool] = []
+  for _ in 0..<self.queue.length() {
+    keep_flags.push(true)
+  }
+  let mut qi = self.queue.length() - 1
+  while qi >= 0 {
+    match self.queue[qi] {
+      ActorWork::Steer(s) => {
+        match drop_counts.get(s) {
+          Some(c) => {
+            if c > 0 {
+              keep_flags[qi] = false
+              drop_counts.set(s, c - 1)
+            }
+          }
+          None => ()
+        }
+      }
+      _ => ()
+    }
+    qi = qi - 1
+  }
+  let kept_q : Array[ActorWork] = []
+  for i in 0..<self.queue.length() {
+    if keep_flags[i] {
+      kept_q.push(self.queue[i])
+    }
+  }
+  self.queue = kept_q
+  self.steer_silent_due_at = None
+  self.open_tools = []
+  self.has_process = false
+  self.idle_since_ms = None
+  self.phase = ActorPhase::Idle
+  self.running_history.push(false)
+  let res = SteerHungResult::{
+    failed: true,
+    hung: true,
+    undelivered_steers: undelivered,
+    turn_end_notified: true,
+  }
+  self.last_hung_end = Some(res)
+  match on_turn_ended {
+    Some(cb) => cb(res)
+    None => ()
+  }
+  SteerSilentOutcome::EndHung(res)
+}
+
+/// Remaining `steerSilentMs` for handover snapshot, clamped to `[0, STEER_SILENT_MS]` (`36bef9f96a`).
+pub fn SessionActor::snapshot_steer_silent_ms(self : SessionActor, now_ms : Int64) -> Option[Int64] {
+  match self.steer_silent_due_at {
+    None => None
+    Some(due) => {
+      let rem = due - now_ms
+      if rem < 0L {
+        Some(0L)
+      } else if rem > STEER_SILENT_MS {
+        Some(STEER_SILENT_MS)
+      } else {
+        Some(rem)
+      }
+    }
+  }
+}
+
+/// Restore `steerSilentMs` and `openTools` from a handover snapshot (`36bef9f96a`).
+pub fn SessionActor::restore_steer_silent_ms(
+  self : SessionActor,
+  remaining_ms : Option[Int64],
+  open_tools : Array[String],
+  now_ms : Int64,
+) -> Unit {
+  self.open_tools = open_tools
+  match remaining_ms {
+    None => self.steer_silent_due_at = None
+    Some(rem) => {
+      let clamped = if rem < 0L { 0L } else if rem > STEER_SILENT_MS { STEER_SILENT_MS } else { rem }
+      self.steer_silent_due_at = Some(now_ms + clamped)
+      self.last_live_event_at = Some(now_ms - (STEER_SILENT_MS - clamped))
+    }
+  }
 }

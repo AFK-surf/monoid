@@ -5,6 +5,7 @@
 import "base_codec"
 import "host_shim"
 import "nodepath"
+import "station_sys"
 
 pub struct FileMeta {
   pub size : Int64
@@ -21,6 +22,7 @@ pub enum FsErr {
   NotFound
   PermissionDenied(String)
   Busy(String)
+  CrossDevice(String)
   Other(String)
 }
 
@@ -29,6 +31,7 @@ pub fn fs_err_msg(e : FsErr) -> String {
     FsErr::NotFound => "ENOENT"
     FsErr::PermissionDenied(m) => m
     FsErr::Busy(m) => m
+    FsErr::CrossDevice(m) => m
     FsErr::Other(m) => m
   }
 }
@@ -37,6 +40,7 @@ pub fn fs_err_is_transient_rename(e : FsErr) -> Bool {
   match e {
     FsErr::PermissionDenied(_) => true
     FsErr::Busy(_) => true
+    FsErr::CrossDevice(_) => false
     FsErr::Other(m) => {
       let low = ascii_lower(m)
       low.contains("eperm") ||
@@ -170,6 +174,11 @@ pub fn classify_shell_err(msg : String) -> FsErr {
   low.contains("being used by another process") ||
   low.contains("sharing violation") {
     FsErr::Busy(msg)
+  } else if low.contains("exdev") ||
+  low.contains("cross-device") ||
+  low.contains("os error 18") ||
+  low.contains("different device") {
+    FsErr::CrossDevice(msg)
   } else {
     FsErr::Other(msg)
   }
@@ -739,6 +748,9 @@ pub fn MemFs::ops(self : MemFs) -> OpsFs {
         self.rename_fail_count = self.rename_fail_count - 1
         if self.rename_fail_code == "EPERM" || self.rename_fail_code == "EACCES" {
           return Err(FsErr::PermissionDenied(self.rename_fail_code))
+        }
+        if self.rename_fail_code == "EXDEV" {
+          return Err(FsErr::CrossDevice(self.rename_fail_code))
         }
         return Err(FsErr::Busy(self.rename_fail_code))
       }

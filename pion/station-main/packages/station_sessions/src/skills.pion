@@ -1,0 +1,1353 @@
+// Composer `/` slash-invocable skills discovery, frontmatter parsing, and `<skill-invocation>`
+// delivery formatting (`station/src/sessions/skills.ts`, `#9028`).
+
+import "base_codec"
+import "jscase"
+import "nodepath"
+
+pub let MAX_SKILLS : Int = 250
+pub let MAX_COMMAND_DEPTH : Int = 4
+pub let MAX_DESCRIPTION_CHARS : Int = 200
+pub let MAX_INVOCATIONS : Int = 5
+pub let PROJECT_MEMORY_PREFIX : String = "项目记忆："
+
+/// Normalize a runtime string to one of the 10 known runtime kinds, else `None` (`#9028`).
+pub fn normalize_skill_runtime(raw : Option[String]) -> Option[String] {
+  match raw {
+    None => None
+    Some(r) => {
+      if r == "claude" ||
+      r == "codex" ||
+      r == "dsh" ||
+      r == "grok" ||
+      r == "cursor" ||
+      r == "devin" ||
+      r == "hermes" ||
+      r == "agy" ||
+      r == "pi" ||
+      r == "copilot" {
+        Some(r)
+      } else {
+        None
+      }
+    }
+  }
+}
+
+fn is_valid_workspace_id(ws : String) -> Bool {
+  let b = ws.to_bytes()
+  let n = b.length()
+  if n == 0 || n > 128 {
+    return false
+  }
+  for i in 0..<n {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 95 || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Workspace-scoped agent home path matching `station/src/sessions/agent-home.ts` `workspaceAgentHomePath`:
+/// home workspace uses `agent_home`; joined workspaces use `<agent_home>/workspaces/<ws>`.
+pub fn workspace_agent_home_path(
+  agent_home : String,
+  ws : Option[String],
+  home_ws : Option[String],
+) -> Result[String, String] {
+  match (ws, home_ws) {
+    (None, _) => Ok(agent_home)
+    (_, None) => Ok(agent_home)
+    (Some(w), Some(h)) => {
+      if w == h {
+        Ok(agent_home)
+      } else if !is_valid_workspace_id(w) {
+        Err("not a workspace id: " + w)
+      } else {
+        Ok(nodepath::join("/", [agent_home, "workspaces", w]))
+      }
+    }
+  }
+}
+
+/// Workspace-scoped `skills/` directory (`<workspace_agent_home_path>/skills`).
+pub fn workspace_skills_dir(
+  agent_home : String,
+  ws : Option[String],
+  home_ws : Option[String],
+) -> Result[String, String] {
+  match workspace_agent_home_path(agent_home, ws, home_ws) {
+    Ok(dir) => Ok(nodepath::join("/", [dir, "skills"]))
+    Err(e) => Err(e)
+  }
+}
+
+pub enum SkillSource {
+  Session
+  Agent
+  Workspace
+  Project
+  Builtin
+}
+
+pub fn skill_source_name(s : SkillSource) -> String {
+  match s {
+    SkillSource::Session => "session"
+    SkillSource::Agent => "agent"
+    SkillSource::Workspace => "workspace"
+    SkillSource::Project => "project"
+    SkillSource::Builtin => "builtin"
+  }
+}
+
+pub fn skill_source_rank(s : SkillSource) -> Int {
+  match s {
+    SkillSource::Session => 0
+    SkillSource::Agent => 1
+    SkillSource::Workspace => 2
+    SkillSource::Project => 3
+    SkillSource::Builtin => 4
+  }
+}
+
+pub struct ListedSkill {
+  pub name : String
+  pub description : String
+  pub source : SkillSource
+  pub place : Option[String]
+}
+
+pub fn ListedSkill::to_json(self : ListedSkill) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("name", base_codec::json_str(self.name)),
+    ("description", base_codec::json_str(self.description)),
+    ("source", base_codec::json_str(skill_source_name(self.source))),
+  ]
+  match self.place {
+    Some(p) => if p.length() > 0 { fields.push(("place", base_codec::json_str(p))) }
+    None => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+pub struct ResolvedSkill {
+  pub name : String
+  pub description : String
+  pub source : SkillSource
+  pub path : String
+}
+
+pub struct ListedSkills {
+  pub runtime : Option[String]
+  pub skills : Array[ListedSkill]
+}
+
+pub fn ListedSkills::to_json(self : ListedSkills) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<self.skills.length() {
+    arr.push(self.skills[i].to_json())
+  }
+  base_codec::json_obj([
+    (
+      "runtime",
+      match self.runtime {
+        Some(rt) => base_codec::json_str(rt)
+        None => base_codec::json_null()
+      },
+    ),
+    ("skills", base_codec::json_arr(arr)),
+  ])
+}
+
+/// Skills turned off by Claude Code `SETTINGS.skillOverrides` (`station/src/agents/claude.ts`, `#9028`).
+pub fn claude_disabled_skills() -> Array[String] {
+  [
+    "loop",
+    "schedule",
+    "keybindings-help",
+    "fewer-permission-prompts",
+    "plugin-authoring",
+    "update-config",
+    "anthropic-skills:computer-use",
+    "anthropic-skills:chrome-browser",
+    "anthropic-skills:built-in-browser",
+    "anthropic-skills:docs",
+    "anthropic-skills:google-workspace",
+    "anthropic-skills:morning",
+    "anthropic-skills:import-memory",
+  ]
+}
+
+pub fn builtin_skill_names() -> Array[String] {
+  [
+    "stillfail-chats",
+    "stillfail-cron",
+    "stillfail-github-ci",
+    "stillfail-jobs",
+    "stillfail-leading",
+    "stillfail-login",
+    "stillfail-move",
+    "stillfail-projects",
+    "stillfail-show",
+    "stillfail-viz",
+    "stillfail-browser",
+    "stillfail-feedback",
+    "stillfail-retire",
+  ]
+}
+
+pub struct ParsedFrontmatter {
+  pub name : Option[String]
+  pub description : Option[String]
+  pub disable_slash_command : Option[Bool]
+  pub user_invocable : Option[Bool]
+}
+
+fn trim_ascii_ws(s : String) -> String {
+  let b = s.to_bytes()
+  let mut lo = 0
+  let mut hi = b.length()
+  while lo < hi {
+    let c = b[lo].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      lo = lo + 1
+    } else {
+      break
+    }
+  }
+  while hi > lo {
+    let c = b[hi - 1].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      hi = hi - 1
+    } else {
+      break
+    }
+  }
+  b.slice(lo, hi).to_string()
+}
+
+fn leading_spaces(s : String) -> Int {
+  let b = s.to_bytes()
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 32 || c == 9 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  i
+}
+
+fn unquote_yaml(raw : String) -> String {
+  let n = raw.length()
+  if n >= 2 && raw.starts_with("\"") && raw.ends_with("\"") {
+    let inner = raw.slice(1, n - 1)
+    let sb = StringBuilder::new()
+    let mut i = 0
+    while i < inner.length() {
+      if inner.code_unit_at(i) == 92 && i + 1 < inner.length() {
+        let next = inner.code_unit_at(i + 1)
+        if next == 110 || next == 116 {
+          sb.write_string(" ")
+          i = i + 2
+          continue
+        }
+        if next == 114 {
+          i = i + 2
+          continue
+        }
+        if next == 34 || next == 92 {
+          sb.write_string(inner.slice(i + 1, i + 2))
+          i = i + 2
+          continue
+        }
+      }
+      sb.write_string(inner.slice(i, i + 1))
+      i = i + 1
+    }
+    return sb.to_string()
+  }
+  if n >= 2 && raw.starts_with("'") && raw.ends_with("'") {
+    let inner = raw.slice(1, n - 1)
+    let sb = StringBuilder::new()
+    let mut i = 0
+    while i < inner.length() {
+      if inner.code_unit_at(i) == 39 && i + 1 < inner.length() && inner.code_unit_at(i + 1) == 39 {
+        sb.write_string("'")
+        i = i + 2
+      } else {
+        sb.write_string(inner.slice(i, i + 1))
+        i = i + 1
+      }
+    }
+    return sb.to_string()
+  }
+  raw
+}
+
+fn is_fm_key_char(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 45
+}
+
+fn split_lines_crlf(text : String) -> Array[String] {
+  let raw = text.split("\n")
+  let out : Array[String] = []
+  for i in 0..<raw.length() {
+    let line = raw[i]
+    if line.ends_with("\r") {
+      out.push(line.slice(0, line.length() - 1))
+    } else {
+      out.push(line)
+    }
+  }
+  out
+}
+
+/// Parses YAML frontmatter from the head of a `SKILL.md` or command `.md` file (`#9028`).
+pub fn parse_skill_frontmatter(text : String) -> (ParsedFrontmatter, String) {
+  let clean = if text.starts_with("\u{FEFF}") {
+    text.slice(3, text.length())
+  } else {
+    text
+  }
+  let empty = ParsedFrontmatter::{
+    name: None,
+    description: None,
+    disable_slash_command: None,
+    user_invocable: None,
+  }
+  let lines = split_lines_crlf(clean)
+  if lines.length() < 2 || lines[0] != "---" {
+    return (empty, clean)
+  }
+  let mut close_idx = -1
+  let mut li = 1
+  while li < lines.length() {
+    if lines[li] == "---" {
+      close_idx = li
+      break
+    }
+    li = li + 1
+  }
+  if close_idx < 0 {
+    return (empty, clean)
+  }
+
+  let mut name : Option[String] = None
+  let mut description : Option[String] = None
+  let mut disable_slash : Option[Bool] = None
+  let mut user_invocable : Option[Bool] = None
+
+  let mut i = 1
+  while i < close_idx {
+    let line = lines[i]
+    let trimmed = trim_ascii_ws(line)
+    if trimmed.length() == 0 || trimmed.starts_with("#") {
+      i = i + 1
+      continue
+    }
+    // Top-level YAML keys must start at column 0 (forbid indented keys, matching `/^([A-Za-z0-9_-]+)\s*:\s*(.*)$/`).
+    if leading_spaces(line) > 0 {
+      i = i + 1
+      continue
+    }
+    let colon = line.index_of(":")
+    if colon <= 0 {
+      i = i + 1
+      continue
+    }
+    let raw_key = trim_ascii_ws(line.slice(0, colon))
+    let raw_key_bytes = raw_key.to_bytes()
+    let mut key_ok = raw_key_bytes.length() > 0
+    for ki in 0..<raw_key_bytes.length() {
+      if !is_fm_key_char(raw_key_bytes[ki].to_int() & 0xFF) {
+        key_ok = false
+        break
+      }
+    }
+    if !key_ok {
+      i = i + 1
+      continue
+    }
+    let key = jscase::lower(raw_key)
+    let mut fval = trim_ascii_ws(line.slice(colon + 1, line.length()))
+    if fval == ">" || fval == ">-" || fval == ">+" || fval == "|" || fval == "|-" || fval == "|+" {
+      let folded = fval.starts_with(">")
+      let block : Array[String] = []
+      let mut base_indent = -1
+      while i + 1 < close_idx {
+        let next = lines[i + 1]
+        if trim_ascii_ws(next).length() == 0 {
+          block.push("")
+          i = i + 1
+          continue
+        }
+        let indent = leading_spaces(next)
+        if indent == 0 {
+          break
+        }
+        if base_indent < 0 {
+          base_indent = indent
+        }
+        let cut = if indent < base_indent { indent } else { base_indent }
+        block.push(next.slice(cut, next.length()))
+        i = i + 1
+      }
+      if folded {
+        let sb = StringBuilder::new()
+        let mut wrote = false
+        for bi in 0..<block.length() {
+          let t = trim_ascii_ws(block[bi])
+          if t.length() > 0 {
+            if wrote {
+              sb.write_string(" ")
+            }
+            sb.write_string(t)
+            wrote = true
+          }
+        }
+        fval = sb.to_string()
+      } else {
+        let sb = StringBuilder::new()
+        for bi in 0..<block.length() {
+          if bi > 0 {
+            sb.write_string("\n")
+          }
+          sb.write_string(block[bi])
+        }
+        fval = trim_ascii_ws(sb.to_string())
+      }
+    } else if fval.length() == 0 {
+      let sb = StringBuilder::new()
+      let mut wrote = false
+      while i + 1 < close_idx {
+        let next = lines[i + 1]
+        if trim_ascii_ws(next).length() == 0 || leading_spaces(next) == 0 {
+          break
+        }
+        if wrote {
+          sb.write_string(" ")
+        }
+        sb.write_string(trim_ascii_ws(next))
+        wrote = true
+        i = i + 1
+      }
+      fval = sb.to_string()
+    } else {
+      fval = unquote_yaml(fval)
+    }
+
+    if key == "name" && fval.length() > 0 {
+      name = Some(fval)
+    } else if key == "description" && fval.length() > 0 {
+      description = Some(fval)
+    } else if key == "disable-slash-command" || key == "disable_slash_command" || key == "disableslashcommand" {
+      disable_slash = Some(jscase::lower(fval) == "true")
+    } else if key == "user-invocable" || key == "user_invocable" || key == "userinvocable" {
+      user_invocable = Some(jscase::lower(fval) != "false")
+    }
+    i = i + 1
+  }
+
+  let body_sb = StringBuilder::new()
+  let mut bi = close_idx + 1
+  while bi < lines.length() {
+    if bi > close_idx + 1 {
+      body_sb.write_string("\n")
+    }
+    body_sb.write_string(lines[bi])
+    bi = bi + 1
+  }
+  (
+    ParsedFrontmatter::{
+      name: name,
+      description: description,
+      disable_slash_command: disable_slash,
+      user_invocable: user_invocable,
+    },
+    body_sb.to_string(),
+  )
+}
+
+/// Collapse whitespace and truncate to at most `MAX_DESCRIPTION_CHARS` Unicode scalar codepoints (`#9028`).
+pub fn compact_description(raw : String) -> String {
+  let b = raw.to_bytes()
+  let sb = StringBuilder::new()
+  let mut in_ws = true
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      if !in_ws {
+        sb.write_byte(32.to_byte())
+        in_ws = true
+      }
+      i = i + 1
+    } else {
+      sb.write_byte(b[i])
+      in_ws = false
+      i = i + 1
+    }
+  }
+  let one = trim_ascii_ws(sb.to_string())
+  let ob = one.to_bytes()
+  let n = ob.length()
+  let mut cp = 0
+  let mut byte_idx = 0
+  let mut cut_idx = n
+  while byte_idx < n {
+    if cp == MAX_DESCRIPTION_CHARS - 1 {
+      cut_idx = byte_idx
+    }
+    let lead = ob[byte_idx].to_int() & 0xFF
+    let step = if lead < 0x80 { 1 } else if lead < 0xE0 { 2 } else if lead < 0xF0 { 3 } else { 4 }
+    cp = cp + 1
+    byte_idx = byte_idx + step
+  }
+  if cp > MAX_DESCRIPTION_CHARS {
+    trim_ascii_ws(ob.slice(0, cut_idx).to_string()) + "…"
+  } else {
+    one
+  }
+}
+
+pub fn fallback_description(body : String) -> String {
+  let lines = split_lines_crlf(body)
+  for i in 0..<lines.length() {
+    let line = trim_ascii_ws(lines[i])
+    if line.length() == 0 {
+      continue
+    }
+    let mut p = 0
+    while p < line.length() && (line.code_unit_at(p) & 0xFF) == 35 {
+      p = p + 1
+    }
+    let stripped = trim_ascii_ws(line.slice(p, line.length()))
+    if stripped.length() > 0 {
+      return compact_description(stripped)
+    }
+  }
+  ""
+}
+
+// ── Skill discovery over injectable `SkillFs` port ──
+
+pub struct SkillFs {
+  pub list_dir : (String) -> Array[String]
+  pub is_file : (String) -> Bool
+  pub is_dir : (String) -> Bool
+  pub read_head : (String, Int) -> Option[String]
+  pub canonical : (String) -> String
+}
+
+pub struct CollectSkillsOptions {
+  pub runtime : Option[String]
+  pub profile_home : Option[String]
+  pub profile_is_machine : Bool
+  pub fallback_agy_homes : Array[String]
+  pub cwd : Option[String]
+  pub workspace_skills_dir : Option[String]
+  pub preset_dirs : Array[String]
+  pub site_skills_dir : Option[String]
+  pub home_dir : String
+}
+
+fn str_arr_has(arr : Array[String], target : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+fn sort_str_arr(arr : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<arr.length() {
+    out.push(arr[i])
+  }
+  let mut si = 1
+  while si < out.length() {
+    let cur = out[si]
+    let mut pos = si
+    while pos > 0 && out[pos - 1] > cur {
+      out[pos] = out[pos - 1]
+      pos = pos - 1
+    }
+    out[pos] = cur
+    si = si + 1
+  }
+  out
+}
+
+fn path_is_inside(path : String, root : Option[String]) -> Bool {
+  match root {
+    None => false
+    Some(r) => {
+      if path == r {
+        return true
+      }
+      if r.ends_with("/") {
+        path.starts_with(r)
+      } else {
+        path.starts_with(r + "/")
+      }
+    }
+  }
+}
+
+fn has_bad_skill_name_char(name : String) -> Bool {
+  let b = name.to_bytes()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 || c == 47 || c == 92 {
+      return true
+    }
+  }
+  false
+}
+
+struct SkillCollector {
+  by_key : Map[String, ResolvedSkill]
+  keys : Array[String]
+  disabled : Array[String]
+}
+
+fn SkillCollector::add(self : SkillCollector, skill : ResolvedSkill) -> Unit {
+  let name = trim_ascii_ws(skill.name)
+  if name.length() == 0 || has_bad_skill_name_char(name) {
+    return ()
+  }
+  let key = jscase::lower(name)
+  if str_arr_has(self.disabled, name) || str_arr_has(self.disabled, key) {
+    return ()
+  }
+  match self.by_key.get(key) {
+    Some(existing) => {
+      if skill_source_rank(skill.source) < skill_source_rank(existing.source) {
+        self.by_key.set(
+          key,
+          ResolvedSkill::{ name: name, description: skill.description, source: skill.source, path: skill.path },
+        )
+      }
+      return ()
+    }
+    None => ()
+  }
+  if self.keys.length() >= MAX_SKILLS {
+    return ()
+  }
+  self.keys.push(key)
+  self.by_key.set(
+    key,
+    ResolvedSkill::{ name: name, description: skill.description, source: skill.source, path: skill.path },
+  )
+}
+
+fn scan_skill_dir(
+  fs : SkillFs,
+  c : SkillCollector,
+  dir : String,
+  source : SkillSource,
+  skip_inside : Array[Option[String]],
+  classify : Option[(String, String, String) -> SkillSource],
+  override_names : Option[Map[String, String]],
+) -> Unit {
+  let entries = sort_str_arr((fs.list_dir)(dir))
+  for i in 0..<entries.length() {
+    if c.keys.length() >= MAX_SKILLS {
+      break
+    }
+    let entry = entries[i]
+    if entry.starts_with(".") {
+      continue
+    }
+    let item_dir = nodepath::join("/", [dir, entry])
+    let skill_md = nodepath::join("/", [item_dir, "SKILL.md"])
+    if !(fs.is_file)(skill_md) {
+      continue
+    }
+    let real_dir = (fs.canonical)(item_dir)
+    let mut skip = false
+    for si in 0..<skip_inside.length() {
+      if path_is_inside(real_dir, skip_inside[si]) {
+        skip = true
+        break
+      }
+    }
+    if skip {
+      continue
+    }
+    let head = match (fs.read_head)(skill_md, 4096) {
+      Some(h) => h
+      None => continue
+    }
+    let (fm, body) = parse_skill_frontmatter(head)
+    match fm.disable_slash_command {
+      Some(true) => continue
+      _ => ()
+    }
+    match fm.user_invocable {
+      Some(false) => continue
+      _ => ()
+    }
+    let name = match override_names {
+      Some(ov) => match ov.get(entry) {
+        Some(n) => n
+        None => match fm.name { Some(n) => n, None => entry }
+      }
+      None => match fm.name { Some(n) => n, None => entry }
+    }
+    let desc_raw = match fm.description {
+      Some(d) => d
+      None => fallback_description(body)
+    }
+    let description = compact_description(desc_raw)
+    let actual_source = match classify {
+      Some(f) => f(entry, description, real_dir)
+      None => source
+    }
+    c.add(ResolvedSkill::{ name: name, description: description, source: actual_source, path: (fs.canonical)(skill_md) })
+  }
+}
+
+fn scan_claude_commands_walk(
+  fs : SkillFs,
+  c : SkillCollector,
+  root : String,
+  dir : String,
+  rel_prefix : String,
+  depth : Int,
+  source : SkillSource,
+  visited : Map[String, Bool],
+) -> Unit {
+  if depth > MAX_COMMAND_DEPTH || c.keys.length() >= MAX_SKILLS {
+    return ()
+  }
+  let real = (fs.canonical)(dir)
+  if visited.contains(real) {
+    return ()
+  }
+  visited.set(real, true)
+  let entries = sort_str_arr((fs.list_dir)(dir))
+  for i in 0..<entries.length() {
+    if c.keys.length() >= MAX_SKILLS {
+      break
+    }
+    let entry = entries[i]
+    if entry.starts_with(".") {
+      continue
+    }
+    let full = nodepath::join("/", [dir, entry])
+    if (fs.is_dir)(full) {
+      let next_prefix = if rel_prefix.length() == 0 { entry } else { rel_prefix + ":" + entry }
+      scan_claude_commands_walk(fs, c, root, full, next_prefix, depth + 1, source, visited)
+      continue
+    }
+    if !(fs.is_file)(full) || !jscase::lower(entry).ends_with(".md") {
+      continue
+    }
+    let stem = entry.slice(0, entry.length() - 3)
+    let fallback_name = if rel_prefix.length() == 0 { stem } else { rel_prefix + ":" + stem }
+    if fallback_name.length() == 0 {
+      continue
+    }
+    let head = match (fs.read_head)(full, 4096) {
+      Some(h) => h
+      None => continue
+    }
+    let (fm, body) = parse_skill_frontmatter(head)
+    match fm.disable_slash_command {
+      Some(true) => continue
+      _ => ()
+    }
+    match fm.user_invocable {
+      Some(false) => continue
+      _ => ()
+    }
+    let name = match fm.name {
+      Some(n) => n
+      None => fallback_name
+    }
+    let desc_raw = match fm.description {
+      Some(d) => d
+      None => fallback_description(body)
+    }
+    c.add(ResolvedSkill::{
+      name: name,
+      description: compact_description(desc_raw),
+      source: source,
+      path: (fs.canonical)(full),
+    })
+  }
+}
+
+fn scan_agy_plugins(
+  fs : SkillFs,
+  c : SkillCollector,
+  gemini : String,
+  skip_shared : Array[Option[String]],
+) -> Unit {
+  let plugins_root = nodepath::join("/", [gemini, "config", "plugins"])
+  let plugin_dirs = sort_str_arr((fs.list_dir)(plugins_root))
+  if plugin_dirs.length() == 0 {
+    return ()
+  }
+  let disabled_plugins : Map[String, Bool] = Map::new()
+  match (fs.read_head)(nodepath::join("/", [gemini, "config", "config.json"]), 65536) {
+    Some(cfg_raw) => match base_codec::json_parse(cfg_raw) {
+      base_codec::JsonParseResult::Ok(parsed) => match base_codec::json_get(parsed, "plugins") {
+        Some(base_codec::Json::Obj(pfields)) => {
+          for pi in 0..<pfields.length() {
+            let (pname, pval) = pfields[pi]
+            match base_codec::json_get(pval, "enabled") {
+              Some(base_codec::Json::Bool(false)) => disabled_plugins.set(pname, true)
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      _ => ()
+    }
+    None => ()
+  }
+  for i in 0..<plugin_dirs.length() {
+    if c.keys.length() >= MAX_SKILLS {
+      break
+    }
+    let dir = plugin_dirs[i]
+    if dir.starts_with(".") || disabled_plugins.contains(dir) {
+      continue
+    }
+    let plugin_path = nodepath::join("/", [plugins_root, dir])
+    let mut meta_disabled = false
+    match (fs.read_head)(nodepath::join("/", [plugin_path, "plugin.json"]), 16384) {
+      Some(meta_raw) => match base_codec::json_parse(meta_raw) {
+        base_codec::JsonParseResult::Ok(mv) => match base_codec::json_get(mv, "disabled") {
+          Some(base_codec::Json::Bool(true)) => meta_disabled = true
+          _ => ()
+        }
+        _ => ()
+      }
+      None => ()
+    }
+    if meta_disabled {
+      continue
+    }
+    scan_skill_dir(fs, c, nodepath::join("/", [plugin_path, "skills"]), SkillSource::Agent, skip_shared, None, None)
+  }
+}
+
+/// Collect all slash-invocable skills ordered by priority:
+/// `session` -> `agent` -> `workspace` -> `project` -> `builtin` (`#9028`).
+pub fn collect_skills(fs : SkillFs, opts : CollectSkillsOptions) -> Array[ResolvedSkill] {
+  let rt = match normalize_skill_runtime(opts.runtime) {
+    Some(r) => r
+    None => ""
+  }
+  let disabled = if rt == "claude" { claude_disabled_skills() } else { [] }
+  let c = SkillCollector::{ by_key: Map::new(), keys: [], disabled: disabled }
+  let shared_root : Option[String] = match opts.workspace_skills_dir {
+    Some(d) => if d.length() > 0 { Some((fs.canonical)(d)) } else { None }
+    None => None
+  }
+  let site_root : Option[String] = match opts.site_skills_dir {
+    Some(d) => if d.length() > 0 { Some((fs.canonical)(d)) } else { None }
+    None => None
+  }
+  let skip_shared : Array[Option[String]] = [shared_root, site_root]
+
+  // 1. Session-local skills (cwd and preset dirs).
+  if rt != "pi" {
+    match opts.cwd {
+      Some(cwd) => {
+        if cwd.length() > 0 {
+          if rt == "agy" {
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".agent", "skills"]), SkillSource::Session, skip_shared, None, None)
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".agents", "skills"]), SkillSource::Session, skip_shared, None, None)
+          } else if rt == "claude" {
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".claude", "skills"]), SkillSource::Session, skip_shared, None, None)
+            let visited : Map[String, Bool] = Map::new()
+            scan_claude_commands_walk(fs, c, nodepath::join("/", [cwd, ".claude", "commands"]), nodepath::join("/", [cwd, ".claude", "commands"]), "", 0, SkillSource::Session, visited)
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".agents", "skills"]), SkillSource::Session, skip_shared, None, None)
+          } else if rt == "copilot" {
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".github", "skills"]), SkillSource::Session, skip_shared, None, None)
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".agents", "skills"]), SkillSource::Session, skip_shared, None, None)
+          } else if rt == "cursor" {
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".cursor", "skills"]), SkillSource::Session, skip_shared, None, None)
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".agents", "skills"]), SkillSource::Session, skip_shared, None, None)
+          } else if rt == "devin" {
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".devin", "skills"]), SkillSource::Session, skip_shared, None, None)
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".agents", "skills"]), SkillSource::Session, skip_shared, None, None)
+          } else {
+            scan_skill_dir(fs, c, nodepath::join("/", [cwd, ".agents", "skills"]), SkillSource::Session, skip_shared, None, None)
+          }
+        }
+      }
+      None => ()
+    }
+    if opts.preset_dirs.length() > 0 {
+      let linked : Map[String, Bool] = Map::new()
+      // Exact 1:1 with Node `SKILL_HOMES` in `station/src/sessions/agent-home.ts`.
+      let skill_homes = [".claude/skills", ".agents/skills"]
+      for di in 0..<opts.preset_dirs.length() {
+        let pdir = opts.preset_dirs[di]
+        if pdir.length() == 0 {
+          continue
+        }
+        let base_name = nodepath::basename("/", pdir)
+        for hi in 0..<skill_homes.length() {
+          let dir = nodepath::join("/", [pdir, skill_homes[hi]])
+          let entries = sort_str_arr((fs.list_dir)(dir))
+          let overrides : Map[String, String] = Map::new()
+          for ei in 0..<entries.length() {
+            let n = entries[ei]
+            if n.starts_with(".") {
+              continue
+            }
+            if !(fs.is_file)(nodepath::join("/", [dir, n, "SKILL.md"])) {
+              continue
+            }
+            let chosen = if linked.contains(n) { base_name + "-" + n } else { n }
+            if linked.contains(chosen) {
+              continue
+            }
+            linked.set(chosen, true)
+            if chosen != n {
+              overrides.set(n, chosen)
+            }
+          }
+          scan_skill_dir(fs, c, dir, SkillSource::Session, skip_shared, None, Some(overrides))
+        }
+      }
+    }
+  }
+
+  // 2. Runtime-specific agent skills (exact 1:1 with Node `geminiDir`/`copilotHome`/`cursorHome`/`grokHome`/`devinHome`/`hermesHome`).
+  if rt == "agy" {
+    match opts.profile_home {
+      Some(ph) => {
+        let gemini = nodepath::join("/", [ph, "agy", ".gemini"])
+        scan_skill_dir(fs, c, nodepath::join("/", [gemini, "config", "skills"]), SkillSource::Agent, skip_shared, None, None)
+        scan_agy_plugins(fs, c, gemini, skip_shared)
+      }
+      None => ()
+    }
+    let builtin_dirs : Array[String] = []
+    match opts.profile_home {
+      Some(ph) => builtin_dirs.push(nodepath::join("/", [ph, "agy", ".gemini", "antigravity-cli", "builtin", "skills"]))
+      None => ()
+    }
+    for fi in 0..<opts.fallback_agy_homes.length() {
+      let cand = nodepath::join("/", [opts.fallback_agy_homes[fi], "agy", ".gemini", "antigravity-cli", "builtin", "skills"])
+      if !str_arr_has(builtin_dirs, cand) {
+        builtin_dirs.push(cand)
+      }
+    }
+    for bi in 0..<builtin_dirs.length() {
+      let bdir = builtin_dirs[bi]
+      if (fs.list_dir)(bdir).length() > 0 {
+        scan_skill_dir(fs, c, bdir, SkillSource::Agent, skip_shared, None, None)
+        break
+      }
+    }
+  } else if rt == "claude" {
+    match opts.profile_home {
+      Some(ph) => {
+        let chome = if opts.profile_is_machine { nodepath::join("/", [opts.home_dir, ".claude"]) } else { ph }
+        scan_skill_dir(fs, c, nodepath::join("/", [chome, "skills"]), SkillSource::Agent, skip_shared, None, None)
+        let visited : Map[String, Bool] = Map::new()
+        let cmd_root = nodepath::join("/", [chome, "commands"])
+        scan_claude_commands_walk(fs, c, cmd_root, cmd_root, "", 0, SkillSource::Agent, visited)
+      }
+      None => ()
+    }
+  } else if rt == "codex" {
+    match opts.profile_home {
+      Some(ph) => {
+        scan_skill_dir(fs, c, nodepath::join("/", [ph, "skills"]), SkillSource::Agent, skip_shared, None, None)
+        scan_skill_dir(fs, c, nodepath::join("/", [ph, "skills", ".system"]), SkillSource::Agent, skip_shared, None, None)
+      }
+      None => ()
+    }
+  } else if rt == "copilot" {
+    match opts.profile_home {
+      Some(ph) => scan_skill_dir(fs, c, nodepath::join("/", [ph, "copilot", "skills"]), SkillSource::Agent, skip_shared, None, None)
+      None => ()
+    }
+  } else if rt == "cursor" {
+    match opts.profile_home {
+      Some(ph) => scan_skill_dir(fs, c, nodepath::join("/", [ph, "cursor", "skills"]), SkillSource::Agent, skip_shared, None, None)
+      None => ()
+    }
+  } else if rt == "grok" {
+    match opts.profile_home {
+      Some(ph) => scan_skill_dir(fs, c, nodepath::join("/", [ph, "grok", "skills"]), SkillSource::Agent, skip_shared, None, None)
+      None => ()
+    }
+  } else if rt == "devin" {
+    match opts.profile_home {
+      Some(ph) => scan_skill_dir(fs, c, nodepath::join("/", [ph, "devin", "skills"]), SkillSource::Agent, skip_shared, None, None)
+      None => ()
+    }
+  } else if rt == "hermes" {
+    match opts.profile_home {
+      Some(ph) => scan_skill_dir(fs, c, nodepath::join("/", [ph, "hermes", "skills"]), SkillSource::Agent, skip_shared, None, None)
+      None => ()
+    }
+  } else if rt == "dsh" {
+    match opts.profile_home {
+      Some(ph) => scan_skill_dir(fs, c, nodepath::join("/", [ph, "agents", "skills"]), SkillSource::Agent, skip_shared, None, None)
+      None => ()
+    }
+  }
+
+  // 3. Shared workspace, project memory, and station built-in skills.
+  match opts.workspace_skills_dir {
+    Some(ws_dir) => {
+      if ws_dir.length() > 0 {
+        let builtins = builtin_skill_names()
+        scan_skill_dir(
+          fs,
+          c,
+          ws_dir,
+          SkillSource::Workspace,
+          [],
+          Some(fn(entry_name : String, desc : String, real_dir : String) -> SkillSource {
+            if str_arr_has(builtins, entry_name) || path_is_inside(real_dir, site_root) {
+              SkillSource::Builtin
+            } else if desc.starts_with(PROJECT_MEMORY_PREFIX) {
+              SkillSource::Project
+            } else {
+              SkillSource::Workspace
+            }
+          }),
+          None,
+        )
+      }
+    }
+    None => ()
+  }
+
+  let out : Array[ResolvedSkill] = []
+  for i in 0..<c.keys.length() {
+    match c.by_key.get(c.keys[i]) {
+      Some(s) => out.push(s)
+      None => ()
+    }
+  }
+  // Insertion sort by (source_rank, lowercase name).
+  let mut si = 1
+  while si < out.length() {
+    let cur = out[si]
+    let cur_rank = skill_source_rank(cur.source)
+    let cur_name = jscase::lower(cur.name)
+    let mut pos = si
+    while pos > 0 {
+      let prev = out[pos - 1]
+      let prev_rank = skill_source_rank(prev.source)
+      let prev_name = jscase::lower(prev.name)
+      if prev_rank > cur_rank || (prev_rank == cur_rank && prev_name > cur_name) {
+        out[pos] = prev
+        pos = pos - 1
+      } else {
+        break
+      }
+    }
+    out[pos] = cur
+    si = si + 1
+  }
+  out
+}
+
+/// Project `ResolvedSkill`s into `ListedSkill`s, attaching `place` to `Session` skills when non-empty (`#9028`).
+pub fn to_listed_skills(skills : Array[ResolvedSkill], place : String) -> Array[ListedSkill] {
+  let out : Array[ListedSkill] = []
+  for i in 0..<skills.length() {
+    let s = skills[i]
+    let p = match s.source {
+      SkillSource::Session => if place.length() > 0 { Some(place) } else { None }
+      _ => None
+    }
+    out.push(ListedSkill::{ name: s.name, description: s.description, source: s.source, place: p })
+  }
+  out
+}
+
+// ── Explicit `/<skill>` invocation extraction & XML hint formatting (`#9028`) ──
+
+fn strip_fenced_blocks(text : String) -> String {
+  let sb = StringBuilder::new()
+  let mut pos = 0
+  let n = text.length()
+  while pos < n {
+    let rest = text.slice(pos, n)
+    let idx = rest.index_of("```")
+    if idx < 0 {
+      sb.write_string(rest)
+      break
+    }
+    sb.write_string(rest.slice(0, idx))
+    let after_open = pos + idx + 3
+    if after_open >= n {
+      break
+    }
+    let tail = text.slice(after_open, n)
+    let close = tail.index_of("```")
+    if close < 0 {
+      sb.write_string(text.slice(pos + idx, n))
+      break
+    }
+    sb.write_string(" ")
+    pos = after_open + close + 3
+  }
+  sb.to_string()
+}
+
+fn is_ascii_alnum(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57)
+}
+
+fn is_slash_token_char(c : Int) -> Bool {
+  is_ascii_alnum(c) || c == 95 || c == 46 || c == 58 || c == 45
+}
+
+fn is_ascii_ws(c : Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12
+}
+
+/// Whether the UTF-8 sequence ending at byte index `end` (exclusive) is a JS `\s` Unicode whitespace character
+/// (ASCII ws, NBSP U+00A0, OGHAM U+1680, U+2000..U+200A, U+2028/U+2029, U+202F, U+205F, U+3000, BOM U+FEFF).
+fn ends_with_unicode_ws(b : Bytes, end : Int) -> Bool {
+  if end <= 0 {
+    return true
+  }
+  let c1 = b[end - 1].to_int() & 0xFF
+  if is_ascii_ws(c1) {
+    return true
+  }
+  if end >= 2 {
+    let b0 = b[end - 2].to_int() & 0xFF
+    if b0 == 0xC2 && c1 == 0xA0 {
+      return true
+    }
+  }
+  if end >= 3 {
+    let b0 = b[end - 3].to_int() & 0xFF
+    let b1 = b[end - 2].to_int() & 0xFF
+    if b0 == 0xE1 && b1 == 0x9A && c1 == 0x80 {
+      return true // U+1680
+    }
+    if b0 == 0xE2 && b1 == 0x80 && ((c1 >= 0x80 && c1 <= 0x8A) || c1 == 0xA8 || c1 == 0xA9 || c1 == 0xAF) {
+      return true // U+2000..U+200A, U+2028, U+2029, U+202F
+    }
+    if b0 == 0xE2 && b1 == 0x81 && c1 == 0x9F {
+      return true // U+205F
+    }
+    if b0 == 0xE3 && b1 == 0x80 && c1 == 0x80 {
+      return true // U+3000 fullwidth space
+    }
+    if b0 == 0xEF && b1 == 0xBB && c1 == 0xBF {
+      return true // U+FEFF BOM
+    }
+  }
+  false
+}
+
+/// Whether the UTF-8 sequence starting at `pos` is a JS `\s` Unicode whitespace character.
+fn starts_with_unicode_ws(b : Bytes, pos : Int) -> Bool {
+  let n = b.length()
+  if pos >= n {
+    return true
+  }
+  let b0 = b[pos].to_int() & 0xFF
+  if is_ascii_ws(b0) {
+    return true
+  }
+  if pos + 1 < n {
+    let b1 = b[pos + 1].to_int() & 0xFF
+    if b0 == 0xC2 && b1 == 0xA0 {
+      return true
+    }
+  }
+  if pos + 2 < n {
+    let b1 = b[pos + 1].to_int() & 0xFF
+    let b2 = b[pos + 2].to_int() & 0xFF
+    if b0 == 0xE1 && b1 == 0x9A && b2 == 0x80 {
+      return true
+    }
+    if b0 == 0xE2 && b1 == 0x80 && ((b2 >= 0x80 && b2 <= 0x8A) || b2 == 0xA8 || b2 == 0xA9 || b2 == 0xAF) {
+      return true
+    }
+    if b0 == 0xE2 && b1 == 0x81 && b2 == 0x9F {
+      return true
+    }
+    if b0 == 0xE3 && b1 == 0x80 && b2 == 0x80 {
+      return true
+    }
+    if b0 == 0xEF && b1 == 0xBB && b2 == 0xBF {
+      return true
+    }
+  }
+  false
+}
+
+fn is_slash_trailing_boundary(s : String, byte_pos : Int) -> Bool {
+  let b = s.to_bytes()
+  if byte_pos >= b.length() {
+    return true
+  }
+  if starts_with_unicode_ws(b, byte_pos) {
+    return true
+  }
+  let c = b[byte_pos].to_int() & 0xFF
+  // ASCII punctuation: . , ! ? ; : ) ] " ' `
+  if c == 46 || c == 44 || c == 33 || c == 63 || c == 59 || c == 58 || c == 41 || c == 93 || c == 34 || c == 39 || c == 96 {
+    return true
+  }
+  // CJK punctuation: ，。！？；：） 】 」 』
+  let rem = b.slice(byte_pos, b.length()).to_string()
+  rem.starts_with("，") ||
+  rem.starts_with("。") ||
+  rem.starts_with("！") ||
+  rem.starts_with("？") ||
+  rem.starts_with("；") ||
+  rem.starts_with("：") ||
+  rem.starts_with("）") ||
+  rem.starts_with("】") ||
+  rem.starts_with("」") ||
+  rem.starts_with("』")
+}
+
+/// Extracts explicit `/<skill>` tokens written by a person, ignoring fenced code blocks, paths (`a/b`), and URLs (`#9028`).
+pub fn extract_slash_invocations(text : String) -> Array[String] {
+  if text.index_of("/") < 0 {
+    return []
+  }
+  let clean = strip_fenced_blocks(text)
+  let b = clean.to_bytes()
+  let n = b.length()
+  let out : Array[String] = []
+  let mut i = 0
+  while i < n {
+    let c = b[i].to_int() & 0xFF
+    if c == 47 && ends_with_unicode_ws(b, i) {
+      let start = i + 1
+      if start < n && is_ascii_alnum(b[start].to_int() & 0xFF) {
+        let mut end = start + 1
+        while end < n && end - start < 64 && is_slash_token_char(b[end].to_int() & 0xFF) {
+          end = end + 1
+        }
+        if is_slash_trailing_boundary(clean, end) {
+          let key = jscase::lower(b.slice(start, end).to_string())
+          if !str_arr_has(out, key) {
+            out.push(key)
+          }
+          i = end
+          continue
+        }
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn escape_xml_attr(s : String) -> String {
+  let sb = StringBuilder::new()
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 38 {
+      sb.write_string("&amp;")
+    } else if c == 34 {
+      sb.write_string("&quot;")
+    } else if c == 60 {
+      sb.write_string("&lt;")
+    } else if c == 62 {
+      sb.write_string("&gt;")
+    } else {
+      sb.write_byte(b[i])
+    }
+  }
+  sb.to_string()
+}
+
+/// Formats `<skill-invocation>` hints for human messages that explicitly invoked one or more resolved skills (`#9028`).
+pub fn format_skill_invocations(
+  texts : Array[String],
+  resolved : Array[ResolvedSkill],
+) -> String {
+  if resolved.length() == 0 {
+    return ""
+  }
+  let by_key : Map[String, ResolvedSkill] = Map::new()
+  for i in 0..<resolved.length() {
+    by_key.set(jscase::lower(resolved[i].name), resolved[i])
+  }
+  let matched : Array[ResolvedSkill] = []
+  let seen : Map[String, Bool] = Map::new()
+  for ti in 0..<texts.length() {
+    let tokens = extract_slash_invocations(texts[ti])
+    for ki in 0..<tokens.length() {
+      let tok = tokens[ki]
+      if seen.contains(tok) {
+        continue
+      }
+      match by_key.get(tok) {
+        Some(skill) => {
+          seen.set(tok, true)
+          matched.push(skill)
+          if matched.length() >= MAX_INVOCATIONS {
+            break
+          }
+        }
+        None => ()
+      }
+    }
+    if matched.length() >= MAX_INVOCATIONS {
+      break
+    }
+  }
+  if matched.length() == 0 {
+    return ""
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<matched.length() {
+    if i > 0 {
+      sb.write_string("\n")
+    }
+    let s = matched[i]
+    sb.write_string("<skill-invocation name=\"")
+    sb.write_string(escape_xml_attr(s.name))
+    sb.write_string("\" path=\"")
+    sb.write_string(escape_xml_attr(s.path))
+    sb.write_string("\">\nThe user explicitly invoked /")
+    sb.write_string(s.name)
+    sb.write_string(". Read ")
+    sb.write_string(s.path)
+    sb.write_string(" and follow its instructions for this request.\n</skill-invocation>")
+  }
+  sb.to_string()
+}
+
+/// Append `<skill-invocation>` hints to a formatted delivery prompt if human texts invoke resolved skills (`#9028`).
+pub fn append_skill_invocations_to_delivery(
+  base_text : String,
+  human_texts : Array[String],
+  resolved : Array[ResolvedSkill],
+) -> String {
+  let hint = format_skill_invocations(human_texts, resolved)
+  if hint.length() == 0 {
+    base_text
+  } else if base_text.length() == 0 {
+    hint
+  } else {
+    base_text + "\n\n" + hint
+  }
+}

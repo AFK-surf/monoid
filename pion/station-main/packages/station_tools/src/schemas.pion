@@ -354,7 +354,7 @@ fn append_chat_tools(out : Array[ToolDecl]) -> Unit {
   out.push(
     make_tool_decl(
       "chat_create",
-      "Open a still.fail chat with its own agent, here or on another workspace station. for: me means you lead it (it asks you and reports each turn; end waiting to await it); person means your person owns it (no reports to you). text starts it; session_send writes to its link. Retry uncertain calls with the same key. See skills stillfail-chats and stillfail-leading.",
+      "Open a still.fail chat here or on another workspace station. For a specific model, pass runtime and model. for: me means you lead it (await with waiting); person gives it to your person. text starts it; session_send writes to it. Retry with the same key. See skills stillfail-chats and stillfail-leading.",
       s_obj(
         [
           ("for", s_str_enum(["me", "person"], "me: you lead it; person: your person's.")),
@@ -362,8 +362,8 @@ fn append_chat_tools(out : Array[ToolDecl]) -> Unit {
           ("text", s_str("The first message, standing on its own: what its agent is to do and what it needs to do it (it does not see your chat). Markdown.")),
           ("title", s_str("The chat's name, in their language (up to 120 characters). Its agent names it when left out.")),
           ("station", s_str("Another station of the workspace to open it on, by its name or id. Left out: this station.")),
-          ("runtime", s_str_enum(runtime_kinds(), "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI, pi: Pi). Default: that of its model.")),
-          ("model", s_str("Its agent's model. Default: the one the person it goes to uses most on that station, when one clearly leads; else it is not opened and you are told which to ask them about.")),
+          ("runtime", s_str_enum(runtime_kinds(), "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI, pi: Pi). With a model and no runtime: the opener's runtime.")),
+          ("model", s_str("Full model ID (e.g. gpt-6.2-astra). If omitted, the station picks the person's clearly most-used model, limited to runtime if given.")),
           ("effort", s_str("Its agent's reasoning effort. Default: the one that person has opened most chats with on that runtime and model there lately, else its model's.")),
           ("speed", s_str_enum(["standard", "fast", "ultrafast"], "Overrides fast. Ultrafast needs a supported Codex model and eligible ChatGPT plan.")),
           ("fast", s_bool("Fast mode.")),

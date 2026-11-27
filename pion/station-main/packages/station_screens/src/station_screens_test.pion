@@ -910,3 +910,53 @@ test "prepare_local_links: workspace paths, file: URLs, <file:///...> autolink, 
     Err(_) => assert_true(false)
   }
 }
+
+test "w17b2_trash_dangling_link_helper_sync_optimistic_open_and_frame_reader" {
+  // #6939: preserve dangling symlinks already in trash
+  let mem = MemDriveFs::new()
+  mem.put_dir("/home/.Trash")
+  mem.put_symlink("/home/.Trash/report.txt", "/nonexistent/target")
+  mem.put_text("/home/report.txt", "fresh")
+  match move_to_trash(mem.fs(), "/home/report.txt", TrashKind::Finder, 1000L, "/home") {
+    Ok(Some(dest)) => assert_eq(dest, "/home/.Trash/report 2.txt")
+    _ => assert_true(false)
+  }
+
+  // #8868: HelperFilesState syncs from HelperGrants and refreshes with backoff
+  let hf = HelperFilesState::new("/Users/me")
+  let st = HelperStatus::empty()
+  st.files.set("documents", "granted")
+  st.files.set("desktop", "denied")
+  assert_true(hf.sync_grants(st))
+  assert_true(hf.tops_needing_refresh(["/Users/me/Documents", "/Users/me/Desktop"], 10000L).length() == 1)
+  hf.record_access_failure(10000L)
+  assert_eq(hf.tops_needing_refresh(["/Users/me/Desktop"], 12000L).length(), 0)
+  assert_eq(hf.tops_needing_refresh(["/Users/me/Desktop"], 16000L).length(), 1)
+
+  // #9062: HelperGrantsState::fresh / invalidate / desktop_open_optimistic
+  let hg = HelperGrantsState::new(true, "/Applications/still.fail.app/Contents/Resources/node")
+  let ok_st = HelperStatus::{ ..HelperStatus::empty(), capture: true, control: true }
+  hg.learn_status(ok_st, 1000L)
+  assert_true(desktop_open_optimistic(hg, false, 15000L))
+  assert_true(!desktop_open_optimistic(hg, false, 31000L))
+  hg.on_grants_event()
+  assert_true(!desktop_open_optimistic(hg, false, 15000L))
+
+  // #8986: HelperFrameReader joins multi-chunk payload once at exact size
+  let reader = HelperFrameReader::new()
+  let hdr = Bytes::new(5)
+  hdr[0] = 7.to_byte()
+  hdr[4] = 6.to_byte()
+  assert_eq(match reader.feed(hdr) { Ok(f) => f.length(), Err(_) => -1 }, 0)
+  assert_eq(match reader.feed("ab".to_bytes()) { Ok(f) => f.length(), Err(_) => -1 }, 0)
+  assert_eq(match reader.feed("cd".to_bytes()) { Ok(f) => f.length(), Err(_) => -1 }, 0)
+  match reader.feed("ef".to_bytes()) {
+    Ok(frames) => {
+      assert_eq(frames.length(), 1)
+      assert_eq(frames[0].0, 7)
+      assert_eq(frames[0].1.to_string(), "abcdef")
+      assert_true(reader.join_alloc_bytes == 6L)
+    }
+    Err(_) => assert_true(false)
+  }
+}
