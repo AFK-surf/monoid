@@ -692,9 +692,9 @@ export async function presetCopyOf(workspace: string): Promise<PresetCopy | null
 export function presetInstructions(copy: PresetCopy): string {
   const dirs = copy.dirs.map((d) =>
     d.elsewhere === undefined
-      ? `  - ${d.path}${d.repo ? ` (a clone of ${d.repo}: change it in a worktree of your own, as with any repository)` : ""}`
+      ? `  - ${d.path}${d.repo ? ` (a clone of ${d.repo}: change it in a worktree of your own with \`stillfail worktree add --detach\`, as with any repository)` : ""}`
       : d.repo
-        ? `  - ${d.repo}: this station's clone of it (in the repository cache; clone it there if it is not yet), a worktree of your own to change it (on ${d.elsewhere} it is ${d.path})`
+        ? `  - ${d.repo}: this station's clone of it (in the repository cache; clone it there if it is not yet), a worktree of your own to change it with \`stillfail worktree add --detach\` (on ${d.elsewhere} it is ${d.path})`
         : `  - ${d.path} on station ${d.elsewhere}: read it there with the station tools (station_task, station_file), not copied here`,
   );
   const lines = [

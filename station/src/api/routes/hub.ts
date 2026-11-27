@@ -5,9 +5,9 @@ import { modelSpeed } from "../../../../client/core-ts/src/model-speed.ts";
 // routes/chats.ts's and routes/sessions.ts's (GET /sessions/:key/files among them).
 import { presetCopyInput } from "../../sessions/presets.ts";
 import { createHash, randomBytes, type Hash } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { appendFile, copyFile, mkdir, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readdir, rename, rm, stat, statfs, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { cloneFile } from "../../ops/clone.ts";
 import { clean, fileName as nameOf, inside } from "../../ops/paths.ts";
 import { type Answer, type Request, error, json, param, segment, ok, Refused, input } from "../request.ts";
 import type { Route, Tools } from "../admin.ts";
@@ -199,7 +199,7 @@ async function savePartNow(body: Buffer, dir: string, q: PartAsked, lang: Reques
     if (from !== null) {
       const { safe, path } = await uploadPath(dir, q.name);
       // A copy of its own (a clone where the disk makes one): the chat it goes to may change it, the other not.
-      await copyFile(from, path, fsConstants.COPYFILE_FICLONE);
+      await cloneFile(from, path);
       await known(dir, q.sha256, path);
       const file = { name: safe, path, size: q.size };
       assembled.set(q.id, { at: now, file });

@@ -71,7 +71,7 @@ const REPO_GIT_TERM_GRACE_MS = 10_000;
 /// it would not even be heard to close).
 export const runRepoGit: RepoGitRun = (dir, args, timeoutMs = REPO_GIT_TIMEOUT_MS, background = false) =>
   new Promise((resolve) => {
-    const env = { ...startEnv(), GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
+    const env = { ...startEnv(), GIT_NO_LAZY_FETCH: "1", GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -oBatchMode=yes -oStrictHostKeyChecking=accept-new" };
     const [program, argv] = background ? platform.backgrounded("git", ["-C", dir, ...args]) : ["git", ["-C", dir, ...args]];
     const child = startCommand(program, argv, { env, stdio: ["ignore", "pipe", "ignore"] });
     let stdout = "";

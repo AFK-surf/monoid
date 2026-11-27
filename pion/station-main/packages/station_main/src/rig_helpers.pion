@@ -2818,8 +2818,8 @@ pub fn dispatch_rig_peer_rpc_ext(
       Ok(s) => s
       Err(e) => return Err(e)
     }
-    let _ = remote.close_session_room(ws, peer, session, now_ms)
-    return Ok(reply_json(base_codec::json_obj([("closed", base_codec::json_bool(true))])))
+    let closed = remote.close_session_room(ws, peer, session, now_ms)
+    return Ok(reply_json(base_codec::json_obj([("closed", base_codec::json_bool(closed))])))
   }
   if method == "session.size" {
     let session = match require_session(env.request) {

@@ -512,6 +512,15 @@ const CHAT_RECORD = "$chat-record";
 /// `atWork`, `archivedCount`, the chats each names): fewer than those, each write read them all again in turn.
 const CHAT_ANSWERS_KEPT = 512;
 
+/// Whether a row `namedMany` found for the id `asked` comes before another as CHAT_READS.named orders them (`ORDER BY
+/// archived, id IS NOT ?, ord, id`): listed first, its id the one asked, its place, its id (compared as SQLite's TEXT).
+function namedBefore(a: ChatFound, aOrd: number, b: ChatFound, bOrd: number, asked: string): boolean {
+  if (a.archived !== b.archived) return !a.archived;
+  if ((a.id === asked) !== (b.id === asked)) return a.id === asked;
+  if (aOrd !== bOrd) return aOrd < bOrd;
+  return a.id < b.id;
+}
+
 /// How long a session counts as used lately once its chat or history was opened (`usedLately`).
 export const RECENT_MS = 3 * 86_400_000;
 
@@ -2029,7 +2038,13 @@ export class Data {
       const db = this.of(s);
       if (db) by.set(db, [...(by.get(db) ?? []), s]);
     }
-    return [...by].map(([db, stations]) => [db, this.#chatRows(db, read, { ...p, stations }, topics)]);
+    // (each database's answer kept by the keys of its own stations: another's written tells it nothing; one with no
+    // key of its own kept by them all, never by none)
+    return [...by].map(([db, stations]) => {
+      const own = new Set(stations);
+      const mine = by.size === 1 ? topics : topics.filter((t) => own.has(String(t.station)));
+      return [db, this.#chatRows(db, read, { ...p, stations }, mine.length > 0 ? mine : topics)];
+    });
   }
 
   /// A declared read's answer in one database: as its statement gave it while its keys' revisions (and their stations'
@@ -2070,8 +2085,51 @@ export class Data {
   chatNamed(station: string, id: string): { row: unknown; archived: boolean } | undefined {
     void this.listed(station, "chats");
     void this.listed(station, "archived");
-    this.#readQuery(readTopic(CHAT_READS.named.name, [station, id]));
-    return this.of(station)?.chatNamed(station, id);
+    const f = this.chatFound(CHAT_READS.named, { station, id })[0];
+    return f?.record === undefined ? undefined : { row: f.record, archived: f.archived };
+  }
+
+  /// The chats many links name (as chatNamed finds each), by `${station}\u0001${id}`, only those found with a record:
+  /// one statement for them all in each database (none while none of their keys was told), and their records read
+  /// together. A chat that leads others names hundreds it opened, and read one by one they were twice as many statements.
+  chatNamedMany(targets: readonly (readonly [station: string, id: string])[]): Map<string, { row: unknown; archived: boolean }> {
+    const out = new Map<string, { row: unknown; archived: boolean }>();
+    const pairs: [string, string][] = [];
+    const asked = new Set<string>();
+    const stations: string[] = [];
+    for (const [station, id] of targets) {
+      const k = `${station}\u0001${id}`;
+      if (asked.has(k)) continue;
+      asked.add(k);
+      pairs.push([station, id]);
+      if (!stations.includes(station)) stations.push(station);
+    }
+    if (pairs.length === 0) return out;
+    for (const st of stations) {
+      void this.listed(st, "chats");
+      void this.listed(st, "archived");
+    }
+    // (each one's first as CHAT_READS.named orders them: listed before archived, by its id before its session, by its
+    // place, by its id)
+    const best = new Map<string, { f: ChatFound; ord: number }>();
+    for (const r of this.chatCounted(CHAT_READS.namedMany, { stations, pairs })) {
+      const f = foundOf([r])[0];
+      const k = `${f.station}\u0001${String(r[3])}`;
+      const ord = Number(r[4]);
+      const was = best.get(k);
+      if (was === undefined || namedBefore(f, ord, was.f, was.ord, String(r[3]))) best.set(k, { f, ord });
+    }
+    const winners = new Map<string, ChatFound>();
+    for (const { f } of best.values()) {
+      const key = `${f.station}\u0001${f.archived ? 1 : 0}\u0001${f.id}`;
+      if (!winners.has(key)) winners.set(key, f);
+    }
+    this.chatRecords([...winners.values()]);
+    for (const [k, { f }] of best) {
+      const w = winners.get(`${f.station}\u0001${f.archived ? 1 : 0}\u0001${f.id}`)!;
+      if (w.record !== undefined) out.set(k, { row: w.record, archived: w.archived });
+    }
+    return out;
   }
 
   /// The chat a link names (as chatNamed finds it): its id, its title and whether it is archived, of their columns, no

@@ -776,60 +776,87 @@ pub fn TransfersManager::run_local(
         }
       }
     } else {
-      let up_id = station_ops::ops_slice_str(t.id, 0, if t.id.length() < 32 { t.id.length() } else { 32 }) + "-" + t.done.to_string()
-      let mut last_mtime : Option[Int64] = None
-      while true {
-        if self.is_cancelled(t.id) { return Ok(t) }
-        let (chunk, total_sz, mtime, _) = match drive.read(t.from.root, join2_rel(t.from.path, item.path), t.at, self.part_size, t.anywhere) {
-          Ok(r) => r
-          Err(e) => {
+      let mut cloned_fast = false
+      if t.from.station is None && t.at == 0L {
+        match drive.try_clone_local(t.from.root, join2_rel(t.from.path, item.path), t.to.root, dest_rel, t.anywhere) {
+          Some(Ok(sz)) => {
+            if sz != item.size {
+              t.total = t.total + (sz - item.size)
+              item.size = sz
+            }
+            t.copied = t.copied + sz
+            t.at = sz
+            match on_chunk {
+              Some(cb) => cb(t)
+              None => ()
+            }
+            cloned_fast = true
+          }
+          Some(Err(e)) => {
             t.state = TransferState::Failed
             t.error = Some(e.message)
             t.ended_at = Some(now)
             return Err(e)
           }
-        }
-        match last_mtime {
-          Some(prev_m) => {
-            if prev_m != mtime {
-              t.copied = t.copied - t.at
-              t.at = 0.to_int64()
-              last_mtime = None
-              continue
-            }
-          }
           None => ()
         }
-        last_mtime = Some(mtime)
-        if total_sz != item.size {
-          t.total = t.total + (total_sz - item.size)
-          item.size = total_sz
-        }
-        match drive.upload(t.to.root, dest_rel, up_id, t.at, total_sz, chunk, false, t.anywhere, now) {
-          Ok(res) => {
-            t.copied = t.copied + (res.have - t.at)
-            t.at = res.have
-            match on_chunk {
-              Some(cb) => cb(t)
-              None => ()
+      }
+      if !cloned_fast {
+        let up_id = station_ops::ops_slice_str(t.id, 0, if t.id.length() < 32 { t.id.length() } else { 32 }) + "-" + t.done.to_string()
+        let mut last_mtime : Option[Int64] = None
+        while true {
+          if self.is_cancelled(t.id) { return Ok(t) }
+          let (chunk, total_sz, mtime, _) = match drive.read(t.from.root, join2_rel(t.from.path, item.path), t.at, self.part_size, t.anywhere) {
+            Ok(r) => r
+            Err(e) => {
+              t.state = TransferState::Failed
+              t.error = Some(e.message)
+              t.ended_at = Some(now)
+              return Err(e)
             }
-            if !(res.entry is None) || t.at >= total_sz {
-              break
-            }
-            if self.is_cancelled(t.id) { return Ok(t) }
           }
-          Err(e) => {
-            match (e.code, e.have) {
-              (DriveCode::UploadLost, Some(have)) => {
-                t.copied = t.copied - (t.at - have)
-                t.at = have
+          match last_mtime {
+            Some(prev_m) => {
+              if prev_m != mtime {
+                t.copied = t.copied - t.at
+                t.at = 0.to_int64()
+                last_mtime = None
                 continue
               }
-              _ => {
-                t.state = TransferState::Failed
-                t.error = Some(e.message)
-                t.ended_at = Some(now)
-                return Err(e)
+            }
+            None => ()
+          }
+          last_mtime = Some(mtime)
+          if total_sz != item.size {
+            t.total = t.total + (total_sz - item.size)
+            item.size = total_sz
+          }
+          match drive.upload(t.to.root, dest_rel, up_id, t.at, total_sz, chunk, false, t.anywhere, now) {
+            Ok(res) => {
+              t.copied = t.copied + (res.have - t.at)
+              t.at = res.have
+              match on_chunk {
+                Some(cb) => cb(t)
+                None => ()
+              }
+              if !(res.entry is None) || t.at >= total_sz {
+                break
+              }
+              if self.is_cancelled(t.id) { return Ok(t) }
+            }
+            Err(e) => {
+              match (e.code, e.have) {
+                (DriveCode::UploadLost, Some(have)) => {
+                  t.copied = t.copied - (t.at - have)
+                  t.at = have
+                  continue
+                }
+                _ => {
+                  t.state = TransferState::Failed
+                  t.error = Some(e.message)
+                  t.ended_at = Some(now)
+                  return Err(e)
+                }
               }
             }
           }

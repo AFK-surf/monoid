@@ -18,11 +18,11 @@ import "station_sys"
 import "station_vault"
 
 pub fn version_line() -> String {
-  "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin"
+  "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin,worktree"
 }
 
 pub fn usage_line() -> String {
-  "usage: stillfail-station-pion --version | run [--app DIR] [--port N] [--data DIR] [--control-fd N] | id | status | lock status|reset | channel [stable|beta] | enroll <cloud> <token> | update [--beta|--stable] --app DIR | heap | admin ..."
+  "usage: stillfail-station-pion --version | run [--app DIR] [--port N] [--data DIR] [--control-fd N] | id | status | lock status|reset | channel [stable|beta] | enroll <cloud> <token> | update [--beta|--stable] --app DIR | heap | [-C <repo>] worktree <args> | admin ..."
 }
 
 fn run_smoke_sys() -> Int {

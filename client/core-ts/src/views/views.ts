@@ -3785,13 +3785,19 @@ export class Views implements Owner {
     const items: { item: J; at: string; row: J | undefined; thread: number | null; idx: number }[] = [];
     const rawOpened = arr(get(raw, "opened"));
     const ws = ofAddress(station);
-    for (let idx = 0; idx < rawOpened.length; idx++) {
-      const o = rawOpened[idx];
+    // (each one's station and session, its chat found with the others' at once)
+    const asked: ({ o: J; at: string; session: string } | null)[] = rawOpened.map((o) => {
       const session = str(get(o, "session"));
-      if (session === null) continue;
+      if (session === null) return null;
       const there = str(get(o, "station"));
-      const at = there !== null && there !== "" ? `${ws}/${there}` : station;
-      const found = this.#core.data.chatNamed(at, session);
+      return { o, at: there !== null && there !== "" ? `${ws}/${there}` : station, session };
+    });
+    const named = this.#core.data.chatNamedMany(asked.flatMap((a) => (a === null ? [] : [[a.at, a.session] as const])));
+    for (let idx = 0; idx < asked.length; idx++) {
+      const a = asked[idx];
+      if (a === null) continue;
+      const { o, at, session } = a;
+      const found = named.get(`${at}\u0001${session}`);
       const row = found?.row as J | undefined;
       const title = str(get(row, "title")) || str(get(o, "title")) || t("core-views.new_chat");
       const out: J = { station: at, session, title };
@@ -4812,7 +4818,7 @@ export class Views implements Owner {
     if (openers.length > 0) view.openers = openers;
     // the chats it opened, each where it stands, for its bar's list of them
     const openedRow = row ?? archivedRow;
-    const opened = openedRow !== undefined ? this.#opened(station, openedRow) : [];
+    const opened = openedRow !== undefined ? timed("chat.opened", () => this.#opened(station, openedRow)) : [];
     if (opened.length > 0) {
       view.opened = opened;
       view.openedText = t("core-views.opened", { n: opened.length });
@@ -5663,7 +5669,7 @@ export class Views implements Owner {
     const where = isObject(origin) ? this.#whereIn(station, agents, surface, strOf(origin, "channel"), strOf(origin, "channelName"), strOf(origin, "threadTs"), undefined, get(origin, "links")) : null;
     const opener = row !== undefined ? this.#opener(station, row) : null;
     const openers = row !== undefined ? this.#openers(station, row) : [];
-    const opened = row !== undefined ? this.#opened(station, row) : [];
+    const opened = row !== undefined ? timed("chat.opened", () => this.#opened(station, row)) : [];
     return {
       ok: {
         me: this.me(ofAddress(station)),

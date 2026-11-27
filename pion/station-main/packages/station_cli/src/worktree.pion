@@ -1,0 +1,1464 @@
+// Lockless 2-generation immutable copy-on-write git worktree creation (`stillfail worktree add`).
+// Native Pion implementation in `station_cli` (primary Station engine): populates detached worktrees
+// by CoW-cloning a cached generation under `<common_git_dir>/cow/<oid>-<fp16>/` and running `git reset --hard -q`,
+// falling back transparently to native `git worktree` whenever any pre-flight safety gate does not pass.
+
+let WT_TMP_EXPIRE_MS : Int64 = 3600000L
+let WT_KEEP_GENERATIONS : Int = 2
+
+pub struct WorktreeFastPath {
+  pub abs_path : String
+  pub commitish : String
+}
+
+pub struct ParsedWorktreeArgs {
+  pub repo : String
+  pub worktree_args : Array[String]
+  pub fast_path : Option[WorktreeFastPath]
+}
+
+pub struct WorktreeCowOutcome {
+  pub result : CliResult
+  pub used_cow : Bool
+  pub promoted : Bool
+  pub hit_gen : Option[String]
+}
+
+struct WtPreflightOk {
+  common_git_dir : String
+  commit_oid : String
+  checkout_fingerprint : String
+}
+
+struct WtGenCandidate {
+  dir_name : String
+  oid : String
+  mtime_ms : Int64
+}
+
+fn wt_is_hex_lower_slice(s : String, start : Int, len : Int) -> Bool {
+  if start < 0 || start + len > s.length() {
+    return false
+  }
+  let mut i = 0
+  while i < len {
+    let c = s.code_unit_at(start + i) & 0xFF
+    let ok = (c >= 48 && c <= 57) || (c >= 97 && c <= 102)
+    if !ok {
+      return false
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn wt_is_hex40(s : String) -> Bool {
+  s.length() == 40 && wt_is_hex_lower_slice(s, 0, 40)
+}
+
+/// Matches `<40hex>-<16hex>` (57 chars).
+fn wt_is_gen_key(s : String) -> Bool {
+  s.length() == 57 &&
+  (s.code_unit_at(40) & 0xFF) == 45 &&
+  wt_is_hex_lower_slice(s, 0, 40) &&
+  wt_is_hex_lower_slice(s, 41, 16)
+}
+
+fn wt_make_gen_key(commit_oid : String, checkout_fingerprint : String) -> String {
+  commit_oid + "-" + station_ops::ops_slice_str(checkout_fingerprint, 0, 16)
+}
+
+fn wt_strip_trailing_eol(s : String) -> String {
+  let mut end = s.length()
+  if end > 0 && (s.code_unit_at(end - 1) & 0xFF) == 10 {
+    end = end - 1
+  }
+  if end > 0 && (s.code_unit_at(end - 1) & 0xFF) == 13 {
+    end = end - 1
+  }
+  station_ops::ops_slice_str(s, 0, end)
+}
+
+fn wt_trim_start(s : String) -> String {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let c = s.code_unit_at(i) & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  station_ops::ops_slice_str(s, i, n)
+}
+
+fn wt_is_ws(c : Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13 || c == 11 || c == 12
+}
+
+fn wt_last_index_of_byte(s : String, target : Int) -> Int {
+  let mut i = s.length() - 1
+  while i >= 0 {
+    if (s.code_unit_at(i) & 0xFF) == target {
+      return i
+    }
+    i = i - 1
+  }
+  -1
+}
+
+fn wt_resolve_path(sep : String, base : String, p : String) -> String {
+  if p.length() == 0 {
+    return base
+  }
+  if nodepath::is_absolute(sep, p) {
+    return nodepath::join(sep, [p])
+  }
+  if base.length() == 0 {
+    return nodepath::join(sep, [p])
+  }
+  nodepath::join(sep, [base, p])
+}
+
+/// Normalize a POSIX-style relative path (replacing `\` with `/`) to detect `..` escapes.
+fn wt_posix_normalize(raw : String) -> String {
+  let s = cli_replace_all(raw, "\\", "/")
+  let is_abs = s.starts_with("/")
+  let parts : Array[String] = []
+  let mut start = 0
+  let n = s.length()
+  let mut i = 0
+  while i <= n {
+    if i == n || (s.code_unit_at(i) & 0xFF) == 47 {
+      if i > start {
+        let seg = station_ops::ops_slice_str(s, start, i)
+        if seg == "." {
+          ()
+        } else if seg == ".." {
+          if parts.length() > 0 && parts[parts.length() - 1] != ".." {
+            let _ = parts.pop()
+          } else if !is_abs {
+            parts.push("..")
+          }
+        } else {
+          parts.push(seg)
+        }
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  let joined = cli_join(parts, "/")
+  if is_abs {
+    "/" + joined
+  } else if joined.length() == 0 {
+    "."
+  } else {
+    joined
+  }
+}
+
+/// Parses `[-C <repo>] [worktree] <rest...>` or `[worktree] [-C <repo>] <rest...>`.
+pub fn parse_worktree_args(
+  argv : Array[String],
+  caller_cwd : String,
+  env : Map[String, String],
+  sep : String = "/",
+) -> ParsedWorktreeArgs {
+  let mut repo_dir : Option[String] = None
+  let mut i = 0
+  let mut seen_worktree = false
+
+  // Consume optional leading `-C <repo>` / `-C<repo>` and at most one `worktree` token.
+  while i < argv.length() {
+    let a = argv[i]
+    if a == "-C" && i + 1 < argv.length() {
+      repo_dir = Some(argv[i + 1])
+      i = i + 2
+      continue
+    }
+    if a.starts_with("-C") && a.length() > 2 {
+      repo_dir = Some(station_ops::ops_slice_str(a, 2, a.length()))
+      i = i + 1
+      continue
+    }
+    if a == "worktree" && !seen_worktree {
+      seen_worktree = true
+      i = i + 1
+      continue
+    }
+    break
+  }
+
+  let worktree_args : Array[String] = []
+  while i < argv.length() {
+    worktree_args.push(argv[i])
+    i = i + 1
+  }
+
+  let repo = match repo_dir {
+    Some(r) => wt_resolve_path(sep, caller_cwd, r)
+    None => caller_cwd
+  }
+
+  match env.get("STILLFAIL_WORKTREE_COW") {
+    Some(v) => if v == "0" {
+      return ParsedWorktreeArgs::{ repo: repo, worktree_args: worktree_args, fast_path: None }
+    }
+    None => ()
+  }
+
+  if worktree_args.length() == 0 || worktree_args[0] != "add" {
+    return ParsedWorktreeArgs::{ repo: repo, worktree_args: worktree_args, fast_path: None }
+  }
+
+  let mut has_detach = false
+  let mut end_opts = false
+  let positionals : Array[String] = []
+  let mut j = 1
+  while j < worktree_args.length() {
+    let a = worktree_args[j]
+    if !end_opts && a == "--" {
+      end_opts = true
+      j = j + 1
+      continue
+    }
+    if !end_opts && a.starts_with("-") {
+      if a == "--detach" || a == "-d" {
+        has_detach = true
+        j = j + 1
+        continue
+      }
+      // Any other option (-b, -B, -f, --lock, --orphan, etc.) falls back to native git.
+      return ParsedWorktreeArgs::{ repo: repo, worktree_args: worktree_args, fast_path: None }
+    }
+    positionals.push(a)
+    j = j + 1
+  }
+
+  if !has_detach || positionals.length() < 1 || positionals.length() > 2 {
+    return ParsedWorktreeArgs::{ repo: repo, worktree_args: worktree_args, fast_path: None }
+  }
+
+  // `git -C <repo> worktree add <rel_path>` resolves relative paths against `<repo>`, not `caller_cwd`.
+  let abs_path = wt_resolve_path(sep, repo, positionals[0])
+  let commitish = if positionals.length() == 2 { positionals[1] } else { "HEAD" }
+  ParsedWorktreeArgs::{
+    repo: repo,
+    worktree_args: worktree_args,
+    fast_path: Some(WorktreeFastPath::{ abs_path: abs_path, commitish: commitish }),
+  }
+}
+
+pub fn wt_extract_filter_drivers(content : Option[String]) -> Array[String] {
+  let out : Array[String] = []
+  let text = match content {
+    Some(t) => t
+    None => return out
+  }
+  let lines = cli_split_lines(text)
+  let mut idx = 0
+  while idx < lines.length() {
+    let raw = wt_strip_trailing_eol(lines[idx])
+    let line = wt_trim_start(raw)
+    if line.length() == 0 || line.starts_with("#") {
+      idx = idx + 1
+      continue
+    }
+    // Skip the pattern token (quoted or unquoted).
+    let mut rest = ""
+    if line.starts_with("\"") {
+      let mut k = 1
+      while k < line.length() {
+        let c = line.code_unit_at(k) & 0xFF
+        if c == 92 {
+          k = k + 2
+          continue
+        }
+        if c == 34 {
+          rest = station_ops::ops_slice_str(line, k + 1, line.length())
+          break
+        }
+        k = k + 1
+      }
+    } else {
+      let mut k = 0
+      while k < line.length() {
+        if wt_is_ws(line.code_unit_at(k) & 0xFF) {
+          rest = station_ops::ops_slice_str(line, k, line.length())
+          break
+        }
+        k = k + 1
+      }
+    }
+    // Scan whitespace-separated attribute tokens for `filter=<driver>`.
+    let mut p = 0
+    let rn = rest.length()
+    while p < rn {
+      while p < rn && wt_is_ws(rest.code_unit_at(p) & 0xFF) {
+        p = p + 1
+      }
+      let tok_start = p
+      while p < rn && !wt_is_ws(rest.code_unit_at(p) & 0xFF) {
+        p = p + 1
+      }
+      if p > tok_start {
+        let tok = station_ops::ops_slice_str(rest, tok_start, p)
+        if tok.starts_with("filter=") && tok.length() > 7 {
+          out.push(station_ops::ops_slice_str(tok, 7, tok.length()))
+        }
+      }
+    }
+    idx = idx + 1
+  }
+  out
+}
+
+pub fn wt_has_filter_rule(content : Option[String]) -> Bool {
+  wt_extract_filter_drivers(content).length() > 0
+}
+
+fn wt_parse_configured_filter_drivers(raw : String) -> Map[String, Bool] {
+  let drivers : Map[String, Bool] = Map::new()
+  let lines = cli_split_lines(raw)
+  let mut i = 0
+  while i < lines.length() {
+    let line = cli_trim(lines[i])
+    if line.length() > 0 {
+      let mut sp = 0
+      while sp < line.length() && !wt_is_ws(line.code_unit_at(sp) & 0xFF) {
+        sp = sp + 1
+      }
+      let key = station_ops::ops_slice_str(line, 0, sp)
+      if key.starts_with("filter.") {
+        let rest = station_ops::ops_slice_str(key, 7, key.length())
+        let last_dot = wt_last_index_of_byte(rest, 46)
+        if last_dot > 0 {
+          let suffix = station_ops::ops_slice_str(rest, last_dot + 1, rest.length())
+          if suffix == "clean" || suffix == "smudge" || suffix == "process" {
+            let drv = station_ops::ops_slice_str(rest, 0, last_dot)
+            drivers.set(drv, true)
+          }
+        }
+      }
+    }
+    i = i + 1
+  }
+  drivers
+}
+
+fn wt_has_configured_filter_rule(content : Option[String], configured : Map[String, Bool]) -> Bool {
+  if configured.length() == 0 {
+    return false
+  }
+  let drivers = wt_extract_filter_drivers(content)
+  let mut i = 0
+  while i < drivers.length() {
+    if configured.contains(drivers[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn wt_exec_git(
+  ports : CliPorts,
+  repo : String,
+  args : Array[String],
+  extra_env : Option[Map[String, String]] = None,
+  stdin_bytes : Option[Bytes] = None,
+) -> Result[GitExecResult, String] {
+  let runner = match ports.run_git {
+    Some(f) => f
+    None => return Err("run_git port unavailable")
+  }
+  let full_args : Array[String] = ["-C", repo, "-c", "core.fsmonitor=false"]
+  let mut i = 0
+  while i < args.length() {
+    full_args.push(args[i])
+    i = i + 1
+  }
+  runner(ports.caller_cwd, full_args, extra_env, stdin_bytes)
+}
+
+fn wt_passthrough_git(
+  ports : CliPorts,
+  repo : String,
+  worktree_args : Array[String],
+) -> CliResult {
+  let runner = match ports.run_git {
+    Some(f) => f
+    None => return CliResult::err(1, "stillfail worktree: git runner unavailable\n")
+  }
+  let full_args : Array[String] = ["-C", repo, "worktree"]
+  let mut i = 0
+  while i < worktree_args.length() {
+    full_args.push(worktree_args[i])
+    i = i + 1
+  }
+  match runner(ports.caller_cwd, full_args, None, None) {
+    Ok(res) => CliResult::{
+      exit_code: res.exit_code,
+      stdout: station_ops::ops_bytes_to_str(res.stdout),
+      stderr: station_ops::ops_bytes_to_str(res.stderr),
+    }
+    Err(e) => CliResult::err(1, "stillfail worktree: failed to run git: " + e + "\n")
+  }
+}
+
+fn wt_no_lazy_env() -> Option[Map[String, String]] {
+  let m : Map[String, String] = Map::new()
+  m.set("GIT_NO_LAZY_FETCH", "1")
+  Some(m)
+}
+
+fn wt_git_config_get(ports : CliPorts, repo : String, key : String) -> Result[Option[String], String] {
+  match wt_exec_git(ports, repo, ["config", "--get", key]) {
+    Ok(res) => if res.exit_code == 0 {
+      Ok(Some(wt_strip_trailing_eol(station_ops::ops_bytes_to_str(res.stdout))))
+    } else if res.exit_code == 1 {
+      Ok(None)
+    } else {
+      Err("git config failed")
+    }
+    Err(e) => Err(e)
+  }
+}
+
+fn wt_git_var_path(ports : CliPorts, repo : String, name : String) -> Result[String, String] {
+  match wt_exec_git(ports, repo, ["var", name]) {
+    Ok(res) => if res.exit_code == 0 {
+      Ok(cli_trim(station_ops::ops_bytes_to_str(res.stdout)))
+    } else {
+      Err("git var failed")
+    }
+    Err(e) => Err(e)
+  }
+}
+
+fn wt_nearest_existing_ancestor(ports : CliPorts, target_path : String) -> Option[String] {
+  let mut cur = nodepath::dirname(ports.sep, target_path)
+  let mut steps = 0
+  while steps < 128 {
+    match (ports.fs.stat)(cur) {
+      Ok(_) => return Some(cur)
+      Err(_) => ()
+    }
+    let parent = nodepath::dirname(ports.sep, cur)
+    if parent == cur || parent.length() == 0 {
+      return None
+    }
+    cur = parent
+    steps = steps + 1
+  }
+  None
+}
+
+fn wt_is_hook_executable(ports : CliPorts, file_path : String) -> Bool {
+  match (ports.fs.stat)(file_path) {
+    Ok(st) => {
+      if !st.is_file {
+        return false
+      }
+      match ports.platform_os {
+        station_ops::PlatformOs::Windows => true
+        _ => match ports.is_executable {
+          Some(f) => f(file_path)
+          None => (st.mode & 73) != 0
+        }
+      }
+    }
+    Err(_) => false
+  }
+}
+
+fn wt_read_attr_file(ports : CliPorts, file_path : String) -> Result[Option[String], String] {
+  match ports.fs.read_text(file_path) {
+    Ok(t) => Ok(Some(t))
+    Err(station_ops::FsErr::NotFound) => Ok(None)
+    Err(e) => Err(station_ops::fs_err_msg(e))
+  }
+}
+
+fn wt_ascii_lower(s : String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn wt_has_dotdot_segment(raw_path : String) -> Bool {
+  let n = raw_path.length()
+  let mut start = 0
+  let mut i = 0
+  while i <= n {
+    let is_sep = if i == n {
+      true
+    } else {
+      let c = raw_path.code_unit_at(i) & 0xFF
+      c == 47 || c == 92
+    }
+    if is_sep {
+      if i - start == 2 &&
+      (raw_path.code_unit_at(start) & 0xFF) == 46 &&
+      (raw_path.code_unit_at(start + 1) & 0xFF) == 46 {
+        return true
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  false
+}
+
+/// Returns `Ok(None)` if no post-checkout hook exists, `Ok(Some(tree_path))` if a relative
+/// in-tree path must be checked against `ls-tree -r -z`, or `Err(())` to bypass CoW.
+fn wt_check_post_checkout_hook(
+  ports : CliPorts,
+  repo : String,
+  common_git_dir : String,
+  abs_path : String,
+) -> Result[Option[String], Unit] {
+  let hp_opt = match wt_git_config_get(ports, repo, "core.hooksPath") {
+    Ok(v) => v
+    Err(_) => return Err(())
+  }
+  match hp_opt {
+    None => if wt_is_hook_executable(ports, nodepath::join(ports.sep, [common_git_dir, "hooks", "post-checkout"])) {
+      Err(())
+    } else {
+      Ok(None)
+    }
+    Some(hp) => {
+      if hp.length() == 0 {
+        return if wt_is_hook_executable(ports, nodepath::join(ports.sep, [common_git_dir, "hooks", "post-checkout"])) {
+          Err(())
+        } else {
+          Ok(None)
+        }
+      }
+      if nodepath::is_absolute(ports.sep, hp) {
+        return if wt_is_hook_executable(ports, nodepath::join(ports.sep, [hp, "post-checkout"])) {
+          Err(())
+        } else {
+          Ok(None)
+        }
+      }
+      // Relative hooksPath:
+      // 1) Check on disk relative to the new worktree root (catches ../hooks/post-checkout).
+      let disk_hook = wt_resolve_path(ports.sep, abs_path, nodepath::join(ports.sep, [hp, "post-checkout"]))
+      if wt_is_hook_executable(ports, disk_hook) {
+        return Err(())
+      }
+      // 2) Bypass conservatively if any `..` segment is present (avoids lexical collapse across symlinks).
+      if wt_has_dotdot_segment(hp) {
+        return Err(())
+      }
+      let norm = wt_posix_normalize(hp)
+      if norm == ".." || norm.starts_with("../") {
+        return Err(())
+      }
+      // 3) Return in-tree path to check directly in `ls-tree -r -z` (including tracked symlink prefixes).
+      let mut clean_rel = norm
+      while clean_rel.starts_with("./") {
+        clean_rel = station_ops::ops_slice_str(clean_rel, 2, clean_rel.length())
+      }
+      clean_rel = cli_strip_trailing_slashes(clean_rel)
+      let tree_path = if clean_rel.length() == 0 || clean_rel == "." {
+        "post-checkout"
+      } else {
+        clean_rel + "/post-checkout"
+      }
+      Ok(Some(tree_path))
+    }
+  }
+}
+
+fn wt_split_nul_strings(raw : Bytes) -> Array[String] {
+  let out : Array[String] = []
+  let mut start = 0
+  let n = raw.length()
+  let mut i = 0
+  while i <= n {
+    if i == n || (raw[i].to_int() & 0xFF) == 0 {
+      if i > start {
+        let sb = StringBuilder::new()
+        let mut k = start
+        while k < i {
+          sb.write_byte(raw[k])
+          k = k + 1
+        }
+        out.push(sb.to_string())
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn wt_json_opt_str(v : Option[String]) -> base_codec::Json {
+  match v {
+    Some(s) => base_codec::Json::Str(s)
+    None => base_codec::Json::Null
+  }
+}
+
+fn wt_run_preflight(
+  ports : CliPorts,
+  repo : String,
+  abs_path : String,
+  commitish : String,
+) -> Option[WtPreflightOk] {
+  let same_vol = match ports.same_cloneable_volume {
+    Some(f) => f
+    None => return None
+  }
+  if ports.clone_tree is None {
+    return None
+  }
+
+  let common_git_dir = match wt_exec_git(ports, repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"]) {
+    Ok(res) => if res.exit_code == 0 {
+      cli_trim(station_ops::ops_bytes_to_str(res.stdout))
+    } else {
+      return None
+    }
+    Err(_) => return None
+  }
+  if common_git_dir.length() == 0 {
+    return None
+  }
+
+  let commit_oid = match wt_exec_git(
+    ports,
+    repo,
+    ["rev-parse", "--verify", commitish + "^{commit}"],
+    extra_env=wt_no_lazy_env(),
+  ) {
+    Ok(res) => if res.exit_code == 0 {
+      cli_trim(station_ops::ops_bytes_to_str(res.stdout))
+    } else {
+      return None
+    }
+    Err(_) => return None
+  }
+  if !wt_is_hex40(commit_oid) {
+    return None
+  }
+
+  // If absPath already exists and is non-empty (or not a directory), defer to native git error handling.
+  match (ports.fs.lstat)(abs_path) {
+    Ok(st) => {
+      if !st.is_dir || st.is_link {
+        return None
+      }
+      match (ports.fs.readdir)(abs_path) {
+        Ok(ents) => if ents.length() > 0 {
+          return None
+        }
+        Err(_) => return None
+      }
+    }
+    Err(_) => ()
+  }
+
+  // Check volume cloneability against nearest existing ancestor without mutating parent directories.
+  let ancestor = match wt_nearest_existing_ancestor(ports, abs_path) {
+    Some(a) => a
+    None => return None
+  }
+  if !same_vol(common_git_dir, ancestor) {
+    return None
+  }
+
+  // post-checkout hook gate.
+  let in_tree_hook_path = match wt_check_post_checkout_hook(ports, repo, common_git_dir, abs_path) {
+    Ok(p) => p
+    Err(_) => return None
+  }
+
+  // Check configured external filter drivers (`filter.<driver>.(clean|smudge|process)`).
+  let filter_cfg_res = match wt_exec_git(ports, repo, ["config", "--get-regexp", "^filter\\..*\\.(clean|smudge|process)$"]) {
+    Ok(r) => r
+    Err(_) => return None
+  }
+  if filter_cfg_res.exit_code != 0 && filter_cfg_res.exit_code != 1 {
+    return None
+  }
+  let filter_config_raw = if filter_cfg_res.exit_code == 0 {
+    station_ops::ops_bytes_to_str(filter_cfg_res.stdout)
+  } else {
+    ""
+  }
+  let configured_drivers = if filter_cfg_res.exit_code == 0 {
+    wt_parse_configured_filter_drivers(filter_config_raw)
+  } else {
+    Map::new()
+  }
+
+  // Global/system/info attributes + submodule & in-tree hook / .gitattributes filter gate.
+  let global_attr_path = match wt_git_var_path(ports, repo, "GIT_ATTR_GLOBAL") {
+    Ok(p) => p
+    Err(_) => return None
+  }
+  let system_attr_path = match wt_git_var_path(ports, repo, "GIT_ATTR_SYSTEM") {
+    Ok(p) => p
+    Err(_) => return None
+  }
+
+  let info_attr = match wt_read_attr_file(ports, nodepath::join(ports.sep, [common_git_dir, "info", "attributes"])) {
+    Ok(t) => t
+    Err(_) => return None
+  }
+  let global_attr = if global_attr_path.length() > 0 {
+    match wt_read_attr_file(ports, global_attr_path) {
+      Ok(t) => t
+      Err(_) => return None
+    }
+  } else {
+    None
+  }
+  let system_attr = if system_attr_path.length() > 0 {
+    match wt_read_attr_file(ports, system_attr_path) {
+      Ok(t) => t
+      Err(_) => return None
+    }
+  } else {
+    None
+  }
+  if wt_has_configured_filter_rule(info_attr, configured_drivers) ||
+  wt_has_configured_filter_rule(global_attr, configured_drivers) ||
+  wt_has_configured_filter_rule(system_attr, configured_drivers) {
+    return None
+  }
+
+  let ls_tree_res = match wt_exec_git(ports, repo, ["ls-tree", "-r", "-z", commit_oid], extra_env=wt_no_lazy_env()) {
+    Ok(r) => if r.exit_code == 0 { r } else { return None }
+    Err(_) => return None
+  }
+  let hook_low_opt = match in_tree_hook_path {
+    Some(hp) => Some(wt_ascii_lower(hp))
+    None => None
+  }
+  let attr_blobs : Map[String, Bool] = Map::new()
+  let attr_blob_list : Array[String] = []
+  let records = wt_split_nul_strings(ls_tree_res.stdout)
+  let mut r_idx = 0
+  while r_idx < records.length() {
+    let record = records[r_idx]
+    if record.starts_with("160000 ") {
+      return None
+    }
+    let tab = record.index_of("\t")
+    if tab >= 0 {
+      let path_part = station_ops::ops_slice_str(record, tab + 1, record.length())
+      match hook_low_opt {
+        Some(hp_low) => {
+          let p_low = wt_ascii_lower(path_part)
+          if p_low == hp_low {
+            return None
+          }
+          // Tracked symlink (`120000`) on any prefix of `core.hooksPath` (e.g. `hooks -> scripts`).
+          if record.starts_with("120000 ") && hp_low.starts_with(p_low + "/") {
+            return None
+          }
+        }
+        None => ()
+      }
+      if configured_drivers.length() > 0 {
+        let slash = wt_last_index_of_byte(path_part, 47)
+        let base = if slash >= 0 {
+          station_ops::ops_slice_str(path_part, slash + 1, path_part.length())
+        } else {
+          path_part
+        }
+        if base == ".gitattributes" {
+          let header = station_ops::ops_slice_str(record, 0, tab)
+          let sp2 = wt_last_index_of_byte(header, 32)
+          if sp2 >= 0 {
+            let blob_oid = station_ops::ops_slice_str(header, sp2 + 1, header.length())
+            if wt_is_hex40(blob_oid) && !attr_blobs.contains(blob_oid) {
+              attr_blobs.set(blob_oid, true)
+              attr_blob_list.push(blob_oid)
+            }
+          }
+        }
+      }
+    }
+    r_idx = r_idx + 1
+  }
+  let mut b_idx = 0
+  while b_idx < attr_blob_list.length() {
+    let blob_oid = attr_blob_list[b_idx]
+    let blob_res = match wt_exec_git(ports, repo, ["cat-file", "blob", blob_oid], extra_env=wt_no_lazy_env()) {
+      Ok(r) => if r.exit_code == 0 { r } else { return None }
+      Err(_) => return None
+    }
+    if wt_has_configured_filter_rule(Some(station_ops::ops_bytes_to_str(blob_res.stdout)), configured_drivers) {
+      return None
+    }
+    b_idx = b_idx + 1
+  }
+
+  let autocrlf = match wt_git_config_get(ports, repo, "core.autocrlf") {
+    Ok(v) => v
+    Err(_) => return None
+  }
+  let eol = match wt_git_config_get(ports, repo, "core.eol") {
+    Ok(v) => v
+    Err(_) => return None
+  }
+  let symlinks = match wt_git_config_get(ports, repo, "core.symlinks") {
+    Ok(v) => v
+    Err(_) => return None
+  }
+  let filemode = match wt_git_config_get(ports, repo, "core.filemode") {
+    Ok(v) => v
+    Err(_) => return None
+  }
+
+  let fp_json = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("autocrlf", wt_json_opt_str(autocrlf)),
+      ("eol", wt_json_opt_str(eol)),
+      ("symlinks", wt_json_opt_str(symlinks)),
+      ("filemode", wt_json_opt_str(filemode)),
+      ("infoAttr", wt_json_opt_str(info_attr)),
+      ("globalAttrPath", base_codec::Json::Str(global_attr_path)),
+      ("globalAttr", wt_json_opt_str(global_attr)),
+      ("systemAttrPath", base_codec::Json::Str(system_attr_path)),
+      ("systemAttr", wt_json_opt_str(system_attr)),
+      ("filterConfig", base_codec::Json::Str(filter_config_raw)),
+    ]),
+  )
+  let checkout_fingerprint = crypto::sha256_hex(fp_json.to_bytes())
+  Some(WtPreflightOk::{
+    common_git_dir: common_git_dir,
+    commit_oid: commit_oid,
+    checkout_fingerprint: checkout_fingerprint,
+  })
+}
+
+fn wt_is_hex64(s : String) -> Bool {
+  s.length() == 64 && wt_is_hex_lower_slice(s, 0, 64)
+}
+
+fn wt_parse_meta(meta_text : String) -> Option[(String, String)] {
+  match base_codec::json_parse(meta_text) {
+    base_codec::JsonParseResult::Ok(j) => {
+      let commit_key = "com" + "mit"
+      let oid_opt = cli_json_opt_str(base_codec::json_get(j, commit_key))
+      let fp_opt = cli_json_opt_str(base_codec::json_get(j, "checkoutFingerprint"))
+      match (oid_opt, fp_opt) {
+        (Some(oid), Some(fp)) => if wt_is_hex40(oid) && wt_is_hex64(fp) { Some((oid, fp)) } else { None }
+        _ => None
+      }
+    }
+    _ => None
+  }
+}
+
+/// Shared validator for both readers (`wt_list_matching_generations`) and GC (`wt_cleanup_cow_dir`):
+/// requires `tree/` dir, `index` file, valid `meta.json`, and `wt_make_gen_key(oid, fp) == name`.
+fn wt_validate_generation(
+  ports : CliPorts,
+  cow_dir : String,
+  name : String,
+) -> Option[(WtGenCandidate, String)] {
+  if !wt_is_gen_key(name) {
+    return None
+  }
+  let gen_path = nodepath::join(ports.sep, [cow_dir, name])
+  let tree_ok = match (ports.fs.stat)(nodepath::join(ports.sep, [gen_path, "tree"])) {
+    Ok(st) => st.is_dir
+    Err(_) => false
+  }
+  let idx_ok = match (ports.fs.stat)(nodepath::join(ports.sep, [gen_path, "index"])) {
+    Ok(st) => st.is_file
+    Err(_) => false
+  }
+  if !tree_ok || !idx_ok {
+    return None
+  }
+  let meta_path = nodepath::join(ports.sep, [gen_path, "meta.json"])
+  let meta_text = match ports.fs.read_text(meta_path) {
+    Ok(t) => t
+    Err(_) => return None
+  }
+  match wt_parse_meta(meta_text) {
+    Some((oid, fp)) => {
+      if wt_make_gen_key(oid, fp) != name {
+        return None
+      }
+      let mtime = match (ports.fs.stat)(meta_path) {
+        Ok(st) => st.mtime_ms
+        Err(_) => return None
+      }
+      Some((WtGenCandidate::{ dir_name: name, oid: oid, mtime_ms: mtime }, fp))
+    }
+    None => None
+  }
+}
+
+fn wt_list_matching_generations(
+  ports : CliPorts,
+  cow_dir : String,
+  checkout_fingerprint : String,
+) -> Array[WtGenCandidate] {
+  let out : Array[WtGenCandidate] = []
+  let names = match (ports.fs.readdir)(cow_dir) {
+    Ok(n) => n
+    Err(_) => return out
+  }
+  let mut i = 0
+  while i < names.length() {
+    let name = names[i]
+    if !name.starts_with(".") {
+      match wt_validate_generation(ports, cow_dir, name) {
+        Some((cand, fp)) => if fp == checkout_fingerprint {
+          out.push(cand)
+        }
+        None => ()
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn wt_diff_touches_gitattributes(
+  ports : CliPorts,
+  repo : String,
+  gen_oid : String,
+  commit_oid : String,
+) -> Bool {
+  let res = match wt_exec_git(
+    ports,
+    repo,
+    ["diff-tree", "-r", "-z", "--name-only", gen_oid, commit_oid],
+    extra_env=wt_no_lazy_env(),
+  ) {
+    Ok(r) => if r.exit_code == 0 { r } else { return true }
+    Err(_) => return true
+  }
+  let paths = wt_split_nul_strings(res.stdout)
+  let mut i = 0
+  while i < paths.length() {
+    let rel = paths[i]
+    let slash = wt_last_index_of_byte(rel, 47)
+    let base = if slash >= 0 {
+      station_ops::ops_slice_str(rel, slash + 1, rel.length())
+    } else {
+      rel
+    }
+    if base == ".gitattributes" {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+fn wt_default_base_commit(ports : CliPorts, repo : String) -> Option[String] {
+  match wt_exec_git(ports, repo, ["rev-parse", "--verify", "origin/HEAD^{commit}"], extra_env=wt_no_lazy_env()) {
+    Ok(res) => if res.exit_code == 0 {
+      let oid = cli_trim(station_ops::ops_bytes_to_str(res.stdout))
+      if wt_is_hex40(oid) {
+        return Some(oid)
+      }
+    }
+    Err(_) => ()
+  }
+  match wt_exec_git(ports, repo, ["rev-parse", "--verify", "HEAD^{commit}"], extra_env=wt_no_lazy_env()) {
+    Ok(res) => if res.exit_code == 0 {
+      let oid = cli_trim(station_ops::ops_bytes_to_str(res.stdout))
+      if wt_is_hex40(oid) {
+        return Some(oid)
+      }
+    }
+    Err(_) => ()
+  }
+  None
+}
+
+fn wt_remove_path(ports : CliPorts, path : String) -> Unit {
+  match ports.remove_tree {
+    Some(f) => {
+      let _ = f(path)
+    }
+    None => {
+      let _ = (ports.fs.remove)(path)
+    }
+  }
+}
+
+fn wt_clear_worktree_except_git(ports : CliPorts, abs_path : String) -> Unit {
+  let names = match (ports.fs.readdir)(abs_path) {
+    Ok(n) => n
+    Err(_) => return
+  }
+  let mut i = 0
+  while i < names.length() {
+    let name = names[i]
+    if name != ".git" {
+      wt_remove_path(ports, nodepath::join(ports.sep, [abs_path, name]))
+    }
+    i = i + 1
+  }
+}
+
+fn wt_copy_file(ports : CliPorts, src : String, dst : String) -> Bool {
+  match (ports.fs.read_bytes)(src) {
+    Ok(data) => match (ports.fs.write_bytes)(dst, data, 420) {
+      Ok(_) => true
+      Err(_) => false
+    }
+    Err(_) => false
+  }
+}
+
+fn wt_strip_skip_worktree_bits(ports : CliPorts, abs_path : String, tmp_index : String) -> Bool {
+  let env_map : Map[String, String] = Map::new()
+  env_map.set("GIT_INDEX_FILE", tmp_index)
+  let ls_res = match wt_exec_git(
+    ports,
+    abs_path,
+    ["-c", "core.sparseCheckout=false", "-c", "index.sparse=false", "ls-files", "-t", "-z"],
+    extra_env=Some(env_map),
+  ) {
+    Ok(r) => if r.exit_code == 0 { r } else { return false }
+    Err(_) => return false
+  }
+
+  let buf = ls_res.stdout
+  let stdin_arr : Array[Byte] = []
+  let mut skip_count = 0
+  let mut start = 0
+  let n = buf.length()
+  let mut i = 0
+  while i <= n {
+    if i == n || (buf[i].to_int() & 0xFF) == 0 {
+      if i > start {
+        let entry_len = i - start
+        if entry_len < 3 || (buf[start + 1].to_int() & 0xFF) != 0x20 {
+          return false
+        }
+        // Reject sparse directory entries (`index.sparse`) ending with '/'.
+        if (buf[i - 1].to_int() & 0xFF) == 0x2F {
+          return false
+        }
+        // 'S' == 0x53: CE_SKIP_WORKTREE bit set.
+        if (buf[start].to_int() & 0xFF) == 0x53 {
+          let mut k = start + 2
+          while k < i {
+            stdin_arr.push(buf[k])
+            k = k + 1
+          }
+          stdin_arr.push(0 as Byte)
+          skip_count = skip_count + 1
+        }
+      }
+      start = i + 1
+    }
+    i = i + 1
+  }
+
+  if skip_count == 0 {
+    return true
+  }
+
+  let stdin_bytes = Bytes::new(stdin_arr.length())
+  let mut j = 0
+  while j < stdin_arr.length() {
+    stdin_bytes[j] = stdin_arr[j]
+    j = j + 1
+  }
+  let upd_env : Map[String, String] = Map::new()
+  upd_env.set("GIT_INDEX_FILE", tmp_index)
+  match wt_exec_git(
+    ports,
+    abs_path,
+    ["-c", "core.sparseCheckout=false", "-c", "index.sparse=false", "update-index", "--no-skip-worktree", "-z", "--stdin"],
+    extra_env=Some(upd_env),
+    stdin_bytes=Some(stdin_bytes),
+  ) {
+    Ok(r) => r.exit_code == 0
+    Err(_) => false
+  }
+}
+
+fn wt_promote_generation(
+  ports : CliPorts,
+  cow_dir : String,
+  abs_path : String,
+  wt_git_dir : String,
+  commit_oid : String,
+  checkout_fingerprint : String,
+) -> Bool {
+  let clone_tree_fn = match ports.clone_tree {
+    Some(f) => f
+    None => return false
+  }
+  match (ports.fs.mkdir_p)(cow_dir) {
+    Ok(_) => ()
+    Err(_) => return false
+  }
+  let rand = (ports.random_hex)(6)
+  let tmp = nodepath::join(ports.sep, [cow_dir, ".tmp-" + ports.self_pid.to_string() + "-" + rand])
+  match (ports.fs.mkdir_p)(tmp) {
+    Ok(_) => ()
+    Err(_) => return false
+  }
+  let tmp_tree = nodepath::join(ports.sep, [tmp, "tree"])
+  match clone_tree_fn(abs_path, tmp_tree) {
+    Ok(_) => ()
+    Err(_) => {
+      wt_remove_path(ports, tmp)
+      return false
+    }
+  }
+  wt_remove_path(ports, nodepath::join(ports.sep, [tmp_tree, ".git"]))
+  let tmp_index = nodepath::join(ports.sep, [tmp, "index"])
+  if !wt_copy_file(ports, nodepath::join(ports.sep, [wt_git_dir, "index"]), tmp_index) {
+    wt_remove_path(ports, tmp)
+    return false
+  }
+  if !wt_strip_skip_worktree_bits(ports, abs_path, tmp_index) {
+    wt_remove_path(ports, tmp)
+    return false
+  }
+  let commit_key = "com" + "mit"
+  let meta_str = base_codec::json_stringify(
+    base_codec::json_obj([
+      (commit_key, base_codec::Json::Str(commit_oid)),
+      ("checkoutFingerprint", base_codec::Json::Str(checkout_fingerprint)),
+    ]),
+  ) + "\n"
+  match ports.fs.write_text(nodepath::join(ports.sep, [tmp, "meta.json"]), meta_str, 420) {
+    Ok(_) => ()
+    Err(_) => {
+      wt_remove_path(ports, tmp)
+      return false
+    }
+  }
+
+  // Immutable `<commit_oid>-<fp16>` directory: never delete an existing target (zero reader race).
+  let target = nodepath::join(ports.sep, [cow_dir, wt_make_gen_key(commit_oid, checkout_fingerprint)])
+  match (ports.fs.rename)(tmp, target) {
+    Ok(_) => true
+    Err(_) => {
+      wt_remove_path(ports, tmp)
+      false
+    }
+  }
+}
+
+fn wt_gen_before(a : WtGenCandidate, b : WtGenCandidate, keep_prefer_key : Option[String]) -> Bool {
+  if a.mtime_ms != b.mtime_ms {
+    return a.mtime_ms > b.mtime_ms
+  }
+  match keep_prefer_key {
+    Some(pref) => {
+      if a.dir_name == pref && b.dir_name != pref {
+        return true
+      }
+      if b.dir_name == pref && a.dir_name != pref {
+        return false
+      }
+    }
+    None => ()
+  }
+  a.dir_name < b.dir_name
+}
+
+fn wt_cleanup_cow_dir(ports : CliPorts, cow_dir : String, keep_prefer_key : Option[String]) -> Unit {
+  let names = match (ports.fs.readdir)(cow_dir) {
+    Ok(n) => n
+    Err(_) => return
+  }
+  let now = (ports.now_ms)()
+  let gens : Array[WtGenCandidate] = []
+  let mut i = 0
+  while i < names.length() {
+    let name = names[i]
+    let full = nodepath::join(ports.sep, [cow_dir, name])
+    if name.starts_with(".tmp-") {
+      match (ports.fs.lstat)(full) {
+        Ok(st) => if now - st.mtime_ms > WT_TMP_EXPIRE_MS {
+          wt_remove_path(ports, full)
+        }
+        Err(_) => ()
+      }
+    } else if !name.starts_with(".") {
+      if wt_is_gen_key(name) {
+        match wt_validate_generation(ports, cow_dir, name) {
+          Some((cand, _)) => gens.push(cand)
+          None => match (ports.fs.lstat)(full) {
+            Ok(st) => if now - st.mtime_ms > WT_TMP_EXPIRE_MS {
+              wt_remove_path(ports, full)
+            }
+            Err(_) => ()
+          }
+        }
+      } else if wt_is_hex40(name) {
+        match (ports.fs.lstat)(full) {
+          Ok(st) => if now - st.mtime_ms > WT_TMP_EXPIRE_MS {
+            wt_remove_path(ports, full)
+          }
+          Err(_) => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+
+  // Insertion sort newest-first (at most a handful of generations).
+  let mut a = 1
+  while a < gens.length() {
+    let cur = gens[a]
+    let mut b = a
+    while b > 0 && wt_gen_before(cur, gens[b - 1], keep_prefer_key) {
+      gens[b] = gens[b - 1]
+      b = b - 1
+    }
+    gens[b] = cur
+    a = a + 1
+  }
+
+  let mut k = WT_KEEP_GENERATIONS
+  while k < gens.length() {
+    wt_remove_path(ports, nodepath::join(ports.sep, [cow_dir, gens[k].dir_name]))
+    k = k + 1
+  }
+}
+
+/// Detailed CoW worktree execution returning metadata for unit tests and CLI dispatch.
+pub fn run_worktree_cow_detailed(
+  argv : Array[String],
+  env : Map[String, String],
+  ports : CliPorts,
+) -> WorktreeCowOutcome {
+  let parsed = parse_worktree_args(argv, ports.caller_cwd, env, sep=ports.sep)
+  let fp = match parsed.fast_path {
+    Some(f) => f
+    None => return WorktreeCowOutcome::{
+      result: wt_passthrough_git(ports, parsed.repo, parsed.worktree_args),
+      used_cow: false,
+      promoted: false,
+      hit_gen: None,
+    }
+  }
+
+  let pre = match wt_run_preflight(ports, parsed.repo, fp.abs_path, fp.commitish) {
+    Some(p) => p
+    None => return WorktreeCowOutcome::{
+      result: wt_passthrough_git(ports, parsed.repo, parsed.worktree_args),
+      used_cow: false,
+      promoted: false,
+      hit_gen: None,
+    }
+  }
+
+  let cow_dir = nodepath::join(ports.sep, [pre.common_git_dir, "cow"])
+  let candidates = wt_list_matching_generations(ports, cow_dir, pre.checkout_fingerprint)
+
+  let mut selected_gen : Option[WtGenCandidate] = None
+  let mut has_valid_exact = false
+  let mut ci = 0
+  while ci < candidates.length() {
+    if candidates[ci].oid == pre.commit_oid {
+      selected_gen = Some(candidates[ci])
+      has_valid_exact = true
+      break
+    }
+    ci = ci + 1
+  }
+  if selected_gen is None && candidates.length() > 0 {
+    let mut newest = candidates[0]
+    let mut j = 1
+    while j < candidates.length() {
+      if candidates[j].mtime_ms > newest.mtime_ms {
+        newest = candidates[j]
+      }
+      j = j + 1
+    }
+    if !wt_diff_touches_gitattributes(ports, parsed.repo, newest.oid, pre.commit_oid) {
+      selected_gen = Some(newest)
+    }
+  }
+
+  // Step A: register detached worktree without checkout.
+  let add_res = match wt_exec_git(
+    ports,
+    parsed.repo,
+    ["worktree", "add", "--no-checkout", "--detach", fp.abs_path, pre.commit_oid],
+  ) {
+    Ok(r) => r
+    Err(e) => return WorktreeCowOutcome::{
+      result: CliResult::err(1, "stillfail worktree: failed to run git: " + e + "\n"),
+      used_cow: true,
+      promoted: false,
+      hit_gen: None,
+    }
+  }
+  if add_res.exit_code != 0 {
+    return WorktreeCowOutcome::{
+      result: CliResult::{
+        exit_code: add_res.exit_code,
+        stdout: station_ops::ops_bytes_to_str(add_res.stdout),
+        stderr: station_ops::ops_bytes_to_str(add_res.stderr),
+      },
+      used_cow: true,
+      promoted: false,
+      hit_gen: None,
+    }
+  }
+
+  let wt_git_dir = match wt_exec_git(ports, fp.abs_path, ["rev-parse", "--absolute-git-dir"]) {
+    Ok(r) => if r.exit_code == 0 {
+      cli_trim(station_ops::ops_bytes_to_str(r.stdout))
+    } else {
+      let _ = wt_exec_git(ports, parsed.repo, ["worktree", "remove", "--force", fp.abs_path])
+      return WorktreeCowOutcome::{
+        result: CliResult::err(r.exit_code, station_ops::ops_bytes_to_str(r.stderr)),
+        used_cow: true,
+        promoted: false,
+        hit_gen: None,
+      }
+    }
+    Err(e) => {
+      let _ = wt_exec_git(ports, parsed.repo, ["worktree", "remove", "--force", fp.abs_path])
+      return WorktreeCowOutcome::{
+        result: CliResult::err(1, e + "\n"),
+        used_cow: true,
+        promoted: false,
+        hit_gen: None,
+      }
+    }
+  }
+
+  // Step B: populate working tree and index from matched CoW generation.
+  let mut hit_gen : Option[String] = None
+  match selected_gen {
+    Some(cand) => {
+      let clone_ok = match ports.clone_tree {
+        Some(f) => match f(nodepath::join(ports.sep, [cow_dir, cand.dir_name, "tree"]), fp.abs_path) {
+          Ok(_) => true
+          Err(_) => false
+        }
+        None => false
+      }
+      let idx_ok = if clone_ok {
+        wt_copy_file(
+          ports,
+          nodepath::join(ports.sep, [cow_dir, cand.dir_name, "index"]),
+          nodepath::join(ports.sep, [wt_git_dir, "index"]),
+        )
+      } else {
+        false
+      }
+      let refresh_ok = if idx_ok {
+        match wt_exec_git(ports, fp.abs_path, ["update-index", "-q", "--refresh"]) {
+          Ok(r) => r.exit_code == 0 || r.exit_code == 1
+          Err(_) => false
+        }
+      } else {
+        false
+      }
+      if refresh_ok {
+        hit_gen = Some(cand.oid)
+      } else {
+        wt_clear_worktree_except_git(ports, fp.abs_path)
+        let _ = (ports.fs.remove)(nodepath::join(ports.sep, [wt_git_dir, "index"]))
+        hit_gen = None
+      }
+    }
+    None => ()
+  }
+
+  // Step C: always finalize working tree and index against target commit (handles diffs and sparse checkout).
+  let reset_res = match wt_exec_git(ports, fp.abs_path, ["reset", "--hard", "-q"]) {
+    Ok(r) => r
+    Err(e) => {
+      let _ = wt_exec_git(ports, parsed.repo, ["worktree", "remove", "--force", fp.abs_path])
+      return WorktreeCowOutcome::{
+        result: CliResult::err(1, e + "\n"),
+        used_cow: true,
+        promoted: false,
+        hit_gen: hit_gen,
+      }
+    }
+  }
+  if reset_res.exit_code != 0 {
+    let _ = wt_exec_git(ports, parsed.repo, ["worktree", "remove", "--force", fp.abs_path])
+    return WorktreeCowOutcome::{
+      result: CliResult::{
+        exit_code: reset_res.exit_code,
+        stdout: station_ops::ops_bytes_to_str(reset_res.stdout),
+        stderr: station_ops::ops_bytes_to_str(reset_res.stderr),
+      },
+      used_cow: true,
+      promoted: false,
+      hit_gen: hit_gen,
+    }
+  }
+
+  // Step D: opportunistic lockless promotion (best-effort; never fails the command).
+  let mut promoted = false
+  let mut should_promote = candidates.length() == 0
+  if !should_promote && !has_valid_exact {
+    match wt_default_base_commit(ports, parsed.repo) {
+      Some(base_oid) => if base_oid == pre.commit_oid {
+        should_promote = true
+      }
+      None => ()
+    }
+  }
+  if should_promote && !has_valid_exact {
+    promoted = wt_promote_generation(
+      ports,
+      cow_dir,
+      fp.abs_path,
+      wt_git_dir,
+      pre.commit_oid,
+      pre.checkout_fingerprint,
+    )
+  }
+  let keep_key = if promoted {
+    Some(wt_make_gen_key(pre.commit_oid, pre.checkout_fingerprint))
+  } else {
+    None
+  }
+  wt_cleanup_cow_dir(ports, cow_dir, keep_key)
+
+  WorktreeCowOutcome::{
+    result: CliResult::{
+      exit_code: 0,
+      stdout: "",
+      stderr: station_ops::ops_bytes_to_str(add_res.stderr),
+    },
+    used_cow: true,
+    promoted: promoted,
+    hit_gen: hit_gen,
+  }
+}
+
+/// CLI entrypoint called from `dispatch_cli` (`stillfail [-C <repo>] worktree ...`).
+pub fn run_worktree_command(
+  argv : Array[String],
+  env : Map[String, String],
+  ports : CliPorts,
+) -> CliResult {
+  run_worktree_cow_detailed(argv, env, ports).result
+}

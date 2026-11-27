@@ -44,6 +44,7 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
 import { stopBytes } from "../mesh/files.ts";
 import type { Fibers } from "../ops/fibers.ts";
+import { clonesAt } from "../ops/clone.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
 import { knownOf, localOf } from "../connects/remote.ts";
@@ -279,7 +280,7 @@ export const gitHere = (): Promise<boolean> =>
 /// The bytes free where `data` is; a copy there a clone where the disk makes them (APFS: macOS).
 const roomHere = (data: string) => async () => {
   const s = await statfs(data).catch(() => null);
-  return { free: s === null ? null : Number(s.bavail) * Number(s.bsize), clones: platform.clonesFiles };
+  return { free: s === null ? null : Number(s.bavail) * Number(s.bsize), clones: s === null ? false : await clonesAt(data) };
 };
 
 // (the gathering, placing and preview: carry.ts, the MoonBit program's)

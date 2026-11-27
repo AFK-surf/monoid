@@ -82,6 +82,7 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
         None => None
       }
     },
+    lstat_err: None,
     stat: fn(p : String) -> Option[station_jobs::FsStat] {
       match files.get(p) {
         Some(b) => Some(station_jobs::FsStat::{

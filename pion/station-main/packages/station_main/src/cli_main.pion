@@ -21,7 +21,7 @@ import "station_ops"
 import "station_rules_bridge"
 import "station_sys"
 
-/// Whether `cmd` is one of the 8 wired CLI subcommands.
+/// Whether `cmd` is one of the 9 wired CLI subcommands.
 pub fn is_cli_command(cmd : String) -> Bool {
   cmd == "id" ||
   cmd == "status" ||
@@ -30,11 +30,19 @@ pub fn is_cli_command(cmd : String) -> Bool {
   cmd == "enroll" ||
   cmd == "update" ||
   cmd == "heap" ||
-  cmd == "admin"
+  cmd == "admin" ||
+  cmd == "worktree"
 }
 
-/// Find the subcommand in `cli_args` (excluding `argv[0]`), matching `station/src/main.ts` line 98.
+/// Find the subcommand in `cli_args` (excluding `argv[0]`), matching `station/src/main.ts` line 98
+/// plus `-C <repo> worktree` / `-C<repo> worktree`.
 pub fn find_main_subcommand(cli_args : Array[String]) -> Option[String] {
+  if cli_args.length() >= 3 && cli_args[0] == "-C" && cli_args[2] == "worktree" {
+    return Some("worktree")
+  }
+  if cli_args.length() >= 2 && cli_args[0].starts_with("-C") && cli_args[0].length() > 2 && cli_args[1] == "worktree" {
+    return Some("worktree")
+  }
   let mut i = 0
   while i < cli_args.length() {
     let a = cli_args[i]
@@ -197,6 +205,222 @@ fn cli_run_child(
   }
   let _ = child.close()
   Ok((exit_code, cli_byte_array_to_string(stdout_buf), cli_byte_array_to_string(stderr_buf)))
+}
+
+fn cli_byte_array_to_bytes(buf : Array[Byte]) -> Bytes {
+  let out = Bytes::new(buf.length())
+  let mut i = 0
+  while i < buf.length() {
+    out[i] = buf[i]
+    i = i + 1
+  }
+  out
+}
+
+fn cli_is_git_repo_env_key(k : String) -> Bool {
+  k == "GIT_DIR" ||
+  k == "GIT_WORK_TREE" ||
+  k == "GIT_INDEX_FILE" ||
+  k == "GIT_COMMON_DIR" ||
+  k == "GIT_OBJECT_DIRECTORY" ||
+  k == "GIT_ALTERNATE_OBJECT_DIRECTORIES" ||
+  k == "GIT_PREFIX"
+}
+
+fn cli_build_clean_git_env(extra_env : Option[Map[String, String]]) -> Array[String] {
+  let merged : Map[String, String] = Map::new()
+  let entries = station_sys::env_all()
+  let mut i = 0
+  while i < entries.length() {
+    let entry = entries[i]
+    let eq = entry.index_of("=")
+    if eq > 0 {
+      let k = station_ops::ops_slice_str(entry, 0, eq)
+      if !cli_is_git_repo_env_key(k) {
+        let v = station_ops::ops_slice_str(entry, eq + 1, entry.length())
+        merged.set(k, v)
+      }
+    }
+    i = i + 1
+  }
+  match extra_env {
+    Some(m) => {
+      let keys = m.keys()
+      let mut j = 0
+      while j < keys.length() {
+        let k = keys[j]
+        match m.get(k) {
+          Some(v) => merged.set(k, v)
+          None => ()
+        }
+        j = j + 1
+      }
+    }
+    None => ()
+  }
+  let out : Array[String] = []
+  let mkeys = merged.keys()
+  let mut idx = 0
+  while idx < mkeys.length() {
+    let k = mkeys[idx]
+    match merged.get(k) {
+      Some(v) => out.push(k + "=" + v)
+      None => ()
+    }
+    idx = idx + 1
+  }
+  out
+}
+
+/// Run `git` via `station_sys::proc_spawn` (never `"proc.run"`), stripping the 7 repository-pinning
+/// `GIT_*` env vars, optionally piping stdin bytes, and returning raw `Bytes` stdout/stderr.
+fn cli_run_git(
+  ev_id : Int64,
+  cwd : String,
+  args : Array[String],
+  extra_env : Option[Map[String, String]],
+  stdin_bytes : Option[Bytes],
+) -> Result[station_cli::GitExecResult, String] {
+  let has_stdin = match stdin_bytes {
+    Some(_) => true
+    None => false
+  }
+  let opts = station_sys::SpawnOptions::{
+    program: "git",
+    args: args,
+    env: Some(cli_build_clean_git_env(extra_env)),
+    cwd: cwd,
+    new_pgid: false,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: has_stdin,
+    pipe_stdout: true,
+    pipe_stderr: true,
+  }
+  let child = match station_sys::proc_spawn(ev_id, opts) {
+    Ok(c) => c
+    Err(e) => return Err("failed to spawn git: " + e)
+  }
+  match stdin_bytes {
+    Some(data) => {
+      if (data.length() > 0 && !child.write_stdin(data)) || !child.close_stdin() {
+        let _ = child.kill(station_sys::SIG_KILL, false)
+        let _ = child.close()
+        return Err("failed to write git stdin")
+      }
+    }
+    None => ()
+  }
+  let stdout_buf : Array[Byte] = []
+  let stderr_buf : Array[Byte] = []
+  let mut exited = false
+  let mut exit_code = 128
+  let mut stdout_eof = false
+  let mut stderr_eof = false
+  while !(exited && stdout_eof && stderr_eof) {
+    // timer: event wait for git child process output and exit
+    match host_shim::wait(100L) {
+      Some(host_shim::HostEvent::Sys(id, payload)) => {
+        if id == ev_id {
+          match station_sys::decode_sys_event(payload) {
+            Some(station_sys::SysEvent::ProcStdout(b)) => cli_append_bytes(stdout_buf, b)
+            Some(station_sys::SysEvent::ProcStderr(b)) => cli_append_bytes(stderr_buf, b)
+            Some(station_sys::SysEvent::ProcStdoutEof) => stdout_eof = true
+            Some(station_sys::SysEvent::ProcStderrEof) => stderr_eof = true
+            Some(station_sys::SysEvent::ProcExit(st)) => {
+              exited = true
+              exit_code = if st.signal > 0 { 128 + st.signal } else if st.code < 0 { 128 } else { st.code }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  let _ = child.close()
+  Ok(station_cli::GitExecResult::{
+    exit_code: exit_code,
+    stdout: cli_byte_array_to_bytes(stdout_buf),
+    stderr: cli_byte_array_to_bytes(stderr_buf),
+  })
+}
+
+fn cli_lstat_kind(path : String) -> (Bool, Bool, Bool) {
+  // Returns (exists, is_dir, is_symlink) from pipe-delimited `station_sys::lstat_raw` (`dir|...`, `file|...`, `link|...`).
+  match station_sys::lstat_raw(path) {
+    None => (false, false, false)
+    Some(raw) => (true, raw.starts_with("dir|"), raw.starts_with("link|"))
+  }
+}
+
+/// Pure `station_sys` non-recursive stack tree remover: chmods directories to `0700` before
+/// traversal, never chmods symlinks, and only chmods regular files on Windows.
+fn cli_remove_tree_force(path : String, sep : String) -> Result[Unit, String] {
+  let (exists, is_dir, is_link) = cli_lstat_kind(path)
+  if !exists {
+    return Ok(())
+  }
+  if is_link {
+    let ok = if sep == "\\" && station_sys::is_dir_symlink(path) {
+      station_sys::rmdir(path)
+    } else {
+      station_sys::unlink(path)
+    }
+    return if ok { Ok(()) } else { Err("failed to remove symlink: " + path) }
+  }
+  if !is_dir {
+    if sep == "\\" {
+      let _ = station_sys::chmod(path, 384)
+    }
+    return if station_sys::unlink(path) { Ok(()) } else { Err("failed to remove file: " + path) }
+  }
+  let stack : Array[(String, Bool)] = [(path, false)]
+  let mut steps = 0
+  while stack.length() > 0 && steps < 500000 {
+    let idx = stack.length() - 1
+    let (cur, expanded) = stack[idx]
+    let _ = stack.pop()
+    steps = steps + 1
+    if expanded {
+      let _ = station_sys::rmdir(cur)
+      continue
+    }
+    stack.push((cur, true))
+    let _ = station_sys::chmod(cur, 448)
+    match station_sys::read_dir(cur) {
+      Some(names) => {
+        let mut i = 0
+        while i < names.length() {
+          let child = nodepath::join(sep, [cur, names[i]])
+          let (ce, cd, cl) = cli_lstat_kind(child)
+          if ce {
+            if cd && !cl {
+              stack.push((child, false))
+            } else if cl {
+              if sep == "\\" && station_sys::is_dir_symlink(child) {
+                let _ = station_sys::rmdir(child)
+              } else {
+                let _ = station_sys::unlink(child)
+              }
+            } else {
+              if sep == "\\" {
+                let _ = station_sys::chmod(child, 384)
+              }
+              let _ = station_sys::unlink(child)
+            }
+          }
+          i = i + 1
+        }
+      }
+      None => ()
+    }
+  }
+  let (still_exists, _, _) = cli_lstat_kind(path)
+  if still_exists {
+    Err("failed to remove tree: " + path)
+  } else {
+    Ok(())
+  }
 }
 
 /// Binary-safe production `OpsFs`: uses `station_sys::read_file_strict` to distinguish ENOENT from
@@ -615,16 +839,7 @@ fn build_production_cli_ports(
   })
 
   let remove_tree_fn = Some(fn(path : String) -> Result[Unit, String] {
-    let req = base_codec::json_stringify(base_codec::json_obj([
-      ("path", base_codec::json_str(path)),
-      ("recursive", base_codec::json_bool(true)),
-    ]))
-    // sync: CLI recursive remove_tree via fs.remove
-    let raw = host_shim::shell_sync("fs.remove", req)
-    match cli_parse_shell_sync_err(raw) {
-      Some(err) => Err(err)
-      None => Ok(())
-    }
+    cli_remove_tree_force(path, sep)
   })
 
   let mkdir_exclusive_fn = Some(fn(dir : String, mode : Int) -> Result[Unit, String] {
@@ -665,6 +880,33 @@ fn build_production_cli_ports(
     }
   })
 
+  let git_ev_counter : Array[Int64] = [800000L]
+  let run_git_fn = Some(
+    fn(
+      cwd : String,
+      args : Array[String],
+      extra_env : Option[Map[String, String]],
+      stdin_bytes : Option[Bytes],
+    ) -> Result[station_cli::GitExecResult, String] {
+      let ev_id = git_ev_counter[0]
+      git_ev_counter[0] = ev_id + 1L
+      cli_run_git(ev_id, cwd, args, extra_env, stdin_bytes)
+    },
+  )
+  let same_vol_fn = Some(fn(a : String, b : String) -> Bool {
+    station_sys::same_cloneable_volume(a, b)
+  })
+  let clone_tree_fn = Some(fn(src : String, dst : String) -> Result[Unit, String] {
+    match station_sys::clone_tree(src, dst) {
+      Ok(_) => Ok(())
+      Err(rc) => Err("clone_tree failed: rc=" + rc.to_string())
+    }
+  })
+  let caller_cwd = match station_sys::getcwd() {
+    Some(p) => p
+    None => "."
+  }
+
   station_cli::CliPorts::{
     fs: ops_fs,
     cloud_fs: cloud_fs,
@@ -691,6 +933,11 @@ fn build_production_cli_ports(
     mkdir_exclusive: mkdir_exclusive_fn,
     symlink_dir: symlink_dir_fn,
     heap_stats: heap_stats_fn,
+    caller_cwd: caller_cwd,
+    run_git: run_git_fn,
+    same_cloneable_volume: same_vol_fn,
+    clone_tree: clone_tree_fn,
+    is_executable: Some(station_sys::is_executable),
   }
 }
 

@@ -63,14 +63,15 @@ function listed(titles: (i: number) => string = (i) => `链接 ${i}`): J[] {
   ];
 }
 
-/// Statements counted as they run on the account's database: those of `file_kept`, and those reading a linked chat's
-/// record (its JSON).
-function counting(sql: NodeSql): { kept: number; linkedJson: number } {
-  const counted = { kept: 0, linkedJson: 0 };
+/// Statements counted as they run on the account's database: those of `file_kept`, those reading a linked chat's
+/// record (its JSON), and those of `chat` finding or reading the chats it opened (asked by their ids, alone or in JSON).
+function counting(sql: NodeSql): { kept: number; linkedJson: number; openedSql: number } {
+  const counted = { kept: 0, linkedJson: 0, openedSql: 0 };
   const all = sql.all.bind(sql);
   sql.all = (q: string, params?: readonly SqlValue[]): SqlRow[] => {
     if (/\bfile_kept\b/.test(q)) counted.kept++;
     if (/\bjson\b/.test(q) && /\bchat\b/.test(q) && (params ?? []).some((p) => typeof p === "string" && /^l[0-9]+$/.test(p))) counted.linkedJson++;
+    if (/\bchat\b/.test(q) && (params ?? []).some((p) => typeof p === "string" && /(^|")o[0-9]+("|$)/.test(p))) counted.openedSql++;
     return all(q, params);
   };
   return counted;
@@ -123,10 +124,11 @@ test("a_chat_made_again_while_its_agent_works_reads_no_file_kept_nor_linked_reco
   }
   const took = performance.now() - started;
   const made = workSince(before);
-  console.log(`chat-draw: ${made.chats} makes of a chat of ${FILES} files, ${LINKS} links and ${OPENED} chats opened: ${counted.kept} statements of file_kept, ${counted.linkedJson} of linked records, ${(took / ROUNDS).toFixed(2)} ms a make (Node)`);
+  console.log(`chat-draw: ${made.chats} makes of a chat of ${FILES} files, ${LINKS} links and ${OPENED} chats opened: ${counted.kept} statements of file_kept, ${counted.linkedJson} of linked records, ${counted.openedSql} of opened chats, ${(took / ROUNDS).toFixed(2)} ms a make (Node)`);
   assert.equal(made.chats, ROUNDS, "made again each time");
   assert.ok(counted.kept <= 1, `${counted.kept} statements of file_kept (${ROUNDS * FILES * 2} before)`);
   assert.equal(counted.linkedJson, 0, "no linked chat's record read");
+  assert.equal(counted.openedSql, 0, "no chat it opened found or read again");
   assert.deepEqual(drawnOf(u), shown);
   assert.deepEqual(u.value.messages, was.messages);
   assert.deepEqual(u.value.opened, was.opened);
@@ -151,6 +153,151 @@ test("a_chat_made_again_while_its_agent_works_reads_no_file_kept_nor_linked_reco
   assert.deepEqual(fresh.u.value.opened, u.value.opened);
   t.store.runner.shutdown();
   fresh.t.store.runner.shutdown();
+});
+
+const MANY = 150;
+const STB = "ws/b";
+
+/// A chat that leads MANY chats it opened, of every way one is found (`i % 10`): 0 listed by its id; 1 archived alone;
+/// 2 listed by its session (another id); 3 on another station (a chat of the same id on this one not it); 4 listed and
+/// archived by one id (the listed one it); 5 none (titled as it was given); 6 listed by its id and another by its session
+/// placed first (the one of its id it); 7 archived by its id and listed by its session (the listed one it); 8 and 9 two
+/// listed by its session, the first placed of them it (8: the later id placed first; 9: the earlier, by `ord` again
+/// when their places are made one, the earlier id then).
+function many(): { a: J[]; archived: J[]; b: J[]; opened: J[]; want: Map<string, { title: string; archived: boolean }> } {
+  const opened: J[] = [];
+  const a: J[] = [];
+  const archived: J[] = [];
+  const b: J[] = [];
+  const want = new Map<string, { title: string; archived: boolean }>();
+  const arch = { at: 1, by: "auto" };
+  for (let i = 0; i < MANY; i++) {
+    const s = `o${i}`;
+    const k = i % 10;
+    opened.push({ session: s, title: `给的 ${i}`, ...(k === 3 ? { station: "b" } : {}) });
+    if (k === 0) a.push(rowOf(s, { title: `活 ${i}` }));
+    if (k === 1) archived.push(rowOf(s, { title: `归 ${i}`, archived: arch }));
+    if (k === 2) a.push(rowOf(`c${i}`, { session: s, title: `会 ${i}` }));
+    if (k === 3) {
+      b.push(rowOf(s, { title: `乙 ${i}` }));
+      a.push(rowOf(s, { title: `错 ${i}` }));
+    }
+    if (k === 4) {
+      a.push(rowOf(s, { title: `新 ${i}` }));
+      archived.push(rowOf(s, { title: `旧 ${i}`, archived: arch }));
+    }
+    if (k === 6) {
+      a.push(rowOf(`d${i}`, { session: s, title: `次 ${i}` }));
+      a.push(rowOf(s, { title: `本 ${i}` }));
+    }
+    if (k === 7) {
+      archived.push(rowOf(s, { title: `档 ${i}`, archived: arch }));
+      a.push(rowOf(`e${i}`, { session: s, title: `活会 ${i}` }));
+    }
+    if (k === 8) {
+      a.push(rowOf(`h${i}`, { session: s, title: `先 ${i}` }));
+      a.push(rowOf(`g${i}`, { session: s, title: `后 ${i}` }));
+    }
+    if (k === 9) {
+      a.push(rowOf(`g${i}`, { session: s, title: `前 ${i}` }));
+      a.push(rowOf(`h${i}`, { session: s, title: `末 ${i}` }));
+    }
+    const title = [`活 ${i}`, `归 ${i}`, `会 ${i}`, `乙 ${i}`, `新 ${i}`, `给的 ${i}`, `本 ${i}`, `活会 ${i}`, `先 ${i}`, `前 ${i}`][k];
+    want.set(`${k === 3 ? STB : ST}\u0001${s}`, { title, archived: k === 1 });
+  }
+  return { a: [rowOf("k", { thread: 7, title: "领头的", opened }), ...a], archived, b, opened, want };
+}
+
+test("opening_a_chat_with_many_opened_subchats_batches_sql_and_preserves_precedence", async () => {
+  // Written by one core, then the chat opened on a core started anew on the same database: none of its opened chats
+  // found yet, the archived and the other station's records not held.
+  const w = setup();
+  const now = w.host.nowMs();
+  const m = many();
+  w.set(workspace(), { id: "ws", stations: [{ id: "a", name: "alpha", last_seen: Math.trunc(now / 1000) - 10, version: "0.4.0" }, { id: "b", name: "beta", last_seen: Math.trunc(now / 1000) - 10, version: "0.4.0" }] });
+  w.set(threads(ST), [thread(now)]);
+  w.set(pageOf, { first: 1, last: 1, entries: [entry(1, "好了")], end: true, thread: thread(now) });
+  w.set(sessionOf("k"), { session: fullSession("k"), threads: [thread(now)], turns: [] });
+  for (const st of [ST, STB]) w.set(overview(st), overviewOf());
+  w.set(rows(ST), m.a);
+  w.set({ topic: "archivedRows", station: ST }, m.archived);
+  w.set(rows(STB), m.b);
+  await w.host.time.pass(100);
+
+  const t = setup({ host: w.host });
+  const sql = t.host.sqls.get(dbName("s1"))!;
+  const u = ui();
+  t.subscribe(1, chatTopic);
+  // (what the chat reads given again, as its station's list is loaded where it is shown: this station's listed rows
+  // written anew, the archived and the other station's read of the database)
+  t.set(workspace(), { id: "ws", stations: [{ id: "a", name: "alpha", last_seen: Math.trunc(now / 1000) - 10, version: "0.4.0" }, { id: "b", name: "beta", last_seen: Math.trunc(now / 1000) - 10, version: "0.4.0" }] });
+  t.set(threads(ST), [thread(now)]);
+  t.set(pageOf, { first: 1, last: 1, entries: [entry(1, "好了")], end: true, thread: thread(now) });
+  t.set(sessionOf("k"), { session: fullSession("k"), threads: [thread(now)], turns: [] });
+  t.set(rows(ST), m.a);
+  for (const st of [ST, STB]) {
+    t.set(overview(st), overviewOf());
+    t.set(link(st), { state: "online" });
+  }
+  const counted = counting(sql);
+  const opening = performance.now();
+  await t.read(u, 1);
+  const openMs = performance.now() - opening;
+  assert.ok(u.value !== undefined, "the chat shown");
+  const cold = counted.openedSql;
+  const opened: J[] = u.value.opened;
+  console.log(`chat-opened: ${MANY} chats opened found and read cold in ${cold} statements of chat (${MANY * 2} one by one), opened in ${openMs.toFixed(1)} ms (Node)`);
+  assert.ok(cold <= 3, `${cold} statements of chat for ${MANY} chats opened`);
+  assert.equal(opened.length, MANY);
+  for (const o of opened) {
+    const want = m.want.get(`${o.station}\u0001${o.session}`);
+    assert.deepEqual([o.session, o.title, o.archived === true], [o.session, want?.title, want?.archived], `${o.station} ${o.session}`);
+  }
+  // Each as one asked alone finds it (CHAT_READS.named), the listed before the archived in the list's order.
+  for (const o of opened) {
+    const one = t.data.chatNamed(o.station, o.session);
+    assert.equal((one?.row as J | undefined)?.title ?? `给的 ${o.session.slice(1)}`, o.title, `${o.station} ${o.session} asked alone`);
+    assert.equal(one?.archived === true, o.archived === true);
+  }
+  const firstArchived = opened.findIndex((o) => o.archived === true);
+  assert.ok(firstArchived > 0 && opened.slice(firstArchived).every((o) => o.archived === true), "the archived last");
+
+  // Made again as its agent works: none of them found or read again.
+  const before = counted.openedSql;
+  const was = u.value.opened;
+  const making = performance.now();
+  for (let i = 0; i < ROUNDS; i++) {
+    t.set(sessionOf("k"), { session: fullSession("k", { lastActiveAt: 2 + i, turns: i + 1 }), threads: [thread(t.host.nowMs())], turns: [] });
+    await t.read(u, 1);
+  }
+  console.log(`chat-opened: ${ROUNDS} makes again, ${counted.openedSql - before} statements of chat for the chats opened, ${((performance.now() - making) / ROUNDS).toFixed(2)} ms a make (Node)`);
+  assert.equal(counted.openedSql - before, 0, "no chat it opened found or read again");
+  assert.deepEqual(u.value.opened, was);
+
+  // One renamed, one archived, one archived back: each shown so.
+  const archivedNow = m.archived.filter((r) => r.id !== "o1");
+  const listedNow = [...m.a.map((r) => (r.id === "o0" ? { ...r, title: "改了" } : r.id === "o10" ? null : r)).filter((r) => r !== null), rowOf("o1", { title: "回来了" })];
+  t.set(rows(ST), listedNow);
+  t.set({ topic: "archivedRows", station: ST }, [...archivedNow, rowOf("o10", { title: "活 10", archived: { at: 2, by: "auto" } })]);
+  await t.read(u, 1);
+  const of = (s: string) => (u.value.opened as J[]).find((o) => o.station === ST && o.session === s);
+  assert.equal(of("o0")?.title, "改了");
+  assert.deepEqual([of("o10")?.title, of("o10")?.archived], ["活 10", true]);
+  assert.deepEqual([of("o1")?.title, of("o1")?.archived ?? false], ["回来了", false]);
+  // Each chosen as SQLite orders them (CHAT_READS.named) also where two are placed alike: the earlier id. (Read with no
+  // computed, so both statements run anew on the rows as they are.)
+  const tied = Array.from({ length: MANY }, (_, i) => i).filter((i) => i % 10 >= 8);
+  for (const i of tied) sql.run("UPDATE chat SET ord = (SELECT ord FROM chat WHERE station = ? AND archived = 0 AND id = ?) WHERE station = ? AND archived = 0 AND id = ?", [ST, `h${i}`, ST, `g${i}`]);
+  const pairs = Array.from({ length: MANY }, (_, i) => [i % 10 === 3 ? STB : ST, `o${i}`] as const);
+  const batched = t.data.chatNamedMany(pairs);
+  for (const [st, s] of pairs) {
+    const one = t.data.chatNamed(st, s);
+    const many = batched.get(`${st}\u0001${s}`);
+    assert.deepEqual([(many?.row as J | undefined)?.title, many?.archived], [(one?.row as J | undefined)?.title, one?.archived], `${st} ${s} with places alike`);
+  }
+  for (const i of tied) assert.equal((batched.get(`${ST}\u0001o${i}`)?.row as J | undefined)?.title, i % 10 === 8 ? `后 ${i}` : `前 ${i}`, `o${i}: the earlier id where placed alike`);
+  t.store.runner.shutdown();
+  w.store.runner.shutdown();
 });
 
 test("what_is_kept_of_a_session_is_known_as_it_is_kept_and_let_go", async () => {

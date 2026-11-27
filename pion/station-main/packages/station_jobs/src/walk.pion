@@ -20,7 +20,7 @@ pub let WALK_YIELD_EVERY : Int = 256
 pub let LATEST_MOST : Int = 100000
 
 pub struct FsStat {
-  pub kind : String // "file" | "dir" | "link" | "other"
+  pub kind : String // "file" | "dir" | "link" | "dir_link" | "other"
   pub size : Int64
   pub executable : Bool
   pub mode : Int
@@ -38,12 +38,17 @@ pub fn FsStat::is_dir(self : FsStat) -> Bool {
 }
 
 pub fn FsStat::is_symlink(self : FsStat) -> Bool {
-  self.kind == "link"
+  self.kind == "link" || self.kind == "dir_link"
+}
+
+pub fn FsStat::is_dir_symlink(self : FsStat) -> Bool {
+  self.kind == "dir_link"
 }
 
 pub struct FsPort {
   pub sep : String
   pub lstat : (String) -> Option[FsStat]
+  pub lstat_err : Option[(String) -> Result[FsStat, Int]]
   pub stat : (String) -> Option[FsStat]
   pub read_dir : (String) -> Option[Array[String]]
   pub read_file : (String) -> Option[String]
@@ -252,7 +257,14 @@ pub fn remove_tree_bounded(
     Some(s) => s
     None => return true
   }
-  if !st.is_dir() || st.is_symlink() {
+  if st.is_symlink() {
+    return if fs.sep == "\\" && st.is_dir_symlink() {
+      (fs.rmdir)(path)
+    } else {
+      (fs.remove_file)(path)
+    }
+  }
+  if !st.is_dir() {
     return (fs.remove_file)(path)
   }
   let stack : Array[(String, Bool)] = [(path, false)]
@@ -267,6 +279,7 @@ pub fn remove_tree_bounded(
       continue
     }
     stack.push((cur, true))
+    let _ = (fs.chmod)(cur, 448)
     match (fs.read_dir)(cur) {
       Some(names) => {
         for i in 0..<names.length() {
@@ -275,7 +288,16 @@ pub fn remove_tree_bounded(
             Some(cst) => {
               if cst.is_dir() && !cst.is_symlink() {
                 stack.push((child, false))
+              } else if cst.is_symlink() {
+                if fs.sep == "\\" && cst.is_dir_symlink() {
+                  let _ = (fs.rmdir)(child)
+                } else {
+                  let _ = (fs.remove_file)(child)
+                }
               } else {
+                if fs.sep == "\\" {
+                  let _ = (fs.chmod)(child, 384)
+                }
                 let _ = (fs.remove_file)(child)
               }
             }
@@ -296,10 +318,25 @@ pub fn remove_tree_bounded(
 /// (real `rmdir`, real `realpath`, real `(dev, ino)` `lstat`, real `truncate`, real `read_range`,
 /// real `0600`/`0755` `write_file_mode`). Works without needing `World`.
 pub fn sys_fs(sep : String = "/") -> FsPort {
+  let lstat_err_fn = fn(p : String) -> Result[FsStat, Int] {
+    match station_sys::lstat_raw_err(p) {
+      Ok(raw) => match parse_lstat_str(raw) {
+        Some(st) => {
+          if sep == "\\" && st.kind == "link" && station_sys::is_dir_symlink(p) {
+            Ok(FsStat::{ ..st, kind: "dir_link" })
+          } else {
+            Ok(st)
+          }
+        }
+        None => Err(-1)
+      }
+      Err(code) => Err(code)
+    }
+  }
   let lstat_fn = fn(p : String) -> Option[FsStat] {
-    match station_sys::lstat_raw(p) {
-      Some(raw) => parse_lstat_str(raw)
-      None => None
+    match lstat_err_fn(p) {
+      Ok(st) => Some(st)
+      Err(_) => None
     }
   }
   let stat_fn = fn(p : String) -> Option[FsStat] {
@@ -332,7 +369,17 @@ pub fn sys_fs(sep : String = "/") -> FsPort {
     match lstat_fn(p) {
       None => return true
       Some(st) => {
-        if !st.is_dir() || st.is_symlink() {
+        if st.is_symlink() {
+          return if sep == "\\" && st.is_dir_symlink() {
+            station_sys::rmdir(p)
+          } else {
+            station_sys::unlink(p)
+          }
+        }
+        if !st.is_dir() {
+          if sep == "\\" {
+            let _ = station_sys::chmod(p, 384)
+          }
           return station_sys::unlink(p)
         }
       }
@@ -349,6 +396,7 @@ pub fn sys_fs(sep : String = "/") -> FsPort {
         continue
       }
       stack.push((cur, true))
+      let _ = station_sys::chmod(cur, 448)
       match station_sys::read_dir(cur) {
         Some(names) => {
           for i in 0..<names.length() {
@@ -357,7 +405,16 @@ pub fn sys_fs(sep : String = "/") -> FsPort {
               Some(cst) => {
                 if cst.is_dir() && !cst.is_symlink() {
                   stack.push((child, false))
+                } else if cst.is_symlink() {
+                  if sep == "\\" && cst.is_dir_symlink() {
+                    let _ = station_sys::rmdir(child)
+                  } else {
+                    let _ = station_sys::unlink(child)
+                  }
                 } else {
+                  if sep == "\\" {
+                    let _ = station_sys::chmod(child, 384)
+                  }
                   let _ = station_sys::unlink(child)
                 }
               }
@@ -376,6 +433,7 @@ pub fn sys_fs(sep : String = "/") -> FsPort {
   FsPort::{
     sep: sep,
     lstat: lstat_fn,
+    lstat_err: Some(lstat_err_fn),
     stat: stat_fn,
     read_dir: fn(p : String) -> Option[Array[String]] { station_sys::read_dir(p) },
     read_file: fn(p : String) -> Option[String] {
@@ -444,6 +502,7 @@ pub fn world_fs(world : World, sep : String = "/") -> FsPort {
   FsPort::{
     sep: sep,
     lstat: base.lstat,
+    lstat_err: base.lstat_err,
     stat: base.stat,
     read_dir: base.read_dir,
     read_file: base.read_file,
@@ -909,7 +968,20 @@ pub fn RemoveTreeCursor::step(
         return RemoveTreeStep::Done(true)
       }
     }
-    if !st.is_dir() || st.is_symlink() {
+    if st.is_symlink() {
+      let ok = if self.fs.sep == "\\" && st.is_dir_symlink() {
+        (self.fs.rmdir)(self.root)
+      } else {
+        (self.fs.remove_file)(self.root)
+      }
+      self.visited = self.visited + 1
+      self.finished = Some(ok)
+      return RemoveTreeStep::Done(ok)
+    }
+    if !st.is_dir() {
+      if self.fs.sep == "\\" {
+        let _ = (self.fs.chmod)(self.root, 384)
+      }
       let ok = (self.fs.remove_file)(self.root)
       self.visited = self.visited + 1
       self.finished = Some(ok)
@@ -938,7 +1010,16 @@ pub fn RemoveTreeCursor::step(
           Some(cst) => {
             if cst.is_dir() && !cst.is_symlink() {
               self.stack.push((child, false))
+            } else if cst.is_symlink() {
+              if self.fs.sep == "\\" && cst.is_dir_symlink() {
+                let _ = (self.fs.rmdir)(child)
+              } else {
+                let _ = (self.fs.remove_file)(child)
+              }
             } else {
+              if self.fs.sep == "\\" {
+                let _ = (self.fs.chmod)(child, 384)
+              }
               let _ = (self.fs.remove_file)(child)
             }
           }
@@ -966,6 +1047,7 @@ pub fn RemoveTreeCursor::step(
       continue
     }
     self.stack.push((cur, true))
+    let _ = (self.fs.chmod)(cur, 448)
     match (self.fs.read_dir)(cur) {
       Some(names) => {
         self.cur_dir = Some(cur)

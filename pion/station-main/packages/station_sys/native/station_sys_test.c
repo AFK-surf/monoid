@@ -28,6 +28,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#if defined(__linux__)
+#include <sys/ioctl.h>
+#endif
 
 static void assert_js_lower_eq(
     const uint8_t *in,
@@ -2324,6 +2327,133 @@ int main(void) {
         const uint8_t bad_args[] = "/nonexistent/stillfail_no_such_bin\0";
         assert(sts_exec_replace("/nonexistent/stillfail_no_such_bin", bad_args, (int64_t)(sizeof(bad_args) - 1)) == 127);
         printf("  [PASS] sts_exec_replace (inherited FD + exit 42 + ENOENT 127)\n");
+    }
+
+    {
+        // CoW clone primitives: sts_clones_at, sts_same_cloneable_volume, sts_clone_file, sts_clone_tree.
+        char cdir[256];
+        make_temp_dir(cdir, sizeof(cdir));
+        int32_t can_clone = sts_clones_at(cdir);
+        assert(can_clone == 0 || can_clone == 1);
+        assert(sts_clones_at("/nonexistent/stillfail_no_such_dir_xyz") == -1);
+        assert(sts_same_cloneable_volume(cdir, cdir) == (can_clone == 1 ? 1 : 0));
+
+        char src[320], dst[320], sym[320];
+        snprintf(src, sizeof(src), "%s/src.bin", cdir);
+        snprintf(dst, sizeof(dst), "%s/dst.bin", cdir);
+        snprintf(sym, sizeof(sym), "%s/sym.bin", cdir);
+        const size_t payload_len = 128u * 1024u;
+        uint8_t *payload = (uint8_t *)malloc(payload_len);
+        assert(payload != NULL);
+        memset(payload, 0x5A, payload_len);
+        assert(sts_write_file_mode(src, payload, (int64_t)payload_len, 0644, 0) == 1);
+        assert(symlink(src, sym) == 0);
+        assert(sts_clone_file(sym, dst, 1) == -5);
+
+        int32_t crc = sts_clone_file(src, dst, 1);
+        assert(crc == (can_clone == 1 ? 1 : 2));
+        // excl=1 on existing dst MUST return -7 (EEXIST) without overwriting.
+        assert(sts_clone_file(src, dst, 1) == -7);
+        // excl=0 overwrites cleanly.
+        int32_t crc2 = sts_clone_file(src, dst, 0);
+        assert(crc2 == (can_clone == 1 ? 1 : 2));
+
+        // sts_clone_file_only: O(1) CoW only, returns 1 on CoW volumes and -8 on non-CoW (leaving zero residue).
+        char dst_only[320];
+        snprintf(dst_only, sizeof(dst_only), "%s/dst_only.bin", cdir);
+        int32_t orc = sts_clone_file_only(src, dst_only, 1);
+        if (can_clone == 1) {
+            assert(orc == 1);
+            assert(sts_clone_file_only(src, dst_only, 1) == -7);
+            assert(sts_clone_file_only(src, dst_only, 0) == 1);
+            assert(unlink(dst_only) == 0);
+        } else {
+            assert(orc == -8);
+            struct stat st_none;
+            assert(lstat(dst_only, &st_none) != 0);
+        }
+
+        if (can_clone == 1) {
+#ifdef __APPLE__
+            struct log2phys l_src, l_dst;
+            memset(&l_src, 0, sizeof(l_src));
+            memset(&l_dst, 0, sizeof(l_dst));
+            int f1 = open(src, O_RDONLY);
+            int f2 = open(dst, O_RDONLY);
+            assert(f1 >= 0 && f2 >= 0);
+            assert(fcntl(f1, F_LOG2PHYS, &l_src) != -1);
+            assert(fcntl(f2, F_LOG2PHYS, &l_dst) != -1);
+            close(f1);
+            close(f2);
+            assert(l_src.l2p_devoffset > 0 && l_src.l2p_devoffset == l_dst.l2p_devoffset);
+#elif defined(__linux__)
+            // FS_IOC_FIEMAP physical extent sharing check on Btrfs/XFS
+            uint8_t req1[88], req2[88];
+            memset(req1, 0, sizeof(req1));
+            memset(req2, 0, sizeof(req2));
+            uint64_t fmlen = 1ULL << 60;
+            uint32_t fmext = 1;
+            memcpy(req1 + 8, &fmlen, 8);
+            memcpy(req1 + 24, &fmext, 4);
+            memcpy(req2 + 8, &fmlen, 8);
+            memcpy(req2 + 24, &fmext, 4);
+            int f1 = open(src, O_RDONLY);
+            int f2 = open(dst, O_RDONLY);
+            assert(f1 >= 0 && f2 >= 0);
+            if (ioctl(f1, 0xC020660BUL, req1) == 0 && ioctl(f2, 0xC020660BUL, req2) == 0) {
+                uint32_t m1 = 0, m2 = 0;
+                uint64_t p1 = 0, p2 = 0;
+                memcpy(&m1, req1 + 20, 4);
+                memcpy(&m2, req2 + 20, 4);
+                memcpy(&p1, req1 + 32 + 8, 8);
+                memcpy(&p2, req2 + 32 + 8, 8);
+                assert(m1 >= 1 && m2 >= 1 && p1 > 0 && p1 == p2);
+            }
+            close(f1);
+            close(f2);
+#endif
+            // sts_clone_tree with 0555 read-only subdir + symlink + regular file.
+            char tsrc[320], tdst[320], tro[360], tf[400], ts[400], dtf[400], dts[400], dro[360];
+            snprintf(tsrc, sizeof(tsrc), "%s/tsrc", cdir);
+            snprintf(tdst, sizeof(tdst), "%s/tdst", cdir);
+            snprintf(tro, sizeof(tro), "%s/ro", tsrc);
+            snprintf(tf, sizeof(tf), "%s/big.bin", tro);
+            snprintf(ts, sizeof(ts), "%s/link", tsrc);
+            snprintf(dro, sizeof(dro), "%s/ro", tdst);
+            snprintf(dtf, sizeof(dtf), "%s/big.bin", dro);
+            snprintf(dts, sizeof(dts), "%s/link", tdst);
+            assert(sts_mkdir_p(tro) == 1);
+            assert(sts_write_file_mode(tf, payload, (int64_t)payload_len, 0444, 0) == 1);
+            assert(symlink("ro/big.bin", ts) == 0);
+            assert(chmod(tro, 0555) == 0);
+            assert(sts_clone_tree(tsrc, tdst) == 1);
+            struct stat st_ro, st_lnk;
+            assert(lstat(dro, &st_ro) == 0 && (st_ro.st_mode & 0777) == 0555);
+            assert(lstat(dts, &st_lnk) == 0 && S_ISLNK(st_lnk.st_mode));
+            // sts_clone_tree with multi-level non-existent parent dirs (nearest existing ancestor check).
+            char deep_dst[360], deep_p1[340], deep_p2[350], deep_ro[400], deep_f[440], deep_l[440];
+            snprintf(deep_p1, sizeof(deep_p1), "%s/deep1", cdir);
+            snprintf(deep_p2, sizeof(deep_p2), "%s/deep1/deep2", cdir);
+            snprintf(deep_dst, sizeof(deep_dst), "%s/deep1/deep2/tdst", cdir);
+            snprintf(deep_ro, sizeof(deep_ro), "%s/ro", deep_dst);
+            snprintf(deep_f, sizeof(deep_f), "%s/big.bin", deep_ro);
+            snprintf(deep_l, sizeof(deep_l), "%s/link", deep_dst);
+            assert(sts_clone_tree(tsrc, deep_dst) == 1);
+            struct stat st_dro;
+            assert(lstat(deep_ro, &st_dro) == 0 && (st_dro.st_mode & 0777) == 0555);
+            assert(chmod(deep_ro, 0700) == 0);
+            assert(unlink(deep_f) == 0 && unlink(deep_l) == 0 && rmdir(deep_ro) == 0);
+            assert(rmdir(deep_dst) == 0 && rmdir(deep_p2) == 0 && rmdir(deep_p1) == 0);
+
+            // Cleanup tree (restore dir perms first)
+            assert(chmod(tro, 0700) == 0);
+            assert(chmod(dro, 0700) == 0);
+            assert(unlink(tf) == 0 && unlink(ts) == 0 && rmdir(tro) == 0 && rmdir(tsrc) == 0);
+            assert(unlink(dtf) == 0 && unlink(dts) == 0 && rmdir(dro) == 0 && rmdir(tdst) == 0);
+        }
+        free(payload);
+        assert(unlink(sym) == 0 && unlink(dst) == 0 && unlink(src) == 0 && rmdir(cdir) == 0);
+        printf("  [PASS] CoW clone primitives (clones_at=%d, clone_file, clone_tree, extent sharing)\n", can_clone);
     }
 
     assert(sts_wait_detached_for_test(5000) == 1);

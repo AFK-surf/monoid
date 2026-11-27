@@ -629,6 +629,43 @@ PLAN
   "station id") exec "$station" id --data "$data" ;;
   "lock status"|"lock reset") what=$2; shift 2; exec "$station" lock "$what" "$@" --data "$data" ;;
   "heap "*) exec "$station" heap --data "$data" ;;
+  "worktree "*|"worktree"|"-C "*|"-C"*)
+    if [ "${1:-}" = "-C" ]; then
+      [ $# -ge 3 ] && [ "${3:-}" = "worktree" ] || { echo "usage: stillfail [-C <repo>] worktree add [--detach|-d] <path> [<commit-ish>]" >&2; exit 2; }
+      repo_dir=$2
+      shift 3
+      set -- -C "$repo_dir" "$@"
+    elif [ "${1:-}" != "worktree" ]; then
+      case "${1:-}" in
+        -C?*)
+          [ $# -ge 2 ] && [ "${2:-}" = "worktree" ] || { echo "usage: stillfail [-C <repo>] worktree add [--detach|-d] <path> [<commit-ish>]" >&2; exit 2; }
+          repo_dir=${1#-C}
+          shift 2
+          set -- -C "$repo_dir" "$@" ;;
+        *)
+          echo "usage: stillfail [-C <repo>] worktree add [--detach|-d] <path> [<commit-ish>]" >&2; exit 2 ;;
+      esac
+    else
+      shift
+    fi
+    pion_bin=${STILLFAIL_STATION_PION:-$here/station/stillfail-station-pion}
+    if [ "${STILLFAIL_STATION_ENGINE:-}" != node ] && [ -x "$pion_bin" ] && [ ! -d "$pion_bin" ]; then
+      exec "$pion_bin" worktree "$@"
+    fi
+    node=""
+    for at in "${STILLFAIL_NODE:-}" "$here/node/bin/node"; do
+      [ -n "$at" ] && [ -x "$at" ] && [ ! -d "$at" ] && { node=$at; break; }
+    done
+    [ -n "$node" ] || node=$(command -v node 2>/dev/null || true)
+    entry=""
+    if [ -f "$here/station/main.js" ]; then entry=$here/station/main.js
+    elif [ -f "$here/station/src/main.ts" ]; then entry=$here/station/src/main.ts
+    fi
+    if [ -n "$node" ] && [ -n "$entry" ]; then
+      exec "$node" "$entry" worktree "$@"
+    fi
+    echo "stillfail worktree: neither $pion_bin nor Node with station entry in $here/station is available; reinstall still.fail" >&2
+    exit 1 ;;
   "admin "*)
     # Node's admin CLI (station/admin-cli.js in a release, bin/admin-cli.ts in a clone). The reader binary is only
     # invoked when STILLFAIL_ADMIN_ENGINE=moonbit says so or where Node / admin-cli is absent (note: the slimmed
@@ -665,5 +702,5 @@ PLAN
       echo "stillfail admin: neither Node with admin-cli (in $here/station or $here/bin) nor $reader is here; reinstall still.fail" >&2
     fi
     exit 1 ;;
-  *) echo "usage: stillfail start [--port N] | stillfail move <folder> | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] [--lock <hash>] [--join | --stay] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail heap | stillfail admin <command>" >&2; exit 2 ;;
+  *) echo "usage: stillfail start [--port N] | stillfail move <folder> | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] [--lock <hash>] [--join | --stay] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail heap | stillfail [-C <repo>] worktree <args> | stillfail admin <command>" >&2; exit 2 ;;
 esac

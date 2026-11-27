@@ -446,6 +446,34 @@ fn is_hex64(s : String) -> Bool {
 }
 
 ///|
+fn is_gone_room(name : String) -> Bool {
+  let len = name.length()
+  if len > 6 && name.view(end_offset=6).to_string().equal(".gone-") {
+    return true
+  }
+  if len <= 64 || (len - 64) % 14 != 0 {
+    return false
+  }
+  if !is_hex64(name.view(end_offset=64).to_string()) {
+    return false
+  }
+  let mut i = 64
+  while i < len {
+    if !name.view(start_offset=i, end_offset=i + 6).to_string().equal(".gone-") {
+      return false
+    }
+    for j in (i + 6)..<(i + 14) {
+      let c = name.unsafe_get(j).to_int()
+      if !((c >= 48 && c <= 57) || (c >= 97 && c <= 102)) {
+        return false
+      }
+    }
+    i += 14
+  }
+  true
+}
+
+///|
 /// isDeepStrictEqual of two JSON values (keys in any order).
 fn json_equal(a : Json, b : Json) -> Bool {
   match (a, b) {
@@ -870,8 +898,18 @@ async fn Actors::close_here(self : Actors, workspace : String, peer : String, se
     _ => ()
   }
   if field_of(moved, "room") is String(gone) {
-    self.rlog("info", "remote session directory removed", fields={ "workspace": jstr(workspace), "station": jstr(peer), "session": jstr(session) })
-    self.remove(gone, recursive=true) catch { _ => () }
+    let removed = try {
+      ignore(self.rnode("removeTask", [jstr(gone)]))
+      true
+    } catch {
+      e => {
+        self.rlog("warn", "remote session directory not removed", fields={ "workspace": jstr(workspace), "station": jstr(peer), "session": jstr(session), "error": jstr(FsError::of(e)) })
+        false
+      }
+    }
+    if removed {
+      self.rlog("info", "remote session directory removed", fields={ "workspace": jstr(workspace), "station": jstr(peer), "session": jstr(session) })
+    }
   }
   true
 }
@@ -884,6 +922,16 @@ async fn Actors::sweep(self : Actors, now : Double) -> Unit raise {
   for name in self.readdir_names(sessions) {
     if self.remote.stopped {
       return
+    }
+    if is_gone_room(name) {
+      let dir = self.rjoin([sessions, name])
+      ignore(self.rnode("removeTask", [jstr(dir)])) catch {
+        e => self.rlog("warn", "gone remote session directory not removed", fields={ "name": jstr(name), "error": jstr(FsError::of(e)) })
+      }
+      continue
+    }
+    if !is_hex64(name) {
+      continue
     }
     let meta = self.read_json(self.rjoin([sessions, name, "session.json"])) catch { _ => continue }
     let (workspace, peer, session) = (text_of(meta, "workspace"), text_of(meta, "station"), text_of(meta, "session"))
@@ -935,6 +983,19 @@ async fn Actors::sweep(self : Actors, now : Double) -> Unit raise {
       }
       self.remove(dir, recursive=true)
     })
+  }
+  let tombstones = self.rjoin([self.remote.root, "tombstones"])
+  for name in self.readdir_names(tombstones) {
+    if self.remote.stopped {
+      return
+    }
+    if name == "." || name == ".." {
+      continue
+    }
+    let dir = self.rjoin([tombstones, name])
+    ignore(self.rnode("removeTask", [jstr(dir)])) catch {
+      e => self.rlog("warn", "gone remote directory not removed", fields={ "name": jstr(name), "error": jstr(FsError::of(e)) })
+    }
   }
 }
 
@@ -1002,6 +1063,9 @@ async fn Actors::rooms(self : Actors) -> Array[RoomUse] raise {
   for name in self.readdir_names(sessions) {
     if self.remote.stopped {
       break
+    }
+    if !is_hex64(name) {
+      continue
     }
     let dir = self.rjoin([sessions, name])
     let meta = self.read_json(self.rjoin([dir, "session.json"])) catch { _ => Json::null() }
@@ -1080,15 +1144,31 @@ async fn Actors::budget(self : Actors, now : Double, budget : Double) -> Double 
     // Taken out in one step with its use asked again (Node's `closeRoom`): one used since it was looked at stays.
     let moved = self.rnode("closeRoom", [jstr(room.dir), Json::array([]), jnum(now - room_recent_ms)])
     if field_of(moved, "room") is String(gone) {
-      ignore(self.rnode("removeTask", [jstr(gone)])) catch { _ => () }
-      total -= room.bytes
-      self.rlog("info", "remote session directory removed", fields={
-        "why": jstr("over budget"),
-        "bytes": jnum(room.bytes),
-        "workspace": jstr(workspace),
-        "station": jstr(station),
-        "session": jstr(session),
-      })
+      let removed = try {
+        ignore(self.rnode("removeTask", [jstr(gone)]))
+        true
+      } catch {
+        e => {
+          self.rlog("warn", "remote session directory not removed", fields={
+            "why": jstr("over budget"),
+            "workspace": jstr(workspace),
+            "station": jstr(station),
+            "session": jstr(session),
+            "error": jstr(FsError::of(e)),
+          })
+          false
+        }
+      }
+      if removed {
+        total -= room.bytes
+        self.rlog("info", "remote session directory removed", fields={
+          "why": jstr("over budget"),
+          "bytes": jnum(room.bytes),
+          "workspace": jstr(workspace),
+          "station": jstr(station),
+          "session": jstr(session),
+        })
+      }
     }
   }
   if before - total > 0.0 { before - total } else { 0.0 }

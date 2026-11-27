@@ -522,7 +522,6 @@ export async function drives(isDir: (path: string) => Promise<boolean>): Promise
 export const windows: Platform = {
   os: "windows",
   buildOs: "win32",
-  clonesFiles: false,
   nativeCache: (env, home) => env.STILLFAIL_NATIVE_CACHE || join(env.LOCALAPPDATA || join(home, "AppData", "Local"), "stillfail-native"),
 
   exe: (name) => `${name}.exe`,

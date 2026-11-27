@@ -113,7 +113,7 @@ test("a release is asked of Farview's own private release first, then of still.f
   assert.match(nativeCache({}), /stillfail-native$/);
   // (each system's place, as scripts/native.ts has it)
   assert.equal(windows.nativeCache({ LOCALAPPDATA: "C:\\L" }, "C:\\h"), join("C:\\L", "stillfail-native"));
-  if (unix.clonesFiles) assert.equal(unix.nativeCache({ XDG_CACHE_HOME: "/x" }, "/h"), join("/h", "Library", "Caches", "stillfail-native"));
+  if (unix.os === "macos") assert.equal(unix.nativeCache({ XDG_CACHE_HOME: "/x" }, "/h"), join("/h", "Library", "Caches", "stillfail-native"));
   else {
     assert.equal(unix.nativeCache({ XDG_CACHE_HOME: "/x" }, "/h"), join("/x", "stillfail-native"));
     assert.equal(unix.nativeCache({}, "/h"), join("/h", ".cache", "stillfail-native"));

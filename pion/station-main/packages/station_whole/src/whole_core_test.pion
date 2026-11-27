@@ -814,6 +814,7 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
         ino: 0L,
       })
     },
+    lstat_err: None,
     stat: fn(_p : String) -> Option[station_jobs::FsStat] {
       Some(station_jobs::FsStat::{
         kind: "dir",
