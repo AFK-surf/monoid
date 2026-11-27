@@ -210,6 +210,7 @@ pub struct EdgeMuxHub {
   mut next_call_id : Int64
   mut next_req_id : Int
   pending_tokens : Map[Int64, builders_core::MuxToken]
+  discard_ids : Map[Int64, Bool]
   deferred_done : Map[Int64, (builders_core::MuxToken, host_shim::ShellDone)]
   deferred_done_order : Array[Int64]
   deferred_sys : Array[(Int64, Bytes)]
@@ -235,6 +236,7 @@ pub fn EdgeMuxHub::from_transport(
     next_call_id: EDGE_MUX_CALL_ID_BASE,
     next_req_id: 1,
     pending_tokens: Map::new(),
+    discard_ids: Map::new(),
     deferred_done: Map::new(),
     deferred_done_order: [],
     deferred_sys: [],
@@ -261,6 +263,9 @@ pub fn EdgeMuxHub::host(
 
 /// Convenience wrapper adopting a `ShellMux`'s underlying `MuxTransport` directly with a
 /// disjoint high call-ID space (`EDGE_MUX_CALL_ID_BASE = 1 << 44`).
+/// NOTE: Any coexisting `ShellMux` on the same host shell MUST be constructed via
+/// `builders_core::ShellMux::new(hub.as_mux_transport())` so `EdgeMuxHub` remains the sole
+/// owner of the underlying `transport.wait`.
 pub fn EdgeMuxHub::new(
   mux : builders_core::ShellMux,
   now_fn : () -> Int64 = host_shim::now_ms,
@@ -274,6 +279,7 @@ pub fn EdgeMuxHub::new(
     next_call_id: hub.next_call_id,
     next_req_id: hub.next_req_id,
     pending_tokens: hub.pending_tokens,
+    discard_ids: hub.discard_ids,
     deferred_done: hub.deferred_done,
     deferred_done_order: hub.deferred_done_order,
     deferred_sys: hub.deferred_sys,
@@ -373,6 +379,22 @@ pub fn EdgeMuxHub::call_async_raw(
   cid
 }
 
+/// Issue a fire-and-forget asynchronous `client/shell` call (e.g. `stream.close`, `ws.send`,
+/// `ws.close`): its `ShellDone` reply is silently discarded on arrival and NEVER enters
+/// `deferred_done` or triggers overflow accounting.
+pub fn EdgeMuxHub::call_async_discard(
+  self : EdgeMuxHub,
+  op : String,
+  json_str : String,
+  payload : Option[Bytes],
+) -> Int64 {
+  let cid = self.next_call_id
+  self.next_call_id = self.next_call_id + 1L
+  self.discard_ids.set(cid, true)
+  (self.transport.call_async)(cid, op, json_str, payload)
+  cid
+}
+
 /// Cancel an in-flight cancellable `client/shell` call (`fetch.cancel`).
 pub fn EdgeMuxHub::cancel(self : EdgeMuxHub, call_id : Int64) -> Unit {
   let _ = (self.transport.call_sync)("fetch.cancel", "{\"id\":" + call_id.to_string() + "}")
@@ -466,6 +488,10 @@ fn EdgeMuxHub::buffer_deferred_sys(self : EdgeMuxHub, ev_id : Int64, payload : B
 pub fn EdgeMuxHub::deliver_host_event(self : EdgeMuxHub, ev : host_shim::HostEvent) -> Unit {
   match ev {
     host_shim::HostEvent::ShellDone(done) => {
+      if self.discard_ids.contains(done.id) {
+        self.discard_ids.remove(done.id)
+        return
+      }
       if done.id < EDGE_MUX_CALL_ID_BASE && !self.pending_tokens.contains(done.id) {
         self.shell_mux_inbox.push(host_shim::HostEvent::ShellDone(done))
         return
@@ -531,9 +557,24 @@ pub fn EdgeMuxHub::as_mux_transport(self : EdgeMuxHub) -> builders_core::MuxTran
         Some(ev) => return Some(ev)
         None => ()
       }
-      if timeout_ms <= 0L {
+      if timeout_ms == 0L {
         let _ = self.pump_one(0L)
         return self.pop_shell_mux_inbox()
+      }
+      if timeout_ms < 0L {
+        // Blocking wait matching `station_host.h` (`timeout_ms < 0`): pass `-1` through to
+        // underlying `wait`, continuing past internal `Sys` or hub `ShellDone` events until
+        // an external event arrives or the underlying transport stops (`None`).
+        while true {
+          match self.pop_shell_mux_inbox() {
+            Some(ev) => return Some(ev)
+            None => ()
+          }
+          if !self.pump_one(-1L) {
+            return self.pop_shell_mux_inbox()
+          }
+        }
+        return None
       }
       let deadline = (self.now_fn)() + timeout_ms
       while true {
@@ -545,8 +586,9 @@ pub fn EdgeMuxHub::as_mux_transport(self : EdgeMuxHub) -> builders_core::MuxTran
         if rem <= 0L {
           return None
         }
-        let slice = if rem > 50L { 50L } else { rem }
-        let _ = self.pump_one(slice)
+        if !self.pump_one(rem) {
+          return self.pop_shell_mux_inbox()
+        }
       }
       None
     },
@@ -706,8 +748,7 @@ pub fn EdgeMuxHub::fetch_bounded_stream(
   let parts : Array[Bytes] = []
   let mut total = 0
   let close_stream = fn() -> Unit {
-    let _ = self.call_async_raw(
-      builders_core::MuxToken::Tagged(stream_id, CONNECTS_TOK_STREAM_CLOSE, 0L),
+    let _ = self.call_async_discard(
       "stream.close",
       "{\"id\":" + stream_id.to_string() + "}",
       None,
@@ -988,6 +1029,7 @@ pub fn ConnectMuxBridge::ws_send_async(
   self : ConnectMuxBridge,
   handle : Int64,
   frame : station_connects::WsFrame,
+  discard : Bool = true,
 ) -> Result[Int64, String] {
   if !self.open_ws.contains(handle) {
     return Err("websocket handle not open")
@@ -1008,12 +1050,16 @@ pub fn ConnectMuxBridge::ws_send_async(
       return Ok(0L)
     }
   }
-  let cid = self.hub.call_async_raw(
-    builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_SEND, handle),
-    op,
-    json_str,
-    payload,
-  )
+  let cid = if discard {
+    self.hub.call_async_discard(op, json_str, payload)
+  } else {
+    self.hub.call_async_raw(
+      builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_SEND, handle),
+      op,
+      json_str,
+      payload,
+    )
+  }
   Ok(cid)
 }
 
@@ -1022,7 +1068,7 @@ pub fn ConnectMuxBridge::ws_send(
   handle : Int64,
   frame : station_connects::WsFrame,
 ) -> Result[Unit, String] {
-  let cid = match self.ws_send_async(handle, frame) {
+  let cid = match self.ws_send_async(handle, frame, discard=false) {
     Ok(id) => id
     Err(e) => return Err(e)
   }
@@ -1048,8 +1094,7 @@ pub fn ConnectMuxBridge::ws_close(self : ConnectMuxBridge, handle : Int64) -> Un
   }
   self.ws_inbox.remove(handle)
   self.ws_next_inflight.remove(handle)
-  let _ = self.hub.call_async_raw(
-    builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_CLOSE, handle),
+  let _ = self.hub.call_async_discard(
     "ws.close",
     "{\"id\":" + handle.to_string() + "}",
     None,
@@ -1327,8 +1372,7 @@ fn ConnectsOsRuntime::arm_group_sse_read(self : ConnectsOsRuntime, stream_id : I
 }
 
 fn ConnectsOsRuntime::close_group_stream_handle(self : ConnectsOsRuntime, stream_id : Int) -> Unit {
-  let _ = self.bridge.hub.call_async_raw(
-    builders_core::MuxToken::Tagged(stream_id, CONNECTS_TOK_STREAM_CLOSE, 0L),
+  let _ = self.bridge.hub.call_async_discard(
     "stream.close",
     "{\"id\":" + stream_id.to_string() + "}",
     None,

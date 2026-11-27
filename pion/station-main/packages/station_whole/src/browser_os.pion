@@ -606,8 +606,7 @@ pub fn cdp_ws_port_for_hub(hub : EdgeMuxHub, ws_id : Int) -> station_browser::Cd
         ("id", base_codec::json_int(ws_id)),
         ("text", base_codec::json_str(text)),
       ])
-      let _ = hub.call_async_raw(
-        builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_SEND, 0L),
+      let _ = hub.call_async_discard(
         "ws.send",
         base_codec::json_stringify(args),
         None,
@@ -615,8 +614,7 @@ pub fn cdp_ws_port_for_hub(hub : EdgeMuxHub, ws_id : Int) -> station_browser::Cd
       true
     },
     close_ws: fn() -> Unit {
-      let _ = hub.call_async_raw(
-        builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_CLOSE, 0L),
+      let _ = hub.call_async_discard(
         "ws.close",
         "{\"id\":" + ws_id.to_string() + "}",
         None,
@@ -1281,8 +1279,7 @@ pub fn BrowserProxyOsAdapter::apply_actions(
               ("id", base_codec::json_int(ws_id)),
               ("text", base_codec::json_str(text)),
             ])
-            let _ = self.hub.call_async_raw(
-              builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_SEND, cid.to_int64()),
+            let _ = self.hub.call_async_discard(
               "ws.send",
               base_codec::json_stringify(args),
               None,
@@ -1300,8 +1297,7 @@ pub fn BrowserProxyOsAdapter::apply_actions(
         match self.upstream_ws.get(cid) {
           Some(ws_id) => {
             self.upstream_ws.remove(cid)
-            let _ = self.hub.call_async_raw(
-              builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_CLOSE, cid.to_int64()),
+            let _ = self.hub.call_async_discard(
               "ws.close",
               "{\"id\":" + ws_id.to_string() + "}",
               None,

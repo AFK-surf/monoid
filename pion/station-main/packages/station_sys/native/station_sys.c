@@ -1489,7 +1489,7 @@ int64_t sts_proc_spawn(
     siex.lpAttributeList = attr_list;
 
     DWORD cflags = EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW |
-                   ((flags & STS_PROC_NEW_PGID) ? CREATE_NEW_PROCESS_GROUP : 0);
+                   ((flags & STS_PROC_NEW_PGID) ? (CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED) : 0);
     BOOL ok = pipes_ok && CreateProcessW(NULL, wline, NULL, NULL, TRUE, cflags, wenv, wcwd, &siex.StartupInfo, &pi);
     DWORD err = ok ? 0 : GetLastError();
 
@@ -1515,22 +1515,29 @@ int64_t sts_proc_spawn(
         copy_err(err_buf, err_cap, msg);
         return -1;
     }
-    CloseHandle(pi.hThread);
 
     HANDLE h_job = NULL;
     if ((flags & STS_PROC_NEW_PGID) != 0) {
+        /* Fail-closed Job Object assignment BEFORE ResumeThread (without KILL_ON_JOB_CLOSE
+         * so closing the handle or station handover never kills detached lasting jobs). */
         h_job = CreateJobObjectW(NULL, NULL);
-        if (h_job != NULL) {
-            JOBOBJECT_EXTENDED_LIMIT_INFORMATION jeli;
-            memset(&jeli, 0, sizeof(jeli));
-            jeli.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if (!SetInformationJobObject(h_job, JobObjectExtendedLimitInformation, &jeli, sizeof(jeli)) ||
-                !AssignProcessToJobObject(h_job, pi.hProcess)) {
-                CloseHandle(h_job);
-                h_job = NULL;
+        if (h_job == NULL || !AssignProcessToJobObject(h_job, pi.hProcess)) {
+            DWORD jerr = GetLastError();
+            TerminateProcess(pi.hProcess, 1);
+            if (h_job != NULL) CloseHandle(h_job);
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            for (int i = 0; i < 3; i++) {
+                if (mine_h[i] != NULL) CloseHandle(mine_h[i]);
             }
+            char msg[256];
+            win_err_str(jerr ? jerr : ERROR_ACCESS_DENIED, msg, sizeof(msg));
+            copy_err(err_buf, err_cap, msg);
+            return -1;
         }
+        ResumeThread(pi.hThread);
     }
+    CloseHandle(pi.hThread);
 
     win_proc_t *p = (win_proc_t *)calloc(1, sizeof(*p));
     if (p == NULL) {
@@ -2627,6 +2634,12 @@ int32_t sts_sync_file(const char *path) {
     return ok ? 0 : sts_win_map_err(ferr);
 }
 
+typedef struct {
+    HANDLE h;
+    int refs;
+    int closed;
+} win_file_ro_t;
+
 int64_t sts_file_open_ro(const char *path, int64_t *out_size, int32_t *out_err) {
     if (out_size != NULL) *out_size = 0;
     if (out_err != NULL) *out_err = -1;
@@ -2677,9 +2690,19 @@ int64_t sts_file_open_ro(const char *path, int64_t *out_size, int32_t *out_err) 
         if (out_err != NULL) *out_err = sts_win_map_err(e);
         return -1;
     }
-    int64_t id = ht_insert(STS_HK_FILE_RO, (void *)h);
+    win_file_ro_t *f = (win_file_ro_t *)malloc(sizeof(*f));
+    if (f == NULL) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = -1;
+        return -1;
+    }
+    f->h = h;
+    f->refs = 1;
+    f->closed = 0;
+    int64_t id = ht_insert(STS_HK_FILE_RO, f);
     if (id < 0) {
         CloseHandle(h);
+        free(f);
         if (out_err != NULL) *out_err = -1;
         return -1;
     }
@@ -2696,54 +2719,99 @@ void *sts_file_pread(int64_t handle, int64_t offset, int64_t len, int64_t *out_l
         if (out_err != NULL) *out_err = -6;
         return NULL;
     }
-    HANDLE h = INVALID_HANDLE_VALUE;
+    win_file_ro_t *f = NULL;
     size_t b = (size_t)((uint64_t)handle % STS_HANDLE_BUCKETS);
     ht_lock();
     for (sts_hnode_t *cur = g_ht_buckets[b]; cur != NULL; cur = cur->next) {
         if (cur->id == handle && cur->kind == STS_HK_FILE_RO) {
-            h = (HANDLE)cur->ptr;
+            win_file_ro_t *cand = (win_file_ro_t *)cur->ptr;
+            if (!cand->closed) {
+                cand->refs += 1;
+                f = cand;
+            }
             break;
         }
     }
     ht_unlock();
-    if (h == INVALID_HANDLE_VALUE) {
+    if (f == NULL) {
         if (out_err != NULL) *out_err = -2;
         return NULL;
     }
+    void *res = NULL;
+    int32_t err = 0;
     if (len == 0) {
-        if (out_err != NULL) *out_err = 0;
-        return dup_bytes("", 0, out_len);
-    }
-    uint8_t *buf = (uint8_t *)malloc((size_t)len);
-    if (buf == NULL) return NULL;
-    int64_t total = 0;
-    while (total < len) {
-        uint64_t cur = (uint64_t)offset + (uint64_t)total;
-        OVERLAPPED ov;
-        memset(&ov, 0, sizeof(ov));
-        ov.Offset = (DWORD)(cur & 0xFFFFFFFFULL);
-        ov.OffsetHigh = (DWORD)((cur >> 32) & 0xFFFFFFFFULL);
-        DWORD chunk = (DWORD)((len - total) > 0x7fffffffLL ? 0x7fffffffLL : (len - total));
-        DWORD got = 0;
-        if (!ReadFile(h, buf + total, chunk, &got, &ov)) {
-            DWORD e = GetLastError();
-            if (e == ERROR_HANDLE_EOF) break;
-            free(buf);
-            if (out_err != NULL) *out_err = sts_win_map_err(e);
-            return NULL;
+        res = dup_bytes("", 0, out_len);
+        if (res == NULL) err = -1;
+    } else {
+        uint8_t *buf = (uint8_t *)malloc((size_t)len);
+        if (buf == NULL) {
+            err = -1;
+        } else {
+            int64_t total = 0;
+            while (total < len) {
+                uint64_t cur = (uint64_t)offset + (uint64_t)total;
+                OVERLAPPED ov;
+                memset(&ov, 0, sizeof(ov));
+                ov.Offset = (DWORD)(cur & 0xFFFFFFFFULL);
+                ov.OffsetHigh = (DWORD)((cur >> 32) & 0xFFFFFFFFULL);
+                DWORD chunk = (DWORD)((len - total) > 0x7fffffffLL ? 0x7fffffffLL : (len - total));
+                DWORD got = 0;
+                if (!ReadFile(f->h, buf + total, chunk, &got, &ov)) {
+                    DWORD e = GetLastError();
+                    if (e == ERROR_HANDLE_EOF) break;
+                    free(buf);
+                    buf = NULL;
+                    err = sts_win_map_err(e);
+                    break;
+                }
+                if (got == 0) break;
+                total += (int64_t)got;
+            }
+            if (buf != NULL) {
+                if (out_len != NULL) *out_len = total;
+                res = buf;
+            }
         }
-        if (got == 0) break;
-        total += (int64_t)got;
     }
-    if (out_len != NULL) *out_len = total;
-    if (out_err != NULL) *out_err = 0;
-    return buf;
+    int should_free = 0;
+    ht_lock();
+    f->refs -= 1;
+    if (f->refs == 0) should_free = 1;
+    ht_unlock();
+    if (should_free) {
+        CloseHandle(f->h);
+        free(f);
+    }
+    if (out_err != NULL) *out_err = err;
+    return res;
 }
 
 int32_t sts_file_close(int64_t handle) {
-    HANDLE h = (HANDLE)ht_take(STS_HK_FILE_RO, handle);
-    if (h == NULL) return 0;
-    CloseHandle(h);
+    if (handle <= 0) return 0;
+    win_file_ro_t *f = NULL;
+    int should_free = 0;
+    size_t b = (size_t)((uint64_t)handle % STS_HANDLE_BUCKETS);
+    ht_lock();
+    sts_hnode_t **pp = &g_ht_buckets[b];
+    while (*pp != NULL) {
+        sts_hnode_t *cur = *pp;
+        if (cur->id == handle && cur->kind == STS_HK_FILE_RO) {
+            *pp = cur->next;
+            f = (win_file_ro_t *)cur->ptr;
+            free(cur);
+            f->closed = 1;
+            f->refs -= 1;
+            if (f->refs == 0) should_free = 1;
+            break;
+        }
+        pp = &cur->next;
+    }
+    ht_unlock();
+    if (f == NULL) return 0;
+    if (should_free) {
+        CloseHandle(f->h);
+        free(f);
+    }
     return 1;
 }
 
@@ -3438,6 +3506,7 @@ typedef struct {
     HANDLE h_in_w;
     HANDLE h_out_r;
     HANDLE h_proc;
+    HANDLE h_job;
     HANDLE h_stop;
     _Atomic int closing;
     SRWLOCK resize_lock;
@@ -3470,6 +3539,7 @@ static void win_pty_unref(win_pty_t *pt) {
         pt->hpc = NULL;
     }
     if (pt->h_proc != NULL) CloseHandle(pt->h_proc);
+    if (pt->h_job != NULL) CloseHandle(pt->h_job);
     if (pt->h_stop != NULL) CloseHandle(pt->h_stop);
     free(pt);
 }
@@ -3703,7 +3773,7 @@ int64_t sts_pty_spawn(
         NULL,
         NULL,
         FALSE,
-        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT,
+        EXTENDED_STARTUPINFO_PRESENT | CREATE_UNICODE_ENVIRONMENT | CREATE_SUSPENDED,
         wenv,
         wcwd,
         &siex.StartupInfo,
@@ -3724,11 +3794,30 @@ int64_t sts_pty_spawn(
         copy_err(err_buf, err_cap, msg);
         return -1;
     }
+
+    /* Fail-closed Job Object assignment BEFORE ResumeThread (without KILL_ON_JOB_CLOSE). */
+    HANDLE h_job = CreateJobObjectW(NULL, NULL);
+    if (h_job == NULL || !AssignProcessToJobObject(h_job, pi.hProcess)) {
+        DWORD jerr = GetLastError();
+        TerminateProcess(pi.hProcess, 1);
+        if (h_job != NULL) CloseHandle(h_job);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        CloseHandle(in_w);
+        CloseHandle(out_r);
+        p_close(hpc);
+        char msg[256];
+        win_err_str(jerr ? jerr : ERROR_ACCESS_DENIED, msg, sizeof(msg));
+        copy_err(err_buf, err_cap, msg);
+        return -1;
+    }
+    ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
 
     win_pty_t *pt = (win_pty_t *)calloc(1, sizeof(*pt));
     if (pt == NULL) {
-        TerminateProcess(pi.hProcess, 1);
+        TerminateJobObject(h_job, 1);
+        CloseHandle(h_job);
         CloseHandle(in_w);
         CloseHandle(out_r);
         p_close(hpc);
@@ -3743,6 +3832,7 @@ int64_t sts_pty_spawn(
     pt->h_in_w = in_w;
     pt->h_out_r = out_r;
     pt->h_proc = pi.hProcess;
+    pt->h_job = h_job;
     pt->h_stop = CreateEventW(NULL, TRUE, FALSE, NULL);
     InitializeSRWLock(&pt->resize_lock);
     InitializeSRWLock(&pt->write_lock);
@@ -3875,7 +3965,7 @@ int32_t sts_pty_kill(int64_t handle, int32_t sig) {
         if (wr == WAIT_OBJECT_0) return 0;
         return -1;
     }
-    BOOL ok = TerminateProcess(pt->h_proc, 1);
+    BOOL ok = (pt->h_job != NULL) ? TerminateJobObject(pt->h_job, 1) : TerminateProcess(pt->h_proc, 1);
     win_pty_unref(pt);
     return ok ? 1 : 0;
 }
@@ -6735,6 +6825,12 @@ int32_t sts_sync_file(const char *path) {
     return rc == 0 ? 0 : sts_posix_map_errno(e);
 }
 
+typedef struct {
+    int fd;
+    int refs;
+    int closed;
+} posix_file_ro_t;
+
 int64_t sts_file_open_ro(const char *path, int64_t *out_size, int32_t *out_err) {
     if (out_size != NULL) *out_size = 0;
     if (out_err != NULL) *out_err = -1;
@@ -6767,16 +6863,18 @@ int64_t sts_file_open_ro(const char *path, int64_t *out_size, int32_t *out_err) 
         if (out_err != NULL) *out_err = -5;
         return -1;
     }
-    int *pfd = (int *)malloc(sizeof(int));
-    if (pfd == NULL) {
+    posix_file_ro_t *f = (posix_file_ro_t *)malloc(sizeof(*f));
+    if (f == NULL) {
         close(fd);
         return -1;
     }
-    *pfd = fd;
-    int64_t id = ht_insert(STS_HK_FILE_RO, pfd);
+    f->fd = fd;
+    f->refs = 1;
+    f->closed = 0;
+    int64_t id = ht_insert(STS_HK_FILE_RO, f);
     if (id < 0) {
         close(fd);
-        free(pfd);
+        free(f);
         return -1;
     }
     if (out_size != NULL) *out_size = (int64_t)st.st_size;
@@ -6792,49 +6890,93 @@ void *sts_file_pread(int64_t handle, int64_t offset, int64_t len, int64_t *out_l
         if (out_err != NULL) *out_err = -6;
         return NULL;
     }
-    int fd = -1;
+    posix_file_ro_t *f = NULL;
     size_t b = (size_t)((uint64_t)handle % STS_HANDLE_BUCKETS);
     ht_lock();
     for (sts_hnode_t *cur = g_ht_buckets[b]; cur != NULL; cur = cur->next) {
         if (cur->id == handle && cur->kind == STS_HK_FILE_RO) {
-            fd = *(int *)cur->ptr;
+            posix_file_ro_t *cand = (posix_file_ro_t *)cur->ptr;
+            if (!cand->closed) {
+                cand->refs += 1;
+                f = cand;
+            }
             break;
         }
     }
     ht_unlock();
-    if (fd < 0) {
+    if (f == NULL) {
         if (out_err != NULL) *out_err = -2;
         return NULL;
     }
+    void *res = NULL;
+    int32_t err = 0;
     if (len == 0) {
-        if (out_err != NULL) *out_err = 0;
-        return dup_bytes("", 0, out_len);
-    }
-    uint8_t *buf = (uint8_t *)malloc((size_t)len);
-    if (buf == NULL) return NULL;
-    int64_t total = 0;
-    while (total < len) {
-        ssize_t got = pread(fd, buf + total, (size_t)(len - total), (off_t)(offset + total));
-        if (got < 0) {
-            if (errno == EINTR) continue;
-            int e = errno;
-            free(buf);
-            if (out_err != NULL) *out_err = sts_posix_map_errno(e);
-            return NULL;
+        res = dup_bytes("", 0, out_len);
+        if (res == NULL) err = -1;
+    } else {
+        uint8_t *buf = (uint8_t *)malloc((size_t)len);
+        if (buf == NULL) {
+            err = -1;
+        } else {
+            int64_t total = 0;
+            while (total < len) {
+                ssize_t got = pread(f->fd, buf + total, (size_t)(len - total), (off_t)(offset + total));
+                if (got < 0) {
+                    if (errno == EINTR) continue;
+                    int e = errno;
+                    free(buf);
+                    buf = NULL;
+                    err = sts_posix_map_errno(e);
+                    break;
+                }
+                if (got == 0) break;
+                total += (int64_t)got;
+            }
+            if (buf != NULL) {
+                if (out_len != NULL) *out_len = total;
+                res = buf;
+            }
         }
-        if (got == 0) break;
-        total += (int64_t)got;
     }
-    if (out_len != NULL) *out_len = total;
-    if (out_err != NULL) *out_err = 0;
-    return buf;
+    int should_free = 0;
+    ht_lock();
+    f->refs -= 1;
+    if (f->refs == 0) should_free = 1;
+    ht_unlock();
+    if (should_free) {
+        close(f->fd);
+        free(f);
+    }
+    if (out_err != NULL) *out_err = err;
+    return res;
 }
 
 int32_t sts_file_close(int64_t handle) {
-    int *pfd = (int *)ht_take(STS_HK_FILE_RO, handle);
-    if (pfd == NULL) return 0;
-    close(*pfd);
-    free(pfd);
+    if (handle <= 0) return 0;
+    posix_file_ro_t *f = NULL;
+    int should_free = 0;
+    size_t b = (size_t)((uint64_t)handle % STS_HANDLE_BUCKETS);
+    ht_lock();
+    sts_hnode_t **pp = &g_ht_buckets[b];
+    while (*pp != NULL) {
+        sts_hnode_t *cur = *pp;
+        if (cur->id == handle && cur->kind == STS_HK_FILE_RO) {
+            *pp = cur->next;
+            f = (posix_file_ro_t *)cur->ptr;
+            free(cur);
+            f->closed = 1;
+            f->refs -= 1;
+            if (f->refs == 0) should_free = 1;
+            break;
+        }
+        pp = &cur->next;
+    }
+    ht_unlock();
+    if (f == NULL) return 0;
+    if (should_free) {
+        close(f->fd);
+        free(f);
+    }
     return 1;
 }
 

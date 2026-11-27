@@ -409,6 +409,61 @@ test "connects_os_shared_hub_sys_zero_drop_utf8_and_group_sse_reconnect" {
     fn(_tok : builders_core::MuxToken, _done : host_shim::ShellDone) -> Unit { saw_low = true },
   )
   edge_assert(saw_low && bridged_sys == 1)
+
+  // R6: `as_mux_transport().wait(-1)` passes `-1` through to underlying wait and continues past internal `Sys`
+  let wait_args : Array[Int64] = []
+  let w_queue : Array[host_shim::HostEvent] = [
+    host_shim::HostEvent::Sys(888L, "internal-sys".to_bytes()),
+    host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: 42L, json: "{\"ext\":true}", error: "", bytes: None }),
+  ]
+  let w_transport = builders_core::MuxTransport::{
+    call_async: fn(_id : Int64, _op : String, _j : String, _p : Option[Bytes]) -> Unit {},
+    call_sync: fn(_op : String, _j : String) -> String { "{}" },
+    write_stdout_line: fn(_l : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _p : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { 1000L },
+    wall_ms: fn() -> Int64 { 1000L },
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      wait_args.push(ms)
+      if w_queue.length() > 0 {
+        let first = w_queue[0]
+        let rest : Array[host_shim::HostEvent] = []
+        for i in 1..<w_queue.length() {
+          rest.push(w_queue[i])
+        }
+        w_queue.clear()
+        for i in 0..<rest.length() {
+          w_queue.push(rest[i])
+        }
+        return Some(first)
+      }
+      None
+    },
+  }
+  let w_hub = EdgeMuxHub::from_transport(w_transport, max_deferred_done=2, max_deferred_sys=4)
+  let mut w_sys_seen = 0
+  w_hub.set_sys_router(fn(id : Int64, _b : Bytes) -> Bool {
+    if id == 888L { w_sys_seen = w_sys_seen + 1 }
+    true
+  })
+  let w_tr = w_hub.as_mux_transport()
+  let got_ext = (w_tr.wait)(-1L)
+  edge_assert(w_sys_seen == 1)
+  edge_assert(wait_args.length() == 2 && wait_args[0] == -1L && wait_args[1] == -1L)
+  edge_assert(
+    match got_ext {
+      Some(host_shim::HostEvent::ShellDone(d)) => d.id == 42L
+      _ => false
+    },
+  )
+  // Subsequent wait(-1) returns None when underlying transport stops
+  edge_assert((w_tr.wait)(-1L) is None)
+  edge_assert(wait_args.length() == 3 && wait_args[2] == -1L)
+
+  // R6: `call_async_discard` replies NEVER enter `deferred_done` or trigger overflow
+  let disc_cid = w_hub.call_async_discard("stream.close", "{\"id\":9}", None)
+  w_hub.deliver_host_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: disc_cid, json: "{}", error: "", bytes: None }))
+  edge_assert(w_hub.deferred_done_count() == 0 && w_hub.deferred_done_dropped_count() == 0L)
 }
 
 // ---------------------------------------------------------------------------

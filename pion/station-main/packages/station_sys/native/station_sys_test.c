@@ -50,6 +50,26 @@ static void assert_js_lower_str(const char *in, const char *expected) {
         (const uint8_t *)expected, strlen(expected));
 }
 
+static void *ro_pread_worker(void *arg) {
+    int64_t fh = *(int64_t *)arg;
+    for (int i = 0; i < 64; i++) {
+        int64_t rlen = 0;
+        int32_t rerr = -1;
+        uint8_t *chunk = (uint8_t *)sts_file_pread(fh, (int64_t)(i % 4) * 4096, 4096, &rlen, &rerr);
+        if (chunk != NULL) {
+            assert(rerr == 0);
+            for (int64_t k = 0; k < rlen; k++) {
+                assert(chunk[k] == 'B');
+            }
+            sts_free(chunk);
+        } else {
+            assert(rerr == -2);
+            break;
+        }
+    }
+    return NULL;
+}
+
 static void test_js_lower_utf8(void) {
     // 1. Empty & ASCII fast paths
     assert_js_lower_str("", "");
@@ -2119,6 +2139,21 @@ int main(void) {
             assert(off == fsz);
             assert(sts_file_close(fh) == 1);
             assert(sts_file_close(fh) == 0);
+
+            // Concurrent `sts_file_pread` + `sts_file_close` refcount stress (TSan + ASan)
+            for (int iter = 0; iter < 32; iter++) {
+                int64_t cfh = sts_file_open_ro(fa, &fsz, &ferr);
+                assert(cfh > 0 && ferr == 0);
+                pthread_t ths[4];
+                for (int t = 0; t < 4; t++) {
+                    assert(pthread_create(&ths[t], NULL, ro_pread_worker, &cfh) == 0);
+                }
+                assert(sts_file_close(cfh) == 1);
+                for (int t = 0; t < 4; t++) {
+                    pthread_join(ths[t], NULL);
+                }
+            }
+
             free(buf_a);
             free(buf_b);
             unlink(fsym);
