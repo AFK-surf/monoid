@@ -370,14 +370,21 @@ test "a family's variants go once it moved on, its newest and the fixed ones nev
   let cc_old = { ..c, id: "co", key: "mbui-linux-store-app-pkgs-m-cc0987654321fe-d19cbafad89f7953", accessed: now - 12.0 * h }
   assert_eq(ids([cc_old, cc_new]), ["co"])
   assert_eq(ids([{ ..cc_old, accessed: now }, { ..cc_new, accessed: now - 50.0 * h }]), ["cn"])
-  // an apt spec retired and v1's apt cache: 3rd+ variants go after 1 hour idle while the 2 newest stay for 12 hours
+  // an apt spec retired and v1's apt cache: gone at 12 hours, the spec read last kept
   let v1 = { ..c, id: "v1", key: "apt-mbui-host-linux-20ba3079a0cbad0f", accessed: now - 17.0 * h }
-  let s_old = { ..c, id: "s1", key: "apt-mbui-host-linux-68b46ada6dcd-20ba3079a0cbad0f", accessed: now - 2.0 * h }
-  let s_mid = { ..c, id: "s2", key: "apt-mbui-host-linux-875dc52b7221-bf9c7f2fe9dcddc1", accessed: now - 0.5 * h }
+  let s_old = { ..c, id: "s1", key: "apt-mbui-host-linux-68b46ada6dcd-20ba3079a0cbad0f", accessed: now - 16.0 * h }
+  let s_mid = { ..c, id: "s2", key: "apt-mbui-host-linux-875dc52b7221-bf9c7f2fe9dcddc1", accessed: now - 3.0 * h }
   let s_new = { ..c, id: "s3", key: "apt-mbui-host-linux-131ce6adc482-bf9c7f2fe9dcddc1", accessed: now - 60.0 }
   assert_eq(ids([v1, s_old, s_mid, s_new]), ["v1", "s1"])
-  // 3rd variant read within the last hour stays until 1 hour idle
-  assert_eq(ids([{ ..s_old, accessed: now - 0.9 * h }, s_mid, s_new]), [])
+  // 3 distinct apt specs: 3rd oldest goes after 1 hour idle while the 2 newest stay for 12 hours
+  let s_3rd = { ..s_old, accessed: now - 4.0 * h }
+  assert_eq(ids([s_3rd, s_mid, s_new]), ["s1"])
+  assert_eq(ids([{ ..s_old, accessed: now - 0.9 * h }, { ..s_mid, accessed: now - 0.5 * h }, s_new]), [])
+  // multiple caches of the same spec (2 distinct specs total) never trigger the 3rd-variant rule against the active 2nd spec
+  let b2 = { ..c, id: "b2", key: "apt-mbui-host-linux-131ce6adc482-2222222222222222", accessed: now - 600.0 }
+  let b1 = { ..c, id: "b1", key: "apt-mbui-host-linux-131ce6adc482-1111111111111111", accessed: now - 720.0 }
+  let a1 = { ..c, id: "a1", key: "apt-mbui-host-linux-875dc52b7221-3333333333333333", accessed: now - 4200.0 }
+  assert_eq(ids([b2, b1, a1]), [])
   // Windows cut-build fallback goes 4 hours after full mbui-win-build-mono was read since
   let win_full = { ..c, id: "wf", key: "mbui-win-build-mono-2f7ebb7dcb895c4a", accessed: now - 60.0 }
   let win_cut = { ..c, id: "wc", key: "mbui-win-build-mono-moon-2f7ebb7dcb895c4a", accessed: now - 4.0 * h }

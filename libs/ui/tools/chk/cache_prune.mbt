@@ -301,10 +301,10 @@ fn family_of(key : String) -> (String, Bool)? {
     return None
   }
   guard kind_of(key) is Some(k) else { return None }
-  let parts = k.split("-").map(fn(p) { p.to_owned() }).to_array()
   if k == "mbui-win-build-mono-moon" {
     return Some(("mbui-win-build-mono", true))
   }
+  let parts = k.split("-").map(fn(p) { p.to_owned() }).to_array()
   if k.has_prefix("apt-") {
     let n = parts.length()
     let fam = if n >= 2 && is_apt_spec(parts[n - 1]) {
@@ -335,46 +335,65 @@ fn stale_family_caches(
   now : Double,
 ) -> Array[Cache] {
   let h = 3600.0
-  let seen : Array[(Cache, String, Bool)] = []
+  let seen : Array[(Cache, String, String, Bool)] = []
   let max_read : Map[String, Double] = Map([])
   let plain_read : Map[String, Double] = Map([])
-  let fam_reads : Map[String, Array[Double]] = Map([])
+  let kind_read : Map[String, Map[String, Double]] = Map([])
   for c in kept {
     if c.ref_ != default_head || c.size < 1000000L || c.accessed <= 0.0 {
       continue
     }
+    guard kind_of(c.key) is Some(kind) else { continue }
     guard family_of(c.key) is Some((fam, variant)) else { continue }
-    seen.push((c, fam, variant))
+    seen.push((c, fam, kind, variant))
     if max_read.get(fam).unwrap_or(0.0) < c.accessed {
       max_read[fam] = c.accessed
     }
     if !variant && plain_read.get(fam).unwrap_or(0.0) < c.accessed {
       plain_read[fam] = c.accessed
     }
-    match fam_reads.get(fam) {
-      Some(xs) => xs.push(c.accessed)
-      None => fam_reads[fam] = [c.accessed]
+    let by_kind = match kind_read.get(fam) {
+      Some(m) => m
+      None => {
+        let m : Map[String, Double] = Map([])
+        kind_read[fam] = m
+        m
+      }
+    }
+    if by_kind.get(kind).unwrap_or(0.0) < c.accessed {
+      by_kind[kind] = c.accessed
     }
   }
-  // Second most recent access time per family (when >= 3 caches exist in that family): anything strictly older than
-  // this is a 3rd+ retired variant (e.g. a 3rd Ubuntu ImageVersion apt-* cache) and can be pruned after 1 hour idle.
+  // Second most recent kind-level access time per family (when >= 3 distinct kinds exist in that family): a kind
+  // whose newest read is strictly older than two other kinds in the same family is a 3rd+ retired variant (e.g. a
+  // 3rd Ubuntu ImageVersion apt-* spec) and can be pruned after 1 hour idle without touching active 2-image rollouts.
   let second_read : Map[String, Double] = Map([])
-  for fam, xs in fam_reads {
-    if xs.length() >= 3 {
+  for fam, by_kind in kind_read {
+    if by_kind.length() >= 3 {
+      let xs : Array[Double] = []
+      for _, t in by_kind {
+        xs.push(t)
+      }
       xs.sort_by(fn(a, b) { b.compare(a) })
       second_read[fam] = xs[1]
     }
   }
   let out : Array[Cache] = []
   for s in seen {
-    let (c, fam, variant) = s
+    let (c, fam, kind, variant) = s
     if !variant || c.accessed >= max_read.get(fam).unwrap_or(0.0) {
       continue
     }
     let idle = now - c.accessed
     let replaced = plain_read.get(fam).unwrap_or(0.0) > c.accessed && idle >= 4.0 * h
     let extra_variant = match second_read.get(fam) {
-      Some(t2) => c.accessed < t2 && idle >= 1.0 * h
+      Some(t2) => {
+        let kmax = match kind_read.get(fam) {
+          Some(m) => m.get(kind).unwrap_or(c.accessed)
+          None => c.accessed
+        }
+        kmax < t2 && idle >= 1.0 * h
+      }
       None => false
     }
     if replaced || extra_variant || idle >= 12.0 * h {
