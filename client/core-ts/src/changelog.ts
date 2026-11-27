@@ -15,7 +15,7 @@ import { Effect } from "effect";
 import { channelHeader } from "./cloud.ts";
 import type { Data } from "./data.ts";
 import * as format from "./format.ts";
-import type { Host } from "./host.ts";
+import { header, type Host } from "./host.ts";
 import { t } from "./i18n.ts";
 import type { Owner } from "./core/routing.ts";
 import type { Topic } from "./protocol.ts";
@@ -135,16 +135,41 @@ export class Changelog implements Owner {
     this.#changed();
   }
 
-  /// Reads the changelog from still.fail cloud (a sync task); what was kept stays when it cannot be read.
+  /// Reads the changelog from still.fail cloud (a sync task); what was kept stays when it cannot be read. Asked with the
+  /// ETag of the feed kept (`changelog.etag`, of the origin and channel it was read from), an unchanged one is a 304: the
+  /// feed is not sent, parsed nor written again (~1.2 MB on the beta, 2026-11-27), and nothing shown is made again.
   read(): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      const header = channelHeader(this.#host);
-      const response = yield* Effect.result(this.#host.fetch({ method: "GET", url: `${this.#host.cloudOrigin()}/v1/changelog`, headers: header ? [header] : [], body: null }));
-      const feed = response._tag === "Success" && response.success.status === 200 ? (parseJson(response.success.body) as J) : undefined;
-      if (feed !== undefined && Array.isArray(get(feed, "entries"))) {
+      const origin = this.#host.cloudOrigin();
+      const ch = channelHeader(this.#host);
+      const channel = ch ? ch[1] : "";
+      const hasFeed = () => Array.isArray(get(this.#data.record(TABLE, "feed"), "entries"));
+      const kept = this.#data.record(TABLE, "etag") as J;
+      const keptEtag = kept && typeof kept === "object" && typeof kept.etag === "string" ? kept.etag.trim() : "";
+      const ask = hasFeed() && keptEtag !== "" && kept.origin === origin && kept.channel === channel;
+      const headers: [string, string][] = [...(ch ? [ch] : []), ...(ask ? [["if-none-match", keptEtag] as [string, string]] : [])];
+      const response = yield* Effect.result(this.#host.fetch({ method: "GET", url: `${origin}/v1/changelog`, headers, body: null }));
+      const answer = response._tag === "Success" ? response.success : null;
+      if (answer?.status === 304 && hasFeed()) {
+        const etag = header(answer, "etag")?.trim();
+        if (etag && etag !== keptEtag) this.#data.put(TABLE, "etag", { etag, origin, channel });
+        const wasFailed = this.#failed;
+        this.#failed = false;
+        if (wasFailed) this.#changed();
+        return;
+      }
+      const feed = answer?.status === 200 ? (parseJson(answer.body) as J) : undefined;
+      if (answer !== null && feed !== undefined && Array.isArray(get(feed, "entries"))) {
         this.#failed = false;
         this.#data.put(TABLE, "feed", feed);
-      } else this.#failed = true;
+        const etag = header(answer, "etag")?.trim();
+        if (etag) this.#data.put(TABLE, "etag", { etag, origin, channel });
+        else this.#data.forgetRecord(TABLE, "etag");
+      } else {
+        // (a 304 for a feed no longer kept: its ETag goes too, so the next read asks for it whole)
+        if (answer?.status === 304) this.#data.forgetRecord(TABLE, "etag");
+        this.#failed = true;
+      }
       this.#changed();
     });
   }

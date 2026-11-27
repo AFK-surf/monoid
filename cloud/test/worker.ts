@@ -3,6 +3,7 @@ import worker, { Account as ProductionAccount, Directory as ProductionDirectory,
 import { probeLines, relaySamples, seedConsole, SEED_RELAYS } from "./console-seed.ts";
 import { clock, signToken, nowSeconds, reply, readJson } from "../src/auth";
 import { sockets, type Delivery } from "../src/directory";
+import { forgetEdgeChangelog } from "../src/changelog";
 import type { Env } from "../src/env";
 import type { MailMessage } from "../src/mail";
 export { LoginLimiter };
@@ -664,6 +665,11 @@ export default {
       const { times, overloaded } = (await readJson(request)) as { times?: number; overloaded?: boolean };
       statusLosing.lose(Number(times ?? 0), Boolean(overloaded));
       return reply({ armed: Number(times ?? 0) });
+    }
+    if (path === "/__test/cold-changelog") {
+      // A request answered by an isolate that has not kept the changelog (what this place keeps stays).
+      forgetEdgeChangelog();
+      return reply({ ok: true });
     }
     if (path === "/__test/changelog-stats") {
       const stats = changelogStats;
