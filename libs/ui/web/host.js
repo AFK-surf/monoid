@@ -589,7 +589,7 @@
         float px = c.x + float(ix) * (h.x * 0.38);
         vec4 smp = vs_backdrop4(vec2(px, py));
         float a = (u_through > 0.5) ? clamp(smp.a, 0.0, 1.0) : 1.0;
-        float y = mix(hole_y, vs_ink_luma(smp.rgb), a);
+        float y = vs_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));
         sum += y;
         if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
@@ -1269,7 +1269,7 @@
         float px = c.x + float(ix) * (h.x * 0.38);
         vec4 smp = backdrop4(vec2(px, py));
         float a = (u_through > 0.5) ? clamp(smp.a, 0.0, 1.0) : 1.0;
-        float y = mix(hole_y, mb_ink_luma(smp.rgb), a);
+        float y = mb_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));
         sum += y;
         if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
@@ -2622,7 +2622,7 @@
         vec2 uv = clamp(vec2(px, py) * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw);
         vec4 smp = texture(u_bd, uv);
         float a = is_through ? clamp(smp.a, 0.0, 1.0) : 1.0;
-        float y = mix(hole_y, mb_ink_luma(smp.rgb), a);
+        float y = mb_ink_luma(clamp(smp.rgb + vec3((1.0 - a) * hole_y), 0.0, 1.0));
         sum += y;
         if (y > mx1) { mx2 = mx1; mx1 = y; } else if (y > mx2) { mx2 = y; }
         if (y < mn1) { mn2 = mn1; mn1 = y; } else if (y < mn2) { mn2 = y; }
