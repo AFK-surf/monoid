@@ -174,7 +174,7 @@ fn pane_made(
           v.switch_by(
             fn() {
               @sfbase.workspace_owners_version.get() |> ignore
-              @sfbase.workspace_in_view(src).0.map(fn(w) { (w.id, @sfbase.workspace_owner_of(w.id)) })
+              @sfbase.workspace_in_view(src).0.map(fn(w) { (w.id, @sfbase.workspace_explicit_owner_of(w.id)) })
             },
             fn(p, _id) {
             guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
@@ -259,8 +259,14 @@ fn pane_made(
         (
           "place/remote",
           fn(v, _page, _under, _stint, k) {
-            v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, ws_id) {
-              guard ws_id is Some(wid) else { return }
+            v.switch_by(
+              fn() {
+                @sfbase.workspace_owners_version.get() |> ignore
+                @sfbase.workspace_in_view(src).0.map(fn(w) { (w.id, @sfbase.workspace_explicit_owner_of(w.id)) })
+              },
+              fn(p, ws_id) {
+              guard ws_id is Some((wid, _)) else { return }
+              @sfbase.record_entry_identity(k, wid)
               pane_made_host(p, src, k)
               let ends = pane_chat_bar_ends(src, p)
               let width = fn() {

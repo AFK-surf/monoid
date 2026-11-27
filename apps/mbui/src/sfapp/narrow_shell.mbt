@@ -136,8 +136,22 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     tab_moves_slot=false,
   )
   |> ignore
-  // (none kept of another workspace: those put by left for good as the workspace in view changes)
-  v.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(_) { app.nav.shelf_empty() })
+  // (none kept of another workspace: those put by left for good only when switching between two distinct workspaces,
+  // never on initial mount or transient None during unrelated workspace invalidation)
+  let last_ws : Ref[String?] = Ref(None)
+  v.reacts(
+    fn() { workspace_in_view(src).0.map(fn(w) { w.id }) },
+    fn(next) {
+      match (last_ws.val, next) {
+        (Some(prev), Some(cur)) if prev != cur => {
+          last_ws.val = Some(cur)
+          app.nav.shelf_empty()
+        }
+        (None, Some(cur)) => last_ws.val = Some(cur)
+        _ => ()
+      }
+    },
+  )
   // what the places of the bar open on asked ahead of them from the moment it shows, held till its page is gone from
   // view under another (the stack at rest: Nav::root_shows), at those moments whatever frames are drawn (sfbase's
   // places_ahead_node)
@@ -433,7 +447,16 @@ fn narrow_made_as(
               { back: under.map(@sfbase.back_label), top: status_top_now(v.window_w()), foot: nav_foot(), named: false }
             }
           }
-          v.pick(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+          v.pick(
+            fn() {
+              @sfbase.workspace_owners_version.get() |> ignore
+              workspace_in_view(src).0.map(fn(w) { (w.id, @sfbase.workspace_explicit_owner_of(w.id)) })
+            },
+            fn(p, id) {
+            match id {
+              Some((ws_id, _)) => @sfbase.record_entry_identity(serial, ws_id)
+              None => ()
+            }
             let last_gen = Ref(0)
             let acts = fn(make : (@view.View) -> Unit, _side : (@sf.Look) -> Double) {
               let gen = next_place_actions_gen()

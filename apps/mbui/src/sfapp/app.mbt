@@ -699,8 +699,10 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
       },
       fn(t) { @sfbase.features_from_prefs(t.0) },
     )
-    // (the window's keys as the core's prefs keep them on this device, changed as they are: settings' keymap.mbt)
-    root.keymap(By(fn() { @settings.keymap_of(src.topic("prefs", {}).get().value) })) |> ignore
+    // (the window's keys as the core's prefs keep them on this device, changed as they are: settings' keymap.mbt;
+    // capture this window's id at tree build time so recording in another window never blanks this window's keymap)
+    let tree_wid = @ui.current_window_id()
+    root.keymap(By(fn() { @settings.keymap_of(src.topic("prefs", {}).get().value, window_id=tree_wid) })) |> ignore
     // (the window's height, what a chat list's and a chat's first window are worked out of wherever they are first
     // asked: sfbase's first_window, chat_first_window; said before any page of nodes is made, as it asks; none before
     // the first frame gives it, what was known kept till then). Read as window().1, not window_h(): the first frame sets
@@ -1118,9 +1120,9 @@ pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
     // (the library's words and their language as the first window's tree says them: app_tree's)
     @sf.set_words(fill)
     root.reacts(fn() { src.topic("prefs", {}).get().value }, @sfbase.language_from_prefs)
-    // (its own size from the menu bar and its keys, apart from the first window's)
+    // (its own size from the menu bar and its keys, apart from the first window's; bind keymap to this window's `wid`)
     @sfdesk.zoom_actions(root, src, kept=false)
-    root.keymap(By(fn() { @settings.keymap_of(src.topic("prefs", {}).get().value) })) |> ignore
+    root.keymap(By(fn() { @settings.keymap_of(src.topic("prefs", {}).get().value, window_id=wid) })) |> ignore
     @ui.set_tree_theme(@sf.ui_theme_now)
     root.sides(By(fn() { sides_room() })) |> ignore
     root.transitions_only() |> ignore

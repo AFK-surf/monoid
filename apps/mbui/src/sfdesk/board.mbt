@@ -76,6 +76,10 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
   (
     "home",
     fn(v, _page, _under, stint, k) {
+      match @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) {
+        Some(w) => @sfbase.record_entry_identity(k, w.id)
+        None => ()
+      }
       pane_made_host(v, src, k)
       board_listed_back()
       // (once made, put by as it was while the list is chosen (View::each's `keeps`), taken in again at once as the
@@ -113,7 +117,11 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
 fn board_tape_made(src : Source, tips : @sf.TipLayer, width : () -> Double) -> (String, (@view.View, () -> Page, Page?, () -> Int, Int) -> Unit) {
   (
     "home",
-    fn(v, _page, _under, stint, _k) {
+    fn(v, _page, _under, stint, k) {
+      match @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) {
+        Some(w) => @sfbase.record_entry_identity(k, w.id)
+        None => ()
+      }
       v.lends(@sf.pane_lent, true).grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { tape_page_ground(v) })) |> ignore
       context_node(v)
       board_listed_back()

@@ -278,6 +278,17 @@ fn host_station_address(v : Json?) -> String {
 }
 
 ///|
+/// Synchronous authoritative local station address read directly from the host (never waiting on the 3s polling timer).
+fn live_local_station_address(managed : Bool) -> String {
+  if managed {
+    let parsed = Some(@json.parse(@hostapi.app_said("local_station")) catch { _ => Json::null() })
+    host_station_address(parsed)
+  } else {
+    this_machine()
+  }
+}
+
+///|
 /// 关于's 本机 Station: the station here updates on its own, apart from the app, and its newer release was said only on
 /// its own page, where it was missed (the user, 2026-11-10: 「关于菜单里面的那个更新，应该还有一个板块提及本机 station 的
 /// 更新，这样子大家就不会漏掉了」). `host`: what its host says of it (本机 Station's word). While it is up in a workspace
@@ -347,11 +358,11 @@ fn about_station_node(
         let guarded_core : Core = {
           ..core,
           call: fn(name, params, done) {
-            // Re-verify live role, target station, online state, and page liveness at invocation time
-            // (guards against role downgrade, workspace switch, and delayed clicks on parked/stale menus).
+            // Re-verify live role, synchronous host station address, online state, and page liveness at invocation time
+            // (guards against role downgrade, host station change within the 3s poll window, and stale park/wake clicks).
             let allowed = active_token() > 0 &&
               address != "" &&
-              @signals.untracked(cur_address) == address &&
+              live_local_station_address(managed) == address &&
               @signals.untracked(fn() { own(address) is Some(_) && manager(address) })
             if allowed {
               (core.call)(name, params, done)

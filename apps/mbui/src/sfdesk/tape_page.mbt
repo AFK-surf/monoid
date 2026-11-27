@@ -315,7 +315,7 @@ fn tape_made(
           v.switch_by(
             fn() {
               @sfbase.workspace_owners_version.get() |> ignore
-              @sfbase.workspace_in_view(src).0.map(fn(w) { (w.id, @sfbase.workspace_owner_of(w.id)) })
+              @sfbase.workspace_in_view(src).0.map(fn(w) { (w.id, @sfbase.workspace_explicit_owner_of(w.id)) })
             },
             fn(p, _id) {
             // (what the page made in `p` does in the bar, its own while `p` is: given as it is made, let go with `p`
@@ -343,11 +343,11 @@ fn tape_made(
                 settings_fixture(src, core)
                 // (made in a panel of its own: lent to all it makes, however late, its cards the panel's: @sf.pane_lent)
                 p.grow(Is(1.0)).min_height(Is(Some(0.0))).lends(@sf.pane_lent, true) |> ignore
-                let content = p.box(fn(a) {
+                p.covered_box(fn() { wide.tape_at.get() != Page }, fn(a) {
                   a.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
                   f(a, core, here, stint, told, acts)
                 })
-                p.cover_child_while(content, fn() { wide.tape_at.get() != Page })
+                |> ignore
               }
               None => ()
             }
@@ -411,8 +411,14 @@ fn tape_made(
         (
           "place/remote",
           fn(v, _page, _under, _stint, k) {
-            v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, ws_id) {
-              guard ws_id is Some(wid) else { return }
+            v.switch_by(
+              fn() {
+                @sfbase.workspace_owners_version.get() |> ignore
+                @sfbase.workspace_in_view(src).0.map(fn(w) { (w.id, @sfbase.workspace_explicit_owner_of(w.id)) })
+              },
+              fn(p, ws_id) {
+              guard ws_id is Some((wid, _)) else { return }
+              @sfbase.record_entry_identity(k, wid)
               context_node(p)
               p.lends(@sf.pane_lent, true) |> ignore
               @sfpages.remote_workbench_node(

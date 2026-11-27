@@ -1458,21 +1458,23 @@ fn page_entry_tells_left(serial : Int, p : Page, parked : Bool) -> Unit {
 }
 
 ///|
-/// Whether a root-tab page `kind` may be parked on the root `shelf` when switching tabs.
-/// Sensitive routes (Vault, Security, Permissions, MCP, ADB, ProfileAccount, NewProfile) are never shelved.
+/// Explicit allowlist of root-tab page `kind`s permitted to park on the root `shelf` when switching tabs.
+/// Default-deny: any unknown or sensitive `place/*` (e.g. `place/vault`, `place/vault-items`, `place/mcp`,
+/// `place/security`, `place/permissions`, `place/adb/*`, `place/profile-account/*`, `place/new-profile/*`) is rejected.
 fn shelf_kind_allowed(kind : String) -> Bool {
-  !(kind == "place/vault" ||
-    kind == "vault" ||
-    kind == "vault-items" ||
-    kind.has_prefix("vault-item/") ||
-    kind == "security" ||
-    kind == "security-open" ||
-    kind == "place/security" ||
-    kind == "permissions" ||
-    kind == "mcp" ||
-    kind.has_prefix("adb/") ||
-    kind.has_prefix("profile-account/") ||
-    kind.has_prefix("new-profile/"))
+  kind == "home" ||
+  kind == "place/files" ||
+  kind == "place/remote" ||
+  kind == "place/stations" ||
+  kind == "place/profiles" ||
+  kind == "place/connects" ||
+  kind == "place/usage" ||
+  kind == "place/archive" ||
+  kind == "place/changelog" ||
+  kind == "place/appearance" ||
+  kind == "place/about" ||
+  kind == "place/fonts" ||
+  kind == "place/shortcuts"
 }
 
 ///|
@@ -1497,6 +1499,7 @@ pub fn new_nav() -> @ui.Nav[Page] {
     on_entry_gone=page_entry_gone,
   )
   nav.set_shelf_kind_filter(Some(shelf_kind_allowed))
+  nav.set_shelf_serial_guard(Some(shelf_entry_identity_valid))
   nav
 }
 
@@ -1879,11 +1882,6 @@ fn kept_left_ws_gen_of(ws : String) -> Int {
 }
 
 ///|
-fn owner_is_confirmed(owner : String) -> Bool {
-  owner != "" && owner != "\u{3}pending" && owner != "\u{3}revoked"
-}
-
-///|
 fn kept_left_key_field(key : String, index : Int) -> String {
   let mut cur = 0
   for part in key.split("\u{1}") {
@@ -1905,30 +1903,46 @@ fn kept_left_key_matches_ws(key : String, ws : String) -> Bool {
   }
 }
 
+fn confirmed_explicit_owner_of(ws : String) -> String? {
+  match workspace_explicit_owner_of(ws) {
+    Some(owner) if owner != "" && owner != "\u{3}pending" && owner != "\u{3}revoked" => Some(owner)
+    _ => None
+  }
+}
+
 ///|
 /// Bind creation-time `(ws, owner, global_gen, ws_gen)` to navigation entry `serial`.
-/// Fail-closed: if `ws == ""` or `workspace_owner_of(ws)` is unconfirmed (`""` / `"\u{3}pending"` / `"\u{3}revoked"`),
-/// clears any prior binding so the entry cannot park into `kept_left`.
+/// Fail-closed: only stamps entries currently in the active stack (`has_active_serial`), and requires an explicit
+/// confirmed owner (`confirmed_explicit_owner_of(ws)`) without falling back to `account_principal_sig`.
 pub fn record_entry_identity(serial : Int, ws : String) -> Unit {
-  // Never re-stamp an entry that has already left the active stack (in nav.gone / kept_left):
-  // prevents a late switch_by flush during leave from stamping the new owner onto a leaving entry.
-  if @signals.untracked(fn() { app.nav.page_of(serial) }) is None {
+  if !@signals.untracked(fn() { app.nav.has_active_serial(serial) }) {
     return
   }
   if ws == "" {
     entry_identities.remove(serial)
     return
   }
-  let owner = workspace_owner_of(ws)
-  if !owner_is_confirmed(owner) {
-    entry_identities.remove(serial)
-    return
+  match confirmed_explicit_owner_of(ws) {
+    Some(owner) =>
+      entry_identities[serial] = {
+        ws,
+        owner,
+        global_gen: kept_left_global_gen.val,
+        ws_gen: kept_left_ws_gen_of(ws),
+      }
+    None => entry_identities.remove(serial)
   }
-  entry_identities[serial] = {
-    ws,
-    owner,
-    global_gen: kept_left_global_gen.val,
-    ws_gen: kept_left_ws_gen_of(ws),
+}
+
+///|
+/// Validate that a root-shelf entry `serial` still matches its creation-time explicit workspace owner and auth gens.
+fn shelf_entry_identity_valid(serial : Int) -> Bool {
+  match entry_identities.get(serial) {
+    None => false
+    Some(id) =>
+      id.global_gen == kept_left_global_gen.val &&
+      id.ws_gen == kept_left_ws_gen_of(id.ws) &&
+      confirmed_explicit_owner_of(id.ws) == Some(id.owner)
   }
 }
 
@@ -1943,21 +1957,22 @@ pub fn kept_left_invalidate_global() -> Unit {
 
 ///|
 /// Workspace-scoped auth invalidation (`AuthScope::Workspace(ws)`): bump only `ws`'s generation, drop recorded
-/// identities belonging to `ws`, and evict only `ws`'s entries from `kept_left` without touching other workspaces or
-/// the root shelf.
+/// identities belonging to `ws`, evict only `ws`'s entries from `kept_left` and root `shelf`, and cancel shelving
+/// of any in-flight `swap_out` root belonging to `ws` without touching unrelated workspaces.
 pub fn kept_left_invalidate_workspace(ws : String) -> Unit {
   guard ws != "" else { return }
   kept_left_ws_gen[ws] = kept_left_ws_gen_of(ws) + 1
-  let gone : Array[Int] = []
+  let ws_serials : Map[Int, Bool] = Map([])
   for serial, id in entry_identities {
     if id.ws == ws {
-      gone.push(serial)
+      ws_serials[serial] = true
     }
   }
-  for serial in gone {
+  for serial, _ in ws_serials {
     entry_identities.remove(serial)
   }
   app.nav.evict_kept_left(fn(key, _kind) { kept_left_key_matches_ws(key, ws) })
+  app.nav.evict_shelf(fn(serial) { ws_serials.contains(serial) })
 }
 
 ///|
@@ -1976,8 +1991,7 @@ pub fn setting_page_kind() -> String {
 fn wide_chat_left_key(r : ChatRef) -> (String, String)? {
   let ws = workspace_of(r.station)
   guard ws != "" else { return None }
-  let owner = workspace_owner_of(ws)
-  guard owner_is_confirmed(owner) else { return None }
+  guard confirmed_explicit_owner_of(ws) is Some(owner) else { return None }
   let key = "chat\u{1}" +
     ws +
     "\u{1}" +
@@ -1997,8 +2011,7 @@ fn wide_chat_left_key(r : ChatRef) -> (String, String)? {
 fn wide_setting_left_key(src : Source, route_name : String) -> (String, String)? {
   let ws = @signals.untracked(fn() { workspace_in_view(src).0 })
   guard ws is Some(w) else { return None }
-  let owner = workspace_owner_of(w.id)
-  guard owner_is_confirmed(owner) else { return None }
+  guard confirmed_explicit_owner_of(w.id) is Some(owner) else { return None }
   let key = "setting\u{1}" +
     w.id +
     "\u{1}" +
@@ -2015,7 +2028,7 @@ fn wide_setting_left_key(src : Source, route_name : String) -> (String, String)?
 ///|
 /// Explicit allowlist for wide-layout (`Paned` / `Taped`) `keeps_left` parking.
 /// Only `Chat(r)` and the 5 audited low-risk setting routes (`Changelog`, `Appearance`, `About`, `Fonts`, `Shortcuts`)
-/// may park, and only when the workspace owner is confirmed (fail-closed on empty/`pending`/`revoked`);
+/// may park, and only when the workspace has an explicit confirmed owner (`confirmed_explicit_owner_of`, fail-closed);
 /// every sensitive/other route and any future route returns `None` (destroyed immediately on leave).
 pub fn wide_page_left_key(src : Source, p : Page) -> (String, String)? {
   match p {
@@ -2034,10 +2047,9 @@ fn wide_entry_can_park(_src : Source, serial : Int, key : String, _kind : String
   match entry_identities.get(serial) {
     None => false
     Some(id) =>
-      owner_is_confirmed(id.owner) &&
       id.global_gen == kept_left_global_gen.val &&
       id.ws_gen == kept_left_ws_gen_of(id.ws) &&
-      workspace_owner_of(id.ws) == id.owner &&
+      confirmed_explicit_owner_of(id.ws) == Some(id.owner) &&
       kept_left_key_field(key, 1) == id.ws &&
       kept_left_key_field(key, 2) == id.owner
   }

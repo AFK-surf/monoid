@@ -128,6 +128,55 @@ pub fn topic_matches_scope(topic : Json, scope : AuthScope) -> Bool {
 }
 
 ///|
+/// Prune only `ws` out of a cached `workspaces` snapshot (`Array[AccountWorkspaces]`) so invalidating an unrelated
+/// workspace never wipes the currently active workspace out of `workspace_in_view` (preventing `shell_is` from
+/// flashing to `Reading` and tearing down the nav renderer / parked pools). Returns `None` if no workspaces remain.
+fn prune_workspace_from_workspaces_json(v : Json?, ws : String) -> Json? {
+  match v {
+    Some(Array(accounts)) => {
+      let out : Array[Json] = []
+      let mut remaining = 0
+      for a in accounts {
+        match a {
+          Object(m) => {
+            let next_m = m.copy()
+            match m.get("workspaces") {
+              Some(Array(list)) => {
+                let kept : Array[Json] = []
+                for w in list {
+                  let id = match w {
+                    Object(wm) =>
+                      match wm.get("id") {
+                        Some(String(s)) => s
+                        _ => ""
+                      }
+                    _ => ""
+                  }
+                  if id != ws {
+                    kept.push(w)
+                    remaining += 1
+                  }
+                }
+                next_m["workspaces"] = Json::array(kept)
+              }
+              _ => ()
+            }
+            out.push(Json::object(next_m))
+          }
+          other => out.push(other)
+        }
+      }
+      if remaining > 0 {
+        Some(Json::array(out))
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+///|
 /// Parameter-map variant of `topic_matches_scope`, used by `@sfbase.invalidate_auth_scope`.
 pub fn topic_matches_scope_params(name : String, params : Map[String, Json], scope : AuthScope) -> Bool {
   topic_matches_scope_with(topic_json(name, params), scope, client.device_global_policy)
@@ -922,7 +971,12 @@ fn Client::invalidate_scope_inner(self : Client, scope : AuthScope, mask : Bool)
       self.subs.remove(s.id)
       self.let_go(s.id, "topic " + topic_name(s.topic))
     } else {
-      s.value = None
+      let preserved = match scope {
+        Workspace(ws) if !mask && topic_name(s.topic) == "workspaces" =>
+          prune_workspace_from_workspaces_json(s.value, ws)
+        _ => None
+      }
+      s.value = preserved
       s.held = None
       s.error = None
       s.later = None

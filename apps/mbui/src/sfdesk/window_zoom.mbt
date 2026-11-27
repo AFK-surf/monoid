@@ -37,8 +37,9 @@ pub fn window_zoom_keys(c : @ui.Ctx, src : Source) -> Unit {
     return
   }
   let prefs = src.topic("prefs", {}).get().value
+  let wid = @ui.current_window_id()
   @ui.set_window_key_handler(fn(code, mods) {
-    if @signals.untracked(fn() { @settings.keys_recording.get() }) != "" {
+    if @signals.untracked(fn() { @settings.keys_recording.get() != "" && @settings.keys_recording_window.get() == wid }) {
       return false
     }
     // Let the visible side panel or board chat take ⌘W before the Mac's close-window menu; only a remote-screen key

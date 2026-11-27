@@ -10424,6 +10424,44 @@ pub fn View::on_rest(
 }
 
 ///|
+/// Create a child box that starts in `covered` rest (`drop_holds=false`) if `covered()` is already true BEFORE
+/// `make(target)` runs, and toggles `covered` rest whenever `covered()` changes.
+/// This ensures `when_active(while_covered=true)` registered inside `make(target)` never fires a spurious initial
+/// `enter` when constructed while already covered (e.g. Medium Tape `Page` built while `Side` is foreground).
+pub fn View::covered_box(self : View, covered : () -> Bool, make : (View) -> Unit) -> View {
+  let wake : Ref[(() -> Unit)?] = Ref(None)
+  let release = fn() {
+    match wake.val {
+      Some(w) => {
+        wake.val = None
+        w()
+      }
+      None => ()
+    }
+  }
+  let target = self.box(fn(_) {  })
+  if @signals.untracked(covered) && target.alive() {
+    wake.val = Some(target.tree.rest_begin(target.at, drop_holds=false))
+  }
+  make(target)
+  self.reacts(
+    covered,
+    fn(on) {
+      if on {
+        if wake.val is None && target.alive() {
+          wake.val = Some(target.tree.rest_begin(target.at, drop_holds=false))
+        }
+      } else {
+        release()
+      }
+    },
+    at_start=false,
+  )
+  self.owns(release) |> ignore
+  target
+}
+
+///|
 /// Put child `target` into `covered` rest (`drop_holds=false`) whenever `covered()` is true, and wake it when
 /// `covered()` becomes false. The reactive watcher is owned by `self` (outside `target`'s sleep subtree) so it never
 /// freezes itself while `target` is covered.

@@ -51,8 +51,12 @@ pub fn key_label(prefs : Json?, action : String) -> String {
 /// The first reachable key label of `action` as a key cap shows it ("" when shortcut recording is active, no key is
 /// bound/mappable, or no bound key can currently reach `target`). Uses the core's `labels` at the matching index when
 /// present, falling back to `binding_label`.
-pub fn reachable_key_label(prefs : Json?, action : String, target : @view.View) -> String {
-  if keys_recording.get() != "" && keys_recording_window.get() == @ui.current_window_id() {
+pub fn reachable_key_label(prefs : Json?, action : String, target : @view.View, window_id? : Int) -> String {
+  let wid = match window_id {
+    Some(id) => id
+    None => @ui.current_window_id()
+  }
+  if keys_recording.get() != "" && keys_recording_window.get() == wid {
     return ""
   }
   let a = key_action(prefs, action)
@@ -221,8 +225,12 @@ pub fn binding_label(binding : String) -> String {
 /// (Escape the frame's `frame.escape`, a mouse's forward button `nav.forward`, ⌃1 … ⌃9 on a Mac and Alt elsewhere
 /// `workspace.1` … `workspace.9`, a player's, a reader's and the files' keys where they are up: @sf.player_bindings,
 /// reader_bindings, files_bindings). None while the 快捷键 page records new keys: the next key is its.
-pub fn keymap_of(prefs : Json?) -> @view.Keymap {
-  if keys_recording.get() != "" && keys_recording_window.get() == @ui.current_window_id() {
+pub fn keymap_of(prefs : Json?, window_id? : Int) -> @view.Keymap {
+  let wid = match window_id {
+    Some(id) => id
+    None => @ui.current_window_id()
+  }
+  if keys_recording.get() != "" && keys_recording_window.get() == wid {
     return @view.Keymap::new([])
   }
   let bindings : Array[@view.Binding] = []

@@ -245,6 +245,10 @@ let nav_kept_left_limits : Array[(@signals.Signal[Int], NavKeptLeftLimits)] = []
 let nav_shelf_kind_filters : Array[(@signals.Signal[Int], (String) -> Bool)] = []
 
 ///|
+// kept across runs: per-Nav side table guarding root-shelf entry serials on park, swap_out settle, and take-back
+let nav_shelf_serial_guards : Array[(@signals.Signal[Int], (Int) -> Bool)] = []
+
+///|
 // kept across runs: per-Nav side table guarding `(serial, key, kind)` before parking into `kept_left`
 let nav_kept_left_guards : Array[(@signals.Signal[Int], (Int, String, String) -> Bool)] = []
 
@@ -253,6 +257,16 @@ fn nav_shelf_kind_allows(said : @signals.Signal[Int], kind : String) -> Bool {
   for entry in nav_shelf_kind_filters {
     if physical_equal(entry.0, said) {
       return (entry.1)(kind)
+    }
+  }
+  true
+}
+
+///|
+fn nav_shelf_serial_allows(said : @signals.Signal[Int], serial : Int) -> Bool {
+  for entry in nav_shelf_serial_guards {
+    if physical_equal(entry.0, said) {
+      return (entry.1)(serial)
     }
   }
   true
@@ -471,10 +485,70 @@ pub fn[P] Nav::evict_kept_left(self : Nav[P], drop : (String, String) -> Bool) -
 }
 
 ///|
+/// Register or clear a per-Nav root-shelf entry serial guard checked on shelving, `swap_out` settle, and take-back.
+pub fn[P] Nav::set_shelf_serial_guard(self : Nav[P], guard_fn : ((Int) -> Bool)?) -> Unit {
+  match nav_shelf_serial_guards.search_by(fn(e) { physical_equal(e.0, self.said) }) {
+    Some(i) =>
+      match guard_fn {
+        Some(f) => nav_shelf_serial_guards[i] = (self.said, f)
+        None => {
+          nav_shelf_serial_guards.remove(i) |> ignore
+          if nav_shelf_serial_guards.is_empty() {
+            nav_shelf_serial_guards.shrink_to_fit()
+          }
+        }
+      }
+    None =>
+      match guard_fn {
+        Some(f) => nav_shelf_serial_guards.push((self.said, f))
+        None => ()
+      }
+  }
+}
+
+///|
+/// Evict root-shelf entries whose serial satisfies `should_evict(serial)`, and cancel shelving for any in-flight
+/// `swap_out` root whose serial satisfies `should_evict(serial)` (without disturbing unrelated shelf entries).
+pub fn[P] Nav::evict_shelf(self : Nav[P], should_evict : (Int) -> Bool) -> Unit {
+  let mut removed = false
+  let kept : Array[NavPage[P]] = []
+  for e in self.shelf {
+    if should_evict(e.serial) {
+      e.shown_once = false
+      self.gone.push(e)
+      removed = true
+    } else {
+      kept.push(e)
+    }
+  }
+  self.shelf.clear()
+  self.shelf.append(kept)
+  if self.shelf.is_empty() {
+    self.shelf.shrink_to_fit()
+  }
+  match self.swap_out {
+    Some(was) if self.swap_kept && should_evict(was.serial) => self.swap_kept = false
+    _ => ()
+  }
+  if removed {
+    self.told()
+    wake()
+  }
+}
+
+///|
+/// Whether `serial` is currently on the active navigation stack (`self.pages` only; never `leaving`, `swap_out`,
+/// `shelf`, or `kept_left`).
+pub fn[P] Nav::has_active_serial(self : Nav[P], serial : Int) -> Bool {
+  self.pages.iter().any(fn(e) { e.serial == serial })
+}
+
+///|
 /// Remove `self` from all global per-Nav side tables (call before discarding a `Nav` on app reset).
 pub fn[P] Nav::clear_side_tables(self : Nav[P]) -> Unit {
   nav_limits_set(self.said, None, nav_kept_left_most)
   self.set_shelf_kind_filter(None)
+  self.set_shelf_serial_guard(None)
   self.set_kept_left_guard(None)
 }
 
@@ -856,7 +930,7 @@ fn[P] Nav::settle_swap(self : Nav[P]) -> Unit {
       self.swap_out = None
       if self.swap_kept {
         match self.shelves {
-          Some(shelves) if shelves(was.page) => {
+          Some(shelves) if shelves(was.page) && nav_shelf_serial_allows(self.said, was.serial) => {
             was.focus_kept = 0
             self.shelf.push(was)
           }
@@ -1362,7 +1436,7 @@ fn[P : Eq] Nav::replace_kept_now(self : Nav[P], page : P) -> Unit {
   self.settle()
   guard self.shelves is Some(shelves) && self.pages.length() == 1 else { return self.replace_now(page) }
   let was = self.pages.pop().unwrap()
-  if shelves(was.page) {
+  if shelves(was.page) && nav_shelf_serial_allows(self.said, was.serial) {
     was.focus_kept = 0
     self.shelf.push(was)
   } else {
@@ -1373,8 +1447,14 @@ fn[P : Eq] Nav::replace_kept_now(self : Nav[P], page : P) -> Unit {
   let e = match self.shelf.search_by(fn(e) { e.page == page }) {
     Some(i) => {
       let e = self.shelf.remove(i)
-      e.stint = next_stint()
-      e
+      if nav_shelf_serial_allows(self.said, e.serial) {
+        e.stint = next_stint()
+        e
+      } else {
+        e.shown_once = false
+        self.gone.push(e)
+        nav_page(page, None)
+      }
     }
     None => nav_page(page, None)
   }
@@ -1436,8 +1516,14 @@ fn[P : Eq] Nav::replace_tab_now(self : Nav[P], page : P, way : Int, dur : Double
     match self.shelf.search_by(fn(x) { x.page == page }) {
       Some(i) => {
         let x = self.shelf.remove(i)
-        x.stint = next_stint()
-        x
+        if nav_shelf_serial_allows(self.said, x.serial) {
+          x.stint = next_stint()
+          x
+        } else {
+          x.shown_once = false
+          self.gone.push(x)
+          nav_page(page, None)
+        }
       }
       None => nav_page(page, None)
     }

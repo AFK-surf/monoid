@@ -121,6 +121,71 @@ test "PR-B3c Changelog: parked page never marks changelog.seen and hot-returns w
 }
 
 ///|
+test "PR-B3c r3 P1-4: Changelog constructed while covered (Medium Side foreground) does not mark seen until revealed" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sffixture.fixture_reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let seen_calls : Ref[Int] = Ref(0)
+  let base_src = @sffixture.fixture("settings")
+  let base_core = @sfbase.settings_core(base_src, rig_workspace)
+  let topic_c = @signals.computed(fn(_) -> @settings.Read {
+    {
+      value: Some({
+        "news": "news-covered-v1",
+        "build": 1301,
+        "tabs": [{ "part": "app", "label": "App", "days": [] }],
+      }),
+      error: None,
+      version: 1,
+    }
+  })
+  let core : @settings.Core = {
+    ..base_core,
+    topic: fn(name, params) {
+      if name == "changelog" {
+        topic_c
+      } else {
+        (base_core.topic)(name, params)
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "changelog.seen" {
+        seen_calls.val += 1
+        done(Ok(Json::object({})))
+      } else {
+        (base_core.call)(name, params, done)
+      }
+    },
+  }
+  // Start covered (simulating Medium Tape with wide.tape_at == Side in foreground).
+  let covered = @signals.signal(true)
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      @sf.look_lent(root, @sf.look_for(600.0))
+      root.covered_box(fn() { covered.get() }, fn(slot) {
+        slot.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        changelog_node(slot, core, on_back=fn() {  }, frame=fn() { @sf.no_frame })
+      })
+      |> ignore
+    },
+    w=600.0,
+    h=900.0,
+    platform=0,
+  )
+  t.draw()
+  assert_eq(seen_calls.val, 0, msg="Changelog built while covered must not fire changelog.seen before switching to Page")
+  // Reveal Page: now when_active enters and marks unread news-covered-v1 seen.
+  covered.set(false)
+  t.draw()
+  assert_eq(seen_calls.val, 1, msg="Changelog must fire changelog.seen once revealed on Page")
+  @ui.run_let_go()
+}
+
+///|
 test "PR-B3c Appearance: zoom picker closes on park and hot-return wake writes 0 prefs" {
   @sfbase.reset()
   reset()
@@ -286,7 +351,8 @@ test "PR-B3c About: management calls guarded against role downgrade, workspace/s
   t.click(Button, label=confirm_btn)
   t.run_for(@ui.move_most_ms)
   assert_eq(calls.length(), 0, msg="delayed confirm after role downgrade must execute 0 software calls")
-  // Restore admin, re-open confirm dialog, then change REAL host `local_station` JSON BEFORE clicking confirm!
+  // Restore admin, re-open confirm dialog, then change REAL host `local_station` JSON and click confirm IMMEDIATELY
+  // (WITHOUT waiting for the 3000ms polling cycle!) -> synchronous host re-read must reject the stale station call.
   role_sig.set("admin")
   t.draw()
   t.click(Button, label=back_label)
@@ -298,11 +364,9 @@ test "PR-B3c About: management calls guarded against role downgrade, workspace/s
     "local_station",
     "{\"data\":\"~/.stillfail\",\"runner\":\"service\",\"workspace\":{\"id\":\"ws2\",\"station\":\"st2\",\"stationName\":\"Other\"}}",
   )
-  t.run_for(@settings.local_read_ms)
-  t.draw()
   t.click(Button, label=confirm_btn)
   t.run_for(@ui.move_most_ms)
-  assert_eq(calls.length(), 0, msg="delayed confirm after live local_station host change must execute 0 software calls")
+  assert_eq(calls.length(), 0, msg="immediate confirm after host station change (within 3s poll window) must execute 0 software calls")
   // Scenario C: restore live local_station, open confirm dialog in active_gen N, park -> wake (active_gen N+1),
   // then click the stale confirm button -> must be rejected by active_gen check!
   t.set_app_said(
@@ -542,18 +606,19 @@ test "PR-B3c Shortcuts: parking during key recording releases global recorder, n
     @ui.current_window_id(),
     msg="recording state must bind to the recording window's id",
   )
-  // In a different window, keymap_of must NOT be suppressed while this window is recording.
+  // Explicit window_id binding: while main window is recording, an already-open secondary window's keymap & labels
+  // (bound to its own wid) must NOT be blanked even while current_window_id() is the main window.
   let root_v = @ui.view_tree().unwrap().root()
-  @settings.keys_recording_window.set(@ui.current_window_id() + 99)
+  let main_wid = @ui.current_window_id()
+  let secondary_wid = main_wid + 99
   assert_true(
-    @settings.reachable_key_label(Some(prefs_json), "app.test", root_v) != "",
-    msg="recording in another window must not suppress this window's keymap",
+    @settings.reachable_key_label(Some(prefs_json), "app.test", root_v, window_id=secondary_wid) != "",
+    msg="main window recording must not suppress secondary window's key label",
   )
-  @settings.keys_recording_window.set(@ui.current_window_id())
   assert_eq(
-    @settings.reachable_key_label(Some(prefs_json), "app.test", root_v),
+    @settings.reachable_key_label(Some(prefs_json), "app.test", root_v, window_id=main_wid),
     "",
-    msg="recording in this window suppresses this window's keymap",
+    msg="main window recording suppresses main window's key label",
   )
   // Park Shortcuts while recording!
   page.set(1)
