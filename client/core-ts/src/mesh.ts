@@ -655,20 +655,25 @@ export class Link {
   #open(head: J | ((media: boolean) => J), finish: boolean, body: Uint8Array | null, wrote?: (sent: number) => void, media = 0, guard?: () => boolean): Effect.Effect<[IrohStream, Lines, J, boolean], CoreError> {
     let opened: IrohStream | null = null;
     return Effect.gen({ self: this }, function* () {
-      if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "auth_stale"));
+      const checkGuard = () => (guard && !guard() ? Effect.fail(new CoreError("auth_stale", "auth_stale")) : Effect.void);
+      yield* checkGuard();
       const stream = (opened = yield* Effect.mapError(this.conn.openBi(), cut));
-      if (guard && !guard()) return yield* Effect.fail(new CoreError("auth_stale", "auth_stale"));
       const taking = media > 0 && stream.receiveMediaDatagrams !== undefined ? yield* Effect.orElseSucceed(stream.receiveMediaDatagrams(media), () => false) : false;
+      yield* checkGuard();
       const said = typeof head === "function" ? head(taking) : head;
       yield* Effect.mapError(stream.write(utf8(`${JSON.stringify(said)}\n`)), cut);
       // A body that is told of goes a step at a time, each said as the stream takes it (as far as the link lets it).
       if (body !== null && body.length > 0 && wrote) {
         for (let at = 0; at < body.length; at += BODY_STEP) {
+          yield* checkGuard();
           const end = Math.min(at + BODY_STEP, body.length);
           yield* Effect.mapError(stream.write(body.subarray(at, end)), cut);
           wrote(end);
         }
-      } else if (body !== null && body.length > 0) yield* Effect.mapError(stream.write(body), cut);
+      } else if (body !== null && body.length > 0) {
+        yield* checkGuard();
+        yield* Effect.mapError(stream.write(body), cut);
+      }
       if (finish) yield* Effect.mapError(stream.finish(), cut);
       const lines = new Lines(stream);
       const line = yield* lines.next();

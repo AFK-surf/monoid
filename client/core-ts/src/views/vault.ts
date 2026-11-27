@@ -1181,15 +1181,20 @@ function spreadAll(inner: Inner, ws: string): void {
 /// A station brought the latest version of each vault and item it lacks, as copies (`?copy=1`: a later version than
 /// the one it holds, checked as any is). One that will not take it (a station from before, which takes only the next
 /// version) is left as it is: its agents see what it holds.
-function spread(inner: Inner, address: string, opts?: { cap?: AuthScopeCapability; vaultId?: string }): Effect.Effect<void> {
+export function spread(inner: Inner, address: string, opts?: { cap?: AuthScopeCapability; vaultId?: string }): Effect.Effect<void> {
   const ws = ofAddress(address);
   const station = address.slice(ws.length + 1);
   return Effect.gen(function* () {
     if (!inner.stations.link(address) || !inner.stations.reachable(address)) return;
     const allWanted = lacks(held(inner, ws), (vault) => items(inner, ws, vault), station);
     const wanted = opts?.vaultId !== undefined ? allWanted.filter((w) => w.id === opts.vaultId) : allWanted;
-    for (const want of wanted) {
-      const cap = opts?.cap ?? inner.store.authGen.vaultCapability(ws, want.id);
+    // Capture every vault's capability synchronously alongside the planned items before the first yield*,
+    // so an auth boundary while copying Vault 1 also invalidates Vault 2's planned work.
+    const planned = wanted.map((want) => ({
+      want,
+      cap: opts?.cap ?? inner.store.authGen.vaultCapability(ws, want.id),
+    }));
+    for (const { want, cap } of planned) {
       if (!cap.isValid()) {
         if (opts?.cap !== undefined) return;
         continue;
@@ -3300,15 +3305,19 @@ class Vaults {
             const k = mem(inner).keys.get(slot);
             if (k && k.until <= now) {
               mem(inner).keys.delete(slot);
-              const cur = held(inner, this.ws).vaults[v.id];
               const prefix = `${this.ws}/${v.id}/`;
-              const newerKeyLive = [...mem(inner).keys.entries()].some(
-                ([keySlot, entry]) =>
-                  keySlot.startsWith(prefix) &&
-                  entry.until > now &&
-                  entry.cap.isValid(),
-              );
-              if ((!cur || cur.epoch <= v.epoch) && !newerKeyLive) {
+              const hasLiveNewerEpoch = [...mem(inner).keys.entries()].some(([keySlot, entry]) => {
+                if (!keySlot.startsWith(prefix)) return false;
+                const suffix = keySlot.slice(prefix.length);
+                if (!/^\d+$/.test(suffix)) return false;
+                return Number(suffix) > v.epoch && entry.until > now && entry.cap.isValid();
+              });
+              if (!hasLiveNewerEpoch) {
+                // No newer epoch key is live: this expiry locks the vault. Evict any lingering older
+                // migration keys for this vault and bump vaultGen immediately so in-flight entry caps fail.
+                for (const keySlot of [...mem(inner).keys.keys()]) {
+                  if (keySlot.startsWith(prefix)) mem(inner).keys.delete(keySlot);
+                }
                 inner.store.authGen.bumpVault(this.ws, v.id, dependentVaultWorkspaces(inner, this.ws));
               }
             }
@@ -4566,38 +4575,47 @@ class Vaults {
     });
   }
 
-  deletePlain(id: string): Effect.Effect<unknown, CoreError> {
+  deletePlain(id: string, cap?: AuthScopeCapability): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
+      if (cap) yield* cap.assertValid();
       const prev = held(self.#inner, self.ws).plain[id];
       if (!prev || prev.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
-      return yield* self.#putPlainRow(prev.station, { id, version: prev.version + 1, kind: prev.kind, name: "", fields: {}, notes: "", at: nowS(self.#inner), deleted: true });
+      return yield* self.#putPlainRow(prev.station, { id, version: prev.version + 1, kind: prev.kind, name: "", fields: {}, notes: "", at: nowS(self.#inner), deleted: true }, cap);
     });
   }
 
   /// A plain item's version taken by its station, held here as it said it; not the next (written elsewhere meanwhile):
   /// the library read again before it fails.
-  #putPlainRow(station: string, next: J): Effect.Effect<unknown, CoreError> {
+  #putPlainRow(station: string, next: J, cap?: AuthScopeCapability): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
-      const said = yield* Effect.tapError(self.#station(station, "PUT", "/vault/plain", next), (e) =>
+      const req = cap
+        ? self.#stationGuarded(cap, station, "PUT", "/vault/plain", next)
+        : self.#station(station, "PUT", "/vault/plain", next);
+      const said = yield* Effect.tapError(req, (e) =>
         e.code === "vault_conflict" ? Effect.ignore(readStation(self.#inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" }) : Effect.void,
       );
       const item = (get(said, "item") as PlainRow | undefined) ?? (({ fields: _, ...rest }) => rest)(next);
-      change(self.#inner, self.ws, (h) => void (h.plain[item.id] = { ...item, station }));
+      if (cap) {
+        cap.commit(() => change(self.#inner, self.ws, (h) => void (h.plain[item.id] = { ...item, station })));
+      } else {
+        change(self.#inner, self.ws, (h) => void (h.plain[item.id] = { ...item, station }));
+      }
       return { id: item.id, version: item.version };
     });
   }
 
   /// What a plain item holds, as its station keeps it (nobody asked: nothing is sealed).
-  openPlain(id: string, declaredVault?: string): Effect.Effect<unknown, CoreError> {
+  openPlain(id: string, declaredVault?: string, cap?: AuthScopeCapability): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
       if (declaredVault !== undefined && declaredVault !== PLAIN) {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
-      const wsCap = self.#wsCap(true);
+      const wsCap = cap ?? self.#wsCap(true);
+      yield* wsCap.assertValid();
       const row = held(inner, self.ws).plain[id];
       if (!row || row.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
       const i = get(yield* self.#stationGuarded(wsCap, row.station, "GET", `/vault/plain/item?id=${encodeURIComponent(id)}`, null), "item") as J;
@@ -4645,7 +4663,9 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const wsCap = self.#wsCap(true);
       const { lock, self: who } = yield* self.#ready();
+      yield* wsCap.assertValid();
       // (one this device holds a key to first; personal vaults only, never migrate plain secrets into a shared workspace vault)
       const owns = Object.values(held(inner, self.ws).vaults).filter((v) => !v.deleted && v.scope !== "workspace" && trusted(lock, v) && v.owner === who.sub);
       const own = owns.find((v) => v.keys.some((k) => k.cert.device === who.device)) ?? owns[0];
@@ -4653,8 +4673,11 @@ class Vaults {
       const waiting = own ? undefined : Object.values(held(inner, self.ws).vaults).find((v) => v.scope !== "workspace" && v.owner === who.sub && waitingAs(inner, self.ws, lock, v) !== null);
       if (waiting !== undefined) return yield* Effect.fail(waitingError(inner, self.ws, waiting));
       if (!own) return yield* fail("vault_not_set_up", t("core-misc.vault.notSetUp"));
+      const ownCap = wsCap.narrowVault(own.id);
+      yield* ownCap.assertValid();
       const same = (p: Plain) => JSON.stringify([p.kind, p.name, p.fields]);
       const had = new Set((yield* self.unsealOwn()).map((s) => same(s.plain)));
+      yield* ownCap.assertValid();
       let moved = 0;
       let left = 0;
       // (the stations found to keep no copy of the vault: their other items left as they are, not opened or brought again)
@@ -4666,24 +4689,28 @@ class Vaults {
           continue;
         }
         const done = yield* Effect.result(Effect.gen(function* () {
-          const opened = (yield* self.openPlain(row.id)) as { plain: Plain };
+          yield* ownCap.assertValid();
+          const opened = (yield* self.openPlain(row.id, PLAIN, ownCap)) as { plain: Plain };
+          yield* ownCap.assertValid();
           const sig = same(plainOf(opened.plain));
           if (!had.has(sig)) {
-            yield* self.putItem(own.id, null, opened.plain, row.listing ?? null);
+            yield* self.putItem(own.id, null, opened.plain, row.listing ?? null, ownCap);
             // (two of the same in the library: one item in the vault)
             had.add(sig);
           }
           // Deleted where it was only once that station holds the vault's copy whole: a station that keeps no vault (one
           // from before, `vault_needs_lock`) or did not take it now is left with what it had, its agents listing it
           // still. Deleted at once, the item was on this device alone and agents on every station listed none (FB-70).
-          yield* spread(inner, `${self.ws}/${row.station}`, { vaultId: own.id });
+          yield* spread(inner, `${self.ws}/${row.station}`, { cap: ownCap, vaultId: own.id });
+          yield* ownCap.assertValid();
           if (lacks(held(inner, self.ws), (id) => items(inner, self.ws, id), row.station).some((w) => w.id === own.id)) {
             unkept.add(row.station);
             return yield* fail("vault_no_station", t("core-misc.vault.noPlainStation"));
           }
-          yield* self.deletePlain(row.id);
+          yield* self.deletePlain(row.id, ownCap);
         }));
         if (done._tag === "Success") moved++;
+        else if (done.failure.code === "auth_stale") return yield* Effect.fail(done.failure);
         else left++;
       }
       // (left on a station that keeps no vault: said, so the person updates it rather than being told it was moved)

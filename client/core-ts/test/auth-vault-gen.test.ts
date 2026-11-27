@@ -1502,5 +1502,66 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     };
     await makePendingLinkCase("request");
     await makePendingLinkCase("ask");
+
+    // 5. R4 P1-1: Link.#open re-checks guard between head write and body write (0 body bytes written)
+    //    AND between BODY_STEP chunks (2nd chunk never written)
+    const { BODY_STEP } = await import("../src/mesh.ts");
+    const runWriteSuspendCase = async (mode: "head-to-body" | "chunked") => {
+      const capW = tracker.vaultCapability("ws-wire", `v-write-${mode}`);
+      const enteredWrite = Deferred.makeUnsafe<void>();
+      const releaseWrite = Deferred.makeUnsafe<void>();
+      const writes: Uint8Array[] = [];
+      let resetCalls = 0;
+      const suspendOnCall = mode === "head-to-body" ? 1 : 2; // 1=head, 2=first body chunk
+      const fakeStream = {
+        write: (bytes: Uint8Array) =>
+          Effect.gen(function* () {
+            writes.push(bytes.slice());
+            if (writes.length === suspendOnCall) {
+              yield* Deferred.succeed(enteredWrite, undefined);
+              yield* Deferred.await(releaseWrite);
+            }
+          }),
+        finish: () => Effect.void,
+        read: () => Effect.succeed(null),
+        reset: () => { resetCalls++; },
+      };
+      const fakeConn = {
+        openBi: () => Effect.succeed(fakeStream),
+        acceptBi: () => Effect.succeed(null),
+        paths: () => [],
+        stats: () => ({ rxBytes: 0, txBytes: 0 }),
+        closeReason: () => null,
+        close: () => {},
+      };
+      const link = new Link(fakeConn as never, {} as never, "cred", { credential: () => Effect.succeed("cred") } as never, null);
+      const payload = mode === "head-to-body" ? new Uint8Array([9, 8, 7, 6]) : new Uint8Array(BODY_STEP + 16).fill(42);
+      const wroteProgress: number[] = [];
+      const pendingCall = Effect.runPromise(
+        Effect.result(
+          link.request(
+            head,
+            payload,
+            mode === "chunked" ? (n) => wroteProgress.push(n) : undefined,
+            () => capW.isValid(),
+          ),
+        ),
+      );
+      await Effect.runPromise(Deferred.await(enteredWrite));
+      tracker.bumpVault("ws-wire", `v-write-${mode}`);
+      Effect.runSync(Deferred.succeed(releaseWrite, undefined));
+      const res = await pendingCall;
+      assert.equal(res._tag, "Failure", `${mode}: must fail when capability revoked mid-write`);
+      assert.equal(res.failure.code, "auth_stale", `${mode}: must fail with auth_stale`);
+      assert.equal(resetCalls, 1, `${mode}: must reset stream immediately`);
+      if (mode === "head-to-body") {
+        assert.equal(writes.length, 1, "head-to-body: stream.write must be called only once (0 body bytes written)");
+      } else {
+        assert.equal(writes.length, 2, "chunked: 2nd body chunk must never be written after revocation");
+        assert.deepEqual(wroteProgress, [BODY_STEP], "chunked: only 1st chunk progress recorded");
+      }
+    };
+    await runWriteSuspendCase("head-to-body");
+    await runWriteSuspendCase("chunked");
   });
 });
