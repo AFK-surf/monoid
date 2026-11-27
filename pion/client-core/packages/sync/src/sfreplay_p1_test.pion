@@ -573,18 +573,49 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
   sf_expect_bool(cr, "mayMove", true)
   sf_expect_bool(cr, "swipeArchive", true)
 
-  // 2. `chat.place` persists to SQLite `account_doc("place:<station>/<thread>")` (matching TS `topics.ts:710-760`),
+  // 2. `chat.place` persists to SQLite `workspace_pref(ws, "place:<station>/<thread>")` (matching TS `data.ts:1776`),
+  //    caches `None` misses to avoid redundant SQL reads, short-circuits unchanged writes,
   //    survives restart in a brand new `ClientCore`, and deletes the row on `seq: null`!
+  // Negative-cache check: repeated lookups for a thread without a saved place hit memory cache after 1 SQL read.
+  let (miss_a, _) = core.chat_place_for("ws-1/st-1", Some(10))
+  debug_assert(miss_a.is_none(), "expected no initial place for thread 10")
+  debug_assert(core.chat_places.get("ws-1/st-1\u{01}10").is_some(), "missing place must be cached as None in LRU")
+
   let _ = sf_call_ok(core, 40L, "chat.place", base_codec::json_obj([
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
     ("seq", base_codec::json_int(4)),
     ("offset", base_codec::json_num(12.5)),
   ]))
-  match store::get_account_doc(db, "place:ws-1/st-1/10") {
-    sql::SqlResult::Ok(Some(raw)) => debug_assert(raw.contains("\"at\":4"), "expected persisted place doc: " + raw)
-    _ => debug_assert(false, "chat.place must persist to SQLite account_doc!")
+  match store::get_workspace_pref(db, "ws-1", "place:ws-1/st-1/10") {
+    sql::SqlResult::Ok(Some(raw)) => debug_assert(raw.contains("\"at\":4"), "expected persisted place pref: " + raw)
+    _ => debug_assert(false, "chat.place must persist to SQLite workspace_pref!")
   }
+  // Unchanged `chat.place` short-circuits without touching SQLite: delete underlying row directly and re-send identical place.
+  let _ = store::delete_workspace_pref(db, "ws-1", "place:ws-1/st-1/10")
+  let _ = sf_call_ok(core, 401L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(12.5)),
+  ]))
+  match store::get_workspace_pref(db, "ws-1", "place:ws-1/st-1/10") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "identical chat.place must short-circuit without writing SQLite")
+  }
+  // Re-persist with an actual offset change so restart recovery test below reads from workspace_pref.
+  let _ = sf_call_ok(core, 402L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(13.5)),
+  ]))
+  let _ = sf_call_ok(core, 403L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(12.5)),
+  ]))
   let ch_view = sf_sub_val(core, 41L, "chat", [
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
@@ -632,9 +663,24 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
     ("thread", base_codec::json_int(10)),
     ("seq", base_codec::json_null()),
   ]))
-  match store::get_account_doc(db, "place:ws-1/st-1/10") {
+  match store::get_workspace_pref(db, "ws-1", "place:ws-1/st-1/10") {
     sql::SqlResult::Ok(None) => ()
     _ => debug_assert(false, "chat.place(seq: null) must delete persisted place row")
+  }
+
+  // P2-3: Sensitive topics (`accounts`, `lock`, `vaults`) MUST NEVER emit `v` keep tokens or honor `have`!
+  let _ = sf_sub_val(core, 430L, "accounts", [])
+  match core.handle_request(protocol::CoreRequest::Unsubscribe(430L, true, true)) {
+    None => ()
+    _ => debug_assert(false, "sensitive topic accounts must not emit Unsubscribed(v) token on keep=true")
+  }
+  debug_assert(core.router.kept_count() == 0, "sensitive topic accounts must never be cached in kept")
+  let acct_val = sf_sub_val(core, 431L, "accounts", [])
+  let fake_tok = protocol::value_token(acct_val)
+  let _ = core.handle_request(protocol::CoreRequest::Unsubscribe(431L, true, false))
+  match core.handle_request(protocol::CoreRequest::Subscribe(432L, protocol::Topic::{ name: "accounts", params: [] }, true, None, Some(fake_tok))) {
+    Some(protocol::CoreEvent::Value(_, _, _)) => ()
+    _ => debug_assert(false, "sensitive topic accounts must ignore have token and return full Value")
   }
 
   // 4. `chat.window` requires `rows` and clamps to [1, 200]

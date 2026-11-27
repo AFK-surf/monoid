@@ -198,7 +198,29 @@ int main(void) {
     assert(ca != NULL);
     long long created_at_ms = strtoll(ca + 12, NULL, 10);
     assert(created_at_ms > 1700000000000LL);
+
+    // P1-2: `chat.place` and `chat.window` MUST NOT push unsolicited refreshes on active `chat` sub #19;
+    // they take effect only when opening / re-subscribing (aligned with TS `station/topics.ts:710-760`).
+    send_json("{\"id\":191,\"call\":\"chat.place\",\"params\":{\"station\":\"st-local\",\"thread\":42,\"seq\":1,\"offset\":4.5}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":191") != NULL && strstr(m->json, "\"error\"") == NULL);
+    send_json("{\"id\":192,\"call\":\"chat.window\",\"params\":{\"station\":\"st-local\",\"thread\":42,\"rows\":50}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":192") != NULL && strstr(m->json, "\"error\"") == NULL);
+    // Sentinel call immediately after: next message MUST be #193 (zero unsolicited #19 chat delta in between!).
+    send_json("{\"id\":193,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":193") != NULL && strstr(m->json, "\"theme\"") != NULL);
     send_json("{\"id\":19,\"unsubscribe\":true}");
+
+    // Re-subscribing picks up persisted `at` and `atOffset` from `chat.place`.
+    send_json("{\"id\":194,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":194") != NULL && strstr(m->json, "\"at\":1") != NULL && strstr(m->json, "\"atOffset\":4.5") != NULL);
+    send_json("{\"id\":194,\"unsubscribe\":true}");
+    send_json("{\"id\":195,\"call\":\"chat.place\",\"params\":{\"station\":\"st-local\",\"thread\":42,\"seq\":null}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":195") != NULL && strstr(m->json, "\"error\"") == NULL);
 
     send_json("{\"id\":10,\"call\":\"chat.rename\",\"params\":{\"thread\":42,\"title\":\"Renamed from C host\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);

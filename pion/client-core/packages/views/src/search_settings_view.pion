@@ -416,11 +416,53 @@ pub fn project_settings(
     (false, "已开启：" + join_names_ssv(review_on, "、") + "；未开启：" + join_names_ssv(review_off, "、"))
   }
   let _ = prefs
+  // Read persisted progress preferences (`workspace_pref(ws, "progressPrefs")`) with TS `PROGRESS_DEFAULT` fallback (`progress-prefs.ts:15`).
+  let mut progress_minutes = 10
+  let mut progress_strength = "require"
+  let mut progress_seq = 1L
+  if ws_scope.length() > 0 {
+    match store::get_workspace_pref(db, ws_scope, "progressPrefs") {
+      sql::SqlResult::Ok(Some(raw_pp)) => {
+        let pp = parse_json_or_null(raw_pp)
+        match base_codec::json_get(pp, "minutes") {
+          Some(base_codec::Json::Num(n, _)) => {
+            let m = n.to_int()
+            if m >= 5 && m <= 1440 {
+              progress_minutes = m
+            }
+          }
+          _ => ()
+        }
+        match j_opt_str(pp, "strength") {
+          Some("require") => { progress_strength = "require" }
+          Some("remind") => { progress_strength = "remind" }
+          _ => ()
+        }
+        match base_codec::json_get(pp, "seq") {
+          Some(base_codec::Json::Num(n, _)) => {
+            let s = n.to_int64()
+            if s > 0L { progress_seq = s }
+          }
+          _ => match base_codec::json_get(pp, "rev") {
+            Some(base_codec::Json::Num(n, _)) => {
+              let r = n.to_int64()
+              if r > 0L { progress_seq = r }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
   sql::SqlResult::Ok(base_codec::json_obj([
     ("decisionsOn", base_codec::json_int(decisions_on)),
     ("decisionsText", base_codec::json_str(decisions_text)),
     ("hintNoReview", base_codec::json_bool(hint_no_review)),
     ("hintReviewText", base_codec::json_str(hint_review_text)),
+    ("progressMinutes", base_codec::json_int(progress_minutes)),
+    ("progressStrength", base_codec::json_str(progress_strength)),
+    ("progressSeq", base_codec::json_int64(progress_seq)),
   ]))
 }
 

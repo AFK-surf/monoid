@@ -612,17 +612,6 @@ pub fn put_account_doc(
   }
 }
 
-pub fn sql_account_doc_delete() -> String {
-  "DELETE FROM account_doc WHERE name = ?"
-}
-
-pub fn delete_account_doc(db : sql::Sql, name : String) -> sql::SqlResult[Unit] {
-  match db.run(sql_account_doc_delete(), params=[base_codec::json_str(name)]) {
-    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
-    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
-  }
-}
-
 /// Upsert a workspace roster record (`workspace` table).
 pub fn upsert_workspace(
   db : sql::Sql,

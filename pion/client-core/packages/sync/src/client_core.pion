@@ -74,7 +74,7 @@ pub struct ClientCore {
   pub mut utc_offset_min : Int
   pub mut db_account_sub : Option[String]
   chat_windows : Map[String, Int]
-  chat_places : Map[String, (Int, Option[Double])]
+  chat_places : Map[String, Option[(Int, Option[Double])]]
   chat_place_order : Array[String]
   mut on_prefs_saved : Option[(base_codec::Json) -> Result[Unit, String]]
   mut auth_seq : Int
@@ -1386,17 +1386,21 @@ pub fn ClientCore::chat_window_for(
   if best > 0 { best } else { 30 }
 }
 
-fn chat_place_doc_key(station : String, thread : Int) -> String {
+fn chat_place_pref_key(station : String, thread : Int) -> String {
   "place:" + station + "/" + thread.to_string()
+}
+
+fn ClientCore::chat_place_workspace(self : ClientCore, station : String) -> String {
+  let ws = station_workspace_prefix(station)
+  if ws.length() > 0 { ws } else { self.workspace }
 }
 
 fn ClientCore::cache_chat_place_lru(
   self : ClientCore,
   pk : String,
-  seq : Int,
-  offset_opt : Option[Double],
+  entry : Option[(Int, Option[Double])],
 ) -> Unit {
-  self.chat_places.set(pk, (seq, offset_opt))
+  self.chat_places.set(pk, entry)
   let next : Array[String] = []
   for i in 0..<self.chat_place_order.length() {
     if self.chat_place_order[i] != pk {
@@ -1422,8 +1426,9 @@ fn ClientCore::cache_chat_place_lru(
   }
 }
 
-/// Look up scroll position `(at, atOffset)` for `(station, thread)` (`topics.ts:710-760`):
-/// hits bounded in-memory LRU first, lazily hydrating from SQLite `account_doc("place:<st>/<th>")` across restarts.
+/// Look up scroll position `(at, atOffset)` for `(station, thread)` (`topics.ts:712-721`, `data.ts:1776`):
+/// hits bounded 256-entry in-memory LRU first (caching `None` misses too so repeated reads avoid SQL),
+/// lazily hydrating from SQLite `workspace_pref(ws, "place:<st>/<th>")` across restarts.
 pub fn ClientCore::chat_place_for(
   self : ClientCore,
   station : String,
@@ -1434,26 +1439,55 @@ pub fn ClientCore::chat_place_for(
     Some(th) => {
       let pk = station + "\u{01}" + th.to_string()
       match self.chat_places.get(pk) {
-        Some((seq, off)) => (Some(seq), off)
-        None => match store::get_account_doc(self.db, chat_place_doc_key(station, th)) {
-          sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
-            base_codec::JsonParseResult::Ok(j) => match proto_int(j, "at") {
-              Some(seq) => {
-                let off_opt : Option[Double] = match base_codec::json_get(j, "offset") {
-                  Some(base_codec::Json::Num(n, _)) => Some(n)
-                  _ => None
+        Some(Some((seq, off))) => (Some(seq), off)
+        Some(None) => (None, None)
+        None => {
+          let ws = self.chat_place_workspace(station)
+          let loaded : Option[(Int, Option[Double])] = match store::get_workspace_pref(self.db, ws, chat_place_pref_key(station, th)) {
+            sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+              base_codec::JsonParseResult::Ok(j) => match proto_int(j, "at") {
+                Some(seq) => {
+                  let off_opt : Option[Double] = match base_codec::json_get(j, "offset") {
+                    Some(base_codec::Json::Num(n, _)) => Some(n)
+                    _ => None
+                  }
+                  Some((seq, off_opt))
                 }
-                self.cache_chat_place_lru(pk, seq, off_opt)
-                (Some(seq), off_opt)
+                None => None
               }
-              None => (None, None)
+              base_codec::JsonParseResult::Err(_) => None
             }
-            base_codec::JsonParseResult::Err(_) => (None, None)
+            _ => None
           }
-          _ => (None, None)
+          self.cache_chat_place_lru(pk, loaded)
+          match loaded {
+            Some((seq, off)) => (Some(seq), off)
+            None => (None, None)
+          }
         }
       }
     }
+  }
+}
+
+fn chat_place_equal(
+  a_seq : Option[Int],
+  a_off : Option[Double],
+  b_seq : Option[Int],
+  b_off : Option[Double],
+) -> Bool {
+  let seq_eq = match (a_seq, b_seq) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+  if !seq_eq {
+    return false
+  }
+  match (a_off, b_off) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
   }
 }
 
@@ -1464,31 +1498,33 @@ fn ClientCore::set_chat_place_mem(
   seq_opt : Option[Int],
   offset_opt : Option[Double],
 ) -> Unit {
+  let eff_off : Option[Double] = match seq_opt {
+    Some(_) => offset_opt
+    None => None
+  }
+  let (cur_seq, cur_off) = self.chat_place_for(station, Some(thread))
+  if chat_place_equal(cur_seq, cur_off, seq_opt, eff_off) {
+    return
+  }
   let pk = station + "\u{01}" + thread.to_string()
-  let dk = chat_place_doc_key(station, thread)
+  let ws = self.chat_place_workspace(station)
+  let dk = chat_place_pref_key(station, thread)
   match seq_opt {
     None => {
-      self.chat_places.remove(pk)
-      let next : Array[String] = []
-      for i in 0..<self.chat_place_order.length() {
-        if self.chat_place_order[i] != pk {
-          next.push(self.chat_place_order[i])
-        }
-      }
-      self.chat_place_order.clear()
-      for i in 0..<next.length() {
-        self.chat_place_order.push(next[i])
-      }
-      let _ = store::delete_account_doc(self.db, dk)
+      self.cache_chat_place_lru(pk, None)
+      let _ = store::delete_workspace_pref(self.db, ws, dk)
     }
     Some(seq) => {
-      self.cache_chat_place_lru(pk, seq, offset_opt)
-      let fields : Array[(String, base_codec::Json)] = [("at", base_codec::json_int(seq))]
-      match offset_opt {
-        Some(off) => fields.push(("offset", base_codec::json_num(off)))
-        None => ()
+      self.cache_chat_place_lru(pk, Some((seq, eff_off)))
+      let off_j = match eff_off {
+        Some(off) => base_codec::json_num(off)
+        None => base_codec::json_null()
       }
-      let _ = store::put_account_doc(self.db, dk, base_codec::json_stringify(base_codec::json_obj(fields)))
+      let fields : Array[(String, base_codec::Json)] = [
+        ("at", base_codec::json_int(seq)),
+        ("offset", off_j),
+      ]
+      let _ = store::put_workspace_pref(self.db, ws, dk, base_codec::json_stringify(base_codec::json_obj(fields)))
     }
   }
 }
@@ -3346,8 +3382,6 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
                   base_codec::Json::Bool(b) => { fill_flag = b }
                   _ => ()
                 }
-              } else if k == "_auth" {
-                ()
               } else {
                 patch_pairs.push((k, v))
               }
@@ -3640,8 +3674,8 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         }
       }
       if call_name == "chat.place" {
-        // 1:1 with `client/core-ts/src/core/calls.ts:743-751` & `station/topics.ts:710-760`:
-        // 256-entry bounded in-memory LRU + SQLite `account_doc("place:<st>/<th>")` restart persistence.
+        // 1:1 with `client/core-ts/src/core/calls.ts:743-751`, `station/topics.ts:710-760`, & `data.ts:1776`:
+        // 256-entry bounded in-memory LRU (caching `None` too) + SQLite `workspace_pref(ws, "place:<st>/<th>")` restart persistence.
         let st = match proto_str(params, "station") {
           Some(s) => if s.length() > 0 { s } else { self.station }
           None => self.station

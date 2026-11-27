@@ -1040,7 +1040,9 @@ pub fn ComposerManager::add(
     }, raw_quote))
   }
   let s = self.state_for(key)
-  self.seq = temp_seq
+  if temp_seq > self.seq {
+    self.seq = temp_seq
+  }
   for i in 0..<staged.length() {
     let (f, raw_quote) = staged[i]
     let mut quote_bind : Option[String] = f.quote

@@ -518,6 +518,7 @@ struct ProfileGroupBucketMpv {
   profile : base_codec::Json
   mut usable : Bool
   mut look : Bool
+  mut can_batch_share : Bool
   members : Array[base_codec::Json]
   mut used_count : Int
 }
@@ -553,6 +554,10 @@ pub fn project_profiles(
       Some(base_codec::Json::Bool(b)) => b
       _ => true
     }
+    let st_sharing = j_bool(doc, "sharing") || match base_codec::json_get(doc, "overview") {
+      Some(ov) => j_bool(ov, "sharing")
+      None => false
+    }
     let profs = extract_overview_profiles_mpv(doc)
     for pi in 0..<profs.length() {
       let raw_p = profs[pi]
@@ -565,6 +570,15 @@ pub fn project_profiles(
         None => true
       }
       let p_usable = st_online && enabled
+      let is_borrowed = match base_codec::json_get(raw_p, "sharedFrom") {
+        Some(base_codec::Json::Null) | None => false
+        _ => true
+      }
+      let is_shareable = match j_opt_bool(raw_p, "shareable") {
+        Some(false) => false
+        _ => true
+      }
+      let p_can_batch_share = !is_borrowed && st_online && st_sharing && is_shareable
       let has_trouble = match base_codec::json_get(raw_p, "trouble") {
         Some(base_codec::Json::Obj(_)) => true
         _ => false
@@ -599,6 +613,8 @@ pub fn project_profiles(
       match buckets.get(acct_key) {
         Some(b) => {
           b.members.push(mem_obj)
+          // Signed in on multiple stations (`several == true`) disables batch sharing (`views/profiles.ts:203`).
+          b.can_batch_share = false
           if p_usable {
             b.usable = true
           }
@@ -619,6 +635,7 @@ pub fn project_profiles(
             profile: conformed,
             usable: p_usable,
             look: p_look,
+            can_batch_share: p_can_batch_share,
             members: [mem_obj],
             used_count: used_n,
           })
@@ -673,12 +690,25 @@ pub fn project_profiles(
       ("station", base_codec::json_str(b.station)),
       ("profile", b.profile),
       ("title", base_codec::json_str(b.title)),
+      ("canBatchShare", base_codec::json_bool(b.can_batch_share)),
       ("usable", base_codec::json_bool(b.usable)),
       ("look", base_codec::json_bool(b.look)),
       ("where", base_codec::json_str(b.station_name)),
       ("several", base_codec::json_bool(b.members.length() > 1)),
       ("usedCount", base_codec::json_int(b.used_count)),
     ]))
+  }
+  let manages = if ws_scope.length() > 0 {
+    match store::get_workspace(db, ws_scope) {
+      sql::SqlResult::Ok(Some(ws_row)) => {
+        let wj = parse_json_or_null(ws_row.json)
+        let role = j_str(wj, "role")
+        role == "owner" || role == "admin"
+      }
+      _ => false
+    }
+  } else {
+    false
   }
   let wait_obj = base_codec::json_obj([
     ("reading", base_codec::json_bool(false)),
@@ -690,6 +720,7 @@ pub fn project_profiles(
     ("attention", base_codec::json_int(attention)),
     ("wait", wait_obj),
     ("machineLogins", base_codec::json_arr([])),
+    ("manages", base_codec::json_bool(manages)),
   ]))
 }
 

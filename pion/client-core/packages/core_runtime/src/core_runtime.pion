@@ -751,6 +751,26 @@ fn resolve_thread_and_chat_meta(
   }
 }
 
+fn build_new_chat_view() -> base_codec::Json {
+  base_codec::json_obj([
+    ("kept", base_codec::json_str("")),
+    ("next", base_codec::json_str("new:chat-pion")),
+    ("stations", base_codec::json_arr([])),
+    ("any", base_codec::json_bool(true)),
+    ("down", base_codec::json_bool(false)),
+    ("waiting", base_codec::json_bool(false)),
+    ("preset", base_codec::json_str("")),
+    ("presetStation", base_codec::json_str("")),
+    ("presetName", base_codec::json_str("")),
+    ("presets", base_codec::json_arr([])),
+    ("presetMarks", base_codec::json_arr([])),
+    ("presetModel", base_codec::json_bool(false)),
+    ("presetStations", base_codec::json_bool(false)),
+    ("autoStation", base_codec::json_bool(false)),
+    ("autoPoolCount", base_codec::json_int(0)),
+  ])
+}
+
 /// Start the Pion `ClientCore` + real Rust `stillfail-shell` on `data_dir` (called on core thread).
 pub extern "C" fn pion_core_runtime_start(
   data_dir : Ptr,
@@ -1034,7 +1054,7 @@ fn affected_topic_for_call(call_name : String) -> Option[String] {
   if call_name == "download.join" || call_name == "download.leave" {
     return Some("downloads")
   }
-  if call_name == "chat.send" || call_name == "decision.answer" || call_name == "chat.window" || call_name == "chat.place" {
+  if call_name == "chat.send" || call_name == "decision.answer" {
     return Some("chat")
   }
   if call_name == "chat.read" || call_name == "chat.rename" || call_name == "chat.pin" ||
@@ -1344,7 +1364,15 @@ fn evaluate_runtime_topic(
 
 fn handle_runtime_subscribe(_sess : RuntimeSession, id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
   let tname = topic.name
-  let val_opt : Option[base_codec::Json] = if tname == "adbShare" {
+  let val_opt : Option[base_codec::Json] = if tname == "driveTransfers" {
+    Some(base_codec::json_obj([
+      ("supported", base_codec::json_bool(false)),
+      ("loaded", base_codec::json_bool(false)),
+      ("transfers", base_codec::json_arr([])),
+    ]))
+  } else if tname == "newChat" {
+    Some(build_new_chat_view())
+  } else if tname == "adbShare" {
     Some(base_codec::json_obj([
       ("sharing", base_codec::json_bool(false)),
       ("phase", base_codec::json_str("off")),
