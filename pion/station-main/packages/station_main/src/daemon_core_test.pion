@@ -1,15 +1,17 @@
 // Pure unit tests for `daemon_core.pion`:
-// - 4-way ShellMux tag non-collision (`MUX_TAG_LOOPBACK/DOOR/MESH/ROLE`) & `make_role_mux`
-// - `FRONT_FRAME_END` / `FRONT_FRAME_FAILED` / data frame encoding & decoding
-// - `pending_handover_rpcs` FIFO queue, cap, 40s expiry, and front-disconnect pruning
+// - 4-way ShellMux tag non-collision (`MUX_TAG_LOOPBACK/DOOR/MESH/ROLE`) & `fetch.cancel` ID re-encoding
+// - `FRONT_FRAME_END` / `FRONT_FRAME_FAILED` / multi-chunk data frame encoding & decoding
+// - `pending_handover_rpcs` FIFO queue, cap, 40s replay expiration filter, and front-disconnect pruning
+// - `can_mark_role_ready` barrier enforcement (refused while `!handover_done`)
 // - Predecessor identity check (`resolve_predecessor_pid`) & `hub.json` with `procStartTicks` + `bootId`
-// - Fail-closed `authenticate_peer_rpc` & role callback lifecycle ordering
+// - Fail-closed `authenticate_peer_rpc` / `parse_and_authenticate_peer_line` & `FILE_STREAM_CHUNK_BYTES` parity
 
 import "base_codec"
+import "station_jobs"
 import "station_mesh"
 import "station_ops"
 
-test "daemon_core: MUX_TAG_ROLE=3 and 0/1/2 tags never collide across ids" {
+test "daemon_core: MUX_TAG_ROLE=3 and 0/1/2 tags never collide and rewrite fetch.cancel ids" {
   assert_true(MUX_TAG_LOOPBACK == 0L, "MUX_TAG_LOOPBACK == 0")
   assert_true(MUX_TAG_DOOR == 1L, "MUX_TAG_DOOR == 1")
   assert_true(MUX_TAG_MESH == 2L, "MUX_TAG_MESH == 2")
@@ -30,7 +32,23 @@ test "daemon_core: MUX_TAG_ROLE=3 and 0/1/2 tags never collide across ids" {
       assert_true(dec_tag == tag, "decoded tag matches original")
     }
   }
-  // Also verify MuxSlot resets cleanly on take.
+
+  // `make_tagged_mux` call_sync must re-encode `fetch.cancel` `{"id": N}` to `4*N + tag` for all tags 0..3.
+  for ti in 0..<tags.length() {
+    let tag = tags[ti]
+    let rewritten = rewrite_tagged_sync_args("fetch.cancel", "{\"id\":42}", tag)
+    let want_id = 42L * 4L + tag
+    assert_str_eq(rewritten, "{\"id\":" + want_id.to_string() + "}")
+  }
+  // Other sync ops pass through unchanged.
+  assert_str_eq(rewrite_tagged_sync_args("iroh.sockets", "{\"id\":42}", MUX_TAG_MESH), "{\"id\":42}")
+
+  // Verify FILE_STREAM_CHUNK_BYTES matches station_jobs::REMOTE_CHUNK.
+  assert_true(
+    FILE_STREAM_CHUNK_BYTES == station_jobs::REMOTE_CHUNK.to_int64(),
+    "FILE_STREAM_CHUNK_BYTES must equal station_jobs::REMOTE_CHUNK",
+  )
+
   let role_slot = MuxSlot::{ next_ev: None }
   assert_true(role_slot.next_ev is None, "role slot starts empty")
 }
@@ -73,7 +91,7 @@ test "daemon_core: FRONT_FRAME_END, FRONT_FRAME_FAILED, and multi-chunk data enc
   assert_true(decode_front_frame_header(Bytes::new(3), 0) is None, "short header returns None")
 }
 
-test "daemon_core: pending_handover_rpcs FIFO order, cap, 40s timeout, and front pruning" {
+test "daemon_core: pending_handover_rpcs FIFO order, cap, 40s replay filter, and front pruning" {
   let q : Array[PendingHandoverRpc] = []
   let mk = fn(sid : Int64, line : String, is_front : Bool, at : Int64) -> PendingHandoverRpc {
     PendingHandoverRpc::{
@@ -81,6 +99,7 @@ test "daemon_core: pending_handover_rpcs FIFO order, cap, 40s timeout, and front
       line: line,
       bin_opt: None,
       remote_id: "peer-1",
+      alpn: station_mesh::PEER_BYTES_ALPN,
       v2_bytes: true,
       is_front: is_front,
       queued_at_ms: at,
@@ -91,20 +110,33 @@ test "daemon_core: pending_handover_rpcs FIFO order, cap, 40s timeout, and front
   assert_true(enqueue_handover_rpc(q, mk(3L, "third", true, 10000L), max_items=3), "enqueue 3")
   assert_true(!enqueue_handover_rpc(q, mk(4L, "overflow", false, 11000L), max_items=3), "cap enforced")
 
-  // Expire items older than 40s (PREVIOUS_LIMIT_MS = 40000L): at now=42000L, sid=1 (1000L) expires, 2 & 3 remain.
+  // Periodic expiry: at now=42000L, sid=1 (1000L) expires, 2 & 3 remain.
   let expired = expire_handover_rpcs(q, 42000L, limit_ms=40000L)
   assert_true(expired.length() == 1 && expired[0].sid == 1L, "only sid=1 expired")
   assert_true(q.length() == 2 && q[0].sid == 2L && q[1].sid == 3L, "FIFO order preserved after expiry")
 
-  // Drop front items only (simulating front.sock disconnect while direct iroh items stay queued).
+  // Front disconnect pruning removes only is_front items.
   drop_front_handover_rpcs(q)
   assert_true(q.length() == 1 && q[0].sid == 2L, "only non-front sid=2 survives front reset")
 
-  // Drain preserves FIFO order and empties queue.
+  // Replay partition re-checks 40s deadline at replay time: sid=2 (5000L) is expired at now=46000L,
+  // while sid=5 (43000L) and sid=6 (44000L) replay in strict FIFO order.
   assert_true(enqueue_handover_rpc(q, mk(5L, "fifth", false, 43000L), max_items=3), "enqueue 5")
-  let drained = drain_handover_rpcs(q)
-  assert_true(q.length() == 0, "queue cleared after drain")
-  assert_true(drained.length() == 2 && drained[0].sid == 2L && drained[1].sid == 5L, "FIFO replay order")
+  assert_true(enqueue_handover_rpc(q, mk(6L, "sixth", false, 44000L), max_items=3), "enqueue 6")
+  let (valid, replay_expired) = partition_handover_rpcs_for_replay(q, 46000L, limit_ms=40000L)
+  assert_true(q.length() == 0, "queue cleared after replay partition")
+  assert_true(replay_expired.length() == 1 && replay_expired[0].sid == 2L, "expired sid=2 filtered out on replay")
+  assert_true(
+    valid.length() == 2 && valid[0].sid == 5L && valid[1].sid == 6L,
+    "non-expired items replay in FIFO order",
+  )
+}
+
+test "daemon_core: mark_role_ready barrier rejects premature readiness before handover_done" {
+  assert_true(!can_mark_role_ready(false, false), "must reject mark_role_ready while !handover_done")
+  assert_true(!can_mark_role_ready(false, true), "must reject when !handover_done even if ready")
+  assert_true(can_mark_role_ready(true, false), "allows mark_role_ready once handover_done && !role_ready")
+  assert_true(!can_mark_role_ready(true, true), "idempotent: second call returns false")
 }
 
 test "daemon_core: predecessor identity verification and hub.json formatting" {
@@ -137,7 +169,7 @@ test "daemon_core: predecessor identity verification and hub.json formatting" {
   assert_true(hub.contains("\"bootId\":\"boot-uuid-1\""), "hub.json contains bootId")
 }
 
-test "daemon_core: authenticate_peer_rpc rejects empty/unknown peers and admits workspace peers" {
+test "daemon_core: authenticate_peer_rpc and parse_and_authenticate_peer_line fail closed on unknown peers" {
   let roster = station_mesh::CloudRoster::{
     origin: "https://app.still.fail",
     station_id: "self-st",
@@ -158,6 +190,7 @@ test "daemon_core: authenticate_peer_rpc rejects empty/unknown peers and admits 
     ],
     moved_offered: Map::new(),
   }
+  let line = "{\"workspace\":\"ws-1\",\"request\":{\"method\":\"ping\"}}"
   let env = station_mesh::PeerRequestEnvelope::{
     workspace: "ws-1",
     request: base_codec::json_obj([("method", base_codec::json_str("ping"))]),
@@ -171,67 +204,25 @@ test "daemon_core: authenticate_peer_rpc rejects empty/unknown peers and admits 
     Err(_) => ()
     Ok(_) => panic("unknown peer id must be rejected")
   }
-  match authenticate_peer_rpc(roster, "known-peer", env) {
-    Ok(station_mesh::PeerRouteTarget::BusLocal(ws)) => assert_str_eq(ws, "ws-1")
-    _ => panic("known workspace peer must be admitted")
+  match parse_and_authenticate_peer_line(line, "unknown-peer", station_mesh::PEER_BYTES_ALPN, roster) {
+    Err(_) => ()
+    Ok(_) => panic("parse_and_authenticate_peer_line must reject unknown peer")
   }
-}
-
-test "daemon_core: role callback lifecycle order and handover queue replay" {
-  let trace : Array[String] = []
-  let queue : Array[PendingHandoverRpc] = []
-  let mut role_ready = false
-
-  // 1. validate_mode
-  trace.push("validate_mode")
-  // 2. on_init
-  trace.push("on_init")
-  // 3. RPC arrives during handover barrier -> queued
-  if !role_ready {
-    let _ = enqueue_handover_rpc(
-      queue,
-      PendingHandoverRpc::{
-        sid: 10L,
-        line: "rpc-a",
-        bin_opt: None,
-        remote_id: "peer-1",
-        v2_bytes: true,
-        is_front: false,
-        queued_at_ms: 100L,
-      },
-    )
-    let _ = enqueue_handover_rpc(
-      queue,
-      PendingHandoverRpc::{
-        sid: 11L,
-        line: "rpc-b",
-        bin_opt: None,
-        remote_id: "peer-1",
-        v2_bytes: true,
-        is_front: true,
-        queued_at_ms: 101L,
-      },
-    )
+  match parse_and_authenticate_peer_line("{bad json", "known-peer", station_mesh::PEER_BYTES_ALPN, roster) {
+    Err(e) => assert_true(e.contains("invalid peer json"), "malformed json rejected")
+    Ok(_) => panic("malformed json must be rejected")
   }
-  // 4. on_predecessor_gone -> role finishes takeover and calls mark_role_ready()
-  trace.push("on_predecessor_gone")
-  role_ready = true
-  let replayed = drain_handover_rpcs(queue)
-  for i in 0..<replayed.length() {
-    trace.push("on_peer_rpc:" + replayed[i].line)
+  match parse_and_authenticate_peer_line(line, "known-peer", station_mesh::PEER_BYTES_ALPN, roster) {
+    Ok(auth) => {
+      assert_str_eq(auth.remote_id, "known-peer")
+      assert_str_eq(auth.alpn, station_mesh::PEER_BYTES_ALPN)
+      match auth.route {
+        station_mesh::PeerRouteTarget::BusLocal(ws) => assert_str_eq(ws, "ws-1")
+        _ => panic("expected BusLocal(ws-1)")
+      }
+    }
+    Err(e) => panic("known workspace peer must be admitted: " + e)
   }
-  // 5. on_handover_start -> on_shutdown
-  trace.push("on_handover_start")
-  trace.push("on_shutdown")
-
-  assert_true(trace.length() == 7, "7 lifecycle steps recorded")
-  assert_str_eq(trace[0], "validate_mode")
-  assert_str_eq(trace[1], "on_init")
-  assert_str_eq(trace[2], "on_predecessor_gone")
-  assert_str_eq(trace[3], "on_peer_rpc:rpc-a")
-  assert_str_eq(trace[4], "on_peer_rpc:rpc-b")
-  assert_str_eq(trace[5], "on_handover_start")
-  assert_str_eq(trace[6], "on_shutdown")
 }
 
 test "daemon_core: parse_daemon_run_args and parse_tell_reply" {

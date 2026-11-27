@@ -67,6 +67,7 @@ struct RigRuntimeState {
   prev_peers_by_ws : Map[String, Array[String]]
   prev_workspaces : Array[String]
   finish_vault_run : (ActiveVaultRun) -> Unit
+  disconnect_remote : () -> Unit
   mut door_started : Bool
   mut door_announced : Bool
   mut jobs_adopted : Bool
@@ -191,6 +192,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
 
   let hooks = DaemonRoleHooks::{
     role_name: "rig",
+    hears_outside: false,
+    has_mesh_directory: false,
+    accept_peer_http: false,
     validate_mode: fn(
       data : String,
       ops_fs : station_ops::OpsFs,
@@ -459,7 +463,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
             }
           }
         },
-        held: true,
+        held: ctx.has_predecessor(),
         crypto: station_rig::default_rig_crypto(),
       })
 
@@ -877,6 +881,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         prev_peers_by_ws: prev_peers_by_ws,
         prev_workspaces: prev_workspaces,
         finish_vault_run: finish_vault_run,
+        disconnect_remote: fn() -> Unit { remote_opt = None },
         door_started: false,
         door_announced: false,
         jobs_adopted: false,
@@ -919,10 +924,11 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       sid : Int64,
       line : String,
       bin_opt : Option[Bytes],
-      remote_id : String,
+      auth : PeerAuthInfo,
       v2_bytes : Bool,
       is_front : Bool,
     ) -> Unit {
+      let remote_id = auth.remote_id
       match state_opt {
         Some(st) => {
           match extract_zstd_sync_put(line, bin_opt) {
@@ -975,25 +981,19 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         None => ()
       }
     },
+    on_peer_http: fn(_ctx : DaemonCtx, _sid : Int64, _payload : Bytes, _remote_id : String, _is_front : Bool) -> Unit {},
     on_stream_start: fn(
       ctx : DaemonCtx,
       sid : Int64,
-      line : String,
-      remote_id : String,
+      _line : String,
+      auth : PeerAuthInfo,
       _v2_bytes : Bool,
     ) -> StreamStartAction {
       match state_opt {
         Some(st) => {
-          let parsed = match base_codec::json_parse(line) {
-            base_codec::JsonParseResult::Ok(j) => j
-            base_codec::JsonParseResult::Err(_) => return StreamStartAction::BufferBinary(station_jobs::REMOTE_CHUNK + 65536)
-          }
-          let is_sync_put = match base_codec::json_get(parsed, "request") {
-            Some(req_j) => match base_codec::json_get(req_j, "method") {
-              Some(base_codec::Json::Str("sync.put")) => true
-              _ => false
-            }
-            None => false
+          let is_sync_put = match base_codec::json_get(auth.env.request, "method") {
+            Some(base_codec::Json::Str("sync.put")) => true
+            _ => false
           }
           if is_sync_put {
             return StreamStartAction::BufferBinary(station_jobs::DIRSYNC_PACKED_MAX + 65536)
@@ -1001,11 +1001,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           if !ctx.is_role_ready() {
             return StreamStartAction::BufferBinary(station_jobs::REMOTE_CHUNK + 65536)
           }
-          let env = match station_mesh::decode_peer_request(parsed) {
-            Ok(e) => e
-            Err(_) => return StreamStartAction::BufferBinary(station_jobs::REMOTE_CHUNK + 65536)
-          }
-          let is_file_put = match base_codec::json_get(env.request, "method") {
+          let is_file_put = match base_codec::json_get(auth.env.request, "method") {
             Some(base_codec::Json::Str("file.put")) => true
             _ => false
           }
@@ -1014,7 +1010,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           }
           let now_ms = host_shim::wall_ms()
           let roster = build_cloud_roster(ctx.cloud, (now_ms / 1000L).to_double(), ctx.cloud.peers_current)
-          match begin_streaming_file_put(roster, remote_id, env, st.rig, st.remote_mgr, now_ms) {
+          match begin_streaming_file_put(roster, auth.remote_id, auth.env, st.rig, st.remote_mgr, now_ms) {
             Ok(put_ctx) => {
               st.active_put_streams.set(sid, put_ctx)
               StreamStartAction::Streaming
@@ -1319,6 +1315,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
               None => ()
             }
           }
+          (st.disconnect_remote)()
           st.door_srv.close_with_callbacks(st.door_cb)
           let w_end = host_shim::wall_ms()
           let _ = st.job_mgr.poll_followed(w_end)
