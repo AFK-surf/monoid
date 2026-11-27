@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [888341385](https://github.com/AFK-surf/monoid/commit/888341385d2dd34f3489cfcd2dbaf6aa5a08c24d) fix(station): offer Copilot models GitHub lists wi | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 | [c793e8932](https://github.com/AFK-surf/monoid/commit/c793e8932be884d034b45c2b5e41747bfe94fd3d) perf(cloud): single-flight cache changelog and rel | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 | [e3218e65a](https://github.com/AFK-surf/monoid/commit/e3218e65aa16b7e28b8b6c6757e38fa5f157eef0) perf(station,core): stream incremental overview-pa | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 109.2 | 122.42 |
 | [36bef9f96](https://github.com/AFK-surf/monoid/commit/36bef9f96a1e71d686c5c71fe550e82cd7ec0dfc) fix(station): end a turn that stays silent after i | 2.67 | 3.61 | 14.98 | 38.02 | 58.19 | 33.32 | 67.97 | 108.89 | 125.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [946d4f54c](https://github.com/AFK-surf/monoid/commit/946d4f54c95a38588c97016d8997f0a2125806c6) fix(mbui): include the film build script in the ho | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.5 | 130.75 |
 | [a1672fb1e](https://github.com/AFK-surf/monoid/commit/a1672fb1e10a7d2fb9f5c1bf3fb07152ed8724b4) fix(mbui): keep Home rows in place while a chat op | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.5 | 130.75 |
 | [d96ca5075](https://github.com/AFK-surf/monoid/commit/d96ca50756a20b86f0b1c886aa30b228ab81ca55) perf(ui): batch & prewarm WebGL2 shaders and strip | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.61 | 115.48 |
-| [870cca361](https://github.com/AFK-surf/monoid/commit/870cca3611e275db49bda34c6182af9a443a5883) feat(station-main): assemble pure-Pion roles:rig d | 2.65 | 3.58 | 14.86 | 37.77 | 57.83 | 33.09 | 67.67 | 101.98 | 115.27 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [888341385](https://github.com/AFK-surf/monoid/commit/888341385d2dd34f3489cfcd2dbaf6aa5a08c24d) fix(station): offer Copilot models GitHub lists wi | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.51 |
 | [c793e8932](https://github.com/AFK-surf/monoid/commit/c793e8932be884d034b45c2b5e41747bfe94fd3d) perf(cloud): single-flight cache changelog and rel | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [e3218e65a](https://github.com/AFK-surf/monoid/commit/e3218e65aa16b7e28b8b6c6757e38fa5f157eef0) perf(station,core): stream incremental overview-pa | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.64 |
 | [36bef9f96](https://github.com/AFK-surf/monoid/commit/36bef9f96a1e71d686c5c71fe550e82cd7ec0dfc) fix(station): end a turn that stays silent after i | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.82 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [946d4f54c](https://github.com/AFK-surf/monoid/commit/946d4f54c95a38588c97016d8997f0a2125806c6) fix(mbui): include the film build script in the ho | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.53 |
 | [a1672fb1e](https://github.com/AFK-surf/monoid/commit/a1672fb1e10a7d2fb9f5c1bf3fb07152ed8724b4) fix(mbui): keep Home rows in place while a chat op | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.46 |
 | [d96ca5075](https://github.com/AFK-surf/monoid/commit/d96ca50756a20b86f0b1c886aa30b228ab81ca55) perf(ui): batch & prewarm WebGL2 shaders and strip | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.82 |
-| [870cca361](https://github.com/AFK-surf/monoid/commit/870cca3611e275db49bda34c6182af9a443a5883) feat(station-main): assemble pure-Pion roles:rig d | 0.59 | 0.77 | 3.01 | 4.04 | 7.47 | 2.22 | 6.26 | 57.57 |
