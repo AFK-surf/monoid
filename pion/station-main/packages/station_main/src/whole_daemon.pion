@@ -2764,8 +2764,72 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     return
                   }
                   // O(n) raw-byte NDJSON line assembly (no UTF-8 split corruption, bounded to 8 MiB/line).
+                  // Batch contiguous `Out` frames from a single `tcp.read` into one ACID WAL tx
+                  // before sending ACK so bursty runners avoid per-line `synchronous=FULL` stalls.
                   let mut scan_from = 0
                   let mut cur_chunk = chunk
+                  let mut pending_batch : Array[(String, Int64, Int64, Bytes)] = []
+                  let mut batch_out = rconn.acked_out
+                  let mut batch_err = rconn.acked_err
+                  let mut need_reack = false
+                  let flush_batch = fn() -> Bool {
+                    if pending_batch.length() == 0 {
+                      if need_reack && rconn.sock_id >= 0L {
+                        need_reack = false
+                        let ack_line = station_drivers::encode_runner_ack(
+                          rconn.acked_out,
+                          rconn.acked_err,
+                          Some(rconn.keep_from),
+                        ) + "\n"
+                        let _ = ctx.mux_role.call_async_raw(
+                          builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
+                          "tcp.write",
+                          base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
+                          Some(ack_line.to_bytes()),
+                        )
+                      }
+                      return true
+                    }
+                    let now_w = host_shim::wall_ms()
+                    match st.core.agents.commit_adopted_runner_chunks(
+                      rconn.instance_id,
+                      rconn.session_key,
+                      rconn.runner_id,
+                      rconn.runner_pid,
+                      rconn.started_at,
+                      pending_batch,
+                      now_w,
+                    ) {
+                      Ok(_) => {
+                        let count = pending_batch.length()
+                        pending_batch = []
+                        need_reack = false
+                        rconn.acked_out = batch_out
+                        rconn.acked_err = batch_err
+                        rconn.lines_received = rconn.lines_received + count
+                        if rconn.sock_id >= 0L {
+                          let ack_line = station_drivers::encode_runner_ack(
+                            rconn.acked_out,
+                            rconn.acked_err,
+                            Some(rconn.keep_from),
+                          ) + "\n"
+                          let _ = ctx.mux_role.call_async_raw(
+                            builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
+                            "tcp.write",
+                            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
+                            Some(ack_line.to_bytes()),
+                          )
+                        }
+                        true
+                      }
+                      Err(pe) => {
+                        pending_batch = []
+                        ctx.log("failed to commit adopted runner chunk (" + rconn.instance_id + "): " + pe + "; closing runner socket fail-stop")
+                        rconn.exited = true
+                        false
+                      }
+                    }
+                  }
                   while scan_from < cur_chunk.length() {
                     let mut nl = -1
                     for bi in scan_from..<cur_chunk.length() {
@@ -2824,6 +2888,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     }
                     match station_drivers::decode_runner_frame(line) {
                       Some(station_drivers::RunnerFrame::Attached(att_out, att_err, _keep)) => {
+                        if !flush_batch() {
+                          break
+                        }
                         rconn.attached_seen = true
                         let now_w = host_shim::wall_ms()
                         match st.core.agents.get_or_init_runner_instance(
@@ -2839,6 +2906,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                           Ok((eff_out, eff_err, _existed)) => {
                             rconn.acked_out = eff_out
                             rconn.acked_err = eff_err
+                            batch_out = eff_out
+                            batch_err = eff_err
                             rconn.db_initialized = true
                           }
                           Err(pe) => {
@@ -2864,6 +2933,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                             Ok((db_out, db_err, _)) => {
                               rconn.acked_out = db_out
                               rconn.acked_err = db_err
+                              batch_out = db_out
+                              batch_err = db_err
                               rconn.db_initialized = true
                             }
                             Err(pe) => {
@@ -2873,25 +2944,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                             }
                           }
                         }
-                        let current_acked = if stream == "err" { rconn.acked_err } else { rconn.acked_out }
+                        let current_acked = if stream == "err" { batch_err } else { batch_out }
                         let end_pos = at + payload.length().to_int64()
                         if end_pos <= current_acked {
                           // Already committed on disk (duplicate replay): skip duplicate insert and re-ACK.
-                          let ack_line = station_drivers::encode_runner_ack(
-                            rconn.acked_out,
-                            rconn.acked_err,
-                            Some(rconn.keep_from),
-                          ) + "\n"
-                          if rconn.sock_id >= 0L {
-                            let _ = ctx.mux_role.call_async_raw(
-                              builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
-                              "tcp.write",
-                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
-                              Some(ack_line.to_bytes()),
-                            )
-                          }
+                          need_reack = true
                         } else if at > current_acked {
-                          // Offset gap: fail-stop immediately without advancing ACK across the gap.
+                          // Offset gap: commit any valid contiguous prefix before the gap, then fail-stop!
+                          let _ = flush_batch()
                           ctx.log(
                             "adopted runner offset gap (" + rconn.instance_id + "): at=" + at.to_string() +
                             " > acked=" + current_acked.to_string() + "; closing runner socket fail-stop",
@@ -2905,50 +2965,16 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                           } else {
                             (at, payload)
                           }
-                          // Atomically commit chunk + offset in `adopted-runners.db` BEFORE advancing ACK!
-                          match st.core.agents.commit_adopted_runner_chunk(
-                            rconn.instance_id,
-                            rconn.session_key,
-                            rconn.runner_id,
-                            rconn.runner_pid,
-                            rconn.started_at,
-                            stream,
-                            write_at,
-                            end_pos,
-                            write_payload,
-                            now_w,
-                          ) {
-                            Ok(_) => {
-                              if stream == "err" {
-                                rconn.acked_err = end_pos
-                              } else {
-                                rconn.acked_out = end_pos
-                              }
-                              rconn.lines_received = rconn.lines_received + 1
-                              // Send ACK with `keep: 0` so native `stillfail-runner` preserves active turn stdout!
-                              let ack_line = station_drivers::encode_runner_ack(
-                                rconn.acked_out,
-                                rconn.acked_err,
-                                Some(rconn.keep_from),
-                              ) + "\n"
-                              if rconn.sock_id >= 0L {
-                                let _ = ctx.mux_role.call_async_raw(
-                                  builders_core::MuxToken::Tagged(owner_id, RUNNER_TOK_UNIX_WRITE, rconn.sock_id),
-                                  "tcp.write",
-                                  base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(rconn.sock_id))])),
-                                  Some(ack_line.to_bytes()),
-                                )
-                              }
-                            }
-                            Err(pe) => {
-                              ctx.log("failed to commit adopted runner chunk (" + rconn.instance_id + "): " + pe + "; closing runner socket fail-stop")
-                              rconn.exited = true
-                              break
-                            }
+                          pending_batch.push((stream, write_at, end_pos, write_payload))
+                          if stream == "err" {
+                            batch_err = end_pos
+                          } else {
+                            batch_out = end_pos
                           }
                         }
                       }
                       Some(station_drivers::RunnerFrame::Exit(code_opt, sig_opt)) => {
+                        let _ = flush_batch()
                         st.core.agents.record_adopted_runner_exit(rconn.session_key, code_opt, sig_opt)
                         rconn.exited = true
                         if rconn.sock_id >= 0L {
@@ -2966,6 +2992,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       }
                       _ => ()
                     }
+                  }
+                  if !rconn.exited {
+                    let _ = flush_batch()
                   }
                   if rconn.exited && rconn.sock_id >= 0L {
                     let usid = rconn.sock_id
