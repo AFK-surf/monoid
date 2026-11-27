@@ -1910,11 +1910,6 @@ let stage_gap : Double = @ui.Space::px(S5)
 let stage_margin : Double = @ui.Space::px(S6)
 
 ///|
-/// Cap on a scrollable stage's column height on large monitors (inside `window_h - 2 * stage_margin - system_bars`):
-/// keeps tall previews comfortable and buttons within easy reach while short previews still hug their natural height.
-let stage_scroll_h : Double = 700.0
-
-///|
 /// What a dialog takes of a share of the window besides what it holds: the window's room round it, its padding over and
 /// under (dialog_room, dialog_pad).
 let dialog_frame_h : Double = dialog_room + dialog_pad + dialog_pad

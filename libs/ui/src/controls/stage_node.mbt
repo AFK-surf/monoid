@@ -43,10 +43,7 @@ fn stage_node(
       d
       // (as wide as what it holds is laid out where the stage has the room, else the stage)
       .width(By(fn() { Some(dmax(0.0, dmin(room().0, x.w))) }))
-      .max_height(By(fn() {
-        let h = room().1
-        Some(dmax(0.0, if x.stage_scroll is Some(_) { dmin(h, stage_scroll_h) } else { h }))
-      }))
+      .max_height(By(fn() { Some(dmax(0.0, room().1)) }))
       .gap(Is(stage_gap))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }))
@@ -199,14 +196,15 @@ fn stage_scroll_node(
       })
       |> ignore
       let whole = whole_ref.val.unwrap()
-      // Monotonic slot height: hugs short previews on open (zero extra gap under short cards like share-pool),
-      // and never shrinks when a filter switches to fewer rows so bottom tabs & buttons stay stationary.
+      // Monotonic unscaled peak height: hugs short previews on open (zero extra gap under short cards like share-pool),
+      // scales cleanly with `across()` if the window narrows, and never shrinks when a filter switches to fewer rows so
+      // bottom tabs & buttons stay stationary. Idempotent local Ref monotonic max; does not affect `whole`'s own layout.
       slot.height(By(fn() {
-        let h = room.tall(whole) * across()
-        if h > peak_h.val {
-          peak_h.val = h
+        let tall = room.tall(whole)
+        if tall > peak_h.val {
+          peak_h.val = tall
         }
-        Some(peak_h.val)
+        Some(peak_h.val * across())
       }))
       |> ignore
     })
