@@ -7,13 +7,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Accounts as AccountManager, checkConfig, DEFAULT_NEW_SUBSCRIPTION_MAX_CONCURRENT_SESSIONS } from "../src/accounts/index.ts";
 import { ConfigFile } from "../src/ops/config.ts";
+import { hearLines, type Line } from "../src/ops/log.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { AccountCapError } from "../src/sessions/accounts.ts";
 import { type SlotCoordinator } from "../src/sessions/hub.ts";
 import { isSessionCapped, pickProfile } from "../src/sessions/pool.ts";
 import { portable } from "../src/share/index.ts";
 import { Store } from "../src/store/store.ts";
-import { Rig, message, settle, testClock } from "./hub-fakes.ts";
+import { FakeDriver, Rig, message, settle, testClock } from "./hub-fakes.ts";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -308,6 +309,152 @@ test("raising or clearing maxConcurrentSessions auto-drains queued sessions", as
     r.hub.drainCapQueue();
     await settle();
     assert.equal(r.claude.sessions.length, 3, "clearing cap should drain remaining queued session");
+  } finally {
+    await r.close();
+  }
+});
+
+/// What the station logs while `f` runs: a start the account's concurrency cap queued is no failure.
+async function capLogs(f: (lines: Line[]) => Promise<void>) {
+  const lines: Line[] = [];
+  hearLines((l) => lines.push(l));
+  try {
+    await f(lines);
+  } finally {
+    hearLines(null);
+  }
+  const failed = lines.filter((l) => l.level === "ERROR" && l.message === "session task failed");
+  assert.deepEqual(failed, [], "an account concurrency cap queue is logged as no failure");
+}
+
+/// A session left with no process (as one taken up after a handover), then 2/2 slots filled on its account.
+async function idleThenFull(r: Rig) {
+  r.edit((raw) => {
+    raw.profiles[0].name = "新订阅号N";
+    raw.profiles[0].access = { kind: "subscription" };
+    raw.profiles[0].maxConcurrentSessions = 2;
+  });
+  await r.accept(message({ ts: "3.0", threadTs: "3000.1", text: "s3 first" }));
+  await settle();
+  const a3 = r.claude.last();
+  const k3 = a3.options.route;
+  await r.call(k3, "chat_post", { to: "C1/3000.1", text: "ok 3", kind: "all_done", done: "answered s3 first in its thread" });
+  a3.complete();
+  await settle();
+  await r.hub.evict(k3);
+  await settle();
+  await r.accept(message({ ts: "1.0", threadTs: "1000.1", text: "s1" }));
+  await settle();
+  await r.accept(message({ ts: "2.0", threadTs: "2000.1", text: "s2" }));
+  await settle();
+  assert.equal(r.claude.sessions.length, 3);
+  const a1 = r.claude.sessions[1]!;
+  return { k3, a1, k1: a1.options.route };
+}
+
+test("notices refused a turn by the account's concurrency cap wait in the queue, gather, and are given once a slot frees", async () => {
+  const time = testClock();
+  const r = new Rig({ clock: time.clock });
+  try {
+    await capLogs(async (lines) => {
+      const { k3, a1, k1 } = await idleThenFull(r);
+      const posts3 = () => r.chat.posts.filter(([t]) => t.threadTs === "3000.1").length;
+      const before = posts3();
+
+      await r.hub.actor(r.session(k3)).notify("background job A finished");
+      await settle();
+      assert.equal(r.claude.sessions.length, 3, "a notice must not start a turn while 2/2 run");
+      assert.equal(posts3(), before + 1, "queued once, said once");
+      assert.ok(r.chat.posts.at(-1)![1].includes("2/2"), r.chat.posts.at(-1)![1]);
+      assert.ok(lines.some((l) => l.level === "INFO" && l.message === "session queued by account concurrency cap" && l.fields.cap === 2));
+      const opens = lines.filter((l) => l.message === "session queued by account concurrency cap").length;
+
+      // (another while it waits: kept with the first, said nothing again, no start tried for it)
+      await r.hub.actor(r.session(k3)).notify("background job B finished");
+      await settle();
+      assert.equal(r.claude.sessions.length, 3);
+      assert.equal(posts3(), before + 1, "a second notice while queued must not be said again");
+      assert.equal(r.store.lastTurn(k3)?.detail, "other: session_cap");
+      assert.equal(lines.filter((l) => l.message === "session queued by account concurrency cap").length, opens);
+
+      // A slot frees: the queued session wakes on its own with both notices in one turn.
+      await r.call(k1, "chat_post", { to: "C1/1000.1", text: "done 1", kind: "all_done", done: "completed s1 and posted result" });
+      a1.complete();
+      await settle();
+      assert.equal(r.claude.sessions.length, 4, "the notice-queued session must wake when a slot frees");
+      const woke = r.claude.last();
+      assert.equal(woke.options.route, k3);
+      assert.ok(woke.prompts[0]!.includes("background job A finished") && woke.prompts[0]!.includes("background job B finished"), woke.prompts[0]);
+    });
+  } finally {
+    await r.close();
+  }
+});
+
+test("retryFailed starts at once a session the account's concurrency cap queued on a notice", async () => {
+  const time = testClock();
+  const r = new Rig({ clock: time.clock });
+  try {
+    await capLogs(async () => {
+      const { k3 } = await idleThenFull(r);
+      await r.hub.actor(r.session(k3)).notify("background job C finished");
+      await settle();
+      assert.equal(r.claude.sessions.length, 3);
+      const last = r.store.lastTurn(k3)!;
+      assert.equal(last.detail, "other: session_cap");
+      assert.ok(last.about, "the queued turn is bound to its notice");
+      await r.hub.retryFailed(k3, last.about.thread, last.about.seq);
+      await settle();
+      assert.equal(r.claude.sessions.length, 4, "retryFailed must start the notice-queued session past the cap");
+      const started = r.claude.last();
+      assert.equal(started.options.route, k3);
+      assert.ok(started.prompts[0]!.includes("background job C finished"), started.prompts[0]);
+    });
+  } finally {
+    await r.close();
+  }
+});
+
+test("a recovery with no messages waiting that the account's concurrency cap queues resumes once a slot frees", async () => {
+  const time = testClock();
+  const r = new Rig({ clock: time.clock });
+  try {
+    r.edit((raw) => {
+      raw.profiles[0].access = { kind: "subscription" };
+      raw.profiles[0].maxConcurrentSessions = 2;
+    });
+    await capLogs(async (lines) => {
+      // A turn of session 3 left running by a station that stopped.
+      await r.accept(message({ ts: "3.0", threadTs: "3000.1", text: "s3 long task" }));
+      await settle();
+      const k3 = r.claude.last().options.route;
+      await r.hub.shutdown();
+      assert.equal(r.store.listTurns(k3).at(-1)!.summary.endedAt, null, "left running by the station that stopped");
+      // The next station: 2/2 run on the account before session 3 recovers.
+      const claude = new FakeDriver("claude");
+      r.hub = r.newHub({ chats: (id) => (id === "cl" ? r.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false });
+      await r.accept(message({ ts: "1.0", threadTs: "1000.1", text: "s1" }));
+      await settle();
+      await r.accept(message({ ts: "2.0", threadTs: "2000.1", text: "s2" }));
+      await settle();
+      assert.equal(claude.count(), 2);
+      const a1 = claude.sessions[0]!;
+      assert.equal(r.store.hasPending(k3), false, "nothing waits for session 3 but its cut-off turn");
+
+      await r.hub.actor(r.session(k3)).recover();
+      await settle();
+      assert.equal(claude.count(), 2, "the recovery must queue while 2/2 run");
+      assert.equal(r.store.lastTurn(k3)?.detail, "other: session_cap");
+      assert.ok(lines.some((l) => l.message === "session queued by account concurrency cap"));
+
+      await r.call(a1.options.route, "chat_post", { to: "C1/1000.1", text: "done 1", kind: "all_done", done: "completed s1 and posted result" });
+      a1.complete();
+      await settle();
+      assert.equal(claude.count(), 3, "the queued recovery must resume when a slot frees");
+      const resumed = claude.last();
+      assert.equal(resumed.options.route, k3);
+      assert.ok(resumed.prompts[0]!.includes("restarted while you were in the middle of a turn"), resumed.prompts[0]);
+    });
   } finally {
     await r.close();
   }

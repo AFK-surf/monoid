@@ -44,6 +44,8 @@ pub struct QueuedRetry {
   pub text : String
   pub by : base_codec::Json
   pub codex_retried : Bool
+  pub passive : Bool
+  pub fresh : Bool
 }
 
 pub struct DeferredEnd {
@@ -975,6 +977,13 @@ fn ActorsGen::start_actor_pump(self : ActorsGen, a : Actor) -> Unit {
                 sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
               }
               effect::Exit::Failed(e) => {
+                // (a start refused by its account's concurrency cap is no failure: `pause_for_session_cap_k` queued it
+                // and said so)
+                if is_some(session_cap_info(e)) {
+                  self.settle_task(a, item, TaskOutcome::Ran)
+                  sk(effect::Exit::Succeeded(sessions_core::IterStep::Continue))
+                  return
+                }
                 let fields : Array[(String, base_codec::Json)] = [
                   ("error", sessions_core::jstr(sessions_core::error_message(e))),
                   ("runtime", sessions_core::jstr(a.runtime)),

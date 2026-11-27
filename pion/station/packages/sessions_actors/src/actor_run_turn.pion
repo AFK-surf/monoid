@@ -897,6 +897,11 @@ pub fn ActorsGen::give_notices_k(
                         k(effect::Exit::Succeeded(()))
                         return
                       }
+                      // (waiting for its account's concurrency cap: they stay, given with the turn it is woken to)
+                      if a.paused_cap {
+                        k(effect::Exit::Succeeded(()))
+                        return
+                      }
                       if self.turn_slots_full(a) {
                         self.enqueue_turn_wait(a)
                         k(effect::Exit::Succeeded(()))
@@ -2029,6 +2034,16 @@ pub fn ActorsGen::pause_for_session_cap_k(
     }
   }
   if !a.cap_wait_notified {
+    self.log(
+      a,
+      "info",
+      "session queued by account concurrency cap",
+      [
+        ("active", sessions_core::jint(active)),
+        ("cap", sessions_core::jint(cap)),
+        ("runtime", sessions_core::jstr(a.runtime)),
+      ],
+    )
     let with_tid = fn(tid : String) -> Unit {
       self.store_k(
         a,
@@ -2347,7 +2362,25 @@ pub fn ActorsGen::start_turn_k(
                             match ex_pc {
                               effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
                               effect::Exit::Failed(e2) => finish(effect::Exit::Failed(e2))
-                              effect::Exit::Succeeded(_) => finish(effect::Exit::Failed(e))
+                              effect::Exit::Succeeded(_) => {
+                                // (a turn of its own, on no messages or notices, is had once woken: those are taken up
+                                // again as they wait)
+                                let handed = match delivery {
+                                  Some(d) => d.pending.length() > 0
+                                  None => false
+                                }
+                                if kind != "input" && !handed && notices_taken == 0 && !is_some(a.queued_retry) {
+                                  a.queued_retry = Some(QueuedRetry::{
+                                    kind: kind,
+                                    text: text,
+                                    by: by,
+                                    codex_retried: false,
+                                    passive: passive,
+                                    fresh: fresh,
+                                  })
+                                }
+                                finish(effect::Exit::Failed(e))
+                              }
                             }
                           },
                         )
@@ -3280,9 +3313,9 @@ pub fn ActorsGen::wake_queued_k(
                                 r.text,
                                 r.by,
                                 None,
-                                false,
+                                r.passive,
                                 0,
-                                false,
+                                r.fresh,
                                 fn(ex_st : effect::Exit[Unit]) -> Unit {
                                   match ex_st {
                                     effect::Exit::Interrupted => finish(effect::Exit::Interrupted)
@@ -3403,19 +3436,21 @@ pub fn ActorsGen::wake_cap_queued_k(
                             effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
                             effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
                             effect::Exit::Succeeded(has_p) => {
+                              // (as `wake_queued_k`: what came since it was queued is had first, its own turn given up
+                              // for it)
                               match a.queued_retry {
                                 Some(r) => {
+                                  a.queued_retry = None
                                   if !has_p {
-                                    a.queued_retry = None
                                     self.start_turn_k(
                                       a,
                                       r.kind,
                                       r.text,
                                       r.by,
                                       None,
-                                      false,
+                                      r.passive,
                                       0,
-                                      false,
+                                      r.fresh,
                                       fn(ex_st : effect::Exit[Unit]) -> Unit {
                                         match ex_st {
                                           effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
@@ -3444,10 +3479,23 @@ pub fn ActorsGen::wake_cap_queued_k(
                                 }
                                 None => ()
                               }
+                              // (notices it was refused a turn on, and those come while it waited: never woken otherwise)
+                              let after_pump = fn(ex_p : effect::Exit[Unit]) -> Unit {
+                                match ex_p {
+                                  effect::Exit::Succeeded(_) => {
+                                    if !is_some(a.turn) && !a.paused_cap && a.notices.length() > 0 {
+                                      self.give_notices_k(a, tk)
+                                    } else {
+                                      tk(effect::Exit::Succeeded(()))
+                                    }
+                                  }
+                                  _ => tk(ex_p)
+                                }
+                              }
                               if has_p {
-                                self.pump_k(a, -1, tk)
+                                self.pump_k(a, -1, after_pump)
                               } else {
-                                tk(effect::Exit::Succeeded(()))
+                                after_pump(effect::Exit::Succeeded(()))
                               }
                             }
                           }
@@ -4008,6 +4056,8 @@ pub fn ActorsGen::fire_tools_retry_k(
                               text: words,
                               by: turn_for_nobody(),
                               codex_retried: false,
+                              passive: false,
+                              fresh: false,
                             })
                             self.enqueue_turn_wait(a)
                             k(effect::Exit::Succeeded(()))
@@ -5293,6 +5343,8 @@ fn ActorsGen::on_turn_ended_codex_auth_k(
                                                 text: words,
                                                 by: t.by,
                                                 codex_retried: t.codex_retried,
+                                                passive: false,
+                                                fresh: false,
                                               })
                                               self.enqueue_turn_wait(a)
                                               finish(effect::Exit::Succeeded(()))
@@ -5711,6 +5763,8 @@ fn ActorsGen::on_turn_ended_notices_k(
                                                 text: words,
                                                 by: turn_for_nobody(),
                                                 codex_retried: false,
+                                                passive: false,
+                                                fresh: false,
                                               })
                                               self.enqueue_turn_wait(a)
                                               finish(effect::Exit::Succeeded(()))
@@ -5781,6 +5835,8 @@ fn ActorsGen::on_turn_ended_notices_k(
                                         text: words,
                                         by: turn_for_nobody(),
                                         codex_retried: false,
+                                        passive: false,
+                                        fresh: false,
                                       })
                                       self.pause_for_session_cap_k(
                                         a,

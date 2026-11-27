@@ -2186,6 +2186,8 @@ test "r3 coverage: FB-39 max_concurrent_turns queues auth_retry into queued_retr
     text: "GO_ON_AFTER_SPENT",
     by: turn_for_nobody(),
     codex_retried: true,
+    passive: false,
+    fresh: false,
   })
   actors.current.enqueue_cap_wait(s2)
   actors.heard("{\"drainCapQueue\":true,\"now\":3000}", s.disp)
@@ -3486,4 +3488,186 @@ test "stop during kick pendingAndFormat keeps pending messages when was_starting
   s.drive(responder)
   assert_run(!s.has_rpc("store.markDelivered"), "stop during kick pendingAndFormat must not mark delivered")
   assert_run(!s.has_rpc("node.notice"), "stop during kick pendingAndFormat must not post stopped notice")
+}
+
+fn d103_logged(s : NodeScript, message : String) -> Bool {
+  for i in 0..<s.tells.length() {
+    let (_, t, args) = s.tells[i]
+    if t == "log" && args.length() > 1 {
+      match sessions_core::str_of(Some(args[1])) {
+        Some(m) => {
+          if m == message {
+            return true
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  false
+}
+
+fn d103_count(s : NodeScript, fn_name : String) -> Int {
+  let mut n = 0
+  for i in 0..<s.rpcs.length() {
+    let (_, f, _) = s.rpcs[i]
+    if f == fn_name {
+      n = n + 1
+    }
+  }
+  n
+}
+
+fn d103_prompted(s : NodeScript, parts : Array[String]) -> Bool {
+  for i in 0..<s.rpcs.length() {
+    let (_, f, args) = s.rpcs[i]
+    if f == "agent.prompt" {
+      let text = base_codec::json_stringify(base_codec::json_arr(args))
+      let mut all = true
+      for j in 0..<parts.length() {
+        if !text.contains(parts[j]) {
+          all = false
+        }
+      }
+      if all {
+        return true
+      }
+    }
+  }
+  false
+}
+
+test "d103: notices refused by the account concurrency cap stay queued, gather, and are given once woken" {
+  let s = r2_new()
+  let a = s.actors.actor("s3", "claude")
+  a.notices.push("background job A finished")
+  let mut capped = true
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "node.open" {
+      if capped {
+        return Some(
+          Err(
+            base_codec::json_obj([
+              ("message", sessions_core::jstr("account reached concurrency cap (2/2)")),
+              ("sessionCap", sessions_core::jbool(true)),
+              ("profile", sessions_core::jstr("cc")),
+              ("active", sessions_core::jint(2)),
+              ("cap", sessions_core::jint(2)),
+            ]),
+          ),
+        )
+      }
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(3)),
+            ("generation", sessions_core::jint(2)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("cc")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-s3")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+
+  // A notice while 2/2 run: queued by the cap, said once, logged as no failure.
+  s.actors.heard("{\"call\":1,\"actor\":\"s3\",\"method\":\"notify\",\"args\":[\"background job A finished\"],\"now\":1001}", s.disp)
+  s.drive(responder)
+  assert_run(a.paused_cap, "a notice refused by the cap must leave it waiting in cap_wait_queue")
+  assert_run(s.actors.current.gen.resources.cap_wait_queue.length() == 1, "queued once")
+  assert_run(!is_some(a.queued_retry), "a notice turn is not a queued_retry: its notices are kept instead")
+  assert_run(a.notices.length() >= 1, "the notice must be kept")
+  assert_run(d103_logged(s, "session queued by account concurrency cap"), "the queue must be logged")
+  assert_run(!d103_logged(s, "session task failed"), "a cap queue must not be logged as a failed task")
+  let opens = d103_count(s, "node.open")
+
+  // Another while it waits: kept, no start tried for it.
+  s.actors.heard("{\"call\":2,\"actor\":\"s3\",\"method\":\"notify\",\"args\":[\"background job B finished\"],\"now\":1002}", s.disp)
+  s.drive(responder)
+  assert_run(
+    d103_count(s, "node.open") == opens,
+    "a notice while queued by the cap must not try to open again",
+  )
+  assert_run(a.paused_cap, "still waiting")
+
+  // A slot frees: woken with both notices in one job turn.
+  capped = false
+  s.actors.heard("{\"drainCapQueue\":true,\"now\":3000}", s.disp)
+  s.drive(responder)
+  assert_run(!a.paused_cap, "woken")
+  assert_run(s.actors.current.gen.resources.cap_wait_queue.length() == 0, "cap_wait_queue must be empty")
+  assert_run(d103_prompted(s, ["background job A finished", "background job B finished"]), "both notices must be given in the woken turn")
+  assert_run(!d103_logged(s, "session task failed"), "no failed task logged")
+}
+
+test "d103: a turn of its own refused by the account concurrency cap is kept as queued_retry and resumed once woken" {
+  let s = r2_new()
+  let a = s.actors.actor("s3", "claude")
+  let mut capped = true
+  let responder = fn(f : String, _args : Array[base_codec::Json]) -> Option[Result[base_codec::Json, base_codec::Json]] {
+    if f == "deps.held" || f == "store.hasPending" || f == "agent.busy" || f == "agent.holding" || f == "deps.coldAfresh" {
+      return Some(Ok(sessions_core::jbool(false)))
+    }
+    if f == "node.open" {
+      if capped {
+        return Some(
+          Err(
+            base_codec::json_obj([
+              ("message", sessions_core::jstr("account reached concurrency cap (2/2)")),
+              ("sessionCap", sessions_core::jbool(true)),
+              ("profile", sessions_core::jstr("cc")),
+              ("active", sessions_core::jint(2)),
+              ("cap", sessions_core::jint(2)),
+            ]),
+          ),
+        )
+      }
+      return Some(
+        Ok(
+          base_codec::json_obj([
+            ("handle", sessions_core::jint(3)),
+            ("generation", sessions_core::jint(2)),
+            ("runtime", sessions_core::jstr("claude")),
+            ("profile", sessions_core::jstr("cc")),
+            ("identity", base_codec::json_obj([])),
+          ]),
+        ),
+      )
+    }
+    if f == "node.uuid" {
+      return Some(Ok(sessions_core::jstr("turn-s3")))
+    }
+    Some(Ok(base_codec::json_null()))
+  }
+  let cur = s.actors.current
+  cur.spawn_work(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cur.enqueue_k(
+      a,
+      fn(tk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        cur.start_turn_k(a, "resume", "RESUME_AFTER_RESTART_WORDS", turn_for_nobody(), None, false, 0, true, tk)
+      },
+      k,
+    )
+  })
+  s.drive(responder)
+  assert_run(a.paused_cap, "the resume must wait in cap_wait_queue")
+  match a.queued_retry {
+    Some(r) => assert_run(r.kind == "resume" && r.text == "RESUME_AFTER_RESTART_WORDS" && r.fresh, "kept as it was asked")
+    None => panic("a turn of its own refused by the cap must be kept as queued_retry")
+  }
+  assert_run(!d103_logged(s, "session task failed"), "a cap queue must not be logged as a failed task")
+
+  capped = false
+  s.actors.heard("{\"drainCapQueue\":true,\"now\":3000}", s.disp)
+  s.drive(responder)
+  assert_run(!a.paused_cap && !is_some(a.queued_retry), "woken and its retry taken")
+  assert_run(d103_prompted(s, ["RESUME_AFTER_RESTART_WORDS"]), "the resume must be given once woken")
 }

@@ -1488,6 +1488,8 @@ pub fn ActorsGen::reassign_k(
                                                               text: words,
                                                               by: turn_for_nobody(),
                                                               codex_retried: false,
+                                                              passive: false,
+                                                              fresh: false,
                                                             })
                                                             self.pause_for_session_cap_k(
                                                               a,

@@ -179,7 +179,10 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
           }
           if a.queued_retry is Some(r) {
             a.queued_retry = None
-            return self.start_turn(a, r.kind, r.text, by=r.by)
+            return self.start_turn(a, r.kind, r.text, by=r.by, passive=r.passive, fresh=r.fresh)
+          }
+          if a.notices.length() > 0 {
+            return self.give_notices(a)
           }
           return self.start_turn(a, "resume", self.words(a, "GO_ON_AFTER_FAILED"), fresh=true)
         }
@@ -314,7 +317,9 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
             self.pump(a)
           } else if a.queued_retry is Some(r) {
             a.queued_retry = None
-            self.start_turn(a, r.kind, r.text, by=r.by)
+            self.start_turn(a, r.kind, r.text, by=r.by, passive=r.passive, fresh=r.fresh)
+          } else if a.notices.length() > 0 {
+            self.give_notices(a)
           }
         }
       })
@@ -615,7 +620,7 @@ async fn Actors::reassign(self : Actors, a : Actor, thread : Json, seq : Json) -
     self.set_agent(a, None)
     self.end_process(a, agent)
     a.refill = None
-    a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+    a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false, passive: false, fresh: false })
     self.pause_for_session_cap(
       a,
       str_of(o.get("profile")).unwrap_or(""),
@@ -865,7 +870,7 @@ async fn Actors::wake_queued(self : Actors, a : Actor) -> Unit raise {
       } else if !self.held(a) {
         a.queued_retry = None
         if !self.has_pending(a) {
-          self.start_turn(a, r.kind, r.text, by=r.by)
+          self.start_turn(a, r.kind, r.text, by=r.by, passive=r.passive, fresh=r.fresh)
           if a.turn is Some(nt) && r.codex_retried {
             nt.codex_retried = true
           }
@@ -894,10 +899,11 @@ async fn Actors::wake_cap_queued(self : Actors, a : Actor) -> Unit raise {
       a.paused_cap = true
       return
     }
+    // (as `wake_queued`: what came since it was queued is had first, its own turn given up for it)
     if a.queued_retry is Some(r) {
+      a.queued_retry = None
       if !self.has_pending(a) {
-        a.queued_retry = None
-        self.start_turn(a, r.kind, r.text, by=r.by) catch {
+        self.start_turn(a, r.kind, r.text, by=r.by, passive=r.passive, fresh=r.fresh) catch {
           e => {
             if session_cap_info(e) is Some(_) {
               a.queued_retry = Some(r)
@@ -913,6 +919,10 @@ async fn Actors::wake_cap_queued(self : Actors, a : Actor) -> Unit raise {
     }
     if self.has_pending(a) {
       self.pump(a)
+    }
+    // (notices it was refused a turn on, and those come while it waited: never woken otherwise)
+    if a.turn is None && !a.paused_cap && a.notices.length() > 0 {
+      self.give_notices(a)
     }
   })
 }
@@ -938,6 +948,11 @@ async fn Actors::release(self : Actors, a : Actor) -> Json raise {
     }
     if a.refill is Some(_) && a.refill_at <= self.now {
       self.await_refill(a, self.now)
+    }
+    // (waiting for its account's concurrency cap: woken in its place in `cap_wait_queue`, never ahead of it)
+    if a.paused_cap {
+      self.drain_cap_queue()
+      return
     }
     if a.queued_retry is Some(_) {
       self.enqueue_turn_wait(a)
@@ -1511,6 +1526,10 @@ async fn Actors::give_notices(self : Actors, a : Actor) -> Unit raise {
   if a.notices.length() == 0 {
     return
   }
+  // (waiting for its account's concurrency cap: they stay, given with the turn it is woken to)
+  if a.paused_cap {
+    return
+  }
   if self.turn_slots_full(a) {
     self.enqueue_turn_wait(a)
     return
@@ -1929,6 +1948,11 @@ async fn Actors::pause_for_session_cap(
   a.paused_cap = true
   a.force_session_cap = false
   if !a.cap_wait_notified {
+    self.log(a, "info", "session queued by account concurrency cap", fields={
+      "active": jnum(active.to_double()),
+      "cap": jnum(cap.to_double()),
+      "runtime": jstr(a.runtime),
+    })
     let tid = match turn {
       Some(t) => t.id
       None => {
@@ -2032,6 +2056,14 @@ async fn Actors::start_turn(
           self.emit_turn_trace(a, t, "cap")
         }
         self.pause_for_session_cap(a, profile, active, cap, protection, kind, by, turn)
+        // (a turn of its own, on no messages or notices, is had once woken: those are taken up again as they wait)
+        let handed = match delivery {
+          Some(d) => d.pending.length() > 0
+          None => false
+        }
+        if kind != "input" && !handed && notices_taken == 0 && a.queued_retry is None {
+          a.queued_retry = Some({ kind, text, by, codex_retried: false, passive, fresh })
+        }
         raise e
       }
       let message = match e {
@@ -3110,7 +3142,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       self.log(a, "info", "authentication failed; reopening and continuing", fields={ "runtime": jstr(a.runtime), "tried": auth_tried_json(a) })
       let text = self.words(a, "GO_ON_AFTER_AUTH")
       if self.max_concurrent_turns > 0 && self.active_turn_slots() > self.max_concurrent_turns {
-        a.queued_retry = Some({ kind: "auth_retry", text, by: t.by, codex_retried: t.codex_retried })
+        a.queued_retry = Some({ kind: "auth_retry", text, by: t.by, codex_retried: t.codex_retried, passive: false, fresh: false })
         self.enqueue_turn_wait(a)
         return
       }
@@ -3148,7 +3180,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       a.refill = None
       if self.max_concurrent_turns > 0 && self.active_turn_slots() > self.max_concurrent_turns {
         if !self.has_pending(a) {
-          a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+          a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false, passive: false, fresh: false })
         }
         self.enqueue_turn_wait(a)
         return
@@ -3163,7 +3195,7 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       self.set_agent(a, None)
       self.end_process(a, agent)
       a.refill = None
-      a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false })
+      a.queued_retry = Some({ kind: "resume", text: self.words(a, "GO_ON_AFTER_SPENT"), by: turn_for_nobody(), codex_retried: false, passive: false, fresh: false })
       self.pause_for_session_cap(
         a,
         str_of(o.get("profile")).unwrap_or(""),
@@ -4017,7 +4049,7 @@ async fn Actors::fire_tools_retry(self : Actors, a : Actor, id : Int) -> Unit ra
     return
   }
   if self.turn_slots_full(a) {
-    a.queued_retry = Some({ kind: "resume", text: self.words(a, "TOOLS_LOST"), by: turn_for_nobody(), codex_retried: false })
+    a.queued_retry = Some({ kind: "resume", text: self.words(a, "TOOLS_LOST"), by: turn_for_nobody(), codex_retried: false, passive: false, fresh: false })
     self.enqueue_turn_wait(a)
     return
   }

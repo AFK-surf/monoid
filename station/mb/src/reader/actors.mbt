@@ -34,12 +34,15 @@ priv struct Turn {
 }
 
 ///|
-/// An `auth_retry` or `spend` failover continuation deferred while active turn slots exceed `max_concurrent_turns`.
+/// A turn of its own (not on messages or notices) deferred while active turn slots exceed `max_concurrent_turns`,
+/// or refused by its account's concurrency cap: started as it was asked once a slot opens.
 priv struct QueuedRetry {
   kind : String
   text : String
   by : Json
   codex_retried : Bool
+  passive : Bool
+  fresh : Bool
 }
 
 ///|
@@ -512,6 +515,8 @@ async fn Actors::enqueue(self : Actors, a : Actor, task : async () -> Unit raise
     a.tasks.try_offer(() => {
       if a.phase != "closed" {
         task() catch {
+          // (a start refused by its account's concurrency cap is no failure: `pause_for_session_cap` queued it and said so)
+          e if session_cap_info(e) is Some(_) => ()
           e => {
             // (which runtime and model it ran under, never what was said)
             let fields : Map[String, Json] = {

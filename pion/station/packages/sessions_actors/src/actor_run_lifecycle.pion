@@ -1003,6 +1003,12 @@ pub fn ActorsGen::release_k(
       if is_some(a.refill) && a.refill_at <= self.gen.counters.now {
         self.await_refill(a, self.gen.counters.now)
       }
+      // (waiting for its account's concurrency cap: woken in its place in `cap_wait_queue`, never ahead of it)
+      if a.paused_cap {
+        self.drain_cap_queue()
+        tk(effect::Exit::Succeeded(()))
+        return
+      }
       if is_some(a.queued_retry) {
         self.enqueue_turn_wait(a)
         self.drain_turn_queue(true)
@@ -2963,10 +2969,14 @@ pub fn ActorsGen::called_k(
                             match a.queued_retry {
                               Some(r) => {
                                 a.queued_retry = None
-                                self.start_turn_k(a, r.kind, r.text, r.by, None, false, 0, false, tk)
+                                self.start_turn_k(a, r.kind, r.text, r.by, None, r.passive, 0, r.fresh, tk)
                                 return
                               }
                               None => ()
+                            }
+                            if a.notices.length() > 0 {
+                              self.give_notices_k(a, tk)
+                              return
                             }
                             self.words_k(a, "GO_ON_AFTER_FAILED", [], fn(ex_w : effect::Exit[String]) -> Unit {
                               match ex_w {
@@ -3357,9 +3367,15 @@ pub fn ActorsGen::called_k(
                           match a.queued_retry {
                             Some(r) => {
                               a.queued_retry = None
-                              self.start_turn_k(a, r.kind, r.text, r.by, None, false, 0, false, tk)
+                              self.start_turn_k(a, r.kind, r.text, r.by, None, r.passive, 0, r.fresh, tk)
                             }
-                            None => tk(effect::Exit::Succeeded(()))
+                            None => {
+                              if a.notices.length() > 0 {
+                                self.give_notices_k(a, tk)
+                              } else {
+                                tk(effect::Exit::Succeeded(()))
+                              }
+                            }
                           }
                         }
                       }
