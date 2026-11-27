@@ -42,6 +42,15 @@ fn side_terminal_tab(front : String) -> Bool {
 }
 
 ///|
+/// Whether `front` is a passive read-only side-panel tab with no external resources (agent history, chat own tabs
+/// `jobs`/`letters`/`things`/`subchats`, or files/drive), eligible for `View::pick_kept` parking.
+fn side_tab_passive(front : String) -> Bool {
+  front != "" &&
+  front != tab_full_mark &&
+  (side_history_tab(front) || side_own_tab(front) || side_files_tab(front) is Some(_))
+}
+
+///|
 /// Whether `front` is one of the chat's own tabs made as nodes (side_own_node): 任务, agent 往来, 图片、文件和链接.
 fn side_own_tab(front : String) -> Bool {
   front is ("jobs" | "letters" | "things" | "subchats")
@@ -376,55 +385,91 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         })
       })
       let prev_front : Ref[(String, Int)?] = Ref(None)
-      p.pick(at_once=true, fn() { history_in_front(src, r) }, fn(q, agent) {
-        q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+      let tab_ways : Map[String, (@motion.NodeWay, Ref[Double])] = Map([])
+      let tab_enter = fn(q : @view.View, agent : String, way : @motion.NodeWay, dir : Ref[Double]) {
         let (tabs, front) = @signals.untracked(fn() { side_shown(src, r) })
         let cur_idx = tabs.search(front).unwrap_or(0)
         match prev_front.val {
           Some((old_agent, old_idx)) if old_agent != agent && agent != "" && agent != tab_full_mark && !@ui.reduced_motion() => {
-            let dir = if cur_idx >= old_idx { 1.0 } else { -1.0 }
-            let way = @motion.NodeWay::new(0.0)
+            dir.val = if cur_idx >= old_idx { 1.0 } else { -1.0 }
             way.go_from(q, 0.0, 1.0, @motion.tween(140.0, ease=Out))
-            q
-            .offset(By(fn() { (dir * 8.0 * (1.0 - way.shown(q)), 0.0) }))
-            .alpha(By(fn() { way.shown(q) }))
-            .carries_until(fn() { way.ends_at() })
-            |> ignore
           }
-          _ => ()
+          _ => way.put(1.0)
         }
         prev_front.val = if agent == "" || agent == tab_full_mark { None } else { Some((agent, cur_idx)) }
-        if agent == tab_full_mark {
-          // (over the whole window: nothing of it here meanwhile, tab_full_node.mbt)
-          ()
-        } else if agent == "" {
-          // (no tab of the tree's in front: nothing, every tab the panel shows is the tree's, side_node_tab)
-          ()
-        } else if @sfbase.view_tab_file(agent) is Some(_) {
-          tab_held_beside(q, r, agent)
-          side_view_node(q, src, r, agent, fn(n) { side_whole(src, n) }, full_of(r, agent))
-        } else if tab_service(agent) is Some(job) {
-          tab_held_beside(q, r, agent)
-          service_tab_node(q, src, r, job, None, full_of(r, agent), None, tips)
-        } else if tab_file(agent) is Some((session, path, name)) {
-          tab_held_beside(q, r, agent)
-          file_tab_node(q, src, r, session, path, name, full_of(r, agent), tips)
-        } else if side_screen_tab(agent) is Some(_) {
-          side_screen_node(q, src, r, agent, fn() { side_shown(src, r).0 }, false, shows=pane_shows(serial))
-        } else if side_adb_tab(agent) is Some(station) {
-          side_adb_node(q, src, station)
-        } else if side_files_tab(agent) is Some(station) {
-          side_files_node(q, src, r, station, fn() { @sf.foot_corner(@sf.button_height(), ftab_side, ftab_under) }, tips)
-        } else if side_station_tab(agent) is Some(station) {
-          side_station_node(q, src, station, tips, fn() { side_whole(src, q) }, false)
-        } else if side_terminal_tab(agent) {
-          side_terminal_node(q, src, r, agent)
-        } else if side_own_tab(agent) {
-          side_own_node(q, src, r, agent, tips, @sf.pane_foot_card)
-        } else {
-          side_history_node(q, src, r, agent, tips)
-        }
-      })
+      }
+      p.pick_kept(
+        fn() { history_in_front(src, r) },
+        fn(q, agent) {
+          q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+          let way = @motion.NodeWay::new(1.0)
+          let dir = Ref(1.0)
+          q
+          .offset(By(fn() { (dir.val * 8.0 * (1.0 - way.shown(q)), 0.0) }))
+          .alpha(By(fn() { way.shown(q) }))
+          .carries_until(fn() { way.ends_at() })
+          |> ignore
+          // Cancel any in-flight 140ms transition on park so parked branches leave 0 timers on Tree::timeline.
+          q.on_rest(fn() { way.put(1.0) }) |> ignore
+          if agent != "" && agent != tab_full_mark {
+            tab_ways[agent] = (way, dir)
+            q.owns(fn() { tab_ways.remove(agent) }) |> ignore
+          }
+          tab_enter(q, agent, way, dir)
+          if agent == tab_full_mark {
+            // (over the whole window: nothing of it here meanwhile, tab_full_node.mbt)
+            ()
+          } else if agent == "" {
+            // (no tab of the tree's in front: nothing, every tab the panel shows is the tree's, side_node_tab)
+            ()
+          } else if @sfbase.view_tab_file(agent) is Some(_) {
+            tab_held_beside(q, r, agent)
+            side_view_node(q, src, r, agent, fn(n) { side_whole(src, n) }, full_of(r, agent))
+          } else if tab_service(agent) is Some(job) {
+            tab_held_beside(q, r, agent)
+            service_tab_node(q, src, r, job, None, full_of(r, agent), None, tips)
+          } else if tab_file(agent) is Some((session, path, name)) {
+            tab_held_beside(q, r, agent)
+            file_tab_node(q, src, r, session, path, name, full_of(r, agent), tips)
+          } else if side_screen_tab(agent) is Some(_) {
+            side_screen_node(q, src, r, agent, fn() { side_shown(src, r).0 }, false, shows=pane_shows(serial))
+          } else if side_adb_tab(agent) is Some(station) {
+            side_adb_node(q, src, station)
+          } else if side_files_tab(agent) is Some(station) {
+            side_files_node(q, src, r, station, fn() { @sf.foot_corner(@sf.button_height(), ftab_side, ftab_under) }, tips)
+          } else if side_station_tab(agent) is Some(station) {
+            side_station_node(q, src, station, tips, fn() { side_whole(src, q) }, false)
+          } else if side_terminal_tab(agent) {
+            side_terminal_node(q, src, r, agent)
+          } else if side_own_tab(agent) {
+            side_own_node(q, src, r, agent, tips, @sf.pane_foot_card)
+          } else {
+            side_history_node(q, src, r, agent, tips)
+          }
+        },
+        at_once=true,
+        keeps_max=6,
+        keep_if=fn(agent) {
+          // Check fullscreen/window handoff signals (`tab_full`/`window_has_tab`, never `held_full`) first so
+          // `held_beside` clears immediately without deadlocking the fullscreen overlay.
+          if @signals.untracked(fn() {
+              @sfbase.tab_full_is(r.station, r.session, agent) ||
+              @sfbase.window_has_tab(r.station, r.session, agent) ||
+              !side_now(src, r).0.contains(agent)
+            }) {
+            return false
+          }
+          side_tab_passive(agent)
+        },
+        on_take=fn(q, agent) {
+          match tab_ways.get(agent) {
+            Some((way, dir)) => tab_enter(q, agent, way, dir)
+            None => ()
+          }
+          // Release any ahead-read handed over by `side_front_pressed` after the frame draws.
+          @ui.after_drawn_frame(fn() { @sfbase.shown_read(side_tab_shown_at(r, agent)) })
+        },
+      )
     })
     // its edge, beside the page only
     col.show(at_once=true, fn() { !over() && open() }, fn(e) { side_edge_node(e, src, fn() { side_change(src, r, "clear", None) }, tips) })

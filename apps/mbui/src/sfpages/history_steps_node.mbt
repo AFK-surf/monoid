@@ -4637,14 +4637,8 @@ fn steps_head_of(src : Source, params : Map[String, Json], lkey : String) -> Ste
   steps_head.read(
     src,
     lkey,
-    fn(was) {
+    fn(_) {
       let st = src.topic("history", params).get()
-      // (none read yet, no error: asked again as a page taken back from the stack's kept left reads it, what it read
-      // last till the core's first answer, never its bones in between)
-      match was {
-        Some(prev) if st.value is None && st.error is None => return prev
-        _ => ()
-      }
       let h = st.value
       let empty = flag(h, "empty")
       let waiting = !(h is Some(Object(_))) || (empty && !flag(h, "loaded"))
@@ -4673,13 +4667,8 @@ fn steps_rows_of_topic(src : Source, params : Map[String, Json], lkey : String) 
   steps_rows.read(
     src,
     lkey,
-    fn(was) {
+    fn(_) {
       let st = src.topic("history", params).get()
-      // (as steps_head_of's: what it read last till the core's first answer to it asked again)
-      match was {
-        Some(prev) if st.value is None && st.error is None => return prev
-        _ => ()
-      }
       let h = st.value
       steps_rows_of(h, items(h, "items"), steps_own.only_io.get())
     },

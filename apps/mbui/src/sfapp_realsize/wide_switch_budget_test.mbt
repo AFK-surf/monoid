@@ -686,3 +686,150 @@ test "wide switch budget (dim 6): full wide rotation stays within live node and 
   assert_eq(t.unasked_faults(), [], msg="dim 6 unasked faults")
   assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="dim 6 parked timeline count == 0")
 }
+
+///|
+/// Dimension 5b: Chat right-side panel passive tabs (`jobs`, `files`, `letters`, `things`, plus agent history if
+/// present) hot-return with 0 body rebuilds, 0 parked timers, and release cleanly on panel clear.
+test "wide switch budget (dim 5b): side panel passive tabs hot-return with 0 body rebuilds and 0 parked timers" {
+  let c = @sfrealsize.RealSizeChanging::new()
+  let tabs_sig : @signals.Signal[(Array[String], String)] = @signals.signal(([], ""))
+  let tabs_ver : @signals.Signal[Int] = @signals.signal(0)
+  let src_ref : Ref[@sfbase.Source?] = Ref(None)
+  let made = fn() {
+    match src_ref.val {
+      Some(s) => s
+      None => {
+        @sfapp.reset()
+        let base = {
+          ..c.source(@sffixture.fixture("home")),
+          reads_ahead: fn() { true },
+          gates_opens: fn() { true },
+        }
+        let s : @sfbase.Source = {
+          ..base,
+          topic_read: fn(name, params) {
+            let st = (base.topic_read)(name, params)
+            if name == "chat" {
+              let (open, shown) = tabs_sig.get()
+              let ver = tabs_ver.get()
+              match st.value {
+                Some(Object(m)) => {
+                  let copy : Map[String, Json] = Map([])
+                  for k, v in m {
+                    copy[k] = v
+                  }
+                  let tabs_obj : Map[String, Json] = {
+                    "open": Json::array(open.map(Json::string)),
+                    "shown": if shown == "" { Json::null() } else { Json::string(shown) },
+                    "canReopen": Json::boolean(false),
+                  }
+                  copy["tabs"] = Json::object(tabs_obj)
+                  { ..st, value: Some(Json::object(copy)), version: st.version + ver }
+                }
+                _ => st
+              }
+            } else {
+              st
+            }
+          },
+          call: fn(name, params, on_done) {
+            if name.has_prefix("chat.tabs.") {
+              let act = name.exact_view(start="chat.tabs.".length()).to_owned()
+              let tab = match params {
+                Object(m) =>
+                  match m.get("tab") {
+                    Some(String(t)) => t
+                    _ => ""
+                  }
+                _ => ""
+              }
+              let (cur_open, cur_shown) = tabs_sig.untracked()
+              let next : (Array[String], String) = match act {
+                "open" if tab != "" =>
+                  if cur_open.contains(tab) {
+                    (cur_open, tab)
+                  } else {
+                    ([..cur_open, tab], tab)
+                  }
+                "front" if tab != "" => (cur_open, tab)
+                "close" if tab != "" => {
+                  let rest = cur_open.filter(fn(x) { x != tab })
+                  let next_shown = if cur_shown == tab { rest.get(0).unwrap_or("") } else { cur_shown }
+                  (rest, next_shown)
+                }
+                "clear" => ([], "")
+                _ => (cur_open, cur_shown)
+              }
+              tabs_sig.set(next)
+              tabs_ver.set(tabs_ver.untracked() + 1)
+              on_done(Ok(Json::null()))
+            } else {
+              (base.call)(name, params, on_done)
+            }
+          },
+        }
+        @sfapp.open_fixture_over("home", s)
+        src_ref.val = Some(s)
+        s
+      }
+    }
+  }
+  let t = @ui.Tester::new(
+    fn(x) { @sfapp.view(x, made()) },
+    tree=fn(root) { @sfapp.app_tree(made())(root) },
+    w=1280.0,
+    h=800.0,
+    platform=0,
+    window_corner=@sfapptest.test_window_corner(0),
+    corners_held=false,
+    words_over_held=false,
+    env=[("MBUI_LOCALE", "zh")],
+  )
+  t.motion_unjudged(true)
+  t.run_for(@sfapptest.squeeze_opening)
+  t.run_for(@sfapptest.kept_switch_over_ms)
+  let src = made()
+  let ws = @signals.untracked(fn() { @sfbase.workspace_in_view(src).0.unwrap().id })
+  let chat_ref = match @sfbase.app.nav.top() {
+    Chat(r) => r
+    _ => {
+      let first = @signals.untracked(fn() { @sfbase.chats_of(src, ws, "all").0.unwrap().days[0].items[0] })
+      let r : @sfbase.ChatRef = {
+        station: first.station,
+        session: first.session,
+        title: first.title,
+        station_name: first.station_name,
+      }
+      @ui.view_tree().unwrap().event(t.time(), fn() { @sfbase.nav_over_home([Chat(r)]) })
+      t.run_for(@sfapptest.kept_switch_over_ms)
+      r
+    }
+  }
+  let tree = @ui.view_tree().unwrap()
+  let passive_tabs : Array[String] = ["jobs", "files", "letters"]
+  match @signals.untracked(fn() { @sfbase.chat_view_now(src, chat_ref) }) {
+    Some(cv) if cv.agents.length() > 0 => passive_tabs.push(cv.agents[0].key)
+    _ => ()
+  }
+  // Cold-open each passive tab in the side panel.
+  for tab in passive_tabs {
+    wide_budget_step(t, fn() { @sfdesk.side_change(src, chat_ref, "open", Some(tab)) }) |> ignore
+  }
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 parked timers after side-panel cold opens")
+  // Hot-return across every passive tab: 0 body nodes made (at most tab_strip × toggle <= 6), 0 parked timers, 0 faults.
+  for tab in passive_tabs {
+    let h = wide_budget_step(t, fn() { @sfdesk.side_front_pressed(src, chat_ref, tab) })
+    println("wide-budget dim5b side_panel hot \{tab}: \{Repr(h)}")
+    assert_true(h.0 <= 6 && h.1 <= 6, msg="side-panel hot return to \{tab} must not rebuild body, got \{Repr(h)}")
+    assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 parked timers on hot return to \{tab}")
+    assert_eq(t.unasked_faults(), [], msg="0 unasked faults on hot return to \{tab}")
+  }
+  // Clear side panel and verify all parked passive branches are released with 0 residual timers.
+  let cleared = wide_budget_step(t, fn() { @sfdesk.side_change(src, chat_ref, "clear", None) })
+  assert_true(cleared.1 > 50, msg="clearing side panel must dispose parked passive tabs (let_go=\{cleared.1})")
+  t.run_for(@sfapptest.kept_glide_over_ms)
+  assert_eq(tree.parked_retired_count(), 0, msg="dim 5b parked_retired_count must be 0")
+  assert_true(t.at_rest(), msg="dim 5b at_rest")
+  assert_eq(t.unasked_faults(), [], msg="dim 5b unasked faults")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="dim 5b parked timeline count == 0")
+}
