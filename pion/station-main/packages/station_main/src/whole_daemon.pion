@@ -920,25 +920,6 @@ fn handle_connect_inbound_event(
             Err(_) => return false
           }
         }
-        let att_opt : Option[String] = if m.files.length() > 0 {
-          let farr : Array[base_codec::Json] = []
-          for fi in 0..<m.files.length() {
-            let f = m.files[fi]
-            let ff : Array[(String, base_codec::Json)] = [
-              ("id", base_codec::json_str(f.id)),
-              ("name", base_codec::json_str(f.name)),
-              ("size", base_codec::json_int64(f.size)),
-            ]
-            match f.url {
-              Some(u) => ff.push(("url", base_codec::json_str(u)))
-              None => ()
-            }
-            farr.push(base_codec::json_obj(ff))
-          }
-          Some(base_codec::json_stringify(base_codec::json_arr(farr)))
-        } else {
-          None
-        }
         let msg = station_store::NewMessage::{
           thread: tid,
           ts: Some(m.ts),
@@ -946,7 +927,7 @@ fn handle_connect_inbound_event(
           author: m.user,
           agent_identity: None,
           text: Some(m.text),
-          attachments: att_opt,
+          attachments: None,
           quotes: m.quoted,
           declared: None,
           client: None,
@@ -958,6 +939,52 @@ fn handle_connect_inbound_event(
         match st_db.insert_message(msg, deliver_to=active_sessions) {
           Ok((n, fresh)) => {
             if fresh {
+              if m.files.length() > 0 {
+                let _ = st_db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+                  let mut ord = 0L
+                  for fi in 0..<m.files.length() {
+                    let f = m.files[fi]
+                    let is_secret = match f.url {
+                      Some(u) => u.starts_with("secret:")
+                      None => false
+                    }
+                    if is_secret {
+                      continue
+                    }
+                    let fid = if f.id.length() > 0 { f.id } else { "file-" + n.to_string() + "-" + fi.to_string() }
+                    let url_json = match f.url {
+                      Some(u) => base_codec::json_str(u)
+                      None => base_codec::json_null()
+                    }
+                    match t.run(
+                      "INSERT OR IGNORE INTO deferred_files (thread, n, file_id, name, size, url, ord) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                      [
+                        sql_db::int64_to_json(tid),
+                        sql_db::int64_to_json(n),
+                        base_codec::json_str(fid),
+                        base_codec::json_str(f.name),
+                        sql_db::int64_to_json(f.size),
+                        url_json,
+                        sql_db::int64_to_json(ord),
+                      ],
+                    ) {
+                      Ok(_) => ()
+                      Err(e) => return Err(e)
+                    }
+                    ord = ord + 1L
+                  }
+                  if ord > 0L {
+                    match t.run(
+                      "UPDATE threads SET has_deferred = 1 WHERE id = ?1 AND has_deferred = 0",
+                      [sql_db::int64_to_json(tid)],
+                    ) {
+                      Ok(_) => ()
+                      Err(e) => return Err(e)
+                    }
+                  }
+                  Ok(())
+                })
+              }
               for si in 0..<active_sessions.length() {
                 let actor = core.agents.hub.ensure_actor(active_sessions[si], meta.runtime)
                 let _ = actor.submit_input(m.text)
@@ -1011,15 +1038,21 @@ fn handle_connect_inbound_event(
           Some(v) => v
           None => base_codec::json_null()
         }
-        let latest_text = match st_db.db.first(
-          "SELECT text FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
+        let (latest_text, latest_att) = match st_db.db.first(
+          "SELECT text, attachments FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
           [sql_db::int64_to_json(tid), sql_db::int64_to_json(target_n)],
         ) {
-          Ok(Some(r)) => match r.get("text") {
-            Some(base_codec::Json::Str(s)) => s
-            _ => orig_text
-          }
-          _ => orig_text
+          Ok(Some(r)) => (
+            match r.get("text") {
+              Some(base_codec::Json::Str(s)) => s
+              _ => orig_text
+            },
+            match r.get("attachments") {
+              Some(v) => v
+              None => orig_att
+            },
+          )
+          _ => (orig_text, orig_att)
         }
         if latest_text == new_text {
           return true
@@ -1044,7 +1077,7 @@ fn handle_connect_inbound_event(
               base_codec::json_str(orig_ak),
               base_codec::json_str(orig_author),
               base_codec::json_str(new_text),
-              orig_att,
+              latest_att,
               orig_quotes,
               sql_db::int64_to_json(target_n),
               sql_db::int64_to_json(now_ms),

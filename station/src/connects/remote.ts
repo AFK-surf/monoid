@@ -404,14 +404,19 @@ export function answerCall(surface: (connect: Known, workspace: string | undefin
     }
     if (op === "download") {
       const file = args[0] as InboundFile;
+      if (file?.url?.startsWith("secret:") === true) {
+        const bytes = await chat.download!(file);
+        return withBytes({ size: bytes.length }, oneBytes(Buffer.from(bytes)));
+      }
       const flightKey = `${workspace ?? ""}\0${known!.origin}\0${known!.id}\0${String(file?.id ?? "")}\0${String(file?.url ?? "")}`;
       let pending = downloadFlights.get(flightKey);
       if (pending === undefined) {
         pending = Promise.resolve().then(() => chat.download!(file));
         downloadFlights.set(flightKey, pending);
-        void pending.finally(() => {
+        const cleanup = () => {
           if (downloadFlights.get(flightKey) === pending) downloadFlights.delete(flightKey);
-        });
+        };
+        void pending.then(cleanup, cleanup);
       }
       const bytes = await pending;
       return withBytes({ size: bytes.length }, oneBytes(Buffer.from(bytes)));

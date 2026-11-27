@@ -14,7 +14,7 @@ import { marksDir, stateOf } from "./reference/transcripts.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { addToThread, autoArchive, archive, archiveBy, archiveChat, bindSingle, configure, deleteSession, newSession, openChat, say as sayIn } from "../src/sessions/lifecycle.ts";
-import { AUTO, MANUAL, archiveLookOf } from "../src/store/store.ts";
+import { AUTO, MANUAL, Store, archiveLookOf } from "../src/store/store.ts";
 import { FakeDriver, Rig, given, matches, message, reply, say, settle, testClock } from "./hub-fakes.ts";
 
 const chat = (runtime: "claude" | "codex" = "claude") => ({ runtime, createdBy: "local" });
@@ -192,6 +192,32 @@ test("concurrent and cross-session fetches of the same platform file coalesce in
   const otherKey = sessionKey("cl", "C2", "9999.000100");
   const denied = await r.call(otherKey, "chat_history", { to: "C2/9999.000100", fetch: ["FSF"] });
   assert.ok(denied.includes("no unfetched file FSF in C2/9999.000100"), denied);
+
+  // Platform edit and late completeMessage after fetching must preserve resolved attachments.
+  const tid = r.thread("C1", m.threadTs).id;
+  assert.equal(r.store.editMessage("slack:T1", "C1", m.threadTs, m.ts, "<@UBOT> edited text"), tid);
+  const afterEdit = r.said(tid).find((x) => x.ts === m.ts)!;
+  assert.equal(afterEdit.text, "<@UBOT> edited text");
+  assert.equal(afterEdit.attachments.length, 1, "platform edit preserves resolved attachment");
+  assert.equal(afterEdit.attachments[0]!.path, clPath);
+  r.store.completeMessage(tid, afterEdit.n, "<@UBOT> edited text with quote", []);
+  const afterComplete = r.said(tid).find((x) => x.ts === m.ts)!;
+  assert.equal(afterComplete.attachments.length, 1, "completeMessage preserves resolved attachment");
+  assert.equal(afterComplete.attachments[0]!.path, clPath);
+
+  // Handover consistency: a second Store opened BEFORE deferred files are written immediately sees hasDeferred + files.
+  const second = Store.open(join(r.dir, "stillfail.db"));
+  try {
+    const m2 = say("<@UBOT> after handover open", { channel: "C3", threadTs: "8888.000100", ts: "8888.000100", files: [{ id: "FHO", name: "handover.txt", size: 4, url: "https://files.slack.com/FHO" }] });
+    await r.accept(m2, "cl");
+    await settle();
+    const t2 = second.threadAt("slack:T1", "C3", "8888.000100")!;
+    assert.equal(t2.hasDeferred, true, "second process sees threads.has_deferred without stale cache");
+    const defs = second.deferredFiles(t2.id, [1]);
+    assert.equal(defs.get(1)?.[0]?.id, "FHO", "second process reads deferred_files written after open");
+  } finally {
+    second.close();
+  }
   await r.close();
 });
 

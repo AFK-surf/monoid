@@ -21,7 +21,7 @@
 // running that nothing took up.
 import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { copyFile, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
@@ -41,7 +41,7 @@ import { iso, sessionPlaces } from "../read/transcript.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import * as titles from "../../../client/core-ts/src/titles.ts";
 import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
-import { type ArchivedWorkspace, type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
+import { type ArchivedWorkspace, type Attachment, deferredFileId, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
 import { comingWs, handedWs, sees } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
@@ -165,10 +165,16 @@ function isEphemeralSecret(file: InboundFile): boolean {
   return file.url?.startsWith("secret:") === true;
 }
 
-/// Atomically copies (CoW clone where supported) an already-downloaded file into another session's uploads directory
-/// without sharing an inode across sessions.
+/// Atomically copies (CoW clone where supported) an already-downloaded regular file into another session's uploads
+/// directory without sharing an inode or following symlinks on the source path.
 async function placeDownloadedCopy(srcPath: string, destPath: string): Promise<void> {
   if (samePath(srcPath, destPath)) return;
+  const srcStat = await lstat(srcPath);
+  if (!srcStat.isFile()) {
+    const err = new Error(`refusing to copy non-regular cached upload: ${srcPath}`) as NodeJS.ErrnoException;
+    err.code = "ENOENT";
+    throw err;
+  }
   await mkdir(dirname(destPath), { recursive: true });
   const part = `${destPath}.part-${randomBytes(4).toString("hex")}`;
   try {
@@ -1380,6 +1386,15 @@ export class Hub {
         said = { text: quoted.text, attachments: quoted.attachments };
         quotedFiles = quoted.files;
       }
+    } else if (into === null && at === null && ephemeralFiles.length > 0) {
+      // No active session can take an ephemeral in-memory secret: note it as unfetched and drain it from the surface
+      // so the secret bytes are not retained in RAM.
+      const missing: string[] = [];
+      for (const f of ephemeralFiles) {
+        missing.push(tr(stationLang(), "station.slack.fileNotFetched", { name: f.name, error: "session is archived" }));
+        void chat.download?.(f).catch(() => {});
+      }
+      said = { text: [said.text, ...missing].filter((t) => t !== "").join("\n\n"), attachments: said.attachments };
     }
     const [n, fresh] = this.store.insertMessage({ thread: thread.id, ts: message.ts, authorKind: "person", author: message.user, ...said });
     if (fresh) {
@@ -1460,7 +1475,7 @@ export class Hub {
     if (!row) throw new Error("unknown session");
     await this.waitRestore(key);
     const dir = join(row.workspace, "uploads");
-    const fileId = file.id !== "" ? file.id : createHash("sha256").update(file.url ?? file.name).digest("hex").slice(0, 16);
+    const fileId = deferredFileId(file);
     const destPath = join(dir, safeUploadName(fileId, file.name));
     const secret = isEphemeralSecret(file);
     const cacheable = !secret && (file.id !== "" || (file.url !== null && file.url !== ""));
@@ -1477,7 +1492,7 @@ export class Hub {
     if (cacheable) {
       const cached = this.store.downloadedFile(scope, fileId);
       if (cached !== null) {
-        const cachedStat = await stat(cached.path).catch(() => null);
+        const cachedStat = await lstat(cached.path).catch(() => null);
         if (cachedStat?.isFile()) {
           try {
             await placeDownloadedCopy(cached.path, destPath);
@@ -1489,12 +1504,13 @@ export class Hub {
       }
     }
 
-    // Single-flight path: join an in-flight download on this station if one is running.
+    // Single-flight path: join an in-flight download on this station if one is running. Callers sharing the same flight
+    // observe the same rejection if the platform download fails, and may retry independently once the flight clears.
     if (cacheable) {
       const existing = this.downloading.get(flightKey);
       if (existing !== undefined) {
         const ready = await existing;
-        const readyStat = await stat(ready.path).catch(() => null);
+        const readyStat = await lstat(ready.path).catch(() => null);
         if (readyStat?.isFile()) {
           try {
             await placeDownloadedCopy(ready.path, destPath);
@@ -1558,7 +1574,7 @@ export class Hub {
   async fetched(chat: ChatSurface, key: string, text: string, files: InboundFile[] | undefined, surface?: string): Promise<{ text: string; attachments: Attachment[] }> {
     const row = files && files.length > 0 ? this.store.getSession(key) : null;
     if (!files || !row) return { text, attachments: [] };
-    const place = surface ?? (chat.workspace() ? `slack:${chat.workspace()}` : row.connect);
+    const place = surface ?? (chat.workspace?.() ? `slack:${chat.workspace()}` : row.connect);
     const attachments: Attachment[] = [];
     const missing: string[] = [];
     const seen = new Set<string>();

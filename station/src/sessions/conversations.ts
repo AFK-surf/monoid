@@ -874,7 +874,7 @@ export async function threadHistory(hub: Hub, key: string, thread: ThreadRow, co
       cards.get(n)!.chose = { by: name !== null ? `${name} (${c.by})` : c.by, option: c.option };
     }
   }
-  const deferred = thread.surface === STILLFAIL_SURFACE ? new Map() : hub.store.deferredFiles(thread.id, messages.map((m) => m.n));
+  const deferred = thread.surface === STILLFAIL_SURFACE || !thread.hasDeferred ? new Map() : hub.store.deferredFiles(thread.id, messages.map((m) => m.n));
   return formatHistory(messages, thread.surface, threadAddress(thread.channel, thread.threadTs), key, names, cards, deferred);
 }
 

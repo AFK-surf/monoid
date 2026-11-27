@@ -52,6 +52,14 @@ test("a_card_restated_by_an_edit_replaces_the_posts_unedited", () => {
   assert.equal(m.editedAt, null, "the same words: not an edit of them");
 });
 
+test("an_attachment_only_edit_updates_attachments_without_marking_edited", () => {
+  const original = message(1, "看看截图");
+  const resolved = change(2, "edit", 1, "看看截图");
+  const [m] = merge([original, resolved]) as J[];
+  assert.deepEqual(m.attachments, [{ name: "b.png" }]);
+  assert.equal(m.editedAt, null, "attaching deferred files does not mark the message edited");
+});
+
 test("a_notice_about_a_profile_says_which", () => {
   const notice = { ...message(1, "⚠️ 认证失败"), authorKind: "ember", profile: "cc" };
   const merged = merge([notice, message(2, "二")]) as J[];

@@ -1242,6 +1242,31 @@ test("connect.event acknowledges early within acceptWaitMs when openSlackThread 
   assert.deepEqual(h.rig.chat.downloads, ["F1"], "origin downloaded once on demand");
   assert.ok(fetched.includes("4k.png"), fetched);
   assert.equal(s.rig.said(thread.id)[0]!.attachments.length, 1, "historical attachment attached after on-demand fetch");
+
+  // Remote download failure must NOT produce an unhandledRejection on origin and must clean up downloadFlights so retry succeeds.
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    h.rig.chat.earlier.set("5202.1", [
+      { ts: "5202.1", user: "U1", text: "with missing file", fromBot: false, files: [{ id: "FFAIL", name: "fail.bin", size: 4, url: "https://files.example/fail.bin" }] },
+    ]);
+    const mFail = message({ text: "<@UBOT> check fail", threadTs: "5202.1", ts: "5202.2" });
+    await h.connects.receive("cl", { type: "message", message: mFail });
+    await s.rig.hub.drained(`cl@${H}`, mFail.channel, mFail.threadTs);
+    await settle();
+    const failKey = sessionKey(`cl@${H}`, mFail.channel, mFail.threadTs);
+    const errRes = await s.rig.call(failKey, "chat_history", { to: `${mFail.channel}/${mFail.threadTs}`, fetch: ["FFAIL"] });
+    assert.ok(errRes.includes("missing_scope"), errRes);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(unhandled.length, 0, "remote download rejection must never leak unhandledRejection");
+    // Retry once available: flight entry was cleaned up so the second fetch succeeds.
+    h.rig.chat.shared.set("FFAIL", "recovered");
+    const okRes = await s.rig.call(failKey, "chat_history", { to: `${mFail.channel}/${mFail.threadTs}`, fetch: ["FFAIL"] });
+    assert.ok(okRes.includes("fail.bin"), okRes);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
   await close();
 });
 

@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS threads (
   project TEXT,
   project_locked INTEGER NOT NULL DEFAULT 0,
   tags TEXT,
+  has_deferred INTEGER NOT NULL DEFAULT 0,
   UNIQUE (surface, channel, thread_ts)
 );
 CREATE TABLE IF NOT EXISTS thread_sessions (
@@ -178,6 +179,7 @@ CREATE TABLE IF NOT EXISTS deferred_files (
   PRIMARY KEY (thread, n, file_id)
 );
 CREATE INDEX IF NOT EXISTS deferred_files_by_id ON deferred_files (thread, file_id, n, ord);
+CREATE INDEX IF NOT EXISTS deferred_files_unresolved ON deferred_files (thread, n, ord) WHERE resolved_at IS NULL;
 -- Station-wide index of platform files already downloaded into a session's uploads, keyed by workspace+surface and file_id.
 CREATE TABLE IF NOT EXISTS downloaded_files (
   scope TEXT NOT NULL,
@@ -188,6 +190,7 @@ CREATE TABLE IF NOT EXISTS downloaded_files (
   at INTEGER NOT NULL,
   PRIMARY KEY (scope, file_id)
 );
+CREATE INDEX IF NOT EXISTS downloaded_files_at ON downloaded_files (at);
 -- The Router's idempotency key is committed with its message. Targets are kept only until delivery has been handed on.
 CREATE TABLE IF NOT EXISTS comma_router_once (
   -- A retry may still be finishing while an expired key is reused. Never reuse its identity.
@@ -1623,6 +1626,7 @@ export function addProjectColumns(db: DatabaseSync): void {
   if (!has(db, "threads", "project")) db.exec("ALTER TABLE threads ADD COLUMN project TEXT");
   if (!has(db, "threads", "project_locked")) db.exec("ALTER TABLE threads ADD COLUMN project_locked INTEGER NOT NULL DEFAULT 0");
   if (!has(db, "threads", "tags")) db.exec("ALTER TABLE threads ADD COLUMN tags TEXT");
+  if (!has(db, "threads", "has_deferred")) db.exec("ALTER TABLE threads ADD COLUMN has_deferred INTEGER NOT NULL DEFAULT 0");
   if (!has(db, "entries", "proposal")) db.exec("ALTER TABLE entries ADD COLUMN proposal TEXT");
   db.exec(`CREATE TABLE IF NOT EXISTS proposal_outcomes (
     thread INTEGER NOT NULL,

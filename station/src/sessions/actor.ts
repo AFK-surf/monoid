@@ -653,7 +653,7 @@ export async function formatDelivery(deps: SessionDeps, key: string, said: any[]
   const deferred = new Map<string, { id: string; name: string; size: number; url: string | null }[]>();
   const byThread = new Map<number, number[]>();
   for (const m of fromChat) {
-    if (m.surface === STILLFAIL_SURFACE) continue;
+    if (m.surface === STILLFAIL_SURFACE || m.hasDeferred === false) continue;
     let ns = byThread.get(m.message.thread);
     if (ns === undefined) {
       ns = [];

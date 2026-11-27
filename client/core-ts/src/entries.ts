@@ -66,14 +66,15 @@ function mergeNow(entries: unknown[], source?: (seq: number, entry: object) => v
         if ((edit.text ?? "") === out.text) continue;
       }
       const text = edit.text === undefined ? "" : edit.text;
-      if (text !== out.text) {
+      const textChanged = text !== out.text;
+      if (textChanged) {
         heard.push(edit);
         source?.(n, edit);
       }
       out.text = text;
       out.attachments = edit.attachments === undefined ? [] : edit.attachments;
       out.quotes = edit.quotes === undefined ? [] : edit.quotes;
-      out.editedAt = edit.at === undefined ? null : edit.at;
+      if (textChanged) out.editedAt = edit.at === undefined ? null : edit.at;
     }
     const shared = sharedValue(out);
     editedBy.set(entry, { edits, message: shared, heard });
