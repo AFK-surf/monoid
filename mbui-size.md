@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e1b9f2f4c](https://github.com/AFK-surf/monoid/commit/e1b9f2f4c937fc2b9ffb19237f1f50b4d4875d9d) fix(mbui): smoothly dissolve peek drawer glass, sh | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
 | [29f114f4a](https://github.com/AFK-surf/monoid/commit/29f114f4a65049752a872e8806fbe485d5422d9c) feat(mbui): add wide keeps_left allowlist, pages_l | 2.73 | 3.69 | 15.33 | 38.46 | 59.38 | 33.68 | 68.88 | 103.68 | 129.49 |
 | [0ef14d118](https://github.com/AFK-surf/monoid/commit/0ef14d1188dd4ea47d13845a074bbc6532c7ec42) fix(station): await in-flight stateDir removal acr | 2.73 | 3.69 | 15.31 | 38.44 | 59.31 | 33.68 | 68.88 | 103.68 | 134.43 |
 | [ea9ed02cb](https://github.com/AFK-surf/monoid/commit/ea9ed02cb073cd8425848a6c9e62387b97015213) fix(mbui): open the model panel at its foot and ke | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.64 | 68.76 | 103.47 | 133.05 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [36e832ca1](https://github.com/AFK-surf/monoid/commit/36e832ca1da5f831119dcdaf2e551cff9e2f1343) perf(ui,mbui): snap sliding pane offsets, defer la | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.3 | 136.48 |
 | [f4121f666](https://github.com/AFK-surf/monoid/commit/f4121f66695c19b5891d7787469d542723fc762c) refactor(android,core): use monotonic dispatch tok | 2.69 | 3.64 | 15.12 | 38.17 | 58.71 | 33.44 | 68.35 | 103.3 | 136.48 |
 | [83640c3cc](https://github.com/AFK-surf/monoid/commit/83640c3cc46c4a2313039a2f29cbafcf31d7f069) perf(station): join streamed frame pieces once in  | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
-| [a876a5380](https://github.com/AFK-surf/monoid/commit/a876a53806f66277bd14f3637dd1806cf6a2f471) fix(safe-mode): guide unprotected moved-lock stati | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.44 | 68.35 | 103.35 | 135.75 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e1b9f2f4c](https://github.com/AFK-surf/monoid/commit/e1b9f2f4c937fc2b9ffb19237f1f50b4d4875d9d) fix(mbui): smoothly dissolve peek drawer glass, sh | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.74 |
 | [29f114f4a](https://github.com/AFK-surf/monoid/commit/29f114f4a65049752a872e8806fbe485d5422d9c) feat(mbui): add wide keeps_left allowlist, pages_l | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.74 |
 | [0ef14d118](https://github.com/AFK-surf/monoid/commit/0ef14d1188dd4ea47d13845a074bbc6532c7ec42) fix(station): await in-flight stateDir removal acr | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [ea9ed02cb](https://github.com/AFK-surf/monoid/commit/ea9ed02cb073cd8425848a6c9e62387b97015213) fix(mbui): open the model panel at its foot and ke | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.56 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [36e832ca1](https://github.com/AFK-surf/monoid/commit/36e832ca1da5f831119dcdaf2e551cff9e2f1343) perf(ui,mbui): snap sliding pane offsets, defer la | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 65.37 |
 | [f4121f666](https://github.com/AFK-surf/monoid/commit/f4121f66695c19b5891d7787469d542723fc762c) refactor(android,core): use monotonic dispatch tok | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.48 |
 | [83640c3cc](https://github.com/AFK-surf/monoid/commit/83640c3cc46c4a2313039a2f29cbafcf31d7f069) perf(station): join streamed frame pieces once in  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.49 |
-| [a876a5380](https://github.com/AFK-surf/monoid/commit/a876a53806f66277bd14f3637dd1806cf6a2f471) fix(safe-mode): guide unprotected moved-lock stati | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.43 |
