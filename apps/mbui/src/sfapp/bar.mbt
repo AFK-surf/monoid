@@ -43,7 +43,7 @@ let act_gap : Double = 10.0
 ///|
 /// How much taller than the capsule its lens is lifted (TabBarLens.kt LIFTED_HEIGHT_RATIO), and how wide for that
 /// height, no wider than a share of a place (LIFTED_ASPECT, LIFTED_TAB_SHARE).
-let lens_lift_h : Double = 1.28
+let lens_lift_h : Double = 1.16
 
 ///|
 let lens_lift_aspect : Double = 1.50

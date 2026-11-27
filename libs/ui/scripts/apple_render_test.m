@@ -1430,10 +1430,12 @@ int main(void) {
         double oob_sub = (0.2126 * p_ob[2] + 0.7152 * p_ob[1] + 0.0722 * p_ob[0]) / 255.0;
         printf("apple_render: wave7 testC half_dark l_sub=%.3f l_txt=%.3f r_sub=%.3f r_txt=%.3f g_right=%.3f oob=%.3f chroma=%d,%d,%d\n",
                l_sub, l_txt, r_sub, r_txt, g_right, oob_sub, p_lc[2], p_lc[1], p_lc[0]);
-        CHECK(l_sub > 0.82);
-        CHECK(l_txt > 0.82);
+        CHECK(l_sub < 0.45);
+        CHECK(l_txt < 0.25);
         CHECK(r_sub < 0.45);
-        CHECK(r_txt < 0.45);
+        CHECK(r_txt < 0.25);
+        CHECK(fabs(l_sub - r_sub) < 0.05);
+        CHECK(fabs(l_txt - r_txt) < 0.05);
         CHECK(g_right > 0.75);
         CHECK(oob_sub < 0.45);
         CHECK((int)p_lc[2] > (int)p_lc[0] + 120);
@@ -1441,7 +1443,7 @@ int main(void) {
 
         // Expand dark backdrop from 45% to 100% across 20 frames + 10 settle frames:
         // whole capsule and all ink converge to dark glass with light ink.
-        double min_l_sub = 1.0, min_l_txt = 1.0, end_r_sub = 0.0, end_g_right = 1.0;
+        double end_l_txt = 0.0, end_r_sub = 0.0, end_g_right = 1.0;
         for (int s = 0; s < 30; s++) {
           double t = s < 20 ? (double)(s + 1) / 20.0 : 1.0;
           tc[MB_INST + 2] = 184.0 + (400.0 - 184.0) * t;
@@ -1449,28 +1451,21 @@ int main(void) {
           mb_render_present(tc, 9, 1.0, 1.0, 1.0);
           present_drain();
           px_tc = read_texture(canvas, &aw, &ah);
-          p_ls = px_tc + (300 * aw + 144) * 4;
           p_lt = px_tc + (300 * aw + 208) * 4;
           p_rs = px_tc + (300 * aw + 464) * 4;
           p_rg = px_tc + (300 * aw + 620) * 4;
-          double cs = (0.2126 * p_ls[2] + 0.7152 * p_ls[1] + 0.0722 * p_ls[0]) / 255.0;
-          double ct = (0.2126 * p_lt[2] + 0.7152 * p_lt[1] + 0.0722 * p_lt[0]) / 255.0;
+          end_l_txt = (0.2126 * p_lt[2] + 0.7152 * p_lt[1] + 0.0722 * p_lt[0]) / 255.0;
           end_r_sub = (0.2126 * p_rs[2] + 0.7152 * p_rs[1] + 0.0722 * p_rs[0]) / 255.0;
           end_g_right = (0.2126 * p_rg[2] + 0.7152 * p_rg[1] + 0.0722 * p_rg[0]) / 255.0;
-          if (cs < min_l_sub) min_l_sub = cs;
-          if (ct < min_l_txt) min_l_txt = ct;
           free(px_tc);
         }
-        printf("apple_render: wave7 testC scroll_to_full min_l_sub=%.3f min_l_txt=%.3f end_r_sub=%.3f end_g_right=%.3f\n",
-               min_l_sub, min_l_txt, end_r_sub, end_g_right);
+        printf("apple_render: wave7 testC scroll_to_full end_l_txt=%.3f end_r_sub=%.3f end_g_right=%.3f\n",
+               end_l_txt, end_r_sub, end_g_right);
+        CHECK(end_l_txt > 0.75);
         CHECK(end_r_sub > 0.68);
         CHECK(end_g_right < 0.35);
 
         // Test C-frost: light adaptive glass accounts for user glassFrost / Increase Contrast opacity (tint_a):
-        // (1) Half-dark large capsule (composer-shaped) at 0x67 -> 0.522 (Increase Contrast) -> 0.752 (65% frost) -> 0.913 (95% frost) -> 0x67:
-        //     at 0x67 left ink inverts bright; raising tint_a on the same slot keeps left ink dark on the bright frosted surface;
-        // (2) Full-dark capsule at 0.752 (65% frost) and 0.913 (95% frost): stays light glass + dark ink (never flips dark or white-on-white),
-        //     and jumping 0x67 -> 0.913 on an existing flipped dark slot snaps immediately with settling == 0.
         {
           tc[MB_INST + 2] = 184.0;
           tc[2 * MB_INST + 11] = 0x67 / 255.0;
@@ -1481,7 +1476,7 @@ int main(void) {
           px_tc = read_texture(canvas, &aw, &ah);
           p_lt = px_tc + (300 * aw + 208) * 4;
           double l0 = (0.2126 * p_lt[2] + 0.7152 * p_lt[1] + 0.0722 * p_lt[0]) / 255.0;
-          CHECK(l0 > 0.82);
+          CHECK(l0 < 0.25);
           free(px_tc);
 
           const double frost_alphas[3] = {0.522, 0.752, 0.913};
@@ -1505,7 +1500,6 @@ int main(void) {
             free(px_tc);
           }
 
-          // Return to 0x67 on the same slot restores local bright inversion.
           tc[2 * MB_INST + 11] = 0x67 / 255.0;
           mb_host_render_dirty(0, 0, 400, 300);
           mb_render_present(tc, 9, 1.0, 1.0, 1.0);
@@ -1513,7 +1507,7 @@ int main(void) {
           px_tc = read_texture(canvas, &aw, &ah);
           p_lt = px_tc + (300 * aw + 208) * 4;
           double l_back = (0.2126 * p_lt[2] + 0.7152 * p_lt[1] + 0.0722 * p_lt[0]) / 255.0;
-          CHECK(l_back > 0.82);
+          CHECK(l_back < 0.25);
           free(px_tc);
 
           // Full-dark backdrop: 0x67 flips dark, then raising to 0.913 snaps immediately to light glass + dark ink (settling == 0).
@@ -1652,7 +1646,7 @@ int main(void) {
           double l_o = (0.2126 * p_o[2] + 0.7152 * p_o[1] + 0.0722 * p_o[0]) / 255.0;
           double l_i = (0.2126 * p_i[2] + 0.7152 * p_i[1] + 0.0722 * p_i[0]) / 255.0;
           printf("apple_render: wave7 testE1 line_word_unified l_H=%.3f l_o=%.3f l_i=%.3f\n", l_H, l_o, l_i);
-          CHECK(l_H > 0.82 && l_o > 0.82 && l_i > 0.82 && fabs(l_H - l_o) < 0.05 && fabs(l_H - l_i) < 0.05);
+          CHECK(l_H < 0.25 && l_o < 0.25 && l_i < 0.25 && fabs(l_H - l_o) < 0.05 && fabs(l_H - l_i) < 0.05);
           free(px_e1);
         }
 
@@ -1697,9 +1691,8 @@ int main(void) {
           double l4 = (0.2126 * p4[2] + 0.7152 * p4[1] + 0.0722 * p4[0]) / 255.0;
           printf("apple_render: wave7 testE2 lowpass_anti_osc l1=%.3f l2=%.3f l3=%.3f l4=%.3f\n",
                  l1, l2, l3, l4);
-          CHECK(l1 > 0.82 && l2 > 0.82 && l3 > 0.82);
-          CHECK(fabs(l1 - l2) < 0.05 && fabs(l2 - l3) < 0.05);
-          CHECK(l4 < 0.35);
+          CHECK(l1 < 0.25 && l2 < 0.25 && l3 < 0.25 && l4 < 0.25);
+          CHECK(fabs(l1 - l2) < 0.05 && fabs(l2 - l3) < 0.05 && fabs(l3 - l4) < 0.05);
           free(px_e2);
         }
 
@@ -1748,7 +1741,7 @@ int main(void) {
           double l_top = (0.2126 * p_top[2] + 0.7152 * p_top[1] + 0.0722 * p_top[0]) / 255.0;
           double l_bot = (0.2126 * p_bot[2] + 0.7152 * p_bot[1] + 0.0722 * p_bot[0]) / 255.0;
           printf("apple_render: wave7 testF icon_bands_unified l_top=%.3f l_bot=%.3f\n", l_top, l_bot);
-          CHECK(l_top > 0.82 && l_bot > 0.82 && fabs(l_top - l_bot) < 0.05);
+          CHECK(l_top < 0.25 && l_bot < 0.25 && fabs(l_top - l_bot) < 0.05);
           free(px_tf);
         }
 
@@ -4162,7 +4155,7 @@ int main(void) {
           printf("apple_render: v9_switch_5press_delta_area=(%d,%d,%d,%d,%d)\n", areas[0], areas[1], areas[2], areas[3], areas[4]);
           CHECK(areas[0] < areas[1] && areas[1] < areas[2] && areas[2] < areas[3] && areas[3] < areas[4]);
         }
-        // --- V9f: Role 4 Tab icon bevel gate (FIXED refract=9.0, Role 4 -64; icon at x_right-6.7pt vs empty; |y-cy|=0.42*h diff==0) ---
+        // --- V9f: Role 4 Tab monotonic outer meniscus (no fake badge copy from 6.7pt inward; continuous outer lip refraction) ---
         {
           double tb[4 * MB_INST];
           rect_at(tb, 0, 0, VW, VH, 0, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0, 0);
@@ -4190,7 +4183,7 @@ int main(void) {
           uint8_t *px_icon = read_texture(canvas, &aw1, &ah1);
           uint8_t *a_mid = A_PX(px_empty, aw0, 400, 120);
           uint8_t *b_mid = A_PX(px_icon, aw1, 400, 120);
-          int mid_delta = abs((int)b_mid[2] - (int)a_mid[2]) + abs((int)b_mid[1] - (int)a_mid[1]);
+          int ghost_delta = abs((int)b_mid[2] - (int)a_mid[2]) + abs((int)b_mid[1] - (int)a_mid[1]);
           uint8_t *a_out = A_PX(px_empty, aw0, (int)lround(123.2 * 3), (int)lround(58.9 * 3));
           uint8_t *b_out = A_PX(px_icon, aw1, (int)lround(123.2 * 3), (int)lround(58.9 * 3));
           int out_diff = 0;
@@ -4198,12 +4191,26 @@ int main(void) {
             int df = abs((int)b_out[ch] - (int)a_out[ch]);
             if (df > out_diff) out_diff = df;
           }
-          printf("apple_render: v9_tab_icon_bevel mid_delta=%d out_diff=%d\n", mid_delta, out_diff);
-          CHECK(mid_delta >= 40 && out_diff == 0);
+          rect_at(tb + MB_INST, 129.5, 35.0, 2.0, 10.0, 0, 1.0, 0.55, 0.0, 0);
+          rect_at(tb + 2 * MB_INST, 25, 17.5, 110, 45, 6, 1.0, 1.0, 1.0, -566);
+          tb[2 * MB_INST + 4] = 22.5; tb[2 * MB_INST + 6] = 1.0; tb[2 * MB_INST + 7] = -64.0;
+          tb[2 * MB_INST + 11] = 0.0; tb[2 * MB_INST + 12] = 1.0; tb[2 * MB_INST + 13] = 9.0;
+          tb[2 * MB_INST + 15] = 1.0; tb[2 * MB_INST + 21] = 9.0; tb[2 * MB_INST + 22] = 0.0; tb[2 * MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, VW, VH);
+          mb_render_present(tb, 3, 28.0 / 255.0, 28.0 / 255.0, 30.0 / 255.0);
+          present_drain();
+          int aw2 = 0, ah2 = 0;
+          uint8_t *px_lip = read_texture(canvas, &aw2, &ah2);
+          uint8_t *c_mid = A_PX(px_lip, aw2, 400, 120);
+          int lip_delta = abs((int)c_mid[2] - (int)a_mid[2]) + abs((int)c_mid[1] - (int)a_mid[1]);
+          printf("apple_render: v9_tab_icon_bevel ghost_delta=%d out_diff=%d lip_delta=%d\n", ghost_delta, out_diff, lip_delta);
+          CHECK(ghost_delta == 0 && out_diff == 0 && lip_delta >= 40);
           free(px_empty);
           free(px_icon);
+          free(px_lip);
         }
-        // --- V9g: Role 4 Tab bevelGate outer falloff regression (no un-refracted ghost at inward=10pt) ---
+        // --- V9g: Role 4 Tab zero interior double-fold / ghosting at inward >= 5.5pt ---
         {
           double tg[3 * MB_INST];
           rect_at(tg, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 0);
@@ -4219,15 +4226,11 @@ int main(void) {
           int awg = 0, ahg = 0;
           uint8_t *pxg = read_texture(canvas, &awg, &ahg);
           uint8_t *co = A_PX(pxg, awg, 127, 120);
-          double l_orig = 0.2126 * co[2] + 0.7152 * co[1] + 0.0722 * co[0];
-          double min_l = 1e9;
-          for (int px_i = 132; px_i <= 136; px_i++) {
-            uint8_t *cr = A_PX(pxg, awg, px_i, 120);
-            double lr = 0.2126 * cr[2] + 0.7152 * cr[1] + 0.0722 * cr[0];
-            if (lr < min_l) min_l = lr;
-          }
-          printf("apple_render: v9_tab_no_ghost orig_L=%.1f refr_min_L=%.1f\n", l_orig, min_l);
-          CHECK(l_orig > 220.0 && min_l < 170.0);
+          double l_bar = 0.2126 * co[2] + 0.7152 * co[1] + 0.0722 * co[0];
+          uint8_t *cb = A_PX(pxg, awg, 114, 120);
+          double l_clean = 0.2126 * cb[2] + 0.7152 * cb[1] + 0.0722 * cb[0];
+          printf("apple_render: v9_tab_no_ghost bar_L=%.1f clean_L=%.1f\n", l_bar, l_clean);
+          CHECK(l_bar < 130.0 && l_clean > 220.0);
           free(pxg);
         }
         // --- V9a2: Switch ON @ 2x phase-shifted integrated green mass ---
@@ -4354,6 +4357,29 @@ int main(void) {
           CHECK(l_side_out <= 14.0 && l_side_out < l_mid - 40.0);
           CHECK(l_side_in >= l_mid - 6.0);
           free(pxd);
+          // V10-Dark-On-Bright: Dark Regular glass on #F2F3F0 bright backdrop has no dead-black contour (>= 120/255) and bright top rim.
+          double rgdb[2 * MB_INST];
+          rect_at(rgdb, 0, 0, 160, 80, 0, 242.0 / 255.0, 243.0 / 255.0, 240.0 / 255.0, 0);
+          rect_at(rgdb + MB_INST, 20, 10, 120, 60, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -72);
+          rgdb[MB_INST + 4] = 24.0; rgdb[MB_INST + 6] = 1.0; rgdb[MB_INST + 7] = 0.0;
+          rgdb[MB_INST + 11] = 0x67 / 255.0; rgdb[MB_INST + 12] = 0.6; rgdb[MB_INST + 13] = 14.0;
+          rgdb[MB_INST + 15] = 1.0; rgdb[MB_INST + 21] = 20.0; rgdb[MB_INST + 22] = 0.0; rgdb[MB_INST + 23] = 0.0;
+          glass_forget();
+          mb_host_render_dirty(0, 0, 160, 80);
+          mb_render_present(rgdb, 2, 242.0 / 255.0, 243.0 / 255.0, 240.0 / 255.0);
+          present_drain();
+          uint8_t *pxdb = read_texture(canvas, &aw, &ah);
+          uint8_t *db_mid = A_PX(pxdb, aw, 80 * 2, 40 * 2);
+          uint8_t *db_top = A_PX(pxdb, aw, 80 * 2, 10 * 2);
+          uint8_t *db_side_out = A_PX(pxdb, aw, 140 * 2, 40 * 2);
+          int db_out_min = db_side_out[2] < db_side_out[1] ? db_side_out[2] : db_side_out[1];
+          if (db_side_out[0] < db_out_min) db_out_min = db_side_out[0];
+          double db_l_mid = 0.2126 * db_mid[2] + 0.7152 * db_mid[1] + 0.0722 * db_mid[0];
+          double db_l_top = 0.2126 * db_top[2] + 0.7152 * db_top[1] + 0.0722 * db_top[0];
+          printf("apple_render: v10_reg_dark_on_bright_2x out_min=%d top=%.1f mid=%.1f\n", db_out_min, db_l_top, db_l_mid);
+          CHECK(db_out_min >= 120);
+          CHECK(db_l_top > db_l_mid + 20.0);
+          free(pxdb);
           // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must keep
           // full-res stroke separation (blocks reintroduction of secondary detailAmt smear or k=1 blur downsample).
           mb_render_set_size(160, 80, 3);

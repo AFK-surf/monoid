@@ -121,6 +121,7 @@ pub fn fluid_scrubber_look(
         fill
         .over(Is(true))
         .points(Is(false))
+        .adaptive_ink(Is(true))
         .width(By(fn() { Some(w()) }))
         .height(By(fn() { Some(bh()) }))
         .alpha(By(fn() { if fill_w(fill) <= 0.0 { 0.0 } else { 1.0 } }))

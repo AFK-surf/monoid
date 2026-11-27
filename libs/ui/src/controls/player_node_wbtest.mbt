@@ -69,7 +69,7 @@ fn liquid_blurs(t : @ui.Tester) -> Array[Double] {
 }
 
 ///|
-test "player_node video controls use ViewerDark liquid glass with outside shadow and degrade cleanly under MBUI_GLASS=solid" {
+test "player_node video controls use adaptive Floating glass in light mode and ViewerDark in dark mode, degrading cleanly under MBUI_GLASS=solid" {
   for narrow in [false, true] {
     for dark in [false, true] {
       let t = player_glass_tester(narrow, "video", dark, false)
@@ -79,14 +79,40 @@ test "player_node video controls use ViewerDark liquid glass with outside shadow
       let expected_min = if narrow { 2 } else { 2 }
       assert_true(liquid.length() >= expected_min, msg="narrow=\{narrow} dark=\{dark} liquid=\{liquid.length()}")
       assert_true(has_outside_shadow(t), msg="narrow=\{narrow} dark=\{dark} outside shadow")
-      // Every bottom/top player glass instance over video uses ViewerDark (blur = 4.0).
+      // Dark mode video uses ViewerDark (blur = 4.0) with media_dark_text; light mode video uses adaptive Floating (blur = 1.2)
+      // on player bars (desktop viewer_bar_node top pills use adaptive liquid_viewer_clear_glass blur = 4.0) with light ink.
       let blurs = liquid_blurs(t)
-      assert_true(blurs.iter().all(fn(b) { (b - 4.0).abs() < 0.01 }), msg="narrow=\{narrow} dark=\{dark} blurs=\{Repr(blurs)}")
-      // Solid fallback: 0 liquid glass instances, solid media_dark_ground drawn.
+      if dark {
+        assert_true(
+          blurs.iter().all(fn(b) { (b - 4.0).abs() < 0.01 }),
+          msg="narrow=\{narrow} dark=\{dark} blurs=\{Repr(blurs)}",
+        )
+        assert_eq(media_ink(true).text, media_dark_text, msg="dark video uses media_dark_text")
+      } else {
+        if narrow {
+          assert_true(
+            blurs.iter().all(fn(b) { (b - 1.2).abs() < 0.01 }),
+            msg="narrow=\{narrow} dark=\{dark} blurs=\{Repr(blurs)}",
+          )
+        } else {
+          assert_true(
+            blurs.iter().any(fn(b) { (b - 1.2).abs() < 0.01 }),
+            msg="narrow=\{narrow} dark=\{dark} blurs=\{Repr(blurs)}",
+          )
+        }
+        let adaptive_count = t
+          .drawn_instances()
+          .filter(fn(a) { a.length() > 14 && a[5] == 6.0 && a[14] < 0.0 })
+          .length()
+        assert_eq(adaptive_count, liquid.length(), msg="narrow=\{narrow} light video all glass adaptive")
+        assert_eq(media_ink(true).text, theme().p.text, msg="light video uses theme text ink")
+      }
+      // Solid fallback: 0 liquid glass instances, solid ground drawn.
       let ts = player_glass_tester(narrow, "video", dark, true)
       assert_eq(ts.drawn_glass().length(), 0, msg="narrow=\{narrow} dark=\{dark} solid glass count")
+      let expected_ground = media_ink(true).ground
       assert_true(
-        ts.drawn_rects().iter().any(fn(r) { r.4 == media_dark_ground }),
+        ts.drawn_rects().iter().any(fn(r) { r.4 == expected_ground }),
         msg="narrow=\{narrow} dark=\{dark} solid ground fallback",
       )
     }
@@ -584,4 +610,37 @@ test "player_node fluid scrubber 72pt volume at 1%: right edge stays 0.72pt acro
   t.run_for(player_slider_settle_ms)
   @ui.set_glass_solid(None)
   set_dark(None)
+}
+
+///|
+test "light mode video AlongTime bare 3pt progress line keeps white fill and dark track over raw video stage" {
+  defer {
+    @ui.set_glass_solid(None)
+    set_dark(None)
+  }
+  let t = player_glass_tester(true, "video", false, false, pin={ ..pinned(2000.0), playing: false })
+  // Hide floating controls so AlongTime renders the bare 3pt bottom progress line directly on the video stage.
+  t.tap(195.0, 400.0)
+  t.run_for(playing_for("k").media.times().1 + @player.media_sleep_ms + 500.0)
+  assert_true(t.query(Slider, label="web-pages.drive.player.position") is None, msg="controls hidden before AlongTime")
+  t.press_at(100.0, 300.0)
+  t.move_to(130.0, 300.0)
+  t.draw()
+  assert_true(t.rect_of("1×") is Some(_), msg="AlongTime HUD must be visible")
+  let bar_rects = t
+    .drawn_rects()
+    .filter(fn(r) { (r.3 - player_scrub_bar_h).abs() < 0.5 && r.1 > 700.0 })
+  assert_true(
+    bar_rects.iter().any(fn(r) { r.4 == media_dark_text }),
+    msg="bare 3pt video progress line fill must stay media_dark_text in light mode",
+  )
+  assert_true(
+    bar_rects.iter().any(fn(r) { r.4 == 0x00000040L }),
+    msg="bare 3pt video progress line track must use translucent dark scrim 0x00000040L",
+  )
+  assert_true(
+    !bar_rects.iter().any(fn(r) { r.4 == theme().p.text }),
+    msg="bare 3pt video progress line must not draw dark light-mode theme().p.text directly over video",
+  )
+  t.release(130.0, 300.0)
 }

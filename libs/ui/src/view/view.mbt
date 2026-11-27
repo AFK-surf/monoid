@@ -6370,10 +6370,12 @@ pub fn View::glass(self : View, g : Live[@paint.Glass?], loc~ : SourceLoc) -> Vi
 }
 
 ///|
-/// Whether bare text in this subtree adapts its ink luminance to the backdrop behind it without a glass capsule.
-/// Bare adaptive ink only adapts text (`kind == 7`); it does not adapt icons (`kind == 10/11`) or fills (`kind == 0`).
-/// Backdrop capture automatically expands for bare adaptive text emitted after `kind == 5` (frosted/progressive) or
-/// unmerged `kind == 6` glass, and does not span across `merged_liquid` groups.
+/// Opts a node into adaptive ink luminance:
+/// - Outside an adaptive liquid glass capsule: creates a bare adaptive ink scope for text (`kind == 7`) without a
+///   glass capsule (does not adapt icons `kind == 10/11` or fills `kind == 0`; backdrop capture expands after `kind == 5`
+///   or unmerged `kind == 6` glass and does not span across `merged_liquid` groups).
+/// - Inside an adaptive liquid glass capsule: allows an explicit opaque `kind == 0` fill (such as a scrubber progress
+///   fill) to inherit the enclosing capsule's adaptive state while shielding descendants beneath an opaque ground.
 #callsite(autofill(loc))
 pub fn View::adaptive_ink(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
   self.bind(loc~, AdaptiveInk, on, Paint, fn(on) { self.tree.nodes[self.at].look.adaptive_ink = on })

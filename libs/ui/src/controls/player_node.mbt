@@ -918,8 +918,8 @@ fn player_is_picture_ink(k : MediaInk) -> Bool {
 
 ///|
 /// Single-layer iOS 27 Liquid Glass recipe for floating player controls and status overlays:
-/// uses `@glass.liquid_viewer_dark_glass` over video pictures (`picture == true`, white ink) and
-/// `@glass.liquid_floating_glass` over audio stages (`picture == false`, theme-adaptive ink),
+/// uses `@glass.liquid_viewer_dark_glass` over dark-mode video pictures (`player_is_picture_ink(k)`) and
+/// `@glass.liquid_floating_glass` (adaptive light glass) over light-mode video pictures and audio stages,
 /// keeping `ink().ground` as the `MBUI_GLASS=solid` fallback.
 fn player_surface_glass(ink : () -> MediaInk, spot : (Double, Double)?) -> @ui.Glass {
   let k = ink()
@@ -1056,11 +1056,20 @@ fn failed_card_node(parent : @view.View, pn : PlayerNode, ink : () -> MediaInk, 
       _ => ""
     }
   }
-  night_card_node(parent, ink, title, note, fn(foot) {
+  // Failed video has no decoded video frame, so its backdrop is always pure-black `media_dark_stage` (unlike
+  // `ended_card_node`, which floats over the final video frame and follows theme-adaptive `ink`).
+  let card_ink = fn() {
+    if !pn.audio(pn.status()) {
+      media_dark_ink()
+    } else {
+      ink()
+    }
+  }
+  night_card_node(parent, card_ink, title, note, fn(foot) {
     night_button_node(foot, fn() { t("android-misc.drive.player.retry") }, fn() {
       pn.act(fn() { pn.p.retry() })
       pn.ready.set(pn.p.started())
-    }, ink)
+    }, card_ink)
     |> ignore
   }, buttons=fn() { state() != -2 && state() != -3 && state() != -4 }, embedded=pn.embedded, loc~)
 }
@@ -2005,7 +2014,7 @@ fn desk_player_node(
     n.show(at_once=true, fn() { !native_on() && !embedded }, fn(b) {
       b.over(Is(true)) |> ignore
       let bar_ink = fn() -> ViewerInk {
-        if picture() {
+        if picture() && theme().dark {
           let k = ink()
           {
             ground: k.stage,
@@ -3065,10 +3074,12 @@ fn along_time_hud_node(
             dmin(1.0, dmax(0.0, pos / dur))
           }
         }
+        let is_video = fn() { !pn.audio(pn.status()) }
         track
         .height(Is(Some(player_scrub_bar_h)))
         .radius(Is(player_scrub_bar_h / 2.0))
-        .ground(By(fn() { alpha(ink().text, media_track_share) }))
+        .ground(By(fn() { if is_video() { 0x00000040L } else { alpha(ink().text, media_track_share) } }))
+        .shadow(By(fn() { if is_video() { (1.0, 2.0, 0x00000038L) } else { (0.0, 0.0, 0L) } }))
         .clips(Is(true))
         |> ignore
         track.box(fn(fill) {
@@ -3076,7 +3087,7 @@ fn along_time_hud_node(
           .over(Is(true))
           .height(Is(Some(player_scrub_bar_h)))
           .radius(Is(player_scrub_bar_h / 2.0))
-          .ground(By(fn() { ink().text }))
+          .ground(By(fn() { if is_video() { media_dark_text } else { ink().text } }))
           .ground_drawn(By(fn() {
             let w = r.width()
             let f = frac()

@@ -408,7 +408,7 @@ function runGlassVectorsInPage() {
     }
     roi.v9_sw_5press_delta_area = areas;
   }
-  // V9f: Role 4 Tab icon bevel gate (FIXED refract=9.0, Role 4 -64; icon at x_right-6.7pt vs empty; |y-cy|=0.42*h diff==0)
+  // V9f: Role 4 Tab monotonic outer meniscus (no fake badge copy from 6.7pt inward; continuous outer lip refraction)
   {
     const buf = new Float32Array(4 * INST);
     rect(buf, 0, 0, 0, VW, VH, 0, 28 / 255, 28 / 255, 30 / 255, 1, 0);
@@ -424,15 +424,23 @@ function runGlassVectorsInPage() {
     buf[3 * INST + 12] = 1; buf[3 * INST + 13] = 9; buf[3 * INST + 15] = 1; buf[3 * INST + 21] = 9;
     H.present(buf, 4, 28 / 255, 28 / 255, 30 / 255);
     const shotIcon = H.renderPixels();
+    rect(buf, INST, 129.5, 35.0, 2.0, 10.0, 0, 1, 0.55, 0, 1, 0);
+    rect(buf, 2 * INST, 25, 17.5, 110, 45, 6, 1, 1, 1, 0, -566);
+    buf[2 * INST + 4] = 22.5; buf[2 * INST + 6] = 1; buf[2 * INST + 7] = -64;
+    buf[2 * INST + 12] = 1; buf[2 * INST + 13] = 9; buf[2 * INST + 15] = 1; buf[2 * INST + 21] = 9;
+    H.present(buf, 3, 28 / 255, 28 / 255, 30 / 255);
+    const shotLip = H.renderPixels();
     const aMid = pxAt(shotEmpty, 400, 120);
     const bMid = pxAt(shotIcon, 400, 120);
-    const midDelta = Math.abs(bMid[0] - aMid[0]) + Math.abs(bMid[1] - aMid[1]);
+    const cMid = pxAt(shotLip, 400, 120);
+    const ghostDelta = Math.abs(bMid[0] - aMid[0]) + Math.abs(bMid[1] - aMid[1]);
+    const lipDelta = Math.abs(cMid[0] - aMid[0]) + Math.abs(cMid[1] - aMid[1]);
     const aOut = pxAt(shotEmpty, Math.round(123.2 * 3), Math.round(58.9 * 3));
     const bOut = pxAt(shotIcon, Math.round(123.2 * 3), Math.round(58.9 * 3));
     const outDiff = Math.max(Math.abs(bOut[0] - aOut[0]), Math.abs(bOut[1] - aOut[1]), Math.abs(bOut[2] - aOut[2]));
-    roi.v9_tab_icon_delta = { midDelta, outDiff };
+    roi.v9_tab_icon_delta = { ghostDelta, outDiff, lipDelta };
   }
-  // V9g: Role 4 Tab bevelGate outer falloff regression (no un-refracted ghost at inward=10pt)
+  // V9g: Role 4 Tab zero interior double-fold / ghosting at inward >= 5.5pt
   {
     const buf = new Float32Array(3 * INST);
     rect(buf, 0, 0, 0, VW, VH, 0, 246 / 255, 244 / 255, 240 / 255, 1, 0);
@@ -442,13 +450,9 @@ function runGlassVectorsInPage() {
     buf[2 * INST + 12] = 1; buf[2 * INST + 13] = 9; buf[2 * INST + 15] = 1; buf[2 * INST + 21] = 9;
     H.present(buf, 3, 246 / 255, 244 / 255, 240 / 255);
     const shotG = H.renderPixels();
-    const origL = lumaOf(pxAt(shotG, 127, 120));
-    let refrMinL = 1e9;
-    for (let pxI = 132; pxI <= 136; pxI++) {
-      const lr = lumaOf(pxAt(shotG, pxI, 120));
-      if (lr < refrMinL) refrMinL = lr;
-    }
-    roi.v9_tab_no_ghost = { origL, refrMinL };
+    const barL = lumaOf(pxAt(shotG, 127, 120));
+    const cleanL = lumaOf(pxAt(shotG, 114, 120));
+    roi.v9_tab_no_ghost = { barL, cleanL };
   }
   // V9h: Switch ON held glassFrost C0 continuity (0 -> eps, 0.108->0.110 veil, 0.127->0.129 blur, 0.60 frosted)
   {
@@ -592,6 +596,19 @@ function runGlassVectorsInPage() {
       lSideIn: lumaOf(pxAt(shotd, 140 * 2 - 1, 40 * 2)),
       lSideOut: lumaOf(pxAt(shotd, 140 * 2, 40 * 2)),
       roiFnv1a: '0x' + dh.toString(16).padStart(16, '0'),
+    };
+    const bufdb = new Float32Array(2 * INST);
+    rect(bufdb, 0, 0, 0, VW, VH, 0, 242 / 255, 243 / 255, 240 / 255, 1, 0);
+    rect(bufdb, INST, 20, 10, 120, 60, 6, 32 / 255, 32 / 255, 32 / 255, 0x67 / 255, -72);
+    bufdb[INST + 4] = 24; bufdb[INST + 6] = 1; bufdb[INST + 7] = 0;
+    bufdb[INST + 12] = 0.6; bufdb[INST + 13] = 14; bufdb[INST + 15] = 1; bufdb[INST + 21] = 20;
+    H.present(bufdb, 2, 242 / 255, 243 / 255, 240 / 255);
+    const shotdb = H.renderPixels();
+    const dbOut = pxAt(shotdb, 140 * 2, 40 * 2);
+    roi.v10_reg_dark_on_bright = {
+      outMin: Math.min(dbOut[0], dbOut[1], dbOut[2]),
+      lTop: lumaOf(pxAt(shotdb, 80 * 2, 10 * 2)),
+      lMid: lumaOf(pxAt(shotdb, 80 * 2, 40 * 2)),
     };
     // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes
     {
@@ -1601,8 +1618,8 @@ check(roi.v9_sw_off_moat[0] > roi.v9_sw_off_moat[1] && roi.v9_sw_off_moat[1] >= 
   `v9_sw_off_moat=${JSON.stringify(roi.v9_sw_off_moat)}`);
 check(roi.v9_sw_5press_delta_area[0] < roi.v9_sw_5press_delta_area[1] && roi.v9_sw_5press_delta_area[1] < roi.v9_sw_5press_delta_area[2] && roi.v9_sw_5press_delta_area[2] < roi.v9_sw_5press_delta_area[3] && roi.v9_sw_5press_delta_area[3] < roi.v9_sw_5press_delta_area[4],
   `v9_sw_5press_delta_area=${JSON.stringify(roi.v9_sw_5press_delta_area)}`);
-check(roi.v9_tab_icon_delta.midDelta >= 40 && roi.v9_tab_icon_delta.outDiff === 0, `v9_tab_icon_delta=${JSON.stringify(roi.v9_tab_icon_delta)}`);
-check(roi.v9_tab_no_ghost.origL > 220.0 && roi.v9_tab_no_ghost.refrMinL < 170.0, `v9_tab_no_ghost=${JSON.stringify(roi.v9_tab_no_ghost)}`);
+check(roi.v9_tab_icon_delta.ghostDelta === 0 && roi.v9_tab_icon_delta.outDiff === 0 && roi.v9_tab_icon_delta.lipDelta >= 40, `v9_tab_icon_delta=${JSON.stringify(roi.v9_tab_icon_delta)}`);
+check(roi.v9_tab_no_ghost.barL < 130.0 && roi.v9_tab_no_ghost.cleanL > 220.0, `v9_tab_no_ghost=${JSON.stringify(roi.v9_tab_no_ghost)}`);
 check(roi.v9_switch_frost_continuity.maxDEps <= 2 && roi.v9_switch_frost_continuity.maxDVeil <= 10 && roi.v9_switch_frost_continuity.maxDBlur <= 10 && roi.v9_switch_frost_continuity.ctr60[0] > roi.v9_switch_frost_continuity.ctr0[0] + 25 && (roi.v9_switch_frost_continuity.ctr60[1] - roi.v9_switch_frost_continuity.ctr60[0]) < (roi.v9_switch_frost_continuity.ctr0[1] - roi.v9_switch_frost_continuity.ctr0[0]) - 20, `v9_switch_frost_continuity=${JSON.stringify(roi.v9_switch_frost_continuity)}`);
 check(roi.v9_sw_2x[0] > 40 && roi.v9_sw_2x[1] > 40, `v9_sw_2x=${JSON.stringify(roi.v9_sw_2x)}`);
 check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 150.0 && roi.v10_reg_light.sideLmin <= 176.0 && roi.v10_reg_light.lightOuterTopL <= roi.v10_reg_light.lightMidL - 15.0 && roi.v10_reg_light.lightTopL >= roi.v10_reg_light.lightMidL,
@@ -1610,6 +1627,8 @@ check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 150.0 && 
 // (its ROI hash Metal's: the 1-point rim of what is outside it, glass_reflect_cases.h, moved 66 pixels 1 LSB)
 check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.lSideOut <= 14.0 && roi.v10_reg_dark.lSideOut < roi.v10_reg_dark.lMid - 40.0 && roi.v10_reg_dark.lSideIn >= roi.v10_reg_dark.lMid - 6.0 && roi.v10_reg_dark.roiFnv1a === '0xe6ce81e8141ce998',
   `v10_reg_dark=${JSON.stringify(roi.v10_reg_dark)}`);
+check(roi.v10_reg_dark_on_bright.outMin >= 120 && roi.v10_reg_dark_on_bright.lTop > roi.v10_reg_dark_on_bright.lMid + 20.0,
+  `v10_reg_dark_on_bright=${JSON.stringify(roi.v10_reg_dark_on_bright)}`);
 check(roi.v12_reg_antismear.delta >= 4.0 && roi.v12_reg_antismear.minL >= 170.0,
   `v12_reg_antismear=${JSON.stringify(roi.v12_reg_antismear)}`);
 check(roi.v11_unified_panel_glass.midBR >= 24 && roi.v11_unified_panel_glass.rimL >= roi.v11_unified_panel_glass.midL + 4.0 && roi.v11_unified_panel_glass.solidDL <= 1.0 &&
@@ -1736,7 +1755,7 @@ for (const t of roi.v11_top) {
   {
     const lf = roi.light_adaptive_frost;
     console.log(`web_glass_test: light_adaptive_frost l0=${lf.l0.toFixed(3)} lBack=${lf.lBack.toFixed(3)} frost=${JSON.stringify(lf.frostRes.map(x => [x.a, +x.ink.toFixed(3), +x.glass.toFixed(3)]))} full65=${JSON.stringify(lf.full65)} full95=${JSON.stringify(lf.full95)}`);
-    check(lf.l0 > 0.82 && lf.lBack > 0.82, `light_adaptive_frost_baseline=${JSON.stringify(lf)}`);
+    check(lf.l0 < 0.25 && lf.lBack < 0.25, `light_adaptive_frost_baseline=${JSON.stringify(lf)}`);
     for (const r of lf.frostRes) check(r.ink < 0.25 && r.glass > 0.56, `light_adaptive_frost_half=${JSON.stringify(r)}`);
     check(lf.full65.ink < 0.25 && lf.full65.glass > 0.72, `light_adaptive_frost_65=${JSON.stringify(lf.full65)}`);
     check(lf.full95.ink < 0.25 && lf.full95.glass > 0.85, `light_adaptive_frost_95=${JSON.stringify(lf.full95)}`);
