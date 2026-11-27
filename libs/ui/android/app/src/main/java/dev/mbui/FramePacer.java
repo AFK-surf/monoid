@@ -85,10 +85,6 @@ final class FramePacer {
         final long continuityGen;
         final long dispatchToken;
 
-        Taken(boolean app, boolean pictured, boolean external, boolean picturedPaced, long[] vsyncAt, long continuityGen) {
-            this(app, pictured, external, picturedPaced, vsyncAt, continuityGen, 0L);
-        }
-
         Taken(boolean app, boolean pictured, boolean external, boolean picturedPaced, long[] vsyncAt, long continuityGen, long dispatchToken) {
             this.app = app;
             this.pictured = pictured;

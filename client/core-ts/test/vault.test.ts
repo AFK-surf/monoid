@@ -5497,7 +5497,7 @@ test("vault.ask & standalone KeyAsk hardening: concurrent asks independent, cloc
   d2.core.close();
 });
 
-test("Direction 2A R5b: migrate() -> unsealOwn() revocation during second #ready() fails auth_stale before BOX_KEY read", async () => {
+test("Direction 2A R5b: unsealOwn() post-#ready() capability check intercepts revocation before BOX_KEY read during migrate()", async () => {
   for (const trigger of ["bumpVault", "bumpWorkspace", "vault.lock"] as const) {
     const r = await rig();
     r.putLock();
@@ -5528,19 +5528,42 @@ test("Direction 2A R5b: migrate() -> unsealOwn() revocation during second #ready
     const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
     assert.equal(vaults().vaults.find((v: any) => v.id === ownId)?.open, false, `${trigger}: vault starts locked after restart`);
 
-    const enteredSecondReady = Deferred.makeUnsafe<void>();
-    const releaseSecondReady = Deferred.makeUnsafe<void>();
-    let signerLoads = 0;
+    // Explicitly observe migrate()'s `wsCap.narrowVault(ownId)` boundary (which runs strictly after
+    // migrate()'s own #ready() and immediately before entering unsealOwn()) so suspension inside
+    // unsealOwn()'s #ready() does not rely on fragile Signer.KEY call-count assumptions.
+    let migrateReadyCompleted = false;
+    let narrowCalls = 0;
+    const origWsCap = r.core.inner.store.authGen.vaultWorkspaceCapability.bind(r.core.inner.store.authGen);
+    r.core.inner.store.authGen.vaultWorkspaceCapability = (ws, opts) => {
+      const cap = origWsCap(ws, opts);
+      const origNarrow = cap.narrowVault.bind(cap);
+      cap.narrowVault = (vaultId) => {
+        narrowCalls++;
+        if (vaultId === ownId && narrowCalls === 1) {
+          migrateReadyCompleted = true;
+        }
+        return origNarrow(vaultId);
+      };
+      return cap;
+    };
+
+    const enteredUnsealOwnReady = Deferred.makeUnsafe<void>();
+    const releaseUnsealOwnReady = Deferred.makeUnsafe<void>();
+    let signerLoadsBeforeUnsealOwn = 0;
+    let signerLoadsInUnsealOwn = 0;
     let boxKeyReads = 0;
     const origSecGet = r.host.secureGet!.bind(r.host);
     r.host.secureGet = (k, reason) => {
       if (k === Signer.KEY) {
         return Effect.gen(function* () {
-          signerLoads++;
-          // 1st Signer.KEY read belongs to migrate()'s own #ready(); suspend strictly on the 2nd inside unsealOwn()'s #ready().
-          if (signerLoads === 2) {
-            yield* Deferred.succeed(enteredSecondReady, undefined);
-            yield* Deferred.await(releaseSecondReady);
+          if (!migrateReadyCompleted) {
+            signerLoadsBeforeUnsealOwn++;
+          } else {
+            signerLoadsInUnsealOwn++;
+            if (signerLoadsInUnsealOwn === 1) {
+              yield* Deferred.succeed(enteredUnsealOwnReady, undefined);
+              yield* Deferred.await(releaseUnsealOwnReady);
+            }
           }
           return yield* origSecGet(k, reason);
         });
@@ -5566,11 +5589,14 @@ test("Direction 2A R5b: migrate() -> unsealOwn() revocation during second #ready
     });
 
     const migratePromise = r.ask("vault.migrate", {});
-    await Effect.runPromise(Deferred.await(enteredSecondReady));
-    assert.equal(signerLoads, 2, `${trigger}: must pass migrate()'s 1st #ready() and suspend inside unsealOwn()'s 2nd #ready()`);
-    assert.equal(boxKeyReads, 0, `${trigger}: must not read BOX_KEY while suspended inside 2nd #ready()`);
+    await Effect.runPromise(Deferred.await(enteredUnsealOwnReady));
+    assert.equal(migrateReadyCompleted, true, `${trigger}: migrate()'s first #ready() must have completed and narrowed ownCap`);
+    assert.equal(narrowCalls, 1, `${trigger}: must be suspended inside unsealOwn()'s #ready() before its per-vault narrowVault loop`);
+    assert.ok(signerLoadsBeforeUnsealOwn >= 1, `${trigger}: migrate()'s own #ready() must have loaded Signer.KEY`);
+    assert.equal(signerLoadsInUnsealOwn, 1, `${trigger}: suspended on unsealOwn()'s #ready() Signer.KEY load`);
+    assert.equal(boxKeyReads, 0, `${trigger}: must not read BOX_KEY while suspended inside unsealOwn()'s #ready()`);
 
-    // Revoke capability while unsealOwn() is suspended inside its 2nd #ready().
+    // Revoke capability while unsealOwn() is suspended inside its #ready().
     if (trigger === "bumpVault") {
       r.core.inner.store.authGen.bumpVault("ws", ownId);
     } else if (trigger === "bumpWorkspace") {
@@ -5578,11 +5604,11 @@ test("Direction 2A R5b: migrate() -> unsealOwn() revocation during second #ready
     } else {
       await r.ask("vault.lock", {});
     }
-    Effect.runSync(Deferred.succeed(releaseSecondReady, undefined));
+    Effect.runSync(Deferred.succeed(releaseUnsealOwnReady, undefined));
 
     await fails(migratePromise, "auth_stale");
-    assert.equal(boxKeyReads, 0, `${trigger}: unsealOwn() must intercept stale cap before calling #key()/BOX_KEY read`);
-    assert.equal(signerLoads, 2, `${trigger}: must complete without retrying #ready()`);
+    assert.equal(boxKeyReads, 0, `${trigger}: unsealOwn() post-#ready() capability check must intercept before #key()/BOX_KEY read`);
+    assert.equal(signerLoadsInUnsealOwn, 1, `${trigger}: unsealOwn() must fail immediately without retrying #ready()`);
     assert.equal(vaults().vaults.find((v: any) => v.id === ownId)?.open, false, `${trigger}: vault must remain locked`);
     assert.equal(itemWrites, 0, `${trigger}: stale migrate/unsealOwn must perform 0 item writes`);
     assert.equal(plainDeletes, 0, `${trigger}: stale migrate/unsealOwn must perform 0 deletePlain writes`);

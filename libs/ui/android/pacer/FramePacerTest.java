@@ -2451,6 +2451,44 @@ public final class FramePacerTest {
                         + ", sameBeatReposted=" + sameBeatReposted + ", backwardDispatched=" + backwardDispatched);
     }
 
+    /**
+     * Regression: wantImmediateFrame() mid-frame after wall-clock frameNow() must NOT clear
+     * appDispatchedFromWallClock, so a same-beat latched vsyncCame(T, activeGen) still deduplicates
+     * without requesting an extra render or regressing vsyncAt, and re-posts a fresh generation.
+     */
+    static void wantImmediateFramePreservesFrameNowWallClockDedupCase() {
+        Phone ph = new Phone(120, 3, true, 200_000);
+        ph.onMain = true;
+        long t = 12 * ph.period;
+        long wallNow = t + 1_000_000L; // 1 ms after latched T (< period / 2)
+
+        ph.now = wallNow;
+        ph.pacer.frameNow();
+        FramePacer.Taken tk1 = ph.pacer.takeRender();
+
+        ph.pacer.wantImmediateFrame();
+        FramePacer.Taken tk2 = ph.pacer.takeRender();
+        FramePacer.Begun b2 = ph.pacer.begin(tk2.vsyncAt, wallNow + 200_000L, tk2.external, tk2.continuityGen);
+        ph.pacer.ended(true, false, b2.following, 0f, b2.externalDemand);
+
+        long activeGen = ph.pacer.scheduler.activeVsyncGen();
+        int rendersBefore = ph.renderRequests;
+        int postsBefore = ph.vsyncPosts;
+        ph.pacer.vsyncCame(t, t + 2 * ph.period, activeGen);
+        long rearmedGen = ph.pacer.scheduler.activeVsyncGen();
+
+        boolean noExtraRender = ph.renderRequests == rendersBefore && !ph.pacer.scheduler.isAppDispatched();
+        boolean reposted = ph.vsyncPosts == postsBefore + 1 && rearmedGen != 0L && rearmedGen != activeGen;
+        boolean vsyncNotRegressed = ph.pacer.vsyncAt()[0] == wallNow;
+        boolean monotonicTokens = tk1.app && tk2.app && tk1.dispatchToken > 0L && tk2.dispatchToken > tk1.dispatchToken;
+
+        check("wantImmediateFrame after frameNow preserves wall-clock same-beat dedup and re-posts fresh gen",
+                noExtraRender && reposted && vsyncNotRegressed && monotonicTokens,
+                "noExtraRender=" + noExtraRender + ", reposted=" + reposted
+                        + " (activeGen=" + activeGen + "->" + rearmedGen + "), vsyncAt0=" + ph.pacer.vsyncAt()[0]
+                        + "/" + wallNow + ", tokens=" + tk1.dispatchToken + "->" + tk2.dispatchToken);
+    }
+
     public static void main(String[] args) throws IOException {
         motionCase("a motion of 1 ms CPU and 1 ms GPU a frame shows a new frame at every refresh", 1, 1, true);
         motionCase("a motion of 0.5 ms CPU and 7 ms GPU a frame (the GPU under a refresh) shows a new frame at every refresh", 0.5, 7, true);
@@ -2500,6 +2538,7 @@ public final class FramePacerTest {
         resetContinuityClearsInFlightWantedCase();
         askReadsNanoTimeInsideLockAndRejectsStaleOrNegativeAheadCase();
         dispatchTokenMonotonicAndBackwardVsyncFailOpenCase();
+        wantImmediateFramePreservesFrameNowWallClockDedupCase();
         if (args.length > 0) {
             replay(args[0], 1);
             replay(args[0], 7);

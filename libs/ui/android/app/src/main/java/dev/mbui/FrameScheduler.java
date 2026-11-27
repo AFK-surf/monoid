@@ -3,23 +3,25 @@ package dev.mbui;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Pure Android frame-scheduling state machine with single-lock ownership where Choreographer vsync
- * slot ownership, same-beat deduplication, and per-frame dispatch identity rely on explicit
- * monotonic tokens rather than mutable deduplication timestamps.
+ * Pure Android frame-scheduling state machine with single-lock ownership.
  *
- * <p>Production callbacks use the generation-tagged 3-arg path
+ * <p>Slot ownership and release rely strictly on monotonic callback generations ({@link #activeVsyncGen}),
+ * never timestamps: production callbacks use the generation-tagged 3-arg path
  * ({@link FramePacer.Platform#postVsync(long)} -> {@link #vsyncCame(long, long, long)}), where each
  * callback releases only its own {@code activeVsyncGen} slot and stale generations are ignored.
  * Legacy untagged 2-arg {@code vsyncCame(t, shows)} ({@code gen == 0L}) fails open by releasing
  * the slot and re-arming whenever undispatched demand exists.
  *
- * <p>Each latched beat receives a strictly monotonic {@link #currentBeatSeq} and each dispatched
- * app frame receives a strictly monotonic {@link #activeDispatchToken} (propagated through
- * {@link FramePacer.Taken#dispatchToken} and used for same-beat external demand attribution).
- * Choreographer {@code vsyncAt} timestamps are kept strictly for timeline reporting, {@link #aheadBeatSeq}
- * prefetch expiry, and binding independent same-beat platform callbacks ({@code vsyncCame} /
- * {@code fireWake} / wall-clock {@code frameNow}) to the active beat; timestamps never refuse
- * releasing a vsync slot.
+ * <p>Kept-ahead beat tracking uses monotonic beat sequences ({@link #currentBeatSeq},
+ * {@link #appDispatchedBeatSeq}, {@link #aheadBeatSeq}), and per-frame app dispatch identity and
+ * same-beat external demand attribution use monotonic dispatch tokens ({@link #activeDispatchToken},
+ * {@link #takenDispatchToken}, {@link #externalForToken}, propagated through
+ * {@link FramePacer.Taken#dispatchToken}). Because Android delivers independent Choreographer
+ * callbacks ({@code vsyncCame}, {@code fireWake}, and wall-clock {@code frameNow}) without a shared
+ * frame ID, {@link #isSameDispatchedBeatLocked(long)} still matches incoming timestamps against
+ * {@link #appDispatchedBeatNs} (plus a half-period window when {@link #appDispatchedFromWallClock}
+ * is true), and {@link #vsyncAt} is kept for timeline reporting and {@link #aheadBeatSeq} prefetch
+ * expiry; timestamps never refuse releasing a vsync slot.
  *
  * <p>Constructive liveness invariant (fail-open): whenever undispatched demand exists
  * ({@code (appWanted && !appDispatched) || picturesOnly}), at least one of the following holds once
@@ -253,7 +255,7 @@ final class FrameScheduler {
             if (!wasDispatched || activeDispatchToken == 0L) {
                 activeDispatchToken = ++nextDispatchToken;
             }
-            if (currentBeatSeq != 0L) {
+            if (currentBeatSeq != 0L && appDispatchedBeatSeq != currentBeatSeq) {
                 appDispatchedBeatSeq = currentBeatSeq;
                 if (vsyncAt[0] != 0L) {
                     appDispatchedBeatNs = vsyncAt[0];
@@ -318,7 +320,7 @@ final class FrameScheduler {
             if (shows != 0L && vsyncAt[0] == t && vsyncAt[1] == 0L) {
                 vsyncAt = new long[] {t, shows};
             }
-            if (isSameDispatchedBeatLocked(t)) {
+            if ((!imeMoving || appDispatchedFromWallClock) && isSameDispatchedBeatLocked(t)) {
                 act = handleDuplicateVsyncLocked(gen);
             } else if (imeMoving) {
                 deferredVsyncT = t;
@@ -627,18 +629,6 @@ final class FrameScheduler {
     long activeVsyncGen() {
         synchronized (lock) {
             return activeVsyncGen;
-        }
-    }
-
-    long activeDispatchToken() {
-        synchronized (lock) {
-            return activeDispatchToken;
-        }
-    }
-
-    long takenDispatchToken() {
-        synchronized (lock) {
-            return takenDispatchToken;
         }
     }
 
