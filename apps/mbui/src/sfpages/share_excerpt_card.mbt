@@ -47,17 +47,17 @@ let ex_shot_prefix : String = "share-excerpt/shot"
 // ── selection-share registry (wired from chat_quote_node to sfdesk/context_menu) ──
 
 ///|
-/// Active chat pages able to share their current single-message selection as an image.
+/// Active chat pages able to act on their current single-message text selection: `(quote, share_excerpt)`.
 // kept across runs: cleared by excerpt_share_reset and each view's on-dispose hook
-let excerpt_resolvers : Map[Int, () -> (() -> Unit)?] = Map([])
+let excerpt_resolvers : Map[Int, () -> (() -> Unit, () -> Unit)?] = Map([])
 
 ///|
 // kept across runs: monotonically incremented handle id, reset in excerpt_share_reset
 let excerpt_resolver_seq : Ref[Int] = Ref(0)
 
 ///|
-/// Registers a chat list's selection-share resolver for the lifetime of `v`.
-fn excerpt_share_register(v : @view.View, resolve : () -> (() -> Unit)?) -> Unit {
+/// Registers a chat list's selection actions `(quote, share_excerpt)` for the lifetime of `v`.
+fn excerpt_share_register(v : @view.View, resolve : () -> (() -> Unit, () -> Unit)?) -> Unit {
   excerpt_resolver_seq.val += 1
   let id = excerpt_resolver_seq.val
   excerpt_resolvers[id] = resolve
@@ -65,10 +65,10 @@ fn excerpt_share_register(v : @view.View, resolve : () -> (() -> Unit)?) -> Unit
 }
 
 ///|
-/// Returns the share-as-image action for the currently active single-message selection, if any.
+/// Returns `(quote, share_excerpt)` actions for the currently active single-message selection, if any.
 /// Called by `sfdesk/context_menu.mbt` only when `context.words` is non-empty within the right-clicked scope.
-pub fn excerpt_share_for_picked() -> (() -> Unit)? {
-  let mut found : (() -> Unit)? = None
+pub fn excerpt_share_for_picked() -> (() -> Unit, () -> Unit)? {
+  let mut found : (() -> Unit, () -> Unit)? = None
   excerpt_resolvers.each(fn(_, f) {
     if found is None {
       found = f()
@@ -193,8 +193,14 @@ fn ex_is_grapheme_extender(c : Char) -> Bool {
 }
 
 ///|
-/// Tokenizes `text` into atomic chunks (keeping Latin words and ZWJ/combining emoji clusters whole so wrapping and
-/// color-band transitions never split mid-word or mid-grapheme).
+fn ex_is_regional_indicator(c : Char) -> Bool {
+  let code = c.to_int()
+  code >= 0x1F1E6 && code <= 0x1F1FF
+}
+
+///|
+/// Tokenizes `text` into atomic chunks (keeping Latin words, flag pairs, and ZWJ/combining emoji clusters whole so
+/// wrapping and color-band transitions never split mid-word or mid-grapheme).
 fn ex_fade_tokens(text : String) -> Array[String] {
   let cs = text.to_array()
   let tokens : Array[String] = []
@@ -207,6 +213,9 @@ fn ex_fade_tokens(text : String) -> Array[String] {
         i += 1
       }
       tokens.push(String::from_array(cs[start:i].to_owned()))
+    } else if ex_is_regional_indicator(c) && i + 1 < cs.length() && ex_is_regional_indicator(cs[i + 1]) {
+      tokens.push(String::from_array(cs[i:i + 2].to_owned()))
+      i += 2
     } else {
       let start = i
       i += 1

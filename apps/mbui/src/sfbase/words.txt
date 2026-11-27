@@ -922,6 +922,7 @@ web-main.chat.shareExcerpt.mode
 web-main.chat.shareExcerpt.pages
 web-main.chat.shareExcerpt.pagesCapped
 web-main.chat.shareExcerpt.pagesNotice
+web-main.chat.shareExcerpt.pill
 web-main.chat.shareExcerpt.save
 web-main.chat.shareExcerpt.saveAll
 web-main.chat.shareExcerpt.savePage

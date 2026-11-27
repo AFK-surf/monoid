@@ -26,7 +26,7 @@ pub struct ContextMenu {
   mut share_link : String
   mut share_words : String
   mut share_key : String
-  mut share_excerpt : (() -> Unit)?
+  mut share_excerpt : (() -> Unit, () -> Unit)?
 }
 
 ///|
@@ -372,6 +372,7 @@ fn context_items() -> Array[@sf.MenuItem?] {
     let image = context.image
     item("desktop.contextMenu.copyImage", "copy", fn() { context_copying.set(image) }, false)
   }
+  let has_selection = context.field == 0 && context.words.trim(chars=" \n\t") != ""
   if context.field != 0 {
     let (field, can) = (context.field, context.field_can)
     group()
@@ -384,28 +385,35 @@ fn context_items() -> Array[@sf.MenuItem?] {
       let what = x.0
       item(x.1, x.2, fn() { @ui.field_edit_now(field, what) }, (can & what) == 0)
     }
-  } else if context.words.trim(chars=" \n\t") != "" {
+  } else if has_selection {
+    // When message text is selected, show only the focused selection actions (引用 / 复制 / 分享为图片) without mixing
+    // whole-message actions (复制消息 / 复制消息链接 / 多选) underneath.
     group()
     let words = context.words
-    item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
     match context.share_excerpt {
-      Some(go_excerpt) => item("web-main.chat.shareExcerpt", "share", go_excerpt, false)
-      None => ()
+      Some((go_quote, go_excerpt)) => {
+        item("web-main.chat.quote", "quote", go_quote, false)
+        item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
+        item("web-main.chat.shareExcerpt", "share", go_excerpt, false)
+      }
+      None => item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
     }
   }
-  match context.share {
-    Some(go) => {
-      group()
-      let (words, link) = (context.share_words, context.share_link)
-      if words.trim(chars=" \n\t") != "" {
-        item("web-main.chat.copyMessage", "copy", fn() { @sfbase.copy_out(words, said=@sf.t("common.copied")) }, false)
+  if !has_selection {
+    match context.share {
+      Some(go) => {
+        group()
+        let (words, link) = (context.share_words, context.share_link)
+        if words.trim(chars=" \n\t") != "" {
+          item("web-main.chat.copyMessage", "copy", fn() { @sfbase.copy_out(words, said=@sf.t("common.copied")) }, false)
+        }
+        if link != "" {
+          item("web-main.chat.copyMessageLink", "link", fn() { @sfbase.copy_out(link, said=@sf.t("common.link.copied")) }, false)
+        }
+        item("web-main.chat.selectMessages", "check-circle", go, false)
       }
-      if link != "" {
-        item("web-main.chat.copyMessageLink", "link", fn() { @sfbase.copy_out(link, said=@sf.t("common.link.copied")) }, false)
-      }
-      item("web-main.chat.selectMessages", "check-circle", go, false)
+      None => ()
     }
-    None => ()
   }
   items
 }
@@ -413,6 +421,7 @@ fn context_items() -> Array[@sf.MenuItem?] {
 ///|
 /// The message the menu is open for told (sfbase's message_menu): its row lit while it is, none once it is gone.
 fn context_lit() -> Unit {
+  @sfbase.context_menu_open.set(context.open)
   @sfbase.message_menu.set(if context.open && context.share is Some(_) { context.share_key } else { "" })
 }
 

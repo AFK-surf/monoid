@@ -942,6 +942,7 @@ let en : Map[String, String] = {
   "web-main.chat.shareExcerpt.pages": "Series ({count} cards)",
   "web-main.chat.shareExcerpt.pagesCapped": "{total} chars · max {pages} cards ({shown} chars shown)",
   "web-main.chat.shareExcerpt.pagesNotice": "{total} chars · split into {pages} cards",
+  "web-main.chat.shareExcerpt.pill": "Share",
   "web-main.chat.shareExcerpt.save": "Save image",
   "web-main.chat.shareExcerpt.saveAll": "Save all",
   "web-main.chat.shareExcerpt.savePage": "Save card",

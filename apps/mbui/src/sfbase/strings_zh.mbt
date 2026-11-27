@@ -930,6 +930,7 @@ let zh : Map[String, String] = {
   "web-main.chat.shareExcerpt.pages": "分页卡片（{count} 张）",
   "web-main.chat.shareExcerpt.pagesCapped": "共 {total} 字 · 最多 {pages} 张（已展示 {shown} 字）",
   "web-main.chat.shareExcerpt.pagesNotice": "共 {total} 字 · 已拆分为 {pages} 张卡片",
+  "web-main.chat.shareExcerpt.pill": "分享图",
   "web-main.chat.shareExcerpt.save": "保存图片",
   "web-main.chat.shareExcerpt.saveAll": "保存全部",
   "web-main.chat.shareExcerpt.savePage": "保存本页",

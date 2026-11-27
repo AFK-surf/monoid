@@ -95,6 +95,12 @@ pub let share_offered : @signals.Signal[(Double, Double, () -> Unit, String, Str
 pub let message_menu : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
 
 ///|
+/// Whether the desktop right-click context menu is currently open (even on rows without `share`, such as unsent
+/// messages), so the floating selection pill hides while the menu is showing.
+// kept across runs: false as a run begins (pick_reset)
+pub let context_menu_open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
 /// The message whose ⋯'s menu is open on the page made as nodes (its key, as its MessageShare says it; "" none), told
 /// by its ⋯ as it opens that menu and as the menu goes: the message lit meanwhile, every piece of a long one, whichever
 /// piece's ⋯ opened it (message_menu_on).
@@ -173,6 +179,7 @@ pub fn pick_reset() -> Unit {
   pk.link = ""
   share_offered.set(None)
   message_menu.set("")
+  context_menu_open.set(false)
   message_more.set("")
   pk.taken_at = -1
   pk.sel.reset()

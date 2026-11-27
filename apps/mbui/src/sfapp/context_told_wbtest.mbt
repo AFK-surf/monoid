@@ -90,7 +90,7 @@ test "大屏聊天页与右侧执行历史面板同开：从左栏消息拖入�
 }
 
 ///|
-test "大屏: 选中对话正文后右键出现「分享为图片」，点击打开分享图预览并支持复制与保存" {
+test "大屏: 划词浮条并列「引用 | 分享图」，右键菜单与浮条互斥且严格分治，两条入口均可打开分享图并复制保存" {
   let t = wide_tester([], mode="chat")
   t.run_for(@ui.move_most_ms)
   for _ in 0..<12 {
@@ -101,13 +101,38 @@ test "大屏: 选中对话正文后右键出现「分享为图片」，点击打
   }
   t.run_for(@ui.move_most_ms)
   let (x, y, w, h) = words_rect(t, "第二屏的插画")
-  // Drag across part of the message text, then right-click inside it.
-  t.drag(x + 2.0, y + h / 2.0, x + w - 2.0, y + h / 2.0)
-  t.run_for(@ui.move_most_ms)
+  // 0. Right-clicking message without selection shows ONLY whole-message items (no 分享为图片).
   t.right_click(x + w / 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息") is Some(_), msg="expected 复制消息 when right-clicking without selection")
+  assert_true(t.find("多选") is Some(_), msg="expected 多选 when right-clicking without selection")
+  assert_true(t.find("分享为图片") is None, msg="expected no 分享为图片 when right-clicking without selection")
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms)
+  // 1. Drag-selecting text shows the floating pill with both 引用 and 分享图; clicking 分享图 opens the card directly.
+  t.drag(x + 2.0, y + h / 2.0, x + w - 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("引用") is Some(_), msg="expected 引用 on floating selection pill")
+  assert_true(t.find("分享图") is Some(_), msg="expected 分享图 on floating selection pill")
+  t.tap_text("分享图")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("保存图片") is Some(_), msg="expected share card stage opened from floating pill 分享图")
+  assert_eq(t.audit(), [])
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms)
+  // 2. Drag again, then right-click inside selection: floating pill hides and only 3 selection actions appear.
+  t.drag(x + 2.0, y + h / 2.0, x + w - 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("分享图") is Some(_), msg="expected floating pill 分享图 before right-click")
+  t.right_click(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("分享图") is None, msg="floating pill 分享图 must hide while right-click menu is open")
+  assert_true(t.find("引用") is Some(_), msg="expected 引用 in selection context menu")
   assert_true(t.find("复制") is Some(_), msg="expected 复制 in selection context menu")
   assert_true(t.find("分享为图片") is Some(_), msg="expected 分享为图片 in selection context menu")
+  // Whole-message items must NOT clutter the focused text-selection menu.
+  assert_true(t.find("复制消息") is None, msg="expected no 复制消息 in text-selection context menu")
+  assert_true(t.find("多选") is None, msg="expected no 多选 in text-selection context menu")
   t.tap_text("分享为图片")
   t.run_for(@ui.move_most_ms)
   // Share card stage opened with Copy image & Save image buttons and zero audit faults.
