@@ -2533,6 +2533,7 @@ web-pages.profiles.disableConfirm
 web-pages.profiles.disableCopyBody
 web-pages.profiles.disabled
 web-pages.profiles.disableKeyBody
+web-pages.profiles.disableProfileBody
 web-pages.profiles.env
 web-pages.profiles.envAdd
 web-pages.profiles.envLead

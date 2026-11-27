@@ -260,8 +260,9 @@ fn profile_keys(core : Core, here : () -> Here, o : () -> Json?, p : () -> Json?
   let machine = flag(pv, "machine")
   let signs_in = kind == "subscription" || kind == "service" || flag(access, "login")
   let asked = sign_asked(pv)
+  let disabled = has(pv, "enabled") && !flag(pv, "enabled")
   let out : Array[String] = []
-  if !copy && signs_in && !machine && asked {
+  if !copy && signs_in && !machine && (if disabled { signing_in(pv) } else { asked }) {
     out.push("sign-in")
   } else if field(pv, "trouble") is Some(Object(_)) && text(field(pv, "trouble"), "action") != "login" {
     out.push("trouble")
@@ -559,10 +560,10 @@ fn profile_more_node(a : @view.View, core : Core, here : () -> Here, address : S
 }
 
 ///|
-/// Its menu, beside what opened it (`from`): renaming it (but the machine's own), turning a key's off or on, deleting
-/// it (the machine's own login: stopping it, the login stays the machine's), asked first. A copy of another station's
-/// is edited there: here only whether this station uses it (停用, 启用: `profile.put` `enabled`, kept by its station as
-/// the copy is refreshed).
+/// Its menu, beside what opened it (`from`): renaming it (but the machine's own), turning a non-machine profile off or
+/// on, deleting it (the machine's own login: stopping it, the login stays the machine's), asked first. A copy of another
+/// station's is edited there: here only whether this station uses it (停用, 启用: `profile.put` `enabled`, kept by its
+/// station as the copy is refreshed).
 fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @sf.Beside) -> Unit {
   let id = text(p, "id")
   let on = [("station", address), ("id", id)]
@@ -570,7 +571,7 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
   let copy = profile_copy(p)
   let access = field(p, "access")
   let keyed = ["api-provider", "anthropic-api", "opencode-go"].contains(text(access, "kind")) && !flag(access, "login")
-  let can_disable = (keyed && has(p, "enabled")) || profile_pausable(p)
+  let can_disable = (!machine && !copy && has(p, "enabled")) || profile_pausable(p)
   let item = if machine { @sf.t("web-pages.profiles.disable") } else { @sf.t("web-pages.profiles.delete") }
   let remove = fn() {
     let (title, words) = if machine {
@@ -644,7 +645,15 @@ fn profile_menu(core : Core, here : Here, address : String, p : Json?, from : @s
     }
     items.push(Some(@sf.menu_item_of(label, icon="power", disabled=is_doing(core, ["profile.put"], on), fn() {
       if enabled {
-        let words = @sf.t(if copy { "web-pages.profiles.disableCopyBody" } else { "web-pages.profiles.disableKeyBody" })
+        let words = @sf.t(
+          if copy {
+            "web-pages.profiles.disableCopyBody"
+          } else if keyed {
+            "web-pages.profiles.disableKeyBody"
+          } else {
+            "web-pages.profiles.disableProfileBody"
+          },
+        )
         confirm(@sf.t("web-pages.profiles.disableConfirm", args=[("name", text(p, "name"))]), words, label, danger=true, change)
       } else {
         change()

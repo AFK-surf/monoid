@@ -54,9 +54,11 @@ test("outdated models are unchecked once, each replaced by the newest of its lin
       { id: "b", home: "homes/b", models: ["gpt-6-sol", "gpt-6.1-sol", "gpt-5.6-terra", "gpt-6-astra"] },
       // Its check does not list a newer one (maybe not yet): left until one does.
       { id: "later", home: "homes/later", access: { kind: "subscription" }, models: ["claude-sonnet-4-6", "claude-opus-5-5"] },
-      // A subscription whose account no longer runs it: unchecked, unless it is all the profile has.
+      // A subscription whose account no longer runs it: dropped, deleting models when none remain so it runs `found`.
       { id: "gone", home: "homes/gone", access: { kind: "subscription" }, models: ["gpt-5.6-terra", "gpt-6.1-sol"] },
       { id: "only", home: "homes/only", access: { kind: "subscription" }, models: ["gpt-5.6-terra"] },
+      // Subscription with no check models yet: kept until checked.
+      { id: "unchecked", home: "homes/unchecked", access: { kind: "subscription" }, models: ["gpt-6.2-astra"] },
       // Another station's, changed there.
       { id: "lent", home: "homes/lent", models: ["claude-opus-5"], share: { borrowed: true } },
       // Unchecked here before and checked again by hand.
@@ -81,7 +83,8 @@ test("outdated models are unchecked once, each replaced by the newest of its lin
       ["gpt-6.1-sol", "gpt-5.6-terra", "gpt-6-astra"],
       ["claude-sonnet-4-6", "claude-opus-5-5"],
       ["gpt-6.1-sol"],
-      ["gpt-5.6-terra"],
+      undefined,
+      ["gpt-6.2-astra"],
       ["claude-opus-5"],
       ["claude-opus-4-8"],
       undefined,
@@ -91,8 +94,29 @@ test("outdated models are unchecked once, each replaced by the newest of its lin
     { profile: "a", removed: ["claude-opus-4-6", "claude-haiku-4-5-20251001", "claude-fable-5-1"], added: ["claude-opus-5-5", "claude-haiku-5-5", "claude-fable-5-2"] },
     { profile: "b", removed: ["gpt-6-sol"], added: [] },
     { profile: "gone", removed: ["gpt-5.6-terra"], added: [] },
+    { profile: "only", removed: ["gpt-5.6-terra"], added: [] },
   ]);
   assert.equal(raw.profiles[0].model, "claude-fable-5-2");
   assert.deepEqual(raw.connects.map((c: any) => c.bind.model), ["claude-fable-5-2", "gpt-5.6-terra"]);
-  assert.deepEqual([...unchecked].sort(), ["claude-fable-5-1", "claude-haiku-4-5", "claude-opus-4-6", "gpt-5.6-terra", "gpt-6-sol"]);
+  assert.deepEqual([...unchecked].sort(), ["claude-fable-5-1", "claude-haiku-4-5", "claude-opus-4-6", "gpt-6-sol"]);
+});
+
+test("downgraded subscription drops all unsupported models without poisoning outdatedUnchecked", () => {
+  const raw: any = {
+    profiles: [
+      { id: "downgraded", home: "homes/d", access: { kind: "subscription" }, model: "gpt-6.2-astra", models: ["gpt-6.1-terra", "gpt-6.2-astra"] },
+      { id: "second", home: "homes/s", access: { kind: "subscription" }, models: ["gpt-6.2-astra"] },
+    ],
+  };
+  const freeModels = ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna"];
+  // Even if gpt-6.2-astra was somehow in done, a subscription tier that no longer offers it must still drop it.
+  const { changes, unchecked } = uncheckOutdated(raw, () => freeModels, new Set(["gpt-6.2-astra"]));
+  assert.equal(raw.profiles[0].models, undefined);
+  assert.equal(raw.profiles[0].model, undefined);
+  assert.equal(raw.profiles[1].models, undefined);
+  assert.deepEqual(changes, [
+    { profile: "downgraded", removed: ["gpt-6.1-terra", "gpt-6.2-astra"], added: [] },
+    { profile: "second", removed: ["gpt-6.2-astra"], added: [] },
+  ]);
+  assert.deepEqual([...unchecked], []);
 });

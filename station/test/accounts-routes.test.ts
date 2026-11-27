@@ -31,7 +31,7 @@ const member = viewer("dev@example.com", "member");
 
 type Rig = Awaited<ReturnType<typeof rig>>;
 
-async function rig(o: { approval?: string; data?: string; store?: Store; quota?: { n: number }; readQuota?: AccountsDeps["quota"]; resetQuota?: AccountsDeps["resetQuota"]; codex?: AccountsDeps["codex"]; hub?: AccountsDeps["hub"]; hermes?: AccountsDeps["hermes"]; machine?: MachineLogins; check?: AccountsDeps["check"]; checkOnStart?: boolean; discover?: AccountsDeps["discover"]; review?: AccountsDeps["reviewUndecided"]; clock?: Clock.Clock; workspaces?: string[]; shared?: AccountsDeps["shared"]; urls?: AccountsDeps["urls"]; claudeVersion?: string; ownReset?: boolean } = {}) {
+async function rig(o: { approval?: string; data?: string; store?: Store; quota?: { n: number }; readQuota?: AccountsDeps["quota"]; resetQuota?: AccountsDeps["resetQuota"]; codex?: AccountsDeps["codex"]; hub?: AccountsDeps["hub"]; hermes?: AccountsDeps["hermes"]; machine?: MachineLogins; check?: AccountsDeps["check"]; checkOnStart?: boolean; discover?: AccountsDeps["discover"]; review?: AccountsDeps["reviewUndecided"]; clock?: Clock.Clock; workspaces?: string[]; shared?: AccountsDeps["shared"]; urls?: AccountsDeps["urls"]; claudeVersion?: string; ownReset?: boolean; loginBack?: AccountsDeps["loginBack"] } = {}) {
   const data = o.data ?? temp("routes");
   const path = join(data, "config.json");
   if (!existsSync(path)) {
@@ -79,6 +79,7 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
     workspaces: () => o.workspaces ?? [],
     shared: o.shared,
     urls: o.urls,
+    loginBack: o.loginBack,
     ...(o.claudeVersion !== undefined ? { claudeVersion: () => o.claudeVersion! } : {}),
   });
   accounts.start();
@@ -2023,6 +2024,138 @@ test("sharedAdded checks newly borrowed keyed and subscription profiles without 
     await t.accounts.sharedChanged("bv", false);
     assert.deepEqual(checkedKeys, ["k1", "k2"]);
     assert.deepEqual(t.accounts.health("bv").check?.models, ["gemini-4-neon", "gemini-4-pro"]);
+    assert.equal(lendCalls, 0);
+  } finally {
+    await t.close();
+  }
+});
+
+test("disabling and re-enabling a subscription profile moves sessions off, calls loginBack, and refreshes quota", async () => {
+  const data = temp("reenable-sub");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{ id: "cx", runtime: "codex", home: "homes/cx", access: { kind: "subscription" } }],
+    connects: [],
+  }));
+  const back: string[] = [];
+  const gone: string[] = [];
+  let quotaCalls = 0;
+  const t = await rig({
+    data,
+    hub: { accounts: { setHealth: () => {}, healthOf: () => ({}) }, profileGone: async (id) => { gone.push(id); } },
+    loginBack: (id) => { back.push(id); },
+    readQuota: async () => {
+      quotaCalls++;
+      return { state: "ok", windows: [{ label: "每周", usedPercent: 10, resetsAt: null }], detail: null, checkedAt: 1, plan: "pro" };
+    },
+  });
+  try {
+    await t.accounts.check("cx");
+    await until(() => quotaCalls >= 1, "initial quota read finishes");
+    await settle();
+    back.length = 0;
+    quotaCalls = 0;
+
+    assert.equal((await t.call("PUT", "/profiles/cx", { enabled: false }))[0], 200);
+    await settle();
+    assert.equal(t.view("cx")?.enabled, false);
+    assert.deepEqual(gone, ["cx"]);
+
+    assert.equal((await t.call("PUT", "/profiles/cx", { enabled: true }))[0], 200);
+    await until(() => quotaCalls >= 1, "re-enabling refreshes quota");
+    await settle();
+    assert.deepEqual(back, ["cx"]);
+    assert.equal(t.view("cx")?.enabled, true);
+    assert.notEqual(t.profile("cx")?.enabled, false);
+  } finally {
+    await t.close();
+  }
+});
+
+test("subscription plan downgrade observed by quota triggers recheck and drops unsupported legacy models", async () => {
+  const data = temp("plan-downgrade");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{
+      id: "cx",
+      runtime: "codex",
+      home: "homes/cx",
+      access: { kind: "subscription" },
+      models: ["gpt-6.1-terra", "gpt-6.2-astra"],
+    }],
+    connects: [],
+  }));
+  let tier: "pro" | "free" = "pro";
+  let checkCalls = 0;
+  const t = await rig({
+    data,
+    check: async () => {
+      checkCalls++;
+      // Even if a stale JWT keeps check.plan at "pro" after downgrade, model/list reflects the Free tier.
+      return tier === "pro"
+        ? { state: "ok", detail: "pro", plan: "pro", models: ["gpt-6.1-terra", "gpt-6.2-astra", "gpt-6-luna"], checkedAt: 1 }
+        : { state: "ok", detail: "free", plan: "pro", models: ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna"], checkedAt: 2 };
+    },
+    readQuota: async () => (
+      tier === "pro"
+        ? { state: "ok", windows: [{ label: "每周", usedPercent: 58, resetsAt: null }], detail: null, checkedAt: 1, plan: "pro" }
+        : { state: "ok", windows: [{ label: "每月", usedPercent: 1, resetsAt: null }], detail: null, checkedAt: 2, plan: "free" }
+    ),
+  });
+  try {
+    await t.accounts.check("cx");
+    await until(() => t.accounts.health("cx").quota?.plan === "pro", "initial quota read finishes");
+    await settle();
+    assert.equal(checkCalls, 1);
+    assert.ok(t.accounts.profiles().find((p) => p.id === "cx")?.models.includes("gpt-6.2-astra"));
+
+    // Subscription downgrades to Free; quota refresh detects plan change and triggers background recheck.
+    tier = "free";
+    await t.accounts.refreshQuota("cx");
+    await until(() => checkCalls >= 2, "plan change triggers recheck");
+    await settle();
+    const after = t.accounts.profiles().find((p) => p.id === "cx")!;
+    assert.deepEqual(after.models, ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna"]);
+    assert.equal(after.models.includes("gpt-6.2-astra"), false);
+    const raw = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+    assert.equal(raw.profiles[0].models, undefined);
+
+    // Subsequent quota rounds on the same Free plan must not keep re-triggering checks even if check.plan stays stale.
+    await t.accounts.refreshQuota("cx");
+    await settle();
+    assert.equal(checkCalls, 2);
+  } finally {
+    await t.close();
+  }
+});
+
+test("sharedChanged on a host-disabled borrowed subscription moves sessions off without lending credentials", async () => {
+  const data = temp("borrowed-disabled-changed");
+  writeFileSync(join(data, "config.json"), JSON.stringify({
+    profiles: [{
+      id: "bx",
+      runtime: "codex",
+      home: "homes/bx",
+      access: { kind: "subscription" },
+      enabled: false,
+      share: { id: "s1", borrowed: true, host: "H", hostOff: true },
+    }],
+    connects: [],
+  }));
+  const gone: string[] = [];
+  let statusCalls = 0;
+  let lendCalls = 0;
+  const t = await rig({
+    data,
+    hub: { accounts: { setHealth: () => {}, healthOf: () => ({}) }, profileGone: async (id) => { gone.push(id); } },
+    shared: {
+      status: async () => { statusCalls++; return { check: { state: "ok", detail: "host", models: null, checkedAt: 1 }, quota: null }; },
+      lendCodex: async () => { lendCalls++; return Date.now() + 86_400_000; },
+      view: () => null,
+    },
+  });
+  try {
+    await t.accounts.sharedChanged("bx", false);
+    assert.deepEqual(gone, ["bx"]);
+    assert.equal(statusCalls, 0);
     assert.equal(lendCalls, 0);
   } finally {
     await t.close();

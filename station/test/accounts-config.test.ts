@@ -214,3 +214,49 @@ test("google-vertex profile passes checkConfig with a key, runs agy only, is bil
   assert.equal(overridden.GOOGLE_APPLICATION_CREDENTIALS, vertexKeyFile(profile.home));
   assert.equal(overridden.GEMINI_API_KEY, undefined);
 });
+
+test("hubConfig filters stale legacy models on subscriptions against checked tier models while keeping context variants and API key models", () => {
+  const raw = {
+    profiles: [
+      { id: "free-codex", runtime: "codex", home: "homes/fc", access: { kind: "subscription" }, models: ["gpt-6.1-terra", "gpt-6.2-astra"] },
+      { id: "claude-1m", runtime: "claude", home: "homes/c1", access: { kind: "subscription" }, models: ["claude-opus-5-5[1m]", "claude-fable-5-2"] },
+      { id: "unchecked-sub", runtime: "codex", home: "homes/us", access: { kind: "subscription" }, models: ["gpt-6.2-astra"] },
+      { id: "api-key", home: "homes/ak", access: { kind: "api-provider", provider: "openai", key: "k" }, models: ["custom-preview-model"] },
+    ],
+  };
+  const found: Record<string, string[] | null> = {
+    "free-codex": ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna"],
+    "claude-1m": ["claude-opus-5-5", "claude-sonnet-5-5"],
+    "unchecked-sub": null,
+    "api-key": ["gpt-6.2-sol"],
+  };
+  const cfg = hubConfig(raw, "/data", (id) => found[id] ?? null);
+  const byId = Object.fromEntries(cfg.profiles.map((p) => [p.id, p]));
+  assert.deepEqual(byId["free-codex"]!.models, ["gpt-5.6-luna", "gpt-5.6-terra", "gpt-6-luna"]);
+  assert.deepEqual(byId["free-codex"]!.named, []);
+  assert.deepEqual(byId["claude-1m"]!.models, ["claude-opus-5-5[1m]", "claude-opus-5-5", "claude-sonnet-5-5"]);
+  assert.deepEqual(byId["claude-1m"]!.named, ["claude-opus-5-5[1m]"]);
+  assert.deepEqual(byId["unchecked-sub"]!.models, ["gpt-6.2-astra"]);
+  assert.deepEqual(byId["api-key"]!.models, ["custom-preview-model", "gpt-6.2-sol"]);
+  assert.deepEqual(byId["api-key"]!.named, ["custom-preview-model"]);
+
+  // Opt-in catalog models (e.g. Devin Fusion combinations) passed via `allowed` stay when pinned without being auto-added to `runs`.
+  const devinCfg = hubConfig(
+    {
+      profiles: [
+        {
+          id: "dv",
+          runtime: "devin",
+          home: "homes/dv",
+          access: { kind: "subscription" },
+          models: ["fusion-gpt-6-sol-sidekick-swe-2-medium", "fusion-removed-combo"],
+        },
+      ],
+    },
+    "/data",
+    () => ["gpt-6-sol"],
+    () => ["gpt-6-sol", "fusion-gpt-6-sol-sidekick-swe-2-medium", "fusion-other-unticked"],
+  );
+  assert.deepEqual(devinCfg.profiles[0]!.named, ["fusion-gpt-6-sol-sidekick-swe-2-medium"]);
+  assert.deepEqual(devinCfg.profiles[0]!.models, ["fusion-gpt-6-sol-sidekick-swe-2-medium", "gpt-6-sol"]);
+});

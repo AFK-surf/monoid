@@ -154,10 +154,12 @@ test("a shared key profile is copied to the other station, key and all; stopping
   assert.equal(b.config.raw().profiles.find((p: any) => p.id === id).enabled, false, "a disabled key stays disabled on its copy");
   assert.equal(b.config.raw().profiles.find((p: any) => p.id === id).access.key, "sk-new", "the key is retained");
   assert.equal(b.config.raw().profiles.find((p: any) => p.id === id).share.hostOff, true);
+  assert.equal(b.sharing.profileView(b.config.raw().profiles.find((p: any) => p.id === id))?.pausable, undefined, "host-disabled copy cannot be unpaused on borrower");
   a.config.update((raw) => { delete raw.profiles[0].enabled; });
   await settle(a, b);
   assert.equal(b.config.raw().profiles.find((p: any) => p.id === id).enabled, undefined, "enabling propagates too");
   assert.equal(b.config.raw().profiles.find((p: any) => p.id === id).share.hostOff, undefined);
+  assert.equal(b.sharing.profileView(b.config.raw().profiles.find((p: any) => p.id === id))?.pausable, true);
   // Paused on the borrowing station (accounts/index.ts putProfile): so it stays as its host edits it, disables it and
   // enables it again.
   b.config.update((raw) => { const c = raw.profiles.find((p: any) => p.id === id); c.share.paused = true; c.enabled = false; });
@@ -1567,6 +1569,36 @@ test("cross-station concurrency slots: older host refusing share.slotClaim falls
     return origAsk(_to, _ws, req);
   };
   assert.deepEqual(await b.sharing.claimBorrowedSlot(bp1, "s-old-host"), { ok: true, fallback: true });
+
+  await a.sharing.close();
+  await b.sharing.close();
+});
+
+test("disabled hosted subscription refuses share.lend and share.slotClaim without borrower fallback", async () => {
+  const cloud = new FakeCloud();
+  const time = testClock();
+  const all = new Map<string, Station>();
+  const a = station(cloud, A, () => all, [{ ...SUB, maxConcurrentSessions: 2 }], undefined, { clock: time.clock });
+  const b = station(cloud, B, () => all, [], undefined, { clock: time.clock });
+  all.set(A, a).set(B, b);
+
+  await a.sharing.shareProfile("max", true, null);
+  await settle(a, b);
+  const copy = b.config.raw().profiles[0];
+  assert.equal((await b.sharing.lendClaude(copy)).token, "token-of-max");
+
+  // Host disables the profile in config.json; even before reconcile reaches B, lend and slotClaim are refused without fallback.
+  a.lent.length = 0;
+  a.config.update((raw) => {
+    raw.profiles[0].enabled = false;
+  });
+  await assert.rejects(() => b.sharing.claimBorrowedSlot(copy, "s-disabled"), /disabled on its host/);
+  assert.equal(b.sharing.hasBorrowedSlot("s-disabled"), false);
+  await assert.rejects(() => b.sharing.lendClaude(copy, "token-of-max"), (e: Error) => !/token-of-max/.test(e.message));
+  assert.deepEqual(a.lent, []);
+  await settle(a, b);
+  assert.equal(b.config.raw().profiles[0].enabled, false);
+  assert.equal(b.config.raw().profiles[0].share.hostOff, true);
 
   await a.sharing.close();
   await b.sharing.close();

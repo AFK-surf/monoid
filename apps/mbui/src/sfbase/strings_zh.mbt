@@ -2555,6 +2555,7 @@ let zh : Map[String, String] = {
   "web-pages.profiles.disableCopyBody": "这台 station 不再使用这个共享的 Profile；分享它的 station 不受影响，以后可以在这里再启用。正在使用它的会话会切换到其他 Profile；没有可用的 Profile 时会停止。",
   "web-pages.profiles.disabled": "已停用",
   "web-pages.profiles.disableKeyBody": "Key 和配置会保留，以后可以重新启用。使用它的会话会切换到其他 Profile；没有可用的 Profile 时会停止。共享副本的 station 更新后会同步停用状态。",
+  "web-pages.profiles.disableProfileBody": "账号和配置会保留，以后可以重新启用。使用它的会话会切换到其他 Profile；没有可用的 Profile 时会停止。共享副本的 station 更新后会同步停用状态。",
   "web-pages.profiles.env": "环境变量",
   "web-pages.profiles.envAdd": "添加变量",
   "web-pages.profiles.envLead": "运行时启动时会加载这些变量，用于接入你的模型服务。值中的 {route} 会替换为会话的路由 ID。",

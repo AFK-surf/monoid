@@ -476,7 +476,7 @@ export class Accounts {
     const raw = this.deps.config.raw();
     const made = this.settingsMade;
     if (made !== null && made.raw === raw && made.checks === this.checksChanged) return made.settings;
-    const settings = hubConfig(raw, this.deps.data, this.found);
+    const settings = hubConfig(raw, this.deps.data, this.found, this.allowedModels);
     this.settingsMade = { raw, checks: this.checksChanged, settings };
     return settings;
   }
@@ -486,11 +486,17 @@ export class Accounts {
   profiles(): Profile[] {
     return this.settings().profiles;
   }
-  /// Counts the changes of `checks` (what `found` reads), for `profiles`.
+  /// Counts the changes of `checks` (what `found` / `allowedModels` read), for `profiles`.
   private checksChanged = 0;
 
   /// The models profile `id`'s last check found (null: none listed), which it runs besides those config.json names.
   readonly found = (id: string): readonly string[] | null => this.checks.get(id)?.models ?? null;
+
+  /// The models profile `id`'s last check permits in `config.json` `models`, including opt-in Devin Fusion combinations.
+  readonly allowedModels = (id: string): readonly string[] | null => {
+    const c = this.checks.get(id);
+    return c?.models ? [...c.models, ...expandDevinFusion(c.fusion)] : null;
+  };
 
   private profile(id: string): Profile | undefined {
     return this.profiles().find((p) => p.id === id);
@@ -636,6 +642,8 @@ export class Accounts {
       });
       if (before.enabled !== false && given.enabled === false) {
         this.deps.hub?.profileGone?.(id).catch((error) => log.warn("accounts", "moving sessions off a paused copy failed", { profile: id, error: (error as Error).message }));
+      } else if (before.enabled === false && given.enabled === true && this.profile(id)?.enabled !== false) {
+        this.deps.loginBack?.(id);
       }
       return;
     }
@@ -783,6 +791,9 @@ export class Accounts {
     });
     if (before?.enabled !== false && given.enabled === false) {
       this.deps.hub?.profileGone?.(id).catch((error) => log.warn("accounts", "moving sessions off a disabled profile failed", { profile: id, error: (error as Error).message }));
+    } else if (before?.enabled === false && given.enabled === true) {
+      this.deps.loginBack?.(id);
+      if (this.quotaFn) this.background.spawn(() => this.readQuota(id, false).catch(() => undefined));
     }
   }
 
@@ -1342,13 +1353,9 @@ export class Accounts {
   /// (`outdatedUnchecked`), so one checked again by hand stays. Worked out at the start and again as a check finds other
   /// models (a newer one offered, an old one gone).
   private async uncheckOutdated(): Promise<void> {
-    const found = (id: string) => {
-      const c = this.checks.get(id);
-      return c?.models ? [...c.models, ...expandDevinFusion(c.fusion)] : null;
-    };
     const unchecked = (raw: Json) => {
       const done = new Set<string>(Array.isArray(raw?.outdatedUnchecked) ? raw.outdatedUnchecked.filter((k: unknown) => typeof k === "string") : []);
-      const { changes, unchecked } = uncheckOutdated(raw, found, done);
+      const { changes, unchecked } = uncheckOutdated(raw, this.allowedModels, done);
       return { changes, now: [...new Set([...done, ...unchecked])].sort() };
     };
     // Worked out on a copy first: config.json is written only when something changes.
@@ -1421,10 +1428,12 @@ export class Accounts {
     if (check.state === "login" && before?.state !== "login") this.lost(id, before, forced);
     else if (check.state === "ok" && before?.state !== "ok") this.deps.loginBack?.(id);
     const foundBefore = this.found(id);
+    const allowedBefore = this.allowedModels(id);
     this.checks.set(id, check);
-    // The hub's config takes only the models a check found (`found`): a check that found the same keeps it, as one
-    // stamped anew on every round made every profile's config again for each overview and pick (0.1.11070).
-    if (!sameModels(foundBefore, this.found(id))) this.checksChanged++;
+    // The hub's config takes only the models a check found (`found`) and permits (`allowedModels`): a check that found
+    // the same keeps it, as one stamped anew on every round made every profile's config again for each overview and
+    // pick (0.1.11070).
+    if (!sameModels(foundBefore, this.found(id)) || !sameModels(allowedBefore, this.allowedModels(id))) this.checksChanged++;
     this.deps.store.setProfileCheck(id, check);
     // Other models found: one may now replace one the profile names.
     if (
@@ -1931,10 +1940,21 @@ export class Accounts {
     this.#keepQuota(id, read);
     if (before?.state === "blocked" && read.state === "ok") this.deps.loginBack?.(id);
     this.changed();
+    const nextPlan = typeof read.plan === "string" ? read.plan.trim().toLowerCase() : "";
+    const prevCheckPlan = typeof this.checks.get(id)?.plan === "string" ? this.checks.get(id)!.plan!.trim().toLowerCase() : "";
+    const prevQuotaPlan = typeof before?.plan === "string" ? before.plan.trim().toLowerCase() : "";
+    const planChanged =
+      accessKind(profile) === "subscription" &&
+      read.state === "ok" &&
+      nextPlan !== "" &&
+      (prevQuotaPlan !== "" ? nextPlan !== prevQuotaPlan : prevCheckPlan !== "" && nextPlan !== prevCheckPlan);
     // Its login found over: its check says so, and the pool passes it over (as a Console or Kimi sign-in refused).
     if (profile.runtime === "codex" && accessKind(profile) === "subscription") {
       if (refused) this.codexLogin(id, true);
-      else if (read.state === "ok") this.codexLogin(id, false);
+      else if (read.state === "ok") {
+        this.codexLogin(id, false);
+        if (planChanged) this.background.spawn(() => this.check(id).catch(() => undefined));
+      }
     } else if (signedOut && this.checks.get(id)?.state !== "login") {
       // Checked before this answers (asked again with its login renewed), so a host lending it says it signed out with
       // the allowance that found it so, never `ok` from before (share/index.ts `share.status`).
@@ -1947,6 +1967,8 @@ export class Accounts {
       read.state === "ok" &&
       (this.checks.get(id)?.state === "failed" || this.checks.get(id)?.state === "login")
     ) {
+      this.background.spawn(() => this.check(id).catch(() => undefined));
+    } else if (planChanged) {
       this.background.spawn(() => this.check(id).catch(() => undefined));
     }
     return read;
@@ -1988,10 +2010,13 @@ export class Accounts {
     this.authRevoked.delete(id);
     if (this.quotas.get(id)?.restricted === true) this.quotas.delete(id);
     const profile = this.profile(id);
-    if (profile?.enabled === false) await this.deps.hub?.profileGone?.(id);
+    if (profile?.enabled === false) {
+      await this.deps.hub?.profileGone?.(id);
+      return;
+    }
     if (!profile || !borrowed(profile)) return;
     if (accessKind(profile) !== "subscription") {
-      if (profile.enabled !== false) await this.check(id, stationLang()).catch(() => undefined);
+      await this.check(id, stationLang()).catch(() => undefined);
       return;
     }
     if (!this.deps.shared) return;

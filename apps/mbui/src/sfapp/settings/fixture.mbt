@@ -90,6 +90,8 @@ priv struct SettingsFixture {
   models_added : Array[String]
   /// Whether the example API key is enabled.
   mut key_enabled : Bool
+  /// Whether Claude 主账号 is enabled.
+  mut cc_enabled : Bool
   /// Claude 主账号's configured maxConcurrentSessions (null = unlimited) and new-account protection flag.
   mut cc_max_sessions : Json
   mut cc_protection : Bool
@@ -238,6 +240,7 @@ let fx : SettingsFixture = {
   fable_used: false,
   models_added: [],
   key_enabled: true,
+  cc_enabled: true,
   cc_max_sessions: Json::number(8.0),
   cc_protection: true,
   copy_shown: false,
@@ -582,6 +585,7 @@ fn fixture_reset() -> Unit {
   fx.fable_used = false
   fx.models_added.clear()
   fx.key_enabled = true
+  fx.cc_enabled = true
   fx.cc_max_sessions = Json::number(8.0)
   fx.cc_protection = true
   fx.copy_shown = false
@@ -1591,8 +1595,17 @@ fn fx_cc_name() -> String {
 ///|
 fn fx_profiles() -> Array[Json] {
   let profiles = [
-    fx_profile("cc", fx_cc_name(), "subscription", fx_cc_tone(), "可用", "claude", "Claude 订阅", fx_cc_with([
-      ("share", obj([("id", str("sh1")), ("role", str("host")), ("host", str("st1")), ("users", ["st2"]), ..fx_cc_follows()])),
+    fx_profile(
+      "cc",
+      fx_cc_name(),
+      "subscription",
+      if fx.cc_enabled { fx_cc_tone() } else { "neutral" },
+      if fx.cc_enabled { "可用" } else { "已停用" },
+      "claude",
+      "Claude 订阅",
+      fx_cc_with([
+        ("enabled", Json::boolean(fx.cc_enabled)),
+        ("share", obj([("id", str("sh1")), ("role", str("host")), ("host", str("st1")), ("users", ["st2"]), ..fx_cc_follows()])),
       ("fast", Json::boolean(false)),
       ("backgroundOnMessage", Json::boolean(true)),
       ("maxConcurrentSessions", fx.cc_max_sessions),
@@ -4761,6 +4774,11 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
         None => ()
       }
       fx.cc_protection = false
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    "profile.put" if text(p, "id") == "cc" && has(field(p, "input"), "enabled") => {
+      fx.cc_enabled = flag(field(p, "input"), "enabled")
       fx_changed()
       Some(Ok(obj([])))
     }
