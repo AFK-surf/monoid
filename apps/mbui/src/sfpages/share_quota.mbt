@@ -18,6 +18,7 @@ fn share_picture_open(
   above? : (@view.View) -> Unit,
   w? : Double = @sf.share_w_most,
   scroll? : @view.Scroll,
+  reset_copied? : () -> String = fn() { "" },
 ) -> Unit {
   let clip_in_stage = scroll is Some(_)
   @sf.stage_panel_nodes(
@@ -30,27 +31,36 @@ fn share_picture_open(
     live=fn() { (@sf.t(title), "", "") },
     foot=fn(f, _) {
       let taking : @signals.Signal[Bool] = @signals.signal(false)
+      let copied : @signals.Signal[Bool] = @signals.signal(false)
+      let album = @sf.picture_to_album()
       let (label, icon) = @sf.picture_out_way()
+      // Reset inline copied state whenever the preview content changes (provider filter / mask mode).
+      f.reacts(reset_copied, fn(_) { copied.set(false) }, at_start=false)
       @sf.button_node(
         f,
-        fn() { label },
+        fn() { if !album && copied.get() { @sf.t("common.copied") } else { label } },
         tone=Primary,
         icon~,
         on_night=true,
         busy=fn() { taking.get() },
         disabled=fn() { taking.get() },
+        done=fn() { !album && copied.get() },
         fn() {
           if taking.untracked() {
             return
           }
           taking.set(true)
+          copied.set(false)
           @ui.take_picture(
             share_shot,
             w,
             fn(paper) { draw(paper, true) },
             fn(png) {
               taking.set(false)
-              picture_out_now(png) |> ignore
+              // Show inline checkmark on the copy button instead of popping a bottom toast over the stage footer.
+              if picture_out_now(png, copy_said=!album) && !album {
+                copied.set(true)
+              }
             },
             scale=share_scale,
           )
@@ -191,6 +201,7 @@ pub fn accounts_share_open(core : Core, scope : () -> String) -> Unit {
   share_picture_open(
     "web-main.share.accounts",
     scroll~,
+    reset_copied=fn() { "\{active_group()}|\{share_mask_all.get()}" },
     fn(v, flat) {
       share_frame_node(v, flat, fn() { shown_count().to_string() + " " + @sf.t("web-main.share.accountsCount") }, fn(p) {
         p.each(at_once=true, shown_groups, fn(g) { g.0 }, fn(x, g) {

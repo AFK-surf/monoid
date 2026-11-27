@@ -761,15 +761,21 @@ test "share-accounts-many: tall 24-account preview scrolls at readable width and
         t.kept()[t.kept().length() - 1].2
       } else {
         t.click(Button, label="复制图片")
-        t.frame()
+        t.run_for(@motion.presence_in_ms)
         t.clipboard_png().unwrap()
       }
       png_size(png).unwrap()
     }
     let (all_w, all_h) = export_png()
     assert_eq(all_w, 1080)
+    if at.2 == 0 {
+      assert_true(t.query(Button, label="已复制") is Some(_), msg="inline copied feedback avoids toast over footer")
+    }
     t.click(Tab, label="Claude")
     t.run_for(@motion.presence_in_ms)
+    if at.2 == 0 {
+      assert_true(t.query(Button, label="复制图片") is Some(_), msg="switching provider resets copied button label")
+    }
     let (claude_w, claude_h) = export_png()
     assert_eq(claude_w, 1080)
     assert_true(claude_h < all_h / 2, msg="filtered PNG shorter than full: \{claude_h} vs \{all_h}")
