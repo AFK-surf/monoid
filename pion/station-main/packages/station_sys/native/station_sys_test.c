@@ -1584,7 +1584,7 @@ static void test_pty(void) {
 
     {
         char ip[128];
-        // Loopback & unspecified aliases MUST be blocked (-2) when reject_loopback_or_unspec=1.
+        // Pure user-space literal IP & localhost checks (0 syscalls, 0 FDs).
         assert(sts_resolve_host_for_tunnel("127.0.0.1", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("127.0.0.2", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("0.0.0.0", 1, ip, sizeof(ip)) == -2);
@@ -1595,16 +1595,49 @@ static void test_pty(void) {
         assert(sts_resolve_host_for_tunnel("[::ffff:127.0.0.2]", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("::ffff:0.0.0.0", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("2130706433", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("0x7f000001", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("0177.0.0.1", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("localhost", 1, ip, sizeof(ip)) == -2);
-        // When reject_loopback_or_unspec=0, loopback resolves cleanly to literal IP.
+        assert(sts_resolve_host_for_tunnel("LOCALHOST.", 1, ip, sizeof(ip)) == -2);
+        // When reject_loopback_or_unspec=0, loopback resolves cleanly to canonical literal IP.
         assert(sts_resolve_host_for_tunnel("127.0.0.2", 0, ip, sizeof(ip)) == 1);
         assert(strcmp(ip, "127.0.0.2") == 0);
+        assert(sts_resolve_host_for_tunnel("2130706433", 0, ip, sizeof(ip)) == 1);
+        assert(strcmp(ip, "127.0.0.1") == 0);
         assert(sts_resolve_host_for_tunnel("[::1]", 0, ip, sizeof(ip)) == 1);
         assert(strcmp(ip, "::1") == 0);
         // Non-loopback literal passes even with reject_loopback_or_unspec=1.
         assert(sts_resolve_host_for_tunnel("192.0.2.10", 1, ip, sizeof(ip)) == 1);
         assert(strcmp(ip, "192.0.2.10") == 0);
-        printf("  [PASS] resolve_host_for_tunnel (loopback/unspec/v4-mapped/decimal blocked)\n");
+        // Non-literal hostname returns 0 (needs async DNS worker, never blocks sync path).
+        assert(sts_resolve_host_for_tunnel("printer.example.invalid", 1, ip, sizeof(ip)) == 0);
+
+        // Async DNS worker thread test via sth_wait (numeric hosts exercise real detached worker
+        // + getaddrinfo + STS_EV_DNS_RESOLVED without triggering platform mDNSResponder lazy sockets).
+        assert(sts_resolve_host_for_tunnel_async(9901, "127.0.0.2", 1) == 1);
+        assert(sts_resolve_host_for_tunnel_async(9902, "192.0.2.10", 1) == 1);
+        int got9901 = 0, got9902 = 0;
+        for (int iter = 0; iter < 50 && (!got9901 || !got9902); iter++) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &ev_len);
+            if (ev == NULL) continue;
+            if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_DNS_RESOLVED) {
+                uint64_t eid = read_u64_le(ev + 1);
+                int32_t rc = read_i32_le(ev + 10);
+                if (eid == 9901) {
+                    assert(rc == -2);
+                    got9901 = 1;
+                } else if (eid == 9902) {
+                    assert(rc == 1);
+                    assert(ev_len == 14 + 10);
+                    assert(memcmp(ev + 14, "192.0.2.10", 10) == 0);
+                    got9902 = 1;
+                }
+            }
+            sth_free(ev);
+        }
+        assert(got9901 == 1 && got9902 == 1);
+        printf("  [PASS] resolve_host_for_tunnel (0-FD user-space literal + async DNS worker)\n");
     }
 
     assert(sts_wait_detached_for_test(5000) == 1);
@@ -2194,7 +2227,7 @@ int main(void) {
 
     {
         char ip[128];
-        // Loopback & unspecified aliases MUST be blocked (-2) when reject_loopback_or_unspec=1.
+        // Pure user-space literal IP & localhost checks (0 syscalls, 0 FDs).
         assert(sts_resolve_host_for_tunnel("127.0.0.1", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("127.0.0.2", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("0.0.0.0", 1, ip, sizeof(ip)) == -2);
@@ -2205,16 +2238,49 @@ int main(void) {
         assert(sts_resolve_host_for_tunnel("[::ffff:127.0.0.2]", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("::ffff:0.0.0.0", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("2130706433", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("0x7f000001", 1, ip, sizeof(ip)) == -2);
+        assert(sts_resolve_host_for_tunnel("0177.0.0.1", 1, ip, sizeof(ip)) == -2);
         assert(sts_resolve_host_for_tunnel("localhost", 1, ip, sizeof(ip)) == -2);
-        // When reject_loopback_or_unspec=0, loopback resolves cleanly to literal IP.
+        assert(sts_resolve_host_for_tunnel("LOCALHOST.", 1, ip, sizeof(ip)) == -2);
+        // When reject_loopback_or_unspec=0, loopback resolves cleanly to canonical literal IP.
         assert(sts_resolve_host_for_tunnel("127.0.0.2", 0, ip, sizeof(ip)) == 1);
         assert(strcmp(ip, "127.0.0.2") == 0);
+        assert(sts_resolve_host_for_tunnel("2130706433", 0, ip, sizeof(ip)) == 1);
+        assert(strcmp(ip, "127.0.0.1") == 0);
         assert(sts_resolve_host_for_tunnel("[::1]", 0, ip, sizeof(ip)) == 1);
         assert(strcmp(ip, "::1") == 0);
         // Non-loopback literal passes even with reject_loopback_or_unspec=1.
         assert(sts_resolve_host_for_tunnel("192.0.2.10", 1, ip, sizeof(ip)) == 1);
         assert(strcmp(ip, "192.0.2.10") == 0);
-        printf("  [PASS] resolve_host_for_tunnel (loopback/unspec/v4-mapped/decimal blocked)\n");
+        // Non-literal hostname returns 0 (needs async DNS worker, never blocks sync path).
+        assert(sts_resolve_host_for_tunnel("printer.example.invalid", 1, ip, sizeof(ip)) == 0);
+
+        // Async DNS worker thread test via sth_wait (numeric hosts exercise real detached worker
+        // + getaddrinfo + STS_EV_DNS_RESOLVED without triggering platform mDNSResponder lazy sockets).
+        assert(sts_resolve_host_for_tunnel_async(9901, "127.0.0.2", 1) == 1);
+        assert(sts_resolve_host_for_tunnel_async(9902, "192.0.2.10", 1) == 1);
+        int got9901 = 0, got9902 = 0;
+        for (int iter = 0; iter < 50 && (!got9901 || !got9902); iter++) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &ev_len);
+            if (ev == NULL) continue;
+            if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_DNS_RESOLVED) {
+                uint64_t eid = read_u64_le(ev + 1);
+                int32_t rc = read_i32_le(ev + 10);
+                if (eid == 9901) {
+                    assert(rc == -2);
+                    got9901 = 1;
+                } else if (eid == 9902) {
+                    assert(rc == 1);
+                    assert(ev_len == 14 + 10);
+                    assert(memcmp(ev + 14, "192.0.2.10", 10) == 0);
+                    got9902 = 1;
+                }
+            }
+            sth_free(ev);
+        }
+        assert(got9901 == 1 && got9902 == 1);
+        printf("  [PASS] resolve_host_for_tunnel (0-FD user-space literal + async DNS worker)\n");
     }
 
     assert(sts_wait_detached_for_test(5000) == 1);

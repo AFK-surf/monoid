@@ -1054,6 +1054,66 @@ test("W17A.3: SQLite devices + unified 404 + serial 501 + own-port loopback guar
     await until("upstream TCP socket closed on peer revocation", () => openUpstreamSockets === 0, 5000);
   }
 
+  // 2g. `CLOSE_REMOVED` (4004) MUST also immediately sever any active `device:` tunnel and close
+  //     its upstream TCP socket (even though `peers_current` becomes false on disconnect)!
+  {
+    // Re-add peer via fresh cloud `state` frame so we can open a new active tunnel.
+    for (const ws of cloudSockets) {
+      ws.send(
+        JSON.stringify({
+          type: "state",
+          workspace: "ws-edge",
+          workspace_name: "EdgeWS",
+          name: "edge-station",
+          peers: [{ id: peerId, name: "peer-caller", ips: ["127.0.0.1"] }],
+          relay_urls: [],
+          grant_keys: grantKeys,
+        }),
+      );
+    }
+    const remConn = await until("peer http conn ready for CLOSE_REMOVED", async () => {
+      const c = await peerEp.connect({ id: stationId, relays: [], ips: [`127.0.0.1:${udpPort}`] }, PEER_HTTP_ALPN);
+      try {
+        const s = await c.openBi();
+        await writeLine(s, { workspace: "ws-edge", device: addedTcp.id, session: "s2", tcp: true, probe: true });
+        await s.finish();
+        const r = new Reader(s, 65536);
+        const h = (await r.line()) as { status: number };
+        if (h.status === 200) return c;
+      } catch {}
+      c.close(0, "retry");
+      return null;
+    });
+    const liveStream2 = await remConn.openBi();
+    await writeLine(liveStream2, { workspace: "ws-edge", device: addedTcp.id, session: "s2", tcp: true });
+    const lr2 = new Reader(liveStream2, 65536);
+    const lhead2 = (await lr2.line()) as { status: number };
+    assert.equal(lhead2.status, 200);
+    await liveStream2.write(Buffer.from("ping-before-removed"));
+    const echoed2 = lr2.carry.length > 0 ? lr2.carry : (await liveStream2.read()) ?? Buffer.alloc(0);
+    assert.equal(echoed2.toString("utf8"), "ping-before-removed");
+    assert.ok(openUpstreamSockets >= 1, "expected open upstream socket before CLOSE_REMOVED");
+
+    // Close cloud WS with `CLOSE_REMOVED` (4004).
+    for (const ws of cloudSockets) {
+      if (ws.readyState === ws.OPEN) ws.close(4004, "removed");
+    }
+
+    let removedClosed = false;
+    try {
+      const next = await Promise.race([
+        liveStream2.read(),
+        new Promise<string>((r) => setTimeout(() => r("TIMEOUT"), 5000)),
+      ]);
+      if (next === null) removedClosed = true;
+    } catch {
+      removedClosed = true;
+    }
+    assert.equal(removedClosed, true, "active device tunnel was NOT severed on CLOSE_REMOVED (4004)");
+    await until("upstream TCP socket closed on CLOSE_REMOVED", () => openUpstreamSockets === 0, 5000);
+    remConn.close(0, "done");
+  }
+
   httpConn.close(0, "done");
   await new Promise((r) => setTimeout(r, 150));
   const fdAfter = openFdCount(pionPid);
@@ -1582,6 +1642,24 @@ test("W17A.6: Real before_store restore/ready.json recovery (Node Exporter -> Pi
   // Pre-create empty schema DB as Node/Pion fresh restore expects (or let restore build it).
   assert.equal(existsSync(join(dataDir, "stillfail.db")), false);
 
+  // --- Part A0: Incomplete replica (missing `head.json`) MUST fail closed, preserve `ready.json` & `copy/`,
+  //     NOT create empty `stillfail.db`, and succeed once `head.json` is restored in the SAME data dir! ---
+  const headJsonPath = join(copyDir, head.gen, "head.json");
+  const savedHeadJson = readFileSync(headJsonPath);
+  rmSync(headJsonPath);
+
+  const incompleteRun = spawnSync(pionBin, ["run", "--data", dataDir, "--port", "0"], {
+    env: { ...process.env, STILLFAIL_NO_DISCOVERY: "1", STILLFAIL_NO_DHT: "1" },
+    encoding: "utf8",
+    timeout: 15_000,
+  });
+  assert.notEqual(incompleteRun.status, 0, "incomplete replica (missing head.json) must exit non-zero");
+  assert.equal(existsSync(join(dataDir, "restore", "ready.json")), true, "incomplete replica must preserve ready.json");
+  assert.equal(existsSync(join(dataDir, "stillfail.db")), false, "incomplete replica must NOT leave empty stillfail.db");
+
+  // Restore `head.json` in the SAME `dataDir` and verify startup recovery now succeeds cleanly!
+  writeFileSync(headJsonPath, savedHeadJson);
+
   const udpPort = await pickFreeUdpPort();
   const launcher = spawn(launcherBin, ["run", "--app", appDir, "--data", dataDir, "--port", "0"], {
     env: {
@@ -1672,6 +1750,7 @@ test("W17A.7: ConnectsOsRuntime nested Slack config + real DB-before-ACK + SIGUS
   });
   const slackWss = new WebSocketServer({ noServer: true });
   servers.push(slackWss, slackSrv);
+  const editRowsAtAck: number[] = [];
   slackSrv.on("upgrade", (req, socket, head) => {
     slackWss.handleUpgrade(req, socket, head, (ws) => {
       wsConnections++;
@@ -1685,16 +1764,40 @@ test("W17A.7: ConnectsOsRuntime nested Slack config + real DB-before-ACK + SIGUS
             // At the exact moment ACK arrives, verify the row is ALREADY persisted in SQLite!
             if (dataDirRef && existsSync(join(dataDirRef, "stillfail.db"))) {
               const db = new DatabaseSync(join(dataDirRef, "stillfail.db"), { readOnly: true });
-              const row = db
-                .prepare("SELECT COUNT(*) AS cnt FROM entries WHERE text = 'hello-slack-db-before-ack'")
-                .get() as { cnt: number };
+              if (msg.envelope_id === "env-w17a-slack-1") {
+                const row = db
+                  .prepare("SELECT COUNT(*) AS cnt FROM entries WHERE text = 'hello-slack-db-before-ack'")
+                  .get() as { cnt: number };
+                dbRowsAtAck.push(row.cnt);
+              } else if (msg.envelope_id === "env-w17a-slack-edit") {
+                const row = db
+                  .prepare("SELECT COUNT(*) AS cnt FROM entries WHERE kind = 'edit' AND text = 'edited-slack-text'")
+                  .get() as { cnt: number };
+                editRowsAtAck.push(row.cnt);
+              }
               db.close();
-              dbRowsAtAck.push(row.cnt);
             }
           }
         } catch {}
       });
       if (connNum === 1) {
+        // 1) Unaddressed message in an unrelated channel MUST be ignored (no thread/entry created).
+        ws.send(
+          JSON.stringify({
+            envelope_id: "env-w17a-slack-unaddr",
+            type: "events_api",
+            payload: {
+              event: {
+                type: "message",
+                channel: "C_RANDOM",
+                ts: "1795780000.000050",
+                user: "U_BOB",
+                text: "random chatter not addressed to bot",
+              },
+            },
+          }),
+        );
+        // 2) Addressed `app_mention` -> persisted under `surface = "slack:T_W17A"` BEFORE ACK.
         ws.send(
           JSON.stringify({
             envelope_id: "env-w17a-slack-1",
@@ -1707,6 +1810,27 @@ test("W17A.7: ConnectsOsRuntime nested Slack config + real DB-before-ACK + SIGUS
                 thread_ts: "1795780000.000100",
                 user: "U_ALICE",
                 text: "hello-slack-db-before-ack",
+              },
+            },
+          }),
+        );
+        // 3) `message_changed` edit on the existing thread -> persisted as `kind='edit'` BEFORE ACK.
+        ws.send(
+          JSON.stringify({
+            envelope_id: "env-w17a-slack-edit",
+            type: "events_api",
+            payload: {
+              event: {
+                type: "message",
+                subtype: "message_changed",
+                channel: "C_W17A",
+                message: {
+                  type: "message",
+                  user: "U_ALICE",
+                  ts: "1795780000.000100",
+                  thread_ts: "1795780000.000100",
+                  text: "edited-slack-text",
+                },
               },
             },
           }),
@@ -1729,6 +1853,7 @@ test("W17A.7: ConnectsOsRuntime nested Slack config + real DB-before-ACK + SIGUS
   const stationId = idRes.stdout.trim();
 
   // Real Node nested `config.json` schema: omitted `kind` MUST default to `"slack"`, omitted `enabled` to `true`!
+  // Includes `team.id` so `surface` MUST be `"slack:T_W17A"` (1:1 with Node `surfaceName`).
   writeFileSync(
     join(dataDir, "config.json"),
     JSON.stringify({
@@ -1741,6 +1866,7 @@ test("W17A.7: ConnectsOsRuntime nested Slack config + real DB-before-ACK + SIGUS
             appToken: "xapp-1-w17a-test",
             botToken: "xoxb-w17a-test",
             baseUrl: `http://127.0.0.1:${slackPort}`,
+            team: { id: "T_W17A", name: "W17A" },
           },
         },
       ],
@@ -1779,15 +1905,23 @@ test("W17A.7: ConnectsOsRuntime nested Slack config + real DB-before-ACK + SIGUS
     return p > 0 && isAlive(p) ? p : null;
   });
 
-  // Verify Slack Socket Mode connected, persisted message to `stillfail.db` BEFORE sending ACK!
+  // Verify Slack Socket Mode connected, persisted message & edit to `stillfail.db` BEFORE sending ACK!
   try {
-    await until("slack envelope ACK received", () => ackedEnvelopes.includes("env-w17a-slack-1"), 8_000);
+    await until(
+      "slack envelopes ACKed",
+      () =>
+        ackedEnvelopes.includes("env-w17a-slack-unaddr") &&
+        ackedEnvelopes.includes("env-w17a-slack-1") &&
+        ackedEnvelopes.includes("env-w17a-slack-edit"),
+      8_000,
+    );
   } catch (e) {
     const logPath = join(dataDir, "stillfail.log");
     const logTail = existsSync(logPath) ? readFileSync(logPath, "utf8").slice(-1000) : "(no stillfail.log)";
-    throw new Error(`${(e as Error).message} | wsConnections=${wsConnections} | slackLogs=${slackLogs.join("").slice(-300)} | stillfail.log=${logTail}`);
+    throw new Error(`${(e as Error).message} | wsConnections=${wsConnections} | acked=${JSON.stringify(ackedEnvelopes)} | slackLogs=${slackLogs.join("").slice(-300)} | stillfail.log=${logTail}`);
   }
   assert.ok(dbRowsAtAck.length >= 1 && dbRowsAtAck[0] >= 1, `DB row was NOT persisted before Slack ACK: ${JSON.stringify(dbRowsAtAck)}`);
+  assert.ok(editRowsAtAck.length >= 1 && editRowsAtAck[0] >= 1, `Edit row was NOT persisted before Slack ACK: ${JSON.stringify(editRowsAtAck)}`);
 
   // Trigger `SIGUSR2` handover while Slack connector is live -> old Pion exits cleanly, new Pion reconnects!
   const fdBefore = openFdCount(pid1);
@@ -1807,4 +1941,25 @@ test("W17A.7: ConnectsOsRuntime nested Slack config + real DB-before-ACK + SIGUS
   launcher.kill("SIGTERM");
   await until("slack launcher exit", () => launcher.exitCode !== null || launcher.signalCode !== null);
   await until("slack pion pid2 exited", () => !isAlive(pid2));
+
+  // Verify 1:1 Node `Store.open` readback parity:
+  // - `surface` is `"slack:T_W17A"`
+  // - `C_RANDOM` unaddressed message created 0 threads / 0 entries
+  // - `C_W17A` has original message + `kind='edit'` entry (`target=1`, `ts=null`)
+  const nodeVerifyStore = Store.open(join(dataDir, "stillfail.db"), join(dataDir, "archive"));
+  try {
+    const th = nodeVerifyStore.threadAt("slack:T_W17A", "C_W17A", "1795780000.000100");
+    assert.ok(th !== null && th !== undefined, "Node Store.threadAt('slack:T_W17A', 'C_W17A', ...) must find Pion-written thread");
+    const unaddrTh = nodeVerifyStore.threadAt("slack:T_W17A", "C_RANDOM", "1795780000.000050");
+    assert.equal(unaddrTh, null, "unaddressed C_RANDOM message must NOT create a thread");
+    const editRow = nodeVerifyStore.db
+      .prepare("SELECT kind, target, ts, text FROM entries WHERE thread = ? AND kind = 'edit'")
+      .get(th.id) as { kind: string; target: number | null; ts: string | null; text: string } | undefined;
+    assert.ok(editRow !== undefined, "expected kind='edit' entry in thread");
+    assert.equal(editRow.target, 1);
+    assert.equal(editRow.ts, null);
+    assert.equal(editRow.text, "edited-slack-text");
+  } finally {
+    nodeVerifyStore.close();
+  }
 });

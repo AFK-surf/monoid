@@ -175,6 +175,7 @@ struct AdminStreamState {
 
 enum ProxyStreamMode {
   ReadingHeadLine
+  ResolvingHost(Int64, String, Int, Bool, Bytes, Bool)
   OpeningTcp(Int, Bytes, Bool)
   Tunneling(Int64)
   OpeningHttp(Int, String, String, Array[(String, String)], Bool, Bytes, Bool)
@@ -229,6 +230,9 @@ struct WholeRuntimeState {
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
   connect_ws : Map[String, String]
+  connect_surface : Map[String, String]
+  dns_streams : Map[Int64, Int64]
+  mut next_dns_ev_id : Int64
   mut replica_before_store_ok : Bool
   mcp_srv : station_http::HttpServer
   mcp_cb : station_http::ServerCallbacks
@@ -336,6 +340,7 @@ fn load_connects_from_config(
   cfg_raw : base_codec::Json,
   connects : station_whole::ConnectsOsRuntime,
   connect_ws : Map[String, String],
+  connect_surface : Map[String, String],
   home_ws : String,
 ) -> Unit {
   let items = match base_codec::json_get(cfg_raw, "connects") {
@@ -385,6 +390,14 @@ fn load_connects_from_config(
     connect_ws.set(cid, ws)
     if kind == "slack" {
       let sub = base_codec::json_get(it, "slack")
+      let team_id = match sub {
+        Some(s) => match base_codec::json_get(s, "team") {
+          Some(t) => get_str(t, "id").trim()
+          None => ""
+        }
+        None => ""
+      }
+      connect_surface.set(cid, if team_id.length() > 0 { "slack:" + team_id } else { "slack:" + cid })
       let bot_tok = get_nested_str(it, sub, "botToken")
       let app_tok = get_nested_str(it, sub, "appToken")
       let cfg_base = get_nested_str(it, sub, "baseUrl")
@@ -409,6 +422,7 @@ fn load_connects_from_config(
         }
       }
     } else if kind == "feishu" {
+      connect_surface.set(cid, "feishu:" + cid)
       let sub = base_codec::json_get(it, "feishu")
       let app_id = get_nested_str(it, sub, "appId")
       let app_sec = get_nested_str(it, sub, "appSecret")
@@ -429,6 +443,7 @@ fn load_connects_from_config(
         }
       }
     } else if kind == "comma" {
+      connect_surface.set(cid, "comma:" + cid)
       let sub = base_codec::json_get(it, "comma")
       let srv = get_nested_str(it, sub, "server")
       let url = if srv.length() > 0 { srv } else { get_nested_str(it, sub, "url") }
@@ -447,6 +462,7 @@ fn load_connects_from_config(
         let _ = connects.start_connect(cid)
       }
     } else if kind == "group" {
+      connect_surface.set(cid, "group:" + cid)
       let sub = base_codec::json_get(it, "group")
       let srv = get_nested_str(it, sub, "server")
       let origin = if srv.length() > 0 { srv } else { get_nested_str(it, sub, "origin") }
@@ -522,6 +538,23 @@ fn handle_device_tunnel(
             station_sys::TunnelResolveResult::BlockedLoopback => {
               send_refusal(ctx, pstream.sid, 403, "that machine refused: device target port is the station's own")
               pstream.mode = ProxyStreamMode::Done
+              return
+            }
+            station_sys::TunnelResolveResult::NeedsAsyncDns => {
+              if carry.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+                send_refusal(ctx, pstream.sid, 413, "pre-connect payload too large")
+                pstream.mode = ProxyStreamMode::Done
+                return
+              }
+              let ev_id = st.next_dns_ev_id
+              st.next_dns_ev_id = st.next_dns_ev_id + 1L
+              pstream.mode = ProxyStreamMode::ResolvingHost(ev_id, hp.host, hp.port, is_probe, carry, pstream.peer_ended)
+              st.dns_streams.set(ev_id, pstream.sid)
+              if !station_sys::resolve_host_for_tunnel_async(ev_id, hp.host, reject_lo) {
+                st.dns_streams.remove(ev_id)
+                send_refusal(ctx, pstream.sid, 502, "the device could not be reached there: failed to start dns worker for " + hp.host)
+                pstream.mode = ProxyStreamMode::Done
+              }
               return
             }
             station_sys::TunnelResolveResult::Failed => {
@@ -2509,6 +2542,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
   }
 
   let close_proxy_local_resources = fn(ctx : DaemonCtx, st : WholeRuntimeState, pstream : ProxyStreamState) -> Unit {
+    match pstream.mode {
+      ProxyStreamMode::ResolvingHost(ev_id, _, _, _, _, _) => st.dns_streams.remove(ev_id)
+      _ => ()
+    }
     pstream.tcp_write_queue.clear()
     pstream.tcp_write_queue_bytes = 0
     pstream.tcp_write_in_flight = false
@@ -2955,6 +2992,21 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             return Ok(())
           }
         }
+      }
+      ProxyStreamMode::ResolvingHost(ev_id, host, port, is_probe, carry, ended) => {
+        if pstream.rx_buf.length() > 0 {
+          if carry.length() + pstream.rx_buf.length() > WHOLE_MAX_PRE_CONNECT_BODY {
+            st.dns_streams.remove(ev_id)
+            send_proxy_refusal_and_finish(ctx, pstream.sid, 413, "pre-connect payload too large")
+            pstream.mode = ProxyStreamMode::Done
+            pstream.rx_buf = Bytes::new(0)
+            return Ok(())
+          }
+          let next_carry = concat_bytes_local(carry, pstream.rx_buf)
+          pstream.rx_buf = Bytes::new(0)
+          pstream.mode = ProxyStreamMode::ResolvingHost(ev_id, host, port, is_probe, next_carry, ended)
+        }
+        return Ok(())
       }
       ProxyStreamMode::OpeningTcp(port, carry, ended) => {
         if pstream.rx_buf.length() > 0 {
@@ -3869,7 +3921,50 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         fn(_cid : String) -> Option[String] { None },
       )
       let connect_ws : Map[String, String] = Map::new()
+      let connect_surface : Map[String, String] = Map::new()
       let connect_bridge = station_whole::ConnectMuxBridge::with_hub(ctx.edge_hub, ctx.ops_fs)
+      let self_station_id = ctx.station_key.id
+      let resolve_surface = fn(connect_id : String, platform : station_connects::ConnectPlatform) -> String {
+        match connect_surface.get(connect_id) {
+          Some(s) => if s.length() > 0 { return s }
+          None => ()
+        }
+        match platform {
+          station_connects::ConnectPlatform::Slack => "slack:" + connect_id
+          station_connects::ConnectPlatform::Feishu
+          | station_connects::ConnectPlatform::Lark => "feishu:" + connect_id
+          station_connects::ConnectPlatform::Comma => "comma:" + connect_id
+          station_connects::ConnectPlatform::Group => "group:" + connect_id
+          station_connects::ConnectPlatform::Chat => "web"
+        }
+      }
+      let is_routed_elsewhere = fn(db : sql_db::Db, connect_id : String, channel : String, thread_ts : String) -> Bool {
+        match db.first("SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='connect_threads' LIMIT 1", []) {
+          Ok(Some(_)) => match db.first(
+            "SELECT station FROM connect_threads WHERE connect = ?1 AND channel = ?2 AND thread_ts = ?3 LIMIT 1",
+            [base_codec::json_str(connect_id), base_codec::json_str(channel), base_codec::json_str(thread_ts)],
+          ) {
+            Ok(Some(row)) => match row.get("station") {
+              Some(base_codec::Json::Str(st_id)) => st_id.length() > 0 && st_id != self_station_id
+              _ => false
+            }
+            _ => false
+          }
+          _ => false
+        }
+      }
+      let find_existing_thread = fn(db : sql_db::Db, surface : String, channel : String, thread_ts : String) -> Option[Int64] {
+        match db.first(
+          "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3 LIMIT 1",
+          [base_codec::json_str(surface), base_codec::json_str(channel), base_codec::json_str(thread_ts)],
+        ) {
+          Ok(Some(row)) => match row.get("id") {
+            Some(base_codec::Json::Num(n, _)) => Some(n.to_int64())
+            _ => None
+          }
+          _ => None
+        }
+      }
       let connect_cbs = station_whole::ConnectsCallbacks::{
         on_event: fn(
           connect_id : String,
@@ -3880,33 +3975,73 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             Ok(d) => d
             Err(_) => return false
           }
+          let surface = resolve_surface(connect_id, platform)
+          let ws = match connect_ws.get(connect_id) {
+            Some(w) => w
+            None => core.config.home_workspace
+          }
+          let make_ev_target = fn() -> station_api::EventTarget {
+            station_api::EventTarget::{
+              lang: None,
+              viewer: None,
+              email: None,
+              workspace: if ws.length() > 0 { Some(ws) } else { None },
+              subs: None,
+              read_only: None,
+              managers: None,
+              vault: None,
+              sees_ws: if ws.length() > 0 { Some(Some(ws)) } else { None },
+              sees_session: None,
+              sees_thread: None,
+              sees_job: None,
+            }
+          }
           match ev {
-            station_connects::ChatEvent::Message(m) | station_connects::ChatEvent::OwnNotice(m) => {
-              let surface = match platform {
-                station_connects::ConnectPlatform::Slack => "slack"
-                station_connects::ConnectPlatform::Feishu
-                | station_connects::ConnectPlatform::Lark => "feishu"
-                station_connects::ConnectPlatform::Comma => "comma"
-                station_connects::ConnectPlatform::Group => "group"
-                station_connects::ConnectPlatform::Chat => "web"
-              }
-              let ws = match connect_ws.get(connect_id) {
-                Some(w) => w
-                None => core.config.home_workspace
-              }
+            station_connects::ChatEvent::Message(m) => {
               let thread_ts = if m.thread_ts.length() > 0 { m.thread_ts } else { m.ts }
+              if is_routed_elsewhere(st_db.db, connect_id, m.channel, thread_ts) {
+                // Owned by another station: never create a duplicate local thread and never silently drop+ACK!
+                return false
+              }
+              let existing = find_existing_thread(st_db.db, surface, m.channel, thread_ts)
+              if !m.addressed && existing is None {
+                // Unaddressed chatter in an untracked channel/thread: ignore without creating thread/entry (hub.ts:1262).
+                return true
+              }
               let now_ms = host_shim::wall_ms()
-              let tid = match st_db.ensure_thread(
-                surface,
-                m.channel,
-                thread_ts,
-                None,
-                Some(m.user),
-                now_ms,
-                home=if ws.length() > 0 { Some(ws) } else { None },
-              ) {
-                Ok(id) => id
-                Err(_) => return false
+              let tid = match existing {
+                Some(id) => id
+                None => match st_db.ensure_thread(
+                  surface,
+                  m.channel,
+                  thread_ts,
+                  None,
+                  Some(m.user),
+                  now_ms,
+                  home=if ws.length() > 0 { Some(ws) } else { None },
+                ) {
+                  Ok(id) => id
+                  Err(_) => return false
+                }
+              }
+              let att_opt : Option[String] = if m.files.length() > 0 {
+                let arr : Array[base_codec::Json] = []
+                for fi in 0..<m.files.length() {
+                  let f = m.files[fi]
+                  let fields : Array[(String, base_codec::Json)] = [
+                    ("id", base_codec::json_str(f.id)),
+                    ("name", base_codec::json_str(f.name)),
+                    ("size", base_codec::json_int64(f.size)),
+                  ]
+                  match f.url {
+                    Some(u) => fields.push(("url", base_codec::json_str(u)))
+                    None => ()
+                  }
+                  arr.push(base_codec::json_obj(fields))
+                }
+                Some(base_codec::json_stringify(base_codec::json_arr(arr)))
+              } else {
+                None
               }
               let msg_n = match st_db.insert_message(
                 station_store::NewMessage::{
@@ -3916,7 +4051,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   author: m.user,
                   agent_identity: None,
                   text: Some(m.text),
-                  attachments: None,
+                  attachments: att_opt,
                   quotes: m.quoted,
                   declared: None,
                   client: Some(connect_id),
@@ -3945,32 +4080,173 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   ]),
                 ),
               ])
-              let ev_target = station_api::EventTarget::{
-                lang: None,
-                viewer: None,
-                email: None,
-                workspace: if ws.length() > 0 { Some(ws) } else { None },
-                subs: None,
-                read_only: None,
-                managers: None,
-                vault: None,
-                sees_ws: if ws.length() > 0 { Some(Some(ws)) } else { None },
-                sees_session: None,
-                sees_thread: None,
-                sees_job: None,
-              }
-              let _ = core.api.events.emit("thread", ev_payload, ev_target, now_ms, None)
+              let _ = core.api.events.emit("thread", ev_payload, make_ev_target(), now_ms, None)
               true
             }
-            _ => true
+            station_connects::ChatEvent::OwnNotice(m) => {
+              let thread_ts = if m.thread_ts.length() > 0 { m.thread_ts } else { m.ts }
+              let tid = match find_existing_thread(st_db.db, surface, m.channel, thread_ts) {
+                Some(id) => id
+                None => return true
+              }
+              let now_ms = host_shim::wall_ms()
+              match st_db.insert_message(
+                station_store::NewMessage::{
+                  thread: tid,
+                  ts: Some(m.ts),
+                  author_kind: "notice",
+                  author: m.user,
+                  agent_identity: None,
+                  text: Some(m.text),
+                  attachments: None,
+                  quotes: m.quoted,
+                  declared: None,
+                  client: Some(connect_id),
+                  card: None,
+                  options: None,
+                  proposal: None,
+                  at: now_ms,
+                },
+              ) {
+                Ok((msg_n, _)) => {
+                  let ev_payload = base_codec::json_obj([
+                    ("id", base_codec::json_int64(tid)),
+                    (
+                      "entries",
+                      base_codec::json_arr([
+                        base_codec::json_obj([
+                          ("n", base_codec::json_int64(msg_n)),
+                          ("kind", base_codec::json_str("message")),
+                          ("authorKind", base_codec::json_str("notice")),
+                          ("author", base_codec::json_str(m.user)),
+                          ("text", base_codec::json_str(m.text)),
+                          ("at", base_codec::json_int64(now_ms)),
+                        ]),
+                      ]),
+                    ),
+                  ])
+                  let _ = core.api.events.emit("thread", ev_payload, make_ev_target(), now_ms, None)
+                  true
+                }
+                Err(_) => false
+              }
+            }
+            station_connects::ChatEvent::Changed(channel, thread_ts_in, ts, new_text) => {
+              let thread_ts = if thread_ts_in.length() > 0 { thread_ts_in } else { ts }
+              if is_routed_elsewhere(st_db.db, connect_id, channel, thread_ts) {
+                return false
+              }
+              let tid = match find_existing_thread(st_db.db, surface, channel, thread_ts) {
+                Some(id) => id
+                None => return true
+              }
+              let orig = match st_db.db.first(
+                "SELECT n, author_kind, author, text, attachments, quotes FROM entries WHERE thread = ?1 AND ts = ?2 AND kind = 'message' ORDER BY n ASC LIMIT 1",
+                [sql_db::int64_to_json(tid), base_codec::json_str(ts)],
+              ) {
+                Ok(Some(r)) => r
+                Ok(None) => return true
+                Err(_) => return false
+              }
+              let orig_n = match orig.get("n") {
+                Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                _ => return false
+              }
+              let orig_ak = match orig.get("author_kind") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => "person"
+              }
+              let orig_author = match orig.get("author") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => ""
+              }
+              let orig_text = match orig.get("text") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => ""
+              }
+              let orig_att = match orig.get("attachments") {
+                Some(base_codec::Json::Str(s)) => base_codec::json_str(s)
+                _ => base_codec::json_null()
+              }
+              let orig_quotes = match orig.get("quotes") {
+                Some(base_codec::Json::Str(s)) => base_codec::json_str(s)
+                _ => base_codec::json_null()
+              }
+              let cur_text = match st_db.db.first(
+                "SELECT text FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
+                [sql_db::int64_to_json(tid), sql_db::int64_to_json(orig_n)],
+              ) {
+                Ok(Some(r)) => match r.get("text") {
+                  Some(base_codec::Json::Str(s)) => s
+                  _ => orig_text
+                }
+                Ok(None) => orig_text
+                Err(_) => return false
+              }
+              if cur_text == new_text {
+                return true
+              }
+              let now_ms = host_shim::wall_ms()
+              match st_db.tx_retry_busy(3, fn(t : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
+                let base_n = match t.first("SELECT MAX(n) AS n FROM entries WHERE thread = ?1", [sql_db::int64_to_json(tid)]) {
+                  Ok(Some(r)) => match r.get("n") {
+                    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                    _ => orig_n
+                  }
+                  Ok(None) => orig_n
+                  Err(e) => return Err(e)
+                }
+                let next_n = base_n + 1L
+                match t.run(
+                  "INSERT INTO entries (thread, n, kind, target, ts, author_kind, author, text, attachments, quotes, at) VALUES (?1, ?2, 'edit', ?3, NULL, ?4, ?5, ?6, ?7, ?8, ?9)",
+                  [
+                    sql_db::int64_to_json(tid),
+                    sql_db::int64_to_json(next_n),
+                    sql_db::int64_to_json(orig_n),
+                    base_codec::json_str(orig_ak),
+                    base_codec::json_str(orig_author),
+                    base_codec::json_str(new_text),
+                    orig_att,
+                    orig_quotes,
+                    sql_db::int64_to_json(now_ms),
+                  ],
+                ) {
+                  Ok(_) => Ok(next_n)
+                  Err(e) => Err(e)
+                }
+              }) {
+                Ok(edit_n) => {
+                  let ev_payload = base_codec::json_obj([
+                    ("id", base_codec::json_int64(tid)),
+                    (
+                      "entries",
+                      base_codec::json_arr([
+                        base_codec::json_obj([
+                          ("n", base_codec::json_int64(edit_n)),
+                          ("kind", base_codec::json_str("edit")),
+                          ("target", base_codec::json_int64(orig_n)),
+                          ("authorKind", base_codec::json_str(orig_ak)),
+                          ("author", base_codec::json_str(orig_author)),
+                          ("text", base_codec::json_str(new_text)),
+                          ("at", base_codec::json_int64(now_ms)),
+                        ]),
+                      ]),
+                    ),
+                  ])
+                  let _ = core.api.events.emit("thread", ev_payload, make_ev_target(), now_ms, None)
+                  true
+                }
+                Err(_) => false
+              }
+            }
+            // Unimplemented event types fail closed (return false -> never ACK without handling).
+            station_connects::ChatEvent::Stop(_, _, _, _)
+            | station_connects::ChatEvent::LoginCode(_, _, _, _, _) => false
           }
         },
-        on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool {
-          core.store.require_open() is Ok(_)
-        },
-        on_interactive: fn(_cid : String, _eid : String, _payload : base_codec::Json) -> Bool {
-          core.store.require_open() is Ok(_)
-        },
+        // Fail closed for unimplemented interactive/card handlers so frames are never ACKed without persistence.
+        on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool { false },
+        on_interactive: fn(_cid : String, _eid : String, _payload : base_codec::Json) -> Bool { false },
         on_disconnect: fn(_cid : String, _reason : String) -> Unit {},
       }
       let connects = station_whole::ConnectsOsRuntime::new(
@@ -4111,6 +4387,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         browser: browser,
         connects: connects,
         connect_ws: connect_ws,
+        connect_surface: connect_surface,
+        dns_streams: Map::new(),
+        next_dns_ev_id: 30064771072L, // 7 << 32 (disjoint from jobs/browser/terminals/logins/adb/restore)
         replica_before_store_ok: false,
         mcp_srv: mcp_srv,
         mcp_cb: mcp_cb,
@@ -4181,97 +4460,87 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let home_ws = st.core.config.home_workspace
           let before_store_fn = fn(dir : String) -> Result[Unit, String] {
             let ready_path = nodepath::join(ctx.sep, [dir, "restore", "ready.json"])
-            match station_sys::read_file_strict(ready_path) {
-              Err(station_sys::StrictReadErr::NotFound) => ()
-              Err(_) => {
-                return Err("failed to read restore/ready.json (preserving file)")
-              }
-              Ok(raw_bytes) => {
-                let raw_str = raw_bytes.to_string()
-                match base_codec::json_parse(raw_str) {
-                  base_codec::JsonParseResult::Ok(j) => {
-                    match base_codec::json_get(j, "gen") {
-                      Some(base_codec::Json::Str(g)) => {
-                        if g.length() == 0 {
-                          return Err("corrupt restore/ready.json: empty gen (preserving file)")
-                        }
-                      }
-                      _ => return Err("corrupt restore/ready.json: missing gen (preserving file)")
-                    }
-                  }
-                  base_codec::JsonParseResult::Err(pe) => {
-                    return Err("corrupt restore/ready.json (" + pe + "; preserving file)")
-                  }
-                }
-                let self_argv = host_shim::args()
-                if self_argv.length() == 0 {
+            if station_sys::lstat_raw(ready_path) is Some(_) {
+              let self_argv = host_shim::args()
+              let argv0 = if self_argv.length() > 0 { self_argv[0] } else { "" }
+              let self_exe = match resolve_self_executable_with(
+                argv0,
+                match station_sys::getcwd() { Some(c) => c; None => "" },
+                station_sys::env_get("PATH"),
+                ctx.sep,
+                station_sys::os_name(),
+                station_sys::realpath,
+                station_sys::is_executable,
+              ) {
+                Some(p) => p
+                None => if argv0.length() > 0 { argv0 } else {
                   return Err("cannot determine self executable for replica restore")
                 }
-                let db_path = nodepath::join(ctx.sep, [dir, "stillfail.db"])
-                // Disjoint high event_id (6 << 32) for one-shot `--internal-replica-restore` helper.
-                let restore_ev_id : Int64 = 25769803776L
-                let spawn_opts = station_sys::SpawnOptions::{
-                  program: self_argv[0],
-                  args: [
-                    "--internal-replica-restore",
-                    "--db",
-                    db_path,
-                    "--data",
-                    dir,
-                    "--now",
-                    w_now.to_string(),
-                    "--sep",
-                    ctx.sep,
-                  ],
-                  env: None,
-                  cwd: dir,
-                  new_pgid: false,
-                  strip_malloc_space_efficient: false,
-                  pipe_stdin: false,
-                  pipe_stdout: false,
-                  pipe_stderr: true,
+              }
+              let db_path = nodepath::join(ctx.sep, [dir, "stillfail.db"])
+              // Disjoint high event_id (6 << 32) for one-shot `--internal-replica-restore` helper.
+              let restore_ev_id : Int64 = 25769803776L
+              let spawn_opts = station_sys::SpawnOptions::{
+                program: self_exe,
+                args: [
+                  "--internal-replica-restore",
+                  "--db",
+                  db_path,
+                  "--data",
+                  dir,
+                  "--now",
+                  w_now.to_string(),
+                  "--sep",
+                  ctx.sep,
+                ],
+                env: None,
+                cwd: dir,
+                new_pgid: false,
+                strip_malloc_space_efficient: false,
+                pipe_stdin: false,
+                pipe_stdout: false,
+                pipe_stderr: true,
+              }
+              let child = match station_sys::proc_spawn(restore_ev_id, spawn_opts) {
+                Ok(c) => c
+                Err(se) => return Err("failed to spawn --internal-replica-restore: " + se)
+              }
+              let mut exit_code : Option[Int] = None
+              let err_sb = StringBuilder::new()
+              let prev_router = ctx.edge_hub.get_sys_router()
+              ctx.edge_hub.set_sys_router(fn(eid : Int64, payload : Bytes) -> Bool {
+                if eid != restore_ev_id {
+                  return false
                 }
-                let child = match station_sys::proc_spawn(restore_ev_id, spawn_opts) {
-                  Ok(c) => c
-                  Err(se) => return Err("failed to spawn --internal-replica-restore: " + se)
+                match station_sys::decode_sys_event(payload) {
+                  Some(station_sys::SysEvent::ProcStderr(b)) => err_sb.write_string(b.to_string())
+                  Some(station_sys::SysEvent::ProcExit(es)) => exit_code = Some(es.code)
+                  _ => ()
                 }
-                let mut exit_code : Option[Int] = None
-                let err_sb = StringBuilder::new()
-                let prev_router = ctx.edge_hub.get_sys_router()
-                ctx.edge_hub.set_sys_router(fn(eid : Int64, payload : Bytes) -> Bool {
-                  if eid != restore_ev_id {
-                    return false
-                  }
-                  match station_sys::decode_sys_event(payload) {
-                    Some(station_sys::SysEvent::ProcStderr(b)) => err_sb.write_string(b.to_string())
-                    Some(station_sys::SysEvent::ProcExit(es)) => exit_code = Some(es.code)
-                    _ => ()
-                  }
-                  true
-                })
-                // timer: bounded replica restore helper deadline (120s)
-                let deadline = host_shim::now_ms() + 120000L
-                while exit_code is None && host_shim::now_ms() < deadline {
-                  let _ = ctx.edge_hub.pump_one(50L)
+                true
+              })
+              // timer: bounded replica restore helper deadline (120s)
+              let deadline = host_shim::now_ms() + 120000L
+              while exit_code is None && host_shim::now_ms() < deadline {
+                let _ = ctx.edge_hub.pump_one(50L)
+              }
+              ctx.edge_hub.restore_sys_router(prev_router)
+              match exit_code {
+                Some(0) => {
+                  let _ = child.close()
                 }
-                ctx.edge_hub.restore_sys_router(prev_router)
-                match exit_code {
-                  Some(0) => {
-                    let _ = child.close()
-                  }
-                  Some(rc) => {
-                    let _ = child.close()
-                    let detail = err_sb.to_string().trim()
-                    return Err(
-                      "replica restore helper exited " + rc.to_string()
-                      + (if detail.length() > 0 { ": " + detail } else { "" }),
-                    )
-                  }
-                  None => {
-                    let _ = child.kill(station_sys::SIG_KILL, false)
-                    let _ = child.close()
-                    return Err("replica restore helper timed out after 120s")
-                  }
+                Some(rc) => {
+                  let _ = child.close()
+                  let detail = err_sb.to_string().trim()
+                  return Err(
+                    "replica restore helper exited " + rc.to_string()
+                    + (if detail.length() > 0 { ": " + detail } else { "" }),
+                  )
+                }
+                None => {
+                  let _ = child.kill(station_sys::SIG_KILL, false)
+                  let _ = child.close()
+                  return Err("replica restore helper timed out after 120s")
                 }
               }
             }
@@ -4340,7 +4609,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 ])
               })
               // Load configured connects after primary store opens (devices are queried live from SQLite `devices` table).
-              load_connects_from_config(ctx.cfg_raw, st.connects, st.connect_ws, home_ws)
+              load_connects_from_config(ctx.cfg_raw, st.connects, st.connect_ws, st.connect_surface, home_ws)
               // Remove handover snapshot ONLY AFTER valid snapshot restore succeeded!
               if snap_valid_to_remove {
                 let _ = (ctx.ops_fs.remove)(ho_path)
@@ -4955,6 +5224,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   pstream.rx_buf = Bytes::new(0)
                   pstream.mode = ProxyStreamMode::Done
                 }
+                ProxyStreamMode::ResolvingHost(ev_id, host, port, is_probe, carry, _) => {
+                  pstream.mode = ProxyStreamMode::ResolvingHost(ev_id, host, port, is_probe, carry, true)
+                }
                 ProxyStreamMode::OpeningTcp(port, carry, _) => {
                   pstream.mode = ProxyStreamMode::OpeningTcp(port, carry, true)
                 }
@@ -5049,9 +5321,55 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       }
     },
     on_outbound_reply: fn(_ctx : DaemonCtx, _method : String, _ref_id : String, _until_opt : Option[Int64]) -> Unit {},
-    on_sys_event: fn(_ctx : DaemonCtx, ev_id : Int64, sev : station_sys::SysEvent) -> Unit {
+    on_sys_event: fn(ctx : DaemonCtx, ev_id : Int64, sev : station_sys::SysEvent) -> Unit {
       match state_opt {
         Some(st) => {
+          match sev {
+            station_sys::SysEvent::DnsResolved(rc, ip) => {
+              match st.dns_streams.get(ev_id) {
+                Some(sid) => {
+                  st.dns_streams.remove(ev_id)
+                  match st.proxy_streams.get(sid) {
+                    Some(pstream) => match pstream.mode {
+                      ProxyStreamMode::ResolvingHost(cur_ev, host, port, is_probe, carry, peer_ended) => {
+                        if cur_ev == ev_id {
+                          if rc == -2 {
+                            send_proxy_refusal_and_finish(ctx, sid, 403, "that machine refused: device target port is the station's own")
+                            pstream.mode = ProxyStreamMode::Done
+                          } else if rc != 1 || ip.length() == 0 {
+                            send_proxy_refusal_and_finish(ctx, sid, 502, "the device could not be reached there: failed to resolve " + host)
+                            pstream.mode = ProxyStreamMode::Done
+                          } else if is_probe {
+                            ctx.write_peer_http_chunk(sid, encode_proxy_head_line(200, []))
+                            ctx.finish_peer_http(sid)
+                            pstream.mode = ProxyStreamMode::Done
+                          } else {
+                            pstream.mode = ProxyStreamMode::OpeningTcp(port, carry, peer_ended)
+                            let dial_args = base_codec::json_obj([
+                              ("host", base_codec::json_str(ip)),
+                              ("port", base_codec::json_int(port)),
+                              ("timeoutMs", base_codec::json_int(5000)),
+                            ])
+                            let _ = ctx.mux_role.call_async_raw(
+                              builders_core::MuxToken::Tagged(0, PROXY_TOK_TCP_OPEN, sid),
+                              "tcp.dial",
+                              base_codec::json_stringify(dial_args),
+                              None,
+                            )
+                          }
+                        }
+                      }
+                      _ => ()
+                    }
+                    None => ()
+                  }
+                  return
+                }
+                None => ()
+              }
+            }
+            _ => ()
+          }
           let now_sys = host_shim::now_ms()
           if st.devices.handle_sys_event(ev_id, sev) {
             return
@@ -5113,7 +5431,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.terminals.tick(now)
           let _ = st.logins.tick(now)
           let _ = st.browser.tick(now)
-          let _ = st.connects.tick(wall)
+          let _ = st.connects.tick(now)
           let _ = ctx.edge_hub.drain_deferred_done(fn(tok : builders_core::MuxToken, d : host_shim::ShellDone) -> Bool {
             st.connects.handle_mux_reply(tok, d)
           })
@@ -5207,17 +5525,20 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               None => ()
             }
           }
-          // Immediately re-check every live `stillfail/http/1` peer-http / `device:` tunnel on fresh cloud roster!
-          if ctx.cloud.peers_current {
+          // Immediately re-check every live `stillfail/http/1` peer-http / `device:` tunnel on fresh cloud roster
+          // OR explicit station removal (`CLOSE_REMOVED`), while preserving active tunnels during pure cloud outages!
+          let station_removed = ctx.cloud.removed()
+          if ctx.cloud.peers_current || station_removed {
             let ps_keys = st.proxy_streams.keys()
             for psi in 0..<ps_keys.length() {
               let sid = ps_keys[psi]
               match st.proxy_streams.get(sid) {
                 Some(pstream) => {
-                  let mut kick : Option[(Int, String)] = station_mesh::check_peer_http_roster_change(
-                    roster,
-                    pstream.remote_id,
-                  )
+                  let mut kick : Option[(Int, String)] = if station_removed {
+                    Some((3, "removed from workspace"))
+                  } else {
+                    station_mesh::check_peer_http_roster_change(roster, pstream.remote_id)
+                  }
                   if kick is None {
                     match pstream.ws {
                       Some(ws) => {

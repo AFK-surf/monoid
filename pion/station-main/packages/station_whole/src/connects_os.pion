@@ -44,6 +44,22 @@ fn conn_is_http_url(url : String) -> Bool {
   url.starts_with("http://") || url.starts_with("https://")
 }
 
+fn conn_is_hex64(s : String) -> Bool {
+  let b = s.to_bytes()
+  if b.length() != 64 {
+    return false
+  }
+  for i in 0..<64 {
+    let c = b[i].to_int() & 0xFF
+    let is_digit = c >= 48 && c <= 57
+    let is_hex_lower = c >= 97 && c <= 102
+    if !is_digit && !is_hex_lower {
+      return false
+    }
+  }
+  true
+}
+
 fn conn_is_ws_url(url : String) -> Bool {
   url.starts_with("ws://") || url.starts_with("wss://")
 }
@@ -1445,6 +1461,12 @@ pub fn ConnectsOsRuntime::start_connect(
       }
     }
     ConnectorEntry::Group(g) => {
+      if conn_is_hex64(g.anchor_url) {
+        // Canonical Node `config.json` 64-hex iroh endpoint ID (`im/2` mesh transport):
+        // accepted as valid config, explicitly marked `unsupported_im2` (never ACK/advance cursor).
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Error("unsupported_im2"))
+        return Err("unsupported_im2")
+      }
       if !conn_is_http_url(g.anchor_url) {
         self.statuses.set(connect_id, station_connects::ConnectStatus::Error("invalid anchor_url"))
         return Err("disallowed Group anchor URL scheme: " + g.anchor_url)
@@ -1858,8 +1880,16 @@ pub fn ConnectsOsRuntime::feed_group_sse(
           station_connects::GroupStep::Event(ev) => {
             if self.is_connect_running(connect_id) {
               if (self.callbacks.on_event)(connect_id, station_connects::ConnectPlatform::Group, ev) {
+                g.commit_pending(now_ms)
                 delivered = delivered + 1
+              } else {
+                // Fail-closed: discard pending cursor commit and stop batch immediately so redelivery retries in order!
+                g.discard_pending()
+                break
               }
+            } else {
+              g.discard_pending()
+              break
             }
           }
           _ => ()

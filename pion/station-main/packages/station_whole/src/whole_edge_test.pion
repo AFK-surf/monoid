@@ -949,3 +949,94 @@ test "connects_os_fail_closed_ack_on_callback_false" {
   edge_assert(ack_count == 1)
   rt.stop()
 }
+
+test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
+  let mem = station_ops::MemFs::new()
+  let h = MockMuxHarness::new(1000L, fn(_id, _op, _json, _payload, _q) {})
+  let bridge = ConnectMuxBridge::with_hub(h.hub, mem.ops())
+  let allow : Array[Bool] = [false]
+  let calls : Array[Int] = [0]
+  let persisted : Array[String] = []
+  let cbs = ConnectsCallbacks::{
+    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Bool {
+      calls[0] = calls[0] + 1
+      if !allow[0] {
+        return false
+      }
+      match ev {
+        station_connects::ChatEvent::Message(m) => persisted.push(m.text)
+        _ => ()
+      }
+      true
+    },
+    on_card_answer: fn(_cid, _ans) -> Bool { false },
+    on_interactive: fn(_cid, _eid, _p) -> Bool { false },
+    on_disconnect: fn(_cid, _r) -> Unit {},
+  }
+  let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
+
+  // 1. Canonical Node 64-hex endpoint ID is accepted as valid config with explicit `unsupported_im2` status.
+  let hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let seed = "1112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f30"
+  edge_assert(rt.register_group("grp-im2", hex64, seed, "bot-1", "Bot") is Ok(_))
+  match rt.start_connect("grp-im2") {
+    Err(msg) => edge_assert(msg == "unsupported_im2")
+    Ok(_) => panic("expected unsupported_im2 for 64-hex group endpoint")
+  }
+  edge_assert(!rt.is_connect_running("grp-im2"))
+
+  // 2. Signed Group SSE event: first delivery fails (`on_event` returns false) -> cursor NOT advanced;
+  //    redelivery succeeds -> callback invoked twice, persisted once, 3rd delivery ignored as duplicate!
+  edge_assert(rt.register_group("grp-sse", "http://127.0.0.1:9999", seed, "bot-1", "Bot") is Ok(_))
+  rt.running_connects.set("grp-sse", true)
+  let user_seed = "2122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f40"
+  let (ev_id, signed_ev) = match station_connects::group_sign_event(
+    user_seed,
+    "d_alice",
+    "u_alice",
+    1L,
+    1000L,
+    0L,
+    "",
+    station_connects::GROUP_LOBBY,
+    "msg.post",
+    base_codec::json_obj([("text", base_codec::json_str("retry-safe-msg"))]),
+  ) {
+    Ok(pair) => pair
+    Err(e) => panic(e)
+  }
+  let stamped = base_codec::json_obj([
+    (
+      "stamped",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(ev_id)),
+        ("aseq", base_codec::json_int(1)),
+        ("event", signed_ev),
+      ]),
+    ),
+  ])
+  let sse_chunk = "event: event\ndata: " + base_codec::json_stringify(stamped) + "\n\n"
+
+  // Attempt 1: callback returns false -> 0 delivered, cursor stays 0.
+  match rt.feed_group_sse("grp-sse", sse_chunk, 1000L) {
+    Ok(n) => edge_assert(n == 0)
+    Err(e) => panic(e)
+  }
+  edge_assert(calls[0] == 1 && persisted.length() == 0)
+
+  // Attempt 2: callback returns true -> 1 delivered, cursor advances to 1.
+  allow[0] = true
+  match rt.feed_group_sse("grp-sse", sse_chunk, 1001L) {
+    Ok(n) => edge_assert(n == 1)
+    Err(e) => panic(e)
+  }
+  edge_assert(calls[0] == 2 && persisted.length() == 1 && persisted[0] == "retry-safe-msg")
+
+  // Attempt 3: exact same event redelivered -> ignored as duplicate (calls stays 2, persisted stays 1).
+  match rt.feed_group_sse("grp-sse", sse_chunk, 1002L) {
+    Ok(n) => edge_assert(n == 0)
+    Err(e) => panic(e)
+  }
+  edge_assert(calls[0] == 2 && persisted.length() == 1)
+  rt.stop()
+}

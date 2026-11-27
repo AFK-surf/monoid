@@ -591,11 +591,26 @@ test "GroupConnector: UTF-16 canonical json, Ed25519 verify, msg.edit aseq, and 
       ]),
     ),
   ])
+  // Failed delivery MUST NOT advance cursor: discarding pending allows exact redelivery!
   match conn.take_sse(SseEvent::{ event: "event", data: base_codec::json_stringify(stamped_post), id: None }, i64(1100)) {
     GroupStep::Event(ChatEvent::Message(m)) => {
       debug_assert(m.ts == "2" && m.addressed, "verified msg.post accepted at aseq 2")
+      conn.discard_pending()
     }
     _ => debug_assert(false, "expected verified msg.post")
+  }
+  debug_assert(conn.cursor(sp) == i64(1), "cursor must NOT advance when caller rejects event")
+  match conn.take_sse(SseEvent::{ event: "event", data: base_codec::json_stringify(stamped_post), id: None }, i64(1101)) {
+    GroupStep::Event(ChatEvent::Message(m)) => {
+      debug_assert(m.ts == "2" && m.addressed, "redelivered msg.post accepted at aseq 2")
+      conn.commit_pending(i64(1101))
+    }
+    _ => debug_assert(false, "expected redelivered msg.post after discard")
+  }
+  debug_assert(conn.cursor(sp) == i64(2), "cursor advances only after commit_pending")
+  match conn.take_sse(SseEvent::{ event: "event", data: base_codec::json_stringify(stamped_post), id: None }, i64(1102)) {
+    GroupStep::DuplicateIgnored(_) => {}
+    _ => debug_assert(false, "expected DuplicateIgnored after commit_pending")
   }
 
   // Real Ed25519-signed `msg.edit` at aseq=3 MUST map ts back to original aseq "2"!
@@ -633,6 +648,7 @@ test "GroupConnector: UTF-16 canonical json, Ed25519 verify, msg.edit aseq, and 
   match conn.take_sse(SseEvent::{ event: "event", data: base_codec::json_stringify(stamped_edit), id: None }, i64(1200)) {
     GroupStep::Event(ChatEvent::Changed(_, _, ts, new_txt)) => {
       debug_assert(ts == "2" && new_txt == "edited @Helper", "msg.edit mapped to original aseq 2")
+      conn.commit_pending(i64(1200))
     }
     _ => debug_assert(false, "expected ChatEvent::Changed with original aseq")
   }

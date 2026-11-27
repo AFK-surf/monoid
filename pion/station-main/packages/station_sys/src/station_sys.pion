@@ -181,6 +181,11 @@ extern "C" fn sts_resolve_host_for_tunnel(
   out_ip : Ptr,
   out_cap : Int64,
 ) -> Int
+extern "C" fn sts_resolve_host_for_tunnel_async(
+  event_id : Int64,
+  host : Ptr,
+  reject_loopback_or_unspec : Int,
+) -> Int
 extern "C" fn sts_free(ptr : Ptr) -> Unit
 
 // ---------------------------------------------------------------------------
@@ -246,6 +251,7 @@ pub enum SysEvent {
   PtyExit(ExitStatus)
   UdpRecv(UdpPacket)
   UdpClosed
+  DnsResolved(Int, String)
 }
 
 // ---------------------------------------------------------------------------
@@ -423,6 +429,13 @@ pub fn decode_sys_event(payload : Bytes) -> Option[SysEvent] {
       return None
     }
     Some(SysEvent::UdpClosed)
+  } else if tag == 60 {
+    if n < 5 {
+      return None
+    }
+    let rc = read_i32_le(payload, 1)
+    let ip = bytes_to_str(slice_bytes(payload, 5, n - 5))
+    Some(SysEvent::DnsResolved(rc, ip))
   } else {
     None
   }
@@ -1558,13 +1571,12 @@ pub fn register_sqlite_js_lower() -> Result[Unit, String] {
 pub enum TunnelResolveResult {
   Allowed(String)
   BlockedLoopback
+  NeedsAsyncDns
   Failed
 }
 
-/// Resolve `host` via OS `getaddrinfo` for `device:` tunnel dialing.
-/// When `reject_loopback_or_unspec` is `true`, returns `BlockedLoopback` if ANY resolved
-/// address is loopback (`127.0.0.0/8`, `::1`, `::ffff:127.0.0.0/104`) or unspecified
-/// (`0.0.0.0`, `::`, `::ffff:0.0.0.0`); otherwise returns `Allowed(first_literal_ip)`.
+/// Pure user-space literal IP / `localhost` resolution for `device:` tunnel dialing
+/// (0 syscalls, 0 FDs, never blocks). Returns `NeedsAsyncDns` for non-literal hostnames.
 pub fn resolve_host_for_tunnel(
   host : String,
   reject_loopback_or_unspec : Bool,
@@ -1587,8 +1599,26 @@ pub fn resolve_host_for_tunnel(
     sts_free(buf)
     if rc == -2 {
       TunnelResolveResult::BlockedLoopback
+    } else if rc == 0 {
+      TunnelResolveResult::NeedsAsyncDns
     } else {
       TunnelResolveResult::Failed
     }
   }
+}
+
+/// Spawn a detached worker thread to resolve a non-literal hostname via OS `getaddrinfo`.
+/// Emits `SysEvent::DnsResolved(rc, ip)` (`rc == 1` allowed, `-2` blocked loopback/unspec, `-1` error).
+pub fn resolve_host_for_tunnel_async(
+  event_id : Int64,
+  host : String,
+  reject_loopback_or_unspec : Bool,
+) -> Bool {
+  let ok = sts_resolve_host_for_tunnel_async(
+    event_id,
+    host.as_cstr(),
+    if reject_loopback_or_unspec { 1 } else { 0 },
+  )
+  let _ = host.length()
+  ok != 0
 }

@@ -597,6 +597,17 @@ struct SpaceDeviceState {
 /// Transport contract: `ConnectTransport::fetch` adapts `{method, url, headers, body}`
 /// onto the `im/2` iroh link stream `{method, path, headers}` authenticated by
 /// this device's Ed25519 endpoint identity (no HTTP Bearer token is used on the wire).
+pub struct GroupPendingCommit {
+  pub space : String
+  pub aseq : Int64
+  pub dedupe_key : String
+  pub own_device_state : Option[SpaceDeviceState]
+  pub by_id_entry : Option[GroupSaid]
+  pub edit_target : Option[(String, String)]
+  pub remove_own_ask : Option[String]
+  pub remove_left_stream : Option[String]
+}
+
 pub struct GroupConnector {
   pub connect_id : String
   pub anchor_url : String
@@ -618,6 +629,7 @@ pub struct GroupConnector {
   mut closed_asks : Map[String, Bool]
   mut closed_asks_order : Array[String]
   mut left_streams : Map[String, Bool]
+  mut pending_commit : Option[GroupPendingCommit]
 }
 
 pub fn GroupConnector::new(
@@ -664,8 +676,61 @@ pub fn GroupConnector::new(
       closed_asks: Map::new(),
       closed_asks_order: [],
       left_streams: Map::new(),
+      pending_commit: None,
     },
   )
+}
+
+pub fn GroupConnector::commit_pending(self : GroupConnector, now_ms : Int64) -> Unit {
+  match self.pending_commit {
+    None => ()
+    Some(pc) => {
+      self.pending_commit = None
+      self.cursors.set(pc.space, pc.aseq)
+      if pc.dedupe_key != "" {
+        self.dedupe.remember(pc.dedupe_key, now_ms)
+      }
+      match pc.own_device_state {
+        Some(ds) => self.device_state.set(pc.space, ds)
+        None => ()
+      }
+      match pc.by_id_entry {
+        Some(said) => {
+          self.by_id.set(said.id, said)
+          self.by_id_order.push(said.id)
+          while self.by_id_order.length() > GROUP_TAIL_MOST {
+            let oldest = self.by_id_order[0]
+            let next : Array[String] = []
+            for i in 1..<self.by_id_order.length() {
+              next.push(self.by_id_order[i])
+            }
+            self.by_id_order = next
+            self.by_id.remove(oldest)
+          }
+        }
+        None => ()
+      }
+      match pc.edit_target {
+        Some((tid, new_txt)) => match self.by_id.get(tid) {
+          Some(m) => m.text = new_txt
+          None => ()
+        }
+        None => ()
+      }
+      match pc.remove_own_ask {
+        Some(tid) => self.own_asks.remove(tid)
+        None => ()
+      }
+      match pc.remove_left_stream {
+        Some(sk) => self.left_streams.remove(sk)
+        None => ()
+      }
+    }
+  }
+}
+
+pub fn GroupConnector::discard_pending(self : GroupConnector) -> Unit {
+  self.pending_commit = None
 }
 
 pub fn GroupConnector::register_space(
@@ -826,7 +891,6 @@ pub fn GroupConnector::take_sse(
       return GroupStep::InvalidSignature(space + "#" + raw_aseq.to_string())
     }
   }
-  self.cursors.set(space, verified.aseq)
 
   let ev = verified.event
   // Advance HLC with received event HLC.
@@ -844,12 +908,14 @@ pub fn GroupConnector::take_sse(
     _ => {}
   }
 
-  // Update own device sequence if this event came from our own device.
-  if json_str_field(ev, "device") == self.device_id {
+  // Compute own device sequence update (committed only when cursor commits).
+  let own_ds_opt : Option[SpaceDeviceState] = if json_str_field(ev, "device") == self.device_id {
     match json_safe_count_field(ev, "dseq") {
-      Some(d) => self.device_state.set(space, SpaceDeviceState::{ dseq: d, prev: verified.id })
-      None => {}
+      Some(d) => Some(SpaceDeviceState::{ dseq: d, prev: verified.id })
+      None => None
     }
+  } else {
+    None
   }
 
   let author = json_str_field(ev, "author")
@@ -861,10 +927,8 @@ pub fn GroupConnector::take_sse(
     None => base_codec::json_obj([])
   }
 
-  // Fold into bounded local `by_id` index (max `GROUP_TAIL_MOST` = 200) BEFORE skipping own messages.
-  if kind == "msg.post" || kind == "decision.ask" {
-    self.by_id.set(
-      verified.id,
+  let by_id_entry_opt : Option[GroupSaid] = if kind == "msg.post" || kind == "decision.ask" {
+    Some(
       GroupSaid::{
         id: verified.id,
         space: space,
@@ -875,17 +939,25 @@ pub fn GroupConnector::take_sse(
         deleted: false,
       },
     )
-    self.by_id_order.push(verified.id)
-    while self.by_id_order.length() > GROUP_TAIL_MOST {
-      let oldest = self.by_id_order[0]
-      let next : Array[String] = []
-      for i in 1..<self.by_id_order.length() {
-        next.push(self.by_id_order[i])
-      }
-      self.by_id_order = next
-      self.by_id.remove(oldest)
-    }
-  } else if kind == "msg.unsend" {
+  } else {
+    None
+  }
+
+  let commit_noop = fn() -> Unit {
+    self.pending_commit = Some(GroupPendingCommit::{
+      space: space,
+      aseq: verified.aseq,
+      dedupe_key: "",
+      own_device_state: own_ds_opt,
+      by_id_entry: by_id_entry_opt,
+      edit_target: None,
+      remove_own_ask: None,
+      remove_left_stream: None,
+    })
+    self.commit_pending(now_ms)
+  }
+
+  if kind == "msg.unsend" {
     let target = json_str_field(body, "target")
     match self.by_id.get(target) {
       Some(m) => {
@@ -896,10 +968,12 @@ pub fn GroupConnector::take_sse(
       }
       None => {}
     }
+    commit_noop()
     return GroupStep::NoOp
   }
 
   if author == self.bot_user_id {
+    commit_noop()
     return GroupStep::NoOp
   }
 
@@ -913,12 +987,14 @@ pub fn GroupConnector::take_sse(
       None => str_starts_with(space, "d_")
     }
     let addressed = is_direct || group_mentions(words, self.bot_name)
+    let mut rm_left : Option[String] = None
     match self.left_streams.get(stream) {
       Some(true) => {
         if !addressed {
+          commit_noop()
           return GroupStep::NoOp
         }
-        self.left_streams.remove(stream)
+        rm_left = Some(stream)
       }
       _ => {}
     }
@@ -948,9 +1024,21 @@ pub fn GroupConnector::take_sse(
       _ => {}
     }
     let dedupe_key = "group:" + space + "#" + verified.aseq.to_string()
-    if !self.dedupe.accept(dedupe_key, now_ms) {
+    if self.dedupe.is_duplicate(dedupe_key, now_ms) {
+      commit_noop()
       return GroupStep::DuplicateIgnored(dedupe_key)
     }
+    // Defer cursor, device_state, by_id, and dedupe commit until caller confirms persistence via `commit_pending`.
+    self.pending_commit = Some(GroupPendingCommit::{
+      space: space,
+      aseq: verified.aseq,
+      dedupe_key: dedupe_key,
+      own_device_state: own_ds_opt,
+      by_id_entry: by_id_entry_opt,
+      edit_target: None,
+      remove_own_ask: None,
+      remove_left_stream: rm_left,
+    })
     return GroupStep::Event(
       ChatEvent::Message(
         InboundMessage::{
@@ -972,22 +1060,38 @@ pub fn GroupConnector::take_sse(
     match self.by_id.get(target) {
       Some(m) => {
         if m.author != author || m.deleted {
+          commit_noop()
           return GroupStep::NoOp
         }
         let new_text = json_str_field(body, "text")
-        m.text = new_text
+        self.pending_commit = Some(GroupPendingCommit::{
+          space: space,
+          aseq: verified.aseq,
+          dedupe_key: "",
+          own_device_state: own_ds_opt,
+          by_id_entry: None,
+          edit_target: Some((target, new_text)),
+          remove_own_ask: None,
+          remove_left_stream: None,
+        })
         return GroupStep::Event(
           ChatEvent::Changed(thread.channel, thread.thread_ts, m.aseq.to_string(), new_text),
         )
       }
-      None => return GroupStep::NoOp
+      None => {
+        commit_noop()
+        return GroupStep::NoOp
+      }
     }
   }
 
   if kind == "decision.resolve" {
     let target = json_str_field(body, "target")
     match self.closed_asks.get(target) {
-      Some(true) => return GroupStep::NoOp
+      Some(true) => {
+        commit_noop()
+        return GroupStep::NoOp
+      }
       _ => {}
     }
     let is_own_ask = match self.own_asks.get(target) {
@@ -998,13 +1102,13 @@ pub fn GroupConnector::take_sse(
       Some(m) => {
         // Someone else's decision: ignore.
         if !is_own_ask && m.author != self.bot_user_id {
+          commit_noop()
           return GroupStep::NoOp
         }
         true
       }
       None => false
     }
-    self.own_asks.remove(target)
     // Pre-restart decision (neither in `own_asks` nor `by_id`): still deliver,
     // addressed in direct spaces (1:1 with `station/src/group/surface.ts:666-671`).
     let is_direct = match self.spaces.get(space) {
@@ -1013,6 +1117,16 @@ pub fn GroupConnector::take_sse(
     }
     let addressed = is_own_ask || known_bot_ask || is_direct
     let choice = json_str_field(body, "choice")
+    self.pending_commit = Some(GroupPendingCommit::{
+      space: space,
+      aseq: verified.aseq,
+      dedupe_key: "",
+      own_device_state: own_ds_opt,
+      by_id_entry: None,
+      edit_target: None,
+      remove_own_ask: Some(target),
+      remove_left_stream: None,
+    })
     return GroupStep::Event(
       ChatEvent::Message(
         InboundMessage::{
@@ -1029,6 +1143,7 @@ pub fn GroupConnector::take_sse(
     )
   }
 
+  commit_noop()
   GroupStep::NoOp
 }
 
