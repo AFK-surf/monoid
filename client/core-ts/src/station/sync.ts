@@ -2063,7 +2063,9 @@ export class StationsSync {
     const data = parseJson(raw);
     if (data === undefined) return;
     const core = this.#core;
-    if (streamReadGen !== undefined && core.store.authGen.workspaceAuthGen(ofAddress(address)) !== streamReadGen) return;
+    const curGen = core.store.authGen.workspaceAuthGen(ofAddress(address));
+    if (streamReadGen !== undefined && curGen !== streamReadGen) return;
+    const effectiveReadGen = streamReadGen ?? curGen;
     if (SEARCHED.has(name)) this.#searchStale(address);
     if ((name === "overview" || name === "usage") && core.store.inUse({ topic: "profilePace", station: address })) this.paceShown(address);
     // An archive and restore can be coalesced: there may be no second removal in the shared-row stream.
@@ -2088,8 +2090,8 @@ export class StationsSync {
       }
     }
     if (RETOLD.has(name)) {
-      this.#retold.told(address, name, data, streamReadGen);
-      this.#held(address, name, data, true, streamReadGen);
+      this.#retold.told(address, name, data, effectiveReadGen);
+      this.#held(address, name, data, true, effectiveReadGen);
       return;
     }
     switch (name) {
@@ -2116,8 +2118,8 @@ export class StationsSync {
           }
         }
         // Its rows, as what was said makes them (told again on top of a read asked before it, as the station's own were).
-        this.#retold.told(address, "said", data, streamReadGen);
-        this.#held(address, "said", data, true, streamReadGen);
+        this.#retold.told(address, "said", data, effectiveReadGen);
+        this.#held(address, "said", data, true, effectiveReadGen);
         // Into its channel: the thread goes that far at once (the rest of its summary is read below), and a gap what
         // was told left is read. A chat let go for room (and not opened since) is not kept current: what it said is
         // read when it is opened. History older than what is held comes with the station's (#history).
@@ -2171,7 +2173,7 @@ export class StationsSync {
       case "made":
       case "chat-mark":
       case "chat-changed":
-        return this.#held(address, name, data, true, streamReadGen);
+        return this.#held(address, name, data, true, effectiveReadGen);
       // The stream that took over could not be told all that came since the last its predecessor gave: read again.
       case "missed":
         return this.snapshot(address);
@@ -2242,6 +2244,7 @@ export class StationsSync {
   /// read asked before it brought (`#retell`).
   #held(address: string, name: string, data: unknown, details = true, streamReadGen?: number): void {
     const core = this.#core;
+    if (streamReadGen !== undefined && core.store.authGen.workspaceAuthGen(ofAddress(address)) !== streamReadGen) return;
     switch (name) {
       case "session":
         return this.#onSession(address, data, details);
@@ -2433,8 +2436,12 @@ export class StationsSync {
   /// twice so, the second while the first was on its way).
   #retell(address: string, read: number, shared = false, details = true): void {
     // Only a shared-list read replaces sharedRows. Replaying its events after an unrelated, slower read could put an
-    // older row back over a newer shared-list answer.
-    for (const { name, data, readGen } of this.#retold.since(read, address)) if (SHARED_RETOLD.has(name) === shared) this.#held(address, name, data, details, readGen);
+    // older row back over a newer shared-list answer. Drop any cached event whose readGen no longer matches current authGen.
+    const curGen = this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
+    for (const { name, data, readGen } of this.#retold.since(read, address)) {
+      if (readGen === undefined || readGen !== curGen) continue;
+      if (SHARED_RETOLD.has(name) === shared) this.#held(address, name, data, details, readGen);
+    }
   }
 
   /// A session's summary changed: in place among the listed (and in its detail); its detail is read again when its
@@ -2653,8 +2660,10 @@ export class StationsSync {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return unread?.();
       const gen = link.generation;
+      const readGen = this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/chats?marks=1&own=1", null, { quiet: true, ctx }));
       if (this.#links.get(address) !== link || this.#core.data.of(address) === undefined) return;
+      if (this.#core.store.authGen.workspaceAuthGen(ofAddress(address)) !== readGen) return;
       if (answer._tag === "Failure") {
         const status = answer.failure.status;
         if (status === undefined || status >= 500) {
@@ -2702,8 +2711,10 @@ export class StationsSync {
       link.marksWanted.whole = false;
       if (!whole && scope.sessions.length === 0 && scope.threads.length === 0) return;
       const query = whole ? "" : [...scope.sessions.map((k) => `&session=${encode(k)}`), ...scope.threads.map((id) => `&thread=${id}`)].join("");
+      const readGen = this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
       const read = marksOf(yield* this.requests.call(link.addr, "GET", `/chats?marks=1&own=1${query}`, null, { quiet: true }));
       if (read === null || !link.own || this.#links.get(address) !== link || this.#core.data.of(address) === undefined) return;
+      if (this.#core.store.authGen.workspaceAuthGen(ofAddress(address)) !== readGen) return;
       let remakeWhole = whole;
       if (whole) {
         link.marksPending = false;

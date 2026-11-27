@@ -2291,6 +2291,12 @@ export class CloudSync {
         if (this.hasUnverifiedAccounts()) this.#deferredWorkspaceSync.add(event.id);
         return;
       }
+      if (sub !== owner) {
+        // Never merge an event from a different account's socket (e.g. an admin socket's invitations/added delta)
+        // into the owning account's view; enqueue a full authoritative reread under the owner instead.
+        core.scheduler.enqueue("cloud", `workspace/${event.id}`, Priority.shown, this.#workspace(event.id));
+        return;
+      }
       const lock = event.lock;
       const topic = { topic: "workspace", workspace: event.id } as const;
       // Only its lock moved on, as the event says: in place, no request (the lock itself is read of the stations,
@@ -2307,8 +2313,9 @@ export class CloudSync {
         // Only its requests to be let in moved (the cloud's, which apps from before ask and drop): nothing this core
         // shows of the workspace says them (its view's `lock_requests` is held as the cloud last gave it, read by none),
         // so nothing is asked; every device of every member read the whole workspace for each.
-      } else if (!this.#changedIn(event.id, event)) core.scheduler.enqueue("cloud", `workspace/${event.id}`, Priority.shown, this.#workspace(event.id));
+      } else if (!this.#changedIn(sub, event.id, event)) core.scheduler.enqueue("cloud", `workspace/${event.id}`, Priority.shown, this.#workspace(event.id));
     } else if (event.type === "station" && typeof event.workspace === "string" && typeof event.id === "string" && typeof event.online === "boolean") {
+      if (core.workspaces.owner(event.workspace) !== sub) return;
       // A station came online or went: in place, no request (unless workspace is pending auth confirmation, in which case force a full reread).
       const online = event.online;
       const id = event.id;
@@ -2350,11 +2357,12 @@ export class CloudSync {
   /// What a `workspace` event says changed of the view (cloud directory.ts `#told`), taken in place: nothing to do where
   /// the view held is that version or later (this device's own write answered with it), patched where it is the version
   /// before; false otherwise (none held, none said, a change missed: read whole then).
-  #changedIn(id: string, event: Record<string, unknown>): boolean {
+  #changedIn(sub: string, id: string, event: Record<string, unknown>): boolean {
     const held = this.#core.data.shared({ topic: "workspace", workspace: id });
     const [before, after] = Array.isArray(event.rev) ? event.rev : [];
     if (this.#core.pendingAuthConfirm.has(id)) return false;
     const owner = this.#core.workspaces.owner(id);
+    if (sub !== owner) return false;
     const readGen = this.#core.store.authGen.workspaceAuthGen(id);
     const base = this.#confirmedBase.get(id);
     if (!base || base.owner !== owner || base.gen !== readGen) return false;

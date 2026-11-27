@@ -3918,26 +3918,57 @@ class Vaults {
     return Effect.gen(function* () {
       const inner = self.#inner;
       const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startGlobalAuthGen = inner.store.authGen.globalGen;
       const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
       const startWsVaultGen = inner.store.authGen.vaultWorkspaceGen(self.ws);
-      const initialVaultId = targetVault ?? held(inner, self.ws).requests[id]?.vault;
+      const initialReq = held(inner, self.ws).requests[id];
+      const initialVaultId = targetVault ?? initialReq?.vault;
       const initialVaultGen = initialVaultId && initialVaultId !== PLAIN ? inner.store.authGen.vaultGen(self.ws, initialVaultId) : undefined;
+      const crossSrcWs = initialReq?.cross?.workspace;
+      const entryGens = {
+        startWsAuthGen,
+        startGlobalAuthGen,
+        startVaultGlobalGen,
+        startWsVaultGen,
+        ...(initialVaultId !== undefined ? { initialVaultId } : {}),
+        ...(initialVaultGen !== undefined ? { initialVaultGen } : {}),
+        ...(crossSrcWs !== undefined
+          ? {
+              crossSrcWs,
+              startCrossSrcWsAuthGen: inner.store.authGen.workspaceAuthGen(crossSrcWs),
+              startCrossSrcWsVaultGen: inner.store.authGen.vaultWorkspaceGen(crossSrcWs),
+              startCrossSrcVaultGen: initialReq?.vault && initialReq.vault !== PLAIN ? inner.store.authGen.vaultGen(crossSrcWs, initialReq.vault) : undefined,
+            }
+          : {}),
+      };
       const asked = yield* self.#request(id);
-      if (asked.r.browse !== undefined) return yield* self.#approveBrowse(asked.r, asked.station, selectedItems);
+      if (
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
+      if (asked.r.browse !== undefined) return yield* self.#approveBrowse(asked.r, asked.station, selectedItems, entryGens);
       if (!["once", "hour", "chat"].includes(scope)) return yield* Effect.fail(CoreError.invalid("scope: once, hour or chat"));
       const timeout = timeoutValue as { kind?: unknown; seconds?: unknown } | undefined;
       if (timeout !== undefined && (timeout === null || typeof timeout !== "object" || (timeout.kind !== "idle" && timeout.kind !== "fixed") || !Number.isSafeInteger(timeout.seconds) || (timeout.seconds as number) < 1 || (timeout.seconds as number) > 30 * 86400 || scope === "once" || (timeout.seconds as number) > GRANT_SECS[scope])) return yield* Effect.fail(CoreError.invalid("invalid timeout"));
       // The plain library's: its owner says so, nothing to open or sign (the station holds the value).
-      if (asked.r.save) return yield* self.#keepSaved(asked.r, asked.station, typed, targetVault);
-      if (asked.r.describe) return yield* self.#describe(asked.r, asked.station);
-      if (asked.r.remove) return yield* self.#remove(asked.r, asked.station);
+      if (asked.r.save) return yield* self.#keepSaved(asked.r, asked.station, typed, targetVault, entryGens);
+      if (asked.r.describe) return yield* self.#describe(asked.r, asked.station, entryGens);
+      if (asked.r.remove) return yield* self.#remove(asked.r, asked.station, entryGens);
       if (asked.r.timeout && scope !== "once" && !timeout) return yield* Effect.fail(CoreError.invalid("this request needs an approval with its timeout; update the app"));
-      if (asked.r.cross !== undefined) return yield* self.#approveCross(asked.r, asked.station, scope, timeout as { kind: "idle" | "fixed"; seconds: number } | undefined);
+      if (asked.r.cross !== undefined) return yield* self.#approveCross(asked.r, asked.station, scope, timeout as { kind: "idle" | "fixed"; seconds: number } | undefined, entryGens);
       if (asked.r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
         const { r, station } = asked;
         const h = held(inner, self.ws);
         if (!allows(h.plain[r.item]?.listing?.lasts ?? h.plainLasts?.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
+        if (
+          inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+          inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
+        ) {
+          return yield* fail("auth_stale", t("core-misc.auth.stale"));
+        }
         yield* self.#postDecision(station, "/vault/plain/grants", { request: r.id, scope, ...(timeout ? { timeout } : {}) }, r.id);
         self.#settled(r.id, { status: "granted", scope, ...(timeout ? { timeout: timeout as { kind: "idle" | "fixed"; seconds: number } } : {}) });
         return { request: r.id, scope };
@@ -4036,7 +4067,12 @@ class Vaults {
 
   /// Approve a cross-workspace browse request (`secret_list` other_workspaces): re-verifies every candidate against
   /// strict personal-vault security rules, signs `BrowseAnswer` with `TAG.browse`, and posts to `/vault/browses`.
-  #approveBrowse(r: Request, station: string, selected?: { workspace: string; vault: string; item: string }[]): Effect.Effect<unknown, CoreError> {
+  #approveBrowse(
+    r: Request,
+    station: string,
+    selected: { workspace: string; vault: string; item: string }[] | undefined,
+    entryGens: { startWsAuthGen: number; startVaultGlobalGen: number },
+  ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
@@ -4097,6 +4133,12 @@ class Vaults {
         TAG.browse,
         signer,
       );
+      if (
+        inner.store.authGen.workspaceAuthGen(self.ws) !== entryGens.startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== entryGens.startVaultGlobalGen
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       yield* self.#postDecision(station, "/vault/browses", answer, r.id);
       self.#settled(r.id, { status: "granted", browse: { workspaces: sourceWorkspaces.size, items: listings.length } });
       return { request: r.id, workspaces: sourceWorkspaces.size, items: listings.length };
@@ -4106,7 +4148,21 @@ class Vaults {
   /// Approve a cross-workspace personal secret use (`r.cross`): dual-lock verified (`lockB` + `lockA`), decrypts
   /// from local SQLite cache under `wsA`, re-seals under `grantContext(wsB, r.id)` to `r.box`, and posts `Grant`
   /// with `sourceWs: wsA`.
-  #approveCross(r: Request, station: string, scope: Scope, timeout?: { kind: "idle" | "fixed"; seconds: number }): Effect.Effect<unknown, CoreError> {
+  #approveCross(
+    r: Request,
+    station: string,
+    scope: Scope,
+    timeout: { kind: "idle" | "fixed"; seconds: number } | undefined,
+    entryGens: {
+      startWsAuthGen: number;
+      startGlobalAuthGen: number;
+      startVaultGlobalGen: number;
+      crossSrcWs?: string;
+      startCrossSrcWsAuthGen?: number;
+      startCrossSrcWsVaultGen?: number;
+      startCrossSrcVaultGen?: number;
+    },
+  ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
@@ -4149,15 +4205,29 @@ class Vaults {
       if (!allows(itemA.listing.lasts ?? vA.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
       const mineA = keyVault.keys.find((k) => k.cert.device === whoA.device);
       if (!mineA) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
-      const startSrcWsAuthGen = inner.store.authGen.workspaceAuthGen(wsA);
-      const startDstWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
-      const startSrcVaultGen = inner.store.authGen.vaultGen(wsA, vA.id);
-      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      const startDstWsAuthGen = entryGens.startWsAuthGen;
+      const startVaultGlobalGen = entryGens.startVaultGlobalGen;
+      let startSrcWsAuthGen: number;
+      let startSrcVaultGen: number;
+      if (entryGens.crossSrcWs === wsA && entryGens.startCrossSrcWsAuthGen !== undefined && entryGens.startCrossSrcVaultGen !== undefined) {
+        startSrcWsAuthGen = entryGens.startCrossSrcWsAuthGen;
+        startSrcVaultGen = entryGens.startCrossSrcVaultGen;
+      } else {
+        if (
+          inner.store.authGen.globalGen !== entryGens.startGlobalAuthGen ||
+          inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
+        ) {
+          return yield* fail("auth_stale", t("core-misc.auth.stale"));
+        }
+        startSrcWsAuthGen = inner.store.authGen.workspaceAuthGen(wsA);
+        startSrcVaultGen = inner.store.authGen.vaultGen(wsA, vA.id);
+      }
       const crossStale = () =>
         inner.store.authGen.workspaceAuthGen(wsA) !== startSrcWsAuthGen ||
         inner.store.authGen.workspaceAuthGen(self.ws) !== startDstWsAuthGen ||
         inner.store.authGen.vaultGen(wsA, vA.id) !== startSrcVaultGen ||
         inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
+      if (crossStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const priv = yield* self.#boxKey(t("core-misc.vault.reason.approve", { name: itemA.listing.name }));
       if (crossStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       if (boxPublic(priv) !== mineA.cert.box) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
@@ -4202,7 +4272,13 @@ class Vaults {
   /// vaults this device holds a key to (the one asked for first, their own next; a new one only when they have none of
   /// their own: one this device has no key to yet, refused), its copy brought to that station, which is then told where
   /// it went, with the grant that lets the asking chat use it. Either way the chat that asked may use it at once.
-  #keepSaved(r: Request, station: string, typed: unknown, targetVault?: string): Effect.Effect<unknown, CoreError> {
+  #keepSaved(
+    r: Request,
+    station: string,
+    typed: unknown,
+    targetVault: string | undefined,
+    entryGens: { startWsAuthGen: number; startVaultGlobalGen: number },
+  ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
@@ -4212,6 +4288,12 @@ class Vaults {
       if (given instanceof CoreError) return yield* Effect.fail(given);
       if (r.vault === PLAIN) {
         if (!plainMode(self.#inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
+        if (
+          inner.store.authGen.workspaceAuthGen(self.ws) !== entryGens.startWsAuthGen ||
+          inner.store.authGen.vaultGlobalGen !== entryGens.startVaultGlobalGen
+        ) {
+          return yield* fail("auth_stale", t("core-misc.auth.stale"));
+        }
         yield* self.#postDecision(station, "/vault/plain/saves", { request: r.id, ...(given ? { fields: given } : {}) }, r.id);
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
@@ -4275,8 +4357,14 @@ class Vaults {
           }
         }
       }
-      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
-      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      const startWsAuthGen = entryGens.startWsAuthGen;
+      const startVaultGlobalGen = entryGens.startVaultGlobalGen;
+      if (
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       const startRekeyVaultGen = rekeyCandidate ? inner.store.authGen.vaultGen(self.ws, rekeyCandidate.id) : 0;
       const startChosenVaultGen = chosen ? inner.store.authGen.vaultGen(self.ws, chosen.id) : 0;
       const priv = yield* self.#boxKey(t("core-misc.vault.reason.save", { name: s.name }));
@@ -4358,19 +4446,24 @@ class Vaults {
   /// An agent's request to rename an item or change its about, approved: the plain library's written by its station; a
   /// vault's item opened here and written as its next version saying so (its listing too, what agents read), its copy
   /// brought to the station that asked, which is then told. It grants nothing.
-  #describe(r: Request, station: string): Effect.Effect<unknown, CoreError> {
+  #describe(r: Request, station: string, entryGens: { startWsAuthGen: number; startVaultGlobalGen: number }): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
       const d = r.describe!;
       if (typeof d.name !== "string" || d.name.trim() === "" || typeof d.about !== "string") return yield* Effect.fail(CoreError.invalid("describe: {name, about}"));
+      const describeStale = () =>
+        inner.store.authGen.workspaceAuthGen(self.ws) !== entryGens.startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== entryGens.startVaultGlobalGen;
       if (r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
+        if (describeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         yield* self.#postDecision(station, "/vault/plain/described", { request: r.id }, r.id);
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
       }
       const opened = (yield* self.open(r.item)) as { vault: string; plain: Plain };
+      if (describeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const item = items(inner, self.ws, opened.vault)[r.item];
       if (!item || item.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
       const { about: _, ...listing } = item.listing ?? { name: d.name, kind: opened.plain.kind, modes: [], hosts: [] };
@@ -4378,6 +4471,7 @@ class Vaults {
       yield* self.putItem(opened.vault, r.item, { ...opened.plain, name: d.name, notes: d.about }, item.listing ? { ...listing, name: d.name, ...(d.about ? { about: d.about } : {}) } : null);
       // The station that asked holds its copy before it is told.
       yield* spread(inner, `${self.ws}/${station}`);
+      if (describeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       yield* self.#postDecision(station, "/vault/described", { request: r.id }, r.id);
       self.#settled(r.id, { status: "granted" });
       return { request: r.id, item: r.item };
@@ -4387,21 +4481,27 @@ class Vaults {
   /// An agent's request to delete an item, approved: the plain library's deleted by its station; a vault's item deleted
   /// here (its deleted version signed by this device), its copy brought to the station that asked, which is then told.
   /// It grants nothing.
-  #remove(r: Request, station: string): Effect.Effect<unknown, CoreError> {
+  #remove(r: Request, station: string, entryGens: { startWsAuthGen: number; startVaultGlobalGen: number }): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const removeStale = () =>
+        inner.store.authGen.workspaceAuthGen(self.ws) !== entryGens.startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== entryGens.startVaultGlobalGen;
       if (r.vault === PLAIN) {
         if (!plainMode(inner, self.ws)) return yield* fail("vault_locked", t("core-misc.vault.plainLocked"));
+        if (removeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         yield* self.#postDecision(station, "/vault/plain/removed", { request: r.id }, r.id);
         self.#settled(r.id, { status: "granted" });
         return { request: r.id, item: r.item };
       }
+      if (removeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const item = items(inner, self.ws, r.vault)[r.item];
       // (gone already, by another device or from its page: what is left is to say so)
       if (item && !item.deleted) yield* self.deleteItem(r.vault, r.item);
       // The station that asked holds its copy before it is told.
       yield* spread(inner, `${self.ws}/${station}`);
+      if (removeStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       yield* self.#postDecision(station, "/vault/removed", { request: r.id }, r.id);
       self.#settled(r.id, { status: "granted" });
       return { request: r.id, item: r.item };

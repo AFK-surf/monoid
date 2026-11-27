@@ -407,8 +407,10 @@ export class Core {
       if (typeof storedConn === "number" && Number.isInteger(storedConn) && storedConn > nextConnSeq) {
         nextConnSeq = storedConn;
       }
-      inner.data.device.put("auth", "connSeq", nextConnSeq);
-      yield* Effect.ignore(inner.data.device.flushTable("auth"));
+      if (!inner.data.device.isUnloaded("auth")) {
+        inner.data.device.put("auth", "connSeq", nextConnSeq);
+        yield* Effect.ignore(inner.data.device.flushTable("auth"));
+      }
       // Authorization gate: refuse reading/emitting positive held Data records for workspaces or accounts not currently
       // authorized by a signed-in account, or while awaiting fresh post-boundary per-topic/per-station confirmation
       // after same-owner downgrade/revocation/safeMode changes. Pure local topics (`draft`, `prefs`) are never gated.
@@ -885,7 +887,12 @@ export class Core {
     this.inner.store.registerClient(client, initialConnId, false, false);
     const failPersist = (err: unknown) => {
       this.inner.store.failClientAuth(client, err);
-      this.inner.runner.onDefect(err);
+      // Do NOT call `runner.onDefect` (all production hosts treat `onDefect` as fatal and crash-loop on disk full);
+      // record a non-fatal warning on the tracer instead.
+      const span = this.inner.tracer.root("core.auth_persist_failed", Kind.Internal);
+      span.set("stillfail.error", err instanceof Error ? err.message : String(err));
+      span.fail();
+      span.end();
     };
     try {
       this.inner.runner.fork(
@@ -1020,6 +1027,10 @@ export class Core {
     const target = callAuthTarget(inner, client, call, name);
     const conn = inner.store.connOf(client);
     if (auth !== undefined) inner.store.setAuthEnforced(client);
+    if (inner.store.isAuthFailed(client) && (target.protectedWrite || auth !== undefined || inner.store.isAuthEnforced(client))) {
+      inner.host.emit(client, answer(id, { err: new CoreError("storage_failed", "Device storage is unavailable; free space and retry.") }));
+      return;
+    }
     const enforced = conn > 0 && inner.store.isAuthEnforced(client);
     const verifyFor = (tgt: ReturnType<typeof callAuthTarget>): CoreError | null => {
       if (auth === undefined && (!tgt.protectedWrite || !enforced)) return null;
@@ -1089,6 +1100,7 @@ export class Core {
           : callGen
             ? { id, value, bytes, ...callGen }
             : { id, value, bytes },
+        true,
       );
     };
     const key = `${client}/${id}`;
@@ -1130,7 +1142,7 @@ export class Core {
           if (doing !== null) {
             inner.doing.end(doing);
           }
-          inner.store.emitClient(client, answer(id, { err: cancelled }, callGen));
+          inner.store.emitClient(client, answer(id, { err: cancelled }, callGen), true);
         }),
       ),
       Effect.exit,
@@ -1154,7 +1166,7 @@ export class Core {
               failed = doing;
             } else inner.doing.end(doing);
           }
-          inner.store.emitClient(client, answer(id, result, callGen));
+          inner.store.emitClient(client, answer(id, result, callGen), true);
           if (failed !== null) {
             yield* Effect.sleep(FAILED_SHOWN_MS);
             inner.doing.end(failed);

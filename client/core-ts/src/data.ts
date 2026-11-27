@@ -191,6 +191,10 @@ class Device {
           && Array.isArray(cur[key])
         ) {
           merged[key] = frozen([...new Set([...(merged[key] as unknown[]), ...(cur[key] as unknown[])])]);
+        } else if (table === "auth" && key === "connSeq") {
+          const diskVal = Number(merged[key] ?? 0);
+          const memVal = Number(cur[key] ?? 0);
+          merged[key] = frozen(Math.max(Number.isFinite(diskVal) ? diskVal : 0, Number.isFinite(memVal) ? memVal : 0));
         } else {
           merged[key] = cur[key];
         }

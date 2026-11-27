@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { Deferred, Effect } from "effect";
 import { apply as applyOps, type Op } from "../src/delta.ts";
+import { STORAGE_KEY } from "../src/accounts.ts";
 import { AuthGenTracker } from "../src/auth-gen.ts";
 import { Core, syncWorkspaceAuth } from "../src/core.ts";
 import { DEVICE_TABLES } from "../src/data.ts";
@@ -20,7 +21,8 @@ import { Retold } from "../src/station/retold.ts";
 import { logKey } from "../src/station/link.ts";
 import { COALESCE_MS, EVICT_AFTER_MS, Store } from "../src/store.ts";
 import { DEVICE_GLOBAL_TOPIC_SET, sanitizeKeptValue } from "../src/topic-policy.ts";
-import { FakeHost } from "../src/testing.ts";
+import { FakeHost, jsonResponse } from "../src/testing.ts";
+import { account, nowS } from "./helpers.ts";
 
 function setup() {
   const host = new FakeHost();
@@ -642,12 +644,14 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     const defects: unknown[] = [];
     coreFail.inner.runner.onDefect = (err) => defects.push(err);
     const cFail = coreFail.connect({ authHandshake: true, requireCallAuth: true });
-    // Send an exempt RPC while persistence is pending so it queues in #deferredEmits, then fail storageSet
+    // Queue a subscription (`prefs`) + an exempt RPC (`commands.find`) + an in-flight RPC that finishes AFTER persistence fails
+    coreFail.receiveRaw(cFail, { id: 76, subscribe: { topic: "prefs" } });
     coreFail.receiveRaw(cFail, { id: 77, call: "commands.find", params: { query: "", offered: [] } });
     await failHost.time.pass(10);
     Effect.runSync(Deferred.fail(failGate, new HostError("disk full")));
     await failHost.time.pass(20);
     const failEmitted = failHost.takeEmitted().filter(([c]) => c === cFail).map(([, m]) => m);
+    assert.equal(defects.length, 0, "persistence failure must NOT call runner.onDefect (would fatal crash-loop hosts)");
     assert.equal(
       failEmitted.some((m) => "auth" in m || ("conn" in m && typeof (m as { conn?: unknown }).conn === "number")),
       false,
@@ -656,11 +660,24 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     const rpcErr = failEmitted.find((m) => "id" in m && m.id === 77) as { error?: { code?: string }; conn?: number } | undefined;
     assert.equal(rpcErr?.error?.code, "storage_failed", "deferred RPC must receive explicit storage_failed error rather than hanging");
     assert.equal(rpcErr?.conn, undefined, "storage_failed error must not leak unpersisted conn");
-    assert.ok(defects.length >= 1, "persistence failure must report defect");
-    // Once storage recovers, syncAuth(cFail) succeeds and emits a fresh persisted conn snapshot
+    const subErr = failEmitted.find((m) => "id" in m && m.id === 76 && "error" in m);
+    assert.equal(subErr, undefined, "queued subscription value must NEVER be emitted as an RPC storage_failed error");
+    // After persistence failure, protected write RPC must be rejected with storage_failed (never fall into unhandshaked path)
+    coreFail.receiveRaw(cFail, { id: 78, call: "chat.send", params: { station: "ws-1/s1", thread: 1, text: "blocked" } });
+    await failHost.time.pass(10);
+    const postFailWrite = failHost.takeEmitted().find(([c, m]) => c === cFail && "id" in m && m.id === 78) as [number, { error?: { code?: string }; conn?: number }] | undefined;
+    assert.equal(postFailWrite?.[1].error?.code, "storage_failed", "protected write after auth persist failure must fail with storage_failed");
+    assert.equal(postFailWrite?.[1].conn, undefined, "post-failure storage_failed must not carry conn");
+    // In-flight RPC emission reaching emitClient after #authFailed is set must NOT leak conn and must receive storage_failed
+    coreFail.inner.store.emitClient(cFail, { id: 79, ok: { leaked: true }, conn: 999 } as unknown as CoreMessage, true);
+    const lateRpc = failHost.takeEmitted().find(([c, m]) => c === cFail && "id" in m && m.id === 79) as [number, { error?: { code?: string }; conn?: number }] | undefined;
+    assert.equal(lateRpc?.[1].error?.code, "storage_failed", "late in-flight RPC after auth failure must receive storage_failed");
+    assert.equal(lateRpc?.[1].conn, undefined, "late in-flight RPC must NOT leak unpersisted conn");
+    // Once storage recovers, syncAuth(cFail) clears #authFailed and emits a fresh persisted conn snapshot
     failHost.storageSet = FakeHost.prototype.storageSet.bind(failHost);
     coreFail.syncAuth(cFail);
     await failHost.time.pass(20);
+    assert.equal(coreFail.inner.store.isAuthFailed(cFail), false, "syncAuth recovery must clear #authFailed");
     assert.equal(
       failHost.takeEmitted().some(([c, m]) => c === cFail && "auth" in m),
       true,
@@ -669,7 +686,7 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     await coreFail.close().catch(() => undefined);
   });
 
-  it("Astra r12: P0-1 approve start gen, P0-2 thread/job-log streamReadGen gate, P0-3 cloud delta/joined reread, P1-1 unloaded reload & exempt RPC gating", async () => {
+  it("Astra r12/r13: P0-1 approve start gen, P0-2 thread/job-log & Retold/marks gate, P0-3 cloud sub!==owner & joined reread, P1-1/P1-5 unloaded futureDiskSeq reload", async () => {
     // 1. Astra P1-1: Delayed persistence gates BOTH `{ id: 0, auth }` AND exempt RPC answers, releasing them in order
     const gateHost = new FakeHost();
     const coreGate = await Core.create(gateHost, { iroh: null });
@@ -695,29 +712,40 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     assert.equal((released[1] as { id?: number }).id, 88);
     await coreGate.close();
 
-    // 2. Astra P1-1: `#unloaded` device/auth recovers via reload("auth") and advances connId strictly above diskSeq
+    // 2. Astra P1-5: `#unloaded` device/auth recovers via reload("auth") with futureDiskSeq > Date.now()*1000, preserving max on merge & disk
     const unloadHost = new FakeHost();
+    const futureDiskSeq = Date.now() * 1000 + 5_000_000;
     let failGetOnce = true;
+    let persistedAuthSeq = 0;
     const origGet = unloadHost.storageGet.bind(unloadHost);
+    const origSetUnload = unloadHost.storageSet.bind(unloadHost);
     unloadHost.storageGet = (key: string) => {
       if (key === "device/auth" && failGetOnce) {
         failGetOnce = false;
         return Effect.fail(new HostError("transient read fail"));
       }
       if (key === "device/auth") {
-        return Effect.succeed(new TextEncoder().encode(JSON.stringify({ connSeq: 9000 })));
+        return Effect.succeed(new TextEncoder().encode(JSON.stringify({ connSeq: futureDiskSeq })));
       }
       return origGet(key);
+    };
+    unloadHost.storageSet = (key: string, value: Uint8Array) => {
+      if (key === "device/auth") {
+        const parsed = JSON.parse(new TextDecoder().decode(value)) as { connSeq?: number };
+        if (typeof parsed.connSeq === "number") persistedAuthSeq = parsed.connSeq;
+      }
+      return origSetUnload(key, value);
     };
     const coreUnload = await Core.create(unloadHost, { iroh: null });
     assert.equal(coreUnload.inner.data.device.isUnloaded("auth"), true);
     const cUnload = coreUnload.connect({ authHandshake: true, requireCallAuth: true });
     await unloadHost.time.pass(20);
     const unloadSnap = unloadHost.takeEmitted().find(([c, m]) => c === cUnload && "auth" in m) as [number, { auth: { conn: number } }] | undefined;
-    assert.ok(unloadSnap && unloadSnap[1].auth.conn > 9000, "reloaded device/auth must advance conn strictly above diskSeq 9000");
+    assert.ok(unloadSnap && unloadSnap[1].auth.conn > futureDiskSeq, "reloaded device/auth must advance conn strictly above futureDiskSeq");
+    assert.ok(persistedAuthSeq > futureDiskSeq, "persisted device/auth connSeq must be strictly above futureDiskSeq");
     await coreUnload.close();
 
-    // 3. Astra P0-2: Real thread (channel + summary) and job-log (link.memory + onChange) gated by streamReadGen
+    // 3. Astra P0-2 & P0-3: Real thread/job-log streamReadGen gate + Retold stale session dropped on replay
     const stHost = new FakeHost();
     const coreSt = await Core.create(stHost, { iroh: null });
     const addr = "ws-sse/s1";
@@ -754,7 +782,14 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     assert.equal(logChangeCount, 1, "current streamReadGen job-log event must invoke onChange");
     assert.notEqual(link.memory.get(logKey("j1", 50)), undefined, "current streamReadGen job-log event must update link.memory");
 
-    // 4. Astra P0-3: CloudSync joined afterWrite (viewOf !== id) enqueues full workspace reread rather than direct #took
+    // Stale session event cannot overwrite Data summary after workspaceAuthGen bumps
+    coreSt.inner.data.putSummary(addr, { key: "s-keep", title: "current-title", updatedAt: 200 });
+    coreSt.inner.store.authGen.bumpWorkspace("ws-sse");
+    const nextWsGen = coreSt.inner.store.authGen.workspaceAuthGen("ws-sse");
+    coreSt.inner.stations.onEvent(addr, "session", JSON.stringify({ key: "s-keep", title: "stale-title", updatedAt: 100 }), false, nextWsGen - 1);
+    assert.equal((coreSt.inner.data.of(addr)?.summary(addr, "s-keep") as { title?: string } | undefined)?.title, "current-title", "stale session must NOT overwrite current summary");
+
+    // 4. Astra P0-3: CloudSync joined afterWrite (viewOf !== id) enqueues full workspace reread
     const enqueuedKeys: string[] = [];
     const origEnqueue = coreSt.inner.scheduler.enqueue.bind(coreSt.inner.scheduler);
     const origAsk = coreSt.inner.scheduler.ask.bind(coreSt.inner.scheduler);
@@ -775,20 +810,154 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     );
     assert.ok(enqueuedKeys.includes("workspace/ws-joined"), "joined afterWrite (viewOf !== id) must enqueue full workspace reread");
 
-    // 5. Astra P0-1: vault.approve rejects with auth_stale and issues 0 POST /vault/grants if workspaceAuthGen bumps during #request
-    let grantPosts = 0;
+    // 5. Astra P0-4: vault.approve with real `params.request` — positive control succeeds, stale boundary during #request rejects with auth_stale and 0 POSTs
+    coreSt.inner.data.set(
+      { topic: "workspace", workspace: "ws-sse" },
+      { id: "ws-sse", name: "SSE", role: "owner", members: [], stations: [{ id: "s1", name: "S1", online: true }] },
+      false,
+    );
+    const origReachable = coreSt.inner.stations.reachable.bind(coreSt.inner.stations);
+    coreSt.inner.stations.reachable = (a) => (a === addr ? true : origReachable(a));
+    let plainGrantPosts = 0;
+    let bumpDuringRead = false;
     const origCall = coreSt.inner.stations.requests.call.bind(coreSt.inner.stations.requests);
     coreSt.inner.stations.requests.call = (station, method, path, body, ...rest) => {
-      if (method === "POST" && path === "/vault/grants") grantPosts++;
-      if (method === "GET" && path === "/vault") {
-        coreSt.inner.store.authGen.bumpWorkspace("ws-sse");
+      if (method === "POST" && path === "/vault/plain/grants") {
+        plainGrantPosts++;
+        return Effect.succeed({ ok: true });
       }
+      if (method === "GET" && path === "/vault/plain") {
+        return Effect.succeed({
+          items: [{ id: "it-1", listing: { name: "API", kind: "token", modes: ["env"], hosts: [], lasts: "chat" } }],
+        });
+      }
+      if (method === "GET" && path === "/vault/requests") {
+        if (bumpDuringRead) {
+          bumpDuringRead = false;
+          coreSt.inner.store.authGen.bumpWorkspace("ws-sse");
+        }
+        return Effect.succeed({
+          requests: [
+            { id: "req-plain-ok", vault: "plain", item: "it-1", mode: "env", status: "pending", box: "" },
+            { id: "req-plain-stale", vault: "plain", item: "it-1", mode: "env", status: "pending", box: "" },
+          ],
+        });
+      }
+      if (method === "GET" && path === "/vault/vaults") return Effect.succeed({ vaults: [] });
+      if (method === "GET" && path === "/vault/items") return Effect.succeed({ items: [] });
+      if (method === "GET" && path === "/vault/boxes") return Effect.succeed({ boxes: [] });
+      if (method === "GET" && path.startsWith("/vault/")) return Effect.succeed({ uses: [] });
       return origCall(station, method, path, body, ...rest);
     };
+    // Positive control: normal approve passes #request + entry boundary check (reaches plainMode -> vault_locked, NOT auth_stale)
     const cApp = coreSt.connect({ authHandshake: false });
-    coreSt.receiveRaw(cApp, { id: 91, call: "vault.approve", params: { workspace: "ws-sse", id: "req-1", scope: "once" } });
+    coreSt.receiveRaw(cApp, { id: 91, call: "vault.approve", params: { workspace: "ws-sse", request: "req-plain-ok", scope: "once" } });
     await stHost.time.pass(50);
-    assert.equal(grantPosts, 0, "stale approve must never POST /vault/grants");
+    const okAns = stHost.takeEmitted().find(([c, m]) => c === cApp && "id" in m && m.id === 91) as [number, { ok?: unknown; error?: { code?: string } }] | undefined;
+    assert.equal(okAns?.[1].error?.code, "vault_locked", `positive control vault.approve must pass #request + authGen check (expected vault_locked, got ${JSON.stringify(okAns?.[1])})`);
+    assert.equal(plainGrantPosts, 0, "plainMode disabled prevents /vault/plain/grants");
+
+    // Negative test: workspaceAuthGen bumps during #request async station read -> explicitly returns auth_stale and 0 new POSTs
+    coreSt.inner.data.forgetRecord("vault", "ws-sse");
+    plainGrantPosts = 0;
+    bumpDuringRead = true;
+    coreSt.receiveRaw(cApp, { id: 92, call: "vault.approve", params: { workspace: "ws-sse", request: "req-plain-stale", scope: "once" } });
+    await stHost.time.pass(50);
+    const staleAns = stHost.takeEmitted().find(([c, m]) => c === cApp && "id" in m && m.id === 92) as [number, { error?: { code?: string } }] | undefined;
+    assert.equal(staleAns?.[1].error?.code, "auth_stale", "approve across boundary during #request must explicitly fail with auth_stale");
+    assert.equal(plainGrantPosts, 0, "stale approve must issue 0 POST /vault/plain/grants");
     await coreSt.close();
+
+    // 6. Astra P0-2: Dual-account different roles (acct-member owns ws-role, acct-admin also has live /v1/events socket) —
+    // admin delta carrying `invitations`/`added` must NEVER be merged into acct-member's workspace view in either arrival order,
+    // and must trigger a full owner-context reread instead.
+    for (const order of ["admin-first", "member-first"] as const) {
+      const dualHost = new FakeHost();
+      dualHost.store(STORAGE_KEY, [
+        account("acct-member", "m@x.com", "Member", "tok-member", "rm", nowS(dualHost) + 3600),
+        account("acct-admin", "a@x.com", "Admin", "tok-admin", "ra", nowS(dualHost) + 3600),
+      ]);
+      const wsFetchByToken: string[] = [];
+      let memberWsRev = 1;
+      dualHost.onFetch((req) => {
+        const auth = req.headers.find(([k]) => k.toLowerCase() === "authorization")?.[1] ?? "";
+        const isAdmin = auth === "Bearer tok-admin";
+        const path = req.url.replace("https://stillfail.test", "");
+        if (path === "/v1/me") {
+          return jsonResponse(200, {
+            workspaces: [{ id: "ws-role", name: "Shared", role: isAdmin ? "admin" : "member" }],
+            invitations: [],
+            relay_url: "https://relay.test",
+          });
+        }
+        if (path === "/v1/workspaces/ws-role") {
+          wsFetchByToken.push(isAdmin ? "admin" : "member");
+          if (isAdmin) {
+            return jsonResponse(200, {
+              id: "ws-role",
+              name: "Shared",
+              role: "admin",
+              rev: memberWsRev,
+              members: [{ sub: "acct-member", role: "member" }, { sub: "acct-admin", role: "admin" }],
+              invitations: [{ id: "inv-admin-only", email: "secret@example.com", role: "admin" }],
+              stations: [],
+            });
+          }
+          return jsonResponse(200, {
+            id: "ws-role",
+            name: "Shared",
+            role: "member",
+            rev: memberWsRev,
+            members: [{ sub: "acct-member", role: "member" }],
+            stations: [],
+          });
+        }
+        return jsonResponse(404, { error: "not_found" });
+      });
+      const coreDual = await Core.create(dualHost, { clock: dualHost.time.clock, iroh: null });
+      await dualHost.time.pass(500, 50);
+      assert.equal(coreDual.inner.workspaces.owner("ws-role"), "acct-member", `${order}: acct-member should own ws-role`);
+      const findSock = (tok: string) =>
+        dualHost.sockets.find((s) => s.url.endsWith("/v1/events") && !s.closed && (s.url.includes(tok) || s.protocols.some((p) => p.includes(tok))));
+      const memberSock = findSock("tok-member");
+      const adminSock = findSock("tok-admin");
+      assert.ok(memberSock && adminSock, `${order}: both accounts must have open /v1/events sockets`);
+
+      wsFetchByToken.length = 0;
+      memberWsRev = 2;
+      const adminDelta = JSON.stringify({
+        type: "workspace",
+        id: "ws-role",
+        rev: [1, 2],
+        invitations: [{ id: "inv-secret", email: "secret@example.com", role: "admin" }],
+        added: [{ sub: "acct-new", role: "admin" }],
+      });
+      const memberDelta = JSON.stringify({
+        type: "workspace",
+        id: "ws-role",
+        rev: [1, 2],
+        name: "Shared-Updated",
+      });
+      if (order === "admin-first") {
+        adminSock.send(adminDelta);
+        await dualHost.time.pass(200, 20);
+        const mid = coreDual.inner.data.shared({ topic: "workspace", workspace: "ws-role" }) as Record<string, unknown> | undefined;
+        assert.equal("invitations" in (mid ?? {}), false, `${order}: admin delta must never merge invitations into member view`);
+        assert.equal("added" in (mid ?? {}), false, `${order}: admin delta must never merge added into member view`);
+        assert.ok(wsFetchByToken.includes("member"), `${order}: non-owner delta must enqueue full owner workspace reread`);
+        assert.equal(wsFetchByToken.includes("admin"), false, `${order}: owner reread must use acct-member, not acct-admin`);
+        memberSock.send(memberDelta);
+        await dualHost.time.pass(200, 20);
+      } else {
+        memberSock.send(memberDelta);
+        await dualHost.time.pass(200, 20);
+        adminSock.send(adminDelta);
+        await dualHost.time.pass(200, 20);
+      }
+      const wsAfter = coreDual.inner.data.shared({ topic: "workspace", workspace: "ws-role" }) as Record<string, unknown> | undefined;
+      assert.equal("invitations" in (wsAfter ?? {}), false, `${order}: final member view must never contain admin invitations`);
+      assert.equal("added" in (wsAfter ?? {}), false, `${order}: final member view must never contain admin added`);
+      await coreDual.close();
+    }
   });
 });

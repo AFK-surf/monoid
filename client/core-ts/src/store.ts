@@ -186,7 +186,8 @@ export class Store {
   /// Clients whose initial `{ id: 0, auth }` snapshot has not been emitted yet.
   readonly #pendingSnapshots = new Set<ClientId>();
   readonly #authNotReady = new Set<ClientId>();
-  readonly #deferredEmits = new Map<ClientId, CoreMessage[]>();
+  readonly #authFailed = new Set<ClientId>();
+  readonly #deferredEmits = new Map<ClientId, { msg: CoreMessage; isRpc: boolean }[]>();
   /// Clients for which protected write RPCs must carry explicit `CallAuth` (all production hosts + `syncAuth` + auth-aware clients).
   readonly #authEnforced = new Set<ClientId>();
   /// Optional authorization gate checked before reading held data or computing/emitting topic values.
@@ -263,32 +264,37 @@ export class Store {
   markClientAuthReady(client: ClientId): void {
     if (!this.#connIds.has(client)) return;
     this.#authNotReady.delete(client);
+    this.#authFailed.delete(client);
     this.#flushAuthSnapshot(client);
     const queued = this.#deferredEmits.get(client);
     if (queued) {
       this.#deferredEmits.delete(client);
-      for (const msg of queued) this.host.emit(client, msg);
+      for (const entry of queued) this.host.emit(client, entry.msg);
     }
   }
 
-  /// Aborts an unpersisted handshake for `client`: never emits the unpersisted `connId`, fails any queued RPCs
-  /// explicitly without `conn` (preventing hangs/leaks), and clears handshake state so a subsequent `syncAuth` can recover.
+  /// Whether `client`'s handshake `device/auth` persistence failed (and has not yet recovered via `syncAuth`).
+  isAuthFailed(client: ClientId): boolean {
+    return this.#authFailed.has(client);
+  }
+
+  /// Aborts an unpersisted handshake for `client`: marks `#authFailed` (preserving `#authEnforced`), never emits the
+  /// unpersisted `connId`, fails only queued RPCs (`isRpc === true`) explicitly without `conn` (never misreporting
+  /// subscription values as RPC errors), and clears handshake state so a subsequent `syncAuth` can recover.
   failClientAuth(client: ClientId, err: unknown): void {
     const message = err instanceof Error ? err.message : String(err);
     const queued = this.#deferredEmits.get(client);
+    this.#authFailed.add(client);
     this.#deferredEmits.delete(client);
     this.#connIds.delete(client);
     this.#pendingSnapshots.delete(client);
     this.#authNotReady.delete(client);
     if (queued) {
       const seenRpc = new Set<number>();
-      for (const msg of queued) {
-        if ("id" in msg && typeof msg.id === "number" && msg.id > 0 && !seenRpc.has(msg.id)) {
-          // Only emit an explicit error for deferred RPC answers/progress (never leak unpersisted `conn`).
-          if ("ok" in msg || "error" in msg || "value" in msg) {
-            seenRpc.add(msg.id);
-            this.host.emit(client, { id: msg.id, error: new CoreError("storage_failed", message) });
-          }
+      for (const { msg, isRpc } of queued) {
+        if (isRpc && "id" in msg && typeof msg.id === "number" && msg.id > 0 && !seenRpc.has(msg.id)) {
+          seenRpc.add(msg.id);
+          this.host.emit(client, { id: msg.id, error: new CoreError("storage_failed", message) });
         }
       }
     }
@@ -307,12 +313,25 @@ export class Store {
     this.host.emit(client, { id: 0, auth: this.authGen.snapshot(connId) });
   }
 
-  /// Emits `msg` to `client`, deferring until `device/auth` persistence completes if `client` is awaiting handshake persistence.
-  emitClient(client: ClientId, msg: CoreMessage): void {
+  /// Emits `msg` to `client`, deferring until `device/auth` persistence completes if `client` is awaiting handshake
+  /// persistence. If persistence failed (`#authFailed`), RPCs receive an explicit `storage_failed` error without `conn`
+  /// and any conn-tagged non-RPC message is dropped.
+  emitClient(client: ClientId, msg: CoreMessage, isRpc = false): void {
     if (this.#authNotReady.has(client)) {
       let q = this.#deferredEmits.get(client);
       if (!q) this.#deferredEmits.set(client, (q = []));
-      q.push(msg);
+      q.push({ msg, isRpc });
+      return;
+    }
+    if (this.#authFailed.has(client)) {
+      if (isRpc && "id" in msg && typeof msg.id === "number" && msg.id > 0) {
+        this.host.emit(client, {
+          id: msg.id,
+          error: new CoreError("storage_failed", "Device storage is unavailable; free space and retry."),
+        });
+      } else if (!("conn" in msg && typeof (msg as { conn?: unknown }).conn === "number")) {
+        this.host.emit(client, msg);
+      }
       return;
     }
     this.#flushAuthSnapshot(client);
@@ -759,6 +778,7 @@ export class Store {
     this.#connIds.delete(client);
     this.#pendingSnapshots.delete(client);
     this.#authNotReady.delete(client);
+    this.#authFailed.delete(client);
     this.#deferredEmits.delete(client);
     this.#authEnforced.delete(client);
     this.#tokenScope.delete(client);
