@@ -8,7 +8,7 @@ import { DurableObject } from "cloudflare:workers";
 import { AwsClient } from "aws4fetch";
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 import { bearerToken, clock, denied, nowSeconds, readJson, reply } from "./auth";
-import { changelogFixesOf, etagOf, parseChangelog, parseReleased, readReleaseFile, type ChangelogEntry, type ChangelogFix, type Channel, type PlatformReleases } from "./changelog";
+import { changelogCacheSeconds, changelogFixesOf, etagOf, parseChangelog, parseReleased, readReleaseFile, type ChangelogEntry, type ChangelogFix, type Channel, type PlatformReleases } from "./changelog";
 import type { Env } from "./env";
 import { relayName, relayUrls, type Relays } from "./relays";
 import { unavailable } from "./releases";
@@ -275,6 +275,16 @@ export class ServiceStatus extends DurableObject<Env> {
       }
       return { ok: true, body: cached.body, etag: cached.etag };
     }
+    const result = await this.#buildChangelogOnce(cacheKey, channel, upstream, ttlSeconds);
+    if (!result.ok) return result;
+    if (ifNoneMatch && result.etag === ifNoneMatch) {
+      return { ok: true, notModified: true, etag: result.etag };
+    }
+    return { ok: true, body: result.body, etag: result.etag };
+  }
+
+  /** The changelog built afresh, once for all who ask while it is being built. */
+  #buildChangelogOnce(cacheKey: string, channel: Channel, upstream: string | null, ttlSeconds: number): Promise<ChangelogFullResult> {
     let promise = ttlSeconds > 0 ? this.#responseInFlight.get(cacheKey) : undefined;
     if (!promise) {
       promise = this.#buildChangelogResponse(channel, upstream, ttlSeconds, false);
@@ -286,12 +296,20 @@ export class ServiceStatus extends DurableObject<Env> {
         this.ctx.waitUntil(promise.then(cleanup, cleanup));
       }
     }
-    const result = await promise;
-    if (!result.ok) return result;
-    if (ifNoneMatch && result.etag === ifNoneMatch) {
-      return { ok: true, notModified: true, etag: result.etag };
-    }
-    return { ok: true, body: result.body, etag: result.etag };
+    return promise;
+  }
+
+  /**
+   * Builds a channel's changelog into the cache before anyone asks (`receiveReleased`, between clearing it and
+   * telling every device: they all ask at once). Nothing is answered, so the body never crosses back.
+   */
+  async warmChangelog(channel: Channel, upstream: string | null, ttlSeconds: number): Promise<void> {
+    if (ttlSeconds <= 0) return;
+    const cacheKey = `${channel}\0${upstream ?? ""}`;
+    const cached = this.#responseCache.get(cacheKey);
+    if (cached && cached.expiresAt > clock.now()) return;
+    const result = await this.#buildChangelogOnce(cacheKey, channel, upstream, ttlSeconds);
+    if (!result.ok) throw new Error(`changelog ${result.file} unavailable: ${result.message}`);
   }
 
   #refreshChangelogFixes(ttlSeconds: number): void {
@@ -549,7 +567,14 @@ export async function receiveReleased(request: Request, env: Env): Promise<Respo
   if (claims === undefined) return reply({ error: "not_found" }, 404);
   if (claims === "unavailable") return reply({ error: "jwks_unavailable" }, 503);
   if (!claims || !RELEASING.some((file) => claims.workflow_ref === `${claims.repository}/.github/workflows/${file}@refs/heads/main`)) return denied();
-  await env.SERVICE_STATUS.getByName("primary").invalidateChangelog().catch((error) => console.error("changelog cache invalidate failed:", error));
+  const status = env.SERVICE_STATUS.getByName("primary");
+  await status.invalidateChangelog().catch((error) => console.error("changelog cache invalidate failed:", error));
+  // Every device told reads its channel's changelog at once: built here first, they all find it kept.
+  const ttl = changelogCacheSeconds(env);
+  if (ttl > 0) {
+    const upstream = env.RELEASES_UPSTREAM ?? null;
+    await Promise.all((["beta", "stable"] as const).map((channel) => status.warmChangelog(channel, upstream, ttl).catch((error) => console.error(`changelog ${channel} prewarm failed:`, error))));
+  }
   await env.DIRECTORY.getByName("primary").tellAll({ type: "release" }, { type: "release" }, { ephemeral: true });
   return reply({ ok: true });
 }
