@@ -25,9 +25,10 @@ pub fn StationInfoShow::brief() -> StationInfoShow {
 }
 
 ///|
-/// Standard verification display (source station, removal, retirement): mark, name, live status, and machine identity.
+/// Standard verification display (source station, removal, retirement): mark, name, live status, machine identity, and
+/// live CPU/memory/disk availability.
 pub fn StationInfoShow::compact() -> StationInfoShow {
-  { state: true, host: true, meters: false, net: false, version: false }
+  { state: true, host: true, meters: true, net: false, version: false }
 }
 
 ///|
@@ -135,7 +136,8 @@ pub fn station_info_from_core(
   } else {
     None
   }
-  { role, address, name, row: resolved_row, net, cpu_busy: None, show, note }
+  let busy = @signals.computed(fn(_) { @settings.cpu_busy(core) })
+  { role, address, name, row: resolved_row, net, cpu_busy: Some(fn() { busy.get() }), show, note }
 }
 
 ///|
@@ -188,7 +190,7 @@ fn station_info_meters_text(row : Json?, busy : Bool) -> String {
 }
 
 ///|
-fn station_info_spec_text(row : Json?, show : StationInfoShow, online : Bool, net_in_head : Bool) -> String {
+fn station_info_spec_text(row : Json?, show : StationInfoShow, online : Bool, head_state : String) -> String {
   let parts : Array[String] = []
   if show.host {
     let host = field(row, "host")
@@ -206,10 +208,21 @@ fn station_info_spec_text(row : Json?, show : StationInfoShow, online : Bool, ne
       parts.push(@sf.t("web-pages.stations.versionLabel", args=[("version", ver)]))
     }
   }
-  if online && show.state && net_in_head {
-    let running = number(field(field(row, "overview"), "counts"), "running").to_int()
-    if running > 0 {
-      parts.push(@sf.t("web-pages.stations.page.runningShort", args=[("n", running.to_string())]))
+  if online && show.state {
+    let ov = field(row, "overview")
+    let running = number(field(ov, "counts"), "running").to_int()
+    let workload = if running > 0 {
+      @sf.t("web-pages.stations.page.runningShort", args=[("n", running.to_string())])
+    } else {
+      let proc = text(ov, "processesText")
+      if proc != "" {
+        proc
+      } else {
+        text(row, "stateText")
+      }
+    }
+    if workload != "" && workload != head_state {
+      parts.push(workload)
     }
   }
   parts.join(" · ")
@@ -238,7 +251,7 @@ fn station_info_item_node(parent : @view.View, item : StationInfoItem, loc~ : So
     }
   })
   let net_text = fn() { net_sig.get() }
-  let state_text = fn() {
+  let state_sig = @signals.computed(fn(_) {
     if !has_row() {
       ""
     } else if !online() {
@@ -255,14 +268,17 @@ fn station_info_item_node(parent : @view.View, item : StationInfoItem, loc~ : So
         if running > 0 {
           @sf.t("web-pages.stations.page.runningShort", args=[("n", running.to_string())])
         } else {
-          @sf.t("web-pages.stations.online")
+          match text(row(), "stateText") {
+            "" => @sf.t("web-pages.stations.online")
+            s => s
+          }
         }
       }
     }
-  }
+  })
+  let state_text = fn() { state_sig.get() }
   let spec_text = fn() {
-    let net_in_head = item.show.net && online() && net_text() != ""
-    station_info_spec_text(row(), item.show, online(), net_in_head)
+    station_info_spec_text(row(), item.show, online(), state_text())
   }
   let meters_text = fn() {
     if !item.show.meters || !online() {
@@ -274,6 +290,23 @@ fn station_info_item_node(parent : @view.View, item : StationInfoItem, loc~ : So
       }
       station_info_meters_text(row(), busy)
     }
+  }
+  let problem_text = fn() {
+    if !item.show.state {
+      return ""
+    }
+    let blocked = text(row(), "blocked")
+    if blocked != "" {
+      return blocked
+    }
+    for p in items(row(), "problems") {
+      let key = text(Some(p), "key")
+      let msg = text(Some(p), "text")
+      if msg != "" && (online() || key != "away") {
+        return msg
+      }
+    }
+    ""
   }
   parent.box(made_for=loc, fn(block) {
     @sf.style_node(block, fn() { si_item_box })
@@ -325,6 +358,11 @@ fn station_info_item_node(parent : @view.View, item : StationInfoItem, loc~ : So
     if item.show.meters {
       block.show(fn() { meters_text() != "" }, at_once=true, fn(m) {
         @sf.words_node(loc~, m, meters_text, fn() { si_meta_words }) |> ignore
+      })
+    }
+    if item.show.state {
+      block.show(fn() { problem_text() != "" }, at_once=true, fn(p) {
+        @sf.words_node(loc~, p, problem_text, fn() { si_meta_words }) |> ignore
       })
     }
     if item.note != "" {

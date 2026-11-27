@@ -244,6 +244,28 @@ pub fn station_retire_panel(core : Core, here : Here, s : Json?, preview : Json)
           }
         },
       )
+      // target station info card showing live status & resources whenever a destination is selected
+      let ws_prefix = @sfbase.workspace_of(address)
+      v.show(fn() { to.get() != "" }, at_once=true, fn(t_wrap) {
+        t_wrap.pick(fn() { to.get() }, fn(t_box, id) {
+          if id != "" {
+            let target_addr = if ws_prefix == "" { id } else { ws_prefix + "/" + id }
+            let target_name = match choices.iter().find_first(fn(c) { c.0 == id }) {
+              Some(c) => c.1
+              None => id
+            }
+            station_info_card_node(t_box, [
+              station_info_from_core(
+                core,
+                target_addr,
+                target_name,
+                role=@sf.t("common.confirmFact.targetStation"),
+                show=StationInfoShow::target(),
+              ),
+            ])
+          }
+        })
+      })
       // what goes along, each kind as the station counts and names it
       ws_way_label_node(v, fn() {
         if to.get() == "" {
