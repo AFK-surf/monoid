@@ -2,14 +2,18 @@
 // station of the workspace. Two stations here, H (the connect's) and S, over a transport of the test's that carries
 // what the mesh does (a JSON head, bytes after it).
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { mkdtempSync, readdirSync, writeFileSync } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { Cloud } from "../src/cloud/state.ts";
 import { type Inbox, NoLink, PeerBus, Refused, bytesOf, withBytes } from "../src/mesh/bus.ts";
-import { PeerGone, PeerStopped } from "../src/mesh/peer.ts";
+import { PEER_ALPN, PEER_BYTES_ALPN, PeerGone, PeerStopped, STOPPING, peerCall, servePeer } from "../src/mesh/peer.ts";
+import type { Connection, Endpoint } from "../src/mesh/native.ts";
 import { WorkspaceConnects, fingerprint, mayHaveTaken } from "../src/connects/workspace.ts";
+import { memoryMesh } from "./memory-mesh.ts";
 import { connectEdits } from "../src/api/routes/connects.ts";
 import { overview } from "../src/api/overview.ts";
 import { hubConfig } from "../src/sessions/config.ts";
@@ -1036,83 +1040,132 @@ test("once the station connected its connects, a call of one still not connected
   await t.close();
 });
 
-test("multi-station allowlist: ambiguous connect.event timeout or drop never fails over to a second station, pins the thread, and routes retries to the same station", async () => {
+test("multi-station allowlist with real peerCall: post-write timeouts and drops pin without failover, while pre-write timeouts and bare refusals fail over cleanly", async () => {
   const { h, s1, s2, close } = multiWorkspace({
     [S]: () => ({ sessions: true, acceptAutoChats: true, load: { running: { turns: 0 }, memory: { totalBytes: 100, availableBytes: 90 } } }),
     [S2]: () => ({ sessions: true, acceptAutoChats: true, load: { running: { turns: 1 }, memory: { totalBytes: 100, availableBytes: 50 } } }),
   });
   h.rig.raw.connects.find((c: Json) => c.id === "cl").stations = [S, S2];
 
-  // Simulate S1 accepting connect.event (running it in background) while H's peer RPC times out at 30s.
-  const origHandle = s1.bus.handle.bind(s1.bus);
-  let timedOutOnce = false;
-  s1.bus.handle = async (ws, from, req) => {
-    if (req?.method === "connect.event" && !timedOutOnce) {
-      timedOutOnce = true;
-      void origHandle(ws, from, req);
-      throw new Error("peer request timed out; execution may have happened — query the same task key");
+  // Wire H -> S1 over real `peerCall` + `servePeer` on `memoryMesh`, so `peer.ts`'s `wrote` tracking and `mark` run for real.
+  const mesh = memoryMesh();
+  const bind = () => mesh.bind({ secretKey: randomBytes(32), alpns: [PEER_BYTES_ALPN, PEER_ALPN], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
+  const [epH, epS1] = await Promise.all([bind(), bind()]);
+  const cloudOf = (station: string, peers: string[]): any =>
+    Object.assign(Object.create(Cloud.prototype), {
+      state: { workspace: "ws", workspace_name: "ws", name: "", station, peers: peers.map((id) => ({ id })), revocations: [], joined: [] },
+      lock: null,
+      peersCurrent: true,
+      relays: () => [],
+    });
+
+  let mode: "normal" | "post-write-timeout" | "post-write-stop" | "pre-write-timeout" = "normal";
+  const serverConns: Connection[] = [];
+  const origS1Handle = s1.bus.handle.bind(s1.bus);
+  void (async () => {
+    for (;;) {
+      const conn = await epS1.accept();
+      if (!conn) return;
+      serverConns.push(conn);
+      void servePeer(conn, cloudOf(epS1.id(), [epH.id()]), {
+        handle: async (ws: string, _peer: string, req: Json) => {
+          if (req?.method === "connect.event" && mode === "post-write-timeout") {
+            // Run the event on S1 while holding the RPC answer past peerCall's answerMs.
+            void origS1Handle(ws, H, req);
+            await new Promise(() => {});
+          }
+          if (req?.method === "connect.event" && mode === "post-write-stop") {
+            void origS1Handle(ws, H, req);
+            for (const c of serverConns) c.close(0, STOPPING);
+            await new Promise(() => {});
+          }
+          return origS1Handle(ws, H, req);
+        },
+      } as any).catch(() => {});
     }
-    return origHandle(ws, from, req);
+  })();
+
+  const proxiedH = new Proxy(epH, {
+    get(e, prop) {
+      if (prop === "connect") return async (...args: unknown[]) => {
+        const conn = await (e.connect as (...a: unknown[]) => Promise<Connection>)(...args);
+        return new Proxy(conn, {
+          get(c, p) {
+            if (p === "openBi" && mode === "pre-write-timeout") return () => new Promise(() => {});
+            const v = (c as any)[p];
+            return typeof v === "function" ? v.bind(c) : v;
+          },
+        });
+      };
+      const v = (e as any)[prop];
+      return typeof v === "function" ? v.bind(e) : v;
+    },
+  });
+  const callS1 = peerCall(proxiedH, cloudOf(epH.id(), [epS1.id()]), (id) => ({ id }), undefined, 50, { checkMs: 60_000 });
+  const origAsk = h.bus.ask.bind(h.bus);
+  h.bus.ask = async (station, request) => {
+    if (station === S && request?.method === "connect.event") {
+      return callS1(epS1.id(), "ws", request);
+    }
+    return origAsk(station, request);
   };
 
-  const m1 = message({ text: "<@UBOT> heavy thread", threadTs: "5001.1", ts: "5001.2" });
-  await assert.rejects(h.connects.receive("cl", { type: "message", message: m1 }), /peer request timed out/);
-  await settle();
+  try {
+    // 1. Post-write timeout: S1 received and ran connect.event while H's peerCall timed out.
+    mode = "post-write-timeout";
+    const m1 = message({ text: "<@UBOT> heavy thread", threadTs: "5001.1", ts: "5001.2" });
+    await assert.rejects(h.connects.receive("cl", { type: "message", message: m1 }), /peer request timed out/);
+    await settle();
+    assert.equal(h.rig.store.connectThreadStation("cl", m1.channel, m1.threadTs), S, "post-write timeout pins thread to S1");
+    assert.equal(s1.rig.store.listSessions().length, 1, "S1 started the session");
+    assert.equal(s2.rig.store.listSessions().length, 0, "S2 must NEVER start a duplicate session on post-write timeout");
+    assert.equal(h.rig.store.listSessions().length, 0, "H must NEVER start a duplicate session on post-write timeout");
 
-  // Thread must be pinned to S1 and MUST NOT fail over to S2 or local H.
-  assert.equal(h.rig.store.connectThreadStation("cl", m1.channel, m1.threadTs), S);
-  assert.equal(s1.rig.store.listSessions().length, 1, "S1 started the session");
-  assert.equal(s2.rig.store.listSessions().length, 0, "S2 must NEVER start a duplicate session on timeout");
-  assert.equal(h.rig.store.listSessions().length, 0, "H must NEVER start a duplicate session on timeout");
+    // Companion duplicate / Slack redelivery routes ONLY to S1 and deduplicates to 1 session.
+    mode = "normal";
+    await h.connects.receive("cl", { type: "message", message: m1 });
+    await settle();
+    assert.equal(s1.rig.store.listSessions().length, 1);
+    assert.equal(s2.rig.store.listSessions().length, 0);
 
-  // Slack's companion message event (same ts) or redelivery routes ONLY to S1 and dedupes to 1 session.
-  await h.connects.receive("cl", { type: "message", message: m1 });
-  await settle();
-  assert.equal(s1.rig.store.listSessions().length, 1);
-  assert.equal(s2.rig.store.listSessions().length, 0);
-  assert.equal(h.rig.store.listSessions().length, 0);
+    // 2. Post-write PeerStopped: S1 received the request then closed with STOPPING -> pins to S1, no failover.
+    mode = "post-write-stop";
+    const m2 = message({ text: "<@UBOT> peer stopped", threadTs: "5002.1", ts: "5002.1" });
+    await assert.rejects(h.connects.receive("cl", { type: "message", message: m2 }), PeerStopped);
+    await settle();
+    assert.equal(h.rig.store.connectThreadStation("cl", m2.channel, m2.threadTs), S);
+    assert.equal(s2.rig.store.listSessions().length, 0, "post-write PeerStopped must not fail over to S2");
 
-  // PeerStopped / PeerGone on a new thread also pins and refuses failover; NoLink / Refused still fail over cleanly.
-  const origHandle2 = s2.bus.handle.bind(s2.bus);
-  s1.bus.handle = async (ws, from, req) => {
-    if (req?.method === "connect.event") throw new PeerStopped();
-    return origHandle(ws, from, req);
-  };
-  const m2 = message({ text: "<@UBOT> peer stopped", threadTs: "5002.1", ts: "5002.1" });
-  await assert.rejects(h.connects.receive("cl", { type: "message", message: m2 }), PeerStopped);
-  assert.equal(h.rig.store.connectThreadStation("cl", m2.channel, m2.threadTs), S);
-  assert.equal(s2.rig.store.listSessions().length, 0, "PeerStopped must not fail over to S2");
+    // 3. Pre-write openBi timeout (wrote === false): S1 never received bytes -> MUST fail over cleanly to S2!
+    mode = "pre-write-timeout";
+    const m3 = message({ text: "<@UBOT> pre-write timeout", threadTs: "5003.1", ts: "5003.1" });
+    await h.connects.receive("cl", { type: "message", message: m3 });
+    await settle();
+    assert.equal(h.rig.store.connectThreadStation("cl", m3.channel, m3.threadTs), S2, "pre-write timeout fails over to S2");
+    assert.ok(s2.rig.store.getSession(sessionKey(`cl@${H}`, m3.channel, m3.threadTs)));
 
-  // Explicit NoLink / Refused on S1 DOES fail over to S2.
-  s1.bus.handle = async (ws, from, req) => {
-    if (req?.method === "connect.event") throw new NoLink("dial failed");
-    return origHandle(ws, from, req);
-  };
-  s2.bus.handle = origHandle2;
-  const m3 = message({ text: "<@UBOT> clean no-link", threadTs: "5003.1", ts: "5003.1" });
-  await h.connects.receive("cl", { type: "message", message: m3 });
-  await settle();
-  assert.equal(h.rig.store.connectThreadStation("cl", m3.channel, m3.threadTs), S2);
-  assert.ok(s2.rig.store.getSession(sessionKey(`cl@${H}`, m3.channel, m3.threadTs)));
-
-  // Error classification invariants.
-  assert.equal(mayHaveTaken(new NoLink("dial failed")), false);
-  assert.equal(mayHaveTaken(new Refused("retiring")), false);
-  assert.equal(mayHaveTaken(new Refused("peer request timed out; execution may have happened")), true);
-  assert.equal(mayHaveTaken(new PeerGone()), true);
-  assert.equal(mayHaveTaken(new PeerStopped()), true);
-  assert.equal(mayHaveTaken(new Error("the other station answered nothing")), true);
-  await close();
+    // 4. Error classification invariants.
+    assert.equal(mayHaveTaken(new NoLink("dial failed")), false);
+    assert.equal(mayHaveTaken(new Refused("retiring")), false);
+    assert.equal(mayHaveTaken(new Refused("peer request timed out")), false, "bare callee read timeout never ran");
+    assert.equal(mayHaveTaken(new Refused("peer request timed out; execution may have happened — query the same task key")), true, "relayed ambiguous failure pins");
+    assert.equal(mayHaveTaken(new PeerGone()), false, "unmarked pre-write PeerGone fails over");
+    assert.equal(mayHaveTaken(new PeerStopped()), false, "unmarked pre-write PeerStopped fails over");
+    assert.equal(mayHaveTaken(new Error("peer request timed out; execution may have happened")), false, "unmarked plain Error fails over");
+  } finally {
+    await Promise.all([epH.close(), epS1.close()]);
+    await close();
+  }
 });
 
-test("single-station routing: ambiguous timeout pins to target station without falling back locally to H", async () => {
+test("single-station routing: relayed ambiguous timeout pins to target station without falling back locally to H", async () => {
   const { h, s, close } = workspace();
   h.rig.raw.connects.find((c: Json) => c.id === "cl").station = S;
   const origHandle = s.bus.handle.bind(s.bus);
   s.bus.handle = async (ws, from, req) => {
     if (req?.method === "connect.event") {
       void origHandle(ws, from, req);
-      throw new Error("peer request timed out; execution may have happened — query the same task key");
+      throw new Refused("peer request timed out; execution may have happened — query the same task key");
     }
     return origHandle(ws, from, req);
   };

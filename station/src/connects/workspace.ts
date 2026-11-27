@@ -10,7 +10,7 @@ import { Clock, Duration, Effect, Layer } from "effect";
 import type { Route } from "../api/admin.ts";
 import { error, input, ok, Refused, segment } from "../api/request.ts";
 import { type Inbox, NoLink, Refused as Declined } from "../mesh/bus.ts";
-import { PeerGone, mayHaveRun } from "../mesh/peer.ts";
+import { mayHaveRun } from "../mesh/peer.ts";
 import { log } from "../ops/log.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
 import { Agents } from "../sessions/agents.ts";
@@ -67,22 +67,16 @@ export type WorkspaceConnectsDeps = {
 const DESCRIBE_TIMEOUT_MS = 1_500;
 const CONNECTS_READY_TIMEOUT_MS = 15_000;
 const ACCEPT_WAIT_MS = 5_000;
+const AMBIGUOUS_RELAY = "peer request timed out; execution may have happened";
 
 /// Whether a failed `connect.event` forward may already have reached and begun executing on the target station.
-/// Never fail over to another station (or local fallback) when true: doing so spawns duplicate sessions across stations.
+/// Relies on `peer.ts`'s `mayHaveRun` (set only after bytes were written onto the peer stream) so pre-write dial/open
+/// failures and bare callee read timeouts still fail over cleanly, while post-write timeouts/drops and relayed
+/// ambiguous failures pin the thread instead of spawning duplicate sessions across stations.
 export function mayHaveTaken(error: unknown): boolean {
   if (error instanceof NoLink) return false;
-  if (error instanceof Declined) return error.message.startsWith("peer request timed out");
-  if (mayHaveRun(error) || error instanceof PeerGone) return true;
-  if (error instanceof Error) {
-    return (
-      error.message.startsWith("peer request timed out") ||
-      error.message === "the other station answered nothing" ||
-      error.message === "the other station took nothing for 30 s" ||
-      error.message === "the other station sent nothing for 30 s"
-    );
-  }
-  return false;
+  if (error instanceof Declined) return error.message.startsWith(AMBIGUOUS_RELAY);
+  return mayHaveRun(error);
 }
 
 export class WorkspaceConnects {
@@ -398,17 +392,23 @@ export class WorkspaceConnects {
     if (known === null || typeof d?.kind !== "string" || typeof workspace !== "string" || d.workspace !== workspace || !this.inWorkspace(workspace, peer)) throw new Error("no such connect");
     const id = localOf(known, this.d.here());
     if (this.entryOf(id) !== undefined) throw new Error("that connect runs on this station");
-    // Refuse before learning or accepting while handing this workspace's chats to another station, so the sender
-    // receives an explicit Refused error and can cleanly fail over.
-    if (this.d.hub().quietIn(workspace)) throw new Retiring();
-    this.remote.learn(id, peer, d);
     const event = request.event as ChatEvent;
+    // Refuse message events before learning or accepting while handing this workspace's chats to another station, so
+    // the sender receives an explicit Refused error and can cleanly fail over (edits/stops continue as hub.ts does).
+    if (event.type === "message" && this.d.hub().quietIn(workspace)) throw new Retiring();
+    this.remote.learn(id, peer, d);
     // (its chat was handed from here to another station, and the connect's station not told yet, or the event already
     // on its way: it goes on there, as the connect's station would send it)
     const thread = threadOfEvent(event);
     const moved = this.d.hub().movedTo(id, thread.channel, thread.threadTs);
     if (moved !== null && moved !== this.d.here()) {
-      await this.d.bus.ask(moved, { method: EVENT, workspace, connect: known, described: d, event });
+      try {
+        await this.d.bus.ask(moved, { method: EVENT, workspace, connect: known, described: d, event });
+      } catch (e) {
+        // Preserve post-write ambiguity across the relay hop so the connect's station pins instead of failing over.
+        if (mayHaveTaken(e)) throw new Error(`${AMBIGUOUS_RELAY} — query the same task key`);
+        throw e;
+      }
       return { ok: true };
     }
     if (event.type !== "message") {
@@ -433,6 +433,9 @@ export class WorkspaceConnects {
       log.info("connects", "remote message still downloading thread context/files; acknowledging acceptance early", { connect: id, channel: thread.channel, threadTs: thread.threadTs, waitMs });
       void work.then(noteNames, (error) => {
         log.warn("connects", "a remote message failed after acceptance", { connect: id, channel: thread.channel, threadTs: thread.threadTs, error: (error as Error).message });
+        const chat = this.remote.surface(id);
+        const notice = markNotice(`⚠️ ${tr(stationLang(), "station.slack.sessionFailed", { error: (error as Error).message })}`);
+        void chat?.post({ channel: thread.channel, threadTs: thread.threadTs }, notice, []).catch(() => {});
       });
     }
     return { ok: true };

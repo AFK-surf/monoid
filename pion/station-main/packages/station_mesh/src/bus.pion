@@ -35,12 +35,14 @@ pub fn peer_error_message(e : PeerError) -> String {
 
 /// Whether a failed peer RPC may already have reached and begun executing on the remote station
 /// (mirrors `station/src/mesh/peer.ts` `mayHaveRun` and `connects/workspace.ts` `mayHaveTaken`).
-pub fn peer_error_may_have_run(e : PeerError) -> Bool {
+/// `wrote` must be true only once bytes were written onto the peer stream, so pre-write dial/open
+/// timeouts and bare callee read timeouts stay definite non-delivery failures.
+pub fn peer_error_may_have_run(e : PeerError, wrote : Bool) -> Bool {
   match e {
-    PeerError::Timeout(_) => true
-    PeerError::PeerGone(_) => true
-    PeerError::PeerStopped(_) => true
-    PeerError::Refused(m) => str_starts_with(m, "peer request timed out")
+    PeerError::Timeout(_) => wrote
+    PeerError::PeerGone(_) => wrote
+    PeerError::PeerStopped(_) => wrote
+    PeerError::Refused(m) => str_starts_with(m, "peer request timed out; execution may have happened")
     PeerError::NoLink(_) => false
     PeerError::NoBytes(_) => false
     PeerError::NotReady(_) => false
