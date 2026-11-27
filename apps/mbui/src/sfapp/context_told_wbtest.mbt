@@ -188,6 +188,53 @@ test "大屏: 划词浮条并列「引用 | 分享图」，右键菜单与浮条
 }
 
 ///|
+test "大屏: 本机刚发出的消息（o: 行 key 送达后）划词右键仍出「分享为图片」；跨消息选区右键选区外消息出整条消息菜单" {
+  let t = wide_tester([], mode="chat")
+  t.run_for(@ui.move_most_ms)
+  // Send a local message so its list row keeps the `"o:..."` key even after delivery assigns `ts`.
+  guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("no composer's field") }
+  t.tap(fx + fw / 2.0, fy + fh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.type_text("本机刚发的测试消息用于右键分享")
+  t.run_for(@ui.move_most_ms)
+  tap_send(t)
+  t.run_for(fix_deliver_ms + fix_answer_ms + fix_turn_end_ms + @ui.move_most_ms * 3.0)
+  let (mx, my, mw, mh) = words_rect(t, "本机刚发的测试消息用于右键分享")
+  t.drag(mx + 2.0, my + mh / 2.0, mx + mw - 2.0, my + mh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  t.right_click(mx + mw / 2.0, my + mh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("分享为图片") is Some(_), msg="locally-sent delivered message (o: row key) must show 分享为图片 on selection right-click")
+  assert_true(t.find("引用") is Some(_), msg="expected 引用 for locally-sent message selection")
+  assert_true(t.find("复制") is Some(_), msg="expected 复制 for locally-sent message selection")
+  assert_true(t.find("复制消息") is None, msg="expected no 复制消息 when right-clicking selection on locally-sent message")
+  assert_eq(@sfbase.message_menu.get(), "", msg="selection menu on locally-sent message must not light whole row")
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms)
+  // Cross-message selection (from Claude's message into our newly sent message):
+  // right-clicking a third message OUTSIDE the selection must show its whole-message menu, while right-clicking
+  // INSIDE the cross-message selection shows only 复制.
+  let (ax, ay, aw, ah) = words_rect(t, "做完了：列表")
+  let (ox, oy, ow, oh) = words_rect(t, "推送截图前")
+  t.drag(ax + 2.0, ay + ah / 2.0, mx + mw - 2.0, my + mh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  // Right-click message outside cross-message selection -> whole-message menu.
+  t.right_click(ox + ow / 2.0, oy + oh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息") is Some(_), msg="right-clicking message outside cross-message selection must show 复制消息")
+  assert_true(t.find("多选") is Some(_), msg="right-clicking message outside cross-message selection must show 多选")
+  assert_true(t.find("分享为图片") is None)
+  t.key_told(@ui.key_escape, 0, t.time())
+  t.run_for(@ui.move_most_ms)
+  // Right-click message inside cross-message selection -> 复制 only (no 分享为图片, no 复制消息).
+  t.right_click(ax + aw / 2.0, ay + ah / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制") is Some(_), msg="right-clicking inside cross-message selection must offer 复制")
+  assert_true(t.find("复制消息") is None, msg="cross-message selection menu must not mix 复制消息")
+  assert_true(t.find("分享为图片") is None, msg="cross-message selection must not offer single-message 分享为图片")
+}
+
+///|
 test "超长选中文本分享图：支持单图节选与分页卡片切换、翻页且大屏与小屏 1.3x 均无审计缺陷" {
   let para = "陶哲轩指出，理想情况下科技公司应当在机器大规模产出自动证明之前就与数学界建立透明的协作规范。"
   let parts : Array[String] = []

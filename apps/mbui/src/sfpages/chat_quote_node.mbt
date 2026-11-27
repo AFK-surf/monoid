@@ -185,13 +185,24 @@ fn chat_quote_node(
 ) -> Unit {
   let draft = r.station + ":" + r.session
   let wid = @ui.current_window_id()
-  // Register this chat's single-message text selection actions (row_key, quote, share as image) for sfdesk/context_menu.
+  // Register this chat's selection resolver `(canonical_share_keys, single_message_actions)` for sfdesk/context_menu.
+  // Maps every row key (including locally-sent `"o:..."` rows after delivery) to its canonical `"m:" + ts` share key.
   excerpt_share_register(v, fn() {
-    match @signals.untracked(fn() { chat_picked_message(v, rows) }) {
-      Some((p, m)) if p.text.trim(chars=" \n\t\r") != "" =>
-        Some((p.of[0], fn() { chat_quote_of(src, draft, p, m) }, fn() { chat_excerpt_share_of(src, here, p, m) }))
-      _ => None
-    }
+    @signals.untracked(fn() {
+      guard @ui.picked_now_in(v) is Some(p) && p.text.trim(chars=" \n\t\r") != "" else { return None }
+      let share_keys : Array[String] = []
+      for k in p.of {
+        match chat_message_of(rows, k) {
+          Some(m) if m.ts != "" => share_keys.push("m:" + m.ts)
+          _ => share_keys.push(k)
+        }
+      }
+      let single = match chat_picked_message(v, rows) {
+        Some((sp, sm)) => Some((fn() { chat_quote_of(src, draft, sp, sm) }, fn() { chat_excerpt_share_of(src, here, sp, sm) }))
+        None => None
+      }
+      Some((share_keys, single))
+    })
   })
   // (实验性功能 › 按住 ⌘ 点击引用文本: holding ⌘ highlights and underlines the hovered sentence; clicking quotes it)
   @ui.words_cmd_pick(

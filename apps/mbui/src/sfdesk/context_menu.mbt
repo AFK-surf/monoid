@@ -26,7 +26,7 @@ pub struct ContextMenu {
   mut share_link : String
   mut share_words : String
   mut share_key : String
-  mut share_excerpt : (String, () -> Unit, () -> Unit)?
+  mut share_excerpt : (Array[String], (() -> Unit, () -> Unit)?)?
 }
 
 ///|
@@ -345,13 +345,13 @@ fn context_menu_slots(v : @view.View, wid : Int) -> Unit {
 
 ///|
 /// Whether the open context menu targets selected text on the right-clicked row (as opposed to right-clicking a
-/// different message while another message still has a text selection).
+/// different message while another message or group of messages has a text selection).
 fn context_is_selection() -> Bool {
   if context.field != 0 || context.words.trim(chars=" \n\t") == "" {
     return false
   }
   match (context.share, context.share_excerpt) {
-    (Some(_), Some((picked_key, _, _))) => picked_key == context.share_key
+    (Some(_), Some((picked_keys, _))) => picked_keys.contains(context.share_key)
     _ => true
   }
 }
@@ -404,12 +404,12 @@ fn context_items() -> Array[@sf.MenuItem?] {
     group()
     let words = context.words
     match context.share_excerpt {
-      Some((_, go_quote, go_excerpt)) => {
+      Some((_, Some((go_quote, go_excerpt)))) => {
         item("web-main.chat.quote", "quote", go_quote, false)
         item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
         item("web-main.chat.shareExcerpt", "share", go_excerpt, false)
       }
-      None => item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
+      _ => item("desktop.contextMenu.copy", "copy", fn() { @sfbase.copy_out(words) }, false)
     }
   }
   if !has_selection {

@@ -47,17 +47,19 @@ let ex_shot_prefix : String = "share-excerpt/shot"
 // ── selection-share registry (wired from chat_quote_node to sfdesk/context_menu) ──
 
 ///|
-/// Active chat pages able to act on their current single-message text selection: `(row_key, quote, share_excerpt)`.
+/// Active chat pages able to describe their current text selection: `(canonical_share_keys, single_message_actions)`.
+/// `canonical_share_keys` uses `"m:" + m.ts` for delivered messages (matching `message_share_of` even when a
+/// locally-sent row's list key is `"o:..."`) and falls back to the row key for unsent messages.
 // kept across runs: cleared by excerpt_share_reset and each view's on-dispose hook
-let excerpt_resolvers : Map[Int, () -> (String, () -> Unit, () -> Unit)?] = Map([])
+let excerpt_resolvers : Map[Int, () -> (Array[String], (() -> Unit, () -> Unit)?)?] = Map([])
 
 ///|
 // kept across runs: monotonically incremented handle id, reset in excerpt_share_reset
 let excerpt_resolver_seq : Ref[Int] = Ref(0)
 
 ///|
-/// Registers a chat list's selection actions `(row_key, quote, share_excerpt)` for the lifetime of `v`.
-fn excerpt_share_register(v : @view.View, resolve : () -> (String, () -> Unit, () -> Unit)?) -> Unit {
+/// Registers a chat list's selection resolver `(canonical_share_keys, single_message_actions)` for the lifetime of `v`.
+fn excerpt_share_register(v : @view.View, resolve : () -> (Array[String], (() -> Unit, () -> Unit)?)?) -> Unit {
   excerpt_resolver_seq.val += 1
   let id = excerpt_resolver_seq.val
   excerpt_resolvers[id] = resolve
@@ -65,10 +67,10 @@ fn excerpt_share_register(v : @view.View, resolve : () -> (String, () -> Unit, (
 }
 
 ///|
-/// Returns `(row_key, quote, share_excerpt)` for the currently active single-message selection, if any.
-/// Called by `sfdesk/context_menu.mbt` to verify the right-clicked message matches the selected message.
-pub fn excerpt_share_for_picked() -> (String, () -> Unit, () -> Unit)? {
-  let mut found : (String, () -> Unit, () -> Unit)? = None
+/// Returns `(canonical_share_keys, single_message_actions)` for the currently active chat selection, if any.
+/// Called by `sfdesk/context_menu.mbt` to verify the right-clicked message is part of the selected text.
+pub fn excerpt_share_for_picked() -> (Array[String], (() -> Unit, () -> Unit)?)? {
+  let mut found : (Array[String], (() -> Unit, () -> Unit)?)? = None
   excerpt_resolvers.each(fn(_, f) {
     if found is None {
       found = f()
