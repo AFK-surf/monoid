@@ -433,10 +433,21 @@ static void held_shown_now(void) {
   }
 }
 
+// Whether any cloaked window is waiting to be uncloaked after DWM composes this round's presented frame.
+static int any_held_to_reveal(void) {
+  for (int k = 1; k < MB_WINS; k++) {
+    WinSlot *w = &win_slots[k];
+    if (w->h && w->held == 2) return 1;
+  }
+  if (win0_reveal == 2 && hwnd) return 1;
+  if (window_to_show && !window_shown && hwnd && win_slots[0].submitted_this) return 1;
+  return 0;
+}
+
 // What the frames presented since the last round owe the compositor waited for, and what was held shown then.
 static void frames_paced(void) {
   if (win0_reveal == 2) mb_render_finish();
-  mb_render_pace();
+  mb_render_pace_ex(any_held_to_reveal());
   held_shown_now();
 }
 
