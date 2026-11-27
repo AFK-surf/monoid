@@ -197,7 +197,7 @@ fn panel_centred_node(
               let stepped = keyed.under is Some(_)
               if stepped {
                 line.box(fn(k) {
-                  style_node(k, fn() { dialog_back_at(drop=head_line_drop(k, Heading, h=dialog_corner_key_side, row=dialog_corner_key_side)) }, in_row=true)
+                  style_node(k, fn() { dialog_back_at(drop=head_line_drop(k, Xl2, leading=L7, h=dialog_corner_key_side, row=dialog_corner_key_side)) }, in_row=true)
                   dialog_step_back_node(k, fn() { back_under(keyed) |> ignore }) |> ignore
                 })
                 |> ignore
@@ -205,7 +205,7 @@ fn panel_centred_node(
               line.box(fn(l) {
                 style_node(l, fn() {
                   let d = @ui.capsule_in(dialog_r, dialog_corner_key_side)
-                  dialog_title_line.then(@ui.style(mt=room(d - dialog_pad + head_line_drop(l, Heading, row=dialog_corner_key_side))))
+                  dialog_title_line.then(@ui.style(mt=room(d - dialog_pad + head_line_drop(l, Xl2, leading=L7, row=dialog_corner_key_side))))
                 }, in_row=true)
                 l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 if stepped {
@@ -217,7 +217,7 @@ fn panel_centred_node(
               })
               |> ignore
               line.box(fn(at) {
-                style_node(at, fn() { dialog_close_at(drop=head_line_drop(at, Heading, h=dialog_corner_key_side, row=dialog_corner_key_side)) }, in_row=true)
+                style_node(at, fn() { dialog_close_at(drop=head_line_drop(at, Xl2, leading=L7, h=dialog_corner_key_side, row=dialog_corner_key_side)) }, in_row=true)
                 close_node(at)
               })
               |> ignore

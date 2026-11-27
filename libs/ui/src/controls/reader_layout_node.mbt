@@ -50,7 +50,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     stage_scroll: None,
     stage_bg: None,
     above: None,
-    heads_itself: true,
+    heads_itself: false,
     side: Bottom,
     along: Start,
     offset: panel_offset,
@@ -59,27 +59,14 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     on_back: None,
     nodes: {
       body: fn(col, _) {
-        col.box(fn(head) {
-          style_node(head, fn() { layout_sheet_head })
-          // (its words' own line, as the old host's sheet set its title, no line of the size's)
-          head.box(fn(w) {
-            w
-            .words(By(fn() { t("web-pages.drive.reader.layout") }))
-            .words_look(By(fn() { @view.WordsLook::{ ..@ui.style_words(sheet_title_words), line: -@ui.tree_theme().text_line } }))
-            .ink(By(fn() { @ui.style_ink(sheet_title_words) }))
-            |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
         layout_body(col, true, sheet_paper)
       },
       foot: None,
-      hugs: false,
+      hugs: true,
       hugs_centred: false,
       hugs_wide: false,
       steps: false,
-      sheet_heads: true,
+      sheet_heads: false,
       heads: false,
       top: 0.0,
       most: None,
@@ -585,6 +572,7 @@ let slider_rest : Double = 0.16
 let slider_thumb_room : Double = @glass.slider_thumb_w
 
 ///|
-/// The layout's sheet's title's row (the old host's reader sheet's: 18 in, 4 over, 10 under).
+/// Compact muted summary caption above a reader/player sheet's list (chapter count / playlist position), keeping the
+/// centered sheet header title uncrowded between the 44pt concentric corner keys.
 // kept across runs: a value (no field of it changes)
-let layout_sheet_head : @ui.Style = @ui.css("row w=Full px=S4_5 pt=S1 pb=S2_5 align=ACenter")
+let sheet_subnote_row : @ui.Style = @ui.css("w=Full px=S5 pb=S2")

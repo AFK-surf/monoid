@@ -155,7 +155,7 @@ test "小屏抽屉二级页面推入中途立刻返回，位置与速度连续�
 ///|
 /// Find the floating sheet glass rect (x, y, w, h) and the last quiet card rect/corners in the last drawn frame.
 fn sheet_glass_and_card(t : @ui.Tester) -> ((Double, Double, Double, Double), (Double, Double, Double, Double, (Double, Double, Double, Double))) raise {
-  let glasses = t.drawn_glass()
+  let glasses = t.drawn_glass().filter(fn(g) { g.2 > 200.0 && g.3 > 100.0 })
   assert_true(glasses.length() >= 1, msg="expected sheet glass")
   let g = glasses[glasses.length() - 1]
   let gx = g.0
@@ -190,7 +190,7 @@ test "小屏悬浮抽屉内 quiet_card_node 与抽屉玻璃四角严格同心（
   assert_true((right_gap - panel_card_in).abs() < 0.5, msg="right gap \{right_gap} vs \{panel_card_in}")
   assert_true((bottom_gap - panel_card_in).abs() < 0.5, msg="bottom gap \{bottom_gap} vs \{panel_card_in}")
   assert_true((cr.0 - quiet_card_corner).abs() < 0.5 && (cr.1 - quiet_card_corner).abs() < 0.5 && (cr.2 - quiet_card_corner).abs() < 0.5 && (cr.3 - quiet_card_corner).abs() < 0.5, msg="card corners \{Repr(cr)} vs \{quiet_card_corner}")
-  let gcs = t.drawn_glass_corners()
+  let gcs = t.drawn_glass_corners().filter(fn(g) { g.2 > 100.0 })
   assert_true(gcs.length() >= 1 && (gcs[gcs.length() - 1].4 - dialog_r).abs() < 0.5, msg="glass corner \{Repr(gcs)}")
   assert_eq(t.audit(), [])
 }

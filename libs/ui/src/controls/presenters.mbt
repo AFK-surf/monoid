@@ -2143,12 +2143,13 @@ let sheet_row_check : Double = 14.0
 let sheet_grows : @ui.Style = @ui.style(w=Full, h=grow)
 
 ///|
-// kept across runs: a value (no field of it changes)
-let sheet_title_row : @ui.Style = @ui.css("row w=Full pt=S1 pb=S2_5 align=AFirstLine").then(@ui.style(px=room(sheet_panel_sides)))
+// kept across runs: a value (no field of it changes); pt=2 + L7(22) + pb=14 = 38pt, placing the root title midpoint
+// at sheet_grab_h(25) + 2 + 11 = 38pt (exact match to step_row's 44pt back key center at 16 + 22 = 38pt)
+let sheet_title_row : @ui.Style = @ui.css("row w=Full pt=S0_5 pb=S3_5 align=AFirstLine").then(@ui.style(px=room(sheet_panel_sides)))
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sheet_title_words : @ui.TextStyle = @ui.text_style(size=Title, weight=Bold, color=Fg)
+let sheet_title_words : @ui.TextStyle = @ui.text_style(size=Xl2, leading=L7, weight=Semibold, color=Fg)
 
 ///|
 /// How far in from a sheet's sides its rows are (sheet_rows' px).

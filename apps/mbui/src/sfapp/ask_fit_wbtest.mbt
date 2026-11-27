@@ -117,7 +117,7 @@ test "大屏, a short window, started with keyboard and mouse or touch: a questi
     t.run_for(@ui.move_most_ms)
     t.resize(1280.0, 340.0)
     t.run_for(@ui.move_most_ms)
-    @sf.ask(ask_long_title, "保存", fn(_) {  }, value="周报整理", hint=ask_long_hint + "说明到此为止。")
+    @sf.ask(ask_long_title, "保存", fn(_) {  }, value="周报整理", hint=ask_long_hint + ask_long_hint + "说明到此为止。")
     t.run_for(@ui.move_most_ms)
     let hint0 = t.rect_of("改名后").unwrap()
     // (the foot of what shows of what it holds: its hint's glyphs' clip)

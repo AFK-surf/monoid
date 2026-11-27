@@ -701,7 +701,7 @@ test "one over another with a finger at Small: one scrim however many sheets, th
   let (_, title) = t.drawn_of("删掉这个？").unwrap()
   assert_true(y1 < y0 - pushed_gap && y1 < title, msg="\{y0} \{y1} \{title}")
   // (the two not laid one over the other: the one under ends, foot and all, pushed_gap over the one over it)
-  let sheets = t.drawn_glass().copy()
+  let sheets = t.drawn_glass().filter(fn(g) { g.3 > 100.0 })
   sheets.sort_by_key(fn(g) { g.1 })
   assert_eq(sheets.length(), 2, msg="\{Repr(sheets)}")
   assert_true(sheets[0].1 + sheets[0].3 + pushed_gap <= sheets[1].1 + 0.5, msg="\{Repr(sheets)}")

@@ -261,11 +261,33 @@ fn confirm_panel(
     // (all it holds as far in as its look says, past its own ground, edge and shadow: each part of it, its title, its
     // words, its foot and its buttons, the same, Look's `words` as a surface's are)
     let words_in = fn() { look().words }
-    d.box(fn(t) {
-      t
-      .words(By(title), look=toast_words_look(Heading, Font, 600, true))
-      .ink(By(fn() { theme().color(Fg) }))
-      .alpha(By(words_in))
+    // (its title's row: unified 17/22pt modal title aligned on line 1 with the concentric 36pt Liquid Glass close key,
+    // matching `panel_centred_node` and `ask_node` across tiers; `dialog_close_key_node` has `tab_stop=false` so the
+    // alert's initial focus trap and backdrop `outside=false` stay intact)
+    d.box(fn(h) {
+      style_node(h, fn() { dialog_head })
+      h.alpha(By(words_in)) |> ignore
+      h.box(fn(t) {
+        style_node(t, fn() {
+          let inset = @ui.capsule_in(dialog_r, dialog_corner_key_side)
+          dialog_title_line.then(@ui.style(mt=room(inset - confirm_top + head_line_drop(t, Xl2, leading=L7, row=dialog_corner_key_side))))
+        }, in_row=true)
+        t.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        t.box(fn(w) {
+          w
+          .words(By(title), look=toast_words_look(Xl2, L7, 600, true))
+          .ink(By(fn() { theme().color(Fg) }))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+      h.box(fn(at) {
+        style_node(at, fn() { dialog_close_at(drop=head_line_drop(at, Xl2, leading=L7, h=dialog_corner_key_side, row=dialog_corner_key_side)) }, in_row=true)
+        dialog_close_key_node(at, cancel) |> ignore
+      })
       |> ignore
     })
     |> ignore
@@ -336,8 +358,8 @@ fn confirm_panel(
 let confirm_ground_ms : Double = 180.0
 
 ///|
-/// Over its title (confirm_box's pt=S7).
-let confirm_top : Double = 28.0
+/// Over its title: symmetric with `dialog_pad` (24pt), matching real iOS 27 Liquid Glass alerts (~22pt top inset).
+let confirm_top : Double = 24.0
 
 ///|
 /// Accessible description combining verification facts, body copy, and optional warning.

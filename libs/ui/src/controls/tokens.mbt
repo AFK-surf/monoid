@@ -2333,10 +2333,33 @@ pub let face_status_most : @ui.Len = Fixed(140.0)
 pub let face_ink : Int64 = 0xFFFFFFFFL
 
 ///|
-/// A sheet's grabber: 38 × 5, round at its ends (its 3 capped at half its height, as every
-/// renderer draws it; its colour the palette's line, said where it is drawn).
+/// A sheet's grabber matching real iOS 27 `_UIGrabber` (57.3×3.7pt floating / 60×4pt docked, 6..10pt from top,
+/// rounded ends, ~25% fg alpha in light and ~35% fg alpha in dark, stepping up to 40%/50% under Increase Contrast).
+// kept across runs: values (no field changes)
+pub let sheet_grabber : @ui.Style = @ui.css("w=Fixed(58.0) h=Fixed(4.0) radius=Full bg=A(Fg,O25)")
+
+///|
 // kept across runs: a value (no field of it changes)
-pub let sheet_grabber : @ui.Style = @ui.css("w=Fixed(38.0) h=Fixed(5.0) radius=Full")
+let sheet_grabber_more : @ui.Style = @ui.css("w=Fixed(58.0) h=Fixed(4.0) radius=Full bg=A(Fg,O40)")
+
+///|
+// kept across runs: a value (no field of it changes)
+let sheet_grabber_dark : @ui.Style = @ui.css("w=Fixed(58.0) h=Fixed(4.0) radius=Full bg=A(Fg,O35)")
+
+///|
+// kept across runs: a value (no field of it changes)
+let sheet_grabber_dark_more : @ui.Style = @ui.css("w=Fixed(58.0) h=Fixed(4.0) radius=Full bg=A(Fg,O50)")
+
+///|
+/// Resolved sheet grabber style for light/dark and Increase Contrast (`@ui.more_contrast()`).
+fn sheet_grabber_style(dark : Bool, more : Bool) -> @ui.Style {
+  match (dark, more) {
+    (false, false) => sheet_grabber
+    (false, true) => sheet_grabber_more
+    (true, false) => sheet_grabber_dark
+    (true, true) => sheet_grabber_dark_more
+  }
+}
 
 ///|
 /// A tip's widest (the web's parts.css.ts tooltip: 300).

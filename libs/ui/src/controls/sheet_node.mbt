@@ -1174,12 +1174,14 @@ fn sheet_node(
               Some(@view.said(Dialog, label=lbl, description=a11y_desc))
             }))
             |> ignore
-            // (the grabber: 38 × 5 in the line's colour, 12 over it and 8 under)
+            // (the grabber: 58 × 4 at y = 6..10pt matching real iOS 27 `_UIGrabber`, 25%/35% fg alpha light/dark,
+            // stepping up to 40%/50% when Increase Contrast is active)
             col.box(fn(g) {
               style_node(g, fn() { sheet_grab_outer })
               g.box(fn(i) {
                 style_node(i, fn() { sheet_grab_inner })
-                i.box(fn(b) { style_node(b, fn() { sheet_grabber.then(@ui.style(bg=Data(theme().p.line))) }) }) |> ignore
+                i.box(fn(b) { style_node(b, fn() { sheet_grabber_style(theme().dark, @ui.more_contrast()) }) })
+                |> ignore
               })
               |> ignore
             })
@@ -1330,7 +1332,8 @@ fn sheet_node(
                   // it is now (`live`), there while it has one)
                   // (its title's words, and its step's count beside them where it says one (step_head's: 1 / 4))
                   let title_words = fn(at : @view.View, centered : Bool) {
-                    let style = if centered { sheet_head_words } else { sheet_title_words }
+                    let base_style = if centered { sheet_head_words } else { sheet_title_words }
+                    let style = fn() { if now().1 != "" { base_style.then(one_line) } else { base_style } }
                     let line_style = if centered { sheet_title_line_center } else { dialog_title_line }
                     at.box(fn(l) {
                       style_node(l, fn() { line_style })
@@ -1340,8 +1343,8 @@ fn sheet_node(
                         l.box(fn(w) {
                           w
                           .words_runs(By(fn() { title_runs(now().0, theme().p.accent_text) }))
-                          .words_look(By(fn() { @ui.style_words(style) }))
-                          .ink(By(fn() { @ui.style_ink(style) }))
+                          .words_look(By(fn() { @ui.style_words(style()) }))
+                          .ink(By(fn() { @ui.style_ink(style()) }))
                           .words_centered(Is(centered))
                           .shrink(Is(1.0))
                           .min_width(Is(Some(0.0)))
@@ -1349,7 +1352,7 @@ fn sheet_node(
                         })
                         |> ignore
                       } else {
-                        words_node(l, fn() { now().0 }, fn() { style })
+                        words_node(l, fn() { now().0 }, style)
                         .words_centered(Is(centered))
                         .shrink(Is(1.0))
                         .min_width(Is(Some(0.0)))
@@ -1360,13 +1363,11 @@ fn sheet_node(
                     |> ignore
                   }
                   let title_row = fn(r : @view.View) {
-                    let has_end = x.nodes.head_end is Some(_)
                     style_node(r, fn() { sheet_title_row })
-                    // (centered under the grabber like iOS 27 when there is no trailing head_end control)
                     r.box(fn(at) {
-                      style_node(at, fn() { if has_end { sheet_title_room } else { sheet_title_room_center } }, in_row=true)
+                      style_node(at, fn() { sheet_title_room }, in_row=true)
                       at.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-                      title_words(at, !has_end)
+                      title_words(at, false)
                     })
                     |> ignore
                     // (what stands at the end of its line: PanelNodes' `head_end`, its title taking the room up to it)
@@ -1380,33 +1381,60 @@ fn sheet_node(
                       None => ()
                     }
                   }
-                  // (a step further in, matching iOS 27: 44pt circular Liquid Glass back button concentric with the
-                  // sheet's 38pt top-left corner at 16×16, horizontally centered title right under the grabber with
-                  // its first line vertically centered on the back button, and a symmetric 44pt right balance spacer)
-                  let step_row = fn(r : @view.View) {
-                    style_node(r, fn() { sheet_step_row_style(r) })
-                    sheet_step_back_node(r, go_back) |> ignore
+                  // (iOS 27 concentric sheet header: 44pt circular Liquid Glass `<` at top-left (16, 16) when stepped,
+                  // centered 17pt title right under the grabber at y_mid = 38pt, and 44pt circular Liquid Glass `×`
+                  // overlaid at top-right (sw - 60, 16) matching `steps_centred_node` so wrapped titles clear the close
+                  // key without false beside-row squeeze)
+                  let bar_row = fn(r : @view.View, stepped : Bool) {
+                    let has_custom_end = x.nodes.head_end is Some(_)
+                    style_node(r, fn() { sheet_bar_row_style(r, stepped, has_custom_end) })
+                    if stepped {
+                      sheet_step_back_node(r, go_back) |> ignore
+                    } else {
+                      // (0x44pt leading height strut anchors `AFirstLine` at y_mid = 38pt on root sheets)
+                      r.box(fn(strut) {
+                        strut.width(Is(Some(0.0))).height(Is(Some(sheet_step_back_side))).shrink(Is(0.0)) |> ignore
+                      })
+                      |> ignore
+                    }
                     r.box(fn(at) {
                       style_node(at, fn() { sheet_title_room_center }, in_row=true)
                       at.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                       title_words(at, true)
                     })
                     |> ignore
-                    r.box(fn(bal) {
-                      bal.width(Is(Some(sheet_step_back_side))).height(Is(Some(1.0))).shrink(Is(0.0)) |> ignore
-                    })
-                    |> ignore
+                    match x.nodes.head_end {
+                      Some(f) =>
+                        r.box(fn(e) {
+                          e.shrink(Is(0.0)).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+                          f(e)
+                        })
+                        |> ignore
+                      None =>
+                        r.box(fn(o) {
+                          o.over(Is(true), edges=(None, Some(0.0), Some(sheet_step_key_at), None)) |> ignore
+                          sheet_close_key_node(o, cancel) |> ignore
+                        })
+                        |> ignore
+                    }
                   }
                   // (what heads itself where it says so on a sheet too)
                   let heads = x.heads_itself && x.nodes.sheet_heads
-                  if (k != 0 || step_back is Some(_)) && !heads {
-                    page.box(step_row) |> ignore
+                  let stepped = k != 0 || step_back is Some(_)
+                  let has_end = x.nodes.head_end is Some(_)
+                  if stepped && !heads {
+                    page.box(fn(r) { bar_row(r, true) }) |> ignore
                   } else if heads {
                     ()
                   } else if x.live is Some(_) {
-                    page.show(fn() { now().0 != "" }, title_row)
+                    page.show(fn() { now().0 != "" }, fn(r) {
+                      if has_end { title_row(r) } else { bar_row(r, false) }
+                    })
                   } else if x.title != "" {
-                    page.box(title_row) |> ignore
+                    page.box(fn(r) {
+                      if has_end { title_row(r) } else { bar_row(r, false) }
+                    })
+                    |> ignore
                   }
                   // (what it says, under its title, as it is now)
                   let said = fn(s : @view.View) {
@@ -1820,7 +1848,7 @@ impl Eq for SheetItem with equal(a, b) {
 }
 
 ///|
-/// Top bleed of a sheet's page stack into the empty padding below the grabber bar (`y = 6..11pt`, `sheet_grab_h =
+/// Top bleed of a sheet's page stack into the empty padding below the grabber bar (`y = 6..10pt`, `sheet_grab_h =
 /// 25pt`): keeps the stack's clip boundary (`y = 14pt`) clear above both the 44pt concentric back key (`y = 16pt`) and
 /// its inset focus ring on capped sheets, while every page's matching `pt = sheet_stack_over` leaves all non-step
 /// layouts unchanged.
@@ -1837,6 +1865,11 @@ let sheet_step_back_side : Double = 44.0
 let sheet_step_back_icon : Double = 22.0
 
 ///|
+/// Close glyph size inside `sheet_close_key_node` (20pt optical weight inside the 44pt circular Liquid Glass disc,
+/// matching iOS 27 `NavigationBarPlatterContainer_v2` `×` and scaling proportionally from 16pt on 36pt desktop dialogs).
+let sheet_close_key_icon : Double = 20.0
+
+///|
 /// Chevron glyph size inside a 36pt desktop dialog circular back button.
 let dialog_back_key_icon : Double = 18.0
 
@@ -1850,10 +1883,10 @@ let dialog_close_key_icon : Double = 16.0
 let sheet_step_key_at : Double = @ui.capsule_in(dialog_r, sheet_step_back_side)
 
 ///|
-/// Centered sheet header title styles (iOS 27 inline sheet navigation title: centered horizontally under the grabber,
-/// semibold, `Title` size).
+/// Centered sheet header title styles (iOS 27 inline sheet navigation title: `Xl2` 17pt Semibold, `L7` 22pt line,
+/// centered horizontally under the grabber).
 // kept across runs: values (no field changes)
-let sheet_head_words : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibold, color=Fg, center=true)
+let sheet_head_words : @ui.TextStyle = @ui.text_style(size=Xl2, leading=L7, weight=Semibold, color=Fg, center=true)
 
 ///|
 let sheet_title_room_center : @ui.Style = @ui.css("w=Full align=ACenter")
@@ -1917,6 +1950,18 @@ fn sheet_step_back_node(
 }
 
 ///|
+/// Circular 44pt Liquid Glass close button for phone sheet headers standing in the 38pt top-right corner at (sw - 60, 16)
+/// (`tab_stop=false`).
+#callsite(autofill(loc))
+fn sheet_close_key_node(
+  parent : @view.View,
+  cancel : () -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  corner_pill_key_node(loc~, parent, "close", fn() { t("common.close") }, cancel, side=sheet_step_back_side, icon_size=sheet_close_key_icon, tab_stop=false)
+}
+
+///|
 /// Circular 36pt Liquid Glass back button for desktop/wide dialog step headers standing in the 38pt top-left corner.
 #callsite(autofill(loc))
 fn dialog_step_back_node(
@@ -1939,13 +1984,14 @@ fn dialog_close_key_node(
 }
 
 ///|
-/// Layout style for a sheet step's header row (`step_row`): `AFirstLine` aligns the centered title's first line with
-/// the 44pt circular Liquid Glass back button at `(16, 16)` across 0.85x–2.0x font scales, keeping the button
-/// concentric with `dialog_r` (38pt). At extreme scales (>2.0x) where first-line centering would push the title into
-/// the grabber (`y = 6..11pt`) or displace the back button from `(16, 16)`, switches to `AStart` at `y = 16pt` so the
-/// back button remains strictly concentric and the title stays clear below the grabber.
-fn sheet_step_row_style(v : @view.View) -> @ui.Style {
-  let line = node_sp(v, @ui.tree_theme().text_size(Title).1)
+/// Layout style for an iOS 27 concentric sheet header row (`bar_row`): `AFirstLine` aligns the centered title's first
+/// line with the 44pt circular Liquid Glass `<`/`×` keys at `(16, 16)` / `(sw - 60, 16)` across 0.85x–2.0x font scales,
+/// keeping both keys strictly concentric with `dialog_r` (38pt). At extreme scales (>2.0x) where first-line centering
+/// would push the title into the grabber (`y = 6..10pt`) or displace the corner keys from `y = 16pt`, switches to
+/// `AStart` at `y = 16pt`. Symmetric `68pt` (`16 + 44 + 8`) side insets keep the centered title dead-center under the
+/// grabber while clearing both 44pt corner keys.
+fn sheet_bar_row_style(v : @view.View, stepped : Bool, has_custom_end : Bool) -> @ui.Style {
+  let line = node_sp(v, @ui.tree_theme().leading.l7)
   let raw_over = sheet_step_key_at - sheet_grab_h - dmax(0.0, (line - sheet_step_back_side) / 2.0)
   let (align, over) = if raw_over < -sheet_stack_over {
     (@ui.Align::AStart, sheet_step_key_at - sheet_grab_h)
@@ -1953,12 +1999,14 @@ fn sheet_step_row_style(v : @view.View) -> @ui.Style {
     (@ui.Align::AFirstLine, raw_over)
   }
   let mt_room = room(over)
+  let clear_side = sheet_step_key_at + sheet_step_back_side + @ui.Space::S2.px()
   @ui.style(
     row=true,
     w=Full,
     align~,
-    gap=S2,
-    px=room(sheet_step_key_at),
+    gap=if stepped || has_custom_end { S2 } else { S0 },
+    pl=room(if stepped { sheet_step_key_at } else { clear_side }),
+    pr=room(if has_custom_end { sheet_step_key_at } else { clear_side }),
     pb=S3,
     mt=mt_room,
   )

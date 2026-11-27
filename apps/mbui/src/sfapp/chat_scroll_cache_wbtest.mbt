@@ -175,8 +175,9 @@ test "a chat's things on 小屏, sixty files: their rows wheeled away and back a
   @sfpages.things_choose(r, "files")
   open_things(src, r, 7.0)
   t.run_for(sheet_way_ms(t))
-  // (its rows' words alone: the chat under the sheet is no part of it)
-  let (down, up, again) = reused_wheeled(t, (195.0, 600.0), (0.0, 0.0), 844.0, fn(w) { w.has_suffix(".log") || w.has_suffix(".pdf") || w.contains(" · ") }, [90.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0])
+  // (its rows' words alone, inside the capped sheet's visible scroll viewport above `sheet_panel_foot`: the chat under
+  // the sheet and overscan rows clipped behind the 24pt bottom padding are no part of what shows)
+  let (down, up, again) = reused_wheeled(t, (195.0, 600.0), (0.0, 0.0), 844.0 - @sf.sheet_panel_foot, fn(w) { w.has_suffix(".log") || w.has_suffix(".pdf") || w.contains(" · ") }, [90.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0, 90.0])
   println("THINGS_REUSED made down \{down}, up \{up}, down again \{again}")
   // (each made anew as it comes to show, a row a dozen nodes and more: 179, 166 and 193 so, 2026-11-17; taken for
   // others, 29, 23 and 14)
