@@ -281,6 +281,7 @@ fn MemFs::to_port(self : MemFs) -> FsPort {
   FsPort::{
     sep: "/",
     lstat: lstat_fn,
+    lstat_err: None,
     stat: stat_fn,
     read_dir: read_dir_fn,
     read_file: fn(p : String) -> Option[String] {
@@ -1550,7 +1551,7 @@ test "step_sweep atomically renames to tombstone before yielding so concurrent p
   expect(finished, "step_sweep finished")
   expect((fs.exists)(old_room_dir + "/work/fresh.txt"), "newly recreated room & fresh file completely intact")
   expect(!(fs.exists)(old_room_dir + "/work/old1.txt"), "old files are not in the recreated room")
-  // Verify zero .gone-* tombstones remain under /data/remote/sessions
+  // Verify zero .gone-* tombstones remain under /data/remote/sessions or /data/remote/tombstones
   match (fs.read_dir)("/data/remote/sessions") {
     Some(ents) => {
       for i in 0..<ents.length() {
@@ -1558,6 +1559,10 @@ test "step_sweep atomically renames to tombstone before yielding so concurrent p
       }
     }
     None => panic("missing sessions dir")
+  }
+  match (fs.read_dir)("/data/remote/tombstones") {
+    Some(tents) => expect(tents.length() == 0, "tombstones dir completely drained")
+    None => panic("missing tombstones dir")
   }
 
   // Also verify RemoveTreeCursor yields mid-directory on a flat directory with 6 files and budget=2
@@ -1662,4 +1667,349 @@ test "w17b2_shared_clone_packs_and_preview_frame_reader" {
     Err(e) => panic(e)
   }
   expect(pr.finish() is Ok(_), "EOF between frames is ok")
+}
+
+test "step_sweep cleans stray .gone-* and <64hex>.gone-<8hex> tombstones and chmods only dirs on Unix" {
+  let mfs = MemFs::new(1000.to_int64())
+  let base_fs = mfs.to_port()
+  let chmod_calls : Array[(String, Int)] = []
+  let fs = FsPort::{
+    ..base_fs,
+    chmod: fn(p : String, mode : Int) -> Bool {
+      chmod_calls.push((p, mode))
+      (base_fs.chmod)(p, mode)
+    },
+  }
+  let (backend, _, _, _) = make_test_backend(["PATH=/usr/bin:/bin"])
+  let jm = JobManager::new("/data", fs, backend, "", fn(_s : String, _t : String) -> Unit {}, fn(_j : JobRecord) -> Unit {})
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+
+  let live_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let tomb1 = "/data/remote/sessions/.gone-100-1"
+  let tomb2 = "/data/remote/sessions/" + live_hex + ".gone-deadbeef"
+  let live_dir = "/data/remote/sessions/" + live_hex
+  mfs.put_file(tomb1 + "/ro/f.txt", "stale1")
+  mfs.put_file(tomb2 + "/session.json", "{\"workspace\":\"ws\"}")
+  mfs.put_file(tomb2 + "/work/ro/f2.txt", "stale2")
+  mfs.put_file(live_dir + "/work/keep.txt", "alive")
+
+  let _ = rm.sweep(2000.to_int64())
+  expect(!(fs.exists)(tomb1), "prefix .gone- tombstone removed by sweep")
+  expect(!(fs.exists)(tomb2), "<64hex>.gone-<8hex> tombstone removed by sweep")
+  expect((fs.exists)(live_dir + "/work/keep.txt"), "live room untouched by tombstone sweep")
+
+  // On Unix (sep == "/"), chmod(448) is called on directories only, never on regular files.
+  let mut saw_dir_chmod = false
+  for i in 0..<chmod_calls.length() {
+    let (p, m) = chmod_calls[i]
+    expect(!p.ends_with(".txt") && !p.ends_with(".json"), "Unix remove must never chmod regular file: " + p)
+    if m == 448 {
+      saw_dir_chmod = true
+    }
+  }
+  expect(saw_dir_chmod, "directories received chmod 0o700 before unlink/rmdir")
+}
+
+test "prepare_scoped mirror tombstone survives restart in remote/tombstones while preserving .gone-*.json manifests" {
+  let t0 = 1000.to_int64()
+  let mfs = MemFs::new(t0)
+  let fs = mfs.to_port()
+  let (backend, _, _, _) = make_test_backend(["PATH=/usr/bin:/bin"])
+  let jm1 = JobManager::new("/data", fs, backend, "", fn(_s : String, _t : String) -> Unit {}, fn(_j : JobRecord) -> Unit {})
+  let rm1 = RemoteManager::new("/data", fs, jm1, noop_remote_callbacks())
+
+  let prep = match rm1.prepare_scoped(
+    RemotePrepareRequest::{
+      key: "scoped_k1",
+      workspace: "ws_rig",
+      source_station: "st_rig",
+      source_session: "sess_rig",
+      name: "build",
+      command: "echo hi",
+      mirror_name: Some("/Users/dev/monoid"),
+      back_paths: [],
+      screen: false,
+      small: false,
+    },
+    t0,
+    "{\"name\":\"build\",\"command\":\"echo hi\",\"dir\":\"/Users/dev/monoid\"}",
+  ) {
+    Ok(r) => r
+    Err(e) => panic("prepare_scoped failed: " + e)
+  }
+  let rid = prep.room_id
+  let mirror_work_path = "/data/remote/sessions/" + rid + "/work/monoid"
+  mfs.put_file(mirror_work_path + "/f1.txt", "a", t0)
+  mfs.put_file(mirror_work_path + "/f2.txt", "b", t0)
+  mfs.put_file(mirror_work_path + "/f3.txt", "c", t0)
+
+  // Reader-style manifest whose legitimate mirror name starts with `.gone-`, plus a live mirror named `.gone-release-2026-1`!
+  let manifest_file = "/data/remote/sessions/" + rid + "/mirrors/.gone-project.json"
+  let custom_dot_dir = "/data/remote/sessions/" + rid + "/mirrors/.gone-project/src.txt"
+  mfs.put_file(manifest_file, "{\"files\":{}}", t0)
+  mfs.put_file(custom_dot_dir, "keep-me", t0)
+  // Advance past MIRROR_IDLE_MS (but < REMOTE_IDLE_MS by keeping room & `.gone-release-2026-1` mirror active):
+  let now = t0 + MIRROR_IDLE_MS + 5000.to_int64()
+  let gone_named_mirror_file = "/data/remote/sessions/" + rid + "/mirrors/.gone-release-2026-1/main.rs"
+  mfs.put_file(gone_named_mirror_file, "fn main() {}", now)
+  mfs.put_file("/data/remote/sessions/" + rid + "/work/recent.txt", "fresh", now)
+  let cur = rm1.begin_sweep(now, false, None)
+  match rm1.step_sweep(cur, 1) {
+    SweepStep::Yielded(_) => ()
+    SweepStep::Done(_) => panic("expected Yielded right after renaming mirror to tombstones/")
+  }
+  expect(!(fs.exists)(mirror_work_path), "prepare_scoped mirror renamed out of work/")
+  match (fs.read_dir)("/data/remote/tombstones") {
+    Some(ts) => expect(ts.length() == 1, "tombstone parked in /data/remote/tombstones")
+    None => panic("missing tombstones dir")
+  }
+
+  // Simulate Station restart before cursor finished: fresh RemoteManager adopts & sweeps!
+  let jm2 = JobManager::new("/data", fs, backend, "", fn(_s : String, _t : String) -> Unit {}, fn(_j : JobRecord) -> Unit {})
+  let rm2 = RemoteManager::new("/data", fs, jm2, noop_remote_callbacks())
+  let _ = rm2.adopt_existing(now + 100.to_int64())
+  let _ = rm2.sweep(now + 200.to_int64())
+
+  match (fs.read_dir)("/data/remote/tombstones") {
+    Some(ts) => expect(ts.length() == 0, "restart sweep reclaimed prepare_scoped mirror tombstone")
+    None => panic("missing tombstones dir")
+  }
+  expect((fs.exists)(manifest_file), "legitimate .gone-project.json manifest MUST NOT be deleted")
+  expect((fs.exists)(custom_dot_dir), "arbitrary .gone-project dir without -ts-seq MUST NOT be deleted")
+  // Note: adopt_existing adopts active mirrors with recent mtime; advance < MIRROR_IDLE_MS so `.gone-release-2026-1` is a live mirror!
+  expect((fs.exists)(gone_named_mirror_file), "legitimate mirror named .gone-release-2026-1 MUST NOT be deleted by stray sweep")
+}
+
+test "budget eviction does not close room or deduct bytes when tombstone rename fails" {
+  let t0 = 1000.to_int64()
+  let mfs = MemFs::new(t0)
+  let base_fs = mfs.to_port()
+  let fail_room_id = "1111111111111111"
+  let ok_room_id = "2222222222222222"
+  let fail_room_dir = "/data/remote/sessions/" + fail_room_id
+  let ok_room_dir = "/data/remote/sessions/" + ok_room_id
+  let fs = FsPort::{
+    ..base_fs,
+    rename: fn(old_p : String, new_p : String) -> Bool {
+      if old_p == fail_room_dir {
+        false
+      } else {
+        (base_fs.rename)(old_p, new_p)
+      }
+    },
+  }
+  let (backend, _, _, _) = make_test_backend(["PATH=/usr/bin:/bin"])
+  let jm = JobManager::new("/data", fs, backend, "", fn(_s : String, _t : String) -> Unit {}, fn(_j : JobRecord) -> Unit {})
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+
+  // remote_budget(Some(1000L)) == 150 bytes; populate 100 bytes in each room (200 bytes total > 150 bytes).
+  let hundred = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789"
+  mfs.put_file(fail_room_dir + "/work/big1.bin", hundred, t0)
+  mfs.put_file(ok_room_dir + "/work/big2.bin", hundred, t0 + 1000.to_int64())
+
+  let now = t0 + ROOM_RECENT_MS + 60000.to_int64()
+  expect(rm.adopt_existing(now) == 2, "adopted 2 rooms")
+  // Restore distinct last_used_at ordering: fail_room oldest, ok_room second oldest.
+  match rm.rooms.get(fail_room_id) {
+    Some(r) => r.last_used_at = t0
+    None => panic("missing fail_room")
+  }
+  match rm.rooms.get(ok_room_id) {
+    Some(r) => r.last_used_at = t0 + 1000.to_int64()
+    None => panic("missing ok_room")
+  }
+
+  let rep = rm.sweep(now, false, Some(1000L))
+  // fail_room rename failed -> must remain open, on disk, and NOT in budget_evicted_rooms;
+  // because its 100 bytes were NOT deducted, ok_room IS evicted to bring usage from 200 to 100 <= 150!
+  match rm.rooms.get(fail_room_id) {
+    Some(r) => expect(!r.closed, "rename-failed room stays open")
+    None => panic("missing fail_room")
+  }
+  expect((fs.exists)(fail_room_dir + "/work/big1.bin"), "rename-failed room still on disk")
+  expect(rep.budget_evicted_rooms.length() == 1 && rep.budget_evicted_rooms[0] == ok_room_id, "second room evicted instead")
+  expect(!(fs.exists)(ok_room_dir), "ok_room directory evicted")
+}
+
+test "Windows dir_link symlinks choose rmdir at both root and child without chmod" {
+  let rmdir_calls : Array[String] = []
+  let unlink_calls : Array[String] = []
+  let chmod_calls : Array[String] = []
+  let entries : Map[String, FsStat] = Map::new()
+  let mk_stat = fn(kind : String) -> FsStat {
+    FsStat::{ kind: kind, size: 0L, executable: false, mode: 511, mtime_ms: 1L, dev: 1L, ino: 1L }
+  }
+  entries.set("C:\\root_junc", mk_stat("dir_link"))
+  entries.set("C:\\tree", mk_stat("dir"))
+  entries.set("C:\\tree\\child_junc", mk_stat("dir_link"))
+  entries.set("C:\\tree\\file_link", mk_stat("link"))
+
+  let win_fs = FsPort::{
+    sep: "\\",
+    lstat: fn(p : String) -> Option[FsStat] { entries.get(p) },
+    lstat_err: None,
+    stat: fn(p : String) -> Option[FsStat] { entries.get(p) },
+    read_dir: fn(p : String) -> Option[Array[String]] {
+      if p == "C:\\tree" { Some(["child_junc", "file_link"]) } else { None }
+    },
+    read_file: fn(_p : String) -> Option[String] { None },
+    read_bytes: fn(_p : String) -> Option[Bytes] { None },
+    read_range: fn(_p : String, _o : Int64, _l : Int64) -> Option[Bytes] { None },
+    write_file: fn(_p : String, _c : String) -> Bool { false },
+    write_bytes: fn(_p : String, _d : Bytes) -> Bool { false },
+    write_file_mode: fn(_p : String, _d : Bytes, _m : Int, _a : Bool) -> Bool { false },
+    append_file: fn(_p : String, _c : String) -> Bool { false },
+    truncate_in_place: fn(_p : String) -> Bool { false },
+    rename: fn(_a : String, _b : String) -> Bool { false },
+    remove_file: fn(p : String) -> Bool {
+      unlink_calls.push(p)
+      entries.remove(p)
+      true
+    },
+    rmdir: fn(p : String) -> Bool {
+      rmdir_calls.push(p)
+      entries.remove(p)
+      true
+    },
+    remove_dir_all: fn(_p : String) -> Bool { false },
+    mkdir_p: fn(_p : String) -> Bool { false },
+    readlink: fn(_p : String) -> Option[String] { None },
+    realpath: fn(_p : String) -> Option[String] { None },
+    chmod: fn(p : String, _m : Int) -> Bool {
+      chmod_calls.push(p)
+      true
+    },
+    exists: fn(p : String) -> Bool { entries.contains(p) },
+    now_ms: fn() -> Int64 { 1000L },
+  }
+
+  // 1) Root directory junction via RemoveTreeCursor
+  let rmc_root = RemoveTreeCursor::new(win_fs, "C:\\root_junc")
+  match rmc_root.step(10) {
+    RemoveTreeStep::Done(ok) => expect(ok, "root dir_link removed")
+    RemoveTreeStep::Yielded(_) => panic("unexpected yield")
+  }
+  expect(rmdir_calls.length() == 1 && rmdir_calls[0] == "C:\\root_junc", "root dir_link used rmdir")
+  expect(unlink_calls.length() == 0, "root dir_link did not call remove_file")
+  expect(chmod_calls.length() == 0, "root dir_link did not call chmod")
+
+  // 2) Child directory junction + file symlink inside C:\tree via RemoveTreeCursor
+  let rmc_tree = RemoveTreeCursor::new(win_fs, "C:\\tree")
+  let mut tree_done = false
+  for _ in 0..<10 {
+    match rmc_tree.step(10) {
+      RemoveTreeStep::Done(ok) => {
+        expect(ok, "tree removed")
+        tree_done = true
+        break
+      }
+      RemoveTreeStep::Yielded(_) => ()
+    }
+  }
+  expect(tree_done, "tree cursor finished")
+  expect(rmdir_calls.length() == 3, "rmdir called on root_junc, child_junc, and C:\\tree")
+  expect(rmdir_calls[1] == "C:\\tree\\child_junc", "child dir_link used rmdir")
+  expect(unlink_calls.length() == 1 && unlink_calls[0] == "C:\\tree\\file_link", "file_link used remove_file")
+  expect(chmod_calls.length() == 1 && chmod_calls[0] == "C:\\tree", "chmod called only on real directory")
+}
+
+test "close_session_room marks room closed on rename even if remove_dir_all fails, returns false on rename/lstat_err failure" {
+  let t0 = 1000.to_int64()
+  let mfs = MemFs::new(t0)
+  let base_fs = mfs.to_port()
+  let fail_rm_all : Array[Bool] = [true]
+  let fail_rename : Array[Bool] = [false]
+  let lstat_err_code : Array[Int] = [0]
+  let fs = FsPort::{
+    ..base_fs,
+    lstat_err: Some(fn(p : String) -> Result[FsStat, Int] {
+      if lstat_err_code[0] != 0 && sj_starts_with(p, "/data/remote/sessions/") {
+        Err(lstat_err_code[0])
+      } else {
+        match (base_fs.lstat)(p) {
+          Some(st) => Ok(st)
+          None => Err(-2)
+        }
+      }
+    }),
+    rename: fn(a : String, b : String) -> Bool {
+      if fail_rename[0] { false } else { (base_fs.rename)(a, b) }
+    },
+    remove_dir_all: fn(p : String) -> Bool {
+      if fail_rm_all[0] { false } else { (base_fs.remove_dir_all)(p) }
+    },
+  }
+  let (backend, _, _, _) = make_test_backend(["PATH=/usr/bin:/bin"])
+  let jm = JobManager::new("/data", fs, backend, "", fn(_s : String, _t : String) -> Unit {}, fn(_j : JobRecord) -> Unit {})
+  let rm = RemoteManager::new("/data", fs, jm, noop_remote_callbacks())
+
+  let prep1 = match rm.prepare_scoped(
+    RemotePrepareRequest::{
+      key: "k1",
+      workspace: "ws_c",
+      source_station: "st_c",
+      source_session: "sess_c",
+      name: "t1",
+      command: "echo 1",
+      mirror_name: None,
+      back_paths: [],
+      screen: false,
+      small: false,
+    },
+    t0,
+    "{\"name\":\"t1\",\"command\":\"echo 1\"}",
+  ) {
+    Ok(r) => r
+    Err(e) => panic("prepare_scoped 1 failed: " + e)
+  }
+  let rid = prep1.room_id
+  let work_dir = "/data/remote/sessions/" + rid + "/work"
+  mfs.put_file(work_dir + "/old.txt", "old", t0)
+
+  // 1) Rename fails -> close_session_room returns false and keeps room open!
+  fail_rename[0] = true
+  expect(!rm.close_session_room("ws_c", "st_c", "sess_c", t0 + 10.to_int64()), "rename failure returns false")
+  fail_rename[0] = false
+
+  // 2) lstat_err EACCES (-3) during budget eviction -> treated as Failed (room stays open, bytes NOT deducted)!
+  let eacces_room = "/data/remote/sessions/3333333333333333"
+  mfs.put_file(eacces_room + "/work/f.bin", "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789", t0)
+  let _ = rm.adopt_existing(t0)
+  lstat_err_code[0] = -3
+  let rep_eacces = rm.sweep(t0 + ROOM_RECENT_MS + 5000.to_int64(), false, Some(100L))
+  expect(rep_eacces.budget_evicted_rooms.length() == 0, "lstat EACCES must not falsely evict or deduct bytes")
+  lstat_err_code[0] = 0
+
+  // 3) Rename succeeds, remove_dir_all fails -> close_session_room marks r.closed = true and returns true;
+  // immediate prepare_scoped on the same session recreates `work/`, and subsequent sweep cleans `tombstones/`!
+  expect(rm.close_session_room("ws_c", "st_c", "sess_c", t0 + 20.to_int64()), "rename success logically closes room")
+  expect(!(fs.exists)(work_dir), "old room dir moved out")
+  let prep2 = match rm.prepare_scoped(
+    RemotePrepareRequest::{
+      key: "k2",
+      workspace: "ws_c",
+      source_station: "st_c",
+      source_session: "sess_c",
+      name: "t2",
+      command: "echo 2",
+      mirror_name: None,
+      back_paths: [],
+      screen: false,
+      small: false,
+    },
+    t0 + 30.to_int64(),
+    "{\"name\":\"t2\",\"command\":\"echo 2\"}",
+  ) {
+    Ok(r) => r
+    Err(e) => panic("prepare_scoped 2 after partial close failed: " + e)
+  }
+  expect(prep2.room_id == rid, "same room_id")
+  expect((fs.exists)(work_dir), "ensure_room_v2 recreated work/ because r.closed was set true on rename")
+
+  fail_rm_all[0] = false
+  let _ = rm.sweep(t0 + 40.to_int64())
+  match (fs.read_dir)("/data/remote/tombstones") {
+    Some(ts) => expect(ts.length() == 0, "leftover tombstone cleaned on subsequent sweep")
+    None => panic("missing tombstones dir")
+  }
 }

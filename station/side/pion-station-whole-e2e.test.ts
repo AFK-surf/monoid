@@ -511,7 +511,7 @@ test("W16B.1: --version advertises roles:rig,whole and --smoke-js-lower passes f
   assert.equal(ver.status, 0, ver.stderr);
   assert.equal(
     ver.stdout.trim(),
-    "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin",
+    "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin,worktree",
   );
 
   const jsl = spawnSync(bin, ["--smoke-js-lower"], { encoding: "utf8", timeout: 15_000 });

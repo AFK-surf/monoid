@@ -55,6 +55,39 @@ pub fn is_hex64(s : String) -> Bool {
   true
 }
 
+pub fn is_gone_room(name : String) -> Bool {
+  if name.length() > 6 && name.starts_with(".gone-") {
+    return true
+  }
+  let bytes = name.to_bytes()
+  let len = bytes.length()
+  if len <= 64 || (len - 64) % 14 != 0 {
+    return false
+  }
+  for i in 0..<64 {
+    let b = bytes[i].to_int()
+    let ok = (b >= 48 && b <= 57) || (b >= 97 && b <= 102)
+    if !ok {
+      return false
+    }
+  }
+  let mut i = 64
+  while i < len {
+    if bytes[i] != (46 as Byte) || bytes[i + 1] != (103 as Byte) || bytes[i + 2] != (111 as Byte) || bytes[i + 3] != (110 as Byte) || bytes[i + 4] != (101 as Byte) || bytes[i + 5] != (45 as Byte) {
+      return false
+    }
+    for j in (i + 6)..<(i + 14) {
+      let b = bytes[j].to_int()
+      let ok = (b >= 48 && b <= 57) || (b >= 97 && b <= 102)
+      if !ok {
+        return false
+      }
+    }
+    i = i + 14
+  }
+  true
+}
+
 /// Deep structural equality of two JSON values (object keys in any order; `remote_target.mbt:450-456`).
 pub fn json_equal(a : base_codec::Json, b : base_codec::Json) -> Bool {
   match (a, b) {
@@ -2680,15 +2713,26 @@ pub fn RemoteCtx::close_here_k(
                 effect::Exit::Succeeded(_) => {
                   match sessions_core::field_of(moved, "room") {
                     base_codec::Json::Str(gone) => {
-                      self.rlog("info", "remote session directory removed", [
-                        ("workspace", sessions_core::jstr(workspace)),
-                        ("station", sessions_core::jstr(peer)),
-                        ("session", sessions_core::jstr(session)),
-                      ])
-                      self.remove_k(gone, true, fn(rem : effect::Exit[Unit]) -> Unit {
+                      self.rnode_k("removeTask", [sessions_core::jstr(gone)], fn(rem : effect::Exit[base_codec::Json]) -> Unit {
                         match rem {
                           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-                          _ => k(effect::Exit::Succeeded(true))
+                          effect::Exit::Succeeded(_) => {
+                            self.rlog("info", "remote session directory removed", [
+                              ("workspace", sessions_core::jstr(workspace)),
+                              ("station", sessions_core::jstr(peer)),
+                              ("session", sessions_core::jstr(session)),
+                            ])
+                            k(effect::Exit::Succeeded(true))
+                          }
+                          effect::Exit::Failed(e) => {
+                            self.rlog("warn", "remote session directory not removed", [
+                              ("workspace", sessions_core::jstr(workspace)),
+                              ("station", sessions_core::jstr(peer)),
+                              ("session", sessions_core::jstr(session)),
+                              ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                            ])
+                            k(effect::Exit::Succeeded(true))
+                          }
                         }
                       })
                     }
@@ -2837,6 +2881,27 @@ pub fn RemoteCtx::sweep_k(self : RemoteCtx, now : Double, k : (effect::Exit[Unit
           snames,
           fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
             if self.state.stopped {
+              nk(effect::Exit::Succeeded(()))
+              return
+            }
+            if is_gone_room(name) {
+              let dir = self.rjoin([sessions, name])
+              self.rnode_k("removeTask", [sessions_core::jstr(dir)], fn(rex : effect::Exit[base_codec::Json]) -> Unit {
+                match rex {
+                  effect::Exit::Interrupted => nk(effect::Exit::Interrupted)
+                  effect::Exit::Succeeded(_) => nk(effect::Exit::Succeeded(()))
+                  effect::Exit::Failed(e) => {
+                    self.rlog("warn", "gone remote session directory not removed", [
+                      ("name", sessions_core::jstr(name)),
+                      ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                    ])
+                    nk(effect::Exit::Succeeded(()))
+                  }
+                }
+              })
+              return
+            }
+            if !is_hex64(name) {
               nk(effect::Exit::Succeeded(()))
               return
             }
@@ -2999,7 +3064,51 @@ pub fn RemoteCtx::sweep_k(self : RemoteCtx, now : Double, k : (effect::Exit[Unit
                             }
                           })
                         },
-                        k,
+                        fn(fex2 : effect::Exit[Unit]) -> Unit {
+                          match fex2 {
+                            effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                            effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                            effect::Exit::Succeeded(_) => {
+                              if self.state.stopped {
+                                k(effect::Exit::Succeeded(()))
+                                return
+                              }
+                              let tombstones = self.rjoin([self.state.root, "tombstones"])
+                              self.readdir_names_k(tombstones, fn(trex2 : effect::Exit[Array[String]]) -> Unit {
+                                match trex2 {
+                                  effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
+                                  effect::Exit::Interrupted => k(effect::Exit::Interrupted)
+                                  effect::Exit::Succeeded(tnames) => {
+                                    for_each_k(
+                                      tnames,
+                                      fn(_ti : Int, tname : String, tnk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                                        if self.state.stopped || tname == "." || tname == ".." {
+                                          tnk(effect::Exit::Succeeded(()))
+                                          return
+                                        }
+                                        let tdir = self.rjoin([tombstones, tname])
+                                        self.rnode_k("removeTask", [sessions_core::jstr(tdir)], fn(rmex : effect::Exit[base_codec::Json]) -> Unit {
+                                          match rmex {
+                                            effect::Exit::Interrupted => tnk(effect::Exit::Interrupted)
+                                            effect::Exit::Succeeded(_) => tnk(effect::Exit::Succeeded(()))
+                                            effect::Exit::Failed(e) => {
+                                              self.rlog("warn", "gone remote directory not removed", [
+                                                ("name", sessions_core::jstr(tname)),
+                                                ("error", sessions_core::jstr(sessions_core::error_message(e))),
+                                              ])
+                                              tnk(effect::Exit::Succeeded(()))
+                                            }
+                                          }
+                                        })
+                                      },
+                                      k,
+                                    )
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        },
                       )
                     }
                   }
@@ -3177,6 +3286,10 @@ pub fn RemoteCtx::rooms_k(self : RemoteCtx, k : (effect::Exit[Array[RoomUse]]) -
           names,
           fn(_i : Int, name : String, nk : (effect::Exit[Unit]) -> Unit) -> Unit {
             if self.state.stopped {
+              nk(effect::Exit::Succeeded(()))
+              return
+            }
+            if !is_hex64(name) {
               nk(effect::Exit::Succeeded(()))
               return
             }
@@ -3364,7 +3477,7 @@ pub fn RemoteCtx::budget_k(self : RemoteCtx, now : Double, budget : Double, k : 
                                         self.rnode_k("removeTask", [sessions_core::jstr(gone)], fn(rmex : effect::Exit[base_codec::Json]) -> Unit {
                                           match rmex {
                                             effect::Exit::Interrupted => rk(effect::Exit::Interrupted)
-                                            _ => {
+                                            effect::Exit::Succeeded(_) => {
                                               total = total - room.bytes
                                               self.rlog("info", "remote session directory removed", [
                                                 ("why", sessions_core::jstr("over budget")),
@@ -3372,6 +3485,16 @@ pub fn RemoteCtx::budget_k(self : RemoteCtx, now : Double, budget : Double, k : 
                                                 ("workspace", sessions_core::jstr(workspace)),
                                                 ("station", sessions_core::jstr(station)),
                                                 ("session", sessions_core::jstr(session)),
+                                              ])
+                                              rk(effect::Exit::Succeeded(()))
+                                            }
+                                            effect::Exit::Failed(e) => {
+                                              self.rlog("warn", "remote session directory not removed", [
+                                                ("why", sessions_core::jstr("over budget")),
+                                                ("workspace", sessions_core::jstr(workspace)),
+                                                ("station", sessions_core::jstr(station)),
+                                                ("session", sessions_core::jstr(session)),
+                                                ("error", sessions_core::jstr(sessions_core::error_message(e))),
                                               ])
                                               rk(effect::Exit::Succeeded(()))
                                             }

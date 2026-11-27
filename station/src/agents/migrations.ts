@@ -200,6 +200,7 @@ export const NOTES: [number, string][] = [
   [193, "station_tool called with no name lists every tool it reaches (with what each does): call it so first when its description names no tools."],
   [194, "chat_post takes reply_to in a Feishu conversation: the ts of a message there to post under, in its thread, so a group is not interrupted; left out, the post goes where the conversation is. Choose where each post belongs."],
   [195, "When choosing a specific model with chat_create, pass both its full model ID and its runtime, because passing only model uses the opening chat's runtime."],
+  [196, "For read-only inspection of a shared repository cache clone (history, search, diff on a fixed commit), run `GIT_NO_LAZY_FETCH=1 git -C <repos_dir>/<repo> grep|show|diff|log` without opening a worktree (or open a CoW worktree if a partial clone lacks blobs); when editing or building, use `stillfail -C <repos_dir>/<repo> worktree add --detach <workspace>/<name> origin/main` for a copy-on-write worktree."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

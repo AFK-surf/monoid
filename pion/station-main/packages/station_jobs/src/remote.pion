@@ -262,6 +262,7 @@ pub fn RemoteManager::new(
   let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "incoming"]))
   let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "outgoing"]))
   let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "sessions"]))
+  let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "tombstones"]))
   let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "used"]))
   let _ = (fs.mkdir_p)(nodepath::join(fs.sep, [root, "prepared"]))
   RemoteManager::{
@@ -281,26 +282,40 @@ pub fn RemoteManager::new(
   }
 }
 
-/// Atomically renames `dir_path` to a dot-prefixed sibling tombstone (`<parent>/.gone-<name>-<ts>-<seq>`)
-/// before cooperative multi-tick deletion (`station/src/jobs/remote.ts` `closeRoom`), so any concurrent
-/// `ensure_room`/`prepare`/`start` arriving between ticks creates a clean directory and never collides
-/// with the tree being deleted.
-fn RemoteManager::tombstone_dir(self : RemoteManager, dir_path : String, now_ms : Int64) -> Option[String] {
-  match (self.fs.lstat)(dir_path) {
-    None => return None
-    Some(_) => ()
+enum TombstoneOutcome {
+  Missing
+  Renamed(String)
+  Failed
+}
+
+/// Atomically renames `dir_path` into the dedicated Station-owned same-volume `<root>/tombstones`
+/// directory (`.gone-<base>-<ts>-<seq>`) before cooperative multi-tick deletion, so both `prepare`
+/// (`sessions/<rid>/mirrors/<name>`) and `prepare_scoped` (`sessions/<rid>/work/<name>`) mirror
+/// tombstones and room tombstones share one exclusive recovery home without colliding with manifest files.
+fn RemoteManager::tombstone_dir(self : RemoteManager, dir_path : String, now_ms : Int64) -> TombstoneOutcome {
+  match self.fs.lstat_err {
+    Some(f) => match f(dir_path) {
+      Ok(_) => ()
+      Err(-2) => return TombstoneOutcome::Missing
+      Err(_) => return TombstoneOutcome::Failed
+    }
+    None => match (self.fs.lstat)(dir_path) {
+      None => return TombstoneOutcome::Missing
+      Some(_) => ()
+    }
   }
+  let tomb_root = nodepath::join(self.fs.sep, [self.root, "tombstones"])
+  let _ = (self.fs.mkdir_p)(tomb_root)
   self.tombstone_seq = self.tombstone_seq + 1.to_int64()
-  let parent = nodepath::dirname(self.fs.sep, dir_path)
   let base = nodepath::basename(self.fs.sep, dir_path)
   let tomb = nodepath::join(
     self.fs.sep,
-    [parent, ".gone-" + base + "-" + now_ms.to_string() + "-" + self.tombstone_seq.to_string()],
+    [tomb_root, ".gone-" + base + "-" + now_ms.to_string() + "-" + self.tombstone_seq.to_string()],
   )
   if (self.fs.rename)(dir_path, tomb) {
-    Some(tomb)
+    TombstoneOutcome::Renamed(tomb)
   } else {
-    None
+    TombstoneOutcome::Failed
   }
 }
 
@@ -502,7 +517,7 @@ pub fn RemoteManager::adopt_existing(
   let mut count = 0
   for i in 0..<dirs.length() {
     let rid = dirs[i]
-    if sj_starts_with(rid, ".") {
+    if sj_starts_with(rid, ".") || is_stray_tombstone_name(rid) {
       continue
     }
     let room_dir = nodepath::join(self.fs.sep, [sessions_root, rid])
@@ -550,7 +565,7 @@ pub fn RemoteManager::adopt_existing(
       Some(mnames) => {
         for mi in 0..<mnames.length() {
           let mname = mnames[mi]
-          if sj_starts_with(mname, ".") {
+          if sj_starts_with(mname, ".") || is_stray_tombstone_name(mname) {
             continue
           }
           let mpath = nodepath::join(self.fs.sep, [mirrors_dir, mname])
@@ -1254,17 +1269,95 @@ pub enum SweepStep {
   Done(RemoteSweepReport)
 }
 
+fn is_hex_lower_byte(b : Int) -> Bool {
+  (b >= 48 && b <= 57) || (b >= 97 && b <= 102)
+}
+
+fn is_ascii_digits_slice(bytes : Bytes, start : Int, end : Int) -> Bool {
+  if end <= start {
+    return false
+  }
+  for i in start..<end {
+    let b = bytes[i].to_int() & 0xFF
+    if b < 48 || b > 57 {
+      return false
+    }
+  }
+  true
+}
+
+/// Returns true for legacy tombstone directory names in `remote/sessions/` or `mirrors/`:
+/// - `<64hex>(.gone-<8hex>)+` (Node/MB/Pion reader `closeRoom` format), or
+/// - `.gone-<prefix>-<ts_digits>-<seq_digits>` / `.gone-<ts_digits>-<seq_digits>` (legacy sibling `tombstone_dir` format).
+/// Never matches `<name>.json` manifests or arbitrary dot-prefixed names like `.gone-project`.
+fn is_stray_tombstone_name(name : String) -> Bool {
+  let bytes = name.to_bytes()
+  let len = bytes.length()
+  if name.starts_with(".gone-") {
+    if len <= 8 {
+      return false
+    }
+    let mut dash2 = -1
+    let mut k = len - 1
+    while k >= 6 {
+      if (bytes[k].to_int() & 0xFF) == 45 {
+        dash2 = k
+        break
+      }
+      k = k - 1
+    }
+    if dash2 <= 6 || !is_ascii_digits_slice(bytes, dash2 + 1, len) {
+      return false
+    }
+    let mut dash1 = -1
+    let mut m = dash2 - 1
+    while m >= 5 {
+      if (bytes[m].to_int() & 0xFF) == 45 {
+        dash1 = m
+        break
+      }
+      m = m - 1
+    }
+    if dash1 < 5 || !is_ascii_digits_slice(bytes, dash1 + 1, dash2) {
+      return false
+    }
+    return true
+  }
+  if len <= 64 || (len - 64) % 14 != 0 {
+    return false
+  }
+  for i in 0..<64 {
+    if !is_hex_lower_byte(bytes[i].to_int()) {
+      return false
+    }
+  }
+  let mut i = 64
+  while i < len {
+    if bytes[i] != (46 as Byte) || bytes[i + 1] != (103 as Byte) || bytes[i + 2] != (111 as Byte) || bytes[i + 3] != (110 as Byte) || bytes[i + 4] != (101 as Byte) || bytes[i + 5] != (45 as Byte) {
+      return false
+    }
+    for j in (i + 6)..<(i + 14) {
+      if !is_hex_lower_byte(bytes[j].to_int()) {
+        return false
+      }
+    }
+    i = i + 14
+  }
+  true
+}
+
 /// Resumable cooperative cursor for `RemoteManager::step_sweep` so directory traversal and
 /// recursive deletion yield back to the single-threaded event loop every `budget` entries (default 256).
 pub struct RemoteSweepCursor {
   now_ms : Int64
   low_disk : Bool
   disk_total : Option[Int64]
-  mut phase : Int // 0=mirrors, 1=idle_rooms, 2=measure_rooms, 3=budget_evict, 4=expire_tasks, 5=done
+  mut phase : Int // 0=mirrors, 1=idle_rooms, 2=measure_rooms, 3=budget_evict, 4=expire_tasks, 5=stray_tombstones, 6=done
   mut idx : Int
   mut rm_cursor : Option[RemoveTreeCursor]
   mut walk_cursor : Option[WalkCursor]
   mut cur_room_bytes : Int64
+  mut pending_evict_bytes : Int64
   usages : Array[RoomUsage]
   mut total_bytes : Int64
   budget : Int64
@@ -1272,6 +1365,7 @@ pub struct RemoteSweepCursor {
   mirrors_removed : Array[String]
   tasks_expired : Array[String]
   budget_evicted_rooms : Array[String]
+  stray_tombstones : Array[String]
   pub mut processed : Int
   mut finished : Option[RemoteSweepReport]
 }
@@ -1292,6 +1386,7 @@ pub fn RemoteManager::begin_sweep(
     rm_cursor: None,
     walk_cursor: None,
     cur_room_bytes: 0.to_int64(),
+    pending_evict_bytes: 0.to_int64(),
     usages: [],
     total_bytes: 0.to_int64(),
     budget: remote_budget(disk_total),
@@ -1299,6 +1394,7 @@ pub fn RemoteManager::begin_sweep(
     mirrors_removed: [],
     tasks_expired: [],
     budget_evicted_rooms: [],
+    stray_tombstones: [],
     processed: 0,
     finished: None,
   }
@@ -1366,13 +1462,19 @@ pub fn RemoteManager::step_sweep(
             _ => false
           }
           if can_clean {
-            let tomb_opt = self.tombstone_dir(m.path, cur.now_ms)
-            m.state = MirrorState::Cleaned
-            m.bytes = 0.to_int64()
-            cur.mirrors_removed.push(mk)
-            match tomb_opt {
-              Some(tomb) => cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
-              None => ()
+            match self.tombstone_dir(m.path, cur.now_ms) {
+              TombstoneOutcome::Renamed(tomb) => {
+                m.state = MirrorState::Cleaned
+                m.bytes = 0.to_int64()
+                cur.mirrors_removed.push(mk)
+                cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
+              }
+              TombstoneOutcome::Missing => {
+                m.state = MirrorState::Cleaned
+                m.bytes = 0.to_int64()
+                cur.mirrors_removed.push(mk)
+              }
+              TombstoneOutcome::Failed => ()
             }
           }
           used = used + 1
@@ -1421,12 +1523,17 @@ pub fn RemoteManager::step_sweep(
         Some(r) => {
           if !r.closed && cur.now_ms - r.last_used_at >= REMOTE_IDLE_MS && !self.room_has_active_tasks(rid) {
             let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
-            let tomb_opt = self.tombstone_dir(room_dir, cur.now_ms)
-            r.closed = true
-            cur.rooms_removed.push(rid)
-            match tomb_opt {
-              Some(tomb) => cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
-              None => ()
+            match self.tombstone_dir(room_dir, cur.now_ms) {
+              TombstoneOutcome::Renamed(tomb) => {
+                r.closed = true
+                cur.rooms_removed.push(rid)
+                cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
+              }
+              TombstoneOutcome::Missing => {
+                r.closed = true
+                cur.rooms_removed.push(rid)
+              }
+              TombstoneOutcome::Failed => ()
             }
           }
           used = used + 1
@@ -1546,12 +1653,16 @@ pub fn RemoteManager::step_sweep(
               cur.processed = cur.processed + inc
               return SweepStep::Yielded(cur.processed)
             }
-            RemoveTreeStep::Done(_) => {
+            RemoveTreeStep::Done(ok) => {
               let delta = rmc.visited - before
               let inc = if delta > 0 { delta } else { 1 }
               used = used + inc
               cur.processed = cur.processed + inc
               cur.rm_cursor = None
+              if ok {
+                cur.total_bytes = cur.total_bytes - cur.pending_evict_bytes
+              }
+              cur.pending_evict_bytes = 0.to_int64()
             }
           }
           continue
@@ -1570,13 +1681,19 @@ pub fn RemoteManager::step_sweep(
           Some(r) => {
             if !r.closed {
               let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", u.room_id])
-              let tomb_opt = self.tombstone_dir(room_dir, cur.now_ms)
-              r.closed = true
-              cur.total_bytes = cur.total_bytes - u.bytes
-              cur.budget_evicted_rooms.push(u.room_id)
-              match tomb_opt {
-                Some(tomb) => cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
-                None => ()
+              match self.tombstone_dir(room_dir, cur.now_ms) {
+                TombstoneOutcome::Renamed(tomb) => {
+                  r.closed = true
+                  cur.budget_evicted_rooms.push(u.room_id)
+                  cur.pending_evict_bytes = u.bytes
+                  cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
+                }
+                TombstoneOutcome::Missing => {
+                  r.closed = true
+                  cur.budget_evicted_rooms.push(u.room_id)
+                  cur.total_bytes = cur.total_bytes - u.bytes
+                }
+                TombstoneOutcome::Failed => ()
               }
             }
           }
@@ -1585,7 +1702,7 @@ pub fn RemoteManager::step_sweep(
       }
       used = used + 1
       cur.processed = cur.processed + 1
-    } else {
+    } else if cur.phase == 4 {
       // Phase 4: expire old finished tasks and compact `task_keys` + `job_to_task`
       let kept_keys : Array[String] = []
       for i in 0..<self.task_keys.length() {
@@ -1615,13 +1732,78 @@ pub fn RemoteManager::step_sweep(
         }
       }
       self.task_keys = kept_keys
+      let tomb_root = nodepath::join(self.fs.sep, [self.root, "tombstones"])
+      match (self.fs.read_dir)(tomb_root) {
+        Some(tnames) => {
+          for ti in 0..<tnames.length() {
+            if tnames[ti] != "." && tnames[ti] != ".." {
+              cur.stray_tombstones.push(nodepath::join(self.fs.sep, [tomb_root, tnames[ti]]))
+            }
+          }
+        }
+        None => ()
+      }
+      let sessions_dir = nodepath::join(self.fs.sep, [self.root, "sessions"])
+      match (self.fs.read_dir)(sessions_dir) {
+        Some(names) => {
+          for i in 0..<names.length() {
+            if is_stray_tombstone_name(names[i]) {
+              let cand = nodepath::join(self.fs.sep, [sessions_dir, names[i]])
+              match (self.fs.lstat)(cand) {
+                Some(st) => if st.is_dir() && !st.is_symlink() {
+                  cur.stray_tombstones.push(cand)
+                }
+                None => ()
+              }
+            }
+          }
+        }
+        None => ()
+      }
+      cur.phase = 5
+      cur.idx = 0
+      continue
+    } else {
+      // Phase 5: cooperatively remove stray `.gone-*` / `<64hex>.gone-<8hex>` tombstones left across restarts.
+      match cur.rm_cursor {
+        Some(rmc) => {
+          let before = rmc.visited
+          let rem = limit - used
+          match rmc.step(rem) {
+            RemoveTreeStep::Yielded(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              return SweepStep::Yielded(cur.processed)
+            }
+            RemoveTreeStep::Done(_) => {
+              let delta = rmc.visited - before
+              let inc = if delta > 0 { delta } else { 1 }
+              used = used + inc
+              cur.processed = cur.processed + inc
+              cur.rm_cursor = None
+            }
+          }
+          continue
+        }
+        None => ()
+      }
+      if cur.idx < cur.stray_tombstones.length() {
+        let tomb = cur.stray_tombstones[cur.idx]
+        cur.idx = cur.idx + 1
+        cur.rm_cursor = Some(RemoveTreeCursor::new(self.fs, tomb))
+        used = used + 1
+        cur.processed = cur.processed + 1
+        continue
+      }
       let rep = RemoteSweepReport::{
         rooms_removed: cur.rooms_removed,
         mirrors_removed: cur.mirrors_removed,
         tasks_expired: cur.tasks_expired,
         budget_evicted_rooms: cur.budget_evicted_rooms,
       }
-      cur.phase = 5
+      cur.phase = 6
       cur.finished = Some(rep)
       return SweepStep::Done(rep)
     }
@@ -2566,14 +2748,21 @@ pub fn RemoteManager::close_session_room(
   let rid = remote_room_id_v2(workspace, source_station, source_session)
   let room_dir = nodepath::join(self.fs.sep, [self.root, "sessions", rid])
   match self.tombstone_dir(room_dir, now_ms) {
-    Some(tomb) => {
+    TombstoneOutcome::Renamed(tomb) => {
+      match self.rooms.get(rid) {
+        Some(r) => r.closed = true
+        None => ()
+      }
       let _ = (self.fs.remove_dir_all)(tomb)
+      true
     }
-    None => ()
+    TombstoneOutcome::Missing => {
+      match self.rooms.get(rid) {
+        Some(r) => r.closed = true
+        None => ()
+      }
+      true
+    }
+    TombstoneOutcome::Failed => false
   }
-  match self.rooms.get(rid) {
-    Some(r) => r.closed = true
-    None => ()
-  }
-  true
 }

@@ -12,6 +12,7 @@ fn test_noop_fs() -> station_jobs::FsPort {
   station_jobs::FsPort::{
     sep: "/",
     lstat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
+    lstat_err: None,
     stat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
     read_dir: fn(_p : String) -> Option[Array[String]] { None },
     read_file: fn(_p : String) -> Option[String] { None },
@@ -61,9 +62,9 @@ fn assert_true(cond : Bool, msg : String) -> Unit {
   }
 }
 
-test "version line advertises roles:rig,whole and all 8 CLI commands in W17A-Whole-Cutover" {
+test "version line advertises roles:rig,whole and all 9 CLI commands in W17A-Whole-Cutover" {
   let v = version_line()
-  assert_str_eq(v, "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin")
+  assert_str_eq(v, "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin,worktree")
   let tokens = v.split(" ")
   assert_true(tokens.length() == 4, "version line must have exactly 4 whitespace-separated tokens")
 }
@@ -82,13 +83,22 @@ test "is_rig_raw_cloud_json matches launcher data.rs::is_rig 1:1" {
   assert_true(is_rig_raw_cloud_json("{\"workspace\":\"ws-1\",\"rig\":{\"owner\":\"u1\",\"person\":\"" + hex + "\"},\"joined\":[{\"workspace\":\"ws-2\",\"rig\":{\"owner\":\"u2\",\"person\":\"" + hex + "\"}}]}"), "all-rig joined workspace is rig")
 }
 
-test "cli_main helpers classify all 8 CLI subcommands, parse env, and decode process_usage" {
-  let expected = ["id", "status", "lock", "channel", "enroll", "update", "heap", "admin"]
+test "cli_main helpers classify all 9 CLI subcommands, parse env, and decode process_usage" {
+  let expected = ["id", "status", "lock", "channel", "enroll", "update", "heap", "admin", "worktree"]
   for i in 0..<expected.length() {
     assert_true(is_cli_command(expected[i]), "expected CLI command: " + expected[i])
   }
   assert_true(!is_cli_command("run"), "run is daemon mode, not CLI subcommand")
   assert_true(!is_cli_command("unknown"), "unknown is not a CLI command")
+
+  match find_main_subcommand(["-C", "/repo", "worktree", "add", "--detach", "wt"]) {
+    Some(c) => assert_str_eq(c, "worktree")
+    None => panic("expected worktree after -C <repo>")
+  }
+  match find_main_subcommand(["-C/repo", "worktree", "list"]) {
+    Some(c) => assert_str_eq(c, "worktree")
+    None => panic("expected worktree after -C<repo>")
+  }
 
   match find_main_subcommand(["--data", "/tmp/d", "status", "--json"]) {
     Some(c) => assert_str_eq(c, "status")
@@ -341,6 +351,43 @@ test "dispatch_rig_peer_rpc enforces handover hold, UNGATED allowlist, and grant
   match dispatch_rig_peer_rpc(roster, "stranger-station", desc_env, rig, rm, incoming, vgrants, load_fn, now_ms) {
     Err(_) => ()
     Ok(_) => panic("expected stranger peer refusal")
+  }
+
+  // 6. `session.close` RPC forwards actual close outcome (`closed: false` on rename failure, `closed: true` on success).
+  let fail_close_fs = station_jobs::FsPort::{
+    ..test_noop_fs(),
+    lstat_err: Some(fn(_p : String) -> Result[station_jobs::FsStat, Int] {
+      Ok(station_jobs::FsStat::{ kind: "dir", size: 0L, executable: true, mode: 493, mtime_ms: now_ms, dev: 1L, ino: 1L })
+    }),
+    rename: fn(_a : String, _b : String) -> Bool { false },
+  }
+  let rm_fail_close = station_jobs::RemoteManager::new(
+    "/rig-data-fail",
+    fail_close_fs,
+    jm,
+    station_jobs::noop_remote_callbacks(),
+  )
+  let close_env = station_mesh::PeerRequestEnvelope::{
+    workspace: ws,
+    request: base_codec::json_obj([
+      ("method", base_codec::json_str("session.close")),
+      ("session", base_codec::json_str("chat:1")),
+    ]),
+    has_bytes: false,
+  }
+  match dispatch_rig_peer_rpc(roster, peer, close_env, rig, rm_fail_close, incoming, vgrants, load_fn, now_ms) {
+    Ok(v) => match base_codec::json_get(v, "closed") {
+      Some(base_codec::Json::Bool(b)) => assert_true(!b, "rename failure must return closed: false")
+      _ => panic("missing closed boolean")
+    }
+    Err(e) => panic("session.close RPC failed unexpectedly: " + e)
+  }
+  match dispatch_rig_peer_rpc(roster, peer, close_env, rig, rm, incoming, vgrants, load_fn, now_ms) {
+    Ok(v) => match base_codec::json_get(v, "closed") {
+      Some(base_codec::Json::Bool(b)) => assert_true(b, "missing room close returns closed: true")
+      _ => panic("missing closed boolean")
+    }
+    Err(e) => panic("session.close RPC failed unexpectedly: " + e)
   }
 }
 

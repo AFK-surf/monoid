@@ -161,12 +161,12 @@ function platformId(): string {
   return `${os}-${arch}`;
 }
 
-test("1. --version advertises exact 4-token handshake with all 8 CLI commands", () => {
+test("1. --version advertises exact 4-token handshake with all 9 CLI commands", () => {
   const bin = resolvePionBinary();
   const r = runBin(bin, ["--version"]);
   assert.equal(r.status, 0, r.stderr);
   const line = r.stdout.trim();
-  assert.equal(line, "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin");
+  assert.equal(line, "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin,worktree");
   assert.equal(line.split(/\s+/).length, 4);
 });
 

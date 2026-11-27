@@ -126,6 +126,11 @@ fn make_test_ports(
         objects: 4096L,
       }
     }),
+    caller_cwd: "/work",
+    run_git: None,
+    same_cloneable_volume: None,
+    clone_tree: None,
+    is_executable: None,
   }
 }
 
@@ -1194,4 +1199,357 @@ test "P2 & Nit: feed 503 backoff retry, jscase::lower, find_command strictness, 
   assert_eq(sleeps.length(), 2)
   assert_true(sleeps[0] == 1000L)
   assert_true(sleeps[1] == 2000L)
+}
+
+test "worktree: parse_worktree_args handles -C, single worktree token, flags, and env bypass" {
+  let env = empty_env()
+  // Relative <path> resolves against `-C <repo>` (matching `git -C <repo> worktree add`), not `caller_cwd`.
+  let p1 = parse_worktree_args(["-C", "/repo", "worktree", "add", "--detach", "rel/wt1", "origin/main"], "/caller", env)
+  assert_eq(p1.repo, "/repo")
+  match p1.fast_path {
+    Some(fp) => {
+      assert_eq(fp.abs_path, "/repo/rel/wt1")
+      assert_eq(fp.commitish, "origin/main")
+    }
+    None => panic("expected fast_path for -C /repo worktree add --detach")
+  }
+
+  // Consumes at most one `worktree` token so `-C /repo worktree worktree` does not strip the subcommand twice.
+  let p_double = parse_worktree_args(["-C", "/repo", "worktree", "worktree"], "/caller", env)
+  assert_eq(p_double.worktree_args.length(), 1)
+  assert_eq(p_double.worktree_args[0], "worktree")
+  assert_true(p_double.fast_path is None)
+
+  // Non-detach / extra flags fall back to passthrough.
+  let p_branch = parse_worktree_args(["worktree", "add", "-b", "feat/x", "wt2"], "/caller", env)
+  assert_true(p_branch.fast_path is None)
+  let p_list = parse_worktree_args(["worktree", "list"], "/caller", env)
+  assert_true(p_list.fast_path is None)
+
+  // STILLFAIL_WORKTREE_COW=0 disables fast path.
+  let env_off = empty_env()
+  env_off.set("STILLFAIL_WORKTREE_COW", "0")
+  let p_off = parse_worktree_args(["worktree", "add", "--detach", "wt3"], "/caller", env_off)
+  assert_true(p_off.fast_path is None)
+
+  // Filter driver extraction in .gitattributes.
+  assert_true(wt_has_filter_rule(Some("*.bin filter=lfs diff=lfs merge=lfs -text\n")))
+  assert_true(wt_has_filter_rule(Some("\"path with spaces\" filter=custom\n")))
+  assert_true(!wt_has_filter_rule(Some("# *.bin filter=lfs\n*.txt text eol=lf\n")))
+  let drvs = wt_extract_filter_drivers(Some("*.bin filter=lfs\n*.dat filter=custom\n"))
+  assert_eq(drvs.length(), 2)
+  assert_eq(drvs[0], "lfs")
+  assert_eq(drvs[1], "custom")
+}
+
+test "worktree: skip-worktree strip failure prevents promoting dirty generation" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_text("/repo/.git/HEAD", "ref: refs/heads/main\n")
+  let _ = mem.put_text("/repo/.git/worktrees/wt1/index", "dummy-index")
+  let base_ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let _ = (base_ports.fs.mkdir_p)("/repo")
+  let oid = "0123456789abcdef0123456789abcdef01234567"
+  let ports = CliPorts::{
+    ..base_ports,
+    caller_cwd: "/outside",
+    same_cloneable_volume: Some(fn(_a : String, _b : String) -> Bool { true }),
+    clone_tree: Some(fn(_src : String, dst : String) -> Result[Unit, String] {
+      let _ = (base_ports.fs.mkdir_p)(dst)
+      Ok(())
+    }),
+    run_git: Some(
+      fn(
+        _cwd : String,
+        args : Array[String],
+        _extra : Option[Map[String, String]],
+        _stdin : Option[Bytes],
+      ) -> Result[GitExecResult, String] {
+        let joined = cli_join(args, " ")
+        if joined.contains("--git-common-dir") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "/repo/.git\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("--verify") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: (oid + "\n").to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("config --get-regexp") || joined.contains("config --get") {
+          return Ok(GitExecResult::{ exit_code: 1, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+        }
+        if joined.contains("var GIT_ATTR_") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("ls-tree -r -z") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+        }
+        if joined.contains("worktree add --no-checkout") || joined.contains("reset --hard") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+        }
+        if joined.contains("--absolute-git-dir") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "/repo/.git/worktrees/wt1\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("ls-files -t -z") {
+          let raw = "S a.txt".to_bytes()
+          let out = Bytes::new(raw.length() + 1)
+          for k in 0..<raw.length() {
+            out[k] = raw[k]
+          }
+          out[raw.length()] = 0 as Byte
+          return Ok(GitExecResult::{ exit_code: 0, stdout: out, stderr: Bytes::new(0) })
+        }
+        if joined.contains("update-index --no-skip-worktree") {
+          return Err("failed to write git stdin")
+        }
+        Ok(GitExecResult::{ exit_code: 0, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+      },
+    ),
+  }
+  let out = run_worktree_cow_detailed(["-C", "/repo", "worktree", "add", "--detach", "rel/wt1", "HEAD"], empty_env(), ports)
+  assert_eq(out.result.exit_code, 0)
+  assert_true(out.used_cow)
+  assert_true(!out.promoted)
+  let cow_entries = match (ports.fs.readdir)("/repo/.git/cow") {
+    Ok(e) => e
+    Err(_) => []
+  }
+  assert_eq(cow_entries.length(), 0)
+}
+
+test "worktree: configured filter driver bypasses CoW while unconfigured filter=lfs uses CoW" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_text("/repo/.git/HEAD", "ref: refs/heads/main\n")
+  let _ = mem.put_text("/repo/.git/worktrees/wt1/index", "dummy-index")
+  let base_ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let _ = (base_ports.fs.mkdir_p)("/repo")
+  let oid = "0123456789abcdef0123456789abcdef01234567"
+  let attr_oid = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  let make_ports_with_filter = fn(configured_filter : Bool) -> CliPorts {
+    CliPorts::{
+      ..base_ports,
+      caller_cwd: "/outside",
+      same_cloneable_volume: Some(fn(_a : String, _b : String) -> Bool { true }),
+      clone_tree: Some(fn(_src : String, dst : String) -> Result[Unit, String] {
+        let _ = (base_ports.fs.mkdir_p)(dst)
+        Ok(())
+      }),
+      run_git: Some(
+        fn(
+          _cwd : String,
+          args : Array[String],
+          _extra : Option[Map[String, String]],
+          _stdin : Option[Bytes],
+        ) -> Result[GitExecResult, String] {
+          let joined = cli_join(args, " ")
+          if joined.contains("--git-common-dir") {
+            return Ok(GitExecResult::{ exit_code: 0, stdout: "/repo/.git\n".to_bytes(), stderr: Bytes::new(0) })
+          }
+          if joined.contains("--verify") {
+            return Ok(GitExecResult::{ exit_code: 0, stdout: (oid + "\n").to_bytes(), stderr: Bytes::new(0) })
+          }
+          if joined.contains("config --get-regexp") {
+            if configured_filter {
+              return Ok(GitExecResult::{ exit_code: 0, stdout: "filter.lfs.smudge cat\n".to_bytes(), stderr: Bytes::new(0) })
+            }
+            return Ok(GitExecResult::{ exit_code: 1, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+          }
+          if joined.contains("config --get") {
+            return Ok(GitExecResult::{ exit_code: 1, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+          }
+          if joined.contains("var GIT_ATTR_") {
+            return Ok(GitExecResult::{ exit_code: 0, stdout: "\n".to_bytes(), stderr: Bytes::new(0) })
+          }
+          if joined.contains("ls-tree -r -z") {
+            let rec = "100644 blob " + attr_oid + "\t.gitattributes"
+            let raw = rec.to_bytes()
+            let out = Bytes::new(raw.length() + 1)
+            for k in 0..<raw.length() {
+              out[k] = raw[k]
+            }
+            out[raw.length()] = 0 as Byte
+            return Ok(GitExecResult::{ exit_code: 0, stdout: out, stderr: Bytes::new(0) })
+          }
+          if joined.contains("cat-file blob " + attr_oid) {
+            return Ok(GitExecResult::{ exit_code: 0, stdout: "*.bin filter=lfs\n".to_bytes(), stderr: Bytes::new(0) })
+          }
+          if joined.contains("--absolute-git-dir") {
+            return Ok(GitExecResult::{ exit_code: 0, stdout: "/repo/.git/worktrees/wt1\n".to_bytes(), stderr: Bytes::new(0) })
+          }
+          Ok(GitExecResult::{ exit_code: 0, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+        },
+      ),
+    }
+  }
+  // Unconfigured filter.lfs.* -> uses CoW fast path!
+  let o1 = run_worktree_cow_detailed(["-C", "/repo", "worktree", "add", "--detach", "wt1", "HEAD"], empty_env(), make_ports_with_filter(false))
+  assert_eq(o1.result.exit_code, 0)
+  assert_true(o1.used_cow)
+  // Configured filter.lfs.smudge -> bypasses CoW to native git!
+  let o2 = run_worktree_cow_detailed(["-C", "/repo", "worktree", "add", "--detach", "wt2", "HEAD"], empty_env(), make_ports_with_filter(true))
+  assert_eq(o2.result.exit_code, 0)
+  assert_true(!o2.used_cow)
+}
+
+test "worktree: dispatch_cli routes -C <repo> worktree and falls back to passthrough git" {
+  let mem = station_ops::MemFs::new()
+  let base_ports = make_test_ports(mem, dummy_http, fn() -> Int64 { 1800000000000L })
+  let seen_args : Array[Array[String]] = []
+  let ports = CliPorts::{
+    ..base_ports,
+    run_git: Some(
+      fn(
+        _cwd : String,
+        args : Array[String],
+        _extra : Option[Map[String, String]],
+        _stdin : Option[Bytes],
+      ) -> Result[GitExecResult, String] {
+        seen_args.push(args)
+        Ok(GitExecResult::{ exit_code: 0, stdout: "/repo  abc1234 [main]\n".to_bytes(), stderr: Bytes::new(0) })
+      },
+    ),
+  }
+  let res = dispatch_cli(["-C", "/repo", "worktree", "list"], empty_env(), ports)
+  assert_eq(res.exit_code, 0)
+  assert_true(res.stdout.contains("/repo"))
+  assert_eq(seen_args.length(), 1)
+  assert_eq(seen_args[0][0], "-C")
+  assert_eq(seen_args[0][1], "/repo")
+  assert_eq(seen_args[0][2], "worktree")
+  assert_eq(seen_args[0][3], "list")
+}
+
+test "worktree: tracked symlink on relative core.hooksPath prefix bypasses CoW and corrupt meta.json is reclaimed" {
+  let mem = station_ops::MemFs::new()
+  let _ = mem.put_text("/repo/.git/HEAD", "ref: refs/heads/main\n")
+  let _ = mem.put_text("/repo/.git/worktrees/wt1/index", "dummy-index")
+  let clock_val : Array[Int64] = [1800000000000L]
+  let base_ports = make_test_ports(mem, dummy_http, fn() -> Int64 { clock_val[0] })
+  let _ = (base_ports.fs.mkdir_p)("/repo")
+  let oid = "0123456789abcdef0123456789abcdef01234567"
+  let link_oid = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  let hook_oid = "cccccccccccccccccccccccccccccccccccccccc"
+
+  // 1) `core.hooksPath = hooks` where `hooks` is a `120000` symlink to `scripts` in `ls-tree -r -z`
+  let symlink_ports = CliPorts::{
+    ..base_ports,
+    caller_cwd: "/repo",
+    same_cloneable_volume: Some(fn(_a : String, _b : String) -> Bool { true }),
+    clone_tree: Some(fn(_src : String, dst : String) -> Result[Unit, String] {
+      let _ = (base_ports.fs.mkdir_p)(dst)
+      Ok(())
+    }),
+    run_git: Some(
+      fn(
+        _cwd : String,
+        args : Array[String],
+        _extra : Option[Map[String, String]],
+        _stdin : Option[Bytes],
+      ) -> Result[GitExecResult, String] {
+        let joined = cli_join(args, " ")
+        if joined.contains("--git-common-dir") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "/repo/.git\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("--verify") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: (oid + "\n").to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("config --get core.hooksPath") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "hooks\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("config --get-regexp") || joined.contains("config --get") {
+          return Ok(GitExecResult::{ exit_code: 1, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+        }
+        if joined.contains("var GIT_ATTR_") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("ls-tree -r -z") {
+          let r1 = ("120000 blob " + link_oid + "\thooks").to_bytes()
+          let r2 = ("100755 blob " + hook_oid + "\tscripts/post-checkout").to_bytes()
+          let out = Bytes::new(r1.length() + 1 + r2.length() + 1)
+          for i in 0..<r1.length() { out[i] = r1[i] }
+          out[r1.length()] = 0 as Byte
+          for j in 0..<r2.length() { out[r1.length() + 1 + j] = r2[j] }
+          out[r1.length() + 1 + r2.length()] = 0 as Byte
+          return Ok(GitExecResult::{ exit_code: 0, stdout: out, stderr: Bytes::new(0) })
+        }
+        Ok(GitExecResult::{ exit_code: 0, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+      },
+    ),
+  }
+  let sym_out = run_worktree_cow_detailed(["-C", "/repo", "worktree", "add", "--detach", "wt_sym", "HEAD"], empty_env(), symlink_ports)
+  assert_eq(sym_out.result.exit_code, 0)
+  assert_true(!sym_out.used_cow)
+
+  // 2) Corrupt `meta.json` in `/repo/.git/cow/<oid>-<fp16>` is preserved within grace period, then reclaimed after WT_TMP_EXPIRE_MS!
+  let rec_rm = fn(root_p : String) -> Result[Unit, String] {
+    let stack : Array[(String, Bool)] = [(root_p, false)]
+    while stack.length() > 0 {
+      let idx = stack.length() - 1
+      let (cur, done) = stack[idx]
+      let _ = stack.pop()
+      if done {
+        let _ = (base_ports.fs.remove)(cur)
+      } else {
+        match (base_ports.fs.readdir)(cur) {
+          Ok(children) => {
+            stack.push((cur, true))
+            for ci in 0..<children.length() {
+              stack.push((cur + "/" + children[ci], false))
+            }
+          }
+          Err(_) => {
+            let _ = (base_ports.fs.remove)(cur)
+          }
+        }
+      }
+    }
+    Ok(())
+  }
+  let clean_ports = CliPorts::{
+    ..symlink_ports,
+    remove_tree: Some(rec_rm),
+    run_git: Some(
+      fn(
+        _cwd : String,
+        args : Array[String],
+        _extra : Option[Map[String, String]],
+        _stdin : Option[Bytes],
+      ) -> Result[GitExecResult, String] {
+        let joined = cli_join(args, " ")
+        if joined.contains("--git-common-dir") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "/repo/.git\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("--verify") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: (oid + "\n").to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("config --get-regexp") || joined.contains("config --get") {
+          return Ok(GitExecResult::{ exit_code: 1, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+        }
+        if joined.contains("var GIT_ATTR_") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        if joined.contains("--absolute-git-dir") {
+          return Ok(GitExecResult::{ exit_code: 0, stdout: "/repo/.git/worktrees/wt1\n".to_bytes(), stderr: Bytes::new(0) })
+        }
+        Ok(GitExecResult::{ exit_code: 0, stdout: Bytes::new(0), stderr: Bytes::new(0) })
+      },
+    ),
+  }
+  let broken_key = oid + "-0123456789abcdef"
+  let _ = (clean_ports.fs.mkdir_p)("/repo/.git/cow")
+  let _ = (clean_ports.fs.mkdir_p)("/repo/.git/cow/" + broken_key)
+  let _ = (clean_ports.fs.mkdir_p)("/repo/.git/cow/" + broken_key + "/tree")
+  let _ = mem.put_text("/repo/.git/cow/" + broken_key + "/index", "idx")
+  let _ = mem.put_text("/repo/.git/cow/" + broken_key + "/meta.json", "{corrupt-json")
+  let base_mtime = match (clean_ports.fs.lstat)("/repo/.git/cow/" + broken_key) {
+    Ok(st) => st.mtime_ms
+    Err(_) => 0L
+  }
+  // Within grace period (base_mtime + 500ms): NOT evicted yet, and NOT matched as hit_gen!
+  clock_val[0] = base_mtime + 500L
+  let p_young = run_worktree_cow_detailed(["-C", "/repo", "worktree", "add", "--detach", "wt_ok1", "HEAD"], empty_env(), clean_ports)
+  assert_true(p_young.used_cow && (p_young.hit_gen is None))
+  assert_true((clean_ports.fs.stat)("/repo/.git/cow/" + broken_key) is Ok(_))
+
+  // Past WT_TMP_EXPIRE_MS (> 3_600_000 ms): cleanupCowDir reclaims the broken generation directory!
+  clock_val[0] = base_mtime + 7200000L
+  let p_expired = run_worktree_cow_detailed(["-C", "/repo", "worktree", "add", "--detach", "wt_ok2", "HEAD"], empty_env(), clean_ports)
+  assert_true(p_expired.used_cow)
+  assert_true((clean_ports.fs.stat)("/repo/.git/cow/" + broken_key) is Err(_))
 }

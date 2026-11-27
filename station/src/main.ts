@@ -95,7 +95,10 @@ setDefaultAutoSelectFamilyAttemptTimeout(2_000);
 
 const args = process.argv.slice(2);
 const data = dataDir(args);
-const command = args.find((a, i) => !a.startsWith("--") && !(i > 0 && args[i - 1].startsWith("--") && args[i - 1] !== "--with-parent"));
+const command =
+  (args[0] === "-C" && args[2] === "worktree") || (args[0]?.startsWith("-C") && args[0].length > 2 && args[1] === "worktree")
+    ? "worktree"
+    : args.find((a, i) => !a.startsWith("--") && !(i > 0 && args[i - 1].startsWith("--") && args[i - 1] !== "--with-parent"));
 /// Flags that take a value: what follows them is no command's argument.
 const VALUED = ["--data", "--provider", "--lock", "--rig", "--workspace"];
 /// How often the main thread's longest hold is looked at, and from how long a hold is said.
@@ -555,6 +558,12 @@ switch (command) {
   case "heap":
     process.exitCode = await heapCommand(data);
     break;
+  // Lockless CoW git worktree helper (sessions/worktree-cow.ts).
+  case "worktree": {
+    const { worktreeCommand } = await import("./sessions/worktree-cow.ts");
+    process.exitCode = await worktreeCommand(args[0] === "worktree" ? args.slice(1) : args, process.cwd());
+    break;
+  }
   default:
     usage();
 }

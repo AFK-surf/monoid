@@ -330,6 +330,20 @@ int32_t sts_exec_replace(
     const uint8_t *argv_nul,
     int64_t argv_len);
 
+// Copy-on-write (reflink / APFS clonefile) filesystem primitives:
+// - `sts_clones_at`: 1 = CoW supported, 0 = unsupported, -1 = transient error.
+// - `sts_same_cloneable_volume`: 1 = same st_dev and CoW supported, 0 otherwise.
+// - `sts_clone_file`: 1 = CoW cloned, 2 = fallback copy, -2 = ENOENT, -3 = EACCES/EPERM,
+//   -4 = EISDIR, -5 = symlink/non-regular, -7 = EEXIST (when excl != 0), -1 = other IO error.
+// - `sts_clone_file_only`: O(1) CoW reflink only (never falls back to byte copy);
+//   1 = CoW cloned, -8 = unsupported/cross-volume, -7 = EEXIST, negative = other error.
+// - `sts_clone_tree`: 1 = CoW tree cloned, -8 = unsupported/cross-volume, negative = other error.
+int32_t sts_clones_at(const char *dir_path);
+int32_t sts_same_cloneable_volume(const char *dir_a, const char *dir_b);
+int32_t sts_clone_file(const char *src, const char *dst, int32_t excl);
+int32_t sts_clone_file_only(const char *src, const char *dst, int32_t excl);
+int32_t sts_clone_tree(const char *src_dir, const char *dst_dir);
+
 // Free any buffer returned by `sts_*`.
 void sts_free(void *ptr);
 

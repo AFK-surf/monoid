@@ -26,7 +26,7 @@ if ($release -and $userDir -and (Split-Path -Leaf $release) -eq 'app') {
 }
 $data = if ($env:STILLFAIL_DATA) { $env:STILLFAIL_DATA } else { $own }
 $station = if ($env:STILLFAIL_STATION_BIN) { $env:STILLFAIL_STATION_BIN } else { Join-Path $here 'mesh\target\release\stillfail-station.exe' }
-$usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail screen-service install|uninstall|status | stillfail uninstall [--purge] | stillfail admin <command>'
+$usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail screen-service install|uninstall|status | stillfail uninstall [--purge] | stillfail [-C <repo>] worktree <args> | stillfail admin <command>'
 $a = @($args)
 
 function Run([string[]] $more) {
@@ -319,6 +319,44 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     if ($p.ExitCode -ne 0) { exit $p.ExitCode }
     & $svcBin status
     exit 0
+  }
+  { $a[0] -eq 'worktree' -or ($a.Count -ge 3 -and $a[0] -eq '-C' -and $a[2] -eq 'worktree') -or ($a.Count -ge 2 -and $a[0].StartsWith('-C') -and $a[0].Length -gt 2 -and $a[1] -eq 'worktree') } {
+    $rest = if ($a[0] -eq '-C') {
+      @('-C', $a[1]) + @(if ($a.Count -gt 3) { $a[3..($a.Count - 1)] })
+    } elseif ($a[0].StartsWith('-C') -and $a[0].Length -gt 2) {
+      @('-C', $a[0].Substring(2)) + @(if ($a.Count -gt 2) { $a[2..($a.Count - 1)] })
+    } else {
+      @(if ($a.Count -gt 1) { $a[1..($a.Count - 1)] })
+    }
+    function QuoteArgW([string] $s) {
+      if ($s -ne '' -and $s -notmatch '[\s"]') { return $s }
+      $s = [regex]::Replace($s, '(\\*)"', { param($m) $m.Groups[1].Value * 2 + '\"' })
+      $s = [regex]::Replace($s, '(\\+)\z', { param($m) $m.Groups[1].Value * 2 })
+      return '"' + $s + '"'
+    }
+    $pionBin = if ($env:STILLFAIL_STATION_PION) { $env:STILLFAIL_STATION_PION } else { Join-Path $here 'station\stillfail-station-pion.exe' }
+    if ($env:STILLFAIL_STATION_ENGINE -cne 'node' -and (Test-Path -LiteralPath $pionBin -PathType Leaf)) {
+      $startP = New-Object System.Diagnostics.ProcessStartInfo $pionBin
+      $startP.UseShellExecute = $false
+      $startP.WorkingDirectory = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+      $startP.Arguments = (@('worktree') + $rest | ForEach-Object { QuoteArgW $_ }) -join ' '
+      $childP = [System.Diagnostics.Process]::Start($startP)
+      $childP.WaitForExit()
+      exit $childP.ExitCode
+    }
+    $node = @($env:STILLFAIL_NODE, (Join-Path $here 'node\node.exe')) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Leaf) } | Select-Object -First 1
+    if (-not $node) { $found = Get-Command node -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1; $node = if ($found) { $found.Source } else { $null } }
+    $built = Join-Path $here 'station\main.js'
+    $src = Join-Path $here 'station\src\main.ts'
+    $entry = if (Test-Path -LiteralPath $built) { $built } elseif (Test-Path -LiteralPath $src) { $src } else { $null }
+    if (-not $node -or -not $entry) { [Console]::Error.WriteLine("stillfail worktree: neither $pionBin nor Node with station entry in $here\station is available; reinstall still.fail"); exit 1 }
+    $start = New-Object System.Diagnostics.ProcessStartInfo $node
+    $start.UseShellExecute = $false
+    $start.WorkingDirectory = $ExecutionContext.SessionState.Path.CurrentFileSystemLocation.ProviderPath
+    $start.Arguments = (@($entry, 'worktree') + $rest | ForEach-Object { QuoteArgW $_ }) -join ' '
+    $child = [System.Diagnostics.Process]::Start($start)
+    $child.WaitForExit()
+    exit $child.ExitCode
   }
   { $a[0] -eq 'admin' } {
     # As bin/stillfail's: Node's admin CLI (station\admin-cli.js in a release, bin\admin-cli.ts in a clone); the reader

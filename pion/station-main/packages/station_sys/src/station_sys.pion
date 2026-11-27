@@ -107,6 +107,11 @@ extern "C" fn sts_read_file_strict(path : Ptr, out_len : Ptr, out_err : Ptr) -> 
 extern "C" fn sts_write_file_atomic(path : Ptr, data : Ptr, len : Int64, mode : Int) -> Int
 extern "C" fn sts_rename(old_path : Ptr, new_path : Ptr) -> Int
 extern "C" fn sts_random_bytes(buf : Ptr, len : Int64) -> Int
+extern "C" fn sts_clones_at(dir_path : Ptr) -> Int
+extern "C" fn sts_same_cloneable_volume(dir_a : Ptr, dir_b : Ptr) -> Int
+extern "C" fn sts_clone_file(src : Ptr, dst : Ptr, excl : Int) -> Int
+extern "C" fn sts_clone_file_only(src : Ptr, dst : Ptr, excl : Int) -> Int
+extern "C" fn sts_clone_tree(src_dir : Ptr, dst_dir : Ptr) -> Int
 
 extern "C" fn sts_peer_process(fd : Int, out_len : Ptr) -> Ptr
 extern "C" fn sts_process_usage(pids : Ptr, count : Int, out_len : Ptr) -> Ptr
@@ -1639,4 +1644,68 @@ pub fn exec_replace(program : String, argv : Array[String]) -> Int {
   let _ = program.length()
   let _ = raw.length()
   rc
+}
+
+/// Returns `Some(true)` if `dir_path` supports CoW cloning, `Some(false)` if explicitly unsupported,
+/// or `None` on transient error (missing dir / permission denied).
+pub fn clones_at(dir_path : String) -> Option[Bool] {
+  let rc = sts_clones_at(dir_path.as_cstr())
+  let _ = dir_path.length()
+  if rc == 1 {
+    Some(true)
+  } else if rc == 0 {
+    Some(false)
+  } else {
+    None
+  }
+}
+
+/// Returns true iff `dir_a` and `dir_b` reside on the same CoW-capable volume.
+pub fn same_cloneable_volume(dir_a : String, dir_b : String) -> Bool {
+  let rc = sts_same_cloneable_volume(dir_a.as_cstr(), dir_b.as_cstr())
+  let _ = dir_a.length()
+  let _ = dir_b.length()
+  rc == 1
+}
+
+/// Clones `src` to `dst` using CoW when supported, falling back to streaming copy.
+/// Returns `Ok(true)` if CoW-cloned, `Ok(false)` if copied by bytes, or `Err(rc)` on error
+/// (`-2` ENOENT, `-3` EACCES/EPERM, `-4` EISDIR, `-5` symlink/non-regular, `-7` EEXIST, `-1` IO).
+pub fn clone_file(src : String, dst : String, excl : Bool) -> Result[Bool, Int] {
+  let rc = sts_clone_file(src.as_cstr(), dst.as_cstr(), if excl { 1 } else { 0 })
+  let _ = src.length()
+  let _ = dst.length()
+  if rc == 1 {
+    Ok(true)
+  } else if rc == 2 {
+    Ok(false)
+  } else {
+    Err(rc)
+  }
+}
+
+/// O(1) CoW-only clone of `src` to `dst` (never falls back to synchronous byte copy).
+/// Returns `Ok(())` if CoW-cloned, `Err(-8)` if unsupported/cross-volume, `Err(-7)` on EEXIST, or `Err(rc)`.
+pub fn clone_file_only(src : String, dst : String, excl : Bool) -> Result[Unit, Int] {
+  let rc = sts_clone_file_only(src.as_cstr(), dst.as_cstr(), if excl { 1 } else { 0 })
+  let _ = src.length()
+  let _ = dst.length()
+  if rc == 1 {
+    Ok(())
+  } else {
+    Err(rc)
+  }
+}
+
+/// Clones directory contents of `src_dir` into `dst_dir` using CoW (never falls back to full copy).
+/// Returns `Ok(())` on success, `Err(-8)` if unsupported/cross-volume, or `Err(rc)` on error.
+pub fn clone_tree(src_dir : String, dst_dir : String) -> Result[Unit, Int] {
+  let rc = sts_clone_tree(src_dir.as_cstr(), dst_dir.as_cstr())
+  let _ = src_dir.length()
+  let _ = dst_dir.length()
+  if rc == 1 {
+    Ok(())
+  } else {
+    Err(rc)
+  }
 }

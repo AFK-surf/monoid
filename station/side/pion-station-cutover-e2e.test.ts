@@ -427,7 +427,7 @@ test("W17A.1: Zero-wrapper real Launcher routes whole station -> whole_daemon an
   assert.equal(ver.status, 0, ver.stderr);
   assert.equal(
     ver.stdout.trim(),
-    "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin",
+    "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin,worktree",
   );
 
   const mesh = resolveMeshAddon();

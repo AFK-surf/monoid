@@ -2124,6 +2124,11 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
           objects: obj_count,
         }
       }),
+      caller_cwd: ".",
+      run_git: None,
+      same_cloneable_volume: None,
+      clone_tree: None,
+      is_executable: None,
     }
     let _ = station_cli::answer_heap_request(data, heap_ports)
   }

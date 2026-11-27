@@ -79,15 +79,23 @@
 #include <libproc.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
+#include <sys/clonefile.h>
 #include <sys/event.h>
+#include <sys/mount.h>
 #include <sys/resource.h>
 #include <sys/sysctl.h>
+#include <sys/time.h>
 #include <sys/un.h>
 #include <util.h>
 #else
 #include <pty.h>
 #include <sys/inotify.h>
 #include <sys/syscall.h>
+#ifdef __linux__
+#ifndef FICLONE
+#define FICLONE _IOW(0x94, 9, int)
+#endif
+#endif
 #endif
 extern char **environ;
 #endif
@@ -3435,6 +3443,152 @@ int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len
     free(wtmp);
     free(wdst);
     return ok ? 1 : 0;
+}
+
+int32_t sts_clones_at(const char *dir_path) {
+    (void)dir_path;
+    return 0;
+}
+
+int32_t sts_same_cloneable_volume(const char *dir_a, const char *dir_b) {
+    (void)dir_a;
+    (void)dir_b;
+    return 0;
+}
+
+static int32_t sts_win_check_reparse_path(const wchar_t *wpath, int *out_is_dir) {
+    if (out_is_dir != NULL) *out_is_dir = 0;
+    DWORD attr = GetFileAttributesW(wpath);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        return sts_win_map_err(GetLastError());
+    }
+    if ((attr & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        if (out_is_dir != NULL) *out_is_dir = 1;
+    }
+    if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        HANDLE h = CreateFileW(
+            wpath,
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            NULL,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            NULL);
+        if (h == INVALID_HANDLE_VALUE) {
+            return sts_win_map_err(GetLastError());
+        }
+        FILE_ATTRIBUTE_TAG_INFO ati;
+        BOOL got = GetFileInformationByHandleEx(h, FileAttributeTagInfo, &ati, sizeof(ati));
+        DWORD gle = got ? 0 : GetLastError();
+        CloseHandle(h);
+        if (!got) return sts_win_map_err(gle);
+        if (sts_win_is_name_surrogate_reparse(&ati)) return -5;
+    }
+    return 0;
+}
+
+int32_t sts_clone_file(const char *src, const char *dst, int32_t excl) {
+    if (src == NULL || src[0] == '\0' || dst == NULL || dst[0] == '\0') return -1;
+    wchar_t *wsrc = utf8_to_wide(src);
+    wchar_t *wdst = utf8_to_wide(dst);
+    if (wsrc == NULL || wdst == NULL) {
+        free(wsrc);
+        free(wdst);
+        return -1;
+    }
+    int src_is_dir = 0;
+    int32_t sc = sts_win_check_reparse_path(wsrc, &src_is_dir);
+    if (sc != 0) {
+        free(wsrc);
+        free(wdst);
+        return sc;
+    }
+    if (src_is_dir) {
+        free(wsrc);
+        free(wdst);
+        return -4;
+    }
+    if (excl != 0) {
+        BOOL ok = CopyFileW(wsrc, wdst, TRUE);
+        DWORD gle = ok ? 0 : GetLastError();
+        free(wsrc);
+        free(wdst);
+        if (ok) return 2;
+        if (gle == ERROR_FILE_EXISTS || gle == ERROR_ALREADY_EXISTS) return -7;
+        return sts_win_map_err(gle);
+    }
+    int dst_is_dir = 0;
+    int32_t dc = sts_win_check_reparse_path(wdst, &dst_is_dir);
+    if (dc == -5) {
+        free(wsrc);
+        free(wdst);
+        return -5;
+    }
+    if (dc == 0 && dst_is_dir) {
+        free(wsrc);
+        free(wdst);
+        return -4;
+    }
+    uint8_t rnd[8];
+    if (!sts_random_bytes(rnd, 8)) {
+        free(wsrc);
+        free(wdst);
+        return -1;
+    }
+    static const char hx[] = "0123456789abcdef";
+    char hex[17];
+    for (int i = 0; i < 8; i++) {
+        hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
+        hex[i * 2 + 1] = hx[rnd[i] & 0xF];
+    }
+    hex[16] = '\0';
+    const char *slash1 = strrchr(dst, '/');
+    const char *slash2 = strrchr(dst, '\\');
+    const char *slash = (slash1 != NULL && (slash2 == NULL || slash1 > slash2)) ? slash1 : slash2;
+    size_t dir_len = slash != NULL ? (size_t)(slash - dst) + 1 : 0;
+    size_t tmp_cap = dir_len + 64;
+    char *tmp_utf8 = (char *)malloc(tmp_cap);
+    if (tmp_utf8 == NULL) {
+        free(wsrc);
+        free(wdst);
+        return -1;
+    }
+    snprintf(tmp_utf8, tmp_cap, "%.*s.sf-clone.%lu.%s", (int)dir_len, dst, (unsigned long)GetCurrentProcessId(), hex);
+    wchar_t *wtmp = utf8_to_wide(tmp_utf8);
+    free(tmp_utf8);
+    if (wtmp == NULL) {
+        free(wsrc);
+        free(wdst);
+        return -1;
+    }
+    BOOL ok = CopyFileW(wsrc, wtmp, TRUE);
+    DWORD gle = ok ? 0 : GetLastError();
+    if (ok) {
+        ok = MoveFileExW(wtmp, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+        if (!ok) {
+            gle = GetLastError();
+            DeleteFileW(wtmp);
+        }
+    }
+    free(wtmp);
+    free(wsrc);
+    free(wdst);
+    if (ok) return 2;
+    if (gle == ERROR_FILE_EXISTS || gle == ERROR_ALREADY_EXISTS) return -7;
+    return sts_win_map_err(gle);
+}
+
+int32_t sts_clone_file_only(const char *src, const char *dst, int32_t excl) {
+    (void)src;
+    (void)dst;
+    (void)excl;
+    return -8;
+}
+
+int32_t sts_clone_tree(const char *src_dir, const char *dst_dir) {
+    (void)src_dir;
+    (void)dst_dir;
+    return -8;
 }
 
 // ---------------------------------------------------------------------------
@@ -7437,6 +7591,816 @@ int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len
     }
     free(tmp);
     return 1;
+}
+
+static int32_t sts_clone_errno_map(int err) {
+    if (err == ENOENT || err == ENOTDIR) return -2;
+    if (err == EACCES || err == EPERM) return -3;
+    if (err == EISDIR) return -4;
+    if (err == ELOOP) return -5;
+    if (err == EEXIST) return -7;
+    return -1;
+}
+
+static int sts_copy_fd_stream(int src_fd, int dst_fd) {
+    const size_t cap = 256u * 1024u;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (buf == NULL) {
+        errno = ENOMEM;
+        return -1;
+    }
+    for (;;) {
+        ssize_t n = read(src_fd, buf, cap);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            int saved = errno;
+            free(buf);
+            errno = saved;
+            return -1;
+        }
+        if (n == 0) break;
+        ssize_t off = 0;
+        while (off < n) {
+            ssize_t w = write(dst_fd, buf + off, (size_t)(n - off));
+            if (w < 0) {
+                if (errno == EINTR) continue;
+                int saved = errno;
+                free(buf);
+                errno = saved;
+                return -1;
+            }
+            off += w;
+        }
+    }
+    free(buf);
+    return 0;
+}
+
+static void sts_hex16(uint8_t rnd[8], char out[17]) {
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < 8; i++) {
+        out[i * 2] = hx[(rnd[i] >> 4) & 0xF];
+        out[i * 2 + 1] = hx[rnd[i] & 0xF];
+    }
+    out[16] = '\0';
+}
+
+int32_t sts_clones_at(const char *dir_path) {
+    if (dir_path == NULL || dir_path[0] == '\0') return -1;
+#ifdef __APPLE__
+    struct statfs sfs;
+    if (statfs(dir_path, &sfs) != 0) return -1;
+    return strcmp(sfs.f_fstypename, "apfs") == 0 ? 1 : 0;
+#elif defined(__linux__)
+    uint8_t rnd[8];
+    if (!sts_random_bytes(rnd, 8)) return -1;
+    char hex[17];
+    sts_hex16(rnd, hex);
+    size_t dlen = strlen(dir_path);
+    size_t cap = dlen + 64;
+    char *pa = (char *)malloc(cap);
+    char *pb = (char *)malloc(cap);
+    if (pa == NULL || pb == NULL) {
+        free(pa);
+        free(pb);
+        return -1;
+    }
+    const char *sep = (dlen > 0 && dir_path[dlen - 1] == '/') ? "" : "/";
+    snprintf(pa, cap, "%s%s.sf-cow-probe.%ld.%s.a", dir_path, sep, (long)getpid(), hex);
+    snprintf(pb, cap, "%s%s.sf-cow-probe.%ld.%s.b", dir_path, sep, (long)getpid(), hex);
+    int fd_a = open(pa, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd_a < 0) {
+        free(pa);
+        free(pb);
+        return -1;
+    }
+    if (write(fd_a, "x", 1) != 1) {
+        close(fd_a);
+        unlink(pa);
+        free(pa);
+        free(pb);
+        return -1;
+    }
+    int fd_b = open(pb, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW | O_CLOEXEC, 0600);
+    if (fd_b < 0) {
+        close(fd_a);
+        unlink(pa);
+        free(pa);
+        free(pb);
+        return -1;
+    }
+    int rc = ioctl(fd_b, FICLONE, fd_a);
+    int saved = errno;
+    close(fd_b);
+    close(fd_a);
+    unlink(pb);
+    unlink(pa);
+    free(pa);
+    free(pb);
+    if (rc == 0) return 1;
+    if (saved == EOPNOTSUPP || saved == ENOSYS || saved == EXDEV || saved == EINVAL || saved == ENOTTY) return 0;
+    return -1;
+#else
+    (void)dir_path;
+    return 0;
+#endif
+}
+
+int32_t sts_same_cloneable_volume(const char *dir_a, const char *dir_b) {
+    if (dir_a == NULL || dir_a[0] == '\0' || dir_b == NULL || dir_b[0] == '\0') return 0;
+    struct stat sa;
+    struct stat sb;
+    if (stat(dir_a, &sa) != 0 || stat(dir_b, &sb) != 0) return 0;
+    if (sa.st_dev != sb.st_dev) return 0;
+    return sts_clones_at(dir_b) == 1 ? 1 : 0;
+}
+
+int32_t sts_clone_file(const char *src, const char *dst, int32_t excl) {
+    if (src == NULL || src[0] == '\0' || dst == NULL || dst[0] == '\0') return -1;
+    struct stat sst;
+    if (lstat(src, &sst) != 0) return sts_clone_errno_map(errno);
+    if (S_ISDIR(sst.st_mode)) return -4;
+    if (!S_ISREG(sst.st_mode)) return -5;
+    if (excl == 0) {
+        struct stat dst_st;
+        if (lstat(dst, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) return -4;
+    }
+    mode_t fmode = sst.st_mode & 0777;
+    const char *slash = strrchr(dst, '/');
+    size_t dir_len = slash != NULL ? (size_t)(slash - dst) + 1 : 0;
+
+#ifdef __APPLE__
+    if (excl != 0) {
+        if (clonefile(src, dst, CLONE_NOFOLLOW) == 0) {
+            (void)utimes(dst, NULL);
+            return 1;
+        }
+        int ce = errno;
+        if (ce == EEXIST) return -7;
+        if (ce != EXDEV && ce != ENOTSUP && ce != EINVAL && ce != EOPNOTSUPP) {
+            return sts_clone_errno_map(ce);
+        }
+        int src_fd = open(src, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+        if (src_fd < 0) return sts_clone_errno_map(errno);
+        struct stat fst;
+        if (fstat(src_fd, &fst) != 0 || !S_ISREG(fst.st_mode)) {
+            close(src_fd);
+            return -5;
+        }
+        int dst_fd = open(dst, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, fmode);
+        if (dst_fd < 0) {
+            int de = errno;
+            close(src_fd);
+            return sts_clone_errno_map(de);
+        }
+        (void)fchmod(dst_fd, fmode);
+        if (sts_copy_fd_stream(src_fd, dst_fd) != 0) {
+            int se = errno;
+            close(dst_fd);
+            close(src_fd);
+            unlink(dst);
+            return sts_clone_errno_map(se);
+        }
+        if (close(dst_fd) != 0) {
+            int se = errno;
+            close(src_fd);
+            unlink(dst);
+            return sts_clone_errno_map(se);
+        }
+        close(src_fd);
+        return 2;
+    }
+
+    size_t tmp_cap = dir_len + 64;
+    char *tmp = (char *)malloc(tmp_cap);
+    if (tmp == NULL) return -1;
+    int cloned = 0;
+    int fallback_copy = 0;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            free(tmp);
+            return -1;
+        }
+        char hex[17];
+        sts_hex16(rnd, hex);
+        snprintf(tmp, tmp_cap, "%.*s.sf-clone.%ld.%s", (int)dir_len, dst, (long)getpid(), hex);
+        if (clonefile(src, tmp, CLONE_NOFOLLOW) == 0) {
+            cloned = 1;
+            break;
+        }
+        int ce = errno;
+        if (ce == EEXIST) continue;
+        if (ce == EXDEV || ce == ENOTSUP || ce == EINVAL || ce == EOPNOTSUPP) {
+            fallback_copy = 1;
+            break;
+        }
+        free(tmp);
+        return sts_clone_errno_map(ce);
+    }
+    if (cloned) {
+        (void)utimes(tmp, NULL);
+        if (rename(tmp, dst) != 0) {
+            int re = errno;
+            unlink(tmp);
+            free(tmp);
+            return sts_clone_errno_map(re);
+        }
+        free(tmp);
+        return 1;
+    }
+    if (!fallback_copy) {
+        free(tmp);
+        return -1;
+    }
+    int src_fd = open(src, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (src_fd < 0) {
+        free(tmp);
+        return sts_clone_errno_map(errno);
+    }
+    struct stat fst;
+    if (fstat(src_fd, &fst) != 0 || !S_ISREG(fst.st_mode)) {
+        close(src_fd);
+        free(tmp);
+        return -5;
+    }
+    int dst_fd = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            close(src_fd);
+            free(tmp);
+            return -1;
+        }
+        char hex[17];
+        sts_hex16(rnd, hex);
+        snprintf(tmp, tmp_cap, "%.*s.sf-clone.%ld.%s", (int)dir_len, dst, (long)getpid(), hex);
+        dst_fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, fmode);
+        if (dst_fd >= 0) break;
+        if (errno != EEXIST) {
+            int de = errno;
+            close(src_fd);
+            free(tmp);
+            return sts_clone_errno_map(de);
+        }
+    }
+    if (dst_fd < 0) {
+        close(src_fd);
+        free(tmp);
+        return -1;
+    }
+    (void)fchmod(dst_fd, fmode);
+    if (sts_copy_fd_stream(src_fd, dst_fd) != 0) {
+        int se = errno;
+        close(dst_fd);
+        close(src_fd);
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(se);
+    }
+    if (close(dst_fd) != 0) {
+        int se = errno;
+        close(src_fd);
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(se);
+    }
+    close(src_fd);
+    if (rename(tmp, dst) != 0) {
+        int re = errno;
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(re);
+    }
+    free(tmp);
+    return 2;
+#else
+    int src_fd = open(src, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (src_fd < 0) return sts_clone_errno_map(errno);
+    struct stat fst;
+    if (fstat(src_fd, &fst) != 0 || !S_ISREG(fst.st_mode)) {
+        close(src_fd);
+        return -5;
+    }
+    if (excl != 0) {
+        int dst_fd = open(dst, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, fmode);
+        if (dst_fd < 0) {
+            int de = errno;
+            close(src_fd);
+            return sts_clone_errno_map(de);
+        }
+        (void)fchmod(dst_fd, fmode);
+        int32_t kind = 2;
+#ifdef __linux__
+        if (ioctl(dst_fd, FICLONE, src_fd) == 0) {
+            kind = 1;
+        } else
+#endif
+        {
+            if (sts_copy_fd_stream(src_fd, dst_fd) != 0) {
+                int se = errno;
+                close(dst_fd);
+                close(src_fd);
+                unlink(dst);
+                return sts_clone_errno_map(se);
+            }
+        }
+        if (close(dst_fd) != 0) {
+            int se = errno;
+            close(src_fd);
+            unlink(dst);
+            return sts_clone_errno_map(se);
+        }
+        close(src_fd);
+        return kind;
+    }
+
+    size_t tmp_cap = dir_len + 64;
+    char *tmp = (char *)malloc(tmp_cap);
+    if (tmp == NULL) {
+        close(src_fd);
+        return -1;
+    }
+    int dst_fd = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            close(src_fd);
+            free(tmp);
+            return -1;
+        }
+        char hex[17];
+        sts_hex16(rnd, hex);
+        snprintf(tmp, tmp_cap, "%.*s.sf-clone.%ld.%s", (int)dir_len, dst, (long)getpid(), hex);
+        dst_fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, fmode);
+        if (dst_fd >= 0) break;
+        if (errno != EEXIST) {
+            int de = errno;
+            close(src_fd);
+            free(tmp);
+            return sts_clone_errno_map(de);
+        }
+    }
+    if (dst_fd < 0) {
+        close(src_fd);
+        free(tmp);
+        return -1;
+    }
+    (void)fchmod(dst_fd, fmode);
+    int32_t kind = 2;
+#ifdef __linux__
+    if (ioctl(dst_fd, FICLONE, src_fd) == 0) {
+        kind = 1;
+    } else
+#endif
+    {
+        if (sts_copy_fd_stream(src_fd, dst_fd) != 0) {
+            int se = errno;
+            close(dst_fd);
+            close(src_fd);
+            unlink(tmp);
+            free(tmp);
+            return sts_clone_errno_map(se);
+        }
+    }
+    if (close(dst_fd) != 0) {
+        int se = errno;
+        close(src_fd);
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(se);
+    }
+    close(src_fd);
+    if (rename(tmp, dst) != 0) {
+        int re = errno;
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(re);
+    }
+    free(tmp);
+    return kind;
+#endif
+}
+
+int32_t sts_clone_file_only(const char *src, const char *dst, int32_t excl) {
+    if (src == NULL || src[0] == '\0' || dst == NULL || dst[0] == '\0') return -1;
+    struct stat sst;
+    if (lstat(src, &sst) != 0) return sts_clone_errno_map(errno);
+    if (S_ISDIR(sst.st_mode)) return -4;
+    if (!S_ISREG(sst.st_mode)) return -5;
+    if (excl == 0) {
+        struct stat dst_st;
+        if (lstat(dst, &dst_st) == 0 && S_ISDIR(dst_st.st_mode)) return -4;
+    }
+    const char *slash = strrchr(dst, '/');
+    size_t dir_len = slash != NULL ? (size_t)(slash - dst) + 1 : 0;
+
+#ifdef __APPLE__
+    size_t tmp_cap = dir_len + 64;
+    char *tmp = (char *)malloc(tmp_cap);
+    if (tmp == NULL) return -1;
+    int cloned = 0;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            free(tmp);
+            return -1;
+        }
+        char hex[17];
+        sts_hex16(rnd, hex);
+        snprintf(tmp, tmp_cap, "%.*s.sf-clone.%ld.%s", (int)dir_len, dst, (long)getpid(), hex);
+        if (clonefile(src, tmp, CLONE_NOFOLLOW) == 0) {
+            cloned = 1;
+            break;
+        }
+        int ce = errno;
+        if (ce == EEXIST) continue;
+        free(tmp);
+        if (ce == EXDEV || ce == ENOTSUP || ce == EINVAL || ce == EOPNOTSUPP || ce == ENOSYS) return -8;
+        return sts_clone_errno_map(ce);
+    }
+    if (!cloned) {
+        free(tmp);
+        return -1;
+    }
+    if (utimes(tmp, NULL) != 0) {
+        int ue = errno;
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(ue);
+    }
+    int sync_fd = sts_posix_open_retry(tmp, O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0);
+    if (sync_fd < 0 && (errno == EACCES || errno == EROFS)) {
+        sync_fd = sts_posix_open_retry(tmp, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC, 0);
+    }
+    if (sync_fd < 0) {
+        int oe = errno;
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(oe);
+    }
+    int frc;
+    do {
+        frc = fsync(sync_fd);
+    } while (frc < 0 && errno == EINTR);
+    if (frc != 0) {
+        int fe = errno;
+        close(sync_fd);
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(fe);
+    }
+    if (close(sync_fd) != 0) {
+        int ce = errno;
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(ce);
+    }
+    if (excl != 0) {
+        int lrc = link(tmp, dst);
+        int le = lrc == 0 ? 0 : errno;
+        unlink(tmp);
+        free(tmp);
+        if (lrc != 0) return sts_clone_errno_map(le);
+        return 1;
+    }
+    if (rename(tmp, dst) != 0) {
+        int re = errno;
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(re);
+    }
+    free(tmp);
+    return 1;
+#elif defined(__linux__)
+    mode_t fmode = sst.st_mode & 0777;
+    int src_fd = open(src, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    if (src_fd < 0) return sts_clone_errno_map(errno);
+    struct stat fst;
+    if (fstat(src_fd, &fst) != 0 || !S_ISREG(fst.st_mode)) {
+        close(src_fd);
+        return -5;
+    }
+    size_t tmp_cap = dir_len + 64;
+    char *tmp = (char *)malloc(tmp_cap);
+    if (tmp == NULL) {
+        close(src_fd);
+        return -1;
+    }
+    int tmp_fd = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            close(src_fd);
+            free(tmp);
+            return -1;
+        }
+        char hex[17];
+        sts_hex16(rnd, hex);
+        snprintf(tmp, tmp_cap, "%.*s.sf-clone.%ld.%s", (int)dir_len, dst, (long)getpid(), hex);
+        tmp_fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, fmode);
+        if (tmp_fd >= 0) break;
+        if (errno != EEXIST) {
+            int de = errno;
+            close(src_fd);
+            free(tmp);
+            return sts_clone_errno_map(de);
+        }
+    }
+    if (tmp_fd < 0) {
+        close(src_fd);
+        free(tmp);
+        return -1;
+    }
+    if (ioctl(tmp_fd, FICLONE, src_fd) != 0) {
+        int ie = errno;
+        close(tmp_fd);
+        unlink(tmp);
+        close(src_fd);
+        free(tmp);
+        if (ie == EXDEV || ie == EOPNOTSUPP || ie == ENOTSUP || ie == EINVAL || ie == ENOSYS || ie == ENOTTY || ie == EPERM) {
+            return -8;
+        }
+        return sts_clone_errno_map(ie);
+    }
+    if (fchmod(tmp_fd, fmode) != 0) {
+        int me = errno;
+        close(tmp_fd);
+        unlink(tmp);
+        close(src_fd);
+        free(tmp);
+        return sts_clone_errno_map(me);
+    }
+    if (fsync(tmp_fd) != 0) {
+        int fe = errno;
+        close(tmp_fd);
+        unlink(tmp);
+        close(src_fd);
+        free(tmp);
+        return sts_clone_errno_map(fe);
+    }
+    if (close(tmp_fd) != 0) {
+        int ce = errno;
+        unlink(tmp);
+        close(src_fd);
+        free(tmp);
+        return sts_clone_errno_map(ce);
+    }
+    close(src_fd);
+    if (excl != 0) {
+        int lrc = link(tmp, dst);
+        int le = lrc == 0 ? 0 : errno;
+        unlink(tmp);
+        free(tmp);
+        if (lrc != 0) return sts_clone_errno_map(le);
+        return 1;
+    }
+    if (rename(tmp, dst) != 0) {
+        int re = errno;
+        unlink(tmp);
+        free(tmp);
+        return sts_clone_errno_map(re);
+    }
+    free(tmp);
+    return 1;
+#else
+    (void)dir_len;
+    return -8;
+#endif
+}
+
+#ifdef __linux__
+static int32_t sts_clone_tree_linux_rec(const char *src_dir, const char *dst_dir, int depth) {
+    if (depth > 128) return -1;
+    DIR *d = opendir(src_dir);
+    if (d == NULL) return sts_clone_errno_map(errno);
+    size_t slen = strlen(src_dir);
+    size_t dlen = strlen(dst_dir);
+    const char *ssep = (slen > 0 && src_dir[slen - 1] == '/') ? "" : "/";
+    const char *dsep = (dlen > 0 && dst_dir[dlen - 1] == '/') ? "" : "/";
+    struct dirent *ent;
+    for (;;) {
+        errno = 0;
+        ent = readdir(d);
+        if (ent == NULL) {
+            if (errno != 0) {
+                int re = errno;
+                closedir(d);
+                return sts_clone_errno_map(re);
+            }
+            break;
+        }
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        size_t nlen = strlen(ent->d_name);
+        char *sp = (char *)malloc(slen + nlen + 2);
+        char *dp = (char *)malloc(dlen + nlen + 2);
+        if (sp == NULL || dp == NULL) {
+            free(sp);
+            free(dp);
+            closedir(d);
+            return -1;
+        }
+        snprintf(sp, slen + nlen + 2, "%s%s%s", src_dir, ssep, ent->d_name);
+        snprintf(dp, dlen + nlen + 2, "%s%s%s", dst_dir, dsep, ent->d_name);
+        struct stat st;
+        if (lstat(sp, &st) != 0) {
+            int e = errno;
+            free(sp);
+            free(dp);
+            closedir(d);
+            return sts_clone_errno_map(e);
+        }
+        struct timespec ts[2];
+        ts[0] = st.st_atim;
+        ts[1] = st.st_mtim;
+        if (S_ISLNK(st.st_mode)) {
+            size_t lcap = st.st_size > 0 ? (size_t)st.st_size + 1 : 4096;
+            char *target = (char *)malloc(lcap);
+            if (target == NULL) {
+                free(sp);
+                free(dp);
+                closedir(d);
+                return -1;
+            }
+            ssize_t rlen = readlink(sp, target, lcap - 1);
+            if (rlen < 0) {
+                int e = errno;
+                free(target);
+                free(sp);
+                free(dp);
+                closedir(d);
+                return sts_clone_errno_map(e);
+            }
+            target[rlen] = '\0';
+            if (symlink(target, dp) != 0) {
+                int e = errno;
+                free(target);
+                free(sp);
+                free(dp);
+                closedir(d);
+                return sts_clone_errno_map(e);
+            }
+            (void)utimensat(AT_FDCWD, dp, ts, AT_SYMLINK_NOFOLLOW);
+            free(target);
+        } else if (S_ISDIR(st.st_mode)) {
+            mode_t orig_mode = st.st_mode & 0777;
+            if (mkdir(dp, orig_mode | 0700) != 0) {
+                if (errno != EEXIST) {
+                    int e = errno;
+                    free(sp);
+                    free(dp);
+                    closedir(d);
+                    return sts_clone_errno_map(e);
+                }
+                struct stat est;
+                if (lstat(dp, &est) != 0 || !S_ISDIR(est.st_mode)) {
+                    free(sp);
+                    free(dp);
+                    closedir(d);
+                    return -7;
+                }
+                (void)chmod(dp, orig_mode | 0700);
+            }
+            int32_t sub_rc = sts_clone_tree_linux_rec(sp, dp, depth + 1);
+            if (sub_rc != 1) {
+                free(sp);
+                free(dp);
+                closedir(d);
+                return sub_rc;
+            }
+            (void)chmod(dp, orig_mode);
+            (void)utimensat(AT_FDCWD, dp, ts, 0);
+        } else if (S_ISREG(st.st_mode)) {
+            mode_t orig_mode = st.st_mode & 0777;
+            int sfd = open(sp, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+            if (sfd < 0) {
+                int e = errno;
+                free(sp);
+                free(dp);
+                closedir(d);
+                return sts_clone_errno_map(e);
+            }
+            int dfd = open(dp, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, orig_mode);
+            if (dfd < 0) {
+                int e = errno;
+                close(sfd);
+                free(sp);
+                free(dp);
+                closedir(d);
+                return sts_clone_errno_map(e);
+            }
+            if (ioctl(dfd, FICLONE, sfd) != 0) {
+                close(dfd);
+                close(sfd);
+                unlink(dp);
+                free(sp);
+                free(dp);
+                closedir(d);
+                return -8;
+            }
+            (void)fchmod(dfd, orig_mode);
+            (void)futimens(dfd, ts);
+            close(dfd);
+            close(sfd);
+        } else {
+            free(sp);
+            free(dp);
+            closedir(d);
+            return -5;
+        }
+        free(sp);
+        free(dp);
+    }
+    closedir(d);
+    return 1;
+}
+#endif
+
+static char *sts_nearest_existing_ancestor_dup(const char *path) {
+    char *cur = strdup(path);
+    if (cur == NULL) return NULL;
+    for (;;) {
+        size_t len = strlen(cur);
+        while (len > 1 && cur[len - 1] == '/') cur[--len] = '\0';
+        struct stat st;
+        if (stat(cur, &st) == 0) return cur;
+        char *slash = strrchr(cur, '/');
+        if (slash == NULL) {
+            free(cur);
+            char *dot = strdup(".");
+            if (dot != NULL && stat(dot, &st) == 0) return dot;
+            free(dot);
+            return NULL;
+        }
+        if (slash == cur) {
+            if (cur[1] == '\0') {
+                free(cur);
+                return NULL;
+            }
+            cur[1] = '\0';
+        } else {
+            *slash = '\0';
+        }
+    }
+}
+
+int32_t sts_clone_tree(const char *src_dir, const char *dst_dir) {
+    if (src_dir == NULL || src_dir[0] == '\0' || dst_dir == NULL || dst_dir[0] == '\0') return -1;
+    char *ancestor = sts_nearest_existing_ancestor_dup(dst_dir);
+    if (ancestor == NULL) return -8;
+    int32_t same = sts_same_cloneable_volume(src_dir, ancestor);
+    free(ancestor);
+    if (same != 1) return -8;
+    if (!sts_mkdir_p(dst_dir)) return -1;
+#ifdef __APPLE__
+    DIR *d = opendir(src_dir);
+    if (d == NULL) return sts_clone_errno_map(errno);
+    size_t slen = strlen(src_dir);
+    size_t dst_len = strlen(dst_dir);
+    const char *ssep = (slen > 0 && src_dir[slen - 1] == '/') ? "" : "/";
+    const char *dsep = (dst_len > 0 && dst_dir[dst_len - 1] == '/') ? "" : "/";
+    struct dirent *ent;
+    for (;;) {
+        errno = 0;
+        ent = readdir(d);
+        if (ent == NULL) {
+            if (errno != 0) {
+                int re = errno;
+                closedir(d);
+                return sts_clone_errno_map(re);
+            }
+            break;
+        }
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        size_t nlen = strlen(ent->d_name);
+        char *sp = (char *)malloc(slen + nlen + 2);
+        char *dp = (char *)malloc(dst_len + nlen + 2);
+        if (sp == NULL || dp == NULL) {
+            free(sp);
+            free(dp);
+            closedir(d);
+            return -1;
+        }
+        snprintf(sp, slen + nlen + 2, "%s%s%s", src_dir, ssep, ent->d_name);
+        snprintf(dp, dst_len + nlen + 2, "%s%s%s", dst_dir, dsep, ent->d_name);
+        if (clonefile(sp, dp, CLONE_NOFOLLOW) != 0) {
+            int ce = errno;
+            free(sp);
+            free(dp);
+            closedir(d);
+            if (ce == EXDEV || ce == ENOTSUP || ce == EOPNOTSUPP) return -8;
+            return sts_clone_errno_map(ce);
+        }
+        free(sp);
+        free(dp);
+    }
+    closedir(d);
+    return 1;
+#elif defined(__linux__)
+    return sts_clone_tree_linux_rec(src_dir, dst_dir, 0);
+#else
+    return -8;
+#endif
 }
 
 // ---------------------------------------------------------------------------

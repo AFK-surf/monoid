@@ -106,6 +106,7 @@ pub struct DriveFs {
   pub rename : (String, String) -> Result[Unit, station_ops::FsErr]
   pub remove : (String) -> Result[Unit, station_ops::FsErr]
   pub readdir : (String) -> Result[Array[String], station_ops::FsErr]
+  pub clone_file : Option[(String, String, Bool) -> Result[Bool, station_ops::FsErr]]
 }
 
 pub fn DriveFs::exists(self : DriveFs, path : String) -> Bool {
@@ -538,6 +539,7 @@ pub fn MemDriveFs::fs(self : MemDriveFs) -> DriveFs {
       }
       Ok(out)
     },
+    clone_file: None,
   }
 }
 
@@ -909,6 +911,8 @@ fn map_fs_err(e : station_ops::FsErr) -> DriveError {
     station_ops::FsErr::Other(m) => {
       if m == "EISDIR" {
         DriveError::new(DriveCode::IsADirectory, "that is a folder")
+      } else if m == "EEXIST" {
+        DriveError::new(DriveCode::Exists, "there is already one by that name")
       } else {
         DriveError::new(DriveCode::Io, m)
       }
@@ -1016,6 +1020,53 @@ pub fn Drive::read(
   }
   let name = if at.parts.length() > 0 { at.parts[at.parts.length() - 1] } else { "" }
   Ok((slice, total_size, mtime_ms, drive_type_of(name)))
+}
+
+/// Attempts a same-station CoW file clone using the same root/path/protected validation as `read`/`upload`.
+/// Returns `None` when cloning is unavailable or declined so callers fall back to chunked streaming.
+pub fn Drive::try_clone_local(
+  self : Drive,
+  from_root : String,
+  from_path : String,
+  to_root : String,
+  to_path : String,
+  anywhere : Bool,
+) -> Option[Result[Int64, DriveError]] {
+  let cloner = match self.fs.clone_file {
+    Some(f) => f
+    None => return None
+  }
+  let src_at = match self.place(from_root, from_path, anywhere) {
+    Ok(p) => p
+    Err(_) => return None
+  }
+  let dst_at = match self.place(to_root, to_path, anywhere) {
+    Ok(p) => p
+    Err(_) => return None
+  }
+  if dst_at.parts.length() == 0 {
+    return None
+  }
+  let sst = match (self.fs.lstat)(src_at.found) {
+    Ok(m) => m
+    Err(_) => return None
+  }
+  if !sst.is_file || sst.is_link {
+    return None
+  }
+  let sep = if self.is_win { "\\" } else { "/" }
+  let parent = nodepath::dirname(sep, dst_at.found)
+  if parent.length() > 0 {
+    match (self.fs.mkdir_p)(parent) {
+      Ok(_) => ()
+      Err(_) => return None
+    }
+  }
+  match cloner(src_at.found, dst_at.found, true) {
+    Ok(true) => Some(Ok(sst.size))
+    Ok(false) => None
+    Err(e) => Some(Err(map_fs_err(e)))
+  }
 }
 
 pub fn Drive::mkdir(self : Drive, root : String, path : String, anywhere : Bool) -> Result[DriveEntry, DriveError] {

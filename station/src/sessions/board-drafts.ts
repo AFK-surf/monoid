@@ -11,9 +11,9 @@
 // starting the draft sends it (`stage`: copied among the uploads, as a message takes a file). A draft started or
 // deleted has its files put aside (`.gone`) for a day, so that the device starting it still sends them, then dropped.
 import { createHash, randomBytes } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, utimes } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, utimes } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { cloneFile } from "../ops/clone.ts";
 import { type DraftRecord, type KeptDraft, DraftRefusal, draftsOf, isGoneDraft, mergeDrafts } from "../../../client/core-ts/src/board-drafts.ts";
 import { canonical } from "../../../client/core-ts/src/preset-records.ts";
 import { moveFile } from "../ops/files.ts";
@@ -205,7 +205,7 @@ export class BoardDrafts {
     await mkdir(dir, { recursive: true });
     const stamp = new Date(this.#deps.now()).toISOString().slice(0, 19).replace(/[:.]/g, "-");
     const path = join(dir, `${stamp}-${randomBytes(3).toString("hex")}-${safe}`);
-    await copyFile(at.path, path, fsConstants.COPYFILE_FICLONE);
+    await cloneFile(at.path, path);
     return { name: safe, path, size: at.size };
   }
 }

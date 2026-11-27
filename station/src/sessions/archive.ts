@@ -19,8 +19,9 @@
 // addon (tests), the lock files are made where the Rust makes them but the lock itself is held within
 // this process (one station at a time works on a data directory; only an overlap at a handover would see both).
 import { loadMesh } from "../mesh/native.ts";
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, stat, unlink } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, readlink, realpath, rm, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { cloneFile } from "../ops/clone.ts";
 import { renameRetrying, type RenameRetry } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { clean, inside, segments } from "../ops/paths.ts";
@@ -168,7 +169,7 @@ async function ownerWritable(path: string): Promise<void> {
   const gone = (error: NodeJS.ErrnoException) => {
     if (error.code !== "ENOENT") throw error;
   };
-  const need = there.isDirectory() ? 0o700 : 0o200;
+  const need = there.isDirectory() ? 0o700 : (platform.os === "windows" ? 0o200 : 0);
   if ((there.mode & need) !== need) await chmod(path, (there.mode | need) & 0o7777).catch(gone);
   if (!there.isDirectory()) return;
   const names = await readdir(path).catch((error: NodeJS.ErrnoException) => (gone(error), [] as string[]));
@@ -495,7 +496,7 @@ async function overlayEntries(source: string, dest: string, refused: Refused): P
       if (entry.isSymbolicLink()) {
         const target = await readlink(from);
         if ((await symlinkOrStandIn(target, into, {})) === "refused") refused.set(into, target);
-      } else if (entry.isFile()) await copyFile(from, into);
+      } else if (entry.isFile()) await cloneFile(from, into);
       else throw new Error(`cannot restore special file ${from}`);
     }
   }

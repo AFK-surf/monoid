@@ -37,6 +37,7 @@ import { fileBytes, readBytes, stopBytes, writeBytes } from "../mesh/files.ts";
 import { Bulk, LINK, PACKED, patchOf } from "./dirsync.ts";
 import { DEFAULT_LIMIT, WorkspaceReader } from "./workspace-size.ts";
 import { MEASURE_UP_TO, measuredUpTo } from "../sessions/footprint.ts";
+import { removeTree } from "../sessions/archive.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import { COLAB_GPUS, type ColabAccount, type ColabGpu, SANDBOX, SANDBOX_NAME_RE, type Sandbox, ensureIdentity, isColab, parseRemoteSandbox, sandboxDescribed } from "../agents/sandbox.ts";
 
@@ -381,8 +382,8 @@ export class Remote {
     this.notify = options.notify;
     this.places = options.places ?? new Places({ own: options.data });
     this.diskFree = options.diskFree ?? diskFree;
-    this.removeMirror = options.removeMirror ?? ((path) => rm(path, { recursive: true, force: true }));
-    this.removeTask = options.removeTask ?? ((path) => rm(path, { recursive: true, force: true }));
+    this.removeMirror = options.removeMirror ?? ((path) => removeTree(path, { force: true }));
+    this.removeTask = options.removeTask ?? ((path) => removeTree(path, { force: true }));
     this.root = join(options.data, "remote");
     for (const name of ["incoming", "outgoing", "sessions", "used", "prepared"]) mkdirSync(join(this.root, name), { recursive: true }); // sync: once, as it is made
     this.landing = join(this.root, "landing", String(process.pid));

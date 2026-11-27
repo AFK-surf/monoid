@@ -836,6 +836,61 @@ test "adversarial P1-5 & P2-7 & P2-8: remote+move refused, NoTrash error propaga
     }
     Ok(_) => assert_true(false)
   }
+
+  // CoW fast-path contract on move:
+  // 1) `Err("EEXIST")` / `Err("EIO")` propagates failure and NEVER deletes source file!
+  // 2) `Ok(false)` (unsupported `-8`) falls back to chunked upload and moves cleanly!
+  mem.put_text("/root/src/move_me.txt", "payload-123")
+  let base_dfs = mem.fs()
+  let eio_dfs = DriveFs::{
+    ..base_dfs,
+    clone_file: Some(fn(_s : String, _d : String, _ex : Bool) -> Result[Bool, station_ops::FsErr] {
+      Err(station_ops::FsErr::Other("EIO"))
+    }),
+  }
+  let eio_drv = Drive::new(eio_dfs, ["/root"], [], false, "/home/u", TrashKind::None)
+  let tr_eio = match mgr.start(
+    "alice", "ws-1", true, false, true,
+    TransferFrom::{ station: None, station_name: None, grant: None, root: "/root", path: "src", names: ["move_me.txt"] },
+    TransferTo::{ root: "/root", path: "dst" },
+    Map::new(), 1300.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(_) => { assert_true(false); return }
+  }
+  match mgr.run_local(tr_eio.id, eio_drv, 1310.to_int64()) {
+    Err(e) => {
+      assert_eq(drive_code_name(e.code), "io")
+      assert_eq(transfer_state_name(tr_eio.state), "failed")
+      assert_true(mem.fs().exists("/root/src/move_me.txt"))
+    }
+    Ok(_) => assert_true(false)
+  }
+
+  let unsup_dfs = DriveFs::{
+    ..base_dfs,
+    clone_file: Some(fn(_s : String, _d : String, _ex : Bool) -> Result[Bool, station_ops::FsErr] {
+      Ok(false)
+    }),
+  }
+  let unsup_drv = Drive::new(unsup_dfs, ["/root"], [], false, "/home/u", TrashKind::None)
+  let tr_unsup = match mgr.start(
+    "alice", "ws-1", true, false, true,
+    TransferFrom::{ station: None, station_name: None, grant: None, root: "/root", path: "src", names: ["move_me.txt"] },
+    TransferTo::{ root: "/root", path: "dst" },
+    Map::new(), 1320.to_int64(),
+  ) {
+    Ok(t) => t
+    Err(_) => { assert_true(false); return }
+  }
+  match mgr.run_local(tr_unsup.id, unsup_drv, 1330.to_int64()) {
+    Ok(done_u) => {
+      assert_eq(transfer_state_name(done_u.state), "done")
+      assert_true(mem.fs().exists("/root/dst/move_me.txt"))
+      assert_true(!mem.fs().exists("/root/src/move_me.txt"))
+    }
+    Err(_) => assert_true(false)
+  }
 }
 
 // ---------------------------------------------------------------------------

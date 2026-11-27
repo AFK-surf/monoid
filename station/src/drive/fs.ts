@@ -2,9 +2,10 @@
 // runs, through still.fail Helper (helper/files.ts), which holds the grants. The same few operations either way, on
 // paths the drive has already checked (the helper checks them again against the roots it is told).
 import { constants, createReadStream } from "node:fs";
-import { type FileHandle, copyFile, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, unlink } from "node:fs/promises";
+import { type FileHandle, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
+import { cloneFile } from "../ops/clone.ts";
 import { wall } from "../ops/fibers.ts";
 import { platform } from "../platform/index.ts";
 import { toTrash } from "./trash.ts";
@@ -114,7 +115,7 @@ export const direct: Fs = {
   },
   readAll: (path) => readFile(path),
   readStream: (path, chunk) => createReadStream(path, { highWaterMark: chunk }),
-  copyTo: (path, to) => copyFile(path, to, constants.COPYFILE_EXCL | constants.COPYFILE_FICLONE),
+  copyTo: (path, to) => cloneFile(path, to, { excl: true }),
   async write(path, w) {
     const handle = await open(path, w.create ? "w" : "r+");
     try {

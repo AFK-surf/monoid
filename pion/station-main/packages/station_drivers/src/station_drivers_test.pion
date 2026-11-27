@@ -786,12 +786,13 @@ test "review P1: station_tag and person_tag Unicode parity with TS" {
   expect(str_starts_with(istanbul, "_"), "İstanbul lowercased & hashed: " + istanbul)
 }
 
-test "review P1: migrations 121-192 verbatim and session_instructions full template" {
+test "review P1: migrations 121-196 verbatim and session_instructions full template" {
   let notes = migration_notes()
-  expect(notes.length() == 72, "all 72 notes 121..192 present")
+  expect(notes.length() == 76, "all 76 notes 121..196 present")
   expect(str_contains(notes[10].1, "station_use {station, reason, timeout?}"), "note 131 verbatim station_use")
   expect(str_contains(notes[12].1, "device_use {device, reason, timeout?}"), "note 133 verbatim device_use")
   expect(str_contains(notes[14].1, "relays {action: list|add|remove, url?}"), "note 135 verbatim relays")
+  expect(notes[notes.length() - 1].0 == 196 && str_contains(notes[notes.length() - 1].1, "stillfail -C <repos_dir>/<repo> worktree add --detach"), "note 196 present")
 
   let inst = session_instructions("/ws/1", None, "/repos", "/mem/MEMORY.md", "", "", "gt1", true, true, "alice@example.com")
   expect(str_contains(inst, "End every turn with one state, given as kind on your last chat_post or with chat_state:"), "turn-ending section present")
@@ -802,6 +803,8 @@ test "review P1: migrations 121-192 verbatim and session_instructions full templ
   expect(str_contains(inst, "Never ask people to run a command or paste a secret:"), "secret/login rule present")
   expect(str_contains(inst, "Before fixing a bug, look whether someone already opened or merged a fix"), "bugfix rule present")
   expect(str_contains(inst, "Formatting: GitHub Markdown everywhere."), "Formatting table present")
+  expect(str_contains(inst, "GIT_NO_LAZY_FETCH=1 git -C /repos/<repo>"), "read-only cache inspection guidance present")
+  expect(str_contains(inst, "stillfail -C /repos/<repo> worktree add --detach"), "CoW worktree guidance present")
 }
 
 test "review P1: workspace isolation (borrowed empty share_workspaces, homeWorkspace, sorted colab, profiles_for)" {
@@ -929,17 +932,17 @@ test "review R2: invalid UUID rejection, byte-for-byte session_instructions pari
   )
   let len1 = out1.to_bytes().length()
   let sha1 = crypto::sha256_hex(out1.to_bytes())
-  expect(len1 == 9631, "out1 byte length must match TS 9631, got " + len1.to_string())
+  expect(len1 == 9912, "out1 byte length must match TS 9912, got " + len1.to_string())
   expect(
-    sha1 == "b87810f8a42d18e0c6d6df86e55b0a70e712f6a62a07f5f8cd6411c362874e90",
+    sha1 == "f424a6df8b6494f09ff6171b89c8edfb2db55d16fa1b9214165313caa65925f8",
     "out1 sha256 must match TS instructions.ts exactly, got " + sha1,
   )
   let out2 = session_instructions("/ws/2", None, "/repos", "/mem/MEMORY.md", "", "", "", true, false, "")
   let len2 = out2.to_bytes().length()
   let sha2 = crypto::sha256_hex(out2.to_bytes())
-  expect(len2 == 8505, "out2 byte length must match TS 8505, got " + len2.to_string())
+  expect(len2 == 8786, "out2 byte length must match TS 8786, got " + len2.to_string())
   expect(
-    sha2 == "8bbe2f44f87c8b2b1902bf9717eb1d75528418d0c37e282a925bd9a3af4e4e94",
+    sha2 == "34dcf6ed05c4835cb7c025da5a3f304a58ce8e0e04e6d6d077dbaf8312148ec4",
     "out2 sha256 must match TS instructions.ts exactly, got " + sha2,
   )
 

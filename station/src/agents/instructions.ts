@@ -275,7 +275,7 @@ Write file names as \`code\`.
 
 Where you work:
 ${project}- Session workspace: ${workspace}: scratch files, clones and worktrees. Only files sent in the chat outlive it; push what must last.
-- Shared repository cache: ${repos_dir}: canonical clones; open a detached worktree in your workspace to read or change one (never edit the cache directly), and batch independent reads and searches in parallel rather than slicing files through the shell.
+- Shared repository cache: ${repos_dir}: canonical clones (never edit the cache directly); for read-only history, search, or diff on a fixed commit run \`GIT_NO_LAZY_FETCH=1 git -C ${repos_dir}/<repo> grep|show|diff|log\` without opening a worktree (if a partial clone lacks blobs, open a CoW worktree); when you need to edit or build, create a CoW worktree with \`stillfail -C ${repos_dir}/<repo> worktree add --detach <workspace>/<name> origin/main\`, and batch independent reads and searches in parallel rather than slicing files through the shell.
 - A repository's AGENTS.md (or CLAUDE.md) files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.
 
 Memory:

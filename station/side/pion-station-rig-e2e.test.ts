@@ -449,10 +449,10 @@ async function pickFreeUdpPort(): Promise<number> {
 
 const bin = resolvePionBinary();
 
-test("Gate 12.1: --version advertises roles:rig,whole and all 8 CLI commands, --smoke-sys and --smoke-http pass", () => {
+test("Gate 12.1: --version advertises roles:rig,whole and all 9 CLI commands, --smoke-sys and --smoke-http pass", () => {
   const ver = spawnSync(bin, ["--version"], { encoding: "utf8", timeout: 10_000 });
   assert.equal(ver.status, 0, ver.stderr);
-  assert.equal(ver.stdout.trim(), "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin");
+  assert.equal(ver.stdout.trim(), "stillfail-station-pion 0.1.0 roles:rig,whole commands:id,status,lock,channel,enroll,update,heap,admin,worktree");
   assert.equal(ver.stdout.trim().split(/\s+/).length, 4);
 
   const sys = spawnSync(bin, ["--smoke-sys"], { encoding: "utf8", timeout: 10_000 });

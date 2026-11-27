@@ -60,8 +60,6 @@ export type Platform = {
   os: string;
   /// How the runtimes name a build's OS (darwin, linux, win32); none for another.
   buildOs: string | null;
-  /// Whether a file copied on a disk of this machine can be a clone of it, taking no room of its own (APFS: macOS).
-  clonesFiles: boolean;
   /// The machine's cache of native parts, which scripts/native.ts keeps and every worktree and station process shares:
   /// $STILLFAIL_NATIVE_CACHE, else ~/Library/Caches/stillfail-native (macOS), $XDG_CACHE_HOME/stillfail-native or
   /// ~/.cache/stillfail-native (Linux), %LOCALAPPDATA%\stillfail-native (Windows).

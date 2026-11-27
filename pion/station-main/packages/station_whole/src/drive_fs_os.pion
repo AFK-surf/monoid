@@ -237,6 +237,14 @@ pub fn os_drive_fs() -> station_screens::DriveFs {
         }
       }
     },
+    clone_file: Some(fn(src : String, dst : String, excl : Bool) -> Result[Bool, station_ops::FsErr] {
+      match station_sys::clone_file_only(src, dst, excl) {
+        Ok(_) => Ok(true)
+        Err(-8) => Ok(false)
+        Err(-7) => Err(station_ops::FsErr::Other("EEXIST"))
+        Err(code) => Err(map_sys_err(code))
+      }
+    }),
   }
 }
 
@@ -377,6 +385,7 @@ pub fn instrument_drive_fs(
     },
     remove: inner.remove,
     readdir: inner.readdir,
+    clone_file: inner.clone_file,
   }
 }
 

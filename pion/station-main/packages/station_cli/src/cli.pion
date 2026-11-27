@@ -1,5 +1,5 @@
 // Station CLI entrypoint, argument parsing, common options, formatting helpers, and ports.
-// Implements the 8 non-`run` subcommands: id, status, lock, channel, enroll, update, heap, admin.
+// Implements the 9 non-`run` subcommands: id, status, lock, channel, enroll, update, heap, admin, worktree.
 
 import "base_codec"
 import "crypto"
@@ -69,6 +69,12 @@ pub struct HeapDiagSnapshot {
   pub objects : Int64
 }
 
+pub struct GitExecResult {
+  pub exit_code : Int
+  pub stdout : Bytes
+  pub stderr : Bytes
+}
+
 pub struct CliPorts {
   pub fs : station_ops::OpsFs
   pub cloud_fs : station_cloud::CloudFs
@@ -95,6 +101,11 @@ pub struct CliPorts {
   pub mkdir_exclusive : Option[(String, Int) -> Result[Unit, String]]
   pub symlink_dir : Option[(String, String) -> Result[Unit, String]]
   pub heap_stats : Option[() -> HeapDiagSnapshot]
+  pub caller_cwd : String
+  pub run_git : Option[(String, Array[String], Option[Map[String, String]], Option[Bytes]) -> Result[GitExecResult, String]]
+  pub same_cloneable_volume : Option[(String, String) -> Bool]
+  pub clone_tree : Option[(String, String) -> Result[Unit, String]]
+  pub is_executable : Option[(String) -> Bool]
 }
 
 /// Build a `CloudFs` backed by an `OpsFs` (useful for tests and unified CLI FS injection).
@@ -173,7 +184,7 @@ pub fn key_fs_from_ops(
 pub let CLI_VALUED_FLAGS : Array[String] = ["--data", "--provider", "--lock", "--rig", "--workspace"]
 
 pub fn cli_usage() -> String {
-  "usage: stillfail-station run --app DIR [--port N] [--data DIR] | enroll <cloud> <token> [--provider stillfail|comma] [--lock HASH] [--rig HASH] [--join | --stay] | status | id | channel [stable|beta] | update [--beta|--stable] --app DIR | lock status | lock reset [--workspace ID] | heap | admin ..."
+  "usage: stillfail-station run --app DIR [--port N] [--data DIR] | enroll <cloud> <token> [--provider stillfail|comma] [--lock HASH] [--rig HASH] [--join | --stay] | status | id | channel [stable|beta] | update [--beta|--stable] --app DIR | lock status | lock reset [--workspace ID] | heap | [-C <repo>] worktree <args> | admin ..."
 }
 
 pub fn cli_ascii_lower(s : String) -> String {
@@ -513,9 +524,15 @@ pub fn cli_remove_json_field(obj : base_codec::Json, key : String) -> base_codec
   base_codec::json_obj(out)
 }
 
-/// Find the subcommand in `argv` (exact 1:1 with `station/src/main.ts` line 98):
+/// Find the subcommand in `argv` (exact 1:1 with `station/src/main.ts` line 98, plus `-C <repo> worktree`):
 /// first arg not starting with `--` and not immediately following a `--*` flag other than `--with-parent`.
 fn find_command(argv : Array[String]) -> Option[(String, Int)] {
+  if argv.length() >= 3 && argv[0] == "-C" && argv[2] == "worktree" {
+    return Some(("worktree", 2))
+  }
+  if argv.length() >= 2 && argv[0].starts_with("-C") && argv[0].length() > 2 && argv[1] == "worktree" {
+    return Some(("worktree", 1))
+  }
   let mut i = 0
   while i < argv.length() {
     let a = argv[i]
@@ -551,8 +568,8 @@ fn strip_bool_flag(argv : Array[String], flag_name : String) -> (Array[String], 
   (out, found)
 }
 
-/// Unified Station CLI dispatcher for all 8 subcommands:
-/// `id`, `status`, `lock`, `channel`, `enroll`, `update`, `heap`, `admin`.
+/// Unified Station CLI dispatcher for all 9 subcommands:
+/// `id`, `status`, `lock`, `channel`, `enroll`, `update`, `heap`, `admin`, `worktree`.
 pub fn dispatch_cli(
   argv : Array[String],
   env : Map[String, String],
@@ -562,6 +579,9 @@ pub fn dispatch_cli(
   match cmd_opt {
     None => CliResult::err(2, cli_usage() + "\n")
     Some((cmd, cmd_idx)) => {
+      if cmd == "worktree" {
+        return run_worktree_command(argv, env, ports)
+      }
       if cmd == "admin" {
         let admin_args : Array[String] = []
         let mut i = 0

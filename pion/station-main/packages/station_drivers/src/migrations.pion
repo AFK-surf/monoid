@@ -85,6 +85,10 @@ pub fn migration_notes() -> Array[(Int, String)] {
     (190, "Memory now routes into four layers: MEMORY.md (<= 8 KB target, hard-capped at 16 KB on injection) for cross-project/person/machine rules only, skills/<project>/SKILL.md for projects, skills/machines/<station-tag>.md for machine/environment notes (current station auto-injected as <station-memory>, 4 KB cap), and skills/people/<name>.md for team roles and preferences (read via skill_read). Update existing same-topic entries in place instead of appending duplicates."),
     (191, "skills/people/<person-tag>.md (the tag is the person's email in lower case) of the person a session is for is now auto-injected at session start as <person-memory> (4 KB cap): keep personal preferences, approval habits and personal machine details there, not in MEMORY.md."),
     (192, "device_list now includes AirPlay devices (kind: \"airplay\", Apple TV / HomePod / AirPlay speakers) and new tool device_control runs standard AirPlay actions (status, power, remote, apps, launch, playing, seek, volume, keyboard, play_url, stream_audio) over the device tunnel (see skill stillfail-jobs)."),
+    (193, "station_tool called with no name lists every tool it reaches (with what each does): call it so first when its description names no tools."),
+    (194, "chat_post takes reply_to in a Feishu conversation: the ts of a message there to post under, in its thread, so a group is not interrupted; left out, the post goes where the conversation is. Choose where each post belongs."),
+    (195, "When choosing a specific model with chat_create, pass both its full model ID and its runtime, because passing only model uses the opening chat's runtime."),
+    (196, "For read-only inspection of a shared repository cache clone (history, search, diff on a fixed commit), run `GIT_NO_LAZY_FETCH=1 git -C <repos_dir>/<repo> grep|show|diff|log` without opening a worktree (or open a CoW worktree if a partial clone lacks blobs); when editing or building, use `stillfail -C <repos_dir>/<repo> worktree add --detach <workspace>/<name> origin/main` for a copy-on-write worktree."),
   ]
 }
 
