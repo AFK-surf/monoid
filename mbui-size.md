@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0d1a636af](https://github.com/AFK-surf/monoid/commit/0d1a636afb53cf81c9b5ecf2bf34702869b54c10) docs(releases): 0.1.11718 stable notes (#9095) | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.61 | 68.66 | 103.7 | 129.79 |
 | [9f2817e54](https://github.com/AFK-surf/monoid/commit/9f2817e54f553ef17254858e404889232dd16ca3) feat(mbui): compact grouped Profiles & Connects ro | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.61 | 68.66 | 103.7 | 129.79 |
 | [89089da80](https://github.com/AFK-surf/monoid/commit/89089da803552093d1ba066dc83c94f3d1c0aaf1) ci(mbui): speed up pages test build on release/* a | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.7 | 124.28 |
 | [2bfbbefca](https://github.com/AFK-surf/monoid/commit/2bfbbefca014ba5add4b7d96d5b50aa0e476c075) chore(ui/ui): eliminate remaining mbt2pion publish | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.7 | 124.28 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [073a8026e](https://github.com/AFK-surf/monoid/commit/073a8026e80c8c8cd2fe52b033b2e6775978588e) fix(station): prevent evicting idle agy sessions w | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 | [575cbdc10](https://github.com/AFK-surf/monoid/commit/575cbdc1071a70a38087e9e9fa5c6c45d7c08381) feat(station,core,mbui): invoke attached agent ski | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 | [29a0c3082](https://github.com/AFK-surf/monoid/commit/29a0c30829680c42407bde6dd3bea1e333122f5f) fix(mbui): require 500ms hover dwell before peekin | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
-| [65946164d](https://github.com/AFK-surf/monoid/commit/65946164d5e902e5e9b0bb6c20a02c3506f518f7) fix(station): link session pages on the workspace' | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0d1a636af](https://github.com/AFK-surf/monoid/commit/0d1a636afb53cf81c9b5ecf2bf34702869b54c10) docs(releases): 0.1.11718 stable notes (#9095) | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.49 |
 | [9f2817e54](https://github.com/AFK-surf/monoid/commit/9f2817e54f553ef17254858e404889232dd16ca3) feat(mbui): compact grouped Profiles & Connects ro | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.84 |
 | [89089da80](https://github.com/AFK-surf/monoid/commit/89089da803552093d1ba066dc83c94f3d1c0aaf1) ci(mbui): speed up pages test build on release/* a | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.77 |
 | [2bfbbefca](https://github.com/AFK-surf/monoid/commit/2bfbbefca014ba5add4b7d96d5b50aa0e476c075) chore(ui/ui): eliminate remaining mbt2pion publish | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 58.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [073a8026e](https://github.com/AFK-surf/monoid/commit/073a8026e80c8c8cd2fe52b033b2e6775978588e) fix(station): prevent evicting idle agy sessions w | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.77 |
 | [575cbdc10](https://github.com/AFK-surf/monoid/commit/575cbdc1071a70a38087e9e9fa5c6c45d7c08381) feat(station,core,mbui): invoke attached agent ski | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.77 |
 | [29a0c3082](https://github.com/AFK-surf/monoid/commit/29a0c30829680c42407bde6dd3bea1e333122f5f) fix(mbui): require 500ms hover dwell before peekin | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.41 |
-| [65946164d](https://github.com/AFK-surf/monoid/commit/65946164d5e902e5e9b0bb6c20a02c3506f518f7) fix(station): link session pages on the workspace' | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.46 |
