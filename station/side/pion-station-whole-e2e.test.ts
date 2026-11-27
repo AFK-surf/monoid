@@ -18,18 +18,19 @@
 // 4. `BecameRig` mode switch: live presence frame marking station rig-only triggers handover stop cleanly.
 import assert from "node:assert/strict";
 import { type ChildProcess, execFileSync, spawn, spawnSync } from "node:child_process";
-import { generateKeyPairSync, randomBytes, sign as cryptoSign } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, sign as cryptoSign } from "node:crypto";
 import { createSocket as createUdpSocket } from "node:dgram";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request as httpRequest, type Server as HttpServer } from "node:http";
 import { createServer as createNetServer, type Server as NetServer } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { WebSocketServer } from "ws";
+import { type Entry, apply as lockApply, endpointBytes, entryHash, genesis as lockGenesis, signedBytes } from "../../shared/lock.ts";
 import { loadMesh, type Connection, type Endpoint } from "../src/mesh/native.ts";
 import { PEER_BYTES_ALPN } from "../src/mesh/peer.ts";
 import { PEER_HTTP_ALPN } from "../src/mesh/peer-http.ts";
@@ -402,13 +403,16 @@ async function openAdminConn(
   stationId: string,
   addr: string,
   credential: string,
-): Promise<{ conn: Connection; helloReply: any }> {
+  lock?: Record<string, unknown>,
+): Promise<{ conn: Connection; ctrl: Awaited<ReturnType<Connection["openBi"]>>; ctrlReader: Reader; helloReply: any }> {
   const conn = await ep.connect({ id: stationId, relays: [], ips: [addr] }, ADMIN_ALPN);
   const ctrl = await conn.openBi();
-  await writeLine(ctrl, { credential });
-  const reader = new Reader(ctrl);
-  const helloReply = await reader.line();
-  return { conn, helloReply };
+  const payload: Record<string, unknown> = { credential };
+  if (lock) payload.lock = lock;
+  await writeLine(ctrl, payload);
+  const ctrlReader = new Reader(ctrl);
+  const helloReply = await ctrlReader.line();
+  return { conn, ctrl, ctrlReader, helloReply };
 }
 
 async function adminCall(
@@ -1016,6 +1020,110 @@ exec ${JSON.stringify(bin)} "$@"
       await hs3.finish();
       const hr3 = new Reader(hs3);
       assert.equal((await hr3.line()).status, 403);
+
+      // `socket: true` WebSocket forwarding over `front.sock` (`preview.ts` 5-byte `[kind: u8][len: u32be][payload]` framing)
+      const wsUpstreamHttp = createHttpServer((_req, res) => { res.writeHead(404); res.end(); });
+      const wsUpstream = new WebSocketServer({ server: wsUpstreamHttp });
+      servers.push(wsUpstreamHttp, wsUpstream);
+      wsUpstream.on("connection", (sock) => {
+        sock.on("message", (data, isBinary) => {
+          if (isBinary) {
+            sock.send(Buffer.concat([Buffer.from([0xaa]), Buffer.from(data as Buffer)]), { binary: true });
+          } else {
+            sock.send(`WS-ECHO:${data.toString("utf8")}`);
+          }
+        });
+      });
+      await new Promise<void>((r) => wsUpstreamHttp.listen(0, "127.0.0.1", () => r()));
+      const wsUpPort = (wsUpstreamHttp.address() as { port: number }).port;
+
+      const wsStream = await frontHttpConn.openBi();
+      await writeLine(wsStream, { workspace: ws, port: wsUpPort, path: "/ws", headers: [], socket: true });
+      const wsReader = new Reader(wsStream);
+      const wsHead = await wsReader.line();
+      assert.equal(wsHead.status, 101, `expected 101 for socket:true WS proxy, got ${JSON.stringify(wsHead)}`);
+      const encodeWsFrame = (kind: number, payload: Buffer) => {
+        const hdr = Buffer.allocUnsafe(5);
+        hdr[0] = kind;
+        hdr.writeUInt32BE(payload.length, 1);
+        return Buffer.concat([hdr, payload]);
+      };
+      await wsStream.write(encodeWsFrame(1, Buffer.from("hello-ws-r3", "utf8")));
+      let wsRaw = wsReader.carry;
+      const readWsFrame = async (): Promise<{ kind: number; payload: Buffer }> => {
+        while (wsRaw.length < 5) {
+          const c = await wsStream.read();
+          assert.notEqual(c, null, "ws proxy stream ended before frame header");
+          wsRaw = Buffer.concat([wsRaw, c!]);
+        }
+        const kind = wsRaw[0]!;
+        const len = wsRaw.readUInt32BE(1);
+        while (wsRaw.length < 5 + len) {
+          const c = await wsStream.read();
+          assert.notEqual(c, null, "ws proxy stream ended before frame payload");
+          wsRaw = Buffer.concat([wsRaw, c!]);
+        }
+        const payload = wsRaw.subarray(5, 5 + len);
+        wsRaw = wsRaw.subarray(5 + len);
+        return { kind, payload };
+      };
+      const f1 = await readWsFrame();
+      assert.equal(f1.kind, 1);
+      assert.equal(f1.payload.toString("utf8"), "WS-ECHO:hello-ws-r3");
+      const closePayload = Buffer.allocUnsafe(2);
+      closePayload.writeUInt16BE(1000, 0);
+      await wsStream.write(encodeWsFrame(8, closePayload));
+      await wsStream.finish();
+
+      // 16 MiB `tcp: true` backpressure test over `front.sock`: client pauses reading for 2.5s ->
+      // MUST receive 100% of 16 MiB bytes with matching SHA-256 and zero stream reset!
+      const bigTcpSize = 16 * 1024 * 1024;
+      const bigTcpChunk = randomBytes(64 * 1024);
+      const expectedSha = createHash("sha256");
+      for (let off = 0; off < bigTcpSize; off += bigTcpChunk.length) {
+        expectedSha.update(bigTcpChunk);
+      }
+      const expectedDigest = expectedSha.digest("hex");
+      const bulkTcpSrv = createNetServer((sock) => {
+        let sent = 0;
+        const pump = () => {
+          while (sent < bigTcpSize) {
+            const ok = sock.write(bigTcpChunk);
+            sent += bigTcpChunk.length;
+            if (!ok) {
+              sock.once("drain", pump);
+              return;
+            }
+          }
+          sock.end();
+        };
+        pump();
+      });
+      servers.push(bulkTcpSrv);
+      await new Promise<void>((r) => bulkTcpSrv.listen(0, "127.0.0.1", () => r()));
+      const bulkTcpPort = (bulkTcpSrv.address() as { port: number }).port;
+
+      const bpStream = await frontHttpConn.openBi();
+      await writeLine(bpStream, { workspace: ws, port: bulkTcpPort, tcp: true });
+      const bpReader = new Reader(bpStream);
+      const bpHead = await bpReader.line();
+      assert.equal(bpHead.status, 200);
+      const actualSha = createHash("sha256");
+      let totalGot = 0;
+      if (bpReader.carry.length > 0) {
+        actualSha.update(bpReader.carry);
+        totalGot += bpReader.carry.length;
+      }
+      // Pause reading for 2.5s to force backpressure on upstream TCP socket!
+      await new Promise((r) => setTimeout(r, 2500));
+      for (;;) {
+        const c = await bpStream.read();
+        if (c === null) break;
+        actualSha.update(c);
+        totalGot += c.length;
+      }
+      assert.equal(totalGot, bigTcpSize, `expected all 16 MiB (${bigTcpSize}B) without truncation/reset, got ${totalGot}B`);
+      assert.equal(actualSha.digest("hex"), expectedDigest, "16 MiB backpressured tcp tunnel SHA-256 mismatch");
     } finally {
       await frontHttpConn.close(0, "done");
     }
@@ -1097,6 +1205,17 @@ exec ${JSON.stringify(bin)} "$@"
   extraPids.push(liveJobPid);
   assert.equal(isAlive(liveJobPid), true, `job pid ${liveJobPid} should be alive before SIGUSR2`);
 
+  // Seed a real native `stillfail-runner` descriptor (`"runner": <livePid>`) before `SIGUSR2` handover
+  // to verify R3 Item 4 (live runner adoption via native `"runner"` field)!
+  const liveRunnerProc = spawn("sleep", ["30"], { stdio: "ignore" });
+  children.push(liveRunnerProc);
+  assert.ok(liveRunnerProc.pid && liveRunnerProc.pid > 1);
+  mkdirSync(join(data, "run", "runners"), { recursive: true });
+  writeFileSync(
+    join(data, "run", "runners", "claude-sess-unicode-1.json"),
+    JSON.stringify({ runner: liveRunnerProc.pid, session: "sess-unicode-1", kind: "claude", sock: join(data, "run", "runners", "claude-sess-unicode-1.sock") }) + "\n",
+  );
+
   // ── Part H: Real Rust Launcher `SIGUSR2` Hot Handover (`Pion Whole -> Pion Whole`) ──
   // Live `sleep 30` job MUST SURVIVE handover and remain visible in the new daemon's `job_list`!
   process.kill(lc.pid!, "SIGUSR2");
@@ -1107,8 +1226,10 @@ exec ${JSON.stringify(bin)} "$@"
   await until("old whole_daemon pid1 exited cleanly", () => !isAlive(pid1), 15_000);
   assert.notEqual(pid2, pid1);
 
-  // CRITICAL: job started before `SIGUSR2` MUST STILL BE ALIVE!
+  // CRITICAL: job & native runner started before `SIGUSR2` MUST STILL BE ALIVE!
   assert.equal(isAlive(liveJobPid), true, `running job pid ${liveJobPid} was killed during SIGUSR2 handover!`);
+  assert.equal(isAlive(liveRunnerProc.pid), true, `native runner pid ${liveRunnerProc.pid} was killed during SIGUSR2 handover!`);
+  liveRunnerProc.kill("SIGKILL");
 
   await until("new whole_daemon MCP ready after handover", async () => {
     const r = await mcpCall(bearerToken, "job_list", {});
@@ -1217,4 +1338,337 @@ test("W16B.7: BecameRig mode switch triggers handover stop when live presence tr
     wd.stderr().includes("station became rig-only: triggering handover to rig process"),
     `expected BecameRig log message, got:\n${wd.stderr()}`,
   );
+});
+
+test("W16B.8: Control stream 1 idle exemption + live revocation kicks active stillfail/admin/1 connection immediately", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const data = freshDir("rev-idle-data");
+  const drive = freshDir("rev-idle-drive");
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const memberEp = await addon.bind({
+    secretKey: randomBytes(32),
+    alpns: [ADMIN_ALPN],
+    relayUrls: [],
+    discovery: false,
+    dht: false,
+    bindAddr: "127.0.0.1:0",
+  });
+  endpoints.push(memberEp);
+
+  const ws = "ws-rev-idle";
+  let liveWsSock: import("ws").WebSocket | null = null;
+  const wsHttp = createHttpServer((_req, res) => { res.writeHead(404); res.end(); });
+  const wss = new WebSocketServer({ server: wsHttp });
+  servers.push(wsHttp, wss);
+  wss.on("connection", (sock) => {
+    liveWsSock = sock;
+  });
+  await new Promise<void>((r) => wsHttp.listen(0, "127.0.0.1", () => r()));
+  const wsPort = (wsHttp.address() as { port: number }).port;
+
+  seedWholeDataDir(data, stSeed, stationId, memberEp.id(), drive, ws, grantKeys, `http://127.0.0.1:${wsPort}`);
+
+  // Set generic peer-http idle sweep to 1000ms so any non-exempt stream idle > 1s is closed.
+  const wd = startWholeDaemon(bin, data, { STILLFAIL_PEER_HTTP_IDLE_MS: "1000" });
+  await until("ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("mesh bound", () => wd.meshAddr());
+  await until("presence WS connected", () => liveWsSock !== null, 10_000);
+
+  const nowSec = Math.floor(Date.now() / 1000);
+  const jwt1 = signMemberJwt({
+    ws,
+    device: memberEp.id(),
+    sub: "u-alice",
+    email: "alice@example.com",
+    name: "Alice",
+    role: "owner",
+    iat: nowSec - 10,
+    exp: nowSec + 3600,
+    sid: "sid-live-1",
+  });
+  const { conn: adminConn, ctrl, ctrlReader, helloReply } = await openAdminConn(memberEp, stationId, meshAddr, jwt1);
+  assert.equal(helloReply?.ok, true, `admin hello failed: ${JSON.stringify(helloReply)}`);
+
+  const st1 = await adminCall(adminConn, "GET", "/status");
+  assert.equal(st1.status, 200);
+
+  // R3 Item 2: Sleep 1600ms (> 1000ms idle sweep) with control stream 1 completely idle,
+  // then renew credential on the SAME control stream 1 -> MUST succeed (not reset)!
+  await new Promise((r) => setTimeout(r, 1600));
+  const jwt2 = signMemberJwt({
+    ws,
+    device: memberEp.id(),
+    sub: "u-alice",
+    email: "alice@example.com",
+    name: "Alice",
+    role: "owner",
+    iat: nowSec - 5,
+    exp: nowSec + 7200,
+    sid: "sid-live-1",
+  });
+  await writeLine(ctrl, { credential: jwt2 });
+  const renewReply = await ctrlReader.line();
+  assert.equal(renewReply?.ok, true, `control stream 1 renewal after idle failed: ${JSON.stringify(renewReply)}`);
+  const st2 = await adminCall(adminConn, "GET", "/status");
+  assert.equal(st2.status, 200);
+
+  // R3 Item 1a: Push live revocation via cloud presence `state` frame -> active connection
+  // MUST be kicked immediately (`credential_revoked`), so subsequent GET /status fails!
+  liveWsSock!.send(
+    JSON.stringify({
+      type: "state",
+      workspace: ws,
+      workspace_name: "Whole E2E WS",
+      name: "pion-whole-e2e",
+      peers: [{ id: memberEp.id(), name: "peer-station" }],
+      revocations: [{ kind: "sub", id: "u-alice", at: nowSec + 60 }],
+    }),
+  );
+
+  await until("active admin connection kicked after live revocation", async () => {
+    try {
+      await adminCall(adminConn, "GET", "/status", {}, undefined, 1500);
+      return false;
+    } catch {
+      return true;
+    }
+  }, 8_000);
+
+  try { await adminConn.close(0, "done"); } catch {}
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("W16B.9: Real personal lock (onPersonalLock) rejects app device removed from personal lock while admitting active device", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const data = freshDir("person-lock-data");
+  const drive = freshDir("person-lock-drive");
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epGood = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const epRemoved = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epGood, epRemoved);
+
+  const ws = "ws-person-lock";
+  const edKey = () => {
+    const { privateKey, publicKey } = generateKeyPairSync("ed25519");
+    const hex = (publicKey.export({ format: "der", type: "spki" }) as Buffer).subarray(-32).toString("hex");
+    return { hex, id: `ed25519:${hex}`, sign: (b: Buffer) => cryptoSign(null, b, privateKey).toString("hex") };
+  };
+  const signEntry = (e: Omit<Entry, "sig">, k: ReturnType<typeof edKey>): Entry =>
+    ({ ...e, sig: { key: k.id, alg: "Ed25519", sig: k.sign(signedBytes(entryHash(e as Entry))) } }) as Entry;
+
+  const firstDev = { signer: edKey(), base: edKey(), pkey: edKey() };
+  const removedDev = { signer: edKey(), base: edKey(), pkey: edKey() };
+
+  // Build personal lock chain for u-alice: genesis(firstDev) -> add(removedDev) -> device.remove(removedDev)
+  const personalChain: Entry[] = [];
+  const pushP = (kind: string, body: unknown, by: ReturnType<typeof edKey>) => {
+    const last = personalChain[personalChain.length - 1];
+    personalChain.push(
+      signEntry({ v: 1, ws: "person:u-alice", seq: personalChain.length, prev: last ? entryHash(last) : null, at: 1000, kind, body }, by),
+    );
+  };
+  pushP("genesis", { sub: "u-alice", device: { key: firstDev.pkey.id, id: firstDev.base.hex, label: "first" } }, firstDev.pkey);
+  pushP("device", { key: removedDev.pkey.id, id: removedDev.base.hex, label: "removed" }, firstDev.pkey);
+  pushP("device.remove", { key: removedDev.pkey.id }, firstDev.pkey);
+  const personGenesis = entryHash(personalChain[0]!);
+
+  // Build workspace lock chain with BOTH firstDev and removedDev in workspace lock, AND bind u-alice -> personGenesis
+  const wsGen = signEntry(
+    {
+      v: 1,
+      ws,
+      seq: 0,
+      prev: null,
+      at: 1000,
+      kind: "genesis",
+      body: {
+        owner: "u-alice",
+        origins: ["https://app.still.fail"],
+        rp_id: "app.still.fail",
+        cloud_keys: grantKeys,
+        members: [{ sub: "u-alice", email: "alice@example.com", role: "owner" }],
+        devices: [
+          { id: firstDev.base.hex, sub: "u-alice", kind: "app", label: "first", sign_key: firstDev.signer.id },
+          { id: removedDev.base.hex, sub: "u-alice", kind: "app", label: "removed", sign_key: removedDev.signer.id },
+        ],
+        passkeys: [],
+        stations: [{ key: stationId, name: "pion-whole-e2e" }],
+        gateways: [],
+      },
+    },
+    firstDev.signer,
+  );
+  const wsState0 = lockGenesis(wsGen);
+  const wsBind = signEntry(
+    { v: 1, ws, seq: 1, prev: wsState0.head, at: 1001, kind: "person", body: { sub: "u-alice", person: personGenesis } },
+    firstDev.signer,
+  );
+  // Sanity-check our signed entries fold cleanly in shared/lock.ts
+  const wsState1 = lockApply(wsState0, wsBind, 2000);
+  assert.equal(wsState1.persons.get("u-alice"), personGenesis);
+
+  seedWholeDataDir(data, stSeed, stationId, epGood.id(), drive, ws, grantKeys);
+  writeFileSync(join(data, "mesh/lock.json"), JSON.stringify({ entries: [wsGen, wsBind] }), { mode: 0o600 });
+  writeFileSync(join(data, "mesh/person-chains.json"), JSON.stringify({ chains: { [personGenesis]: personalChain } }), { mode: 0o600 });
+
+  const wd = startWholeDaemon(bin, data);
+  await until("ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("mesh bound", () => wd.meshAddr());
+
+  // 1. removedDev is still on workspace lock, but REMOVED from u-alice's personal lock -> MUST BE REFUSED!
+  const jwtRemoved = signMemberJwt({ ws, device: epRemoved.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
+  const badRes = await openAdminConn(epRemoved, stationId, meshAddr, jwtRemoved, {
+    device: removedDev.base.hex,
+    proof: removedDev.base.sign(endpointBytes(ws, epRemoved.id())),
+  });
+  assert.ok(badRes.helloReply?.error, `device removed from personal lock MUST be refused, got: ${JSON.stringify(badRes.helloReply)}`);
+  await badRes.conn.close(0, "done");
+
+  // 2. firstDev is on BOTH workspace lock AND personal lock -> MUST BE ADMITTED!
+  const jwtGood = signMemberJwt({ ws, device: epGood.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
+  const goodRes = await openAdminConn(epGood, stationId, meshAddr, jwtGood, {
+    device: firstDev.base.hex,
+    proof: firstDev.base.sign(endpointBytes(ws, epGood.id())),
+  });
+  assert.equal(goodRes.helloReply?.ok, true, `device on personal lock should be admitted, got: ${JSON.stringify(goodRes.helloReply)}`);
+  const st = await adminCall(goodRes.conn, "GET", "/status");
+  assert.equal(st.status, 200);
+  await goodRes.conn.close(0, "done");
+
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("W16B.10: Per-workspace Drive isolation (no cross-workspace or $HOME fallback) + Drive Content-Length mismatch atomic protection + corrupt whole-handover.json preserved", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const data = freshDir("drive-iso-data");
+  const homeDrive = freshDir("drive-iso-home");
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epHome = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const epJoined = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epHome, epJoined);
+
+  const wsHome = "ws-home-drive";
+  const wsJoined = "ws-joined-empty";
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  mkdirSync(join(data, "run"), { recursive: true });
+  mkdirSync(homeDrive, { recursive: true });
+  writeFileSync(join(homeDrive, "secret.txt"), "HOME-SECRET-ONLY");
+  writeFileSync(join(homeDrive, "existing.bin"), "ORIGINAL-DATA-MUST-STAY");
+  // R3 Item 5: Seed corrupt whole-handover.json -> startup MUST preserve (not delete) it!
+  writeFileSync(join(data, "run/whole-handover.json"), "{corrupt-handover-json");
+
+  writeFileSync(join(data, "mesh/secret.key"), stSeed, { mode: 0o600 });
+  writeFileSync(
+    join(data, "mesh/cloud.json"),
+    JSON.stringify({
+      origin: "",
+      station: stationId,
+      workspace: wsHome,
+      workspace_name: "Home WS",
+      name: "pion-drive-iso",
+      relay_url: "",
+      relay_urls: [],
+      grant_keys: grantKeys,
+      peers: [],
+      revocations: [],
+      joined: [
+        {
+          workspace: wsJoined,
+          workspace_name: "Joined Empty Drive WS",
+          name: "pion-drive-iso",
+          grant_keys: grantKeys,
+          peers: [],
+          revocations: [],
+        },
+      ],
+    }),
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    join(data, "config.json"),
+    JSON.stringify({ engine: "pion", drive: { roots: [homeDrive], workspaces: { [wsJoined]: [] } } }) + "\n",
+  );
+
+  const wd = startWholeDaemon(bin, data);
+  await until("ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("mesh bound", () => wd.meshAddr());
+
+  // Wait until DB is open (on_predecessor_gone completed) -> corrupt whole-handover.json MUST still exist!
+  await until("DB open", () => existsSync(join(data, "stillfail.db")), 10_000);
+  assert.equal(existsSync(join(data, "run/whole-handover.json")), true, "corrupt whole-handover.json must be preserved on disk");
+
+  // 1. Joined workspace with empty drive.workspaces[wsJoined] = [] MUST get 403 for homeDrive, $HOME, and empty root!
+  const jwtJoined = signMemberJwt({ ws: wsJoined, device: epJoined.id(), sub: "u-bob", email: "bob@example.com", name: "Bob", role: "owner" });
+  const jConn = await openAdminConn(epJoined, stationId, meshAddr, jwtJoined);
+  assert.equal(jConn.helloReply?.ok, true, JSON.stringify(jConn.helloReply));
+  const rHomeRoot = await adminCall(jConn.conn, "GET", `/drive/read?root=${encodeURIComponent(homeDrive)}&path=secret.txt&offset=0&length=64`);
+  assert.equal(rHomeRoot.status, 403, `joined ws must NOT read home drive root, got ${rHomeRoot.status}`);
+  const rOsHome = await adminCall(jConn.conn, "GET", `/drive/read?root=${encodeURIComponent(homedir())}&path=.profile&offset=0&length=64`);
+  assert.equal(rOsHome.status, 403, `joined ws must NOT fallback to OS $HOME, got ${rOsHome.status}`);
+  const rEmptyRoot = await adminCall(jConn.conn, "GET", `/drive/read?path=secret.txt&offset=0&length=64`);
+  assert.equal(rEmptyRoot.status, 403, `joined ws with empty roots must refuse empty root, got ${rEmptyRoot.status}`);
+  await jConn.conn.close(0, "done");
+
+  // 2. Home workspace member CAN read homeDrive, and Content-Length mismatch uploads MUST return 400 WITHOUT overwriting existing.bin!
+  const jwtHome = signMemberJwt({ ws: wsHome, device: epHome.id(), sub: "u-alice", email: "alice@example.com", name: "Alice", role: "owner" });
+  const hConn = await openAdminConn(epHome, stationId, meshAddr, jwtHome);
+  assert.equal(hConn.helloReply?.ok, true, JSON.stringify(hConn.helloReply));
+
+  const rOk = await adminCall(hConn.conn, "GET", `/drive/read?root=${encodeURIComponent(homeDrive)}&path=secret.txt&offset=0&length=64`);
+  assert.equal(rOk.status, 200);
+  assert.equal(rOk.body.toString("utf8"), "HOME-SECRET-ONLY");
+
+  // Over-length body (Content-Length: 10, sends 12 bytes) -> 400, existing.bin untouched!
+  const upOver = await adminCall(
+    hConn.conn,
+    "PUT",
+    `/drive/upload?root=${encodeURIComponent(homeDrive)}&path=existing.bin&id=up-over&offset=0&total=10&replace=1`,
+    { "content-type": "application/octet-stream", "content-length": "10" },
+    Buffer.from("0123456789XX"),
+  );
+  assert.equal(upOver.status, 400, `over-length upload must return 400, got ${upOver.status}: ${upOver.body.toString("utf8")}`);
+  assert.equal(readFileSync(join(homeDrive, "existing.bin"), "utf8"), "ORIGINAL-DATA-MUST-STAY");
+
+  // Under-length body (Content-Length: 10, sends 8 bytes) -> 400, existing.bin untouched!
+  const upUnder = await adminCall(
+    hConn.conn,
+    "PUT",
+    `/drive/upload?root=${encodeURIComponent(homeDrive)}&path=existing.bin&id=up-under&offset=0&total=10&replace=1`,
+    { "content-type": "application/octet-stream", "content-length": "10" },
+    Buffer.from("01234567"),
+  );
+  assert.equal(upUnder.status, 400, `under-length upload must return 400, got ${upUnder.status}: ${upUnder.body.toString("utf8")}`);
+  assert.equal(readFileSync(join(homeDrive, "existing.bin"), "utf8"), "ORIGINAL-DATA-MUST-STAY");
+
+  // Out-of-bounds offset + Content-Length > total (6 + 8 > 10) -> 400, existing.bin untouched!
+  const upOob = await adminCall(
+    hConn.conn,
+    "PUT",
+    `/drive/upload?root=${encodeURIComponent(homeDrive)}&path=existing.bin&id=up-oob&offset=6&total=10&replace=1`,
+    { "content-type": "application/octet-stream", "content-length": "8" },
+    Buffer.from("01234567"),
+  );
+  assert.equal(upOob.status, 400, `offset+content-length>total must return 400, got ${upOob.status}`);
+  assert.equal(readFileSync(join(homeDrive, "existing.bin"), "utf8"), "ORIGINAL-DATA-MUST-STAY");
+
+  await hConn.conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
 });

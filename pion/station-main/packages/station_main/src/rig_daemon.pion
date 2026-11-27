@@ -1313,7 +1313,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         None => ()
       }
     },
-    on_handover_start: fn(_ctx : DaemonCtx) -> Unit {},
+    on_handover_start: fn(_ctx : DaemonCtx) -> Result[Unit, String] { Ok(()) },
     on_shutdown: fn(_ctx : DaemonCtx) -> Unit {
       match state_opt {
         Some(st) => {

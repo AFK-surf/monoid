@@ -280,6 +280,7 @@ pub struct ActivePeerHttpStream {
   pub mut write_queue_bytes : Int
   pub mut write_in_flight : Bool
   pub mut finish_pending : Bool
+  pub mut idle_exempt : Bool
 }
 
 pub struct OutboundTell {
@@ -798,6 +799,7 @@ pub struct DaemonCtx {
   request_stop_fn : () -> Unit
   fail_and_stop_fn : (String) -> Unit
   loopback_port_fn : () -> Int
+  shown_loopback_port_fn : () -> Int
   announce_mcp_port_fn : (Int) -> Unit
   enqueue_tell_fn : (String, String, base_codec::Json) -> Unit
   reply_peer_rpc_fn : (Int64, Bytes, Option[DaemonFileStreamPlan], Bool, Bool) -> Unit
@@ -807,6 +809,7 @@ pub struct DaemonCtx {
   close_peer_http_fn : (Int64) -> Unit
   stream_conn_id_fn : (Int64) -> Int64
   peer_http_write_queued_bytes_fn : (Int64) -> Int
+  set_stream_idle_exempt_fn : (Int64, Bool) -> Unit
   close_mesh_conn_fn : (Int64, Bool, Int, String) -> Unit
 }
 
@@ -832,6 +835,17 @@ pub fn DaemonCtx::is_handover_shutdown(self : DaemonCtx) -> Bool {
 /// Return the bound loopback HTTP port (or 0 if not yet listening).
 pub fn DaemonCtx::loopback_port(self : DaemonCtx) -> Int {
   (self.loopback_port_fn)()
+}
+
+/// Return the launcher-announced loopback HTTP port (or 0 if not yet listening).
+pub fn DaemonCtx::shown_loopback_port(self : DaemonCtx) -> Int {
+  (self.shown_loopback_port_fn)()
+}
+
+/// Exempt (or un-exempt) an active full-duplex stream from the generic 60s idle timeout
+/// (used for `stillfail/admin/1` authenticated control streams whose lifecycle is governed by `ServeEndpoint`).
+pub fn DaemonCtx::set_stream_idle_exempt(self : DaemonCtx, sid : Int64, exempt : Bool) -> Unit {
+  (self.set_stream_idle_exempt_fn)(sid, exempt)
 }
 
 /// Return the parent mesh connection ID for an active full-duplex stream (or -1 if unknown).
@@ -989,7 +1003,8 @@ pub struct DaemonRoleHooks {
   /// Notify role when `cloud.json` / presence roster changes (`wall_sec`, `wall_ms`, `connected`).
   pub on_cloud_changed : (DaemonCtx, Int64, Int64, Bool) -> Unit
   /// Called when the launcher requests a graceful handover (`control.on("handover")`).
-  pub on_handover_start : (DaemonCtx) -> Unit
+  /// Returning `Err(msg)` reports failure to the launcher control channel and marks handover failed.
+  pub on_handover_start : (DaemonCtx) -> Result[Unit, String]
   /// Called during graceful shutdown before closing launcher control, `hub.json`, and `host_shim`.
   pub on_shutdown : (DaemonCtx) -> Unit
   /// Report role-owned live object count for `heap` diagnostics (core adds active conns/streams).
@@ -1165,6 +1180,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let mut role_ready = false
   let mut loopback_announced = false
   let mut loopback_bound_port = 0
+  let mut loopback_shown_port = 0
   let mut hub_written = false
   let mut handover_warned = false
   let mut mesh_bound = false
@@ -1530,6 +1546,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       write_queue_bytes: 0,
       write_in_flight: false,
       finish_pending: false,
+      idle_exempt: false,
     }
     active_peer_http_streams.set(sid, st)
     if role_ready {
@@ -1792,6 +1809,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       stopping = true
     },
     loopback_port_fn: fn() -> Int { loopback_bound_port },
+    shown_loopback_port_fn: fn() -> Int { loopback_shown_port },
     announce_mcp_port_fn: fn(dport : Int) -> Unit {
       let _ = ops_fs.write_text(station_ops::mcp_port_file(data, sep=sep), format_mcp_json(dport), 420)
       let _ = control.serving("mcp", dport)
@@ -1812,6 +1830,12 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       match active_peer_http_streams.get(sid) {
         Some(st) => st.write_queue_bytes
         None => 0
+      }
+    },
+    set_stream_idle_exempt_fn: fn(sid : Int64, exempt : Bool) -> Unit {
+      match active_peer_http_streams.get(sid) {
+        Some(st) => st.idle_exempt = exempt
+        None => ()
       }
     },
     close_mesh_conn_fn: fn(conn_id : Int64, is_front : Bool, code : Int, reason : String) -> Unit {
@@ -1937,7 +1961,14 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   control.on("stop", fn() -> Unit { stopping = true })
   control.on("handover", fn() -> Unit {
     handover_stopping = true
-    (hooks.on_handover_start)(ctx)
+    match (hooks.on_handover_start)(ctx) {
+      Ok(_) => ()
+      Err(msg) => {
+        log("handover start failed: " + msg)
+        handover_failed = true
+        let _ = control.failed("handover start failed: " + msg)
+      }
+    }
     stopping = true
   })
   control.on("hup", fn() -> Unit {
@@ -2349,6 +2380,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
         Some(lp) => lp.admin
         None => port
       }
+      loopback_shown_port = shown
       let _ = ops_fs.write_text(nodepath::join(sep, [run_dir, "ports.json"]), format_ports_json(shown), 420)
       let _ = control.serving("admin", port)
       if !ready_sent {
@@ -2597,13 +2629,21 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
         stream_ids_list.push(kept_streams[si])
       }
 
-      // Enforce 60s idle timeout on full-duplex `PEER_HTTP_ALPN` streams.
+      // Enforce idle timeout on non-exempt full-duplex streams (authenticated `stillfail/admin/1`
+      // control streams are exempt and governed by `ServeEndpoint::poll_member_deadlines`).
+      let eff_idle_ms : Int64 = match station_sys::env_get("STILLFAIL_PEER_HTTP_IDLE_MS") {
+        Some(s) => match base_codec::parse_int64_str(s.trim()) {
+          Some(n) => if n >= 500L { n } else { PEER_HTTP_IDLE_TIMEOUT_MS }
+          None => PEER_HTTP_IDLE_TIMEOUT_MS
+        }
+        None => PEER_HTTP_IDLE_TIMEOUT_MS
+      }
       let ph_keys = active_peer_http_streams.keys()
       for phi in 0..<ph_keys.length() {
         let ph_sid = ph_keys[phi]
         match active_peer_http_streams.get(ph_sid) {
           Some(st) => {
-            if now - st.last_activity_ms >= PEER_HTTP_IDLE_TIMEOUT_MS {
+            if !st.idle_exempt && now - st.last_activity_ms >= eff_idle_ms {
               close_peer_http_internal(ph_sid, true)
             }
           }
