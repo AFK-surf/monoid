@@ -849,7 +849,7 @@ pub fn WholeCore::handle_peer_rpc(
         Some(m) => m
         None => return Err("task.clean requires mirror")
       }
-      match self.remote.clean_mirror_scoped(workspace, peer_station, session, mirror, eff_now) {
+      match self.remote.clean_mirror_scoped(workspace, peer_station, session, mirror) {
         Ok(removed) => return Ok(form::Json::Obj([("removed", form::Json::Bool(removed))]))
         Err(e) => return Err(e)
       }

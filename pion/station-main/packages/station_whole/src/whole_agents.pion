@@ -26,7 +26,7 @@ pub struct WholeAgentsConfig {
   pub data_dir : String
   pub assets_dir : String
   pub runner_bin : String
-  pub mcp_port : Int
+  pub mut mcp_port : Int
   pub home_ws : String
 }
 

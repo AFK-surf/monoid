@@ -1,0 +1,1620 @@
+// Production pure-Pion full-station daemon (`whole_daemon.pion`), assembling `station_whole::WholeCore`
+// onto `daemon_core.pion` with:
+// - Pre-handover preparation (`on_init`): binds inherited `mcp_fd` (or `127.0.0.1:0`), serves `503` on
+//   `/mcp` before readiness, NEVER opens SQLite primary writer before predecessor exit;
+// - Atomic post-predecessor takeover (`on_predecessor_gone`): `WholeCore::open_after_predecessor_gone`
+//   (`before_store` + `register_sqlite_js_lower` + SQLite open/migrate + handover snapshot restore +
+//   crash-recovery token adoption + active job adoption) -> `ctx.mark_role_ready()`;
+// - True full-duplex `PEER_HTTP_ALPN` incremental HTTP/1.1 + streaming Drive upload/download +
+//   half-open SSE chunked streaming (zero EOF deadlock);
+// - Authenticated `PEER_ALPN`/`PEER_BYTES_ALPN` RPC & streaming file upload/download routing;
+// - Graceful `SIGUSR2` handover snapshot export (`<data>/run/whole-handover.json`) and zero-leak shutdown.
+
+import "base_codec"
+import "form"
+import "host_shim"
+import "http1"
+import "nodepath"
+import "station_api"
+import "station_cloud"
+import "station_http"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+import "station_rules_bridge"
+import "station_screens"
+import "station_store"
+import "station_sys"
+import "station_whole"
+
+let WHOLE_HANDOVER_FILE : String = "whole-handover.json"
+let WHOLE_MAX_HTTP_HEAD : Int64 = 65536L
+let WHOLE_MAX_HTTP_BODY : Int64 = 4194304L
+let WHOLE_DRIVE_READ_CHUNK : Int = 65536
+let WHOLE_UPKEEP_EVERY_MS : Int64 = 600000L
+
+struct DriveUploadStreamState {
+  root : String
+  rel : String
+  upload_id : String
+  total : Int64
+  replace : Bool
+  mut cur_offset : Int64
+  mut last_entry : Option[station_screens::DriveEntry]
+  mut failed : Option[station_screens::DriveError]
+}
+
+enum PeerHttpStreamMode {
+  ReadingHead
+  ReadingFixedBody(http1::Request, Int64, Bytes)
+  ReadingChunkedBody(http1::Request, http1::ChunkedDecoder, Bytes)
+  StreamingDriveFixed(http1::Request, Int64, Int64, DriveUploadStreamState)
+  StreamingDriveChunked(http1::Request, http1::ChunkedDecoder, DriveUploadStreamState)
+  SseStreaming(Int)
+  Done
+}
+
+struct PeerHttpConnState {
+  sid : Int64
+  remote_id : String
+  alpn : String
+  is_front : Bool
+  mut mode : PeerHttpStreamMode
+  mut rx_buf : Bytes
+  mut last_sse_ping_ms : Int64
+}
+
+struct WholeDriveRpcPutState {
+  root : String
+  rel : String
+  upload_id : String
+  total : Int64
+  replace : Bool
+  mut cur_offset : Int64
+  mut last_entry : Option[station_screens::DriveEntry]
+}
+
+struct WholeRuntimeState {
+  core : station_whole::WholeCore
+  mcp_srv : station_http::HttpServer
+  mcp_cb : station_http::ServerCallbacks
+  http_streams : Map[Int64, PeerHttpConnState]
+  drive_rpc_puts : Map[Int64, WholeDriveRpcPutState]
+  rig_put_streams : Map[Int64, StreamPutCtx]
+  mut mcp_announced : Bool
+  mut handover_exported : Bool
+  mut becoming_rig : Bool
+  mut last_event_seq : Int64
+  mut next_upkeep_ms : Int64
+}
+
+fn encode_http1_response_wire(resp : station_http::HttpResponse) -> Bytes {
+  let headers : Array[http1::Header] = []
+  let mut has_cl = false
+  let mut has_conn = false
+  for i in 0..<resp.headers.length() {
+    let h = resp.headers[i]
+    if station_http::ascii_eq_ci(h.name, "content-length") {
+      has_cl = true
+    } else if station_http::ascii_eq_ci(h.name, "connection") {
+      has_conn = true
+    }
+    headers.push(h)
+  }
+  let bodyless = resp.status < 200 || resp.status == 204 || resp.status == 304
+  if !bodyless && !has_cl {
+    headers.push(http1::Header::new("Content-Length", resp.body.length().to_string()))
+  }
+  if !has_conn {
+    headers.push(http1::Header::new("Connection", "close"))
+  }
+  let reason = if resp.reason.length() > 0 { resp.reason } else { station_http::status_reason(resp.status) }
+  match http1::encode_response(http1::Version::Http11, resp.status, reason, headers) {
+    Ok(head_b) => if bodyless || resp.body.length() == 0 { head_b } else { concat_bytes_local(head_b, resp.body) }
+    Err(_) => ("HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").to_bytes()
+  }
+}
+
+fn encode_http1_chunk(data : Bytes) -> Bytes {
+  if data.length() == 0 {
+    return Bytes::new(0)
+  }
+  http1::encode_chunk(data)
+}
+
+fn encode_sse_frame(event_name : String, data_str : String, id_opt : Option[String] = None) -> Bytes {
+  let sb = StringBuilder::new()
+  match id_opt {
+    Some(id) => if id.length() > 0 { sb.write_string("id: " + id + "\n") }
+    None => ()
+  }
+  if event_name.length() > 0 {
+    sb.write_string("event: " + event_name + "\n")
+  }
+  sb.write_string("data: " + data_str + "\n\n")
+  sb.to_string().to_bytes()
+}
+
+fn parse_drive_roots_from_cfg(cfg_raw : base_codec::Json, fallback : String) -> Array[String] {
+  let out : Array[String] = []
+  match station_sys::env_get("STILLFAIL_DRIVE_ROOTS") {
+    Some(env_roots) => {
+      if env_roots.length() > 0 {
+        let parts = env_roots.split(",")
+        for i in 0..<parts.length() {
+          let p = parts[i].trim()
+          if p.length() > 0 {
+            out.push(p)
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  if out.length() == 0 {
+    match base_codec::json_get(cfg_raw, "driveRoots") {
+      Some(base_codec::Json::Arr(arr)) => {
+        for i in 0..<arr.length() {
+          match arr[i] {
+            base_codec::Json::Str(s) => if s.length() > 0 { out.push(s) }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+  }
+  if out.length() == 0 {
+    match base_codec::json_get(cfg_raw, "drive") {
+      Some(drv) => match base_codec::json_get(drv, "roots") {
+        Some(base_codec::Json::Arr(arr)) => {
+          for i in 0..<arr.length() {
+            match arr[i] {
+              base_codec::Json::Str(s) => if s.length() > 0 { out.push(s) }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+  }
+  if out.length() == 0 && fallback.length() > 0 {
+    out.push(fallback)
+  }
+  out
+}
+
+fn build_whole_core_config(ctx : DaemonCtx, now_secs : Double) -> station_whole::WholeCoreConfig {
+  let home_ws = match ctx.cloud.state {
+    Some(s) => if s.workspace.length() > 0 { s.workspace } else { "local" }
+    None => "local"
+  }
+  let allowed : Array[String] = []
+  let full_ms = ctx.cloud.full_memberships(now_secs)
+  for i in 0..<full_ms.length() {
+    let w = full_ms[i].workspace
+    if w.length() > 0 {
+      allowed.push(w)
+    }
+  }
+  let mut has_home = false
+  for i in 0..<allowed.length() {
+    if allowed[i] == home_ws {
+      has_home = true
+    }
+  }
+  if !has_home && home_ws.length() > 0 && ctx.cloud.rig_in(home_ws) is None {
+    allowed.push(home_ws)
+  }
+
+  let rig_ws : Array[String] = []
+  let mut rig_owner_email = ""
+  let mut rig_owner_name = ""
+  let mut rig_person = ""
+  let rig_ms = ctx.cloud.rig_memberships(now_secs)
+  for i in 0..<rig_ms.length() {
+    rig_ws.push(rig_ms[i].workspace)
+    match rig_ms[i].rig {
+      Some(r) => {
+        if rig_person.length() == 0 {
+          rig_owner_email = r.owner_email
+          rig_owner_name = r.owner_name
+          rig_person = r.person
+        }
+      }
+      None => ()
+    }
+  }
+
+  let drive_roots = parse_drive_roots_from_cfg(ctx.cfg_raw, station_sys::homedir())
+  let runner_bin = match ctx.args.app {
+    Some(a) => nodepath::join(ctx.sep, [a, "station", "stillfail-runner"])
+    None => ""
+  }
+  station_whole::WholeCoreConfig::{
+    station_id: ctx.station_key.id,
+    station_build: "0.1.0",
+    data_dir: ctx.data,
+    drive_roots: drive_roots,
+    drive_protected: [ctx.data],
+    assets_dir: nodepath::join(ctx.sep, [ctx.data, "assets"]),
+    runner_bin: runner_bin,
+    mcp_port: 0,
+    home_workspace: home_ws,
+    allowed_workspaces: allowed,
+    rig_workspaces: rig_ws,
+    rig_owner_email: rig_owner_email,
+    rig_owner_name: rig_owner_name,
+    rig_person_lock_id: rig_person,
+  }
+}
+
+fn req_header_ci(headers : Array[http1::Header], name : String) -> Option[String] {
+  for i in 0..<headers.length() {
+    if station_http::ascii_eq_ci(headers[i].name, name) {
+      return Some(headers[i].value)
+    }
+  }
+  None
+}
+
+fn resolve_peer_identity_for_http(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  remote_id : String,
+  headers : Array[http1::Header],
+) -> station_whole::PeerIdentity {
+  if remote_id.length() == 0 {
+    return station_whole::PeerIdentity::Unknown
+  }
+  let now_s = (host_shim::wall_ms() / 1000L).to_double()
+  let roster = build_cloud_roster(ctx.cloud, now_s, ctx.cloud.peers_current)
+  let req_ws : Option[String] = match req_header_ci(headers, "x-stillfail-workspace") {
+    Some(w) => if w.trim().length() > 0 { Some(w.trim()) } else { None }
+    None => None
+  }
+  let ws = match station_mesh::member(roster, remote_id, req_ws) {
+    Ok(w) => w
+    Err(_) => return station_whole::PeerIdentity::Unknown
+  }
+  let email = match req_header_ci(headers, "x-stillfail-email") {
+    Some(e) => if e.trim().length() > 0 { e.trim() } else { "peer@" + ws }
+    None => "peer@" + ws
+  }
+  let role = match req_header_ci(headers, "x-stillfail-role") {
+    Some(r) => {
+      let rt = r.trim()
+      if rt == "viewer" || rt == "member" || rt == "admin" || rt == "owner" { rt } else { "owner" }
+    }
+    None => "owner"
+  }
+  let is_home = ws == core.config.home_workspace
+  let viewer = station_api::Viewer::{
+    email: email,
+    sub: remote_id,
+    name: email,
+    workspace: ws,
+    home: is_home,
+    role: role,
+    device: None,
+  }
+  station_whole::PeerIdentity::AuthenticatedMember(viewer, "ed25519:" + remote_id)
+}
+
+fn drive_entry_json_local(e : station_screens::DriveEntry) -> base_codec::Json {
+  base_codec::json_obj([
+    ("name", base_codec::json_str(e.name)),
+    ("dir", base_codec::json_bool(e.dir)),
+    ("size", base_codec::json_int64(e.size)),
+    ("mtime", base_codec::json_int64(e.mtime)),
+    ("mime", base_codec::json_str(e.mime)),
+  ])
+}
+
+fn drive_code_name_local(c : station_screens::DriveCode) -> String {
+  match c {
+    station_screens::DriveCode::InvalidRequest => "invalid_request"
+    station_screens::DriveCode::NotARoot => "not_a_root"
+    station_screens::DriveCode::NotFound => "not_found"
+    station_screens::DriveCode::PathEscape => "path_escape"
+    station_screens::DriveCode::Protected => "protected"
+    station_screens::DriveCode::Permission => "permission"
+    station_screens::DriveCode::IsADirectory => "is_a_directory"
+    station_screens::DriveCode::NotADirectory => "not_a_directory"
+    station_screens::DriveCode::Exists => "exists"
+    station_screens::DriveCode::UploadLost => "upload_lost"
+    station_screens::DriveCode::NoTrash => "no_trash"
+    station_screens::DriveCode::TooLarge => "too_large"
+    station_screens::DriveCode::Io => "io"
+  }
+}
+
+fn drive_err_http_resp(e : station_screens::DriveError) -> station_http::HttpResponse {
+  let status = station_screens::drive_code_status(e.code)
+  let fields : Array[(String, base_codec::Json)] = [
+    ("error", base_codec::json_str(e.message)),
+    ("code", base_codec::json_str(drive_code_name_local(e.code))),
+  ]
+  match e.have {
+    Some(h) => fields.push(("have", base_codec::json_int64(h)))
+    None => ()
+  }
+  station_api::json_status(status, base_codec::json_obj(fields))
+}
+
+fn resolve_drive_root_for_ws(
+  core : station_whole::WholeCore,
+  ws : String,
+  requested : Option[String],
+) -> Result[String, String] {
+  let allowed = match core.api.workspace_drive_roots.get(ws) {
+    Some(r) => r
+    None => []
+  }
+  if allowed.length() == 0 {
+    return Err("no drive roots authorized for workspace " + ws)
+  }
+  match requested {
+    Some(r) => {
+      if r.length() == 0 {
+        return Ok(allowed[0])
+      }
+      for i in 0..<allowed.length() {
+        if allowed[i] == r {
+          return Ok(r)
+        }
+      }
+      Err("drive root not authorized for workspace " + ws)
+    }
+    None => Ok(allowed[0])
+  }
+}
+
+/// Entrypoint for `stillfail-station-pion run --whole-daemon ...` (or `STILLFAIL_PION_WHOLE_DAEMON=1`).
+pub fn run_whole_daemon(argv : Array[String]) -> Int {
+  let mut state_opt : Option[WholeRuntimeState] = None
+
+  let send_http_resp_and_finish = fn(ctx : DaemonCtx, sid : Int64, resp : station_http::HttpResponse) -> Unit {
+    ctx.write_peer_http_chunk(sid, encode_http1_response_wire(resp))
+    ctx.finish_peer_http(sid)
+  }
+
+  let dispatch_peer_http_request = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    conn : PeerHttpConnState,
+    raw_req : http1::Request,
+    body : Bytes,
+  ) -> Unit {
+    let now_w = host_shim::wall_ms()
+    let peer_id = resolve_peer_identity_for_http(ctx, st.core, conn.remote_id, raw_req.headers)
+    let norm_raw = station_whole::normalize_api_path(raw_req.path)
+    let (norm_path, _, norm_query) = station_http::parse_request_target(norm_raw)
+
+    // Stream large `GET /drive/read` responses in 64 KiB chunks without buffering whole file.
+    if raw_req.method == "GET" && norm_path == "/drive/read" {
+      match peer_id {
+        station_whole::PeerIdentity::Unknown => {
+          send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(403, "unauthenticated peer rejected"))
+          conn.mode = PeerHttpStreamMode::Done
+          return
+        }
+        station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
+          let req_len = match norm_query.get("length") {
+            Some(s) => match base_codec::parse_int64_str(s) {
+              Some(n) => n.to_int()
+              None => 65536
+            }
+            None => match norm_query.get("len") {
+              Some(s) => match base_codec::parse_int64_str(s) {
+                Some(n) => n.to_int()
+                None => 65536
+              }
+              None => 65536
+            }
+          }
+          if req_len > WHOLE_DRIVE_READ_CHUNK {
+            let root = match resolve_drive_root_for_ws(st.core, v.workspace, norm_query.get("root")) {
+              Ok(r) => r
+              Err(msg) => {
+                send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(403, msg))
+                conn.mode = PeerHttpStreamMode::Done
+                return
+              }
+            }
+            let rel = match norm_query.get("path") {
+              Some(p) => if p.length() > 0 { p } else {
+                send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(400, "path is required"))
+                conn.mode = PeerHttpStreamMode::Done
+                return
+              }
+              None => {
+                send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(400, "path is required"))
+                conn.mode = PeerHttpStreamMode::Done
+                return
+              }
+            }
+            let start_off = match norm_query.get("offset") {
+              Some(s) => match base_codec::parse_int64_str(s) {
+                Some(n) => n
+                None => 0L
+              }
+              None => 0L
+            }
+            let first_take = WHOLE_DRIVE_READ_CHUNK
+            match st.core.api.drive.read(root, rel, start_off, first_take, false) {
+              Err(de) => {
+                send_http_resp_and_finish(ctx, conn.sid, drive_err_http_resp(de))
+                conn.mode = PeerHttpStreamMode::Done
+                return
+              }
+              Ok((first_bytes, total_sz, mtime, mime)) => {
+                let avail_total = if total_sz - start_off < req_len.to_int64() {
+                  if total_sz > start_off { total_sz - start_off } else { 0L }
+                } else {
+                  req_len.to_int64()
+                }
+                let ct = if mime.length() > 0 { mime } else { "application/octet-stream" }
+                let hdrs : Array[http1::Header] = [
+                  http1::Header::new("Content-Type", ct),
+                  http1::Header::new("Content-Length", avail_total.to_string()),
+                  http1::Header::new("stillfail-total", total_sz.to_string()),
+                  http1::Header::new("stillfail-mtime", mtime.to_string()),
+                  http1::Header::new(station_api::BUILD_HEADER, st.core.config.station_build),
+                  http1::Header::new("Connection", "close"),
+                ]
+                match http1::encode_response(http1::Version::Http11, 200, "OK", hdrs) {
+                  Ok(hb) => ctx.write_peer_http_chunk(conn.sid, hb)
+                  Err(_) => ()
+                }
+                if first_bytes.length() > 0 {
+                  ctx.write_peer_http_chunk(conn.sid, first_bytes)
+                }
+                let mut cur_off = start_off + first_bytes.length().to_int64()
+                let mut rem = avail_total - first_bytes.length().to_int64()
+                while rem > 0L {
+                  let take = if rem > WHOLE_DRIVE_READ_CHUNK.to_int64() {
+                    WHOLE_DRIVE_READ_CHUNK
+                  } else {
+                    rem.to_int()
+                  }
+                  match st.core.api.drive.read(root, rel, cur_off, take, false) {
+                    Ok((cb, _, _, _)) => {
+                      if cb.length() == 0 {
+                        break
+                      }
+                      ctx.write_peer_http_chunk(conn.sid, cb)
+                      cur_off = cur_off + cb.length().to_int64()
+                      rem = rem - cb.length().to_int64()
+                    }
+                    Err(_) => break
+                  }
+                }
+                ctx.finish_peer_http(conn.sid)
+                conn.mode = PeerHttpStreamMode::Done
+                return
+              }
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+
+    let action = st.core.handle_peer_http(peer_id, raw_req.method, raw_req.path, raw_req.headers, body, now_w)
+    match action {
+      station_http::HandlerAction::Respond(resp) => {
+        send_http_resp_and_finish(ctx, conn.sid, resp)
+        conn.mode = PeerHttpStreamMode::Done
+      }
+      station_http::HandlerAction::UpgradeSse(extra_headers) => {
+        let viewer = match peer_id {
+          station_whole::PeerIdentity::AuthenticatedMember(v, _) => v
+          _ => station_api::Viewer::owner("peer", st.core.config.home_workspace)
+        }
+        let opened = st.core.api.events.open_stream(
+          viewer,
+          station_api::Lang::En,
+          station_api::EventsOpenOptions::{
+            host: false,
+            since: None,
+            brief: false,
+            running: false,
+            spare: None,
+            held_keys: [],
+            supports_live_rates: true,
+          },
+        )
+        let hdrs : Array[http1::Header] = [
+          http1::Header::new("Content-Type", "text/event-stream; charset=utf-8"),
+          http1::Header::new("Cache-Control", "no-cache"),
+          http1::Header::new("Transfer-Encoding", "chunked"),
+          http1::Header::new("Connection", "keep-alive"),
+          http1::Header::new(station_api::BUILD_HEADER, st.core.config.station_build),
+        ]
+        for hi in 0..<extra_headers.length() {
+          let eh = extra_headers[hi]
+          if !station_http::ascii_eq_ci(eh.name, "content-type")
+          && !station_http::ascii_eq_ci(eh.name, "cache-control")
+          && !station_http::ascii_eq_ci(eh.name, "transfer-encoding")
+          && !station_http::ascii_eq_ci(eh.name, "connection")
+          {
+            hdrs.push(eh)
+          }
+        }
+        match http1::encode_response(http1::Version::Http11, 200, "OK", hdrs) {
+          Ok(head_b) => {
+            ctx.write_peer_http_chunk(conn.sid, head_b)
+            for fi in 0..<opened.initial_frames.length() {
+              ctx.write_peer_http_chunk(conn.sid, encode_http1_chunk(opened.initial_frames[fi].to_bytes()))
+            }
+            let open_payload = base_codec::json_stringify(
+              base_codec::json_obj([
+                ("station", base_codec::json_str(st.core.config.station_id)),
+                ("ready", base_codec::json_bool(st.core.ready)),
+              ]),
+            )
+            let initial_sse = encode_sse_frame("open", open_payload)
+            ctx.write_peer_http_chunk(conn.sid, encode_http1_chunk(initial_sse))
+            conn.last_sse_ping_ms = host_shim::now_ms()
+            conn.mode = PeerHttpStreamMode::SseStreaming(opened.client_id)
+          }
+          Err(_) => {
+            let _ = st.core.api.events.disconnect(opened.client_id)
+            send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(500, "sse encode failed"))
+            conn.mode = PeerHttpStreamMode::Done
+          }
+        }
+      }
+      _ => {
+        send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(501, "unsupported handler action"))
+        conn.mode = PeerHttpStreamMode::Done
+      }
+    }
+  }
+
+  let begin_drive_upload_stream = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    conn : PeerHttpConnState,
+    raw_req : http1::Request,
+  ) -> Result[DriveUploadStreamState, station_http::HttpResponse] {
+    let peer_id = resolve_peer_identity_for_http(ctx, st.core, conn.remote_id, raw_req.headers)
+    let viewer = match peer_id {
+      station_whole::PeerIdentity::AuthenticatedMember(v, _) => v
+      _ => return Err(station_api::json_error(403, "unauthenticated peer rejected"))
+    }
+    if viewer.is_read_only() {
+      return Err(station_api::json_error(403, "read-only members cannot change this station"))
+    }
+    if st.core.api.read_only_handover {
+      return Err(station_api::json_error(403, "station is in read-only handover mode"))
+    }
+    let norm_raw = station_whole::normalize_api_path(raw_req.path)
+    let (_, _, q) = station_http::parse_request_target(norm_raw)
+    let root = match resolve_drive_root_for_ws(st.core, viewer.workspace, q.get("root")) {
+      Ok(r) => r
+      Err(msg) => return Err(station_api::json_error(403, msg))
+    }
+    let rel = match q.get("path") {
+      Some(p) => if p.length() > 0 { p } else { return Err(station_api::json_error(400, "path is required")) }
+      None => return Err(station_api::json_error(400, "path is required"))
+    }
+    let up_id = match q.get("id") {
+      Some(u) => if u.length() > 0 { u } else { return Err(station_api::json_error(400, "id is required")) }
+      None => return Err(station_api::json_error(400, "id is required"))
+    }
+    let offset = match q.get("offset") {
+      Some(s) => match base_codec::parse_int64_str(s) {
+        Some(n) => n
+        None => return Err(station_api::json_error(400, "invalid offset"))
+      }
+      None => 0L
+    }
+    let total = match q.get("total") {
+      Some(s) => match base_codec::parse_int64_str(s) {
+        Some(n) => n
+        None => return Err(station_api::json_error(400, "invalid total"))
+      }
+      None => return Err(station_api::json_error(400, "total is required"))
+    }
+    let replace = match q.get("replace") {
+      Some(v) => v == "1"
+      None => false
+    }
+    Ok(DriveUploadStreamState::{
+      root: root,
+      rel: rel,
+      upload_id: up_id,
+      total: total,
+      replace: replace,
+      cur_offset: offset,
+      last_entry: None,
+      failed: None,
+    })
+  }
+
+  let feed_drive_upload_chunk = fn(
+    st : WholeRuntimeState,
+    up : DriveUploadStreamState,
+    chunk : Bytes,
+  ) -> Unit {
+    if up.failed is Some(_) || chunk.length() == 0 {
+      return
+    }
+    match st.core.api.drive.upload(
+      up.root,
+      up.rel,
+      up.upload_id,
+      up.cur_offset,
+      up.total,
+      chunk,
+      up.replace,
+      false,
+      host_shim::wall_ms(),
+    ) {
+      Ok(res) => {
+        up.cur_offset = res.have
+        up.last_entry = res.entry
+      }
+      Err(de) => up.failed = Some(de)
+    }
+  }
+
+  let finish_drive_upload_stream = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    conn : PeerHttpConnState,
+    up : DriveUploadStreamState,
+  ) -> Unit {
+    match up.failed {
+      Some(de) => send_http_resp_and_finish(ctx, conn.sid, drive_err_http_resp(de))
+      None => {
+        let entry_j = match up.last_entry {
+          Some(e) => drive_entry_json_local(e)
+          None => base_codec::json_null()
+        }
+        let resp = station_api::json_ok(
+          base_codec::json_obj([
+            ("have", base_codec::json_int64(up.cur_offset)),
+            ("entry", entry_j),
+          ]),
+        )
+        .with_header(station_api::BUILD_HEADER, st.core.config.station_build)
+        send_http_resp_and_finish(ctx, conn.sid, resp)
+      }
+    }
+    conn.mode = PeerHttpStreamMode::Done
+  }
+
+  let process_peer_http_rx = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    conn : PeerHttpConnState,
+  ) -> Result[Unit, String] {
+    let limits = http1::Limits::default()
+    let mut steps = 0
+    while steps < 32 {
+      steps = steps + 1
+      match conn.mode {
+        PeerHttpStreamMode::Done | PeerHttpStreamMode::SseStreaming(_) => return Ok(())
+        PeerHttpStreamMode::ReadingHead => {
+          if conn.rx_buf.length() == 0 {
+            return Ok(())
+          }
+          match http1::parse_request_with_limits(conn.rx_buf, limits) {
+            Ok(http1::ParseStatus::Partial) => {
+              if conn.rx_buf.length().to_int64() > WHOLE_MAX_HTTP_HEAD {
+                send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(431, "request header too large"))
+                conn.mode = PeerHttpStreamMode::Done
+                return Err("request header too large")
+              }
+              return Ok(())
+            }
+            Err(e) => {
+              send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(400, http1::http_error_string(e)))
+              conn.mode = PeerHttpStreamMode::Done
+              return Err(http1::http_error_string(e))
+            }
+            Ok(http1::ParseStatus::Complete(raw_req, consumed)) => {
+              conn.rx_buf = if consumed < conn.rx_buf.length() {
+                slice_bytes_local(conn.rx_buf, consumed, conn.rx_buf.length())
+              } else {
+                Bytes::new(0)
+              }
+              let norm_raw = station_whole::normalize_api_path(raw_req.path)
+              let (norm_path, _, _) = station_http::parse_request_target(norm_raw)
+              let is_drive_upload = raw_req.method == "PUT" && norm_path == "/drive/upload"
+              match raw_req.framing {
+                http1::Framing::None => {
+                  dispatch_peer_http_request(ctx, st, conn, raw_req, Bytes::new(0))
+                  return Ok(())
+                }
+                http1::Framing::ContentLength(cl) => {
+                  if cl == 0L {
+                    dispatch_peer_http_request(ctx, st, conn, raw_req, Bytes::new(0))
+                    return Ok(())
+                  }
+                  if is_drive_upload {
+                    match begin_drive_upload_stream(ctx, st, conn, raw_req) {
+                      Ok(up) => conn.mode = PeerHttpStreamMode::StreamingDriveFixed(raw_req, cl, 0L, up)
+                      Err(resp) => {
+                        send_http_resp_and_finish(ctx, conn.sid, resp)
+                        conn.mode = PeerHttpStreamMode::Done
+                        return Ok(())
+                      }
+                    }
+                  } else {
+                    if cl < 0L || cl > WHOLE_MAX_HTTP_BODY {
+                      send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(413, "payload too large"))
+                      conn.mode = PeerHttpStreamMode::Done
+                      return Err("payload too large")
+                    }
+                    conn.mode = PeerHttpStreamMode::ReadingFixedBody(raw_req, cl, Bytes::new(0))
+                  }
+                }
+                http1::Framing::Chunked => {
+                  let dec = http1::ChunkedDecoder::with_limits(limits)
+                  if is_drive_upload {
+                    match begin_drive_upload_stream(ctx, st, conn, raw_req) {
+                      Ok(up) => conn.mode = PeerHttpStreamMode::StreamingDriveChunked(raw_req, dec, up)
+                      Err(resp) => {
+                        send_http_resp_and_finish(ctx, conn.sid, resp)
+                        conn.mode = PeerHttpStreamMode::Done
+                        return Ok(())
+                      }
+                    }
+                  } else {
+                    conn.mode = PeerHttpStreamMode::ReadingChunkedBody(raw_req, dec, Bytes::new(0))
+                  }
+                }
+              }
+            }
+          }
+        }
+        PeerHttpStreamMode::ReadingFixedBody(raw_req, expected, acc) => {
+          let need = expected.to_int() - acc.length()
+          if need <= 0 {
+            dispatch_peer_http_request(ctx, st, conn, raw_req, acc)
+            return Ok(())
+          }
+          if conn.rx_buf.length() == 0 {
+            return Ok(())
+          }
+          let avail = conn.rx_buf.length()
+          if avail <= need {
+            let next_acc = concat_bytes_local(acc, conn.rx_buf)
+            conn.rx_buf = Bytes::new(0)
+            if next_acc.length() >= expected.to_int() {
+              dispatch_peer_http_request(ctx, st, conn, raw_req, next_acc)
+              return Ok(())
+            } else {
+              conn.mode = PeerHttpStreamMode::ReadingFixedBody(raw_req, expected, next_acc)
+              return Ok(())
+            }
+          } else {
+            let take = slice_bytes_local(conn.rx_buf, 0, need)
+            conn.rx_buf = slice_bytes_local(conn.rx_buf, need, avail)
+            let next_acc = concat_bytes_local(acc, take)
+            dispatch_peer_http_request(ctx, st, conn, raw_req, next_acc)
+            return Ok(())
+          }
+        }
+        PeerHttpStreamMode::ReadingChunkedBody(raw_req, dec, acc) => {
+          if conn.rx_buf.length() == 0 {
+            return Ok(())
+          }
+          dec.feed(conn.rx_buf)
+          conn.rx_buf = Bytes::new(0)
+          let mut cur_acc = acc
+          while true {
+            match dec.next() {
+              Ok(http1::ChunkStep::Data(c)) => {
+                if cur_acc.length().to_int64() + c.length().to_int64() > WHOLE_MAX_HTTP_BODY {
+                  send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(413, "payload too large"))
+                  conn.mode = PeerHttpStreamMode::Done
+                  return Err("payload too large")
+                }
+                cur_acc = concat_bytes_local(cur_acc, c)
+              }
+              Ok(http1::ChunkStep::NeedMore) => {
+                conn.mode = PeerHttpStreamMode::ReadingChunkedBody(raw_req, dec, cur_acc)
+                return Ok(())
+              }
+              Ok(http1::ChunkStep::Done(_)) => {
+                dispatch_peer_http_request(ctx, st, conn, raw_req, cur_acc)
+                return Ok(())
+              }
+              Err(e) => {
+                send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(400, http1::http_error_string(e)))
+                conn.mode = PeerHttpStreamMode::Done
+                return Err(http1::http_error_string(e))
+              }
+            }
+          }
+          return Ok(())
+        }
+        PeerHttpStreamMode::StreamingDriveFixed(raw_req, expected, got, up) => {
+          let rem = expected - got
+          if rem <= 0L {
+            finish_drive_upload_stream(ctx, st, conn, up)
+            return Ok(())
+          }
+          if conn.rx_buf.length() == 0 {
+            return Ok(())
+          }
+          let avail = conn.rx_buf.length().to_int64()
+          if avail <= rem {
+            let chunk = conn.rx_buf
+            conn.rx_buf = Bytes::new(0)
+            feed_drive_upload_chunk(st, up, chunk)
+            let next_got = got + avail
+            if next_got >= expected {
+              finish_drive_upload_stream(ctx, st, conn, up)
+              return Ok(())
+            } else {
+              conn.mode = PeerHttpStreamMode::StreamingDriveFixed(raw_req, expected, next_got, up)
+              return Ok(())
+            }
+          } else {
+            let take = slice_bytes_local(conn.rx_buf, 0, rem.to_int())
+            conn.rx_buf = slice_bytes_local(conn.rx_buf, rem.to_int(), conn.rx_buf.length())
+            feed_drive_upload_chunk(st, up, take)
+            finish_drive_upload_stream(ctx, st, conn, up)
+            return Ok(())
+          }
+        }
+        PeerHttpStreamMode::StreamingDriveChunked(raw_req, dec, up) => {
+          if conn.rx_buf.length() == 0 {
+            return Ok(())
+          }
+          dec.feed(conn.rx_buf)
+          conn.rx_buf = Bytes::new(0)
+          while true {
+            match dec.next() {
+              Ok(http1::ChunkStep::Data(c)) => {
+                if c.length() > 0 {
+                  feed_drive_upload_chunk(st, up, c)
+                }
+              }
+              Ok(http1::ChunkStep::NeedMore) => {
+                conn.mode = PeerHttpStreamMode::StreamingDriveChunked(raw_req, dec, up)
+                return Ok(())
+              }
+              Ok(http1::ChunkStep::Done(_)) => {
+                finish_drive_upload_stream(ctx, st, conn, up)
+                return Ok(())
+              }
+              Err(e) => {
+                send_http_resp_and_finish(ctx, conn.sid, station_api::json_error(400, http1::http_error_string(e)))
+                conn.mode = PeerHttpStreamMode::Done
+                return Err(http1::http_error_string(e))
+              }
+            }
+          }
+          return Ok(())
+        }
+      }
+    }
+    Ok(())
+  }
+
+  let hooks = DaemonRoleHooks::{
+    role_name: "whole",
+    hears_outside: false,
+    has_mesh_directory: true,
+    accept_peer_http: true,
+    validate_mode: fn(
+      data : String,
+      _ops_fs : station_ops::OpsFs,
+      cloud : station_cloud::CloudStore,
+      now_secs : Double,
+      _sep : String,
+    ) -> Result[Unit, String] {
+      if cloud.is_rig_only(now_secs) {
+        return Err("stillfail-station-pion --whole-daemon refuses rig-only station: " + data)
+      }
+      Ok(())
+    },
+    on_init: fn(ctx : DaemonCtx) -> Result[Unit, String] {
+      let now_secs = (host_shim::wall_ms() / 1000L).to_double()
+      let cfg = build_whole_core_config(ctx, now_secs)
+      let verify_fn = Some(station_cloud::shell_verifier_of_client(ctx.shell_client))
+      let thumb_port = Some(station_whole::os_thumb_port(ctx.shell_client))
+
+      // Pre-handover init ONLY: SQLite MUST NOT be opened until `on_predecessor_gone`!
+      let core = station_whole::WholeCore::init_pre_handover(
+        cfg,
+        thumb_port=thumb_port,
+        verify_fn=verify_fn,
+      )
+      for wi in 0..<cfg.allowed_workspaces.length() {
+        core.api.set_workspace_drive_roots(cfg.allowed_workspaces[wi], cfg.drive_roots)
+      }
+
+      // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
+      // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
+      let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
+      let mcp_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
+        if req.method == "GET" && req.path == "/healthz" {
+          return station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok"))
+        }
+        if req.path == "/mcp" || req.path.starts_with("/mcp/") {
+          let mresp = core.handle_mcp_http(
+            req.method,
+            req.path,
+            req.header("host"),
+            req.header("origin"),
+            req.header("authorization"),
+            req.body_text(),
+            host_shim::wall_ms(),
+          )
+          let resp = station_http::HttpResponse::{
+            status: mresp.status,
+            reason: station_http::status_reason(mresp.status),
+            headers: [http1::Header::new("Content-Type", mresp.content_type)],
+            body: mresp.body.to_bytes(),
+            chunked: false,
+            close_after: false,
+          }
+          return station_http::HandlerAction::Respond(resp)
+        }
+        if req.method == "POST" && (req.path == "/job-notify" || req.path == "/jobs/notify") {
+          if !core.ready {
+            return station_http::HandlerAction::Respond(
+              station_api::json_error(503, "station is not ready"),
+            )
+          }
+          let auth = match req.header("authorization") {
+            Some(a) => a
+            None => ""
+          }
+          let rep = core.agents.jobs.handle_notify(auth, req.body, host_shim::wall_ms())
+          return station_http::HandlerAction::Respond(
+            station_http::HttpResponse::json(rep.status, base_codec::json_stringify(rep.body)),
+          )
+        }
+        if req.method == "POST" && req.path == "/jobs/screen" {
+          if !core.ready {
+            return station_http::HandlerAction::Respond(
+              station_api::json_error(503, "station is not ready"),
+            )
+          }
+          let auth = match req.header("authorization") {
+            Some(a) => a
+            None => ""
+          }
+          let rep = core.agents.jobs.handle_screen(auth, req.body_text(), host_shim::wall_ms())
+          return station_http::HandlerAction::Respond(
+            station_http::HttpResponse::json(rep.status, base_codec::json_stringify(rep.body)),
+          )
+        }
+        station_http::HandlerAction::Respond(station_http::HttpResponse::text(404, "not found"))
+      })
+
+      let mut mcp_fd_used = false
+      match ctx.args.launcher.fds {
+        Some(fds) => {
+          if fds.mcp >= 0 {
+            mcp_srv.listen_fd(fds.mcp)
+            mcp_fd_used = true
+          }
+        }
+        None => ()
+      }
+      if !mcp_fd_used {
+        mcp_srv.listen_loopback(0)
+      }
+
+      let now0 = host_shim::now_ms()
+      state_opt = Some(WholeRuntimeState::{
+        core: core,
+        mcp_srv: mcp_srv,
+        mcp_cb: mcp_cb,
+        http_streams: Map::new(),
+        drive_rpc_puts: Map::new(),
+        rig_put_streams: Map::new(),
+        mcp_announced: false,
+        handover_exported: false,
+        becoming_rig: false,
+        last_event_seq: 0L,
+        // timer: periodic jobs and remote upkeep (10m)
+        next_upkeep_ms: now0 + WHOLE_UPKEEP_EVERY_MS,
+      })
+      Ok(())
+    },
+    on_predecessor_gone: fn(ctx : DaemonCtx) -> Bool {
+      match state_opt {
+        Some(st) => {
+          let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])
+          let snap_opt : Option[station_whole::WholeHandoverSnapshot] = match ctx.ops_fs.read_text(ho_path) {
+            Ok(raw) => {
+              let _ = (ctx.ops_fs.remove)(ho_path)
+              match station_whole::WholeHandoverSnapshot::from_json(raw) {
+                Ok(s) => Some(s)
+                Err(e) => {
+                  ctx.log("ignoring invalid whole handover snapshot: " + e)
+                  None
+                }
+              }
+            }
+            Err(_) => None
+          }
+          let w_now = host_shim::wall_ms()
+          match st.core.open_after_predecessor_gone(
+            true,
+            fn(_dir : String) -> Result[Unit, String] { Ok(()) },
+            handover=snap_opt,
+            wait_ms=5000,
+            now_ms=w_now,
+          ) {
+            Ok(_) => {
+              ctx.mark_role_ready()
+              true
+            }
+            Err(e) => {
+              let msg = "whole_daemon failed to open primary store after predecessor exit: " + e
+              ctx.fail_and_stop(msg)
+              false
+            }
+          }
+        }
+        None => false
+      }
+    },
+    on_peer_rpc: fn(
+      ctx : DaemonCtx,
+      sid : Int64,
+      _line : String,
+      bin_opt : Option[Bytes],
+      auth : PeerAuthInfo,
+      v2_bytes : Bool,
+      is_front : Bool,
+    ) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match auth.route {
+            station_mesh::PeerRouteTarget::BusOutside(_) => {
+              let err_b = station_mesh::encode_peer_answer_err("peer is not another station in this workspace", v2_bytes)
+              ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
+              return
+            }
+            _ => ()
+          }
+          let now_w = host_shim::wall_ms()
+          let req = auth.env.request
+          let method = match base_codec::json_get(req, "method") {
+            Some(base_codec::Json::Str(m)) => m
+            _ => ""
+          }
+          let ws = auth.env.workspace
+
+          // Full-station HTTP-over-RPC bridge (`{ method: "http", httpMethod, path, headers?, body? }`).
+          if method == "http" {
+            let http_method = match base_codec::json_get(req, "httpMethod") {
+              Some(base_codec::Json::Str(m)) => m
+              _ => "GET"
+            }
+            let path = match base_codec::json_get(req, "path") {
+              Some(base_codec::Json::Str(p)) => p
+              _ => "/status"
+            }
+            let hdrs : Array[http1::Header] = [http1::Header::new("x-stillfail-workspace", ws)]
+            match base_codec::json_get(req, "headers") {
+              Some(base_codec::Json::Arr(arr)) => {
+                for hi in 0..<arr.length() {
+                  match arr[hi] {
+                    base_codec::Json::Arr(pair) => {
+                      if pair.length() >= 2 {
+                        match (pair[0], pair[1]) {
+                          (base_codec::Json::Str(k), base_codec::Json::Str(v)) => hdrs.push(http1::Header::new(k, v))
+                          _ => ()
+                        }
+                      }
+                    }
+                    _ => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+            let body_bytes = match bin_opt {
+              Some(b) => b
+              None => match base_codec::json_get(req, "body") {
+                Some(base_codec::Json::Str(s)) => s.to_bytes()
+                _ => Bytes::new(0)
+              }
+            }
+            let peer_id = resolve_peer_identity_for_http(ctx, st.core, auth.remote_id, hdrs)
+            match st.core.handle_peer_http(peer_id, http_method, path, hdrs, body_bytes, now_w) {
+              station_http::HandlerAction::Respond(resp) => {
+                let rh_arr : Array[base_codec::Json] = []
+                for hi in 0..<resp.headers.length() {
+                  rh_arr.push(
+                    base_codec::json_arr([
+                      base_codec::json_str(resp.headers[hi].name),
+                      base_codec::json_str(resp.headers[hi].value),
+                    ]),
+                  )
+                }
+                let res_j = base_codec::json_obj([
+                  ("status", base_codec::json_int(resp.status)),
+                  ("headers", base_codec::json_arr(rh_arr)),
+                  ("body", base_codec::json_str(resp.body.to_string())),
+                ])
+                let reply_b = station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes)
+                ctx.reply_peer_rpc(sid, reply_b, None, v2_bytes, is_front)
+              }
+              _ => {
+                let err_b = station_mesh::encode_peer_answer_err("streaming route requires PEER_HTTP_ALPN", v2_bytes)
+                ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
+              }
+            }
+            return
+          }
+
+          // Streaming Drive read over `PEER_BYTES_ALPN` (`method: "drive.read"`).
+          if method == "drive.read" {
+            let root = match resolve_drive_root_for_ws(
+              st.core,
+              ws,
+              match base_codec::json_get(req, "root") { Some(base_codec::Json::Str(s)) => Some(s), _ => None },
+            ) {
+              Ok(r) => r
+              Err(msg) => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(msg, v2_bytes), None, v2_bytes, is_front)
+                return
+              }
+            }
+            let rel = match base_codec::json_get(req, "path") {
+              Some(base_codec::Json::Str(p)) => p
+              _ => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("path is required", v2_bytes), None, v2_bytes, is_front)
+                return
+              }
+            }
+            let offset = match base_codec::json_get(req, "offset") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0L
+            }
+            let length = match base_codec::json_get(req, "length") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int()
+              _ => WHOLE_DRIVE_READ_CHUNK
+            }
+            match st.core.api.drive.read(root, rel, offset, length, false) {
+              Ok((bytes, total, mtime, mime)) => {
+                let meta = base_codec::json_obj([
+                  ("total", base_codec::json_int64(total)),
+                  ("mtime", base_codec::json_int64(mtime)),
+                  ("mime", base_codec::json_str(mime)),
+                  ("size", base_codec::json_int(bytes.length())),
+                ])
+                if v2_bytes {
+                  let hdr = station_mesh::encode_peer_answer_ok(meta, true, true)
+                  ctx.reply_peer_rpc(sid, concat_bytes_local(hdr, bytes), None, true, is_front)
+                } else {
+                  ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(meta, false, false), None, false, is_front)
+                }
+              }
+              Err(de) => {
+                ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(de.message, v2_bytes), None, v2_bytes, is_front)
+              }
+            }
+            return
+          }
+
+          // Standard `WholeCore::handle_peer_rpc` (full-station `describe` + isolated `MixedRig` RPCs).
+          let params_form = station_rules_bridge::base_to_form(req)
+          match st.core.handle_peer_rpc(auth.remote_id, ws, method, params_form, now_w) {
+            Ok(res_form) => {
+              let res_base = station_rules_bridge::form_to_base(res_form)
+              let reply_b = station_mesh::encode_peer_answer_ok(res_base, false, v2_bytes)
+              ctx.reply_peer_rpc(sid, reply_b, None, v2_bytes, is_front)
+            }
+            Err(msg) => {
+              let err_b = station_mesh::encode_peer_answer_err(msg, v2_bytes)
+              ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
+            }
+          }
+        }
+        None => ()
+      }
+    },
+    on_stream_start: fn(
+      ctx : DaemonCtx,
+      sid : Int64,
+      _line : String,
+      auth : PeerAuthInfo,
+      _v2_bytes : Bool,
+    ) -> StreamStartAction {
+      match state_opt {
+        Some(st) => {
+          if !ctx.is_role_ready() {
+            return StreamStartAction::Reject("station handover in progress")
+          }
+          let req = auth.env.request
+          let method = match base_codec::json_get(req, "method") {
+            Some(base_codec::Json::Str(m)) => m
+            _ => ""
+          }
+          if method == "drive.upload" {
+            let root = match resolve_drive_root_for_ws(
+              st.core,
+              auth.env.workspace,
+              match base_codec::json_get(req, "root") { Some(base_codec::Json::Str(s)) => Some(s), _ => None },
+            ) {
+              Ok(r) => r
+              Err(msg) => return StreamStartAction::Reject(msg)
+            }
+            let rel = match base_codec::json_get(req, "path") {
+              Some(base_codec::Json::Str(p)) => if p.length() > 0 { p } else { return StreamStartAction::Reject("path is required") }
+              _ => return StreamStartAction::Reject("path is required")
+            }
+            let up_id = match base_codec::json_get(req, "id") {
+              Some(base_codec::Json::Str(u)) => if u.length() > 0 { u } else { return StreamStartAction::Reject("id is required") }
+              _ => return StreamStartAction::Reject("id is required")
+            }
+            let offset = match base_codec::json_get(req, "offset") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => 0L
+            }
+            let total = match base_codec::json_get(req, "total") {
+              Some(base_codec::Json::Num(n, _)) => n.to_int64()
+              _ => return StreamStartAction::Reject("total is required")
+            }
+            let replace = match base_codec::json_get(req, "replace") {
+              Some(base_codec::Json::Bool(b)) => b
+              _ => false
+            }
+            st.drive_rpc_puts.set(
+              sid,
+              WholeDriveRpcPutState::{
+                root: root,
+                rel: rel,
+                upload_id: up_id,
+                total: total,
+                replace: replace,
+                cur_offset: offset,
+                last_entry: None,
+              },
+            )
+            return StreamStartAction::Streaming
+          }
+          if method == "file.put" {
+            let now_ms = host_shim::wall_ms()
+            let roster = build_cloud_roster(ctx.cloud, (now_ms / 1000L).to_double(), ctx.cloud.peers_current)
+            match begin_streaming_file_put(roster, auth.remote_id, auth.env, st.core.rig, st.core.remote, now_ms) {
+              Ok(put_ctx) => {
+                st.rig_put_streams.set(sid, put_ctx)
+                return StreamStartAction::Streaming
+              }
+              Err(e) => return StreamStartAction::Reject(e)
+            }
+          }
+          StreamStartAction::BufferBinary(station_jobs::REMOTE_CHUNK + 65536)
+        }
+        None => StreamStartAction::Reject("whole runtime not initialized")
+      }
+    },
+    on_stream_chunk: fn(_ctx : DaemonCtx, sid : Int64, chunk : Bytes) -> Result[Unit, String] {
+      match state_opt {
+        Some(st) => {
+          match st.drive_rpc_puts.get(sid) {
+            Some(up) => {
+              if chunk.length() == 0 {
+                return Ok(())
+              }
+              match st.core.api.drive.upload(
+                up.root,
+                up.rel,
+                up.upload_id,
+                up.cur_offset,
+                up.total,
+                chunk,
+                up.replace,
+                false,
+                host_shim::wall_ms(),
+              ) {
+                Ok(res) => {
+                  up.cur_offset = res.have
+                  up.last_entry = res.entry
+                  Ok(())
+                }
+                Err(de) => Err(de.message)
+              }
+            }
+            None => match st.rig_put_streams.get(sid) {
+              Some(put_ctx) => feed_streaming_put(put_ctx, chunk)
+              None => Err("streaming upload state missing")
+            }
+          }
+        }
+        None => Err("whole runtime not initialized")
+      }
+    },
+    on_stream_end: fn(
+      ctx : DaemonCtx,
+      sid : Int64,
+      _remote_id : String,
+      v2_bytes : Bool,
+      is_front : Bool,
+    ) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match st.drive_rpc_puts.get(sid) {
+            Some(up) => {
+              st.drive_rpc_puts.remove(sid)
+              let entry_j = match up.last_entry {
+                Some(e) => drive_entry_json_local(e)
+                None => base_codec::json_null()
+              }
+              let res_j = base_codec::json_obj([
+                ("have", base_codec::json_int64(up.cur_offset)),
+                ("entry", entry_j),
+              ])
+              ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+              return
+            }
+            None => ()
+          }
+          match st.rig_put_streams.get(sid) {
+            Some(put_ctx) => {
+              st.rig_put_streams.remove(sid)
+              finalize_streaming_put_to_stream(ctx, st.core.remote, sid, put_ctx, v2_bytes, is_front)
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_stream_abort: fn(_ctx : DaemonCtx, sid : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          st.drive_rpc_puts.remove(sid)
+          st.rig_put_streams.remove(sid)
+        }
+        None => ()
+      }
+    },
+    on_peer_http_open: fn(
+      _ctx : DaemonCtx,
+      sid : Int64,
+      remote_id : String,
+      alpn : String,
+      is_front : Bool,
+    ) -> Result[Unit, String] {
+      match state_opt {
+        Some(st) => {
+          st.http_streams.set(
+            sid,
+            PeerHttpConnState::{
+              sid: sid,
+              remote_id: remote_id,
+              alpn: alpn,
+              is_front: is_front,
+              mode: PeerHttpStreamMode::ReadingHead,
+              rx_buf: Bytes::new(0),
+              last_sse_ping_ms: host_shim::now_ms(),
+            },
+          )
+          Ok(())
+        }
+        None => Err("whole runtime not initialized")
+      }
+    },
+    on_peer_http_data: fn(ctx : DaemonCtx, sid : Int64, chunk : Bytes) -> Result[Unit, String] {
+      match state_opt {
+        Some(st) => {
+          match st.http_streams.get(sid) {
+            Some(conn) => {
+              conn.rx_buf = concat_bytes_local(conn.rx_buf, chunk)
+              process_peer_http_rx(ctx, st, conn)
+            }
+            None => Err("unknown peer_http stream")
+          }
+        }
+        None => Err("whole runtime not initialized")
+      }
+    },
+    on_peer_http_end: fn(ctx : DaemonCtx, sid : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match st.http_streams.get(sid) {
+            Some(conn) => {
+              match conn.mode {
+                PeerHttpStreamMode::ReadingFixedBody(raw_req, _, acc) => {
+                  let body = concat_bytes_local(acc, conn.rx_buf)
+                  conn.rx_buf = Bytes::new(0)
+                  dispatch_peer_http_request(ctx, st, conn, raw_req, body)
+                }
+                PeerHttpStreamMode::StreamingDriveFixed(_, _, _, up) => {
+                  finish_drive_upload_stream(ctx, st, conn, up)
+                }
+                _ => ()
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_peer_http_close: fn(_ctx : DaemonCtx, sid : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match st.http_streams.get(sid) {
+            Some(conn) => {
+              match conn.mode {
+                PeerHttpStreamMode::SseStreaming(cid) => {
+                  let _ = st.core.api.events.disconnect(cid)
+                }
+                _ => ()
+              }
+            }
+            None => ()
+          }
+          st.http_streams.remove(sid)
+        }
+        None => ()
+      }
+    },
+    on_outbound_reply: fn(_ctx : DaemonCtx, _method : String, _ref_id : String, _until_opt : Option[Int64]) -> Unit {},
+    on_extra_host_event: fn(_ctx : DaemonCtx, ev : DaemonExtraEvent) -> Unit {
+      match state_opt {
+        Some(st) => {
+          match ev {
+            DaemonExtraEvent::SysEvent(ev_id, sev) => {
+              let _ = st.core.agents.jobs.handle_sys_event(ev_id, sev, host_shim::wall_ms())
+            }
+            DaemonExtraEvent::DoorDone(tok, d) => {
+              let _ = st.mcp_srv.handle_done(tok, d, st.mcp_cb)
+            }
+            DaemonExtraEvent::RoleDone(_, _) => ()
+          }
+        }
+        None => ()
+      }
+    },
+    on_loop_step: fn(ctx : DaemonCtx, _now : Int64, _wall : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          if !st.mcp_announced && st.mcp_srv.is_listening() {
+            st.mcp_announced = true
+            let mport = st.mcp_srv.port()
+            st.core.agents.config.mcp_port = mport
+            st.core.agents.jobs.notify_url = "http://127.0.0.1:" + mport.to_string() + "/job-notify"
+            ctx.announce_mcp_port(mport)
+            ctx.log("mcp server listening on 127.0.0.1:" + mport.to_string())
+          }
+          let _ = st.mcp_srv.tick(st.mcp_cb)
+        }
+        None => ()
+      }
+    },
+    on_tick: fn(ctx : DaemonCtx, now : Int64, wall : Int64) -> Unit {
+      match state_opt {
+        Some(st) => {
+          st.core.on_tick(wall)
+          let _ = st.core.agents.jobs.poll_followed(wall)
+          let _ = st.core.remote.drain_queue(wall)
+
+          // Push live `EventsHub` broadcasts and periodic SSE keepalives to open `PEER_HTTP_ALPN` SSE streams.
+          let hs_keys = st.http_streams.keys()
+          for hi in 0..<hs_keys.length() {
+            let sid = hs_keys[hi]
+            match st.http_streams.get(sid) {
+              Some(conn) => {
+                match conn.mode {
+                  PeerHttpStreamMode::SseStreaming(cid) => {
+                    match st.core.api.events.get_client(cid) {
+                      Some(client) => {
+                        let frames = client.drain_outbox()
+                        if frames.length() > 0 {
+                          for fi in 0..<frames.length() {
+                            ctx.write_peer_http_chunk(sid, encode_http1_chunk(frames[fi].to_bytes()))
+                          }
+                          conn.last_sse_ping_ms = now
+                        } else if now - conn.last_sse_ping_ms >= 15000L {
+                          conn.last_sse_ping_ms = now
+                          ctx.write_peer_http_chunk(sid, encode_http1_chunk(": ping\n\n".to_bytes()))
+                        }
+                      }
+                      None => ()
+                    }
+                  }
+                  _ => ()
+                }
+              }
+              None => ()
+            }
+          }
+
+          if now >= st.next_upkeep_ms {
+            let _ = st.core.agents.jobs.upkeep(wall)
+            let _ = st.core.remote.sweep(wall, low_disk=false, disk_total=None)
+            // timer: periodic jobs and remote upkeep (10m)
+            st.next_upkeep_ms = now + WHOLE_UPKEEP_EVERY_MS
+          }
+        }
+        None => ()
+      }
+    },
+    on_cloud_changed: fn(ctx : DaemonCtx, w_s : Int64, _w_ms : Int64, connected : Bool) -> Unit {
+      match state_opt {
+        Some(st) => {
+          if !connected {
+            return
+          }
+          if ctx.cloud.is_rig_only(w_s.to_double()) && !st.becoming_rig {
+            st.becoming_rig = true
+            ctx.log("station became rig-only: triggering handover to rig process")
+            match station_ops::find_restarter(ctx.ops_fs, ctx.data, station_ops::is_pid_alive, sep=ctx.sep) {
+              Some(target) => {
+                let _ = station_sys::proc_kill(target.pid, station_sys::SIG_USR2, false)
+              }
+              None => ctx.request_stop()
+            }
+          }
+        }
+        None => ()
+      }
+    },
+    on_handover_start: fn(ctx : DaemonCtx) -> Unit {
+      match state_opt {
+        Some(st) => {
+          if st.handover_exported || !st.core.store.is_primary_open() {
+            return
+          }
+          st.handover_exported = true
+          match st.core.export_handover(host_shim::wall_ms()) {
+            Ok(snap) => {
+              let ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_HANDOVER_FILE])
+              let body = base_codec::json_stringify(snap.to_json())
+              let _ = station_ops::write_private(ctx.ops_fs, ho_path, body.to_bytes(), ctx.self_pid, 1, sep=ctx.sep)
+            }
+            Err(e) => ctx.log("failed to export whole handover snapshot: " + e)
+          }
+        }
+        None => ()
+      }
+    },
+    on_shutdown: fn(ctx : DaemonCtx) -> Unit {
+      match state_opt {
+        Some(st) => {
+          // Close all open peer_http streams cleanly.
+          let hs_keys = st.http_streams.keys()
+          for hi in 0..<hs_keys.length() {
+            ctx.close_peer_http(hs_keys[hi])
+            st.http_streams.remove(hs_keys[hi])
+          }
+          st.drive_rpc_puts.clear()
+          st.rig_put_streams.clear()
+          st.mcp_srv.close_with_callbacks(st.mcp_cb)
+          // Stop any managed job child processes by process group.
+          let jobs_list = st.core.agents.jobs.list()
+          let w_end = host_shim::wall_ms()
+          for ji in 0..<jobs_list.length() {
+            if station_jobs::job_state_is_up(jobs_list[ji].state) {
+              let _ = st.core.agents.jobs.stop(jobs_list[ji].id, w_end)
+            }
+          }
+          let _ = st.core.agents.jobs.poll_followed(w_end)
+          let _ = st.core.agents.jobs.tick_stops(w_end)
+          st.core.shutdown()
+        }
+        None => ()
+      }
+    },
+    heap_objects_count: fn() -> Int64 {
+      match state_opt {
+        Some(st) => (st.core.active_object_count() + st.http_streams.length()).to_int64()
+        None => 0L
+      }
+    },
+  }
+
+  run_daemon(argv, hooks)
+}

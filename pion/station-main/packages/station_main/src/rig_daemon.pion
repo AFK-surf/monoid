@@ -194,6 +194,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     role_name: "rig",
     hears_outside: false,
     has_mesh_directory: false,
+    accept_peer_http: false,
     validate_mode: fn(
       data : String,
       ops_fs : station_ops::OpsFs,
@@ -1056,6 +1057,14 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
         None => ()
       }
     },
+    on_peer_http_open: fn(_ctx : DaemonCtx, _sid : Int64, _remote_id : String, _alpn : String, _is_front : Bool) -> Result[Unit, String] {
+      Err("peer_http not supported on rig")
+    },
+    on_peer_http_data: fn(_ctx : DaemonCtx, _sid : Int64, _chunk : Bytes) -> Result[Unit, String] {
+      Err("peer_http not supported on rig")
+    },
+    on_peer_http_end: fn(_ctx : DaemonCtx, _sid : Int64) -> Unit {},
+    on_peer_http_close: fn(_ctx : DaemonCtx, _sid : Int64) -> Unit {},
     on_outbound_reply: fn(_ctx : DaemonCtx, method : String, ref_id : String, until_opt : Option[Int64]) -> Unit {
       if method == "vault.used" && ref_id.length() > 0 {
         match (state_opt, until_opt) {
