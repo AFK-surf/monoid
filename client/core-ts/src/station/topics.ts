@@ -21,7 +21,7 @@ import { PAGE, TRANSCRIPT_PAGE, entriesOf, lettersOf, transcriptOf } from "./cha
 import { type StationsSync, retryAfter, stepShown } from "./sync.ts";
 import type { LinkNet } from "./wire.ts";
 import { screenCard, screensChanged, screensView } from "../screens.ts";
-import { terminalCard, terminalsView } from "../terminals.ts";
+import { terminalCard, terminalsChanged, terminalsView } from "../terminals.ts";
 import { isStationAuthor } from "../titles.ts";
 import { down, downWords, isLetter, members } from "../views/views.ts";
 import { type Link, MEMORY, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
@@ -123,6 +123,7 @@ export class StationTopics implements Owner {
     sync.wanted = (address) => this.#wanted(address);
     sync.onTouched = (address, what) => {
       if (what === "screens") screensChanged(core, address);
+      if (what === "terminals") terminalsChanged(core, address);
     };
     sync.onTold = (address, id, entries) => this.tell(address, id, entries);
   }

@@ -1053,6 +1053,11 @@ export class StationsSync {
     return this.ask(address, "screens", this.#screens(address));
   }
 
+  /// The station's terminals read now, for a person waiting on them (a view of one opened before they were confirmed).
+  readTerminals(address: string): Effect.Effect<void, CoreError> {
+    return this.ask(address, "terminals", this.#terminals(address));
+  }
+
   /// The agents' memory on the station (GET /memory, the `memory` topic), read as a page shows it: each time, as agents
   /// write it while they work and nothing on the stream says so; what was read last (kept in the link's memory) shows
   /// meanwhile. Not read, why: once nothing is held.

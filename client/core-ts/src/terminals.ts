@@ -165,6 +165,7 @@ type Open = {
   input(data: Uint8Array): void;
   resize(cols: number, rows: number): void;
   take(control?: boolean): void;
+  listed(): void;
 };
 
 const opened = new WeakMap<Inner, Map<string, Open>>();
@@ -173,6 +174,11 @@ function openIn(inner: Inner): Map<string, Open> {
   let views = opened.get(inner);
   if (!views) opened.set(inner, (views = new Map()));
   return views;
+}
+
+/// The station's list of terminals changed: notify open views on that station (e.g. mid-session 401/403 abort).
+export function terminalsChanged(inner: Inner, station: string): void {
+  for (const view of openIn(inner).values()) if (view.station === station) view.listed();
 }
 
 /// Returns the station address bound to an open terminal `view` for `client`, if any.
@@ -247,6 +253,16 @@ export function install(): void {
   };
 }
 
+type Outcome =
+  | { reopen: true }
+  | { dropped: true }
+  | { retry: true }
+  | { denied: true }
+  | { outdated: true }
+  | { gone: true }
+  | { authStale: true }
+  | { failed: CoreError };
+
 function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress: Progress, at: [ClientId, RequestId], ctx: SpanContext): Effect.Effect<unknown, CoreError> {
   const name = key(at[0], c.view);
   const open = openIn(inner);
@@ -254,6 +270,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
   return Effect.gen(function* () {
     const addr = yield* Effect.try({ try: () => StationAddr.parse(c.station), catch: asCoreError });
     const station = addr.toString();
+    const startAuthGen = inner.store.authGen.workspaceAuthGen(addr.workspace);
     /// What the page is told, as it is now.
     const state: J = { phase: "connecting", id: c.terminal === "new" ? "" : c.terminal, types: false, typing: null, looking: [], cols: c.ask.cols, rows: c.ask.rows };
     const tell = () => progress({ state: { ...state, looking: [...state.looking] } });
@@ -264,13 +281,22 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
     let again: Deferred.Deferred<void> | null = null;
     let inband = false;
     let takePending = false;
+    const deniedAbort = Deferred.makeUnsafe<void>();
+    let denied = false;
+    const markDenied = () => {
+      denied = true;
+      Deferred.doneUnsafe(deniedAbort, Effect.void);
+      if (again !== null) Deferred.doneUnsafe(again, Effect.void);
+    };
+    const isViewDenied = () => denied || inner.stations.isDenied("terminals", station);
+    const isAuthStale = () => inner.store.authGen.workspaceAuthGen(addr.workspace) !== startAuthGen;
     const write = (bytes: Uint8Array) => {
       if (out !== null) Queue.offerUnsafe(out, bytes);
     };
     open.set(name, {
       station,
       workspace: addr.workspace,
-      authGen: inner.store.authGen.workspaceAuthGen(addr.workspace),
+      authGen: startAuthGen,
       input: (data) => {
         if (!state.types) return;
         for (let i = 0; i < data.length; i += INPUT_MAX) write(frame(KIND.input, data.subarray(i, i + INPUT_MAX)));
@@ -281,29 +307,98 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
       },
       // Switches typing/looking in-band when the station supports KIND.control; falls back to reopening against older stations.
       take: (control = true) => {
-        ask = control ? { ...ask, control: true, taken: undefined } : { ...ask, control: false, taken: undefined };
+        const effective = control && mayDrive(inner, station);
+        ask = effective ? { ...ask, control: true, taken: undefined } : { ...ask, control: false, taken: undefined };
         if (inband && out !== null && state.phase === "live") {
-          write(frame(KIND.control, utf8(JSON.stringify({ control, taken: control, cols: ask.cols, rows: ask.rows }))));
+          write(frame(KIND.control, utf8(JSON.stringify({ control: effective, taken: effective, cols: ask.cols, rows: ask.rows }))));
           takePending = false;
           return;
         }
         takePending = true;
-        if (control) ask = { ...ask, taken: true };
+        if (effective) ask = { ...ask, taken: true };
         if (again !== null && id !== "new") Deferred.doneUnsafe(again, Effect.void);
+      },
+      listed: () => {
+        if (inner.stations.isDenied("terminals", station)) {
+          markDenied();
+        }
       },
     });
     yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
+
+    // Fail closed immediately if GET /terminals already returned 401/403 in this auth generation.
+    if (isViewDenied()) {
+      state.phase = "denied";
+      state.message = t("core-views.screen.denied");
+      tell();
+      return null;
+    }
     tell();
 
-    /// One stream: opened, read until it ends, is to be opened again, or fails.
-    const attempt = Effect.scoped(
+    const confirmedTerminals = () => (inner.stations.isConfirmed("terminals", station) ? inner.stations.terminals(station) : undefined);
+    const hasConfirmedId = (targetId: string) =>
+      (confirmedTerminals()?.terminals ?? []).some((item) => isObject(item) && get(item, "id") === targetId);
+
+    const readConfirmed = (): Effect.Effect<Outcome | null> =>
       Effect.gen(function* () {
+        const readRes = yield* Effect.result(inner.stations.readTerminals(station));
+        if (isViewDenied()) return { denied: true };
+        if (isAuthStale()) return { authStale: true };
+        if (readRes._tag === "Failure") {
+          const st = readRes.failure.status;
+          if (st !== undefined && st >= 400 && st < 500 && st !== 401 && st !== 403 && st !== 404) {
+            return { failed: readRes.failure };
+          }
+          return { retry: true };
+        }
+        if (!inner.stations.isConfirmed("terminals", station)) return { retry: true };
+        return null;
+      });
+
+    /// Enforces current-authGen station confirmation, target existence, and live drive authorization
+    /// before every initial or reconnect `requests.terminalView` handshake.
+    const checkConfirmedTarget = (): Effect.Effect<{ blocked: Outcome } | { sendAsk: TerminalAsk }> =>
+      Effect.gen(function* () {
+        if (isViewDenied()) return { blocked: { denied: true } };
+        if (isAuthStale()) return { blocked: { authStale: true } };
+        if (!inner.stations.isConfirmed("terminals", station)) {
+          const err = yield* readConfirmed();
+          if (err !== null) return { blocked: err };
+        }
+        if (isViewDenied()) return { blocked: { denied: true } };
+        if (isAuthStale()) return { blocked: { authStale: true } };
+        if (confirmedTerminals()?.outdated) return { blocked: { outdated: true } };
+        const canControl = mayDrive(inner, station);
+        if (id === "new") {
+          if (!canControl) {
+            markDenied();
+            return { blocked: { denied: true } };
+          }
+        } else if (!hasConfirmedId(id)) {
+          const err = yield* readConfirmed();
+          if (err !== null) return { blocked: err };
+          if (confirmedTerminals()?.outdated) return { blocked: { outdated: true } };
+          if (!hasConfirmedId(id)) return { blocked: { gone: true } };
+        }
+        const liveControl = mayDrive(inner, station);
+        const sendAsk: TerminalAsk = liveControl ? ask : { ...ask, control: false, taken: undefined };
+        return { sendAsk };
+      });
+
+    /// One stream: confirmed, opened, read until it ends, is to be opened again, or fails.
+    const attempt: Effect.Effect<Outcome> = Effect.scoped(
+      Effect.gen(function* () {
+        const checked = yield* checkConfirmedTarget();
+        if ("blocked" in checked) return checked.blocked;
+        const sendAsk = checked.sendAsk;
         takePending = false; // This request carries the choice so far; a choice made while it opens still needs sending.
-        const opened = yield* Effect.result(inner.stations.requests.terminalView(addr, id, ask, ctx));
-        if (opened._tag === "Failure") return { failed: opened.failure } as const;
+        const opened = yield* Effect.result(inner.stations.requests.terminalView(addr, id, sendAsk, ctx));
+        if (isViewDenied()) return { denied: true };
+        if (isAuthStale()) return { authStale: true };
+        if (opened._tag === "Failure") return { failed: opened.failure };
         const socket: WireSocket = opened.success;
         // A new one is opened once: its reopens are of the terminal it made.
-        if (id === "new") ask = { cols: ask.cols, rows: ask.rows, control: ask.control, ...(takePending && ask.taken ? { taken: true } : {}) };
+        if (id === "new") ask = { cols: ask.cols, rows: ask.rows, control: sendAsk.control, ...(takePending && ask.taken ? { taken: true } : {}) };
         else if (ask.taken && !takePending) ask = { ...ask, taken: undefined };
         const queue = yield* Queue.unbounded<Uint8Array>();
         out = queue;
@@ -323,8 +418,8 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
             Effect.map(Effect.result(socket.reply.body.take), (r) => ({ r }) as const),
             Effect.as(Deferred.await(reopen), { reopen: true } as const),
           );
-          if ("reopen" in next) return { reopen: true } as const;
-          if (next.r._tag === "Failure" || next.r.success === null) return { dropped: true } as const;
+          if ("reopen" in next) return { reopen: true };
+          if (next.r._tag === "Failure" || next.r.success === null) return { dropped: true };
           reader.push(next.r.success);
           for (const f of drainFrames(reader)) {
             if (f.kind === KIND.screen) progress({ screen: true }, f.payload);
@@ -334,7 +429,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
               try {
                 s = JSON.parse(new TextDecoder().decode(f.payload));
               } catch {
-                return { failed: new CoreError("garbled", t("core-misc.terminal.garbled")) } as const;
+                return { failed: new CoreError("garbled", t("core-misc.terminal.garbled")) };
               }
               if (!isObject(s)) continue;
               if (s.inband === true) inband = true;
@@ -351,9 +446,10 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
               tell();
               if (takePending && state.phase !== "ended") {
                 takePending = false;
-                if (!inband) return { reopen: true } as const;
-                write(frame(KIND.control, utf8(JSON.stringify({ control: ask.control, taken: ask.control, cols: ask.cols, rows: ask.rows }))));
-                ask = { ...ask, taken: undefined };
+                const effective = ask.control && mayDrive(inner, station);
+                if (!inband) return { reopen: true };
+                write(frame(KIND.control, utf8(JSON.stringify({ control: effective, taken: effective, cols: ask.cols, rows: ask.rows }))));
+                ask = { ...ask, control: effective, taken: undefined };
               }
             }
           }
@@ -361,32 +457,76 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
       }),
     );
 
-    let misses = 0;
-    for (;;) {
-      const r = yield* attempt;
-      if ("reopen" in r) continue;
-      if ("dropped" in r) {
-        if (state.phase === "ended") return null;
-        misses = 0;
-      } else {
-        const v = verdict(r.failed);
-        if (v !== null) {
-          state.phase = v.phase;
-          state.message = v.message;
+    let authStale = false;
+    const runBody = Effect.scoped(
+      Effect.gen(function* () {
+        let misses = 0;
+        for (;;) {
+          const r = yield* attempt;
+          if ("denied" in r || isViewDenied()) return;
+          if ("authStale" in r || isAuthStale()) {
+            authStale = true;
+            return;
+          }
+          if ("outdated" in r) {
+            state.phase = "outdated";
+            state.message = t("core-views.terminal.outdated");
+            tell();
+            return;
+          }
+          if ("gone" in r) {
+            state.phase = "gone";
+            state.message = t("core-views.terminal.gone");
+            tell();
+            return;
+          }
+          if ("reopen" in r) continue;
+          if ("dropped" in r) {
+            if (state.phase === "ended") return;
+            misses = 0;
+          } else if ("retry" in r) {
+            if (misses >= REOPEN_MS.length) {
+              state.phase = "failed";
+              state.message = t("core-views.terminal.remote");
+              tell();
+              return;
+            }
+          } else {
+            const v = verdict(r.failed);
+            if (v !== null) {
+              state.phase = v.phase;
+              state.message = v.message;
+              tell();
+              return;
+            }
+            if (misses >= REOPEN_MS.length) {
+              state.phase = "failed";
+              state.message = r.failed.message;
+              tell();
+              return;
+            }
+          }
+          state.phase = "reconnecting";
           tell();
-          return null;
+          yield* Effect.sleep(REOPEN_MS[Math.min(misses, REOPEN_MS.length - 1)]!);
+          misses++;
         }
-        if (misses >= REOPEN_MS.length) {
-          state.phase = "failed";
-          state.message = r.failed.message;
-          tell();
-          return null;
-        }
-      }
-      state.phase = "reconnecting";
+      }),
+    );
+
+    const raced = yield* Effect.raceFirst(
+      Effect.as(runBody, "done" as const),
+      Effect.as(Deferred.await(deniedAbort), "denied" as const),
+    );
+    if (raced === "denied" || isViewDenied()) {
+      state.phase = "denied";
+      state.message = t("core-views.screen.denied");
       tell();
-      yield* Effect.sleep(REOPEN_MS[Math.min(misses, REOPEN_MS.length - 1)]!);
-      misses++;
+      return null;
     }
+    if (authStale || isAuthStale()) {
+      return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
+    }
+    return null;
   }).pipe(Effect.scoped);
 }
