@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bf2170d8e](https://github.com/AFK-surf/monoid/commit/bf2170d8e020e0f417ec190fc135ad9c4a994857) refactor(core,mbui): replace manual auth-gen tuple | 2.69 | 3.64 | 15.11 | 38.16 | 58.69 | 33.42 | 68.33 | 103.22 | 117.62 |
 | [42bf07e01](https://github.com/AFK-surf/monoid/commit/42bf07e012517d7a7df70ae2e6c6b1f07d49ef4e) perf(station): reuse fresh Helper grants in macOS  | 2.69 | 3.64 | 15.11 | 38.14 | 58.65 | 33.41 | 68.32 | 102.91 | 130.28 |
 | [387a9d744](https://github.com/AFK-surf/monoid/commit/387a9d744083b417403f1ee91bae198134fd9672) fix(ui): keep adaptive glass ink dark over kind 9  | 2.69 | 3.64 | 15.11 | 38.14 | 58.65 | 33.41 | 68.32 | 102.91 | 130.28 |
 | [b9ab7e501](https://github.com/AFK-surf/monoid/commit/b9ab7e501a7a6cf1265567918fd51c296dd15e04) fix(mbui): explain why typed emails cannot be adde | 2.68 | 3.63 | 15.09 | 38.12 | 58.57 | 33.4 | 68.27 | 103.04 | 133.33 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d93475c74](https://github.com/AFK-surf/monoid/commit/d93475c74b41ea78eb736f7a8102b326d3687209) fix(ci): paginate native-artifacts release assets  | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 102.09 | 138.12 |
 | [b1d1d6c1c](https://github.com/AFK-surf/monoid/commit/b1d1d6c1cd280efcd84bbe20f4c52b9bbc66a506) feat(ui,mbui,core): Markdown marks and lists in th | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 102.09 | 138.12 |
 | [af3969628](https://github.com/AFK-surf/monoid/commit/af396962837fed9c56ccb914c2816c3399efd84b) feat(mbui): migrate pollers, subject-keyed screen  | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 102.09 | 138.12 |
-| [5a3e3166e](https://github.com/AFK-surf/monoid/commit/5a3e3166eac49e576ec3cac9e9f5db2064eb827a) ci(mbui): trim Actions cache footprint below GitHu | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.79 | 102.06 | 130.96 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bf2170d8e](https://github.com/AFK-surf/monoid/commit/bf2170d8e020e0f417ec190fc135ad9c4a994857) refactor(core,mbui): replace manual auth-gen tuple | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.53 |
 | [42bf07e01](https://github.com/AFK-surf/monoid/commit/42bf07e012517d7a7df70ae2e6c6b1f07d49ef4e) perf(station): reuse fresh Helper grants in macOS  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 65.88 |
 | [387a9d744](https://github.com/AFK-surf/monoid/commit/387a9d744083b417403f1ee91bae198134fd9672) fix(ui): keep adaptive glass ink dark over kind 9  | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.69 |
 | [b9ab7e501](https://github.com/AFK-surf/monoid/commit/b9ab7e501a7a6cf1265567918fd51c296dd15e04) fix(mbui): explain why typed emails cannot be adde | 0.59 | 0.78 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.71 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d93475c74](https://github.com/AFK-surf/monoid/commit/d93475c74b41ea78eb736f7a8102b326d3687209) fix(ci): paginate native-artifacts release assets  | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [b1d1d6c1c](https://github.com/AFK-surf/monoid/commit/b1d1d6c1cd280efcd84bbe20f4c52b9bbc66a506) feat(ui,mbui,core): Markdown marks and lists in th | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [af3969628](https://github.com/AFK-surf/monoid/commit/af396962837fed9c56ccb914c2816c3399efd84b) feat(mbui): migrate pollers, subject-keyed screen  | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.75 |
-| [5a3e3166e](https://github.com/AFK-surf/monoid/commit/5a3e3166eac49e576ec3cac9e9f5db2064eb827a) ci(mbui): trim Actions cache footprint below GitHu | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.84 |
