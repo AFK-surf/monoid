@@ -2936,3 +2936,80 @@ test("W16B.13: ACID adopted-runners.db — (a) pre-ACKed real stillfail-runner +
   wdFail2.sendCtrl({ op: "stop" });
   assert.equal(await wdFail2.waitExit(), 0, wdFail2.stderr());
 });
+
+test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified ConfigFile settings (mcpServers/updates), and workspaces", { skip: process.platform === "win32" }, async () => {
+  const smokeRes = spawnSync(bin, ["--smoke-vault-sqlite"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(smokeRes.status, 0, `--smoke-vault-sqlite failed: ${smokeRes.stderr}`);
+  const smokeJson = JSON.parse(smokeRes.stdout.trim());
+  assert.equal(smokeJson.ok, true);
+  assert.equal(smokeJson.sqlite_vault, true);
+
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = mkdtempSync(join(tmpdir(), "stillfail-w17c2-e2e-"));
+  dirs.push(base);
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner);
+
+  const ws = "ws-w17c2";
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
+
+  const wd = startWholeDaemon(bin, data);
+  await until("w17c2 daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("w17c2 mesh bound", () => wd.meshAddr());
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+
+  // 1. Vault HTTP routes wired (no 404 unsupported api op; 409 vault_needs_lock without pinned lock)
+  for (const path of ["/vault/vaults", "/vault/discover", "/vault/asks", "/vault/joins"]) {
+    const r = await adminCall(conn, "GET", path);
+    assert.equal(r.status, 409, `GET ${path} expected 409 vault_needs_lock, got ${r.status}: ${r.body.toString()}`);
+    assert.ok(r.body.toString().includes("vault_needs_lock"), `GET ${path} missing vault_needs_lock: ${r.body.toString()}`);
+  }
+  const usesResp = await adminCall(conn, "GET", "/vault/uses");
+  assert.equal(usesResp.status, 200, `GET /vault/uses failed: ${usesResp.body.toString()}`);
+
+  // 2. Unified ConfigFile settings mutations persist to config.json and read back cleanly
+  const putMcp = await adminCall(
+    conn,
+    "PUT",
+    "/mcp-servers",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ servers: { demo: { command: "echo" } } })),
+  );
+  assert.equal(putMcp.status, 200, `PUT /mcp-servers failed: ${putMcp.body.toString()}`);
+  const getMcp = await adminCall(conn, "GET", "/mcp-servers");
+  assert.equal(getMcp.status, 200, `GET /mcp-servers failed: ${getMcp.body.toString()}`);
+  assert.ok(getMcp.body.toString().includes("demo"), `GET /mcp-servers missing persisted server: ${getMcp.body.toString()}`);
+
+  const putCh = await adminCall(
+    conn,
+    "POST",
+    "/updates/channel",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ channel: "beta" })),
+  );
+  assert.equal(putCh.status, 200, `POST /updates/channel failed: ${putCh.body.toString()}`);
+  const cfgDisk = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+  assert.equal(cfgDisk.updateChannel, "beta");
+  assert.equal(cfgDisk.mcpServers?.demo?.command, "echo");
+
+  const wsResp = await adminCall(conn, "GET", "/workspaces");
+  assert.equal(wsResp.status, 200, `GET /workspaces failed: ${wsResp.body.toString()}`);
+  assert.ok(wsResp.body.toString().includes(ws), `GET /workspaces missing ${ws}: ${wsResp.body.toString()}`);
+
+  await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});

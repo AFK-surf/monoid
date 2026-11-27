@@ -1444,6 +1444,7 @@ struct WholeRuntimeState {
   logins : station_whole::LoginsOsRuntime
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
+  upkeep : AsyncUpkeepRunner
   connect_meta : Map[String, ConnectMeta]
   remote_connects : Map[String, RemoteConnectRecord]
   remote_connects_path : String
@@ -1889,20 +1890,59 @@ fn handle_device_tunnel(
         station_devices::DeviceKind::Serial
         | station_devices::DeviceKind::AirPlay
         | station_devices::DeviceKind::AndroidTv => {
-          let kind_name = match spec.kind {
-            station_devices::DeviceKind::Serial => "serial"
-            station_devices::DeviceKind::AirPlay => "airplay"
-            station_devices::DeviceKind::AndroidTv => "android_tv"
-            _ => "unsupported"
+          let kept = station_devices::KeptDevice::{
+            ws: ws,
+            device: spec,
+            owner_sub: "",
+            owner_email: "",
+            owner_name: "",
+            at_secs: 0L,
           }
-          send_refusal(
-            ctx,
-            pstream.sid,
-            501,
-            "device kind '" + kind_name + "' is not supported by pion whole station yet",
-          )
-          pstream.mode = ProxyStreamMode::Done
-          return
+          match resolve_device_tunnel_via_os(st.devices, kept) {
+            ResolvedDeviceTunnel::Tcp(host, port) => (host, port)
+            ResolvedDeviceTunnel::Serial(_path, _baud) => {
+              if is_probe {
+                ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
+                ctx.finish_peer_http(pstream.sid)
+              } else {
+                ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
+                ctx.finish_peer_http(pstream.sid)
+              }
+              pstream.mode = ProxyStreamMode::Done
+              return
+            }
+            ResolvedDeviceTunnel::AirPlay(dev_ref) => {
+              if is_probe {
+                ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
+                ctx.finish_peer_http(pstream.sid)
+              } else {
+                let ap_resp = st.devices.handle_airplay_http(dev_ref, "GET", "/status", [], carry)
+                ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(ap_resp.status, [("content-type", "application/json")]))
+                ctx.write_peer_http_chunk(pstream.sid, ap_resp.body)
+                ctx.finish_peer_http(pstream.sid)
+              }
+              pstream.mode = ProxyStreamMode::Done
+              return
+            }
+            ResolvedDeviceTunnel::AndroidTv(dev_ref) => {
+              if is_probe {
+                ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(200, []))
+                ctx.finish_peer_http(pstream.sid)
+              } else {
+                let atv_resp = st.devices.handle_android_tv_http(dev_ref, "GET", "/status", carry)
+                ctx.write_peer_http_chunk(pstream.sid, encode_proxy_head_line(atv_resp.status, [("content-type", "application/json")]))
+                ctx.write_peer_http_chunk(pstream.sid, atv_resp.body)
+                ctx.finish_peer_http(pstream.sid)
+              }
+              pstream.mode = ProxyStreamMode::Done
+              return
+            }
+            ResolvedDeviceTunnel::Refuse(code, msg) => {
+              send_refusal(ctx, pstream.sid, code, msg)
+              pstream.mode = ProxyStreamMode::Done
+              return
+            }
+          }
         }
       }
       if is_probe {
@@ -5467,6 +5507,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         cfg,
         thumb_port=thumb_port,
         verify_fn=verify_fn,
+        config_file_override=Some(ctx.config_file),
       )
       // Watch `config.json` directory so external edits hot-reload `disabledRuntimes` via `ConfigFile::listen`.
       match core.config_file {
@@ -6054,6 +6095,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       }
 
       let now0 = host_shim::now_ms()
+      wire_whole_core_runtime_hooks(ctx, core, logins, browser)
+      let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
         replica: replica,
@@ -6062,6 +6105,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         logins: logins,
         browser: browser,
         connects: connects,
+        upkeep: upkeep,
         connect_meta: connect_meta,
         remote_connects: remote_connects,
         remote_connects_path: remote_connects_path,
@@ -7261,7 +7305,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             _ => ()
           }
           let now_sys = host_shim::now_ms()
-          if st.devices.handle_sys_event(ev_id, sev) {
+          if st.devices.handle_sys_event(ev_id, sev, now_sys) {
+            return
+          }
+          if st.upkeep.handle_sys_event(ev_id, sev) {
             return
           }
           if st.terminals.handle_sys_event(ev_id, sev, now_sys) {
@@ -7314,6 +7361,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       match state_opt {
         Some(st) => {
           st.core.on_tick(wall)
+          let _ = flush_admin_sse_clients(ctx, st.core, st.admin_streams)
+          st.upkeep.tick(now, false)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)
@@ -7662,6 +7711,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
           // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
           st.connects.stop()
+          st.upkeep.shutdown()
           st.browser.stop_all()
           let _ = st.browser.drain_kills_with_hub(max_ms=500L)
           st.terminals.stop_all()

@@ -2110,6 +2110,7 @@ pub fn DevicesOsRuntime::handle_sys_event(
   self : DevicesOsRuntime,
   event_id : Int64,
   ev : station_sys::SysEvent,
+  now_ms : Int64 = -1L,
 ) -> Bool {
   match self.mdns_scans.get(event_id) {
     Some(scan) => {
@@ -2118,7 +2119,8 @@ pub fn DevicesOsRuntime::handle_sys_event(
           scan.packets.push(station_devices::parse_mdns_packet(dg.data))
         }
         station_sys::SysEvent::UdpClosed => {
-          self.finalize_mdns_scan(scan, (self.now_fn)())
+          let mono_now = if now_ms >= 0L { now_ms } else { (self.now_fn)() }
+          self.finalize_mdns_scan(scan, mono_now)
         }
         _ => ()
       }

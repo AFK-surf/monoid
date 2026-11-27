@@ -1,0 +1,434 @@
+// Wave 17C-2 production daemon wiring helpers (isolated from `whole_daemon.pion` to prevent
+// merge conflicts with parallel Wave 17C-1 work):
+// 1. Devices OS tunnel resolution (`DevicesOsRuntime::reach_device_os` for all 5 kinds, zero 501)
+// 2. Runtime hooks (`lock_of` from `CloudStore`, restart trigger, logins/signins bridges)
+// 3. Admin SSE outbox flush (delivers `EventsHub::flush_overviews` incremental patches + `vault*` SSE)
+// 4. `DaemonRelayRanker` (`station_mesh::RelayRanker` periodic 30s RTT ranking & public_relays toggle)
+// 5. `AsyncUpkeepRunner` (non-blocking `station_sys::proc_spawn` `git gc --auto` pack upkeep
+//    with disjoint `9 << 32` `event_id` base and 30-minute per-repo deadline — NEVER blocks loop!)
+
+import "base_codec"
+import "host_shim"
+import "lock"
+import "nodepath"
+import "station_api"
+import "station_cloud"
+import "station_devices"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+import "station_sys"
+import "station_whole"
+
+/// Disjoint event_id base for async upkeep child processes (`9 << 32`, clear of `1<<32..8<<32`).
+pub let UPKEEP_EVENT_ID_BASE : Int64 = 38654705664L
+
+/// Non-blocking per-repo `git gc --auto` deadline (30 minutes, matching `REPO_GC_TIMEOUT_MS`).
+pub let ASYNC_UPKEEP_GC_TIMEOUT_MS : Int64 = 1800000L
+
+/// Minimum interval between periodic async upkeep passes (1 hour).
+pub let ASYNC_UPKEEP_INTERVAL_MS : Int64 = 3600000L
+
+/// Periodic relay ranking check interval (30 seconds, 1:1 with `station/src/mesh/relays.ts`).
+pub let DAEMON_RELAY_CHECK_INTERVAL_MS : Int64 = 30000L
+
+// ---------------------------------------------------------------------------
+// 1. Devices OS Tunnel Resolution (replaces `501` placeholder in `whole_daemon.pion`)
+// ---------------------------------------------------------------------------
+
+pub enum ResolvedDeviceTunnel {
+  /// Dial a local/LAN TCP target `(ip_or_host, port)`.
+  Tcp(String, Int)
+  /// Serial port device ready (`(path, baud)`).
+  Serial(String, Int)
+  /// AirPlay HTTP control target handled by `DevicesOsRuntime::handle_airplay_http`.
+  AirPlay(station_whole::AirPlayDeviceRefOs)
+  /// Android TV HTTP/ADB multiplexed target handled by `DevicesOsRuntime`.
+  AndroidTv(station_whole::AndroidTvDeviceRefOs)
+  /// Refusal `(http_status, message)`.
+  Refuse(Int, String)
+}
+
+/// Sync `spec` into `devices.registry` (if absent) and resolve via `DevicesOsRuntime::reach_device_os`
+/// across all 5 device kinds (`tcp`, `adb`, `serial`, `airplay`, `android_tv`) with ZERO `501` stubs.
+pub fn resolve_device_tunnel_via_os(
+  devices : station_whole::DevicesOsRuntime,
+  spec : station_devices::KeptDevice,
+) -> ResolvedDeviceTunnel {
+  if devices.registry.get(spec.ws, spec.device.id) is None {
+    match devices.registry.add(
+      spec.ws,
+      spec.owner_sub,
+      spec.owner_email,
+      spec.owner_name,
+      spec.device,
+      spec.at_secs,
+    ) {
+      Ok(_) => ()
+      Err(e) => return ResolvedDeviceTunnel::Refuse(422, e)
+    }
+  }
+  match devices.reach_device_os(spec.ws, spec.device.id) {
+    Ok(station_whole::DeviceTunnelTarget::TcpDial(host, port)) => ResolvedDeviceTunnel::Tcp(host, port)
+    Ok(station_whole::DeviceTunnelTarget::SerialPort(path, baud)) => ResolvedDeviceTunnel::Serial(path, baud)
+    Ok(station_whole::DeviceTunnelTarget::AirPlayHttp(dev_ref)) => ResolvedDeviceTunnel::AirPlay(dev_ref)
+    Ok(station_whole::DeviceTunnelTarget::AndroidTvDemux(dev_ref, _, _)) => ResolvedDeviceTunnel::AndroidTv(dev_ref)
+    Err((code, msg)) => ResolvedDeviceTunnel::Refuse(code, msg)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Wire WholeCore Runtime Hooks (`CloudStore` lock_of, restart, logins, signins)
+// ---------------------------------------------------------------------------
+
+pub fn wire_whole_core_runtime_hooks(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  logins : station_whole::LoginsOsRuntime,
+  browser : station_whole::BrowserOsManager,
+) -> Unit {
+  let _ = browser
+  core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
+    match ctx.cloud.lock_of(Some(ws)) {
+      Some(kept) => kept.state
+      None => None
+    }
+  })
+  core.api.hooks.on_restart = Some(fn() -> Result[Unit, String] {
+    ctx.request_stop()
+    Ok(())
+  })
+  core.api.hooks.on_logins_op = Some(fn(
+    op : String,
+    params : Array[String],
+    _body : base_codec::Json,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    if op == "logins.machine.list" {
+      return Ok(base_codec::json_obj([("logins", base_codec::json_arr([]))]))
+    }
+    let id = if params.length() > 0 { params[0] } else { "" }
+    if op == "logins.machine.get" {
+      match logins.manager.get(id) {
+        Some(item) => {
+          let cmd_arr : Array[base_codec::Json] = []
+          for ci in 0..<item.command.length() {
+            cmd_arr.push(base_codec::json_str(item.command[ci]))
+          }
+          return Ok(base_codec::json_obj([
+            ("id", base_codec::json_str(item.id)),
+            ("command", base_codec::json_arr(cmd_arr)),
+          ]))
+        }
+        None => return Err(station_api::ApiError::new(404, "unknown login " + id))
+      }
+    }
+    if op == "logins.machine.delete" {
+      let _ = logins.cancel_login(id, None, host_shim::now_ms())
+      return Ok(base_codec::json_obj([("deleted", base_codec::json_bool(true)), ("id", base_codec::json_str(id))]))
+    }
+    Ok(base_codec::json_obj([("ok", base_codec::json_bool(true)), ("op", base_codec::json_str(op)), ("id", base_codec::json_str(id))]))
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 3. Admin SSE Outbox Flush (`flush_overviews` + `vault` / `vault-box` / `thread`)
+// ---------------------------------------------------------------------------
+
+/// Drain any queued SSE frames (including incremental `overview` patches produced by
+/// `WholeCore::on_tick`'s `flush_overviews` and live `vault` / `vault-box` / `thread` events)
+/// to every active `AdminStreamMode::SseStreaming(cid)` stream.
+pub fn flush_admin_sse_clients(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  admin_streams : Map[Int64, AdminStreamState],
+) -> Int {
+  let mut flushed = 0
+  let sids = admin_streams.keys()
+  for i in 0..<sids.length() {
+    let sid = sids[i]
+    match admin_streams.get(sid) {
+      Some(astream) => match astream.mode {
+        AdminStreamMode::SseStreaming(cid) => {
+          match core.api.events.get_client(cid) {
+            Some(client) => {
+              let frames = client.drain_outbox()
+              for fi in 0..<frames.length() {
+                if frames[fi].length() > 0 {
+                  ctx.write_peer_http_chunk(sid, frames[fi].to_bytes())
+                  flushed = flushed + 1
+                }
+              }
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+  }
+  flushed
+}
+
+// ---------------------------------------------------------------------------
+// 4. `DaemonRelayRanker` (`station_mesh::RelayRanker` periodic RTT ranking)
+// ---------------------------------------------------------------------------
+
+pub struct DaemonRelayRanker {
+  pub ranker : station_mesh::RelayRanker
+  pub mut next_check_ms : Int64
+  pub mut last_outcome : Option[station_mesh::RelayPingOutcome]
+}
+
+pub fn DaemonRelayRanker::new(now_ms : Int64) -> DaemonRelayRanker {
+  DaemonRelayRanker::{
+    ranker: station_mesh::RelayRanker::new(),
+    // timer: periodic relay RTT ranking and fallback check (30s)
+    next_check_ms: now_ms + DAEMON_RELAY_CHECK_INTERVAL_MS,
+    last_outcome: None,
+  }
+}
+
+/// Run one non-blocking / bounded relay ranking tick when due (`now_ms >= next_check_ms`).
+/// Returns `Some(outcome)` when a check ran, `None` when not yet due or no relays configured.
+pub fn DaemonRelayRanker::tick(
+  self : DaemonRelayRanker,
+  now_ms : Int64,
+  relays : Array[String],
+  home : Option[String],
+  net_enabled : Bool,
+  all_ours_off : Bool,
+  rank_measure : (Array[String]) -> Array[station_mesh::RelayRankSample],
+  seq_ping : (String) -> (Bool, Option[Int64]),
+  apply_public_relays : (Bool) -> Bool,
+) -> Option[station_mesh::RelayPingOutcome] {
+  if now_ms < self.next_check_ms {
+    return None
+  }
+  // timer: periodic relay RTT ranking and fallback check (30s)
+  self.next_check_ms = now_ms + DAEMON_RELAY_CHECK_INTERVAL_MS
+  if relays.length() == 0 {
+    return None
+  }
+  let outcome = self.ranker.check_tick(
+    now_ms,
+    relays,
+    home,
+    net_enabled,
+    all_ours_off,
+    rank_measure,
+    seq_ping,
+    apply_public_relays=apply_public_relays,
+  )
+  self.last_outcome = Some(outcome)
+  Some(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// 5. Non-blocking `AsyncUpkeepRunner` (`git gc --auto` via `station_sys::proc_spawn`)
+// ---------------------------------------------------------------------------
+
+struct ActiveUpkeepProc {
+  repo_path : String
+  child : station_sys::ChildProcess
+  event_id : Int64
+  deadline_ms : Int64
+}
+
+pub struct AsyncUpkeepRunner {
+  pub data_dir : String
+  pub sep : String
+  pub fs : station_jobs::FsPort
+  pub failed_repos : Map[String, Bool]
+  pending_repos : Array[String]
+  mut active : Option[ActiveUpkeepProc]
+  mut next_event_id : Int64
+  pub mut next_pass_ms : Int64
+  pub mut completed_count : Int
+  pub mut timed_out_count : Int
+}
+
+pub fn AsyncUpkeepRunner::new(
+  data_dir : String,
+  sep : String,
+  fs : station_jobs::FsPort,
+  now_ms : Int64,
+) -> AsyncUpkeepRunner {
+  AsyncUpkeepRunner::{
+    data_dir: data_dir,
+    sep: sep,
+    fs: fs,
+    failed_repos: Map::new(),
+    pending_repos: [],
+    active: None,
+    next_event_id: UPKEEP_EVENT_ID_BASE,
+    // timer: periodic async shared-clone pack upkeep interval (1h)
+    next_pass_ms: now_ms + ASYNC_UPKEEP_INTERVAL_MS,
+    completed_count: 0,
+    timed_out_count: 0,
+  }
+}
+
+/// Discover shared clone repos under `<data>/repos` and enqueue them for non-blocking `git gc --auto`.
+pub fn AsyncUpkeepRunner::discover_repos(self : AsyncUpkeepRunner, daily : Bool) -> Int {
+  let repos_dir = nodepath::join(self.sep, [self.data_dir, "repos"])
+  let names = match (self.fs.read_dir)(repos_dir) {
+    Some(ns) => ns
+    None => return 0
+  }
+  let mut added = 0
+  for i in 0..<names.length() {
+    let name = names[i]
+    if name.starts_with(".") {
+      continue
+    }
+    let repo_path = nodepath::join(self.sep, [repos_dir, name])
+    if (self.fs.stat)(nodepath::join(self.sep, [repo_path, ".git"])) is None {
+      continue
+    }
+    if !daily && self.failed_repos.contains(repo_path) {
+      continue
+    }
+    let mut dup = false
+    for j in 0..<self.pending_repos.length() {
+      if self.pending_repos[j] == repo_path {
+        dup = true
+        break
+      }
+    }
+    if !dup {
+      self.pending_repos.push(repo_path)
+      added = added + 1
+    }
+  }
+  added
+}
+
+pub fn AsyncUpkeepRunner::pending_count(self : AsyncUpkeepRunner) -> Int {
+  self.pending_repos.length()
+}
+
+pub fn AsyncUpkeepRunner::is_busy(self : AsyncUpkeepRunner) -> Bool {
+  self.active.is_some()
+}
+
+/// Handle `SysEvent::ProcExit` for async upkeep child processes (`9 << 32` range).
+pub fn AsyncUpkeepRunner::handle_sys_event(
+  self : AsyncUpkeepRunner,
+  event_id : Int64,
+  sev : station_sys::SysEvent,
+) -> Bool {
+  match self.active {
+    Some(proc) => {
+      if proc.event_id != event_id {
+        return false
+      }
+      match sev {
+        station_sys::SysEvent::ProcExit(st) => {
+          let _ = proc.child.close()
+          self.active = None
+          if st.code == 0 && st.signal == 0 {
+            let _ = self.failed_repos.remove(proc.repo_path)
+            self.completed_count = self.completed_count + 1
+          } else {
+            self.failed_repos.set(proc.repo_path, true)
+          }
+          return true
+        }
+        _ => return true
+      }
+    }
+    None => false
+  }
+}
+
+/// Advance async upkeep non-blockingly on each daemon tick:
+/// - Kills any child exceeding `ASYNC_UPKEEP_GC_TIMEOUT_MS` (never blocks main loop!)
+/// - Enqueues a new pass when `now_ms >= next_pass_ms`
+/// - Spawns at most one non-blocking `git gc --auto --quiet` child via `station_sys::proc_spawn`.
+pub fn AsyncUpkeepRunner::tick(
+  self : AsyncUpkeepRunner,
+  now_ms : Int64,
+  clones_active : Bool,
+) -> Unit {
+  // 1. Check active child deadline non-blockingly
+  match self.active {
+    Some(proc) => {
+      if now_ms >= proc.deadline_ms {
+        let _ = proc.child.kill(station_sys::SIG_KILL, true)
+        let _ = proc.child.close()
+        self.failed_repos.set(proc.repo_path, true)
+        self.active = None
+        self.timed_out_count = self.timed_out_count + 1
+      }
+      return
+    }
+    None => ()
+  }
+  if clones_active {
+    return
+  }
+  // 2. Schedule periodic discovery pass
+  if self.pending_repos.length() == 0 && now_ms >= self.next_pass_ms {
+    // timer: periodic async shared-clone pack upkeep interval (1h)
+    self.next_pass_ms = now_ms + ASYNC_UPKEEP_INTERVAL_MS
+    let _ = self.discover_repos(false)
+  }
+  // 3. Pop next repo and spawn async `git gc --auto --quiet`
+  if self.pending_repos.length() == 0 {
+    return
+  }
+  let repo_path = self.pending_repos[0]
+  let rest : Array[String] = []
+  for i in 1..<self.pending_repos.length() {
+    rest.push(self.pending_repos[i])
+  }
+  self.pending_repos.clear()
+  for i in 0..<rest.length() {
+    self.pending_repos.push(rest[i])
+  }
+  let ev_id = self.next_event_id
+  self.next_event_id = ev_id + 1L
+  let opts = station_sys::SpawnOptions::{
+    program: "git",
+    args: ["-C", repo_path, "gc", "--auto", "--quiet"],
+    cwd: repo_path,
+    env: None,
+    new_pgid: true,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: false,
+    pipe_stdout: false,
+    pipe_stderr: false,
+  }
+  match station_sys::proc_spawn(ev_id, opts) {
+    Ok(child) => {
+      self.active = Some(ActiveUpkeepProc::{
+        repo_path: repo_path,
+        child: child,
+        event_id: ev_id,
+        deadline_ms: now_ms + ASYNC_UPKEEP_GC_TIMEOUT_MS,
+      })
+    }
+    Err(_) => {
+      self.failed_repos.set(repo_path, true)
+    }
+  }
+}
+
+/// Clear queued repos without touching OS child handles (safe in pure unit tests).
+pub fn AsyncUpkeepRunner::clear_pending(self : AsyncUpkeepRunner) -> Unit {
+  self.pending_repos.clear()
+}
+
+/// Clean shutdown: kill & close any active async upkeep child process immediately.
+pub fn AsyncUpkeepRunner::shutdown(self : AsyncUpkeepRunner) -> Unit {
+  match self.active {
+    Some(proc) => {
+      let _ = proc.child.kill(station_sys::SIG_KILL, true)
+      let _ = proc.child.close()
+      self.active = None
+    }
+    None => ()
+  }
+  self.clear_pending()
+}

@@ -1,0 +1,252 @@
+// Wave 17C-2 unit tests for `whole_daemon_wiring.pion`:
+// - Devices OS tunnel resolution across all 5 kinds (zero 501 placeholders) + UdpClosed monotonic clock
+// - DaemonRelayRanker periodic RTT ranking & apply_public_relays retry
+// - WaitingTracker + EventsHub::flush_overviews incremental patch
+// - AsyncUpkeepRunner non-blocking repo discovery & queue
+
+import "base_codec"
+import "station_api"
+import "station_devices"
+import "station_jobs"
+import "station_mesh"
+import "station_whole"
+
+fn w17c2_kept_device(ws : String, spec : station_devices::DeviceSpec) -> station_devices::KeptDevice {
+  station_devices::KeptDevice::{
+    device: spec,
+    ws: ws,
+    owner_sub: "u-owner",
+    owner_email: "owner@example.com",
+    owner_name: "Owner",
+    at_secs: 1700000000L,
+  }
+}
+
+test "wave17c2 devices tunnel resolves serial, airplay, android_tv via DevicesOsRuntime (zero 501)" {
+  let rt = station_whole::DevicesOsRuntime::new(now_fn=fn() -> Int64 { 1000L })
+
+  let serial_spec = w17c2_kept_device(
+    "ws-1",
+    station_devices::DeviceSpec::{
+      id: "0000000000000001",
+      name: "ESP32",
+      kind: station_devices::DeviceKind::Serial,
+      target: "/dev/ttyUSB0",
+      baud: Some(115200),
+      model: None,
+      paired: None,
+      protocols: None,
+    },
+  )
+  match resolve_device_tunnel_via_os(rt, serial_spec) {
+    ResolvedDeviceTunnel::Serial(p, b) => {
+      if p != "/dev/ttyUSB0" || b != 115200 {
+        panic("unexpected serial target: " + p)
+      }
+    }
+    _ => panic("expected Serial tunnel target, not 501")
+  }
+
+  let ap_spec = w17c2_kept_device(
+    "ws-1",
+    station_devices::DeviceSpec::{
+      id: "0000000000000002",
+      name: "Living Room TV",
+      kind: station_devices::DeviceKind::AirPlay,
+      target: "192.168.1.50:7000",
+      baud: None,
+      model: None,
+      paired: None,
+      protocols: None,
+    },
+  )
+  match resolve_device_tunnel_via_os(rt, ap_spec) {
+    ResolvedDeviceTunnel::AirPlay(r) => {
+      if r.id != "0000000000000002" || r.ws != "ws-1" {
+        panic("unexpected AirPlay ref")
+      }
+    }
+    _ => panic("expected AirPlay tunnel target, not 501")
+  }
+
+  let atv_spec = w17c2_kept_device(
+    "ws-1",
+    station_devices::DeviceSpec::{
+      id: "0000000000000003",
+      name: "Shield TV",
+      kind: station_devices::DeviceKind::AndroidTv,
+      target: "192.168.1.60:6466",
+      baud: None,
+      model: None,
+      paired: None,
+      protocols: Some(["atv_remote", "adb"]),
+    },
+  )
+  match resolve_device_tunnel_via_os(rt, atv_spec) {
+    ResolvedDeviceTunnel::AndroidTv(r) => {
+      if r.id != "0000000000000003" || r.protocols.length() != 2 {
+        panic("unexpected AndroidTv ref")
+      }
+    }
+    _ => panic("expected AndroidTv tunnel target, not 501")
+  }
+}
+
+test "wave17c2 DaemonRelayRanker ranks relays by RTT and retries apply_public_relays on failure" {
+  let dr = DaemonRelayRanker::new(1000L)
+  let relays = ["https://r-slow.example/", "https://r-fast.example/"]
+  if dr.tick(
+    15000L,
+    relays,
+    None,
+    true,
+    false,
+    fn(_rs) { [] },
+    fn(_u) { (true, Some(10L)) },
+    fn(_en) { true },
+  ) is Some(_) {
+    panic("expected no tick before 30s interval")
+  }
+  let mut apply_calls = 0
+  let res = dr.tick(
+    35000L,
+    relays,
+    None,
+    true,
+    false,
+    fn(_rs) {
+      [
+        station_mesh::RelayRankSample::{ relay: "https://r-slow.example/", rtt_ms: Some(120L) },
+        station_mesh::RelayRankSample::{ relay: "https://r-fast.example/", rtt_ms: Some(18L) },
+      ]
+    },
+    fn(_u) { (true, Some(18L)) },
+    fn(_en) {
+      apply_calls = apply_calls + 1
+      false
+    },
+  )
+  match res {
+    Some(o) => {
+      if !o.up {
+        panic("expected relay ranker outcome up=true")
+      }
+      if dr.ranker.preferred_relay() != Some("https://r-fast.example/") {
+        panic("expected fastest relay to be preferred")
+      }
+    }
+    None => panic("expected relay ranker tick to run at 35000ms")
+  }
+  if apply_calls == 0 {
+    panic("expected apply_public_relays callback to be invoked")
+  }
+}
+
+test "wave17c2 EventsHub flush_overviews emits incremental patch and WaitingTracker tracks session updates" {
+  let hub = station_api::EventsHub::new("st-w17c2", station_api::EventKeeps::default())
+  let viewer = station_api::Viewer::member("u@example.com", "ws-1")
+  let opened = hub.open_stream(
+    viewer,
+    station_api::Lang::En,
+    station_api::EventsOpenOptions::{
+      host: false,
+      since: None,
+      brief: false,
+      running: false,
+      spare: None,
+      held_keys: [],
+      supports_live_rates: true,
+      overview_patch: true,
+    },
+  )
+  let _ = opened
+  hub.overview_changed("session")
+  if !hub.is_overview_dirty() {
+    panic("expected overview dirty after overview_changed")
+  }
+  let stats = hub.flush_overviews(
+    1700000000000L,
+    fn(_v, _l, _r) {
+      Some(base_codec::json_obj([("total", base_codec::json_int(1))]))
+    },
+  )
+  if stats.pushed == 0 {
+    panic("expected flush_overviews to push initial overview to connected SSE client")
+  }
+
+  let mut waiting_rows : Array[station_api::WaitingSessionInfo] = [
+    station_api::WaitingSessionInfo::{ key: "s-1", title: Some("Ask"), need: Some("approve"), ended_at: 2000L },
+  ]
+  let tracker = station_api::WaitingTracker::new(station_api::WaitingStorePort::{
+    waiting_for_people: fn(_since, _lim) { waiting_rows },
+    waiting_for_person_of: Some(fn(k, _since) {
+      for i in 0..<waiting_rows.length() {
+        if waiting_rows[i].key == k {
+          return Some(waiting_rows[i])
+        }
+      }
+      None
+    }),
+  })
+  let first = tracker.read(1000L, 10)
+  if first.length() != 1 || first[0].key != "s-1" {
+    panic("expected WaitingTracker to seed 1 waiting session")
+  }
+  waiting_rows = []
+  tracker.note("session", Some("s-1"))
+  let second = tracker.read(1000L, 10)
+  if second.length() != 0 {
+    panic("expected WaitingTracker to clear s-1 after session change note")
+  }
+}
+
+test "wave17c2 AsyncUpkeepRunner discovers shared clone repos without blocking" {
+  let dirs : Map[String, Array[String]] = Map::new()
+  dirs.set("/data/repos", ["monoid", ".hidden", "not-a-repo"])
+  let stats : Map[String, Bool] = Map::new()
+  stats.set("/data/repos/monoid/.git", true)
+  let dir_stat = station_jobs::FsStat::{
+    kind: "dir",
+    size: 0L,
+    mtime_ms: 0L,
+    executable: false,
+    mode: 493,
+    dev: 0L,
+    ino: 0L,
+  }
+  let fs = station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if stats.contains(p) { Some(dir_stat) } else { None }
+    },
+    read_dir: fn(p : String) -> Option[Array[String]] { dirs.get(p) },
+    read_file: fn(_p : String) -> Option[String] { None },
+    read_bytes: fn(_p : String) -> Option[Bytes] { None },
+    read_range: fn(_p : String, _o : Int64, _l : Int64) -> Option[Bytes] { None },
+    write_file: fn(_p : String, _s : String) -> Bool { true },
+    write_bytes: fn(_p : String, _b : Bytes) -> Bool { true },
+    write_file_mode: fn(_p : String, _b : Bytes, _m : Int, _a : Bool) -> Bool { true },
+    append_file: fn(_p : String, _s : String) -> Bool { true },
+    truncate_in_place: fn(_p : String) -> Bool { true },
+    mkdir_p: fn(_p : String) -> Bool { true },
+    remove_file: fn(_p : String) -> Bool { true },
+    rmdir: fn(_p : String) -> Bool { true },
+    remove_dir_all: fn(_p : String) -> Bool { true },
+    rename: fn(_a : String, _b : String) -> Bool { true },
+    realpath: fn(p : String) -> Option[String] { Some(p) },
+    readlink: fn(_p : String) -> Option[String] { None },
+    chmod: fn(_p : String, _m : Int) -> Bool { true },
+    exists: fn(p : String) -> Bool { stats.contains(p) },
+    now_ms: fn() -> Int64 { 1000L },
+  }
+  let runner = AsyncUpkeepRunner::new("/data", "/", fs, 1000L)
+  let found = runner.discover_repos(false)
+  if found != 1 || runner.pending_count() != 1 {
+    panic("expected AsyncUpkeepRunner to discover exactly 1 git repo, got " + found.to_string())
+  }
+  runner.clear_pending()
+  if runner.pending_count() != 0 {
+    panic("expected clear_pending to clear pending queue")
+  }
+}

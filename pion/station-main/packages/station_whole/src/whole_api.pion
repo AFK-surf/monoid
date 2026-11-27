@@ -995,6 +995,8 @@ pub struct WholeApi {
   pub cpu_window : station_api::CpuWindow
   pub mut read_only_handover : Bool
   pub mut edge_status_fn : Option[() -> base_codec::Json]
+  pub hooks : WholeApiRuntimeHooks
+  pub mut waiting_tracker : Option[station_api::WaitingTracker]
   request_now_cell : Array[Int64]
 }
 
@@ -1032,6 +1034,8 @@ pub fn WholeApi::new_with_ports(
     cpu_window: station_api::CpuWindow::new(),
     read_only_handover: true,
     edge_status_fn: None,
+    hooks: WholeApiRuntimeHooks::new(),
+    waiting_tracker: None,
     request_now_cell: [0L],
   }
 }
@@ -1046,7 +1050,15 @@ pub fn WholeApi::new(
   thumb_port : Option[station_screens::ThumbPort] = None,
   config_file : Option[station_ops::ConfigFile] = None,
   config_open_err : Option[station_ops::ConfigError] = None,
+  updates : Option[station_drivers::RuntimeUpdatesManager] = None,
+  waiting_tracker : Option[station_api::WaitingTracker] = None,
 ) -> WholeApi {
+  let eff_updates = match updates {
+    Some(u) => u
+    None => station_drivers::RuntimeUpdatesManager::new()
+  }
+  let hooks = WholeApiRuntimeHooks::new()
+  let runtime_port = WholeApiRuntimePort::production(whole_store, agents, auth_policy.home_workspace)
   let effective_fs = match drive_fs {
     Some(f) => f
     None => os_drive_fs()
@@ -1395,6 +1407,10 @@ pub fn WholeApi::new(
       }
       return Ok(listed.to_json())
     }
+    match dispatch_extra_read_op(op, req, args, agents, seen_store, runtime_port) {
+      Some(res) => return res
+      None => ()
+    }
     Err(station_api::ApiError::new(404, "unsupported read op: " + op))
   }
 
@@ -1685,12 +1701,26 @@ pub fn WholeApi::new(
       }
       return Ok(screens.listed_json(lang, Some(req.viewer.workspace)))
     }
-    if op == "vault.uses.get" {
-      return Ok(
-        base_codec::json_obj([
-          ("activeGrants", base_codec::json_int(whole_store.vault_grants.len())),
-        ]),
-      )
+    match dispatch_extra_call_op(
+      op,
+      req,
+      params,
+      body,
+      whole_store,
+      agents,
+      auth_policy,
+      drive,
+      screens,
+      events,
+      eff_updates,
+      config_file,
+      config_open_err,
+      hooks,
+      runtime_port,
+      now_ms,
+    ) {
+      Some(res) => return res
+      None => ()
     }
     Err(station_api::ApiError::new(404, "unsupported api op: " + op))
   }
@@ -1999,6 +2029,8 @@ pub fn WholeApi::new(
     cpu_window: station_api::CpuWindow::new(),
     read_only_handover: true,
     edge_status_fn: None,
+    hooks: hooks,
+    waiting_tracker: waiting_tracker,
     request_now_cell: request_now_cell,
   }
 }
@@ -2247,12 +2279,13 @@ pub fn WholeApi::handle_authenticated_api_with_status(
   }
 
   // 2. Read-only member gate & pre-handover read-only gate.
+  self.hooks.read_only_handover_cell[0] = self.read_only_handover
   if viewer.is_read_only() && !station_api::read_only_may(method, norm_path) {
     return station_http::HandlerAction::Respond(
       station_api::json_error(403, "read-only members cannot change this station"),
     )
   }
-  if self.read_only_handover && !station_api::read_only_may(method, norm_path) {
+  if self.read_only_handover && !station_api::read_only_may(method, norm_path) && !norm_path.starts_with("/vault/") {
     return station_http::HandlerAction::Respond(
       station_api::json_error(403, "station is in read-only handover mode"),
     )
@@ -2261,6 +2294,13 @@ pub fn WholeApi::handle_authenticated_api_with_status(
   // 3. `GET /status` (or `/api/status`): workspace-scoped `LocalStatus` gated by `OLDEST_CORE`.
   if method == "GET" && norm_path == "/status" {
     let (running, processes) = status_snapshot(viewer)
+    let waiting_list : Array[station_api::WaitingSessionInfo] = match self.waiting_tracker {
+      Some(wt) => {
+        let since = now_ms - station_api::STATUS_WAITING_DAYS.to_int64() * 86400000L
+        wt.read(since, station_api::STATUS_TASKS_MOST)
+      }
+      None => []
+    }
     let st_out = station_api::status_of(station_api::StatusInput::{
       version: self.auth_policy.station_build,
       cloud: Some(station_api::StatusCloudState::{
@@ -2273,7 +2313,7 @@ pub fn WholeApi::handle_authenticated_api_with_status(
       reached: true,
       running: running,
       processes: processes,
-      waiting: [],
+      waiting: waiting_list,
       health: None,
     })
     let base_status_json = st_out.to_json()

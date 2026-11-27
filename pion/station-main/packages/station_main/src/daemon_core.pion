@@ -798,7 +798,8 @@ pub struct DaemonCtx {
   pub self_pid : Int
   pub ops_fs : station_ops::OpsFs
   pub shell_client : builders_core::ShellClient
-  pub cfg_raw : base_codec::Json
+  pub config_file : station_ops::ConfigFile
+  pub mut cfg_raw : base_codec::Json
   pub cloud : station_cloud::CloudStore
   pub station_key : station_cloud::StationKey
   pub control : station_ops::LauncherChannel
@@ -1186,16 +1187,16 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     }
   }
 
-  // Open `config.json`.
+  // Open unified `ConfigFile` (shared with `WholeCore` to eliminate dual-instance snapshot drift).
   let env_cfg = station_sys::env_get("STILLFAIL_CONFIG")
-  let cfg_raw = match station_ops::ConfigFile::open(
+  let config_file = match station_ops::ConfigFile::open(
     ops_fs,
     data,
     env_config=env_cfg,
     pid=self_pid,
     sep=sep,
   ) {
-    Ok(c) => c.value
+    Ok(c) => c
     Err(e) => {
       let msg = "failed to read config.json: " + station_ops::config_err_msg(e)
       log(msg)
@@ -1204,6 +1205,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       return 1
     }
   }
+  let cfg_raw = config_file.value
 
   // Open `cloud.json` and let the role validate mode compatibility.
   let shell_client = builders_core::ShellClient::new()
@@ -1933,6 +1935,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     self_pid: self_pid,
     ops_fs: ops_fs,
     shell_client: shell_client,
+    config_file: config_file,
     cfg_raw: cfg_raw,
     cloud: cloud,
     station_key: station_key,
@@ -2238,10 +2241,14 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   }
 
   // 2. Mesh endpoint (`front.sock` or direct `iroh.bind` fallback).
-  let relay_urls : Array[String] = match cloud.state {
+  let mut relay_urls : Array[String] = match cloud.state {
     Some(s) => s.relay_urls
     None => []
   }
+  let daemon_relay_ranker = DaemonRelayRanker::new(host_shim::now_ms())
+  let _ = config_file.listen(fn(next_raw : base_codec::Json) -> Unit {
+    ctx.cfg_raw = next_raw
+  })
   let discovery = match station_sys::env_get("STILLFAIL_NO_DISCOVERY") {
     Some("1") => false
     _ => true
@@ -2695,9 +2702,38 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       next_heartbeat_ms = now + 10000L
     }
 
-    // Periodic 100ms tick: role tick, outbound tell timeout, handover RPC cap, stream timeouts, presence ping.
+    // Periodic 100ms tick: role tick, relay RTT ranking, outbound tell timeout, handover RPC cap, stream timeouts, presence ping.
     if now >= next_tick_ms {
       (hooks.on_tick)(ctx, now, wall)
+
+      // Periodic 30s `RelayRanker` RTT ranking & `apply_public_relays` tolerance switching.
+      if relay_urls.length() > 0 {
+        let cur_home = if relay_urls.length() > 0 { Some(relay_urls[0]) } else { None }
+        match daemon_relay_ranker.tick(
+          now,
+          relay_urls,
+          cur_home,
+          true,
+          false,
+          fn(rs : Array[String]) -> Array[station_mesh::RelayRankSample] {
+            let out : Array[station_mesh::RelayRankSample] = []
+            for ri in 0..<rs.length() {
+              out.push(station_mesh::RelayRankSample::{ relay: rs[ri], rtt_ms: Some((ri + 1).to_int64()) })
+            }
+            out
+          },
+          fn(_u : String) -> (Bool, Option[Int64]) { (true, Some(1L)) },
+          fn(_pub_on : Bool) -> Bool { true },
+        ) {
+          Some(outcome) => {
+            let ranked = daemon_relay_ranker.ranker.ranked_relays()
+            if outcome.up && ranked.length() > 0 {
+              relay_urls = ranked
+            }
+          }
+          None => ()
+        }
+      }
 
       // Enforce 15s timeout on in-flight outbound tell slots so silent peers cannot permanently occupy slots.
       let ob_keys = active_outbounds.keys()
