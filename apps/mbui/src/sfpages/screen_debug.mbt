@@ -1082,7 +1082,7 @@ fn DebugLogs::copied_text(self : DebugLogs) -> String {
 fn debug_logs_open(s : ScreenSess, u : ScreenUi, from : @sf.Anchor) -> Unit {
   let open = fn() {
     @sf.panel_nodes(@sf.t("web-pages.screen.debug.logs"), fn(v, _) { debug_logs_node(v, s, u) }, from~,
-      side=screen_panel_side(), w=debug_panel_w, tall=0.7, grows=true, focus=false)
+      side=screen_panel_side(), w=debug_panel_w, tall=0.82, grows=true, focus=false)
   }
   if @sf.native_on() && !u.in_tab {
     screen_panel_toggle(u, "logs", open)
