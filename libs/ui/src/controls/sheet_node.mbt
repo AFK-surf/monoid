@@ -1013,7 +1013,9 @@ fn sheet_node(
             })
             |> ignore
             // (its pages: the one that shows in the sheet's column, as tall as it makes the sheet; the rest over it, off to
-            // its sides (cut off by the sheet), kept as they were left)
+            // its sides (cut off by the sheet), kept as they were left; `sheet_stack_over` bleeds into the empty padding
+            // below the grabber bar so a capped sheet's clip never shaves the top of a concentric step back key or its
+            // focus ring)
             col.box(fn(stack) {
               stack
               // (what slides off to its sides cut off by it, a share of the window tall; as tall as what it holds, a
@@ -1021,7 +1023,7 @@ fn sheet_node(
               // down to its foot)
               .margin(By(fn() {
                 let inset = sheet_float_inset * sheet_float_t(stack)
-                (-inset, 0.0, -inset, 0.0)
+                (-inset, -sheet_stack_over, -inset, 0.0)
               }))
               .clips(By(fn() { capped_of(top().x) }))
               .grow(By(fn() { if capped_of(top().x) { 1.0 } else { 0.0 } }))
@@ -1100,7 +1102,7 @@ fn sheet_node(
                       sheet_target_float_t(pg)
                     }
                     let inset = sheet_float_inset * ft
-                    (inset, 0.0, inset, 0.0)
+                    (inset, sheet_stack_over, inset, 0.0)
                   }))
                   .height(By(fn() {
                     if capped && !shows() {
@@ -1108,7 +1110,7 @@ fn sheet_node(
                         Some(h) => Some(h)
                         None =>
                           if !hugs_of(pg) {
-                            Some(dmax(0.0, x.tall * win_h() - sheet_grab_h - @ui.system_bars().bottom))
+                            Some(dmax(0.0, x.tall * win_h() - (sheet_grab_h - sheet_stack_over) - @ui.system_bars().bottom))
                           } else {
                             None
                           }
@@ -1124,7 +1126,7 @@ fn sheet_node(
                       let wh = win_h()
                       let most = wh * (if x.grows { 1.0 } else { sheet_most })
                       let lim = if capped && hugs_of(pg) { dmin(most, x.tall * wh) } else { most }
-                      Some(dmax(0.0, lim - sheet_grab_h - (if capped { @ui.system_bars().bottom } else { 0.0 })))
+                      Some(dmax(0.0, lim - (sheet_grab_h - sheet_stack_over) - (if capped { @ui.system_bars().bottom } else { 0.0 })))
                     } else {
                       None
                     }
@@ -1194,11 +1196,11 @@ fn sheet_node(
                     }
                   }
                   // (a step further in: its circular back key concentric with the sheet's 42 top-left corner at 24×24
-                  // (corner_back_side = 36, left edge aligned with sheet_panel_sides = 24), its title's first line on
+                  // (sheet_step_back_side = 36, left edge aligned with sheet_panel_sides = 24), its title's first line on
                   // the key's middle beside it)
                   let step_row = fn(r : @view.View) {
                     style_node(r, fn() { sheet_step_row_style(r) })
-                    corner_back_key_node(r, go_back) |> ignore
+                    sheet_step_back_node(r, go_back) |> ignore
                     // (its words on as many lines as they take, in the room the row leaves them, as the host's title)
                     r.box(fn(at) {
                       style_node(at, fn() { sheet_title_room }, in_row=true)
@@ -1631,21 +1633,43 @@ impl Eq for SheetItem with equal(a, b) {
 }
 
 ///|
-/// Diameter of a step's circular back button standing in a 42pt pane/dialog corner (`pane_corner` / `dialog_r`):
-/// 36pt (`radius = 18`), so `@ui.capsule_in(42, 36) = 24` aligns its left edge flush with `panel_words` /
-/// `sheet_panel_sides` (24pt) while staying concentric with the 42pt corner (`24 + 18 = 42`).
-let corner_back_side : Double = 36.0
+/// Top bleed of a sheet's page stack into the empty padding below the grabber bar (`y = 12..17pt`, `sheet_grab_h =
+/// 25pt`): keeps the stack's clip boundary (`y = 21pt`) clear above both the 36pt concentric back key (`y = 24pt`) and
+/// its 3pt focus ring (`y = 21pt`) on capped sheets, while every page's matching `pt = sheet_stack_over` leaves all
+/// non-step layouts unchanged.
+let sheet_stack_over : Double = 4.0
 
 ///|
-/// How far in from a 42pt sheet or dialog corner its 36pt circular back button stands (`capsule_in(42, 36) = 24`,
-/// flush with `sheet_panel_sides` and `dialog_pad`).
-let sheet_step_key_at : Double = @ui.capsule_in(pane_corner, corner_back_side)
+/// Diameter of a sheet step's circular back button in a 42pt top-left corner (`pane_corner`): 36pt (`radius = 18`), so
+/// `@ui.capsule_in(42, 36) = 24` aligns its left edge flush with `sheet_panel_sides` (24pt) while staying concentric
+/// with the 42pt corner (`24 + 18 = 42`).
+let sheet_step_back_side : Double = 36.0
 
 ///|
-/// Circular surface back button (`corner_back_side` = 36pt, `p.chip` ground matching secondary buttons on the same
-/// sheet/dialog) for step headers sitting directly in a 42pt top-left corner.
+/// Chevron glyph size inside `sheet_step_back_node` (half the 36pt circular disc, matching `icon_button_node`'s 16/32).
+let sheet_step_back_icon : Double = 18.0
+
+///|
+/// How far in from a 42pt sheet corner its 36pt circular back button stands (`capsule_in(42, 36) = 24`, flush with
+/// `sheet_panel_sides`).
+let sheet_step_key_at : Double = @ui.capsule_in(pane_corner, sheet_step_back_side)
+
+///|
+/// Neutral translucent circular fill for `sheet_step_back_node` on Liquid Glass sheets (no glass-on-glass, no warm
+/// opaque chip tint): pure black 6.5% at rest in Light (12% hover) and pure white 10% at rest in Dark (18% hover).
+fn sheet_step_back_ground(lit : Double, press : Double) -> Int64 {
+  let dark = theme().dark
+  let base = if dark { 0xFFFFFFFFL } else { 0x000000FFL }
+  let rest_a = if dark { 0.10 } else { 0.065 }
+  let hover_a = if dark { 0.08 } else { 0.055 }
+  alpha(base, rest_a + hover_a * (lit + icon_button_press_more * press))
+}
+
+///|
+/// Circular neutral-translucent back button (`sheet_step_back_side` = 36pt) for sheet step headers standing directly
+/// in the sheet's 42pt top-left corner.
 #callsite(autofill(loc))
-fn corner_back_key_node(
+fn sheet_step_back_node(
   parent : @view.View,
   press : () -> Unit,
   loc~ : SourceLoc,
@@ -1670,46 +1694,42 @@ fn corner_back_key_node(
       let deeper = lit_before_press(v, b, hand)
       v
       .focus_ring_theme()
-      .width(Is(Some(corner_back_side)))
-      .height(Is(Some(corner_back_side)))
+      .width(Is(Some(sheet_step_back_side)))
+      .height(Is(Some(sheet_step_back_side)))
       .shrink(Is(0.0))
-      .radius(Is(corner_back_side / 2.0))
+      .radius(Is(sheet_step_back_side / 2.0))
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
       .ground(
         By(fn() {
-          let p = theme().p
           let pr = if deeper.val { dmin(1.0, dmax(0.0, feel.pressed_on(v))) } else { 0.0 }
-          let base = over(p.chip, alpha(p.hover, hand.shown(v)))
-          if pr <= 0.0 {
-            base
-          } else {
-            over(base, alpha(p.hover, pr))
-          }
+          sheet_step_back_ground(hand.shown(v), pr)
         }),
       )
       |> ignore
-      icon_node(v, "chevron-left", 18.0, By(fn() { theme().p.text }), weighed=true) |> ignore
+      icon_node(v, "chevron-left", sheet_step_back_icon, By(fn() { theme().p.text }), weighed=true) |> ignore
     },
   )
 }
 
 ///|
 /// Layout style for a sheet step's header row (`step_row`): `AFirstLine` aligns the title's first line with the
-/// 36pt circular back button at `(24, 24)` across every font scale, keeping the button concentric with `pane_corner`
-/// and flush with `sheet_panel_sides`.
+/// 36pt circular back button at `(24, 24)` across 0.85x–2.0x font scales, keeping the button concentric with
+/// `pane_corner` and flush with `sheet_panel_sides`, while clamping at `-sheet_stack_over` so >2.0x scales never
+/// collide with the grabber bar or clip inside a capped stack.
 fn sheet_step_row_style(v : @view.View) -> @ui.Style {
   let line = node_sp(v, @ui.tree_theme().text_size(Title).1)
-  let over = sheet_step_key_at - sheet_grab_h - dmax(0.0, (line - corner_back_side) / 2.0)
-  let pt_room = room(dmax(0.0, over))
-  let mt_room = room(dmin(0.0, over))
+  let over = dmax(
+    -sheet_stack_over,
+    sheet_step_key_at - sheet_grab_h - dmax(0.0, (line - sheet_step_back_side) / 2.0),
+  )
+  let mt_room = room(over)
   @ui.style(
     row=true,
     w=Full,
     align=AFirstLine,
     gap=S2_5,
     px=room(sheet_step_key_at),
-    pt=pt_room,
     pb=S3,
     mt=mt_room,
   )

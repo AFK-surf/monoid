@@ -197,19 +197,9 @@ fn panel_centred_node(
               let stepped = keyed.under is Some(_)
               if stepped {
                 line.box(fn(k) {
-                  style_node(
-                    k,
-                    fn() {
-                      let d = @ui.capsule_in(dialog_r, corner_back_side)
-                      let drop = head_line_drop(k, Heading, h=corner_back_side, row=dialog_close)
-                      @ui.style(
-                        ml=room(d - (dialog_pad + words_in)),
-                        mt=room(d - (dialog_pad + dialog_head_over) + drop),
-                      )
-                    },
-                    in_row=true,
-                  )
-                  corner_back_key_node(k, fn() { back_under(keyed) |> ignore }) |> ignore
+                  style_node(k, fn() { dialog_back_at(drop=head_line_drop(k, Heading, h=step_back_side, row=dialog_close)) }, in_row=true)
+                  icon_button_node(k, "chevron-left", fn() { t("common.back") }, fn() { back_under(keyed) |> ignore }, size=step_back_side)
+                  |> ignore
                 })
                 |> ignore
               }

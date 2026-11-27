@@ -565,6 +565,22 @@ fn dialog_close_at(drop? : Double = 0.0) -> @ui.Style {
 }
 
 ///|
+/// Where a stepped dialog's back key stands at its title's row's start: symmetric with `dialog_close_at` (32pt
+/// concentric in the 42pt top-left corner at 26×26, matching `dialog_close`'s height so both buttons in `dialog_head`
+/// share one height and the row grows no taller for it).
+fn dialog_back_at(drop? : Double = 0.0) -> @ui.Style {
+  let side = step_back_side
+  let d = @ui.capsule_in(dialog_r, side)
+  let up = d - (dialog_pad + dialog_head_over)
+  @ui.style(
+    ml=room(d - dialog_pad),
+    mt=room(up + drop),
+    mr=room(@ui.Space::px(S1) - @ui.Space::px(S3)),
+    mb=room(dialog_close - side - up),
+  )
+}
+
+///|
 // kept across runs: a value (no field of it changes)
 let dialog_title : @ui.TextStyle = @ui.text_style(size=Heading, weight=Semibold, color=Fg)
 
