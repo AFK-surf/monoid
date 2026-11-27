@@ -171,7 +171,16 @@ function retireByProgram(store: StationStore, mb: string | MbBackfillSelection, 
       },
       catch: (error) => error,
     }),
-    (program) => Effect.promise(() => program.terminate()).pipe(Effect.asVoid),
+    (program) => Effect.promise(async () => {
+      const terminated = program.terminate();
+      // Give SIGTERM 2 s to exit cleanly, escalate to SIGKILL, and bound the final wait so a stuck child
+      // (uninterruptible I/O or inherited pipe) can never block station shutdown forever.
+      const exited = await wall.within(2_000, terminated, "usage retirement SIGTERM timed out").then(() => true, () => false);
+      if (!exited) {
+        program.kill();
+        await wall.within(1_000, terminated, "usage retirement SIGKILL timed out").catch(() => {});
+      }
+    }),
   );
 }
 

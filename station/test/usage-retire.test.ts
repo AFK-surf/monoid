@@ -2,7 +2,9 @@
 // (store/usage-retire.ts, usage/module.ts `retireAfterPrevious`): their writers stopped in one write as handover ends,
 // their tables freed a bounded batch at a time, never brought back; the calls go on being recorded and counted.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { chmodSync, closeSync, constants as fsConstants, mkdtempSync, openSync, rmSync, writeFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { constants, DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -204,39 +206,40 @@ test("an interrupted retirement resumes and reopening does not restore the old s
 test("interrupting retirement terminates its cleanup program before shutdown finishes", { skip: process.platform === "win32" }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "usage-retire-interrupt-"));
   const store = Store.open(join(dir, "station.db"));
-  const pidFile = join(dir, "child.pid");
+  const fifo = join(dir, "child.fifo");
   const script = join(dir, "stub-retire.sh");
-  // Ignore stdin EOF (sleep holds the process open) and record our own PID once spawned so only an explicit
-  // terminate() signal ends the child process.
-  writeFileSync(script, `#!/bin/sh\necho $$ > ${JSON.stringify(`${pidFile}.tmp`)}\nmv ${JSON.stringify(`${pidFile}.tmp`)} ${JSON.stringify(pidFile)}\nexec sleep 60\n`);
+  execFileSync("mkfifo", [fifo]);
+  // Synchronize startup via a FIFO (deterministic on both Linux and macOS, no FSEvents timing gap) and exec sleep so
+  // the recorded PID is the exact process that terminate() must signal and reap, ignoring stdin EOF.
+  writeFileSync(script, `#!/bin/sh\necho $$ > ${JSON.stringify(fifo)}\nexec sleep 60\n`);
   chmodSync(script, 0o755);
   let childPid = 0;
-  let onChange = () => {};
-  const watcher = watch(dir, () => { onChange(); });
+  let readDone = false;
   try {
-    const started = new Promise<number>((resolve) => {
-      const check = () => {
-        if (!existsSync(pidFile)) return false;
-        const pid = Number(readFileSync(pidFile, "utf8").trim());
-        if (Number.isInteger(pid) && pid > 1) {
-          watcher.close();
-          resolve(pid);
-          return true;
-        }
-        return false;
-      };
-      onChange = check;
-      check();
+    const started = readFile(fifo, "utf8").then((text) => {
+      readDone = true;
+      const pid = Number(text.trim());
+      assert.ok(Number.isInteger(pid) && pid > 1, `unexpected stub pid: ${JSON.stringify(text)}`);
+      return pid;
     });
     const fiber = Effect.runFork(retireAfterPrevious(store, Promise.resolve(), script));
-    childPid = await started;
+    // Fail fast if the fiber settles before the stub ever writes its PID.
+    const joined = Effect.runPromise(Fiber.join(fiber)).then((done) => {
+      throw new Error(`retireAfterPrevious settled before stub started (done=${String(done)})`);
+    });
+    // Suppress unhandled rejection when `started` wins and `fiber` is interrupted below.
+    joined.catch(() => {});
+    childPid = await Promise.race([started, joined]);
     // Child is alive right before interruption.
     assert.doesNotThrow(() => process.kill(childPid, 0));
     await Effect.runPromise(Fiber.interrupt(fiber));
     // Interruption must have terminated and reaped the child before resolving.
     assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
   } finally {
-    watcher.close();
+    if (!readDone) {
+      // Unblock a pending FIFO open(O_RDONLY) if the stub failed before opening the write end.
+      try { closeSync(openSync(fifo, fsConstants.O_WRONLY | fsConstants.O_NONBLOCK)); } catch {}
+    }
     if (childPid > 1) {
       try { process.kill(childPid, "SIGKILL"); } catch {}
     }

@@ -24,6 +24,7 @@ for part in $parts; do
     # The station's of real processes and the file system as they take their time (station/side): a lock across
     # processes, logs followed by fs.watch, two endpoints on one station's key at a real iroh-relay, and iOS Simulators.
     # The full Pion station E2E files run separately under `station-pion` below so side-mac stays within its budget.
+    # Keep the native parts list in sync with `station/package.json` `test:side`.
     station) (
       cd station && set --
       for f in side/*.test.ts; do
