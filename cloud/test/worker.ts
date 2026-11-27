@@ -613,6 +613,7 @@ function withDynamicFailingBucket(env: Env): Env {
 }
 
 const statusLosing = new Losing();
+let changelogStats = { calls: 0, notModified: 0, full: 0 };
 
 export class ServiceStatus extends ProductionServiceStatus {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -622,9 +623,18 @@ export class ServiceStatus extends ProductionServiceStatus {
     statusLosing.call();
     return super.invalidateChangelog();
   }
-  override changelogResponse(channel: Parameters<ProductionServiceStatus["changelogResponse"]>[0], upstream: string | null, ttlSeconds: number) {
+  override async changelogResponse(
+    channel: Parameters<ProductionServiceStatus["changelogResponse"]>[0],
+    upstream: string | null,
+    ttlSeconds: number,
+    ifNoneMatch?: string | null,
+  ) {
     statusLosing.call();
-    return super.changelogResponse(channel, upstream, ttlSeconds);
+    const result = await super.changelogResponse(channel, upstream, ttlSeconds, ifNoneMatch);
+    changelogStats.calls++;
+    if (result.ok && "notModified" in result && result.notModified) changelogStats.notModified++;
+    else if (result.ok) changelogStats.full++;
+    return result;
   }
   override changelogFixes(ttlSeconds: number) {
     statusLosing.call();
@@ -633,6 +643,9 @@ export class ServiceStatus extends ProductionServiceStatus {
   override releasedVersions(channel: Parameters<ProductionServiceStatus["releasedVersions"]>[0], upstream: string | null, ttlSeconds: number) {
     statusLosing.call();
     return super.releasedVersions(channel, upstream, ttlSeconds);
+  }
+  settled(): Promise<void> {
+    return this.settleChangelog();
   }
 }
 
@@ -651,6 +664,15 @@ export default {
       const { times, overloaded } = (await readJson(request)) as { times?: number; overloaded?: boolean };
       statusLosing.lose(Number(times ?? 0), Boolean(overloaded));
       return reply({ armed: Number(times ?? 0) });
+    }
+    if (path === "/__test/changelog-stats") {
+      const stats = changelogStats;
+      changelogStats = { calls: 0, notModified: 0, full: 0 };
+      return reply(stats);
+    }
+    if (path === "/__test/status-settled") {
+      await (env.SERVICE_STATUS.getByName("primary") as unknown as { settled(): Promise<void> }).settled();
+      return reply({ ok: true });
     }
     if (path === "/__test/devices") return reply(deviceRequests);
     if (path === "/__test/sockets") {

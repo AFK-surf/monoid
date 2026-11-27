@@ -2937,9 +2937,11 @@ jobs:
   # or Android's: each hands put only what it finished (release-put.sh --hand), and one cut at its five minutes held
   # back the Mac's and Windows' betas, signed and ready: main 44147606865, 2026-11-17. `done` still waits for every
   # part, so deployed/beta stays and the next run plans the one that failed again)
+  # Wait for monoid-api: release-told.sh forwards /v1/releases/out to monoid-cloud, so waiting avoids Cloudflare DO RPC
+  # version-mismatch errors when release broadcasts wake stations.
   put:
-    needs: [plan, check, check-mac, check-linux, check-station, check-core, api, static, station, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win]
-    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
+    needs: [plan, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, station, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win]
+    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5
