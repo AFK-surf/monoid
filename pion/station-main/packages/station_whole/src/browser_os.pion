@@ -131,6 +131,7 @@ fn brw_is_blocked_ipv4(a : Int, b : Int, _c : Int, _d : Int) -> Bool {
   if a == 127 { return true } // 127.0.0.0/8 (loopback)
   if a == 169 && b == 254 { return true } // 169.254.0.0/16 (link-local / metadata)
   if a == 172 && b >= 16 && b <= 31 { return true } // 172.16.0.0/12
+  if a == 192 && b == 0 && _c == 0 { return true } // 192.0.0.0/24 (IETF protocol assignments)
   if a == 192 && b == 168 { return true } // 192.168.0.0/16
   if a == 198 && (b == 18 || b == 19) { return true } // 198.18.0.0/15 (benchmarking / RFC 2544)
   if a >= 224 { return true } // 224.0.0.0/4 multicast + 240.0.0.0/4 reserved
@@ -296,6 +297,23 @@ fn brw_is_blocked_ipv6(b : Bytes) -> Bool {
     }
   }
 
+  // ::ffff:0:0:0/96 (IPv4-translated IPv6, RFC 2765)
+  let mut first8_zero = true
+  for i in 0..<8 {
+    if (b[i].to_int() & 0xFF) != 0 {
+      first8_zero = false
+      break
+    }
+  }
+  if first8_zero && (b[8].to_int() & 0xFF) == 0xFF && (b[9].to_int() & 0xFF) == 0xFF && (b[10].to_int() & 0xFF) == 0 && (b[11].to_int() & 0xFF) == 0 {
+    return true
+  }
+
+  // 2001::/32 (Teredo tunneling, RFC 4380) and 2001:db8::/32 (documentation, RFC 3849)
+  if b0 == 0x20 && b1 == 0x01 && ((b2 == 0x00 && b3 == 0x00) || (b2 == 0x0D && b3 == 0xB8)) {
+    return true
+  }
+
   // 2002::/16 (6to4 tunneling, RFC 3056 — embeds IPv4 in bits 16..47)
   if b0 == 0x20 && b1 == 0x02 {
     return true
@@ -319,8 +337,8 @@ fn brw_is_blocked_ipv6(b : Bytes) -> Bool {
   if (b0 & 0xFE) == 0xFC {
     return true
   }
-  // fe80::/10 (link-local)
-  if b0 == 0xFE && (b1 & 0xC0) == 0x80 {
+  // fe80::/10 (link-local) and fec0::/10 (deprecated site-local, RFC 3879)
+  if b0 == 0xFE && ((b1 & 0xC0) == 0x80 || (b1 & 0xC0) == 0xC0) {
     return true
   }
   // ff00::/8 (multicast)
@@ -695,6 +713,7 @@ struct PendingBrowserKill {
   child : station_sys::ChildProcess
   event_id : Int64
   deadline_ms : Int64
+  mut pgid_killed : Bool
 }
 
 pub struct BrowserOsManager {
@@ -841,19 +860,24 @@ pub fn BrowserOsManager::spawn_farview(
   self.status_of(session)
 }
 
-fn brw_force_kill_pgid_and_close(child : station_sys::ChildProcess) -> Unit {
+fn brw_force_kill_explicit_and_close(child : station_sys::ChildProcess, pgid_killed : Bool) -> Bool {
   let _ = child.kill(station_sys::SIG_KILL, true)
-  // `sts_proc_kill_handle` skips signaling once the group leader has exited (`p->exited`),
-  // so explicitly signal `-pgid` before closing to reap `trap "" TERM` descendants.
-  if child.pid > 0 {
+  // On Windows, Job Object teardown via `child.kill` atomically kills the process tree
+  // (never call blocking `proc_kill` / `taskkill`). On POSIX, if an explicitly stopped
+  // leader exited before `SIGKILL`, signal `-pgid` at most once before `close()` so
+  // `trap "" TERM` descendants cannot survive.
+  let mut did_pgid = pgid_killed
+  if !did_pgid && child.pid > 0 && station_sys::os_name() != "windows" {
+    did_pgid = true
     let _ = station_sys::proc_kill(child.pid, station_sys::SIG_KILL, true)
   }
   let _ = child.close()
+  did_pgid
 }
 
 /// Process a `station_sys::SysEvent` for a managed or terminating browser subprocess.
-/// Always sends unconditional process-group `SIGKILL` before `close()` on `ProcExit` so
-/// `trap "" TERM` descendants in the process group never survive when the leader exits first.
+/// Natural exits ONLY close the handle (never invoking raw `proc_kill`); explicit
+/// `pending_kills` escalate with handle-bound `SIGKILL` (+ one-shot POSIX `-pgid` before `close()`).
 pub fn BrowserOsManager::handle_sys_event(
   self : BrowserOsManager,
   event_id : Int64,
@@ -864,7 +888,7 @@ pub fn BrowserOsManager::handle_sys_event(
       match ev {
         station_sys::SysEvent::ProcExit(_) => {
           self.pending_kills.remove(event_id)
-          brw_force_kill_pgid_and_close(pk.child)
+          pk.pgid_killed = brw_force_kill_explicit_and_close(pk.child, pk.pgid_killed)
         }
         _ => ()
       }
@@ -882,7 +906,8 @@ pub fn BrowserOsManager::handle_sys_event(
       match self.procs.get(session) {
         Some(p) => {
           self.procs.remove(session)
-          brw_force_kill_pgid_and_close(p.child)
+          // Natural exit: close handle only, never invoke raw `proc_kill(pid)`!
+          let _ = p.child.close()
         }
         None => ()
       }
@@ -893,8 +918,8 @@ pub fn BrowserOsManager::handle_sys_event(
   true
 }
 
-/// Non-blocking tick: escalates any `pending_kills` whose grace deadline has elapsed with an
-/// unconditional process-group `SIGKILL` followed by `close()`.
+/// Non-blocking tick: escalates any `pending_kills` whose grace deadline has elapsed with
+/// handle-bound `SIGKILL` (+ one-shot POSIX `-pgid` before `close()`).
 pub fn BrowserOsManager::tick(self : BrowserOsManager, now_ms : Int64) -> Int {
   let mut finalized = 0
   let ids = self.pending_kills.keys()
@@ -904,7 +929,7 @@ pub fn BrowserOsManager::tick(self : BrowserOsManager, now_ms : Int64) -> Int {
       Some(pk) => {
         if now_ms >= pk.deadline_ms {
           self.pending_kills.remove(ev_id)
-          brw_force_kill_pgid_and_close(pk.child)
+          pk.pgid_killed = brw_force_kill_explicit_and_close(pk.child, pk.pgid_killed)
           finalized = finalized + 1
         }
       }
@@ -1018,7 +1043,7 @@ pub fn BrowserOsManager::stop_session(
       self.by_event.remove(p.event_id)
       let _ = p.child.kill(station_sys::SIG_TERM, true)
       if grace_ms <= 0L {
-        brw_force_kill_pgid_and_close(p.child)
+        let _ = brw_force_kill_explicit_and_close(p.child, false)
       } else {
         self.pending_kills.set(
           p.event_id,
@@ -1026,6 +1051,7 @@ pub fn BrowserOsManager::stop_session(
             child: p.child,
             event_id: p.event_id,
             deadline_ms: (self.now_fn)() + grace_ms,
+            pgid_killed: false,
           },
         )
       }
@@ -1065,7 +1091,7 @@ pub fn BrowserOsManager::drain_kills_with_hub(
     match self.pending_kills.get(rem[i]) {
       Some(pk) => {
         self.pending_kills.remove(rem[i])
-        brw_force_kill_pgid_and_close(pk.child)
+        pk.pgid_killed = brw_force_kill_explicit_and_close(pk.child, pk.pgid_killed)
         finalized = finalized + 1
       }
       None => ()

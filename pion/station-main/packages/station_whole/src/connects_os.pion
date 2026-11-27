@@ -22,6 +22,9 @@ pub let CONNECTS_DEFAULT_MAX_BODY_BYTES : Int = 16777216
 pub let CONNECTS_MAX_ATTACHMENT_BYTES : Int = 52428800
 pub let EDGE_MUX_MAX_DEFERRED_DONE : Int = 1024
 pub let EDGE_MUX_MAX_DEFERRED_SYS : Int = 4096
+/// Disjoint high call-ID base (`1 << 44`) so `EdgeMuxHub` never collides with
+/// `ShellMux` (`1, 2, 3...`) or `daemon_core` (`4*k+{0,1,2,3}`) on a shared host shell.
+pub let EDGE_MUX_CALL_ID_BASE : Int64 = 17592186044416L
 
 pub let CONNECTS_TOK_FETCH : Int = 3101
 pub let CONNECTS_TOK_WS_OPEN : Int = 3102
@@ -210,6 +213,9 @@ pub struct EdgeMuxHub {
   deferred_done : Map[Int64, (builders_core::MuxToken, host_shim::ShellDone)]
   deferred_done_order : Array[Int64]
   deferred_sys : Array[(Int64, Bytes)]
+  mut deferred_done_dropped : Int64
+  mut deferred_sys_dropped : Int64
+  mut on_overflow : Option[(String, Int64) -> Unit]
   mut shell_done_router : Option[(builders_core::MuxToken, host_shim::ShellDone) -> Bool]
   mut sys_router : Option[(Int64, Bytes) -> Bool]
   mut stdin_router : Option[(host_shim::HostEvent) -> Unit]
@@ -225,12 +231,15 @@ pub fn EdgeMuxHub::from_transport(
     now_fn: transport.now_ms,
     max_deferred_done: if max_deferred_done > 0 { max_deferred_done } else { EDGE_MUX_MAX_DEFERRED_DONE },
     max_deferred_sys: if max_deferred_sys > 0 { max_deferred_sys } else { EDGE_MUX_MAX_DEFERRED_SYS },
-    next_call_id: 1L,
+    next_call_id: EDGE_MUX_CALL_ID_BASE,
     next_req_id: 1,
     pending_tokens: Map::new(),
     deferred_done: Map::new(),
     deferred_done_order: [],
     deferred_sys: [],
+    deferred_done_dropped: 0L,
+    deferred_sys_dropped: 0L,
+    on_overflow: None,
     shell_done_router: None,
     sys_router: None,
     stdin_router: None,
@@ -248,7 +257,8 @@ pub fn EdgeMuxHub::host(
   )
 }
 
-/// Convenience wrapper adopting a `ShellMux`'s underlying `MuxTransport` directly.
+/// Convenience wrapper adopting a `ShellMux`'s underlying `MuxTransport` directly with a
+/// disjoint high call-ID space (`EDGE_MUX_CALL_ID_BASE = 1 << 44`).
 pub fn EdgeMuxHub::new(
   mux : builders_core::ShellMux,
   now_fn : () -> Int64 = host_shim::now_ms,
@@ -265,6 +275,9 @@ pub fn EdgeMuxHub::new(
     deferred_done: hub.deferred_done,
     deferred_done_order: hub.deferred_done_order,
     deferred_sys: hub.deferred_sys,
+    deferred_done_dropped: hub.deferred_done_dropped,
+    deferred_sys_dropped: hub.deferred_sys_dropped,
+    on_overflow: hub.on_overflow,
     shell_done_router: hub.shell_done_router,
     sys_router: hub.sys_router,
     stdin_router: hub.stdin_router,
@@ -321,6 +334,21 @@ pub fn EdgeMuxHub::deferred_sys_count(self : EdgeMuxHub) -> Int {
   self.deferred_sys.length()
 }
 
+pub fn EdgeMuxHub::deferred_done_dropped_count(self : EdgeMuxHub) -> Int64 {
+  self.deferred_done_dropped
+}
+
+pub fn EdgeMuxHub::deferred_sys_dropped_count(self : EdgeMuxHub) -> Int64 {
+  self.deferred_sys_dropped
+}
+
+pub fn EdgeMuxHub::set_overflow_handler(
+  self : EdgeMuxHub,
+  handler : (String, Int64) -> Unit,
+) -> Unit {
+  self.on_overflow = Some(handler)
+}
+
 pub fn EdgeMuxHub::next_id(self : EdgeMuxHub) -> Int {
   let id = self.next_req_id
   self.next_req_id = self.next_req_id + 1
@@ -364,6 +392,11 @@ fn EdgeMuxHub::buffer_deferred_done(
         self.deferred_done_order.push(rest[i])
       }
       self.deferred_done.remove(oldest)
+      self.deferred_done_dropped = self.deferred_done_dropped + 1L
+      match self.on_overflow {
+        Some(cb) => cb("deferred_done", oldest)
+        None => ()
+      }
     }
     self.deferred_done_order.push(done.id)
   }
@@ -372,6 +405,7 @@ fn EdgeMuxHub::buffer_deferred_done(
 
 fn EdgeMuxHub::buffer_deferred_sys(self : EdgeMuxHub, ev_id : Int64, payload : Bytes) -> Unit {
   if self.deferred_sys.length() >= self.max_deferred_sys {
+    let (oldest_id, _) = self.deferred_sys[0]
     let rest : Array[(Int64, Bytes)] = []
     for i in 1..<self.deferred_sys.length() {
       rest.push(self.deferred_sys[i])
@@ -379,6 +413,11 @@ fn EdgeMuxHub::buffer_deferred_sys(self : EdgeMuxHub, ev_id : Int64, payload : B
     self.deferred_sys.clear()
     for i in 0..<rest.length() {
       self.deferred_sys.push(rest[i])
+    }
+    self.deferred_sys_dropped = self.deferred_sys_dropped + 1L
+    match self.on_overflow {
+      Some(cb) => cb("deferred_sys", oldest_id)
+      None => ()
     }
   }
   self.deferred_sys.push((ev_id, payload))
@@ -510,6 +549,7 @@ pub fn EdgeMuxHub::await_call(
   }
   let eff_timeout = if timeout_ms > 0L { timeout_ms } else { CONNECTS_DEFAULT_TIMEOUT_MS }
   let deadline = (self.now_fn)() + eff_timeout
+  let dropped_before = self.deferred_done_dropped
   while true {
     let now = (self.now_fn)()
     let rem = deadline - now
@@ -535,6 +575,9 @@ pub fn EdgeMuxHub::await_call(
           return Ok(done)
         }
         self.deliver_host_event(host_shim::HostEvent::ShellDone(done))
+        if self.deferred_done_dropped > dropped_before {
+          return Err("EdgeMuxHub deferred_done overflow while awaiting call " + call_id.to_string())
+        }
       }
       Some(other_ev) => {
         self.deliver_host_event(other_ev)

@@ -255,14 +255,17 @@ fn rep_hash_file_streaming(src_path : String) -> Result[(String, Int64), String]
 // 1. True Chunked Streaming SFB1 Seal / Open (bounded RAM + atomic cutover)
 // ---------------------------------------------------------------------------
 
-pub fn sfb1_seal_file_streaming(
+/// Single-pass 256 KiB chunked streaming hash + SFB1 seal: every chunk read from `src_path`
+/// is fed identically to BOTH `crypto::Sha256::update` and `Sfb1StreamSealer::push`, eliminating
+/// any TOCTOU window between hashing and sealing even under concurrent source modification.
+pub fn sfb1_hash_and_seal_file_streaming(
   key : Bytes,
   ctx : station_replica::Sfb1Context,
   src_path : String,
   dst_path : String,
   salt : Bytes,
   chunk_size : Int = REPLICA_STREAM_CHUNK_BYTES,
-) -> Result[Int64, String] {
+) -> Result[(String, Int64), String] {
   let eff_chunk = if chunk_size > 0 { chunk_size } else { REPLICA_STREAM_CHUNK_BYTES }
   let sealer = match station_replica::Sfb1StreamSealer::new(key, ctx, salt) {
     Ok(s) => s
@@ -276,6 +279,7 @@ pub fn sfb1_seal_file_streaming(
     Ok(t) => t
     Err(e) => return Err(e)
   }
+  let hasher = crypto::Sha256::new()
   let mut read_off = 0L
   let mut write_off = 0L
   let mut total_plain = 0L
@@ -302,6 +306,7 @@ pub fn sfb1_seal_file_streaming(
         if chunk.length() == 0 {
           break
         }
+        hasher.update(chunk)
         total_plain = total_plain + chunk.length().to_int64()
         read_off = read_off + chunk.length().to_int64()
         match sealer.push(chunk) {
@@ -347,7 +352,21 @@ pub fn sfb1_seal_file_streaming(
     let _ = station_sys::unlink(tmp)
     return Err("atomic rename failed for " + dst_path)
   }
-  Ok(total_plain)
+  Ok((station_sys::hex_encode(hasher.finalize()), total_plain))
+}
+
+pub fn sfb1_seal_file_streaming(
+  key : Bytes,
+  ctx : station_replica::Sfb1Context,
+  src_path : String,
+  dst_path : String,
+  salt : Bytes,
+  chunk_size : Int = REPLICA_STREAM_CHUNK_BYTES,
+) -> Result[Int64, String] {
+  match sfb1_hash_and_seal_file_streaming(key, ctx, src_path, dst_path, salt, chunk_size=chunk_size) {
+    Ok((_, total_plain)) => Ok(total_plain)
+    Err(e) => Err(e)
+  }
 }
 
 pub fn sfb1_open_file_streaming(
@@ -703,13 +722,6 @@ pub fn backup_dir_sfb1(
       return Err("unsafe source path: " + rel)
     }
     let full = nodepath::join("/", [src_dir, rel])
-    let (content_hash, fsize) = match rep_hash_file_streaming(full) {
-      Ok(pair) => pair
-      Err(e) => {
-        rep_remove_tree(scratch_dir)
-        return Err(e)
-      }
-    }
     let salt = match salt_fn() {
       Ok(s) => s
       Err(e) => {
@@ -720,11 +732,11 @@ pub fn backup_dir_sfb1(
     let ctx = station_replica::Sfb1Context::{
       ws: ws,
       origin: origin,
-      logical_path: "blobs/" + content_hash,
+      logical_path: "gen/" + gen + "/blob",
     }
-    let tmp_blob = nodepath::join("/", [scratch_dir, content_hash + ".sfb1"])
-    match sfb1_seal_file_streaming(enc_key, ctx, full, tmp_blob, salt) {
-      Ok(_) => ()
+    let tmp_blob = nodepath::join("/", [scratch_dir, "item-" + i.to_string() + ".sfb1"])
+    let (content_hash, fsize) = match sfb1_hash_and_seal_file_streaming(enc_key, ctx, full, tmp_blob, salt) {
+      Ok(pair) => pair
       Err(e) => {
         rep_remove_tree(scratch_dir)
         return Err(e)
@@ -999,7 +1011,7 @@ pub fn restore_dir_sfb1(
         return Err("get_object failed for " + obj_key + ": " + e)
       }
     }
-    let ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "blobs/" + content_hash }
+    let ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "gen/" + gen + "/blob" }
     let opener = match station_replica::Sfb1StreamOpener::new(enc_key, ctx) {
       Ok(o) => o
       Err(e) => {
@@ -1126,61 +1138,92 @@ pub fn restore_dir_sfb1(
   }
   let moved_old : Array[(String, String)] = []
   let moved_new : Array[String] = []
-  let rollback = fn() -> Unit {
+  let created_dirs : Array[String] = []
+  let ensure_parent_tracking = fn(rel_path : String) -> Result[Unit, String] {
+    let segs = rel_path.split("/")
+    if segs.length() <= 1 {
+      return Ok(())
+    }
+    let mut cur = dst_dir
+    for s_idx in 0..<(segs.length() - 1) {
+      cur = nodepath::join("/", [cur, segs[s_idx]])
+      match station_sys::lstat_raw_err(cur) {
+        Ok(st) => {
+          if !st.starts_with("dir|") {
+            return Err("restore parent path is not a directory: " + cur)
+          }
+        }
+        Err(-2) => {
+          if !station_sys::mkdir_exclusive(cur) {
+            return Err("mkdir failed for " + cur)
+          }
+          created_dirs.push(cur)
+        }
+        Err(code) => return Err("lstat failed on " + cur + " (code=" + code.to_string() + ")")
+      }
+    }
+    Ok(())
+  }
+  let rollback = fn(base_err : String) -> String {
     let mut k = moved_new.length() - 1
     while k >= 0 {
       let _ = station_sys::unlink(moved_new[k])
       k = k - 1
     }
+    let mut restore_bak_failed = false
     let mut m = moved_old.length() - 1
     while m >= 0 {
       let (bak_path, orig_path) = moved_old[m]
-      let _ = station_sys::rename(bak_path, orig_path)
+      if !station_sys::rename(bak_path, orig_path) {
+        restore_bak_failed = true
+      }
       m = m - 1
     }
+    let mut d = created_dirs.length() - 1
+    while d >= 0 {
+      let _ = station_sys::rmdir(created_dirs[d])
+      d = d - 1
+    }
     rep_remove_tree(stage_dir)
-    rep_remove_tree(bak_dir)
+    if restore_bak_failed {
+      base_err + "; rollback incomplete, original files preserved at " + bak_dir
+    } else {
+      rep_remove_tree(bak_dir)
+      base_err
+    }
   }
 
   for i in 0..<verified_items.length() {
     let (rel, _) = verified_items[i]
     match rep_reject_symlinks_along(dst_dir, rel) {
       Ok(_) => ()
-      Err(e) => {
-        rollback()
-        return Err(e)
-      }
+      Err(e) => return Err(rollback(e))
     }
     let src_staged = nodepath::join("/", [stage_dir, rel])
     let dst_file = nodepath::join("/", [dst_dir, rel])
-    let dst_parent = nodepath::dirname("/", dst_file)
-    if !station_sys::mkdir_p(dst_parent) {
-      rollback()
-      return Err("mkdir_p failed for " + dst_parent)
+    match ensure_parent_tracking(rel) {
+      Ok(_) => ()
+      Err(e) => return Err(rollback(e))
     }
     match station_sys::lstat_raw_err(dst_file) {
       Ok(st) => {
         if st.starts_with("dir|") || st.starts_with("link|") {
-          rollback()
-          return Err("restore target occupied by dir/symlink: " + dst_file)
+          return Err(rollback("restore target occupied by dir/symlink: " + dst_file))
         }
         let bak_file = nodepath::join("/", [bak_dir, rel])
         let bak_parent = nodepath::dirname("/", bak_file)
         if !station_sys::mkdir_p(bak_parent) || !station_sys::rename(dst_file, bak_file) {
-          rollback()
-          return Err("failed to back up existing file before overwrite: " + dst_file)
+          return Err(rollback("failed to back up existing file before overwrite: " + dst_file))
         }
         moved_old.push((bak_file, dst_file))
       }
       Err(-2) => ()
       Err(code) => {
-        rollback()
-        return Err("lstat failed on " + dst_file + " (code=" + code.to_string() + ")")
+        return Err(rollback("lstat failed on " + dst_file + " (code=" + code.to_string() + ")"))
       }
     }
     if !station_sys::rename(src_staged, dst_file) {
-      rollback()
-      return Err("atomic cutover rename failed for " + dst_file)
+      return Err(rollback("atomic cutover rename failed for " + dst_file))
     }
     moved_new.push(dst_file)
   }

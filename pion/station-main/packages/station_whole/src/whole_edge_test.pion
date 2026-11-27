@@ -347,6 +347,32 @@ test "connects_os_shared_hub_sys_zero_drop_utf8_and_group_sse_reconnect" {
   // Stop suppresses all subsequent callbacks
   rt.stop()
   edge_assert(rt.is_stopped())
+
+  // R4: Disjoint call-ID space (`1 << 44`) + non-silent overflow callback & `await_call` error
+  let ov_hub = EdgeMuxHub::from_transport(h.hub.transport, max_deferred_done=2, max_deferred_sys=2)
+  let c1 = ov_hub.call_async_raw(builders_core::MuxToken::Tagged(1, 1, 0L), "ws.close", "{\"id\":1}", None)
+  edge_assert(c1 >= EDGE_MUX_CALL_ID_BASE)
+  let overflows : Array[String] = []
+  ov_hub.set_overflow_handler(
+    fn(queue_name : String, dropped_id : Int64) -> Unit {
+      overflows.push(queue_name + ":" + dropped_id.to_string())
+    },
+  )
+  // Overflow deferred_sys (cap=2 -> 3rd item evicts 1st and invokes callback)
+  ov_hub.deliver_host_event(host_shim::HostEvent::Sys(10L, "a".to_bytes()))
+  ov_hub.deliver_host_event(host_shim::HostEvent::Sys(11L, "b".to_bytes()))
+  ov_hub.deliver_host_event(host_shim::HostEvent::Sys(12L, "c".to_bytes()))
+  edge_assert(ov_hub.deferred_sys_dropped_count() == 1L)
+  edge_assert(overflows.length() == 1 && overflows[0] == "deferred_sys:10")
+  // Overflow deferred_done during `await_call` MUST return Err (never silently drop!)
+  h.queue.clear()
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: 101L, json: "{}", error: "", bytes: None }))
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: 102L, json: "{}", error: "", bytes: None }))
+  h.queue.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: 103L, json: "{}", error: "", bytes: None }))
+  let ov_res = ov_hub.await_call(999999L, 500L, cancel_on_timeout=false)
+  edge_assert(ov_res is Err(_))
+  edge_assert(ov_hub.deferred_done_dropped_count() == 1L)
+  edge_assert(overflows.length() == 2 && overflows[1] == "deferred_done:101")
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +562,7 @@ test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
     "http://127.0.0.1:9222/json",
     "http://169.254.169.254/latest/meta-data",
     "http://172.16.0.1/",
+    "http://192.0.0.1/",
     "http://192.168.1.1/",
     "http://198.18.0.1/",
     "http://198.19.255.254/",
@@ -545,11 +572,15 @@ test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
     "http://[::1]/",
     "http://[::7f00:1]/",
     "http://[::ffff:127.0.0.1]/",
+    "http://[::ffff:0:7f00:1]/",
     "http://[64:ff9b::7f00:1]/",
+    "http://[2001::1]/",
+    "http://[2001:db8::1]/",
     "http://[2002:7f00:1::]/",
     "http://[fc00::1]/",
     "http://[fd12:3456::1]/",
     "http://[fe80::1]/",
+    "http://[fec0::1]/",
     "http://[ff02::1]/",
   ]
   for i in 0..<blocked_urls.length() {
