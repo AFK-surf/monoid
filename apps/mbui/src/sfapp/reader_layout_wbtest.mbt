@@ -142,6 +142,8 @@ test "小屏: the layout's controls pressed where they are drawn: the size, a pa
   t.tap_text("顶格")
   t.run_for(@ui.move_most_ms)
   assert_false(layout_style().indent)
+  // (no 版面宽度 on a phone: its column is the window's at every width)
+  assert_true(t.find("版面宽度") is None, msg="no width in the sheet")
   // Escape: the panel closed at once, the sheet sinking away, then gone
   t.key(@ui.key_escape)
   assert_true(r.panel.get() == @sf.ReaderPanel::NoPanel)
@@ -177,6 +179,11 @@ test "wide: the layout docked at the right under the bar, each of its words and 
     ("缩进", 981.0, 429.0, 279.0, 18.0),
     ("首行缩进", 1026.0, 464.0, 52.0, 18.0),
     ("顶格", 1176.5, 464.0, 26.0, 18.0),
+    // (版面宽度 under the indent, as far below it as the indent is below the face)
+    ("版面宽度", 981.0, 501.0, 279.0, 18.0),
+    ("标准", 1016.0, 536.0, 26.0, 18.0),
+    ("宽", 1114.0, 536.0, 13.0, 18.0),
+    ("铺满", 1199.0, 536.0, 26.0, 18.0),
   ]
   assert_eq(words, old)
   // on the paper, 319 wide at the window's right, from under the bar to its foot
@@ -197,6 +204,18 @@ test "wide: the layout docked at the right under the bar, each of its words and 
   assert_eq(layout_control(t, Radio, "黑体").0, (1121.5, 386.0, 135.5, 30.0))
   assert_eq(layout_control(t, Radio, "首行缩进").0, (984.0, 458.0, 135.5, 30.0))
   assert_eq(layout_control(t, Radio, "顶格").0, (1121.5, 458.0, 135.5, 30.0))
+  // the width's three a third of the track each, side by side within the panel's room, none over another
+  let thirds = []
+  for l in ["标准", "宽", "铺满"] {
+    thirds.push(layout_control(t, Radio, l).0)
+  }
+  for i, r in thirds {
+    assert_eq((r.1, r.3), (530.0, 30.0), msg="\{i}: \{Repr(r)}")
+    assert_true(r.2 >= 88.0 && r.0 >= 981.0 && r.0 + r.2 <= 1260.0, msg="\{i}: \{Repr(r)}")
+    if i > 0 {
+      assert_true(r.0 >= thirds[i - 1].0 + thirds[i - 1].2, msg="\{i} over \{i - 1}")
+    }
+  }
   t.assert_idle()
 }
 
@@ -236,6 +255,12 @@ test "wide: the layout's controls pressed where they are drawn: the size, a pape
   t.tap_text("顶格")
   t.run_for(@ui.move_most_ms)
   assert_false(layout_style().indent)
+  t.tap_text("铺满")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(layout_style().width, "full")
+  t.tap_text("标准")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(layout_style().width, "standard")
   // Esc: closed at once; again: back to the folder
   t.key(@ui.key_escape)
   assert_true(r.panel.get() == @sf.ReaderPanel::NoPanel)
@@ -376,6 +401,14 @@ test "wide: layout changes show while the core is still keeping them" {
   t.draw()
   assert_true(t.find("150%") is Some(_))
   assert_eq(pending.length(), 3)
+  // 版面宽度's 宽: the column wider at once, kept by the core as the reader's width
+  let (x, y) = layout_middle(t, Radio, "宽")
+  t.tap(x, y)
+  t.draw()
+  assert_eq(layout_style().width, "wide")
+  assert_eq(t.get(Radio, label="宽").check, Some(On))
+  assert_eq(pending.length(), 4)
+  assert_eq(field(Some(pending[3]), "reader"), Some({ "width": "wide" }))
 }
 
 ///|

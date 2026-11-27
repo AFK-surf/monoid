@@ -245,6 +245,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
     ["face", "ReaderFace"],
     ["indent", "bool", { doc: "Paragraphs start indented two characters." }],
     ["paper", "ReaderPaper"],
+    ["width", "ReaderWidth"],
   ], { doc: "How the drive's reader lays text out on this device (`prefs.set {reader: {…}}`, one setting or several)." }),
   TypographyPrefs: struct([
     ["textSize", "i64", { client: "I54", doc: "What people and agents wrote, its size as a percent: 85 to 130 by 5 (100)." }],
@@ -264,6 +265,7 @@ export const PREF_SHAPES: Record<string, Shape> = {
   LineHeightPreset: words(["compact","normal","relaxed"], { doc: "Lines of what people and agents wrote: closer, as the app sets them, or further apart.", default: "normal" }),
   ReaderFace: words(["serif","sans"], { default: "sans" }),
   ReaderPaper: words(["follow","white","green","grey","night"], { doc: "The reader's paper: as the app looks (`follow`), or one of its own.", default: "follow" }),
+  ReaderWidth: words(["standard","wide","full"], { doc: "How wide the reader's column is: a novel's 34em or a document's 48em (`standard`), 48em or 64em (`wide`), or\nthe whole row (`full`).", default: "standard" }),
   OpenChat: struct([
     ["station", "String"],
     ["key", "String"],

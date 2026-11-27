@@ -13,7 +13,8 @@
 // down as they fade; the contents and the search sheets from the window's foot (sheet_node), the layout's half as tall.
 // In a tab beside a chat (`host` Tab or PanelTab) the tab's tools open its panels (reader_panel_toggle), while
 // scroll-to-bottom floats at the tab's bottom-right (reader_beside_chrome, matching a chat's float); the column starts
-// at the tab's top (wider in PanelTab, and for a Markdown document anywhere: doc_column_ems), and an open panel sits over the text where the tab has not
+// at the tab's top (wider in PanelTab, and for a Markdown document anywhere: doc_column_ems; wider still or the whole
+// row by the layout's width: reader_column_ems), and an open panel sits over the text where the tab has not
 // room for both.
 //
 // ⌘F finds, ← → go from chapter to chapter, Esc closes what is open over the text (else goes back): the keymap's
@@ -43,7 +44,9 @@ pub fn reader_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let beside = host != OwnPage
-  let ems = if host == PanelTab || markdown { doc_column_ems } else { desk_column_ems }
+  // (how many of its size its column is wide: by the kind of text and the layout's width, read as that changes)
+  let doc = host == PanelTab || markdown
+  let ems = fn() { reader_column_ems(doc, (viewer_host().reader_style)().width) }
   let r = reading_for(key)
   reader_load(r, file, markdown)
   // (what the page that holds it keeps on its words: told of the phone's bars, and first to take a tap on the text)
@@ -370,7 +373,7 @@ fn reader_column_node(
   r : Reading,
   book : Book,
   beside : Bool,
-  ems : Double,
+  ems : () -> Double?,
   wide : () -> Bool,
   small : () -> Bool,
   paper : () -> ReaderPaper,
@@ -507,7 +510,7 @@ fn reader_column_node(
 fn reader_sides(
   row : @view.View,
   r : Reading,
-  ems : Double,
+  ems : () -> Double?,
   wide : () -> Bool,
   style : () -> ReaderStyle,
   middle : (@view.View) -> Unit,
@@ -522,7 +525,7 @@ fn reader_sides(
     .shrink(Is(1.0))
     .max_width(By(fn() {
       let s = style()
-      Some(ems * s.size.to_double() + 2.0 * s.margin.to_double())
+      ems().map(fn(e) { e * s.size.to_double() + 2.0 * s.margin.to_double() })
     }))
     .padding(By(fn() {
       let margin = style().margin.to_double()
@@ -542,10 +545,15 @@ fn reader_sides(
 /// own margins kept at the row's edges): what a Markdown table wider than the column takes before it scrolls across
 /// (markdown_node's `bleed`, out to the row's end with its copy key's room kept), none where the column fills the row
 /// (小屏, a narrow tab).
-fn reader_bleed(r : Reading, ems : Double, wide : () -> Bool, style : () -> ReaderStyle, row_w : () -> Double) -> Double {
+fn reader_bleed(r : Reading, ems : () -> Double?, wide : () -> Bool, style : () -> ReaderStyle, row_w : () -> Double) -> Double {
   let s = style()
   let room = dmax(0.0, row_w() - reader_panel_room(r, wide))
-  let column = dmin(ems * s.size.to_double() + 2.0 * s.margin.to_double(), room * reader_middle_grows / (reader_middle_grows + 2.0))
+  // (as wide as the row: all of it but for a hair)
+  let all = room * reader_middle_grows / (reader_middle_grows + 2.0)
+  let column = match ems() {
+    Some(e) => dmin(e * s.size.to_double() + 2.0 * s.margin.to_double(), all)
+    None => all
+  }
   dmax(0.0, (room - column) / 2.0)
 }
 
@@ -574,7 +582,7 @@ fn reader_chunk_node(
   r : Reading,
   book : Book,
   k : Int,
-  ems : Double,
+  ems : () -> Double?,
   wide : () -> Bool,
   small : () -> Bool,
   style : () -> ReaderStyle,

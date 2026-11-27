@@ -118,6 +118,10 @@ fn reader_prefs(src : Source) -> @sf.ReaderStyle {
       _ => true
     },
     paper: word("paper", d.paper),
+    width: match word("width", d.width) {
+      "wide" | "full" as w => w
+      _ => d.width
+    },
   }
 }
 
@@ -131,6 +135,7 @@ fn reader_put(src : Source, change : @sf.ReaderStyleChange) -> Unit {
     Face(s) => ("face", Json::string(s))
     Indent(b) => ("indent", Json::boolean(b))
     Paper(s) => ("paper", Json::string(s))
+    Width(s) => ("width", Json::string(s))
   }
   reader_set[k] = v
   let o : Map[String, Json] = Map([])

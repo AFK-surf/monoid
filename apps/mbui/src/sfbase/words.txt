@@ -2338,6 +2338,10 @@ web-pages.drive.reader.foundAt
 web-pages.drive.reader.foundCount
 web-pages.drive.reader.indent
 web-pages.drive.reader.indentLabel
+web-pages.drive.reader.width
+web-pages.drive.reader.widthFull
+web-pages.drive.reader.widthStandard
+web-pages.drive.reader.widthWide
 web-pages.drive.reader.layout
 web-pages.drive.reader.less
 web-pages.drive.reader.lines

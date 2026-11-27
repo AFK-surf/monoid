@@ -4,7 +4,8 @@
 ///|
 /// The text's size (12 to 32), its lines' height as a multiple of it (1.2 to 2.4), the room either side (8 to 44),
 /// its face ("serif" or "sans"), whether paragraphs start indented two characters, the paper under it ("follow" from
-/// before: the light one, the app's dark being night; "white", "green", "grey", "night").
+/// before: the light one, the app's dark being night; "white", "green", "grey", "night"), how wide its column is
+/// ("standard": a novel's 34em, a document's 48em; "wide": 48em, 64em; "full": the whole row: reader_column_ems).
 #derive(Eq)
 pub(all) struct ReaderStyle {
   size : Int
@@ -13,6 +14,7 @@ pub(all) struct ReaderStyle {
   face : String
   indent : Bool
   paper : String
+  width : String
 }
 
 ///|
@@ -24,6 +26,7 @@ pub(all) enum ReaderStyleChange {
   Face(String)
   Indent(Bool)
   Paper(String)
+  Width(String)
 }
 
 ///|
@@ -35,6 +38,7 @@ pub let reader_style_default : ReaderStyle = {
   face: "sans",
   indent: true,
   paper: "follow",
+  width: "standard",
 }
 
 ///|
@@ -47,6 +51,7 @@ pub fn ReaderStyle::changed(self : ReaderStyle, change : ReaderStyleChange) -> R
     Face(face) => { ..self, face }
     Indent(indent) => { ..self, indent }
     Paper(paper) => { ..self, paper }
+    Width(width) => { ..self, width }
   }
 }
 

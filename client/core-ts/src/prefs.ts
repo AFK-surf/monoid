@@ -95,10 +95,11 @@ function customHue(v: unknown): number | null {
 type Map_ = Record<string, unknown>;
 
 /// How the drive's reader lays text out on this device: each number within its bounds, its default
-/// where none is kept; the papers and faces there are.
+/// where none is kept; the papers, faces and widths there are.
 const READER_NUMBERS = { size: [12, 32, 16], line: [1.2, 2.4, 1.7], margin: [8, 44, 22] } as const;
 const PAPERS = ["follow", "white", "green", "grey", "night"];
 const FACES = ["serif", "sans"];
+const WIDTHS = ["standard", "wide", "full"];
 
 export function readerOf(v: unknown): Map_ {
   const r = isObject(v) ? v : {};
@@ -114,6 +115,7 @@ export function readerOf(v: unknown): Map_ {
     face: FACES.includes(r.face as string) ? r.face : "sans",
     indent: typeof r.indent === "boolean" ? r.indent : true,
     paper: PAPERS.includes(r.paper as string) ? r.paper : "follow",
+    width: WIDTHS.includes(r.width as string) ? r.width : "standard",
   };
 }
 

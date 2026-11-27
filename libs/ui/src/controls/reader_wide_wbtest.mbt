@@ -122,13 +122,16 @@ test "a plain text keeps a novel's column over a wide window while a Markdown do
   let style = fn() { reader_style_default }
   let wide = fn() { true }
   let s = reader_style_default
-  let novel = reader_bleed(r, desk_column_ems, wide, style, fn() { 1440.0 })
-  let doc = reader_bleed(r, doc_column_ems, wide, style, fn() { 1440.0 })
+  let novel = reader_bleed(r, fn() { Some(desk_column_ems) }, wide, style, fn() { 1440.0 })
+  let doc = reader_bleed(r, fn() { Some(doc_column_ems) }, wide, style, fn() { 1440.0 })
   assert_true(novel > doc && doc > 0.0, msg="novel \{novel}, doc \{doc}")
   let column = doc_column_ems * s.size.to_double() + 2.0 * s.margin.to_double()
   assert_true((doc - (1440.0 - column) / 2.0).abs() < 0.01, msg="doc \{doc}")
   // none where the column fills the row
-  assert_true(reader_bleed(r, doc_column_ems, wide, style, fn() { 390.0 }) < table_key_room)
+  assert_true(reader_bleed(r, fn() { Some(doc_column_ems) }, wide, style, fn() { 390.0 }) < table_key_room)
+  // none where the column is as wide as the row (the layout's 铺满)
+  // (but for the hair either side the row keeps: reader_middle_grows)
+  assert_true(reader_bleed(r, fn() { None }, wide, style, fn() { 1440.0 }) < 2.0)
   reader_let_go("reader-wide-bleed")
 }
 
@@ -141,4 +144,70 @@ test "a Markdown document on a narrow screen keeps its words inside the window, 
   assert_true(runs_to(para) <= 390.0 - margin + 0.5, msg="paragraph to \{runs_to(para)}")
   assert_true((runs_from(cells) - runs_from(para)).abs() < 16.0, msg="table from \{runs_from(cells)}, the words from \{runs_from(para)}")
   assert_eq(faults, [])
+}
+
+///|
+test "the layout's width: standard keeps a novel's 34em and a document's 48em, wide 48em and 64em, full none" {
+  assert_eq(reader_column_ems(false, "standard"), Some(desk_column_ems))
+  assert_eq(reader_column_ems(true, "standard"), Some(doc_column_ems))
+  assert_eq(reader_column_ems(false, "wide"), Some(wide_text_ems))
+  assert_eq(reader_column_ems(true, "wide"), Some(wide_doc_ems))
+  assert_eq(reader_column_ems(false, "full"), None)
+  assert_eq(reader_column_ems(true, "full"), None)
+  // (a width the core never says: the standard column)
+  assert_eq(reader_column_ems(true, "huge"), Some(doc_column_ems))
+  assert_eq(reader_style_default.width, "standard")
+}
+
+///|
+test "a Markdown document's column follows the layout's width as it is changed: 48em, then 64em, then the whole row" {
+  let key = "reader-wide-width"
+  let book = wide_doc()
+  let w = 1440.0
+  let h = 900.0
+  let t = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w~, h~, platform=0)
+  let r = reading_for(key)
+  r.asked = true
+  r.book.set(Some(book))
+  set_viewer_host(viewer_host_default())
+  let file = blob_file(@utf8.encode(book.text), "export.md", book.text.length().to_double(), save=fn() {  })
+  @ui.set_view_app(fn(root) {
+    reader_node(root, key, file, markdown=true, back_label=fn() { "返回" }, on_back=fn() {  }) |> ignore
+  })
+  t.draw()
+  let s = reader_style_default
+  let size = s.size.to_double()
+  let margin = s.margin.to_double()
+  let read = fn() {
+    let runs = t.text_runs()
+    let para = runs.filter(fn(l) { l.top < h && (l.text.contains("report") || l.text.contains("column holds") || l.text.contains("on purpose")) })
+    let cells = runs.filter(fn(l) { l.text.contains("cell") || l.text.contains("wraps") || l.text.contains("squeezed") })
+    (para, cells)
+  }
+  let (para, _) = read()
+  let standard_w = runs_to(para) - runs_from(para)
+  assert_true(standard_w <= doc_column_ems * size + 0.5, msg="standard: \{standard_w}")
+  // 宽: a document's 64em, wider than the standard 48em; its table still out past it
+  @ui.view_tree().unwrap().event(t.time(), fn() { (viewer_host().set_reader_style)(Width("wide")) })
+  t.draw()
+  let (para, cells) = read()
+  let wide_w = runs_to(para) - runs_from(para)
+  assert_true(wide_w > doc_column_ems * size && wide_w <= wide_doc_ems * size + 0.5, msg="wide: \{wide_w}")
+  let column_from = (w - (wide_doc_ems * size + 2.0 * margin)) / 2.0 + margin
+  assert_true((runs_from(para) - column_from).abs() < 1.0, msg="wide from \{runs_from(para)}, its column's \{column_from}")
+  assert_true(runs_to(cells) > column_from + wide_doc_ems * size + 40.0, msg="wide table to \{runs_to(cells)}")
+  assert_true(runs_to(cells) <= w - margin - table_key_room + 0.5, msg="wide table to \{runs_to(cells)}")
+  assert_eq(t.audit(), [])
+  // 铺满: the whole row less the margins, its table within it
+  @ui.view_tree().unwrap().event(t.time(), fn() { (viewer_host().set_reader_style)(Width("full")) })
+  t.draw()
+  let (para, cells) = read()
+  let full_w = runs_to(para) - runs_from(para)
+  assert_true(full_w > wide_doc_ems * size && full_w <= w - 2.0 * margin + 0.5, msg="full: \{full_w}")
+  assert_true((runs_from(para) - margin).abs() < 2.0, msg="full from \{runs_from(para)}")
+  assert_true((runs_from(cells) - runs_from(para)).abs() < 16.0, msg="full table from \{runs_from(cells)}")
+  assert_true(runs_to(cells) <= w - margin + 0.5, msg="full table to \{runs_to(cells)}")
+  assert_eq(t.audit(), [])
+  reader_let_go(key)
+  (viewer_host().set_reader_style)(Width("standard"))
 }

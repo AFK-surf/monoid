@@ -269,6 +269,44 @@ fn layout_body(col : @view.View, narrow : Bool, p : () -> ReaderPaper, loc~ : So
       |> ignore
     })
     |> ignore
+    // the column's width: in the panel docked beside the text only (a phone's column is the window's at every width,
+    // so the sheet offers no choice that changes nothing)
+    if !narrow {
+      b.box(fn(k) {
+        style_node(k, fn() { desk_layout_block })
+        label(k, "web-pages.drive.reader.width")
+        seg_node(
+          k,
+          fn() {
+            [
+              t("web-pages.drive.reader.widthStandard"),
+              t("web-pages.drive.reader.widthWide"),
+              t("web-pages.drive.reader.widthFull"),
+            ]
+          },
+          fn() {
+            match style().width {
+              "wide" => 1
+              "full" => 2
+              _ => 0
+            }
+          },
+          fn(i) {
+            let want = match i {
+              1 => "wide"
+              2 => "full"
+              _ => "standard"
+            }
+            if want != @signals.untracked(style).width {
+              set(Width(want))
+            }
+          },
+          item_w=desk_seg_third,
+        )
+        |> ignore
+      })
+      |> ignore
+    }
   })
   |> ignore
 }
