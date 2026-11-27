@@ -36,10 +36,10 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
   let with_empty_query = Json::object({ "scope": Json::string("w1"), "query": Json::string("") })
 
   let expected_lasting : Array[String] = [
-    "workspace", "workspaces", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "usage",
+    "workspace", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "usage",
     "archive", "chats", "longJobs", "changelog", "stationUpdates",
   ]
-  assert_eq(expected_lasting.length(), 14)
+  assert_eq(expected_lasting.length(), 13)
   for name in expected_lasting {
     assert_false(topic_policy_sensitive(name, empty))
     assert_true(topic_policy_lasting(name, empty))
@@ -156,10 +156,10 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
     assert_eq(topic_policy_keep_by(name, empty, false, false), 0)
   }
 
-  // PR-B2b MBUI_TOPIC_POLICY switch off downgrades all 8 upgraded topics to live (0 / false)
-  assert_true(topic_policy_lasting_by("workspaces", empty, true))
+  // workspaces remains LIVE regardless of MBUI_TOPIC_POLICY
+  assert_false(topic_policy_lasting_by("workspaces", empty, true))
   assert_false(topic_policy_lasting_by("workspaces", empty, false))
-  assert_eq(topic_policy_keep_by("workspaces", empty, true, true), 64)
+  assert_eq(topic_policy_keep_by("workspaces", empty, true, true), 0)
   assert_eq(topic_policy_keep_by("workspaces", empty, true, false), 0)
   for name in ["profilesOverview", "presets", "otherPresets", "releases", "fonts"] {
     assert_true(topic_policy_show_kept_by(name, empty, true, true))
@@ -240,7 +240,7 @@ test "topic_kept and topic_shown_kept_params follow topic_policy_enabled while s
   assert_false(topic_shown_kept_params("vaults", empty))
 
   topic_policy_enabled.val = fn() { true }
-  assert_eq(topic_kept("workspaces", empty), 64)
+  assert_eq(topic_kept("workspaces", empty), 0)
   assert_eq(topic_kept("jobLog", empty), 8)
   assert_true(topic_shown_kept_params("otherPresets", empty))
   assert_eq(topic_kept("vaults", empty), 0)
@@ -248,12 +248,64 @@ test "topic_kept and topic_shown_kept_params follow topic_policy_enabled while s
 }
 
 ///|
-test "TopicState::is_retained distinguishes unconfirmed (<0) from fresh (>=0) for press_wait gating" {
+test "TopicState::is_retained and is_confirmed distinguish retained (<0), empty (0/None), and confirmed (>=0/Some)" {
   let retained_show : TopicState = { value: Some({ "terminals": [] }), error: None, version: -2, waiting: false }
   let retained_last : TopicState = { value: Some({ "terminals": [] }), error: None, version: -3, waiting: false }
+  let empty_unconfirmed : TopicState = { value: None, error: None, version: 0, waiting: false }
   let fresh : TopicState = { value: Some({ "terminals": [] }), error: None, version: 0, waiting: false }
   assert_true(opens_answered(retained_show) && retained_show.is_retained())
   assert_true(opens_answered(retained_last) && retained_last.is_retained())
   assert_false(opens_answered(retained_show) && !retained_show.is_retained())
-  assert_true(opens_answered(fresh) && !fresh.is_retained())
+  assert_false(retained_show.is_confirmed())
+  assert_false(retained_last.is_confirmed())
+  assert_false(empty_unconfirmed.is_retained())
+  assert_false(empty_unconfirmed.is_confirmed())
+  assert_true(opens_answered(fresh) && !fresh.is_retained() && fresh.is_confirmed())
+}
+
+///|
+test "chat_remote_open press_wait waits while terminals is retained (-2) and opens menu once fresh (>=0) arrives" {
+  let prev_cap = terminals_capable_fn.val
+  terminals_capable_fn.val = fn() { true }
+  defer {
+    terminals_capable_fn.val = prev_cap
+    @sf.presenters_reset()
+  }
+  let t = @ui.Tester::new(fn(_) {  }, tree=fn(_) {  })
+  let tree = @ui.view_tree().unwrap()
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-2)
+  let terms_val : Json = {
+    "known": true,
+    "outdated": false,
+    "open": true,
+    "terminals": [{ "id": "t-1", "cwd": "/work/proj", "ended": false, "chat": "c-1" }],
+  }
+  let base = made_source()
+  let src : Source = {
+    ..base,
+    asks_terminals: fn() { true },
+    topic_read: fn(name, _params) {
+      if name == "terminals" {
+        { value: Some(terms_val), error: None, version: terms_ver.get() }
+      } else {
+        { value: None, error: None, version: 0 }
+      }
+    },
+  }
+  let r : ChatRef = { station: "w1/s1", session: "c-1", title: "Chat", station_name: "Studio" }
+  let v = chat_view_made({ "key": "c-1", "canTerminal": true, "canBrowser": false, "screens": [] })
+  chat_remote_caps[v.key] = (false, true)
+  defer { chat_remote_caps.remove(v.key) }
+  let before = @sf.last_presented()
+  tree.event(t.time(), fn() {
+    chat_remote_open(src, r, v, from=@sf.at_point(20.0, 20.0))
+  })
+  t.draw()
+  // While retained (-2), press_wait must NOT open the menu yet.
+  assert_eq(@sf.last_presented(), before)
+
+  // Once fresh (version = 1) arrives, press_wait opens the menu immediately.
+  tree.event(t.time() + 10.0, fn() { terms_ver.set(1) })
+  t.draw()
+  assert_true(@sf.last_presented() > before)
 }

@@ -458,45 +458,65 @@ test("stationSearch_wordsKind_tracks_each_station_independently_and_skips_stale_
   assert.deepEqual(host.takeEmitted(), [[1, value(4, { items: ["hit-a"] })]]);
 });
 
-test("workspaces_lasting_kept_survives_workspace_switch_but_clears_on_global_and_workspace_auth_boundaries", async () => {
+test("workspaces_remains_live_and_never_retained_in_kept", async () => {
   const { host, store, pass } = setup();
   const wsTopic: Topic = { topic: "workspaces" };
-  const chatsA: Topic = { topic: "chats", scope: "wsA", mine: false };
-  const chatsB: Topic = { topic: "chats", scope: "wsB", mine: false };
   store.registerClient(1, 1);
   store.authGen.syncAccounts(["acc-1"]);
   store.authGen.syncWorkspace("wsA", "owner:acc-1:role:owner");
-  store.authGen.syncWorkspace("wsB", "owner:acc-1:role:member");
 
   store.subscribe(1, 1, wsTopic);
-  store.set(wsTopic, { ok: { workspaces: [{ id: "wsA" }, { id: "wsB" }] } });
-  await pass(COALESCE_MS * 2);
-  store.unsubscribe(1, 1, true);
-  assert.ok(store.keptValueOf(1, wsTopic) !== undefined, "workspaces must be retained in #kept");
-
-  // Routine workspace switch (wsA -> wsB) must NOT clear workspaces #kept.
-  store.subscribe(1, 2, chatsA);
-  store.set(chatsA, { ok: { days: [] } });
-  await pass(COALESCE_MS * 2);
-  store.unsubscribe(1, 2, true);
-  store.subscribe(1, 3, chatsB);
-  store.set(chatsB, { ok: { days: [] } });
-  await pass(COALESCE_MS * 2);
-  assert.ok(store.keptValueOf(1, wsTopic) !== undefined, "routine workspace switch must not clear workspaces #kept");
-
-  // Workspace permission change must clear workspaces #kept synchronously.
-  store.authGen.syncWorkspace("wsB", "owner:acc-1:role:removed");
-  assert.equal(store.keptValueOf(1, wsTopic), undefined, "workspace auth boundary must clear workspaces #kept");
-
-  // Re-retain workspaces, then switch account (Global boundary): must clear workspaces #kept synchronously.
-  store.subscribe(1, 4, wsTopic);
   store.set(wsTopic, { ok: { workspaces: [{ id: "wsA" }] } });
   await pass(COALESCE_MS * 2);
-  store.unsubscribe(1, 4, true);
-  assert.ok(store.keptValueOf(1, wsTopic) !== undefined);
-  store.authGen.syncAccounts(["acc-2"]);
-  assert.equal(store.keptValueOf(1, wsTopic), undefined, "global account switch must clear workspaces #kept");
+  store.unsubscribe(1, 1, true);
+  assert.equal(store.keptValueOf(1, wsTopic), undefined, "workspaces is LIVE and must not be retained in #kept");
   host.takeEmitted();
+});
+
+test("wordsLetGo_clears_on_eviction_and_auth_boundary_without_stale_leak", async () => {
+  const { host, store, pass } = setup();
+  const st1 = (query: string): Topic => ({ topic: "stationSearch", station: "wsA/st1", query });
+  let computes = 0;
+  store.setSource({
+    start(topic) {
+      if (topic.topic === "stationSearch") store.invalidate(topic);
+    },
+    stop() {},
+    compute(topic) {
+      if (topic.topic !== "stationSearch") return undefined;
+      computes++;
+      return { ok: { items: [`hit-${topic.query}-${computes}`] } };
+    },
+  });
+  store.registerClient(1, 1);
+  store.authGen.syncAccounts(["acc-1"]);
+  store.authGen.syncWorkspace("wsA", "owner:acc-1:role:owner");
+
+  // Subscribe then unsubscribe -> enters #wordsLetGo, then auth boundary fires -> must evict cleanly.
+  store.subscribe(1, 1, st1("alpha"));
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 1);
+  host.takeEmitted();
+  store.unsubscribe(1, 1);
+  store.authGen.syncWorkspace("wsA", "owner:acc-1:role:member");
+  host.takeEmitted();
+
+  // Re-subscribing with a new query must NOT depend on or keep the old invalidated entry.
+  store.subscribe(1, 2, st1("beta"));
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 2);
+  const betaMsgs = host.takeEmitted().map(([, m]) => m as { id?: number; value?: unknown });
+  assert.deepEqual(betaMsgs.find((m) => m.id === 2)?.value, { items: ["hit-beta-2"] });
+  store.unsubscribe(1, 2);
+
+  // Let idle eviction run -> #wordsLetGo entry must be removed upon eviction.
+  await pass(EVICT_AFTER_MS + EVICT_AFTER_MS / 4);
+  assert.deepEqual(store.liveTopics(), []);
+  store.subscribe(1, 3, st1("gamma"));
+  await pass(COALESCE_MS * 2);
+  assert.equal(computes, 3);
+  const gammaMsgs = host.takeEmitted().map(([, m]) => m as { id?: number; value?: unknown });
+  assert.deepEqual(gammaMsgs.find((m) => m.id === 3)?.value, { items: ["hit-gamma-3"] });
 });
 
 test("topics_changed_together_go_out_together_in_order", async () => {

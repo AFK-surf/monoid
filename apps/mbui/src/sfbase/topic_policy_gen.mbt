@@ -224,6 +224,7 @@ pub fn topic_policy_sensitive(name : String, params : Json) -> Bool {
 ///|
 /// Whether `(name, params)` is a bar/rail opening list kept in `last_said` (`policy` = `MBUI_TOPIC_POLICY`).
 pub fn topic_policy_lasting_by(name : String, params : Json, policy : Bool) -> Bool {
+  ignore(policy)
   if topic_policy_sensitive(name, params) || topic_policy_typed(params) {
     return false
   }
@@ -241,7 +242,6 @@ pub fn topic_policy_lasting_by(name : String, params : Json, policy : Bool) -> B
     | "changelog"
     | "screens"
     | "terminals" => true
-    "workspaces" => policy
     _ => false
   }
 }
@@ -293,12 +293,6 @@ pub fn topic_policy_keep_by(name : String, params : Json, views : Bool, policy :
         0
       } else {
         topic_policy_last_most
-      }
-    "workspaces" =>
-      if policy && !topic_policy_typed(params) {
-        topic_policy_last_most
-      } else {
-        0
       }
     "presets" => if views && policy && !topic_policy_typed(params) { 8 } else { 0 }
     "projects" => if views && !topic_policy_typed(params) { 8 } else { 0 }

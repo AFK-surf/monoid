@@ -4,11 +4,12 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { apply as applyOps } from "../src/delta.ts";
 import { answers, apply, call, readsOf, subscribe, v } from "./helpers.ts";
-import { base, overview, started, stationReplies } from "./station-fixture.ts";
+import { base, overview, started, stationLater, stationReplies } from "./station-fixture.ts";
 import type { HttpRequest } from "../src/host.ts";
 import type { StationAddr } from "../src/station/addr.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
-import type { FakeHost } from "../src/testing.ts";
+import { logKey, PRESETS } from "../src/station/link.ts";
+import { jsonResponse, type FakeHost } from "../src/testing.ts";
 import { work } from "../src/work.ts";
 
 const S = "ws/st";
@@ -409,5 +410,50 @@ test("a_preset_that_binds_a_model_starts_only_on_stations_that_run_it_never_on_a
   await host.settle();
   assert.match(answered(6)?.error?.message ?? "", /Fable/);
   assert.equal(host.requests.slice(before).filter((r) => r.method === "POST" && r.url.endsWith("/admin/api/sessions")).length, 0);
+  core.close();
+});
+
+test("presets_and_jobLog_clear_link_memory_on_same_owner_downgrade_and_do_not_fallback_on_error", async () => {
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile] },
+    "GET /presets": { presets: [preset("app", "App")], candidates: [candidate] },
+    "GET /jobs/j1/log?lines=200": { text: "secret-log-line\n", outputAt: 1, follows: false },
+  };
+  const { host, core } = await started(said as never);
+
+  const ui = core.connect();
+  const values = new Map<number, unknown>();
+  subscribe(core, ui, 1, { topic: "presets", station: S });
+  subscribe(core, ui, 2, { topic: "jobLog", station: S, job: "j1", lines: 200 });
+  await host.settle();
+  apply(host, values);
+  assert.deepEqual(v(values, 1).presets.map((p: { id: string }) => p.id), ["app"]);
+  assert.equal(v(values, 2).lines[0].runs[0].text, "secret-log-line");
+
+  // Same-owner downgrade bumps workspace authGen while link stays connected:
+  // link.memory must clear presets & jobLog synchronously, and 403 on refresh must surface error (never stale cache).
+  stationLater(host, (req) => {
+    if (req.method === "GET" && (req.url.endsWith("/admin/api/presets") || req.url.includes("/admin/api/jobs/j1/log"))) {
+      return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+    }
+    return undefined;
+  });
+  const link = core.inner.stations.link(S);
+  assert.ok(link, "station link remains connected on same-owner downgrade");
+  assert.equal(link.memory.has(PRESETS), true, "presets was populated in link.memory before downgrade");
+  assert.equal(link.memory.has(logKey("j1", 200)), true, "jobLog was populated in link.memory before downgrade");
+  host.takeEmitted();
+  core.inner.store.authGen.syncWorkspace("ws", "owner:a@x.com:role:restricted");
+  assert.equal(link.memory.has(PRESETS), false, "presets must be cleared from link.memory on auth boundary");
+  assert.equal(link.memory.has(logKey("j1", 200)), false, "jobLog must be cleared from link.memory on auth boundary");
+
+  core.inner.stations.refreshWorkspace("ws");
+  await host.settle();
+  const emitted = host.takeEmitted().map(([, m]) => m as { id?: number; value?: unknown; error?: unknown });
+  const pMsg = emitted.find((m) => m.id === 1 && m.error !== undefined);
+  const lMsg = emitted.find((m) => m.id === 2 && m.error !== undefined);
+  assert.ok(pMsg?.error !== undefined, `presets must surface error instead of stale value, got ${JSON.stringify(emitted)}`);
+  assert.ok(lMsg?.error !== undefined, `jobLog must surface error instead of stale value, got ${JSON.stringify(emitted)}`);
   core.close();
 });

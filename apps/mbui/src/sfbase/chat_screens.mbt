@@ -103,7 +103,7 @@ fn chat_remote_menu_show(
   terminals_val : Json?,
   from : @sf.Beside,
   along : @ui.Along,
-  terms_retained? : Bool = false,
+  terms_confirmed? : Bool = true,
 ) -> Unit {
   let term_ok = can_terminal && (terminals_capable_fn.val)()
   if !can_browser && !term_ok {
@@ -162,7 +162,15 @@ fn chat_remote_menu_show(
     let listed_ids = user_tabs.map(fn(s) { s.id })
     items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.screen.openBrowserRow"), icon="web", fn() {
       match src {
-        Some(s) => open_remote_browser(s, r.station, listed_ids)
+        Some(s) =>
+          if can_browser {
+            open_remote_browser(s, r.station, listed_ids)
+          } else {
+            match @settings.browser_tab_to_open(r.station, listed_ids) {
+              Some(to) => open_screen(r.station, to, None)
+              None => if !user_tabs.is_empty() { open_screen(r.station, user_tabs[0].id, None) }
+            }
+          }
         None =>
           match @settings.browser_tab_to_open(r.station, listed_ids) {
             Some(to) => open_screen(r.station, to, None)
@@ -177,8 +185,10 @@ fn chat_remote_menu_show(
       items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openTerminal"), heading=true, fn() { })))
     }
     if term_ok {
-      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", fn() {
-        open_terminal(r.station, "new", "", r.session)
+      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", disabled=!terms_confirmed, fn() {
+        if terms_confirmed {
+          open_terminal(r.station, "new", "", r.session)
+        }
       })))
     }
     for t in open_terms {
@@ -186,8 +196,8 @@ fn chat_remote_menu_show(
       let tid = text(tv, "id")
       let cwd = text(tv, "cwd")
       let label = chat_terminal_short(cwd) + (if text(tv, "chat") == r.session && r.session != "" { " · " + r.title } else { "" })
-      items_out.push(Some(@sf.menu_item_of(label, icon="terminal", disabled=terms_retained, fn() {
-        if !terms_retained {
+      items_out.push(Some(@sf.menu_item_of(label, icon="terminal", disabled=!terms_confirmed, fn() {
+        if terms_confirmed {
           open_terminal(r.station, tid, cwd, text(tv, "chat"))
         }
       })))
@@ -235,7 +245,8 @@ pub fn chat_remote_open(
     fn() {
       let st = @signals.untracked(fn() { sub.get() })
       let_go(src, scope)
-      chat_remote_menu_show(Some(src), r, v.screens, v.can_browser(), true, st.value, from, along, terms_retained=st.is_retained())
+      let confirmed = st.is_confirmed()
+      chat_remote_menu_show(Some(src), r, v.screens, v.can_browser(), true, st.value, from, along, terms_confirmed=confirmed)
     },
     let_go=fn() { let_go(src, scope) },
     most=@sf.open_hold_ms,

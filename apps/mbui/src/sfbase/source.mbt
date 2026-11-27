@@ -52,6 +52,13 @@ pub fn TopicState::is_retained(self : TopicState) -> Bool {
 }
 
 ///|
+/// Whether the topic state is a fresh, confirmed value from the core (`version >= 0 && value is Some(_)`)
+/// rather than an unconfirmed empty subscription (`version == 0, value == None`) or a retained/placeholder value (`version < 0`).
+pub fn TopicState::is_confirmed(self : TopicState) -> Bool {
+  self.version >= 0 && self.value is Some(_)
+}
+
+///|
 /// A legacy topic read leaves by name; an owned read releases only the supplied, independently owned reader.
 pub(all) enum TopicLeave {
   Legacy

@@ -32,7 +32,7 @@ import { digest } from "../digest.ts";
 import { logged } from "../log-lines.ts";
 import { type Channel, Channels } from "../channels/channels.ts";
 import { ENTRIES, LETTERS, PAGE, TRANSCRIPT, TRANSCRIPT_PAGE, entriesOf, heldIn, lettersOf, transcriptOf } from "./channel-kinds.ts";
-import { type HistoryRead, type Link, Links, type LiveView, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
+import { type HistoryRead, type Link, Links, type LiveView, LOG_KEY, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import { concat, readAll, replyHeader, type StationWire } from "./wire.ts";
 import { SseParser } from "../sse.ts";
 import * as logins from "./machine-logins.ts";
@@ -368,6 +368,11 @@ export class StationsSync {
     // A thread caught up on brought its latest: one less to catch up on.
     core.data.onLogChange((table, station, id) => {
       if (table === "entry") this.#caughtUp(station, Number(id));
+    });
+    // Drop cached station presets and job logs synchronously on auth boundary (including offline links and same-owner downgrades).
+    core.store.authGen.onBoundary((event) => {
+      if (event.kind === "global") this.clearProtectedMemory(null);
+      else if (event.kind === "workspace") this.clearProtectedMemory(event.workspace);
     });
     // Nothing left to bring of a station: what is still behind is not coming now (read again later, as the sync goes).
     core.scheduler.onIdle = (lane) => this.#lull(lane);
@@ -966,15 +971,19 @@ export class StationsSync {
 
   #presets(address: string): Effect.Effect<void, CoreError> {
     const key = topicKey({ topic: "presets", station: address });
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     return Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/presets", null, { quiet: true }));
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
       if (answer._tag === "Success") {
         link.errors.delete(key);
         link.memory.set(PRESETS, answer.success);
         this.onChange(address, "log", key);
-      } else if (answer.failure.status !== undefined && !link.memory.has(PRESETS)) {
+      } else if (answer.failure.status !== undefined) {
+        link.memory.delete(PRESETS);
         link.errors.set(key, answer.failure);
         this.onChange(address, "errors", key);
       }
@@ -1051,6 +1060,9 @@ export class StationsSync {
   readLog(address: string, job: string, lines: number): void {
     const key = logKey(job, lines);
     if (this.#links.get(address)?.memory.fresh(key)) return;
+    const tKey = topicKey({ topic: "jobLog", station: address, job, lines });
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
     this.#enqueue(
       address,
       `log/${job}/${lines}`,
@@ -1058,12 +1070,20 @@ export class StationsSync {
       Effect.gen({ self: this }, function* () {
         const link = this.#links.get(address);
         if (!link || !this.reachable(address)) return;
-        const answer = yield* this.requests.call(link.addr, "GET", `/jobs/${encode(job)}/log?lines=${lines}`, null, { quiet: true });
-        link.followsLogs = get(answer, "follows") === true;
-        // What the stream said meanwhile is newer.
-        if (!link.memory.fresh(key)) {
-          link.memory.set(key, logged(link.memory.get(key), str(get(answer, "text")) ?? "", get(answer, "outputAt") ?? null));
-          this.onChange(address, "log", topicKey({ topic: "jobLog", station: address, job, lines }));
+        const answer = yield* Effect.result(this.requests.call(link.addr, "GET", `/jobs/${encode(job)}/log?lines=${lines}`, null, { quiet: true }));
+        if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
+        if (answer._tag === "Success") {
+          link.errors.delete(tKey);
+          link.followsLogs = get(answer.success, "follows") === true;
+          // What the stream said meanwhile is newer.
+          if (!link.memory.fresh(key)) {
+            link.memory.set(key, logged(link.memory.get(key), str(get(answer.success, "text")) ?? "", get(answer.success, "outputAt") ?? null));
+            this.onChange(address, "log", tKey);
+          }
+        } else if (answer.failure.status !== undefined) {
+          link.memory.delete(key);
+          link.errors.set(tKey, answer.failure);
+          this.onChange(address, "errors", tKey);
         }
       }),
     );
@@ -3219,11 +3239,29 @@ export class StationsSync {
     });
   }
 
+  /// Clears cached `presets` and `jobLog` entries from `link.memory` for stations matching `ws` (or all stations when `ws === null`).
+  clearProtectedMemory(ws: string | null): void {
+    for (const link of this.#links.values()) {
+      const address = link.addr.toString();
+      if (ws !== null && ofAddress(address) !== ws) continue;
+      const presetsKey = topicKey({ topic: "presets", station: address });
+      link.memory.delete(PRESETS);
+      link.errors.delete(presetsKey);
+      for (const k of [...link.memory.keys()]) {
+        if (k.startsWith(LOG_KEY)) link.memory.delete(k);
+      }
+      for (const k of [...link.errors.keys()]) {
+        if (k.startsWith("jobLog\u0000")) link.errors.delete(k);
+      }
+    }
+  }
+
   /// Proactively re-reads `overview`, `chatRows`, `sessions`, `threads`, and all currently active
   /// held station topics (`jobs`, `archivedRows`, `stationUsage`, `session`, `thread`, `drive`,
-  /// `slackApp`, `job`) on all reachable stations of `ws` after a downgrade/safe-mode boundary so UI
+  /// `slackApp`, `job`, `presets`, `jobLog`) on all reachable stations of `ws` after a downgrade/safe-mode boundary so UI
   /// recovers without requiring a link reconnect.
   refreshWorkspace(ws: string): void {
+    this.clearProtectedMemory(ws);
     for (const link of this.#links.values()) {
       const address = link.addr.toString();
       if (ofAddress(address) !== ws || !this.reachable(address)) continue;
@@ -3270,6 +3308,14 @@ export class StationsSync {
           case "job":
             if (typeof t.id === "string" && t.id.length > 0) {
               this.#enqueue(address, `job/${t.id}`, Priority.shown, this.#read(address, t, `/jobs/${encode(t.id)}`));
+            }
+            break;
+          case "presets":
+            this.#enqueue(address, "presets", Priority.shown, this.#presets(address));
+            break;
+          case "jobLog":
+            if (typeof t.job === "string" && typeof t.lines === "number") {
+              this.readLog(address, t.job, t.lines);
             }
             break;
         }

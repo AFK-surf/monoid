@@ -26,6 +26,13 @@ pub fn Read::is_retained(self : Read) -> Bool {
 }
 
 ///|
+/// Whether this read is a fresh, confirmed value from the core (`version >= 0 && value is Some(_)`)
+/// rather than an unconfirmed empty subscription (`version == 0, value == None`) or a retained/placeholder value (`version < 0`).
+pub fn Read::is_confirmed(self : Read) -> Bool {
+  self.version >= 0 && self.value is Some(_)
+}
+
+///|
 /// What the pages need of the app around them.
 pub(all) struct Core {
   /// the topic `name` with its params (the core's `subscribe`)

@@ -14,6 +14,7 @@ import { Effect } from "effect";
 import { Choose } from "../src/choose.ts";
 import type { Inner } from "../src/core.ts";
 import { handlers } from "../src/core/execute.ts";
+import { AuthGenTracker } from "../src/auth-gen.ts";
 import { CoreError } from "../src/error.ts";
 import { GONE_KEPT, type KeptRecord, type PresetProjects, type PresetRecord, canonical, isGone, mergePresetProjects, presetProjectsOf } from "../src/preset-records.ts";
 import { TABLE, heldOf, presetProjectsHeld, starredKeys, starsHeld } from "../src/presets-kept.ts";
@@ -184,6 +185,7 @@ function device(who: { sub: string; email: string; name: string }, stations: Rig
       perform: (op: { target: { station: string }; method: string; path: string; body: unknown }) => call(op.target.station, op.method, op.path, op.body),
     },
     store: {
+      authGen: new AuthGenTracker(),
       get: (t: { topic: string; station?: string }) => (t.topic === "presets" ? lists.get(t.station!) : undefined),
       value: (t: { topic: string; scope?: string }) =>
         t.topic === "stations" ? { ok: stations.map((s) => ({ id: s.id, name: s.id.toUpperCase(), station: s.address, online: up.has(s.address) })) } : t.topic === "overview" ? { ok: lists.get(`overview`) } : undefined,
@@ -748,4 +750,43 @@ test("preset.setProject carries per-user /preset-projects between stations witho
   assert.equal(afterExplicit?.project, "Fresh");
   assert.equal(afterExplicit?.rev, 3);
   assert.equal(afterExplicit?.ren, undefined, "explicit setProject must clear server ren watermark");
+});
+
+test("otherPresets_clears_cache_on_auth_boundary_and_drops_stale_inflight_response", async () => {
+  const a = station("a");
+  const bo = device(YOU, [a]);
+  await bo.open(a);
+  const theirs = ok(await bo.call("add", a.address, { name: "Bo's review", dirs: ["/src/app"], instructions: "be kind" })) as { id: string };
+  const d = device(ME, [a]);
+  await d.open(a);
+  d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:member");
+  const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { id: string }[] } }).ok;
+
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id), [theirs.id]);
+
+  // Workspace auth boundary clears #others cache synchronously.
+  d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:downgraded");
+  assert.deepEqual(others().presets, [], "auth boundary must clear #others cache synchronously");
+
+  // In-flight read started under old generation must be dropped when authGen bumps before completion.
+  let release!: () => void;
+  const inflight = new Promise<void>((resolve) => { release = resolve; });
+  const origAnswer = a.answer;
+  let holding = true;
+  a.answer = (viewer) => (method, path, body) => {
+    if (path === "/presets/others" && holding) {
+      holding = false;
+      return Effect.flatMap(Effect.promise(() => inflight), () => origAnswer(viewer)(method, path, body));
+    }
+    return origAnswer(viewer)(method, path, body);
+  };
+
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.host.time.pass(10);
+  d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:changed-again");
+  release();
+  await d.settle();
+  assert.deepEqual(others().presets, [], "stale in-flight otherPresets response must be dropped after authGen bump");
 });

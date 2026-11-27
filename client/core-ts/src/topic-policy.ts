@@ -96,7 +96,7 @@ const CHAT_DELTA: TopicPolicy = { retention: "delta", keep: 8, keepBeforeViews: 
 
 export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   accounts: SENSITIVE,
-  workspaces: { retention: "swr", lasting: true, topicPolicy: true },
+  workspaces: LIVE,
   workspace: LASTING,
   link: LIVE,
   overview: LIVE,

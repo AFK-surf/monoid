@@ -399,7 +399,10 @@ pub fn terminal_pane_node(
   }
   let listed = src.topic("terminals", { "station": str(at.station) })
   let screens_topic = src.topic("screens", { "station": str(at.station) })
-  let may = fn() { flag(listed.get().value, "open") }
+  let may = fn() {
+    let st = listed.get()
+    st.is_confirmed() && flag(st.value, "open")
+  }
   let typing_here : @signals.Computed[Bool] = @signals.computed(fn(was) {
     match text(s(), "phase") {
       "ended" | "failed" | "gone" | "denied" | "outdated" => false
@@ -696,7 +699,7 @@ pub fn terminal_pane_node(
   }
   let open_url_in_station_browser = fn(url : String) {
     let sr = @signals.untracked(fn() { screens_topic.get() })
-    if sr.is_retained() {
+    if !sr.is_confirmed() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
       return
     }
     let scs = items(sr.value, "screens")
@@ -720,14 +723,14 @@ pub fn terminal_pane_node(
     None => ""
   }
   let set_control = fn(control : Bool) {
-    if @sfbase.is_window_switching_away(v, station_ws) {
+    if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may) {
       return
     }
     cur_watch.val = !control
     (src.call)("terminal.take", obj([("view", str(sess.view)), ("control", Json::boolean(control))]), @sfbase.answer_unread)
   }
   let take = fn() {
-    if @sfbase.is_window_switching_away(v, station_ws) {
+    if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may) {
       return
     }
     cur_watch.val = false
@@ -899,10 +902,11 @@ pub fn terminal_pane_node(
       @sf.t("web-pages.screen.panel"),
       fn(p, done) {
         let terms = fn() { items(listed.get().value, "terminals") }
-        let terms_retained = fn() { listed.get().is_retained() }
         let scs = fn() { items(screens_topic.get().value, "screens") }
-        let screens_retained = fn() { screens_topic.get().is_retained() }
-        let can_browser = fn() { flag(screens_topic.get().value, "browser") && flag(screens_topic.get().value, "control") }
+        let can_browser = fn() {
+          let sr = screens_topic.get()
+          sr.is_confirmed() && flag(sr.value, "browser") && flag(sr.value, "control")
+        }
         let other_scs = fn() { scs().filter(fn(sc) { text(Some(sc), "kind") != "browser" }) }
         let user_browser_ids = fn() {
           scs().filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") }).map(fn(sc) { text(Some(sc), "id") })
@@ -918,7 +922,8 @@ pub fn terminal_pane_node(
                 row,
                 fn() { text(sv(), "title") },
                 fn() {
-                  if @signals.untracked(screens_retained) {
+                  let sr = screens_topic.untracked()
+                  if !sr.is_confirmed() || !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
                     return
                   }
                   done()
@@ -932,15 +937,23 @@ pub fn terminal_pane_node(
                 br,
                 fn() { @sf.t("web-pages.remote.openBrowser") },
                 fn() {
-                  if @signals.untracked(screens_retained) {
+                  let sr = screens_topic.untracked()
+                  if !sr.is_confirmed() {
                     return
                   }
-                  done()
-                  let ids = @signals.untracked(user_browser_ids)
+                  let ids = items(sr.value, "screens")
+                    .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+                    .map(fn(sc) { text(Some(sc), "id") })
                   let target = match @settings.browser_tab_to_open(at.station, ids) {
                     Some(id) => id
-                    None => @settings.new_browser_tab(src.call, at.station, ids, @sfbase.answer_unread)
+                    None => {
+                      if !(flag(sr.value, "browser") && flag(sr.value, "control")) {
+                        return
+                      }
+                      @settings.new_browser_tab(src.call, at.station, ids, @sfbase.answer_unread)
+                    }
                   }
+                  done()
                   switch_page(Screen({ station: at.station, screen: target, title: "", until_gone: false }))
                 },
                 icon=fn() { "web" },
@@ -954,12 +967,13 @@ pub fn terminal_pane_node(
                 row,
                 fn() { terminal_title(tv()) },
                 fn() {
-                  if @signals.untracked(terms_retained) {
+                  let tr = listed.untracked()
+                  if !tr.is_confirmed() || !items(tr.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
                     return
                   }
                   done()
                   if !@signals.untracked(here) {
-                    go_terminal(tid, !flag(listed.untracked().value, "open"), text(@signals.untracked(tv), "cwd"))
+                    go_terminal(tid, !flag(tr.value, "open"), text(@signals.untracked(tv), "cwd"))
                   }
                 },
                 icon=fn() { if here() { "check" } else { "terminal" } },
@@ -967,7 +981,13 @@ pub fn terminal_pane_node(
               )
             })
             let open_new_browser = fn() {
-              let ids = @signals.untracked(user_browser_ids)
+              let sr = screens_topic.untracked()
+              if !sr.is_confirmed() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
+                return
+              }
+              let ids = items(sr.value, "screens")
+                .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
+                .map(fn(sc) { text(Some(sc), "id") })
               let target = @settings.new_browser_tab(
                 src.call,
                 at.station,
@@ -983,7 +1003,12 @@ pub fn terminal_pane_node(
               may,
               can_browser,
               done,
-              fn() { go_terminal("new", false, @signals.untracked(cwd)) },
+              fn() {
+                if !@signals.untracked(may) {
+                  return
+                }
+                go_terminal("new", false, @signals.untracked(cwd))
+              },
               open_new_browser,
             )
           })
@@ -1113,7 +1138,7 @@ pub fn terminal_pane_node(
               e,
               fn() { @sf.t("web-pages.terminal.end") },
               fn() {
-                if @sfbase.is_window_switching_away(v, station_ws) {
+                if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may) {
                   return
                 }
                 let id = @signals.untracked(cur_terminal_id)

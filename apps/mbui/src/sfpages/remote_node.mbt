@@ -90,15 +90,25 @@ pub fn remote_close_tab_clean(src : Source, ws : String, key : String) -> Unit {
 }
 
 ///|
-/// Whether `screens` for `station` is currently unconfirmed/retained (`version < 0`).
-fn remote_screens_retained(src : Source, station : String) -> Bool {
-  @signals.untracked(fn() { src.topic("screens", { "station": Json::string(station) }).get().is_retained() })
+/// Whether `screens` for `station` is fresh and confirmed (`version >= 0 && value is Some(_)`).
+fn remote_screens_confirmed(src : Source, station : String) -> Bool {
+  src.topic("screens", { "station": Json::string(station) }).get().is_confirmed()
 }
 
 ///|
-/// Whether `terminals` for `station` is currently unconfirmed/retained (`version < 0`).
-fn remote_terminals_retained(src : Source, station : String) -> Bool {
-  @signals.untracked(fn() { src.topic("terminals", { "station": Json::string(station) }).get().is_retained() })
+/// Whether `terminals` for `station` is fresh and confirmed (`version >= 0 && value is Some(_)`).
+fn remote_terminals_confirmed(src : Source, station : String) -> Bool {
+  src.topic("terminals", { "station": Json::string(station) }).get().is_confirmed()
+}
+
+///|
+/// Whether `r`'s backing station topic (`terminals` or `screens`) is fresh and confirmed.
+fn remote_row_confirmed(src : Source, r : RemoteRow) -> Bool {
+  if r.kind == "terminal" {
+    remote_terminals_confirmed(src, r.station)
+  } else {
+    remote_screens_confirmed(src, r.station)
+  }
 }
 
 ///|
@@ -107,7 +117,7 @@ pub fn remote_open_station_browser_tab(src : Source, ws : String, station : Stri
   let sr = @signals.untracked(fn() {
     src.topic("screens", { "station": Json::string(station) }).get()
   })
-  if sr.is_retained() {
+  if !sr.is_confirmed() {
     return
   }
   let sval = sr.value
@@ -116,7 +126,12 @@ pub fn remote_open_station_browser_tab(src : Source, ws : String, station : Stri
     .map(fn(sc) { text(Some(sc), "id") })
   let target = match @settings.browser_tab_to_open(station, listed) {
     Some(id) => id
-    None => @settings.new_browser_tab(src.call, station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
+    None => {
+      if !(flag(sval, "browser") && flag(sval, "control")) {
+        return
+      }
+      @settings.new_browser_tab(src.call, station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
+    }
   }
   remote_tab_show(src, ws, @sfbase.RemoteTab::Screen({ station, screen: target, title: "", until_gone: false }))
 }
@@ -365,7 +380,7 @@ fn remote_front_in(src : Source, ws : String, lines : Array[RemoteLine]) -> (Str
   match tabs.iter().find_first(fn(p) { p.0 == act }) {
     Some(p) => Some(p)
     None =>
-      match remote_rows_of(lines).get(0) {
+      match remote_rows_of(lines).iter().find_first(fn(r) { remote_row_confirmed(src, r) }) {
         Some(r) => {
           let tab = remote_row_tab(r)
           Some((tab.key(), tab))
@@ -403,7 +418,8 @@ pub fn remote_row_step(src : Source, ws : String, delta : Int) -> Unit {
   let asks_t = (src.asks_terminals)()
   let (rows, front) = @signals.untracked(fn() {
     let lines = remote_lines(src, ws, asks_t)
-    (remote_rows_of(lines), remote_front_in(src, ws, lines))
+    let confirmed = remote_rows_of(lines).filter(fn(r) { remote_row_confirmed(src, r) })
+    (confirmed, remote_front_in(src, ws, lines))
   })
   guard !rows.is_empty() else { return }
   let at = match front {
@@ -422,13 +438,7 @@ pub fn remote_row_step(src : Source, ws : String, delta : Int) -> Unit {
 /// Row `r` opened: across the whole screen its own page (a screen's, a terminal's); in a side column a tab of the
 /// workbench beside it, brought to the front.
 fn remote_row_open(src : Source, ws : String, at : @sf.ListAt, r : RemoteRow) -> Unit {
-  if r.kind == "terminal" {
-    if remote_terminals_retained(src, r.station) {
-      return
-    }
-  } else if remote_screens_retained(src, r.station) {
-    return
-  }
+  guard @signals.untracked(fn() { remote_row_confirmed(src, r) }) else { return }
   match (at, r.kind) {
     (Whole, "terminal") => @sfbase.open_terminal(r.station, r.id, r.cwd, "", watch=r.watch)
     (Whole, _) => @sfbase.open_screen(r.station, r.id, Some(r.title))
@@ -439,13 +449,7 @@ fn remote_row_open(src : Source, ws : String, at : @sf.ListAt, r : RemoteRow) ->
 ///|
 /// Row `r` closed (its tab of the browser closed, its terminal ended), with the workbench's tabs showing it.
 fn remote_row_close(src : Source, ws : String, r : RemoteRow) -> Unit {
-  if r.kind == "terminal" {
-    if remote_terminals_retained(src, r.station) {
-      return
-    }
-  } else if remote_screens_retained(src, r.station) {
-    return
-  }
+  guard @signals.untracked(fn() { remote_row_confirmed(src, r) }) else { return }
   let on : Map[String, Json] = { "station": Json::string(r.station) }
   if r.kind == "terminal" {
     on["terminal"] = Json::string(r.id)
@@ -828,20 +832,23 @@ pub fn remote_page_node(
 }
 
 ///|
-/// Whether a new terminal can be opened on station `address` from here: asked for, and the station letting this person
-/// type (or not said yet).
+/// Whether a new terminal can be opened on station `address` from here: asked for, confirmed, and the station letting
+/// this person open terminals.
 fn remote_can_term(src : Source, address : String) -> Bool {
   guard (src.asks_terminals)() else { return false }
-  let tval = src.topic("terminals", { "station": Json::string(address) }).get().value
-  tval is None || flag(tval, "open")
+  let tr = src.topic("terminals", { "station": Json::string(address) }).get()
+  tr.is_confirmed() && flag(tr.value, "open")
 }
 
 ///|
-/// Whether station `address`'s browser can be reached from here: a tab of its own made where it lets this person drive
-/// it, else the tabs it has.
+/// Whether station `address`'s browser can be reached from here: confirmed, and either a tab of its own can be made
+/// where it lets this person drive it, or it already has browser tabs.
 fn remote_can_browse(src : Source, address : String) -> Bool {
-  let sv = src.topic("screens", { "station": Json::string(address) }).get().value
-  (flag(sv, "browser") && flag(sv, "control")) || items(sv, "screens").any(fn(sc) { text(Some(sc), "kind") == "browser" })
+  let sr = src.topic("screens", { "station": Json::string(address) }).get()
+  sr.is_confirmed() && (
+    (flag(sr.value, "browser") && flag(sr.value, "control")) ||
+    items(sr.value, "screens").any(fn(sc) { text(Some(sc), "kind") == "browser" })
+  )
 }
 
 ///|
@@ -856,7 +863,7 @@ fn remote_terminal_stations(src : Source, ws : String) -> Array[(String, String)
 /// of workspace `ws`'s workbench brought to the front.
 fn remote_new_browser_view(src : Source, ws : String, at : @sf.ListAt, address : String) -> Unit {
   let sr = @signals.untracked(fn() { src.topic("screens", { "station": Json::string(address) }).get() })
-  if sr.is_retained() {
+  if !sr.is_confirmed() {
     return
   }
   let sv = sr.value
@@ -901,6 +908,9 @@ fn remote_station_add_menu(
     out.push(
       Some(
         @sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", fn() {
+          if !@signals.untracked(fn() { remote_can_term(src, address) }) {
+            return
+          }
           if at == Whole {
             @sfbase.open_terminal(address, "new", "", "")
           } else {

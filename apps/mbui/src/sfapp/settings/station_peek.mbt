@@ -187,7 +187,7 @@ pub fn new_browser_tab(
 pub fn open_station_browser(core : Core, address : String, from? : @sf.Anchor = Unanchored) -> Unit {
   ignore(from)
   let screens_read = (core.topic)("screens", { "station": str(address) }).get()
-  if screens_read.is_retained() {
+  if !screens_read.is_confirmed() {
     return
   }
   let listed = items(screens_read.value, "screens").filter(fn(sc) {
@@ -195,12 +195,16 @@ pub fn open_station_browser(core : Core, address : String, from? : @sf.Anchor = 
   }).map(fn(sc) { text(Some(sc), "id") })
   let screen = match browser_tab_to_open(address, listed) {
     Some(screen) => screen
-    None =>
+    None => {
+      if !(flag(screens_read.value, "browser") && flag(screens_read.value, "control")) {
+        return
+      }
       new_browser_tab(core.call, address, listed, fn(r) {
         if r is Err(e) {
           (core.say)(fill("android-misc.act.failed", [("what", tr("web-pages.screen.openBrowserWhat")), ("error", error_text(e))]))
         }
       })
+    }
   }
   (core.open_screen)(address, screen)
 }
@@ -253,13 +257,15 @@ fn peek_screen_items(
     }
     for screen in other_screens {
       let sc = Some(screen)
+      let sid = text(sc, "id")
       let icon = if text(sc, "kind") == "simulator" { "phone" } else { "monitor" }
       screen_items.push(Some(@sf.menu_item_of(text(sc, "title"), icon~, disabled=screens_retained, fn() {
-        if screens_retained {
+        let sr = (core.topic)("screens", { "station": str(address) }).get()
+        if !sr.is_confirmed() || !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
           return
         }
         close()
-        (core.open_screen)(address, text(sc, "id"))
+        (core.open_screen)(address, sid)
       })))
     }
   }
@@ -272,17 +278,20 @@ fn peek_screen_items(
     }
     for screen in agent_tabs {
       let sc = Some(screen)
+      let sid = text(sc, "id")
       screen_items.push(Some(@sf.menu_item_of(text(sc, "title"), icon="web", disabled=screens_retained, fn() {
-        if screens_retained {
+        let sr = (core.topic)("screens", { "station": str(address) }).get()
+        if !sr.is_confirmed() || !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
           return
         }
         close()
-        (core.open_screen)(address, text(sc, "id"))
+        (core.open_screen)(address, sid)
       })))
     }
     if has_user {
       screen_items.push(Some(@sf.menu_item_of(tr("web-pages.screen.openBrowserRow"), icon="web", disabled=screens_retained, fn() {
-        if screens_retained {
+        let sr = (core.topic)("screens", { "station": str(address) }).get()
+        if !sr.is_confirmed() {
           return
         }
         close()
@@ -293,7 +302,7 @@ fn peek_screen_items(
   if (core.terminals_on)() {
     let terms_read = (core.topic)("terminals", { "station": str(address) }).get()
     let terms = terms_read.value
-    let terms_retained = terms_read.is_retained()
+    let terms_unconfirmed = !terms_read.is_confirmed()
     if flag(terms, "known") && !flag(terms, "outdated") {
       let open_terms = items(terms, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
       let can_term = flag(terms, "open")
@@ -307,8 +316,9 @@ fn peek_screen_items(
           let cwd = text(tv, "cwd")
           let parts = cwd.split("/").collect().filter(fn(p) { p.length() > 0 })
           let label = match parts.last() { Some(last) => last.to_owned(); None => if cwd == "" { tr("web-pages.remote.openTerminal") } else { cwd } }
-          screen_items.push(Some(@sf.menu_item_of(label, icon="terminal", disabled=terms_retained, fn() {
-            if terms_retained {
+          screen_items.push(Some(@sf.menu_item_of(label, icon="terminal", disabled=terms_unconfirmed, fn() {
+            let tr_now = (core.topic)("terminals", { "station": str(address) }).get()
+            if !tr_now.is_confirmed() || !items(tr_now.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
               return
             }
             close()
@@ -316,7 +326,11 @@ fn peek_screen_items(
           })))
         }
         if can_term {
-          screen_items.push(Some(@sf.menu_item_of(tr("web-pages.remote.openTerminal"), icon="terminal", fn() {
+          screen_items.push(Some(@sf.menu_item_of(tr("web-pages.remote.openTerminal"), icon="terminal", disabled=terms_unconfirmed, fn() {
+            let tr_now = (core.topic)("terminals", { "station": str(address) }).get()
+            if !tr_now.is_confirmed() || !flag(tr_now.value, "open") {
+              return
+            }
             close()
             (open_terminal_of.val)(address, "new", "")
           })))

@@ -366,6 +366,7 @@ export function generateTopicPolicyMbt(
     "///|",
     "/// Whether `(name, params)` is a bar/rail opening list kept in `last_said` (`policy` = `MBUI_TOPIC_POLICY`).",
     "pub fn topic_policy_lasting_by(name : String, params : Json, policy : Bool) -> Bool {",
+    ...(lastingPolicyTopics.length === 0 ? ["  ignore(policy)"] : []),
     "  if topic_policy_sensitive(name, params) || topic_policy_typed(params) {",
     "    return false",
     "  }",

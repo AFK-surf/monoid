@@ -1920,3 +1920,116 @@ test "remote_node guards close and browser open while screens/terminals are reta
   assert_true(calls.iter().any(fn(c) { c.0 == "terminal.end" }))
   assert_true(calls.iter().any(fn(c) { c.0 == "screen.close" }))
 }
+
+///|
+test "remote_node and station_peek reject unconfirmed empty (0/None), retained (<0), and incapable states before write calls" {
+  let screens_state : @signals.Signal[@sfbase.Topic] = @signals.signal({ value: None, error: None, version: 0 })
+  let terms_state : @signals.Signal[@sfbase.Topic] = @signals.signal({ value: None, error: None, version: 0 })
+  let calls : Array[(String, Json)] = []
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    asks_terminals: fn() { true },
+    topic_read: fn(name, params) {
+      if name == "screens" {
+        screens_state.get()
+      } else if name == "terminals" {
+        terms_state.get()
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  }
+  let core = @sfbase.settings_core(src, rig_workspace)
+
+  // 1. Unconfirmed empty subscription (version == 0, value == None): 0 writes, capabilities false.
+  assert_false(remote_can_term(src, "ws1/st1"))
+  assert_false(remote_can_browse(src, "ws1/st1"))
+  remote_open_station_browser_tab(src, "ws1", "ws1/st1")
+  remote_new_browser_view(src, "ws1", Side, "ws1/st1")
+  @settings.open_station_browser(core, "ws1/st1")
+  assert_eq(calls.length(), 0)
+
+  // 2. Retained (-2) with capable flags: still 0 writes and capabilities false.
+  let capable_screens : Json = { "known": true, "outdated": false, "browser": true, "control": true, "screens": [] }
+  let capable_terms : Json = { "known": true, "outdated": false, "open": true, "terminals": [] }
+  screens_state.set({ value: Some(capable_screens), error: None, version: -2 })
+  terms_state.set({ value: Some(capable_terms), error: None, version: -2 })
+  assert_false(remote_can_term(src, "ws1/st1"))
+  assert_false(remote_can_browse(src, "ws1/st1"))
+  remote_open_station_browser_tab(src, "ws1", "ws1/st1")
+  remote_new_browser_view(src, "ws1", Side, "ws1/st1")
+  @settings.open_station_browser(core, "ws1/st1")
+  assert_eq(calls.length(), 0)
+
+  // 3. Fresh (version >= 0) but browser/control disabled: 0 screen.openBrowser calls.
+  let readonly_screens : Json = { "known": true, "outdated": false, "browser": true, "control": false, "screens": [] }
+  screens_state.set({ value: Some(readonly_screens), error: None, version: 1 })
+  remote_open_station_browser_tab(src, "ws1", "ws1/st1")
+  @settings.open_station_browser(core, "ws1/st1")
+  assert_eq(calls.length(), 0)
+
+  // 4. Fresh (version >= 0) and capable: screen.openBrowser fires normally.
+  screens_state.set({ value: Some(capable_screens), error: None, version: 2 })
+  terms_state.set({ value: Some(capable_terms), error: None, version: 2 })
+  assert_true(remote_can_term(src, "ws1/st1"))
+  assert_true(remote_can_browse(src, "ws1/st1"))
+  @settings.open_station_browser(core, "ws1/st1")
+  assert_true(calls.iter().any(fn(c) { c.0 == "screen.openBrowser" }))
+}
+
+///|
+test "remote_front_in and remote_row_step skip retained rows and select once confirmed" {
+  let screens_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-3)
+  let base = @sffixture.fixture("settings")
+  let screens_val : Json = {
+    "known": true,
+    "outdated": false,
+    "browser": false,
+    "control": false,
+    "screens": [],
+  }
+  let terms_val : Json = {
+    "known": true,
+    "outdated": false,
+    "open": true,
+    "terminals": [
+      { "id": "term-1", "cwd": "/work/proj", "ended": false },
+    ],
+  }
+  let stations_val : Json = [
+    { "station": "ws1/st1", "name": "Studio", "online": true },
+  ]
+  let src : Source = {
+    ..base,
+    asks_terminals: fn() { true },
+    topic_read: fn(name, params) {
+      if name == "screens" {
+        { value: Some(screens_val), error: None, version: screens_ver.get() }
+      } else if name == "terminals" {
+        { value: Some(terms_val), error: None, version: terms_ver.get() }
+      } else if name == "stations" {
+        { value: Some(stations_val), error: None, version: 1 }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+  }
+  let lines = remote_lines(src, "ws1", true)
+  assert_eq(remote_rows_of(lines).length(), 1)
+  // Retained (-3): default auto-select must return None and remote_row_step must open 0 tabs.
+  assert_true(remote_front_in(src, "ws1", lines) is None)
+  let tabs_before = @sfbase.remote_tabs_raw(src, "ws1").0.length()
+  remote_row_step(src, "ws1", 1)
+  assert_eq(@sfbase.remote_tabs_raw(src, "ws1").0.length(), tabs_before)
+
+  // Fresh (1): default auto-select picks the confirmed terminal row.
+  terms_ver.set(1)
+  screens_ver.set(1)
+  assert_true(remote_front_in(src, "ws1", lines) is Some(_))
+}

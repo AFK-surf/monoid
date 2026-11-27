@@ -72,9 +72,9 @@ priv enum TabAct {
 }
 
 ///|
-/// Whether `screens` for this viewer's station is currently unconfirmed/retained (`version < 0`).
-fn browser_screens_retained(s : ScreenSess) -> Bool {
-  @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get().is_retained() })
+/// Whether `screens` for this viewer's station is currently fresh and confirmed (`version >= 0 && value is Some(_)`).
+fn browser_screens_confirmed(s : ScreenSess) -> Bool {
+  @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get().is_confirmed() })
 }
 
 ///|
@@ -82,7 +82,7 @@ fn browser_screens_retained(s : ScreenSess) -> Bool {
 fn tab_do(s : ScreenSess, u : ScreenUi, act : TabAct, close : () -> Unit) -> Unit {
   match act {
     Show(id, title) =>
-      if id != s.screen && !browser_screens_retained(s) {
+      if id != s.screen && browser_screens_confirmed(s) {
         switch_screen_to(s, u, id, title, false)
       }
     Window(window) => {
@@ -105,9 +105,12 @@ fn tab_do(s : ScreenSess, u : ScreenUi, act : TabAct, close : () -> Unit) -> Uni
 /// shown alone; else none (a simulator: its name in their place).
 fn view_tabs(s : ScreenSess) -> (Array[ViewTab], Bool) {
   if browser_shown(s) {
-    let (sc, listed) = browser_tabs_of(s)
+    let sr = s.src.topic("screens", { "station": Json::string(s.station) }).get()
+    let sc = sr.value
     guard sc is Some(_) else { return ([], false) }
-    let can_add = flag(sc, "browser") && flag(sc, "control")
+    let confirmed = sr.is_confirmed()
+    let listed = items(sc, "screens").filter(fn(item) { is_browser_screen(Some(item)) })
+    let can_add = confirmed && flag(sc, "browser") && flag(sc, "control")
     let tabs = listed.map(fn(item) {
       let id = text(Some(item), "id")
       let current = id == s.screen
@@ -125,12 +128,12 @@ fn view_tabs(s : ScreenSess) -> (Array[ViewTab], Bool) {
         note: text(Some(item), "site"),
         current,
         press: Show(id, title),
-        close: if flag(Some(item), "closable") { Some(Close(id)) } else { None },
+        close: if confirmed && flag(Some(item), "closable") { Some(Close(id)) } else { None },
       }
     })
     if !tabs.iter().any(fn(t) { t.current }) {
       let title = opt_text(s.state, "title").unwrap_or("")
-      let closable = (s.user_tab() || s.opens_url()) && flag(sc, "control")
+      let closable = confirmed && (s.user_tab() || s.opens_url()) && flag(sc, "control")
       tabs.push({
         key: s.screen,
         words: tab_words(title),
@@ -566,7 +569,13 @@ fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
   if !s.is_active_principal() {
     return
   }
-  let listed = browser_tabs_of(s).1.map(fn(t) { text(Some(t), "id") })
+  let sr = @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get() })
+  if !sr.is_confirmed() || !(flag(sr.value, "browser") && flag(sr.value, "control")) {
+    return
+  }
+  let listed = items(sr.value, "screens")
+    .filter(fn(item) { is_browser_screen(Some(item)) })
+    .map(fn(t) { text(Some(t), "id") })
   let next = @settings.new_browser_tab(s.src.call, s.station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
   let nu = screen_ui(screen_key(s.station, next))
   nu.address_asked.set(nu.address_asked.untracked() + 1)
@@ -577,7 +586,19 @@ fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
 /// Tab `id` closed (its ×, ⌘W): where it is the one shown, the one after it is shown in its place (else the one
 /// before; none left, the viewer closes), as a browser does.
 fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], close : () -> Unit) -> Unit {
-  if !s.is_active_principal() || browser_screens_retained(s) {
+  if !s.is_active_principal() {
+    return
+  }
+  let sr = @signals.untracked(fn() { s.src.topic("screens", { "station": Json::string(s.station) }).get() })
+  if !sr.is_confirmed() {
+    return
+  }
+  let fresh_tabs = items(sr.value, "screens").filter(fn(item) { is_browser_screen(Some(item)) })
+  let can_close = match fresh_tabs.iter().find_first(fn(t) { text(Some(t), "id") == id }) {
+    Some(item) => flag(Some(item), "closable")
+    None => id == s.screen && (s.user_tab() || s.opens_url()) && flag(sr.value, "control")
+  }
+  if !can_close {
     return
   }
   let p : Map[String, Json] = { "station": Json::string(s.station), "screen": Json::string(id) }
@@ -585,8 +606,9 @@ fn close_tab(s : ScreenSess, u : ScreenUi, id : String, tabs : Array[Json], clos
   if id != s.screen {
     return
   }
-  let at = tabs.search_by(fn(t) { text(Some(t), "id") == id }).unwrap_or(-1)
-  let rest = tabs.filter(fn(t) { text(Some(t), "id") != id })
+  let use_tabs = if fresh_tabs.is_empty() { tabs } else { fresh_tabs }
+  let at = use_tabs.search_by(fn(t) { text(Some(t), "id") == id }).unwrap_or(-1)
+  let rest = use_tabs.filter(fn(t) { text(Some(t), "id") != id })
   if rest.is_empty() {
     close()
     return

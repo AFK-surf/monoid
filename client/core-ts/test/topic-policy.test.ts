@@ -51,7 +51,6 @@ const EXPECTED_LASTING = [
   "terminals",
   "usage",
   "workspace",
-  "workspaces",
 ];
 
 const EXPECTED_HOME_LASTING = ["changelog", "chats", "longJobs"];
@@ -87,7 +86,6 @@ const EXPECTED_B2B_POLICY_GATED = [
   "presets",
   "profilesOverview",
   "releases",
-  "workspaces",
 ];
 
 describe("topic-policy SSOT", () => {
@@ -306,12 +304,14 @@ describe("topic-policy SSOT", () => {
     assert.equal(evaluateTopicPolicy("profilesOverview", { scope: "w1" }, { topicPolicy: false }).lazyWhenIdle, true);
     assert.equal(evaluateTopicPolicy("profilesOverview", { scope: "w1" }, { topicPolicy: true }).lazyWhenIdle, true);
 
-    // When MBUI_TOPIC_POLICY is ON (default):
-    const ws = evaluateTopicPolicy("workspaces", {});
-    assert.equal(ws.retention, "swr");
-    assert.equal(ws.lasting, true);
-    assert.equal(ws.keep, LASTING_KEPT);
-    assert.equal(ws.showKept, false);
+    // workspaces stays LIVE regardless of MBUI_TOPIC_POLICY (contains account/ownership metadata).
+    for (const topicPolicy of [true, false]) {
+      const ws = evaluateTopicPolicy("workspaces", {}, { topicPolicy });
+      assert.equal(ws.retention, "live");
+      assert.equal(ws.lasting, false);
+      assert.equal(ws.keep, 0);
+      assert.equal(ws.showKept, false);
+    }
 
     for (const name of ["jobLog", "chatFeedback"] as const) {
       const ev = evaluateTopicPolicy(name, { station: "w1/s1", id: "j1" });

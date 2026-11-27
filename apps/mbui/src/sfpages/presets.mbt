@@ -758,6 +758,7 @@ fn preset_others_content(
   stations : Array[Json],
   picked : String,
   said : @sfbase.TopicState?,
+  cur_said : () -> @sfbase.TopicState?,
   let_go : () -> Unit,
   close : () -> Unit,
   small : Bool,
@@ -766,6 +767,16 @@ fn preset_others_content(
   let others = match said {
     Some({ value, .. }) => items(value, "presets")
     _ => []
+  }
+  let cur_has = fn(id : String, at : String) -> Bool {
+    match @signals.untracked(cur_said) {
+      Some(st) if st.is_confirmed() && !flag(st.value, "reading") =>
+        items(st.value, "presets").iter().any(fn(p) {
+          let po = Some(p)
+          text(po, "id") == id && text(po, "station") == at
+        })
+      _ => false
+    }
   }
   let has_search = others.length() >= 5
   let query_field = @ui.Field::new()
@@ -795,8 +806,13 @@ fn preset_others_content(
       let idx = search_at.untracked()
       let safe = if idx >= 0 && idx < list.length() { idx } else { 0 }
       let po = Some(list[safe])
+      let id = text(po, "id")
+      let at = text(po, "station")
+      if !cur_has(id, at) {
+        return
+      }
       let_go()
-      preset_pick(src, w, text(po, "id"), text(po, "station"))()
+      preset_pick(src, w, id, at)()
       close()
     }
   }
@@ -901,6 +917,9 @@ fn preset_others_content(
               fn() { id == picked },
               fn() { lit(my_key) },
               fn() {
+                if !cur_has(id, at) {
+                  return
+                }
                 let_go()
                 preset_pick(src, w, id, at)()
                 close()
@@ -908,7 +927,12 @@ fn preset_others_content(
               action=(
                 "copy",
                 fn() { @sf.t("web-main.preset.copyItem", args=[("name", name)]) },
-                fn(_) { preset_copy_run(src, w, address, id, stations, close) },
+                fn(_) {
+                  if !cur_has(id, at) {
+                    return
+                  }
+                  preset_copy_run(src, w, address, id, stations, close)
+                },
               ),
             )
           })
@@ -1009,7 +1033,7 @@ fn preset_others_open(
       None => ()
     }
     let body = fn(b : @view.View, close : () -> Unit) {
-      preset_others_content(b, src, w, address, stations, picked, said, let_go, close, @sf.in_small_panel_node(b), !in_panel && !stepped)
+      preset_others_content(b, src, w, address, stations, picked, said, fn() { lease.follow() }, let_go, close, @sf.in_small_panel_node(b), !in_panel && !stepped)
     }
     if in_panel {
       @sf.panel_go_nodes(@sf.t("web-main.preset.others"), body, left=let_go)

@@ -385,6 +385,7 @@ export class StationTopics implements Owner {
         return { ok: terminalCard(this.#core, station, topic.terminal, this.#sync.terminals(station), link?.state.state === "online") };
       }
       case "jobLog": {
+        if (error) return { err: error };
         const v = link?.memory.get(logKey(topic.job as string, topic.lines as number));
         return v === undefined ? undefined : { ok: v };
       }
@@ -431,10 +432,11 @@ export class StationTopics implements Owner {
         if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
         return error ? { err: error } : undefined;
       case "presets": {
+        if (error) return { err: error };
         const v = this.#sync.presets(station);
         if (v !== undefined) return { ok: structuredClone(v) as never };
         if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
-        return error ? { err: error } : undefined;
+        return undefined;
       }
       case "profilePace": {
         // As the station said them last; none while a station is down or has not said (the overview draws what it

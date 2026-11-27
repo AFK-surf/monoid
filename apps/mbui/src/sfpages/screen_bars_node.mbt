@@ -1411,8 +1411,8 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let ss = @signals.untracked(fn() { sub_s.get() })
       let tval = ts.value
       let sval = ss.value
-      let t_retained = ts.is_retained()
-      let s_retained = ss.is_retained()
+      let t_confirmed = ts.is_confirmed()
+      let s_confirmed = ss.is_confirmed()
       @sfbase.let_go(s.src, scope)
       let go_page = fn(next : @sfbase.Page) {
         if pg.lone {
@@ -1426,30 +1426,35 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
       let user_ids = scs
         .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
         .map(fn(sc) { text(Some(sc), "id") })
-      let can_term = flag(tval, "open")
-      let can_browse = flag(sval, "browser") && flag(sval, "control")
+      let can_term = t_confirmed && flag(tval, "open")
+      let can_browse = s_confirmed && flag(sval, "browser") && flag(sval, "control")
       let menu_items : Array[@sf.MenuItem?] = []
       for sc in others {
         let sid = text(Some(sc), "id")
         let title = text(Some(sc), "title")
         let here = sid == s.screen
         let icon = if here { "check" } else if text(Some(sc), "kind") == "simulator" { "phone" } else { "monitor" }
-        menu_items.push(Some(@sf.menu_item_of(title, icon~, disabled=s_retained, fn() {
-          if !here && !s_retained {
+        menu_items.push(Some(@sf.menu_item_of(title, icon~, disabled=!s_confirmed, fn() {
+          if !here && s_confirmed {
             go_page(Screen({ station: s.station, screen: sid, title, until_gone: false }))
           }
         })))
       }
       if !user_ids.is_empty() || can_browse {
         let in_browser = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
-        menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, disabled=s_retained, fn() {
-          if s_retained || !s.is_active_principal() {
+        menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, disabled=!s_confirmed, fn() {
+          if !s_confirmed || !s.is_active_principal() {
             return
           }
           if !in_browser {
             let target = match @settings.browser_tab_to_open(s.station, user_ids) {
               Some(tid) => tid
-              None => @settings.new_browser_tab(s.src.call, s.station, user_ids, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
+              None => {
+                if !can_browse {
+                  return
+                }
+                @settings.new_browser_tab(s.src.call, s.station, user_ids, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
+              }
             }
             go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
           }
@@ -1464,8 +1469,8 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           let tv = Some(t)
           let tid = text(tv, "id")
           let cwd = text(tv, "cwd")
-          menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", disabled=t_retained, fn() {
-            if !t_retained {
+          menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", disabled=!t_confirmed, fn() {
+            if t_confirmed {
               go_page(Terminal({ station: s.station, terminal: tid, watch: !can_term, cwd }))
             }
           })))
@@ -1476,10 +1481,13 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           menu_items.push(None)
         }
         let open_new_terminal = fn() {
+          if !can_term {
+            return
+          }
           go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
         }
         let open_new_browser = fn() {
-          if !s.is_active_principal() {
+          if !can_browse || !s.is_active_principal() {
             return
           }
           let target = @settings.new_browser_tab(
