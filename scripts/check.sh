@@ -715,6 +715,11 @@ if part ts; then
     step "mbui budgets only fall" node scripts/mbui-budgets.ts "$range"
   fi
   if touches '^scripts/mbui-budgets\.ts$|^test/mbui-budgets\.test\.ts$'; then step "mbui budgets test" node --test test/mbui-budgets.test.ts; fi
+  # Stop unilateral drift in station/src while cutting over to pion/station-main (scripts/station-pion-sync.ts).
+  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^station/src/|^scripts/station-pion-sync\.ts$'; then
+    step "station/src synced with pion/station-main" node scripts/station-pion-sync.ts "$range"
+  fi
+  if touches '^scripts/station-pion-sync\.ts$|^test/station-pion-sync\.test\.ts$'; then step "station pion sync guard test" node --test test/station-pion-sync.test.ts; fi
   # The stable channel's release notes (scripts/changelog.ts): each one read as CI will.
   if touches '^docs/releases/|^scripts/changelog\.ts$'; then step "release notes" sh -c 'node scripts/changelog.ts --stable > /dev/null'; fi
   # Root tests also import the core's Markdown reader. Wait for its packages on a cold checkout, as the web does.
