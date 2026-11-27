@@ -3,16 +3,16 @@
 //
 // Security invariants:
 // - Per-session MCP tokens are 32-byte OS CSPRNG (`station_sys::random_bytes(32)` -> 64 hex chars).
+// - Session creation, token rotation, token revocation, and archival persist to SQLite BEFORE
+//   updating in-memory tables so revoked tokens never resurrect across restart.
 // - Token lookup uses constant-time byte comparison (`ct_eq_str`) against active tokens.
-// - Missing, wrong, or revoked tokens are rejected with HTTP 401.
 // - Non-loopback Host headers or any browser `Origin` header are rejected with HTTP 403 via
 //   `station_tools::check_local_origin`.
-// - Core MCP tool calls (`chat_*`, `search`, `job_*`, `session_*`, `project_*`) read and write
-//   the live SQLite `station_store::Store`, `SessionHub`, and `JobManager`.
+// - Every MCP tool call resolves `caller_ws` from SQLite and strictly isolates all reads/writes
+//   to `caller_ws`, never falling back to a default thread when an explicit target is not found.
 
 import "base_codec"
 import "crypto"
-import "nodepath"
 import "sql_db"
 import "station_api"
 import "station_drivers"
@@ -27,7 +27,7 @@ pub struct WholeAgentsConfig {
   pub assets_dir : String
   pub runner_bin : String
   pub mcp_port : Int
-  pub home_ws : Option[String]
+  pub home_ws : String
 }
 
 pub struct McpHttpResponse {
@@ -50,87 +50,7 @@ pub fn ct_eq_str(a : String, b : String) -> Bool {
   diff == 0
 }
 
-fn parse_fs_stat(raw : String) -> Option[station_jobs::FsStat] {
-  let parts = split_pipe_fields(raw)
-  if parts.length() < 6 {
-    return None
-  }
-  Some(station_jobs::FsStat::{
-    kind: parts[0],
-    size: parse_i64_dec(parts[1]),
-    mtime_ms: parse_i64_dec(parts[3]),
-    mode: if parts.length() >= 7 { parse_i64_dec(parts[6]).to_int() } else { 420 },
-  })
-}
-
-/// Production `station_jobs::FsPort` backed by `station_sys`.
-pub fn os_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
-  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
-  station_jobs::FsPort::{
-    sep: sep,
-    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
-      match station_sys::lstat_raw(p) {
-        Some(raw) => parse_fs_stat(raw)
-        None => None
-      }
-    },
-    stat: fn(p : String) -> Option[station_jobs::FsStat] {
-      match station_sys::stat_raw(p) {
-        Some(raw) => parse_fs_stat(raw)
-        None => None
-      }
-    },
-    read_dir: fn(p : String) -> Option[Array[String]] { station_sys::read_dir(p) },
-    read_file: fn(p : String) -> Option[String] {
-      match station_sys::read_file_strict(p) {
-        Ok(b) => Some(b.to_string())
-        Err(_) => None
-      }
-    },
-    read_bytes: fn(p : String) -> Option[Bytes] {
-      match station_sys::read_file_strict(p) {
-        Ok(b) => Some(b)
-        Err(_) => None
-      }
-    },
-    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
-      match station_sys::read_range_meta(p, off, len) {
-        Ok((b, _, _)) => Some(b)
-        Err(_) => None
-      }
-    },
-    write_file: fn(p : String, s : String) -> Bool {
-      station_sys::write_file_atomic(p, s.to_bytes(), mode=384)
-    },
-    write_bytes: fn(p : String, b : Bytes) -> Bool {
-      station_sys::write_file_atomic(p, b, mode=384)
-    },
-    write_file_mode: fn(p : String, b : Bytes, mode : Int, append : Bool) -> Bool {
-      station_sys::write_file_mode(p, b, mode=mode, append=append)
-    },
-    append_file: fn(p : String, s : String) -> Bool {
-      station_sys::write_file_mode(p, s.to_bytes(), mode=384, append=true)
-    },
-    truncate_in_place: fn(p : String) -> Bool { station_sys::truncate_in_place(p, 0L) },
-    rename: fn(a : String, b : String) -> Bool { station_sys::rename(a, b) },
-    remove_file: fn(p : String) -> Bool { station_sys::unlink(p) },
-    rmdir: fn(p : String) -> Bool { station_sys::rmdir(p) },
-    remove_dir_all: fn(p : String) -> Bool { station_sys::rmdir(p) },
-    mkdir_p: fn(p : String) -> Bool { station_sys::mkdir_p(p) },
-    readlink: fn(p : String) -> Option[String] { station_sys::readlink(p) },
-    realpath: fn(p : String) -> Option[String] {
-      match station_sys::realpath_err(p) {
-        Ok(r) => Some(r)
-        Err(_) => None
-      }
-    },
-    chmod: fn(p : String, mode : Int) -> Bool { station_sys::chmod(p, mode) },
-    exists: fn(p : String) -> Bool { station_sys::lstat_raw(p).is_some() },
-    now_ms: now_ms,
-  }
-}
-
-/// Pure in-memory `station_jobs::FsPort` for unit tests without disk side effects.
+/// Pure in-memory `station_jobs::FsPort` for deterministic unit tests without disk side effects.
 pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
   let files : Map[String, Bytes] = Map::new()
   station_jobs::FsPort::{
@@ -229,6 +149,50 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
   }
 }
 
+/// Exact list of MCP station tools genuinely wired to live SQLite / SessionHub / JobManager.
+pub fn wired_mcp_tool_names() -> Array[String] {
+  [
+    "chat_post",
+    "chat_state",
+    "chat_history",
+    "chat_list",
+    "chat_read",
+    "chat_create",
+    "chat_archive",
+    "chat_configure",
+    "session_send",
+    "session_history",
+    "search",
+    "job_start",
+    "job_list",
+    "job_log",
+    "job_stop",
+    "project_manage",
+  ]
+}
+
+fn is_wired_mcp_tool(name : String) -> Bool {
+  let names = wired_mcp_tool_names()
+  for i in 0..<names.length() {
+    if names[i] == name {
+      return true
+    }
+  }
+  false
+}
+
+/// Filtered MCP tool declarations matching only genuinely wired handlers (zero fake entries).
+pub fn wired_station_tools() -> Array[station_tools::ToolDecl] {
+  let all = station_tools::station_tools()
+  let out : Array[station_tools::ToolDecl] = []
+  for i in 0..<all.length() {
+    if is_wired_mcp_tool(all[i].name) {
+      out.push(all[i])
+    }
+  }
+  out
+}
+
 /// Full-station agents subsystem: `SessionHub`, `DriversRuntime`, `McpServer`, `JobManager`,
 /// and per-session CSPRNG Bearer token table.
 pub struct WholeAgents {
@@ -276,16 +240,17 @@ pub fn WholeAgents::new_with_deps(
   }
 }
 
+/// Production `WholeAgents` constructor reusing `station_jobs::sys_fs` (live clock & recursive tree ops).
 pub fn WholeAgents::new(
   config : WholeAgentsConfig,
   job_fs : Option[station_jobs::FsPort] = None,
   job_backend : Option[station_jobs::ProcBackend] = None,
   random_bytes_fn : Option[(Int) -> Result[Bytes, String]] = None,
-  now_ms : () -> Int64 = fn() -> Int64 { 0L },
 ) -> WholeAgents {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
   let fs = match job_fs {
     Some(f) => f
-    None => os_job_fs_port(now_ms)
+    None => station_jobs::sys_fs(sep=sep)
   }
   let backend = match job_backend {
     Some(b) => b
@@ -306,11 +271,7 @@ pub fn WholeAgents::actor_count(self : WholeAgents) -> Int {
   self.hub.actors.length()
 }
 
-/// Issue a fresh 32-byte CSPRNG hex MCP bearer token for `session_key`, revoking any prior token.
-pub fn WholeAgents::issue_session_token(
-  self : WholeAgents,
-  session_key : String,
-) -> Result[String, String] {
+fn WholeAgents::generate_token_hex(self : WholeAgents) -> Result[String, String] {
   let raw = match (self.random_bytes_fn)(32) {
     Ok(b) => b
     Err(e) => return Err("CSPRNG failed while issuing MCP token: " + e)
@@ -318,29 +279,106 @@ pub fn WholeAgents::issue_session_token(
   if raw.length() < 32 {
     return Err("CSPRNG returned fewer than 32 bytes for MCP token")
   }
-  let tok = crypto::bytes_to_hex(raw)
+  Ok(crypto::bytes_to_hex(raw))
+}
+
+fn WholeAgents::generate_revoked_marker(self : WholeAgents, session_key : String) -> String {
+  let suffix = match (self.random_bytes_fn)(16) {
+    Ok(b) => crypto::bytes_to_hex(b)
+    Err(_) => session_key
+  }
+  "revoked:" + session_key + ":" + suffix
+}
+
+fn WholeAgents::set_active_token_mem(self : WholeAgents, session_key : String, tok : String) -> Unit {
   let _ = self.revoke_session_token(session_key)
   self.active_tokens.push((tok, session_key))
+}
+
+/// Issue an in-memory 32-byte CSPRNG hex MCP bearer token (pure DI tests / pre-DB callers).
+pub fn WholeAgents::issue_session_token(
+  self : WholeAgents,
+  session_key : String,
+) -> Result[String, String] {
+  let tok = match self.generate_token_hex() {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  self.set_active_token_mem(session_key, tok)
   Ok(tok)
 }
 
-/// Register an existing persisted token (e.g. during session adoption after handover).
+/// Rotate a session's MCP token atomically: persists the new token into SQLite `sessions.token`
+/// FIRST, and only on commit revokes the old token and activates the new one in memory.
+pub fn WholeAgents::rotate_session_token(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  session_key : String,
+) -> Result[String, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let tok = match self.generate_token_hex() {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let updated = match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+    t.run(
+      "UPDATE sessions SET token = ?1 WHERE key = ?2 AND archived_at IS NULL",
+      [base_codec::json_str(tok), base_codec::json_str(session_key)],
+    )
+  }) {
+    Ok(n) => n
+    Err(e) => return Err("rotate_session_token SQLite update failed: " + e.message)
+  }
+  if updated == 0 {
+    return Err("cannot rotate token: session not found or archived: " + session_key)
+  }
+  self.set_active_token_mem(session_key, tok)
+  Ok(tok)
+}
+
+/// Persist token revocation to SQLite `sessions.token = 'revoked:...'` FIRST, then revoke in memory.
+/// Guarantees revoked tokens NEVER resurrect on restart!
+pub fn WholeAgents::revoke_session_token_persisted(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  session_key : String,
+) -> Result[Bool, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let marker = self.generate_revoked_marker(session_key)
+  match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+    t.run(
+      "UPDATE sessions SET token = ?1 WHERE key = ?2",
+      [base_codec::json_str(marker), base_codec::json_str(session_key)],
+    )
+  }) {
+    Ok(_) => ()
+    Err(e) => return Err("revoke_session_token SQLite update failed: " + e.message)
+  }
+  Ok(self.revoke_session_token(session_key))
+}
+
+/// Register an existing persisted token (never registers empty or `revoked:` markers).
 pub fn WholeAgents::register_adopted_token(
   self : WholeAgents,
   session_key : String,
   token : String,
 ) -> Unit {
-  if token.length() == 0 {
+  if token.length() == 0 || token.starts_with("revoked:") {
     return
   }
   if self.revoked_tokens.get(token).is_some() {
     return
   }
-  let _ = self.revoke_session_token(session_key)
-  self.active_tokens.push((token, session_key))
+  self.set_active_token_mem(session_key, token)
 }
 
-/// Immediately revoke the active MCP bearer token for `session_key`.
+/// Immediately revoke the active MCP bearer token for `session_key` in memory.
 pub fn WholeAgents::revoke_session_token(self : WholeAgents, session_key : String) -> Bool {
   let kept : Array[(String, String)] = []
   let mut removed = false
@@ -360,13 +398,31 @@ pub fn WholeAgents::revoke_session_token(self : WholeAgents, session_key : Strin
   removed
 }
 
-/// Revoke all active MCP tokens (used on shutdown).
+/// Revoke all active MCP tokens in memory (used on shutdown).
 pub fn WholeAgents::revoke_all_tokens(self : WholeAgents) -> Unit {
   for i in 0..<self.active_tokens.length() {
     let (tok, _) = self.active_tokens[i]
     self.revoked_tokens.set(tok, true)
   }
   self.active_tokens.clear()
+}
+
+/// Clear all in-memory actors, tokens, and tracked job records on clean shutdown so
+/// `WholeCore::active_object_count() == 0`.
+pub fn WholeAgents::clear_runtime_state_on_shutdown(self : WholeAgents) -> Unit {
+  self.revoke_all_tokens()
+  let actor_keys : Array[String] = []
+  for i in 0..<self.hub.adopted_keys.length() {
+    actor_keys.push(self.hub.adopted_keys[i])
+  }
+  self.hub.actors.clear()
+  self.hub.adopted_keys.clear()
+  self.session_runtimes.clear()
+  self.session_is_subagent.clear()
+  self.jobs.jobs.clear()
+  self.jobs.job_ids.clear()
+  self.jobs.token_to_job.clear()
+  let _ = actor_keys
 }
 
 /// Look up the active token for `session_key`.
@@ -382,7 +438,7 @@ pub fn WholeAgents::token_for_session(self : WholeAgents, session_key : String) 
 
 /// Constant-time lookup of `candidate` token against all active tokens.
 pub fn WholeAgents::resolve_token_ct(self : WholeAgents, candidate : String) -> Option[String] {
-  if candidate.length() == 0 {
+  if candidate.length() == 0 || candidate.starts_with("revoked:") {
     return None
   }
   let mut matched : Option[String] = None
@@ -408,8 +464,16 @@ pub fn WholeAgents::set_subagent(self : WholeAgents, session_key : String, is_su
   self.session_is_subagent.set(session_key, is_sub)
 }
 
-/// Create a real session + default thread in SQLite, ensure its `SessionActor`, and issue a
-/// 32-byte CSPRNG MCP bearer token. Returns `(mcp_token, thread_id)`.
+fn opt_str_json_param(v : Option[String]) -> base_codec::Json {
+  match v {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+}
+
+/// Atomically create a session + default thread + membership + initial CSPRNG token inside ONE
+/// SQLite transaction (`Store::tx`), updating in-memory token/actor tables ONLY after commit.
+/// Returns `(mcp_token, thread_id)`.
 pub fn WholeAgents::create_session(
   self : WholeAgents,
   whole_store : WholeStore,
@@ -428,50 +492,89 @@ pub fn WholeAgents::create_session(
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  let token = match self.issue_session_token(key) {
+  let token = match self.generate_token_hex() {
     Ok(t) => t
     Err(e) => return Err(e)
   }
-  let row = station_store::NewSession::{
-    key: key,
-    connect: connect,
-    sess_scope: "all",
-    title: title,
-    created_by: created_by,
-    created_by_sub: None,
-    runtime: runtime,
-    profile: profile,
-    model: model,
-    effort: None,
-    workspace: workspace,
-    cwd: Some(workspace),
-    token: token,
-    created_at: now_ms,
-    last_active_at: now_ms,
-    ws: ws,
-    told_notes: 0L,
+  let effective_ws : Option[String] = match ws {
+    Some(w) => if w.length() > 0 { Some(w) } else { Some(self.config.home_ws) }
+    None => Some(self.config.home_ws)
   }
-  match st.insert_session(row) {
-    Ok(_) => ()
-    Err(e) => {
-      let _ = self.revoke_session_token(key)
-      return Err("insert_session failed: " + e.message)
+  let tid = match st.tx(fn(t : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
+    match t.run(
+      "INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, model, effort, workspace, cwd, token, running, created_at, last_active_at, ws, told_notes)" +
+      " VALUES (?1, ?2, 'all', ?3, ?4, ?5, ?6, ?7, NULL, ?8, ?8, ?9, 0, ?10, ?10, ?11, 0)",
+      [
+        base_codec::json_str(key),
+        base_codec::json_str(connect),
+        opt_str_json_param(title),
+        opt_str_json_param(created_by),
+        base_codec::json_str(runtime),
+        base_codec::json_str(profile),
+        opt_str_json_param(model),
+        base_codec::json_str(workspace),
+        base_codec::json_str(token),
+        sql_db::int64_to_json(now_ms),
+        opt_str_json_param(effective_ws),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
     }
-  }
-  let tid = match st.ensure_thread("chat", "CHAT", key, title, created_by, now_ms, home=Some(key)) {
+    match t.run(
+      "INSERT OR IGNORE INTO threads (surface, channel, thread_ts, title, created_by, created_at, home)" +
+      " SELECT 'chat', 'CHAT', ?1, ?2, ?3, ?4, ?1 WHERE NOT EXISTS" +
+      " (SELECT 1 FROM threads WHERE surface = 'chat' AND channel = 'CHAT' AND thread_ts = ?1)",
+      [
+        base_codec::json_str(key),
+        opt_str_json_param(title),
+        opt_str_json_param(created_by),
+        sql_db::int64_to_json(now_ms),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let thread_id = match t.first(
+      "SELECT id FROM threads WHERE surface = 'chat' AND channel = 'CHAT' AND thread_ts = ?1",
+      [base_codec::json_str(key)],
+    ) {
+      Ok(Some(r)) => match r.get("id") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+        _ => return Err(sql_db::sql_error(1, "missing thread id after insert"))
+      }
+      Ok(None) => return Err(sql_db::sql_error(1, "thread not found after insert"))
+      Err(e) => return Err(e)
+    }
+    match t.run(
+      "INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?1, ?2, ?3, ?4)" +
+      " ON CONFLICT (thread, session) DO UPDATE SET left_at = NULL",
+      [
+        sql_db::int64_to_json(thread_id),
+        base_codec::json_str(key),
+        base_codec::json_str(connect),
+        sql_db::int64_to_json(now_ms),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match station_store::settle_conversation_in_tx(t, thread_id, now_ms, born=None) {
+      Ok(_) => Ok(thread_id)
+      Err(e) => Err(e)
+    }
+  }) {
     Ok(id) => id
-    Err(e) => return Err("ensure_thread failed: " + e.message)
+    Err(e) => return Err("create_session transaction failed: " + e.message)
   }
-  match st.join_thread(tid, key, connect, now_ms) {
-    Ok(_) => ()
-    Err(e) => return Err("join_thread failed: " + e.message)
-  }
+  // Only update in-memory tables AFTER SQLite transaction commits.
+  self.set_active_token_mem(key, token)
   let _ = self.hub.ensure_actor(key, runtime)
   self.session_runtimes.set(key, runtime)
   Ok((token, tid))
 }
 
-/// Archive a session in SQLite and immediately revoke its MCP bearer token.
+/// Archive a session in SQLite AND persist token revocation (`revoked:...`) before updating memory.
 pub fn WholeAgents::archive_session(
   self : WholeAgents,
   whole_store : WholeStore,
@@ -487,6 +590,16 @@ pub fn WholeAgents::archive_session(
     Ok(_) => ()
     Err(e) => return Err("archive_session failed: " + e.message)
   }
+  let marker = self.generate_revoked_marker(key)
+  match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+    t.run(
+      "UPDATE sessions SET token = ?1 WHERE key = ?2",
+      [base_codec::json_str(marker), base_codec::json_str(key)],
+    )
+  }) {
+    Ok(_) => ()
+    Err(e) => return Err("archive_session token revoke failed: " + e.message)
+  }
   let _ = self.revoke_session_token(key)
   match self.hub.actors.get(key) {
     Some(a) => {
@@ -497,7 +610,7 @@ pub fn WholeAgents::archive_session(
   Ok(())
 }
 
-/// Delete a session from SQLite and immediately revoke its MCP bearer token.
+/// Delete a session from SQLite first, then revoke its MCP token and remove its actor in memory.
 pub fn WholeAgents::delete_session(
   self : WholeAgents,
   whole_store : WholeStore,
@@ -515,6 +628,42 @@ pub fn WholeAgents::delete_session(
   let _ = self.hub.actors.remove(key)
   let _ = self.session_runtimes.remove(key)
   Ok(deleted)
+}
+
+/// Idempotently adopt all active (non-archived, non-revoked) session tokens from SQLite.
+/// Runs unconditionally during `open_after_predecessor_gone` so crash restarts without a handover
+/// snapshot still restore valid active tokens while never resurrecting revoked tokens.
+pub fn WholeAgents::adopt_all_active_tokens_from_store(
+  self : WholeAgents,
+  whole_store : WholeStore,
+) -> Result[Int, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let rows = match st.db.all(
+    "SELECT key, runtime, token FROM sessions WHERE archived_at IS NULL AND token NOT LIKE 'revoked:%' LIMIT 10000",
+    [],
+  ) {
+    Ok(r) => r
+    Err(e) => return Err("adopt_all_active_tokens_from_store failed: " + e.message)
+  }
+  let mut count = 0
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let k = match r.get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let rt = match r.get("runtime") { Some(base_codec::Json::Str(s)) => s, _ => "claude" }
+    let tok = match r.get("token") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    if k.length() > 0 && tok.length() > 0 && !tok.starts_with("revoked:") {
+      self.session_runtimes.set(k, rt)
+      let _ = self.hub.ensure_actor(k, rt)
+      if self.token_for_session(k).is_none() {
+        self.register_adopted_token(k, tok)
+        count = count + 1
+      }
+    }
+  }
+  Ok(count)
 }
 
 /// Adopt handed-over sessions from SQLite + live `RunnerInfo` via `SessionHub::adopt` and
@@ -578,7 +727,7 @@ pub fn WholeAgents::adopt_sessions(
         }
         adopt_ok.set(row.key, ok)
         self.session_runtimes.set(row.key, row.runtime)
-        if row.archived_at.is_none() && row.token.length() > 0 {
+        if row.archived_at.is_none() && row.token.length() > 0 && !row.token.starts_with("revoked:") {
           self.register_adopted_token(row.key, row.token)
         }
       }
@@ -624,7 +773,7 @@ pub fn WholeAgents::build_driver_launch_spec(
   build_os_driver_launch(runtime, opts)
 }
 
-/// Export handover snapshots for all tracked actors.
+/// Export handover snapshots for all tracked active sessions.
 pub fn WholeAgents::export_session_snapshots(
   self : WholeAgents,
 ) -> Array[station_sessions::HandoverSnapshot] {
@@ -653,7 +802,7 @@ pub fn WholeAgents::export_session_snapshots(
 }
 
 // ---------------------------------------------------------------------------
-// Real SQLite-backed MCP Tool Dispatch
+// Real SQLite-backed MCP Tool Dispatch (Strict Workspace Isolation)
 // ---------------------------------------------------------------------------
 
 fn mcp_arg_str(args : base_codec::Json, key : String) -> Option[String] {
@@ -677,45 +826,117 @@ fn mcp_arg_bool(args : base_codec::Json, key : String) -> Option[Bool] {
   }
 }
 
-fn resolve_thread_id_for_to(
+fn parse_turn_declared(
+  kind : String,
+  args : base_codec::Json,
+) -> Result[station_sessions::TurnDeclared, String] {
+  if kind == "all_done" {
+    let d = match mcp_arg_str(args, "done") {
+      Some(s) => s
+      None => "done"
+    }
+    Ok(station_sessions::TurnDeclared::AllDone(d))
+  } else if kind == "need_human" {
+    let nd = match mcp_arg_str(args, "need") {
+      Some(s) => s
+      None => "input needed"
+    }
+    Ok(station_sessions::TurnDeclared::NeedHuman(nd))
+  } else if kind == "waiting" {
+    let fw = match mcp_arg_str(args, "for") {
+      Some(s) => s
+      None => "work"
+    }
+    let sc = mcp_arg_int(args, "seconds", 60)
+    let wt = match mcp_arg_bool(args, "watch") {
+      Some(b) => b
+      None => false
+    }
+    Ok(station_sessions::TurnDeclared::Waiting(fw, sc, wt))
+  } else {
+    Err("invalid turn state kind: " + kind + " (expected all_done, need_human, or waiting)")
+  }
+}
+
+/// Strictly resolve a thread ID:
+/// - If `explicit_target` is `Some(raw)` (non-empty), MUST resolve that exact target and NEVER
+///   fall back to the caller's default thread!
+/// - If `explicit_target` is `None` (or empty), resolves caller's own bound thread.
+/// - Always verifies `thread_visible_in_ws(st, tid, caller_ws, home_ws) == true` (cross-workspace refused).
+fn resolve_scoped_thread_id(
   st : station_store::Store,
   session_key : String,
-  to_opt : Option[String],
+  explicit_target : Option[String],
+  caller_ws : String,
+  home_ws : String,
 ) -> Result[Int64, String] {
-  match to_opt {
-    Some(to_raw) => {
-      let slash = to_raw.index_of("/")
-      if slash > 0 {
-        let ch = to_raw.slice(0, slash)
-        let ts = to_raw.slice(slash + 1, to_raw.length())
-        match st.db.first(
-          "SELECT id FROM threads WHERE channel = ?1 AND thread_ts = ?2 LIMIT 1",
-          [base_codec::json_str(ch), base_codec::json_str(ts)],
-        ) {
-          Ok(Some(r)) => match r.get("id") {
-            Some(base_codec::Json::Num(n, _)) => return Ok(n.to_int64())
-            _ => ()
+  let tid : Int64 = match explicit_target {
+    Some(raw) => {
+      let trimmed = raw.trim()
+      if trimmed.length() > 0 {
+        let mut found : Option[Int64] = None
+        let slash = trimmed.index_of("/")
+        if slash > 0 {
+          let ch = trimmed.slice(0, slash)
+          let ts = trimmed.slice(slash + 1, trimmed.length())
+          match st.db.first(
+            "SELECT id FROM threads WHERE channel = ?1 AND thread_ts = ?2 LIMIT 1",
+            [base_codec::json_str(ch), base_codec::json_str(ts)],
+          ) {
+            Ok(Some(r)) => match r.get("id") {
+              Some(base_codec::Json::Num(n, _)) => found = Some(n.to_int64())
+              _ => ()
+            }
+            Ok(None) => ()
+            Err(e) => return Err("lookup thread failed: " + e.message)
           }
-          _ => ()
+        }
+        if found.is_none() {
+          match base_codec::parse_int64_str(trimmed) {
+            Some(parsed_id) => {
+              match st.get_thread(parsed_id) {
+                Ok(Some(_)) => found = Some(parsed_id)
+                Ok(None) => ()
+                Err(e) => return Err("lookup thread failed: " + e.message)
+              }
+            }
+            None => ()
+          }
+        }
+        match found {
+          Some(id) => id
+          None => return Err("unknown thread target: " + trimmed)
+        }
+      } else {
+        match st.db.first(
+          "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1",
+          [base_codec::json_str(session_key)],
+        ) {
+          Ok(Some(r)) => match r.get("thread") {
+            Some(base_codec::Json::Num(n, _)) => n.to_int64()
+            _ => return Err("no thread bound to session " + session_key)
+          }
+          Ok(None) => return Err("no thread bound to session " + session_key)
+          Err(e) => return Err("lookup thread failed: " + e.message)
         }
       }
-      match base_codec::parse_int64_str(to_raw) {
-        Some(tid) => return Ok(tid)
-        None => ()
+    }
+    None => match st.db.first(
+      "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1",
+      [base_codec::json_str(session_key)],
+    ) {
+      Ok(Some(r)) => match r.get("thread") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+        _ => return Err("no thread bound to session " + session_key)
       }
+      Ok(None) => return Err("no thread bound to session " + session_key)
+      Err(e) => return Err("lookup thread failed: " + e.message)
     }
-    None => ()
   }
-  match st.db.first(
-    "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1",
-    [base_codec::json_str(session_key)],
-  ) {
-    Ok(Some(r)) => match r.get("thread") {
-      Some(base_codec::Json::Num(n, _)) => Ok(n.to_int64())
-      _ => Err("no thread bound to session " + session_key)
-    }
-    Ok(None) => Err("no thread bound to session " + session_key)
-    Err(e) => Err("lookup thread failed: " + e.message)
+  match thread_visible_in_ws(st, tid, caller_ws, home_ws) {
+    Ok(true) => Ok(tid)
+    Ok(false) => Err("access denied: thread " + tid.to_string() + " belongs to another workspace")
+    Err(e) => Err(e)
   }
 }
 
@@ -744,15 +965,33 @@ fn thread_row_to_json(t : station_store::ThreadRow) -> base_codec::Json {
   ])
 }
 
+fn WholeAgents::resolve_caller_ws(
+  self : WholeAgents,
+  st : station_store::Store,
+  session_key : String,
+) -> Result[String, String] {
+  match session_effective_ws(st, session_key, self.config.home_ws) {
+    Ok(Some(ws)) => Ok(ws)
+    Ok(None) => Err("unknown caller session: " + session_key)
+    Err(e) => Err(e)
+  }
+}
+
 fn WholeAgents::build_domain_handlers(
   self : WholeAgents,
   whole_store : WholeStore,
   now_ms : Int64,
 ) -> station_tools::DomainHandlers {
   let base = station_tools::default_domain_handlers()
+  let home_ws = self.config.home_ws
+
   let chat_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
     let st = match whole_store.require_open() {
       Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
       Err(e) => return station_tools::error_reply(e)
     }
     if tool == "chat_post" {
@@ -762,14 +1001,24 @@ fn WholeAgents::build_domain_handlers(
       }
       let title_opt = mcp_arg_str(args, "title")
       let kind_opt = mcp_arg_str(args, "kind")
-      let tid = match resolve_thread_id_for_to(st, session, mcp_arg_str(args, "to")) {
+      let parsed_decl : Option[station_sessions::TurnDeclared] = match kind_opt {
+        Some(k) => match parse_turn_declared(k, args) {
+          Ok(d) => Some(d)
+          Err(e) => return station_tools::error_reply(e)
+        }
+        None => None
+      }
+      let tid = match resolve_scoped_thread_id(st, session, mcp_arg_str(args, "to"), caller_ws, home_ws) {
         Ok(id) => id
         Err(e) => return station_tools::error_reply(e)
       }
       match title_opt {
         Some(t) => {
           if t.length() > 0 {
-            let _ = st.update_thread_metadata(tid, Some(t), None, None, None)
+            match st.update_thread_metadata(tid, Some(t), None, None, None) {
+              Ok(_) => ()
+              Err(e) => return station_tools::error_reply("update_thread_metadata failed: " + e.message)
+            }
           }
         }
         None => ()
@@ -793,26 +1042,11 @@ fn WholeAgents::build_domain_handlers(
         }
         match st.insert_message(msg) {
           Ok((n, _)) => {
-            let ends = match kind_opt {
-              Some(k) => {
-                match self.hub.actors.get(session) {
-                  Some(actor) => {
-                    let decl = if k == "all_done" {
-                      let d = match mcp_arg_str(args, "done") { Some(s) => s, None => "done" }
-                      station_sessions::TurnDeclared::AllDone(d)
-                    } else if k == "need_human" {
-                      let nd = match mcp_arg_str(args, "need") { Some(s) => s, None => "input needed" }
-                      station_sessions::TurnDeclared::NeedHuman(nd)
-                    } else {
-                      let fw = match mcp_arg_str(args, "for") { Some(s) => s, None => "work" }
-                      let sc = mcp_arg_int(args, "seconds", 60)
-                      let wt = match mcp_arg_bool(args, "watch") { Some(b) => b, None => false }
-                      station_sessions::TurnDeclared::Waiting(fw, sc, wt)
-                    }
-                    actor.record_post(decl)
-                  }
-                  None => ()
-                }
+            let ends = match parsed_decl {
+              Some(decl) => {
+                let rt = match self.session_runtimes.get(session) { Some(r) => r, None => "claude" }
+                let actor = self.hub.ensure_actor(session, rt)
+                actor.record_post(decl)
                 true
               }
               None => false
@@ -839,24 +1073,18 @@ fn WholeAgents::build_domain_handlers(
         Some(k) => k
         None => return station_tools::error_reply("kind is required")
       }
-      match self.hub.actors.get(session) {
-        Some(actor) => {
-          let decl = if kind == "all_done" {
-            let d = match mcp_arg_str(args, "done") { Some(s) => s, None => "done" }
-            station_sessions::TurnDeclared::AllDone(d)
-          } else if kind == "need_human" {
-            let nd = match mcp_arg_str(args, "need") { Some(s) => s, None => "input needed" }
-            station_sessions::TurnDeclared::NeedHuman(nd)
-          } else {
-            let fw = match mcp_arg_str(args, "for") { Some(s) => s, None => "work" }
-            let sc = mcp_arg_int(args, "seconds", 60)
-            let wt = match mcp_arg_bool(args, "watch") { Some(b) => b, None => false }
-            station_sessions::TurnDeclared::Waiting(fw, sc, wt)
-          }
-          actor.record_state(decl)
-        }
-        None => ()
+      let decl = match parse_turn_declared(kind, args) {
+        Ok(d) => d
+        Err(e) => return station_tools::error_reply(e)
       }
+      let actor = match self.hub.actors.get(session) {
+        Some(a) => a
+        None => match st.get_session(session) {
+          Ok(Some(row)) => self.hub.ensure_actor(session, row.runtime)
+          _ => return station_tools::error_reply("unknown session actor: " + session)
+        }
+      }
+      actor.record_state(decl)
       return station_tools::text_reply_ending_turn("recorded state: " + kind)
     }
     if tool == "chat_list" {
@@ -872,7 +1100,8 @@ fn WholeAgents::build_domain_handlers(
         project: mcp_arg_str(args, "project"),
         offset: mcp_arg_int(args, "offset", 0),
       }
-      match st.search_chat_threads(None, self.config.home_ws, q, filter, limit) {
+      // Strictly scoped to `caller_ws` (NEVER `None`).
+      match st.search_chat_threads(Some(caller_ws), Some(home_ws), q, filter, limit) {
         Ok((threads, total)) => {
           let items : Array[base_codec::Json] = []
           for i in 0..<threads.length() {
@@ -891,12 +1120,20 @@ fn WholeAgents::build_domain_handlers(
       }
     }
     if tool == "chat_history" || tool == "chat_read" {
-      let tid = match resolve_thread_id_for_to(st, session, mcp_arg_str(args, "to")) {
-        Ok(id) => id
-        Err(_) => match resolve_thread_id_for_to(st, session, mcp_arg_str(args, "chat")) {
-          Ok(id) => id
-          Err(e) => return station_tools::error_reply(e)
+      let target_opt = if tool == "chat_read" {
+        match mcp_arg_str(args, "chat") {
+          Some(c) => Some(c)
+          None => mcp_arg_str(args, "to")
         }
+      } else {
+        mcp_arg_str(args, "to")
+      }
+      if tool == "chat_read" && target_opt.is_none() {
+        return station_tools::error_reply("chat is required for chat_read")
+      }
+      let tid = match resolve_scoped_thread_id(st, session, target_opt, caller_ws, home_ws) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
       }
       let limit = mcp_arg_int(args, "limit", 30)
       match st.db.all(
@@ -937,11 +1174,17 @@ fn WholeAgents::build_domain_handlers(
       }
     }
     if tool == "chat_configure" {
-      let tid = match resolve_thread_id_for_to(st, session, mcp_arg_str(args, "chat")) {
+      let tid = match resolve_scoped_thread_id(st, session, mcp_arg_str(args, "chat"), caller_ws, home_ws) {
         Ok(id) => id
         Err(e) => return station_tools::error_reply(e)
       }
-      let proj = mcp_arg_str(args, "project")
+      let proj = match mcp_arg_str(args, "project") {
+        Some(raw_p) => match station_api::normalize_project_name(raw_p) {
+          Ok(clean) => Some(clean)
+          Err(e) => return station_tools::error_reply(e)
+        }
+        None => None
+      }
       let tags_opt : Option[Array[String]] = match base_codec::json_get(args, "tags") {
         Some(base_codec::Json::Arr(_)) => Some(parse_str_array_field(args, "tags"))
         _ => None
@@ -962,6 +1205,15 @@ fn WholeAgents::build_domain_handlers(
       let target = match mcp_arg_str(args, "chat") {
         Some(c) => c
         None => return station_tools::error_reply("chat is required")
+      }
+      match session_effective_ws(st, target, home_ws) {
+        Ok(Some(tws)) => {
+          if tws != caller_ws {
+            return station_tools::error_reply("access denied: target session belongs to another workspace")
+          }
+        }
+        Ok(None) => return station_tools::error_reply("unknown session " + target)
+        Err(e) => return station_tools::error_reply(e)
       }
       match self.archive_session(whole_store, target, "manual", now_ms) {
         Ok(_) => return station_tools::text_reply("archived " + target)
@@ -987,6 +1239,7 @@ fn WholeAgents::build_domain_handlers(
         Some(c) => if c.length() > 0 { c } else { self.config.data_dir }
         None => self.config.data_dir
       }
+      // Strictly inherit `caller_ws` (NEVER hardcoded `home_ws`).
       match self.create_session(
         whole_store,
         new_key,
@@ -997,7 +1250,7 @@ fn WholeAgents::build_domain_handlers(
         profile,
         mcp_arg_str(args, "model"),
         ws_dir,
-        self.config.home_ws,
+        Some(caller_ws),
         now_ms,
       ) {
         Ok((_, tid)) => return station_tools::text_reply(
@@ -1005,6 +1258,7 @@ fn WholeAgents::build_domain_handlers(
             base_codec::json_obj([
               ("session", base_codec::json_str(new_key)),
               ("thread", base_codec::json_int64(tid)),
+              ("workspace", base_codec::json_str(caller_ws)),
             ]),
           ),
         )
@@ -1023,12 +1277,19 @@ fn WholeAgents::build_domain_handlers(
           None => return station_tools::error_reply("text is required")
         }
       }
-      match st.get_session(target) {
-        Ok(Some(_)) => ()
+      let target_row = match st.get_session(target) {
+        Ok(Some(row)) => row
         Ok(None) => return station_tools::error_reply("unknown session " + target)
         Err(e) => return station_tools::error_reply("session lookup failed: " + e.message)
       }
-      let tid = match resolve_thread_id_for_to(st, target, None) {
+      let target_ws = match target_row.ws {
+        Some(w) => if w.length() > 0 { w } else { home_ws }
+        None => home_ws
+      }
+      if target_ws != caller_ws {
+        return station_tools::error_reply("access denied: target session belongs to another workspace")
+      }
+      let tid = match resolve_scoped_thread_id(st, target, None, caller_ws, home_ws) {
         Ok(id) => id
         Err(e) => return station_tools::error_reply(e)
       }
@@ -1050,13 +1311,15 @@ fn WholeAgents::build_domain_handlers(
       }
       match st.insert_message(msg, deliver_to=[target]) {
         Ok((n, _)) => {
-          let actor = self.hub.ensure_actor(target, "claude")
+          // Open actor with target's REAL runtime from SQLite (never hardcoded "claude").
+          let actor = self.hub.ensure_actor(target, target_row.runtime)
           let _ = actor.submit_input(body_text)
           return station_tools::text_reply(
             base_codec::json_stringify(
               base_codec::json_obj([
                 ("delivered", base_codec::json_bool(true)),
                 ("to", base_codec::json_str(target)),
+                ("runtime", base_codec::json_str(target_row.runtime)),
                 ("thread", base_codec::json_int64(tid)),
                 ("n", base_codec::json_int64(n)),
               ]),
@@ -1070,6 +1333,15 @@ fn WholeAgents::build_domain_handlers(
       let target = match mcp_arg_str(args, "chat") {
         Some(c) => if c.length() > 0 { c } else { session }
         None => session
+      }
+      match session_effective_ws(st, target, home_ws) {
+        Ok(Some(tws)) => {
+          if tws != caller_ws {
+            return station_tools::error_reply("access denied: target session belongs to another workspace")
+          }
+        }
+        Ok(None) => return station_tools::error_reply("unknown session " + target)
+        Err(e) => return station_tools::error_reply(e)
       }
       let limit = mcp_arg_int(args, "limit", 20)
       match st.db.all(
@@ -1108,12 +1380,16 @@ fn WholeAgents::build_domain_handlers(
     station_tools::error_reply("unsupported chat tool: " + tool)
   }
 
-  let search_handler = fn(_session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+  let search_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
     if tool != "search" {
       return station_tools::error_reply("unsupported search tool: " + tool)
     }
     let st = match whole_store.require_open() {
       Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
       Err(e) => return station_tools::error_reply(e)
     }
     let q = match mcp_arg_str(args, "query") {
@@ -1123,9 +1399,17 @@ fn WholeAgents::build_domain_handlers(
     let limit = mcp_arg_int(args, "limit", 5)
     let words = station_api::search_terms(q)
     let hits : Array[base_codec::Json] = []
+    // Strictly scoped to threads belonging to `caller_ws`.
     match st.db.all(
-      "SELECT e.thread, e.n, e.text, e.at, t.title FROM entries e LEFT JOIN threads t ON t.id = e.thread WHERE e.kind = 'message' ORDER BY e.at DESC LIMIT 200",
-      [],
+      "SELECT e.thread, e.n, e.text, e.at, t.title FROM entries e" +
+      " JOIN threads t ON t.id = e.thread" +
+      " LEFT JOIN sessions h ON h.key = t.home" +
+      " WHERE e.kind = 'message' AND CASE" +
+      "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+      "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+      "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+      " ORDER BY e.at DESC",
+      [base_codec::json_str(home_ws), base_codec::json_str(caller_ws)],
     ) {
       Ok(rows) => {
         for i in 0..<rows.length() {
@@ -1158,6 +1442,14 @@ fn WholeAgents::build_domain_handlers(
   }
 
   let job_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
+      Err(e) => return station_tools::error_reply(e)
+    }
     if tool == "job_start" {
       let command = match mcp_arg_str(args, "command") {
         Some(c) => c
@@ -1193,7 +1485,13 @@ fn WholeAgents::build_domain_handlers(
         pipe_stdio: false,
       }
       match self.jobs.start(req, now_ms) {
-        Ok(rec) => return station_tools::text_reply(base_codec::json_stringify(rec.to_json()))
+        Ok(rec) => {
+          match whole_store.persist_job(rec) {
+            Ok(_) => ()
+            Err(e) => return station_tools::error_reply(e)
+          }
+          return station_tools::text_reply(base_codec::json_stringify(rec.to_json()))
+        }
         Err(e) => return station_tools::error_reply(e)
       }
     }
@@ -1207,20 +1505,32 @@ fn WholeAgents::build_domain_handlers(
         base_codec::json_stringify(base_codec::json_obj([("jobs", base_codec::json_arr(out))])),
       )
     }
-    if tool == "job_stop" {
+    if tool == "job_stop" || tool == "job_log" {
       let id = match mcp_arg_str(args, "id") {
         Some(s) => s
         None => return station_tools::error_reply("id is required")
       }
-      match self.jobs.stop(id, now_ms) {
-        Ok(rec) => return station_tools::text_reply(base_codec::json_stringify(rec.to_json()))
+      let job_rec = match self.jobs.get(id) {
+        Some(r) => r
+        None => return station_tools::error_reply("no job " + id)
+      }
+      match session_effective_ws(st, job_rec.session, home_ws) {
+        Ok(Some(jws)) => {
+          if jws != caller_ws {
+            return station_tools::error_reply("access denied: job belongs to another workspace")
+          }
+        }
+        Ok(None) => return station_tools::error_reply("no job " + id)
         Err(e) => return station_tools::error_reply(e)
       }
-    }
-    if tool == "job_log" {
-      let id = match mcp_arg_str(args, "id") {
-        Some(s) => s
-        None => return station_tools::error_reply("id is required")
+      if tool == "job_stop" {
+        match self.jobs.stop(id, now_ms) {
+          Ok(rec) => {
+            let _ = whole_store.update_job_state(rec)
+            return station_tools::text_reply(base_codec::json_stringify(rec.to_json()))
+          }
+          Err(e) => return station_tools::error_reply(e)
+        }
       }
       let lines = mcp_arg_int(args, "lines", 50)
       match self.jobs.log(id, lines=lines) {
@@ -1231,7 +1541,7 @@ fn WholeAgents::build_domain_handlers(
     station_tools::error_reply("unsupported job tool: " + tool)
   }
 
-  let project_handler = fn(_session : String, tool : String, _args : base_codec::Json) -> station_tools::ToolReply {
+  let project_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
     if tool != "project_manage" {
       return station_tools::error_reply("unsupported project tool: " + tool)
     }
@@ -1239,24 +1549,126 @@ fn WholeAgents::build_domain_handlers(
       Ok(s) => s
       Err(e) => return station_tools::error_reply(e)
     }
-    match st.db.all(
-      "SELECT project, COUNT(*) AS cnt FROM threads WHERE project IS NOT NULL AND project != '' GROUP BY project ORDER BY project",
-      [],
-    ) {
-      Ok(rows) => {
-        let projs : Array[base_codec::Json] = []
-        for i in 0..<rows.length() {
-          let r = rows[i]
-          let name = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-          let cnt = match r.get("cnt") { Some(v) => v, None => base_codec::json_int(0) }
-          projs.push(base_codec::json_obj([("name", base_codec::json_str(name)), ("count", cnt)]))
-        }
-        station_tools::text_reply(
-          base_codec::json_stringify(base_codec::json_obj([("projects", base_codec::json_arr(projs))])),
-        )
-      }
-      Err(e) => station_tools::error_reply("project_manage failed: " + e.message)
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
+      Err(e) => return station_tools::error_reply(e)
     }
+    let action = match mcp_arg_str(args, "action") {
+      Some(a) => a
+      None => return station_tools::error_reply("action is required (list, propose, rename, merge, reclassify)")
+    }
+    if action == "list" {
+      match st.db.all(
+        "SELECT t.project, COUNT(*) AS cnt FROM threads t" +
+        " LEFT JOIN sessions h ON h.key = t.home" +
+        " WHERE t.project IS NOT NULL AND t.project != '' AND CASE" +
+        "  WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?1) = ?2" +
+        "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?1 = ?2" +
+        "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?1) = ?2) END" +
+        " GROUP BY t.project ORDER BY t.project",
+        [base_codec::json_str(home_ws), base_codec::json_str(caller_ws)],
+      ) {
+        Ok(rows) => {
+          let projs : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            let name = match r.get("project") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let cnt = match r.get("cnt") { Some(v) => v, None => base_codec::json_int(0) }
+            projs.push(base_codec::json_obj([("name", base_codec::json_str(name)), ("count", cnt)]))
+          }
+          return station_tools::text_reply(
+            base_codec::json_stringify(base_codec::json_obj([("projects", base_codec::json_arr(projs))])),
+          )
+        }
+        Err(e) => return station_tools::error_reply("project_manage list failed: " + e.message)
+      }
+    }
+    if action == "propose" {
+      let raw_name = match mcp_arg_str(args, "name") {
+        Some(n) => n
+        None => return station_tools::error_reply("name is required for propose")
+      }
+      let clean = match station_api::normalize_project_name(raw_name) {
+        Ok(c) => if c.length() > 0 { c } else { return station_tools::error_reply("project name must not be empty") }
+        Err(e) => return station_tools::error_reply(e)
+      }
+      return station_tools::text_reply(
+        base_codec::json_stringify(
+          base_codec::json_obj([
+            ("proposed", base_codec::json_str(clean)),
+            ("workspace", base_codec::json_str(caller_ws)),
+          ]),
+        ),
+      )
+    }
+    if action == "reclassify" {
+      let tid = match resolve_scoped_thread_id(st, session, mcp_arg_str(args, "chat"), caller_ws, home_ws) {
+        Ok(id) => id
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let raw_proj = match mcp_arg_str(args, "project") {
+        Some(p) => p
+        None => return station_tools::error_reply("project is required for reclassify")
+      }
+      let clean = match station_api::normalize_project_name(raw_proj) {
+        Ok(c) => c
+        Err(e) => return station_tools::error_reply(e)
+      }
+      match st.update_thread_metadata(tid, None, Some(clean), None, None) {
+        Ok(updated) => return station_tools::text_reply(
+          base_codec::json_stringify(
+            base_codec::json_obj([
+              ("updated", base_codec::json_bool(updated)),
+              ("thread", base_codec::json_int64(tid)),
+              ("project", base_codec::json_str(clean)),
+            ]),
+          ),
+        )
+        Err(e) => return station_tools::error_reply("project_manage reclassify failed: " + e.message)
+      }
+    }
+    if action == "rename" || action == "merge" {
+      let from_name = match mcp_arg_str(args, "from") {
+        Some(f) => f
+        None => return station_tools::error_reply("from is required for " + action)
+      }
+      let raw_to = match mcp_arg_str(args, "to") {
+        Some(t) => t
+        None => return station_tools::error_reply("to is required for " + action)
+      }
+      let to_name = match station_api::normalize_project_name(raw_to) {
+        Ok(c) => if c.length() > 0 { c } else { return station_tools::error_reply("target project name must not be empty") }
+        Err(e) => return station_tools::error_reply(e)
+      }
+      match st.tx(fn(t : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+        t.run(
+          "UPDATE threads SET project = ?1 WHERE project = ?2 AND id IN (" +
+          " SELECT th.id FROM threads th LEFT JOIN sessions h ON h.key = th.home WHERE CASE" +
+          "  WHEN th.home IS NOT NULL THEN COALESCE(h.ws, ?3) = ?4" +
+          "  WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = th.id) THEN ?3 = ?4" +
+          "  ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = th.id AND COALESCE(a.ws, ?3) = ?4) END)",
+          [
+            base_codec::json_str(to_name),
+            base_codec::json_str(from_name),
+            base_codec::json_str(home_ws),
+            base_codec::json_str(caller_ws),
+          ],
+        )
+      }) {
+        Ok(n) => return station_tools::text_reply(
+          base_codec::json_stringify(
+            base_codec::json_obj([
+              ("action", base_codec::json_str(action)),
+              ("from", base_codec::json_str(from_name)),
+              ("to", base_codec::json_str(to_name)),
+              ("updated", base_codec::json_int(n)),
+            ]),
+          ),
+        )
+        Err(e) => return station_tools::error_reply("project_manage " + action + " failed: " + e.message)
+      }
+    }
+    station_tools::error_reply("unsupported project_manage action: " + action)
   }
 
   station_tools::DomainHandlers::{
@@ -1314,7 +1726,7 @@ pub fn WholeAgents::handle_mcp_http_with_handlers(
         },
       }
     },
-    static_tools: fn() -> Array[station_tools::ToolDecl] { station_tools::station_tools() },
+    static_tools: fn() -> Array[station_tools::ToolDecl] { wired_station_tools() },
     dynamic_tools: fn(_session : String) -> Array[station_tools::ToolDecl] { [] },
     listing_of: fn(session : String) -> Option[station_tools::Listing] {
       let rt = match self.session_runtimes.get(session) {
@@ -1332,12 +1744,7 @@ pub fn WholeAgents::handle_mcp_http_with_handlers(
   McpHttpResponse::{ status: st, content_type: ct, body: text }
 }
 
-/// Handle a local HTTP request to `/mcp`:
-/// 1. Enforces path == `/mcp`.
-/// 2. Enforces `station_tools::check_local_origin` (rejects cross-site `Origin` or non-loopback `Host` with `403`).
-/// 3. Enforces `POST` (`405`), `extract_bearer_token`, and constant-time active token verification (`401`).
-/// 4. Dispatches JSON-RPC 2.0 (`initialize`, `ping`, `tools/list`, `tools/call`) via `McpServer::handle`
-///    and `station_tools::dispatch_tool` against live SQLite `WholeStore` + `SessionHub` + `JobManager`.
+/// Handle a local HTTP request to `/mcp` against live SQLite `WholeStore` + `SessionHub` + `JobManager`.
 pub fn WholeAgents::handle_mcp_http(
   self : WholeAgents,
   whole_store : WholeStore,

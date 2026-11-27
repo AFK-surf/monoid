@@ -1,5 +1,5 @@
-// Real SQLite primary store lifecycle, predecessor-exit write guard, and handover snapshot
-// persistence for `station_whole`.
+// Real SQLite primary store lifecycle, predecessor-exit write guard, job persistence,
+// workspace visibility queries, and handover snapshot persistence for `station_whole`.
 //
 // Invariant: SQLite primary write connection (`<data>/stillfail.db`) MUST NEVER be opened
 // until the caller confirms the predecessor process has exited (`predecessor_gone == true`),
@@ -8,11 +8,15 @@
 import "base_codec"
 import "http1"
 import "nodepath"
+import "sql_db"
 import "station_api"
+import "station_jobs"
 import "station_sessions"
 import "station_store"
 import "station_sys"
 import "station_vault"
+
+pub let HANDOVER_SNAPSHOT_VERSION : Int = 1
 
 pub enum StorePhase {
   PreHandover
@@ -42,7 +46,7 @@ pub struct WholeHandoverSnapshot {
 
 pub fn WholeHandoverSnapshot::empty(exported_at : Int64) -> WholeHandoverSnapshot {
   WholeHandoverSnapshot::{
-    version: 1,
+    version: HANDOVER_SNAPSHOT_VERSION,
     exported_at: exported_at,
     kept_sends: [],
     session_snapshots: [],
@@ -223,7 +227,10 @@ pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSna
   }
   let version = match json_opt_int(j, "version") {
     Some(v) => v
-    None => 1
+    None => return Err("missing handover snapshot version")
+  }
+  if version != HANDOVER_SNAPSHOT_VERSION {
+    return Err("unsupported handover snapshot version: " + version.to_string())
   }
   let exported_at = match json_opt_i64(j, "exportedAt") {
     Some(t) => t
@@ -320,7 +327,8 @@ pub fn WholeStore::require_open(self : WholeStore) -> Result[station_store::Stor
   }
 }
 
-/// Pure predecessor-exit guard and `before_store` runner (shared by unit tests and live SQLite open).
+/// Pure predecessor-exit guard and one-shot `before_store` runner (never re-runs `before_store`
+/// if it already succeeded on an earlier attempt).
 pub fn WholeStore::check_open_guard(
   self : WholeStore,
   predecessor_gone : Bool,
@@ -334,17 +342,17 @@ pub fn WholeStore::check_open_guard(
     StorePhase::Closed => return Err("cannot reopen a closed WholeStore")
     StorePhase::PreHandover => ()
   }
-  match before_store(self.data_dir) {
-    Ok(_) => {
-      self.before_store_ran = true
-      Ok(true)
+  if !self.before_store_ran {
+    match before_store(self.data_dir) {
+      Ok(_) => self.before_store_ran = true
+      Err(e) => return Err("before_store hook failed: " + e)
     }
-    Err(e) => Err("before_store hook failed: " + e)
   }
+  Ok(true)
 }
 
 /// Strictly opens `<data_dir>/stillfail.db` ONLY after the caller confirms the predecessor process
-/// has exited (`predecessor_gone == true`), running `before_store(data_dir)` first (reserved for
+/// has exited (`predecessor_gone == true`), running `before_store(data_dir)` once (reserved for
 /// `station_replica` restore) and then `station_store::Store::open(...)` with schema migrations.
 pub fn WholeStore::open_primary_after_predecessor_gone(
   self : WholeStore,
@@ -371,6 +379,183 @@ pub fn WholeStore::open_primary_after_predecessor_gone(
     }
     Err(e) => Err("failed to open primary SQLite store: " + e.message)
   }
+}
+
+/// Resolve a session's effective workspace in SQLite (`COALESCE(sessions.ws, home_ws)`).
+pub fn session_effective_ws(
+  st : station_store::Store,
+  session_key : String,
+  home_ws : String,
+) -> Result[Option[String], String] {
+  match st.get_session(session_key) {
+    Ok(Some(row)) => match row.ws {
+      Some(w) => if w.length() > 0 { Ok(Some(w)) } else { Ok(Some(home_ws)) }
+      None => Ok(Some(home_ws))
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err("session_effective_ws failed: " + e.message)
+  }
+}
+
+/// Check whether `thread_id` is visible inside workspace `ws` (aligned 1:1 with `store.pion`
+/// workspace scoping: `t.home` -> home session's `COALESCE(ws, home_ws)`, else member sessions,
+/// else `home_ws`).
+pub fn thread_visible_in_ws(
+  st : station_store::Store,
+  thread_id : Int64,
+  ws : String,
+  home_ws : String,
+) -> Result[Bool, String] {
+  match st.db.first(
+    "SELECT 1 FROM threads t LEFT JOIN sessions h ON h.key = t.home WHERE t.id = ?1 AND CASE" +
+    " WHEN t.home IS NOT NULL THEN COALESCE(h.ws, ?2) = ?3" +
+    " WHEN NOT EXISTS (SELECT 1 FROM thread_sessions m WHERE m.thread = t.id) THEN ?2 = ?3" +
+    " ELSE EXISTS (SELECT 1 FROM thread_sessions m LEFT JOIN sessions a ON a.key = m.session WHERE m.thread = t.id AND COALESCE(a.ws, ?2) = ?3) END LIMIT 1",
+    [sql_db::int64_to_json(thread_id), base_codec::json_str(home_ws), base_codec::json_str(ws)],
+  ) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err("thread_visible_in_ws failed: " + e.message)
+  }
+}
+
+fn job_record_to_store(rec : station_jobs::JobRecord) -> station_store::JobRecord {
+  station_store::JobRecord::{
+    id: rec.id,
+    session_key: rec.session,
+    name: rec.name,
+    command: rec.command,
+    cwd: rec.cwd,
+    port: match rec.port {
+      Some(p) => Some(p.to_int64())
+      None => None
+    },
+    token: rec.token,
+    state: station_jobs::job_state_to_str(rec.state),
+    pgid: match rec.pgid {
+      Some(p) => Some(p.to_int64())
+      None => None
+    },
+    exit_code: match rec.exit_code {
+      Some(c) => Some(c.to_int64())
+      None => None
+    },
+    started_at: rec.started_at,
+    ended_at: rec.ended_at,
+    restarts: rec.restarts.to_int64(),
+    log: rec.log_path,
+    watch: rec.watch,
+    queued: if rec.queued { Some(1L) } else { None },
+    screen: if rec.screen { Some(1L) } else { None },
+    size: None,
+    small: if rec.small { Some(1L) } else { None },
+  }
+}
+
+fn job_record_from_store(rec : station_store::JobRecord) -> station_jobs::JobRecord {
+  station_jobs::JobRecord::{
+    id: rec.id,
+    session: rec.session_key,
+    name: rec.name,
+    command: rec.command,
+    cwd: rec.cwd,
+    port: match rec.port {
+      Some(p) => Some(p.to_int())
+      None => None
+    },
+    token: rec.token,
+    state: station_jobs::job_state_from_str(rec.state),
+    pgid: match rec.pgid {
+      Some(p) => Some(p.to_int())
+      None => None
+    },
+    start_time_ms: None,
+    exit_code: match rec.exit_code {
+      Some(c) => Some(c.to_int())
+      None => None
+    },
+    started_at: rec.started_at,
+    ended_at: rec.ended_at,
+    restarts: rec.restarts.to_int(),
+    log_path: rec.log,
+    watch: rec.watch,
+    queued: match rec.queued {
+      Some(v) => v != 0L
+      None => false
+    },
+    screen: match rec.screen {
+      Some(v) => v != 0L
+      None => false
+    },
+    small: match rec.small {
+      Some(v) => v != 0L
+      None => false
+    },
+    notices: [],
+  }
+}
+
+/// Persist a started job record into SQLite `jobs` so `job_seen` and restart adoption stay in sync.
+pub fn WholeStore::persist_job(
+  self : WholeStore,
+  rec : station_jobs::JobRecord,
+) -> Result[Unit, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::insert_job(st.db, job_record_to_store(rec)) {
+    Ok(_) => Ok(())
+    Err(e) => Err("persist_job failed: " + e.message)
+  }
+}
+
+/// Update an existing job's state in SQLite `jobs`.
+pub fn WholeStore::update_job_state(
+  self : WholeStore,
+  rec : station_jobs::JobRecord,
+) -> Result[Unit, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  match station_store::update_job_state(
+    st.db,
+    rec.id,
+    station_jobs::job_state_to_str(rec.state),
+    match rec.exit_code {
+      Some(c) => Some(c.to_int64())
+      None => None
+    },
+    rec.ended_at,
+    Some(rec.restarts.to_int64()),
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err("update_job_state failed: " + e.message)
+  }
+}
+
+/// Adopt all running jobs persisted in SQLite `jobs` into `JobManager` on startup/restart.
+pub fn WholeStore::adopt_active_jobs(
+  self : WholeStore,
+  jobs : station_jobs::JobManager,
+  now_ms : Int64,
+) -> Result[Int, String] {
+  let st = match self.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let running = match station_store::list_running_jobs(st.db) {
+    Ok(rows) => rows
+    Err(e) => return Err("list_running_jobs failed: " + e.message)
+  }
+  let mut count = 0
+  for i in 0..<running.length() {
+    if jobs.adopt_from_store(job_record_from_store(running[i]), now_ms) {
+      count = count + 1
+    }
+  }
+  Ok(count)
 }
 
 pub fn WholeStore::record_handover_in(
@@ -448,24 +633,45 @@ pub fn WholeStore::register_vault_grant(
   }
 }
 
-/// Apply a handover snapshot to `AdminApi` (`keep_sends`) and persist handover audit state into SQLite.
+/// Return currently active (unexpired, non-revoked) vault grant IDs at `now_sec`.
+pub fn WholeStore::active_vault_grant_ids_at(
+  self : WholeStore,
+  now_sec : Int64,
+) -> Array[String] {
+  let active : Array[String] = []
+  for i in 0..<self.active_vault_grant_ids.length() {
+    let id = self.active_vault_grant_ids[i]
+    if self.vault_grants.is_active(id, now_sec) {
+      active.push(id)
+    }
+  }
+  self.active_vault_grant_ids = active
+  active
+}
+
+/// Apply a handover snapshot: persists audit state into SQLite FIRST, and ONLY on SQLite commit
+/// updates in-memory `last_restored_handover_at` and `AdminApi::keep_sends`.
 pub fn WholeStore::apply_handover_restore(
   self : WholeStore,
   snap : WholeHandoverSnapshot,
   admin_api : station_api::AdminApi,
   ws_override : Option[String],
 ) -> Result[Unit, String] {
+  if snap.version != HANDOVER_SNAPSHOT_VERSION {
+    return Err("unsupported handover snapshot version: " + snap.version.to_string())
+  }
   let st = match self.require_open() {
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  admin_api.keep_sends(snap.kept_sends, ws_override)
-  self.last_restored_handover_at = Some(snap.exported_at)
   let snap_json = base_codec::json_stringify(snap.to_json())
   match station_store::save_handover_in(st.db, "whole-core-last", snap_json) {
-    Ok(_) => Ok(())
-    Err(e) => Err("persist restored handover snapshot failed: " + e.message)
+    Ok(_) => ()
+    Err(e) => return Err("persist restored handover snapshot failed: " + e.message)
   }
+  admin_api.keep_sends(snap.kept_sends, ws_override)
+  self.last_restored_handover_at = Some(snap.exported_at)
+  Ok(())
 }
 
 /// Mark `WholeStore` closed without invoking SQLite FFI (used when `store` was never opened).
