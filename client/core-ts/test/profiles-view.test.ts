@@ -572,7 +572,7 @@ test("service profiles decorate without agent runtime, dedup by (service, email)
   assert.ok(view.items.some((i: any) => i.group === "agy" && i.members.length === 1), "agy subscription must not merge with service profile");
 });
 
-test("colab service profile groups under Google without merging with Antigravity CLI or entering Gemini overview pool", () => {
+test("colab service profile is its own group apart from Google, without merging with Antigravity CLI or entering Gemini overview pool", () => {
   const colab = shownProfile({
     id: "colab-1",
     name: "lin@example.com",
@@ -604,8 +604,8 @@ test("colab service profile groups under Google without merging with Antigravity
     check: { state: "ok", detail: "已登录", models: [], checkedAt: 1000 },
     quota: { state: "ok", windows: [], checkedAt: 1000 },
   });
-  assert.equal(colab.group, "agy");
-  assert.equal(colab.groupTitle, "Google");
+  assert.equal(colab.group, "colab");
+  assert.equal(colab.groupTitle, "Google Colab");
   assert.equal(agy.group, "agy");
   assert.equal(agy.groupTitle, "Google");
   assert.equal(colab.providerName, "Google Colab");
@@ -627,11 +627,10 @@ test("colab service profile groups under Google without merging with Antigravity
   });
   assert.equal(expired.trouble?.action, "login");
 
-  // Same email for Antigravity CLI and Colab stay separate rows under Google.
+  // Same email for Antigravity CLI and Colab: separate rows, Antigravity CLI's under Google, Colab's in a group of their
+  // own right after it (added from Google's tile, but not Gemini accounts).
   const view = workspaceProfiles([station(A, "office", true, [agy, colab, expired])]);
-  const googleRows = view.items.filter((i: any) => i.group === "agy");
-  assert.equal(googleRows.length, 3);
-  assert.ok(googleRows.every((i: any) => i.groupTitle === "Google"));
+  assert.deepEqual(view.items.map((i: any) => [i.group, i.groupTitle]), [["agy", "Google"], ["colab", "Google Colab"], ["colab", "Google Colab"]]);
 
   // Neither ok nor expired (needsFix) Colab profiles enter the Gemini overview pool.
   const ov = profilesOverview(view.items, () => null, 1_900_000_000_000, 480);

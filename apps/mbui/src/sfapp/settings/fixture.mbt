@@ -1788,7 +1788,7 @@ fn fx_profiles() -> Array[Json] {
       ]),
     )
     profiles.push(
-      fx_profile("colab", "lin@colab.example", "service", "green", "可用", "agy", "Google", [
+      fx_profile("colab", "lin@colab.example", "service", "green", "可用", "colab", "Google Colab", [
         ("runtime", Json::null()),
         ("service", str("colab")),
         ("runtimes", []),

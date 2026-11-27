@@ -694,11 +694,17 @@ final class MBText {
                     continue;
                 }
                 if (c == '\n'
-                        || c == 0x00A5 || c == 0x00A7 || c == 0x00B0 || c == 0x00B1
-                        || c == 0x00B7 || c == 0x00D7 || c == 0x00F7
+                        || c == 0x00A5 || c == 0x00A7 || c == 0x00AB
+                        || (c >= 0x00B0 && c <= 0x00B3) || c == 0x00B7 || c == 0x00B9
+                        || (c >= 0x00BB && c <= 0x00FF)
                         || c == 0x2013 || c == 0x2014 || (c >= 0x2018 && c <= 0x201D)
                         || c == 0x2022 || c == 0x2026 || c == 0x2030
-                        || c == 0x2032 || c == 0x2033 || c == 0x20AC || c == 0x2103) {
+                        || c == 0x2032 || c == 0x2033 || c == 0x20AC || c == 0x2103
+                        || (c >= 0x2190 && c <= 0x2193)
+                        || c == 0x2212 || c == 0x221E || c == 0x2248
+                        || c == 0x2260 || c == 0x2264 || c == 0x2265
+                        || (c >= 0x2500 && c <= 0x257F)
+                        || c == 0x2713 || c == 0x2717) {
                     continue;
                 }
                 flags &= ~SCAN_UNITS;
@@ -915,10 +921,10 @@ final class MBText {
     }
 
     /**
-     * Whether a cluster may be drawn in colours of its own (an emoji's): false only where every unit of it is of what
-     * no font draws so (letters of Latin, Greek and Cyrillic and their marks, ASCII's, Han, kana, Hangul, the full
-     * width's punctuation); a unit of anything else (a symbol, a pair of surrogates, U+FE0F, U+200D, U+20E3, © and ®,
-     * 〰 and 〽) says it may.
+     * Whether a cluster may be drawn in colours of its own (an emoji's): false only where every unit of it is a
+     * non-emoji text glyph (ASCII, Latin/Greek/Cyrillic and their marks, common monochrome punctuation/arrows/math/
+     * box-drawing/check-cross symbols, Han, kana, Hangul, full-width punctuation); anything else (other symbols, a
+     * surrogate pair, U+FE0F, U+200D, U+20E3, ©, ®, 〰, 〽) says it may.
      */
     static boolean mayBeColour(String s) {
         for (int i = 0, n = s.length(); i < n; i++) {
@@ -930,6 +936,11 @@ final class MBText {
                 || (c >= 0x2030 && c <= 0x2033)
                 || c == 0x20AC
                 || c == 0x2103
+                || (c >= 0x2190 && c <= 0x2193)
+                || c == 0x2212 || c == 0x221E || c == 0x2248
+                || c == 0x2260 || c == 0x2264 || c == 0x2265
+                || (c >= 0x2500 && c <= 0x257F)
+                || c == 0x2713 || c == 0x2717
                 || (c >= 0x3000 && c <= 0x30FF && c != 0x3030 && c != 0x303D)
                 || (c >= 0x3400 && c <= 0x4DBF)
                 || (c >= 0x4E00 && c <= 0x9FFF)

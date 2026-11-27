@@ -55,6 +55,7 @@ public final class MBTextTest extends Instrumentation {
             "中文\tﬃ\r\nالعربية אבג 123 fi", "計測\temoji💡\nEnd",
             "測字前綴我是漢字測字後綴", "測字、漢字！測字：漢字　漢字", "ゔゕカッヷ・한글",
             "完成任务 ✅ 下一步 → 延迟 ≤ 16ms 🎉 汉字缓存命中测试",
+            "延迟 145ms → 125ms ← ↑ ↓ ≤ 16ms ≥ 0ms ≠ 1 ≈ 99% −5 ∞ ✓ ✗ ┌─┬─┐ café «ok»",
             "Apple 的性能测试 foo 中 bar 字 baz 中文测试字 end",
             "pure ASCII line without any Han or tabs 0123456789 AV To fi fl",
             "pure ASCII\twith\ttabs\tand\nnewlines",
@@ -110,7 +111,7 @@ public final class MBTextTest extends Instrumentation {
         MBText.Scratch scratch = new MBText.Scratch();
         MBTextBefore.Scratch before = new MBTextBefore.Scratch();
         for (float size : new float[]{21.5f, 112f, 13f}) {
-            for (String text : new String[]{"中", "j", "f", "W", "fi", "♥", "👩🏽‍💻", "café", " "}) {
+            for (String text : new String[]{"中", "j", "f", "W", "fi", "♥", "👩🏽‍💻", "café", "→", "≤", "✓", "✗", "─", " "}) {
                 MBText.Entry e = new MBText.Entry(text, size, 700, 1);
                 MBTextBefore.Entry old = new MBTextBefore.Entry(text, size, 700, 1);
                 for (float scale : new float[]{1f, 2.625f, 1f}) {

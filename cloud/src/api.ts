@@ -13,7 +13,7 @@ import { productOf } from "../../client/i18n/brand.ts";
 import type { Live } from "./account";
 import { EVENTS_PROTOCOLS, ROLES, sockets, type AddedMail, type Role } from "./directory";
 import { PROVISION_KEY_PREFIX } from "./directory/stations";
-import { fail } from "./directory/types";
+import { cleanEmoji, cleanName, fail } from "./directory/types";
 import type { Env } from "./env";
 import { requestLang, tr, type Lang } from "./i18n.ts";
 import { mailConfigured, sendAdded } from "./mail";
@@ -86,7 +86,7 @@ async function mailAdded(env: Env, lang: Lang, workspace: string, mail: AddedMai
   return failed;
 }
 
-async function directory<T>(run: () => Promise<T> | T, status = 200): Promise<Response> {
+export async function directory<T>(run: () => Promise<T> | T, status = 200): Promise<Response> {
   try {
     const value = await run();
     return reply(value ?? { ok: true }, status);
@@ -410,10 +410,12 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   const parts = path.split("/").slice(3).map(decodeURIComponent); // after /v1/workspaces/
   const [ws, kind, target, action] = parts;
   if (!ws || !/^[0-9A-HJKMNP-TV-Z]{26}$/.test(ws)) return reply({ error: "not_found" }, 404);
-  // A picture sent as the icon, kept in the bucket once the caller may change the workspace (icons.ts).
-  const icon = async () => {
+  // A picture sent as the icon, kept in the bucket once the caller and other fields pass checks (icons.ts).
+  const icon = async (station?: string) => {
     if (typeof input.icon !== "string" || !input.icon.startsWith("data:")) return input.icon;
-    await dir.manages(sub, ws);
+    await dir.manages(sub, ws, station);
+    if (input.name !== undefined && cleanName(input.name) === null) fail(400, "invalid_name");
+    if (input.emoji !== undefined && input.emoji !== null && input.emoji !== "" && cleanEmoji(input.emoji) === null) fail(400, "invalid_emoji");
     return keptIcon(env, input.icon);
   };
   if (!kind) {
@@ -502,7 +504,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   if (kind === "stations" && target && validKeyHex(target)) {
     // (what it is, a whole station or one that only runs tasks: asked alone)
     if (!action && method === "PATCH" && input.mode !== undefined) return directory(() => dir.setStationMode(sub, ws, target, input.mode));
-    if (!action && method === "PATCH") return directory(async () => dir.updateStation(sub, ws, target, { name: input.name, emoji: input.emoji, icon: await icon() }));
+    if (!action && method === "PATCH") return directory(async () => dir.updateStation(sub, ws, target, { name: input.name, emoji: input.emoji, icon: await icon(target) }));
     if (!action && method === "DELETE") return directory(() => dir.removeStation(sub, ws, target));
   }
   return reply({ error: "not_found" }, 404);

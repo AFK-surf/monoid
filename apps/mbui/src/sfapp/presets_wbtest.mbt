@@ -725,6 +725,142 @@ test "a preset can leave directories, station, and model unrestricted, or bind a
 }
 
 ///|
+/// A new preset's dialog over a new chat whose workspace has twelve stations (newchat-station-many's), on a desk or a
+/// phone, its 不限 Station capsule pressed: the many stations' picker over it.
+fn preset_many_stations(calls : Array[Made], wide : Bool) -> @ui.Tester raise {
+  new_run()
+  @sf.presenters_reset()
+  let src = preset_calls("newchat-preset-new", calls)
+  @sffixture.new_fix.station_many = true
+  let t = preset_tester(src, wide)
+  open_mode("newchat-preset-new")
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  press(t, "不限 Station")
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// Whether the station row named `name` is drawn ticked.
+fn station_ticked(t : @ui.Tester, name : String) -> Bool {
+  t
+  .semantics()
+  .iter()
+  .any(fn(n) { n.role == @ui.Role::Button && n.label == name && !n.hidden && n.check is Some(@view.Check::On) })
+}
+
+///|
+test "with many stations a preset's stations are picked in the new chat's table, many at once, the panel kept open" {
+  let calls : Array[Made] = []
+  let t = preset_many_stations(calls, true)
+  assert_eq(t.audit(), [])
+  // (the new chat's wide table: centred, its search and columns; 不限 and 自动分配 over it)
+  let dlg = t.get(@ui.Role::Dialog)
+  assert_true(dlg.rect.2 >= 720.0, msg="expected the wide table, got w=\{dlg.rect.2}")
+  assert_true(shows(t, "运行中") && shows(t, "自动分配 (11)") && shows(t, "不限 Station"), msg=runs(t))
+  assert_true(t.focused() is Some(f) && f.role == @ui.Role::TextField, msg="its search takes the keys")
+  // (↓ lights the keys' row; the hand come onto another row lights that one alone)
+  t.key(@ui.key_code_down)
+  t.run_for(@ui.move_most_ms)
+  assert_true(panel_row_highlighted(t, "Maple"), msg="↓ lights Maple")
+  let (ox, oy, ow, oh) = t.get(Button, label="Office-Host-2").rect
+  t.move_to(ox + ow / 2.0, oy + oh / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(panel_row_highlighted(t, "Office-Host-2"), msg="the hand's row lit")
+  assert_false(panel_row_highlighted(t, "Maple"), msg="the keys' row let go of")
+  assert_eq(t.audit(), [])
+  // (two found by their names: each pressed ticks it, the table still open)
+  t.type_text("hyper")
+  t.frame()
+  press(t, "pvg-office-hyper-build-node-01")
+  t.frame()
+  assert_true(station_ticked(t, "pvg-office-hyper-build-node-01"), msg=t.semantics_dump())
+  assert_true(t.query(@ui.Role::Dialog) is Some(_), msg="a press keeps it open")
+  // (↓ to the second, Enter: ticked too)
+  t.key(@ui.key_code_down)
+  t.run_for(@ui.move_most_ms)
+  // (one row lit: the keys' new one, the hand's let go of)
+  assert_eq(t.audit(), [])
+  t.key(@ui.key_code_enter)
+  t.frame()
+  assert_true(station_ticked(t, "sgp-edge-hyper-worker-04"), msg=t.semantics_dump())
+  assert_true(station_ticked(t, "pvg-office-hyper-build-node-01"))
+  // (pressed again: let go of)
+  press(t, "sgp-edge-hyper-worker-04")
+  t.frame()
+  assert_false(station_ticked(t, "sgp-edge-hyper-worker-04"))
+  press(t, "sgp-edge-hyper-worker-04")
+  t.frame()
+  assert_eq(t.audit(), [])
+  // (自动分配: every one ticked, and pressed again none; then the two again)
+  press(t, "自动分配 (11)")
+  t.frame()
+  assert_true(t.query(@ui.Role::Button, label="自动分配 (11)", checked=@view.Check::On) is Some(_), msg=t.semantics_dump())
+  assert_true(station_ticked(t, "pvg-office-hyper-build-node-01") && station_ticked(t, "sgp-edge-hyper-worker-04"))
+  press(t, "自动分配 (11)")
+  t.frame()
+  assert_false(station_ticked(t, "pvg-office-hyper-build-node-01"))
+  press(t, "pvg-office-hyper-build-node-01")
+  t.frame()
+  press(t, "sgp-edge-hyper-worker-04")
+  t.frame()
+  // (Esc: the search cleared, then the table closed)
+  t.key(@ui.key_escape)
+  t.frame()
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(shows(t, "2 台 station"), msg=runs(t))
+  t.tap_text("比如：still.fail 开发")
+  t.type_text("构建")
+  t.frame()
+  press(t, "创建")
+  t.frame()
+  let made = Some(named(calls, "preset.add")[0].params)
+  assert_eq(items(made, "stations"), [Json::string("st4"), Json::string("st8")])
+}
+
+///|
+test "with many stations on a phone a preset's stations are picked in a searchable sheet, 不限 and 自动分配 first" {
+  let calls : Array[Made] = []
+  let t = preset_many_stations(calls, false)
+  assert_eq(t.audit(), [])
+  assert_true(shows(t, "不限 Station") && shows(t, "自动分配") && shows(t, "Willow"), msg=runs(t))
+  press(t, "Willow")
+  t.frame()
+  press(t, "Maple")
+  t.frame()
+  assert_true(t.query(@ui.Role::Dialog, label="选择运行的 station") is Some(_), msg="a press keeps it open")
+  assert_eq(t.audit(), [])
+  // (searched: 不限 and 自动分配 out of the way of what is found, which is pressed as any)
+  t.tap_text("搜索 station")
+  t.type_text("tokyo")
+  t.frame()
+  assert_false(shows(t, "自动分配"), msg=runs(t))
+  assert_false(shows(t, "Willow"), msg=runs(t))
+  // (the one found lit for the keys, Enter ticks it, the sheet kept open)
+  t.run_for(@ui.move_most_ms)
+  assert_true(panel_row_highlighted(t, "tokyo-mac-studio-0"), msg="the first found lit")
+  t.key(@ui.key_code_enter)
+  t.frame()
+  assert_true(t.query(@ui.Role::Dialog, label="选择运行的 station") is Some(_), msg="Enter keeps it open")
+  t.key(@ui.key_escape)
+  t.frame()
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(shows(t, "3 台 station"), msg=runs(t))
+  // (不限 Station: every one let go of, the sheet closed on it)
+  press(t, "3 台 station")
+  t.run_for(@ui.move_most_ms)
+  let sheet = t.get(@ui.Role::Dialog, label="选择运行的 station")
+  guard t.query(Button, label="不限 Station", within=sheet) is Some(any) else { fail(t.semantics_dump()) }
+  t.tap(any.rect.0 + any.rect.2 / 2.0, any.rect.1 + any.rect.3 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(@ui.Role::Dialog, label="选择运行的 station") is None, msg="不限 closes it")
+  assert_true(shows(t, "不限 Station"), msg=runs(t))
+}
+
+///|
 test "the preset's screens keep every rule, on a phone and on a desk" {
   let faults : Array[String] = []
   for mode in [

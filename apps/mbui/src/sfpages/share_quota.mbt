@@ -118,8 +118,32 @@ pub fn accounts_share_open(core : Core, scope : () -> String) -> Unit {
       share_frame_node(v, flat, fn() { entries.get().length().to_string() + " " + @sf.t("web-main.share.accountsCount") }, fn(p) {
         p.each(fn() { pl_groups(entries.get()) }, fn(g) { g.0 }, fn(x, g) {
           @sf.section_heading_node(x, fn() { g.get().1 })
+          let grp_sig = @signals.computed(
+            fn(_) {
+              @sfbase.quota_compact_group(
+                x,
+                g.get().2.map(fn(e) { field(field(Some(e), "profile"), "quota") }),
+              )
+            },
+            same=fn(a, b) { a == b },
+          )
+          let grp = fn() { grp_sig.get() }
           @sf.group_node(x, fn(rows) {
-            rows.each(fn() { g.get().2 }, fn(e) { text(Some(e), "key") }, fn(r, e) { share_account_row(r, fn() { Some(e.get()) }) })
+            let keyed = fn() {
+              let list = g.get().2
+              let n = list.length()
+              list.mapi(fn(i, e) { (e, @sf.card_piece_of(i, n)) })
+            }
+            rows.each(keyed, fn(item) { text(Some(item.0), "key") }, fn(r, item) {
+              let piece = fn() { item.get().1 }
+              @sf.card_sep_node(r, piece)
+              share_account_row(
+                r,
+                fn() { Some(item.get().0) },
+                grp,
+                fn() { piece() is (@sf.CardFoot | @sf.CardWhole) },
+              )
+            })
           })
         })
       })
@@ -234,10 +258,17 @@ fn share_name(name : String) -> String {
 }
 
 ///|
-/// An account's row on the picture, Profile's 账号's (pl_account_row_node's) but pressed by nothing and with no chevron:
-/// its vendor's mark, its name (an email's part before the @ hidden but its first two letters, share_name; all of it
-/// dots in its place while share_mask_all says, its line as long), its plan's tag, its allowance's chips under them.
-fn share_account_row(r : @view.View, ev : () -> Json?) -> Unit {
+/// An account's row on the picture, matching Profile's compact grouped row (`pl_account_row_node`) with
+/// non-interactive layout:
+/// - Line 1: 20x20 mark box (18pt provider mark), masked single-line account name (`share_name` or spoiler dots
+///   via `@sf.masked_words_box` while `share_mask_all` holds) + droppable plan tag.
+/// - Line 2 (flush left under the mark): group-aligned equal-width 16pt micro-capsule quota strip (`quota_compact_node`).
+fn share_account_row(
+  r : @view.View,
+  ev : () -> Json?,
+  group : () -> @sfbase.QuotaCompactGroup,
+  at_foot : () -> Bool,
+) -> Unit {
   let p = fn() { field(ev(), "profile") }
   let name = fn() {
     match text(p(), "name") {
@@ -245,36 +276,47 @@ fn share_account_row(r : @view.View, ev : () -> Json?) -> Unit {
       n => n
     }
   }
-  @sf.link_row_node(
-    r,
-    fn() { if share_mask_all.get() { name() } else { share_name(name()) } },
-    fn() {  },
-    chevron=false,
-    goes=false,
-    title_cut=true,
-    lead=LeadLine(fn(l) {
-      l.pick(fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) }, fn(m, of) {
-        @sf.provider_logo_node(m, of.0, of.1, pl_logo, of.2) |> ignore
-      })
-    }),
-    title_after=fn(a) {
-      a.drops(Is(pl_drop_plan)) |> ignore
-      @sf.row_tag_node(a, fn() { text(p(), "planText") })
-    },
-    title_after_shown=fn() { text(p(), "planText") != "" },
-    below=fn(q) {
-      q.box(fn(w) {
-        @sf.style_node(w, fn() { pl_quota_line })
-        let (_, _, _, foot) = @sf.row_below_inset(w)
-        w.margin(Is((0.0, 0.0, 0.0, foot))) |> ignore
-        @sfbase.quota_worded_node(w, fn() { field(p(), "quota") })
+  let plan_tag = fn() { pl_plan_tag(p()) }
+  r.box(fn(row) {
+    @sf.style_node(row, fn() { pl_row_multi })
+    // Line 1: 20x20 mark box, masked single-line account name + droppable plan tag
+    row.box(fn(head) {
+      @sf.style_node(head, fn() { pl_head })
+      head.box(fn(m) {
+        @sf.style_node(m, fn() { pl_mark_box }, in_row=true)
+        @sfbase.provider_mark_node(
+          m,
+          fn() { (text(p(), "runtime"), text(field(p(), "access"), "kind"), text(p(), "providerMark")) },
+          pl_logo,
+        )
       })
       |> ignore
-    },
-    below_open=fn() { 1.0 },
-    lines_from_lead=true,
-    title_masked=fn() { share_mask_all.get() },
-  )
+      head.box(fn(n) {
+        @sf.style_node(n, fn() { pl_name_row })
+        n.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).fits(Is(true)) |> ignore
+        @sf.masked_words_box(n, Some(fn() { share_mask_all.get() }), fn(w) {
+          w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          @sf.words_node(
+            w,
+            fn() { if share_mask_all.get() { name() } else { share_name(name()) } },
+            fn() { pl_name },
+          )
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          |> ignore
+        })
+        n.show(at_once=true, fn() { plan_tag() != "" }, fn(a) {
+          a.drops(Is(pl_drop_plan)) |> ignore
+          @sf.row_tag_node(a, plan_tag)
+        })
+      })
+      |> ignore
+    })
+    |> ignore
+    // Line 2: compact equal-width 16pt micro-capsule quota strip, flush left under the mark
+    @sfbase.quota_compact_node(row, fn() { field(p(), "quota") }, group~, at_foot~)
+  })
+  |> ignore
 }
 
 // ── every pool's quota and refills ─────────────────────────────────────

@@ -18,7 +18,7 @@ import { reachedAt } from "./changelog";
 import { isMoveCall, moveApi, moving } from "./move";
 import { asProductOf } from "./here";
 import type { Env } from "./env";
-import { adminApi, adminKeyApi, api, audited, blockAccount, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
+import { adminApi, adminKeyApi, api, audited, blockAccount, directory, relayAdmin, FEEDBACK_REPLY_PATH, FEEDBACK_STATUS_PATH, feedbackList, liveOf, notBetaReply, onTestChannel, replyToFeedback, setFeedbackStatus } from "./api";
 import { cloudLogToTelemetry, errorMessage, noted, parseTraceparent, recordCall, recordRootSpan, relayToTelemetry, route, takeNotes, unverifiedNotes, type SpanNotes, type TraceParent } from "./tracing";
 export { TelemetryLimiter } from "./tracing";
 export { Account } from "./account";
@@ -370,20 +370,21 @@ async function handle(request: Request, env: Env): Promise<Response> {
   if ((admin || deleteWorkspace || listWorkspaces) && request.method === "POST") {
     const supplied = bearerToken(request);
     if (!env.ADMIN_TOKEN || env.ADMIN_TOKEN.length < 43 || !supplied || (await digest(supplied)) !== (await digest(env.ADMIN_TOKEN))) return denied();
+    if (listWorkspaces) return reply({ workspaces: await env.DIRECTORY.getByName("primary").adminWorkspaces() });
+    if (deleteWorkspace) {
+      return audited(env, "admin-token", "workspace.delete", `workspace:${deleteWorkspace[1]!}`, "", () => directory(async () => {
+        await env.DIRECTORY.getByName("primary").adminDeleteWorkspace(deleteWorkspace[1]!);
+        return { deleted: true };
+      }));
+    }
+    let body: Record<string, unknown>;
     try {
-      if (listWorkspaces) return reply({ workspaces: await env.DIRECTORY.getByName("primary").adminWorkspaces() });
-      if (deleteWorkspace) {
-        return await audited(env, "admin-token", "workspace.delete", `workspace:${deleteWorkspace[1]!}`, "", async () => {
-          await env.DIRECTORY.getByName("primary").adminDeleteWorkspace(deleteWorkspace[1]!);
-          return reply({ deleted: true });
-        });
-      }
-      const body = await readJson(request);
-      if (typeof body.blocked !== "boolean") return reply({ error: "invalid_request" }, 400);
-      return await audited(env, "admin-token", "user.block", `user:${admin![1]!}`, body.blocked ? "on" : "off", () => blockAccount(env, admin![1]!, body.blocked as boolean));
+      body = await readJson(request);
     } catch {
       return reply({ error: "invalid_request" }, 400);
     }
+    if (typeof body.blocked !== "boolean") return reply({ error: "invalid_request" }, 400);
+    return audited(env, "admin-token", "user.block", `user:${admin![1]!}`, body.blocked ? "on" : "off", () => blockAccount(env, admin![1]!, body.blocked as boolean));
   }
   // The cloud's list of relays with ADMIN_TOKEN, for scripts (api.ts relayAdmin; the console's own are adminApi's).
   if (path.startsWith("/v1/admin/relays/") && request.method === "POST") {

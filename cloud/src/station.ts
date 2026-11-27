@@ -86,6 +86,10 @@ export class Station extends DurableObject<Env> {
       this.#opening--;
     }
     if (said.frame === null) {
+      if (this.#opening === 0) {
+        this.#toldMeanwhile = false;
+        this.#framesMeanwhile = [];
+      }
       this.#gone();
       return Response.json({ error: "station_removed" }, { status: 404 });
     }
@@ -96,8 +100,11 @@ export class Station extends DurableObject<Env> {
     const origin = header(request, "origin") ?? undefined;
     pair[1].serializeAttachment({ station, at: Date.now(), gen: said.gen, ...(origin ? { origin } : {}) } satisfies Attachment);
     pair[1].send(framed(said.frame, origin));
-    for (const frame of this.#framesMeanwhile) this.#send(frame);
-    if (this.#toldMeanwhile) await this.#sendState(station);
+    const frames = this.#opening === 0 ? this.#framesMeanwhile.splice(0) : [...this.#framesMeanwhile];
+    const told = this.#toldMeanwhile;
+    if (this.#opening === 0) this.#toldMeanwhile = false;
+    for (const frame of frames) this.#send(frame);
+    if (told) await this.#sendState(station);
     if ((await this.ctx.storage.getAlarm()) === null) await this.ctx.storage.setAlarm(Date.now() + SILENT_MS); // timer: a heartbeat's check, the station's pings
     return new Response(null, { status: 101, webSocket: pair[0] });
   }
@@ -137,7 +144,7 @@ export class Station extends DurableObject<Env> {
   async deliver(station: string, body: Delivery): Promise<{ live: boolean }> {
     // One opening is told as it opens, and is a socket already to the Directory, which would else stop telling it.
     if (this.#opening > 0) {
-      this.#toldMeanwhile = true;
+      if (body.state) this.#toldMeanwhile = true;
       this.#framesMeanwhile.push(...(body.frames ?? []));
     }
     if (body.state && !(await this.#sendState(station, body.frame))) return { live: false };

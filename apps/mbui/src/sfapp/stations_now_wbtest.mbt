@@ -676,4 +676,10 @@ test "the subscriptions' picture: 完全打码 over it keeps each name laid out 
   t.click(Tab, label="部分打码")
   t.run_for(@motion.presence_in_ms)
   assert_true(picture_says(t, "af•••@proton.me"))
+  // Compact grouped micro-capsules: Chinese short mark `周` (not legacy `每周`) and zero corner/squeeze/contrast faults
+  assert_true(picture_says(t, "周"), msg="share-accounts uses compact Chinese short mark 周")
+  assert_true(!picture_says(t, "每周"), msg="share-accounts drops legacy verbose 每周 label")
+  assert_eq(t.squeeze_faults(), [])
+  assert_eq(t.corner_faults(), [])
+  assert_eq(t.contrast_faults(), [])
 }

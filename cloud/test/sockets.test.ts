@@ -608,3 +608,29 @@ test("a station's socket replacing one that closes while its state is read is no
     await h.close();
   }
 });
+
+test("a frame-only delivery while a station socket opens sends the frame without a duplicate state frame", async () => {
+  const h = await harness();
+  try {
+    const { station } = await setUp(h);
+    const dir = await directory(h);
+    const object = await h.object("STATIONS", station.id);
+    await object.holdOpening();
+    const connecting = connect(h, station);
+    await object.openingHeld();
+    await dir.modelsMade("etag-meanwhile");
+    await h.settled();
+    await object.letOpen();
+    const presence = await connecting;
+    const frames = await presence.take();
+    assert.deepEqual(frames.map((f) => f.type), ["state", "models"]);
+    assert.equal(frames[1].etag, "etag-meanwhile");
+
+    // A follow-up reconnect must not replay the drained frame.
+    const next = await connect(h, station, "0.2.0", h.now() + 1);
+    assert.equal(await presence.closed, 4000);
+    assert.deepEqual((await next.take()).map((f) => f.type), ["state"]);
+  } finally {
+    await h.close();
+  }
+});

@@ -208,7 +208,13 @@ test "a key that comes and goes before its way ends: never seen whole; at its en
     )
     |> ignore
     let told = c.told[n:].to_owned()
-    assert_true(told.iter().all(fn(s) { s.1.whole != Some(30) }), msg="at \{rate} a second: \{Repr(told)}")
+    let mut none_whole = true
+    for i in 0..<told.length() {
+      if told[i].1.whole == Some(30) {
+        none_whole = false
+      }
+    }
+    assert_true(none_whole, msg="at \{rate} a second: \{Repr(told)}")
     assert_eq(told.length(), 2, msg="at \{rate} a second: \{Repr(told)}")
     assert_eq((told[0].0, told[0].1.whole, told[0].1.foot_whole), (at, Some(29), false), msg="at \{rate} a second")
     assert_eq(told[1].0, gone, msg="at \{rate} a second")

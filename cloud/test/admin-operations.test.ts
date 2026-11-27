@@ -185,6 +185,12 @@ test("every change of the operators is noted, by whom, of what as it was called;
     const ws = ((await (await admin("POST", "/v1/admin/workspaces", { name: "Gone", owners: ["x@example.test"], members: 5, stations: 64 })).json()) as any).id as string;
     // Deleted by the scripts' token: still named as it was.
     assert.equal((await h.fetch(`/v1/admin/workspaces/${ws}/delete`, { method: "POST", headers: { authorization: `Bearer ${h.adminToken}` } })).status, 200);
+    const missingDelete = await h.fetch(`/v1/admin/workspaces/${ws}/delete`, { method: "POST", headers: { authorization: `Bearer ${h.adminToken}` } });
+    assert.equal(missingDelete.status, 404);
+    assert.deepEqual(await missingDelete.json(), { error: "workspace_not_found" });
+    const badBlock = await h.fetch(`/v1/admin/accounts/${bobTokens.subject}`, { method: "POST", headers: { authorization: `Bearer ${h.adminToken}`, "content-type": "application/json" }, body: "{" });
+    assert.equal(badBlock.status, 400);
+    assert.deepEqual(await badBlock.json(), { error: "invalid_request" });
     const carol = h.as(await h.login("carol"));
     assert.equal((await carol("POST", "/v1/feedback", { key: "k", title: "t", body: "b", area: "web" })).status, 201);
     const fb = ((await (await admin("GET", "/v1/admin/feedback")).json()) as any).feedback[0].id as string;

@@ -241,7 +241,10 @@ pub fn updating_mark_node(parent : @view.View, size : Double, color : () -> Int6
         .lines(By(fn() {
           let ink = color()
           let lines = arrow(top, ink)
-          lines.push_iter(arrow(top + pitch, ink).iter())
+          let next = arrow(top + pitch, ink)
+          for i in 0..<next.length() {
+            lines.push(next[i])
+          }
           lines
         }))
         .offset(By(fn() {
@@ -280,7 +283,10 @@ pub fn icon_inks_node(
     .shapes(By(fn() {
       let out : Array[@ui.Shape] = []
       for p in inks(v) {
-        out.push_iter(icon_parts_shapes(name, p.0, size, p.1).iter())
+        let parts = icon_parts_shapes(name, p.0, size, p.1)
+        for i in 0..<parts.length() {
+          out.push(parts[i])
+        }
       }
       out
     }))

@@ -632,6 +632,7 @@
   "core-views.profiles.group.cursor": "Cursor subscriptions",
   "core-views.profiles.group.devin": "Devin subscriptions",
   "core-views.profiles.group.agy": "Google",
+  "core-views.profiles.group.colab": "Google Colab",
   "core-views.profiles.group.key": "API keys",
   "core-views.profiles.group.service": "Service accounts",
   "core-views.profiles.waitSync": "Waiting to sync",

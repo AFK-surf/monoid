@@ -13,13 +13,21 @@
 fn ask_again(m : Map[String, Json]) -> (String, Json)? {
   let args = fn(j : Json?) -> (Double, Int, Int, String)? {
     match j {
-      Some(Array([Number(size, ..), Number(weight, ..), Number(style, ..), .. rest])) => {
-        let text = match rest {
-          [String(t), ..] => t
-          _ => ""
+      Some(Array(a)) if a.length() >= 3 =>
+        match (a[0], a[1], a[2]) {
+          (Number(size, ..), Number(weight, ..), Number(style, ..)) => {
+            let text = if a.length() > 3 {
+              match a[3] {
+                String(t) => t
+                _ => ""
+              }
+            } else {
+              ""
+            }
+            Some((size, weight.to_int(), style.to_int(), text))
+          }
+          _ => None
         }
-        Some((size, weight.to_int(), style.to_int(), text))
-      }
       _ => None
     }
   }

@@ -2932,7 +2932,7 @@ fn preset_station_id(s : Json) -> String {
 
 ///|
 fn preset_station_open(
-  _src : Source,
+  src : Source,
   _address : String,
   stations : Array[Json],
   e : PresetEditing,
@@ -2976,52 +2976,108 @@ fn preset_station_open(
   let some_checked = fn() {
     !unrestricted() && !all_checked()
   }
+  let toggle = fn(sid : String) {
+    let cur = @signals.untracked(current_selected)
+    if cur.contains(sid) {
+      apply_selected(cur.filter(fn(x) { x != sid }))
+    } else {
+      apply_selected([..cur, sid])
+    }
+  }
+  let checked = fn(sid : String) {
+    e.auto_station.get() || e.station.get() == sid || e.stations.get().contains(sid)
+  }
+  // (不限 and 自动分配 first, then each station: in a popover as rows, or past `station_table_from` in the new
+  // chat's searchable table (不限 and 自动分配 beside its search), each row led by its check box)
+  let allowlisted_count = stations.filter(fn(s) { flag(Some(s), "acceptAutoChats") }).length()
+  let auto_press = fn() {
+    if all_checked() {
+      apply_selected([])
+    } else {
+      e.auto_station.set(true)
+      e.station.set("")
+      e.stations.set([])
+    }
+  }
+  let modes = fn(n : @view.View, close : () -> Unit) {
+    @sf.choice_row_node(
+      n,
+      fn() { @sf.t("web-main.preset.anyStation") },
+      unrestricted,
+      compact=true,
+      note=fn() { @sf.t("web-main.preset.anyStationHint") },
+      press=fn() {
+        apply_selected([])
+        close()
+      },
+    )
+    @sf.choice_row_node(
+      n,
+      fn() { @sf.t("web-main.preset.autoStation") },
+      fn() { false },
+      compact=true,
+      lead=fn(l) { @sf.check_mark_node(l, all_checked, mixed=some_checked) },
+      note=fn() {
+        if allowlisted_count > 0 {
+          @sf.t("web-main.preset.autoStationAllowlistHint", args=[("n", allowlisted_count.to_string())])
+        } else {
+          @sf.t("web-main.preset.autoStationEmptyHint")
+        }
+      },
+      press=auto_press,
+    )
+  }
+  if stations.length() >= station_table_from {
+    @sf.panel_nodes(
+      @sf.t("android-chat.new.station.pick"),
+      fn(n, close) {
+        let list = station_pick_list(src, stations)
+        let role : StationPickRole = {
+          many: true,
+          chosen: fn(en) { checked(preset_station_id(en.station)) },
+          press: fn(en) { toggle(preset_station_id(en.station)) },
+        }
+        if @sf.in_dialog_node(n) {
+          // (beside the search as the new chat's 自动分配 is: 不限 closing as its row does, 自动分配 every one ticked)
+          sp_wide_table_node(n, list, role, pill=fn(top) {
+            sp_pill_node(top, fn() { @sf.t("web-main.preset.anyStation") }, "sliders", unrestricted, fn() {
+              apply_selected([])
+              close()
+            })
+            sp_pill_node(
+              top,
+              fn() {
+                if allowlisted_count > 0 {
+                  @sf.t("web-main.newChat.stationAutoCount", args=[("n", allowlisted_count.to_string())])
+                } else {
+                  @sf.t("web-main.preset.autoStation")
+                }
+              },
+              "sparks",
+              all_checked,
+              auto_press,
+            )
+          })
+        } else {
+          sp_narrow_drawer_node(n, list, role, head=Some(fn(h) { modes(h, close) }))
+        }
+      },
+      from=Unanchored,
+      w=740.0,
+      wide=true,
+      hugs_centred=true,
+    )
+    return
+  }
   @sf.panel_nodes(
     @sf.t("android-chat.new.station.pick"),
     fn(n, close) {
-      @sf.choice_row_node(
-        n,
-        fn() { @sf.t("web-main.preset.anyStation") },
-        unrestricted,
-        compact=true,
-        note=fn() { @sf.t("web-main.preset.anyStationHint") },
-        press=fn() {
-          apply_selected([])
-          close()
-        },
-      )
-      let allowlisted_count = stations.filter(fn(s) { flag(Some(s), "acceptAutoChats") }).length()
-      @sf.choice_row_node(
-        n,
-        fn() { @sf.t("web-main.preset.autoStation") },
-        fn() { false },
-        compact=true,
-        lead=fn(l) { @sf.check_mark_node(l, all_checked, mixed=some_checked) },
-        note=fn() {
-          if allowlisted_count > 0 {
-            @sf.t("web-main.preset.autoStationAllowlistHint", args=[("n", allowlisted_count.to_string())])
-          } else {
-            @sf.t("web-main.preset.autoStationEmptyHint")
-          }
-        },
-        press=fn() {
-          if all_checked() {
-            apply_selected([])
-          } else {
-            e.auto_station.set(true)
-            e.station.set("")
-            e.stations.set([])
-          }
-        },
-      )
+      modes(n, close)
       for s in stations {
         let sid = preset_station_id(s)
         let sname = preset_station_name(text(Some(s), "station"), text(Some(s), "name"), stations)
         let emoji = text(Some(s), "emoji")
         let icon = text(Some(s), "icon")
-        let checked = fn() {
-          e.auto_station.get() || e.station.get() == sid || e.stations.get().contains(sid)
-        }
         @sf.choice_row_node(
           n,
           fn() { sname },
@@ -3029,18 +3085,11 @@ fn preset_station_open(
           compact=true,
           lead=fn(l) {
             l.gap(Is(8.0)) |> ignore
-            @sf.check_mark_node(l, checked)
+            @sf.check_mark_node(l, fn() { checked(sid) })
             preset_station_mark_node(l, text(Some(s), "station"), emoji, icon, @sfbase.StationMarkAt::Row, fn() { @sf.theme().p.muted })
           },
           note=fn() { text(Some(s), "summary") },
-          press=fn() {
-            let cur = @signals.untracked(current_selected)
-            if cur.contains(sid) {
-              apply_selected(cur.filter(fn(x) { x != sid }))
-            } else {
-              apply_selected([..cur, sid])
-            }
-          },
+          press=fn() { toggle(sid) },
         )
       }
     },

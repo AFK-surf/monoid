@@ -1140,11 +1140,6 @@ let pl_dot_side : Double = 6.0
 let pl_drop_plan : Int = 1
 
 ///|
-/// Its allowance's windows, a line of their own 6 under its words (used by share_quota.mbt).
-// kept across runs: a value (no field of it changes)
-let pl_quota_line : @ui.Style = @ui.css("w=Full pt=S1_5")
-
-///|
 /// Compact two-line account row: symmetric 12pt horizontal and 10pt vertical padding, 4pt line gap, >= 44pt height.
 // kept across runs: a value (no field of it changes)
 let pl_row_multi : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 gap=S1 min_h=S11")

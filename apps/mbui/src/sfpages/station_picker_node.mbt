@@ -1,4 +1,5 @@
-// Where a new chat runs (station picker, opened from new_chat_node.mbt):
+// Where a new chat runs (station picker, opened from new_chat_node.mbt), and which stations a preset may run on
+// (presets.mbt `preset_station_open`, many at once: each row led by its check box, a press keeping the panel open):
 // - Fewer than `station_table_from` stations: lightweight anchored popover (420pt on Medium/Large, bottom sheet on Small)
 //   with optional "Auto" row + hairline divider + compact two-line station rows (no search bar so it opens lightly
 //   without taking focus or raising an IME).
@@ -59,6 +60,152 @@ priv struct StationPickEntry {
   name : String
   station : Json
   net : @signals.Computed[@sfbase.TopicState]
+}
+
+///|
+/// What a press on a station does in the many-station table and drawer: a new chat's one pick (`many` false: the
+/// chosen row ticked at its end, the press closing), or a preset's set of stations (`many`: each row led by its check
+/// box, a press toggling it with the panel kept open).
+priv struct StationPickRole {
+  many : Bool
+  chosen : (StationPickEntry) -> Bool
+  press : (StationPickEntry) -> Unit
+}
+
+///|
+/// The many-station picker's rows and what it is searched and sorted by, shared by its wide table and narrow drawer.
+priv struct StationPickList {
+  entries : Array[StationPickEntry]
+  busy : @signals.Computed[Bool]
+  query_field : @ui.Field
+  search_at : @signals.Signal[Int]
+  navigated : @signals.Signal[Bool]
+  sort_col : @signals.Signal[StationSortCol?]
+  sort_asc : @signals.Signal[Bool]
+  visible_indices : @signals.Computed[Array[Int]]
+}
+
+///|
+fn station_pick_list(src : Source, stations : Array[Json]) -> StationPickList {
+  let entries : Array[StationPickEntry] = []
+  for i, s in stations {
+    let st = Some(s)
+    let addr = text(st, "station")
+    let id = text(st, "id")
+    let name = text(st, "name")
+    let net = src.topic("stationNet", { "station": Json::string(addr) })
+    entries.push({
+      index: i,
+      key: if addr != "" { addr } else { id + "#" + i.to_string() },
+      id,
+      name: if name != "" { name } else { addr },
+      station: s,
+      net,
+    })
+  }
+  let busy = @signals.computed(fn(_) { cpu_busy(src) })
+  let query_field = @ui.Field::new()
+  let sort_col : @signals.Signal[StationSortCol?] = @signals.signal(None)
+  let sort_asc : @signals.Signal[Bool] = @signals.signal(true)
+  let visible_indices = @signals.computed(fn(_) {
+    let q = query_field.text()
+    let matched : Array[StationPickEntry] = []
+    for e in entries {
+      if sp_entry_matches(q, e) {
+        matched.push(e)
+      }
+    }
+    match sort_col.get() {
+      Some(col) => {
+        let asc = sort_asc.get()
+        let b = busy.get()
+        matched.sort_by(fn(a, c) { sp_compare_entries(a, c, col, asc, b) })
+      }
+      None => ()
+    }
+    matched.map(fn(e) { e.index })
+  })
+  {
+    entries,
+    busy,
+    query_field,
+    search_at: @signals.signal(0),
+    navigated: @signals.signal(false),
+    sort_col,
+    sort_asc,
+    visible_indices,
+  }
+}
+
+///|
+fn StationPickList::step(self : StationPickList, delta : Int) -> Unit {
+  let list = self.visible_indices.get()
+  let count_n = list.length()
+  if count_n > 0 {
+    let cur = self.search_at.untracked()
+    let next = (cur + delta + count_n) % count_n
+    self.navigated.set(true)
+    self.search_at.set(next)
+  }
+}
+
+///|
+/// Enter in the search field: the row stepped to (the first shown when none was), pressed.
+fn StationPickList::enter(self : StationPickList, role : StationPickRole) -> Unit {
+  let list = self.visible_indices.get()
+  if list.length() > 0 {
+    let idx = self.search_at.untracked()
+    let safe = if idx >= 0 && idx < list.length() { idx } else { 0 }
+    (role.press)(self.entries[list[safe]])
+  }
+}
+
+///|
+fn StationPickList::toggle_sort(self : StationPickList, col : StationSortCol) -> Unit {
+  match self.sort_col.untracked() {
+    Some(cur) if cur == col => self.sort_asc.set(!self.sort_asc.untracked())
+    _ => {
+      self.sort_col.set(Some(col))
+      self.sort_asc.set(sp_default_asc(col))
+    }
+  }
+  self.search_at.set(0)
+}
+
+///|
+/// A row pressed (a preset's many stay open): the keys' place moved to it, so that they step on from the row pressed
+/// rather than from another lit beside it.
+fn StationPickList::pointed_at(self : StationPickList, entry_idx : Int) -> Unit {
+  let list = self.visible_indices.untracked()
+  for at, i in list {
+    if i == entry_idx {
+      self.search_at.set(at)
+      self.navigated.set(false)
+      return
+    }
+  }
+}
+
+///|
+/// Whether the keys have stepped to another row than `entry_idx`: the hand's row then unlit, one row lit at a time.
+fn StationPickList::keys_elsewhere(self : StationPickList, entry_idx : Int) -> Bool {
+  self.navigated.get() && !self.highlighted(entry_idx)
+}
+
+///|
+fn StationPickList::highlighted(self : StationPickList, entry_idx : Int) -> Bool {
+  let q_nonempty = self.query_field.text().trim().to_owned() != ""
+  if !q_nonempty && !self.navigated.get() {
+    return false
+  }
+  let list = self.visible_indices.get()
+  let at = self.search_at.get()
+  at >= 0 && at < list.length() && list[at] == entry_idx
+}
+
+///|
+fn StationPickList::searching(self : StationPickList) -> Bool {
+  self.query_field.text().trim().to_owned() != ""
 }
 
 ///|
@@ -268,6 +415,22 @@ fn sp_station_mark_box(parent : @view.View, st : Json?, single_line? : Bool = fa
 }
 
 ///|
+/// A many-station pick's check box leading a table row, on the line of the station's mark beside it.
+fn sp_check_box(parent : @view.View, on : () -> Bool) -> Unit {
+  parent.box(fn(m) {
+    m
+    .height(Is(Some(sp_mark_slot_w)))
+    .shrink(Is(0.0))
+    .row(Is(true))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    |> ignore
+    @sf.check_mark_node(m, on)
+  })
+  |> ignore
+}
+
+///|
 /// Top "Auto" assignment row for compact list and narrow drawer, followed by a hairline divider when stations follow.
 fn sp_auto_row_node(
   parent : @view.View,
@@ -342,29 +505,22 @@ fn sp_auto_row_node(
 /// Compact two-line station row (used by `< 6` popover/sheet and `>= 6` narrow drawer).
 fn sp_compact_station_row_node(
   parent : @view.View,
-  src : Source,
-  w : Workspace,
   st : Json?,
+  name : String,
   net : @signals.Computed[@sfbase.TopicState],
   busy : @signals.Computed[Bool],
-  here : Bool,
+  chosen : () -> Bool,
   highlighted : () -> Bool,
-  close : () -> Unit,
+  press : () -> Unit,
 ) -> Unit {
   let tips = parent.lent(@sf.panel_tips_lent)
-  let name = text(st, "name")
-  let id = text(st, "id")
   let online = flag(st, "online")
-  let press = fn() {
-    @sfbase.pick_new(src, w.id, { "station": Json::string(id) })
-    close()
-  }
   let meters = @signals.computed(fn(_) { @settings.meters_said(items(field(st, "host"), "meters"), busy.get()) })
   @sf.action_box_node(
     parent,
     fn() { name },
     fn(_) { press() },
-    check=fn() { if here { On } else { Off } },
+    check=fn() { if chosen() { On } else { Off } },
     fn(row) {
       @sf.style_node(row, fn() { sp_compact_row.then(@sf.panel_row_in_node(row)) })
       @sf.hover_ground_node(
@@ -390,7 +546,7 @@ fn sp_compact_station_row_node(
             @sf.tip_node(tl, name_v, fn() { name }, within=true, repeats=true, pressed=fn() { row.pressed() }) |> ignore
           }
           station_state_node(head, fn() { st })
-          if here {
+          if chosen() {
             @sf.icon_node(head, "check", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
           }
         })
@@ -450,9 +606,13 @@ fn station_few_picker_node(n : @view.View, src : Source, w : Workspace, v : Json
   for s in stations {
     let st = Some(s)
     let addr = text(st, "station")
+    let id = text(st, "id")
     let net = src.topic("stationNet", { "station": Json::string(addr) })
     let here = !is_auto && addr == current
-    sp_compact_station_row_node(n, src, w, st, net, busy, here, fn() { false }, close)
+    sp_compact_station_row_node(n, st, text(st, "name"), net, busy, fn() { here }, fn() { false }, fn() {
+      @sfbase.pick_new(src, w.id, { "station": Json::string(id) })
+      close()
+    })
   }
 }
 
@@ -571,202 +731,109 @@ fn station_many_picker_node(n : @view.View, src : Source, w : Workspace, v : Jso
   let is_auto = flag(v, "autoStation")
   let pool = count(v, "autoPoolCount")
   let show_auto = pool > 0 && !flag(v, "presetStations")
-  let stations = items(v, "stations")
-  let entries : Array[StationPickEntry] = []
-  for i, s in stations {
-    let st = Some(s)
-    let addr = text(st, "station")
-    let id = text(st, "id")
-    let name = text(st, "name")
-    let net = src.topic("stationNet", { "station": Json::string(addr) })
-    entries.push({ index: i, key: if addr != "" { addr } else { id + "#" + i.to_string() }, id, name, station: s, net })
-  }
-  let busy = @signals.computed(fn(_) { cpu_busy(src) })
-  let query_field = @ui.Field::new()
-  let search_at : @signals.Signal[Int] = @signals.signal(0)
-  let navigated : @signals.Signal[Bool] = @signals.signal(false)
-  let sort_col : @signals.Signal[StationSortCol?] = @signals.signal(None)
-  let sort_asc : @signals.Signal[Bool] = @signals.signal(true)
-  let visible_indices = @signals.computed(fn(_) {
-    let q = query_field.text()
-    let matched : Array[StationPickEntry] = []
-    for e in entries {
-      if sp_entry_matches(q, e) {
-        matched.push(e)
-      }
-    }
-    match sort_col.get() {
-      Some(col) => {
-        let asc = sort_asc.get()
-        let b = busy.get()
-        matched.sort_by(fn(a, c) { sp_compare_entries(a, c, col, asc, b) })
-      }
-      None => ()
-    }
-    matched.map(fn(e) { e.index })
-  })
-  let on_step = fn(delta : Int) {
-    let list = visible_indices.get()
-    let count_n = list.length()
-    if count_n > 0 {
-      let cur = search_at.untracked()
-      let next = (cur + delta + count_n) % count_n
-      navigated.set(true)
-      search_at.set(next)
-    }
-  }
-  let on_enter = fn() {
-    let list = visible_indices.get()
-    if list.length() > 0 {
-      let idx = search_at.untracked()
-      let safe = if idx >= 0 && idx < list.length() { idx } else { 0 }
-      let chosen = entries[list[safe]]
-      @sfbase.pick_new(src, w.id, { "station": Json::string(chosen.id) })
+  let list = station_pick_list(src, items(v, "stations"))
+  let role : StationPickRole = {
+    many: false,
+    chosen: fn(e) { !is_auto && e.key == current },
+    press: fn(e) {
+      @sfbase.pick_new(src, w.id, { "station": Json::string(e.id) })
       close()
-    }
-  }
-  let toggle_sort = fn(col : StationSortCol) {
-    match sort_col.untracked() {
-      Some(cur) if cur == col => sort_asc.set(!sort_asc.untracked())
-      _ => {
-        sort_col.set(Some(col))
-        sort_asc.set(sp_default_asc(col))
-      }
-    }
-    search_at.set(0)
-  }
-  let is_highlighted = fn(entry_idx : Int) -> Bool {
-    let q_nonempty = query_field.text().trim().to_owned() != ""
-    if !q_nonempty && !navigated.get() {
-      return false
-    }
-    let list = visible_indices.get()
-    let at = search_at.get()
-    at >= 0 && at < list.length() && list[at] == entry_idx
+    },
   }
   if @sf.in_dialog_node(n) {
-    sp_wide_table_node(
-      n,
-      src,
-      w,
-      entries,
-      visible_indices,
-      busy,
-      current,
-      is_auto,
-      show_auto,
-      pool,
-      query_field,
-      search_at,
-      navigated,
-      sort_col,
-      sort_asc,
-      toggle_sort,
-      is_highlighted,
-      on_enter,
-      on_step,
-      close,
-    )
+    sp_wide_table_node(n, list, role, pill=fn(top) {
+      if show_auto {
+        sp_auto_pill_node(top, src, w, pool, is_auto, close)
+      }
+    })
   } else {
-    sp_narrow_drawer_node(
-      n,
-      src,
-      w,
-      entries,
-      visible_indices,
-      busy,
-      current,
-      is_auto,
-      show_auto,
-      pool,
-      query_field,
-      search_at,
-      navigated,
-      is_highlighted,
-      on_enter,
-      on_step,
-      close,
-    )
+    sp_narrow_drawer_node(n, list, role, head=if show_auto {
+      Some(fn(a) { sp_auto_row_node(a, src, w, pool, is_auto, fn() { list.visible_indices.get().length() > 0 }, close) })
+    } else {
+      None
+    })
   }
 }
 
 ///|
-/// Wide layout (`room.width() >= 560pt`): search bar + auto-assign toggle, sortable header row, scrollable table.
+/// The wide table's "Auto (N)" pill beside its search: a new chat's automatic assignment.
+fn sp_auto_pill_node(top : @view.View, src : Source, w : Workspace, pool : Int, is_auto : Bool, close : () -> Unit) -> Unit {
+  sp_pill_node(top, fn() { @sf.t("web-main.newChat.stationAutoCount", args=[("n", pool.to_string())]) }, "sparks", fn() {
+    is_auto
+  }, fn() {
+    @sfbase.pick_new(src, w.id, { "autoStation": Json::boolean(true) })
+    close()
+  })
+}
+
+///|
+/// A choice beside the wide table's search (a new chat's automatic assignment, a preset's 不限 and 自动分配): lit with
+/// a tick while `on`.
+fn sp_pill_node(top : @view.View, label : () -> String, icon : String, on : () -> Bool, press : () -> Unit) -> Unit {
+  @sf.action_box_node(
+    top,
+    label,
+    fn(_) { press() },
+    check=fn() { if on() { On } else { Off } },
+    fn(btn) {
+      @sf.style_node(btn, fn() {
+        (if on() { sp_auto_pill_on } else { sp_auto_pill }).then(@ui.style(h=Fixed(@sf.menu_row_min)))
+      }, in_row=true)
+      btn.shrink(Is(0.0)) |> ignore
+      @sf.hover_ground_node(btn, lit=Some(fn() { !on() && (@sf.hovered_in_node(btn) || btn.focus_shown()) }))
+      @sf.rippled_node(btn, press, @sf.menu_row_min / 2.0, label)
+      @sf.icon_node(btn, icon, 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
+      @sf.words_node(btn, label, fn() { if on() { sp_auto_pill_words_on } else { sp_auto_pill_words } }) |> ignore
+      btn.show(at_once=true, on, fn(c) {
+        c.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+        @sf.icon_node(c, "check", 13.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
+      })
+    },
+  )
+  |> ignore
+}
+
+///|
+/// The many-station picker's search field: typing narrows the rows, arrows step through them, Enter presses one.
+fn sp_search_node(parent : @view.View, list : StationPickList, role : StationPickRole, hint : () -> String) -> Unit {
+  @sf.panel_search_input_node(
+    parent,
+    list.query_field,
+    hint,
+    edited=fn(_) {
+      list.search_at.set(0)
+      list.navigated.set(false)
+    },
+    submitted=fn(_) { list.enter(role) },
+    step=fn(d) {
+      list.step(d)
+      true
+    },
+  )
+  |> ignore
+}
+
+///|
+/// Wide layout (`room.width() >= 560pt`): search bar (and what `pill` puts beside it), sortable header row, scrollable
+/// table.
 fn sp_wide_table_node(
   body : @view.View,
-  src : Source,
-  w : Workspace,
-  entries : Array[StationPickEntry],
-  visible_indices : @signals.Computed[Array[Int]],
-  busy : @signals.Computed[Bool],
-  current : String,
-  is_auto : Bool,
-  show_auto : Bool,
-  pool : Int,
-  query_field : @ui.Field,
-  search_at : @signals.Signal[Int],
-  navigated : @signals.Signal[Bool],
-  sort_col : @signals.Signal[StationSortCol?],
-  sort_asc : @signals.Signal[Bool],
-  toggle_sort : (StationSortCol) -> Unit,
-  is_highlighted : (Int) -> Bool,
-  on_enter : () -> Unit,
-  on_step : (Int) -> Unit,
-  close : () -> Unit,
+  list : StationPickList,
+  role : StationPickRole,
+  pill~ : (@view.View) -> Unit,
 ) -> Unit {
   let tips = body.lent(@sf.panel_tips_lent)
-  // Top bar: full-width search + optional "Auto (N)" pill
+  let { entries, busy, visible_indices, sort_col, sort_asc, .. } = list
+  let toggle_sort = fn(col) { list.toggle_sort(col) }
+  // Top bar: full-width search + optional pill
   body.box(fn(top) {
     @sf.style_node(top, fn() { sp_wide_top })
     top.box(fn(sw) {
       sw.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      @sf.panel_search_input_node(
-        sw,
-        query_field,
-        fn() { @sf.t("web-main.newChat.stationSearchWide") },
-        edited=fn(_) {
-          search_at.set(0)
-          navigated.set(false)
-        },
-        submitted=fn(_) { on_enter() },
-        step=fn(d) {
-          on_step(d)
-          true
-        },
-      )
-      |> ignore
+      sp_search_node(sw, list, role, fn() { @sf.t("web-main.newChat.stationSearchWide") })
     })
     |> ignore
-    if show_auto {
-      let auto_label = fn() { @sf.t("web-main.newChat.stationAutoCount", args=[("n", pool.to_string())]) }
-      let auto_press = fn() {
-        @sfbase.pick_new(src, w.id, { "autoStation": Json::boolean(true) })
-        close()
-      }
-      @sf.action_box_node(
-        top,
-        auto_label,
-        fn(_) { auto_press() },
-        check=fn() { if is_auto { On } else { Off } },
-        fn(btn) {
-          @sf.style_node(btn, fn() {
-            (if is_auto { sp_auto_pill_on } else { sp_auto_pill }).then(@ui.style(h=Fixed(@sf.menu_row_min)))
-          }, in_row=true)
-          btn.shrink(Is(0.0)) |> ignore
-          if !is_auto {
-            @sf.hover_ground_node(btn, lit=Some(fn() { @sf.hovered_in_node(btn) || btn.focus_shown() }))
-          }
-          @sf.rippled_node(btn, auto_press, @sf.menu_row_min / 2.0, auto_label)
-          @sf.icon_node(btn, "sparks", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
-          @sf.words_node(btn, auto_label, fn() { if is_auto { sp_auto_pill_words_on } else { sp_auto_pill_words } })
-          |> ignore
-          if is_auto {
-            @sf.icon_node(btn, "check", 13.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
-          }
-        },
-      )
-      |> ignore
-    }
+    pill(top)
   })
   |> ignore
   // Sortable table header + hairline divider + scrollable body grouped tightly (no excess dialog column gap)
@@ -788,42 +855,53 @@ fn sp_wide_table_node(
     })
     |> ignore
     // Scrollable table body
-    @sf.capped_node(tbl, fn() { sp_table_body_max_h }, fn(list) {
-      list.show(at_once=true, fn() { visible_indices.get().is_empty() }, fn(empty) {
+    @sf.capped_node(tbl, fn() { sp_table_body_max_h }, fn(rows) {
+      // (apart as rows that light up stand: the keys' row kept lit beside the hand's)
+      rows.gap(Is(@sf.lit_apart)) |> ignore
+      rows.show(at_once=true, fn() { visible_indices.get().is_empty() }, fn(empty) {
         @sf.style_node(empty, fn() { sp_empty_box })
         @sf.words_node(empty, fn() { @sf.t("common.noMatch") }, fn() { sp_empty_words }) |> ignore
       })
-      list.each(fn() { visible_indices.get() }, fn(i) { i }, fn(row_host, i_sig) {
+      rows.each(fn() { visible_indices.get() }, fn(i) { i }, fn(row_host, i_sig) {
         let idx = i_sig.untracked()
         let entry = entries[idx]
         let st = Some(entry.station)
         let online = flag(st, "online")
         let running = number(field(field(st, "overview"), "counts"), "running")
-        let here = !is_auto && entry.key == current
+        let chosen = fn() { (role.chosen)(entry) }
         let press = fn() {
-          @sfbase.pick_new(src, w.id, { "station": Json::string(entry.id) })
-          close()
+          list.pointed_at(idx)
+          (role.press)(entry)
         }
         let meters = @signals.computed(fn(_) { @settings.meters_said(items(field(st, "host"), "meters"), busy.get()) })
         @sf.action_box_node(
           row_host,
           fn() { entry.name },
           fn(_) { press() },
-          check=fn() { if here { On } else { Off } },
+          check=fn() { if chosen() { On } else { Off } },
           fn(row) {
             @sf.style_node(row, fn() { sp_table_row.then(@ui.style(radius=@sf.panel_in)) })
             row.min_height(By(fn() { Some(dmax(sp_table_row_min_h, @sf.theme().t.ui_line + sp_table_row_pad_y)) }))
             |> ignore
             @sf.hover_ground_node(
               row,
-              lit=Some(fn() { @sf.hovered_in_node(row) || row.focus_shown() }),
-              extra=fn() { is_highlighted(idx) },
+              lit=Some(fn() { (@sf.hovered_in_node(row) && !list.keys_elsewhere(idx)) || row.focus_shown() }),
+              extra=fn() { list.highlighted(idx) },
             )
+            // (the hand come onto a row after the keys stepped: the hand's again, the keys' row no longer kept lit)
+            row.reacts(fn() { @sf.hovered_in_node(row) }, fn(on) {
+              if on {
+                list.navigated.set(false)
+              }
+            })
             @sf.rippled_node(row, press, @sf.row_corner, fn() { entry.name })
-            // Column 1: Station mark + name (with repeats=true tooltip on name node) + check
+            // Column 1: (check box +) Station mark + name (with repeats=true tooltip on name node) (+ check)
             row.box(fn(c1) {
               @sf.style_node(c1, fn() { sp_cell_station }, in_row=true)
               c1.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              if role.many {
+                sp_check_box(c1, chosen)
+              }
               sp_station_mark_box(c1, st, single_line=true)
               let name_v = @sf.words_node(c1, fn() { entry.name }, fn() { sp_row_name })
                 .grow(Is(1.0))
@@ -836,8 +914,11 @@ fn sp_wide_table_node(
                 @sf.tip_node(tl, name_v, fn() { entry.name }, within=true, repeats=true, pressed=fn() { row.pressed() })
                 |> ignore
               }
-              if here {
-                @sf.icon_node(c1, "check", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
+              if !role.many {
+                c1.show(at_once=true, chosen, fn(k) {
+                  k.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+                  @sf.icon_node(k, "check", new_mark, By(fn() { @sf.theme().p.accent_text })) |> ignore
+                })
               }
             })
             |> ignore
@@ -960,70 +1041,60 @@ fn sp_sort_head_cell(
 }
 
 ///|
-/// Narrow layout (`room.width() < 560pt`): top search bar + auto row + compact two-line station list.
+/// Narrow layout (`room.width() < 560pt`): top search bar, what `head` puts first while nothing is searched, and the
+/// compact two-line station list.
 fn sp_narrow_drawer_node(
   body : @view.View,
-  src : Source,
-  w : Workspace,
-  entries : Array[StationPickEntry],
-  visible_indices : @signals.Computed[Array[Int]],
-  busy : @signals.Computed[Bool],
-  current : String,
-  is_auto : Bool,
-  show_auto : Bool,
-  pool : Int,
-  query_field : @ui.Field,
-  search_at : @signals.Signal[Int],
-  navigated : @signals.Signal[Bool],
-  is_highlighted : (Int) -> Bool,
-  on_enter : () -> Unit,
-  on_step : (Int) -> Unit,
-  close : () -> Unit,
+  list : StationPickList,
+  role : StationPickRole,
+  head~ : ((@view.View) -> Unit)?,
 ) -> Unit {
+  let { entries, busy, visible_indices, .. } = list
   body.box(fn(sb) {
     @sf.style_node(sb, fn() { sp_narrow_search_wrap.then(@sf.panel_field_in_node(sb)) })
-    @sf.panel_search_input_node(
-      sb,
-      query_field,
-      fn() { @sf.t("web-main.newChat.stationSearch") },
-      edited=fn(_) {
-        search_at.set(0)
-        navigated.set(false)
-      },
-      submitted=fn(_) { on_enter() },
-      step=fn(d) {
-        on_step(d)
-        true
-      },
-    )
-    |> ignore
+    sp_search_node(sb, list, role, fn() { @sf.t("web-main.newChat.stationSearch") })
   })
   |> ignore
-  @sf.capped_node(body, fn() { sp_table_body_max_h }, fn(list) {
-    if show_auto {
-      list.show(at_once=true, fn() { query_field.text().trim().to_owned() == "" }, fn(a) {
-        sp_auto_row_node(a, src, w, pool, is_auto, fn() { visible_indices.get().length() > 0 }, close)
-      })
+  @sf.capped_node(body, fn() { sp_table_body_max_h }, fn(rows) {
+    if head is Some(head) {
+      rows.show(at_once=true, fn() { !list.searching() }, head)
     }
-    list.show(at_once=true, fn() { visible_indices.get().is_empty() }, fn(empty) {
+    rows.show(at_once=true, fn() { visible_indices.get().is_empty() }, fn(empty) {
       @sf.style_node(empty, fn() { sp_empty_box })
       @sf.words_node(empty, fn() { @sf.t("common.noMatch") }, fn() { sp_empty_words }) |> ignore
     })
-    list.each(fn() { visible_indices.get() }, fn(i) { i }, fn(row_host, i_sig) {
+    rows.each(fn() { visible_indices.get() }, fn(i) { i }, fn(row_host, i_sig) {
       let idx = i_sig.untracked()
       let entry = entries[idx]
-      let here = !is_auto && entry.key == current
-      sp_compact_station_row_node(
-        row_host,
-        src,
-        w,
-        Some(entry.station),
-        entry.net,
-        busy,
-        here,
-        fn() { is_highlighted(idx) },
-        close,
-      )
+      let chosen = fn() { (role.chosen)(entry) }
+      let press = fn() {
+        list.pointed_at(idx)
+        (role.press)(entry)
+      }
+      if role.many {
+        // (a preset's: its check box leading the station's row as with few stations, the panel's own row)
+        let st = Some(entry.station)
+        @sf.choice_row_node(
+          row_host,
+          fn() { entry.name },
+          fn() { false },
+          compact=true,
+          lead=fn(l) {
+            l.gap(Is(8.0)) |> ignore
+            @sf.check_mark_node(l, chosen)
+            preset_station_mark_node(l, text(st, "station"), text(st, "emoji"), text(st, "icon"), @sfbase.StationMarkAt::Row, fn() {
+              @sf.theme().p.muted
+            })
+          },
+          note=fn() { text(st, "summary") },
+          press~,
+          held=fn() { list.highlighted(idx) },
+        )
+      } else {
+        sp_compact_station_row_node(row_host, Some(entry.station), entry.name, entry.net, busy, chosen, fn() {
+          list.highlighted(idx)
+        }, press)
+      }
     })
   })
   |> ignore
