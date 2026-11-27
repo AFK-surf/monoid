@@ -808,8 +808,7 @@ let transfers_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 
 ///|
 /// The workspaces at the rail's foot (workspaceItem) in `r`, under the ＋, where `at` says the rail is drawn: each on a
-/// 30 square of its own, 6 apart (a letter in a hairline ring, a mark on nothing, the places' ground under the
-/// pointer); the one in view a short bar at its left; another with what waits in it (the core's marks' tone) its mark on
+/// 30 square of its own, 6 apart (a letter or a mark on nothing, the places' ground under the pointer); the one in view a short bar at its left; another with what waits in it (the core's marks' tone) its mark on
 /// its corner, said beside its name. The ＋ (making one, another account, invitations; the accent's dot on its corner
 /// while one waits) always seen (the web's only as the pointer comes over them), lit while its menu is open; pressed,
 /// its menu (sfpages' workspace_add_pressed, beside it). Pressed, that workspace.
