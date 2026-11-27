@@ -2784,7 +2784,14 @@ int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len
     for (const char *p = path; *p != '\0'; p++) {
         if (*p == '/' || *p == '\\') last_sep = p;
     }
-    size_t dir_len = last_sep != NULL ? (size_t)(last_sep - path) + 1 : 0;
+    size_t dir_len = 0;
+    if (last_sep != NULL) {
+        dir_len = (size_t)(last_sep - path) + 1;
+    } else if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':') {
+        // Drive-relative Windows path (e.g. "D:result.bin"): preserve "D:" prefix
+        // so the temp file stays on the same volume and in the same target directory.
+        dir_len = 2;
+    }
     wchar_t *wdst = utf8_to_wide(path);
     if (wdst == NULL) return 0;
 

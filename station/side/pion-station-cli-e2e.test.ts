@@ -401,6 +401,11 @@ test("5. enroll: real HTTP enroll with verified Ed25519 signatures and Node pari
   assert.equal(pCloud.name, nCloud.name);
   assert.ok(existsSync(join(dPion, "mesh", "lock-pending.json")), "pion enroll --lock must write lock-pending.json");
   assert.ok(existsSync(join(dNode, "mesh", "lock-pending.json")), "node enroll --lock must write lock-pending.json");
+  if (process.platform !== "win32") {
+    assert.equal(statSync(join(dPion, "mesh", "cloud.json")).mode & 0o777, 0o600, "cloud.json must be mode 0600");
+    assert.equal(statSync(join(dPion, "mesh", "lock-pending.json")).mode & 0o777, 0o600, "lock-pending.json must be mode 0600");
+    assert.equal(statSync(join(dPion, "mesh", "secret.key")).mode & 0o777, 0o600, "secret.key must be mode 0600");
+  }
 });
 
 test("6. update: signed release verification, tamper rejection, and --replace-prepare verbatim-symlink .tar.gz", async () => {

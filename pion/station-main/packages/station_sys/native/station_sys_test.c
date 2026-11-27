@@ -399,6 +399,23 @@ static void test_win_cli_prims(void) {
     sts_free(got);
     assert(sts_unlink(long_file) == 1);
 
+    // Drive-relative path atomic write (e.g. "C:sf_drive_rel_test_<pid>.bin"): temp file stays on same drive.
+    {
+        int64_t cwd_len = 0;
+        char *cwd = (char *)sts_getcwd(&cwd_len);
+        assert(cwd != NULL && cwd_len >= 2 && cwd[1] == ':');
+        char drive_rel[64];
+        snprintf(drive_rel, sizeof(drive_rel), "%c:sf_drive_rel_test_%lu.bin", cwd[0], (unsigned long)GetCurrentProcessId());
+        sts_free(cwd);
+        assert(sts_write_file_atomic(drive_rel, payload, 4, -1) == 1);
+        int64_t dlen = 0;
+        int32_t derr = 0;
+        uint8_t *dgot = (uint8_t *)sts_read_file_strict(drive_rel, &dlen, &derr);
+        assert(dgot != NULL && dlen == 4 && derr == 0 && memcmp(dgot, payload, 4) == 0);
+        sts_free(dgot);
+        assert(sts_unlink(drive_rel) == 1);
+    }
+
     // Dangling directory symlink & dangling file symlink (`sts_is_dir_symlink` without following target).
     char dlink[320], flink[320];
     snprintf(dlink, sizeof(dlink), "%s\\dangling_dir_link", dir);
