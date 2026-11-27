@@ -12,6 +12,7 @@ pub struct SyncScheduler {
   pub lane : effect::Scheduler
   pub events : StationEvents
   pub mut transport : StationTransport
+  mut auth_gen : Option[AuthGenTracker]
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
@@ -24,6 +25,7 @@ pub fn SyncScheduler::new(
   transport : StationTransport,
   width : Int = 2,
   urgent_room : Int = 2,
+  auth_gen : Option[AuthGenTracker] = None,
 ) -> SyncScheduler {
   SyncScheduler::{
     workspace: workspace,
@@ -31,10 +33,127 @@ pub fn SyncScheduler::new(
     lane: effect::Scheduler::new(width=width, urgent_room=urgent_room),
     events: events,
     transport: transport,
+    auth_gen: auth_gen,
     focused_thread: None,
     idle_preempted_count: 0,
     completed_order: [],
   }
+}
+
+pub fn SyncScheduler::set_auth_gen(self : SyncScheduler, tracker : AuthGenTracker) -> Unit {
+  self.auth_gen = Some(tracker)
+}
+
+fn SyncScheduler::effective_workspace(self : SyncScheduler) -> String {
+  let ws = workspace_of_station_addr(self.station)
+  if ws.length() > 0 { ws } else { self.workspace }
+}
+
+/// Single Fail-Open capability-guarded read primitive (`client/core-ts/src/station/link.ts:846-872`).
+/// - Captures a fresh `WorkspaceCapability` for `workspace_of_station_addr(station)` before I/O;
+/// - Enforces `cap.commit(...)` strictly BEFORE SQLite write-back (0 stale rows ever persisted);
+/// - On `auth_stale` when the workspace is NOT revoked (`!tracker.is_workspace_revoked(ws)`) and
+///   `retry_count < 2`, automatically re-enqueues a fresh read with a new `WorkspaceCapability`
+///   so benign mid-flight auth/lock bumps never leave local SQLite stuck on old data.
+fn SyncScheduler::guarded_read_k[A](
+  self : SyncScheduler,
+  key : String,
+  priority : Int,
+  path : String,
+  err_prefix : String,
+  completed_tag : String,
+  apply_json : (base_codec::Json) -> sql::SqlResult[A],
+  k : (effect::Exit[A]) -> Unit,
+  cap : Option[WorkspaceCapability] = None,
+  retry_count : Int = 0,
+) -> Unit {
+  let target_ws = self.effective_workspace()
+  let eff_cap : Option[WorkspaceCapability] = match cap {
+    Some(c) => Some(c)
+    None => match self.auth_gen {
+      Some(tracker) => Some(tracker.workspace_capability(target_ws))
+      None => None
+    }
+  }
+  let tracker_opt : Option[AuthGenTracker] = match eff_cap {
+    Some(c) => Some(c.tracker)
+    None => self.auth_gen
+  }
+  self.lane.run_k(
+    key,
+    priority,
+    fn(_preempt : effect::Preempt, tk : (effect::Exit[A]) -> Unit) -> Unit {
+      let req_fn = self.transport.request_k
+      req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        match ex {
+          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
+          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
+          effect::Exit::Succeeded(reply) => {
+            if reply.status < 200 || reply.status >= 300 {
+              tk(effect::Exit::Failed(effect::EffectError::Custom(err_prefix + " " + reply.status.to_string())))
+              return
+            }
+            match base_codec::json_parse(bytes_to_str(reply.body)) {
+              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+              base_codec::JsonParseResult::Ok(j) => {
+                let apply_fn = fn() -> sql::SqlResult[A] { apply_json(j) }
+                let applied = match eff_cap {
+                  Some(c) => match c.commit(apply_fn) {
+                    None => {
+                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
+                      return
+                    }
+                    Some(r) => r
+                  }
+                  None => apply_fn()
+                }
+                match applied {
+                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
+                  sql::SqlResult::Ok(v) => {
+                    self.completed_order.push(completed_tag)
+                    tk(effect::Exit::Succeeded(v))
+                  }
+                }
+              }
+            }
+          }
+        }
+      })
+    },
+    fn(ex : effect::Exit[A]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
+          match tracker_opt {
+            Some(tracker) => {
+              if !tracker.is_workspace_revoked(target_ws) && retry_count < 2 {
+                let fresh_cap = tracker.workspace_capability(target_ws)
+                let _ = self.events.db.shell.rt.fork_quiet_named("guarded-retry:" + key, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  self.guarded_read_k(
+                    key,
+                    priority,
+                    path,
+                    err_prefix,
+                    completed_tag,
+                    apply_json,
+                    fn(rex : effect::Exit[A]) -> Unit {
+                      k(rex)
+                      fk(effect::Exit::Succeeded(()))
+                    },
+                    cap=Some(fresh_cap),
+                    retry_count=retry_count + 1,
+                  )
+                })
+                return
+              }
+            }
+            None => ()
+          }
+          k(ex)
+        }
+        other => k(other)
+      }
+    },
+  )
 }
 
 fn SyncScheduler::task_key(self : SyncScheduler, resource : String) -> String {
@@ -70,14 +189,13 @@ pub fn SyncScheduler::focus_thread(self : SyncScheduler, thread : Option[Int]) -
 }
 
 /// Schedule a workspace lock fetch (`GET /lock`) at the given priority.
-/// Parses `{ head, entries, aside? }` and forwards it to `StationEvents::notify_lock_payload`
-/// (`ClientCore::handle_lock_event` -> `ClientCore::apply_lock_chain`), preserving Gate #2
-/// genesis pinning, anti-rollback, and SQLite `workspace_pref(ws, "lock")` persistence.
+/// Lock chains are cryptographically verified authoritative state (`lock_bridge` / `views/lock.ts`)
+/// and are intentionally NOT gated by `authGen` so a cloud-side bump can never drop an arriving
+/// device-revocation lock update.
 pub fn SyncScheduler::fetch_lock_k(
   self : SyncScheduler,
   priority : Int,
   k : (effect::Exit[Bool]) -> Unit,
-  cap : Option[WorkspaceCapability] = None,
 ) -> Unit {
   let key = self.task_key("lock")
   self.lane.run_k(
@@ -106,20 +224,8 @@ pub fn SyncScheduler::fetch_lock_k(
                   Some(base_codec::Json::Arr(xs)) => xs.length() > 0
                   _ => false
                 }
-                let do_apply = fn() -> Unit {
-                  if has_entries {
-                    self.events.notify_lock_payload(j)
-                  }
-                }
-                match cap {
-                  Some(c) => match c.commit(do_apply) {
-                    None => {
-                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
-                      return
-                    }
-                    Some(_) => ()
-                  }
-                  None => do_apply()
+                if has_entries {
+                  self.events.notify_lock_payload(j)
                 }
                 self.completed_order.push("lock")
                 tk(effect::Exit::Succeeded(has_entries))
@@ -135,8 +241,7 @@ pub fn SyncScheduler::fetch_lock_k(
 
 /// Schedule a viewer marks fetch (`GET /chats?marks=1&own=1` with optional `&session=...&thread=...` scope),
 /// strictly aligned with `client/core-ts/src/station/sync.ts` `#marksWhole` / `#marksRead`.
-/// Atomically persists `reads`/`pins`/`kept`/`hidden`/`muted`/`dismissed` into SQLite `shared_mark`
-/// and triggers targeted refresh callbacks for affected `(station, id)` / `thread` keys.
+/// Routes through `guarded_read_k` for pre-write capability enforcement and Fail-Open retry.
 pub fn SyncScheduler::fetch_marks_k(
   self : SyncScheduler,
   priority : Int,
@@ -160,54 +265,22 @@ pub fn SyncScheduler::fetch_marks_k(
     path_sb.write_string(threads[i].to_string())
   }
   let req_path = path_sb.to_string()
-  self.lane.run_k(
+  self.guarded_read_k(
     key,
     priority,
-    fn(_preempt : effect::Preempt, tk : (effect::Exit[Array[String]]) -> Unit) -> Unit {
-      let req_fn = self.transport.request_k
-      req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-        match ex {
-          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-          effect::Exit::Succeeded(reply) => {
-            if reply.status < 200 || reply.status >= 300 {
-              tk(effect::Exit::Failed(effect::EffectError::Custom("marks fetch status " + reply.status.to_string())))
-              return
-            }
-            match base_codec::json_parse(bytes_to_str(reply.body)) {
-              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) => {
-                let apply_fn = fn() -> sql::SqlResult[Array[String]] {
-                  self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads)
-                }
-                let applied = match cap {
-                  Some(c) => match c.commit(apply_fn) {
-                    None => {
-                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
-                      return
-                    }
-                    Some(r) => r
-                  }
-                  None => apply_fn()
-                }
-                match applied {
-                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                  sql::SqlResult::Ok(affected) => {
-                    self.completed_order.push("marks")
-                    tk(effect::Exit::Succeeded(affected))
-                  }
-                }
-              }
-            }
-          }
-        }
-      })
+    req_path,
+    "marks fetch status",
+    "marks",
+    fn(j : base_codec::Json) -> sql::SqlResult[Array[String]] {
+      self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads)
     },
     k,
+    cap=cap,
   )
 }
 
 /// Schedule a snapshot fetch (`GET /chats`) at `priority_shown()` (or `priority_focused()`).
+/// Routes through `guarded_read_k` for pre-write capability enforcement and Fail-Open retry.
 pub fn SyncScheduler::fetch_snapshot_k(
   self : SyncScheduler,
   priority : Int,
@@ -215,53 +288,21 @@ pub fn SyncScheduler::fetch_snapshot_k(
   cap : Option[WorkspaceCapability] = None,
 ) -> Unit {
   let key = self.task_key("snapshot")
-  self.lane.run_k(
+  self.guarded_read_k(
     key,
     priority,
-    fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
-      let req_fn = self.transport.request_k
-      req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-        match ex {
-          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-          effect::Exit::Succeeded(reply) => {
-            if reply.status < 200 || reply.status >= 300 {
-              tk(effect::Exit::Failed(effect::EffectError::Custom("snapshot status " + reply.status.to_string())))
-              return
-            }
-            match base_codec::json_parse(bytes_to_str(reply.body)) {
-              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) => {
-                let apply_fn = fn() -> sql::SqlResult[Int] { self.events.apply_snapshot(j) }
-                let applied = match cap {
-                  Some(c) => match c.commit(apply_fn) {
-                    None => {
-                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
-                      return
-                    }
-                    Some(r) => r
-                  }
-                  None => apply_fn()
-                }
-                match applied {
-                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                  sql::SqlResult::Ok(n) => {
-                    self.completed_order.push("snapshot")
-                    tk(effect::Exit::Succeeded(n))
-                  }
-                }
-              }
-            }
-          }
-        }
-      })
-    },
+    "/chats",
+    "snapshot status",
+    "snapshot",
+    fn(j : base_codec::Json) -> sql::SqlResult[Int] { self.events.apply_snapshot(j) },
     k,
+    cap=cap,
   )
 }
 
 /// Schedule a thread entry fetch (`GET /threads/<id>/entries`) at the given priority.
 /// When `is_foreground` is true (`client.focus`), holds a foreground token so `idle` work yields immediately.
+/// Routes through `guarded_read_k` for pre-write capability enforcement and Fail-Open retry.
 pub fn SyncScheduler::fetch_thread_k(
   self : SyncScheduler,
   thread : Int,
@@ -276,48 +317,14 @@ pub fn SyncScheduler::fetch_thread_k(
   } else {
     None
   }
-  self.lane.run_k(
+  let path = "/threads/" + thread.to_string() + "/entries"
+  self.guarded_read_k(
     key,
     priority,
-    fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
-      let req_fn = self.transport.request_k
-      let path = "/threads/" + thread.to_string() + "/entries"
-      req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-        match ex {
-          effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-          effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-          effect::Exit::Succeeded(reply) => {
-            if reply.status < 200 || reply.status >= 300 {
-              tk(effect::Exit::Failed(effect::EffectError::Custom("thread fetch status " + reply.status.to_string())))
-              return
-            }
-            match base_codec::json_parse(bytes_to_str(reply.body)) {
-              base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-              base_codec::JsonParseResult::Ok(j) => {
-                let apply_fn = fn() -> sql::SqlResult[Int] { self.events.apply_snapshot(j) }
-                let applied = match cap {
-                  Some(c) => match c.commit(apply_fn) {
-                    None => {
-                      tk(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
-                      return
-                    }
-                    Some(r) => r
-                  }
-                  None => apply_fn()
-                }
-                match applied {
-                  sql::SqlResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e.to_string())))
-                  sql::SqlResult::Ok(n) => {
-                    self.completed_order.push("thread:" + thread.to_string())
-                    tk(effect::Exit::Succeeded(n))
-                  }
-                }
-              }
-            }
-          }
-        }
-      })
-    },
+    path,
+    "thread fetch status",
+    "thread:" + thread.to_string(),
+    fn(j : base_codec::Json) -> sql::SqlResult[Int] { self.events.apply_snapshot(j) },
     fn(ex : effect::Exit[Int]) -> Unit {
       match end_fg {
         Some(f) => f()
@@ -325,6 +332,7 @@ pub fn SyncScheduler::fetch_thread_k(
       }
       k(ex)
     },
+    cap=cap,
   )
 }
 

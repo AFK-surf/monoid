@@ -77,7 +77,6 @@ pub struct ClientCore {
   pub mut auth_enforced : Bool
   pub mut db_account_sub : Option[String]
   workspace_owners : Map[String, String]
-  revoked_workspaces : Map[String, Int]
   sub_auth_caps : Map[Int64, (Int, Int)]
   chat_windows : Map[String, Int]
   chat_places : Map[String, (Int, Option[Double])]
@@ -179,7 +178,6 @@ pub fn ClientCore::new(
     auth_enforced: false,
     db_account_sub: None,
     workspace_owners: Map::new(),
-    revoked_workspaces: Map::new(),
     sub_auth_caps: Map::new(),
     chat_windows: Map::new(),
     chat_places: Map::new(),
@@ -219,9 +217,11 @@ pub fn ClientCore::new(
   let _ = core.auth_gen.on_boundary(fn(ev : AuthBoundaryEvent) -> Unit {
     core.on_auth_boundary(ev)
   })
+  core.sync.set_auth_gen(core.auth_gen)
   core.wire_station_hooks(station, events, sync)
   core.restore_lock_state()
   core.restore_notify_state()
+  core.seed_workspace_baselines()
   core
 }
 
@@ -281,13 +281,10 @@ fn ClientCore::wire_station_hooks(
         }, cap=Some(ws_cap))
       })
       let _ = rt.fork_quiet_named("initial-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-        if !ws_cap.is_valid() {
-          k(effect::Exit::Succeeded(()))
-          return
-        }
+        // Lock chains are cryptographically verified authority (never gated by authGen).
         sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
           k(effect::Exit::Succeeded(()))
-        }, cap=Some(ws_cap))
+        })
       })
       if ws_cap.is_valid() {
         local_outbox.flush_station_offline(rt, station)
@@ -312,13 +309,9 @@ fn ClientCore::wire_station_hooks(
       self.schedule_marks_read(station, sync, [], [], true)
     }
     let _ = rt.fork_quiet_named("missed-lock:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-      if !ws_cap.is_valid() {
-        k(effect::Exit::Succeeded(()))
-        return
-      }
       sync.fetch_lock_k(effect::priority_shown(), fn(_ex : effect::Exit[Bool]) -> Unit {
         k(effect::Exit::Succeeded(()))
-      }, cap=Some(ws_cap))
+      })
     })
   })
   events.set_marks_applied_hook(fn(
@@ -747,7 +740,7 @@ pub fn ClientCore::attach_station_transport(
         let ev = StationEvents::new(self.workspace, station, self.db, self.outbox, transport)
         ev.viewer_email = self.events.viewer_email
         ev.viewer_selves = self.events.viewer_selves
-        let sy = SyncScheduler::new(self.workspace, station, ev, transport)
+        let sy = SyncScheduler::new(self.workspace_of_station(station), station, ev, transport, auth_gen=Some(self.auth_gen))
         self.wire_station_hooks(station, ev, sy)
         self.extra_events.set(station, ev)
         self.extra_sync.set(station, sy)
@@ -1381,37 +1374,135 @@ pub fn ClientCore::set_db_account_sub(self : ClientCore, sub : String) -> Unit {
   }
 }
 
-/// Check whether `ws` is currently gated by an unconfirmed revocation boundary (`pendingAuthConfirm`).
+/// Check whether `ws` is currently gated by an unconfirmed revocation boundary (delegated to
+/// the single `AuthGenTracker` workspace authority state machine).
 pub fn ClientCore::is_workspace_revoked(self : ClientCore, ws : String) -> Bool {
-  ws.length() > 0 && self.revoked_workspaces.get(ws).is_some()
+  self.auth_gen.is_workspace_revoked(ws)
 }
 
-/// Lift the revocation gate for `ws` once CloudSync / auth confirms the caller's updated membership.
+/// Lift revocation gate for `ws` (delegated to `AuthGenTracker`, bumping if any slot cleared).
 pub fn ClientCore::clear_workspace_revoked(self : ClientCore, ws : String) -> Unit {
-  if ws.length() > 0 {
-    self.revoked_workspaces.remove(ws)
-  }
+  let _ = self.auth_gen.clear_workspace_revoked(ws)
 }
 
 /// Workspace authorization revocation / role downgrade boundary.
-/// Clears/gates pre-revocation workspace projections BEFORE pushing boundary snapshots so no
-/// unconfirmed pre-revocation data leaks out on the re-anchored `CoreEvent::Value` push.
+/// Atomically marks `ws` revoked inside `AuthGenTracker` BEFORE `on_auth_boundary` clears
+/// `rows_memo` and pushes fresh boundary snapshots.
 pub fn ClientCore::revoke_workspace(
   self : ClientCore,
   ws : String,
   dependent_workspaces : Array[String] = [],
 ) -> Int {
-  if ws.length() > 0 {
-    self.revoked_workspaces.set(ws, 1)
-  }
-  for i in 0..<dependent_workspaces.length() {
-    if dependent_workspaces[i].length() > 0 {
-      self.revoked_workspaces.set(dependent_workspaces[i], 1)
+  self.auth_gen.revoke_workspace(ws, dependent_workspaces=dependent_workspaces)
+}
+
+/// Seed startup Cloud workspace authorization baselines from persisted SQLite `workspace` rows
+/// so the first post-boot CloudSync observing a change properly advances `authGen`.
+fn ClientCore::seed_workspace_baselines(self : ClientCore) -> Unit {
+  match store::list_workspaces(self.db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => {
+            let ws = parse_cloud_workspace(r.id, j)
+            let owner_s = match proto_str(j, "ownerSub") {
+              Some(s) => s
+              None => self.viewer_sub
+            }
+            self.auth_gen.seed_workspace_part(ws.id, "cloud", workspace_auth_digest(ws, owner_sub=owner_s))
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
     }
+    sql::SqlResult::Err(_) => ()
   }
-  self.rows_memo = views::RowsMemo::new()
-  self.pending_dirty_rows.clear()
-  self.auth_gen.bump_workspace(ws, dependent_workspaces=dependent_workspaces)
+}
+
+/// Canonical set-based authorization digest for a verified `lock::LockState`:
+/// `disabled` + sorted `members` (`sub:role`) + sorted `devices` (`sub:id:sign_key`) + sorted `stations` (`key`),
+/// excluding volatile `head`.
+pub fn lock_state_auth_digest(st : lock::LockState) -> String {
+  let member_items : Array[String] = []
+  let ms = st.members.entries()
+  for i in 0..<ms.length() {
+    let (_, m) = ms[i]
+    member_items.push(m.sub + ":" + m.role)
+  }
+  let sorted_members = sort_unique_strs_ac(member_items)
+
+  let device_items : Array[String] = []
+  let ds = st.devices.entries()
+  for i in 0..<ds.length() {
+    let (_, d) = ds[i]
+    let key_s = match d.sign_key {
+      Some(k) => k
+      None => d.id
+    }
+    device_items.push(d.sub + ":" + d.id + ":" + key_s)
+  }
+  let sorted_devices = sort_unique_strs_ac(device_items)
+
+  let station_items : Array[String] = []
+  let ss = st.stations.entries()
+  for i in 0..<ss.length() {
+    let (_, s) = ss[i]
+    station_items.push(s.key)
+  }
+  let sorted_stations = sort_unique_strs_ac(station_items)
+
+  let sb = StringBuilder::new()
+  sb.write_string("lock:")
+  sb.write_string(st.ws)
+  sb.write_string("|dis:")
+  sb.write_string(if st.disabled { "1" } else { "0" })
+  sb.write_string("|m:")
+  for i in 0..<sorted_members.length() {
+    if i > 0 { sb.write_string(",") }
+    sb.write_string(sorted_members[i])
+  }
+  sb.write_string("|d:")
+  for i in 0..<sorted_devices.length() {
+    if i > 0 { sb.write_string(",") }
+    sb.write_string(sorted_devices[i])
+  }
+  sb.write_string("|s:")
+  for i in 0..<sorted_stations.length() {
+    if i > 0 { sb.write_string(",") }
+    sb.write_string(sorted_stations[i])
+  }
+  sb.to_string()
+}
+
+/// Detect unimplemented `chats` topic filter/groupBy params (pending SQLite `project` / `chat_tag` schema sync)
+/// so callers get an explicit `unsupported` error instead of an unfiltered list.
+pub fn chats_unsupported_param(topic : protocol::Topic) -> Option[String] {
+  match topic.param("project") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 {
+      return Some("chats project filter requires schema project column (not yet wired)")
+    }
+    _ => ()
+  }
+  match topic.param("tag") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 {
+      return Some("chats tag filter requires schema chat_tag table (not yet wired)")
+    }
+    _ => ()
+  }
+  match topic.param("unclassified") {
+    Some(base_codec::Json::Bool(true)) => {
+      return Some("chats unclassified filter requires schema project column (not yet wired)")
+    }
+    _ => ()
+  }
+  match topic.param("groupBy") {
+    Some(base_codec::Json::Str(g)) => if g == "project" {
+      return Some("chats groupBy=project requires schema project column (not yet wired)")
+    }
+    _ => ()
+  }
+  None
 }
 
 /// Single-vault lock boundary: advances ONLY `vaultGen` for `(ws, vault_id)` without
@@ -1582,6 +1673,10 @@ fn ClientCore::emit_boundary_wire_event(self : ClientCore, ev : protocol::CoreEv
 /// 3. Leaves unrelated workspace / vault subscriptions completely untouched;
 /// 4. Emits `{ id: 0, auth }` incremental boundary message when `active_conn > 0`.
 fn ClientCore::on_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -> Unit {
+  // Always clear memoized chat rows BEFORE re-evaluating boundary snapshots so revocation
+  // (whether triggered by CloudSync 403, lock update, or manual revoke) never leaks stale cache.
+  self.rows_memo = views::RowsMemo::new()
+  self.pending_dirty_rows.clear()
   self.router.invalidate_kept_where(fn(t : protocol::Topic) -> Bool {
     self.auth_gen.matches(t, ev)
   })
@@ -1803,6 +1898,14 @@ pub fn ClientCore::verify_write_auth(
   vault_opt : Option[String] = None,
   is_vault : Bool = false,
 ) -> Option[protocol::CoreError] {
+  // Unconditional workspace authority gate: writes to a revoked workspace are ALWAYS rejected
+  // even if the caller omits wire `auth` or supplies the newly bumped `authGen`.
+  match ws_opt {
+    Some(ws) => if self.auth_gen.is_workspace_revoked(ws) {
+      return Some(auth_stale_error())
+    }
+    None => ()
+  }
   let call_auth : Option[CallAuth] = match wire_auth {
     Some(w) => {
       self.auth_enforced = true
@@ -1900,6 +2003,10 @@ fn ClientCore::open_jobs_json_list(self : ClientCore) -> Array[base_codec::Json]
 /// delivers `shapes/`-conforming payloads and ≤ 4 KB keyed deltas.
 fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
   if topic.name == "chats" {
+    match chats_unsupported_param(topic) {
+      Some(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unsupported", message: msg }))
+      None => ()
+    }
     let ws_scope = match topic.param("scope") {
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
@@ -2008,6 +2115,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       accounts=self.auth_store.accounts,
       viewer_sub=self.viewer_sub,
       viewer_email=self.viewer_marks.me,
+      revoked_workspaces=Some(self.auth_gen.revoked_workspaces_map()),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -2418,6 +2526,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       viewer_id=self.viewer_sub,
       lang=self.lang,
       prefs=prefs_opt,
+      revoked_workspaces=Some(self.auth_gen.revoked_workspaces_map()),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -2671,6 +2780,8 @@ fn ClientCore::restore_lock_state(self : ClientCore) -> Unit {
       self.lock_state = Some(v.state)
       self.lock_kept_entries = v.chain.entries
       self.lock_kept_aside = kept_aside
+      let lock_ws = if v.state.ws.length() > 0 { v.state.ws } else { self.workspace }
+      self.auth_gen.seed_workspace_part(lock_ws, "lock", lock_state_auth_digest(v.state))
       let now_secs = self.rt.now().to_double() / 1000.0
       match views::effective_state(self.workspace, v.chain.entries, [], [], now_secs, native_lock_crypto()) {
         Ok(eff) => {
@@ -3008,14 +3119,20 @@ pub fn ClientCore::apply_lock_chain(
         Ok(_) => ()
         Err(msg) => return Err(msg)
       }
-      // Feed authoritative lock state digest into `auth_gen.sync_workspace_part(..., "lock", ...)`
-      // in an isolated slot (never colliding with Cloud digest, excluding volatile `head`).
+      // Feed full set-based canonical lock digest (`disabled` + sorted `members`/`devices`/`stations`,
+      // excluding volatile `head`) into `auth_gen.sync_workspace_part(..., "lock", ..., revoked=...)`.
       let lock_ws = if v.state.ws.length() > 0 { v.state.ws } else { self.workspace }
-      let lock_digest = "lock:" + lock_ws + "|dis:" + (if v.state.disabled { "1" } else { "0" }) +
-      "|m:" + v.state.members.length().to_string() +
-      "|d:" + v.state.devices.length().to_string() +
-      "|s:" + v.state.stations.length().to_string()
-      let _ = self.auth_gen.sync_workspace_part(lock_ws, "lock", lock_digest)
+      let lock_digest = lock_state_auth_digest(v.state)
+      let mut lock_revoked = false
+      if !v.state.disabled {
+        if self.viewer_sub.length() > 0 && v.state.members.length() > 0 && v.state.members.get(self.viewer_sub).is_none() {
+          lock_revoked = true
+        }
+        if self.device_id.length() > 0 && v.state.devices.length() > 0 && v.state.devices.get(self.device_id).is_none() {
+          lock_revoked = true
+        }
+      }
+      let _ = self.auth_gen.sync_workspace_part(lock_ws, "lock", lock_digest, revoked=lock_revoked)
       self.outbox.tell(CoreEvent::LockUpdated(
         self.workspace,
         v.state.head,
@@ -3168,25 +3285,43 @@ fn proto_int(j : base_codec::Json, k : String) -> Option[Int] {
   }
 }
 
-fn ClientCore::workspace_for_composer_params(
-  self : ClientCore,
-  params : base_codec::Json,
-  key : String,
-) -> Option[String] {
-  match proto_str(params, "station") {
-    Some(s) => if s.length() > 0 {
-      let ws = workspace_of_station_addr(s)
-      return Some(if ws.length() > 0 { ws } else { self.workspace })
+fn ClientCore::workspace_of_composer_key(self : ClientCore, key : String) -> String {
+  if key.starts_with("new:") {
+    let rest = key.slice(4, key.length())
+    if rest.length() > 0 {
+      let ws = workspace_of_station_addr(rest)
+      return if ws.length() > 0 { ws } else { rest }
     }
-    None => ()
+    return self.workspace
   }
   match draft_at_key(key) {
     Some((st, _)) => {
       let ws = workspace_of_station_addr(st)
-      Some(if ws.length() > 0 { ws } else { self.workspace })
+      if ws.length() > 0 { ws } else { self.workspace }
     }
-    None => Some(self.workspace)
+    None => self.workspace
   }
+}
+
+/// Strictly derive composer write target workspace from `key` (never overridden by `params.station`!).
+/// If `params.station` is also provided and resolves to a different workspace than `key`, refuses immediately.
+fn ClientCore::verify_composer_write_auth(
+  self : ClientCore,
+  call_auth : Option[protocol::WireCallAuth],
+  params : base_codec::Json,
+  key : String,
+) -> Option[protocol::CoreError] {
+  let key_ws = self.workspace_of_composer_key(key)
+  match proto_str(params, "station") {
+    Some(s) => if s.length() > 0 {
+      let param_ws = workspace_of_station_addr(s)
+      if param_ws.length() > 0 && param_ws != key_ws {
+        return Some(auth_stale_error())
+      }
+    }
+    None => ()
+  }
+  self.verify_write_auth(call_auth, ws_opt=Some(key_ws))
 }
 
 /// Handle a `protocol::CoreRequest` across both Slice 1 read-only queries and Slice 2 sync/outbox commands.
@@ -4270,7 +4405,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4283,7 +4418,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4300,7 +4435,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
         let st_opt = proto_str(params, "station")
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4311,7 +4446,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4333,7 +4468,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4352,7 +4487,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4378,7 +4513,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4395,7 +4530,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4411,7 +4546,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4423,7 +4558,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4435,7 +4570,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4451,7 +4586,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }
@@ -4466,13 +4601,24 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
-          Some(err) => return Some(protocol::CoreEvent::Err(id, err))
-          None => ()
-        }
         let to = match proto_str(params, "to") {
           Some(t) => t
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing to" }))
+        }
+        // Dual-end authority verification: validate BOTH `from` (`key`) and `to` keys,
+        // and reject cross-workspace carry before mutating either composer state!
+        let from_ws = self.workspace_of_composer_key(key)
+        let to_ws = self.workspace_of_composer_key(to)
+        if from_ws != to_ws {
+          return Some(protocol::CoreEvent::Err(id, auth_stale_error()))
+        }
+        match self.verify_composer_write_auth(call_auth, params, key) {
+          Some(err) => return Some(protocol::CoreEvent::Err(id, err))
+          None => ()
+        }
+        match self.verify_write_auth(call_auth, ws_opt=Some(to_ws)) {
+          Some(err) => return Some(protocol::CoreEvent::Err(id, err))
+          None => ()
         }
         let v = self.composers.carry(key, to)
         return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
@@ -4482,7 +4628,7 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           Some(k) => k
           None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
         }
-        match self.verify_write_auth(call_auth, ws_opt=self.workspace_for_composer_params(params, key)) {
+        match self.verify_composer_write_auth(call_auth, params, key) {
           Some(err) => return Some(protocol::CoreEvent::Err(id, err))
           None => ()
         }

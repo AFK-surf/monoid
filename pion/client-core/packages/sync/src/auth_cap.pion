@@ -35,7 +35,7 @@ fn is_account_param_topic(name : String) -> Bool {
 }
 
 fn is_workspace_aggregate_topic(name : String) -> Bool {
-  name == "workspaces" || name == "lockPrompts" || name == "downloads"
+  name == "workspaces" || name == "workspaceMarks" || name == "lockPrompts" || name == "downloads"
 }
 
 /// Single source of truth for device-global & transport-only topics exempt from `(account, workspace)` `authGen`,
@@ -304,7 +304,8 @@ fn sort_unique_strs_ac(xs : Array[String]) -> Array[String] {
   uniq
 }
 
-/// Monotonic generation tracker for `(account, workspace)` authorization and per-vault lock boundaries.
+/// Monotonic generation tracker and single workspace authority state machine for
+/// `(account, workspace)` authorization, revocation gating, and per-vault lock boundaries.
 pub struct AuthGenTracker {
   mut global_gen : Int
   mut aggregate_auth_gen : Int
@@ -312,6 +313,7 @@ pub struct AuthGenTracker {
   workspace_gens : Map[String, Int]
   workspace_digests : Map[String, String]
   workspace_part_digests : Map[String, String]
+  workspace_part_revoked : Map[String, Bool]
   vault_gens : Map[String, Int]
   vault_ws_gens : Map[String, Int]
   mut vault_global_gen : Int
@@ -327,6 +329,7 @@ pub fn AuthGenTracker::new() -> AuthGenTracker {
     workspace_gens: Map::new(),
     workspace_digests: Map::new(),
     workspace_part_digests: Map::new(),
+    workspace_part_revoked: Map::new(),
     vault_gens: Map::new(),
     vault_ws_gens: Map::new(),
     vault_global_gen: 1,
@@ -526,27 +529,163 @@ fn AuthGenTracker::bump_dependent_vault_ws(
   out
 }
 
-/// Synchronizes one named authoritative source slot (`part`: `"cloud"` or `"lock"`) for `workspace`.
-/// Each source keeps its own slot so alternating Cloud and Lock refreshes with unchanged content
-/// NEVER collide or trigger spurious `authGen` bumps.
+/// Single source of truth: returns `true` iff any authoritative source (`cloud`, `lock`, `manual`)
+/// currently marks `workspace` as revoked / unconfirmed.
+pub fn AuthGenTracker::is_workspace_revoked(self : AuthGenTracker, workspace : String) -> Bool {
+  if workspace.length() == 0 {
+    return false
+  }
+  let prefix = workspace + "\u{01}"
+  let ks = self.workspace_part_revoked.keys()
+  for i in 0..<ks.length() {
+    let k = ks[i]
+    if k.starts_with(prefix) {
+      match self.workspace_part_revoked.get(k) {
+        Some(true) => return true
+        _ => ()
+      }
+    }
+  }
+  false
+}
+
+/// Snapshot map of all currently revoked workspaces (for filtering aggregate views such as
+/// `workspaces` and `workspaceMarks`).
+pub fn AuthGenTracker::revoked_workspaces_map(self : AuthGenTracker) -> Map[String, Bool] {
+  let out : Map[String, Bool] = Map::new()
+  let ks = self.workspace_part_revoked.keys()
+  for i in 0..<ks.length() {
+    let k = ks[i]
+    match self.workspace_part_revoked.get(k) {
+      Some(true) => match k.index_of("\u{01}") {
+        idx if idx > 0 => out.set(k.slice(0, idx), true)
+        _ => ()
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+/// Seed startup authorization baseline for `(workspace, part)` from persisted SQLite without
+/// bumping `authGen` (so the very first post-boot sync that observes a change properly advances `authGen`).
+pub fn AuthGenTracker::seed_workspace_part(
+  self : AuthGenTracker,
+  workspace : String,
+  part : String,
+  digest : String,
+  revoked : Bool = false,
+) -> Unit {
+  if workspace.length() == 0 || part.length() == 0 {
+    return
+  }
+  let slot_key = workspace + "\u{01}" + part
+  if self.workspace_part_digests.get(slot_key).is_none() {
+    self.workspace_part_digests.set(slot_key, digest)
+    if revoked {
+      self.workspace_part_revoked.set(slot_key, true)
+    }
+  }
+}
+
+/// Atomically revoke `workspace` (and any `dependent_workspaces`) in the `"manual"` authority slot
+/// BEFORE advancing `authGen` and firing `on_boundary`.
+pub fn AuthGenTracker::revoke_workspace(
+  self : AuthGenTracker,
+  workspace : String,
+  dependent_workspaces : Array[String] = [],
+) -> Int {
+  if workspace.length() > 0 {
+    self.workspace_part_revoked.set(workspace + "\u{01}manual", true)
+  }
+  for i in 0..<dependent_workspaces.length() {
+    if dependent_workspaces[i].length() > 0 {
+      self.workspace_part_revoked.set(dependent_workspaces[i] + "\u{01}manual", true)
+    }
+  }
+  self.bump_workspace(workspace, dependent_workspaces=dependent_workspaces)
+}
+
+/// Clear revocation flags across all authority slots for `workspace` (optionally bumping `authGen`
+/// so live subscriptions re-push recovered data).
+pub fn AuthGenTracker::clear_workspace_revoked(
+  self : AuthGenTracker,
+  workspace : String,
+  bump_on_clear : Bool = true,
+) -> Bool {
+  if workspace.length() == 0 {
+    return false
+  }
+  let prefix = workspace + "\u{01}"
+  let ks = self.workspace_part_revoked.keys()
+  let mut cleared_any = false
+  for i in 0..<ks.length() {
+    let k = ks[i]
+    if k.starts_with(prefix) {
+      match self.workspace_part_revoked.get(k) {
+        Some(true) => {
+          self.workspace_part_revoked.set(k, false)
+          cleared_any = true
+        }
+        _ => ()
+      }
+    }
+  }
+  if cleared_any && bump_on_clear {
+    let _ = self.bump_workspace(workspace)
+  }
+  cleared_any
+}
+
+/// Synchronizes one named authoritative source slot (`part`: `"cloud"` or `"lock"`) for `workspace`
+/// atomically with its `revoked` state BEFORE firing `on_boundary`:
+/// - Transition `revoked: false -> true` ALWAYS bumps `authGen` (even with no prior baseline);
+/// - Repeated `revoked: true -> true` is strictly idempotent (zero duplicate bumps);
+/// - Recovery `revoked: true -> false` clears `"manual"` slot as well and ALWAYS bumps `authGen`
+///   so live subscriptions automatically re-push recovered snapshots;
+/// - Normal `revoked: false -> false` bumps iff a prior digest existed and changed.
 pub fn AuthGenTracker::sync_workspace_part(
   self : AuthGenTracker,
   workspace : String,
   part : String,
   digest : String,
+  revoked : Bool = false,
   dependent_workspaces : Array[String] = [],
 ) -> Bool {
   let slot_key = workspace + "\u{01}" + part
-  match self.workspace_part_digests.get(slot_key) {
-    None => {
-      self.workspace_part_digests.set(slot_key, digest)
-      false
+  let was_revoked = match self.workspace_part_revoked.get(slot_key) {
+    Some(true) => true
+    _ => false
+  }
+  let was_manual_revoked = if part == "cloud" && !revoked {
+    match self.workspace_part_revoked.get(workspace + "\u{01}manual") {
+      Some(true) => true
+      _ => false
     }
+  } else {
+    false
+  }
+  let prev_digest = self.workspace_part_digests.get(slot_key)
+  // Mutate authoritative revocation + digest state BEFORE firing any boundary notification!
+  self.workspace_part_revoked.set(slot_key, revoked)
+  self.workspace_part_digests.set(slot_key, digest)
+  if was_manual_revoked {
+    self.workspace_part_revoked.set(workspace + "\u{01}manual", false)
+  }
+  if revoked != was_revoked || was_manual_revoked {
+    let _ = self.bump_workspace(workspace, dependent_workspaces=dependent_workspaces)
+    return true
+  }
+  if revoked {
+    // Idempotent repeated revocation (e.g. duplicate 403/404): zero duplicate bumps!
+    return false
+  }
+  match prev_digest {
+    None => false
     Some(prev) => {
       if prev == digest {
         return false
       }
-      self.workspace_part_digests.set(slot_key, digest)
       let _ = self.bump_workspace(workspace, dependent_workspaces=dependent_workspaces)
       true
     }
@@ -799,6 +938,11 @@ pub fn AuthGenTracker::verify_call_auth(
   }
   match resolved_ws {
     Some(rws) => {
+      // Unconditional authority gate: writes to a revoked workspace are ALWAYS rejected
+      // even if the caller presents the bumped `authGen`!
+      if self.is_workspace_revoked(rws) {
+        return Some(auth_stale_error())
+      }
       match a.account {
         Some(acc) => {
           let owner = owner_of(rws)

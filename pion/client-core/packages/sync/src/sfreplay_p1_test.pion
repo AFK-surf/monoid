@@ -361,6 +361,42 @@ test "sfreplay_p1: composer closure, raw bytes refusal, draft.get/put {key} form
   ]))
   debug_assert(file_mode_err == "unsupported", "composer.add with mode=file must return unsupported")
 
+  // `composer.add` batch atomicity: if item #2 triggers `unsupported`, item #1 MUST NOT remain in `state.files`!
+  let batch_err = sf_call_err_code(core, 132L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("ok-first")),
+        ("name", base_codec::json_str("first.md")),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/first.md")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("path")),
+        ])),
+      ]),
+      base_codec::json_obj([
+        ("id", base_codec::json_str("bad-second")),
+        ("name", base_codec::json_str("second.bin")),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/second.bin")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("file")),
+        ])),
+      ]),
+    ])),
+  ]))
+  debug_assert(batch_err == "unsupported", "2-item batch with invalid 2nd item must return unsupported")
+  let cv_after_batch_err = sf_sub_val(core, 133L, "composer", [("key", base_codec::json_str(key))])
+  match base_codec::json_get(cv_after_batch_err, "files") {
+    Some(base_codec::Json::Arr(fs)) => debug_assert(fs.length() == 0, "atomic batch refusal must leave 0 files in composer")
+    _ => debug_assert(false, "expected empty files array after rejected batch")
+  }
+
   // `composer.add` with ref mode="path" succeeds
   let _ = sf_call_ok(core, 14L, "composer.add", base_codec::json_obj([
     ("key", base_codec::json_str(key)),
@@ -490,14 +526,43 @@ test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & re
     ("thread", base_codec::json_int(10)),
   ])
   sf_expect_int(ch_view, "at", 4)
+  match base_codec::json_get(ch_view, "atOffset") {
+    Some(base_codec::Json::Num(off, _)) => debug_assert(off == 12.5, "expected atOffset 12.5 before restart")
+    _ => debug_assert(false, "missing atOffset before restart")
+  }
 
-  // Restart recovery: a fresh `ClientCore` on the same DB MUST recover `at: 4` & `atOffset: 12.5`!
+  // Restart recovery: a fresh `ClientCore` on the same DB MUST recover BOTH `at: 4` AND `atOffset: 12.5`!
   let core_restarted = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
   let ch_after_restart = sf_sub_val(core_restarted, 411L, "chat", [
     ("station", base_codec::json_str("ws-1/st-1")),
     ("thread", base_codec::json_int(10)),
   ])
   sf_expect_int(ch_after_restart, "at", 4)
+  match base_codec::json_get(ch_after_restart, "atOffset") {
+    Some(base_codec::Json::Num(off, _)) => debug_assert(off == 12.5, "expected atOffset 12.5 after restart")
+    _ => debug_assert(false, "missing atOffset after restart")
+  }
+  // Unimplemented `chats` filter/groupBy params MUST return explicit `unsupported` error (never unfiltered list!)
+  let unsupported_chats_cases : Array[Array[(String, base_codec::Json)]] = [
+    [("scope", base_codec::json_str("ws-1")), ("project", base_codec::json_str("proj-alpha"))],
+    [("scope", base_codec::json_str("ws-1")), ("tag", base_codec::json_str("urgent"))],
+    [("scope", base_codec::json_str("ws-1")), ("unclassified", base_codec::json_bool(true))],
+    [("scope", base_codec::json_str("ws-1")), ("groupBy", base_codec::json_str("project"))],
+  ]
+  for ci in 0..<unsupported_chats_cases.length() {
+    let req = protocol::CoreRequest::Subscribe(
+      (420 + ci).to_int64(),
+      protocol::Topic::{ name: "chats", params: unsupported_chats_cases[ci] },
+      true,
+      None,
+      None,
+      None,
+    )
+    match core_restarted.handle_request(req) {
+      Some(protocol::CoreEvent::Err(_, e)) => debug_assert(e.code == "unsupported", "expected unsupported for chats param #" + ci.to_string())
+      _ => debug_assert(false, "unimplemented chats filter/groupBy #" + ci.to_string() + " must return Err(unsupported)")
+    }
+  }
   // Clearing via `seq: null` deletes the persisted place row.
   let _ = sf_call_ok(core_restarted, 412L, "chat.place", base_codec::json_obj([
     ("station", base_codec::json_str("ws-1/st-1")),

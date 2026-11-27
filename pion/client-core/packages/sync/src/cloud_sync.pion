@@ -453,13 +453,16 @@ pub fn fetch_workspace_k(
       effect::Exit::Failed(e) => k(effect::Exit::Failed(e))
       effect::Exit::Succeeded(resp) => {
         if resp.status == 403 || resp.status == 404 {
-          // Revocation / membership removal: advance workspace `authGen` rather than silently returning.
+          // Revocation / membership removal: atomically mark `cloud` slot revoked & advance `authGen`
+          // idempotently (repeated 403/404 produces zero duplicate bumps).
           match auth_gen {
             Some(tracker) => {
-              let bumped = tracker.sync_workspace_part(ws_id, "cloud", "revoked:" + resp.status.to_string())
-              if !bumped {
-                let _ = tracker.bump_workspace(ws_id)
-              }
+              let _ = tracker.sync_workspace_part(
+                ws_id,
+                "cloud",
+                "revoked:" + resp.status.to_string(),
+                revoked=true,
+              )
             }
             None => ()
           }
@@ -511,7 +514,27 @@ pub fn fetch_workspace_k(
           sql::SqlResult::Ok(_) => {
             match auth_gen {
               Some(tracker) => {
-                let _ = tracker.sync_workspace_part(ws.id, "cloud", workspace_auth_digest(ws, owner_sub=owner_sub))
+                // If Cloud returned an explicit non-empty member roster and our `owner_sub` was removed,
+                // mark revoked atomically; otherwise 200 OK confirms active membership and clears revocation.
+                let mut member_revoked = false
+                if owner_sub.length() > 0 && ws.members.length() > 0 {
+                  let mut found_me = false
+                  for mi in 0..<ws.members.length() {
+                    if ws.members[mi].sub == owner_sub {
+                      found_me = true
+                      break
+                    }
+                  }
+                  if !found_me {
+                    member_revoked = true
+                  }
+                }
+                let _ = tracker.sync_workspace_part(
+                  ws.id,
+                  "cloud",
+                  workspace_auth_digest(ws, owner_sub=owner_sub),
+                  revoked=member_revoked,
+                )
               }
               None => ()
             }
@@ -738,6 +761,11 @@ pub fn CloudSync::fetch_workspace_k(
   auth_gen : Option[AuthGenTracker] = None,
   owner_sub : String = "",
 ) -> Unit {
+  let eff_ag = match auth_gen {
+    Some(t) => Some(t)
+    None => self.auth_gen
+  }
+  let eff_owner = if owner_sub.length() > 0 { owner_sub } else { self.owner_sub }
   fetch_workspace_k(
     self.sh,
     self.origin,
@@ -746,8 +774,8 @@ pub fn CloudSync::fetch_workspace_k(
     self.db,
     k,
     cap=cap,
-    auth_gen=auth_gen,
-    owner_sub=owner_sub,
+    auth_gen=eff_ag,
+    owner_sub=eff_owner,
   )
 }
 

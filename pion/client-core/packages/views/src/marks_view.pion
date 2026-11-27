@@ -176,6 +176,7 @@ pub fn project_workspace_marks(
   viewer_id : String = "",
   lang : String = "zh",
   prefs : Option[base_codec::Json] = None,
+  revoked_workspaces : Option[Map[String, Bool]] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   let ws_rows = match store::list_workspaces(db) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
@@ -201,6 +202,13 @@ pub fn project_workspace_marks(
 
   for wi in 0..<ws_rows.length() {
     let wr = ws_rows[wi]
+    let is_rev = match revoked_workspaces {
+      Some(rm) => match rm.get(wr.id) { Some(true) => true; _ => false }
+      None => false
+    }
+    if is_rev {
+      continue
+    }
     let wj = parse_json_or_null(wr.json)
     let ws_id = wr.id
     let ws_name = match j_opt_str(wj, "name") {

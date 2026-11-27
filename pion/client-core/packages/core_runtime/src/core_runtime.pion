@@ -453,6 +453,7 @@ fn kept_put(
 /// On an auth/vault boundary, purge matching `sess.kept_vals` and re-anchor matching `sess.runtime_subs`
 /// to their new generation, forcing a full `CoreEvent::Value` snapshot (never freezing live subs!).
 fn on_runtime_auth_boundary(sess : RuntimeSession, ev : sync::AuthBoundaryEvent) -> Unit {
+  sess.core.rows_memo = views::RowsMemo::new()
   let next_ord : Array[String] = []
   for i in 0..<sess.kept_order.length() {
     let ck = sess.kept_order[i]
@@ -1291,7 +1292,6 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                     effect::Exit::Interrupted => ()
                     effect::Exit::Succeeded(ws) => {
                       sess.core.register_workspace_owner(ws.id, me.sub)
-                      sess.core.clear_workspace_revoked(ws.id)
                       cs.set_auth_gen(sess.core.auth_gen, owner_sub=me.sub)
                       let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
                         ("sub", base_codec::json_str(me.sub)),
@@ -1336,6 +1336,10 @@ fn evaluate_runtime_topic(
   let utc_offset_min = pion_core_utc_offset_min(now_ms)
 
   if tname == "chats" {
+    match sync::chats_unsupported_param(topic) {
+      Some(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unsupported", message: msg }))
+      None => ()
+    }
     let ws_scope = match topic.param("scope") {
       Some(base_codec::Json::Str(s)) => s
       _ => sess.core.workspace

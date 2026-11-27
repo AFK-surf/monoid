@@ -912,8 +912,9 @@ pub fn ComposerManager::starting(self : ComposerManager, key : String, starting 
   self.changed(key, s, count=true)
 }
 
-/// `composer.add` (supports `ref` path/file references, `link` attachments, and already-uploaded `done`
-/// attachments; explicitly refuses raw binary `bytes` uploads instead of silently discarding bytes).
+/// `composer.add` (supports `ref` path references, `link` attachments, and already-uploaded `done`
+/// attachments; validates the ENTIRE batch atomically before mutating `state.files` or persisting,
+/// explicitly refusing raw binary `bytes` and `mode: "file"` with zero partial leftovers).
 pub fn ComposerManager::add(
   self : ComposerManager,
   key : String,
@@ -930,9 +931,18 @@ pub fn ComposerManager::add(
   }
   let s = self.state_for(key)
   let fresh = is_fresh_key(key)
+  let staged : Array[ComposerFile] = []
+  let mut temp_seq = self.seq
   for i in 0..<files_json.length() {
     let fj = files_json[i]
-    let fid = match cm_nonempty_str(fj, "id") { Some(v) => v; None => self.local_id("file") }
+    let fid = match cm_nonempty_str(fj, "id") {
+      Some(v) => v
+      None => {
+        let n = temp_seq
+        temp_seq += 1
+        "file-" + n.to_string()
+      }
+    }
     let fname = match cm_opt_str(fj, "name") { Some(v) => v; None => "" }
     let fsize = cm_int64(fj, "size")
     let link_opt : Option[ComposerLink] = match base_codec::json_get(fj, "link") {
@@ -947,7 +957,7 @@ pub fn ComposerManager::add(
       None => None
     }
     if link_opt.is_some() {
-      s.files.push(ComposerFile::{
+      staged.push(ComposerFile::{
         id: fid,
         name: fname,
         size: fsize,
@@ -990,7 +1000,7 @@ pub fn ComposerManager::add(
     }
     let is_path_mode = match ref_opt { Some(r) => r.mode == "path"; None => false }
     if is_path_mode {
-      s.files.push(ComposerFile::{
+      staged.push(ComposerFile::{
         id: fid,
         name: fname,
         size: fsize,
@@ -1024,7 +1034,7 @@ pub fn ComposerManager::add(
       }
       None => ()
     }
-    s.files.push(ComposerFile::{
+    staged.push(ComposerFile::{
       id: fid,
       name: fname,
       size: fsize,
@@ -1039,6 +1049,10 @@ pub fn ComposerManager::add(
       link: None,
       quote: quote_bind,
     })
+  }
+  self.seq = temp_seq
+  for i in 0..<staged.length() {
+    s.files.push(staged[i])
   }
   Ok(self.changed(key, s, count=true))
 }
