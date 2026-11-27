@@ -195,11 +195,11 @@ test "大屏: 本机刚发出的消息（o: 行 key 送达后）划词右键仍�
   guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("no composer's field") }
   t.tap(fx + fw / 2.0, fy + fh / 2.0)
   t.run_for(@ui.move_most_ms)
-  t.type_text("本机刚发的测试消息用于右键分享")
+  t.type_text("测试一下")
   t.run_for(@ui.move_most_ms)
   tap_send(t)
   t.run_for(fix_deliver_ms + fix_answer_ms + fix_turn_end_ms + @ui.move_most_ms * 3.0)
-  let (mx, my, mw, mh) = words_rect(t, "本机刚发的测试消息用于右键分享")
+  let (mx, my, mw, mh) = words_rect(t, "测试一下")
   t.drag(mx + 2.0, my + mh / 2.0, mx + mw - 2.0, my + mh / 2.0)
   t.run_for(@ui.move_most_ms)
   t.right_click(mx + mw / 2.0, my + mh / 2.0)
