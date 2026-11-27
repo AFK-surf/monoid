@@ -1352,7 +1352,7 @@ test "colab service profile shows CU credits, active VM note, and relogin on exp
 }
 
 ///|
-test "profiles list aggregates Google Colab under Google group and add profile flow picks colab method" {
+test "profiles list shows Google Colab as its own group apart from Google and add profile flow picks colab method under Google" {
   let agy_item : Json = {
     "key": "agy-lin@example.com",
     "group": "agy",
@@ -1375,8 +1375,8 @@ test "profiles list aggregates Google Colab under Google group and add profile f
   }
   let colab_item : Json = {
     "key": "colab-lin@example.com",
-    "group": "agy",
-    "groupTitle": "Google",
+    "group": "colab",
+    "groupTitle": "Google Colab",
     "title": "lin@example.com",
     "usable": true,
     "station": "ws1/st1",
@@ -1432,6 +1432,11 @@ test "profiles list aggregates Google Colab under Google group and add profile f
   assert_true(t_list.find("Google") is Some(_), msg="profiles list shows Google group")
   assert_true(t_list.find("Ultra 5x") is Some(_), msg="profiles list shows Antigravity CLI row")
   assert_true(t_list.find("Google Colab") is Some(_), msg="profiles list shows Google Colab tag on Colab row")
+  // (its own section's heading and its row's tag: grouped under Google, only the tag would say it)
+  assert_true(
+    t_list.words().filter(fn(w) { w.0 == "Google Colab" }).length() >= 2,
+    msg="profiles list heads Google Colab's own section",
+  )
   assert_true(t_list.find("2,500 CU") is Some(_), msg="profiles list shows CU balance")
   assert_true(t_list.find("1 台运行中 · 10.05 CU/h") is Some(_), msg="profiles list shows active VM detail")
   assert_eq(t_list.audit(), [])
