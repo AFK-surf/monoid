@@ -40,6 +40,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     live: None,
     tall: narrow_sheet_half,
     grows: false,
+    dock_first: false,
     focus: true,
     ruled: false,
     fade_out_together: false,

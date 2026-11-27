@@ -719,3 +719,45 @@ test "小屏形变动画途中按下抓手无跳变，窗口高度变化与 size
   t2.run_for(@ui.move_most_ms)
   assert_eq(t2.audit(), [])
 }
+
+///|
+test "dock_first 仅预判首帧全宽停靠，不切到 grows 档位拖动也不阻塞矮内容回落浮岛" {
+  // 1) Tall form sheet with dock_first=true opens docked full-width and keeps pull-down-to-dismiss (not 55% detent)
+  let t1 = presenting_tester(phone, fn(_) {
+    panel_nodes("迁走表单", from=Unanchored, form=true, dock_first=true, fn(v, _) {
+      v.box(fn(b) { b.height(Is(Some(680.0))) |> ignore }) |> ignore
+      words_node(v, fn() { "核对来源与目标" }, fn() { paragraph }) |> ignore
+    })
+  })
+  open_it(t1)
+  t1.run_for(@ui.move_most_ms)
+  let (dx0, dy0, dw0, _) = sheet_glass_box(t1)
+  assert_true(dx0.abs() < 0.5 && (dw0 - phone.1).abs() < 0.5, msg="tall dock_first opens docked full-width: dx0=\{dx0}, dw0=\{dw0}")
+  // Drag down past sheet_drag_close (80pt): must dismiss rather than parking at 55% detent
+  let cx = phone.1 / 2.0
+  t1.press_at(cx, dy0 + 16.0)
+  t1.hold_move(cx, dy0 + 16.0 + sheet_drag_close + 40.0)
+  t1.release(cx, dy0 + 16.0 + sheet_drag_close + 40.0)
+  t1.run_for(@ui.move_most_ms)
+  assert_true(t1.query(Dialog, label="迁走表单") is None, msg="dock_first tall sheet must dismiss on downward drag rather than snap to 55% detent")
+  assert_eq(t1.audit(), [])
+
+  // 2) Short form sheet with dock_first=true still resolves to floating island before rising, and grabber tap does not stretch to 94%
+  let t2 = presenting_tester(phone, fn(_) {
+    panel_nodes("矮确认", from=Unanchored, form=true, dock_first=true, fn(v, _) {
+      v.box(fn(b) { b.height(Is(Some(240.0))) |> ignore }) |> ignore
+      words_node(v, fn() { "少量条目" }, fn() { paragraph }) |> ignore
+    })
+  })
+  open_it(t2)
+  t2.run_for(@ui.move_most_ms)
+  let (fx0, fy0, fw0, fh0) = sheet_glass_box(t2)
+  assert_true((fx0 - sheet_float_inset).abs() < 0.5 && (fw0 - (phone.1 - 2.0 * sheet_float_inset)).abs() < 0.5, msg="short dock_first resolves to floating island: fx0=\{fx0}, fw0=\{fw0}")
+  // Tap grabber: must stay floating at content height (never expand to 94% detent)
+  t2.press_at(cx, fy0 + 12.0)
+  t2.release(cx, fy0 + 12.0)
+  t2.run_for(@ui.move_most_ms)
+  let (fx1, _, fw1, fh1) = sheet_glass_box(t2)
+  assert_true((fx1 - sheet_float_inset).abs() < 0.5 && (fw1 - fw0).abs() < 0.5 && (fh1 - fh0).abs() < 1.0, msg="grabber tap on dock_first must not stretch height: (\{fx1},\{fw1},\{fh1}) vs (\{fx0},\{fw0},\{fh0})")
+  assert_eq(t2.audit(), [])
+}

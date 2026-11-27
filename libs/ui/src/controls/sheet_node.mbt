@@ -480,12 +480,12 @@ fn sheet_node(
         (dx, dv)
       }
       // (initial resting float_t before `rise` measures actual height: declared `tall` when given, `0.0` for auto-height
-      // `grows` sheets that typically expand tall, and `1.0` floating for plain auto-height sheets so short sheets and
-      // build-time `dialog_rows_node` callers stay floating without re-measuring)
+      // `grows` or `dock_first` sheets expected to open tall, and `1.0` floating for plain auto-height sheets so short
+      // sheets and build-time `dialog_rows_node` callers stay floating without re-measuring)
       let sheet_declared_float_t = fn(pg : SheetPage) -> Double {
         if pg.x.tall > 0.0 {
           sheet_rest_float_t(pg.x.tall)
-        } else if pg.x.grows {
+        } else if pg.x.grows || pg.x.dock_first {
           0.0
         } else {
           1.0

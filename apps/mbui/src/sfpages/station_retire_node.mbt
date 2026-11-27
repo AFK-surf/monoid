@@ -222,6 +222,7 @@ pub fn station_retire_panel(core : Core, here : Here, s : Json?, preview : Json)
     @sf.t("web-pages.stations.retire.title"),
     from=Unanchored,
     form=true,
+    dock_first=true,
     fn(v, _) {
       station_info_card_node(v, [
         station_info_from_core(core, address, text(s, "name"), row=fn() { s }, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),

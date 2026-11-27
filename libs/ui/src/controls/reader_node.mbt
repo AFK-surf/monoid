@@ -1664,6 +1664,7 @@ fn reader_sheets(parent : @view.View, r : Reading, paper : () -> ReaderPaper, lo
       live: None,
       tall: narrow_sheet_tall,
       grows: false,
+      dock_first: false,
       focus: panel == Find,
       ruled: false,
       fade_out_together: false,

@@ -163,6 +163,9 @@ priv struct PanelOf {
   live : (() -> (String, String, String))?
   tall : Double
   grows : Bool
+  /// hint that an auto-height Small sheet is expected to open docked full-width (>= 75% viewport height) without
+  /// switching to `grows` detent dragging (panel_nodes' `dock_first`)
+  dock_first : Bool
   focus : Bool
   ruled : Bool
   /// fade the panel and its contents together as it leaves
@@ -722,6 +725,9 @@ pub fn pick(
 /// while the panel stays where it stands (a reading aid beside what is read); a press outside still closes it.
 /// `head_end`: on a sheet, what stands at the end of its title's line (a quiet action of the whole panel's, as a panel
 /// that heads itself beside what opened it has at its own head's end); not drawn where the panel has no such head.
+/// `dock_first`: hint that an auto-height sheet on Small is expected to open docked full-width (`>= 75%` of viewport
+/// height), avoiding a Frame 0 floating-to-docked re-measure without enabling `grows` detent resizing; `rise()` still
+/// resolves the true floating-vs-docked state from measured layout height before the sheet rises into view.
 pub fn panel_nodes(
   title : String,
   body : (@view.View, () -> Unit) -> Unit,
@@ -740,6 +746,7 @@ pub fn panel_nodes(
   ruled? : Bool = false,
   form? : Bool = false,
   grows? : Bool = false,
+  dock_first? : Bool = false,
   popover? : Bool = false,
   side? : @ui.Side = Bottom,
   along? : @ui.Along = Start,
@@ -767,6 +774,7 @@ pub fn panel_nodes(
       live,
       tall,
       grows,
+      dock_first,
       focus,
       ruled,
       fade_out_together,
@@ -814,6 +822,7 @@ pub fn stage_panel_nodes(
       live,
       tall: 0.0,
       grows: false,
+      dock_first: false,
       focus: true,
       ruled: false,
       fade_out_together: false,
