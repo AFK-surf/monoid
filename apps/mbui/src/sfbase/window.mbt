@@ -179,11 +179,12 @@ pub fn window_text(p : Page) -> String? {
 let startup_window_owner : Ref[String?] = Ref(None)
 
 ///|
-/// Transient `(station, screen, owner)` held ONLY across the synchronous first-frame render inside
+/// Transient `(station, screen, owner, claimed_wid)` held ONLY across the synchronous first-frame render inside
 /// `@ui.window_open_here(what)` for a `Page::Screen` before `windows_here_owner[wid]` is populated.
-/// Cleared immediately on return.
+/// The first unregistered positive `wid` matching `(station, screen)` claims it; any other unregistered `wid`
+/// is denied. Cleared immediately on return.
 // kept across runs: put back by pages.mbt's reset
-let windows_here_opening_owner : Ref[(String, String, String)?] = Ref(None)
+let windows_here_opening_owner : Ref[(String, String, String, Int?)?] = Ref(None)
 
 ///|
 /// Set the creation owner for a child-process standalone screen window (called only at real startup entrypoints).
@@ -279,7 +280,7 @@ pub fn open_window(p : Page) -> Bool {
         }
         let owner = window_page_owner(p)
         windows_here_opening_owner.val = match p {
-          Screen(at) => Some((at.station, at.screen, owner))
+          Screen(at) => Some((at.station, at.screen, owner, None))
           _ => None
         }
         let wid = @ui.window_open_here(what)
@@ -495,44 +496,47 @@ pub fn window_here_owner_state(wid : Int, station : String, screen? : String = "
     Some(i) => station.exact_view(end=i).to_owned()
     None => ""
   }
-  if wid > 0 {
-    let expected = match windows_here_owner.get(wid) {
+  let expected_opt : String? = if wid > 0 {
+    match windows_here_owner.get(wid) {
       Some(o) => Some(o)
       None =>
         if !windows_here_show.contains(wid) {
           match windows_here_opening_owner.val {
-            Some((st, sc, o)) if st == station && (screen == "" || sc == screen) => Some(o)
+            Some((st, sc, o, claimed)) if sc != "" && screen != "" && st == station && sc == screen =>
+              match claimed {
+                None => {
+                  windows_here_opening_owner.val = Some((st, sc, o, Some(wid)))
+                  Some(o)
+                }
+                Some(cwid) if cwid == wid => Some(o)
+                _ => None
+              }
             _ => None
           }
         } else {
           None
         }
     }
-    match expected {
-      Some(owner) if owner != "" && !workspace_is_revoked(ws) =>
-        if workspace_explicit_owner_of(ws) == Some(owner) {
-          Matched
-        } else {
-          Denied
-        }
-      _ => Denied
-    }
   } else {
     match startup_window_owner.val {
-      None => Matched
-      Some(expected) => {
-        if expected == "" || workspace_is_revoked(ws) {
-          return Denied
-        }
-        if !workspace_owners_synced() {
-          return Waiting
-        }
-        match workspace_explicit_owner_of(ws) {
-          Some(actual) => if actual == expected { Matched } else { Denied }
-          None => Denied
-        }
-      }
+      None => return Matched
+      Some(expected) => Some(expected)
     }
+  }
+  guard expected_opt is Some(expected) else { return Denied }
+  if expected == "" || workspace_is_revoked(ws) {
+    return Denied
+  }
+  match workspace_explicit_owner_of(ws) {
+    Some(actual) => if actual == expected { Matched } else { Denied }
+    None =>
+      if !workspace_owners_synced() {
+        Waiting
+      } else if workspace_owner_pending_for(ws, expected) {
+        Waiting
+      } else {
+        Denied
+      }
   }
 }
 

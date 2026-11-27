@@ -1476,31 +1476,33 @@ static void audio_packet(MBStream *s, NSData *data, NSUInteger expectedGen, BOOL
   __weak MBStream *weak = s;
   dispatch_queue_t queue = s.audioQueue;
   os_unfair_lock_lock(&audio_state_lock);
-  if (s.audioGeneration != generation) {
-    os_unfair_lock_unlock(&audio_state_lock);
-    return;
-  }
-  [s.audioPlayer scheduleBuffer:buffer completionCallbackType:AVAudioPlayerNodeCompletionDataPlayedBack completionHandler:^(AVAudioPlayerNodeCompletionCallbackType type) {
-    (void)type;
-    dispatch_async(queue, ^{
-      MBStream *live = weak;
-      if (!live) return;
-      os_unfair_lock_lock(&audio_state_lock);
-      if (live.audioGeneration == generation && live.audioQueued > 0) {
-        live.audioQueued--;
-        if (live.audioPending > 0) live.audioPending--;
-        live.audioBuffersDone++;
-        // An underrun must refill the same reserve before starting again, folding played frames first.
-        if (live.audioQueued == 0) {
-          fold_player_frames_locked(live, (double)live.audioBuffersDone * 960.0);
-          [live.audioPlayer stop];
+  @try {
+    if (s.audioGeneration != generation) {
+      return;
+    }
+    [s.audioPlayer scheduleBuffer:buffer completionCallbackType:AVAudioPlayerNodeCompletionDataPlayedBack completionHandler:^(AVAudioPlayerNodeCompletionCallbackType type) {
+      (void)type;
+      dispatch_async(queue, ^{
+        MBStream *live = weak;
+        if (!live) return;
+        os_unfair_lock_lock(&audio_state_lock);
+        if (live.audioGeneration == generation && live.audioQueued > 0) {
+          live.audioQueued--;
+          if (live.audioPending > 0) live.audioPending--;
+          live.audioBuffersDone++;
+          // An underrun must refill the same reserve before starting again, folding played frames first.
+          if (live.audioQueued == 0) {
+            fold_player_frames_locked(live, (double)live.audioBuffersDone * 960.0);
+            [live.audioPlayer stop];
+          }
         }
-      }
-      os_unfair_lock_unlock(&audio_state_lock);
-    });
-  }];
-  if (!s.audioPlayer.playing && s.audioQueued >= 3) [s.audioPlayer play];
-  os_unfair_lock_unlock(&audio_state_lock);
+        os_unfair_lock_unlock(&audio_state_lock);
+      });
+    }];
+    if (!s.audioPlayer.playing && s.audioQueued >= 3) [s.audioPlayer play];
+  } @finally {
+    os_unfair_lock_unlock(&audio_state_lock);
+  }
 }
 
 void mb_host_stream_audio(int32_t sid, moonbit_bytes_t data) {

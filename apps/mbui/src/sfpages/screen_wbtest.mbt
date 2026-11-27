@@ -3538,7 +3538,7 @@ test "child-process standalone screen waits for workspaces snapshot with 0 scree
   t.draw()
   t.draw()
   // Before workspaces snapshot arrives: Waiting, 0 screen.view RPCs!
-  assert_true(@sfbase.window_here_owner_state(0, at.station) == Waiting)
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting)
   assert_eq(opens.val, 0, msg="Waiting child-process screen must emit 0 screen.view RPCs")
   // Stale cached snapshot (loaded=false) carrying ws-1 -> acct-a MUST still stay Waiting with 0 screen.view RPCs!
   let snap_stale : Json = Json::array([
@@ -3551,7 +3551,7 @@ test "child-process standalone screen waits for workspaces snapshot with 0 scree
   @sfbase.workspace_owners_sync_json(Some(snap_stale))
   t.draw()
   t.draw()
-  assert_true(@sfbase.window_here_owner_state(0, at.station) == Waiting, msg="loaded=false cached snapshot must keep child-process screen Waiting")
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting, msg="loaded=false cached snapshot must keep child-process screen Waiting")
   assert_eq(opens.val, 0, msg="loaded=false cached snapshot must emit 0 screen.view RPCs")
   // Snapshot arrives (loaded=true) with ws-1 -> acct-a: reactively wakes and opens screen.view!
   let snap_a : Json = Json::array([
@@ -3564,8 +3564,146 @@ test "child-process standalone screen waits for workspaces snapshot with 0 scree
   @sfbase.workspace_owners_sync_json(Some(snap_a))
   t.draw()
   t.draw()
-  assert_true(@sfbase.window_here_owner_state(0, at.station) == Matched)
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched)
   assert_eq(opens.val, 1, msg="child-process screen must auto-wake and open once matching snapshot arrives")
+  @ui.run_let_go()
+}
+
+///|
+test "post-sync A loses ws while B is loaded=false: A window immediately Denied & session/lease revoked with 0 RPC, B Waits then Matches" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  let base = @sffixture.fixture("settings")
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b"])
+  let snap_both : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_both))
+  let opens = Ref(0)
+  let inputs = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, _params, _bytes, _on_val, _done) {
+      if name == "screen.view" {
+        opens.val += 1
+        opens.val
+      } else {
+        0
+      }
+    },
+    call: fn(name, params, done) {
+      if name == "screen.input" {
+        inputs.val += 1
+        done(Ok(Json::object({})))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+    cancel: fn(_) {  },
+  }
+  let at : ScreenAt = { station: "ws-1/st-1", screen: "browser:e2e-1", title: "E2E", until_gone: false }
+  @sfbase.set_startup_window_owner(Some("acct-a"))
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick(
+        at_once=true,
+        fn() {
+          screen_revokes_now() |> ignore
+          @sfbase.workspace_owners_version.get() |> ignore
+          match @sfbase.window_here_owner_state(0, at.station, screen=at.screen) {
+            Matched => 0
+            Waiting => 1
+            Denied => 2
+          }
+        },
+        fn(q, st) {
+          if st == 0 {
+            q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+            screen_node(q, src, at, fn() { @sf.no_frame })
+          }
+        },
+      )
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  let key_a = screen_key_for_owner("acct-a", at.station, at.screen)
+  assert_eq(opens.val, 1, msg="A must open screen.view initially")
+  assert_true(screens_open.contains(key_a), msg="A session must be open")
+  assert_true(screen_leases.contains(key_a), msg="A lease must be active")
+  let sess_a = screens_open.get(key_a).unwrap()
+  // Push snapshot: A (loaded=true, lost ws-1), B (loaded=false, cached ws-1)
+  let snap_a_lost_b_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_a_lost_b_pending))
+  t.draw()
+  t.draw()
+  assert_eq(@sfbase.workspace_explicit_owner_of("ws-1"), None)
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Denied, msg="A window must immediately turn Denied")
+  assert_false(screens_open.contains(key_a), msg="A session must be revoked immediately")
+  assert_false(screen_leases.contains(key_a), msg="A lease must be revoked immediately")
+  // Subsequent input on A's old session must emit 0 RPCs
+  sess_a.input(src, Json::object({ "t": Json::string("click") }))
+  assert_eq(inputs.val, 0, msg="revoked A session must emit 0 screen.input RPCs")
+  // Switch standalone window identity to B while B is still loaded=false -> Waiting, 0 new opens, 0 inputs!
+  @sfbase.set_startup_window_owner(Some("acct-b"))
+  @sfbase.workspace_owners_version.set(@sfbase.workspace_owners_version.untracked() + 1)
+  t.draw()
+  t.draw()
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Waiting, msg="B window must Wait while loaded=false")
+  assert_eq(opens.val, 1, msg="Waiting B window must emit 0 additional screen.view RPCs")
+  assert_eq(inputs.val, 0)
+  // Push snapshot: A (loaded=true, no ws-1), B (loaded=true, has ws-1) -> B Matches and remounts!
+  let snap_b_loaded : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  @sfbase.workspace_owners_sync_json(Some(snap_b_loaded))
+  t.draw()
+  t.draw()
+  let key_b = screen_key_for_owner("acct-b", at.station, at.screen)
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Matched, msg="B window must transition to Matched")
+  assert_eq(opens.val, 2, msg="B window must open fresh screen.view on Matched")
+  assert_true(screens_open.contains(key_b), msg="B session must be active")
+  assert_true(screen_leases.contains(key_b), msg="B lease must be active")
+  // Verify A remains Denied
+  @sfbase.set_startup_window_owner(Some("acct-a"))
+  assert_true(@sfbase.window_here_owner_state(0, at.station, screen=at.screen) == Denied, msg="A must stay Denied after B takes ownership")
   @ui.run_let_go()
 }
 

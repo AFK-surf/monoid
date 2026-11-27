@@ -171,20 +171,26 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   assert_eq(window_page_owner_of(no_owner), Some(""))
   set_startup_window_owner(window_page_owner_of(no_owner))
   assert_true(window_here_owner_state(0, "ws-1/st-1") == Denied, msg="missing owner must Deny child-process window")
-  // In-process secondary window transient opening owner is bound to exact (station, screen, owner)
-  // and requires explicit workspace ownership (no first-account fallback).
+  // In-process secondary window transient opening owner is bound to exact (station, screen, owner, claimed_wid)
+  // with NO empty-screen wildcard, single-wid claim, and explicit workspace ownership (no first-account fallback).
   reset()
   accounts_subs_sync(["acct-a"])
   workspace_owner_set("ws-1", "acct-a")
-  windows_here_opening_owner.val = Some(("ws-1/st-1", "browser:win-1", "acct-a"))
-  assert_true(window_here_owner_state(1, "ws-1/st-1", screen="browser:win-1") == Matched, msg="matching station+screen during opening must Match")
+  windows_here_opening_owner.val = Some(("ws-1/st-1", "browser:win-1", "acct-a", None))
+  assert_true(window_here_owner_state(1, "ws-1/st-1", screen="") == Denied, msg="empty screen must never match opening owner")
+  assert_true(window_here_owner_state(1, "ws-1/st-1", screen="browser:win-1") == Matched, msg="first unregistered wid with matching station+screen must Match and claim")
+  assert_true(window_here_owner_state(1, "ws-1/st-1", screen="browser:win-1") == Matched, msg="same claimed wid must continue to Match")
+  assert_true(window_here_owner_state(2, "ws-1/st-1", screen="browser:win-1") == Denied, msg="second unregistered wid with same station+screen must be Denied after claim")
   assert_true(window_here_owner_state(1, "ws-1/st-1", screen="browser:win-2") == Denied, msg="different screen on same station during opening must be Denied")
   assert_true(window_here_owner_state(2, "ws-2/st-2", screen="browser:win-1") == Denied, msg="different station during opening must be Denied")
-  windows_here_opening_owner.val = Some(("ws-1/st-1", "browser:win-1", ""))
+  windows_here_opening_owner.val = Some(("ws-1/st-1", "browser:win-1", "", None))
   assert_true(window_here_owner_state(1, "ws-1/st-1", screen="browser:win-1") == Denied, msg="empty opening owner must be Denied")
-  // Without explicit workspace ownership (even when fallback account matches), wid > 0 must be Denied.
-  windows_here_opening_owner.val = Some(("ws-unmapped/st-1", "browser:win-1", "acct-a"))
-  assert_true(window_here_owner_state(1, "ws-unmapped/st-1", screen="browser:win-1") == Denied, msg="missing explicit workspace owner must be Denied even if fallback account matches")
+  // Before complete snapshot (!workspace_owners_synced), unmapped workspace for wid > 0 waits (never Matched);
+  // after complete snapshot, missing explicit workspace owner is Denied even if fallback account matches.
+  windows_here_opening_owner.val = Some(("ws-unmapped/st-1", "browser:win-1", "acct-a", None))
+  assert_true(window_here_owner_state(1, "ws-unmapped/st-1", screen="browser:win-1") == Waiting, msg="unmapped workspace before first snapshot must Wait, never Match")
+  workspace_owners_sync_json(Some(snap_a))
+  assert_true(window_here_owner_state(1, "ws-unmapped/st-1", screen="browser:win-1") == Denied, msg="missing explicit workspace owner after snapshot must be Denied even if fallback account matches")
   windows_here_opening_owner.val = None
   // Unknown secondary window id (`wid > 0`) -> Denied!
   assert_true(window_here_owner_state(999, "ws-1/st-1", screen="browser:win-1") == Denied, msg="unknown secondary window id must be Denied")
@@ -209,7 +215,7 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   workspace_owners_sync_json(Some(snap_partial))
   assert_false(workspace_owners_synced(), msg="partial load must keep workspace_owners_synced false")
   assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="lower-priority loaded B must not hijack ws-1 cached under unloaded A")
-  assert_true(window_here_owner_state(0, "ws-1/st-1") == Waiting, msg="child-process window for B must stay Waiting during partial load")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="child-process window for B must stay Waiting during partial load")
   let snap_full : Json = Json::array([
     Json::object({
       "account": Json::object({ "sub": Json::string("acct-a") }),
@@ -225,8 +231,47 @@ test "window_text -> window_page is pure, preserves owner, and child-process scr
   workspace_owners_sync_json(Some(snap_full))
   assert_true(workspace_owners_synced(), msg="all accounts loaded must mark workspace_owners_synced true")
   assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-a"), msg="higher-priority A must own shared ws-1")
-  assert_true(window_here_owner_state(0, "ws-1/st-1") == Denied, msg="child-process window for B must become Denied once A owns ws-1")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="child-process window for B must become Denied once A owns ws-1")
   set_startup_window_owner(Some("acct-a"))
-  assert_true(window_here_owner_state(0, "ws-1/st-1") == Matched, msg="child-process window for A must become Matched once A owns ws-1")
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="child-process window for A must become Matched once A owns ws-1")
+  // Post-sync revocation while secondary account B is still loaded=false:
+  // A (loaded=true, lost ws-1) MUST be immediately Denied while B (loaded=false, cached ws-1) stays Waiting!
+  let snap_a_lost_b_pending : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(false),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_a_lost_b_pending))
+  assert_eq(workspace_explicit_owner_of("ws-1"), None, msg="A lost ws-1 must clear explicit owner even while B is loaded=false")
+  set_startup_window_owner(Some("acct-a"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="loaded A that lost ws-1 must be immediately Denied")
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Waiting, msg="unloaded B with cached ws-1 must stay Waiting")
+  // Once B finishes loading with ws-1: A stays Denied, B transitions to Matched!
+  let snap_b_loaded : Json = Json::array([
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-a") }),
+      "workspaces": Json::array([]),
+      "loaded": Json::boolean(true),
+    }),
+    Json::object({
+      "account": Json::object({ "sub": Json::string("acct-b") }),
+      "workspaces": Json::array([Json::object({ "id": Json::string("ws-1") })]),
+      "loaded": Json::boolean(true),
+    }),
+  ])
+  workspace_owners_sync_json(Some(snap_b_loaded))
+  assert_eq(workspace_explicit_owner_of("ws-1"), Some("acct-b"))
+  set_startup_window_owner(Some("acct-a"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Denied, msg="A must remain Denied after B loads ws-1")
+  set_startup_window_owner(Some("acct-b"))
+  assert_true(window_here_owner_state(0, "ws-1/st-1", screen="browser:win-1") == Matched, msg="B must transition to Matched after loading ws-1")
   reset()
 }
