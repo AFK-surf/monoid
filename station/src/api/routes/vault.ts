@@ -9,7 +9,10 @@
 // is answered with the one held, unchanged), so that agents on any station may ask for its secrets.
 import { type LockState, type Member, admit } from "../../../../shared/lock.ts";
 import type { Viewer } from "../../mesh/credential.ts";
-import { type BoxCert, type Item, type KeyAsk, type Vault, TAG, askOk, certOk, itemOk, itemSupersedes, signedOk, signerOf, vaultOk, vaultSupersedes } from "../../vault/crypto.ts";
+import {
+  type BoxCert, type DiscoverableVault, type Item, type JoinAsk, type JoinDismiss, type KeyAsk, type Vault,
+  TAG, askOk, certOk, itemOk, itemSupersedes, joinAskOk, joinDismissOk, signedOk, signerOf, vaultOk, vaultSupersedes,
+} from "../../vault/crypto.ts";
 import { isDeletedVaultWrite, type VaultStore } from "../../vault/store.ts";
 import type { Route } from "../admin.ts";
 import type { Events, To } from "../events.ts";
@@ -54,9 +57,58 @@ function deviceOf(lock: LockState, r: Request): string | null {
   }
 }
 
-const sees = (vault: Vault, viewer: Viewer) => vault.ws === viewer.workspace && vault.members.includes(viewer.sub);
+const sees = (vault: Vault, viewer: Viewer) =>
+  vault.ws === viewer.workspace && Array.isArray(vault.members) && vault.members.includes(viewer.sub);
 /// Whom a vault's changes are told to: its members.
 const members = (vault: Vault): To => ({ workspace: vault.ws, subs: vault.members });
+const isAdminRole = (role: string | undefined) => role === "owner" || role === "admin";
+const MAX_DISCOVERABLE = 4;
+const MAX_ADMIN_DISCOVERY_PROBES = 16;
+
+function toDiscoverable(v: Vault): DiscoverableVault {
+  return {
+    id: v.id,
+    ws: v.ws,
+    name: v.name,
+    scope: "workspace",
+    owner: v.owner,
+    memberCount: v.members.length,
+    seq: v.seq,
+    at: v.at,
+  };
+}
+
+/// Active workspace vaults in `l.ws` that `viewerSub` is NOT yet a member of, found via the audited
+/// `vault_member_lookup` index across workspace owners/admins (no new schema/backfill). Verifies vault signature
+/// and current owner/admin signer role (rather than full `vaultOk`) so a workspace vault with a removed device's
+/// historical key remains discoverable.
+function discoverableWorkspaceVaults(vaults: VaultStore, l: LockState, viewerSub: string): Vault[] {
+  if (!l.members.has(viewerSub)) return [];
+  const admins = [...l.members.values()]
+    .filter((m) => isAdminRole(m.role))
+    .map((m) => m.sub)
+    .sort()
+    .slice(0, MAX_ADMIN_DISCOVERY_PROBES);
+  if (admins.length === 0) return [];
+  const candidates = vaults.memberVaultsMany(l.ws, admins, 64);
+  const out: Vault[] = [];
+  const seenIds = new Set<string>();
+  for (const v of candidates) {
+    if (seenIds.has(v.id)) continue;
+    seenIds.add(v.id);
+    if (v.ws !== l.ws || v.deleted || v.scope !== "workspace" || !Array.isArray(v.members) || v.members.includes(viewerSub)) continue;
+    if (!signedOk(v, TAG.vault)) continue;
+    const signer = signerOf(l, v.sig?.key);
+    if (signer === null || !isAdminRole(l.members.get(signer.sub)?.role)) continue;
+    out.push(v);
+    if (out.length >= MAX_DISCOVERABLE) break;
+  }
+  return out;
+}
+
+function adminSubsOf(l: LockState, v: Vault): string[] {
+  return v.members.filter((s) => isAdminRole(l.members.get(s)?.role));
+}
 
 /// Outside security mode (`genesis` ""), an authenticated workspace owner or admin may include workspace members who
 /// have never connected to this station in a workspace vault (`PUT /vault/vaults`, including `?copy=1`). Add those
@@ -90,13 +142,17 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
       handle: async (r) => {
         const l = locked(r);
         if (isAnswer(l)) return l;
-        return json(200, JSON.stringify({ vaults: vaults.memberVaults(l.ws, r.viewer.sub).filter((v) => sees(v, r.viewer)) }));
+        const memberVaults = vaults.memberVaults(l.ws, r.viewer.sub).filter((v) => sees(v, r.viewer));
+        const discoverable = discoverableWorkspaceVaults(vaults, l, r.viewer.sub).map(toDiscoverable);
+        return json(200, JSON.stringify({ vaults: memberVaults, discoverable }));
       },
     },
     {
       // The latest versions of vaults the viewer was a member of, each shown by a version naming them that its owner's
       // device signed (`held`): how a device taken out of a vault (or one that was away as it was) knows it was, rather
       // than taking a station's not listing it for it. Nothing for one the viewer was never shown.
+      // Note: for workspace vaults, requires the signer of `h` to hold a *current* workspace owner/admin role (never
+      // accepting a self-signed `h.owner` bypass from an ordinary member; a demoted admin's old witness stops working).
       method: "POST",
       pattern: /^\/vault\/vaults\/latest$/,
       handle: async (r) => {
@@ -112,9 +168,9 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           if (signer === null) continue;
           const isWs = h.scope === "workspace";
           const role = l.members.get(signer.sub)?.role;
-          if (signer.sub !== h.owner && !(isWs && (role === "owner" || role === "admin"))) continue;
+          if (isWs ? !isAdminRole(role) : signer.sub !== h.owner) continue;
           const v = vaults.vault(l.ws, h.id);
-          if (v !== null && (v.owner === h.owner || (isWs && v.scope === "workspace"))) latest.push(v);
+          if (v !== null && (isWs ? v.scope === "workspace" : v.owner === h.owner)) latest.push(v);
         }
         return json(200, JSON.stringify({ vaults: latest }));
       },
@@ -128,40 +184,86 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
         const l = locked(r);
         if (isAnswer(l)) return l;
         const next = body(r) as Vault;
-        if (next === null || typeof next !== "object" || typeof next.id !== "string") return refuse(400, "vault_invalid", "a vault, as JSON");
+        if (next === null || typeof next !== "object" || typeof next.id !== "string" || !Array.isArray(next.members)) return refuse(400, "vault_invalid", "a vault, as JSON");
         if (next.ws !== r.viewer.workspace) return refuse(400, "vault_invalid", "a vault of another workspace");
         const copy = param(r, "copy") === "1";
+        const approveSub = param(r, "approveJoinSub");
+        const approveAtRaw = param(r, "approveJoinAt");
+        let approveJoin: { sub: string; at: number } | undefined;
+        if (approveSub !== undefined || approveAtRaw !== undefined) {
+          const atNum = Number(approveAtRaw);
+          if (!approveSub || approveSub.length > 200 || !Number.isSafeInteger(atNum) || atNum < 0 || copy) {
+            return refuse(400, "vault_invalid", "approveJoinSub and approveJoinAt must both be valid");
+          }
+          approveJoin = { sub: approveSub, at: atNum };
+        }
         for (let attempt = 0; attempt < 3; attempt++) {
           const held = vaults.vaultSnapshot(l.ws, next.id), prev = held?.value ?? null;
-          if (attempt > 0 && prev !== null && !sees(prev, r.viewer)) return refuse(404, "vault_unknown", "no such vault here, or not one of yours");
+          const checkLock = workspaceCheckLock(l, prev, next);
+          const viewerSeesPrev = prev !== null && sees(prev, r.viewer);
+          if (prev !== null && !viewerSeesPrev) {
+            if (!copy) return refuse(404, "vault_unknown", "no such vault here, or not one of yours");
+            // On ?copy=1 from a newly-added member whose device spreads `next` to a lagging station, prove `next`
+            // itself is validly signed and names `r.viewer` before touching `prev` or answering anything but 404.
+            if (!sees(next, r.viewer) || vaultOk(checkLock, null, next, true) !== null) {
+              return refuse(404, "vault_unknown", "no such vault here, or not one of yours");
+            }
+          }
+          if (!copy && prev !== null && prev.scope === "workspace") {
+            const signer = typeof next.sig?.key === "string" ? signerOf(checkLock, next.sig.key) : null;
+            if (signer === null || !prev.members.includes(signer.sub) || !isAdminRole(l.members.get(signer.sub)?.role)) {
+              return refuse(403, "vault_not_admin", "only an existing managing admin of this workspace vault may update it");
+            }
+          }
           // A copy of a sibling is kept only if every station chooses it over the one currently held.
           let sibling = false;
           if (copy && prev !== null && Number.isSafeInteger(next.seq) && next.seq <= prev.seq) {
-            if (next.seq < prev.seq || !vaultSupersedes(next, prev)) return json(200, JSON.stringify({ vault: prev }));
+            if (next.seq < prev.seq || !vaultSupersedes(next, prev)) {
+              return viewerSeesPrev ? json(200, JSON.stringify({ vault: prev })) : refuse(404, "vault_unknown", "no such vault here, or not one of yours");
+            }
             sibling = true;
           }
           if (!copy && Number.isSafeInteger(next.seq) && next.seq !== (prev === null ? 0 : prev.seq + 1)) {
-            return refuse(409, "vault_conflict", `seq ${prev === null ? 0 : prev.seq + 1} is the one that follows`, { vault: prev });
+            return refuse(409, "vault_conflict", `seq ${prev === null ? 0 : prev.seq + 1} is the one that follows`, viewerSeesPrev ? { vault: prev } : {});
           }
           const scopeChanged = (next.scope ?? null) !== (prev?.scope ?? null);
           const ownerChanged = prev !== null && next.owner !== prev.owner &&
             !(next.scope === "workspace" && prev.scope === "workspace" && signerOf(l, next.sig?.key)?.sub === next.owner);
-          const checkLock = workspaceCheckLock(l, prev, next);
           const why = sibling
             ? vaultOk(checkLock, null, next, true) ?? (scopeChanged ? "a vault's scope does not change" : ownerChanged ? "a vault's owner does not change" : null)
             : vaultOk(checkLock, prev, next, copy);
           if (why !== null) return refuse(400, "vault_invalid", why);
+          const addedSubs = next.scope === "workspace" && !next.deleted
+            ? next.members.filter((m) => !(prev?.members ?? []).includes(m))
+            : [];
+          if (approveJoin !== undefined && (!next.members.includes(approveJoin.sub) || next.scope !== "workspace" || next.deleted)) {
+            return refuse(400, "vault_invalid", "approveJoinSub must be included in an active workspace vault's members");
+          }
+          let writeRes: "saved" | "conflict" | "join_cancelled";
           try {
-            if (!vaults.putVaultIf(next, held?.body ?? null)) continue;
+            writeRes = vaults.putVaultChecked(next, held?.body ?? null, { addedSubs, approveJoin });
           } catch (error) {
             if (!isDeletedVaultWrite(error)) throw error;
             continue;
           }
+          if (writeRes === "join_cancelled") {
+            return refuse(409, "join_cancelled", "that join request was cancelled or superseded before approval");
+          }
+          if (writeRes === "conflict") continue;
           tell("vault", next, `vault\0${next.id}`, members(next));
           const gone = (prev?.members ?? []).filter((m) => !next.members.includes(m));
           const goneDevices = gone.length === 0 ? [] : [...l.devices.values()].filter((d) => gone.includes(d.sub)).map((d) => d.id);
           if (!next.deleted) vaults.pruneAsks(next.ws, next.id, next.keys, goneDevices);
           if (gone.length > 0) tell("vault-gone", { id: next.id, vault: next }, `vault-gone\0${next.id}`, { workspace: next.ws, subs: gone });
+          if (next.scope === "workspace") {
+            // Emitted AFTER `vault-gone` so removed members never have discovery cleared by stale membership; carries
+            // zero secret or member payload (receivers re-read under live auth).
+            tell("vault-discover", { vault: next.id, deleted: Boolean(next.deleted) }, `vault-discover\0${next.ws}\0${next.id}`, { workspace: next.ws });
+            if (addedSubs.length > 0) {
+              const notifySubs = [...new Set([...adminSubsOf(l, next), ...addedSubs])];
+              tell("vault-joins-changed", { vault: next.id }, `vault-joins-changed\0${next.ws}\0${next.id}`, { workspace: next.ws, subs: notifySubs });
+            }
+          }
           return json(200, JSON.stringify({ vault: next }));
         }
         const current = vaults.vault(l.ws, next.id);
@@ -326,6 +428,144 @@ export const routes = ({ vaults, lock, chains, events, boxed, beforeWrite }: Vau
           return json(200, JSON.stringify({ ask: next }));
         }
         return refuse(503, "vault_busy", "the key ask changed while it was being written");
+      },
+    },
+    {
+      method: "GET",
+      pattern: /^\/vault\/joins$/,
+      handle: async (r) => {
+        const l = locked(r);
+        if (isAnswer(l)) return l;
+        const of = param(r, "vault");
+        const viewerIsAdmin = isAdminRole(l.members.get(r.viewer.sub)?.role);
+        const managedVaults: Vault[] = [];
+        if (viewerIsAdmin) {
+          const candidates = of === undefined ? vaults.memberVaults(l.ws, r.viewer.sub) : [vaults.vault(l.ws, of)].filter((v): v is Vault => v !== null);
+          for (const v of candidates) {
+            if (sees(v, r.viewer) && !v.deleted && v.scope === "workspace" && (of === undefined || v.id === of)) managedVaults.push(v);
+          }
+        }
+        const discoverable = discoverableWorkspaceVaults(vaults, l, r.viewer.sub).filter((v) => of === undefined || v.id === of);
+        if (of !== undefined && managedVaults.length === 0 && discoverable.length === 0) {
+          return refuse(404, "vault_unknown", "no such workspace vault here");
+        }
+        const managedById = new Map(managedVaults.map((v) => [v.id, v]));
+        const joins: JoinAsk[] = [];
+        const dismisses: JoinDismiss[] = [];
+        const floors: Record<string, number> = {};
+        if (managedVaults.length > 0) {
+          const managedIds = [...managedById.keys()];
+          joins.push(
+            ...vaults.joinsForVaults(l.ws, managedIds, 128, {
+              perVault: 64,
+              perVaultScan: 128,
+              maxScan: 512,
+              accept: (a) => {
+                if (joinAskOk(l, a) !== null) return false;
+                const v = managedById.get(a.vault);
+                return v !== undefined && !v.members.includes(a.sub) && l.members.has(a.sub);
+              },
+            }),
+          );
+          dismisses.push(
+            ...vaults.joinDismissesForVaults(l.ws, managedIds, 64, (d) => {
+              const v = managedById.get(d.vault);
+              return v !== undefined && joinDismissOk(l, v, d) === null;
+            }),
+          );
+        }
+        if (discoverable.length > 0) {
+          const own = vaults.ownJoinsForVaults(l.ws, discoverable.map((v) => v.id), r.viewer.sub);
+          const discById = new Map(discoverable.map((v) => [v.id, v]));
+          for (const j of own.joins) {
+            if (joinAskOk(l, j) === null) joins.push(j);
+          }
+          for (const d of own.dismisses) {
+            const v = discById.get(d.vault);
+            if (v !== undefined && joinDismissOk(l, v, d) === null) dismisses.push(d);
+          }
+          for (const [vid, fl] of Object.entries(own.floors)) floors[vid] = fl;
+        }
+        return json(200, JSON.stringify({ joins, dismisses, floors }));
+      },
+    },
+    {
+      method: "PUT",
+      pattern: /^\/vault\/joins$/,
+      handle: async (r) => {
+        const waiting = beforeWrite?.();
+        if (waiting === false || (waiting !== undefined && (!await waiting || beforeWrite?.() === false))) return refuse(503, "vault_handover", "the previous station has not finished handing over");
+        const l = locked(r);
+        if (isAnswer(l)) return l;
+        const next = body(r) as JoinAsk;
+        const why = joinAskOk(l, next);
+        if (why !== null) return refuse(400, "vault_invalid", why);
+        if (deviceOf(l, r) !== next.device || next.sub !== r.viewer.sub) {
+          return refuse(403, "vault_not_device", "a device publishes only its own member's join request");
+        }
+        if (!l.members.has(r.viewer.sub)) return refuse(403, "vault_not_member", "only workspace members may request to join");
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const heldVault = vaults.vaultSnapshot(l.ws, next.vault), vault = heldVault?.value ?? null;
+          if (vault === null || vault.deleted || vault.scope !== "workspace" || vault.ws !== l.ws) {
+            return refuse(404, "vault_unknown", "no such workspace vault here");
+          }
+          if (vault.members.includes(r.viewer.sub)) {
+            return json(200, JSON.stringify({ join: next, alreadyMember: true }));
+          }
+          if (next.state === "pending") {
+            // Require the station to already hold a verified BoxCert for `(next.device, next.box)` so admin approval
+            // can wrap the vault key immediately without a zero-key gap.
+            const heldBox = vaults.box(l.ws, next.device);
+            if (heldBox === null || heldBox.box !== next.box || certOk(l, heldBox) !== null) {
+              return refuse(409, "vault_box_missing", "publish this device's box certificate before requesting to join");
+            }
+          }
+          const snap = vaults.joinSnapshot(l.ws, next.vault, next.sub);
+          const had = snap?.value ?? null;
+          if (had !== null && had.at >= next.at && joinAskOk(l, had) === null) {
+            return json(200, JSON.stringify({ join: had }));
+          }
+          if (!vaults.putJoinIf(next, heldVault!.body, snap?.body ?? null, snap !== null)) continue;
+          const notifySubs = [...new Set([...adminSubsOf(l, vault), r.viewer.sub])];
+          tell("vault-joins-changed", { vault: vault.id }, `vault-joins-changed\0${vault.ws}\0${vault.id}`, { workspace: vault.ws, subs: notifySubs });
+          return json(200, JSON.stringify({ join: next }));
+        }
+        return refuse(503, "vault_busy", "the join request changed while it was being written");
+      },
+    },
+    {
+      method: "PUT",
+      pattern: /^\/vault\/joins\/dismiss$/,
+      handle: async (r) => {
+        const waiting = beforeWrite?.();
+        if (waiting === false || (waiting !== undefined && (!await waiting || beforeWrite?.() === false))) return refuse(503, "vault_handover", "the previous station has not finished handing over");
+        const l = locked(r);
+        if (isAnswer(l)) return l;
+        const next = body(r) as JoinDismiss;
+        if (next === null || typeof next !== "object" || typeof next.vault !== "string" || typeof next.sub !== "string") {
+          return refuse(400, "vault_invalid", "a join dismiss is an object");
+        }
+        if (deviceOf(l, r) === null) return refuse(403, "vault_not_device", "a lock app device signs join dismissals");
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const heldVault = vaults.vaultSnapshot(l.ws, next.vault), vault = heldVault?.value ?? null;
+          if (vault === null || vault.deleted || vault.scope !== "workspace" || !sees(vault, r.viewer)) {
+            return refuse(404, "vault_unknown", "no such workspace vault here, or not one of yours");
+          }
+          const why = joinDismissOk(l, vault, next);
+          if (why !== null) return refuse(400, "vault_invalid", why);
+          const snap = vaults.joinSnapshot(l.ws, next.vault, next.sub);
+          if (snap !== null && snap.dismissUpTo >= next.upTo && (snap.dismiss !== null && joinDismissOk(l, vault, snap.dismiss) === null)) {
+            return json(200, JSON.stringify({ dismiss: snap.dismiss }));
+          }
+          if (snap !== null && snap.dismissUpTo > next.upTo) {
+            return json(200, JSON.stringify({ dismiss: snap.dismiss ?? next, floor: snap.dismissUpTo }));
+          }
+          if (!vaults.putJoinDismissIf(next, heldVault!.body, snap === null ? null : snap.dismissUpTo)) continue;
+          const notifySubs = [...new Set([...adminSubsOf(l, vault), next.sub])];
+          tell("vault-joins-changed", { vault: vault.id }, `vault-joins-changed\0${vault.ws}\0${vault.id}`, { workspace: vault.ws, subs: notifySubs });
+          return json(200, JSON.stringify({ dismiss: next }));
+        }
+        return refuse(503, "vault_busy", "the join dismissal changed while it was being written");
       },
     },
   ];

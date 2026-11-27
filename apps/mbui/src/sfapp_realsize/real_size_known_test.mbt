@@ -5,6 +5,11 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Raised once, 2026-11-27: the workspace of real size's `vaults` topic now weighs a shared workspace vault with a
+// pending join request and a discoverable workspace vault card (client/core-ts/test/real-size.ts `WORKSPACE_VAULT`
+// and `DISC_VAULT`): wide `settings-vault*` screens make, lay out and measure those two new cards once on open
+// (+63 made, +33 laid, +11 measured), nothing else changed.
+
 // Raised once, 2026-11-26: a station's 软件与更新 gives each runtime an 启用 switch (sfpages station_node.mbt
 // software_row_node, the station's `disabledRuntimes`), the workspace of real size's station listing a dozen runtimes:
 // every settings-station screen showing that list makes, lays out and measures their switches, nothing else changed.
@@ -782,7 +787,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-me-reading": (616, 477, 74),
   "wide settings-workspace": (764, 572, 110),
   "wide settings-security": (666, 514, 76),
-  "wide settings-vault": (732, 554, 92),
+  "wide settings-vault": (795, 587, 103),
   "wide settings-vault-items": (796, 608, 82),
   "wide settings-vault-item": (507, 401, 52),
   "wide settings-stations": (822, 593, 103),
@@ -885,15 +890,15 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-archive": (829, 607, 96),
   "wide settings-kept": (627, 503, 75),
   "wide settings-kept-many": (738, 571, 83),
-  "wide settings-vault-off": (732, 554, 92),
-  "wide settings-vault-plain": (732, 554, 92),
-  "wide settings-vault-waits": (732, 554, 92),
-  "wide settings-vault-syncing": (732, 554, 92),
-  "wide settings-vault-confirm": (732, 554, 92),
+  "wide settings-vault-off": (795, 587, 103),
+  "wide settings-vault-plain": (795, 587, 103),
+  "wide settings-vault-waits": (795, 587, 103),
+  "wide settings-vault-syncing": (795, 587, 103),
+  "wide settings-vault-confirm": (795, 587, 103),
   "wide settings-vault-words": (628, 521, 113),
   "wide settings-vault-add": (891, 683, 115),
   "wide settings-vault-editor": (902, 693, 111),
-  "wide settings-vault-recover": (780, 595, 99),
+  "wide settings-vault-recover": (843, 628, 110),
   // (raised once, 2026-11-17: the device asking's panel put up by a reaction of the shell as the workspace is in view
   // (sfapp's signed_in_prompts), in the frame the screen opens in, not by the old view over the pages a frame after it:
   // its nodes made, laid out and measured in that frame's count, nothing more shown)

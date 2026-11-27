@@ -38,7 +38,7 @@ pub fn settings_fixture(src : Source, core : Core) -> Unit {
       let row = items((core.topic)("vaults", { "workspace": str("ws1") }).get().value, "vaults").iter().find_first(fn(r) {
         text(Some(r), "scope") == "workspace"
       })
-      @sfpages.vault_members_dialog(core, here, row)
+      @sfpages.vault_members_dialog(core, here, text(row, "id"))
     }
     "vault-devices-dialog" => {
       let here = @settings.here_of(core, "ws1", "星火工作室")

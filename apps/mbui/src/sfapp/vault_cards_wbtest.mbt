@@ -826,6 +826,9 @@ test "workspace vault fixture modes pass audit across wide, narrow, and 1.3x fon
     "settings-vault-workspace",
     "settings-vault-workspace-save-picked",
     "settings-vault-workspace-members",
+    "settings-vault-workspace-requests",
+    "settings-vault-discover",
+    "settings-vault-discover-pending",
     "settings-vault-workspace-editor",
   ]
   for size in sizes {

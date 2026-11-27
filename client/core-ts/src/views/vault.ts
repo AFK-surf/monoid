@@ -76,8 +76,8 @@ import { Priority } from "../sync/scheduler.ts";
 import type { SpanContext } from "../trace.ts";
 import { get, isObject, utf8 } from "../util.ts";
 import {
-  type BoxCert, type BrowseAnswer, type CrossListing, type Deny, type Grant, type Item, type KeyAsk, type Listing, type Plain, type Request, type Save, type Scope, type Vault,
-  SCOPES, TAG, allows, askOk, boxPublic, decrypt, encryptWith, fromWords, grantContext, itemContext, keyContext, openSeal, recoveryPair, saveContext, rulesCrypto, sealWith, sign, toWords,
+  type BoxCert, type BrowseAnswer, type CrossListing, type Deny, type DiscoverableVault, type Grant, type Item, type JoinAsk, type JoinDismiss, type KeyAsk, type Listing, type Plain, type Request, type Save, type Scope, type Vault,
+  SCOPES, TAG, allows, askOk, boxPublic, decrypt, encryptWith, fromWords, grantContext, itemContext, joinAskOk, joinDismissOk, keyContext, openSeal, recoveryPair, saveContext, rulesCrypto, sealWith, sign, toWords, trySealWith,
 } from "../vault/crypto.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../../rules/js/rules.js";
@@ -142,6 +142,15 @@ type Held = {
   /// Explicit per-vault key asks (`vaultId -> device -> KeyAsk`), decoupled from `BoxCert` so automatic certificate
   /// publishing never triggers prompts and asks are never embedded into `Vault.keys`.
   asks?: Record<string, Record<string, KeyAsk>>;
+  /// Minimal non-secret summaries of shared workspace vaults the viewer has not joined yet (per source stations).
+  discoverable?: Record<string, { summary: DiscoverableVault; from: string[] }>;
+  /// Standalone signed workspace-vault join asks (`vaultId -> applicantSub -> JoinAsk`), structurally isolated from
+  /// `asks` so join requests never trigger global `lockPrompts` popups.
+  joins?: Record<string, Record<string, JoinAsk>>;
+  /// Admin-signed join-request dismissals (`vaultId -> applicantSub -> JoinDismiss`) for monotonic cross-station sync.
+  joinDismisses?: Record<string, Record<string, JoinDismiss>>;
+  /// Station-reported monotonic dismiss floor for the viewer's own join requests per vault (covers join -> remove cycles).
+  joinFloors?: Record<string, number>;
 };
 
 /// A vault's version a station holds, and its items' versions; the signatures of those (`sig`, `sigs`): which of two of
@@ -481,6 +490,75 @@ function verifiedAskAt(lock: Checked, h: Held, vaultId: string, device: string):
   return askOk(lock, cached, true) === null ? cached.at : -1;
 }
 
+/// Verified previous `at` of `(vaultId, sub)` in `h.joins`, accepting current and historical signing keys (`ever = true`).
+function verifiedJoinAt(lock: Checked, h: Held, vaultId: string, sub: string): number {
+  const byVault = h.joins;
+  if (!isObject(byVault) || !Object.prototype.hasOwnProperty.call(byVault, vaultId)) return -1;
+  const map = byVault[vaultId];
+  if (!isObject(map) || !Object.prototype.hasOwnProperty.call(map, sub)) return -1;
+  const cached = map[sub];
+  if (cached === undefined || typeof cached.at !== "number" || !Number.isSafeInteger(cached.at) || cached.at < 0 || cached.at >= Number.MAX_SAFE_INTEGER) return -1;
+  if (cached.vault !== vaultId || cached.sub !== sub) return -1;
+  return joinAskOk(lock, cached, true) === null ? cached.at : -1;
+}
+
+const MAX_DISCOVERABLE_SHOWN = 4;
+const MAX_JOIN_REQUESTS_SHOWN = 32;
+
+function validDiscoverable(ws: string, raw: unknown): raw is DiscoverableVault {
+  if (!isObject(raw)) return false;
+  const d = raw as Partial<DiscoverableVault>;
+  return typeof d.id === "string" && d.id.length > 0 && d.id.length <= 120
+    && d.ws === ws
+    && d.scope === "workspace"
+    && typeof d.name === "string" && d.name.length <= 120
+    && typeof d.owner === "string" && d.owner.length > 0 && d.owner.length <= 200
+    && typeof d.memberCount === "number" && Number.isSafeInteger(d.memberCount) && d.memberCount >= 0
+    && typeof d.seq === "number" && Number.isSafeInteger(d.seq) && d.seq >= 0
+    && typeof d.at === "number" && Number.isSafeInteger(d.at) && d.at >= 0;
+}
+
+function toDiscoverable(v: Vault): DiscoverableVault {
+  return {
+    id: v.id,
+    ws: v.ws,
+    name: v.name,
+    scope: "workspace",
+    owner: v.owner,
+    memberCount: v.members.length,
+    seq: v.seq,
+    at: v.at,
+  };
+}
+
+function joinDismissValid(lock: Checked, v: Vault | undefined, d: JoinDismiss): boolean {
+  if (v !== undefined) {
+    return joinDismissOk(lock, v, d, (s) => isWorkspaceAdmin(lock, s)) === null;
+  }
+  // For an unjoined applicant who does not hold `v.members`, verify the dismissal is validly signed by a current
+  // workspace owner/admin device under `TAG.joinDismiss` for `d.vault`.
+  const signer = ownSigner(lock, d?.sig?.key);
+  if (signer === undefined || !isWorkspaceAdmin(lock, signer.sub)) return false;
+  return joinDismissOk(lock, { id: d.vault, scope: "workspace", members: [signer.sub] }, d, (s) => isWorkspaceAdmin(lock, s)) === null;
+}
+
+function joinDismissFloor(lock: Checked, h: Held, v: Vault | undefined, vaultId: string, applicantSub: string, isSelf: boolean): number {
+  let floor = -1;
+  const byVault = h.joinDismisses;
+  if (isObject(byVault) && Object.prototype.hasOwnProperty.call(byVault, vaultId)) {
+    const map = byVault[vaultId];
+    if (isObject(map) && Object.prototype.hasOwnProperty.call(map, applicantSub)) {
+      const d = map[applicantSub];
+      if (d !== undefined && joinDismissValid(lock, v, d) && d.upTo > floor) floor = d.upTo;
+    }
+  }
+  if (isSelf && isObject(h.joinFloors) && Object.prototype.hasOwnProperty.call(h.joinFloors, vaultId)) {
+    const f = h.joinFloors[vaultId];
+    if (typeof f === "number" && Number.isSafeInteger(f) && f > floor) floor = f;
+  }
+  return floor;
+}
+
 /// The app device of the lock that signs with `key`, where it is its person's own (no other's signature counts).
 const ownSigner = (lock: Checked, key: unknown) => [...lock.devices.values()].find((x) => x.kind === "app" && x.own && x.sign_key === key);
 
@@ -740,7 +818,14 @@ function waitingError(inner: Inner, ws: string, v: Vault): CoreError {
 /// (test/vault.test.ts "a station that lies"). No lock checked here: none taken. A vault waiting to be keyed anew
 /// (`waitingAs`) is taken as the lock it waits by took it, and its items checked against that lock: else any later
 /// version a station made up of it or of an item, taken by none, would be held over it.
-type Fits = { vault(v: Vault): boolean; item(i: Item): boolean; cert(c: BoxCert): boolean; ask(a: KeyAsk): boolean };
+type Fits = {
+  vault(v: Vault): boolean;
+  item(i: Item): boolean;
+  cert(c: BoxCert): boolean;
+  ask(a: KeyAsk): boolean;
+  join(a: JoinAsk): boolean;
+  joinDismiss(d: JoinDismiss): boolean;
+};
 function fitsWith(inner: Inner, ws: string, lock: Checked): Fits {
   return {
     vault: (v) => trusted(lock, v) || waitingAs(inner, ws, lock, v) !== null,
@@ -751,11 +836,17 @@ function fitsWith(inner: Inner, ws: string, lock: Checked): Fits {
     },
     cert: (c) => rules.cert_ok_js(lock, c, false, rulesCrypto) === null,
     ask: (a) => askOk(lock, a) === null,
+    join: (a) => joinAskOk(lock, a) === null,
+    joinDismiss: (d) => {
+      if (!isObject(d) || typeof d.vault !== "string") return false;
+      const v = held(inner, ws).vaults[d.vault];
+      return joinDismissValid(lock, v, d);
+    },
   };
 }
 function fits(inner: Inner, ws: string): Fits {
   const lock = lockOf(inner, ws);
-  if (lock instanceof CoreError) return { vault: () => false, item: () => false, cert: () => false, ask: () => false };
+  if (lock instanceof CoreError) return { vault: () => false, item: () => false, cert: () => false, ask: () => false, join: () => false, joinDismiss: () => false };
   return fitsWith(inner, ws, lock);
 }
 
@@ -822,7 +913,9 @@ export function install(inner: Inner): void {
     read: (address) => readStation(inner, address),
     resumed: (address) => {
       const ws = ofAddress(address);
-      return inner.data.record("vault", ws) !== undefined ? backfillAsks(inner, address) : readStation(inner, address);
+      return inner.data.record("vault", ws) !== undefined
+        ? Effect.andThen(backfillAsks(inner, address), backfillJoins(inner, address))
+        : readStation(inner, address);
     },
     event: (address, name, data) => heard(inner, address, name, data),
   });
@@ -882,9 +975,11 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
     const then = held(inner, ws);
     const vaults = yield* Effect.result(ask(inner, address, "GET", "/vault/vaults"));
     let list: Vault[] | null = null;
+    let rawDiscoverable: unknown = undefined;
     let all: Item[] = [];
     let boxes: BoxCert[] = [];
     let keyAsks: KeyAsk[] = [];
+    let joinsRes: { joins: JoinAsk[]; dismisses: JoinDismiss[]; floors: Record<string, number> } | null = null;
     const incomingChains: Record<string, Entry[]> = {};
     const incomingRoles: Record<string, string> = {};
     if (vaults._tag === "Failure") {
@@ -895,11 +990,20 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
       });
     } else {
       list = arr(get(vaults.success, "vaults")) as Vault[];
+      rawDiscoverable = get(vaults.success, "discoverable");
       all = arr(get(yield* ask(inner, address, "GET", "/vault/items"), "items")) as Item[];
       const boxesRes = yield* ask(inner, address, "GET", "/vault/boxes");
       boxes = arr(get(boxesRes, "boxes")) as BoxCert[];
-      // Older stations without `/vault/asks` answer 404: treat as none.
+      // Older stations without `/vault/asks` or `/vault/joins` answer 404: treat as none.
       keyAsks = yield* Effect.orElseSucceed(Effect.map(ask(inner, address, "GET", "/vault/asks"), (r) => arr(get(r, "asks")) as KeyAsk[]), () => [] as KeyAsk[]);
+      joinsRes = yield* Effect.orElseSucceed(
+        Effect.map(ask(inner, address, "GET", "/vault/joins"), (r) => ({
+          joins: arr(get(r, "joins")) as JoinAsk[],
+          dismisses: arr(get(r, "dismisses")) as JoinDismiss[],
+          floors: isObject(get(r, "floors")) ? (get(r, "floors") as Record<string, number>) : {},
+        })),
+        () => null,
+      );
       const ownerSub = inner.workspaces.owner(ws);
       const rawChains = get(boxesRes, "chains");
       if (isObject(rawChains)) {
@@ -952,9 +1056,15 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
         for (const v of list) {
           holds(h, v, station, all.filter((i) => i.vault === v.id), fit);
         }
+        mergeDiscoverable(h, ws, station, rawDiscoverable, inner.workspaces.owner(ws));
       }
       for (const c of boxes) if (heldOver(h.boxes[c.device], c, fit)) h.boxes[c.device] = c;
       for (const a of keyAsks) mergeAsk(h, a, fit);
+      if (joinsRes !== null) {
+        for (const j of joinsRes.joins) mergeJoin(h, j, fit);
+        for (const d of joinsRes.dismisses) mergeJoinDismiss(h, d, fit);
+        for (const [vid, fl] of Object.entries(joinsRes.floors)) mergeJoinFloor(h, vid, fl);
+      }
       for (const [id, at] of Object.entries(h.asked)) {
         if (at === station) {
           delete h.requests[id];
@@ -996,6 +1106,7 @@ function readStationChecked(inner: Inner, address: string, opts?: { force?: bool
           yield* Effect.ignore(ask(inner, address, "PUT", "/vault/boxes", mine), { log: "Unhandled", message: "vault box brought" });
         }
         yield* backfillAsks(inner, address, keyAsks, opts);
+        yield* backfillJoins(inner, address, joinsRes, opts);
       }
     }
     if (list !== null) spreadAll(inner, ws);
@@ -1033,6 +1144,159 @@ function backfillAsks(inner: Inner, address: string, knownAsks?: KeyAsk[], opts?
       yield* Effect.ignore(ask(inner, address, "PUT", "/vault/asks", myAsk), { log: "Unhandled", message: "vault ask brought" });
     }
   });
+}
+
+/// Backfill this device's already-accepted explicit `JoinAsk` records and managing admin `JoinDismiss` records to
+/// `address` on full read or short-disconnect SSE resume, skipping entries `known` already reports at >= `at`/`upTo`.
+function backfillJoins(
+  inner: Inner,
+  address: string,
+  known?: { joins: JoinAsk[]; dismisses: JoinDismiss[]; floors: Record<string, number> } | null,
+  opts?: { force?: boolean },
+): Effect.Effect<void, CoreError> {
+  return Effect.gen(function* () {
+    if (!opts?.force && (!inner.stations.link(address) || !inner.stations.reachable(address))) return;
+    const ws = ofAddress(address);
+    const lock = lockOf(inner, ws);
+    if (lock instanceof CoreError) return;
+    const self = me(lock, signerOf(inner));
+    if (self === null) return;
+    const cur = held(inner, ws);
+    const mine = cur.boxes[self.device];
+    if (mine === undefined || mine.box !== mem(inner).box || certOwner(lock, mine) === null) return;
+    if (isObject(cur.joins)) {
+      for (const [vaultId, bySub] of Object.entries(cur.joins)) {
+        if (!isObject(bySub) || !Object.prototype.hasOwnProperty.call(bySub, self.sub)) continue;
+        const v = cur.vaults[vaultId];
+        if (isObject(v) && (v.deleted || (Array.isArray(v.members) && v.members.includes(self.sub)))) continue;
+        const myJoin = bySub[self.sub];
+        if (myJoin === undefined || myJoin.device !== self.device || myJoin.box !== mine.box || joinAskOk(lock, myJoin) !== null) continue;
+        const floor = Math.max(
+          joinDismissFloor(lock, cur, v, vaultId, self.sub, true),
+          known?.floors?.[vaultId] ?? -1,
+        );
+        if (myJoin.state === "pending" && myJoin.at <= floor) continue;
+        if (known?.joins.some((j) => j.vault === vaultId && j.sub === self.sub && j.at >= myJoin.at)) continue;
+        yield* Effect.ignore(ask(inner, address, "PUT", "/vault/joins", myJoin), { log: "Unhandled", message: "vault join brought" });
+      }
+    }
+    if (isObject(cur.joinDismisses)) {
+      for (const [vaultId, bySub] of Object.entries(cur.joinDismisses)) {
+        const v = cur.vaults[vaultId];
+        if (!isObject(v) || v.deleted || v.scope !== "workspace" || !canManage(lock, v, self.sub) || !isObject(bySub)) continue;
+        for (const d of Object.values(bySub)) {
+          if (d === undefined || joinDismissValid(lock, v, d) === false) continue;
+          if (known?.dismisses.some((k) => k.vault === vaultId && k.sub === d.sub && k.upTo >= d.upTo)) continue;
+          yield* Effect.ignore(ask(inner, address, "PUT", "/vault/joins/dismiss", d), { log: "Unhandled", message: "vault join dismiss brought" });
+        }
+      }
+    }
+  });
+}
+
+/// Re-read `/vault/joins` from `address` under live auth & current role (triggered by zero-payload `vault-joins-changed`).
+function readJoins(inner: Inner, address: string): Effect.Effect<void> {
+  const ws = ofAddress(address);
+  return Effect.flatMap(
+    Effect.orElseSucceed(
+      Effect.map(ask(inner, address, "GET", "/vault/joins"), (r) => ({
+        joins: arr(get(r, "joins")) as JoinAsk[],
+        dismisses: arr(get(r, "dismisses")) as JoinDismiss[],
+        floors: isObject(get(r, "floors")) ? (get(r, "floors") as Record<string, number>) : {},
+      })),
+      () => null,
+    ),
+    (res) => Effect.sync(() => {
+      if (res === null) return;
+      const fit = fits(inner, ws);
+      change(inner, ws, (h) => {
+        for (const j of res.joins) mergeJoin(h, j, fit);
+        for (const d of res.dismisses) mergeJoinDismiss(h, d, fit);
+        for (const [vid, fl] of Object.entries(res.floors)) mergeJoinFloor(h, vid, fl);
+      });
+    }),
+  );
+}
+
+function mergeDiscoverable(h: Held, ws: string, station: string, rawList: unknown, sub: string | null): void {
+  if (!Array.isArray(rawList)) return;
+  const reported = new Map<string, DiscoverableVault>();
+  for (const item of rawList) {
+    if (!validDiscoverable(ws, item)) continue;
+    reported.set(item.id, item);
+    if (reported.size >= MAX_DISCOVERABLE_SHOWN) break;
+  }
+  const cur = (h.discoverable ??= {});
+  for (const [id, entry] of Object.entries(cur)) {
+    if (!reported.has(id)) {
+      const nextFrom = entry.from.filter((s) => s !== station);
+      if (nextFrom.length === 0) delete cur[id];
+      else entry.from = nextFrom;
+    }
+  }
+  for (const [id, summary] of reported) {
+    const heldVault = h.vaults[id];
+    if (heldVault !== undefined && (heldVault.deleted || (sub !== null && heldVault.members.includes(sub)))) {
+      delete cur[id];
+      continue;
+    }
+    const prev = cur[id];
+    if (prev === undefined) {
+      cur[id] = { summary, from: [station] };
+    } else {
+      const newerSummary = summary.seq > prev.summary.seq || (summary.seq === prev.summary.seq && summary.at >= prev.summary.at);
+      cur[id] = {
+        summary: newerSummary ? summary : prev.summary,
+        from: prev.from.includes(station) ? prev.from : [...prev.from, station],
+      };
+    }
+  }
+  for (const id of Object.keys(cur)) {
+    const heldVault = h.vaults[id];
+    if (heldVault !== undefined && (heldVault.deleted || (sub !== null && heldVault.members.includes(sub)))) delete cur[id];
+  }
+  if (Object.keys(cur).length === 0) delete h.discoverable;
+}
+
+function seedDiscoverable(h: Held, v: Vault, station: string): void {
+  if (v.scope !== "workspace" || v.deleted) return;
+  const summary = toDiscoverable(v);
+  const cur = (h.discoverable ??= {});
+  const prev = cur[v.id];
+  cur[v.id] = prev === undefined
+    ? { summary, from: [station] }
+    : {
+        summary: summary.seq >= prev.summary.seq ? summary : prev.summary,
+        from: prev.from.includes(station) ? prev.from : [...prev.from, station],
+      };
+}
+
+const heldJoinOver = (had: JoinAsk | undefined, a: JoinAsk, fit: Fits) =>
+  fit.join(a) && (had === undefined || !fit.join(had) || had.at <= a.at);
+
+function mergeJoin(h: Held, a: JoinAsk, fit: Fits): void {
+  if (!isObject(a) || typeof a.vault !== "string" || typeof a.sub !== "string") return;
+  const byVault = h.joins?.[a.vault];
+  const had = byVault && Object.prototype.hasOwnProperty.call(byVault, a.sub) ? byVault[a.sub] : undefined;
+  if (!heldJoinOver(had, a, fit)) return;
+  ((h.joins ??= {})[a.vault] ??= {})[a.sub] = a;
+}
+
+const heldJoinDismissOver = (had: JoinDismiss | undefined, d: JoinDismiss, fit: Fits) =>
+  fit.joinDismiss(d) && (had === undefined || !fit.joinDismiss(had) || had.upTo <= d.upTo);
+
+function mergeJoinDismiss(h: Held, d: JoinDismiss, fit: Fits): void {
+  if (!isObject(d) || typeof d.vault !== "string" || typeof d.sub !== "string") return;
+  const byVault = h.joinDismisses?.[d.vault];
+  const had = byVault && Object.prototype.hasOwnProperty.call(byVault, d.sub) ? byVault[d.sub] : undefined;
+  if (!heldJoinDismissOver(had, d, fit)) return;
+  ((h.joinDismisses ??= {})[d.vault] ??= {})[d.sub] = d;
+}
+
+function mergeJoinFloor(h: Held, vaultId: string, floor: number): void {
+  if (typeof vaultId !== "string" || vaultId === "" || typeof floor !== "number" || !Number.isSafeInteger(floor) || floor < 0) return;
+  const prev = h.joinFloors?.[vaultId] ?? -1;
+  if (floor > prev) (h.joinFloors ??= {})[vaultId] = floor;
 }
 
 /// Whether item `i` is kept over `had` (none: it is): the later version, or of one version the one every station keeps
@@ -1132,6 +1396,10 @@ function take(h: Held, v: Vault, fit: Fits): void {
     if (v.deleted) {
       delete h.before?.[v.id];
       delete h.asks?.[v.id];
+      delete h.discoverable?.[v.id];
+      delete h.joins?.[v.id];
+      delete h.joinDismisses?.[v.id];
+      delete h.joinFloors?.[v.id];
     } else {
       if (had !== undefined && v.epoch > had.epoch) {
         const before = (h.before ??= {});
@@ -1145,6 +1413,13 @@ function take(h: Held, v: Vault, fit: Fits): void {
           }
         }
         if (Object.keys(vaultAsksMap).length === 0) delete h.asks![v.id];
+      }
+      const vaultJoinsMap = h.joins?.[v.id];
+      if (vaultJoinsMap !== undefined) {
+        for (const m of v.members) {
+          if (Object.prototype.hasOwnProperty.call(vaultJoinsMap, m)) delete vaultJoinsMap[m];
+        }
+        if (Object.keys(vaultJoinsMap).length === 0) delete h.joins![v.id];
       }
     }
     if (h.later?.[v.id] !== undefined && !rules.vault_supersedes_js(h.later[v.id], v)) delete h.later[v.id];
@@ -1245,6 +1520,8 @@ function letGo(h: Held, id: string, station: string): void {
     delete h.at[id];
     delete h.before?.[id];
     delete h.asks?.[id];
+    delete h.joins?.[id];
+    delete h.joinDismisses?.[id];
     return;
   }
   if (h.at[id] === station || h.at[id] === undefined) h.at[id] = Object.keys(on).sort()[0]!;
@@ -1331,7 +1608,15 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
     case "vault": {
       if (typeof d?.id !== "string") return;
       const known = held(inner, ws).on[d.id]?.[station] !== undefined;
-      change(inner, ws, (h) => holds(h, d as Vault, station, null, fits(inner, ws)));
+      const ownerSub = inner.workspaces.owner(ws);
+      change(inner, ws, (h) => {
+        holds(h, d as Vault, station, null, fits(inner, ws));
+        const cur = h.vaults[d.id];
+        if (cur !== undefined && ownerSub !== null && cur.members.includes(ownerSub) && h.discoverable?.[d.id] !== undefined) {
+          delete h.discoverable[d.id];
+          if (Object.keys(h.discoverable).length === 0) delete h.discoverable;
+        }
+      });
       if (held(inner, ws).vaults[d.id]?.deleted) inner.data.forgetRecord("vaultItems", `${ws}/${d.id}`);
       // One this person was just put in (or this station was just brought): its items are read.
       else if (!known) inner.scheduler.enqueue(address, `${address} vault/${d.id}`, Priority.background, readItems(inner, address, d.id));
@@ -1348,6 +1633,38 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
         unheld(h, d.id, station);
       });
       forgetIfOut(inner, ws, d.id, station);
+      if (
+        isObject(d.vault)
+        && d.vault.id === d.id
+        && d.vault.ws === ws
+        && d.vault.scope === "workspace"
+        && !d.vault.deleted
+        && held(inner, ws).vaults[d.id] === undefined
+      ) {
+        change(inner, ws, (h) => seedDiscoverable(h, d.vault as Vault, station));
+      }
+      return;
+    case "vault-discover": {
+      if (typeof d?.vault !== "string") return;
+      if (d.deleted === true) {
+        change(inner, ws, (h) => {
+          delete h.discoverable?.[d.vault];
+          delete h.joins?.[d.vault];
+          delete h.joinDismisses?.[d.vault];
+          delete h.joinFloors?.[d.vault];
+          if (h.discoverable && Object.keys(h.discoverable).length === 0) delete h.discoverable;
+        });
+        return;
+      }
+      const cur = held(inner, ws).vaults[d.vault];
+      const ownerSub = inner.workspaces.owner(ws);
+      if (cur === undefined || cur.deleted || (ownerSub !== null && !cur.members.includes(ownerSub))) {
+        inner.scheduler.enqueue(address, `${address} vault`, Priority.background, readStation(inner, address));
+      }
+      return;
+    }
+    case "vault-joins-changed":
+      inner.scheduler.enqueue(address, `${address} vault-joins`, Priority.background, readJoins(inner, address));
       return;
     case "vault-item":
       if (typeof d?.vault === "string" && typeof d?.id === "string") {
@@ -2469,6 +2786,16 @@ export function vaultsView(inner: Inner, ws: string): J {
       atText: str(stamp(at * 1000, clock).ago) ?? "",
     };
   };
+  const nowSec = Math.floor(clock.now / 1000);
+  const skewMax = nowSec + ASK_FUTURE_SKEW_S;
+  const wsMemberSubs = new Set<string>(
+    arr(get(workspaceView(inner, ws), "members"))
+      .map((m) => str(get(m, "sub")))
+      .filter((s): s is string => s !== null && s !== ""),
+  );
+  if (wsMemberSubs.size === 0) {
+    for (const s of lock.members.keys()) if (s !== "") wsMemberSubs.add(s);
+  }
   const vaults = Object.values(h.vaults)
     // (one waiting to be keyed anew too, where this device holds a key of it: readAs)
     .filter((v) => sub !== null && v.members.includes(sub) && readAs(inner, ws, lock, v, self) !== null)
@@ -2477,21 +2804,86 @@ export function vaultsView(inner: Inner, ws: string): J {
       const readLock = readAs(inner, ws, lock, v, self);
       const keyed = new Map(v.keys.map((k) => [k.cert.device, k.cert.box]));
       const all = Object.values(items(inner, ws, v.id)).filter((i) => !i.deleted);
+      const isWs = v.scope === "workspace";
+      const manages = sub !== null && canManage(lock, v, sub);
       const authorizedDevices = v.keys
         .map((k) => {
           const devSub = lock.devices.get(k.cert.device)?.sub ?? readLock?.devices.get(k.cert.device)?.sub ?? stateOf(inner, ws).devices.get(k.cert.device)?.sub ?? "";
           return deviceRow(k.cert.device, devSub, k.cert.at);
         })
         .sort((a, b) => Number(b.current) - Number(a.current) || b.at - a.at || (a.device < b.device ? -1 : a.device > b.device ? 1 : 0));
-      const pendingDevices = vouched
-        .filter((c) => v.members.includes(c.sub) && keyed.get(c.device) !== c.box)
+      const pendingVouched = vouched.filter((c) => v.members.includes(c.sub) && keyed.get(c.device) !== c.box);
+      const pendingDevices = pendingVouched
         .map((c) => deviceRow(c.device, c.sub, c.at))
         .sort((a, b) => b.at - a.at || (a.device < b.device ? -1 : a.device > b.device ? 1 : 0));
+      const keyedMemberSubs = new Set<string>();
+      for (const k of v.keys) {
+        const devSub = lock.devices.get(k.cert.device)?.sub ?? readLock?.devices.get(k.cert.device)?.sub ?? stateOf(inner, ws).devices.get(k.cert.device)?.sub;
+        if (devSub) keyedMemberSubs.add(devSub);
+      }
+      const pendingBySub = new Map<string, number>();
+      for (const c of pendingVouched) pendingBySub.set(c.sub, (pendingBySub.get(c.sub) ?? 0) + 1);
+      let joinRequests: J[] | undefined;
+      let unjoinedCount: number | undefined;
+      if (isWs) {
+        let unjoined = 0;
+        for (const wsSub of wsMemberSubs) {
+          if (!v.members.includes(wsSub)) unjoined++;
+        }
+        unjoinedCount = unjoined;
+        if (manages) {
+          const rawJoins = h.joins?.[v.id];
+          if (isObject(rawJoins)) {
+            const reqRows: { sortAt: number; row: J }[] = [];
+            for (const j of Object.values(rawJoins)) {
+              if (
+                j === undefined
+                || j.ws !== ws
+                || j.vault !== v.id
+                || j.state !== "pending"
+                || v.members.includes(j.sub)
+                || !lock.members.has(j.sub)
+                || joinAskOk(lock, j) !== null
+              ) continue;
+              const floor = joinDismissFloor(lock, h, v, v.id, j.sub, false);
+              if (j.at <= floor) continue;
+              const info = memberOf(j.sub);
+              const dev = deviceLabelOf(inner, ws, j.device, j.sub);
+              const future = j.at > skewMax;
+              const shownAt = future ? nowSec : j.at;
+              reqRows.push({
+                sortAt: future ? 0 : j.at,
+                row: {
+                  sub: j.sub,
+                  name: info.ownerName,
+                  ...(info.ownerEmail ? { email: info.ownerEmail } : {}),
+                  device: j.device,
+                  deviceText: deviceText(dev),
+                  deviceCode: deviceVerifyCode(j.device),
+                  box: j.box,
+                  at: j.at,
+                  atText: str(stamp(shownAt * 1000, clock).ago) ?? "",
+                },
+              });
+            }
+            reqRows.sort((a, b) => b.sortAt - a.sortAt || (a.row.sub < b.row.sub ? -1 : a.row.sub > b.row.sub ? 1 : 0));
+            if (reqRows.length > 0) joinRequests = reqRows.slice(0, MAX_JOIN_REQUESTS_SHOWN).map((r) => r.row);
+          }
+        }
+      }
       return {
         id: v.id, name: v.name, owner: v.owner, ownerName: nameOf(v.owner), mine: v.owner === sub,
-        scope: v.scope === "workspace" ? "workspace" : "personal",
-        manages: sub !== null && canManage(lock, v, sub),
-        members: v.members.map((s) => ({ sub: s, name: nameOf(s) })),
+        scope: isWs ? "workspace" : "personal",
+        manages,
+        members: v.members.map((s) => {
+          const pendingForSub = pendingBySub.get(s) ?? 0;
+          return {
+            sub: s,
+            name: nameOf(s),
+            keyed: keyedMemberSubs.has(s),
+            ...(pendingForSub > 0 ? { pendingDevices: pendingForSub } : {}),
+          };
+        }),
         station: hostOf(inner, ws, v.id), stationName: stationName.get(hostOf(inner, ws, v.id)) ?? "",
         items: all.length, devices: v.keys.length, open: unlocked(inner, ws, v),
         // Whether this device has a key to it; members' devices set up since that have none yet (its owner's device gives
@@ -2502,8 +2894,34 @@ export function vaultsView(inner: Inner, ws: string): J {
         recoverable: v.recovery !== undefined, lasts: v.lasts ?? "chat",
         authorizedDevices,
         pendingDevices,
+        ...(joinRequests !== undefined ? { joinRequests } : {}),
+        ...(unjoinedCount !== undefined ? { unjoinedCount } : {}),
         // (said only while it waits to be keyed anew: a row that does not wait is as it was)
         ...(waitingAs(inner, ws, lock, v) !== null ? { waits: waitsOn(inner, ws, v) } : {}),
+      };
+    });
+  const memberVaultIds = new Set(vaults.map((v) => v.id));
+  const availableWorkspaceVaults = Object.values(h.discoverable ?? {})
+    .filter((entry) => entry.from.length > 0 && validDiscoverable(ws, entry.summary) && !memberVaultIds.has(entry.summary.id) && !h.vaults[entry.summary.id]?.deleted)
+    .sort((a, b) => (a.summary.id < b.summary.id ? -1 : a.summary.id > b.summary.id ? 1 : 0))
+    .slice(0, MAX_DISCOVERABLE_SHOWN)
+    .map(({ summary: d }) => {
+      const ownJoin = sub !== null ? h.joins?.[d.id]?.[sub] : undefined;
+      const floor = sub !== null ? joinDismissFloor(lock, h, undefined, d.id, sub, true) : -1;
+      const requested = ownJoin !== undefined
+        && ownJoin.ws === ws
+        && ownJoin.vault === d.id
+        && ownJoin.state === "pending"
+        && joinAskOk(lock, ownJoin) === null
+        && ownJoin.at > floor;
+      const shownAt = requested ? (ownJoin.at > skewMax ? nowSec : ownJoin.at) : 0;
+      return {
+        id: d.id,
+        name: d.name,
+        ownerName: nameOf(d.owner),
+        memberCount: d.memberCount,
+        requested,
+        ...(requested ? { requestedAt: ownJoin.at, requestedAtText: str(stamp(shownAt * 1000, clock).ago) ?? "" } : {}),
       };
     });
   // (a secret to keep is told only to whom it is for: it may be meant for no vault yet; none of the plain library's, which
@@ -2575,12 +2993,16 @@ export function vaultsView(inner: Inner, ws: string): J {
   const why = self === null ? whyNot(inner, ws) : null;
   // (no safe mode, their own lock begun nowhere yet: 开启 begins it with this device on it, `Vaults.setup`)
   const begins = self === null && why === null && able(inner) && personalNone(inner, ws);
-  const hasWorkspaceVault = Object.values(h.vaults).some((v) => !v.deleted && v.scope === "workspace" && (trusted(lock, v) || waitingAs(inner, ws, lock, v) !== null));
+  const hasRecovery = self !== null && vouched.some((c) => c.sub === self.sub && typeof c.recovery === "string");
+  // Also suppress duplicate workspace-vault creation when a station reports an existing workspace vault via discovery.
+  const hasWorkspaceVault =
+    Object.values(h.vaults).some((v) => !v.deleted && v.scope === "workspace" && (trusted(lock, v) || waitingAs(inner, ws, lock, v) !== null))
+    || availableWorkspaceVaults.length > 0;
   const canCreateWorkspace = setUp && self !== null && isWorkspaceAdmin(lock, self.sub) && !hasWorkspaceVault;
   return {
     ...base,
     ...(thisDeviceCode ? { thisDeviceCode } : {}),
-    canSign: self !== null || begins, ...(why !== null ? { stateText: why.text, ...(why.confirm ? { confirmText: t("core-misc.vault.confirm") } : {}) } : {}), setUp, canCreateWorkspace, vaults, requests, ...statusWords(vaults, requests), ...(plainItems.length > 0 ? { plainLeft: plainItems.length } : {}),
+    canSign: self !== null || begins, ...(why !== null ? { stateText: why.text, ...(why.confirm ? { confirmText: t("core-misc.vault.confirm") } : {}) } : {}), setUp, canCreateWorkspace, ...(hasRecovery ? { hasRecovery: true } : {}), ...(availableWorkspaceVaults.length > 0 ? { availableWorkspaceVaults } : {}), vaults, requests, ...statusWords(vaults, requests), ...(plainItems.length > 0 ? { plainLeft: plainItems.length } : {}),
   };
 }
 
@@ -2745,6 +3167,22 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
       return v.addDevice(p("vault"), str(c.params.device));
     case "setMembers":
       return v.setMembers(p("vault"), arr(c.params.members).filter((x): x is string => typeof x === "string"));
+    case "addMember": {
+      const askAt = typeof c.params.askAt === "number" && Number.isSafeInteger(c.params.askAt) && c.params.askAt >= 0 ? c.params.askAt : undefined;
+      return v.addMember(p("vault"), p("sub"), {
+        ...(askAt !== undefined ? { askAt } : {}),
+        ...(str(c.params.askDevice) ? { askDevice: str(c.params.askDevice)! } : {}),
+        ...(str(c.params.askBox) ? { askBox: str(c.params.askBox)! } : {}),
+      });
+    }
+    case "removeMember":
+      return v.removeMember(p("vault"), p("sub"));
+    case "requestJoin":
+      return v.requestJoin(p("vault"));
+    case "cancelJoin":
+      return v.cancelJoin(p("vault"));
+    case "dismissJoin":
+      return v.dismissJoin(p("vault"), p("sub"), typeof c.params.upTo === "number" && Number.isSafeInteger(c.params.upTo) && c.params.upTo >= 0 ? c.params.upTo : null);
     case "ask": {
       if (c.params.vault !== undefined && (typeof c.params.vault !== "string" || c.params.vault === "")) {
         return Effect.fail(CoreError.invalid("vault"));
@@ -3086,16 +3524,22 @@ class Vaults {
         const add = self.#missing(lock, v, device);
         const { keys: kept, freshened } = self.#freshened(lock, v);
         if (add.length === 0 && !freshened) return 0;
-        const devices = new Set(add.map((c) => c.device));
         const context = keyContext(self.ws, v.id, v.epoch);
+        const wrappedAdd: { cert: BoxCert; wrapped: string }[] = [];
+        const devices = new Set<string>();
+        for (const c of add) {
+          const cert = bare(c);
+          const eph = new Uint8Array(32);
+          inner.host.randomBytes(eph);
+          const wrapped = trySealWith(cert.box, key, context, eph);
+          if (wrapped === null) continue;
+          wrappedAdd.push({ cert, wrapped });
+          devices.add(cert.device);
+        }
+        if (wrappedAdd.length === 0 && !freshened) return 0;
         const keys = [
           ...kept.filter((k) => !devices.has(k.cert.device)),
-          ...add.map((c) => {
-            const cert = bare(c);
-            const eph = new Uint8Array(32);
-            inner.host.randomBytes(eph);
-            return { cert, wrapped: sealWith(cert.box, key, context, eph) };
-          }),
+          ...wrappedAdd,
         ];
         const { sig: _, ...rest } = v;
         if (!cap.isValid()) return 0;
@@ -3103,7 +3547,7 @@ class Vaults {
         // as the next certificate or read comes, but as the vault moves on)
         yield* Effect.tapError(self.#putVault(sign({ ...rest, seq: v.seq + 1, keys, at: nowS(inner) }, TAG.vault, signer), hostOf(inner, self.ws, v.id), cap), (e) =>
           Effect.sync(() => void (e.code === "vault_invalid" && mem(inner).refused.set(vaultSlot(self.ws, v.id), v.seq))));
-        return add.length;
+        return wrappedAdd.length;
       }),
     );
   }
@@ -3291,12 +3735,19 @@ class Vaults {
         /// The version keyed anew, following `seq` under `epoch`.
         const made = (seq: number, epoch: number) => {
           const context = keyContext(self.ws, v.id, epoch);
-          const seal = (pub: string) => {
+          const sealedKeys: { cert: BoxCert; wrapped: string }[] = [];
+          for (const c of to) {
             const eph = new Uint8Array(32);
             inner.host.randomBytes(eph);
-            return sealWith(pub, key, context, eph);
-          };
-          return sign({ ...rest, owner: nextOwner, seq: seq + 1, members, epoch, keys: to.map((c) => ({ cert: bare(c), wrapped: seal(c.box) })), ...(recovery ? { recovery: seal(recovery) } : {}), at: nowS(inner) }, TAG.vault, signer);
+            const wrapped = trySealWith(c.box, key, context, eph);
+            if (wrapped !== null) sealedKeys.push({ cert: bare(c), wrapped });
+          }
+          const sealedRecovery = recovery ? (() => {
+            const eph = new Uint8Array(32);
+            inner.host.randomBytes(eph);
+            return trySealWith(recovery, key, context, eph);
+          })() : null;
+          return sign({ ...rest, owner: nextOwner, seq: seq + 1, members, epoch, keys: sealedKeys, ...(sealedRecovery ? { recovery: sealedRecovery } : {}), at: nowS(inner) }, TAG.vault, signer);
         };
         const host = hostOf(inner, self.ws, v.id);
         yield* cap.assertValid();
@@ -3492,14 +3943,16 @@ class Vaults {
     next: Vault,
     station: string,
     cap: VaultCapability,
+    opts?: { query?: string; allowLocalFallback?: boolean },
   ): Effect.Effect<Vault, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
       yield* self.#assertCapTarget(cap, next.id);
+      const path = opts?.query ? `/vault/vaults?${opts.query}` : "/vault/vaults";
       const targets = station === "" ? [] : [station, ...writeHosts(inner, self.ws, next.id).filter((s) => s !== station)];
       for (const s of targets) {
-        const put = self.#stationGuarded(cap, s, "PUT", "/vault/vaults", next);
+        const put = self.#stationGuarded(cap, s, "PUT", path, next);
         const res = targets.length > 1
           ? yield* Effect.timeoutOption(Effect.result(put), WRITE_TRY_MS) // timer: a deadline
           : Option.some(yield* Effect.result(put));
@@ -3515,6 +3968,9 @@ class Vaults {
         }
         if (res.value.failure.code === "auth_stale") return yield* Effect.fail(res.value.failure);
         if (!localFallback(res.value.failure)) return yield* Effect.fail(res.value.failure);
+      }
+      if (opts?.allowLocalFallback === false) {
+        return yield* fail("vault_station_offline", t("core-misc.vault.removeOffline"));
       }
       yield* cap.commitOrFail(() => {
         change(inner, self.ws, (h) => take(h, next, fits(inner, self.ws)));
@@ -3556,7 +4012,9 @@ class Vaults {
         words = toWords(entropy);
         recovery = recoveryPair(entropy).pub;
       }
-      const stations = yield* self.#publish(sign({ v: 1 as const, ws: self.ws, device: who.device, box: pub, recovery, at: nowS(inner) }, TAG.box, signer));
+      const prevAt = verifiedBoxAt(lock, held(inner, self.ws), who.device);
+      const boxAt = Math.max(nowS(inner), prevAt + 1);
+      const stations = yield* self.#publish(sign({ v: 1 as const, ws: self.ws, device: who.device, box: pub, recovery, at: boxAt }, TAG.box, signer));
       let readFailed = false;
       for (const s of stations) {
         const ok = yield* Effect.orElseSucceed(readStationChecked(inner, `${self.ws}/${s}`, { force: true }), () => false);
@@ -3816,23 +4274,31 @@ class Vaults {
       const key = new Uint8Array(32);
       inner.host.randomBytes(key);
       const context = keyContext(self.ws, id, 0);
-      const seal = (pub: string) => {
+      const sealTry = (pub: string) => {
         const eph = new Uint8Array(32);
         inner.host.randomBytes(eph);
-        return sealWith(pub, key, context, eph);
+        return trySealWith(pub, key, context, eph);
       };
       const recovery = isWs ? undefined : (here.recovery ?? to.find((c) => c.recovery)?.recovery);
-      const buildVault = (subs: string[], sealedTo: Vouched[]) => sign(
-        {
-          v: 1 as const, ws: self.ws, id, seq: 0, owner: who.sub, name: name.trim(), members: subs, epoch: 0,
-          ...(isWs ? { scope: "workspace" as const } : {}),
-          keys: sealedTo.map((c) => ({ cert: bare(c), wrapped: seal(c.box) })),
-          ...(recovery ? { recovery: seal(recovery) } : {}),
-          at: nowS(inner),
-        },
-        TAG.vault,
-        signer,
-      );
+      const buildVault = (subs: string[], sealedTo: Vouched[]) => {
+        const sealedKeys: { cert: BoxCert; wrapped: string }[] = [];
+        for (const c of sealedTo) {
+          const wrapped = sealTry(c.box);
+          if (wrapped !== null) sealedKeys.push({ cert: bare(c), wrapped });
+        }
+        const sealedRecovery = recovery ? sealTry(recovery) : null;
+        return sign(
+          {
+            v: 1 as const, ws: self.ws, id, seq: 0, owner: who.sub, name: name.trim(), members: subs, epoch: 0,
+            ...(isWs ? { scope: "workspace" as const } : {}),
+            keys: sealedKeys,
+            ...(sealedRecovery ? { recovery: sealedRecovery } : {}),
+            at: nowS(inner),
+          },
+          TAG.vault,
+          signer,
+        );
+      };
       const next = buildVault(memberSubs, to);
       const put = yield* Effect.result(self.#putVault(next, on, vaultCap));
       let v: Vault;
@@ -3867,14 +4333,387 @@ class Vaults {
     });
   }
 
+  /// Publish a standalone signed `JoinAsk` to the workspace's stations (`PUT /vault/joins`), prioritizing stations
+  /// known to hold `record.vault` (`preferred`). If a station rejects `state: "pending"` with `409 vault_box_missing`,
+  /// pushes `boxCert` (`PUT /vault/boxes`) to that station and retries once so admin approval has the applicant's key.
+  #publishJoin(
+    record: JoinAsk,
+    preferred: readonly string[],
+    cap: WorkspaceCapability,
+    boxCert?: BoxCert,
+  ): Effect.Effect<{ stations: string[]; alreadyMember: boolean }, CoreError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const inner = self.#inner;
+      const allStations = stationsOf(inner, self.ws).map((s) => s.id);
+      const ordered = [...new Set([...preferred.filter((id) => allStations.includes(id)), ...allStations])];
+      if (ordered.length === 0) return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+      const sendOne = (sid: string) =>
+        self.#stationGuarded(cap, sid, "PUT", "/vault/joins", record).pipe(
+          Effect.catch((err) => {
+            if (record.state === "pending" && err.code === "vault_box_missing" && boxCert !== undefined) {
+              return self.#stationGuarded(cap, sid, "PUT", "/vault/boxes", boxCert).pipe(
+                Effect.andThen(self.#stationGuarded(cap, sid, "PUT", "/vault/joins", record)),
+              );
+            }
+            return Effect.fail(err);
+          }),
+          Effect.map((res) => ({
+            id: sid,
+            join: (get(res, "join") as JoinAsk | undefined) ?? record,
+            alreadyMember: get(res, "alreadyMember") === true,
+          })),
+        );
+      const published = yield* answersOf(inner, ordered.map(sendOne), tookOrRefused);
+      const ok = published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
+      if (ok.length === 0) {
+        const errs = published.flatMap((r) => (r._tag === "Failure" ? [r.failure] : []));
+        const stale = errs.find((e) => e.code === "auth_stale");
+        if (stale !== undefined) return yield* Effect.fail(stale);
+        if (errs.length > 0 && errs.every((e) => e.status === 404 && e.code !== "vault_unknown")) {
+          return yield* fail("vault_station_old", t("core-misc.vault.joinStationOld"));
+        }
+        if (errs.length > 0 && errs.every((e) => e.code === "vault_box_missing")) {
+          return yield* fail("vault_box_missing", t("core-misc.vault.joinBoxMissing"));
+        }
+        return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+      }
+      const already = ok.find((item) => item.alreadyMember);
+      if (already !== undefined) {
+        const addr = `${self.ws}/${already.id}`;
+        inner.scheduler?.enqueue(addr, `${addr} vault`, Priority.shown, readStation(inner, addr));
+        return { stations: ok.map((item) => item.id), alreadyMember: true };
+      }
+      cap.commit(() => {
+        change(inner, self.ws, (h) => {
+          const fit = fits(inner, self.ws);
+          mergeJoin(h, record, fit);
+          for (const item of ok) mergeJoin(h, item.join, fit);
+        });
+      });
+      return { stations: ok.map((item) => item.id), alreadyMember: false };
+    });
+  }
+
+  /// Publish an admin-signed `JoinDismiss` to the workspace's stations (`PUT /vault/joins/dismiss`).
+  #publishJoinDismiss(record: JoinDismiss, cap: VaultCapability, requireAck: boolean): Effect.Effect<string[], CoreError> {
+    const self = this;
+    return Effect.gen(function* () {
+      const inner = self.#inner;
+      const stations = stationsOf(inner, self.ws);
+      if (stations.length === 0) {
+        if (requireAck) return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+        return [];
+      }
+      const published = yield* answersOf(
+        inner,
+        stations.map((s) =>
+          self.#stationGuarded(cap, s.id, "PUT", "/vault/joins/dismiss", record).pipe(
+            Effect.map((res) => ({
+              id: s.id,
+              dismiss: (get(res, "dismiss") as JoinDismiss | undefined) ?? record,
+            })),
+          ),
+        ),
+        tookOrRefused,
+      );
+      const ok = published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
+      if (ok.length === 0) {
+        if (!requireAck) return [];
+        const errs = published.flatMap((r) => (r._tag === "Failure" ? [r.failure] : []));
+        const stale = errs.find((e) => e.code === "auth_stale");
+        if (stale !== undefined) return yield* Effect.fail(stale);
+        if (errs.length > 0 && errs.every((e) => e.status === 404 && e.code !== "vault_unknown")) {
+          return yield* fail("vault_station_old", t("core-misc.vault.joinStationOld"));
+        }
+        return yield* fail("vault_ask_unsent", t("core-misc.vault.joinNoStation"));
+      }
+      cap.commit(() => {
+        change(inner, self.ws, (h) => {
+          const fit = fits(inner, self.ws);
+          mergeJoinDismiss(h, record, fit);
+          for (const item of ok) mergeJoinDismiss(h, item.dismiss, fit);
+        });
+      });
+      return ok.map((item) => item.id);
+    });
+  }
+
+  /// Unjoined workspace member requesting to join a discoverable shared workspace vault: silently prepares this
+  /// device's X25519 box key & `BoxCert` (without creating a personal vault or skipping future recovery-word setup),
+  /// ensures at least one station holds the `BoxCert`, and publishes a signed `JoinAsk` (`state: "pending"`).
+  requestJoin(vaultId: string): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    if (vaultId === "") return Effect.fail(CoreError.invalid("vault"));
+    const wsCap = self.#wsCap();
+    return this.#certifying()(Effect.gen(function* () {
+      const inner = self.#inner;
+      yield* wsCap.assertValid();
+      yield* lockRead(inner, self.ws);
+      if (!able(inner)) return yield* fail("vault_unavailable", t("core-misc.vault.unavailable"));
+      if (personalNone(inner, self.ws)) {
+        const sub = inner.workspaces.owner(self.ws)!;
+        const signer = yield* Signer.make(inner.host);
+        signerKnown(inner, signer.id);
+        yield* inner.adb.personal().open(sub, t("core-misc.vault.reason.join"));
+        if (inner.adb.personal().standing(sub) !== "member") {
+          return yield* fail("vault_personal_outside", t("core-misc.vault.notTrusted"));
+        }
+      }
+      const { lock, signer, self: who } = yield* self.#ready();
+      yield* wsCap.assertValid();
+      const h0 = held(inner, self.ws);
+      const already = h0.vaults[vaultId];
+      if (already !== undefined && !already.deleted && already.members.includes(who.sub)) {
+        return { asked: 0, alreadyMember: true };
+      }
+      const disc = h0.discoverable?.[vaultId];
+      if (disc === undefined || disc.from.length === 0) {
+        return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
+      }
+      const pub = yield* ensureBoxKey(inner);
+      const here = certs(inner, self.ws, lock).find((c) => c.device === who.device);
+      if (here === undefined || here.box !== pub) {
+        yield* self.#certify(lock, signer, who);
+      }
+      yield* wsCap.assertValid();
+      const cur = held(inner, self.ws);
+      const boxCert = cur.boxes[who.device];
+      const prevAt = verifiedJoinAt(lock, cur, vaultId, who.sub);
+      const floor = joinDismissFloor(lock, cur, undefined, vaultId, who.sub, true);
+      const at = Math.max(nowS(inner), prevAt + 1, floor + 1);
+      const record: JoinAsk = sign(
+        { v: 1 as const, ws: self.ws, vault: vaultId, sub: who.sub, device: who.device, box: pub, state: "pending" as const, at },
+        TAG.join,
+        signer,
+      );
+      const res = yield* self.#publishJoin(record, disc.from, wsCap, boxCert);
+      return { asked: res.alreadyMember ? 0 : res.stations.length, alreadyMember: res.alreadyMember };
+    }));
+  }
+
+  /// Applicant withdrawing their own pending workspace-vault join request (`state: "cancelled"`).
+  cancelJoin(vaultId: string): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    if (vaultId === "") return Effect.fail(CoreError.invalid("vault"));
+    const wsCap = self.#wsCap();
+    return this.#certifying()(Effect.gen(function* () {
+      const inner = self.#inner;
+      yield* wsCap.assertValid();
+      const { lock, signer, self: who } = yield* self.#ready();
+      yield* wsCap.assertValid();
+      const pub = yield* ensureBoxKey(inner);
+      const cur = held(inner, self.ws);
+      const prevAt = verifiedJoinAt(lock, cur, vaultId, who.sub);
+      const at = Math.max(nowS(inner), prevAt + 1);
+      const record: JoinAsk = sign(
+        { v: 1 as const, ws: self.ws, vault: vaultId, sub: who.sub, device: who.device, box: pub, state: "cancelled" as const, at },
+        TAG.join,
+        signer,
+      );
+      const preferred = cur.discoverable?.[vaultId]?.from ?? [];
+      yield* self.#publishJoin(record, preferred, wsCap);
+      return { cancelled: true };
+    }));
+  }
+
+  /// Managing admin dismissing an applicant's join request up to `upTo` (signed monotonic `JoinDismiss`).
+  dismissJoin(vaultId: string, applicantSub: string, upTo: number | null): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    if (vaultId === "" || applicantSub === "") return Effect.fail(CoreError.invalid("vault and sub"));
+    const cap = self.#vaultCap(vaultId);
+    return Effect.gen(function* () {
+      const inner = self.#inner;
+      yield* cap.assertValid();
+      const { lock, signer, self: who } = yield* self.#ready();
+      const v = yield* self.#vault(lock, vaultId);
+      if (v.scope !== "workspace") return yield* fail("vault_not_workspace", "only workspace vaults support join requests");
+      if (!canManage(lock, v, who.sub)) return yield* fail("vault_not_admin", t("core-misc.vault.notOwner"));
+      const cur = held(inner, self.ws);
+      const resolvedUpTo = upTo !== null ? upTo : verifiedJoinAt(lock, cur, vaultId, applicantSub);
+      if (resolvedUpTo < 0) return yield* Effect.fail(CoreError.invalid("upTo"));
+      const record: JoinDismiss = sign(
+        { v: 1 as const, ws: self.ws, vault: vaultId, sub: applicantSub, upTo: resolvedUpTo, at: nowS(inner) },
+        TAG.joinDismiss,
+        signer,
+      );
+      yield* self.#publishJoinDismiss(record, cap, true);
+      return { dismissed: true, upTo: resolvedUpTo };
+    });
+  }
+
+  /// Atomically adds a single workspace member to a shared workspace vault (either approving a join request or
+  /// proactively inviting an unjoined member): captures `VaultCapability` before `#giving`, retries up to 3 times on
+  /// `409 vault_conflict`, isolates bad X25519 certs via `trySealWith`, and passes `approveJoinSub`/`approveJoinAt`
+  /// when approving an explicit join request so a concurrent withdrawal returns `409 join_cancelled`.
+  addMember(
+    vaultId: string,
+    memberSub: string,
+    opts?: { askAt?: number; askDevice?: string; askBox?: string },
+  ): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    if (vaultId === "" || memberSub === "") return Effect.fail(CoreError.invalid("vault and sub"));
+    const cap = self.#vaultCap(vaultId);
+    return this.#giving(vaultId)(Effect.gen(function* () {
+      const inner = self.#inner;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        yield* cap.assertValid();
+        let { lock, signer, self: who } = yield* self.#ready();
+        let v = yield* self.#vault(lock, vaultId);
+        if (v.scope !== "workspace") return yield* fail("vault_not_workspace", "only workspace vaults support managing members");
+        if (!canManage(lock, v, who.sub)) return yield* fail("vault_not_admin", t("core-misc.vault.notOwner"));
+        if (!lock.members.has(memberSub)) return yield* Effect.fail(CoreError.invalid(`member ${memberSub} is not in workspace`));
+        if (v.members.includes(memberSub)) {
+          const keyedDevices = v.keys.filter((k) => lock.devices.get(k.cert.device)?.sub === memberSub).length;
+          return { id: v.id, members: v.members, added: false, keyedDevices };
+        }
+        const host = hostOf(inner, self.ws, v.id);
+        if (attempt === 0 && opts?.askAt !== undefined && host !== "") {
+          const allCerts0 = certs(inner, self.ws, lock);
+          const hasTargetCert = opts.askDevice && opts.askBox
+            ? allCerts0.some((c) => c.sub === memberSub && c.device === opts.askDevice && c.box === opts.askBox)
+            : allCerts0.some((c) => c.sub === memberSub);
+          if (!hasTargetCert) {
+            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault station refresh before addMember" });
+            yield* cap.assertValid();
+            ({ lock, signer, self: who } = yield* self.#ready());
+            v = yield* self.#vault(lock, vaultId);
+            if (!canManage(lock, v, who.sub)) return yield* fail("vault_not_admin", t("core-misc.vault.notOwner"));
+            if (v.members.includes(memberSub)) {
+              const keyedDevices = v.keys.filter((k) => lock.devices.get(k.cert.device)?.sub === memberSub).length;
+              return { id: v.id, members: v.members, added: false, keyedDevices };
+            }
+          }
+        }
+        const oldKey = yield* self.#key(v, who, false, t("core-misc.vault.reason.unlock", { name: v.name }), false, undefined, cap);
+        const nextMembers = [...v.members, memberSub];
+        const { keys: kept } = self.#freshened(lock, v);
+        const keyedMap = new Map(kept.map((k) => [k.cert.device, k.cert.box]));
+        const addCerts = certs(inner, self.ws, lock).filter((c) => nextMembers.includes(c.sub) && keyedMap.get(c.device) !== c.box);
+        const context = keyContext(self.ws, v.id, v.epoch);
+        const wrappedAdd: { cert: BoxCert; wrapped: string }[] = [];
+        const addDevices = new Set<string>();
+        for (const c of addCerts) {
+          const cert = bare(c);
+          const eph = new Uint8Array(32);
+          inner.host.randomBytes(eph);
+          const wrapped = trySealWith(cert.box, oldKey, context, eph);
+          if (wrapped === null) continue;
+          wrappedAdd.push({ cert, wrapped });
+          addDevices.add(cert.device);
+        }
+        const keys = [...kept.filter((k) => !addDevices.has(k.cert.device)), ...wrappedAdd];
+        const keyedDevices = keys.filter((k) => lock.devices.get(k.cert.device)?.sub === memberSub).length;
+        const { sig: _, ...rest } = v;
+        const next = sign({ ...rest, seq: v.seq + 1, members: nextMembers, keys, at: nowS(inner) }, TAG.vault, signer);
+        const query = opts?.askAt !== undefined
+          ? `approveJoinSub=${encodeURIComponent(memberSub)}&approveJoinAt=${opts.askAt}`
+          : undefined;
+        const put = yield* Effect.result(self.#putVault(next, host, cap, query ? { query } : undefined));
+        if (put._tag === "Failure") {
+          if (put.failure.code === "join_cancelled") {
+            if (host !== "") yield* Effect.ignore(readJoins(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault joins read" });
+            return yield* fail("join_cancelled", t("core-misc.vault.joinCancelled"));
+          }
+          if (put.failure.code === "vault_conflict" && attempt < 2 && host !== "") {
+            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault station read" });
+            continue;
+          }
+          if (!safeMode(inner, self.ws) && put.failure.code === "vault_invalid" && put.failure.message.includes("is not in the lock")) {
+            return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
+          }
+          return yield* Effect.fail(put.failure);
+        }
+        const maxAskAt = Math.max(opts?.askAt ?? -1, verifiedJoinAt(lock, held(inner, self.ws), vaultId, memberSub));
+        if (maxAskAt >= 0) {
+          const dismissRec: JoinDismiss = sign(
+            { v: 1 as const, ws: self.ws, vault: vaultId, sub: memberSub, upTo: maxAskAt, at: nowS(inner) },
+            TAG.joinDismiss,
+            signer,
+          );
+          inner.runner.fork(Effect.ignore(self.#publishJoinDismiss(dismissRec, cap, false), { log: "Unhandled", message: "vault join dismiss after approve" }));
+        }
+        return { id: v.id, members: nextMembers, added: true, keyedDevices };
+      }
+      return yield* fail("vault_conflict", "the vault changed while it was being written");
+    }));
+  }
+
+  /// Atomically removes a single member from a shared workspace vault, rotating to `epoch + 1` with a fresh master key
+  /// and strictly requiring station ACK (never falling back to an offline local fork). Retries up to 3 times on
+  /// `409 vault_conflict` and isolates bad X25519 certs via `trySealWith`.
+  removeMember(vaultId: string, memberSub: string): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    if (vaultId === "" || memberSub === "") return Effect.fail(CoreError.invalid("vault and sub"));
+    const cap = self.#vaultCap(vaultId);
+    return this.#giving(vaultId)(Effect.gen(function* () {
+      const inner = self.#inner;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        yield* cap.assertValid();
+        const { lock, signer, self: who } = yield* self.#ready();
+        const v = yield* self.#vault(lock, vaultId);
+        if (v.scope !== "workspace") return yield* fail("vault_not_workspace", "only workspace vaults support managing members");
+        if (!canManage(lock, v, who.sub)) return yield* fail("vault_not_admin", t("core-misc.vault.notOwner"));
+        if (memberSub === who.sub) return yield* Effect.fail(CoreError.invalid("cannot remove yourself from workspace vault"));
+        if (!v.members.includes(memberSub)) return { id: v.id, members: v.members, removed: false, rekeyed: false };
+        const oldKey = yield* self.#key(v, who, false, t("core-misc.vault.reason.unlock", { name: v.name }), false, undefined, cap);
+        const nextMembers = v.members.filter((m) => m !== memberSub);
+        const newKey = new Uint8Array(32);
+        inner.host.randomBytes(newKey);
+        const nextEpoch = v.epoch + 1;
+        const context = keyContext(self.ws, v.id, nextEpoch);
+        const to = certs(inner, self.ws, lock).filter((c) => nextMembers.includes(c.sub));
+        const keys: { cert: BoxCert; wrapped: string }[] = [];
+        for (const c of to) {
+          const cert = bare(c);
+          const eph = new Uint8Array(32);
+          inner.host.randomBytes(eph);
+          const wrapped = trySealWith(cert.box, newKey, context, eph);
+          if (wrapped === null) continue;
+          keys.push({ cert, wrapped });
+        }
+        if (!keys.some((k) => k.cert.device === who.device)) {
+          return yield* fail("vault_not_set_up", t("core-misc.vault.notSetUp"));
+        }
+        const nextOwner = nextMembers.includes(v.owner) ? v.owner : who.sub;
+        const { sig: _, recovery: _r, ...rest } = v;
+        const next = sign(
+          { ...rest, owner: nextOwner, seq: v.seq + 1, members: nextMembers, epoch: nextEpoch, keys, at: nowS(inner) },
+          TAG.vault,
+          signer,
+        );
+        const host = hostOf(inner, self.ws, v.id);
+        const put = yield* Effect.result(self.#putVault(next, host, cap, { allowLocalFallback: false }));
+        if (put._tag === "Failure") {
+          if (put.failure.code === "vault_conflict" && attempt < 2 && host !== "") {
+            yield* Effect.ignore(readStation(inner, `${self.ws}/${host}`), { log: "Unhandled", message: "vault station read" });
+            continue;
+          }
+          if (!safeMode(inner, self.ws) && put.failure.code === "vault_invalid" && put.failure.message.includes("is not in the lock")) {
+            return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
+          }
+          return yield* Effect.fail(put.failure);
+        }
+        const nv = put.success;
+        self.#keep(v, oldKey, cap);
+        self.#keep(nv, newKey, cap);
+        yield* Effect.ignore(self.#carryNow(v.id, null, new Map([[keyOf(self.ws, v), oldKey], [keyOf(self.ws, nv), newKey]]), {}, cap), { log: "Unhandled", message: "vault items keyed anew" });
+        return { id: v.id, members: nextMembers, removed: true, rekeyed: true, epoch: nextEpoch };
+      }
+      return yield* fail("vault_conflict", "the vault changed while it was being written");
+    }));
+  }
+
   /// Updates the member list of a shared workspace vault (workspace owners/admins who are members only). Adding
   /// members keeps the current epoch and seals the current master key to their set-up devices; removing any member
   /// rotates to `epoch + 1` with a fresh master key (taking over `owner` if the original creator is removed) and
   /// immediately re-encrypts all items under the new epoch.
   setMembers(id: string, members: string[]): Effect.Effect<unknown, CoreError> {
     const self = this;
+    const cap = self.#vaultCap(id);
     return Effect.gen(function* () {
       const inner = self.#inner;
+      yield* cap.assertValid();
       const { lock, signer, self: who } = yield* self.#ready();
       const v0 = yield* self.#vault(lock, id);
       if (v0.scope !== "workspace") return yield* fail("vault_not_workspace", "only workspace vaults support managing members");
@@ -3893,7 +4732,7 @@ class Vaults {
       if (added0.length === 0 && removed0.length === 0) return { id: v0.id, members: v0.members, rekeyed: false };
       return yield* self.#giving(v0.id)(
         Effect.gen(function* () {
-          const cap = self.#vaultCap(v0.id);
+          yield* cap.assertValid();
           const { lock, signer, self: who } = yield* self.#ready();
           const v = yield* self.#vault(lock, id);
           if (v.scope !== "workspace") return yield* fail("vault_not_workspace", "only workspace vaults support managing members");
@@ -3910,17 +4749,19 @@ class Vaults {
             const { keys: kept } = self.#freshened(lock, v);
             const keyed = new Map(kept.map((k) => [k.cert.device, k.cert.box]));
             const addCerts = certs(inner, self.ws, lock).filter((c) => nextMembers.includes(c.sub) && keyed.get(c.device) !== c.box);
-            const addDevices = new Set(addCerts.map((c) => c.device));
             const context = keyContext(self.ws, v.id, v.epoch);
-            const keys = [
-              ...kept.filter((k) => !addDevices.has(k.cert.device)),
-              ...addCerts.map((c) => {
-                const cert = bare(c);
-                const eph = new Uint8Array(32);
-                inner.host.randomBytes(eph);
-                return { cert, wrapped: sealWith(cert.box, oldKey, context, eph) };
-              }),
-            ];
+            const wrappedAdd: { cert: BoxCert; wrapped: string }[] = [];
+            const addDevices = new Set<string>();
+            for (const c of addCerts) {
+              const cert = bare(c);
+              const eph = new Uint8Array(32);
+              inner.host.randomBytes(eph);
+              const wrapped = trySealWith(cert.box, oldKey, context, eph);
+              if (wrapped === null) continue;
+              wrappedAdd.push({ cert, wrapped });
+              addDevices.add(cert.device);
+            }
+            const keys = [...kept.filter((k) => !addDevices.has(k.cert.device)), ...wrappedAdd];
             const { sig: _, ...rest } = v;
             const next = sign({ ...rest, seq: v.seq + 1, members: nextMembers, keys, at: nowS(inner) }, TAG.vault, signer);
             const put = yield* Effect.result(self.#putVault(next, hostOf(inner, self.ws, v.id), cap));
@@ -3937,23 +4778,26 @@ class Vaults {
           const nextEpoch = v.epoch + 1;
           const context = keyContext(self.ws, v.id, nextEpoch);
           const to = certs(inner, self.ws, lock).filter((c) => nextMembers.includes(c.sub));
+          const keys: { cert: BoxCert; wrapped: string }[] = [];
+          for (const c of to) {
+            const cert = bare(c);
+            const eph = new Uint8Array(32);
+            inner.host.randomBytes(eph);
+            const wrapped = trySealWith(cert.box, newKey, context, eph);
+            if (wrapped === null) continue;
+            keys.push({ cert, wrapped });
+          }
+          if (!keys.some((k) => k.cert.device === who.device)) {
+            return yield* fail("vault_not_set_up", t("core-misc.vault.notSetUp"));
+          }
           const nextOwner = nextMembers.includes(v.owner) ? v.owner : who.sub;
           const { sig: _, recovery: _r, ...rest } = v;
           const next = sign(
-            {
-              ...rest, owner: nextOwner, seq: v.seq + 1, members: nextMembers, epoch: nextEpoch,
-              keys: to.map((c) => {
-                const cert = bare(c);
-                const eph = new Uint8Array(32);
-                inner.host.randomBytes(eph);
-                return { cert, wrapped: sealWith(cert.box, newKey, context, eph) };
-              }),
-              at: nowS(inner),
-            },
+            { ...rest, owner: nextOwner, seq: v.seq + 1, members: nextMembers, epoch: nextEpoch, keys, at: nowS(inner) },
             TAG.vault,
             signer,
           );
-          const put = yield* Effect.result(self.#putVault(next, hostOf(inner, self.ws, v.id), cap));
+          const put = yield* Effect.result(self.#putVault(next, hostOf(inner, self.ws, v.id), cap, { allowLocalFallback: false }));
           if (put._tag === "Failure") {
             if (!safeMode(inner, self.ws) && put.failure.code === "vault_invalid" && put.failure.message.includes("is not in the lock")) {
               return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));

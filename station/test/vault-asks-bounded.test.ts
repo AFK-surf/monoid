@@ -29,8 +29,8 @@ function fixture() {
     get(target, prop) {
       if (prop === "prepare") {
         return (sql: string) => target.prepare(sql.replace(
-          "SELECT body FROM vault_asks WHERE ws = ?",
-          "SELECT body, ask_seen(device) AS seen FROM vault_asks WHERE ws = ?",
+          "SELECT at, device, body FROM vault_asks WHERE ws = ?",
+          "SELECT at, device, body, ask_seen(device) AS seen FROM vault_asks WHERE ws = ?",
         ));
       }
       const value = Reflect.get(target, prop, target);
@@ -119,6 +119,28 @@ test("GET /vault/asks scans only the viewer's vaults via vault_asks_vault_at ind
     assert.equal(answer2.status, 200);
     assert.equal(answer2.body.asks.filter((a: KeyAsk) => a.vault === secondVaultId).length, 5, "empty vaults must not cap active vault below its 5 asks");
     assert.equal(answer2.body.asks.filter((a: KeyAsk) => a.vault === f.myVaultId).length, 1);
+
+    // Keyset scan past 68 stale/invalid-signature rows in one vault still reaches the valid ask underneath (bounded <= perVaultScan).
+    const thirdVaultId = "v_01HZZZZZZZZZZZZZZZZZZZZZZ3";
+    f.vaults.putVault({
+      v: 1, ws: f.myAsk.ws, id: thirdVaultId, seq: 0, owner: "alice", name: "Third", members: ["alice"], epoch: 0,
+      keys: [], at: 1000, sig: f.myAsk.sig,
+    });
+    for (let i = 0; i < 68; i++) {
+      const devId = `e${i.toString(16).padStart(63, "0")}`;
+      const bad = f.signAsk(thirdVaultId, devId, 9000 + i);
+      // Corrupt signature (simulating rotated signing key) while keeping device active in lock.
+      f.vaults.putAsk({ ...bad, sig: { ...bad.sig, sig: "00".repeat(64) } });
+    }
+    const validUnderStale = f.signAsk(thirdVaultId, f.myAsk.device, 1500);
+    f.vaults.putAsk(validUnderStale);
+    const answer3 = await f.read();
+    assert.equal(answer3.status, 200);
+    assert.deepEqual(
+      answer3.body.asks.filter((a: KeyAsk) => a.vault === thirdVaultId),
+      [validUnderStale],
+      "bounded keyset cursor must advance past 68 stale rotated-key rows to find valid ask",
+    );
   } finally {
     f.db.close();
   }
