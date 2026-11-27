@@ -28,14 +28,14 @@
 //        the release, one a line
 //   node scripts/native.ts ensure [--windows] [--publish | --publish-store] [--outbox DIR] [part[:target]…]
 //        CI: each (default: all) in the cache, built when not prebuilt; --publish uploads what the release and the
-//        store lack (gh, main only), then prunes those parts and targets to the newest 20; --publish-store puts what the
+//        store lack (gh, main only), then prunes those parts and targets to the newest 10 (sweeping all groups past 800); --publish-store puts what the
 //        store lacks in the store instead (release-put.sh, CLOUDFLARE_API_TOKEN), never asking GitHub (the Shanghai
 //        Macs' main jobs: their `gh release upload` timed out at the job's 5 minutes again and again, 2026-11-25);
 //        --outbox copies the artifacts the release lacks there (a branch's run artifact)
 //        The default leaves out what only Windows builds (MSVC's: the mbui app's shell and engine); --windows is those.
 //        Never what only Linux builds (the mbui app's Linux shell and engine: the prebuild workflow's alone), nor
 //        what is built only by hand (`prebuilt`: ghostty-vt, prebuild --release on a Mac).
-//   node scripts/native.ts prune [N]                   the release keeps the newest N (20) of each part and target
+//   node scripts/native.ts prune [N]                   the release keeps the newest N (10) of each part and target
 //   node scripts/native.ts prebuild [--release] [part:target…]   each (default: the Windows parts) in neither the store
 //        (STORE: the releases bucket's natives/) nor the release, got or built here (Windows builds the Windows ones, a
 //        Mac cross-builds them), then put in the store (scripts/release-put.sh: CLOUDFLARE_API_TOKEN, the releases
@@ -47,7 +47,7 @@
 //        the store lacks, copied there (release-put.sh, CLOUDFLARE_API_TOKEN); never built. (Every part, not only the
 //        Windows ones: the release's download answered GitHub's runners 504 again and again on 2026-11-08, iroh-wasm's,
 //        failing every branch's bundle, static and check-linux; the store is asked first. And the readers: the release
-//        keeps 20 of a part, a few hours of main's, so a stable release of the day before found its readers gone and
+//        keeps 10 of a part, a few hours of main's, so a stable release of the day before found its readers gone and
 //        built all four in its station job, past its 10 minutes. scripts/release-prune.ts deletes a reader there after
 //        14 days. Not reader-harness, the tests' alone.)
 //
@@ -1507,7 +1507,11 @@ async function releaseThroughApiOnce(name: string): Promise<{ bytes: Buffer; url
       let nextUrl: string | null = `${root}/${release.id}/assets?per_page=100`;
       while (nextUrl && !asset) {
         const page = await api(nextUrl, "application/vnd.github+json", AbortSignal.timeout(30_000));
-        if (!page.ok) { await page.body?.cancel().catch(() => {}); break; }
+        if (!page.ok) {
+          log(`release assets API answered ${page.status}`);
+          await page.body?.cancel().catch(() => {});
+          return passing(page.status) ? "again" : null;
+        }
         const items = await page.json() as { name?: unknown; id?: unknown; digest?: unknown }[];
         if (Array.isArray(items)) asset = items.find((a) => a.name === name);
         nextUrl = nextPageUrl(page.headers.get("link"), apiOrigin);
@@ -1948,13 +1952,23 @@ async function listReleaseAssets(): Promise<ReleaseAsset[] | null> {
   }
   const relId = gh(["api", `repos/${REPO}/releases/tags/${RELEASE}`, "--jq", ".id"], { allowFail: true, timeout: 30_000 }).trim();
   if (!/^\d+$/.test(relId)) return null;
-  const listed = gh(
-    ["api", "--paginate", "--slurp", `repos/${REPO}/releases/${relId}/assets?per_page=100`, "--jq", "[.[][] | {id, name, created_at}]"],
-    { allowFail: true, timeout: 30_000 },
+  // Emit one JSON object per line (NDJSON): `gh api --paginate` does not allow `--slurp` together with `--jq`.
+  const done = spawnSync(
+    "gh",
+    ["api", "--paginate", `repos/${REPO}/releases/${relId}/assets?per_page=100`, "--jq", ".[] | {id, name, created_at}"],
+    { encoding: "utf8", maxBuffer: 64 << 20, timeout: 30_000, killSignal: "SIGKILL" },
   );
-  if (!listed) return null;
+  if (done.error || done.status !== 0) return null;
   try {
-    return JSON.parse(listed) as ReleaseAsset[];
+    const all: ReleaseAsset[] = [];
+    const seen = new Set<number>();
+    for (const line of done.stdout.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      const a = JSON.parse(trimmed) as ReleaseAsset;
+      if (!seen.has(a.id)) { seen.add(a.id); all.push(a); }
+    }
+    return all;
   } catch {
     return null;
   }
@@ -1975,7 +1989,7 @@ async function prune(keep: number, only?: Set<string>): Promise<void> {
   // (one GitHub dropped is left for the next prune: an EOF on one DELETE failed main's natives job, 6484574c, 2026-11-04)
   if (token) {
     const headers = { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" };
-    await inTurn(targets, 8, async (a) => {
+    await inTurn(targets, 4, async (a) => {
       try {
         const r = await fetch(`${GITHUB_API}/repos/${REPO}/releases/assets/${a.id}`, {
           method: "DELETE",

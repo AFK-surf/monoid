@@ -6,7 +6,7 @@
 //   node scripts/native-download-test.mjs
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -90,6 +90,9 @@ const server = http.createServer((req, res) => {
           "content-type": "application/json",
           link: `<http://127.0.0.1:${port}/api/repos/o/r/releases/42/assets?per_page=100&page=2>; rel="next"`,
         }).end(JSON.stringify([{ name: "other-linux-x64-000000000000000000000000.tar.gz", id: 999 }]));
+      } else if (count("paged page 2") === 1) {
+        // First page-2 attempt returns 502; releaseThroughApi must retry rather than treat as absent.
+        res.writeHead(502).end("bad gateway");
       } else {
         res.writeHead(200, { "content-type": "application/json" })
           .end(JSON.stringify([{ name: NAME, id: CASES.paged, digest }]));
@@ -131,15 +134,16 @@ await new Promise((done) => server.listen(0, "127.0.0.1", done));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 // native.ts subcommand for that case, with a cache of its own; what it said, and how it ended
-const runNative = (release, args) => new Promise((done) => {
+const runNative = (release, args, extraEnv = {}) => new Promise((done) => {
   const cache = join(t, `cache-${release}`);
   const env = { ...process.env };
-  for (const k of Object.keys(env)) if (k.startsWith("STILLFAIL_") || k === "CI") delete env[k];
+  for (const k of Object.keys(env)) if (k.startsWith("STILLFAIL_") || k === "CI" || k === "GH_TOKEN" || k === "GITHUB_TOKEN") delete env[k];
   Object.assign(env, {
     STILLFAIL_NATIVE_CACHE: cache, STILLFAIL_NATIVE_STORE: `${base}/store`, STILLFAIL_NATIVE_GITHUB: base,
     STILLFAIL_NATIVE_GITHUB_API: `${base}/api`, STILLFAIL_NATIVE_REPO: "o/r", STILLFAIL_NATIVE_RELEASE: release,
     STILLFAIL_NATIVE_RETRY_MS: "1", GH_TOKEN: "t0ken",
-  });
+  }, extraEnv);
+  for (const [k, v] of Object.entries(extraEnv)) if (v === undefined) delete env[k];
   const child = spawn(process.execPath, [join(root, "scripts/native.ts"), ...args], { env });
   let out = "", err = "";
   child.stdout.on("data", (b) => { out += b; });
@@ -184,8 +188,8 @@ const started = Date.now();
 }
 {
   const got = await fetchKey("paged");
-  check("paged", unpacked(got), "not taken whole via paginated /releases/<id>/assets fallback", got);
-  check("paged", of("paged", "assets-page").length === 2, `paginated assets asked ${of("paged", "assets-page").length} pages, not 2`, got);
+  check("paged", unpacked(got), "not taken whole via paginated /releases/<id>/assets fallback after page-2 502", got);
+  check("paged", of("paged", "assets-page").length === 4, `paginated assets asked ${of("paged", "assets-page").length} pages across 2 attempts, not 4`, got);
   check("paged", of("paged", "signed").length === 1 && of("paged", "signed").every((s) => s[3] === ""), "the token sent on to the signed URL", got);
 }
 {
@@ -194,6 +198,48 @@ const started = Date.now();
   check("prune", got.status === 0, `prune exited ${got.status}`, got);
   check("prune", of("prune", "assets-page").length === 2, `prune read ${of("prune", "assets-page").length} pages, not 2`, got);
   check("prune", sorted.length === 2 && sorted[0] === 101 && sorted[1] === 102, `prune deleted [${sorted.join(",")}], expected [101,102]`, got);
+}
+{
+  // gh CLI fallback (no GH_TOKEN/GITHUB_TOKEN): rejects --slurp with --jq, emits NDJSON, and records DELETE calls.
+  const binDir = join(t, "fake-gh-bin");
+  const delLog = join(t, "gh-deleted.log");
+  mkdirSync(binDir, { recursive: true });
+  const fakeGh = join(binDir, "gh");
+  writeFileSync(fakeGh, `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+if (args.includes("--slurp") && (args.includes("--jq") || args.includes("--template"))) {
+  process.stderr.write("the \`--slurp\` option is not supported with \`--jq\` or \`--template\`\\n");
+  process.exit(1);
+}
+if (args[0] === "api" && args.includes("repos/o/r/releases/tags/gh-fallback")) {
+  process.stdout.write("99\\n");
+  process.exit(0);
+}
+if (args[0] === "api" && args.includes("--paginate") && args.includes("repos/o/r/releases/99/assets?per_page=100")) {
+  const rows = ${JSON.stringify([...PRUNE_PAGES[1], ...PRUNE_PAGES[2]])};
+  for (const r of rows) process.stdout.write(JSON.stringify(r) + "\\n");
+  process.exit(0);
+}
+if (args[0] === "api" && args.includes("DELETE")) {
+  const ep = args.find((a) => a.startsWith("repos/o/r/releases/assets/")) ?? "";
+  appendFileSync(${JSON.stringify(delLog)}, ep.split("/").pop() + "\\n");
+  process.exit(0);
+}
+process.stderr.write("unexpected fake gh call: " + args.join(" ") + "\\n");
+process.exit(1);
+`);
+  chmodSync(fakeGh, 0o755);
+  const got = await runNative("gh-fallback", ["prune", "2"], {
+    GH_TOKEN: undefined,
+    GITHUB_TOKEN: undefined,
+    PATH: `${binDir}:${process.env.PATH ?? ""}`,
+  });
+  const ghDeleted = existsSync(delLog)
+    ? readFileSync(delLog, "utf8").trim().split("\n").filter(Boolean).map(Number).sort((a, b) => a - b)
+    : [];
+  check("gh-fallback", got.status === 0, `gh-fallback prune exited ${got.status}`, got);
+  check("gh-fallback", ghDeleted.join(",") === "101,102", `gh-fallback deleted [${ghDeleted.join(",")}], expected [101,102]`, got);
 }
 {
   // selectPruneTargets unit checks: dedup, only scoping under cap, global cap sweep across unmentioned groups, and min-keep floor.
@@ -213,4 +259,4 @@ const started = Date.now();
 server.close();
 rmSync(t, { recursive: true, force: true });
 if (fails) process.exit(1);
-console.log(`native-download-test: 6 cases (${Date.now() - started} ms)`);
+console.log(`native-download-test: 7 cases (${Date.now() - started} ms)`);
