@@ -30,8 +30,9 @@ class ParityClient {
     this.proc.stderr.on("data", (d) => {
       this.stderr += d.toString("utf8");
     });
+    this.proc.stdout.setEncoding("utf8");
     this.proc.stdout.on("data", (chunk) => {
-      this.buf += chunk.toString("utf8");
+      this.buf += chunk;
       let nl;
       while ((nl = this.buf.indexOf("\n")) >= 0) {
         const line = this.buf.slice(0, nl);

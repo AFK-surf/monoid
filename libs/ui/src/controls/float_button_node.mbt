@@ -61,7 +61,7 @@ pub fn float_button_node(
               let (_, _, sx, sy) = ih.stretch(b)
               (sx + sy) / 2.0
             }),
-            about=At(0.5, 0.5),
+            about=@view.Pivot::At(0.5, 0.5),
             moves_besides=false,
           )
           |> ignore
@@ -216,7 +216,7 @@ fn float_icon(b : @view.View, icon : String, busy : (() -> Bool)?, loc~ : Source
           } else {
             t
           }
-        }), about=At(0.5, 0.5))
+        }), about=@view.Pivot::At(0.5, 0.5))
         .turn(By(fn() { if u() > 0.5 { i.cycle(spinner_turn_ms) * 2.0 * pi } else { 0.0 } }), drawn=true)
         |> ignore
       })

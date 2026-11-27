@@ -15,8 +15,20 @@ fn place_route(src : Source, w : Workspace, place : String) -> @settings.Route? 
   match place_pick.get(place_key(w.id, place)) {
     // (a station or profile gone from the list: the first, not its page waiting for it; one just made a rig stays, its
     // workspace listing it so before the rigs' topic first answers)
-    Some(Station(a)) if !stations_listed(src, w).iter().any(fn(s) { text(Some(s), "station") == a }) && place_rig_at(src, w, a) is None && !workspace_lists_rig(src, w, a) =>
-      place_route_first(src, w, place)
+    Some(Station(a)) => {
+      let mut has_station = false
+      for s in stations_listed(src, w) {
+        if text(Some(s), "station") == a {
+          has_station = true
+          break
+        }
+      }
+      if !has_station && place_rig_at(src, w, a) is None && !workspace_lists_rig(src, w, a) {
+        place_route_first(src, w, place)
+      } else {
+        Some(Station(a))
+      }
+    }
     Some(ProfilesOverview | Profiles("")) =>
       match src.topic("profiles", { "scope": Json::string(w.id) }).get().value {
         Some(_) as v if items(v, "items").length() == 0 => None
@@ -191,7 +203,7 @@ fn stations_place_node(
       Some(w) =>
         match place_route(src, w, "stations") {
           Some(Station(a)) => Picked(a)
-          _ => if @sfbase.station_rows(src, w.id).value is Some(_) { First } else { Reading }
+          _ => if @sfbase.station_rows(src, w.id).value is Some(_) { StationsShown::First } else { StationsShown::Reading }
         }
       None => Reading
     }

@@ -4,7 +4,7 @@
 
 ///|
 test "94-share-new-chat" {
-  @sfreplay.orders(fn(seed) raise {
+  @sfreplay.orders(fn(seed) {
     let f = @sfreplay.Flow::start(@sfreplay.trace("share-new-chat"), seed~)
     f.share_files(["e2e-photo.jpg", "e2e-doc.pdf"])
     // the sheet raised over the app as it starts

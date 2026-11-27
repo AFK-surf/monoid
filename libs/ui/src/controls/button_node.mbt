@@ -264,7 +264,7 @@ fn button_by(
         spin_room_node(room, gap, fn() { open.shown(v) })
         room.show(fn() { busy() || turning.shown(v) > 0.0 }, at_once=true, fn(o) {
           o.over(Is(true)) |> ignore
-          spinner_in(o, fn() { open.shown(v) }, At(0.0, 0.5))
+          spinner_in(o, fn() { open.shown(v) }, @view.Pivot::At(0.0, 0.5))
         })
         room.show(fn() { done() || tick.shown(v) > 0.0 }, at_once=true, fn(o) {
           o.over(Is(true)) |> ignore
@@ -287,13 +287,13 @@ fn button_by(
         icon_node(room, icon, button_icon, By(fn() { looks().2 }))
         .margin(Is((-ink_l, 0.0, -ink_r, 0.0)))
         .alpha(By(fn() { seen_at(rest()) }))
-        .scale(By(rest), about=At(0.5, 0.5))
+        .scale(By(rest), about=@view.Pivot::At(0.5, 0.5))
         |> ignore
         room.box(fn(g) { g.width(By(fn() { Some(gap()) })) |> ignore }) |> ignore
         // (over the icon's own square: the spinner and the tick, made while they show)
         room.show(fn() { busy() || turning.shown(v) > 0.0 }, at_once=true, fn(o) {
           o.over(Is(true)).margin(Is((-ink_l, 0.0, 0.0, 0.0))) |> ignore
-          spinner_in(o, fn() { 1.0 - rest() }, At(0.5, 0.5))
+          spinner_in(o, fn() { 1.0 - rest() }, @view.Pivot::At(0.5, 0.5))
         })
         room.show(fn() { done() || tick.shown(v) > 0.0 }, at_once=true, fn(o) {
           o.over(Is(true)).margin(Is((-ink_l, 0.0, 0.0, 0.0))) |> ignore

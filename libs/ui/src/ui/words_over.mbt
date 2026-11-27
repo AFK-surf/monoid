@@ -210,7 +210,7 @@ fn Ctx::words_over_details(self : Ctx) -> Array[(String, String, Double, Double,
       continue
     }
     match (view_app.val, by) {
-      (Some(tree), Node(id)) if tree.in_particle_flight(id) => continue
+      (Some(tree), InstBy::Node(id)) if tree.in_particle_flight(id) => continue
       _ => ()
     }
     let o = match by {

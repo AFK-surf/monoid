@@ -1130,12 +1130,20 @@ fn wide_bar_keys(
       along_row=true,
       fn(b) {
         @sf.bar_pill_group_node(b, height=36.0, pad=2.0, gap=0.0, adaptive=true, fn(p) {
-          @sf.icon_button_node(p, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
+          let me : Ref[@view.View?] = Ref(None)
+          let btn = @sf.icon_button_node(p, "panel-open", fn() { @sf.t("web-pages.chat.openPanel") }, fn() {
             match @signals.untracked(view) {
               Some(v) if v.agents.length() > 0 => side_change(src, r, "open", Some(v.agents[0].key))
               _ => ()
             }
           }, tips~, shortcut="chat.history")
+          me.val = Some(btn)
+          btn.on_menu(fn(_) {
+            match me.val {
+              Some(at) => side_mode_menu_open(src, r, view, at.placed_window_now(), End)
+              None => ()
+            }
+          })
           |> ignore
         })
         |> ignore

@@ -501,6 +501,8 @@
   "web-pages.chat.lastActive": "Active {time}",
   "web-pages.chat.openInSlack": "Open in Slack",
   "web-pages.chat.openPanel": "Show panel",
+  "web-pages.chat.openPanelTab": "Open panel tab",
+  "web-pages.chat.tabOpen": "Open",
   "web-pages.chat.pickSaved": "Changed. Applies from the next turn",
   "web-pages.chat.profileDetails": "Profile details",
   "web-pages.chat.transcript": "Session file",

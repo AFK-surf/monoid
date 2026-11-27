@@ -307,7 +307,7 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
             None => (if chat_session != "" { InChat(None, chat_session) } else { NoSteps }, f.file, "")
           }
           // (a film's or a song's as it was known as it was opened beside: tab_facts)
-          let file = match tab_facts.get(tab) {
+          let file : Attachment = match tab_facts.get(tab) {
             Some((width, height, duration, frames)) => { ..file, width, height, duration, frames }
             None => file
           }

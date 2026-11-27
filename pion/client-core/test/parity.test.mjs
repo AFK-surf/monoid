@@ -433,6 +433,7 @@ test("Module B: collections.ts (all SPECS, keyOf, diffKeyed, applyKeyed, heavier
 test("Module C: protocol.ts (all 103 TOPICS, parseClientMessage, topicKey, topicStation, isView) + digest.ts", async () => {
   const sampleValid = (kind, name) => {
     if (name === "part") return "updates";
+    if (name === "groupBy") return "project";
     if (kind === "string") return `v-${name}`;
     if (kind === "bool") return true;
     if (kind === "object") return { z: 1, a: "x" };

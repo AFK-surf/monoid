@@ -1,0 +1,879 @@
+// Unit tests covering Direction 2B Phase 1 real SQLite / state-machine / view implementations:
+// - Unshadowed topics: accounts (mbui array), workspaces (account-grouped array), prefs
+// - Real P1 topics: workspaceMarks (via exact TS chat_marks partial index), composer,
+//                   chatRow (changing overlays + views.ts menu rules), chats (unsupported filter/groupBy)
+// - Real P1 calls: prefs.get/set, client.device (string build + prefs.device), notify.permission/set
+//                  (workspaces patch + restart persistence), chat.place (256 LRU + SQLite account_doc persistence),
+//                  chat.window (required rows clamped [1, 200]), draft.get/put ({key} and {station, chat}),
+//                  markdown (with md_kept cache), link.parse (with moved + copies.formerly resolution),
+//                  account.switch (same-account ok, unknown not_found, cross-account unsupported),
+//                  and full composer.* closure (refuses raw bytes & mode=file atomically with zero LRU eviction).
+
+import "base_codec"
+import "effect"
+import "protocol"
+import "sql"
+import "store"
+import "views"
+
+fn open_sf_p1_core(name : String) -> (ClientCore, sql::Sql, effect::Runtime) {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, name) {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql::Sql::open failed: " + e.to_string())
+  }
+  let core = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
+  (core, db, rt)
+}
+
+fn sf_call_ok(core : ClientCore, id : Int64, name : String, params : base_codec::Json) -> base_codec::Json {
+  match core.handle_request(protocol::CoreRequest::Call(id, name, params, None)) {
+    Some(protocol::CoreEvent::Ok(_, v, _)) => v
+    Some(protocol::CoreEvent::Err(_, e)) => panic("call " + name + " failed: " + e.code + " " + e.message)
+    _ => panic("call " + name + " returned unexpected event")
+  }
+}
+
+fn sf_call_err_code(core : ClientCore, id : Int64, name : String, params : base_codec::Json) -> String {
+  match core.handle_request(protocol::CoreRequest::Call(id, name, params, None)) {
+    Some(protocol::CoreEvent::Err(_, e)) => e.code
+    _ => panic("expected Err for call " + name)
+  }
+}
+
+fn sf_sub_val(core : ClientCore, id : Int64, topic_name : String, params : Array[(String, base_codec::Json)]) -> base_codec::Json {
+  let req = protocol::CoreRequest::Subscribe(id, protocol::Topic::{ name: topic_name, params: params }, true, None, None)
+  match core.handle_request(req) {
+    Some(protocol::CoreEvent::Value(_, v, _)) => v
+    Some(protocol::CoreEvent::Err(_, e)) => panic("sub " + topic_name + " failed: " + e.code + " " + e.message)
+    _ => panic("sub " + topic_name + " returned unexpected event")
+  }
+}
+
+fn sf_expect_str(j : base_codec::Json, key : String, want : String) -> Unit {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => debug_assert(s == want, key + " expected " + want + ", got " + s)
+    _ => debug_assert(false, key + " missing string " + want)
+  }
+}
+
+fn sf_expect_bool(j : base_codec::Json, key : String, want : Bool) -> Unit {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Bool(b)) => debug_assert(b == want, key + " bool mismatch")
+    _ => debug_assert(false, key + " missing bool")
+  }
+}
+
+fn sf_expect_int(j : base_codec::Json, key : String, want : Int) -> Unit {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, _)) => debug_assert(n.to_int() == want, key + " int mismatch")
+    _ => debug_assert(false, key + " missing int")
+  }
+}
+
+fn sf_insert_chat(
+  db : sql::Sql,
+  station : String,
+  id : String,
+  json : String,
+  thread : Option[Int],
+  session : Option[String],
+  at : Int64,
+  unread : Int,
+  tone : Option[String] = None,
+) -> Unit {
+  let th_j = match thread {
+    Some(t) => base_codec::json_int(t)
+    None => base_codec::json_null()
+  }
+  let sess_j = match session {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+  let tone_j = match tone {
+    Some(t) => base_codec::json_str(t)
+    None => base_codec::json_null()
+  }
+  let _ = db.run(
+    sql_chat_upsert(),
+    params=[
+      base_codec::json_str(station),
+      base_codec::json_str(id),
+      base_codec::json_int(0),
+      base_codec::json_num(1.0),
+      th_j,
+      sess_j,
+      base_codec::json_null(),
+      base_codec::json_int64(at),
+      base_codec::json_null(),
+      base_codec::json_int(unread),
+      base_codec::json_int(1),
+      base_codec::json_int(0),
+      tone_j,
+      base_codec::json_int(0),
+      base_codec::json_int(0),
+      base_codec::json_str(json),
+    ],
+  )
+}
+
+fn sf_insert_changing(
+  db : sql::Sql,
+  station : String,
+  change_id : Int,
+  json : String,
+) -> Unit {
+  let _ = db.run(
+    sql_changing_put(),
+    params=[
+      base_codec::json_str(station),
+      base_codec::json_int(change_id),
+      base_codec::json_str(json),
+    ],
+  )
+}
+
+test "sfreplay_p1: accounts & workspaces mbui wire shapes + account.switch validation" {
+  let (core, db, _) = open_sf_p1_core("sf-p1-accounts")
+  core.auth_store.register_account(views::StoredAccount::{
+    sub: "sub-alice",
+    email: "alice@still.fail",
+    name: "Alice",
+    picture: "",
+    access: "",
+    refresh: "",
+    access_expires: 0L,
+  })
+  let _ = store::upsert_workspace(
+    db,
+    "ws-1",
+    "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true}]}",
+    confirmed=Some(1730000000000L),
+  )
+
+  // `accounts` MUST be a JSON array matching `apps/mbui/src/sfbase/model.mbt:654`
+  let accs = sf_sub_val(core, 1L, "accounts", [])
+  match accs {
+    base_codec::Json::Arr(xs) => {
+      debug_assert(xs.length() == 1, "expected 1 account")
+      sf_expect_str(xs[0], "sub", "sub-alice")
+      sf_expect_str(xs[0], "email", "alice@still.fail")
+    }
+    _ => debug_assert(false, "accounts must be a JSON array")
+  }
+
+  // `workspaces` MUST be an account-grouped array matching `apps/mbui/src/sfbase/source.mbt:853`
+  let wss = sf_sub_val(core, 2L, "workspaces", [])
+  match wss {
+    base_codec::Json::Arr(groups) => {
+      debug_assert(groups.length() == 1, "expected 1 account group in workspaces")
+      match base_codec::json_get(groups[0], "account") {
+        Some(acc) => sf_expect_str(acc, "sub", "sub-alice")
+        None => debug_assert(false, "workspaces group missing account")
+      }
+      match base_codec::json_get(groups[0], "workspaces") {
+        Some(base_codec::Json::Arr(ws_list)) => {
+          debug_assert(ws_list.length() == 1, "expected 1 workspace under account")
+          sf_expect_str(ws_list[0], "id", "ws-1")
+        }
+        _ => debug_assert(false, "workspaces group missing workspaces array")
+      }
+    }
+    _ => debug_assert(false, "workspaces must be an account-grouped JSON array")
+  }
+
+  // `account.switch` with unknown account MUST fail and NOT mutate active_account!
+  let err_code = sf_call_err_code(core, 3L, "account.switch", base_codec::json_obj([
+    ("account", base_codec::json_str("sub-nonexistent")),
+  ]))
+  debug_assert(err_code == "not_found", "unknown account.switch must return not_found")
+  let still_alice = match core.auth_store.active_sub {
+    Some(s) => s == "sub-alice"
+    None => false
+  }
+  debug_assert(still_alice, "failed switch must not mutate active_sub")
+
+  // Same-account idempotent switch succeeds; cross-account DB switch MUST honestly return `unsupported`
+  // without mutating `active_sub` or `viewer_sub`!
+  core.auth_store.register_account(views::StoredAccount::{
+    sub: "sub-bob",
+    email: "bob@still.fail",
+    name: "Bob",
+    picture: "",
+    access: "",
+    refresh: "",
+    access_expires: 0L,
+  })
+  let _ = sf_call_ok(core, 4L, "account.switch", base_codec::json_obj([
+    ("account", base_codec::json_str("sub-alice")),
+  ]))
+  let cross_err = sf_call_err_code(core, 5L, "account.switch", base_codec::json_obj([
+    ("account", base_codec::json_str("sub-bob")),
+  ]))
+  debug_assert(cross_err == "unsupported", "cross-account DB switch must honestly return unsupported")
+  let still_alice_2 = match core.auth_store.active_sub {
+    Some(s) => s == "sub-alice"
+    None => false
+  }
+  debug_assert(still_alice_2, "unsupported cross-account switch must not mutate active_sub")
+}
+
+test "sfreplay_p1: prefs, client.device (string build), notify.set persistence & workspaceMarks pure unread" {
+  let (core, db, rt) = open_sf_p1_core("sf-p1-prefs")
+
+  let _ = sf_call_ok(core, 1L, "client.device", base_codec::json_obj([
+    ("app", base_codec::json_str("ios")),
+    ("locale", base_codec::json_str("zh-CN")),
+    ("build", base_codec::json_str("1420")),
+  ]))
+  let _ = sf_call_ok(core, 2L, "prefs.set", base_codec::json_obj([
+    ("appearance", base_codec::json_str("light")),
+    ("reader", base_codec::json_obj([("size", base_codec::json_int(20))])),
+    ("badgeKinds", base_codec::json_obj([("on", base_codec::json_bool(false))])),
+  ]))
+
+  let p = sf_sub_val(core, 3L, "prefs", [])
+  sf_expect_str(p, "appearance", "light")
+  match base_codec::json_get(p, "reader") {
+    Some(r) => sf_expect_int(r, "size", 20)
+    None => debug_assert(false, "missing reader")
+  }
+  match base_codec::json_get(p, "device") {
+    Some(d) => {
+      sf_expect_str(d, "locale", "zh-CN")
+      sf_expect_bool(d, "phone", true)
+      sf_expect_bool(d, "handoff", false)
+      sf_expect_str(d, "sentFrom", "ios 1420")
+      sf_expect_bool(d, "mac", true)
+      sf_expect_str(d, "name", "still.fail iOS")
+    }
+    None => debug_assert(false, "missing device in prefs")
+  }
+
+  // Insert an unread chat matching TS `chat_marks` (`tone IS NOT NULL OR asks = 1`) and verify workspaceMarks counts it!
+  let _ = store::upsert_workspace(
+    db,
+    "ws-1",
+    "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true}]}",
+    confirmed=Some(1730000000000L),
+  )
+  sf_insert_chat(
+    db,
+    "ws-1/st-1",
+    "chat-unread-only",
+    "{\"id\":\"chat-unread-only\",\"title\":\"Unread Only\",\"mine\":true,\"unread\":true,\"lastActiveAt\":1730000000000}",
+    None,
+    Some("chat-unread-only"),
+    1730000000000L,
+    3,
+    tone=Some("done"),
+  )
+  let wm = sf_sub_val(core, 4L, "workspaceMarks", [])
+  match base_codec::json_get(wm, "badgeKinds") {
+    Some(bk) => sf_expect_bool(bk, "on", false)
+    None => debug_assert(false, "missing badgeKinds in workspaceMarks")
+  }
+  match base_codec::json_get(wm, "workspaces") {
+    Some(ms) => match base_codec::json_get(ms, "ws-1") {
+      Some(m) => sf_expect_int(m, "unread", 1)
+      None => debug_assert(false, "workspaceMarks must include pure unread > 0 chat for ws-1")
+    }
+    None => debug_assert(false, "missing workspaces map in workspaceMarks")
+  }
+
+  // `notify.permission` + `notify.set` with `workspaces` patch persists across restart!
+  let _ = sf_call_ok(core, 5L, "notify.permission", base_codec::json_obj([("state", base_codec::json_str("granted"))]))
+  let nv = sf_call_ok(core, 6L, "notify.set", base_codec::json_obj([
+    ("asked", base_codec::json_bool(true)),
+    ("preview", base_codec::json_bool(false)),
+    ("workspaces", base_codec::json_obj([("ws-1", base_codec::json_bool(false))])),
+  ]))
+  sf_expect_str(nv, "permission", "granted")
+  sf_expect_bool(nv, "preview", false)
+  sf_expect_bool(nv, "asked", true)
+
+  // Construct a brand new ClientCore over the same DB -> notify settings MUST restore!
+  let core2 = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  let nv2 = sf_call_ok(core2, 7L, "notify.set", base_codec::json_obj([]))
+  sf_expect_bool(nv2, "preview", false)
+  sf_expect_bool(nv2, "asked", true)
+  match base_codec::json_get(nv2, "muted") {
+    Some(base_codec::Json::Arr(xs)) => debug_assert(xs.length() == 1, "ws-1 muted must persist across restart")
+    _ => debug_assert(false, "expected muted array restored on restart")
+  }
+}
+
+test "sfreplay_p1: composer closure, raw bytes refusal, draft.get/put {key} form, and LRU zero-eviction on invalid add" {
+  let (core, db, _) = open_sf_p1_core("sf-p1-composer")
+  let key = "ws-1/st-1:sess-9"
+
+  let _ = sf_call_ok(core, 10L, "composer.text", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("text", base_codec::json_str("hello world")),
+  ]))
+  let _ = sf_call_ok(core, 11L, "composer.quote", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("id", base_codec::json_str("q1")),
+    ("focus", base_codec::json_bool(true)),
+    ("quote", base_codec::json_obj([
+      ("author", base_codec::json_str("bob")),
+      ("text", base_codec::json_str("quoted text")),
+      ("comment", base_codec::json_str("my note")),
+    ])),
+  ]))
+  let cv1 = sf_sub_val(core, 12L, "composer", [("key", base_codec::json_str(key))])
+  sf_expect_str(cv1, "text", "hello world")
+  sf_expect_str(cv1, "focus", "q1")
+  sf_expect_bool(cv1, "ready", true)
+
+  // `composer.add` with raw binary `bytes` MUST fail explicitly instead of silently discarding bytes!
+  let raw_err = sf_call_err_code(core, 13L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("raw-1")),
+        ("name", base_codec::json_str("photo.png")),
+        ("bytes", base_codec::json_str("iVBORw0KGgo=")),
+      ]),
+    ])),
+  ]))
+  debug_assert(raw_err == "unsupported", "composer.add with raw bytes must return unsupported")
+
+  // `composer.add` with `mode: "file"` MUST fail explicitly until station file upload is wired!
+  let file_mode_err = sf_call_err_code(core, 131L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("f-file")),
+        ("name", base_codec::json_str("upload.bin")),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/upload.bin")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("file")),
+        ])),
+      ]),
+    ])),
+  ]))
+  debug_assert(file_mode_err == "unsupported", "composer.add with mode=file must return unsupported")
+
+  // `composer.add` batch atomicity: if item #2 triggers `unsupported`, item #1 MUST NOT remain in `state.files`!
+  let batch_err = sf_call_err_code(core, 132L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("ok-first")),
+        ("name", base_codec::json_str("first.md")),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/first.md")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("path")),
+        ])),
+      ]),
+      base_codec::json_obj([
+        ("id", base_codec::json_str("bad-second")),
+        ("name", base_codec::json_str("second.bin")),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/second.bin")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("file")),
+        ])),
+      ]),
+    ])),
+  ]))
+  debug_assert(batch_err == "unsupported", "2-item batch with invalid 2nd item must return unsupported")
+  let cv_after_batch_err = sf_sub_val(core, 133L, "composer", [("key", base_codec::json_str(key))])
+  match base_codec::json_get(cv_after_batch_err, "files") {
+    Some(base_codec::Json::Arr(fs)) => debug_assert(fs.length() == 0, "atomic batch refusal must leave 0 files in composer")
+    _ => debug_assert(false, "expected empty files array after rejected batch")
+  }
+
+  // `composer.add` with ref mode="path" succeeds
+  let _ = sf_call_ok(core, 14L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("f1")),
+        ("name", base_codec::json_str("spec.md")),
+        ("size", base_codec::json_int(128)),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/spec.md")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("path")),
+        ])),
+      ]),
+    ])),
+  ]))
+
+  // Switching an existing ref to `mode: "file"` via `composer.mode` MUST also return `unsupported`!
+  let mode_err = sf_call_err_code(core, 141L, "composer.mode", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("id", base_codec::json_str("f1")),
+    ("mode", base_codec::json_str("file")),
+  ]))
+  debug_assert(mode_err == "unsupported", "composer.mode(file) must return unsupported")
+
+  // Verify `draft.get` works with BOTH `{station, chat}` AND `{key}`!
+  let dg_sc = sf_call_ok(core, 20L, "draft.get", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("chat", base_codec::json_str("sess-9")),
+  ]))
+  sf_expect_str(dg_sc, "text", "hello world")
+  let dg_key = sf_call_ok(core, 21L, "draft.get", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+  ]))
+  sf_expect_str(dg_key, "text", "hello world")
+
+  // `draft.put` with `{key}` form
+  let _ = sf_call_ok(core, 22L, "draft.put", base_codec::json_obj([
+    ("key", base_codec::json_str("ws-1/st-1:sess-10")),
+    ("value", base_codec::json_obj([("text", base_codec::json_str("key-form draft"))])),
+  ]))
+  let dg2 = sf_call_ok(core, 23L, "draft.get", base_codec::json_obj([
+    ("key", base_codec::json_str("ws-1/st-1:sess-10")),
+  ]))
+  sf_expect_str(dg2, "text", "key-form draft")
+
+  // Verify `ComposerManager` bounded LRU (never exceeds COMPOSER_MAX_STATES = 64)
+  for i in 0..<64 {
+    let k = "ws-1/st-1:lru-" + i.to_string()
+    let _ = sf_call_ok(core, (100 + i).to_int64(), "composer.text", base_codec::json_obj([
+      ("key", base_codec::json_str(k)),
+      ("text", base_codec::json_str("x")),
+    ]))
+  }
+  debug_assert(core.composers.states.keys().length() == 64, "expected exactly 64 LRU states")
+  let oldest_key = "ws-1/st-1:lru-0"
+  debug_assert(core.composers.states.get(oldest_key).is_some(), "oldest LRU key must be present before invalid add")
+
+  // Invalid `composer.add` targeting a brand-new key MUST validate BEFORE `state_for(key)`
+  // so it causes ZERO LRU eviction and does NOT insert the invalid key into `states`!
+  let invalid_new_key = "ws-1/st-1:brand-new-invalid"
+  let lru_err_1 = sf_call_err_code(core, 200L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(invalid_new_key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("ok-1")),
+        ("name", base_codec::json_str("ok.md")),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/ok.md")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("path")),
+        ])),
+      ]),
+      base_codec::json_obj([
+        ("id", base_codec::json_str("bad-2")),
+        ("name", base_codec::json_str("bad.bin")),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/bad.bin")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("file")),
+        ])),
+      ]),
+    ])),
+  ]))
+  debug_assert(lru_err_1 == "unsupported", "invalid batch on new key must return unsupported")
+  debug_assert(core.composers.states.get(oldest_key).is_some(), "invalid composer.add must NOT evict oldest LRU state")
+  debug_assert(core.composers.states.get(invalid_new_key).is_none(), "invalid composer.add must NOT allocate LRU slot for new key")
+  debug_assert(core.composers.states.keys().length() == 64, "LRU size must remain 64 after invalid add")
+
+  let lru_err_2 = sf_call_err_code(core, 201L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str("ws-1/st-1:brand-new-raw-bytes")),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("raw-new")),
+        ("name", base_codec::json_str("raw.png")),
+        ("bytes", base_codec::json_str("AAAA")),
+      ]),
+    ])),
+  ]))
+  debug_assert(lru_err_2 == "unsupported", "raw bytes on new key must return unsupported")
+  debug_assert(core.composers.states.get(oldest_key).is_some(), "raw bytes invalid add must NOT evict oldest LRU state")
+  debug_assert(core.composers.states.get("ws-1/st-1:brand-new-raw-bytes").is_none(), "raw bytes invalid add must NOT allocate LRU slot")
+
+  // Valid additional states still cap strictly at 64
+  for i in 64..<80 {
+    let k = "ws-1/st-1:lru-" + i.to_string()
+    let _ = sf_call_ok(core, (100 + i).to_int64(), "composer.text", base_codec::json_obj([
+      ("key", base_codec::json_str(k)),
+      ("text", base_codec::json_str("x")),
+    ]))
+  }
+  debug_assert(core.composers.states.keys().length() <= 64, "composer in-memory states must be LRU-bounded")
+  let _ = db
+}
+
+test "sfreplay_p1: chatRow overlays & menu rules, chat.place DB persistence & restart recovery, chat.window clamp, markdown, link.parse formerly" {
+  let (core, db, rt) = open_sf_p1_core("sf-p1-views")
+
+  let _ = store::upsert_workspace(
+    db,
+    "ws-1",
+    "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true},{\"id\":\"st-2\",\"name\":\"Station 2\",\"online\":true,\"formerly\":[\"st-old\"]}]}",
+    confirmed=Some(1730000000000L),
+  )
+  let _ = store::upsert_workspace(
+    db,
+    "ws-other",
+    "{\"id\":\"ws-other\",\"name\":\"Other WS\",\"role\":\"member\",\"stations\":[]}",
+    confirmed=Some(1730000000000L),
+  )
+  sf_insert_chat(
+    db,
+    "ws-1/st-1",
+    "chat-1",
+    "{\"id\":\"chat-1\",\"title\":\"Original Title\",\"at\":1730000002000,\"connect\":\"chat\",\"runtime\":\"claude\",\"thread\":10}",
+    Some(10),
+    Some("chat-1"),
+    1730000002000L,
+    0,
+  )
+  sf_insert_chat(
+    db,
+    "ws-1/st-1",
+    "chat-2",
+    "{\"id\":\"chat-2\",\"title\":\"Second Chat\",\"at\":1730000001000,\"connect\":\"chat\",\"thread\":11}",
+    Some(11),
+    Some("chat-2"),
+    1730000001000L,
+    0,
+  )
+  // Add local `changing` rename + pin overlays for chat-1
+  sf_insert_changing(db, "ws-1/st-1", 1, "{\"kind\":\"rename\",\"id\":\"chat-1\",\"title\":\"Renamed Locally\"}")
+  sf_insert_changing(db, "ws-1/st-1", 2, "{\"kind\":\"pin\",\"id\":\"chat-1\",\"pinned\":true,\"pinnedAt\":1730000003000}")
+
+  // 1. `chatRow` applies local `changing` overlays and aligns menu permissions with views.ts
+  let cr = sf_sub_val(core, 30L, "chatRow", [
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("session", base_codec::json_str("chat-1")),
+  ])
+  sf_expect_str(cr, "title", "Renamed Locally")
+  sf_expect_bool(cr, "pinned", true)
+  sf_expect_bool(cr, "mayShare", true)
+  sf_expect_bool(cr, "mayPublish", true)
+  sf_expect_bool(cr, "mayMove", true)
+  sf_expect_bool(cr, "swipeArchive", true)
+
+  // 2. `chat.place` persists to SQLite `workspace_pref(ws, "place:<station>/<thread>")` (matching TS `data.ts:1776`),
+  //    caches `None` misses to avoid redundant SQL reads, short-circuits unchanged writes,
+  //    survives restart in a brand new `ClientCore`, and deletes the row on `seq: null`!
+  // Negative-cache check: repeated lookups for a thread without a saved place hit memory cache after 1 SQL read.
+  let (miss_a, _) = core.chat_place_for("ws-1/st-1", Some(10))
+  debug_assert(miss_a.is_none(), "expected no initial place for thread 10")
+  debug_assert(core.chat_places.get("ws-1/st-1\u{01}10").is_some(), "missing place must be cached as None in LRU")
+
+  let _ = sf_call_ok(core, 40L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(12.5)),
+  ]))
+  match store::get_workspace_pref(db, "ws-1", "place:ws-1/st-1/10") {
+    sql::SqlResult::Ok(Some(raw)) => debug_assert(raw.contains("\"at\":4"), "expected persisted place pref: " + raw)
+    _ => debug_assert(false, "chat.place must persist to SQLite workspace_pref!")
+  }
+  // Unchanged `chat.place` short-circuits without touching SQLite: delete underlying row directly and re-send identical place.
+  let _ = store::delete_workspace_pref(db, "ws-1", "place:ws-1/st-1/10")
+  let _ = sf_call_ok(core, 401L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(12.5)),
+  ]))
+  match store::get_workspace_pref(db, "ws-1", "place:ws-1/st-1/10") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "identical chat.place must short-circuit without writing SQLite")
+  }
+  // Re-persist with an actual offset change so restart recovery test below reads from workspace_pref.
+  let _ = sf_call_ok(core, 402L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(13.5)),
+  ]))
+  let _ = sf_call_ok(core, 403L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(12.5)),
+  ]))
+  // Even with persisted `chat.place(seq=4, offset=12.5)`, Part 1 opens `chat` at the tail window
+  // (`at` omitted) so newer tail messages are never hidden while `newer` / `chat.newer` / `chat.latest`
+  // are not yet wired. Seed 50 entries on thread 10 to prove the tail entry (seq=50) stays visible!
+  for en in 1..<51 {
+    let ejson = "{\"kind\":\"message\",\"n\":" + en.to_string() + ",\"at\":" + (1730000000000L + en.to_int64() * 1000L).to_string() + ",\"author\":\"alice\",\"text\":\"msg-" + en.to_string() + "\"}"
+    let _ = db.run(
+      sql_entry_put(),
+      params=[
+        base_codec::json_str("ws-1/st-1"),
+        base_codec::json_int(10),
+        base_codec::json_int(en),
+        base_codec::json_str(ejson),
+      ],
+    )
+  }
+  let _ = sf_call_ok(core, 4099L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("rows", base_codec::json_int(6)),
+  ]))
+  let ch_view = sf_sub_val(core, 41L, "chat", [
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+  ])
+  debug_assert(base_codec::json_get(ch_view, "at").is_none(), "Part 1 chat open must not anchor at persisted place before chat.newer exists")
+  debug_assert(base_codec::json_get(ch_view, "atOffset").is_none(), "Part 1 chat open must not emit atOffset before chat.newer exists")
+  debug_assert(base_codec::json_stringify(ch_view).contains("msg-50"), "tail entry msg-50 must be visible on chat open even with chat.place(seq=4)")
+  let init_msg_count = match base_codec::json_get(ch_view, "messages") {
+    Some(base_codec::Json::Arr(ms)) => ms.length()
+    _ => 0
+  }
+  debug_assert(init_msg_count > 0 && init_msg_count <= 6, "chat.window(rows=6) must bound opening window")
+
+  // Subscription-period `chat.window` snapshot invariance: while sub #41 is active (opened with rows=6),
+  // calling `chat.place(seq=2)` and `chat.window(rows=50)` then triggering a refresh via `chat.send` MUST
+  // keep sub #41 pinned to its opening `rows=6` snapshot (not expanding to 50) and keep `at` absent!
+  let _ = sf_call_ok(core, 4101L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(2)),
+    ("offset", base_codec::json_num(7.5)),
+  ]))
+  let _ = sf_call_ok(core, 4102L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("rows", base_codec::json_int(50)),
+  ]))
+  let _ = sf_call_ok(core, 4103L, "chat.send", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("clientKey", base_codec::json_str("ck-snap-1")),
+    ("author", base_codec::json_str("alice")),
+    ("text", base_codec::json_str("new msg during active sub")),
+  ]))
+  let refresh_evs = core.refresh_topic("chat")
+  debug_assert(refresh_evs.length() == 1, "expected 1 live refresh event for active chat sub #41")
+  let (ref_wire, _) = protocol::encode_core_event(refresh_evs[0])
+  debug_assert(ref_wire.contains("new msg during active sub"), "live refresh must include new message: " + ref_wire)
+  debug_assert(!ref_wire.contains("msg-1\"") && !ref_wire.contains("\"at\""), "active sub refresh must keep opening rows=6 snapshot and omit at: " + ref_wire)
+  // Unsubscribing #41 removes snapshot AND reclaims `chat_windows` entry (`views.ts:1453`).
+  let _ = core.handle_request(protocol::CoreRequest::Unsubscribe(41L, true, false))
+  debug_assert(core.chat_windows.get("ws-1/st-1:t:10").is_none(), "unsubscribe must reclaim chat_windows entry")
+  // Restore (seq=4, offset=12.5) for restart recovery check below.
+  let _ = sf_call_ok(core, 4105L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(4)),
+    ("offset", base_codec::json_num(12.5)),
+  ]))
+
+  // Restart recovery: a fresh `ClientCore` on the same DB MUST recover BOTH `at: Some(4)` AND `atOffset: Some(12.5)`
+  // via `chat_place_for`, while subscribing to `chat` still opens at the tail window so msg-50 stays visible!
+  let core_restarted = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  let (rec_seq, rec_off) = core_restarted.chat_place_for("ws-1/st-1", Some(10))
+  match (rec_seq, rec_off) {
+    (Some(4), Some(off)) => debug_assert(off == 12.5, "expected recovered atOffset 12.5 after restart")
+    _ => debug_assert(false, "fresh ClientCore must recover (Some(4), Some(12.5)) from workspace_pref")
+  }
+  let ch_after_restart = sf_sub_val(core_restarted, 411L, "chat", [
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+  ])
+  debug_assert(base_codec::json_get(ch_after_restart, "at").is_none(), "restarted chat sub must still open at tail window")
+  debug_assert(base_codec::json_stringify(ch_after_restart).contains("msg-50"), "restarted chat sub must keep tail entry msg-50 visible")
+  // Unimplemented `chats` filter/groupBy params MUST return explicit `unsupported` error (never unfiltered list!)
+  let unsupported_chats_cases : Array[Array[(String, base_codec::Json)]] = [
+    [("scope", base_codec::json_str("ws-1")), ("project", base_codec::json_str("proj-alpha"))],
+    [("scope", base_codec::json_str("ws-1")), ("tag", base_codec::json_str("urgent"))],
+    [("scope", base_codec::json_str("ws-1")), ("unclassified", base_codec::json_bool(true))],
+    [("scope", base_codec::json_str("ws-1")), ("groupBy", base_codec::json_str("project"))],
+  ]
+  for ci in 0..<unsupported_chats_cases.length() {
+    let req = protocol::CoreRequest::Subscribe(
+      (420 + ci).to_int64(),
+      protocol::Topic::{ name: "chats", params: unsupported_chats_cases[ci] },
+      true,
+      None,
+      None,
+    )
+    match core_restarted.handle_request(req) {
+      Some(protocol::CoreEvent::Err(_, e)) => debug_assert(e.code == "unsupported", "expected unsupported for chats param #" + ci.to_string())
+      _ => debug_assert(false, "unimplemented chats filter/groupBy #" + ci.to_string() + " must return Err(unsupported)")
+    }
+  }
+  // Clearing via `seq: null` deletes the persisted place row.
+  let _ = sf_call_ok(core_restarted, 412L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_null()),
+  ]))
+  match store::get_workspace_pref(db, "ws-1", "place:ws-1/st-1/10") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "chat.place(seq: null) must delete persisted place row")
+  }
+
+  // P2-3: Sensitive topics (`accounts`, `lock`, `vaults`) MUST emit `{id, v: null}` on `Unsubscribe(keep=true)`
+  // (never leaving mbui `ending` stalled), NEVER cache in `kept`, and ignore `have`!
+  let _ = sf_sub_val(core, 430L, "accounts", [])
+  match core.handle_request(protocol::CoreRequest::Unsubscribe(430L, true, true)) {
+    Some(protocol::CoreEvent::Unsubscribed(uid, None)) => {
+      debug_assert(uid == 430L, "expected Unsubscribed id=430")
+      let (unsub_wire, _) = protocol::encode_core_event(protocol::CoreEvent::Unsubscribed(uid, None))
+      debug_assert(unsub_wire.contains("\"v\":null"), "sensitive keep unsubscribe must encode {id, v: null}: " + unsub_wire)
+    }
+    _ => debug_assert(false, "sensitive topic accounts must emit Unsubscribed(430, None) on keep=true")
+  }
+  debug_assert(core.router.kept_count() == 0, "sensitive topic accounts must never be cached in kept")
+  let acct_val = sf_sub_val(core, 431L, "accounts", [])
+  let fake_tok = protocol::value_token(acct_val)
+  let _ = core.handle_request(protocol::CoreRequest::Unsubscribe(431L, true, false))
+  match core.handle_request(protocol::CoreRequest::Subscribe(432L, protocol::Topic::{ name: "accounts", params: [] }, true, None, Some(fake_tok))) {
+    Some(protocol::CoreEvent::Value(_, _, _)) => ()
+    _ => debug_assert(false, "sensitive topic accounts must ignore have token and return full Value")
+  }
+
+  // 4. `chat.window` requires `rows` and clamps to [1, 200]
+  let win_err = sf_call_err_code(core, 42L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+  ]))
+  debug_assert(win_err == "bad_params", "chat.window without rows must fail with bad_params")
+  let _ = sf_call_ok(core, 43L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("rows", base_codec::json_int(999)),
+  ]))
+  debug_assert(core.chat_window_for("ws-1/st-1", Some(10), None) == 200, "chat.window must clamp rows to 200")
+
+  // 5. `markdown` + `md_kept` cache
+  let md1 = sf_call_ok(core, 44L, "markdown", base_codec::json_obj([("text", base_codec::json_str("# Hello **world**"))]))
+  debug_assert(base_codec::json_get(md1, "md").is_some(), "markdown returns md AST")
+  let _ = core.md_store.flush_turn()
+  debug_assert(core.md_store.has(store::md_key("# Hello **world**")), "md_kept cached parsed markdown")
+
+  // 6. `link.parse` resolves replaced station via overview's `copies.formerly` on every hop
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-1/st-2",
+    "overview",
+    "{\"copies\":{\"formerly\":[\"st-old\"]}}",
+    confirmed=Some(1730000000000L),
+  )
+  let lp_replaced = sf_call_ok(core, 45L, "link.parse", base_codec::json_obj([
+    ("url", base_codec::json_str("https://app.still.fail/w/ws-1/s/st-old/chats/sess-9")),
+  ]))
+  sf_expect_str(lp_replaced, "opens", "chat")
+  sf_expect_str(lp_replaced, "station", "st-2")
+  sf_expect_str(lp_replaced, "chat", "sess-9")
+}
+
+test "sfreplay_p1: settings progressPrefs nested sub check & profiles canBatchShare alignment" {
+  let (core, db, _) = open_sf_p1_core("sf-p1-r3-align")
+  let _ = store::upsert_workspace(
+    db,
+    "ws-1",
+    "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true},{\"id\":\"st-2\",\"name\":\"Station 2\",\"online\":true},{\"id\":\"st-off\",\"name\":\"Offline\",\"online\":false}]}",
+    confirmed=Some(1730000000000L),
+  )
+
+  // 1. TS `views/progress.ts:40-45` nested `{sub, progress: {minutes, strength, rev, at}, owed, met}`
+  let _ = store::put_workspace_pref(
+    db,
+    "ws-1",
+    "progressPrefs",
+    "{\"sub\":\"sub-alice\",\"progress\":{\"minutes\":30,\"strength\":\"remind\",\"rev\":4,\"at\":1730000000000},\"owed\":[],\"met\":[]}",
+  )
+  let st_match = sf_sub_val(core, 501L, "settings", [("scope", base_codec::json_str("ws-1"))])
+  sf_expect_int(st_match, "progressMinutes", 30)
+  sf_expect_str(st_match, "progressStrength", "remind")
+  sf_expect_int(st_match, "progressSeq", 4)
+
+  // Another person's `progressPrefs` (`sub != viewer_sub`) MUST fall back to PROGRESS_DEFAULT!
+  core.set_viewer("bob@still.fail", sub="sub-bob", role="member")
+  let st_other = sf_sub_val(core, 502L, "settings", [("scope", base_codec::json_str("ws-1"))])
+  sf_expect_int(st_other, "progressMinutes", 10)
+  sf_expect_str(st_other, "progressStrength", "require")
+  sf_expect_int(st_other, "progressSeq", 1)
+
+  // 2. `profiles` `canBatchShare` & `several` (`views/profiles.ts:117,198-205`):
+  // - p1: owned on st-1 (sharing=true, online=true) + borrowed (`share.role == "user"`) on st-2
+  //   -> `several == false` (borrowed copy does NOT count!) and `canBatchShare == true`
+  // - p2: owned on st-1 with `share == null && shareable == false` -> `canBatchShare == false`
+  // - p3: owned on st-1 with `share != null && shareable == false` (host st-1 online) -> `canBatchShare == true`
+  // - p4: owned on st-1 with `share.host == "st-off"` (host offline) -> `canBatchShare == false`
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-1/st-1",
+    "overview",
+    "{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true,\"sharing\":true,\"profiles\":[{\"id\":\"p1\",\"name\":\"P1\",\"email\":\"p1@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"share\":{\"id\":\"sh-1\",\"role\":\"host\",\"host\":\"st-1\"}},{\"id\":\"p2\",\"name\":\"P2\",\"email\":\"p2@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"shareable\":false},{\"id\":\"p3\",\"name\":\"P3\",\"email\":\"p3@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"shareable\":false,\"share\":{\"id\":\"sh-3\",\"role\":\"host\",\"host\":\"st-1\"}},{\"id\":\"p4\",\"name\":\"P4\",\"email\":\"p4@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"share\":{\"id\":\"sh-4\",\"role\":\"host\",\"host\":\"st-off\"}}]}",
+    confirmed=Some(1730000000000L),
+  )
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-1/st-2",
+    "overview",
+    "{\"id\":\"st-2\",\"name\":\"Station 2\",\"online\":true,\"sharing\":true,\"profiles\":[{\"id\":\"p1-copy\",\"name\":\"P1 Copy\",\"email\":\"p1@example.com\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"enabled\":true,\"share\":{\"id\":\"sh-1\",\"role\":\"user\",\"host\":\"st-1\"}}]}",
+    confirmed=Some(1730000000000L),
+  )
+  let _ = store::upsert_station_doc(
+    db,
+    "ws-1/st-off",
+    "overview",
+    "{\"id\":\"st-off\",\"name\":\"Offline\",\"online\":false,\"sharing\":true,\"profiles\":[]}",
+    confirmed=Some(1730000000000L),
+  )
+  let pv = sf_sub_val(core, 503L, "profiles", [("scope", base_codec::json_str("ws-1"))])
+  match base_codec::json_get(pv, "items") {
+    Some(base_codec::Json::Arr(items)) => {
+      debug_assert(items.length() == 4, "expected 4 grouped profiles")
+      let mut saw_p1 = false
+      let mut saw_p2 = false
+      let mut saw_p3 = false
+      let mut saw_p4 = false
+      for i in 0..<items.length() {
+        let it = items[i]
+        match base_codec::json_get(it, "title") {
+          Some(base_codec::Json::Str("p1@example.com")) => {
+            saw_p1 = true
+            sf_expect_bool(it, "several", false)
+            sf_expect_bool(it, "canBatchShare", true)
+          }
+          Some(base_codec::Json::Str("p2@example.com")) => {
+            saw_p2 = true
+            sf_expect_bool(it, "canBatchShare", false)
+          }
+          Some(base_codec::Json::Str("p3@example.com")) => {
+            saw_p3 = true
+            sf_expect_bool(it, "canBatchShare", true)
+          }
+          Some(base_codec::Json::Str("p4@example.com")) => {
+            saw_p4 = true
+            sf_expect_bool(it, "canBatchShare", false)
+          }
+          _ => ()
+        }
+      }
+      debug_assert(saw_p1 && saw_p2 && saw_p3 && saw_p4, "must verify all 4 profile canBatchShare cases")
+    }
+    _ => debug_assert(false, "expected items array in profiles view")
+  }
+}

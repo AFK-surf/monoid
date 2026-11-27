@@ -1239,11 +1239,13 @@
       s_cap = 1.16 * 1.847264 * u * u * exp(-u) * capCut * medialTaper;
       H_opt = 10.6 * hs * refScale;
     } else {
-      float r_lip = 4.2 * hs;
-      float L_lip = 1.05 * hs;
-      s_lip = 5.5 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;
-      s_cap = 0.0;
-      H_opt = 6.2 * hs * refScale;
+      float r_lip = 4.4 * hs;
+      float L_lip = 1.75 * hs;
+      s_lip = 1.45 * exp(-d / L_lip) * (1.0 - smoothstep(0.45 * r_lip, r_lip, d)) * medialTaper;
+      float u = max(d - 2.6 * hs, 0.0) / (2.4 * hs);
+      float capCut = 1.0 - smoothstep(8.5 * hs, 12.0 * hs, d);
+      s_cap = 0.55 * 1.847264 * u * u * exp(-u) * capCut * medialTaper;
+      H_opt = 3.2 * hs * min(refScale, 1.5);
     }
     return vec2(mb_snell_intersect(s_lip - s_cap, ior, H_opt), s_lip);
   }
@@ -2038,50 +2040,53 @@
         vec3 dropRes = clamp(refractColor + vec3(liftGain * pressAmt * (1.0 - backdropLuma)), 0.0, 1.0);
         float domeScale = clamp(v_rect.w / 38.4, 0.80, 1.35);
         float sizeGate = smoothstep(28.0, 36.0, v_rect.w);
-        float roleVol = isRoleSeg ? 0.65 : (isRoleTab ? 0.55 : 1.0);
+        float roleVol = isRoleSeg ? 0.65 : (isRoleTab ? 0.35 : 1.0);
         float upperFace = smoothstep(-0.15, 0.85, -surfaceNormal.y);
         float qTop = (inward - 8.5 * domeScale) / (6.2 * domeScale);
         float topEnv = exp(-qTop * qTop) * upperFace * smoothstep(0.55, 1.80, inward);
         dropRes *= (1.0 - mix(0.20, 0.082, brightBg) * roleVol * sizeGate * pressAmt * topEnv);
         float sideArc = pow(max(abs(surfaceNormal.x), 0.0), 1.6);
         float sideEnv = exp(-max(inward - 1.5, 0.0) / 4.2) * smoothstep(0.25, 1.20, inward);
-        dropRes *= (1.0 - mix(0.16, 0.065, brightBg) * (isRoleSeg ? 0.55 : (isRoleTab ? 0.45 : 1.0)) * sizeGate * pressAmt * sideArc * sideEnv);
+        dropRes *= (1.0 - mix(0.16, 0.065, brightBg) * (isRoleSeg ? 0.55 : (isRoleTab ? 0.25 : 1.0)) * sizeGate * pressAmt * sideArc * sideEnv);
         float lowerFace = smoothstep(0.10, 0.85, surfaceNormal.y);
         float lowEnv = exp(-max(inward - 2.0, 0.0) / 5.5) * smoothstep(0.50, 1.60, inward);
-        dropRes = clamp(dropRes + vec3(mix(0.032, 0.025, brightBg) * lowerFace * lowEnv * (isRoleSeg ? 0.45 : (isRoleTab ? 0.35 : 1.0)) * sizeGate * pressAmt), 0.0, 1.0);
+        dropRes = clamp(dropRes + vec3(mix(0.032, 0.025, brightBg) * lowerFace * lowEnv * (isRoleSeg ? 0.45 : (isRoleTab ? 0.30 : 1.0)) * sizeGate * pressAmt), 0.0, 1.0);
         // Stage A: Razor-sharp inner 3D specular rim
         if (pressAmt > 0.001 && inward < 12.0) {
           float litTop = max(-surfaceNormal.y, 0.0);
           float litBot = max(surfaceNormal.y, 0.0);
-          float dirLobe = 0.96 * (litTop * litTop * litTop) + 1.00 * (litBot * litBot * litBot) + 0.05;
+          float lobeFloor = isRoleTab ? 0.10 : 0.05;
+          float dirLobe = 0.96 * (litTop * litTop * litTop) + 1.00 * (litBot * litBot * litBot) + lobeFloor;
           float rimStart = isRoleSw ? 0.60 : 0.45;
           float rimPeak  = isRoleSw ? 0.95 : 0.75;
           float rimRise = smoothstep(rimStart, rimPeak, inward);
           float rimInset = max(inward - rimPeak, 0.0);
           float rimEnv = rimRise * (0.90 * exp(-rimInset / 0.38) + 0.14 * exp(-rimInset / 1.50));
-          float rimStr = mix(0.24, 0.14, brightBg) * dirLobe * rimEnv * pressAmt;
+          float rimStr = (isRoleTab ? mix(0.28, 0.16, brightBg) : mix(0.24, 0.14, brightBg)) * dirLobe * rimEnv * pressAmt;
           dropRes = mix(dropRes, vec3(1.0), clamp(rimStr, 0.0, 1.0));
         }
         // Stage B: Slim Apple-exact closed-form analytic 3D bevel wall
         float across = pow(max(1.0 - surfaceNormal.y * surfaceNormal.y, 0.0), 1.35);
         float invS = 1.0 / max(u_scale, 1.0);
         float hsWall = clamp(halfMinor / 19.2, 0.72, 1.25);
-        float w0_top = (isRoleSw ? 0.30 : 0.24) * hsWall;
-        float w0_side = max(0.52 * hsWall, 1.55 * invS);
+        float w0_top = (isRoleSw ? 0.30 : (isRoleTab ? 0.18 : 0.24)) * hsWall;
+        float w0_side = isRoleTab ? max(0.30 * hsWall, 1.10 * invS) : max(0.52 * hsWall, 1.55 * invS);
         float w0_eff = mix(w0_top, w0_side, across);
-        float L_eff  = mix(0.12, 0.42, across) * hsWall;
+        float L_eff  = (isRoleTab ? mix(0.08, 0.16, across) : mix(0.12, 0.42, across)) * hsWall;
         float wallCov = mb_bevel_cov(sd_px, u_scale, w0_eff, L_eff);
-        float wallBlend = clamp(wallCov / max(materialAlpha, 0.001), 0.0, 1.0) * 0.94 * pressAmt;
+        float wallRaw = clamp(wallCov / max(materialAlpha, 0.001), 0.0, 1.0);
+        float wallBlend = wallRaw * (isRoleTab ? 0.82 : 0.94) * pressAmt;
         if (wallBlend > 0.001) {
           vec3 envBg = backdrop(p + surfaceNormal * 1.2);
           float envY = luma(envBg);
           float envChroma = max(envBg.r, max(envBg.g, envBg.b)) - min(envBg.r, min(envBg.g, envBg.b));
           float brightEnv = smoothstep(0.35, 0.75, envY);
           float satEnv = smoothstep(0.10, 0.35, envChroma);
-          float neutralMul = mix(0.26, mix(0.80, 0.72, across), brightEnv);
+          float wallMix = isRoleTab ? (wallRaw * mix(0.62, 0.82, brightEnv) * pressAmt) : wallBlend;
+          float neutralMul = isRoleTab ? mix(0.50, mix(0.82, 0.75, across), brightEnv) : mix(0.26, mix(0.80, 0.72, across), brightEnv);
           vec3 neutralTint = envBg * neutralMul;
           vec3 satTint = pow(max(envBg, vec3(0.0001)), vec3(1.25)) * 0.72;
-          dropRes = mix(dropRes, mix(neutralTint, satTint, satEnv), wallBlend);
+          dropRes = mix(dropRes, mix(neutralTint, satTint, satEnv), wallMix);
         }
         // Stage C: Segmented prismatic edge dispersion AFTER Stage B
         if (pressAmt > 0.001 && inward < 12.0 && abs(v_pad.z) > 0.005) {

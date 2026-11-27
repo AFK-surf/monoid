@@ -105,7 +105,10 @@ fn info_facts_node(
   let creator = fn() { @sfpages.chat_creator_said(thread()) }
   // (its first fact's words as far under the panel's top as a menu's first item's: the fact's row taller than its
   // line, centred in it; its labels in a column 80 wide, or as wide as the widest of them in this language)
-  let over = fn() { @sf.menu_row_over - (@sf.fact_row_h - @sf.theme().t.ui_line) / 2.0 }
+  let over = fn() {
+    let diff : Double = @sf.fact_row_h - @sf.theme().t.ui_line
+    @sf.menu_row_over - diff / 2.0
+  }
   @sf.facts_list_node(f, labels, least=info_label_w, style=fn() { info_facts.then(@ui.style(pt=@sf.room_of(over()))) }, fn(list) {
     // (a fact while `when` holds: its label, then its words)
     let fact = fn(when : () -> Bool, label : String, value : (@view.View) -> Unit) {

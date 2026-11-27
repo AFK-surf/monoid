@@ -198,7 +198,41 @@ int main(void) {
     assert(ca != NULL);
     long long created_at_ms = strtoll(ca + 12, NULL, 10);
     assert(created_at_ms > 1700000000000LL);
+
+    // P1-2: `chat.place` and `chat.window` MUST NOT push unsolicited refreshes on active `chat` sub #19;
+    // furthermore, subsequent refreshes (`chat.send` / `EntryAdded`) on #19 keep the opening `rows` snapshot,
+    // and in Part 1 re-subscribing opens at the tail window (never anchoring at `at` before `newer` /
+    // `chat.newer` / `chat.latest` are wired) so tail messages remain visible.
+    send_json("{\"id\":191,\"call\":\"chat.place\",\"params\":{\"station\":\"st-local\",\"thread\":42,\"seq\":1,\"offset\":4.5}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":191") != NULL && strstr(m->json, "\"error\"") == NULL);
+    send_json("{\"id\":192,\"call\":\"chat.window\",\"params\":{\"station\":\"st-local\",\"thread\":42,\"rows\":50}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":192") != NULL && strstr(m->json, "\"error\"") == NULL);
+    // Sentinel call immediately after: next message MUST be #193 (zero unsolicited #19 chat delta in between!).
+    send_json("{\"id\":193,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":193") != NULL && strstr(m->json, "\"theme\"") != NULL);
+    // Now trigger a real refresh on active sub #19 via `chat.send`: #19 receives the new message delta,
+    // and its `at`/`atOffset` MUST remain absent.
+    send_json("{\"id\":1931,\"call\":\"chat.send\",\"params\":{\"thread\":42,\"clientKey\":\"ck-e2e-2\",\"author\":\"alice\",\"text\":\"second msg during active sub\"}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":1931") != NULL && strstr(m->json, "\"queued\":true") != NULL);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #19 live delta after chat.place+chat.send -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":19") != NULL && strstr(m->json, "\"delta\"") != NULL && strstr(m->json, "second msg during active sub") != NULL);
+    assert(strstr(m->json, "\"at\"") == NULL && strstr(m->json, "\"atOffset\"") == NULL);
     send_json("{\"id\":19,\"unsubscribe\":true}");
+
+    // Re-subscribing opens at the tail window (latest message visible, no mid-thread `at` truncation).
+    send_json("{\"id\":194,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":194") != NULL && strstr(m->json, "second msg during active sub") != NULL);
+    assert(strstr(m->json, "\"at\"") == NULL && strstr(m->json, "\"atOffset\"") == NULL);
+    send_json("{\"id\":194,\"unsubscribe\":true}");
+    send_json("{\"id\":195,\"call\":\"chat.place\",\"params\":{\"station\":\"st-local\",\"thread\":42,\"seq\":null}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":195") != NULL && strstr(m->json, "\"error\"") == NULL);
 
     send_json("{\"id\":10,\"call\":\"chat.rename\",\"params\":{\"thread\":42,\"title\":\"Renamed from C host\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);

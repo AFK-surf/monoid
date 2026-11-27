@@ -479,9 +479,7 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
         ((kn.x - n.x).abs() <= gap_slack && (kn.fw - n.fw).abs() <= gap_slack) ||
         ((kn.y - n.y).abs() <= gap_slack && (kn.fh - n.fh).abs() <= gap_slack)
       }
-      kept
-      .iter()
-      .find_first(fn(k) {
+      arr_find_first(kept, fn(k) {
         k == a || k == b || (within(k, o) && holder(a, k) == o && (like(k, a) || like(k, b)))
       })
     }
@@ -1338,9 +1336,7 @@ fn Ctx::tree_lit_apart_faults(self : Ctx, out : Array[String]) -> Unit {
       if o < start {
         return None
       }
-      kept
-      .iter()
-      .find_first(fn(k) {
+      arr_find_first(kept, fn(k) {
         k == a || k == b || (within(k, o) && holder(a, k) == o && (like(k, a) || like(k, b)))
       })
     }
@@ -1440,7 +1436,7 @@ fn Ctx::gap_steps(self : Ctx, whole : Array[Bool], layer : Array[Int], out : Arr
     // 6. each gap a step of the scale, or none
     for g in gaps {
       let (a, b, d) = g
-      if d > gap_slack && !scale.iter().any(fn(s) { (d - s.px()).abs() <= gap_slack }) {
+      if d > gap_slack && !arr_any(scale, fn(s) { (d - s.px()).abs() <= gap_slack }) {
         out.push("rule 6: \{self.named(a)} and \{self.named(b)} \{d} apart, off the scale, in \{self.named(i)}")
       }
     }

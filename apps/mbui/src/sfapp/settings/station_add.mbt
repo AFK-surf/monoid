@@ -789,7 +789,17 @@ fn station_name_key() -> String {
 fn station_joined(core : Core, here : Here) -> Json? {
   match adding.made.get() {
     // (one that only runs tasks joins the workspace's rigs, not its stations)
-    Some(_) if adding.tasks.get() => rigs_listed(core, here).iter().find_first(fn(r) { !adding.known.get().contains(text(Some(r), "id")) })
+    Some(_) if adding.tasks.get() => {
+      let known = adding.known.get()
+      let mut found : Json? = None
+      for r in rigs_listed(core, here) {
+        if !known.contains(text(Some(r), "id")) {
+          found = Some(r)
+          break
+        }
+      }
+      found
+    }
     Some(_) =>
       match stations_of(core, here).value {
         Some(Array(a)) => a.iter().find_first(fn(s) { !adding.known.get().contains(text(Some(s), "id")) })

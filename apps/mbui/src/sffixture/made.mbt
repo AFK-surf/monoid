@@ -53,9 +53,13 @@ pub fn fixture_reset() -> Unit {
   fix_presets_said.val = 0
   fix_job_more.val = 0
   new_fix.presets.clear()
-  new_fix.presets.push_iter([fix_preset_design(), fix_preset("p-tc", "web-app + backend", ["web-app", "backend"], "")].iter())
+  for p in [fix_preset_design(), fix_preset("p-tc", "web-app + backend", ["web-app", "backend"], "")] {
+    new_fix.presets.push(p)
+  }
   new_fix.others.clear()
-  new_fix.others.push_iter(fix_others().iter())
+  for o in fix_others() {
+    new_fix.others.push(o)
+  }
   new_fix.others_reading = false
   fix_chats.clear()
   fix_windows.clear()

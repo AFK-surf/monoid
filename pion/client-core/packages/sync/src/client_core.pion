@@ -22,7 +22,7 @@ struct MarksWanted {
 }
 
 pub struct ClientCore {
-  pub workspace : String
+  pub mut workspace : String
   pub station : String
   pub rt : effect::Runtime
   pub db : sql::Sql
@@ -32,6 +32,7 @@ pub struct ClientCore {
   pub local_outbox : LocalOutbox
   pub sync : SyncScheduler
   pub doing : DoingTracker
+  pub composers : ComposerManager
   extra_events : Map[String, StationEvents]
   extra_sync : Map[String, SyncScheduler]
   marks_wanted : Map[String, MarksWanted]
@@ -66,6 +67,17 @@ pub struct ClientCore {
   pub notify_muted : Array[String]
   pub mut notify_kinds : views::NotifyKindsInput
   pub mut lang : String
+  pub mut device_app : String
+  pub mut device_locale : String
+  pub mut device_build : String
+  pub mut device_phone : Bool
+  pub mut utc_offset_min : Int
+  pub mut db_account_sub : Option[String]
+  chat_windows : Map[String, Int]
+  chat_places : Map[String, Option[(Int, Option[Double])]]
+  chat_place_order : Array[String]
+  chat_sub_snapshots : Map[Int64, ChatSubSnapshot]
+  mut on_prefs_saved : Option[(base_codec::Json) -> Result[Unit, String]]
   mut auth_seq : Int
   mut lock_state : Option[lock::LockState]
   mut lock_root : Option[String]
@@ -109,6 +121,7 @@ pub fn ClientCore::new(
     local_outbox: local_outbox,
     sync: sync,
     doing: DoingTracker::new(),
+    composers: ComposerManager::new(db),
     extra_events: Map::new(),
     extra_sync: Map::new(),
     marks_wanted: Map::new(),
@@ -149,6 +162,17 @@ pub fn ClientCore::new(
       billed: false,
     },
     lang: "zh",
+    device_app: "desktop",
+    device_locale: "",
+    device_build: "",
+    device_phone: false,
+    utc_offset_min: 0,
+    db_account_sub: None,
+    chat_windows: Map::new(),
+    chat_places: Map::new(),
+    chat_place_order: [],
+    chat_sub_snapshots: Map::new(),
+    on_prefs_saved: None,
     auth_seq: 0,
     lock_state: None,
     lock_root: None,
@@ -171,6 +195,7 @@ pub fn ClientCore::new(
   })
   core.wire_station_hooks(station, events, sync)
   core.restore_lock_state()
+  core.restore_notify_state()
   core
 }
 
@@ -965,6 +990,9 @@ pub fn ClientCore::set_viewer(
   }
   if sub.length() > 0 {
     self.viewer_sub = sub
+    if self.db_account_sub.is_none() {
+      self.db_account_sub = Some(sub)
+    }
   }
   if role.length() > 0 {
     self.viewer_role = role
@@ -1215,6 +1243,387 @@ pub fn ClientCore::current_doing_inputs(self : ClientCore) -> Array[views::Doing
   out
 }
 
+/// Configure optional host persistence hook invoked after `prefs.set` persists to SQLite.
+pub fn ClientCore::set_on_prefs_saved(
+  self : ClientCore,
+  hook : (base_codec::Json) -> Result[Unit, String],
+) -> Unit {
+  self.on_prefs_saved = Some(hook)
+}
+
+/// Routine workspace switch (A -> B): updates `self.workspace`.
+pub fn ClientCore::switch_workspace(self : ClientCore, ws : String) -> Unit {
+  if ws.length() > 0 {
+    self.workspace = ws
+  }
+}
+
+/// Record the primary account `sub` whose SQLite database is currently open in `self.db`.
+pub fn ClientCore::set_db_account_sub(self : ClientCore, sub : String) -> Unit {
+  if sub.length() > 0 {
+    self.db_account_sub = Some(sub)
+  }
+}
+
+fn station_workspace_prefix(addr : String) -> String {
+  match addr.index_of("/") {
+    idx if idx > 0 => addr.slice(0, idx)
+    _ => ""
+  }
+}
+
+/// Detect unimplemented `chats` topic filter/groupBy params (pending SQLite `project` / `chat_tag` schema sync)
+/// so callers get an explicit `unsupported` error instead of an unfiltered list.
+pub fn chats_unsupported_param(topic : protocol::Topic) -> Option[String] {
+  match topic.param("project") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 {
+      return Some("chats project filter requires schema project column (not yet wired)")
+    }
+    _ => ()
+  }
+  match topic.param("tag") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 {
+      return Some("chats tag filter requires schema chat_tag table (not yet wired)")
+    }
+    _ => ()
+  }
+  match topic.param("unclassified") {
+    Some(base_codec::Json::Bool(true)) => {
+      return Some("chats unclassified filter requires schema project column (not yet wired)")
+    }
+    _ => ()
+  }
+  match topic.param("groupBy") {
+    Some(base_codec::Json::Str(g)) => if g == "project" {
+      return Some("chats groupBy=project requires schema project column (not yet wired)")
+    }
+    _ => ()
+  }
+  None
+}
+
+/// Restore persisted notification settings (`on`, `asked`, `preview`, `kinds`, `muted`) from SQLite.
+fn ClientCore::restore_notify_state(self : ClientCore) -> Unit {
+  match store::get_account_doc(self.db, "notify") {
+    sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => {
+        match base_codec::json_get(j, "on") {
+          Some(base_codec::Json::Bool(b)) => {
+            self.notify_on = b
+            self.notify_push = b
+          }
+          _ => ()
+        }
+        match base_codec::json_get(j, "asked") {
+          Some(base_codec::Json::Bool(b)) => { self.notify_asked = b }
+          _ => ()
+        }
+        match base_codec::json_get(j, "preview") {
+          Some(base_codec::Json::Bool(b)) => { self.notify_preview = b }
+          _ => ()
+        }
+        match base_codec::json_get(j, "muted") {
+          Some(base_codec::Json::Arr(xs)) => {
+            self.notify_muted.clear()
+            for i in 0..<xs.length() {
+              match xs[i] {
+                base_codec::Json::Str(s) => if s.length() > 0 { self.notify_muted.push(s) }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        match base_codec::json_get(j, "kinds") {
+          Some(kj) => match kj {
+            base_codec::Json::Obj(_) => {
+              let cur = self.notify_kinds
+              let next_done = match proto_str(kj, "done") {
+                Some(s) => if s == "off" || s == "away" || s == "always" { s } else { cur.done }
+                None => cur.done
+              }
+              self.notify_kinds = views::NotifyKindsInput::{
+                wait: match base_codec::json_get(kj, "wait") { Some(base_codec::Json::Bool(b)) => b; _ => cur.wait },
+                failed: match base_codec::json_get(kj, "failed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.failed },
+                done: next_done,
+                message: match base_codec::json_get(kj, "message") { Some(base_codec::Json::Bool(b)) => b; _ => cur.message },
+                billed: match base_codec::json_get(kj, "billed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.billed },
+              }
+            }
+            _ => ()
+          }
+          None => ()
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
+    _ => ()
+  }
+}
+
+struct ChatSubSnapshot {
+  station : String
+  thread : Option[Int]
+  session : Option[String]
+  rows : Int
+}
+
+/// Drop any stale per-subscription chat window snapshot when starting a fresh subscription on `id`.
+pub fn ClientCore::drop_chat_sub_snapshot(self : ClientCore, id : Int64) -> Unit {
+  self.chat_sub_snapshots.remove(id)
+}
+
+/// Snapshot `rows` (`chat.window`) once when a `chat` subscription opens and reuse it for every
+/// refresh (`EntryAdded` / `ConnectionChanged` / `chat.send`) on that subscription (`views.ts:1453`),
+/// so mid-subscription `chat.window` calls never reshape the active view.
+pub fn ClientCore::chat_sub_window_rows_for(
+  self : ClientCore,
+  id : Int64,
+  station : String,
+  thread : Option[Int],
+  session : Option[String],
+) -> Int {
+  match self.chat_sub_snapshots.get(id) {
+    Some(snap) => snap.rows
+    None => {
+      let rows = self.chat_window_for(station, thread, session)
+      self.chat_sub_snapshots.set(id, ChatSubSnapshot::{
+        station: station,
+        thread: thread,
+        session: session,
+        rows: rows,
+      })
+      rows
+    }
+  }
+}
+
+/// Drop a `chat` subscription's open snapshot on `Unsubscribe` and reclaim its `chat_windows` entry
+/// when no other live subscription targets the same chat (`views.ts:1453`).
+pub fn ClientCore::close_chat_sub_snapshot(self : ClientCore, id : Int64) -> Unit {
+  match self.chat_sub_snapshots.get(id) {
+    None => ()
+    Some(snap) => {
+      self.chat_sub_snapshots.remove(id)
+      let rem_ids = self.chat_sub_snapshots.keys()
+      match snap.thread {
+        Some(th) => {
+          let mut in_use = false
+          for i in 0..<rem_ids.length() {
+            match self.chat_sub_snapshots.get(rem_ids[i]) {
+              Some(other) => {
+                if other.station == snap.station {
+                  match other.thread {
+                    Some(oth) => if oth == th { in_use = true }
+                    None => ()
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          if !in_use {
+            self.chat_windows.remove(snap.station + ":t:" + th.to_string())
+          }
+        }
+        None => ()
+      }
+      match snap.session {
+        Some(sk) => if sk.length() > 0 {
+          let mut in_use = false
+          for i in 0..<rem_ids.length() {
+            match self.chat_sub_snapshots.get(rem_ids[i]) {
+              Some(other) => {
+                if other.station == snap.station {
+                  match other.session {
+                    Some(osk) => if osk == sk { in_use = true }
+                    None => ()
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          if !in_use {
+            self.chat_windows.remove(snap.station + ":s:" + sk)
+          }
+        }
+        None => ()
+      }
+    }
+  }
+}
+
+/// Look up effective `chat.window` row count for `(station, thread?, session?)` (`views.ts:5023`).
+pub fn ClientCore::chat_window_for(
+  self : ClientCore,
+  station : String,
+  thread : Option[Int],
+  session : Option[String],
+) -> Int {
+  let mut best = 0
+  match thread {
+    Some(th) => match self.chat_windows.get(station + ":t:" + th.to_string()) {
+      Some(n) => if n > best { best = n }
+      None => ()
+    }
+    None => ()
+  }
+  match session {
+    Some(sk) => if sk.length() > 0 {
+      match self.chat_windows.get(station + ":s:" + sk) {
+        Some(n) => if n > best { best = n }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  if best > 0 { best } else { 30 }
+}
+
+fn chat_place_pref_key(station : String, thread : Int) -> String {
+  "place:" + station + "/" + thread.to_string()
+}
+
+fn ClientCore::chat_place_workspace(self : ClientCore, station : String) -> String {
+  let ws = station_workspace_prefix(station)
+  if ws.length() > 0 { ws } else { self.workspace }
+}
+
+fn ClientCore::cache_chat_place_lru(
+  self : ClientCore,
+  pk : String,
+  entry : Option[(Int, Option[Double])],
+) -> Unit {
+  self.chat_places.set(pk, entry)
+  let next : Array[String] = []
+  for i in 0..<self.chat_place_order.length() {
+    if self.chat_place_order[i] != pk {
+      next.push(self.chat_place_order[i])
+    }
+  }
+  next.push(pk)
+  self.chat_place_order.clear()
+  for i in 0..<next.length() {
+    self.chat_place_order.push(next[i])
+  }
+  while self.chat_place_order.length() > 256 {
+    let oldest = self.chat_place_order[0]
+    let trimmed : Array[String] = []
+    for i in 1..<self.chat_place_order.length() {
+      trimmed.push(self.chat_place_order[i])
+    }
+    self.chat_place_order.clear()
+    for i in 0..<trimmed.length() {
+      self.chat_place_order.push(trimmed[i])
+    }
+    self.chat_places.remove(oldest)
+  }
+}
+
+/// Look up scroll position `(at, atOffset)` for `(station, thread)` (`topics.ts:712-721`, `data.ts:1776`):
+/// hits bounded 256-entry in-memory LRU first (caching `None` misses too so repeated reads avoid SQL),
+/// lazily hydrating from SQLite `workspace_pref(ws, "place:<st>/<th>")` across restarts.
+pub fn ClientCore::chat_place_for(
+  self : ClientCore,
+  station : String,
+  thread : Option[Int],
+) -> (Option[Int], Option[Double]) {
+  match thread {
+    None => (None, None)
+    Some(th) => {
+      let pk = station + "\u{01}" + th.to_string()
+      match self.chat_places.get(pk) {
+        Some(Some((seq, off))) => (Some(seq), off)
+        Some(None) => (None, None)
+        None => {
+          let ws = self.chat_place_workspace(station)
+          let loaded : Option[(Int, Option[Double])] = match store::get_workspace_pref(self.db, ws, chat_place_pref_key(station, th)) {
+            sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+              base_codec::JsonParseResult::Ok(j) => match proto_int(j, "at") {
+                Some(seq) => {
+                  let off_opt : Option[Double] = match base_codec::json_get(j, "offset") {
+                    Some(base_codec::Json::Num(n, _)) => Some(n)
+                    _ => None
+                  }
+                  Some((seq, off_opt))
+                }
+                None => None
+              }
+              base_codec::JsonParseResult::Err(_) => None
+            }
+            _ => None
+          }
+          self.cache_chat_place_lru(pk, loaded)
+          match loaded {
+            Some((seq, off)) => (Some(seq), off)
+            None => (None, None)
+          }
+        }
+      }
+    }
+  }
+}
+
+fn chat_place_equal(
+  a_seq : Option[Int],
+  a_off : Option[Double],
+  b_seq : Option[Int],
+  b_off : Option[Double],
+) -> Bool {
+  let seq_eq = match (a_seq, b_seq) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+  if !seq_eq {
+    return false
+  }
+  match (a_off, b_off) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+fn ClientCore::set_chat_place_mem(
+  self : ClientCore,
+  station : String,
+  thread : Int,
+  seq_opt : Option[Int],
+  offset_opt : Option[Double],
+) -> Unit {
+  let eff_off : Option[Double] = match seq_opt {
+    Some(_) => offset_opt
+    None => None
+  }
+  let (cur_seq, cur_off) = self.chat_place_for(station, Some(thread))
+  if chat_place_equal(cur_seq, cur_off, seq_opt, eff_off) {
+    return
+  }
+  let pk = station + "\u{01}" + thread.to_string()
+  let ws = self.chat_place_workspace(station)
+  let dk = chat_place_pref_key(station, thread)
+  match seq_opt {
+    None => {
+      self.cache_chat_place_lru(pk, None)
+      let _ = store::delete_workspace_pref(self.db, ws, dk)
+    }
+    Some(seq) => {
+      self.cache_chat_place_lru(pk, Some((seq, eff_off)))
+      let off_j = match eff_off {
+        Some(off) => base_codec::json_num(off)
+        None => base_codec::json_null()
+      }
+      let fields : Array[(String, base_codec::Json)] = [
+        ("at", base_codec::json_int(seq)),
+        ("offset", off_j),
+      ]
+      let _ = store::put_workspace_pref(self.db, ws, dk, base_codec::json_stringify(base_codec::json_obj(fields)))
+    }
+  }
+}
+
 /// Configure the cloud origin used by `auth.begin` (e.g. `"https://app.still.fail"`).
 pub fn ClientCore::set_cloud_origin(self : ClientCore, origin : String) -> Unit {
   if origin.length() > 0 {
@@ -1246,6 +1655,10 @@ fn ClientCore::open_jobs_json_list(self : ClientCore) -> Array[base_codec::Json]
 /// delivers `shapes/`-conforming payloads and ≤ 4 KB keyed deltas.
 fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protocol::Topic) -> Option[protocol::CoreEvent] {
   if topic.name == "chats" {
+    match chats_unsupported_param(topic) {
+      Some(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unsupported", message: msg }))
+      None => ()
+    }
     let ws_scope = match topic.param("scope") {
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
@@ -1284,6 +1697,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       watching_only=watching_only,
       hidden_mode=hidden_mode,
       changed_keys=dirty_opt,
+      lang=self.lang,
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -1312,6 +1726,12 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
+    let rows_lim = self.chat_sub_window_rows_for(id, st, th_opt, sess_opt)
+    // Do not anchor `project_chat_by_params` at a persisted `chat.place` (`at` / `at_offset`) in Part 1:
+    // `views/chat_view.pion` currently hardcodes `newer: false` and Pion has not yet implemented
+    // `chat.newer` / `chat.latest` window extension, so opening mid-thread would hide newer tail
+    // messages with no way to load them. Wire place-anchored opening together with live `newer`
+    // computation and `chat.newer` / `chat.latest` as one cohesive abstraction in a follow-up PR.
     match views::project_chat_by_params(
       self.db,
       st,
@@ -1320,6 +1740,10 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       compact,
       self.viewer_marks.me,
       self.rt.now(),
+      rows=rows_lim,
+      at=None,
+      at_offset=None,
+      utc_offset_min=self.utc_offset_min,
       lang=self.lang,
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
@@ -1327,7 +1751,12 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     }
   }
   if topic.name == "workspaces" {
-    match views::project_workspaces(self.db) {
+    match views::project_workspaces(
+      self.db,
+      accounts=self.auth_store.accounts,
+      viewer_sub=self.viewer_sub,
+      viewer_email=self.viewer_marks.me,
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -1529,7 +1958,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       Some(base_codec::Json::Str(s)) => s
       _ => self.workspace
     }
-    match views::project_settings(self.db, ws_scope) {
+    match views::project_settings(self.db, ws_scope, viewer_sub=self.viewer_sub) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -1697,6 +2126,64 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
   if topic.name == "doing" {
     let j = views::project_doing(self.current_doing_inputs())
     return Some(protocol::CoreEvent::Value(id, j, None))
+  }
+  // ── Phase 1 sfreplay & runtime-unshadowed real topic projectors ──
+  if topic.name == "prefs" {
+    match views::project_prefs(
+      self.db,
+      default_workspace=self.workspace,
+      device_app=self.device_app,
+      device_locale=self.device_locale,
+      device_phone=self.device_phone,
+    ) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "workspaceMarks" {
+    let prefs_opt : Option[base_codec::Json] = match views::project_prefs(
+      self.db,
+      default_workspace=self.workspace,
+      device_app=self.device_app,
+      device_locale=self.device_locale,
+      device_phone=self.device_phone,
+    ) {
+      sql::SqlResult::Ok(pj) => Some(pj)
+      sql::SqlResult::Err(_) => None
+    }
+    match views::project_workspace_marks(
+      self.db,
+      self.viewer_marks.me,
+      viewer_id=self.viewer_sub,
+      lang=self.lang,
+      prefs=prefs_opt,
+    ) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
+  }
+  if topic.name == "composer" {
+    let key = match topic.param("key") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    return Some(protocol::CoreEvent::Value(id, self.composers.value(key), None))
+  }
+  if topic.name == "chatRow" {
+    let st = match topic.param("station") {
+      Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
+      _ => self.station
+    }
+    let sess = match topic.param("session") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+    let ws_of_st = station_workspace_prefix(st)
+    let briefs = self.station_briefs_for_scope(ws_of_st)
+    match views::project_chat_row(self.db, st, sess, briefs, self.viewer_marks, self.rt.now(), lang=self.lang) {
+      sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+      sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+    }
   }
   None
 }
@@ -2412,7 +2899,7 @@ fn proto_int(j : base_codec::Json, k : String) -> Option[Int] {
 /// Handle a `protocol::CoreRequest` across both Slice 1 read-only queries and Slice 2 sync/outbox commands.
 pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest) -> Option[protocol::CoreEvent] {
   match req {
-    protocol::CoreRequest::Call(id, call_name, params, _bytes) => {
+    protocol::CoreRequest::Call(id, call_name, params, bytes) => {
       if call_name == "client.focus" {
         match proto_int(params, "thread") {
           Some(th) => {
@@ -2969,17 +3456,746 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           ("cancelledReqIds", base_codec::json_arr(canc_j)),
         ]), None))
       }
+      // ── Phase 1 real sfreplay & unshadowed calls ──
+      if call_name == "prefs.get" {
+        match views::project_prefs(
+          self.db,
+          default_workspace=self.workspace,
+          device_app=self.device_app,
+          device_locale=self.device_locale,
+          device_phone=self.device_phone,
+        ) {
+          sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Ok(id, j, None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "prefs.set" {
+        let mut fill_flag = false
+        let patch_pairs : Array[(String, base_codec::Json)] = []
+        match params {
+          base_codec::Json::Obj(pairs) => {
+            for i in 0..<pairs.length() {
+              let (k, v) = pairs[i]
+              if k == "fill" {
+                match v {
+                  base_codec::Json::Bool(b) => { fill_flag = b }
+                  _ => ()
+                }
+              } else {
+                patch_pairs.push((k, v))
+              }
+            }
+          }
+          _ => ()
+        }
+        match store::set_device_prefs(self.db, base_codec::json_obj(patch_pairs), fill_flag, self.rt.now()) {
+          Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: msg }))
+          Ok(next_prefs) => {
+            match self.on_prefs_saved {
+              Some(hook) => match hook(next_prefs) {
+                Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "storage_error", message: msg }))
+                Ok(_) => ()
+              }
+              None => ()
+            }
+            match base_codec::json_get(next_prefs, "lang") {
+              Some(base_codec::Json::Str(s)) => { self.lang = if s == "en" { "en" } else { "zh" } }
+              _ => ()
+            }
+            match base_codec::json_get(next_prefs, "workspace") {
+              Some(base_codec::Json::Str(ws)) => if ws.length() > 0 { self.switch_workspace(ws) }
+              _ => ()
+            }
+            return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+          }
+        }
+      }
+      if call_name == "client.device" {
+        // 1:1 with `client/core-ts/src/prefs.ts:518-560` (`device`)
+        let trim_str = fn(k : String) -> String {
+          match proto_str(params, k) {
+            Some(s) => s.trim()
+            None => ""
+          }
+        }
+        let app = trim_str("app")
+        if app != "web" && app != "desktop" && app != "android" && app != "ios" {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid app: expected web|desktop|android|ios" }))
+        }
+        let build = trim_str("build")
+        let agent = trim_str("userAgent")
+        let model = trim_str("model")
+        let machine_raw = trim_str("machine")
+        let machine = if machine_raw.length() > 60 { machine_raw.slice(0, 60) } else { machine_raw }
+        let locale = trim_str("locale")
+        let client_raw = trim_str("client")
+        let client_name = if client_raw.length() > 40 { client_raw.slice(0, 40) } else { client_raw }
+        let agent_lc = {
+          let bs = agent.to_bytes()
+          let sb = StringBuilder::new()
+          for i in 0..<bs.length() {
+            let c = bs[i].to_int()
+            if c >= 65 && c <= 90 { sb.write_byte((c + 32) as Byte) } else { sb.write_byte(bs[i]) }
+          }
+          sb.to_string()
+        }
+        let phone = app == "android" || app == "ios" || (app == "web" && (agent_lc.contains("android") || agent_lc.contains("iphone") || agent_lc.contains("ipad")))
+        let handoff = app == "web" && !phone
+        let is_mac = app == "ios" || agent_lc.contains("mac os x") || agent_lc.contains("iphone") || agent_lc.contains("ipad")
+        let os_s = if agent_lc.contains("iphone") || agent_lc.contains("ipad") {
+          "iOS"
+        } else if agent.contains("Mac OS X") {
+          "macOS"
+        } else if agent.contains("Windows") {
+          "Windows"
+        } else if agent.contains("Android") {
+          "Android"
+        } else if agent.contains("Linux") {
+          "Linux"
+        } else {
+          ""
+        }
+        let browser_s = if agent.contains("Edg/") {
+          "Edge"
+        } else if agent.contains("Chrome/") {
+          "Chrome"
+        } else if agent.contains("Firefox/") {
+          "Firefox"
+        } else if agent.contains("Safari/") {
+          "Safari"
+        } else {
+          ""
+        }
+        let b_suffix = if build.length() == 0 { "" } else { " " + build }
+        let sent_from = if app == "web" {
+          "web" + b_suffix + " (" + (if phone { "phone" } else { "pc" }) + ")"
+        } else {
+          app + b_suffix
+        }
+        self.device_app = app
+        self.device_build = build
+        self.device_phone = phone
+        if locale.length() > 0 {
+          self.device_locale = locale
+        }
+        let cur_prefs = match store::get_device_prefs(self.db) {
+          sql::SqlResult::Ok(j) => j
+          sql::SqlResult::Err(_) => base_codec::json_obj([])
+        }
+        let eff_lang = match proto_str(cur_prefs, "language") {
+          Some(l) => if l == "en" { "en" } else { "zh" }
+          None => if locale.length() > 0 {
+            if locale.starts_with("zh") || locale.starts_with("ZH") || locale.starts_with("Zh") { "zh" } else { "en" }
+          } else {
+            self.lang
+          }
+        }
+        self.lang = eff_lang
+        let brand = if client_name.length() > 0 { client_name } else { "still.fail" }
+        let more_str = fn(s : String) -> String { if s.length() == 0 { "" } else { " · " + s } }
+        let dev_name = if app == "android" {
+          let extra = if machine.length() > 0 { machine } else { model }
+          brand + " Android" + more_str(extra)
+        } else if app == "ios" {
+          let extra = if machine.length() > 0 { machine } else { model }
+          brand + " iOS" + more_str(extra)
+        } else if app == "desktop" {
+          let extra = if machine.length() > 0 { machine } else { os_s }
+          brand + (if eff_lang == "en" { " Desktop" } else { " 桌面版" }) + more_str(extra)
+        } else {
+          let br = if browser_s.length() > 0 { browser_s } else if eff_lang == "en" { "Browser" } else { "浏览器" }
+          brand + " Web · " + br + more_str(os_s)
+        }
+        let told_fields : Array[(String, base_codec::Json)] = [
+          ("app", base_codec::json_str(app)),
+          ("phone", base_codec::json_bool(phone)),
+          ("handoff", base_codec::json_bool(handoff)),
+          ("sentFrom", base_codec::json_str(sent_from)),
+          ("mac", base_codec::json_bool(is_mac)),
+          ("name", base_codec::json_str(dev_name)),
+        ]
+        if locale.length() > 0 {
+          told_fields.push(("locale", base_codec::json_str(locale)))
+        }
+        if client_name.length() > 0 {
+          told_fields.push(("client", base_codec::json_str(client_name)))
+        }
+        let next_prefs = j_set_field(
+          j_set_field(cur_prefs, "device", base_codec::json_obj(told_fields)),
+          "lang",
+          base_codec::json_str(eff_lang),
+        )
+        let _ = store::put_account_doc(self.db, "prefs", base_codec::json_stringify(next_prefs))
+        match self.on_prefs_saved {
+          Some(hook) => { let _ = hook(next_prefs) }
+          None => ()
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+      }
+      if call_name == "notify.permission" {
+        let st = match proto_str(params, "state") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing state" }))
+        }
+        if st != "granted" && st != "denied" && st != "default" && st != "unknown" {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid permission state" }))
+        }
+        self.notify_permission = st
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+      }
+      if call_name == "notify.set" {
+        // 1:1 with `client/core-ts/src/attend-parse.ts:58-68` & `attend.ts:155-162`
+        match base_codec::json_get(params, "kinds") {
+          Some(base_codec::Json::Null) | None => ()
+          Some(base_codec::Json::Obj(_)) => ()
+          _ => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "kinds must be an object" }))
+        }
+        match base_codec::json_get(params, "workspaces") {
+          Some(base_codec::Json::Null) | None => ()
+          Some(base_codec::Json::Obj(_)) => ()
+          _ => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "workspaces must be an object" }))
+        }
+        match base_codec::json_get(params, "asked") {
+          Some(base_codec::Json::Bool(b)) => { self.notify_asked = b }
+          _ => ()
+        }
+        match base_codec::json_get(params, "on") {
+          Some(base_codec::Json::Bool(b)) => {
+            self.notify_on = b
+            self.notify_push = b
+          }
+          _ => ()
+        }
+        match base_codec::json_get(params, "push") {
+          Some(base_codec::Json::Bool(b)) => { self.notify_push = b }
+          _ => ()
+        }
+        match base_codec::json_get(params, "preview") {
+          Some(base_codec::Json::Bool(b)) => { self.notify_preview = b }
+          _ => ()
+        }
+        match base_codec::json_get(params, "inFront") {
+          Some(base_codec::Json::Bool(b)) => { self.notify_in_front = b }
+          _ => ()
+        }
+        // Support both `workspaces: { wsId: boolean }` patch (`true` = heard/unmuted, `false` = muted)
+        // and explicit `muted: [wsId]` array.
+        let muted_set : Map[String, Bool] = Map::new()
+        for i in 0..<self.notify_muted.length() {
+          muted_set.set(self.notify_muted[i], true)
+        }
+        match base_codec::json_get(params, "muted") {
+          Some(base_codec::Json::Arr(xs)) => {
+            muted_set.clear()
+            for i in 0..<xs.length() {
+              match xs[i] {
+                base_codec::Json::Str(s) => if s.length() > 0 { muted_set.set(s, true) }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        match base_codec::json_get(params, "workspaces") {
+          Some(base_codec::Json::Obj(ws_entries)) => {
+            for i in 0..<ws_entries.length() {
+              let (wid, v) = ws_entries[i]
+              match v {
+                base_codec::Json::Bool(heard) => {
+                  if heard {
+                    muted_set.remove(wid)
+                  } else {
+                    muted_set.set(wid, true)
+                  }
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        let sorted_muted = muted_set.keys()
+        for i in 1..<sorted_muted.length() {
+          let cur = sorted_muted[i]
+          let mut j = i - 1
+          while j >= 0 && sorted_muted[j] > cur {
+            sorted_muted[j + 1] = sorted_muted[j]
+            j -= 1
+          }
+          sorted_muted[j + 1] = cur
+        }
+        self.notify_muted.clear()
+        for i in 0..<sorted_muted.length() {
+          self.notify_muted.push(sorted_muted[i])
+        }
+        match base_codec::json_get(params, "kinds") {
+          Some(kj) => match kj {
+            base_codec::Json::Obj(_) => {
+              let cur = self.notify_kinds
+              let next_done = match proto_str(kj, "done") {
+                Some(s) => if s == "off" || s == "away" || s == "always" { s } else { cur.done }
+                None => cur.done
+              }
+              self.notify_kinds = views::NotifyKindsInput::{
+                wait: match base_codec::json_get(kj, "wait") { Some(base_codec::Json::Bool(b)) => b; _ => cur.wait },
+                failed: match base_codec::json_get(kj, "failed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.failed },
+                done: next_done,
+                message: match base_codec::json_get(kj, "message") { Some(base_codec::Json::Bool(b)) => b; _ => cur.message },
+                billed: match base_codec::json_get(kj, "billed") { Some(base_codec::Json::Bool(b)) => b; _ => cur.billed },
+              }
+            }
+            _ => ()
+          }
+          None => ()
+        }
+        let muted_j : Array[base_codec::Json] = []
+        for i in 0..<self.notify_muted.length() {
+          muted_j.push(base_codec::json_str(self.notify_muted[i]))
+        }
+        let kinds_j = base_codec::json_obj([
+          ("wait", base_codec::json_bool(self.notify_kinds.wait)),
+          ("failed", base_codec::json_bool(self.notify_kinds.failed)),
+          ("done", base_codec::json_str(self.notify_kinds.done)),
+          ("message", base_codec::json_bool(self.notify_kinds.message)),
+          ("billed", base_codec::json_bool(self.notify_kinds.billed)),
+        ])
+        let persist_j = base_codec::json_obj([
+          ("on", base_codec::json_bool(self.notify_on)),
+          ("asked", base_codec::json_bool(self.notify_asked)),
+          ("kinds", kinds_j),
+          ("preview", base_codec::json_bool(self.notify_preview)),
+          ("muted", base_codec::json_arr(muted_j)),
+        ])
+        let _ = store::put_account_doc(self.db, "notify", base_codec::json_stringify(persist_j))
+        match views::project_notify(self.db, self.current_notify_state(), self.notices_held, lang=self.lang) {
+          sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Ok(id, j, None))
+          sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+        }
+      }
+      if call_name == "chat.place" {
+        // 1:1 with `client/core-ts/src/core/calls.ts:743-751`, `station/topics.ts:710-760`, & `data.ts:1776`:
+        // 256-entry bounded in-memory LRU (caching `None` too) + SQLite `workspace_pref(ws, "place:<st>/<th>")` restart persistence.
+        let st = match proto_str(params, "station") {
+          Some(s) => if s.length() > 0 { s } else { self.station }
+          None => self.station
+        }
+        let th = match proto_int(params, "thread") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread" }))
+        }
+        let seq_opt = proto_int(params, "seq")
+        let off_opt : Option[Double] = match base_codec::json_get(params, "offset") {
+          Some(base_codec::Json::Num(n, _)) => Some(n)
+          _ => None
+        }
+        self.set_chat_place_mem(st, th, seq_opt, off_opt)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+      }
+      if call_name == "chat.window" {
+        // 1:1 with `client/core-ts/src/core/calls.ts:787-796`: `rows` required, clamped to `[1, 200]`.
+        let st = match proto_str(params, "station") {
+          Some(s) => if s.length() > 0 { s } else { self.station }
+          None => self.station
+        }
+        let raw_rows = match proto_int(params, "rows") {
+          Some(r) => r
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing rows" }))
+        }
+        if raw_rows <= 0 {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "rows must be positive" }))
+        }
+        let clamped_rows = if raw_rows > 200 { 200 } else { raw_rows }
+        let th_opt = proto_int(params, "thread")
+        let sess_opt = match proto_str(params, "session") {
+          Some(s) => if s.length() > 0 { Some(s) } else { None }
+          None => None
+        }
+        if th_opt.is_none() && sess_opt.is_none() {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing thread or session" }))
+        }
+        match th_opt {
+          Some(th) => self.chat_windows.set(st + ":t:" + th.to_string(), clamped_rows)
+          None => ()
+        }
+        match sess_opt {
+          Some(s) => self.chat_windows.set(st + ":s:" + s, clamped_rows)
+          None => ()
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_null(), None))
+      }
+      if call_name == "draft.get" {
+        // 1:1 with `client/core-ts/src/core/calls.ts:901-913`: accepts `{ key }` OR `{ station, chat }`.
+        let (st, chat) = match proto_str(params, "key") {
+          Some(k) => match draft_at_key(k) {
+            Some(pair) => pair
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid draft key" }))
+          }
+          None => {
+            let s = match proto_str(params, "station") {
+              Some(v) => if v.length() > 0 { v } else { "" }
+              None => ""
+            }
+            let c = match proto_str(params, "chat") {
+              Some(v) => if v.length() > 0 { v } else { "" }
+              None => ""
+            }
+            if s.length() == 0 || c.length() == 0 {
+              return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key or station+chat" }))
+            }
+            (s, c)
+          }
+        }
+        return Some(protocol::CoreEvent::Ok(id, self.composers.read_draft(st, chat), None))
+      }
+      if call_name == "draft.put" {
+        // 1:1 with `client/core-ts/src/core/calls.ts:901-921`: accepts `{ key }` OR `{ station, chat }`.
+        let (st, chat) = match proto_str(params, "key") {
+          Some(k) => match draft_at_key(k) {
+            Some(pair) => pair
+            None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "invalid draft key" }))
+          }
+          None => {
+            let s = match proto_str(params, "station") {
+              Some(v) => if v.length() > 0 { v } else { "" }
+              None => ""
+            }
+            let c = match proto_str(params, "chat") {
+              Some(v) => if v.length() > 0 { v } else { "" }
+              None => ""
+            }
+            if s.length() == 0 || c.length() == 0 {
+              return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key or station+chat" }))
+            }
+            (s, c)
+          }
+        }
+        let draft_val = match base_codec::json_get(params, "value") {
+          Some(v) => v
+          None => params
+        }
+        return Some(protocol::CoreEvent::Ok(id, self.composers.put_draft(st, chat, draft_val), None))
+      }
+      if call_name == "markdown" {
+        let text = match proto_str(params, "text") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing text" }))
+        }
+        let mk = store::md_key(text)
+        let now = self.rt.now()
+        let md_json = match self.md_store.get(mk, now) {
+          Some(raw) => match base_codec::json_parse(raw) {
+            base_codec::JsonParseResult::Ok(j) => j
+            base_codec::JsonParseResult::Err(_) => {
+              let parsed = views::parse_md_ast(text)
+              self.md_store.put_prepared(mk, base_codec::json_stringify(parsed), "markdown", now)
+              parsed
+            }
+          }
+          None => {
+            let parsed = views::parse_md_ast(text)
+            self.md_store.put_prepared(mk, base_codec::json_stringify(parsed), "markdown", now)
+            parsed
+          }
+        }
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("md", md_json)]), None))
+      }
+      if call_name == "link.parse" {
+        let url = match proto_str(params, "url") {
+          Some(u) => u
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing url" }))
+        }
+        let parsed = views::parse_link_target(self.db, url, self.cloud_origin)
+        return Some(protocol::CoreEvent::Ok(id, parsed, None))
+      }
+      if call_name == "composer.text" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let txt = match proto_str(params, "text") { Some(s) => s; None => "" }
+        let v = self.composers.text(key, txt)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.append" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let words = match proto_str(params, "words") {
+          Some(w) => w
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing words" }))
+        }
+        let v = self.composers.append(key, words)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.take" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let st_opt = proto_str(params, "station")
+        return Some(protocol::CoreEvent::Ok(id, self.composers.take(key, station=st_opt, lang=self.lang), None))
+      }
+      if call_name == "composer.add" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let st = match proto_str(params, "station") {
+          Some(s) => if s.length() > 0 { s } else { self.station }
+          None => self.station
+        }
+        let files = match base_codec::json_get(params, "files") {
+          Some(base_codec::Json::Arr(xs)) => xs
+          _ => []
+        }
+        match self.composers.add(key, st, files, bytes=bytes) {
+          Ok(v) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+          Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unsupported", message: msg }))
+        }
+      }
+      if call_name == "composer.mode" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let fid = match proto_str(params, "id") {
+          Some(f) => f
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing id" }))
+        }
+        let mode = match proto_str(params, "mode") { Some(m) => m; None => "path" }
+        match self.composers.mode(key, fid, mode) {
+          Ok(v) => return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+          Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "unsupported", message: msg }))
+        }
+      }
+      if call_name == "composer.quote" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let qj = match base_codec::json_get(params, "quote") {
+          Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+          _ => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing quote" }))
+        }
+        let qid = match proto_str(params, "id") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing id" }))
+        }
+        let focus = match base_codec::json_get(params, "focus") {
+          Some(base_codec::Json::Bool(b)) => b
+          _ => false
+        }
+        let att = base_codec::json_get(params, "attachment")
+        let fid = proto_str(params, "fileId")
+        let v = self.composers.quote(key, qj, qid, focus, attachment=att, file_id=fid)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.comment" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let qid = match proto_str(params, "id") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing id" }))
+        }
+        let words = match proto_str(params, "comment") { Some(s) => s; None => "" }
+        let v = self.composers.comment(key, qid, words)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.unquote" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let qid = match proto_str(params, "id") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing id" }))
+        }
+        let v = self.composers.unquote(key, qid)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.focused" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let v = self.composers.focused(key)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.error" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let v = self.composers.error(key, proto_str(params, "error"))
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.remove" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let fid = match proto_str(params, "id") {
+          Some(s) => s
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing id" }))
+        }
+        let v = self.composers.remove(key, fid)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.restore" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let uw = match base_codec::json_get(params, "unlessWritten") {
+          Some(base_codec::Json::Bool(b)) => b
+          _ => false
+        }
+        return Some(protocol::CoreEvent::Ok(id, self.composers.restore(key, proto_str(params, "error"), uw), None))
+      }
+      if call_name == "composer.carry" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let to = match proto_str(params, "to") {
+          Some(t) => t
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing to" }))
+        }
+        let v = self.composers.carry(key, to)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "composer.starting" {
+        let key = match proto_str(params, "key") {
+          Some(k) => k
+          None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing key" }))
+        }
+        let st_flag = match base_codec::json_get(params, "starting") {
+          Some(base_codec::Json::Bool(b)) => b
+          _ => false
+        }
+        let v = self.composers.starting(key, st_flag)
+        return Some(protocol::CoreEvent::Ok(id, base_codec::json_obj([("version", base_codec::json_int(v))]), None))
+      }
+      if call_name == "account.switch" {
+        let acct = match proto_str(params, "account") {
+          Some(s) => s
+          None => match proto_str(params, "id") {
+            Some(s) => s
+            None => match proto_str(params, "email") {
+              Some(s) => s
+              None => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing account" }))
+            }
+          }
+        }
+        if acct.length() == 0 {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "empty account" }))
+        }
+        if self.auth_store.accounts.length() > 0 {
+          // Resolve by `sub` or `email` against signed-in accounts; refuse unknown accounts without writing `active_account`.
+          let mut found_account = false
+          let mut target_sub = ""
+          let mut target_email = ""
+          for i in 0..<self.auth_store.accounts.length() {
+            let a = self.auth_store.accounts[i]
+            if a.sub == acct || a.email == acct {
+              found_account = true
+              target_sub = a.sub
+              target_email = a.email
+              break
+            }
+          }
+          if !found_account {
+            return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: "account not found: " + acct }))
+          }
+          // Multi-account SQLite DB re-open is not yet wired: refuse cross-account DB switch honestly
+          // without mutating `active_sub`, `viewer_sub`, or `active_account` (preventing cross-account data mix!).
+          match self.db_account_sub {
+            Some(open_sub) => {
+              if open_sub != target_sub {
+                return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+                  code: "unsupported",
+                  message: "multi-account db switch not yet wired",
+                }))
+              }
+            }
+            None => ()
+          }
+          match self.auth_store.switch_account(target_sub) {
+            Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: msg }))
+            Ok(_) => {
+              if target_email.length() > 0 {
+                self.set_viewer(target_email, sub=target_sub)
+              }
+            }
+          }
+        } else {
+          // When `auth_store` is empty, verify against persisted `account_doc("accounts")` if populated.
+          let mut resolved_sub = acct
+          match store::get_account_doc(self.db, "accounts") {
+            sql::SqlResult::Ok(Some(raw)) => match base_codec::json_parse(raw) {
+              base_codec::JsonParseResult::Ok(j) => {
+                let items = match j {
+                  base_codec::Json::Arr(xs) => xs
+                  base_codec::Json::Obj(_) => match base_codec::json_get(j, "accounts") {
+                    Some(base_codec::Json::Arr(xs)) => xs
+                    _ => []
+                  }
+                  _ => []
+                }
+                if items.length() > 0 {
+                  let mut found = false
+                  for i in 0..<items.length() {
+                    let it = items[i]
+                    let s = match proto_str(it, "sub") { Some(v) => v; None => match proto_str(it, "id") { Some(v) => v; None => "" } }
+                    let e = match proto_str(it, "email") { Some(v) => v; None => "" }
+                    if s == acct || e == acct {
+                      found = true
+                      if s.length() > 0 { resolved_sub = s }
+                      break
+                    }
+                  }
+                  if !found {
+                    return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "not_found", message: "account not found: " + acct }))
+                  }
+                }
+              }
+              base_codec::JsonParseResult::Err(_) => ()
+            }
+            _ => ()
+          }
+          match self.db_account_sub {
+            Some(open_sub) => {
+              if open_sub != resolved_sub {
+                return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{
+                  code: "unsupported",
+                  message: "multi-account db switch not yet wired",
+                }))
+              }
+            }
+            None => ()
+          }
+        }
+        return self.router.handle(req)
+      }
       self.router.handle(req)
     }
-    protocol::CoreRequest::Subscribe(_id, topic, _keyed, _from, _have) => {
+    protocol::CoreRequest::Subscribe(id, topic, _keyed, _from, _have) => {
       // Rule 4: subscribing NEVER starts a network request; only reads local SQLite.
       // If subscribing to a specific chat thread, only raises priority without opening a new fetch.
+      self.drop_chat_sub_snapshot(id)
       if topic.name == "chat" {
         match topic.param("thread") {
           Some(base_codec::Json::Num(n, _)) => self.sync.focus_thread(Some(n.to_int()))
           _ => ()
         }
       }
+      self.router.handle(req)
+    }
+    protocol::CoreRequest::Unsubscribe(id, _, _) => {
+      self.close_chat_sub_snapshot(id)
       self.router.handle(req)
     }
     _ => self.router.handle(req)

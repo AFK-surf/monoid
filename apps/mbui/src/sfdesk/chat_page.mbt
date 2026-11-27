@@ -148,7 +148,14 @@ fn history_toggle(src : Source, r : ChatRef, v : ChatView) -> Unit {
   if agent(front) {
     side_change(src, r, "clear", None)
   } else {
-    side_change(src, r, "open", Some(tabs.iter().find_first(agent).unwrap_or(v.agents[0].key)))
+    let mut first_tab = v.agents[0].key
+    for t in tabs {
+      if agent(t) {
+        first_tab = t
+        break
+      }
+    }
+    side_change(src, r, "open", Some(first_tab))
   }
 }
 

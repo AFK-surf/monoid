@@ -222,11 +222,16 @@ pub fn vault_foot_node(
       ("", "", false)
     } else {
       match vault_target_picked.get(request()) {
-        Some((id, _, _)) =>
-          match ts.iter().find_first(fn(t) { t.0 == id }) {
-            Some(t) => t
-            None => ts[0]
+        Some((id, _, _)) => {
+          let mut chosen = ts[0]
+          for t in ts {
+            if t.0 == id {
+              chosen = t
+              break
+            }
           }
+          chosen
+        }
         None => ts[0]
       }
     }
@@ -584,7 +589,15 @@ pub fn vault_actions_node(
   mine : () -> Bool,
   who? : () -> String? = fn() { None },
 ) -> Unit {
-  let row = fn() { items(vaults_of(core, ws()), "requests").iter().find_first(fn(r) { text(Some(r), "id") == request() }) }
+  let row = fn() -> Json? {
+    let req = request()
+    for r in items(vaults_of(core, ws()), "requests") {
+      if text(Some(r), "id") == req {
+        return Some(r)
+      }
+    }
+    None
+  }
   let said = fn() { topic_answer(core, ws(), request(), mine(), who()) }
   vault_foot_node(
     v,

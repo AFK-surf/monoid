@@ -132,7 +132,7 @@ fn hex_of(c : Int64) -> String {
   out.write_char('#')
   let shown = if (c & 0xFFL) == 0xFFL { 3 } else { 4 }
   for i in 0..<shown {
-    let b = ((c >> (24 - i * 8)) & 0xFFL).to_int()
+    let b : Int = ((c >> (24 - i * 8)) & 0xFFL).to_int()
     out.write_char(digits[b / 16])
     out.write_char(digits[b % 16])
   }

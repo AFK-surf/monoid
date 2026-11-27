@@ -33,7 +33,7 @@ priv struct RailAt {
 ///|
 /// The rail where the block's move has `f`, closed to the bar or not (`bar`).
 fn rail_at_fold(bar : Bool, f : FoldLook) -> RailAt {
-  { bar, w: f.rail_w, pl: f.rail_pl, pt: f.rail_pt, pb: f.rail_pb, top: f.rail_top, under: dock_ground(bar), mark: f.mark }
+  { bar, w: f.rail_w, pl: f.rail_pl, pt: f.rail_pt, pb: f.rail_pb, top: f.rail_top, under: f.ground, mark: f.mark }
 }
 
 ///|

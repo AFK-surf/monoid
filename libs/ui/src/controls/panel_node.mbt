@@ -77,7 +77,7 @@ fn panel_node(
         if layer.leaving() && x.fade_out_together {
           // Fade the whole panel from that appearance, retaining the popover's scale and curve.
           let fade = if leave_from.val > 0.0 { dmin(1.0, dmax(0.0, p / leave_from.val)) } else { 0.0 }
-          { ..pop_out_for(layer).at(p, p), alpha: leave_look.val.alpha * fade, words: leave_look.val.words }
+          @ui.Look::{ ..pop_out_for(layer).at(p, p), alpha: leave_look.val.alpha * fade, words: leave_look.val.words }
         } else if layer.leaving() {
           pop_out_for(layer).at(p, p)
         } else {

@@ -1,0 +1,1312 @@
+// Composer state machine and draft persistence (`composer` topic + `composer.*` / `draft.get` / `draft.put`),
+// aligned with `client/core-ts/src/composer.ts` and persisted in SQLite `draft`.
+
+import "base_codec"
+import "sql"
+import "store"
+
+let COMPOSER_MAX_FILE_BYTES : Int64 = 1073741824L
+
+pub struct ComposerQuote {
+  pub id : String
+  pub author : String
+  pub text : String
+  pub comment : String
+  pub ts : Option[String]
+  pub role : Option[String]
+  pub mark : Option[String]
+}
+
+pub struct ComposerRef {
+  pub station : String
+  pub station_name : String
+  pub path : String
+  pub dir : Bool
+  pub mode : String
+}
+
+pub struct ComposerLink {
+  pub url : String
+  pub title : Option[String]
+  pub site : Option[String]
+}
+
+pub struct ComposerFile {
+  pub id : String
+  pub name : String
+  pub size : Int64
+  pub sent : Option[Int64]
+  pub width : Option[Int]
+  pub height : Option[Int]
+  pub done : Option[base_codec::Json]
+  pub error : Option[String]
+  pub waits : Bool
+  pub pasted : Option[base_codec::Json]
+  pub ref_ : Option[ComposerRef]
+  pub link : Option[ComposerLink]
+  pub quote : Option[String]
+}
+
+struct TakenDraft {
+  text : String
+  quotes : Array[ComposerQuote]
+  files : Array[ComposerFile]
+  id : String
+}
+
+struct ComposerState {
+  mut text : String
+  mut rev : Int
+  mut quotes : Array[ComposerQuote]
+  mut focus : Option[String]
+  mut files : Array[ComposerFile]
+  mut starting : Bool
+  mut error : Option[String]
+  mut version : Int
+  mut taken : Option[TakenDraft]
+  mut id : String
+}
+
+let COMPOSER_MAX_STATES : Int = 64
+
+pub struct ComposerManager {
+  db : sql::Sql
+  states : Map[String, ComposerState]
+  state_order : Array[String]
+  mut seq : Int
+}
+
+pub fn ComposerManager::new(db : sql::Sql) -> ComposerManager {
+  ComposerManager::{
+    db: db,
+    states: Map::new(),
+    state_order: [],
+    seq: 1,
+  }
+}
+
+fn ComposerManager::touch_state_lru(self : ComposerManager, key : String) -> Unit {
+  let next : Array[String] = []
+  for i in 0..<self.state_order.length() {
+    if self.state_order[i] != key {
+      next.push(self.state_order[i])
+    }
+  }
+  next.push(key)
+  self.state_order.clear()
+  for i in 0..<next.length() {
+    self.state_order.push(next[i])
+  }
+  while self.state_order.length() > COMPOSER_MAX_STATES {
+    let oldest = self.state_order[0]
+    let trimmed : Array[String] = []
+    for i in 1..<self.state_order.length() {
+      trimmed.push(self.state_order[i])
+    }
+    self.state_order.clear()
+    for i in 0..<trimmed.length() {
+      self.state_order.push(trimmed[i])
+    }
+    self.states.remove(oldest)
+  }
+}
+
+fn ComposerManager::local_id(self : ComposerManager, prefix : String) -> String {
+  let n = self.seq
+  self.seq += 1
+  prefix + "-" + n.to_string()
+}
+
+fn trim_ws_cm(s : String) -> String {
+  let bs = s.to_bytes()
+  let mut lo = 0
+  let mut hi = bs.length()
+  while lo < hi {
+    let c = bs[lo].to_int()
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      lo += 1
+    } else {
+      break
+    }
+  }
+  while hi > lo {
+    let c = bs[hi - 1].to_int()
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      hi -= 1
+    } else {
+      break
+    }
+  }
+  s.slice(lo, hi)
+}
+
+fn trim_end_ws_cm(s : String) -> String {
+  let bs = s.to_bytes()
+  let mut hi = bs.length()
+  while hi > 0 {
+    let c = bs[hi - 1].to_int()
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      hi -= 1
+    } else {
+      break
+    }
+  }
+  s.slice(0, hi)
+}
+
+fn cm_opt_str(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn cm_nonempty_str(j : base_codec::Json, k : String) -> Option[String] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+    _ => None
+  }
+}
+
+fn cm_int64(j : base_codec::Json, k : String) -> Int64 {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, repr)) => {
+      if repr.length() > 0 {
+        match base_codec::parse_int64_str(repr) {
+          Some(v) => return v
+          None => ()
+        }
+      }
+      n.to_int64()
+    }
+    _ => 0L
+  }
+}
+
+fn cm_opt_int(j : base_codec::Json, k : String) -> Option[Int] {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+}
+
+fn cm_bool(j : base_codec::Json, k : String) -> Bool {
+  match base_codec::json_get(j, k) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+/// Split composer key into `(station, chat)` matching `refs.ts draftAt`:
+/// - `new:<workspace>` -> `(<workspace>, "new")`
+/// - `<station>:<chat>` -> `(<station>, <chat>)` (first colon separator)
+pub fn draft_at_key(key : String) -> Option[(String, String)] {
+  if key.starts_with("new:") {
+    let rest = key.slice(4, key.length())
+    if rest.length() > 0 {
+      return Some((rest, "new"))
+    }
+    return None
+  }
+  match key.index_of(":") {
+    idx if idx > 0 => {
+      let st = key.slice(0, idx)
+      let ch = key.slice(idx + 1, key.length())
+      if ch.length() > 0 { Some((st, ch)) } else { None }
+    }
+    _ => None
+  }
+}
+
+pub fn draft_key_for(station : String, chat : String) -> String {
+  if chat == "new" {
+    "new:" + station
+  } else {
+    station + ":" + chat
+  }
+}
+
+fn is_fresh_key(key : String) -> Bool {
+  key.starts_with("new:")
+}
+
+fn is_named_file(f : ComposerFile) -> Bool {
+  if f.link.is_some() {
+    return true
+  }
+  match f.ref_ {
+    Some(r) => r.mode == "path"
+    None => false
+  }
+}
+
+fn ref_to_json(r : ComposerRef) -> base_codec::Json {
+  base_codec::json_obj([
+    ("station", base_codec::json_str(r.station)),
+    ("stationName", base_codec::json_str(r.station_name)),
+    ("path", base_codec::json_str(r.path)),
+    ("dir", base_codec::json_bool(r.dir)),
+    ("mode", base_codec::json_str(r.mode)),
+  ])
+}
+
+fn link_to_json(l : ComposerLink) -> base_codec::Json {
+  let fs : Array[(String, base_codec::Json)] = [("url", base_codec::json_str(l.url))]
+  match l.title { Some(t) => fs.push(("title", base_codec::json_str(t))); None => () }
+  match l.site { Some(s) => fs.push(("site", base_codec::json_str(s))); None => () }
+  base_codec::json_obj(fs)
+}
+
+fn shown_file_json(f : ComposerFile) -> base_codec::Json {
+  let fs : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(f.id)),
+    ("name", base_codec::json_str(f.name)),
+    ("size", base_codec::json_int64(f.size)),
+  ]
+  match f.sent { Some(s) => fs.push(("sent", base_codec::json_int64(s))); None => () }
+  match f.width { Some(w) => fs.push(("width", base_codec::json_int(w))); None => () }
+  match f.height { Some(h) => fs.push(("height", base_codec::json_int(h))); None => () }
+  match f.done { Some(d) => fs.push(("done", d)); None => () }
+  match f.error { Some(e) => fs.push(("error", base_codec::json_str(e))); None => () }
+  if f.waits { fs.push(("waits", base_codec::json_bool(true))) }
+  match f.pasted { Some(p) => fs.push(("pasted", p)); None => () }
+  match f.ref_ { Some(r) => fs.push(("ref", ref_to_json(r))); None => () }
+  match f.link { Some(l) => fs.push(("link", link_to_json(l))); None => () }
+  base_codec::json_obj(fs)
+}
+
+fn sent_quote_json(q : ComposerQuote, files : Array[ComposerFile], strip_mark : Bool) -> base_codec::Json {
+  let fs : Array[(String, base_codec::Json)] = [
+    ("author", base_codec::json_str(q.author)),
+    ("text", base_codec::json_str(q.text)),
+    ("comment", base_codec::json_str(if strip_mark { trim_ws_cm(q.comment) } else { q.comment })),
+  ]
+  match q.ts { Some(t) => fs.push(("ts", base_codec::json_str(t))); None => () }
+  match q.role { Some(r) => fs.push(("role", base_codec::json_str(r))); None => () }
+  if !strip_mark {
+    match q.mark { Some(m) => fs.push(("mark", base_codec::json_str(m))); None => () }
+  }
+  for i in 0..<files.length() {
+    match files[i].quote {
+      Some(qid) => if qid == q.id {
+        let fname = match files[i].done {
+          Some(d) => match cm_nonempty_str(d, "name") { Some(n) => n; None => files[i].name }
+          None => files[i].name
+        }
+        fs.push(("file", base_codec::json_str(fname)))
+        break
+      }
+      None => ()
+    }
+  }
+  base_codec::json_obj(fs)
+}
+
+fn up_once_files(files : Array[ComposerFile]) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<files.length() {
+    match files[i].done {
+      Some(d) => {
+        let p = match cm_opt_str(d, "path") { Some(s) => s; None => files[i].id }
+        if seen.get(p).is_none() {
+          seen.set(p, true)
+          out.push(d)
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+fn empty_composer_state() -> ComposerState {
+  ComposerState::{
+    text: "",
+    rev: 0,
+    quotes: [],
+    focus: None,
+    files: [],
+    starting: false,
+    error: None,
+    version: 0,
+    taken: None,
+    id: "",
+  }
+}
+
+fn ComposerManager::resolve_at(self : ComposerManager, key : String) -> Option[(String, String)] {
+  let at = match draft_at_key(key) {
+    Some(pair) => pair
+    None => return None
+  }
+  if at.1 == "new" {
+    return Some(at)
+  }
+  match store::resolve_chat_now(self.db, at.0, at.1) {
+    sql::SqlResult::Ok(Some(loc)) => Some((loc.station, at.1))
+    _ => Some(at)
+  }
+}
+
+fn ComposerManager::parse_quote_json(q : base_codec::Json, qid : String) -> ComposerQuote {
+  let author = match cm_opt_str(q, "author") { Some(s) => s; None => "" }
+  let text = match cm_opt_str(q, "text") { Some(s) => s; None => "" }
+  let comment = match cm_opt_str(q, "comment") { Some(s) => s; None => "" }
+  let mark = match cm_nonempty_str(q, "mark") {
+    Some(m) => if m.length() <= 2000 { Some(m) } else { None }
+    None => None
+  }
+  ComposerQuote::{
+    id: qid,
+    author: author,
+    text: text,
+    comment: comment,
+    ts: cm_nonempty_str(q, "ts"),
+    role: cm_nonempty_str(q, "role"),
+    mark: mark,
+  }
+}
+
+fn ComposerManager::state_from_draft(self : ComposerManager, kept : base_codec::Json) -> ComposerState {
+  let s = empty_composer_state()
+  match kept {
+    base_codec::Json::Obj(_) => ()
+    _ => return s
+  }
+  match cm_opt_str(kept, "text") {
+    Some(t) => {
+      s.text = t
+      if t.length() > 0 {
+        s.rev = 1
+      }
+    }
+    None => ()
+  }
+  match cm_opt_str(kept, "id") {
+    Some(did) => { s.id = did }
+    None => ()
+  }
+  match base_codec::json_get(kept, "files") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let f = xs[i]
+        match f {
+          base_codec::Json::Obj(_) => {
+            s.files.push(ComposerFile::{
+              id: self.local_id("kept"),
+              name: match cm_opt_str(f, "name") { Some(n) => n; None => "" },
+              size: cm_int64(f, "size"),
+              sent: None,
+              width: cm_opt_int(f, "width"),
+              height: cm_opt_int(f, "height"),
+              done: Some(f),
+              error: None,
+              waits: false,
+              pasted: None,
+              ref_: None,
+              link: None,
+              quote: None,
+            })
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(kept, "waiting") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let w = xs[i]
+        match cm_nonempty_str(w, "id") {
+          Some(wid) => {
+            s.files.push(ComposerFile::{
+              id: wid,
+              name: match cm_opt_str(w, "name") { Some(n) => n; None => "" },
+              size: cm_int64(w, "size"),
+              sent: None,
+              width: cm_opt_int(w, "width"),
+              height: cm_opt_int(w, "height"),
+              done: None,
+              error: None,
+              waits: true,
+              pasted: base_codec::json_get(w, "pasted"),
+              ref_: None,
+              link: None,
+              quote: None,
+            })
+          }
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(kept, "quotes") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let qj = xs[i]
+        match qj {
+          base_codec::Json::Obj(_) => {
+            let q = ComposerManager::parse_quote_json(qj, self.local_id("kept"))
+            s.quotes.push(q)
+            match cm_nonempty_str(qj, "file") {
+              Some(fname) => {
+                for fi in 0..<s.files.length() {
+                  if s.files[fi].name == fname && s.files[fi].quote.is_none() {
+                    let old = s.files[fi]
+                    s.files[fi] = ComposerFile::{
+                      id: old.id,
+                      name: old.name,
+                      size: old.size,
+                      sent: old.sent,
+                      width: old.width,
+                      height: old.height,
+                      done: old.done,
+                      error: old.error,
+                      waits: old.waits,
+                      pasted: old.pasted,
+                      ref_: old.ref_,
+                      link: old.link,
+                      quote: Some(q.id),
+                    }
+                    break
+                  }
+                }
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(kept, "links") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let lj = xs[i]
+        match cm_nonempty_str(lj, "url") {
+          Some(u) => {
+            let title = cm_nonempty_str(lj, "title")
+            let name = match title { Some(t) => t; None => u }
+            s.files.push(ComposerFile::{
+              id: self.local_id("kept"),
+              name: name,
+              size: 0L,
+              sent: None,
+              width: None,
+              height: None,
+              done: None,
+              error: None,
+              waits: false,
+              pasted: None,
+              ref_: None,
+              link: Some(ComposerLink::{ url: u, title: title, site: cm_nonempty_str(lj, "site") }),
+              quote: None,
+            })
+          }
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(kept, "paths") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let pj = xs[i]
+        match base_codec::json_get(pj, "ref") {
+          Some(rj) => {
+            match (cm_nonempty_str(rj, "station"), cm_nonempty_str(rj, "path")) {
+              (Some(rst), Some(rpath)) => {
+                let sname = match cm_nonempty_str(rj, "stationName") { Some(n) => n; None => rst }
+                let r = ComposerRef::{
+                  station: rst,
+                  station_name: sname,
+                  path: rpath,
+                  dir: cm_bool(rj, "dir"),
+                  mode: "path",
+                }
+                s.files.push(ComposerFile::{
+                  id: self.local_id("kept"),
+                  name: match cm_opt_str(pj, "name") { Some(n) => n; None => "" },
+                  size: cm_int64(pj, "size"),
+                  sent: None,
+                  width: None,
+                  height: None,
+                  done: base_codec::json_get(pj, "done"),
+                  error: None,
+                  waits: false,
+                  pasted: None,
+                  ref_: Some(r),
+                  link: None,
+                  quote: None,
+                })
+              }
+              _ => ()
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  s
+}
+
+fn ComposerManager::draft_json(self : ComposerManager, s : ComposerState) -> base_codec::Json {
+  let _ = self.seq
+  let quotes_j : Array[base_codec::Json] = []
+  for i in 0..<s.quotes.length() {
+    quotes_j.push(sent_quote_json(s.quotes[i], s.files, false))
+  }
+  let non_path : Array[ComposerFile] = []
+  let waiting_j : Array[base_codec::Json] = []
+  let links_j : Array[base_codec::Json] = []
+  let paths_j : Array[base_codec::Json] = []
+  for i in 0..<s.files.length() {
+    let f = s.files[i]
+    let is_path = match f.ref_ { Some(r) => r.mode == "path"; None => false }
+    if !is_path {
+      non_path.push(f)
+    } else {
+      match f.ref_ {
+        Some(r) => {
+          let pf : Array[(String, base_codec::Json)] = [
+            ("name", base_codec::json_str(f.name)),
+            ("size", base_codec::json_int64(f.size)),
+            ("ref", ref_to_json(r)),
+            ("station", base_codec::json_str(r.station)),
+          ]
+          match f.done { Some(d) => pf.push(("done", d)); None => () }
+          paths_j.push(base_codec::json_obj(pf))
+        }
+        None => ()
+      }
+    }
+    if f.waits {
+      let wf : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_str(f.id)),
+        ("name", base_codec::json_str(f.name)),
+        ("size", base_codec::json_int64(f.size)),
+      ]
+      match f.width { Some(w) => wf.push(("width", base_codec::json_int(w))); None => () }
+      match f.height { Some(h) => wf.push(("height", base_codec::json_int(h))); None => () }
+      match f.pasted { Some(p) => wf.push(("pasted", p)); None => () }
+      waiting_j.push(base_codec::json_obj(wf))
+    }
+    match f.link {
+      Some(l) => links_j.push(link_to_json(l))
+      None => ()
+    }
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("text", base_codec::json_str(s.text)),
+    ("quotes", base_codec::json_arr(quotes_j)),
+    ("files", base_codec::json_arr(up_once_files(non_path))),
+  ]
+  if waiting_j.length() > 0 { out.push(("waiting", base_codec::json_arr(waiting_j))) }
+  if links_j.length() > 0 { out.push(("links", base_codec::json_arr(links_j))) }
+  if paths_j.length() > 0 { out.push(("paths", base_codec::json_arr(paths_j))) }
+  if s.id.length() > 0 { out.push(("id", base_codec::json_str(s.id))) }
+  base_codec::json_obj(out)
+}
+
+fn ComposerManager::ensure_id(self : ComposerManager, s : ComposerState) -> String {
+  if s.id.length() == 0 {
+    s.id = self.local_id("draft")
+  }
+  s.id
+}
+
+fn ComposerManager::state_for(self : ComposerManager, key : String) -> ComposerState {
+  match self.states.get(key) {
+    Some(existing) => {
+      self.touch_state_lru(key)
+      existing
+    }
+    None => {
+      let kept_j = match self.resolve_at(key) {
+        Some((st, ch)) => match store::get_draft(self.db, st, ch) {
+          sql::SqlResult::Ok(Some(row)) => match base_codec::json_parse(row.json) {
+            base_codec::JsonParseResult::Ok(j) => j
+            base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+          }
+          _ => base_codec::json_null()
+        }
+        None => base_codec::json_null()
+      }
+      let s = self.state_from_draft(kept_j)
+      self.states.set(key, s)
+      self.touch_state_lru(key)
+      s
+    }
+  }
+}
+
+fn ComposerManager::save(self : ComposerManager, key : String, s : ComposerState) -> Unit {
+  match self.resolve_at(key) {
+    None => ()
+    Some((st, ch)) => {
+      let blank = trim_ws_cm(s.text).length() == 0 && s.quotes.length() == 0 && s.files.length() == 0
+      if blank {
+        let _ = store::delete_draft(self.db, st, ch)
+      } else {
+        let d = self.draft_json(s)
+        let _ = store::put_draft(self.db, st, ch, base_codec::json_stringify(d))
+      }
+    }
+  }
+}
+
+fn ComposerManager::changed(self : ComposerManager, key : String, s : ComposerState, count : Bool = true) -> Int {
+  if count {
+    s.version += 1
+  }
+  self.save(key, s)
+  s.version
+}
+
+/// Project `ComposerView` for the `composer` topic (`shapes/composer.ts`).
+pub fn ComposerManager::value(self : ComposerManager, key : String) -> base_codec::Json {
+  let s = self.state_for(key)
+  let mut uploading = false
+  let mut has_ok_file = false
+  let mut has_pasted_err = false
+  let shown_files : Array[base_codec::Json] = []
+  for i in 0..<s.files.length() {
+    let f = s.files[i]
+    if f.done.is_none() && f.error.is_none() && !f.waits && !is_named_file(f) {
+      uploading = true
+    }
+    if f.error.is_none() {
+      has_ok_file = true
+    }
+    if f.pasted.is_some() && f.error.is_some() {
+      has_pasted_err = true
+    }
+    if f.quote.is_none() {
+      shown_files.push(shown_file_json(f))
+    }
+  }
+  let ready = (trim_ws_cm(s.text).length() > 0 || has_ok_file || s.quotes.length() > 0) && !s.starting && !has_pasted_err
+  let quotes_out : Array[base_codec::Json] = []
+  for i in 0..<s.quotes.length() {
+    let q = s.quotes[i]
+    let qf : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(q.id)),
+      ("author", base_codec::json_str(q.author)),
+      ("text", base_codec::json_str(q.text)),
+      ("comment", base_codec::json_str(q.comment)),
+    ]
+    match q.ts { Some(t) => qf.push(("ts", base_codec::json_str(t))); None => () }
+    match q.role { Some(r) => qf.push(("role", base_codec::json_str(r))); None => () }
+    match q.mark { Some(m) => qf.push(("mark", base_codec::json_str(m))); None => () }
+    for fi in 0..<s.files.length() {
+      match s.files[fi].quote {
+        Some(qid) => if qid == q.id {
+          qf.push(("own", shown_file_json(s.files[fi])))
+          break
+        }
+        None => ()
+      }
+    }
+    quotes_out.push(base_codec::json_obj(qf))
+  }
+  let out : Array[(String, base_codec::Json)] = [
+    ("text", base_codec::json_str(s.text)),
+    ("rev", base_codec::json_int(s.rev)),
+  ]
+  match s.focus { Some(f) => out.push(("focus", base_codec::json_str(f))); None => () }
+  out.push(("quotes", base_codec::json_arr(quotes_out)))
+  out.push(("files", base_codec::json_arr(shown_files)))
+  out.push(("uploading", base_codec::json_bool(uploading)))
+  out.push(("ready", base_codec::json_bool(ready)))
+  out.push(("starting", base_codec::json_bool(s.starting)))
+  match s.error { Some(e) => out.push(("error", base_codec::json_str(e))); None => () }
+  out.push(("version", base_codec::json_int(s.version)))
+  base_codec::json_obj(out)
+}
+
+/// `draft.get` (`composer.ts readDraft`)
+pub fn ComposerManager::read_draft(self : ComposerManager, station : String, chat : String) -> base_codec::Json {
+  let key = draft_key_for(station, chat)
+  let s = self.state_for(key)
+  let _ = self.ensure_id(s)
+  let d = self.draft_json(s)
+  if trim_ws_cm(s.text).length() == 0 && s.quotes.length() == 0 && s.files.length() == 0 {
+    return base_codec::json_obj([
+      ("text", base_codec::json_str("")),
+      ("quotes", base_codec::json_arr([])),
+      ("files", base_codec::json_arr([])),
+      ("id", base_codec::json_str(s.id)),
+    ])
+  }
+  d
+}
+
+/// `draft.put` (`composer.ts putDraft`)
+pub fn ComposerManager::put_draft(
+  self : ComposerManager,
+  station : String,
+  chat : String,
+  value : base_codec::Json,
+) -> base_codec::Json {
+  let key = draft_key_for(station, chat)
+  let was = self.state_for(key)
+  let s = self.state_from_draft(value)
+  let blank = trim_ws_cm(s.text).length() == 0 && s.quotes.length() == 0 && s.files.length() == 0
+  if blank {
+    s.text = ""
+    s.id = ""
+  } else {
+    s.id = self.ensure_id(was)
+  }
+  let _ = self.ensure_id(s)
+  s.rev = was.rev + 1
+  s.version = was.version
+  self.states.set(key, s)
+  let _ = self.changed(key, s, count=true)
+  base_codec::json_obj([("id", base_codec::json_str(s.id))])
+}
+
+/// `composer.text`
+pub fn ComposerManager::text(self : ComposerManager, key : String, text : String) -> Int {
+  let s = self.state_for(key)
+  if s.text == text {
+    return s.version
+  }
+  s.text = text
+  self.changed(key, s, count=false)
+}
+
+/// `composer.append`
+pub fn ComposerManager::append(self : ComposerManager, key : String, words : String) -> Int {
+  let s = self.state_for(key)
+  s.text = if trim_ws_cm(s.text).length() > 0 { trim_end_ws_cm(s.text) + "\n" + words } else { words }
+  s.rev += 1
+  self.changed(key, s, count=true)
+}
+
+/// `composer.quote`
+pub fn ComposerManager::quote(
+  self : ComposerManager,
+  key : String,
+  quote_json : base_codec::Json,
+  qid : String,
+  focus : Bool,
+  attachment : Option[base_codec::Json] = None,
+  file_id : Option[String] = None,
+) -> Int {
+  let s = self.state_for(key)
+  let q = ComposerManager::parse_quote_json(quote_json, qid)
+  s.quotes.push(q)
+  match attachment {
+    Some(att) => {
+      let fid = match file_id { Some(id) => id; None => self.local_id("quoted") }
+      s.files.push(ComposerFile::{
+        id: fid,
+        name: match cm_opt_str(att, "name") { Some(n) => n; None => "" },
+        size: cm_int64(att, "size"),
+        sent: None,
+        width: cm_opt_int(att, "width"),
+        height: cm_opt_int(att, "height"),
+        done: Some(att),
+        error: None,
+        waits: false,
+        pasted: None,
+        ref_: None,
+        link: None,
+        quote: Some(q.id),
+      })
+    }
+    None => ()
+  }
+  if focus {
+    s.focus = Some(q.id)
+  }
+  self.changed(key, s, count=true)
+}
+
+/// `composer.comment`
+pub fn ComposerManager::comment(self : ComposerManager, key : String, qid : String, words : String) -> Int {
+  let s = self.state_for(key)
+  for i in 0..<s.quotes.length() {
+    let q = s.quotes[i]
+    if q.id == qid {
+      s.quotes[i] = ComposerQuote::{
+        id: q.id,
+        author: q.author,
+        text: q.text,
+        comment: words,
+        ts: q.ts,
+        role: q.role,
+        mark: q.mark,
+      }
+    }
+  }
+  self.changed(key, s, count=true)
+}
+
+/// `composer.unquote`
+pub fn ComposerManager::unquote(self : ComposerManager, key : String, qid : String) -> Int {
+  let s = self.state_for(key)
+  let next_q : Array[ComposerQuote] = []
+  for i in 0..<s.quotes.length() {
+    if s.quotes[i].id != qid {
+      next_q.push(s.quotes[i])
+    }
+  }
+  s.quotes = next_q
+  let next_f : Array[ComposerFile] = []
+  for i in 0..<s.files.length() {
+    match s.files[i].quote {
+      Some(fq) => if fq != qid { next_f.push(s.files[i]) }
+      None => next_f.push(s.files[i])
+    }
+  }
+  s.files = next_f
+  match s.focus {
+    Some(f) => if f == qid { s.focus = None }
+    None => ()
+  }
+  self.changed(key, s, count=true)
+}
+
+/// `composer.focused`
+pub fn ComposerManager::focused(self : ComposerManager, key : String) -> Int {
+  let s = self.state_for(key)
+  if s.focus.is_none() {
+    return s.version
+  }
+  s.focus = None
+  self.changed(key, s, count=true)
+}
+
+/// `composer.error`
+pub fn ComposerManager::error(self : ComposerManager, key : String, err : Option[String]) -> Int {
+  let s = self.state_for(key)
+  let same_err = match (s.error, err) {
+    (None, None) => true
+    (Some(a), Some(b)) => a == b
+    _ => false
+  }
+  if same_err {
+    return s.version
+  }
+  s.error = err
+  self.changed(key, s, count=true)
+}
+
+/// `composer.starting`
+pub fn ComposerManager::starting(self : ComposerManager, key : String, starting : Bool) -> Int {
+  let s = self.state_for(key)
+  if s.starting == starting {
+    return s.version
+  }
+  s.starting = starting
+  self.changed(key, s, count=true)
+}
+
+/// `composer.add` (supports `ref` path references, `link` attachments, and already-uploaded `done`
+/// attachments; validates the ENTIRE batch atomically BEFORE touching LRU state or mutating
+/// `state.files`, explicitly refusing raw binary `bytes` and `mode: "file"` with zero partial
+/// leftovers and zero LRU eviction).
+pub fn ComposerManager::add(
+  self : ComposerManager,
+  key : String,
+  station : String,
+  files_json : Array[base_codec::Json],
+  bytes : Option[Bytes] = None,
+) -> Result[Int, String] {
+  let _ = station
+  match bytes {
+    Some(b) => if b.length() > 0 {
+      return Err("binary attachment upload is not yet wired in Pion core")
+    }
+    None => ()
+  }
+  let fresh = is_fresh_key(key)
+  let staged : Array[(ComposerFile, Option[String])] = []
+  let mut temp_seq = self.seq
+  for i in 0..<files_json.length() {
+    let fj = files_json[i]
+    let fid = match cm_nonempty_str(fj, "id") {
+      Some(v) => v
+      None => {
+        let n = temp_seq
+        temp_seq += 1
+        "file-" + n.to_string()
+      }
+    }
+    let fname = match cm_opt_str(fj, "name") { Some(v) => v; None => "" }
+    let fsize = cm_int64(fj, "size")
+    let link_opt : Option[ComposerLink] = match base_codec::json_get(fj, "link") {
+      Some(lj) => match cm_nonempty_str(lj, "url") {
+        Some(u) => Some(ComposerLink::{
+          url: u,
+          title: cm_nonempty_str(lj, "title"),
+          site: cm_nonempty_str(lj, "site"),
+        })
+        None => None
+      }
+      None => None
+    }
+    if link_opt.is_some() {
+      staged.push((ComposerFile::{
+        id: fid,
+        name: fname,
+        size: fsize,
+        sent: None,
+        width: None,
+        height: None,
+        done: None,
+        error: None,
+        waits: false,
+        pasted: None,
+        ref_: None,
+        link: link_opt,
+        quote: None,
+      }, None))
+      continue
+    }
+    let top_mode = match cm_opt_str(fj, "mode") { Some(m) => m; None => "" }
+    if top_mode == "file" {
+      return Err("station file upload (mode=file) is not yet wired in Pion core")
+    }
+    let ref_opt : Option[ComposerRef] = match base_codec::json_get(fj, "ref") {
+      Some(rj) => match (cm_nonempty_str(rj, "station"), cm_nonempty_str(rj, "path")) {
+        (Some(rst), Some(rpath)) => {
+          let sname = match cm_nonempty_str(rj, "stationName") { Some(n) => n; None => rst }
+          let mode = match cm_opt_str(rj, "mode") { Some("file") => "file"; _ => "path" }
+          if mode == "file" {
+            return Err("station file upload (mode=file) is not yet wired in Pion core")
+          }
+          Some(ComposerRef::{
+            station: rst,
+            station_name: sname,
+            path: rpath,
+            dir: cm_bool(rj, "dir"),
+            mode: mode,
+          })
+        }
+        _ => None
+      }
+      None => None
+    }
+    let is_path_mode = match ref_opt { Some(r) => r.mode == "path"; None => false }
+    if is_path_mode {
+      staged.push((ComposerFile::{
+        id: fid,
+        name: fname,
+        size: fsize,
+        sent: None,
+        width: None,
+        height: None,
+        done: None,
+        error: None,
+        waits: false,
+        pasted: None,
+        ref_: ref_opt,
+        link: None,
+        quote: None,
+      }, None))
+      continue
+    }
+    let done_opt = base_codec::json_get(fj, "done")
+    if ref_opt.is_none() && done_opt.is_none() {
+      return Err("raw attachment upload is not yet wired in Pion core")
+    }
+    let too_big = fsize > COMPOSER_MAX_FILE_BYTES
+    let raw_quote = cm_nonempty_str(fj, "quote")
+    staged.push((ComposerFile::{
+      id: fid,
+      name: fname,
+      size: fsize,
+      sent: None,
+      width: cm_opt_int(fj, "width"),
+      height: cm_opt_int(fj, "height"),
+      done: done_opt,
+      error: if too_big { Some("File exceeds 1 GiB limit") } else { None },
+      waits: !too_big && fresh,
+      pasted: base_codec::json_get(fj, "pasted"),
+      ref_: ref_opt,
+      link: None,
+      quote: None,
+    }, raw_quote))
+  }
+  let s = self.state_for(key)
+  if temp_seq > self.seq {
+    self.seq = temp_seq
+  }
+  for i in 0..<staged.length() {
+    let (f, raw_quote) = staged[i]
+    let mut quote_bind : Option[String] = f.quote
+    match raw_quote {
+      Some(qid) => {
+        for qi in 0..<s.quotes.length() {
+          if s.quotes[qi].id == qid {
+            quote_bind = Some(qid)
+            break
+          }
+        }
+      }
+      None => ()
+    }
+    s.files.push(ComposerFile::{
+      id: f.id,
+      name: f.name,
+      size: f.size,
+      sent: f.sent,
+      width: f.width,
+      height: f.height,
+      done: f.done,
+      error: f.error,
+      waits: f.waits,
+      pasted: f.pasted,
+      ref_: f.ref_,
+      link: f.link,
+      quote: quote_bind,
+    })
+  }
+  Ok(self.changed(key, s, count=true))
+}
+
+/// `composer.mode` (explicitly refuses `mode == "file"` until station file upload is wired).
+pub fn ComposerManager::mode(self : ComposerManager, key : String, id : String, mode : String) -> Result[Int, String] {
+  if mode == "file" {
+    return Err("station file upload (mode=file) is not yet wired in Pion core")
+  }
+  let s = self.state_for(key)
+  let next_mode = "path"
+  let mut updated = false
+  for i in 0..<s.files.length() {
+    let f = s.files[i]
+    if f.id == id {
+      match f.ref_ {
+        Some(r) => if r.mode != next_mode {
+          let nr = ComposerRef::{
+            station: r.station,
+            station_name: r.station_name,
+            path: r.path,
+            dir: r.dir,
+            mode: next_mode,
+          }
+          s.files[i] = ComposerFile::{
+            id: f.id,
+            name: f.name,
+            size: f.size,
+            sent: f.sent,
+            width: f.width,
+            height: f.height,
+            done: f.done,
+            error: None,
+            waits: false,
+            pasted: f.pasted,
+            ref_: Some(nr),
+            link: f.link,
+            quote: f.quote,
+          }
+          updated = true
+        }
+        None => ()
+      }
+    }
+  }
+  if !updated {
+    return Ok(s.version)
+  }
+  Ok(self.changed(key, s, count=true))
+}
+
+/// `composer.remove`
+pub fn ComposerManager::remove(self : ComposerManager, key : String, id : String) -> Int {
+  let s = self.state_for(key)
+  let next_f : Array[ComposerFile] = []
+  for i in 0..<s.files.length() {
+    if s.files[i].id != id {
+      next_f.push(s.files[i])
+    }
+  }
+  s.files = next_f
+  self.changed(key, s, count=true)
+}
+
+/// `composer.take` (`composer.ts take`)
+pub fn ComposerManager::take(
+  self : ComposerManager,
+  key : String,
+  station : Option[String] = None,
+  lang : String = "zh",
+) -> base_codec::Json {
+  let _ = station
+  let s = self.state_for(key)
+  let taken_files : Array[ComposerFile] = []
+  for i in 0..<s.files.length() {
+    let f = s.files[i]
+    if f.waits && station.is_some() {
+      taken_files.push(ComposerFile::{
+        id: f.id,
+        name: f.name,
+        size: f.size,
+        sent: f.sent,
+        width: f.width,
+        height: f.height,
+        done: f.done,
+        error: f.error,
+        waits: false,
+        pasted: f.pasted,
+        ref_: f.ref_,
+        link: f.link,
+        quote: f.quote,
+      })
+    } else {
+      taken_files.push(f)
+    }
+  }
+  let taken = TakenDraft::{
+    text: s.text,
+    quotes: s.quotes,
+    files: taken_files,
+    id: self.ensure_id(s),
+  }
+  s.taken = Some(taken)
+  s.id = ""
+  s.text = ""
+  s.rev += 1
+  s.quotes = []
+  s.files = []
+  s.error = None
+  s.focus = None
+  let version = self.changed(key, s, count=true)
+
+  let words : Array[String] = []
+  let trimmed = trim_ws_cm(taken.text)
+  if trimmed.length() > 0 {
+    words.push(trimmed)
+  }
+  let sent : Array[ComposerFile] = []
+  for i in 0..<taken.files.length() {
+    let f = taken.files[i]
+    match f.link {
+      Some(l) => {
+        let lw = match l.title { Some(t) => t + "\n" + l.url; None => l.url }
+        words.push(lw)
+      }
+      None => ()
+    }
+    match f.ref_ {
+      Some(r) => if r.mode == "path" {
+        let pw = if lang == "en" {
+          (if r.dir { "Folder on " } else { "File on " }) + r.station_name + ": " + r.path
+        } else {
+          r.station_name + " 上的" + (if r.dir { "文件夹：" } else { "文件：" }) + r.path
+        }
+        words.push(pw)
+      }
+      None => ()
+    }
+    if !is_named_file(f) {
+      sent.push(f)
+    }
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<words.length() {
+    if i > 0 { sb.write_string("\n") }
+    sb.write_string(words[i])
+  }
+  let quotes_j : Array[base_codec::Json] = []
+  for i in 0..<taken.quotes.length() {
+    quotes_j.push(sent_quote_json(taken.quotes[i], sent, true))
+  }
+  let uploads_j : Array[base_codec::Json] = []
+  for i in 0..<sent.length() {
+    let f = sent[i]
+    if f.done.is_none() && f.error.is_none() {
+      uploads_j.push(base_codec::json_obj([
+        ("id", base_codec::json_str(f.id)),
+        ("name", base_codec::json_str(f.name)),
+        ("size", base_codec::json_int64(f.size)),
+      ]))
+    }
+  }
+  base_codec::json_obj([
+    ("text", base_codec::json_str(sb.to_string())),
+    ("attachments", base_codec::json_arr(up_once_files(sent))),
+    ("quotes", base_codec::json_arr(quotes_j)),
+    ("uploads", base_codec::json_arr(uploads_j)),
+    ("version", base_codec::json_int(version)),
+  ])
+}
+
+/// `composer.restore`
+pub fn ComposerManager::restore(
+  self : ComposerManager,
+  key : String,
+  err : Option[String],
+  unless_written : Bool,
+) -> base_codec::Json {
+  let s = self.state_for(key)
+  let back = match s.taken {
+    None => return base_codec::json_obj([("version", base_codec::json_int(s.version)), ("back", base_codec::json_bool(false))])
+    Some(t) => t
+  }
+  if unless_written && (trim_ws_cm(s.text).length() > 0 || s.files.length() > 0 || s.quotes.length() > 0) {
+    s.taken = None
+    return base_codec::json_obj([("version", base_codec::json_int(s.version)), ("back", base_codec::json_bool(false))])
+  }
+  s.taken = None
+  s.text = back.text
+  s.rev += 1
+  s.quotes = back.quotes
+  s.files = back.files
+  s.id = back.id
+  s.error = err
+  let v = self.changed(key, s, count=true)
+  base_codec::json_obj([("version", base_codec::json_int(v)), ("back", base_codec::json_bool(true))])
+}
+
+/// `composer.carry`
+pub fn ComposerManager::carry(self : ComposerManager, from : String, to : String) -> Int {
+  let s = self.state_for(from)
+  if from == to {
+    return s.version
+  }
+  let was = self.state_for(to)
+  let next_taken = match s.taken {
+    Some(t) => Some(t)
+    None => was.taken
+  }
+  let next_to = ComposerState::{
+    text: s.text,
+    rev: was.rev + 1,
+    quotes: s.quotes,
+    focus: None,
+    files: s.files,
+    starting: false,
+    error: None,
+    version: was.version,
+    taken: next_taken,
+    id: s.id,
+  }
+  let next_from = ComposerState::{
+    text: "",
+    rev: s.rev + 1,
+    quotes: [],
+    focus: None,
+    files: [],
+    starting: false,
+    error: None,
+    version: s.version,
+    taken: None,
+    id: "",
+  }
+  self.states.set(to, next_to)
+  self.states.set(from, next_from)
+  let _ = self.changed(from, next_from, count=true)
+  self.changed(to, next_to, count=true)
+}

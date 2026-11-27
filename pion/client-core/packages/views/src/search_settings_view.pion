@@ -345,6 +345,7 @@ pub fn project_chat_search(
 pub fn project_settings(
   db : sql::Sql,
   ws_scope : String,
+  viewer_sub : String = "",
 ) -> sql::SqlResult[base_codec::Json] {
   let st_rows = match store::list_workspace_stations_merged(db, ws_scope) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
@@ -416,11 +417,97 @@ pub fn project_settings(
     (false, "已开启：" + join_names_ssv(review_on, "、") + "；未开启：" + join_names_ssv(review_off, "、"))
   }
   let _ = prefs
+  // Read persisted progress preferences (`workspace_pref(ws, "progressPrefs")`) aligned with
+  // TS `views/progress.ts:40-45` (`{sub, progress: {minutes, strength, rev, at}, owed, met}`)
+  // and `progress-prefs.ts:15,26-33` (`PROGRESS_DEFAULT` fallback).
+  let mut progress_minutes = 10
+  let mut progress_strength = "require"
+  let mut progress_seq = 1L
+  if ws_scope.length() > 0 {
+    match store::get_workspace_pref(db, ws_scope, "progressPrefs") {
+      sql::SqlResult::Ok(Some(raw_pp)) => {
+        let pp = parse_json_or_null(raw_pp)
+        let is_held_envelope = base_codec::json_get(pp, "sub").is_some() || base_codec::json_get(pp, "progress").is_some()
+        if is_held_envelope {
+          let sub_ok = match j_opt_str(pp, "sub") {
+            Some(s) => s.length() > 0 && (viewer_sub.length() == 0 || s == viewer_sub)
+            None => false
+          }
+          if sub_ok {
+            match base_codec::json_get(pp, "progress") {
+              Some(prog) => {
+                let min_opt : Option[Int] = match base_codec::json_get(prog, "minutes") {
+                  Some(base_codec::Json::Num(n, _)) => if n == n.floor() && n >= 5.0 && n <= 1440.0 { Some(n.to_int()) } else { None }
+                  _ => None
+                }
+                let str_opt : Option[String] = match j_opt_str(prog, "strength") {
+                  Some("require") => Some("require")
+                  Some("remind") => Some("remind")
+                  _ => None
+                }
+                let rev_opt : Option[Int64] = match base_codec::json_get(prog, "rev") {
+                  Some(base_codec::Json::Num(n, _)) => if n == n.floor() && n >= 1.0 && n <= 9007199254740991.0 { Some(n.to_int64()) } else { None }
+                  _ => None
+                }
+                let at_ok = match base_codec::json_get(prog, "at") {
+                  Some(base_codec::Json::Num(n, _)) => n == n.floor() && n >= 0.0 && n <= 9007199254740991.0
+                  _ => false
+                }
+                match (min_opt, str_opt, rev_opt, at_ok) {
+                  (Some(m), Some(st), Some(rev), true) => {
+                    progress_minutes = m
+                    progress_strength = st
+                    progress_seq = rev
+                  }
+                  _ => ()
+                }
+              }
+              None => ()
+            }
+          }
+        } else {
+          // Legacy flat `{minutes, strength, seq?/rev?}` fallback.
+          match base_codec::json_get(pp, "minutes") {
+            Some(base_codec::Json::Num(n, _)) => {
+              if n == n.floor() && n >= 5.0 && n <= 1440.0 {
+                progress_minutes = n.to_int()
+              }
+            }
+            _ => ()
+          }
+          match j_opt_str(pp, "strength") {
+            Some("require") => { progress_strength = "require" }
+            Some("remind") => { progress_strength = "remind" }
+            _ => ()
+          }
+          match base_codec::json_get(pp, "seq") {
+            Some(base_codec::Json::Num(n, _)) => {
+              if n == n.floor() && n >= 1.0 && n <= 9007199254740991.0 {
+                progress_seq = n.to_int64()
+              }
+            }
+            _ => match base_codec::json_get(pp, "rev") {
+              Some(base_codec::Json::Num(n, _)) => {
+                if n == n.floor() && n >= 1.0 && n <= 9007199254740991.0 {
+                  progress_seq = n.to_int64()
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+      }
+      _ => ()
+    }
+  }
   sql::SqlResult::Ok(base_codec::json_obj([
     ("decisionsOn", base_codec::json_int(decisions_on)),
     ("decisionsText", base_codec::json_str(decisions_text)),
     ("hintNoReview", base_codec::json_bool(hint_no_review)),
     ("hintReviewText", base_codec::json_str(hint_review_text)),
+    ("progressMinutes", base_codec::json_int(progress_minutes)),
+    ("progressStrength", base_codec::json_str(progress_strength)),
+    ("progressSeq", base_codec::json_int64(progress_seq)),
   ]))
 }
 

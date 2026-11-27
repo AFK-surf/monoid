@@ -119,8 +119,8 @@ fn transient_dismiss_for_present(from : Anchor) -> Unit {
     Some(slot) => {
       let keep_held = @signals.untracked(slot.is_held)
       let from_inside = match (from, (slot.holder)()) {
-        (Node(v), Some(h)) => h.alive() && v.alive() && h.tree.holds(h.id(), v.id())
-        (At(x, y, w, h0), Some(h)) if h.alive() => {
+        (Anchor::Node(v), Some(h)) => h.alive() && v.alive() && h.tree.holds(h.id(), v.id())
+        (Anchor::At(x, y, w, h0), Some(h)) if h.alive() => {
           let cx = x + w / 2.0
           let cy = y + h0 / 2.0
           match h.tree.target_at(cx, cy) {

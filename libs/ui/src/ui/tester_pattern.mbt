@@ -155,7 +155,7 @@ fn pattern_find_id(tree : Array[SemNode], id : Int) -> SemNode? {
 /// Whether `s` is currently in the tree's Tab focus order.
 fn pattern_is_tab_stop(s : SemNode, order : Array[@view.FocusAt]) -> Bool {
   match tree_said_ids.get(s.id) {
-    Some(nid) => order.iter().any(fn(f) { f.id == nid })
+    Some(nid) => arr_any(order, fn(f) { f.id == nid })
     None => false
   }
 }
@@ -177,13 +177,13 @@ fn pattern_container_label(s : SemNode) -> String {
 ///|
 /// Whether `s` declares `target` in its accessibility actions (checks both `SemNode.actions` and `@view.Said.actions`).
 fn pattern_has_action(s : SemNode, target : Action) -> Bool {
-  if s.actions.iter().any(fn(a) { a == target }) {
+  if arr_any(s.actions, fn(a) { a == target }) {
     return true
   }
   match (tree_said_ids.get(s.id), view_app.val) {
     (Some(nid), Some(tree)) =>
       match tree.said_of(nid) {
-        Some(said) => said.actions.iter().any(fn(a) { a == target })
+        Some(said) => arr_any(said.actions, fn(a) { a == target })
         None => false
       }
     _ => false
@@ -927,7 +927,7 @@ fn check_dialog(
         pattern_fault(pattern, "focus-containment", "open \{pattern_tag(dlg)} must contain focus, but focus is None"),
       )
   }
-  let has_focusable = subtree.iter().any(fn(n) { !n.hidden && !n.disabled && (n.focused || pattern_can_focus(n)) })
+  let has_focusable = arr_any(subtree, fn(n) { !n.hidden && !n.disabled && (n.focused || pattern_can_focus(n)) })
   if !has_focusable {
     faults.push(
       pattern_fault(

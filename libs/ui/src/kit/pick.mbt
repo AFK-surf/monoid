@@ -222,10 +222,21 @@ pub fn Pick::tapped_away(self : Pick, c : @ui.Ctx, keep : Array[Int]) -> Bool {
     return false
   }
   match c.tapped_anywhere() {
-    Some((tx, ty)) if !keep.iter().any(fn(id) { pick_in(c, id, tx, ty) }) => {
-      self.clear()
-      c.built_from_changed("a passage let go")
-      true
+    Some((tx, ty)) => {
+      let mut in_keep = false
+      for i = 0; i < keep.length(); i = i + 1 {
+        if pick_in(c, keep[i], tx, ty) {
+          in_keep = true
+          break
+        }
+      }
+      if !in_keep {
+        self.clear()
+        c.built_from_changed("a passage let go")
+        true
+      } else {
+        false
+      }
     }
     _ => false
   }

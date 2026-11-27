@@ -218,7 +218,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
   let extra_h = fn(s : @view.View) { state.open_way.shown(s) * state.row2_h.get() + state.crumb_h.get() }
   narrow_bar_scrim_node(g, fn(s) { collapsed_h(s) + extra_h(s) }, fn(s) {
     let base = collapsed_h(s)
-    let extra = extra_h(s)
+    let extra : Double = extra_h(s)
     let expanded_fade = @sf.dmin(base + extra, 52.0)
     base + (expanded_fade - base) * bar_clamp01(extra / 24.0)
   })
@@ -379,7 +379,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
         row2_room.box(fn(row2_pad) {
           row2_pad.padding(Is((0.0, 8.0, 0.0, 0.0))) |> ignore
           row2_pad.box(fn(row2_box) {
-            let hp = fn() { state.open_way.shown(row2_box) }
+            let hp = fn() -> Double { state.open_way.shown(row2_box) }
             @sf.presses_node(
               row2_box,
               fn() {
@@ -488,7 +488,7 @@ fn bar_middle_node(
         }
       })
       mid.box(fn(t_box) {
-        let tp = fn() { state.open_way.shown(t_box) }
+        let tp = fn() -> Double { state.open_way.shown(t_box) }
         @sf.presses_node(
           t_box,
           fn() {

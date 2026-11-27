@@ -107,8 +107,12 @@ pub fn shows(t : @ui.Tester, words : String) -> Bool {
 }
 
 ///|
-pub fn pressed(t : @ui.Tester, role : @ui.Role, label : String) -> Unit raise {
-  let (x, y, w, h) = t.get(role, label~).rect
+pub fn pressed(t : @ui.Tester, role : @ui.Role, label : String) -> Unit {
+  let found = t.all(role, label~)
+  if found.length() != 1 {
+    @halt.saying("pressed: expected 1 \{Repr(role)} labeled \{label}, got \{found.length()}:\n\{t.semantics_dump()}")
+  }
+  let (x, y, w, h) = found[0].rect
   let at = t.time() + tap_step_ms
   t.advance(tap_step_ms)
   t.touch_raw(0, 9, x + w / 2.0, y + h / 2.0, at)
@@ -252,7 +256,12 @@ pub fn say_room(t : @ui.Tester, width : String, height : String) -> Unit {
 ///|
 pub fn corner_cover(a : Array[Double], px : Double, py : Double, scale : Double) -> Double {
   let cover = fn(d : Double) { @cmp.maximum(0.0, @cmp.minimum(1.0, 0.5 - d * scale)) }
-  let own = cover(@ui.sd_box(px - (a[0] + a[2] / 2.0), py - (a[1] + a[3] / 2.0), a[2] / 2.0, a[3] / 2.0, a[4]))
+  let ax : Double = a[0]
+  let ay : Double = a[1]
+  let aw : Double = a[2]
+  let ah : Double = a[3]
+  let ar : Double = a[4]
+  let own = cover(@ui.sd_box(px - (ax + aw / 2.0), py - (ay + ah / 2.0), aw / 2.0, ah / 2.0, ar))
   let cut = fn(k : Int) {
     cover(
       @ui.sd_clip(

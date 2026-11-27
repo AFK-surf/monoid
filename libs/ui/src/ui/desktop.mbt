@@ -236,7 +236,13 @@ priv struct Desk {
 priv enum SelKey {
   NoSel
   Para(Int)
-  Words(Int, @view.NodeId, Array[Int])
+  Words(Int, @view.NodeId, Int?, String)
+}
+
+///|
+fn sel_words_key(tree_no : Int, list_id : @view.NodeId, place : Array[Int]) -> SelKey {
+  let head = if place.length() > 0 { Some(place[0]) } else { None }
+  SelKey::Words(tree_no, list_id, head, list_text(place))
 }
 
 ///|
@@ -951,8 +957,8 @@ pub fn picked_words() -> String {
 fn refresh_at(base : SelKey, at : Array[Int], row_depth : Int) -> Array[Int] {
   guard row_depth >= 0 && row_depth < at.length() else { return at }
   match (base, view_app.val) {
-    (Words(tree_no, list_id, path), Some(tree)) if tree_no == view_tree_made.val && path.length() > 0 =>
-      match tree.row_order_of(list_id, path[0]) {
+    (SelKey::Words(tree_no, list_id, Some(first_row), _), Some(tree)) if tree_no == view_tree_made.val =>
+      match tree.row_order_of(list_id, first_row) {
         Some(cur) if at[row_depth] != cur => {
           let next = at.copy()
           next[row_depth] = cur
@@ -2046,7 +2052,7 @@ fn selection_end_drawn() -> (SelTarget, Double, Double, Double)? {
 /// where it was drawn (Ctx::sel_walk's ox, oy); none where it is not found.
 fn Ctx::selection_moved_now(self : Ctx) -> (Double, Double) {
   guard selection_end_drawn() is Some((t, _, _, _)) else { return (0.0, 0.0) }
-  guard t.base is Para(base) else { return (0.0, 0.0) }
+  guard t.base is SelKey::Para(base) else { return (0.0, 0.0) }
   for j in 0..<self.count {
     let n = self.nodes[j]
     let said = match (n.rcut, n.rich) {

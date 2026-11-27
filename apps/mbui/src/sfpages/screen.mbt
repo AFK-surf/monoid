@@ -1519,13 +1519,18 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
     match (self.stream, bytes) { (Some(st), Some(data)) => st.audio(data); _ => () }
   }
   // (the engine's own read of the view numbers what it says: those after it the host may take, ScreenSess::route)
-  let seq = match (o.get("frame"), o.get("audio")) {
-    (Some(Object(_) as f), _) | (_, Some(Object(_) as f)) =>
+  let seq_obj : Json? = match (o.get("frame"), o.get("audio")) {
+    (Some(Object(_) as f), _) => Some(f)
+    (_, Some(Object(_) as f)) => Some(f)
+    _ => None
+  }
+  let seq = match seq_obj {
+    Some(f) =>
       match field(Some(f), "n") {
         Some(Number(n, ..)) => Some(n)
         _ => None
       }
-    _ => None
+    None => None
   }
   match o.get("config") {
     Some(Object(_) as c) => {

@@ -106,7 +106,7 @@ pub fn viewer_head_node(
           }))
           .ink(By(fn() { @ui.tree_theme().color(Fg) }))
           // (read out whole, however much of it is drawn)
-          .says(By(fn() { Some(@view.said(Text, label=name())) }))
+          .says(By(fn() { Some(@view.said(@view.Role::Text, label=name())) }))
           .shrink(Is(1.0))
           .min_width(Is(Some(0.0)))
           |> ignore
@@ -120,7 +120,7 @@ pub fn viewer_head_node(
             { size, weight: 400, line, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
           }))
           .ink(By(fn() { @ui.tree_theme().color(Muted) }))
-          .says(By(fn() { Some(@view.said(Text, label=meta())) }))
+          .says(By(fn() { Some(@view.said(@view.Role::Text, label=meta())) }))
           |> ignore
         })
       })

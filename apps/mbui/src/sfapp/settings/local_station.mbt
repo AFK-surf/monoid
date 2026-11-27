@@ -13,7 +13,8 @@ pub fn local_station_managed() -> Bool {
 ///|
 /// What the host says of this machine's station (its native call `local_station`), read as it is now.
 fn local_station_json() -> Json? {
-  Some(@json.parse(@hostapi.app_said("local_station")) catch { _ => Json::null() })
+  let raw = @hostapi.app_said("local_station")
+  Some(@json.parse(raw) catch { _ => Json::null() })
 }
 
 ///|
@@ -100,11 +101,12 @@ fn local_joinable_item(core : Core, here : Here) -> Json? {
     return None
   }
   let joinable = (core.topic)("joinable", { "workspace": str(here.workspace) }).get().value
-  items(joinable, "items")
-  .iter()
-  .find_first(fn(j) {
-    !flag(Some(j), "rig") && (text(Some(j), "id") == st || (ws_id != "" && text(Some(j), "station") == ws_id + "/" + st))
-  })
+  for j in items(joinable, "items") {
+    if !flag(Some(j), "rig") && (text(Some(j), "id") == st || (ws_id != "" && text(Some(j), "station") == ws_id + "/" + st)) {
+      return Some(j)
+    }
+  }
+  None
 }
 
 ///|

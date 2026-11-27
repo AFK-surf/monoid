@@ -438,8 +438,8 @@ pub fn marks_put_down() -> Unit {
   // (the keyboard down, what was written in done with: its field lets go of the focus)
   marking.write_field.let_go()
   if id >= 0 {
-    match marking.shapes.iter().find_first(fn(s) { s.id == id }) {
-      Some(was) =>
+    for was in marking.shapes {
+      if was.id == id {
         if was.text != text || was.color != color {
           marks_commit(
             if text != "" {
@@ -449,7 +449,8 @@ pub fn marks_put_down() -> Unit {
             },
           )
         }
-      None => ()
+        break
+      }
     }
   } else if text != "" {
     let m : Mark = { id: marking.next_id, kind: "words", color, w, pts: [x, y], text }
@@ -577,7 +578,7 @@ fn marks_finger_down(x : Double, y : Double, k : Double) -> Unit {
     return
   }
   let reach = mark_reach / k
-  if marking.tool == Select || marking.tool == Words {
+  if marking.tool == Select || marking.tool == MarkTool::Words {
     // the picked mark's handles first, then the marks, the topmost first
     if marking.tool == Select {
       match marking.shapes.iter().find_first(fn(s) { s.id == marking.picked }) {
@@ -605,7 +606,7 @@ fn marks_finger_down(x : Double, y : Double, k : Double) -> Unit {
     match hit {
       Some(s) => {
         // words with the words tool: written again
-        if s.kind == "words" && marking.tool == Words {
+        if s.kind == "words" && marking.tool == MarkTool::Words {
           marking.writing = Some((s.id, s.pts[0], s.pts[1], s.w, s.color))
           marking.write_field.set(s.text)
           marking.write_field.focus()

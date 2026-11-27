@@ -290,7 +290,7 @@ pub fn Tester::tree_room_faults(self : Tester) -> Array[String] {
     let (id, (x0, y0, x1, y1), _, _) = targets[k]
     // (the first words drawn within it)
     let words = match
-      drawn.search_by(fn(d) {
+      arr_search_by(drawn, fn(d) {
         d.words != "" && d.x >= x0 - 0.5 && d.y >= y0 - 0.5 && d.x + d.w <= x1 + 0.5 && d.y + d.h <= y1 + 0.5
       }) {
       Some(j) => "「\{words_short(drawn[j].words)}」 "

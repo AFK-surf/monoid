@@ -168,7 +168,14 @@ pub fn fixture_keys_set(changed : Map[String, Array[String]], params : Json) -> 
           continue
         }
         let had = fx_keys_of(changed, a)
-        if had.iter().any(fn(b) { ks.contains(b) }) {
+        let mut clash = false
+        for b in had {
+          if ks.contains(b) {
+            clash = true
+            break
+          }
+        }
+        if clash {
           changed[a.0] = had.filter(fn(b) { !ks.contains(b) })
           moved.push(Json::string(a.0))
           if said is Null {

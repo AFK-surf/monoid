@@ -168,7 +168,7 @@ fn marks_item_urgency(kind : String) -> Int {
 }
 
 /// Project `workspaceMarks` topic across all workspaces in `db`.
-/// Uses the `chat_marked` SQLite partial index (`archived = 0 AND (tone IS NOT NULL OR asks = 1 OR unread = 1)`)
+/// Uses the `chat_marks` SQLite partial index (`archived = 0 AND (tone IS NOT NULL OR asks = 1)`) — 1:1 with `client/core-ts/src/db/schema.ts:725` and `chat-reads.ts:438`.
 /// so there is zero N+1 `get_chat_by_key` read amplification and no 200-row truncation.
 pub fn project_workspace_marks(
   db : sql::Sql,
@@ -281,7 +281,7 @@ pub fn project_workspace_marks(
         Some(nm) => nm
         None => st_addr
       }
-      // 1. Indexed read of marked chats (uses `chat_marks` covering partial index: archived = 0 AND (tone IS NOT NULL OR asks = 1)).
+      // 1. Indexed read of marked chats (uses `chat_marks` covering partial index: archived = 0 AND (tone IS NOT NULL OR asks = 1), 1:1 with TS `CHAT_READS.marked`).
       let marked_rows = match db.all(
         "SELECT id, last_active, json, unread FROM chat WHERE station = ? AND archived = 0 AND (tone IS NOT NULL OR asks = 1)",
         params=[base_codec::json_str(st_addr)],

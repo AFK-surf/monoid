@@ -1498,7 +1498,7 @@ fn reader_narrow_chrome(
         card.width(By(fn() { Some(w()) })) |> ignore
         @glass.liquid_capsule_decorate(
           card,
-          tone=Panel,
+          tone=@glass.LiquidCapsuleTone::Panel,
           sharing=false,
           glass=fn(_) { narrow_panel_glass(paper()) },
           shadow=glass_overlay_shadow,
@@ -1687,7 +1687,7 @@ fn reader_sheets(parent : @view.View, r : Reading, paper : () -> ReaderPaper, lo
               w
               .grow(Is(1.0))
               .words(Is(title))
-              .words_look(By(fn() { { ..@ui.style_words(sheet_title_words), line: -@ui.tree_theme().text_line } }))
+              .words_look(By(fn() { @view.WordsLook::{ ..@ui.style_words(sheet_title_words), line: -@ui.tree_theme().text_line } }))
               .ink(By(fn() { @ui.style_ink(sheet_title_words) }))
               |> ignore
             })

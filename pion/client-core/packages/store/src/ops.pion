@@ -34,6 +34,10 @@ pub fn sql_pref_put() -> String {
   "INSERT OR REPLACE INTO workspace_pref (workspace, key, json) VALUES (?, ?, ?)"
 }
 
+pub fn sql_pref_delete() -> String {
+  "DELETE FROM workspace_pref WHERE workspace = ? AND key = ?"
+}
+
 pub fn sql_search_messages_station() -> String {
   "SELECT station, thread, seq, n, at, text FROM said WHERE station = ? AND instr(lower(text), lower(?)) > 0 ORDER BY at DESC, seq DESC LIMIT ?"
 }
@@ -168,6 +172,17 @@ pub fn put_workspace_pref(db : sql::Sql, workspace : String, key : String, json 
     base_codec::json_str(workspace),
     base_codec::json_str(key),
     base_codec::json_str(json),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Delete one workspace preference key from `workspace_pref`.
+pub fn delete_workspace_pref(db : sql::Sql, workspace : String, key : String) -> sql::SqlResult[Unit] {
+  match db.run(sql_pref_delete(), params=[
+    base_codec::json_str(workspace),
+    base_codec::json_str(key),
   ]) {
     sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
     sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())

@@ -725,11 +725,24 @@ pub fn vault_members_dialog(core : Core, here : Here, rv : Json?) -> Unit {
   let error : @signals.Signal[String] = @signals.signal("")
   let changed = fn() {
     let cur = selected.get()
-    cur.length() != initial.length() || cur.iter().any(fn(s) { !initial.contains(s) })
+    if cur.length() != initial.length() {
+      return true
+    }
+    for i = 0; i < cur.length(); i = i + 1 {
+      if !initial.contains(cur[i]) {
+        return true
+      }
+    }
+    false
   }
   let has_removed = fn() {
     let cur = selected.get()
-    initial.iter().any(fn(s) { !cur.contains(s) })
+    for i = 0; i < initial.length(); i = i + 1 {
+      if !cur.contains(initial[i]) {
+        return true
+      }
+    }
+    false
   }
   open_dialog_nodes(
     @sf.t("web-pages.vault.members.dialogTitle"),

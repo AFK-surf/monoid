@@ -343,7 +343,7 @@ fn switcher_offered(src : Source, w : Workspace, wide_frame : Bool) -> Array[@sf
   // the app's newer build, as 关于's row offers it: one ready put in place, or one downloaded now (what the person's
   // word does, sfbase updates.mbt update_go)
   match update_now() {
-    Offered(v, ..) | Failed(v, _) | Ready(v, ..) | Allow(v) =>
+    Offered(v, waiting=_) | Failed(v, _) | Ready(v, away=_) | Allow(v) =>
       offer(action_offered("update.app", "download", version=text(Some(v), "versionName"), fn() { update_go(src) }))
     _ => ()
   }

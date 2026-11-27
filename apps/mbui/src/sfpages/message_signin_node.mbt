@@ -230,12 +230,12 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
       "done" | "left" => NoButtons
       "filling" => Filling
       "code" => Code
-      "person" => Person
+      "person" => SignInButtons::Person
       _ =>
         if step() == "choosing" {
           Choosing
         } else {
-          Asking(signin_manager())
+          SignInButtons::Asking(signin_manager())
         }
     }
   }

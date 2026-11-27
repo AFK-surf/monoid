@@ -315,8 +315,8 @@ fn history_go(src : Source, spot : Spot) -> Unit {
       ()
     }
   }
-  for p in spot.pages[k:] {
-    app.nav.push(p)
+  for i = k; i < spot.pages.length(); i = i + 1 {
+    app.nav.push(spot.pages[i])
   }
   @signals.end_batch()
 }

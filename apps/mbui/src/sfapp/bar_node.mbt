@@ -626,9 +626,7 @@ fn bar_glass_capsule(
         bar_k_until(),
       )
       let t = bar_moment(g, Ball, until)
-      let a = bar_ball_at(t)
-      let spot = if a.held > 0.01 { Some((a.cx, a.cy - top())) } else { None }
-      (spot, bar_merge_at(t))
+      (None, bar_merge_at(t))
     })
     // (its top where the panel has it as each frame is drawn, its foot where it is; its right end in by the action's
     // room as far as the notch is open then)
@@ -969,7 +967,7 @@ fn bar_places_node(
   row_top : () -> Double,
 ) -> Unit {
   let items = fn() { bar_laid_now().items }
-  let slot = fn(n : Int) { bar_slot(w(), n) }
+  let slot = fn(n : Int) -> Double { bar_slot(w(), n) }
   holder.box(fn(row) {
     row
     .over(Is(true))
@@ -1048,7 +1046,7 @@ fn bar_places_node(
 /// as faint and as low as the panel has them as each frame is drawn; none while it is closed, nor while a bar chosen
 /// lands (bar_swap_node draws them going).
 fn bar_rows_node(holder : @view.View, w : () -> Double) -> Unit {
-  let slot = fn(n : Int) { bar_slot(w(), n) }
+  let slot = fn(n : Int) -> Double { bar_slot(w(), n) }
   holder.box(fn(rows) {
     rows.over(Is(true)) |> ignore
     rows.show(at_once=true,
@@ -1097,7 +1095,7 @@ fn bar_swap_node(
   row_top : () -> Double,
   panel : () -> Double,
 ) -> Unit {
-  let slot = fn(n : Int) { bar_slot(w(), n) }
+  let slot = fn(n : Int) -> Double { bar_slot(w(), n) }
   let bar_mid = fn() { row_top() + bar_track / 2.0 }
   holder.box(fn(b) {
     b.over(Is(true)) |> ignore

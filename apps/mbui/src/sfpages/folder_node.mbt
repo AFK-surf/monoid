@@ -382,9 +382,9 @@ pub fn folder_view_node(
               Some(n) =>
                 match dv_entries(src, at.station, root, ch.folder).unwrap_or([]).iter().find_first(fn(e) { e.name == n }) {
                   Some(e) => One({ ..at, path: ch.folder }, e)
-                  None => Nothing
+                  None => Previewed::Nothing
                 }
-              None => Nothing
+              None => Previewed::Nothing
             }
           }
         }

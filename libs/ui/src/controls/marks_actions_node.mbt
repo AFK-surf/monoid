@@ -84,7 +84,7 @@ pub fn marks_actions_node(
         .words(By(fn() { said().error }))
         .words_look(By(fn() { meta(400) }))
         .ink(Is(marks_error_ink))
-        .says(By(fn() { Some(@view.said(Text, label=said().error)) }))
+        .says(By(fn() { Some(@view.said(@view.Role::Text, label=said().error)) }))
         |> ignore
       })
       |> ignore

@@ -218,7 +218,7 @@ fn Ctx::focus_frame_start(self : Ctx) -> Unit {
   self.actions.clear()
   for a in self.asked_actions {
     self.actions.push(a)
-    if a.1 == Focus {
+    if a.1 == Action::Focus {
       self.focus_moved(a.0)
     }
   }
@@ -532,15 +532,21 @@ fn Ctx::focus_frame_end(self : Ctx) -> Unit {
           }
       }
       match island {
-        Some(i) if (islands_built.contains(i) || !old_islands.iter().any(fn(o) { o.id == i })) &&
+        Some(i) if (islands_built.contains(i) || !arr_any(old_islands, fn(o) { o.id == i })) &&
           !self.focusables.iter().any(fn(f) { f.id == self.focus }) => self.focus_moved(0)
         _ => ()
       }
     } else {
       match self.dev.catchers.get(self.focus) {
-        Some({ island: Some(i), .. }) if !old_islands.iter().any(fn(o) { o.id == i }) =>
-          self.focus_moved(0)
-        _ => ()
+        Some(catcher) =>
+          match catcher.island {
+            Some(i) =>
+              if !arr_any(old_islands, fn(o) { o.id == i }) {
+                self.focus_moved(0)
+              }
+            None => ()
+          }
+        None => ()
       }
     }
   }

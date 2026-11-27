@@ -1,4 +1,5 @@
 import {
+  "ui/halt",
   "ui/hostapi",
   "ui/ui",
   "moonbitlang/core/cmp",

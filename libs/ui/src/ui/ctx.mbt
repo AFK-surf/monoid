@@ -308,11 +308,11 @@ struct EditorState {
 
 ///|
 pub struct Ctx {
-  nodes : Array[Node]
+  mut nodes: Array[Node]
   mut count : Int
   mut cur : Int
   mut id_seed : Int
-  id_stack : Array[Int]
+  mut id_stack: Array[Int]
   mut width : Double
   mut height : Double
   /// the window's size this frame (width, height: the box being built's, Ctx::sized)
@@ -385,7 +385,7 @@ pub struct Ctx {
   mut passing : Int
   mut next_points : Map[Int, Bool]
   /// of this frame's, the places of their targets among next_hit_ids, in order (said.mbt's SaidList::Hits)
-  next_point_hits : Array[Int]
+  mut next_point_hits: Array[Int]
   mut scroll_ids : Array[Int]
   mut scroll_rects : Array[Double]
   mut next_scroll_ids : Array[Int]
@@ -396,8 +396,8 @@ pub struct Ctx {
   /// whose thumb it holds (0 none)
   mut bars : Array[BarAt]
   mut next_bars : Array[BarAt]
-  across_seen : Array[(Int, Double, Double)]
-  floating : Array[Int]
+  mut across_seen: Array[(Int, Double, Double)]
+  mut floating: Array[Int]
   mut bar_near : Int
   mut bar_drag : Int
   // pointer
@@ -406,16 +406,16 @@ pub struct Ctx {
   mut down : Bool
   mut hover : Int
   /// what holds the one under the pointer (`hover`), as the last frame drew them, outermost first (Ctx::hovered)
-  hover_in : Array[Int]
+  mut hover_in: Array[Int]
   /// what the press went down on as the last frame drew it (the hit target) and what holds that one, outermost first
   /// (Ctx::press_within): not what only lies under it, a page under a layer over it
-  press_on : Array[Int]
+  mut press_on: Array[Int]
   mut active : Int
   mut focus : Int
-  clicked : Array[Int]
+  mut clicked: Array[Int]
   /// what was clicked twice since the last frame, the second within double_click_ms of the first and where it was
   /// (Ctx::on_double_press, hand's `double`); the last click (its id, when, where), for the next to be the second of two
-  double_clicked : Array[Int]
+  mut double_clicked: Array[Int]
   mut last_click : (Int, Double, Double, Double)
   /// how many presses in a row the last one was (NSEvent's clickCount: 2 a double click's second), and how many, when
   /// and where, for the next to count on from
@@ -488,13 +488,13 @@ pub struct Ctx {
   dev : DeviceState
   springs : Map[Int, SpringPath]
   /// what is said to move (motion_data.mbt), the last id given to one, and whether a cycle was read this frame
-  movers : Array[MoverEntry]
+  mut movers: Array[MoverEntry]
   mut cycling : Bool
   /// the cycles read this frame (their periods, who reads them), whether a motion said was not at rest at its end, and
   /// the latest rest of the stacks (Ctx::nav) built this frame: what a test asks (Tester::assert_idle, nav_rest)
-  cycles : Array[(Double, SourceLoc)]
+  mut cycles: Array[(Double, SourceLoc)]
   /// what comes again every so often while shown this frame (Ctx::every): its period, who reads it
-  periodic : Array[(Double, SourceLoc)]
+  mut periodic: Array[(Double, SourceLoc)]
   mut motion_left : Bool
   /// whether this frame read a motion going (Ctx::shows_motion): its next frame asked for as this one ends, as for what
   /// is said to move
@@ -521,7 +521,7 @@ pub struct Ctx {
   place_reads : Map[Int, (String, (Int, Double, Double)?)]
   /// lists' places read as the view built (Ctx::list_info, list_info_as): each list's key, and whether what was made
   /// of its place is not what it makes of it now
-  info_reads : Array[(String, () -> Bool)]
+  mut info_reads: Array[(String, () -> Bool)]
   row_reads : Map[(Int, Int), (String, Double?)]
   words_reads : Map[String, Bool]
   /// words read as the view built only for their shape (Ctx::words_shape_of): read back as their lines change, not as
@@ -550,7 +550,7 @@ pub struct Ctx {
   host_rec : HostRec
   /// covers by their ids, and those asked for this frame (cover.mbt)
   covers : Map[Int, CoverState]
-  cover_asks : Array[CoverAsk]
+  mut cover_asks: Array[CoverAsk]
   // the page being built (a page of a Nav, by its serial; 0 none), and the
   // ids of the state each page's widgets made, forgotten with the page
   mut owner : Int
@@ -610,18 +610,18 @@ pub struct Ctx {
   // the boxes of the frame whose corner is `Inner` (style.mbt): worked out once laid out (corners.mbt), and those
   // that could not be (Tester::corner_faults says them); of them, those `InnerOr`, their own corner where they lie in
   // no container's: found from the nodes once laid out (Node's `corner_by`, corners_found)
-  inners : Array[Int]
-  inners_or : Array[Int]
+  mut inners: Array[Int]
+  mut inners_or: Array[Int]
   // what move_state moves (move_state.mbt): the moves going on; what each box named to be moved was shown as, this
   // frame (its build so far) and the last; how many boxes of each name this build has built
-  move_runs : Array[MoveRun]
+  mut move_runs: Array[MoveRun]
   mut shown_now : Map[String, MoveShown]
   mut shown_last : Map[String, MoveShown]
   move_seen : Map[String, Int]
   // the boxes of the frame whose corner is `Around`: worked out from what lies in their corner (corners.mbt), found as
   // the inners are
-  arounds : Array[Int]
-  inner_faults : Array[String]
+  mut arounds: Array[Int]
+  mut inner_faults: Array[String]
   // the corner ladder of the theme the view was built under (Theme::corner_ladder: the frame's, or one put in force
   // over it with with_theme that says one), what corner_faults holds corners to
   mut corner_ladder : Array[Double]
@@ -653,10 +653,10 @@ pub struct Ctx {
   // what the widgets of the frame say they are (semantics.mbt: found from the nodes, sems_found), and how deep in a
   // part hidden from it the view builds; the actions asked of them (by the host's accessibility, a test) for the next
   // frame, and this frame's
-  sems : Array[Sem]
+  mut sems: Array[Sem]
   mut sem_hide : Int
-  asked_actions : Array[(Int, Action)]
-  actions : Array[(Int, Action)]
+  mut asked_actions: Array[(Int, Action)]
+  mut actions: Array[(Int, Action)]
   // what the system's accessibility was told the widgets are, as it has them (a11y.mbt; nothing while it is off)
   a11y : A11yTold
   // the keyboard's focus beyond a field's (focus.mbt): whether it shows (it came by the keyboard), what had it as the
@@ -684,13 +684,13 @@ pub struct Ctx {
   /// id: asked as the next frame is built, no node read (Ctx::old_modal_stack)
   last_stacks : Map[Int, Int]
   /// the layers this frame has given the focus as they opened (their ids): once a frame, at the first build they are in
-  layers_opened : Array[Int]
+  mut layers_opened: Array[Int]
   /// what the view tells outside of what it built, by key, this build's (Ctx::after_build): done once the frame's
   /// builds are over
-  tells : Array[(Int, () -> Unit)]
+  mut tells: Array[(Int, () -> Unit)]
   /// what the frame's builds said to tell outside, by its key, the last said of each kept, whichever build said it
   /// (Ctx::tell)
-  told : Array[(Int, () -> Unit)]
+  mut told: Array[(Int, () -> Unit)]
   /// the shots being taken, by their keys' (shot.mbt)
   shots : Map[Int, Shot]
   /// while a shot taken at its own pixels a point is built, those (Ctx::drawn_scale); else 0
@@ -719,7 +719,7 @@ pub struct Ctx {
   mut inst : FixedArray[Double]
   mut ninst : Int
   // the pieces of the shapes painted this frame (shape.mbt): x0 y0 x1 y1 each, as shares of their instance's rect
-  segs : Array[Double]
+  mut segs: Array[Double]
   mut ime_sig : String
   /// the input method's action last told the host (@hostapi.ime_action)
   mut ime_action_told : Int
@@ -996,30 +996,18 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   for n in self.nodes {
     n.unlinked()
   }
-  self.nodes.clear()
-  self.nodes.shrink_to_fit()
-  self.id_stack.clear()
-  self.id_stack.shrink_to_fit()
-  self.hit_ids.clear()
-  self.hit_ids.shrink_to_fit()
-  self.hit_rects.clear()
-  self.hit_rects.shrink_to_fit()
-  self.next_hit_ids.clear()
-  self.next_hit_ids.shrink_to_fit()
-  self.next_hit_rects.clear()
-  self.next_hit_rects.shrink_to_fit()
-  self.hit_clips.clear()
-  self.hit_clips.shrink_to_fit()
-  self.next_hit_clips.clear()
-  self.next_hit_clips.shrink_to_fit()
-  self.hit_ends.clear()
-  self.hit_ends.shrink_to_fit()
-  self.next_hit_ends.clear()
-  self.next_hit_ends.shrink_to_fit()
-  self.hit_marks.clear()
-  self.hit_marks.shrink_to_fit()
-  self.next_hit_marks.clear()
-  self.next_hit_marks.shrink_to_fit()
+  self.nodes = []
+  self.id_stack = []
+  self.hit_ids = []
+  self.hit_rects = []
+  self.next_hit_ids = []
+  self.next_hit_rects = []
+  self.hit_clips = []
+  self.next_hit_clips = []
+  self.hit_ends = []
+  self.next_hit_ends = []
+  self.hit_marks = []
+  self.next_hit_marks = []
   self.built_ids.clear()
   self.marks_ahead.clear()
   self.focus_ahead.clear()
@@ -1027,51 +1015,33 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.passes.clear()
   self.next_passes.clear()
   self.next_points.clear()
-  self.next_point_hits.clear()
-  self.next_point_hits.shrink_to_fit()
-  self.scroll_ids.clear()
-  self.scroll_ids.shrink_to_fit()
-  self.scroll_rects.clear()
-  self.scroll_rects.shrink_to_fit()
-  self.next_scroll_ids.clear()
-  self.next_scroll_ids.shrink_to_fit()
-  self.next_scroll_rects.clear()
-  self.next_scroll_rects.shrink_to_fit()
-  self.bars.clear()
-  self.bars.shrink_to_fit()
-  self.next_bars.clear()
-  self.next_bars.shrink_to_fit()
-  self.across_seen.clear()
-  self.across_seen.shrink_to_fit()
-  self.floating.clear()
-  self.floating.shrink_to_fit()
-  self.hover_in.clear()
-  self.hover_in.shrink_to_fit()
-  self.press_on.clear()
-  self.press_on.shrink_to_fit()
-  self.clicked.clear()
-  self.clicked.shrink_to_fit()
-  self.double_clicked.clear()
-  self.double_clicked.shrink_to_fit()
-  self.press_chain.clear()
-  self.press_chain.shrink_to_fit()
+  self.next_point_hits = []
+  self.scroll_ids = []
+  self.scroll_rects = []
+  self.next_scroll_ids = []
+  self.next_scroll_rects = []
+  self.bars = []
+  self.next_bars = []
+  self.across_seen = []
+  self.floating = []
+  self.hover_in = []
+  self.press_on = []
+  self.clicked = []
+  self.double_clicked = []
+  self.press_chain = []
   self.lists.clear()
   for id, st in self.editors {
     editor_gone(st, id)
   }
   self.editors.clear()
   self.springs.clear()
-  self.movers.clear()
-  self.movers.shrink_to_fit()
-  self.cycles.clear()
-  self.cycles.shrink_to_fit()
-  self.periodic.clear()
-  self.periodic.shrink_to_fit()
+  self.movers = []
+  self.cycles = []
+  self.periodic = []
   self.laid_reads.clear()
   self.size_reads.clear()
   self.place_reads.clear()
-  self.info_reads.clear()
-  self.info_reads.shrink_to_fit()
+  self.info_reads = []
   self.row_reads.clear()
   self.words_reads.clear()
   self.words_shape_reads.clear()
@@ -1084,53 +1054,37 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.shown_watch.clear()
   self.shown_spans.clear()
   self.covers.clear()
-  self.cover_asks.clear()
-  self.cover_asks.shrink_to_fit()
+  self.cover_asks = []
   self.owned.clear()
   self.owned_releases.clear()
   self.layer_gen.clear()
   self.layer_on_dismiss.clear()
   self.layer_retired.clear()
   self.layers_gone.clear()
-  self.inners.clear()
-  self.inners.shrink_to_fit()
-  self.inners_or.clear()
-  self.inners_or.shrink_to_fit()
-  self.move_runs.clear()
-  self.move_runs.shrink_to_fit()
+  self.inners = []
+  self.inners_or = []
+  self.move_runs = []
   self.shown_now.clear()
   self.shown_last.clear()
   self.move_seen.clear()
-  self.arounds.clear()
-  self.arounds.shrink_to_fit()
-  self.inner_faults.clear()
-  self.inner_faults.shrink_to_fit()
+  self.arounds = []
+  self.inner_faults = []
   self.lit_asked.clear()
   self.hand_chooses.clear()
-  self.sems.clear()
-  self.sems.shrink_to_fit()
-  self.asked_actions.clear()
-  self.asked_actions.shrink_to_fit()
-  self.actions.clear()
-  self.actions.shrink_to_fit()
-  self.focusables.clear()
-  self.focusables.shrink_to_fit()
-  self.last_focusables.clear()
-  self.last_focusables.shrink_to_fit()
+  self.sems = []
+  self.asked_actions = []
+  self.actions = []
+  self.focusables = []
+  self.last_focusables = []
   atlas_said.val = None
   self.groups.clear()
-  self.layers.clear()
-  self.layers.shrink_to_fit()
-  self.last_layers.clear()
-  self.last_layers.shrink_to_fit()
+  self.layers = []
+  self.last_layers = []
   self.built_count = 0
   self.last_stacks.clear()
-  self.layers_opened.clear()
-  self.layers_opened.shrink_to_fit()
-  self.tells.clear()
-  self.tells.shrink_to_fit()
-  self.told.clear()
-  self.told.shrink_to_fit()
+  self.layers_opened = []
+  self.tells = []
+  self.told = []
   self.shots_let_go()
   self.dismissals.clear()
   self.layer_return.clear()
@@ -1138,7 +1092,7 @@ fn Ctx::let_go(self : Ctx) -> Unit {
   self.focus_island.clear()
   self.focus_returned = false
   self.segs_cut(0)
-  self.segs.shrink_to_fit()
+  self.segs = []
 }
 
 // ---------------------------------------------------------------------------
@@ -1674,7 +1628,7 @@ pub fn Ctx::box(
     Some(b) => b
     None =>
       match st.bg {
-        Some(c) => th.color(c)
+        Some(c) => Theme::color(th, c)
         None => 0L
       }
   }
@@ -1724,7 +1678,7 @@ pub fn Ctx::box(
     Some(c) => c
     None =>
       match st.border_color {
-        Some(c) => th.color(c)
+        Some(c) => Theme::color(th, c)
         None => 0L
       }
   }
@@ -2042,7 +1996,7 @@ pub fn Ctx::text(
     Some(c) => c
     None =>
       match st.color {
-        Some(c) => self.theme.color(c)
+        Some(c) => Theme::color(self.theme, c)
         None => self.theme.fg
       }
   }
@@ -3103,4 +3057,44 @@ pub fn Ctx::wake_in(self : Ctx, ms : Double, later? : Bool = false, loc~ : Sourc
   // the clock (including zero or a negative delay), so it cannot ask for the same frame forever.
   let at = self.clock + ms
   self.wake_at_time(if at > self.clock { at } else { self.clock + 1.0 }, later~, loc~)
+}
+
+///|
+fn[T] arr_any(arr : Array[T], pred : (T) -> Bool) -> Bool {
+  for i = 0; i < arr.length(); i = i + 1 {
+    if pred(arr[i]) {
+      return true
+    }
+  }
+  false
+}
+
+///|
+fn[T] arr_all(arr : Array[T], pred : (T) -> Bool) -> Bool {
+  for i = 0; i < arr.length(); i = i + 1 {
+    if !pred(arr[i]) {
+      return false
+    }
+  }
+  true
+}
+
+///|
+fn[T] arr_find_first(arr : Array[T], pred : (T) -> Bool) -> T? {
+  for i = 0; i < arr.length(); i = i + 1 {
+    if pred(arr[i]) {
+      return Some(arr[i])
+    }
+  }
+  None
+}
+
+///|
+fn[T] arr_search_by(arr : Array[T], pred : (T) -> Bool) -> Int? {
+  for i = 0; i < arr.length(); i = i + 1 {
+    if pred(arr[i]) {
+      return Some(i)
+    }
+  }
+  None
 }

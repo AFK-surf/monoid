@@ -1469,7 +1469,9 @@ fn pv_previews_sweep(but? : Viewer) -> Unit {
     }
   }
   pv_previews_gone.clear()
-  pv_previews_gone.push_iter(still.iter())
+  for k in still {
+    pv_previews_gone.push(k)
+  }
 }
 
 ///|
@@ -1787,7 +1789,7 @@ pub fn Viewer::read_whole(self : Viewer, src : Source, done : (Result[Bytes, Jso
   // (its answer one change, whoever asked (the one shown, or read ahead beside it): what came, or that it failed, told
   // with its no longer being read, never what follows either running between them and asking again)
   let previewed = Ref(false)
-  let done = fn(r) {
+  let done : (Result[Bytes, Json]) -> Unit = fn(r) {
     @signals.start_batch()
     self.got.set(None)
     self.previewed.set(previewed.val)
@@ -3315,7 +3317,9 @@ fn pv_frames_sweep(but? : Viewer) -> Unit {
     }
   }
   pv_frames_gone.clear()
-  pv_frames_gone.push_iter(still.iter())
+  for k in still {
+    pv_frames_gone.push(k)
+  }
 }
 
 ///|

@@ -122,7 +122,14 @@ pub fn view_check_run(c : @ui.Ctx) -> Unit {
     Some((t, g)) => [v, p, t, g, u]
     None => [v, p, u]
   }
-  let open = views.iter().all(fn(x) { !x.here() || (x.state() != 0 && x.host_done()) })
+  let mut open = true
+  for i in 0..<views.length() {
+    let x = views[i]
+    if x.here() && !(x.state() != 0 && x.host_done()) {
+      open = false
+      break
+    }
+  }
   // (a host places a view as the frame that told it is painted: Android on its main thread, where the app's exit
   // comes after it; its picture waits for its own word that the view, placed and done, is on the display: VIEWDRAWN)
   if open {

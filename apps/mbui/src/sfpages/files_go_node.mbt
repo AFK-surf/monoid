@@ -100,10 +100,25 @@ fn child_of(folder : String, name : String) -> String {
 /// The folder `abs` of `station` as a place to go: a root for one who browses everywhere, else under the folder it pins
 /// that holds it (none: it cannot be gone to).
 fn place_of(stations : Array[DvStation], station : String, abs : String) -> DriveAt? {
-  match stations.iter().find_first(fn(s) { s.station == station }) {
+  let mut found : DvStation? = None
+  for i = 0; i < stations.length(); i = i + 1 {
+    if stations[i].station == station {
+      found = Some(stations[i])
+      break
+    }
+  }
+  match found {
     Some(s) if s.anywhere => Some({ station, root: Some(abs), path: "" })
-    Some(s) =>
-      match s.roots.iter().find_first(fn(r) { abs == r.path || abs.has_prefix(r.path + "/") }) {
+    Some(s) => {
+      let mut found_r : DvRoot? = None
+      for i = 0; i < s.roots.length(); i = i + 1 {
+        let r = s.roots[i]
+        if abs == r.path || abs.has_prefix(r.path + "/") {
+          found_r = Some(r)
+          break
+        }
+      }
+      match found_r {
         Some(r) =>
           Some({
             station,
@@ -112,6 +127,7 @@ fn place_of(stations : Array[DvStation], station : String, abs : String) -> Driv
           })
         None => None
       }
+    }
     None => None
   }
 }
@@ -167,9 +183,17 @@ fn go_body(v : @view.View, src : Source, ws : String, here : DriveAt, to : (Driv
       None => None
     }
   }
-  let named = fn() {
+  let named = fn() -> DvStation? {
     match resolved() {
-      Some(r) => stations().iter().find_first(fn(s) { s.station == r.station })
+      Some(r) => {
+        let sts = stations()
+        for i = 0; i < sts.length(); i = i + 1 {
+          if sts[i].station == r.station {
+            return Some(sts[i])
+          }
+        }
+        None
+      }
       None => None
     }
   }
@@ -382,7 +406,14 @@ fn station_switch_node(
   // picked: the same folder there when it has one, else its home (said so); ⌥ held as it is picked, in a new tab
   let picked = fn(station : String) {
     let stations = drive_stations(src, ws).0.unwrap_or([])
-    match stations.iter().find_first(fn(s) { s.station == station }) {
+    let mut found : DvStation? = None
+    for i = 0; i < stations.length(); i = i + 1 {
+      if stations[i].station == station {
+        found = Some(stations[i])
+        break
+      }
+    }
+    match found {
       Some(s) if station != at.station && s.online => {
         let tab = (@ui.mods_held() & @ui.mod_alt) != 0
         let open_at = fn(root : String, same : Bool) {

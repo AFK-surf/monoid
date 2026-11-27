@@ -39,3 +39,51 @@ test "a computed of a LiveArray follows what is pushed, put in place of it and l
   a.clear()
   assert_eq((seen.get(), c), (0, ["z"]))
 }
+
+///|
+test "LiveArray::iter, push_iter, any, all, and search_by keep initial length snapshot when mutated" {
+  let a : LiveArray[Int] = LiveArray::new()
+  a.replace([1, 2, 3])
+  a.push_iter(a.iter())
+  assert_eq(a.copy(), [1, 2, 3, 1, 2, 3])
+
+  let b : LiveArray[Int] = LiveArray::new()
+  b.replace([10, 20, 30])
+  let mut steps = 0
+  for x in b.iter() {
+    steps = steps + 1
+    b.push(x + 1)
+  }
+  assert_eq(steps, 3)
+  assert_eq(b.copy(), [10, 20, 30, 11, 21, 31])
+
+  let c : LiveArray[Int] = LiveArray::new()
+  c.replace([1, 2, 3])
+  let mut any_steps = 0
+  assert_eq(c.any(fn(x) {
+    any_steps = any_steps + 1
+    c.push(x + 10)
+    false
+  }), false)
+  assert_eq(any_steps, 3)
+
+  let d : LiveArray[Int] = LiveArray::new()
+  d.replace([1, 2, 3])
+  let mut all_steps = 0
+  assert_eq(d.all(fn(x) {
+    all_steps = all_steps + 1
+    d.push(x + 10)
+    true
+  }), true)
+  assert_eq(all_steps, 3)
+
+  let e : LiveArray[Int] = LiveArray::new()
+  e.replace([1, 2, 3])
+  let mut search_steps = 0
+  assert_eq(e.search_by(fn(x) {
+    search_steps = search_steps + 1
+    e.push(x + 10)
+    false
+  }), None)
+  assert_eq(search_steps, 3)
+}

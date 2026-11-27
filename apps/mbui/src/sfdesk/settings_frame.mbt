@@ -160,7 +160,7 @@ fn settings_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
               }
             },
             fn() { update_pressed(src) },
-            offered=fn() { update_now() is Offered(_, ..) },
+            offered=fn() { update_now() is Offered(_, waiting=_) },
           )
         })
         |> ignore

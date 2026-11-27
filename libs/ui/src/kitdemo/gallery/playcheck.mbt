@@ -49,7 +49,8 @@ fn play_check_step(c : @ui.Ctx, v : @ui.NativeView) -> Unit {
 fn play_check_next(c : @ui.Ctx, v : @ui.NativeView) -> Bool {
   match play_check_said.val {
     0 if v.state() == 1 => {
-      let tenths = (v.duration() / 100.0).round().to_int() * 100
+      let dur : Double = v.duration()
+      let tenths = (dur / 100.0).round().to_int() * 100
       let (w, h) = v.natural()
       @hostapi.log("PLAYCHECK ready \{tenths} \{w.to_int()}x\{h.to_int()}")
       play_check_said.val = 1
@@ -59,7 +60,7 @@ fn play_check_next(c : @ui.Ctx, v : @ui.NativeView) -> Bool {
     1 if v.shown() => {
       match c.drawn_pixels(c.id(play_check_key)) {
         PixelsRead(w, h, px) => {
-          let (vw, vh) = play_check_size
+          let (vw, vh) : (Double, Double) = play_check_size
           let x = (vw / 2.0 * c.scale).to_int()
           let y = (vh / 2.0 * c.scale).to_int()
           let i = if x < w && y < h { (y * w + x) * 4 } else { 0 }

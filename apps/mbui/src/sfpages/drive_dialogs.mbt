@@ -110,7 +110,7 @@ fn which_station(
         @sf.style_node(r, fn() { pick_row.then(row) })
         // (the list's ground under the hand: pick_row's hovered)
         @sf.hover_ground_node(r)
-        @sfbase.station_mark_at_node(r, fn() { s.station }, fn() { s.emoji }, fn() { s.icon }, Row, faint=fn() { !s.online })
+        @sfbase.station_mark_at_node(r, fn() { s.station }, fn() { s.emoji }, fn() { s.icon }, @sfbase.StationMarkAt::Row, faint=fn() { !s.online })
         @sf.words_node(r, fn() { s.name }, fn() { pick_name }) |> ignore
         if !s.online {
           @sf.words_node(r, fn() { @sf.t("web-pages.stations.offline") }, fn() { pick_meta }) |> ignore
@@ -362,7 +362,12 @@ fn picker_entry_of(key : String) -> PickerEntry? {
   } else {
     (picker_entries(v, "entries"), key.exact_view(start=2).to_owned())
   }
-  list.iter().find_first(fn(e) { e.path == path })
+  for i = 0; i < list.length(); i = i + 1 {
+    if list[i].path == path {
+      return Some(list[i])
+    }
+  }
+  None
 }
 
 ///|

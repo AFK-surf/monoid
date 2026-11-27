@@ -383,7 +383,14 @@ fn pl_groups(list : Array[Json]) -> Array[(String, String, Array[Json])] {
   let out : Array[(String, String, Array[Json])] = []
   for p in list {
     let g = text(Some(p), "group")
-    match out.search_by(fn(x) { x.0 == g }) {
+    let mut found : Int? = None
+    for i = 0; i < out.length(); i = i + 1 {
+      if out[i].0 == g {
+        found = Some(i)
+        break
+      }
+    }
+    match found {
       Some(i) => out[i].2.push(p)
       None => out.push((g, text(Some(p), "groupTitle"), [p]))
     }

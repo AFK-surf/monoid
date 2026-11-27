@@ -302,7 +302,14 @@ pub fn service_serve(src : Source, p : ServicePage, req : @ui.SiteRequest, reply
       headers.push(h)
     }
   }
-  if typed != "" && !headers.iter().any(fn(h) { h.0.to_lower() == "content-type" }) {
+  let mut has_ct = false
+  for h in headers {
+    if h.0.to_lower() == "content-type" {
+      has_ct = true
+      break
+    }
+  }
+  if typed != "" && !has_ct {
     headers.push(("Content-Type", typed))
   }
   // a page of the service gets its script first (its sockets, its bodies, its marks)

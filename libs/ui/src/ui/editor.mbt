@@ -74,9 +74,9 @@ fn EditorState::look_shown(self : EditorState) -> (String, Array[(Int, Int, Int6
 /// what is being composed moved along by it, one it is within grown over it: as look_shown moves its colours. None
 /// of a secret.
 fn EditorState::sets_shown(self : EditorState) -> Array[WordsSet] {
-  guard !field_sets.is_empty() && !self.secret else { return [] }
-  guard field_sets.search_by(fn(k) { physical_equal(k.0, self) }) is Some(at) else { return [] }
-  let f = field_sets[at].1
+  guard !field_sets.val.is_empty() && !self.secret else { return [] }
+  guard field_sets.val.search_by(fn(k) { physical_equal(k.0, self) }) is Some(at) else { return [] }
+  let f = field_sets.val[at].1
   let set = f(self.text)
   let ml = self.marked.length()
   if ml == 0 || set.is_empty() {
@@ -671,7 +671,7 @@ fn EditorState::key_edit(self : EditorState, code : Int, mods : Int, now : Doubl
   let t = self.text
   let (anchor, caret) = (self.anchor, self.caret)
   match edit_of(code, mods, h_keys()) {
-    Some(Move(r)) => self.move_by(r, shift, up)
+    Some(Edit::Move(r)) => self.move_by(r, shift, up)
     Some(Erase(r)) => self.erase(r, up)
     None =>
       if code == key_select_all {
@@ -2142,9 +2142,9 @@ pub fn Field::new(text? : String = "") -> Field {
 /// same order, only how wide and in what face. What `set` reads (a signal) lays the field out again as it changes.
 /// Stretches in order and apart; none said, or none given of some words: all alike.
 pub fn Field::sets(self : Field, set : (String) -> Array[WordsSet]) -> Unit {
-  match field_sets.search_by(fn(k) { physical_equal(k.0, self.st) }) {
-    Some(at) => field_sets[at] = (self.st, set)
-    None => field_sets.push((self.st, set))
+  match field_sets.val.search_by(fn(k) { physical_equal(k.0, self.st) }) {
+    Some(at) => field_sets.val[at] = (self.st, set)
+    None => field_sets.val.push((self.st, set))
   }
 }
 
@@ -2153,12 +2153,11 @@ pub fn Field::sets(self : Field, set : (String) -> Array[WordsSet]) -> Unit {
 /// them (an editor's state as it is laid out in memory is what every unit that reads one was compiled with), and few
 /// (a composer's): looked up by which field it is.
 // kept across runs: put back as a run begins (fields_sets_forget, with the tree's fields)
-let field_sets : Array[(EditorState, (String) -> Array[WordsSet])] = []
+let field_sets : Ref[Array[(EditorState, (String) -> Array[WordsSet])]] = Ref([])
 
 ///|
 fn field_sets_forget() -> Unit {
-  field_sets.clear()
-  field_sets.shrink_to_fit()
+  field_sets.val = []
 }
 
 ///|

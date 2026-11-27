@@ -64,10 +64,12 @@ pub fn profiles_offers(profiles : Json?) -> Array[(Json, Array[Json])] {
 ///|
 /// The machine logins station `station` offers, as the workspace's `profiles` says them (profiles_offers).
 pub fn profiles_offers_of(profiles : Json?, station : String) -> Array[Json] {
-  match profiles_offers(profiles).iter().find_first(fn(o) { text(Some(o.0), "station") == station }) {
-    Some(o) => o.1
-    None => []
+  for o in profiles_offers(profiles) {
+    if text(Some(o.0), "station") == station {
+      return o.1
+    }
   }
+  []
 }
 
 ///|

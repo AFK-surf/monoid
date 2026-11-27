@@ -253,10 +253,12 @@ pub fn files_shell_node(
   }
   let tab = fn() {
     let t = tabs()
-    match t.tabs.iter().find_first(fn(x) { x.id == t.current }) {
-      Some(x) => x
-      None => t.tabs[0]
+    for i = 0; i < t.tabs.length(); i = i + 1 {
+      if t.tabs[i].id == t.current {
+        return t.tabs[i]
+      }
     }
+    t.tabs[0]
   }
   // (told by the page on top, not by one under it as another slides in over it, `arrives`; once its sides are made,
   // as the first is and as the address moves)
@@ -300,7 +302,13 @@ pub fn files_shell_node(
   let stations = fn() { drive_stations(src, ws).0.unwrap_or([]) }
   let station_of = fn(p : DriveAt) {
     fn() {
-      stations().iter().find_first(fn(s) { s.station == p.station }).unwrap_or(@sfbase.dv_station({ "station": Json::string(p.station) }))
+      let sts = stations()
+      for i = 0; i < sts.length(); i = i + 1 {
+        if sts[i].station == p.station {
+          return sts[i]
+        }
+      }
+      @sfbase.dv_station({ "station": Json::string(p.station) })
     }
   }
   let folder_of = fn(i : Int, p : DriveAt) -> FolderOf {
@@ -599,10 +607,37 @@ fn files_home_body(
         match last_files_page(ws) {
           Some(at) => Some(at)
           None => {
-            let mine = stations.iter().find_first(fn(s) { s.station == here && s.anywhere && s.home != "" })
-            let pinned = stations.iter().find_first(fn(s) { s.roots.length() > 0 })
-            let home = stations.iter().find_first(fn(s) { s.anywhere && s.home != "" })
-            let saved = favorites_in(src, ws, stations).iter().find_first(fn(f) { stations.iter().any(fn(s) { s.station == f.station && s.drive }) })
+            let mut mine : DvStation? = None
+            let mut pinned : DvStation? = None
+            let mut home : DvStation? = None
+            for i = 0; i < stations.length(); i = i + 1 {
+              let s = stations[i]
+              if mine is None && s.station == here && s.anywhere && s.home != "" {
+                mine = Some(s)
+              }
+              if pinned is None && s.roots.length() > 0 {
+                pinned = Some(s)
+              }
+              if home is None && s.anywhere && s.home != "" {
+                home = Some(s)
+              }
+            }
+            let favs = favorites_in(src, ws, stations)
+            let mut saved : Favorite? = None
+            for fi = 0; fi < favs.length(); fi = fi + 1 {
+              let f = favs[fi]
+              let mut has_drive = false
+              for si = 0; si < stations.length(); si = si + 1 {
+                if stations[si].station == f.station && stations[si].drive {
+                  has_drive = true
+                  break
+                }
+              }
+              if has_drive {
+                saved = Some(f)
+                break
+              }
+            }
             match (mine, pinned, home, saved) {
               (Some(s), _, _, _) => Some({ station: s.station, root: Some(s.home), path: "" })
               (_, _, Some(s), _) => Some({ station: s.station, root: Some(s.home), path: "" })

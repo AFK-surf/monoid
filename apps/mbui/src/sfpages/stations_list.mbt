@@ -558,7 +558,7 @@ fn sl_station_row_node(
           @sf.style_node(m, fn() { sl_mark_box }, in_row=true)
           // (in its name's ink: the name's softer one while up, so neither outshines what the row says of it)
           let ink = fn() { if online() { @ui.tree_theme().color(Subtle) } else { @sf.theme().p.muted } }
-          @sfbase.station_mark_at_node(m, fn() { text(s(), "station") }, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, Row, words=ink)
+          @sfbase.station_mark_at_node(m, fn() { text(s(), "station") }, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, @sfbase.StationMarkAt::Row, words=ink)
         })
         |> ignore
         head.box(fn(n) {
@@ -1065,7 +1065,7 @@ let sl_first_art_w : Double = 240.0
 
 ///|
 /// Station, rig and device mark size on a compact row: a row's (station_mark_side's), each kind's alike.
-let sl_mark_side : Double = @sfbase.station_mark_side(Row)
+let sl_mark_side : Double = @sfbase.station_mark_side(@sfbase.StationMarkAt::Row)
 
 ///|
 /// Hairline separator inset matching the row's 12pt horizontal padding inside card_piece_node.

@@ -215,9 +215,23 @@ priv struct RsRead {
 /// it is shown now).
 fn rs_read(address : String, groups : () -> Array[Json], flat : () -> Bool) -> RsRead {
   let by = fn() { rs_shown_of(address).by }
-  let group_of = fn(key : String) { groups().iter().find_first(fn(g) { text(Some(g), "key") == key }) }
-  let process_of = fn(gkey : String, key : String) {
-    items(group_of(gkey), "processes").iter().find_first(fn(p) { text(Some(p), "key") == key })
+  let group_of = fn(key : String) -> Json? {
+    let gs = groups()
+    for i = 0; i < gs.length(); i = i + 1 {
+      if text(Some(gs[i]), "key") == key {
+        return Some(gs[i])
+      }
+    }
+    None
+  }
+  let process_of = fn(gkey : String, key : String) -> Json? {
+    let ps = items(group_of(gkey), "processes")
+    for i = 0; i < ps.length(); i = i + 1 {
+      if text(Some(ps[i]), "key") == key {
+        return Some(ps[i])
+      }
+    }
+    None
   }
   let use_of = fn(j : Json?) { rs_use(field(j, "use"), by()) }
   let most_now = @signals.computed(fn(_) {

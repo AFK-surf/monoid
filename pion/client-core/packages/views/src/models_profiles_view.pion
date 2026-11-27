@@ -512,12 +512,19 @@ struct ProfileGroupBucketMpv {
   key : String
   group : String
   title : String
-  station : String
-  station_id : String
-  station_name : String
-  profile : base_codec::Json
+  mut station : String
+  mut station_id : String
+  mut station_name : String
+  mut profile : base_codec::Json
   mut usable : Bool
   mut look : Bool
+  mut owned_count : Int
+  mut rep_owned : Bool
+  mut rep_rank : Int
+  mut rep_host_online : Bool
+  mut rep_can_share : Bool
+  mut rep_share_is_null : Bool
+  mut rep_shareable : Bool
   members : Array[base_codec::Json]
   mut used_count : Int
 }
@@ -532,6 +539,23 @@ pub fn project_profiles(
     sql::SqlResult::Ok(rs) => rs
   }
   let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+  let station_online_by_id : Map[String, Bool] = Map::new()
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    if prefix.length() > 0 && !r.address.starts_with(prefix) {
+      continue
+    }
+    let doc = parse_json_or_null(r.json)
+    let st_id = match j_opt_str(doc, "id") {
+      Some(s) => s
+      None => r.address
+    }
+    let st_online = match base_codec::json_get(doc, "online") {
+      Some(base_codec::Json::Bool(b)) => b
+      _ => true
+    }
+    station_online_by_id.set(st_id, st_online)
+  }
   let buckets : Map[String, ProfileGroupBucketMpv] = Map::new()
   let bucket_keys : Array[String] = []
 
@@ -553,6 +577,10 @@ pub fn project_profiles(
       Some(base_codec::Json::Bool(b)) => b
       _ => true
     }
+    let st_sharing = j_bool(doc, "sharing") || match base_codec::json_get(doc, "overview") {
+      Some(ov) => j_bool(ov, "sharing")
+      None => false
+    }
     let profs = extract_overview_profiles_mpv(doc)
     for pi in 0..<profs.length() {
       let raw_p = profs[pi]
@@ -565,6 +593,40 @@ pub fn project_profiles(
         None => true
       }
       let p_usable = st_online && enabled
+      let share_obj : Option[base_codec::Json] = match base_codec::json_get(raw_p, "share") {
+        Some(sh) => match sh {
+          base_codec::Json::Obj(_) => Some(sh)
+          _ => None
+        }
+        None => None
+      }
+      let is_borrowed = match share_obj {
+        Some(sh) => match j_opt_str(sh, "role") {
+          Some("user") => true
+          _ => false
+        }
+        None => match base_codec::json_get(raw_p, "sharedFrom") {
+          Some(base_codec::Json::Null) | None => false
+          _ => true
+        }
+      }
+      let is_owned = !is_borrowed
+      let share_is_null = share_obj.is_none()
+      let host_id = match share_obj {
+        Some(sh) => match j_opt_str(sh, "host") {
+          Some(h) => if h.length() > 0 { h } else { st_id }
+          None => st_id
+        }
+        None => st_id
+      }
+      let host_online = match station_online_by_id.get(host_id) {
+        Some(b) => b
+        None => false
+      }
+      let is_shareable = match j_opt_bool(raw_p, "shareable") {
+        Some(false) => false
+        _ => true
+      }
       let has_trouble = match base_codec::json_get(raw_p, "trouble") {
         Some(base_codec::Json::Obj(_)) => true
         _ => false
@@ -572,6 +634,17 @@ pub fn project_profiles(
       let check_tone = match j_opt_str(conformed, "checkTone") {
         Some(t) => t
         None => "neutral"
+      }
+      let copy_rank = if is_owned && p_usable && !has_trouble {
+        4
+      } else if is_owned && p_usable {
+        3
+      } else if is_owned && st_online {
+        2
+      } else if is_owned {
+        1
+      } else {
+        0
       }
       let p_look = !p_usable || has_trouble || check_tone == "red"
       let used_n = j_arr(raw_p, "usedBy").length()
@@ -599,6 +672,21 @@ pub fn project_profiles(
       match buckets.get(acct_key) {
         Some(b) => {
           b.members.push(mem_obj)
+          if is_owned {
+            b.owned_count += 1
+          }
+          if copy_rank > b.rep_rank {
+            b.station = r.address
+            b.station_id = st_id
+            b.station_name = st_name
+            b.profile = conformed
+            b.rep_owned = is_owned
+            b.rep_rank = copy_rank
+            b.rep_host_online = host_online
+            b.rep_can_share = st_sharing
+            b.rep_share_is_null = share_is_null
+            b.rep_shareable = is_shareable
+          }
           if p_usable {
             b.usable = true
           }
@@ -619,6 +707,13 @@ pub fn project_profiles(
             profile: conformed,
             usable: p_usable,
             look: p_look,
+            owned_count: if is_owned { 1 } else { 0 },
+            rep_owned: is_owned,
+            rep_rank: copy_rank,
+            rep_host_online: host_online,
+            rep_can_share: st_sharing,
+            rep_share_is_null: share_is_null,
+            rep_shareable: is_shareable,
             members: [mem_obj],
             used_count: used_n,
           })
@@ -666,6 +761,8 @@ pub fn project_profiles(
     if b.look {
       attention += 1
     }
+    let several = b.owned_count > 1
+    let can_batch_share = b.rep_owned && !several && b.rep_host_online && b.rep_can_share && !(b.rep_share_is_null && !b.rep_shareable)
     items_out.push(base_codec::json_obj([
       ("key", base_codec::json_str(b.key)),
       ("group", base_codec::json_str(b.group)),
@@ -673,12 +770,25 @@ pub fn project_profiles(
       ("station", base_codec::json_str(b.station)),
       ("profile", b.profile),
       ("title", base_codec::json_str(b.title)),
+      ("canBatchShare", base_codec::json_bool(can_batch_share)),
       ("usable", base_codec::json_bool(b.usable)),
       ("look", base_codec::json_bool(b.look)),
       ("where", base_codec::json_str(b.station_name)),
-      ("several", base_codec::json_bool(b.members.length() > 1)),
+      ("several", base_codec::json_bool(several)),
       ("usedCount", base_codec::json_int(b.used_count)),
     ]))
+  }
+  let manages = if ws_scope.length() > 0 {
+    match store::get_workspace(db, ws_scope) {
+      sql::SqlResult::Ok(Some(ws_row)) => {
+        let wj = parse_json_or_null(ws_row.json)
+        let role = j_str(wj, "role")
+        role == "owner" || role == "admin"
+      }
+      _ => false
+    }
+  } else {
+    false
   }
   let wait_obj = base_codec::json_obj([
     ("reading", base_codec::json_bool(false)),
@@ -690,6 +800,7 @@ pub fn project_profiles(
     ("attention", base_codec::json_int(attention)),
     ("wait", wait_obj),
     ("machineLogins", base_codec::json_arr([])),
+    ("manages", base_codec::json_bool(manages)),
   ]))
 }
 

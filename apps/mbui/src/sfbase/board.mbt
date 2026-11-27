@@ -463,7 +463,7 @@ pub fn board_draft_set(src : Source, ws : String, id : String, title : String, s
   let station_name = if station == "" { d.station_name } else { station_name }
   let station = if station == "" { d.station } else { station }
   guard d.title != title || d.station != station || d.station_name != station_name else { return }
-  board_drafts_put(src, ws, was.map(fn(x) { if x.id == id { { ..x, title, station, station_name } } else { x } }))
+  board_drafts_put(src, ws, was.map(fn(x : BoardDraft) { if x.id == id { { ..x, title, station, station_name } } else { x } }))
 }
 
 ///|
@@ -685,7 +685,14 @@ pub fn board_items(src : Source, ws : String) -> Array[ChatItem] {
     for s in board_started.get() {
       let name = s.draft.station + "/" + s.key
       guard s.ws == ws && !board_seen_here.contains(name) else { continue }
-      if all.iter().any(fn(i) { row_name(i) == name }) {
+      let mut listed = false
+      for i in all {
+        if row_name(i) == name {
+          listed = true
+          break
+        }
+      }
+      if listed {
         board_seen_here[name] = true
       } else {
         coming.push(board_coming(s))

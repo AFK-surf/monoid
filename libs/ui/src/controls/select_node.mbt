@@ -20,10 +20,14 @@ pub fn select_node(
   loc~ : SourceLoc,
 ) -> Unit {
   let words = fn() {
-    match options().iter().find_first(fn(o) { o.0 == value() }) {
-      Some(o) => o.1
-      None => ""
+    let opts = options()
+    let v = value()
+    for i = 0; i < opts.length(); i = i + 1 {
+      if opts[i].0 == v {
+        return opts[i].1
+      }
     }
+    ""
   }
   let opener = Opener::new()
   @headless.disclosure(

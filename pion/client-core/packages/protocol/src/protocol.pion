@@ -238,6 +238,32 @@ fn topic_spec_fields(name : String) -> Option[Array[(String, ParamKind, ParamHow
       ("mine", ParamKind::PBool, ParamHow::HDef),
       ("watching", ParamKind::PBool, ParamHow::HSkipFalse),
       ("hidden", ParamKind::PBool, ParamHow::HSkipFalse),
+      ("project", ParamKind::PStr, ParamHow::HSkip),
+      ("unclassified", ParamKind::PBool, ParamHow::HSkipFalse),
+      ("tag", ParamKind::PStr, ParamHow::HSkip),
+      ("groupBy", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "projects" || name == "tags" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("cursor", ParamKind::PStr, ParamHow::HSkip),
+      ("q", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "project" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("name", ParamKind::PStr, ParamHow::HReq),
+      ("cursor", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "chatSubchats" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("thread", ParamKind::PU64, ParamHow::HOpt),
+      ("session", ParamKind::PStr, ParamHow::HOpt),
+      ("q", ParamKind::PStr, ParamHow::HReq),
     ])
   }
   if name == "chatRow" || name == "chatFeedback" {
@@ -542,6 +568,13 @@ pub fn parse_topic(raw : base_codec::Json) -> Option[Topic] {
       _ => return None
     }
   }
+  if name == "chats" {
+    match base_codec::json_obj_get(params, "groupBy") {
+      Some(base_codec::Json::Str(g)) => if g != "time" && g != "project" { return None }
+      Some(_) => return None
+      None => ()
+    }
+  }
   Some(Topic::{ name: name, params: params })
 }
 
@@ -573,11 +606,47 @@ pub fn is_view(t : Topic) -> Bool {
   n == "profiles" || n == "profile" || n == "connects" || n == "connect" || n == "connectCandidates" ||
   n == "chat" || n == "history" || n == "agentCard" || n == "stationNet" || n == "stationDiag" ||
   n == "chatSearch" || n == "search" || n == "archive" || n == "chatJobs" || n == "chatLetters" ||
-  n == "chatThings" || n == "chatOutline" || n == "imageNear" || n == "longJobs" ||
+  n == "chatThings" || n == "chatOutline" || n == "chatSubchats" || n == "imageNear" || n == "longJobs" ||
   n == "workspaceMarks" || n == "decisions" || n == "usage" || n == "agentRates" || n == "fleet" ||
   n == "railCard" || n == "stationUpdates" || n == "settings" || n == "resources" ||
   n == "adminList" || n == "adminItem" || n == "adminOverview" || n == "adminRelays" ||
-  n == "workspaceWays"
+  n == "workspaceWays" || n == "projects" || n == "project" || n == "tags"
+}
+
+/// Sensitive topics (`client/core-ts/src/topic-policy.ts:91-231`):
+/// NEVER cached in `kept` / `kept_by_token`, NEVER emit `v` tokens, and NEVER honor `have`/`same`/`kept`.
+pub fn is_sensitive_topic(t : Topic) -> Bool {
+  let n = t.name
+  if n == "accounts" ||
+  n == "machineLogins" ||
+  n == "machineLogin" ||
+  n == "machineLoginScreen" ||
+  n == "loginSessions" ||
+  n == "admin" ||
+  n == "adminList" ||
+  n == "adminItem" ||
+  n == "adminOverview" ||
+  n == "adminRelays" ||
+  n == "rigs" ||
+  n == "devices" ||
+  n == "slackTokens" ||
+  n == "lock" ||
+  n == "joinable" ||
+  n == "memberships" ||
+  n == "lockDraft" ||
+  n == "lockPrompts" ||
+  n == "vaults" ||
+  n == "vaultItems" ||
+  n == "vaultUses" {
+    return true
+  }
+  if n == "stationPart" {
+    match t.param("part") {
+      Some(base_codec::Json::Str(p)) => return p == "machineLogins" || p == "logins"
+      _ => ()
+    }
+  }
+  false
 }
 
 pub enum CoreRequest {
@@ -823,6 +892,8 @@ pub struct Slice1Router {
   sub_ids : Array[Int64]
   kept : Map[String, KeptSub]
   kept_order : Array[String]
+  kept_by_token : Map[String, KeptSub]
+  kept_token_order : Array[String]
   mut topic_evaluator : Option[(Int64, Topic) -> Option[CoreEvent]]
 }
 
@@ -835,6 +906,8 @@ pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : S
     sub_ids: [],
     kept: Map::new(),
     kept_order: [],
+    kept_by_token: Map::new(),
+    kept_token_order: [],
     topic_evaluator: None,
   }
 }
@@ -858,12 +931,33 @@ pub fn Slice1Router::kept_count(self : Slice1Router) -> Int {
   self.kept_order.length()
 }
 
-fn Slice1Router::remember_kept(self : Slice1Router, tk : String, value : base_codec::Json, token : String) -> Unit {
+fn kept_token_composite_key(tk : String, token : String) -> String {
+  tk + "\u{01}" + token
+}
+
+fn remove_str_from_array(xs : Array[String], needle : String) -> Unit {
+  let next : Array[String] = []
+  for i in 0..<xs.length() {
+    if xs[i] != needle {
+      next.push(xs[i])
+    }
+  }
+  xs.clear()
+  for i in 0..<next.length() {
+    xs.push(next[i])
+  }
+}
+
+fn Slice1Router::remember_kept(self : Slice1Router, topic : Topic, tk : String, value : base_codec::Json, token : String) -> Unit {
+  if is_sensitive_topic(topic) {
+    return
+  }
+  let entry = KeptSub::{ value: value, token: token }
   if self.kept.get(tk).is_none() {
     self.kept_order.push(tk)
   }
-  self.kept.set(tk, KeptSub::{ value: value, token: token })
-  // Cap remembered values at 96 (matches store.ts kept_most_by).
+  self.kept.set(tk, entry)
+  // Cap remembered values at 96 (matches store.ts kept_most_by); evict synced token entries too.
   while self.kept_order.length() > 96 {
     let oldest = self.kept_order[0]
     let next_order : Array[String] = []
@@ -874,7 +968,33 @@ fn Slice1Router::remember_kept(self : Slice1Router, tk : String, value : base_co
     for i in 0..<next_order.length() {
       self.kept_order.push(next_order[i])
     }
+    match self.kept.get(oldest) {
+      Some(evicted) => {
+        let comp_k = kept_token_composite_key(oldest, evicted.token)
+        self.kept_by_token.remove(comp_k)
+        remove_str_from_array(self.kept_token_order, comp_k)
+      }
+      None => ()
+    }
     self.kept.remove(oldest)
+  }
+  // Scoped index by `(topic_key, token)` (capped at 64) so `have: token` survives repeated resubscribes.
+  let comp_key = kept_token_composite_key(tk, token)
+  if self.kept_by_token.get(comp_key).is_none() {
+    self.kept_token_order.push(comp_key)
+  }
+  self.kept_by_token.set(comp_key, entry)
+  while self.kept_token_order.length() > 64 {
+    let oldest_tok = self.kept_token_order[0]
+    let next_toks : Array[String] = []
+    for i in 1..<self.kept_token_order.length() {
+      next_toks.push(self.kept_token_order[i])
+    }
+    self.kept_token_order.clear()
+    for i in 0..<next_toks.length() {
+      self.kept_token_order.push(next_toks[i])
+    }
+    self.kept_by_token.remove(oldest_tok)
   }
 }
 
@@ -1811,23 +1931,30 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
           if kept_opt.is_some() {
             self.kept.remove(tk)
           }
-          // 2. `have` exact match -> `same: true`, or diff against kept == 0 -> `same: true`.
+          // Sensitive topics NEVER honor `have`/`same`/`kept` (`topic-policy.ts`).
+          if is_sensitive_topic(topic) {
+            return Some(CoreEvent::Value(id, payload, bytes))
+          }
+          // 2. `have` exact match -> `same: true`, or diff against matching `(topic_key, token)` kept.
           let mut kept_ops_opt : Option[Array[base_codec::Json]] = None
           match have {
             Some(h) => {
               if h == tok {
                 return Some(CoreEvent::Same(id))
               }
-              match kept_opt {
+              let comp_key = kept_token_composite_key(tk, h)
+              let prev_entry_opt : Option[KeptSub] = match kept_opt {
+                Some(k) => if k.token == h { Some(k) } else { self.kept_by_token.get(comp_key) }
+                None => self.kept_by_token.get(comp_key)
+              }
+              match prev_entry_opt {
                 Some(k) => {
-                  if k.token == h {
-                    let spec = if keyed { spec_for_topic(topic.name) } else { None }
-                    let ops = diff_keyed(k.value, payload, spec)
-                    if ops.length() == 0 {
-                      return Some(CoreEvent::Same(id))
-                    }
-                    kept_ops_opt = Some(ops)
+                  let spec = if keyed { spec_for_topic(topic.name) } else { None }
+                  let ops = diff_keyed(k.value, payload, spec)
+                  if ops.length() == 0 {
+                    return Some(CoreEvent::Same(id))
                   }
+                  kept_ops_opt = Some(ops)
                 }
                 None => ()
               }
@@ -1895,13 +2022,17 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
       self.remove_sub_id(id)
       if keep {
         match prev {
-          Some(sub) =>
-          match (sub.last_value, sub.last_token) {
-            (Some(v), Some(tok)) => {
-              self.remember_kept(sub.topic_key, v, tok)
-              Some(CoreEvent::Unsubscribed(id, Some(tok)))
+          Some(sub) => {
+            if is_sensitive_topic(sub.topic) {
+              return Some(CoreEvent::Unsubscribed(id, None))
             }
-            _ => Some(CoreEvent::Unsubscribed(id, None))
+            match (sub.last_value, sub.last_token) {
+              (Some(v), Some(tok)) => {
+                self.remember_kept(sub.topic, sub.topic_key, v, tok)
+                Some(CoreEvent::Unsubscribed(id, Some(tok)))
+              }
+              _ => Some(CoreEvent::Unsubscribed(id, None))
+            }
           }
           None => Some(CoreEvent::Unsubscribed(id, None))
         }

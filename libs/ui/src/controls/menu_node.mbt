@@ -374,9 +374,31 @@ fn menu_node_by(
       // (what opened it, where it is drawn: what its panel goes beside)
       let at = anchor(layer)
       // (a column before every item's words where one has an icon or is one of a choice: the web's dropdown)
-      let iconed = fn() { cur_items().iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" }) }
+      let iconed = fn() {
+        let items = cur_items()
+        for i = 0; i < items.length(); i = i + 1 {
+          if items[i] is Some(it) && it.chosen is None && it.icon != "" {
+            return true
+          }
+        }
+        false
+      }
       // (none for a check said to go at its row's end)
-      let lead = fn() { iconed() || (!check_end && cur_items().iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) })) }
+      let lead = fn() {
+        if iconed() {
+          return true
+        }
+        if check_end {
+          return false
+        }
+        let items = cur_items()
+        for i = 0; i < items.length(); i = i + 1 {
+          if items[i] is Some(it) && it.chosen is Some(_) {
+            return true
+          }
+        }
+        false
+      }
       let gap = fn() { if lead() && !iconed() { chooser_gap } else { menu_gap } }
       // (how far in a heading's words are: past the check's or icon's column, and a mark's where a row has one, as the
       // dropdown's heading_look has them)
@@ -813,7 +835,7 @@ fn menu_node_by(
                 }
                 Some(@view.said(Dialog, label=title_plain(lv_title), description=desc))
               }
-              MenuItems(_, _) => Some(@view.said(Menu, label=title_plain(lv_title)))
+              MenuItems(_, _) => Some(@view.said(@view.Role::Menu, label=title_plain(lv_title)))
             }
           }),
         )
@@ -1541,8 +1563,22 @@ fn menu_leaving_level_node(
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(parent) {
-  let iconed = snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" })
-  let lead = iconed || (!check_end && snap_items.iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) }))
+  let mut iconed = false
+  for i = 0; i < snap_items.length(); i = i + 1 {
+    if snap_items[i] is Some(it) && it.chosen is None && it.icon != "" {
+      iconed = true
+      break
+    }
+  }
+  let mut lead = iconed
+  if !lead && !check_end {
+    for i = 0; i < snap_items.length(); i = i + 1 {
+      if snap_items[i] is Some(it) && it.chosen is Some(_) {
+        lead = true
+        break
+      }
+    }
+  }
   let gap = if lead && !iconed { chooser_gap } else { menu_gap }
   let past = menu_level_past(snap_items, extra, check_end)
   if snap_depth > 0 && past > 0.0 {
@@ -1745,8 +1781,22 @@ fn menu_back_row_node(
 /// icon's column and a row's own mark where one has it after the column, each with the room after it (as the live
 /// menu's `past`, its headings' words as far in).
 fn menu_level_past(items : Array[MenuItem?], extra : (Int) -> MenuExtra, check_end : Bool) -> Double {
-  let iconed = items.iter().any(fn(x) { x is Some(i) && i.chosen is None && i.icon != "" })
-  let lead = iconed || (!check_end && items.iter().any(fn(x) { x is Some(i) && i.chosen is Some(_) }))
+  let mut iconed = false
+  for i = 0; i < items.length(); i = i + 1 {
+    if items[i] is Some(it) && it.chosen is None && it.icon != "" {
+      iconed = true
+      break
+    }
+  }
+  let mut lead = iconed
+  if !lead && !check_end {
+    for i = 0; i < items.length(); i = i + 1 {
+      if items[i] is Some(it) && it.chosen is Some(_) {
+        lead = true
+        break
+      }
+    }
+  }
   let gap = if lead && !iconed { chooser_gap } else { menu_gap }
   let mut marked = false
   for n, x in items {

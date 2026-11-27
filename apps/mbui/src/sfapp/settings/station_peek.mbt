@@ -348,7 +348,12 @@ let peek_meters : @ui.Style = @ui.css("row w=Full h=S5 gap=S2 align=ACenter")
 ///|
 /// It said what this core cannot read: no reading is on its way, so nothing shows as if one were.
 fn unreadable(s : Json?) -> Bool {
-  items(s, "problems").iter().any(fn(p) { text(Some(p), "key") == "incompatible" })
+  for p in items(s, "problems") {
+    if text(Some(p), "key") == "incompatible" {
+      return true
+    }
+  }
+  false
 }
 
 ///|

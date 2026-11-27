@@ -128,7 +128,15 @@ pub fn dv_up_done(src : Source, u : DvUpload) -> Unit {
 /// Whether file `u`, up, is in its folder's entries as the core has them now.
 pub fn dv_up_listed(src : Source, u : DvUpload) -> Bool {
   match dv_entries(src, u.station, u.root, u.dir) {
-    Some(es) => es.iter().any(fn(e) { e.name == u.name.get() })
+    Some(es) => {
+      let target = u.name.get()
+      for e in es {
+        if e.name == target {
+          return true
+        }
+      }
+      false
+    }
     None => false
   }
 }

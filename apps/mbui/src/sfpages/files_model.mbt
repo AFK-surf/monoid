@@ -139,7 +139,13 @@ pub fn favorite_same_path(root : String, path : String, other_root : String, oth
 ///|
 /// Whether the folder (`station`, `root`, `path`) is among them, whatever root it was reached under.
 pub fn favorite_has(list : Array[Favorite], station : String, root : String, path : String) -> Bool {
-  list.iter().any(fn(f) { f.station == station && favorite_same_path(f.root, f.path, root, path) })
+  for i = 0; i < list.length(); i = i + 1 {
+    let f = list[i]
+    if f.station == station && favorite_same_path(f.root, f.path, root, path) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -303,7 +309,14 @@ pub fn folder_name(st : DvStation, at : DriveAt) -> String {
 /// A pane's folder (its last part; a root pinned by its name, the home as 主目录) and its station's name (paneParts).
 pub fn pane_parts(p : DriveAt, stations : Array[DvStation]) -> (String, String) {
   let root = p.root.unwrap_or("")
-  match stations.iter().find_first(fn(s) { s.station == p.station }) {
+  let mut found : DvStation? = None
+  for i = 0; i < stations.length(); i = i + 1 {
+    if stations[i].station == p.station {
+      found = Some(stations[i])
+      break
+    }
+  }
+  match found {
     Some(s) => {
       let folder = if p.path != "" {
         dv_name(p.path)

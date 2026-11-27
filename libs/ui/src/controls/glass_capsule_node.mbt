@@ -21,7 +21,7 @@ pub fn glass_capsule_node(
 ) -> @view.View {
   @glass.liquid_capsule_decorate(
     b,
-    tone=if dark { ViewerDark } else if panel { Panel } else { Floating },
+    tone=if dark { ViewerDark } else if panel { @glass.LiquidCapsuleTone::Panel } else { Floating },
     min_height~,
     radius~,
     sharing~,

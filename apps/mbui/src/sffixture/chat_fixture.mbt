@@ -1404,7 +1404,8 @@ pub fn fix_own(files : Array[Json]) -> Array[Json] {
 pub fn fix_deliver(session : String, id : String) -> Unit {
   let fc = fix_chat(session)
   let mut found : Json? = None
-  for o in fc.outbox {
+  for i = 0; i < fc.outbox.length(); i = i + 1 {
+    let o = fc.outbox[i]
     if text(Some(o), "id") == id {
       found = Some(o)
     }
@@ -1418,7 +1419,8 @@ pub fn fix_deliver(session : String, id : String) -> Unit {
   }
   // (taken by the station, the chat's entries yet to reach it: sent a while first, as the core says it)
   if fix_sent_for.val >= 0.0 && text(Some(params), "state") != "sent" {
-    for i, o in fc.outbox {
+    for i = 0; i < fc.outbox.length(); i = i + 1 {
+      let o = fc.outbox[i]
       if text(Some(o), "id") == id {
         match outgoing_json(id, params, "sent", "") {
           Object(m) => {
@@ -1693,7 +1695,14 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
         // (by its number: the window brought back as far as it holds it, a page before at a time, the chat's earliest
         // page at most)
         let target = number(p, "seq")
-        let holds = fn() { items(Some(rich_chat(f.older)), "messages").iter().any(fn(m) { number(Some(m), "seq") == target }) }
+        let holds = fn() -> Bool {
+          for m in items(Some(rich_chat(f.older)), "messages") {
+            if number(Some(m), "seq") == target {
+              return true
+            }
+          }
+          false
+        }
         if !holds() && f.older < rich_chat_pages {
           while !holds() && f.older < rich_chat_pages {
             f.older += 1
@@ -1703,14 +1712,14 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
         return Some(Ok({ "seq": Json::number(target) }))
       }
       let all = items(Some(rich_chat(f.older)), "messages")
-      Some(
-        Ok({
-          "seq": match all.iter().find_first(fn(m) { text(Some(m), "ts") == ts }) {
-            Some(m) => Json::number(number(Some(m), "seq"))
-            None => Json::null()
-          },
-        }),
-      )
+      let mut seq_val = Json::null()
+      for m in all {
+        if text(Some(m), "ts") == ts {
+          seq_val = Json::number(number(Some(m), "seq"))
+          break
+        }
+      }
+      Some(Ok({ "seq": seq_val }))
     }
     // where its runtime keeps the session's transcript
     "session.transcript" => Some(Ok({ "path": "/Users/lin/.claude/projects/release/7c1e5b2a-4f0d-4c8e-9a61-3b2f.jsonl" }))
@@ -1739,7 +1748,16 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
             }
           }
         }
-        if count > 0 && words.iter().all(fn(w) { said.contains(w) }) {
+        let mut all_words = count > 0
+        if all_words {
+          for w in words {
+            if !said.contains(w) {
+              all_words = false
+              break
+            }
+          }
+        }
+        if all_words {
           hits.push({ "seq": Json::number(number(Some(m), "seq")), "count": Json::number(count.to_double()) })
         }
       }
@@ -1791,7 +1809,14 @@ pub fn fixture_chat_call(f : Fixture, name : String, params : Json) -> Result[Js
     }
     "chat.xshareAdd" => {
       let id = text(p, "id")
-      if fix_outside.iter().any(fn(x) { x.0 == id && x.2 }) {
+      let mut can_share = false
+      for x in fix_outside {
+        if x.0 == id && x.2 {
+          can_share = true
+          break
+        }
+      }
+      if can_share {
         fix_xshared[id] = true
         Some(Ok(Json::object({})))
       } else {
@@ -2376,13 +2401,27 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
       // at the end, words sent under it came to stand over it once the station had them, a whole row up in one frame)
       if ask_end {
         let card = ask_end_post()
-        let at = all.search_by(fn(x) { number(Some(x), "seq") > number(Some(card), "seq") }).unwrap_or(all.length())
+        let card_seq = number(Some(card), "seq")
+        let mut at = all.length()
+        for i, x in all {
+          if number(Some(x), "seq") > card_seq {
+            at = i
+            break
+          }
+        }
         all.insert(at, card)
       }
       // chat-ask-text's card, the same way
       if ask_text {
         let card = ask_text_post()
-        let at = all.search_by(fn(x) { number(Some(x), "seq") > number(Some(card), "seq") }).unwrap_or(all.length())
+        let card_seq = number(Some(card), "seq")
+        let mut at = all.length()
+        for i, x in all {
+          if number(Some(x), "seq") > card_seq {
+            at = i
+            break
+          }
+        }
         all.insert(at, card)
       }
       // each answer's message and the agent's answer to it, where they were said: before what the chat had sent
@@ -2406,11 +2445,15 @@ pub fn with_cards(f : Fixture, v : Json, session : String) -> Json {
         None => []
       }
       for s in said {
-        let at = if s.1 < since.length() {
+        let mut at : Int? = None
+        if s.1 < since.length() {
           let ts = text(Some(since[s.1]), "ts")
-          all.search_by(fn(x) { text(Some(x), "ts") == ts })
-        } else {
-          None
+          for i, x in all {
+            if text(Some(x), "ts") == ts {
+              at = Some(i)
+              break
+            }
+          }
         }
         match at {
           Some(i) => all.insert(i, s.2)
@@ -3270,7 +3313,14 @@ pub fn with_long_pieces(v : Json) -> Json {
     _ => []
   }
   // (the viewer's own at the end, quoting it)
-  match all.iter().find_first(fn(j) { j is Object(m) && m.get("seq") is Some(Number(7.0, ..)) }) {
+  let mut found_msg : Json? = None
+  for j in all {
+    if j is Object(m) && m.get("seq") is Some(Number(7.0, ..)) {
+      found_msg = Some(j)
+      break
+    }
+  }
+  match found_msg {
     Some(Object(seven)) => {
       let n = seven.copy()
       n["seq"] = Json::number(12.0)

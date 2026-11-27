@@ -24,7 +24,7 @@ fn side_panel(t : @ui.Tester) -> @ui.Laid? {
 /// Whether box `b` is the block's ground as the window's tree draws it (frame.mbt dock_node): a ground at the window's
 /// left edge (6 in at most), taller than the window's half, narrower than it.
 fn dock_ground(b : @ui.Laid) -> Bool {
-  b.kind != "text" && b.bg != 0L && b.x >= 0.0 && b.x <= 6.0 && b.h > 300.0 && b.w < 600.0
+  b.kind != "text" && (b.bg != 0L || b.glass) && b.x >= 0.0 && b.x <= 6.0 && b.h > 300.0 && b.w < 600.0
 }
 
 ///|
