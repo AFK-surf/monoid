@@ -11,6 +11,7 @@
 
 import "base_codec"
 import "effect"
+import "form"
 import "lock"
 import "protocol"
 import "sql"
@@ -119,9 +120,10 @@ pub fn AuthGenTracker::open_with_device(
   load_persisted : () -> Int64,
   save_persisted : (Int64) -> Unit,
   now_ms : Int64 = 0L,
+  floor : Int64 = 0L,
 ) -> AuthGenTracker {
   let prev = load_persisted()
-  let next = store::next_monotonic_conn_seq(prev, now_ms=now_ms)
+  let next = store::next_monotonic_conn_seq(prev, now_ms=now_ms, floor=floor)
   save_persisted(next)
   AuthGenTracker::new(conn_seq=next)
 }
@@ -911,6 +913,17 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
   }
   sort_strings_ac(members_list)
 
+  let join_arr = fn(xs : Array[String]) -> String {
+    let sb = StringBuilder::new()
+    for i in 0..<xs.length() {
+      if i > 0 {
+        sb.write_string(",")
+      }
+      sb.write_string(xs[i])
+    }
+    sb.to_string()
+  }
+
   let devices_list : Array[String] = []
   let ds = st.devices.entries()
   for i in 0..<ds.length() {
@@ -924,7 +937,17 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
       Some(e) => e.to_int64().to_string()
       None => ""
     }
-    devices_list.push(id + ":" + d.sub + ":" + d.kind + ":" + sk + ":" + own_s + ":" + exp_s)
+    let eps : Array[String] = []
+    match d.endpoints {
+      Some(xs) => {
+        for j in 0..<xs.length() {
+          eps.push(xs[j])
+        }
+        sort_strings_ac(eps)
+      }
+      None => ()
+    }
+    devices_list.push(id + ":" + d.sub + ":" + d.kind + ":" + sk + ":" + own_s + ":" + exp_s + ":[" + join_arr(eps) + "]")
   }
   sort_strings_ac(devices_list)
 
@@ -945,6 +968,19 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
   }
   sort_strings_ac(persons_list)
 
+  let gateways_list : Array[String] = []
+  let gws = st.gateways.entries()
+  for i in 0..<gws.length() {
+    let (g, enabled) = gws[i]
+    gateways_list.push(g + ":" + (if enabled { "1" } else { "0" }))
+  }
+  sort_strings_ac(gateways_list)
+
+  let cloud_keys_s = match form::canonical(st.cloud_keys) {
+    Ok(s) => s
+    Err(_) => ""
+  }
+
   let stations_list : Array[String] = []
   let ss = st.stations.entries()
   for i in 0..<ss.length() {
@@ -953,22 +989,12 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
   }
   sort_strings_ac(stations_list)
 
-  let join_arr = fn(xs : Array[String]) -> String {
-    let sb = StringBuilder::new()
-    for i in 0..<xs.length() {
-      if i > 0 {
-        sb.write_string(",")
-      }
-      sb.write_string(xs[i])
-    }
-    sb.to_string()
-  }
   let dis_s = if st.disabled { "1" } else { "0" }
   let moved_s = match st.moved {
     Some(m) => m
     None => ""
   }
-  let sec_digest = "d=" + dis_s + "|m=" + join_arr(members_list) + "|v=" + join_arr(devices_list) + "|p=" + join_arr(passkeys_list) + "|pr=" + join_arr(persons_list) + "|mv=" + moved_s
+  let sec_digest = "d=" + dis_s + "|m=" + join_arr(members_list) + "|v=" + join_arr(devices_list) + "|p=" + join_arr(passkeys_list) + "|pr=" + join_arr(persons_list) + "|gw=" + join_arr(gateways_list) + "|ck=" + cloud_keys_s + "|mv=" + moved_s
   let full_digest = sec_digest + "|s=" + join_arr(stations_list)
   (full_digest, sec_digest)
 }

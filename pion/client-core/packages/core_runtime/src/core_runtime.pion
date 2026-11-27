@@ -24,6 +24,7 @@ struct AccountInfo {
   name : String
   picture : String
   access : String
+  refresh : String
 }
 
 struct RuntimeSub {
@@ -31,6 +32,7 @@ struct RuntimeSub {
   topic : protocol::Topic
   keyed : Bool
   mut last_val : Option[base_codec::Json]
+  mut waiting_auth : Bool
 }
 
 struct RuntimeSession {
@@ -40,6 +42,8 @@ struct RuntimeSession {
   accounts : Array[AccountInfo]
   prefs : Map[String, base_codec::Json]
   station_online : Map[String, Bool]
+  station_ws : Map[String, String]
+  station_rejoin_params : Map[String, base_codec::Json]
   runtime_subs : Array[RuntimeSub]
   kept_vals : Map[String, base_codec::Json]
   kept_topics : Map[String, protocol::Topic]
@@ -54,6 +58,7 @@ struct RuntimeSession {
 }
 
 let g_session : Array[Option[RuntimeSession]] = [None]
+let g_last_device_conn_seq : Array[Int64] = [0L]
 
 fn bytes_to_str(b : Bytes) -> String {
   let sb = StringBuilder::new()
@@ -212,6 +217,7 @@ fn emit_topic_refresh(
     }
     match evaluate_runtime_topic(sess, sub.id, sub.topic, changed_keys=changed_keys) {
       Some(protocol::CoreEvent::Value(_, new_val, _)) => {
+        sub.waiting_auth = false
         match sub.last_val {
           Some(prev_val) => {
             if !protocol::json_equal(prev_val, new_val) {
@@ -236,6 +242,7 @@ fn emit_topic_refresh(
         }
       }
       Some(protocol::CoreEvent::Waiting(wid)) => {
+        sub.waiting_auth = !sess.core.is_topic_authorized(sub.topic)
         if sub.last_val.is_some() {
           sub.last_val = None
           let (wj, wb) = sess.core.encode_sub_event(sub.topic, protocol::CoreEvent::Waiting(wid))
@@ -436,7 +443,13 @@ fn handle_runtime_auth_boundary(sess : RuntimeSession, ev : sync::AuthBoundaryEv
       match evaluate_runtime_topic(sess, sub.id, sub.topic) {
         Some(sev) => {
           match sev {
-            protocol::CoreEvent::Value(_, new_val, _) => { sub.last_val = Some(new_val) }
+            protocol::CoreEvent::Value(_, new_val, _) => {
+              sub.last_val = Some(new_val)
+              sub.waiting_auth = false
+            }
+            protocol::CoreEvent::Waiting(_) => {
+              sub.waiting_auth = !sess.core.is_topic_authorized(sub.topic)
+            }
             _ => ()
           }
           let (j, b) = sess.core.encode_sub_event(sub.topic, sev)
@@ -451,6 +464,9 @@ fn handle_runtime_auth_boundary(sess : RuntimeSession, ev : sync::AuthBoundaryEv
 fn handle_runtime_topic_confirmed(sess : RuntimeSession, ws : String, topic_name : String) -> Unit {
   for i in 0..<sess.runtime_subs.length() {
     let sub = sess.runtime_subs[i]
+    if !sub.waiting_auth {
+      continue
+    }
     if topic_name != "*" && sub.topic.name != topic_name {
       continue
     }
@@ -459,11 +475,13 @@ fn handle_runtime_topic_confirmed(sess : RuntimeSession, ws : String, topic_name
       None => false
     }
     if matches_ws && sess.core.is_topic_authorized(sub.topic) {
+      sub.waiting_auth = false
       sub.last_val = None
       match evaluate_runtime_topic(sess, sub.id, sub.topic) {
         Some(sev) => {
           match sev {
             protocol::CoreEvent::Value(_, new_val, _) => { sub.last_val = Some(new_val) }
+            protocol::CoreEvent::Waiting(_) => { sub.waiting_auth = !sess.core.is_topic_authorized(sub.topic) }
             _ => ()
           }
           let (j, b) = sess.core.encode_sub_event(sub.topic, sev)
@@ -475,15 +493,37 @@ fn handle_runtime_topic_confirmed(sess : RuntimeSession, ws : String, topic_name
   }
 }
 
-fn handle_runtime_workspace_revoked(sess : RuntimeSession, ws : String) -> Unit {
+fn runtime_station_matches_ws(sess : RuntimeSession, st : String, ws : String) -> Bool {
+  match sess.station_ws.get(st) {
+    Some(sws) => if sws == ws { return true }
+    None => ()
+  }
   let ws_prefix = ws + "/"
-  let matches_st = fn(st : String) -> Bool {
-    st == ws || st.starts_with(ws_prefix) || (ws == sess.core.workspace && st == sess.core.station && !st.contains("/"))
+  st == ws || st.starts_with(ws_prefix) || (ws == sess.core.workspace && st == sess.core.station && !st.contains("/"))
+}
+
+fn handle_runtime_downgrade_refresh(sess : RuntimeSession, ws : String) -> Unit {
+  match sess.cloud {
+    Some(cs) => cs.clear_workspace_credentials(ws)
+    None => ()
   }
   let mkeys = sess.mesh_transports.keys()
   for i in 0..<mkeys.length() {
     let st = mkeys[i]
-    if matches_st(st) {
+    if runtime_station_matches_ws(sess, st, ws) {
+      match sess.mesh_transports.get(st) {
+        Some(ctrl) => ctrl.reconnect_with_fresh_cred()
+        None => ()
+      }
+    }
+  }
+}
+
+fn handle_runtime_workspace_revoked(sess : RuntimeSession, ws : String) -> Unit {
+  let mkeys = sess.mesh_transports.keys()
+  for i in 0..<mkeys.length() {
+    let st = mkeys[i]
+    if runtime_station_matches_ws(sess, st, ws) {
       match sess.mesh_transports.get(st) {
         Some(ctrl) => {
           sess.core.detach_station_transport(st)
@@ -499,7 +539,7 @@ fn handle_runtime_workspace_revoked(sess : RuntimeSession, ws : String) -> Unit 
   let md_keys = sess.md_stores.keys()
   for i in 0..<md_keys.length() {
     let st = md_keys[i]
-    if matches_st(st) {
+    if runtime_station_matches_ws(sess, st, ws) {
       match sess.md_stores.get(st) {
         Some(ms) => ms.clear_pending()
         None => ()
@@ -509,7 +549,7 @@ fn handle_runtime_workspace_revoked(sess : RuntimeSession, ws : String) -> Unit 
   }
   let okeys = sess.station_online.keys()
   for i in 0..<okeys.length() {
-    if matches_st(okeys[i]) {
+    if runtime_station_matches_ws(sess, okeys[i], ws) {
       sess.station_online.remove(okeys[i])
     }
   }
@@ -519,6 +559,139 @@ fn handle_runtime_workspace_revoked(sess : RuntimeSession, ws : String) -> Unit 
       None => false
     }
   })
+}
+
+fn strip_rejoin_credential(params : base_codec::Json) -> base_codec::Json {
+  match params {
+    base_codec::Json::Obj(fs) => {
+      let kept : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        if fs[i].0 != "credential" {
+          kept.push(fs[i])
+        }
+      }
+      base_codec::json_obj(kept)
+    }
+    _ => params
+  }
+}
+
+fn resolve_station_connect_workspace(sess : RuntimeSession, target_st : String, params : base_codec::Json) -> String {
+  match opt_str_param(params, "workspace") {
+    Some(w) => if w.length() > 0 { return w }
+    None => ()
+  }
+  match target_st.index_of("/") {
+    idx if idx > 0 => target_st.slice(0, idx)
+    _ => sess.core.workspace
+  }
+}
+
+fn connect_runtime_station(sess : RuntimeSession, target_st : String, params : base_codec::Json) -> String {
+  let target_ws = resolve_station_connect_workspace(sess, target_st, params)
+  sess.station_ws.set(target_st, target_ws)
+  sess.station_rejoin_params.set(target_st, strip_rejoin_credential(params))
+  let peer_opt = match opt_str_param(params, "peerId") {
+    Some(p) => if p.length() > 0 { Some(p) } else { None }
+    None => match opt_str_param(params, "endpointId") {
+      Some(p) => if p.length() > 0 { Some(p) } else { None }
+      None => None
+    }
+  }
+  let mut mode = "offline"
+  match peer_opt {
+    Some(peer_id) => {
+      let relays : Array[String] = []
+      match base_codec::json_get(params, "relays") {
+        Some(base_codec::Json::Arr(xs)) => {
+          for i in 0..<xs.length() {
+            match xs[i] {
+              base_codec::Json::Str(r) => if r.length() > 0 { relays.push(r) }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      let static_cred = match opt_str_param(params, "credential") {
+        Some(c) => c
+        None => ""
+      }
+      let cloud_ref = sess.cloud
+      let get_cred = fn(dev_id : String, fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+        if static_cred.length() > 0 && !fresh {
+          ck(effect::Exit::Succeeded(static_cred))
+          return
+        }
+        match cloud_ref {
+          Some(cs) => cs.fetch_member_credential_k(
+            target_ws,
+            dev_id,
+            pion_core_wall_now_ms() / 1000.to_int64(),
+            fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+              match ex {
+                effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
+                effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+                effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+              }
+            },
+            fresh=fresh,
+          )
+          None => if static_cred.length() > 0 {
+            ck(effect::Exit::Succeeded(static_cred))
+          } else {
+            ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
+          }
+        }
+      }
+      let core_ref = sess.core
+      let cfg = sync::MeshStationConfig::new(
+        target_ws,
+        peer_id,
+        relays,
+        get_cred,
+        get_lock_carry=Some(fn() -> sync::MeshLockCarry {
+          sync::mesh_lock_carry_for_core(core_ref)
+        }),
+      )
+      match sess.mesh_transports.get(target_st) {
+        Some(old_ctrl) => {
+          sess.core.detach_station_transport(target_st)
+          old_ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+        }
+        None => ()
+      }
+      let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
+      sess.mesh_transports.set(target_st, ctrl)
+      sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
+      mode = "mesh"
+    }
+    None => {
+      if is_loopback_http_url(sess.origin) {
+        mode = "loopback_http"
+      }
+    }
+  }
+  if !sess.live_sync_enabled {
+    sess.live_sync_enabled = true
+    sess.core.start()
+  }
+  mode
+}
+
+fn handle_runtime_workspace_rejoined(sess : RuntimeSession, ws : String) -> Unit {
+  let rkeys = sess.station_rejoin_params.keys()
+  for i in 0..<rkeys.length() {
+    let st = rkeys[i]
+    if runtime_station_matches_ws(sess, st, ws) && sess.mesh_transports.get(st).is_none() {
+      match sess.station_rejoin_params.get(st) {
+        Some(p) => {
+          let _ = connect_runtime_station(sess, st, p)
+        }
+        None => ()
+      }
+    }
+  }
 }
 
 fn handle_runtime_cloud_applied(sess : RuntimeSession, kind : String) -> Unit {
@@ -691,7 +864,17 @@ fn parse_stored_accounts(raw : base_codec::Json) -> Array[AccountInfo] {
           Some(s) => s
           None => ""
         }
-        out.push(AccountInfo::{ sub: sub, email: email, name: name, picture: picture, access: access })
+        let refresh = match opt_str_param(a, "refresh") {
+          Some(s) => s
+          None => match opt_str_param(a, "refresh_token") {
+            Some(s) => s
+            None => match opt_str_param(a, "refreshToken") {
+              Some(s) => s
+              None => ""
+            }
+          }
+        }
+        out.push(AccountInfo::{ sub: sub, email: email, name: name, picture: picture, access: access, refresh: refresh })
       }
     }
     _ => ()
@@ -1133,7 +1316,8 @@ pub extern "C" fn pion_core_runtime_start(
     }
     None => 0L
   }
-  let device_conn_seq = store::next_monotonic_conn_seq(prev_device_conn, now_ms=pion_core_wall_now_ms())
+  let device_conn_seq = store::next_monotonic_conn_seq(prev_device_conn, now_ms=pion_core_wall_now_ms(), floor=g_last_device_conn_seq[0])
+  g_last_device_conn_seq[0] = device_conn_seq
   let _ = write_storage_json(sh, "device/conn_seq", base_codec::json_obj([("conn", base_codec::json_int64(device_conn_seq))]))
   let core = sync::ClientCore::new(
     default_ws,
@@ -1194,7 +1378,7 @@ pub extern "C" fn pion_core_runtime_start(
         name: ai.name,
         picture: ai.picture,
         access: ai.access,
-        refresh: "",
+        refresh: ai.refresh,
         access_expires: 0.to_int64(),
       })
     }
@@ -1206,6 +1390,8 @@ pub extern "C" fn pion_core_runtime_start(
     accounts: accounts,
     prefs: prefs_map,
     station_online: Map::new(),
+    station_ws: Map::new(),
+    station_rejoin_params: Map::new(),
     runtime_subs: [],
     kept_vals: Map::new(),
     kept_topics: Map::new(),
@@ -1224,6 +1410,12 @@ pub extern "C" fn pion_core_runtime_start(
   core.set_on_workspace_revoked(fn(ws : String) -> Unit {
     handle_runtime_workspace_revoked(sess, ws)
   })
+  core.set_on_workspace_rejoined(fn(ws : String) -> Unit {
+    handle_runtime_workspace_rejoined(sess, ws)
+  })
+  core.set_on_downgrade_refresh(fn(ws : String) -> Unit {
+    handle_runtime_downgrade_refresh(sess, ws)
+  })
   core.set_on_runtime_boundary(fn(ev : sync::AuthBoundaryEvent) -> Unit {
     handle_runtime_auth_boundary(sess, ev)
   })
@@ -1239,9 +1431,14 @@ pub extern "C" fn pion_core_runtime_start(
   match cloud_opt {
     Some(cs) => {
       core.bind_cloud_sync(cs)
-      if origin.length() > 0 && accounts.length() > 0 && accounts[0].access.length() > 0 {
-        cs.set_origin_and_token(origin, accounts[0].access)
-        start_cloud_events_ws(sess, cs)
+      if origin.length() > 0 && accounts.length() > 0 {
+        if accounts[0].refresh.length() > 0 {
+          cs.set_refresh_token(accounts[0].refresh)
+        }
+        if accounts[0].access.length() > 0 {
+          cs.set_origin_and_token(origin, accounts[0].access)
+          start_cloud_events_ws(sess, cs)
+        }
       }
     }
     None => ()
@@ -1685,7 +1882,7 @@ pub extern "C" fn pion_core_runtime_send(
         Some(err_id) => {
           let ev = protocol::CoreEvent::Err(err_id, protocol::CoreError::{ code: "bad_message", message: msg })
           let (out_j, out_b) = if base_codec::json_get(raw, "subscribe").is_some() {
-            protocol::encode_sub_event_with_auth(ev, protocol::WireOutGen::{ conn: sess.core.auth.conn_seq, auth_gen: None, vault_gen: None })
+            protocol::encode_sub_event_with_auth(ev, sess.core.wire_out_gen_for_raw_subscribe(raw))
           } else {
             protocol::encode_core_event(ev)
           }
@@ -1704,17 +1901,21 @@ pub extern "C" fn pion_core_runtime_send(
                 protocol::CoreEvent::Value(_, v, _) => Some(v)
                 _ => None
               }
+              let is_waiting_auth = match ev {
+                protocol::CoreEvent::Waiting(_) => !sess.core.is_topic_authorized(topic)
+                _ => false
+              }
               // Register live subscription in `sess.runtime_subs` (replacing any prior entry with same `id`).
               let mut replaced = false
               for i in 0..<sess.runtime_subs.length() {
                 if sess.runtime_subs[i].id == id {
-                  sess.runtime_subs[i] = RuntimeSub::{ id: id, topic: topic, keyed: keyed, last_val: val_opt }
+                  sess.runtime_subs[i] = RuntimeSub::{ id: id, topic: topic, keyed: keyed, last_val: val_opt, waiting_auth: is_waiting_auth }
                   replaced = true
                   break
                 }
               }
               if !replaced {
-                sess.runtime_subs.push(RuntimeSub::{ id: id, topic: topic, keyed: keyed, last_val: val_opt })
+                sess.runtime_subs.push(RuntimeSub::{ id: id, topic: topic, keyed: keyed, last_val: val_opt, waiting_auth: is_waiting_auth })
               }
               let allow_kept = !sync::is_vault_topic(topic.name) && sess.core.is_topic_authorized(topic)
               let out_ev = if allow_kept {
@@ -1790,95 +1991,7 @@ pub extern "C" fn pion_core_runtime_send(
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
               None => sess.core.station
             }
-            let target_ws = match opt_str_param(params, "workspace") {
-              Some(w) => if w.length() > 0 { w } else { sess.core.workspace }
-              None => sess.core.workspace
-            }
-            let peer_opt = match opt_str_param(params, "peerId") {
-              Some(p) => if p.length() > 0 { Some(p) } else { None }
-              None => match opt_str_param(params, "endpointId") {
-                Some(p) => if p.length() > 0 { Some(p) } else { None }
-                None => None
-              }
-            }
-            let mut mode = "offline"
-            match peer_opt {
-              Some(peer_id) => {
-                let relays : Array[String] = []
-                match base_codec::json_get(params, "relays") {
-                  Some(base_codec::Json::Arr(xs)) => {
-                    for i in 0..<xs.length() {
-                      match xs[i] {
-                        base_codec::Json::Str(r) => if r.length() > 0 { relays.push(r) }
-                        _ => ()
-                      }
-                    }
-                  }
-                  _ => ()
-                }
-                let static_cred = match opt_str_param(params, "credential") {
-                  Some(c) => c
-                  None => ""
-                }
-                let cloud_ref = sess.cloud
-                let get_cred = fn(dev_id : String, fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
-                  if static_cred.length() > 0 && !fresh {
-                    ck(effect::Exit::Succeeded(static_cred))
-                    return
-                  }
-                  match cloud_ref {
-                    Some(cs) => cs.fetch_member_credential_k(
-                      target_ws,
-                      dev_id,
-                      pion_core_wall_now_ms() / 1000.to_int64(),
-                      fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
-                        match ex {
-                          effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
-                          effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
-                          effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
-                        }
-                      },
-                      fresh=fresh,
-                    )
-                    None => if static_cred.length() > 0 {
-                      ck(effect::Exit::Succeeded(static_cred))
-                    } else {
-                      ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
-                    }
-                  }
-                }
-                let core_ref = sess.core
-                let cfg = sync::MeshStationConfig::new(
-                  target_ws,
-                  peer_id,
-                  relays,
-                  get_cred,
-                  get_lock_carry=Some(fn() -> sync::MeshLockCarry {
-                    sync::mesh_lock_carry_for_core(core_ref)
-                  }),
-                )
-                match sess.mesh_transports.get(target_st) {
-                  Some(old_ctrl) => {
-                    sess.core.detach_station_transport(target_st)
-                    old_ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
-                  }
-                  None => ()
-                }
-                let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
-                sess.mesh_transports.set(target_st, ctrl)
-                sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
-                mode = "mesh"
-              }
-              None => {
-                if is_loopback_http_url(sess.origin) {
-                  mode = "loopback_http"
-                }
-              }
-            }
-            if !sess.live_sync_enabled {
-              sess.live_sync_enabled = true
-              sess.core.start()
-            }
+            let mode = connect_runtime_station(sess, target_st, params)
             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
               ("connecting", base_codec::json_bool(true)),
               ("station", base_codec::json_str(target_st)),
@@ -1894,6 +2007,8 @@ pub extern "C" fn pion_core_runtime_send(
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
               None => sess.core.station
             }
+            sess.station_ws.remove(target_st)
+            sess.station_rejoin_params.remove(target_st)
             match sess.mesh_transports.get(target_st) {
               Some(ctrl) => {
                 sess.core.detach_station_transport(target_st)

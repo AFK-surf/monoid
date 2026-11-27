@@ -271,14 +271,16 @@ pub fn search_chats(
 }
 
 /// Compute the next strictly monotonic `conn_seq`:
-/// `max(persisted + 1, now_ms * 1000)` when `now_ms > 0`, or `persisted + 1` in deterministic
-/// virtual-clock tests (`now_ms == 0`), guaranteeing cross-restart strict monotonicity even if
-/// storage is read-only or restarts occur within the same millisecond (`core.ts:406-414`).
-pub fn next_monotonic_conn_seq(persisted : Int64, now_ms : Int64 = 0L) -> Int64 {
-  let base = if persisted > 0L { persisted } else { 0L }
-  let next_persisted = base + 1L
-  let floor_conn = if now_ms > 0L { now_ms * 1000L } else { 0L }
-  if floor_conn > next_persisted { floor_conn } else { next_persisted }
+/// `max(persisted + 1, floor + 1, now_ms * 1000)` when `now_ms > 0`, or `max(persisted + 1, floor + 1)`
+/// in deterministic virtual-clock tests (`now_ms == 0`), guaranteeing strict monotonicity even across
+/// same-millisecond consecutive allocations or read-only storage (`core.ts:406-414`).
+pub fn next_monotonic_conn_seq(persisted : Int64, now_ms : Int64 = 0L, floor : Int64 = 0L) -> Int64 {
+  let base_p = if persisted > 0L { persisted } else { 0L }
+  let base_f = if floor > 0L { floor } else { 0L }
+  let base = if base_p > base_f { base_p } else { base_f }
+  let next_seq = base + 1L
+  let time_floor = if now_ms > 0L { now_ms * 1000L } else { 0L }
+  if time_floor > next_seq { time_floor } else { next_seq }
 }
 
 /// Parse a stored `conn_seq` JSON/integer string (`"42"` or `{"conn": 42}`).
@@ -454,6 +456,68 @@ pub fn drop_workspace(
   let ts_shared_table_exists = fn(name : String) -> Bool {
     has_sqlite_master && existing_tables.get(name).is_some()
   }
+  // Probe real column names (`address` vs `station` vs `workspace`) for TS-shared optional tables
+  // (`client/core-ts/src/db/schema.ts`: `station_part` & `station_part_profiles` use `address`,
+  // while `chat_agent`, `chat_tag`, `letter`, `log_bytes`, `log_bytes_done`, `slack_said`,
+  // `slack_who`, `session_detail` use `station`).
+  let ts_shared_specs : Array[(String, String)] = [
+    ("station_part", "address"),
+    ("station_part_profiles", "address"),
+    ("station_parts", "address"),
+    ("chat_agent", "station"),
+    ("chat_tag", "station"),
+    ("letter", "station"),
+    ("log_bytes", "station"),
+    ("log_bytes_done", "station"),
+    ("log_bytes_entry", "station"),
+    ("log_bytes_transcript", "station"),
+    ("file_kept", "station"),
+    ("slack_said", "station"),
+    ("slack_who", "station"),
+    ("session_detail", "station"),
+  ]
+  let ts_shared_targets : Array[(String, String)] = []
+  for i in 0..<ts_shared_specs.length() {
+    let (tbl, default_col) = ts_shared_specs[i]
+    if ts_shared_table_exists(tbl) {
+      let mut resolved_col = ""
+      match db.all("PRAGMA table_info(" + tbl + ")") {
+        sql::SqlResult::Ok(cols) => {
+          if cols.length() > 0 {
+            let mut has_address = false
+            let mut has_station = false
+            let mut has_workspace = false
+            for ci in 0..<cols.length() {
+              let cname = sql::col_text(cols[ci], 1)
+              if cname == "address" {
+                has_address = true
+              } else if cname == "station" {
+                has_station = true
+              } else if cname == "workspace" {
+                has_workspace = true
+              }
+            }
+            if has_address {
+              resolved_col = "address"
+            } else if has_station {
+              resolved_col = "station"
+            } else if has_workspace {
+              resolved_col = "workspace"
+            }
+          } else {
+            // Stub/mock DB that does not populate PRAGMA table_info rows: use schema default.
+            resolved_col = default_col
+          }
+        }
+        sql::SqlResult::Err(_) => {
+          resolved_col = default_col
+        }
+      }
+      if resolved_col.length() > 0 {
+        ts_shared_targets.push((tbl, resolved_col))
+      }
+    }
+  }
 
   let burst = sql::Burst::new(db)
   burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
@@ -520,20 +584,17 @@ pub fn drop_workspace(
         }
       }
     }
-    // Also clean any TS-shared optional tables if present in `sqlite_master` (`station_part`, `chat_agent`, `chat_tag`, `log_bytes`).
-    let ts_shared_station_tables = [
-      "station_part",
-      "station_parts",
-      "chat_agent",
-      "chat_tag",
-      "log_bytes",
-      "log_bytes_entry",
-      "log_bytes_transcript",
-    ]
-    for i in 0..<ts_shared_station_tables.length() {
-      let tbl = ts_shared_station_tables[i]
-      if ts_shared_table_exists(tbl) {
-        match delete_station_scoped_in_burst(b, tbl, "station", ws, ws_prefix, extra_stations) {
+    // Also clean any TS-shared optional tables discovered in `sqlite_master`, using their exact
+    // probed column (`address`, `station`, or `workspace`).
+    for i in 0..<ts_shared_targets.length() {
+      let (tbl, col) = ts_shared_targets[i]
+      if col == "workspace" {
+        match b.run("DELETE FROM " + tbl + " WHERE workspace = ?", params=[base_codec::json_str(ws)]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      } else {
+        match delete_station_scoped_in_burst(b, tbl, col, ws, ws_prefix, extra_stations) {
           sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
           sql::SqlResult::Ok(_) => ()
         }

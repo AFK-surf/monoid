@@ -22,12 +22,11 @@ struct MarksWanted {
 }
 
 struct PendingAuthConfirm {
-  gen : Int
+  mut gen : Int
   mut workspace_doc_confirmed : Bool
-  expected_stations : Array[String]
   confirmed_overview_stations : Map[String, Bool]
   confirmed_snapshot_stations : Map[String, Bool]
-  confirmed_thread_stations : Map[String, Bool]
+  confirmed_threads : Map[String, Bool]
   confirmed_keys : Map[String, Bool]
   released_subs : Map[Int64, Bool]
 }
@@ -61,10 +60,12 @@ pub struct ClientCore {
   pending_wire_events : Array[(String, Option[Bytes])]
   ws_roles : Map[String, String]
   pending_auth_confirm : Map[String, PendingAuthConfirm]
+  drop_failed_workspaces : Map[String, Bool]
   lock_digest_by_ws : Map[String, String]
   lock_sec_digest_by_ws : Map[String, String]
   mut on_runtime_boundary : Option[(AuthBoundaryEvent) -> Unit]
   mut on_workspace_revoked_hook : Option[(String) -> Unit]
+  mut on_workspace_rejoined_hook : Option[(String) -> Unit]
   mut on_topic_confirmed_hook : Option[(String, String) -> Unit]
   mut on_downgrade_refresh_hook : Option[(String) -> Unit]
   mut on_cloud_applied_hook : Option[(String) -> Unit]
@@ -172,10 +173,12 @@ pub fn ClientCore::new(
     pending_wire_events: [],
     ws_roles: Map::new(),
     pending_auth_confirm: Map::new(),
+    drop_failed_workspaces: Map::new(),
     lock_digest_by_ws: Map::new(),
     lock_sec_digest_by_ws: Map::new(),
     on_runtime_boundary: None,
     on_workspace_revoked_hook: None,
+    on_workspace_rejoined_hook: None,
     on_topic_confirmed_hook: None,
     on_downgrade_refresh_hook: None,
     on_cloud_applied_hook: None,
@@ -288,11 +291,14 @@ fn ClientCore::wire_station_hooks(
   let local_outbox = self.local_outbox
   events.set_auth_tracker(self.auth)
   events.set_overview_applied_hook(fn(ws : String, st : String, gen : Int) -> Unit {
-    self.handle_confirmed_station_read(ws, st, "overview", gen)
+    self.handle_confirmed_station_read(ws, st, "overview", gen, None)
+  })
+  events.set_disconnected_hook(fn(ws : String, _st : String) -> Unit {
+    self.release_newly_confirmed_subs(ws)
   })
   sync.set_auth_tracker(self.auth)
-  sync.set_on_confirmed_read(fn(ws : String, st : String, kind : String, gen : Int) -> Unit {
-    self.handle_confirmed_station_read(ws, st, kind, gen)
+  sync.set_on_confirmed_read(fn(ws : String, st : String, kind : String, gen : Int, thread_opt : Option[Int]) -> Unit {
+    self.handle_confirmed_station_read(ws, st, kind, gen, thread_opt)
   })
   events.set_hooks(
     fn(b : sql::Burst, th : Int, n : Int, ck : String) -> Unit {
@@ -1859,6 +1865,7 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       accounts=self.auth_store.accounts,
       viewer_sub=self.viewer_sub,
       viewer_email=self.viewer_marks.me,
+      is_excluded=Some(fn(ws : String) -> Bool { self.is_workspace_revoked_or_pending(ws) }),
     ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
@@ -2428,6 +2435,86 @@ pub fn ClientCore::set_on_workspace_revoked(
   self.on_workspace_revoked_hook = Some(cb)
 }
 
+pub fn ClientCore::set_on_workspace_rejoined(
+  self : ClientCore,
+  cb : (String) -> Unit,
+) -> Unit {
+  self.on_workspace_rejoined_hook = Some(cb)
+}
+
+/// Build the full `WireOutGen` envelope for a raw JSON `subscribe` request whose full parse failed
+/// (`Invalid`), preserving `conn` + `authGen` + `vaultGen` whenever `subscribe.topic` is recognizable
+/// (`apps/mbui/src/core/client.mbt:2388,2405`).
+pub fn ClientCore::wire_out_gen_for_raw_subscribe(
+  self : ClientCore,
+  raw : base_codec::Json,
+) -> protocol::WireOutGen {
+  match base_codec::json_get(raw, "subscribe") {
+    Some(base_codec::Json::Obj(fs)) => {
+      let mut tname = ""
+      let params : Array[(String, base_codec::Json)] = []
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        if k == "topic" {
+          match v {
+            base_codec::Json::Str(s) => { tname = s }
+            _ => ()
+          }
+        } else {
+          params.push((k, v))
+        }
+      }
+      if tname.length() > 0 {
+        return self.auth.wire_out_gen(protocol::Topic::{ name: tname, params: params })
+      }
+    }
+    _ => ()
+  }
+  protocol::WireOutGen::{ conn: self.auth.conn_seq, auth_gen: None, vault_gen: None }
+}
+
+/// True if `ws` is currently revoked OR still has an uncompleted `drop_workspace` pending
+/// (either in-memory `drop_failed_workspaces` or persisted `account_doc("revoked_pending:<ws>")`).
+pub fn ClientCore::is_workspace_revoked_or_pending(self : ClientCore, ws : String) -> Bool {
+  if ws.length() == 0 {
+    return false
+  }
+  if self.auth.is_revoked(ws) || self.drop_failed_workspaces.get(ws).is_some() {
+    return true
+  }
+  match store::get_account_doc(self.db, "revoked_pending:" + ws) {
+    sql::SqlResult::Ok(Some(_)) => true
+    _ => false
+  }
+}
+
+/// Ensure any previously failed `drop_workspace` for `ws` succeeds and purges stale pre-revocation
+/// SQLite rows BEFORE allowing a Cloud 200 rejoin to clear `revoked` or reopen reads.
+/// Returns `true` when clean/purged, or `false` if purge still failed (caller MUST keep `ws` revoked).
+fn ClientCore::ensure_pending_drop_cleared_before_rejoin(self : ClientCore, ws : String) -> Bool {
+  let pending_key = "revoked_pending:" + ws
+  let has_pending_doc = match store::get_account_doc(self.db, pending_key) {
+    sql::SqlResult::Ok(Some(_)) => true
+    _ => false
+  }
+  if !has_pending_doc && self.drop_failed_workspaces.get(ws).is_none() {
+    return true
+  }
+  let extra_sts = self.collect_stations_for_workspace(ws)
+  match store::drop_workspace(self.db, ws, extra_stations=extra_sts) {
+    sql::SqlResult::Ok(_) => {
+      let _ = store::delete_account_doc(self.db, pending_key)
+      self.drop_failed_workspaces.remove(ws)
+      true
+    }
+    sql::SqlResult::Err(_) => {
+      self.drop_failed_workspaces.set(ws, true)
+      self.auth.set_revoked(ws, true)
+      false
+    }
+  }
+}
+
 pub fn ClientCore::set_on_topic_confirmed(
   self : ClientCore,
   cb : (String, String) -> Unit,
@@ -2466,8 +2553,11 @@ fn ClientCore::recover_pending_revocations(self : ClientCore) -> Unit {
           match store::drop_workspace(self.db, ws, extra_stations=extra_sts) {
             sql::SqlResult::Ok(_) => {
               let _ = store::delete_account_doc(self.db, key)
+              self.drop_failed_workspaces.remove(ws)
             }
-            sql::SqlResult::Err(_) => ()
+            sql::SqlResult::Err(_) => {
+              self.drop_failed_workspaces.set(ws, true)
+            }
           }
         }
       }
@@ -2516,7 +2606,8 @@ fn is_overview_held_topic(name : String) -> Bool {
 
 fn is_snapshot_held_topic(name : String) -> Bool {
   name == "chats" || name == "chatRow" || name == "archive" ||
-  name == "search" || name == "chatSearch" || name == "railCard"
+  name == "search" || name == "chatSearch" || name == "railCard" ||
+  name == "longJobs"
 }
 
 fn is_thread_held_topic(name : String) -> Bool {
@@ -2526,18 +2617,19 @@ fn is_thread_held_topic(name : String) -> Bool {
 /// Authorization gate consulted before projecting or caching a topic value
 /// (aligned 1:1 with `client/core-ts/src/core.ts:419-440` + `:1540` downgrade confirmation latch):
 /// 1. Device-global topics are always authorized.
-/// 2. Any topic belonging to a `revoked` workspace is IMMEDIATELY refused (even if `drop_workspace` failed).
+/// 2. Any topic belonging to a `revoked` or `revoked_pending` workspace is IMMEDIATELY refused
+///    (even if `drop_workspace` failed).
 /// 3. Role-downgrade latch gates ONLY `protocol::is_held_or_role_gated_topic` topics belonging explicitly
 ///    to `ws` (per `protocol::topic_workspace`, NEVER falling back parameterless topics to `self.workspace`),
-///    with independent per-station confirmation so one station confirming NEVER releases another station.
+///    with dynamic online-only station sets and exact per-`(station, thread)` confirmation for `chat`.
 pub fn ClientCore::is_topic_authorized(self : ClientCore, topic : protocol::Topic) -> Bool {
   if is_device_global_topic(topic.name) {
     return true
   }
-  // 1. Hard revocation check FIRST (blocks even if SQLite `drop_workspace` failed).
+  // 1. Hard revocation / pending-drop check FIRST (blocks even if SQLite `drop_workspace` failed).
   match protocol::topic_revocation_workspace(topic) {
     Some(rws) => {
-      if rws.length() > 0 && rws != "all" && rws != "*" && self.auth.is_revoked(rws) {
+      if rws.length() > 0 && rws != "all" && rws != "*" && self.is_workspace_revoked_or_pending(rws) {
         return false
       }
     }
@@ -2575,28 +2667,41 @@ pub fn ClientCore::is_topic_authorized(self : ClientCore, topic : protocol::Topi
         return pending.confirmed_snapshot_stations.get(st).is_some()
       }
       if is_thread_held_topic(topic.name) {
-        return pending.confirmed_thread_stations.get(st).is_some() || pending.confirmed_snapshot_stations.get(st).is_some()
+        if pending.confirmed_snapshot_stations.get(st).is_some() {
+          return true
+        }
+        if topic.name == "chat" {
+          match topic.param("thread") {
+            Some(base_codec::Json::Num(n, _)) => {
+              let th_key = st + ":" + n.to_int().to_string()
+              return pending.confirmed_threads.get(th_key).is_some()
+            }
+            _ => ()
+          }
+        }
+        return false
       }
       false
     }
     None => {
+      let online_stations = self.collect_online_stations_for_workspace(ws)
       if is_overview_held_topic(topic.name) {
         if !pending.workspace_doc_confirmed {
           return false
         }
-        for i in 0..<pending.expected_stations.length() {
-          if pending.confirmed_overview_stations.get(pending.expected_stations[i]).is_none() {
+        for i in 0..<online_stations.length() {
+          if pending.confirmed_overview_stations.get(online_stations[i]).is_none() {
             return false
           }
         }
         return true
       }
       if is_snapshot_held_topic(topic.name) {
-        if pending.expected_stations.length() == 0 {
+        if online_stations.length() == 0 {
           return pending.workspace_doc_confirmed
         }
-        for i in 0..<pending.expected_stations.length() {
-          if pending.confirmed_snapshot_stations.get(pending.expected_stations[i]).is_none() {
+        for i in 0..<online_stations.length() {
+          if pending.confirmed_snapshot_stations.get(online_stations[i]).is_none() {
             return false
           }
         }
@@ -2681,6 +2786,7 @@ fn ClientCore::handle_confirmed_station_read(
   station : String,
   kind : String,
   gen : Int,
+  thread_opt : Option[Int],
 ) -> Unit {
   let pending = match self.pending_auth_confirm.get(ws) {
     Some(p) => p
@@ -2695,15 +2801,21 @@ fn ClientCore::handle_confirmed_station_read(
       pending.confirmed_overview_stations.set(station, true)
       changed = true
     }
-  } else if kind == "snapshot" || kind == "marks" {
+  } else if kind == "snapshot" {
     if pending.confirmed_snapshot_stations.get(station).is_none() {
       pending.confirmed_snapshot_stations.set(station, true)
       changed = true
     }
   } else if kind == "thread" {
-    if pending.confirmed_thread_stations.get(station).is_none() {
-      pending.confirmed_thread_stations.set(station, true)
-      changed = true
+    match thread_opt {
+      Some(th) => {
+        let th_key = station + ":" + th.to_string()
+        if pending.confirmed_threads.get(th_key).is_none() {
+          pending.confirmed_threads.set(th_key, true)
+          changed = true
+        }
+      }
+      None => ()
     }
   }
   if changed {
@@ -2738,6 +2850,79 @@ fn ClientCore::collect_attached_stations_for_workspace(self : ClientCore, ws : S
   out
 }
 
+/// Collect attached stations of `ws` that are currently `Connected` or `Connecting`
+/// (strictly excluding `Disconnected` / `Reconnecting` stations so offline stations never wedge
+/// aggregate workspace topics at `Waiting`).
+fn ClientCore::collect_online_stations_for_workspace(self : ClientCore, ws : String) -> Array[String] {
+  let out : Array[String] = []
+  let add_unique = fn(st : String) -> Unit {
+    if st.length() == 0 {
+      return
+    }
+    for i in 0..<out.length() {
+      if out[i] == st {
+        return
+      }
+    }
+    out.push(st)
+  }
+  if self.has_live_transport && self.events.workspace == ws && self.events.is_online_or_connecting() {
+    add_unique(self.station)
+  }
+  let eks = self.extra_events.keys()
+  for i in 0..<eks.length() {
+    let st = eks[i]
+    match self.extra_events.get(st) {
+      Some(ev) => if ev.workspace == ws && ev.is_online_or_connecting() { add_unique(st) }
+      None => ()
+    }
+  }
+  out
+}
+
+fn ClientCore::fetch_downgrade_ws_doc_with_retry(
+  self : ClientCore,
+  cs : CloudSync,
+  ws : String,
+  expected_gen : Int,
+  attempt : Int,
+) -> Unit {
+  let _ = self.rt.fork_quiet_named("downgrade-ws-doc:" + ws, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    cs.fetch_workspace_k(ws, fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) | effect::Exit::Interrupted => fk(effect::Exit::Succeeded(()))
+        effect::Exit::Failed(_) => {
+          let should_retry = attempt < 3 && !self.is_workspace_revoked_or_pending(ws) && match self.pending_auth_confirm.get(ws) {
+            Some(p) => p.gen == expected_gen && !p.workspace_doc_confirmed
+            None => false
+          }
+          if should_retry {
+            let delay_ms = 500 << attempt
+            // timer: bounded retry backoff for transient Cloud `/v1/workspaces/<ws>` fetch during downgrade confirmation.
+            effect::sleep_k(delay_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+              match sex {
+                effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+                _ => {
+                  let still_needed = !self.is_workspace_revoked_or_pending(ws) && match self.pending_auth_confirm.get(ws) {
+                    Some(p) => p.gen == expected_gen && !p.workspace_doc_confirmed
+                    None => false
+                  }
+                  if still_needed {
+                    self.fetch_downgrade_ws_doc_with_retry(cs, ws, expected_gen, attempt + 1)
+                  }
+                  fk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          } else {
+            fk(effect::Exit::Succeeded(()))
+          }
+        }
+      }
+    })
+  })
+}
+
 /// Actively refresh Cloud workspace metadata and reconnect/re-read every attached station of `ws`
 /// after a role downgrade (`client/core-ts/src/core.ts:1555-1561`) so the confirmation latch unlocks automatically.
 fn ClientCore::trigger_downgrade_refresh(
@@ -2745,14 +2930,17 @@ fn ClientCore::trigger_downgrade_refresh(
   ws : String,
   need_workspace_doc : Bool,
 ) -> Unit {
+  // Notify host hook FIRST so cached member credentials are purged and mesh transports force fresh cred renewal
+  // before SSE reconnect and snapshot re-reads fire.
+  match self.on_downgrade_refresh_hook {
+    Some(cb) => cb(ws)
+    None => ()
+  }
   if need_workspace_doc {
     match self.bound_cloud {
       Some(cs) => {
-        let _ = self.rt.fork_quiet_named("downgrade-ws-doc:" + ws, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-          cs.fetch_workspace_k(ws, fn(_ : effect::Exit[CloudWorkspace]) -> Unit {
-            fk(effect::Exit::Succeeded(()))
-          })
-        })
+        let expected_gen = self.auth.workspace_auth_gen(ws)
+        self.fetch_downgrade_ws_doc_with_retry(cs, ws, expected_gen, 0)
       }
       None => ()
     }
@@ -2761,32 +2949,39 @@ fn ClientCore::trigger_downgrade_refresh(
   for i in 0..<attached.length() {
     let st = attached[i]
     if st == self.station {
-      self.events.reconnect_for_auth(self.rt)
-      let _ = self.rt.fork_quiet_named("downgrade-snap:" + st, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-        self.sync.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
-          fk(effect::Exit::Succeeded(()))
-        })
-      })
-    } else {
-      match self.extra_events.get(st) {
-        Some(ev) => ev.reconnect_for_auth(self.rt)
-        None => ()
-      }
-      match self.extra_sync.get(st) {
-        Some(sy) => {
-          let _ = self.rt.fork_quiet_named("downgrade-snap:" + st, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-            sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
-              fk(effect::Exit::Succeeded(()))
-            })
+      if self.events.is_online_or_connecting() {
+        self.events.reconnect_for_auth(self.rt)
+        let _ = self.rt.fork_quiet_named("downgrade-snap:" + st, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          self.sync.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+            fk(effect::Exit::Succeeded(()))
           })
+        })
+      }
+    } else {
+      let is_online = match self.extra_events.get(st) {
+        Some(ev) => {
+          if ev.is_online_or_connecting() {
+            ev.reconnect_for_auth(self.rt)
+            true
+          } else {
+            false
+          }
         }
-        None => ()
+        None => false
+      }
+      if is_online {
+        match self.extra_sync.get(st) {
+          Some(sy) => {
+            let _ = self.rt.fork_quiet_named("downgrade-snap:" + st, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+              sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+                fk(effect::Exit::Succeeded(()))
+              })
+            })
+          }
+          None => ()
+        }
       }
     }
-  }
-  match self.on_downgrade_refresh_hook {
-    Some(cb) => cb(ws)
-    None => ()
   }
 }
 
@@ -2865,14 +3060,12 @@ pub fn ClientCore::update_workspace_role(
         // fires `on_boundary`, so the boundary re-anchor emits `Waiting` instead of leaking stale
         // privileged SQLite rows under the new `authGen`!
         let next_gen = self.auth.workspace_auth_gen(ws) + 1
-        let expected_stations = self.collect_attached_stations_for_workspace(ws)
         self.pending_auth_confirm.set(ws, PendingAuthConfirm::{
           gen: next_gen,
           workspace_doc_confirmed: confirm_workspace_doc,
-          expected_stations: expected_stations,
           confirmed_overview_stations: Map::new(),
           confirmed_snapshot_stations: Map::new(),
-          confirmed_thread_stations: Map::new(),
+          confirmed_threads: Map::new(),
           confirmed_keys: Map::new(),
           released_subs: Map::new(),
         })
@@ -2958,7 +3151,12 @@ pub fn ClientCore::revoke_workspace(self : ClientCore, ws : String) -> Unit {
   // so a failed `drop_workspace` still blocks all reads immediately and retries on next startup.
   self.auth.set_revoked(ws, true)
   let pending_key = "revoked_pending:" + ws
-  let _ = store::put_account_doc(self.db, pending_key, "1")
+  match store::put_account_doc(self.db, pending_key, "1") {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(_) => {
+      self.drop_failed_workspaces.set(ws, true)
+    }
+  }
   self.pending_auth_confirm.remove(ws)
   self.ws_roles.remove(ws)
   self.lock_digest_by_ws.remove(ws)
@@ -2984,8 +3182,11 @@ pub fn ClientCore::revoke_workspace(self : ClientCore, ws : String) -> Unit {
   match store::drop_workspace(self.db, ws, extra_stations=ws_stations) {
     sql::SqlResult::Ok(_) => {
       let _ = store::delete_account_doc(self.db, pending_key)
+      self.drop_failed_workspaces.remove(ws)
     }
-    sql::SqlResult::Err(_) => ()
+    sql::SqlResult::Err(_) => {
+      self.drop_failed_workspaces.set(ws, true)
+    }
   }
 
   // 4. Purge all in-memory caches for `ws`.
@@ -3091,19 +3292,39 @@ pub fn ClientCore::revoke_workspace(self : ClientCore, ws : String) -> Unit {
 }
 
 /// Apply authoritative `/v1/me` result to viewer identity & workspace role/revocation recovery state,
-/// plus `Data.retain(me.workspaces)` reconciliation against local SQLite `workspace` rows.
+/// plus `Data.retain(me.raw_workspace_ids)` reconciliation when `me.retain_handled` is false.
 pub fn ClientCore::apply_cloud_me(self : ClientCore, me : CloudMe) -> Unit {
   if me.email.length() > 0 || me.sub.length() > 0 {
     self.set_viewer(me.email, sub=me.sub)
   }
   let kept_ids : Map[String, Bool] = Map::new()
+  if me.raw_workspace_ids.length() > 0 {
+    for i in 0..<me.raw_workspace_ids.length() {
+      kept_ids.set(me.raw_workspace_ids[i], true)
+    }
+  } else {
+    for i in 0..<me.workspaces.length() {
+      kept_ids.set(me.workspaces[i].id, true)
+    }
+  }
+  let mut need_rewrite_me_doc = false
   for i in 0..<me.workspaces.length() {
     let w = me.workspaces[i]
     kept_ids.set(w.id, true)
     self.auth.ensure_workspace(w.id)
-    if self.auth.is_revoked(w.id) {
+    if self.is_workspace_revoked_or_pending(w.id) {
+      let had_pending = self.drop_failed_workspaces.get(w.id).is_some() || match store::get_account_doc(self.db, "revoked_pending:" + w.id) {
+        sql::SqlResult::Ok(Some(_)) => true
+        _ => false
+      }
+      if !self.ensure_pending_drop_cleared_before_rejoin(w.id) {
+        // Purge of pre-revocation data still failed: keep `w.id` revoked and refuse reads!
+        continue
+      }
+      if had_pending {
+        need_rewrite_me_doc = true
+      }
       self.auth.set_revoked(w.id, false)
-      let _ = store::delete_account_doc(self.db, "revoked_pending:" + w.id)
       self.pending_auth_confirm.remove(w.id)
       if w.role.length() > 0 {
         self.ws_roles.set(w.id, w.role)
@@ -3113,21 +3334,34 @@ pub fn ClientCore::apply_cloud_me(self : ClientCore, me : CloudMe) -> Unit {
         }
       }
       let _ = self.auth.bump_workspace(w.id)
+      match self.on_workspace_rejoined_hook {
+        Some(cb) => cb(w.id)
+        None => ()
+      }
     } else if w.role.length() > 0 {
       let _ = self.update_workspace_role(w.id, w.role, confirm_workspace_doc=false)
     }
   }
-  // Safety-net `retain`: revoke & drop any local SQLite workspace absent from authoritative `/v1/me`.
-  match store::list_workspaces(self.db) {
-    sql::SqlResult::Ok(rows) => {
-      for i in 0..<rows.length() {
-        let wid = rows[i].id
-        if wid.length() > 0 && kept_ids.get(wid).is_none() && !self.auth.is_revoked(wid) {
-          self.revoke_workspace(wid)
+  if need_rewrite_me_doc {
+    let _ = self.db.run(sql_account_doc_put(), params=[
+      base_codec::json_str("me"),
+      base_codec::json_str(base_codec::json_stringify(me.raw)),
+      base_codec::json_int64(self.rt.now()),
+    ])
+  }
+  // Safety-net `retain`: ONLY run when caller did not already execute seq-guarded `retain()` in `CloudSync::fetch_me_k`.
+  if !me.retain_handled {
+    match store::list_workspaces(self.db) {
+      sql::SqlResult::Ok(rows) => {
+        for i in 0..<rows.length() {
+          let wid = rows[i].id
+          if wid.length() > 0 && kept_ids.get(wid).is_none() && !self.auth.is_revoked(wid) {
+            self.revoke_workspace(wid)
+          }
         }
       }
+      sql::SqlResult::Err(_) => ()
     }
-    sql::SqlResult::Err(_) => ()
   }
   match self.on_cloud_applied_hook {
     Some(cb) => cb("me")
@@ -3136,8 +3370,9 @@ pub fn ClientCore::apply_cloud_me(self : ClientCore, me : CloudMe) -> Unit {
 }
 
 /// Apply authoritative `/v1/workspaces/<ws>` 200 result:
-/// - If `ws_id` was previously `revoked`, clears `revoked`, seeds role, bumps `authGen`,
-///   and resumes SSE ONLY when a live station transport is attached (never on `core_offline_transport()`).
+/// - If `ws_id` was previously `revoked` or had a pending drop, MUST complete `store::drop_workspace`
+///   FIRST before clearing `revoked`, re-persisting fresh `ws.raw`, seeding role, bumping `authGen`,
+///   and resuming live transports/SSE.
 /// - Otherwise checks viewer's role for downgrade/upgrade and enforces the Invariant 5 confirmation latch.
 pub fn ClientCore::apply_cloud_workspace(
   self : ClientCore,
@@ -3164,19 +3399,28 @@ pub fn ClientCore::apply_cloud_workspace(
       }
     }
   }
-  // Ensure persisted SQLite `workspace.json` carries top-level `"role"` when resolved from `members`
-  // so `views::project_profiles` (`manages`) and `views::project_workspace` always reflect the new role.
-  if resolved_role.length() > 0 && proto_str(ws.raw, "role").is_none() {
-    let patched = j_set_field(ws.raw, "role", base_codec::json_str(resolved_role))
-    let _ = self.db.run(sql_workspace_put(), params=[
-      base_codec::json_str(ws_id),
-      base_codec::json_str(base_codec::json_stringify(patched)),
-      base_codec::json_int64(self.rt.now()),
-    ])
+  let effective_ws_json = if resolved_role.length() > 0 && proto_str(ws.raw, "role").is_none() {
+    j_set_field(ws.raw, "role", base_codec::json_str(resolved_role))
+  } else {
+    ws.raw
   }
-  if self.auth.is_revoked(ws_id) {
+  if self.is_workspace_revoked_or_pending(ws_id) {
+    let had_pending = self.drop_failed_workspaces.get(ws_id).is_some() || match store::get_account_doc(self.db, "revoked_pending:" + ws_id) {
+      sql::SqlResult::Ok(Some(_)) => true
+      _ => false
+    }
+    if !self.ensure_pending_drop_cleared_before_rejoin(ws_id) {
+      // Old pre-revocation SQLite rows could not be purged: stay revoked and refuse rejoin!
+      return
+    }
+    if had_pending || (resolved_role.length() > 0 && proto_str(ws.raw, "role").is_none()) {
+      let _ = self.db.run(sql_workspace_put(), params=[
+        base_codec::json_str(ws_id),
+        base_codec::json_str(base_codec::json_stringify(effective_ws_json)),
+        base_codec::json_int64(self.rt.now()),
+      ])
+    }
     self.auth.set_revoked(ws_id, false)
-    let _ = store::delete_account_doc(self.db, "revoked_pending:" + ws_id)
     self.pending_auth_confirm.remove(ws_id)
     if resolved_role.length() > 0 {
       self.ws_roles.set(ws_id, resolved_role)
@@ -3188,11 +3432,22 @@ pub fn ClientCore::apply_cloud_workspace(
     if self.live && self.has_live_transport && ws_id == self.workspace && !self.events.is_running() {
       self.events.start(self.rt)
     }
+    match self.on_workspace_rejoined_hook {
+      Some(cb) => cb(ws_id)
+      None => ()
+    }
     match self.on_cloud_applied_hook {
       Some(cb) => cb("workspace")
       None => ()
     }
     return
+  }
+  if resolved_role.length() > 0 && proto_str(ws.raw, "role").is_none() {
+    let _ = self.db.run(sql_workspace_put(), params=[
+      base_codec::json_str(ws_id),
+      base_codec::json_str(base_codec::json_stringify(effective_ws_json)),
+      base_codec::json_int64(self.rt.now()),
+    ])
   }
   if resolved_role.length() > 0 {
     let changed = self.update_workspace_role(ws_id, resolved_role, confirm_workspace_doc=true)
@@ -3212,6 +3467,7 @@ pub fn ClientCore::apply_cloud_workspace(
 /// directly drive `ClientCore` revocation, recovery, and role downgrade lifecycles.
 pub fn ClientCore::bind_cloud_sync(self : ClientCore, cs : CloudSync) -> Unit {
   self.bound_cloud = Some(cs)
+  cs.set_revoked_checker(fn(ws : String) -> Bool { self.is_workspace_revoked_or_pending(ws) })
   cs.set_authority_hooks(
     fn(me : CloudMe) -> Unit { self.apply_cloud_me(me) },
     fn(ws_id : String, ws : CloudWorkspace) -> Unit { self.apply_cloud_workspace(ws_id, ws) },
@@ -3220,6 +3476,41 @@ pub fn ClientCore::bind_cloud_sync(self : ClientCore, cs : CloudSync) -> Unit {
 }
 
 fn ClientCore::handle_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -> Unit {
+  // 0. If a workspace with an active downgrade confirmation latch receives a subsequent `authGen`
+  //    bump (e.g. from a lock security-boundary change), re-arm its latch to the new generation
+  //    and schedule a fresh confirmation cycle so subscribers never wedge at `Waiting`.
+  let rearm_workspaces : Array[String] = []
+  let rearm_one = fn(ws : String, new_gen : Int) -> Unit {
+    if self.is_workspace_revoked_or_pending(ws) {
+      return
+    }
+    match self.pending_auth_confirm.get(ws) {
+      Some(p) => {
+        if new_gen > p.gen {
+          p.gen = new_gen
+          p.workspace_doc_confirmed = false
+          p.confirmed_overview_stations.clear()
+          p.confirmed_snapshot_stations.clear()
+          p.confirmed_threads.clear()
+          p.confirmed_keys.clear()
+          p.released_subs.clear()
+          rearm_workspaces.push(ws)
+        }
+      }
+      None => ()
+    }
+  }
+  match ev {
+    AuthBoundaryEvent::Workspace(ws, new_gen) => rearm_one(ws, new_gen)
+    AuthBoundaryEvent::WorkspaceAndVault(ws, new_gen, _) => rearm_one(ws, new_gen)
+    AuthBoundaryEvent::Global(new_gen) => {
+      let pws = self.pending_auth_confirm.keys()
+      for i in 0..<pws.length() {
+        rearm_one(pws[i], new_gen)
+      }
+    }
+    _ => ()
+  }
   // 1. Always emit the authoritative `{id: 0, auth: ...}` boundary snapshot first.
   let _ = self.emit_auth_handshake()
   // 2. Purge affected `kept` cache & reset cached `last_value` on active subs strictly per `auth.matches_topic`.
@@ -3246,6 +3537,10 @@ fn ClientCore::handle_auth_boundary(self : ClientCore, ev : AuthBoundaryEvent) -
   match self.on_runtime_boundary {
     Some(cb) => cb(ev)
     None => ()
+  }
+  // 5. Kick off fresh downgrade refresh for any re-armed workspace(s).
+  for i in 0..<rearm_workspaces.length() {
+    self.trigger_downgrade_refresh(rearm_workspaces[i], true)
   }
 }
 
@@ -3829,7 +4124,7 @@ pub fn ClientCore::apply_lock_chain(
           let _ = self.auth.bump_workspace(self.workspace)
         }
       }
-      self.handle_confirmed_station_read(self.workspace, self.station, "lock", self.auth.workspace_auth_gen(self.workspace))
+      self.handle_confirmed_station_read(self.workspace, self.station, "lock", self.auth.workspace_auth_gen(self.workspace), None)
       self.outbox.tell(CoreEvent::LockUpdated(
         self.workspace,
         v.state.head,
@@ -4931,6 +5226,13 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
             (s, c)
           }
         }
+        let draft_ws = {
+          let pws = station_workspace_prefix(st)
+          if pws.length() > 0 { pws } else if st == self.station { self.workspace } else { "" }
+        }
+        if draft_ws.length() > 0 && self.is_workspace_revoked_or_pending(draft_ws) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "workspace_revoked", message: "workspace revoked" }))
+        }
         return Some(protocol::CoreEvent::Ok(id, self.composers.read_draft(st, chat), None))
       }
       if call_name == "draft.put" {
@@ -4954,6 +5256,13 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
             }
             (s, c)
           }
+        }
+        let draft_ws = {
+          let pws = station_workspace_prefix(st)
+          if pws.length() > 0 { pws } else if st == self.station { self.workspace } else { "" }
+        }
+        if draft_ws.length() > 0 && self.is_workspace_revoked_or_pending(draft_ws) {
+          return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "workspace_revoked", message: "workspace revoked" }))
         }
         let draft_val = match base_codec::json_get(params, "value") {
           Some(v) => v
@@ -5300,7 +5609,11 @@ pub fn ClientCore::handle_wire(self : ClientCore, json_text : String, bytes : Op
     match protocol::wire_error_id(raw) {
       Some(id) => {
         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_message", message: msg })
-        Some(protocol::encode_core_event(ev))
+        if base_codec::json_get(raw, "subscribe").is_some() {
+          Some(protocol::encode_sub_event_with_auth(ev, self.wire_out_gen_for_raw_subscribe(raw)))
+        } else {
+          Some(protocol::encode_core_event(ev))
+        }
       }
       None => None
     }

@@ -589,6 +589,28 @@ fn handle_l5_real_op(op : String, args : base_codec::Json, world : World) -> Opt
     ])))
   }
 
+  if op == "l5real.dropWorkspace" {
+    let rt = effect::Runtime::new()
+    let sh = make_real_sqlite_shell(rt, world)
+    let db = match sql::Sql::open(sh, "real") {
+      sql::SqlResult::Ok(d) => d
+      sql::SqlResult::Err(e) => return Some(err_resp("open host sql: " + e.to_string()))
+    }
+    let ws = j_s(args, "workspace")
+    let extras : Array[String] = []
+    let ex_arr = j_arr_l3(args, "extraStations")
+    for i in 0..<ex_arr.length() {
+      match ex_arr[i] {
+        base_codec::Json::Str(s) => extras.push(s)
+        _ => ()
+      }
+    }
+    match store::drop_workspace(db, ws, extra_stations=extras) {
+      sql::SqlResult::Ok(_) => return Some(ok_resp(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      sql::SqlResult::Err(e) => return Some(err_resp("drop_workspace failed: " + e.to_string()))
+    }
+  }
+
   None
 }
 

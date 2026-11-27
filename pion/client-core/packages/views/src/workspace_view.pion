@@ -25,6 +25,7 @@ pub fn project_workspaces(
   accounts : Array[StoredAccount] = [],
   viewer_sub : String = "",
   viewer_email : String = "",
+  is_excluded : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   let rows = match store::list_workspaces(db) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
@@ -33,6 +34,13 @@ pub fn project_workspaces(
   let ws_items : Array[base_codec::Json] = []
   for i in 0..<rows.length() {
     let r = rows[i]
+    let skip = match is_excluded {
+      Some(pred) => pred(r.id)
+      None => false
+    }
+    if skip {
+      continue
+    }
     let j = parse_json_or_null(r.json)
     let name = match j_opt_str(j, "name") {
       Some(n) => n

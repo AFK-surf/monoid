@@ -454,6 +454,7 @@ pub struct MeshStationTransport {
   mut active_link : Option[mesh::Link]
   mut active_transport : Option[StationTransport]
   mut last_admission : Option[MeshAdmission]
+  mut force_fresh_cred : Bool
   mut closed : Bool
 }
 
@@ -469,6 +470,7 @@ pub fn MeshStationTransport::new(
     active_link: None,
     active_transport: None,
     last_admission: None,
+    force_fresh_cred: false,
     closed: false,
   }
 }
@@ -632,7 +634,11 @@ pub fn MeshStationTransport::connect_k(
             let get_carry = self.config.get_lock_carry
             let get_cred = self.config.get_credential_k
             let cred_source = fn(device_id : String, fresh : Bool, ck : (effect::Exit[mesh::Presented]) -> Unit) -> Unit {
-              get_cred(device_id, fresh, fn(cex : effect::Exit[String]) -> Unit {
+              let want_fresh = fresh || self.force_fresh_cred
+              if self.force_fresh_cred {
+                self.force_fresh_cred = false
+              }
+              get_cred(device_id, want_fresh, fn(cex : effect::Exit[String]) -> Unit {
                 match cex {
                   effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
                   effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
@@ -758,6 +764,13 @@ pub fn MeshStationTransport::drop_link(self : MeshStationTransport, reason : Str
     Some(m) => m.drop_link(self.config.peer_id, link_scope=self.config.link_scope, reason=reason)
     None => ()
   }
+}
+
+/// Force the next mesh handshake to request a fresh Cloud member credential (`fresh=true`)
+/// and drop the current peer link so post-downgrade role changes take effect on the station.
+pub fn MeshStationTransport::reconnect_with_fresh_cred(self : MeshStationTransport) -> Unit {
+  self.force_fresh_cred = true
+  self.drop_link(reason="auth_downgrade")
 }
 
 /// Close the active link and tear down the underlying `Mesh` instance cleanly.

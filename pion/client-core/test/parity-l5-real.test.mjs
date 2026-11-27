@@ -1137,3 +1137,38 @@ test("W25b-v3 P1-3: strict single-thread FIFO head-of-line blocking on HTTP 503 
     acct.close();
   }
 });
+
+test("R3 P0-2: real node:sqlite store::drop_workspace succeeds on real TS AccountDb DDL (station_part.address & station_part_profiles.address) and purges only target workspace", async () => {
+  const time = new TestTime();
+  const sqlObj = makeNodeSql(":memory:");
+  const acct = new AccountDb("sub-1", "r3-drop-ws", sqlObj, new Runner(time.clock), makeDummyDerive());
+  acct.commitNow();
+  // Verify real TS AccountDb created `station_part (address PRIMARY KEY)` and `station_part_profiles (address PRIMARY KEY)`.
+  sqlObj.run("INSERT OR REPLACE INTO workspace (id, json, confirmed) VALUES (?, ?, ?)", ["ws-drop", '{"id":"ws-drop","name":"Drop"}', 1000]);
+  sqlObj.run("INSERT OR REPLACE INTO workspace (id, json, confirmed) VALUES (?, ?, ?)", ["ws-keep", '{"id":"ws-keep","name":"Keep"}', 1000]);
+  sqlObj.run("INSERT OR REPLACE INTO station (address, kind, json, confirmed) VALUES (?, 'overview', ?, ?)", ["ws-drop/st-1", '{"id":"st-1"}', 1000]);
+  sqlObj.run("INSERT OR REPLACE INTO station (address, kind, json, confirmed) VALUES (?, 'overview', ?, ?)", ["ws-keep/st-2", '{"id":"st-2"}', 1000]);
+  sqlObj.run("INSERT OR REPLACE INTO station_part (address, part) VALUES (?, ?)", ["ws-drop/st-1", '{"p":1}']);
+  sqlObj.run("INSERT OR REPLACE INTO station_part (address, part) VALUES (?, ?)", ["ws-keep/st-2", '{"p":2}']);
+  sqlObj.run("INSERT OR REPLACE INTO station_part_profiles (address, profiles) VALUES (?, ?)", ["ws-drop/st-1", '[]']);
+  sqlObj.run("INSERT OR REPLACE INTO station_part_profiles (address, profiles) VALUES (?, ?)", ["ws-keep/st-2", '[]']);
+  sqlObj.run("INSERT OR REPLACE INTO chat_agent (station, session, archived, id) VALUES (?, ?, 0, ?)", ["ws-drop/st-1", "s-1", "c-1"]);
+  sqlObj.run("INSERT OR REPLACE INTO chat_agent (station, session, archived, id) VALUES (?, ?, 0, ?)", ["ws-keep/st-2", "s-2", "c-2"]);
+
+  const res = await rpc.call(
+    "l5real.dropWorkspace",
+    { workspace: "ws-drop", extraStations: [] },
+    { sql: sqlObj },
+  );
+  assert.equal(res.ok, true, "drop_workspace MUST succeed on real TS AccountDb SQLite with station_part(address) DDL");
+  assert.equal(sqlObj.all("SELECT id FROM workspace WHERE id = ?", ["ws-drop"]).length, 0);
+  assert.equal(sqlObj.all("SELECT id FROM workspace WHERE id = ?", ["ws-keep"]).length, 1);
+  assert.equal(sqlObj.all("SELECT address FROM station_part WHERE address = ?", ["ws-drop/st-1"]).length, 0);
+  assert.equal(sqlObj.all("SELECT address FROM station_part WHERE address = ?", ["ws-keep/st-2"]).length, 1);
+  assert.equal(sqlObj.all("SELECT address FROM station_part_profiles WHERE address = ?", ["ws-drop/st-1"]).length, 0);
+  assert.equal(sqlObj.all("SELECT address FROM station_part_profiles WHERE address = ?", ["ws-keep/st-2"]).length, 1);
+  assert.equal(sqlObj.all("SELECT station FROM chat_agent WHERE station = ?", ["ws-drop/st-1"]).length, 0);
+  assert.equal(sqlObj.all("SELECT station FROM chat_agent WHERE station = ?", ["ws-keep/st-2"]).length, 1);
+  counts.gate5Sse += 1;
+  acct.close();
+});

@@ -14,7 +14,7 @@ pub struct SyncScheduler {
   pub mut transport : StationTransport
   mut transport_epoch : Int64
   mut auth : Option[AuthGenTracker]
-  mut on_confirmed_read : Option[(String, String, String, Int) -> Unit]
+  mut on_confirmed_read : Option[(String, String, String, Int, Option[Int]) -> Unit]
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
@@ -48,17 +48,22 @@ pub fn SyncScheduler::set_auth_tracker(self : SyncScheduler, tracker : AuthGenTr
   self.auth = Some(tracker)
 }
 
-/// Register a callback `(workspace, station, kind, auth_gen)` invoked after a guarded read commits to SQLite.
+/// Register a callback `(workspace, station, kind, auth_gen, thread_opt)` invoked after a guarded read commits to SQLite.
 pub fn SyncScheduler::set_on_confirmed_read(
   self : SyncScheduler,
-  cb : (String, String, String, Int) -> Unit,
+  cb : (String, String, String, Int, Option[Int]) -> Unit,
 ) -> Unit {
   self.on_confirmed_read = Some(cb)
 }
 
-fn SyncScheduler::notify_confirmed(self : SyncScheduler, kind : String, auth_gen : Int) -> Unit {
+fn SyncScheduler::notify_confirmed(
+  self : SyncScheduler,
+  kind : String,
+  auth_gen : Int,
+  thread_opt : Option[Int] = None,
+) -> Unit {
   match self.on_confirmed_read {
-    Some(cb) => cb(self.workspace, self.station, kind, auth_gen)
+    Some(cb) => cb(self.workspace, self.station, kind, auth_gen, thread_opt)
     None => ()
   }
 }
@@ -241,7 +246,7 @@ pub fn SyncScheduler::fetch_marks_k(
           sql::SqlResult::Ok(affected) => {
             self.completed_order.push("marks")
             match confirmed_gen {
-              Some(ag) => self.notify_confirmed("marks", ag)
+              Some(ag) => self.notify_confirmed(if is_whole { "marks:whole" } else { "marks:scoped" }, ag)
               None => ()
             }
             Ok(affected)
@@ -438,7 +443,7 @@ pub fn SyncScheduler::fetch_thread_k(
           sql::SqlResult::Ok(n) => {
             self.completed_order.push("thread:" + thread.to_string())
             match confirmed_gen {
-              Some(ag) => self.notify_confirmed("thread", ag)
+              Some(ag) => self.notify_confirmed("thread", ag, thread_opt=Some(thread))
               None => ()
             }
             Ok(n)

@@ -703,6 +703,7 @@ pub struct StationEvents {
   mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
   mut on_thread_dirty : (Int) -> Unit
   mut on_overview_applied : (String, String, Int) -> Unit
+  mut on_disconnected : (String, String) -> Unit
   mut auth : Option[AuthGenTracker]
   mut stream_epoch : Int64
   mut stream_fiber : Option[effect::Fiber[Unit]]
@@ -745,6 +746,7 @@ pub fn StationEvents::new(
     on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
     on_thread_dirty: fn(_th : Int) -> Unit {},
     on_overview_applied: fn(_ws : String, _st : String, _gen : Int) -> Unit {},
+    on_disconnected: fn(_ws : String, _st : String) -> Unit {},
     auth: None,
     stream_epoch: 1L,
     stream_fiber: None,
@@ -759,6 +761,20 @@ pub fn StationEvents::set_auth_tracker(self : StationEvents, tracker : AuthGenTr
 
 pub fn StationEvents::set_overview_applied_hook(self : StationEvents, cb : (String, String, Int) -> Unit) -> Unit {
   self.on_overview_applied = cb
+}
+
+pub fn StationEvents::set_disconnected_hook(self : StationEvents, cb : (String, String) -> Unit) -> Unit {
+  self.on_disconnected = cb
+}
+
+/// True only while the station SSE stream is actively `Connected` or `Connecting`
+/// (returns `false` when `Disconnected` or `Reconnecting`, so offline stations never block
+/// downgrade confirmation latches).
+pub fn StationEvents::is_online_or_connecting(self : StationEvents) -> Bool {
+  match self.state {
+    ConnectionState::Connected | ConnectionState::Connecting => true
+    ConnectionState::Disconnected(_) | ConnectionState::Reconnecting(_) => false
+  }
 }
 
 /// Reset all in-memory stream state (`sessions`, `jobs`, `dirty_threads`, `last_event_id`)
@@ -777,14 +793,23 @@ pub fn StationEvents::reset_state(self : StationEvents) -> Unit {
 }
 
 /// Reconnect an active SSE stream after an auth boundary (e.g. role downgrade) so the new stream
-/// binds the updated `authGen` and rejects any events from pre-downgrade streams.
+/// binds the updated `authGen` and rejects any events from pre-downgrade streams, without falsely
+/// reporting the station as disconnected during the intentional reconnect swap.
 pub fn StationEvents::reconnect_for_auth(self : StationEvents, rt : effect::Runtime) -> Unit {
   if self.is_workspace_revoked() {
     self.stop()
     return
   }
   if self.stream_fiber.is_some() {
-    self.stop()
+    self.stream_epoch += 1L
+    self.cancel_active_stream()
+    match self.stream_fiber {
+      Some(f) => {
+        self.stream_fiber = None
+        f.interrupt()
+      }
+      None => ()
+    }
     self.last_event_id = None
     self.attempts = 0
     self.start(rt)
@@ -960,6 +985,13 @@ pub fn StationEvents::last_id(self : StationEvents) -> Option[String] {
 fn StationEvents::set_state(self : StationEvents, next : ConnectionState) -> Unit {
   self.state = next
   self.outbox.tell(CoreEvent::ConnectionChanged(self.station, next))
+  match next {
+    ConnectionState::Disconnected(_) | ConnectionState::Reconnecting(_) => {
+      let cb = self.on_disconnected
+      cb(self.workspace, self.station)
+    }
+    _ => ()
+  }
 }
 
 fn upsert_shared_mark_in_burst(
@@ -3013,6 +3045,10 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     self.active_stream_fiber = Some(child)
   }
   done_sig.wait_k(fn(wex : effect::Exit[Bool]) -> Unit {
+    if self.stream_epoch != my_epoch {
+      k(effect::Exit::Interrupted)
+      return
+    }
     self.active_stream_fiber = None
     self.active_cancel = None
     if self.stopped || effect::is_interrupted() {
@@ -3072,6 +3108,7 @@ pub fn StationEvents::start(self : StationEvents, rt : effect::Runtime) -> Unit 
     None => ()
   }
   self.stopped = false
+  self.state = ConnectionState::Connecting
   let f = rt.fork_quiet_named("station-events:" + self.station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
     self.stream_loop_k(rt, k)
   })

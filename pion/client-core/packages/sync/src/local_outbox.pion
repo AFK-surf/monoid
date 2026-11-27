@@ -245,7 +245,34 @@ pub fn LocalOutbox::has_unreached_for_station(self : LocalOutbox, station : Stri
   false
 }
 
+fn LocalOutbox::clear_in_flight_for_station(self : LocalOutbox, station : String) -> Unit {
+  if station.length() == 0 {
+    return
+  }
+  let pref = station + "\u{01}"
+  let tks = self.in_flight_threads.keys()
+  for i in 0..<tks.length() {
+    if tks[i].starts_with(pref) {
+      self.in_flight_threads.remove(tks[i])
+    }
+  }
+  let pks = self.in_flight_pending.keys()
+  for i in 0..<pks.length() {
+    if pks[i].starts_with(pref) {
+      self.in_flight_pending.remove(pks[i])
+    }
+  }
+  let oks = self.in_flight_overlays.keys()
+  for i in 0..<oks.length() {
+    if oks[i].starts_with(pref) {
+      self.in_flight_overlays.remove(oks[i])
+    }
+  }
+}
+
 /// Register a station-specific `StationTransport` so multi-station operations route to the exact target station.
+/// Bumps the station epoch (blocking stale replies from the prior transport) AND clears stale in-flight
+/// markers for `station` so queued items are immediately eligible to dispatch on the new transport.
 pub fn LocalOutbox::register_station_transport(
   self : LocalOutbox,
   station : String,
@@ -253,6 +280,7 @@ pub fn LocalOutbox::register_station_transport(
 ) -> Unit {
   if station.length() > 0 {
     let _ = self.bump_station_epoch(station)
+    self.clear_in_flight_for_station(station)
     self.station_transports.set(station, transport)
   }
 }
@@ -261,6 +289,7 @@ pub fn LocalOutbox::register_station_transport(
 pub fn LocalOutbox::unregister_station_transport(self : LocalOutbox, station : String) -> Unit {
   if station.length() > 0 {
     let _ = self.bump_station_epoch(station)
+    self.clear_in_flight_for_station(station)
     self.station_transports.remove(station)
   }
 }
