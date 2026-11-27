@@ -2290,7 +2290,7 @@ test "a screen left covered by a background tab opens at once when mounted in an
   let s = r.sess()
   assert_eq(r.told("screen.view").length(), 1)
   // Simulate a backgrounded remote workbench tab leaving covered=true on the shared ScreenUi.
-  let key = screen_key_src(s.src, "ws-1/st-1", "browser:tab-1")
+  let key = screen_key("ws-1/st-1", "browser:tab-1")
   screen_lease_apply_hidden(s.src, key)
   r.t.draw()
   assert_eq(r.cancelled.length(), 1)
@@ -2737,8 +2737,8 @@ test "screen_view 1s stats tick clears timeline when parked and resets fps/bps b
   assert_eq(view_cbs.length(), 1)
   (view_cbs[0])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
   t.draw()
-  let s = screens_open.get(screen_key_src(src, at.station, at.screen)).unwrap()
-  let u = screen_uis.get(screen_key_src(src, at.station, at.screen)).unwrap()
+  let s = screens_open.get(screen_key(at.station, at.screen)).unwrap()
+  let u = screen_uis.get(screen_key(at.station, at.screen)).unwrap()
   let sv = screen_root.val.unwrap()
   assert_true(t.subtree_timeline_count(sv) > 0, msg="live screen_view should have 1s stats tick active")
   // Feed 10 frames / 1000 bytes and advance 1s.
@@ -2761,11 +2761,13 @@ test "screen_view 1s stats tick clears timeline when parked and resets fps/bps b
   s.bytes += 50000
   t.run_for(second_ms * 5.0)
   assert_eq(u.seen.untracked(), seen_before_park, msg="stats tick must not fire while parked")
-  // Wake -> baseline resets to current frames/bytes; only post-wake frames count (no spike).
+  // Wake -> baseline resets to current frames/bytes and stale fps/bps cleared to None; only post-wake frames count.
   active.set(true)
   t.draw()
   assert_eq(u.rate_frames, s.frames, msg="wake must reset rate_frames baseline")
   assert_eq(u.rate_bytes, s.bytes, msg="wake must reset rate_bytes baseline")
+  assert_true(u.fps is None, msg="wake must clear stale fps before first post-wake interval")
+  assert_true(u.bps is None, msg="wake must clear stale bps before first post-wake interval")
   s.frames += 5
   s.bytes += 500
   t.run_for(second_ms)
@@ -2969,18 +2971,19 @@ test "multi-holder screen lease preserves stream across handoff, pauses on last 
   assert_eq(opens.length(), 2, msg="waking Place(remote) must reopen paused stream")
   // Make Account A live, deliver a frame & send input.
   (view_cbs[1])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
-  let s_a = screens_open.get(screen_key_src(src, at.station, at.screen)).unwrap()
+  let s_a = screens_open.get(screen_key(at.station, at.screen)).unwrap()
   s_a.frames = 3
   s_a.shown_any = true
   s_a.input(src, Json::object({ "t": Json::string("key"), "key": Json::string("a") }))
   assert_eq(inputs.length(), 1, msg="acct-a driving input should succeed before switch")
   // Switch to Account B in the SAME workspace ("ws-1") and SAME screen ("browser:shared-1")!
+  let old_key = screen_key(at.station, at.screen)
   @sfbase.account_principal_set("acct-b")
   assert_true(s_a.revoked, msg="acct-a session must be synchronously revoked on account switch")
   assert_eq(cancelled.length(), 2, msg="acct-a stream must be synchronously cancelled on account switch")
-  assert_true(screens_open.is_empty(), msg="old account sessions must be cleared from screens_open")
-  assert_true(screen_uis.is_empty(), msg="old account UIs must be cleared from screen_uis")
-  assert_true(screen_leases.is_empty(), msg="old account leases must be cleared from screen_leases")
+  assert_false(screens_open.contains(old_key), msg="old account session must be cleared from screens_open")
+  assert_false(screen_uis.contains(old_key), msg="old account UI must be cleared from screen_uis")
+  assert_false(screen_leases.contains(old_key), msg="old account lease must be cleared from screen_leases")
   // Late frame & late input on revoked acct-a session: old frames == 0 and old input == 0!
   (view_cbs[1])({ "frame": { "ts": 100.0 } }, Some(Bytes::make(16, b'\x01')))
   assert_eq(s_a.frames, 0, msg="late frame after account switch must result in 0 old frames")
@@ -2993,5 +2996,92 @@ test "multi-holder screen lease preserves stream across handoff, pauses on last 
   assert_eq(s_b.account, "acct-b")
   assert_eq(s_b.frames, 0)
   assert_false(s_b.shown_any)
+  @ui.run_let_go()
+}
+
+///|
+test "multi-account workspace owner switch revokes only affected workspace, clears clipboard, guards RPCs, and re-mounts live node" {
+  @sfbase.reset()
+  reset()
+  @settings.reset()
+  @sf.presenters_reset()
+  @sf.set_words(@sfbase.fill)
+  @sfbase.accounts_subs_sync(["acct-a", "acct-b", "acct-c"])
+  @sfbase.workspace_owner_set("ws-1", "acct-a")
+  @sfbase.workspace_owner_set("ws-2", "acct-c")
+  let opens : Array[String] = []
+  let view_cbs : Array[(Json, Bytes?) -> Unit] = []
+  let cancelled : Array[Int] = []
+  let rpcs : Array[String] = []
+  let next_call = Ref(0)
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    call: fn(name, _params, done) {
+      rpcs.push(name)
+      done(Ok(Json::null()))
+    },
+    stream: fn(name, params, _bytes, on_val, _done) {
+      if name == "screen.view" {
+        next_call.val += 1
+        opens.push(text(Some(params), "station"))
+        view_cbs.push(on_val)
+        next_call.val
+      } else {
+        0
+      }
+    },
+    cancel: fn(id) { cancelled.push(id) },
+  }
+  let at1 : ScreenAt = { station: "ws-1/st-1", screen: "browser:tab-1", title: "WS1", until_gone: false }
+  let at2 : ScreenAt = { station: "ws-2/st-2", screen: "browser:tab-2", title: "WS2", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      screen_node(root, src, at1, fn() { @sf.no_frame }, in_tab=true)
+      screen_node(root, src, at2, fn() { @sf.no_frame }, in_tab=true)
+    },
+    w=1000.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.length(), 2)
+  let s_a = screens_open.get(screen_key(at1.station, at1.screen)).unwrap()
+  let s_c = screens_open.get(screen_key(at2.station, at2.screen)).unwrap()
+  (view_cbs[0])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
+  (view_cbs[1])({ "state": { "phase": "live", "control": true, "may": true, "others": [] } }, None)
+  s_a.frames = 5
+  s_a.copied.push(CopiedText("secret-from-a", None))
+  // Workspace ws-1 ownership moves from acct-a to acct-b while acct-a, acct-b, acct-c all remain signed in.
+  @sfbase.workspace_owner_set("ws-1", "acct-b")
+  assert_true(s_a.revoked, msg="ws-1 acct-a session must be revoked on workspace owner change")
+  assert_true(s_a.copied.is_empty(), msg="revoked session clipboard queue must be cleared")
+  assert_false(s_c.revoked, msg="unrelated ws-2 acct-c session must remain untouched")
+  assert_true(screens_open.contains(screen_key(at2.station, at2.screen)), msg="ws-2 session must remain open")
+  // Late outbound RPCs on revoked s_a must all be dropped.
+  let rpcs_before = rpcs.length()
+  reload_asked(s_a)
+  browser_act(s_a, "screen.back", "back")
+  s_a.input(src, Json::object({ "t": Json::string("key"), "key": Json::string("x") }))
+  assert_eq(rpcs.length(), rpcs_before, msg="revoked session must emit 0 outbound RPCs")
+  // Live mounted screen_node on ws-1/st-1 re-mounts cleanly for acct-b on next draw.
+  t.draw()
+  t.draw()
+  assert_eq(opens.length(), 3, msg="mounted ws-1 screen_node must reopen cleanly under acct-b")
+  let s_b = screens_open.get(screen_key(at1.station, at1.screen)).unwrap()
+  assert_eq(s_b.account, "acct-b")
+  assert_false(physical_equal(s_a, s_b))
+  assert_eq(s_b.frames, 0)
+  // Core reconnect (generation bump 0 -> 1) must NOT drift screen_key or revoke active principal.
+  let gen = Ref(0)
+  let src_gen : Source = { ..src, generation: fn(_name, _params) { (gen.val, true) } }
+  let key_before = screen_key(at1.station, at1.screen)
+  gen.val = 1
+  assert_eq(screen_key(at1.station, at1.screen), key_before, msg="core reconnect must not change screen_key")
+  assert_true(s_b.is_active_principal(), msg="core reconnect must not revoke active principal")
+  assert_true(physical_equal(screen_sess(src_gen, at1.station, at1.screen), s_b), msg="core reconnect must reuse same ScreenSess")
   @ui.run_let_go()
 }

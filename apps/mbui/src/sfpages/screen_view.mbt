@@ -58,7 +58,7 @@ priv struct ScreenUi {
   mut tapped_at : (Double, Double)?
   /// the page it is shown on, as last made (its title, whether it goes back once its screen is gone)
   mut at : ScreenAt?
-  /// its page under another on the stack (screen_covered): out of sight
+  /// out of sight when no visible lease holder remains
   covered : @signals.Signal[Bool]
   /// a mouse on the stage (screen_mouse)
   mouse : MouseDrive
@@ -352,26 +352,28 @@ pub fn screen_pane_node(
 ) -> Unit {
   let station = at.station
   let screen = at.screen
-  let key = screen_key_src(src, station, screen)
-  let s = screen_sess(src, station, screen)
-  let u = screen_ui(key)
-  u.in_tab = in_tab
-  u.at = Some(at)
-  // its 关闭: closed through the shell, the page it is; the window back as it was where its 全屏 filled the screen
-  let close = fn() {
-    screen_panels_close(u)
-    if u.fulled && @ui.full_screen() {
-      @hostapi.set_full_screen(false)
+  v.pick(at_once=true, loc~, fn() {
+    screen_revokes.get() |> ignore
+    screen_key(station, screen)
+  }, fn(root, key) {
+    let s = screen_sess(src, station, screen)
+    let u = screen_ui(key)
+    u.in_tab = in_tab
+    u.at = Some(at)
+    // its 关闭: closed through the shell, the page it is; the window back as it was where its 全屏 filled the screen
+    let close = fn() {
+      screen_panels_close(u)
+      if u.fulled && @ui.full_screen() {
+        @hostapi.set_full_screen(false)
+      }
+      u.fulled = false
+      match on_close {
+        Some(f) => f()
+        None => @sfbase.close_page(Screen(at)) |> ignore
+      }
     }
-    u.fulled = false
-    match on_close {
-      Some(f) => f()
-      None => @sfbase.close_page(Screen(at)) |> ignore
-    }
-  }
-  u.close_page = close
-  let lone = on_close is Some(_) && !in_tab
-  v.box(made_for=loc, fn(root) {
+    u.close_page = close
+    let lone = on_close is Some(_) && !in_tab
     root.grow(Is(1.0)).min_height(Is(Some(0.0))).min_width(Is(Some(0.0))).clips(Is(true)) |> ignore
     // (its ground under all of it, a box of its own: the page's, 全屏 the theater's dark)
     root.box(fn(g) {
@@ -466,7 +468,6 @@ pub fn screen_pane_node(
     })
     |> ignore
   })
-  |> ignore
 }
 
 ///|
@@ -671,13 +672,16 @@ fn screen_catcher_node(root : @view.View, pg : ScreenPage) -> Unit {
 fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : ScreenAt, visible_in_host : () -> Bool) -> Unit {
   let s = pg.s
   let u = pg.u
-  let key = screen_key_src(src, s.station, s.screen)
+  let key = screen_key(s.station, s.screen)
   screen_holder_next.val += 1
   let holder_id = screen_holder_next.val
   let tree_active = Ref(false)
   let shown = fn() { @ui.app_visible() && !u.covered.get() }
+  if !@signals.untracked(visible_in_host) && screen_lease_visible_count(key) == 0 {
+    u.covered.set(true)
+  }
   let sync_lease = fn() {
-    if !s.revoked {
+    if s.is_active_principal() {
       let vis = tree_active.val && @signals.untracked(visible_in_host)
       screen_lease_set(src, key, holder_id, vis)
     }
@@ -758,14 +762,15 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
   // first's)
   let wid = @ui.current_window_id()
   root.reacts(fn() { (shown(), s.said.get()) }, fn(now) {
-    guard now.0 && s.child_screen is Some(next) else { return }
+    guard now.0 && s.is_active_principal() && s.child_screen is Some(next) else { return }
     s.child_screen = None
     root.at_moment(root.cause_at(), fn() { @ui.as_window(wid, fn() {
+      guard s.is_active_principal() else { return }
       let child_at : ScreenAt = { station: s.station, screen: next, title: "", until_gone: true }
       if pg.lone {
         // (the window shows the child first, so the screen it leaves is no window's when it is let go of)
         @sfbase.lone_page_replace(Screen({ ..child_at, until_gone: false }))
-        screen_left(src, at.station, at.screen)
+        screen_left_force(src, key)
       } else if u.in_tab {
         @sfbase.open_page(Screen(child_at))
       } else {
@@ -836,7 +841,7 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
     u.seen.set(u.seen.untracked() + 1)
     ticking.val = Some(root.at_moment_active(at + second_ms, fn() { tick(at + second_ms) }, later=true, while_covered=true))
   }
-  let start_tick = fn() {
+  let start_tick = fn(reset_display : Bool) {
     stop_tick()
     if !stats_active.val || !root.alive() {
       return
@@ -844,16 +849,22 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
     let (frames, bytes) = s.came()
     u.rate_frames = frames
     u.rate_bytes = bytes
+    if reset_display {
+      u.fps = None
+      u.bps = None
+    }
     let next = ((root.cause_at() / second_ms).floor() + 1.0) * second_ms
     ticking.val = Some(root.at_moment_active(next, fn() { tick(next) }, later=true, while_covered=true))
   }
 
+  let ever_rested = Ref(false)
   root.when_active(while_covered=true, fn() {
     stats_active.val = true
     if @signals.untracked(fn() { s.phase_now() == "live" }) {
-      start_tick()
+      start_tick(ever_rested.val)
     }
     fn() {
+      ever_rested.val = true
       stats_active.val = false
       stop_tick()
     }
@@ -861,7 +872,7 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
   |> ignore
   root.reacts(fn() { s.phase_now() == "live" }, fn(live) {
     if live {
-      start_tick()
+      start_tick(false)
     } else {
       stop_tick()
     }
@@ -1110,6 +1121,11 @@ fn screen_lease_apply_hidden(src : Source, key : String) -> Unit {
 }
 
 ///|
+/// Bumped whenever any screen session is revoked so live mounted `screen_pane_node` views re-mount against the active
+/// principal cleanly.
+let screen_revokes : @signals.Signal[Int] = @signals.signal(0)
+
+///|
 fn screen_leases_settle() -> Unit {
   let empty_keys : Array[String] = []
   for key, lease in screen_leases {
@@ -1128,7 +1144,7 @@ fn screen_leases_settle() -> Unit {
       }
     } else {
       let held_by_window = match screens_open.get(key) {
-        Some(s) => @sfbase.window_has_screen(s.station, s.screen)
+        Some(s) => @sfbase.window_has_screen_for_owner(s.account, s.station, s.screen)
         None => false
       }
       if !held_by_window {
@@ -1191,12 +1207,16 @@ fn screen_lease_release(src : Source, key : String, holder_id : Int) -> Unit {
 
 ///|
 fn screen_revoke_keys(drop_keys : Array[String]) -> Unit {
+  if drop_keys.is_empty() {
+    return
+  }
   for key in drop_keys {
     screen_leases.remove(key)
     match screens_open.get(key) {
       Some(s) => {
         s.revoked = true
         s.heard = false
+        s.copied.clear()
         s.close(s.src)
         s.state = None
         s.shown_any = false
@@ -1239,25 +1259,52 @@ fn screen_revoke_keys(drop_keys : Array[String]) -> Unit {
     screens_open.remove(key)
     screen_uis.remove(key)
   }
+  screen_revokes.set(screen_revokes.untracked() + 1)
 }
 
 ///|
-/// Synchronously revoke all screen sessions, holders, frames, and input not belonging to account `active_account`.
-fn screen_revoke_account(active_account : String) -> Unit {
-  let prefix = active_account + "\u{1}"
+/// Synchronously revoke all screen sessions, holders, frames, clipboard queues, and input belonging to a removed
+/// account `old_account`. Other still-signed-in accounts remain untouched.
+fn screen_revoke_account(old_account : String) -> Unit {
+  let prefix = old_account + "\u{2}"
   let drop_keys : Array[String] = []
   for key, s in screens_open {
-    if s.account != active_account {
+    if s.account == old_account {
       drop_keys.push(key)
     }
   }
   for key in screen_uis.keys().collect() {
-    if !drop_keys.contains(key) && !key.has_prefix(prefix) {
+    if !drop_keys.contains(key) && key.has_prefix(prefix) {
       drop_keys.push(key)
     }
   }
   for key in screen_leases.keys().collect() {
-    if !drop_keys.contains(key) && !key.has_prefix(prefix) {
+    if !drop_keys.contains(key) && key.has_prefix(prefix) {
+      drop_keys.push(key)
+    }
+  }
+  screen_revoke_keys(drop_keys)
+}
+
+///|
+/// Synchronously revoke screen sessions for workspace `ws` owned by `old_owner` when that workspace's owning account
+/// changes. Sessions belonging to other workspaces or accounts remain untouched.
+fn screen_revoke_workspace_owner(ws : String, old_owner : String, _new_owner : String) -> Unit {
+  let prefix = old_owner + "\u{2}"
+  let ws_seg = "\u{2}" + ws + "\u{2}"
+  let drop_keys : Array[String] = []
+  for key, s in screens_open {
+    if s.workspace == ws && s.account == old_owner {
+      drop_keys.push(key)
+    }
+  }
+  for key in screen_uis.keys().collect() {
+    if !drop_keys.contains(key) && key.has_prefix(prefix) && key.contains(ws_seg) {
+      drop_keys.push(key)
+    }
+  }
+  for key in screen_leases.keys().collect() {
+    if !drop_keys.contains(key) && key.has_prefix(prefix) && key.contains(ws_seg) {
       drop_keys.push(key)
     }
   }
@@ -1291,28 +1338,12 @@ fn screen_leases_reset() -> Unit {
   screen_holder_next.val = 0
   screen_lease_settle_queued.val = false
   screen_auth_gen.val = 0
+  screen_revokes.set(0)
 }
 
 ///|
-/// The view's page gone: the view, its decoder and its files let go of; upright (held upright only again) and asleep
-/// again. Kept alive if another visible holder or standalone window still displays the same screen.
-pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
-  let key = screen_key_src(src, station, screen)
-  // (taken over by a window of this run beside the first, as it opened there: its view, its decoder and the frame it
-  // shows kept open for that window, the way it was driven with them; only what this page put up here let go of. That
-  // window lets it go as it closes: screen_window_left)
-  if @sfbase.window_has_screen(station, screen) {
-    match screen_uis.get(key) {
-      Some(u) => {
-        screen_panels_close(u)
-        if u.fulled && @ui.full_screen() {
-          @hostapi.set_full_screen(false)
-        }
-      }
-      None => ()
-    }
-    return
-  }
+/// Unconditionally close and tear down screen `key` (used when replacing a `lone` window's screen with a child screen).
+fn screen_left_force(src : Source, key : String) -> Unit {
   match screens_open.get(key) {
     Some(s) => s.close(src)
     None => ()
@@ -1342,6 +1373,37 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
 }
 
 ///|
+/// The view's page gone for a captured `key`: the view, its decoder and its files let go of; upright (held upright only
+/// again) and asleep again. Kept alive if another visible holder or standalone window of the same owner still displays
+/// the same screen.
+pub fn screen_left_key(src : Source, key : String, station : String, screen : String) -> Unit {
+  let owner = match screens_open.get(key) {
+    Some(s) => s.account
+    None => screen_owner_of(station)
+  }
+  if screen_lease_visible_count(key) > 1 || @sfbase.window_has_screen_for_owner(owner, station, screen) {
+    match screen_uis.get(key) {
+      Some(u) => {
+        screen_panels_close(u)
+        if u.fulled && @ui.full_screen() {
+          @hostapi.set_full_screen(false)
+        }
+      }
+      None => ()
+    }
+    return
+  }
+  screen_left_force(src, key)
+}
+
+///|
+/// The view's page gone: the view, its decoder and its files let go of; upright (held upright only again) and asleep
+/// again. Kept alive if another visible holder or standalone window still displays the same screen.
+pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
+  screen_left_key(src, screen_key(station, screen), station, screen)
+}
+
+///|
 /// A window of this run beside the first closed on page `p` (sfbase's window_page_left): a screen it showed that no
 /// other window shows now let go of, as its page leaving would (screen_left).
 fn screen_window_left(p : @sfbase.Page) -> Unit {
@@ -1349,9 +1411,16 @@ fn screen_window_left(p : @sfbase.Page) -> Unit {
     terminal_left(tat.station, tat.terminal)
     return
   }
-  guard p is Screen(at) && !@sfbase.window_has_screen(at.station, at.screen) else { return }
-  match screens_open.get(screen_key(at.station, at.screen)) {
-    Some(s) => screen_left(s.src, at.station, at.screen)
+  guard p is Screen(at) else { return }
+  let key = screen_key(at.station, at.screen)
+  if screen_lease_visible_count(key) > 0 {
+    return
+  }
+  match screens_open.get(key) {
+    Some(s) =>
+      if !@sfbase.window_has_screen_for_owner(s.account, at.station, at.screen) {
+        screen_left_key(s.src, key, at.station, at.screen)
+      }
     None => ()
   }
 }
@@ -1396,6 +1465,10 @@ fn screen_act(what : String) -> (Result[Json, Json]) -> Unit {
 /// The copies made on the screen: onto the device's clipboard, text as it is, a picture as a PNG (the latest copy wins).
 /// Where the system says so itself (Android 13 and later, with a preview), nothing more; else it is said here.
 fn screen_copies(s : ScreenSess) -> Unit {
+  if !s.is_active_principal() {
+    s.copied.clear()
+    return
+  }
   if s.copied.is_empty() {
     return
   }
@@ -1448,6 +1521,12 @@ fn screen_copies(s : ScreenSess) -> Unit {
 /// answers. Asked by ⌘V (Ctrl+V) where the screen carries no clipboard (a tab of the station's browser, a device's): its
 /// text typed there, or with none the key itself sent, the screen pasting its own. A paste asked meanwhile, asked next.
 fn screen_pasted(s : ScreenSess, u : ScreenUi, got : @ui.Clipboard) -> Unit {
+  guard s.is_active_principal() else {
+    u.paste_from_key = None
+    u.paste_owed = None
+    s.pasting.set(false)
+    return
+  }
   let from_key = u.paste_from_key
   u.paste_from_key = None
   let finish = fn() {

@@ -60,6 +60,19 @@ test "Source::owned_by auto-parks on deep park, faults on parked Raw read, and n
     msg="expected parked-source-raw-read fault, got: \{Repr(faults)}",
   )
   faults.clear()
+  // Even when another active Graph watcher holds the same topic, a parked Raw read via `topic().get()`
+  // must NOT bypass the parked guard via the watched-topic cache shortcut.
+  let watch = @signals.watch(fn() {  })
+  let active_watcher = owned.topic("status2", {})
+  watch.read(fn() { active_watcher.get() }) |> ignore
+  let parked_topic_res = owned.topic("status2", {}).get()
+  assert_true(parked_topic_res.value is None)
+  assert_true(
+    faults.any(fn(s) { s.contains("parked-source-raw-read: status2") }),
+    msg="parked Raw topic().get() must fault even with active watched holder, got: \{Repr(faults)}",
+  )
+  watch.stop()
+  faults.clear()
   // Waking restores owner in pre-order before descendants re-read: 0 faults, fresh value seen.
   val.set(Json::string("v2"))
   active_tab.set(0)
@@ -67,7 +80,8 @@ test "Source::owned_by auto-parks on deep park, faults on parked Raw read, and n
   assert_eq(faults, [], msg="waking parked page must produce 0 faults")
   assert_eq(seen.val, "v2")
   assert_eq(owned.prefetch("status", {}).value, Some(Json::string("v2")))
-  // Chat path: owned_by_parkable(auto_park=false) does not auto-park on pick_kept rest.
+  // Chat path: owned_by_parkable(auto_park=false) does not auto-park on pick_kept rest,
+  // and manual park returns None without faulting (so Chat failure callbacks like composer stay safe).
   let chat_tab = @signals.signal(0)
   let chat_owned_ref : Ref[Source?] = Ref(None)
   let chat_park_ref : Ref[((Bool) -> Unit)?] = Ref(None)
@@ -90,7 +104,7 @@ test "Source::owned_by auto-parks on deep park, faults on parked Raw read, and n
   assert_eq(faults, [], msg="auto_park=false must not auto-park on pick_kept rest")
   (chat_park_ref.val.unwrap())(true)
   assert_true(chat_owned_ref.val.unwrap().prefetch("chat", {}).value is None)
-  assert_true(faults.any(fn(s) { s.contains("parked-source-raw-read: chat") }))
+  assert_eq(faults, [], msg="manual auto_park=false park must return None without faulting")
   @view.faults_stop.val = prev_stop
   @view.fault_told.val = prev_told
   @ui.run_let_go()

@@ -16,9 +16,43 @@ priv struct ViewSourceOwner {
   mut reading : TopicReadMode
   mut topics : Array[ViewSourceTopic]
   leaving : Map[String, Bool]
+  // whether this owner auto-parks on view rest (`Source::owned_by` with MBUI_PARK_SOURCES enabled);
+  // Raw reads while parked fault only when `auto_park` is true (manual Chat park keeps returning None).
+  auto_park : Bool
   // its view put by at rest (a page's entry kept left: Source::owned_by_parkable): what it holds of its untracked reads
   // let go of, and none read so till it is taken back
   mut parked : Bool
+}
+
+///|
+/// Currently parked view-owned sources (cleared on wake, dispose, and `last_reset`).
+/// Checked before `existing_followed_topic` shortcut in `source.mbt` so Raw reads on a parked view
+/// cannot bypass the parked guard via a watched Graph holder.
+// kept across runs: put back as a run begins (last_reset)
+let parked_owners : Ref[Array[(Source, ViewSourceOwner)]] = Ref([])
+
+///|
+fn parked_owner_set(owned : Source, owner : ViewSourceOwner, on : Bool) -> Unit {
+  if on {
+    if !parked_owners.val.iter().any(fn(p) { physical_equal(p.0, owned) }) {
+      parked_owners.val.push((owned, owner))
+    }
+  } else {
+    parked_owners.val = parked_owners.val.filter(fn(p) { !physical_equal(p.0, owned) })
+  }
+}
+
+///|
+fn source_parked_raw_blocked(src : Source, name : String) -> Bool {
+  for p in parked_owners.val {
+    if physical_equal(p.0, src) && p.1.parked {
+      if p.1.auto_park {
+        @view.fault("parked-source-raw-read: " + name)
+      }
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -45,9 +79,12 @@ fn view_owner_follow(owner : ViewSourceOwner, name : String, params : Map[String
   if mode is Graph {
     return Some(scoped_topic(owner.base, name, params))
   }
-  // (put by at rest: an untracked Raw read on a parked view faults in tests and reports via fault_told)
+  // (put by at rest: an untracked Raw read on an auto-parked view faults in tests and reports via fault_told;
+  // manually parked Chat sources (`auto_park=false`) return None without faulting)
   if owner.parked {
-    @view.fault("parked-source-raw-read: " + name)
+    if owner.auto_park {
+      @view.fault("parked-source-raw-read: " + name)
+    }
     return None
   }
   let key = (owner.base.topic_key)(name, params)
@@ -92,6 +129,7 @@ pub fn Source::owned_by_parkable(src : Source, view : @view.View, auto_park? : B
     reading: Raw,
     topics: [],
     leaving: {},
+    auto_park,
     parked: false,
   }
   // (the source made below: what it read untracked, kept by what is worked out of it, let go of as it is put by)
@@ -101,6 +139,10 @@ pub fn Source::owned_by_parkable(src : Source, view : @view.View, auto_park? : B
   let ever_parked = Ref(false)
   let park = fn(on : Bool) {
     owner.parked = on
+    match owned_ref.val {
+      Some(owned) => parked_owner_set(owned, owner, on)
+      None => ()
+    }
     if on {
       ever_parked.val = true
       let topics = owner.topics
@@ -187,10 +229,28 @@ pub fn Source::owned_by_parkable(src : Source, view : @view.View, auto_park? : B
     return (owned, park)
   }
   if auto_park {
-    view.on_rest(fn() { park(true) }, wake=fn() { park(false) }) |> ignore
+    view.on_rest(
+      fn() {
+        if !view.alive() {
+          return
+        }
+        park(true)
+      },
+      wake=fn() {
+        if !view.alive() {
+          return
+        }
+        park(false)
+      },
+    )
+    |> ignore
   }
   view.owns(fn() {
     owner.live.set(false)
+    match owned_ref.val {
+      Some(owned) => parked_owner_set(owned, owner, false)
+      None => ()
+    }
     let topics = owner.topics
     owner.topics = []
     for t in topics {

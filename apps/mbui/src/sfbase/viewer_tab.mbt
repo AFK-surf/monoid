@@ -176,6 +176,8 @@ pub fn ViewTab::same_file(self : ViewTab, other : ViewTab) -> Bool {
 /// whether what it plays goes on as its tab moves between the panel and the whole window (tab_viewer_moves).
 priv struct TabViewer {
   viewer : Viewer
+  owner : String
+  ws : String
   mut drawn : Int
   mut closing : Bool
   mut goes_on : Bool
@@ -196,8 +198,53 @@ let tab_gone : Map[String, Bool] = Map([])
 let tab_viewers : Map[String, TabViewer] = Map([])
 
 ///|
+fn tab_chat_workspace(chat : String) -> String {
+  let station = match chat.find(":") {
+    Some(i) => chat.exact_view(end=i).to_owned()
+    None => chat
+  }
+  match station.find("/") {
+    Some(i) => station.exact_view(end=i).to_owned()
+    None => ""
+  }
+}
+
+///|
 fn tab_viewer_id(chat : String, tab : String) -> String {
-  chat + "\n" + tab
+  let ws = tab_chat_workspace(chat)
+  workspace_owner_of(ws) + "\u{2}" + chat + "\u{2}" + tab
+}
+
+///|
+fn tab_viewers_revoke_matching(pred : (TabViewer) -> Bool) -> Unit {
+  let drop : Array[String] = []
+  for id, t in tab_viewers {
+    if pred(t) {
+      drop.push(id)
+    }
+  }
+  for id in drop {
+    match tab_viewers.get(id) {
+      Some(t) => {
+        t.goes_on = false
+        t.viewer.pause_player()
+        t.viewer.let_go()
+        tab_viewers.remove(id)
+      }
+      None => ()
+    }
+    tab_gone.remove(id)
+  }
+}
+
+///|
+fn init {
+  on_account_revoked(fn(old_account) {
+    tab_viewers_revoke_matching(fn(t) { t.owner == old_account })
+  })
+  on_workspace_owner_change(fn(ws, old_owner, _new_owner) {
+    tab_viewers_revoke_matching(fn(t) { t.ws == ws && t.owner == old_owner })
+  })
 }
 
 ///|
@@ -253,7 +300,8 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
             None => file
           }
           let v = new_viewer(station, f.key, file, f.drive, steps, named=f.named, at~, beside=true)
-          tab_viewers[id] = { viewer: v, drawn: 0, closing: false, goes_on: false, near: Map([]) }
+          let ws = tab_chat_workspace(chat)
+          tab_viewers[id] = { viewer: v, owner: workspace_owner_of(ws), ws, drawn: 0, closing: false, goes_on: false, near: Map([]) }
           Some(v)
         }
         _ => None
@@ -344,7 +392,7 @@ priv struct TabMoved {
 /// made (tab_moved): none where its viewer is made already (it is kept as it is), nothing to keep where it steps through
 /// nothing and nothing is known of it. Whether it was kept (tab_moved_dropped, its tab not put there).
 fn tab_steps_said(tab : String, steps : Stepping, width : Double, height : Double, near : TopicLease?, at : String) -> Bool {
-  if tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) || (steps is NoSteps && width <= 0.0 && at == "" && near is None) {
+  if tab_viewers.keys().any(fn(id) { id.has_suffix("\u{2}" + tab) }) || (steps is NoSteps && width <= 0.0 && at == "" && near is None) {
     match near {
       Some(l) => l.release()
       None => ()
@@ -420,7 +468,7 @@ fn beside_open(
     tab_asked[put] = at
   }
   tab_viewers.each(fn(id, t) {
-    if t.drawn > 0 && id.has_suffix("\n" + put) && tab_asked.contains(put) {
+    if t.drawn > 0 && id.has_suffix("\u{2}" + put) && tab_asked.contains(put) {
       tab_asked.remove(put)
       t.viewer.play_asked(at)
     }
@@ -492,7 +540,7 @@ fn Viewer::pause_player(self : Viewer) -> Unit {
 /// side_panel_node).
 pub fn tab_players_pause(chat? : String = "") -> Unit {
   tab_viewers.each(fn(id, t) {
-    if chat == "" || id.has_prefix(chat + "\n") {
+    if chat == "" || id.contains("\u{2}" + chat + "\u{2}") {
       t.viewer.pause_player()
     }
   })
@@ -522,7 +570,7 @@ pub fn Viewer::move_beside(self : Viewer, src : Source) -> Unit {
   }
   let tab = self.view_tab()
   // (none where its tab is open already: its viewer is kept as it is)
-  let near = if self.shown_kind() == Some(KImage) && !tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) {
+  let near = if self.shown_kind() == Some(KImage) && !tab_viewers.keys().any(fn(id) { id.has_suffix("\u{2}" + tab) }) {
     image_near_params(self).map(fn(p) { src.lease_topic("imageNear", p) })
   } else {
     None

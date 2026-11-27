@@ -1735,6 +1735,7 @@ pub fn reset() -> Unit {
   remote_tabs_reset()
   windows_open.clear()
   windows_here_show.clear()
+  windows_here_owner.clear()
   tab_windows.clear()
 }
 

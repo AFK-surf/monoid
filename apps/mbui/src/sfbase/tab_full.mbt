@@ -71,7 +71,9 @@ pub fn tab_full_close() -> Unit {
   match tab_full.untracked() {
     Some(f) => {
       let lone = full_lone.val
-      if !lone {
+      // Only preserve playback when handing back to a live side-panel chat still on the nav stack.
+      let chat_alive = app.nav.pages().any(fn(p) { p == Chat(f.chat) })
+      if !lone && chat_alive {
         tab_viewer_moves(f.chat.station + ":" + f.chat.session, f.tab)
       }
       full_lone.val = false

@@ -297,6 +297,10 @@ fn topic_signal(src : Source, name : String, params : Map[String, Json], said : 
     if !held_building.val && src.topic_scope is None {
       return None
     }
+    // A Raw read on a parked view source must never bypass the parked guard via a watched Graph holder.
+    if src.topic_scope is Some(_) && !held_building.val && source_parked_raw_blocked(src, name) {
+      return Some({ value: None, error: None, version: 0, waiting: false })
+    }
     // An event in a build can read a topic the graph already holds. Use that value without adding a manual hold. So
     // can an event of a view's (a press on what its page shows, outside any build) through that view's source: as it
     // is then, held no longer than the graph holds it, not for as long as the view lives (Source::owned_by's raw read).
@@ -338,7 +342,6 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
     if last_accounts.val != Some(now) {
       last_accounts.val = Some(now)
       last_said.val = last_said.val.filter(fn(l) { !physical_equal(l.source, src) })
-      account_principal_set(accounts_principal_of(Some(now)))
     }
   }
   // (a view's own source reads through the one it is of, which keeps them: topic_scope none)
@@ -446,71 +449,169 @@ fn last_put(src : Source, key : String, value : Json) -> Unit {
 let last_accounts : Ref[Json?] = Ref(None)
 
 ///|
-/// Canonical identity of the currently signed-in account(s), updated when `accounts` changes.
+/// Per-workspace owning account (`ws_id -> sub/email`), updated outside computed getters from `workspaces` topic.
+// kept across runs: put back as a run begins (last_reset)
+let workspace_owners : Map[String, String] = Map([])
+
+///|
+/// Currently signed-in account subs (updated outside computed getters by `sfcore`'s `accounts_told`).
+// kept across runs: put back as a run begins (last_reset)
+let active_account_subs : Ref[Array[String]] = Ref([])
+
+///|
+/// Fallback single-account principal when a workspace owner has not been populated yet.
 // kept across runs: put back as a run begins (last_reset)
 pub let account_principal_sig : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
 
 ///|
-/// Synchronous hooks notified whenever `account_principal_sig` changes (e.g., screen lease revocation).
+/// Synchronous hooks notified when a specific account `removed_account` is signed out or replaced.
 // kept across runs: registered once at package init
-let account_principal_listeners : Array[(String) -> Unit] = []
+let account_revoke_listeners : Array[(String) -> Unit] = []
 
 ///|
-/// Canonical principal string from an `accounts` topic payload.
-pub fn accounts_principal_of(list : Json?) -> String {
-  match list {
-    Some(Array(items)) =>
-      items
-      .map(fn(a) {
-        match a {
-          Object(m) =>
-            match (m.get("sub"), m.get("account")) {
-              (Some(String(sub)), _) => sub
-              (_, Some(Object(acc))) =>
-                match acc.get("sub") {
-                  Some(String(sub)) => sub
-                  _ => a.stringify()
-                }
-              _ => a.stringify()
-            }
-          _ => a.stringify()
+/// Synchronous hooks notified when workspace `ws` changes owner from `old_owner` to `new_owner`.
+// kept across runs: registered once at package init
+let workspace_owner_change_listeners : Array[(String, String, String) -> Unit] = []
+
+///|
+/// Owning account of workspace `ws` (`workspace_owners[ws]`, falling back to `account_principal_sig`).
+pub fn workspace_owner_of(ws : String) -> String {
+  if ws != "" {
+    match workspace_owners.get(ws) {
+      Some(owner) if owner != "" => return owner
+      _ => ()
+    }
+  }
+  account_principal_sig.untracked()
+}
+
+///|
+/// Set the owning account for workspace `ws` (outside computed getters). If `ws` previously belonged to a different
+/// owner, synchronously revokes only `(ws, old_owner)` resources.
+pub fn workspace_owner_set(ws : String, owner : String) -> Unit {
+  guard ws != "" else { return }
+  match workspace_owners.get(ws) {
+    Some(prev) =>
+      if prev != owner {
+        workspace_owners[ws] = owner
+        for f in workspace_owner_change_listeners {
+          f(ws, prev, owner)
         }
-      })
-      .join("\u{1}")
-    Some(other) => other.stringify()
-    None => ""
+      }
+    None => {
+      workspace_owners[ws] = owner
+      let fallback = account_principal_sig.untracked()
+      if fallback != "" && fallback != owner {
+        for f in workspace_owner_change_listeners {
+          f(ws, fallback, owner)
+        }
+      }
+    }
   }
 }
 
 ///|
-/// Current account principal string without tracking.
+/// Sync per-workspace account ownership from a `workspaces` topic payload (called from reactive effects, never inside
+/// a computed getter).
+pub fn workspace_owners_sync_json(v : Json?) -> Unit {
+  guard v is Some(Array(accounts)) else { return }
+  let seen : Map[String, String] = Map([])
+  for a in accounts {
+    let s = Some(a)
+    let acc = field(s, "account")
+    let sub = text(acc, "sub")
+    let owner = if sub != "" { sub } else { text(acc, "email") }
+    if owner == "" {
+      continue
+    }
+    for w in items(s, "workspaces") {
+      let id = text(Some(w), "id")
+      if id != "" && !seen.contains(id) {
+        seen[id] = owner
+      }
+    }
+  }
+  for ws, owner in seen {
+    workspace_owner_set(ws, owner)
+  }
+}
+
+///|
+/// Sync currently signed-in account subs (called from `sfcore`'s `accounts_told`, outside computed getters).
+/// Only accounts that disappeared from `subs` are synchronously revoked; unrelated accounts are untouched.
+pub fn accounts_subs_sync(subs : Array[String]) -> Unit {
+  let prev = active_account_subs.val
+  let removed : Array[String] = []
+  for old in prev {
+    if old != "" && !subs.contains(old) {
+      removed.push(old)
+    }
+  }
+  active_account_subs.val = subs.copy()
+  let next_fallback = subs.get(0).unwrap_or("")
+  if account_principal_sig.untracked() != next_fallback {
+    account_principal_sig.set(next_fallback)
+  }
+  for old in removed {
+    for ws in workspace_owners.keys().collect() {
+      if workspace_owners.get(ws) == Some(old) {
+        workspace_owners.remove(ws)
+      }
+    }
+    for f in account_revoke_listeners {
+      f(old)
+    }
+  }
+}
+
+///|
+/// Current fallback account principal string without tracking.
 pub fn account_principal_now() -> String {
   account_principal_sig.untracked()
 }
 
 ///|
-/// Update the active account principal and synchronously notify registered listeners when it changes.
+/// Update the active single-account principal (used in tests and single-account switches) and synchronously revoke
+/// the previous account when switching from a non-empty principal to a different one.
 pub fn account_principal_set(who : String) -> Unit {
-  if account_principal_sig.untracked() == who {
+  let prev = account_principal_sig.untracked()
+  if prev == who {
     return
   }
   account_principal_sig.set(who)
-  for f in account_principal_listeners {
-    f(who)
+  active_account_subs.val = if who == "" { [] } else { [who] }
+  if prev != "" {
+    for ws in workspace_owners.keys().collect() {
+      if workspace_owners.get(ws) == Some(prev) {
+        workspace_owners.remove(ws)
+      }
+    }
+    for f in account_revoke_listeners {
+      f(prev)
+    }
   }
 }
 
 ///|
-/// Register a synchronous listener called when the active account principal changes.
-pub fn on_account_principal_change(f : (String) -> Unit) -> Unit {
-  account_principal_listeners.push(f)
+/// Register a synchronous listener called when a specific account is revoked/signed out.
+pub fn on_account_revoked(f : (String) -> Unit) -> Unit {
+  account_revoke_listeners.push(f)
+}
+
+///|
+/// Register a synchronous listener called when workspace `ws` changes owner `(ws, old_owner, new_owner)`.
+pub fn on_workspace_owner_change(f : (String, String, String) -> Unit) -> Unit {
+  workspace_owner_change_listeners.push(f)
 }
 
 ///|
 fn last_reset() -> Unit {
   last_said.val = []
   last_accounts.val = None
+  workspace_owners.clear()
+  active_account_subs.val = []
   account_principal_sig.set("")
+  parked_owners.val = []
 }
 
 ///|

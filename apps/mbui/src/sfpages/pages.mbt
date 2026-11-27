@@ -9,7 +9,8 @@ fn init {
   @sfbase.share_card_of.val = share_card_open
   @sfbase.screen_made_stream.val = screen_fixture_stream
   @sf.picture_out_now_by.val = fn(png, said) { picture_out_now(png, copy_said=said) }
-  @sfbase.on_account_principal_change(screen_revoke_account)
+  @sfbase.on_account_revoked(screen_revoke_account)
+  @sfbase.on_workspace_owner_change(screen_revoke_workspace_owner)
 }
 
 ///|

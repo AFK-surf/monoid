@@ -631,11 +631,12 @@ fn side_screen_page_node(
 ) -> Unit {
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    let screen_id = @sfpages.screen_key_of(at.station, at.screen)
     s.owns(fn() {
       match app.nav.top() {
         Screen(top) if top.station == at.station && top.screen == at.screen => ()
         Place("remote") if @sfpages.remote_has_screen(src, at.station, at.screen) => ()
-        _ => @sfpages.screen_left(src, at.station, at.screen)
+        _ => @sfpages.screen_left_key(src, screen_id, at.station, at.screen)
       }
     })
     |> ignore

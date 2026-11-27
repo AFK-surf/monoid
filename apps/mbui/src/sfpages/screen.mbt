@@ -80,11 +80,13 @@ fn custom_cursor_key(shape : String) -> String {
 priv struct ScreenSess {
   /// where it reads and writes
   src : Source
-  /// account identity that owns this session (revoked synchronously on account switch)
+  /// owning account of this screen's workspace (revoked synchronously on account/owner change)
   account : String
-  /// full subject principal `(account, conn_gen, auth_gen)` that owns this session
+  /// workspace id extracted from `station`
+  workspace : String
+  /// full subject principal `(account, auth_gen)` that owns this session
   principal : String
-  /// set true when revoked by principal/auth change; blocks late frames, reopens, and input
+  /// set true when revoked by principal/auth change; blocks late frames, reopens, clipboard, and RPCs
   mut revoked : Bool
   station : String
   screen : String
@@ -214,6 +216,8 @@ priv struct ScreenSess {
   mut passkey_id : String
   mut passkey_gen : Int
   mut passkey_owner_principal : String
+  /// request-level keepalive holder in `screen_leases` while a passkey prompt is in-flight (0 when none)
+  mut passkey_keepalive_holder : Int
   /// a child browser popup opened from this tab while driving (`childOpened` / `childScreen`), to open over it once built
   mut child_screen : String?
 }
@@ -239,51 +243,52 @@ let screen_max_h : Int = 1080
 let screen_auth_gen : Ref[Int] = Ref(0)
 
 ///|
-/// Subject principal for screen isolation: `(account, conn_gen, auth_gen)`.
-fn screen_principal(src : Source) -> String {
-  let acc = @sfbase.account_principal_now()
-  let (conn_gen, _) = (src.generation)("screens", {})
-  acc + "\u{1}" + conn_gen.to_string() + "\u{1}" + screen_auth_gen.val.to_string()
-}
-
-///|
-/// Default subject principal when no `Source` is passed (e.g. window callbacks and tests).
-fn screen_principal_current() -> String {
-  @sfbase.account_principal_now() + "\u{1}0\u{1}" + screen_auth_gen.val.to_string()
-}
-
-///|
 fn screen_workspace_and_station(station : String) -> (String, String) {
   match station.find("/") {
     Some(i) => (station.exact_view(end=i).to_owned(), station.exact_view(start=i + 1).to_owned())
-    None => (@sfbase.app.picked.untracked(), station)
+    None => ("", station)
   }
 }
 
 ///|
-/// Subject-isolated key for screen sessions, UI state, and visibility leases:
-/// `(principal [account, conn_gen, auth_gen], workspace, station, screen)`.
-fn screen_key_for(principal : String, station : String, screen : String) -> String {
-  let (ws, st) = screen_workspace_and_station(station)
-  principal + "\u{1}" + ws + "\u{1}" + st + "\u{1}" + screen
+fn screen_owner_of(station : String) -> String {
+  let (ws, _) = screen_workspace_and_station(station)
+  @sfbase.workspace_owner_of(ws)
 }
 
 ///|
-fn screen_key_src(src : Source, station : String, screen : String) -> String {
-  screen_key_for(screen_principal(src), station, screen)
+/// Unified subject principal for screen isolation: `(ws_account_owner, screen_auth_gen)` using `\u{2}` separator.
+fn screen_principal_for(station : String) -> String {
+  screen_owner_of(station) + "\u{2}" + screen_auth_gen.val.to_string()
 }
 
 ///|
+/// Unified subject-isolated key for screen sessions, UI state, and visibility leases:
+/// `(ws_account_owner, screen_auth_gen, workspace, station, screen)`.
 fn screen_key(station : String, screen : String) -> String {
-  screen_key_for(screen_principal_current(), station, screen)
+  let (ws, st) = screen_workspace_and_station(station)
+  screen_principal_for(station) + "\u{2}" + ws + "\u{2}" + st + "\u{2}" + screen
+}
+
+///|
+/// Public alias of `screen_key` for callers (e.g. `sfdesk/panel_node.mbt`) to capture the creation-time screen key.
+pub fn screen_key_of(station : String, screen : String) -> String {
+  screen_key(station, screen)
+}
+
+///|
+/// Whether this session is still valid for the current subject principal (not revoked and owner/auth_gen unchanged).
+fn ScreenSess::is_active_principal(self : ScreenSess) -> Bool {
+  !self.revoked && self.principal == screen_principal_for(self.station)
 }
 
 ///|
 /// The view of `screen` on `station`, made the first time its page asks.
 fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
-  let principal = screen_principal(src)
-  let account = @sfbase.account_principal_now()
-  let key = screen_key_for(principal, station, screen)
+  let (ws, _) = screen_workspace_and_station(station)
+  let account = @sfbase.workspace_owner_of(ws)
+  let principal = screen_principal_for(station)
+  let key = screen_key(station, screen)
   match screens_open.get(key) {
     Some(s) => s
     None => {
@@ -291,6 +296,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
       let s : ScreenSess = {
         src,
         account,
+        workspace: ws,
         principal,
         revoked: false,
         station,
@@ -360,6 +366,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         passkey_id: "",
         passkey_gen: 0,
         passkey_owner_principal: "",
+        passkey_keepalive_holder: 0,
         child_screen: None,
       }
       screens_open[key] = s
@@ -380,7 +387,11 @@ fn ScreenSess::part_stream(self : ScreenSess) -> @ui.Stream {
           screen_ack(self.src, self, ts, wait_us~)
           self.shown_told()
         },
-        broken=fn() { screen_tell(self.src, "screen.keyframe", { "view": Json::string(self.view) }) },
+        broken=fn() {
+          if self.is_active_principal() {
+            screen_tell(self.src, "screen.keyframe", { "view": Json::string(self.view) })
+          }
+        },
         // on the system's video layer too, over the whole's: a frame of the part shown now shown as it comes, one of
         // another part (or while the whole's shows) drawn, the picture put where its part is
         layer=true,
@@ -449,6 +460,9 @@ fn ScreenSess::shown_told(self : ScreenSess) -> Unit {
 /// another than the last told (the core asks the station once it has stayed a moment). The whole is told only after a
 /// part was.
 fn ScreenSess::look(self : ScreenSess, src : Source, part : Part?, w : Double, h : Double) -> Unit {
+  if !self.is_active_principal() {
+    return
+  }
   let r4 = fn(v : Double) { (v * 10000.0).round() / 10000.0 }
   let key = match part {
     Some(p) => "\{r4(p.x)} \{r4(p.y)} \{r4(p.w)} \{r4(p.h)} \{w.round()} \{h.round()}"
@@ -495,7 +509,11 @@ fn ScreenSess::own_stream(self : ScreenSess) -> Unit {
         }
         self.shown_told()
       },
-      broken=fn() { screen_tell(self.src, "screen.keyframe", { "view": Json::string(self.view) }) },
+      broken=fn() {
+        if self.is_active_principal() {
+          screen_tell(self.src, "screen.keyframe", { "view": Json::string(self.view) })
+        }
+      },
       // shown by the system's video layer where the host has one (its node's, ui's stream: screen_stage_picture): a
       // frame of it draws nothing of the app's, unless a part is drawn over it (a frame of the whole newer than the
       // part's puts the part away)
@@ -517,7 +535,7 @@ fn screen_tell(src : Source, name : String, params : Map[String, Json]) -> Unit 
 
 ///|
 fn screen_ack(src : Source, s : ScreenSess, ts : Double, wait_us? : Double = 0.0) -> Unit {
-  if ts <= s.acked {
+  if !s.is_active_principal() || ts <= s.acked {
     return
   }
   s.acked = ts
@@ -979,7 +997,7 @@ fn ScreenSess::stage_is(self : ScreenSess, w : Int, h : Int) -> Unit {
 /// the host decodes it, H.264 where it does), as large as 画质 asks, and the 画质 itself (how high the station lets the
 /// bit rate go) and the 帧率 (the most frames a second it sends).
 fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
-  if self.call != 0 || own_screen(self.station, self.screen) {
+  if !self.is_active_principal() || self.call != 0 || own_screen(self.station, self.screen) {
     return
   }
   // again after it ended (重新打开): on its way, not still saying how the last one ended
@@ -992,9 +1010,6 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
   self.looked = ""
   // (input waits for the view opened again to say it is live: the state before is the last one's)
   self.heard = false
-  if self.revoked || self.principal != screen_principal(src) {
-    return
-  }
   let quality = screen_quality(src)
   let fps = screen_fps(src)
   let bitrate = screen_bitrate(src)
@@ -1073,7 +1088,7 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
 /// pictures asked this large and this often (`screen.bounds`: the core opens its stream again, the one before kept until the new one has opened, so a
 /// Windows desktop keeps the display scale set from it), the frame on screen kept meanwhile.
 fn ScreenSess::asked_again(self : ScreenSess, src : Source) -> Unit {
-  if self.revoked || self.principal != screen_principal(src) {
+  if !self.is_active_principal() {
     return
   }
   let quality = screen_quality(src)
@@ -1133,6 +1148,9 @@ fn ScreenSess::close(self : ScreenSess, src : Source) -> Unit {
 ///|
 /// 只看 or 控制: the core opens the view again with it, the frame on screen kept meanwhile.
 fn ScreenSess::control(self : ScreenSess, src : Source, on : Bool) -> Unit {
+  if !self.is_active_principal() {
+    return
+  }
   self.wants_control = Some(on)
   screen_tell(src, "screen.control", { "view": Json::string(self.view), "control": Json::boolean(on) })
 }
@@ -1140,7 +1158,7 @@ fn ScreenSess::control(self : ScreenSess, src : Source, on : Bool) -> Unit {
 ///|
 /// Input for the station (`screen.input`): only while this viewer drives it.
 fn ScreenSess::input(self : ScreenSess, src : Source, input : Json) -> Unit {
-  if self.revoked || self.principal != screen_principal(src) {
+  if !self.is_active_principal() {
     return
   }
   // (which of a desktop's windows it shows goes looking too: the view's own)
@@ -1178,6 +1196,9 @@ fn ScreenSess::paste(
   words : String,
   done : (Result[Json, Json]) -> Unit,
 ) -> Unit {
+  if !self.is_active_principal() {
+    return
+  }
   let p : Map[String, Json] = {
     "view": Json::string(self.view),
     "text": Json::string(words),
@@ -1194,6 +1215,9 @@ fn ScreenSess::paste_png(
   png : Bytes,
   done : (Result[Json, Json]) -> Unit,
 ) -> Unit {
+  if !self.is_active_principal() {
+    return
+  }
   let p : Map[String, Json] = {
     "view": Json::string(self.view),
     "png": Json::boolean(true),
@@ -1210,6 +1234,9 @@ fn ScreenSess::reveal(
   path : String,
   done : (Result[Json, Json]) -> Unit,
 ) -> Unit {
+  if !self.is_active_principal() {
+    return
+  }
   let input = Json::object({ "t": Json::string("reveal"), "path": Json::string(path) })
   (src.call)("screen.input", Json::object({ "view": Json::string(self.view), "input": input }), done)
 }
@@ -1346,7 +1373,7 @@ pub fn screen_unread_calls() -> Array[String] {
 /// changes nothing a frame reads is taken as it comes, before the frame is built: what a frame or a sound's packet sets
 /// here is read by no build.
 fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
-  if self.revoked || self.principal != screen_principal(self.src) {
+  if !self.is_active_principal() {
     return
   }
   guard value is Object(o) else { return }
@@ -1627,7 +1654,7 @@ fn ScreenSess::toggle_audio(self : ScreenSess) -> Unit {
   self.audio_muted.set(muted)
   if muted { match self.stream { Some(st) => st.audio(Bytes::make(0, b'\x00')); None => () } }
   // Muted, the station sends the view no sound till it is on again.
-  if self.call != 0 {
+  if self.call != 0 && self.is_active_principal() {
     screen_tell(self.src, "screen.sound", { "view": Json::string(self.view), "on": Json::boolean(!muted) })
   }
 }
@@ -1718,7 +1745,7 @@ fn ScreenSess::toggle_mic(self : ScreenSess) -> Unit {
   let on = !self.mic_on.untracked()
   // (shared no more while nothing records it: the bar's 麦克风 goes along its row, not at once)
   @view.transition(fn() { self.mic_on.set(on) })
-  if self.call != 0 {
+  if self.call != 0 && self.is_active_principal() {
     screen_tell(self.src, "screen.micOn", { "view": Json::string(self.view), "on": Json::boolean(on) })
   }
 }

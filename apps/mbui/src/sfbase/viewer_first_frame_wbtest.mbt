@@ -108,3 +108,56 @@ test "viewer_tab_node pauses on ordinary park, stays paused on wake, and preserv
   tab_viewers_reset()
   @ui.run_let_go()
 }
+
+///|
+test "tab_viewer revokes on workspace owner change and tab_full_close does not set goes_on when chat left stack" {
+  reset()
+  @sf.set_words(fill)
+  accounts_subs_sync(["acct-a", "acct-b"])
+  workspace_owner_set("ws1", "acct-a")
+  let file : Attachment = {
+    name: "clip.mp4",
+    path: "clip.mp4",
+    size: 1024.0,
+    width: 640.0,
+    height: 360.0,
+    thumbhash: "",
+    owner: "",
+    upload: "",
+    duration: 10.0,
+    frames: 300,
+    held: false,
+  }
+  let chat = "ws1/st1:s1"
+  let tab = view_tab_key("ws1/st1", "s1", file, None, false)
+  let src = made_source()
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      root.pick_kept(at_once=true, fn() { true }, fn(slot, _) {
+        viewer_tab_node(slot, src, chat, tab, fn() { 400.0 }, None)
+      })
+    },
+    w=800.0,
+    h=600.0,
+    platform=0,
+  )
+  t.draw()
+  let tv_a = tab_viewers.get(tab_viewer_id(chat, tab)).unwrap()
+  assert_eq(tv_a.owner, "acct-a")
+  let vid_a = tv_a.viewer.media.unwrap().native().unwrap().id()
+  assert_true(t.view_said("{\"info\":{\"view\":\{vid_a},\"state\":3,\"at\":[2000,10000,1,0,0,0,640,360,300,0]}}"))
+  t.draw()
+  // Closing fullscreen when chat is no longer on nav stack must NOT set goes_on.
+  let chat_ref : ChatRef = { station: "ws1/st1", session: "s1", title: "C1", station_name: "st1" }
+  tab_full.set(Some({ chat: chat_ref, tab }))
+  full_lone.val = false
+  tab_full_close()
+  assert_false(tv_a.goes_on, msg="tab_full_close must not set goes_on when chat is not on nav stack")
+  // Workspace owner revocation synchronously pauses & releases old TabViewer.
+  workspace_owner_set("ws1", "acct-b")
+  assert_true(tab_viewers.is_empty(), msg="revoked owner TabViewer must be removed on workspace owner change")
+  assert_true(t.views().contains("close \{vid_a}"), msg="revoked owner TabViewer native player must be closed")
+  tab_viewers_reset()
+  @ui.run_let_go()
+}

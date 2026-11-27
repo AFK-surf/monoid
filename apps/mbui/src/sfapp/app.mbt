@@ -945,6 +945,10 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         // signed in, the shell it is laid out in a node picked by the window's width and what is in view
         // (narrow_shell.mbt): laid out Small with a workspace, the narrow shell's nodes; on the tape, its panels' nodes
         // (tape_shell.mbt); the ways in, the splash, a window of its own; nothing before the window has a width
+        // keep per-workspace account ownership in sync outside computed getters
+        v.reacts(fn() { src.topic("workspaces", {}).get().value }, fn(ws) {
+          @sfbase.workspace_owners_sync_json(ws)
+        })
         let shell_was : Ref[ShellIs] = Ref(Unsized)
         v.pick(fn() { shell_is(src, v.window_w()) }, fn(s, shell) {
           // Resizing into the tape keeps the page being read in front, not the sidebar's old selection.

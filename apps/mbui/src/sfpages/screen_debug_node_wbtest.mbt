@@ -606,7 +606,7 @@ test "debug_lines_node clears timeline when parked and preserves chained after-a
     },
   }
   let s = screen_sess(src, "ws-1/st-1", "sim:1")
-  let u = screen_ui(screen_key_src(src, "ws-1/st-1", "sim:1"))
+  let u = screen_ui(screen_key("ws-1/st-1", "sim:1"))
   let d = u.logs
   let active = @signals.signal(true)
   let logs_root : Ref[@view.View?] = Ref(None)

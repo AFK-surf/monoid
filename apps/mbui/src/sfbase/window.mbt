@@ -244,6 +244,7 @@ pub fn open_window(p : Page) -> Bool {
         if wid > 0 {
           windows_open[key] = Here(wid)
           windows_here_show[wid] = p
+          windows_here_owner[wid] = window_page_owner(p)
           windows_here_told(p, wid)
           (window_page_given.val)(p, wid)
           return true
@@ -270,6 +271,22 @@ let windows_open : Map[String, WindowOpened] = Map([])
 ///|
 /// The page each window of this run beside its first shows, by the window's id (open_window), while it is open.
 let windows_here_show : Map[Int, Page] = Map([])
+
+///|
+/// Creation account owner of each standalone window (by window id), so subject switches cannot alias windows.
+let windows_here_owner : Map[Int, String] = Map([])
+
+///|
+fn window_page_owner(p : Page) -> String {
+  match p {
+    Screen(at) =>
+      match at.station.find("/") {
+        Some(i) => workspace_owner_of(at.station.exact_view(end=i).to_owned())
+        None => workspace_owner_of("")
+      }
+    _ => account_principal_now()
+  }
+}
 
 ///|
 /// The chats' tabs a window of this run beside its first shows, by window_key, and its id: what the panel beside the
@@ -340,6 +357,7 @@ pub let window_tab_left : Ref[(TabFull) -> Unit] = Ref(fn(_) {  })
 pub fn window_gives_back(wid : Int) -> Unit {
   guard windows_here_show.get(wid) is Some(p) else { return }
   windows_here_show.remove(wid)
+  windows_here_owner.remove(wid)
   windows_here_untold(p, wid)
   match window_key(p) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
@@ -386,7 +404,22 @@ pub fn window_here_page(wid : Int) -> Page? {
 /// Whether a window of this run beside its first shows `screen` on `station` now: its view, handed over as the window
 /// opened, is that window's to let go of, not the page it left here.
 pub fn window_has_screen(station : String, screen : String) -> Bool {
-  windows_here_show.values().any(fn(p) { p is Screen(at) && at.station == station && at.screen == screen })
+  let ws = match station.find("/") {
+    Some(i) => station.exact_view(end=i).to_owned()
+    None => ""
+  }
+  window_has_screen_for_owner(workspace_owner_of(ws), station, screen)
+}
+
+///|
+/// Whether a standalone window belonging to `owner` shows `screen` on `station` now.
+pub fn window_has_screen_for_owner(owner : String, station : String, screen : String) -> Bool {
+  for wid, p in windows_here_show {
+    if p is Screen(at) && at.station == station && at.screen == screen && windows_here_owner.get(wid) == Some(owner) {
+      return true
+    }
+  }
+  false
 }
 
 ///|
@@ -410,6 +443,7 @@ pub fn lone_page_replace(next : Page) -> Unit {
     None => ()
   }
   windows_here_show[wid] = next
+  windows_here_owner[wid] = window_page_owner(next)
   windows_here_told(next, wid)
   match was.bind(window_key) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
@@ -426,6 +460,8 @@ pub fn lone_page_replace(next : Page) -> Unit {
 fn window_here_gone(wid : Int) -> Unit {
   guard windows_here_show.get(wid) is Some(p) else { return }
   windows_here_show.remove(wid)
+  windows_here_owner.remove(wid)
+  windows_here_owner.remove(wid)
   windows_here_untold(p, wid)
   match window_key(p) {
     Some(key) if windows_open.get(key) is Some(Here(w)) && w == wid => windows_open.remove(key)
