@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Deferred, Effect, Queue } from "effect";
 import { FrameReader, KIND, drainFrames, frame, parseTerminal } from "../src/terminals.ts";
+import { t as i18n } from "../src/i18n.ts";
 import { HostWire, type StationWire, type TerminalAsk } from "../src/station/wire.ts";
 import { jsonResponse, type FakeHost } from "../src/testing.ts";
 import { call } from "./helpers.ts";
@@ -14,7 +15,7 @@ const station = "w1/s1";
 const withTerminals = () => ({ ...base(), "GET /terminals": { terminals: [{ id: "term-1", by: "a@x.com", cwd: "/tmp", at: 1, looking: [] }] } });
 
 function terminalWire() {
-  const opens: { path: string; ask: TerminalAsk; got: { kind: number; value: unknown }[]; ready(): void; state(value: Record<string, unknown>): void; end(): void }[] = [];
+  const opens: { path: string; ask: TerminalAsk; got: { kind: number; value: unknown }[]; closed: boolean; ready(): void; state(value: Record<string, unknown>): void; out(text: string): void; end(): void }[] = [];
   const make = (host: FakeHost): StationWire => {
     const plain = new HostWire(host);
     return {
@@ -23,12 +24,15 @@ function terminalWire() {
         const ready = Deferred.makeUnsafe<void>();
         const queue = yield* Queue.unbounded<Uint8Array | null>();
         const got: { kind: number; value: unknown }[] = [];
-        opens.push({
-          path: head.path, ask, got,
+        const entry = {
+          path: head.path, ask, got, closed: false,
           ready: () => { Deferred.doneUnsafe(ready, Effect.void); },
-          state: (value) => { Queue.offerUnsafe(queue, frame(KIND.state, Buffer.from(JSON.stringify(value)))); },
+          state: (value: Record<string, unknown>) => { Queue.offerUnsafe(queue, frame(KIND.state, Buffer.from(JSON.stringify(value)))); },
+          out: (text: string) => { Queue.offerUnsafe(queue, frame(KIND.out, Buffer.from(text))); },
           end: () => { Queue.offerUnsafe(queue, null); },
-        });
+        };
+        opens.push(entry);
+        yield* Effect.addFinalizer(() => Effect.sync(() => { entry.closed = true; }));
         yield* Deferred.await(ready);
         const reader = new FrameReader();
         return {
@@ -378,4 +382,116 @@ test("r14: terminal.view gates on current-authGen confirmation, clamps viewer co
       core.close();
     }
   }
+});
+
+test("r15: live terminal aborts immediately on authGen boundary, new-terminal take(false) survives handshake, and denied uses terminal copy", async (t) => {
+  const S = "ws/st";
+
+  // P1: live open terminal stream (no socket end) aborts immediately on workspace authGen bump,
+  //     closes socket scope, returns auth_stale, and ignores any subsequent frames pushed to old socket.
+  await t.test("P1: live open socket aborts immediately on authGen boundary", async () => {
+    const wire = terminalWire();
+    const { host, core } = await started(withTerminals(), 0, wire.make);
+    try {
+      const ui = core.connect();
+      call(core, ui, 30, "terminal.view", { station: S, terminal: "term-1", view: "v-live", cols: 80, rows: 24 });
+      await host.settle();
+      assert.equal(wire.opens.length, 1);
+      wire.opens[0]!.ready();
+      wire.opens[0]!.state({ id: "term-1", types: true, cols: 80, rows: 24, inband: true });
+      await host.settle();
+      assert.equal(wire.opens[0]!.closed, false, "socket should still be live before auth boundary");
+
+      host.takeEmitted();
+      core.inner.store.authGen.syncWorkspace("ws", "owner:a@x.com:role:revoked");
+      await host.settle();
+
+      assert.equal(wire.opens[0]!.closed, true, "live socket scope must be closed immediately on authGen boundary");
+      assert.equal(wire.opens.length, 1, "must not reopen after authGen boundary");
+      const abortMsgs = host.takeEmitted().map(([, m]) => m as { id?: number; kind?: string; error?: { code?: string }; value?: { state?: { phase?: string } } });
+      assert.ok(
+        abortMsgs.some((m) => m.id === 30 && m.error?.code === "auth_stale"),
+        `expected immediate auth_stale error, got ${JSON.stringify(abortMsgs)}`,
+      );
+      assert.ok(
+        !abortMsgs.some((m) => m.id === 30 && m.value?.state?.phase === "denied"),
+        `authGen boundary must fail with auth_stale, not emit phase: denied: ${JSON.stringify(abortMsgs)}`,
+      );
+
+      // Pushing further frames onto the old socket must emit zero progress messages.
+      wire.opens[0]!.out("post-boundary-secret");
+      wire.opens[0]!.state({ id: "term-1", types: true, cols: 80, rows: 24, inband: true });
+      await host.settle();
+      const lateMsgs = host.takeEmitted().map(([, m]) => m as { id?: number });
+      assert.deepEqual(
+        lateMsgs.filter((m) => m.id === 30),
+        [],
+        `must emit 0 progress messages after auth_stale abort, got ${JSON.stringify(lateMsgs)}`,
+      );
+    } finally {
+      core.close();
+    }
+  });
+
+  // P2: terminal: "new" with control: true + take(false) before ready() preserves control: false (inband true & false).
+  for (const inband of [true, false]) {
+    await t.test(`P2: new-terminal take(false) before ready() is not overwritten (inband=${inband})`, async () => {
+      const wire = terminalWire();
+      const routes = {
+        ...base(),
+        "GET /terminals": {
+          terminals: [
+            { id: "term-1", by: "a@x.com", cwd: "/tmp", at: 1, looking: [] },
+            { id: "t-new", by: "a@x.com", cwd: "/work", at: 2, looking: [] },
+          ],
+        },
+      };
+      const { host, core } = await started(routes, 0, wire.make);
+      try {
+        const ui = core.connect();
+        call(core, ui, 40, "terminal.view", { station: S, terminal: "new", view: "v-new-ro", cols: 80, rows: 24, control: true, cwd: "/work" });
+        await host.settle();
+        assert.equal(wire.opens.length, 1);
+        assert.equal(wire.opens[0]!.ask.control, true);
+
+        call(core, ui, 41, "terminal.take", { view: "v-new-ro", control: false });
+        await host.settle();
+
+        wire.opens[0]!.ready();
+        wire.opens[0]!.state({ id: "t-new", types: true, cols: 80, rows: 24, inband });
+        await host.settle();
+
+        if (inband) {
+          assert.equal(wire.opens.length, 1);
+          assert.deepEqual(wire.opens[0]!.got, [{ kind: KIND.control, value: { control: false, taken: false, cols: 80, rows: 24 } }]);
+        } else {
+          assert.equal(wire.opens.length, 2);
+          assert.equal(wire.opens[1]!.path, "/admin/api/terminals/t-new/view");
+          assert.deepEqual(wire.opens[1]!.ask, { cols: 80, rows: 24, control: false });
+        }
+      } finally {
+        core.close();
+      }
+    });
+  }
+
+  // P3: denied terminal message uses core-views.terminal.denied (never screen copy).
+  await t.test("P3: terminal denied state message uses core-views.terminal.denied", async () => {
+    const wire = terminalWire();
+    const { host, core } = await started(withTerminals(), 0, wire.make, (st) => {
+      st.cloud.role = "viewer";
+    });
+    try {
+      const ui = core.connect();
+      host.takeEmitted();
+      call(core, ui, 50, "terminal.view", { station: S, terminal: "new", view: "v-denied-msg", cols: 80, rows: 24, control: true });
+      await host.settle();
+      const msgs = host.takeEmitted().map(([, m]) => m as { id?: number; value?: { state?: { phase?: string; message?: string } } });
+      const deniedMsg = msgs.find((m) => m.id === 50 && m.value?.state?.phase === "denied")?.value?.state?.message;
+      assert.equal(deniedMsg, i18n("core-views.terminal.denied"));
+      assert.ok(deniedMsg && !deniedMsg.includes("屏幕") && !deniedMsg.toLowerCase().includes("screen"), `unexpected screen copy in terminal denied message: ${deniedMsg}`);
+    } finally {
+      core.close();
+    }
+  });
 });

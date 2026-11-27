@@ -281,15 +281,21 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
     let again: Deferred.Deferred<void> | null = null;
     let inband = false;
     let takePending = false;
-    const deniedAbort = Deferred.makeUnsafe<void>();
+    const abortSignal = Deferred.makeUnsafe<"denied" | "auth_stale">();
     let denied = false;
+    let authStale = false;
     const markDenied = () => {
       denied = true;
-      Deferred.doneUnsafe(deniedAbort, Effect.void);
+      Deferred.doneUnsafe(abortSignal, Effect.succeed("denied" as const));
+      if (again !== null) Deferred.doneUnsafe(again, Effect.void);
+    };
+    const markAuthStale = () => {
+      authStale = true;
+      Deferred.doneUnsafe(abortSignal, Effect.succeed("auth_stale" as const));
       if (again !== null) Deferred.doneUnsafe(again, Effect.void);
     };
     const isViewDenied = () => denied || inner.stations.isDenied("terminals", station);
-    const isAuthStale = () => inner.store.authGen.workspaceAuthGen(addr.workspace) !== startAuthGen;
+    const isAuthStale = () => authStale || inner.store.authGen.workspaceAuthGen(addr.workspace) !== startAuthGen;
     const write = (bytes: Uint8Array) => {
       if (out !== null) Queue.offerUnsafe(out, bytes);
     };
@@ -319,17 +325,26 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
         if (again !== null && id !== "new") Deferred.doneUnsafe(again, Effect.void);
       },
       listed: () => {
-        if (inner.stations.isDenied("terminals", station)) {
+        if (isAuthStale()) {
+          markAuthStale();
+        } else if (inner.stations.isDenied("terminals", station)) {
           markDenied();
         }
       },
     });
     yield* Effect.addFinalizer(() => Effect.sync(() => open.delete(name)));
+    const unsubBoundary = inner.store.authGen.onBoundary(() => {
+      if (isAuthStale()) markAuthStale();
+    });
+    yield* Effect.addFinalizer(() => Effect.sync(unsubBoundary));
 
-    // Fail closed immediately if GET /terminals already returned 401/403 in this auth generation.
+    // Fail closed immediately if authGen already advanced or GET /terminals already returned 401/403 in this auth generation.
+    if (isAuthStale()) {
+      return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
+    }
     if (isViewDenied()) {
       state.phase = "denied";
-      state.message = t("core-views.screen.denied");
+      state.message = t("core-views.terminal.denied");
       tell();
       return null;
     }
@@ -398,7 +413,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
         if (opened._tag === "Failure") return { failed: opened.failure };
         const socket: WireSocket = opened.success;
         // A new one is opened once: its reopens are of the terminal it made.
-        if (id === "new") ask = { cols: ask.cols, rows: ask.rows, control: sendAsk.control, ...(takePending && ask.taken ? { taken: true } : {}) };
+        if (id === "new") ask = { cols: ask.cols, rows: ask.rows, control: ask.control, ...(takePending && ask.taken ? { taken: true } : {}) };
         else if (ask.taken && !takePending) ask = { ...ask, taken: undefined };
         const queue = yield* Queue.unbounded<Uint8Array>();
         out = queue;
@@ -419,6 +434,8 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
             Effect.as(Deferred.await(reopen), { reopen: true } as const),
           );
           if ("reopen" in next) return { reopen: true };
+          if (isAuthStale()) return { authStale: true };
+          if (isViewDenied()) return { denied: true };
           if (next.r._tag === "Failure" || next.r.success === null) return { dropped: true };
           reader.push(next.r.success);
           for (const f of drainFrames(reader)) {
@@ -457,17 +474,16 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
       }),
     );
 
-    let authStale = false;
     const runBody = Effect.scoped(
       Effect.gen(function* () {
         let misses = 0;
         for (;;) {
           const r = yield* attempt;
-          if ("denied" in r || isViewDenied()) return;
           if ("authStale" in r || isAuthStale()) {
             authStale = true;
             return;
           }
+          if ("denied" in r || isViewDenied()) return;
           if ("outdated" in r) {
             state.phase = "outdated";
             state.message = t("core-views.terminal.outdated");
@@ -487,7 +503,7 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
           } else if ("retry" in r) {
             if (misses >= REOPEN_MS.length) {
               state.phase = "failed";
-              state.message = t("core-views.terminal.remote");
+              state.message = t("core-misc.terminal.timeout");
               tell();
               return;
             }
@@ -516,16 +532,16 @@ function view(inner: Inner, c: Extract<TerminalCall, { kind: "view" }>, progress
 
     const raced = yield* Effect.raceFirst(
       Effect.as(runBody, "done" as const),
-      Effect.as(Deferred.await(deniedAbort), "denied" as const),
+      Deferred.await(abortSignal),
     );
+    if (raced === "auth_stale" || isAuthStale()) {
+      return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
+    }
     if (raced === "denied" || isViewDenied()) {
       state.phase = "denied";
-      state.message = t("core-views.screen.denied");
+      state.message = t("core-views.terminal.denied");
       tell();
       return null;
-    }
-    if (authStale || isAuthStale()) {
-      return yield* Effect.fail(new CoreError("auth_stale", t("core-misc.auth.stale")));
     }
     return null;
   }).pipe(Effect.scoped);

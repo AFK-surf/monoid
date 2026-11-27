@@ -611,6 +611,7 @@
   "core-views.terminal.gone": "此终端已结束",
   "core-views.terminal.outdated": "此 station 需要更新才能打开终端",
   "core-views.terminal.remote": "远程终端",
+  "core-views.terminal.denied": "暂时无法打开此终端",
   "core-views.terminal.typing": "{name} 正在输入",
   "core-views.permissions.capture.name": "屏幕录制",
   "core-views.permissions.capture.line": "远程查看此屏幕，agent 截屏",
