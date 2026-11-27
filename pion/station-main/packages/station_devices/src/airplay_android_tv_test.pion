@@ -442,3 +442,98 @@ test "w17b4 streaming AndroidTvDemuxer, commit_any_device_add rollback, and comm
     DeviceCommitResult::Err(_, msg) => w17_assert(false, "rebind failed: " + msg)
   }
 }
+
+test "w17b4 review regressions: streaming HTTP buffer, ADB volume & launch fallback, DER overflow & float repeat floor" {
+  // P1-2: AndroidTvHttpBuffer split header/body + byte-by-byte + 413 + single-shot discard
+  let hb = AndroidTvHttpBuffer::new(1024)
+  let raw_req = "POST /action HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: 19\r\n\r\n{\"action\":\"status\"}".to_bytes()
+  let mut got_ready = false
+  let mut i = 0
+  while i < raw_req.length() {
+    let one = Bytes::new(1)
+    one[0] = raw_req[i]
+    match hb.push(one, false) {
+      HttpAccumStep::NeedMore => ()
+      HttpAccumStep::Ready(req) => {
+        w17_assert(!got_ready, "ready only once")
+        w17_assert(req.method == "POST" && req.path == "/action", "parsed method/path")
+        w17_assert(bytes_to_str(req.body) == "{\"action\":\"status\"}", "exact body")
+        got_ready = true
+      }
+      _ => w17_assert(false, "unexpected step during byte-by-byte")
+    }
+    i = i + 1
+  }
+  w17_assert(got_ready, "byte-by-byte reached Ready")
+  // Trailing bytes after response must be discarded without re-triggering Ready
+  match hb.push("POST /action HTTP/1.1\r\n\r\n".to_bytes(), false) {
+    HttpAccumStep::AlreadyResponded => ()
+    _ => w17_assert(false, "expected AlreadyResponded on trailing bytes")
+  }
+  // Content-Length > max immediately returns TooLarge (413)
+  let hb_cap = AndroidTvHttpBuffer::new(32)
+  match hb_cap.push("POST /action HTTP/1.1\r\nContent-Length: 9999999\r\n\r\n".to_bytes(), false) {
+    HttpAccumStep::TooLarge => ()
+    _ => w17_assert(false, "expected TooLarge for oversized Content-Length")
+  }
+
+  // P2-3: ADB volume commands (mute, up, down, level with range conversion, query)
+  match build_adb_control_commands("volume", base_codec::json_obj([("mute", base_codec::json_bool(true))])) {
+    Ok(cmds) => w17_assert(cmds.length() == 1 && cmds[0].length() == 3 && cmds[0][2] == "164", "adb volume mute")
+    Err(e) => w17_assert(false, e.message)
+  }
+  match build_adb_control_commands("volume", base_codec::json_obj([("action", base_codec::json_str("up"))])) {
+    Ok(cmds) => w17_assert(cmds.length() == 1 && cmds[0][2] == "24", "adb volume up")
+    Err(e) => w17_assert(false, e.message)
+  }
+  match build_adb_control_commands("volume", base_codec::json_obj([("action", base_codec::json_str("down"))])) {
+    Ok(cmds) => w17_assert(cmds.length() == 1 && cmds[0][2] == "25", "adb volume down")
+    Err(e) => w17_assert(false, e.message)
+  }
+  let (set_cmd, idx, vmax) = build_adb_volume_set_command(50, "volume is 4 in range [0..20]")
+  w17_assert(idx == 10 && vmax == 20 && set_cmd[5] == "--set" && set_cmd[6] == "10", "volume range conversion 50% of 20 = 10")
+  match build_adb_control_commands("volume", base_codec::json_obj([])) {
+    Ok(cmds) => w17_assert(cmds.length() == 1 && cmds[0][5] == "--get", "adb volume query")
+    Err(e) => w17_assert(false, e.message)
+  }
+
+  // P2-4: ADB launch returns [LEANBACK_LAUNCHER, LAUNCHER] fallback chain
+  match build_adb_control_commands("launch", base_codec::json_obj([("app", base_codec::json_str("com.netflix.ninja"))])) {
+    Ok(cmds) => {
+      w17_assert(cmds.length() == 2, "launch fallback chain len == 2")
+      w17_assert(cmds[0][4] == "android.intent.category.LEANBACK_LAUNCHER", "primary leanback")
+      w17_assert(cmds[1][4] == "android.intent.category.LAUNCHER", "fallback launcher")
+    }
+    Err(e) => w17_assert(false, e.message)
+  }
+
+  // P3-6: empty der_integer -> 02 01 00; 4-byte DER length rejected cleanly without 32-bit overflow
+  let zero_der = der_integer(Bytes::new(0))
+  w17_assert(zero_der.length() == 3 && (zero_der[0].to_int() & 0xFF) == 0x02 && (zero_der[1].to_int() & 0xFF) == 0x01 && (zero_der[2].to_int() & 0xFF) == 0x00, "empty der_integer == 0")
+  let bad_der = Bytes::new(8)
+  bad_der[0] = 0x30.to_byte()
+  bad_der[1] = 0x84.to_byte() // 4-byte length -> must be rejected
+  bad_der[2] = 0x80.to_byte()
+  bad_der[3] = 0x00.to_byte()
+  bad_der[4] = 0x00.to_byte()
+  bad_der[5] = 0x01.to_byte()
+  w17_assert(extract_rsa_modulus_exponent_from_cert_der(bad_der) is Err(_), "4-byte DER length rejected")
+
+  // P3-8: float repeat 2.5 floors to 2 (not 1 or 3) on both Remote v2 and ADB
+  let st = AtvRemoteState::new()
+  match build_atv_remote_control_frames(
+    st,
+    "remote",
+    base_codec::json_obj([("key", base_codec::json_str("up")), ("repeat", base_codec::json_num(2.5))]),
+  ) {
+    Ok((frames, _)) => w17_assert(frames.length() == 2, "remote repeat 2.5 floors to 2")
+    Err(e) => w17_assert(false, e.message)
+  }
+  match build_adb_control_commands(
+    "remote",
+    base_codec::json_obj([("key", base_codec::json_str("up")), ("repeat", base_codec::json_num(2.5))]),
+  ) {
+    Ok(cmds) => w17_assert(cmds.length() == 2, "adb repeat 2.5 floors to 2")
+    Err(e) => w17_assert(false, e.message)
+  }
+}

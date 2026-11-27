@@ -1199,8 +1199,14 @@ pub fn DeviceCredentialStoreOs::delete(
     Ok(p) => p
     Err(e) => return Err(e)
   }
-  let _ = station_sys::unlink(file)
-  Ok(())
+  if station_sys::unlink(file) {
+    return Ok(())
+  }
+  match station_sys::lstat_raw_err(file) {
+    Err(-2) => Ok(()) // ENOENT: already absent
+    Err(code) => Err("failed to delete device credentials file (errno=" + code.to_string() + ")")
+    Ok(_) => Err("failed to delete device credentials file")
+  }
 }
 
 pub fn DeviceCredentialStoreOs::as_port(self : DeviceCredentialStoreOs) -> station_devices::DeviceCredentialPort {
@@ -1230,13 +1236,29 @@ pub enum DeviceTunnelTarget {
   TcpDial(String, Int)
   SerialPort(String, Int)
   AirPlayHttp(AirPlayDeviceRefOs)
-  AndroidTvDemux(AndroidTvDeviceRefOs, station_devices::AndroidTvDemuxer)
+  AndroidTvDemux(AndroidTvDeviceRefOs, station_devices::AndroidTvDemuxer, station_devices::AndroidTvHttpBuffer)
 }
 
 pub enum AndroidTvTunnelStep {
   NeedMoreBytes
   AdbForward(String, Bytes)
   HttpReply(station_devices::DeviceHttpResponse)
+  Closed
+}
+
+pub let MDNS_SCAN_DEFAULT_TIMEOUT_MS : Int64 = 2500L
+pub let MDNS_SCAN_MIN_TIMEOUT_MS : Int64 = 300L
+pub let MDNS_SCAN_MAX_TIMEOUT_MS : Int64 = 10000L
+/// Disjoint event_id base (`8 << 32`, clear of `whole_daemon`'s `1<<32..7<<32`).
+pub let MDNS_EVENT_ID_BASE : Int64 = 34359738368L
+pub let MDNS_BIND_ADDR : String = "0.0.0.0"
+
+struct ActiveMdnsScan {
+  event_id : Int64
+  on_close : Option[() -> Unit]
+  bind_addr : String
+  deadline_ms : Int64
+  packets : Array[station_devices::ParsedMdnsRecords]
 }
 
 /// Configure a serial port raw at `baud` via `stty` (`-f` on macOS, `-F` on Linux; rejects Windows).
@@ -1265,6 +1287,7 @@ pub fn configure_serial_raw_os(
 }
 
 pub struct DeviceFsPort {
+  pub stat_size : (String) -> Result[Int64, String]
   pub read_file : (String) -> Result[Bytes, String]
   pub write_file : (String, Bytes) -> Result[Unit, String]
   pub tmpdir : () -> String
@@ -1272,6 +1295,23 @@ pub struct DeviceFsPort {
 
 pub fn device_fs_os() -> DeviceFsPort {
   DeviceFsPort::{
+    stat_size: fn(path : String) -> Result[Int64, String] {
+      match station_sys::lstat_raw_err(path) {
+        Ok(raw) => {
+          match parse_stat_meta(raw) {
+            Ok(meta) => {
+              if !meta.is_file {
+                Err("not a regular file: " + path)
+              } else {
+                Ok(meta.size)
+              }
+            }
+            Err(_) => Err("not a regular file: " + path)
+          }
+        }
+        Err(_) => Err("not a regular file: " + path)
+      }
+    },
     read_file: fn(path : String) -> Result[Bytes, String] {
       match station_sys::read_file_strict(path) {
         Ok(b) => Ok(b)
@@ -1307,6 +1347,9 @@ pub struct DevicesOsRuntime {
   grant_procs : Map[String, (station_sys::ChildProcess, Int64)]
   pending_grant_kills : Map[Int64, PendingProcKill]
   rig_devices : Map[String, Array[station_devices::KeptDevice]]
+  mdns_scans : Map[Int64, ActiveMdnsScan]
+  completed_mdns_scans : Map[Int64, Array[station_devices::AndroidTvCandidate]]
+  mut next_mdns_event_id : Int64
 }
 
 pub fn DevicesOsRuntime::new(
@@ -1332,6 +1375,9 @@ pub fn DevicesOsRuntime::new(
     grant_procs: Map::new(),
     pending_grant_kills: Map::new(),
     rig_devices: Map::new(),
+    mdns_scans: Map::new(),
+    completed_mdns_scans: Map::new(),
+    next_mdns_event_id: MDNS_EVENT_ID_BASE,
   }
 }
 
@@ -1353,24 +1399,31 @@ pub fn DevicesOsRuntime::set_credential_port(
   self.cred_port = Some(port)
 }
 
-pub fn DevicesOsRuntime::android_tv_adb_socket_path(self : DevicesOsRuntime) -> String {
-  if self.data_dir != "" {
-    self.data_dir + "/run/android-tv-adb.sock"
-  } else {
-    "/tmp/stillfail-android-tv-adb.sock"
+pub fn DevicesOsRuntime::android_tv_adb_socket_path(self : DevicesOsRuntime) -> Result[String, String] {
+  if self.data_dir.trim() == "" {
+    return Err("data_dir is not configured for isolated Android TV ADB")
   }
+  Ok(self.data_dir + "/run/android-tv-adb.sock")
 }
 
-pub fn DevicesOsRuntime::android_tv_adb_key_dir(self : DevicesOsRuntime) -> String {
-  if self.data_dir != "" {
-    self.data_dir + "/devices/adb-keys"
-  } else {
-    "/tmp/stillfail-android-tv-adb-keys"
+pub fn DevicesOsRuntime::android_tv_adb_key_dir(self : DevicesOsRuntime) -> Result[String, String] {
+  if self.data_dir.trim() == "" {
+    return Err("data_dir is not configured for isolated Android TV ADB")
   }
+  Ok(self.data_dir + "/devices/adb-keys")
 }
 
 /// Environment variables isolating Android TV ADB from the host's `:5037` server and `~/.android/adbkey`.
-pub fn DevicesOsRuntime::isolated_android_tv_adb_env(self : DevicesOsRuntime) -> Array[String] {
+/// Fails closed if `data_dir` has not been configured (never falls back to `/tmp`).
+pub fn DevicesOsRuntime::isolated_android_tv_adb_env(self : DevicesOsRuntime) -> Result[Array[String], String] {
+  let key_dir = match self.android_tv_adb_key_dir() {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  let sock_path = match self.android_tv_adb_socket_path() {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
   let base_env = station_sys::env_all()
   let out : Array[String] = []
   for i in 0..<base_env.length() {
@@ -1379,11 +1432,11 @@ pub fn DevicesOsRuntime::isolated_android_tv_adb_env(self : DevicesOsRuntime) ->
       out.push(e)
     }
   }
-  out.push("ADB_VENDOR_KEYS=" + self.android_tv_adb_key_dir())
+  out.push("ADB_VENDOR_KEYS=" + key_dir)
   if station_sys::os_name() != "win32" {
-    out.push("ADB_SERVER_SOCKET=localfilesystem:" + self.android_tv_adb_socket_path())
+    out.push("ADB_SERVER_SOCKET=localfilesystem:" + sock_path)
   }
-  out
+  Ok(out)
 }
 
 pub fn DevicesOsRuntime::set_airplay_handlers(
@@ -1404,15 +1457,14 @@ pub fn DevicesOsRuntime::set_android_tv_handlers(
   self.android_tv_screenshot_fn = Some(on_screenshot)
 }
 
-fn DevicesOsRuntime::load_device_creds(self : DevicesOsRuntime, ws : String, device_id : String) -> Option[String] {
+fn DevicesOsRuntime::load_device_creds(
+  self : DevicesOsRuntime,
+  ws : String,
+  device_id : String,
+) -> Result[Option[String], String] {
   match self.cred_port {
-    Some(port) => {
-      match (port.get)(ws, device_id) {
-        Ok(opt) => opt
-        Err(_) => None
-      }
-    }
-    None => None
+    Some(port) => (port.get)(ws, device_id)
+    None => Ok(None)
   }
 }
 
@@ -1475,6 +1527,7 @@ pub fn DevicesOsRuntime::reach_device_os(
         DeviceTunnelTarget::AndroidTvDemux(
           AndroidTvDeviceRefOs::{ id: d.id, ws: kept.ws, target: d.target, name: d.name, protocols: protos },
           station_devices::AndroidTvDemuxer::new(has_adb),
+          station_devices::AndroidTvHttpBuffer::new(),
         ),
       )
     }
@@ -1490,7 +1543,24 @@ pub fn DevicesOsRuntime::handle_airplay_http(
   headers : Array[(String, String)],
   body : Bytes,
 ) -> station_devices::DeviceHttpResponse {
-  let creds = self.load_device_creds(dev_ref.ws, dev_ref.id)
+  let creds = match self.load_device_creds(dev_ref.ws, dev_ref.id) {
+    Ok(opt) => opt
+    Err(e) => {
+      return station_devices::device_http_json(
+        401,
+        base_codec::json_obj([
+          ("ok", base_codec::json_bool(false)),
+          (
+            "error",
+            base_codec::json_obj([
+              ("code", base_codec::json_str("auth_failed")),
+              ("message", base_codec::json_str(e)),
+            ]),
+          ),
+        ]),
+      )
+    }
+  }
   let x_filename = station_devices::device_http_header_get(headers, "x-filename")
   station_devices::dispatch_airplay_http_route(
     method,
@@ -1520,7 +1590,24 @@ pub fn DevicesOsRuntime::handle_android_tv_http(
   path : String,
   body : Bytes,
 ) -> station_devices::DeviceHttpResponse {
-  let creds = self.load_device_creds(dev_ref.ws, dev_ref.id)
+  let creds = match self.load_device_creds(dev_ref.ws, dev_ref.id) {
+    Ok(opt) => opt
+    Err(e) => {
+      return station_devices::device_http_json(
+        401,
+        base_codec::json_obj([
+          ("ok", base_codec::json_bool(false)),
+          (
+            "error",
+            base_codec::json_obj([
+              ("code", base_codec::json_str("auth_failed")),
+              ("message", base_codec::json_str(e)),
+            ]),
+          ),
+        ]),
+      )
+    }
+  }
   station_devices::dispatch_android_tv_http_route(
     method,
     path,
@@ -1540,16 +1627,21 @@ pub fn DevicesOsRuntime::handle_android_tv_http(
   )
 }
 
-/// Feed bytes into a 4-byte transparent `android_tv` tunnel demuxer:
-/// routes `^[0-9a-f]{4}$` (when `adb` protocol is paired) to the isolated ADB server socket,
-/// and all HTTP requests to `handle_android_tv_http`.
+/// Feed bytes into a 4-byte transparent `android_tv` tunnel demuxer with streaming HTTP buffering:
+/// - Routes `^[0-9a-f]{4}$` (when `adb` protocol is paired) to the isolated ADB server socket (fail-closed if `data_dir` unset).
+/// - Buffers HTTP chunks until `\r\n\r\n` + full `Content-Length` bytes arrive (immediate 413 if `> ATV_MAX_JSON_BYTES`),
+///   dispatches once with `Connection: close`, and discards trailing bytes (`AndroidTvTunnelStep::Closed`).
 pub fn DevicesOsRuntime::handle_android_tv_tunnel_bytes(
   self : DevicesOsRuntime,
   dev_ref : AndroidTvDeviceRefOs,
   demux : station_devices::AndroidTvDemuxer,
+  http_buf : station_devices::AndroidTvHttpBuffer,
   chunk : Bytes,
   is_eof : Bool = false,
 ) -> AndroidTvTunnelStep {
+  if http_buf.is_responded() {
+    return AndroidTvTunnelStep::Closed
+  }
   let decided = match demux.push(chunk) {
     Some(res) => Some(res)
     None => if is_eof { demux.finish() } else { None }
@@ -1557,12 +1649,49 @@ pub fn DevicesOsRuntime::handle_android_tv_tunnel_bytes(
   match decided {
     None => AndroidTvTunnelStep::NeedMoreBytes
     Some((station_devices::AndroidTvRoute::AdbRaw, payload)) => {
-      AndroidTvTunnelStep::AdbForward(self.android_tv_adb_socket_path(), payload)
+      match self.android_tv_adb_socket_path() {
+        Ok(sock) => AndroidTvTunnelStep::AdbForward(sock, payload)
+        Err(msg) => {
+          AndroidTvTunnelStep::HttpReply(
+            station_devices::device_http_json(
+              503,
+              base_codec::json_obj([
+                ("ok", base_codec::json_bool(false)),
+                (
+                  "error",
+                  base_codec::json_obj([
+                    ("code", base_codec::json_str("adb_missing")),
+                    ("message", base_codec::json_str(msg)),
+                  ]),
+                ),
+              ]),
+            ),
+          )
+        }
+      }
     }
     Some((station_devices::AndroidTvRoute::HttpControl, payload)) => {
-      match station_devices::parse_device_http_request(payload) {
-        Ok(req) => AndroidTvTunnelStep::HttpReply(self.handle_android_tv_http(dev_ref, req.method, req.path, req.body))
-        Err(msg) => {
+      match http_buf.push(payload, is_eof) {
+        station_devices::HttpAccumStep::NeedMore => AndroidTvTunnelStep::NeedMoreBytes
+        station_devices::HttpAccumStep::AlreadyResponded => AndroidTvTunnelStep::Closed
+        station_devices::HttpAccumStep::TooLarge => {
+          AndroidTvTunnelStep::HttpReply(
+            station_devices::device_http_json(
+              413,
+              base_codec::json_obj([
+                ("ok", base_codec::json_bool(false)),
+                (
+                  "error",
+                  base_codec::json_obj([
+                    ("code", base_codec::json_str("payload_too_large")),
+                    ("message", base_codec::json_str("request body exceeds 1 MB")),
+                  ]),
+                ),
+              ]),
+            ),
+          )
+        }
+        station_devices::HttpAccumStep::BadRequest(msg) => {
           AndroidTvTunnelStep::HttpReply(
             station_devices::device_http_json(
               400,
@@ -1578,6 +1707,9 @@ pub fn DevicesOsRuntime::handle_android_tv_tunnel_bytes(
               ]),
             ),
           )
+        }
+        station_devices::HttpAccumStep::Ready(req) => {
+          AndroidTvTunnelStep::HttpReply(self.handle_android_tv_http(dev_ref, req.method, req.path, req.body))
         }
       }
     }
@@ -1637,6 +1769,14 @@ pub fn DevicesOsRuntime::control_device_with_fs(
       let apath = match audio_path {
         Some(p) => p.trim()
         None => return Err("stream_audio requires audio_path (a local audio file path on this station)")
+      }
+      // lstat size check BEFORE reading file into memory (rejects > 100 MB & non-regular files).
+      let file_size = match (fs.stat_size)(apath) {
+        Ok(sz) => sz
+        Err(e) => return Err(e)
+      }
+      if file_size > station_devices::AIRPLAY_MAX_AUDIO_BYTES.to_int64() {
+        return Err("audio file exceeds 100 MB limit")
       }
       let audio_bytes = match (fs.read_file)(apath) {
         Ok(b) => b
@@ -1809,16 +1949,33 @@ pub fn DevicesOsRuntime::commit_rebind_device_os(
   )
 }
 
-/// Send an ephemeral UDP mDNS query for Android TV services on port 0 (`224.0.0.251:5353`)
-/// bound locally to `"127.0.0.1"` and collect parsed records until `timeout_ms`.
-pub fn scan_android_tv_mdns_os(
-  hub : EdgeMuxHub,
-  timeout_ms : Int64 = 1500L,
-) -> Array[station_devices::AndroidTvCandidate] {
-  let ev_id = 25769803776L + ((hub.now_fn)() & 0xFFFFL)
-  let sock = match station_sys::udp_bind(ev_id, "127.0.0.1", 0) {
+fn clamp_mdns_timeout_ms(timeout_ms : Int64) -> Int64 {
+  if timeout_ms < MDNS_SCAN_MIN_TIMEOUT_MS {
+    MDNS_SCAN_MIN_TIMEOUT_MS
+  } else if timeout_ms > MDNS_SCAN_MAX_TIMEOUT_MS {
+    MDNS_SCAN_MAX_TIMEOUT_MS
+  } else {
+    timeout_ms
+  }
+}
+
+/// Pure event-driven LAN mDNS scan for Android TV services (`_androidtvremote2`,
+/// `_adb-tls-connect`, `_adb-tls-pairing`):
+/// - Binds ephemeral UDP4 port 0 on `0.0.0.0` (aligns with Node `dgram.createSocket("udp4").bind(0)`)
+/// - Allocates a monotonic `event_id` from disjoint base `8 << 32` (`MDNS_EVENT_ID_BASE`)
+/// - Sends one mDNS PTR query to `224.0.0.251:5353` and returns immediately (zero blocking `pump_one`)
+/// - Inbound `SysEvent::UdpRecv` packets are collected via `handle_sys_event`, and expiry is finalized
+///   by `tick_expiry` / `tick_expiry_with`, making candidates retrievable via `take_android_tv_mdns_result`.
+pub fn DevicesOsRuntime::start_android_tv_mdns_scan(
+  self : DevicesOsRuntime,
+  now_ms : Int64,
+  timeout_ms : Int64 = MDNS_SCAN_DEFAULT_TIMEOUT_MS,
+) -> Result[Int64, String] {
+  let ev_id = self.next_mdns_event_id
+  self.next_mdns_event_id = ev_id + 1L
+  let sock = match station_sys::udp_bind(ev_id, "0.0.0.0", 0) {
     Some(s) => s
-    None => return []
+    None => return Err("failed to bind ephemeral UDP4 socket (0.0.0.0:0) for mDNS scan")
   }
   let query = station_devices::build_mdns_query([
     station_devices::MDNS_SVC_REMOTE,
@@ -1826,35 +1983,92 @@ pub fn scan_android_tv_mdns_os(
     station_devices::MDNS_SVC_ADB_PAIR,
   ])
   let _ = sock.send_to("224.0.0.251", 5353, query)
-  let packets : Array[station_devices::ParsedMdnsRecords] = []
-  let prev_sys = hub.get_sys_router()
-  hub.set_sys_router(
-    fn(id : Int64, payload : Bytes) -> Bool {
-      if id == ev_id {
-        match station_sys::decode_sys_event(payload) {
-          Some(station_sys::SysEvent::UdpRecv(dg)) => {
-            packets.push(station_devices::parse_mdns_packet(dg.data))
-          }
-          _ => ()
-        }
-        return true
-      }
-      match prev_sys {
-        Some(f) => f(id, payload)
-        None => false
-      }
+  let eff_ms = clamp_mdns_timeout_ms(timeout_ms)
+  self.mdns_scans.set(
+    ev_id,
+    ActiveMdnsScan::{
+      event_id: ev_id,
+      on_close: Some(
+        fn() -> Unit {
+          let _ = sock.close()
+        },
+      ),
+      bind_addr: MDNS_BIND_ADDR,
+      deadline_ms: now_ms + eff_ms,
+      packets: [],
     },
   )
-  let eff_ms = if timeout_ms < 100L { 100L } else if timeout_ms > 10000L { 10000L } else { timeout_ms }
-  let deadline = (hub.now_fn)() + eff_ms
-  while (hub.now_fn)() < deadline {
-    let rem = deadline - (hub.now_fn)()
-    let step = if rem > 50L { 50L } else { rem }
-    let _ = hub.pump_one(step)
+  Ok(ev_id)
+}
+
+/// Deterministic virtual mDNS scan registration (no OS socket FFI) for unit tests.
+/// Returns `(event_id, bind_addr, deadline_ms)`.
+pub fn DevicesOsRuntime::start_android_tv_mdns_scan_virtual(
+  self : DevicesOsRuntime,
+  now_ms : Int64,
+  timeout_ms : Int64 = MDNS_SCAN_DEFAULT_TIMEOUT_MS,
+) -> (Int64, String, Int64) {
+  let ev_id = self.next_mdns_event_id
+  self.next_mdns_event_id = ev_id + 1L
+  let eff_ms = clamp_mdns_timeout_ms(timeout_ms)
+  let deadline = now_ms + eff_ms
+  self.mdns_scans.set(
+    ev_id,
+    ActiveMdnsScan::{
+      event_id: ev_id,
+      on_close: None,
+      bind_addr: MDNS_BIND_ADDR,
+      deadline_ms: deadline,
+      packets: [],
+    },
+  )
+  (ev_id, MDNS_BIND_ADDR, deadline)
+}
+
+pub fn DevicesOsRuntime::active_mdns_scan_count(self : DevicesOsRuntime) -> Int {
+  self.mdns_scans.length()
+}
+
+pub fn DevicesOsRuntime::take_android_tv_mdns_result(
+  self : DevicesOsRuntime,
+  event_id : Int64,
+) -> Option[Array[station_devices::AndroidTvCandidate]] {
+  match self.completed_mdns_scans.get(event_id) {
+    Some(cands) => {
+      self.completed_mdns_scans.remove(event_id)
+      Some(cands)
+    }
+    None => None
   }
-  hub.restore_sys_router(prev_sys)
-  let _ = sock.close()
-  station_devices::merge_mdns_records(packets)
+}
+
+pub fn DevicesOsRuntime::cancel_android_tv_mdns_scan(
+  self : DevicesOsRuntime,
+  event_id : Int64,
+) -> Bool {
+  match self.mdns_scans.get(event_id) {
+    Some(scan) => {
+      self.mdns_scans.remove(event_id)
+      match scan.on_close {
+        Some(f) => f()
+        None => ()
+      }
+      true
+    }
+    None => false
+  }
+}
+
+fn DevicesOsRuntime::finalize_mdns_scan(
+  self : DevicesOsRuntime,
+  scan : ActiveMdnsScan,
+) -> Unit {
+  self.mdns_scans.remove(scan.event_id)
+  match scan.on_close {
+    Some(f) => f()
+    None => ()
+  }
+  self.completed_mdns_scans.set(scan.event_id, station_devices::merge_mdns_records(scan.packets))
 }
 
 pub fn DevicesOsRuntime::pending_kill_count(self : DevicesOsRuntime) -> Int {
@@ -1883,6 +2097,21 @@ pub fn DevicesOsRuntime::handle_sys_event(
   event_id : Int64,
   ev : station_sys::SysEvent,
 ) -> Bool {
+  match self.mdns_scans.get(event_id) {
+    Some(scan) => {
+      match ev {
+        station_sys::SysEvent::UdpRecv(dg) => {
+          scan.packets.push(station_devices::parse_mdns_packet(dg.data))
+        }
+        station_sys::SysEvent::UdpClosed => {
+          self.finalize_mdns_scan(scan)
+        }
+        _ => ()
+      }
+      return true
+    }
+    None => ()
+  }
   match self.pending_grant_kills.get(event_id) {
     Some(pk) => {
       match ev {
@@ -2030,6 +2259,18 @@ pub fn DevicesOsRuntime::tick_expiry_with(
         if mono_ms >= pk.deadline_ms {
           self.pending_grant_kills.remove(ev_id)
           on_kill(pk)
+        }
+      }
+      None => ()
+    }
+  }
+  let mdns_ids = self.mdns_scans.keys()
+  for i in 0..<mdns_ids.length() {
+    let ev_id = mdns_ids[i]
+    match self.mdns_scans.get(ev_id) {
+      Some(scan) => {
+        if mono_ms >= scan.deadline_ms {
+          self.finalize_mdns_scan(scan)
         }
       }
       None => ()

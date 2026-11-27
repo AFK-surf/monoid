@@ -1242,8 +1242,8 @@ test "w17b4_devices_os_airplay_android_tv_serial_tunnel_creds_and_control" {
 
   // Android TV 4-byte demux: ADB stream routes to isolated android-tv-adb.sock
   match devs.reach_device_os("ws-a", "1000000000000005") {
-    Ok(DeviceTunnelTarget::AndroidTvDemux(ref_atv, demux)) => {
-      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, "000chost:version".to_bytes()) {
+    Ok(DeviceTunnelTarget::AndroidTvDemux(ref_atv, demux, http_buf)) => {
+      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, http_buf, "000chost:version".to_bytes()) {
         AndroidTvTunnelStep::AdbForward(sock, payload) => {
           edge_assert(sock.ends_with("/run/android-tv-adb.sock"))
           edge_assert(dev_bytes_to_str(payload) == "000chost:version")
@@ -1253,25 +1253,60 @@ test "w17b4_devices_os_airplay_android_tv_serial_tunnel_creds_and_control" {
     }
     _ => panic("expected AndroidTvDemux")
   }
-  // Android TV 4-byte demux: HTTP request routes to AndroidTvControlServer
+  // Android TV 4-byte demux: split HTTP header + body chunks & single-response discard
   match devs.reach_device_os("ws-a", "1000000000000005") {
-    Ok(DeviceTunnelTarget::AndroidTvDemux(ref_atv, demux)) => {
-      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, "GET /status HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".to_bytes()) {
+    Ok(DeviceTunnelTarget::AndroidTvDemux(ref_atv, demux, http_buf)) => {
+      // Split header across chunks before \r\n\r\n
+      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, http_buf, "POST /action HTTP/1.1\r\nContent-Length: ".to_bytes()) {
+        AndroidTvTunnelStep::NeedMoreBytes => ()
+        _ => panic("expected NeedMoreBytes on partial header")
+      }
+      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, http_buf, "19\r\n\r\n{\"action\":".to_bytes()) {
+        AndroidTvTunnelStep::NeedMoreBytes => ()
+        _ => panic("expected NeedMoreBytes on partial body")
+      }
+      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, http_buf, "\"status\"}".to_bytes()) {
         AndroidTvTunnelStep::HttpReply(resp) => {
           edge_assert(resp.status == 200)
           edge_assert(dev_bytes_to_str(resp.body).contains("\"action\":\"status\""))
         }
-        _ => panic("expected HttpReply")
+        _ => panic("expected HttpReply once full body arrived")
+      }
+      // Trailing bytes after response must return Closed (never respond twice)
+      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, http_buf, "GET /status HTTP/1.1\r\n\r\n".to_bytes()) {
+        AndroidTvTunnelStep::Closed => ()
+        _ => panic("expected Closed on trailing bytes")
+      }
+    }
+    _ => panic("expected AndroidTvDemux")
+  }
+  // Oversized Content-Length (> 1 MB) returns 413 immediately
+  match devs.reach_device_os("ws-a", "1000000000000005") {
+    Ok(DeviceTunnelTarget::AndroidTvDemux(ref_atv, demux, http_buf)) => {
+      match devs.handle_android_tv_tunnel_bytes(ref_atv, demux, http_buf, "POST /action HTTP/1.1\r\nContent-Length: 2000000\r\n\r\n".to_bytes()) {
+        AndroidTvTunnelStep::HttpReply(resp) => edge_assert(resp.status == 413)
+        _ => panic("expected 413 HttpReply")
       }
     }
     _ => panic("expected AndroidTvDemux")
   }
 
-  // device_control_with_fs for AirPlay action, AirPlay stream_audio, & Android TV screenshot
+  // device_control_with_fs for AirPlay action, AirPlay stream_audio (with lstat size check), & Android TV screenshot
   let mem_files : Map[String, Bytes] = Map::new()
   mem_files.set("/mem/song.mp3", "ID3audio".to_bytes())
+  let read_calls : Array[Int] = [0]
   let mem_fs = DeviceFsPort::{
+    stat_size: fn(p : String) -> Result[Int64, String] {
+      if p == "/mem/huge.wav" {
+        return Ok(station_devices::AIRPLAY_MAX_AUDIO_BYTES.to_int64() + 1L)
+      }
+      match mem_files.get(p) {
+        Some(b) => Ok(b.length().to_int64())
+        None => Err("not a regular file: " + p)
+      }
+    },
     read_file: fn(p : String) -> Result[Bytes, String] {
+      read_calls[0] = read_calls[0] + 1
       match mem_files.get(p) {
         Some(b) => Ok(b)
         None => Err("not found: " + p)
@@ -1283,6 +1318,10 @@ test "w17b4_devices_os_airplay_android_tv_serial_tunnel_creds_and_control" {
     },
     tmpdir: fn() -> String { "/mem/tmp" },
   }
+  // P3-9: oversized audio rejected by stat_size BEFORE read_file is called!
+  edge_assert(devs.control_device_with_fs(mem_fs, "ws-a", tmp_root, "Apple TV", "stream_audio", None, Some("/mem/huge.wav")) is Err(_))
+  edge_assert(read_calls[0] == 0)
+
   match devs.control_device_with_fs(mem_fs, "ws-a", tmp_root, "Apple TV", "remote", Some(base_codec::json_obj([("key", base_codec::json_str("home"))])), None) {
     Ok(out) => edge_assert(out.contains("\"action\":\"remote\""))
     Err(e) => panic("airplay control failed: " + e)
@@ -1299,6 +1338,40 @@ test "w17b4_devices_os_airplay_android_tv_serial_tunnel_creds_and_control" {
     }
     Err(e) => panic("atv screenshot failed: " + e)
   }
+
+  // P3-7: corrupt/AAD-mismatched credentials propagate 401 auth_failed (never silently swallowed as None)
+  enc_files.set("1000000000000004", "{\"v\":1,\"salt\":\"bad\",\"iv\":\"bad\",\"tag\":\"bad\",\"ciphertext\":\"bad\"}")
+  let bad_cred_resp = devs.handle_airplay_http(
+    AirPlayDeviceRefOs::{ id: "1000000000000004", ws: "ws-a", target: "AA:BB:CC:DD", name: "Apple TV" },
+    "GET",
+    "/status",
+    [],
+    Bytes::new(0),
+  )
+  edge_assert(bad_cred_resp.status == 401)
+  enc_files.remove("1000000000000004")
+
+  // P1-1: event-driven mDNS scan binds 0.0.0.0, uses disjoint >= 8<<32 monotonic ev_id, clamps 300..10000 / default 2500, expires in tick_expiry_with
+  let (ev1, bind1, dl1) = devs.start_android_tv_mdns_scan_virtual(1000L)
+  edge_assert(bind1 == "0.0.0.0")
+  edge_assert(ev1 == MDNS_EVENT_ID_BASE && ev1 >= 34359738368L)
+  edge_assert(dl1 == 3500L) // 1000 + 2500 default
+  let (ev2, _, dl2) = devs.start_android_tv_mdns_scan_virtual(1000L, timeout_ms=50L)
+  edge_assert(ev2 == ev1 + 1L && dl2 == 1300L) // clamped to 300ms min
+  edge_assert(devs.active_mdns_scan_count() == 2)
+  // Expire ev2 at 1400ms while ev1 stays active until 3500ms
+  let _ = devs.tick_expiry_with(1400L, 1400L, fn(_pk : PendingProcKill) -> Unit {})
+  edge_assert(devs.active_mdns_scan_count() == 1)
+  edge_assert(devs.take_android_tv_mdns_result(ev2) is Some(_))
+  edge_assert(devs.take_android_tv_mdns_result(ev1) is None)
+  let _ = devs.tick_expiry_with(3500L, 3500L, fn(_pk : PendingProcKill) -> Unit {})
+  edge_assert(devs.active_mdns_scan_count() == 0)
+  edge_assert(devs.take_android_tv_mdns_result(ev1) is Some(_))
+
+  // P2-5: unconfigured data_dir fails closed (never falls back to /tmp)
+  let uncfg = DevicesOsRuntime::new(now_fn=mock_now)
+  edge_assert(uncfg.android_tv_adb_socket_path() is Err(_))
+  edge_assert(uncfg.android_tv_adb_key_dir() is Err(_))
 
   // 4. tick_expiry_with expires BOTH AirPlay and Android TV pairing sessions
   edge_assert(devs.airplay_pairing.start("ws-a", "AA:BB", None, None, None, ["airplay"], Some("ap_t"), true, 1000L) is Ok(_))

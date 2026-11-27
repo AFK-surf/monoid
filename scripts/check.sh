@@ -656,7 +656,9 @@ if part ts; then
           // `client/shell` `"tcp.listen"` is hardcoded to 127.0.0.1 or inherited fd in Rust (`client/shell/src/net.rs` `"tcp.listen"`);
           // allow it unless an explicit non-local address or `"host":` key appears in the call.
           const isShellTcpListen = token === "\"tcp.listen\"" && !explicitHostKeyRe.test(call);
-          if (nonLocalBindRe.test(call) || (!isShellTcpListen && !listenAllowedRe.test(call))) {
+          // Ephemeral port-0 UDP sockets for outbound LAN mDNS discovery bind `0.0.0.0:0` and close on timeout.
+          const isEphemeralUdpBind = /\budp_bind\s*\(/.test(token) && /,\s*"0\.0\.0\.0"\s*,\s*0\s*\)$/.test(call);
+          if (!isEphemeralUdpBind && (nonLocalBindRe.test(call) || (!isShellTcpListen && !listenAllowedRe.test(call)))) {
             violations.push(`${file}:${ln}: listeners on this machine only (${rawLines[ln - 1].trim()})`);
           }
         }

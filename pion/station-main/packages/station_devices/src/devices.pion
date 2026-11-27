@@ -1212,6 +1212,135 @@ pub fn device_http_header_get(headers : Array[(String, String)], name_lower : St
   None
 }
 
+// ── Streaming HTTP/1.1 Request Accumulator for Android TV Tunnels ──
+
+pub enum HttpAccumStep {
+  NeedMore
+  Ready(ParsedDeviceHttpRequest)
+  TooLarge
+  BadRequest(String)
+  AlreadyResponded
+}
+
+/// Incremental single-request HTTP/1.1 accumulator (`Connection: close`):
+/// - Buffers chunks until `\r\n\r\n` + full `Content-Length` body bytes arrive
+/// - Rejects headers or `Content-Length` / body exceeding `max_body_bytes` immediately with `TooLarge` (413)
+/// - Emits `Ready` at most once, then discards all trailing bytes (`AlreadyResponded`)
+pub struct AndroidTvHttpBuffer {
+  max_body_bytes : Int
+  mut buf : Bytes
+  mut header_end : Int
+  mut content_length : Int
+  mut responded : Bool
+}
+
+pub fn AndroidTvHttpBuffer::new(max_body_bytes : Int = ATV_MAX_JSON_BYTES) -> AndroidTvHttpBuffer {
+  AndroidTvHttpBuffer::{
+    max_body_bytes: if max_body_bytes > 0 { max_body_bytes } else { ATV_MAX_JSON_BYTES },
+    buf: Bytes::new(0),
+    header_end: -1,
+    content_length: -1,
+    responded: false,
+  }
+}
+
+pub fn AndroidTvHttpBuffer::is_responded(self : AndroidTvHttpBuffer) -> Bool {
+  self.responded
+}
+
+fn find_crlf_crlf(raw : Bytes) -> Int {
+  let n = raw.length()
+  let mut i = 0
+  while i + 3 < n {
+    if (raw[i].to_int() & 0xFF) == 0x0D &&
+    (raw[i + 1].to_int() & 0xFF) == 0x0A &&
+    (raw[i + 2].to_int() & 0xFF) == 0x0D &&
+    (raw[i + 3].to_int() & 0xFF) == 0x0A {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+pub fn AndroidTvHttpBuffer::push(self : AndroidTvHttpBuffer, chunk : Bytes, is_eof : Bool) -> HttpAccumStep {
+  if self.responded {
+    return HttpAccumStep::AlreadyResponded
+  }
+  if chunk.length() > 0 {
+    self.buf = if self.buf.length() == 0 { chunk } else { concat_bytes([self.buf, chunk]) }
+  }
+  if self.header_end < 0 {
+    let he = find_crlf_crlf(self.buf)
+    if he < 0 {
+      if self.buf.length() > self.max_body_bytes {
+        self.responded = true
+        self.buf = Bytes::new(0)
+        return HttpAccumStep::TooLarge
+      }
+      if is_eof {
+        self.responded = true
+        self.buf = Bytes::new(0)
+        return HttpAccumStep::BadRequest("incomplete HTTP/1.1 request headers")
+      }
+      return HttpAccumStep::NeedMore
+    }
+    self.header_end = he
+    let head_only = sub_bytes(self.buf, 0, he + 4)
+    let head_parsed = match parse_device_http_request(head_only) {
+      Ok(r) => r
+      Err(msg) => {
+        self.responded = true
+        self.buf = Bytes::new(0)
+        return HttpAccumStep::BadRequest(msg)
+      }
+    }
+    match device_http_header_get(head_parsed.headers, "content-length") {
+      Some(cl_str) => {
+        match parse_uint_decimal(trim_ascii(cl_str)) {
+          Some(cl) => {
+            if cl < 0 || cl > self.max_body_bytes {
+              self.responded = true
+              self.buf = Bytes::new(0)
+              return HttpAccumStep::TooLarge
+            }
+            self.content_length = cl
+          }
+          None => {
+            self.responded = true
+            self.buf = Bytes::new(0)
+            return HttpAccumStep::BadRequest("invalid Content-Length header")
+          }
+        }
+      }
+      None => self.content_length = 0
+    }
+  }
+  let body_start = self.header_end + 4
+  let body_have = self.buf.length() - body_start
+  if body_have > self.max_body_bytes {
+    self.responded = true
+    self.buf = Bytes::new(0)
+    return HttpAccumStep::TooLarge
+  }
+  if body_have < self.content_length {
+    if is_eof {
+      self.responded = true
+      self.buf = Bytes::new(0)
+      return HttpAccumStep::BadRequest("truncated HTTP/1.1 request body")
+    }
+    return HttpAccumStep::NeedMore
+  }
+  let exact_end = body_start + self.content_length
+  let full_req = sub_bytes(self.buf, 0, exact_end)
+  self.responded = true
+  self.buf = Bytes::new(0)
+  match parse_device_http_request(full_req) {
+    Ok(req) => HttpAccumStep::Ready(req)
+    Err(msg) => HttpAccumStep::BadRequest(msg)
+  }
+}
+
 // ── Unified Device Add / Rebind Commit Helpers (`android-tv/pairing.ts:340-459`) ──
 
 pub struct DeviceCredentialPort {

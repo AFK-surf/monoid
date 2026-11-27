@@ -1842,6 +1842,10 @@ pub fn der_set(items : Array[Bytes]) -> Bytes {
 }
 
 pub fn der_integer(buf : Bytes) -> Bytes {
+  if buf.length() == 0 {
+    let z = Bytes::new(1)
+    return der_tag(0x02, z)
+  }
   let trimmed = strip_leading_zeros(buf)
   if trimmed.length() > 0 && (trimmed[0].to_int() & 0x80) != 0 {
     let z = Bytes::new(1)
@@ -1993,7 +1997,8 @@ fn read_der_tlv(buf : Bytes, offset : Int) -> Result[DerTlv, String] {
     len = b1
   } else {
     let n_bytes = b1 & 0x7F
-    if n_bytes == 0 || n_bytes > 4 || pos + n_bytes > buf.length() {
+    // Cap at 3 length bytes (max 16 MiB) to prevent signed 32-bit Int overflow on 4-byte lengths.
+    if n_bytes == 0 || n_bytes > 3 || pos + n_bytes > buf.length() {
       return Err("invalid DER length")
     }
     let mut i = 0
@@ -2003,7 +2008,7 @@ fn read_der_tlv(buf : Bytes, offset : Int) -> Result[DerTlv, String] {
     }
     pos = pos + n_bytes
   }
-  if pos + len > buf.length() {
+  if len < 0 || pos + len > buf.length() {
     return Err("DER content exceeds buffer")
   }
   Ok(DerTlv::{ tag, content: sub_bytes(buf, pos, pos + len), next: pos + len })
@@ -2493,6 +2498,20 @@ pub fn apply_atv_remote_server_msg(state : AtvRemoteState, msg : DecodedRemoteMe
   }
 }
 
+fn json_num_floor_opt(j : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(d, _)) => Some(d.floor().to_int())
+    _ => None
+  }
+}
+
+fn json_num_round_opt(j : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(d, _)) => Some(d.round().to_int())
+    _ => None
+  }
+}
+
 /// Build framed Remote v2 outbound protobuf packets and JSON control result (`remote-client.ts:387-501`).
 pub fn build_atv_remote_control_frames(
   state : AtvRemoteState,
@@ -2571,7 +2590,7 @@ pub fn build_atv_remote_control_frames(
       Some(s) => to_ascii_lower(trim_ascii(s))
       None => "single"
     }
-    let rep_raw = match json_int_opt(args, "repeat") {
+    let rep_raw = match json_num_floor_opt(args, "repeat") {
       Some(n) => n
       None => 1
     }
@@ -2667,7 +2686,7 @@ pub fn build_atv_remote_control_frames(
       }
       _ => ()
     }
-    match json_int_opt(args, "level") {
+    match json_num_round_opt(args, "level") {
       Some(raw_lvl) => {
         let target = if raw_lvl < 0 { 0 } else if raw_lvl > 100 { 100 } else { raw_lvl }
         match (state.volume_level, state.volume_max) {
@@ -2982,7 +3001,21 @@ pub fn parse_adb_status_dumps(
   base_codec::json_obj(fields)
 }
 
+/// Compute the `cmd media_session volume --stream 3 --set <idx>` command from a 0..100 `level`
+/// and the output of `cmd media_session volume --stream 3 --get` (`adb-client.ts:479-488`).
+pub fn build_adb_volume_set_command(level : Int, vol_dump : String) -> (Array[String], Int, Int) {
+  let clamped = if level < 0 { 0 } else if level > 100 { 100 } else { level }
+  let max_vol = match parse_adb_volume_dump(vol_dump) {
+    Some((_, _, vmax)) => if vmax > 0 { vmax } else { 15 }
+    None => 15
+  }
+  let idx = (clamped * max_vol + 50) / 100
+  (["cmd", "media_session", "volume", "--stream", "3", "--set", idx.to_string()], idx, max_vol)
+}
+
 /// Build validated ADB shell command arg lists for an Android TV control action (`adb-client.ts:395-512`).
+/// For `launch` with a package name, returns `[primary_leanback, fallback_launcher]` so the executor
+/// falls back to `android.intent.category.LAUNCHER` if `LEANBACK_LAUNCHER` fails.
 pub fn build_adb_control_commands(
   action : String,
   args : base_codec::Json,
@@ -3011,7 +3044,7 @@ pub fn build_adb_control_commands(
       Some(s) => to_ascii_lower(trim_ascii(s))
       None => "single"
     }
-    let rep_raw = match json_int_opt(args, "repeat") {
+    let rep_raw = match json_num_floor_opt(args, "repeat") {
       Some(n) => n
       None => 1
     }
@@ -3057,10 +3090,43 @@ pub fn build_adb_control_commands(
     if !is_valid_android_pkg_name(app) {
       return Err(AndroidTvError::{ code: "invalid_params", message: "invalid Android package name: " + app })
     }
-    return Ok([["monkey", "-p", app, "-c", "android.intent.category.LEANBACK_LAUNCHER", "1"]])
+    return Ok([
+      ["monkey", "-p", app, "-c", "android.intent.category.LEANBACK_LAUNCHER", "1"],
+      ["monkey", "-p", app, "-c", "android.intent.category.LAUNCHER", "1"],
+    ])
   }
   if action == "playing" {
     return Ok([["dumpsys", "media_session"]])
+  }
+  if action == "volume" {
+    let is_mute = match json_bool_opt(args, "mute") {
+      Some(true) => true
+      _ => {
+        match json_str_opt(args, "action") {
+          Some(a) => a == "mute"
+          None => false
+        }
+      }
+    }
+    if is_mute {
+      return Ok([["input", "keyevent", "164"]])
+    }
+    match json_str_opt(args, "action") {
+      Some("up") => return Ok([["input", "keyevent", "24"]])
+      Some("down") => return Ok([["input", "keyevent", "25"]])
+      _ => ()
+    }
+    match json_num_round_opt(args, "level") {
+      Some(raw_lvl) => {
+        let vol_dump = match json_str_opt(args, "volumeDump") {
+          Some(d) => d
+          None => ""
+        }
+        let (set_cmd, _, _) = build_adb_volume_set_command(raw_lvl, vol_dump)
+        return Ok([["cmd", "media_session", "volume", "--stream", "3", "--get"], set_cmd])
+      }
+      None => return Ok([["cmd", "media_session", "volume", "--stream", "3", "--get"]])
+    }
   }
   if action == "keyboard" {
     let text = match json_str_opt(args, "text") {
