@@ -68,7 +68,7 @@ pub fn liquid_dialog_surface_decorate(@view.View, radius? : Double, solid? : () 
 
 pub fn liquid_drawer_glass(solid? : Int64) -> @paint.Glass
 
-pub fn liquid_drawer_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool) -> @view.View
+pub fn liquid_drawer_surface_decorate(@view.View, radius? : Double, active? : () -> Bool, strength? : () -> Double, solid? : () -> Int64, shadow? : () -> (Double, Double, Int64), solid_edge? : () -> (Double, Int64), clips? : Bool) -> @view.View
 
 pub fn liquid_floating_glass(tint? : Int64?, solid? : Int64, spot? : (Double, Double)?, sharing? : Bool) -> @paint.Glass
 

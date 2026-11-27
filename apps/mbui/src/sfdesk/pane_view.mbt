@@ -778,7 +778,7 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
         list_band: 0.0,
         bar: false,
         tape: false,
-        glass: false,
+        glass: 0.0,
       }
   }
 }

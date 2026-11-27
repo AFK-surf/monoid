@@ -251,3 +251,38 @@ test "drawer_surface_decorate gates glass, shadow, and solid-mode hairline by ac
   @ui.set_glass_solid(None)
   set_dark(None)
 }
+
+
+///|
+test "drawer_surface_decorate smoothly scales glass strength and shadow across [0, 1]" {
+  let k = @signals.signal(0.0)
+  let t = @ui.Tester::new(fn(_) { () }, w=800.0, h=600.0, dark=false, platform=0)
+  set_dark(Some(false))
+  @ui.set_glass_solid(None)
+  @ui.set_view_app(
+    fn(root) {
+      root.box(fn(v) {
+        v.width(Is(Some(240.0))).height(Is(Some(400.0))) |> ignore
+        drawer_surface_decorate(v, strength=fn() { k.get() }, solid=fn() { theme().p.bg }, clips=false) |> ignore
+      })
+      |> ignore
+    },
+    theme=ui_theme_now,
+  )
+  t.draw()
+  assert_eq((t.drawn_glass().length(), outside_shadows(t)), (0, []))
+  k.set(0.5)
+  t.draw()
+  let mid_shadows = outside_shadows(t)
+  let (full_sigma, full_dy, full_col) = glass_overlay_shadow()
+  assert_eq(t.drawn_glass().length(), 1)
+  assert_eq(mid_shadows.length(), 1)
+  assert_true((mid_shadows[0].0 - full_sigma * 0.5).abs() < 0.01)
+  assert_true((mid_shadows[0].1 - full_dy * 0.5).abs() < 0.01)
+  assert_true((mid_shadows[0].2 & 0xFFL) < (full_col & 0xFFL))
+  k.set(1.0)
+  t.draw()
+  assert_eq((t.drawn_glass().length(), outside_shadows(t)), (1, [glass_overlay_shadow()]))
+  @ui.set_glass_solid(None)
+  set_dark(None)
+}

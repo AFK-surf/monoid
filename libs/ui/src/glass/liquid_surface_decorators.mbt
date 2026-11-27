@@ -353,6 +353,7 @@ pub fn liquid_drawer_surface_decorate(
   v : @view.View,
   radius? : Double,
   active? : () -> Bool = fn() { true },
+  strength? : () -> Double,
   solid? : () -> Int64,
   shadow? : () -> (Double, Double, Int64) = fn() { shadow_default },
   solid_edge? : () -> (Double, Int64) = liquid_overlay_solid_edge,
@@ -365,23 +366,31 @@ pub fn liquid_drawer_surface_decorate(
   if clips {
     v.clips(Is(true)) |> ignore
   }
+  let level = match strength {
+    Some(f) => fn() { if active() { clamp(f(), 0.0, 1.0) } else { 0.0 } }
+    None => fn() { if active() { 1.0 } else { 0.0 } }
+  }
   v
   .glass(
     By(fn() {
-      if !active() {
+      let k = level()
+      if k <= 0.001 {
         return None
       }
       let s = match solid {
         Some(f) => f()
         None => clear
       }
-      Some(liquid_drawer_glass(solid=s))
+      let base = liquid_drawer_glass(solid=s)
+      Some(if k >= 0.999 { base } else { base.at_strength(k) })
     }),
   )
   .edge(
     By(fn() {
-      if active() && v.glass_solid() {
-        solid_edge()
+      let k = level()
+      if k > 0.001 && v.glass_solid() {
+        let (w, c) = solid_edge()
+        (w, if k >= 0.999 { c } else { alpha(c, k) })
       } else {
         (0.0, clear)
       }
@@ -389,10 +398,14 @@ pub fn liquid_drawer_surface_decorate(
   )
   .shadow(
     By(fn() {
-      if active() {
+      let k = level()
+      if k <= 0.001 {
+        shadow_none
+      } else if k >= 0.999 {
         shadow()
       } else {
-        shadow_none
+        let (sigma, dy, color) = shadow()
+        (sigma * k, dy * k, alpha(color, k))
       }
     }),
   )

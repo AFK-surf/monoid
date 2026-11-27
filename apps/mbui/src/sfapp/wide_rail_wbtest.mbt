@@ -1374,3 +1374,51 @@ test "wide: folded rail blends into theme background at rest and switches to tra
     assert_eq(t.contrast_faults(), [])
   }
 }
+
+
+///|
+test "wide: dismissing the peeking glass drawer fades glass and shadow smoothly before reaching the narrow rail" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, window_inset=true)
+  t.key(@ui.key_of_char('\\'), mods=@ui.mod_cmd)
+  t.move_to(1000.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  // Enter hover peek
+  let (rx, ry, rw, rh) = t.query(Button, label="文件").unwrap().rect
+  t.move_to(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@sfdesk.peek_enter_ms)
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfdesk.wide.peeking.get())
+  // Leave the drawer to trigger dismiss
+  t.move_to(1000.0, 400.0)
+  t.frame()
+  t.run_for(@sfdesk.peek_leave_ms)
+  t.frame()
+  assert_false(@sfdesk.wide.peeking.get())
+  // Sample mid-dismiss frames: glass strength must fade strictly below full (1.0) while narrowing,
+  // and must already be None (dissolved) once the bar narrows close to the resting rail width.
+  let mut mid_frames = 0
+  let mut lingered_narrow_glass = false
+  let _ = t.sample_frames(@ui.move_most_ms, fn(_tt, _ms) {
+    for d in @ui.view_tree().unwrap().drawn() {
+      if d.x == @sfdesk.closed_bar_in && d.h > 400.0 {
+        match d.glass {
+          Some(gl) => {
+            if gl.strength > 0.01 && gl.strength < 0.95 {
+              mid_frames = mid_frames + 1
+            }
+            if d.w < 72.0 {
+              lingered_narrow_glass = true
+            }
+          }
+          None => ()
+        }
+      }
+    }
+  })
+  assert_true(mid_frames >= 2, msg="expected >=2 intermediate fading glass frames during peek dismiss, got \{mid_frames}")
+  assert_false(lingered_narrow_glass, msg="glass must dissolve before drawer reaches narrow rail width (<72px)")
+  assert_eq(t.corner_faults(), [])
+  assert_eq(t.contrast_faults(), [])
+}

@@ -445,7 +445,7 @@ fn dock_side_at(
     list_band: f.band,
     bar,
     tape: false,
-    glass: !wide.tape.get() && f.glass > 0.01,
+    glass: if wide.tape.get() { 0.0 } else { dock_glass_strength(f.glass) },
   }
 }
 
@@ -490,11 +490,21 @@ fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit, gro
         None => {
           // (a signal of its own, so a window made shorter or wider, which moves `at`, wakes none of the glass's,
           // edge's or shadow's bindings: only the block peeking or not does)
-          let glass_on = @signals.computed(fn(_) { at().glass }, same=fn(a, b) { a == b })
-          g.owns(fn() { glass_on.dispose() }) |> ignore
-          let peek_glass = fn() { if @signals.active_sub() is None { at().glass } else { glass_on.get() } }
-          g.ground(By(fn() { if peek_glass() { 0L } else { at().ground } })) |> ignore
-          @sf.drawer_surface_decorate(g, active=peek_glass, solid=closed_ground, clips=false) |> ignore
+          let glass_level_c = @signals.computed(fn(_) { at().glass }, same=fn(a, b) { a == b })
+          g.owns(fn() { glass_level_c.dispose() }) |> ignore
+          let peek_glass = fn() { if @signals.active_sub() is None { at().glass } else { glass_level_c.get() } }
+          g.ground(By(fn() {
+            let k = peek_glass()
+            if k <= 0.001 {
+              at().ground
+            } else if k >= 0.999 {
+              0L
+            } else {
+              @sf.alpha(at().ground, 1.0 - k)
+            }
+          }))
+          |> ignore
+          @sf.drawer_surface_decorate(g, strength=peek_glass, solid=closed_ground, clips=false) |> ignore
         }
       }
       dock_round_node(g, at)
@@ -586,7 +596,22 @@ priv struct SideAt {
   list_band : Double
   bar : Bool
   tape : Bool
-  glass : Bool
+  glass : Double
+}
+
+///|
+/// Smoothly maps `FoldLook.glass` (`0..1`) to the drawer glass materialisation strength: dissolves cleanly to `0.0`
+/// before the shrinking drawer narrows down to the resting rail (`g <= 0.14`) so no narrow glass strip lingers or
+/// snaps off at the end of a dismiss, and materialises smoothly with zero-slope easing as the drawer slides out.
+fn dock_glass_strength(g : Double) -> Double {
+  if g <= 0.14 {
+    0.0
+  } else if g >= 1.0 {
+    1.0
+  } else {
+    let u = (g - 0.14) / 0.86
+    u * u * (3.0 - 2.0 * u)
+  }
 }
 
 ///|

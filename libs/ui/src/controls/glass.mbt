@@ -227,12 +227,14 @@ pub fn drawer_surface_decorate(
   radius? : Double,
   solid? : () -> Int64,
   active? : () -> Bool = fn() { true },
+  strength? : () -> Double,
   clips? : Bool = false,
 ) -> @view.View {
   @glass.liquid_drawer_surface_decorate(
     v,
     radius?,
     active~,
+    strength?,
     solid=match solid {
       Some(f) => f
       None => panel_ground
