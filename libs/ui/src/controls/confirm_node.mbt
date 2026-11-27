@@ -460,7 +460,7 @@ let dialog_facts_kv : @ui.Style = @ui.css("row w=Full gap=S2 align=AFirstLine")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let dialog_facts_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O75))))
+let dialog_facts_key : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, dark=@ui.text_patch(color=Over(Muted, A(Fg, O95))))
 
 ///|
 // kept across runs: a value (no field of it changes)

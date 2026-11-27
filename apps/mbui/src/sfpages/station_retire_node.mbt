@@ -223,7 +223,9 @@ pub fn station_retire_panel(core : Core, here : Here, s : Json?, preview : Json)
     from=Unanchored,
     form=true,
     fn(v, _) {
-      @sf.dialog_facts_card_node(v, [(@sf.t("common.confirmFact.sourceStation"), text(s, "name"))])
+      station_info_card_node(v, [
+        station_info_from_core(core, address, text(s, "name"), row=fn() { s }, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),
+      ])
       // where they go: the station chosen, or none up to choose
       ws_way_row_node(
         v,

@@ -3047,5 +3047,6 @@
   "web-pages.devices.revokeTitle": "Revoke access",
   "web-pages.devices.detailTitle": "Device details",
   "web-pages.archivePolicy.editOption": "Edit option",
-  "web-pages.devices.label.name": "Name"
+  "web-pages.devices.label.name": "Name",
+  "web-pages.stations.online": "Online"
 }

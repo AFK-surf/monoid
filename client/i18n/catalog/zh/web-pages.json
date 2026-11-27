@@ -2990,5 +2990,6 @@
   "web-pages.devices.revokeTitle": "收回设备权限",
   "web-pages.devices.detailTitle": "设备详情",
   "web-pages.archivePolicy.editOption": "编辑选项",
-  "web-pages.devices.label.name": "名称"
+  "web-pages.devices.label.name": "名称",
+  "web-pages.stations.online": "在线"
 }

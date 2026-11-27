@@ -1027,7 +1027,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-station-move-empty": (383, 281, 48),
   "phone settings-station-move-none": (368, 270, 47),
   // Raised 2026-11-17: what it opens with up a sheet of the window's tree on 小屏 (as phone newchat-preset's).
-  "phone settings-station-move-all": (638, 470, 74),
+  // Raised 2026-11-27: move-all confirm now shows the live 2-station StationInfoCard (source + target).
+  "phone settings-station-move-all": (686, 505, 84),
   "phone settings-station-move-section": (572, 399, 68),
   "phone settings-station-move-offered": (572, 399, 68),
   "wide settings-station-move": (739, 571, 73),
@@ -1035,7 +1036,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-station-move-ended": (897, 664, 89),
   "wide settings-station-move-empty": (514, 407, 50),
   "wide settings-station-move-none": (497, 394, 49),
-  "wide settings-station-move-all": (762, 591, 77),
+  // Raised 2026-11-27: move-all confirm now shows the live 2-station StationInfoCard (source + target).
+  "wide settings-station-move-all": (849, 658, 93),
   "wide settings-station-move-section": (791, 608, 107),
   "wide settings-station-move-offered": (791, 608, 107),
   "phone settings-station-terminals": (572, 399, 68),

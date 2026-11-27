@@ -551,20 +551,40 @@ pub fn station_move_all_confirm(core : Core, address : String, v : Json?, back :
     "" => to
     n => n
   }
+  let to_addr = if to.contains("/") || to == "" { to } else { @sfbase.workspace_of(address) + "/" + to }
+  let from_name = @settings.station_name(address)
   let action = @sf.t(if back { "web-pages.stations.move.allBack" } else { "web-pages.stations.move.all" })
-  @sf.confirm(
+  let summary = text(all, "text")
+  let stations = if back {
+    [
+      station_info_from_core(core, to_addr, to_name, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),
+      station_info_from_core(core, address, from_name, role=@sf.t("common.confirmFact.targetStation"), show=StationInfoShow::target()),
+    ]
+  } else {
+    [
+      station_info_from_core(core, address, from_name, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),
+      station_info_from_core(core, to_addr, to_name, role=@sf.t("common.confirmFact.targetStation"), show=StationInfoShow::target()),
+    ]
+  }
+  open_dialog_nodes(
     action,
-    text(all, "text"),
-    action,
-    facts=[
-      (@sf.t(if back { "common.confirmFact.sourceStation" } else { "common.confirmFact.targetStation" }), to_name),
-    ],
-    fn() {
-      if back {
-        @settings.act(core, @sf.t("web-pages.stations.move.allBack"), "move.back", obj([("station", str(address)), ("from", str(to)), ("all", Json::boolean(true))]))
-      } else {
-        @settings.act(core, @sf.t("web-pages.stations.move.all"), "move.start", obj([("station", str(address)), ("to", str(to)), ("all", Json::boolean(true))]))
+    fn(body, _) {
+      station_info_card_node(body, stations)
+      if summary != "" {
+        @sf.words_node(body, fn() { summary }, fn() { st_memory }) |> ignore
       }
+    },
+    fn(foot, shut) {
+      @sf.button_node(foot, fn() { @sf.t("common.cancel") }, shut, tone=Ghost) |> ignore
+      @sf.button_node(foot, fn() { action }, fn() {
+        shut()
+        if back {
+          @settings.act(core, @sf.t("web-pages.stations.move.allBack"), "move.back", obj([("station", str(address)), ("from", str(to)), ("all", Json::boolean(true))]))
+        } else {
+          @settings.act(core, @sf.t("web-pages.stations.move.all"), "move.start", obj([("station", str(address)), ("to", str(to)), ("all", Json::boolean(true))]))
+        }
+      }, tone=Primary)
+      |> ignore
     },
   )
 }
