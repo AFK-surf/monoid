@@ -7,7 +7,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('../../web/host.js', import.meta.url), 'utf8');
 
-function makeBrowser({ parallel = true, webdriver = false, search = '', failNextLink = null } = {}) {
+function makeBrowser({ parallel = true, webdriver = false, search = '', failNextLink = null, onFrame = null } = {}) {
   const element = () => ({
     style: {},
     listeners: new Map(),
@@ -26,6 +26,9 @@ function makeBrowser({ parallel = true, webdriver = false, search = '', failNext
     const ops = [];
     const shaderSrc = new Map();
     const progShaders = new Map();
+    const createdProgs = new Set();
+    const createdShaders = new Set();
+    const createdVs = new Set();
     const deletedProgs = new Set();
     const deletedShaders = new Set();
     const gl = new Proxy({
@@ -86,6 +89,8 @@ function makeBrowser({ parallel = true, webdriver = false, search = '', failNext
         if (name === 'createShader') {
           return (type) => {
             const s = { id: nextId++, type };
+            createdShaders.add(s.id);
+            if (type === 0x8b31) createdVs.add(s.id);
             ops.push(['createShader', s.id, type]);
             return s;
           };
@@ -118,6 +123,7 @@ function makeBrowser({ parallel = true, webdriver = false, search = '', failNext
         if (name === 'createProgram') {
           return () => {
             const p = { id: nextId++ };
+            createdProgs.add(p.id);
             progShaders.set(p.id, []);
             ops.push(['createProgram', p.id]);
             return p;
@@ -153,7 +159,7 @@ function makeBrowser({ parallel = true, webdriver = false, search = '', failNext
       },
     });
     return {
-      gl, ops, shaderSrc, progShaders, deletedProgs, deletedShaders,
+      gl, ops, shaderSrc, progShaders, createdProgs, createdShaders, createdVs, deletedProgs, deletedShaders,
       setLost(v) { lost = v; },
     };
   }
@@ -178,6 +184,7 @@ function makeBrowser({ parallel = true, webdriver = false, search = '', failNext
   };
 
   const popups = [];
+  const mainRafs = [];
   const win = {
     ...element(),
     document,
@@ -193,7 +200,7 @@ function makeBrowser({ parallel = true, webdriver = false, search = '', failNext
     queueMicrotask,
     devicePixelRatio: 2,
     performance: { now: () => 0 },
-    requestAnimationFrame() { return 1; },
+    requestAnimationFrame(cb) { mainRafs.push(cb); return mainRafs.length; },
     cancelAnimationFrame() {},
     setTimeout() { return 1; },
     getComputedStyle: () => ({ paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px' }),
@@ -210,12 +217,14 @@ function makeBrowser({ parallel = true, webdriver = false, search = '', failNext
         ...element(),
         title: '',
         body: element(),
+        head: element(),
         documentElement: element(),
         createElement: (tag) => (tag === 'canvas' ? pcanvas : element()),
         open() {},
         write() {},
         close() {},
       };
+      const rafs = [];
       const pwin = {
         ...element(),
         document: pdoc,
@@ -224,20 +233,22 @@ function makeBrowser({ parallel = true, webdriver = false, search = '', failNext
         innerHeight: 200,
         screenX: 0,
         screenY: 0,
-        requestAnimationFrame() { return 1; },
+        closed: false,
+        getComputedStyle: () => ({ paddingTop: '0px', paddingRight: '0px', paddingBottom: '0px', paddingLeft: '0px' }),
+        requestAnimationFrame(cb) { rafs.push(cb); return rafs.length; },
         cancelAnimationFrame() {},
         close() { this.closed = true; },
         focus() {},
       };
-      popups.push({ win: pwin, canvas: pcanvas, gl: pgl });
+      popups.push({ win: pwin, canvas: pcanvas, gl: pgl, rafs });
       return pwin;
     },
   };
   win.window = win;
   vm.runInNewContext(source, win, { filename: 'host.js' });
   const H = win.__mbhost;
-  H.run('test', () => {}, () => {}, () => {}, () => {}, () => {});
-  return { H, win, canvas, gl: mainGl, popups };
+  H.run('test', () => { if (onFrame) onFrame(H); }, () => {}, () => {}, () => {}, () => {});
+  return { H, win, canvas, gl: mainGl, popups, mainRafs };
 }
 
 const INST = 60;
@@ -268,6 +279,10 @@ test('setupGL batches compiles and links with zero getShaderParameter stalls and
   assert.equal(links.length, 4, 'setupGL submits 4 links in one batch (ui, flat, post, adaptive)');
   assert.equal(checks.length, 1, 'setupGL only queries LINK_STATUS for MB_PROG_UI, deferring flat/post/adaptive');
   assert.ok(checks[0] > links.at(-1), 'all 4 linkProgram calls are submitted before the first getProgramParameter');
+  assert.equal(b.gl.createdVs.size, 3, 'setupGL creates 3 shared vertex shaders (vs, vsAd, pvs)');
+  for (const id of b.gl.createdVs) {
+    assert.ok(!b.gl.deletedShaders.has(id), 'shared vertex shaders must not be deleted by finishLink');
+  }
 });
 
 test('first present prewarms all 7 lazy programs + veil in heavy-first order and draws adopt them without relinking', async () => {
@@ -323,6 +338,14 @@ test('first present prewarms all 7 lazy programs + veil in heavy-first order and
     linksAfterPrewarm,
     'drawing merged liquid glass adopts pending programs without creating or relinking any program',
   );
+  assert.equal(
+    b.gl.ops.filter((op) => op[0] === 'useProgram' && op[1] === null).length,
+    0,
+    'drawing merged liquid + blur + adaptive must finalize post/adProg before useProgram (never useProgram(null))',
+  );
+  for (const id of b.gl.createdVs) {
+    assert.ok(!b.gl.deletedShaders.has(id), 'shared vertex shaders remain alive after finalizing programs');
+  }
 });
 
 test('prewarm is disabled without KHR_parallel_shader_compile, under webdriver, or with shot_at', async () => {
@@ -361,10 +384,24 @@ test('webglcontextlost cancels queued prewarm and context restoration re-enables
   b.canvas.dispatch('webglcontextrestored', {});
   const linksAfterRestore = b.gl.ops.filter((op) => op[0] === 'linkProgram').length;
   b.H.present(makeInst(0, 0, 0), 1, 1, 1, 1);
+  // Queue prewarm on gen N, then restore immediately (isContextLost stays false) before microtask flushes:
+  // glGen mismatch alone must cancel the stale microtask from the old generation.
+  b.canvas.dispatch('webglcontextlost', { preventDefault() {} });
+  b.canvas.dispatch('webglcontextrestored', {});
+  const linksAfterFastRestore = b.gl.ops.filter((op) => op[0] === 'linkProgram').length;
   await flushMicrotasks();
   assert.equal(
     b.gl.ops.filter((op) => op[0] === 'linkProgram').length,
-    linksAfterRestore + 8,
+    linksAfterFastRestore,
+    'stale prewarm microtask is blocked by glGen mismatch even when isContextLost() is false',
+  );
+  assert.ok(linksAfterFastRestore > linksAfterRestore, 'fast restore ran fresh setupGL');
+
+  b.H.present(makeInst(0, 0, 0), 1, 1, 1, 1);
+  await flushMicrotasks();
+  assert.equal(
+    b.gl.ops.filter((op) => op[0] === 'linkProgram').length,
+    linksAfterFastRestore + 8,
     'restored context prewarms 7 lazy programs + veil',
   );
 });
@@ -387,9 +424,12 @@ test('link failure surfaces program and shader logs and deletes shader handles; 
     /prog:4:.*prog-log-.*shader-log-/s,
     'link failure includes program and fragment shader info logs',
   );
-  // Every fragment shader attached to a finalized program was deleted.
+  // Every fragment shader attached to a finalized program was deleted, while shared VS stay intact.
   const deleted = b.gl.deletedShaders.size;
   assert.ok(deleted >= 2, 'fragment shader handles are deleted even on link failure');
+  for (const id of b.gl.createdVs) {
+    assert.ok(!b.gl.deletedShaders.has(id), 'link failure must not delete shared vertex shaders');
+  }
 
   // If context is lost mid-draw, getProgramParameter returning false must not throw.
   const b2 = makeBrowser({ parallel: false });
@@ -398,18 +438,36 @@ test('link failure surfaces program and shader logs and deletes shader handles; 
 });
 
 test('closing a secondary window deletes all pending prewarmed programs and shaders', async () => {
-  const b = makeBrowser({ parallel: true });
-  const wid = b.H.windows(1, JSON.stringify({ title: 'aux', w: 200, h: 200 }));
+  const b = makeBrowser({
+    parallel: true,
+    onFrame(H) {
+      if (H.windows(4, 0, '') === 1) H.present(makeInst(0, 0, 0), 1, 1, 1, 1);
+    },
+  });
+  await flushMicrotasks();
+  const wid = b.H.windows(1, 0, JSON.stringify({ title: 'aux', w: 200, h: 200 }));
   assert.equal(wid, 1);
   assert.equal(b.popups.length, 1);
-  const pgl = b.popups[0].gl;
-  // Render a frame in the popup window to queue prewarm, then flush microtasks so pendingProgs are populated.
-  b.H.windows(4, '');
-  // Trigger popup's pending state directly by closing immediately after setupGL (pendingFlat/Post/Ad exist).
-  assert.ok(pgl.ops.filter((op) => op[0] === 'linkProgram').length >= 4);
+  const popup = b.popups[0];
+  const pgl = popup.gl;
+  assert.equal(pgl.createdProgs.size, 4, 'popup setupGL creates 4 startup programs');
+
+  // Drive one frame in the popup window (via main/popup rAF) and flush microtasks so all 7 lazy MB_PROG_* + veil are pending.
+  while (b.mainRafs.length || popup.rafs.length) {
+    while (b.mainRafs.length) b.mainRafs.shift()(16);
+    while (popup.rafs.length) popup.rafs.shift()(16);
+  }
+  await flushMicrotasks();
+  assert.equal(pgl.createdProgs.size, 12, 'popup prewarmed all 7 lazy MB_PROG_* + veil (12 total programs)');
+
+  // Closing the popup must delete EVERY created program (including pendingProgs + veil.pending + pending aux)
+  // and EVERY created shader (including shared vs/vsAd/pvs + all pending fragment shaders).
   b.H.windows(3, wid, '');
   await flushMicrotasks();
-  // Popup had 1 finalized prog (MB_PROG_UI) + 3 pending aux progs (flat, post, adaptive) + 3 shared VS + 3 pending FS.
-  assert.ok(pgl.deletedProgs.size >= 4, `expected >= 4 deleted programs on popup close, got ${pgl.deletedProgs.size}`);
-  assert.ok(pgl.deletedShaders.size >= 6, `expected >= 6 deleted shaders on popup close, got ${pgl.deletedShaders.size}`);
+  for (const pid of pgl.createdProgs) {
+    assert.ok(pgl.deletedProgs.has(pid), `popup program ${pid} was not deleted on close`);
+  }
+  for (const sid of pgl.createdShaders) {
+    assert.ok(pgl.deletedShaders.has(sid), `popup shader ${sid} was not deleted on close`);
+  }
 });

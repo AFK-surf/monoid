@@ -2889,6 +2889,8 @@
     return true;
   }
 
+  // Gate background prewarm on KHR_parallel_shader_compile as a driver-support signal; we intentionally do not poll
+  // COMPLETION_STATUS_KHR and instead let finishLink() block only if a shader is needed before background link finishes.
   function canPrewarm() {
     return !!(parallelExt && typeof parallelExt.COMPLETION_STATUS_KHR === 'number' &&
       shotAt < 0 && !globalThis.__mbrender &&
