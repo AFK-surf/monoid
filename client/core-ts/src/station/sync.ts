@@ -348,7 +348,7 @@ export class StationsSync {
       },
       afresh: (address, ctx) => this.snapshot(address, ctx),
       goesOn: (address, how) => this.#goesOn(address, how),
-      event: (address, name, raw, again) => this.onEvent(address, name, raw, again),
+      event: (address, name, raw, again, streamReadGen) => this.onEvent(address, name, raw, again, streamReadGen),
       toldMissed: (address) => this.#tally(address),
       changed: (address, what) => this.onChange(address, what),
       ratesOpened: (address, supported) => {
@@ -1223,11 +1223,14 @@ export class StationsSync {
     return this.#asked((read) => Effect.gen({ self: this }, function* () {
       if (!this.reachable(address) || !this.#links.has(address)) return unread?.();
       const link = this.#links.get(address)!;
+      const gen = this.#core.store.readGen(topic);
       const answer = yield* Effect.result(shape ? Effect.map(this.requests.call(link.addr, "GET", path, null, { quiet: true, ctx, noHedge }), (value) => ({ value: shape(value), changed: undefined })) : this.#whole(link, topic, path, ctx, noHedge));
       const key = topicKey(topic);
       if (answer._tag === "Success") {
+        if (this.#core.store.readGen(topic).authGen !== gen.authGen) return;
         link.errors.delete(key);
         this.#core.data.set(topic, answer.success.value, true, answer.success.changed);
+        this.#core.confirmWorkspaceAuth?.(ofAddress(address), topic, gen.authGen);
         if (topic.topic === "jobs" && !link.jobsRead) {
           link.jobsRead = true;
           this.onChange(address, "link");
@@ -1384,7 +1387,7 @@ export class StationsSync {
     });
   }
 
-  #archivedFrom(address: string, topic: Topic, page: string, read: unknown[], ctx: SpanContext | null, attempt = 0): Effect.Effect<void, CoreError> {
+  #archivedFrom(address: string, topic: Topic, page: string, read: unknown[], ctx: SpanContext | null, attempt = 0, startGen?: number): Effect.Effect<void, CoreError> {
     return this.#asked((asked) => Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link) return;
@@ -1395,14 +1398,22 @@ export class StationsSync {
         this.onChange(address, "link");
       };
       if (!this.reachable(address)) return stopped(null);
+      const ws = ofAddress(address);
+      const readGen = startGen ?? this.#core.store.authGen.workspaceAuthGen(ws);
       const said = yield* Effect.result(this.requests.call(link.addr, "GET", `/chats?archived=1&page=${encode(page)}`, null, { quiet: true, ctx }));
       if (said._tag === "Failure") {
         const { status, message } = said.failure;
         if ((status !== undefined && status < 500) || attempt >= READ_RETRIES) return stopped(message);
         const again = Effect.sleep(READ_RETRY_MS * 2 ** attempt).pipe(
-          Effect.andThen(Effect.sync(() => void this.#enqueue(address, `archived/${page}`, Priority.background, this.#archivedFrom(address, topic, page, read, null, attempt + 1)))),
+          Effect.andThen(Effect.sync(() => void this.#enqueue(address, `archived/${page}`, Priority.background, this.#archivedFrom(address, topic, page, read, null, attempt + 1, readGen)))),
         );
         this.#core.runner.fork(again, link.scoped);
+        return;
+      }
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== readGen) {
+        link.archivedCurrent = false;
+        link.archiveReading = false;
+        this.onChange(address, "link");
         return;
       }
       const answer = said.success;
@@ -1411,6 +1422,7 @@ export class StationsSync {
       if (Array.isArray(answer)) {
         link.archiveReading = false;
         this.#core.data.set(topic, answer);
+        this.#core.confirmWorkspaceAuth?.(ws, topic, readGen);
         this.#retell(address, asked);
         this.onChange(address, "link");
         return;
@@ -1425,12 +1437,16 @@ export class StationsSync {
       }
       const next = str(get(answer, "next"));
       const end = next === null ? null : Number(next.slice(0, next.indexOf(":")));
-      const held = end === null ? [] : arr(this.#core.data.shared(topic)).filter((r) => !seen.has(str(get(r, "id"))) && (u64(get(get(r, "archived"), "at")) ?? 0) < end);
+      // Never splice old `data.shared(topic)` tail while `archivedRows` is unconfirmed post-boundary.
+      const held = end === null || !this.#core.store.isAuthorized(topic)
+        ? []
+        : arr(this.#core.data.shared(topic)).filter((r) => !seen.has(str(get(r, "id"))) && (u64(get(get(r, "archived"), "at")) ?? 0) < end);
       if (next === null) link.archiveReading = false;
       this.#core.data.set(topic, [...rows, ...held]);
+      this.#core.confirmWorkspaceAuth?.(ws, topic, readGen);
       this.#retell(address, asked);
       if (next === null) this.onChange(address, "link");
-      else this.#enqueue(address, `archived/${next}`, Priority.background, this.#archivedFrom(address, topic, next, rows, null));
+      else this.#enqueue(address, `archived/${next}`, Priority.background, this.#archivedFrom(address, topic, next, rows, null, 0, readGen));
     }));
   }
 
@@ -1450,10 +1466,13 @@ export class StationsSync {
       if (!link || !this.reachable(address)) return;
       const topic: Topic = { topic: "drive", station: address, root, path };
       const key = topicKey(topic);
+      const gen = this.#core.store.readGen(topic);
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", `/drive/list?root=${encode(root)}&path=${encode(path)}`, null, { quiet: true, ctx }));
       if (answer._tag === "Success") {
+        if (this.#core.store.readGen(topic).authGen !== gen.authGen) return;
         const had = link.errors.delete(key);
         this.#core.data.set(topic, answer.success);
+        this.#core.confirmWorkspaceAuth?.(ofAddress(address), topic, gen.authGen);
         if (had) this.onChange(address, "errors", key);
       } else if (answer.failure.status !== undefined && answer.failure.status >= 400 && answer.failure.status < 500) {
         // Not there now: what was held of it is let go, for the refusal to be what is shown.
@@ -1604,7 +1623,17 @@ export class StationsSync {
       if (previous?.fiber) this.#core.runner.interrupt(previous.fiber);
       const active: { link: Link; fiber: Fiber.Fiber<void, never> | null } = { link, fiber: null };
       this.#usageReading.set(address, active);
-      const stillHere = () => this.#links.get(address) === link && this.#usageReading.get(address) === active;
+      const ws = ofAddress(address);
+      const readGen = this.#core.store.authGen.workspaceAuthGen(ws);
+      const stillHere = () => {
+        if (this.#links.get(address) !== link || this.#usageReading.get(address) !== active) return false;
+        if (this.#core.store.authGen.workspaceAuthGen(ws) !== readGen) {
+          link.usageCurrent = false;
+          link.usageFrom = null;
+          return false;
+        }
+        return true;
+      };
       const timeout = () => new CoreError("timeout", t("core-logic.mesh.timed_out"));
       const read = Effect.scoped(Effect.gen({ self: this }, function* () {
         const reply = yield* Effect.timeoutOrElse(this.requests.stream(link.addr, path, ctx), {
@@ -1617,6 +1646,7 @@ export class StationsSync {
           if (!stillHere() || !this.#core.store.inUse(topic)) return false;
           link.errors.delete(topicKey(topic));
           this.#core.data.set(topic, shape ? shape(value) : value);
+          this.#core.confirmWorkspaceAuth?.(ws, topic, readGen);
           return true;
         };
         if (!(replyHeader(reply, "content-type") ?? "").startsWith("text/event-stream")) {
@@ -1774,11 +1804,15 @@ export class StationsSync {
       let sliceAt = this.#core.host.monotonicMs();
       let sliced = 0;
       const left = new CoreError("gone", "");
+      const ws = ofAddress(address);
+      const batchReadGen = this.#core.store.authGen.workspaceAuthGen(ws);
       const onItem = (i: number, item: { status: number; body: unknown }) => Effect.gen({ self: this }, function* () {
         // A link may have been let go while another task ran between answers.
-        if (this.#links.get(address) !== link) return yield* Effect.fail(left);
+        if (this.#links.get(address) !== link || this.#core.store.authGen.workspaceAuthGen(ws) !== batchReadGen) {
+          return yield* Effect.fail(left);
+        }
         const read = batch[i]!;
-        const after = read.apply(item);
+        const after = read.apply(item, batchReadGen);
         applied = i + 1;
         if (after !== null && !link.historyAsked.has(after.path)) link.history.push(after);
         sliced++;
@@ -1842,7 +1876,7 @@ export class StationsSync {
         if (this.#links.get(address) !== link || link.historySweep !== sweep) return null;
         if (again) {
           const topic = { topic: "session", station: address, key };
-          reads.push({ path: sessionPath(key), cost: 1, apply: (a) => (this.#took(address, topic, a), null) });
+          reads.push({ path: sessionPath(key), cost: 1, apply: (a, readGen) => (this.#took(address, topic, a, readGen), null) });
         }
         if (this.#core.store.firstValuesPending() || ++sliced >= HISTORY_SLICE_ITEMS || this.#core.host.monotonicMs() - sliceAt >= HISTORY_SLICE_MS) {
           yield* this.#core.store.turn();
@@ -1908,13 +1942,16 @@ export class StationsSync {
   }
 
   /// A read of a held topic answered in a batch, as #read takes its answer (a 4xx while nothing is held is its error).
-  #took(address: string, topic: Topic, a: { status: number; body: unknown }): void {
+  #took(address: string, topic: Topic, a: { status: number; body: unknown }, readGen: number): void {
     const link = this.#links.get(address);
     if (!link) return;
+    const ws = ofAddress(address);
+    if (this.#core.store.authGen.workspaceAuthGen(ws) !== readGen) return;
     const key = topicKey(topic);
     if (a.status >= 200 && a.status < 300) {
       link.errors.delete(key);
       this.#core.data.set(topic, a.body);
+      this.#core.confirmWorkspaceAuth?.(ws, topic, readGen);
     } else if (a.status >= 400 && a.status < 500 && this.#core.data.shared(topic) === undefined) {
       link.errors.set(key, httpError(a.status, a.body));
       this.onChange(address, "errors", key);
@@ -2016,13 +2053,13 @@ export class StationsSync {
   // ── events ──
 
   /// `again`: told again as its stream resumed (link.ts), not as it happened.
-  onEvent(address: string, name: string, raw: string, again = false): void {
-    const apply = () => this.#onEvent(address, name, raw, again);
+  onEvent(address: string, name: string, raw: string, again = false, streamReadGen?: number): void {
+    const apply = () => this.#onEvent(address, name, raw, again, streamReadGen);
     const db = this.#core.data.of(address);
     timed(`event.${name}`, () => db ? db.fromStation(address, apply) : apply());
   }
 
-  #onEvent(address: string, name: string, raw: string, again: boolean): void {
+  #onEvent(address: string, name: string, raw: string, again: boolean, streamReadGen?: number): void {
     const data = parseJson(raw);
     if (data === undefined) return;
     const core = this.#core;
@@ -2050,8 +2087,9 @@ export class StationsSync {
       }
     }
     if (RETOLD.has(name)) {
-      this.#retold.told(address, name, data);
-      this.#held(address, name, data);
+      if (streamReadGen !== undefined && core.store.authGen.workspaceAuthGen(ofAddress(address)) !== streamReadGen) return;
+      this.#retold.told(address, name, data, streamReadGen);
+      this.#held(address, name, data, true, streamReadGen);
       return;
     }
     switch (name) {
@@ -2133,7 +2171,7 @@ export class StationsSync {
       case "made":
       case "chat-mark":
       case "chat-changed":
-        return this.#held(address, name, data);
+        return this.#held(address, name, data, true, streamReadGen);
       // The stream that took over could not be told all that came since the last its predecessor gave: read again.
       case "missed":
         return this.snapshot(address);
@@ -2202,7 +2240,7 @@ export class StationsSync {
 
   /// What a stream told of what reads bring too (RETOLD) into what is held: as it is told, and again on top of what a
   /// read asked before it brought (`#retell`).
-  #held(address: string, name: string, data: unknown, details = true): void {
+  #held(address: string, name: string, data: unknown, details = true, streamReadGen?: number): void {
     const core = this.#core;
     switch (name) {
       case "session":
@@ -2361,8 +2399,10 @@ export class StationsSync {
         if (this.#links.get(address)?.own && session !== null) this.#marksRead(address, { sessions: [session], threads: thread === null ? [] : [thread] });
         return;
       }
-      case "job":
-        return this.onJob(address, data);
+      case "job": {
+        if (streamReadGen === undefined || core.store.authGen.workspaceAuthGen(ofAddress(address)) !== streamReadGen) return;
+        return this.onJob(address, data, streamReadGen);
+      }
       case "job-removed": {
         const id = str(get(data, "id"));
         const key = str(get(data, "session"));
@@ -2375,8 +2415,15 @@ export class StationsSync {
         if (id) core.data.dropJob(address, id);
         return;
       }
-      case "overview":
-        return core.data.set({ topic: name, station: address }, data);
+      case "overview": {
+        const t = { topic: name, station: address };
+        const ws = ofAddress(address);
+        const curGen = core.store.authGen.workspaceAuthGen(ws);
+        if (streamReadGen === undefined || curGen !== streamReadGen) return;
+        core.data.set(t, data);
+        core.confirmWorkspaceAuth?.(ws, t, streamReadGen);
+        return;
+      }
     }
   }
 
@@ -2387,7 +2434,7 @@ export class StationsSync {
   #retell(address: string, read: number, shared = false, details = true): void {
     // Only a shared-list read replaces sharedRows. Replaying its events after an unrelated, slower read could put an
     // older row back over a newer shared-list answer.
-    for (const { name, data } of this.#retold.since(read, address)) if (SHARED_RETOLD.has(name) === shared) this.#held(address, name, data, details);
+    for (const { name, data, readGen } of this.#retold.since(read, address)) if (SHARED_RETOLD.has(name) === shared) this.#held(address, name, data, details, readGen);
   }
 
   /// A session's summary changed: in place among the listed (and in its detail); its detail is read again when its
@@ -2474,7 +2521,13 @@ export class StationsSync {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address) || this.#core.data.of(address) === undefined) return unread?.();
       const seq = ++link.sharedReadSeq;
-      const stale = () => this.#links.get(address) !== link || link.sharedReadSeq !== seq || this.#core.data.of(address) === undefined;
+      const ws = ofAddress(address);
+      const readGen = this.#core.store.authGen.workspaceAuthGen(ws);
+      const stale = () =>
+        this.#links.get(address) !== link ||
+        link.sharedReadSeq !== seq ||
+        this.#core.data.of(address) === undefined ||
+        this.#core.store.authGen.workspaceAuthGen(ws) !== readGen;
       const sameStrings = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((v, i) => v === b[i]);
       const me = this.#me(address);
       const meta = this.#core.data.sharedMeta(address);
@@ -2564,6 +2617,7 @@ export class StationsSync {
                 for (const [id, r] of changedMap) this.#sharedPut(link, id, r);
                 this.#retell(address, asked, true);
                 this.#made(address, { whole: true });
+                this.#core.confirmWorkspaceAuth?.(ws, { topic: "chatRows", station: address }, readGen);
                 return;
               }
             }
@@ -2590,6 +2644,7 @@ export class StationsSync {
       for (const r of answer.success) if (isObject(r) && typeof get(r, "id") === "string") this.#sharedPut(link, get(r, "id") as string, r as Record<string, any>);
       this.#retell(address, asked, true);
       this.#made(address, { whole: true });
+      this.#core.confirmWorkspaceAuth?.(ws, { topic: "chatRows", station: address }, readGen);
     }));
   }
 
@@ -2870,11 +2925,13 @@ export class StationsSync {
   }
 
   /// A job as it is now: in place in its session's jobs, and among the station's open ones while it is open.
-  onJob(address: string, job: unknown): void {
+  onJob(address: string, job: unknown, readGen: number): void {
     const id = str(get(job, "id"));
     const key = str(get(job, "session"));
     if (!id || !key) return;
     const core = this.#core;
+    const ws = ofAddress(address);
+    if (core.store.authGen.workspaceAuthGen(ws) !== readGen) return;
     core.data.patchDetail(address, key, (detail) => {
       if (!isObject(detail) || !Array.isArray(detail.jobs)) return;
       const i = detail.jobs.findIndex((j) => get(j, "id") === id);
@@ -2885,6 +2942,7 @@ export class StationsSync {
     const open = state === "running" || (state === "exited" && (get(job, "port") ?? null) !== null);
     // A new one: which chat it is in is the station's to say.
     if (core.data.putJob(address, job, open)) this.#enqueue(address, "jobs", Priority.shown, this.#read(address, { topic: "jobs", station: address }, JOBS));
+    core.confirmWorkspaceAuth?.(ws, { topic: "job", station: address, id }, readGen);
   }
 
   /// A thread's summary into the station's threads, and the details of the sessions taking part. It says how far the
@@ -2977,9 +3035,14 @@ export class StationsSync {
     return this.#asked((read) => Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link) return;
+      const ws = ofAddress(address);
+      const readGen = this.#core.store.authGen.workspaceAuthGen(ws);
       const view = yield* Effect.result(this.requests.call(link.addr, "GET", `/threads/${id}`, null, { quiet: true }));
-      if (view._tag === "Success") this.putThread(address, view.success);
-      else if (view.failure.status === 404) this.#threadGone(address, id);
+      if (view._tag === "Success") {
+        if (this.#core.store.authGen.workspaceAuthGen(ws) !== readGen) return;
+        this.putThread(address, view.success);
+        this.#core.confirmWorkspaceAuth?.(ws, { topic: "thread", station: address, thread: id }, readGen);
+      } else if (view.failure.status === 404) this.#threadGone(address, id);
       this.#retell(address, read);
     }));
   }
@@ -3123,6 +3186,7 @@ export class StationsSync {
       const tab = op.effect.kind === "tab" ? op.effect.screen : null;
       if (tab !== null) this.#tabOpening(address, tab, true);
       for (;;) {
+        const readGen = this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
         const result = yield* Effect.result(this.requests.call(addr, current.method, current.path, current.body, { ctx }));
         if (tab !== null) {
           if (result._tag === "Success") yield* Effect.ignore(this.readScreens(address));
@@ -3135,14 +3199,70 @@ export class StationsSync {
           }
           return yield* Effect.fail(result.failure);
         }
-        yield* this.afterWrite(address, current.effect, result.success);
+        yield* this.afterWrite(address, current.effect, result.success, readGen);
         return result.success;
       }
     });
   }
 
+  /// Proactively re-reads `overview`, `chatRows`, `sessions`, `threads`, and all currently active
+  /// held station topics (`jobs`, `archivedRows`, `stationUsage`, `session`, `thread`, `drive`,
+  /// `slackApp`, `job`) on all reachable stations of `ws` after a downgrade/safe-mode boundary so UI
+  /// recovers without requiring a link reconnect.
+  refreshWorkspace(ws: string): void {
+    for (const link of this.#links.values()) {
+      const address = link.addr.toString();
+      if (ofAddress(address) !== ws || !this.reachable(address)) continue;
+      this.#enqueue(address, "overview", Priority.shown, this.#read(address, { topic: "overview", station: address }, "/overview"));
+      this.#enqueue(address, "shared", Priority.shown, this.#sharedWhole(address, null, undefined, 0, true));
+      this.#enqueue(address, "sessions", Priority.shown, this.#read(address, { topic: "sessions", station: address }, "/sessions"));
+      this.#enqueue(address, "threads", Priority.shown, this.#read(address, { topic: "threads", station: address }, "/threads"));
+      for (const t of this.#core.store.liveTopics()) {
+        if (t.station !== address) continue;
+        switch (t.topic) {
+          case "jobs":
+            this.#enqueue(address, "jobs", Priority.shown, this.#read(address, t, JOBS));
+            break;
+          case "archivedRows":
+            link.archivedCurrent = false;
+            this.#enqueue(address, "archived", Priority.shown, this.#archived(address));
+            break;
+          case "stationUsage":
+            link.usageCurrent = false;
+            this.usageShown(address);
+            break;
+          case "session":
+            if (typeof t.key === "string" && t.key.length > 0) {
+              this.#enqueue(address, `session/${t.key}`, Priority.shown, this.#session(address, t.key));
+            }
+            break;
+          case "thread":
+            if (typeof t.thread === "number") {
+              this.#enqueue(address, `thread/${t.thread}`, Priority.shown, this.#threadSummary(address, t.thread));
+            }
+            break;
+          case "drive":
+            if (typeof t.root === "string" && typeof t.path === "string") {
+              this.#enqueue(address, `drive/${t.root}/${t.path}`, Priority.shown, this.#drive(address, t.root, t.path));
+            }
+            break;
+          case "slackApp":
+            if (typeof t.connect === "string" && t.connect.length > 0) {
+              this.#enqueue(address, `slackApp/${t.connect}`, Priority.shown, this.#read(address, t, `/connects/${encode(t.connect)}/slack-app`));
+            }
+            break;
+          case "job":
+            if (typeof t.id === "string" && t.id.length > 0) {
+              this.#enqueue(address, `job/${t.id}`, Priority.shown, this.#read(address, t, `/jobs/${encode(t.id)}`));
+            }
+            break;
+        }
+      }
+    }
+  }
+
   /// Brings what a successful write changed up to date before it answers.
-  afterWrite(address: string, effect: OpEffect, answer: unknown): Effect.Effect<void> {
+  afterWrite(address: string, effect: OpEffect, answer: unknown, readGen: number): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
       const reads: [string, Effect.Effect<void, CoreError>][] = [];
       const read = (what: string, topic: Topic, path: string) => reads.push([what, this.#read(address, topic, path)]);
@@ -3206,7 +3326,7 @@ export class StationsSync {
           for (const id of this.#slackConnects(address)) read(`slackApp/${id}`, { topic: "slackApp", station: address, connect: id }, `/connects/${encode(id)}/slack-app`);
           break;
         case "job":
-          if (get(answer, "id") !== undefined && get(answer, "state") !== undefined) this.onJob(address, answer);
+          if (get(answer, "id") !== undefined && get(answer, "state") !== undefined) this.onJob(address, answer, readGen);
           break;
         // What the agents' memory says of it changed (a skill shared or no longer): read again where it is shown or held.
         case "memory":
@@ -3246,8 +3366,13 @@ export class StationsSync {
       // `overview`).
       const told = get(answer, "connects") !== undefined && get(answer, "profiles") !== undefined ? answer : get(get(answer, "overview"), "connects") !== undefined && get(get(answer, "overview"), "profiles") !== undefined ? get(answer, "overview") : undefined;
       if (told !== undefined) {
-        this.#core.data.set({ topic: "overview", station: address }, told);
-        reads.splice(0, reads.length, ...reads.filter(([what]) => what !== "overview"));
+        const ws = ofAddress(address);
+        if (this.#core.store.authGen.workspaceAuthGen(ws) === readGen) {
+          const t = { topic: "overview", station: address };
+          this.#core.data.set(t, told);
+          this.#core.confirmWorkspaceAuth?.(ws, t, readGen);
+          reads.splice(0, reads.length, ...reads.filter(([what]) => what !== "overview"));
+        }
       }
       yield* Effect.all(
         reads.map(([what, work]) => Effect.ignore(this.ask(address, what, work), { log: "Unhandled", message: "station read" })),
@@ -3282,8 +3407,9 @@ export class StationsSync {
       for (const item of selected) {
         const id = str(get(item, "id"));
         if (id === null) return yield* Effect.fail(CoreError.invalid(t("station.core.noSoftwareId")));
+        const updateReadGen = this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
         answer = yield* this.requests.call(addr, "POST", "/updates", { id }, { ctx });
-        yield* this.afterWrite(address, { kind: "overview" }, answer);
+        yield* this.afterWrite(address, { kind: "overview" }, answer, updateReadGen);
         if (id === "station") break;
         const deadline = this.#core.host.nowMs() + 15 * 60_000;
         let seen = changes;

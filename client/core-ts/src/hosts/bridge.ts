@@ -646,9 +646,9 @@ export function startBridged(native: Native, cloudOrigin: string, beta: boolean,
   };
   return {
     bridge,
-    connect(): number {
+    connect(options?: { authHandshake?: boolean; requireCallAuth?: boolean }): number {
       const id = next++;
-      later((core) => core.connect());
+      later((core) => core.connect(options ?? { authHandshake: true, requireCallAuth: true }));
       return id;
     },
     receive(client: number, json: string, bytes?: Uint8Array): void {

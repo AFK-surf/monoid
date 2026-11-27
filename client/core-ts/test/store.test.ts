@@ -503,12 +503,13 @@ const TOKEN = /^[0-9a-z]+:[0-9a-z]+$/;
 
 test("an_unsubscribe_that_keeps_is_answered_with_the_version_of_what_its_subscriber_holds_its_last_message", async () => {
   const { host, store, pass } = setup();
-  store.subscribe(1, 10, overview());
-  store.set(overview(), { ok: { n: 1 } });
+  const ws: Topic = { topic: "workspace", workspace: "ws" };
+  store.subscribe(1, 10, ws);
+  store.set(ws, { ok: { n: 1 } });
   await pass(COALESCE_MS * 2);
   host.takeEmitted();
   // (a difference on its way as the unsubscribe comes: gone out before it, so what is held by the answer has it)
-  store.set(overview(), { ok: { n: 2 } });
+  store.set(ws, { ok: { n: 2 } });
   await pass(COALESCE_MS * 2);
   store.unsubscribe(1, 10, true);
   const out = host.takeEmitted() as [number, Record<string, unknown>][];
@@ -518,16 +519,16 @@ test("an_unsubscribe_that_keeps_is_answered_with_the_version_of_what_its_subscri
   assert.equal(said.id, 10);
   assert.match(said.v, TOKEN);
   // (none further for it)
-  store.set(overview(), { ok: { n: 3 } });
+  store.set(ws, { ok: { n: 3 } });
   await pass(COALESCE_MS * 2);
   assert.deepEqual(host.takeEmitted(), []);
   // Not kept: no answer, nothing hashed.
-  store.subscribe(1, 11, overview());
+  store.subscribe(1, 11, ws);
   host.takeEmitted();
   store.unsubscribe(1, 11);
   assert.deepEqual(host.takeEmitted(), []);
   // Kept of one that never had a value, or of an id unknown: answered still, with none.
-  store.subscribe(1, 12, { topic: "overview", station: "ws/other" });
+  store.subscribe(1, 12, { topic: "workspace", workspace: "ws-other" });
   store.unsubscribe(1, 12, true);
   store.unsubscribe(1, 99, true);
   assert.deepEqual(host.takeEmitted(), [
@@ -538,17 +539,18 @@ test("an_unsubscribe_that_keeps_is_answered_with_the_version_of_what_its_subscri
 
 test("a_change_not_gone_out_as_an_unsubscribe_that_keeps_comes_is_not_in_its_version_and_follows_a_same", async () => {
   const { host, store, pass } = setup();
-  store.subscribe(1, 10, overview());
-  store.set(overview(), { ok: { n: 1 } });
+  const ws: Topic = { topic: "workspace", workspace: "ws" };
+  store.subscribe(1, 10, ws);
+  store.set(ws, { ok: { n: 1 } });
   await pass(COALESCE_MS * 2);
   host.takeEmitted();
-  store.set(overview(), { ok: { n: 2 } });
+  store.set(ws, { ok: { n: 2 } });
   // (not gone out yet: the client holds n 1)
   store.unsubscribe(1, 10, true);
   const [[, { v: held }]] = host.takeEmitted() as [number, { id: number; v: string }][];
   // Asked again with it before the change goes out: what it holds is still what went last, so `same`, and then the
   // change as to any subscriber.
-  store.subscribe(1, 11, overview(), false, undefined, held);
+  store.subscribe(1, 11, ws, false, undefined, held);
   await pass(COALESCE_MS * 2);
   assert.deepEqual(host.takeEmitted(), [
     [1, { id: 11, same: true }],
@@ -558,8 +560,8 @@ test("a_change_not_gone_out_as_an_unsubscribe_that_keeps_comes_is_not_in_its_ver
 
 test("a_subscription_asked_with_the_version_it_holds_is_answered_same_where_the_value_is_that_one", async () => {
   const { host, store, pass } = setup();
-  const rows: Topic = { topic: "chatRows", station: "ws/st" };
-  const list = [{ id: "a", title: "A" }, { id: "b", title: "B" }];
+  const rows: Topic = { topic: "stations", scope: "ws" };
+  const list = [{ station: "a", title: "A" }, { station: "b", title: "B" }];
   store.subscribe(1, 10, rows, true);
   store.set(rows, { ok: list });
   await pass(COALESCE_MS * 2);
@@ -570,15 +572,15 @@ test("a_subscription_asked_with_the_version_it_holds_is_answered_same_where_the_
   store.subscribe(1, 11, rows, true, undefined, v);
   assert.deepEqual(host.takeEmitted(), [[1, { id: 11, same: true }]]);
   // Then on as any subscriber: what changes goes as keyed ops to what it holds.
-  store.set(rows, { ok: [...list, { id: "c", title: "C" }] });
+  store.set(rows, { ok: [...list, { station: "c", title: "C" }] });
   await pass(COALESCE_MS * 2);
   const [[, next]] = host.takeEmitted() as [number, { id: number; delta: AnyOp[] }][];
   assert.equal(next.id, 11);
-  assert.deepEqual(applyKeyed(list, next.delta), [...list, { id: "c", title: "C" }]);
+  assert.deepEqual(applyKeyed(list, next.delta), [...list, { station: "c", title: "C" }]);
   // A version of another value: whole.
   store.unsubscribe(1, 11);
   store.subscribe(1, 12, rows, true, undefined, v);
-  assert.deepEqual(host.takeEmitted(), [[1, value(12, [...list, { id: "c", title: "C" }])]]);
+  assert.deepEqual(host.takeEmitted(), [[1, value(12, [...list, { station: "c", title: "C" }])]]);
   store.unsubscribe(1, 12);
   // Let go of and dropped from the store, nothing of it remembered for the client (its `same` above took it): made
   // again equal, it is another object, so another token: whole (a token names the value object, never its content).
@@ -607,12 +609,12 @@ async function keptAt(t: ReturnType<typeof setup>, client: number, id: number, t
 test("a_subscription_asked_again_with_a_version_the_core_remembers_gets_what_changed_from_it_keyed", async () => {
   const t = setup();
   const { host, store, pass } = t;
-  const rows: Topic = { topic: "chatRows", station: "ws/st" };
-  const list = Array.from({ length: 40 }, (_, i) => ({ id: `r${i}`, title: `Row ${i} ${"words ".repeat(8)}` }));
+  const rows: Topic = { topic: "stations", scope: "ws" };
+  const list = Array.from({ length: 40 }, (_, i) => ({ station: `r${i}`, title: `Row ${i} ${"words ".repeat(8)}` }));
   const v = await keptAt(t, 1, 10, rows, list, true);
   assert.equal(store.keptOf(1), 1);
   // One row changed and one added while nobody held it: what changed from the rows kept, keyed, not the 40 again.
-  const next = [...list.slice(0, 5), { ...list[5]!, title: "Renamed" }, ...list.slice(6), { id: "new", title: "New" }];
+  const next = [...list.slice(0, 5), { ...list[5]!, title: "Renamed" }, ...list.slice(6), { station: "new", title: "New" }];
   store.set(rows, { ok: next });
   await pass(COALESCE_MS * 2);
   store.subscribe(1, 11, rows, true, undefined, v);
@@ -633,17 +635,18 @@ test("a_subscription_asked_again_with_a_version_the_core_remembers_gets_what_cha
 test("a_subscription_asked_again_not_keyed_gets_plain_ops_from_what_the_core_remembers", async () => {
   const t = setup();
   const { host, store, pass } = t;
+  const ws: Topic = { topic: "workspace", workspace: "ws" };
   const was = { text: "x".repeat(400), n: 1 };
-  const v = await keptAt(t, 1, 10, overview(), was, false);
-  store.set(overview(), { ok: { ...was, n: 2 } });
+  const v = await keptAt(t, 1, 10, ws, was, false);
+  store.set(ws, { ok: { ...was, n: 2 } });
   await pass(COALESCE_MS * 2);
-  store.subscribe(1, 11, overview(), false, undefined, v);
+  store.subscribe(1, 11, ws, false, undefined, v);
   await pass(COALESCE_MS * 2);
   const [[, first]] = host.takeEmitted() as [number, { id: number; delta: Op[]; kept: true }][];
   assert.deepEqual({ id: first.id, kept: first.kept }, { id: 11, kept: true });
   assert.deepEqual(applyOps(structuredClone(was), first.delta), { ...was, n: 2 });
   // Then on as any subscriber.
-  store.set(overview(), { ok: { ...was, n: 3 } });
+  store.set(ws, { ok: { ...was, n: 3 } });
   await pass(COALESCE_MS * 2);
   const [[, then]] = host.takeEmitted() as [number, { id: number; delta: Op[] }][];
   assert.deepEqual(applyOps(structuredClone({ ...was, n: 2 }), then.delta), { ...was, n: 3 });
@@ -652,38 +655,39 @@ test("a_subscription_asked_again_not_keyed_gets_plain_ops_from_what_the_core_rem
 test("a_subscription_asked_again_goes_whole_where_what_changed_is_heavier_or_nothing_of_that_version_is_remembered", async () => {
   const t = setup();
   const { host, store, pass } = t;
+  const ws: Topic = { topic: "workspace", workspace: "ws" };
   // What changed weighs more than the value: whole.
-  const v = await keptAt(t, 1, 10, overview(), { n: 1 }, false);
-  store.set(overview(), { ok: { n: 2 } });
+  const v = await keptAt(t, 1, 10, ws, { n: 1 }, false);
+  store.set(ws, { ok: { n: 2 } });
   await pass(COALESCE_MS * 2);
-  store.subscribe(1, 11, overview(), false, undefined, v);
+  store.subscribe(1, 11, ws, false, undefined, v);
   await pass(COALESCE_MS * 2);
   assert.deepEqual(host.takeEmitted(), [[1, value(11, { n: 2 })]]);
   assert.equal(store.keptOf(1), 0);
   store.unsubscribe(1, 11);
   // Another version than the one remembered: whole, and the remembered one forgotten all the same.
   const big = { text: "x".repeat(400), n: 1 };
-  await keptAt(t, 1, 12, overview(), big, false);
-  store.set(overview(), { ok: { ...big, n: 2 } });
+  await keptAt(t, 1, 12, ws, big, false);
+  store.set(ws, { ok: { ...big, n: 2 } });
   await pass(COALESCE_MS * 2);
-  store.subscribe(1, 13, overview(), false, undefined, version({ other: true }));
+  store.subscribe(1, 13, ws, false, undefined, version({ other: true }));
   await pass(COALESCE_MS * 2);
   assert.deepEqual(host.takeEmitted(), [[1, value(13, { ...big, n: 2 })]]);
   assert.equal(store.keptOf(1), 0);
   store.unsubscribe(1, 13);
   // Another client's: nothing remembered for this one.
-  const w = await keptAt(t, 2, 20, overview(), big, false);
-  store.set(overview(), { ok: { ...big, n: 3 } });
+  const w = await keptAt(t, 2, 20, ws, big, false);
+  store.set(ws, { ok: { ...big, n: 3 } });
   await pass(COALESCE_MS * 2);
-  store.subscribe(1, 14, overview(), false, undefined, w);
+  store.subscribe(1, 14, ws, false, undefined, w);
   await pass(COALESCE_MS * 2);
   assert.deepEqual(host.takeEmitted(), [[1, value(14, { ...big, n: 3 })]]);
   assert.equal(store.keptOf(2), 1);
   // An error now: the error, nothing else.
-  store.set(overview(), { err: new CoreError("x", "gone") });
+  store.set(ws, { err: new CoreError("x", "gone") });
   await pass(COALESCE_MS * 2);
   host.takeEmitted();
-  store.subscribe(2, 21, overview(), false, undefined, w);
+  store.subscribe(2, 21, ws, false, undefined, w);
   const out = host.takeEmitted() as [number, Record<string, unknown>][];
   assert.equal(out.length, 1);
   assert.ok("error" in out[0]![1]);
@@ -693,8 +697,8 @@ test("a_subscription_asked_again_goes_whole_where_what_changed_is_heavier_or_not
 test("a_subscription_asked_again_from_another_takes_that_ones_rows_before_what_was_kept", async () => {
   const t = setup();
   const { host, store, pass } = t;
-  const chats = (limit: number): Topic => ({ topic: "chatRows", station: "ws/st", limit });
-  const list = Array.from({ length: 30 }, (_, i) => ({ id: `r${i}`, title: `Row ${i} ${"words ".repeat(8)}` }));
+  const chats = (limit: number): Topic => ({ topic: "stations", scope: "ws", limit });
+  const list = Array.from({ length: 30 }, (_, i) => ({ station: `r${i}`, title: `Row ${i} ${"words ".repeat(8)}` }));
   const v = await keptAt(t, 1, 10, chats(50), list, true);
   // The first rows held; more of them asked from those, with the version kept as well: from the rows held.
   store.subscribe(1, 11, chats(20), true);
@@ -709,7 +713,7 @@ test("a_subscription_asked_again_from_another_takes_that_ones_rows_before_what_w
   assert.deepEqual(first, { id: 12, same: true });
   store.unsubscribe(1, 12, true);
   host.takeEmitted();
-  const more = [...list, { id: "r30", title: "Row 30" }];
+  const more = [...list, { station: "r30", title: "Row 30" }];
   store.set(chats(50), { ok: more });
   await pass(COALESCE_MS * 2);
   store.subscribe(1, 13, chats(50), true, 11, v);
@@ -724,7 +728,7 @@ test("a_subscription_asked_again_from_another_takes_that_ones_rows_before_what_w
 test("the_values_remembered_for_a_client_are_bounded_the_least_recently_let_go_of_forgotten_and_dropped_with_it", async () => {
   const t = setup();
   const { host, store, pass } = t;
-  const topic = (i: number): Topic => ({ topic: "overview", station: `ws/s${i}` });
+  const topic = (i: number): Topic => ({ topic: "workspace", workspace: `ws${i}` });
   const big = (i: number) => ({ text: "x".repeat(400), n: i });
   const versions: string[] = [];
   for (let i = 0; i < KEPT_PER_CLIENT + 2; i++) versions.push(await keptAt(t, 1, 100 + i, topic(i), big(i), false));
@@ -747,8 +751,8 @@ test("the_values_remembered_for_a_client_are_bounded_the_least_recently_let_go_o
 test("a_value_let_go_of_keeping_it_and_asked_again_unchanged_is_answered_same_nothing_of_it_hashed", async () => {
   const t = setup();
   const { host, store, pass } = t;
-  const rows: Topic = { topic: "chatRows", station: "ws/st" };
-  const list = Array.from({ length: 40 }, (_, i) => ({ id: `r${i}`, title: `Row ${i}` }));
+  const rows: Topic = { topic: "stations", scope: "ws" };
+  const list = Array.from({ length: 40 }, (_, i) => ({ station: `r${i}`, title: `Row ${i}` }));
   const hashed = work.versions;
   const v = await keptAt(t, 1, 10, rows, list, true);
   store.subscribe(1, 11, rows, true, undefined, v);
@@ -761,8 +765,8 @@ test("a_value_let_go_of_keeping_it_and_asked_again_unchanged_is_answered_same_no
 test("a_value_evicted_and_made_again_equal_goes_as_what_changed_from_what_was_kept_which_is_nothing", async () => {
   const t = setup();
   const { host, store, pass } = t;
-  const rows: Topic = { topic: "chatRows", station: "ws/st" };
-  const list = Array.from({ length: 40 }, (_, i) => ({ id: `r${i}`, title: `Row ${i} ${"words ".repeat(8)}` }));
+  const rows: Topic = { topic: "stations", scope: "ws" };
+  const list = Array.from({ length: 40 }, (_, i) => ({ station: `r${i}`, title: `Row ${i} ${"words ".repeat(8)}` }));
   const hashed = work.versions;
   const v = await keptAt(t, 1, 10, rows, list, true);
   // Dropped from the store, the value it held remembered for the client (#kept): made again equal, another object.
@@ -783,8 +787,8 @@ test("a_value_evicted_and_made_again_equal_goes_as_what_changed_from_what_was_ke
 test("a_value_asked_again_with_a_token_of_another_run_goes_whole", async () => {
   const t = setup();
   const { host, store, pass } = t;
-  const rows: Topic = { topic: "chatRows", station: "ws/st" };
-  const list = [{ id: "a", title: "A" }];
+  const rows: Topic = { topic: "stations", scope: "ws" };
+  const list = [{ station: "a", title: "A" }];
   const v = await keptAt(t, 1, 10, rows, list, true);
   // (the same count, another run: as a token a client kept across a restart of its core says)
   const other = `zzzzzzzzzzzz:${v.split(":")[1]}`;

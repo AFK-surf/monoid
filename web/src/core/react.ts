@@ -107,7 +107,8 @@ function listen(key: string, topic: Topic, listener: () => void): () => void {
     (value) => update(e, { value, error: null, loading: false }),
     // The last value stays on screen next to the error.
     (error) => update(e, { value: e.state.value, error, loading: false }),
-    () => { if (e.state.loading) update(e, { ...e.state, waiting: true }); },
+    // Boundary invalidation clears any held value immediately so stale data is never rendered or acted on.
+    () => update(e, e.state.loading ? { ...e.state, waiting: true } : { value: undefined, error: null, loading: true, waiting: true }),
   );
   return () => {
     e.listeners.delete(listener);

@@ -4232,6 +4232,7 @@ export class Views implements Owner {
   /// A station's accounts' rows (#profileRowsView): kept beside its part under `key`, else made of the part it holds
   /// (none while its overview is not read) and kept beside it.
   #profileRowsOfStation(station: string, key: string): J {
+    if (!this.#core.store.isAuthorized({ topic: "overview", station })) return undefined;
     const kept = this.#core.data.kept(KEPT.profileRow, [station], key);
     if (kept !== undefined) return kept;
     const profiled = this.#core.data.overviewProfiled(station);

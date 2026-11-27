@@ -71,6 +71,7 @@ priv struct KeptList {
   sweep : () -> Unit
   clear : () -> Unit
   forget_source : (Source, Bool) -> Unit
+  forget_matching : (Source, (String) -> Bool) -> Unit
 }
 
 ///|
@@ -146,6 +147,7 @@ fn[T] SourceKept::read(self : SourceKept[T], source : Source, key : String, gett
           sweep: fn() { self.sweep() },
           clear: fn() { self.clear() },
           forget_source: fn(src, kept) { self.forget_source(src, kept~) },
+          forget_matching: fn(src, matches) { self.forget_matching(src, matches) },
         })
       }
       made
@@ -240,6 +242,45 @@ fn[T] SourceKept::forget_source(self : SourceKept[T], source : Source, kept? : B
       }
       None => ()
     }
+  }
+}
+
+///|
+/// Disposes and removes derived `Kept` entries of `source` whose key satisfies `matches` (auth/vault boundary).
+fn[T] SourceKept::forget_matching(self : SourceKept[T], source : Source, matches : (String) -> Bool) -> Unit {
+  let keys : Array[String] = []
+  for key, entries in self.kept {
+    if matches(key) && entries.iter().any(fn(e) { physical_equal(e.source, source) }) {
+      keys.push(key)
+    }
+  }
+  for key in keys {
+    match self.kept.get(key) {
+      Some(entries) => {
+        let rest = entries.filter(fn(e) {
+          if physical_equal(e.source, source) {
+            e.value.dispose()
+            kept_count.made -= 1
+            false
+          } else {
+            true
+          }
+        })
+        if rest.is_empty() {
+          self.kept.remove(key) |> ignore
+        } else {
+          self.kept[key] = rest
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+///|
+fn kept_forget_matching(src : Source, matches : (String) -> Bool) -> Unit {
+  for l in kept_lists {
+    (l.forget_matching)(src, matches)
   }
 }
 

@@ -16,6 +16,7 @@ import { buildFusion } from "../present.ts";
 import { machineMeta } from "../views/models.ts";
 import { once, wholeFile } from "./whole-file.ts";
 import { StationAddr } from "./addr.ts";
+import { ofAddress } from "../workspace.ts";
 import { readAll, replyHeader, takeFrames, encodeFrame, type Frame } from "./wire.ts";
 import type { SpanContext } from "../trace.ts";
 import { DOWNLOAD_PART } from "../views/downloads.ts";
@@ -752,10 +753,11 @@ export function install(): void {
   };
   handlers.driveUploadPart = (inner, call, _p, _a, ctx) => {
     const c = call as Extract<Call, { kind: "driveUploadPart" }>;
+    const readGen = inner.store.authGen.workspaceAuthGen(ofAddress(c.station));
     return Effect.flatMap(parse(c.station), (addr) =>
       Effect.tap(inner.stations.requests.driveUploadPart(addr, c, c.bytes, ctx), (got) =>
         // Whole: the folder it went into, as it is now, before the call answers.
-        got.entry !== null ? inner.stations.afterWrite(c.station, { kind: "drive", root: c.root, paths: [folderOf(c.path)] }, got) : Effect.void,
+        got.entry !== null ? inner.stations.afterWrite(c.station, { kind: "drive", root: c.root, paths: [folderOf(c.path)] }, got, readGen) : Effect.void,
       ),
     );
   };

@@ -793,6 +793,10 @@ export class PersonalLock {
     });
   }
 
+  isLoaded(sub: string): boolean {
+    return this.#loaded.has(sub);
+  }
+
   standing(sub: string): Standing {
     const pinned = this.chain(sub);
     if (this.#seen.has(sub) && (this.#pinned.get(sub)?.length ?? 0) > 0) return "replaced";

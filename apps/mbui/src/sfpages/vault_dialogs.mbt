@@ -81,6 +81,45 @@ fn vault_oauth(core : Core, ws : String, vault : String, provider : String) -> U
 }
 
 ///|
+/// Active vault editor dialogs `(ws, get_vault, clear_and_close)` so auth/vault boundaries can
+/// immediately wipe plaintext inputs and close open editors for the affected scope.
+// kept across runs: vault_dialogs_reset empties it
+let active_vault_editors : Map[Int, (String, () -> String, () -> Unit)] = Map([])
+
+///|
+// kept across runs: monotonic id counter; vault_dialogs_reset zeroes it
+let next_vault_editor_id : Ref[Int] = Ref(0)
+
+///|
+fn vault_dialogs_reset() -> Unit {
+  active_vault_editors.clear()
+  next_vault_editor_id.val = 0
+}
+
+///|
+fn clear_vault_editors_for(ws : String, vault : String) -> Unit {
+  let to_close : Array[(Int, () -> Unit)] = []
+  for id, entry in active_vault_editors {
+    let (ews, get_vault, close_fn) = entry
+    let matches = if ws == "" && vault == "" {
+      true
+    } else if ews != ws {
+      false
+    } else {
+      let ev = @signals.untracked(get_vault)
+      vault == "" || ev == "" || ev == vault
+    }
+    if matches {
+      to_close.push((id, close_fn))
+    }
+  }
+  for item in to_close {
+    active_vault_editors.remove(item.0)
+    (item.1)()
+  }
+}
+
+///|
 /// A fixture's mode's 添加 put up from the page's own (MBUI_FIXTURE=settings-vault-add), as it is drawn.
 pub let fx_vault_add_up : Ref[Bool] = Ref(false)
 
@@ -197,7 +236,19 @@ pub fn vault_editor_dialog(
   }
   open_dialog_nodes(
     title,
-    fn(v, _) {
+    fn(v, shut) {
+      let editor_id = next_vault_editor_id.val
+      next_vault_editor_id.val = editor_id + 1
+      active_vault_editors[editor_id] = (
+        ws,
+        target_vault,
+        fn() {
+          mark_revoked()
+          clear_fields()
+          shut()
+        },
+      )
+      v.owns(fn() { active_vault_editors.remove(editor_id) }) |> ignore
       if plain {
         @sf.words_node(v, said("web-pages.vault.risk.editor"), fn() { vt_warn_lines }) |> ignore
       }
@@ -529,7 +580,19 @@ pub fn vault_about_dialog(
   }
   open_dialog_nodes(
     @sf.t("web-pages.vault.editor.about"),
-    fn(v, _) {
+    fn(v, shut) {
+      let editor_id = next_vault_editor_id.val
+      next_vault_editor_id.val = editor_id + 1
+      active_vault_editors[editor_id] = (
+        ws,
+        fn() { vault },
+        fn() {
+          mark_revoked()
+          typed.set("")
+          shut()
+        },
+      )
+      v.owns(fn() { active_vault_editors.remove(editor_id) }) |> ignore
       @sf.field_node(
         v,
         fn() { @sf.t("web-pages.vault.editor.about") },

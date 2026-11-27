@@ -23,6 +23,7 @@ import { test } from "node:test";
 import { holdLanguage } from "../src/i18n.ts";
 import type { Ty } from "../src/conform.ts";
 import { shapeOf } from "../src/present.ts";
+import { sanitizeKeptValue } from "../src/topic-policy.ts";
 import { parseTopic, TOPICS, type Topic } from "../src/protocol.ts";
 import { SHAPES } from "../src/shapes/schema.ts";
 import { equal, isObject } from "../src/util.ts";
@@ -768,8 +769,8 @@ test("what looking in a chat's outline finds holds to the bar on a chat of real 
 // message at most `DELTA_BAR_KB`, those over in `OVER_AGAIN` (by `<name>/<cause>`, as `OVER_DELTA`), which only falls.
 
 /// The topics the app keeps as it lets go of them (apps/mbui/src/sfbase/source.mbt `topic_kept`: the lists the places
-/// open on, `lasting`, and `chat`).
-const KEPT = new Set(["workspace", "stations", "stationNet", "profiles", "connects", "vaults", "usage", "archive", "chat"]);
+/// open on, `lasting`, and `chat`; `vaults` is unconditionally `sensitive` and never kept).
+const KEPT = new Set(["workspace", "stations", "stationNet", "profiles", "connects", "usage", "archive", "chat"]);
 
 /// Those whose first message asked again after a cause is over `DELTA_BAR_KB`, by `<name>/<cause>`: KB as in `OVER`.
 const OVER_AGAIN: Record<string, number> = {};
@@ -822,8 +823,9 @@ test("what a topic the app keeps is sent as it is asked again after something ch
             faults.push(`${at}: ${JSON.stringify(m)?.slice(0, 80)}, ${JSON.stringify(w)?.slice(0, 80)}`);
             continue;
           }
-          // (what it holds then is what it would be sent whole)
-          const holds = "same" in m ? value : "kept" in m ? applyKeyed(value, m.delta) : m.value;
+          // (what it holds then is what it would be sent whole; `profiles`/`station` sanitize kept bases on both ends)
+          const keptBase = sanitizeKeptValue(ASKED[name]!.topic, value);
+          const holds = "same" in m ? value : "kept" in m ? applyKeyed(keptBase, m.delta) : m.value;
           if (JSON.stringify(canonical(holds)) !== JSON.stringify(canonical(w.value))) faults.push(`${at}: asked again (${said(m)}), it holds another value than the one whole`);
           measured.set(at, bytes(m));
           rows.push({ name: at, whole: bytes(w), now: bytes(m), how: said(m) });

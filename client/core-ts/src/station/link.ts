@@ -139,7 +139,7 @@ function covers(open: EventsFor, wants: EventsFor): boolean {
 
 /// A read of a station's history (sync.ts `#history`): its path, how much of a batch it takes, and what its answer
 /// does (and the read after it, as a channel has more to bring).
-export type HistoryRead = { path: string; cost: number; apply: (answer: { status: number; body: unknown }) => HistoryRead | null };
+export type HistoryRead = { path: string; cost: number; apply: (answer: { status: number; body: unknown }, readGen: number) => HistoryRead | null };
 
 /// Local link diagnostics recorded as `#follow` connects, disconnects and backs off (`Link.diag`).
 export type LinkDiag = {
@@ -280,7 +280,7 @@ export type Told = {
   goesOn(address: string, how: { away: boolean; restored: boolean }): void;
   /// An event of a stream. `again`: told again as the stream resumed (what came while the device was not on it), not
   /// as it happened.
-  event(address: string, name: string, raw: string, again: boolean): void;
+  event(address: string, name: string, raw: string, again: boolean, streamReadGen?: number): void;
   /// What a stream that went on was told first is in (the station tells what was missed as it joins, in the same turn).
   toldMissed(address: string): void;
   /// How a station's link is, or its host figures as last kept, changed.
@@ -715,6 +715,7 @@ export class Links {
             // Not answered at all within as long as a stream may stay silent: the way it went is taken for gone (a
             // station killed and started anew, its connection left open here: every open waited on it for good).
             const slow = Effect.sleep(STREAM_IDLE_MS).pipe(Effect.as({ slow: true } as const)); // timer: a timeout
+            const streamReadGen = core.store.authGen.workspaceAuthGen(ofAddress(address));
             const opened = yield* Effect.raceAllFirst([Effect.result(self.#requests.stream(link.addr, path, span.context)), dropped, slow]);
             if ("slow" in opened) {
               self.#requests.wire.reset?.(link.addr);
@@ -854,7 +855,7 @@ export class Links {
                 if (name === "missed") {
                   if (!snapshotted) self.#told.afresh(address, null);
                   snapshotted = true;
-                } else self.#told.event(address, name, data, head !== null && id !== undefined && upTo(id, head));
+                } else self.#told.event(address, name, data, head !== null && id !== undefined && upTo(id, head), streamReadGen);
                 if (id !== undefined) {
                   link.cursor.heard(id);
                   link.back?.end("event");

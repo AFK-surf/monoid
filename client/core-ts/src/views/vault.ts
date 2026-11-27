@@ -2523,6 +2523,20 @@ export function itemsView(inner: Inner, ws: string, id: string): J {
 
 // ── what a person does ──
 
+/// Workspaces whose `vaults` aggregate view currently depends on `ws` (pending browse or cross-workspace request).
+export function dependentVaultWorkspaces(inner: Inner, ws: string): string[] {
+  const deps: string[] = [];
+  for (const [otherWs] of inner.workspaces.owned()) {
+    if (otherWs === ws) continue;
+    const reqs = Object.values(held(inner, otherWs).requests);
+    const depends = reqs.some(
+      (r) => r.status === "pending" && (r.browse !== undefined || r.cross?.workspace === ws),
+    );
+    if (depends) deps.push(otherWs);
+  }
+  return deps;
+}
+
 function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknown, CoreError> {
   const v = new Vaults(inner, c.workspace, ctx);
   const p = (k: string) => str(c.params[k]) ?? "";
@@ -2532,6 +2546,7 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
     case "lock":
       return Effect.sync(() => {
         mem(inner).keys.clear();
+        inner.store.authGen.bumpAllVaults();
         changed(inner, c.workspace);
         return null;
       });
@@ -2574,11 +2589,13 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
         (vault, plain, listing) => (vault === PLAIN ? v.putPlain(null, plain, listing) : v.putItem(vault, null, plain, listing)),
         (request, token) => v.approve(request, "once", { secret: token }),
       );
-    case "open":
+    case "open": {
+      const declaredVault = typeof c.params.vault === "string" && c.params.vault.length > 0 ? c.params.vault : undefined;
       // (with its fields as its page shows them, and its kind in a word)
-      return (held(inner, c.workspace).plain[p("item")] ? v.openPlain(p("item")) : v.open(p("item"))).pipe(
+      return (held(inner, c.workspace).plain[p("item")] ? v.openPlain(p("item"), declaredVault) : v.open(p("item"), declaredVault)).pipe(
         Effect.map((o) => ({ ...(o as J), shown: shownFields(get(o, "plain")), kindText: kindText(get(get(o, "plain"), "kind")) })),
       );
+    }
     case "migrate":
       return v.migrate();
     case "recover":
@@ -2772,21 +2789,45 @@ class Vaults {
   /// A vault's key: kept unsealed a while, else unsealed with this device's box key (the person asked); `fresh`: asked
   /// even when it is kept (an agent's grant). In hand, it is given on to the members' devices set up since that have
   /// none (`#give`: its owner's device only), unless the call is that giving itself (`give` false).
-  #key(v: Vault, self: { device: string }, fresh: boolean, reason: string, give = true, unsealed?: (priv: Uint8Array) => void): Effect.Effect<Uint8Array, CoreError> {
+  #key(
+    v: Vault,
+    self: { device: string },
+    fresh: boolean,
+    reason: string,
+    give = true,
+    unsealed?: (priv: Uint8Array) => void,
+    expected?: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
+  ): Effect.Effect<Uint8Array, CoreError> {
     const inner = this.#inner;
     const ws = this.ws;
     const self_ = this;
     return Effect.tap(
       Effect.gen(function* () {
+        const startWsAuthGen = expected?.wsAuthGen ?? inner.store.authGen.workspaceAuthGen(ws);
+        const startVaultGen = expected?.vaultGen ?? inner.store.authGen.vaultGen(ws, v.id);
+        const startVaultGlobalGen = expected?.vaultGlobalGen ?? inner.store.authGen.vaultGlobalGen;
         const kept = mem(inner).keys.get(keyOf(v));
-        if (!fresh && kept && kept.until > inner.host.nowMs()) return kept.key;
+        if (!fresh && kept && kept.until > inner.host.nowMs()) {
+          if (
+            inner.store.authGen.workspaceAuthGen(ws) !== startWsAuthGen ||
+            inner.store.authGen.vaultGen(ws, v.id) !== startVaultGen ||
+            inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen
+          ) {
+            return yield* fail("auth_stale", t("core-misc.auth.stale"));
+          }
+          return kept.key;
+        }
         const mine = v.keys.find((k) => k.cert.device === self.device);
         if (!mine) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
         const priv = yield* self_.#boxKey(reason);
         if (boxPublic(priv) !== mine.cert.box) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
         const key = yield* Effect.try({ try: () => openSeal(priv, mine.wrapped, keyContext(ws, v.id, v.epoch)), catch: asCoreError });
+        // Re-check auth & vault generations after awaiting host unseal: if `vault.lock`, timeout, or
+        // workspace auth boundary happened while unsealing, drop the unsealed key and NEVER re-populate `mem(inner).keys`.
+        if (!self_.#keep(v, key, { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen })) {
+          return yield* fail("auth_stale", t("core-misc.auth.stale"));
+        }
         unsealed?.(priv);
-        self_.#keep(v, key);
         // (in hand for what the person does: a vault of theirs waiting to be keyed anew is keyed anew with it now)
         inner.runner.fork(Effect.ignore(self_.rekeyGone(), { log: "Unhandled", message: "vaults keyed anew" }));
         return key;
@@ -2989,12 +3030,17 @@ class Vaults {
       const inHand = (v: Vault) => (mem(inner).keys.get(keyOf(v))?.until ?? 0) > inner.host.nowMs();
       const asked = out === undefined ? [] : waiting.filter((v) => !inHand(v) && goneOf(v).some((x) => out.has(x)));
       if (asked.length > 0) {
+        const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+        const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+        const startVaultGens = new Map(asked.map((v) => [v.id, inner.store.authGen.vaultGen(self.ws, v.id)]));
         for (const v of asked) for (const x of goneOf(v)) out!.delete(x);
         const priv = yield* self.#boxKey(t("core-misc.vault.reason.rekey", { name: asked[0]!.name }));
         for (const v of asked) {
           const mine = v.keys.find((k) => k.cert.device === who.device)!;
           const key = yield* Effect.result(Effect.try({ try: () => openSeal(priv, mine.wrapped, keyContext(self.ws, v.id, v.epoch)), catch: asCoreError }));
-          if (key._tag === "Success") self.#keep(v, key.success);
+          if (key._tag === "Success") {
+            self.#keep(v, key.success, { wsAuthGen: startWsAuthGen, vaultGen: startVaultGens.get(v.id)!, vaultGlobalGen: startVaultGlobalGen });
+          }
         }
       }
       for (const v of waiting) yield* Effect.ignore(self.#rekey(v.id, v.seq), { log: "Unhandled", message: "vault keyed anew" });
@@ -3006,6 +3052,9 @@ class Vaults {
     return this.#giving(id)(
       Effect.gen(function* () {
         const inner = self.#inner;
+        const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+        const startVaultGen = inner.store.authGen.vaultGen(self.ws, id);
+        const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
         const { lock, signer, self: who } = yield* self.#ready();
         const v = held(inner, self.ws).vaults[id];
         // (written anew meanwhile, by another of the person's devices: nothing left to do here)
@@ -3054,8 +3103,9 @@ class Vaults {
         // The key before kept a while too, not forgotten: an item not written again yet (this device stopped, a write
         // that failed) is carried on with it, nobody asked. The device taken out holds that key anyway: keeping it
         // here a while gives nothing away. (The version it was sealed in is kept as the last of its epoch, `before`.)
-        self.#keep(v, old);
-        self.#keep(nv, key);
+        const expected = { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen };
+        self.#keep(v, old, expected);
+        self.#keep(nv, key, expected);
         // Its items, as they held when the lock took the version before, written again under the new key.
         yield* Effect.ignore(self.#carryNow(id, null, new Map([[keyOf(v), old], [keyOf(nv), key]])), { log: "Unhandled", message: "vault items keyed anew" });
         // A device that came back meanwhile (put in the lock again as it was keyed anew) was looked at against the
@@ -3074,7 +3124,13 @@ class Vaults {
   /// unsealed with this device's box key, read at most once: the person asked, saying `ask` (`how.asked` told when they
   /// are), or read already (`how.priv`); `ask` null and none read, those of a key not to be had are left as they are.
   /// How many it wrote. Within the vault's giving (`carryOn` takes its turn; `#rekey` holds it already).
-  #carryNow(id: string, ask: string | null, known?: Map<string, Uint8Array>, how: { asked?: () => void; priv?: Uint8Array } = {}): Effect.Effect<number, CoreError> {
+  #carryNow(
+    id: string,
+    ask: string | null,
+    known?: Map<string, Uint8Array>,
+    how: { asked?: () => void; priv?: Uint8Array } = {},
+    expected?: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
+  ): Effect.Effect<number, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
@@ -3114,6 +3170,9 @@ class Vaults {
           if (kept && kept.until > inner.host.nowMs()) return kept.key;
           const sealed = of.keys.find((k) => k.cert.device === who.device);
           if (sealed === undefined) return null;
+          const startWsAuthGen = expected?.wsAuthGen ?? inner.store.authGen.workspaceAuthGen(ws);
+          const startVaultGen = expected && of.id === id ? expected.vaultGen : inner.store.authGen.vaultGen(ws, of.id);
+          const startVaultGlobalGen = expected?.vaultGlobalGen ?? inner.store.authGen.vaultGlobalGen;
           const p = yield* boxKey;
           if (p === null || boxPublic(p) !== sealed.cert.box) return null;
           let key: Uint8Array;
@@ -3122,7 +3181,9 @@ class Vaults {
           } catch {
             return null;
           }
-          self.#keep(of, key);
+          if (!self.#keep(of, key, { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen })) {
+            return yield* fail("auth_stale", t("core-misc.auth.stale"));
+          }
           return key;
         });
       const key = plan.length === 0 ? null : yield* keyFor(v);
@@ -3156,13 +3217,27 @@ class Vaults {
 
   /// Vault `id`'s items left under an earlier key carried on (`#carryNow`), in its turn after a giving or a keying anew
   /// under way: a read that carries waits for it, not racing it item by item.
-  carryOn(id: string, ask: string | null, known?: Map<string, Uint8Array>, how: { asked?: () => void; priv?: Uint8Array } = {}): Effect.Effect<number, CoreError> {
-    return this.#giving(id)(this.#carryNow(id, ask, known, how));
+  carryOn(
+    id: string,
+    ask: string | null,
+    known?: Map<string, Uint8Array>,
+    how: { asked?: () => void; priv?: Uint8Array } = {},
+    expected?: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
+  ): Effect.Effect<number, CoreError> {
+    return this.#giving(id)(this.#carryNow(id, ask, known, how, expected));
   }
 
   /// A vault's key kept unsealed UNLOCK_MS from now, then forgotten (and the pages told).
-  #keep(v: Vault, key: Uint8Array): void {
+  /// Always verifies `(wsAuthGen, vaultGen, vaultGlobalGen)` before populating `mem(inner).keys`.
+  #keep(v: Vault, key: Uint8Array, expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number }): boolean {
     const inner = this.#inner;
+    if (
+      inner.store.authGen.workspaceAuthGen(this.ws) !== expected.wsAuthGen ||
+      inner.store.authGen.vaultGen(this.ws, v.id) !== expected.vaultGen ||
+      inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen
+    ) {
+      return false;
+    }
     const until = inner.host.nowMs() + UNLOCK_MS;
     mem(inner).keys.set(keyOf(v), { key, until });
     changed(inner, this.ws);
@@ -3171,11 +3246,15 @@ class Vaults {
         Effect.sleep(UNLOCK_MS),
         Effect.sync(() => {
           const k = mem(inner).keys.get(keyOf(v));
-          if (k && k.until <= inner.host.nowMs()) mem(inner).keys.delete(keyOf(v));
+          if (k && k.until <= inner.host.nowMs()) {
+            mem(inner).keys.delete(keyOf(v));
+            inner.store.authGen.bumpVault(this.ws, v.id, dependentVaultWorkspaces(inner, this.ws));
+          }
           changed(inner, this.ws);
         }),
       ),
     );
+    return true;
   }
 
   /// A vault's version taken by its station, held here as it is; where no station can take it now (`station` none, or
@@ -3349,6 +3428,8 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
       if (name.trim() === "") return yield* Effect.fail(CoreError.invalid("name"));
       const { lock, signer, self: who } = yield* self.#ready();
       const here = yield* self.#current(lock, signer, who);
@@ -3434,7 +3515,7 @@ class Vaults {
       } else {
         return yield* Effect.fail(put.failure);
       }
-      self.#keep(v, key);
+      self.#keep(v, key, { wsAuthGen: startWsAuthGen, vaultGen: inner.store.authGen.vaultGen(self.ws, v.id), vaultGlobalGen: startVaultGlobalGen });
       return { id, station: on };
     });
   }
@@ -3465,6 +3546,9 @@ class Vaults {
       if (added0.length === 0 && removed0.length === 0) return { id: v0.id, members: v0.members, rekeyed: false };
       return yield* self.#giving(v0.id)(
         Effect.gen(function* () {
+          const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+          const startVaultGen = inner.store.authGen.vaultGen(self.ws, v0.id);
+          const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
           const { lock, signer, self: who } = yield* self.#ready();
           const v = yield* self.#vault(lock, id);
           if (v.scope !== "workspace") return yield* fail("vault_not_workspace", "only workspace vaults support managing members");
@@ -3532,8 +3616,9 @@ class Vaults {
             return yield* Effect.fail(put.failure);
           }
           const nv = put.success;
-          self.#keep(v, oldKey);
-          self.#keep(nv, newKey);
+          const expected = { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen };
+          self.#keep(v, oldKey, expected);
+          self.#keep(nv, newKey, expected);
           yield* Effect.ignore(self.#carryNow(v.id, null, new Map([[keyOf(v), oldKey], [keyOf(nv), newKey]])), { log: "Unhandled", message: "vault items keyed anew" });
           return { id: v.id, members: nextMembers, rekeyed: true, epoch: nextEpoch };
         }),
@@ -3693,17 +3778,34 @@ class Vaults {
     return Effect.try({ try: () => decrypt(key, item.ct, itemContext(this.ws, v.id, item.id, item.version, item.epoch)), catch: asCoreError });
   }
 
-  open(id: string): Effect.Effect<unknown, CoreError> {
+  open(id: string, declaredVault?: string): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
+      const inner = self.#inner;
+      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startGlobal = inner.store.authGen.vaultGlobalGen;
+      const startWsVaultGen = inner.store.authGen.vaultWorkspaceGen(self.ws);
+      const startDeclaredVaultGen = declaredVault !== undefined ? inner.store.authGen.vaultGen(self.ws, declaredVault) : undefined;
       // (a device taken out of the lock opens nothing, of a vault waiting to be keyed anew either: #ready refuses it)
       const { lock, self: who } = yield* self.#ready();
       let { v, item, as } = yield* self.#find(lock, who, id);
+      if (declaredVault !== undefined && declaredVault !== v.id) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
+      const startVaultGen = startDeclaredVaultGen ?? inner.store.authGen.vaultGen(self.ws, v.id);
+      if (
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== startGlobal ||
+        (declaredVault === undefined && inner.store.authGen.vaultWorkspaceGen(self.ws) !== startWsVaultGen) ||
+        inner.store.authGen.vaultGen(self.ws, v.id) !== startVaultGen
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       // Written before its vault was keyed anew (`rekeyGone`), as held here: its station read again for the one
       // written since under the new key.
       if (item.epoch < v.epoch) {
-        const host = hostOf(self.#inner, self.ws, v.id);
-        if (host !== "") yield* Effect.ignore(readItems(self.#inner, `${self.ws}/${host}`, v.id), { log: "Unhandled", message: "vault items read" });
+        const host = hostOf(inner, self.ws, v.id);
+        if (host !== "") yield* Effect.ignore(readItems(inner, `${self.ws}/${host}`, v.id), { log: "Unhandled", message: "vault items read" });
         ({ v, item, as } = yield* self.#find(lock, who, id));
       }
       const name = item.listing?.name ?? v.name;
@@ -3712,14 +3814,22 @@ class Vaults {
       // asked for this device's box key where the keys are not unsealed (as opening it would); one not to be carried on
       // stays refused below (nor one of a vault waiting to be keyed anew: nothing is written into it). What fails it is
       // reading the box key, which opening it would fail on the same way: the answer, not asked again.
+      const expected = { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startGlobal };
       if (item.epoch < v.epoch) {
-        yield* self.carryOn(v.id, reason);
+        yield* self.carryOn(v.id, reason, undefined, {}, expected);
         ({ v, item, as } = yield* self.#find(lock, who, id));
       }
-      const key = yield* self.#key(v, who, false, reason);
+      const key = yield* self.#key(v, who, false, reason, true, undefined, expected);
       // (an item of a vault waiting to be keyed anew checked against the lock as it took the vault, as what is carried
       // on is)
       const bytes = yield* self.#plain(as, v, item, key);
+      if (
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGen(self.ws, v.id) !== startVaultGen ||
+        inner.store.authGen.vaultGlobalGen !== startGlobal
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       return { vault: v.id, id: item.id, version: item.version, plain: JSON.parse(new TextDecoder().decode(bytes)) };
     });
   }
@@ -3729,6 +3839,12 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      const startWsVaultGen = inner.store.authGen.vaultWorkspaceGen(self.ws);
+      const startVaultGens = new Map(
+        Object.keys(held(inner, self.ws).vaults).map((vid) => [vid, inner.store.authGen.vaultGen(self.ws, vid)]),
+      );
       const entropy = yield* Effect.try({ try: () => fromWords(words), catch: asCoreError });
       const { lock, signer, self: who } = yield* self.#ready();
       const here = yield* self.#current(lock, signer, who);
@@ -3752,7 +3868,12 @@ class Vaults {
           others++;
           continue;
         }
-        self.#keep(v, key);
+        const kept = self.#keep(v, key, {
+          wsAuthGen: startWsAuthGen,
+          vaultGen: startVaultGens.get(v.id) ?? startWsVaultGen,
+          vaultGlobalGen: startVaultGlobalGen,
+        });
+        if (!kept) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         if (v.keys.some((k) => k.cert.device === who.device && k.cert.box === here.box)) {
           recovered++;
           continue;
@@ -3827,12 +3948,20 @@ class Vaults {
       let item: Item = found;
       if (!allows(item.listing?.lasts ?? v.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
       // (this device's box key, as it was unsealed for it: a sign-in's newer cookies the request carries are opened with it)
+      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startVaultGen = inner.store.authGen.vaultGen(self.ws, v.id);
+      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      const expected = { wsAuthGen: startWsAuthGen, vaultGen: startVaultGen, vaultGlobalGen: startVaultGlobalGen };
+      const approveStale = () =>
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGen(self.ws, v.id) !== startVaultGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
       const unsealed: { priv?: Uint8Array } = {};
-      const key = yield* self.#key(v, who, true, t("core-misc.vault.reason.approve", { name: item.listing?.name ?? v.name }), true, (p) => (unsealed.priv = p));
+      const key = yield* self.#key(v, who, true, t("core-misc.vault.reason.approve", { name: item.listing?.name ?? v.name }), true, (p) => (unsealed.priv = p), expected);
       // Still under the earlier key (its keying anew stopped half-way): carried on to the vault's key first, with the
       // box key just read (the person asked once); one not to be carried on stays refused below.
       if (item.epoch < v.epoch) {
-        yield* Effect.ignore(self.carryOn(v.id, null, new Map([[keyOf(v), key]]), unsealed.priv ? { priv: unsealed.priv } : {}), { log: "Unhandled", message: "vault items carried on" });
+        yield* Effect.ignore(self.carryOn(v.id, null, new Map([[keyOf(v), key]]), unsealed.priv ? { priv: unsealed.priv } : {}, expected), { log: "Unhandled", message: "vault items carried on" });
         item = items(inner, self.ws, v.id)[r.item] ?? item;
       }
       let bytes = yield* self.#plain(as, v, item, key);
@@ -3851,6 +3980,7 @@ class Vaults {
           catch: asCoreError,
         }));
         if (renewed._tag === "Success") {
+          if (approveStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
           const plain = renewed.success;
           const version = item.version + 1;
           const nonce = new Uint8Array(12);
@@ -3861,6 +3991,7 @@ class Vaults {
           if (put._tag === "Success") bytes = utf8(JSON.stringify(plain));
         }
       }
+      if (approveStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const mode = r.mode === "browse" ? "proxy" : r.mode;
       const grantTo = (box: string): Grant => {
         const eph = new Uint8Array(32);
@@ -3880,6 +4011,7 @@ class Vaults {
         if (sent.failure.code !== "vault_refused") return yield* Effect.fail(sent.failure);
         if (requestGone(sent.failure)) self.#dropRequest(r.id);
         yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+        if (approveStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         const again = held(inner, self.ws).requests[r.id];
         if (again?.status !== "pending" || !again.box || again.box === r.box) return yield* Effect.fail(sent.failure);
         grant = grantTo(again.box);
@@ -4005,7 +4137,17 @@ class Vaults {
       if (!allows(itemA.listing.lasts ?? vA.lasts, scope)) return yield* fail("vault_scope", t("core-misc.vault.scopeTooLong"));
       const mineA = keyVault.keys.find((k) => k.cert.device === whoA.device);
       if (!mineA) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
+      const startSrcWsAuthGen = inner.store.authGen.workspaceAuthGen(wsA);
+      const startDstWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startSrcVaultGen = inner.store.authGen.vaultGen(wsA, vA.id);
+      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      const crossStale = () =>
+        inner.store.authGen.workspaceAuthGen(wsA) !== startSrcWsAuthGen ||
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startDstWsAuthGen ||
+        inner.store.authGen.vaultGen(wsA, vA.id) !== startSrcVaultGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
       const priv = yield* self.#boxKey(t("core-misc.vault.reason.approve", { name: itemA.listing.name }));
+      if (crossStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       if (boxPublic(priv) !== mineA.cert.box) return yield* fail("vault_no_key", t("core-misc.vault.noKey"));
       const vaultKey = yield* Effect.try({ try: () => openSeal(priv, mineA.wrapped, keyContext(wsA, vA.id, keyVault.epoch)), catch: asCoreError });
       const bytes = yield* Effect.try({ try: () => decrypt(vaultKey, itemA.ct, itemContext(wsA, vA.id, itemA.id, itemA.version, itemA.epoch)), catch: asCoreError });
@@ -4024,12 +4166,14 @@ class Vaults {
           signer,
         );
       };
+      if (crossStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       let grant = grantTo(r.box);
       const sent = yield* Effect.result(self.#station(station, "POST", "/vault/grants", grant));
       if (sent._tag === "Failure") {
         if (sent.failure.code !== "vault_refused") return yield* Effect.fail(sent.failure);
         if (requestGone(sent.failure)) self.#dropRequest(r.id);
         yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
+        if (crossStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         const again = held(inner, self.ws).requests[r.id];
         if (again?.status !== "pending" || !again.box || again.box === r.box) return yield* Effect.fail(sent.failure);
         grant = grantTo(again.box);
@@ -4119,6 +4263,10 @@ class Vaults {
           }
         }
       }
+      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      const startRekeyVaultGen = rekeyCandidate ? inner.store.authGen.vaultGen(self.ws, rekeyCandidate.id) : 0;
+      const startChosenVaultGen = chosen ? inner.store.authGen.vaultGen(self.ws, chosen.id) : 0;
       const priv = yield* self.#boxKey(t("core-misc.vault.reason.save", { name: s.name }));
       if (boxPublic(priv) !== box) return yield* fail("vault_no_key", t(given ? "core-misc.vault.noKey" : "core-misc.vault.notSealedHere"));
       const body = yield* Effect.try({
@@ -4135,7 +4283,9 @@ class Vaults {
       if (!v && rekeyCandidate !== undefined) {
         const mine = rekeyCandidate.keys.find((k) => k.cert.device === who.device && k.cert.box === box)!;
         const oldKey = yield* Effect.try({ try: () => openSeal(priv, mine.wrapped, keyContext(self.ws, rekeyCandidate.id, rekeyCandidate.epoch)), catch: asCoreError });
-        self.#keep(rekeyCandidate, oldKey);
+        if (!self.#keep(rekeyCandidate, oldKey, { wsAuthGen: startWsAuthGen, vaultGen: startRekeyVaultGen, vaultGlobalGen: startVaultGlobalGen })) {
+          return yield* fail("auth_stale", t("core-misc.auth.stale"));
+        }
         yield* Effect.timeoutOption(Effect.ignore(self.#rekey(rekeyCandidate.id, rekeyCandidate.seq), { log: "Unhandled", message: "vault keyed anew before save" }), REKEY_WAIT_MS); // timer: a deadline
         v = yield* self.#vault(lock, rekeyCandidate.id);
       }
@@ -4149,18 +4299,27 @@ class Vaults {
       const kept = mem(inner).keys.get(keyOf(vault));
       const wrapped = vault.keys.find((k) => k.cert.device === who.device)!.wrapped;
       const key = kept && kept.until > inner.host.nowMs() ? kept.key : yield* Effect.try({ try: () => openSeal(priv, wrapped, keyContext(self.ws, vault.id, vault.epoch)), catch: asCoreError });
-      self.#keep(vault, key);
+      const targetVaultGen = chosen && vault.id === chosen.id ? startChosenVaultGen : inner.store.authGen.vaultGen(self.ws, vault.id);
+      const saveStale = () =>
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGen(self.ws, vault.id) !== targetVaultGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
+      if (!self.#keep(vault, key, { wsAuthGen: startWsAuthGen, vaultGen: targetVaultGen, vaultGlobalGen: startVaultGlobalGen })) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       inner.runner.fork(Effect.ignore(self.#give(vault.id, vault.epoch, key, null), { log: "Unhandled", message: "vault key given" }));
       // Written once: an approval tried again after the station was not told finds it there.
       const had = items(inner, self.ws, vault.id)[r.item];
       if (had?.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
       if (had === undefined) {
+        if (saveStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         const nonce = new Uint8Array(12);
         inner.host.randomBytes(nonce);
         const ct = encryptWith(key, utf8(JSON.stringify(body.plain)), itemContext(self.ws, vault.id, r.item, 0, vault.epoch), nonce);
         const next = sign({ v: 1 as const, ws: self.ws, vault: vault.id, id: r.item, version: 0, epoch: vault.epoch, ct, ...(body.listing ? { listing: body.listing } : {}), at: nowS(inner) }, TAG.item, signer);
         yield* self.#putItem(next, vault);
       }
+      if (saveStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       // Keeping it lets the chat that asked use it, for as long as the vault's items are given: its grant sealed to the
       // request's box (a station from before boxes none: no grant then).
       const scope: Scope = allows(body.listing?.lasts ?? vault.lasts, "hour") ? "hour" : "once";
@@ -4177,6 +4336,7 @@ class Vaults {
         : null;
       // The station that asked holds its copy before it is told.
       yield* spread(inner, `${self.ws}/${station}`);
+      if (saveStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       yield* self.#postDecision(station, "/vault/saves", { request: r.id, vault: vault.id, ...(grant ? { grant } : {}) }, r.id);
       self.#settled(r.id, { status: "granted", ...(grant ? { scope } : {}) });
       return { request: r.id, vault: vault.id, item: r.item, ...(grant ? { scope } : {}) };
@@ -4306,12 +4466,26 @@ class Vaults {
   }
 
   /// What a plain item holds, as its station keeps it (nobody asked: nothing is sealed).
-  openPlain(id: string): Effect.Effect<unknown, CoreError> {
+  openPlain(id: string, declaredVault?: string): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
-      const row = held(self.#inner, self.ws).plain[id];
+      const inner = self.#inner;
+      if (declaredVault !== undefined && declaredVault !== PLAIN) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
+      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
+      const startGlobal = inner.store.authGen.vaultGlobalGen;
+      const startWsVaultGen = inner.store.authGen.vaultWorkspaceGen(self.ws);
+      const row = held(inner, self.ws).plain[id];
       if (!row || row.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
       const i = get(yield* self.#station(row.station, "GET", `/vault/plain/item?id=${encodeURIComponent(id)}`, null), "item") as J;
+      if (
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== startGlobal ||
+        inner.store.authGen.vaultWorkspaceGen(self.ws) !== startWsVaultGen
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       const fields: Record<string, string> = {};
       for (const [k, x] of Object.entries(isObject(i?.fields) ? (i.fields as Record<string, unknown>) : {})) if (typeof x === "string") fields[k] = x;
       return { vault: PLAIN, id, version: Number(get(i, "version") ?? row.version), plain: { kind: get(i, "kind") ?? row.kind, name: get(i, "name") ?? row.name, fields, domains: [], notes: str(get(i, "notes")) ?? "" } };

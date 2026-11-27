@@ -36,11 +36,12 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
   let with_empty_query = Json::object({ "scope": Json::string("w1"), "query": Json::string("") })
 
   let expected_lasting : Array[String] = [
-    "workspace", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "vaults", "usage",
+    "workspace", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "usage",
     "archive", "chats", "longJobs", "changelog", "stationUpdates",
   ]
-  assert_eq(expected_lasting.length(), 14)
+  assert_eq(expected_lasting.length(), 13)
   for name in expected_lasting {
+    assert_false(topic_policy_sensitive(name, empty))
     assert_true(topic_policy_lasting(name, empty))
     assert_false(topic_policy_lasting(name, with_q))
     assert_false(topic_policy_lasting(name, with_empty_q))
@@ -51,6 +52,44 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
     assert_eq(topic_kept_by(name, with_q, true), 0)
     assert_eq(topic_kept_by(name, with_query, true), 0)
     assert_false(topic_shown_kept(name))
+  }
+
+  let expected_sensitive : Array[String] = [
+    "accounts", "lock", "lockDraft", "lockPrompts", "loginSessions", "machineLogins", "machineLogin",
+    "machineLoginScreen", "slackTokens", "admin", "adminList", "adminItem", "adminOverview", "adminRelays",
+    "vaults", "vaultItems", "vaultUses", "rigs", "devices", "memberships", "joinable",
+  ]
+  assert_eq(expected_sensitive.length(), 21)
+  for name in expected_sensitive {
+    assert_true(topic_policy_sensitive(name, empty))
+    assert_false(topic_policy_lasting(name, empty))
+    assert_eq(topic_kept_by(name, empty, true), 0)
+    assert_eq(topic_kept_by(name, empty, false), 0)
+    assert_false(topic_policy_show_kept(name, empty, true))
+  }
+
+  // stationPart byParam branches
+  for part in ["machineLogins", "logins"] {
+    let p = Json::object({ "scope": Json::string("w1"), "station": Json::string("w1/s1"), "part": Json::string(part) })
+    assert_true(topic_policy_sensitive("stationPart", p))
+    assert_eq(topic_kept_by("stationPart", p, true), 0)
+    assert_false(topic_policy_show_kept("stationPart", p, true))
+  }
+  for part in ["archiving", "automaticDecisions", "unknownPart"] {
+    let p = Json::object({ "scope": Json::string("w1"), "station": Json::string("w1/s1"), "part": Json::string(part) })
+    assert_false(topic_policy_sensitive("stationPart", p))
+    assert_eq(topic_kept_by("stationPart", p, true), 0)
+    assert_false(topic_policy_show_kept("stationPart", p, true))
+  }
+  assert_eq(topic_kept_by("stationPart", empty, true), 0)
+  assert_false(topic_policy_show_kept("stationPart", empty, true))
+  for part in ["profiles", "updates", "copies"] {
+    let p = Json::object({ "scope": Json::string("w1"), "station": Json::string("w1/s1"), "part": Json::string(part) })
+    assert_false(topic_policy_sensitive("stationPart", p))
+    assert_eq(topic_kept_by("stationPart", p, true), 24)
+    assert_eq(topic_kept_by("stationPart", p, false), 0)
+    assert_true(topic_policy_show_kept("stationPart", p, true))
+    assert_false(topic_policy_show_kept("stationPart", p, false))
   }
 
   for name in ["chats", "longJobs", "changelog"] {
@@ -66,7 +105,6 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
     ("agentCard", 16),
     ("railCard", 16),
     ("station", 16),
-    ("stationPart", 24),
     ("profile", 16),
     ("connect", 16),
     ("connectCandidates", 8),
@@ -77,7 +115,7 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
     ("project", 16),
     ("tags", 8),
   ]
-  assert_eq(expected_views.length(), 16)
+  assert_eq(expected_views.length(), 15)
   for kv in expected_views {
     let (name, cap) = kv
     assert_false(topic_policy_lasting(name, empty))

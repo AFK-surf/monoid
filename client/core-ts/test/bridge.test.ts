@@ -328,10 +328,15 @@ test("a_file_picked_in_the_app_is_read_from_there_as_it_goes_up", async (t) => {
   native.picked.set(7, bytes("abc"));
   const client = core.connect();
   const states = new Map<number, J>();
+  let authConn = 0;
+  let authGen = 1;
   const read = () => {
     for (const [, json] of native.emitted.splice(0)) {
       const m = JSON.parse(json);
-      if ("value" in m) states.set(m.id, m.value);
+      if (m.id === 0 && m.auth) {
+        authConn = m.auth.conn;
+        authGen = m.auth.global ?? 1;
+      } else if ("value" in m) states.set(m.id, m.value);
       else if ("delta" in m) states.set(m.id, apply(states.get(m.id), m.delta));
       else if ("error" in m) errors.set(m.id, m.error);
     }
@@ -340,16 +345,18 @@ test("a_file_picked_in_the_app_is_read_from_there_as_it_goes_up", async (t) => {
   const until = async (done: () => boolean) => {
     for (read(); !done(); read()) await native.heard();
   };
+  await until(() => authConn > 0);
+  const auth = { conn: authConn, authGen };
   core.receive(client, JSON.stringify({ id: 1, subscribe: { topic: "composer", key: "phone-1" } }));
   // A picture: its size is read from its head too.
-  core.receive(client, JSON.stringify({ id: 2, call: "composer.add", params: { key: "phone-1", station: "ws/st", files: [{ id: "f1", name: "a.png", size: 3, blob: { hostFile: 7, size: 3, type: "image/png" } }] } }));
+  core.receive(client, JSON.stringify({ id: 2, call: "composer.add", params: { key: "phone-1", station: "ws/st", files: [{ id: "f1", name: "a.png", size: 3, blob: { hostFile: 7, size: 3, type: "image/png" } }] }, auth }));
   // No such station here: it fails once its first part is read from the app.
   await until(() => errors.has(2) || states.get(1)?.files?.[0]?.error != null);
   assert.equal(errors.get(2), undefined);
   // Named first (the station may have it already), read from the app as it goes (a picture's head before, for its size).
   assert.ok(native.calls.indexOf("picked.hash") >= 0 && native.calls.indexOf("picked.hash") < native.calls.lastIndexOf("picked.read"));
   assert.ok(native.picked.has(7), "a failed upload keeps its file, to go again");
-  core.receive(client, JSON.stringify({ id: 3, call: "composer.remove", params: { key: "phone-1", id: "f1" } }));
+  core.receive(client, JSON.stringify({ id: 3, call: "composer.remove", params: { key: "phone-1", id: "f1" }, auth }));
   await until(() => !native.picked.has(7));
   native.host.close();
   rmSync(dir, { recursive: true, force: true });
@@ -366,10 +373,15 @@ test("a_file_held_whole_by_the_app_goes_up_from_the_bytes_beside_its_call", asyn
   const client = core.connect();
   const states = new Map<number, J>();
   const errors = new Map<number, J>();
+  let authConn = 0;
+  let authGen = 1;
   const read = () => {
     for (const [, json] of native.emitted.splice(0)) {
       const m = JSON.parse(json);
-      if ("value" in m) states.set(m.id, m.value);
+      if (m.id === 0 && m.auth) {
+        authConn = m.auth.conn;
+        authGen = m.auth.global ?? 1;
+      } else if ("value" in m) states.set(m.id, m.value);
       else if ("delta" in m) states.set(m.id, apply(states.get(m.id), m.delta));
       else if ("error" in m) errors.set(m.id, m.error);
     }
@@ -377,13 +389,15 @@ test("a_file_held_whole_by_the_app_goes_up_from_the_bytes_beside_its_call", asyn
   const until = async (done: () => boolean) => {
     for (read(); !done(); read()) await native.heard();
   };
+  await until(() => authConn > 0);
+  const auth = { conn: authConn, authGen };
   core.receive(client, JSON.stringify({ id: 1, subscribe: { topic: "composer", key: "mbui-1" } }));
   // two files in one call, each its own run of the bytes
   const sha = "a".repeat(64);
   core.receive(client, JSON.stringify({ id: 2, call: "composer.add", params: { key: "mbui-1", station: "ws/st", files: [
     { id: "f1", name: "a.txt", size: 3, blob: { hostBytes: [0, 3], type: "text/plain", sha256: sha } },
     { id: "f2", name: "b.txt", size: 2, blob: { hostBytes: [3, 2], type: "text/plain" } },
-  ] } }), bytes("abcde"));
+  ] }, auth }), bytes("abcde"));
   // taken (no such station here: each fails as it goes up), never asked of the app
   await until(() => errors.has(2) || (states.get(1)?.files?.length === 2 && states.get(1).files.every((f: J) => f.error != null)));
   assert.equal(errors.get(2), undefined);

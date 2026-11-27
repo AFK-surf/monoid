@@ -278,7 +278,7 @@ fn accounts_told(list : Json) -> Unit {
     _ => list.stringify()
   }
   match signed_in.val {
-    Some(was) if was != who && trace_switch("MBUI_SWR_VIEWS") => @core.client.forget_kept()
+    Some(was) if was != who => @core.client.forget_kept()
     _ => ()
   }
   signed_in.val = Some(who)
