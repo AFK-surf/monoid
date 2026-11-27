@@ -412,8 +412,9 @@ test "wide cold-open budget: Medium (600x900) key Place cold-open 5-dim sweep" {
         )
       })
       wide_cold_record("medium/attention", m_att, t_att, c_att, alive_pre_att)
-      // Exclude pre-existing rail top-left workspace icon corner radius on platform=2 (corners_held=false in wide_cold_open_init).
-      assert_eq(t_att.audit().filter(fn(s) { !s.contains("from its edges") }), [])
+      // Exclude only the pre-existing rail top-left workspace badge (at 19,33 30x30 in 「星 个」) corner radius on platform=2.
+      let non_rail_ws_corner = fn(s : String) { !(s.contains("in 「星 个」 (at 19,33 30×30") && s.contains("from its edges")) }
+      assert_eq(t_att.audit().filter(non_rail_ws_corner), [])
     }
     None => fail("medium rail attention bell button not found in semantics")
   }

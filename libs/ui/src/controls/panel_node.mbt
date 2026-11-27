@@ -147,17 +147,19 @@ fn panel_node(
         .max_height(
           By(fn() {
             let room_h = dmax(0.0, over_room(layer).1 - 16.0)
-            if x.tall > 0.0 && x.nodes.hugs {
+            let hugs_here = x.tall > 0.0 && x.nodes.hugs && (x.nodes.hugs_wide || layout(layer.window_w()) is Small)
+            if hugs_here {
               Some(dmin(x.tall * over_room(layer).1, room_h))
             } else {
               Some(room_h)
             }
           }),
         )
-        // (`tall`: a share of the window, no taller than the room beside what opened it; `hugs` fits content up to that cap)
+        // (`tall`: a share of the window, no taller than the room beside what opened it; on Small or with `hugs_wide`, `hugs` fits content up to that cap)
         .height(
           By(fn() {
-            if x.tall > 0.0 && !x.nodes.hugs {
+            let hugs_here = x.tall > 0.0 && x.nodes.hugs && (x.nodes.hugs_wide || layout(layer.window_w()) is Small)
+            if x.tall > 0.0 && !hugs_here {
               Some(dmin(x.tall * over_room(layer).1, dmax(0.0, over_room(layer).1 - 16.0)))
             } else {
               None
@@ -343,7 +345,8 @@ fn panel_node(
         }
         if p.lent(pill_morph_lent) is Some(_) {
           p.box(fn(content) {
-            if x.tall > 0.0 && !x.nodes.hugs {
+            let hugs_here = x.tall > 0.0 && x.nodes.hugs && (x.nodes.hugs_wide || layout(layer.window_w()) is Small)
+            if x.tall > 0.0 && !hugs_here {
               content.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
             } else {
               content.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

@@ -249,6 +249,7 @@ fn attention_present(
     offset~,
     tall~,
     hugs~,
+    hugs_wide=true,
     grows~,
     foot=fn(v, close) {
       // (across the foot's row, its words at its start as the old foot's were)

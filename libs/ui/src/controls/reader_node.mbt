@@ -1713,6 +1713,7 @@ fn reader_sheets(parent : @view.View, r : Reading, paper : () -> ReaderPaper, lo
         foot: None,
         hugs: false,
         hugs_centred: false,
+        hugs_wide: false,
         steps: false,
         sheet_heads: true,
         heads: false,

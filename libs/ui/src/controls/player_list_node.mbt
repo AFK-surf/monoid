@@ -366,6 +366,7 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
       foot: None,
       hugs: false,
       hugs_centred: false,
+      hugs_wide: false,
       steps: false,
       sheet_heads: true,
       heads: false,

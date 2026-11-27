@@ -230,7 +230,15 @@ test "virtualized attention panel exposes visible rows to a11y and navigates on 
     Some(b) => {
       t.tap(b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)
       t.run_for(@ui.move_most_ms)
-      assert_true(t.find("选一个发布的时间") is None, msg="tapping attention row should close the panel")
+      assert_true(t.find("Maple 离线") is None, msg="tapping attention row should close the panel")
+      assert_true(t.query(Dialog) is None, msg="attention panel dialog should be closed after row tap")
+      match app.nav.top() {
+        Chat(r) => {
+          assert_eq(r.title, "夜里的备份")
+          assert_true(r.session != "", msg="target chat session must be non-empty")
+        }
+        _ => fail("tapping attention row must navigate to target Chat")
+      }
     }
     None => fail("chat attention row '夜里的备份' missing from a11y semantics")
   }
