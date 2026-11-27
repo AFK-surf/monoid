@@ -26,6 +26,7 @@ int mb_views_frost(int n, const double *frosts) {
 int mb_views_count(void) { return 0; }
 void mb_views_draw_under(CGContextRef ctx, double scale) { (void)ctx, (void)scale; }
 void mb_text_set_scale(double scale) { (void)scale; }
+void mb_text_flush_ahead(void) {}
 
 static int failed;
 
