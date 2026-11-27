@@ -147,10 +147,11 @@ fn picker_open(src : Source, ws : String, s : DvStation, picked : (Favorite) -> 
 ///|
 /// The folders at `path` (the home where None) of `station` asked of it (`drive.folders`), a later ask superseding one
 /// on its way. Where the picker shows a folder already (a station picked, a step of the way, a folder's row, one just
-/// made), it stays as it is till the answer comes, the station's choice naming the one pressed; then the station, its
+/// made), it stays drawn till the answer comes. The choice names the station pressed. Folders of the previous station
+/// take no input while the new station answers. Then the station, its
 /// way, its rows and the foot switch to it in one change, told as what the answer tells (nothing sets out by it), at the
 /// end of what is running (a frame being drawn shows it wholly as it was: sfbase's switch_answered), the filter
-/// emptied with it; what it held kept as the last (its way stays where the folder could not be read). As it opens it
+/// emptied with it; the last folder's way stays on a failed read on the same station. As it opens it
 /// shows that it reads.
 fn picker_go(src : Source, station : String, path : String?) -> Unit {
   @signals.start_batch()
@@ -178,7 +179,6 @@ fn picker_go(src : Source, station : String, path : String?) -> Unit {
       guard serial == dialogs.serial.untracked() else { return }
       @view.answering(fn() {
         @signals.start_batch()
-        dialogs.station.set(station)
         dialogs.at.set(path)
         dialogs.asking.set(false)
         dialogs.filter.set("")
@@ -190,9 +190,8 @@ fn picker_go(src : Source, station : String, path : String?) -> Unit {
             dialogs.denied.set(flag(Some(v), "unreadable"))
           }
           Err(e) => {
-            match dialogs.value.untracked() {
-              Some(v) => dialogs.last.set(Some(v))
-              None => ()
+            if dialogs.station.untracked() != station {
+              dialogs.last.set(None)
             }
             dialogs.value.set(None)
             if text(Some(e), "code") == "permission" {
@@ -204,6 +203,7 @@ fn picker_go(src : Source, station : String, path : String?) -> Unit {
             }
           }
         }
+        dialogs.station.set(station)
         @signals.end_batch()
       })
     })
@@ -228,8 +228,15 @@ pub fn folder_pick(src : Source, p : @sfbase.FolderPick) -> Unit {
 }
 
 ///|
-/// The folder shown (its answer), "" while it is read or one the station may not read.
+/// While a new station answers, the old folders stay drawn under the new name.
+fn picker_on_chosen_station() -> Bool {
+  dialogs.picked.get() == dialogs.station.get()
+}
+
+///|
+/// The folder available to choose on the named station, or "" until there is one.
 fn picker_here() -> String {
+  guard picker_on_chosen_station() else { return "" }
   match dialogs.value.get() {
     Some(v) if !dialogs.denied.get() && dialogs.error.get() == "" => text(Some(v), "path")
     _ => ""
@@ -260,7 +267,7 @@ fn picker_body(v : @view.View, src : Source, p : @sfbase.FolderPick) -> Unit {
   picker_where(v, src, p)
   picker_filter_node(v)
   v.box(fn(main) {
-    main.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    main.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).presses(By(picker_on_chosen_station)) |> ignore
     main.pick(picker_shows, fn(b, shows) {
       b.grow(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       match shows {
@@ -489,6 +496,7 @@ fn picker_where(v : @view.View, src : Source, p : @sfbase.FolderPick) -> Unit {
     .grow(Is(1.0))
     .basis(Is(Some(0.0)))
     .min_width(Is(Some(0.0)))
+    .presses(By(picker_on_chosen_station))
     |> ignore
   })
   |> ignore

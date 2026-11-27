@@ -286,6 +286,54 @@ test "switching the browsing station starts at its home and saves the chosen fol
 }
 
 ///|
+test "a preset's folder comes from the chosen station when its first read is late or fails" {
+  for wide in [false, true] {
+    new_run()
+    let calls : Array[Made] = []
+    let base = preset_calls("newchat-preset-new-browse-repos", calls)
+    let held : Ref[((Result[Json, Json]) -> Unit)?] = Ref(None)
+    let src : Source = {
+      ..base,
+      call: fn(name, params, done) {
+        if name == "drive.folders" && text(Some(params), "station") == "ws1/st2" && held.val is None {
+          held.val = Some(done)
+        } else {
+          (base.call)(name, params, done)
+        }
+      },
+    }
+    let t = preset_mode("newchat-preset-new-browse-repos", wide~, src~)
+    press(t, "选择文件夹所在的 station: Willow")
+    t.run_for(@ui.move_most_ms)
+    t.click(MenuItemRadio, label="Maple")
+    t.run_for(@ui.move_most_ms)
+    guard held.val is Some(answer) else { fail("Maple was not asked for its home") }
+    let reads = named(calls, "drive.folders").length()
+    assert_true(t.query(Button, label="选择文件夹所在的 station: Maple") is Some(_))
+    assert_true(t.get(Button, label="新建文件夹").disabled)
+    assert_true(t.get(Button, label="选择「项目」").disabled)
+    for label in ["lin", "web-app", "新建文件夹", "选择「项目」"] {
+      let (x, y) = t.find(label).unwrap()
+      t.tap(x, y)
+    }
+    assert_eq(named(calls, "drive.folders").length(), reads)
+    assert_true(t.query(Button, label="选择文件夹所在的 station: Maple") is Some(_))
+    answer(Err({ "code": "offline", "message": "Maple offline" }))
+    t.frame()
+    assert_false(shows(t, "lin"), msg="the old station's path after Maple failed")
+    press(t, "重试")
+    t.frame()
+    press(t, "选择「主目录」")
+    t.run_for(@ui.move_most_ms)
+    press(t, "创建")
+    t.frame()
+    let folder = Some(items(Some(named(calls, "preset.add")[0].params), "dirs")[0])
+    assert_eq(text(folder, "station"), "ws1/st2")
+    assert_eq(text(folder, "path"), "/Users/lin")
+  }
+}
+
+///|
 test "editing another station's preset still starts browsing on the composer's station" {
   new_run()
   @sffixture.new_fix.station = "st2"
