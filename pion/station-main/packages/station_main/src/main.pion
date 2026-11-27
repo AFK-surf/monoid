@@ -858,7 +858,7 @@ pub fn check_external_connects_need_node(data : String, sep : String) -> Array[S
   let remote_path = nodepath::join(sep, [data, "remote-connects.json"])
   let remote_reason = match station_sys::read_file_strict(remote_path) {
     Ok(raw) => remote_connects_file_needs_node(Some(raw.to_string()), false)
-    Err(station_sys::FileReadError::NotFound) => None
+    Err(station_sys::StrictReadErr::NotFound) => None
     Err(_) => remote_connects_file_needs_node(None, true)
   }
   match remote_reason {

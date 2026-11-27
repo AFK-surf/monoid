@@ -892,6 +892,7 @@ test "P1-1 holds_all compares transcript_manifest and hand_over parity" {
       gens: [Holding::{ gen: h.gen, batches: h.batches, head: Some(h) }],
       files: [test_hash_1],
       has_unverified_head: false,
+      unverified_gens: [],
     }
   }
   // Same gen & to, different transcript_manifest -> MUST return false!
@@ -940,6 +941,7 @@ test "P1-1 holds_all compares transcript_manifest and hand_over parity" {
     gens: [Holding::{ gen: h_with_m.gen, batches: h_with_m.batches, head: Some(h_with_m) }],
     files: [test_hash_1, enc_m.root_hash, test_hash_3],
     has_unverified_head: false,
+    unverified_gens: [],
   }
   let m_reader : Option[(String, Int) -> Result[Option[Bytes], String]] = Some(fn(h, _max) { Ok(m_objs.get(h)) })
   assert(holds_all_logical(held_m, held_m, m_reader, m_reader))
@@ -957,7 +959,7 @@ test "P1-1 holds_all compares transcript_manifest and hand_over parity" {
     Ok(h) => h
     Err(_) => {
       assert(false)
-      Held::{ gens: [], files: [], has_unverified_head: false }
+      Held::{ gens: [], files: [], has_unverified_head: false, unverified_gens: [] }
     }
   }
   match hand_over(
@@ -1018,7 +1020,12 @@ test "P1-2 behind origin filter newer gen and old dropped run" {
     runs: [RunEntry::{ run: "r9", from: 1L }],
   }
   let mk_held = fn(h : Head) -> Held {
-    Held::{ gens: [Holding::{ gen: h.gen, batches: h.batches, head: Some(h) }], files: [], has_unverified_head: false }
+    Held::{
+      gens: [Holding::{ gen: h.gen, batches: h.batches, head: Some(h) }],
+      files: [],
+      has_unverified_head: false,
+      unverified_gens: [],
+    }
   }
   assert(!behind(own, mk_held(other_origin)))
 

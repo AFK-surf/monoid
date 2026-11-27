@@ -74,6 +74,9 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
           size: b.length().to_int64(),
           mtime_ms: now_ms(),
           mode: 384,
+          executable: false,
+          dev: 0L,
+          ino: 0L,
         })
         None => None
       }
@@ -85,6 +88,9 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
           size: b.length().to_int64(),
           mtime_ms: now_ms(),
           mode: 384,
+          executable: false,
+          dev: 0L,
+          ino: 0L,
         })
         None => None
       }

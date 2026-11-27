@@ -311,22 +311,6 @@ if [ "$GOT_SHA" != "$PINNED_SHA" ]; then
   exit 1
 fi
 
-# Relax only the wall-clock 3x speedup threshold (exit code 2) in upstream scripts/bootstrap.sh
-# while keeping multicore_bench concurrency correctness checks (exit code 1 / crashes) enforced.
-BOOTSTRAP_SH="$SRC_DIR/scripts/bootstrap.sh"
-if [ ! -f "$BOOTSTRAP_SH" ]; then
-  echo "ensure-pionc.sh: missing $BOOTSTRAP_SH in checked-out pion source" >&2
-  exit 1
-fi
-sed 's|^"\$TMP_DIR/multicore_bench"$|set +e; "$TMP_DIR/multicore_bench"; _mc_rc=$?; set -e; if [ "$_mc_rc" -ne 0 ] \&\& [ "$_mc_rc" -ne 2 ]; then exit "$_mc_rc"; fi|' \
-  "$BOOTSTRAP_SH" > "${BOOTSTRAP_SH}.tmp"
-mv -f "${BOOTSTRAP_SH}.tmp" "$BOOTSTRAP_SH"
-if ! grep -q '_mc_rc' "$BOOTSTRAP_SH" || \
-   grep -qx '"\$TMP_DIR/multicore_bench"' "$BOOTSTRAP_SH"; then
-  echo "ensure-pionc.sh: failed to relax multicore_bench timing gate in $BOOTSTRAP_SH" >&2
-  exit 1
-fi
-
 (
   cd "$SRC_DIR"
   sh scripts/install.sh --prefix "$STAGE_DIR" >&2

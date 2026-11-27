@@ -802,7 +802,9 @@ test "connects_os_ws_send_async_two_arg_default_awaitable" {
     },
   )
   let bridge = ConnectMuxBridge::with_hub(h.hub, mem.ops())
-  let ws_h = match bridge.ws_open(station_connects::WsOpenRequest::{ url: "wss://example.com/ws", headers: [] }) {
+  let ws_h = match bridge.ws_open(
+    station_connects::WsOpenRequest::{ url: "wss://example.com/ws", headers: [], timeout_ms: 0L },
+  ) {
     Ok(id) => id
     Err(e) => panic("ws_open failed: " + e)
   }

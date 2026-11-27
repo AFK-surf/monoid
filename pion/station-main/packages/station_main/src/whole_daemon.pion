@@ -4983,6 +4983,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             conn_id: conn_id,
             remote_id: remote_id,
             alpn: station_mesh::ALPN,
+            via: if is_front { "front" } else { "direct" },
+            accepted_ms: host_shim::wall_ms(),
           })
           st.admin_conns.set(
             conn_id,
@@ -4993,6 +4995,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               control_sid: None,
               iat: 0L,
               sid_claim: "",
+              cred_role: "",
+              effective_role: "",
               lock_base: None,
               lock_proof: None,
             },
@@ -5033,6 +5037,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   conn_id: conn_id,
                   remote_id: remote_id,
                   alpn: station_mesh::ALPN,
+                  via: if is_front { "front" } else { "direct" },
+                  accepted_ms: host_shim::wall_ms(),
                 })
                 let fresh = AdminConnState::{
                   conn_id: conn_id,

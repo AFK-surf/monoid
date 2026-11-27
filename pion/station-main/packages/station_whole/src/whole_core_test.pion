@@ -526,6 +526,9 @@ test "whole_core_mixed_rig_real_task_list_live_clock_expiry_and_zero_shutdown_co
     env_var: Some("API_KEY"),
     secret: station_vault::VaultSecret::{ kind: "api_key", name: "API_KEY", fields: sf },
     expires_sec: 1700000100L,
+    idle_sec: 0L,
+    uses: 0,
+    revoked: false,
   }
   wc_assert(core.store.register_vault_grant(g, clock.now_ms / 1000L).is_ok(), "register grant ok")
   wc_assert(core.store.active_vault_grant_ids_at(clock.now_ms / 1000L).length() == 1, "grant active before exp")
@@ -793,10 +796,26 @@ test "whole_core_r4_nested_snapshot_arrays_prepared_task_job_null_and_projects_i
   let trunc_fs = station_jobs::FsPort::{
     sep: "/",
     lstat: fn(_p : String) -> Option[station_jobs::FsStat] {
-      Some(station_jobs::FsStat::{ kind: "dir", size: 0L, mtime_ms: 0L, mode: 493 })
+      Some(station_jobs::FsStat::{
+        kind: "dir",
+        size: 0L,
+        mtime_ms: 0L,
+        mode: 493,
+        executable: false,
+        dev: 0L,
+        ino: 0L,
+      })
     },
     stat: fn(_p : String) -> Option[station_jobs::FsStat] {
-      Some(station_jobs::FsStat::{ kind: "dir", size: 0L, mtime_ms: 0L, mode: 493 })
+      Some(station_jobs::FsStat::{
+        kind: "dir",
+        size: 0L,
+        mtime_ms: 0L,
+        mode: 493,
+        executable: false,
+        dev: 0L,
+        ino: 0L,
+      })
     },
     read_dir: fn(_p : String) -> Option[Array[String]] { Some(["sub1", "sub2"]) },
     read_file: base_fs.read_file,

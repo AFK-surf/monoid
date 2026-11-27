@@ -695,6 +695,8 @@ fn job_record_from_store(rec : station_store::JobRecord) -> station_jobs::JobRec
       Some(v) => v != 0L
       None => false
     },
+    next_restart_at: None,
+    stop_deadline_at: None,
     notices: [],
   }
 }
