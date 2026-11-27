@@ -853,8 +853,14 @@ const ask = (inner: Inner, address: string, method: string, path: string, body: 
 /// (for example `Vaults.setup` after `PUT /vault/boxes`, or conflict/refusal recovery), while background sync callers
 /// still skip offline or unlinked stations.
 export function readStation(inner: Inner, address: string, opts?: { force?: boolean }): Effect.Effect<void, CoreError> {
+  return Effect.asVoid(readStationChecked(inner, address, opts));
+}
+
+/// Same as `readStation`, returning `true` iff the station's vault listing (`GET /vault/vaults`, items, boxes) was
+/// successfully fetched and merged into local state.
+function readStationChecked(inner: Inner, address: string, opts?: { force?: boolean }): Effect.Effect<boolean, CoreError> {
   return Effect.gen(function* () {
-    if (!opts?.force && (!inner.stations.link(address) || !inner.stations.reachable(address))) return;
+    if (!opts?.force && (!inner.stations.link(address) || !inner.stations.reachable(address))) return false;
     const ws = ofAddress(address);
     const station = address.slice(ws.length + 1);
     // The plain library (a station from before keeps none: 404), whether security mode is on or not.
@@ -1000,6 +1006,7 @@ export function readStation(inner: Inner, address: string, opts?: { force?: bool
     if (list !== null) carryKept(inner, ws);
     // (this device not set up while the person's vault is on elsewhere: set up by itself)
     autoBox(inner, ws);
+    return list !== null;
   });
 }
 
@@ -3550,10 +3557,15 @@ class Vaults {
         recovery = recoveryPair(entropy).pub;
       }
       const stations = yield* self.#publish(sign({ v: 1 as const, ws: self.ws, device: who.device, box: pub, recovery, at: nowS(inner) }, TAG.box, signer));
-      for (const s of stations) yield* Effect.ignore(readStation(inner, `${self.ws}/${s}`, { force: true }), { log: "Unhandled", message: "vault station read" });
-      // (not made, it is offered on the page as when there is none; one waiting to be keyed anew is one; workspace vaults do not count as a personal vault)
+      let readFailed = false;
+      for (const s of stations) {
+        const ok = yield* Effect.orElseSucceed(readStationChecked(inner, `${self.ws}/${s}`, { force: true }), () => false);
+        if (!ok) readFailed = true;
+      }
+      // (not made, it is offered on the page as when there is none; one waiting to be keyed anew is one; workspace vaults do not count as a personal vault;
+      // if a station accepted PUT /vault/boxes but its vault listing could not be read, do not blindly create a duplicate personal vault)
       const own = Object.values(held(inner, self.ws).vaults).some((v) => !v.deleted && v.scope !== "workspace" && (trusted(lock, v) || waitingAs(inner, self.ws, lock, v) !== null) && v.owner === who.sub);
-      const made = own ? null : yield* Effect.orElseSucceed(Effect.map(self.create(t("core-misc.vault.personal"), null), (m) => (m as { id: string }).id), () => null);
+      const made = own || readFailed ? null : yield* Effect.orElseSucceed(Effect.map(self.create(t("core-misc.vault.personal"), null), (m) => (m as { id: string }).id), () => null);
       // What a station still keeps unencrypted from before moved into the vault just made, its key in hand (nobody
       // asked again); what is left, or comes later, the page offers to move (`plainLeft`, `migrate`).
       if (made !== null && Object.values(held(inner, self.ws).plain).some((r) => !r.deleted)) yield* Effect.ignore(self.migrate(), { log: "Unhandled", message: "plain secrets moved into the vault" });
@@ -4255,7 +4267,7 @@ class Vaults {
     return Effect.gen(function* () {
       const inner = self.#inner;
       if (!held(inner, self.ws).requests[id]) {
-        yield* answersOf(inner, stationsOf(inner, self.ws).map((s) => readStation(inner, `${self.ws}/${s.id}`)), () => (held(inner, self.ws).requests[id] !== undefined ? 0 : OTHERS_MS));
+        yield* answersOf(inner, stationsOf(inner, self.ws).map((s) => readStation(inner, `${self.ws}/${s.id}`, { force: true })), () => (held(inner, self.ws).requests[id] !== undefined ? 0 : OTHERS_MS));
       }
       const h = held(inner, self.ws);
       const r = h.requests[id];
@@ -4579,7 +4591,7 @@ class Vaults {
         const hasReq = r.vault !== "" && r.vault !== PLAIN && h0.vaults[r.vault] !== undefined;
         const hasOwnPersonal = Object.values(h0.vaults).some((v) => !v.deleted && v.scope !== "workspace" && v.owner === who.sub);
         if (station !== "" && ((r.vault !== "" && r.vault !== PLAIN && !hasReq) || !hasOwnPersonal)) {
-          yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`, { force: true }), { log: "Unhandled", message: "vault station read" });
+          yield* Effect.ignore(readStation(inner, `${self.ws}/${station}`), { log: "Unhandled", message: "vault station read" });
         }
       }
       const lockNow = lockOf(inner, self.ws);

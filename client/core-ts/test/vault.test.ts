@@ -5650,6 +5650,14 @@ test("vault.setup reads the station that accepted PUT /vault/boxes even while it
   const h2 = d2.core.inner.data.record("vault", "ws") as { vaults?: Record<string, Vault> } | undefined;
   assert.ok(h2?.vaults?.[first.made] !== undefined, "d2 must hold the existing vault discovered from the station");
 
+  // Forced readStation also propagates force to backfillAsks while SSE link is in offline backoff.
+  await d2.ask("vault.ask", { vault: first.made });
+  const askedRecord = d1.st.asks.get(`${first.made}/${d1.phone.hex}`);
+  assert.ok(askedRecord !== undefined, "vault.ask persisted KeyAsk on station");
+  d1.st.asks.delete(`${first.made}/${d1.phone.hex}`);
+  await Effect.runPromise(readStation(d2.core.inner, "ws/st", { force: true }));
+  assert.deepEqual(d1.st.asks.get(`${first.made}/${d1.phone.hex}`), askedRecord, "forced readStation backfills accepted KeyAsk while offline");
+
   // Also verify unlinked workspaces (link === undefined, e.g. non-focused workspace on a phone):
   // default readStation skips, while vault.setup still force-reads the station that accepted PUT /vault/boxes.
   d2.core.inner.data.forgetRecord("vault", "ws");
@@ -5662,6 +5670,20 @@ test("vault.setup reads the station that accepted PUT /vault/boxes even while it
   assert.ok(vaultGets > beforeUnlinked, "vault.setup must force-read even when no SSE link is open for that workspace");
   assert.equal(setup3.made, null, "vault.setup must NOT create a duplicate personal vault when unlinked");
   assert.equal(d1.st.vaults.size, 1, "station must still hold only the single original personal vault");
+
+  // Also verify that if PUT /vault/boxes succeeds but the follow-up vault read fails (500 on /vault/vaults
+  // or 500 on /vault/items), vault.setup does NOT blindly create a duplicate personal vault.
+  for (const failPath of ["/vault/vaults", "/vault/items"] as const) {
+    d2.core.inner.data.forgetRecord("vault", "ws");
+    stationReplies(d2.host, (req) => {
+      if (req.method === "GET" && req.url.includes(failPath)) return status(500, { error: "transient_error" });
+      return d2.st.reply(req);
+    });
+    const setupFail = await d2.ask("vault.setup", {});
+    assert.deepEqual(setupFail.stations, ["st"], `${failPath}: PUT /vault/boxes succeeded`);
+    assert.equal(setupFail.made, null, `${failPath}: failed readStation must NOT trigger duplicate personal vault creation`);
+    assert.equal(d1.st.vaults.size, 1, `${failPath}: station must still hold only the single original personal vault`);
+  }
 
   d1.core.close();
   d2.core.close();
