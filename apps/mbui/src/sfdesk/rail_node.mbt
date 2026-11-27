@@ -334,16 +334,6 @@ fn rail_key_node(
 }
 
 ///|
-/// How round the rail's grounds are drawn now (rail_round_of), linked or not: what a box filling one draws within it.
-fn rail_drawn_corner(bar : Bool) -> Double {
-  let r = rail_round_of(bar)
-  match r.links() {
-    Some(l) => l[0].radius(@ui.tree_corner_roots_now())
-    None => @ui.tree_theme().corner(r)
-  }
-}
-
-///|
 /// A mark hung on the top right corner of a ground of the rail (`sq`, its 30 square), as rail_hung's: on the corner,
 /// its middle on the ground's curve where it turns 45°, on a disc of what the rail stands on 2 round it; `shown` of the
 /// way in (a list's as the sidebar folds: from 40%, clear up to half its size). What it is by `mark`.
@@ -915,24 +905,8 @@ fn rail_workspaces_node(
               square=true,
               lit=false,
               fn(k) {
-                // a letter's square: bare at rest as the switcher's rows have it, ringed only pointed at (an outlined
-                // control's hairline in Border), never the pointer's ground; a mark stands on nothing. The ring a box of
-                // its own under what is hung on its corner (an edge is drawn over what its node holds), as round as
-                // the square it fills: linked again, it would follow the window's corner as if it stood apart.
-                k.sq.box(fn(ring) {
-                  ring.over(Is(true)) |> ignore
-                  @sf.style_node(ring, fn() { rail_sq })
-                  ring.radius(By(fn() { rail_drawn_corner(at().bar) })) |> ignore
-                  ring.edge(By(fn() {
-                    if marked() || !@sf.lit_node(k.sq) {
-                      (0.0, 0L)
-                    } else {
-                      @sf.control_edge(hot=true)
-                    }
-                  }))
-                  |> ignore
-                })
-                |> ignore
+                // a letter's square or a mark: bare at rest as the switcher's rows have it, pointed at only the rail's
+                // hover ground, no hairline ring round it (as every other key of the rail)
                 // its mark, else its letter (sfpages' workspace_mark)
                 k.sq.pick(fn() { if marked() { 1 } else { 0 } }, fn(m, which) {
                   if which == 1 {
