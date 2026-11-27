@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [84182f16d](https://github.com/AFK-surf/monoid/commit/84182f16d5ef5d6bd20e5f7d29b874c4a87427a9) fix(ci): parse Node-Station-Only trailers in GitHu | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.76 | 127.04 |
 | [0887a2f25](https://github.com/AFK-surf/monoid/commit/0887a2f25da434e8ebb4273626be14e3f8e180d4) fix(ui,mbui): dock tall auto-height phone sheets f | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.56 | 127.37 |
 | [bff3776c0](https://github.com/AFK-surf/monoid/commit/bff3776c07fe17c788bc520301ea165eae8444a5) fix(station): stop ambiguous connect.event timeout | 2.74 | 3.7 | 15.37 | 38.48 | 59.48 | 33.74 | 69 | 103.68 | 136.41 |
 | [d23b63109](https://github.com/AFK-surf/monoid/commit/d23b6310954fb5b08211962bf80afe84d5811956) fix(ui): fixed short dialog titles, concentric ver | 2.74 | 3.7 | 15.37 | 38.48 | 59.48 | 33.74 | 69 | 103.68 | 136.41 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6c31cadf0](https://github.com/AFK-surf/monoid/commit/6c31cadf0c75ed2e9e19c8f16e784377010ead51) feat(mbui): jump to NewChat with current chat @ref | 2.7 | 3.66 | 15.2 | 38.26 | 58.91 | 33.51 | 68.53 | 103.3 | 126.98 |
 | [4e97bdec0](https://github.com/AFK-surf/monoid/commit/4e97bdec08523a8bdb980f04d6664ebece312599) feat(vault): workspace vault discovery, join reque | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
 | [e65a7cd01](https://github.com/AFK-surf/monoid/commit/e65a7cd01f8b7a0b511c6ab99689af00a795534b) feat(pion-core): unshadow runtime stubs and close  | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
-| [deaa0f205](https://github.com/AFK-surf/monoid/commit/deaa0f205acec647467c79c8f9addb3baca1ee74) chore(mbui): clean up mbt2pion publish diagnostics | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [84182f16d](https://github.com/AFK-surf/monoid/commit/84182f16d5ef5d6bd20e5f7d29b874c4a87427a9) fix(ci): parse Node-Station-Only trailers in GitHu | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
 | [0887a2f25](https://github.com/AFK-surf/monoid/commit/0887a2f25da434e8ebb4273626be14e3f8e180d4) fix(ui,mbui): dock tall auto-height phone sheets f | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.53 |
 | [bff3776c0](https://github.com/AFK-surf/monoid/commit/bff3776c07fe17c788bc520301ea165eae8444a5) fix(station): stop ambiguous connect.event timeout | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.61 |
 | [d23b63109](https://github.com/AFK-surf/monoid/commit/d23b6310954fb5b08211962bf80afe84d5811956) fix(ui): fixed short dialog titles, concentric ver | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.85 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [6c31cadf0](https://github.com/AFK-surf/monoid/commit/6c31cadf0c75ed2e9e19c8f16e784377010ead51) feat(mbui): jump to NewChat with current chat @ref | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.82 |
 | [4e97bdec0](https://github.com/AFK-surf/monoid/commit/4e97bdec08523a8bdb980f04d6664ebece312599) feat(vault): workspace vault discovery, join reque | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
 | [e65a7cd01](https://github.com/AFK-surf/monoid/commit/e65a7cd01f8b7a0b511c6ab99689af00a795534b) feat(pion-core): unshadow runtime stubs and close  | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
-| [deaa0f205](https://github.com/AFK-surf/monoid/commit/deaa0f205acec647467c79c8f9addb3baca1ee74) chore(mbui): clean up mbt2pion publish diagnostics | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
