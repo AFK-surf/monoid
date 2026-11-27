@@ -1819,9 +1819,17 @@ fn pick_found(choices : Array[Choice], query : String) -> Array[Choice] {
 // The web's: a small panel beside what opened it, a dialog in the middle of the window
 
 ///|
-/// A step's head in a dialog: as high as a titled dialog's head (dialog_head's, its close button over its corner now).
+/// A step's head in a dialog: as high as a titled dialog's head (dialog_head's, its close button over its corner now),
+/// lined up at its top, its title let down onto where a title of one line stands centred in it (step_head_over).
 // kept across runs: a value (no field of it changes)
-let dialog_step_head : @ui.Style = @ui.style(row=true, w=Full, align=ACenter, min_h=Fixed(dialog_close), pt=room(dialog_head_over))
+let dialog_step_head : @ui.Style = @ui.style(row=true, w=Full, align=AStart, min_h=Fixed(dialog_close))
+
+///|
+/// How far down a step's head in a dialog (dialog_step_head) has what it holds, its back key and its title: its
+/// title's first line where one line stood centred in it, however many lines the title takes (head_line_drop).
+fn step_head_over(v : @view.View) -> @ui.Style {
+  @ui.style(pt=room(dialog_head_over + head_line_drop(v, Heading, row=dialog_close - dialog_head_over)))
+}
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -2067,7 +2075,7 @@ let sheet_grows : @ui.Style = @ui.style(w=Full, h=grow)
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sheet_title_row : @ui.Style = @ui.css("row w=Full pt=S1 pb=S2_5 align=ACenter").then(@ui.style(px=room(sheet_panel_sides)))
+let sheet_title_row : @ui.Style = @ui.css("row w=Full pt=S1 pb=S2_5 align=AFirstLine").then(@ui.style(px=room(sheet_panel_sides)))
 
 ///|
 // kept across runs: a value (no field of it changes)

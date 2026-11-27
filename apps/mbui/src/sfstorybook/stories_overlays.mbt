@@ -574,6 +574,46 @@ fn stories_overlays(tips : @sf.TipLayer) -> Array[Story] {
             })
           },
         ),
+        (
+          "标题长短不同的对话框",
+          fn(card) {
+            side_by_side(card, fn(r) {
+              for it in [("授权钥匙", "OPPO Find X9 Ultra · still.fail Android 申请密钥库的钥匙"), ("短标题", "申请钥匙")] {
+                let (label, title) = it
+                @sf.button_node(r, fn() { label }, fn() {
+                  @sf.panel_nodes(
+                    title,
+                    fn(body, _) {
+                      @sf.words_node(body, fn() { "设备核对码 3CR-C5Q" }, fn() { @sf.paragraph }) |> ignore
+                    },
+                    description="此设备已在你的受信任设备中，刚刚申请「Workspace 密钥库」的钥匙。请核对以下信息无误后再授权。",
+                    from=@sf.Anchor::Unanchored,
+                    foot=fn(f, close) {
+                      @sf.button_node(f, fn() { "稍后" }, close) |> ignore
+                      @sf.button_node(f, fn() { "授权" }, close, tone=Primary) |> ignore
+                    },
+                  )
+                })
+                |> ignore
+                @sf.button_node(r, fn() { label + "两步" }, fn() {
+                  @sf.panel_nodes(
+                    "授权",
+                    fn(body, _) {
+                      @sf.panel_row_node(body, fn() { "核对设备" }, fn() {
+                        @sf.panel_go_nodes(title, fn(next, _) {
+                          @sf.words_node(next, fn() { "设备核对码 3CR-C5Q" }, fn() { @sf.paragraph }) |> ignore
+                        })
+                      }, end="chevron-right")
+                    },
+                    from=@sf.Anchor::Unanchored,
+                    steps=true,
+                  )
+                })
+                |> ignore
+              }
+            })
+          },
+        ),
       ],
     },
   ]

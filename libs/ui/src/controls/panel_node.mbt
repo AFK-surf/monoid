@@ -409,7 +409,7 @@ fn panel_node(
 /// from where a title's line is so that the key stands as far in from the panel's top as from its side, concentric with
 /// its corner (as far in as its corner less the key's).
 // kept across runs: a value (no field of it changes)
-let panel_step_line : @ui.Style = @ui.css("row w=Full align=ACenter gap=S1").then(@ui.style(mt=room(panel_step_up)))
+let panel_step_line : @ui.Style = @ui.css("row w=Full align=AFirstLine gap=S1").then(@ui.style(mt=room(panel_step_up)))
 
 ///|
 /// How far up from a title's line (panel_head_box's, panel_pad and its top in) a step's head stands (panel_step_line).

@@ -325,7 +325,7 @@ fn step_page_node(
     // (its head: as high as a titled dialog's, its back key past its first step before its title, the row no taller for
     // it (step_head's), under the close button over the dialog's corner)
     part.box(fn(line) {
-      style_node(line, fn() { dialog_step_head.then(step_head_gap).then(@ui.style(pl=room(words_in))) })
+      style_node(line, fn() { dialog_step_head.then(step_head_over(line)).then(step_head_gap).then(@ui.style(pl=room(words_in))) })
       if k != 0 || keyed.under is Some(_) {
         line.box(fn(key) {
           // (out of the words' line by as far as its chevron stands in, the row no taller for it: step_head's)

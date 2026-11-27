@@ -197,14 +197,14 @@ fn panel_centred_node(
               let stepped = keyed.under is Some(_)
               if stepped {
                 line.box(fn(k) {
-                  style_node(k, fn() { dialog_back_at }, in_row=true)
+                  style_node(k, fn() { dialog_back_at.then(@ui.style(mt=room(head_line_drop(k, Heading, h=step_back_side, row=dialog_close)))) }, in_row=true)
                   icon_button_node(k, "chevron-left", fn() { t("common.back") }, fn() { back_under(keyed) |> ignore }, size=step_back_side)
                   |> ignore
                 })
                 |> ignore
               }
               line.box(fn(l) {
-                style_node(l, fn() { dialog_title_line }, in_row=true)
+                style_node(l, fn() { dialog_title_line.then(@ui.style(mt=room(head_line_drop(l, Heading, row=dialog_close)))) }, in_row=true)
                 l.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 if stepped {
                   l.grow(Is(1.0)) |> ignore
@@ -215,7 +215,7 @@ fn panel_centred_node(
               })
               |> ignore
               line.box(fn(at) {
-                style_node(at, fn() { dialog_close_at() }, in_row=true)
+                style_node(at, fn() { dialog_close_at(drop=head_line_drop(at, Heading, h=dialog_close, row=dialog_close)) }, in_row=true)
                 close_node(at)
               })
               |> ignore

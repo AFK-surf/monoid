@@ -492,19 +492,30 @@ let first_actions : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter justify
 let dialog_room : Double = 48.0
 
 ///|
-/// Its title's row (dialogHead: 25 under the top, 26 from the right): the close button at its end, its middle on the
-/// title's (where it stands alone: dialog_close_at).
+/// Its title's row (dialogHead: 25 under the top, 26 from the right): the close button at its end, each lined up at
+/// its top and let down onto its title's first line (head_line_drop), never centred on a title of several lines.
 // kept across runs: a value (no field of it changes)
 let dialog_head : @ui.Style = @ui.style(
   row=true,
   w=Full,
   justify=JBetween,
-  align=ACenter,
+  align=AStart,
   gap=S3,
   min_h=Fixed(dialog_close),
   pt=room(dialog_head_over),
   pr=room(dialog_head_end),
 )
+
+///|
+/// How far down from the top of a head's row, lined up at its start and at least `row` tall, a part `h` tall (the
+/// title's first line itself where none) stands for its middle to be the middle of the first line of a title of words
+/// `size` in node `v`'s tree (followed across the theme and the size of words): a title of one line and what stands
+/// beside it as they stood centred in the row, a title of several lines with them still on its first (the user,
+/// 2026-11-27: 「这种不应该对标题居中」).
+fn head_line_drop(v : @view.View, size : @ui.TextSize, h? : Double, row? : Double = 0.0) -> Double {
+  let line = node_sp(v, @ui.tree_theme().text_size(size).1)
+  dmax(0.0, (dmax(row, line) - h.unwrap_or(line)) / 2.0)
+}
 
 ///|
 /// How far its title's row stands under its padding's top, and in from its padding's end.
@@ -545,11 +556,12 @@ fn dialog_untitled_top() -> @ui.Style {
 /// with it (capsule_in: a mouse's 32 18 in, the ladder's pane corner's own place for it as on the tape's line; a
 /// finger's 44, 12), the row as high as with a mouse's (its margins making up the rest, its middle no longer the
 /// title's; the user, 2026-10-25: 25 in, by the corner and not with it).
-fn dialog_close_at() -> @ui.Style {
+/// `drop`: how far further down it stands to be on its title's first line (head_line_drop).
+fn dialog_close_at(drop? : Double = 0.0) -> @ui.Style {
   let side = dialog_close
   let d = @ui.capsule_in(dialog_r, side)
   let up = d - (dialog_pad + dialog_head_over)
-  @ui.style(mt=room(up), mr=room(d - (dialog_pad + dialog_head_end)), mb=room(dialog_close - side - up))
+  @ui.style(mt=room(up + drop), mr=room(d - (dialog_pad + dialog_head_end)), mb=room(dialog_close - side - up))
 }
 
 ///|
