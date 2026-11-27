@@ -48,6 +48,15 @@ final class FrameTelemetry {
     /**
      * Computes frame timestamp, lateness, and continuity for the app frame beginning now on the
      * drawing thread, invoking {@code onAskAhead} if the previous frame asked for this one.
+     *
+     * <p>The vsync after the frame beginning now is asked for before its work (drawing thread),
+     * where the frame before asked for this one (a motion going on): a frame asked for only as it
+     * ended had the first vsync after its work, so one whose work went past the display's frame
+     * left a refresh with no new frame, what moved standing still for one and then stepping two
+     * (an OPPO Find N6's inner screen, its frames 6–16 ms at 120 Hz). Asked ahead, the vsync comes
+     * while the frame is drawn; one that ends after it draws the next at once, for that vsync and
+     * shown at its refresh (showAt), as the system's own frames are asked for in the vsync before
+     * theirs: a frame over the display's frame costs nothing where the next is lighter.
      */
     FramePacer.Begun begin(long[] at, long began, boolean externalDemand, long gen,
                            long framePeriodNs, Runnable onAskAhead) {
@@ -56,18 +65,28 @@ final class FrameTelemetry {
             lastVsync = 0L;
             askedAtEnd = false;
         }
+        // (the frame before asked for this one: the one after it asked for now, before this one's work: askAhead)
         if (askedAtEnd && onAskAhead != null) onAskAhead.run();
+        // the vsync's time; a frame the system asked for (a resize) has none, and time never goes back
         long v = at[0];
         long minV = minValidVsyncNs;
         if (v != 0L && minV != 0L && v < minV) v = 0L;
         double now = v != 0L ? v / 1e6 : began / 1e6;
         if (now < lastFrame) now = lastFrame;
         lastFrame = now;
+        // how late the frame before reached the screen (@hostapi.frame_late): the display's frames that passed past the one
+        // after it without a frame, on the vsyncs' grid (its work over the display's frame and drawn on for the vsync it
+        // asked ahead, shown at that vsync's refresh: none passed, it was in time; past that one too, this one's vsync is
+        // the first after its work); 0 where it did not ask for this one (its vsync perhaps one during that work), or
+        // either has no vsync. (Counted from when its work ended, a frame drawn on at once for the vsync asked ahead was
+        // said late by a frame it was not: a page let go as the finger lifts, its slide held a frame and its first step
+        // shown twice.)
         double late = 0;
         if (v != 0L && lastVsync != 0L && askedAtEnd) {
             long frames = Math.round((double) (v - lastVsync) / framePeriodNs);
             if (frames > 1) late = (frames - 1) * framePeriodNs / 1e6;
         }
+        // drawn at the vsync after the frame before's: the hand moving what it holds, a frame each vsync
         boolean following = v > lastVsync && lastVsync != 0L && v - lastVsync < framePeriodNs * 3L / 2L;
         lastVsync = v;
         return new FramePacer.Begun(v, v != 0L ? at[1] : 0L, now, late, following, externalDemand);

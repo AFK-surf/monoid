@@ -3,7 +3,14 @@ package dev.mbui;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Thin facade wiring {@link FrameScheduler} (pure vsync/wake scheduling state machine),
+ * Which vsync the app's next frame is drawn for, and what rate the surface says of the display (MBView's, kept apart
+ * from Android so a test can run it: FramePacerTest, on its own clock and threads). MBView hands it the system's
+ * vsyncs, the frames' work and the hand; it asks MBView's Platform for a vsync, a frame made and a rate said. Its
+ * threads are MBView's: the main thread's (vsyncs, the hand), the drawing thread's (the app's thread, which makes the
+ * frames, the GL thread drawing each it hands over; the GL thread itself with MBView.ONE: frames, the rate), any (a
+ * frame wanted).
+ *
+ * <p>Thin facade wiring {@link FrameScheduler} (pure vsync/wake scheduling state machine),
  * {@link RateVoter} (display refresh-rate voting), and {@link FrameTelemetry} (frame continuity,
  * GL timing, and ADPF hints) behind the stable package-private API used by {@link MBView} and tests.
  */

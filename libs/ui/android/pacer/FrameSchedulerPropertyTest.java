@@ -29,6 +29,7 @@ public final class FrameSchedulerPropertyTest {
     private static final long PERIOD_120 = 8_333_333L;
     private static final long PERIOD_90 = 11_111_111L;
     private static final long PERIOD_60 = 16_666_667L;
+    private static final long PERIOD_20 = 50_000_000L;
 
     static final class PostedVsync {
         final long gen;
@@ -42,7 +43,7 @@ public final class FrameSchedulerPropertyTest {
 
     static final class Harness implements FramePacer.Platform {
         final Random rng;
-        final long period;
+        long period;
         final FramePacer pacer;
         long vsyncNow;
         long wallSkewNs; // nanoTime() = vsyncNow + wallSkewNs (can lead or lag by -25ms..+25ms)
@@ -134,7 +135,12 @@ public final class FrameSchedulerPropertyTest {
             onMain = prev;
         }
 
-        void deliverNextVsync(boolean sameBeat, boolean allowDrop) {
+        long showsFor(long t) {
+            // Exercise both API < 33 (shows == 0) and API 33+ (shows = t + 2 * period).
+            return rng.nextInt(3) == 0 ? 0L : t + 2L * period;
+        }
+
+        void deliverNextVsync(boolean sameBeat) {
             if (!sameBeat) {
                 vsyncNow += period;
             }
@@ -142,15 +148,10 @@ public final class FrameSchedulerPropertyTest {
             List<PostedVsync> batch = new ArrayList<>(inFlightVsyncs);
             inFlightVsyncs.clear();
             long t = vsyncNow;
-            long shows = t + 2L * period;
+            long shows = showsFor(t);
             boolean prev = onMain;
             onMain = true;
             for (PostedVsync pv : batch) {
-                if (allowDrop && rng.nextInt(8) == 0) {
-                    // Simulate callback delayed/dropped (remember as stale candidate)
-                    if (pv.gen != 0L && stalePool.size() < 16) stalePool.add(pv);
-                    continue;
-                }
                 if (pv.untagged) {
                     pacer.vsyncCame(t, shows);
                 } else {
@@ -243,7 +244,7 @@ public final class FrameSchedulerPropertyTest {
                 if (totalRenders > before && !pacer.scheduler.hasUndispatchedDemand()) {
                     break;
                 }
-                deliverNextVsync(false, false);
+                deliverNextVsync(false);
                 drainMainQueue();
                 if (renderPending) {
                     runTakeRender(false);
@@ -254,7 +255,7 @@ public final class FrameSchedulerPropertyTest {
     }
 
     private static void runSequence(int seqIdx, Random rng) {
-        long[] periods = {PERIOD_120, PERIOD_90, PERIOD_60};
+        long[] periods = {PERIOD_120, PERIOD_90, PERIOD_60, PERIOD_20};
         long period = periods[rng.nextInt(periods.length)];
         Harness h = new Harness(rng, period);
         int steps = 30 + rng.nextInt(31); // 30..60 steps
@@ -263,6 +264,12 @@ public final class FrameSchedulerPropertyTest {
             // Random wall-clock jitter: -25ms .. +25ms relative to Choreographer vsyncNow
             h.wallSkewNs = (rng.nextInt(51) - 25) * 1_000_000L;
             h.onMain = rng.nextInt(4) != 0; // 75% main thread, 25% background/app thread
+            // Randomly switch display refresh rate mid-sequence (120/90/60/20 Hz LTPO transitions)
+            if (rng.nextInt(12) == 0) {
+                h.period = periods[rng.nextInt(periods.length)];
+                h.pacer.framePeriod = h.period;
+                h.pacer.topRate = (float) Math.round(1e9 / h.period);
+            }
 
             int op = rng.nextInt(16);
             switch (op) {
@@ -291,7 +298,7 @@ public final class FrameSchedulerPropertyTest {
                     h.pacer.setImeMoving(h.imeMoving);
                     break;
                 case 6: // scheduleWake
-                    double offsetMs = (rng.nextInt(4) - 1) * (period / 1e6);
+                    double offsetMs = (rng.nextInt(4) - 1) * (h.period / 1e6);
                     FramePacer.WakeReq req = h.pacer.scheduleWake(h.vsyncNow / 1e6 + offsetMs, rng.nextBoolean());
                     if (req != null && h.wakes.size() < 16) h.wakes.add(req);
                     break;
@@ -299,7 +306,7 @@ public final class FrameSchedulerPropertyTest {
                     if (!h.wakes.isEmpty()) {
                         h.onMain = true;
                         FramePacer.WakeReq w = h.wakes.get(rng.nextInt(h.wakes.size()));
-                        int res = h.pacer.fireWake(w, h.vsyncNow, h.vsyncNow + 2L * period);
+                        int res = h.pacer.fireWake(w, h.vsyncNow, h.showsFor(h.vsyncNow));
                         if (res == 0 || res == 2) h.wakes.remove(w);
                     }
                     break;
@@ -307,11 +314,11 @@ public final class FrameSchedulerPropertyTest {
                     h.onMain = true;
                     h.pacer.wantFrame();
                     h.drainMainQueue();
-                    h.deliverNextVsync(true, false);
+                    h.deliverNextVsync(true);
                     break;
-                case 9: // Normal next vsync delivery (may occasionally drop a callback only if reset follows, so keep non-dropping here)
+                case 9: // Normal next vsync delivery
                     h.drainMainQueue();
-                    h.deliverNextVsync(false, false);
+                    h.deliverNextVsync(false);
                     break;
                 case 10: // takeRender + frame body
                     h.runTakeRender(true);
@@ -340,7 +347,7 @@ public final class FrameSchedulerPropertyTest {
                     break;
                 case 15: // Direct untagged 2-arg vsyncCame(t, shows) at current vsync (same-beat legacy duplicate)
                     h.onMain = true;
-                    h.pacer.vsyncCame(h.vsyncNow, h.vsyncNow + 2L * period);
+                    h.pacer.vsyncCame(h.vsyncNow, h.showsFor(h.vsyncNow));
                     break;
                 default:
                     break;
@@ -362,21 +369,32 @@ public final class FrameSchedulerPropertyTest {
         h.drainMainQueue();
         h.checkStructuralInvariant();
 
-        // Phase 1 liveness: drain any existing demand first.
+        // Phase 1 liveness: drain any existing demand first so Phase 2 starts from an idle state.
         h.settle(8);
         h.drainMainQueue();
         h.checkStructuralInvariant();
+        if (h.pacer.appWanted.get() || h.pacer.picturesOnly.get()) {
+            throw new AssertionError("PHASE 1 STUCK DEMAND in sequence " + seqIdx
+                    + " (appWanted=" + h.pacer.appWanted.get()
+                    + ", picturesOnly=" + h.pacer.picturesOnly.get() + ")");
+        }
 
-        // Phase 2 liveness: inject a fresh demand (wantFrame / wantPacedFrame / pictureFrame) and prove
-        // it ALWAYS produces a new render within bounded ticks (0 deadlocks).
+        // Phase 2 liveness: inject a fresh demand (wantFrame / wantPacedFrame / pictureFrame) and strictly
+        // assert the matching render kind (app vs picture) occurs within bounded ticks and clears demand.
+        int appBefore = h.appRenders;
+        int picBefore = h.pictureRenders;
         int demandKind = rng.nextInt(3);
         if (demandKind == 0) h.pacer.wantFrame();
         else if (demandKind == 1) h.pacer.wantPacedFrame();
         else h.pacer.pictureFrame();
 
-        int produced = h.settle(8);
-        if (produced <= 0) {
+        h.settle(8);
+        h.drainMainQueue();
+        boolean kindRendered = (demandKind == 2) ? (h.pictureRenders > picBefore) : (h.appRenders > appBefore);
+        boolean demandCleared = !h.pacer.appWanted.get() && !h.pacer.picturesOnly.get();
+        if (!kindRendered || !demandCleared) {
             throw new AssertionError("DEADLOCK in sequence " + seqIdx + " (demandKind=" + demandKind
+                    + ", kindRendered=" + kindRendered + ", demandCleared=" + demandCleared
                     + ", activeVsyncGen=" + h.pacer.scheduler.activeVsyncGen()
                     + ", hasDeferred=" + h.pacer.scheduler.hasDeferredVsync()
                     + ", hasUndispatched=" + h.pacer.scheduler.hasUndispatchedDemand()

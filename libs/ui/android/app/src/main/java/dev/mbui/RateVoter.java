@@ -1,11 +1,22 @@
 package dev.mbui;
 
 /**
- * Pure display refresh-rate voting policy ({@code Surface.setFrameRate}), isolated from
- * {@link FrameScheduler} with zero shared locks.
+ * The rate this surface's frames want of the display (Surface.setFrameRate), said as the system's own views say
+ * theirs (a list flung, a view moved: Android 15's frame rate categories): the display's highest while the app
+ * draws frame after frame (a motion, the hand moving what it holds), and from a finger going down (as the system's
+ * touch boost: the motion it starts is not where the display goes over to it) until it lifts; nothing once a vsync
+ * passes with none drawn and no finger on the screen. Withdrawn as a single vsync passed with none drawn while a
+ * finger was down, it went down and up again within a gesture, wherever a vsync brought no touch (a finger slowing,
+ * the touches' own rate a little off the display's), and each change of the display's rate can step what moves (OPPO
+ * Find N6, 0.1.5814: scrolling stepped all along, its frames 1.3–2.7 ms).
+ * A surface that says nothing is left at the rate the system picks for it from how often its buffers came: a phone
+ * that does 120 Hz (an OPPO Find N6) kept the display at 60 for the app, every motion with half the frames its
+ * own views' get. Said only while it moves: a rate said keeps the display at it for as long as the surface shows,
+ * still or not.
  *
  * <p>All mutable voting state is owned by the drawing thread, with a single volatile mirror
- * ({@link #pacedActive}) readable lock-free by the GL thread.
+ * ({@link #pacedActive}) readable lock-free by the GL thread. Interacts with {@link FrameScheduler}
+ * solely through the explicit {@link Probe} callbacks (including {@code consumeExternalForLastVsync}).
  */
 final class RateVoter {
     /** Read-only probe into scheduler/view state needed by refresh-rate policy. */
@@ -159,9 +170,12 @@ final class RateVoter {
     }
 
     /**
-     * The motion that ended with frame {@code at} (drawing thread): no rate said once the display's
-     * highest rate's worth of vsyncs (a second) passed with nothing moved since, none asked, and no
-     * finger down.
+     * The motion that ended with frame {@code at} (drawing thread): no rate said once the display's highest rate's worth of
+     * vsyncs (a second) passed with nothing moved since, none asked and no finger down. A frame drawn meanwhile that moves
+     * nothing (a spinner's step, a page's words coming in) does not keep it. Said at once after the motion, the display
+     * went down to the rate the system picks from how often frames came (a spinner stepping: 12-60 Hz on an OPPO Find
+     * N6), and the next flick's first frames stepped up through it at 83, 17, 17, 17 ms before 8.3 (2026-11-04: 5-8
+     * frames at the start of every swipe, the app's own work 2-5 ms each): a list is flicked again well within a second.
      */
     private void stillAfter(int at) {
         if (stillFrom == at) return;

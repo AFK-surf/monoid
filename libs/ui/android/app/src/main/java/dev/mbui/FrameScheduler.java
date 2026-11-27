@@ -3,16 +3,28 @@ package dev.mbui;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Pure Android frame-scheduling state machine with single-lock ownership and zero timestamp-based
- * control flow for vsync slot ownership.
+ * Pure Android frame-scheduling state machine with single-lock ownership where Choreographer vsync
+ * slot ownership and release never depend on timestamps.
+ *
+ * <p>Production callbacks use the generation-tagged 3-arg path
+ * ({@link FramePacer.Platform#postVsync(long)} -> {@link #vsyncCame(long, long, long)}), where each
+ * callback releases only its own {@code activeVsyncGen} slot and stale generations are ignored.
+ * Legacy untagged 2-arg {@code vsyncCame(t, shows)} ({@code gen == 0L}) fails open by releasing
+ * the slot and re-arming whenever undispatched demand exists. Timestamps ({@link #lastFrameNowAt},
+ * {@link #lastAppDispatchedVsyncNs}, and {@link #ahead} freshness) are used only for same-vsync
+ * deduplication and prefetch expiry, never to refuse releasing a vsync slot.
  *
  * <p>Constructive liveness invariant (fail-open): whenever undispatched demand exists
  * ({@code (appWanted && !appDispatched) || picturesOnly}), at least one of the following holds once
- * the lock is released: (1) an active Choreographer callback generation ({@code activeVsyncGen != 0})
- * is in flight, (2) a deferred IME flush ({@code deferredVsync}) is queued on the main thread, or
- * (3) {@link FramePacer.Platform#requestRender()} is invoked immediately outside the lock.
+ * {@link #lock} is released: (1) an active Choreographer callback generation
+ * ({@code activeVsyncGen != 0}) is in flight, (2) a deferred IME flush ({@code deferredVsync}) is
+ * queued on the main thread, or (3) {@link FramePacer.Platform#requestRender()} is invoked
+ * immediately outside the lock.
  *
- * <p>No {@link FramePacer.Platform} callback is ever invoked while holding {@link #lock}.
+ * <p>No dispatching/re-entrant {@link FramePacer.Platform} callback ({@code requestRender},
+ * {@code postVsync}, {@code postMain}, {@code setRate}) is ever invoked while holding {@link #lock};
+ * only the side-effect-free monotonic clock {@link FramePacer.Platform#nanoTime()} is sampled
+ * inside the lock.
  */
 final class FrameScheduler {
     interface PeriodSource {
@@ -64,7 +76,10 @@ final class FrameScheduler {
     private long activeVsyncGen;
     /** Last vsync timestamp dispatched for an app frame (used only for same-vsync deduplication). */
     private long lastAppDispatchedVsyncNs;
-    /** Wall-clock timestamp of the most recent {@link #frameNow()} dispatch. */
+    /**
+     * Timestamp of the most recent immediate dispatch: wall-clock {@code nanoTime()} from
+     * {@link #frameNow()} or {@code vsyncNs} from {@link #wakeFrameNow(long, long, boolean)}.
+     */
     private long lastFrameNowAt;
 
     // Main-thread state for coalescing CALLBACK_ANIMATION (vsyncCame) with CALLBACK_INSETS_ANIMATION (frameNow).
@@ -156,6 +171,9 @@ final class FrameScheduler {
             deferredWakeApp = false;
             deferredWakeExternal = false;
             activeVsyncGen = 0L;
+            lastFrameNowAt = 0L;
+            lastAppDispatchedVsyncNs = 0L;
+            externalForVsync = 0L;
             if (onContinuityReset != null) onContinuityReset.run();
             if (appWanted.get() || picturesOnly.get()) {
                 postGen = claimPostVsyncLocked();
@@ -268,7 +286,6 @@ final class FrameScheduler {
 
     /** A frame wanted (from any thread): drawn immediately for a fresh kept vsync, or at the next vsync. */
     void ask(boolean forApp, boolean isExternal, boolean fromPaced) {
-        long now = p.nanoTime();
         long act = ACT_NONE;
         synchronized (lock) {
             if (forApp) {
@@ -281,8 +298,9 @@ final class FrameScheduler {
             boolean alreadyPendingForT = false;
             if (ahead) {
                 ahead = false;
-                if (now - vsyncAt[0] < periodSource.framePeriodNs()) {
-                    long t = vsyncAt[0];
+                long t = vsyncAt[0];
+                long age = p.nanoTime() - t;
+                if (age >= 0L && age < periodSource.framePeriodNs()) {
                     if (forApp && t != 0L && lastAppDispatchedVsyncNs == t) {
                         if (appDispatched) alreadyPendingForT = true;
                     } else {
@@ -308,15 +326,19 @@ final class FrameScheduler {
         }
     }
 
-    /** A frame now, at the vsync being drawn (main thread, within a Choreographer frame: the keyboard's motion). */
+    /**
+     * A frame now, at the vsync being drawn (main thread, within a Choreographer frame: the keyboard's motion), not the
+     * next. (The frame's own vsync time is not public: now, a moment after it, never before a frame drawn; shown as soon
+     * as it is drawn.)
+     */
     void frameNow() {
-        long now = p.nanoTime();
         long postGen = 0L;
         synchronized (lock) {
             externalWanted.set(true);
             appWanted.set(true);
             appDispatched = true;
             ahead = false;
+            long now = p.nanoTime();
             lastFrameNowAt = now;
             long dt = deferredVsync ? deferredVsyncT : now;
             if (dt != 0L) lastAppDispatchedVsyncNs = dt;
@@ -443,7 +465,7 @@ final class FrameScheduler {
         }
         ahead = true;
         if (fromVsync) clearActiveVsyncLocked(gen);
-        // Defensive re-check if appWanted was set directly outside lock before wantFrame().
+        // (a frame wanted as this was kept: the one asking saw it not yet kept, and asked for another vsync, or none)
         boolean app2 = appWanted.get();
         if ((app2 || picturesOnly.get()) && ahead) {
             ahead = false;
