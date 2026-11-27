@@ -88,6 +88,18 @@ test "Home keeps its displayed row as a chat slides over it and shows the latest
 }
 
 ///|
+test "Home draws its first rows under a chat opened before the first frame" {
+  new_run()
+  let src = fixture("chat")
+  open_fixture_over("chat", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  t.run_for(@ui.move_ms(390.0) / 8.0)
+  assert_true(app.nav.top() is Chat(_) && app.nav.root_shows(), msg="the chat is sliding over Home")
+  assert_true(t.find("首页的列表改成按天分组") is Some(_), msg="the Home row under the arriving chat was never drawn")
+}
+
+///|
 test "a row's menu at each width and with either hand: held by a finger, right clicked by a mouse; the same items" {
   for case in one_page_cases {
     let (w, platform, regular, _) = case

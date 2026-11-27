@@ -356,8 +356,8 @@ fn chats_pane_node(
         Some(view) => (view.days, view.syncing is Some(_))
         None => ([], false)
       }
-      // The outgoing list keeps the rows on screen until the chat covers it.
-      if !keep_rows() && !physical_equal(days, seen.val) {
+      // Keep rows already on screen during the push. A chat opened before the first frame still has Home under it.
+      if !physical_equal(days, seen.val) && (seen.val.is_empty() || !keep_rows()) {
         seen.val = days
         stamp.val += 1
       }
