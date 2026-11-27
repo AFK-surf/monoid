@@ -2970,7 +2970,8 @@ jobs:
       # (the station's platforms' deltas, each its job's, put in its feed; none, and the feed goes out as it was handed)
       - name: The station's deltas in its feed
         run: node scripts/release-deltas.ts --merge "$RUNNER_TEMP/release"
-      - name: Put the releases (their files, then their feeds)
+      - id: put-releases
+        name: Put the releases (their files, then their feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           HANDED: ${{ needs.station.outputs.hand }} ${{ needs.android.outputs.hand }} ${{ needs.desktop.outputs.hand }}
@@ -2998,6 +2999,7 @@ jobs:
       # (app.youdid.wtf is the same Worker as app.still.fail, cloud/wrangler.jsonc, whose devices and stations it tells:
       # told once, by PUBLIC_ORIGIN, the only audience cloud/src/status.ts takes; youdid.wtf's token was refused every time)
       - name: Tell the clouds the releases are out (their stations and apps read their feeds then)
+        if: ${{ !cancelled() && steps.put-releases.outcome == 'success' }}
         run: sh scripts/release-told.sh https://app.still.fail
 
   # Old installers and beta blockmaps deleted (scripts/release-prune.ts says which stay), after put and beside done and

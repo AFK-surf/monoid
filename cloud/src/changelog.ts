@@ -190,9 +190,13 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
   const ttl = changelogCacheSeconds(env);
   const channel = channelOf(request, env);
   if (ttl > 0 && env.SERVICE_STATUS) {
-    const result = await env.SERVICE_STATUS.getByName("primary").changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl);
-    if (!result.ok) return unavailable(result.file, new Error(result.message));
-    return new Response(result.body, { status: 200, headers: CHANGELOG_HEADERS });
+    try {
+      const result = await env.SERVICE_STATUS.getByName("primary").changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl);
+      if (!result.ok) return unavailable(result.file, new Error(result.message));
+      return new Response(result.body, { status: 200, headers: CHANGELOG_HEADERS });
+    } catch (error) {
+      console.error("changelog cache unavailable:", error);
+    }
   }
   let failure = null as { file: string; error: unknown } | null;
   const failed: Failed = (file, error) => {
@@ -208,7 +212,12 @@ export async function fixedFor(env: Env, station: string, told: string[]): Promi
   const dir = env.DIRECTORY.getByName("primary");
   const ttl = changelogCacheSeconds(env);
   const status = ttl > 0 && env.SERVICE_STATUS ? env.SERVICE_STATUS.getByName("primary") : null;
-  const entries = status ? await status.changelogEntries("beta", ttl) : await changelog(env.RELEASES);
+  const entries = status
+    ? await status.changelogEntries("beta", ttl).catch((error) => {
+        console.error("changelog cache unavailable:", error);
+        return changelog(env.RELEASES);
+      })
+    : await changelog(env.RELEASES);
   await dir.markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
   if (told.length) await dir.toldFixed(station, told);
   const reports = await dir.fixedUntold(station);
@@ -216,7 +225,10 @@ export async function fixedFor(env: Env, station: string, told: string[]): Promi
   const fixed: FixedReport[] = [];
   for (const report of reports) {
     have[report.channel] ??= status
-      ? await status.releasedVersions(report.channel, env.RELEASES_UPSTREAM ?? null, ttl)
+      ? await status.releasedVersions(report.channel, env.RELEASES_UPSTREAM ?? null, ttl).catch((error) => {
+          console.error("changelog cache unavailable:", error);
+          return released(env.RELEASES, report.channel, env.RELEASES_UPSTREAM);
+        })
       : await released(env.RELEASES, report.channel, env.RELEASES_UPSTREAM);
     const { desktopPlatform, ...details } = report;
     const { macos, windows, ...parts } = have[report.channel]!;

@@ -547,7 +547,15 @@ export async function blockAccount(env: Env, sub: string, on: boolean): Promise<
 /** The changelog's fixes marked on the reports (changelog.ts): the Directory does nothing when it is as last time. Admin reads may lag by up to CHANGELOG_CACHE_SECONDS unless invalidated by /v1/releases/out. */
 async function markFixed(env: Env): Promise<void> {
   const ttl = changelogCacheSeconds(env);
-  const entries = ttl > 0 && env.SERVICE_STATUS ? await env.SERVICE_STATUS.getByName("primary").changelogEntries("beta", ttl) : await changelog(env.RELEASES);
+  const entries =
+    ttl > 0 && env.SERVICE_STATUS
+      ? await env.SERVICE_STATUS.getByName("primary")
+          .changelogEntries("beta", ttl)
+          .catch((error) => {
+            console.error("changelog cache unavailable:", error);
+            return changelog(env.RELEASES);
+          })
+      : await changelog(env.RELEASES);
   await env.DIRECTORY.getByName("primary").markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
 }
 

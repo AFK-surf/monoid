@@ -779,3 +779,63 @@ test("ServiceStatus cache never caches R2 failures or non-404 4xx, and caches 40
     await h429.close();
   }
 });
+
+test("ServiceStatus RPC errors fall back to direct R2 reads and never block /v1/releases/out broadcasts", async () => {
+  const { publicKey, privateKey } = await generateKeyPair("RS256");
+  const jwk = { ...(await exportJWK(publicKey)), kid: "actions", alg: "RS256", use: "sig" };
+  const h = await harness({
+    changelogCacheSeconds: 30,
+    statusRepoId: "42",
+    push: () => ({ status: 200, body: JSON.stringify({ keys: [jwk] }) }),
+  });
+  try {
+    const { station, aliceTokens } = await workspace(h);
+    await send(h, station, report({ key: "fallback-k1" }), { channel: "beta" });
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    await bucket.put("changelog.json", JSON.stringify([
+      { version: 1345, commit: "c", at: 3, text: ["回退直读"], fixes: [1], parts: ["station"] },
+    ]));
+    await bucket.put("station-beta.json", JSON.stringify({ build: 1345 }));
+
+    const events = await listen(h, aliceTokens.access_token);
+    await events.take();
+
+    // Force ServiceStatus RPCs to throw (overloaded DO).
+    const armed = await h.fetch("/__test/lose-status", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ times: 10, overloaded: true }),
+    });
+    assert.equal(armed.status, 200);
+
+    // GET /v1/changelog falls back to direct R2 read -> 200.
+    const changelogResp = await h.fetch("/v1/changelog", { headers: { "x-stillfail-channel": "beta" } });
+    assert.equal(changelogResp.status, 200);
+    const changelogBody = (await changelogResp.json()) as any;
+    assert.equal(changelogBody.entries[0].text[0], "回退直读");
+    assert.equal(changelogBody.released.station, 1345);
+
+    // POST /v1/feedback/fixed falls back to direct R2 read -> returns fixed report.
+    const out = await fixed(h, station);
+    assert.deepEqual(out.map((f) => [f.number, f.version, f.released.station]), [[1, 1345, 1345]]);
+
+    // POST /v1/releases/out catches invalidateChangelog() error, still returns 200 and broadcasts release.
+    const oidcToken = await new SignJWT({
+      repository: "o/r",
+      repository_id: "42",
+      workflow_ref: "o/r/.github/workflows/pipeline.yml@refs/heads/main",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "actions" })
+      .setIssuer("https://token.actions.githubusercontent.com")
+      .setAudience(h.origin)
+      .setIssuedAt()
+      .setExpirationTime("10 years")
+      .sign(privateKey);
+    const told = await h.fetch("/v1/releases/out", { method: "POST", headers: { authorization: `Bearer ${oidcToken}` } });
+    assert.equal(told.status, 200);
+    assert.deepEqual(await events.take(), [{ type: "release" }]);
+    events.ws.close(1000);
+  } finally {
+    await h.close();
+  }
+});

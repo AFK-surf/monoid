@@ -612,9 +612,27 @@ function withDynamicFailingBucket(env: Env): Env {
   return { ...env, RELEASES };
 }
 
+const statusLosing = new Losing();
+
 export class ServiceStatus extends ProductionServiceStatus {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, withDynamicFailingBucket(env));
+  }
+  override invalidateChangelog(): void {
+    statusLosing.call();
+    return super.invalidateChangelog();
+  }
+  override changelogResponse(channel: Parameters<ProductionServiceStatus["changelogResponse"]>[0], upstream: string | null, ttlSeconds: number) {
+    statusLosing.call();
+    return super.changelogResponse(channel, upstream, ttlSeconds);
+  }
+  override changelogEntries(channel: Parameters<ProductionServiceStatus["changelogEntries"]>[0], ttlSeconds: number) {
+    statusLosing.call();
+    return super.changelogEntries(channel, ttlSeconds);
+  }
+  override releasedVersions(channel: Parameters<ProductionServiceStatus["releasedVersions"]>[0], upstream: string | null, ttlSeconds: number) {
+    statusLosing.call();
+    return super.releasedVersions(channel, upstream, ttlSeconds);
   }
 }
 
@@ -628,6 +646,11 @@ export default {
       bucketFails = (await readJson(request)) as Record<string, number>;
       bucketCalls = [];
       return reply({ calls });
+    }
+    if (path === "/__test/lose-status") {
+      const { times, overloaded } = (await readJson(request)) as { times?: number; overloaded?: boolean };
+      statusLosing.lose(Number(times ?? 0), Boolean(overloaded));
+      return reply({ armed: Number(times ?? 0) });
     }
     if (path === "/__test/devices") return reply(deviceRequests);
     if (path === "/__test/sockets") {
