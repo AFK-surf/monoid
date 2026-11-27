@@ -533,6 +533,41 @@ test("a look: a source that frames parts frames the part as large as the client 
   await w.served;
 });
 
+test("a helper picture split over pipe reads is joined once, with the next picture in the last read", async (t) => {
+  const pipe = Object.assign(new EventEmitter(), { write() {}, destroy() {} });
+  const view = new HelperView("jpeg", pipe, () => {});
+  t.after(() => view.close());
+  pipe.emit("data", helperMessage(1, Buffer.from(JSON.stringify({ width: 1280, height: 720 }))));
+  await view.ready;
+
+  const picture = Buffer.alloc(40_000);
+  for (let i = 0; i < picture.length; i += 4) picture.writeUInt32BE(i, i);
+  const head = Buffer.alloc(9);
+  head[0] = 1;
+  head.writeBigUInt64BE(30_000n, 1);
+  const first = helperMessage(3, Buffer.concat([head, picture]));
+  head.writeBigUInt64BE(60_000n, 1);
+  const next = Buffer.from([5, 4, 3]);
+  const wire = Buffer.concat([first, helperMessage(3, Buffer.concat([head, next]))]);
+  const a = view.next();
+  const b = view.next();
+
+  const joins = t.mock.method(Buffer, "concat");
+  pipe.emit("data", wire.subarray(0, 2));
+  pipe.emit("data", wire.subarray(2, 5));
+  for (let at = 5; at < wire.length; at += 8192) pipe.emit("data", wire.subarray(at, at + 8192));
+  joins.mock.restore();
+  const joined = joins.mock.calls.reduce((sum, call) => sum + (call.result?.length ?? 0), 0);
+  assert.ok(joined <= wire.length, `joined ${joined} bytes for ${wire.length} bytes of pictures`);
+  assert.deepEqual(await a, { key: true, ts: 30_000, data: new Uint8Array(picture) });
+  assert.deepEqual(await b, { key: true, ts: 60_000, data: new Uint8Array(next) });
+
+  const last = view.next();
+  pipe.emit("data", first.subarray(0, 8192));
+  pipe.emit("close");
+  assert.equal(await last, null);
+});
+
 test("the helper's view of a part of the display: the part asked with the bounds of a helper that frames parts (none of one from before them), each config saying the part its frames show as the helper said it", () => {
   const written: Buffer[] = [];
   const listeners: Record<string, ((chunk: Buffer) => void)[]> = {};
