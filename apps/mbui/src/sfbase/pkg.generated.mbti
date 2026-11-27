@@ -1726,6 +1726,8 @@ pub fn skills_reset() -> Unit
 
 pub fn skills_runtime_label(String) -> String
 
+pub fn skills_badge_cut(String) -> String
+
 pub fn skills_source_label(String, String, place? : String) -> String
 
 pub fn skills_state(String, String, String, String) -> (String, Array[SkillOffer], Bool, Bool)

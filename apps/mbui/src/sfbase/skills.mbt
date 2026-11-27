@@ -364,6 +364,32 @@ pub fn skills_runtime_label(runtime : String) -> String {
 }
 
 ///|
+/// A preset's or project's name as a badge: at most about six wide letters (a Latin letter half of one), the rest cut
+/// with `…`, so a long name never squeezes the skill's own name out of its row.
+pub fn skills_badge_cut(name : String) -> String {
+  let most = 12 // in half-widths
+  let wide = fn(ch : Char) { if ch.to_int() < 0x2E80 { 1 } else { 2 } }
+  let mut used = 0
+  for ch in name {
+    used += wide(ch)
+  }
+  if used <= most {
+    return name
+  }
+  // what fits beside the `…` (one wide letter)
+  let out = StringBuilder()
+  let mut kept = 0
+  for ch in name {
+    if kept + wide(ch) + 2 > most {
+      break
+    }
+    kept += wide(ch)
+    out.write_char(ch)
+  }
+  out.to_string() + "…"
+}
+
+///|
 /// Localized badge text for a skill's `source`, naming the attached runtime for `"agent"` skills and the chat's preset or
 /// project (`place`) for `"session"` ones.
 pub fn skills_source_label(source : String, runtime : String, place? : String = "") -> String {
@@ -372,7 +398,7 @@ pub fn skills_source_label(source : String, runtime : String, place? : String = 
       let label = skills_runtime_label(runtime)
       if label != "" { label } else { @sf.t("web-main.skillMenu.source.agent") }
     }
-    "session" => if place != "" { place } else { @sf.t("web-main.skillMenu.source.session") }
+    "session" => if place != "" { skills_badge_cut(place) } else { @sf.t("web-main.skillMenu.source.session") }
     "workspace" => @sf.t("web-main.skillMenu.source.workspace")
     "project" => @sf.t("web-main.skillMenu.source.project")
     "builtin" => @sf.t("web-main.skillMenu.source.builtin")

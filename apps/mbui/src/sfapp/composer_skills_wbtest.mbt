@@ -151,4 +151,8 @@ test "composer /: a session skill's badge is its chat's preset or project, else 
   assert_eq(@sfbase.skills_source_label("session", "claude", place="发版值守"), "发版值守")
   assert_eq(@sfbase.skills_source_label("session", "claude"), "工作目录")
   assert_eq(@sfbase.skills_source_label("workspace", "claude", place="发版值守"), "工作区")
+  assert_eq(@sfbase.skills_badge_cut("发版值守与回归检查清单"), "发版值守与…")
+  assert_eq(@sfbase.skills_badge_cut("monoid"), "monoid")
+  assert_eq(@sfbase.skills_badge_cut("release-checklist"), "release-ch…")
+  assert_eq(@sfbase.skills_badge_cut("发版值守"), "发版值守")
 }
