@@ -15,6 +15,7 @@ mesh_door = { workspace = true }
 mesh_wire = { workspace = true }
 nodepath = { workspace = true }
 sse = { workspace = true }
+station_cli = { workspace = true }
 station_cloud = { workspace = true }
 station_http = { workspace = true }
 station_jobs = { workspace = true }

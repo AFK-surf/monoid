@@ -58,8 +58,45 @@ fn assert_true(cond : Bool, msg : String) -> Unit {
   }
 }
 
-test "version line advertises roles:rig and empty commands in W12" {
-  assert_str_eq(version_line(), "stillfail-station-pion 0.1.0 roles:rig commands:")
+test "version line advertises roles:rig and all 8 CLI commands in W12-CLI-Main" {
+  let v = version_line()
+  assert_str_eq(v, "stillfail-station-pion 0.1.0 roles:rig commands:id,status,lock,channel,enroll,update,heap,admin")
+  let tokens = v.split(" ")
+  assert_true(tokens.length() == 4, "version line must have exactly 4 whitespace-separated tokens")
+}
+
+test "cli_main helpers classify all 8 CLI subcommands, parse env, and decode process_usage" {
+  let expected = ["id", "status", "lock", "channel", "enroll", "update", "heap", "admin"]
+  for i in 0..<expected.length() {
+    assert_true(is_cli_command(expected[i]), "expected CLI command: " + expected[i])
+  }
+  assert_true(!is_cli_command("run"), "run is daemon mode, not CLI subcommand")
+  assert_true(!is_cli_command("unknown"), "unknown is not a CLI command")
+
+  match find_main_subcommand(["--data", "/tmp/d", "status", "--json"]) {
+    Some(c) => assert_str_eq(c, "status")
+    None => panic("expected status after --data flag")
+  }
+  match find_main_subcommand(["--with-parent", "run", "--port", "0"]) {
+    Some(c) => assert_str_eq(c, "run")
+    None => panic("expected run after --with-parent")
+  }
+  assert_true(find_main_subcommand(["--unknown"]) is None, "--unknown has no subcommand")
+
+  let env = parse_env_entries(["A=1=2", "EMPTY=", "NOEQUALS"], "/home/fallback")
+  match env.get("A") {
+    Some(v) => assert_str_eq(v, "1=2")
+    None => panic("expected A=1=2")
+  }
+  match env.get("HOME") {
+    Some(h) => assert_str_eq(h, "/home/fallback")
+    None => panic("expected fallback HOME")
+  }
+  let (rss, cpu) = parse_process_usage_entry("[{\"pid\":1,\"footprint\":4096,\"cpuNs\":12345}]", 1024L)
+  assert_true(rss == 4096L, "footprint parsed")
+  assert_true(cpu == 12345L, "cpuNs parsed")
+  let (fb_rss, fb_cpu) = parse_process_usage_entry("[]", 2048L)
+  assert_true(fb_rss == 2048L && fb_cpu == 0L, "fallback RSS when usage array empty")
 }
 
 test "usage line mentions --version and run" {
