@@ -407,3 +407,76 @@ test("r17: delayed cold-start GRANTS_KEY discards stale grants across boundary, 
     runner.shutdown();
   }
 });
+
+test("r18: overlapping same-owner boundaries coalesce refresh and never drop the final readGrants", async () => {
+  const host = new FakeHost();
+  const exp = Math.floor(host.nowMs() / 1000) + 3600;
+  const runner = new Runner(host.time.clock);
+  const store = new Store(host, runner);
+  store.authGen.syncAccounts(["acct-a"]);
+  const gate1 = Deferred.makeUnsafe<void>();
+  const gate2 = Deferred.makeUnsafe<void>();
+  let callNum = 0;
+  const link = {
+    ask: (_head: unknown, { adb: ask }: { adb: { op: string } }) => {
+      if (ask.op !== "grants") return Effect.fail(new Error("unexpected"));
+      const n = ++callNum;
+      const gate = n === 1 ? gate1 : gate2;
+      const id = n === 1 ? "g-from-stale-first-refresh" : "g-from-second-refresh";
+      return Effect.map(Deferred.await(gate), () => {
+        let sent = false;
+        const bytes = new TextEncoder().encode(
+          JSON.stringify({
+            signs: true,
+            grants: [{ id, chat: "c1", session: "s1", reason: "debug", status: "granted", exp, at: n }],
+          }),
+        );
+        return { status: 200, body: { take: Effect.sync(() => { if (sent) return null; sent = true; return bytes; }) } };
+      });
+    },
+  };
+  const mesh = { deviceId: () => "phone", link: () => Effect.succeed(link) } as unknown as Mesh;
+  const stub = personalStub();
+  const adb = new Adb({
+    ...stub,
+    subOf: () => "acct-a",
+    subs: () => [{ sub: "acct-a", email: "a@x" }],
+    host,
+    runner,
+    store,
+    mesh: () => Effect.succeed(mesh),
+    credentials: () => (() => Effect.succeed({} as never)),
+    relays: () => [],
+    lends: () => false,
+  });
+  takeAll(adb);
+  try {
+    const gen0 = store.authGen.workspaceAuthGen("ws");
+    adb.heard("ws/st", { id: "g-init", chat: "c1", session: "s1", reason: "debug", status: "granted", exp, at: 0 }, gen0, "acct-a");
+    assert.deepEqual(adb.grants().map((g) => g.id), ["g-init"]);
+
+    // Boundary 1: prunes g-init and starts refresh #1 (blocked on gate1)
+    store.authGen.bumpWorkspace("ws");
+    await host.time.pass(20);
+    assert.deepEqual(adb.grants(), [], "boundary 1 must immediately hide old-gen grant");
+    assert.equal(callNum, 1, "boundary 1 must start refresh #1");
+
+    // Boundary 2 arrives WHILE refresh #1 is STILL in-flight!
+    store.authGen.syncAccounts(["acct-a", "acct-b"]);
+    await host.time.pass(20);
+    // Release refresh #1 (now stale -> discarded) and refresh #2 (fresh -> populates grants!)
+    Deferred.doneUnsafe(gate1, Effect.void);
+    await host.time.pass(20);
+    assert.equal(callNum, 2, "overlapping boundary 2 must coalesce and trigger refresh #2 once refresh #1 completes");
+    assert.deepEqual(adb.grants(), [], "stale refresh #1 response must be discarded");
+    Deferred.doneUnsafe(gate2, Effect.void);
+    await host.time.pass(20);
+    assert.deepEqual(
+      adb.grants().map((g) => g.id),
+      ["g-from-second-refresh"],
+      "coalesced refresh #2 must automatically recover grants under latest gen without manual readGrants",
+    );
+  } finally {
+    runner.shutdown();
+  }
+});

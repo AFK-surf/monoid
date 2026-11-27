@@ -3318,7 +3318,7 @@ class Vaults {
   #putVault(
     next: Vault,
     station: string,
-    expected: { wsAuthGen: number; vaultGen?: number; vaultGlobalGen: number },
+    expected: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
   ): Effect.Effect<Vault, CoreError> {
     const self = this;
     return Effect.gen(function* () {
@@ -3326,7 +3326,7 @@ class Vaults {
       const isStale = () =>
         inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
         inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen ||
-        (expected.vaultGen !== undefined && inner.store.authGen.vaultGen(self.ws, next.id) !== expected.vaultGen);
+        inner.store.authGen.vaultGen(self.ws, next.id) !== expected.vaultGen;
       const targets = station === "" ? [] : [station, ...writeHosts(inner, self.ws, next.id).filter((s) => s !== station)];
       for (const s of targets) {
         if (isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
@@ -3498,7 +3498,7 @@ class Vaults {
       const inner = self.#inner;
       const startWsAuthGen = expected?.wsAuthGen ?? inner.store.authGen.workspaceAuthGen(self.ws);
       const startVaultGlobalGen = expected?.vaultGlobalGen ?? inner.store.authGen.vaultGlobalGen;
-      const createExpected = { wsAuthGen: startWsAuthGen, vaultGlobalGen: startVaultGlobalGen };
+      const createExpected = { wsAuthGen: startWsAuthGen, vaultGen: startVaultGlobalGen, vaultGlobalGen: startVaultGlobalGen };
       const createStale = () =>
         inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
         inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
@@ -3977,12 +3977,9 @@ class Vaults {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
-      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
-      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
-      const startWsVaultGen = inner.store.authGen.vaultWorkspaceGen(self.ws);
-      const startVaultGens = new Map(
-        Object.keys(held(inner, self.ws).vaults).map((vid) => [vid, inner.store.authGen.vaultGen(self.ws, vid)]),
-      );
+      const startSnap = inner.store.authGen.snapshot(0);
+      const startWsAuthGen = snapWsAuthGen(startSnap, self.ws);
+      const startVaultGlobalGen = startSnap.vaultGlobal ?? 1;
       const entropy = yield* Effect.try({ try: () => fromWords(words), catch: asCoreError });
       const { lock, signer, self: who } = yield* self.#ready();
       const here = yield* self.#current(lock, signer, who);
@@ -4006,11 +4003,12 @@ class Vaults {
           others++;
           continue;
         }
-        const kept = self.#keep(v, key, {
+        const vExpected = {
           wsAuthGen: startWsAuthGen,
-          vaultGen: startVaultGens.get(v.id) ?? startWsVaultGen,
+          vaultGen: snapVaultGen(startSnap, self.ws, v.id),
           vaultGlobalGen: startVaultGlobalGen,
-        });
+        };
+        const kept = self.#keep(v, key, vExpected);
         if (!kept) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         if (v.keys.some((k) => k.cert.device === who.device && k.cert.box === here.box)) {
           recovered++;
@@ -4028,11 +4026,7 @@ class Vaults {
         yield* self.#putVault(
           sign({ ...rest, seq: v.seq + 1, keys, at: nowS(inner) }, TAG.vault, signer),
           hostOf(inner, self.ws, v.id),
-          {
-            wsAuthGen: startWsAuthGen,
-            ...(startVaultGens.has(v.id) ? { vaultGen: startVaultGens.get(v.id)! } : {}),
-            vaultGlobalGen: startVaultGlobalGen,
-          },
+          vExpected,
         );
         recovered++;
       }

@@ -574,6 +574,8 @@ export class Adb {
   #ports: Omit<Offer, "station" | "minutes"> | null = null;
   /// This person's chats' grants of their phone (and requests waiting), by station address, bound to owner `sub` & workspace `authGen`.
   readonly #grants = new Map<string, { sub: string; gen: number; grants: Map<string, J> }>();
+  /// Serialized coalescing refresh state per station so overlapping same-owner boundaries never drop the latest refresh.
+  readonly #refreshing = new Map<string, { sub: string; rerun: boolean }>();
   readonly #retold = new Retold();
   /// Whether the grants kept on the device were read (`adbShare` `known`): before, none known is not none granted.
   #known = false;
@@ -602,27 +604,36 @@ export class Adb {
     env.store.authGen.onBoundary((event) => {
       if (event.kind !== "global" && event.kind !== "workspace") return;
       let pruned = false;
-      const toRefresh: string[] = [];
-      for (const [station, entry] of [...this.#grants]) {
+      const toRefresh: [string, string][] = [];
+      const stations = new Set<string>([...this.#grants.keys(), ...this.#refreshing.keys()]);
+      for (const station of stations) {
         const ws = ofAddress(station);
         if (event.kind === "workspace" && ws !== event.workspace) continue;
+        const entry = this.#grants.get(station);
+        const ref = this.#refreshing.get(station);
+        const entrySub = entry?.sub ?? ref?.sub;
         const curSub = this.#ownerAt(station);
         const curGen = this.#env.store.authGen.workspaceAuthGen(ws);
-        if (curSub === null || entry.sub !== curSub) {
-          this.#grants.delete(station);
-          pruned = true;
-        } else if (entry.gen !== curGen) {
-          this.#grants.delete(station);
-          pruned = true;
-          toRefresh.push(station);
+        if (curSub === null || (entrySub !== undefined && entrySub !== curSub)) {
+          if (entry !== undefined) {
+            this.#grants.delete(station);
+            pruned = true;
+          }
+          this.#refreshing.delete(station);
+        } else if ((entry !== undefined && entry.gen !== curGen) || ref !== undefined) {
+          if (entry !== undefined) {
+            this.#grants.delete(station);
+            pruned = true;
+          }
+          toRefresh.push([station, curSub]);
         }
       }
       if (pruned) {
         this.#keep();
         this.#sync();
       }
-      for (const station of toRefresh) {
-        this.#env.runner.fork(Effect.ignore(this.readGrants(station), { log: "Unhandled", message: "adb grants refresh after boundary" }));
+      for (const [station, sub] of toRefresh) {
+        this.#scheduleRefresh(station, sub);
       }
     });
     const loadSnap = env.store.authGen.snapshot(0);
@@ -647,7 +658,7 @@ export class Adb {
                 // Auth boundary crossed while GRANTS_KEY was loading asynchronously: never stamp stale persisted
                 // grants with the new generation; trigger authoritative refresh if the same owner is still active.
                 if (curSub !== null && sub === curSub) {
-                  this.#env.runner.fork(Effect.ignore(this.readGrants(station), { log: "Unhandled", message: "adb grants refresh after cold-start boundary" }));
+                  this.#scheduleRefresh(station, curSub);
                 }
                 continue;
               }
@@ -677,6 +688,35 @@ export class Adb {
           this.#sync();
         }),
       ),
+    );
+  }
+
+  #scheduleRefresh(station: string, sub: string): void {
+    const existing = this.#refreshing.get(station);
+    if (existing !== undefined) {
+      existing.sub = sub;
+      existing.rerun = true;
+      return;
+    }
+    const state = { sub, rerun: false };
+    this.#refreshing.set(station, state);
+    this.#env.runner.fork(
+      Effect.gen({ self: this }, function* () {
+        for (;;) {
+          state.rerun = false;
+          if (this.#refreshing.get(station) !== state || this.#ownerAt(station) !== state.sub) {
+            if (this.#refreshing.get(station) === state) this.#refreshing.delete(station);
+            return;
+          }
+          yield* Effect.ignore(this.readGrants(station), { log: "Unhandled", message: "adb grants refresh after boundary" });
+          const after = this.#refreshing.get(station);
+          if (after !== state) return;
+          if (!after.rerun) {
+            this.#refreshing.delete(station);
+            return;
+          }
+        }
+      }),
     );
   }
 

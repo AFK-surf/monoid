@@ -4829,3 +4829,80 @@ test("vault calls r17: #key->#give positive/negative with eligible peer device, 
     r2.core.close();
   }
 });
+
+test("vault calls r18: recover with startSnap allows newly-discovered vault when unrelated vault locks, and blocks when target vault locks on 503", async () => {
+  for (const mode of ["unrelated-lock", "target-lock"] as const) {
+    const r = await rig();
+    r.putLock();
+    const setupRes = (await r.ask("vault.setup", {})) as { words: string; made: string };
+    await r.ask("vault.delete", { vault: setupRes.made });
+    const vOther = (await r.ask("vault.create", { name: "Team", scope: "workspace" })) as { id: string };
+    // Create a second personal vault on station that is NOT keyed for this device (only keyed to r.phone + recovery key!)
+    const { pub: recPub } = recoveryPair(fromWords(setupRes.words));
+    const vNewKey = fill(88);
+    const vNewId = "v_01JANEW0000000000000000R18";
+    const ctx = keyContext("ws", vNewId, 0);
+    const phoneCert: BoxCert = sign({ v: 1 as const, ws: "ws", device: r.phone.hex, box: boxPublic(fill(89)), at: 2000 }, TAG.box, r.phone);
+    const vNew: Vault = sign(
+      {
+        v: 1 as const,
+        ws: "ws",
+        id: vNewId,
+        seq: 0,
+        owner: "s1",
+        name: "Recovered",
+        members: ["s1"],
+        epoch: 0,
+        keys: [{ cert: phoneCert, wrapped: sealWith(phoneCert.box, vNewKey, ctx, fill(90)) }],
+        recovery: sealWith(recPub, vNewKey, ctx, fill(91)),
+        at: 2000,
+      },
+      TAG.vault,
+      r.me.signer!,
+    );
+    // Inject vNew into held vaults DURING recover's #ready() (so it was NOT present at recover() entry!)
+    let injected = false;
+    const origSecGet = r.host.secureGet!.bind(r.host);
+    r.host.secureGet = (k, reason) => {
+      if (!injected) {
+        injected = true;
+        const h = r.core.inner.data.record("vault", "ws") as { vaults: Record<string, Vault>; at: Record<string, string>; on: Record<string, Record<string, { seq: number; epoch: number; items: Record<string, number> }>> };
+        r.st.vaults.set(vNewId, vNew);
+        r.core.inner.data.put("vault", "ws", {
+          ...h,
+          vaults: { ...h.vaults, [vNewId]: vNew },
+          at: { ...h.at, [vNewId]: "st" },
+          on: { ...h.on, [vNewId]: { st: { seq: 0, epoch: 0, items: {} } } },
+        });
+        if (mode === "unrelated-lock") {
+          // Lock unrelated vault vOther during #ready() -> must NOT block recovering vNew!
+          r.core.inner.store.authGen.bumpVault("ws", vOther.id);
+        }
+      }
+      return origSecGet(k, reason);
+    };
+    let bumpedTarget = false;
+    stationReplies(r.host, (httpReq) => {
+      if (mode === "target-lock" && !bumpedTarget && httpReq.method === "PUT" && httpReq.url.includes("/vault/vaults")) {
+        bumpedTarget = true;
+        r.core.inner.store.authGen.bumpVault("ws", vNewId);
+        return status(503, { error: "unavailable" });
+      }
+      return r.st.reply(httpReq);
+    });
+
+    if (mode === "unrelated-lock") {
+      const res = (await r.ask("vault.recover", { words: setupRes.words })) as { recovered: number };
+      assert.equal(injected, true);
+      assert.ok(res.recovered >= 1, "recovering newly-discovered vNew must succeed even if unrelated vOther locked");
+      assert.equal(r.st.vaults.get(vNewId)!.seq, 1, "vNew must be re-keyed for this device on station");
+    } else {
+      await fails(r.ask("vault.recover", { words: setupRes.words }), "auth_stale");
+      assert.equal(injected, true);
+      assert.equal(bumpedTarget, true);
+      const localV = (r.core.inner.data.record("vault", "ws") as { vaults: Record<string, Vault> }).vaults[vNewId];
+      assert.equal(localV?.seq, 0, "stale recover on 503 must NOT commit seq 1 locally offline");
+    }
+    r.core.close();
+  }
+});
