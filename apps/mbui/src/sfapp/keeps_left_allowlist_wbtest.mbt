@@ -474,18 +474,38 @@ test "PR-B3c r3/r4 P1-2 & P2-1/2/3: root shelf allowlist, sync swap_out eviction
   )
   |> ignore
   assert_true(sub.value is Some(_), msg="workspaces snapshot must be delivered to sub before auth boundary")
+  @sfbase.account_principal_sig.set("acct-1")
   @sfbase.workspace_owners_sync_json(sub.value)
   assert_eq(@sfbase.workspace_explicit_owner_of("ws-active"), Some("acct-1"), msg="ws-active owner synced before boundary")
   assert_eq(@sfbase.workspace_explicit_owner_of("ws-other"), Some("acct-1"), msg="ws-other owner synced before boundary")
-  // Dispatch real Workspace("ws-other") auth boundary through Client::receive.
+  let owner_events : Array[(String, String, String)] = []
+  let listen_active = Ref(true)
+  @sfbase.on_workspace_owner_change(fn(w, old_o, new_o) {
+    if listen_active.val {
+      owner_events.push((w, old_o, new_o))
+    }
+  })
+  // 1. Dispatch real Workspace("ws-other") auth boundary through Client::receive:
+  //    must emit exactly 1 targeted ("ws-other", "acct-1", "") revocation, move ws-other to pending,
+  //    prune ws-other from both workspaces & ownedWorkspaces, and keep ws-active intact.
   c.receive("{\"auth\":{\"conn\":1,\"global\":1,\"workspace\":\"ws-other\",\"authGen\":2}}") |> ignore
   assert_true(
     seen_scopes.iter().any(fn(s) { s is @core.AuthScope::Workspace("ws-other") }),
     msg="real Core Client must dispatch Workspace(ws-other) auth boundary",
   )
+  assert_eq(
+    owner_events,
+    [("ws-other", "acct-1", "")],
+    msg="Workspace(ws-other) boundary must emit exactly 1 targeted revocation (ws-other, acct-1, \"\")",
+  )
   assert_true(
     @sfbase.workspace_explicit_owner_of("ws-other") is None,
     msg="Workspace(ws-other) boundary must synchronously invalidate ws-other explicit owner",
+  )
+  assert_eq(
+    @sfbase.workspace_owner_of("ws-other"),
+    "\u{3}pending",
+    msg="Workspace(ws-other) boundary must mark ws-other pending explicit loss",
   )
   assert_eq(
     @sfbase.workspace_explicit_owner_of("ws-active"),
@@ -495,17 +515,70 @@ test "PR-B3c r3/r4 P1-2 & P2-1/2/3: root shelf allowlist, sync swap_out eviction
   let (remaining, _, _) = @sfbase.workspaces_of(sub.value)
   assert_eq(remaining.length(), 1, msg="Workspace(ws-other) invalidation must prune only ws-other and keep ws-active live")
   assert_eq(remaining[0].id, "ws-active", msg="ws-active must remain in workspaces snapshot without flashing None")
-  // Verify ownedWorkspaces was pruned too: re-syncing sub.value must NOT resurrect ws-other owner, while ws-active stays confirmed.
   let raw_str = sub.value.unwrap().stringify()
   assert_false(raw_str.contains("ws-other"), msg="pruned workspaces snapshot must not retain ws-other in workspaces or ownedWorkspaces")
-  @sfbase.workspace_owners_sync_json(sub.value)
+  // 2. Follow-up snapshot where old owner acct-1 (loaded=true) lost ws-other and candidate acct-2 (loaded=false)
+  //    lists ws-other: ws-other MUST stay pending (never prematurely confirmed)!
+  let unloaded_candidate : Json = [
+    {
+      "account": { "sub": "acct-1", "email": "a@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-active", "name": "Active" }],
+      "ownedWorkspaces": ["ws-active"],
+    },
+    {
+      "account": { "sub": "acct-2", "email": "b@example.com" },
+      "loaded": false,
+      "workspaces": [{ "id": "ws-other", "name": "Other" }],
+      "ownedWorkspaces": ["ws-other"],
+    },
+  ]
+  @sfbase.workspace_owners_sync_json(Some(unloaded_candidate))
   assert_true(
     @sfbase.workspace_explicit_owner_of("ws-other") is None,
-    msg="re-syncing pruned snapshot must not resurrect ws-other owner from stale ownedWorkspaces",
+    msg="unloaded candidate acct-2 must NOT prematurely confirm ws-other after explicit boundary loss",
+  )
+  assert_eq(
+    @sfbase.workspace_owner_of("ws-other"),
+    "\u{3}pending",
+    msg="ws-other must stay pending while candidate acct-2 is loaded=false",
   )
   assert_eq(
     @sfbase.workspace_explicit_owner_of("ws-active"),
     Some("acct-1"),
-    msg="re-syncing pruned snapshot must preserve ws-active explicit owner",
+    msg="ws-active must stay confirmed acct-1 during acct-2 unloaded snapshot",
   )
+  // 3. Follow-up snapshot where acct-2 finishes loading (loaded=true): ws-other is confirmed as acct-2
+  //    without emitting any spurious fallback revocation against unrelated primary account acct-1 or ws-active!
+  let loaded_candidate : Json = [
+    {
+      "account": { "sub": "acct-1", "email": "a@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-active", "name": "Active" }],
+      "ownedWorkspaces": ["ws-active"],
+    },
+    {
+      "account": { "sub": "acct-2", "email": "b@example.com" },
+      "loaded": true,
+      "workspaces": [{ "id": "ws-other", "name": "Other" }],
+      "ownedWorkspaces": ["ws-other"],
+    },
+  ]
+  @sfbase.workspace_owners_sync_json(Some(loaded_candidate))
+  assert_eq(
+    @sfbase.workspace_explicit_owner_of("ws-other"),
+    Some("acct-2"),
+    msg="loaded=true candidate acct-2 must confirm ws-other ownership",
+  )
+  assert_eq(
+    @sfbase.workspace_explicit_owner_of("ws-active"),
+    Some("acct-1"),
+    msg="ws-active must remain confirmed acct-1 throughout",
+  )
+  assert_eq(
+    owner_events,
+    [("ws-other", "acct-1", "")],
+    msg="recovering ws-other to acct-2 after explicit boundary loss must not emit spurious revocations for acct-1 or ws-active",
+  )
+  listen_active.val = false
 }
