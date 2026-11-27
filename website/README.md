@@ -15,6 +15,8 @@ node website/build.mjs --check              # translations: missing, extra, stal
 Device showcase renders (`website/assets/shots/{duo,android,desk,web}-{en,zh}{,-1x}.webp`) ship in English and Chinese,
 matching `apps/mbui`'s two UI locales (`en` and `zh-CN`): `zh-CN` and `zh-TW` pages receive `-zh` renders, while `en`,
 `ja`, and `ko` pages receive `-en` renders. Size metadata is tracked in `website/shots-sizes.txt` (excluded from CDN output).
+Regenerating them with `bash website/devices.sh` requires Blender 4.2+, `ffmpeg`, `node`, `curl`, and Chromium
+(`CHROMIUM_BIN`, with CJK system fonts such as PingFang SC or Noto Sans CJK SC installed for `-zh` OS chrome).
 
 ## Changing the copy
 

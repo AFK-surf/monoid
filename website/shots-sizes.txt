@@ -1,8 +1,8 @@
-duo-en         2000x1500  2x= 127710B  1x=  45910B
-duo-zh         2000x1500  2x= 122528B  1x=  42132B
-android-en     2000x1500  2x=  79590B  1x=  26950B
-android-zh     2000x1500  2x=  76220B  1x=  24860B
-desk-en        2000x1500  2x= 130948B  1x=  45434B
-desk-zh        2000x1500  2x= 130164B  1x=  45780B
-web-en         2000x1500  2x= 105258B  1x=  34214B
-web-zh         2000x1500  2x= 102848B  1x=  33606B
+duo-en         2000x1500  2x=  76874B  1x=  26624B
+duo-zh         2000x1500  2x=  73958B  1x=  24934B
+android-en     2000x1500  2x=  82604B  1x=  28696B
+android-zh     2000x1500  2x=  79168B  1x=  26078B
+desk-en        2000x1500  2x= 106986B  1x=  38096B
+desk-zh        2000x1500  2x= 106492B  1x=  37760B
+web-en         2000x1500  2x=  91026B  1x=  30776B
+web-zh         2000x1500  2x=  88280B  1x=  29294B
