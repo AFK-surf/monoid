@@ -1,28 +1,31 @@
 // Production OS adapter for `station_replica`:
-// - Real SFB1 encrypted streaming backup & restore (`Sfb1StreamSealer` / `Sfb1StreamOpener` +
-//   `manifest` + `format`) over `station_sys` positioned file I/O (`read_range_meta`, `write_at`,
-//   `sync_file`, `write_file_atomic`) and `station_ops::OpsFs`.
-// - Real SigV4 S3 HTTP transport over `builders_core::ShellMux` `fetch` + local disk target with
-//   path-traversal guards; tampered ciphertext AEAD failures strictly reject and leave targets clean.
-// - `ReplicaOsRuntime` wiring `WriteGate`, `HandoffCache`, `KeptLog`, `LentLog`, and
-//   `MoveScheduler` with real `before_store` and `take_back_soon` hooks so writes during migration
-//   are never lost.
-// - Cross-station `ShareOsSync` wrappers for `share_memory`, `share_profiles`, and `share_records`.
+// - True chunked streaming SFB1 encryption/decryption (`sfb1_seal_file_streaming`,
+//   `sfb1_open_file_streaming`) using 256 KiB chunks via `station_sys::read_range_meta`,
+//   `station_sys::write_at`, `station_sys::sync_file`, and atomic `rename` (never buffers whole
+//   files in RAM; cleans up temp file on AEAD rejection).
+// - Raw binary `ReplicaTargetPort::local` over `station_sys` (never JSON-encoding binary data).
+// - Segment-validated relative paths (allowing `notes..old`, rejecting `.`/`..`/symlinks).
+// - SFB1 anti-rollback: AAD `logical_path` binds `gen` (`"head/" + gen`, `"index/" + gen`),
+//   validates `head.gen/workspace/origin` + exact `index`/`head.files` set equality, and stages
+//   all restored files into an exclusive temporary directory with symlink-free verification
+//   before atomic cutover into `dst` (zero partial plaintext on failure).
+// - Real SigV4 S3 client using `host_shim::wall_ms` for UTC signing and `EdgeMuxHub` streaming
+//   `stream.open`/`stream.read` body cap + XML `<Error>` rejection on `DeleteObjects`.
+// - `ReplicaOsRuntime` wiring `WriteGate`, `MoveScheduler`, failure-locked `before_store` /
+//   `take_back_soon`, and fail-closed `kept.jsonl` persistence, plus `ShareOsSync`.
 
 import "base_codec"
 import "builders_core"
 import "crypto"
 import "host_shim"
 import "nodepath"
-import "station_http"
 import "station_ops"
 import "station_replica"
 import "station_sys"
 
-pub let REPLICA_STREAM_CHUNK_BYTES : Int = 65536
+pub let REPLICA_STREAM_CHUNK_BYTES : Int = 262144
 pub let REPLICA_S3_TIMEOUT_MS : Int64 = 60000L
 pub let REPLICA_S3_MAX_BODY_BYTES : Int = 67108864
-pub let REPLICA_TOK_S3_FETCH : Int = 3201
 
 fn rep_concat_bytes(parts : Array[Bytes]) -> Bytes {
   let mut total = 0
@@ -41,26 +44,199 @@ fn rep_concat_bytes(parts : Array[Bytes]) -> Bytes {
   out
 }
 
-fn rep_is_safe_rel_path(rel : String) -> Bool {
-  if rel.length() == 0 || rel.starts_with("/") || rel.starts_with("\\") {
+/// Strictly validates a relative path segment-by-segment:
+/// - Rejects empty path, leading/trailing `/`, `\`, NUL, drive letters (`C:`), empty segments,
+///   `.` and `..`.
+/// - Allows valid filenames containing `..` such as `notes..old` or `a/notes..old`.
+pub fn rep_is_safe_rel_path(rel : String) -> Bool {
+  let raw = rel.to_bytes()
+  let n = raw.length()
+  if n == 0 {
     return false
   }
-  if rel.contains("..") || rel.contains("\u{0000}") {
+  if (raw[0].to_int() & 0xFF) == 47 || (raw[n - 1].to_int() & 0xFF) == 47 {
     return false
+  }
+  if n >= 2 && (raw[1].to_int() & 0xFF) == 58 {
+    return false
+  }
+  for i in 0..<n {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0 || b == 92 {
+      return false
+    }
+  }
+  let mut start = 0
+  for i in 0..<(n + 1) {
+    if i == n || (raw[i].to_int() & 0xFF) == 47 {
+      let seg_len = i - start
+      if seg_len == 0 {
+        return false
+      }
+      if seg_len == 1 && (raw[start].to_int() & 0xFF) == 46 {
+        return false
+      }
+      if seg_len == 2
+      && (raw[start].to_int() & 0xFF) == 46
+      && (raw[start + 1].to_int() & 0xFF) == 46 {
+        return false
+      }
+      start = i + 1
+    }
   }
   true
 }
 
-fn rep_is_http_url(url : String) -> Bool {
-  url.starts_with("http://") || url.starts_with("https://")
+fn rep_split_rel_segments(rel : String) -> Array[String] {
+  let out : Array[String] = []
+  let raw = rel.to_bytes()
+  let n = raw.length()
+  let mut start = 0
+  for i in 0..<(n + 1) {
+    if i == n || (raw[i].to_int() & 0xFF) == 47 {
+      if i > start {
+        out.push(rel.slice(start, i))
+      }
+      start = i + 1
+    }
+  }
+  out
+}
+
+/// Checks every path prefix under `root` for `rel` via `lstat_raw_err`, strictly rejecting any
+/// symlink component (prevents `a -> /outside` symlink escape).
+fn rep_reject_symlinks_along(root : String, rel : String) -> Result[Unit, String] {
+  match station_sys::lstat_raw_err(root) {
+    Ok(st) => if st.starts_with("link|") { return Err("symlink root rejected: " + root) }
+    Err(_) => ()
+  }
+  let segs = rep_split_rel_segments(rel)
+  let mut cur = root
+  for i in 0..<segs.length() {
+    cur = nodepath::join("/", [cur, segs[i]])
+    match station_sys::lstat_raw_err(cur) {
+      Ok(st) => {
+        if st.starts_with("link|") {
+          return Err("symlink path component rejected: " + cur)
+        }
+        if i + 1 < segs.length() && !st.starts_with("dir|") {
+          return Err("non-directory parent component rejected: " + cur)
+        }
+      }
+      Err(-2) => () // ENOENT is fine for components not yet created
+      Err(code) => return Err("lstat failed on " + cur + " (code=" + code.to_string() + ")")
+    }
+  }
+  Ok(())
+}
+
+fn rep_remove_tree(path : String) -> Unit {
+  match station_sys::lstat_raw_err(path) {
+    Err(_) => return
+    Ok(st) => {
+      if st.starts_with("dir|") {
+        match station_sys::read_dir(path) {
+          Some(entries) => {
+            for i in 0..<entries.length() {
+              rep_remove_tree(nodepath::join("/", [path, entries[i]]))
+            }
+          }
+          None => ()
+        }
+        let _ = station_sys::rmdir(path)
+      } else {
+        let _ = station_sys::unlink(path)
+      }
+    }
+  }
+}
+
+fn rep_unique_tmp_path(dst_path : String) -> Result[String, String] {
+  let suffix = match station_sys::random_hex(8) {
+    Ok(h) => h
+    Err(e) => return Err("random_hex failed: " + e)
+  }
+  let parent = nodepath::dirname("/", dst_path)
+  let base = nodepath::basename("/", dst_path)
+  Ok(nodepath::join("/", [parent, "." + base + ".sf-tmp-" + suffix]))
+}
+
+/// Raw binary atomic file write over `station_sys` (`write_at` + `sync_file` + `rename`).
+pub fn rep_write_binary_atomic(dst_path : String, data : Bytes) -> Result[Unit, String] {
+  let parent = nodepath::dirname("/", dst_path)
+  if !station_sys::mkdir_p(parent) {
+    return Err("mkdir_p failed for " + parent)
+  }
+  let tmp = match rep_unique_tmp_path(dst_path) {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let mut off = 0L
+  if data.length() == 0 {
+    match station_sys::write_at(tmp, 0L, Bytes::new(0), true, None, Some(0L), true) {
+      Ok(_) => ()
+      Err(code) => {
+        let _ = station_sys::unlink(tmp)
+        return Err("write_at failed (code=" + code.to_string() + ")")
+      }
+    }
+  } else {
+    while off < data.length().to_int64() {
+      let rem = data.length() - off.to_int()
+      let take = if rem > REPLICA_STREAM_CHUNK_BYTES { REPLICA_STREAM_CHUNK_BYTES } else { rem }
+      let chunk = data.slice(off.to_int(), off.to_int() + take)
+      let is_last = off.to_int() + take >= data.length()
+      match station_sys::write_at(tmp, off, chunk, off == 0L, None, if is_last { Some(data.length().to_int64()) } else { None }, is_last) {
+        Ok(_) => off = off + take.to_int64()
+        Err(code) => {
+          let _ = station_sys::unlink(tmp)
+          return Err("write_at failed (code=" + code.to_string() + ")")
+        }
+      }
+    }
+  }
+  match station_sys::sync_file(tmp) {
+    Ok(_) => ()
+    Err(code) => {
+      let _ = station_sys::unlink(tmp)
+      return Err("sync_file failed (code=" + code.to_string() + ")")
+    }
+  }
+  if !station_sys::rename(tmp, dst_path) {
+    let _ = station_sys::unlink(tmp)
+    return Err("atomic rename failed for " + dst_path)
+  }
+  Ok(())
+}
+
+/// Raw binary read over `station_sys::read_range_meta`.
+pub fn rep_read_binary_file(src_path : String) -> Result[Bytes, String] {
+  let parts : Array[Bytes] = []
+  let mut off = 0L
+  while true {
+    match station_sys::read_range_meta(src_path, off, REPLICA_STREAM_CHUNK_BYTES.to_int64()) {
+      Err(code) => return Err("read_range_meta failed for " + src_path + " (code=" + code.to_string() + ")")
+      Ok((chunk, total_sz, _)) => {
+        if chunk.length() == 0 {
+          break
+        }
+        parts.push(chunk)
+        off = off + chunk.length().to_int64()
+        if off >= total_sz {
+          break
+        }
+      }
+    }
+  }
+  Ok(rep_concat_bytes(parts))
 }
 
 // ---------------------------------------------------------------------------
-// 1. SFB1 Streaming Disk Seal / Open (AEAD fail-closed + atomic write)
+// 1. True Chunked Streaming SFB1 Seal / Open (bounded RAM + atomic cutover)
 // ---------------------------------------------------------------------------
 
-/// Encrypts `src_path` to `dst_path` using streaming `Sfb1StreamSealer` over `station_sys`
-/// positioned reads (`read_range_meta`) and atomic output (`write_file_atomic`).
+/// Encrypts `src_path` to `dst_path` using bounded-memory 256 KiB chunked streaming via
+/// `Sfb1StreamSealer` + `station_sys::write_at` + `sync_file` + atomic `rename`.
 pub fn sfb1_seal_file_streaming(
   key : Bytes,
   ctx : station_replica::Sfb1Context,
@@ -74,50 +250,92 @@ pub fn sfb1_seal_file_streaming(
     Ok(s) => s
     Err(e) => return Err("sfb1 sealer init failed: " + e)
   }
-  let sealed_chunks : Array[Bytes] = []
-  let mut offset = 0L
+  let parent = nodepath::dirname("/", dst_path)
+  if !station_sys::mkdir_p(parent) {
+    return Err("mkdir_p failed for " + parent)
+  }
+  let tmp = match rep_unique_tmp_path(dst_path) {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let mut read_off = 0L
+  let mut write_off = 0L
   let mut total_plain = 0L
+  let write_emitted = fn(chunks : Array[Bytes]) -> Result[Unit, String] {
+    for i in 0..<chunks.length() {
+      let c = chunks[i]
+      if c.length() == 0 {
+        continue
+      }
+      match station_sys::write_at(tmp, write_off, c, write_off == 0L, None, None, false) {
+        Ok(_) => write_off = write_off + c.length().to_int64()
+        Err(code) => return Err("write_at failed (code=" + code.to_string() + ")")
+      }
+    }
+    Ok(())
+  }
   while true {
-    match station_sys::read_range_meta(src_path, offset, eff_chunk.to_int64()) {
-      Err(code) => return Err("read_range_meta failed for " + src_path + " (code=" + code.to_string() + ")")
+    match station_sys::read_range_meta(src_path, read_off, eff_chunk.to_int64()) {
+      Err(code) => {
+        let _ = station_sys::unlink(tmp)
+        return Err("read_range_meta failed for " + src_path + " (code=" + code.to_string() + ")")
+      }
       Ok((chunk, total_sz, _)) => {
         if chunk.length() == 0 {
           break
         }
         total_plain = total_plain + chunk.length().to_int64()
-        offset = offset + chunk.length().to_int64()
+        read_off = read_off + chunk.length().to_int64()
         match sealer.push(chunk) {
-          Ok(emitted) => {
-            for i in 0..<emitted.length() {
-              sealed_chunks.push(emitted[i])
+          Ok(emitted) => match write_emitted(emitted) {
+            Ok(_) => ()
+            Err(e) => {
+              let _ = station_sys::unlink(tmp)
+              return Err(e)
             }
           }
-          Err(e) => return Err("sfb1 seal push failed: " + e)
+          Err(e) => {
+            let _ = station_sys::unlink(tmp)
+            return Err("sfb1 seal push failed: " + e)
+          }
         }
-        if offset >= total_sz {
+        if read_off >= total_sz {
           break
         }
       }
     }
   }
   match sealer.finish() {
-    Ok(emitted) => {
-      for i in 0..<emitted.length() {
-        sealed_chunks.push(emitted[i])
+    Ok(emitted) => match write_emitted(emitted) {
+      Ok(_) => ()
+      Err(e) => {
+        let _ = station_sys::unlink(tmp)
+        return Err(e)
       }
     }
-    Err(e) => return Err("sfb1 seal finish failed: " + e)
+    Err(e) => {
+      let _ = station_sys::unlink(tmp)
+      return Err("sfb1 seal finish failed: " + e)
+    }
   }
-  let ciphertext = rep_concat_bytes(sealed_chunks)
-  if !station_sys::write_file_atomic(dst_path, ciphertext, mode=384) {
-    return Err("write_file_atomic failed for " + dst_path)
+  match station_sys::sync_file(tmp) {
+    Ok(_) => ()
+    Err(code) => {
+      let _ = station_sys::unlink(tmp)
+      return Err("sync_file failed (code=" + code.to_string() + ")")
+    }
+  }
+  if !station_sys::rename(tmp, dst_path) {
+    let _ = station_sys::unlink(tmp)
+    return Err("atomic rename failed for " + dst_path)
   }
   Ok(total_plain)
 }
 
-/// Decrypts `src_path` to `dst_path` using streaming `Sfb1StreamOpener` over `station_sys`
-/// positioned reads. Strictly rejects any AEAD tag mismatch / truncation / tampering and
-/// never writes partial plaintext to `dst_path`.
+/// Decrypts `src_path` to `dst_path` using bounded-memory chunked streaming via
+/// `Sfb1StreamOpener` + `station_sys::write_at` + `sync_file` + atomic `rename`.
+/// Strictly rejects any AEAD tag mismatch/truncation and unlinks the temp file so `dst_path`
+/// is never created or modified on failure.
 pub fn sfb1_open_file_streaming(
   key : Bytes,
   ctx : station_replica::Sfb1Context,
@@ -130,25 +348,49 @@ pub fn sfb1_open_file_streaming(
     Ok(o) => o
     Err(e) => return Err("sfb1 opener init failed: " + e)
   }
-  let plain_chunks : Array[Bytes] = []
-  let mut offset = 0L
+  let parent = nodepath::dirname("/", dst_path)
+  if !station_sys::mkdir_p(parent) {
+    return Err("mkdir_p failed for " + parent)
+  }
+  let tmp = match rep_unique_tmp_path(dst_path) {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let mut read_off = 0L
+  let mut write_off = 0L
   while true {
-    match station_sys::read_range_meta(src_path, offset, eff_chunk.to_int64()) {
-      Err(code) => return Err("read_range_meta failed for " + src_path + " (code=" + code.to_string() + ")")
+    match station_sys::read_range_meta(src_path, read_off, eff_chunk.to_int64()) {
+      Err(code) => {
+        let _ = station_sys::unlink(tmp)
+        return Err("read_range_meta failed for " + src_path + " (code=" + code.to_string() + ")")
+      }
       Ok((chunk, total_sz, _)) => {
         if chunk.length() == 0 {
           break
         }
-        offset = offset + chunk.length().to_int64()
+        read_off = read_off + chunk.length().to_int64()
         match opener.push(chunk) {
           Ok(emitted) => {
             for i in 0..<emitted.length() {
-              plain_chunks.push(emitted[i])
+              let c = emitted[i]
+              if c.length() == 0 {
+                continue
+              }
+              match station_sys::write_at(tmp, write_off, c, write_off == 0L, None, None, false) {
+                Ok(_) => write_off = write_off + c.length().to_int64()
+                Err(code) => {
+                  let _ = station_sys::unlink(tmp)
+                  return Err("write_at failed (code=" + code.to_string() + ")")
+                }
+              }
             }
           }
-          Err(e) => return Err("sfb1 AEAD reject: " + e)
+          Err(e) => {
+            let _ = station_sys::unlink(tmp)
+            return Err("sfb1 AEAD reject: " + e)
+          }
         }
-        if offset >= total_sz {
+        if read_off >= total_sz {
           break
         }
       }
@@ -156,112 +398,72 @@ pub fn sfb1_open_file_streaming(
   }
   match opener.finish() {
     Ok(_) => ()
-    Err(e) => return Err("sfb1 AEAD finish reject: " + e)
+    Err(e) => {
+      let _ = station_sys::unlink(tmp)
+      return Err("sfb1 AEAD finish reject: " + e)
+    }
   }
-  let plain = rep_concat_bytes(plain_chunks)
-  if !station_sys::write_file_atomic(dst_path, plain, mode=384) {
-    return Err("write_file_atomic failed for " + dst_path)
+  if write_off == 0L {
+    match station_sys::write_at(tmp, 0L, Bytes::new(0), true, None, Some(0L), true) {
+      Ok(_) => ()
+      Err(code) => {
+        let _ = station_sys::unlink(tmp)
+        return Err("write_at empty failed (code=" + code.to_string() + ")")
+      }
+    }
   }
-  Ok(plain.length().to_int64())
+  match station_sys::sync_file(tmp) {
+    Ok(_) => ()
+    Err(code) => {
+      let _ = station_sys::unlink(tmp)
+      return Err("sync_file failed (code=" + code.to_string() + ")")
+    }
+  }
+  if !station_sys::rename(tmp, dst_path) {
+    let _ = station_sys::unlink(tmp)
+    return Err("atomic rename failed for " + dst_path)
+  }
+  Ok(write_off)
 }
 
 // ---------------------------------------------------------------------------
-// 2. Real SigV4 S3 Transport over `builders_core::ShellMux` + `ReplicaTargetPort`
+// 2. Real SigV4 S3 Transport (`wall_ms` UTC signing + streaming cap) & `ReplicaTargetPort`
 // ---------------------------------------------------------------------------
 
-fn rep_clamp_i32(ms : Int64) -> Int {
-  if ms < 0L {
-    0
-  } else if ms > 2147483647L {
-    2147483647
-  } else {
-    ms.to_int()
-  }
-}
-
-/// Build a real `station_replica::S3Client` whose signed SigV4 HTTP requests execute over
-/// `builders_core::ShellMux` `fetch` with timeout, cancellation, and response body cap.
-pub fn os_s3_client(
+/// Build a real `station_replica::S3Client` whose signed SigV4 HTTP requests use `wall_fn`
+/// (default `host_shim::wall_ms` for real UTC dates) and execute over `EdgeMuxHub` streaming
+/// `stream.open`/`stream.read` (zero event loss + bounded response body).
+pub fn os_s3_client_with_hub(
   target : station_replica::NormalizedS3Target,
-  mux : builders_core::ShellMux,
-  now_fn : () -> Int64 = host_shim::now_ms,
+  hub : EdgeMuxHub,
+  wall_fn : () -> Int64 = host_shim::wall_ms,
   timeout_ms : Int64 = REPLICA_S3_TIMEOUT_MS,
   max_body_bytes : Int = REPLICA_S3_MAX_BODY_BYTES,
 ) -> station_replica::S3Client {
   let eff_timeout = if timeout_ms > 0L { timeout_ms } else { REPLICA_S3_TIMEOUT_MS }
   let eff_max = if max_body_bytes > 0 { max_body_bytes } else { REPLICA_S3_MAX_BODY_BYTES }
-  let mut seq = 1
   station_replica::S3Client::new(
     target,
-    now_fn,
+    wall_fn,
     fn(
       method_name : String,
       url : String,
       headers : Map[String, String],
       body : Bytes,
     ) -> Result[station_replica::S3HttpResponse, String] {
-      if !rep_is_http_url(url) {
-        return Err("disallowed S3 URL scheme: " + url)
-      }
-      let hdr_arr : Array[base_codec::Json] = []
+      let hdr_pairs : Array[(String, String)] = []
       let hkeys = headers.keys()
       for i in 0..<hkeys.length() {
         let k = hkeys[i]
         match headers.get(k) {
-          Some(v) => hdr_arr.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(v)]))
+          Some(v) => hdr_pairs.push((k, v))
           None => ()
         }
       }
-      let args = base_codec::json_obj([
-        ("method", base_codec::json_str(method_name)),
-        ("url", base_codec::json_str(url)),
-        ("headers", base_codec::json_arr(hdr_arr)),
-        ("redirect", base_codec::json_str("manual")),
-        ("timeoutMs", base_codec::json_int(rep_clamp_i32(eff_timeout))),
-      ])
-      let rid = seq
-      seq = seq + 1
       let payload_opt : Option[Bytes] = if body.length() > 0 { Some(body) } else { None }
-      let call_id = mux.call_async_raw(
-        builders_core::MuxToken::Tagged(rid, REPLICA_TOK_S3_FETCH, 0L),
-        "fetch",
-        base_codec::json_stringify(args),
-        payload_opt,
-      )
-      let deadline = now_fn() + eff_timeout
-      let mut done_opt : Option[host_shim::ShellDone] = None
-      while done_opt is None {
-        let rem = deadline - now_fn()
-        if rem <= 0L {
-          let _ = mux.cancel(call_id)
-          return Err("S3 HTTP request timed out")
-        }
-        let slice = if rem > 250L { 250L } else { rem }
-        let progressed = mux.step(
-          slice,
-          fn(_line : String) -> Unit {},
-          fn() -> Unit {},
-          fn(_tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
-            if done.id == call_id {
-              done_opt = Some(done)
-            }
-          },
-        )
-        if !progressed && now_fn() >= deadline {
-          let _ = mux.cancel(call_id)
-          return Err("S3 HTTP request timed out")
-        }
-      }
-      let done = match done_opt {
-        Some(d) => d
-        None => return Err("S3 HTTP request abandoned")
-      }
-      match station_http::decode_fetch_done(done) {
-        Err(e) => Err(e.message)
+      match hub.fetch_bounded_stream(method_name, url, hdr_pairs, payload_opt, eff_max, eff_timeout) {
+        Err(e) => Err(e)
         Ok(resp) => {
-          if resp.body.length() > eff_max {
-            return Err("S3 response body exceeded cap")
-          }
           let hmap : Map[String, String] = Map::new()
           for i in 0..<resp.headers.length() {
             let (k, v) = resp.headers[i]
@@ -274,14 +476,69 @@ pub fn os_s3_client(
   )
 }
 
-/// Uniform object target port for local directory or S3 replica storage.
+pub fn os_s3_client(
+  target : station_replica::NormalizedS3Target,
+  mux : builders_core::ShellMux,
+  now_fn : () -> Int64 = host_shim::now_ms,
+  wall_fn : () -> Int64 = host_shim::wall_ms,
+  timeout_ms : Int64 = REPLICA_S3_TIMEOUT_MS,
+  max_body_bytes : Int = REPLICA_S3_MAX_BODY_BYTES,
+) -> station_replica::S3Client {
+  os_s3_client_with_hub(
+    target,
+    EdgeMuxHub::new(mux, now_fn=now_fn),
+    wall_fn=wall_fn,
+    timeout_ms=timeout_ms,
+    max_body_bytes=max_body_bytes,
+  )
+}
+
+/// Uniform object target port for local binary directory or S3 replica storage.
 pub struct ReplicaTargetPort {
   pub put_object : (String, Bytes) -> Result[Unit, String]
   pub get_object : (String) -> Result[Bytes, String]
   pub delete_object : (String) -> Result[Unit, String]
 }
 
-pub fn ReplicaTargetPort::local(root_dir : String, fs : station_ops::OpsFs) -> ReplicaTargetPort {
+/// Production local disk target using raw binary `station_sys` I/O (atomic temp write + fsync +
+/// rename, symlink-free segment validation). Never uses JSON text-encoded `OpsFs.write_bytes`.
+pub fn ReplicaTargetPort::local_disk(root_dir : String) -> ReplicaTargetPort {
+  ReplicaTargetPort::{
+    put_object: fn(key : String, data : Bytes) -> Result[Unit, String] {
+      if !rep_is_safe_rel_path(key) {
+        return Err("unsafe replica object key: " + key)
+      }
+      match rep_reject_symlinks_along(root_dir, key) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let full = nodepath::join("/", [root_dir, key])
+      rep_write_binary_atomic(full, data)
+    },
+    get_object: fn(key : String) -> Result[Bytes, String] {
+      if !rep_is_safe_rel_path(key) {
+        return Err("unsafe replica object key: " + key)
+      }
+      match rep_reject_symlinks_along(root_dir, key) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let full = nodepath::join("/", [root_dir, key])
+      rep_read_binary_file(full)
+    },
+    delete_object: fn(key : String) -> Result[Unit, String] {
+      if !rep_is_safe_rel_path(key) {
+        return Err("unsafe replica object key: " + key)
+      }
+      let full = nodepath::join("/", [root_dir, key])
+      let _ = station_sys::unlink(full)
+      Ok(())
+    },
+  }
+}
+
+/// Injectable `OpsFs`-backed local target for in-memory `MemFs` unit tests.
+pub fn ReplicaTargetPort::local_mem(root_dir : String, fs : station_ops::OpsFs) -> ReplicaTargetPort {
   ReplicaTargetPort::{
     put_object: fn(key : String, data : Bytes) -> Result[Unit, String] {
       if !rep_is_safe_rel_path(key) {
@@ -319,6 +576,11 @@ pub fn ReplicaTargetPort::local(root_dir : String, fs : station_ops::OpsFs) -> R
   }
 }
 
+/// Default local disk target (`ReplicaTargetPort::local_disk`), preserving clean binary I/O.
+pub fn ReplicaTargetPort::local(root_dir : String) -> ReplicaTargetPort {
+  ReplicaTargetPort::local_disk(root_dir)
+}
+
 pub fn ReplicaTargetPort::s3(client : station_replica::S3Client) -> ReplicaTargetPort {
   ReplicaTargetPort::{
     put_object: fn(key : String, data : Bytes) -> Result[Unit, String] {
@@ -343,7 +605,13 @@ pub fn ReplicaTargetPort::s3(client : station_replica::S3Client) -> ReplicaTarge
     },
     delete_object: fn(key : String) -> Result[Unit, String] {
       match client.delete_objects([key]) {
-        Ok(_) => Ok(())
+        Ok(res) => {
+          if res.errors.length() > 0 {
+            let e0 = res.errors[0]
+            return Err("S3 delete error (" + e0.code + "): " + e0.message)
+          }
+          Ok(())
+        }
         Err(station_replica::S3ErrorKind::Offline) => Err("S3 offline")
         Err(station_replica::S3ErrorKind::Auth) => Err("S3 auth error")
         Err(station_replica::S3ErrorKind::NotFound) => Ok(())
@@ -355,7 +623,7 @@ pub fn ReplicaTargetPort::s3(client : station_replica::S3Client) -> ReplicaTarge
 }
 
 // ---------------------------------------------------------------------------
-// 3. Directory-level SFB1 Backup & Restore (`manifest` + `format` + `Sfb1Stream*`)
+// 3. Directory-level SFB1 Backup & Staged Symlink-Free Atomic Restore
 // ---------------------------------------------------------------------------
 
 pub struct BackupBundleResult {
@@ -395,8 +663,8 @@ fn rep_collect_files(
   Ok(())
 }
 
-/// Pack a local directory into SFB1-encrypted objects + transcript manifest + signed Head
-/// and upload them to `target` (local directory or S3).
+/// Pack a local directory into SFB1-encrypted content-addressed blobs + transcript manifest +
+/// gen-bound encrypted `index.json` and `head.json` and upload them to `target`.
 pub fn backup_dir_sfb1(
   src_dir : String,
   target : ReplicaTargetPort,
@@ -424,6 +692,9 @@ pub fn backup_dir_sfb1(
 
   for i in 0..<sorted.length() {
     let rel = sorted[i]
+    if !rep_is_safe_rel_path(rel) {
+      return Err("unsafe source path: " + rel)
+    }
     let full = nodepath::join("/", [src_dir, rel])
     let plain_parts : Array[Bytes] = []
     let mut off = 0L
@@ -449,7 +720,11 @@ pub fn backup_dir_sfb1(
       Ok(s) => s
       Err(e) => return Err("salt generation failed: " + e)
     }
-    let ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "blobs/" + content_hash }
+    let ctx = station_replica::Sfb1Context::{
+      ws: ws,
+      origin: origin,
+      logical_path: "blobs/" + content_hash,
+    }
     let sealer = match station_replica::Sfb1StreamSealer::new(enc_key, ctx, salt) {
       Ok(s) => s
       Err(e) => return Err("sealer init failed: " + e)
@@ -485,12 +760,16 @@ pub fn backup_dir_sfb1(
     total_bytes = total_bytes + fsize
   }
 
-  // Seal and upload path-to-hash index.json
+  // Seal and upload gen-bound index.json (AAD logical_path binds `gen` to prevent rollback).
   let index_salt = match salt_fn() {
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  let index_ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "index.json" }
+  let index_ctx = station_replica::Sfb1Context::{
+    ws: ws,
+    origin: origin,
+    logical_path: "index/" + gen,
+  }
   let index_bytes = base_codec::json_stringify(base_codec::json_obj(index_fields)).to_bytes()
   let index_cipher = match station_replica::sfb1_seal(enc_key, index_ctx, index_bytes, index_salt) {
     Ok(c) => c
@@ -502,7 +781,6 @@ pub fn backup_dir_sfb1(
     Err(e) => return Err("put index.json failed: " + e)
   }
 
-  // Encode and seal transcript manifest (root + leaves).
   let encoded = match station_replica::encode_transcript_manifest(files_map) {
     Ok(m) => m
     Err(e) => return Err("encode_transcript_manifest failed: " + e)
@@ -572,7 +850,12 @@ pub fn backup_dir_sfb1(
     Ok(s) => s
     Err(e) => return Err(e)
   }
-  let head_ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "head.json" }
+  // Bind `head.json` AAD strictly to `gen` ("head/" + gen) to prevent cross-generation rollback.
+  let head_ctx = station_replica::Sfb1Context::{
+    ws: ws,
+    origin: origin,
+    logical_path: "head/" + gen,
+  }
   let head_cipher = match station_replica::sfb1_seal(enc_key, head_ctx, station_replica::head_to_bytes(head), head_salt) {
     Ok(c) => c
     Err(e) => return Err(e)
@@ -586,8 +869,9 @@ pub fn backup_dir_sfb1(
   Ok(BackupBundleResult::{ head: head, manifest_root: encoded.root_hash, uploaded_keys: uploaded })
 }
 
-/// Restore an SFB1-encrypted backup generation from `target` into a clean directory `dst_dir`.
-/// Fails closed on any AEAD verification failure, malformed Head, or path traversal attempt.
+/// Restore an SFB1-encrypted backup generation into `dst_dir` with full anti-rollback,
+/// symlink-escape rejection, staging isolation, and atomic cutover (zero partial files in
+/// `dst_dir` if any blob fails AEAD or SHA-256 verification).
 pub fn restore_dir_sfb1(
   target : ReplicaTargetPort,
   dst_dir : String,
@@ -596,12 +880,19 @@ pub fn restore_dir_sfb1(
   origin : String,
   gen : String,
 ) -> Result[station_replica::Head, String] {
+  if !station_replica::is_gen(gen) {
+    return Err("invalid replica generation id: " + gen)
+  }
   let head_key = "gen/" + gen + "/head.json"
   let head_cipher = match (target.get_object)(head_key) {
     Ok(b) => b
     Err(e) => return Err("get head.json failed: " + e)
   }
-  let head_ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "head.json" }
+  let head_ctx = station_replica::Sfb1Context::{
+    ws: ws,
+    origin: origin,
+    logical_path: "head/" + gen,
+  }
   let head_plain = match station_replica::sfb1_open(enc_key, head_ctx, head_cipher) {
     Ok(p) => p
     Err(e) => return Err("head.json AEAD reject: " + e)
@@ -614,7 +905,10 @@ pub fn restore_dir_sfb1(
     Some(h) => h
     None => return Err("head.json failed schema validation")
   }
-  // Verify transcript manifest if present.
+  // Strict anti-rollback & identity binding
+  if head.gen != gen || head.workspace != ws || head.origin != origin {
+    return Err("head.json identity mismatch (rollback or cross-origin substitution rejected)")
+  }
   match head.transcript_manifest {
     Some(root_hash) => {
       let res = station_replica::load_transcript_manifest(
@@ -650,7 +944,11 @@ pub fn restore_dir_sfb1(
     Ok(b) => b
     Err(e) => return Err("get index.json failed: " + e)
   }
-  let index_ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "index.json" }
+  let index_ctx = station_replica::Sfb1Context::{
+    ws: ws,
+    origin: origin,
+    logical_path: "index/" + gen,
+  }
   let index_plain = match station_replica::sfb1_open(enc_key, index_ctx, index_cipher) {
     Ok(p) => p
     Err(e) => return Err("index.json AEAD reject: " + e)
@@ -660,10 +958,17 @@ pub fn restore_dir_sfb1(
     _ => return Err("invalid index.json format")
   }
 
+  // Validate exact path safety, symlink-free dst prefixes, and 100% index <-> head.files parity.
+  let seen_hashes : Map[String, Bool] = Map::new()
+  let verified_items : Array[(String, String)] = []
   for i in 0..<index_entries.length() {
     let (rel, hv) = index_entries[i]
     if !rep_is_safe_rel_path(rel) {
       return Err("unsafe file path in index: " + rel)
+    }
+    match rep_reject_symlinks_along(dst_dir, rel) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
     }
     let content_hash = match hv {
       base_codec::Json::Str(s) => s
@@ -672,15 +977,51 @@ pub fn restore_dir_sfb1(
     if !station_replica::is_hex64(content_hash) || !head.files.contains(content_hash) {
       return Err("index hash not present in head.files: " + content_hash)
     }
+    seen_hashes.set(content_hash, true)
+    verified_items.push((rel, content_hash))
+  }
+  let head_hashes = head.files.keys()
+  for i in 0..<head_hashes.length() {
+    if !seen_hashes.contains(head_hashes[i]) {
+      return Err("head.files hash missing from index.json: " + head_hashes[i])
+    }
+  }
+
+  // Stage all decrypted blobs in a private exclusive staging directory before touching `dst_dir`.
+  let stage_parent = nodepath::dirname("/", dst_dir)
+  if !station_sys::mkdir_p(stage_parent) {
+    return Err("mkdir_p failed for stage parent: " + stage_parent)
+  }
+  let stage_hex = match station_sys::random_hex(8) {
+    Ok(h) => h
+    Err(e) => return Err("random_hex failed: " + e)
+  }
+  let stage_dir = nodepath::join("/", [stage_parent, ".sf-restore-stage-" + stage_hex])
+  if !station_sys::mkdir_exclusive(stage_dir) {
+    return Err("mkdir_exclusive failed for staging dir: " + stage_dir)
+  }
+
+  for i in 0..<verified_items.length() {
+    let (rel, content_hash) = verified_items[i]
     let obj_key = "gen/" + gen + "/blobs/" + content_hash
     let cipher = match (target.get_object)(obj_key) {
       Ok(b) => b
-      Err(e) => return Err("get_object failed for " + obj_key + ": " + e)
+      Err(e) => {
+        rep_remove_tree(stage_dir)
+        return Err("get_object failed for " + obj_key + ": " + e)
+      }
     }
-    let ctx = station_replica::Sfb1Context::{ ws: ws, origin: origin, logical_path: "blobs/" + content_hash }
+    let ctx = station_replica::Sfb1Context::{
+      ws: ws,
+      origin: origin,
+      logical_path: "blobs/" + content_hash,
+    }
     let opener = match station_replica::Sfb1StreamOpener::new(enc_key, ctx) {
       Ok(o) => o
-      Err(e) => return Err(e)
+      Err(e) => {
+        rep_remove_tree(stage_dir)
+        return Err(e)
+      }
     }
     let plain_parts : Array[Bytes] = []
     let mut pos = 0
@@ -697,33 +1038,68 @@ pub fn restore_dir_sfb1(
             plain_parts.push(out_chunks[j])
           }
         }
-        Err(e) => return Err("sfb1 AEAD reject on " + rel + ": " + e)
+        Err(e) => {
+          rep_remove_tree(stage_dir)
+          return Err("sfb1 AEAD reject on " + rel + ": " + e)
+        }
       }
       pos = end
     }
     match opener.finish() {
       Ok(_) => ()
-      Err(e) => return Err("sfb1 finish reject on " + rel + ": " + e)
+      Err(e) => {
+        rep_remove_tree(stage_dir)
+        return Err("sfb1 finish reject on " + rel + ": " + e)
+      }
     }
     let plain = rep_concat_bytes(plain_parts)
     let actual_hash = station_sys::hex_encode(crypto::sha256(plain))
     if actual_hash != content_hash {
+      rep_remove_tree(stage_dir)
       return Err("content sha256 mismatch for " + rel)
     }
-    let full = nodepath::join("/", [dst_dir, rel])
-    let parent = nodepath::dirname("/", full)
-    if !station_sys::mkdir_p(parent) {
-      return Err("mkdir_p failed for " + parent)
-    }
-    if !station_sys::write_file_atomic(full, plain, mode=384) {
-      return Err("write_file_atomic failed for " + full)
+    let stage_file = nodepath::join("/", [stage_dir, rel])
+    match rep_write_binary_atomic(stage_file, plain) {
+      Ok(_) => ()
+      Err(e) => {
+        rep_remove_tree(stage_dir)
+        return Err("stage write failed for " + rel + ": " + e)
+      }
     }
   }
+
+  // All blobs verified and staged cleanly: cut over into `dst_dir` with re-verified symlink guard.
+  if !station_sys::mkdir_p(dst_dir) {
+    rep_remove_tree(stage_dir)
+    return Err("mkdir_p failed for " + dst_dir)
+  }
+  for i in 0..<verified_items.length() {
+    let (rel, _) = verified_items[i]
+    match rep_reject_symlinks_along(dst_dir, rel) {
+      Ok(_) => ()
+      Err(e) => {
+        rep_remove_tree(stage_dir)
+        return Err(e)
+      }
+    }
+    let src_staged = nodepath::join("/", [stage_dir, rel])
+    let dst_file = nodepath::join("/", [dst_dir, rel])
+    let dst_parent = nodepath::dirname("/", dst_file)
+    if !station_sys::mkdir_p(dst_parent) {
+      rep_remove_tree(stage_dir)
+      return Err("mkdir_p failed for " + dst_parent)
+    }
+    if !station_sys::rename(src_staged, dst_file) {
+      rep_remove_tree(stage_dir)
+      return Err("atomic cutover rename failed for " + dst_file)
+    }
+  }
+  rep_remove_tree(stage_dir)
   Ok(head)
 }
 
 // ---------------------------------------------------------------------------
-// 4. `ReplicaOsRuntime` (`ReplicaCoord` + `MoveScheduler` `beforeStore` / `takeBackSoon`)
+// 4. `ReplicaOsRuntime` (`WriteGate` + `MoveScheduler` `before_store`/`take_back_soon`)
 // ---------------------------------------------------------------------------
 
 pub struct MoveWriteHookEvent {
@@ -745,22 +1121,67 @@ pub struct ReplicaOsRuntime {
   in_flight_moves : Map[String, String]
 }
 
-pub fn ReplicaOsRuntime::new(fs : station_ops::OpsFs, ledger_dir : String) -> ReplicaOsRuntime {
+/// Fail-closed constructor: treats ONLY `FsErr::NotFound` as an empty ledger; any I/O or
+/// corrupt JSONL line returns `Err(...)` instead of silently overwriting `kept.jsonl`.
+pub fn ReplicaOsRuntime::open(
+  fs : station_ops::OpsFs,
+  ledger_dir : String,
+) -> Result[ReplicaOsRuntime, String] {
   let kept_path = nodepath::join("/", [ledger_dir, "kept.jsonl"])
   let kept = match fs.read_text(kept_path) {
-    Ok(text) => station_replica::KeptLog::from_jsonl(text)
-    Err(_) => station_replica::KeptLog::new()
+    Err(station_ops::FsErr::NotFound) => station_replica::KeptLog::new()
+    Err(e) => return Err("failed to read kept.jsonl: " + station_ops::fs_err_msg(e))
+    Ok(text) => {
+      // Validate every non-empty line is valid JSON with string `k` before accepting.
+      let raw = text.to_bytes()
+      let mut start = 0
+      for i in 0..<(raw.length() + 1) {
+        if i == raw.length() || (raw[i].to_int() & 0xFF) == 10 {
+          if i > start {
+            let line = text.slice(start, i)
+            match base_codec::json_parse(line) {
+              base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "k") {
+                Some(base_codec::Json::Str(_)) => ()
+                _ => return Err("corrupt kept.jsonl entry (missing string key)")
+              }
+              base_codec::JsonParseResult::Err(e) => return Err("corrupt kept.jsonl JSON: " + e)
+            }
+          }
+          start = i + 1
+        }
+      }
+      station_replica::KeptLog::from_jsonl(text)
+    }
   }
-  ReplicaOsRuntime::{
-    fs: fs,
-    ledger_dir: ledger_dir,
-    write_gate: station_replica::WriteGate::new(),
-    handoff_cache: station_replica::HandoffCache::new(),
-    kept_log: kept,
-    lent_log: station_replica::LentLog::new(),
-    scheduler: None,
-    hook_events: [],
-    in_flight_moves: Map::new(),
+  Ok(
+    ReplicaOsRuntime::{
+      fs: fs,
+      ledger_dir: ledger_dir,
+      write_gate: station_replica::WriteGate::new(),
+      handoff_cache: station_replica::HandoffCache::new(),
+      kept_log: kept,
+      lent_log: station_replica::LentLog::new(),
+      scheduler: None,
+      hook_events: [],
+      in_flight_moves: Map::new(),
+    },
+  )
+}
+
+pub fn ReplicaOsRuntime::new(fs : station_ops::OpsFs, ledger_dir : String) -> ReplicaOsRuntime {
+  match ReplicaOsRuntime::open(fs, ledger_dir) {
+    Ok(rt) => rt
+    Err(_) => ReplicaOsRuntime::{
+      fs: fs,
+      ledger_dir: ledger_dir,
+      write_gate: station_replica::WriteGate::new(),
+      handoff_cache: station_replica::HandoffCache::new(),
+      kept_log: station_replica::KeptLog::new(),
+      lent_log: station_replica::LentLog::new(),
+      scheduler: None,
+      hook_events: [],
+      in_flight_moves: Map::new(),
+    }
   }
 }
 
@@ -780,6 +1201,14 @@ pub fn ReplicaOsRuntime::mark_moving(
   self.in_flight_moves.set(module_id + ":" + item_id, to_station)
 }
 
+pub fn ReplicaOsRuntime::is_moving(
+  self : ReplicaOsRuntime,
+  module_id : String,
+  item_id : String,
+) -> Bool {
+  self.in_flight_moves.contains(module_id + ":" + item_id)
+}
+
 pub fn ReplicaOsRuntime::clear_moving(
   self : ReplicaOsRuntime,
   module_id : String,
@@ -789,7 +1218,10 @@ pub fn ReplicaOsRuntime::clear_moving(
 }
 
 pub fn ReplicaOsRuntime::persist_kept_log(self : ReplicaOsRuntime) -> Result[Unit, String] {
-  let _ = (self.fs.mkdir_p)(self.ledger_dir)
+  match (self.fs.mkdir_p)(self.ledger_dir) {
+    Ok(_) => ()
+    Err(e) => return Err("mkdir_p ledger_dir failed: " + station_ops::fs_err_msg(e))
+  }
   let kept_path = nodepath::join("/", [self.ledger_dir, "kept.jsonl"])
   let content = self.kept_log.compact_jsonl()
   match self.fs.write_text(kept_path, content, 384) {
@@ -798,8 +1230,50 @@ pub fn ReplicaOsRuntime::persist_kept_log(self : ReplicaOsRuntime) -> Result[Uni
   }
 }
 
-/// Real `takeBackSoon` hook: pulls an item back from `from_station` via `MoveScheduler::move_back`
-/// before a local write proceeds, recording durable state in `KeptLog`.
+/// Drive `MoveScheduler::move_forward` while wiring `WriteGate` and `in_flight_moves` tracking.
+pub fn ReplicaOsRuntime::move_forward_item(
+  self : ReplicaOsRuntime,
+  ws : String,
+  origin : String,
+  to_station : String,
+  module_id : String,
+  item_id : String,
+  now_ms : Int64,
+) -> Result[station_replica::MoveOutcome, String] {
+  let sched = match self.scheduler {
+    Some(s) => s
+    None => return Err("move scheduler not attached")
+  }
+  if !self.write_gate.can_handover(ws, origin, now_ms, true) {
+    return Err("write_gate busy: handover deferred")
+  }
+  self.mark_moving(module_id, item_id, to_station)
+  let sel = station_replica::MoveSelection::{
+    module_id: Some(module_id),
+    item: Some(item_id),
+    all: false,
+    with_needs: false,
+    follow: [],
+    arrive_stopped: false,
+  }
+  match sched.move_forward(ws, to_station, sel) {
+    Err(e) => {
+      self.clear_moving(module_id, item_id)
+      Err(e)
+    }
+    Ok(outcome) => {
+      if outcome.failures.length() > 0 {
+        self.clear_moving(module_id, item_id)
+        return Err("move_forward failed: " + outcome.failures[0].error)
+      }
+      Ok(outcome)
+    }
+  }
+}
+
+/// Real `takeBackSoon` hook: invokes `MoveScheduler::move_back`, strictly checks
+/// `outcome.failures` (keeping the moving lock intact on any failure!), and propagates
+/// `persist_kept_log()` errors without swallowing.
 pub fn ReplicaOsRuntime::take_back_soon(
   self : ReplicaOsRuntime,
   ws : String,
@@ -822,12 +1296,21 @@ pub fn ReplicaOsRuntime::take_back_soon(
   match sched.move_back(ws, from_station, sel) {
     Err(e) => Err("take_back_soon failed: " + e)
     Ok(outcome) => {
-      self.clear_moving(module_id, item_id)
+      if outcome.failures.length() > 0 {
+        return Err("take_back_soon item failed: " + outcome.failures[0].error)
+      }
+      if outcome.refused.length() > 0 {
+        return Err("take_back_soon item refused: " + outcome.refused[0].why)
+      }
       let _ = self.kept_log.set(
         "takeback:" + module_id + ":" + item_id,
         base_codec::json_stringify(base_codec::json_str(from_station)),
       )
-      let _ = self.persist_kept_log()
+      match self.persist_kept_log() {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      self.clear_moving(module_id, item_id)
       self.hook_events.push(
         MoveWriteHookEvent::{
           kind: "take_back_soon",
@@ -841,8 +1324,8 @@ pub fn ReplicaOsRuntime::take_back_soon(
   }
 }
 
-/// Real `beforeStore` hook: acquires `WriteGate` and, if `module_id:item_id` is currently
-/// migrating to another station, invokes `take_back_soon` first so no write is lost mid-move.
+/// Real `beforeStore` hook: if `module_id:item_id` is currently moving, calls `take_back_soon`
+/// first; on any failure keeps the moving gate locked and returns `Err` so writes never proceed.
 pub fn ReplicaOsRuntime::before_store(
   self : ReplicaOsRuntime,
   ws : String,
@@ -912,8 +1395,6 @@ pub fn ShareOsSync::new(fs : station_ops::OpsFs, slot_epoch : String) -> ShareOs
   }
 }
 
-/// 3-way merge a shared memory file and persist atomically via `OpsFs`; falls back to union merge
-/// if 3-way conflicts occur.
 pub fn ShareOsSync::merge_and_save_memory(
   self : ShareOsSync,
   path : String,
@@ -935,7 +1416,6 @@ pub fn ShareOsSync::merge_and_save_memory(
   }
 }
 
-/// Merge `projects.jsonl` across stations and persist atomically via `OpsFs`.
 pub fn ShareOsSync::merge_and_save_projects(
   self : ShareOsSync,
   path : String,
@@ -952,7 +1432,6 @@ pub fn ShareOsSync::merge_and_save_projects(
   }
 }
 
-/// Carry incoming preset records for an authenticated asker and update local state.
 pub fn ShareOsSync::apply_presets(
   self : ShareOsSync,
   who : station_replica::PresetAsker,

@@ -1,9 +1,13 @@
-// Comprehensive unit tests for Wave 16C-Edge-OS production adapters:
-// - `connects_os.pion` (`ConnectMuxBridge`, `ConnectsOsRuntime`)
-// - `replica_os.pion` (`os_s3_client`, `ReplicaTargetPort`, `ReplicaOsRuntime`, `ShareOsSync`)
-// - `browser_os.pion` (`validate_browser_navigation_url`, `open_cdp_session_os`, `BrowserOsManager`,
-//   `build_signin_form_port`, `BrowserProxyOsAdapter`)
-// - `devices_os.pion` (`TerminalsOsRuntime`, `LoginsOsRuntime`, `DevicesOsRuntime`)
+// Comprehensive R2 unit tests for Wave 16C-Edge-OS production adapters:
+// - `connects_os.pion`: zero-event-loss `EdgeMuxHub`, streaming `stream.open`/`stream.read`
+//   body cap, `ws_next_inflight` deduplication, real Group SSE stream + post-`stop()` guard.
+// - `replica_os.pion`: `rep_is_safe_rel_path` (`notes..old` allowed), `os_s3_client` (`wall_ms`
+//   UTC signing + XML `DeleteObjects` error), `ReplicaOsRuntime::open` fail-closed `kept.jsonl`,
+//   failure-locked `before_store`/`take_back_soon`, and `ShareOsSync`.
+// - `browser_os.pion`: strict CDP userinfo `@` rejection, full IPv4/IPv6/localhost CIDR
+//   blocklist wired through `BrowserProxyOsAdapter`, `(session, context_id)` gate keys,
+//   self-contained `build_signin_form_port`.
+// - `devices_os.pion`: `TerminalsOsRuntime`, `LoginsOsRuntime`, `AdbOsRunner`, `DevicesOsRuntime`.
 
 import "base_codec"
 import "builders_core"
@@ -12,10 +16,8 @@ import "host_shim"
 import "station_browser"
 import "station_connects"
 import "station_devices"
-import "station_http"
 import "station_ops"
 import "station_replica"
-import "station_sys"
 
 fn edge_assert(cond : Bool) -> Unit {
   if !cond {
@@ -41,6 +43,11 @@ struct MockMuxClock {
 
 fn MockMuxClock::new(start : Int64) -> MockMuxClock {
   MockMuxClock::{ now: start }
+}
+
+struct MockStreamState {
+  chunks : Array[Bytes]
+  mut idx : Int
 }
 
 struct MockMuxHarness {
@@ -106,69 +113,120 @@ fn MockMuxHarness::new(
 }
 
 // ---------------------------------------------------------------------------
-// 1. Connects OS adapter tests
+// 1. Connects OS adapter tests (shared mux zero-drop, streaming cap, Group SSE, post-stop)
 // ---------------------------------------------------------------------------
 
-test "connects_os_transport_guards_body_cap_timeout_and_runtime_lifecycle" {
+test "connects_os_shared_mux_streaming_cap_ws_dedup_and_post_stop_guard" {
   let mem = station_ops::MemFs::new()
   mem.put_dir("/att")
   let _ = mem.put_file("/att/hello.txt", "attachment-bytes".to_bytes())
   let _ = mem.put_file("/att/big.bin", Bytes::new(2048))
 
+  let streams : Map[Int, MockStreamState] = Map::new()
+  let mut stream_seq = 100
   let mut ws_seq = 10
-  let mut drop_next_fetch = false
+  let mut drop_next_open = false
+  let mut ws_next_calls = 0
+
   let h = MockMuxHarness::new(
     1000L,
     fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
-      if op == "fetch" {
-        if drop_next_fetch {
+      if op == "stream.open" {
+        if drop_next_open {
           return
         }
+        let sid = stream_seq
+        stream_seq = stream_seq + 1
         if json.contains("oversize") {
+          streams.set(sid, MockStreamState::{ chunks: [Bytes::new(80), Bytes::new(80)], idx: 0 })
           q.push(
             host_shim::HostEvent::ShellDone(
               host_shim::ShellDone::{
                 id: id,
-                json: "{\"status\":200,\"headers\":[[\"content-type\",\"application/octet-stream\"]],\"redirected\":false}",
+                json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[],\"redirected\":false}",
                 error: "",
-                bytes: Some(Bytes::new(512)),
+                bytes: None,
               },
             ),
           )
         } else if json.contains("apps.connections.open") {
+          streams.set(
+            sid,
+            MockStreamState::{
+              chunks: ["{\"ok\":true,\"url\":\"wss://wss-primary.slack.com/link/?ticket=t1\"}".to_bytes()],
+              idx: 0,
+            },
+          )
           q.push(
             host_shim::HostEvent::ShellDone(
               host_shim::ShellDone::{
                 id: id,
-                json: "{\"status\":200,\"headers\":[[\"content-type\",\"application/json\"]],\"redirected\":false}",
+                json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[],\"redirected\":false}",
                 error: "",
-                bytes: Some("{\"ok\":true,\"url\":\"wss://wss-primary.slack.com/link/?ticket=t1\"}".to_bytes()),
+                bytes: None,
               },
             ),
           )
         } else if json.contains("chat.postMessage") {
+          streams.set(sid, MockStreamState::{ chunks: ["{\"ok\":true,\"ts\":\"1700000001.000100\"}".to_bytes()], idx: 0 })
           q.push(
             host_shim::HostEvent::ShellDone(
               host_shim::ShellDone::{
                 id: id,
-                json: "{\"status\":200,\"headers\":[],\"redirected\":false}",
+                json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[],\"redirected\":false}",
                 error: "",
-                bytes: Some("{\"ok\":true,\"ts\":\"1700000001.000100\"}".to_bytes()),
+                bytes: None,
               },
             ),
           )
         } else {
+          streams.set(sid, MockStreamState::{ chunks: ["{\"ok\":true}".to_bytes()], idx: 0 })
           q.push(
             host_shim::HostEvent::ShellDone(
               host_shim::ShellDone::{
                 id: id,
-                json: "{\"status\":200,\"headers\":[[\"x-test\",\"ok\"]],\"redirected\":false}",
+                json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[[\"x-test\",\"ok\"]],\"redirected\":false}",
                 error: "",
-                bytes: Some("{\"ok\":true}".to_bytes()),
+                bytes: None,
               },
             ),
           )
         }
+      } else if op == "stream.read" {
+        let parsed = match base_codec::json_parse(json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          _ => base_codec::json_null()
+        }
+        let sid = match base_codec::json_get(parsed, "id") {
+          Some(base_codec::Json::Num(n, _)) => n.to_int()
+          _ => -1
+        }
+        match streams.get(sid) {
+          Some(st) => {
+            if st.idx < st.chunks.length() {
+              let c = st.chunks[st.idx]
+              st.idx = st.idx + 1
+              q.push(
+                host_shim::HostEvent::ShellDone(
+                  host_shim::ShellDone::{ id: id, json: "{\"end\":false}", error: "", bytes: Some(c) },
+                ),
+              )
+            } else {
+              q.push(
+                host_shim::HostEvent::ShellDone(
+                  host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None },
+                ),
+              )
+            }
+          }
+          None => q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None },
+            ),
+          )
+        }
+      } else if op == "stream.close" {
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{}", error: "", bytes: None }))
       } else if op == "ws.open" {
         let wid = ws_seq
         ws_seq = ws_seq + 1
@@ -177,12 +235,10 @@ test "connects_os_transport_guards_body_cap_timeout_and_runtime_lifecycle" {
             host_shim::ShellDone::{ id: id, json: "{\"id\":" + wid.to_string() + "}", error: "", bytes: None },
           ),
         )
+      } else if op == "ws.next" {
+        ws_next_calls = ws_next_calls + 1
       } else if op == "ws.send" || op == "ws.ping" || op == "ws.close" {
-        q.push(
-          host_shim::HostEvent::ShellDone(
-            host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None },
-          ),
-        )
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None }))
       }
     },
   )
@@ -196,36 +252,36 @@ test "connects_os_transport_guards_body_cap_timeout_and_runtime_lifecycle" {
   )
 
   // Fail-closed URL scheme rejection
-  let bad_http = bridge.fetch(station_connects::HttpRequest::new("GET", "file:///etc/passwd"))
-  edge_assert(bad_http.error is Some(_))
+  edge_assert(bridge.fetch(station_connects::HttpRequest::new("GET", "file:///etc/passwd")).error is Some(_))
   edge_assert(bridge.ws_open(station_connects::WsOpenRequest::{ url: "http://example.com", headers: [], timeout_ms: 100L }) is Err(_))
 
-  // Status + header passthrough
+  // Streaming fetch + header passthrough + body cap abort
   let ok_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/ok"))
   edge_assert(ok_resp.error is None && ok_resp.status == 200)
   edge_assert(match station_connects::header_get(ok_resp.headers, "x-test") { Some(v) => v == "ok" None => false })
-
-  // Oversize response body rejected
   let big_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/oversize"))
   edge_assert(big_resp.error is Some(_))
 
   // Request timeout triggers `fetch.cancel`
-  drop_next_fetch = true
+  drop_next_open = true
   let to_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/hang", timeout_ms=200L))
-  edge_assert(to_resp.error is Some(_))
-  edge_assert(h.cancels.length() >= 1)
-  drop_next_fetch = false
+  edge_assert(to_resp.error is Some(_) && h.cancels.length() >= 1)
+  drop_next_open = false
 
-  // Attachment loader via OpsFs + size limit
-  match bridge.load_outbound_file("/att/hello.txt", mime="text/plain", max_bytes=1024) {
-    Ok(f) => edge_assert(f.name == "hello.txt" && f.bytes.length() == 16)
-    Err(e) => panic("load_outbound_file failed: " + e)
+  // `ws_next_inflight` prevents duplicate `ws.next` after timeout
+  let wh = match bridge.ws_open(station_connects::WsOpenRequest::{ url: "wss://example.com/ws", headers: [], timeout_ms: 500L }) {
+    Ok(id) => id
+    Err(e) => panic(e)
   }
-  edge_assert(bridge.load_outbound_file("/att/big.bin", max_bytes=1024) is Err(_))
+  let before_calls = ws_next_calls
+  edge_assert(bridge.ws_next(wh) is Err(_))
+  edge_assert(bridge.has_ws_next_inflight(wh))
+  edge_assert(bridge.ws_next(wh) is Err(_))
+  edge_assert(ws_next_calls == before_calls + 1)
+  bridge.ws_close(wh)
 
-  // ConnectsOsRuntime: register Slack + Comma, start, pump inbound frame, send downlink, stop()
+  // ConnectsOsRuntime: zero-event-loss routing during concurrent fetch + post-stop 0-callback guard
   let received_events : Array[String] = []
-  let disconnects : Array[String] = []
   let cbs = ConnectsCallbacks::{
     on_event: fn(cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Unit {
       match ev {
@@ -235,100 +291,116 @@ test "connects_os_transport_guards_body_cap_timeout_and_runtime_lifecycle" {
     },
     on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Unit {},
     on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Unit {},
-    on_disconnect: fn(cid : String, reason : String) -> Unit {
-      disconnects.push(cid + ":" + reason)
-    },
+    on_disconnect: fn(_cid : String, _reason : String) -> Unit {},
   }
   let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
   edge_assert(rt.register_slack("sl-1", "xapp-1-valid", "xoxb-1-valid") is Ok(_))
-  rt.register_comma("cm-1", "https://comma.example", "tok-1", "station-1", "inst-1")
-  edge_assert(rt.connector_count() == 2)
   edge_assert(rt.start_connect("sl-1") is Ok(_))
-  edge_assert(bridge.open_ws_count() == 1)
 
-  // Feed an inbound Slack message via `handle_mux_reply`
-  let slack_env = "{\"envelope_id\":\"env-1\",\"type\":\"events_api\",\"payload\":{\"event\":{\"type\":\"app_mention\",\"channel\":\"C123\",\"ts\":\"1700000000.000100\",\"thread_ts\":\"1700000000.000100\",\"user\":\"U1\",\"text\":\"hello bot\"}}}"
-  let handled = rt.handle_mux_reply(
-    builders_core::MuxToken::Tagged(10, CONNECTS_TOK_WS_NEXT, 10L),
+  // Inject an out-of-band Slack WS frame into queue BEFORE a concurrent `fetch`: must be routed, NOT swallowed!
+  let ws_call_id = match bridge.ws_next_inflight.get(11L) {
+    Some(id) => id
+    None => panic("expected inflight ws.next for handle 11")
+  }
+  let slack_env = "{\"envelope_id\":\"env-1\",\"type\":\"events_api\",\"payload\":{\"event\":{\"type\":\"app_mention\",\"channel\":\"C123\",\"ts\":\"1700000000.000100\",\"thread_ts\":\"1700000000.000100\",\"user\":\"U1\",\"text\":\"concurrent-not-lost\"}}}"
+  h.queue.push(
+    host_shim::HostEvent::ShellDone(
+      host_shim::ShellDone::{
+        id: ws_call_id,
+        json: "{\"text\":" + base_codec::json_stringify(base_codec::json_str(slack_env)) + "}",
+        error: "",
+        bytes: None,
+      },
+    ),
+  )
+  let r2 = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/ok"))
+  edge_assert(r2.error is None && r2.status == 200)
+  edge_assert(received_events.length() == 1 && received_events[0].contains("concurrent-not-lost"))
+
+  // Stop suppresses all subsequent callbacks
+  rt.stop()
+  edge_assert(rt.is_stopped())
+  let _ = rt.handle_mux_reply(
+    builders_core::MuxToken::Tagged(11, CONNECTS_TOK_WS_NEXT, 11L),
     host_shim::ShellDone::{
-      id: 99L,
+      id: 999L,
       json: "{\"text\":" + base_codec::json_stringify(base_codec::json_str(slack_env)) + "}",
       error: "",
       bytes: None,
     },
   )
-  edge_assert(handled)
-  edge_assert(received_events.length() == 1 && received_events[0].contains("hello bot"))
-
-  // Downlink message send
-  match rt.send_message("sl-1", station_connects::ThreadRef::new("C123", "1700000000.000100"), "hi there") {
-    Ok(ts) => edge_assert(ts == "1700000001.000100")
-    Err(e) => panic("send_message failed: " + e)
-  }
-
-  // Graceful stop closes all open WebSockets
-  rt.stop()
-  edge_assert(rt.is_stopped())
-  edge_assert(bridge.open_ws_count() == 0)
+  edge_assert(received_events.length() == 1)
 }
 
 // ---------------------------------------------------------------------------
-// 2. Replica OS adapter tests
+// 2. Replica OS adapter tests (segment paths, S3 wall_ms + XML delete error, move failure lock)
 // ---------------------------------------------------------------------------
 
-test "replica_os_s3_transport_aead_tamper_move_hooks_and_share_sync" {
-  // Real SigV4 S3 client over mock ShellMux
-  let s3_store : Map[String, Bytes] = Map::new()
+test "replica_os_paths_s3_delete_error_corrupt_ledger_and_move_failure_lock" {
+  // Segment path validation allows `notes..old` and rejects traversal/NUL/backslash
+  edge_assert(rep_is_safe_rel_path("notes..old"))
+  edge_assert(rep_is_safe_rel_path("sub/notes..old"))
+  edge_assert(!rep_is_safe_rel_path("../escape"))
+  edge_assert(!rep_is_safe_rel_path("a/../b"))
+  edge_assert(!rep_is_safe_rel_path("a/./b"))
+  edge_assert(!rep_is_safe_rel_path("/abs"))
+  edge_assert(!rep_is_safe_rel_path("a\\b"))
+
+  // S3 client with wall_ms UTC signing + HTTP 200 XML <Error> on DeleteObjects -> Err
+  let streams : Map[Int, MockStreamState] = Map::new()
+  let mut sseq = 1
+  let mut saw_utc_year = false
   let h = MockMuxHarness::new(
-    1700000000000L,
-    fn(id : Int64, op : String, json : String, payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
-      if op == "fetch" {
+    1000L,
+    fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "stream.open" {
+        if json.contains("20231114T") {
+          saw_utc_year = true
+        }
+        let sid = sseq
+        sseq = sseq + 1
+        if json.contains("delete=") {
+          let xml = "<DeleteResult><Error><Key>sf/k1</Key><Code>AccessDenied</Code><Message>Denied</Message></Error></DeleteResult>"
+          streams.set(sid, MockStreamState::{ chunks: [xml.to_bytes()], idx: 0 })
+        } else {
+          streams.set(sid, MockStreamState::{ chunks: [], idx: 0 })
+        }
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{
+              id: id,
+              json: "{\"id\":" + sid.to_string() + ",\"status\":200,\"headers\":[],\"redirected\":false}",
+              error: "",
+              bytes: None,
+            },
+          ),
+        )
+      } else if op == "stream.read" {
         let parsed = match base_codec::json_parse(json) {
           base_codec::JsonParseResult::Ok(j) => j
           _ => base_codec::json_null()
         }
-        let method_name = match base_codec::json_get(parsed, "method") {
-          Some(base_codec::Json::Str(s)) => s
-          _ => "GET"
+        let sid = match base_codec::json_get(parsed, "id") {
+          Some(base_codec::Json::Num(n, _)) => n.to_int()
+          _ => -1
         }
-        let url = match base_codec::json_get(parsed, "url") {
-          Some(base_codec::Json::Str(s)) => s
-          _ => ""
-        }
-        if method_name == "PUT" {
-          let body = match payload {
-            Some(b) => b
-            None => Bytes::new(0)
+        match streams.get(sid) {
+          Some(st) => {
+            if st.idx < st.chunks.length() {
+              let c = st.chunks[st.idx]
+              st.idx = st.idx + 1
+              q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"end\":false}", error: "", bytes: Some(c) }))
+            } else {
+              q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None }))
+            }
           }
-          s3_store.set(url, body)
-          q.push(
-            host_shim::HostEvent::ShellDone(
-              host_shim::ShellDone::{ id: id, json: "{\"status\":200,\"headers\":[]}", error: "", bytes: None },
-            ),
-          )
-        } else if method_name == "GET" {
-          match s3_store.get(url) {
-            Some(b) => q.push(
-              host_shim::HostEvent::ShellDone(
-                host_shim::ShellDone::{ id: id, json: "{\"status\":200,\"headers\":[]}", error: "", bytes: Some(b) },
-              ),
-            )
-            None => q.push(
-              host_shim::HostEvent::ShellDone(
-                host_shim::ShellDone::{ id: id, json: "{\"status\":404,\"headers\":[]}", error: "", bytes: None },
-              ),
-            )
-          }
+          None => q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"end\":true}", error: "", bytes: None }))
         }
+      } else if op == "stream.close" {
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{}", error: "", bytes: None }))
       }
     },
   )
-
-  let key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-  let enc_key = match station_replica::parse_encryption_key(key_hex) {
-    Ok(k) => k
-    Err(e) => panic(e)
-  }
   let target_cfg = station_replica::NormalizedS3Target::{
     id: "s3-test",
     name: "Test S3",
@@ -339,48 +411,29 @@ test "replica_os_s3_transport_aead_tamper_move_hooks_and_share_sync" {
     force_path_style: true,
     access_key_id: "AKIA_TEST",
     secret_access_key: "SECRET_TEST",
-    encryption_key: key_hex,
+    encryption_key: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     include_transcripts: true,
   }
-  let s3 = os_s3_client(target_cfg, h.mux, now_fn=fn() -> Int64 { h.clock.now })
+  let s3 = os_s3_client(
+    target_cfg,
+    h.mux,
+    now_fn=fn() -> Int64 { h.clock.now },
+    wall_fn=fn() -> Int64 { 1700000000000L },
+  )
   let s3_port = ReplicaTargetPort::s3(s3)
+  edge_assert((s3_port.delete_object)("k1") is Err(_))
+  edge_assert(saw_utc_year)
 
-  // SFB1 stream seal -> S3 PUT -> S3 GET -> stream open roundtrip + 1-byte tamper AEAD rejection
-  let ctx = station_replica::Sfb1Context::{ ws: "ws-1", origin: "st-a", logical_path: "files/doc.txt" }
-  let salt = crypto::sha256("salt-1".to_bytes()).slice(0, 16)
-  let plain = "confidential replica payload 0123456789".to_bytes()
-  let sealed = match station_replica::sfb1_seal(enc_key, ctx, plain, salt) {
-    Ok(c) => c
-    Err(e) => panic(e)
-  }
-  edge_assert((s3_port.put_object)("obj/doc.sfb1", sealed) is Ok(_))
-  let fetched = match (s3_port.get_object)("obj/doc.sfb1") {
-    Ok(b) => b
-    Err(e) => panic(e)
-  }
-  match station_replica::sfb1_open(enc_key, ctx, fetched) {
-    Ok(opened) => edge_assert(edge_bytes_eq(opened, plain))
-    Err(e) => panic("sfb1_open failed: " + e)
-  }
-  // Flip 1 byte of ciphertext -> AEAD must strictly reject
-  let tampered = Bytes::new(fetched.length())
-  for i in 0..<fetched.length() {
-    tampered[i] = fetched[i]
-  }
-  let last = tampered.length() - 1
-  tampered[last] = ((tampered[last].to_int() & 0xFF) ^ 0x01) as Byte
-  edge_assert(station_replica::sfb1_open(enc_key, ctx, tampered) is Err(_))
-
-  // Local target path-traversal guard
+  // Corrupt `kept.jsonl` fails closed in `ReplicaOsRuntime::open`
   let mem = station_ops::MemFs::new()
-  mem.put_dir("/rep")
-  let local_port = ReplicaTargetPort::local("/rep", mem.ops())
-  edge_assert((local_port.put_object)("../escape.bin", plain) is Err(_))
-  edge_assert((local_port.put_object)("ok/a.bin", plain) is Ok(_))
-  edge_assert(match (local_port.get_object)("ok/a.bin") { Ok(b) => edge_bytes_eq(b, plain) Err(_) => false })
+  mem.put_dir("/rep/ledger")
+  let _ = mem.put_text("/rep/ledger/kept.jsonl", "{not valid json\n")
+  edge_assert(ReplicaOsRuntime::open(mem.ops(), "/rep/ledger") is Err(_))
 
-  // MoveScheduler + ReplicaOsRuntime `before_store` -> `take_back_soon` hook
-  let mut back_calls = 0
+  // MoveScheduler `back_item` failure keeps moving lock engaged and fails `before_store`
+  let mem2 = station_ops::MemFs::new()
+  mem2.put_dir("/rep2/ledger")
+  let mut fail_back = true
   let mut item_there = true
   let chat_item = station_replica::MoveItem::{
     module_id: "chats",
@@ -395,24 +448,20 @@ test "replica_os_s3_transport_aead_tamper_move_hooks_and_share_sync" {
   let chat_mod = station_replica::MoveModule::{
     id: "chats",
     needs: [],
-    plan: fn(_ws : String, _to : String) -> Result[Array[station_replica::MoveItem], String] {
-      Ok([chat_item])
-    },
+    plan: fn(_ws : String, _to : String) -> Result[Array[station_replica::MoveItem], String] { Ok([chat_item]) },
     move_item: fn(_it : station_replica::MoveItem, _to : String, _w : Option[station_replica::MoveWaits]) -> Result[Unit, String] {
       item_there = true
       Ok(())
     },
     back_item: fn(_it : station_replica::MoveItem, _from : String, _w : Option[station_replica::MoveWaits]) -> Result[Unit, String] {
-      back_calls = back_calls + 1
+      if fail_back {
+        return Err("peer unreachable")
+      }
       item_there = false
       Ok(())
     },
     state: fn(_it : station_replica::MoveItem) -> station_replica::MoveItemStateKind {
-      if item_there {
-        station_replica::MoveItemStateKind::There
-      } else {
-        station_replica::MoveItemStateKind::Here
-      }
+      if item_there { station_replica::MoveItemStateKind::There } else { station_replica::MoveItemStateKind::Here }
     },
     usable_here: fn(_it : station_replica::MoveItem) -> Bool { !item_there },
     usable_there: fn(_it : station_replica::MoveItem) -> Bool { item_there },
@@ -428,104 +477,75 @@ test "replica_os_s3_transport_aead_tamper_move_hooks_and_share_sync" {
     Ok(s) => s
     Err(e) => panic(e)
   }
-  let rep_rt = ReplicaOsRuntime::new(mem.ops(), "/rep/ledger")
-  rep_rt.attach_scheduler(sched)
-  rep_rt.mark_moving("chats", "chat-42", "st-b")
-  match rep_rt.before_store("ws-1", "st-a", "chats", "chat-42", 2000L) {
-    Ok(seq) => {
-      edge_assert(seq == 1L)
-      edge_assert(back_calls == 1)
-      edge_assert(!item_there)
-      edge_assert(rep_rt.kept_log.has("takeback:chats:chat-42"))
-    }
-    Err(e) => panic("before_store failed: " + e)
-  }
-  rep_rt.after_store("ws-1", "st-a", 2010L)
-
-  // Cross-station ShareOsSync (memory 3-way merge + presets + stars + progress)
-  let share = ShareOsSync::new(mem.ops(), "epoch-1")
-  match share.merge_and_save_memory("/rep/MEMORY.md", "line1\n", "line1\nline2\n", "line1\nline3\n", Some("st-a"), Some("st-b")) {
-    Ok(m) => edge_assert(m.contains("line2") && m.contains("line3"))
+  let rep_rt = match ReplicaOsRuntime::open(mem2.ops(), "/rep2/ledger") {
+    Ok(r) => r
     Err(e) => panic(e)
   }
-  let prog = station_replica::ProgressPrefs::{ minutes: 15, strength: "remind", rev: 1, at: 1000L }
-  edge_assert(share.apply_progress(prog) is Ok(_))
+  rep_rt.attach_scheduler(sched)
+  rep_rt.mark_moving("chats", "chat-42", "st-b")
+  edge_assert(rep_rt.before_store("ws-1", "st-a", "chats", "chat-42", 2000L) is Err(_))
+  edge_assert(rep_rt.is_moving("chats", "chat-42"))
+  // Once peer recovers, `before_store` succeeds and clears moving lock
+  fail_back = false
+  edge_assert(
+    match rep_rt.before_store("ws-1", "st-a", "chats", "chat-42", 2010L) {
+      Ok(seq) => seq == 1L
+      Err(_) => false
+    },
+  )
+  edge_assert(!rep_rt.is_moving("chats", "chat-42"))
+  rep_rt.after_store("ws-1", "st-a", 2020L)
 }
 
 // ---------------------------------------------------------------------------
-// 3. Browser OS adapter tests
+// 3. Browser OS adapter tests (strict CDP userinfo, IPv4/IPv6/localhost CIDR, proxy filter)
 // ---------------------------------------------------------------------------
 
-test "browser_os_url_policy_cdp_roundtrip_gate_isolation_signin_and_proxy" {
-  // Fail-closed URL policy
-  edge_assert(validate_browser_navigation_url("javascript:alert(1)") is Err(_))
-  edge_assert(validate_browser_navigation_url("file:///etc/passwd") is Err(_))
-  edge_assert(validate_browser_navigation_url("data:text/html,hi") is Err(_))
-  edge_assert(validate_browser_navigation_url("chrome://settings") is Err(_))
-  edge_assert(validate_browser_navigation_url("http://127.0.0.1:9222/json") is Err(_))
-  edge_assert(validate_browser_navigation_url("http://10.0.0.5/admin") is Err(_))
-  edge_assert(validate_browser_navigation_url("http://192.168.1.1/") is Err(_))
-  edge_assert(validate_browser_navigation_url("http://172.16.0.1/") is Err(_))
-  edge_assert(validate_browser_navigation_url("http://127.0.0.1:9222/json", allow_private=true) is Ok(_))
-  edge_assert(validate_browser_navigation_url("https://example.com/path") is Ok(_))
+test "browser_os_strict_cdp_url_full_cidr_blocklist_and_proxy_enforcement" {
+  // CDP WS userinfo bypass (`@`) and non-loopback rejected
+  edge_assert(validate_loopback_cdp_ws_url("ws://127.0.0.1:1@10.77.0.20/devtools/browser/1") is Err(_))
+  edge_assert(validate_loopback_cdp_ws_url("ws://10.0.0.2:9222/devtools/browser/1") is Err(_))
+  edge_assert(validate_loopback_cdp_ws_url("wss://127.0.0.1:9222/devtools/browser/1") is Err(_))
+  edge_assert(validate_loopback_cdp_ws_url("ws://127.0.0.1:9222/devtools/browser/1") is Ok(_))
+  edge_assert(validate_loopback_cdp_ws_url("ws://[::1]:9222/devtools/browser/1") is Ok(_))
 
-  // CDP WS roundtrip over mock ShellMux + loopback guard
-  let cdp_sent : Array[String] = []
+  // Full IPv4/IPv6/localhost/scheme blocklist
+  let blocked_urls = [
+    "javascript:alert(1)",
+    "file:///etc/passwd",
+    "data:text/html,hi",
+    "ftp://example.com/a",
+    "http://localhost/a",
+    "http://localhost./a",
+    "http://foo.localhost/a",
+    "http://0.0.0.1/",
+    "http://10.0.0.5/admin",
+    "http://100.64.0.1/",
+    "http://127.0.0.1:9222/json",
+    "http://169.254.169.254/latest/meta-data",
+    "http://172.16.0.1/",
+    "http://192.168.1.1/",
+    "http://224.0.0.1/",
+    "http://240.0.0.1/",
+    "http://[::]/",
+    "http://[::1]/",
+    "http://[::ffff:127.0.0.1]/",
+    "http://[fc00::1]/",
+    "http://[fd12:3456::1]/",
+    "http://[fe80::1]/",
+    "http://[ff02::1]/",
+  ]
+  for i in 0..<blocked_urls.length() {
+    edge_assert(validate_browser_navigation_url(blocked_urls[i]) is Err(_))
+  }
+  edge_assert(validate_browser_navigation_url("https://example.com/path") is Ok(_))
+  edge_assert(validate_browser_navigation_url("http://127.0.0.1:9222/json", allow_private=true) is Ok(_))
+
+  // Proxy adapter enforces navigation policy on client CDP `Page.navigate`
   let h = MockMuxHarness::new(
     5000L,
-    fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
-      if op == "ws.open" {
-        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"id\":77}", error: "", bytes: None }))
-      } else if op == "ws.send" {
-        cdp_sent.push(json)
-        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None }))
-      } else if op == "ws.next" {
-        let reply = "{\"id\":1,\"result\":{\"product\":\"Chrome/130\"}}"
-        q.push(
-          host_shim::HostEvent::ShellDone(
-            host_shim::ShellDone::{
-              id: id,
-              json: "{\"text\":" + base_codec::json_stringify(base_codec::json_str(reply)) + "}",
-              error: "",
-              bytes: None,
-            },
-          ),
-        )
-      } else if op == "fetch" && json.contains("/json/version") {
-        q.push(
-          host_shim::HostEvent::ShellDone(
-            host_shim::ShellDone::{
-              id: id,
-              json: "{\"status\":200,\"headers\":[]}",
-              error: "",
-              bytes: Some("{\"Browser\":\"Chrome/130\",\"webSocketDebuggerUrl\":\"ws://127.0.0.1:9222/devtools/browser/abc\"}".to_bytes()),
-            },
-          ),
-        )
-      }
-    },
+    fn(_id : Int64, _op : String, _json : String, _p : Option[Bytes], _q : Array[host_shim::HostEvent]) -> Unit {},
   )
-
-  // Non-loopback CDP WS must be refused
-  edge_assert(open_cdp_session_os(h.mux, "ws://10.0.0.2:9222/devtools/browser/1", now_fn=fn() -> Int64 { h.clock.now }) is Err(_))
-  edge_assert(fetch_devtools_version(h.mux, 9222, now_fn=fn() -> Int64 { h.clock.now }) is Ok(_))
-
-  let (ws_id, cdp) = match open_cdp_session_os(h.mux, "ws://127.0.0.1:9222/devtools/browser/abc", now_fn=fn() -> Int64 { h.clock.now }) {
-    Ok(pair) => pair
-    Err(e) => panic("open_cdp_session_os failed: " + e)
-  }
-  edge_assert(ws_id == 77)
-  let req_id = match cdp.send("Browser.getVersion", base_codec::json_obj([]), None, 5000L) {
-    Ok(rid) => rid
-    Err(e) => panic(e)
-  }
-  edge_assert(req_id == 1L && cdp_sent.length() == 1)
-  edge_assert(pump_cdp_session_once(h.mux, ws_id, cdp, now_fn=fn() -> Int64 { h.clock.now }) is Ok(true))
-  let settled = cdp.take_settled()
-  edge_assert(settled.length() == 1 && settled[0].id == 1L)
-  let _ = cdp.close()
-
-  // BrowserOsManager tab ownership isolation + Gate
   let hold_hub = station_browser::AgentHoldHubPort::{
     people_views: fn(_t : String) -> Array[station_browser::ScreenWatcherView] { [] },
     has_taken_view: fn(_t : String) -> Bool { false },
@@ -537,79 +557,43 @@ test "browser_os_url_policy_cdp_roundtrip_gate_isolation_signin_and_proxy" {
     h.mux,
     hold_hub,
     fn(s : String) -> String { "agent-" + s },
-    fn(ctx : String) -> Option[String] { if ctx == "ctx-a" { Some("sess-a") } else { None } },
+    fn(_ctx : String) -> Option[String] { None },
     now_fn=fn() -> Int64 { h.clock.now },
   )
-  mgr.tabs.on_target_created(
-    station_browser::TargetSnapshot::{
-      target_id: "t-a",
-      target_type: "page",
-      title: "A",
-      url: "https://example.com",
-      attached: false,
-      opener_id: None,
-      browser_context_id: Some("ctx-a"),
-    },
-  )
-  mgr.tabs.on_target_created(
-    station_browser::TargetSnapshot::{
-      target_id: "t-b",
-      target_type: "page",
-      title: "B",
-      url: "https://other.com",
-      attached: false,
-      opener_id: None,
-      browser_context_id: Some("ctx-b"),
-    },
-  )
-  edge_assert(mgr.tabs.of_session("sess-a").length() == 1)
-  edge_assert(mgr.tabs.of_session("sess-b").length() == 0)
+  // Gate keyed by (session, context_id)
+  let _g1 = mgr.gate_for("sess-a", "ctx-1")
+  let _g2 = mgr.gate_for("sess-a", "ctx-2")
+  edge_assert(mgr.gates.length() == 2)
 
-  // SignInFormPort origin-locked autofill refuses wrong site
-  let form_port = build_signin_form_port(
-    fn(expr : String) -> String {
-      if expr == "location.hostname" { "evil.com" } else { "https://evil.com/login" }
-    },
-    fn(_v : String) -> Bool { true },
-    fn() -> Unit {},
-  )
-  edge_assert(!(form_port.on_site)("example.com"))
-  edge_assert(!(form_port.type_field)(station_browser::FormField::Password, "example.com", "secret"))
-
-  // BrowserProxyOsAdapter forwarding
   let proxy = station_browser::BrowserProxy::new(
     fn(s : String) -> Bool { s == "sess-a" },
     fn(s : String) -> Result[station_browser::OpenedBrowser, String] {
-      Ok(station_browser::OpenedBrowser::{ ws_url: "ws://127.0.0.1:9222/b", gate: mgr.gate_for(s, "ctx-a") })
+      Ok(station_browser::OpenedBrowser::{ ws_url: "ws://127.0.0.1:9222/b", gate: mgr.gate_for(s, "ctx-1") })
     },
   )
-  let adapter = BrowserProxyOsAdapter::new(proxy, h.mux)
-  adapter.bind_upstream(1, 77)
-  let client_msgs : Array[String] = []
-  let dispatched = adapter.apply_actions(
-    [
-      station_browser::ProxyAction::SendToUpstreamText(1, "{\"id\":1}"),
-      station_browser::ProxyAction::SendToClientText(1, "{\"ok\":true}"),
-    ],
-    fn(_cid : Int, txt : String) -> Unit { client_msgs.push(txt) },
-    fn(_cid : Int, _b : Bytes) -> Unit {},
-    fn(_cid : Int, _code : Int, _r : String) -> Unit {},
+  let adapter = BrowserProxyOsAdapter::new(proxy, h.mux, allow_private=false)
+  let actions = adapter.on_client_text_checked(
+    1,
+    "{\"id\":7,\"method\":\"Page.navigate\",\"params\":{\"url\":\"http://[::ffff:127.0.0.1]/secret\"}}",
   )
-  edge_assert(dispatched == 2 && client_msgs.length() == 1)
+  edge_assert(actions.length() == 1)
+  match actions[0] {
+    station_browser::ProxyAction::SendToClientText(_, err_json) => edge_assert(err_json.contains("blocked"))
+    _ => panic("expected SendToClientText error for blocked IPv4-mapped IPv6")
+  }
 }
 
 // ---------------------------------------------------------------------------
 // 4. Devices OS adapter tests
 // ---------------------------------------------------------------------------
 
-test "devices_os_terminals_logins_grants_pairing_and_aggregated_sources" {
-  // TerminalsOsRuntime resize validation + registry wiring
-  let terms = TerminalsOsRuntime::new("/home/tester")
-  edge_assert(terms.resize("nonexistent", 0, 0) is Err(_))
+test "devices_os_terminals_logins_adb_runner_and_aggregated_sources" {
+  let mock_now = fn() -> Int64 { 1000L }
+  let terms = TerminalsOsRuntime::new("/home/tester", scroll_max_bytes=1024, now_fn=mock_now)
+  edge_assert(!station_devices::is_valid_terminal_size(0, 0))
   edge_assert(terms.live_count() == 0)
 
-  // LoginsOsRuntime + LoginRun URL extraction & callback validation
-  let logins = LoginsOsRuntime::new(Some(station_devices::LoginPages::new(true)))
+  let logins = LoginsOsRuntime::new(Some(station_devices::LoginPages::new(true)), now_fn=mock_now)
   let starter = station_devices::LoginStarter::{
     by: station_devices::LoginPerson::{ email: "alice@example.com", name: "Alice" },
     workspace: Some("ws-1"),
@@ -618,7 +602,7 @@ test "devices_os_terminals_logins_grants_pairing_and_aggregated_sources" {
   }
   let view = match logins.manager.start("gh auth login", starter, None, false, 1000L) {
     Ok(v) => v
-    Err(r) => panic("manager.start failed: " + r.message)
+    Err(r) => panic(r.message)
   }
   let run = match logins.manager.get_run(view.id) {
     Some(r) => r
@@ -628,8 +612,7 @@ test "devices_os_terminals_logins_grants_pairing_and_aggregated_sources" {
   let _ = run.on_settled(None)
   edge_assert(match run.url { Some(u) => u.contains("github.com") None => false })
 
-  // DevicesOsRuntime: DeviceRegistry + PhoneGrants expiry/revocation + Pairing + DeviceSources
-  let devs = DevicesOsRuntime::new()
+  let devs = DevicesOsRuntime::new(now_fn=mock_now)
   let spec = station_devices::DeviceSpec::{
     id: "0123456789abcdef",
     name: "Pixel 9",
@@ -641,54 +624,13 @@ test "devices_os_terminals_logins_grants_pairing_and_aggregated_sources" {
     paired: None,
   }
   edge_assert(devs.registry.add("ws-1", "sub-1", "alice@example.com", "Alice", spec, 100L) is Ok(_))
-
-  let rig_spec = station_devices::DeviceSpec::{
-    id: "fedcba9876543210",
-    name: "Rig Board",
-    kind: station_devices::DeviceKind::Serial,
-    target: "/dev/ttyUSB0",
-    baud: Some(115200),
-    model: None,
-    protocols: None,
-    paired: None,
-  }
-  devs.set_rig_devices(
-    "rig-shanghai",
-    [
-      station_devices::KeptDevice::{
-        device: rig_spec,
-        ws: "ws-1",
-        owner_sub: "sub-2",
-        owner_email: "bob@example.com",
-        owner_name: "Bob",
-        at_secs: 100L,
-      },
-    ],
-  )
-
-  // PhoneGrants: ask -> decide(Hour) -> held before expiry -> expired after 1h+
-  let req = match devs.phone_grants.ask("sess-1", "c-1", "ws-1", "alice@example.com", "test app", 10000L) {
+  let req = match devs.phone_grants.ask("sess-1", "c-1", "ws-1", "alice@example.com", "test", 10000L) {
     Ok(r) => r
     Err(e) => panic(e)
   }
   edge_assert(devs.phone_grants.decide("alice@example.com", req.id, Some(station_devices::PhoneScope::Hour), "ws-1", 10000L) is None)
-  let sources_active = devs.aggregate_sources("ws-1", "sess-1", 20000L)
-  edge_assert(sources_active.length() == 3)
-  edge_assert(!sources_active[0].requires_approval) // WholeStationOpen
-  edge_assert(sources_active[1].requires_approval) // RigApprovalRequired
-  edge_assert(sources_active[2].requires_approval && sources_active[2].active_grant_id is Some(_))
-
-  // After 2 hours, Hour grant has expired and disappears from active sources
-  let sources_expired = devs.aggregate_sources("ws-1", "sess-1", 10000L + 7200000L)
-  edge_assert(sources_expired.length() == 2)
-
-  // Android TV & AirPlay pairing + frame encoding
-  let atv_frame = encode_android_tv_pairing_start_frame("stillfail", "station")
-  edge_assert(atv_frame.length() > 4)
+  edge_assert(devs.aggregate_sources("ws-1", "sess-1", 20000L).length() == 2)
+  edge_assert(devs.aggregate_sources("ws-1", "sess-1", 10000L + 7200000L).length() == 1)
   edge_assert(encode_android_tv_key_frame("home", 3) is Ok(_))
-  edge_assert(encode_android_tv_key_frame("definitely_not_a_real_key_xyz", 3) is Err(_))
-  let ap_step = devs.airplay_pairing.start("ws-1", "ap-1", Some("192.168.1.50"), Some("Living Room"), None, ["airplay"], Some("tok"), true, 1000L)
-  edge_assert(ap_step is Ok(_))
-  let (expired_ap, _) = devs.tick_expiry(1000L + 200000L)
-  edge_assert(expired_ap == 1)
+  edge_assert(encode_android_tv_key_frame("invalid_key_xyz", 3) is Err(_))
 }

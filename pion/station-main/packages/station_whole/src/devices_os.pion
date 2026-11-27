@@ -1,17 +1,18 @@
 // Production OS adapter for `station_devices`:
-// - `TerminalsOsRuntime`: real OS child processes (`station_sys::proc_spawn` / `write_stdin` /
-//   `kill` / `close`) wired into `TerminalsRegistry` + `VtTerminal` with bounded scrollback,
-//   resize, and clean process-group exit reclamation.
-// - `LoginsOsRuntime`: real CLI login execution via `station_sys::proc_spawn` (with
-//   `keychain_out_of_git` env scrubbing), stdout/stderr feeding `LoginRun::output` for URL/device
-//   code extraction, callback validation, deadline timeout kill, and cancellation cleanup.
-// - `AdbOsRunner`: real `adb` subprocess execution via `station_sys::proc_spawn` + `host_shim::wait`
-//   with hard timeout and process-group kill cleanup.
-// - `DevicesOsRuntime`: wires `DeviceRegistry`, `PhoneGrants`, `PhoneDisplays`, `GrantServers`,
-//   `AirPlayPairingManager`, `AndroidTvPairingManager` transport bridge, and aggregated
-//   `DeviceSources` view across local station, rigs, and lent phones.
+// - `TerminalsOsRuntime`: real OS PTY via `station_sys::pty_spawn` / `PtyHandle::write` /
+//   `PtyHandle::resize` / `PtyHandle::kill` / `PtyHandle::close`, strict `scroll_max_bytes`
+//   bounding, natural-exit removal from `by_id` (`live_count() == 0`), and `SIGTERM` grace
+//   before `SIGKILL`.
+// - `LoginsOsRuntime`: real CLI login execution via `station_sys::proc_spawn` with immediate
+//   `write_stdin` (does not wait for output first), `keychain_out_of_git`, URL extraction,
+//   callback validation, deadline timeout kill, and `SIGTERM` grace before `SIGKILL`.
+// - Event-driven `AdbOsRunner` (globally monotonic `event_id`, independent stdout & stderr byte
+//   caps with immediate process-group kill on overflow, zero swallowed host events) plus
+//   non-swallowing sync helper `run_adb_command_os`.
+// - `DevicesOsRuntime`: `DeviceRegistry`, `PhoneGrants`, `PhoneDisplays`, `GrantServers` (with
+//   managed `ChildProcess` handle-bound teardown instead of bare `proc_kill(pid)`), AirPlay &
+//   Android TV pairing/control, and aggregated `DeviceSources`.
 
-import "base_codec"
 import "host_shim"
 import "station_devices"
 import "station_sys"
@@ -19,6 +20,8 @@ import "station_sys"
 pub let DEVICES_DEFAULT_SCROLLBACK : Int = 262144
 pub let DEVICES_DEFAULT_VT_SCROLLBACK : Int = 1000
 pub let DEVICES_DEFAULT_ADB_TIMEOUT_MS : Int64 = 15000L
+pub let DEVICES_DEFAULT_ADB_MAX_BYTES : Int = 4194304
+pub let DEVICES_STOP_GRACE_MS : Int64 = 500L
 
 fn dev_bytes_to_str(b : Bytes) -> String {
   let sb = StringBuilder::new()
@@ -54,39 +57,118 @@ fn dev_encode_env(pairs : Array[(String, String)]) -> Array[String] {
   out
 }
 
+fn dev_kill_proc_with_grace(
+  child : station_sys::ChildProcess,
+  event_id : Int64,
+  grace_ms : Int64,
+  now_fn : () -> Int64,
+  on_other_event : (host_shim::HostEvent) -> Unit,
+) -> Unit {
+  let _ = child.kill(station_sys::SIG_TERM, true)
+  let mut exited = false
+  if grace_ms > 0L {
+    let deadline = now_fn() + grace_ms
+    while !exited && now_fn() < deadline {
+      let rem = deadline - now_fn()
+      let slice = if rem > 25L { 25L } else { rem }
+      match host_shim::wait(slice) {
+        Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
+          if ev_id == event_id {
+            match station_sys::decode_sys_event(payload) {
+              Some(station_sys::SysEvent::ProcExit(_)) => exited = true
+              _ => ()
+            }
+          } else {
+            on_other_event(host_shim::HostEvent::Sys(ev_id, payload))
+          }
+        }
+        Some(other) => on_other_event(other)
+        None => ()
+      }
+    }
+  }
+  if !exited {
+    let _ = child.kill(station_sys::SIG_KILL, true)
+  }
+  let _ = child.close()
+}
+
+fn dev_kill_pty_with_grace(
+  pty : station_sys::PtyHandle,
+  event_id : Int64,
+  grace_ms : Int64,
+  now_fn : () -> Int64,
+  on_other_event : (host_shim::HostEvent) -> Unit,
+) -> Unit {
+  let _ = pty.kill(station_sys::SIG_TERM)
+  let mut exited = false
+  if grace_ms > 0L {
+    let deadline = now_fn() + grace_ms
+    while !exited && now_fn() < deadline {
+      let rem = deadline - now_fn()
+      let slice = if rem > 25L { 25L } else { rem }
+      match host_shim::wait(slice) {
+        Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
+          if ev_id == event_id {
+            match station_sys::decode_sys_event(payload) {
+              Some(station_sys::SysEvent::PtyExit(_)) => exited = true
+              _ => ()
+            }
+          } else {
+            on_other_event(host_shim::HostEvent::Sys(ev_id, payload))
+          }
+        }
+        Some(other) => on_other_event(other)
+        None => ()
+      }
+    }
+  }
+  if !exited {
+    let _ = pty.kill(station_sys::SIG_KILL)
+  }
+  let _ = pty.close()
+}
+
 // ---------------------------------------------------------------------------
-// 1. Real OS Terminals Runtime (`TerminalsRegistry` + `VtTerminal` + `station_sys`)
+// 1. Real OS PTY Terminals Runtime (`TerminalsRegistry` + `VtTerminal` + `station_sys::pty_*`)
 // ---------------------------------------------------------------------------
 
 struct LiveTerminalProc {
   term_id : String
   workspace : String
-  child : station_sys::ChildProcess
+  pty : station_sys::PtyHandle
   event_id : Int64
   vt : station_devices::VtTerminal
   mut exited : Bool
-  mut stdout_eof : Bool
-  mut stderr_eof : Bool
+  mut pty_eof : Bool
   mut exit_status : Option[station_devices::TerminalEnded]
 }
 
 pub struct TerminalsOsRuntime {
   pub registry : station_devices::TerminalsRegistry
+  pub scroll_max_bytes : Int
+  pub now_fn : () -> Int64
   by_id : Map[String, LiveTerminalProc]
   by_event : Map[Int64, String]
+  ended_screens : Map[String, station_devices::VtScreen]
   mut next_event_id : Int64
 }
 
 pub fn TerminalsOsRuntime::new(
   home : String,
   scroll_max_bytes : Int = DEVICES_DEFAULT_SCROLLBACK,
+  now_fn : () -> Int64 = host_shim::now_ms,
 ) -> TerminalsOsRuntime {
-  let reg = station_devices::TerminalsRegistry::new(home, scroll_max_bytes)
+  let eff_scroll = if scroll_max_bytes < 1024 { 1024 } else { scroll_max_bytes }
+  let reg = station_devices::TerminalsRegistry::new(home, eff_scroll)
   reg.set_offered(true)
   TerminalsOsRuntime::{
     registry: reg,
+    scroll_max_bytes: eff_scroll,
+    now_fn: now_fn,
     by_id: Map::new(),
     by_event: Map::new(),
+    ended_screens: Map::new(),
     next_event_id: 800001L,
   }
 }
@@ -95,8 +177,8 @@ pub fn TerminalsOsRuntime::live_count(self : TerminalsOsRuntime) -> Int {
   self.by_id.length()
 }
 
-/// Open a terminal session in `TerminalsRegistry` and spawn a real OS process via
-/// `station_sys::proc_spawn` (new process group, piped stdin/stdout/stderr).
+/// Open a terminal session in `TerminalsRegistry` and spawn a real OS PTY via
+/// `station_sys::pty_spawn`.
 pub fn TerminalsOsRuntime::spawn_terminal(
   self : TerminalsOsRuntime,
   asked : station_devices::TerminalAsked,
@@ -114,22 +196,20 @@ pub fn TerminalsOsRuntime::spawn_terminal(
   }
   let ev_id = self.next_event_id
   self.next_event_id = self.next_event_id + 1L
-  let opts = station_sys::SpawnOptions::{
-    program: program,
-    args: args,
-    env: env,
-    cwd: sess.cwd,
-    new_pgid: true,
-    strip_malloc_space_efficient: true,
-    pipe_stdin: true,
-    pipe_stdout: true,
-    pipe_stderr: true,
-  }
-  let child = match station_sys::proc_spawn(ev_id, opts) {
-    Ok(c) => c
+  let pty = match station_sys::pty_spawn(
+    ev_id,
+    program,
+    args,
+    env,
+    sess.cwd,
+    sess.size.cols,
+    sess.size.rows,
+    strip_malloc_space_efficient=true,
+  ) {
+    Ok(h) => h
     Err(e) => {
       self.registry.mark_ended(sess.id, Some(station_devices::TerminalEnded::{ code: Some(-1), signal: None }))
-      return Err("spawn terminal process failed: " + e)
+      return Err("pty_spawn failed: " + e)
     }
   }
   let vt = station_devices::VtTerminal::new(sess.size.cols, sess.size.rows, DEVICES_DEFAULT_VT_SCROLLBACK)
@@ -138,12 +218,11 @@ pub fn TerminalsOsRuntime::spawn_terminal(
     LiveTerminalProc::{
       term_id: sess.id,
       workspace: workspace,
-      child: child,
+      pty: pty,
       event_id: ev_id,
       vt: vt,
       exited: false,
-      stdout_eof: false,
-      stderr_eof: false,
+      pty_eof: false,
       exit_status: None,
     },
   )
@@ -162,22 +241,16 @@ pub fn TerminalsOsRuntime::write_stdin(
       if p.exited {
         return Err("terminal already exited: " + term_id)
       }
-      if p.child.write_stdin(data) {
+      if p.pty.write(data) {
         Ok(())
       } else {
-        Err("write_stdin failed for terminal: " + term_id)
+        Err("pty write failed for terminal: " + term_id)
       }
     }
   }
 }
 
-pub fn TerminalsOsRuntime::close_stdin(self : TerminalsOsRuntime, term_id : String) -> Bool {
-  match self.by_id.get(term_id) {
-    Some(p) => p.child.close_stdin()
-    None => false
-  }
-}
-
+/// Resize both the live OS PTY (`PtyHandle::resize` -> `SIGWINCH`) and the `VtTerminal`.
 pub fn TerminalsOsRuntime::resize(
   self : TerminalsOsRuntime,
   term_id : String,
@@ -190,6 +263,9 @@ pub fn TerminalsOsRuntime::resize(
   match self.by_id.get(term_id) {
     None => Err("terminal not found: " + term_id)
     Some(p) => {
+      if !p.pty.resize(cols, rows) {
+        return Err("pty resize failed for terminal: " + term_id)
+      }
       p.vt.resize(cols, rows)
       match self.registry.get(term_id, p.workspace) {
         Some(s) => s.size = station_devices::TerminalSize::{ cols: cols, rows: rows }
@@ -206,12 +282,36 @@ pub fn TerminalsOsRuntime::screen(
 ) -> Option[station_devices::VtScreen] {
   match self.by_id.get(term_id) {
     Some(p) => Some(p.vt.screen())
-    None => None
+    None => self.ended_screens.get(term_id)
   }
 }
 
-/// Process a `HostEvent::Sys(event_id, payload)` decoded into `station_sys::SysEvent`.
-/// Returns `true` if `event_id` belonged to a managed terminal.
+/// Feed output bytes into `TerminalSession::on_output` in slices bounded by `scroll_max_bytes`
+/// so a single large PTY read can never exceed `scroll_max_bytes`.
+fn TerminalsOsRuntime::feed_bounded_scrollback(
+  self : TerminalsOsRuntime,
+  s : station_devices::TerminalSession,
+  bytes : Bytes,
+  now_ms : Int64,
+) -> Unit {
+  let cap = self.scroll_max_bytes
+  let n = bytes.length()
+  if n == 0 {
+    return
+  }
+  let start = if n > cap { n - cap } else { 0 }
+  let step = if cap > 512 { 512 } else { cap }
+  let mut pos = start
+  while pos < n {
+    let end = if pos + step < n { pos + step } else { n }
+    let _ = s.on_output(bytes.slice(pos, end), now_ms)
+    pos = end
+  }
+}
+
+/// Process a `station_sys::SysEvent` (`PtyData`/`PtyEof`/`PtyExit`).
+/// On natural exit + EOF, marks ended, snapshots final screen, closes PTY handle, and removes
+/// the entry from `by_id` and `by_event` so `live_count()` drops to 0 and VT memory is freed.
 pub fn TerminalsOsRuntime::handle_sys_event(
   self : TerminalsOsRuntime,
   event_id : Int64,
@@ -227,31 +327,21 @@ pub fn TerminalsOsRuntime::handle_sys_event(
     None => return true
   }
   match ev {
-    station_sys::SysEvent::ProcStdout(bytes) => {
+    station_sys::SysEvent::PtyData(bytes) => {
       p.vt.write_bytes(bytes)
+      let replies = p.vt.take_responses()
+      for i in 0..<replies.length() {
+        let _ = p.pty.write(replies[i].to_bytes())
+      }
       match self.registry.get(term_id, p.workspace) {
-        Some(s) => {
-          let _ = s.on_output(bytes, now_ms)
-        }
+        Some(s) => self.feed_bounded_scrollback(s, bytes, now_ms)
         None => ()
       }
     }
-    station_sys::SysEvent::ProcStderr(bytes) => {
-      p.vt.write_bytes(bytes)
-      match self.registry.get(term_id, p.workspace) {
-        Some(s) => {
-          let _ = s.on_output(bytes, now_ms)
-        }
-        None => ()
-      }
+    station_sys::SysEvent::PtyEof => {
+      p.pty_eof = true
     }
-    station_sys::SysEvent::ProcStdoutEof => {
-      p.stdout_eof = true
-    }
-    station_sys::SysEvent::ProcStderrEof => {
-      p.stderr_eof = true
-    }
-    station_sys::SysEvent::ProcExit(status) => {
+    station_sys::SysEvent::PtyExit(status) => {
       p.exited = true
       let sig_opt : Option[String] = if status.signal != 0 {
         Some(status.signal_name)
@@ -267,25 +357,31 @@ pub fn TerminalsOsRuntime::handle_sys_event(
     }
     _ => ()
   }
-  if p.exited && p.stdout_eof && p.stderr_eof {
+  if p.exited && p.pty_eof {
+    self.ended_screens.set(term_id, p.vt.screen())
     self.registry.mark_ended(term_id, p.exit_status)
-    let _ = p.child.close()
+    let _ = p.pty.close()
     self.by_event.remove(event_id)
+    self.by_id.remove(term_id)
   }
   true
 }
 
-/// Kill a terminal's process group cleanly and close its handle.
-pub fn TerminalsOsRuntime::kill_terminal(self : TerminalsOsRuntime, term_id : String) -> Bool {
+pub fn TerminalsOsRuntime::kill_terminal(
+  self : TerminalsOsRuntime,
+  term_id : String,
+  grace_ms : Int64 = DEVICES_STOP_GRACE_MS,
+  on_other_event : (host_shim::HostEvent) -> Unit = fn(_ev : host_shim::HostEvent) -> Unit {},
+) -> Bool {
   match self.by_id.get(term_id) {
     None => false
     Some(p) => {
       self.by_id.remove(term_id)
       self.by_event.remove(p.event_id)
       if !p.exited {
-        let _ = p.child.kill(station_sys::SIG_TERM, true)
-        let _ = p.child.kill(station_sys::SIG_KILL, true)
-        let _ = p.child.close()
+        dev_kill_pty_with_grace(p.pty, p.event_id, grace_ms, self.now_fn, on_other_event)
+      } else {
+        let _ = p.pty.close()
       }
       let _ = self.registry.end_terminal(term_id, p.workspace)
       true
@@ -293,10 +389,13 @@ pub fn TerminalsOsRuntime::kill_terminal(self : TerminalsOsRuntime, term_id : St
   }
 }
 
-pub fn TerminalsOsRuntime::stop_all(self : TerminalsOsRuntime) -> Unit {
+pub fn TerminalsOsRuntime::stop_all(
+  self : TerminalsOsRuntime,
+  grace_ms : Int64 = DEVICES_STOP_GRACE_MS,
+) -> Unit {
   let ids = self.by_id.keys()
   for i in 0..<ids.length() {
-    let _ = self.kill_terminal(ids[i])
+    let _ = self.kill_terminal(ids[i], grace_ms=grace_ms)
   }
 }
 
@@ -317,14 +416,19 @@ struct LiveLoginProc {
 
 pub struct LoginsOsRuntime {
   pub manager : station_devices::LoginsManager
+  pub now_fn : () -> Int64
   by_id : Map[String, LiveLoginProc]
   by_event : Map[Int64, String]
   mut next_event_id : Int64
 }
 
-pub fn LoginsOsRuntime::new(pages : Option[station_devices::LoginPages]) -> LoginsOsRuntime {
+pub fn LoginsOsRuntime::new(
+  pages : Option[station_devices::LoginPages],
+  now_fn : () -> Int64 = host_shim::now_ms,
+) -> LoginsOsRuntime {
   LoginsOsRuntime::{
     manager: station_devices::LoginsManager::new(pages),
+    now_fn: now_fn,
     by_id: Map::new(),
     by_event: Map::new(),
     next_event_id: 850001L,
@@ -335,8 +439,6 @@ pub fn LoginsOsRuntime::live_count(self : LoginsOsRuntime) -> Int {
   self.by_id.length()
 }
 
-/// Start a CLI login through `LoginsManager::start` and spawn its real OS command via
-/// `station_sys::proc_spawn` with `keychain_out_of_git` environment scrubbing.
 pub fn LoginsOsRuntime::start_login(
   self : LoginsOsRuntime,
   command_line : String,
@@ -400,7 +502,43 @@ pub fn LoginsOsRuntime::start_login(
   Ok(view)
 }
 
-/// Flush pending stdin writes queued on `LoginRun` into the live child process.
+/// Write directly to a live login child's stdin immediately after spawn (does not require
+/// waiting for prior stdout from the child).
+pub fn LoginsOsRuntime::write_stdin(
+  self : LoginsOsRuntime,
+  login_id : String,
+  data : Bytes,
+) -> Result[Unit, String] {
+  match self.by_id.get(login_id) {
+    None => Err("login process not running: " + login_id)
+    Some(p) => {
+      if p.exited {
+        return Err("login process already exited: " + login_id)
+      }
+      if p.child.write_stdin(data) {
+        Ok(())
+      } else {
+        Err("write_stdin failed for login: " + login_id)
+      }
+    }
+  }
+}
+
+/// Forward interactive input (text or key) through `LoginsManager` AND immediately flush it to
+/// the live child's stdin without waiting for output first.
+pub fn LoginsOsRuntime::send_input(
+  self : LoginsOsRuntime,
+  login_id : String,
+  text : Option[String],
+  key : Option[station_devices::LoginKey],
+) -> Result[Int, String] {
+  match self.manager.input(login_id, text, key) {
+    Err(r) => return Err("login input refused: " + r.message)
+    Ok(_) => ()
+  }
+  Ok(self.flush_writes(login_id))
+}
+
 pub fn LoginsOsRuntime::flush_writes(self : LoginsOsRuntime, login_id : String) -> Int {
   let run = match self.manager.get_run(login_id) {
     Some(r) => r
@@ -423,9 +561,6 @@ pub fn LoginsOsRuntime::flush_writes(self : LoginsOsRuntime, login_id : String) 
   sent
 }
 
-/// Process a `station_sys::SysEvent` for a running login subprocess.
-/// Feeds stdout/stderr into `LoginRun::output` (extracting URLs & codes), flushes any stdin
-/// responses, and reaps the handle on `ProcExit`.
 pub fn LoginsOsRuntime::handle_sys_event(
   self : LoginsOsRuntime,
   event_id : Int64,
@@ -476,7 +611,6 @@ pub fn LoginsOsRuntime::handle_sys_event(
   true
 }
 
-/// Validate and relay an incoming OAuth loopback callback for `login_id`.
 pub fn LoginsOsRuntime::handle_callback(
   self : LoginsOsRuntime,
   login_id : String,
@@ -495,20 +629,21 @@ pub fn LoginsOsRuntime::handle_callback(
   }
 }
 
-/// Cancel an active login, killing its process group and closing its handle.
 pub fn LoginsOsRuntime::cancel_login(
   self : LoginsOsRuntime,
   login_id : String,
   by : Option[station_devices::LoginPerson],
   now_ms : Int64,
+  grace_ms : Int64 = DEVICES_STOP_GRACE_MS,
+  on_other_event : (host_shim::HostEvent) -> Unit = fn(_ev : host_shim::HostEvent) -> Unit {},
 ) -> Result[station_devices::LoginView, String] {
   match self.by_id.get(login_id) {
     Some(p) => {
       self.by_id.remove(login_id)
       self.by_event.remove(p.event_id)
       if !p.exited {
-        let _ = p.child.kill(station_sys::SIG_TERM, true)
-        let _ = p.child.kill(station_sys::SIG_KILL, true)
+        dev_kill_proc_with_grace(p.child, p.event_id, grace_ms, self.now_fn, on_other_event)
+      } else {
         let _ = p.child.close()
       }
     }
@@ -520,7 +655,6 @@ pub fn LoginsOsRuntime::cancel_login(
   }
 }
 
-/// Expire timed-out login runs and kill their underlying child processes.
 pub fn LoginsOsRuntime::tick(self : LoginsOsRuntime, now_ms : Int64) -> Array[String] {
   let expired : Array[String] = []
   let ids = self.by_id.keys()
@@ -559,7 +693,7 @@ pub fn LoginsOsRuntime::stop_all(self : LoginsOsRuntime, now_ms : Int64) -> Unit
 }
 
 // ---------------------------------------------------------------------------
-// 3. Real `adb` Subprocess Runner (with timeout & process-group cleanup)
+// 3. Event-Driven `AdbOsRunner` (Monotonic IDs, Bounded Output Caps, Zero Swallowed Events)
 // ---------------------------------------------------------------------------
 
 pub struct AdbExecResult {
@@ -567,19 +701,60 @@ pub struct AdbExecResult {
   pub stdout : Bytes
   pub stderr : Bytes
   pub timed_out : Bool
+  pub truncated : Bool
+  pub error : Option[String]
 }
 
-/// Run an `adb` (or custom executable) command via `station_sys::proc_spawn` with hard deadline
-/// and guaranteed process-group kill + handle close on completion or timeout.
-pub fn run_adb_command_os(
+struct LiveAdbProc {
+  event_id : Int64
+  child : station_sys::ChildProcess
+  deadline_ms : Int64
+  max_output_bytes : Int
+  out_chunks : Array[Bytes]
+  err_chunks : Array[Bytes]
+  mut out_bytes : Int
+  mut err_bytes : Int
+  mut stdout_eof : Bool
+  mut stderr_eof : Bool
+  mut exit_code : Option[Int]
+  mut timed_out : Bool
+  mut truncated : Bool
+  mut error : Option[String]
+}
+
+/// Non-blocking, event-driven ADB command runner with globally monotonic `event_id`s,
+/// independent stdout/stderr byte caps, and deadline timeout cleanup.
+pub struct AdbOsRunner {
+  by_event : Map[Int64, LiveAdbProc]
+  completed : Map[Int64, AdbExecResult]
+  mut next_event_id : Int64
+}
+
+pub fn AdbOsRunner::new(start_event_id : Int64 = 890001L) -> AdbOsRunner {
+  AdbOsRunner::{
+    by_event: Map::new(),
+    completed: Map::new(),
+    next_event_id: start_event_id,
+  }
+}
+
+pub fn AdbOsRunner::active_count(self : AdbOsRunner) -> Int {
+  self.by_event.length()
+}
+
+pub fn AdbOsRunner::start_cmd(
+  self : AdbOsRunner,
   program : String,
   args : Array[String],
   cwd : String,
+  now_ms : Int64,
   timeout_ms : Int64 = DEVICES_DEFAULT_ADB_TIMEOUT_MS,
-  event_id : Int64 = 890001L,
-  now_fn : () -> Int64 = host_shim::now_ms,
-) -> Result[AdbExecResult, String] {
+  max_output_bytes : Int = DEVICES_DEFAULT_ADB_MAX_BYTES,
+) -> Result[Int64, String] {
+  let ev_id = self.next_event_id
+  self.next_event_id = self.next_event_id + 1L
   let eff_timeout = if timeout_ms > 0L { timeout_ms } else { DEVICES_DEFAULT_ADB_TIMEOUT_MS }
+  let eff_cap = if max_output_bytes > 0 { max_output_bytes } else { DEVICES_DEFAULT_ADB_MAX_BYTES }
   let opts = station_sys::SpawnOptions::{
     program: program,
     args: args,
@@ -591,55 +766,214 @@ pub fn run_adb_command_os(
     pipe_stdout: true,
     pipe_stderr: true,
   }
-  let child = match station_sys::proc_spawn(event_id, opts) {
+  let child = match station_sys::proc_spawn(ev_id, opts) {
     Ok(c) => c
     Err(e) => return Err("adb proc_spawn failed: " + e)
   }
-  let out_chunks : Array[Bytes] = []
-  let err_chunks : Array[Bytes] = []
-  let deadline = now_fn() + eff_timeout
-  let mut exit_code : Option[Int] = None
-  let mut stdout_eof = false
-  let mut stderr_eof = false
-  let mut timed_out = false
+  self.by_event.set(
+    ev_id,
+    LiveAdbProc::{
+      event_id: ev_id,
+      child: child,
+      deadline_ms: now_ms + eff_timeout,
+      max_output_bytes: eff_cap,
+      out_chunks: [],
+      err_chunks: [],
+      out_bytes: 0,
+      err_bytes: 0,
+      stdout_eof: false,
+      stderr_eof: false,
+      exit_code: None,
+      timed_out: false,
+      truncated: false,
+      error: None,
+    },
+  )
+  Ok(ev_id)
+}
 
-  while exit_code is None || !stdout_eof || !stderr_eof {
-    let rem = deadline - now_fn()
-    if rem <= 0L {
-      timed_out = true
-      let _ = child.kill(station_sys::SIG_TERM, true)
-      let _ = child.kill(station_sys::SIG_KILL, true)
-      break
-    }
-    let slice = if rem > 200L { 200L } else { rem }
-    match host_shim::wait(slice) {
-      Some(host_shim::HostEvent::Sys(ev_id, payload)) => {
-        if ev_id == event_id {
-          match station_sys::decode_sys_event(payload) {
-            Some(station_sys::SysEvent::ProcStdout(b)) => out_chunks.push(b)
-            Some(station_sys::SysEvent::ProcStderr(b)) => err_chunks.push(b)
-            Some(station_sys::SysEvent::ProcStdoutEof) => stdout_eof = true
-            Some(station_sys::SysEvent::ProcStderrEof) => stderr_eof = true
-            Some(station_sys::SysEvent::ProcExit(st)) => exit_code = Some(st.code)
-            _ => ()
-          }
-        }
-      }
-      _ => ()
-    }
-  }
-  let _ = child.close()
-  Ok(
+fn AdbOsRunner::finalize_proc(self : AdbOsRunner, p : LiveAdbProc) -> Unit {
+  let _ = p.child.close()
+  self.by_event.remove(p.event_id)
+  self.completed.set(
+    p.event_id,
     AdbExecResult::{
-      exit_code: match exit_code {
+      exit_code: match p.exit_code {
         Some(c) => c
         None => -1
       },
-      stdout: dev_concat_bytes(out_chunks),
-      stderr: dev_concat_bytes(err_chunks),
-      timed_out: timed_out,
+      stdout: dev_concat_bytes(p.out_chunks),
+      stderr: dev_concat_bytes(p.err_chunks),
+      timed_out: p.timed_out,
+      truncated: p.truncated,
+      error: p.error,
     },
   )
+}
+
+/// Feed a decoded `SysEvent` into `AdbOsRunner`. Enforces `max_output_bytes` on BOTH stdout and
+/// stderr, immediately killing the process group on overflow.
+pub fn AdbOsRunner::handle_sys_event(
+  self : AdbOsRunner,
+  event_id : Int64,
+  ev : station_sys::SysEvent,
+) -> Bool {
+  let p = match self.by_event.get(event_id) {
+    Some(proc) => proc
+    None => return false
+  }
+  match ev {
+    station_sys::SysEvent::ProcStdout(b) => {
+      if p.out_bytes + b.length() > p.max_output_bytes {
+        let keep = p.max_output_bytes - p.out_bytes
+        if keep > 0 {
+          p.out_chunks.push(b.slice(0, keep))
+          p.out_bytes = p.out_bytes + keep
+        }
+        p.truncated = true
+        p.error = Some("adb stdout exceeded max_output_bytes (" + p.max_output_bytes.to_string() + ")")
+        let _ = p.child.kill(station_sys::SIG_TERM, true)
+        let _ = p.child.kill(station_sys::SIG_KILL, true)
+        self.finalize_proc(p)
+        return true
+      }
+      if b.length() > 0 {
+        p.out_chunks.push(b)
+        p.out_bytes = p.out_bytes + b.length()
+      }
+    }
+    station_sys::SysEvent::ProcStderr(b) => {
+      if p.err_bytes + b.length() > p.max_output_bytes {
+        let keep = p.max_output_bytes - p.err_bytes
+        if keep > 0 {
+          p.err_chunks.push(b.slice(0, keep))
+          p.err_bytes = p.err_bytes + keep
+        }
+        p.truncated = true
+        p.error = Some("adb stderr exceeded max_output_bytes (" + p.max_output_bytes.to_string() + ")")
+        let _ = p.child.kill(station_sys::SIG_TERM, true)
+        let _ = p.child.kill(station_sys::SIG_KILL, true)
+        self.finalize_proc(p)
+        return true
+      }
+      if b.length() > 0 {
+        p.err_chunks.push(b)
+        p.err_bytes = p.err_bytes + b.length()
+      }
+    }
+    station_sys::SysEvent::ProcStdoutEof => p.stdout_eof = true
+    station_sys::SysEvent::ProcStderrEof => p.stderr_eof = true
+    station_sys::SysEvent::ProcExit(st) => p.exit_code = Some(st.code)
+    _ => ()
+  }
+  if p.exit_code is Some(_) && p.stdout_eof && p.stderr_eof {
+    self.finalize_proc(p)
+  }
+  true
+}
+
+pub fn AdbOsRunner::tick(self : AdbOsRunner, now_ms : Int64) -> Array[Int64] {
+  let timed_out_ids : Array[Int64] = []
+  let ids = self.by_event.keys()
+  for i in 0..<ids.length() {
+    let id = ids[i]
+    match self.by_event.get(id) {
+      Some(p) => {
+        if now_ms >= p.deadline_ms {
+          p.timed_out = true
+          p.error = Some("adb command timed out")
+          let _ = p.child.kill(station_sys::SIG_TERM, true)
+          let _ = p.child.kill(station_sys::SIG_KILL, true)
+          self.finalize_proc(p)
+          timed_out_ids.push(id)
+        }
+      }
+      None => ()
+    }
+  }
+  timed_out_ids
+}
+
+pub fn AdbOsRunner::take_result(self : AdbOsRunner, event_id : Int64) -> Option[AdbExecResult] {
+  match self.completed.get(event_id) {
+    Some(r) => {
+      self.completed.remove(event_id)
+      Some(r)
+    }
+    None => None
+  }
+}
+
+pub fn AdbOsRunner::stop_all(self : AdbOsRunner) -> Unit {
+  let ids = self.by_event.keys()
+  for i in 0..<ids.length() {
+    match self.by_event.get(ids[i]) {
+      Some(p) => {
+        let _ = p.child.kill(station_sys::SIG_TERM, true)
+        let _ = p.child.kill(station_sys::SIG_KILL, true)
+        self.finalize_proc(p)
+      }
+      None => ()
+    }
+  }
+}
+
+/// Standalone synchronous ADB helper built on `AdbOsRunner`: enforces stdout/stderr byte caps,
+/// kills process group on overflow/timeout, and forwards EVERY unrelated `HostEvent` (`ShellDone`,
+/// other `Sys`, stdin) to `on_other_event` so zero host events are ever swallowed.
+pub fn run_adb_command_os(
+  program : String,
+  args : Array[String],
+  cwd : String,
+  timeout_ms : Int64 = DEVICES_DEFAULT_ADB_TIMEOUT_MS,
+  max_output_bytes : Int = DEVICES_DEFAULT_ADB_MAX_BYTES,
+  runner : Option[AdbOsRunner] = None,
+  now_fn : () -> Int64 = host_shim::now_ms,
+  on_other_event : (host_shim::HostEvent) -> Unit = fn(_ev : host_shim::HostEvent) -> Unit {},
+) -> Result[AdbExecResult, String] {
+  let r = match runner {
+    Some(existing) => existing
+    None => AdbOsRunner::new(start_event_id=890001L + (now_fn() & 0xFFFFL))
+  }
+  let ev_id = match r.start_cmd(
+    program,
+    args,
+    cwd,
+    now_fn(),
+    timeout_ms=timeout_ms,
+    max_output_bytes=max_output_bytes,
+  ) {
+    Ok(id) => id
+    Err(e) => return Err(e)
+  }
+  while true {
+    match r.take_result(ev_id) {
+      Some(res) => return Ok(res)
+      None => ()
+    }
+    let _ = r.tick(now_fn())
+    match r.take_result(ev_id) {
+      Some(res) => return Ok(res)
+      None => ()
+    }
+    match host_shim::wait(100L) {
+      Some(host_shim::HostEvent::Sys(id, payload)) => {
+        if id == ev_id {
+          match station_sys::decode_sys_event(payload) {
+            Some(sev) => {
+              let _ = r.handle_sys_event(id, sev)
+            }
+            None => ()
+          }
+        } else {
+          on_other_event(host_shim::HostEvent::Sys(id, payload))
+        }
+      }
+      Some(other) => on_other_event(other)
+      None => ()
+    }
+  }
+  Err("adb command loop exited unexpectedly")
 }
 
 // ---------------------------------------------------------------------------
@@ -668,12 +1002,16 @@ pub struct DevicesOsRuntime {
   pub grant_servers : station_devices::GrantServers
   pub airplay_pairing : station_devices::AirPlayPairingManager
   pub android_tv_pairing : station_devices::AndroidTvPairingManager
+  pub adb_runner : AdbOsRunner
+  pub now_fn : () -> Int64
+  grant_procs : Map[String, (station_sys::ChildProcess, Int64)]
   rig_devices : Map[String, Array[station_devices::KeptDevice]]
 }
 
 pub fn DevicesOsRuntime::new(
   display_idle_ms : Int64 = 300000L,
   pairing_ttl_ms : Int64 = 180000L,
+  now_fn : () -> Int64 = host_shim::now_ms,
 ) -> DevicesOsRuntime {
   DevicesOsRuntime::{
     registry: station_devices::DeviceRegistry::new(),
@@ -682,6 +1020,9 @@ pub fn DevicesOsRuntime::new(
     grant_servers: station_devices::GrantServers::new(),
     airplay_pairing: station_devices::AirPlayPairingManager::new(pairing_ttl_ms),
     android_tv_pairing: station_devices::AndroidTvPairingManager::new(pairing_ttl_ms),
+    adb_runner: AdbOsRunner::new(),
+    now_fn: now_fn,
+    grant_procs: Map::new(),
     rig_devices: Map::new(),
   }
 }
@@ -694,10 +1035,17 @@ pub fn DevicesOsRuntime::set_rig_devices(
   self.rig_devices.set(rig_station, devices)
 }
 
-/// Build the aggregated `DeviceSources` view for `workspace` and `session` across:
-/// 1) whole-station devices (`WholeStationOpen`),
-/// 2) rig-attached devices (`RigApprovalRequired`),
-/// 3) lent Android phones (`PhoneApprovalRequired`, showing active grant if held & unexpired).
+/// Register a managed `ChildProcess` handle for a `GrantServers` entry so teardown uses
+/// handle-bound process-group signaling (no PID-reuse window).
+pub fn DevicesOsRuntime::register_grant_process(
+  self : DevicesOsRuntime,
+  grant_id : String,
+  child : station_sys::ChildProcess,
+  event_id : Int64,
+) -> Unit {
+  self.grant_procs.set(grant_id, (child, event_id))
+}
+
 pub fn DevicesOsRuntime::aggregate_sources(
   self : DevicesOsRuntime,
   workspace : String,
@@ -772,12 +1120,10 @@ pub fn DevicesOsRuntime::aggregate_sources(
   out
 }
 
-/// Encode an Android TV pairing request frame ready to send over a TLS/TCP transport.
 pub fn encode_android_tv_pairing_start_frame(service_name : String, client_name : String) -> Bytes {
   station_devices::atv_frame_message(station_devices::encode_pairing_request(service_name, client_name))
 }
 
-/// Encode an Android TV remote key-inject frame ready to send over a TLS/TCP transport.
 pub fn encode_android_tv_key_frame(key_name : String, direction : Int) -> Result[Bytes, String] {
   match station_devices::resolve_android_key_code(key_name) {
     Some(code) => Ok(station_devices::atv_frame_message(station_devices::encode_remote_key_inject(code, direction)))
@@ -785,20 +1131,25 @@ pub fn encode_android_tv_key_frame(key_name : String, direction : Int) -> Result
   }
 }
 
-/// Stop and kill any tracked `GrantServers` ADB daemon for `grant_id`.
-pub fn DevicesOsRuntime::stop_grant_server_os(self : DevicesOsRuntime, grant_id : String) -> Bool {
-  match self.grant_servers.stop(grant_id) {
-    None => false
-    Some(srv) => {
-      if srv.pid > 0 {
-        let _ = station_sys::proc_kill(srv.pid, station_sys::SIG_TERM, false)
-      }
+/// Stop and terminate a `GrantServers` daemon via its managed `ChildProcess` handle and process
+/// group (`SIGTERM` grace -> `SIGKILL` -> `close()`), never signaling bare PIDs.
+pub fn DevicesOsRuntime::stop_grant_server_os(
+  self : DevicesOsRuntime,
+  grant_id : String,
+  grace_ms : Int64 = DEVICES_STOP_GRACE_MS,
+  on_other_event : (host_shim::HostEvent) -> Unit = fn(_ev : host_shim::HostEvent) -> Unit {},
+) -> Bool {
+  let stopped_rec = self.grant_servers.stop(grant_id) is Some(_)
+  match self.grant_procs.get(grant_id) {
+    Some((child, ev_id)) => {
+      self.grant_procs.remove(grant_id)
+      dev_kill_proc_with_grace(child, ev_id, grace_ms, self.now_fn, on_other_event)
       true
     }
+    None => stopped_rec
   }
 }
 
-/// Periodic expiry sweep for AirPlay/AndroidTV pairing sessions and idle phone displays.
 pub fn DevicesOsRuntime::tick_expiry(self : DevicesOsRuntime, now_ms : Int64) -> (Int, Int) {
   let ap_expired = self.airplay_pairing.expire_due(now_ms)
   let disp_expired = self.phone_displays.sweep_idle(now_ms, [])
