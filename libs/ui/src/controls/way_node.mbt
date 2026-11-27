@@ -92,13 +92,13 @@ pub fn way_line_node(
           p.owns(fn() { parts.remove(i) }) |> ignore
           let name = fn() {
             match entry.get() {
-              Step(_, s, _) => s
+              WayEntry::Step(_, s, _) => s
               More => ""
             }
           }
           let total = fn() {
             match entry.get() {
-              Step(_, _, n) => n
+              WayEntry::Step(_, _, n) => n
               More => 0
             }
           }

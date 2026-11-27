@@ -35,7 +35,14 @@ pub fn[K : Eq] tabs_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   let t = @headless.Tabs::new(chosen, choose, manual~)
-  let place_of = fn(k : K) -> Int { tabs.search_by(fn(e) { e.0 == k }).unwrap_or(0) }
+  let place_of = fn(k : K) -> Int {
+    for i = 0; i < tabs.length(); i = i + 1 {
+      if tabs[i].0 == k {
+        return i
+      }
+    }
+    0
+  }
   let tab_h = match look {
     Underline => tabs_line_h
     Pill => tabs_pill_h

@@ -2814,7 +2814,7 @@ fn phone_player_node(
               .min_width(Is(Some(0.0)))
               .max_width(Is(Some(1.0e9)), within=true)
               .ink(By(fn() { ink().text }))
-              .says(By(fn() { Some(@view.said(Text, label=file.name)) }))
+              .says(By(fn() { Some(@view.said(@view.Role::Text, label=file.name)) }))
               |> ignore
             })
             |> ignore

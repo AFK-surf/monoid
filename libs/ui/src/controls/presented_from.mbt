@@ -7,7 +7,13 @@
 pub fn presented_from(from : Anchor) -> Bool {
   // (read: what asks is told again as one is presented or let go)
   presented_said.val.get() |> ignore
-  presented_now.iter().any(fn(p) { p.open && p.from == from })
+  for i = 0; i < presented_now.val.length(); i = i + 1 {
+    let p = presented_now.val[i]
+    if p.open && p.from == from {
+      return true
+    }
+  }
+  false
 }
 
 ///|

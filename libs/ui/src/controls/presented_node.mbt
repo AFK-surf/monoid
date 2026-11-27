@@ -109,8 +109,8 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       let mut out : Array[PresentedItem] = []
       in_win(fn() {
         presented_said.val.get() |> ignore
-        out = presented_now
-          .filter(fn(p) { (w > 0.0 && h > 0.0) || (p.shows is Panel(x) && x.stage) })
+        out = presented_now.val
+          .filter(fn(p) { (w > 0.0 && h > 0.0) || (p.shows is Shows::Panel(x) && x.stage) })
           .map(fn(p) { PresentedItem::{ p: p } })
       })
       out

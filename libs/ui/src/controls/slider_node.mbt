@@ -116,7 +116,7 @@ pub fn value_slider_node(
             o
             .over(Is(true), edges=(None, Some(-vslider_bubble_gap), None, None))
             .points(Is(false))
-            .scale(By(fn() { dmin(1.0, slider_bubble_scale_from + (1.0 - slider_bubble_scale_from) * hold(o)) }), about=At(0.5, 1.0))
+            .scale(By(fn() { dmin(1.0, slider_bubble_scale_from + (1.0 - slider_bubble_scale_from) * hold(o)) }), about=@view.Pivot::At(0.5, 1.0))
             .moved_by(
               fn(w, h, _at) { (thumb_x(o) + @glass.slider_thumb_w / 2.0 - w / 2.0, -h) },
               fn(_w, _h) { 0.0 },

@@ -26,7 +26,7 @@ pub fn style_node(v : @view.View, look : () -> @ui.Style, in_row? : Bool, loc~ :
     fn(s) {
       style_set(v, was.val, s, loc)
       was.val = Some(match was.val {
-        Some(w) => { ..s, says: w.says.joined(s.says) }
+        Some(w) => StyleSet::{ ..s, says: w.says.joined(s.says) }
         None => s
       })
     },
@@ -59,7 +59,7 @@ pub fn[T : Eq] style_node_and(
       let (s, a) = p
       style_set(v, was.val, s, loc)
       was.val = Some(match was.val {
-        Some(w) => { ..s, says: w.says.joined(s.says) }
+        Some(w) => StyleSet::{ ..s, says: w.says.joined(s.says) }
         None => s
       })
       set_also(a)
@@ -91,7 +91,7 @@ fn style_node_ring(
     fn(sr) {
       style_set(v, was.val, sr.0, loc)
       was.val = Some(match was.val {
-        Some(w) => { ..sr.0, says: w.says.joined(sr.0.says) }
+        Some(w) => StyleSet::{ ..sr.0, says: w.says.joined(sr.0.says) }
         None => sr.0
       })
       if rung.val != Some(sr.1) {

@@ -347,7 +347,7 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
             w
             .grow(Is(1.0))
             .words(By(fn() { t("web-pages.drive.player.list") }))
-            .words_look(By(fn() { { ..@ui.style_words(sheet_title_words), line: -@ui.tree_theme().text_line } }))
+            .words_look(By(fn() { @view.WordsLook::{ ..@ui.style_words(sheet_title_words), line: -@ui.tree_theme().text_line } }))
             .ink(By(fn() { @ui.style_ink(sheet_title_words) }))
             |> ignore
           })

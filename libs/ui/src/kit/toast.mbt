@@ -77,7 +77,14 @@ pub fn toaster(
   // as drawn last frame (those no longer given put away), then the new ones
   let order : Array[Toast] = []
   for to in kept.drawn {
-    match toasts.search_by(fn(x) { x.id == to.id }) {
+    let mut found : Int? = None
+    for i = 0; i < toasts.length(); i = i + 1 {
+      if toasts[i].id == to.id {
+        found = Some(i)
+        break
+      }
+    }
+    match found {
       Some(k) => order.push(toasts[k])
       None => {
         kept.gone[to.id] = true
@@ -101,7 +108,14 @@ pub fn toaster(
     return { open, acted }
   }
   // the time stops while the pointer is over one or the focus is in one
-  let paused = order.iter().any(fn(to) { c.hovered(c.id(key + "/" + to.id)) || focus_in(c, key, to.id) })
+  let mut paused = false
+  for i = 0; i < order.length(); i = i + 1 {
+    let to = order[i]
+    if c.hovered(c.id(key + "/" + to.id)) || focus_in(c, key, to.id) {
+      paused = true
+      break
+    }
+  }
   let (ww, _) = c.window_size()
   let width = dmin(w, ww - 32.0)
   let mut region = 0
