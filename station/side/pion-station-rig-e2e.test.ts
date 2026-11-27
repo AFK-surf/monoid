@@ -1543,6 +1543,71 @@ test("Gate 12.3, 12.4, 12.5, 12.6: cross-workspace isolation, real vault.run, No
   assert.equal(scItem3.removed, 1);
   assert.equal(readFileSync(join(mirrorRootA, "item"), "utf8"), "file-to-nested-r8\n");
 
+  // Astra P1 (R9): Directory rollback fidelity — move `oldslot/file` (`oldslot/` mode 0o750) to `reserved/newdir/renamed`
+  // with pre-existing empty `reserved/` dir, force `task.json` failure -> `oldslot/` restored with exact 0o750 mode,
+  // `oldslot/file` restored, pre-existing empty `reserved/` preserved, and newly created `reserved/newdir` cleaned up!
+  const slotBytes = Buffer.from("oldslot-payload-r9\n", "utf8");
+  const slotHash = createHash("sha1").update(Buffer.concat([Buffer.from(`blob ${slotBytes.length}\0`), slotBytes])).digest("hex");
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-slot1",
+    spec: { name: "dir-slot1", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbSlot1 = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-slot1" })).result;
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.put",
+    session: "chat:c1",
+    key: "k-dir-slot1",
+    id: sbSlot1.id,
+    pieces: [[slotHash, slotBytes.length, 0, slotBytes.length]],
+  }, slotBytes);
+  const scSlot1 = (await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "sync.commit",
+    session: "chat:c1",
+    key: "k-dir-slot1",
+    id: sbSlot1.id,
+    set: [["oldslot/file", slotHash, "100644"]],
+    remove: [],
+    final: true,
+  })).result;
+  assert.equal(scSlot1.synced, true);
+  chmodSync(join(mirrorRootA, "oldslot"), 0o750);
+  mkdirSync(join(mirrorRootA, "reserved"), { recursive: true });
+  assert.equal(statSync(join(mirrorRootA, "oldslot")).mode & 0o777, 0o750);
+
+  await peerRpc(peerA, rigId, rigAddr, wsA, {
+    method: "task.prepare",
+    session: "chat:c1",
+    key: "k-dir-slot2",
+    spec: { name: "dir-slot2", command: "true", dir: "/Users/dev/my:project" },
+  });
+  const sbSlot2 = (await peerRpc(peerA, rigId, rigAddr, wsA, { method: "sync.begin", session: "chat:c1", key: "k-dir-slot2" })).result;
+  const tidSlot2 = createHash("sha256").update(JSON.stringify([wsA, peerAId, "chat:c1", "k-dir-slot2"])).digest("hex");
+  const incDirSlot2 = join(data, "remote/incoming", tidSlot2);
+  chmodSync(incDirSlot2, 0o500);
+  try {
+    await assert.rejects(
+      () => peerRpc(peerA, rigId, rigAddr, wsA, {
+        method: "sync.commit",
+        session: "chat:c1",
+        key: "k-dir-slot2",
+        id: sbSlot2.id,
+        set: [["reserved/newdir/renamed", slotHash, "100644"]],
+        remove: ["oldslot/file"],
+        final: true,
+      }),
+      /failed to write task\.json|failed to rename task\.json/i,
+    );
+    assert.equal(existsSync(join(mirrorRootA, "oldslot")), true, "oldslot/ MUST be restored on rollback");
+    assert.equal(statSync(join(mirrorRootA, "oldslot")).mode & 0o777, 0o750, "oldslot/ MUST preserve exact original mode 0o750");
+    assert.equal(readFileSync(join(mirrorRootA, "oldslot/file"), "utf8"), "oldslot-payload-r9\n");
+    assert.equal(existsSync(join(mirrorRootA, "reserved")), true, "pre-existing empty reserved/ dir MUST NOT be deleted on rollback");
+    assert.equal(existsSync(join(mirrorRootA, "reserved/newdir")), false, "newly created reserved/newdir MUST be cleaned up on rollback");
+  } finally {
+    chmodSync(incDirSlot2, 0o700);
+  }
+
   // Conflicting re-prepare on same key MUST be rejected!
   await assert.rejects(
     () => peerRpc(peerA, rigId, rigAddr, wsA, {

@@ -1973,13 +1973,29 @@ pub fn dispatch_rig_peer_rpc_ext(
           }
         }
       }
-      // Best-effort cleanup of empty parent directories strictly under `mirror_dir` (supports `item/nested` <-> `item` and clean rollback).
-      let prune_empty_parents = fn(rel : String) -> Unit {
+      // Phase 3: apply removals FIRST (matching `dirsync.mbt:349,382`, enabling `item` <-> `item/nested` renames),
+      // then apply writes, then persist MB manifest, then persist `task.json`.
+      // Track exact `removed_dirs` (with original POSIX modes) and newly `created_dirs` (never pre-existing empty dirs)
+      // so rollback restores bytes, file modes, removed dir modes, and cleans only dirs created by this commit.
+      let is_posix = remote.fs.sep != "\\"
+      let old_manifest_raw = (remote.fs.read_file)(manifest_path)
+      let created_new : Array[String] = []
+      let created_dirs : Array[String] = []
+      let created_dirs_seen : Map[String, Bool] = Map::new()
+      let removed_dirs : Array[(String, Int)] = []
+      let touched_existing : Map[String, Bool] = Map::new()
+      let prune_removed_parents = fn(rel : String) -> Unit {
         let mut cur_rel = nodepath::dirname("/", rel)
         while cur_rel.length() > 0 && cur_rel != "." && cur_rel != "/" {
           match station_jobs::safe_transfer_path(remote.fs, mirror_dir, cur_rel, false) {
             Ok(dir_abs) => {
-              if !(remote.fs.rmdir)(dir_abs) {
+              let dmode = match (remote.fs.lstat)(dir_abs) {
+                Some(st) => if st.mode > 0 { st.mode } else { 493 }
+                None => 493
+              }
+              if (remote.fs.rmdir)(dir_abs) {
+                removed_dirs.push((cur_rel, dmode))
+              } else {
                 break
               }
             }
@@ -1988,20 +2004,60 @@ pub fn dispatch_rig_peer_rpc_ext(
           cur_rel = nodepath::dirname("/", cur_rel)
         }
       }
-      // Phase 3: apply removals FIRST (matching `dirsync.mbt:349,382`, enabling `item` <-> `item/nested` renames),
-      // then apply writes, then persist MB manifest, then persist `task.json`.
-      // Any error in any step triggers full rollback (delete new files + empty dirs, restore overwritten & deleted backups + exact modes, restore manifest).
-      let is_posix = remote.fs.sep != "\\"
-      let old_manifest_raw = (remote.fs.read_file)(manifest_path)
-      let created_new : Array[String] = []
-      let touched_existing : Map[String, Bool] = Map::new()
+      let record_new_parents = fn(rel : String) -> Unit {
+        let missing : Array[String] = []
+        let mut cur_rel = nodepath::dirname("/", rel)
+        while cur_rel.length() > 0 && cur_rel != "." && cur_rel != "/" {
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, cur_rel, false) {
+            Ok(dir_abs) => {
+              if (remote.fs.lstat)(dir_abs) is None {
+                missing.push(cur_rel)
+              } else {
+                break
+              }
+            }
+            Err(_) => break
+          }
+          cur_rel = nodepath::dirname("/", cur_rel)
+        }
+        let mut mi = missing.length() - 1
+        while mi >= 0 {
+          let drel = missing[mi]
+          if !created_dirs_seen.contains(drel) {
+            created_dirs_seen.set(drel, true)
+            created_dirs.push(drel)
+          }
+          mi = mi - 1
+        }
+      }
       let rollback_commit = fn() -> Unit {
         for ci in 0..<created_new.length() {
           match station_jobs::safe_transfer_path(remote.fs, mirror_dir, created_new[ci], false) {
             Ok(p) => { let _ = (remote.fs.remove_file)(p) }
             Err(_) => ()
           }
-          prune_empty_parents(created_new[ci])
+        }
+        let mut cdi = created_dirs.length() - 1
+        while cdi >= 0 {
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, created_dirs[cdi], false) {
+            Ok(dir_abs) => { let _ = (remote.fs.rmdir)(dir_abs) }
+            Err(_) => ()
+          }
+          cdi = cdi - 1
+        }
+        let mut rdi = removed_dirs.length() - 1
+        while rdi >= 0 {
+          let (drel, dmode) = removed_dirs[rdi]
+          match station_jobs::safe_transfer_path(remote.fs, mirror_dir, drel, false) {
+            Ok(dir_abs) => {
+              let _ = (remote.fs.mkdir_p)(dir_abs)
+              if is_posix {
+                let _ = (remote.fs.chmod)(dir_abs, dmode)
+              }
+            }
+            Err(_) => ()
+          }
+          rdi = rdi - 1
         }
         for bi in 0..<backup_items.length() {
           let (rel, bak_name, orig_sz, orig_mode) = backup_items[bi]
@@ -2037,7 +2093,7 @@ pub fn dispatch_rig_peer_rpc_ext(
           if (remote.fs.remove_file)(abs) {
             touched_existing.set(rel, true)
             removed = removed + 1
-            prune_empty_parents(rel)
+            prune_removed_parents(rel)
           } else {
             rollback_commit()
             return Err("failed to remove " + rel)
@@ -2051,6 +2107,7 @@ pub fn dispatch_rig_peer_rpc_ext(
           touched_existing.set(rel, true)
         } else {
           created_new.push(rel)
+          record_new_parents(rel)
         }
         match stream_copy_file(remote.fs, hooks, stage_dir, stage_name, mirror_dir, rel, src_sz, fmode) {
           Ok(_) => {
