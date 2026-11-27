@@ -17,7 +17,7 @@
 //   vaults {workspace}            the vaults this person is in, whether this device is set up, requests to approve
 //   vaultItems {workspace, vault} a vault's items: names once it is unlocked (the listed ones' always)
 //   vaultUses {workspace, vault, item}  an item's uses by agents (the requests decided), the latest first
-//   (`lockPrompts` `asks`, views/lock.ts: members' devices set up that wait on this one for a vault's key, every
+//   (`lockPrompts` `asks`, views/lock.ts: members' devices that asked (申请授权) and wait on this one for a vault's key, every
 //   workspace's, wherever the person is: `vault.addDevice {vault, device}` gives it, `vault.hidePrompt` puts one away
 //   until that device asks again; `vaultAsks` here)
 //
@@ -76,8 +76,8 @@ import { Priority } from "../sync/scheduler.ts";
 import type { SpanContext } from "../trace.ts";
 import { get, isObject, utf8 } from "../util.ts";
 import {
-  type BoxCert, type BrowseAnswer, type CrossListing, type Deny, type Grant, type Item, type Listing, type Plain, type Request, type Save, type Scope, type Vault,
-  SCOPES, TAG, allows, boxPublic, decrypt, encryptWith, fromWords, grantContext, itemContext, keyContext, openSeal, recoveryPair, saveContext, rulesCrypto, sealWith, sign, toWords,
+  type BoxCert, type BrowseAnswer, type CrossListing, type Deny, type Grant, type Item, type KeyAsk, type Listing, type Plain, type Request, type Save, type Scope, type Vault,
+  SCOPES, TAG, allows, askOk, boxPublic, decrypt, encryptWith, fromWords, grantContext, itemContext, keyContext, openSeal, recoveryPair, saveContext, rulesCrypto, sealWith, sign, toWords,
 } from "../vault/crypto.ts";
 // @ts-ignore: the MoonBit build's JS, untyped
 import * as rules from "../../../../rules/js/rules.js";
@@ -139,6 +139,9 @@ type Held = {
   memberRoles?: Record<string, string>;
   /// Cross-workspace personal secret uses recorded on each station of this workspace (by station id).
   crossUses?: Record<string, CrossUse[]>;
+  /// Explicit per-vault key asks (`vaultId -> device -> KeyAsk`), decoupled from `BoxCert` so automatic certificate
+  /// publishing never triggers prompts and asks are never embedded into `Vault.keys`.
+  asks?: Record<string, Record<string, KeyAsk>>;
 };
 
 /// A vault's version a station holds, and its items' versions; the signatures of those (`sig`, `sigs`): which of two of
@@ -162,6 +165,8 @@ type Mem = {
   /// Each vault's giving under way (one at a time, keyed by `<ws>/<vault>`); the version of each a station refused as no vault (not given
   /// again until it moves on, keyed by `<ws>/<vault>`).
   giving: Map<string, ReturnType<typeof Semaphore.makeUnsafe>>; refused: Map<string, number>;
+  /// Per-workspace publication lock serializing `ask` and `autoSetUp` so initial `BoxCert` setup and monotonic `KeyAsk` timestamps never race.
+  certLocks: Map<string, ReturnType<typeof Semaphore.makeUnsafe>>;
   /// By workspace, the devices and members this device took out of its lock in this run at a person's asking
   /// (`tookOut`): a vault waiting to be keyed anew for one of them may read the box key to be keyed anew (`rekeyGone`).
   out: Map<string, Set<string>>;
@@ -179,7 +184,7 @@ type Mem = {
 const mems = new WeakMap<Inner, Mem>();
 const mem = (inner: Inner): Mem => {
   let m = mems.get(inner);
-  if (!m) mems.set(inner, (m = { keys: new Map(), checked: new Map(), box: undefined, giving: new Map(), refused: new Map(), out: new Map(), boxInit: Semaphore.makeUnsafe(1), autoBoxing: new Set(), cameRead: new Set(), browseRead: new Set(), settledRequests: new Set() }));
+  if (!m) mems.set(inner, (m = { keys: new Map(), checked: new Map(), box: undefined, giving: new Map(), refused: new Map(), certLocks: new Map(), out: new Map(), boxInit: Semaphore.makeUnsafe(1), autoBoxing: new Set(), cameRead: new Set(), browseRead: new Set(), settledRequests: new Set() }));
   return m;
 };
 
@@ -455,6 +460,27 @@ function certOwner(lock: Checked, cert: BoxCert): string | null {
   return rules.cert_ok_js(lock, cert, false, rulesCrypto) === null ? lock.devices.get(cert.device)!.sub : null;
 }
 
+/// Verified previous `at` of `device` in `h.boxes`, accepting both current and historical signing keys (`ever = true`)
+/// so signing-key rotation or clock rollback keeps `BoxCert.at` monotonically increasing while ignoring unverified records.
+function verifiedBoxAt(lock: Checked, h: Held, device: string): number {
+  const cached = h.boxes[device];
+  if (cached === undefined || typeof cached.at !== "number" || !Number.isSafeInteger(cached.at) || cached.at < 0 || cached.at >= Number.MAX_SAFE_INTEGER) return -1;
+  return rules.cert_ok_js(lock, cached, true, rulesCrypto) === null ? cached.at : -1;
+}
+
+/// Verified previous `at` of `(vaultId, device)` in `h.asks`, accepting both current and historical signing keys
+/// (`ever = true`) so signing-key rotation or clock rollback advances monotonically while ignoring unverified records.
+function verifiedAskAt(lock: Checked, h: Held, vaultId: string, device: string): number {
+  const byVault = h.asks;
+  if (!isObject(byVault) || !Object.prototype.hasOwnProperty.call(byVault, vaultId)) return -1;
+  const map = byVault[vaultId];
+  if (!isObject(map) || !Object.prototype.hasOwnProperty.call(map, device)) return -1;
+  const cached = map[device];
+  if (cached === undefined || typeof cached.at !== "number" || !Number.isSafeInteger(cached.at) || cached.at < 0 || cached.at >= Number.MAX_SAFE_INTEGER) return -1;
+  if (cached.vault !== vaultId || cached.device !== device) return -1;
+  return askOk(lock, cached, true) === null ? cached.at : -1;
+}
+
 /// The app device of the lock that signs with `key`, where it is its person's own (no other's signature counts).
 const ownSigner = (lock: Checked, key: unknown) => [...lock.devices.values()].find((x) => x.kind === "app" && x.own && x.sign_key === key);
 
@@ -714,7 +740,7 @@ function waitingError(inner: Inner, ws: string, v: Vault): CoreError {
 /// (test/vault.test.ts "a station that lies"). No lock checked here: none taken. A vault waiting to be keyed anew
 /// (`waitingAs`) is taken as the lock it waits by took it, and its items checked against that lock: else any later
 /// version a station made up of it or of an item, taken by none, would be held over it.
-type Fits = { vault(v: Vault): boolean; item(i: Item): boolean; cert(c: BoxCert): boolean };
+type Fits = { vault(v: Vault): boolean; item(i: Item): boolean; cert(c: BoxCert): boolean; ask(a: KeyAsk): boolean };
 function fitsWith(inner: Inner, ws: string, lock: Checked): Fits {
   return {
     vault: (v) => trusted(lock, v) || waitingAs(inner, ws, lock, v) !== null,
@@ -724,11 +750,12 @@ function fitsWith(inner: Inner, ws: string, lock: Checked): Fits {
       return v !== undefined && as !== null && rules.item_ok_js(as, v, null, i, true, rulesCrypto) === null;
     },
     cert: (c) => rules.cert_ok_js(lock, c, false, rulesCrypto) === null,
+    ask: (a) => askOk(lock, a) === null,
   };
 }
 function fits(inner: Inner, ws: string): Fits {
   const lock = lockOf(inner, ws);
-  if (lock instanceof CoreError) return { vault: () => false, item: () => false, cert: () => false };
+  if (lock instanceof CoreError) return { vault: () => false, item: () => false, cert: () => false, ask: () => false };
   return fitsWith(inner, ws, lock);
 }
 
@@ -795,7 +822,7 @@ export function install(inner: Inner): void {
     read: (address) => readStation(inner, address),
     resumed: (address) => {
       const ws = ofAddress(address);
-      return inner.data.record("vault", ws) !== undefined ? Effect.void : readStation(inner, address);
+      return inner.data.record("vault", ws) !== undefined ? backfillAsks(inner, address) : readStation(inner, address);
     },
     event: (address, name, data) => heard(inner, address, name, data),
   });
@@ -848,6 +875,7 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
     let list: Vault[] | null = null;
     let all: Item[] = [];
     let boxes: BoxCert[] = [];
+    let keyAsks: KeyAsk[] = [];
     const incomingChains: Record<string, Entry[]> = {};
     const incomingRoles: Record<string, string> = {};
     if (vaults._tag === "Failure") {
@@ -861,6 +889,8 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
       all = arr(get(yield* ask(inner, address, "GET", "/vault/items"), "items")) as Item[];
       const boxesRes = yield* ask(inner, address, "GET", "/vault/boxes");
       boxes = arr(get(boxesRes, "boxes")) as BoxCert[];
+      // Older stations without `/vault/asks` answer 404: treat as none.
+      keyAsks = yield* Effect.orElseSucceed(Effect.map(ask(inner, address, "GET", "/vault/asks"), (r) => arr(get(r, "asks")) as KeyAsk[]), () => [] as KeyAsk[]);
       const ownerSub = inner.workspaces.owner(ws);
       const rawChains = get(boxesRes, "chains");
       if (isObject(rawChains)) {
@@ -915,6 +945,7 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
         }
       }
       for (const c of boxes) if (heldOver(h.boxes[c.device], c, fit)) h.boxes[c.device] = c;
+      for (const a of keyAsks) mergeAsk(h, a, fit);
       for (const [id, at] of Object.entries(h.asked)) {
         if (at === station) {
           delete h.requests[id];
@@ -931,8 +962,10 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
     // Each item as the latest version any station holds (a copy behind its host's says nothing newer).
     for (const v of list ?? []) {
       // (gone where the version held says so: one a station made up deletes nothing)
-      if (held(inner, ws).vaults[v.id]?.deleted) inner.data.forgetRecord("vaultItems", `${ws}/${v.id}`);
-      else changeItems(inner, ws, v.id, (held) => {
+      if (held(inner, ws).vaults[v.id]?.deleted) {
+        inner.data.forgetRecord("vaultItems", `${ws}/${v.id}`);
+        change(inner, ws, (h) => { if (h.asks) delete h.asks[v.id]; });
+      } else changeItems(inner, ws, v.id, (held) => {
         for (const i of all) if (i.vault === v.id && newer(i, held[i.id], fit)) held[i.id] = i;
       });
       settleBefore(inner, ws, v.id);
@@ -949,8 +982,11 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
       const lock = lockOf(inner, ws);
       const self = lock instanceof CoreError ? null : me(lock, signerOf(inner));
       const mine = self === null ? undefined : held(inner, ws).boxes[self.device];
-      if (self !== null && mine !== undefined && mine.box === mem(inner).box && certOwner(lock as Checked, mine) !== null && !boxes.some((c) => c.device === self.device && c.at >= mine.at)) {
-        yield* Effect.ignore(ask(inner, address, "PUT", "/vault/boxes", mine), { log: "Unhandled", message: "vault box brought" });
+      if (self !== null && mine !== undefined && mine.box === mem(inner).box && certOwner(lock as Checked, mine) !== null) {
+        if (!boxes.some((c) => c.device === self.device && c.at >= mine.at)) {
+          yield* Effect.ignore(ask(inner, address, "PUT", "/vault/boxes", mine), { log: "Unhandled", message: "vault box brought" });
+        }
+        yield* backfillAsks(inner, address, keyAsks);
       }
     }
     if (list !== null) spreadAll(inner, ws);
@@ -964,6 +1000,31 @@ export function readStation(inner: Inner, address: string): Effect.Effect<void, 
   });
 }
 
+/// Backfill this device's already-accepted explicit `KeyAsk` records to `address` on full read or short-disconnect
+/// SSE stream resume, skipping asks `knownAsks` already shows on that station at an equal or newer `at`.
+function backfillAsks(inner: Inner, address: string, knownAsks?: KeyAsk[]): Effect.Effect<void, CoreError> {
+  return Effect.gen(function* () {
+    if (!inner.stations.link(address) || !inner.stations.reachable(address)) return;
+    const ws = ofAddress(address);
+    const lock = lockOf(inner, ws);
+    if (lock instanceof CoreError) return;
+    const self = me(lock, signerOf(inner));
+    if (self === null) return;
+    const cur = held(inner, ws);
+    const mine = cur.boxes[self.device];
+    if (mine === undefined || mine.box !== mem(inner).box || certOwner(lock, mine) === null || !cur.asks) return;
+    for (const [vaultId, byDev] of Object.entries(cur.asks)) {
+      if (!isObject(byDev) || !Object.prototype.hasOwnProperty.call(byDev, self.device)) continue;
+      const v = cur.vaults[vaultId];
+      if (!isObject(v) || v.deleted || !Array.isArray(v.keys) || v.keys.some((k) => k.cert.device === self.device && k.cert.box === mine.box)) continue;
+      const myAsk = byDev[self.device];
+      if (myAsk === undefined || myAsk.box !== mine.box || askOk(lock, myAsk) !== null) continue;
+      if (knownAsks?.some((a) => a.vault === vaultId && a.device === self.device && a.at >= myAsk.at)) continue;
+      yield* Effect.ignore(ask(inner, address, "PUT", "/vault/asks", myAsk), { log: "Unhandled", message: "vault ask brought" });
+    }
+  });
+}
+
 /// Whether item `i` is kept over `had` (none: it is): the later version, or of one version the one every station keeps
 /// (rules/ `item_supersedes_js`).
 const newer = (i: Item, had: Item | undefined, fit: Fits) =>
@@ -971,6 +1032,19 @@ const newer = (i: Item, had: Item | undefined, fit: Fits) =>
 
 /// Whether box certificate `c` is held over `had` (the later, as `over` says).
 const heldOver = (had: BoxCert | undefined, c: BoxCert, fit: Fits) => had === undefined || over(fit.cert(c), () => fit.cert(had), had.at <= c.at);
+
+/// Whether standalone key ask `a` is kept over `had`: only verified asks are ever accepted, and a verified ask
+/// replaces an invalid cached entry or advances monotonically by `at`.
+const heldAskOver = (had: KeyAsk | undefined, a: KeyAsk, fit: Fits) =>
+  fit.ask(a) && (had === undefined || !fit.ask(had) || had.at <= a.at);
+
+function mergeAsk(h: Held, a: KeyAsk, fit: Fits): void {
+  if (!isObject(a) || typeof a.vault !== "string" || typeof a.device !== "string") return;
+  const byVault = h.asks?.[a.vault];
+  const had = byVault && Object.prototype.hasOwnProperty.call(byVault, a.device) ? byVault[a.device] : undefined;
+  if (!heldAskOver(had, a, fit)) return;
+  ((h.asks ??= {})[a.vault] ??= {})[a.device] = a;
+}
 
 /// That `at` (a station's holding) holds item `i` at its version.
 function holdsItem(at: Holding, i: Item): void {
@@ -1044,11 +1118,24 @@ function take(h: Held, v: Vault, fit: Fits): void {
   const later = had !== undefined && rules.vault_supersedes_js(v, had);
   if (had === undefined || over(fit.vault(v), () => fit.vault(had), later)) {
     h.vaults[v.id] = v;
-    // (a vault deleted keeps no items, so nothing under an earlier key either)
-    if (v.deleted) delete h.before?.[v.id];
-    else if (had !== undefined && v.epoch > had.epoch) {
-      const before = (h.before ??= {});
-      before[v.id] = { ...before[v.id], [had.epoch]: had };
+    // (a vault deleted keeps no items or asks; once a device's box is keyed in `v.keys`, prune its satisfied ask)
+    if (v.deleted) {
+      delete h.before?.[v.id];
+      delete h.asks?.[v.id];
+    } else {
+      if (had !== undefined && v.epoch > had.epoch) {
+        const before = (h.before ??= {});
+        before[v.id] = { ...before[v.id], [had.epoch]: had };
+      }
+      const vaultAsksMap = h.asks?.[v.id];
+      if (vaultAsksMap !== undefined) {
+        for (const k of v.keys) {
+          if (Object.prototype.hasOwnProperty.call(vaultAsksMap, k.cert.device) && vaultAsksMap[k.cert.device]?.box === k.cert.box) {
+            delete vaultAsksMap[k.cert.device];
+          }
+        }
+        if (Object.keys(vaultAsksMap).length === 0) delete h.asks![v.id];
+      }
     }
     if (h.later?.[v.id] !== undefined && !rules.vault_supersedes_js(h.later[v.id], v)) delete h.later[v.id];
   } else if (later && (h.later?.[v.id] === undefined || rules.vault_supersedes_js(v, h.later[v.id]))) (h.later ??= {})[v.id] = v;
@@ -1147,6 +1234,7 @@ function letGo(h: Held, id: string, station: string): void {
     delete h.vaults[id];
     delete h.at[id];
     delete h.before?.[id];
+    delete h.asks?.[id];
     return;
   }
   if (h.at[id] === station || h.at[id] === undefined) h.at[id] = Object.keys(on).sort()[0]!;
@@ -1273,6 +1361,11 @@ function heard(inner: Inner, address: string, name: string, data: unknown): void
         giveKept(inner, ws);
         // (another device of this person's set up: this one too, by itself)
         autoBox(inner, ws);
+      }
+      return;
+    case "vault-ask":
+      if (typeof d?.vault === "string" && typeof d?.device === "string") {
+        change(inner, ws, (h) => mergeAsk(h, d as KeyAsk, fits(inner, ws)));
       }
       return;
     case "vault-plain":
@@ -2203,16 +2296,39 @@ function memberInfoOf(inner: Inner, ws: string): (sub: string) => { ownerName: s
   };
 }
 
+const hideKey = (vault: string, device: string) => `${vault}/${device}`;
+
+/// Verified standalone `KeyAsk` timestamp for `(vaultId, c.device, c.box)`, or null if never explicitly asked.
+function vaultAskedAt(lock: Checked, h: Held, ws: string, vaultId: string, c: BoxCert): number | null {
+  const byVault = h.asks;
+  if (!isObject(byVault) || !Object.prototype.hasOwnProperty.call(byVault, vaultId)) return null;
+  const map = byVault[vaultId];
+  if (!isObject(map) || !Object.prototype.hasOwnProperty.call(map, c.device)) return null;
+  const a = map[c.device];
+  if (a === undefined || a.ws !== ws || a.vault !== vaultId || a.device !== c.device || a.box !== c.box) return null;
+  return askOk(lock, a) === null ? a.at : null;
+}
+
+const MAX_VAULT_ASKS_SHOWN = 32;
+/// Soft serialized UTF-8 byte cap for `lockPrompts.asks` (always keeping at least the top row).
+const MAX_VAULT_ASKS_BYTES = 16 * 1024;
+const ASK_FUTURE_SKEW_S = 300;
+
 /// The `lockPrompts` topic's `asks` (views/lock.ts promptsView: the topic every page has open, and every recorded
 /// run of the app asks; a topic of its own would be asked by none of them): in every workspace of the person's, the
-/// members' devices set up (their certificates the lock vouches for) that hold no key to a vault of this person's own
-/// that this device holds the key to (so can give it: `vault.addDevice {vault, device}`), the latest asking first; not
-/// those put away (`vault.hidePrompt`), until they ask again (`vault.ask`: a certificate published anew). None where
-/// this app keeps no keys.
+/// members' devices whose person explicitly pressed 申请授权 for that specific vault (standalone signed `KeyAsk` in
+/// `h.asks[v.id][c.device]`, decoupled from `BoxCert` so automatic box-certificate publishing never triggers prompts
+/// and asking for one vault never carries over to other or future vaults) that hold no key to a vault this device can
+/// manage and holds the key to (so can give it: `vault.addDevice {vault, device}`), the latest asking first (bounded
+/// to `MAX_VAULT_ASKS_SHOWN` entries and clamped against far-future signer clocks while preserving exact `at` for
+/// `hidePrompt`); not those put away (`vault.hidePrompt`), until they ask for that vault again (`vault.ask`). None
+/// where this app keeps no keys.
 export function vaultAsks(inner: Inner): J[] {
-  const asks: J[] = [];
-  if (!able(inner)) return asks;
+  if (!able(inner)) return [];
+  const rows: { sortAt: number; row: J }[] = [];
   const now = clockOf(inner);
+  const nowSec = Math.floor(now.now / 1000);
+  const skewMax = nowSec + ASK_FUTURE_SKEW_S;
   for (const ws of workspaceIds(inner.views?.ok({ topic: "workspaces" }))) {
     const lock = lockOf(inner, ws);
     if (lock instanceof CoreError) continue;
@@ -2231,27 +2347,51 @@ export function vaultAsks(inner: Inner): J[] {
       const vaultScope = v.scope === "workspace" ? "workspace" : "personal";
       const vaultItems = Object.values(items(inner, ws, v.id)).filter((i) => !i.deleted).length;
       for (const c of vouched) {
-        if (!v.members.includes(c.sub) || keyed.get(c.device) === c.box || (h.hidden[c.device] ?? -1) >= c.at) continue;
+        // (only vaults explicitly requested via standalone signed KeyAsk: automatic BoxCert publishing prompts nobody,
+        // and asking for vault A never triggers a prompt for vault B or a future vault)
+        const askedAt = vaultAskedAt(lock, h, ws, v.id, c);
+        if (askedAt === null || !v.members.includes(c.sub) || keyed.get(c.device) === c.box) continue;
+        const hiddenAt = Math.max(
+          Object.prototype.hasOwnProperty.call(h.hidden, hideKey(v.id, c.device)) ? h.hidden[hideKey(v.id, c.device)]! : -1,
+          Object.prototype.hasOwnProperty.call(h.hidden, c.device) ? h.hidden[c.device]! : -1,
+        );
+        if (hiddenAt >= askedAt) continue;
         const dev = deviceLabelOf(inner, ws, c.device, c.sub);
         const info = memberOf(c.sub);
         const code = deviceVerifyCode(c.device);
-        asks.push({
-          workspace: ws, workspaceName: workspaceName(inner, ws), vault: v.id, vaultName: v.name, device: c.device,
-          deviceText: deviceText(dev),
-          ...(code ? { deviceCode: code } : {}),
-          ownerName: info.ownerName,
-          ...(info.ownerEmail ? { ownerEmail: info.ownerEmail } : {}),
-          isOwnDevice: c.sub === self.sub,
-          vaultScope,
-          vaultItems,
-          safeMode: safe,
-          at: c.at, atText: str(stamp(c.at * 1000, now).ago) ?? "",
+        // Far-future timestamps (> now + 5m) sort strictly behind real-clock asks (sortAt = 0) so a skewed or
+        // adversarial signer can never starve legitimate requests, while keeping exact signed `at: askedAt` for hidePrompt.
+        const future = askedAt > skewMax;
+        const shownAt = future ? nowSec : askedAt;
+        rows.push({
+          sortAt: future ? 0 : askedAt,
+          row: {
+            workspace: ws, workspaceName: workspaceName(inner, ws), vault: v.id, vaultName: v.name, device: c.device,
+            deviceText: deviceText(dev),
+            ...(code ? { deviceCode: code } : {}),
+            ownerName: info.ownerName,
+            ...(info.ownerEmail ? { ownerEmail: info.ownerEmail } : {}),
+            isOwnDevice: c.sub === self.sub,
+            vaultScope,
+            vaultItems,
+            safeMode: safe,
+            at: askedAt, atText: str(stamp(shownAt * 1000, now).ago) ?? "",
+          },
         });
       }
     }
   }
-  asks.sort((a, b) => b.at - a.at || (a.device < b.device ? -1 : 1));
-  return asks;
+  rows.sort((a, b) => b.sortAt - a.sortAt || (a.row.device < b.row.device ? -1 : a.row.device > b.row.device ? 1 : a.row.vault < b.row.vault ? -1 : a.row.vault > b.row.vault ? 1 : 0));
+  const out: J[] = [];
+  let bytes = 2; // "[]"
+  for (const r of rows) {
+    if (out.length >= MAX_VAULT_ASKS_SHOWN) break;
+    const cost = utf8(JSON.stringify(r.row)).length + (out.length > 0 ? 1 : 0);
+    if (out.length > 0 && bytes + cost > MAX_VAULT_ASKS_BYTES) break;
+    bytes += cost;
+    out.push(r.row);
+  }
+  return out;
 }
 
 /// The `vaults` topic.
@@ -2595,10 +2735,14 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
       return v.addDevice(p("vault"), str(c.params.device));
     case "setMembers":
       return v.setMembers(p("vault"), arr(c.params.members).filter((x): x is string => typeof x === "string"));
-    case "ask":
-      return v.ask();
+    case "ask": {
+      if (c.params.vault !== undefined && (typeof c.params.vault !== "string" || c.params.vault === "")) {
+        return Effect.fail(CoreError.invalid("vault"));
+      }
+      return v.ask(str(c.params.vault));
+    }
     case "hidePrompt":
-      return v.hidePrompt(p("device"), typeof c.params.at === "number" ? c.params.at : null);
+      return v.hidePrompt(p("device"), typeof c.params.at === "number" ? c.params.at : null, str(c.params.vault) || null);
     case "prompts":
       return Effect.succeed({ asks: vaultAsks(inner) });
     case "putItem":
@@ -3436,39 +3580,121 @@ class Vaults {
     });
   }
 
-  /// This device asking for the keys it lacks (set up already): its certificate published anew, dated now, so that
-  /// the owner's devices hearing of it give it the keys they hold unsealed, or prompt for it again where it was put
-  /// away (`lockPrompts` `asks`: what is shown is by the certificate's date). How many stations were told.
-  ask(): Effect.Effect<unknown, CoreError> {
+  /// Publish a standalone signed `KeyAsk` to the workspace's stations (`PUT /vault/asks`) and keep it locally once at
+  /// least one station accepts it (so subsequent clicks advance monotonically and newly-online stations receive it on
+  /// reconnect). Fails clearly when no station accepts the request (offline or pre-`/vault/asks` station) so the UI
+  /// never falsely reports success.
+  #publishAsk(record: KeyAsk): Effect.Effect<string[], CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const stations = stationsOf(inner, self.ws);
+      if (stations.length === 0) return yield* fail("vault_ask_unsent", t("core-misc.vault.askNoStation"));
+      const published = yield* answersOf(inner, stations.map((s) => self.#station(s.id, "PUT", "/vault/asks", record).pipe(
+        Effect.map((res) => ({ id: s.id, ask: (get(res, "ask") as KeyAsk | undefined) ?? record })),
+      )), tookOrRefused);
+      const ok = published.flatMap((r) => (r._tag === "Success" ? [r.success] : []));
+      if (ok.length === 0) {
+        const errs = published.flatMap((r) => (r._tag === "Failure" ? [r.failure] : []));
+        if (errs.length > 0 && errs.every((e) => e.status === 404 && e.code !== "vault_unknown")) {
+          return yield* fail("vault_station_old", t("core-misc.vault.askStationOld"));
+        }
+        return yield* fail("vault_ask_unsent", t("core-misc.vault.askNoStation"));
+      }
+      change(inner, self.ws, (h) => {
+        const fit = fits(inner, self.ws);
+        mergeAsk(h, record, fit);
+        for (const item of ok) mergeAsk(h, item.ask, fit);
+      });
+      return ok.map((item) => item.id);
+    });
+  }
+
+  /// Serializes box-certificate and key-ask publications (`ask`, `autoSetUp`) per workspace so concurrent calls never
+  /// race on initial setup or monotonic ask timestamps.
+  #certifying() {
+    const locks = mem(this.#inner).certLocks;
+    let one = locks.get(this.ws);
+    if (one === undefined) locks.set(this.ws, (one = Semaphore.makeUnsafe(1)));
+    return one.withPermits(1);
+  }
+
+  /// This device explicitly asking for the key to `vaultId` (or, for legacy callers that omit `vault`, the single
+  /// verified unkeyed member vault; rejected if 2+ unkeyed vaults exist): ensures this device's pure `BoxCert` is
+  /// published, then sends a standalone signed `KeyAsk` (`PUT /vault/asks`) for that vault alone so managing devices
+  /// prompt only for that vault, never other or future vaults. Already-keyed vaults are skipped. How many stations took it.
+  ask(vaultId: string | null = null): Effect.Effect<unknown, CoreError> {
+    const self = this;
+    return this.#certifying()(Effect.gen(function* () {
+      const inner = self.#inner;
       const { lock, signer, self: who } = yield* self.#ready();
+      const verifiedVault = (id: string): Vault | null => {
+        const cur = held(inner, self.ws);
+        if (!Object.prototype.hasOwnProperty.call(cur.vaults, id)) return null;
+        const v = cur.vaults[id];
+        if (!isObject(v) || v.deleted || !Array.isArray(v.members) || !Array.isArray(v.keys) || !v.members.includes(who.sub)) return null;
+        return readAs(inner, self.ws, lock, v, who) !== null ? v : null;
+      };
+      if (vaultId !== null && verifiedVault(vaultId) === null) {
+        return yield* Effect.fail(CoreError.invalid("vault"));
+      }
       const here = certs(inner, self.ws, lock).find((c) => c.device === who.device);
       const had = yield* Effect.orElseSucceed(inner.host.storageGet(BOX_PUB), () => null);
-      const pub = had ? new TextDecoder().decode(had) : null;
-      if (!here || pub === null || here.box !== pub) {
-        // (not set up yet, the vault on on another device of the person's, its `autoBox` not done as the person
-        // pressed: set up now, as it would be, and so asking; on nowhere, 开启 is theirs to press, the words said then)
+      let boxPub = had ? new TextDecoder().decode(had) : null;
+      const unkeyedFor = (pub: string): Vault[] => {
+        const cur = held(inner, self.ws);
+        const out: Vault[] = [];
+        for (const id of Object.keys(cur.vaults)) {
+          const v = verifiedVault(id);
+          if (v !== null && !v.keys.some((k) => k.cert.device === who.device && k.cert.box === pub)) out.push(v);
+        }
+        return out;
+      };
+      let certifiedStations: string[] | null = null;
+      if (!here || boxPub === null || here.box !== boxPub) {
+        // (not set up yet, the vault on another device of the person's, its `autoBox` not done as the person
+        // pressed: set up now with a pure BoxCert before sending the standalone KeyAsk; on nowhere, 开启 is theirs)
         if (!onElsewhere(inner, self.ws, lock, who)) return yield* fail("vault_not_set_up", t("core-misc.vault.notSetUp"));
-        return { asked: (yield* self.#certify(lock, signer, who)).length };
+        boxPub = yield* ensureBoxKey(inner);
+        if (vaultId === null && unkeyedFor(boxPub).length > 1) return yield* Effect.fail(CoreError.invalid("vault"));
+        certifiedStations = yield* self.#certify(lock, signer, who);
       }
-      const { sig: _s, ...rest } = bare(here);
-      const stations = yield* self.#publish(sign({ ...rest, at: Math.max(nowS(inner), here.at + 1) }, TAG.box, signer));
+      let target: Vault | null;
+      if (vaultId !== null) {
+        target = verifiedVault(vaultId);
+      } else {
+        const unkeyed = unkeyedFor(boxPub);
+        if (unkeyed.length > 1) return yield* Effect.fail(CoreError.invalid("vault"));
+        target = unkeyed[0] ?? null;
+      }
+      if (target === null) {
+        if (vaultId !== null) return yield* Effect.fail(CoreError.invalid("vault"));
+        const stations = certifiedStations ?? (yield* self.#certify(lock, signer, who));
+        return { asked: stations.length };
+      }
+      if (target.keys.some((k) => k.cert.device === who.device && k.cert.box === boxPub)) {
+        return { asked: 0 };
+      }
+      const prevAt = verifiedAskAt(lock, held(inner, self.ws), target.id, who.device);
+      const at = Math.max(nowS(inner), prevAt + 1);
+      const record = sign({ v: 1 as const, ws: self.ws, vault: target.id, device: who.device, box: boxPub, at }, TAG.ask, signer);
+      const stations = yield* self.#publishAsk(record);
       return { asked: stations.length };
-    });
+    }));
   }
 
   /// This device's box key (made once, `ensureBoxKey`) certified and published, with the recovery key the person's
   /// other devices' certificates carry (none made: their recovery words are said once, on the device that turned the
-  /// vault on); the stations that took it.
+  /// vault on); the stations that took it. Never carries asks and never triggers authorization prompts.
   #certify(lock: Checked, signer: Signer, who: { device: string; sub: string }): Effect.Effect<string[], CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
       const pub = yield* ensureBoxKey(inner);
-      const recovery = certs(inner, self.ws, lock).filter((c) => c.sub === who.sub && typeof c.recovery === "string").sort((a, b) => b.at - a.at)[0]?.recovery ?? null;
-      const at = Math.max(nowS(inner), (held(inner, self.ws).boxes[who.device]?.at ?? -1) + 1);
+      const all = certs(inner, self.ws, lock);
+      const recovery = all.filter((c) => c.sub === who.sub && typeof c.recovery === "string").sort((a, b) => b.at - a.at)[0]?.recovery ?? null;
+      const prevAt = Math.max(all.find((c) => c.device === who.device)?.at ?? -1, verifiedBoxAt(lock, held(inner, self.ws), who.device));
+      const at = Math.max(nowS(inner), prevAt + 1);
       return yield* self.#publish(sign({ v: 1 as const, ws: self.ws, device: who.device, box: pub, ...(recovery !== null ? { recovery } : {}), at }, TAG.box, signer));
     });
   }
@@ -3477,7 +3703,7 @@ class Vaults {
   /// another device of the person's), this device certified (`#certify`). The signer read as it is kept, never made.
   autoSetUp(): Effect.Effect<unknown, CoreError> {
     const self = this;
-    return Effect.gen(function* () {
+    return this.#certifying()(Effect.gen(function* () {
       const inner = self.#inner;
       const lock = lockOf(inner, self.ws);
       if (lock instanceof CoreError) return;
@@ -3488,17 +3714,33 @@ class Vaults {
       yield* ensureBoxKey(inner);
       if (setUpHere(inner, self.ws, lock, who.device)) return;
       yield* self.#certify(lock, signer, who);
-    });
+    }));
   }
 
-  /// A device's prompt for a key put away on this device, until it asks again (a certificate dated later than the
-  /// one shown, `at`: not one that came while the prompt was up).
-  hidePrompt(device: string, at: number | null): Effect.Effect<unknown, CoreError> {
+  /// A device's prompt for a vault key put away on this device, until it asks for that vault again (dated later than
+  /// the one shown, `at`: not one that came while the prompt was up). Scoped to `(vault, device)` when `vault` is
+  /// passed, falling back to per-device for legacy callers.
+  hidePrompt(device: string, at: number | null, vault: string | null = null): Effect.Effect<unknown, CoreError> {
     const inner = this.#inner;
-    const now = held(inner, this.ws).boxes[device]?.at;
-    if (now === undefined) return Effect.fail(CoreError.invalid("device"));
-    const hid = at !== null && at < now ? at : now;
-    change(inner, this.ws, (h) => void (h.hidden[device] = hid));
+    const h = held(inner, this.ws);
+    const box = h.boxes[device];
+    let latest = box !== undefined ? box.at : -1;
+    if (vault !== null) {
+      const ask = isObject(h.asks?.[vault]) && Object.prototype.hasOwnProperty.call(h.asks[vault], device) ? h.asks[vault][device] : undefined;
+      if (ask !== undefined && typeof ask.at === "number" && Number.isSafeInteger(ask.at) && ask.at >= 0) latest = ask.at;
+      else if (box === undefined) return Effect.fail(CoreError.invalid("device"));
+    } else {
+      for (const byDev of Object.values(h.asks ?? {})) {
+        if (isObject(byDev) && Object.prototype.hasOwnProperty.call(byDev, device)) {
+          const a = byDev[device];
+          if (a !== undefined && typeof a.at === "number" && Number.isSafeInteger(a.at) && a.at > latest) latest = a.at;
+        }
+      }
+      if (latest < 0) return Effect.fail(CoreError.invalid("device"));
+    }
+    const hid = at !== null && Number.isFinite(at) && at >= 0 && at < latest ? at : latest;
+    const key = vault !== null ? hideKey(vault, device) : device;
+    change(inner, this.ws, (h) => void (h.hidden[key] = Math.max(h.hidden[key] ?? -1, hid)));
     return Effect.succeed(null);
   }
 

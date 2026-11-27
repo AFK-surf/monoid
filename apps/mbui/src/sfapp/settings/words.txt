@@ -1792,6 +1792,7 @@ web-pages.vault.approve.noKey
 web-pages.vault.approve.notHere
 web-pages.vault.askWhat
 web-pages.vault.asked
+web-pages.vault.askedAdmins
 web-pages.vault.agentMay
 web-pages.vault.all
 web-pages.vault.content
@@ -2210,6 +2211,8 @@ web-pages.remote.openDesktop
 android-settings.vault.ask.saveSharedNamed
 android-settings.vault.ask.saveShared
 web-pages.vault.promptBodyNoSafeMode
+web-pages.vault.promptBodyTheirs
+web-pages.vault.promptBodyTheirsUnknown
 web-pages.vault.promptDeviceCode
 web-pages.vault.promptOwner
 web-pages.vault.promptOwnerSelf

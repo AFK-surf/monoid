@@ -139,6 +139,16 @@ priv struct SettingsFixture {
   mut key_giving : Bool
   /// whether the workspace in key_ask is in safe mode (false tests the non-safe-mode prompt wording)
   mut key_ask_safe_mode : Bool
+  /// whether the device in key_ask is a teammate's (Ana's MacBook Air) asking for the workspace vault's key
+  mut key_ask_theirs : Bool
+  /// override ownerName/ownerEmail in key_ask_theirs (0 = normal Ana, 1 = email only, 2 = both empty)
+  mut key_ask_theirs_owner : Int
+  /// ask timestamp (unix seconds, Double) for key_ask fixture
+  mut key_ask_at : Double
+  /// vault passed to the last `vault.hidePrompt` call in the fixture
+  mut key_ask_hidden_vault : String
+  /// timestamp passed to the last `vault.hidePrompt` call in the fixture
+  mut key_ask_hidden_at : Double
   /// this device's verification code shown on vault no-key card (settings-vault-no-key-code)
   mut this_device_code : String
   /// whether pending device d-new on v-ws has been authorized in the current fixture run
@@ -260,6 +270,11 @@ let fx : SettingsFixture = {
   key_ask_ended: "",
   key_giving: false,
   key_ask_safe_mode: true,
+  key_ask_theirs: false,
+  key_ask_theirs_owner: 0,
+  key_ask_at: 0.0,
+  key_ask_hidden_vault: "",
+  key_ask_hidden_at: 0.0,
   this_device_code: "",
   vault_ws_pending_done: false,
   mba_online: false,
@@ -637,6 +652,11 @@ fn fixture_reset() -> Unit {
   fx.key_ask_ended = ""
   fx.key_giving = false
   fx.key_ask_safe_mode = true
+  fx.key_ask_theirs = false
+  fx.key_ask_theirs_owner = 0
+  fx.key_ask_at = 0.0
+  fx.key_ask_hidden_vault = ""
+  fx.key_ask_hidden_at = 0.0
   fx.this_device_code = ""
   fx.vault_ws_pending_done = false
   fx.mba_online = false
@@ -784,6 +804,18 @@ pub fn fixture_key_ask_ended() -> String {
 }
 
 ///|
+/// The vault id passed to the last `vault.hidePrompt` call.
+pub fn fixture_key_ask_hidden_vault() -> String {
+  fx.key_ask_hidden_vault
+}
+
+///|
+/// The timestamp (`at`) passed to the last `vault.hidePrompt` call.
+pub fn fixture_key_ask_hidden_at() -> Double {
+  fx.key_ask_hidden_at
+}
+
+///|
 /// What the made-up core's `lockPrompts` holds now, as another device changed it (lock_prompts.mbt, vault_prompts.mbt):
 /// the new device asking (`pairing`; into one more workspace meanwhile, `more`), the device waiting for the vault's key
 /// (`key_ask`; the key being given it, `giving`), told to what follows its topics.
@@ -793,12 +825,18 @@ pub fn fixture_prompts_now(
   key_ask~ : Bool,
   giving? : Bool = false,
   safe_mode? : Bool = true,
+  theirs? : Bool = false,
+  theirs_owner? : Int = 0,
+  at? : Double = 0.0,
 ) -> Unit {
   fx.pairing = pairing
   fx.pairing_more = more
   fx.key_ask = key_ask
   fx.key_giving = giving
   fx.key_ask_safe_mode = safe_mode
+  fx.key_ask_theirs = theirs
+  fx.key_ask_theirs_owner = theirs_owner
+  fx.key_ask_at = at
   fx_changed()
 }
 
@@ -1278,6 +1316,12 @@ pub fn fixture_page(mode : String) -> String {
     "settings-vault-replaced" => fx.lock_case = "replaced"
     "settings-vault-replaced-was" => fx.lock_case = "replaced-was"
     "settings-vault-prompt" => fx.key_ask = true
+    // (a teammate's device asking for the workspace vault's key, outside safe mode)
+    "settings-vault-prompt-theirs" => {
+      fx.key_ask = true
+      fx.key_ask_safe_mode = false
+      fx.key_ask_theirs = true
+    }
     "settings-vault-words" => recovery_words["ws1"] = fx_words()
     "settings-vault-add" => fixture_open.desk = "vault-add"
     "settings-vault-editor" => fixture_open.desk = "vault-editor"
@@ -1408,7 +1452,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-station-devices" => "station:ws1/st1"
     "settings-station-tasks" | "settings-station-tasks-locked" => "station:ws1/aa11"
     "settings-station-tasks-other" => "station:ws1/bb22"
-    "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-lock-prompt-role" | "settings-pair-prompt" | "settings-vault-prompt" =>
+    "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-lock-prompt-role" | "settings-pair-prompt" | "settings-vault-prompt" | "settings-vault-prompt-theirs" =>
       "home"
     // (the notifications' page; the system having refused them: its banner's way to allow them)
     "settings-notify" | "settings-notify-denied" => "notifications"
@@ -3689,23 +3733,45 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             "asks",
             if fx.key_ask {
               [
-                obj([
-                  ("workspace", str("ws1")),
-                  ("workspaceName", str("星火工作室")),
-                  ("vault", str("v1")),
-                  ("vaultName", str("林的库")),
-                  ("device", str("d-new")),
-                  ("deviceText", str("Pixel 9")),
-                  ("deviceCode", str("K7M-4PX")),
-                  ("ownerName", str("林")),
-                  ("ownerEmail", str("lin@example.com")),
-                  ("isOwnDevice", Json::boolean(true)),
-                  ("vaultScope", str("personal")),
-                  ("vaultItems", Json::number(3.0)),
-                  ("safeMode", Json::boolean(fx.key_ask_safe_mode)),
-                  ("at", Json::number(0.0)),
-                  ("atText", str("3 分钟前")),
-                ]),
+                if fx.key_ask_theirs {
+                  let owner_name = if fx.key_ask_theirs_owner == 0 { "Ana" } else { "" }
+                  let owner_email = if fx.key_ask_theirs_owner <= 1 { "ana@example.com" } else { "" }
+                  obj([
+                    ("workspace", str("ws1")),
+                    ("workspaceName", str("星火工作室")),
+                    ("vault", str("v-ws")),
+                    ("vaultName", str("Workspace 密钥库")),
+                    ("device", str("d-ana")),
+                    ("deviceText", str("Ana 的 MacBook Air · still.fail")),
+                    ("deviceCode", str("M5J-TK5")),
+                    ("ownerName", str(owner_name)),
+                    ("ownerEmail", str(owner_email)),
+                    ("isOwnDevice", Json::boolean(false)),
+                    ("vaultScope", str("workspace")),
+                    ("vaultItems", Json::number(0.0)),
+                    ("safeMode", Json::boolean(fx.key_ask_safe_mode)),
+                    ("at", Json::number(fx.key_ask_at)),
+                    ("atText", str("刚刚")),
+                  ])
+                } else {
+                  obj([
+                    ("workspace", str("ws1")),
+                    ("workspaceName", str("星火工作室")),
+                    ("vault", str("v1")),
+                    ("vaultName", str("林的库")),
+                    ("device", str("d-new")),
+                    ("deviceText", str("Pixel 9")),
+                    ("deviceCode", str("K7M-4PX")),
+                    ("ownerName", str("林")),
+                    ("ownerEmail", str("lin@example.com")),
+                    ("isOwnDevice", Json::boolean(true)),
+                    ("vaultScope", str("personal")),
+                    ("vaultItems", Json::number(3.0)),
+                    ("safeMode", Json::boolean(fx.key_ask_safe_mode)),
+                    ("at", Json::number(fx.key_ask_at)),
+                    ("atText", str("3 分钟前")),
+                  ])
+                },
               ]
             } else {
               []
@@ -4579,6 +4645,13 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     "vault.addDevice" | "vault.hidePrompt" => {
       if name == "vault.addDevice" && text(p, "vault") == "v-ws" && text(p, "device") == "d-new" {
         fx.vault_ws_pending_done = true
+      }
+      if name == "vault.hidePrompt" {
+        fx.key_ask_hidden_vault = text(p, "vault")
+        fx.key_ask_hidden_at = match field(p, "at") {
+          Some(Number(n, ..)) => n
+          _ => 0.0
+        }
       }
       fx.key_ask = false
       fx.key_ask_ended = if name == "vault.addDevice" { "give" } else { "hide" }
