@@ -1,11 +1,11 @@
 // Only the test bundler imports this entry. Production exports no fixture routes.
-import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus, Station as ProductionStation, TelemetryLimiter as ProductionTelemetryLimiter } from "../src/index";
+import worker, { Account as ProductionAccount, Directory as ProductionDirectory, LoginAttempt as ProductionLoginAttempt, LoginLimiter, RelayLoad as ProductionRelayLoad, ServiceStatus as ProductionServiceStatus, Station as ProductionStation, TelemetryLimiter as ProductionTelemetryLimiter } from "../src/index";
 import { probeLines, relaySamples, seedConsole, SEED_RELAYS } from "./console-seed.ts";
 import { clock, signToken, nowSeconds, reply, readJson } from "../src/auth";
 import { sockets, type Delivery } from "../src/directory";
 import type { Env } from "../src/env";
 import type { MailMessage } from "../src/mail";
-export { LoginLimiter, ServiceStatus };
+export { LoginLimiter };
 
 /** Calls to an object that fail as Cloudflare's do when it moved the object, or says it is overloaded. */
 class Losing {
@@ -587,6 +587,35 @@ function withFailingBucket(env: Env): Env {
     list: call("list", (options?: R2ListOptions) => bucket.list(options)),
   } as unknown as R2Bucket;
   return { ...env, RELEASES };
+}
+
+function withDynamicFailingBucket(env: Env): Env {
+  const bucket = env.RELEASES;
+  if (!bucket) return env;
+  const call = <A extends unknown[], T>(name: string, run: (...args: A) => Promise<T>) => async (...args: A): Promise<T> => {
+    const fails = bucketFails;
+    if (fails) {
+      bucketCalls.push(`${name} ${typeof args[0] === "string" ? args[0] : ""}`.trim());
+      if ((fails[name] ?? 0) > 0) {
+        fails[name]!--;
+        throw new Error(`${name}: We encountered an internal connectivity issue. Please try again. (10001)`);
+      }
+    }
+    return run(...args);
+  };
+  const RELEASES = {
+    head: call("head", (key: string) => bucket.head(key)),
+    get: call("get", (key: string, options?: R2GetOptions) => bucket.get(key, options)),
+    put: call("put", (key: string, value: ArrayBuffer | Uint8Array | ReadableStream, options?: R2PutOptions) => bucket.put(key, value, options)),
+    list: call("list", (options?: R2ListOptions) => bucket.list(options)),
+  } as unknown as R2Bucket;
+  return { ...env, RELEASES };
+}
+
+export class ServiceStatus extends ProductionServiceStatus {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, withDynamicFailingBucket(env));
+  }
 }
 
 export default {

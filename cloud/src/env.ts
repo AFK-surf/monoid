@@ -27,6 +27,8 @@ export interface Env {
   /** Where the station's releases are read when the bucket has none of a file (releases.ts upstream): still.fail's
    * (https://app.still.fail/releases) for monoid's cloud, whose bucket holds its own apps' builds alone. */
   RELEASES_UPSTREAM?: string;
+  /** In-memory cache TTL in seconds for changelog and release feeds on ServiceStatus (changelog.ts, status.ts). Unset: 30; "0" disables caching (for tests). */
+  CHANGELOG_CACHE_SECONDS?: string;
   LOGINS: DurableObjectNamespace<LoginAttempt>;
   LOGIN_LIMITS: DurableObjectNamespace<LoginLimiter>;
   /** How many times the sign-ins an address may start (login.ts `LoginLimiter`: 10 a minute, 100 a day) the cloud allows:

@@ -41,7 +41,7 @@ export interface FixedReport {
   thread: string | null;
 }
 
-type PlatformReleases = Released & { macos: number | null; windows: number | null };
+export type PlatformReleases = Released & { macos: number | null; windows: number | null };
 
 type Bucket = ReleaseBucket | undefined;
 
@@ -52,31 +52,66 @@ type Bucket = ReleaseBucket | undefined;
 type Failed = (file: string, error: unknown) => void;
 const logged: Failed = (file, error) => console.error(`changelog ${file} unavailable:`, error);
 
+const DEFAULT_CACHE_SECONDS = 30;
+
+/** In-memory cache TTL in seconds for changelog and release feeds; unset or invalid falls back to 30, "0" disables caching. */
+export function changelogCacheSeconds(env?: Pick<Env, "CHANGELOG_CACHE_SECONDS">): number {
+  const raw = env?.CHANGELOG_CACHE_SECONDS?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return DEFAULT_CACHE_SECONDS;
+  const seconds = Number(raw);
+  return Number.isSafeInteger(seconds) ? seconds : DEFAULT_CACHE_SECONDS;
+}
+
+const CHANGELOG_HEADERS = {
+  "content-type": "application/json",
+  "cache-control": "public, max-age=300",
+  "referrer-policy": "no-referrer",
+};
+
+export type ReadReleaseFileResult =
+  | { ok: true; value: string | null; cacheable: boolean }
+  | { ok: false; error: unknown };
+
 /**
- * A file of the bucket; with `upstream` (RELEASES_UPSTREAM), one of still.fail's it lacks read there, as index.ts serves
- * it. One that cannot be read (`retryRead` failed twice, or still.fail's not reached) is null as one not there is, and
- * `failed` is told.
+ * Reads a file from the releases bucket or `upstream` (RELEASES_UPSTREAM) when shared.
+ * Distinguishes cacheable 404/missing (`cacheable: true`) from non-404 4xx responses such as 429 (`cacheable: false`)
+ * and transient R2/upstream 5xx/network failures (`ok: false`).
  */
-async function read(bucket: Bucket, key: string, upstream?: string, failed: Failed = logged): Promise<string | null> {
+export async function readReleaseFile(bucket: Bucket, key: string, upstream?: string): Promise<ReadReleaseFileResult> {
   const got = await retryRead(async () => {
     const object = await bucket?.get(key);
     return object ? await new Response(object.body).text() : null;
   });
-  if (!got.ok) {
-    failed(key, got.error);
-    return null;
-  }
-  if (got.value !== null) return got.value;
-  if (!upstream || !sharedRelease(key)) return null;
+  if (!got.ok) return { ok: false, error: got.error };
+  if (got.value !== null) return { ok: true, value: got.value, cacheable: true };
+  if (!upstream || !sharedRelease(key)) return { ok: true, value: null, cacheable: Boolean(bucket) };
   try {
     const answer = await fetch(`${upstream.replace(/\/+$/, "")}/${key}`);
-    if (answer.ok) return await answer.text();
+    if (answer.ok) return { ok: true, value: await answer.text(), cacheable: true };
     await answer.body?.cancel().catch(() => {});
-    if (answer.status >= 500) failed(key, new Error(`upstream ${answer.status}`));
+    if (answer.status >= 500) return { ok: false, error: new Error(`upstream ${answer.status}`) };
+    return { ok: true, value: null, cacheable: answer.status === 404 };
   } catch (error) {
-    failed(key, new Error("upstream unreachable", { cause: error }));
+    return { ok: false, error: new Error("upstream unreachable", { cause: error }) };
   }
-  return null;
+}
+
+async function read(bucket: Bucket, key: string, upstream?: string, failed: Failed = logged): Promise<string | null> {
+  const result = await readReleaseFile(bucket, key, upstream);
+  if (!result.ok) {
+    failed(key, result.error);
+    return null;
+  }
+  return result.value;
+}
+
+export function parseChangelog(text: string | null): ChangelogEntry[] {
+  try {
+    const value = JSON.parse(text ?? "[]") as unknown;
+    return Array.isArray(value) ? (value as ChangelogEntry[]).filter((e) => Number.isSafeInteger(e?.version) && Array.isArray(e.text) && Array.isArray(e.parts)) : [];
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -98,12 +133,7 @@ export async function changelog(bucket: Bucket, channel: Channel = "beta", faile
 }
 
 async function entries(bucket: Bucket, key: string, failed: Failed = logged): Promise<ChangelogEntry[]> {
-  try {
-    const value = JSON.parse((await read(bucket, key, undefined, failed)) ?? "[]") as unknown;
-    return Array.isArray(value) ? (value as ChangelogEntry[]).filter((e) => Number.isSafeInteger(e?.version) && Array.isArray(e.text) && Array.isArray(e.parts)) : [];
-  } catch {
-    return [];
-  }
+  return parseChangelog(await read(bucket, key, undefined, failed));
 }
 
 /** n of a version said as 0.<m>.<n> (or a bare n). */
@@ -119,6 +149,18 @@ const json = (text: string | null): Record<string, unknown> => {
   }
 };
 
+export function parseReleased(station: string | null, android: string | null, mac: string | null, win: string | null, web: string | null): PlatformReleases {
+  const macos = build(json(mac).versionCode);
+  const windows = build(json(win).versionCode);
+  return {
+    station: build(json(station).build ?? json(station).version),
+    android: build(json(android).versionCode),
+    macos, windows,
+    desktop: macos !== null && windows !== null ? Math.min(macos, windows) : null,
+    web: build(json(web).build ?? json(web).version),
+  };
+}
+
 /**
  * What each part has out on a channel, from the feeds the updaters read (scripts/release.sh) and the web app's (deploy.py);
  * the station's from `upstream` where the bucket has none (monoid's cloud: its station is still.fail's, index.ts).
@@ -133,15 +175,7 @@ export async function released(bucket: Bucket, channel: Channel, upstream?: stri
     read(bucket, beta ? "win/beta/latest.json" : "win/latest.json", undefined, failed),
     read(bucket, beta ? "web-beta.json" : "web.json", undefined, failed),
   ]);
-  const macos = build(json(mac).versionCode);
-  const windows = build(json(win).versionCode);
-  return {
-    station: build(json(station).build ?? json(station).version),
-    android: build(json(android).versionCode),
-    macos, windows,
-    desktop: macos !== null && windows !== null ? Math.min(macos, windows) : null,
-    web: build(json(web).build ?? json(web).version),
-  };
+  return parseReleased(station, android, mac, win, web);
 }
 
 /** Whether all of a fix is out: each part it is in has released its version or a later one. */
@@ -153,7 +187,13 @@ const channelOf = (request: Request, env: Env): Channel => (new URL(request.url)
 
 /** GET /v1/changelog: { entries, released } on the channel of the host (or x-stillfail-channel). Anyone may read it. Unavailable while any of it cannot be read: a client keeps what a 200 says in place of what it has (client/core-ts/src/changelog.ts). */
 export async function serveChangelog(request: Request, env: Env): Promise<Response> {
+  const ttl = changelogCacheSeconds(env);
   const channel = channelOf(request, env);
+  if (ttl > 0 && env.SERVICE_STATUS) {
+    const result = await env.SERVICE_STATUS.getByName("primary").changelogResponse(channel, env.RELEASES_UPSTREAM ?? null, ttl);
+    if (!result.ok) return unavailable(result.file, new Error(result.message));
+    return new Response(result.body, { status: 200, headers: CHANGELOG_HEADERS });
+  }
   let failure = null as { file: string; error: unknown } | null;
   const failed: Failed = (file, error) => {
     failure ??= { file, error };
@@ -166,14 +206,18 @@ export async function serveChangelog(request: Request, env: Env): Promise<Respon
 /** Marks the reports the changelog fixes, and gives what has been fixed of a station's reports and is out on their channel. */
 export async function fixedFor(env: Env, station: string, told: string[]): Promise<FixedReport[]> {
   const dir = env.DIRECTORY.getByName("primary");
-  const entries = await changelog(env.RELEASES);
+  const ttl = changelogCacheSeconds(env);
+  const status = ttl > 0 && env.SERVICE_STATUS ? env.SERVICE_STATUS.getByName("primary") : null;
+  const entries = status ? await status.changelogEntries("beta", ttl) : await changelog(env.RELEASES);
   await dir.markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
   if (told.length) await dir.toldFixed(station, told);
   const reports = await dir.fixedUntold(station);
   const have: Partial<Record<Channel, PlatformReleases>> = {};
   const fixed: FixedReport[] = [];
   for (const report of reports) {
-    have[report.channel] ??= await released(env.RELEASES, report.channel, env.RELEASES_UPSTREAM);
+    have[report.channel] ??= status
+      ? await status.releasedVersions(report.channel, env.RELEASES_UPSTREAM ?? null, ttl)
+      : await released(env.RELEASES, report.channel, env.RELEASES_UPSTREAM);
     const { desktopPlatform, ...details } = report;
     const { macos, windows, ...parts } = have[report.channel]!;
     if (desktopPlatform === "macos") parts.desktop = macos;
