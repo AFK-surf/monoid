@@ -615,7 +615,7 @@ fn Flow::take_step(self : Flow, line : String) -> Unit {
   }
   if !waiting_step(line) {
     self.at_step.clear()
-    let moving = self.t.moving()
+    let moving = self.t.moving() // det-ok(motion-read): replay snapshots moving ids at step start
     for i in 0..<moving.length() {
       self.at_step.push(moving[i])
     }
