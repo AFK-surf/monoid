@@ -4554,3 +4554,100 @@ test("vault calls r14: encrypted approve positive/negative and #remove single-va
   assert.equal(r.st.removed.length, 0, "stale #remove must not POST /vault/removed");
   r.core.close();
 });
+
+test("vault calls r15: #putItem offline-fallback gate, accepted-PUT preservation, and #keepSaved create gate", async () => {
+  const r = await rig();
+  r.putLock();
+  await r.ask("vault.setup", {});
+  const v = [...r.st.vaults.values()][0]!;
+  const { id } = (await r.ask("vault.putItem", {
+    vault: v.id,
+    plain: { kind: "token", name: "API", fields: { value: "sec-1" }, domains: [], notes: "" },
+    listing: { name: "API", kind: "token", modes: ["env"], hosts: [] },
+  })) as { id: string };
+
+  // 1a. #putItem offline fallback: station returns 503 (localFallback) and single-vault lock fires during PUT ->
+  // local changeItems must NOT write deleted version, returns auth_stale!
+  const reqRmOffline: Request = { id: "r_rm_off_r15", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "drop", box: "", at: 10, status: "pending", remove: { name: "API" } };
+  r.st.requests.push(reqRmOffline);
+  r.push("vault-request", reqRmOffline);
+  await r.host.time.pass(200);
+  r.take();
+  let bumpedOnPutFail = false;
+  stationReplies(r.host, (httpReq) => {
+    if (!bumpedOnPutFail && httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      bumpedOnPutFail = true;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+      return status(503, { error: "unavailable" });
+    }
+    return r.st.reply(httpReq);
+  });
+  await fails(r.ask("vault.approve", { request: "r_rm_off_r15", scope: "once" }), "auth_stale");
+  assert.equal(bumpedOnPutFail, true);
+  assert.equal(r.st.items.get(id)!.deleted, undefined, "offline-fallback stale #putItem must not commit deletion");
+  assert.equal(r.st.removed.length, 0);
+
+  // 1b. #putItem when station ALREADY accepted PUT and lock fires right on response -> local preserves real committed
+  // item version, while subsequent /vault/removed decision is NOT posted (returns auth_stale).
+  const reqRmAccepted: Request = { id: "r_rm_acc_r15", ws: "ws", vault: v.id, item: id, session: "k1", chat: "7", mode: "env", reason: "drop", box: "", at: 11, status: "pending", remove: { name: "API" } };
+  r.st.requests.push(reqRmAccepted);
+  r.push("vault-request", reqRmAccepted);
+  await r.host.time.pass(200);
+  r.take();
+  let bumpedAfterAccept = false;
+  stationReplies(r.host, (httpReq) => {
+    const res = r.st.reply(httpReq);
+    if (!bumpedAfterAccept && httpReq.method === "PUT" && httpReq.url.includes("/vault/items")) {
+      bumpedAfterAccept = true;
+      r.core.inner.store.authGen.bumpVault("ws", v.id);
+    }
+    return res;
+  });
+  await fails(r.ask("vault.approve", { request: "r_rm_acc_r15", scope: "once" }), "auth_stale");
+  assert.equal(bumpedAfterAccept, true);
+  assert.equal(r.st.items.get(id)!.deleted, true, "station-accepted PUT must be preserved");
+  assert.equal(r.st.removed.length, 0, "post-commit stale boundary must still prevent /vault/removed");
+  r.core.close();
+
+  // 2. #keepSaved when no personal vault exists and #boxKey wait triggers authGen bump -> auth_stale & 0 vaults created
+  const r2 = await rig();
+  r2.putLock();
+  await r2.ask("vault.setup", {});
+  const onlyV = [...r2.st.vaults.values()][0]!;
+  await r2.ask("vault.delete", { vault: onlyV.id });
+  const vaultsBefore = r2.st.vaults.size;
+  const keeper = fill(12);
+  const reqSave: Request = {
+    id: "r_save_r15",
+    ws: "ws",
+    vault: "",
+    item: "i_01JASAVE000000000000000R15",
+    session: "k1",
+    chat: "7",
+    mode: "proxy",
+    reason: "save",
+    hosts: ["example.com"],
+    box: boxPublic(keeper),
+    at: 20,
+    status: "pending",
+    owner: "a@x.com",
+    save: { kind: "token", name: "Tok", modes: ["proxy"], hosts: ["example.com"], typed: true },
+  };
+  r2.st.requests.push(reqSave);
+  r2.push("vault-request", reqSave);
+  await r2.host.time.pass(200);
+  r2.take();
+  let bumpedOnBox = false;
+  const origSecGet = r2.host.secureGet!.bind(r2.host);
+  r2.host.secureGet = (key, reason) => {
+    if (!bumpedOnBox) {
+      bumpedOnBox = true;
+      r2.core.inner.store.authGen.bumpWorkspace("ws");
+    }
+    return origSecGet(key, reason);
+  };
+  await fails(r2.ask("vault.approve", { request: "r_save_r15", scope: "once", typed: { secret: "sk-123" } }), "auth_stale");
+  assert.equal(bumpedOnBox, true);
+  assert.equal(r2.st.vaults.size, vaultsBefore, "stale #keepSaved after #boxKey must NOT auto-create a personal vault");
+  r2.core.close();
+});

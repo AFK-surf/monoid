@@ -266,6 +266,7 @@ export class Store {
   markClientAuthReady(client: ClientId): void {
     const activeConn = this.#connIds.get(client);
     if (activeConn === undefined) return;
+    const wasAuthFailed = this.#authFailed.has(client);
     this.#authNotReady.delete(client);
     this.#authFailed.delete(client);
     this.#flushAuthSnapshot(client);
@@ -284,6 +285,19 @@ export class Store {
           continue;
         }
         this.host.emit(client, entry.msg);
+      }
+    }
+    if (wasAuthFailed) {
+      for (const [at, topic] of this.#subscriptions) {
+        const slash = at.indexOf("/");
+        if (slash < 0 || Number(at.slice(0, slash)) !== client) continue;
+        if (DEVICE_GLOBAL_TOPIC_SET.has(topic.topic)) continue;
+        const entry = this.#topics.get(topicKey(topic));
+        if (entry === undefined || entry.sent === undefined) continue;
+        if (!this.#isAuthorized(topic)) continue;
+        const id = Number(at.slice(slash + 1));
+        const gen = this.#wireGen(client, topic);
+        this.host.emit(client, to(whole(entry.sent), id, gen));
       }
     }
   }

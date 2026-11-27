@@ -332,7 +332,7 @@ export class StationsSync {
   /// (the vault's: views/vault.ts); and hear of its events they know.
   /// `resume`: read whole again as its stream comes back resumed; `resumed`: what it asks then, where it says (a part
   /// that owes the station something: views/presets.ts), instead.
-  readonly also: { read(address: string): Effect.Effect<void, CoreError>; event(address: string, name: string, data: unknown): void; resume?: boolean; resumed?(address: string): Effect.Effect<void, CoreError> }[] = [];
+  readonly also: { read(address: string): Effect.Effect<void, CoreError>; event(address: string, name: string, data: unknown, readGen?: number): void; resume?: boolean; resumed?(address: string): Effect.Effect<void, CoreError> }[] = [];
 
   constructor(core: Inner, wire: StationWire) {
     this.#core = core;
@@ -2226,7 +2226,7 @@ export class StationsSync {
       case "presets":
         if (this.#core.store.inUse({ topic: "presets", station: address }) || this.#links.get(address)?.memory.has(PRESETS)) this.presetsShown(address);
         // (and the person's records carried again: views/presets.ts)
-        for (const part of this.also) part.event(address, name, data);
+        for (const part of this.also) part.event(address, name, data, effectiveReadGen);
         return;
       // A login's terminal as it changes (while one is shown).
       case "login-screen": {
@@ -2236,7 +2236,7 @@ export class StationsSync {
         return;
       }
       default:
-        for (const part of this.also) part.event(address, name, data);
+        for (const part of this.also) part.event(address, name, data, effectiveReadGen);
     }
   }
 

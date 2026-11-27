@@ -2855,7 +2855,13 @@ class Vaults {
 
   /// Vault `id`'s key (of `epoch`, unsealed here) sealed for the members' devices set up since it was keyed (or
   /// `device` alone): its next version, which its owner signs (another member's device gives none). How many it gave.
-  #give(id: string, epoch: number, key: Uint8Array, device: string | null): Effect.Effect<number, CoreError> {
+  #give(
+    id: string,
+    epoch: number,
+    key: Uint8Array,
+    device: string | null,
+    expected?: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
+  ): Effect.Effect<number, CoreError> {
     const self = this;
     // One giving of a vault at a time (two would write the same seq, the second refused), each after the one before,
     // reading the vault and the certificates anew: a certificate heard while a version is written is given to next,
@@ -2863,12 +2869,20 @@ class Vaults {
     return this.#giving(id)(
       Effect.gen(function* () {
         const inner = self.#inner;
+        const isStale = () =>
+          expected !== undefined &&
+          (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
+            inner.store.authGen.vaultGen(self.ws, id) !== expected.vaultGen ||
+            inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen);
+        if (isStale()) return 0;
         const { lock, signer, self: who } = yield* self.#ready();
+        if (isStale()) return 0;
         // (one waiting to be keyed anew is given to no one till it is: a key unsealed to read it gives nothing; asked
         // for by the person, addDevice says why)
         const was = held(inner, self.ws).vaults[id];
         if (was !== undefined && waitingAs(inner, self.ws, lock, was) !== null) return 0;
         const v = yield* self.#vault(lock, id);
+        if (isStale()) return 0;
         if (!canManage(lock, v, who.sub) || v.epoch !== epoch) return 0;
         const add = self.#missing(lock, v, device);
         const { keys: kept, freshened } = self.#freshened(lock, v);
@@ -2885,9 +2899,10 @@ class Vaults {
           }),
         ];
         const { sig: _, ...rest } = v;
+        if (isStale()) return 0;
         // (refused as not a vault, by a station from before this device's checks: not tried again for this version,
         // as the next certificate or read comes, but as the vault moves on)
-        yield* Effect.tapError(self.#putVault(sign({ ...rest, seq: v.seq + 1, keys, at: nowS(inner) }, TAG.vault, signer), hostOf(inner, self.ws, v.id)), (e) =>
+        yield* Effect.tapError(self.#putVault(sign({ ...rest, seq: v.seq + 1, keys, at: nowS(inner) }, TAG.vault, signer), hostOf(inner, self.ws, v.id), expected), (e) =>
           Effect.sync(() => void (e.code === "vault_invalid" && mem(inner).refused.set(v.id, v.seq))));
         return add.length;
       }),
@@ -3263,12 +3278,22 @@ class Vaults {
   /// another online at once). A station's refusal by the rules fails it.
   /// Where another station holds the vault too, each is waited on `WRITE_TRY_MS` before the next is tried
   /// (`writeHosts` order); only a station that cannot take it now passes it on, never one refusing it by the rules.
-  #putVault(next: Vault, station: string): Effect.Effect<Vault, CoreError> {
+  #putVault(
+    next: Vault,
+    station: string,
+    expected?: { wsAuthGen: number; vaultGen?: number; vaultGlobalGen: number },
+  ): Effect.Effect<Vault, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const isStale = () =>
+        expected !== undefined &&
+        (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
+          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen ||
+          (expected.vaultGen !== undefined && inner.store.authGen.vaultGen(self.ws, next.id) !== expected.vaultGen));
       const targets = station === "" ? [] : [station, ...writeHosts(inner, self.ws, next.id).filter((s) => s !== station)];
       for (const s of targets) {
+        if (isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         const put = self.#station(s, "PUT", "/vault/vaults", next);
         const res = targets.length > 1
           ? yield* Effect.timeoutOption(Effect.result(put), WRITE_TRY_MS) // timer: a deadline
@@ -3282,6 +3307,7 @@ class Vaults {
         }
         if (!localFallback(res.value.failure)) return yield* Effect.fail(res.value.failure);
       }
+      if (isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       change(inner, self.ws, (h) => take(h, next, fits(inner, self.ws)));
       spreadAll(inner, self.ws);
       return next;
@@ -3425,15 +3451,26 @@ class Vaults {
   /// set-up devices and recovery key; a workspace vault (`scope: "workspace"`) requires workspace owner/admin, allows
   /// at most one active workspace vault per workspace, seals its key to all selected members' set-up devices, and has
   /// no single-person recovery key.
-  create(name: string, station: string | null, opts?: { scope?: "personal" | "workspace"; members?: string[] }): Effect.Effect<unknown, CoreError> {
+  create(
+    name: string,
+    station: string | null,
+    opts?: { scope?: "personal" | "workspace"; members?: string[] },
+    expected?: { wsAuthGen: number; vaultGlobalGen: number },
+  ): Effect.Effect<unknown, CoreError> {
     const self = this;
     return Effect.gen(function* () {
       const inner = self.#inner;
-      const startWsAuthGen = inner.store.authGen.workspaceAuthGen(self.ws);
-      const startVaultGlobalGen = inner.store.authGen.vaultGlobalGen;
+      const startWsAuthGen = expected?.wsAuthGen ?? inner.store.authGen.workspaceAuthGen(self.ws);
+      const startVaultGlobalGen = expected?.vaultGlobalGen ?? inner.store.authGen.vaultGlobalGen;
+      const createExpected = { wsAuthGen: startWsAuthGen, vaultGlobalGen: startVaultGlobalGen };
+      const createStale = () =>
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
       if (name.trim() === "") return yield* Effect.fail(CoreError.invalid("name"));
+      if (createStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const { lock, signer, self: who } = yield* self.#ready();
       const here = yield* self.#current(lock, signer, who);
+      if (createStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       if (!here || here.sub !== who.sub) return yield* fail("vault_not_set_up", t("core-misc.vault.notSetUp"));
       const allCerts = certs(inner, self.ws, lock);
       const h = held(inner, self.ws);
@@ -3488,7 +3525,8 @@ class Vaults {
         signer,
       );
       const next = buildVault(memberSubs, to);
-      const put = yield* Effect.result(self.#putVault(next, on));
+      if (createStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      const put = yield* Effect.result(self.#putVault(next, on, createExpected));
       let v: Vault;
       if (put._tag === "Success") {
         v = put.success;
@@ -3505,7 +3543,8 @@ class Vaults {
         if (fallbackSubs.length === memberSubs.length) {
           return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
         }
-        const retry = yield* Effect.result(self.#putVault(buildVault(fallbackSubs, allCerts.filter((c) => fallbackSubs.includes(c.sub))), on));
+        if (createStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
+        const retry = yield* Effect.result(self.#putVault(buildVault(fallbackSubs, allCerts.filter((c) => fallbackSubs.includes(c.sub))), on, createExpected));
         if (retry._tag === "Failure") {
           if (retry.failure.code === "vault_invalid" && retry.failure.message.includes("is not in the lock")) {
             return yield* fail("vault_invalid", t("core-misc.vault.memberNotOnStation"));
@@ -3718,7 +3757,7 @@ class Vaults {
       inner.host.randomBytes(nonce);
       const ct = encryptWith(key, utf8(JSON.stringify(body.plain)), itemContext(self.ws, vault, item, version, v.epoch), nonce);
       const next = sign({ v: 1 as const, ws: self.ws, vault, id: item, version, epoch: v.epoch, ct, ...(body.listing ? { listing: body.listing } : {}), at: nowS(inner) }, TAG.item, signer);
-      return yield* self.#putItem(next, v);
+      return yield* self.#putItem(next, v, expected);
     });
   }
 
@@ -3743,7 +3782,7 @@ class Vaults {
       const prev = items(inner, self.ws, vault)[id];
       if (!prev || prev.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
       const next = sign({ v: 1 as const, ws: self.ws, vault, id, version: prev.version + 1, epoch: v.epoch, deleted: true as const, ct: "", at: nowS(inner) }, TAG.item, signer);
-      return yield* self.#putItem(next, v);
+      return yield* self.#putItem(next, v, expected);
     });
   }
 
@@ -3752,14 +3791,24 @@ class Vaults {
   /// here alone, no station said to hold it, so each is brought it as it can be (`spreadAll`).
   /// Where another station holds the vault too, each is waited on `WRITE_TRY_MS` before the next is tried, as
   /// `#putVault`.
-  #putItem(next: Item, v: Vault): Effect.Effect<unknown, CoreError> {
+  #putItem(
+    next: Item,
+    v: Vault,
+    expected?: { wsAuthGen: number; vaultGen: number; vaultGlobalGen: number },
+  ): Effect.Effect<unknown, CoreError> {
     const self = this;
     const targets = writeHosts(this.#inner, this.ws, v.id);
     return Effect.gen(function* () {
       const inner = self.#inner;
+      const isStale = () =>
+        expected !== undefined &&
+        (inner.store.authGen.workspaceAuthGen(self.ws) !== expected.wsAuthGen ||
+          inner.store.authGen.vaultGen(self.ws, v.id) !== expected.vaultGen ||
+          inner.store.authGen.vaultGlobalGen !== expected.vaultGlobalGen);
       let item = next;
       let on = "";
       for (const s of targets) {
+        if (isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
         const put = self.#station(s, "PUT", "/vault/items", next);
         const res = targets.length > 1
           ? yield* Effect.timeoutOption(Effect.result(put), WRITE_TRY_MS) // timer: a deadline
@@ -3776,6 +3825,7 @@ class Vaults {
         }
         if (!localFallback(res.value.failure)) return yield* Effect.fail(res.value.failure);
       }
+      if (on === "" && isStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       const fit = fits(inner, self.ws);
       changeItems(inner, self.ws, v.id, (all) => { if (newer(item, all[item.id], fit)) all[item.id] = item; });
       if (on !== "") change(inner, self.ws, (h) => {
@@ -4366,6 +4416,14 @@ class Vaults {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
       const priv = yield* self.#boxKey(t("core-misc.vault.reason.save", { name: s.name }));
+      if (
+        inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
+        inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen ||
+        (rekeyCandidate !== undefined && inner.store.authGen.vaultGen(self.ws, rekeyCandidate.id) !== startRekeyVaultGen) ||
+        (chosen !== undefined && inner.store.authGen.vaultGen(self.ws, chosen.id) !== startChosenVaultGen)
+      ) {
+        return yield* fail("auth_stale", t("core-misc.auth.stale"));
+      }
       if (boxPublic(priv) !== box) return yield* fail("vault_no_key", t(given ? "core-misc.vault.noKey" : "core-misc.vault.notSealedHere"));
       const body = yield* Effect.try({
         try: () => {
@@ -4388,7 +4446,7 @@ class Vaults {
         v = yield* self.#vault(lock, rekeyCandidate.id);
       }
       if (!v) {
-        const made = (yield* self.create(t("core-misc.vault.personal"), null)) as { id: string };
+        const made = (yield* self.create(t("core-misc.vault.personal"), null, undefined, { wsAuthGen: startWsAuthGen, vaultGlobalGen: startVaultGlobalGen })) as { id: string };
         v = held(inner, self.ws).vaults[made.id];
         if (!v) return yield* fail("vault_unknown", t("core-misc.vault.unknown"));
       }
@@ -4398,14 +4456,15 @@ class Vaults {
       const wrapped = vault.keys.find((k) => k.cert.device === who.device)!.wrapped;
       const key = kept && kept.until > inner.host.nowMs() ? kept.key : yield* Effect.try({ try: () => openSeal(priv, wrapped, keyContext(self.ws, vault.id, vault.epoch)), catch: asCoreError });
       const targetVaultGen = chosen && vault.id === chosen.id ? startChosenVaultGen : snapVaultGen(startSnap, self.ws, vault.id);
+      const saveExpected = { wsAuthGen: startWsAuthGen, vaultGen: targetVaultGen, vaultGlobalGen: startVaultGlobalGen };
       const saveStale = () =>
         inner.store.authGen.workspaceAuthGen(self.ws) !== startWsAuthGen ||
         inner.store.authGen.vaultGen(self.ws, vault.id) !== targetVaultGen ||
         inner.store.authGen.vaultGlobalGen !== startVaultGlobalGen;
-      if (!self.#keep(vault, key, { wsAuthGen: startWsAuthGen, vaultGen: targetVaultGen, vaultGlobalGen: startVaultGlobalGen })) {
+      if (!self.#keep(vault, key, saveExpected)) {
         return yield* fail("auth_stale", t("core-misc.auth.stale"));
       }
-      inner.runner.fork(Effect.ignore(self.#give(vault.id, vault.epoch, key, null), { log: "Unhandled", message: "vault key given" }));
+      inner.runner.fork(Effect.ignore(self.#give(vault.id, vault.epoch, key, null, saveExpected), { log: "Unhandled", message: "vault key given" }));
       // Written once: an approval tried again after the station was not told finds it there.
       const had = items(inner, self.ws, vault.id)[r.item];
       if (had?.deleted) return yield* fail("vault_unknown", t("core-misc.vault.unknownItem"));
@@ -4415,7 +4474,7 @@ class Vaults {
         inner.host.randomBytes(nonce);
         const ct = encryptWith(key, utf8(JSON.stringify(body.plain)), itemContext(self.ws, vault.id, r.item, 0, vault.epoch), nonce);
         const next = sign({ v: 1 as const, ws: self.ws, vault: vault.id, id: r.item, version: 0, epoch: vault.epoch, ct, ...(body.listing ? { listing: body.listing } : {}), at: nowS(inner) }, TAG.item, signer);
-        yield* self.#putItem(next, vault);
+        yield* self.#putItem(next, vault, saveExpected);
       }
       if (saveStale()) return yield* fail("auth_stale", t("core-misc.auth.stale"));
       // Keeping it lets the chat that asked use it, for as long as the vault's items are given: its grant sealed to the

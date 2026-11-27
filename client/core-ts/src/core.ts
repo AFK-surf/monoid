@@ -646,7 +646,16 @@ export class Core {
       handlers.device = (_i, call) => inner.devices.run((call as Extract<Call, { kind: "device" }>).call);
       inner.stations.also.push({ read: (address) => inner.devices.read(address), event: (address, name, data) => inner.devices.heard(address, name, data) });
       // This person's chats' grants of their phone, as each station says them.
-      inner.stations.also.push({ read: (address) => inner.adb.readGrants(address), event: (address, name, data) => (name === "adb-grant" ? inner.adb.heard(address, data) : name === "adb-revoke" ? inner.adb.heardRevoke(address, data) : undefined), resume: true });
+      inner.stations.also.push({
+        read: (address) => inner.adb.readGrants(address),
+        event: (address, name, data, readGen) =>
+          name === "adb-grant"
+            ? inner.adb.heard(address, data, readGen, inner.workspaces.owner(ofAddress(address)) ?? undefined)
+            : name === "adb-revoke"
+              ? inner.adb.heardRevoke(address, data)
+              : undefined,
+        resume: true,
+      });
       handlers.ask = (_i, call) => asks.run((call as Extract<Call, { kind: "ask" }>).ask, inner.accounts);
       inner.changelog = new Changelog(inner.host, inner.store, inner.data);
       inner.router.owners.push(inner.changelog);

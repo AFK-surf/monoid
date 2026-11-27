@@ -997,8 +997,9 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
       a === addr ? [{ id: 1, session: "k-gone", thread: null, restore: { id: "row-gone" }, restoreGuard: false } as never] : [];
     const curGen = rCore.inner.store.authGen.workspaceAuthGen("ws-ret");
     // Start full shared read (takes 50ms) and immediately fire scoped restore removal (completes at ~0ms)
+    link.sharedRows = new Map();
     rCore.inner.stations.onEvent(addr, "chat-shared", JSON.stringify({ id: "row-gone", session: "k-gone", title: "Gone", updatedAt: 10 }), false, curGen);
-    assert.ok(link.sharedRows?.has("row-gone") || rCore.inner.data.chatForSession(addr, "k-gone") !== undefined || true);
+    assert.equal(link.sharedRows.has("row-gone"), true, "precondition: row-gone must exist in sharedRows before scoped restore removal");
     rCore.inner.stations.checkRestores(addr, { session: "k-gone" });
     await rHost.time.pass(100, 10);
     assert.equal(scopedDone, true, "scoped restore check must have run");
@@ -1008,6 +1009,20 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
     // 2. Astra P0-1 + Astra P1 + Opus P2: #authFailed blocks protected subscription frames (even without conn),
     // rejects stale-conn RPCs on/after recovery as auth_stale, and auto-recovers via exponential backoff without syncAuth.
     const fHost = new FakeHost();
+    fHost.store(STORAGE_KEY, [account("acct-fail", "f@x.com", "Fail", "tok-f", "rf", nowS(fHost) + 3600)]);
+    fHost.onFetch((req) => {
+      if (req.url.endsWith("/v1/me")) {
+        return jsonResponse(200, {
+          workspaces: [{ id: "ws-fail", name: "Secret WS", role: "owner" }],
+          invitations: [],
+          relay_url: "https://relay.test",
+        });
+      }
+      if (req.url.endsWith("/v1/workspaces/ws-fail")) {
+        return jsonResponse(200, { id: "ws-fail", name: "Secret WS", role: "owner", members: [], stations: [] });
+      }
+      return jsonResponse(404, { error: "not_found" });
+    });
     let failAuthWrite = true;
     const origSet = fHost.storageSet.bind(fHost);
     fHost.storageSet = (key, value) => {
@@ -1015,22 +1030,29 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
       return origSet(key, value);
     };
     const fCore = await Core.create(fHost, { clock: fHost.time.clock, iroh: null });
+    await fCore.inner.runner.run(fCore.inner.data.accounts(["acct-fail"]));
+    fCore.inner.workspaces.setOwners(new Map([["ws-fail", "acct-fail"]]));
     const cFail = fCore.connect({ authHandshake: true, requireCallAuth: true });
     await fHost.time.pass(50, 10);
     assert.equal(fCore.inner.store.isAuthFailed(cFail), true, "initial persist failure must mark client authFailed");
     fHost.takeEmitted();
 
-    // (a) Protected workspace/station subscription emits 0 frames while #authFailed, whereas device-global passes
-    fCore.inner.store.subscribe(cFail, 501, { topic: "overview", station: "ws-fail/s1" }, false);
+    // (a) Protected workspace subscription emits 0 frames while #authFailed, whereas device-global passes
+    fCore.inner.store.subscribe(cFail, 501, { topic: "workspace", workspace: "ws-fail" }, false);
     fCore.inner.store.subscribe(cFail, 502, { topic: "prefs" }, false);
-    fCore.inner.store.set({ topic: "overview", station: "ws-fail/s1" }, { ok: { secret: "ws-data" } });
+    fCore.inner.data.set(
+      { topic: "workspace", workspace: "ws-fail" },
+      { id: "ws-fail", name: "Secret WS", role: "owner", members: [], stations: [] },
+      false,
+    );
+    fCore.inner.store.invalidate({ topic: "workspace", workspace: "ws-fail" });
     fCore.inner.store.set({ topic: "prefs" }, { ok: { theme: "dark" } });
     await fHost.time.pass(50, 10);
     const duringFail = fHost.takeEmitted().filter(([c]) => c === cFail);
     assert.equal(
       duringFail.filter(([, m]) => "id" in m && m.id === 501).length,
       0,
-      "#authFailed client must receive 0 frames for protected overview topic even without conn",
+      "#authFailed client must receive 0 frames for protected workspace topic even without conn",
     );
     assert.ok(
       duringFail.some(([, m]) => "id" in m && m.id === 502 && "value" in m),
@@ -1048,6 +1070,14 @@ describe("PR-B2s authGen / vaultGen boundaries and sensitive ceiling", () => {
       afterRecover.some(([, m]) => "id" in m && m.id === 0 && "auth" in m && (m.auth as { conn?: number }).conn === recoveredConn),
       "auto-recovery must emit authoritative { id: 0, auth } snapshot with new connId",
     );
+    // r15 P1: without any new store.set or re-subscribe, auto-recovery immediately replays full initial value for protected sub 501
+    const replayedSub501 = afterRecover.find(([, m]) => "id" in m && m.id === 501 && "value" in m) as
+      | [number, { id: number; value?: { id?: string; name?: string }; conn?: number }]
+      | undefined;
+    assert.ok(replayedSub501 !== undefined, `auto-recovery must replay protected subscription 501 initial value without new writes, got ${JSON.stringify(afterRecover)}`);
+    assert.equal(replayedSub501[1].value?.id, "ws-fail", "replayed initial value must match full sent workspace");
+    assert.equal(replayedSub501[1].value?.name, "Secret WS", "replayed initial value must match full sent workspace name");
+    assert.equal(replayedSub501[1].conn, recoveredConn, "replayed initial value must carry new recoveredConn");
 
     // (b) Stale-conn RPC reply (oldConn !== recoveredConn) arriving after recovery (or drained during markClientAuthReady)
     // is rejected as auth_stale without conn, never delivered with stale conn!
