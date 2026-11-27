@@ -390,11 +390,172 @@ fn head_missing(repo : String, ref_ : String) -> Bool? {
 fn still_there(repo : String, c : Cache) -> Bool {
   // Pass the ref as a query field, so quotes and URL metacharacters in a branch name stay part of the ref.
   let args = "api --paginate -X GET " + shell_arg("repos/" + repo + "/actions/caches") +
-    " -f per_page=100 -f " + shell_arg("ref=" + c.ref_) + " -q '.actions_caches[].id'"
+    " -f per_page=100 -f sort=created_at -f direction=asc -f " + shell_arg("ref=" + c.ref_) +
+    " -q '.actions_caches[].id'"
   match gh_lines(args) {
     Some(ids) => ids.contains(c.id)
     None => true
   }
+}
+
+///|
+/// Collapse duplicate cache IDs (for example when concurrent reads or saves shift items across paginated
+/// `actions/caches` responses), keeping the freshest timestamps so one live cache can never supersede itself.
+fn dedup_caches(raw : Array[Cache]) -> Array[Cache] {
+  let out : Array[Cache] = []
+  let by_id : Map[String, Int] = Map([])
+  for c in raw {
+    if c.id.length() == 0 {
+      continue
+    }
+    match by_id.get(c.id) {
+      Some(idx) => {
+        let prev = out[idx]
+        out[idx] = {
+          ..prev,
+          size: if c.size > prev.size { c.size } else { prev.size },
+          created: if c.created > prev.created { c.created } else { prev.created },
+          accessed: if c.accessed > prev.accessed { c.accessed } else { prev.accessed },
+        }
+      }
+      None => {
+        by_id[c.id] = out.length()
+        out.push(c)
+      }
+    }
+  }
+  out
+}
+
+///|
+/// Parse `@tsv` rows from `actions/caches` and deduplicate by cache ID.
+fn parse_caches(lines : Array[String]) -> Array[Cache] {
+  let raw : Array[Cache] = []
+  for l in lines {
+    let f = l.split("\t").map(fn(p) { p.to_owned() }).to_array()
+    if f.length() < 6 || f[0].length() == 0 {
+      continue
+    }
+    raw.push({
+      id: f[0],
+      key: f[1],
+      ref_: f[2],
+      size: num_of(f[3]).to_int64(),
+      created: iso_s(f[4]),
+      accessed: iso_s(f[5]),
+    })
+  }
+  dedup_caches(raw)
+}
+
+///|
+/// Choose which caches to delete. Returns None if a missing-branch confirmation fails so nothing is deleted on API error.
+fn select_prune_targets(
+  raw_caches : Array[Cache],
+  default_head : String,
+  heads : Map[String, Bool],
+  now : Double,
+  is_head_missing : (String) -> Bool?,
+) -> Array[Cache]? {
+  let caches = dedup_caches(raw_caches)
+  caches.sort_by(fn(a, b) {
+    let by_made = b.created.compare(a.created)
+    if by_made != 0 {
+      return by_made
+    }
+    let by_len = b.id.length().compare(a.id.length())
+    if by_len != 0 { by_len } else { b.id.compare(a.id) }
+  })
+  // the homes kept (each job's newest) on each ref, and the earliest of their last reads: a part one of them names is
+  // read with it, so read since then (less a while); each kind of part's last read too, for a ref with no home
+  let homes_read : Map[String, Double] = Map([])
+  let home_seen : Map[String, Bool] = Map([])
+  let last_read : Map[String, Double] = Map([])
+  for c in caches {
+    if is_gradle_part(c.key) {
+      let s = part_slot(c)
+      if last_read.get(s).unwrap_or(0.0) < c.accessed {
+        last_read[s] = c.accessed
+      }
+    } else if c.key.has_prefix("gradle-home-") {
+      let slot = kind_of(c.key).unwrap_or(c.key) + "\n" + c.ref_
+      if !home_seen.contains(slot) {
+        home_seen[slot] = true
+        match homes_read.get(c.ref_) {
+          Some(t) if t <= c.accessed => ()
+          _ => homes_read[c.ref_] = c.accessed
+        }
+      }
+    }
+  }
+  let newest : Map[String, String] = Map([])
+  let missing_heads : Map[String, Bool] = Map([])
+  let gone : Array[Cache] = []
+  for c in caches {
+    if deleted_head_cache(c, heads, now) {
+      let missing = match missing_heads.get(c.ref_) {
+        Some(m) => m
+        None =>
+          match is_head_missing(c.ref_) {
+            Some(m) => {
+              missing_heads[c.ref_] = m
+              m
+            }
+            None => return None
+          }
+      }
+      if missing {
+        gone.push(c)
+        continue
+      }
+    }
+    if idle_branch_cache(c, default_head, now) {
+      gone.push(c)
+      continue
+    }
+    if is_gradle_part(c.key) {
+      let since = match homes_read.get(c.ref_) {
+        Some(t) => t
+        None => last_read.get(part_slot(c)).unwrap_or(c.accessed)
+      }
+      if since - c.accessed > stale_parts_s {
+        gone.push(c)
+      }
+      continue
+    }
+    match kind_of(c.key) {
+      Some(k) => {
+        let slot = k + "\n" + c.ref_
+        // (one under a megabyte left: it frees nothing, and some small ones are markers looked up by their exact
+        // key, mbui-android-refs-same-<inputs>)
+        match newest.get(slot) {
+          Some(kept_id) =>
+            if kept_id != c.id && c.size >= 1000000L {
+              gone.push(c)
+            }
+          None => newest[slot] = c.id
+        }
+      }
+      None => ()
+    }
+  }
+  let going : Map[String, Bool] = Map([])
+  for c in gone {
+    going[c.id] = true
+  }
+  for c in stale_family_caches(
+    caches.filter(fn(c) { !going.contains(c.id) }),
+    default_head,
+    now,
+  ) {
+    gone.push(c)
+    going[c.id] = true
+  }
+  let kept = caches.filter(fn(c) { !going.contains(c.id) })
+  for c in over_cap_caches(kept, default_head, repo_cache_cap_bytes) {
+    gone.push(c)
+  }
+  Some(gone)
 }
 
 ///|
@@ -441,9 +602,12 @@ fn cache_prune(args : Array[String]) -> Int {
       return 1
     }
   }
+  // Sort by immutable created_at ascending instead of default last_accessed_at descending: concurrent cache reads
+  // otherwise move entries to page 1 mid-pagination and push page-boundary entries onto the next page twice
+  // (2026-11-27, cache-prune 45926976180 deleted main's only moonbit-Linux-ARM64 cache 6 s before preview 45926580720).
   let lines = match
     gh_lines(
-      "api --paginate 'repos/\{repo}/actions/caches?per_page=100' -q '.actions_caches[]|[.id,.key,.ref,.size_in_bytes,.created_at,.last_accessed_at]|@tsv'",
+      "api --paginate 'repos/\{repo}/actions/caches?per_page=100&sort=created_at&direction=asc' -q '.actions_caches[]|[.id,.key,.ref,.size_in_bytes,.created_at,.last_accessed_at]|@tsv'",
     ) {
     Some(l) => l
     None => {
@@ -451,113 +615,23 @@ fn cache_prune(args : Array[String]) -> Int {
       return 1
     }
   }
-  let caches : Array[Cache] = []
-  for l in lines {
-    let f = l.split("\t").map(fn(p) { p.to_owned() }).to_array()
-    if f.length() < 6 {
-      continue
-    }
-    caches.push({
-      id: f[0],
-      key: f[1],
-      ref_: f[2],
-      size: num_of(f[3]).to_int64(),
-      created: iso_s(f[4]),
-      accessed: iso_s(f[5]),
-    })
-  }
-  caches.sort_by(fn(a, b) { b.created.compare(a.created) })
-  // the homes kept (each job's newest) on each ref, and the earliest of their last reads: a part one of them names is
-  // read with it, so read since then (less a while); each kind of part's last read too, for a ref with no home
-  let homes_read : Map[String, Double] = Map([])
-  let home_seen : Map[String, Bool] = Map([])
-  let last_read : Map[String, Double] = Map([])
-  for c in caches {
-    if is_gradle_part(c.key) {
-      let s = part_slot(c)
-      if last_read.get(s).unwrap_or(0.0) < c.accessed {
-        last_read[s] = c.accessed
-      }
-    } else if c.key.has_prefix("gradle-home-") {
-      let slot = kind_of(c.key).unwrap_or(c.key) + "\n" + c.ref_
-      if !home_seen.contains(slot) {
-        home_seen[slot] = true
-        match homes_read.get(c.ref_) {
-          Some(t) if t <= c.accessed => ()
-          _ => homes_read[c.ref_] = c.accessed
+  let caches = parse_caches(lines)
+  let mut failed_ref = ""
+  let gone = match
+    select_prune_targets(caches, default_head, heads, now, fn(ref_) {
+      match head_missing(repo, ref_) {
+        Some(m) => Some(m)
+        None => {
+          failed_ref = ref_
+          None
         }
       }
+    }) {
+    Some(g) => g
+    None => {
+      @sys.eprintln("chk cache-prune: could not confirm branch \{failed_ref}")
+      return 1
     }
-  }
-  let newest : Map[String, Bool] = Map([])
-  let missing_heads : Map[String, Bool] = Map([])
-  let gone : Array[Cache] = []
-  for c in caches {
-    if deleted_head_cache(c, heads, now) {
-      let missing = match missing_heads.get(c.ref_) {
-        Some(m) => m
-        None =>
-          match head_missing(repo, c.ref_) {
-            Some(m) => {
-              missing_heads[c.ref_] = m
-              m
-            }
-            None => {
-              @sys.eprintln("chk cache-prune: could not confirm branch \{c.ref_}")
-              return 1
-            }
-          }
-      }
-      if missing {
-        gone.push(c)
-        continue
-      }
-    }
-    if idle_branch_cache(c, default_head, now) {
-      gone.push(c)
-      continue
-    }
-    if is_gradle_part(c.key) {
-      let since = match homes_read.get(c.ref_) {
-        Some(t) => t
-        None => last_read.get(part_slot(c)).unwrap_or(c.accessed)
-      }
-      if since - c.accessed > stale_parts_s {
-        gone.push(c)
-      }
-      continue
-    }
-    match kind_of(c.key) {
-      Some(k) => {
-        let slot = k + "\n" + c.ref_
-        // (one under a megabyte left: it frees nothing, and some small ones are markers looked up by their exact
-        // key, mbui-android-refs-same-<inputs>)
-        if newest.contains(slot) {
-          if c.size >= 1000000L {
-            gone.push(c)
-          }
-        } else {
-          newest[slot] = true
-        }
-      }
-      None => ()
-    }
-  }
-  let going : Map[String, Bool] = Map([])
-  for c in gone {
-    going[c.id] = true
-  }
-  for c in stale_family_caches(
-    caches.filter(fn(c) { !going.contains(c.id) }),
-    default_head,
-    now,
-  ) {
-    gone.push(c)
-    going[c.id] = true
-  }
-  let kept = caches.filter(fn(c) { !going.contains(c.id) })
-  for c in over_cap_caches(kept, default_head, repo_cache_cap_bytes) {
-    gone.push(c)
   }
   let mut freed = 0L
   for c in gone {

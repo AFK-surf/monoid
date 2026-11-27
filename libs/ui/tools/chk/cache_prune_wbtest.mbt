@@ -377,3 +377,76 @@ test "a family's variants go once it moved on, its newest and the fixed ones nev
   ]
   assert_eq(ids(fixed), [])
 }
+
+///|
+test "duplicate cache ids from pagination never cause a cache to supersede itself" {
+  let lines = [
+    "11147320001\tmoonbit-Linux-ARM64-github-hosted-0910ebfb6eb17f3e\trefs/heads/main\t91842814\t2026-11-26T10:23:16Z\t2026-11-27T02:08:19Z",
+    // Same cache returned again on the next page after concurrent reads shifted page boundaries.
+    "11147320001\tmoonbit-Linux-ARM64-github-hosted-0910ebfb6eb17f3e\trefs/heads/main\t91842814\t2026-11-26T10:23:16Z\t2026-11-27T02:13:01Z",
+    "\tinvalid-empty-id\trefs/heads/main\t1000000\t2026-11-26T10:23:16Z\t2026-11-27T02:08:19Z",
+    "malformed-short-row",
+  ]
+  let parsed = parse_caches(lines)
+  assert_eq(parsed.length(), 1)
+  assert_eq(parsed[0].id, "11147320001")
+  assert_eq(parsed[0].accessed, iso_s("2026-11-27T02:13:01Z"))
+  let heads : Map[String, Bool] = { "refs/heads/main": true }
+  let now = iso_s("2026-11-27T02:13:10Z")
+  // Even if duplicate rows reach select_prune_targets directly, the sole live cache is never pruned.
+  let dup = [parsed[0], { ..parsed[0], accessed: iso_s("2026-11-27T02:08:19Z") }]
+  let gone = select_prune_targets(dup, "refs/heads/main", heads, now, fn(_) { Some(false) })
+  assert_eq(gone.map(ids_of), Some([]))
+  // A genuinely newer cache with a different id still supersedes the older one.
+  let newer : Cache = {
+    id: "11182458424",
+    key: "moonbit-Linux-ARM64-github-hosted-1111222233334444",
+    ref_: "refs/heads/main",
+    size: 91842814L,
+    created: iso_s("2026-11-27T02:20:34Z"),
+    accessed: iso_s("2026-11-27T02:20:34Z"),
+  }
+  let gone2 = select_prune_targets(
+    [parsed[0], newer, parsed[0]],
+    "refs/heads/main",
+    heads,
+    now,
+    fn(_) { Some(false) },
+  )
+  assert_eq(gone2.map(ids_of), Some(["11147320001"]))
+}
+
+///|
+test "same-second rolling caches keep the higher numeric id and abort if missing-branch check fails" {
+  let heads : Map[String, Bool] = { "refs/heads/main": true }
+  let t = iso_s("2026-11-27T02:20:34Z")
+  let older : Cache = {
+    id: "999999999",
+    key: "mbui-linux-moon-arm64-1111111111111111",
+    ref_: "refs/heads/main",
+    size: 199000000L,
+    created: t,
+    accessed: t,
+  }
+  let newer : Cache = {
+    id: "1000000000",
+    key: "mbui-linux-moon-arm64-2222222222222222",
+    ref_: "refs/heads/main",
+    size: 199000000L,
+    created: t,
+    accessed: t,
+  }
+  let gone = select_prune_targets([older, newer], "refs/heads/main", heads, t + 60.0, fn(_) { Some(false) })
+  assert_eq(gone.map(ids_of), Some(["999999999"]))
+  // If head_missing returns None for a deleted branch candidate, selection aborts instead of deleting.
+  let deleted_branch : Cache = {
+    id: "1000000001",
+    key: "k-0123456789abcdef",
+    ref_: "refs/heads/gone",
+    size: 5000000L,
+    created: t,
+    accessed: t,
+  }
+  let aborted = select_prune_targets([deleted_branch], "refs/heads/main", heads, t + 600.0, fn(_) { None })
+  assert_eq(aborted.map(ids_of), None)
+}
