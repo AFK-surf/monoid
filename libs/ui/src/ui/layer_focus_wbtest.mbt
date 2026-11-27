@@ -169,7 +169,7 @@ fn two_layers_tester(
 
 ///|
 /// Both of two_layers_tester's opened in one change from the tree's button with the focus: where the focus is then.
-fn both_opened(t : Tester, up : @signals.Signal[Bool], down : @signals.Signal[Bool]) -> String? raise {
+fn both_opened(t : Tester, up : @signals.Signal[Bool], down : @signals.Signal[Bool]) -> String? {
   t.act(Button, Focus, label="树按钮")
   @signals.start_batch()
   up.set(true)

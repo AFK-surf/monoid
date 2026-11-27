@@ -224,7 +224,7 @@ fn signin_press(t : @ui.Tester, words : String) -> Unit {
 
 ///|
 /// The card's top-right cancel × pressed, then its moment.
-fn signin_press_cancel(t : @ui.Tester) -> Unit raise {
+fn signin_press_cancel(t : @ui.Tester) -> Unit {
   t.click(Button, label="取消登录")
   t.run_for(@ui.move_most_ms)
 }
@@ -276,26 +276,26 @@ test "a sign-in on its card, made once as nodes: on screen, signin.self; 1Passwo
     ("the person's step", signin_post_with(more={ "status": s("person"), "why": s("blocked") }), NoManager, fn(t) {
       signin_press(t, "我已登录")
     }, "signin.self"),
-    ("cancel from asking (no manager)", none, NoManager, fn(t) raise { signin_press_cancel(t) }, "signin.deny"),
-    ("cancel from asking (1Password)", none, op, fn(t) raise { signin_press_cancel(t) }, "signin.deny"),
-    ("cancel while 1Password slow", none, OnePassword(signin_two_logins, true, false), fn(t) raise {
+    ("cancel from asking (no manager)", none, NoManager, fn(t) { signin_press_cancel(t) }, "signin.deny"),
+    ("cancel from asking (1Password)", none, op, fn(t) { signin_press_cancel(t) }, "signin.deny"),
+    ("cancel while 1Password slow", none, OnePassword(signin_two_logins, true, false), fn(t) {
       signin_press(t, "用 1Password 登录")
       signin_press_cancel(t)
     }, "signin.deny"),
-    ("cancel from choosing", none, op, fn(t) raise {
+    ("cancel from choosing", none, op, fn(t) {
       signin_press(t, "用 1Password 登录")
       signin_press_cancel(t)
     }, "signin.deny"),
-    ("cancel while filling", signin_post_with(more={ "status": s("filling") }), NoManager, fn(t) raise {
+    ("cancel while filling", signin_post_with(more={ "status": s("filling") }), NoManager, fn(t) {
       signin_press_cancel(t)
     }, "signin.deny"),
-    ("cancel from code", signin_post_with(more={ "status": s("code") }), NoManager, fn(t) raise {
+    ("cancel from code", signin_post_with(more={ "status": s("code") }), NoManager, fn(t) {
       signin_press_cancel(t)
     }, "signin.deny"),
-    ("cancel from person", signin_post_with(more={ "status": s("person"), "why": s("blocked") }), NoManager, fn(t) raise {
+    ("cancel from person", signin_post_with(more={ "status": s("person"), "why": s("blocked") }), NoManager, fn(t) {
       signin_press_cancel(t)
     }, "signin.deny"),
-    ("cancel from left", signin_post_with(more={ "status": s("left") }), NoManager, fn(t) raise {
+    ("cancel from left", signin_post_with(more={ "status": s("left") }), NoManager, fn(t) {
       signin_press_cancel(t)
     }, "signin.deny"),
     ("saving", signin_post_with(more={ "status": s("done"), "keep": Json::boolean(true), "save": s("r-save") }), NoManager, fn(t) {

@@ -47,7 +47,7 @@ test "a chat's screen button says no count on it, however many there are" {
 
 ///|
 /// The words drawn on the screen button's box.
-fn screen_count_on(t : @ui.Tester) -> Array[String] raise {
+fn screen_count_on(t : @ui.Tester) -> Array[String] {
   let (bx, by, bw, bh) = t.get(Button, label="Station 屏幕").rect
   t
   .words()

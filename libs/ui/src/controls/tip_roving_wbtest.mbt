@@ -67,14 +67,14 @@ fn roving_grounds(t : @ui.Tester, ink : Int64) -> Array[(Double, Double, Double,
 
 ///|
 /// Tool `k`'s middle.
-fn roving_tool_at(t : @ui.Tester, k : Int) -> (Double, Double) raise {
+fn roving_tool_at(t : @ui.Tester, k : Int) -> (Double, Double) {
   let b = t.get(Button, label=roving_labels[k])
   (b.rect.0 + b.rect.2 / 2.0, b.rect.1 + b.rect.3 / 2.0)
 }
 
 ///|
 /// Tool `k`'s tip rested on from a row none of whose tips showed: its rect and its ground's colour (or 1L for liquid glass).
-fn roving_cold(k : Int) -> ((Double, Double, Double, Double), Int64) raise {
+fn roving_cold(k : Int) -> ((Double, Double, Double, Double), Int64) {
   let t = roving_tips_tester()
   let (x, y) = roving_tool_at(t, k)
   t.move_to(x, y)

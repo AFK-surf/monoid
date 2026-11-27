@@ -404,7 +404,7 @@ test "a field of the tree's as an old view's: ⌘V's words from the clipboard in
     t.clipboard_gives("XY")
     t.draw()
   })
-  field_alike("a screen reader's", "abc", fn(t, _) { t.act(TextField, SetText("新的字")) catch { _ => () } })
+  field_alike("a screen reader's", "abc", fn(t, _) { t.try_act(TextField, SetText("新的字")) |> ignore })
 }
 
 ///|
@@ -485,7 +485,7 @@ fn field_over_after(tree : Bool, f : Field, at : @signals.Signal[Double]) -> Tes
 /// The field tapped, ⌘V and the clipboard giving three lines (a Tester's answer, by the frame): in the one frame they
 /// come with (the display's next, no other drawn after it), what it holds, how tall it is, where what is under it is,
 /// where the host is told its caret is.
-fn pasted_lines(tree : Bool) -> (String, Double, Double, (Double, Double, Double, Double)) raise {
+fn pasted_lines(tree : Bool) -> (String, Double, Double, (Double, Double, Double, Double)) {
   let f = Field::new()
   let at = @signals.signal(0.0, same=fn(a, b) { a == b })
   let t = field_over_after(tree, f, at)
@@ -541,7 +541,7 @@ fn field_said_so(
   secret? : Bool = false,
   look? : (String) -> (String, Array[(Int, Int, Int64)]),
   ime_action? : Int = 0,
-) -> (String, Array[(String, Double, Double, Double, Double, Double)], Array[Int64], Int, Array[String]) raise {
+) -> (String, Array[(String, Double, Double, Double, Double, Double)], Array[Int64], Int, Array[String]) {
   let f = Field::new()
   let said = []
   let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
@@ -595,12 +595,12 @@ test "a field of the tree's as an old view's, said so: its placeholder said its 
     let tree_one = run(true)
     assert_eq(tree_one, old_one, msg="\{what}: the tree's \{Repr(tree_one)}, the old view's \{Repr(old_one)}")
   }
-  alike("its placeholder's shorter way", fn(tree) raise { field_said_so(tree, "", placeholder=long, shorter=["shorter", "short"]) })
-  alike("a secret", fn(tree) raise { field_said_so(tree, "hunter2", secret=true) })
-  alike("a look", fn(tree) raise {
+  alike("its placeholder's shorter way", fn(tree) { field_said_so(tree, "", placeholder=long, shorter=["shorter", "short"]) })
+  alike("a secret", fn(tree) { field_said_so(tree, "hunter2", secret=true) })
+  alike("a look", fn(tree) {
     field_said_so(tree, "abc def", look=fn(d) { (d, if d.length() >= 3 { [(0, 3, 0xFF0000FFL)] } else { [] }) })
   })
-  alike("the input method's key", fn(tree) raise { field_said_so(tree, "go", ime_action=3) })
+  alike("the input method's key", fn(tree) { field_said_so(tree, "go", ime_action=3) })
 }
 
 ///|
@@ -747,7 +747,7 @@ test "a field of the tree's as an old view's: a secret's words laid out as what 
   // (each word as wide as its size, its dots half that: as the Tester's host measures them, laid out on more lines than
   // its dots)
   let words = "汉字汉字汉字汉字汉字汉字汉字汉字汉字汉字"
-  let tall = fn(tree : Bool) raise {
+  let tall = fn(tree : Bool) {
     let f = Field::new(text=words)
     let t = field_in(tree, f, 60.0, [], max_lines=4, secret=true)
     t.get(TextField).rect.3
@@ -780,7 +780,7 @@ test "a field of the tree's: what is composed put in as written, its look's word
     }
     (b.to_string(), [])
   }
-  let tall = fn(compose : Bool) raise {
+  let tall = fn(compose : Bool) {
     let f = Field::new()
     let t = field_in(true, f, 40.0, [], max_lines=4, look~)
     if compose {
@@ -1224,7 +1224,7 @@ test "a field of the tree's of a size and colours followed: as each changes alon
     |> ignore
   })
   t.draw()
-  let tall = fn() raise { t.get(TextField).rect.3 }
+  let tall = fn() { t.get(TextField).rect.3 }
   let inks = fn() { t.drawn_glyphs().map(fn(gl) { gl.2 }) }
   let (h1, k1) = (tall(), inks())
   // (its size alone, one frame)
@@ -1325,7 +1325,7 @@ test "a field of the tree's focus asked under a modal layer over it that holds t
   })
   t.draw()
   // (the focus its, as a screen reader gives it)
-  t.act(Button, Focus, label="上面") catch { _ => () }
+  t.try_act(Button, Focus, label="上面") |> ignore
   t.draw()
   let before = t.focused().map(fn(s) { s.label })
   f.focus()
@@ -1435,7 +1435,7 @@ test "Ctx::focus_field under a modal layer of the tree's holding the focus: a Fi
     |> ignore
   })
   t.draw()
-  t.act(Button, Focus, label="上面") catch { _ => () }
+  t.try_act(Button, Focus, label="上面") |> ignore
   t.draw()
   let before = t.focused().map(fn(s) { s.label })
   g().focus_field(f)
@@ -1478,7 +1478,7 @@ fn under_modal(old_one : Bool, on : @signals.Signal[Bool], f : Field) -> Tester 
     |> ignore
   })
   t.draw()
-  t.act(Button, Focus, label="上面") catch { _ => () }
+  t.try_act(Button, Focus, label="上面") |> ignore
   t.draw()
   t
 }

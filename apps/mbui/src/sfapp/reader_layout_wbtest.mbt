@@ -14,7 +14,7 @@ fn layout_words(t : @ui.Tester, inside : (Double, Double) -> Bool) -> Array[(Str
 
 ///|
 /// Where the control of `role` named `label` is read out to be (to half a point), and its value.
-fn layout_control(t : @ui.Tester, role : @ui.Role, label : String) -> ((Double, Double, Double, Double), String) raise {
+fn layout_control(t : @ui.Tester, role : @ui.Role, label : String) -> ((Double, Double, Double, Double), String) {
   let half = fn(x : Double) { (x * 2.0).round() / 2.0 }
   let s = t.get(role, label~)
   let (x, y, w, h) = s.rect
@@ -23,7 +23,7 @@ fn layout_control(t : @ui.Tester, role : @ui.Role, label : String) -> ((Double, 
 
 ///|
 /// The middle of the control of `role` named `label` as it is read out.
-fn layout_middle(t : @ui.Tester, role : @ui.Role, label : String) -> (Double, Double) raise {
+fn layout_middle(t : @ui.Tester, role : @ui.Role, label : String) -> (Double, Double) {
   let (x, y, w, h) = t.get(role, label~).rect
   (x + w / 2.0, y + h / 2.0)
 }

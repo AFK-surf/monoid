@@ -127,7 +127,7 @@ test "通知 made once: the badge's tile turned shows at once and its kinds' swi
     let in_badge = @sf.t("web-pages.notifications.inBadge")
     t.click(Button, label=@sf.t("web-pages.notifications.kinds.wait"))
     t.draw()
-    let tile_on = fn() raise { t.get(Button, label=badge).pressed }
+    let tile_on = fn() { t.get(Button, label=badge).pressed }
     let first = tile_on()
     let counted = t.get(Switch, label=in_badge)
     assert_eq(counted.disabled, first != Some(true), msg=at)

@@ -115,7 +115,7 @@ test "narrow: the configurations used most under their title nearest how hard it
     // each a configuration, the same model run two ways two of them: 「常用包括了思考深度和速度还有上下文长度」「是一种配置」)
     let rows = [
       "Opus 5.5", "SWE-2", "Kimi For Coding · 高", "GPT-6 Astra · 高", "DeepSeek V4.1 Flash · DSH · 高", "GPT-6 Astra · 中",
-    ].map(fn(l) raise { t.get(Button, label=l) })
+    ].map(fn(l) { t.get(Button, label=l) })
     for i in 1..<rows.length() {
       assert_true(rows[i].rect.1 > rows[i - 1].rect.1, msg="\{rows[i - 1].label} \{rows[i].label}")
     }
@@ -131,7 +131,7 @@ test "narrow: the configurations used most under their title nearest how hard it
     // how each last ran right after its name, on its line: SWE-2's 高, GPT-6 Astra's 中 (the models' words where they
     // are laid out, scrolled out of sight or not); nothing after the one picked, whose own is what the sheet says under
     // the models
-    let words_of = fn(label : String) -> Array[String] raise {
+    let words_of = fn(label : String) -> Array[String] {
       let (x, y, w, h) = t.get(Button, label~).rect
       let boxes = t.boxes_held()
       let mut from = 0
@@ -181,7 +181,7 @@ test "narrow, models starred: a starred model's configuration under 常用搭配
       msg="a star under 常用搭配",
     )
     // the one it runs on exactly drawn picked (its name the picked weight), the same model run another way not
-    let weight = fn(label : String, name : String) -> Int raise {
+    let weight = fn(label : String, name : String) -> Int {
       let (x, y, w, h) = t.get(Button, label~).rect
       t.boxes_held().rev().iter().find_first(fn(b) { b.kind == "text" && b.text == name && b.x >= x && b.x < x + w && b.y >= y && b.y < y + h }).map(fn(b) { b.weight }).unwrap_or(0)
     }
@@ -444,7 +444,7 @@ test "wide: how hard it thinks one under another, from the least to the most" {
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
     t.run_for(squeeze_opening)
     // (in their order down their column: from the least to the most)
-    let order = ["低", "中", "高", "最高"].map(fn(l) raise { t.get(Radio, label=l).rect })
+    let order = ["低", "中", "高", "最高"].map(fn(l) { t.get(Radio, label=l).rect })
     for i in 1..<order.length() {
       assert_true(order[i].0 == order[0].0 && order[i].1 > order[i - 1].1, msg="\{Repr(order)}")
     }

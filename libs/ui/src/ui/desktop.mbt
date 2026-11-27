@@ -236,13 +236,13 @@ priv struct Desk {
 priv enum SelKey {
   NoSel
   Para(Int)
-  Words(Int, @view.NodeId, Int?, String)
+  Words(Int, Int, Int, Int?, String)
 }
 
 ///|
 fn sel_words_key(tree_no : Int, list_id : @view.NodeId, place : Array[Int]) -> SelKey {
   let head = if place.length() > 0 { Some(place[0]) } else { None }
-  SelKey::Words(tree_no, list_id, head, list_text(place))
+  SelKey::Words(tree_no, list_id.at, list_id.gen, head, list_text(place))
 }
 
 ///|
@@ -957,8 +957,8 @@ pub fn picked_words() -> String {
 fn refresh_at(base : SelKey, at : Array[Int], row_depth : Int) -> Array[Int] {
   guard row_depth >= 0 && row_depth < at.length() else { return at }
   match (base, view_app.val) {
-    (SelKey::Words(tree_no, list_id, Some(first_row), _), Some(tree)) if tree_no == view_tree_made.val =>
-      match tree.row_order_of(list_id, first_row) {
+    (SelKey::Words(tree_no, list_at, list_gen, Some(first_row), _), Some(tree)) if tree_no == view_tree_made.val =>
+      match tree.row_order_of(@view.NodeId::{ at: list_at, gen: list_gen }, first_row) {
         Some(cur) if at[row_depth] != cur => {
           let next = at.copy()
           next[row_depth] = cur

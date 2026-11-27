@@ -16,7 +16,7 @@ fn reused_job_line(k : Int) -> Json {
 ///|
 /// The chat's 任务 tab beside it on 大屏 (chat-jobs-side), its job's output `reused_job_lines` lines, 输出 pressed: at
 /// its end.
-fn reused_jobs_side() -> @ui.Tester raise {
+fn reused_jobs_side() -> @ui.Tester {
   new_run()
   let base = @sffixture.fixture("chat-jobs-side")
   let log : Json = {

@@ -65,7 +65,7 @@ test "send: pressed only while it can go, read out disabled while not" {
   let starting = @signals.signal(false, same=fn(a, b) { a == b })
   let pressed = Ref(0)
   let t = send_tester(ready, starting, pressed)
-  t.click(Button, label="发送") catch { _ => () }
+  t.try_click(Button, label="发送") |> ignore
   t.draw()
   assert_eq(pressed.val, 0)
   assert_true(t.semantics().iter().any(fn(s) { s.role == @ui.Role::Button && s.disabled }))

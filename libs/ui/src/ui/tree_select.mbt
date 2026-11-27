@@ -161,8 +161,10 @@ fn picked_row_has_any(tree_id : Int, list : @view.NodeId, row_num : Int) -> Bool
   picked.spans.each(fn(k, s) {
     if !found.val && s.a < s.b {
       match k {
-        SelKey::Words(t, r, Some(first_row), _) if t == tree_id && r == list && first_row == row_num =>
-          found.val = true
+        SelKey::Words(t, r_at, r_gen, Some(first_row), _) if t == tree_id &&
+          r_at == list.at &&
+          r_gen == list.gen &&
+          first_row == row_num => found.val = true
         _ => ()
       }
     }
@@ -218,7 +220,8 @@ fn picked_told() -> Unit {
   picked.spans.each(fn(k, s) {
     if s.a < s.b {
       match k {
-        SelKey::Words(t, r, Some(first_row), _) => active_rows.insert((t, r, first_row))
+        SelKey::Words(t, r_at, r_gen, Some(first_row), _) =>
+          active_rows.insert((t, @view.NodeId::{ at: r_at, gen: r_gen }, first_row))
         _ => ()
       }
     }

@@ -47,7 +47,7 @@ fn nav_chips_tester() -> @ui.Tester {
 
 ///|
 /// How much of the pointer's ground is seen under the row (its colour's alpha against the hover's own), 0 where none.
-fn nav_row_lit(t : @ui.Tester) -> Double raise {
+fn nav_row_lit(t : @ui.Tester) -> Double {
   let (x, y, w, h) = t.get(Button, label="账号").rect
   let hover = theme().p.hover
   let mut most = 0.0

@@ -74,7 +74,7 @@ fn ma_case(pointing? : @ui.Pointing = Mouse, typeahead? : Bool = true) -> MaCase
 
 ///|
 /// The middle of the menu item called `name`.
-fn ma_middle(t : @ui.Tester, name : String) -> (Double, Double) raise {
+fn ma_middle(t : @ui.Tester, name : String) -> (Double, Double) {
   let (x, y, w, h) = t.get(MenuItem, label=name).rect
   (x + w / 2.0, y + h / 2.0)
 }

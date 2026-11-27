@@ -165,7 +165,7 @@ test "reader layout sliders: Tab focus + arrow keys update value and focus ring 
     }
   }
   assert_true(reached, msg="Tab must reach line-spacing slider")
-  let ring_x = fn() -> Double raise {
+  let ring_x = fn() -> Double {
     let sl_rect = tr.get(Slider, label=line_label).rect
     let mut best = -1.0
     for inst in tr.drawn_instances() {

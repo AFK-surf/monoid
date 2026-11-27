@@ -131,7 +131,7 @@ fn tn_wide_tree() -> Json {
 /// tn_wide's table 300 wide with keyboard and mouse, the pointer over it, its
 /// key pressed and each of its menu's in turn: what each put on the clipboard (Markdown, CSV), the picture's bytes and
 /// the words its shot drew.
-fn tn_copied() -> (String, String, Int?, Array[Array[String]], Array[((Int, Int), Array[String])]) raise {
+fn tn_copied() -> (String, String, Int?, Array[Array[String]], Array[((Int, Int), Array[String])]) {
   let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=300.0, h=400.0, platform=0)
   markdown_read.val = Some(fn(_, done) { done(Some(tn_wide_tree())) })
   @ui.set_view_app(fn(root) {
@@ -145,7 +145,7 @@ fn tn_copied() -> (String, String, Int?, Array[Array[String]], Array[((Int, Int)
   tt.draw()
   tt.move_to(20.0, 15.0)
   tt.run_for(@ui.move_most_ms)
-  let pick = fn(item : String) raise {
+  let pick = fn(item : String) {
     tt.act(Button, Activate, label=t("web-main.prose.copyTable"))
     tt.run_for(@ui.move_most_ms)
     tt.act(MenuItem, Activate, label=item)

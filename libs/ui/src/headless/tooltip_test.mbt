@@ -96,14 +96,14 @@ fn tip_case(pointing? : @ui.Pointing = Mouse) -> TipCase raise {
 
 ///|
 /// The middle of the button called `name`.
-fn TipCase::middle(self : TipCase, name : String) -> (Double, Double) raise {
+fn TipCase::middle(self : TipCase, name : String) -> (Double, Double) {
   let (x, y, w, h) = self.t.get(Button, label=name).rect
   (x + w / 2.0, y + h / 2.0)
 }
 
 ///|
 /// The pointer moved onto the button called `name`.
-fn TipCase::onto(self : TipCase, name : String) -> Unit raise {
+fn TipCase::onto(self : TipCase, name : String) -> Unit {
   let (x, y) = self.middle(name)
   self.t.move_to(x, y)
 }

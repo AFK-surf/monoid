@@ -81,13 +81,13 @@ fn view_tabs(t : @ui.Tester) -> Array[String] {
 
 ///|
 /// Where the tab's stage begins across (its tools' row's left), the file named `name` in front.
-fn tab_left(t : @ui.Tester, name : String) -> Double raise {
+fn tab_left(t : @ui.Tester, name : String) -> Double {
   t.get(Toolbar, label=name).rect.0
 }
 
 ///|
 /// Whether `words` are drawn in the tab (right of its left edge), the file named `name` in front.
-fn shown_beside(t : @ui.Tester, name : String, words : String) -> Bool raise {
+fn shown_beside(t : @ui.Tester, name : String, words : String) -> Bool {
   let left = tab_left(t, name)
   match t.find(words) {
     Some((x, _)) => x >= left
@@ -601,7 +601,7 @@ test "大屏: a picture in a tab is fitted as over the whole window: one larger 
   t.run_for(@ui.move_most_ms)
   let (left, _, wide, _) = t.get(Toolbar, label="界面草图.png").rect
   // (the stage's middle: the middle of the room the hand takes it in, as far in from each of its edges)
-  let middle = fn() raise {
+  let middle = fn() {
     let (ax, ay, aw, ah) = t.get(Image, label="界面草图.png").rect
     (ax + aw / 2.0, ay + ah / 2.0)
   }
@@ -728,7 +728,7 @@ fn tab_player_faults(t : @ui.Tester) -> Array[String] {
 
 ///|
 /// The film the chat-download chat's last message sends: its thumbnail's middle (at the chat's end).
-fn chat_film(t : @ui.Tester) -> (Double, Double) raise {
+fn chat_film(t : @ui.Tester) -> (Double, Double) {
   let (x, y, w, h) = t.get(Button, label=@sf.t("web-main.file.play", args=[("name", beside_film)])).rect
   (x + w / 2.0, y + h / 2.0)
 }
@@ -1449,14 +1449,14 @@ test "a terminal and a station's screen each alone in a window of its own, on a 
 
 ///|
 /// Where the stage of the file tab in front begins (its tools' row's foot, its left), its file named `name`.
-fn tab_stage_at(t : @ui.Tester, name : String) -> (Double, Double) raise {
+fn tab_stage_at(t : @ui.Tester, name : String) -> (Double, Double) {
   let (x, y, _, h) = t.get(Toolbar, label=name).rect
   (x, y + h)
 }
 
 ///|
 /// A press let go on the middle of the button named `label`.
-fn press_button(t : @ui.Tester, label : String) -> Unit raise {
+fn press_button(t : @ui.Tester, label : String) -> Unit {
   let (x, y, w, h) = t.get(Button, label~).rect
   t.touch(0, x + w / 2.0, y + h / 2.0)
   t.touch(2, x + w / 2.0, y + h / 2.0)

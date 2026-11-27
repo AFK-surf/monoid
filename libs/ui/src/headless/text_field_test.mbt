@@ -48,14 +48,14 @@ fn tf_case() -> TfCase raise {
 
 ///|
 /// What the control says now: its label, description and value, and whether it is read out disabled.
-fn tf_control(t : @ui.Tester) -> (String, String, String, Bool) raise {
+fn tf_control(t : @ui.Tester) -> (String, String, String, Bool) {
   let s = t.get(TextField, label="邮箱")
   (s.label, s.description, s.value, s.disabled)
 }
 
 ///|
 /// The middle of the label's node, as the label reads out.
-fn tf_label_middle(t : @ui.Tester) -> (Double, Double) raise {
+fn tf_label_middle(t : @ui.Tester) -> (Double, Double) {
   let (x, y, w, h) = t.get(Text, label="邮箱").rect
   (x + w / 2.0, y + h / 2.0)
 }

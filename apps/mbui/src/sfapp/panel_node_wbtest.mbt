@@ -685,7 +685,7 @@ fn fits_words_body(words : @signals.Signal[String]) -> (@view.View, () -> Unit) 
 /// in leave (x0, y0, x1, y1: its own, scene.mbt 16-19, and the rounded one outside it, 40-43; their round corners not:
 /// the corner rule's), and whether presses just inside its capsule by its edges are its own (`pressed` told so): 0.5 in
 /// from its right end and from its foot, each at its middle (`top`: from its top instead of its foot).
-fn panel_reach_said(t : @ui.Tester, label : String, pressed : Ref[Int], top? : Bool = false) -> String raise {
+fn panel_reach_said(t : @ui.Tester, label : String, pressed : Ref[Int], top? : Bool = false) -> String {
   let (x, y, w, h) = t.get(Button, label~).rect
   let shown = t
     .drawn_instances()

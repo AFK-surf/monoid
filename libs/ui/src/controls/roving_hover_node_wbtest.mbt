@@ -58,7 +58,7 @@ fn rove_grounds(t : @ui.Tester) -> Array[(Double, Double, Double, Double, Double
 
 ///|
 /// Tool `k`'s box.
-fn rove_tool(t : @ui.Tester, k : Int) -> (Double, Double, Double, Double) raise {
+fn rove_tool(t : @ui.Tester, k : Int) -> (Double, Double, Double, Double) {
   t.get(Button, label=rove_labels[k]).rect
 }
 
@@ -69,7 +69,7 @@ fn rove_mid(r : (Double, Double, Double, Double)) -> (Double, Double) {
 
 ///|
 /// The ground at rest under tool `k`, whole.
-fn rove_whole(t : @ui.Tester, k : Int) -> Array[(Double, Double, Double, Double, Double)] raise {
+fn rove_whole(t : @ui.Tester, k : Int) -> Array[(Double, Double, Double, Double, Double)] {
   let (x, y, w, h) = rove_tool(t, k)
   [(x, y, w, h, 1.0)]
 }

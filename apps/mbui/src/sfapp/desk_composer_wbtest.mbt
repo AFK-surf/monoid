@@ -286,7 +286,7 @@ test "desk composer: the pointer moving over the `@` menu's chats chooses them; 
     t.type_text("@的")
     t.frame()
     let b = "首页的列表改成按天分组"
-    let chosen = fn() raise { t.get(at_row(), label=b).selected }
+    let chosen = fn() { t.get(at_row(), label=b).selected }
     // moved onto it: chosen
     let (x, y, w, h) = t.get(at_row(), label=b).rect
     t.move_to(x + w / 2.0, y + h / 2.0)

@@ -98,7 +98,7 @@ fn dialog_under_hidden(t : @ui.Tester) -> Bool {
 
 ///|
 /// The middle of the button called `name`.
-fn dialog_middle(t : @ui.Tester, name : String) -> (Double, Double) raise {
+fn dialog_middle(t : @ui.Tester, name : String) -> (Double, Double) {
   let (x, y, w, h) = t.get(Button, label=name).rect
   (x + w / 2.0, y + h / 2.0)
 }

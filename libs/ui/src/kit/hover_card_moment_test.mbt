@@ -53,7 +53,7 @@ fn card_tester(kept? : Bool = false) -> (@ui.Tester, CardView) {
 
 ///|
 /// The middle of what is labelled `label`.
-fn middle_of(t : @ui.Tester, label : String) -> (Double, Double) raise {
+fn middle_of(t : @ui.Tester, label : String) -> (Double, Double) {
   let (x, y, w, h) = t.get(@ui.Role::Button, label~).rect
   (x + w / 2.0, y + h / 2.0)
 }

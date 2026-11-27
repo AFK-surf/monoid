@@ -195,7 +195,7 @@ test "both players, a desktop's: a pointer click alone never plays or pauses; a 
 
 ///|
 test "both players, a desktop's: its speeds a menu, 0.25× picked" {
-  let seen = both("speeds", fn(node) { either_player(node, false, "a.mp4", []) }, fn(tt, _) raise {
+  let seen = both("speeds", fn(node) { either_player(node, false, "a.mp4", []) }, fn(tt, _) {
     tt.draw()
     tt.click(Button, label=t("web-pages.drive.player.rate"))
     tt.run_for(@ui.move_most_ms)
@@ -220,7 +220,7 @@ test "both players, a desktop's: the bar says the film's size, length and rate a
 
 ///|
 test "both players, a desktop's: at its end, its host still saying it plays, its play key plays it from its start" {
-  let seen = both("at its end", fn(node) { either_player(node, false, "a.mp4", []) }, fn(tt, _) raise {
+  let seen = both("at its end", fn(node) { either_player(node, false, "a.mp4", []) }, fn(tt, _) {
     tt.draw()
     tt.set_player(1, position=10000.0, duration=10000.0, playing=true, ended=true)
     tt.draw()

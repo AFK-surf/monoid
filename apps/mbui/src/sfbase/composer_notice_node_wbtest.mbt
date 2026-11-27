@@ -74,7 +74,7 @@ test "composer notice: its × pressed; out of reach, not pressed" {
     |> ignore
   })
   tt.draw()
-  tt.click(Button, label="关闭") catch { _ => () }
+  tt.try_click(Button, label="关闭") |> ignore
   tt.draw()
   assert_eq(closed.val, 0)
   off.set(false)

@@ -168,7 +168,7 @@ fn relay_cancelled(t : @ui.Tester, at : String) -> Unit raise {
 
 ///|
 /// The button `label` pressed where a screen reader finds it (the foot's, under an input method raised too).
-fn relay_press(t : @ui.Tester, label : String) -> Unit raise {
+fn relay_press(t : @ui.Tester, label : String) -> Unit {
   let b = t.get(Button, label~)
   let (x, y, w, h) = b.rect
   t.tap(x + w / 2.0, y + h / 2.0)
