@@ -36,9 +36,11 @@ static void sth_cond_wait(sth_cond_t *c, sth_lock_t *l) { SleepConditionVariable
 #else
 #include <dirent.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 #ifdef __APPLE__
@@ -855,6 +857,245 @@ void *sth_shell_sync(
         *out_len = (int64_t)n;
     }
     return out;
+}
+
+#define STH_DIRECT_SLICE_MAX (256LL * 1024LL * 1024LL)
+
+void *sth_read_file_slice(
+    const char *path,
+    int64_t from,
+    int64_t length,
+    int64_t *out_len) {
+    if (out_len != NULL) {
+        *out_len = -2;
+    }
+    if (path == NULL || path[0] == '\0' || from < 0) {
+        return NULL;
+    }
+#ifdef _WIN32
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, path, -1, NULL, 0);
+    if (wlen <= 0) {
+        if (out_len != NULL) {
+            *out_len = -1;
+        }
+        return NULL;
+    }
+    wchar_t *wpath = (wchar_t *)malloc(sizeof(wchar_t) * (size_t)wlen);
+    if (wpath == NULL) {
+        abort();
+    }
+    if (MultiByteToWideChar(CP_UTF8, 0, path, -1, wpath, wlen) <= 0) {
+        free(wpath);
+        if (out_len != NULL) {
+            *out_len = -1;
+        }
+        return NULL;
+    }
+    HANDLE h = CreateFileW(
+        wpath,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    free(wpath);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (out_len != NULL) {
+            *out_len = -1;
+        }
+        return NULL;
+    }
+    if (GetFileType(h) != FILE_TYPE_DISK) {
+        CloseHandle(h);
+        return NULL;
+    }
+    if (length == 0) {
+        CloseHandle(h);
+        uint8_t *empty = (uint8_t *)malloc(1);
+        if (empty == NULL) {
+            abort();
+        }
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return empty;
+    }
+    LARGE_INTEGER fsz_li;
+    if (!GetFileSizeEx(h, &fsz_li)) {
+        CloseHandle(h);
+        return NULL;
+    }
+    int64_t fsz = (int64_t)fsz_li.QuadPart;
+    if (from >= fsz) {
+        CloseHandle(h);
+        uint8_t *empty = (uint8_t *)malloc(1);
+        if (empty == NULL) {
+            abort();
+        }
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return empty;
+    }
+    int64_t avail = fsz - from;
+    int64_t target = (length >= 0 && length < avail) ? length : avail;
+    if (target > STH_DIRECT_SLICE_MAX) {
+        CloseHandle(h);
+        return NULL;
+    }
+    LARGE_INTEGER seek_li;
+    seek_li.QuadPart = from;
+    if (!SetFilePointerEx(h, seek_li, NULL, FILE_BEGIN)) {
+        CloseHandle(h);
+        return NULL;
+    }
+    size_t cap = target > 0 ? (size_t)target : 1;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (buf == NULL) {
+        CloseHandle(h);
+        abort();
+    }
+    size_t got = 0;
+    while (1) {
+        if (length >= 0 && got >= (size_t)target) {
+            break;
+        }
+        if (length < 0 && got == cap) {
+            size_t next_cap = cap < 65536 ? 65536 : cap * 2;
+            if (next_cap > (size_t)STH_DIRECT_SLICE_MAX) {
+                next_cap = (size_t)STH_DIRECT_SLICE_MAX;
+            }
+            if (next_cap <= cap) {
+                free(buf);
+                CloseHandle(h);
+                return NULL;
+            }
+            uint8_t *nbuf = (uint8_t *)realloc(buf, next_cap);
+            if (nbuf == NULL) {
+                free(buf);
+                CloseHandle(h);
+                abort();
+            }
+            buf = nbuf;
+            cap = next_cap;
+        }
+        size_t rem = (length >= 0 ? (size_t)target : cap) - got;
+        DWORD want = rem > 0x40000000u ? (DWORD)0x40000000u : (DWORD)rem;
+        DWORD rd = 0;
+        if (!ReadFile(h, buf + got, want, &rd, NULL)) {
+            free(buf);
+            CloseHandle(h);
+            return NULL;
+        }
+        if (rd == 0) {
+            break;
+        }
+        got += (size_t)rd;
+    }
+    CloseHandle(h);
+    if (out_len != NULL) {
+        *out_len = (int64_t)got;
+    }
+    return buf;
+#else
+    int fd = -1;
+    do {
+        fd = open(path, O_RDONLY);
+    } while (fd < 0 && errno == EINTR);
+    if (fd < 0) {
+        if (out_len != NULL) {
+            *out_len = -1;
+        }
+        return NULL;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        return NULL;
+    }
+    if (length == 0) {
+        close(fd);
+        uint8_t *empty = (uint8_t *)malloc(1);
+        if (empty == NULL) {
+            abort();
+        }
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return empty;
+    }
+    int64_t fsz = (int64_t)st.st_size;
+    if (from >= fsz) {
+        close(fd);
+        uint8_t *empty = (uint8_t *)malloc(1);
+        if (empty == NULL) {
+            abort();
+        }
+        if (out_len != NULL) {
+            *out_len = 0;
+        }
+        return empty;
+    }
+    int64_t avail = fsz - from;
+    int64_t target = (length >= 0 && length < avail) ? length : avail;
+    if (target > STH_DIRECT_SLICE_MAX) {
+        close(fd);
+        return NULL;
+    }
+    size_t cap = target > 0 ? (size_t)target : 1;
+    uint8_t *buf = (uint8_t *)malloc(cap);
+    if (buf == NULL) {
+        close(fd);
+        abort();
+    }
+    size_t got = 0;
+    while (1) {
+        if (length >= 0 && got >= (size_t)target) {
+            break;
+        }
+        if (length < 0 && got == cap) {
+            size_t next_cap = cap < 65536 ? 65536 : cap * 2;
+            if (next_cap > (size_t)STH_DIRECT_SLICE_MAX) {
+                next_cap = (size_t)STH_DIRECT_SLICE_MAX;
+            }
+            if (next_cap <= cap) {
+                free(buf);
+                close(fd);
+                return NULL;
+            }
+            uint8_t *nbuf = (uint8_t *)realloc(buf, next_cap);
+            if (nbuf == NULL) {
+                free(buf);
+                close(fd);
+                abort();
+            }
+            buf = nbuf;
+            cap = next_cap;
+        }
+        size_t rem = (length >= 0 ? (size_t)target : cap) - got;
+        if (rem > 0x40000000u) {
+            rem = 0x40000000u;
+        }
+        ssize_t r = pread(fd, buf + got, rem, (off_t)(from + (int64_t)got));
+        if (r > 0) {
+            got += (size_t)r;
+        } else if (r == 0) {
+            break;
+        } else if (errno == EINTR) {
+            continue;
+        } else {
+            free(buf);
+            close(fd);
+            return NULL;
+        }
+    }
+    close(fd);
+    if (out_len != NULL) {
+        *out_len = (int64_t)got;
+    }
+    return buf;
+#endif
 }
 
 void *sth_args(int64_t *out_len) {
