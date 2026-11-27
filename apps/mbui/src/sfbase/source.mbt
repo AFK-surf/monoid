@@ -60,9 +60,9 @@ pub fn TopicState::is_confirmed(self : TopicState) -> Bool {
 
 ///|
 /// Whether a station capability topic (`screens` or `terminals`) is freshly confirmed by the station itself
-/// (`version >= 0`, `value is Some(_)`, `known == true`, and `!outdated`).
+/// in the current auth generation (`version >= 0`, `value is Some(_)`, `known == true`, `confirmed == true`, and `!outdated`).
 pub fn TopicState::is_confirmed_known(self : TopicState) -> Bool {
-  self.is_confirmed() && flag(self.value, "known") && !flag(self.value, "outdated")
+  self.is_confirmed() && flag(self.value, "known") && flag(self.value, "confirmed") && !flag(self.value, "outdated")
 }
 
 ///|

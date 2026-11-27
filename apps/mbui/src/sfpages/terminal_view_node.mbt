@@ -925,7 +925,7 @@ pub fn terminal_pane_node(
                 fn() { text(sv(), "title") },
                 fn() {
                   let sr = screens_topic.untracked()
-                  if !sr.is_confirmed_known() || !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid }) {
+                  if !@sfbase.live_screen_confirmed(sr, sid) {
                     return
                   }
                   done()
@@ -943,9 +943,7 @@ pub fn terminal_pane_node(
                   if !sr.is_confirmed_known() {
                     return
                   }
-                  let ids = items(sr.value, "screens")
-                    .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
-                    .map(fn(sc) { text(Some(sc), "id") })
+                  let ids = @sfbase.confirmed_user_browser_ids(sr)
                   let target = match @settings.browser_tab_to_open(at.station, ids) {
                     Some(id) => id
                     None => {

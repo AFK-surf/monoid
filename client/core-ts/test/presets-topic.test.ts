@@ -561,12 +561,14 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_resta
   subscribe(core, ui, 3, { topic: "presets", station: S });
   await host.settle();
   apply(host, values);
-  assert.equal(v(values, 1).known, false, "cold-start keeper screens stay known: false before station reply");
-  assert.equal(v(values, 2).known, false, "cold-start keeper terminals stay known: false before station reply");
+  assert.equal(v(values, 1).known, true, "cold-start keeper screens stay known: true for display");
+  assert.equal(v(values, 1).confirmed, false, "cold-start keeper screens stay confirmed: false before station reply");
+  assert.equal(v(values, 2).known, true, "cold-start keeper terminals stay known: true for display");
+  assert.equal(v(values, 2).confirmed, false, "cold-start keeper terminals stay confirmed: false before station reply");
   assert.equal(v(values, 3).presets[0].id, "app");
 
   // Non-downgrade auth boundary (e.g. lock trusted flip / unlock): must immediately re-fetch active screens/terminals/presets
-  // so UI recovers known: true instead of getting stuck empty.
+  // so UI recovers confirmed: true instead of getting stuck empty.
   const beforeReqs = host.requests.length;
   core.inner.store.authGen.syncWorkspace("ws", "owner:a@x.com:trusted:1");
   await host.settle();
@@ -575,8 +577,90 @@ test("ephemeral_memory_never_resurrects_persisted_jobLog_or_presets_across_resta
   assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/screens")), "onBoundary must re-fetch active screens");
   assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/terminals")), "onBoundary must re-fetch active terminals");
   assert.ok(afterUrls.some((u) => u.endsWith("/admin/api/presets")), "onBoundary must re-fetch active presets");
-  assert.equal(v(values, 1).known, true, "screens recovers known: true after non-downgrade boundary");
-  assert.equal(v(values, 2).known, true, "terminals recovers known: true after non-downgrade boundary");
+  assert.equal(v(values, 1).known, true);
+  assert.equal(v(values, 1).confirmed, true, "screens recovers confirmed: true after non-downgrade boundary");
+  assert.equal(v(values, 2).known, true);
+  assert.equal(v(values, 2).confirmed, true, "terminals recovers confirmed: true after non-downgrade boundary");
   assert.equal(v(values, 3).presets[0].id, "app", "presets recovers after non-downgrade boundary");
+
+  // Memory.clearKey keeps key in #looked so a read-only keeper cannot lazy-reload old screens/terminals.
+  const roDisk = new Map<string, unknown>([
+    ["screens", { screens: [{ id: "desktop", kind: "desktop", title: "RO" }], outdated: false }],
+  ]);
+  const roMem = new Memory({
+    read: (k) => roDisk.get(k),
+    write: () => {},
+    bound: () => {},
+    now: () => 1000,
+    later: () => {},
+  });
+  roMem.clearKey("screens");
+  assert.equal(roMem.get("screens"), undefined, "clearKey must keep key in #looked so read-only keeper cannot resurrect it");
+  core.close();
+});
+
+test("same_gen_sse_beats_older_inflight_get_and_403_clears_screens_terminals_confirmation", async () => {
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile] },
+    "GET /screens": { screens: [{ id: "desktop", kind: "desktop", title: "Main", width: 1280, height: 800, viewers: [], controlledBy: [] }], browser: true },
+    "GET /terminals": { terminals: [{ id: "t-1", by: "a@x.com", cwd: "/tmp", at: 1, looking: [] }] },
+  };
+  const { host, core, push } = await started(said as never);
+  const ui = core.connect();
+  const values = new Map<number, unknown>();
+  subscribe(core, ui, 1, { topic: "terminals", station: S });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).confirmed, true);
+  assert.deepEqual(v(values, 1).terminals.map((t: { id: string }) => t.id), ["t-1"]);
+
+  // 1. Start a slow GET /terminals returning stale t-1; while in flight, SSE reports t-1 ended (empty list).
+  let releaseStale!: (r: ReturnType<typeof jsonResponse>) => void;
+  const staleGate = new Promise<ReturnType<typeof jsonResponse>>((resolve) => { releaseStale = resolve; });
+  let interceptMode: "stale" | "forbidden" | "none" = "stale";
+  stationLater(host, (req) => {
+    if (req.method === "GET" && req.url.endsWith("/admin/api/terminals")) {
+      if (interceptMode === "stale") {
+        interceptMode = "none";
+        return staleGate;
+      }
+      if (interceptMode === "forbidden") {
+        interceptMode = "none";
+        return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+      }
+    }
+    return undefined;
+  });
+
+  // Trigger a same-gen snapshot which starts slow GET /terminals in the same auth generation as the active SSE stream.
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  // Newer SSE arrives in the same generation with empty terminals list.
+  push("terminals", { terminals: [] });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).confirmed, true);
+  assert.deepEqual(v(values, 1).terminals, [], "SSE updates terminals to empty");
+
+  // Release the older in-flight GET: its seq is behind SSE, so it MUST be dropped and not resurrect t-1.
+  releaseStale(jsonResponse(200, { terminals: [{ id: "t-1", by: "a@x.com", cwd: "/tmp", at: 1, looking: [] }] }));
+  await host.settle();
+  apply(host, values);
+  assert.deepEqual(v(values, 1).terminals, [], "stale in-flight GET must not overwrite newer SSE");
+
+  // 2. 403 on GET /terminals immediately clears confirmed state and stale rows.
+  push("terminals", { terminals: [{ id: "t-2", by: "a@x.com", cwd: "/tmp", at: 2, looking: [] }] });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).confirmed, true);
+  assert.equal(v(values, 1).terminals.length, 1);
+
+  interceptMode = "forbidden";
+  core.inner.stations.snapshot(S);
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).confirmed, false, "403 must clear confirmed state");
+  assert.deepEqual(v(values, 1).terminals, [], "403 must clear stale terminal rows");
   core.close();
 });

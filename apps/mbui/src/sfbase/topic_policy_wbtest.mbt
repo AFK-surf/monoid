@@ -249,12 +249,13 @@ test "topic_kept and topic_shown_kept_params follow topic_policy_enabled while s
 
 ///|
 test "TopicState::is_retained, is_confirmed, and is_confirmed_known distinguish retained, empty, unknown, outdated, and confirmed" {
-  let retained_show : TopicState = { value: Some({ "terminals": [], "known": true }), error: None, version: -2, waiting: false }
-  let retained_last : TopicState = { value: Some({ "terminals": [], "known": true }), error: None, version: -3, waiting: false }
+  let retained_show : TopicState = { value: Some({ "terminals": [], "known": true, "confirmed": true }), error: None, version: -2, waiting: false }
+  let retained_last : TopicState = { value: Some({ "terminals": [], "known": true, "confirmed": true }), error: None, version: -3, waiting: false }
   let empty_unconfirmed : TopicState = { value: None, error: None, version: 0, waiting: false }
-  let unknown_open : TopicState = { value: Some({ "terminals": [], "known": false, "open": true }), error: None, version: 0, waiting: false }
-  let outdated_known : TopicState = { value: Some({ "terminals": [], "known": true, "outdated": true, "open": true }), error: None, version: 1, waiting: false }
-  let fresh : TopicState = { value: Some({ "terminals": [], "known": true, "outdated": false }), error: None, version: 0, waiting: false }
+  let unknown_open : TopicState = { value: Some({ "terminals": [], "known": false, "confirmed": false, "open": true }), error: None, version: 0, waiting: false }
+  let unconfirmed_known : TopicState = { value: Some({ "terminals": [], "known": true, "confirmed": false, "open": true }), error: None, version: 1, waiting: false }
+  let outdated_known : TopicState = { value: Some({ "terminals": [], "known": true, "confirmed": true, "outdated": true, "open": true }), error: None, version: 1, waiting: false }
+  let fresh : TopicState = { value: Some({ "terminals": [], "known": true, "confirmed": true, "outdated": false }), error: None, version: 0, waiting: false }
   assert_true(opens_answered(retained_show) && retained_show.is_retained())
   assert_true(opens_answered(retained_last) && retained_last.is_retained())
   assert_false(opens_answered(retained_show) && !retained_show.is_retained())
@@ -264,6 +265,8 @@ test "TopicState::is_retained, is_confirmed, and is_confirmed_known distinguish 
   assert_false(empty_unconfirmed.is_confirmed())
   assert_true(unknown_open.is_confirmed())
   assert_false(unknown_open.is_confirmed_known())
+  assert_true(unconfirmed_known.is_confirmed())
+  assert_false(unconfirmed_known.is_confirmed_known())
   assert_true(outdated_known.is_confirmed())
   assert_false(outdated_known.is_confirmed_known())
   assert_true(opens_answered(fresh) && !fresh.is_retained() && fresh.is_confirmed() && fresh.is_confirmed_known())
@@ -282,6 +285,7 @@ test "chat_remote_open press_wait waits while terminals is retained (-2) and ope
   let terms_ver : @signals.Signal[Int] = @signals.signal(-2)
   let terms_val : Json = {
     "known": true,
+    "confirmed": true,
     "outdated": false,
     "open": true,
     "terminals": [{ "id": "t-1", "cwd": "/work/proj", "ended": false, "chat": "c-1" }],
@@ -294,7 +298,7 @@ test "chat_remote_open press_wait waits while terminals is retained (-2) and ope
       if name == "terminals" {
         { value: Some(terms_val), error: None, version: terms_ver.get() }
       } else if name == "screens" {
-        { value: Some({ "known": true, "outdated": false, "screens": [] }), error: None, version: 1 }
+        { value: Some({ "known": true, "confirmed": true, "outdated": false, "screens": [] }), error: None, version: 1 }
       } else {
         { value: None, error: None, version: 0 }
       }
@@ -337,7 +341,7 @@ test "chat_remote_open timeout menu keeps live terminals guard and recovers when
     topic_read: fn(name, _params) {
       if name == "terminals" {
         {
-          value: Some({ "known": true, "outdated": false, "open": terms_open.get(), "terminals": [] }),
+          value: Some({ "known": true, "confirmed": true, "outdated": false, "open": terms_open.get(), "terminals": [] }),
           error: None,
           version: terms_ver.get(),
         }

@@ -3725,11 +3725,12 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ("outdated", Json::boolean(false)),
           ("control", Json::boolean(true)),
           ("known", Json::boolean(true)),
+          ("confirmed", Json::boolean(true)),
         ]),
       )
     // (Willow's: Maple is away, none of its own known)
     "screens" if text(Some(Json::object(params)), "station") == "ws1/st2" =>
-      Some(obj([("screens", Json::array([])), ("outdated", Json::boolean(false)), ("control", Json::boolean(false)), ("known", Json::boolean(true))]))
+      Some(obj([("screens", Json::array([])), ("outdated", Json::boolean(false)), ("control", Json::boolean(false)), ("known", Json::boolean(true)), ("confirmed", Json::boolean(true))]))
     "screens" => {
       let m = if mode.has_suffix("-dark") { mode.unsafe_substring(start=0, end=mode.length() - 5) } else { mode }
       if m == "settings-station-pages" || m == "screen-pages" || m == "screen-user-pages" || m == "screen-user-tabs" {
@@ -3748,6 +3749,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             ("outdated", Json::boolean(false)),
             ("control", Json::boolean(true)),
             ("known", Json::boolean(true)),
+            ("confirmed", Json::boolean(true)),
           ]),
         )
       } else if m.has_prefix("place-remote") {
@@ -3767,6 +3769,24 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             ("outdated", Json::boolean(false)),
             ("control", Json::boolean(true)),
             ("known", Json::boolean(true)),
+            ("confirmed", Json::boolean(true)),
+          ]),
+        )
+      } else if m == "chat-station-screens" || m == "chat-agent-screens" || m.has_prefix("chat-remote") {
+        Some(
+          obj([
+            (
+              "screens",
+              [
+                obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Willow 的桌面")), ("width", Json::number(3024.0)), ("height", Json::number(1964.0)), ("line", str("桌面 · 3024×1964")), ("link", str(""))]),
+                obj([("id", str("browser:T1")), ("kind", str("browser")), ("agent", Json::boolean(true)), ("title", str("登录 - GitHub")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("浏览器标签页 · 1280×800 · 由「整理发布清单」打开")), ("link", str(""))]),
+              ],
+            ),
+            ("browser", Json::boolean(m.has_prefix("chat-remote"))),
+            ("outdated", Json::boolean(false)),
+            ("control", Json::boolean(true)),
+            ("known", Json::boolean(true)),
+            ("confirmed", Json::boolean(true)),
           ]),
         )
       } else {
@@ -3782,6 +3802,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             ("outdated", Json::boolean(false)),
             ("control", Json::boolean(true)),
             ("known", Json::boolean(true)),
+            ("confirmed", Json::boolean(true)),
           ]),
         )
       }

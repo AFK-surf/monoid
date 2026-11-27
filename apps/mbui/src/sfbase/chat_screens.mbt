@@ -72,12 +72,33 @@ pub fn open_remote_browser(src : Source, station : String, listed_ids : Array[St
 
 ///|
 /// Whether `sr` is confirmed+known by the station and lists `id` as a real (non-optimistic) screen.
-fn live_screen_confirmed(sr : TopicState, id : String) -> Bool {
+pub fn live_screen_confirmed(sr : TopicState, id : String) -> Bool {
   sr.is_confirmed_known() &&
   items(sr.value, "screens").iter().any(fn(sc) {
     let sv = Some(sc)
     text(sv, "id") == id && !flag(sv, "opening")
   })
+}
+
+///|
+/// Confirmed non-optimistic user browser tab ids listed in `sr` (empty when `sr` is not confirmed+known).
+pub fn confirmed_user_browser_ids(sr : TopicState) -> Array[String] {
+  if !sr.is_confirmed_known() {
+    return []
+  }
+  items(sr.value, "screens")
+    .filter(fn(sc) {
+      let sv = Some(sc)
+      !flag(sv, "opening") && (flag(sv, "userTab") || text(sv, "id").has_prefix("browser:u_"))
+    })
+    .map(fn(sc) { text(Some(sc), "id") })
+}
+
+///|
+/// Whether a station capability topic (`screens` / `terminals`) has settled for the current auth generation:
+/// confirmed by the station, explicitly `outdated`, or answered with an error (never a cold-start `confirmed: false` cache).
+pub fn cap_settled(st : TopicState) -> Bool {
+  st.is_confirmed_known() || (st.is_confirmed() && flag(st.value, "outdated")) || st.error is Some(_)
 }
 
 ///|
@@ -89,26 +110,58 @@ pub fn chat_remote_first(r : ChatRef, screens : Array[ChatScreen], can_terminal 
       match src {
         Some(source) => {
           let sr = @signals.untracked(fn() { source.topic("screens", { "station": Json::string(r.station) }).get() })
-          if !live_screen_confirmed(sr, s.id) {
-            return
+          if live_screen_confirmed(sr, s.id) {
+            open_screen(r.station, s.id, Some(s.title))
+          } else if !cap_settled(sr) {
+            let scope = "chat-remote-first/" + r.station
+            let ssub = hold(source, scope, "screens", { "station": Json::string(r.station) })
+            press_wait(
+              fn() { cap_settled(ssub.get()) },
+              fn() {
+                let cur = ssub.untracked()
+                let_go(source, scope)
+                if live_screen_confirmed(cur, s.id) {
+                  open_screen(r.station, s.id, Some(s.title))
+                }
+              },
+              let_go=fn() { let_go(source, scope) },
+              most=@sf.open_hold_ms,
+            )
+            |> ignore
           }
+          return
         }
-        None => ()
+        None => open_screen(r.station, s.id, Some(s.title))
       }
-      open_screen(r.station, s.id, Some(s.title))
     }
     [] =>
       if can_terminal && (terminals_capable_fn.val)() {
         match src {
           Some(source) => {
             let tr = @signals.untracked(fn() { source.topic("terminals", { "station": Json::string(r.station) }).get() })
-            if !tr.is_confirmed_known() || !flag(tr.value, "open") {
-              return
+            if tr.is_confirmed_known() && flag(tr.value, "open") {
+              open_terminal(r.station, "new", "", r.session)
+            } else if !cap_settled(tr) {
+              let scope = "chat-remote-first/" + r.station
+              let tsub = hold(source, scope, "terminals", { "station": Json::string(r.station) })
+              press_wait(
+                fn() { cap_settled(tsub.get()) },
+                fn() {
+                  let cur = tsub.untracked()
+                  let_go(source, scope)
+                  if cur.is_confirmed_known() && flag(cur.value, "open") {
+                    open_terminal(r.station, "new", "", r.session)
+                  }
+                },
+                let_go=fn() { let_go(source, scope) },
+                most=@sf.open_hold_ms,
+              )
+              |> ignore
             }
+            return
           }
-          None => ()
+          None => open_terminal(r.station, "new", "", r.session)
         }
-        open_terminal(r.station, "new", "", r.session)
       }
   }
 }
@@ -344,10 +397,7 @@ pub fn chat_remote_open(
   let ssub = hold(src, scope, "screens", ask_params)
   if !term_ok {
     press_wait(
-      fn() {
-        let ss = ssub.get()
-        opens_answered(ss) && !ss.is_retained()
-      },
+      fn() { cap_settled(ssub.get()) },
       fn() {
         chat_remote_menu_show(
           Some(src),
@@ -370,11 +420,7 @@ pub fn chat_remote_open(
   }
   let sub = hold(src, scope, "terminals", ask_params)
   press_wait(
-    fn() {
-      let st = sub.get()
-      let ss = ssub.get()
-      opens_answered(st) && !st.is_retained() && opens_answered(ss) && !ss.is_retained()
-    },
+    fn() { cap_settled(sub.get()) && cap_settled(ssub.get()) },
     fn() {
       let st = @signals.untracked(fn() { sub.get() })
       chat_remote_menu_show(

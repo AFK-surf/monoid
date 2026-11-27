@@ -13,7 +13,7 @@ fn fixture_terminals(station : String, mode : String) -> Json {
     !mode.has_prefix("place-remote") &&
     !mode.has_prefix("chat-remote") &&
     mode != "chat-terminal-side" {
-    return Json::object(Map([("terminals", Json::array([])), ("outdated", Json::boolean(false)), ("open", Json::boolean(false)), ("known", Json::boolean(false))]))
+    return Json::object(Map([("terminals", Json::array([])), ("outdated", Json::boolean(false)), ("open", Json::boolean(false)), ("known", Json::boolean(false)), ("confirmed", Json::boolean(false))]))
   }
   let some = station == "ws1/st1"
   let item = fn(id : String, by : String, cwd : String, typing : String, looking : Array[String]) -> Json {
@@ -49,7 +49,7 @@ fn fixture_terminals(station : String, mode : String) -> Json {
       }
     }
   }
-  Json::object(Map([("terminals", Json::array(terminals)), ("outdated", Json::boolean(false)), ("open", Json::boolean(true)), ("known", Json::boolean(true))]))
+  Json::object(Map([("terminals", Json::array(terminals)), ("outdated", Json::boolean(false)), ("open", Json::boolean(true)), ("known", Json::boolean(true)), ("confirmed", Json::boolean(true))]))
 }
 
 ///|

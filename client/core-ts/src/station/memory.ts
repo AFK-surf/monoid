@@ -144,6 +144,19 @@ export class Memory {
     if (kept) this.#keeper?.write(key, undefined);
   }
 
+  /// Clears a single key from memory and confirmation state while keeping it in `#looked` so a read-only
+  /// or lazily-opened keeper can never resurrect pre-boundary / pre-403 rows on a subsequent `get(key)`.
+  clearKey(key: string): void {
+    this.#values.delete(key);
+    this.#looked.add(key);
+    this.#fresh.delete(key);
+    this.#held.delete(key);
+    this.#confirmedGen.delete(key);
+    this.#due.delete(key);
+    this.#written.delete(key);
+    if (!this.#isEphemeral(key)) this.#keeper?.write(key, undefined);
+  }
+
   /// Deletes all in-memory and keeper-persisted keys starting with `prefix` (including entries not yet loaded into memory).
   deletePrefix(prefix: string): void {
     for (const k of [...this.#values.keys()]) {

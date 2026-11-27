@@ -5,6 +5,6 @@ fn init {
   let asked =
     #|{"topic":"terminals","station":"ws/maple"}
   let value =
-    #|{"terminals":[],"outdated":false,"open":true,"known":true}
+    #|{"terminals":[],"outdated":false,"open":true,"known":true,"confirmed":true}
   put(asked, value)
 }

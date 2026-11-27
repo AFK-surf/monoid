@@ -574,7 +574,7 @@ test("a_station_from_before_screens_has_none_and_needs_an_update", async () => {
   subscribe(core, ui, 1, { topic: "screens", station: "ws/st" });
   await host.settle();
   apply(host, values);
-  assert.deepEqual(values.get(1), { screens: [], outdated: true, control: true, known: true, note: "此 station 需要更新才能远程查看屏幕" });
+  assert.deepEqual(values.get(1), { screens: [], outdated: true, control: true, known: true, confirmed: true, note: "此 station 需要更新才能远程查看屏幕" });
   // Its link opens the viewer, which says so at once: no stream is opened (such a station would never answer one).
   const log: J[] = [];
   call(core, ui, 2, "screen.view", { station: "ws/st", screen: "desktop", view: "v" });

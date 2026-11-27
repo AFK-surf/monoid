@@ -766,7 +766,21 @@ export class StationsSync {
       else if (topic.topic === "live") this.channels.bring(transcriptOf(address, String(topic.key)), Priority.shown, "latest");
       else if (topic.topic === "drive" && this.#core.store.inUse(topic)) this.driveShown(address, String(topic.root), String(topic.path));
       else if (topic.topic === "profilePace" && this.#core.store.inUse(topic)) this.paceShown(address);
+      else if (topic.topic === "presets" && this.#core.store.inUse(topic)) this.presetsShown(address);
+      else if (topic.topic === "jobLog" && this.#core.store.inUse(topic) && typeof topic.job === "string" && typeof topic.lines === "number") {
+        this.readLog(address, topic.job, topic.lines);
+      }
     }
+  }
+
+  /// Monotonic per-station sequence numbers for `screens` and `terminals` so an older in-flight GET cannot overwrite a newer SSE or GET.
+  readonly #screensSeq = new Map<string, number>();
+  readonly #terminalsSeq = new Map<string, number>();
+
+  #nextSeq(map: Map<string, number>, address: string): number {
+    const n = (map.get(address) ?? 0) + 1;
+    map.set(address, n);
+    return n;
   }
 
   /// The station's screens as it has them now, in its link's memory (kept: what was said last
@@ -779,11 +793,15 @@ export class StationsSync {
     return Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
+      const seq = this.#nextSeq(this.#screensSeq, address);
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/screens", null, { quiet: true, ctx, noHedge }));
-      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen || this.#screensSeq.get(address) !== seq) return;
       if (answer._tag === "Success") this.#heldScreens(address, { screens: Array.isArray(get(answer.success, "screens")) ? (get(answer.success, "screens") as unknown[]) : [], outdated: false, ...(get(answer.success, "browser") === true ? { browser: true } : {}) }, startGen);
       else if (answer.failure.status === 404) this.#heldScreens(address, { screens: [], outdated: true }, startGen);
-      else return yield* Effect.fail(answer.failure);
+      else if (answer.failure.status === 401 || answer.failure.status === 403) {
+        link.memory.clearKey("screens");
+        this.onChange(address, "screens");
+      } else return yield* Effect.fail(answer.failure);
     });
   }
 
@@ -822,11 +840,15 @@ export class StationsSync {
     return Effect.gen({ self: this }, function* () {
       const link = this.#links.get(address);
       if (!link || !this.reachable(address)) return;
+      const seq = this.#nextSeq(this.#terminalsSeq, address);
       const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/terminals", null, { quiet: true, ctx, noHedge }));
-      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen || this.#terminalsSeq.get(address) !== seq) return;
       if (answer._tag === "Success") this.#heldTerminals(address, { terminals: Array.isArray(get(answer.success, "terminals")) ? (get(answer.success, "terminals") as unknown[]) : [], outdated: false }, startGen);
       else if (answer.failure.status === 404) this.#heldTerminals(address, { terminals: [], outdated: true }, startGen);
-      else return yield* Effect.fail(answer.failure);
+      else if (answer.failure.status === 401 || answer.failure.status === 403) {
+        link.memory.clearKey("terminals");
+        this.onChange(address, "terminals");
+      } else return yield* Effect.fail(answer.failure);
     });
   }
 
@@ -2258,6 +2280,7 @@ export class StationsSync {
       case "screens": {
         const gen = effectiveReadGen ?? this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
         if (this.#core.store.authGen.workspaceAuthGen(ofAddress(address)) === gen) {
+          this.#nextSeq(this.#screensSeq, address);
           this.#heldScreens(address, { screens: Array.isArray(get(data, "screens")) ? (get(data, "screens") as unknown[]) : [], outdated: false, ...(get(data, "browser") === true ? { browser: true } : {}) }, gen);
         }
         return;
@@ -2266,6 +2289,7 @@ export class StationsSync {
       case "terminals": {
         const gen = effectiveReadGen ?? this.#core.store.authGen.workspaceAuthGen(ofAddress(address));
         if (this.#core.store.authGen.workspaceAuthGen(ofAddress(address)) === gen) {
+          this.#nextSeq(this.#terminalsSeq, address);
           this.#heldTerminals(address, { terminals: Array.isArray(get(data, "terminals")) ? (get(data, "terminals") as unknown[]) : [], outdated: false }, gen);
         }
         return;
@@ -3310,7 +3334,13 @@ export class StationsSync {
       const address = link.addr.toString();
       if (ws !== null && ofAddress(address) !== ws) continue;
       const presetsKey = topicKey({ topic: "presets", station: address });
-      for (const p of protectedPrefixes) link.memory.deletePrefix(p);
+      link.memory.deletePrefix(PRESETS);
+      link.memory.deletePrefix(LOG_KEY);
+      // Use clearKey for screens/terminals so #looked stays set and read-only DBs cannot lazy-reload pre-boundary rows.
+      link.memory.clearKey("screens");
+      link.memory.clearKey("terminals");
+      this.#nextSeq(this.#screensSeq, address);
+      this.#nextSeq(this.#terminalsSeq, address);
       link.errors.delete(presetsKey);
       for (const k of [...link.errors.keys()]) {
         const parsed = parseJson(k);

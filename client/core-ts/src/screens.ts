@@ -486,11 +486,11 @@ export function screenPath(station: string, id: string): string {
 }
 
 /// The `screens` topic's value: what is held (none while the station is down: `online` false).
-/// `confirmed`: whether the station itself replied in the current auth generation (cold-start keeper cache is `false`).
+/// `known`: display readiness (`held !== undefined`); `confirmed`: station replied in the current auth generation.
 export function screensView(inner: Inner, station: string, held: Held | undefined, online: boolean, confirmed = held !== undefined): J {
   const control = mayDrive(inner, station);
-  if (held?.outdated) return { screens: [], outdated: true, control, known: confirmed, note: t("core-views.screen.outdated") };
-  if (held === undefined || !online) return { screens: [], outdated: false, control, known: held !== undefined && confirmed };
+  if (held?.outdated) return { screens: [], outdated: true, control, known: true, confirmed, note: t("core-views.screen.outdated") };
+  if (held === undefined || !online) return { screens: [], outdated: false, control, known: held !== undefined, confirmed: held !== undefined && confirmed };
   const screens = held.screens.flatMap((s) => {
     const id = get(s, "id");
     if (typeof id !== "string" || id === "") return [];
@@ -542,7 +542,7 @@ export function screensView(inner: Inner, station: string, held: Held | undefine
   });
   // The machine's own display (`desktop`) first: what a chat's screen button opens, at the head of every list of them.
   screens.sort((a, b) => Number(b.id === DESKTOP) - Number(a.id === DESKTOP));
-  return { screens, outdated: false, control, known: confirmed, ...(held.browser === true ? { browser: true } : {}) };
+  return { screens, outdated: false, control, known: true, confirmed, ...(held.browser === true ? { browser: true } : {}) };
 }
 
 /// What a link to one of a station's screens shows in a message (the `screenCard` topic): the screen as its station's

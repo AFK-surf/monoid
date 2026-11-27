@@ -1231,7 +1231,7 @@ test "a station's overview: its browser one row opening it, the agents' pages an
     let screens_topic : Json = {
       "browser": true,
       "control": true,
-      "known": true,
+      "known": true, "confirmed": true,
       "outdated": false,
       "screens": [
         {
@@ -1738,7 +1738,7 @@ test "screens and terminals kept state (version < 0) show read-only list but dis
   let terms_ver : @signals.Signal[Int] = @signals.signal(-3)
   let calls : Array[(String, Json)] = []
   let screens_topic : Json = {
-    "known": true,
+    "known": true, "confirmed": true,
     "outdated": false,
     "browser": true,
     "control": true,
@@ -1765,7 +1765,7 @@ test "screens and terminals kept state (version < 0) show read-only list but dis
     ],
   }
   let terms_topic : Json = {
-    "known": true,
+    "known": true, "confirmed": true,
     "outdated": false,
     "open": true,
     "terminals": [
@@ -1846,7 +1846,7 @@ test "remote_node guards close and browser open while screens/terminals are reta
   let calls : Array[(String, Json)] = []
   let base = @sffixture.fixture("settings")
   let screens_val : Json = {
-    "known": true,
+    "known": true, "confirmed": true,
     "outdated": false,
     "browser": true,
     "control": true,
@@ -1855,7 +1855,7 @@ test "remote_node guards close and browser open while screens/terminals are reta
     ],
   }
   let terms_val : Json = {
-    "known": true,
+    "known": true, "confirmed": true,
     "outdated": false,
     "open": true,
     "terminals": [
@@ -1955,8 +1955,8 @@ test "remote_node and station_peek reject unconfirmed empty (0/None), retained (
   assert_eq(calls.length(), 0)
 
   // 2. Retained (-2) with capable flags: still 0 writes and capabilities false.
-  let capable_screens : Json = { "known": true, "outdated": false, "browser": true, "control": true, "screens": [] }
-  let capable_terms : Json = { "known": true, "outdated": false, "open": true, "terminals": [] }
+  let capable_screens : Json = { "known": true, "confirmed": true, "outdated": false, "browser": true, "control": true, "screens": [] }
+  let capable_terms : Json = { "known": true, "confirmed": true, "outdated": false, "open": true, "terminals": [] }
   screens_state.set({ value: Some(capable_screens), error: None, version: -2 })
   terms_state.set({ value: Some(capable_terms), error: None, version: -2 })
   assert_false(remote_can_term(src, "ws1/st1"))
@@ -1967,7 +1967,7 @@ test "remote_node and station_peek reject unconfirmed empty (0/None), retained (
   assert_eq(calls.length(), 0)
 
   // 3. Fresh (version >= 0) but browser/control disabled: 0 screen.openBrowser calls.
-  let readonly_screens : Json = { "known": true, "outdated": false, "browser": true, "control": false, "screens": [] }
+  let readonly_screens : Json = { "known": true, "confirmed": true, "outdated": false, "browser": true, "control": false, "screens": [] }
   screens_state.set({ value: Some(readonly_screens), error: None, version: 1 })
   remote_open_station_browser_tab(src, "ws1", "ws1/st1")
   @settings.open_station_browser(core, "ws1/st1")
@@ -1988,14 +1988,14 @@ test "remote_front_in and remote_row_step skip retained rows and select once con
   let terms_ver : @signals.Signal[Int] = @signals.signal(-3)
   let base = @sffixture.fixture("settings")
   let screens_val : Json = {
-    "known": true,
+    "known": true, "confirmed": true,
     "outdated": false,
     "browser": false,
     "control": false,
     "screens": [],
   }
   let terms_val : Json = {
-    "known": true,
+    "known": true, "confirmed": true,
     "outdated": false,
     "open": true,
     "terminals": [
@@ -2037,14 +2037,14 @@ test "remote_front_in and remote_row_step skip retained rows and select once con
 ///|
 test "remote_row_close re-verifies live target existence and capability at invocation time" {
   let screens_val : @signals.Signal[Json] = @signals.signal({
-    "known": true,
+    "known": true, "confirmed": true,
     "outdated": false,
     "browser": true,
     "control": false,
     "screens": [{ "id": "browser:u_1", "kind": "browser", "userTab": true, "closable": true, "title": "Docs" }],
   })
   let terms_val : @signals.Signal[Json] = @signals.signal({
-    "known": true,
+    "known": true, "confirmed": true,
     "outdated": false,
     "open": false,
     "terminals": [{ "id": "term-1", "cwd": "/work/proj", "ended": false }],
@@ -2102,8 +2102,8 @@ test "remote_row_close re-verifies live target existence and capability at invoc
   assert_eq(calls.length(), 0)
 
   // 2. Fresh and capable, but target ended/removed or closable: false: still 0 write calls.
-  terms_val.set({ "known": true, "outdated": false, "open": true, "terminals": [{ "id": "term-1", "cwd": "/work/proj", "ended": true }] })
-  screens_val.set({ "known": true, "outdated": false, "browser": true, "control": true, "screens": [{ "id": "browser:u_1", "kind": "browser", "closable": false, "title": "Docs" }] })
+  terms_val.set({ "known": true, "confirmed": true, "outdated": false, "open": true, "terminals": [{ "id": "term-1", "cwd": "/work/proj", "ended": true }] })
+  screens_val.set({ "known": true, "confirmed": true, "outdated": false, "browser": true, "control": true, "screens": [{ "id": "browser:u_1", "kind": "browser", "closable": false, "title": "Docs" }] })
   remote_row_close(src, "ws1", term_row)
   remote_row_close(src, "ws1", tab_row)
   assert_eq(calls.length(), 0)

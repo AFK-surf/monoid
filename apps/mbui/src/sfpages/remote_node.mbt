@@ -90,24 +90,15 @@ pub fn remote_close_tab_clean(src : Source, ws : String, key : String) -> Unit {
 }
 
 ///|
-/// Whether `screens` for `station` is fresh and confirmed by the station (`version >= 0`, `known`, `!outdated`).
-fn remote_screens_confirmed(src : Source, station : String) -> Bool {
-  src.topic("screens", { "station": Json::string(station) }).get().is_confirmed_known()
-}
-
-///|
-/// Whether `terminals` for `station` is fresh and confirmed by the station (`version >= 0`, `known`, `!outdated`).
-fn remote_terminals_confirmed(src : Source, station : String) -> Bool {
-  src.topic("terminals", { "station": Json::string(station) }).get().is_confirmed_known()
-}
-
-///|
-/// Whether `r`'s backing station topic (`terminals` or `screens`) is fresh and confirmed by the station.
+/// Whether `r`'s backing station topic (`terminals` or `screens`) is fresh and confirmed by the station
+/// and still lists `r.id` as a real (non-ended / non-optimistic) target.
 fn remote_row_confirmed(src : Source, r : RemoteRow) -> Bool {
   if r.kind == "terminal" {
-    remote_terminals_confirmed(src, r.station)
+    let tr = src.topic("terminals", { "station": Json::string(r.station) }).get()
+    tr.is_confirmed_known() &&
+    items(tr.value, "terminals").iter().any(fn(t) { text(Some(t), "id") == r.id && !flag(Some(t), "ended") })
   } else {
-    remote_screens_confirmed(src, r.station)
+    @sfbase.live_screen_confirmed(src.topic("screens", { "station": Json::string(r.station) }).get(), r.id)
   }
 }
 
@@ -121,9 +112,7 @@ pub fn remote_open_station_browser_tab(src : Source, ws : String, station : Stri
     return
   }
   let sval = sr.value
-  let listed = items(sval, "screens")
-    .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
-    .map(fn(sc) { text(Some(sc), "id") })
+  let listed = @sfbase.confirmed_user_browser_ids(sr)
   let target = match @settings.browser_tab_to_open(station, listed) {
     Some(id) => id
     None => {
@@ -927,9 +916,7 @@ fn remote_new_browser_view(src : Source, ws : String, at : @sf.ListAt, address :
     return
   }
   let sv = sr.value
-  let listed = items(sv, "screens")
-    .filter(fn(sc) { flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_") })
-    .map(fn(sc) { text(Some(sc), "id") })
+  let listed = @sfbase.confirmed_user_browser_ids(sr)
   let target = if flag(sv, "browser") && flag(sv, "control") {
     @settings.new_browser_tab(src.call, address, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
   } else {
@@ -937,7 +924,7 @@ fn remote_new_browser_view(src : Source, ws : String, at : @sf.ListAt, address :
       Some(id) => id
       None =>
         items(sv, "screens")
-        .filter(fn(sc) { text(Some(sc), "kind") == "browser" })
+        .filter(fn(sc) { text(Some(sc), "kind") == "browser" && !flag(Some(sc), "opening") })
         .map(fn(sc) { text(Some(sc), "id") })
         .last()
         .unwrap_or("")
