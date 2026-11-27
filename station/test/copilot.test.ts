@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { callOf, countsOf, ownConfig, refusal, resultOf } from "../assets/agents/copilot-bridge.mjs";
-import { CopilotDriver, NOT_SIGNED_IN, SILENT, copilotHome, copilotRules, copilotToken } from "../src/agents/copilot.ts";
+import { CopilotDriver, NOT_SIGNED_IN, SILENT, chatModels, copilotHome, copilotRules, copilotToken } from "../src/agents/copilot.ts";
 import { CommandMissing } from "../src/agents/runner.ts";
 import type { AgentSession, OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { SLACK_SPOKEN, SPEAKS } from "../src/tools/mcp.ts";
@@ -85,6 +85,24 @@ describe("the Copilot driver's rules", () => {
     assert.match(rules, /^Be brief\./);
     assert.match(rules, /stillfail-chat_post/);
     assert.doesNotMatch(rules, /mcp__stillfail__/);
+  });
+
+  test("its models: GitHub's chat models with no policy or an enabled one; none disabled, unconfigured or not for chat", () => {
+    const chat = { type: "chat" };
+    const body = {
+      data: [
+        { id: "gpt-5.4", policy: { state: "enabled" }, capabilities: chat },
+        { id: "gemini-4-hydrogen", model_picker_enabled: true, capabilities: chat },
+        { id: "grok-4.7", policy: null, capabilities: chat },
+        { id: "claude-opus-5-5", policy: { state: "disabled" }, capabilities: chat },
+        { id: "o9", policy: { state: "unconfigured" }, capabilities: chat },
+        { id: "text-embedding-3", capabilities: { type: "embeddings" } },
+        { policy: { state: "enabled" }, capabilities: chat },
+      ],
+    };
+    assert.deepEqual(chatModels(body), ["gpt-5.4", "gemini-4-hydrogen", "grok-4.7"]);
+    assert.deepEqual(chatModels(null), []);
+    assert.deepEqual(chatModels({ data: "none" }), []);
   });
 
   test("a profile's token is its own: its key, its own variable, its sign-in; none borrowed from the machine", async () => {

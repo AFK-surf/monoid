@@ -115,6 +115,16 @@ export async function copilotToken(profile: OpenOptions["profile"]): Promise<str
   return kept === "" ? undefined : kept;
 }
 
+/// The chat models of GitHub's model catalog this account may use. GitHub leaves `policy` out of many models it lets
+/// the account use (no plan setting governs them); only a stated policy other than "enabled" (disabled by the plan,
+/// or not yet turned on in the account's settings) keeps a model out.
+export function chatModels(body: Json): string[] {
+  const data = Array.isArray(body?.data) ? body.data : [];
+  return data
+    .filter((m: Json) => (m?.policy == null || m.policy.state === "enabled") && m?.capabilities?.type === "chat" && typeof m?.id === "string")
+    .map((m: Json) => m.id as string);
+}
+
 /// What a profile with no token of its own is told when a session would open on it.
 export const NOT_SIGNED_IN = "GitHub Copilot is not signed in on this profile: sign it in to GitHub (its profile's sign-in), or give it a token of its own";
 
@@ -169,11 +179,7 @@ export class CopilotDriver extends OwnProcessDriver<CopilotSession> {
       headers: { authorization: `Bearer ${token}`, "copilot-integration-id": "vscode-chat", accept: "application/json" },
     });
     if (!answer.ok) throw new Error(`GitHub Copilot models: ${answer.status}`);
-    const body = (await answer.json().catch(() => null)) as Json;
-    const data = Array.isArray(body?.data) ? body.data : [];
-    return data
-      .filter((m: Json) => m?.policy?.state === "enabled" && m?.capabilities?.type === "chat" && typeof m?.id === "string")
-      .map((m: Json) => m.id as string);
+    return chatModels((await answer.json().catch(() => null)) as Json);
   }
 
   /// Its environment: the profile's token, the SDK's package, the station's tools' token; no other account's.
