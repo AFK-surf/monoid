@@ -195,6 +195,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     hears_outside: false,
     has_mesh_directory: false,
     accept_peer_http: false,
+    accept_admin_alpn: false,
     validate_mode: fn(
       data : String,
       ops_fs : station_ops::OpsFs,
@@ -1065,6 +1066,9 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     },
     on_peer_http_end: fn(_ctx : DaemonCtx, _sid : Int64) -> Unit {},
     on_peer_http_close: fn(_ctx : DaemonCtx, _sid : Int64) -> Unit {},
+    on_peer_http_writable: fn(_ctx : DaemonCtx, _sid : Int64) -> Unit {},
+    on_admin_conn_open: fn(_ctx : DaemonCtx, _conn_id : Int64, _remote_id : String, _is_front : Bool) -> Unit {},
+    on_admin_conn_close: fn(_ctx : DaemonCtx, _conn_id : Int64) -> Unit {},
     on_outbound_reply: fn(_ctx : DaemonCtx, method : String, ref_id : String, until_opt : Option[Int64]) -> Unit {
       if method == "vault.used" && ref_id.length() > 0 {
         match (state_opt, until_opt) {
