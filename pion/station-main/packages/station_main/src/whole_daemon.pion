@@ -2316,6 +2316,42 @@ fn verify_on_personal_lock(
   }
 }
 
+/// Locate every `ws` entry in `person_chains` committing to statement body hash `h` and return
+/// the exact chain prefix from genesis to that entry (1:1 with `PersonChains.commitsTo` in
+/// `station/src/mesh/person-chains.ts:187`), because `lock::body_refusal` checks the LAST entry.
+fn commits_to_body(
+  person_chains : Array[(String, Array[form::Json])],
+  h : String,
+) -> Array[lock::Commit] {
+  let out : Array[lock::Commit] = []
+  for ci in 0..<person_chains.length() {
+    let (g, ch) = person_chains[ci]
+    for j in 0..<ch.length() {
+      let e = ch[j]
+      let kind = match form::json_field(Some(e), "kind") {
+        Some(form::Json::Str(s)) => s
+        _ => ""
+      }
+      if kind != "ws" {
+        continue
+      }
+      let body_h = match form::json_field(form::json_field(Some(e), "body"), "h") {
+        Some(form::Json::Str(s)) => s
+        _ => ""
+      }
+      if body_h != h {
+        continue
+      }
+      let prefix : Array[form::Json] = []
+      for k in 0..<(j + 1) {
+        prefix.push(ch[k])
+      }
+      out.push(lock::Commit::{ genesis: g, chain: prefix })
+    }
+  }
+  out
+}
+
 /// Bring missing moved-lock root chain (`lock.person`) and statement bodies (`lock.bodies`) from
 /// an authenticated hello while a workspace is in `waiting` state (`station/src/mesh/serve.ts` `broughtForState`).
 fn bring_waiting_lock(
@@ -2377,13 +2413,8 @@ fn bring_waiting_lock(
         for i in 0..<items.length() {
           arr.push(station_rules_bridge::base_to_form(items[i]))
         }
-        let commits_fn = fn(_h : String) -> Array[lock::Commit] {
-          let out : Array[lock::Commit] = []
-          for ci in 0..<cloud.person_chains.length() {
-            let (g, ch) = cloud.person_chains[ci]
-            out.push(lock::Commit::{ genesis: g, chain: ch })
-          }
-          out
+        let commits_fn = fn(h : String) -> Array[lock::Commit] {
+          commits_to_body(cloud.person_chains, h)
         }
         match cloud.take_bodies(joined_ws, arr, commits_fn) {
           Ok(r) => if r.taken > 0 { any = true }
@@ -2479,6 +2510,7 @@ fn verify_member_credential(
   hello : base_codec::Json,
   remote_id : String,
   now_secs : Double,
+  prior_lock : Option[(String, String)] = None,
 ) -> Result[VerifiedMember, mesh_door::Refusal] {
   let refuse = fn(msg : String, code : Int, reason : String) -> Result[VerifiedMember, mesh_door::Refusal] {
     Err(mesh_door::Refusal::{
@@ -2649,8 +2681,14 @@ fn verify_member_credential(
       }
     }
 
-    let mut lock_base : Option[String] = None
-    let mut lock_proof_str : Option[String] = None
+    let mut lock_base : Option[String] = match prior_lock {
+      Some((b, _)) => Some(b)
+      None => None
+    }
+    let mut lock_proof_str : Option[String] = match prior_lock {
+      Some((_, p)) => Some(p)
+      None => None
+    }
     match base_codec::json_get(h, "lock") {
       Some(lobj) => {
         match (base_codec::json_get(lobj, "device"), base_codec::json_get(lobj, "proof")) {
@@ -3829,7 +3867,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 }
               },
               fn(_cur : station_mesh::MemberSession, line : base_codec::Json) -> station_mesh::MemberRenewResult {
-                match verify_member_credential(ctx.cloud, line, aconn.remote_id, now_s) {
+                let prior_lock : Option[(String, String)] = match (aconn.lock_base, aconn.lock_proof) {
+                  (Some(b), Some(p)) => Some((b, p))
+                  _ => None
+                }
+                match verify_member_credential(ctx.cloud, line, aconn.remote_id, now_s, prior_lock=prior_lock) {
                   Ok(vm) => {
                     aconn.iat = vm.iat
                     aconn.sid_claim = vm.sid_claim
@@ -7588,4 +7630,327 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
   }
 
   run_daemon(argv, hooks)
+}
+
+fn test_wd_assert(cond : Bool, msg : String = "assertion failed") -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+fn test_wd_b64url(b : Bytes) -> String {
+  let std = base64::encode(b)
+  let sb = StringBuilder::new()
+  for i in 0..<std.length() {
+    let ch = std.code_unit_at(i)
+    if ch == 43 {
+      sb.write_byte(45 as Byte)
+    } else if ch == 47 {
+      sb.write_byte(95 as Byte)
+    } else if ch != 61 {
+      sb.write_byte(ch as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+fn test_wd_sign_entry(seed : Bytes, pub_hex : String, fields : Array[(String, form::Json)]) -> form::Json {
+  let key_id = "ed25519:" + pub_hex
+  let with_empty_sig : Array[(String, form::Json)] = []
+  for i in 0..<fields.length() {
+    with_empty_sig.push(fields[i])
+  }
+  with_empty_sig.push(("sig", form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str("")),
+  ])))
+  let h = match station_rules_bridge::entry_hash(form::Json::Obj(with_empty_sig)) {
+    Ok(v) => v
+    Err(_) => panic("entry_hash failed")
+  }
+  let msg = match station_rules_bridge::signed_bytes(h) {
+    Some(b) => b
+    None => panic("signed_bytes failed")
+  }
+  let sig = match crypto::ed25519_sign(seed, msg) {
+    Ok(b) => base_codec::hex_encode(b)
+    Err(_) => panic("ed25519_sign failed")
+  }
+  let out : Array[(String, form::Json)] = []
+  for i in 0..<fields.length() {
+    out.push(fields[i])
+  }
+  out.push(("sig", form::Json::Obj([
+    ("key", form::Json::Str(key_id)),
+    ("alg", form::Json::Str("Ed25519")),
+    ("sig", form::Json::Str(sig)),
+  ])))
+  form::Json::Obj(out)
+}
+
+fn test_wd_entry_hash(entry : form::Json) -> String {
+  match station_rules_bridge::entry_hash(entry) {
+    Ok(h) => h
+    Err(_) => panic("entry_hash failed")
+  }
+}
+
+fn test_wd_make_jwt(seed : Bytes, kid : String, claims : Array[(String, base_codec::Json)]) -> String {
+  let head = base_codec::json_stringify(base_codec::json_obj([
+    ("alg", base_codec::json_str("EdDSA")),
+    ("typ", base_codec::json_str("stillfail-member+jwt")),
+    ("kid", base_codec::json_str(kid)),
+  ]))
+  let body = base_codec::json_stringify(base_codec::json_obj(claims))
+  let h_b64 = test_wd_b64url(head.to_bytes())
+  let b_b64 = test_wd_b64url(body.to_bytes())
+  let input = (h_b64 + "." + b_b64).to_bytes()
+  let sig = match crypto::ed25519_sign(seed, input) {
+    Ok(b) => test_wd_b64url(b)
+    Err(_) => panic("jwt sign failed")
+  }
+  h_b64 + "." + b_b64 + "." + sig
+}
+
+fn test_wd_endpoint_proof(seed : Bytes, ws : String, _base_hex : String, endpoint : String) -> String {
+  let msg = station_rules_bridge::endpoint_bytes(ws, endpoint)
+  match crypto::ed25519_sign(seed, msg) {
+    Ok(b) => base_codec::hex_encode(b)
+    Err(_) => panic("endpoint proof sign failed")
+  }
+}
+
+fn test_wd_seed(b : Int) -> (Bytes, String, String) {
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = ((b + i) & 0xFF) as Byte
+  }
+  let pk = match crypto::ed25519_public_key(seed) {
+    Ok(p) => p
+    Err(_) => panic("pk")
+  }
+  let hex = base_codec::hex_encode(pk)
+  let b64 = test_wd_b64url(pk)
+  (seed, hex, b64)
+}
+
+test "P1-A & P2-A: non-head ws commit recovery rejects rotated key and renewal preserves endpoint proof" {
+  let ws = "ws_wd_r3"
+  let now_s = 1700000100.0
+  let (owner_seed, owner_pub, _) = test_wd_seed(11)
+  let (old_k_seed, _, old_k_b64) = test_wd_seed(22)
+  let (new_k_seed, _, new_k_b64) = test_wd_seed(33)
+  let (_, extra_dev_pub, _) = test_wd_seed(44)
+  let (_, endpoint_id, _) = test_wd_seed(55)
+  let owner_kid = "ed25519:" + owner_pub
+
+  let old_jwks_form = form::Json::Obj([
+    ("keys", form::Json::Arr([form::Json::Obj([
+      ("kty", form::Json::Str("OKP")), ("crv", form::Json::Str("Ed25519")),
+      ("kid", form::Json::Str("k-old")), ("x", form::Json::Str(old_k_b64)),
+    ])])),
+  ])
+  let new_jwks_form = form::Json::Obj([
+    ("keys", form::Json::Arr([form::Json::Obj([
+      ("kty", form::Json::Str("OKP")), ("crv", form::Json::Str("Ed25519")),
+      ("kid", form::Json::Str("k-new")), ("x", form::Json::Str(new_k_b64)),
+    ])])),
+  ])
+  let old_jwks_base = station_rules_bridge::form_to_base(old_jwks_form)
+
+  let mfs = station_cloud::MemCloudFs::new()
+  let fs = mfs.as_fs()
+  let cs = station_cloud::CloudState::{
+    provider: None,
+    origin: "https://app.still.fail",
+    station: extra_dev_pub,
+    workspace: ws,
+    workspace_name: "WS",
+    workspace_emoji: None,
+    workspace_icon: None,
+    name: "st1",
+    relay_url: "https://r.example",
+    relay_urls: ["https://r.example"],
+    stillfail_relays: None,
+    mesh_relays: None,
+    grant_keys: old_jwks_base,
+    peers: [],
+    revocations: [],
+    gateway_keys: None,
+    removed_at: None,
+    removed_code: None,
+    joined: [],
+    rigs: [],
+    ways: None,
+    rig: None,
+    rig_pending: Map::new(),
+    full_pending: Map::new(),
+    rig_due: [],
+  }
+  test_wd_assert(station_cloud::write_state("/d", cs, fs) is Ok(_), "write_state failed")
+  let cloud = station_cloud::CloudStore::open("/d", fs)
+
+  // Build root person chain with 3 entries: [pgen, p_ws (commits rotated cloud_keys open body), p_tail (newer device.add)]
+  let pgen = test_wd_sign_entry(owner_seed, owner_pub, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(0.0)), ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)), ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str("u1")),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(owner_kid)), ("id", form::Json::Str(owner_pub)),
+        ("label", form::Json::Str("Owner Mac")), ("sign_key", form::Json::Str(owner_kid)),
+      ])),
+    ])),
+  ])
+  let root_hash = test_wd_entry_hash(pgen)
+  let ws_gen = test_wd_sign_entry(owner_seed, owner_pub, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(0.0)), ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)), ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("owner", form::Json::Str("u1")),
+      ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+      ("rp_id", form::Json::Str("app.still.fail")),
+      ("cloud_keys", old_jwks_form),
+      ("members", form::Json::Arr([
+        form::Json::Obj([("sub", form::Json::Str("u1")), ("email", form::Json::Str("u1@x.test")), ("role", form::Json::Str("owner"))]),
+      ])),
+      ("devices", form::Json::Arr([
+        form::Json::Obj([
+          ("id", form::Json::Str(owner_pub)), ("sub", form::Json::Str("u1")),
+          ("kind", form::Json::Str("app")), ("label", form::Json::Str("Owner Mac")),
+          ("sign_key", form::Json::Str(owner_kid)),
+        ]),
+      ])),
+      ("stations", form::Json::Arr([
+        form::Json::Obj([("key", form::Json::Str(extra_dev_pub)), ("name", form::Json::Str("st1"))]),
+      ])),
+    ])),
+  ])
+  let ws_gen_h = test_wd_entry_hash(ws_gen)
+  let ws_mv = test_wd_sign_entry(owner_seed, owner_pub, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("seq", form::Json::Num(1.0)), ("prev", form::Json::Str(ws_gen_h)),
+    ("at", form::Json::Num(1700000010.0)), ("kind", form::Json::Str("moved")),
+    ("body", form::Json::Obj([("root", form::Json::Str(root_hash))])),
+  ])
+  match cloud.take_lock([ws_gen, ws_mv], Some(now_s)) {
+    Ok(n) => test_wd_assert(n == 2, "expected 2 lock entries taken")
+    Err(e) => panic("take_lock failed: " + e)
+  }
+  // Confirm station is in `waiting` state
+  match cloud.locked(now_s) {
+    Some(eff) => test_wd_assert(eff.waiting, "expected waiting lock")
+    None => panic("expected waiting lock")
+  }
+
+  let open_body = form::Json::Obj([
+    ("ws", form::Json::Str(ws)),
+    ("prev", form::Json::Null),
+    ("kind", form::Json::Str("open")),
+    ("email", form::Json::Str("u1@x.test")),
+    ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+    ("rp_id", form::Json::Str("app.still.fail")),
+    ("cloud_keys", new_jwks_form),
+    ("salt", form::Json::Str("0123456789abcdef0123456789abcdef")),
+  ])
+  let open_h = match station_rules_bridge::body_hash(open_body) {
+    Some(h) => h
+    None => panic("body_hash")
+  }
+  let tag = station_rules_bridge::ws_tag(ws, root_hash)
+  let p_ws = test_wd_sign_entry(owner_seed, owner_pub, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(1.0)), ("prev", form::Json::Str(root_hash)),
+    ("at", form::Json::Num(1700000020.0)), ("kind", form::Json::Str("ws")),
+    ("body", form::Json::Obj([("t", form::Json::Str(tag)), ("h", form::Json::Str(open_h))])),
+  ])
+  let p_ws_h = test_wd_entry_hash(p_ws)
+  // Add a newer entry AFTER p_ws so p_ws is NOT at the head of the person chain!
+  let p_tail = test_wd_sign_entry(owner_seed, owner_pub, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str("person:u1")),
+    ("seq", form::Json::Num(2.0)), ("prev", form::Json::Str(p_ws_h)),
+    ("at", form::Json::Num(1700000030.0)), ("kind", form::Json::Str("device")),
+    ("body", form::Json::Obj([
+      ("id", form::Json::Str(extra_dev_pub)),
+      ("label", form::Json::Str("Phone")),
+      ("sign_key", form::Json::Str("ed25519:" + extra_dev_pub)),
+    ])),
+  ])
+
+  // Verify commits_to_body returns exact prefix [pgen, p_ws] (length 2, NOT 3) and body_refusal accepts open_body!
+  let commits = commits_to_body([(root_hash, [pgen, p_ws, p_tail])], open_h)
+  test_wd_assert(commits.length() == 1 && commits[0].chain.length() == 2, "expected exact prefix len 2")
+  match station_rules_bridge::body_refusal(ws, open_body, commits) {
+    None => ()
+    Some(why) => panic("open_body refused: " + why)
+  }
+
+  let jwt_claims = [
+    ("iss", base_codec::json_str("stillfail-cloud")),
+    ("ws", base_codec::json_str(ws)),
+    ("sub", base_codec::json_str("u1")),
+    ("email", base_codec::json_str("u1@x.test")),
+    ("name", base_codec::json_str("U1")),
+    ("role", base_codec::json_str("owner")),
+    ("device", base_codec::json_str(endpoint_id)),
+    ("iat", base_codec::json_int64(1700000050L)),
+    ("exp", base_codec::json_int64(1700009999L)),
+    ("sid", base_codec::json_str("sid_1")),
+  ]
+  let old_jwt = test_wd_make_jwt(old_k_seed, "k-old", jwt_claims)
+  let new_jwt = test_wd_make_jwt(new_k_seed, "k-new", jwt_claims)
+  let ep_proof = test_wd_endpoint_proof(owner_seed, ws, owner_pub, endpoint_id)
+
+  // P1-A: Old-key hello carries root chain (with p_ws NOT at head) + rotated cloud_keys open_body.
+  // Station exits waiting, re-verifies against rotated cloud_keys -> MUST REJECT old_jwt!
+  let hello_old_bring = base_codec::json_obj([
+    ("credential", base_codec::json_str(old_jwt)),
+    ("lock", base_codec::json_obj([
+      ("device", base_codec::json_str(owner_pub)),
+      ("proof", base_codec::json_str(ep_proof)),
+      ("person", base_codec::json_arr([
+        station_rules_bridge::form_to_base(pgen),
+        station_rules_bridge::form_to_base(p_ws),
+        station_rules_bridge::form_to_base(p_tail),
+      ])),
+      ("bodies", base_codec::json_arr([station_rules_bridge::form_to_base(open_body)])),
+    ])),
+  ])
+  match verify_member_credential(cloud, hello_old_bring, endpoint_id, now_s) {
+    Err(refusal) => test_wd_assert(refusal.error == "unknown credential key", "unexpected refusal: " + refusal.error)
+    Ok(_) => panic("P1-A: rotated-out old credential must be rejected; bodies=" + cloud.bodies().values().length().to_string() + " chains=" + cloud.person_chains.length().to_string() + " gkeys=" + base_codec::json_stringify(cloud.grant_keys(now_s)))
+  }
+  match cloud.locked(now_s) {
+    Some(eff) => test_wd_assert(!eff.waiting, "expected active non-waiting lock after recovery")
+    None => panic("expected active non-waiting lock after recovery")
+  }
+
+  // P2-A: Initial hello with new_jwt + endpoint proof succeeds; renewal WITHOUT `lock` field
+  // succeeds when passing `prior_lock`, fails without `prior_lock`, and rejects `old_jwt`!
+  let hello_new = base_codec::json_obj([
+    ("credential", base_codec::json_str(new_jwt)),
+    ("lock", base_codec::json_obj([
+      ("device", base_codec::json_str(owner_pub)),
+      ("proof", base_codec::json_str(ep_proof)),
+    ])),
+  ])
+  let vm1 = match verify_member_credential(cloud, hello_new, endpoint_id, now_s) {
+    Ok(v) => v
+    Err(r) => panic("P2-A: initial hello with endpoint proof failed: " + r.error)
+  }
+  let saved_lock = match (vm1.lock_base, vm1.lock_proof) {
+    (Some(b), Some(p)) => Some((b, p))
+    _ => panic("P2-A: expected saved lock_base/lock_proof")
+  }
+  let renew_no_lock = base_codec::json_obj([("credential", base_codec::json_str(new_jwt))])
+  test_wd_assert(verify_member_credential(cloud, renew_no_lock, endpoint_id, now_s, prior_lock=saved_lock) is Ok(_), "P2-A: renewal with saved_lock failed")
+  test_wd_assert(verify_member_credential(cloud, renew_no_lock, endpoint_id, now_s, prior_lock=None) is Err(_), "P2-A: renewal without proof must fail")
+  let renew_old_key = base_codec::json_obj([("credential", base_codec::json_str(old_jwt))])
+  match verify_member_credential(cloud, renew_old_key, endpoint_id, now_s, prior_lock=saved_lock) {
+    Err(r) => test_wd_assert(r.error == "unknown credential key", "P2-A: unexpected refusal: " + r.error)
+    Ok(_) => panic("P2-A: rotated-out key must be rejected on renewal")
+  }
 }

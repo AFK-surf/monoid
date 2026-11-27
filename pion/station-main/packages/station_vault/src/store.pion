@@ -43,6 +43,27 @@ pub let VAULT_STORE_SCHEMA : String =
 "  vault TEXT NOT NULL,\n" +
 "  PRIMARY KEY (ws, sub, vault)\n" +
 ") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_invalid (\n" +
+"  ws TEXT NOT NULL, vault TEXT NOT NULL, PRIMARY KEY (ws, vault)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_backfill (\n" +
+"  ws TEXT PRIMARY KEY, after_id TEXT, done INTEGER NOT NULL\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_duplicates_v2 (\n" +
+"  ws TEXT NOT NULL, vault TEXT NOT NULL, PRIMARY KEY (ws, vault)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_audit_v2 (\n" +
+"  ws TEXT PRIMARY KEY, after_id TEXT, done INTEGER NOT NULL\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_type_audit_v3 (\n" +
+"  ws TEXT PRIMARY KEY, after_id TEXT, done INTEGER NOT NULL\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_nul_v4 (\n" +
+"  ws TEXT NOT NULL, vault TEXT NOT NULL, PRIMARY KEY (ws, vault)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE TABLE IF NOT EXISTS vault_member_nul_audit_v4 (\n" +
+"  ws TEXT PRIMARY KEY, after_id TEXT, done INTEGER NOT NULL\n" +
+") WITHOUT ROWID;\n" +
 "CREATE INDEX IF NOT EXISTS vaults_workspace_active ON vaults (ws, id DESC)\n" +
 "  WHERE json_valid(body) AND json_extract(body, '$.scope') = 'workspace' AND json_type(body, '$.deleted') IS NOT 'true';\n" +
 "CREATE TABLE IF NOT EXISTS vault_asks (\n" +
@@ -69,9 +90,17 @@ pub let VAULT_STORE_SCHEMA : String =
 ") WITHOUT ROWID;\n" +
 "CREATE INDEX IF NOT EXISTS vault_joins_vault_at ON vault_joins (ws, vault, state, at DESC, sub);\n" +
 "CREATE INDEX IF NOT EXISTS vault_joins_vault_dismiss ON vault_joins (ws, vault, sub) WHERE dismiss_body IS NOT NULL;\n" +
-"CREATE TRIGGER IF NOT EXISTS vault_member_lookup_insert AFTER INSERT ON vaults WHEN json_valid(NEW.body) AND json_type(NEW.body, '$.members') = 'array' BEGIN INSERT OR IGNORE INTO vault_member_lookup (ws, sub, vault) SELECT NEW.ws, m.value, NEW.id FROM json_each(NEW.body, '$.members') m WHERE m.type = 'text'; END;\n" +
-"CREATE TRIGGER IF NOT EXISTS vault_member_lookup_update AFTER UPDATE OF body ON vaults BEGIN DELETE FROM vault_member_lookup WHERE ws = OLD.ws AND vault = OLD.id; INSERT OR IGNORE INTO vault_member_lookup (ws, sub, vault) SELECT NEW.ws, m.value, NEW.id FROM json_each(CASE WHEN json_valid(NEW.body) AND json_type(NEW.body, '$.members') = 'array' THEN NEW.body ELSE '{\"members\":[]}' END, '$.members') m WHERE m.type = 'text'; END;\n" +
-"CREATE TRIGGER IF NOT EXISTS vault_member_lookup_delete AFTER DELETE ON vaults BEGIN DELETE FROM vault_member_lookup WHERE ws = OLD.ws AND vault = OLD.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_add AFTER INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws) BEGIN INSERT INTO vault_member_invalid SELECT NEW.ws, NEW.id WHERE (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0 ON CONFLICT(ws, vault) DO NOTHING; INSERT INTO vault_member_lookup SELECT NEW.ws, m.value, NEW.id FROM json_each(CASE WHEN (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN NEW.body ELSE '{\"members\":[]}' END, '$.members') m WHERE m.type = 'text' ON CONFLICT(ws, sub, vault) DO NOTHING; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_change AFTER UPDATE ON vaults WHEN (OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR CASE WHEN json_valid(OLD.body) AND json_valid(NEW.body) THEN json_extract(OLD.body, '$.members') IS NOT json_extract(NEW.body, '$.members') ELSE OLD.body IS NOT NEW.body END) AND (EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = OLD.ws) OR EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws)) BEGIN DELETE FROM vault_member_invalid WHERE ws = OLD.ws AND vault = OLD.id; INSERT INTO vault_member_invalid SELECT NEW.ws, NEW.id WHERE (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0 AND EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws) ON CONFLICT(ws, vault) DO NOTHING; DELETE FROM vault_member_lookup WHERE ws = OLD.ws AND vault = OLD.id AND sub IN (SELECT value FROM json_each(CASE WHEN (CASE WHEN json_valid(OLD.body) THEN CASE WHEN json_type(OLD.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN OLD.body ELSE '{\"members\":[]}' END, '$.members') WHERE type = 'text'); INSERT INTO vault_member_lookup SELECT NEW.ws, m.value, NEW.id FROM json_each(CASE WHEN (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN NEW.body ELSE '{\"members\":[]}' END, '$.members') m WHERE m.type = 'text' AND EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws) ON CONFLICT(ws, sub, vault) DO NOTHING; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_drop AFTER DELETE ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = OLD.ws) BEGIN DELETE FROM vault_member_invalid WHERE ws = OLD.ws AND vault = OLD.id; DELETE FROM vault_member_lookup WHERE ws = OLD.ws AND vault = OLD.id AND sub IN (SELECT value FROM json_each(CASE WHEN (CASE WHEN json_valid(OLD.body) THEN CASE WHEN json_type(OLD.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN OLD.body ELSE '{\"members\":[]}' END, '$.members') WHERE type = 'text'); END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_type_add_v3 AFTER INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_invalid WHERE ws = NEW.ws AND vault = NEW.id) AND (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 BEGIN DELETE FROM vault_member_invalid WHERE ws = NEW.ws AND vault = NEW.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_type_change_v3 AFTER UPDATE ON vaults WHEN OLD.body IS NOT NEW.body AND (CASE WHEN json_valid(OLD.body) THEN CASE WHEN json_type(OLD.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) IS NOT (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) AND (EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = OLD.ws) OR EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws)) BEGIN DELETE FROM vault_member_invalid WHERE ws = OLD.ws AND vault = OLD.id; INSERT OR IGNORE INTO vault_member_invalid SELECT NEW.ws, NEW.id WHERE (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0 AND EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws); DELETE FROM vault_member_lookup WHERE ws = OLD.ws AND vault = OLD.id AND sub IN (SELECT value FROM json_each(CASE WHEN (CASE WHEN json_valid(OLD.body) THEN CASE WHEN json_type(OLD.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN OLD.body ELSE '{\"members\":[]}' END, '$.members') WHERE type = 'text'); INSERT OR IGNORE INTO vault_member_lookup SELECT NEW.ws, m.value, NEW.id FROM json_each(CASE WHEN (CASE WHEN json_valid(NEW.body) THEN CASE WHEN json_type(NEW.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN NEW.body ELSE '{\"members\":[]}' END, '$.members') m WHERE m.type = 'text' AND EXISTS (SELECT 1 FROM vault_member_backfill WHERE ws = NEW.ws); END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_duplicate_add_v2 AFTER INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = NEW.ws) BEGIN DELETE FROM vault_member_duplicates_v2 WHERE ws = NEW.ws AND vault = NEW.id; INSERT OR IGNORE INTO vault_member_duplicates_v2 SELECT NEW.ws, NEW.id WHERE (CASE WHEN json_valid(NEW.body) THEN EXISTS (SELECT 1 FROM json_each(NEW.body) WHERE key = 'members' LIMIT 1 OFFSET 1) ELSE 0 END) = 1; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_duplicate_change_v2 AFTER UPDATE ON vaults WHEN (OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.body IS NOT NEW.body) AND (EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = OLD.ws) OR EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = NEW.ws)) BEGIN DELETE FROM vault_member_duplicates_v2 WHERE ws = OLD.ws AND vault = OLD.id; DELETE FROM vault_member_duplicates_v2 WHERE ws = NEW.ws AND vault = NEW.id; INSERT OR IGNORE INTO vault_member_duplicates_v2 SELECT NEW.ws, NEW.id WHERE EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = NEW.ws) AND (CASE WHEN json_valid(NEW.body) THEN EXISTS (SELECT 1 FROM json_each(NEW.body) WHERE key = 'members' LIMIT 1 OFFSET 1) ELSE 0 END) = 1; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_duplicate_drop_v2 AFTER DELETE ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_audit_v2 WHERE ws = OLD.ws) BEGIN DELETE FROM vault_member_duplicates_v2 WHERE ws = OLD.ws AND vault = OLD.id; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_nul_add_v4 AFTER INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = NEW.ws) BEGIN DELETE FROM vault_member_nul_v4 WHERE ws = NEW.ws AND vault = NEW.id; INSERT OR IGNORE INTO vault_member_nul_v4 SELECT NEW.ws, NEW.id WHERE (CASE WHEN instr(NEW.body, '\\u0000') > 0 AND json_valid(NEW.body) THEN EXISTS (SELECT 1 FROM json_each(NEW.body) WHERE instr(key, char(0)) > 0 AND substr(key, 1, instr(key, char(0)) - 1) = 'members') ELSE 0 END) = 1; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_nul_change_v4 AFTER UPDATE ON vaults WHEN (OLD.ws IS NOT NEW.ws OR OLD.id IS NOT NEW.id OR OLD.body IS NOT NEW.body) AND (EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = OLD.ws) OR EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = NEW.ws)) BEGIN DELETE FROM vault_member_nul_v4 WHERE ws = OLD.ws AND vault = OLD.id; DELETE FROM vault_member_nul_v4 WHERE ws = NEW.ws AND vault = NEW.id; INSERT OR IGNORE INTO vault_member_nul_v4 SELECT NEW.ws, NEW.id WHERE EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = NEW.ws) AND (CASE WHEN instr(NEW.body, '\\u0000') > 0 AND json_valid(NEW.body) THEN EXISTS (SELECT 1 FROM json_each(NEW.body) WHERE instr(key, char(0)) > 0 AND substr(key, 1, instr(key, char(0)) - 1) = 'members') ELSE 0 END) = 1; END;\n" +
+"CREATE TRIGGER IF NOT EXISTS vault_member_nul_drop_v4 AFTER DELETE ON vaults WHEN EXISTS (SELECT 1 FROM vault_member_nul_audit_v4 WHERE ws = OLD.ws) BEGIN DELETE FROM vault_member_nul_v4 WHERE ws = OLD.ws AND vault = OLD.id; END;\n" +
 "CREATE TRIGGER IF NOT EXISTS vault_item_deleted_insert BEFORE INSERT ON vault_items WHEN EXISTS (SELECT 1 FROM vaults v WHERE v.ws = NEW.ws AND v.id = NEW.vault AND CASE WHEN json_valid(v.body) THEN json_type(v.body, '$.deleted') = 'true' ELSE 0 END) BEGIN SELECT RAISE(ABORT, 'vault was deleted during the write'); END;\n" +
 "CREATE TRIGGER IF NOT EXISTS vault_item_deleted_update BEFORE UPDATE ON vault_items WHEN EXISTS (SELECT 1 FROM vaults v WHERE v.ws = NEW.ws AND v.id = NEW.vault AND CASE WHEN json_valid(v.body) THEN json_type(v.body, '$.deleted') = 'true' ELSE 0 END) BEGIN SELECT RAISE(ABORT, 'vault was deleted during the write'); END;\n" +
 "CREATE TRIGGER IF NOT EXISTS vault_deleted_stays_deleted_insert BEFORE INSERT ON vaults WHEN EXISTS (SELECT 1 FROM vaults v WHERE v.ws = NEW.ws AND v.id = NEW.id AND CASE WHEN json_valid(v.body) THEN json_type(v.body, '$.deleted') = 'true' ELSE 0 END) AND (CASE WHEN json_valid(NEW.body) THEN json_type(NEW.body, '$.deleted') IS NOT 'true' ELSE 1 END) BEGIN SELECT RAISE(ABORT, 'vault was deleted during the write'); END;\n" +
@@ -494,7 +523,252 @@ pub fn VaultStore::vaults(self : VaultStore, ws : String) -> Result[Array[form::
   }
 }
 
-/// Candidate vaults for `sub` via `vault_member_lookup` index (bounded to `sub`'s vaults, never scanning unrelated vaults).
+fn is_well_formed_utf16(s : String) -> Bool {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    let b0 = s.code_unit_at(i)
+    if b0 == 0xED && i + 2 < n {
+      let b1 = s.code_unit_at(i + 1)
+      if b1 >= 0xA0 && b1 <= 0xBF {
+        return false
+      }
+    }
+    i = i + 1
+  }
+  true
+}
+
+fn vault_members_complete_db(db : VaultDbPort, ws : String) -> Result[Bool, sql_db::SqlError] {
+  match (db.first)(
+    "SELECT b.done, a.done AS audited, t.done AS type_audited, n.done AS nul_audited FROM vault_member_backfill b LEFT JOIN vault_member_audit_v2 a ON a.ws = b.ws LEFT JOIN vault_member_type_audit_v3 t ON t.ws = b.ws LEFT JOIN vault_member_nul_audit_v4 n ON n.ws = b.ws WHERE b.ws = ?",
+    [base_codec::json_str(ws)],
+  ) {
+    Ok(Some(row)) => {
+      Ok(row_i64(row, "done") == 1L && row_i64(row, "audited") == 1L && row_i64(row, "type_audited") == 1L && row_i64(row, "nul_audited") == 1L)
+    }
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+let VAULT_MEMBERS_INVALID_SQL : String =
+"SELECT 1 FROM vault_member_invalid i CROSS JOIN vaults v ON v.ws = i.ws AND v.id = i.vault WHERE i.ws = ? UNION ALL SELECT 1 FROM vault_member_duplicates_v2 d CROSS JOIN vaults v ON v.ws = d.ws AND v.id = d.vault WHERE d.ws = ? UNION ALL SELECT 1 FROM vault_member_nul_v4 n CROSS JOIN vaults v ON v.ws = n.ws AND v.id = n.vault WHERE n.ws = ? LIMIT 1"
+
+fn has_invalid_vault_members_db(db : VaultDbPort, ws : String) -> Result[Bool, sql_db::SqlError] {
+  match (db.first)(VAULT_MEMBERS_INVALID_SQL, [base_codec::json_str(ws), base_codec::json_str(ws), base_codec::json_str(ws)]) {
+    Ok(Some(_)) => Ok(true)
+    Ok(None) => Ok(false)
+    Err(e) => Err(e)
+  }
+}
+
+/// Backfill up to `limit` vaults for `ws` into `vault_member_lookup` and its v2/v3/v4 audit tables
+/// (1:1 with `backfillVaultMembers` in `station/src/vault/member-index.ts:167`).
+/// Returns `Ok(true)` once backfill and all audits are complete.
+pub fn VaultStore::backfill_vault_members(
+  self : VaultStore,
+  ws : String,
+  limit : Int = 32,
+) -> Result[Bool, String] {
+  if self.mem is Some(_) {
+    return Ok(true)
+  }
+  let db = match self.db {
+    Some(d) => d
+    None => return Err("vault store closed")
+  }
+  let mut all_done = false
+  let tx_res = (db.tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+    let ws_j = base_codec::json_str(ws)
+    for sql in [
+      "INSERT OR IGNORE INTO vault_member_backfill (ws, after_id, done) VALUES (?, NULL, 0)",
+      "INSERT OR IGNORE INTO vault_member_audit_v2 (ws, after_id, done) VALUES (?, NULL, 0)",
+      "INSERT OR IGNORE INTO vault_member_type_audit_v3 (ws, after_id, done) VALUES (?, NULL, 0)",
+      "INSERT OR IGNORE INTO vault_member_nul_audit_v4 (ws, after_id, done) VALUES (?, NULL, 0)",
+    ] {
+      match (txdb.run)(sql, [ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    let read_cursor = fn(tbl : String) -> Result[(Option[String], Bool), sql_db::SqlError] {
+      match (txdb.first)("SELECT after_id, done FROM " + tbl + " WHERE ws = ?", [ws_j]) {
+        Ok(Some(row)) => Ok((row_str(row, "after_id"), row_i64(row, "done") != 0L))
+        Ok(None) => Ok((None, false))
+        Err(e) => Err(e)
+      }
+    }
+    let (st_after, st_done) = match read_cursor("vault_member_backfill") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let (au_after, au_done) = match read_cursor("vault_member_audit_v2") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let (ty_after, ty_done) = match read_cursor("vault_member_type_audit_v3") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let (nu_after, nu_done) = match read_cursor("vault_member_nul_audit_v4") {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    if st_done && au_done && ty_done && nu_done {
+      all_done = true
+      return Ok(())
+    }
+    let opt_eq = fn(a : Option[String], b : Option[String]) -> Bool {
+      match (a, b) {
+        (None, None) => true
+        (Some(x), Some(y)) => x == y
+        _ => false
+      }
+    }
+    let audit_batch = !au_done && (st_done || opt_eq(st_after, au_after))
+    let after = if !st_done { st_after } else if !au_done { au_after } else if !ty_done { ty_after } else { nu_after }
+    let type_batch = !ty_done && opt_eq(ty_after, after)
+    let nul_batch = !nu_done && opt_eq(nu_after, after)
+    let rows = match after {
+      None => match (txdb.all)("SELECT id FROM vaults WHERE ws = ? ORDER BY id LIMIT ?", [ws_j, base_codec::json_int(limit)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+      Some(aid) => match (txdb.all)("SELECT id FROM vaults WHERE ws = ? AND id > ? ORDER BY id LIMIT ?", [ws_j, base_codec::json_str(aid), base_codec::json_int(limit)]) {
+        Ok(rs) => rs
+        Err(e) => return Err(e)
+      }
+    }
+    let ids : Array[String] = []
+    for i in 0..<rows.length() {
+      match row_str(rows[i], "id") {
+        Some(id) => ids.push(id)
+        None => ()
+      }
+    }
+    let done = ids.length() < limit
+    let last_id : Option[String] = if ids.length() > 0 { Some(ids[ids.length() - 1]) } else { None }
+    let next_cursor_j = fn(fallback : Option[String]) -> base_codec::Json {
+      match last_id {
+        Some(id) => base_codec::json_str(id)
+        None => match fallback {
+          Some(fb) => base_codec::json_str(fb)
+          None => base_codec::Json::Null
+        }
+      }
+    }
+    let done_j = base_codec::json_int(if done { 1 } else { 0 })
+    if !st_done {
+      for i in 0..<ids.length() {
+        let id_j = base_codec::json_str(ids[i])
+        match (txdb.run)(
+          "INSERT OR IGNORE INTO vault_member_invalid SELECT v.ws, v.id FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0",
+          [ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)(
+          "INSERT OR IGNORE INTO vault_member_lookup SELECT v.ws, m.value, v.id FROM vaults v JOIN json_each(CASE WHEN (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN v.body ELSE '{\"members\":[]}' END, '$.members') m WHERE v.ws = ? AND v.id = ? AND m.type = 'text'",
+          [ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match (txdb.run)("UPDATE vault_member_backfill SET after_id = ?, done = ? WHERE ws = ?", [next_cursor_j(st_after), done_j, ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if audit_batch {
+      for i in 0..<ids.length() {
+        let id_j = base_codec::json_str(ids[i])
+        match (txdb.run)("DELETE FROM vault_member_duplicates_v2 WHERE ws = ? AND vault = ?", [ws_j, id_j]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)(
+          "INSERT OR IGNORE INTO vault_member_duplicates_v2 SELECT v.ws, v.id FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN json_valid(v.body) THEN EXISTS (SELECT 1 FROM json_each(v.body) WHERE key = 'members' LIMIT 1 OFFSET 1) ELSE 0 END) = 1",
+          [ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match (txdb.run)("UPDATE vault_member_audit_v2 SET after_id = ?, done = ? WHERE ws = ?", [next_cursor_j(au_after), done_j, ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if type_batch {
+      for i in 0..<ids.length() {
+        let id_j = base_codec::json_str(ids[i])
+        if st_done {
+          match (txdb.run)(
+            "INSERT OR IGNORE INTO vault_member_lookup SELECT v.ws, m.value, v.id FROM vaults v JOIN json_each(CASE WHEN (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1 THEN v.body ELSE '{\"members\":[]}' END, '$.members') m WHERE v.ws = ? AND v.id = ? AND m.type = 'text'",
+            [ws_j, id_j],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        match (txdb.run)(
+          "DELETE FROM vault_member_invalid WHERE ws = ? AND vault = ? AND EXISTS (SELECT 1 FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 1)",
+          [ws_j, id_j, ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        if st_done {
+          match (txdb.run)(
+            "INSERT OR IGNORE INTO vault_member_invalid SELECT v.ws, v.id FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN json_valid(v.body) THEN CASE WHEN json_type(v.body, '$.members') = 'array' THEN 1 ELSE 0 END ELSE 0 END) = 0",
+            [ws_j, id_j],
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      match (txdb.run)("UPDATE vault_member_type_audit_v3 SET after_id = ?, done = ? WHERE ws = ?", [next_cursor_j(ty_after), done_j, ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    if nul_batch {
+      for i in 0..<ids.length() {
+        let id_j = base_codec::json_str(ids[i])
+        match (txdb.run)("DELETE FROM vault_member_nul_v4 WHERE ws = ? AND vault = ?", [ws_j, id_j]) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)(
+          "INSERT OR IGNORE INTO vault_member_nul_v4 SELECT v.ws, v.id FROM vaults v WHERE v.ws = ? AND v.id = ? AND (CASE WHEN instr(v.body, '\\u0000') > 0 AND json_valid(v.body) THEN EXISTS (SELECT 1 FROM json_each(v.body) WHERE instr(key, char(0)) > 0 AND substr(key, 1, instr(key, char(0)) - 1) = 'members') ELSE 0 END) = 1",
+          [ws_j, id_j],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      match (txdb.run)("UPDATE vault_member_nul_audit_v4 SET after_id = ?, done = ? WHERE ws = ?", [next_cursor_j(nu_after), done_j, ws_j]) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    all_done = (st_done || done) && (au_done || (audit_batch && done)) && (ty_done || (type_batch && done)) && (nu_done || (nul_batch && done))
+    Ok(())
+  })
+  match tx_res {
+    Ok(_) => Ok(all_done)
+    Err(e) => Err(e.message)
+  }
+}
+
+/// Candidate vaults for `sub` (1:1 with `VaultStore.memberVaults` in `station/src/vault/store.ts:143`):
+/// uses `vault_member_lookup` ONLY when `sub` is well-formed UTF-16, the workspace has >32 vaults,
+/// backfill + v2/v3/v4 audits are complete, and no invalid/duplicate/NUL markers exist; otherwise
+/// falls back to scanning `vaults(ws)` in the same snapshot so pre-existing Node vaults are never lost.
 pub fn VaultStore::member_vaults(self : VaultStore, ws : String, sub : String) -> Result[Array[form::Json], String] {
   match self.mem {
     Some(m) => {
@@ -526,21 +800,57 @@ pub fn VaultStore::member_vaults(self : VaultStore, ws : String, sub : String) -
       Ok(out)
     }
     None => match self.db {
-      Some(db) => match (db.all)(MEMBER_VAULTS_SQL, [base_codec::json_str(ws), base_codec::json_str(sub)]) {
-        Ok(rows) => {
-          let out : Array[form::Json] = []
+      Some(db) => {
+        if !is_well_formed_utf16(sub) {
+          return self.vaults(ws)
+        }
+        match (db.first)("SELECT 1 FROM vaults WHERE ws = ? LIMIT 1 OFFSET 32", [base_codec::json_str(ws)]) {
+          Ok(None) => return self.vaults(ws)
+          Ok(Some(_)) => ()
+          Err(e) => return Err(e.message)
+        }
+        let mut out : Array[form::Json] = []
+        let tx_res = (db.tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+          let complete = match vault_members_complete_db(txdb, ws) {
+            Ok(b) => b
+            Err(e) => return Err(e)
+          }
+          let invalid = if complete {
+            match has_invalid_vault_members_db(txdb, ws) {
+              Ok(b) => b
+              Err(e) => return Err(e)
+            }
+          } else {
+            true
+          }
+          let rows = if !complete || invalid {
+            match (txdb.all)("SELECT body FROM vaults WHERE ws = ? ORDER BY id", [base_codec::json_str(ws)]) {
+              Ok(rs) => rs
+              Err(e) => return Err(e)
+            }
+          } else {
+            match (txdb.all)(MEMBER_VAULTS_SQL, [base_codec::json_str(ws), base_codec::json_str(sub)]) {
+              Ok(rs) => rs
+              Err(e) => return Err(e)
+            }
+          }
+          let parsed : Array[form::Json] = []
           for i in 0..<rows.length() {
             match row_str(rows[i], "body") {
               Some(b) => match parse_form_json(b) {
-                Some(v) => out.push(v)
+                Some(v) => parsed.push(v)
                 None => ()
               }
               None => ()
             }
           }
-          Ok(out)
+          out = parsed
+          Ok(())
+        })
+        match tx_res {
+          Ok(_) => Ok(out)
+          Err(e) => Err(e.message)
         }
-        Err(e) => Err(e.message)
       }
       None => Err("vault store closed")
     }
@@ -754,6 +1064,8 @@ pub fn VaultStore::put_vault_checked(
   approve_join : Option[ApproveJoinSpec] = None,
   is_valid_ask : Option[(form::Json) -> Bool] = None,
   is_active_dismiss : Option[(form::Json) -> Bool] = None,
+  prune_key_pairs : Array[(String, String)] = [],
+  prune_removed_devices : Array[String] = [],
 ) -> VaultWriteResult {
   let ws = json_str_f(v, "ws")
   let id = json_str_f(v, "id")
@@ -858,6 +1170,17 @@ pub fn VaultStore::put_vault_checked(
             Some(row) => if row.at > row.joined_up_to { row.joined_up_to = row.at }
             None => ()
           }
+        }
+        for i in 0..<prune_key_pairs.length() {
+          let (dev, box_k) = prune_key_pairs[i]
+          let ak = mem_k3(ws, id, dev)
+          match m.asks.get(ak) {
+            Some(ar) => if ar.box_key == box_k { m.asks.remove(ak) }
+            None => ()
+          }
+        }
+        for i in 0..<prune_removed_devices.length() {
+          m.asks.remove(mem_k3(ws, id, prune_removed_devices[i]))
         }
       }
       return VaultWriteResult::Saved
@@ -982,11 +1305,30 @@ pub fn VaultStore::put_vault_checked(
         Ok(_) => ()
         Err(e) => return Err(e)
       }
-    } else if added_subs.length() > 0 {
+    } else {
       for i in 0..<added_subs.length() {
         match (txdb.run)(
           "UPDATE vault_joins SET joined_up_to = CASE WHEN at > joined_up_to THEN at ELSE joined_up_to END WHERE ws = ? AND vault = ? AND sub = ?",
           [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(added_subs[i])],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      for i in 0..<prune_key_pairs.length() {
+        let (dev, box_k) = prune_key_pairs[i]
+        match (txdb.run)(
+          "DELETE FROM vault_asks WHERE ws = ? AND vault = ? AND device = ? AND box = ?",
+          [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(dev), base_codec::json_str(box_k)],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      for i in 0..<prune_removed_devices.length() {
+        match (txdb.run)(
+          "DELETE FROM vault_asks WHERE ws = ? AND vault = ? AND device = ?",
+          [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(prune_removed_devices[i])],
         ) {
           Ok(_) => ()
           Err(e) => return Err(e)
@@ -1029,19 +1371,27 @@ pub fn VaultStore::forget_vault(self : VaultStore, ws : String, id : String) -> 
   }
   match self.db {
     Some(db) => {
-      match (db.run)("DELETE FROM vault_items WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
-        Ok(_) => ()
-        Err(e) => return Err(e.message)
-      }
-      match (db.run)("DELETE FROM vault_asks WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
-        Ok(_) => ()
-        Err(e) => return Err(e.message)
-      }
-      match (db.run)("DELETE FROM vault_joins WHERE ws = ? AND vault = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
-        Ok(_) => ()
-        Err(e) => return Err(e.message)
-      }
-      match (db.run)("DELETE FROM vaults WHERE ws = ? AND id = ?", [base_codec::json_str(ws), base_codec::json_str(id)]) {
+      let tx_res = (db.tx)(fn(txdb : VaultDbPort) -> Result[Unit, sql_db::SqlError] {
+        let p = [base_codec::json_str(ws), base_codec::json_str(id)]
+        match (txdb.run)("DELETE FROM vault_items WHERE ws = ? AND vault = ?", p) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)("DELETE FROM vault_asks WHERE ws = ? AND vault = ?", p) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)("DELETE FROM vault_joins WHERE ws = ? AND vault = ?", p) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        match (txdb.run)("DELETE FROM vaults WHERE ws = ? AND id = ?", p) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        Ok(())
+      })
+      match tx_res {
         Ok(_) => Ok(())
         Err(e) => Err(e.message)
       }

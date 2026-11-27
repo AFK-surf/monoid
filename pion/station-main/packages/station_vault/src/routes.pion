@@ -716,33 +716,6 @@ pub fn handle_put_vault(
       Some(p) => p
       None => next
     }
-    let write_res = if !(approve_join is None) || added_subs.length() > 0 {
-      ctx.store.put_vault_checked(
-        next,
-        prev_body,
-        added_subs=added_subs,
-        approve_join=approve_join,
-        is_valid_ask=Some(fn(a : form::Json) -> Bool { join_ask_ok(lv, a, verify_fn=ctx.verify_fn) is None }),
-        is_active_dismiss=Some(fn(d : form::Json) -> Bool { join_dismiss_ok(lv, target_vault, d, verify_fn=ctx.verify_fn) is None }),
-      )
-    } else {
-      ctx.store.put_vault_if(next, prev_body)
-    }
-    match write_res {
-      VaultWriteResult::JoinCancelled => return route_refuse(409, "join_cancelled", "that join request was cancelled or superseded before approval")
-      VaultWriteResult::Conflict | VaultWriteResult::DeletedWrite => continue
-      VaultWriteResult::DbError(msg) => return route_refuse(500, "vault_error", msg)
-      VaultWriteResult::Saved => ()
-    }
-    emit_event(
-      ctx,
-      VaultRouteEvent::{
-        event: "vault",
-        data: next,
-        dedupe_key: "vault\x00" + next_id,
-        target: VaultEventTarget::{ workspace: l.ws, subs: Some(next_members), vault: None },
-      },
-    )
     let gone : Array[String] = []
     for i in 0..<prev_members.length() {
       if !has_str(next_members, prev_members[i]) {
@@ -758,8 +731,8 @@ pub fn handle_put_vault(
         }
       }
     }
+    let key_pairs : Array[(String, String)] = []
     if !json_is_deleted(next) {
-      let key_pairs : Array[(String, String)] = []
       match form::json_field(Some(next), "keys") {
         Some(form::Json::Arr(ks)) => {
           for i in 0..<ks.length() {
@@ -779,8 +752,36 @@ pub fn handle_put_vault(
         }
         _ => ()
       }
-      let _ = ctx.store.prune_asks(l.ws, next_id, key_pairs, removed_devices=gone_devs)
     }
+    let write_res = if !(approve_join is None) || added_subs.length() > 0 || key_pairs.length() > 0 || gone_devs.length() > 0 {
+      ctx.store.put_vault_checked(
+        next,
+        prev_body,
+        added_subs=added_subs,
+        approve_join=approve_join,
+        is_valid_ask=Some(fn(a : form::Json) -> Bool { join_ask_ok(lv, a, verify_fn=ctx.verify_fn) is None }),
+        is_active_dismiss=Some(fn(d : form::Json) -> Bool { join_dismiss_ok(lv, target_vault, d, verify_fn=ctx.verify_fn) is None }),
+        prune_key_pairs=key_pairs,
+        prune_removed_devices=gone_devs,
+      )
+    } else {
+      ctx.store.put_vault_if(next, prev_body)
+    }
+    match write_res {
+      VaultWriteResult::JoinCancelled => return route_refuse(409, "join_cancelled", "that join request was cancelled or superseded before approval")
+      VaultWriteResult::Conflict | VaultWriteResult::DeletedWrite => continue
+      VaultWriteResult::DbError(msg) => return route_refuse(500, "vault_error", msg)
+      VaultWriteResult::Saved => ()
+    }
+    emit_event(
+      ctx,
+      VaultRouteEvent::{
+        event: "vault",
+        data: next,
+        dedupe_key: "vault\x00" + next_id,
+        target: VaultEventTarget::{ workspace: l.ws, subs: Some(next_members), vault: None },
+      },
+    )
     if gone.length() > 0 {
       emit_event(
         ctx,
