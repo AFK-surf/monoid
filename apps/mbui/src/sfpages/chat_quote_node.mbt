@@ -360,7 +360,7 @@ fn chat_quote_node(
     host.pick(
       fn() {
         // Hide this window's floating selection pill while a right-click context menu is open in the same window.
-        if @sfbase.context_menu_window.get() == Some(wid) {
+        if context_menu_window.get() == Some(wid) {
           return None
         }
         chat_quotable(v, rows).map(fn(q) {

@@ -156,7 +156,7 @@ test "大屏: 划词浮条并列「引用 | 分享图」，右键菜单与浮条
   t.tap_text("复制")
   t.run_for(@ui.move_most_ms)
   assert_true(t.clipboard().contains("第二屏"), msg="expected 复制 to copy selected words")
-  assert_eq(@sfbase.context_menu_window.get(), None, msg="context_menu_window must reset after 复制 closes menu")
+  assert_eq(@sfpages.context_menu_window.get(), None, msg="context_menu_window must reset after 复制 closes menu")
   // 3. Drag A again (pill reappears cleanly), right-click A's selection and open 分享为图片.
   t.drag(x + 2.0, y + h / 2.0, x + w - 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)

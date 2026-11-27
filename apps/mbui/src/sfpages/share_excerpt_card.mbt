@@ -80,10 +80,18 @@ pub fn excerpt_share_for_picked() -> (Array[String], (() -> Unit, () -> Unit)?)?
 }
 
 ///|
+/// Window id of the currently open desktop right-click context menu (`None` when closed), so only that window's
+/// floating selection pill hides while its menu is showing. Kept in `sfpages` (beside `excerpt_resolvers`) rather than
+/// `sfbase` so `sfbase`'s public ABI stays unchanged.
+// kept across runs: reset to None by excerpt_share_reset
+pub let context_menu_window : @signals.Signal[Int?] = @signals.signal(None, same=fn(a, b) { a == b })
+
+///|
 /// Resets module state between test runs (called from `pages.mbt` `reset()`).
 pub fn excerpt_share_reset() -> Unit {
   excerpt_resolvers.clear()
   excerpt_resolver_seq.val = 0
+  context_menu_window.set(None)
 }
 
 // ── product branding helpers ───────────────────────────────────────────────

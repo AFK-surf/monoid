@@ -435,7 +435,7 @@ fn context_items() -> Array[@sf.MenuItem?] {
 /// The message the menu is open for told (sfbase's message_menu): its row lit while a whole-message menu is open
 /// (not while a focused text-selection menu is open), none once it is gone.
 fn context_lit() -> Unit {
-  @sfbase.context_menu_window.set(if context.open { Some(context.window) } else { None })
+  @sfpages.context_menu_window.set(if context.open { Some(context.window) } else { None })
   @sfbase.message_menu.set(
     if context.open && context.share is Some(_) && !context_is_selection() {
       context.share_key
