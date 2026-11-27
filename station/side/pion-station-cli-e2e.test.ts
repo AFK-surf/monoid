@@ -41,6 +41,7 @@ after(async () => {
     }
   }
   for (const s of servers.splice(0)) {
+    s.closeAllConnections?.();
     await new Promise<void>((resolve) => s.close(() => resolve()));
   }
   for (const d of dirs.splice(0)) {

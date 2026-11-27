@@ -2,7 +2,7 @@
 // (store/usage-retire.ts, usage/module.ts `retireAfterPrevious`): their writers stopped in one write as handover ends,
 // their tables freed a bounded batch at a time, never brought back; the calls go on being recorded and counted.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { constants, DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -199,4 +199,48 @@ test("an interrupted retirement resumes and reopening does not restore the old s
     for (const name of ["usage_detail", "usage_main_calls", "usage_history", "usage_minute", "usage_compact"]) assert.equal(table(store, name), undefined, name);
     assert.deepEqual(store.usageOfSession("a").map((r) => [r.calls, r.input]), [[3, 11]]);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("interrupting retirement terminates its cleanup program before shutdown finishes", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "usage-retire-interrupt-"));
+  const store = Store.open(join(dir, "station.db"));
+  const pidFile = join(dir, "child.pid");
+  const script = join(dir, "stub-retire.sh");
+  // Ignore stdin EOF (sleep holds the process open) and record our own PID once spawned so only an explicit
+  // terminate() signal ends the child process.
+  writeFileSync(script, `#!/bin/sh\necho $$ > ${JSON.stringify(`${pidFile}.tmp`)}\nmv ${JSON.stringify(`${pidFile}.tmp`)} ${JSON.stringify(pidFile)}\nexec sleep 60\n`);
+  chmodSync(script, 0o755);
+  let childPid = 0;
+  let onChange = () => {};
+  const watcher = watch(dir, () => { onChange(); });
+  try {
+    const started = new Promise<number>((resolve) => {
+      const check = () => {
+        if (!existsSync(pidFile)) return false;
+        const pid = Number(readFileSync(pidFile, "utf8").trim());
+        if (Number.isInteger(pid) && pid > 1) {
+          watcher.close();
+          resolve(pid);
+          return true;
+        }
+        return false;
+      };
+      onChange = check;
+      check();
+    });
+    const fiber = Effect.runFork(retireAfterPrevious(store, Promise.resolve(), script));
+    childPid = await started;
+    // Child is alive right before interruption.
+    assert.doesNotThrow(() => process.kill(childPid, 0));
+    await Effect.runPromise(Fiber.interrupt(fiber));
+    // Interruption must have terminated and reaped the child before resolving.
+    assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
+  } finally {
+    watcher.close();
+    if (childPid > 1) {
+      try { process.kill(childPid, "SIGKILL"); } catch {}
+    }
+    store.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

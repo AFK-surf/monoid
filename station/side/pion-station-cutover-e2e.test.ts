@@ -111,7 +111,10 @@ function endAllInData(data: string): void {
 
 after(async () => {
   for (const s of servers.splice(0)) {
-    try { s.close(); } catch {}
+    try {
+      if ("closeAllConnections" in s && typeof s.closeAllConnections === "function") s.closeAllConnections();
+      s.close();
+    } catch {}
   }
   for (const ep of endpoints.splice(0)) {
     try { await ep.close(); } catch {}
@@ -393,6 +396,10 @@ function readProcComm(pid: number): string {
   try {
     return readFileSync(`/proc/${pid}/comm`, "utf8").trim();
   } catch {
+    if (process.platform === "darwin") {
+      const r = spawnSync("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8" });
+      if (r.status === 0) return r.stdout.trim();
+    }
     return "";
   }
 }
@@ -401,6 +408,10 @@ function readProcCmdline(pid: number): string {
   try {
     return readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim();
   } catch {
+    if (process.platform === "darwin") {
+      const r = spawnSync("ps", ["-p", String(pid), "-o", "args="], { encoding: "utf8" });
+      if (r.status === 0) return r.stdout.trim();
+    }
     return "";
   }
 }

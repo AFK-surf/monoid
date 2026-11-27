@@ -23,7 +23,7 @@ jobs:
       # One at a time: the mesh's tests compare real round trips, and locks/rigs start local clouds, relays and stations.
       max-parallel: 1
       matrix:
-        part: [core-ts, rust, locks, locks-moved, locks-as-moved, rigs, rigs-as-moved, cloud]
+        part: [core-ts, rust, station-pion, locks, locks-moved, locks-as-moved, rigs, rigs-as-moved, cloud]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -35,6 +35,8 @@ jobs:
         with: { harness: 'true' }
       - if: matrix.part == 'core-ts'
         run: pnpm install --frozen-lockfile && cd client/core-ts && pnpm install --frozen-lockfile
+      - if: matrix.part == 'station-pion'
+        run: pnpm install --frozen-lockfile && cd station && pnpm install --frozen-lockfile
       - if: matrix.part == 'cloud'
         run: cd cloud && pnpm install --frozen-lockfile
       - name: side (${{ matrix.part }})
@@ -92,6 +94,21 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@v4
         with: { name: "side-sim-${{ github.run_id }}-${{ github.run_attempt }}", path: "${{ runner.temp }}/sim", retention-days: 3, if-no-files-found: ignore }
+
+  # The full Pion station's real-machine E2E suite on macOS (split from side-mac so the iOS Simulator run stays well
+  # under its 10-minute budget; uses the prebuilt `station-pion` binary via scripts/native.ts).
+  side-mac-pion:
+    runs-on: [self-hosted, macos-ci]
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
+      - uses: ./.github/actions/setup-mac
+      - uses: ./.github/actions/natives
+        with: { harness: 'true' }
+      - run: pnpm install --frozen-lockfile && cd station && pnpm install --frozen-lockfile
+      - name: side (station-pion)
+        run: sh scripts/side.sh station-pion
   # The station's X11 screens on a real X server (Xvfb, ffmpeg's x11grab, xdotool): a display that would not open
   # failed main's check once (Cannot open display :99, 41459527166), so here, not on every push.
   x11:
