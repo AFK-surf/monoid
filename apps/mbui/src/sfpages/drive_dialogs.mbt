@@ -439,7 +439,12 @@ fn picker_row_node(v : @view.View, e : PickerEntry, name : () -> String, note : 
 /// disk's, a folder the folder's, in the middle of as much width (its height the first line's).
 fn picker_mark_node(v : @view.View, e : PickerEntry) -> Unit {
   if e.git {
-    @sf.tile_avatar_node(v, fn() { e.path }, fn() { e.name }, fn() { "" }, picker_tile, corner=@sf.small_corner)
+    let corner = if @sf.in_small_panel_node(v) {
+      @sf.small_corner
+    } else {
+      @ui.concentric(@sf.quiet_row_corner, @sf.corner_inset)
+    }
+    @sf.tile_avatar_node(v, fn() { e.path }, fn() { e.name }, fn() { "" }, picker_tile, corner~)
   } else {
     v.box(fn(b) {
       b.width(Is(Some(picker_tile))).row(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle))

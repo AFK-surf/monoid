@@ -299,9 +299,9 @@ let share_narrow : ShareLook = {
   inset: @ui.css("w=Full"),
   files_in: 0.0,
   // (in the sheet's top left corner, as far from its top as from its side (the sheet's words' 24, the grabber's room
-  // over it a point more), concentric with it there: the ladder's row corner)
+  // over it a point more), concentric with it there: the dialog ladder's 14pt row corner)
   files_top: @sf.panel_words - @sf.sheet_grab_h,
-  tile_corner: @sf.row_corner,
+  tile_corner: @sf.quiet_row_corner,
 }
 
 ///|
@@ -329,11 +329,11 @@ let share_wide_look : ShareLook = {
   row_gap: 2.0,
   model: 18.0,
   inset: @ui.css("w=Full px=S3"),
-  // (in the panel's top left corner on its words' line, as far from its top, concentric with it there: the ladder's
-  // row corner)
+  // (in the panel's top left corner on its words' line, as far from its top, concentric with it there: the dialog
+  // ladder's 14pt row corner)
   files_in: @sf.panel_words - 12.0,
   files_top: @sf.panel_words - 12.0,
-  tile_corner: @sf.row_corner,
+  tile_corner: @sf.quiet_row_corner,
 }
 
 ///|

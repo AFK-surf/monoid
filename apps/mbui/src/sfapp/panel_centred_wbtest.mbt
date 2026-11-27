@@ -35,14 +35,15 @@ test "panel centred, 大屏 keyboard and mouse: plain, with what it says, a foot
   }
   debug_inspect(out, content=(
     #|[
-    #|  "plain: dialog Some((面板, (380, 314.5, 520, 171))) title [(404, 340.5, 44, 30)] says [] words [(404, 389.5, 472, 22)] ok Some((406, 427.5, 468, 32)) close Some((842, 340.5, 32, 32)) focus None row0 []",
-    #|  "says: dialog Some((面板, (380, 301.5, 520, 197))) title [(404, 327.5, 44, 30)] says [(404, 364.5, 472, 20)] words [(404, 402.5, 472, 22)] ok Some((406, 440.5, 468, 32)) close Some((842, 327.5, 32, 32)) focus None row0 []",
-    #|  "foot: dialog Some((面板, (380, 310.5, 520, 179))) title [(404, 336.5, 44, 30)] says [] words [(404, 385.5, 472, 22)] ok Some((820, 431.5, 54, 32)) close Some((842, 336.5, 32, 32)) focus None row0 []",
-    #|  "wide: dialog Some((面板, (320, 314.5, 640, 171))) title [(344, 340.5, 44, 30)] says [] words [(344, 389.5, 592, 22)] ok Some((346, 427.5, 588, 32)) close Some((902, 340.5, 32, 32)) focus None row0 []",
-    #|  "untitled: dialog Some((关闭 面板里的话，长一些，好看它怎么折行 好的, (380, 323, 520, 154))) title [] says [] words [(404, 381, 472, 22)] ok Some((406, 419, 468, 32)) close Some((842, 349, 32, 32)) focus None row0 []",
-    #|  "tall 800: dialog Some((面板, (380, 169.5, 520, 461))) title [(404, 195.5, 44, 30)] says [] words [] ok Some((820, 572.5, 54, 32)) close Some((842, 195.5, 32, 32)) focus None row0 [(404, 244.5, 472, 22)]",
-    #|  "tall 500: dialog Some((面板, (380, 94.5, 520, 311))) title [(404, 120.5, 44, 30)] says [] words [] ok Some((820, 347.5, 54, 32)) close Some((842, 120.5, 32, 32)) focus None row0 [(404, 169.5, 472, 22)]",
+    #|  "plain: dialog Some((面板, (380, 313, 520, 174))) title [(404, 336, 44, 30)] says [] words [(404, 391, 472, 22)] ok Some((406, 429, 468, 32)) close Some((844, 333, 36, 36)) focus None row0 []",
+    #|  "says: dialog Some((面板, (380, 300, 520, 200))) title [(404, 323, 44, 30)] says [(404, 366, 472, 20)] words [(404, 404, 472, 22)] ok Some((406, 442, 468, 32)) close Some((844, 320, 36, 36)) focus None row0 []",
+    #|  "foot: dialog Some((面板, (380, 311, 520, 178))) title [(404, 334, 44, 30)] says [] words [(404, 389, 472, 22)] ok Some((824, 435, 54, 32)) close Some((844, 331, 36, 36)) focus None row0 []",
+    #|  "wide: dialog Some((面板, (320, 313, 640, 174))) title [(344, 336, 44, 30)] says [] words [(344, 391, 592, 22)] ok Some((346, 429, 588, 32)) close Some((904, 333, 36, 36)) focus None row0 []",
+    #|  "untitled: dialog Some((关闭 面板里的话，长一些，好看它怎么折行 好的, (380, 324, 520, 152))) title [] says [] words [(404, 380, 472, 22)] ok Some((406, 418, 468, 32)) close Some((844, 344, 36, 36)) focus None row0 []",
+    #|  "tall 800: dialog Some((面板, (380, 170, 520, 460))) title [(404, 193, 44, 30)] says [] words [] ok Some((824, 576, 54, 32)) close Some((844, 190, 36, 36)) focus None row0 [(404, 248, 472, 22)]",
+    #|  "tall 500: dialog Some((面板, (380, 95, 520, 310))) title [(404, 118, 44, 30)] says [] words [] ok Some((824, 351, 54, 32)) close Some((844, 115, 36, 36)) focus None row0 [(404, 173, 472, 22)]",
     #|]
+
 
   ))
   assert_eq(drawn, [Some(true), Some(true), Some(true), Some(true), Some(true), Some(true), Some(true)])
@@ -124,10 +125,11 @@ test "panel centred, 大屏 keyboard and mouse: untitled saying something; what 
   out.push("holds nothing: dialog \{@ui.some_text(dialog(t).map(fn(d) { "(\{d.0}, \{@ui.rect_text(d.1)})" }))} foot words \{@ui.list_text(w(t, "脚注").map(@ui.rect_text))} ok \{@ui.some_text(t.query(Button, label="好的").map(fn(s) { tenth4(s.rect) }).map(@ui.rect_text))}")
   debug_inspect(out, content=(
     #|[
-    #|  "untitled says: dialog Some((关闭 说明的话 面板里的话，长一些，好看它怎么折行 好的, (380, 310, 520, 180))) title [] says [(404, 340, 472, 20)] words [(404, 394, 472, 22)] ok Some((406, 432, 468, 32)) close Some((842, 336, 32, 32)) focus None",
-    #|  "holds: dialog Some((面板, (380, 310.5, 520, 179))) words [(404, 385.5, 472, 22)] foot words [(784, 436.5, 28, 22)] ok Some((820, 431.5, 54, 32))",
-    #|  "holds nothing: dialog Some((面板, (380, 330, 520, 140))) foot words [(784, 417, 28, 22)] ok Some((820, 412, 54, 32))",
+    #|  "untitled says: dialog Some((关闭 说明的话 面板里的话，长一些，好看它怎么折行 好的, (380, 311, 520, 178))) title [] says [(404, 341, 472, 20)] words [(404, 393, 472, 22)] ok Some((406, 431, 468, 32)) close Some((844, 331, 36, 36)) focus None",
+    #|  "holds: dialog Some((面板, (380, 311, 520, 178))) words [(404, 389, 472, 22)] foot words [(788, 440, 28, 22)] ok Some((824, 435, 54, 32))",
+    #|  "holds nothing: dialog Some((面板, (380, 331, 520, 138))) foot words [(788, 420, 28, 22)] ok Some((824, 415, 54, 32))",
     #|]
+
 
   ))
 }
@@ -140,12 +142,12 @@ test "panel centred, 大屏 keyboard and mouse: untitled, what it holds reaching
   @sf.panel_nodes(
     "",
     fn(v, _) {
-      // (in the dialog's corners, round as a row there is: the ladder's 18, 24 in from its 42)
+      // (in the dialog's corners, round as a row there is: the dialog ladder's 14, 24 in from its 38)
       v.box(fn(b) {
         b
         .height(Is(Some(60.0)))
         .ground(Is(0x336699FFL))
-        .radius(Is(@sf.row_corner))
+        .radius(Is(@sf.quiet_row_corner))
         .says(Is(Some(@view.said(Button, label="底下"))))
         .presses(Is(true))
         .on_press(fn() { under.val = under.val + 1 })

@@ -108,6 +108,8 @@ pub fn choice_row_node(
           0.0
         } else if part.list {
           list_row_corner(r)
+        } else if parent.lent(panel_in_lent) is Some(p) && !p.small {
+          dialog_row_corner
         } else {
           @signals.untracked(fn() { @ui.tree_theme().corner(Xl2) })
         }

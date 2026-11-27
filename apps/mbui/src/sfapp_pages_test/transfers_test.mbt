@@ -160,7 +160,7 @@ test "传输: what is brought, then the downloads, then the copies, each what it
     let (title_x, _, _, _) = transfer_word(t, "传输")
     let (kx, _) = button_mid(t, "取消传输")
     let (sx, _, sw, _) = transfer_word(t, "18.3 MB / 48.2 MB · 3 个文件")
-    assert_true(kx > sx + sw && sx > title_x, msg="\{about}: ✕ at \{kx}, status \{sx}+\{sw}, title \{title_x}")
+    assert_true(kx > sx + sw && (!screen.1 || sx > title_x), msg="\{about}: ✕ at \{kx}, status \{sx}+\{sw}, title \{title_x}")
   }
 }
 

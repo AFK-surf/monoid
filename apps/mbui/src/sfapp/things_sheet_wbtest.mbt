@@ -55,7 +55,7 @@ test "小屏: the chat's things, a sheet whose body is nodes: each of its words 
   debug_inspect(first, content=(
     
     #|[
-    #|  ("图片、文件和链接", 24, 198, 128, 24),
+    #|  ("图片、文件和链接", 131, 198, 128, 24),
     #|  ("先不换", 63, 203, 293, 22),
     #|  ("这次只改列表，截图下次再说", 63, 225, 293, 18),
     #|  ("媒体 4", 46, 251.5, 45, 21),
@@ -89,13 +89,14 @@ test "小屏: the chat's things, a sheet whose body is nodes: each of its words 
 
 
 
+
   ))
   assert_true(files.iter().any(fn(w) { w.0 == "build.log" }), msg="its files")
   assert_false(files.iter().any(fn(w) { w.0 == "列表高度改前改后" }), msg="its pictures' words gone")
   debug_inspect(files, content=(
     
     #|[
-    #|  ("图片、文件和链接", 24, 198, 128, 24),
+    #|  ("图片、文件和链接", 131, 198, 128, 24),
     #|  ("先不换", 63, 203, 293, 22),
     #|  ("这次只改列表，截图下次再说", 63, 225, 293, 18),
     #|  ("媒体 4", 46, 251.5, 45, 21),
@@ -120,6 +121,7 @@ test "小屏: the chat's things, a sheet whose body is nodes: each of its words 
     #|  ("5 分钟前", 86, 570, 48, 18),
     #|  ("做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。", 16, 595, 358, 46),
     #|]
+
 
 
 
@@ -215,8 +217,9 @@ test "小屏: the chat's things whose body is nodes: a file's row held by a fing
     #|  [],
     #|  [],
     #|  true,
-    #|  (344, [(58, 193)], [(0, 0, 390, 844), (0, 18, 390, 675)]),
+    #|  (344, [(58, 197)], [(0, 0, 390, 844), (0, 22, 390, 675)]),
     #|)
+
   ))
 }
 

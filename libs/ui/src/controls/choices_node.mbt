@@ -112,9 +112,21 @@ pub fn choices_node(
     match extra {
       Some(f) =>
         card.show(on, fn(o) {
-          style_node(o, fn() { if narrow { choice_extra_rows } else { choice_extra } })
+          style_node(o, fn() {
+            if narrow {
+              if in_panel { choice_extra_panel_narrow } else { choice_extra_rows }
+            } else {
+              choice_extra
+            }
+          })
           o.box(fn(i) {
-            style_node(i, fn() { if narrow { choice_extra_rows_in } else { choice_extra_in } })
+            style_node(i, fn() {
+              if narrow {
+                if in_panel { choice_extra_panel_narrow_in } else { choice_extra_rows_in }
+              } else {
+                choice_extra_in
+              }
+            })
             f(i)
           })
           |> ignore

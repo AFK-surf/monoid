@@ -1073,7 +1073,7 @@ fn triple_body_node(
         (if triple_other_stations(vv) { @sf.theme().items.least } else { 0.0 }) +
         (if all_efforts().length() > 0 { 50.0 } else { 0.0 }) +
         (if field(vv, "borrow") is Some(Object(_)) { 64.0 } else { 0.0 }) +
-        85.0 +
+        81.0 +
         (if foot_two_lines { 52.0 } else { 0.0 })
       dmax(3.0 * row_h(), dmin(triple_sheet_rows * row_h(), wh * @sf.sheet_most - sheet_rest))
     } else {

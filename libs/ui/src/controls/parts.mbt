@@ -766,6 +766,19 @@ let choice_extra_rows : @ui.Style = @ui.style(w=Full, px=inset_room)
 let choice_extra_rows_in : @ui.Style = @ui.style(w=Full, pt=S3, pb=inset_room)
 
 ///|
+/// Narrow inside a panel/dialog (`dialog_card_corner = 22`): a 36pt capsule field (`r = 18`) sits `capsule_in(22, 36) = 4`
+/// in from the choice card's sides and foot so its corners are concentric with the 22pt card (`18 + 4 = 22`).
+let choice_extra_panel_inset : Double = @ui.capsule_in(dialog_card_corner, 36.0)
+
+///|
+// kept across runs: a value (no field of it changes)
+let choice_extra_panel_narrow : @ui.Style = @ui.style(w=Full, px=room(choice_extra_panel_inset))
+
+///|
+// kept across runs: a value (no field of it changes)
+let choice_extra_panel_narrow_in : @ui.Style = @ui.style(w=Full, pt=S3, pb=room(choice_extra_panel_inset))
+
+///|
 // kept across runs: a value (no field of it changes)
 let choice_words : @ui.Style = @ui.css("w=Grow(1.0) gap=S0_5")
 

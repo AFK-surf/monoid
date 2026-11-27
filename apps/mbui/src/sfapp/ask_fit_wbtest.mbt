@@ -49,7 +49,10 @@ fn last_line(
 ) -> Array[((Double, Double, Double, Double), Bool, (Double, Double, Double, Double))] {
   let rows = glyph_rows(t, r, clip_x?)
   guard rows.length() >= 2 else { return [] }
-  let apart = rows[1].0 - rows[0].0
+  let mut apart = 0.0
+  for i in 1..<rows.length() {
+    apart = dmax(apart, rows[i].0 - rows[i - 1].0)
+  }
   let out = []
   for row in rows {
     if row.0 > r.1 + r.3 - apart {
@@ -72,9 +75,9 @@ test "大屏, a short window: a question with a long title and a long hint, its 
   let ok = t.query(Button, label="保存").unwrap().rect
   // (its buttons in the panel)
   let in_panel = fn(r : (Double, Double, Double, Double)) { r.1 >= py && r.1 + r.3 <= py + ph + 0.5 }
-  // (its title: two rows of glyphs drawn at least, wholly shown)
+  // (its title: two rows of glyphs drawn at least, wholly shown; clip_x excludes background chat glyphs behind the dialog)
   let title = t.rect_of(ask_long_title).unwrap()
-  let title_rows = glyph_rows(t, title)
+  let title_rows = glyph_rows(t, title, clip_x=(px, px + pw))
   let title_whole = title_rows.iter().all(fn(row) { row.1.iter().all(fn(g) { g.1 }) })
   let title_foot = title.1 + title.3
   // (its field under its title)
@@ -96,10 +99,11 @@ test "大屏, a short window: a question with a long title and a long hint, its 
   let kept = t.rect_of(ask_long_title) == Some(title) &&
     t.query(Button, label="取消").map(fn(b) { b.rect }) == Some(no) &&
     t.query(Button, label="保存").map(fn(b) { b.rect }) == Some(ok)
+  let got = (within, in_panel(no), in_panel(ok), title_rows.length() >= 2, title_whole, under_title, end_hidden, end_shown, moved, kept)
   assert_eq(
-    (within, in_panel(no), in_panel(ok), title_rows.length() >= 2, title_whole, under_title, end_hidden, end_shown, moved, kept),
+    got,
     (true, true, true, true, true, true, true, true, true, true),
-    msg="panel \{py} \{ph} title \{Repr(title)} rows \{title_rows.length()} field \{Repr(field)} hint \{Repr(hint0)} → \{Repr(hint1)} buttons \{Repr(no)} \{Repr(ok)}",
+    msg="got \{Repr(got)} panel \{py} \{ph} title \{Repr(title)} rows \{title_rows.length()} field \{Repr(field)} hint \{Repr(hint0)} → \{Repr(hint1)} last1 \{last1.length()} buttons \{Repr(no)} \{Repr(ok)}",
   )
 }
 

@@ -782,7 +782,7 @@ test "wide, the dialog's 添加目录 under a mouse is lit round, out past its t
   t.run_for(@sf.dur_ms)
   assert_eq(t.corner_faults(), [])
   let lit = t.boxes_held().filter(fn(b) { (b.x - x).abs() < 0.5 && (b.y - y).abs() < 0.5 && (b.w - w).abs() < 0.5 && b.bg != 0L })
-  assert_true(lit.length() == 1 && (lit[0].radius - @sf.row_corner).abs() < 0.5, msg="\{lit.length()} lit")
+  assert_true(lit.length() == 1 && (lit[0].radius - @sf.quiet_row_corner).abs() < 0.5, msg="\{lit.length()} lit")
   // (its tile a corner's inset in from its ground's every side)
   let preset_dir_mark_seen = h - 2.0 * @sf.corner_inset
   let tiles = t.boxes_held().filter(fn(b) { (b.w - preset_dir_mark_seen).abs() < 0.5 && (b.h - preset_dir_mark_seen).abs() < 0.5 && b.y > y && b.y + b.h < y + h })

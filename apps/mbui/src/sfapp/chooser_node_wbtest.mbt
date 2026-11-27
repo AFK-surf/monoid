@@ -203,11 +203,11 @@ test "a chooser as nodes, on the three screens: where it stands, what it draws a
     #|open: expanded None [小时 (72, 671, 30, 18), 分钟 (72, 715, 30, 18)]
     #|open drawn: [(30, 758, 330, 28) 606546703]
     #|menu: [(MenuItemRadio, 小时, Some(On)), (MenuItemRadio, 分钟, Some(Off))]
-    #|chosen: [minutes] [小时 -, 分钟 (38, 763, 26, 18), 单位 (30, 696, 32, 24)]
+    #|chosen: [minutes] [小时 -, 分钟 (38, 763, 26, 18), 单位 (179, 696, 32, 24)]
     #|again: [小时 (72, 671, 30, 18), 分钟 (72, 715, 30, 18)]
-    #|escape: [小时 -, 分钟 (38, 763, 26, 18), 单位 (30, 696, 32, 24)]
+    #|escape: [小时 -, 分钟 (38, 763, 26, 18), 单位 (179, 696, 32, 24)]
     #|escape focus: Some(分钟)
-    #|outside: [小时 -, 分钟 (38, 763, 26, 18), 单位 (30, 696, 32, 24)] chosen [minutes, minutes]
+    #|outside: [小时 -, 分钟 (38, 763, 26, 18), 单位 (179, 696, 32, 24)] chosen [minutes, minutes]
     #|over its edge: [小时 (72, 671, 30, 18), 分钟 (72, 715, 30, 18)]
     #|platform 0 wide false:
     #|rest: (30, 758, 330, 28) expanded Some(false) [小时 (38, 763, 24, 18), 说明文字 (30, 730, 330, 18), 末尾文字 (30, 796, 330, 18)]
@@ -216,25 +216,26 @@ test "a chooser as nodes, on the three screens: where it stands, what it draws a
     #|open: expanded None [小时 (72, 683, 26, 18), 分钟 (72, 719, 26, 18)]
     #|open drawn: [(30, 758, 330, 28) 606546703]
     #|menu: [(MenuItemRadio, 小时, Some(On)), (MenuItemRadio, 分钟, Some(Off))]
-    #|chosen: [minutes] [小时 -, 分钟 (38, 763, 24, 18), 单位 (30, 696, 32, 24)]
+    #|chosen: [minutes] [小时 -, 分钟 (38, 763, 24, 18), 单位 (179, 696, 32, 24)]
     #|again: [小时 (72, 683, 26, 18), 分钟 (72, 719, 26, 18)]
-    #|escape: [小时 -, 分钟 (38, 763, 24, 18), 单位 (30, 696, 32, 24)]
+    #|escape: [小时 -, 分钟 (38, 763, 24, 18), 单位 (179, 696, 32, 24)]
     #|escape focus: Some(分钟)
-    #|outside: [小时 (38, 763, 24, 18), 分钟 -, 单位 (30, 696, 32, 24)] chosen [minutes, hours]
+    #|outside: [小时 (38, 763, 24, 18), 分钟 -, 单位 (179, 696, 32, 24)] chosen [minutes, hours]
     #|over its edge: [小时 (72, 683, 26, 18), 分钟 (72, 719, 26, 18)]
     #|platform 0 wide true:
-    #|rest: (364, 411.5, 472, 28) expanded Some(false) [小时 (372, 416.5, 24, 18), 说明文字 (364, 377.5, 472, 18), 末尾文字 (364, 455.5, 472, 18)]
+    #|rest: (364, 413, 472, 28) expanded Some(false) [小时 (372, 418, 24, 18), 说明文字 (364, 379, 472, 18), 末尾文字 (364, 457, 472, 18)]
     #|rest drawn: []
-    #|pointed drawn: [(364, 411.5, 472, 28) 606546703]
-    #|open: expanded None [小时 (406, 460.5, 26, 18), 分钟 (406, 496.5, 26, 18)]
-    #|open drawn: [(364, 411.5, 472, 28) 606546703]
+    #|pointed drawn: [(364, 413, 472, 28) 606546703]
+    #|open: expanded None [小时 (406, 462, 26, 18), 分钟 (406, 498, 26, 18)]
+    #|open drawn: [(364, 413, 472, 28) 606546703]
     #|menu: [(MenuItemRadio, 小时, Some(On)), (MenuItemRadio, 分钟, Some(Off))]
-    #|chosen: [minutes] [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)]
-    #|again: [小时 (406, 460.5, 26, 18), 分钟 (406, 496.5, 26, 18)]
-    #|escape: [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)]
+    #|chosen: [minutes] [小时 -, 分钟 (372, 418, 24, 18), 单位 (364, 324, 44, 30)]
+    #|again: [小时 (406, 462, 26, 18), 分钟 (406, 498, 26, 18)]
+    #|escape: [小时 -, 分钟 (372, 418, 24, 18), 单位 (364, 324, 44, 30)]
     #|escape focus: Some(分钟)
-    #|outside: [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)] chosen [minutes]
-    #|over its edge: [小时 (406, 460.5, 26, 18), 分钟 (406, 496.5, 26, 18)]
+    #|outside: [小时 -, 分钟 (372, 418, 24, 18), 单位 (364, 324, 44, 30)] chosen [minutes]
+    #|over its edge: [小时 (406, 462, 26, 18), 分钟 (406, 498, 26, 18)]
+
   ))
 }
 
@@ -252,15 +253,16 @@ test "a chooser as nodes, with keyboard and mouse: Tab to it, Enter opening its 
     #|tab: 1 Some(小时)
     #|focused drawn: [(30, 758, 330, 28) 606546703]
     #|enter: [分钟 (72, 719, 26, 18)] focus Some(小时)
-    #|escape: [分钟 -, 单位 (30, 696, 32, 24)] focus Some(小时)
+    #|escape: [分钟 -, 单位 (179, 696, 32, 24)] focus Some(小时)
     #|down: [分钟 (72, 719, 26, 18)] focus Some(小时)
-    #|chosen by keys: [minutes] [小时 -, 分钟 (38, 763, 24, 18), 单位 (30, 696, 32, 24)] focus Some(分钟)
+    #|chosen by keys: [minutes] [小时 -, 分钟 (38, 763, 24, 18), 单位 (179, 696, 32, 24)] focus Some(分钟)
     #|wide true:
     #|tab: 1 Some(小时)
-    #|focused drawn: [(364, 411.5, 472, 28) 606546703]
-    #|enter: [分钟 (406, 496.5, 26, 18)] focus Some(小时)
-    #|escape: [分钟 -, 单位 (364, 328.5, 44, 30)] focus Some(小时)
-    #|down: [分钟 (406, 496.5, 26, 18)] focus Some(小时)
-    #|chosen by keys: [minutes] [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)] focus Some(分钟)
+    #|focused drawn: [(364, 413, 472, 28) 606546703]
+    #|enter: [分钟 (406, 498, 26, 18)] focus Some(小时)
+    #|escape: [分钟 -, 单位 (364, 324, 44, 30)] focus Some(小时)
+    #|down: [分钟 (406, 498, 26, 18)] focus Some(小时)
+    #|chosen by keys: [minutes] [小时 -, 分钟 (372, 418, 24, 18), 单位 (364, 324, 44, 30)] focus Some(分钟)
+
   ))
 }

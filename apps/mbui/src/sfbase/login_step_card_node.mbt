@@ -88,6 +88,9 @@ pub fn login_step_card_node(
           (false, false) => login_card_body
         }
       })
+      if in_sheet {
+        card.radius(Is(@sf.quiet_card_corner)).lends(lc_in_sheet_lent, true) |> ignore
+      }
       // (what is on it as wide as it, a step's button the card's width: its own lines up at the start)
       card.lines_up(Is(None)) |> ignore
       // (as wide as what it holds, 360 at least where there is the room: within the width its place gives it)
@@ -131,7 +134,15 @@ pub fn login_ended_node(parent : @view.View, words : () -> String, failed : () -
 /// it is done (`busy`).
 fn login_cancel_node(h : @view.View, busy : () -> Bool, press : () -> Unit) -> Unit {
   @sf.action_box_node(h, fn() { @sf.t("web-main.logins.cancelWhat") }, fn(_) { press() }, disabled=fn() { busy() }, fn(b) {
-    @sf.style_node(b, fn() { if @sf.lit_node(b) && !busy() { lc_cancel_lit } else { login_cancel } }, in_row=true)
+    let in_sheet = b.lent(lc_in_sheet_lent).unwrap_or(false)
+    @sf.style_node(
+      b,
+      fn() {
+        let base = if @sf.lit_node(b) && !busy() { lc_cancel_lit } else { login_cancel }
+        if in_sheet { base.then(lc_cancel_sheet) } else { base }
+      },
+      in_row=true,
+    )
     b.pick(busy, fn(m, spins) {
       if spins {
         @sf.spinner_node(m, size=login_spin) |> ignore
@@ -209,7 +220,14 @@ pub fn login_code_node(p : @view.View, code : () -> String, copy : (String) -> U
 /// grey one once it has been, lit under the hand; a spinner while it is under way, ↗ for a page opened elsewhere; the
 /// other ways in a ⋯ beside it.
 pub fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
-  let foot = fn(style : @ui.Style) { if s().last { style.then(login_foot_reach) } else { style } }
+  let in_sheet = p.lent(lc_in_sheet_lent).unwrap_or(false)
+  let foot = fn(style : @ui.Style) {
+    if s().last {
+      style.then(if in_sheet { lc_foot_reach_sheet } else { login_foot_reach })
+    } else {
+      style
+    }
+  }
   let button = fn(at : @view.View, in_row : Bool) {
     @sf.action_box_node(at, fn() { s().label }, fn(_) { (s().press)() }, disabled=fn() { s().busy }, fn(b) {
       @sf.style_node(
@@ -226,7 +244,7 @@ pub fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
           let step = if in_row {
             look.then(login_in_row)
           } else {
-            foot(look)
+            foot(if in_sheet { look.then(lc_step_mx_sheet) } else { look })
           }
           step.then(login_inner_round)
         },
@@ -247,7 +265,7 @@ pub fn login_step_node(p : @view.View, s : () -> LoginStep) -> Unit {
     // the other ways of doing the step, seldom used, in a ⋯ at the row's end (align.mbt: what is used least goes into
     // the row's ⋯)
     x.box(fn(r) {
-      @sf.style_node(r, fn() { foot(login_step_row) })
+      @sf.style_node(r, fn() { foot(if in_sheet { login_step_row.then(lc_step_mx_sheet) } else { login_step_row }) })
       button(r, true)
       @sf.action_box_node(r, fn() { @sf.t("common.login.otherWays") }, fn(m) {
           @sf.menu(s().more.map(fn(i) { Some(i) }), from=Node(m), along=End)
@@ -285,7 +303,11 @@ pub fn login_paste_node(
     send(code)
   }
   x.box(made_for=loc, fn(b) {
-    @sf.style_node(b, fn() { login_paste.then(login_inner_round) })
+    let in_sheet = b.lent(lc_in_sheet_lent).unwrap_or(false)
+    @sf.style_node(b, fn() {
+      let base = login_paste.then(login_inner_round)
+      if in_sheet { base.then(lc_paste_sheet) } else { base }
+    })
     b.box(fn(w) {
       @sf.style_node(w, fn() { login_paste_words }, in_row=true)
       // (round its words the field's to a press too: a tap its caret and its menu to paste, a long press its 粘贴)
@@ -470,8 +492,36 @@ pub let login_cancel : @ui.Style = @ui.css("w=S6 h=S6 radius=Full align=ACenter 
 let lc_cancel_lit : @ui.Style = login_cancel.then(@ui.css("bg=Hover"))
 
 ///|
+/// Whether the enclosing `login_step_card_node` is inside a sheet/dialog (`quiet_card_corner` = 22pt instead of
+/// `card_corner` = 26pt), so its corner ×, step button, and paste field reach concentric insets for the 22pt card.
+// kept across runs: a lent key (no field of it changes)
+let lc_in_sheet_lent : @view.Lent[Bool] = @view.Lent::new()
+
+///|
 /// How far past the card's padding 取消 stands (login_cancel), and its side (S6).
 let lc_cancel_off : Double = @ui.capsule_in(@sf.card_corner, lc_cancel_side) - @sf.corner_inset
+
+///|
+let lc_cancel_off_sheet : Double = @ui.capsule_in(@sf.quiet_card_corner, lc_cancel_side) - @sf.corner_inset
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_cancel_sheet : @ui.Style = @ui.style(mt=@sf.room_of(lc_cancel_off_sheet), mr=@sf.room_of(lc_cancel_off_sheet))
+
+///|
+let lc_step_reach_sheet : Double = @sf.corner_inset - @ui.capsule_in(@sf.quiet_card_corner, 32.0)
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_step_mx_sheet : @ui.Style = @ui.style(mx=@sf.room_of(-lc_step_reach_sheet))
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_foot_reach_sheet : @ui.Style = @ui.style(mb=@sf.room_of(-lc_step_reach_sheet))
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_paste_sheet : @ui.Style = @ui.style(mx=@sf.room_of(-lc_step_reach_sheet), mb=@sf.room_of(-lc_step_reach_sheet))
 
 ///|
 let lc_cancel_side : Double = 24.0

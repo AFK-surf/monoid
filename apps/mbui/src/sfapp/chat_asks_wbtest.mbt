@@ -71,13 +71,13 @@ test "a list's panel as tall as what it holds, its share of the window the most 
 ///|
 /// The corner rule's faults known in the context's dialog in a wide window's middle (Tester::corners_known), kept till
 /// the panels' layout is decided (the coordinator of the migration, 2026-11-12): its last row's ground under the hand or
-/// with the focus (choice_row_node's, 18 round) stands 16 in from the dialog's sides and 24 over its foot, in its 42
-/// corners, as far from neither edge as from the other, so no corner of it is concentric there (42 − 24 = 18 by its
-/// foot, 42 − 16 = 26 by its side). What would mend it: the row 16 over the foot too, its corner 26.
+/// with the focus (choice_row_node's, 14 round) stands 16 in from the dialog's sides and 24 over its foot, in its 38
+/// corners, as far from neither edge as from the other, so no corner of it is concentric there (38 − 24 = 14 by its
+/// foot, 38 − 16 = 22 by its side). What would mend it: the row 16 over the foot too, its corner 22.
 // kept across runs: a value (no field of it changes)
 let context_corners_known : Array[String] = [
-  "「清空上下文 结束当前进程，下一条消息开始新的会话」 (at 356,434 488×60, node 911) (corner 18) in the bottom right of 「上下文 压缩上下文 保留摘要，释放上下文空间 清…」 (at 340,283 520×235, node 880) (corner 42): 16 and 24 from its edges",
-  "「清空上下文 结束当前进程，下一条消息开始新的会话」 (at 356,434 488×60, node 911) (corner 18) in the bottom left of 「上下文 压缩上下文 保留摘要，释放上下文空间 清…」 (at 340,283 520×235, node 880) (corner 42): 16 and 24 from its edges",
+  "「清空上下文 结束当前进程，下一条消息开始新的会话」 (at 356,435 488×60, node 866) (corner 14) in the bottom right of 「上下文 压缩上下文 保留摘要，释放上下文空间 清…」 (at 340,281 520×238, node 833) (corner 38): 16 and 24 from its edges",
+  "「清空上下文 结束当前进程，下一条消息开始新的会话」 (at 356,435 488×60, node 866) (corner 14) in the bottom left of 「上下文 压缩上下文 保留摘要，释放上下文空间 清…」 (at 340,281 520×238, node 833) (corner 38): 16 and 24 from its edges",
 ]
 
 ///|
