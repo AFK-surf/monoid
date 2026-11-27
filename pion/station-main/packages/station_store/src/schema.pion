@@ -101,7 +101,7 @@ pub fn core_schema_ddl() -> String {
   "  title TEXT, created_by TEXT, created_at INTEGER NOT NULL, archived_at INTEGER, home TEXT," +
   "  hidden_at INTEGER, hidden_by TEXT, shown_at INTEGER, auto_title TEXT, auto_title_n INTEGER," +
   "  auto_title_changes INTEGER NOT NULL DEFAULT 0, links TEXT, project TEXT," +
-  "  project_locked INTEGER NOT NULL DEFAULT 0, tags TEXT, has_deferred INTEGER NOT NULL DEFAULT 0, UNIQUE (surface, channel, thread_ts)" +
+  "  project_locked INTEGER NOT NULL DEFAULT 0, tags TEXT, UNIQUE (surface, channel, thread_ts)" +
   ");" +
   "CREATE TABLE IF NOT EXISTS thread_sessions (" +
   "  thread INTEGER NOT NULL, session TEXT NOT NULL, connect TEXT NOT NULL, joined_at INTEGER NOT NULL," +
@@ -733,7 +733,6 @@ fn add_remaining_columns_and_indexes(db : sql_db::Db) -> Result[Unit, sql_db::Sq
     ("project", "TEXT"),
     ("project_locked", "INTEGER NOT NULL DEFAULT 0"),
     ("tags", "TEXT"),
-    ("has_deferred", "INTEGER NOT NULL DEFAULT 0"),
   ]
   for i in 0..<thread_cols.length() {
     let (col, kind) = thread_cols[i]

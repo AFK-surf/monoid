@@ -2334,19 +2334,6 @@ fn WholeAgents::build_domain_handlers(
                   Ok(_) => ()
                   Err(e) => return Err(e)
                 }
-                match t.first(
-                  "SELECT 1 FROM deferred_files WHERE thread = ?1 AND resolved_at IS NULL LIMIT 1",
-                  [sql_db::int64_to_json(tid)],
-                ) {
-                  Ok(None) => {
-                    match t.run("UPDATE threads SET has_deferred = 0 WHERE id = ?1 AND has_deferred != 0", [sql_db::int64_to_json(tid)]) {
-                      Ok(_) => ()
-                      Err(e) => return Err(e)
-                    }
-                  }
-                  Ok(Some(_)) => ()
-                  Err(e) => return Err(e)
-                }
                 Ok(())
               }) {
                 Ok(()) => fetched_json.push(

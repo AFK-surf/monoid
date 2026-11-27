@@ -973,15 +973,6 @@ fn handle_connect_inbound_event(
                     }
                     ord = ord + 1L
                   }
-                  if ord > 0L {
-                    match t.run(
-                      "UPDATE threads SET has_deferred = 1 WHERE id = ?1 AND has_deferred = 0",
-                      [sql_db::int64_to_json(tid)],
-                    ) {
-                      Ok(_) => ()
-                      Err(e) => return Err(e)
-                    }
-                  }
                   Ok(())
                 })
               }

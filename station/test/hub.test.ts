@@ -212,7 +212,7 @@ test("concurrent and cross-session fetches of the same platform file coalesce in
     await r.accept(m2, "cl");
     await settle();
     const t2 = second.threadAt("slack:T1", "C3", "8888.000100")!;
-    assert.equal(t2.hasDeferred, true, "second process sees threads.has_deferred without stale cache");
+    assert.equal(t2.hasDeferred, true, "second process sees hasDeferred via deferred_files without stale cache");
     const defs = second.deferredFiles(t2.id, [1]);
     assert.equal(defs.get(1)?.[0]?.id, "FHO", "second process reads deferred_files written after open");
   } finally {

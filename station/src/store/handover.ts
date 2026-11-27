@@ -530,14 +530,8 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         if (t === undefined) break;
         r.thread = t.id;
         r.n = n(t, r.n);
-        if (insert(db, "deferred_files", r, " OR IGNORE").changes > 0) {
-          keep({ thread: r.thread, n: r.n, file_id: r.file_id });
-          if ((r.resolved_at === null || r.resolved_at === undefined) && columnsOf(db, "threads").has("has_deferred")) {
-            db.prepare("UPDATE threads SET has_deferred = 1 WHERE id = ? AND has_deferred = 0").run(t.id);
-          }
-        } else {
-          ctx.counts.rows.deferred_files = (ctx.counts.rows.deferred_files ?? 0) + 1;
-        }
+        if (insert(db, "deferred_files", r, " OR IGNORE").changes > 0) keep({ thread: r.thread, n: r.n, file_id: r.file_id });
+        else ctx.counts.rows.deferred_files = (ctx.counts.rows.deferred_files ?? 0) + 1;
         break;
       }
       case "reads": {
@@ -670,11 +664,6 @@ export function dropImport(db: DatabaseSync, ctx: ImportCtx): string[] {
     for (const key of keys) {
       const cols = Object.keys(key);
       run(`DELETE FROM ${table} WHERE ${cols.map((c) => `${c} = ?`).join(" AND ")}`, ...cols.map((c) => key[c] as SQLInputValue));
-    }
-  }
-  if (ctx.made.rows.deferred_files !== undefined && ctx.made.rows.deferred_files.length > 0 && columnsOf(db, "threads").has("has_deferred")) {
-    for (const tid of new Set(ctx.made.rows.deferred_files.map((k) => Number(k.thread)))) {
-      run("UPDATE threads SET has_deferred = EXISTS (SELECT 1 FROM deferred_files WHERE thread = ? AND resolved_at IS NULL LIMIT 1) WHERE id = ?", tid, tid);
     }
   }
   for (const [thread, session] of ctx.made.members) run("DELETE FROM thread_sessions WHERE thread = ? AND session = ?", thread, session);

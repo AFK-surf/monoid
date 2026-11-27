@@ -3060,7 +3060,10 @@ export class Store {
 
   threadAt(surface: string, channel: string, threadTs: string): ThreadRow | null {
     surface = ownName(surface);
-    const r = this.#one("SELECT * FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?", surface, channel, threadTs);
+    const r = this.#one(
+      "SELECT t.*, EXISTS (SELECT 1 FROM deferred_files df WHERE df.thread = t.id AND df.resolved_at IS NULL) AS has_deferred FROM threads t WHERE t.surface = ? AND t.channel = ? AND t.thread_ts = ?",
+      surface, channel, threadTs,
+    );
     return r ? toThread(r) : null;
   }
 
@@ -3190,7 +3193,7 @@ export class Store {
   /// A thread of this session by the address the agent names it with, and how the session posts there.
   sessionThread(session: string, channel: string, threadTs: string): SessionThread | null {
     const r = this.#one(
-      "SELECT t.*, ts.connect FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.channel = ? AND t.thread_ts = ?",
+      "SELECT t.*, EXISTS (SELECT 1 FROM deferred_files df WHERE df.thread = t.id AND df.resolved_at IS NULL) AS has_deferred, ts.connect FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.channel = ? AND t.thread_ts = ?",
       session, channel, threadTs,
     );
     return r ? toSessionThread(r) : null;
@@ -3513,7 +3516,6 @@ export class Store {
   }
 
   /// Records unfetched platform files attached to message `n` in `thread`, preserving order and ignoring duplicates.
-  /// Sets `threads.has_deferred = 1` in the same transaction so readers across handover stay consistent with zero cache.
   recordDeferredFiles(thread: number, n: number, files: readonly { id: string; name: string; size: number; url: string | null }[]): void {
     if (files.length === 0) return;
     this.#with((changes) => {
@@ -3526,7 +3528,6 @@ export class Store {
           thread, n, fid, f.name, f.size, f.url, ord++,
         );
       }
-      this.#run("UPDATE threads SET has_deferred = 1 WHERE id = ? AND has_deferred = 0", thread);
       changes.push({ type: "thread", id: thread, entries: [] });
     });
   }
@@ -3594,9 +3595,6 @@ export class Store {
         }
       }
       this.#run("UPDATE deferred_files SET resolved_at = ? WHERE thread = ? AND file_id = ? AND resolved_at IS NULL", now, thread, fileId);
-      if (this.#one("SELECT 1 FROM deferred_files WHERE thread = ? AND resolved_at IS NULL LIMIT 1", thread) === undefined) {
-        this.#run("UPDATE threads SET has_deferred = 0 WHERE id = ? AND has_deferred != 0", thread);
-      }
       if (ns.length > 0 && changes.length === 0) changes.push({ type: "thread", id: thread, entries: [] });
       return ns;
     });
@@ -4094,14 +4092,17 @@ export class Store {
   /// letters of their own logs among them by when each was kept.
   pendingMessages(session: string): PendingMessage[] {
     const said = this.#all(
-      `SELECT m.*, t.surface, t.channel, t.thread_ts, t.has_deferred, ts.connect FROM deliveries d
+      `SELECT m.*, t.surface, t.channel, t.thread_ts,
+        EXISTS (SELECT 1 FROM deferred_files df WHERE df.thread = t.id AND df.resolved_at IS NULL) AS has_deferred,
+        ts.connect FROM deliveries d
        JOIN merged m ON m.thread = d.thread AND m.n = d.n JOIN threads t ON t.id = d.thread
        JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session
        WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid`,
       session,
     ).map((r) => {
       const item: PendingMessage = { message: toMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect };
-      // Non-enumerable so PendingMessage keeps the exact wire shape of MoonBit/Pion readers (`pending-delivery-reader.test.ts`).
+      // Non-enumerable so PendingMessage keeps the exact wire shape of MoonBit/Pion readers
+      // (`pending-delivery-reader.test.ts`). Callers fail open (query `deferred_files` directly) if spread/JSON-cloned.
       Object.defineProperty(item, "hasDeferred", { value: r.has_deferred === 1, configurable: true });
       return item;
     });

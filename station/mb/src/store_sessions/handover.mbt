@@ -998,14 +998,6 @@ fn import_page(
         r["n"] = n_of(Some(t), get("n"))
         if insert_row(db, "deferred_files", r, " OR IGNORE").0 > 0 {
           keep({ "thread": get("thread"), "n": get("n"), "file_id": get("file_id") })
-          if get("resolved_at") is Null && columns_of(db, "threads").contains("has_deferred") {
-            ignore(
-              db.run(
-                "UPDATE threads SET has_deferred = 1 WHERE id = ? AND has_deferred = 0",
-                [get("thread")],
-              ),
-            )
-          }
         } else {
           count_up(count_rows, "deferred_files")
         }
@@ -1273,17 +1265,6 @@ fn drop_import_rows(db : @sql.Db, ctx : Json) -> Array[String] raise {
           cols.map(c => nullish(field(key, c))),
         ),
       )
-    }
-    if table == "deferred_files" && columns_of(db, "threads").contains("has_deferred") {
-      for key in arr(keys) {
-        let tid = nullish(field(key, "thread"))
-        ignore(
-          db.run(
-            "UPDATE threads SET has_deferred = EXISTS (SELECT 1 FROM deferred_files WHERE thread = ? AND resolved_at IS NULL LIMIT 1) WHERE id = ?",
-            [tid, tid],
-          ),
-        )
-      }
     }
   }
   for m in arr(nullish(field(made, "members"))) {
