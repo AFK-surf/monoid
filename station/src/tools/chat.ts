@@ -32,11 +32,15 @@ export const CHAT_POST = {
       },
       "send": {
         "type": "string",
-        "description": "The id of a post held back (its chat_post answered it): sends it as written. Give only to, send and the state the turn now ends with."
+        "description": "A held post's id (its chat_post answered it): sends it as written. Give only to, send and the turn's state."
+      },
+      "reply_to": {
+        "type": "string",
+        "description": "Feishu: a message ts to answer in its thread."
       },
       "withdraw": {
         "type": "string",
-        "description": "The message ts of your own answer card to withdraw, its question resolved or obsolete. With to alone: nothing is sent and no turn ends."
+        "description": "The message ts of your own answer card to withdraw, once resolved or obsolete. With to alone: nothing sent, no turn ended."
       },
       "text": {
         "type": "string",
@@ -81,7 +85,7 @@ export const CHAT_POST = {
       },
       "title": {
         "type": "string",
-        "description": "The conversation's name in still.fail lists (nothing is renamed in Slack): a few words on what it is about, in their language, at most 30 characters. Another only when the chat has moved to something else, not to reword it; never over a name people gave."
+        "description": "The conversation's name in still.fail lists (not Slack's): a few words on what it is about, in their language, at most 30 characters. Another only when the chat has moved to something else, not to reword it; never over a name people gave."
       },
       "card": {
         "type": "object",

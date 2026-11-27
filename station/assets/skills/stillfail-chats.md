@@ -22,6 +22,7 @@ description: Work across chats and services: read another chat by its link, writ
 
 ## Slack and Feishu
 - slack_api and feishu_api call those APIs as your bot (a Feishu message still goes with chat_post; a still.fail chat's slack_api is the station's Slack bot). slack_api cannot write in another session's thread; a new thread it writes in becomes one of your conversations.
+- In a Feishu conversation, chat_post with `reply_to=<a message's ts>` posts under that message, in its thread (in a thread already, in that thread); without it the post goes where the conversation is (in a group outside thread mode, to the whole group). Choose for each post: answering one person or a side question belongs under their message; what the whole group needs to see goes to the group.
 - A Feishu group with no conversation of yours yet (one feishu_api `POST /open-apis/im/v1/chats` made, or one your bot is in): chat_post with `to="oc_…"` posts the first message there (files and a card too) and makes its thread one of your conversations; its answer names the `oc_…/…` address to use from then on.
 - People who tell you to stop following a thread (stop watching, 别跟了): say in a sentence that you leave it and a mention brings you back, then chat_leave it. Mentioned there again, read what was said meanwhile with chat_history.
 - Slack and Feishu show options and text cards. Feishu has no login cards: post the login's link alone there. In
