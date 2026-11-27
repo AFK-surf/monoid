@@ -98,6 +98,14 @@ let case_asked : Map[String, Bool] = Map([])
 
 ///|
 // kept across runs: as case_asked
+let case_asked_seq : Map[String, Int] = Map([])
+
+///|
+// kept across runs: as case_asked
+let case_seq_next : Ref[Int] = Ref(0)
+
+///|
+// kept across runs: as case_asked
 let case_came : Map[String, Bool] = Map([])
 
 ///|
@@ -208,7 +216,26 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
   if case_asked.contains(id) {
     return
   }
+  let (ws, _) = screen_workspace_and_station(station)
+  let expected_principal = screen_principal_for(station)
+  let expected_key = screen_key(station, screen)
+  let orig_sess = screens_open.get(expected_key)
+  if @sfbase.workspace_is_revoked(ws) {
+    return
+  }
   case_asked[id] = true
+  case_seq_next.val += 1
+  let req_seq = case_seq_next.val
+  case_asked_seq[id] = req_seq
+  let release_asked = fn(wake : Bool) {
+    if case_asked_seq.get(id) == Some(req_seq) {
+      case_asked.remove(id)
+      case_asked_seq.remove(id)
+      if wake {
+        case_told.set(case_told.untracked() + 1)
+      }
+    }
+  }
   let params = {
     "station": Json::string(station),
     "screen": Json::string(screen),
@@ -216,7 +243,26 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
     "turn": Json::number(turn.to_double()),
   }
   (src.call)("screen.chrome", Json::object(params), fn(r) {
-    guard r is Ok(v) else { return }
+    if @sfbase.workspace_is_revoked(ws) || screen_principal_for(station) != expected_principal {
+      release_asked(true)
+      return
+    }
+    match (orig_sess, screens_open.get(expected_key)) {
+      (Some(orig), Some(cur)) =>
+        if !physical_equal(orig, cur) || !cur.is_active_principal() {
+          release_asked(true)
+          return
+        }
+      (Some(_), None) => {
+        release_asked(true)
+        return
+      }
+      (None, _) => ()
+    }
+    guard r is Ok(v) else {
+      release_asked(false)
+      return
+    }
     let got = Some(v)
     let take = fn(name : String, b64 : String) {
       match @codec.from_base64_exact(b64) {

@@ -3615,6 +3615,7 @@ static int donor_delegated_count;
 static int donor_plan_ready;
 static int donor_plan_ok;
 static int donor_force_off;
+static int donor_occ_scans;
 static uint32_t donor_slot_mask;
 
 static const int *active_donor_of(void) {
@@ -3632,6 +3633,7 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
   donor_plan_ok = 0;
   donor_elig_n = 0;
   donor_delegated_count = 0;
+  donor_occ_scans = 0;
   if (count <= 0 || !f) return 0;
   if ((size_t)count > donor_of_cap) {
     int *nb = (int *)realloc(donor_of_buf, (size_t)count * sizeof(int));
@@ -3683,6 +3685,14 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
   if (neg_overflow) return 0;
   MBDonorCand elig[MB_MAX_DONORS];
   int n_elig = 0;
+  // Cache exact occlusion results per (donor idx, glass start, occ_sr): bare adaptive text glyphs share one box.
+  struct {
+    int32_t d_idx;
+    int32_t glass_start;
+    float occ_sr[4];
+    int occluded;
+  } occ_cache[16];
+  int occ_cache_n = 0, occ_cache_next = 0;
   int32_t cur_glass_start = -1;
   int cur_glass_kind = 0, cur_glass_tid = 0;
   float cur_glass_margin = 0.0f;
@@ -3767,56 +3777,75 @@ static int compute_donor_plan(const float *f, int32_t count, float vp_w, float v
             if (d->idx >= cur_glass_start) continue;
             if (d->vx0 <= req[0] && d->vy0 <= req[1] && d->vx1 >= req[2] && d->vy1 >= req[3]) {
               int occluded = 0;
-              int32_t run_j = d->idx + 1;
-              float prev_tid_j = 0.0f;
-              int has_prev_tid = 0;
-              for (int32_t j = d->idx + 1; j < cur_glass_start; ) {
-                const float *bj = f + (size_t)j * MB_INST;
-                int kj = (int)(bj[5] + 0.5f);
-                if (kj == 12) { has_prev_tid = 0; j++; continue; }
-                if (kj == 8) {
-                  int32_t cn = (int32_t)(bj[12] + 0.5f);
-                  if (cn < 0) cn = 0;
-                  if (j + 1 + cn > count) cn = count - j - 1;
-                  if (bj[32] != 0.0f) { occluded = 1; break; }
-                  float lm = fmaxf(bj[7], 0.0f) * 3.0f + fmaxf(bj[14], 0.0f) + 4.0f;
-                  float lx0 = bj[0], ly0 = bj[1], lx1 = bj[0] + bj[2], ly1 = bj[1] + bj[3];
-                  for (int32_t ci = j + 1; ci < j + 1 + cn; ci++) {
-                    const float *cb = f + (size_t)ci * MB_INST;
-                    int ck = (int)(cb[5] + 0.5f);
-                    if (ck == 12 || cb[2] <= 0.0f || cb[3] <= 0.0f) continue;
-                    if (cb[0] < lx0) lx0 = cb[0];
-                    if (cb[1] < ly0) ly0 = cb[1];
-                    if (cb[0] + cb[2] > lx1) lx1 = cb[0] + cb[2];
-                    if (cb[1] + cb[3] > ly1) ly1 = cb[1] + cb[3];
-                  }
-                  if (lx1 + lm > occ_sr[0] && lx0 - lm < occ_sr[2] && ly1 + lm > occ_sr[1] && ly0 - lm < occ_sr[3]) {
-                    occluded = 1;
-                    break;
-                  }
-                  has_prev_tid = 0;
-                  j += 1 + cn;
-                  continue;
+              int occ_hit = 0;
+              for (int ci = 0; ci < occ_cache_n; ci++) {
+                if (occ_cache[ci].d_idx == d->idx && occ_cache[ci].glass_start == cur_glass_start &&
+                    occ_cache[ci].occ_sr[0] == occ_sr[0] && occ_cache[ci].occ_sr[1] == occ_sr[1] &&
+                    occ_cache[ci].occ_sr[2] == occ_sr[2] && occ_cache[ci].occ_sr[3] == occ_sr[3]) {
+                  occluded = occ_cache[ci].occluded;
+                  occ_hit = 1;
+                  break;
                 }
-                if (kj == 9) {
-                  if (reaches(f, j, j, occ_sr)) { occluded = 1; break; }
-                  has_prev_tid = 0;
-                  j++;
-                  continue;
-                }
-                float tid_j = bj[20];
-                if (tid_j < 0.0f) {
-                  if (!has_prev_tid || tid_j != prev_tid_j) {
+              }
+              if (!occ_hit) {
+                donor_occ_scans++;
+                int32_t run_j = d->idx + 1;
+                float prev_tid_j = 0.0f;
+                int has_prev_tid = 0;
+                for (int32_t j = d->idx + 1; j < cur_glass_start; ) {
+                  const float *bj = f + (size_t)j * MB_INST;
+                  int kj = (int)(bj[5] + 0.5f);
+                  if (kj == 12) { has_prev_tid = 0; j++; continue; }
+                  if (kj == 8) {
+                    int32_t cn = (int32_t)(bj[12] + 0.5f);
+                    if (cn < 0) cn = 0;
+                    if (j + 1 + cn > count) cn = count - j - 1;
+                    if (bj[32] != 0.0f) { occluded = 1; break; }
+                    float lm = fmaxf(bj[7], 0.0f) * 3.0f + fmaxf(bj[14], 0.0f) + 4.0f;
+                    float lx0 = bj[0], ly0 = bj[1], lx1 = bj[0] + bj[2], ly1 = bj[1] + bj[3];
+                    for (int32_t ci = j + 1; ci < j + 1 + cn; ci++) {
+                      const float *cb = f + (size_t)ci * MB_INST;
+                      int ck = (int)(cb[5] + 0.5f);
+                      if (ck == 12 || cb[2] <= 0.0f || cb[3] <= 0.0f) continue;
+                      if (cb[0] < lx0) lx0 = cb[0];
+                      if (cb[1] < ly0) ly0 = cb[1];
+                      if (cb[0] + cb[2] > lx1) lx1 = cb[0] + cb[2];
+                      if (cb[1] + cb[3] > ly1) ly1 = cb[1] + cb[3];
+                    }
+                    if (lx1 + lm > occ_sr[0] && lx0 - lm < occ_sr[2] && ly1 + lm > occ_sr[1] && ly0 - lm < occ_sr[3]) {
+                      occluded = 1;
+                      break;
+                    }
+                    has_prev_tid = 0;
+                    j += 1 + cn;
+                    continue;
+                  }
+                  if (kj == 9) {
+                    if (reaches(f, j, j, occ_sr)) { occluded = 1; break; }
+                    has_prev_tid = 0;
+                    j++;
+                    continue;
+                  }
+                  float tid_j = bj[20];
+                  if (tid_j < 0.0f) {
+                    if (!has_prev_tid || tid_j != prev_tid_j) {
+                      run_j = j;
+                      prev_tid_j = tid_j;
+                      has_prev_tid = 1;
+                    }
+                  } else {
                     run_j = j;
-                    prev_tid_j = tid_j;
-                    has_prev_tid = 1;
+                    has_prev_tid = 0;
                   }
-                } else {
-                  run_j = j;
-                  has_prev_tid = 0;
+                  if (reaches(f, j, run_j, occ_sr)) { occluded = 1; break; }
+                  j++;
                 }
-                if (reaches(f, j, run_j, occ_sr)) { occluded = 1; break; }
-                j++;
+                occ_cache[occ_cache_next].d_idx = d->idx;
+                occ_cache[occ_cache_next].glass_start = cur_glass_start;
+                memcpy(occ_cache[occ_cache_next].occ_sr, occ_sr, sizeof occ_sr);
+                occ_cache[occ_cache_next].occluded = occluded;
+                occ_cache_next = (occ_cache_next + 1) & 15;
+                if (occ_cache_n < 16) occ_cache_n++;
               }
               if (!occluded) {
                 donor_of_buf[i] = d->tid;

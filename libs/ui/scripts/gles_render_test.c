@@ -6643,6 +6643,85 @@ int main(void) {
     printf("gles_render: perf-51 ok\n");
   }
 
+  // Perf-59: compute_donor_plan() occlusion query cache deduplicates scans across bare glyphs sharing a text box.
+  {
+    const int N_GLYPHS = 64;
+    const int N_TOTAL = 3 + N_GLYPHS;
+    float *fc = (float *)calloc((size_t)(N_TOTAL + 1) * MB_INST, sizeof(float));
+    CHECK(fc != NULL);
+    if (fc) {
+      double tmp[MB_INST];
+      rect_at(tmp, 0, 0, W, H, 0, 0.05, 0.05, 0.05, 0);
+      for (int k = 0; k < MB_INST; k++) fc[k] = (float)tmp[k];
+      rect_at(tmp, 0, 0, W, 48, 5, 0, 0, 0, -195);
+      tmp[6] = 1.0; tmp[7] = 6.0; tmp[11] = 0.0; tmp[15] = 1.0;
+      tmp[22] = -1.0; tmp[54] = 48.0; tmp[55] = 24.0;
+      for (int k = 0; k < MB_INST; k++) fc[MB_INST + k] = (float)tmp[k];
+      rect_at(tmp, 4, 14, 20, 20, 6, 0.14, 0.14, 0.15, -196);
+      tmp[4] = 10.0; tmp[6] = 1.0; tmp[7] = 1.4; tmp[11] = 0.4; tmp[14] = -1.0; tmp[15] = 1.0;
+      tmp[21] = 4.0; tmp[23] = 2.0;
+      for (int k = 0; k < MB_INST; k++) fc[2 * MB_INST + k] = (float)tmp[k];
+      for (int g = 0; g < N_GLYPHS; g++) {
+        rect_at(tmp, 44.0 + (g % 32), 16.0, 6.0, 10.0, 7, 0.9, 0.9, 0.9, 0);
+        tmp[21] = 60.0; tmp[22] = 22.0; tmp[23] = bare_ink(14.0, 10.0);
+        for (int k = 0; k < MB_INST; k++) fc[(size_t)(3 + g) * MB_INST + k] = (float)tmp[k];
+      }
+      compute_donor_plan(fc, N_TOTAL, (float)W, (float)H, (float)S);
+      CHECK(donor_delegated_count == N_GLYPHS);
+      CHECK(donor_occ_scans == 1);
+      for (int g = 0; g < N_GLYPHS; g++) CHECK(donor_of_buf[3 + g] == -195);
+
+      // Insert an opaque occluder between donor and pill overlapping box B (cx=82), leaving box A (cx=46) clear.
+      memmove(fc + 3 * MB_INST, fc + 2 * MB_INST, (size_t)(1 + N_GLYPHS) * MB_INST * sizeof(float));
+      rect_at(tmp, 76, 16, 12, 12, 0, 1.0, 1.0, 1.0, 0);
+      for (int k = 0; k < MB_INST; k++) fc[2 * MB_INST + k] = (float)tmp[k];
+      for (int g = 0; g < N_GLYPHS; g++) {
+        float *gp = fc + (size_t)(4 + g) * MB_INST;
+        gp[21] = (g < 32) ? 46.0f : 82.0f;
+        gp[22] = 22.0f;
+        gp[23] = (float)bare_ink(8.0, 8.0);
+      }
+      compute_donor_plan(fc, N_TOTAL + 1, (float)W, (float)H, (float)S);
+      CHECK(donor_delegated_count == 32);
+      CHECK(donor_occ_scans == 2);
+      for (int g = 0; g < 32; g++) CHECK(donor_of_buf[4 + g] == -195);
+      for (int g = 32; g < N_GLYPHS; g++) CHECK(donor_of_buf[4 + g] == 0);
+
+      // Same occ_sr box under two different cur_glass_start pills with an occluder between pill 1 and pill 2:
+      // pill 1's glyphs are delegated, pill 2's glyphs are occluded, donor_occ_scans == 2.
+      memset(fc, 0, (size_t)(N_TOTAL + 1) * MB_INST * sizeof(float));
+      rect_at(tmp, 0, 0, W, H, 0, 0.05, 0.05, 0.05, 0);
+      for (int k = 0; k < MB_INST; k++) fc[k] = (float)tmp[k];
+      rect_at(tmp, 0, 0, W, 48, 5, 0, 0, 0, -195);
+      tmp[6] = 1.0; tmp[7] = 6.0; tmp[11] = 0.0; tmp[15] = 1.0;
+      tmp[22] = -1.0; tmp[54] = 48.0; tmp[55] = 24.0;
+      for (int k = 0; k < MB_INST; k++) fc[MB_INST + k] = (float)tmp[k];
+      rect_at(tmp, 4, 14, 20, 20, 6, 0.14, 0.14, 0.15, -196);
+      tmp[4] = 10.0; tmp[6] = 1.0; tmp[7] = 1.4; tmp[11] = 0.4; tmp[14] = -1.0; tmp[15] = 1.0;
+      tmp[21] = 4.0; tmp[23] = 2.0;
+      for (int k = 0; k < MB_INST; k++) fc[2 * MB_INST + k] = (float)tmp[k];
+      for (int g = 0; g < 4; g++) {
+        rect_at(tmp, 52.0 + g * 3.0, 16.0, 6.0, 10.0, 7, 0.9, 0.9, 0.9, 0);
+        tmp[21] = 60.0; tmp[22] = 22.0; tmp[23] = bare_ink(12.0, 8.0);
+        for (int k = 0; k < MB_INST; k++) fc[(size_t)(3 + g) * MB_INST + k] = (float)tmp[k];
+      }
+      rect_at(tmp, 54, 16, 12, 12, 0, 1.0, 1.0, 1.0, 0);
+      for (int k = 0; k < MB_INST; k++) fc[7 * MB_INST + k] = (float)tmp[k];
+      memcpy(fc + 8 * MB_INST, fc + 2 * MB_INST, MB_INST * sizeof(float));
+      fc[8 * MB_INST + 20] = -197.0f;
+      for (int g = 0; g < 4; g++) {
+        memcpy(fc + (size_t)(9 + g) * MB_INST, fc + (size_t)(3 + g) * MB_INST, MB_INST * sizeof(float));
+      }
+      compute_donor_plan(fc, 13, (float)W, (float)H, (float)S);
+      CHECK(donor_delegated_count == 4);
+      CHECK(donor_occ_scans == 2);
+      for (int g = 0; g < 4; g++) CHECK(donor_of_buf[3 + g] == -195);
+      for (int g = 0; g < 4; g++) CHECK(donor_of_buf[9 + g] == 0);
+      free(fc);
+      printf("gles_render: perf-59 ok\n");
+    }
+  }
+
   // Liquid glass (kind 6) over a native-view hole (kind 9 under MB_VIEWS_UNDER): outputs translucent premultiplied
   // alpha (rgb <= a, Light ~144, Dark ~192) instead of flat opaque 202/255 grey, and partial redraw matches whole frame.
   {

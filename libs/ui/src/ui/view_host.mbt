@@ -4726,14 +4726,14 @@ fn view_old_moved(x : Double, y : Double) -> Unit {
 /// down elsewhere, nothing's. A move with nothing held goes to the old view where it is over it. True where the old
 /// view is to see none of it. `brings` false: a move of a system's batch of a finger's samples after its first, taken
 /// as the first found things, nothing laid out for it (touches.mbt).
-fn view_pointer(kind : Int, x : Double, y : Double, button : Int, brings? : Bool = true) -> Bool {
+fn view_pointer(kind : Int, x : Double, y : Double, button : Int, mods? : Int = 0, brings? : Bool = true) -> Bool {
   match view_app.val {
     Some(tree) if !brings => {
       let took = Ref(false)
-      tree.moves_unlaid(fn() { took.val = view_pointer_now(tree, kind, x, y, button, false) })
+      tree.moves_unlaid(fn() { took.val = view_pointer_now(tree, kind, x, y, button, mods, false) })
       took.val
     }
-    Some(tree) => view_pointer_now(tree, kind, x, y, button, true)
+    Some(tree) => view_pointer_now(tree, kind, x, y, button, mods, true)
     None => false
   }
 }
@@ -4770,7 +4770,7 @@ fn view_buttons_took(kind : Int, x : Double, y : Double, button : Int) -> Bool {
 }
 
 ///|
-fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, button : Int, brings : Bool) -> Bool {
+fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, button : Int, mods : Int, brings : Bool) -> Bool {
   // (the tree as of the event's moment, taken once as it began: what had ended by then settled, what is where then)
   let at = view_moment()
   if brings {
@@ -5005,9 +5005,11 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
       if button != 2 {
         tree_field_menu_dismiss_if_outside(tree, x, y)
       }
+      let shift_pick = button != 2 && tree_shift_picks(tree, x, y, mods)
       // (a press of the primary button, wherever on the tree: words of its picked with the pointer let go, as an old
-      // view's page's are by a press elsewhere (Ctx::select_press); on words to pick, picked anew from there below)
-      if button != 2 && tree_picking() && !picked.finger && !tree_keeps_picked_at(tree, x, y) {
+      // view's page's are by a press elsewhere (Ctx::select_press); on words to pick, picked anew from there below, or
+      // extended from the existing anchor on Shift+click)
+      if button != 2 && tree_picking() && !picked.finger && !shift_pick && !tree_keeps_picked_at(tree, x, y) {
         select_none()
       }
       if button != 2 {
@@ -5098,7 +5100,7 @@ fn view_pointer_now(tree : @view.Tree, kind : Int, x : Double, y : Double, butto
         // there (what scrolls them claims it only as it moves): the selection's, the old view's way to it told it so
         // (Ctx::select_press, its moves and its let go its too), as an old view's page's words are, its lists not
         // dragged by the mouse there)
-        Nothing if button != 2 && pointing() is Mouse && tree_sel_at(x, y) is Some(_) => {
+        Nothing if button != 2 && pointing() is Mouse && (shift_pick || tree_sel_at(x, y) is Some(_)) => {
           view_held.val = Some(Old(-1, None))
           view_input_went(-1)
           false

@@ -217,8 +217,10 @@ export function pastedRefs(pasted: string, here: string): { start: number; end: 
 
 /// A run of a person's words as the clients draw it: as they wrote it, a web address written bare (`link`), or a
 /// reference to a chat (`ref`: its title is `text` where they wrote one, `[title](its page)`; a chat's page written bare
-/// is one too, `text` its address, the message's `chats` saying its title).
-export type WordsRun = { text: string; link?: string; ref?: true; to?: LinkTo };
+/// is one too, `text` its address, the message's `chats` saying its title). How it is set where they marked it as
+/// Markdown marks it (personMarks below), its marks not in `text`: bold `b`, slanted `i`, struck through `s`, code in a
+/// line `code`, a fenced block of code `pre`.
+export type WordsRun = { text: string; link?: string; ref?: true; to?: LinkTo; b?: true; i?: true; s?: true; code?: true; pre?: true };
 
 /// What a person wrote, in runs (WordsRun): references to chats, and web addresses written bare (bareLinks.ts). The one
 /// reading the clients draw a person's words by (what is not a message yet: draftWords).
@@ -241,14 +243,22 @@ export function personWords(text: string): WordsRun[] {
 const WORDS_KEPT = 512;
 const wordsKept = new Map<string, WordsRun[]>();
 
-function wordsOf(text: string): WordsRun[] {
+// The few of Markdown's marks read in a person's words (the user, 2026-11-27: only the basic ones): `**bold**`,
+// `*slanted*` (`__`, `_` too), `~~struck~~`, `` `code` ``, a fenced block of code, and a line begun `- ` or `* ` an
+// item of a list (its mark a bullet). The rest stays as written, as a person's words always were: each line a line,
+// no headings, tables, pictures or HTML, since words written with no thought of Markdown must not change (a `#123`,
+// an indented line, `a_b_c`, `2*3*4`, a path's `*.ts`). A mark with no partner on its line is words.
+
+/// A fence's lines, the code between them (splitBy reads it with no `m`: a line's ends said as they are).
+const FENCE = /(?<=^|\n) {0,3}```[^`\n]*\n([\s\S]*?)\n {0,3}```[ \t]*(?=\n|$)/g;
+/// Code in a line: between as many backticks either side, none of that many inside.
+const CODE = /(?<!`)(`+)(?!`)([^\n]*?[^`\n])\1(?!`)/g;
+/// A list's item: its mark at the start of a line, words after it.
+const ITEM = /^( *)[-*] (?=\S)/gm;
+
+function wordsOf(text: string, marks = false): WordsRun[] {
   const out: WordsRun[] = [];
-  for (const part of splitBy(text, REF_LINK)) {
-    if (typeof part !== "string") {
-      const to = linkTo(part[2]!);
-      out.push({ text: part[1]!, link: part[2]!, ref: true, ...(to ? { to } : {}) });
-      continue;
-    }
+  const plain = (part: string) => {
     for (const bit of bareLinks(part)) {
       if (typeof bit === "string") {
         if (bit !== "") out.push({ text: bit });
@@ -257,18 +267,155 @@ function wordsOf(text: string): WordsRun[] {
         out.push({ text: bit.url, link: bit.url, ...(to?.chat ? { ref: true as const } : {}), ...(to ? { to } : {}) });
       }
     }
+  };
+  const linked = (part: string) => {
+    for (const each of splitBy(part, REF_LINK)) {
+      if (typeof each === "string") plain(each);
+      else {
+        const to = linkTo(each[2]!);
+        out.push({ text: each[1]!, link: each[2]!, ref: true, ...(to ? { to } : {}) });
+      }
+    }
+  };
+  // (a composer's marks, in what is not sent yet: draftWords)
+  const referring = (part: string) => {
+    if (!marks) return linked(part);
+    for (const each of splitBy(part, REF_MARK)) {
+      if (typeof each === "string") linked(each);
+      else out.push({ text: each[1]!, ref: true });
+    }
+  };
+  if (!/[*_~`]/.test(text) && !/^ *- \S/m.test(text)) {
+    referring(text);
+    return out;
+  }
+  for (const block of splitBy(text, FENCE)) {
+    if (typeof block !== "string") {
+      if (block[1] !== "") out.push({ text: block[1]!, pre: true });
+      continue;
+    }
+    for (const part of splitBy(block.replace(ITEM, "$1• "), CODE)) {
+      if (typeof part === "string") referring(part);
+      else out.push({ text: /^ .*\S.* $/.test(part[2]!) ? part[2]!.slice(1, -1) : part[2]!, code: true });
+    }
+  }
+  return emphasized(out);
+}
+
+type Mark = "**" | "__" | "~~" | "*" | "_";
+const STYLE = { "**": "b", "__": "b", "~~": "s", "*": "i", "_": "i" } as const;
+const space = (c: string) => c === "" || /\s/.test(c);
+/// A letter or a digit of a word, ASCII's or not (Chinese): what `_` inside a word is between, never a mark there.
+const wordy = (c: string) => c !== "" && !/[\s!-/:-@[-`{-~]/.test(c);
+const ascii = (c: string) => /[0-9A-Za-z]/.test(c);
+
+/// `runs` with the marks of emphasis in their words (what is no link and no code) taken out and what is between a
+/// pair set so, links and code between them too. A pair is on one line: a mark opens before what is no space and
+/// closes after what is no space; `_` opens only after a space or what opens a bracket or a quote and closes only at a
+/// word's end (a name's or a path's `_` is no mark: `a_b_c`, `/a/__init__.py`), and a lone `*` is none between ASCII
+/// letters or digits (`2*3*4`).
+function emphasized(runs: WordsRun[]): WordsRun[] {
+  // its pieces in order: words, a mark (words too unless it finds its pair), another run whole
+  type Piece = { text: string; run?: WordsRun; mark?: Mark; gone?: true };
+  const pieces: Piece[] = [];
+  const from: ("b" | "i" | "s")[][] = [];
+  const to: ("b" | "i" | "s")[][] = [];
+  let open: { mark: Mark; at: number }[] = [];
+  const meet = (mark: Mark, opens: boolean, closes: boolean) => {
+    const at = pieces.length;
+    pieces.push({ text: mark, mark });
+    let was = -1;
+    if (closes) for (let k = open.length - 1; k >= 0; k--) if (open[k]!.mark === mark) { was = k; break; }
+    if (was >= 0 && open[was]!.at < at - 1) {
+      const start = open[was]!.at;
+      open = open.slice(0, was);
+      pieces[start]!.gone = true;
+      pieces[at]!.gone = true;
+      (from[start] ??= []).push(STYLE[mark]);
+      (to[at] ??= []).push(STYLE[mark]);
+    } else if (opens) open.push({ mark, at });
+  };
+  for (let r = 0; r < runs.length; r++) {
+    const run = runs[r]!;
+    if (run.link !== undefined || run.ref || run.code || run.pre) {
+      if (run.text.includes("\n")) open = [];
+      pieces.push({ text: run.text, run });
+      continue;
+    }
+    const text = run.text;
+    // (what stands before its first letter and after its last: another run's words, a letter to these marks)
+    const before = r > 0 ? "a" : "";
+    const after = r + 1 < runs.length ? "a" : "";
+    let at = 0;
+    let words = 0;
+    const said = (end: number) => {
+      if (end > words) pieces.push({ text: text.slice(words, end) });
+    };
+    while (at < text.length) {
+      const c = text[at]!;
+      if (c === "\n") {
+        open = [];
+        at++;
+        continue;
+      }
+      if (c !== "*" && c !== "_" && c !== "~") {
+        at++;
+        continue;
+      }
+      let end = at;
+      while (text[end] === c) end++;
+      const n = end - at;
+      const prev = at > 0 ? text[at - 1]! : before;
+      const next = end < text.length ? text[end]! : after;
+      let opens = !space(next);
+      let closes = !space(prev);
+      if (c === "_") {
+        opens &&= space(prev) || "([{<\"'*~（【「“‘".includes(prev);
+        closes &&= !wordy(next);
+      }
+      if (n > 3 || (c === "~" && n !== 2) || (!opens && !closes)) {
+        at = end;
+        continue;
+      }
+      said(at);
+      words = end;
+      at = end;
+      const two = (c + c) as Mark;
+      const one = c as Mark;
+      if (n === 2) meet(two, opens, closes);
+      else if (n === 1) {
+        if (c === "*" && ascii(prev) && ascii(next)) pieces.push({ text: c });
+        else meet(one, opens, closes);
+      } else if (open.length > 0 && open[open.length - 1]!.mark === one) {
+        // (`***` closing what `***` opened: the inner one first)
+        meet(one, false, closes);
+        meet(two, opens, closes);
+      } else {
+        meet(two, opens, closes);
+        meet(one, opens, false);
+      }
+    }
+    said(text.length);
+  }
+  if (!pieces.some((p) => p.gone)) return runs;
+  const out: WordsRun[] = [];
+  const on = { b: 0, i: 0, s: 0 };
+  for (let k = 0; k < pieces.length; k++) {
+    const p = pieces[k]!;
+    for (const style of from[k] ?? []) on[style]++;
+    for (const style of to[k] ?? []) on[style]--;
+    if (p.gone) continue;
+    const set: { b?: true; i?: true; s?: true } = { ...(on.b > 0 ? { b: true as const } : {}), ...(on.i > 0 ? { i: true as const } : {}), ...(on.s > 0 ? { s: true as const } : {}) };
+    const last = out[out.length - 1];
+    if (!p.run && last && last.link === undefined && !last.ref && !last.code && !last.pre && !last.b === !set.b && !last.i === !set.i && !last.s === !set.s) last.text += p.text;
+    else out.push(p.run ? (p.run.pre ? p.run : { ...p.run, ...set }) : { text: p.text, ...set });
   }
   return out;
 }
 
 /// What is being written, and what was sent from here before the core has it as a message (its outbox's `words`
 /// otherwise), in the runs its message will be drawn in: the composer's marks (`@[its title]`) references to their chats
-/// (their links the core's till sent: refs.ts), the rest read as personWords.
+/// (their links the core's till sent: refs.ts), the rest read as personWords reads it.
 export function draftWords(text: string): WordsRun[] {
-  const out: WordsRun[] = [];
-  for (const part of splitBy(text, REF_MARK)) {
-    if (typeof part === "string") out.push(...personWords(part));
-    else out.push({ text: part[1]!, ref: true });
-  }
-  return out;
+  return wordsOf(text, true);
 }

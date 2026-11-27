@@ -256,6 +256,9 @@ async fn Histories::entries(self : Histories, runtime : String, path : String, e
         if line == "" {
           continue
         }
+        if can_skip_record_bytes(runtime, @utf8.encode(line)[:]) {
+          continue
+        }
         let record = @jsjson.parse(line) catch { _ => continue }
         timeline_of(runtime, record, state, out) catch {
           e => {

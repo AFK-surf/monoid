@@ -13,8 +13,8 @@ import { Agents } from "../sessions/agents.ts";
 import { ControlPlane, Parts, Paths, Peers, Previous, Readers, StationConfig, Store } from "../services.ts";
 import { makeComma } from "./index.ts";
 import { type CommaChats, OwnerActivity, workspaceMetaOf } from "./surface.ts";
-import { CHANGED, READ, SAY, type WorkspaceReads, answerText, peerChangeNotifier, peerRead, workspaceRead } from "./peer.ts";
-import { routerReads, routerSaysAfter } from "./chats.ts";
+import { CHANGED, READ, READ_FILE, SAY, type WorkspaceReads, answerText, peerChangeNotifier, peerRead, workspaceRead } from "./peer.ts";
+import { routerReadFile, routerReads, routerSaysAfter } from "./chats.ts";
 import { CommaStats, RevIndex, chatOf, connectScope, validRequesterEmail } from "./stats.ts";
 import { workspaceIndex } from "./workspace-index.ts";
 
@@ -114,6 +114,18 @@ export const CommaLive = Layer.effectDiscard(
         }),
       };
     });
+    bus.on(READ_FILE, async (peer: string, request: Json, workspace?: string) => {
+      if (typeof workspace !== "string" || !within(workspace)) throw new Error("not this workspace");
+      member(cloud, peer, workspace);
+      const r = request?.readFile;
+      if (r === null || typeof r !== "object") throw new Error("no such file request");
+      return await routerReadFile(agents.hub, data, workspace, {
+        thread: Number(r.thread),
+        seq: Number(r.seq),
+        file: String(r.file ?? ""),
+        offset: Number(r.offset ?? 0),
+      });
+    });
     const scopes = yield* Effect.acquireRelease(
       Effect.sync(() => new Map<string, { indexes: ReturnType<typeof workspaceIndex>["indexes"]; stats: CommaStats; chats: CommaChats }>()),
       (all) => Effect.sync(() => { for (const scope of all.values()) scope.stats.close(); }),
@@ -181,6 +193,15 @@ export const CommaLive = Layer.effectDiscard(
       const index = workspaceIndex(data, workspace, () => within(workspace), () => scopeVersion, workspaceRead(reads), usage);
       const chats: CommaChats = {
         read: (ref, after, limit) => routerReads(index.stats, reads, ref, after, limit),
+        readFile: async (ref, seq, file, offset) => {
+          if (!within(workspace)) throw new Error("the workspace changed while reading");
+          const chat = chatOf(ref);
+          if (chat === null) throw new Error("no such chat");
+          if (chat.station === null) {
+            return await routerReadFile(agents.hub, data, workspace, { thread: chat.thread, seq, file, offset });
+          }
+          return await bus.ask(chat.station, { method: READ_FILE, workspace, readFile: { thread: chat.thread, seq, file, offset } });
+        },
         say: async (ref, text, key, requester, connect, closeCard, expectedCardSeq, requesterEmail) => {
           if (!within(workspace)) throw new Error("the workspace changed while writing");
           const chat = chatOf(ref);

@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -13,7 +13,7 @@ import { WebSocketServer } from "ws";
 import { peerChangeNotifier, workspaceRead } from "../src/comma/peer.ts";
 import { workspaceIndex } from "../src/comma/workspace-index.ts";
 import { CommaStats, IndexSync, PAGE_BYTES, PAGE_ROWS, type RevIndex, type StationRows, chatOf, chatRef, connectMatches, connectScope, heldFrom, nextPage, probePage, taskWire, taskWireFor } from "../src/comma/stats.ts";
-import { routerSays } from "../src/comma/chats.ts";
+import { routerReadFile, routerSays } from "../src/comma/chats.ts";
 import { CommaSurface } from "../src/comma/surface.ts";
 import { CommaTasks } from "../src/comma/tasks.ts";
 import { Rig } from "./hub-fakes.ts";
@@ -198,6 +198,7 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
   const asked: Json[] = [];
   const chats = {
     read: async (ref: string, after: number, limit: number) => (asked.push(["read", ref, after, limit]), { title: "Fix", messages: [], through: 3 }),
+    readFile: async (ref: string, seq: number, file: string, offset: number) => (asked.push(["readFile", ref, seq, file, offset]), { name: file, size: 3, offset, data: "YWJj" }),
     say: async (ref: string, text: string, key: string, requester: string, connect: string, closeCard?: boolean, expectedCardSeq?: number, requesterEmail?: string) => (asked.push(["say", ref, text, key, requester, connect, closeCard, expectedCardSeq, requesterEmail]), { seq: 4 }),
   };
   const surface = new CommaSurface({ connect: "cm", server: base, token: "salix_conn_test123", name: "mac", tasks: new CommaTasks(join(dir, "tasks.json")), store: rig.store, models: () => [], stats, chats });
@@ -216,7 +217,7 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
     assert.deepEqual([pages.length, tasks.length], [0, 0], "a locked index is retried before it is sent");
     old.exec("ROLLBACK"); locked = false;
     await until(() => metadata !== null && held.through > 0);
-    assert.deepEqual([metadata.capabilities.stats_index, metadata.capabilities.task_index, metadata.capabilities.task_say_cas], [1, 1, 1]);
+    assert.deepEqual([metadata.capabilities.stats_index, metadata.capabilities.task_index, metadata.capabilities.task_say_cas, metadata.capabilities.task_read_file], [1, 1, 1, 1]);
     assert.equal(builds, 1, "connected: built once");
     const sent = pages.flatMap((p) => p.rows);
     assert.deepEqual(sent.map((r: Json) => [r.source, r.kind]), [["stillfail", "usage"], ["stillfail", "task"]]);
@@ -231,12 +232,17 @@ test("connected, the station sends Comma what it lacks of the statistics, and ag
       return answers.get(id);
     };
     assert.deepEqual((await request("r1", "task.read", { task: "7", after: 1, limit: 500 })).result, { title: "Fix", messages: [], through: 3 });
+    assert.deepEqual((await request("rf1", "task.read_file", { task: "7", seq: 5, file: "shot.png" })).result, { name: "shot.png", size: 3, offset: 0, data: "YWJj" });
+    assert.match((await request("rf2", "task.read_file", { task: "7", seq: 0, file: "shot.png" })).error, /seq/);
+    assert.match((await request("rf3", "task.read_file", { task: "7", seq: 5, file: " " })).error, /file/);
+    assert.match((await request("rf4", "task.read_file", { task: "7", seq: 5, file: "shot.png", offset: -1 })).error, /offset/);
     assert.deepEqual((await request("r2", "task.say", { task: "7", text: "选 main", key: "k1", requester: "Router", requester_name: "星火工作室", requester_email: "  Alice@Example.COM ", expected_card_seq: 9 })).result, { seq: 4 });
     assert.deepEqual((await request("r2b", "task.say", { task: "7", text: "ok", key: "k2", requester: "Router", requester_email: "bad:email@x" })).result, { seq: 4 });
     assert.match((await request("r3", "task.say", { task: "7", text: " " })).error, /text/);
     assert.match((await request("r4", "task.say", { task: "7", text: "选 main", expected_card_seq: 0 })).error, /expected_card_seq/);
     assert.deepEqual(asked, [
       ["read", "7", 1, 100],
+      ["readFile", "7", 5, "shot.png", 0],
       ["say", "7", "选 main", "k1", "星火工作室", "cm", false, 9, "alice@example.com"],
       ["say", "7", "ok", "k2", "Router", "cm", false, undefined, undefined],
     ]);
@@ -768,4 +774,49 @@ test("peerChangeNotifier coalesces bursts, retries failed peers and roster looku
     notifier.close();
   }
   assert.deepEqual(active(), [], "close() cancels all timers");
+});
+
+test("routerReadFile reads bounded chunks of recorded uploads inside the workspace and refuses unrecorded, outside, or cross-workspace files", async () => {
+  const rig = new Rig();
+  try {
+    const wsDir = join(rig.dir, "ws-a");
+    const uploadsDir = join(wsDir, "uploads");
+    mkdirSync(uploadsDir, { recursive: true });
+    const bigBytes = Buffer.alloc(300 * 1024, 0x41);
+    bigBytes.write("TAIL", bigBytes.length - 4);
+    const shotPath = join(uploadsDir, "2026-shot.png");
+    writeFileSync(shotPath, bigBytes);
+    const outsidePath = join(rig.dir, "secret.txt");
+    writeFileSync(outsidePath, "top-secret");
+
+    rig.store.insertSession({ key: "a", connect: "ember", runtime: "claude", profile: "cc", workspace: wsDir, token: "a", createdAt: 1, lastActiveAt: 1, ws: null } as never);
+    const thread = rig.store.openThreadOf("ember", "CHAT", "chat-rf", "RF", "ann@x", "a");
+    rig.store.joinThread(thread.id, "a", "ember");
+    const [seq] = rig.store.insertMessage({
+      ...newMessage(thread.id, "rf.1", "agent", "a", "see ![](shot.png)"),
+      attachments: [
+        { name: "shot.png", path: shotPath, size: bigBytes.length, width: 100, height: 50 },
+        { name: "secret.txt", path: outsidePath, size: 10 },
+      ],
+    });
+
+    const home = rig.hub.wsOf("a");
+    const part1 = await routerReadFile(rig.hub, rig.dir, home, { thread: thread.id, seq, file: "shot.png", offset: 0 });
+    assert.equal(part1.name, "shot.png");
+    assert.equal(part1.size, bigBytes.length);
+    assert.equal(part1.offset, 0);
+    const buf1 = Buffer.from(part1.data, "base64");
+    assert.equal(buf1.length, 256 * 1024);
+
+    const part2 = await routerReadFile(rig.hub, rig.dir, home, { thread: thread.id, seq, file: "shot.png", offset: buf1.length });
+    const buf2 = Buffer.from(part2.data, "base64");
+    assert.deepEqual(Buffer.concat([buf1, buf2]), bigBytes);
+
+    assert.deepEqual(await routerReadFile(rig.hub, rig.dir, home, { thread: thread.id, seq, file: "shot.png", offset: bigBytes.length + 1 }), { missing: "offset past end" });
+    assert.deepEqual(await routerReadFile(rig.hub, rig.dir, home, { thread: thread.id, seq, file: "other.png", offset: 0 }), { missing: "no such file" });
+    assert.deepEqual(await routerReadFile(rig.hub, rig.dir, home, { thread: thread.id, seq, file: "secret.txt", offset: 0 }), { missing: "no such file" });
+    await assert.rejects(routerReadFile(rig.hub, rig.dir, "another-ws", { thread: thread.id, seq, file: "shot.png", offset: 0 }), /no such chat of the workspace/);
+  } finally {
+    await rig.hub.shutdown();
+  }
 });

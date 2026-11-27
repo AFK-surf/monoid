@@ -572,7 +572,9 @@ fn main {
   }
   // a window of its own (sfbase's window.mbt, MBUI_WINDOW: started by the app's run beside it, @ui.window_open): the
   // page it was started for alone, none of what follows (the app's run beside it has them)
-  @sfbase.lone_page.val = @sfbase.window_page(@ui.env("MBUI_WINDOW"))
+  let win_env = @ui.env("MBUI_WINDOW")
+  @sfbase.lone_page.val = @sfbase.window_page(win_env)
+  @sfbase.set_startup_window_owner(@sfbase.window_page_owner_of(win_env))
   // 添加 › Slack 账号: the sign-in on this host's browser (sfcore's vault_oauth.mbt)
   @sfbase.vault_oauth_of.val = @sfcore.vault_oauth
   if @sfbase.lone_page.val is None {

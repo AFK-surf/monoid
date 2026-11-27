@@ -444,6 +444,59 @@ static void test_process_utils(void) {
     sth_free(info);
 }
 
+static void test_read_file_slice(void) {
+    char path[256];
+    snprintf(path, sizeof(path), "/tmp/sth_slice_test_%d.bin", (int)sth_pid());
+    FILE *f = fopen(path, "wb");
+    assert(f != NULL);
+    const char payload[] = "0123456789abcdef";
+    assert(fwrite(payload, 1, 16, f) == 16);
+    fclose(f);
+
+    // Whole file (length < 0).
+    int64_t n = -99;
+    uint8_t *b = (uint8_t *)sth_read_file_slice(path, 0, -1, &n);
+    assert(b != NULL && n == 16 && memcmp(b, payload, 16) == 0);
+    sth_free(b);
+
+    // Sub-slice in middle.
+    b = (uint8_t *)sth_read_file_slice(path, 4, 6, &n);
+    assert(b != NULL && n == 6 && memcmp(b, "456789", 6) == 0);
+    sth_free(b);
+
+    // Slice clamping past EOF.
+    b = (uint8_t *)sth_read_file_slice(path, 12, 100, &n);
+    assert(b != NULL && n == 4 && memcmp(b, "cdef", 4) == 0);
+    sth_free(b);
+
+    // Offset at/past EOF returns non-NULL empty slice.
+    b = (uint8_t *)sth_read_file_slice(path, 16, 10, &n);
+    assert(b != NULL && n == 0);
+    sth_free(b);
+    b = (uint8_t *)sth_read_file_slice(path, 999, -1, &n);
+    assert(b != NULL && n == 0);
+    sth_free(b);
+
+    // Zero length returns non-NULL empty slice.
+    b = (uint8_t *)sth_read_file_slice(path, 2, 0, &n);
+    assert(b != NULL && n == 0);
+    sth_free(b);
+
+    // Negative offset -> fallback (-2).
+    b = (uint8_t *)sth_read_file_slice(path, -1, 4, &n);
+    assert(b == NULL && n == -2);
+
+    // Directory -> fallback (-2) on POSIX.
+    b = (uint8_t *)sth_read_file_slice("/tmp", 0, 16, &n);
+    assert(b == NULL && n == -2);
+
+    unlink(path);
+
+    // Missing file -> -1.
+    b = (uint8_t *)sth_read_file_slice(path, 0, 16, &n);
+    assert(b == NULL && n == -1);
+}
+
 int main(void) {
     test_stdin_backpressure_strict_cap();
     test_sth_stop_preserves_stdin_and_eof();
@@ -451,6 +504,7 @@ int main(void) {
     test_shell_lifecycle_and_foreign_thread_race();
     test_mt_sys_queue();
     test_process_utils();
+    test_read_file_slice();
     printf("host_shim_test: ALL PASSED\n");
     return 0;
 }

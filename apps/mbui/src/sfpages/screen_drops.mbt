@@ -131,6 +131,9 @@ fn ScreenSess::pump(self : ScreenSess) -> Unit {
 ///|
 /// The app gone up installed on the device and started: which it is said (its bundle id), or why not.
 fn ScreenSess::drop_install(self : ScreenSess, d : ScreenDropItem) -> Unit {
+  if !self.is_active_principal() {
+    return
+  }
   d.state.set("installing")
   let params = {
     "station": Json::string(self.station),
@@ -138,7 +141,7 @@ fn ScreenSess::drop_install(self : ScreenSess, d : ScreenDropItem) -> Unit {
     "path": Json::string(d.path()),
   }
   (self.src.call)("screen.install", Json::object(params), fn(r) {
-    guard self.drops.iter().any(fn(x) { x.serial == d.serial }) else { return }
+    guard self.is_active_principal() && self.drops.iter().any(fn(x) { x.serial == d.serial }) else { return }
     match r {
       Ok(v) => {
         d.installed = text(Some(v), "app")
@@ -162,6 +165,9 @@ fn ScreenSess::still_going(self : ScreenSess, d : ScreenDropItem) -> Bool {
 /// station answers with what it has (`have`), the last part in with the entry it now has; a name taken refuses the
 /// first part (409 `exists`), and the file goes up again under the next free name.
 fn ScreenSess::drop_part(self : ScreenSess, d : ScreenDropItem, have : Int, planned : Int) -> Unit {
+  if !self.is_active_principal() {
+    return
+  }
   let size = d.bytes.length()
   let len = if size - have < planned { size - have } else { planned }
   let part = Bytes::makei(len, fn(i) { d.bytes[have + i] })
@@ -175,7 +181,7 @@ fn ScreenSess::drop_part(self : ScreenSess, d : ScreenDropItem, have : Int, plan
   }
   (self.src.call_bytes)("drive.upload.part", Json::object(params), part, fn(r) {
     // let go of meanwhile: what the station says of it is not this list's any more
-    if !self.still_going(d) {
+    if !self.is_active_principal() || !self.still_going(d) {
       return
     }
     match r {

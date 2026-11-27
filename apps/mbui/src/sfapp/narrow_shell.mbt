@@ -137,26 +137,6 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   |> ignore
   // (none kept of another workspace: those put by left for good as the workspace in view changes)
   v.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(_) { app.nav.shelf_empty() })
-  // a station's screen with a page put over it (a chat a notice opened): its page is not built there, so its view is
-  // let go of as it is covered, and opened again by its page as it is on top again
-  v.reacts(
-    fn() {
-      let pages = app.nav.pages()
-      let screens : Array[(String, String, Bool)] = []
-      for i, p in pages {
-        match p {
-          Screen(at) => screens.push((at.station, at.screen, i < pages.length() - 1))
-          _ => ()
-        }
-      }
-      screens
-    },
-    fn(screens) {
-      for k in screens {
-        @sfpages.screen_covered(src, k.0, k.1, k.2)
-      }
-    },
-  )
   // what the places of the bar open on asked ahead of them from the moment it shows, held till its page is gone from
   // view under another (the stack at rest: Nav::root_shows), at those moments whatever frames are drawn (sfbase's
   // places_ahead_node)
@@ -815,11 +795,15 @@ fn narrow_made_as(
       })
     // a station's screen (sfpages' screen_node): its bar, its picture and what drives it its own, inside the room the
     // stack's frame keeps over and under it (but in 全屏); let go as the page leaves (app.mbt's page_left: screen_left),
-    // its view paused while a page is over it (screen_covered, above)
+    // its view paused via the multi-holder visibility lease while a page covers it
     Screen(at) =>
-      made("screen/" + at.station + "/" + at.screen, fn(p, _core, _here, frame, _stint, _acts) {
+      made_at("screen/" + at.station + "/" + at.screen, place, fn(p, _core, _here, frame, _stint, _acts, serial) {
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        @sfpages.screen_node(p, src, at, frame)
+        let on_top = fn() {
+          let pages = app.nav.pages()
+          app.nav.shows(serial) && pages.length() > 0 && pages[pages.length() - 1] == Screen(at)
+        }
+        @sfpages.screen_node(p, src, at, frame, shown=on_top)
       })
     // the stations' list, the profiles' (by station: another station's another page) and an account's on several
     // stations (sfpages' stations_list.mbt, profiles_list.mbt); as a place of the bottom bar's, their ＋ the bar's notch

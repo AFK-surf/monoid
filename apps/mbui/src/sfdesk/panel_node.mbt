@@ -631,11 +631,12 @@ fn side_screen_page_node(
 ) -> Unit {
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    let screen_id = @sfpages.screen_key_of(at.station, at.screen)
     s.owns(fn() {
       match app.nav.top() {
         Screen(top) if top.station == at.station && top.screen == at.screen => ()
         Place("remote") if @sfpages.remote_has_screen(src, at.station, at.screen) => ()
-        _ => @sfpages.screen_left(src, at.station, at.screen)
+        _ => @sfpages.screen_left_key(src, screen_id, at.station, at.screen)
       }
     })
     |> ignore
@@ -648,6 +649,7 @@ fn side_screen_page_node(
         screen_tab_alone(tabs()) && !column_short.get() && ww <= wh
       }, fn(p, alone) {
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        let hidden = if on_tape { tape_side_hidden } else { fn() { !shows() } }
         @sfpages.screen_node(
           p,
           src,
@@ -656,13 +658,8 @@ fn side_screen_page_node(
           on_close=fn() { side_change(src, r, "close", Some(tab)) },
           in_tab=true,
           own_bar=if alone { Some(fn() { side_bar_look_node(on_tape) }) } else { None },
+          shown=fn() { !hidden() },
         )
-        // on the tape, out of sight while another panel is in use at rest; off the tape, out of sight while another page
-        // covers its chat in the pane: let go of as a page under another is (its last frame kept, the stream and its hold
-        // on the screen given back), opened again as it comes over
-        let hidden = if on_tape { tape_side_hidden } else { fn() { !shows() } }
-        p.reacts(hidden, fn(h) { @sfpages.screen_covered(src, at.station, at.screen, h) })
-        p.owns(fn() { @sfpages.screen_covered(src, at.station, at.screen, false) }) |> ignore
       })
     })
   })

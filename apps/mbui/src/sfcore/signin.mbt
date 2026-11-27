@@ -247,6 +247,11 @@ pub fn frame(accounts : @core.Sub) -> Unit {
 let signed_in : Ref[String?] = Ref(None)
 
 ///|
+/// Hook notified (outside any computed getter) when `accounts_told` receives the current account list.
+// kept across runs: wire set once in sfapp's fn init
+pub let on_accounts_told : Ref[(Array[String]) -> Unit] = Ref(fn(_) {  })
+
+///|
 fn init {
   @ui.on_reset(fn() { signed_in.val = None })
 }
@@ -256,10 +261,9 @@ fn init {
 /// shown to the next (@core.Client::forget_kept), as the source keeps none of what it last said (sfbase's
 /// read_topic_state). A replay of a run from before MBUI_SWR_VIEWS forgets nothing, as its run's app did not.
 fn accounts_told(list : Json) -> Unit {
-  let who = match list {
+  let subs : Array[String] = match list {
     Array(items) =>
-      items
-      .map(fn(a) {
+      items.map(fn(a) {
         match a {
           Object(m) =>
             match (m.get("sub"), m.get("account")) {
@@ -274,14 +278,18 @@ fn accounts_told(list : Json) -> Unit {
           _ => a.stringify()
         }
       })
-      .join("\u{1}")
-    _ => list.stringify()
+    _ => []
   }
+  let who = if subs.is_empty() { list.stringify() } else { subs.join("\u{1}") }
+  let changed = signed_in.val != Some(who)
   match signed_in.val {
     Some(was) if was != who && trace_switch("MBUI_SWR_VIEWS") => @core.client.forget_kept()
     _ => ()
   }
   signed_in.val = Some(who)
+  if changed {
+    (on_accounts_told.val)(subs)
+  }
 }
 
 /// The first account answer decides the web's entry. Later sign-outs can use the normal retry page.

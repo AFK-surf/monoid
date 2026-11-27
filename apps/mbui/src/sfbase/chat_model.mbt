@@ -414,6 +414,15 @@ pub(all) struct RunSides {
 }
 
 ///|
+/// A shortcut at the end of a harness failure notice (NoticeSoftware).
+#derive(Eq)
+pub(all) struct NoticeSoftware {
+  runtime : String
+  kind : String
+  action : String
+}
+
+///|
 /// A message of the chat (ChatMessage), with what the core decides of it.
 #derive(Eq)
 pub(all) struct Message {
@@ -461,6 +470,9 @@ pub(all) struct Message {
   /// one about `profile` the station says what to do of: that, at the pill's end (重新登录, 设置代理), opening the
   /// profile's page; "" otherwise
   notice_profile_action : String
+  /// one about a runtime's installation or version: repairing/updating it on the station, its progress, or opening the
+  /// station's software settings
+  notice_software : NoticeSoftware?
   notice_md : Json?
   /// the agent whose capacity retry this notice can cancel, while that retry waits
   notice_retry_session : String
@@ -711,6 +723,10 @@ pub fn message_of(m : Json) -> Message {
       None => -1
     },
     notice_profile_action: text(field(s, "notice"), "profileAction"),
+    notice_software: match field(field(s, "notice"), "software") {
+      Some(Object(_)) as sw => Some({ runtime: text(sw, "runtime"), kind: text(sw, "kind"), action: text(sw, "action") })
+      _ => None
+    },
     notice_md: field(field(s, "notice"), "md"),
     notice_retry_session: text(field(s, "notice"), "retrySession"),
     notice_again_session: text(field(s, "notice"), "againSession"),

@@ -399,9 +399,47 @@ pub fn JValue::get_units(self : JValue, name : Array[Int]) -> Option[JValue] {
   }
 }
 
-/// Property lookup by UTF-8 `String`.
+fn is_ascii_str(s : String) -> Bool {
+  let n = s.length()
+  for i in 0..<n {
+    if s.code_unit_at(i) >= 0x80 {
+      return false
+    }
+  }
+  true
+}
+
+fn units_eq_ascii(units : Array[Int], name : String) -> Bool {
+  let n = name.length()
+  if units.length() != n {
+    return false
+  }
+  for i in 0..<n {
+    if units[i] != name.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+/// Property lookup by UTF-8 `String` (zero-allocation fast path for ASCII keys).
 pub fn JValue::get(self : JValue, name : String) -> Option[JValue] {
-  self.get_units(utf16_units(name))
+  if is_ascii_str(name) {
+    match self {
+      JValue::Obj(entries) => {
+        for i in 0..<entries.length() {
+          let (k, v) = entries[i]
+          if units_eq_ascii(k, name) {
+            return Some(v)
+          }
+        }
+        None
+      }
+      _ => None
+    }
+  } else {
+    self.get_units(utf16_units(name))
+  }
 }
 
 // ── Lossless UTF-16 JSON Parser ──
@@ -470,10 +508,18 @@ fn Parser::fail(self : Parser) -> String {
   "unexpected input at " + self.at.to_string()
 }
 
+fn Parser::expect_byte(self : Parser, ch : Int) -> Result[Unit, String] {
+  if self.peek() != ch {
+    return Err(self.fail())
+  }
+  self.at = self.at + 1
+  Ok(())
+}
+
 fn Parser::expect_ascii(self : Parser, word : String) -> Result[Unit, String] {
-  let raw = word.to_bytes()
-  for i in 0..<raw.length() {
-    if self.peek() != (raw[i].to_int() & 0xFF) {
+  let n = word.length()
+  for i in 0..<n {
+    if self.peek() != word.code_unit_at(i) {
       return Err(self.fail())
     }
     self.at = self.at + 1
@@ -482,7 +528,7 @@ fn Parser::expect_ascii(self : Parser, word : String) -> Result[Unit, String] {
 }
 
 fn Parser::parse_string(self : Parser) -> Result[Array[Int], String] {
-  match self.expect_ascii("\"") {
+  match self.expect_byte(0x22) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }
@@ -740,9 +786,473 @@ pub fn parse_units(units : Array[Int]) -> Result[JValue, String] {
   Ok(v)
 }
 
+/// UTF-16 code-unit length of `src[0..byte_end]` (for exact error offsets in `StrParser`).
+fn utf16_len_prefix(src : String, byte_end : Int) -> Int {
+  let end = if byte_end < src.length() { byte_end } else { src.length() }
+  let mut count = 0
+  let mut i = 0
+  while i < end {
+    let b0 = src.code_unit_at(i)
+    if b0 < 0x80 {
+      count = count + 1
+      i = i + 1
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < end && is_utf8_cont(src.code_unit_at(i + 1)) {
+        count = count + 1
+        i = i + 2
+      } else {
+        count = count + 1
+        i = i + 1
+      }
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = src.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end && is_utf8_cont(src.code_unit_at(i + 2)) {
+            count = count + 1
+            i = i + 3
+          } else {
+            count = count + 1
+            i = i + 2
+          }
+          continue
+        }
+      }
+      count = count + 1
+      i = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < end {
+        let b1 = src.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < end && is_utf8_cont(src.code_unit_at(i + 2)) {
+            if i + 3 < end && is_utf8_cont(src.code_unit_at(i + 3)) {
+              count = count + 2
+              i = i + 4
+            } else {
+              count = count + 1
+              i = i + 3
+            }
+            continue
+          }
+          count = count + 1
+          i = i + 2
+          continue
+        }
+      }
+      count = count + 1
+      i = i + 1
+    } else {
+      count = count + 1
+      i = i + 1
+    }
+  }
+  count
+}
+
+/// Direct UTF-8 JSON parser over `String` (`code_unit_at`), avoiding full-input `utf16_units` conversion.
+struct StrParser {
+  src : String
+  len : Int
+  mut at : Int
+}
+
+fn StrParser::peek(self : StrParser) -> Int {
+  if self.at < self.len {
+    self.src.code_unit_at(self.at)
+  } else {
+    -1
+  }
+}
+
+fn StrParser::skip(self : StrParser) -> Unit {
+  let len = self.len
+  let mut i = self.at
+  while i < len {
+    let c = self.src.code_unit_at(i)
+    if c == 0x20 || c == 0x09 || c == 0x0A || c == 0x0D {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  self.at = i
+}
+
+fn StrParser::fail(self : StrParser) -> String {
+  "unexpected input at " + utf16_len_prefix(self.src, self.at).to_string()
+}
+
+fn StrParser::fail_at_utf16(offset : Int) -> String {
+  "unexpected input at " + offset.to_string()
+}
+
+fn StrParser::expect_byte(self : StrParser, ch : Int) -> Result[Unit, String] {
+  if self.at >= self.len || self.src.code_unit_at(self.at) != ch {
+    return Err(self.fail())
+  }
+  self.at = self.at + 1
+  Ok(())
+}
+
+fn StrParser::expect_ascii(self : StrParser, word : String) -> Result[Unit, String] {
+  let n = word.length()
+  for i in 0..<n {
+    if self.at >= self.len || self.src.code_unit_at(self.at) != word.code_unit_at(i) {
+      return Err(self.fail())
+    }
+    self.at = self.at + 1
+  }
+  Ok(())
+}
+
+fn StrParser::parse_string(self : StrParser) -> Result[Array[Int], String] {
+  if self.at >= self.len || self.src.code_unit_at(self.at) != 0x22 {
+    return Err(self.fail())
+  }
+  self.at = self.at + 1
+  let out : Array[Int] = []
+  let len = self.len
+  while true {
+    let i = self.at
+    if i >= len {
+      return Err(self.fail())
+    }
+    let b0 = self.src.code_unit_at(i)
+    if b0 < 0x80 {
+      if b0 == 0x22 {
+        self.at = i + 1
+        break
+      }
+      if b0 < 0x20 {
+        return Err(self.fail())
+      }
+      if b0 != 0x5C {
+        out.push(b0)
+        self.at = i + 1
+        continue
+      }
+      self.at = i + 1
+      if self.at >= len {
+        return Err(self.fail())
+      }
+      let e = self.src.code_unit_at(self.at)
+      if e >= 0x80 {
+        let off = utf16_len_prefix(self.src, self.at) + 1
+        return Err(StrParser::fail_at_utf16(off))
+      }
+      self.at = self.at + 1
+      if e == 0x22 || e == 0x5C || e == 0x2F {
+        out.push(e)
+      } else if e == 0x62 {
+        out.push(0x08)
+      } else if e == 0x66 {
+        out.push(0x0C)
+      } else if e == 0x6E {
+        out.push(0x0A)
+      } else if e == 0x72 {
+        out.push(0x0D)
+      } else if e == 0x74 {
+        out.push(0x09)
+      } else if e == 0x75 {
+        let mut v = 0
+        for _ in 0..<4 {
+          let h = hex_val(self.peek())
+          if h < 0 {
+            return Err(self.fail())
+          }
+          v = v * 16 + h
+          self.at = self.at + 1
+        }
+        out.push(v)
+      } else {
+        return Err(self.fail())
+      }
+    } else if b0 >= 0xC2 && b0 <= 0xDF {
+      if i + 1 < len {
+        let b1 = self.src.code_unit_at(i + 1)
+        if is_utf8_cont(b1) {
+          out.push(((b0 & 0x1F) << 6) | (b1 & 0x3F))
+          self.at = i + 2
+          continue
+        }
+      }
+      out.push(0xFFFD)
+      self.at = i + 1
+    } else if b0 >= 0xE0 && b0 <= 0xEF {
+      let lo1 = if b0 == 0xE0 { 0xA0 } else { 0x80 }
+      let hi1 = if b0 == 0xED { 0x9F } else { 0xBF }
+      if i + 1 < len {
+        let b1 = self.src.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < len {
+            let b2 = self.src.code_unit_at(i + 2)
+            if is_utf8_cont(b2) {
+              out.push(((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F))
+              self.at = i + 3
+              continue
+            }
+          }
+          out.push(0xFFFD)
+          self.at = i + 2
+          continue
+        }
+      }
+      out.push(0xFFFD)
+      self.at = i + 1
+    } else if b0 >= 0xF0 && b0 <= 0xF4 {
+      let lo1 = if b0 == 0xF0 { 0x90 } else { 0x80 }
+      let hi1 = if b0 == 0xF4 { 0x8F } else { 0xBF }
+      if i + 1 < len {
+        let b1 = self.src.code_unit_at(i + 1)
+        if b1 >= lo1 && b1 <= hi1 {
+          if i + 2 < len {
+            let b2 = self.src.code_unit_at(i + 2)
+            if is_utf8_cont(b2) {
+              if i + 3 < len {
+                let b3 = self.src.code_unit_at(i + 3)
+                if is_utf8_cont(b3) {
+                  let cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+                  push_cp_as_utf16(out, cp)
+                  self.at = i + 4
+                  continue
+                }
+              }
+              out.push(0xFFFD)
+              self.at = i + 3
+              continue
+            }
+          }
+          out.push(0xFFFD)
+          self.at = i + 2
+          continue
+        }
+      }
+      out.push(0xFFFD)
+      self.at = i + 1
+    } else {
+      out.push(0xFFFD)
+      self.at = i + 1
+    }
+  }
+  Ok(out)
+}
+
+fn StrParser::read_digits(self : StrParser) -> Bool {
+  let from = self.at
+  let len = self.len
+  let mut i = from
+  while i < len {
+    let c = self.src.code_unit_at(i)
+    if c >= 0x30 && c <= 0x39 {
+      i = i + 1
+    } else {
+      break
+    }
+  }
+  self.at = i
+  i > from
+}
+
+fn StrParser::parse_number(self : StrParser) -> Result[Double, String] {
+  let start = self.at
+  if self.peek() == 0x2D {
+    self.at = self.at + 1
+  }
+  if self.peek() == 0x30 {
+    self.at = self.at + 1
+  } else if !self.read_digits() {
+    return Err(self.fail())
+  }
+  if self.peek() == 0x2E {
+    self.at = self.at + 1
+    if !self.read_digits() {
+      return Err(self.fail())
+    }
+  }
+  let mut has_exp = false
+  let mut exp_neg = false
+  let e = self.peek()
+  if e == 0x65 || e == 0x45 {
+    has_exp = true
+    self.at = self.at + 1
+    let sign = self.peek()
+    if sign == 0x2B || sign == 0x2D {
+      if sign == 0x2D {
+        exp_neg = true
+      }
+      self.at = self.at + 1
+    }
+    if !self.read_digits() {
+      return Err(self.fail())
+    }
+  }
+  let sb = StringBuilder::new()
+  sb.write_substring(self.src, start, self.at)
+  let lit = sb.to_string()
+  match lit.to_double() {
+    Some(d) => Ok(d)
+    None => {
+      if !has_exp {
+        return Err(self.fail())
+      }
+      let neg = self.src.code_unit_at(start) == 0x2D
+      if exp_neg {
+        Ok(if neg { -0.0 } else { 0.0 })
+      } else if neg {
+        Ok(-1.0 / 0.0)
+      } else {
+        Ok(1.0 / 0.0)
+      }
+    }
+  }
+}
+
+fn StrParser::parse_value(self : StrParser, depth : Int) -> Result[JValue, String] {
+  if depth > MAX_PARSE_DEPTH {
+    return Err("maximum nesting depth exceeded at " + utf16_len_prefix(self.src, self.at).to_string())
+  }
+  self.skip()
+  let c = self.peek()
+  if c == 0x7B {
+    self.at = self.at + 1
+    let entries : Array[(Array[Int], JValue)] = []
+    let mut seen : Option[Map[String, Int]] = None
+    self.skip()
+    if self.peek() == 0x7D {
+      self.at = self.at + 1
+      return Ok(JValue::Obj(entries))
+    }
+    while true {
+      self.skip()
+      let key = match self.parse_string() {
+        Ok(k) => k
+        Err(e) => return Err(e)
+      }
+      self.skip()
+      match self.expect_byte(0x3A) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      let v = match self.parse_value(depth + 1) {
+        Ok(jv) => jv
+        Err(e) => return Err(e)
+      }
+      match seen {
+        Some(m) => {
+          let mk = units_map_key(key)
+          match m.get(mk) {
+            Some(idx) => entries[idx] = (key, v)
+            None => {
+              m.set(mk, entries.length())
+              entries.push((key, v))
+            }
+          }
+        }
+        None => {
+          let mut found = -1
+          for i in 0..<entries.length() {
+            let (ek, _) = entries[i]
+            if units_eq(ek, key) {
+              found = i
+              break
+            }
+          }
+          if found >= 0 {
+            entries[found] = (key, v)
+          } else {
+            entries.push((key, v))
+            if entries.length() >= SEEN_FROM {
+              let m : Map[String, Int] = Map::new()
+              for i in 0..<entries.length() {
+                let (ek, _) = entries[i]
+                m.set(units_map_key(ek), i)
+              }
+              seen = Some(m)
+            }
+          }
+        }
+      }
+      self.skip()
+      if self.peek() == 0x2C {
+        self.at = self.at + 1
+        continue
+      }
+      match self.expect_byte(0x7D) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      break
+    }
+    Ok(JValue::Obj(entries))
+  } else if c == 0x5B {
+    self.at = self.at + 1
+    let items : Array[JValue] = []
+    self.skip()
+    if self.peek() == 0x5D {
+      self.at = self.at + 1
+      return Ok(JValue::Arr(items))
+    }
+    while true {
+      match self.parse_value(depth + 1) {
+        Ok(jv) => items.push(jv)
+        Err(e) => return Err(e)
+      }
+      self.skip()
+      if self.peek() == 0x2C {
+        self.at = self.at + 1
+        continue
+      }
+      match self.expect_byte(0x5D) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+      break
+    }
+    Ok(JValue::Arr(items))
+  } else if c == 0x22 {
+    match self.parse_string() {
+      Ok(s) => Ok(JValue::Str(s))
+      Err(e) => Err(e)
+    }
+  } else if c == 0x74 {
+    match self.expect_ascii("true") {
+      Ok(_) => Ok(JValue::Bool(true))
+      Err(e) => Err(e)
+    }
+  } else if c == 0x66 {
+    match self.expect_ascii("false") {
+      Ok(_) => Ok(JValue::Bool(false))
+      Err(e) => Err(e)
+    }
+  } else if c == 0x6E {
+    match self.expect_ascii("null") {
+      Ok(_) => Ok(JValue::Null)
+      Err(e) => Err(e)
+    }
+  } else {
+    match self.parse_number() {
+      Ok(d) => Ok(JValue::Num(d))
+      Err(e) => Err(e)
+    }
+  }
+}
+
 /// Parse a UTF-8 `String` as JavaScript `JSON.parse` (error offsets counted in UTF-16 code units).
 pub fn parse(src : String) -> Result[JValue, String] {
-  parse_units(utf16_units(src))
+  let p = StrParser::{ src: src, len: src.length(), at: 0 }
+  let v = match p.parse_value(0) {
+    Ok(jv) => jv
+    Err(e) => return Err(e)
+  }
+  p.skip()
+  if p.at != p.len {
+    return Err(p.fail())
+  }
+  Ok(v)
 }
 
 // ── Stringifier (ECMAScript key ordering + lone-surrogate escaping) ──

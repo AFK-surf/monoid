@@ -88,7 +88,8 @@ after(async () => {
         } catch {}
       }
     }
-    rmSync(d, { recursive: true, force: true });
+    // (a runner killed just above can still write here while it ends: as the other live tests remove theirs)
+    rmSync(d, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
   }
 });
 

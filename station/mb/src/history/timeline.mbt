@@ -75,7 +75,7 @@ fn trim(s : String) -> String {
 }
 
 ///|
-/// The code points of `s` (Array.from: a pair of surrogates one, a lone one one), as strings.
+/// The code points of `s` (Array.from: a pair of surrogates one, a lone one one), as strings (used by script.mbt).
 fn chars(s : String) -> Array[String] {
   let out = []
   let n = s.length()
@@ -95,11 +95,44 @@ fn chars(s : String) -> Array[String] {
 }
 
 ///|
+fn code_of(c : String) -> Int {
+  if c.length() == 2 {
+    0x10000 + ((c.unsafe_charcode_at(0) - 0xd800) << 10) + (c.unsafe_charcode_at(1) - 0xdc00)
+  } else {
+    c.unsafe_charcode_at(0)
+  }
+}
+
+///|
+/// Count Unicode code points in `text` and return `(total_points, utf16_cut_at_limit)` without allocating.
+fn count_points_and_cut(text : String, limit : Int) -> (Int, Int) {
+  let n = text.length()
+  let mut i = 0
+  let mut pts = 0
+  let mut cut = n
+  while i < n {
+    if pts == limit {
+      cut = i
+    }
+    let c = text.unsafe_charcode_at(i)
+    let w = if c >= 0xd800 && c <= 0xdbff && i + 1 < n && text.unsafe_charcode_at(i + 1) >= 0xdc00 &&
+      text.unsafe_charcode_at(i + 1) <= 0xdfff {
+      2
+    } else {
+      1
+    }
+    i += w
+    pts += 1
+  }
+  (pts, cut)
+}
+
+///|
 /// transcript.ts `clip`.
 fn clip(text : String) -> String {
-  let cs = chars(text)
-  if cs.length() > max_text {
-    cs.view(end=max_text).iter().collect().join("") + "\n… (\{cs.length() - max_text} more characters)"
+  let (pts, cut) = count_points_and_cut(text, max_text)
+  if pts > max_text {
+    text.unsafe_substring(start=0, end=cut) + "\n… (\{pts - max_text} more characters)"
   } else {
     text
   }
@@ -295,21 +328,19 @@ fn injected(text : String) -> Bool {
     if !t.has_prefix("<" + tag) {
       return false
     }
-    let next = chars(t.view(start_offset=tag.length() + 1).to_owned())
-    match next.get(0) {
-      None => true
-      Some(c) => !is_alphanumeric(code_of(c)) && c != "_"
+    let pos = tag.length() + 1
+    if pos >= t.length() {
+      return true
     }
+    let c0 = t.unsafe_charcode_at(pos)
+    let cp = if c0 >= 0xd800 && c0 <= 0xdbff && pos + 1 < t.length() && t.unsafe_charcode_at(pos + 1) >= 0xdc00 &&
+      t.unsafe_charcode_at(pos + 1) <= 0xdfff {
+      0x10000 + ((c0 - 0xd800) << 10) + (t.unsafe_charcode_at(pos + 1) - 0xdc00)
+    } else {
+      c0
+    }
+    !is_alphanumeric(cp) && cp != 0x5f
   })
-}
-
-///|
-fn code_of(c : String) -> Int {
-  if c.length() == 2 {
-    0x10000 + ((c.unsafe_charcode_at(0) - 0xd800) << 10) + (c.unsafe_charcode_at(1) - 0xdc00)
-  } else {
-    c.unsafe_charcode_at(0)
-  }
 }
 
 ///|

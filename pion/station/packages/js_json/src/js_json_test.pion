@@ -374,3 +374,49 @@ test "utf16_len matches utf16_units(s).length() across valid and ill-formed UTF-
     expect(got == want, "ill-formed utf16_len mismatch at " + i.to_string() + ": got=" + got.to_string() + " want=" + want.to_string())
   }
 }
+
+test "StrParser parse matches parse_units on UTF-8, escapes, errors, and ASCII/non-ASCII JValue::get" {
+  let samples : Array[String] = [
+    "{\"a\":\"hello\",\"中\":\"🚀é\",\"esc\":\"\\n\\t\\uD83D\\uDE80\\u0000\",\"n\":-12.5e+2,\"b\":true,\"f\":false,\"z\":null,\"arr\":[1,2,3]}",
+    "{\"k\":1,\"k\":2,\"dup\":\"first\",\"dup\":\"second\"}",
+  ]
+  for i in 0..<samples.length() {
+    let s = samples[i]
+    let a = match parse(s) {
+      Ok(v) => v
+      Err(e) => panic("parse failed: " + e)
+    }
+    let b = match parse_units(utf16_units(s)) {
+      Ok(v) => v
+      Err(e) => panic("parse_units failed: " + e)
+    }
+    expect(jvalue_eq(a, b), "parse vs parse_units parity mismatch at " + i.to_string())
+  }
+  let v = match parse(samples[0]) {
+    Ok(x) => x
+    Err(e) => panic(e)
+  }
+  expect(match v.get("a") { Some(JValue::Str(u)) => sanitize_str(u) == "hello"; _ => false }, "ASCII JValue::get")
+  expect(match v.get("中") { Some(JValue::Str(u)) => sanitize_str(u) == "🚀é"; _ => false }, "non-ASCII JValue::get")
+  expect(match v.get("missing") { None => true; _ => false }, "missing JValue::get")
+
+  let err_samples : Array[String] = [
+    "[\"🚀\",!]",
+    "\"🚀\\q\"",
+    "\"🚀\\🚀\"",
+    "{\"a\":1} trailing",
+    "\"unterminated",
+  ]
+  for i in 0..<err_samples.length() {
+    let s = err_samples[i]
+    let e1 = match parse(s) {
+      Ok(_) => panic("expected err from parse: " + s)
+      Err(e) => e
+    }
+    let e2 = match parse_units(utf16_units(s)) {
+      Ok(_) => panic("expected err from parse_units: " + s)
+      Err(e) => e
+    }
+    expect(e1 == e2, "error mismatch for " + s + ": got=" + e1 + " want=" + e2)
+  }
+}

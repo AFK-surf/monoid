@@ -910,6 +910,9 @@ fn panel_corners(panels : Json?, w : Double, h : Double) -> (Double, Double, Dou
 ///|
 /// `id` started again, said when it was; the next press is for it too.
 fn debug_relaunch(s : ScreenSess, d : DebugLogs, id : String, name : String) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   d.last_app.set(Some((id, name)))
   let params = { "station": Json::string(s.station), "screen": Json::string(s.screen), "app": Json::string(id) }
   (s.src.call)("screen.relaunch", Json::object(params), fn(r) {
@@ -924,8 +927,14 @@ fn debug_relaunch(s : ScreenSess, d : DebugLogs, id : String, name : String) -> 
 ///|
 /// The device's picture in its own pixels, onto this device's clipboard (what a person shows an agent or a colleague).
 fn debug_shot(s : ScreenSess, d : DebugLogs) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let params = { "station": Json::string(s.station), "screen": Json::string(s.screen) }
   (s.src.call)("screen.screenshot", Json::object(params), fn(r) {
+    if !s.is_active_principal() {
+      return
+    }
     match r {
       Ok(v) =>
         match @codec.from_base64_exact(text(Some(v), "png")) {
@@ -1116,6 +1125,9 @@ fn debug_logs_new() -> DebugLogs {
 ///|
 /// What came since the last answer asked for (`screen.logs`), taken; `answered` once it is.
 fn debug_logs_ask(s : ScreenSess, d : DebugLogs, answered : () -> Unit) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   d.asking = true
   let n = d.asks
   let params = { "station": Json::string(s.station), "screen": Json::string(s.screen), "after": Json::number(d.after) }
@@ -1142,6 +1154,9 @@ fn debug_tab_labels() -> Array[String] {
 ///|
 /// Setting `name` of the device set to `value`, how it is then taken from the answer.
 fn debug_setting_chosen(s : ScreenSess, d : DebugLogs, name : String, value : String) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let params = { "station": Json::string(s.station), "screen": Json::string(s.screen), "name": Json::string(name), "value": Json::string(value) }
   (s.src.call)("screen.setSetting", Json::object(params), fn(r) {
     match r {
@@ -1169,6 +1184,9 @@ let debug_text_sizes : Array[(String, String)] = [
 ///|
 /// How the device is set, asked (`screen.settings`).
 fn debug_settings_ask(s : ScreenSess, d : DebugLogs) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   d.settings_asked = true
   let params = { "station": Json::string(s.station), "screen": Json::string(s.screen) }
   (s.src.call)("screen.settings", Json::object(params), fn(r) {
@@ -1220,6 +1238,9 @@ fn debug_going(d : DebugLogs) -> Bool {
 ///|
 /// 录屏 started, of the panel in use where the device has two, or ended.
 fn debug_record_pressed(s : ScreenSess, d : DebugLogs, going : Bool) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let params : Map[String, Json] = { "station": Json::string(s.station), "screen": Json::string(s.screen) }
   if !going {
     if flag(s.state, "poses") {
@@ -1261,6 +1282,9 @@ fn debug_record_pressed(s : ScreenSess, d : DebugLogs, going : Bool) -> Unit {
 ///|
 /// `op` of the device told, what comes back said where 设备 says things.
 fn debug_act(s : ScreenSess, d : DebugLogs, op : String, more : Map[String, Json], done : String) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let params : Map[String, Json] = { "station": Json::string(s.station), "screen": Json::string(s.screen) }
   more.each(fn(k, v) { params[k] = v })
   d.acted.set("")
@@ -1346,6 +1370,9 @@ priv struct DebugApps {
 /// 重启 App from 控制中心, 日志's App, or the tools under the device, beside what opened it (`from`); `push`: the
 /// notification sent to the one chosen; `uninstall`: the one chosen taken off.
 fn debug_apps_open(s : ScreenSess, u : ScreenUi, from : @sf.Anchor, push? : String, uninstall? : Bool = false) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let d : DebugApps = { apps: @signals.signal(None), said: @signals.signal(""), going: false, push, uninstall }
   let params = { "station": Json::string(s.station), "screen": Json::string(s.screen) }
   (s.src.call)("screen.apps", Json::object(params), fn(r) {
@@ -1387,7 +1414,7 @@ fn debug_apps_node(v : @view.View, s : ScreenSess, u : ScreenUi, d : DebugApps) 
           row,
           fn() { a.get().1 },
           fn() {
-            if d.going {
+            if d.going || !s.is_active_principal() {
               return
             }
             let (id, name, _) = a.untracked()

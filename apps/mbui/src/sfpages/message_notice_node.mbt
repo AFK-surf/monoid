@@ -98,6 +98,7 @@ fn notice_words_of(m : Message, open : Bool) -> NoticeWords {
 #derive(Eq)
 priv enum NoticeEnd {
   Install
+  Software
   Act
   ProfileAction
   Report
@@ -124,14 +125,18 @@ fn notice_pill_node(
     match now.install {
       Some(i) if i.action != "" => Install
       _ =>
-        if notice_after(now) is Some(_) {
-          Act
-        } else if now.profile != "" && now.notice_profile_action != "" {
-          ProfileAction
-        } else if now.reportable {
-          Report
-        } else {
-          NoEnd
+        match now.notice_software {
+          Some(sw) if sw.action != "" => Software
+          _ =>
+            if notice_after(now) is Some(_) {
+              Act
+            } else if now.profile != "" && now.notice_profile_action != "" {
+              ProfileAction
+            } else if now.reportable {
+              Report
+            } else {
+              NoEnd
+            }
         }
     }
   }
@@ -164,6 +169,17 @@ fn notice_pill_node(
             notice_action_node(e, fn() { i().action }, ink, fn() { install_busy(src, here.station, i()) }, strut~, fn() {
               install_runtime(src, here.station, @signals.untracked(i))
             })
+          }
+          Software => {
+            let sw = fn() { m().notice_software.unwrap_or(no_notice_software) }
+            notice_action_node(
+              e,
+              fn() { sw().action },
+              ink,
+              fn() { software_notice_busy(src, (here.view)().offline, here.station, sw()) },
+              strut~,
+              fn() { software_notice_act(src, (here.view)().offline, here.station, @signals.untracked(sw)) },
+            )
           }
           Act => {
             // (as it was last offered while it goes)

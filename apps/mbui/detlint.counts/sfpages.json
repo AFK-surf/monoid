@@ -1,7 +1,6 @@
 {
   "counts": {
     "page-at-moment": {
-      "src/sfpages/about.mbt": 1,
       "src/sfpages/activity_steady_node.mbt": 1,
       "src/sfpages/automatic_decisions.mbt": 1,
       "src/sfpages/board_node.mbt": 7,
@@ -13,7 +12,6 @@
       "src/sfpages/drive_views_node.mbt": 1,
       "src/sfpages/find_bar_node.mbt": 1,
       "src/sfpages/history_steps_node.mbt": 2,
-      "src/sfpages/local_station.mbt": 1,
       "src/sfpages/message_media_node.mbt": 1,
       "src/sfpages/message_notice_node.mbt": 1,
       "src/sfpages/message_viz_node.mbt": 1,
@@ -24,14 +22,12 @@
       "src/sfpages/presets.mbt": 1,
       "src/sfpages/publish.mbt": 3,
       "src/sfpages/screen_bars_node.mbt": 1,
-      "src/sfpages/screen_debug_node.mbt": 3,
       "src/sfpages/screen_panel.mbt": 1,
       "src/sfpages/screen_passkey.mbt": 1,
-      "src/sfpages/screen_stage.mbt": 4,
-      "src/sfpages/screen_view.mbt": 4,
+      "src/sfpages/screen_stage.mbt": 3,
+      "src/sfpages/screen_view.mbt": 1,
       "src/sfpages/search.mbt": 1,
       "src/sfpages/sidebar_node.mbt": 2,
-      "src/sfpages/station_node.mbt": 1,
       "src/sfpages/terminal_view_node.mbt": 2,
       "src/sfpages/vault.mbt": 1
     },

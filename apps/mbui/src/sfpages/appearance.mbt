@@ -1,6 +1,6 @@
 // 外观, one page for every frame, made once: how this
 // device shows still.fail, its settings (@sf.settings: wide, rows of one list card, each choice at its row's end;
-// narrow, a block each): 主题, 主题色, 字体 (the faces chosen, opening their page: FontRow; font_setting.mbt), 动画, 震动, 语言; with
+// narrow, a block each): 主题, 主题色, 背景着色, 字体 (the faces chosen, opening their page: FontRow; font_setting.mbt), 动画, 震动, 语言; with
 // keyboard and mouse the files dragged into a chat too, and laid out wide the rail changed in place (as the web's,
 // `wideOnly`). Each choice is the core's prefs (`prefs.set`), shown at once; a colour theme's dot pointed at shows the
 // window in it a moment, the one set again as the pointer leaves it unchosen or the page goes. When a done chat is offered to archive is
@@ -20,7 +20,7 @@ pub fn appearance_node(
   let wide = fn() { @sf.width_is_wide(width) }
   // (what this device offers: its window zoomed, files dropped in; the rail changed where it is beside the page)
   let keys = fn() {
-    let k = ["theme", "accent", "fonts", "glass", "motion", "haptics", "language"]
+    let k = ["theme", "accent", "tint", "fonts", "glass", "motion", "haptics", "language"]
     if @ui.window_zoom_supported() {
       k.push("zoom")
     }
@@ -52,7 +52,7 @@ pub fn appearance_node(
 }
 
 ///|
-/// One of 外观's settings, by its key: 主题, 主题色, 字体 (the faces chosen, opening their page), 动画, 震动, 语言, 缩放,
+/// One of 外观's settings, by its key: 主题, 主题色, 背景着色, 字体 (the faces chosen, opening their page), 动画, 震动, 语言, 缩放,
 /// 拖入的文件, 侧栏. Each choice the core's prefs (`prefs.set`), shown at once.
 fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
   let prefs = fn() { (core.topic)("prefs", Map([])).get().value }
@@ -128,6 +128,16 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
         },
       )
     }
+    // the grounds in the colour theme's hue (on unless turned off: @sf.set_ground_tint, app_frame.mbt), or in none:
+    // white and greys, the accent as chosen
+    "tint" =>
+      @sf.setting_switch_node(
+        v,
+        fn() { @sf.t("web-pages.appearance.tint.title") },
+        fn() { @settings.pref(core, "groundTint") != "off" },
+        fn(on) { @settings.set_pref(core, "groundTint", if on { "" } else { "off" }) },
+        note=fn() { @sf.t("web-pages.appearance.tint.description") },
+      )
     // the faces chosen, opening their page (a chat as they set it and their list are a page's own, on every screen)
     "fonts" =>
       @sf.setting_link_node(

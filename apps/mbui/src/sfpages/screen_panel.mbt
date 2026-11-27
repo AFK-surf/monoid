@@ -684,6 +684,9 @@ fn fps_note(fps : Int) -> String {
 ///|
 /// A choice kept on this device (`prefs.set` `name`: `v`, null for the default), `value` naming it.
 fn prefs_set(s : ScreenSess, name : String, value : String, v : Json) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   ignore(value)
   let p : Map[String, Json] = Map([])
   p[name] = v
@@ -725,6 +728,9 @@ fn go_url_asked(s : ScreenSess, from : @sf.Anchor) -> Unit {
     @sf.t("web-pages.screen.goUrl"),
     @sf.t("web-pages.screen.goUrlAction"),
     fn(url) {
+      if !s.is_active_principal() {
+        return
+      }
       let p : Map[String, Json] = {
         "station": Json::string(s.station),
         "screen": Json::string(s.screen),
@@ -741,6 +747,9 @@ fn go_url_asked(s : ScreenSess, from : @sf.Anchor) -> Unit {
 ///|
 /// Reloads the current browser tab (`screen.reload`).
 fn reload_asked(s : ScreenSess) -> Unit {
+  if !s.is_active_principal() {
+    return
+  }
   let p : Map[String, Json] = {
     "station": Json::string(s.station),
     "screen": Json::string(s.screen),

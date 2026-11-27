@@ -12,6 +12,7 @@ let reset_by_hand : Ref[Bool] = Ref(false)
 /// Every Tester starts from the app as at the start (mbui's on_reset), whatever ran before it in the process: what is
 /// kept here from one Tester to the next would be an input the test does not give.
 fn init {
+  @sfcore.on_accounts_told.val = @sfbase.accounts_subs_sync
   // ＋'s Station 文件 (a composer's, sfpages): the station files' picker (sfdesk's station_pick.mbt). Said once, as the
   // app starts (reset runs only as a Tester starts: a wire set there is never set in the app)
   station_files_asked.val = @sfpages.station_files_pick
@@ -632,7 +633,14 @@ fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> 
     fn() {
       let p = src.topic("prefs", {}).get().value
       let sys = @ui.system_dark()
-      (p, sys, @settings.dark(p, sys), @settings.pref_from(p, "accent"), @settings.pref_from(p, "glass"), @settings.pref_from(p, "glassFrost"))
+      (
+        p,
+        sys,
+        @settings.dark(p, sys),
+        @settings.pref_from(p, "accent") + "/" + @settings.pref_from(p, "groundTint"),
+        @settings.pref_from(p, "glass"),
+        @settings.pref_from(p, "glassFrost"),
+      )
     },
     fn(a) {
       @sfbase.appearance_from_prefs(a.0, a.1) |> ignore
@@ -945,6 +953,19 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         // signed in, the shell it is laid out in a node picked by the window's width and what is in view
         // (narrow_shell.mbt): laid out Small with a workspace, the narrow shell's nodes; on the tape, its panels' nodes
         // (tape_shell.mbt); the ways in, the splash, a window of its own; nothing before the window has a width
+        // keep per-workspace account ownership in sync outside computed getters
+        v.reacts(fn() { src.topic("workspaces", {}).get().value }, fn(ws) {
+          @sfbase.workspace_owners_sync_json(ws)
+        })
+        // notify workspace switches across ALL entrypoints (switcher, deep links, history restore, notifications)
+        let prev_picked = Ref(@sfbase.app.picked.untracked())
+        v.reacts(fn() { @sfbase.app.picked.get() }, fn(now) {
+          let was = prev_picked.val
+          prev_picked.val = now
+          if was != "" && now != "" && was != now {
+            (@sfbase.on_workspace_switched.val)(was, now)
+          }
+        })
         let shell_was : Ref[ShellIs] = Ref(Unsized)
         v.pick(fn() { shell_is(src, v.window_w()) }, fn(s, shell) {
           // Resizing into the tape keeps the page being read in front, not the sidebar's old selection.
@@ -1009,17 +1030,24 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   v.pick(
     at_once=true,
     fn() {
+      @sfpages.screen_revokes_now() |> ignore
+      @sfbase.workspace_owners_version.get() |> ignore
       match shown.get() {
-        Some(Screen(at)) => Some(@sfbase.Page::Screen(at))
-        Some(Terminal(at)) => Some(@sfbase.Page::Terminal(at))
-        Some(SideTab(f)) => Some(@sfbase.Page::SideTab(f))
+        Some(Screen(at)) =>
+          match @sfbase.window_here_owner_state(wid, at.station, screen=at.screen) {
+            Matched => Some((@sfbase.Page::Screen(at), 0))
+            Waiting => Some((@sfbase.Page::Screen(at), 1))
+            Denied => Some((@sfbase.Page::Screen(at), 2))
+          }
+        Some(Terminal(at)) => Some((@sfbase.Page::Terminal(at), 0))
+        Some(SideTab(f)) => Some((@sfbase.Page::SideTab(f), 0))
         _ => None
       }
     },
     fn(q, shown) {
       q.over(Is(true)) |> ignore
       match shown {
-        Some(Screen(at)) => {
+        Some((Screen(at), 0)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           // (its frame the window's top, no band over it at any width: the band is a phone's laid out Small, never a
           // window of its own's)
@@ -1031,7 +1059,15 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
             on_close=fn() { lone_closed(q) },
           )
         }
-        Some(Terminal(at)) =>
+        Some((Screen(_), 1)) => {
+          q.grow(Is(1.0)).min_height(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
+          @sf.waiting_node(q, fn(_) {  })
+        }
+        Some((Screen(_), _)) => {
+          q.grow(Is(1.0)).min_height(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
+          q.words(By(fn() { @sf.t("android-misc.screen.denied") })).ink(By(fn() { @sf.theme().p.muted })) |> ignore
+        }
+        Some((Terminal(at), _)) =>
           @sfpages.terminal_pane_node(
             q,
             src,
@@ -1045,7 +1081,7 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
         // (a chat's tab: drawn as over the whole window, its bar the window's top row, clear of the window's buttons as
         // that bar keeps itself (sf's viewer_bar_node), its 移到侧边 putting it back beside the chat and closing the
         // window: sfdesk's tab_window_node)
-        Some(SideTab(f)) => @sfdesk.tab_window_node(q, src, f, top=fn() { 0.0 }, on_close=fn() { lone_closed(q) })
+        Some((SideTab(f), _)) => @sfdesk.tab_window_node(q, src, f, top=fn() { 0.0 }, on_close=fn() { lone_closed(q) })
         Some(_) => ()
         None => ()
       }

@@ -1020,12 +1020,16 @@ pub fn glyph_mark_node(@view.View, String, Double, () -> Int64, loc~ : SourceLoc
 pub fn gradient_key(Double, Double, Double, Int64, Int64) -> String
 
 #callsite(autofill(loc))
+pub fn grey_of(Int64) -> Int64
+
 pub fn grid_table_node(@view.View, (@view.View, GridTable) -> Unit, in_node? : Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn ground_node(@view.View) -> @view.View
 
 #callsite(autofill(loc))
 pub fn ground_row_node(@view.View, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
+
+pub fn ground_tint() -> Bool
 
 pub let group_corner : Double
 
@@ -2612,6 +2616,8 @@ pub fn set_accent(String) -> Unit
 
 pub fn set_dark(Bool?) -> Unit
 
+pub fn set_ground_tint(Bool) -> Unit
+
 pub fn set_language(String?) -> Unit
 
 pub fn set_product(String) -> Unit
@@ -3254,7 +3260,7 @@ pub fn way_in_node(@view.View, () -> String, () -> String, () -> String, () -> S
 pub fn way_in_note_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
-pub fn way_in_page_node(@view.View, () -> String, (@view.View) -> Unit, loc~ : SourceLoc) -> @view.View
+pub fn way_in_page_node(@view.View, () -> String, (@view.View) -> Unit, middle? : Bool, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
 pub fn way_in_title_node(@view.View, () -> String, loc~ : SourceLoc) -> @view.View

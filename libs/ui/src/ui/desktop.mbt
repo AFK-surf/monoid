@@ -1726,13 +1726,67 @@ fn has_prefix(at : Array[Int], p : Array[Int]) -> Bool {
 }
 
 ///|
+/// Whether a primary mouse press at `(x, y)` with `mods` extends the existing selection anchor (`picked.from`) in
+/// place instead of starting a new selection.
+fn Ctx::can_shift_extend(self : Ctx, x : Double, y : Double, mods : Int) -> Bool {
+  guard (mods & mod_shift_key) != 0 &&
+    !cmd_pick_held(mods=Some(mods)) &&
+    picked.from.base != NoSel &&
+    !picked.finger &&
+    !self.selection_blocked(x, y) else {
+    return false
+  }
+  match picked.layer {
+    TreeScope(_, within) =>
+      match view_app.val {
+        Some(tree) =>
+          match tree_sel_at(x, y) {
+            Some(t) => t.layer == picked.layer
+            None => tree_in_scope(tree, within, x, y)
+          }
+        None => false
+      }
+    OldLayer(layer) =>
+      if desk.mouse_drags || tree_sel_at(x, y) is Some(_) {
+        false
+      } else {
+        match self.sel_at(x, y) {
+          Some(t) => t.layer == OldLayer(layer)
+          None => self.layer_at(x, y) == layer && hit_in(self.hit_ids, self.hit_rects, x, y) == 0
+        }
+      }
+  }
+}
+
+///|
 /// A primary press at (x, y), the `clicks`th in a row (Ctx's `clicks`): on words that are picked with the pointer,
 /// picking starts there (a double click's second picks the word under it, a triple's the paragraph, as a browser's
-/// do); elsewhere what was picked is let go.
-fn Ctx::select_press(self : Ctx, x : Double, y : Double, clicks : Int) -> Unit {
+/// do); with Shift held in the same scope, extends from the existing anchor (`picked.from`); elsewhere what was picked
+/// is let go.
+fn Ctx::select_press(self : Ctx, x : Double, y : Double, clicks : Int, mods? : Int = 0) -> Unit {
   // (a finger's press picks nothing as it goes down: a hold does, finger_select.mbt; what a finger picked stays through
   // it, let go by a tap elsewhere as it lifts)
   if pointing() is Finger && picked.finger {
+    return
+  }
+  if pointing() is Mouse && self.can_shift_extend(x, y, mods) {
+    picked.made = picked.made + 1
+    picked.dragging = true
+    picked.word = None
+    picked.snap = false
+    self.select_to(x, y)
+    picked.list = outer_scroll(self, x, y)
+    picked.across = across_scroll(self, x, y)
+    if picked.layer is TreeScope(_, _) {
+      match picked_shown.get(picked.to.base) {
+        Some((id, _, _)) => tree_edge_from_node(id)
+        None =>
+          match picked_shown.get(picked.from.base) {
+            Some((id, _, _)) => tree_edge_from_node(id)
+            None => tree_edge_stop()
+          }
+      }
+    }
     return
   }
   select_none()

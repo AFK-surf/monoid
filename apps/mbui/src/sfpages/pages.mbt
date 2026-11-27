@@ -9,6 +9,9 @@ fn init {
   @sfbase.share_card_of.val = share_card_open
   @sfbase.screen_made_stream.val = screen_fixture_stream
   @sf.picture_out_now_by.val = fn(png, said) { picture_out_now(png, copy_said=said) }
+  @sfbase.on_account_revoked(screen_revoke_account)
+  @sfbase.on_workspace_owner_change(screen_revoke_workspace_owner)
+  @sfbase.on_workspace_switched.val = screen_workspace_switched
 }
 
 ///|
@@ -22,6 +25,7 @@ pub fn reset() -> Unit {
   screen_fix_heard.val = None
   screens_open.clear()
   screen_uis.clear()
+  screen_leases_reset()
   center_wait_give_up()
   screens_made.val = 0
   hover_reset()

@@ -17,7 +17,7 @@ test("the Router reads the current title of the requested workspace chat", async
   const asked: unknown[][] = [];
   const reply = JSON.stringify({ messages: [
     { kind: "message", n: 4, authorKind: "person", person: { name: "Ada" }, text: "hello", at: 42 },
-    { kind: "message", n: 5, authorKind: "agent", author: "s1", text: "pick one", at: 43, card: { type: "options", options: [{ label: "Ship", recommended: true }] } },
+    { kind: "message", n: 5, authorKind: "agent", author: "s1", text: "pick one", at: 43, card: { type: "options", options: [{ label: "Ship", recommended: true }] }, files: [{ name: "shot.png", size: 1234, width: 800, height: 600 }] },
     { kind: "edit", n: 6, text: "later" },
   ], last: 6 });
   const reads = {
@@ -31,7 +31,7 @@ test("the Router reads the current title of the requested workspace chat", async
       title: "Local",
       messages: [
         { seq: 4, author_kind: "person", author: "Ada", text: "hello", at: 42 },
-        { seq: 5, author_kind: "agent", author: "s1", text: "pick one", at: 43, card: { type: "options", options: [{ label: "Ship", recommended: true }] } },
+        { seq: 5, author_kind: "agent", author: "s1", text: "pick one", at: 43, card: { type: "options", options: [{ label: "Ship", recommended: true }] }, files: [{ name: "shot.png", size: 1234, width: 800, height: 600 }] },
       ],
       through: 6,
     });

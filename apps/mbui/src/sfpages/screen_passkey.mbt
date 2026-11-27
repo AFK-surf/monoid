@@ -39,10 +39,14 @@ fn ScreenSess::passkey_dismiss(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// 登录 pressed: the device asked to sign the page's ask.
+/// 登录 pressed: the device asked to sign the page's ask. Registers a request-level keepalive holder in
+/// `screen_leases` so brief covering does not pause `s.call` and drop the signed WebAuthn result.
 fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
+  guard self.is_active_principal() else { return }
   guard self.passkey_ask() is Some(p) else { return }
   self.passkey_stop()
+  self.passkey_gen += 1
+  self.passkey_owner_principal = self.principal
   self.passkey_id = text(Some(p), "id")
   let allow = match field(Some(p), "allow") {
     Some(Array(a)) =>
@@ -58,6 +62,11 @@ fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
   match @hostapi.passkey_get(text(Some(p), "rpId"), text(Some(p), "clientData"), allow, text(Some(p), "userVerification")) {
     Some(r) => {
       self.passkey_run = Some(r)
+      // Request-level keepalive flag on ScreenLease (separate from real UI holders): prevents brief covering from
+      // pausing `s.call` while WebAuthn confirmation is in-flight, without ever counting as a real UI holder.
+      let key = screen_key(self.station, self.screen)
+      self.passkey_keepalive_key = key
+      screen_lease_set_passkey(self.src, key, true)
       self.passkey_step.set("asking")
     }
     None => {
@@ -68,24 +77,47 @@ fn ScreenSess::passkey_start(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// Let go of: the ask under way forgotten, nothing shown.
+/// Release the request-level keepalive flag if active. Does NOT clear `passkey_muted` here: while hidden, the session
+/// must stay muted until `screen_leases_settle` either restores visibility or pauses the stream.
+fn ScreenSess::passkey_release_keepalive(self : ScreenSess) -> Unit {
+  if self.passkey_keepalive_key != "" {
+    let key = self.passkey_keepalive_key
+    self.passkey_keepalive_key = ""
+    screen_lease_set_passkey(self.src, key, false)
+  }
+}
+
+///|
+/// Let go of: the ask under way forgotten, native handle cancelled, keepalive holder released, nothing shown.
 fn ScreenSess::passkey_stop(self : ScreenSess) -> Unit {
+  self.passkey_gen += 1
+  self.passkey_release_keepalive()
   match self.passkey_run {
     Some(r) => r.end()
     None => ()
   }
   self.passkey_run = None
   self.passkey_note = ""
+  self.passkey_id = ""
+  self.passkey_owner_principal = ""
   self.passkey_step.set("")
 }
 
 ///|
-/// The ask under way ended: what it signed sent, or the page told no (once).
-fn ScreenSess::passkey_took(self : ScreenSess) -> Unit {
+/// The ask under way ended: verify request ownership (gen + active principal + driving) before sending what it signed.
+fn ScreenSess::passkey_took(self : ScreenSess, expected_gen : Int, expected_principal : String) -> Unit {
+  if !self.is_active_principal() ||
+    self.passkey_gen != expected_gen ||
+    self.passkey_owner_principal != expected_principal ||
+    !self.driving() {
+    self.passkey_stop()
+    return
+  }
   guard self.passkey_run is Some(r) else { return }
   guard r.done() is Some(d) else { return }
   r.end()
   self.passkey_run = None
+  self.passkey_release_keepalive()
   let id = self.passkey_id
   if d.code == 0 && d.credential != "" && d.authenticator_data != "" && d.signature != "" {
     let input : Map[String, Json] = {
@@ -124,28 +156,46 @@ let passkey_look_ms : Double = 250.0
 
 ///|
 /// 用通行密钥登录, over the stage in `c` while a page this viewer drives asks for a passkey (on a host whose device has
-/// passkeys to ask): the site and 登录, what it is at, or why it did not sign. An ask under way looked at till it ends
-/// (passkey_look_ms), its end taken then.
+/// passkeys to ask): the site and 登录, what it is at, or why it did not sign. An ask under way uses request-level
+/// scheduling (`at_moment`, never paused while briefly covered so WebAuthn does not time out). Request lifetime is
+/// owned by `ScreenSess` (cancelled on `passkey_dismiss`, `ScreenSess::close`, or principal/account/workspace
+/// revocation), NOT by `c.owns` — so layout `pair` rebuilds or side-panel <-> fullscreen handoffs never cancel an
+/// in-flight WebAuthn request.
 fn passkey_sign_node(c : @view.View, s : ScreenSess) -> Unit {
   let looking : Ref[() -> Unit] = Ref(fn() {  })
-  fn look() -> Unit {
+  fn stop_looking() -> Unit {
+    (looking.val)()
     looking.val = fn() {  }
+  }
+  fn look(expected_gen : Int, expected_principal : String) -> Unit {
+    looking.val = fn() {  }
+    if !c.alive() {
+      return
+    }
+    if !s.is_active_principal() ||
+      s.passkey_gen != expected_gen ||
+      s.passkey_owner_principal != expected_principal {
+      if s.passkey_gen == expected_gen && s.passkey_run is Some(_) {
+        s.passkey_stop()
+      }
+      return
+    }
     match s.passkey_run {
       Some(r) =>
         if r.done() is Some(_) {
-          s.passkey_took()
+          s.passkey_took(expected_gen, expected_principal)
         } else {
-          looking.val = c.at_moment(c.logic_at() + passkey_look_ms, look, later=true)
+          looking.val = c.at_moment(c.logic_at() + passkey_look_ms, fn() { look(expected_gen, expected_principal) }, later=true)
         }
       None => ()
     }
   }
 
+  c.owns(stop_looking) |> ignore
   c.reacts(fn() { s.passkey_step.get() }, fn(step) {
-    (looking.val)()
-    looking.val = fn() {  }
+    stop_looking()
     if step == "asking" {
-      look()
+      look(s.passkey_gen, s.passkey_owner_principal)
     }
   })
   let ask = fn() {

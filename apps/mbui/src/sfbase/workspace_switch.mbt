@@ -216,6 +216,11 @@ fn switch_pick(v : @view.View) -> Unit {
 }
 
 ///|
+/// Hook notified when the active workspace switches from `prev_ws` to `next_ws` (e.g. cancels in-flight passkeys).
+// kept across runs: wire set once in sfpages' fn init
+pub let on_workspace_switched : Ref[(String, String) -> Unit] = Ref(fn(_, _) {  })
+
+///|
 /// What a switch does once done, as one act (history_act: an entry for where it left from, whenever it is done).
 fn switch_picked(src : Source, ws : String) -> Unit {
   history_act(fn() {

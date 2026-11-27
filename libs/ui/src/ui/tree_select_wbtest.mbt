@@ -656,3 +656,229 @@ test "cross-slice horizontal edge scroll stops when pointer leaves table vertica
   finger(2, 280.0, 12.0)
   t.frame_at(t.time() + 16.0)
 }
+
+///|
+test "click then Shift+click in words_picked extends forward, backward, across drags, and resets after a plain click elsewhere" {
+  let t = tree_picked_tester(true)
+  let wide = t.run_rects("wide")
+  assert_eq(wide.length(), 1)
+  let (wx, wy, ww, wh) = wide[0]
+  let cy = wy + wh / 2.0
+  let start_x = 1.0
+  let mid_x = wx + 1.0
+  let end_x = wx + ww + 80.0
+  // Plain click at the start of "wide" sets the collapsed anchor without highlighting anything.
+  t.tap(mid_x, cy)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "")
+  assert_eq(picked_now(), None)
+  // Shift+click forward to the end selects from "wide" to the end.
+  t.hold_mods(mod_shift_key)
+  t.tap(end_x, cy)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "wide world")
+  assert_true(picked_now().map(fn(p) { (p.text, p.ends_at_start) }) == Some(("wide world", false)))
+  // Another Shift+click before the anchor flips the selection backward while keeping the original anchor.
+  t.hold_mods(mod_shift_key)
+  t.tap(start_x, cy)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "hello ")
+  assert_true(picked_now().map(fn(p) { (p.text, p.ends_at_start) }) == Some(("hello ", true)))
+  // Shift+press and drag keeps the same anchor and moves the focus end continuously.
+  t.hold_mods(mod_shift_key)
+  t.press_at(wx + ww / 2.0, cy)
+  t.frame()
+  t.move_to(end_x, cy)
+  t.frame()
+  t.release(end_x, cy)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "wide world")
+  // A plain click outside clears the anchor so a subsequent Shift+click does not resurrect it.
+  t.tap(350.0, 250.0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "")
+  t.hold_mods(mod_shift_key)
+  t.tap(end_x, cy)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "")
+}
+
+///|
+test "Shift+click spans multiple paragraphs and extends into whitespace within the same words_picked scope" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.padding(Is((0.0, 20.0, 0.0, 0.0))).width(Is(Some(320.0))).gap(Is(24.0)) |> ignore
+      words_picked(page)
+      page.box(fn(n) { n.width(Is(Some(300.0))).words_runs(Is([plain("first paragraph")]), ink=0x333333FFL, look~) |> ignore })
+      |> ignore
+      page.box(fn(n) { n.width(Is(Some(300.0))).words_runs(Is([plain("second paragraph")]), ink=0x333333FFL, look~) |> ignore })
+      |> ignore
+      page.box(fn(n) { n.width(Is(Some(300.0))).words_runs(Is([plain("third paragraph")]), ink=0x333333FFL, look~) |> ignore })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Paragraph 1 is at y=20..42, gap at y=42..66, paragraph 2 at y=66..88, gap at y=88..112, paragraph 3 at y=112..134.
+  t.tap(1.0, 31.0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "")
+  // Shift+click on paragraph 3 selects all three paragraphs.
+  t.hold_mods(mod_shift_key)
+  t.tap(299.0, 123.0)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "first paragraph\nsecond paragraph\nthird paragraph")
+  // Shift+click in the vertical whitespace gap closer to paragraph 2 shrinks to paragraphs 1 and 2.
+  t.hold_mods(mod_shift_key)
+  t.tap(299.0, 92.0)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "first paragraph\nsecond paragraph")
+}
+
+///|
+test "Shift+click never crosses between separate words_picked scopes" {
+  let t = Tester::new(fn(_c) {  }, w=500.0, h=300.0, platform=0)
+  t.check_looks(false)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(row) {
+      row.row(Is(true)).width(Is(Some(500.0))).height(Is(Some(300.0))) |> ignore
+      row.box(fn(left) {
+        left.width(Is(Some(240.0))).gap(Is(30.0)) |> ignore
+        words_picked(left)
+        left.box(fn(n) { n.width(Is(Some(220.0))).words_runs(Is([plain("left first line")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+        left.box(fn(n) { n.width(Is(Some(220.0))).words_runs(Is([plain("left second line")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+      row.box(fn(right) {
+        right.width(Is(Some(240.0))).gap(Is(30.0)) |> ignore
+        words_picked(right)
+        right.box(fn(n) { n.width(Is(Some(220.0))).words_runs(Is([plain("right row zero")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+        right.box(fn(n) { n.width(Is(Some(220.0))).words_runs(Is([plain("right row one")]), ink=0x333333FFL, look~) |> ignore })
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Click in left scope, then Shift+click in right scope's text: clears left, starts a collapsed anchor in right.
+  t.tap(2.0, 11.0)
+  t.frame()
+  t.hold_mods(mod_shift_key)
+  t.tap(360.0, 63.0)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "")
+  // Now Shift+click in right scope's first line extends within right scope from that new anchor.
+  t.hold_mods(mod_shift_key)
+  t.tap(242.0, 11.0)
+  t.hold_mods(0)
+  t.frame()
+  assert_true(t.ctx().selected_text().contains("right row zero"), msg="extended in right: \{t.ctx().selected_text()}")
+  assert_true(!t.ctx().selected_text().contains("left"), msg="must not leak left: \{t.ctx().selected_text()}")
+  // Shift+click into left scope's whitespace gap clears right selection instead of leaking.
+  t.hold_mods(mod_shift_key)
+  t.tap(100.0, 36.0)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "")
+}
+
+///|
+test "Shift+click extends a legacy Ctx::selectable selection and an existing dragged selection" {
+  let old = old_picked_tester()
+  old.tap(1.0, 51.0)
+  old.frame()
+  assert_eq(old.ctx().selected_text(), "")
+  old.hold_mods(mod_shift_key)
+  old.tap(300.0, 51.0)
+  old.hold_mods(0)
+  old.frame()
+  assert_eq(old.ctx().selected_text(), "hello wide world")
+  // Dragging part of a tree paragraph then Shift+clicking extends from the drag anchor.
+  let t = tree_picked_tester(true)
+  let next = dragged_at(t, 1.0, 51.0, 60.0, 51.0, t.time(), true)
+  t.frame_at(next)
+  let part = t.ctx().selected_text()
+  assert_true(part.has_prefix("hello") && part.length() < "hello wide world".length(), msg="dragged part: \{part}")
+  t.hold_mods(mod_shift_key)
+  t.tap(300.0, 51.0)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(t.ctx().selected_text(), "hello wide world")
+}
+
+///|
+test "Shift+click updates picked_now.made, works in scrolls_window after prepending rows, and never hijacks buttons" {
+  let t = Tester::new(fn(_c) {  }, w=400.0, h=300.0)
+  t.check_looks(false)
+  let s = @view.Scroll::list()
+  let keys = @signals.signal(Array::makei(10, fn(i) { i }))
+  let clicks = Ref(0)
+  let look : @view.WordsLook = { size: 15.0, weight: 400, line: 22.0, wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+  set_view_app(fn(root) {
+    root.box(fn(page) {
+      page.width(Is(Some(300.0))).height(Is(Some(260.0))) |> ignore
+      words_picked(page)
+      page.box(fn(btn) {
+        btn
+        .width(Is(Some(100.0)))
+        .height(Is(Some(30.0)))
+        .on_press(fn() { clicks.val = clicks.val + 1 })
+        |> ignore
+      })
+      |> ignore
+      page.scrolls_window(s, fn() { keys.get() }, est=22.0, fn(b, i) {
+        b.box(fn(n) { n.words_runs(Is([plain("row \{i} text")]), ink=0x333333FFL, look~) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.drawn_now()
+  // Click row 0, prepend row -1 above it, then Shift+click row 2.
+  let (r0x, r0y, _, r0h) = t.rect_of("row 0 text").unwrap()
+  t.tap(r0x + 1.0, r0y + r0h / 2.0)
+  t.frame()
+  keys.set([-1] + Array::makei(10, fn(i) { i }))
+  t.run_for(move_most_ms)
+  let (r2x, r2y, r2w, r2h) = t.rect_of("row 2 text").unwrap()
+  t.hold_mods(mod_shift_key)
+  t.tap(r2x + r2w - 1.0, r2y + r2h / 2.0)
+  t.hold_mods(0)
+  t.frame()
+  guard picked_now() is Some(p1) else { fail("expected selection after Shift+click") }
+  assert_eq(p1.text, "row 0 text\nrow 1 text\nrow 2 text")
+  // Shift+clicking further down advances picked.made.
+  let (r3x, r3y, r3w, r3h) = t.rect_of("row 3 text").unwrap()
+  t.hold_mods(mod_shift_key)
+  t.tap(r3x + r3w - 1.0, r3y + r3h / 2.0)
+  t.hold_mods(0)
+  t.frame()
+  guard picked_now() is Some(p2) else { fail("expected extended selection") }
+  assert_eq(p2.text, "row 0 text\nrow 1 text\nrow 2 text\nrow 3 text")
+  assert_true(p2.made > p1.made, msg="made advanced: \{p1.made} -> \{p2.made}")
+  // Shift+clicking a button fires the button and clears the text selection instead of extending onto it.
+  t.hold_mods(mod_shift_key)
+  t.tap(50.0, 15.0)
+  t.hold_mods(0)
+  t.frame()
+  assert_eq(clicks.val, 1)
+  assert_eq(t.ctx().selected_text(), "")
+}

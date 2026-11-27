@@ -54,6 +54,12 @@ pub struct FetchResponse {
 pub fn FetchResponse::header(Self, String) -> String?
 pub fn FetchResponse::text(Self) -> String
 
+pub enum FileSlice {
+  Slice(Bytes)
+  Missing
+  Fallback
+}
+
 pub struct Host {
   rt : @effect.Runtime
   lines : @effect.Queue[String]
@@ -69,6 +75,7 @@ pub async fn Host::listen_close(Self, @json.Json) -> Unit noraise
 pub fn Host::listener_of(Self, @json.Json, retry_ms? : Int32) -> @net.Listener[Conn]
 pub fn Host::out(Self, Bytes) -> Unit
 pub async fn Host::read_bytes(Self, String, from? : Int32, length? : Int32) -> Bytes?
+pub fn Host::read_file_slice(Self, String, from? : Int64, length? : Int64) -> FileSlice
 pub async fn Host::read_text(Self, String, strict? : Bool) -> String?
 pub async fn Host::rename_retrying(Self, String, String, backoff? : Array[Int32]) -> Unit
 pub fn Host::say(Self, String) -> Unit

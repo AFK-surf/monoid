@@ -176,6 +176,8 @@ pub fn ViewTab::same_file(self : ViewTab, other : ViewTab) -> Bool {
 /// whether what it plays goes on as its tab moves between the panel and the whole window (tab_viewer_moves).
 priv struct TabViewer {
   viewer : Viewer
+  owner : String
+  ws : String
   mut drawn : Int
   mut closing : Bool
   mut goes_on : Bool
@@ -196,8 +198,65 @@ let tab_gone : Map[String, Bool] = Map([])
 let tab_viewers : Map[String, TabViewer] = Map([])
 
 ///|
+fn tab_chat_workspace(chat : String) -> String {
+  let station = match chat.find(":") {
+    Some(i) => chat.exact_view(end=i).to_owned()
+    None => chat
+  }
+  match station.find("/") {
+    Some(i) => station.exact_view(end=i).to_owned()
+    None => ""
+  }
+}
+
+///|
 fn tab_viewer_id(chat : String, tab : String) -> String {
-  chat + "\n" + tab
+  let ws = tab_chat_workspace(chat)
+  workspace_owner_of(ws) + "\u{2}" + chat + "\u{2}" + tab
+}
+
+///|
+/// Bumped whenever any tab viewer is revoked so mounted `viewer_tab_node` subtrees unmount cleanly.
+// kept across runs: put back by tab_viewers_reset
+let tab_viewer_revokes : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+fn tab_viewers_revoke_matching(pred : (TabViewer) -> Bool) -> Unit {
+  let drop : Array[String] = []
+  for id, t in tab_viewers {
+    if pred(t) {
+      drop.push(id)
+    }
+  }
+  if drop.is_empty() {
+    return
+  }
+  for id in drop {
+    match tab_viewers.get(id) {
+      Some(t) => {
+        t.goes_on = false
+        t.viewer.pause_player()
+        t.viewer.let_go()
+        tab_viewers.remove(id)
+      }
+      None => ()
+    }
+    tab_gone.remove(id)
+  }
+  tab_viewer_revokes.set(tab_viewer_revokes.untracked() + 1)
+}
+
+///|
+fn init {
+  on_account_revoked(fn(old_account) {
+    tab_viewers_revoke_matching(fn(t) { t.owner == old_account })
+  })
+  on_workspace_owner_change(fn(ws, old_owner, _new_owner) {
+    tab_viewers_revoke_matching(fn(t) { t.ws == ws && t.owner == old_owner })
+    if old_owner == "\u{3}revoked" {
+      tab_viewer_revokes.set(tab_viewer_revokes.untracked() + 1)
+    }
+  })
 }
 
 ///|
@@ -253,7 +312,8 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
             None => file
           }
           let v = new_viewer(station, f.key, file, f.drive, steps, named=f.named, at~, beside=true)
-          tab_viewers[id] = { viewer: v, drawn: 0, closing: false, goes_on: false, near: Map([]) }
+          let ws = tab_chat_workspace(chat)
+          tab_viewers[id] = { viewer: v, owner: workspace_owner_of(ws), ws, drawn: 0, closing: false, goes_on: false, near: Map([]) }
           Some(v)
         }
         _ => None
@@ -265,8 +325,33 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
 /// Tab `tab` of chat `chat` about to move between its panel and the whole window (tab_full.mbt): what it plays goes on
 /// there as it was, playing or paused, not paused as the node that drew it goes.
 fn tab_viewer_moves(chat : String, tab : String) -> Unit {
+  let id = tab_viewer_id(chat, tab)
+  match tab_viewers.get(id) {
+    Some(t) => {
+      t.goes_on = true
+      // End-of-frame expiry + fallback: unconditionally expire `goes_on` at the end of the navigation/layout frame
+      // so a failed handoff never leaves stale `goes_on` behind, and pause playback if no node took over (`drawn <= 0`).
+      @ui.after_drawn_frame(fn() {
+        match tab_viewers.get(id) {
+          Some(cur) if cur.goes_on => {
+            cur.goes_on = false
+            if cur.drawn <= 0 {
+              cur.viewer.pause_player()
+            }
+          }
+          _ => ()
+        }
+      })
+    }
+    None => ()
+  }
+}
+
+///|
+/// Immediately cancel a pending `tab_viewer_moves` mark when the target window failed to open.
+fn tab_viewer_moves_cancel(chat : String, tab : String) -> Unit {
   match tab_viewers.get(tab_viewer_id(chat, tab)) {
-    Some(t) => t.goes_on = true
+    Some(t) => t.goes_on = false
     None => ()
   }
 }
@@ -314,6 +399,7 @@ fn tab_viewers_reset() -> Unit {
   tab_moved.each(fn(_, m) { m.release() })
   tab_moved.clear()
   tab_facts.clear()
+  tab_viewer_revokes.set(0)
 }
 
 ///|
@@ -344,7 +430,7 @@ priv struct TabMoved {
 /// made (tab_moved): none where its viewer is made already (it is kept as it is), nothing to keep where it steps through
 /// nothing and nothing is known of it. Whether it was kept (tab_moved_dropped, its tab not put there).
 fn tab_steps_said(tab : String, steps : Stepping, width : Double, height : Double, near : TopicLease?, at : String) -> Bool {
-  if tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) || (steps is NoSteps && width <= 0.0 && at == "" && near is None) {
+  if tab_viewers.keys().any(fn(id) { id.has_suffix("\u{2}" + tab) }) || (steps is NoSteps && width <= 0.0 && at == "" && near is None) {
     match near {
       Some(l) => l.release()
       None => ()
@@ -420,7 +506,7 @@ fn beside_open(
     tab_asked[put] = at
   }
   tab_viewers.each(fn(id, t) {
-    if t.drawn > 0 && id.has_suffix("\n" + put) && tab_asked.contains(put) {
+    if t.drawn > 0 && id.has_suffix("\u{2}" + put) && tab_asked.contains(put) {
       tab_asked.remove(put)
       t.viewer.play_asked(at)
     }
@@ -492,7 +578,7 @@ fn Viewer::pause_player(self : Viewer) -> Unit {
 /// side_panel_node).
 pub fn tab_players_pause(chat? : String = "") -> Unit {
   tab_viewers.each(fn(id, t) {
-    if chat == "" || id.has_prefix(chat + "\n") {
+    if chat == "" || id.contains("\u{2}" + chat + "\u{2}") {
       t.viewer.pause_player()
     }
   })
@@ -522,7 +608,7 @@ pub fn Viewer::move_beside(self : Viewer, src : Source) -> Unit {
   }
   let tab = self.view_tab()
   // (none where its tab is open already: its viewer is kept as it is)
-  let near = if self.shown_kind() == Some(KImage) && !tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) {
+  let near = if self.shown_kind() == Some(KImage) && !tab_viewers.keys().any(fn(id) { id.has_suffix("\u{2}" + tab) }) {
     image_near_params(self).map(fn(p) { src.lease_topic("imageNear", p) })
   } else {
     None
@@ -556,24 +642,14 @@ pub fn viewer_tab_node(
 ) -> Unit {
   guard tab_viewer(chat, tab) is Some(vw) else { return }
   let id = tab_viewer_id(chat, tab)
-  match tab_viewers.get(id) {
-    Some(t) => {
-      t.drawn += 1
-      t.goes_on = false
-    }
-    None => ()
-  }
-  // (asked beside just now: its film or song played at once, before its player is made below)
-  match tab_asked.get(tab) {
-    Some(at) => {
-      tab_asked.remove(tab)
-      vw.play_asked(at)
-    }
-    None => ()
-  }
-  q.owns(fn() {
-    // (its tab no longer shown: what it plays paused, played again only from its play key; not where it is shown
-    // elsewhere now, or is to be as it moves between the panel and the whole window)
+  q.show(at_once=true, fn() {
+    tab_viewer_revokes.get() |> ignore
+    tab_viewers.contains(id)
+  }, fn(q) {
+    q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+  let leave_active = fn() {
+    // (its tab no longer shown or parked: what it plays paused, played again only from its play key; not where it is
+    // shown elsewhere now, or is to be as it moves between the panel and the whole window)
     match tab_viewers.get(id) {
       Some(t) => {
         t.drawn -= 1
@@ -590,6 +666,37 @@ pub fn viewer_tab_node(
         }
       }
       None => vw.pause_player()
+    }
+  }
+  q.when_active(while_covered=true, fn() {
+    // (on ordinary wake, playback stays paused; only explicit side-panel <-> fullscreen handoff via `tab_viewer_moves`
+    // keeps it playing across leave)
+    match tab_viewers.get(id) {
+      Some(t) => {
+        t.drawn += 1
+        t.goes_on = false
+      }
+      None => ()
+    }
+    leave_active
+  })
+  |> ignore
+  // (asked beside just now: its film or song played at once, before its player is made below)
+  match tab_asked.get(tab) {
+    Some(at) => {
+      tab_asked.remove(tab)
+      vw.play_asked(at)
+    }
+    None => ()
+  }
+  q.owns(fn() {
+    // (if disposed while already parked, release a closing viewer once no active node draws it)
+    match tab_viewers.get(id) {
+      Some(t) if t.drawn <= 0 && t.closing => {
+        t.viewer.let_go()
+        tab_viewers.remove(id)
+      }
+      _ => ()
     }
   })
   |> ignore
@@ -706,6 +813,7 @@ pub fn viewer_tab_node(
   |> ignore
   // (its tips over all of it)
   tips_at.val = Some(q.box(fn(l) { l.over(Is(true)) |> ignore }))
+  })
 }
 
 ///|

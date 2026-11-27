@@ -84,6 +84,30 @@ test("a person's words in runs: a chat referenced, a web address written bare, a
     { text: " 和 " },
     { text: "https://example.com/a", link: "https://example.com/a" },
   ]);
+  // The few of Markdown's marks a person wrote, read as how a run is set, the marks themselves gone; a link between a
+  // pair set as the words round it; a list's item its bullet; a fenced block its code alone.
+  assert.deepEqual(personWords("这是**重点**内容，*斜体* 和 ~~删掉~~ 以及 `a_b*c`"), [
+    { text: "这是" },
+    { text: "重点", b: true },
+    { text: "内容，" },
+    { text: "斜体", i: true },
+    { text: " 和 " },
+    { text: "删掉", s: true },
+    { text: " 以及 " },
+    { text: "a_b*c", code: true },
+  ]);
+  assert.deepEqual(personWords("***both*** __bold__ _it_"), [{ text: "both", b: true, i: true }, { text: " " }, { text: "bold", b: true }, { text: " " }, { text: "it", i: true }]);
+  assert.deepEqual(personWords("**看 https://example.com/a_b 这里**"), [
+    { text: "看 ", b: true },
+    { text: "https://example.com/a_b", link: "https://example.com/a_b", b: true },
+    { text: " 这里", b: true },
+  ]);
+  assert.deepEqual(personWords("列表：\n- 一\n  * 二 **粗**\n1. 有序"), [{ text: "列表：\n• 一\n  • 二 " }, { text: "粗", b: true }, { text: "\n1. 有序" }]);
+  assert.deepEqual(personWords("代码：\n```ts\nconst a = *b*;\n- x\n```\n后面"), [{ text: "代码：\n" }, { text: "const a = *b*;\n- x", pre: true }, { text: "\n后面" }]);
+  // Words written with no thought of Markdown stay as written: a mark with no partner on its line, a name's or a
+  // path's `_`, `*` in sums and file patterns, a `#`, a fence never closed.
+  for (const plain of ["snake_case_name 和 /a/__init__.py", "2*3*4 a * b * c *.ts and *.js", "**未闭合\n下一行**", "# 123 > x 5 - 3 = 2", "~~~ x ~ y", "```\nnever closed", "```\n```"]) assert.deepEqual(personWords(plain), [{ text: plain }]);
+  assert.deepEqual(draftWords("@[首页] - hi **@[首页] 粗**"), [{ text: "首页", ref: true }, { text: " - hi " }, { text: "首页", ref: true, b: true }, { text: " 粗", b: true }]);
   // What a link is to, as every client draws it: a screen's, a station's 共享调试, a chat's web service's.
   assert.deepEqual(linkTo("https://app.still.fail/w/ws1/s/st1/screen/browser%3Atab1"), { card: "screen", station: "ws1/st1", screen: "browser:tab1" });
   assert.deepEqual(linkTo("https://app.still.fail/w/ws1/s/st1/terminal/term-1"), { card: "terminal", station: "ws1/st1", terminal: "term-1" });

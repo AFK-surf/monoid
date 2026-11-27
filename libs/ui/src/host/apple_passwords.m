@@ -309,9 +309,19 @@ API_AVAILABLE(macos(14.0), ios(17.4)) static int32_t passkeys_get(NSString *ask)
   }
   who.ident = ident;
   dispatch_async(dispatch_get_main_queue(), ^{
+    BOOL alive = NO;
+    @synchronized(asks) {
+      alive = asks[@(ident)] != nil;
+    }
+    if (!alive) return;
     id manager = [NSClassFromString(@"ASAuthorizationWebBrowserPublicKeyCredentialManager") new];
     if (!manager) return ask_done(ident, @"-1\x1f\x1f\x1f\x1f\x1fno AuthenticationServices\x1f\x1f");
     void (^go)(void) = ^{
+      BOOL still_alive = NO;
+      @synchronized(asks) {
+        still_alive = asks[@(ident)] != nil;
+      }
+      if (!still_alive) return;
       ASPublicKeyCredentialClientData *data = [(ASPublicKeyCredentialClientData *)[NSClassFromString(@"ASPublicKeyCredentialClientData") alloc] initWithChallenge:challenge origin:origin];
       NSString *pref = [uv isEqualToString:@"required"] ? @"required" : [uv isEqualToString:@"discouraged"] ? @"discouraged" : @"preferred";
       ASAuthorizationPlatformPublicKeyCredentialProvider *platform = [(ASAuthorizationPlatformPublicKeyCredentialProvider *)[NSClassFromString(@"ASAuthorizationPlatformPublicKeyCredentialProvider") alloc] initWithRelyingPartyIdentifier:rp];
@@ -364,8 +374,19 @@ moonbit_string_t mb_host_passkeys_out(int32_t id) {
 }
 
 void mb_host_passkeys_end(int32_t id) {
+  MBPasskeyAsk *who = nil;
   @synchronized(asks) {
+    who = asks[@(id)][@"who"];
     [asks removeObjectForKey:@(id)];
+  }
+  if (who) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+      ASAuthorizationController *c = who.controller;
+      who.controller = nil;
+      if (c && [c respondsToSelector:@selector(cancel)]) {
+        [c cancel];
+      }
+    });
   }
 }
 

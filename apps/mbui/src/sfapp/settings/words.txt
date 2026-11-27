@@ -1282,6 +1282,8 @@ web-pages.appearance.motion.reduce
 web-pages.appearance.motion.system
 web-pages.appearance.motion.title
 web-pages.appearance.theme.description
+web-pages.appearance.tint.description
+web-pages.appearance.tint.title
 web-pages.archive.search
 web-pages.archivePolicy.add
 web-pages.archivePolicy.archive

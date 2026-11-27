@@ -42,10 +42,36 @@ pub let markdown_read : Ref[((String, (Json?) -> Unit) -> Unit)?] = Ref(None)
 pub let kept_call : Ref[((String, Json, Bytes?) -> Result[(Json, Bytes?), Json]?)?] = Ref(None)
 
 ///|
-/// Whether a person's words may hold more than one run as the core reads them (refLinks.ts draftWords: an address, a
-/// composer's mark, a link to a chat): words holding none of `://`, `@[`, `](` are their own one run, asked of none.
+/// Whether a person's words may hold more than one run, or one set otherwise than plain, as the core reads them
+/// (refLinks.ts draftWords: an address, a composer's mark, a link to a chat; the few of Markdown's marks it reads: a
+/// pair of `*`, `_`, `~` or backticks, a line begun `- ` or `* `): words with none of these are their own one run,
+/// asked of none. Never false where the core would say more (it may be true where the core says one plain run).
 pub fn words_may_link(text : String) -> Bool {
-  text.contains("://") || text.contains("@[") || text.contains("](")
+  if text.contains("://") || text.contains("@[") || text.contains("](") {
+    return true
+  }
+  let mut stars = 0
+  let mut lows = 0
+  let mut waves = 0
+  let mut ticks = 0
+  // (a line so far only blanks; then its `-` or `*`, an item's mark if a blank follows)
+  let mut starts = true
+  let mut marked = false
+  for c in text {
+    if marked && c == ' ' {
+      return true
+    }
+    marked = starts && (c == '-' || c == '*')
+    starts = c == '\n' || (starts && c == ' ')
+    match c {
+      '*' => stars += 1
+      '_' => lows += 1
+      '~' => waves += 1
+      '`' => ticks += 1
+      _ => ()
+    }
+  }
+  stars > 1 || lows > 1 || waves > 1 || ticks > 1
 }
 
 ///|

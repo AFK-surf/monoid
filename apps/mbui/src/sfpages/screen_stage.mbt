@@ -612,7 +612,7 @@ fn screen_stage_said(stage : @view.View, pg : ScreenPage, phase : () -> String, 
     @sf.style_node(c, fn() { stage_center })
     // (said once it has been a moment: its room kept till then)
     let later = @signals.signal(false)
-    c.at_moment(c.cause_at() + @sf.later_ms, fn() { later.set(true) }, later=true) |> ignore
+    c.at_moment_active(c.cause_at() + @sf.later_ms, fn() { later.set(true) }, later=true, while_covered=true) |> ignore
     c.box(fn(pill) {
       @sf.style_node(pill, fn() { wait_pill_box }, in_row=true)
       floats_capsule_node(pill, active=fn() { later.get() })

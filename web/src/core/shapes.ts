@@ -1964,6 +1964,11 @@ export interface PrefsView {
 	 * orange.
 	 */
 	accent?: string;
+	/**
+	 * The app's grounds on this device: `off` (white and greys in no hue, the accent alone coloured), or none for
+	 * grounds in the colour theme's hue.
+	 */
+	groundTint?: string;
 	/** The window's content size on this device, as a percentage; none means 100%. */
 	windowZoom?: string;
 	/** The remote terminal's font zoom on this device, as a percentage; none means 100%. */
@@ -2269,6 +2274,16 @@ export interface LinkedChat {
 	thread?: number;
 }
 
+/** A shortcut at the end of a harness failure notice to repair or update the runtime on its station, or open its software settings. */
+export interface NoticeSoftware {
+	/** The runtime the notice is about (`codex`, etc.: `software.update`'s `id`). */
+	runtime: string;
+	/** repair | update | updating | settings: what pressing the action at the pill's end does (`repair`: `software.update` with `repair: true`; `update`: `software.update`; `updating`: disabled progress words while it runs; `settings`: opens the station's page). */
+	kind: string;
+	/** The short label at the end of the pill (用 npm 修复, 更新, 正在修复…, 重试, 软件设置). */
+	action: string;
+}
+
 /** A chat's run changed to another runtime or model, its two sides apart (run-change.ts). */
 export interface RunSides {
 	/** What changed as it was (Claude Code · Opus 5.5). */
@@ -2313,6 +2328,11 @@ export interface NoticeShown {
 	 * (重新登录, 设置代理), which opens that profile's page; `words` then say what went wrong alone. Absent otherwise.
 	 */
 	profileAction?: string;
+	/**
+	 * A failure about a runtime's installation or version: repairing or updating it on the station, its progress while
+	 * that runs, or opening the station's software settings. Absent otherwise.
+	 */
+	software?: NoticeSoftware;
 	/**
 	 * A failure's own words, as what failed said them (a provider's, a process's): shown when the notice is
 	 * opened, under `words`. Absent otherwise.
@@ -2735,7 +2755,7 @@ export interface ChatMessage {
 	md?: unknown;
 	/**
 	 * A person's words in runs (refLinks.ts personWords: as written, a bare web address `link`, a reference to a chat
-	 * `ref`): what the clients draw. Absent for others' and from a core from before.
+	 * `ref`, the few of Markdown's marks they wrote read as how a run is set: `b`, `i`, `s`, `code`, `pre`): what the clients draw. Absent for others' and from a core from before.
 	 */
 	words?: unknown;
 	attachments: Attachment[];

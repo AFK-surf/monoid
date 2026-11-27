@@ -20,6 +20,7 @@ fn init {
     tiles_made.clear()
     dark_set.set(None)
     accent_set.set("")
+    grounds_plain.set(false)
     rainbow_hue.set(default_rainbow_hue)
     custom_hue_kept.val = 210
     current.val = {

@@ -2610,17 +2610,27 @@ static int switched_off(const char *env, const char *prop) {
 }
 
 // A stream's sound: played by an AudioTrack of its own (Streams.Sound), the app's packets and its route's alike.
+// Lock order: audio_deliver_lock -> routes_lock (never reversed) so an empty-flush unroute never races an in-flight
+// routed PCM delivery on the core thread.
+static pthread_mutex_t audio_deliver_lock = PTHREAD_MUTEX_INITIALIZER;
 static jmethodID m_st_audio;
 int32_t mb_host_stream_audio_here(void) { return switched_off("MBUI_STREAM_AUDIO", "debug.mbui.stream_audio") ? 0 : 1; }
 void mb_host_stream_audio(int32_t id, moonbit_bytes_t data) {
   JNIEnv *env = streams_env();
   if (!m_st_audio) m_st_audio = (*env)->GetStaticMethodID(env, streams_cls, "audio", "(I[B)V");
   // (stopped: what its route plays stops with it, until the app routes it again)
-  if (Moonbit_array_length(data) == 0) unroute(id, 2);
+  int is_empty = Moonbit_array_length(data) == 0;
+  if (is_empty) {
+    pthread_mutex_lock(&audio_deliver_lock);
+    unroute(id, 2);
+  }
   jbyteArray b = jbytes(env, data);
   (*env)->CallStaticVoidMethod(env, streams_cls, m_st_audio, id, b);
   streams_threw(env);
   (*env)->DeleteLocalRef(env, b);
+  if (is_empty) {
+    pthread_mutex_unlock(&audio_deliver_lock);
+  }
 }
 
 // ---- streams on a layer of the system's (StreamLayer.java: @hostapi.stream_layers, native views of kind 4) ----
@@ -2811,8 +2821,22 @@ int mb_stream_route_take(uint64_t route, int kind, int key, uint64_t seq, uint64
     return 0;
   }
   (*env)->SetByteArrayRegion(env, b, 0, (jsize)len, (const jbyte *)bytes);
-  if (kind == 6) (*env)->CallStaticVoidMethod(env, streams_cls, m_st_audio, sid, b);
-  else (*env)->CallStaticVoidMethod(env, streams_cls, m_st_direct, sid, (jlong)route, key ? JNI_TRUE : JNI_FALSE, (jdouble)ts, b);
+  if (kind == 6) {
+    pthread_mutex_lock(&audio_deliver_lock);
+    pthread_mutex_lock(&routes_lock);
+    mb_route *r2 = route_at(route, 0);
+    int still = r2 && r2->audio == sid;
+    pthread_mutex_unlock(&routes_lock);
+    if (still) {
+      (*env)->CallStaticVoidMethod(env, streams_cls, m_st_audio, sid, b);
+    }
+    int took = still && !(*env)->ExceptionCheck(env);
+    if (!took && (*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    pthread_mutex_unlock(&audio_deliver_lock);
+    (*env)->DeleteLocalRef(env, b);
+    return took;
+  }
+  (*env)->CallStaticVoidMethod(env, streams_cls, m_st_direct, sid, (jlong)route, key ? JNI_TRUE : JNI_FALSE, (jdouble)ts, b);
   int took = !(*env)->ExceptionCheck(env);
   if (!took) (*env)->ExceptionClear(env);
   (*env)->DeleteLocalRef(env, b);
