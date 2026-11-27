@@ -813,7 +813,7 @@ fn[P] Nav::backs_over(
       Moved(x, t) => nav.gesture(1, x, w, t, progress=p, floor=floor())
       LetGo(x, t) => nav.gesture(2, x, w, t, progress=p, floor=floor())
       CalledOff => nav.gesture(3, 0.0, w, m.cause_at(), progress=p, floor=floor())
-      Back => nav.gesture(4, 0.0, w, m.cause_at(), progress=p, floor=floor())
+      @view.BackStep::Back => nav.gesture(4, 0.0, w, m.cause_at(), progress=p, floor=floor())
     }
   }
   let back_node = fn(b : @view.View) { b.over(Is(true)).follows_back(step) |> ignore }

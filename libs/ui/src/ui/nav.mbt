@@ -2253,7 +2253,7 @@ pub fn Ctx::follow_back(self : Ctx, f : (BackStep) -> Unit) -> Unit {
       1 => f(Moved(x, t))
       2 => f(LetGo(x, t))
       3 => f(CalledOff)
-      _ => f(Back)
+      _ => f(@view.BackStep::Back)
     }
   })
   self.back_node_next = -1

@@ -286,7 +286,7 @@ fn Tester::pattern_focus_node(
     faults.push(pattern_fault(pattern, "focus-target", "cannot focus \{pattern_tag(s)} (no semantic id)"))
     return false
   }
-  g().ask_action(s.id, Focus)
+  g().ask_action(s.id, @view.Action::Focus)
   self.draw()
   let tree = self.pattern_semantics()
   let focused = check_focus_invariant(pattern, "focus(\{pattern_tag(s)})", tree, faults)

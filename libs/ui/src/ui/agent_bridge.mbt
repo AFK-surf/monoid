@@ -304,10 +304,10 @@ pub fn agent_snapshot(tree : @view.Tree) -> Array[AgentEntry] {
       if tree.can_focus(sn.id) || s.actions.contains(Action::Focus) {
         agent_push_unique(actions, "focus")
       }
-      if s.actions.contains(@view.Action::Increment) || (s.role == Slider && s.range is Some(_)) {
+      if s.actions.contains(@view.Action::Increment) || (s.role == @view.Role::Slider && s.range is Some(_)) {
         agent_push_unique(actions, "increment")
       }
-      if s.actions.contains(@view.Action::Decrement) || (s.role == Slider && s.range is Some(_)) {
+      if s.actions.contains(@view.Action::Decrement) || (s.role == @view.Role::Slider && s.range is Some(_)) {
         agent_push_unique(actions, "decrement")
       }
       let has_set_text = s.actions.iter().any(fn(a) { a is SetText(_) })
