@@ -222,10 +222,16 @@ pub fn person_lock_storage_key(sub : String) -> String {
   "personal-lock-" + base_codec::hex_encode(sub.to_bytes())
 }
 
-/// Build a fresh `MeshLockCarry` from `ClientCore`'s kept lock entries and personal lock chain.
+/// Build a fresh `MeshLockCarry` from `ClientCore`'s kept lock entries (for `workspace`, defaulting
+/// to `core.workspace`) and personal lock chain.
 /// When `person` is `None` and `core` has a validated personal lock chain loaded, populates `person` automatically.
-pub fn mesh_lock_carry_for_core(core : ClientCore, person : Option[base_codec::Json] = None) -> MeshLockCarry {
-  let kept = core.lock_kept_entries()
+pub fn mesh_lock_carry_for_core(
+  core : ClientCore,
+  person : Option[base_codec::Json] = None,
+  workspace : String = "",
+) -> MeshLockCarry {
+  let target_ws = if workspace.length() > 0 { workspace } else { core.workspace }
+  let kept = core.lock_kept_entries_for(target_ws)
   let entries : Array[base_codec::Json] = []
   for i in 0..<kept.length() {
     entries.push(form_to_codec(kept[i]))

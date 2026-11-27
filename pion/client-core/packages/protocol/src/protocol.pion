@@ -711,11 +711,6 @@ pub fn topic_vault_id(t : Topic) -> Option[String] {
   }
 }
 
-/// Alias for `topic_vault_id` matching `apps/mbui/src/core/client.mbt:105`.
-pub fn topic_vault(t : Topic) -> Option[String] {
-  topic_vault_id(t)
-}
-
 /// Unified outbound generation envelope stamped onto every subscription wire frame
 /// (`Value`, `Delta`, `Same`, `Unsubscribed`, `Waiting`, sub `Err`), matching
 /// `apps/mbui/src/core/client.mbt` `msg_stale_for` 1:1.

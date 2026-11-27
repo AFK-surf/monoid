@@ -162,12 +162,18 @@ int main(void) {
     assert(strstr(m->json, "\"scopes\":{") != NULL);
     assert(strstr(m->json, "\"workspaces\":{") != NULL);
     assert(strstr(m->json, "\"vaults\":{") != NULL);
-    // Verify atomic device-level conn_seq file was persisted at `data_dir/conn_seq`
-    char conn_seq_path[256];
-    snprintf(conn_seq_path, sizeof(conn_seq_path), "%s/conn_seq", data_dir);
-    FILE *conn_seq_f = fopen(conn_seq_path, "r");
-    assert(conn_seq_f != NULL);
-    fclose(conn_seq_f);
+    // Verify atomic TS-compatible device/auth file was persisted at `data_dir/device%2Fauth` with `"connSeq":<conn1>`
+    char dev_auth_path[256];
+    snprintf(dev_auth_path, sizeof(dev_auth_path), "%s/device%%2Fauth", data_dir);
+    FILE *dev_auth_f = fopen(dev_auth_path, "r");
+    assert(dev_auth_f != NULL);
+    char dev_auth_buf[512];
+    size_t dev_auth_n = fread(dev_auth_buf, 1, sizeof(dev_auth_buf) - 1, dev_auth_f);
+    fclose(dev_auth_f);
+    dev_auth_buf[dev_auth_n] = '\0';
+    char conn1_auth_kv[64];
+    snprintf(conn1_auth_kv, sizeof(conn1_auth_kv), "\"connSeq\":%lld", conn1);
+    assert(strstr(dev_auth_buf, conn1_auth_kv) != NULL);
 
     // 1. settings.set + settings.get (real SQLite `workspace_pref`)
     send_json("{\"id\":1,\"call\":\"settings.set\",\"params\":{\"key\":\"theme\",\"value\":\"dark\"}}");
@@ -370,12 +376,42 @@ int main(void) {
     assert(strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\":1") != NULL);
     send_json("{\"id\":28,\"unsubscribe\":true}");
 
-    // 5b3. Real `ws/st` address subscription + invalid subscribe error frame (both stamped with `conn:<conn1>`)
+    // 5b3. Real `ws/st` address subscription + cross-workspace identical-payload `(topic_key, token)` kept isolation
+    // + invalid subscribe error frame (all stamped with `conn:<conn1>`).
     send_json("{\"id\":29,\"subscribe\":{\"topic\":\"chat\",\"station\":\"ws-default/st-local\",\"thread\":42},\"keyed\":true}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
     printf("[core_runtime_e2e] #29 subscribe chat (real ws/st) -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":29") != NULL && strstr(m->json, conn1_kv) != NULL && strstr(m->json, "\"authGen\":1") != NULL && strstr(m->json, "\"vaultGen\"") == NULL);
     send_json("{\"id\":29,\"unsubscribe\":true}");
+
+    // Cross-workspace identical-payload `kept` cache isolation in `core_runtime`:
+    // `chats` for `ws-keep-a` and `ws-keep-b` produce identical empty payloads & identical `v` tokens.
+    // Keeping `ws-keep-b` MUST NOT allow `ws-keep-a` to hit `same:true` with `ws-keep-b`'s token!
+    send_json("{\"id\":291,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-keep-b\",\"mine\":false},\"keyed\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    assert(strstr(m->json, "\"id\":291") != NULL && strstr(m->json, "\"value\"") != NULL);
+    send_json("{\"id\":291,\"unsubscribe\":true,\"keep\":true}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    char wsb_tok[128];
+    assert(extract_v_token(m->json, wsb_tok, sizeof(wsb_tok)));
+    char cross_ws_sub[256];
+    snprintf(cross_ws_sub, sizeof(cross_ws_sub),
+             "{\"id\":292,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-keep-a\",\"mine\":false},\"keyed\":true,\"have\":\"%s\"}",
+             wsb_tok);
+    send_json(cross_ws_sub);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #292 cross-ws have token -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":292") != NULL && strstr(m->json, "\"value\"") != NULL && strstr(m->json, "\"same\":true") == NULL);
+    send_json("{\"id\":292,\"unsubscribe\":true}");
+    char same_ws_sub[256];
+    snprintf(same_ws_sub, sizeof(same_ws_sub),
+             "{\"id\":293,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-keep-b\",\"mine\":false},\"keyed\":true,\"have\":\"%s\"}",
+             wsb_tok);
+    send_json(same_ws_sub);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #293 same-ws have token -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":293") != NULL && strstr(m->json, "\"same\":true") != NULL);
+    send_json("{\"id\":293,\"unsubscribe\":true}");
 
     send_json("{\"id\":98,\"subscribe\":123}");
     m = wait_for_msg_index(&g_ctx, next_idx++);
@@ -478,6 +514,15 @@ int main(void) {
     send_json("{\"id\":99,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
     assert(atomic_load(&g_ctx.post_stop_count) == 0);
 
+    // Inject a sibling TS field (`capRev:ws-1`) into `device/auth` before restart and prove
+    // restart merges `"connSeq":<conn2>` while preserving existing fields!
+    {
+        FILE *f = fopen(dev_auth_path, "w");
+        assert(f != NULL);
+        fprintf(f, "{\"connSeq\":%lld,\"capRev:ws-1\":\"keep-me\"}", conn1);
+        fclose(f);
+    }
+
     atomic_store(&g_ctx.stopped, 0);
     mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
     // Restart handshake MUST strictly increment device-level `connSeq` (`conn2 > conn1`)!
@@ -489,6 +534,19 @@ int main(void) {
     char conn2_kv[64];
     snprintf(conn2_kv, sizeof(conn2_kv), "\"conn\":%lld", conn2);
     assert(strstr(m->json, conn2_kv) != NULL);
+    // Verify `device/auth` preserved `"capRev:ws-1":"keep-me"` and updated `"connSeq":<conn2>`!
+    {
+        FILE *f = fopen(dev_auth_path, "r");
+        assert(f != NULL);
+        char buf2[512];
+        size_t n2 = fread(buf2, 1, sizeof(buf2) - 1, f);
+        fclose(f);
+        buf2[n2] = '\0';
+        char conn2_auth_kv[64];
+        snprintf(conn2_auth_kv, sizeof(conn2_auth_kv), "\"connSeq\":%lld", conn2);
+        assert(strstr(buf2, conn2_auth_kv) != NULL);
+        assert(strstr(buf2, "\"capRev:ws-1\":\"keep-me\"") != NULL);
+    }
 
     send_json("{\"id\":40,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
     m = wait_for_msg_index(&g_ctx, next_idx++);

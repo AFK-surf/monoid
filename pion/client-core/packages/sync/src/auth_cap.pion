@@ -69,7 +69,7 @@ struct BoundaryListener {
 /// from one tracker instance fail-closed when checked against another tracker instance).
 pub struct AuthGenTracker {
   pub owner_id : Int64
-  pub mut conn_seq : Int64
+  conn_seq : Int64
   mut global_gen : Int
   mut aggregate_auth_gen : Int
   mut vault_global_gen : Int
@@ -119,6 +119,10 @@ pub fn AuthGenTracker::open_with_device(
   let next = store::next_monotonic_conn_seq(prev, now_ms=now_ms, floor=floor)
   save_persisted(next)
   AuthGenTracker::new(conn_seq=next)
+}
+
+pub fn AuthGenTracker::conn_seq(self : AuthGenTracker) -> Int64 {
+  self.conn_seq
 }
 
 pub fn AuthGenTracker::global_gen(self : AuthGenTracker) -> Int {
@@ -420,13 +424,6 @@ pub fn AuthGenTracker::unlock_vault(
   self.bump_vault(ws, vault_id=vault_id)
 }
 
-fn is_all_scope_topic(topic : protocol::Topic) -> Bool {
-  match topic.param("scope") {
-    Some(base_codec::Json::Str(s)) => s == "all" || s == "*"
-    _ => false
-  }
-}
-
 /// Effective `authGen` for `topic` (`0` for device-global topics),
 /// 1:1 with `apps/mbui/src/core/client.mbt` `current_auth_gen`.
 pub fn AuthGenTracker::auth_gen_of(self : AuthGenTracker, topic : protocol::Topic) -> Int {
@@ -488,7 +485,8 @@ pub fn AuthGenTracker::wire_out_gen(
   }
 }
 
-/// Whether `topic` is affected by `event`.
+/// Whether `topic` is affected by `event` (1:1 with `client/core-ts/src/auth-gen.ts:430` and
+/// `apps/mbui/src/core/client.mbt:199`).
 pub fn AuthGenTracker::matches_topic(
   self : AuthGenTracker,
   topic : protocol::Topic,
@@ -502,7 +500,7 @@ pub fn AuthGenTracker::matches_topic(
     AuthBoundaryEvent::Global(_, _) => true
     AuthBoundaryEvent::VaultAll(_) => is_vault_topic(topic.name)
     AuthBoundaryEvent::Workspace(ws, _) | AuthBoundaryEvent::WorkspaceAndVault(ws, _, _) => {
-      if is_aggregate_topic(topic.name) || topic.name == "workspaceMarks" || is_all_scope_topic(topic) {
+      if is_aggregate_topic(topic.name) {
         return true
       }
       match protocol::topic_workspace(topic) {
@@ -568,22 +566,25 @@ pub fn AuthGenTracker::handshake_json(self : AuthGenTracker) -> base_codec::Json
     ws_fields.push((ws, base_codec::json_int(g)))
   }
   let vault_keys : Array[String] = []
+  let push_vault_key = fn(k : String) -> Unit {
+    for j in 0..<vault_keys.length() {
+      if vault_keys[j] == k {
+        return
+      }
+    }
+    vault_keys.push(k)
+  }
   let vw_ks = self.vault_ws_gens.keys()
   for i in 0..<vw_ks.length() {
-    vault_keys.push(vw_ks[i])
+    push_vault_key(vw_ks[i])
+  }
+  let vwa_ks = self.vault_ws_all_gens.keys()
+  for i in 0..<vwa_ks.length() {
+    push_vault_key(vwa_ks[i])
   }
   let vi_ks = self.vault_item_gens.keys()
   for i in 0..<vi_ks.length() {
-    let mut exists = false
-    for j in 0..<vault_keys.length() {
-      if vault_keys[j] == vi_ks[i] {
-        exists = true
-        break
-      }
-    }
-    if !exists {
-      vault_keys.push(vi_ks[i])
-    }
+    push_vault_key(vi_ks[i])
   }
   sort_strings_ac(vault_keys)
   let vault_fields : Array[(String, base_codec::Json)] = []
@@ -686,11 +687,40 @@ pub fn VaultCapability::is_valid(
 }
 
 /// Immutable composite capability valid iff every constituent workspace & vault capability
-/// is valid against `tracker` (and matches `owner_id`).
+/// is valid against `tracker` (and matches `owner_id`). Copies input arrays on construction
+/// so caller-side array mutation cannot alter verification results.
 pub struct CompositeCapability {
   pub owner_id : Int64
-  pub workspaces : Array[WorkspaceCapability]
-  pub vaults : Array[VaultCapability]
+  workspaces : Array[WorkspaceCapability]
+  vaults : Array[VaultCapability]
+}
+
+pub fn CompositeCapability::new(
+  owner_id : Int64,
+  workspaces : Array[WorkspaceCapability],
+  vaults : Array[VaultCapability],
+) -> CompositeCapability {
+  let ws_copy : Array[WorkspaceCapability] = []
+  for i in 0..<workspaces.length() {
+    ws_copy.push(workspaces[i])
+  }
+  let v_copy : Array[VaultCapability] = []
+  for i in 0..<vaults.length() {
+    v_copy.push(vaults[i])
+  }
+  CompositeCapability::{
+    owner_id: owner_id,
+    workspaces: ws_copy,
+    vaults: v_copy,
+  }
+}
+
+pub fn CompositeCapability::workspace_count(self : CompositeCapability) -> Int {
+  self.workspaces.length()
+}
+
+pub fn CompositeCapability::vault_count(self : CompositeCapability) -> Int {
+  self.vaults.length()
 }
 
 pub fn CompositeCapability::is_valid(
@@ -835,11 +865,7 @@ pub fn AuthCapability::composite(
   workspaces : Array[WorkspaceCapability],
   vaults : Array[VaultCapability],
 ) -> CompositeCapability {
-  CompositeCapability::{
-    owner_id: self.owner_id,
-    workspaces: workspaces,
-    vaults: vaults,
-  }
+  CompositeCapability::new(self.owner_id, workspaces, vaults)
 }
 
 pub fn AuthGenTracker::capture(self : AuthGenTracker) -> AuthCapability {
@@ -872,46 +898,72 @@ pub fn AuthGenTracker::capture_vault(
 
 // ── Full-set canonical lock digest (no lock_revoked) ──
 
-/// Compute full-set canonical lock digests `(full_digest, security_boundary_digest)` from a
-/// verified `lock::LockState`:
-/// - Covers `disabled`, sorted `members(sub:role)`, sorted `devices` (with expiry & sorted endpoints),
-///   sorted `sign_keys`, sorted `passkeys` (with owner), sorted `persons`, sorted `gateways`,
-///   canonical `cloud_keys`, `moved`, and sorted `stations` (in `full_digest`).
+fn sort_keyed_json(xs : Array[(String, base_codec::Json)]) -> Array[base_codec::Json] {
+  for i in 1..<xs.length() {
+    let cur = xs[i]
+    let mut j = i - 1
+    while j >= 0 && xs[j].0 > cur.0 {
+      xs[j + 1] = xs[j]
+      j -= 1
+    }
+    xs[j + 1] = cur
+  }
+  let out : Array[base_codec::Json] = []
+  for i in 0..<xs.length() {
+    out.push(xs[i].1)
+  }
+  out
+}
+
+fn ac_opt_str_json(v : Option[String]) -> base_codec::Json {
+  match v {
+    Some(s) => base_codec::json_str(s)
+    None => base_codec::json_null()
+  }
+}
+
+/// Compute full-set structured canonical JSON lock digests `(full_digest, security_boundary_digest)`
+/// from a verified `lock::LockState`:
+/// - Uses `base_codec::json_stringify` over sorted canonical tuple arrays (eliminating delimiter ambiguity).
+/// - Covers `disabled`, `rp_id`, sorted `origins`, sorted `members(sub, email, role)`, sorted `devices`
+///   (with `sign_key`, `own`, `exp`, `by`, and sorted `endpoints`), sorted `sign_keys`, sorted `passkeys`
+///   (with `own`), sorted `signed`, sorted `persons`, sorted `gateways`, canonical `cloud_keys`, `moved`,
+///   and sorted `stations` (in `full_digest`).
 /// - Strictly EXCLUDES volatile `head` / `seq` so non-boundary updates never cause spurious bumps.
 /// - NEVER derives `revoked` from `lock.members` (newcomers awaiting approval and migrated members
 ///   are legitimately absent from `lock.members`).
 pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
-  let members_list : Array[String] = []
+  let origins_copy : Array[String] = []
+  for i in 0..<st.origins.length() {
+    origins_copy.push(st.origins[i])
+  }
+  sort_strings_ac(origins_copy)
+  let origins_j : Array[base_codec::Json] = []
+  for i in 0..<origins_copy.length() {
+    origins_j.push(base_codec::json_str(origins_copy[i]))
+  }
+
+  let members_k : Array[(String, base_codec::Json)] = []
   let ms = st.members.entries()
   for i in 0..<ms.length() {
     let (sub, m) = ms[i]
-    members_list.push(sub + ":" + m.role)
-  }
-  sort_strings_ac(members_list)
-
-  let join_arr = fn(xs : Array[String]) -> String {
-    let sb = StringBuilder::new()
-    for i in 0..<xs.length() {
-      if i > 0 {
-        sb.write_string(",")
-      }
-      sb.write_string(xs[i])
-    }
-    sb.to_string()
+    members_k.push((
+      sub,
+      base_codec::json_arr([
+        base_codec::json_str(sub),
+        base_codec::json_str(m.email),
+        base_codec::json_str(m.role),
+      ]),
+    ))
   }
 
-  let devices_list : Array[String] = []
+  let devices_k : Array[(String, base_codec::Json)] = []
   let ds = st.devices.entries()
   for i in 0..<ds.length() {
     let (id, d) = ds[i]
-    let sk = match d.sign_key {
-      Some(s) => s
-      None => ""
-    }
-    let own_s = if d.own { "1" } else { "0" }
-    let exp_s = match d.exp {
-      Some(e) => e.to_int64().to_string()
-      None => ""
+    let exp_j = match d.exp {
+      Some(e) => base_codec::json_int64(e.to_int64())
+      None => base_codec::json_null()
     }
     let eps : Array[String] = []
     match d.endpoints {
@@ -923,28 +975,26 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
       }
       None => ()
     }
-    devices_list.push(id + ":" + d.sub + ":" + d.kind + ":" + sk + ":" + own_s + ":" + exp_s + ":[" + join_arr(eps) + "]")
+    let eps_j : Array[base_codec::Json] = []
+    for j in 0..<eps.length() {
+      eps_j.push(base_codec::json_str(eps[j]))
+    }
+    devices_k.push((
+      id,
+      base_codec::json_arr([
+        base_codec::json_str(id),
+        base_codec::json_str(d.sub),
+        base_codec::json_str(d.kind),
+        ac_opt_str_json(d.sign_key),
+        base_codec::json_bool(d.own),
+        exp_j,
+        ac_opt_str_json(d.by),
+        base_codec::json_arr(eps_j),
+      ]),
+    ))
   }
-  sort_strings_ac(devices_list)
 
-  let passkeys_list : Array[String] = []
-  let ps = st.passkeys.entries()
-  for i in 0..<ps.length() {
-    let (id, p) = ps[i]
-    let p_own = if p.own { "1" } else { "0" }
-    passkeys_list.push(id + ":" + p.sub + ":" + p.key + ":" + p_own)
-  }
-  sort_strings_ac(passkeys_list)
-
-  let persons_list : Array[String] = []
-  let prs = st.persons.entries()
-  for i in 0..<prs.length() {
-    let (sub, person_hash) = prs[i]
-    persons_list.push(sub + ":" + person_hash)
-  }
-  sort_strings_ac(persons_list)
-
-  let sign_keys_list : Array[String] = []
+  let sign_keys_k : Array[(String, base_codec::Json)] = []
   let sks = st.sign_keys.entries()
   for i in 0..<sks.length() {
     let (dev_id, keys) = sks[i]
@@ -953,38 +1003,83 @@ pub fn canonical_lock_digest(st : lock::LockState) -> (String, String) {
       kcopy.push(keys[j])
     }
     sort_strings_ac(kcopy)
-    sign_keys_list.push(dev_id + ":[" + join_arr(kcopy) + "]")
+    let kj : Array[base_codec::Json] = []
+    for j in 0..<kcopy.length() {
+      kj.push(base_codec::json_str(kcopy[j]))
+    }
+    sign_keys_k.push((
+      dev_id,
+      base_codec::json_arr([base_codec::json_str(dev_id), base_codec::json_arr(kj)]),
+    ))
   }
-  sort_strings_ac(sign_keys_list)
 
-  let gateways_list : Array[String] = []
+  let passkeys_k : Array[(String, base_codec::Json)] = []
+  let ps = st.passkeys.entries()
+  for i in 0..<ps.length() {
+    let (id, p) = ps[i]
+    passkeys_k.push((
+      id,
+      base_codec::json_arr([
+        base_codec::json_str(id),
+        base_codec::json_str(p.sub),
+        base_codec::json_str(p.key),
+        base_codec::json_bool(p.own),
+      ]),
+    ))
+  }
+
+  let signed_k : Array[(String, base_codec::Json)] = []
+  let sg = st.signed.entries()
+  for i in 0..<sg.length() {
+    let (k, v) = sg[i]
+    signed_k.push((k, base_codec::json_arr([base_codec::json_str(k), base_codec::json_bool(v)])))
+  }
+
+  let persons_k : Array[(String, base_codec::Json)] = []
+  let prs = st.persons.entries()
+  for i in 0..<prs.length() {
+    let (sub, person_hash) = prs[i]
+    persons_k.push((sub, base_codec::json_arr([base_codec::json_str(sub), base_codec::json_str(person_hash)])))
+  }
+
+  let gateways_k : Array[(String, base_codec::Json)] = []
   let gws = st.gateways.entries()
   for i in 0..<gws.length() {
     let (g, enabled) = gws[i]
-    gateways_list.push(g + ":" + (if enabled { "1" } else { "0" }))
+    gateways_k.push((g, base_codec::json_arr([base_codec::json_str(g), base_codec::json_bool(enabled)])))
   }
-  sort_strings_ac(gateways_list)
 
   let cloud_keys_s = match form::canonical(st.cloud_keys) {
     Ok(s) => s
     Err(_) => ""
   }
 
-  let stations_list : Array[String] = []
+  let stations_k : Array[(String, base_codec::Json)] = []
   let ss = st.stations.entries()
   for i in 0..<ss.length() {
     let (id, s) = ss[i]
-    stations_list.push(id + ":" + s.key)
+    stations_k.push((id, base_codec::json_arr([base_codec::json_str(id), base_codec::json_str(s.key)])))
   }
-  sort_strings_ac(stations_list)
 
-  let dis_s = if st.disabled { "1" } else { "0" }
-  let moved_s = match st.moved {
-    Some(m) => m
-    None => ""
-  }
-  let sec_digest = "d=" + dis_s + "|m=" + join_arr(members_list) + "|v=" + join_arr(devices_list) + "|sk=" + join_arr(sign_keys_list) + "|p=" + join_arr(passkeys_list) + "|pr=" + join_arr(persons_list) + "|gw=" + join_arr(gateways_list) + "|ck=" + cloud_keys_s + "|mv=" + moved_s
-  let full_digest = sec_digest + "|s=" + join_arr(stations_list)
+  let sec_json = base_codec::json_arr([
+    base_codec::json_bool(st.disabled),
+    base_codec::json_str(st.rp_id),
+    base_codec::json_arr(origins_j),
+    base_codec::json_arr(sort_keyed_json(members_k)),
+    base_codec::json_arr(sort_keyed_json(devices_k)),
+    base_codec::json_arr(sort_keyed_json(sign_keys_k)),
+    base_codec::json_arr(sort_keyed_json(passkeys_k)),
+    base_codec::json_arr(sort_keyed_json(signed_k)),
+    base_codec::json_arr(sort_keyed_json(persons_k)),
+    base_codec::json_arr(sort_keyed_json(gateways_k)),
+    base_codec::json_str(cloud_keys_s),
+    ac_opt_str_json(st.moved),
+  ])
+  let sec_digest = base_codec::json_stringify(sec_json)
+  let full_digest = base_codec::json_stringify(base_codec::json_arr([
+    sec_json,
+    base_codec::json_arr(sort_keyed_json(stations_k)),
+  ]))
   (full_digest, sec_digest)
 }
 
@@ -998,14 +1093,9 @@ fn guarded_read_attempt_k[T, R](
   k : (effect::Exit[R]) -> Unit,
   attempt : Int,
   max_retries : Int,
-  on_stale_retry : Option[(Int) -> Unit],
   on_exhausted_stale : Option[() -> Unit],
 ) -> Unit {
   let cap = tracker.capture_workspace(workspace)
-  if !cap.is_valid(tracker) {
-    k(effect::Exit::Failed(effect::EffectError::Custom("auth_stale")))
-    return
-  }
   io_k(cap, fn(ex : effect::Exit[T]) -> Unit {
     match ex {
       effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -1013,10 +1103,6 @@ fn guarded_read_attempt_k[T, R](
       effect::Exit::Succeeded(raw) => {
         if !cap.is_valid(tracker) {
           if attempt < max_retries {
-            match on_stale_retry {
-              Some(cb) => cb(attempt + 1)
-              None => ()
-            }
             guarded_read_attempt_k(
               tracker,
               workspace,
@@ -1025,7 +1111,6 @@ fn guarded_read_attempt_k[T, R](
               k,
               attempt + 1,
               max_retries,
-              on_stale_retry,
               on_exhausted_stale,
             )
             return
@@ -1059,7 +1144,6 @@ pub fn guarded_read_k[T, R](
   commit : (WorkspaceCapability, T) -> Result[R, String],
   k : (effect::Exit[R]) -> Unit,
   max_retries : Int = 2,
-  on_stale_retry : Option[(Int) -> Unit] = None,
   on_exhausted_stale : Option[() -> Unit] = None,
 ) -> Unit {
   guarded_read_attempt_k(
@@ -1070,7 +1154,6 @@ pub fn guarded_read_k[T, R](
     k,
     0,
     if max_retries < 0 { 0 } else { max_retries },
-    on_stale_retry,
     on_exhausted_stale,
   )
 }

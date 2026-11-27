@@ -283,7 +283,7 @@ pub fn next_monotonic_conn_seq(persisted : Int64, now_ms : Int64 = 0L, floor : I
   if time_floor > next_seq { time_floor } else { next_seq }
 }
 
-/// Parse a stored `conn_seq` JSON/integer string (`"42"` or `{"conn": 42}`).
+/// Parse a stored `conn_seq` JSON/integer string (`"42"`, `{"connSeq": 42}`, or `{"conn": 42}`).
 pub fn parse_conn_seq_raw(raw : String) -> Int64 {
   let trimmed = raw.trim()
   match base_codec::parse_int64_str(trimmed) {
@@ -302,21 +302,26 @@ pub fn parse_conn_seq_raw(raw : String) -> Int64 {
           0L
         }
       }
-      base_codec::JsonParseResult::Ok(j) =>
-      match base_codec::json_get(j, "conn") {
-        Some(base_codec::Json::Num(n, repr)) => {
-          if repr.length() > 0 {
-            match base_codec::parse_int64_str(repr) {
-              Some(v) => if v > 0L { v } else { 0L }
-              None => if n > 0.0 { n.to_int64() } else { 0L }
-            }
-          } else if n > 0.0 {
-            n.to_int64()
-          } else {
-            0L
-          }
+      base_codec::JsonParseResult::Ok(j) => {
+        let num_field = match base_codec::json_get(j, "connSeq") {
+          Some(v) => Some(v)
+          None => base_codec::json_get(j, "conn")
         }
-        _ => 0L
+        match num_field {
+          Some(base_codec::Json::Num(n, repr)) => {
+            if repr.length() > 0 {
+              match base_codec::parse_int64_str(repr) {
+                Some(v) => if v > 0L { v } else { 0L }
+                None => if n > 0.0 { n.to_int64() } else { 0L }
+              }
+            } else if n > 0.0 {
+              n.to_int64()
+            } else {
+              0L
+            }
+          }
+          _ => 0L
+        }
       }
       _ => 0L
     }

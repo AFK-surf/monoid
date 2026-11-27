@@ -893,7 +893,7 @@ pub fn handle_l3_op(
       },
     }
     sess.core = sync::ClientCore::new(ws, st, sess.rt, sess.db, tr, fn() -> Unit {})
-    return Some(ok_resp(base_codec::json_obj([("conn", base_codec::json_int64(sess.core.auth.conn_seq))])))
+    return Some(ok_resp(base_codec::json_obj([("conn", base_codec::json_int64(sess.core.auth.conn_seq()))])))
   }
   if op == "core.wire" {
     let raw_str = match base_codec::json_get(args, "rawText") {

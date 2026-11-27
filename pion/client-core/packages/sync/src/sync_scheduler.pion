@@ -14,6 +14,7 @@ pub struct SyncScheduler {
   pub mut transport : StationTransport
   mut transport_epoch : Int64
   mut auth : Option[AuthGenTracker]
+  pending_refresh : Map[String, Bool]
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
@@ -35,6 +36,7 @@ pub fn SyncScheduler::new(
     transport: transport,
     transport_epoch: 1L,
     auth: None,
+    pending_refresh: Map::new(),
     focused_thread: None,
     idle_preempted_count: 0,
     completed_order: [],
@@ -50,6 +52,10 @@ fn SyncScheduler::task_key(self : SyncScheduler, resource : String) -> String {
   self.workspace + "/" + self.station + "/" + resource
 }
 
+pub fn SyncScheduler::has_pending_refresh(self : SyncScheduler, resource : String) -> Bool {
+  self.pending_refresh.get(self.task_key(resource)).is_some()
+}
+
 pub fn SyncScheduler::idle_preemptions(self : SyncScheduler) -> Int {
   self.idle_preempted_count
 }
@@ -58,14 +64,17 @@ pub fn SyncScheduler::completed_tasks(self : SyncScheduler) -> Array[String] {
   self.completed_order
 }
 
-/// Bump the transport epoch so any in-flight reads from a prior transport are discarded.
+/// Bump the transport epoch so any in-flight reads from a prior transport are discarded
+/// and any pending stale-refresh reschedules stop immediately.
 pub fn SyncScheduler::bump_epoch(self : SyncScheduler) -> Unit {
   self.transport_epoch += 1L
+  self.pending_refresh.clear()
 }
 
 /// Swap the underlying `StationTransport` for all scheduled sync reads (`GET /chats`, `GET /lock`, etc.).
 pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTransport) -> Unit {
   self.transport_epoch += 1L
+  self.pending_refresh.clear()
   self.transport = transport
 }
 
@@ -155,7 +164,6 @@ pub fn SyncScheduler::fetch_marks_k(
   k : (effect::Exit[Array[String]]) -> Unit,
   sessions : Array[String] = [],
   threads : Array[Int] = [],
-  allow_stale_reschedule : Bool = true,
 ) -> Unit {
   let is_whole = sessions.length() == 0 && threads.length() == 0
   let key = self.task_key(if is_whole { "marks:whole" } else { "marks:scoped" })
@@ -172,11 +180,13 @@ pub fn SyncScheduler::fetch_marks_k(
     path_sb.write_string(threads[i].to_string())
   }
   let req_path = path_sb.to_string()
+  let run_ep : Array[Int64] = [self.transport_epoch]
   self.lane.run_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Array[String]]) -> Unit) -> Unit {
       let ep = self.transport_epoch
+      run_ep[0] = ep
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
         let req_fn = self.transport.request_k
         req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
@@ -207,6 +217,7 @@ pub fn SyncScheduler::fetch_marks_k(
         match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
           sql::SqlResult::Err(e) => Err(e.to_string())
           sql::SqlResult::Ok(affected) => {
+            self.pending_refresh.remove(key)
             self.completed_order.push("marks")
             Ok(affected)
           }
@@ -214,15 +225,6 @@ pub fn SyncScheduler::fetch_marks_k(
       }
       match self.auth {
         Some(tracker) => {
-          let on_stale = if allow_stale_reschedule {
-            Some(fn() -> Unit {
-              if self.transport_epoch == ep {
-                self.fetch_marks_k(priority, fn(_ : effect::Exit[Array[String]]) -> Unit {}, sessions=sessions, threads=threads, allow_stale_reschedule=false)
-              }
-            })
-          } else {
-            None
-          }
           guarded_read_k(
             tracker,
             self.workspace,
@@ -233,7 +235,11 @@ pub fn SyncScheduler::fetch_marks_k(
               apply_json(j)
             },
             tk,
-            on_exhausted_stale=on_stale,
+            on_exhausted_stale=Some(fn() -> Unit {
+              if self.transport_epoch == ep {
+                self.pending_refresh.set(key, true)
+              }
+            }),
           )
         }
         None =>
@@ -250,7 +256,23 @@ pub fn SyncScheduler::fetch_marks_k(
         })
       }
     },
-    k,
+    fn(ex : effect::Exit[Array[String]]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == run_ep[0] {
+            self.pending_refresh.remove(key)
+            self.fetch_marks_k(priority, k, sessions=sessions, threads=threads)
+            return
+          }
+          self.pending_refresh.remove(key)
+          k(ex)
+        }
+        other => {
+          self.pending_refresh.remove(key)
+          k(other)
+        }
+      }
+    },
   )
 }
 
@@ -259,14 +281,15 @@ pub fn SyncScheduler::fetch_snapshot_k(
   self : SyncScheduler,
   priority : Int,
   k : (effect::Exit[Int]) -> Unit,
-  allow_stale_reschedule : Bool = true,
 ) -> Unit {
   let key = self.task_key("snapshot")
+  let run_ep : Array[Int64] = [self.transport_epoch]
   self.lane.run_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
       let ep = self.transport_epoch
+      run_ep[0] = ep
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
         let req_fn = self.transport.request_k
         req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
@@ -297,6 +320,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
         match self.events.apply_snapshot(j) {
           sql::SqlResult::Err(e) => Err(e.to_string())
           sql::SqlResult::Ok(n) => {
+            self.pending_refresh.remove(key)
             self.completed_order.push("snapshot")
             Ok(n)
           }
@@ -304,15 +328,6 @@ pub fn SyncScheduler::fetch_snapshot_k(
       }
       match self.auth {
         Some(tracker) => {
-          let on_stale = if allow_stale_reschedule {
-            Some(fn() -> Unit {
-              if self.transport_epoch == ep {
-                self.fetch_snapshot_k(priority, fn(_ : effect::Exit[Int]) -> Unit {}, allow_stale_reschedule=false)
-              }
-            })
-          } else {
-            None
-          }
           guarded_read_k(
             tracker,
             self.workspace,
@@ -323,7 +338,11 @@ pub fn SyncScheduler::fetch_snapshot_k(
               apply_json(j)
             },
             tk,
-            on_exhausted_stale=on_stale,
+            on_exhausted_stale=Some(fn() -> Unit {
+              if self.transport_epoch == ep {
+                self.pending_refresh.set(key, true)
+              }
+            }),
           )
         }
         None =>
@@ -340,7 +359,23 @@ pub fn SyncScheduler::fetch_snapshot_k(
         })
       }
     },
-    k,
+    fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == run_ep[0] {
+            self.pending_refresh.remove(key)
+            self.fetch_snapshot_k(priority, k)
+            return
+          }
+          self.pending_refresh.remove(key)
+          k(ex)
+        }
+        other => {
+          self.pending_refresh.remove(key)
+          k(other)
+        }
+      }
+    },
   )
 }
 
@@ -352,7 +387,6 @@ pub fn SyncScheduler::fetch_thread_k(
   priority : Int,
   is_foreground : Bool,
   k : (effect::Exit[Int]) -> Unit,
-  allow_stale_reschedule : Bool = true,
 ) -> Unit {
   let key = self.task_key("thread:" + thread.to_string())
   let end_fg = if is_foreground {
@@ -360,11 +394,13 @@ pub fn SyncScheduler::fetch_thread_k(
   } else {
     None
   }
+  let run_ep : Array[Int64] = [self.transport_epoch]
   self.lane.run_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
       let ep = self.transport_epoch
+      run_ep[0] = ep
       let path = "/threads/" + thread.to_string() + "/entries"
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
         let req_fn = self.transport.request_k
@@ -396,6 +432,7 @@ pub fn SyncScheduler::fetch_thread_k(
         match self.events.apply_snapshot(j) {
           sql::SqlResult::Err(e) => Err(e.to_string())
           sql::SqlResult::Ok(n) => {
+            self.pending_refresh.remove(key)
             self.completed_order.push("thread:" + thread.to_string())
             Ok(n)
           }
@@ -403,15 +440,6 @@ pub fn SyncScheduler::fetch_thread_k(
       }
       match self.auth {
         Some(tracker) => {
-          let on_stale = if allow_stale_reschedule {
-            Some(fn() -> Unit {
-              if self.transport_epoch == ep {
-                self.fetch_thread_k(thread, priority, false, fn(_ : effect::Exit[Int]) -> Unit {}, allow_stale_reschedule=false)
-              }
-            })
-          } else {
-            None
-          }
           guarded_read_k(
             tracker,
             self.workspace,
@@ -422,7 +450,11 @@ pub fn SyncScheduler::fetch_thread_k(
               apply_json(j)
             },
             tk,
-            on_exhausted_stale=on_stale,
+            on_exhausted_stale=Some(fn() -> Unit {
+              if self.transport_epoch == ep {
+                self.pending_refresh.set(key, true)
+              }
+            }),
           )
         }
         None =>
@@ -444,7 +476,21 @@ pub fn SyncScheduler::fetch_thread_k(
         Some(f) => f()
         None => ()
       }
-      k(ex)
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == run_ep[0] {
+            self.pending_refresh.remove(key)
+            self.fetch_thread_k(thread, priority, false, k)
+            return
+          }
+          self.pending_refresh.remove(key)
+          k(ex)
+        }
+        other => {
+          self.pending_refresh.remove(key)
+          k(other)
+        }
+      }
     },
   )
 }
@@ -455,9 +501,9 @@ pub fn SyncScheduler::prefetch_idle_k(
   self : SyncScheduler,
   thread : Int,
   k : (effect::Exit[Int]) -> Unit,
-  allow_stale_reschedule : Bool = true,
 ) -> Unit {
   let key = self.task_key("idle:" + thread.to_string())
+  let run_ep : Array[Int64] = [self.transport_epoch]
   self.lane.run_k(
     key,
     effect::priority_idle(),
@@ -468,6 +514,7 @@ pub fn SyncScheduler::prefetch_idle_k(
         return
       }
       let ep = self.transport_epoch
+      run_ep[0] = ep
       let path = "/threads/" + thread.to_string() + "/entries"
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
         let req_fn = self.transport.request_k
@@ -523,6 +570,7 @@ pub fn SyncScheduler::prefetch_idle_k(
         match self.events.apply_snapshot(j) {
           sql::SqlResult::Err(e) => Err(e.to_string())
           sql::SqlResult::Ok(n) => {
+            self.pending_refresh.remove(key)
             self.completed_order.push("idle:" + thread.to_string())
             Ok(n)
           }
@@ -530,15 +578,6 @@ pub fn SyncScheduler::prefetch_idle_k(
       }
       match self.auth {
         Some(tracker) => {
-          let on_stale = if allow_stale_reschedule {
-            Some(fn() -> Unit {
-              if self.transport_epoch == ep {
-                self.prefetch_idle_k(thread, fn(_ : effect::Exit[Int]) -> Unit {}, allow_stale_reschedule=false)
-              }
-            })
-          } else {
-            None
-          }
           guarded_read_k(
             tracker,
             self.workspace,
@@ -549,7 +588,11 @@ pub fn SyncScheduler::prefetch_idle_k(
               apply_idle(j)
             },
             tk,
-            on_exhausted_stale=on_stale,
+            on_exhausted_stale=Some(fn() -> Unit {
+              if self.transport_epoch == ep {
+                self.pending_refresh.set(key, true)
+              }
+            }),
           )
         }
         None =>
@@ -569,10 +612,27 @@ pub fn SyncScheduler::prefetch_idle_k(
     fn(ex : effect::Exit[Int]) -> Unit {
       match ex {
         effect::Exit::Failed(effect::EffectError::Custom("preempted")) => {
-          // Re-queue behind foreground work once the lane is idle again.
-          self.prefetch_idle_k(thread, k)
+          if self.transport_epoch == run_ep[0] {
+            // Re-queue behind foreground work once the lane is idle again.
+            self.prefetch_idle_k(thread, k)
+          } else {
+            self.pending_refresh.remove(key)
+            k(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          }
         }
-        other => k(other)
+        effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == run_ep[0] {
+            self.pending_refresh.remove(key)
+            self.prefetch_idle_k(thread, k)
+            return
+          }
+          self.pending_refresh.remove(key)
+          k(ex)
+        }
+        other => {
+          self.pending_refresh.remove(key)
+          k(other)
+        }
       }
     },
   )

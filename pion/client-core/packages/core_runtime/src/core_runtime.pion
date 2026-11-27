@@ -375,12 +375,17 @@ fn flush_session_md_stores(sess : RuntimeSession) -> Unit {
   }
 }
 
+fn runtime_kept_key(topic : protocol::Topic, tok : String) -> String {
+  protocol::topic_key(topic) + "\u{01}" + tok
+}
+
 fn kept_put(sess : RuntimeSession, tok : String, topic : protocol::Topic, v : base_codec::Json) -> Unit {
-  let existed = sess.kept_vals.get(tok).is_some()
-  sess.kept_vals.set(tok, v)
-  sess.kept_topics.set(tok, topic)
+  let k = runtime_kept_key(topic, tok)
+  let existed = sess.kept_vals.get(k).is_some()
+  sess.kept_vals.set(k, v)
+  sess.kept_topics.set(k, topic)
   if !existed {
-    sess.kept_order.push(tok)
+    sess.kept_order.push(k)
     while sess.kept_vals.length() > 64 && sess.kept_order.length() > 0 {
       let oldest = sess.kept_order[0]
       let next_ord : Array[String] = []
@@ -400,16 +405,16 @@ fn kept_put(sess : RuntimeSession, tok : String, topic : protocol::Topic, v : ba
 fn kept_purge_where(sess : RuntimeSession, pred : (protocol::Topic) -> Bool) -> Unit {
   let next_ord : Array[String] = []
   for i in 0..<sess.kept_order.length() {
-    let tok = sess.kept_order[i]
-    let drop = match sess.kept_topics.get(tok) {
+    let k = sess.kept_order[i]
+    let drop = match sess.kept_topics.get(k) {
       Some(t) => pred(t)
       None => true
     }
     if drop {
-      sess.kept_vals.remove(tok)
-      sess.kept_topics.remove(tok)
+      sess.kept_vals.remove(k)
+      sess.kept_topics.remove(k)
     } else {
-      next_ord.push(tok)
+      next_ord.push(k)
     }
   }
   sess.kept_order.clear()
@@ -1008,19 +1013,25 @@ pub extern "C" fn pion_core_runtime_start(
   } else {
     None
   }
-  // Device-level strictly monotonic `connSeq` stored outside per-account SQLite via atomic
-  // Rust Shell `storage.set("conn_seq")` (writes `data_dir/conn_seq.partial`, fsyncs, and
-  // atomically renames to `data_dir/conn_seq`), with SQLite `account_doc("conn_seq")` durable
-  // fallback, in-process floor `g_last_device_conn_seq`, and wall-clock lower bound (`now_ms * 1000L`).
+  // Device-level strictly monotonic `connSeq` aligned 1:1 with TS `device/auth` (`{"connSeq": N}`,
+  // preserving sibling fields like `capRev:*` via Rust Shell atomic `storage.set("device/auth")`,
+  // which writes `data_dir/device%2Fauth.partial`, fsyncs, and renames atomically). Also reads
+  // legacy `conn_seq` / `device/conn_seq` and SQLite `account_doc("conn_seq")` to take the max,
+  // with in-process floor `g_last_device_conn_seq` and wall-clock lower bound (`now_ms * 1000L`).
   let parse_conn_json = fn(opt_j : Option[base_codec::Json]) -> Int64 {
     match opt_j {
       Some(j) => store::parse_conn_seq_raw(base_codec::json_stringify(j))
       None => 0L
     }
   }
+  let existing_auth_doc = read_storage_json(sh, "device/auth")
+  let auth_conn = parse_conn_json(existing_auth_doc)
   let file_conn = parse_conn_json(read_storage_json(sh, "conn_seq"))
   let legacy_conn = parse_conn_json(read_storage_json(sh, "device/conn_seq"))
-  let storage_device_conn = if file_conn >= legacy_conn { file_conn } else { legacy_conn }
+  let mut storage_device_conn = if auth_conn >= file_conn { auth_conn } else { file_conn }
+  if legacy_conn > storage_device_conn {
+    storage_device_conn = legacy_conn
+  }
   let db_conn : Int64 = match store::get_account_doc(acct.db, "conn_seq") {
     sql::SqlResult::Ok(Some(raw)) => store::parse_conn_seq_raw(raw)
     _ => 0L
@@ -1028,7 +1039,20 @@ pub extern "C" fn pion_core_runtime_start(
   let prev_device_conn = if storage_device_conn >= db_conn { storage_device_conn } else { db_conn }
   let device_conn_seq = store::next_monotonic_conn_seq(prev_device_conn, now_ms=pion_core_wall_now_ms(), floor=g_last_device_conn_seq[0])
   g_last_device_conn_seq[0] = device_conn_seq
-  match write_storage_json(sh, "conn_seq", base_codec::json_obj([("conn", base_codec::json_int64(device_conn_seq))])) {
+  let merged_auth_fields : Array[(String, base_codec::Json)] = []
+  match existing_auth_doc {
+    Some(base_codec::Json::Obj(pairs)) => {
+      for i in 0..<pairs.length() {
+        let (k, v) = pairs[i]
+        if k != "connSeq" {
+          merged_auth_fields.push((k, v))
+        }
+      }
+    }
+    _ => ()
+  }
+  merged_auth_fields.push(("connSeq", base_codec::json_int64(device_conn_seq)))
+  match write_storage_json(sh, "device/auth", base_codec::json_obj(merged_auth_fields)) {
     Ok(_) => {
       g_last_conn_seq_persist_err[0] = None
       match store::put_account_doc(acct.db, "conn_seq", device_conn_seq.to_string()) {
@@ -1043,12 +1067,12 @@ pub extern "C" fn pion_core_runtime_start(
     Err(storage_err) => {
       match store::put_account_doc(acct.db, "conn_seq", device_conn_seq.to_string()) {
         sql::SqlResult::Ok(_) => {
-          let err_msg = "conn_seq device file persist failed (" + storage_err + "); fell back to sqlite account_doc"
+          let err_msg = "conn_seq device/auth persist failed (" + storage_err + "); fell back to sqlite account_doc"
           g_last_conn_seq_persist_err[0] = Some(err_msg)
           log_runtime_warn(err_msg)
         }
         sql::SqlResult::Err(e) => {
-          let err_msg = "conn_seq persist failed on device file (" + storage_err + ") and sqlite fallback (" + e.to_string() + ")"
+          let err_msg = "conn_seq persist failed on device/auth (" + storage_err + ") and sqlite fallback (" + e.to_string() + ")"
           g_last_conn_seq_persist_err[0] = Some(err_msg)
           log_runtime_warn(err_msg)
         }
@@ -1591,7 +1615,7 @@ pub extern "C" fn pion_core_runtime_send(
               let allow_kept = !protocol::is_sensitive_topic(topic) && !sync::is_vault_topic(topic.name)
               let out_ev = if allow_kept {
                 match (have, val_opt) {
-                  (Some(tok), Some(cur_val)) => match sess.kept_vals.get(tok) {
+                  (Some(tok), Some(cur_val)) => match sess.kept_vals.get(runtime_kept_key(topic, tok)) {
                     Some(prev_val) => {
                       if protocol::json_equal(prev_val, cur_val) {
                         protocol::CoreEvent::Same(id)
@@ -1662,9 +1686,15 @@ pub extern "C" fn pion_core_runtime_send(
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
               None => sess.core.station
             }
-            let target_ws = match opt_str_param(params, "workspace") {
-              Some(w) => if w.length() > 0 { w } else { sess.core.workspace }
-              None => sess.core.workspace
+            let explicit_ws = match opt_str_param(params, "workspace") {
+              Some(w) => w
+              None => ""
+            }
+            let target_ws = if explicit_ws.length() > 0 {
+              explicit_ws
+            } else {
+              let pref = sync::station_workspace_prefix(target_st)
+              if pref.length() > 0 { pref } else { sess.core.workspace }
             }
             let peer_opt = match opt_str_param(params, "peerId") {
               Some(p) => if p.length() > 0 { Some(p) } else { None }
@@ -1716,7 +1746,7 @@ pub extern "C" fn pion_core_runtime_send(
                   relays,
                   get_cred,
                   get_lock_carry=Some(fn() -> sync::MeshLockCarry {
-                    sync::mesh_lock_carry_for_core(core_ref)
+                    sync::mesh_lock_carry_for_core(core_ref, workspace=target_ws)
                   }),
                 )
                 match sess.mesh_transports.get(target_st) {
@@ -1728,7 +1758,7 @@ pub extern "C" fn pion_core_runtime_send(
                 }
                 let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
                 sess.mesh_transports.set(target_st, ctrl)
-                sess.core.attach_station_transport(target_st, tr)
+                sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
                 mode = "mesh"
               }
               None => {
@@ -1823,7 +1853,7 @@ pub extern "C" fn pion_core_runtime_send(
               protocol::CoreEvent::Unsubscribed(_, _) =>
               protocol::encode_sub_event_with_auth(
                 ev,
-                protocol::WireOutGen::{ conn: sess.core.auth.conn_seq, auth_gen: None, vault_gen: None },
+                protocol::WireOutGen::{ conn: sess.core.auth.conn_seq(), auth_gen: None, vault_gen: None },
               )
               _ => protocol::encode_core_event(ev)
             }

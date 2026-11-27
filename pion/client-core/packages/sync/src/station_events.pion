@@ -2885,6 +2885,37 @@ fn StationEvents::schedule_reconnect_k(self : StationEvents, rt : effect::Runtim
   })
 }
 
+/// Dispatch only `event: lock` control frames from a stale-capability SSE batch so lock updates
+/// are never interrupted, returning `true` if any non-`lock` data events were present and dropped.
+fn StationEvents::dispatch_lock_only_sse_batch(self : StationEvents, evs : Array[wire::Event]) -> Bool {
+  let mut has_data = false
+  for i in 0..<evs.length() {
+    let ev = evs[i]
+    if ev.name == "lock" {
+      if ev.data.length() == 0 {
+        continue
+      }
+      let payload = match base_codec::json_parse(ev.data) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(_) => continue
+      }
+      match j_opt_str(payload, "workspace") {
+        Some(ws) => {
+          if ws.length() > 0 && ws != self.workspace {
+            continue
+          }
+        }
+        None => ()
+      }
+      let cb = self.on_lock_payload
+      cb(payload)
+    } else if ev.data.length() > 0 || ev.id.is_some() {
+      has_data = true
+    }
+  }
+  has_data
+}
+
 fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : (effect::Exit[Unit]) -> Unit) -> Unit {
   if self.stopped || effect::is_interrupted() {
     self.set_state(ConnectionState::Disconnected("stopped"))
@@ -2899,6 +2930,10 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     None => "/events"
   }
   let my_epoch = self.stream_epoch
+  let stream_cap : Option[WorkspaceCapability] = match self.auth {
+    Some(tracker) => Some(tracker.capture_workspace(self.workspace))
+    None => None
+  }
   let parser = wire::Sse::new()
   let mut marked_connected = false
   let aborted : Array[Bool] = [false]
@@ -2921,14 +2956,28 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
         }
         match parser.feed(chunk) {
           wire::FeedResult::Ok(evs) => {
-            match self.apply_sse_batch(evs) {
-              sql::SqlResult::Ok(_) => ()
-              sql::SqlResult::Err(_) => {
-                // Immediately cancel the underlying old stream so no further chunks arrive or advance
-                // `last_event_id`, and wake the outer `stream_fiber` to reconnect via `?since=`.
+            let cap_stale = match (self.auth, stream_cap) {
+              (Some(tracker), Some(cap)) => !cap.is_valid(tracker)
+              _ => false
+            }
+            if cap_stale {
+              // Always allow `event: lock` control updates through; drop stale data events without
+              // advancing `last_event_id` and reconnect with a fresh `WorkspaceCapability`.
+              if self.dispatch_lock_only_sse_batch(evs) {
                 aborted[0] = true
                 self.cancel_active_stream()
                 let _ = done_sig.succeed(true)
+              }
+            } else {
+              match self.apply_sse_batch(evs) {
+                sql::SqlResult::Ok(_) => ()
+                sql::SqlResult::Err(_) => {
+                  // Immediately cancel the underlying old stream so no further chunks arrive or advance
+                  // `last_event_id`, and wake the outer `stream_fiber` to reconnect via `?since=`.
+                  aborted[0] = true
+                  self.cancel_active_stream()
+                  let _ = done_sig.succeed(true)
+                }
               }
             }
           }
