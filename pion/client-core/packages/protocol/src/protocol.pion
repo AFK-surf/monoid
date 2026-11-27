@@ -238,6 +238,32 @@ fn topic_spec_fields(name : String) -> Option[Array[(String, ParamKind, ParamHow
       ("mine", ParamKind::PBool, ParamHow::HDef),
       ("watching", ParamKind::PBool, ParamHow::HSkipFalse),
       ("hidden", ParamKind::PBool, ParamHow::HSkipFalse),
+      ("project", ParamKind::PStr, ParamHow::HSkip),
+      ("unclassified", ParamKind::PBool, ParamHow::HSkipFalse),
+      ("tag", ParamKind::PStr, ParamHow::HSkip),
+      ("groupBy", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "projects" || name == "tags" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("cursor", ParamKind::PStr, ParamHow::HSkip),
+      ("q", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "project" {
+    return Some([
+      ("scope", ParamKind::PStr, ParamHow::HReq),
+      ("name", ParamKind::PStr, ParamHow::HReq),
+      ("cursor", ParamKind::PStr, ParamHow::HSkip),
+    ])
+  }
+  if name == "chatSubchats" {
+    return Some([
+      ("station", ParamKind::PStr, ParamHow::HReq),
+      ("thread", ParamKind::PU64, ParamHow::HOpt),
+      ("session", ParamKind::PStr, ParamHow::HOpt),
+      ("q", ParamKind::PStr, ParamHow::HReq),
     ])
   }
   if name == "chatRow" || name == "chatFeedback" {
@@ -542,6 +568,13 @@ pub fn parse_topic(raw : base_codec::Json) -> Option[Topic] {
       _ => return None
     }
   }
+  if name == "chats" {
+    match base_codec::json_obj_get(params, "groupBy") {
+      Some(base_codec::Json::Str(g)) => if g != "time" && g != "project" { return None }
+      Some(_) => return None
+      None => ()
+    }
+  }
   Some(Topic::{ name: name, params: params })
 }
 
@@ -573,11 +606,11 @@ pub fn is_view(t : Topic) -> Bool {
   n == "profiles" || n == "profile" || n == "connects" || n == "connect" || n == "connectCandidates" ||
   n == "chat" || n == "history" || n == "agentCard" || n == "stationNet" || n == "stationDiag" ||
   n == "chatSearch" || n == "search" || n == "archive" || n == "chatJobs" || n == "chatLetters" ||
-  n == "chatThings" || n == "chatOutline" || n == "imageNear" || n == "longJobs" ||
+  n == "chatThings" || n == "chatOutline" || n == "chatSubchats" || n == "imageNear" || n == "longJobs" ||
   n == "workspaceMarks" || n == "decisions" || n == "usage" || n == "agentRates" || n == "fleet" ||
   n == "railCard" || n == "stationUpdates" || n == "settings" || n == "resources" ||
   n == "adminList" || n == "adminItem" || n == "adminOverview" || n == "adminRelays" ||
-  n == "workspaceWays"
+  n == "workspaceWays" || n == "projects" || n == "project" || n == "tags"
 }
 
 pub enum CoreRequest {
@@ -823,7 +856,10 @@ pub struct Slice1Router {
   sub_ids : Array[Int64]
   kept : Map[String, KeptSub]
   kept_order : Array[String]
+  kept_by_token : Map[String, base_codec::Json]
+  kept_token_order : Array[String]
   mut topic_evaluator : Option[(Int64, Topic) -> Option[CoreEvent]]
+  mut sub_auth_guard : Option[(Int64, Topic) -> Bool]
 }
 
 pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : String = "default") -> Slice1Router {
@@ -835,7 +871,10 @@ pub fn Slice1Router::new(db : sql::Sql, md_store : store::MdStore, workspace : S
     sub_ids: [],
     kept: Map::new(),
     kept_order: [],
+    kept_by_token: Map::new(),
+    kept_token_order: [],
     topic_evaluator: None,
+    sub_auth_guard: None,
   }
 }
 
@@ -845,6 +884,14 @@ pub fn Slice1Router::set_topic_evaluator(
   eval : (Int64, Topic) -> Option[CoreEvent],
 ) -> Unit {
   self.topic_evaluator = Some(eval)
+}
+
+/// Install a capability guard checked before emitting subscription refreshes.
+pub fn Slice1Router::set_sub_auth_guard(
+  self : Slice1Router,
+  check_fn : (Int64, Topic) -> Bool,
+) -> Unit {
+  self.sub_auth_guard = Some(check_fn)
 }
 
 pub fn Slice1Router::active_sub(self : Slice1Router, id : Int64) -> Option[String] {
@@ -875,6 +922,23 @@ fn Slice1Router::remember_kept(self : Slice1Router, tk : String, value : base_co
       self.kept_order.push(next_order[i])
     }
     self.kept.remove(oldest)
+  }
+  // Also index by value token (capped at 64) so repeated `have: token` reconnects can diff cleanly.
+  if self.kept_by_token.get(token).is_none() {
+    self.kept_token_order.push(token)
+  }
+  self.kept_by_token.set(token, value)
+  while self.kept_token_order.length() > 64 {
+    let oldest_tok = self.kept_token_order[0]
+    let next_toks : Array[String] = []
+    for i in 1..<self.kept_token_order.length() {
+      next_toks.push(self.kept_token_order[i])
+    }
+    self.kept_token_order.clear()
+    for i in 0..<next_toks.length() {
+      self.kept_token_order.push(next_toks[i])
+    }
+    self.kept_by_token.remove(oldest_tok)
   }
 }
 
@@ -1381,6 +1445,10 @@ pub fn Slice1Router::refresh_sub(self : Slice1Router, id : Int64) -> Option[Core
     Some(s) => s
     None => return None
   }
+  match self.sub_auth_guard {
+    Some(check_fn) => if !check_fn(id, sub.topic) { return None }
+    None => ()
+  }
   match self.evaluate_topic_value(id, sub.topic) {
     CoreEvent::Value(_, next_val, bytes) => {
       let next_tok = value_token(next_val)
@@ -1818,16 +1886,18 @@ pub fn Slice1Router::handle(self : Slice1Router, req : CoreRequest) -> Option[Co
               if h == tok {
                 return Some(CoreEvent::Same(id))
               }
-              match kept_opt {
-                Some(k) => {
-                  if k.token == h {
-                    let spec = if keyed { spec_for_topic(topic.name) } else { None }
-                    let ops = diff_keyed(k.value, payload, spec)
-                    if ops.length() == 0 {
-                      return Some(CoreEvent::Same(id))
-                    }
-                    kept_ops_opt = Some(ops)
+              let prev_val_opt : Option[base_codec::Json] = match kept_opt {
+                Some(k) => if k.token == h { Some(k.value) } else { self.kept_by_token.get(h) }
+                None => self.kept_by_token.get(h)
+              }
+              match prev_val_opt {
+                Some(prev_val) => {
+                  let spec = if keyed { spec_for_topic(topic.name) } else { None }
+                  let ops = diff_keyed(prev_val, payload, spec)
+                  if ops.length() == 0 {
+                    return Some(CoreEvent::Same(id))
                   }
+                  kept_ops_opt = Some(ops)
                 }
                 None => ()
               }

@@ -28,7 +28,18 @@ pub fn spec_for_topic(topic_name : String) -> Option[KeyedSpec] {
       item: Some(spec_fields([("items", rows)])),
       fields: [],
     }
-    return Some(spec_fields([("days", day_spec)]))
+    let group_spec = KeyedSpec::{
+      key: ["key"],
+      item: Some(spec_fields([("items", rows), ("dayBreaks", spec_items("label"))])),
+      fields: [],
+    }
+    return Some(spec_fields([("days", day_spec), ("groups", group_spec)]))
+  }
+  if topic_name == "projects" || topic_name == "tags" {
+    return Some(spec_fields([("items", spec_items("name"))]))
+  }
+  if topic_name == "chatSubchats" {
+    return Some(spec_fields([("items", KeyedSpec::{ key: ["station", "session"], item: None, fields: [] })]))
   }
   if topic_name == "chatSearch" {
     let msg_hit = KeyedSpec::{ key: ["station", "thread", "seq"], item: None, fields: [] }
@@ -118,6 +129,9 @@ pub fn spec_for_topic(topic_name : String) -> Option[KeyedSpec] {
       ("targets", spec_items("station")),
       ("modules", mod_spec),
     ]))
+  }
+  if topic_name == "profiles" {
+    return Some(spec_fields([("items", spec_items("key"))]))
   }
   if topic_name == "profilesOverview" {
     return Some(spec_fields([("pools", spec_items("title"))]))

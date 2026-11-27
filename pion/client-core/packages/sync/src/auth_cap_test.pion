@@ -1,0 +1,250 @@
+// Pure Pion unit tests for first-class immutable `AuthCapability` scope isolation:
+// - Routine workspace switching (A -> B) preserves A's WorkspaceCapability (zero false invalidation)
+// - Workspace revocation (`bump_workspace` / `sync_workspace`) invalidates only target workspace
+// - Single-vault lock (`bump_vault`) isolates V1 from V2 and non-vault WorkspaceCapability
+// - `narrow_vault` anchors to entry `AuthBoundary` snapshot even when called after bump
+// - `CompositeCapability` (`AuthCapability::all`) invalidates on any constituent workspace/vault bump
+// - `ClientCore` write guard rejects stale generation commits with `auth_stale` and drops stale sub pushes
+
+import "base_codec"
+import "effect"
+import "protocol"
+import "sql"
+import "views"
+
+fn open_auth_cap_db(rt : effect::Runtime) -> sql::Sql {
+  let sim_db = SimAccountDb::new(rt)
+  match sql::Sql::open(sim_db.sh, "auth-cap-test") {
+    sql::SqlResult::Ok(db) => db
+    sql::SqlResult::Err(e) => panic("sql::Sql::open failed: " + e.to_string())
+  }
+}
+
+test "auth_cap: routine workspace switch preserves capability; workspace revocation isolates ws" {
+  let tracker = AuthGenTracker::new()
+  let cap_a = tracker.workspace_capability("ws-a")
+  let cap_b = tracker.workspace_capability("ws-b")
+  debug_assert(cap_a.is_valid(), "cap_a valid")
+  debug_assert(cap_b.is_valid(), "cap_b valid")
+  debug_assert(cap_a.assert_valid().is_ok(), "cap_a assert_valid ok")
+
+  // Same digest on initial sync and repeat sync never advances generation.
+  debug_assert(!tracker.sync_workspace("ws-a", "owner:u1:role:admin"), "initial sync must not bump")
+  debug_assert(!tracker.sync_workspace("ws-a", "owner:u1:role:admin"), "identical digest must not bump")
+  debug_assert(cap_a.is_valid(), "cap_a still valid after identical digest")
+  match cap_a.commit(fn() -> Int { 42 }) {
+    Some(v) => debug_assert(v == 42, "commit returned 42")
+    None => debug_assert(false, "expected Some(42)")
+  }
+
+  // Revoking ws-a invalidates cap_a, leaves cap_b completely valid!
+  debug_assert(tracker.sync_workspace("ws-a", "owner:u1:role:viewer"), "changed digest must bump")
+  debug_assert(!cap_a.is_valid(), "cap_a invalidated after role change")
+  debug_assert(cap_b.is_valid(), "cap_b unaffected by ws-a revocation")
+  debug_assert(cap_a.commit(fn() -> Int { 99 }).is_none(), "stale commit must return None")
+  match cap_a.commit_or_fail(fn() -> Int { 99 }) {
+    Err(e) => debug_assert(e.code == "auth_stale", "expected auth_stale")
+    Ok(_) => debug_assert(false, "expected auth_stale for revoked ws-a")
+  }
+  match cap_b.commit_or_fail(fn() -> Int { 77 }) {
+    Ok(v) => debug_assert(v == 77, "ws-b commit ok")
+    Err(_) => debug_assert(false, "ws-b capability should remain valid")
+  }
+}
+
+test "auth_cap: single-vault lock isolates V1 from V2 and non-vault WorkspaceCapability; narrow_vault anchors to entry snapshot" {
+  let tracker = AuthGenTracker::new()
+  let entry = tracker.capture()
+  let ws_cap = entry.workspace("ws-a")
+  let v1_cap = entry.vault("ws-a", "v1")
+  let v2_cap = entry.vault("ws-a", "v2")
+
+  debug_assert(ws_cap.is_valid(), "ws_cap valid")
+  debug_assert(v1_cap.is_valid(), "v1_cap valid")
+  debug_assert(v2_cap.is_valid(), "v2_cap valid")
+
+  // Lock single vault v1 in ws-a
+  let next_vg = tracker.bump_vault("ws-a", "v1")
+  debug_assert(next_vg > 1, "bump_vault advances vaultGen")
+
+  // v1 invalidated; v2 and non-vault ws_cap remain valid!
+  debug_assert(!v1_cap.is_valid(), "v1_cap invalidated")
+  debug_assert(v2_cap.is_valid(), "v2_cap unaffected")
+  debug_assert(ws_cap.is_valid(), "non-vault ws_cap unaffected")
+
+  // `narrow_vault("v1")` called AFTER bump MUST still anchor to entry snapshot and be invalid!
+  let narrowed_v1 = ws_cap.narrow_vault("v1")
+  debug_assert(!narrowed_v1.is_valid(), "narrow_vault(v1) must anchor to entry snapshot")
+  match narrowed_v1.assert_valid() {
+    Err(e) => debug_assert(e.code == "auth_stale", "narrowed v1 auth_stale")
+    Ok(_) => debug_assert(false, "narrowed v1 must fail with auth_stale")
+  }
+  // `narrow_vault("v2")` remains valid
+  let narrowed_v2 = ws_cap.narrow_vault("v2")
+  debug_assert(narrowed_v2.is_valid(), "narrow_vault(v2) still valid")
+
+  // `bump_all_vaults` invalidates v2 while still leaving non-vault ws_cap valid!
+  let _ = tracker.bump_all_vaults()
+  debug_assert(!v2_cap.is_valid(), "v2_cap invalidated after bump_all_vaults")
+  debug_assert(!narrowed_v2.is_valid(), "narrowed_v2 invalidated after bump_all_vaults")
+  debug_assert(ws_cap.is_valid(), "non-vault ws_cap still valid after bump_all_vaults")
+}
+
+test "auth_cap: composite cross-workspace capability invalidates when either constituent bumps" {
+  let tracker = AuthGenTracker::new()
+  let entry = tracker.capture()
+  let ws_a = entry.workspace("ws-a")
+  let vault_b = entry.vault("ws-b", "vb1")
+  let comp = AuthCapability::all([ws_a.as_scope(), vault_b.as_scope()])
+  debug_assert(comp.is_valid(), "composite valid initially")
+  match comp.commit_or_fail(fn() -> String { "ok" }) {
+    Ok(s) => debug_assert(s == "ok", "composite commit ok")
+    Err(_) => debug_assert(false, "composite should be valid before bump")
+  }
+
+  // Locking vault vb1 in ws-b invalidates the composite even though ws-a is still valid!
+  let _ = tracker.bump_vault("ws-b", "vb1")
+  debug_assert(ws_a.is_valid(), "ws_a still valid")
+  debug_assert(!vault_b.is_valid(), "vault_b invalidated")
+  debug_assert(!comp.is_valid(), "composite invalidated")
+  debug_assert(comp.commit(fn() -> Int { 1 }).is_none(), "stale composite commit returns None")
+  match comp.commit_or_fail(fn() -> Int { 1 }) {
+    Err(e) => debug_assert(e.code == "auth_stale", "composite auth_stale")
+    Ok(_) => debug_assert(false, "composite must reject commit with auth_stale")
+  }
+
+  // Global bump (e.g. account sign-out / change) invalidates ws-a too!
+  let _ = tracker.bump_global()
+  debug_assert(!ws_a.is_valid(), "ws_a invalidated on global bump")
+}
+
+test "auth_cap: ClientCore write guard rejects stale auth generation and subscription guard drops stale pushes" {
+  let rt = effect::Runtime::new()
+  let db = open_auth_cap_db(rt)
+  let core = ClientCore::new("ws-a", "ws-a/st1", rt, db, core_offline_transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
+  core.auth_store.register_account(views::StoredAccount::{
+    sub: "sub-alice",
+    email: "alice@still.fail",
+    name: "Alice",
+    picture: "",
+    access: "",
+    refresh: "",
+    access_expires: 0L,
+  })
+  core.active_conn = 7
+
+  // Routine workspace switch A -> B preserves ws-a capability (no false authGen bump)
+  let cap_a = core.workspace_capability("ws-a")
+  core.switch_workspace("ws-b")
+  debug_assert(cap_a.is_valid(), "routine workspace switch must not invalidate cap_a")
+  core.switch_workspace("ws-a")
+
+  // Subscribe to `chats` in ws-a at generation 1
+  let chats_topic = protocol::Topic::{ name: "chats", params: [("scope", base_codec::json_str("ws-a"))] }
+  let sub_req = protocol::CoreRequest::Subscribe(10L, chats_topic, true, None, None)
+  match core.handle_request(sub_req) {
+    Some(protocol::CoreEvent::Value(sid, _, _)) => debug_assert(sid == 10L, "sub id 10")
+    _ => debug_assert(false, "expected initial chats value")
+  }
+  debug_assert(core.is_sub_auth_valid(10L, chats_topic), "sub 10 valid at gen 1")
+
+  // Valid write carrying current authGen=1 succeeds
+  let ok_send = protocol::CoreRequest::Call(
+    11L,
+    "chat.send",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("ws-a/st1")),
+      ("thread", base_codec::json_int(1)),
+      ("text", base_codec::json_str("fresh msg")),
+      (
+        "_auth",
+        base_codec::json_obj([
+          ("conn", base_codec::json_int(7)),
+          ("account", base_codec::json_str("sub-alice")),
+          ("workspace", base_codec::json_str("ws-a")),
+          ("authGen", base_codec::json_int(1)),
+        ]),
+      ),
+    ]),
+    None,
+  )
+  match core.handle_request(ok_send) {
+    Some(protocol::CoreEvent::Ok(cid, _, _)) => debug_assert(cid == 11L, "chat.send ok")
+    _ => debug_assert(false, "expected valid auth write to succeed")
+  }
+
+  // Revoke ws-a -> bumps authGen to 2
+  let new_gen = core.revoke_workspace("ws-a")
+  debug_assert(new_gen == 2, "revoked authGen == 2")
+  debug_assert(!cap_a.is_valid(), "cap_a invalid after revocation")
+
+  // Subscription 10 captured gen=1 -> now stale, refresh must drop emission!
+  debug_assert(!core.is_sub_auth_valid(10L, chats_topic), "sub 10 stale after ws-a revoke")
+  debug_assert(core.refresh_subscription(10L).is_none(), "stale sub push must be dropped")
+
+  // Delayed write carrying stale authGen=1 is rejected with `auth_stale`
+  let stale_send = protocol::CoreRequest::Call(
+    12L,
+    "chat.send",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("ws-a/st1")),
+      ("thread", base_codec::json_int(1)),
+      ("text", base_codec::json_str("stale msg")),
+      (
+        "_auth",
+        base_codec::json_obj([
+          ("conn", base_codec::json_int(7)),
+          ("account", base_codec::json_str("sub-alice")),
+          ("workspace", base_codec::json_str("ws-a")),
+          ("authGen", base_codec::json_int(1)),
+        ]),
+      ),
+    ]),
+    None,
+  )
+  match core.handle_request(stale_send) {
+    Some(protocol::CoreEvent::Err(cid, err)) => {
+      debug_assert(cid == 12L && err.code == "auth_stale", "expected auth_stale on stale chat.send")
+    }
+    _ => debug_assert(false, "expected auth_stale on stale chat.send")
+  }
+
+  // Single-vault lock via `vault.lock` rejects stale vault write while preserving non-vault writes
+  let _ = core.handle_request(protocol::CoreRequest::Call(
+    13L,
+    "vault.lock",
+    base_codec::json_obj([
+      ("workspace", base_codec::json_str("ws-a")),
+      ("vault", base_codec::json_str("v1")),
+    ]),
+    None,
+  ))
+  let stale_vault_call = protocol::CoreRequest::Call(
+    14L,
+    "vault.approve",
+    base_codec::json_obj([
+      ("workspace", base_codec::json_str("ws-a")),
+      ("vault", base_codec::json_str("v1")),
+      ("request", base_codec::json_str("req-1")),
+      (
+        "_auth",
+        base_codec::json_obj([
+          ("conn", base_codec::json_int(7)),
+          ("account", base_codec::json_str("sub-alice")),
+          ("workspace", base_codec::json_str("ws-a")),
+          ("vault", base_codec::json_str("v1")),
+          ("authGen", base_codec::json_int(2)),
+          ("vaultGen", base_codec::json_int(1)),
+        ]),
+      ),
+    ]),
+    None,
+  )
+  match core.handle_request(stale_vault_call) {
+    Some(protocol::CoreEvent::Err(cid, err)) => {
+      debug_assert(cid == 14L && err.code == "auth_stale", "expected auth_stale on stale vault.approve")
+    }
+    _ => debug_assert(false, "expected auth_stale on stale vault.approve after vault.lock")
+  }
+}

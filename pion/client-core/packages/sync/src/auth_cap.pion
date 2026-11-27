@@ -1,0 +1,1070 @@
+// Authoritative `(account, workspace)` authorization generation (`authGen`) and independent
+// per-vault generation (`vaultGen`) tracking plus first-class immutable capabilities,
+// aligned 1:1 with `client/core-ts/src/auth-gen.ts` (PR #9044).
+//
+// Design invariants:
+// - `authGen` advances ONLY when authoritative authorization content digest changes
+//   (account add/remove/switch, role downgrade, member removal, trusted device revocation,
+//   safe mode state change). Identical digests never advance.
+// - Routine workspace switching (A -> B) NEVER advances `authGen` and NEVER clears A's valid cache.
+// - Single-vault timeout / explicit vault lock advances ONLY `vaultGen` for affected vaults
+//   and dependent `vaults` aggregates; non-vault workspace `authGen` and unaffected vaults (V2)
+//   suffer zero false invalidations.
+// - `AuthCapability` is a snapshot factory anchored at call entry; callers must explicitly narrow
+//   to `WorkspaceCapability`, `VaultCapability`, or `CompositeCapability` before guarding writes.
+
+import "base_codec"
+import "protocol"
+
+pub enum TopicScope {
+  Device
+  Global
+  Account(String)
+  Workspace(String)
+  VaultWorkspace(String)
+  Vault(String, String)
+}
+
+fn is_account_param_topic(name : String) -> Bool {
+  name == "loginSessions" ||
+  name == "admin" ||
+  name == "adminList" ||
+  name == "adminItem" ||
+  name == "adminOverview" ||
+  name == "adminRelays"
+}
+
+fn is_workspace_aggregate_topic(name : String) -> Bool {
+  name == "workspaces" || name == "lockPrompts" || name == "downloads"
+}
+
+fn is_device_global_topic(name : String) -> Bool {
+  name == "prefs" ||
+  name == "accounts" ||
+  name == "releases" ||
+  name == "changelog" ||
+  name == "fonts" ||
+  name == "adbShare" ||
+  name == "doing" ||
+  name == "status" ||
+  name == "notices" ||
+  name == "notify" ||
+  name == "workspaceMarks" ||
+  name == "lockPrompts" ||
+  name == "downloads"
+}
+
+pub fn workspace_of_station_addr(addr : String) -> String {
+  match addr.index_of("/") {
+    idx if idx > 0 => addr.slice(0, idx)
+    _ => addr
+  }
+}
+
+/// Classifies a topic into its isolation scope for `authGen` / `vaultGen` enforcement.
+pub fn topic_scope_of(topic : protocol::Topic) -> TopicScope {
+  let name = topic.name
+  let param_str = fn(k : String) -> String {
+    match topic.param(k) {
+      Some(base_codec::Json::Str(s)) => s
+      _ => ""
+    }
+  }
+  if name == "vaultItems" || name == "vaultUses" {
+    return TopicScope::Vault(param_str("workspace"), param_str("vault"))
+  }
+  if name == "vaults" {
+    return TopicScope::VaultWorkspace(param_str("workspace"))
+  }
+  if is_account_param_topic(name) {
+    return TopicScope::Account(param_str("account"))
+  }
+  if is_device_global_topic(name) {
+    return TopicScope::Device
+  }
+  let ws = param_str("workspace")
+  if ws.length() > 0 {
+    return TopicScope::Workspace(ws)
+  }
+  let sc = param_str("scope")
+  if sc.length() > 0 {
+    return TopicScope::Workspace(sc)
+  }
+  let st = param_str("station")
+  if st.length() > 0 {
+    return TopicScope::Workspace(workspace_of_station_addr(st))
+  }
+  TopicScope::Global
+}
+
+pub struct AuthBoundary {
+  pub conn : Int
+  pub global : Int
+  pub aggregate : Int
+  pub vault_global : Int
+  pub scopes : Map[String, Int]
+  pub vaults : Map[String, Int]
+}
+
+pub enum AuthBoundaryEvent {
+  Global(Int)
+  Workspace(String, Int, Array[String], Map[String, Int])
+  Vault(String, String, Int, Array[String])
+  VaultAll(Int)
+}
+
+pub struct CallAuth {
+  pub conn : Option[Int]
+  pub account : Option[String]
+  pub workspace : Option[String]
+  pub vault : Option[String]
+  pub auth_gen : Option[Int]
+  pub vault_gen : Option[Int]
+}
+
+pub struct CallAuthTarget {
+  pub account : Option[String]
+  pub workspace : Option[String]
+  pub vault : Option[String]
+  pub is_vault : Bool
+  pub view_auth_gen : Option[Int]
+}
+
+pub fn CallAuthTarget::empty() -> CallAuthTarget {
+  CallAuthTarget::{
+    account: None,
+    workspace: None,
+    vault: None,
+    is_vault: false,
+    view_auth_gen: None,
+  }
+}
+
+/// Parse optional `auth` object carried on a call's wire params (`_auth` or `auth`).
+pub fn parse_call_auth(params : base_codec::Json) -> Option[CallAuth] {
+  let obj_opt = match base_codec::json_get(params, "_auth") {
+    Some(base_codec::Json::Obj(fs)) => Some(base_codec::json_obj(fs))
+    _ => match base_codec::json_get(params, "auth") {
+      Some(base_codec::Json::Obj(fs)) => {
+        // Only treat `params.auth` as `CallAuth` when it carries auth generation / conn metadata.
+        let j = base_codec::json_obj(fs)
+        if base_codec::json_get(j, "authGen").is_some() ||
+        base_codec::json_get(j, "vaultGen").is_some() ||
+        base_codec::json_get(j, "conn").is_some() {
+          Some(j)
+        } else {
+          None
+        }
+      }
+      _ => None
+    }
+  }
+  match obj_opt {
+    None => None
+    Some(a) => {
+      let opt_int = fn(k : String) -> Option[Int] {
+        match base_codec::json_get(a, k) {
+          Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+          _ => None
+        }
+      }
+      let opt_str = fn(k : String) -> Option[String] {
+        match base_codec::json_get(a, k) {
+          Some(base_codec::Json::Str(s)) => Some(s)
+          _ => None
+        }
+      }
+      Some(CallAuth::{
+        conn: opt_int("conn"),
+        account: opt_str("account"),
+        workspace: opt_str("workspace"),
+        vault: opt_str("vault"),
+        auth_gen: opt_int("authGen"),
+        vault_gen: opt_int("vaultGen"),
+      })
+    }
+  }
+}
+
+pub fn auth_stale_error() -> protocol::CoreError {
+  protocol::CoreError::{
+    code: "auth_stale",
+    message: "authorization context changed; retry against current scope",
+  }
+}
+
+fn max_int_ac(a : Int, b : Int) -> Int {
+  if a >= b { a } else { b }
+}
+
+/// Reconstructs the exact `workspace_auth_gen(ws)` at the time `snap` was captured.
+pub fn snap_ws_auth_gen(snap : AuthBoundary, ws : String) -> Int {
+  let sg = match snap.scopes.get(ws) {
+    Some(g) => g
+    None => 0
+  }
+  max_int_ac(snap.global, sg)
+}
+
+/// Reconstructs the exact `vault_workspace_gen(ws)` at the time `snap` was captured.
+pub fn snap_ws_vault_gen(snap : AuthBoundary, ws : String) -> Int {
+  let vg = match snap.vaults.get(ws) {
+    Some(g) => g
+    None => 0
+  }
+  max_int_ac(snap.vault_global, vg)
+}
+
+/// Reconstructs the exact `vault_gen(ws, vault_id)` at the time `snap` was captured.
+pub fn snap_vault_gen(snap : AuthBoundary, ws : String, vault_id : String) -> Int {
+  let key = ws + "/" + vault_id
+  let vg = match snap.vaults.get(key) {
+    Some(g) => g
+    None => 0
+  }
+  max_int_ac(snap.vault_global, vg)
+}
+
+fn contains_str_ac(xs : Array[String], needle : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == needle {
+      return true
+    }
+  }
+  false
+}
+
+fn sort_unique_strs_ac(xs : Array[String]) -> Array[String] {
+  let uniq : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<xs.length() {
+    let s = xs[i]
+    if seen.get(s).is_none() {
+      seen.set(s, true)
+      uniq.push(s)
+    }
+  }
+  for i in 1..<uniq.length() {
+    let cur = uniq[i]
+    let mut j = i - 1
+    while j >= 0 && uniq[j] > cur {
+      uniq[j + 1] = uniq[j]
+      j -= 1
+    }
+    uniq[j + 1] = cur
+  }
+  uniq
+}
+
+/// Monotonic generation tracker for `(account, workspace)` authorization and per-vault lock boundaries.
+pub struct AuthGenTracker {
+  mut global_gen : Int
+  mut aggregate_auth_gen : Int
+  mut accounts_digest : Option[String]
+  workspace_gens : Map[String, Int]
+  workspace_digests : Map[String, String]
+  vault_gens : Map[String, Int]
+  vault_ws_gens : Map[String, Int]
+  mut vault_global_gen : Int
+  listeners : Array[(Int, (AuthBoundaryEvent) -> Unit)]
+  mut next_listener_id : Int
+}
+
+pub fn AuthGenTracker::new() -> AuthGenTracker {
+  AuthGenTracker::{
+    global_gen: 1,
+    aggregate_auth_gen: 1,
+    accounts_digest: None,
+    workspace_gens: Map::new(),
+    workspace_digests: Map::new(),
+    vault_gens: Map::new(),
+    vault_ws_gens: Map::new(),
+    vault_global_gen: 1,
+    listeners: [],
+    next_listener_id: 1,
+  }
+}
+
+pub fn AuthGenTracker::global_gen(self : AuthGenTracker) -> Int {
+  self.global_gen
+}
+
+pub fn AuthGenTracker::aggregate_auth_gen(self : AuthGenTracker) -> Int {
+  self.aggregate_auth_gen
+}
+
+pub fn AuthGenTracker::vault_global_gen(self : AuthGenTracker) -> Int {
+  self.vault_global_gen
+}
+
+pub fn AuthGenTracker::on_boundary(
+  self : AuthGenTracker,
+  listener : (AuthBoundaryEvent) -> Unit,
+) -> () -> Unit {
+  let lid = self.next_listener_id
+  self.next_listener_id += 1
+  self.listeners.push((lid, listener))
+  fn() -> Unit {
+    let next : Array[(Int, (AuthBoundaryEvent) -> Unit)] = []
+    for i in 0..<self.listeners.length() {
+      if self.listeners[i].0 != lid {
+        next.push(self.listeners[i])
+      }
+    }
+    self.listeners.clear()
+    for i in 0..<next.length() {
+      self.listeners.push(next[i])
+    }
+  }
+}
+
+fn AuthGenTracker::notify(self : AuthGenTracker, ev : AuthBoundaryEvent) -> Unit {
+  let snap : Array[(AuthBoundaryEvent) -> Unit] = []
+  for i in 0..<self.listeners.length() {
+    snap.push(self.listeners[i].1)
+  }
+  for i in 0..<snap.length() {
+    let f = snap[i]
+    f(ev)
+  }
+}
+
+pub fn AuthGenTracker::workspace_auth_gen(self : AuthGenTracker, workspace : String) -> Int {
+  let wg = match self.workspace_gens.get(workspace) {
+    Some(g) => g
+    None => 0
+  }
+  max_int_ac(self.global_gen, wg)
+}
+
+pub fn AuthGenTracker::vault_gen(self : AuthGenTracker, workspace : String, vault : String) -> Int {
+  let key = workspace + "/" + vault
+  let vg = match self.vault_gens.get(key) {
+    Some(g) => g
+    None => 0
+  }
+  max_int_ac(self.vault_global_gen, vg)
+}
+
+pub fn AuthGenTracker::vault_workspace_gen(self : AuthGenTracker, workspace : String) -> Int {
+  let vg = match self.vault_ws_gens.get(workspace) {
+    Some(g) => g
+    None => 0
+  }
+  max_int_ac(self.vault_global_gen, vg)
+}
+
+/// Effective `authGen` for a topic. Device-global preferences return 0.
+pub fn AuthGenTracker::auth_gen_of(self : AuthGenTracker, topic : protocol::Topic) -> Int {
+  if is_workspace_aggregate_topic(topic.name) {
+    return self.aggregate_auth_gen
+  }
+  match topic_scope_of(topic) {
+    TopicScope::Device => 0
+    TopicScope::Global | TopicScope::Account(_) => self.global_gen
+    TopicScope::Workspace(ws) | TopicScope::VaultWorkspace(ws) | TopicScope::Vault(ws, _) => self.workspace_auth_gen(ws)
+  }
+}
+
+/// Effective `vaultGen` for a topic. Non-vault topics return 0.
+pub fn AuthGenTracker::vault_gen_of(self : AuthGenTracker, topic : protocol::Topic) -> Int {
+  match topic_scope_of(topic) {
+    TopicScope::Vault(ws, v) => self.vault_gen(ws, v)
+    TopicScope::VaultWorkspace(ws) => self.vault_workspace_gen(ws)
+    _ => 0
+  }
+}
+
+/// Whether `topic` is affected by `event`.
+pub fn AuthGenTracker::matches(self : AuthGenTracker, topic : protocol::Topic, event : AuthBoundaryEvent) -> Bool {
+  let _ = self.global_gen
+  let tscope = topic_scope_of(topic)
+  match event {
+    AuthBoundaryEvent::Global(_) => match tscope {
+      TopicScope::Device => false
+      _ => true
+    }
+    AuthBoundaryEvent::Workspace(ws, _, deps, _) => {
+      if is_workspace_aggregate_topic(topic.name) {
+        return true
+      }
+      match tscope {
+        TopicScope::VaultWorkspace(tws) => tws == ws || contains_str_ac(deps, tws)
+        TopicScope::Workspace(tws) | TopicScope::Vault(tws, _) => tws == ws
+        _ => false
+      }
+    }
+    AuthBoundaryEvent::Vault(ws, v, _, deps) => match tscope {
+      TopicScope::Vault(tws, tv) => tws == ws && tv == v
+      TopicScope::VaultWorkspace(tws) => tws == ws || contains_str_ac(deps, tws)
+      _ => false
+    }
+    AuthBoundaryEvent::VaultAll(_) => match tscope {
+      TopicScope::Vault(_, _) | TopicScope::VaultWorkspace(_) => true
+      _ => false
+    }
+  }
+}
+
+/// Explicitly advances `globalGen` (used on account sign-out/switch boundaries or revocation).
+pub fn AuthGenTracker::bump_global(self : AuthGenTracker) -> Int {
+  let mut max_seen = max_int_ac(self.global_gen, self.aggregate_auth_gen)
+  let ks = self.workspace_gens.keys()
+  for i in 0..<ks.length() {
+    match self.workspace_gens.get(ks[i]) {
+      Some(g) => if g > max_seen { max_seen = g }
+      None => ()
+    }
+  }
+  self.global_gen = max_seen + 1
+  self.aggregate_auth_gen = self.global_gen
+  self.notify(AuthBoundaryEvent::Global(self.global_gen))
+  self.global_gen
+}
+
+/// Synchronizes the signed-in account set. Advances `globalGen` ONLY when the canonical
+/// account set changes (never on token refresh or identical re-emission).
+pub fn AuthGenTracker::sync_accounts(self : AuthGenTracker, subs : Array[String]) -> Bool {
+  let sorted = sort_unique_strs_ac(subs)
+  let sb = StringBuilder::new()
+  for i in 0..<sorted.length() {
+    if i > 0 {
+      sb.write_byte(1 as Byte)
+    }
+    sb.write_string(sorted[i])
+  }
+  let digest = sb.to_string()
+  match self.accounts_digest {
+    None => {
+      self.accounts_digest = Some(digest)
+      false
+    }
+    Some(prev) => {
+      if prev == digest {
+        return false
+      }
+      self.accounts_digest = Some(digest)
+      let _ = self.bump_global()
+      true
+    }
+  }
+}
+
+pub fn AuthGenTracker::has_workspace_digest(self : AuthGenTracker, workspace : String) -> Bool {
+  self.workspace_digests.get(workspace).is_some()
+}
+
+pub fn AuthGenTracker::workspace_digest(self : AuthGenTracker, workspace : String) -> Option[String] {
+  self.workspace_digests.get(workspace)
+}
+
+fn AuthGenTracker::bump_dependent_vault_ws(
+  self : AuthGenTracker,
+  dependent_workspaces : Array[String],
+) -> Map[String, Int] {
+  let out : Map[String, Int] = Map::new()
+  for i in 0..<dependent_workspaces.length() {
+    let dep = dependent_workspaces[i]
+    let prev = match self.vault_ws_gens.get(dep) {
+      Some(g) => g
+      None => 0
+    }
+    let next = max_int_ac(self.vault_global_gen, prev) + 1
+    self.vault_ws_gens.set(dep, next)
+    out.set(dep, next)
+  }
+  out
+}
+
+/// Synchronizes authoritative authorization summary for a workspace. Advances `authGen(workspace)`
+/// ONLY when digest changes.
+pub fn AuthGenTracker::sync_workspace(
+  self : AuthGenTracker,
+  workspace : String,
+  digest : String,
+  dependent_workspaces : Array[String] = [],
+) -> Bool {
+  match self.workspace_digests.get(workspace) {
+    None => {
+      self.workspace_digests.set(workspace, digest)
+      false
+    }
+    Some(prev) => {
+      if prev == digest {
+        return false
+      }
+      self.workspace_digests.set(workspace, digest)
+      let _ = self.bump_workspace(workspace, dependent_workspaces=dependent_workspaces)
+      true
+    }
+  }
+}
+
+/// Explicitly advances `authGen` for one workspace.
+pub fn AuthGenTracker::bump_workspace(
+  self : AuthGenTracker,
+  workspace : String,
+  dependent_workspaces : Array[String] = [],
+) -> Int {
+  let cur = match self.workspace_gens.get(workspace) {
+    Some(g) => g
+    None => 0
+  }
+  let next = max_int_ac(self.global_gen, cur) + 1
+  self.workspace_gens.set(workspace, next)
+  self.aggregate_auth_gen = max_int_ac(self.aggregate_auth_gen + 1, next)
+  let dep_vault_gens = self.bump_dependent_vault_ws(dependent_workspaces)
+  let deps_copy : Array[String] = []
+  for i in 0..<dependent_workspaces.length() {
+    deps_copy.push(dependent_workspaces[i])
+  }
+  self.notify(AuthBoundaryEvent::Workspace(workspace, next, deps_copy, dep_vault_gens))
+  next
+}
+
+/// Advances `vaultGen` for a single vault (`workspace/vault`) and its dependent `vaults` aggregates
+/// without advancing non-vault workspace `authGen` or touching other vaults (V2).
+pub fn AuthGenTracker::bump_vault(
+  self : AuthGenTracker,
+  workspace : String,
+  vault : String,
+  dependent_workspaces : Array[String] = [],
+) -> Int {
+  let key = workspace + "/" + vault
+  let cur_v = match self.vault_gens.get(key) { Some(g) => g; None => 0 }
+  let cur_ws = match self.vault_ws_gens.get(workspace) { Some(g) => g; None => 0 }
+  let mut max_seen = max_int_ac(self.vault_global_gen, max_int_ac(cur_v, cur_ws))
+  for i in 0..<dependent_workspaces.length() {
+    let g = match self.vault_ws_gens.get(dependent_workspaces[i]) { Some(v) => v; None => 0 }
+    if g > max_seen {
+      max_seen = g
+    }
+  }
+  let next = max_seen + 1
+  self.vault_gens.set(key, next)
+  self.vault_ws_gens.set(workspace, next)
+  let deps_copy : Array[String] = []
+  for i in 0..<dependent_workspaces.length() {
+    let dep = dependent_workspaces[i]
+    self.vault_ws_gens.set(dep, next)
+    deps_copy.push(dep)
+  }
+  self.notify(AuthBoundaryEvent::Vault(workspace, vault, next, deps_copy))
+  next
+}
+
+/// Advances `vaultGen` for all vaults (explicit `vault.lock`), without advancing non-vault `authGen`.
+pub fn AuthGenTracker::bump_all_vaults(self : AuthGenTracker) -> Int {
+  let mut max_seen = self.vault_global_gen
+  let vks = self.vault_gens.keys()
+  for i in 0..<vks.length() {
+    match self.vault_gens.get(vks[i]) {
+      Some(g) => if g > max_seen { max_seen = g }
+      None => ()
+    }
+  }
+  let wsks = self.vault_ws_gens.keys()
+  for i in 0..<wsks.length() {
+    match self.vault_ws_gens.get(wsks[i]) {
+      Some(g) => if g > max_seen { max_seen = g }
+      None => ()
+    }
+  }
+  let next = max_seen + 1
+  self.vault_global_gen = next
+  for i in 0..<vks.length() {
+    self.vault_gens.set(vks[i], next)
+  }
+  for i in 0..<wsks.length() {
+    self.vault_ws_gens.set(wsks[i], next)
+  }
+  self.notify(AuthBoundaryEvent::VaultAll(next))
+  next
+}
+
+/// Builds an authoritative snapshot for a newly connected / restarted client or capability capture.
+pub fn AuthGenTracker::snapshot(self : AuthGenTracker, conn : Int = 0) -> AuthBoundary {
+  let scopes : Map[String, Int] = Map::new()
+  let sks = self.workspace_gens.keys()
+  for i in 0..<sks.length() {
+    let ws = sks[i]
+    let g = match self.workspace_gens.get(ws) { Some(v) => v; None => 0 }
+    scopes.set(ws, max_int_ac(self.global_gen, g))
+  }
+  let vaults : Map[String, Int] = Map::new()
+  let vks = self.vault_gens.keys()
+  for i in 0..<vks.length() {
+    let k = vks[i]
+    let g = match self.vault_gens.get(k) { Some(v) => v; None => 0 }
+    vaults.set(k, max_int_ac(self.vault_global_gen, g))
+  }
+  let wsks = self.vault_ws_gens.keys()
+  for i in 0..<wsks.length() {
+    let ws = wsks[i]
+    let g = match self.vault_ws_gens.get(ws) { Some(v) => v; None => 0 }
+    vaults.set(ws, max_int_ac(self.vault_global_gen, g))
+  }
+  AuthBoundary::{
+    conn: conn,
+    global: self.global_gen,
+    aggregate: self.aggregate_auth_gen,
+    vault_global: self.vault_global_gen,
+    scopes: scopes,
+    vaults: vaults,
+  }
+}
+
+/// Captures an immutable `AuthCapability` factory anchored to the current `AuthBoundary` snapshot.
+pub fn AuthGenTracker::capture(self : AuthGenTracker) -> AuthCapability {
+  let snap = self.snapshot(conn=0)
+  AuthCapability::{
+    tracker: self,
+    snap: snap,
+    global_gen: snap.global,
+    vault_global_gen: snap.vault_global,
+  }
+}
+
+/// Captures an immutable `WorkspaceCapability` for `ws` anchored to the current `AuthBoundary` snapshot.
+pub fn AuthGenTracker::workspace_capability(
+  self : AuthGenTracker,
+  ws : String,
+  sub : Option[String] = None,
+  resolve_owner : Option[() -> Option[String]] = None,
+  track_vault_global : Bool = false,
+  track_ws_vault : Bool = false,
+) -> WorkspaceCapability {
+  self.capture().workspace(
+    ws,
+    sub=sub,
+    resolve_owner=resolve_owner,
+    track_vault_global=track_vault_global,
+    track_ws_vault=track_ws_vault,
+  )
+}
+
+/// Captures an immutable `WorkspaceCapability` for vault operations in `ws` (`track_vault_global: true`).
+pub fn AuthGenTracker::vault_workspace_capability(
+  self : AuthGenTracker,
+  ws : String,
+  sub : Option[String] = None,
+  resolve_owner : Option[() -> Option[String]] = None,
+  track_ws_vault : Bool = false,
+) -> WorkspaceCapability {
+  self.capture().workspace(
+    ws,
+    sub=sub,
+    resolve_owner=resolve_owner,
+    track_vault_global=true,
+    track_ws_vault=track_ws_vault,
+  )
+}
+
+/// Captures an immutable `VaultCapability` for `(ws, vault_id)` anchored to the current `AuthBoundary` snapshot.
+pub fn AuthGenTracker::vault_capability(
+  self : AuthGenTracker,
+  ws : String,
+  vault_id : String,
+  sub : Option[String] = None,
+  resolve_owner : Option[() -> Option[String]] = None,
+) -> VaultCapability {
+  self.capture().vault(ws, vault_id, sub=sub, resolve_owner=resolve_owner)
+}
+
+/// Verifies a delayed write call's original authorization context against current authoritative state.
+pub fn AuthGenTracker::verify_call_auth(
+  self : AuthGenTracker,
+  auth : Option[CallAuth],
+  conn : Int,
+  owner_of : (String) -> Option[String],
+  signed_in_subs : Map[String, Bool],
+  target : CallAuthTarget = CallAuthTarget::empty(),
+  protected_write : Bool = false,
+) -> Option[protocol::CoreError] {
+  let a = match auth {
+    None => {
+      if protected_write && conn > 0 {
+        return Some(auth_stale_error())
+      }
+      return None
+    }
+    Some(v) => v
+  }
+  if conn > 0 {
+    match a.conn {
+      Some(c) => if c != conn { return Some(auth_stale_error()) }
+      None => return Some(auth_stale_error())
+    }
+  }
+  match a.account {
+    Some(acc) => if signed_in_subs.get(acc).is_none() { return Some(auth_stale_error()) }
+    None => ()
+  }
+  match target.account {
+    Some(tacc) => {
+      match a.account {
+        Some(acc) => if acc != tacc { return Some(auth_stale_error()) }
+        None => ()
+      }
+      if signed_in_subs.get(tacc).is_none() {
+        return Some(auth_stale_error())
+      }
+    }
+    None => ()
+  }
+  match (target.workspace, a.workspace) {
+    (Some(tws), Some(aws)) => if tws != aws { return Some(auth_stale_error()) }
+    _ => ()
+  }
+  let resolved_ws = match target.workspace {
+    Some(w) => Some(w)
+    None => a.workspace
+  }
+  match resolved_ws {
+    Some(rws) => {
+      match a.account {
+        Some(acc) => {
+          let owner = owner_of(rws)
+          match owner {
+            Some(o) => if o != acc { return Some(auth_stale_error()) }
+            None => return Some(auth_stale_error())
+          }
+        }
+        None => ()
+      }
+      let cur_auth_gen = self.workspace_auth_gen(rws)
+      match target.view_auth_gen {
+        Some(vg) => {
+          if vg != cur_auth_gen {
+            return Some(auth_stale_error())
+          }
+          if protected_write && conn > 0 && a.auth_gen.is_none() {
+            return Some(auth_stale_error())
+          }
+          match a.auth_gen {
+            Some(ag) => {
+              if a.workspace.is_some() {
+                if ag != cur_auth_gen { return Some(auth_stale_error()) }
+              } else if ag != self.global_gen && ag != cur_auth_gen {
+                return Some(auth_stale_error())
+              }
+            }
+            None => ()
+          }
+        }
+        None => {
+          if protected_write && conn > 0 && a.auth_gen.is_none() {
+            return Some(auth_stale_error())
+          }
+          match a.auth_gen {
+            Some(ag) => if ag != cur_auth_gen { return Some(auth_stale_error()) }
+            None => ()
+          }
+        }
+      }
+    }
+    None => {
+      if protected_write && conn > 0 && a.auth_gen.is_none() {
+        return Some(auth_stale_error())
+      }
+      match a.auth_gen {
+        Some(ag) => if ag != self.global_gen { return Some(auth_stale_error()) }
+        None => ()
+      }
+    }
+  }
+  match (target.vault, a.vault) {
+    (Some(tv), Some(av)) => if tv != av { return Some(auth_stale_error()) }
+    _ => ()
+  }
+  let resolved_vault = match target.vault {
+    Some(v) => Some(v)
+    None => a.vault
+  }
+  if target.is_vault || a.vault_gen.is_some() {
+    let cur_vault_gen = match (resolved_ws, resolved_vault) {
+      (Some(rws), Some(rv)) => self.vault_gen(rws, rv)
+      (Some(rws), None) => self.vault_workspace_gen(rws)
+      _ => self.vault_global_gen
+    }
+    if target.is_vault && protected_write && conn > 0 && a.vault_gen.is_none() {
+      return Some(auth_stale_error())
+    }
+    match a.vault_gen {
+      Some(vg) => if vg != cur_vault_gen { return Some(auth_stale_error()) }
+      None => ()
+    }
+  }
+  None
+}
+
+// ---------------------------------------------------------------------------
+// First-class immutable capability types
+// ---------------------------------------------------------------------------
+
+/// Entry-point snapshot factory. Does NOT expose `is_valid`/`commit` directly:
+/// callers must derive a scoped `WorkspaceCapability`, `VaultCapability`, or `CompositeCapability`.
+pub struct AuthCapability {
+  pub tracker : AuthGenTracker
+  pub snap : AuthBoundary
+  pub global_gen : Int
+  pub vault_global_gen : Int
+}
+
+pub fn AuthCapability::workspace(
+  self : AuthCapability,
+  ws : String,
+  sub : Option[String] = None,
+  resolve_owner : Option[() -> Option[String]] = None,
+  track_vault_global : Bool = false,
+  track_ws_vault : Bool = false,
+) -> WorkspaceCapability {
+  let ws_auth_gen = snap_ws_auth_gen(self.snap, ws)
+  let ws_vault_gen = if track_ws_vault { Some(snap_ws_vault_gen(self.snap, ws)) } else { None }
+  WorkspaceCapability::{
+    tracker: self.tracker,
+    ws: ws,
+    ws_auth_gen: ws_auth_gen,
+    vault_global_gen: self.vault_global_gen,
+    ws_vault_gen: ws_vault_gen,
+    track_vault_global: track_vault_global,
+    sub: sub,
+    resolve_owner: resolve_owner,
+    snap: self.snap,
+  }
+}
+
+pub fn AuthCapability::vault(
+  self : AuthCapability,
+  ws : String,
+  vault_id : String,
+  sub : Option[String] = None,
+  resolve_owner : Option[() -> Option[String]] = None,
+) -> VaultCapability {
+  VaultCapability::{
+    tracker: self.tracker,
+    ws: ws,
+    vault_id: vault_id,
+    ws_auth_gen: snap_ws_auth_gen(self.snap, ws),
+    vault_gen: snap_vault_gen(self.snap, ws, vault_id),
+    vault_global_gen: self.vault_global_gen,
+    sub: sub,
+    resolve_owner: resolve_owner,
+    snap: self.snap,
+  }
+}
+
+/// Unified sum type for composing heterogeneous capabilities into `CompositeCapability`.
+pub enum ScopeCap {
+  Ws(WorkspaceCapability)
+  Vault(VaultCapability)
+  Composite(CompositeCapability)
+}
+
+pub fn ScopeCap::is_valid(self : ScopeCap) -> Bool {
+  match self {
+    ScopeCap::Ws(c) => c.is_valid()
+    ScopeCap::Vault(c) => c.is_valid()
+    ScopeCap::Composite(c) => c.is_valid()
+  }
+}
+
+pub fn AuthCapability::all(caps : Array[ScopeCap]) -> CompositeCapability {
+  CompositeCapability::{ caps: caps }
+}
+
+/// Immutable capability bound to one workspace (and optionally owner `sub`, `vaultGlobalGen`,
+/// and `vaultWorkspaceGen`), anchored to the entry `AuthBoundary` snapshot so `narrow_vault`
+/// never samples post-await generations.
+pub struct WorkspaceCapability {
+  pub tracker : AuthGenTracker
+  pub ws : String
+  pub ws_auth_gen : Int
+  pub vault_global_gen : Int
+  pub ws_vault_gen : Option[Int]
+  pub track_vault_global : Bool
+  pub sub : Option[String]
+  resolve_owner : Option[() -> Option[String]]
+  snap : AuthBoundary
+}
+
+fn opt_str_eq_ac(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x == y
+    _ => false
+  }
+}
+
+pub fn WorkspaceCapability::is_valid(self : WorkspaceCapability) -> Bool {
+  if self.tracker.workspace_auth_gen(self.ws) != self.ws_auth_gen {
+    return false
+  }
+  match self.resolve_owner {
+    Some(f) => if !opt_str_eq_ac(f(), self.sub) { return false }
+    None => ()
+  }
+  if self.track_vault_global && self.tracker.vault_global_gen != self.vault_global_gen {
+    return false
+  }
+  match self.ws_vault_gen {
+    Some(wvg) => if self.tracker.vault_workspace_gen(self.ws) != wvg { return false }
+    None => ()
+  }
+  true
+}
+
+pub fn WorkspaceCapability::assert_valid(self : WorkspaceCapability) -> Result[Unit, protocol::CoreError] {
+  if self.is_valid() { Ok(()) } else { Err(auth_stale_error()) }
+}
+
+pub fn WorkspaceCapability::commit[A](self : WorkspaceCapability, f : () -> A) -> Option[A] {
+  if !self.is_valid() {
+    return None
+  }
+  Some(f())
+}
+
+pub fn WorkspaceCapability::commit_or_fail[A](
+  self : WorkspaceCapability,
+  f : () -> A,
+) -> Result[A, protocol::CoreError] {
+  if !self.is_valid() {
+    return Err(auth_stale_error())
+  }
+  Ok(f())
+}
+
+pub fn WorkspaceCapability::narrow_vault(self : WorkspaceCapability, vault_id : String) -> VaultCapability {
+  let vg = snap_vault_gen(self.snap, self.ws, vault_id)
+  VaultCapability::{
+    tracker: self.tracker,
+    ws: self.ws,
+    vault_id: vault_id,
+    ws_auth_gen: self.ws_auth_gen,
+    vault_gen: vg,
+    vault_global_gen: self.vault_global_gen,
+    sub: self.sub,
+    resolve_owner: self.resolve_owner,
+    snap: self.snap,
+  }
+}
+
+pub fn WorkspaceCapability::same_scope(self : WorkspaceCapability, other : WorkspaceCapability) -> Bool {
+  self.ws == other.ws && opt_str_eq_ac(self.sub, other.sub) && self.ws_auth_gen == other.ws_auth_gen
+}
+
+pub fn WorkspaceCapability::as_scope(self : WorkspaceCapability) -> ScopeCap {
+  ScopeCap::Ws(self)
+}
+
+/// Immutable capability bound to one `(workspace, vault_id)` pair.
+pub struct VaultCapability {
+  pub tracker : AuthGenTracker
+  pub ws : String
+  pub vault_id : String
+  pub ws_auth_gen : Int
+  pub vault_gen : Int
+  pub vault_global_gen : Int
+  pub sub : Option[String]
+  resolve_owner : Option[() -> Option[String]]
+  snap : AuthBoundary
+}
+
+pub fn VaultCapability::is_valid(self : VaultCapability) -> Bool {
+  if self.tracker.workspace_auth_gen(self.ws) != self.ws_auth_gen {
+    return false
+  }
+  if self.tracker.vault_gen(self.ws, self.vault_id) != self.vault_gen {
+    return false
+  }
+  if self.tracker.vault_global_gen != self.vault_global_gen {
+    return false
+  }
+  match self.resolve_owner {
+    Some(f) => if !opt_str_eq_ac(f(), self.sub) { return false }
+    None => ()
+  }
+  true
+}
+
+pub fn VaultCapability::assert_valid(self : VaultCapability) -> Result[Unit, protocol::CoreError] {
+  if self.is_valid() { Ok(()) } else { Err(auth_stale_error()) }
+}
+
+pub fn VaultCapability::commit[A](self : VaultCapability, f : () -> A) -> Option[A] {
+  if !self.is_valid() {
+    return None
+  }
+  Some(f())
+}
+
+pub fn VaultCapability::commit_or_fail[A](
+  self : VaultCapability,
+  f : () -> A,
+) -> Result[A, protocol::CoreError] {
+  if !self.is_valid() {
+    return Err(auth_stale_error())
+  }
+  Ok(f())
+}
+
+pub fn VaultCapability::for_vault(self : VaultCapability, vault_id : String) -> VaultCapability {
+  if vault_id == self.vault_id {
+    return self
+  }
+  VaultCapability::{
+    tracker: self.tracker,
+    ws: self.ws,
+    vault_id: vault_id,
+    ws_auth_gen: self.ws_auth_gen,
+    vault_gen: snap_vault_gen(self.snap, self.ws, vault_id),
+    vault_global_gen: self.vault_global_gen,
+    sub: self.sub,
+    resolve_owner: self.resolve_owner,
+    snap: self.snap,
+  }
+}
+
+pub fn VaultCapability::as_scope(self : VaultCapability) -> ScopeCap {
+  ScopeCap::Vault(self)
+}
+
+/// Combines multiple capabilities so `is_valid()` holds iff every constituent capability is valid.
+pub struct CompositeCapability {
+  pub caps : Array[ScopeCap]
+}
+
+pub fn CompositeCapability::is_valid(self : CompositeCapability) -> Bool {
+  for i in 0..<self.caps.length() {
+    if !self.caps[i].is_valid() {
+      return false
+    }
+  }
+  true
+}
+
+pub fn CompositeCapability::assert_valid(self : CompositeCapability) -> Result[Unit, protocol::CoreError] {
+  if self.is_valid() { Ok(()) } else { Err(auth_stale_error()) }
+}
+
+pub fn CompositeCapability::commit[A](self : CompositeCapability, f : () -> A) -> Option[A] {
+  if !self.is_valid() {
+    return None
+  }
+  Some(f())
+}
+
+pub fn CompositeCapability::commit_or_fail[A](
+  self : CompositeCapability,
+  f : () -> A,
+) -> Result[A, protocol::CoreError] {
+  if !self.is_valid() {
+    return Err(auth_stale_error())
+  }
+  Ok(f())
+}
+
+pub fn CompositeCapability::as_scope(self : CompositeCapability) -> ScopeCap {
+  ScopeCap::Composite(self)
+}

@@ -1,0 +1,305 @@
+// Unit tests covering Direction 2B Phase 1 real SQLite / state-machine / view implementations:
+// - Topics: prefs, workspaceMarks, driveTransfers, changelog, composer, chatRow, chatFeedback, live, newChat
+// - Calls: prefs.get/set, client.device, notify.permission/set, chat.place, chat.window,
+//          draft.get/put, markdown (with md_kept cache), link.parse (with moved resolution),
+//          cache.usage, and full composer.* closure.
+
+import "base_codec"
+import "effect"
+import "protocol"
+import "sql"
+import "store"
+
+fn open_sf_p1_core(name : String) -> (ClientCore, sql::Sql) {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let db = match sql::Sql::open(sim_db.sh, name) {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql::Sql::open failed: " + e.to_string())
+  }
+  let core = ClientCore::new("ws-1", "ws-1/st-1", rt, db, core_offline_transport(), fn() -> Unit {})
+  core.set_viewer("alice@still.fail", sub="sub-alice", role="owner")
+  (core, db)
+}
+
+fn sf_call_ok(core : ClientCore, id : Int64, name : String, params : base_codec::Json) -> base_codec::Json {
+  match core.handle_request(protocol::CoreRequest::Call(id, name, params, None)) {
+    Some(protocol::CoreEvent::Ok(_, v, _)) => v
+    Some(protocol::CoreEvent::Err(_, e)) => panic("call " + name + " failed: " + e.code + " " + e.message)
+    _ => panic("call " + name + " returned unexpected event")
+  }
+}
+
+fn sf_sub_val(core : ClientCore, id : Int64, topic_name : String, params : Array[(String, base_codec::Json)]) -> base_codec::Json {
+  let req = protocol::CoreRequest::Subscribe(id, protocol::Topic::{ name: topic_name, params: params }, true, None, None)
+  match core.handle_request(req) {
+    Some(protocol::CoreEvent::Value(_, v, _)) => v
+    Some(protocol::CoreEvent::Err(_, e)) => panic("sub " + topic_name + " failed: " + e.code + " " + e.message)
+    _ => panic("sub " + topic_name + " returned unexpected event")
+  }
+}
+
+fn sf_expect_str(j : base_codec::Json, key : String, want : String) -> Unit {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Str(s)) => debug_assert(s == want, key + " expected " + want + ", got " + s)
+    _ => debug_assert(false, key + " missing string " + want)
+  }
+}
+
+fn sf_expect_bool(j : base_codec::Json, key : String, want : Bool) -> Unit {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Bool(b)) => debug_assert(b == want, key + " bool mismatch")
+    _ => debug_assert(false, key + " missing bool")
+  }
+}
+
+fn sf_expect_int(j : base_codec::Json, key : String, want : Int) -> Unit {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(n, _)) => debug_assert(n.to_int() == want, key + " int mismatch")
+    _ => debug_assert(false, key + " missing int")
+  }
+}
+
+test "sfreplay_p1: prefs, workspaceMarks, client.device, notify.permission/set" {
+  let (core, _) = open_sf_p1_core("sf-p1-prefs")
+
+  let _ = sf_call_ok(core, 1L, "client.device", base_codec::json_obj([
+    ("app", base_codec::json_str("desktop")),
+    ("locale", base_codec::json_str("en-US")),
+    ("build", base_codec::json_int(1420)),
+  ]))
+  let _ = sf_call_ok(core, 2L, "prefs.set", base_codec::json_obj([
+    ("appearance", base_codec::json_str("light")),
+    ("reader", base_codec::json_obj([("size", base_codec::json_int(20))])),
+    ("badgeKinds", base_codec::json_obj([("on", base_codec::json_bool(false))])),
+  ]))
+
+  let p = sf_sub_val(core, 3L, "prefs", [])
+  sf_expect_str(p, "appearance", "light")
+  match base_codec::json_get(p, "reader") {
+    Some(r) => sf_expect_int(r, "size", 20)
+    None => debug_assert(false, "missing reader")
+  }
+  match base_codec::json_get(p, "device") {
+    Some(d) => sf_expect_str(d, "locale", "en-US")
+    None => debug_assert(false, "missing device")
+  }
+
+  let wm = sf_sub_val(core, 4L, "workspaceMarks", [])
+  match base_codec::json_get(wm, "badgeKinds") {
+    Some(bk) => sf_expect_bool(bk, "on", false)
+    None => debug_assert(false, "missing badgeKinds in workspaceMarks")
+  }
+
+  let _ = sf_call_ok(core, 5L, "notify.permission", base_codec::json_obj([("state", base_codec::json_str("granted"))]))
+  let nv = sf_call_ok(core, 6L, "notify.set", base_codec::json_obj([
+    ("asked", base_codec::json_bool(true)),
+    ("preview", base_codec::json_bool(false)),
+  ]))
+  sf_expect_str(nv, "permission", "granted")
+  sf_expect_bool(nv, "preview", false)
+}
+
+test "sfreplay_p1: composer closure + draft.get/put + SQLite persistence" {
+  let (core, db) = open_sf_p1_core("sf-p1-composer")
+  let key = "ws-1/st-1:sess-9"
+
+  let _ = sf_call_ok(core, 10L, "composer.text", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("text", base_codec::json_str("hello world")),
+  ]))
+  let _ = sf_call_ok(core, 11L, "composer.quote", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("id", base_codec::json_str("q1")),
+    ("focus", base_codec::json_bool(true)),
+    ("quote", base_codec::json_obj([
+      ("author", base_codec::json_str("bob")),
+      ("text", base_codec::json_str("quoted text")),
+      ("comment", base_codec::json_str("my note")),
+    ])),
+  ]))
+  let cv1 = sf_sub_val(core, 12L, "composer", [("key", base_codec::json_str(key))])
+  sf_expect_str(cv1, "text", "hello world")
+  sf_expect_str(cv1, "focus", "q1")
+  sf_expect_bool(cv1, "ready", true)
+
+  let _ = sf_call_ok(core, 13L, "composer.focused", base_codec::json_obj([("key", base_codec::json_str(key))]))
+  let _ = sf_call_ok(core, 14L, "composer.add", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("files", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("f1")),
+        ("name", base_codec::json_str("spec.md")),
+        ("size", base_codec::json_int(128)),
+        ("ref", base_codec::json_obj([
+          ("station", base_codec::json_str("ws-1/st-1")),
+          ("stationName", base_codec::json_str("Station 1")),
+          ("path", base_codec::json_str("/tmp/spec.md")),
+          ("dir", base_codec::json_bool(false)),
+          ("mode", base_codec::json_str("path")),
+        ])),
+      ]),
+    ])),
+  ]))
+  let _ = sf_call_ok(core, 15L, "composer.mode", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("id", base_codec::json_str("f1")),
+    ("mode", base_codec::json_str("file")),
+  ]))
+  let _ = sf_call_ok(core, 16L, "composer.mode", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("id", base_codec::json_str("f1")),
+    ("mode", base_codec::json_str("path")),
+  ]))
+  let _ = sf_call_ok(core, 17L, "composer.starting", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("starting", base_codec::json_bool(true)),
+  ]))
+  let cv_starting = sf_sub_val(core, 18L, "composer", [("key", base_codec::json_str(key))])
+  sf_expect_bool(cv_starting, "ready", false)
+  let _ = sf_call_ok(core, 19L, "composer.starting", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("starting", base_codec::json_bool(false)),
+  ]))
+
+  // Verify draft persisted and readable via `draft.get`
+  let dg = sf_call_ok(core, 20L, "draft.get", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("chat", base_codec::json_str("sess-9")),
+  ]))
+  sf_expect_str(dg, "text", "hello world")
+
+  // Carry to another key and take
+  let key2 = "ws-1/st-1:sess-10"
+  let _ = sf_call_ok(core, 21L, "composer.carry", base_codec::json_obj([
+    ("key", base_codec::json_str(key)),
+    ("to", base_codec::json_str(key2)),
+  ]))
+  let taken = sf_call_ok(core, 22L, "composer.take", base_codec::json_obj([
+    ("key", base_codec::json_str(key2)),
+    ("station", base_codec::json_str("ws-1/st-1")),
+  ]))
+  match base_codec::json_get(taken, "text") {
+    Some(base_codec::Json::Str(s)) => {
+      debug_assert(s.contains("hello world"), "taken text has body")
+      debug_assert(s.contains("/tmp/spec.md"), "taken text has path ref")
+    }
+    _ => debug_assert(false, "expected taken text")
+  }
+  // Draft cleared after take
+  match store::get_draft(db, "ws-1/st-1", "sess-10") {
+    sql::SqlResult::Ok(None) => ()
+    _ => debug_assert(false, "draft should be deleted after take")
+  }
+  // `draft.put` round-trip
+  let _ = sf_call_ok(core, 23L, "draft.put", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("chat", base_codec::json_str("sess-10")),
+    ("value", base_codec::json_obj([("text", base_codec::json_str("restored draft"))])),
+  ]))
+  let dg2 = sf_call_ok(core, 24L, "draft.get", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("chat", base_codec::json_str("sess-10")),
+  ]))
+  sf_expect_str(dg2, "text", "restored draft")
+}
+
+test "sfreplay_p1: driveTransfers, changelog, chatFeedback, live, newChat, markdown, link.parse, cache.usage, chat.place, chat.window" {
+  let (core, db) = open_sf_p1_core("sf-p1-views")
+
+  let _ = store::upsert_workspace(db, "ws-1", "{\"id\":\"ws-1\",\"name\":\"Demo WS\",\"role\":\"owner\",\"stations\":[{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true}]}", confirmed=Some(1730000000000L))
+  let _ = store::upsert_station_doc(db, "ws-1/st-1", "overview", "{\"id\":\"st-1\",\"name\":\"Station 1\",\"online\":true,\"acceptAutoChats\":true,\"drive\":{\"roots\":[\"home\"]}}", confirmed=Some(1730000000000L))
+  let _ = store::upsert_station_doc(db, "ws-1/st-1", "driveTransfers", "{\"transfers\":[{\"id\":\"tr-1\",\"names\":[\"a.bin\"],\"state\":\"running\",\"total\":1000,\"copied\":500,\"createdAt\":1730000000000}]}", confirmed=Some(1730000000000L))
+  let _ = store::put_account_doc(db, "changelog:feed", "{\"entries\":[{\"id\":\"cl-1\",\"part\":\"desktop\",\"build\":1420,\"at\":1730000000000,\"text\":\"Added AuthCapability\"}]}")
+  let _ = store::put_account_doc(db, "changelog:seen", "{\"build\":1400}")
+  let _ = sf_call_ok(core, 30L, "client.device", base_codec::json_obj([("app", base_codec::json_str("desktop")), ("build", base_codec::json_int(1420))]))
+  let _ = store::put_workspace_pref(db, "ws-1", "feedback", "[{\"id\":\"fb-1\",\"number\":7,\"station\":\"st-1\",\"session\":\"sess-1\",\"title\":\"Bug\",\"replies\":[{\"id\":\"r-1\",\"author\":\"team\",\"body\":\"Fixed\",\"at\":1730000000000}]}]")
+
+  // 1. driveTransfers
+  let dt = sf_sub_val(core, 31L, "driveTransfers", [("workspace", base_codec::json_str("ws-1"))])
+  sf_expect_bool(dt, "supported", true)
+  sf_expect_bool(dt, "loaded", true)
+  match base_codec::json_get(dt, "transfers") {
+    Some(base_codec::Json::Arr(xs)) => debug_assert(xs.length() == 1, "expected 1 drive transfer")
+    _ => debug_assert(false, "expected 1 drive transfer")
+  }
+
+  // 2. changelog
+  let cl = sf_sub_val(core, 32L, "changelog", [])
+  match base_codec::json_get(cl, "news") {
+    Some(base_codec::Json::Arr(xs)) => debug_assert(xs.length() == 1, "expected 1 changelog news item")
+    _ => debug_assert(false, "expected 1 changelog news item")
+  }
+
+  // 3. chatFeedback
+  let cf = sf_sub_val(core, 34L, "chatFeedback", [("station", base_codec::json_str("ws-1/st-1")), ("session", base_codec::json_str("sess-1"))])
+  match base_codec::json_get(cf, "reports") {
+    Some(base_codec::Json::Arr(xs)) => debug_assert(xs.length() == 1, "expected 1 feedback report")
+    _ => debug_assert(false, "expected 1 feedback report")
+  }
+
+  // 4. live (populated transcript rows from SQLite)
+  let _ = db.run(
+    "INSERT OR REPLACE INTO transcript (station, session, i, json) VALUES (?, ?, ?, ?)",
+    params=[
+      base_codec::json_str("ws-1/st-1"),
+      base_codec::json_str("sess-1"),
+      base_codec::json_int(0),
+      base_codec::json_str("{\"kind\":\"step\",\"phase\":\"running\",\"text\":\"thinking\"}"),
+    ],
+  )
+  let lv = sf_sub_val(core, 35L, "live", [("station", base_codec::json_str("ws-1/st-1")), ("key", base_codec::json_str("sess-1"))])
+  sf_expect_bool(lv, "loaded", true)
+  sf_expect_str(lv, "phase", "running")
+
+  // 5. newChat
+  let nc = sf_sub_val(core, 36L, "newChat", [("scope", base_codec::json_str("ws-1"))])
+  sf_expect_bool(nc, "any", true)
+  sf_expect_int(nc, "autoPoolCount", 1)
+
+  // 6. markdown + md_kept caching
+  let md1 = sf_call_ok(core, 37L, "markdown", base_codec::json_obj([("text", base_codec::json_str("# Hello **world**"))]))
+  debug_assert(base_codec::json_get(md1, "md").is_some(), "markdown returns md AST")
+  let _ = core.md_store.flush_turn()
+  debug_assert(core.md_store.has(store::md_key("# Hello **world**")), "md_kept cached parsed markdown")
+
+  // 7. link.parse (including host + query + history/message parsing)
+  let lp = sf_call_ok(core, 38L, "link.parse", base_codec::json_obj([
+    ("url", base_codec::json_str("https://app.still.fail/w/ws-1/s/st-1/chats/sess-1?message=5&history=run-2&entry=3")),
+  ]))
+  sf_expect_str(lp, "opens", "chat")
+  sf_expect_str(lp, "workspace", "ws-1")
+  sf_expect_str(lp, "station", "st-1")
+  sf_expect_str(lp, "chat", "sess-1")
+  sf_expect_str(lp, "history", "run-2")
+  sf_expect_int(lp, "entry", 3)
+  sf_expect_int(lp, "message", 5)
+
+  let lp_rel = sf_call_ok(core, 381L, "link.parse", base_codec::json_obj([
+    ("url", base_codec::json_str("/w/ws-1/s/st-1/adb")),
+  ]))
+  sf_expect_str(lp_rel, "opens", "adbShare")
+
+  // 8. cache.usage
+  let cu = sf_call_ok(core, 39L, "cache.usage", base_codec::json_obj([]))
+  debug_assert(base_codec::json_get(cu, "chats").is_some(), "cache.usage returns chats")
+  debug_assert(base_codec::json_get(cu, "drive").is_some(), "cache.usage returns drive")
+  debug_assert(base_codec::json_get(cu, "loose").is_some(), "cache.usage returns loose")
+
+  // 9. chat.place + chat.window
+  let _ = sf_call_ok(core, 40L, "chat.place", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("seq", base_codec::json_int(1)),
+  ]))
+  match store::get_account_doc(db, "chat_place:ws-1/st-1:t:10") {
+    sql::SqlResult::Ok(Some(raw)) => debug_assert(raw.contains("\"seq\":1"), "chat.place persisted in account_doc")
+    _ => debug_assert(false, "expected chat.place persisted")
+  }
+  let _ = sf_call_ok(core, 41L, "chat.window", base_codec::json_obj([
+    ("station", base_codec::json_str("ws-1/st-1")),
+    ("thread", base_codec::json_int(10)),
+    ("rows", base_codec::json_int(60)),
+  ]))
+}

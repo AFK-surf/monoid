@@ -678,6 +678,7 @@ pub fn project_profiles(
       ("where", base_codec::json_str(b.station_name)),
       ("several", base_codec::json_bool(b.members.length() > 1)),
       ("usedCount", base_codec::json_int(b.used_count)),
+      ("canBatchShare", base_codec::json_bool(false)),
     ]))
   }
   let wait_obj = base_codec::json_obj([
@@ -690,6 +691,7 @@ pub fn project_profiles(
     ("attention", base_codec::json_int(attention)),
     ("wait", wait_obj),
     ("machineLogins", base_codec::json_arr([])),
+    ("manages", base_codec::json_bool(false)),
   ]))
 }
 
