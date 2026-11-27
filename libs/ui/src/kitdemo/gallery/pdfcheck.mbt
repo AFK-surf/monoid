@@ -21,7 +21,7 @@ fn pdf_check_hex(px : FixedArray[Byte], at : Int) -> String {
   let digits = "0123456789abcdef".to_array()
   let out = StringBuilder()
   for i in 0..<3 {
-    let b = px[at + i].to_int()
+    let b : Int = px[at + i].to_int()
     out.write_char(digits[b / 16])
     out.write_char(digits[b % 16])
   }

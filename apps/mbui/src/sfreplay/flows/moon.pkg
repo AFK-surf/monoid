@@ -8,6 +8,7 @@ import {
   "stillfail/sffixture",
   "stillfail/sfpages",
   "ui/controls" @sf,
+  "ui/halt",
   "ui/ui",
   "ui/motion",
 } for "test"
