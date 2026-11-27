@@ -1,0 +1,1218 @@
+// Core domain types, failure classification, speaking-tool guards, and
+// environment sanitization for `station_drivers`.
+
+import "base_codec"
+import "crypto"
+
+/// The runtimes a station runs, in the order they are offered.
+pub enum RuntimeKind {
+  Claude
+  Codex
+  Dsh
+  Grok
+  Cursor
+  Devin
+  Hermes
+  Agy
+  Pi
+  Copilot
+}
+
+pub fn runtime_kinds() -> Array[RuntimeKind] {
+  [
+    RuntimeKind::Claude,
+    RuntimeKind::Codex,
+    RuntimeKind::Dsh,
+    RuntimeKind::Grok,
+    RuntimeKind::Cursor,
+    RuntimeKind::Devin,
+    RuntimeKind::Hermes,
+    RuntimeKind::Agy,
+    RuntimeKind::Pi,
+    RuntimeKind::Copilot,
+  ]
+}
+
+pub fn runtime_kind_to_str(r : RuntimeKind) -> String {
+  match r {
+    RuntimeKind::Claude => "claude"
+    RuntimeKind::Codex => "codex"
+    RuntimeKind::Dsh => "dsh"
+    RuntimeKind::Grok => "grok"
+    RuntimeKind::Cursor => "cursor"
+    RuntimeKind::Devin => "devin"
+    RuntimeKind::Hermes => "hermes"
+    RuntimeKind::Agy => "agy"
+    RuntimeKind::Pi => "pi"
+    RuntimeKind::Copilot => "copilot"
+  }
+}
+
+pub fn runtime_kind_from_str(s : String) -> Option[RuntimeKind] {
+  if s == "claude" {
+    Some(RuntimeKind::Claude)
+  } else if s == "codex" {
+    Some(RuntimeKind::Codex)
+  } else if s == "dsh" {
+    Some(RuntimeKind::Dsh)
+  } else if s == "grok" {
+    Some(RuntimeKind::Grok)
+  } else if s == "cursor" {
+    Some(RuntimeKind::Cursor)
+  } else if s == "devin" {
+    Some(RuntimeKind::Devin)
+  } else if s == "hermes" {
+    Some(RuntimeKind::Hermes)
+  } else if s == "agy" {
+    Some(RuntimeKind::Agy)
+  } else if s == "pi" {
+    Some(RuntimeKind::Pi)
+  } else if s == "copilot" {
+    Some(RuntimeKind::Copilot)
+  } else {
+    None
+  }
+}
+
+pub fn runtime_kind_eq(a : RuntimeKind, b : RuntimeKind) -> Bool {
+  runtime_kind_to_str(a) == runtime_kind_to_str(b)
+}
+
+pub fn runtime_label(r : RuntimeKind) -> String {
+  match r {
+    RuntimeKind::Claude => "Claude Code"
+    RuntimeKind::Codex => "Codex"
+    RuntimeKind::Dsh => "DeepSeek Harness"
+    RuntimeKind::Grok => "Grok Build"
+    RuntimeKind::Cursor => "Cursor"
+    RuntimeKind::Devin => "Devin"
+    RuntimeKind::Hermes => "Hermes Agent"
+    RuntimeKind::Agy => "Antigravity CLI"
+    RuntimeKind::Pi => "Pi"
+    RuntimeKind::Copilot => "GitHub Copilot"
+  }
+}
+
+pub enum AccessKind {
+  Subscription
+  OpencodeGo
+  AnthropicApi
+  Env
+  ApiProvider
+  Service
+}
+
+pub fn access_kind_to_str(k : AccessKind) -> String {
+  match k {
+    AccessKind::Subscription => "subscription"
+    AccessKind::OpencodeGo => "opencode-go"
+    AccessKind::AnthropicApi => "anthropic-api"
+    AccessKind::Env => "env"
+    AccessKind::ApiProvider => "api-provider"
+    AccessKind::Service => "service"
+  }
+}
+
+pub fn access_kind_from_str(s : String) -> AccessKind {
+  if s == "subscription" {
+    AccessKind::Subscription
+  } else if s == "opencode-go" {
+    AccessKind::OpencodeGo
+  } else if s == "anthropic-api" {
+    AccessKind::AnthropicApi
+  } else if s == "api-provider" {
+    AccessKind::ApiProvider
+  } else if s == "service" {
+    AccessKind::Service
+  } else {
+    AccessKind::Env
+  }
+}
+
+pub fn access_kind_eq(a : AccessKind, b : AccessKind) -> Bool {
+  access_kind_to_str(a) == access_kind_to_str(b)
+}
+
+pub enum Protocol {
+  ChatCompletions
+  Responses
+  Anthropic
+}
+
+pub fn protocol_to_str(p : Protocol) -> String {
+  match p {
+    Protocol::ChatCompletions => "chat_completions"
+    Protocol::Responses => "responses"
+    Protocol::Anthropic => "anthropic"
+  }
+}
+
+pub fn protocol_from_str(s : String) -> Option[Protocol] {
+  if s == "chat_completions" {
+    Some(Protocol::ChatCompletions)
+  } else if s == "responses" {
+    Some(Protocol::Responses)
+  } else if s == "anthropic" {
+    Some(Protocol::Anthropic)
+  } else {
+    None
+  }
+}
+
+pub enum ClaudeAuth {
+  ApiKey
+  Bearer
+  Both
+}
+
+pub struct Endpoints {
+  pub chat : Option[String]
+  pub responses : Option[String]
+  pub anthropic : Option[String]
+  pub decision : Option[String]
+}
+
+pub struct Via {
+  pub provider : Option[String]
+  pub endpoint : Option[String]
+  pub protocol : Option[String]
+}
+
+pub struct Profile {
+  pub id : String
+  pub runtime : Option[RuntimeKind]
+  pub home : String
+  pub enabled : Bool
+  pub machine : Bool
+  pub fast : Bool
+  pub model : Option[String]
+  pub models : Array[String]
+  pub access_kind : AccessKind
+  pub access_key : String
+  pub access_provider : Option[String]
+  pub access_endpoint : Option[String]
+  pub access_protocol : Option[String]
+  pub access_service : Option[String]
+  pub access_login : Bool
+  pub env : Array[(String, String)]
+  pub borrowed : Bool
+  pub share_workspaces : Array[String]
+  pub withheld : Array[String]
+  pub max_concurrent_sessions : Option[Int]
+}
+
+pub fn Profile::default(id : String, runtime : Option[RuntimeKind], home : String) -> Profile {
+  Profile::{
+    id: id,
+    runtime: runtime,
+    home: home,
+    enabled: true,
+    machine: false,
+    fast: false,
+    model: None,
+    models: [],
+    access_kind: AccessKind::Env,
+    access_key: "",
+    access_provider: None,
+    access_endpoint: None,
+    access_protocol: None,
+    access_service: None,
+    access_login: false,
+    env: [],
+    borrowed: false,
+    share_workspaces: [],
+    withheld: [],
+    max_concurrent_sessions: None,
+  }
+}
+
+pub struct OpenOptions {
+  pub key : String
+  pub profile : Profile
+  pub cwd : String
+  pub resume : Option[String]
+  pub model : Option[String]
+  pub effort : Option[String]
+  pub speed : Option[String]
+  pub context : Option[Int]
+  pub fast : Option[Bool]
+  pub tui : Bool
+  pub instructions : String
+  pub skills : Option[String]
+  pub mcp_token : String
+  pub mcp_url : String
+  pub route : String
+  pub text_only : Bool
+  pub is_root : Bool
+  pub has_keychain : Bool
+  pub os_name : String
+  pub sep : String
+  pub station_env : Array[(String, String)]
+  pub agent_env : Array[(String, String)]
+  pub node_exec : String
+  pub runner_bin : String
+  pub assets_dir : String
+  pub data_dir : String
+  pub stub_dir : String
+  pub sdk_dir : Option[String]
+  pub external_token : Option[String]
+  pub copilot_token : Option[String]
+  pub cursor_key : Option[String]
+  pub home_dir : String
+  pub has_path : (String) -> Bool
+  pub next_uuid : () -> String
+  pub hermes_header_line : Option[String]
+}
+
+/// Format 16 bytes as an RFC 4122 UUID v4 (`xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx`).
+pub fn uuid_v4_from_bytes(raw : Bytes) -> String {
+  let b = Bytes::new(16)
+  for i in 0..<16 {
+    b[i] = if i < raw.length() { raw[i] } else { 0 as Byte }
+  }
+  b[6] = ((b[6].to_int() & 0x0F) | 0x40) as Byte
+  b[8] = ((b[8].to_int() & 0x3F) | 0x80) as Byte
+  let hex = "0123456789abcdef".to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<16 {
+    if i == 4 || i == 6 || i == 8 || i == 10 {
+      sb.write_byte(45 as Byte)
+    }
+    let v = b[i].to_int() & 0xFF
+    sb.write_byte(hex[(v >> 4) & 0x0F])
+    sb.write_byte(hex[v & 0x0F])
+  }
+  sb.to_string()
+}
+
+/// Validate RFC 4122 UUID v4 format (`8-4-4-4-12` hex, version `4`, variant `8|9|a|b`).
+pub fn is_valid_uuid_v4(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() != 36 {
+    return false
+  }
+  for i in 0..<36 {
+    let b = raw[i].to_int() & 0xFF
+    if i == 8 || i == 13 || i == 18 || i == 23 {
+      if b != 45 {
+        return false
+      }
+    } else if i == 14 {
+      if b != 52 { // '4'
+        return false
+      }
+    } else if i == 19 {
+      let ok_var = b == 56 || b == 57 || b == 97 || b == 98 || b == 65 || b == 66
+      if !ok_var {
+        return false
+      }
+    } else {
+      let ok_hex = (b >= 48 && b <= 57) || (b >= 97 && b <= 102) || (b >= 65 && b <= 70)
+      if !ok_hex {
+        return false
+      }
+    }
+  }
+  true
+}
+
+/// Construct `OpenOptions` with explicitly injected host dependencies (`home_dir`, `has_path`, `next_uuid`).
+pub fn OpenOptions::new(
+  key : String,
+  profile : Profile,
+  cwd : String,
+  mcp_url : String,
+  mcp_token : String,
+  home_dir : String,
+  has_path : (String) -> Bool,
+  next_uuid : () -> String,
+) -> OpenOptions {
+  OpenOptions::{
+    key: key,
+    profile: profile,
+    cwd: cwd,
+    resume: None,
+    model: None,
+    effort: None,
+    speed: None,
+    context: None,
+    fast: None,
+    tui: false,
+    instructions: "",
+    skills: None,
+    mcp_token: mcp_token,
+    mcp_url: mcp_url,
+    route: "route-1",
+    text_only: false,
+    is_root: false,
+    has_keychain: false,
+    os_name: "linux",
+    sep: "/",
+    station_env: [],
+    agent_env: [],
+    node_exec: "node",
+    runner_bin: "stillfail-runner",
+    assets_dir: "/opt/stillfail/assets/agents",
+    data_dir: "/data/station",
+    stub_dir: "/tmp/stillfail-no-keychain-1000",
+    sdk_dir: None,
+    external_token: None,
+    copilot_token: None,
+    cursor_key: None,
+    home_dir: home_dir,
+    has_path: has_path,
+    next_uuid: next_uuid,
+    hermes_header_line: None,
+  }
+}
+
+/// Complete launch specification produced by any of the 11 runtime driver builders.
+pub struct DriverLaunchSpec {
+  pub runtime : RuntimeKind
+  pub program : String
+  pub args : Array[String]
+  pub env : Array[(String, String)]
+  pub cwd : String
+  pub bridge_script : Option[String]
+  pub mcp_config_json : Option[String]
+  pub settings_json : Option[String]
+  pub setup_json : Option[String]
+  pub patch_yaml : Option[String]
+  pub opening_meta_json : Option[String]
+  pub rules_dir : Option[String]
+  pub silent_subagents_enabled : Bool
+  pub pty_mode : Bool
+}
+
+// ---------------------------------------------------------------------------
+// Failure classification & speaking-tool guards
+// ---------------------------------------------------------------------------
+
+pub enum FailureReason {
+  Auth
+  Refused
+  Blocked
+  Denied
+  RateLimit
+  Overloaded
+  Network
+  Context
+  Model
+  Exited
+  Other
+}
+
+pub fn failure_reason_to_str(r : FailureReason) -> String {
+  match r {
+    FailureReason::Auth => "auth"
+    FailureReason::Refused => "refused"
+    FailureReason::Blocked => "blocked"
+    FailureReason::Denied => "denied"
+    FailureReason::RateLimit => "rate_limit"
+    FailureReason::Overloaded => "overloaded"
+    FailureReason::Network => "network"
+    FailureReason::Context => "context"
+    FailureReason::Model => "model"
+    FailureReason::Exited => "exited"
+    FailureReason::Other => "other"
+  }
+}
+
+pub enum TurnOutcome {
+  Completed
+  Aborted
+  Failed(FailureReason, String)
+}
+
+pub struct FailureWords {
+  pub auth_codes : Array[String]
+  pub auth : Array[String]
+  pub limit_codes : Array[String]
+  pub limit : Array[String]
+}
+
+pub fn FailureWords::empty() -> FailureWords {
+  FailureWords::{ auth_codes: [], auth: [], limit_codes: [], limit: [] }
+}
+
+pub fn tool_servers() -> Array[String] {
+  ["stillfail"]
+}
+
+/// Tools that speak in a chat — belong to the main session agent only.
+pub fn speaks_tools() -> Array[String] {
+  [
+    "chat_post",
+    "chat_state",
+    "session_send",
+    "chat_create",
+    "chat_leave",
+    "chat_archive",
+    "chat_configure",
+    "project_manage",
+  ]
+}
+
+pub let SPEAKS_WRITING : String = "slack_api"
+
+pub fn slack_writes() -> Array[String] {
+  [
+    "chat.postMessage",
+    "chat.postEphemeral",
+    "chat.scheduleMessage",
+    "chat.update",
+    "chat.delete",
+    "chat.meMessage",
+    "reactions.add",
+    "reactions.remove",
+    "pins.add",
+    "pins.remove",
+    "files.completeUploadExternal",
+    "assistant.threads.",
+  ]
+}
+
+pub fn slack_spoken() -> Array[String] {
+  let out = slack_writes()
+  out.push("chat.startStream")
+  out.push("chat.appendStream")
+  out.push("chat.stopStream")
+  out
+}
+
+pub fn is_slack_write(method : String) -> Bool {
+  let list = slack_writes()
+  for i in 0..<list.length() {
+    if str_starts_with(method, list[i]) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn speaks_in_slack(method : String) -> Bool {
+  let list = slack_spoken()
+  for i in 0..<list.length() {
+    if str_starts_with(method, list[i]) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn station_tool(name : String) -> Bool {
+  let servers = tool_servers()
+  for i in 0..<servers.length() {
+    let s = servers[i]
+    if str_starts_with(name, "mcp__" + s + "__") || str_starts_with(name, s + "__") {
+      return true
+    }
+  }
+  false
+}
+
+pub fn unreachable_error(text : String) -> Bool {
+  let lower = ascii_lower(text)
+  let needles = [
+    "econnrefused",
+    "econnreset",
+    "unable to connect",
+    "is not connected",
+    "fetch failed",
+    "socket hang up",
+    "connection refused",
+    "failed to connect to mcp server",
+  ]
+  any_contains(lower, needles)
+}
+
+pub fn account_restricted(text : String) -> Bool {
+  let lower = ascii_lower(text)
+  any_contains(lower, ["can't receive replies", "cannot receive replies", "verification portal"])
+}
+
+pub fn failure_rest(text : String) -> FailureReason {
+  let lower = ascii_lower(text)
+  let context_words = [
+    "context window",
+    "context_window",
+    "context length",
+    "context_length",
+    "context overflow",
+    "prompt is too long",
+    "maximum context",
+    "too many tokens",
+    "input is too long",
+  ]
+  if any_contains(lower, context_words) {
+    return FailureReason::Context
+  }
+  let net_words = [
+    "stream disconnected",
+    "error sending request",
+    "connection reset",
+    "connection refused",
+    "connection closed",
+    "connection error",
+    "connection failed",
+    "network error",
+    "timed out",
+    "timeout",
+    "econnreset",
+    "econnrefused",
+    "etimedout",
+    "enotfound",
+    "eai_again",
+    "epipe",
+    "socket hang up",
+    "fetch failed",
+    "dns error",
+    "tls handshake",
+  ]
+  if any_contains(lower, net_words) {
+    return FailureReason::Network
+  }
+  FailureReason::Model
+}
+
+pub fn failure_of(text : String, extra : FailureWords) -> FailureReason {
+  let lower = ascii_lower(text)
+  let words = split_word_tokens(lower)
+  let auth_base = [
+    "unauthorized",
+    "authenticat",
+    "not logged in",
+    "sign in",
+    "log in",
+    "api key",
+    "permission_denied",
+    "invalid credential",
+    "can't receive replies",
+    "cannot receive replies",
+    "verification portal",
+  ]
+  let refused_base = [
+    "request not allowed",
+    "unsupported_country",
+    "unsupported country",
+    "not available in your region",
+    "region is not supported",
+    "not authorized in this region",
+  ]
+  let block_page = ["<html", "<!doctype html", "attention required", "just a moment", "cloudflare"]
+  let limit_base = [
+    "rate limit",
+    "rate_limit",
+    "quota",
+    "usage limit",
+    "limit reached",
+    "resource_exhausted",
+    "too many requests",
+    "credit balance",
+  ]
+  let overloaded_base = ["overloaded", "at capacity"]
+
+  if arr_contains_str(words, "401") || any_word(words, extra.auth_codes) {
+    return FailureReason::Auth
+  }
+  if arr_contains_str(words, "403") {
+    if any_contains(lower, auth_base) || any_contains(lower, extra.auth) || str_contains(lower, "token") || str_contains(lower, "scope") {
+      return FailureReason::Auth
+    }
+    if any_contains(lower, refused_base) {
+      return FailureReason::Refused
+    }
+    if any_contains(lower, block_page) {
+      return FailureReason::Blocked
+    }
+    return FailureReason::Denied
+  }
+  if arr_contains_str(words, "429") || any_word(words, extra.limit_codes) {
+    return FailureReason::RateLimit
+  }
+  if arr_contains_str(words, "529") {
+    return FailureReason::Overloaded
+  }
+  if any_contains(lower, refused_base) {
+    return FailureReason::Refused
+  }
+  if str_contains(lower, "forbidden") {
+    return FailureReason::Denied
+  }
+  if any_contains(lower, auth_base) || any_contains(lower, extra.auth) {
+    return FailureReason::Auth
+  }
+  if any_contains(lower, limit_base) || any_contains(lower, extra.limit) {
+    return FailureReason::RateLimit
+  }
+  if any_contains(lower, overloaded_base) {
+    return FailureReason::Overloaded
+  }
+  failure_rest(text)
+}
+
+// ---------------------------------------------------------------------------
+// Security: environment sanitization & loopback MCP URL validation
+// ---------------------------------------------------------------------------
+
+/// Station internal variables and forbidden third-party managed MCP env prefixes
+/// that must NEVER leak into any runtime driver's environment.
+pub fn is_forbidden_driver_env_key(key : String) -> Bool {
+  if key == "STILLFAIL_MESH_FRONT" || key == "MallocSpaceEfficient" {
+    return true
+  }
+  let upper = ascii_upper(key)
+  if str_starts_with(upper, "STILLFAIL_MANAGED_MCP_") ||
+  str_starts_with(upper, "MANAGED_MCP_") ||
+  upper == "STILLFAIL_MCP_SERVERS" ||
+  upper == "STILLFAIL_MCP_SECRETS" {
+    return true
+  }
+  false
+}
+
+/// Strictly validate that an MCP endpoint URL is loopback (`127.0.0.1`, `[::1]`, or `localhost`)
+/// over `http://` with NO userinfo (`@`), NO backslashes/whitespace, and a valid optional port
+/// (1..65535), or empty (for textOnly/probe sessions).
+pub fn is_local_mcp_url(url : String) -> Bool {
+  if url == "" {
+    return true
+  }
+  if !str_starts_with(url, "http://") {
+    return false
+  }
+  let raw = url.to_bytes()
+  let n = raw.length()
+  let mut auth_end = n
+  for i in 7..<n {
+    let b = raw[i].to_int() & 0xFF
+    if b == 47 || b == 63 || b == 35 { // '/', '?', '#'
+      auth_end = i
+      break
+    }
+    if b == 64 || b == 92 || is_ascii_ws(b) { // '@', '\\', whitespace -> reject userinfo/smuggling
+      return false
+    }
+  }
+  let authority = str_slice_bytes(url, 7, auth_end)
+  if authority == "" {
+    return false
+  }
+  let (host, port_opt) = if str_starts_with(authority, "[") {
+    let close = str_index_of(authority, "]", 1)
+    if close < 0 {
+      return false
+    }
+    let h = str_slice_bytes(authority, 0, close + 1)
+    let rest = str_slice_bytes(authority, close + 1, authority.to_bytes().length())
+    if rest == "" {
+      (h, None)
+    } else if str_starts_with(rest, ":") {
+      (h, Some(str_slice_bytes(rest, 1, rest.to_bytes().length())))
+    } else {
+      return false
+    }
+  } else {
+    let colon = str_index_of(authority, ":", 0)
+    if colon < 0 {
+      (authority, None)
+    } else {
+      let h = str_slice_bytes(authority, 0, colon)
+      let p = str_slice_bytes(authority, colon + 1, authority.to_bytes().length())
+      (h, Some(p))
+    }
+  }
+  let lh = ascii_lower(host)
+  if lh != "127.0.0.1" && lh != "localhost" && lh != "[::1]" {
+    return false
+  }
+  match port_opt {
+    None => true
+    Some(p) => {
+      let pb = p.to_bytes()
+      if pb.length() == 0 || pb.length() > 5 {
+        return false
+      }
+      let mut port_val = 0
+      for i in 0..<pb.length() {
+        let d = (pb[i].to_int() & 0xFF) - 48
+        if d < 0 || d > 9 {
+          return false
+        }
+        port_val = port_val * 10 + d
+      }
+      port_val >= 1 && port_val <= 65535
+    }
+  }
+}
+
+/// Derive `$STILLFAIL_PEER_HTTP` from `mcp_url` by replacing trailing `/mcp` with `/peer`.
+pub fn peer_http_base(mcp_url : String) -> String {
+  if str_ends_with(mcp_url, "/mcp") {
+    str_slice_bytes(mcp_url, 0, mcp_url.to_bytes().length() - 4) + "/peer"
+  } else {
+    mcp_url
+  }
+}
+
+/// Keep localhost/127.0.0.1/::1 out of any HTTP/HTTPS/ALL proxy.
+pub fn opt_str_is_some(o : Option[String]) -> Bool {
+  match o {
+    Some(_) => true
+    None => false
+  }
+}
+
+pub fn opt_str_eq(a : Option[String], b : Option[String]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}
+
+pub fn opt_bool_eq(a : Option[Bool], b : Option[Bool]) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => x == y
+    (None, None) => true
+    _ => false
+  }
+}
+
+pub fn keep_local(env : Array[(String, String)]) -> Array[(String, String)] {
+  let has_proxy = opt_str_is_some(env_get_ci(env, "HTTPS_PROXY")) ||
+  opt_str_is_some(env_get_ci(env, "HTTP_PROXY")) ||
+  opt_str_is_some(env_get_ci(env, "ALL_PROXY"))
+  if !has_proxy {
+    return env
+  }
+  let existing = match env_get_ci(env, "NO_PROXY") {
+    Some(v) => v
+    None => ""
+  }
+  let parts = split_comma_trimmed(existing)
+  if arr_contains_str(parts, "*") {
+    return env
+  }
+  let locals = ["localhost", "127.0.0.1", "::1"]
+  for i in 0..<locals.length() {
+    if !arr_contains_str(parts, locals[i]) {
+      parts.push(locals[i])
+    }
+  }
+  let kept = join_strings(parts, ",")
+  let out = env_set(env, "NO_PROXY", kept)
+  env_set(out, "no_proxy", kept)
+}
+
+/// Build the clean base environment for a driver:
+/// station_env + agent_env, minus `scrubbed` and forbidden keys (`STILLFAIL_MESH_FRONT`,
+/// `MallocSpaceEfficient`, managed MCP secrets), then `keep_local`.
+pub fn clean_env(
+  station_env : Array[(String, String)],
+  agent_env : Array[(String, String)],
+  scrubbed : Array[String],
+) -> Array[(String, String)] {
+  let mut merged : Array[(String, String)] = []
+  for i in 0..<station_env.length() {
+    let (k, v) = station_env[i]
+    if !arr_contains_str(scrubbed, k) && !is_forbidden_driver_env_key(k) {
+      merged = env_set(merged, k, v)
+    }
+  }
+  for i in 0..<agent_env.length() {
+    let (k, v) = agent_env[i]
+    if !arr_contains_str(scrubbed, k) && !is_forbidden_driver_env_key(k) {
+      merged = env_set(merged, k, v)
+    }
+  }
+  keep_local(merged)
+}
+
+// ---------------------------------------------------------------------------
+// Shared string / env / JSON helpers
+// ---------------------------------------------------------------------------
+
+pub fn env_get(env : Array[(String, String)], key : String) -> Option[String] {
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    if k == key {
+      return Some(v)
+    }
+  }
+  None
+}
+
+pub fn env_get_ci(env : Array[(String, String)], key : String) -> Option[String] {
+  let target = ascii_lower(key)
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    if ascii_lower(k) == target && v != "" {
+      return Some(v)
+    }
+  }
+  None
+}
+
+pub fn env_set(env : Array[(String, String)], key : String, value : String) -> Array[(String, String)] {
+  if is_forbidden_driver_env_key(key) {
+    return env
+  }
+  let out : Array[(String, String)] = []
+  let mut replaced = false
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    if k == key {
+      out.push((key, value))
+      replaced = true
+    } else {
+      out.push((k, v))
+    }
+  }
+  if !replaced {
+    out.push((key, value))
+  }
+  out
+}
+
+pub fn env_set_default(env : Array[(String, String)], key : String, value : String) -> Array[(String, String)] {
+  match env_get(env, key) {
+    Some(_) => env
+    None => env_set(env, key, value)
+  }
+}
+
+pub fn env_delete(env : Array[(String, String)], key : String) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    if k != key {
+      out.push((k, v))
+    }
+  }
+  out
+}
+
+pub fn env_merge(base : Array[(String, String)], overlay : Array[(String, String)]) -> Array[(String, String)] {
+  let mut out = base
+  for i in 0..<overlay.length() {
+    let (k, v) = overlay[i]
+    out = env_set(out, k, v)
+  }
+  out
+}
+
+pub fn ascii_lower(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b >= 65 && b <= 90 {
+      sb.write_byte((b + 32) as Byte)
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+pub fn ascii_upper(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b >= 97 && b <= 122 {
+      sb.write_byte((b - 32) as Byte)
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+pub fn str_slice_bytes(s : String, start : Int, end : Int) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let a = if start < 0 { 0 } else if start > n { n } else { start }
+  let b = if end < a { a } else if end > n { n } else { end }
+  let sb = StringBuilder::new()
+  for i in a..<b {
+    sb.write_byte(raw[i])
+  }
+  sb.to_string()
+}
+
+pub fn str_trim(s : String) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let mut a = 0
+  while a < n && is_ascii_ws(raw[a].to_int() & 0xFF) {
+    a = a + 1
+  }
+  let mut b = n
+  while b > a && is_ascii_ws(raw[b - 1].to_int() & 0xFF) {
+    b = b - 1
+  }
+  str_slice_bytes(s, a, b)
+}
+
+pub fn is_ascii_ws(b : Int) -> Bool {
+  b == 32 || b == 9 || b == 10 || b == 13 || b == 11 || b == 12
+}
+
+pub fn str_starts_with(s : String, prefix : String) -> Bool {
+  let sb = s.to_bytes()
+  let pb = prefix.to_bytes()
+  if sb.length() < pb.length() {
+    return false
+  }
+  for i in 0..<pb.length() {
+    if sb[i] != pb[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn str_ends_with(s : String, suffix : String) -> Bool {
+  let sb = s.to_bytes()
+  let eb = suffix.to_bytes()
+  if sb.length() < eb.length() {
+    return false
+  }
+  let off = sb.length() - eb.length()
+  for i in 0..<eb.length() {
+    if sb[off + i] != eb[i] {
+      return false
+    }
+  }
+  true
+}
+
+pub fn str_index_of(s : String, needle : String, from : Int) -> Int {
+  let sb = s.to_bytes()
+  let nb = needle.to_bytes()
+  let sn = sb.length()
+  let nn = nb.length()
+  if nn == 0 {
+    return if from < 0 { 0 } else if from > sn { sn } else { from }
+  }
+  if nn > sn {
+    return -1
+  }
+  let start = if from < 0 { 0 } else { from }
+  let limit = sn - nn
+  let mut i = start
+  while i <= limit {
+    let mut matched = true
+    for j in 0..<nn {
+      if sb[i + j] != nb[j] {
+        matched = false
+        break
+      }
+    }
+    if matched {
+      return i
+    }
+    i = i + 1
+  }
+  -1
+}
+
+pub fn str_contains(s : String, needle : String) -> Bool {
+  str_index_of(s, needle, 0) >= 0
+}
+
+pub fn str_replace_all(s : String, from : String, to : String) -> String {
+  if from == "" {
+    return s
+  }
+  let sb = StringBuilder::new()
+  let fn_len = from.to_bytes().length()
+  let total = s.to_bytes().length()
+  let mut pos = 0
+  while pos < total {
+    let at = str_index_of(s, from, pos)
+    if at < 0 {
+      sb.write_string(str_slice_bytes(s, pos, total))
+      break
+    }
+    sb.write_string(str_slice_bytes(s, pos, at))
+    sb.write_string(to)
+    pos = at + fn_len
+  }
+  sb.to_string()
+}
+
+pub fn join_strings(items : Array[String], sep : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<items.length() {
+    if i > 0 {
+      sb.write_string(sep)
+    }
+    sb.write_string(items[i])
+  }
+  sb.to_string()
+}
+
+pub fn split_lines(s : String) -> Array[String] {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[String] = []
+  let mut start = 0
+  for i in 0..<n {
+    if (raw[i].to_int() & 0xFF) == 10 {
+      out.push(str_slice_bytes(s, start, i))
+      start = i + 1
+    }
+  }
+  out.push(str_slice_bytes(s, start, n))
+  out
+}
+
+pub fn split_comma_trimmed(s : String) -> Array[String] {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[String] = []
+  let mut start = 0
+  for i in 0..<(n + 1) {
+    if i == n || (raw[i].to_int() & 0xFF) == 44 {
+      let item = str_trim(str_slice_bytes(s, start, i))
+      if item != "" {
+        out.push(item)
+      }
+      start = i + 1
+    }
+  }
+  out
+}
+
+pub fn split_word_tokens(s : String) -> Array[String] {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[String] = []
+  let mut start = -1
+  for i in 0..<(n + 1) {
+    let is_word = if i < n {
+      let b = raw[i].to_int() & 0xFF
+      (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || b == 95
+    } else {
+      false
+    }
+    if is_word {
+      if start < 0 {
+        start = i
+      }
+    } else if start >= 0 {
+      out.push(str_slice_bytes(s, start, i))
+      start = -1
+    }
+  }
+  out
+}
+
+pub fn arr_contains_str(arr : Array[String], needle : String) -> Bool {
+  for i in 0..<arr.length() {
+    if arr[i] == needle {
+      return true
+    }
+  }
+  false
+}
+
+pub fn any_contains(haystack : String, needles : Array[String]) -> Bool {
+  for i in 0..<needles.length() {
+    if str_contains(haystack, needles[i]) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn any_word(words : Array[String], needles : Array[String]) -> Bool {
+  for i in 0..<needles.length() {
+    if arr_contains_str(words, ascii_lower(needles[i])) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn json_str(s : String) -> base_codec::Json {
+  base_codec::json_str(s)
+}
+
+pub fn json_bool(b : Bool) -> base_codec::Json {
+  base_codec::json_bool(b)
+}
+
+pub fn json_int(n : Int) -> base_codec::Json {
+  base_codec::json_int(n)
+}
+
+pub fn json_int64(n : Int64) -> base_codec::Json {
+  base_codec::json_int64(n)
+}
+
+pub fn json_arr(items : Array[base_codec::Json]) -> base_codec::Json {
+  base_codec::json_arr(items)
+}
+
+pub fn json_obj(entries : Array[(String, base_codec::Json)]) -> base_codec::Json {
+  base_codec::json_obj(entries)
+}
+
+pub fn json_str_arr(items : Array[String]) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<items.length() {
+    out.push(base_codec::json_str(items[i]))
+  }
+  base_codec::json_arr(out)
+}
+
+pub fn json_get_field(v : base_codec::Json, key : String) -> Option[base_codec::Json] {
+  base_codec::json_get(v, key)
+}
+
+pub fn json_get_str(v : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+pub fn json_get_bool(v : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+pub fn json_get_num(v : base_codec::Json, key : String) -> Option[Double] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(n, _)) => Some(n)
+    _ => None
+  }
+}
+
+pub fn json_get_arr(v : base_codec::Json, key : String) -> Option[Array[base_codec::Json]] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Arr(a)) => Some(a)
+    _ => None
+  }
+}
+
+pub fn json_parse_opt(s : String) -> Option[base_codec::Json] {
+  match base_codec::json_parse(s) {
+    base_codec::JsonParseResult::Ok(v) => Some(v)
+    base_codec::JsonParseResult::Err(_) => None
+  }
+}
+
+pub fn json_stringify(v : base_codec::Json) -> String {
+  base_codec::json_stringify(v)
+}
+
+pub fn json_escape_str(s : String) -> String {
+  base_codec::json_stringify(base_codec::json_str(s))
+}

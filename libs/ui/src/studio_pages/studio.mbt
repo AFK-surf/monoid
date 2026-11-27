@@ -644,7 +644,6 @@ fn scene_controls(
             fn() { st.minify.get() },
             fn(v) { st.minify.set(v) },
             fn() { "Minify Wasm" },
-            small=true,
           )
           r1.box(fn(w) {
             w.words(Is("Minify Wasm"), look=words_look(13.0, weight=500, line=18.0)).ink(By(fn() { @sf.theme().p.text }))
@@ -660,7 +659,6 @@ fn scene_controls(
             fn() { st.strict.get() },
             fn(v) { st.strict.set(v) },
             fn() { "Strict Audit" },
-            small=true,
           )
           r2.box(fn(w) {
             w.words(Is("Strict Audit"), look=words_look(13.0, weight=500, line=18.0)).ink(By(fn() { @sf.theme().p.text }))
@@ -1097,7 +1095,6 @@ fn scene_glass(
             fn() { st.glass_refract.get() },
             fn(v) { st.glass_refract.set(v) },
             fn() { "Bezel Specular" },
-            small=true,
           )
           sw_left.box(fn(w) {
             w
@@ -1525,7 +1522,6 @@ fn scene_tokens(
             fn() { st.minify.get() },
             fn(v) { st.minify.set(v) },
             fn() { "Specimen Toggle" },
-            small=true,
           )
           @sf.toggle_chip_node(
             trow,

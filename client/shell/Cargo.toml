@@ -9,6 +9,13 @@ license.workspace = true
 crate-type = ["cdylib", "lib"]
 name = "stillfail_shell"
 
+[features]
+default = []
+# Image decoding, EXIF orientation, resizing, encoding and ThumbHash (`image.thumb`), enabled only for station
+# static libraries (`shell-station` and macOS `shell-apple-station`) to replace `station/native/mesh/src/thumbs.rs`.
+# Client apps (`shell`, `shell-apple`) build with default features and incur 0 KB of image codec overhead.
+station = ["dep:base64", "dep:image", "dep:thumbhash"]
+
 [dependencies]
 mesh-transport = { path = "../../libs/mesh-transport" }
 tokio = { version = "1", features = ["rt-multi-thread", "time", "sync", "macros", "net", "io-util"] }
@@ -63,6 +70,11 @@ opus-rs = "=0.1.42"
 # The phone's own adb session (src/adb.rs): pairing with its adbd and the TLS it speaks, on rustls with ring as here.
 libadb = { version = "=0.7.0", default-features = false, features = ["tokio", "pairing", "host-keys"] }
 embedded-io-async = "0.6"
+# Station image thumbnails and ThumbHashes (`image.thumb`, matching station/native/mesh/src/thumbs.rs): exact versions
+# so both produce byte-identical thumbnails and hashes.
+base64 = { version = "0.22", optional = true }
+image = { version = "=0.25.10", default-features = false, features = ["png", "jpeg", "webp"], optional = true }
+thumbhash = { version = "=0.1.0", optional = true }
 
 [dev-dependencies]
 # The test's clock (`start_paused`): a handshake given up and what it sends over ten minutes, counted in no time.

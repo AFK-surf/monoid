@@ -1,0 +1,1074 @@
+// macOS still.fail Helper (`station/src/helper/{app,files,grants}.ts`) and
+// Windows Elevation (`station/src/elevation/elevation.ts`) protocol & state machines.
+
+import "base_codec"
+import "station_ops"
+
+// ---------------------------------------------------------------------------
+// Helper App lifecycle & wire protocol (`station/src/helper/app.ts`)
+// ---------------------------------------------------------------------------
+
+pub let HELPER_APP : String = "still.fail Helper.app"
+pub let HELPER_START_MS : Int64 = 15_000.to_int64()
+pub let HELPER_COMING_BACK_MS : Int64 = 3_000.to_int64()
+pub let HELPER_REVIVALS_MAX : Int = 5
+pub let HELPER_REVIVALS_MS : Int64 = 60_000.to_int64()
+
+pub fn launch_failed_message(signal : Option[String], stderr : String) -> String {
+  let trimmed = trim_ascii(stderr)
+  if trimmed != "" {
+    return trimmed
+  }
+  match signal {
+    Some(sig) => "open was ended (" + sig + ")"
+    None => "open failed"
+  }
+}
+
+pub fn encode_helper_request(op : String, fields : Array[(String, base_codec::Json)], token : String) -> String {
+  let out : Array[(String, base_codec::Json)] = [("op", base_codec::json_str(op))]
+  for i in 0..<fields.length() {
+    out.push(fields[i])
+  }
+  out.push(("token", base_codec::json_str(token)))
+  base_codec::json_stringify(base_codec::json_obj(out)) + "\n"
+}
+
+pub enum HelperReply {
+  Ok(base_codec::Json)
+  Refused(String, Option[String], Option[String], Option[String], Option[String], Option[Int])
+  ParseError(String)
+}
+
+pub fn parse_helper_reply(line : String) -> HelperReply {
+  match base_codec::json_parse(line) {
+    base_codec::JsonParseResult::Err(e) => HelperReply::ParseError(e)
+    base_codec::JsonParseResult::Ok(v) => {
+      match base_codec::json_get(v, "error") {
+        Some(base_codec::Json::Str(err_msg)) => {
+          let code = opt_json_str(v, "code")
+          let grant = opt_json_str(v, "grant")
+          let state = opt_json_str(v, "state")
+          let top = opt_json_str(v, "top")
+          let pid = opt_json_int(v, "pid")
+          HelperReply::Refused(err_msg, code, grant, state, top, pid)
+        }
+        _ => HelperReply::Ok(v)
+      }
+    }
+  }
+}
+
+pub struct HelperAppState {
+  pub app : String
+  pub dir : String
+  pub socket : String
+  pub mut token : Option[String]
+  pub mut quitting : Bool
+  pub mut installed : Option[String]
+  pub revivals : Array[Int64]
+}
+
+pub fn HelperAppState::new(app : String, dir : String, token : Option[String]) -> HelperAppState {
+  HelperAppState::{
+    app: app,
+    dir: dir,
+    socket: dir + "/helper.sock",
+    token: token,
+    quitting: false,
+    installed: None,
+    revivals: [],
+  }
+}
+
+/// Records an unexpected exit at `now`; returns true if auto-revival should proceed,
+/// false when > HELPER_REVIVALS_MAX revivals happened within HELPER_REVIVALS_MS.
+pub fn HelperAppState::should_revive(self : HelperAppState, now : Int64) -> Bool {
+  if self.quitting {
+    return false
+  }
+  let kept : Array[Int64] = []
+  for i in 0..<self.revivals.length() {
+    if (now - self.revivals[i]) < HELPER_REVIVALS_MS {
+      kept.push(self.revivals[i])
+    }
+  }
+  kept.push(now)
+  while self.revivals.length() > 0 { let _ = self.revivals.pop() }
+  for i in 0..<kept.length() { self.revivals.push(kept[i]) }
+  self.revivals.length() <= HELPER_REVIVALS_MAX
+}
+
+// ---------------------------------------------------------------------------
+// Helper Grants (`station/src/helper/grants.ts`)
+// ---------------------------------------------------------------------------
+
+pub let GRANTS_AGAIN_MS : Int64 = (3 * 60_000).to_int64()
+pub let GRANTS_FRESH_MS : Int64 = 2_000.to_int64()
+pub let GRANTS_SHOWN_MS : Int64 = 30_000.to_int64()
+pub let LOCAL_NETWORK_SETTINGS_URL : String = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_LocalNetwork"
+
+pub enum GrantId {
+  Capture
+  Control
+  Documents
+  Desktop
+  Downloads
+  Removable
+  Network
+  LocalNetwork
+}
+
+pub fn all_grants() -> Array[GrantId] {
+  [
+    GrantId::Capture,
+    GrantId::Control,
+    GrantId::Documents,
+    GrantId::Desktop,
+    GrantId::Downloads,
+    GrantId::Removable,
+    GrantId::Network,
+    GrantId::LocalNetwork,
+  ]
+}
+
+pub fn grant_id_name(g : GrantId) -> String {
+  match g {
+    GrantId::Capture => "capture"
+    GrantId::Control => "control"
+    GrantId::Documents => "documents"
+    GrantId::Desktop => "desktop"
+    GrantId::Downloads => "downloads"
+    GrantId::Removable => "removable"
+    GrantId::Network => "network"
+    GrantId::LocalNetwork => "localNetwork"
+  }
+}
+
+pub fn parse_grant_id(s : String) -> Option[GrantId] {
+  match s {
+    "capture" => Some(GrantId::Capture)
+    "control" => Some(GrantId::Control)
+    "documents" => Some(GrantId::Documents)
+    "desktop" => Some(GrantId::Desktop)
+    "downloads" => Some(GrantId::Downloads)
+    "removable" => Some(GrantId::Removable)
+    "network" => Some(GrantId::Network)
+    "localNetwork" => Some(GrantId::LocalNetwork)
+    _ => None
+  }
+}
+
+pub fn is_screen_grant(g : GrantId) -> Bool {
+  match g {
+    GrantId::Capture => true
+    GrantId::Control => true
+    _ => false
+  }
+}
+
+pub enum GrantState {
+  Granted
+  Denied
+  Unknown
+}
+
+pub fn grant_state_name(s : GrantState) -> String {
+  match s {
+    GrantState::Granted => "granted"
+    GrantState::Denied => "denied"
+    GrantState::Unknown => "unknown"
+  }
+}
+
+pub fn parse_grant_state(s : String) -> GrantState {
+  if s == "granted" {
+    GrantState::Granted
+  } else if s == "denied" {
+    GrantState::Denied
+  } else {
+    GrantState::Unknown
+  }
+}
+
+pub enum WindowState {
+  Up
+  Closed
+  None
+  AlreadyGranted
+}
+
+pub fn window_state_name(w : WindowState) -> String {
+  match w {
+    WindowState::Up => "up"
+    WindowState::Closed => "closed"
+    WindowState::None => "none"
+    WindowState::AlreadyGranted => "granted"
+  }
+}
+
+/// Extracts the macOS app bundle name matching `/([^/]+)\.app\/Contents\//`, else `"stillfail-station"`.
+pub fn local_network_name(exec_path : String) -> String {
+  let needle = ".app/Contents/"
+  let nl = needle.length()
+  let n = exec_path.length()
+  let mut i = 0
+  while i + nl <= n {
+    let mut ok = true
+    for j in 0..<nl {
+      if (exec_path.code_unit_at(i + j) & 0xFF) != (needle.code_unit_at(j) & 0xFF) {
+        ok = false
+        break
+      }
+    }
+    if ok && i > 0 {
+      let mut start = i - 1
+      while start >= 0 && (exec_path.code_unit_at(start) & 0xFF) != 47 {
+        start = start - 1
+      }
+      let name = station_ops::ops_slice_str(exec_path, start + 1, i)
+      if name != "" {
+        return name
+      }
+    }
+    i = i + 1
+  }
+  "stillfail-station"
+}
+
+/// Replaces hex addresses (`0x7a68c38ff0`) with `0x…` so repeated LaunchServices errors dedup.
+pub fn without_addresses(said : String) -> String {
+  let n = said.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    if i + 2 < n &&
+    (said.code_unit_at(i) & 0xFF) == 48 &&
+    (said.code_unit_at(i + 1) & 0xFF) == 120 &&
+    is_hex_ascii(said.code_unit_at(i + 2) & 0xFF) {
+      sb.write_string("0x…")
+      i = i + 2
+      while i < n && is_hex_ascii(said.code_unit_at(i) & 0xFF) {
+        i = i + 1
+      }
+    } else {
+      sb.write_byte((said.code_unit_at(i) & 0xFF) as Byte)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+fn is_hex_ascii(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+pub struct HelperStatus {
+  pub capture : Bool
+  pub control : Bool
+  pub responsible_pid : Option[Int]
+  pub responsible_path : Option[String]
+  pub responsible_name : Option[String]
+  pub display_width : Int
+  pub display_height : Int
+  pub asking : Bool
+  pub asked : Array[String]
+  pub files : Map[String, String]
+}
+
+pub fn HelperStatus::empty() -> HelperStatus {
+  HelperStatus::{
+    capture: false,
+    control: false,
+    responsible_pid: None,
+    responsible_path: None,
+    responsible_name: None,
+    display_width: 0,
+    display_height: 0,
+    asking: false,
+    asked: [],
+    files: Map::new(),
+  }
+}
+
+pub fn parse_helper_status_json(v : base_codec::Json) -> HelperStatus {
+  let capture = opt_json_bool(v, "capture")
+  let control = opt_json_bool(v, "control")
+  let asking = opt_json_bool(v, "asking")
+  let asked : Array[String] = []
+  match base_codec::json_get(v, "asked") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Str(s) => asked.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let files : Map[String, String] = Map::new()
+  match base_codec::json_get(v, "files") {
+    Some(base_codec::Json::Obj(pairs)) => {
+      for i in 0..<pairs.length() {
+        let (k, jv) = pairs[i]
+        match jv {
+          base_codec::Json::Str(s) => files.set(k, s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let (rpid, rpath, rname) = match base_codec::json_get(v, "responsible") {
+    Some(rv) => (opt_json_int(rv, "pid"), opt_json_str(rv, "path"), opt_json_str(rv, "name"))
+    None => (None, None, None)
+  }
+  let (dw, dh) = match base_codec::json_get(v, "display") {
+    Some(dv) => (
+      match opt_json_int(dv, "width") { Some(x) => x; None => 0 },
+      match opt_json_int(dv, "height") { Some(x) => x; None => 0 },
+    )
+    None => (0, 0)
+  }
+  HelperStatus::{
+    capture: capture,
+    control: control,
+    responsible_pid: rpid,
+    responsible_path: rpath,
+    responsible_name: rname,
+    display_width: dw,
+    display_height: dh,
+    asking: asking,
+    asked: asked,
+    files: files,
+  }
+}
+
+pub fn grant_state_of(s : HelperStatus, grant : GrantId) -> GrantState {
+  match grant {
+    GrantId::Capture => if s.capture { GrantState::Granted } else { GrantState::Unknown }
+    GrantId::Control => if s.control { GrantState::Granted } else { GrantState::Unknown }
+    _ => {
+      match s.files.get("all") {
+        Some(a) => if a == "granted" { return GrantState::Granted }
+        None => ()
+      }
+      match s.files.get(grant_id_name(grant)) {
+        Some(said) => parse_grant_state(said)
+        None => GrantState::Unknown
+      }
+    }
+  }
+}
+
+pub struct GrantItemView {
+  pub grant : GrantId
+  pub state : GrantState
+}
+
+pub struct GrantsView {
+  pub grants : Array[GrantItemView]
+  pub asking : Array[GrantId]
+  pub screen : Bool
+  pub local_network_name : Option[String]
+}
+
+pub struct GrantRefused {
+  pub key : String
+}
+
+pub struct HelperGrantsState {
+  pub folders : Bool
+  pub exec_path : String
+  pub mut status : Option[HelperStatus]
+  pub mut checked_at : Int64
+  pub mut attempted_at : Int64
+  pub mut unanswered_key : Option[String]
+  pub mut lan : Option[GrantState]
+  pub asked_at : Map[String, Int64]
+  pub opened_urls : Array[String]
+}
+
+pub fn HelperGrantsState::new(folders : Bool, exec_path : String) -> HelperGrantsState {
+  HelperGrantsState::{
+    folders: folders,
+    exec_path: exec_path,
+    status: None,
+    checked_at: (-1000000000).to_int64(),
+    attempted_at: (-1000000000).to_int64(),
+    unanswered_key: None,
+    lan: None,
+    asked_at: Map::new(),
+    opened_urls: [],
+  }
+}
+
+pub fn HelperGrantsState::needs_refresh(self : HelperGrantsState, now : Int64, force : Bool) -> Bool {
+  if force {
+    return true
+  }
+  match self.unanswered_key {
+    Some(_) => (now - self.attempted_at) >= GRANTS_SHOWN_MS
+    None => (now - self.checked_at) >= GRANTS_FRESH_MS
+  }
+}
+
+pub fn HelperGrantsState::learn_status(self : HelperGrantsState, status : HelperStatus, now : Int64) -> Unit {
+  self.unanswered_key = None
+  self.checked_at = now
+  self.attempted_at = now
+  self.status = Some(status)
+}
+
+pub fn HelperGrantsState::learn_failure(self : HelperGrantsState, err : String, now : Int64) -> Bool {
+  self.attempted_at = now
+  let key = without_addresses(err)
+  let changed = match self.unanswered_key {
+    Some(prev) => prev != key
+    None => true
+  }
+  self.unanswered_key = Some(key)
+  changed
+}
+
+pub fn HelperGrantsState::learn_lan(self : HelperGrantsState, lan : Option[GrantState]) -> Unit {
+  self.lan = lan
+}
+
+pub fn HelperGrantsState::state_of(self : HelperGrantsState, grant : GrantId) -> GrantState {
+  match grant {
+    GrantId::LocalNetwork => match self.lan {
+      Some(s) => s
+      None => GrantState::Unknown
+    }
+    _ => match self.status {
+      Some(s) => grant_state_of(s, grant)
+      None => GrantState::Unknown
+    }
+  }
+}
+
+pub fn HelperGrantsState::view(self : HelperGrantsState) -> Option[GrantsView] {
+  let s = match self.status {
+    Some(x) => x
+    None => return None
+  }
+  let list : Array[GrantItemView] = []
+  let all = all_grants()
+  for i in 0..<all.length() {
+    let g = all[i]
+    let include_g = match g {
+      GrantId::LocalNetwork => !(self.lan is None)
+      _ => self.folders || is_screen_grant(g)
+    }
+    if include_g {
+      list.push(GrantItemView::{ grant: g, state: self.state_of(g) })
+    }
+  }
+  let asking : Array[GrantId] = []
+  if s.asking {
+    for i in 0..<s.asked.length() {
+      match parse_grant_id(s.asked[i]) {
+        Some(gid) => asking.push(gid)
+        None => ()
+      }
+    }
+  }
+  let ln_name = match self.lan {
+    Some(_) => Some(local_network_name(self.exec_path))
+    None => None
+  }
+  Some(GrantsView::{
+    grants: list,
+    asking: asking,
+    screen: s.capture && s.control,
+    local_network_name: ln_name,
+  })
+}
+
+/// Evaluates whether `show(grant)` should open the helper window, return `Up` (already asking),
+/// or return `Closed` (cooldown `GRANTS_AGAIN_MS` active when `!again`).
+pub fn HelperGrantsState::decide_show(
+  self : HelperGrantsState,
+  grant : GrantId,
+  again : Bool,
+  now : Int64,
+) -> WindowState {
+  let gname = grant_id_name(grant)
+  match self.status {
+    Some(s) => {
+      if s.asking && array_has_str(s.asked, gname) {
+        return WindowState::Up
+      }
+    }
+    None => ()
+  }
+  if !again {
+    match self.asked_at.get(gname) {
+      Some(last) => {
+        if (now - last) < GRANTS_AGAIN_MS {
+          return match self.status {
+            None => WindowState::Up
+            Some(_) => WindowState::Closed
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  self.asked_at.set(gname, now)
+  WindowState::Up
+}
+
+/// Request flow for `grant`, including `localNetwork` System Settings and disk-mount check for removable/network.
+pub fn HelperGrantsState::request_grant(
+  self : HelperGrantsState,
+  grant : GrantId,
+  again : Bool,
+  mounted_disk : Option[String],
+  now : Int64,
+) -> Result[(WindowState, Bool), GrantRefused] {
+  match grant {
+    GrantId::LocalNetwork => {
+      let screen_ok = match self.status {
+        Some(s) => s.capture && s.control
+        None => false
+      }
+      match self.lan {
+        Some(GrantState::Granted) => return Ok((WindowState::AlreadyGranted, screen_ok))
+        _ => ()
+      }
+      if !again {
+        match self.asked_at.get("localNetwork") {
+          Some(last) => if (now - last) < GRANTS_AGAIN_MS { return Ok((WindowState::Closed, screen_ok)) }
+          None => ()
+        }
+      }
+      self.asked_at.set("localNetwork", now)
+      self.opened_urls.push(LOCAL_NETWORK_SETTINGS_URL)
+      return Ok((WindowState::Up, screen_ok))
+    }
+    _ => ()
+  }
+  if !self.folders && !is_screen_grant(grant) {
+    return Err(GrantRefused::{ key: "station.permissions.unknown" })
+  }
+  let s = match self.status {
+    Some(x) => x
+    None => return Err(GrantRefused::{ key: "station.permissions.noHelper" })
+  }
+  let screen_ok = s.capture && s.control
+  match grant_state_of(s, grant) {
+    GrantState::Granted => return Ok((WindowState::AlreadyGranted, screen_ok))
+    _ => ()
+  }
+  match grant {
+    GrantId::Removable => {
+      if mounted_disk is None {
+        return Err(GrantRefused::{ key: "station.permissions.noDisk" })
+      }
+    }
+    GrantId::Network => {
+      if mounted_disk is None {
+        return Err(GrantRefused::{ key: "station.permissions.noNetworkDisk" })
+      }
+    }
+    _ => ()
+  }
+  let w = self.decide_show(grant, again, now)
+  Ok((w, screen_ok))
+}
+
+// ---------------------------------------------------------------------------
+// Helper Files authorization state (`station/src/helper/files.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct FolderAccess {
+  pub grant : String
+  pub state : GrantState
+}
+
+pub struct HelperFilesState {
+  pub home : String
+  pub grant_of : Map[String, String]
+  pub states : Map[String, GrantState]
+}
+
+pub fn HelperFilesState::new(home : String) -> HelperFilesState {
+  HelperFilesState::{
+    home: home,
+    grant_of: Map::new(),
+    states: Map::new(),
+  }
+}
+
+fn ascii_lower_str(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i) & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(c as Byte)
+    }
+  }
+  sb.to_string()
+}
+
+fn home_grant_for(home : String, top : String) -> Option[String] {
+  let low = ascii_lower_str(top)
+  let hlow = ascii_lower_str(home)
+  if low == hlow + "/documents" {
+    Some("documents")
+  } else if low == hlow + "/desktop" {
+    Some("desktop")
+  } else if low == hlow + "/downloads" {
+    Some("downloads")
+  } else {
+    None
+  }
+}
+
+pub fn HelperFilesState::known(self : HelperFilesState, top : String) -> Option[FolderAccess] {
+  let grant_opt = match self.grant_of.get(top) {
+    Some(g) => Some(g)
+    None => home_grant_for(self.home, top)
+  }
+  match grant_opt {
+    Some(g) => match self.states.get(g) {
+      Some(st) => Some(FolderAccess::{ grant: g, state: st })
+      None => None
+    }
+    None => None
+  }
+}
+
+pub fn HelperFilesState::learn(self : HelperFilesState, grant : String, state : GrantState) -> Bool {
+  match self.states.get(grant) {
+    Some(prev) => if grant_state_name(prev) == grant_state_name(state) { return false }
+    None => ()
+  }
+  self.states.set(grant, state)
+  true
+}
+
+pub fn HelperFilesState::confirm_path(self : HelperFilesState, path : String) -> Bool {
+  let low = ascii_lower_str(path)
+  let hlow = ascii_lower_str(self.home)
+  let mut changed = false
+  let pairs : Array[(String, String)] = [
+    (hlow + "/documents", "documents"),
+    (hlow + "/desktop", "desktop"),
+    (hlow + "/downloads", "downloads"),
+  ]
+  for i in 0..<pairs.length() {
+    let (prefix, grant) = pairs[i]
+    if low == prefix || low.starts_with(prefix + "/") {
+      if self.learn(grant, GrantState::Granted) {
+        changed = true
+      }
+    }
+  }
+  changed
+}
+
+pub fn HelperFilesState::learn_refusal(
+  self : HelperFilesState,
+  code : String,
+  grant : Option[String],
+  state : Option[String],
+  top : Option[String],
+) -> Bool {
+  if code != "grant" {
+    return false
+  }
+  match (grant, state) {
+    (Some(g), Some(st)) => {
+      match top {
+        Some(t) => if t != "" { self.grant_of.set(t, g) }
+        None => ()
+      }
+      self.learn(g, parse_grant_state(st))
+    }
+    _ => false
+  }
+}
+
+pub fn files_window_words(lang : station_ops::Lang) -> base_codec::Json {
+  let w = fn(k : String) -> base_codec::Json {
+    base_codec::json_str(station_ops::tr(lang, "station.helper.window." + k, []))
+  }
+  base_codec::json_obj([
+    ("title", w("filesTitle")),
+    ("subtitle", w("filesSubtitle")),
+    ("documents", w("documents")),
+    ("documentsWhy", w("documentsWhy")),
+    ("desktop", w("desktop")),
+    ("desktopWhy", w("desktopWhy")),
+    ("downloads", w("downloads")),
+    ("downloadsWhy", w("downloadsWhy")),
+    ("removable", w("removable")),
+    ("removableWhy", w("removableWhy")),
+    ("network", w("network")),
+    ("networkWhy", w("networkWhy")),
+    ("deniedWhy", w("deniedWhy")),
+    ("allow", w("allow")),
+    ("done", w("done")),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// Cross-platform / Windows Elevation State Machine (`station/src/elevation/elevation.ts`)
+// ---------------------------------------------------------------------------
+
+pub let ELEVATION_ASK_MS : Int64 = 120_000.to_int64()
+pub let ELEVATION_RESTART_S : Int = 180
+pub let ELEVATION_APPLY_MS : Int64 = 60_000.to_int64()
+
+pub enum ElevationFailure {
+  Declined
+  Unanswered
+  NotStarted
+  Error
+}
+
+pub fn elevation_failure_name(f : ElevationFailure) -> String {
+  match f {
+    ElevationFailure::Declined => "declined"
+    ElevationFailure::Unanswered => "unanswered"
+    ElevationFailure::NotStarted => "notStarted"
+    ElevationFailure::Error => "error"
+  }
+}
+
+pub fn parse_elevation_failure(s : String) -> Option[ElevationFailure] {
+  match s {
+    "declined" => Some(ElevationFailure::Declined)
+    "unanswered" => Some(ElevationFailure::Unanswered)
+    "notStarted" => Some(ElevationFailure::NotStarted)
+    "error" => Some(ElevationFailure::Error)
+    _ => None
+  }
+}
+
+pub enum ElevationStep {
+  Asking
+  Applying
+  Restarting
+}
+
+pub fn elevation_step_name(s : ElevationStep) -> String {
+  match s {
+    ElevationStep::Asking => "asking"
+    ElevationStep::Applying => "applying"
+    ElevationStep::Restarting => "restarting"
+  }
+}
+
+pub fn parse_elevation_step(s : String) -> Option[ElevationStep] {
+  match s {
+    "asking" => Some(ElevationStep::Asking)
+    "applying" => Some(ElevationStep::Applying)
+    "restarting" => Some(ElevationStep::Restarting)
+    _ => None
+  }
+}
+
+pub struct ElevationKept {
+  pub want : Bool
+  pub at : Int64
+  pub step : Option[ElevationStep]
+  pub failed : Option[ElevationFailure]
+  pub message : Option[String]
+}
+
+pub struct ElevationView {
+  pub on : Bool
+  pub elevated : Bool
+  pub can_elevate : Bool
+  pub step : Option[ElevationStep]
+  pub want : Option[Bool]
+  pub failed : Option[ElevationFailure]
+  pub message : Option[String]
+  pub manage : Bool
+}
+
+pub enum ElevationRefused {
+  Busy
+  NotAdmin
+  NotInstalled
+}
+
+/// Strips optional UTF-8 BOM (0xEF 0xBB 0xBF) written by PowerShell before parsing JSON.
+pub fn strip_utf8_bom(text : String) -> String {
+  if text.length() >= 3 &&
+  (text.code_unit_at(0) & 0xFF) == 0xEF &&
+  (text.code_unit_at(1) & 0xFF) == 0xBB &&
+  (text.code_unit_at(2) & 0xFF) == 0xBF {
+    station_ops::ops_slice_str(text, 3, text.length())
+  } else {
+    text
+  }
+}
+
+pub fn parse_elevation_kept_json(text : String) -> Option[ElevationKept] {
+  let clean = strip_utf8_bom(text)
+  match base_codec::json_parse(clean) {
+    base_codec::JsonParseResult::Ok(v) => {
+      let want = match base_codec::json_get(v, "want") {
+        Some(base_codec::Json::Bool(b)) => b
+        _ => return None
+      }
+      let at = match base_codec::json_get(v, "at") {
+        Some(base_codec::Json::Num(d, _)) => d.to_int64()
+        _ => 0.to_int64()
+      }
+      let step = match opt_json_str(v, "step") {
+        Some(s) => parse_elevation_step(s)
+        None => None
+      }
+      let failed = match opt_json_str(v, "failed") {
+        Some(s) => parse_elevation_failure(s)
+        None => None
+      }
+      let message = opt_json_str(v, "message")
+      Some(ElevationKept::{ want: want, at: at, step: step, failed: failed, message: message })
+    }
+    base_codec::JsonParseResult::Err(_) => None
+  }
+}
+
+pub struct ElevationState {
+  pub mut elevated : Bool
+  pub mut admin : Bool
+  pub mut installed : Bool
+  pub mut on : Bool
+  pub mut kept : Option[ElevationKept]
+  pub mut apply_deadline : Option[Int64]
+}
+
+pub fn ElevationState::new(elevated : Bool, admin : Bool, installed : Bool, on : Bool) -> ElevationState {
+  ElevationState::{
+    elevated: elevated,
+    admin: admin,
+    installed: installed,
+    on: on,
+    kept: None,
+    apply_deadline: None,
+  }
+}
+
+/// Reconciles persisted `run/elevation.json` on station startup.
+pub fn ElevationState::reconcile_on_start(self : ElevationState, now : Int64) -> Unit {
+  match self.kept {
+    Some(k) => {
+      match k.step {
+        Some(ElevationStep::Restarting) => {
+          if k.want != self.elevated {
+            self.kept = Some(ElevationKept::{
+              want: k.want,
+              at: now,
+              step: None,
+              failed: Some(ElevationFailure::NotStarted),
+              message: None,
+            })
+          } else {
+            self.kept = None
+          }
+        }
+        Some(_) => self.kept = None
+        None => ()
+      }
+    }
+    None => ()
+  }
+}
+
+pub fn ElevationState::view(self : ElevationState, manage : Bool) -> ElevationView {
+  let (step, want, failed, message) = match self.kept {
+    Some(k) => {
+      let w = if !(k.step is None) || !(k.failed is None) { Some(k.want) } else { None }
+      (k.step, w, k.failed, k.message)
+    }
+    None => (None, None, None, None)
+  }
+  ElevationView::{
+    on: self.on,
+    elevated: self.elevated,
+    can_elevate: self.elevated || self.admin,
+    step: step,
+    want: want,
+    failed: failed,
+    message: message,
+    manage: manage,
+  }
+}
+
+/// Gate + begin elevation change; returns `(apply_deadline, ask_script)` on success.
+pub fn ElevationState::begin_change(
+  self : ElevationState,
+  on : Bool,
+  apply_script_path : String,
+  now : Int64,
+) -> Result[(Int64, String), ElevationRefused] {
+  match self.kept {
+    Some(k) => if !(k.step is None) { return Err(ElevationRefused::Busy) }
+    None => ()
+  }
+  if !self.elevated && !self.admin {
+    return Err(ElevationRefused::NotAdmin)
+  }
+  if !self.installed {
+    return Err(ElevationRefused::NotInstalled)
+  }
+  self.kept = Some(ElevationKept::{
+    want: on,
+    at: now,
+    step: Some(ElevationStep::Asking),
+    failed: None,
+    message: None,
+  })
+  self.apply_deadline = None
+  Ok((now + ELEVATION_ASK_MS, ask_elevation_script(apply_script_path, !self.elevated)))
+}
+
+/// Handles exit of the UAC prompt launcher PowerShell (`0` = launched, `4` = declined, else error).
+pub fn ElevationState::on_prompt_exit(self : ElevationState, code : Int, now : Int64) -> Unit {
+  let k = match self.kept {
+    Some(x) => x
+    None => return
+  }
+  if code == 4 {
+    match k.step {
+      Some(ElevationStep::Asking) => {
+        self.kept = Some(ElevationKept::{
+          want: k.want,
+          at: now,
+          step: None,
+          failed: Some(ElevationFailure::Declined),
+          message: None,
+        })
+      }
+      _ => ()
+    }
+    return
+  }
+  if code != 0 {
+    match k.step {
+      Some(ElevationStep::Asking) => {
+        self.kept = Some(ElevationKept::{
+          want: k.want,
+          at: now,
+          step: None,
+          failed: Some(ElevationFailure::Error),
+          message: None,
+        })
+      }
+      _ => ()
+    }
+    return
+  }
+  self.apply_deadline = Some(now + ELEVATION_APPLY_MS)
+}
+
+pub fn ElevationState::on_ask_timeout(self : ElevationState, now : Int64) -> Unit {
+  match self.kept {
+    Some(k) => {
+      match k.step {
+        Some(ElevationStep::Asking) => {
+          self.kept = Some(ElevationKept::{
+            want: k.want,
+            at: now,
+            step: None,
+            failed: Some(ElevationFailure::Unanswered),
+            message: None,
+          })
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+}
+
+/// Checks apply deadline expiry once prompt returned 0 (`asking`/`applying` past `APPLY_MS` -> `Error`).
+pub fn ElevationState::check_apply_expiry(self : ElevationState, now : Int64) -> Bool {
+  let deadline = match self.apply_deadline {
+    Some(d) => d
+    None => return false
+  }
+  if now < deadline {
+    return false
+  }
+  match self.kept {
+    Some(k) => {
+      let stuck = match k.step {
+        Some(ElevationStep::Asking) => true
+        Some(ElevationStep::Applying) => true
+        _ => false
+      }
+      if stuck {
+        self.kept = Some(ElevationKept::{
+          want: k.want,
+          at: now,
+          step: None,
+          failed: Some(ElevationFailure::Error),
+          message: None,
+        })
+        self.apply_deadline = None
+        return true
+      }
+      false
+    }
+    None => false
+  }
+}
+
+pub fn ask_elevation_script(apply_path : String, elevate : Bool) -> String {
+  let verb = if elevate { " -Verb RunAs" } else { "" }
+  let args = "-ArgumentList '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', " + ps_quote("\"" + apply_path + "\"")
+  "$ps = (Get-Process -Id $PID).Path\r\ntry {\r\n  Start-Process $ps " + args +
+  " -WindowStyle Hidden" + verb +
+  " -ErrorAction Stop | Out-Null\r\n  exit 0\r\n} catch {\r\n  $e = $_.Exception; while ($e -and -not ($e -is [ComponentModel.Win32Exception])) { $e = $e.InnerException }\r\n  if ($e -and $e.NativeErrorCode -eq 1223) { exit 4 }\r\n  exit 5\r\n}"
+}
+
+// ---------------------------------------------------------------------------
+// Internal JSON & string helpers
+// ---------------------------------------------------------------------------
+
+fn opt_json_str(v : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn opt_json_int(v : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Num(d, _)) => Some(d.to_int())
+    _ => None
+  }
+}
+
+fn opt_json_bool(v : base_codec::Json, key : String) -> Bool {
+  match base_codec::json_get(v, key) {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+}
+
+fn trim_ascii(s : String) -> String {
+  let n = s.length()
+  let mut start = 0
+  while start < n {
+    let c = s.code_unit_at(start) & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 { start = start + 1 } else { break }
+  }
+  let mut end = n
+  while end > start {
+    let c = s.code_unit_at(end - 1) & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 { end = end - 1 } else { break }
+  }
+  station_ops::ops_slice_str(s, start, end)
+}

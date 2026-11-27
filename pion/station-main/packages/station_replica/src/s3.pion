@@ -1,0 +1,840 @@
+// Zero-dependency AWS SigV4 S3/R2 client, XML helpers, and S3 privacy-preserving HMAC tag helpers.
+// 1:1 aligned with `station/src/replica/s3.ts`.
+
+import "base_codec"
+import "crypto"
+
+pub let multipart_threshold : Int = 16 * 1024 * 1024
+pub let multipart_part_size : Int = 8 * 1024 * 1024
+pub let delete_objects_batch : Int = 1000
+
+fn upper_hex_char(n : Int) -> Byte {
+  let d = n & 0x0F
+  (if d < 10 { 48 + d } else { 65 + d - 10 }).to_byte()
+}
+
+/// RFC 3986 percent-encoding (preserves unreserved chars `A-Z a-z 0-9 - _ . ~`).
+pub fn rfc3986_encode(s : String) -> String {
+  let b = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let unreserved = (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 45 ||
+    c == 95 ||
+    c == 46 ||
+    c == 126
+    if unreserved {
+      sb.write_byte(c.to_byte())
+    } else {
+      sb.write_byte(37.to_byte()) // '%'
+      sb.write_byte(upper_hex_char(c >> 4))
+      sb.write_byte(upper_hex_char(c & 0x0F))
+    }
+  }
+  sb.to_string()
+}
+
+pub fn encode_s3_path(key : String) -> String {
+  let sb = StringBuilder::new()
+  let mut start = 0
+  let n = key.length()
+  let mut first = true
+  for i in 0..<(n + 1) {
+    if i == n || key.code_unit_at(i) == 47 {
+      if !first {
+        sb.write_byte(47.to_byte())
+      }
+      first = false
+      sb.write_string(rfc3986_encode(key.slice(start, i)))
+      start = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+fn pad2(n : Int64) -> String {
+  let s = n.to_string()
+  if s.length() < 2 { "0" + s } else { s }
+}
+
+fn pad4(n : Int64) -> String {
+  let s = n.to_string()
+  if s.length() == 1 {
+    "000" + s
+  } else if s.length() == 2 {
+    "00" + s
+  } else if s.length() == 3 {
+    "0" + s
+  } else {
+    s
+  }
+}
+
+pub struct AmzDate {
+  pub amz_date : String
+  pub date_stamp : String
+}
+
+fn floor_div64(a : Int64, b : Int64) -> Int64 {
+  let q = a / b
+  let r = a % b
+  if r != 0.to_int64() && ((r < 0.to_int64()) != (b < 0.to_int64())) { q - 1.to_int64() } else { q }
+}
+
+/// Converts epoch ms to AWS SigV4 `{ amz_date: YYYYMMDDTHHMMSSZ, date_stamp: YYYYMMDD }` using pure UTC math.
+pub fn format_amz_date(ms : Int64) -> AmzDate {
+  let total_sec = floor_div64(ms, 1000.to_int64())
+  let sec_of_day = ((total_sec % 86400.to_int64()) + 86400.to_int64()) % 86400.to_int64()
+  let z = floor_div64(total_sec, 86400.to_int64()) + 719468.to_int64()
+  let era = floor_div64(if z >= 0.to_int64() { z } else { z - 146096.to_int64() }, 146097.to_int64())
+  let doe = z - era * 146097.to_int64()
+  let yoe = (doe - doe / 1460.to_int64() + doe / 36524.to_int64() - doe / 146096.to_int64()) / 365.to_int64()
+  let y = yoe + era * 400.to_int64()
+  let doy = doe - (365.to_int64() * yoe + yoe / 4.to_int64() - yoe / 100.to_int64())
+  let mp = (5.to_int64() * doy + 2.to_int64()) / 153.to_int64()
+  let d = doy - (153.to_int64() * mp + 2.to_int64()) / 5.to_int64() + 1.to_int64()
+  let m = mp + (if mp < 10.to_int64() { 3.to_int64() } else { -9.to_int64() })
+  let year = y + (if m <= 2.to_int64() { 1.to_int64() } else { 0.to_int64() })
+  let hh = sec_of_day / 3600.to_int64()
+  let mm = (sec_of_day % 3600.to_int64()) / 60.to_int64()
+  let ss = sec_of_day % 60.to_int64()
+  let date_stamp = pad4(year) + pad2(m) + pad2(d)
+  AmzDate::{
+    date_stamp: date_stamp,
+    amz_date: date_stamp + "T" + pad2(hh) + pad2(mm) + pad2(ss) + "Z",
+  }
+}
+
+pub fn escape_xml(s : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c == 38 {
+      sb.write_string("&amp;")
+    } else if c == 60 {
+      sb.write_string("&lt;")
+    } else if c == 62 {
+      sb.write_string("&gt;")
+    } else if c == 34 {
+      sb.write_string("&quot;")
+    } else if c == 39 {
+      sb.write_string("&apos;")
+    } else if c == 13 {
+      sb.write_string("&#13;")
+    } else {
+      sb.write_byte(c.to_byte())
+    }
+  }
+  sb.to_string()
+}
+
+pub fn unescape_xml(s : String) -> String {
+  let sb = StringBuilder::new()
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    if s.code_unit_at(i) == 38 {
+      let mut semi = -1
+      let lim = if i + 12 < n { i + 12 } else { n }
+      for j in (i + 1)..<lim {
+        if s.code_unit_at(j) == 59 {
+          semi = j
+          break
+        }
+      }
+      if semi > i + 1 {
+        let ent = s.slice(i + 1, semi)
+        if ent == "amp" {
+          sb.write_byte(38.to_byte())
+          i = semi + 1
+          continue
+        } else if ent == "lt" {
+          sb.write_byte(60.to_byte())
+          i = semi + 1
+          continue
+        } else if ent == "gt" {
+          sb.write_byte(62.to_byte())
+          i = semi + 1
+          continue
+        } else if ent == "quot" {
+          sb.write_byte(34.to_byte())
+          i = semi + 1
+          continue
+        } else if ent == "apos" {
+          sb.write_byte(39.to_byte())
+          i = semi + 1
+          continue
+        } else if ent.length() > 2 && ent.slice(0, 2) == "#x" {
+          let mut cp = 0
+          let mut ok = true
+          for k in 2..<ent.length() {
+            let c = ent.code_unit_at(k)
+            let d = if c >= 48 && c <= 57 {
+              c - 48
+            } else if c >= 97 && c <= 102 {
+              c - 97 + 10
+            } else if c >= 65 && c <= 70 {
+              c - 65 + 10
+            } else {
+              ok = false
+              0
+            }
+            cp = (cp << 4) | d
+          }
+          if ok && cp > 0 && cp < 0x80 {
+            sb.write_byte(cp.to_byte())
+            i = semi + 1
+            continue
+          }
+        } else if ent.length() > 1 && ent.code_unit_at(0) == 35 {
+          let mut cp = 0
+          let mut ok = true
+          for k in 1..<ent.length() {
+            let c = ent.code_unit_at(k)
+            if c >= 48 && c <= 57 {
+              cp = cp * 10 + (c - 48)
+            } else {
+              ok = false
+            }
+          }
+          if ok && cp > 0 && cp < 0x80 {
+            sb.write_byte(cp.to_byte())
+            i = semi + 1
+            continue
+          }
+        }
+      }
+    }
+    sb.write_byte(s.code_unit_at(i).to_byte())
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn is_xml_ws(c : Int) -> Bool {
+  c == 32 || c == 9 || c == 10 || c == 13
+}
+
+fn is_xml_ns_char(c : Int) -> Bool {
+  (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 46 || c == 45
+}
+
+fn match_xml_tag_at(xml : String, pos : Int, tag : String, is_close : Bool) -> Int {
+  let n = xml.length()
+  let mut i = pos
+  if i >= n || xml.code_unit_at(i) != 60 {
+    return -1
+  }
+  i = i + 1
+  if is_close {
+    if i >= n || xml.code_unit_at(i) != 47 {
+      return -1
+    }
+    i = i + 1
+  }
+  // Optional namespace prefix `[A-Za-z0-9_.-]+:`
+  let start = i
+  let mut colon = -1
+  while i < n && is_xml_ns_char(xml.code_unit_at(i)) {
+    i = i + 1
+  }
+  if i < n && xml.code_unit_at(i) == 58 && i > start {
+    colon = i
+  }
+  let name_start = if colon >= 0 { colon + 1 } else { start }
+  if name_start + tag.length() > n || xml.slice(name_start, name_start + tag.length()) != tag {
+    return -1
+  }
+  let after = name_start + tag.length()
+  if after >= n {
+    return -1
+  }
+  let c = xml.code_unit_at(after)
+  if is_close {
+    if c == 62 { after + 1 } else { -1 }
+  } else {
+    if c != 62 && !is_xml_ws(c) {
+      return -1
+    }
+    let mut gt = after
+    while gt < n && xml.code_unit_at(gt) != 62 {
+      gt = gt + 1
+    }
+    if gt < n { gt + 1 } else { -1 }
+  }
+}
+
+/// Extracts all occurrences of `<tag>...</tag>` (including namespace prefixes `<ns:tag>` and multiline attrs).
+pub fn extract_all_xml_tags(xml : String, tag : String) -> Array[String] {
+  let out : Array[String] = []
+  let n = xml.length()
+  let mut pos = 0
+  while pos < n {
+    let mut body_start = -1
+    let mut i = pos
+    while i < n {
+      if xml.code_unit_at(i) == 60 {
+        let bs = match_xml_tag_at(xml, i, tag, false)
+        if bs >= 0 {
+          body_start = bs
+          break
+        }
+      }
+      i = i + 1
+    }
+    if body_start < 0 {
+      break
+    }
+    let mut close_start = -1
+    let mut close_end = -1
+    let mut k = body_start
+    while k < n {
+      if xml.code_unit_at(k) == 60 {
+        let ce = match_xml_tag_at(xml, k, tag, true)
+        if ce >= 0 {
+          close_start = k
+          close_end = ce
+          break
+        }
+      }
+      k = k + 1
+    }
+    if close_start < 0 {
+      break
+    }
+    out.push(unescape_xml(xml.slice(body_start, close_start)))
+    pos = close_end
+  }
+  out
+}
+
+pub fn extract_xml_tag(xml : String, tag : String) -> Option[String] {
+  let all = extract_all_xml_tags(xml, tag)
+  if all.length() > 0 { Some(all[0]) } else { None }
+}
+
+pub struct SignedS3Request {
+  pub url : String
+  pub headers : Map[String, String]
+}
+
+struct ParsedEndpoint {
+  scheme : String
+  host : String
+  hostname : String
+  port : String
+  base_path : String
+}
+
+fn parse_s3_endpoint(endpoint : String) -> ParsedEndpoint {
+  let lower = ascii_lower(endpoint)
+  let is_https = lower.length() >= 8 && lower.slice(0, 8) == "https://"
+  let scheme = if is_https { "https:" } else { "http:" }
+  let rest = if is_https { endpoint.slice(8, endpoint.length()) } else { endpoint.slice(7, endpoint.length()) }
+  let mut slash = rest.length()
+  for i in 0..<rest.length() {
+    if rest.code_unit_at(i) == 47 {
+      slash = i
+      break
+    }
+  }
+  let host = rest.slice(0, slash)
+  let raw_path = rest.slice(slash, rest.length())
+  let mut end_p = raw_path.length()
+  while end_p > 0 && raw_path.code_unit_at(end_p - 1) == 47 {
+    end_p = end_p - 1
+  }
+  let base_path = raw_path.slice(0, end_p)
+  let mut hostname = host
+  let mut port = ""
+  if host.length() > 0 && host.code_unit_at(0) == 91 {
+    for i in 1..<host.length() {
+      if host.code_unit_at(i) == 93 {
+        hostname = host.slice(0, i + 1)
+        if i + 2 <= host.length() && host.code_unit_at(i + 1) == 58 {
+          port = host.slice(i + 2, host.length())
+        }
+        break
+      }
+    }
+  } else {
+    for i in 0..<host.length() {
+      if host.code_unit_at(i) == 58 {
+        hostname = host.slice(0, i)
+        port = host.slice(i + 1, host.length())
+        break
+      }
+    }
+  }
+  ParsedEndpoint::{
+    scheme: scheme,
+    host: host,
+    hostname: hostname,
+    port: port,
+    base_path: base_path,
+  }
+}
+
+/// Computes URL and AWS SigV4 signed headers for an S3 request.
+pub fn sign_s3_request(
+  target : NormalizedS3Target,
+  method_name : String,
+  key : String,
+  query : Map[String, String],
+  body : Bytes,
+  extra_headers : Map[String, String],
+  now_ms : Int64,
+) -> SignedS3Request {
+  let base = parse_s3_endpoint(target.endpoint)
+  let mut start_k = 0
+  while start_k < key.length() && key.code_unit_at(start_k) == 47 {
+    start_k = start_k + 1
+  }
+  let clean_key = key.slice(start_k, key.length())
+  let mut host_header = ""
+  let mut url_origin = ""
+  let mut canonical_path = ""
+  if target.force_path_style {
+    host_header = base.host
+    url_origin = base.scheme + "//" + base.host
+    canonical_path = if clean_key == "" {
+      base.base_path + "/" + rfc3986_encode(target.bucket)
+    } else {
+      base.base_path + "/" + rfc3986_encode(target.bucket) + "/" + encode_s3_path(clean_key)
+    }
+  } else {
+    let vhost = target.bucket + "." + base.hostname
+    host_header = if base.port != "" { vhost + ":" + base.port } else { vhost }
+    url_origin = base.scheme + "//" + host_header
+    canonical_path = if clean_key == "" {
+      base.base_path + "/"
+    } else {
+      base.base_path + "/" + encode_s3_path(clean_key)
+    }
+  }
+  if canonical_path.length() == 0 || canonical_path.code_unit_at(0) != 47 {
+    canonical_path = "/" + canonical_path
+  }
+  // Canonical query string (sorted by encoded key, then encoded value).
+  let qpairs : Array[(String, String)] = []
+  let qkeys = query.keys()
+  for i in 0..<qkeys.length() {
+    let k = qkeys[i]
+    match query.get(k) {
+      Some(v) => qpairs.push((rfc3986_encode(k), rfc3986_encode(v)))
+      None => ()
+    }
+  }
+  let qn = qpairs.length()
+  let mut gap = qn / 2
+  while gap > 0 {
+    for i in gap..<qn {
+      let item = qpairs[i]
+      let mut j = i
+      while j >= gap {
+        let prev = qpairs[j - gap]
+        let c = str_cmp(prev.0, item.0)
+        let gt = if c != 0 { c > 0 } else { str_cmp(prev.1, item.1) > 0 }
+        if !gt {
+          break
+        }
+        qpairs[j] = prev
+        j = j - gap
+      }
+      qpairs[j] = item
+    }
+    gap = gap / 2
+  }
+  let qsb = StringBuilder::new()
+  for i in 0..<qpairs.length() {
+    if i > 0 {
+      qsb.write_byte(38.to_byte())
+    }
+    qsb.write_string(qpairs[i].0)
+    qsb.write_byte(61.to_byte())
+    qsb.write_string(qpairs[i].1)
+  }
+  let canonical_query = qsb.to_string()
+  let amz = format_amz_date(now_ms)
+  let payload_hash = crypto::sha256_hex(body)
+  let lower_headers : Map[String, String] = Map::new()
+  lower_headers.set("host", host_header)
+  lower_headers.set("x-amz-content-sha256", payload_hash)
+  lower_headers.set("x-amz-date", amz.amz_date)
+  let ekeys = extra_headers.keys()
+  for i in 0..<ekeys.length() {
+    let k = ekeys[i]
+    match extra_headers.get(k) {
+      Some(v) => lower_headers.set(ascii_lower(k), trim_ascii(v))
+      None => ()
+    }
+  }
+  let hkeys = sort_strings(lower_headers.keys())
+  let ch_sb = StringBuilder::new()
+  let sh_sb = StringBuilder::new()
+  for i in 0..<hkeys.length() {
+    let k = hkeys[i]
+    let v = match lower_headers.get(k) {
+      Some(s) => s
+      None => ""
+    }
+    ch_sb.write_string(k)
+    ch_sb.write_byte(58.to_byte())
+    ch_sb.write_string(v)
+    ch_sb.write_byte(10.to_byte())
+    if i > 0 {
+      sh_sb.write_byte(59.to_byte())
+    }
+    sh_sb.write_string(k)
+  }
+  let signed_headers = sh_sb.to_string()
+  let canonical_request = method_name +
+  "\n" +
+  canonical_path +
+  "\n" +
+  canonical_query +
+  "\n" +
+  ch_sb.to_string() +
+  "\n" +
+  signed_headers +
+  "\n" +
+  payload_hash
+  let cred_scope = amz.date_stamp + "/" + target.region + "/s3/aws4_request"
+  let string_to_sign = "AWS4-HMAC-SHA256\n" + amz.amz_date + "\n" + cred_scope + "\n" + crypto::sha256_hex(canonical_request.to_bytes())
+  let k_date = crypto::hmac_sha256(("AWS4" + target.secret_access_key).to_bytes(), amz.date_stamp.to_bytes())
+  let k_region = crypto::hmac_sha256(k_date, target.region.to_bytes())
+  let k_service = crypto::hmac_sha256(k_region, "s3".to_bytes())
+  let k_signing = crypto::hmac_sha256(k_service, "aws4_request".to_bytes())
+  let signature = crypto::hmac_sha256_hex(k_signing, string_to_sign.to_bytes())
+  let headers : Map[String, String] = Map::new()
+  for i in 0..<ekeys.length() {
+    let k = ekeys[i]
+    match extra_headers.get(k) {
+      Some(v) => headers.set(k, v)
+      None => ()
+    }
+  }
+  headers.set("x-amz-content-sha256", payload_hash)
+  headers.set("x-amz-date", amz.amz_date)
+  headers.set(
+    "authorization",
+    "AWS4-HMAC-SHA256 Credential=" +
+    target.access_key_id +
+    "/" +
+    cred_scope +
+    ", SignedHeaders=" +
+    signed_headers +
+    ", Signature=" +
+    signature,
+  )
+  let url = if canonical_query == "" {
+    url_origin + canonical_path
+  } else {
+    url_origin + canonical_path + "?" + canonical_query
+  }
+  SignedS3Request::{ url: url, headers: headers }
+}
+
+pub struct S3HttpResponse {
+  pub status : Int
+  pub headers : Map[String, String]
+  pub body : Bytes
+}
+
+pub enum S3ErrorKind {
+  Offline
+  Auth
+  NotFound
+  HttpError(Int, String)
+  ProtocolError(String)
+}
+
+pub fn classify_s3_status(status : Int, body_text : String) -> S3ErrorKind {
+  if status == 401 || status == 403 {
+    return S3ErrorKind::Auth
+  }
+  if status == 404 {
+    return S3ErrorKind::NotFound
+  }
+  let code = match extract_xml_tag(body_text, "Code") {
+    Some(c) => c
+    None => ""
+  }
+  let msg = match extract_xml_tag(body_text, "Message") {
+    Some(m) => m
+    None => ""
+  }
+  let summary = if code != "" || msg != "" {
+    "S3 " + status.to_string() + ": " + trim_ascii(code + " " + msg)
+  } else {
+    "S3 " + status.to_string()
+  }
+  S3ErrorKind::HttpError(status, summary)
+}
+
+pub struct S3DeleteError {
+  pub key : String
+  pub code : String
+  pub message : String
+}
+
+pub struct S3DeleteResult {
+  pub deleted : Array[String]
+  pub errors : Array[S3DeleteError]
+}
+
+/// Injectable HTTP transport port for `S3Client`.
+pub struct S3Client {
+  pub target : NormalizedS3Target
+  now_ms : () -> Int64
+  send : (String, String, Map[String, String], Bytes) -> Result[S3HttpResponse, String]
+}
+
+pub fn S3Client::new(
+  target : NormalizedS3Target,
+  now_ms : () -> Int64,
+  send : (String, String, Map[String, String], Bytes) -> Result[S3HttpResponse, String],
+) -> S3Client {
+  S3Client::{ target: target, now_ms: now_ms, send: send }
+}
+
+fn S3Client::request(
+  self : S3Client,
+  method_name : String,
+  key : String,
+  query : Map[String, String],
+  body : Bytes,
+  extra_headers : Map[String, String],
+) -> Result[S3HttpResponse, S3ErrorKind] {
+  let hdrs : Map[String, String] = Map::new()
+  let ekeys = extra_headers.keys()
+  for i in 0..<ekeys.length() {
+    let k = ekeys[i]
+    match extra_headers.get(k) {
+      Some(v) => hdrs.set(k, v)
+      None => ()
+    }
+  }
+  if method_name == "PUT" || method_name == "POST" {
+    hdrs.set("content-length", body.length().to_string())
+  }
+  let signed = sign_s3_request(self.target, method_name, key, query, body, hdrs, (self.now_ms)())
+  match (self.send)(method_name, signed.url, signed.headers, body) {
+    Ok(res) => Ok(res)
+    Err(_) => Err(S3ErrorKind::Offline)
+  }
+}
+
+pub fn S3Client::test_connection(self : S3Client) -> Result[Unit, S3ErrorKind] {
+  let query : Map[String, String] = Map::new()
+  query.set("list-type", "2")
+  query.set("max-keys", "1")
+  if self.target.prefix != "" {
+    query.set("prefix", self.target.prefix + "/")
+  }
+  let res = match self.request("GET", "", query, Bytes::new(0), Map::new()) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  if res.status >= 200 && res.status < 300 {
+    Ok(())
+  } else {
+    Err(classify_s3_status(res.status, bytes_to_str(res.body)))
+  }
+}
+
+pub fn S3Client::list_prefix(self : S3Client, prefix : String) -> Result[Array[String], S3ErrorKind] {
+  let keys : Array[String] = []
+  let mut token : Option[String] = None
+  while true {
+    let query : Map[String, String] = Map::new()
+    query.set("list-type", "2")
+    query.set("prefix", prefix)
+    match token {
+      Some(t) => query.set("continuation-token", t)
+      None => ()
+    }
+    let res = match self.request("GET", "", query, Bytes::new(0), Map::new()) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    let xml = bytes_to_str(res.body)
+    if res.status < 200 || res.status >= 300 {
+      return Err(classify_s3_status(res.status, xml))
+    }
+    let found = extract_all_xml_tags(xml, "Key")
+    for i in 0..<found.length() {
+      keys.push(found[i])
+    }
+    let trunc = extract_xml_tag(xml, "IsTruncated")
+    let next = extract_xml_tag(xml, "NextContinuationToken")
+    match (trunc, next) {
+      (Some("true"), Some(nt)) => {
+        if nt != "" {
+          token = Some(nt)
+        } else {
+          break
+        }
+      }
+      _ => break
+    }
+  }
+  Ok(keys)
+}
+
+pub fn S3Client::get_object(self : S3Client, key : String, max_bytes : Option[Int]) -> Result[Bytes, S3ErrorKind] {
+  let res = match self.request("GET", key, Map::new(), Bytes::new(0), Map::new()) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  if res.status < 200 || res.status >= 300 {
+    return Err(classify_s3_status(res.status, bytes_to_str(res.body)))
+  }
+  match max_bytes {
+    Some(lim) => {
+      // Pre-check Content-Length header before consuming body (anti-bomb guard).
+      let hkeys = res.headers.keys()
+      for i in 0..<hkeys.length() {
+        if ascii_lower(hkeys[i]) == "content-length" {
+          match res.headers.get(hkeys[i]) {
+            Some(cl_str) => {
+              let mut cl : Int64 = 0L
+              let mut valid = cl_str.length() > 0
+              for j in 0..<cl_str.length() {
+                let c = cl_str.code_unit_at(j)
+                if c >= 48 && c <= 57 {
+                  cl = cl * 10L + (c - 48).to_int64()
+                } else {
+                  valid = false
+                  break
+                }
+              }
+              if valid && cl > lim.to_int64() {
+                return Err(S3ErrorKind::ProtocolError("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")"))
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      if res.body.length() > lim {
+        return Err(S3ErrorKind::ProtocolError("transcript manifest exceeds max bytes (" + manifest_max_bytes.to_string() + ")"))
+      }
+    }
+    None => ()
+  }
+  Ok(res.body)
+}
+
+pub fn S3Client::put_object(self : S3Client, key : String, data : Bytes) -> Result[Unit, S3ErrorKind] {
+  let extra : Map[String, String] = Map::new()
+  extra.set("content-type", "application/octet-stream")
+  let res = match self.request("PUT", key, Map::new(), data, extra) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  if res.status >= 200 && res.status < 300 {
+    Ok(())
+  } else {
+    Err(classify_s3_status(res.status, bytes_to_str(res.body)))
+  }
+}
+
+/// Paginated `POST /?delete` (`DeleteObjects`, 1000 keys/request with `Content-MD5`).
+pub fn S3Client::delete_objects(self : S3Client, keys : Array[String]) -> Result[S3DeleteResult, S3ErrorKind] {
+  let deleted : Array[String] = []
+  let errors : Array[S3DeleteError] = []
+  if keys.length() == 0 {
+    return Ok(S3DeleteResult::{ deleted: deleted, errors: errors })
+  }
+  let mut i = 0
+  while i < keys.length() {
+    let end = if i + delete_objects_batch < keys.length() { i + delete_objects_batch } else { keys.length() }
+    let sb = StringBuilder::new()
+    sb.write_string("<Delete><Quiet>false</Quiet>")
+    for k in i..<end {
+      sb.write_string("<Object><Key>")
+      sb.write_string(escape_xml(keys[k]))
+      sb.write_string("</Key></Object>")
+    }
+    sb.write_string("</Delete>")
+    let body = sb.to_string().to_bytes()
+    let content_md5 = md5_base64(body)
+    let query : Map[String, String] = Map::new()
+    query.set("delete", "")
+    let extra : Map[String, String] = Map::new()
+    extra.set("content-md5", content_md5)
+    extra.set("content-type", "application/xml")
+    let res = match self.request("POST", "", query, body, extra) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    let text = bytes_to_str(res.body)
+    if res.status < 200 || res.status >= 300 {
+      return Err(classify_s3_status(res.status, text))
+    }
+    let accounted : Map[String, Bool] = Map::new()
+    let del_blocks = extract_all_xml_tags(text, "Deleted")
+    for j in 0..<del_blocks.length() {
+      match extract_xml_tag(del_blocks[j], "Key") {
+        Some(k) => {
+          deleted.push(k)
+          accounted.set(k, true)
+        }
+        None => ()
+      }
+    }
+    let err_blocks = extract_all_xml_tags(text, "Error")
+    for j in 0..<err_blocks.length() {
+      let blk = err_blocks[j]
+      let k = match extract_xml_tag(blk, "Key") {
+        Some(s) => s
+        None => ""
+      }
+      let code = match extract_xml_tag(blk, "Code") {
+        Some(s) => s
+        None => "UnknownError"
+      }
+      let msg = match extract_xml_tag(blk, "Message") {
+        Some(s) => s
+        None => ""
+      }
+      errors.push(S3DeleteError::{ key: k, code: code, message: msg })
+      if k != "" {
+        accounted.set(k, true)
+      }
+    }
+    for k in i..<end {
+      let key = keys[k]
+      match accounted.get(key) {
+        Some(_) => ()
+        None =>
+        errors.push(
+          S3DeleteError::{
+            key: key,
+            code: "MissingFromResponse",
+            message: "key omitted from S3 DeleteObjects response",
+          },
+        )
+      }
+    }
+    i = end
+  }
+  Ok(S3DeleteResult::{ deleted: deleted, errors: errors })
+}
+
+/// Computes deterministic S3 privacy-preserving HMAC tags matching `S3Place` in `station/src/replica/s3.ts`.
+pub fn s3_ws_tag(key : Bytes, ws : String) -> String {
+  crypto::hmac_sha256_hex(key, ("ws:" + ws).to_bytes()).slice(0, 32)
+}
+
+pub fn s3_origin_tag(key : Bytes, origin : String) -> String {
+  crypto::hmac_sha256_hex(key, ("origin:" + origin).to_bytes()).slice(0, 32)
+}
+
+pub fn s3_file_tag(key : Bytes, hash : String) -> String {
+  crypto::hmac_sha256_hex(key, ("file:" + hash).to_bytes())
+}

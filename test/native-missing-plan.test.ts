@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
-  defaults, inputsByGit, inputsIn, key, missingWanted, pair, partNames, pathspec, targetsOf, tree,
+  defaults, inputsByGit, inputsIn, inputsOf, key, missingWanted, pair, partNames, pathspec, targetsOf, tree,
 } from "../scripts/native.ts";
 
 // What plan's natives step (pipeline.yml) leans on: native.ts reads the checkout's keys off one git listing as git
@@ -96,9 +96,25 @@ test("plan splits one missing by what its lists name, as each list asked alone d
   assert.ok(mac.length > 0 && mac.every(([, t]) => /^(darwin|ios)-/.test(t)), JSON.stringify(mac));
   assert.ok(linux.length > 0 && linux.every(([, t]) => !/^(darwin|ios)-/.test(t)), JSON.stringify(linux));
   assert.ok(linux.some(([p, t]) => p === "shell-station" && t === "linux-x64"));
+  assert.ok(mac.some(([p, t]) => p === "shell-apple-station" && t === "darwin-arm64"));
+  assert.ok(mac.some(([p, t]) => p === "station-pion" && t === "darwin-arm64"));
+  for (const t of ["linux-x64", "linux-arm64", "win32-x64"]) {
+    assert.ok(linux.some(([p, target]) => p === "station-pion" && target === t), `missing station-pion:${t} in --linux defaults`);
+  }
   assert.deepEqual(missingWanted(["--linux", "--mac"]).map(String).sort(), [...mac, ...linux].map(String).sort());
   // The BRANCH_ lists say each part:target as missing answers it.
-  assert.deepEqual(Object.keys(BRANCH).sort(), ["BRANCH_HARNESS", "BRANCH_MAC_NATIVES", "BRANCH_MAC_READER", "BRANCH_NATIVES", "BRANCH_WIN_READER"]);
+  assert.deepEqual(Object.keys(BRANCH).sort(), [
+    "BRANCH_HARNESS",
+    "BRANCH_MAC_NATIVES",
+    "BRANCH_MAC_READER",
+    "BRANCH_MAC_SHELL_STATION",
+    "BRANCH_MAC_STATION_PION",
+    "BRANCH_NATIVES",
+    "BRANCH_WIN_READER",
+  ]);
+  assert.deepEqual(BRANCH.BRANCH_MAC_READER, ["reader:darwin-arm64", "pion-reader:darwin-arm64"]);
+  assert.deepEqual(BRANCH.BRANCH_MAC_SHELL_STATION, ["shell-apple-station:darwin-arm64"]);
+  assert.deepEqual(BRANCH.BRANCH_MAC_STATION_PION, ["station-pion:darwin-arm64"]);
   for (const list of Object.values(BRANCH)) for (const a of list) assert.equal(pair(a.split(":")).join(":"), a);
   // One flag alone, parts alone, or neither: what missing took before.
   for (const [w, m, l] of [[true, false, false], [false, true, false], [false, false, true]] as const) {
@@ -113,8 +129,16 @@ test("one missing for every list plan asks lists the release once and answers ea
   const dir = mkdtempSync(join(tmpdir(), "native-missing-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const requests = join(dir, "requests"), preload = join(dir, "preload.mjs");
-  // (the release has every part's asset but two, and the store none of those but one of them)
-  const lacking = ["mesh-darwin-arm64-", "reader-linux-x64-", "shell-station-linux-x64-"];
+  // (the release has every part's asset except these, and the store none of them)
+  const lacking = [
+    "mesh-darwin-arm64-",
+    "reader-linux-x64-",
+    "shell-station-linux-x64-",
+    "shell-apple-station-darwin-arm64-",
+    "station-pion-darwin-arm64-",
+    "station-pion-linux-x64-",
+    "station-pion-win32-x64-",
+  ];
   writeFileSync(preload, `
     import { appendFileSync } from 'node:fs';
     const lacking = ${JSON.stringify(lacking)};
@@ -141,16 +165,44 @@ test("one missing for every list plan asks lists the release once and answers ea
     return run.stdout.split("\n").filter(Boolean);
   };
   // main's: --linux and --mac at once, Apple's first
-  assert.deepEqual(missing("--linux", "--mac"), ["mesh:darwin-arm64", "reader:linux-x64", "shell-station:linux-x64"]);
-  assert.deepEqual(missing("--mac"), ["mesh:darwin-arm64"]);
-  assert.deepEqual(missing("--linux"), ["reader:linux-x64", "shell-station:linux-x64"]);
-  // a branch's: every list and the runners' shell-station, each once
-  const want = [...BRANCH.BRANCH_NATIVES!, ...BRANCH.BRANCH_WIN_READER!, ...BRANCH.BRANCH_HARNESS!, ...BRANCH.BRANCH_MAC_NATIVES!,
-    ...BRANCH.BRANCH_MAC_READER!, "shell-station:linux-x64", "shell-station:win32-x64", "reader:linux-x64"];
-  assert.deepEqual(missing(...want), ["shell-station:linux-x64", "reader:linux-x64", "mesh:darwin-arm64"]);
+  assert.deepEqual(missing("--linux", "--mac"), [
+    "mesh:darwin-arm64",
+    "station-pion:darwin-arm64",
+    "shell-apple-station:darwin-arm64",
+    "reader:linux-x64",
+    "station-pion:linux-x64",
+    "station-pion:win32-x64",
+    "shell-station:linux-x64",
+  ]);
+  assert.deepEqual(missing("--mac"), ["mesh:darwin-arm64", "station-pion:darwin-arm64", "shell-apple-station:darwin-arm64"]);
+  assert.deepEqual(missing("--linux"), ["reader:linux-x64", "station-pion:linux-x64", "station-pion:win32-x64", "shell-station:linux-x64"]);
+  // a branch's: every list and the runners' shell-station/station-pion, each once
+  const want = [
+    ...BRANCH.BRANCH_NATIVES!,
+    ...BRANCH.BRANCH_WIN_READER!,
+    ...BRANCH.BRANCH_HARNESS!,
+    ...BRANCH.BRANCH_MAC_NATIVES!,
+    ...BRANCH.BRANCH_MAC_READER!,
+    ...BRANCH.BRANCH_MAC_SHELL_STATION!,
+    ...BRANCH.BRANCH_MAC_STATION_PION!,
+    "station-pion:linux-x64",
+    "station-pion:linux-arm64",
+    "shell-station:linux-x64",
+    "shell-station:win32-x64",
+    "reader:linux-x64",
+  ];
+  assert.deepEqual(missing(...want), [
+    "shell-station:linux-x64",
+    "reader:linux-x64",
+    "station-pion:win32-x64",
+    "mesh:darwin-arm64",
+    "shell-apple-station:darwin-arm64",
+    "station-pion:darwin-arm64",
+    "station-pion:linux-x64",
+  ]);
 });
 
-test("plan.sh triggers station on pion-reader production inputs and ignores its tests and docs", { skip: process.platform === "win32" }, () => {
+test("plan.sh triggers station on pion-reader and station-pion production inputs and ignores tests and docs", { skip: process.platform === "win32" }, () => {
   const cases: [string, boolean][] = [
     ["pion/station/TOOLCHAIN", true],
     ["pion/station/pion.toml", true],
@@ -160,11 +212,26 @@ test("plan.sh triggers station on pion-reader production inputs and ignores its 
     ["pion/station/packages/smoke/src/main.pion", true],
     ["pion/station/packages/readops_core/src/selftest.pion", true],
     ["pion/base/packages/base_codec/src/lib.pion", true],
+    ["pion/station-main/pion.toml", true],
+    ["pion/station-main/scripts/build.sh", true],
+    ["pion/station-main/packages/station_main/src/main.pion", true],
+    ["pion/rules/packages/lock/src/lock.pion", true],
+    ["client/i18n/catalog/zh/station.json", true],
+    ["client/i18n/brand.ts", true],
     ["pion/station/packages/readops_chats/src/readops_chats_test.pion", false],
     ["pion/station/packages/host_shim/native/host_shim_test.c", false],
     ["pion/base/packages/base_codec/src/lib_test.pion", false],
     ["pion/station/AGENTS.md", false],
     ["pion/station/README.md", false],
+    ["pion/station-main/packages/station_main/src/main_test.pion", false],
+    ["pion/station-main/packages/station_sys/native/station_sys_test.c", false],
+    ["pion/station-main/packages/station_replica/scripts/sfb1-interop.mjs", false],
+    ["pion/station-main/AGENTS.md", false],
+    ["pion/station-main/CLAUDE.md", false],
+    ["pion/station-main/README.md", false],
+    ["pion/rules/packages/lock/src/lock_test.pion", false],
+    ["pion/rules/packages/AGENTS.md", false],
+    ["pion/rules/packages/README.md", false],
   ];
   const script = `PLAN_SOURCE=1; . scripts/plan.sh; range=
 while IFS= read -r changed; do decide; echo "$changed $station"; done`;
@@ -176,4 +243,11 @@ while IFS= read -r changed; do decide; echo "$changed $station"; done`;
   for (const [i, [path, expected]] of cases.entries()) {
     assert.equal(out[i], `${path} ${expected}`, path);
   }
+  const stationPionFiles = inputsIn(tree(root), inputsOf("station-pion"));
+  assert.ok(stationPionFiles, "expected station-pion inputs from git tree");
+  assert.equal(
+    stationPionFiles.some(([f]) => f === "pion/station-main/packages/station_replica/scripts/sfb1-interop.mjs"),
+    false,
+    "sfb1-interop.mjs test script must be excluded from station-pion inputs",
+  );
 });

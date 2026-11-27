@@ -6,11 +6,12 @@ import assert from "node:assert/strict";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
-import { Events, type EventsDeps, overviewChangedKeys, overviewComparable } from "../src/api/events.ts";
+import { mock, test } from "node:test";
+import { changedKeysFromMemos, Events, type EventsDeps, OVERVIEW_VIEWER_BATCH, overviewChangedKeys, overviewComparable, overviewComparableMemo } from "../src/api/events.ts";
+import { log } from "../src/ops/log.ts";
 import { KEPT_MS } from "../src/api/event-log.ts";
 import type { StoreChange } from "../src/store/rows.ts";
-import { settle, testClock } from "./hub-fakes.ts";
+import { given, settle, testClock } from "./hub-fakes.ts";
 
 const viewer = (email: string) => ({ sub: email, email, name: email, role: "member", workspace: "w", device: "d" });
 
@@ -1654,4 +1655,331 @@ test("background overview triggers coalesce with sessionRemoved while immediate 
   assert.equal(stream.got.filter((e) => e.event === "overview").length, 3, "cancelled trailing timer does not double-push");
 
   await stream.close();
+});
+
+/// `overviewComparable` as it was before it was serialized key by key: what it says must stay byte for byte the same.
+function comparableBefore(value: unknown, previous?: string): string {
+  const GiB = 1024 ** 3;
+  const LOW = 10 * GiB, LOW_STEP = 512 * 1024 ** 2;
+  const pctStep = (total: number) => Math.min(4 * GiB, Math.max(2 * GiB, Math.floor(total / 100)));
+  const prevBucket = () => {
+    if (previous === undefined) return null;
+    try {
+      const parsed = JSON.parse(previous);
+      const disk = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed.disk : null;
+      if (disk === null || typeof disk !== "object" || Array.isArray(disk) || typeof disk.freeBytes !== "string") return null;
+      const match = /^(low|pct):(-?\d+)$/.exec(disk.freeBytes);
+      return match === null ? null : { regime: match[1], index: Number(match[2]), total: typeof disk.totalBytes === "number" ? disk.totalBytes : 0 };
+    } catch {
+      return null;
+    }
+  };
+  const stepped = (regime: string, free: number, step: number) => {
+    const prev = prevBucket();
+    if (prev !== null && prev.regime === regime && (regime === "low" ? LOW_STEP : prev.total > 0 ? pctStep(prev.total) : 0) === step) {
+      const margin = Math.floor(step / 4);
+      if (free > prev.index * step - margin && free < (prev.index + 1) * step + margin) return `${regime}:${prev.index}`;
+    }
+    return `${regime}:${Math.floor(free / step)}`;
+  };
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return JSON.stringify(value);
+  const src = value as Record<string, any>;
+  const out: Record<string, unknown> = { ...src };
+  delete out.machine;
+  const d = src.disk;
+  if (d !== null && typeof d === "object" && !Array.isArray(d) && typeof d.freeBytes === "number") {
+    const total = typeof d.totalBytes === "number" ? d.totalBytes : 0;
+    const free = d.freeBytes;
+    out.disk = { ...d, freeBytes: free <= LOW ? stepped("low", free, LOW_STEP) : total > 0 && free * 10 <= total ? stepped("pct", free, pctStep(total)) : "ok" };
+  }
+  if (Array.isArray(src.processes)) out.processes = src.processes.map((p: any) => (p === null || typeof p !== "object" || Array.isArray(p) ? p : (({ rssMb: _, ...rest }) => rest)(p)));
+  const c = src.copies;
+  if (c !== null && typeof c === "object" && !Array.isArray(c)) {
+    const headTo = typeof c.to === "number" ? c.to : 0;
+    const normTarget = (item: any) => {
+      if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
+      const { to: tTo, at: tAt, ...rest } = item;
+      const synced = typeof tTo === "number" && headTo > 0 ? tTo >= headTo : tTo === headTo;
+      return { ...rest, synced, at: typeof tAt === "number" ? Math.floor(tAt / 600_000) : (tAt ?? null) };
+    };
+    const { to: _to, chats, ...restCopies } = c;
+    const normCopies: Record<string, unknown> = { ...restCopies, hasData: headTo > 0, hasChats: typeof chats === "number" ? chats > 0 : (chats ?? null) };
+    if (Array.isArray(c.keepers)) normCopies.keepers = c.keepers.map(normTarget);
+    if (c.backup !== null && typeof c.backup === "object" && !Array.isArray(c.backup)) normCopies.backup = Array.isArray(c.backup.s3) ? { ...c.backup, s3: c.backup.s3.map(normTarget) } : c.backup;
+    out.copies = normCopies;
+  }
+  return JSON.stringify(out);
+}
+
+test("overviewComparable says byte for byte what it said before it was serialized key by key", () => {
+  const GiB = 1024 ** 3;
+  const MiB = 1024 ** 2;
+  const odd = { a: undefined, f: () => 1, s: Symbol("s"), nested: { x: undefined, y: [1, undefined, null, { z: undefined }], "q\"uote": "é\n " }, n: null, nan: Number.NaN, big: 1e21, neg: -0 };
+  const samples: unknown[] = [
+    null, undefined, 0, "text", true, [], [1, { a: 1 }], {},
+    odd,
+    { machine: { cpu: 9 }, counts: { running: 1 }, ...odd },
+    { disk: { freeBytes: 8 * GiB - 1 * MiB, totalBytes: 100 * GiB, mount: "/" } },
+    { disk: { freeBytes: 25 * GiB - 1 * MiB, totalBytes: 250 * GiB } },
+    { disk: { freeBytes: 500 * GiB, totalBytes: 1000 * GiB } },
+    { disk: { freeBytes: 8 * GiB, totalBytes: Number.POSITIVE_INFINITY } },
+    { disk: { freeBytes: Number.NEGATIVE_INFINITY } },
+    { disk: { freeBytes: "low:3", totalBytes: 1 } },
+    { disk: null, processes: [{ key: "a", rssMb: 12, state: "running" }, null, [1], "x"] },
+    { copies: { to: 9, chats: 3, keepers: [{ id: "k", to: 9, at: 1_234_567_890 }, { id: "l", to: 3 }, null], backup: { s3: [{ to: 10, at: "x" }], on: true } } },
+    { copies: { to: undefined, chats: undefined, backup: { s3: "no" } } },
+    { counts: { running: 2 }, gone: undefined, extra: [1] },
+    { counts: { running: 1 }, toJSON: () => ({ said: "itself" }) },
+  ];
+  for (const value of samples) {
+    const fresh = overviewComparable(value);
+    assert.equal(fresh, comparableBefore(value), JSON.stringify(value));
+    // Against itself and against the other samples told before it (hysteresis across regimes, malformed previous).
+    for (const previous of [fresh, "not-json", ...samples.map((s) => overviewComparable(s))]) {
+      if (typeof previous !== "string") continue;
+      assert.equal(overviewComparable(value, previous), comparableBefore(value, previous));
+    }
+  }
+  // What the memo says changed is what parsing both says, for every pair of samples (a whole one has no keys).
+  for (const a of samples) {
+    const memoA = overviewComparableMemo(a, null);
+    assert.equal(memoA.text, overviewComparable(a));
+    if (a !== null && typeof a === "object" && "toJSON" in a) assert.equal(memoA.keys, null, "told as a whole: changed keys are parsed");
+    for (const b of samples) {
+      const memoB = overviewComparableMemo(b, null);
+      if (memoA.keys === null || memoB.keys === null) continue;
+      assert.deepEqual(changedKeysFromMemos(memoA, memoB), overviewChangedKeys(memoA.text, memoB.text), `${JSON.stringify(a)} → ${JSON.stringify(b)}`);
+    }
+  }
+  // A hysteresis walk: each told against the last, in the low and the percent regimes and across them.
+  let now: string | undefined;
+  let before: string | undefined;
+  for (let i = 0; i < 400; i++) {
+    const free = i < 200 ? 8 * GiB + ((i * 37) % 300) * MiB - 150 * MiB : 30 * GiB + ((i * 53) % 9000) * MiB - 4500 * MiB;
+    const value = { counts: { running: i % 3 }, disk: { freeBytes: free, totalBytes: i % 7 === 0 ? 400 * GiB : 300 * GiB } };
+    now = overviewComparable(value, now);
+    before = comparableBefore(value, before);
+    assert.equal(now, before, `step ${i}`);
+  }
+});
+
+/// `JSON.parse` calls made by the station's events (not by the test reading what it is told), while `during` runs.
+/// `by`: only those made under it (a function's name in the stack).
+async function parsesIn(during: () => Promise<void>, by = /src[\\/]api[\\/]events\.ts/): Promise<number> {
+  let parses = 0;
+  const parse = JSON.parse;
+  const spy = mock.method(JSON, "parse", function (this: unknown, ...args: Parameters<typeof JSON.parse>) {
+    if (by.test(new Error().stack ?? "")) parses++;
+    return parse.apply(this, args);
+  });
+  try {
+    await during();
+  } finally {
+    spy.mock.restore();
+  }
+  return parses;
+}
+
+test("a viewer's overview is told against what it was told without parsing it again, hysteresis and changed keys as before", async () => {
+  const time = testClock();
+  const GiB = 1024 ** 3;
+  const MiB = 1024 ** 2;
+  const file = join(mkdtempSync(join(tmpdir(), "events-")), "run", "events.json");
+  const pushed: any[] = [];
+  const info = mock.method(log, "info", (_at: string, words: string, fields?: any) => void (words === "overview pushed" && pushed.push(fields)));
+  try {
+    const state = { counts: { running: 1 }, move: { chats: [] as string[] }, disk: { freeBytes: 8 * GiB + 1 * MiB, totalBytes: 100 * GiB } };
+    const before = setup(time.clock, { file, previous: previous() });
+    before.events.follow({ overview: async () => structuredClone(state) });
+    const stream = await opened(before.events);
+    const told = () => stream.got.filter((e) => e.event === "overview").length;
+    before.events.overviewChanged();
+    await settle();
+    assert.equal(told(), 1);
+
+    // Within the low bucket's margin, and only telemetry moving: suppressed, nothing parsed.
+    const quiet = await parsesIn(async () => {
+      for (const free of [8 * GiB - 1 * MiB, 8 * GiB - 127 * MiB, 8 * GiB + 100 * MiB]) {
+        state.disk.freeBytes = free;
+        before.events.overviewChanged();
+        await settle();
+      }
+    });
+    assert.equal(quiet, 0, "suppressed tellings parse nothing");
+    assert.equal(told(), 1, "hysteresis holds the bucket");
+
+    // A field and, past the margin, the bucket change: told, its keys said, nothing parsed.
+    pushed.length = 0;
+    const changed = await parsesIn(async () => {
+      state.counts.running = 2;
+      before.events.overviewChanged("direct");
+      await settle();
+      state.disk.freeBytes = 8 * GiB - 128 * MiB;
+      before.events.overviewChanged("direct");
+      await settle();
+      state.move.chats = ["c1"];
+      state.disk.freeBytes = 8 * GiB - 1 * MiB;
+      before.events.overviewChanged("direct");
+      await settle();
+    });
+    assert.equal(changed, 0, "changed tellings parse nothing");
+    assert.equal(told(), 4);
+    assert.deepEqual(pushed.map((p) => p.changedKeys), [["counts"], ["disk"], ["move"]]);
+    assert.ok(pushed.every((p) => p.viewers === 1 && p.suppressed === 0 && p.initial === 0));
+
+    // Taken up by the next process: the first telling parses what was handed over, once; after that, nothing.
+    const heard = stream.got.findLast((e) => e.id)!.id!;
+    await before.events.handOver();
+    const after = setup(time.clock, { file, previous: previous() }, before);
+    after.events.follow({ overview: async () => structuredClone(state) });
+    state.disk.freeBytes = 8 * GiB - 100 * MiB;
+    let back!: Awaited<ReturnType<typeof opened>>;
+    const first = await parsesIn(async () => {
+      back = await opened(after.events, heard);
+      await settle();
+    }, /previousDiskBucket|overviewChangedKeys/);
+    assert.equal(back.resumed, true);
+    assert.equal(first, 1, "what was handed over is parsed once, for its disk bucket, as the stream comes back");
+    const toldBack = () => back.got.filter((e) => e.event === "overview").length;
+    assert.equal(toldBack(), 0, "handed-over hysteresis holds");
+    const baseline = toldBack();
+    pushed.length = 0;
+    const quietBack = await parsesIn(async () => {
+      after.events.overviewChanged();
+      await settle();
+    });
+    assert.equal(quietBack, 0, "the suppressed telling after it made its memo");
+    state.counts.running = 3;
+    const then = await parsesIn(async () => {
+      state.disk.freeBytes = 8 * GiB - 127 * MiB;
+      after.events.overviewChanged();
+      await settle();
+      state.counts.running = 4;
+      after.events.overviewChanged();
+      await settle();
+    });
+    assert.equal(then, 0, "after the first telling nothing is parsed");
+    assert.equal(toldBack(), baseline + 2);
+    assert.deepEqual(pushed.map((p) => p.changedKeys), [["counts"], ["counts"]]);
+    await stream.close();
+    await back.close();
+  } finally {
+    info.mock.restore();
+  }
+});
+
+/// `n` viewers' streams, each told an overview of its own.
+async function manyViewers(events: Events, n: number) {
+  const streams = [];
+  for (let i = 0; i < n; i++) {
+    const answer = await events.open(viewer(`v${i}@x`), "zh", false, [], [], null);
+    streams.push(reader(answer.body as AsyncIterable<Buffer>));
+  }
+  await settle();
+  return streams;
+}
+
+test("an overview told to many viewers is made a few at a time, the event loop let go between them", async () => {
+  const { events } = setup(testClock().clock);
+  const made: string[] = [];
+  const between: number[] = [];
+  events.follow({
+    overview: async (v) => {
+      // Something waiting for the event loop as the round begins runs before the round is through.
+      if (made.length === 0) setImmediate(() => between.push(made.length));
+      made.push(v.email);
+      return { who: v.email };
+    },
+  });
+  const n = 10;
+  const streams = await manyViewers(events, n);
+  made.length = 0;
+  events.overviewChanged();
+  await settle();
+  assert.deepEqual(between, [OVERVIEW_VIEWER_BATCH], "the loop was let go after the first viewers");
+  assert.equal(made.length, n);
+  for (let i = 0; i < n; i++) {
+    const told = streams[i]!.got.filter((e) => e.event === "overview");
+    assert.deepEqual(told.map((e) => e.data), [{ who: `v${i}@x` }], `v${i}@x is told its own overview once`);
+  }
+  for (const s of streams) await s.close();
+});
+
+test("a handover while an overview is told to many viewers waits for all of them and hands each over", async () => {
+  const time = testClock();
+  const file = join(mkdtempSync(join(tmpdir(), "events-")), "run", "events.json");
+  const before = setup(time.clock, { file, previous: previous() });
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  let holding = false;
+  before.events.follow({
+    overview: async (v) => {
+      // The second few wait: the round is under way as the handover begins.
+      if (holding && v.email === `v${OVERVIEW_VIEWER_BATCH}@x`) await held;
+      return { who: v.email };
+    },
+  });
+  const n = 10;
+  const streams = await manyViewers(before.events, n);
+  holding = true;
+  before.events.overviewChanged();
+  await settle();
+  const toldBy = () => streams.filter((s) => s.got.some((e) => e.event === "overview")).length;
+  // The held one's few are told but for it; the next few are not begun.
+  assert.equal(toldBy(), 2 * OVERVIEW_VIEWER_BATCH - 1, "the first few are told, the rest wait");
+  let handed = false;
+  const handing = before.events.handOver().then(() => void (handed = true));
+  await settle();
+  assert.equal(handed, false, "the handover waits for the round");
+  release();
+  await given(handing, "the handover is done once the round is");
+  assert.equal(toldBy(), n, "every viewer was told before the handover");
+  const written = JSON.parse(readFileSync(file, "utf8"));
+  assert.equal(written.overviews.length, n, "each viewer's overview is handed over");
+  assert.ok(written.overviews.every(([, text]: [string, string]) => /^\{"who":"v\d+@x"\}$/.test(text)));
+  for (const s of streams) await s.close();
+});
+
+test("the first overview a taken-up stream is told, changed, says its changed keys from what was handed over, then parses nothing", async () => {
+  const time = testClock();
+  const file = join(mkdtempSync(join(tmpdir(), "events-")), "run", "events.json");
+  const pushed: any[] = [];
+  const info = mock.method(log, "info", (_at: string, words: string, fields?: any) => void (words === "overview pushed" && pushed.push(fields)));
+  try {
+    const state = { counts: { running: 1 }, move: { chats: [] as string[] } };
+    const before = setup(time.clock, { file, previous: previous() });
+    before.events.follow({ overview: async () => structuredClone(state) });
+    const lost = await opened(before.events);
+    before.events.overviewChanged();
+    await settle();
+    const heard = lost.got.findLast((e) => e.id)!.id!;
+    await before.events.handOver();
+
+    const after = setup(time.clock, { file, previous: previous() }, before);
+    after.events.follow({ overview: async () => structuredClone(state) });
+    state.counts.running = 2;
+    pushed.length = 0;
+    let back!: Awaited<ReturnType<typeof opened>>;
+    const first = await parsesIn(async () => {
+      back = await opened(after.events, heard);
+      await settle();
+    }, /previousDiskBucket|overviewChangedKeys/);
+    assert.equal(back.resumed, true);
+    assert.equal(first, 3, "what was handed over is parsed once for its disk bucket, and with the new one for what changed");
+    assert.deepEqual(back.got.filter((e) => e.event === "overview").map((e) => e.data.counts.running), [2]);
+    assert.deepEqual(pushed.map((p) => p.changedKeys), [["counts"]]);
+
+    pushed.length = 0;
+    const then = await parsesIn(async () => {
+      state.move.chats = ["c1"];
+      after.events.overviewChanged();
+      await settle();
+    });
+    assert.equal(then, 0, "the next round parses nothing");
+    assert.deepEqual(pushed.map((p) => p.changedKeys), [["move"]]);
+    await lost.close();
+    await back.close();
+  } finally {
+    info.mock.restore();
+  }
 });

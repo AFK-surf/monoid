@@ -8,8 +8,9 @@
 // On 大屏 and 中屏: over the window, on its paper, the bar every file opened has
 // (viewer_bar.mbt) on the paper and in its ink: back by name, the file's name, its chapter, how far read and its size,
 // and 目录 · 搜索 · 排版 · 下载. The bar goes as the text is read on down and comes back as it is read back up, or as the
-// pointer comes to the window's top. The text is one column as wide as a line reads well (34 of its size, and the
-// margins), from 40 under the bar; a hairline along the foot says how far through it is. A panel docks at the right
+// pointer comes to the window's top. The text is one column as wide as a line reads well (34 of its size for a plain
+// text, 48 for a Markdown document, and the margins), its tables out past it to the window's edge where they are wide
+// (reader_sides' bleed), from 40 under the bar; a hairline along the foot says how far through it is. A panel docks at the right
 // under the bar, 320 wide, on the paper with a line before it, the text kept clear of it: the contents (the chapters
 // numbered, the one being read marked; finding in the whole text), the search (each place found, in a line of its
 // text), the layout (the day's paper, the size, the lines, the margins, the face, the indent: nodes of the window's
@@ -112,7 +113,7 @@ fn paper_viewer_ink(p : ReaderPaper) -> ViewerInk {
 
 ///|
 /// Where a reader is: a page of its own (the whole window's, a drive's), a tab beside a chat over the whole window or
-/// in a window of its own, or a tab in the chat's panel (its column wider there: panel_column_ems, the panel bounding
+/// in a window of its own, or a tab in the chat's panel (its column wider there: doc_column_ems, the panel bounding
 /// it already).
 #derive(Eq)
 pub(all) enum ReaderHost {
@@ -892,12 +893,14 @@ let desk_reader_top : Double = 85.0
 let desk_reader_foot : Double = 72.0
 
 ///|
-/// The column's width: 34 of the text's size (34em), its margins either side.
+/// The column's width for a plain text (a novel's prose): 34 of the text's size (34em), its margins either side.
 let desk_column_ems : Double = 34.0
 
 ///|
-/// The column's width in a tab in the panel beside a chat: 48 of the text's size, the panel bounding it already.
-let panel_column_ems : Double = 48.0
+/// The column's width for a Markdown document (headings, lists, code, tables: a document's measure, never narrower
+/// over the whole window than in the panel beside a chat) and for any text in a tab in that panel (the panel bounding
+/// it already): 48 of the text's size.
+let doc_column_ems : Double = 48.0
 
 ///|
 /// How far from its end a reader's list is before its scroll-to-bottom float shows (matches a chat's to_newest_away:

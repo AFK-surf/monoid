@@ -1,0 +1,982 @@
+// Attachments, local Markdown links, peer files, image header size parser
+// (PNG / GIF / WebP / JPEG+EXIF), and live-location protocol.
+
+import "crypto"
+import "js_json"
+import "jscase"
+import "nodepath"
+
+// ── Image size header parser (`client/core-ts/src/mediaFacts.ts` + `image-size.ts` 1:1) ──
+
+fn byte_at(b : Bytes, i : Int) -> Int {
+  b[i].to_int() & 0xff
+}
+
+fn read_u16_be(b : Bytes, at : Int) -> Int {
+  (byte_at(b, at) << 8) | byte_at(b, at + 1)
+}
+
+fn read_u16_le(b : Bytes, at : Int) -> Int {
+  byte_at(b, at) | (byte_at(b, at + 1) << 8)
+}
+
+fn read_u32_be_u64(b : Bytes, at : Int) -> Int64 {
+  (byte_at(b, at).to_int64() << 24) |
+  (byte_at(b, at + 1).to_int64() << 16) |
+  (byte_at(b, at + 2).to_int64() << 8) |
+  byte_at(b, at + 3).to_int64()
+}
+
+fn read_u32_le_u64(b : Bytes, at : Int) -> Int64 {
+  byte_at(b, at).to_int64() |
+  (byte_at(b, at + 1).to_int64() << 8) |
+  (byte_at(b, at + 2).to_int64() << 16) |
+  (byte_at(b, at + 3).to_int64() << 24)
+}
+
+fn read_u32_le(b : Bytes, at : Int) -> Int {
+  byte_at(b, at) | (byte_at(b, at + 1) << 8) | (byte_at(b, at + 2) << 16) | (byte_at(b, at + 3) << 24)
+}
+
+fn match_ascii(b : Bytes, at : Int, s : String) -> Bool {
+  if at < 0 || at + s.length() > b.length() {
+    return false
+  }
+  for i in 0..<s.length() {
+    if byte_at(b, at + i) != s.code_unit_at(i) {
+      return false
+    }
+  }
+  true
+}
+
+fn ok_dims(w : Int, h : Int) -> Option[(Int, Int)] {
+  if w > 0 && h > 0 { Some((w, h)) } else { None }
+}
+
+fn ok_dims_u64(w : Int64, h : Int64) -> Option[(Int, Int)] {
+  if w > 0L && h > 0L && w <= 2147483647L && h <= 2147483647L {
+    Some((w.to_int(), h.to_int()))
+  } else {
+    None
+  }
+}
+
+/// Checks an APP1 payload (`Exif\0\0` + TIFF header) for orientation 5..8 (quarter turn).
+pub fn exif_turned(b : Bytes, start : Int, len : Int) -> Option[Bool] {
+  if len < 14 || start + len > b.length() {
+    return None
+  }
+  if !match_ascii(b, start, "Exif") || byte_at(b, start + 4) != 0 || byte_at(b, start + 5) != 0 {
+    return None
+  }
+  let t = start + 6
+  let tlen = len - 6
+  let le = match_ascii(b, t, "II")
+  if !le && !match_ascii(b, t, "MM") {
+    return None
+  }
+  let magic = if le { read_u16_le(b, t + 2) } else { read_u16_be(b, t + 2) }
+  if magic != 42 {
+    return None
+  }
+  let ifd64 = if le { read_u32_le_u64(b, t + 4) } else { read_u32_be_u64(b, t + 4) }
+  if ifd64 < 0L || ifd64 + 2L > tlen.to_int64() {
+    return None
+  }
+  let ifd = ifd64.to_int()
+  let count = if le { read_u16_le(b, t + ifd) } else { read_u16_be(b, t + ifd) }
+  for i in 0..<count {
+    let e = ifd + 2 + i * 12
+    // Tag is at e..e+2 and orientation value is u16 at e+8..e+10 (allow last entry when e+10 <= tlen)
+    if e + 10 > tlen {
+      break
+    }
+    let tag = if le { read_u16_le(b, t + e) } else { read_u16_be(b, t + e) }
+    if tag == 0x0112 {
+      let o = if le { read_u16_le(b, t + e + 8) } else { read_u16_be(b, t + e + 8) }
+      return Some(o >= 5 && o <= 8)
+    }
+  }
+  None
+}
+
+fn parse_jpeg_size(b : Bytes) -> Option[(Int, Int)] {
+  let mut at = 2
+  let mut turned = false
+  for _ in 0..<256 {
+    if at + 4 > b.length() {
+      return None
+    }
+    if byte_at(b, at) != 0xff {
+      return None
+    }
+    let kind = byte_at(b, at + 1)
+    if kind == 0xff {
+      at = at + 1
+      continue
+    }
+    if kind == 0x01 || (kind >= 0xd0 && kind <= 0xd8) {
+      at = at + 2
+      continue
+    }
+    if kind == 0xd9 || kind == 0xda {
+      return None
+    }
+    let len = read_u16_be(b, at + 2)
+    if len < 2 {
+      return None
+    }
+    if kind == 0xe1 {
+      if at + 2 + len <= b.length() {
+        match exif_turned(b, at + 4, len - 2) {
+          Some(t) => turned = t
+          None => ()
+        }
+      }
+    } else if kind >= 0xc0 && kind <= 0xcf && kind != 0xc4 && kind != 0xc8 && kind != 0xcc {
+      if at + 9 > b.length() {
+        return None
+      }
+      let height = read_u16_be(b, at + 5)
+      let width = read_u16_be(b, at + 7)
+      return if turned { ok_dims(height, width) } else { ok_dims(width, height) }
+    }
+    at = at + 2 + len
+  }
+  None
+}
+
+/// Parses image dimensions `(width, height)` from raw header bytes for PNG, GIF, WebP
+/// (VP8 / VP8L / VP8X), and JPEG (including EXIF orientation 5-8 quarter-turn swap).
+pub fn parse_image_size(b : Bytes) -> Option[(Int, Int)] {
+  let n = b.length()
+  // JPEG
+  if n >= 4 && byte_at(b, 0) == 0xff && byte_at(b, 1) == 0xd8 {
+    return parse_jpeg_size(b)
+  }
+  // PNG: \x89PNG ... IHDR + u32be width + u32be height (unsigned 32-bit via Int64)
+  if n >= 24 && byte_at(b, 0) == 0x89 && match_ascii(b, 1, "PNG") && match_ascii(b, 12, "IHDR") {
+    return ok_dims_u64(read_u32_be_u64(b, 16), read_u32_be_u64(b, 20))
+  }
+  // GIF87a / GIF89a
+  if n >= 10 && (match_ascii(b, 0, "GIF87a") || match_ascii(b, 0, "GIF89a")) {
+    return ok_dims(read_u16_le(b, 6), read_u16_le(b, 8))
+  }
+  // WebP: RIFF....WEBP + VP8 / VP8L / VP8X
+  if n >= 30 && match_ascii(b, 0, "RIFF") && match_ascii(b, 8, "WEBP") {
+    if match_ascii(b, 12, "VP8 ") && byte_at(b, 23) == 0x9d && byte_at(b, 24) == 0x01 && byte_at(b, 25) == 0x2a {
+      return ok_dims(read_u16_le(b, 26) & 0x3fff, read_u16_le(b, 28) & 0x3fff)
+    }
+    if match_ascii(b, 12, "VP8L") && byte_at(b, 20) == 0x2f {
+      let bits = read_u32_le(b, 21)
+      return ok_dims((bits & 0x3fff) + 1, ((bits >> 14) & 0x3fff) + 1)
+    }
+    if match_ascii(b, 12, "VP8X") {
+      let w = (byte_at(b, 24) | (byte_at(b, 25) << 8) | (byte_at(b, 26) << 16)) + 1
+      let h = (byte_at(b, 27) | (byte_at(b, 28) << 8) | (byte_at(b, 29) << 16)) + 1
+      return ok_dims(w, h)
+    }
+  }
+  None
+}
+
+// ── Local Markdown links (`station/src/sessions/local-links.ts` 1:1) ──
+
+pub struct MarkdownLink {
+  pub inline : Bool
+  pub destination : String
+  pub start : Int
+  pub end : Int
+}
+
+pub struct NamedLocalPath {
+  pub destination : String
+  pub path : String
+}
+
+fn hex_val(c : Int) -> Int {
+  if c >= 48 && c <= 57 {
+    c - 48
+  } else if c >= 65 && c <= 70 {
+    c - 55
+  } else if c >= 97 && c <= 102 {
+    c - 87
+  } else {
+    -1
+  }
+}
+
+/// Percent-decodes `%XX` sequences into a UTF-8 string.
+pub fn percent_decode(text : String) -> String {
+  let raw = js_json::utf8_bytes(text)
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < raw.length() {
+    let b = byte_at(raw, i)
+    if b == 0x25 && i + 2 < raw.length() {
+      let hi = hex_val(byte_at(raw, i + 1))
+      let lo = hex_val(byte_at(raw, i + 2))
+      if hi >= 0 && lo >= 0 {
+        out.push(((hi << 4) | lo).to_byte())
+        i = i + 3
+        continue
+      }
+    }
+    out.push(b.to_byte())
+    i = i + 1
+  }
+  let buf = Bytes::new(out.length())
+  for j in 0..<out.length() {
+    buf[j] = out[j]
+  }
+  buf.to_string()
+}
+
+fn is_md_punct(c : Int) -> Bool {
+  (c >= 33 && c <= 47) || (c >= 58 && c <= 64) || (c >= 91 && c <= 96) || (c >= 123 && c <= 126)
+}
+
+fn unescape_md(raw : String) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < raw.length() {
+    if raw.code_unit_at(i) == 92 && i + 1 < raw.length() && is_md_punct(raw.code_unit_at(i + 1)) {
+      sb.write_string(raw.slice(i + 1, i + 2))
+      i = i + 2
+    } else {
+      sb.write_string(raw.slice(i, i + 1))
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
+fn in_ranges(ranges : Array[(Int, Int)], pos : Int) -> Bool {
+  for i in 0..<ranges.length() {
+    let (s, e) = ranges[i]
+    if pos >= s && pos < e {
+      return true
+    }
+  }
+  false
+}
+
+fn find_code_ranges(text : String) -> Array[(Int, Int)] {
+  let ranges : Array[(Int, Int)] = []
+  let n = text.length()
+  let mut at = 0
+  let mut open_start = -1
+  let mut open_char = 0
+  let mut open_len = 0
+  while at <= n {
+    let mut line_end = at
+    while line_end < n && text.code_unit_at(line_end) != 10 {
+      line_end = line_end + 1
+    }
+    // Check up to 3 leading spaces
+    let mut p = at
+    let mut spaces = 0
+    while p < line_end && text.code_unit_at(p) == 32 && spaces < 3 {
+      p = p + 1
+      spaces = spaces + 1
+    }
+    let ch = if p < line_end { text.code_unit_at(p) } else { 0 }
+    if ch == 96 || ch == 126 {
+      let mut run = 0
+      while p + run < line_end && text.code_unit_at(p + run) == ch {
+        run = run + 1
+      }
+      if run >= 3 {
+        let rest = text.slice(p + run, line_end)
+        if open_start < 0 {
+          if !(ch == 96 && rest.contains("`")) {
+            open_start = at
+            open_char = ch
+            open_len = run
+          }
+        } else if ch == open_char && run >= open_len && js_json::trim_js(rest).length() == 0 {
+          ranges.push((open_start, line_end))
+          open_start = -1
+        }
+      }
+    }
+    if line_end >= n {
+      break
+    }
+    at = line_end + 1
+  }
+  if open_start >= 0 {
+    ranges.push((open_start, n))
+  }
+  // Inline code spans
+  let spans : Array[(Int, Int)] = []
+  let mut i = 0
+  while i < n {
+    if text.code_unit_at(i) == 92 {
+      i = i + 2
+      continue
+    }
+    if text.code_unit_at(i) != 96 || in_ranges(ranges, i) {
+      i = i + 1
+      continue
+    }
+    let mut run = 0
+    while i + run < n && text.code_unit_at(i + run) == 96 {
+      run = run + 1
+    }
+    let mut j = i + run
+    let mut close = -1
+    while j < n {
+      if text.code_unit_at(j) == 96 {
+        let mut m = 0
+        while j + m < n && text.code_unit_at(j + m) == 96 {
+          m = m + 1
+        }
+        if m == run {
+          close = j
+          break
+        }
+        j = j + m
+      } else {
+        j = j + 1
+      }
+    }
+    if close < 0 {
+      i = i + run
+    } else {
+      spans.push((i, close + run))
+      i = close + run
+    }
+  }
+  for k in 0..<spans.length() {
+    ranges.push(spans[k])
+  }
+  ranges
+}
+
+fn closing_bracket(text : String, open : Int, code : Array[(Int, Int)]) -> Int {
+  let mut depth = 0
+  let mut i = open
+  while i < text.length() {
+    if text.code_unit_at(i) == 92 {
+      i = i + 2
+      continue
+    }
+    if in_ranges(code, i) {
+      i = i + 1
+      continue
+    }
+    let c = text.code_unit_at(i)
+    if c == 91 {
+      depth = depth + 1
+    } else if c == 93 {
+      depth = depth - 1
+      if depth == 0 {
+        return i
+      }
+    }
+    i = i + 1
+  }
+  -1
+}
+
+/// Decodes one UTF-8 codepoint at byte offset `i` in `text`, returning `(codepoint, byte_len)`.
+fn decode_utf8_at(text : String, i : Int) -> (Int, Int) {
+  let n = text.length()
+  let b0 = text.code_unit_at(i) & 0xff
+  if b0 < 0x80 {
+    return (b0, 1)
+  }
+  if (b0 & 0xe0) == 0xc0 && i + 1 < n {
+    let b1 = text.code_unit_at(i + 1) & 0xff
+    if (b1 & 0xc0) == 0x80 {
+      return (((b0 & 0x1f) << 6) | (b1 & 0x3f), 2)
+    }
+  }
+  if (b0 & 0xf0) == 0xe0 && i + 2 < n {
+    let b1 = text.code_unit_at(i + 1) & 0xff
+    let b2 = text.code_unit_at(i + 2) & 0xff
+    if (b1 & 0xc0) == 0x80 && (b2 & 0xc0) == 0x80 {
+      return (((b0 & 0x0f) << 12) | ((b1 & 0x3f) << 6) | (b2 & 0x3f), 3)
+    }
+  }
+  if (b0 & 0xf8) == 0xf0 && i + 3 < n {
+    let b1 = text.code_unit_at(i + 1) & 0xff
+    let b2 = text.code_unit_at(i + 2) & 0xff
+    let b3 = text.code_unit_at(i + 3) & 0xff
+    if (b1 & 0xc0) == 0x80 && (b2 & 0xc0) == 0x80 && (b3 & 0xc0) == 0x80 {
+      return (((b0 & 0x07) << 18) | ((b1 & 0x3f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f), 4)
+    }
+  }
+  (b0, 1)
+}
+
+fn is_ws_cp(cp : Int) -> Bool {
+  if cp < 0x80 {
+    cp == 32 || cp == 9 || cp == 10 || cp == 11 || cp == 12 || cp == 13
+  } else {
+    jscase::is_space(cp) || jscase::is_white_space(cp)
+  }
+}
+
+fn parse_inline_dest(text : String, at : Int) -> Option[(Int, Int, Int)] {
+  let n = text.length()
+  let mut i = at
+  while i < n && (text.code_unit_at(i) == 32 || text.code_unit_at(i) == 9 || text.code_unit_at(i) == 10) {
+    i = i + 1
+  }
+  if i >= n {
+    return None
+  }
+  let mut start = i
+  let mut end = i
+  if text.code_unit_at(i) == 60 {
+    start = i + 1
+    let mut j = start
+    while j < n && text.code_unit_at(j) != 62 && text.code_unit_at(j) != 10 && text.code_unit_at(j) != 60 {
+      j = if text.code_unit_at(j) == 92 { j + 2 } else { j + 1 }
+    }
+    if j >= n || text.code_unit_at(j) != 62 {
+      return None
+    }
+    end = j
+    i = j + 1
+  } else {
+    start = i
+    let mut depth = 0
+    let mut j = i
+    while j < n {
+      let (cp, step) = decode_utf8_at(text, j)
+      if cp == 92 {
+        j = j + 2
+        continue
+      }
+      if is_ws_cp(cp) {
+        break
+      }
+      if cp == 40 {
+        depth = depth + 1
+      } else if cp == 41 {
+        if depth == 0 {
+          break
+        }
+        depth = depth - 1
+      }
+      j = j + step
+    }
+    end = j
+    i = j
+  }
+  while i < n && (text.code_unit_at(i) == 32 || text.code_unit_at(i) == 9 || text.code_unit_at(i) == 10) {
+    i = i + 1
+  }
+  if i < n {
+    let q = text.code_unit_at(i)
+    if q == 34 || q == 39 || q == 40 {
+      let shut = if q == 40 { 41 } else { q }
+      let mut j = i + 1
+      while j < n && text.code_unit_at(j) != shut {
+        j = if text.code_unit_at(j) == 92 { j + 2 } else { j + 1 }
+      }
+      if j >= n || text.code_unit_at(j) != shut {
+        return None
+      }
+      i = j + 1
+      while i < n && (text.code_unit_at(i) == 32 || text.code_unit_at(i) == 9 || text.code_unit_at(i) == 10) {
+        i = i + 1
+      }
+    }
+  }
+  if i < n && text.code_unit_at(i) == 41 {
+    Some((start, end, i + 1))
+  } else {
+    None
+  }
+}
+
+fn norm_ref_label(raw : String) -> String {
+  let lowered = jscase::lower(raw)
+  let pts = js_json::points(lowered)
+  let sb = StringBuilder::new()
+  let mut in_ws = true
+  for i in 0..<pts.length() {
+    let ch = pts[i]
+    let cp = if ch.length() > 0 {
+      let (decoded, _) = decode_utf8_at(ch, 0)
+      decoded
+    } else {
+      0
+    }
+    if is_ws_cp(cp) {
+      if !in_ws {
+        sb.write_string(" ")
+        in_ws = true
+      }
+    } else {
+      in_ws = false
+      sb.write_string(ch)
+    }
+  }
+  jscase::trim(sb.to_string())
+}
+
+/// Finds inline, reference, and `<file:...>` autolinks outside code spans and fenced blocks.
+pub fn find_markdown_links(text : String) -> Array[MarkdownLink] {
+  let code = find_code_ranges(text)
+  let defs : Map[String, String] = Map::new()
+  let def_ranges : Array[(Int, Int)] = []
+  let n = text.length()
+  // Parse reference definitions `[label]: dest`
+  let mut line_start = 0
+  while line_start < n {
+    let mut line_end = line_start
+    while line_end < n && text.code_unit_at(line_end) != 10 {
+      line_end = line_end + 1
+    }
+    if !in_ranges(code, line_start) {
+      let mut p = line_start
+      let mut sp = 0
+      while p < line_end && text.code_unit_at(p) == 32 && sp < 3 {
+        p = p + 1
+        sp = sp + 1
+      }
+      if p < line_end && text.code_unit_at(p) == 91 {
+        let mut rb = p + 1
+        while rb < line_end && text.code_unit_at(rb) != 93 {
+          rb = rb + 1
+        }
+        if rb > p + 1 && rb + 1 < line_end && text.code_unit_at(rb + 1) == 58 {
+          let label = norm_ref_label(text.slice(p + 1, rb))
+          let mut d = rb + 2
+          while d < line_end && (text.code_unit_at(d) == 32 || text.code_unit_at(d) == 9) {
+            d = d + 1
+          }
+          if d < line_end {
+            let mut dest = ""
+            if text.code_unit_at(d) == 60 {
+              let mut gt = d + 1
+              while gt < line_end && text.code_unit_at(gt) != 62 {
+                gt = gt + 1
+              }
+              if gt < line_end {
+                dest = unescape_md(text.slice(d + 1, gt))
+              }
+            } else {
+              let mut e = d
+              while e < line_end {
+                let (cp, step) = decode_utf8_at(text, e)
+                if is_ws_cp(cp) {
+                  break
+                }
+                e = e + step
+              }
+              dest = unescape_md(text.slice(d, e))
+            }
+            if label.length() > 0 && dest.length() > 0 {
+              match defs.get(label) {
+                None => defs.set(label, dest)
+                Some(_) => ()
+              }
+              def_ranges.push((line_start, line_end))
+            }
+          }
+        }
+      }
+    }
+    line_start = line_end + 1
+  }
+
+  let found : Array[MarkdownLink] = []
+  let skip_label_starts : Map[Int, Bool] = Map::new()
+  let mut i = 0
+  while i < n {
+    if text.code_unit_at(i) == 92 {
+      i = i + 2
+      continue
+    }
+    if text.code_unit_at(i) == 91 && !in_ranges(code, i) && !in_ranges(def_ranges, i) && !skip_label_starts.contains(i) {
+      let start = if i > 0 && text.code_unit_at(i - 1) == 33 && !(i > 1 && text.code_unit_at(i - 2) == 92) {
+        i - 1
+      } else {
+        i
+      }
+      let close = closing_bracket(text, i, code)
+      if close >= 0 {
+        if close + 1 < n && text.code_unit_at(close + 1) == 40 {
+          match parse_inline_dest(text, close + 2) {
+            Some((ds, de, link_end)) => {
+              found.push(
+                MarkdownLink::{
+                  inline: true,
+                  destination: unescape_md(text.slice(ds, de)),
+                  start: start,
+                  end: link_end,
+                },
+              )
+              i = i + 1
+              continue
+            }
+            None => ()
+          }
+        }
+        let mut label = text.slice(i + 1, close)
+        let mut has_explicit_label = false
+        if close + 1 < n && text.code_unit_at(close + 1) == 91 {
+          let mut rb = close + 2
+          while rb < n && text.code_unit_at(rb) != 93 {
+            rb = rb + 1
+          }
+          if rb < n && rb > close + 2 {
+            label = text.slice(close + 2, rb)
+            has_explicit_label = true
+          }
+        }
+        match defs.get(norm_ref_label(label)) {
+          Some(dest) => {
+            found.push(
+              MarkdownLink::{
+                inline: false,
+                destination: dest,
+                start: start,
+                end: close + 1,
+              },
+            )
+            if has_explicit_label {
+              skip_label_starts.set(close + 1, true)
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    i = i + 1
+  }
+  // Second pass: Autolinks `<file:...>` (matches TS `text.matchAll(/<(file:[^\s<>]*)>/g)`,
+  // including `\<file:///tmp/e>` where `\` precedes `<`, skipping code spans & existing links)
+  let mut k = 0
+  while k < n {
+    if text.code_unit_at(k) == 60 && !in_ranges(code, k) && k + 6 <= n && text.slice(k + 1, k + 6) == "file:" {
+      let mut gt = k + 6
+      while gt < n {
+        let (cp, step) = decode_utf8_at(text, gt)
+        if cp == 62 || cp == 60 || is_ws_cp(cp) {
+          break
+        }
+        gt = gt + step
+      }
+      if gt < n && text.code_unit_at(gt) == 62 {
+        let mut overlaps = false
+        for j in 0..<found.length() {
+          if k >= found[j].start && k < found[j].end {
+            overlaps = true
+            break
+          }
+        }
+        if !overlaps {
+          found.push(
+            MarkdownLink::{
+              inline: false,
+              destination: text.slice(k + 1, gt),
+              start: k,
+              end: gt + 1,
+            },
+          )
+        }
+        k = gt + 1
+        continue
+      }
+    }
+    k = k + 1
+  }
+  // Sort by start offset ascending
+  for a in 1..<found.length() {
+    let cur = found[a]
+    let mut b = a - 1
+    while b >= 0 && found[b].start > cur.start {
+      found[b + 1] = found[b]
+      b = b - 1
+    }
+    found[b + 1] = cur
+  }
+  found
+}
+
+/// Validates that `bytes` is strictly valid UTF-8 (rejects lone/invalid bytes like `%FF`).
+fn is_valid_utf8(raw : Bytes) -> Bool {
+  let n = raw.length()
+  let mut i = 0
+  while i < n {
+    let b0 = byte_at(raw, i)
+    if b0 <= 0x7f {
+      i = i + 1
+    } else if b0 >= 0xc2 && b0 <= 0xdf {
+      if i + 1 >= n {
+        return false
+      }
+      let b1 = byte_at(raw, i + 1)
+      if (b1 & 0xc0) != 0x80 {
+        return false
+      }
+      i = i + 2
+    } else if b0 >= 0xe0 && b0 <= 0xef {
+      if i + 2 >= n {
+        return false
+      }
+      let b1 = byte_at(raw, i + 1)
+      let b2 = byte_at(raw, i + 2)
+      if (b1 & 0xc0) != 0x80 || (b2 & 0xc0) != 0x80 {
+        return false
+      }
+      if b0 == 0xe0 && b1 < 0xa0 {
+        return false
+      }
+      if b0 == 0xed && b1 >= 0xa0 {
+        return false
+      }
+      i = i + 3
+    } else if b0 >= 0xf0 && b0 <= 0xf4 {
+      if i + 3 >= n {
+        return false
+      }
+      let b1 = byte_at(raw, i + 1)
+      let b2 = byte_at(raw, i + 2)
+      let b3 = byte_at(raw, i + 3)
+      if (b1 & 0xc0) != 0x80 || (b2 & 0xc0) != 0x80 || (b3 & 0xc0) != 0x80 {
+        return false
+      }
+      if b0 == 0xf0 && b1 < 0x90 {
+        return false
+      }
+      if b0 == 0xf4 && b1 >= 0x90 {
+        return false
+      }
+      i = i + 4
+    } else {
+      return false
+    }
+  }
+  true
+}
+
+/// Strict percent-decode for `file:` URLs (matches Node `fileURLToPath`):
+/// rejects `%2F`/`%2f` (encoded slash) and invalid UTF-8 sequences (like `%FF`).
+fn strict_file_url_decode(path_part : String) -> Option[String] {
+  let raw = js_json::utf8_bytes(path_part)
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < raw.length() {
+    let b = byte_at(raw, i)
+    if b == 0x25 {
+      if i + 2 >= raw.length() {
+        return None
+      }
+      let hi = hex_val(byte_at(raw, i + 1))
+      let lo = hex_val(byte_at(raw, i + 2))
+      if hi < 0 || lo < 0 {
+        return None
+      }
+      let decoded = (hi << 4) | lo
+      if decoded == 0x2f {
+        return None
+      }
+      out.push(decoded.to_byte())
+      i = i + 3
+    } else {
+      out.push(b.to_byte())
+      i = i + 1
+    }
+  }
+  let buf = Bytes::new(out.length())
+  for j in 0..<out.length() {
+    buf[j] = out[j]
+  }
+  if !is_valid_utf8(buf) {
+    return None
+  }
+  Some(buf.to_string())
+}
+
+/// Parses a `file:` URL to a POSIX path matching WHATWG URL + Node `fileURLToPath`:
+/// - Supports `file:///...`, `file://localhost/...`, `file:/...`, `file:rel/...`
+/// - Rejects non-localhost host (`file://other/path`)
+/// - Strips `#fragment` and `?query`
+/// - Resolves `.` and `..` (including `%2e` / `%2E` dot segments)
+/// - Rejects `%2F` / `%2f` and invalid UTF-8 (`%FF`)
+pub fn parse_file_url_path(dest : String) -> Option[String] {
+  if !dest.starts_with("file:") {
+    return None
+  }
+  let mut rest = dest.slice(5, dest.length())
+  // Strip #fragment and ?query
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i)
+    if c == 35 || c == 63 {
+      rest = rest.slice(0, i)
+      break
+    }
+  }
+  let mut raw_path = ""
+  if rest.starts_with("//") {
+    let after_slashes = rest.slice(2, rest.length())
+    let mut slash = -1
+    for i in 0..<after_slashes.length() {
+      if after_slashes.code_unit_at(i) == 47 {
+        slash = i
+        break
+      }
+    }
+    let host = if slash >= 0 { after_slashes.slice(0, slash) } else { after_slashes }
+    let host_lower = ascii_lower_str(host)
+    if host_lower != "" && host_lower != "localhost" {
+      return None
+    }
+    raw_path = if slash >= 0 { after_slashes.slice(slash, after_slashes.length()) } else { "/" }
+  } else if rest.starts_with("/") {
+    raw_path = rest
+  } else {
+    // WHATWG URL treats `file:tmp/x` as `file:///tmp/x`
+    raw_path = "/" + rest
+  }
+  // Split segments on `/`, reject `%2f`/`%2F`, normalize `.` / `..` / `%2e` / `%2e%2e`
+  let segs : Array[String] = []
+  let mut i = 0
+  let rn = raw_path.length()
+  let mut trailing_slash = false
+  while i < rn {
+    if raw_path.code_unit_at(i) == 47 {
+      i = i + 1
+      trailing_slash = true
+      continue
+    }
+    trailing_slash = false
+    let s_start = i
+    while i < rn && raw_path.code_unit_at(i) != 47 {
+      i = i + 1
+    }
+    let raw_seg = raw_path.slice(s_start, i)
+    let dec_seg = match strict_file_url_decode(raw_seg) {
+      Some(s) => s
+      None => return None
+    }
+    if dec_seg == "." {
+      continue
+    } else if dec_seg == ".." {
+      if segs.length() > 0 {
+        let _ = segs.pop()
+      }
+    } else {
+      segs.push(dec_seg)
+    }
+  }
+  let sb = StringBuilder::new()
+  sb.write_string("/")
+  for j in 0..<segs.length() {
+    if j > 0 {
+      sb.write_string("/")
+    }
+    sb.write_string(segs[j])
+  }
+  if trailing_slash && segs.length() > 0 {
+    sb.write_string("/")
+  }
+  Some(sb.to_string())
+}
+
+/// Extracts local file paths named by Markdown links (`file:` URLs and absolute `/...` paths).
+pub fn named_local_paths(text : String) -> Array[NamedLocalPath] {
+  let links = find_markdown_links(text)
+  let out : Array[NamedLocalPath] = []
+  for i in 0..<links.length() {
+    let dest = links[i].destination
+    if dest.starts_with("file:") {
+      match parse_file_url_path(dest) {
+        Some(p) => out.push(NamedLocalPath::{ destination: dest, path: p })
+        None => ()
+      }
+    } else {
+      let decoded = percent_decode(dest)
+      if decoded.starts_with("/") && !decoded.starts_with("//") {
+        out.push(NamedLocalPath::{ destination: dest, path: decoded })
+      }
+    }
+  }
+  out
+}
+
+// ── Attachment copy naming (`station/src/sessions/attachment-copy.ts` 1:1) ──
+
+/// Sanitizes an attachment filename by replacing `/`, `\`, and control characters (< 0x20) with `_`.
+pub fn sanitize_attachment_name(name : String) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<name.length() {
+    let c = name.code_unit_at(i)
+    if c == 47 || c == 92 || c < 0x20 {
+      sb.write_string("_")
+    } else {
+      sb.write_string(name.slice(i, i + 1))
+    }
+  }
+  sb.to_string()
+}
+
+/// Formats a unique destination path for an attachment copy at `now_ms` and 1-based `attempt`.
+pub fn format_attachment_path(dir : String, name : String, now_ms : Int64, attempt : Int) -> String {
+  let iso = js_json::format_iso_ms(now_ms)
+  let head = if iso.length() >= 19 { iso.slice(0, 19) } else { iso }
+  let sb = StringBuilder::new()
+  for i in 0..<head.length() {
+    let c = head.code_unit_at(i)
+    if c == 58 || c == 46 {
+      sb.write_string("-")
+    } else {
+      sb.write_string(head.slice(i, i + 1))
+    }
+  }
+  let stamp = sb.to_string()
+  let safe = sanitize_attachment_name(name)
+  let file_name = if attempt <= 1 {
+    stamp + "-" + safe
+  } else {
+    stamp + "-" + attempt.to_string() + "-" + safe
+  }
+  nodepath::join(path_sep_of(dir), [dir, file_name])
+}
+
+// ── Peer files & live-location protocol (`peer-files.ts`, `live-location-protocol.ts`) ──
+
+pub let PEER_FILE_METHOD : String = "session.file"
+pub let PEER_PUT_METHOD : String = "session.put"
+pub let MAX_PEER_FILE_BYTES : Int64 = 52428800L
+
+pub struct LiveLocationIdentity {
+  pub runtime : String
+  pub runtime_session_id : Option[String]
+  pub cwd : Option[String]
+  pub workspace : String
+  pub profile : Option[String]
+  pub ws : Option[String]
+  pub token_hash : String
+}
+
+/// Computes `LiveLocationIdentity` with SHA-256 hex digest of the session token so
+/// the raw token is never sent across threads (`live-location-protocol.ts` 1:1).
+pub fn location_identity(
+  runtime : String,
+  runtime_session_id : Option[String],
+  cwd : Option[String],
+  workspace : String,
+  profile : Option[String],
+  ws : Option[String],
+  token : String,
+) -> LiveLocationIdentity {
+  LiveLocationIdentity::{
+    runtime: runtime,
+    runtime_session_id: runtime_session_id,
+    cwd: cwd,
+    workspace: workspace,
+    profile: profile,
+    ws: ws,
+    token_hash: crypto::sha256_hex(js_json::utf8_bytes(token)),
+  }
+}

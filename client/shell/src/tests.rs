@@ -4137,3 +4137,83 @@ fn tls_upgrade_server_respects_timeout_ms() {
     let (_, err_out, _) = answer(98_312);
     assert!(err_out.contains("timed out"), "expected timeout error, got: {err_out}");
 }
+
+#[cfg(feature = "station")]
+#[test]
+fn image_thumb_shell_roundtrip_and_errors() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+
+    // 1x1 PNG (valid, 67 bytes)
+    let png_1x1: Vec<u8> = vec![
+        137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 2, 0, 0, 0, 144, 119, 83, 222, 0, 0, 0, 12, 73, 68, 65, 84, 8, 215, 99, 248, 207, 192, 0, 0, 3,
+        1, 1, 0, 24, 221, 141, 176, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
+    ];
+
+    // Hash mode over Shell::call
+    shell.call(98_320, "image.thumb".into(), json!({ "mode": "hash" }).to_string().as_bytes(), Some(png_1x1.clone()));
+    let (json_out, err_out, bytes_out) = answer(98_320);
+    assert_eq!(err_out, "");
+    assert!(bytes_out.is_none());
+    let v: Value = serde_json::from_str(&json_out).unwrap();
+    assert_eq!(v["width"], 1);
+    assert_eq!(v["height"], 1);
+    assert!(v["thumbhash"].as_str().is_some_and(|s| !s.is_empty()));
+
+    // Custom mode over Shell::call returns encoded bytes
+    shell.call(
+        98_321,
+        "image.thumb".into(),
+        json!({ "mode": "custom", "maxWidth": 64, "maxHeight": 64, "thumbhash": true }).to_string().as_bytes(),
+        Some(png_1x1),
+    );
+    let (json_out, err_out, bytes_out) = answer(98_321);
+    assert_eq!(err_out, "");
+    let v: Value = serde_json::from_str(&json_out).unwrap();
+    assert_eq!(v["skipped"], false);
+    assert_eq!(v["mime"], "image/jpeg");
+    assert_eq!(v["width"], 1);
+    assert_eq!(v["height"], 1);
+    let bytes = bytes_out.expect("custom mode returns bytes");
+    assert_eq!(bytes.len() as u64, v["size"].as_u64().unwrap());
+
+    // Invalid parameter returns explicit error
+    shell.call(98_322, "image.thumb".into(), json!({ "mode": "custom", "maxWidth": 0, "maxHeight": 64 }).to_string().as_bytes(), None);
+    let (_, err_out, bytes_out) = answer(98_322);
+    assert!(!err_out.is_empty());
+    assert!(bytes_out.is_none());
+}
+
+#[cfg(not(feature = "station"))]
+#[test]
+fn image_thumb_disabled_without_station_feature() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    shell.call(98_325, "image.thumb".into(), json!({ "mode": "hash" }).to_string().as_bytes(), None);
+    let (_, err_out, _) = answer(98_325);
+    assert_eq!(err_out, "no operation image.thumb");
+}
+
+#[test]
+fn image_thumb_ffi_rejects_oversized_bytes_before_copy() {
+    let dir = TempDir::new();
+    let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+    let op = std::ffi::CString::new("image.thumb").unwrap();
+    let payload = br#"{"mode":"hash"}"#;
+    // Pass a null bytes pointer with length > 64 MiB: FFI pre-check must reject synchronously without dereferencing.
+    unsafe {
+        crate::sf_shell_call(
+            &shell as *const Shell,
+            98_326,
+            op.as_ptr(),
+            payload.as_ptr(),
+            payload.len(),
+            std::ptr::null(),
+            (64 * 1024 * 1024) + 1,
+            1,
+        );
+    }
+    let (_, err_out, bytes_out) = answer(98_326);
+    assert!(err_out.contains("exceed maximum size"), "unexpected err: {err_out}");
+    assert!(bytes_out.is_none());
+}

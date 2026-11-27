@@ -25,6 +25,12 @@ fn g() -> Ctx {
 }
 
 ///|
+/// The current frame clock (milliseconds), including the current frame's logic moment during `view_frame`.
+pub fn clock_now() -> Double {
+  dmax(g().clock, view_logic_at.val)
+}
+
+///|
 let g_view : Ref[(Ctx) -> Unit] = { val: fn(_c) { () } }
 
 ///|

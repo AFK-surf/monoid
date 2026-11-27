@@ -1,4 +1,35 @@
 ///|
+test "a ground covers text up to the smooth edge of each of its four corners" {
+  let t = Tester::new(
+    fn(c) {
+      c.box(
+        w=Px(200.0),
+        h=Px(100.0),
+        style=style(radius=Corners(24.0, 0.0, 80.0, 12.0)),
+        bg=red,
+        fn() {  },
+      ) |> ignore
+    },
+    w=200.0,
+    h=100.0,
+  )
+  t.draw()
+  let drawn = rect_of_color(red)
+  let box = FixedArray::makei(inst_size, fn(i) { drawn[i] })
+  let covers = fn(x, y) { ground_kind(box, 0, x, y).0 == 1 }
+  // A point seven units from both edges falls inside the smooth 24-point corner.
+  assert_true(covers(7.0, 7.0))
+  assert_false(covers(4.0, 4.0))
+  assert_true(covers(198.0, 2.0))
+  assert_false(covers(193.0, 93.0))
+  // The bottom-right radius tops out at half the height. Its curve eases into the bottom edge.
+  assert_false(covers(150.0, 99.9))
+  assert_true(covers(150.0, 99.0))
+  assert_true(covers(7.0, 93.0))
+  assert_false(covers(1.0, 99.0))
+}
+
+///|
 test "a shape with words over it is their ground, asked nothing; with none, a mark of its own, asked" {
   // (still.fail's chat find: a highlighter's swipe behind the word found, a yellow at 70% on a white page, 1.13 to 1)
   let swipe = [([0.0, 0.0, 60.0, 1.0, 58.0, 18.0, 2.0, 17.0], true)]

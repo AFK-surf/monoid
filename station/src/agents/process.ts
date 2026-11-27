@@ -10,7 +10,7 @@ import { createConnection } from "node:net";
 import { join } from "node:path";
 import { keyPart } from "./sandbox-name.ts";
 import { log } from "../ops/log.ts";
-import { Lines, RunnerConnection, listeningSoon, runnerOf, runnersDir, type Exit, type RunnerInfo } from "./runner.ts";
+import { Lines, RunnerConnection, listeningSoon, liveRunner, runnerOf, runnersDir, type Exit, type RunnerInfo } from "./runner.ts";
 import { wall } from "../ops/fibers.ts";
 import type { RuntimeKind } from "./runtime.ts";
 
@@ -68,22 +68,30 @@ function socketOf(conn: RunnerConnection): import("node:net").Socket {
 }
 
 /// Ends a runner of this id left by an earlier station, and waits for it to go: `only` that runner (by its pid and its
-/// start), none started under its id since. Whether there was one to end.
+/// start), none started under its id since. Also waits for a runner already exiting after unlinking its socket so a new
+/// runner started under the same id does not collide with its still-present `.json` sentinel. Whether there was a live
+/// listening runner to end.
 export async function endRunner(data: string, id: string, label: string, only?: RunnerInfo): Promise<boolean> {
-  const info = await findRunner(data, id);
-  if (!info || (only !== undefined && (info.runner !== only.runner || info.startedAt !== only.startedAt))) return false;
-  log.warn("agents::process", "ending a runtime process left by a previous run", { label, runner: info.runner, pgid: info.pgid });
-  if (await listeningSoon(info)) {
+  const info = await runnerOf(data, id);
+  if (!info || info.id !== id || (only !== undefined && (info.runner !== only.runner || info.startedAt !== only.startedAt))) return false;
+  if (!(await liveRunner(info))) return false;
+  const listening = await listeningSoon(info);
+  if (listening) {
+    log.warn("agents::process", "ending a runtime process left by a previous run", { label, runner: info.runner, pgid: info.pgid });
     const conn = new RunnerConnection(info, () => {});
-    socketOf(conn).on("error", () => {});
+    const sock = socketOf(conn);
+    const closed = new Promise<void>((resolve) => sock.once("close", () => resolve()));
+    sock.on("error", () => {});
     conn.signal("TERM", true);
-    await Promise.race([conn.exited, sleep(2000)]);
-    if (groupAlive(info.pgid)) conn.signal("KILL", true);
-    await Promise.race([conn.exited, sleep(1000)]);
+    await Promise.race([conn.exited, closed, sleep(2000)]);
+    if (!sock.destroyed && groupAlive(info.pgid)) conn.signal("KILL", true);
+    if (!sock.destroyed) await Promise.race([conn.exited, closed, sleep(1000)]);
     conn.done();
+  } else {
+    log.info("agents::process", "waiting for an exiting runner to finish", { label, runner: info.runner });
   }
   for (let i = 0; i < 300 && pidAlive(info.runner); i++) await sleep(10);
-  return true;
+  return listening;
 }
 
 /// Where the runner will start sending stdout from: the end of what the previous station acknowledged; and where of

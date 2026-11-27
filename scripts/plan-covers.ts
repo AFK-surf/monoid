@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { inputsIn, inputsOf, tree } from "./native.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // (station's esbuild, as its build takes it; only what is used of it, typed: the scripts' typecheck has no esbuild)
@@ -61,6 +62,12 @@ async function inputs(p: Part): Promise<string[]> {
 
 const files = new Map<string, Part[]>();
 for (const p of parts) for (const f of await inputs(p)) files.set(f, [...(files.get(f) ?? []), p]);
+// Native inputs of `station-pion` (pion/station-main, pion/rules/packages, shared pion/station packages, i18n):
+// every non-test, non-doc input must trigger `station=true` in scripts/plan.sh.
+const stationPionPart: Part = { name: "station-pion", entries: [], keys: ["station"] };
+const stationPionFiles = inputsIn(tree(root), inputsOf("station-pion"));
+if (!stationPionFiles) throw new Error("plan-covers: could not list station-pion inputs from native.ts");
+for (const [f] of stationPionFiles) files.set(f, [...(files.get(f) ?? []), stationPionPart]);
 
 // Each file on its own: what plan.sh decides when it is the only one changed.
 const script = `PLAN_SOURCE=1; . scripts/plan.sh; range=

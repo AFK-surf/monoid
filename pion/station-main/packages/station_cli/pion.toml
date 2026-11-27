@@ -1,0 +1,22 @@
+[package]
+name = "station_cli"
+version = "0.1.0"
+
+[dependencies]
+base64 = { workspace = true }
+base_codec = { workspace = true }
+builders_core = { workspace = true }
+crypto = { workspace = true }
+flate = { workspace = true }
+form = { workspace = true }
+host_shim = { workspace = true }
+js_json = { workspace = true }
+jscase = { workspace = true }
+lock = { workspace = true }
+nodepath = { workspace = true }
+url = { workspace = true }
+station_sys = { path = "../station_sys" }
+station_http = { path = "../station_http" }
+station_ops = { path = "../station_ops" }
+station_rules_bridge = { path = "../station_rules_bridge" }
+station_cloud = { path = "../station_cloud" }

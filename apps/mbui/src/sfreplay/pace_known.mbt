@@ -126,7 +126,6 @@ let frames_unrecorded_known : Array[String] = [
   "chinese-enter",
   "delete-failed",
   "dismiss",
-  "draft-restart",
   "drive-delete",
   "drive-lend",
   "drive-list",

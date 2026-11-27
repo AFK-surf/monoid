@@ -847,6 +847,40 @@ test "liquid_segmented_node: unattached external DampedDrag binds on mount and s
 }
 
 ///|
+test "the segmented thumb follows unequal widths and stays over the end options when its spring overshoots" {
+  let drag = DampedDrag::new(0.0, lo=0.0, hi=2.0, held_scale=ctrl_seg_held_scale)
+  let t = glass_case(false, false, fn(page) {
+    liquid_segmented_node(
+      page,
+      fn() { ["One", "Two", "Three"] },
+      fn() { 0 },
+      fn(_) {  },
+      width=270.0,
+      widths=fn() { [55.0, 90.0, 125.0] },
+      pad=0.0,
+      drag~,
+      glass_track=false,
+    )
+    |> ignore
+  })
+  let first = t.get(Tab, label="One").rect
+  let middle = t.get(Tab, label="Two").rect
+  let last = t.get(Tab, label="Three").rect
+  for (position, left, width) in [
+    (-0.25, first.0, first.2),
+    (0.5, (first.0 + middle.0) / 2.0, (first.2 + middle.2) / 2.0),
+    (2.25, last.0, last.2),
+  ] {
+    drag.value.put(position)
+    t.draw()
+    let thumb = t.drawn_rects().filter(fn(r) { r.4 == @ui.tree_theme().lifted })
+    assert_eq(thumb.length(), 1)
+    assert_eq((thumb[0].0, thumb[0].2), (left, width), msg="spring at \{position}")
+  }
+  set_dark(None)
+}
+
+///|
 test "liquid_slider_node: remote track tap to both ends travels smoothly without end-clamp kink (flush=false and flush=true)" {
   for flush in [false, true] {
     let v = @signals.signal(0.0)

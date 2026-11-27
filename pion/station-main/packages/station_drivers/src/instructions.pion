@@ -1,0 +1,746 @@
+// Agent instructions, four-layer memory injection (`read_memory`), UTF-8 safe
+// truncation, `overgrown` calculation, station/person tag sanitization, and
+// thread address formatting — 1:1 aligned with `station/src/agents/instructions.ts`.
+
+import "crypto"
+import "jscase"
+import "nodepath"
+
+pub let MEMORY_MOST : Int = 8192
+pub let MEMORY_INJECT_HARD_MAX : Int = 16384
+pub let STATION_MEMORY_MAX : Int = 4096
+pub let PERSON_MEMORY_MAX : Int = 4096
+pub let MEMORY_READ_SLACK : Int = 4096
+pub let SKILL_MOST : Int = 24576
+pub let LINE_MOST : Int = 1500
+pub let SITE_INSTRUCTIONS_MAX : Int = 4096
+pub let LONG_CHAT : Int = 20
+
+pub let MOVE_LINE : String = " To move chats, or a whole station, to another station, skill stillfail-move."
+
+pub let PROJECTS_BLOCK : String = "\n- A project is any conceptual ongoing workstream or area of work (e.g. office CI, ops, a client, a product, research — not limited to GitHub repos or folders). Once the chat's topic is clear, silently classify it with chat_configure into an existing project (or \"\" to leave unclassified); wait if the opening is vague. Tags (0–3) are optional: prefer existing workspace tags, and when unsure leave tags empty instead of inventing ad-hoc tags.\n- To create a new project (even if a person asks), call project_manage with action=\"propose\" to post a silent confirmation bar — creating a project does not auto-assign the current chat, and a proposal is not a blocking question (never end need_human for it).\n- Before managing projects or tags (listing all, editing notes/refs, renaming, merging, bulk reclassifying, cleaning tags), read skill stillfail-projects."
+
+pub let NUDGE : String = "Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:\n- all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind \"all_done\" (or chat_state \"all_done\" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).\n- need_human: a person has to give, do, decide, confirm or verify something (a card you posted included), or answer a question you asked: kind \"need_human\" with need, what they have to give, do or decide (to verify: where, how and what to look at). If work you started is pending too, mention it after the ask in need.\n- waiting: only work you started that will bring you back on its own (a background command or agent, a job, a loop watching CI), with nothing asked of anyone, and nothing else you can do meanwhile: \"waiting\" (chat_post, or chat_state if you already posted) with seconds, your estimate of how long until it does, and for, what you wait for. Waiting on a person is need_human.\n- Otherwise: continue the work."
+
+pub let RESUME_AFTER_RESTART : String = "The station restarted while you were in the middle of a turn, so that turn was cut off. Check where you were (files, git state, anything you started), then continue. Post only if people need to know."
+pub let GO_ON_AFTER_AUTH : String = "Your last turn stopped on an authentication error. The station reopened the runtime to reload its credentials. Continue the unfinished work from this conversation. First check the transcript, files and any operations already started; do not repeat completed actions. If an action's outcome is uncertain, verify it before retrying. Post only if people need to know."
+pub let GO_ON_AFTER_CODEX_UPDATE : String = "Your last turn stopped because Codex was too old for the selected model. The station updated Codex and reopened this conversation. Continue the unfinished work from this conversation. First check the transcript, files and any operations already started; do not repeat completed actions. If an action's outcome is uncertain, verify it before retrying. Post only if people need to know."
+pub let GO_ON_AFTER_SPENT : String = "Your last turn was cut off: the account it ran on hit its usage limit. You now run on another account (or runtime or model). Check where you were, then continue the work. Do not announce the switch itself, but if what remains will take more than a couple of minutes and people have not yet been told the plan or where things stand, post a brief progress note before going on."
+pub let GO_ON_AFTER_OVERLOADED : String = "Your last turn was cut off: the model was at capacity (the provider's side, not your account), and the station waited a while before trying again. Check where you were, then continue the work. Post only if people need to know."
+pub let GO_ON_AFTER_FAILED : String = "Your last turn failed (the model service or the connection to it went wrong), and a person asked to try again. Check where you were, then continue the work. Post only if people need to know."
+pub let GO_ON_AFTER_UNANSWERED : String = "Your last turns ended without a state (or without reaching anyone), and the station stopped asking; a person asked to try again. Check where you were, then post what people still need to see (your answer, results, questions) and end the turn with a state as usual."
+pub let GO_ON_AFTER_REFILL : String = "Your last turn was cut off: the account it ran on hit its usage limit, and no other account could take over. Its allowance should have refilled by now. Check where you were, then continue the work. Post only if people need to know."
+pub let TOOLS_LOST : String = "Your last turn could not reach the station's tools (chat_post, chat_state and the rest failed or were not connected), so nothing you said reached anyone. The station restarted your process; the tools work again. Check where you were, then post what people still need to see (your answer, results, questions) and end the turn with a state as usual."
+pub let BACKGROUND_STOPPED_WAITING : String = "You ended your last turn waiting, but what you waited on was stopped with your process (see above), so it will never bring you back. Check where it got to (a run it watched may already be done), act on that, and watch again what is still going before you wait."
+pub let UNDECIDED : String = "You are told in this session when it is decided: meanwhile go on with what does not need it (answer the chat, other work); with nothing else left, end your turn need_human (about the card)."
+
+/// Injectable file descriptor snapshot for deterministic, O_NOFOLLOW-checked memory reads.
+pub struct MemoryFileEntry {
+  pub is_regular : Bool
+  pub is_symlink : Bool
+  pub mode : Int
+  pub total_bytes : Int
+  pub opened_nofollow : Bool
+  pub content : Bytes
+}
+
+fn kb_str(n : Int) -> String {
+  let k = (n + 1023) / 1024
+  k.to_string() + " KB"
+}
+
+/// Length of the longest prefix of `buf` that ends on a complete UTF-8 code point boundary.
+pub fn utf8_complete_prefix_len(buf : Bytes) -> Int {
+  let end = buf.length()
+  if end == 0 {
+    return 0
+  }
+  let mut i = end - 1
+  while i > 0 && end - i < 4 && ((buf[i].to_int() & 0xC0) == 0x80) {
+    i = i - 1
+  }
+  let lead = buf[i].to_int() & 0xFF
+  let need = if lead < 0x80 {
+    1
+  } else if (lead & 0xE0) == 0xC0 {
+    2
+  } else if (lead & 0xF0) == 0xE0 {
+    3
+  } else if (lead & 0xF8) == 0xF0 {
+    4
+  } else {
+    1
+  }
+  if end - i < need {
+    i
+  } else {
+    end
+  }
+}
+
+/// Truncate `text` to at most `max_bytes` UTF-8 bytes, preferring a `\n` line boundary
+/// when it is within `LINE_MOST` bytes of `max_bytes`, and otherwise cutting at a
+/// complete UTF-8 code point boundary (never splitting a multi-byte UTF-8 character).
+pub fn truncate_utf8(text : String, max_bytes : Int) -> String {
+  let raw = text.to_bytes()
+  if raw.length() <= max_bytes {
+    return text
+  }
+  if max_bytes <= 0 {
+    return ""
+  }
+  let mut bytes = 0
+  let mut last_newline = -1
+  let mut bytes_at_last_newline = 0
+  let mut end = 0
+  let n = raw.length()
+  let mut i = 0
+  while i < n {
+    let lead = raw[i].to_int() & 0xFF
+    let cp_bytes = if lead < 0x80 {
+      1
+    } else if (lead & 0xE0) == 0xC0 {
+      2
+    } else if (lead & 0xF0) == 0xE0 {
+      3
+    } else if (lead & 0xF8) == 0xF0 {
+      4
+    } else {
+      1
+    }
+    if lead == 0x0A {
+      last_newline = i
+      bytes_at_last_newline = bytes
+    }
+    if bytes + cp_bytes > max_bytes || i + cp_bytes > n {
+      break
+    }
+    bytes = bytes + cp_bytes
+    i = i + cp_bytes
+    end = i
+  }
+  let cut = if last_newline > 0 && bytes_at_last_newline >= max_bytes - LINE_MOST {
+    last_newline
+  } else {
+    end
+  }
+  str_slice_bytes(text, 0, cut)
+}
+
+/// Safely read a bounded memory file entry:
+/// - skip non-regular files and symlinks (`!is_regular || is_symlink || !opened_nofollow`)
+/// - skip owner-only (`0600`) private files (`(mode & 0o077) == 0`)
+/// - skip empty files (`total_bytes <= 0`)
+/// - cap at `cap` bytes on a complete UTF-8 code point boundary
+pub fn read_bounded_memory(entry : MemoryFileEntry, cap : Int) -> Option[(String, Int, Bool)] {
+  if !entry.is_regular || entry.is_symlink || !entry.opened_nofollow {
+    return None
+  }
+  if (entry.mode & 63) == 0 || entry.total_bytes <= 0 {
+    return None
+  }
+  let over_cap = entry.total_bytes > cap
+  let take_len = if entry.content.length() > cap { cap } else { entry.content.length() }
+  let slice = Bytes::new(take_len)
+  for i in 0..<take_len {
+    slice[i] = entry.content[i]
+  }
+  let valid_end = if take_len < entry.total_bytes {
+    utf8_complete_prefix_len(slice)
+  } else {
+    take_len
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<valid_end {
+    sb.write_byte(slice[i])
+  }
+  let text = str_trim(sb.to_string())
+  if text == "" {
+    return None
+  }
+  Some((text, entry.total_bytes, over_cap))
+}
+
+fn capped_memory(path : String, entry : MemoryFileEntry, max_bytes : Int, what : String) -> Option[String] {
+  match read_bounded_memory(entry, max_bytes + MEMORY_READ_SLACK) {
+    None => None
+    Some((text, total_bytes, over_cap)) => {
+      let trimmed_bytes = text.to_bytes().length()
+      if !over_cap && trimmed_bytes <= max_bytes {
+        Some(text)
+      } else {
+        let actual = if over_cap { total_bytes } else { trimmed_bytes }
+        let note = "\n\n[still.fail: " +
+        what +
+        " truncated at " +
+        kb_str(max_bytes) +
+        " (actual " +
+        kb_str(actual) +
+        "); read " +
+        path +
+        " for the full file and condense it]"
+        Some(truncate_utf8(text, max_bytes) + note)
+      }
+    }
+  }
+}
+
+pub fn escape_attr(value : String) -> String {
+  str_replace_all(str_replace_all(value, "&", "&amp;"), "\"", "&quot;")
+}
+
+pub fn escape_xml_attr(value : String) -> String {
+  let s = escape_attr(value)
+  str_replace_all(str_replace_all(s, "<", "&lt;"), ">", "&gt;")
+}
+
+fn is_windows_reserved_stem(s : String) -> Bool {
+  let l = ascii_lower(s)
+  if l == "con" || l == "prn" || l == "aux" || l == "nul" {
+    return true
+  }
+  let raw = l.to_bytes()
+  if raw.length() == 4 {
+    let prefix = str_slice_bytes(l, 0, 3)
+    let d = raw[3].to_int() & 0xFF
+    if (prefix == "com" || prefix == "lpt") && d >= 49 && d <= 57 {
+      return true
+    }
+  }
+  false
+}
+
+fn decode_utf8_points(s : String) -> Array[Int] {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[Int] = []
+  let mut i = 0
+  while i < n {
+    let b0 = raw[i].to_int() & 0xFF
+    if b0 < 0x80 {
+      out.push(b0)
+      i = i + 1
+    } else if (b0 & 0xE0) == 0xC0 && i + 1 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      out.push(((b0 & 0x1F) << 6) | (b1 & 0x3F))
+      i = i + 2
+    } else if (b0 & 0xF0) == 0xE0 && i + 2 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      let b2 = raw[i + 2].to_int() & 0xFF
+      out.push(((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F))
+      i = i + 3
+    } else if (b0 & 0xF8) == 0xF0 && i + 3 < n {
+      let b1 = raw[i + 1].to_int() & 0xFF
+      let b2 = raw[i + 2].to_int() & 0xFF
+      let b3 = raw[i + 3].to_int() & 0xFF
+      out.push(((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F))
+      i = i + 4
+    } else {
+      out.push(0xFFFD)
+      i = i + 1
+    }
+  }
+  out
+}
+
+fn write_utf8_cp(sb : StringBuilder, cp : Int) -> Unit {
+  if cp < 0x80 {
+    sb.write_byte(cp as Byte)
+  } else if cp < 0x800 {
+    sb.write_byte((0xC0 | (cp >> 6)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else if cp < 0x10000 {
+    sb.write_byte((0xE0 | (cp >> 12)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  } else {
+    sb.write_byte((0xF0 | (cp >> 18)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 12) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | ((cp >> 6) & 0x3F)) as Byte)
+    sb.write_byte((0x80 | (cp & 0x3F)) as Byte)
+  }
+}
+
+fn is_portable_reserved(s : String) -> Bool {
+  let l = jscase::lower(s)
+  let dot = str_index_of(l, ".", 0)
+  let stem = if dot >= 0 { str_slice_bytes(l, 0, dot) } else { l }
+  if stem == "con" || stem == "prn" || stem == "aux" || stem == "nul" {
+    return true
+  }
+  let cps = decode_utf8_points(stem)
+  if cps.length() == 4 {
+    let prefix = str_slice_bytes(stem, 0, 3)
+    let d = cps[3]
+    let is_sup = d == 0xB9 || d == 0xB2 || d == 0xB3 // ¹ ² ³
+    if (prefix == "com" || prefix == "lpt") && ((d >= 48 && d <= 57) || is_sup) {
+      return true
+    }
+  }
+  false
+}
+
+/// Safe filename stem for a station name: Unicode letters/digits (`\p{L}\p{N}`), `_` and `-` alone,
+/// truncated at 40 complete Unicode code points, trailing `-` stripped, Windows reserved names guarded.
+pub fn station_tag(station : String) -> String {
+  let cps = decode_utf8_points(station)
+  let sb = StringBuilder::new()
+  let mut in_dash = false
+  for i in 0..<cps.length() {
+    let cp = cps[i]
+    let ok = jscase::is_word_point(cp) || cp == 95 || cp == 45
+    if ok {
+      write_utf8_cp(sb, cp)
+      in_dash = false
+    } else if !in_dash {
+      sb.write_byte(45 as Byte)
+      in_dash = true
+    }
+  }
+  let cleaned = trim_dashes(sb.to_string())
+  let cut = trim_trailing_dashes(take_utf8_codepoints(cleaned, 40))
+  if cut == "" {
+    return "station"
+  }
+  if is_windows_reserved_stem(cut) {
+    cut + "-station"
+  } else {
+    cut
+  }
+}
+
+fn trim_dashes(s : String) -> String {
+  let raw = s.to_bytes()
+  let mut a = 0
+  while a < raw.length() && (raw[a].to_int() & 0xFF) == 45 {
+    a = a + 1
+  }
+  let mut b = raw.length()
+  while b > a && (raw[b - 1].to_int() & 0xFF) == 45 {
+    b = b - 1
+  }
+  str_slice_bytes(s, a, b)
+}
+
+fn trim_trailing_dashes(s : String) -> String {
+  let raw = s.to_bytes()
+  let mut b = raw.length()
+  while b > 0 && (raw[b - 1].to_int() & 0xFF) == 45 {
+    b = b - 1
+  }
+  str_slice_bytes(s, 0, b)
+}
+
+fn take_utf8_codepoints(s : String, max_cp : Int) -> String {
+  let raw = s.to_bytes()
+  let mut count = 0
+  let mut i = 0
+  while i < raw.length() && count < max_cp {
+    let b = raw[i].to_int() & 0xFF
+    let step = if b < 0x80 {
+      1
+    } else if (b & 0xE0) == 0xC0 {
+      2
+    } else if (b & 0xF0) == 0xE0 {
+      3
+    } else if (b & 0xF8) == 0xF0 {
+      4
+    } else {
+      1
+    }
+    if i + step > raw.length() {
+      break
+    }
+    i = i + step
+    count = count + 1
+  }
+  str_slice_bytes(s, 0, i)
+}
+
+let PERSON_TAG_MOST : Int = 80
+
+/// Safe filename stem for a person's email in `skills/people/<tag>.md`.
+/// Uses V8 Unicode `jscase::lower` and `jscase::trim`/`jscase::is_space` to match TS 1:1.
+pub fn person_tag(person : String) -> String {
+  let email = jscase::lower(jscase::trim(person))
+  if email == "" || email == "local" || str_starts_with(email, "slack:") {
+    return ""
+  }
+  let at = str_index_of(email, "@", 0)
+  let raw = email.to_bytes()
+  if at <= 0 || at == raw.length() - 1 || str_index_of(email, "@", at + 1) >= 0 {
+    return ""
+  }
+  let cps = decode_utf8_points(email)
+  for i in 0..<cps.length() {
+    if jscase::is_space(cps[i]) {
+      return ""
+    }
+  }
+  let mut plain_chars = true
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 46 || b == 95 || b == 64 || b == 45
+    if !ok {
+      plain_chars = false
+      break
+    }
+  }
+  let first = raw[0].to_int() & 0xFF
+  let last = raw[raw.length() - 1].to_int() & 0xFF
+  let bad_edge = first == 46 || first == 95 || first == 45 || last == 46 || last == 45
+  let has_dotdot = str_contains(email, "..")
+  if plain_chars && !bad_edge && !has_dotdot && !is_portable_reserved(email) && raw.length() <= PERSON_TAG_MOST {
+    return email
+  }
+  // Fallback: `_<kept>-<sha256_12>`
+  let sb = StringBuilder::new()
+  let mut in_dash = false
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    let ok = (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 46 || b == 95 || b == 64 || b == 45
+    if ok {
+      sb.write_byte(raw[i])
+      in_dash = false
+    } else if !in_dash {
+      sb.write_byte(45 as Byte)
+      in_dash = true
+    }
+  }
+  let mut kept = sb.to_string()
+  while str_contains(kept, "..") {
+    kept = str_replace_all(kept, "..", ".")
+  }
+  let kr = kept.to_bytes()
+  let mut a = 0
+  while a < kr.length() {
+    let b = kr[a].to_int() & 0xFF
+    if b == 46 || b == 95 || b == 45 {
+      a = a + 1
+    } else {
+      break
+    }
+  }
+  kept = str_slice_bytes(kept, a, kr.length())
+  if kept.to_bytes().length() > PERSON_TAG_MOST - 14 {
+    kept = str_slice_bytes(kept, 0, PERSON_TAG_MOST - 14)
+  }
+  let kr2 = kept.to_bytes()
+  let mut b_end = kr2.length()
+  while b_end > 0 {
+    let c = kr2[b_end - 1].to_int() & 0xFF
+    if c == 46 || c == 45 {
+      b_end = b_end - 1
+    } else {
+      break
+    }
+  }
+  kept = str_slice_bytes(kept, 0, b_end)
+  let hash_full = crypto::sha256_hex(email.to_bytes())
+  let hash12 = str_slice_bytes(hash_full, 0, 12)
+  if kept == "" {
+    "_" + hash12
+  } else {
+    "_" + kept + "-" + hash12
+  }
+}
+
+/// Compute overgrown warning note on untruncated `[rel_path, text]` pairs:
+/// `MEMORY.md` > 8 KB, `skills/*/SKILL.md` > 24 KB, or any line > 1500 bytes.
+pub fn overgrown(files : Array[(String, String)]) -> String {
+  let said : Array[String] = []
+  for i in 0..<files.length() {
+    let (rel, text) = files[i]
+    let bytes = text.to_bytes().length()
+    let most = if rel == "MEMORY.md" { MEMORY_MOST } else { SKILL_MOST }
+    let lines = split_lines(text)
+    let mut long_count = 0
+    for j in 0..<lines.length() {
+      if lines[j].to_bytes().length() > LINE_MOST {
+        long_count = long_count + 1
+      }
+    }
+    let why : Array[String] = []
+    if bytes > most {
+      why.push(kb_str(bytes) + ", past " + kb_str(most))
+    }
+    if long_count > 0 {
+      let plural = if long_count == 1 { "" } else { "s" }
+      why.push(long_count.to_string() + " line" + plural + " past " + LINE_MOST.to_string() + " bytes")
+    }
+    if why.length() > 0 {
+      said.push("- " + rel + ": " + join_strings(why, "; "))
+    }
+  }
+  if said.length() == 0 {
+    return ""
+  }
+  "[still.fail: this memory has grown past what an agent can use: condense a file you touch before you add to it]\n" +
+  join_strings(said, "\n") +
+  "\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts."
+}
+
+/// Pure 1:1 implementation of `readMemory()` with injectable file entries:
+/// - computes `overgrown` on untruncated `raw_memory` + `skills`
+/// - hard-caps `MEMORY.md` at `MEMORY_INJECT_HARD_MAX` (16 KB, UTF-8 safe)
+/// - injects `<station-memory>` (4 KB cap, skipping symlinks & `0600`)
+/// - injects `<person-memory>` (4 KB cap, skipping symlinks & `0600`)
+pub fn read_memory(
+  memory_path : String,
+  raw_memory_in : String,
+  skills : Array[(String, String)],
+  station : String,
+  station_entry : Option[MemoryFileEntry],
+  person : String,
+  person_entry : Option[MemoryFileEntry],
+  sep : String,
+) -> String {
+  let raw_memory = str_trim(raw_memory_in)
+  let check_files : Array[(String, String)] = [("MEMORY.md", raw_memory)]
+  for i in 0..<skills.length() {
+    check_files.push(skills[i])
+  }
+  let grown = overgrown(check_files)
+  let raw_bytes = raw_memory.to_bytes().length()
+  let memory = if raw_bytes > MEMORY_INJECT_HARD_MAX {
+    truncate_utf8(raw_memory, MEMORY_INJECT_HARD_MAX) +
+    "\n\n[still.fail: MEMORY.md truncated at " +
+    kb_str(MEMORY_INJECT_HARD_MAX) +
+    " (actual " +
+    kb_str(raw_bytes) +
+    "); read " +
+    memory_path +
+    " for the full file and condense or move non-global entries to skills/<project>/, skills/machines/, or skills/people/]"
+  } else {
+    raw_memory
+  }
+  let base_dir = nodepath::dirname(sep, memory_path)
+  let mut station_block = ""
+  if str_trim(station) != "" {
+    match station_entry {
+      Some(entry) => {
+        let station_path = nodepath::join(sep, [base_dir, "skills", "machines", station_tag(station) + ".md"])
+        match capped_memory(station_path, entry, STATION_MEMORY_MAX, "station memory") {
+          Some(body) => {
+            station_block = "<station-memory station=\"" +
+            escape_attr(station) +
+            "\" path=\"" +
+            escape_attr(station_path) +
+            "\">\n" +
+            body +
+            "\n</station-memory>"
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  let mut person_block = ""
+  let ptag = person_tag(person)
+  if ptag != "" {
+    match person_entry {
+      Some(entry) => {
+        let person_path = nodepath::join(sep, [base_dir, "skills", "people", ptag + ".md"])
+        match capped_memory(person_path, entry, PERSON_MEMORY_MAX, "person memory") {
+          Some(body) => {
+            person_block = "<person-memory person=\"" +
+            escape_xml_attr(jscase::lower(jscase::trim(person))) +
+            "\" path=\"" +
+            escape_xml_attr(person_path) +
+            "\">\n" +
+            body +
+            "\n</person-memory>"
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  let parts : Array[String] = []
+  if memory != "" {
+    parts.push(memory)
+  }
+  if station_block != "" {
+    parts.push(station_block)
+  }
+  if person_block != "" {
+    parts.push(person_block)
+  }
+  if grown != "" {
+    parts.push(grown)
+  }
+  join_strings(parts, "\n\n")
+}
+
+pub fn read_site_instructions(raw : String) -> String {
+  let trimmed = str_trim(raw)
+  if trimmed.to_bytes().length() > SITE_INSTRUCTIONS_MAX {
+    truncate_utf8(trimmed, SITE_INSTRUCTIONS_MAX)
+  } else {
+    trimmed
+  }
+}
+
+pub fn session_instructions(
+  workspace : String,
+  project : Option[String],
+  repos_dir : String,
+  memory_path : String,
+  memory : String,
+  site : String,
+  station : String,
+  move_on : Bool,
+  projects_on : Bool,
+  person : String,
+) -> String {
+  let project_line = match project {
+    Some(p) => "- Project directory: " + p + ". This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n"
+    None => ""
+  }
+  let ptag = person_tag(person)
+  let station_clause = if station == "" { "" } else { " You are on station " + station + "." }
+  let machine_mem = if station == "" {
+    "skills/machines/<station-tag>.md"
+  } else {
+    "skills/machines/" + station_tag(station) + ".md"
+  }
+  let person_mem = if ptag == "" {
+    "skills/people/<person-tag>.md"
+  } else {
+    "skills/people/" + ptag + ".md"
+  }
+  let person_desc = if ptag == "" {
+    "the file of the person a session is for"
+  } else {
+    "this file, of the person this session is for,"
+  }
+  let move_clause = if move_on { MOVE_LINE } else { "" }
+  let proj_clause = if projects_on { PROJECTS_BLOCK } else { "" }
+  let body = "You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.\n\n" +
+  "Messages:\n" +
+  "- Each message comes as <message via=\"web|slack|feishu|group|comma\" thread=\"…\" from=\"…\" ts=\"…\">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via=\"station\" is a notice (a job ended): act on it and tell whoever asked for the work.\n" +
+  "- One session can hear several threads: answer each in its own. Not every message is for you; other agents are bots: build on their work and mention them when you need something.\n" +
+  "- before=\"TS\" means it was written before your post TS, without seeing it.\n" +
+  "- A chat_post is held back when messages you have not read came in its thread first; read them, then send it unchanged with send=<its id> if it still stands, or post what fits now.\n" +
+  "- A message headed 来自/From <a chat's link> is a letter from another chat's agent: answer it with session_send to that link. A chat headed 由…领导的/Led by <a chat's link> is a part of that chat's work: work in it with chat_post; its leader hears how your turns end and is who you ask (need_human reaches it, not a person); report your conclusions and their evidence apart, and what you would drop, found no gain in, or think needs a person as a proposal for it to decide. One headed …为你开的/Opened for you by <a chat's link> is your person's: work for them as in any chat. One headed 由…开的/Opened by: its opener hears how your turns end.\n" +
+  "- Told to stop following a Slack, Feishu or group thread: say so in a sentence and chat_leave it.\n" +
+  "- Write in the language the chat's people write in. Code, commits and pull requests follow their repository.\n\n" +
+  "Answering:\n" +
+  "- Only chat_post reaches people; your ordinary output reaches nobody. chat_post to=<the message's thread>.\n" +
+  "- A subagent you start says nothing itself: it hands its result back to you, and you post what people need. Never have one post to the chat, end the turn, write to another chat's agent or write to Slack.\n" +
+  "- Give the chat a title (a few words) with your first post once its topic is clear: what the whole chat is for, never the step you are on." +
+  proj_clause +
+  "\n- Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end, and post brief progress updates during long multi-step waits.\n" +
+  "- Ask only when a real choice blocks the work. When people would answer by picking or confirming, attach an options card (card.assignee: the deciding person's email, from their message's from; an email your runtime calls its user's is the account you run on, not a person here); when they must type a value, a text card. Do not ask about what is already decided or authorized.\n" +
+  "- Where people gave a principle, decide by it yourself: do not bring them the steps or small choices; ask only what it does not settle and cannot be undone, or only they can decide. Anything that makes someone wait is a decision: ask it plainly.\n" +
+  "- Told off with nothing new found, do not change your answer or give a new date: work out what they want, then say it again.\n" +
+  "- Asked to do something as another chat did, read that chat from its start first (what was asked there, what it used), and never have people carry words between chats. Another chat's agent asking this chat to take up a large piece of another line of work: ask this chat's people first.\n" +
+  "- Before fixing a bug, look whether someone already opened or merged a fix (pull requests by its issue, its words and its files; the files' recent commits).\n" +
+  "- Never ask people to run a command or paste a secret: use the login tool for logins (skill stillfail-login), the vault for credentials (skill stillfail-vault).\n" +
+  "- For visible results show them (skills stillfail-show, stillfail-viz). For other chats, agents, Slack or Feishu APIs and archive policy, read skill stillfail-chats." +
+  move_clause +
+  " To lead other chats or subagents toward one goal, skill stillfail-leading. When you do not have a skill that your instructions or a tool's description names, read it with skill_read by its name.\n\n" +
+  "End every turn with one state, given as kind on your last chat_post or with chat_state:\n" +
+  "- all_done with done: only when nothing people asked for in the chat is left (no next step of yours, no unmerged branch, no open question): what was finished and the evidence (a commit, a release, the answer given). A step of a longer goal done is not all_done.\n" +
+  "- need_human with need: what a person must give, decide or check, asked first in a visible message. Not for what they already decided or told you to do.\n" +
+  "- waiting with for and seconds: only for your own work that runs on and brings you back (a background command or agent, a job, a loop watching CI).\n" +
+  "- Otherwise do not end the turn: a post that says what you do next means you go on doing it now.\n\n" +
+  "Formatting: GitHub Markdown everywhere. Differences:\n" +
+  "| | still.fail chat (thread CHAT/… or EMBER/…) | Slack | Feishu | group |\n" +
+  "|---|---|---|---|---|\n" +
+  "| mention | write the name | <@USER_ID> | <at id=OPEN_ID></at> | @name |\n" +
+  "| files (chat_post files=[paths]) | ![](shot.png) places an image, [name](file) a file | uploaded below the text | sent below the text | sent with the text |\n" +
+  "| math | \\(…\\) and \\[…\\] | Unicode plain text | Unicode plain text | Unicode plain text |\n" +
+  "Write file names as `code`.\n\n" +
+  "Where you work:\n" +
+  project_line +
+  "- Session workspace: " + workspace + ": scratch files, clones and worktrees. Only files sent in the chat outlive it; push what must last.\n" +
+  "- Shared repository cache: " + repos_dir + ": canonical clones; open a detached worktree in your workspace to read or change one (never edit the cache directly), and batch independent reads and searches in parallel rather than slicing files through the shell.\n" +
+  "- A repository's AGENTS.md (or CLAUDE.md) files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.\n\n" +
+  "Memory:\n" +
+  "- The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds." +
+  station_clause +
+  " A line or skill marked [<station>] came from that station before the memory was shared.\n" +
+  "- Route memory into four layers (even when asked to \"remember globally\", place each fact in the right layer rather than dumping everything into MEMORY.md):\n" +
+  "  1. Global memory " + memory_path + " (<= 8 KB, injected below; hard-capped at 16 KB): only cross-project, cross-person, cross-machine rules that would break things if forgotten, one concise line each.\n" +
+  "  2. Project memory: skills/<project>/SKILL.md beside it, description starting \"项目记忆：\". Before working out a project's build or workflow from source, search kinds=[\"skill\"].\n" +
+  "  3. Machine/environment memory: " + machine_mem + " (indexed by skills/machines/SKILL.md with valid YAML frontmatter `name` and `description`) for per-machine paths, build hosts, accounts and ops pitfalls; the current station's file is auto-injected at session start (<station-memory>, capped at 4 KB), read other machines on demand with `skill_read {name: \"machines\", file: \"<tag>.md\"}`.\n" +
+  "  4. People & preferences: " + person_mem + " (indexed by skills/people/SKILL.md with valid YAML frontmatter `name` and `description`; the tag is the person's email in lower case) for team roles and personal communication preferences; " + person_desc + " is auto-injected at session start (<person-memory>, capped at 4 KB), read other people's on demand with `skill_read {name: \"people\", file: \"<tag>.md\"}`, never pile into MEMORY.md.\n" +
+  "- A file named *.conflict-<station>.* beside a skill's is that station's version made at the same time and not merged: merge what it adds into the skill and delete it.\n" +
+  "- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); before writing, check whether the target file already has an entry on the same topic and update/replace it in place rather than appending duplicates. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials."
+  let with_site = if site == "" { body } else { body + "\n\n" + site }
+  if memory == "" {
+    with_site
+  } else {
+    with_site + "\n\n<memory path=\"" + memory_path + "\">\n" + memory + "\n</memory>"
+  }
+}
+
+pub fn thread_address(channel : String, thread_ts : String) -> String {
+  channel + "/" + thread_ts
+}
+
+pub fn parse_thread_address(value : String) -> Option[(String, String)] {
+  let v = str_trim(value)
+  let at = str_index_of(v, "/", 0)
+  if at <= 0 {
+    return None
+  }
+  let channel = str_slice_bytes(v, 0, at)
+  let ts = str_slice_bytes(v, at + 1, v.to_bytes().length())
+  if channel == "" || ts == "" {
+    return None
+  }
+  // Feishu: oc_<alnum> / om[t]_<alnum>
+  if str_starts_with(channel, "oc_") && (str_starts_with(ts, "om_") || str_starts_with(ts, "omt_")) {
+    return Some((channel, ts))
+  }
+  // Group: d_<24hex> or s_<24hex>
+  if (str_starts_with(channel, "d_") || str_starts_with(channel, "s_")) && channel.to_bytes().length() == 26 {
+    if ts == channel || (str_starts_with(ts, "t_") && ts.to_bytes().length() == 18) {
+      return Some((channel, ts))
+    }
+  }
+  // Slack / still.fail chat: [A-Z0-9]+ / <digits>.<digits>
+  let dot = str_index_of(ts, ".", 0)
+  if dot <= 0 {
+    return None
+  }
+  let secs = str_slice_bytes(ts, 0, dot)
+  let micros = str_slice_bytes(ts, dot + 1, ts.to_bytes().length())
+  if is_upper_alnum(channel) && is_digits(secs) && is_digits(micros) {
+    Some((channel, ts))
+  } else {
+    None
+  }
+}
+
+fn is_upper_alnum(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if !((b >= 65 && b <= 90) || (b >= 48 && b <= 57)) {
+      return false
+    }
+  }
+  true
+}
+
+fn is_digits(s : String) -> Bool {
+  let raw = s.to_bytes()
+  if raw.length() == 0 {
+    return false
+  }
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if !(b >= 48 && b <= 57) {
+      return false
+    }
+  }
+  true
+}

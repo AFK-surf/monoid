@@ -1,0 +1,137 @@
+// Unit tests for `subagent_hook.pion` aligned with `station/test/subagent-hook.test.ts`
+// and exact output vectors from `station/assets/agents/subagent-hook.mjs`.
+
+import "base_codec"
+
+fn assert(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic(msg)
+  }
+}
+
+let SLACK_WRITES : String = "chat.postMessage,chat.update,chat.delete,chat.startStream,chat.appendStream,chat.stopStream,reactions.add,files.completeUploadExternal,assistant.threads.setStatus"
+
+test "is_subagent_hook_arg matches POSIX and Windows script paths" {
+  assert(is_subagent_hook_arg("subagent-hook.mjs"), "bare name")
+  assert(is_subagent_hook_arg("/opt/station/assets/agents/subagent-hook.mjs"), "posix path")
+  assert(is_subagent_hook_arg("C:\\station\\assets\\agents\\subagent-hook.mjs"), "win path")
+  assert(!is_subagent_hook_arg("/opt/station/assets/agents/repo-rules-hook.mjs"), "other hook")
+}
+
+test "main agent and malformed inputs are silently let through" {
+  let main_call = "{\"session_id\":\"s1\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"mcp__stillfail__chat_post\",\"tool_input\":{\"text\":\"done\"}}"
+  assert(eval_subagent_hook(main_call, Some(SLACK_WRITES)) == "", "main agent allowed")
+
+  // Named agent session has agent_type without agent_id -> not a subagent.
+  let named_agent = "{\"session_id\":\"s1\",\"agent_type\":\"reviewer\",\"hook_event_name\":\"PreToolUse\",\"tool_name\":\"mcp__stillfail__chat_post\"}"
+  assert(eval_subagent_hook(named_agent, Some(SLACK_WRITES)) == "", "agent_type alone allowed")
+
+  // Malformed / non-object / empty agent_id inputs all pass through.
+  let bad_inputs = [
+    "",
+    "not json",
+    "{",
+    "null",
+    "[]",
+    "42",
+    "{\"agent_id\":\"\"}",
+    "{\"agent_id\":null}",
+  ]
+  for i in 0..<bad_inputs.length() {
+    assert(eval_subagent_hook(bad_inputs[i], Some(SLACK_WRITES)) == "", "bad input allowed")
+  }
+}
+
+test "subagent speaking tools produce exact .mjs deny JSON vector" {
+  let payload = "{\"agent_id\":\"a9f69f7989c7a17a7\",\"agent_type\":\"general-purpose\",\"tool_name\":\"mcp__stillfail__chat_post\",\"tool_input\":{\"text\":\"done\"}}"
+  let expected = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Refused: you are a subagent, and chat_post is only for the agent that started you. A subagent does not post to the chat, end the turn, write to another chat's agent, or open, leave or archive a chat. Nothing was sent or changed. Do not retry, and do not look for another way to do it: finish your task and give what you did or found as your final answer. The agent that started you reads it and posts what people need.\"}}"
+  assert(eval_subagent_hook(payload, Some(SLACK_WRITES)) == expected, "exact chat_post deny vector")
+
+  // Missing tool_name falls back to "this tool".
+  let missing_tool = "{\"agent_id\":\"a1\"}"
+  let expected_missing = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Refused: you are a subagent, and this tool is only for the agent that started you. A subagent does not post to the chat, end the turn, write to another chat's agent, or open, leave or archive a chat. Nothing was sent or changed. Do not retry, and do not look for another way to do it: finish your task and give what you did or found as your final answer. The agent that started you reads it and posts what people need.\"}}"
+  assert(eval_subagent_hook(missing_tool, Some(SLACK_WRITES)) == expected_missing, "missing tool_name fallback")
+}
+
+test "slack_api allows reads and denies writes matching prefix list with exact vector" {
+  // Reads allowed for subagents.
+  let reads = [
+    "conversations.history",
+    "conversations.replies",
+    "users.info",
+    "files.info",
+    "chat.getPermalink",
+    "Chat.postMessage",
+    "chat.post",
+    "xchat.postMessage",
+    "",
+  ]
+  for i in 0..<reads.length() {
+    let payload = "{\"agent_id\":\"a1\",\"tool_name\":\"mcp__stillfail__slack_api\",\"tool_input\":{\"method\":\"" +
+    reads[i] +
+    "\"}}"
+    assert(eval_subagent_hook(payload, Some(SLACK_WRITES)) == "", "slack read allowed")
+  }
+
+  // Write with surrounding whitespace trimmed and exact deny JSON vector.
+  let write_payload = "{\"agent_id\":\"a1\",\"tool_name\":\"mcp__stillfail__slack_api\",\"tool_input\":{\"method\":\" chat.postMessage\\n\"}}"
+  let expected_write = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Refused: you are a subagent, and writing to Slack (chat.postMessage) is only for the agent that started you. Reading Slack with slack_api is fine (conversations.history, conversations.replies, users.info, files.info and the like). Nothing was sent or changed. Do not retry, and do not look for another way to do it: finish your task and give what you did or found as your final answer. The agent that started you reads it and posts what people need.\"}}"
+  assert(eval_subagent_hook(write_payload, Some(SLACK_WRITES)) == expected_write, "slack write exact vector")
+
+  // Method longer than 60 chars is truncated to 60 UTF-16 units.
+  let mut xs = ""
+  for _ in 0..<80 {
+    xs = xs + "x"
+  }
+  let long_payload = "{\"agent_id\":\"a1\",\"tool_name\":\"mcp__stillfail__slack_api\",\"tool_input\":{\"method\":\"chat.postMessage." +
+  xs +
+  "\"}}"
+  let expected_long = "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"Refused: you are a subagent, and writing to Slack (chat.postMessage.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx) is only for the agent that started you. Reading Slack with slack_api is fine (conversations.history, conversations.replies, users.info, files.info and the like). Nothing was sent or changed. Do not retry, and do not look for another way to do it: finish your task and give what you did or found as your final answer. The agent that started you reads it and posts what people need.\"}}"
+  assert(eval_subagent_hook(long_payload, Some(SLACK_WRITES)) == expected_long, "slack long method truncated")
+
+  // Older CLI without argv[2] allows slack_api writes through while still denying chat_post.
+  assert(eval_subagent_hook(write_payload, None) == "", "no writes arg lets slack_api through")
+  let chat_post_sub = "{\"agent_id\":\"a1\",\"tool_name\":\"mcp__stillfail__chat_post\"}"
+  assert(eval_subagent_hook(chat_post_sub, None).length() > 0, "no writes arg still denies chat_post")
+
+  // Non-string method or missing tool_input lets slack_api through.
+  assert(
+    eval_subagent_hook(
+      "{\"agent_id\":\"a1\",\"tool_name\":\"mcp__stillfail__slack_api\",\"tool_input\":{\"method\":7}}",
+      Some(SLACK_WRITES),
+    ) == "",
+    "numeric method allowed",
+  )
+  assert(
+    eval_subagent_hook(
+      "{\"agent_id\":\"a1\",\"tool_name\":\"mcp__stillfail__slack_api\"}",
+      Some(SLACK_WRITES),
+    ) == "",
+    "missing tool_input allowed",
+  )
+}
+
+test "run_subagent_hook reads stdin, writes stdout on deny, and always returns 0" {
+  let out_buf : Array[String] = []
+  let io = SubagentHookIo::{
+    read_stdin: fn() -> String {
+      "{\"agent_id\":\"sub-9\",\"tool_name\":\"mcp__stillfail__chat_state\"}"
+    },
+    write_stdout: fn(s : String) -> Unit { out_buf.push(s) },
+  }
+  let rc = run_subagent_hook(io, ["stillfail-station-pion", "subagent-hook.mjs", SLACK_WRITES])
+  assert(rc == 0, "exit code 0")
+  assert(out_buf.length() == 1, "one stdout write")
+  match base_codec::json_parse(out_buf[0]) {
+    base_codec::JsonParseResult::Ok(v) =>
+    match base_codec::json_get(v, "hookSpecificOutput") {
+      Some(h) =>
+      match base_codec::json_get(h, "permissionDecision") {
+        Some(base_codec::Json::Str(d)) => assert(d == "deny", "deny decision")
+        _ => assert(false, "missing permissionDecision")
+      }
+      None => assert(false, "missing hookSpecificOutput")
+    }
+    _ => assert(false, "valid json output")
+  }
+}

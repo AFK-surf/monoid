@@ -1,0 +1,283 @@
+// Tests for `terminals` and `adb` subdomains.
+
+test "terminals registry, exclusive typing takeover, resize, binary frames, and osc_cwd" {
+  let reg = TerminalsRegistry::new("/home/dev", 2048)
+  let ask = TerminalAsked::{ cols: 120, rows: 40, control: true, taken: false, cwd: None, chat: Some("CHAT/1") }
+
+  // Read-only member cannot open a terminal
+  t_assert(reg.open(ask, "Viewer", None, "ws1", true, None, 1000.to_int64()) is Err(_) == true, "read-only refused")
+
+  let sess = match reg.open(ask, "Alice", Some("alice@x.com"), "ws1", false, Some("/ws/chat1"), 1000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(sess.cwd == "/ws/chat1", "chat_dir fallback cwd")
+  t_assert(sess.id.length() == 21, "term-<16 hex> length")
+  t_assert(reg.list("ws1").length() == 1, "reg.list('ws1').length() == 1")
+  t_assert(reg.list("ws2").length() == 0, "reg.list('ws2').length() == 0")
+
+  // Alice attaches and gets typing control
+  let (v1, types1, _) = match reg.attach_view(sess.id, "ws1", "Alice", "d1", false, ask) {
+    Ok(v) => v
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(types1 == true, "types1 == true")
+
+  // Bob attaches without taken -> watches only
+  let (v2, types2, _) = match reg.attach_view(sess.id, "ws1", "Bob", "d2", false, ask) {
+    Ok(v) => v
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(types2 == false, "types2 == false")
+
+  // Bob sends in-band control takeover + resize -> becomes typing, triggers watcher refresh
+  let ctrl_frame = TerminalFrame::{
+    kind: TERM_KIND_CONTROL,
+    payload: "{\"control\":true,\"taken\":true,\"cols\":100,\"rows\":30}".to_bytes(),
+  }
+  let need_refresh = reg.handle_client_frame(sess.id, "ws1", v2, ctrl_frame, 2000.to_int64())
+  t_assert(need_refresh == true, "need_refresh == true")
+  t_assert(sess.size.cols == 100, "sess.size.cols == 100")
+  t_assert(sess.size.rows == 30, "sess.size.rows == 30")
+  t_assert(t_opt_str(sess.shown().typing, Some("Bob")), "opt_eq")
+
+  // Binary frame encode + split-chunk decode
+  let encoded = terminal_frame_encode(TERM_KIND_INPUT, "ls -la\n".to_bytes())
+  let reader = TerminalFrameReader::new()
+  let f1 = match reader.push(sub_bytes(encoded, 0, 4)) {
+    Ok(v) => v
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(f1.length() == 0, "f1.length() == 0")
+  t_assert(reader.has_partial() == true, "reader.has_partial() == true")
+  let f2 = match reader.push(sub_bytes(encoded, 4, encoded.length())) {
+    Ok(v) => v
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(f2.length() == 1, "f2.length() == 1")
+  t_assert(f2[0].kind == TERM_KIND_INPUT, "f2[0].kind == TERM_KIND_INPUT")
+  t_assert(bytes_to_str(f2[0].payload) == "ls -la\n", "bytes_to_str(f2[0].payload) == 'ls -la\\n'")
+
+  // past_screen offset slicing
+  let out = TerminalOut::{ at: 10.to_int64(), bytes: "abcdef".to_bytes() }
+  match past_screen(out, 12.to_int64()) {
+    Some(sliced) => t_assert(bytes_to_str(sliced) == "cdef", "cdef")
+    None => t_assert(false, "unexpected")
+  }
+  t_assert(past_screen(out, 16.to_int64()) is None == true, "past_screen(out, 16.to_int64()) is None == true")
+
+  // OSC 7 & ConPTY OSC 9;9 split-chunk cwd tracking
+  let r1 = osc_cwd("prompt \u{1b}]7;file://host/Users/dev/my%20")
+  t_assert(t_opt_str(r1.cwd, None), "opt_eq")
+  t_assert(r1.tail == "\u{1b}]7;file://host/Users/dev/my%20", "r1.tail == '\\u{1b}]7;file://host/Users/dev/my%20'")
+  let r2 = osc_cwd(r1.tail + "repo\u{07}$ ")
+  t_assert(t_opt_str(r2.cwd, Some("/Users/dev/my repo")), "opt_eq")
+  t_assert(r2.tail == "", "r2.tail == ''")
+  let r3 = osc_cwd("\u{1b}]9;9;\"C:\\Work\\Proj\"\u{1b}\\")
+  t_assert(t_opt_str(r3.cwd, Some("C:\\Work\\Proj")), "opt_eq")
+
+  // Detach both views: running terminal stays alive (no idle kill) until explicitly ended
+  reg.detach_view(sess.id, "ws1", v1)
+  reg.detach_view(sess.id, "ws1", v2)
+  t_assert(reg.list("ws1").length() == 1, "live terminal stays alive with 0 viewers")
+  reg.mark_ended(sess.id, Some(TerminalEnded::{ code: Some(0), signal: None }))
+  t_assert(reg.list("ws1").length() == 0, "ended terminal with 0 viewers is dropped")
+}
+
+test "regression: terminals random 16-hex IDs across restart, keep() adoption, offered gate, and ring scrollback" {
+  let ask = TerminalAsked::{ cols: 80, rows: 24, control: true, taken: false, cwd: None, chat: None }
+  let reg1 = TerminalsRegistry::new_with_seed("/home/dev", 1024, "boot-1")
+  let t1 = match reg1.open(ask, "Alice", None, "ws1", false, None, 1000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(false, "open t1")
+      return
+    }
+  }
+  // Simulate station restart with new boot seed & adopt surviving runner via keep()
+  let reg2 = TerminalsRegistry::new_with_seed("/home/dev", 1024, "boot-2")
+  let adopted = match reg2.keep(t1.id, "Alice", None, 1000.to_int64(), "/home/dev", None, "ws1", Some(100), Some(30)) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(false, "keep failed")
+      return
+    }
+  }
+  t_assert(adopted.id == t1.id, "adopted keeps original id")
+  t_assert(adopted.size.cols == 100 && adopted.size.rows == 30, "adopted keeps valid size")
+  // Opening a new terminal after restart generates a distinct non-colliding ID
+  let t2 = match reg2.open(ask, "Bob", None, "ws2", false, None, 2000.to_int64()) {
+    Ok(s) => s
+    Err(_) => {
+      t_assert(false, "open t2")
+      return
+    }
+  }
+  t_assert(t2.id != t1.id, "restart ID must not collide with surviving runner")
+  // offered == false blocks new open with 404, while existing terminals remain listed
+  reg2.set_offered(false)
+  match reg2.open(ask, "Bob", None, "ws2", false, None, 3000.to_int64()) {
+    Err(e) => t_assert(e.status == 404, "offered=false returns 404")
+    Ok(_) => t_assert(false, "offered=false must refuse open")
+  }
+  t_assert(reg2.list("ws1").length() == 1, "existing adopted terminal remains listed")
+
+  // O(1) amortized scrollback compaction under many small chunks
+  let mut k = 0
+  while k < 200 {
+    let _ = adopted.on_output("0123456789abcdef".to_bytes(), (4000 + k).to_int64())
+    k = k + 1
+  }
+  t_assert(adopted.scrollback_bytes() <= 1024, "scrollback stays bounded")
+}
+
+fn make_adb_packet(cmd : Int64, arg0 : Int64, payload : Bytes) -> Bytes {
+  let hdr = Bytes::new(24)
+  let mask32 = (0xFFFF.to_int64() << 16) | 0xFFFF.to_int64()
+  let magic = cmd ^ mask32
+  let size = payload.length().to_int64()
+  write_u32_le(hdr, 0, cmd)
+  write_u32_le(hdr, 4, arg0)
+  write_u32_le(hdr, 12, size)
+  write_u32_le(hdr, 20, magic)
+  concat_bytes([hdr, payload])
+}
+
+fn write_u32_le(buf : Bytes, off : Int, v : Int64) -> Unit {
+  buf[off] = (v & 0xFF.to_int64()).to_int().to_byte()
+  buf[off + 1] = ((v >> 8) & 0xFF.to_int64()).to_int().to_byte()
+  buf[off + 2] = ((v >> 16) & 0xFF.to_int64()).to_int().to_byte()
+  buf[off + 3] = ((v >> 24) & 0xFF.to_int64()).to_int().to_byte()
+}
+
+test "adb AdbActivity filters maintenance commands and tracks real agent streams" {
+  let act = AdbActivity::new("fail.still.app")
+  // Maintenance command: ignored
+  let maint = make_adb_packet(ADB_CMD_OPEN, 1.to_int64(), ("shell:" + ADB_KEEP_TCP + "\u{00}").to_bytes())
+  act.take(maint)
+  t_assert(act.take_events().length() == 0, "act.take_events().length() == 0")
+
+  // scrcpy display socket: ignored
+  let scrcpy = make_adb_packet(ADB_CMD_OPEN, 2.to_int64(), "localabstract:scrcpy_1a2b3c4d\u{00}".to_bytes())
+  act.take(scrcpy)
+  t_assert(act.take_events().length() == 0, "act.take_events().length() == 0")
+
+  // Real agent command: OPEN (force=true), WRTE (force=false), CLSE (force=true)
+  act.take(make_adb_packet(ADB_CMD_OPEN, 3.to_int64(), "shell:pm list packages\u{00}".to_bytes()))
+  act.take(make_adb_packet(ADB_CMD_WRTE, 3.to_int64(), "hi".to_bytes()))
+  act.take(make_adb_packet(ADB_CMD_CLSE, 3.to_int64(), Bytes::new(0)))
+  let evs = act.take_events()
+  t_assert(evs.length() == 3, "evs.length() == 3")
+  t_assert(evs[0].force == true, "evs[0].force == true")
+  t_assert(evs[1].force == false, "evs[1].force == false")
+  t_assert(evs[2].force == true, "evs[2].force == true")
+
+  // STLS makes transport opaque
+  act.take(make_adb_packet(ADB_CMD_STLS, 0.to_int64(), Bytes::new(0)))
+  t_assert(act.is_opaque() == true, "act.is_opaque() == true")
+}
+
+test "adb displays, door gate_admit, GrantServers reap, PhoneGrants idle timeout, and phone_send" {
+  // displays
+  match display_of("[server] INFO: New display: 1080x2400/420 (id=7)\n") {
+    Some(d) => {
+      t_assert(d.id == 7, "d.id == 7")
+      t_assert(d.width == 1080, "d.width == 1080")
+      t_assert(d.height == 2400, "d.height == 2400")
+      t_assert(d.density == 420, "d.density == 420")
+    }
+    None => t_assert(false, "unexpected")
+  }
+  t_assert(density_of("Physical density: 420\nOverride density: 480\n") == 480, "density_of('Physical density: 420\\nOverride density: 480\\n') == 480")
+  let disp_dump = "  mBaseDisplayInfo=DisplayInfo{\"scrcpy\", displayId 7, uniqueId \"virtual:scrcpy:1\", layerStack 12}\n"
+  let id_dump = "Display 11529215046400789845 (Virtual display): displayName=\"scrcpy\" uniqueId=\"virtual:scrcpy:1\"\n"
+  t_assert(t_opt_str(surface_of(disp_dump, id_dump, 7, ""), Some("11529215046400789845")), "surface_of")
+  t_assert(root_tasks_on("RootTask id=7723 bounds=[0,0] displayId=7 userId=0\nStack id=99 displayId=0\n", 7).length() == 1, "root_tasks_on('RootTask id=7723 bounds=[0,0] displayId=7 userId=0\\nStack id=99 displayId=0\\n', 7).length() == 1")
+
+  // door failure frame & gate_admit
+  t_assert(adb_failure_frame("denied") == "FAIL0006denied", "adb_failure_frame('denied') == 'FAIL0006denied'")
+  let table = [
+    GateProcRow::{ pid: 100, ppid: 1, pgid: 100 },
+    GateProcRow::{ pid: 200, ppid: 100, pgid: 200 },
+    GateProcRow::{ pid: 300, ppid: 1, pgid: 300 },
+  ]
+  // Runner child (200 under runner 100) admitted
+  let ok_res = gate_admit("g1", Some("/ws/chat1"), true, Some(table), [100], [], [], 999, [200], None)
+  t_assert(t_opt_str(ok_res, None), "opt_eq")
+  // Unrelated process (300) outside workspace refused
+  let bad_res = gate_admit("g1", Some("/ws/chat1"), true, Some(table), [100], [], [(300, "/ws/other")], 999, [300], None)
+  t_assert(bad_res is Some(_) == true, "bad_res is Some(_) == true")
+  // Case-sensitive cwd check: `/data/sessions/chat/C-ABC/workspace/x` MUST be refused for `c-abc/workspace`
+  let case_bypass = gate_admit(
+    "g1",
+    Some("/data/sessions/chat/c-abc/workspace"),
+    true,
+    Some(table),
+    [100],
+    [],
+    [(300, "/data/sessions/chat/C-ABC/workspace/x")],
+    999,
+    [300],
+    None,
+  )
+  t_assert(case_bypass is Some(_) == true, "uppercase sibling dir must not bypass case-sensitive cwd gate")
+  let exact_match = gate_admit(
+    "g1",
+    Some("/data/sessions/chat/c-abc/workspace"),
+    true,
+    Some(table),
+    [100],
+    [],
+    [(300, "/data/sessions/chat/c-abc/workspace/x")],
+    999,
+    [300],
+    None,
+  )
+  t_assert(t_opt_str(exact_match, None), "exact case cwd inside workspace is admitted")
+
+  // GrantServers reap with 2000ms tolerance
+  let rec = [
+    KeptAdbServer::{ grant_id: "g1", pid: 501, port: 15037, started_ms: Some(10000.to_int64()), dir: None },
+    KeptAdbServer::{ grant_id: "g2", pid: 502, port: 15038, started_ms: Some(10000.to_int64()), dir: None },
+  ]
+  let kills = select_reap_pids(rec, [], [(501, 10500.to_int64()), (502, 20000.to_int64())])
+  t_assert(kills.length() == 1, "kills.length() == 1")
+  t_assert(kills[0] == 501, "kills[0] == 501")
+
+  // PhoneGrants idle timeout
+  let grants = PhoneGrants::new()
+  let req = match grants.ask("s1", "CHAT/1", "ws1", "Alice@X.com", "run UI test", 100000.to_int64()) {
+    Ok(r) => r
+    Err(_) => {
+      t_assert(true == false, "true == false")
+      return
+    }
+  }
+  t_assert(grants.decide("bob@x.com", req.id, Some(PhoneScope::Idle), "ws1", 101000.to_int64()) is Some(_) == true, "grants.decide('bob@x.com', req.id, Some(PhoneScope::Idle), 'ws1', 101000.to_int64()) is Some(_) == true")
+  t_assert(t_opt_str(grants.decide("alice@x.com", req.id, Some(PhoneScope::Idle), "ws1", 101000.to_int64()), None), "decide")
+  t_assert(grants.held("s1", 102000.to_int64()).length() == 1, "grants.held('s1', 102000.to_int64()).length() == 1")
+  // Past 1 hour idle -> auto-ended
+  t_assert(grants.held("s1", 101000.to_int64() + PHONE_IDLE_FOR_MS).length() == 0, "grants.held('s1', 101000.to_int64() + PHONE_IDLE_FOR_MS).length() == 0")
+
+  // phone_send staging & fetch line parsing
+  t_assert(stage_upload_name("0123456789abcdef9999", "/tmp/my\napp.apk") == "0123456789abcdef-my_app.apk", "stage_upload_name('0123456789abcdef9999', '/tmp/my\\napp.apk') == '0123456789abcdef-my_app.apk'")
+  match parse_phone_fetch_line("{\"path\":\"/data/user/0/app/a.apk\"}", 0.to_int64()) {
+    Some(PhoneFetchLine::Done(p)) => t_assert(p == "/data/user/0/app/a.apk", "path")
+    _ => t_assert(false, "unexpected")
+  }
+}

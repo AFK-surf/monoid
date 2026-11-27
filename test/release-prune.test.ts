@@ -189,29 +189,43 @@ test("an Android release's symbols: older than 30 days by when the bucket says t
   assert.deepEqual(doomedOf(keys, feeds, null, NOW).filter((k) => k.startsWith("symbols/")), [], "none goes without times");
 });
 
-test("the station's readers in the prebuilt store: older than 14 days by when they were put go; the store's other parts never", () => {
+test("the station's readers and opt-in Pion station in the prebuilt store: older than 14 days by when they were put go; the store's other parts never", () => {
   const reader = (platform: string, c: string) => `natives/reader-${platform}-${c.repeat(24)}.tar.gz`;
   const pionReader = (platform: string, c: string) => `natives/pion-reader-${platform}-${c.repeat(24)}.tar.gz`;
+  const stationPion = (platform: string, c: string) => `natives/station-pion-${platform}-${c.repeat(24)}.tar.gz`;
   const day = 86400;
   const old = [
     reader("darwin-arm64", "a"), reader("linux-x64", "b"), reader("linux-arm64", "c"), reader("win32-x64", "d"),
     pionReader("darwin-arm64", "1"), pionReader("linux-x64", "2"), pionReader("linux-arm64", "3"), pionReader("win32-x64", "4"),
+    stationPion("darwin-arm64", "5"), stationPion("linux-x64", "6"), stationPion("linux-arm64", "7"), stationPion("win32-x64", "8"),
   ];
-  const young = reader("linux-x64", "e"), youngPion = pionReader("linux-x64", "7");
-  const untimed = reader("win32-x64", "f"), untimedPion = pionReader("win32-x64", "8");
-  const unread = reader("darwin-arm64", "0"), unreadPion = pionReader("darwin-arm64", "9");
+  const young = reader("linux-x64", "e"), youngPion = pionReader("linux-x64", "7"), youngStationPion = stationPion("linux-x64", "9");
+  const exact14dStationPion = stationPion("darwin-arm64", "a");
+  const untimed = reader("win32-x64", "f"), untimedPion = pionReader("win32-x64", "8"), untimedStationPion = stationPion("win32-x64", "b");
+  const unread = reader("darwin-arm64", "0"), unreadPion = pionReader("darwin-arm64", "9"), unreadStationPion = stationPion("darwin-arm64", "c");
   const others = [
-    `natives/shell-win32-x64-${"1".repeat(24)}.tar.gz`, `natives/engine-win32-x64-${"2".repeat(24)}.tar.gz`,
+    `natives/shell-win32-x64-${"1".repeat(24)}.tar.gz`, `natives/shell-apple-station-darwin-arm64-${"d".repeat(24)}.tar.gz`,
+    `natives/engine-win32-x64-${"2".repeat(24)}.tar.gz`,
     `natives/ghostty-vt-linux-x64-${"3".repeat(24)}.tar.gz`, `natives/reader-harness-linux-x64-${"4".repeat(24)}.tar.gz`,
     `natives/reader-android-arm64-${"5".repeat(24)}.tar.gz`, `natives/reader-linux-x64-${"6".repeat(12)}.tar.gz`,
     `natives/pion-reader-android-arm64-${"a".repeat(24)}.tar.gz`, `natives/pion-reader-linux-x64-${"b".repeat(12)}.tar.gz`,
+    `natives/station-pion-android-arm64-${"e".repeat(24)}.tar.gz`, `natives/station-pion-linux-x64-${"f".repeat(12)}.tar.gz`,
   ];
-  const keys = [...old, young, youngPion, untimed, untimedPion, unread, unreadPion, ...others];
+  const keys = [
+    ...old,
+    young, youngPion, youngStationPion, exact14dStationPion,
+    untimed, untimedPion, untimedStationPion,
+    unread, unreadPion, unreadStationPion,
+    ...others,
+  ];
   const putAt = new Map<string, number>([...old, ...others].map((k) => [k, NOW - 15 * day]));
   putAt.set(young, NOW - 13 * day);
   putAt.set(youngPion, NOW - 13 * day);
+  putAt.set(youngStationPion, NOW - 13 * day);
+  putAt.set(exact14dStationPion, NOW - 14 * day);
   putAt.set(unread, NaN);
   putAt.set(unreadPion, NaN);
+  putAt.set(unreadStationPion, NaN);
   assert.deepEqual(doomedOf(keys, {}, null, NOW, putAt), old);
   assert.deepEqual(doomedOf(keys, {}, null, NOW), [], "none goes without times");
 });

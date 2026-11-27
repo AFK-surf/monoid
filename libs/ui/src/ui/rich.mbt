@@ -651,6 +651,15 @@ fn rich_can_batch_mono(r : Rich, run : Run, style : Int) -> Bool {
 let rich_mono_batch_budget : Int = 1024
 
 ///|
+fn cjk_ov_eq(a : @view.CjkOverride?, b : @view.CjkOverride?) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(x), Some(y)) => x.face == y.face && x.scale == y.scale && x.weight_off == y.weight_off
+    _ => false
+  }
+}
+
+///|
 /// What of paragraph `r` any width shares (RichPrep).
 /// (`one`: a paragraph of one run of words made as rich_prep_one makes it; false only in a test, which holds the two the
 /// same)
@@ -677,7 +686,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
   // breaks and its levels are its shape's, as they are (nothing laid out of a paragraph writes in them), not copied
   // out and worked out again of the same words
   if one && r.runs.length() == 1 && r.runs[0].drawing is None {
-    return rich_prep_one(r, r.runs[0], lh, sc, px, base_asc, base_desc, extra)
+    return rich_prep_one(r, r.runs[0], cjk, lh, sc, px, base_asc, base_desc, extra)
   }
   let sb = StringBuilder()
   let run_start = []
@@ -698,6 +707,9 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
   let cu = []
   let run_of = []
   let mut off = 0
+  let mut all_simple_ltr = true
+  // 1-slot per-run metrics cache for push_single: (size, weight, style, ov, run_cjk, a, d, lasc, ldesc, rx_val)
+  let mut last_metrics : (Double, Int, Int, @view.CjkOverride?, Bool, Double, Double, Double, Double, Double)? = None
   // the last cluster of the run of words before (its index, its first code unit, the run's size), where an eighth of
   // an em may part it from this run's first (rich_spaced_run): each run is shaped on its own, so neither the host's
   // shaper nor words_spaced_in sees where two runs meet
@@ -710,21 +722,37 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
     let style = r.run_style(run)
     let ov = r.run_cjk_override(run, style)
     let s = shape(run.text, size, weight, style~, spacing=r.spacing, cjk_override=ov)
-    let run_cjk = words_cjk(run.text)
-    let run_cjk_enlarged = match effective_cjk(style, ov) {
-      Some((_, s, _)) => s > 1.0
-      None => false
+    if !s.simple {
+      all_simple_ltr = false
     }
-    let fit = run_cjk && run_cjk_enlarged
-    let (a, d) = line_metrics(size, weight, run_cjk, style~, cjk_override=ov)
-    let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=fit)
+    let run_cjk = if cjk { words_cjk(run.text) } else { false }
+    let (a, d, lasc, ldesc, rx_val) = match last_metrics {
+      Some((ps, pw, pst, pov, pcjk, pa, pd, plasc, pldesc, prx)) if ps == size &&
+        pw == weight &&
+        pst == style &&
+        pcjk == run_cjk &&
+        cjk_ov_eq(pov, ov) => (pa, pd, plasc, pldesc, prx)
+      _ => {
+        let run_cjk_enlarged = match effective_cjk(style, ov) {
+          Some((_, s, _)) => s > 1.0
+          None => false
+        }
+        let fit = run_cjk && run_cjk_enlarged
+        let (a, d) = line_metrics(size, weight, run_cjk, style~, cjk_override=ov)
+        let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=fit)
+        let ldesc = l - lasc
+        let rx_val = if fit { rx } else { 0.0 }
+        last_metrics = Some((size, weight, style, ov, run_cjk, a, d, lasc, ldesc, rx_val))
+        (a, d, lasc, ldesc, rx_val)
+      }
+    }
     run_start.push(off)
     run_size.push(size)
     run_a.push(a)
     run_d.push(d)
     run_lasc.push(lasc)
-    run_ldesc.push(l - lasc)
-    run_extra.push(if fit { rx } else { 0.0 })
+    run_ldesc.push(ldesc)
+    run_extra.push(rx_val)
     run_c0.push(starts.length())
     let n = s.starts.length()
     let (room, after) = r.run_room(run, size)
@@ -769,6 +797,15 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
     let size = r.run_size(run)
     match run.drawing {
       Some(d) => {
+        if all_simple_ltr {
+          for i in 0..<run.text.length() {
+            let c = run.text.unsafe_get(i).to_int()
+            if c != 0xFFFC && !(c >= 0x20 && c <= 0x7E) {
+              all_simple_ltr = false
+              break
+            }
+          }
+        }
         run_start.push(off)
         run_size.push(size)
         run_a.push(d.baseline * size)
@@ -876,25 +913,51 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
           aligned = false
         }
         if aligned {
+          if !s.simple {
+            all_simple_ltr = false
+          }
+          let batch_cjk_enlarged = match effective_cjk(style, batch_ov) {
+            Some((_, sc_cjk, _)) => sc_cjk > 1.0
+            None => false
+          }
+          let mut m_latin : (Double, Double, Double, Double, Double)? = None
+          let mut m_cjk : (Double, Double, Double, Double, Double)? = None
           for j in 0..<count {
             let rk = k + j
             let rrun = r.runs[rk]
-            let rrun_cjk = words_cjk(rrun.text)
-            let batch_cjk_enlarged = match effective_cjk(style, batch_ov) {
-              Some((_, s, _)) => s > 1.0
-              None => false
+            let rrun_cjk = if cjk { words_cjk(rrun.text) } else { false }
+            let (a, d, lasc, ldesc, rx_val) = if rrun_cjk {
+              match m_cjk {
+                Some(v) => v
+                None => {
+                  let fit = batch_cjk_enlarged
+                  let (a, d) = line_metrics(size, weight, true, style~, cjk_override=batch_ov)
+                  let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=fit)
+                  let v = (a, d, lasc, l - lasc, if fit { rx } else { 0.0 })
+                  m_cjk = Some(v)
+                  v
+                }
+              }
+            } else {
+              match m_latin {
+                Some(v) => v
+                None => {
+                  let (a, d) = line_metrics(size, weight, false, style~, cjk_override=batch_ov)
+                  let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=false)
+                  let v = (a, d, lasc, l - lasc, 0.0)
+                  m_latin = Some(v)
+                  v
+                }
+              }
             }
-            let fit = rrun_cjk && batch_cjk_enlarged
-            let (a, d) = line_metrics(size, weight, rrun_cjk, style~, cjk_override=batch_ov)
-            let (l, lasc, rx) = set_line(lh * size / r.size, a, d, sc, px, cjk_fit=fit)
             drawings.push(None)
             run_start.push(off + local_start[j])
             run_size.push(size)
             run_a.push(a)
             run_d.push(d)
             run_lasc.push(lasc)
-            run_ldesc.push(l - lasc)
-            run_extra.push(if fit { rx } else { 0.0 })
+            run_ldesc.push(ldesc)
+            run_extra.push(rx_val)
             run_c0.push(starts.length())
             for c in batch_c0[j]..<batch_c1[j] {
               starts.push(s.starts[c] + off)
@@ -941,7 +1004,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
   }
   // a label (a run on a ground of its own shape) is one thing, as CSS's inline-block is: a line breaks before it
   // (right to left: each line's clusters put in their visual order, rich_lines)
-  let bd = @text.bidi_mixed(text)
+  let bd = if all_simple_ltr { None } else { @text.bidi_mixed(text) }
   {
     text,
     run_start,
@@ -977,6 +1040,7 @@ fn rich_prep(r : Rich, one? : Bool = true, batch? : Bool = true) -> RichPrep {
 fn rich_prep_one(
   r : Rich,
   run : Run,
+  run_cjk : Bool,
   lh : Double,
   sc : Double,
   px : Bool,
@@ -989,7 +1053,6 @@ fn rich_prep_one(
   let style = r.run_style(run)
   let ov = r.run_cjk_override(run, style)
   let s = shape(run.text, size, weight, style~, spacing=r.spacing, cjk_override=ov)
-  let run_cjk = words_cjk(run.text)
   let run_cjk_enlarged = match effective_cjk(style, ov) {
     Some((_, s, _)) => s > 1.0
     None => false

@@ -1,0 +1,746 @@
+// API providers, endpoint resolution, profile environment construction,
+// Codex TOML overrides, DSH/Pi routes, and runtime capability mapping —
+// 1:1 aligned with `station/src/agents/providers.ts` and `station/src/agents/profiles.ts`.
+
+import "base_codec"
+import "nodepath"
+
+pub let KIMI_CODE : String = "kimi-code"
+pub let KIMI_TOKEN_FILE : String = "kimi-code.token"
+pub let OPENCODE : String = "https://opencode.ai/zen/go"
+pub let OPENCODE_SMALL : String = "claude-haiku-5-5"
+pub let CODEX_KEY : String = "STILLFAIL_API_KEY"
+pub let DSH_KEY : String = "STILLFAIL_DSH_KEY"
+pub let PI_KEY : String = "STILLFAIL_PI_KEY"
+let NO_KEY : String = "none"
+
+pub struct Source {
+  pub id : String
+  pub name : String
+  pub chat : Option[String]
+  pub responses : Option[String]
+  pub anthropic : Option[String]
+  pub decision : Option[String]
+  pub endpoint_required : Bool
+  pub protocols : Array[Protocol]
+  pub key_optional : Bool
+  pub auth : ClaudeAuth
+  pub session_header : Bool
+}
+
+fn make_source(
+  id : String,
+  name : String,
+  chat : Option[String],
+  responses : Option[String],
+  anthropic : Option[String],
+  decision : Option[String],
+  endpoint_required : Bool,
+  protocols : Array[Protocol],
+  key_optional : Bool,
+  auth : ClaudeAuth,
+  session_header : Bool,
+) -> Source {
+  Source::{
+    id: id,
+    name: name,
+    chat: chat,
+    responses: responses,
+    anthropic: anthropic,
+    decision: decision,
+    endpoint_required: endpoint_required,
+    protocols: protocols,
+    key_optional: key_optional,
+    auth: auth,
+    session_header: session_header,
+  }
+}
+
+fn all_protocols() -> Array[Protocol] {
+  [Protocol::ChatCompletions, Protocol::Responses, Protocol::Anthropic]
+}
+
+/// Complete API provider catalog in offered order (37 providers).
+pub fn provider_sources() -> Array[Source] {
+  [
+    // Labs
+    make_source("openai", "OpenAI", None, Some("https://api.openai.com/v1"), None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("anthropic", "Anthropic", None, None, Some("https://api.anthropic.com"), None, false, [], false, ClaudeAuth::ApiKey, false),
+    make_source("google", "Google Gemini", Some("https://generativelanguage.googleapis.com/v1beta/openai"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("google-vertex", "Google Vertex AI", None, None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("xai", "xAI", None, Some("https://api.x.ai/v1"), None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("mistral", "Mistral", Some("https://api.mistral.ai/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    // China
+    make_source("deepseek", "DeepSeek", Some("https://api.deepseek.com"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("qwen", "Qwen", Some("https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("moonshotai", "Kimi", Some("https://api.moonshot.ai/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("kimi-code", "Kimi Code", Some("https://api.kimi.com/coding/v1"), None, Some("https://api.kimi.com/coding"), None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("zai", "Z.ai", Some("https://api.z.ai/api/coding/paas/v4"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("minimax", "MiniMax", None, None, Some("https://api.minimax.io/anthropic"), None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("xiaomi", "Xiaomi MiMo", Some("https://api.xiaomimimo.com/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("ant-ling", "Ant Ling", Some("https://api.ant-ling.com/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("jev", "Jev", None, None, None, Some("https://api.typesafe.ai/v1"), false, [], false, ClaudeAuth::Bearer, false),
+    make_source("qwen-cn", "Qwen (China)", Some("https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("moonshotai-cn", "Kimi (China)", Some("https://api.moonshot.cn/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("zai-coding-cn", "Z.ai Coding (China)", Some("https://open.bigmodel.cn/api/coding/paas/v4"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("minimax-cn", "MiniMax (China)", None, None, Some("https://api.minimaxi.com/anthropic"), None, false, [], false, ClaudeAuth::Bearer, false),
+    // Gateways
+    make_source("openrouter", "OpenRouter", Some("https://openrouter.ai/api/v1"), None, Some("https://openrouter.ai/api"), None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("vercel-ai-gateway", "Vercel AI Gateway", None, None, Some("https://ai-gateway.vercel.sh"), None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("opencode", "OpenCode Zen", Some("https://opencode.ai/zen/v1"), Some("https://opencode.ai/zen/v1"), Some("https://opencode.ai/zen"), None, false, [], false, ClaudeAuth::ApiKey, true),
+    make_source("opencode-go", "OpenCode Go", Some("https://opencode.ai/zen/go/v1"), Some("https://opencode.ai/zen/go/v1"), Some("https://opencode.ai/zen/go"), None, false, [], false, ClaudeAuth::ApiKey, true),
+    make_source("command-code", "Command Code", Some("https://api.commandcode.ai/provider/v1"), Some("https://api.commandcode.ai/provider/v1"), Some("https://api.commandcode.ai/provider"), None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("open-design", "Open Design", Some("https://amr-link.open-design.ai/v1"), Some("https://amr-link.open-design.ai/v1"), Some("https://amr-link.open-design.ai"), None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("cloudflare-ai-gateway", "Cloudflare AI Gateway", None, None, None, None, true, all_protocols(), false, ClaudeAuth::Both, false),
+    // Cloud
+    make_source("azure-openai", "Azure OpenAI", None, None, None, None, true, [Protocol::Responses], false, ClaudeAuth::Bearer, false),
+    // Inference
+    make_source("groq", "Groq", Some("https://api.groq.com/openai/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("together", "Together AI", Some("https://api.together.ai/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("fireworks", "Fireworks", Some("https://api.fireworks.ai/inference/v1"), None, Some("https://api.fireworks.ai/inference"), None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("cerebras", "Cerebras", Some("https://api.cerebras.ai/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("huggingface", "Hugging Face", Some("https://router.huggingface.co/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("nvidia", "NVIDIA", Some("https://integrate.api.nvidia.com/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("baseten", "Baseten", Some("https://inference.baseten.co/v1"), None, None, None, false, [], false, ClaudeAuth::Bearer, false),
+    make_source("cloudflare-workers-ai", "Cloudflare Workers AI", None, None, None, None, true, [Protocol::ChatCompletions], false, ClaudeAuth::Bearer, false),
+    // Local
+    make_source("ollama", "Ollama", None, None, None, None, true, [Protocol::ChatCompletions], true, ClaudeAuth::Bearer, false),
+    make_source("custom", "Custom", None, None, None, None, true, all_protocols(), true, ClaudeAuth::Both, false),
+  ]
+}
+
+pub fn find_source(id : String) -> Option[Source] {
+  let list = provider_sources()
+  for i in 0..<list.length() {
+    if list[i].id == id {
+      return Some(list[i])
+    }
+  }
+  None
+}
+
+pub fn group_of_provider(id : String) -> String {
+  if arr_contains_str(["openrouter", "vercel-ai-gateway", "opencode", "opencode-go", "command-code", "open-design", "cloudflare-ai-gateway"], id) {
+    return "gateways"
+  }
+  if arr_contains_str(["azure-openai", "groq", "together", "fireworks", "cerebras", "huggingface", "nvidia", "baseten", "cloudflare-workers-ai"], id) {
+    return "hosted"
+  }
+  if id == "ollama" || id == "custom" {
+    return "local"
+  }
+  "labs"
+}
+
+pub fn clean_endpoint(text : String) -> Option[String] {
+  let mut trimmed = str_trim(text)
+  while str_ends_with(trimmed, "/") {
+    trimmed = str_slice_bytes(trimmed, 0, trimmed.to_bytes().length() - 1)
+  }
+  let rest = if str_starts_with(trimmed, "https://") {
+    str_slice_bytes(trimmed, 8, trimmed.to_bytes().length())
+  } else if str_starts_with(trimmed, "http://") {
+    str_slice_bytes(trimmed, 7, trimmed.to_bytes().length())
+  } else {
+    return None
+  }
+  if rest == "" {
+    return None
+  }
+  let raw = rest.to_bytes()
+  for i in 0..<raw.length() {
+    if is_ascii_ws(raw[i].to_int() & 0xFF) {
+      return None
+    }
+  }
+  Some(trimmed)
+}
+
+pub fn anthropic_root(base : String) -> String {
+  if str_ends_with(base, "/v1") {
+    str_slice_bytes(base, 0, base.to_bytes().length() - 3)
+  } else {
+    base
+  }
+}
+
+fn has_protocol(list : Array[Protocol], target : Protocol) -> Bool {
+  let ts = protocol_to_str(target)
+  for i in 0..<list.length() {
+    if protocol_to_str(list[i]) == ts {
+      return true
+    }
+  }
+  false
+}
+
+pub fn resolve_endpoints(source : Source, endpoint : Option[String], protocol : Option[String]) -> Option[Endpoints] {
+  if !source.endpoint_required {
+    return Some(Endpoints::{
+      chat: source.chat,
+      responses: source.responses,
+      anthropic: source.anthropic,
+      decision: source.decision,
+    })
+  }
+  let base = match endpoint {
+    Some(e) => match clean_endpoint(e) {
+      Some(c) => c
+      None => return None
+    }
+    None => return None
+  }
+  let chosen = match protocol {
+    Some(p) => protocol_from_str(p)
+    None => None
+  }
+  match chosen {
+    Some(cp) => if !has_protocol(source.protocols, cp) { return None }
+    None => ()
+  }
+  if source.id == "cloudflare-ai-gateway" {
+    let root = if str_ends_with(base, "/compat") {
+      str_slice_bytes(base, 0, base.to_bytes().length() - 7)
+    } else if str_ends_with(base, "/openai") {
+      str_slice_bytes(base, 0, base.to_bytes().length() - 7)
+    } else if str_ends_with(base, "/anthropic") {
+      str_slice_bytes(base, 0, base.to_bytes().length() - 10)
+    } else {
+      base
+    }
+    let mut chat : Option[String] = Some(root + "/compat")
+    let mut responses : Option[String] = Some(root + "/openai")
+    let mut anthropic : Option[String] = Some(root + "/anthropic")
+    match chosen {
+      Some(Protocol::ChatCompletions) => {
+        responses = None
+        anthropic = None
+      }
+      Some(Protocol::Responses) => {
+        chat = None
+        anthropic = None
+      }
+      Some(Protocol::Anthropic) => {
+        chat = None
+        responses = None
+      }
+      None => ()
+    }
+    return Some(Endpoints::{ chat: chat, responses: responses, anthropic: anthropic, decision: None })
+  }
+  if source.id == "azure-openai" {
+    return Some(Endpoints::{ chat: None, responses: Some(base), anthropic: None, decision: None })
+  }
+  if source.id == "cloudflare-workers-ai" || source.id == "ollama" {
+    return Some(Endpoints::{ chat: Some(base), responses: None, anthropic: None, decision: None })
+  }
+  match chosen {
+    Some(Protocol::ChatCompletions) => Some(Endpoints::{ chat: Some(base), responses: None, anthropic: None, decision: None })
+    Some(Protocol::Responses) => Some(Endpoints::{ chat: None, responses: Some(base), anthropic: None, decision: None })
+    Some(Protocol::Anthropic) => Some(Endpoints::{ chat: None, responses: None, anthropic: Some(anthropic_root(base)), decision: None })
+    None => {
+      let anth = if str_ends_with(base, "/v1") { Some(anthropic_root(base)) } else { None }
+      Some(Endpoints::{ chat: Some(base), responses: Some(base), anthropic: anth, decision: None })
+    }
+  }
+}
+
+pub fn runtimes_of_endpoints(at : Endpoints) -> Array[RuntimeKind] {
+  let out : Array[RuntimeKind] = []
+  if opt_str_is_some(at.anthropic) {
+    out.push(RuntimeKind::Claude)
+  }
+  if opt_str_is_some(at.responses) {
+    out.push(RuntimeKind::Codex)
+  }
+  if opt_str_is_some(at.chat) || opt_str_is_some(at.anthropic) || opt_str_is_some(at.responses) {
+    out.push(RuntimeKind::Dsh)
+    out.push(RuntimeKind::Pi)
+  }
+  out
+}
+
+pub fn billed_per_use(p : Profile) -> Bool {
+  match p.access_kind {
+    AccessKind::AnthropicApi => true
+    AccessKind::Env => true
+    AccessKind::ApiProvider => !opt_str_eq(p.access_provider, Some(KIMI_CODE))
+    _ => false
+  }
+}
+
+pub fn kimi_signed_in(p : Profile) -> Bool {
+  access_kind_eq(p.access_kind, AccessKind::ApiProvider) &&
+  opt_str_eq(p.access_provider, Some(KIMI_CODE)) &&
+  p.access_login
+}
+
+pub fn key_file(p : Profile, sep : String) -> Option[String] {
+  if kimi_signed_in(p) {
+    Some(nodepath::join(sep, [p.home, KIMI_TOKEN_FILE]))
+  } else {
+    None
+  }
+}
+
+pub fn vertex_key_file(home : String, sep : String) -> String {
+  nodepath::join(sep, [home, "agy", "vertex-credentials.json"])
+}
+
+pub fn vertex_account_project(key : String) -> Option[String] {
+  let parsed = match json_parse_opt(key) {
+    Some(v) => v
+    None => return None
+  }
+  let t = match json_get_str(parsed, "type") {
+    Some(s) => s
+    None => return None
+  }
+  if t != "service_account" {
+    return None
+  }
+  let proj = match json_get_str(parsed, "project_id") {
+    Some(s) => str_trim(s)
+    None => return None
+  }
+  let email = match json_get_str(parsed, "client_email") {
+    Some(s) => str_trim(s)
+    None => return None
+  }
+  let pkey = match json_get_str(parsed, "private_key") {
+    Some(s) => str_trim(s)
+    None => return None
+  }
+  if proj == "" || email == "" || pkey == "" {
+    None
+  } else {
+    Some(proj)
+  }
+}
+
+pub fn takes_fast(p : Profile) -> Bool {
+  match p.runtime {
+    Some(RuntimeKind::Codex) => access_kind_eq(p.access_kind, AccessKind::Subscription)
+    Some(RuntimeKind::Claude) => {
+      access_kind_eq(p.access_kind, AccessKind::AnthropicApi) ||
+      access_kind_eq(p.access_kind, AccessKind::Subscription) ||
+      (access_kind_eq(p.access_kind, AccessKind::ApiProvider) && opt_str_eq(p.access_provider, Some("openrouter")))
+    }
+    _ => false
+  }
+}
+
+pub fn fast_needs_credits(p : Profile) -> Bool {
+  match p.runtime {
+    Some(RuntimeKind::Claude) => access_kind_eq(p.access_kind, AccessKind::Subscription)
+    _ => false
+  }
+}
+
+pub fn profile_via(p : Profile) -> Via {
+  let ep = match p.access_endpoint {
+    Some(e) => clean_endpoint(e)
+    None => None
+  }
+  Via::{ provider: p.access_provider, endpoint: ep, protocol: p.access_protocol }
+}
+
+pub fn api_source(via : Via) -> Option[(Source, Endpoints)] {
+  let pid = match via.provider {
+    Some(id) => id
+    None => return None
+  }
+  let src = match find_source(pid) {
+    Some(s) => s
+    None => return None
+  }
+  match resolve_endpoints(src, via.endpoint, via.protocol) {
+    Some(at) => Some((src, at))
+    None => None
+  }
+}
+
+pub enum DshRoute {
+  Deepseek
+  Pi(String, String, String, Array[(String, String)])
+}
+
+pub fn dsh_route(p : Profile) -> Option[DshRoute] {
+  let session_hdr = [("x-opencode-session", "stillfail-{route}")]
+  if access_kind_eq(p.access_kind, AccessKind::OpencodeGo) {
+    return Some(DshRoute::Pi("OpenCode Go", "openai-completions", OPENCODE + "/v1", session_hdr))
+  }
+  if access_kind_eq(p.access_kind, AccessKind::AnthropicApi) {
+    return Some(DshRoute::Pi("Anthropic", "anthropic-messages", "https://api.anthropic.com", []))
+  }
+  if !access_kind_eq(p.access_kind, AccessKind::ApiProvider) {
+    return None
+  }
+  let (src, at) = match api_source(profile_via(p)) {
+    Some(pair) => pair
+    None => return None
+  }
+  if src.id == "deepseek" {
+    return Some(DshRoute::Deepseek)
+  }
+  let hdrs = if src.session_header { session_hdr } else { [] }
+  match at.chat {
+    Some(u) => return Some(DshRoute::Pi(src.name, "openai-completions", u, hdrs))
+    None => ()
+  }
+  match at.anthropic {
+    Some(u) => return Some(DshRoute::Pi(src.name, "anthropic-messages", u, hdrs))
+    None => ()
+  }
+  match at.responses {
+    Some(u) => return Some(DshRoute::Pi(src.name, "openai-responses", u, hdrs))
+    None => ()
+  }
+  None
+}
+
+pub struct PiRoute {
+  pub name : String
+  pub api : String
+  pub base_url : String
+  pub headers : Array[(String, String)]
+}
+
+pub fn pi_route(p : Profile) -> Option[PiRoute] {
+  match dsh_route(p) {
+    Some(DshRoute::Pi(name, api, base_url, headers)) => Some(PiRoute::{ name: name, api: api, base_url: base_url, headers: headers })
+    Some(DshRoute::Deepseek) => {
+      match api_source(profile_via(p)) {
+        Some((src, at)) => match at.chat {
+          Some(u) => Some(PiRoute::{ name: src.name, api: "openai-completions", base_url: u, headers: [] })
+          None => None
+        }
+        None => None
+      }
+    }
+    None => None
+  }
+}
+
+pub fn profile_runtimes(p : Profile) -> Array[RuntimeKind] {
+  match p.access_kind {
+    AccessKind::Service => []
+    AccessKind::ApiProvider => {
+      let (src, at) = match api_source(profile_via(p)) {
+        Some(pair) => pair
+        None => return []
+      }
+      if kimi_signed_in(p) {
+        return [RuntimeKind::Claude]
+      }
+      if src.id == "google-vertex" {
+        return [RuntimeKind::Agy]
+      }
+      let out = runtimes_of_endpoints(at)
+      if src.id == "xai" {
+        out.push(RuntimeKind::Grok)
+      } else if src.id == "google" {
+        out.push(RuntimeKind::Agy)
+      }
+      out
+    }
+    AccessKind::OpencodeGo => [RuntimeKind::Claude, RuntimeKind::Codex, RuntimeKind::Dsh, RuntimeKind::Pi]
+    AccessKind::AnthropicApi => [RuntimeKind::Claude, RuntimeKind::Dsh, RuntimeKind::Pi]
+    _ => {
+      match p.runtime {
+        Some(r) => {
+          if access_kind_eq(p.access_kind, AccessKind::Subscription) &&
+          (runtime_kind_eq(r, RuntimeKind::Dsh) || runtime_kind_eq(r, RuntimeKind::Pi)) {
+            []
+          } else {
+            [r]
+          }
+        }
+        None => []
+      }
+    }
+  }
+}
+
+pub fn profile_supports_runtime(p : Profile, rt : RuntimeKind) -> Bool {
+  let list = profile_runtimes(p)
+  for i in 0..<list.length() {
+    if runtime_kind_eq(list[i], rt) {
+      return true
+    }
+  }
+  false
+}
+
+pub fn machine_proxy(name : String) -> Bool {
+  let l = ascii_lower(name)
+  l == "http_proxy" || l == "https_proxy" || l == "all_proxy" || l == "no_proxy"
+}
+
+pub fn access_env(
+  runtime : RuntimeKind,
+  kind : AccessKind,
+  key : String,
+  model : Option[String],
+  via : Via,
+) -> Array[(String, String)] {
+  if access_kind_eq(kind, AccessKind::OpencodeGo) && runtime_kind_eq(runtime, RuntimeKind::Claude) {
+    let small = match model {
+      Some(m) => m
+      None => OPENCODE_SMALL
+    }
+    return [
+      ("ANTHROPIC_BASE_URL", OPENCODE),
+      ("ANTHROPIC_API_KEY", key),
+      ("ANTHROPIC_CUSTOM_HEADERS", "x-opencode-session: {route}"),
+      ("ANTHROPIC_DEFAULT_HAIKU_MODEL", small),
+      ("ANTHROPIC_SMALL_FAST_MODEL", small),
+      ("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"),
+    ]
+  }
+  if access_kind_eq(kind, AccessKind::OpencodeGo) && runtime_kind_eq(runtime, RuntimeKind::Codex) {
+    return [("OPENCODE_GO_KEY", key), ("OPENCODE_SESSION", "stillfail-{route}")]
+  }
+  if (access_kind_eq(kind, AccessKind::OpencodeGo) || access_kind_eq(kind, AccessKind::AnthropicApi)) &&
+  runtime_kind_eq(runtime, RuntimeKind::Dsh) {
+    return [(DSH_KEY, key)]
+  }
+  if (access_kind_eq(kind, AccessKind::OpencodeGo) || access_kind_eq(kind, AccessKind::AnthropicApi)) &&
+  runtime_kind_eq(runtime, RuntimeKind::Pi) {
+    return [(PI_KEY, key)]
+  }
+  if runtime_kind_eq(runtime, RuntimeKind::Grok) {
+    if access_kind_eq(kind, AccessKind::ApiProvider) && opt_str_eq(via.provider, Some("xai")) {
+      return [("XAI_API_KEY", key)]
+    }
+    return []
+  }
+  if runtime_kind_eq(runtime, RuntimeKind::Agy) {
+    if access_kind_eq(kind, AccessKind::ApiProvider) && opt_str_eq(via.provider, Some("google")) {
+      return [("GEMINI_API_KEY", key)]
+    }
+    return []
+  }
+  if access_kind_eq(kind, AccessKind::AnthropicApi) {
+    return [("ANTHROPIC_API_KEY", key)]
+  }
+  if access_kind_eq(kind, AccessKind::ApiProvider) {
+    return api_env(runtime, key, model, via)
+  }
+  []
+}
+
+fn api_env(runtime : RuntimeKind, key : String, model : Option[String], via : Via) -> Array[(String, String)] {
+  let (src, at) = match api_source(via) {
+    Some(pair) => pair
+    None => return []
+  }
+  let key_or_none = if key == "" { NO_KEY } else { key }
+  if runtime_kind_eq(runtime, RuntimeKind::Claude) {
+    let anth = match at.anthropic {
+      Some(u) => u
+      None => return []
+    }
+    let mut env : Array[(String, String)] = [("ANTHROPIC_BASE_URL", anth)]
+    match src.auth {
+      ClaudeAuth::ApiKey => {
+        env = env_set(env, "ANTHROPIC_API_KEY", key_or_none)
+      }
+      ClaudeAuth::Bearer => {
+        env = env_set(env, "ANTHROPIC_AUTH_TOKEN", key_or_none)
+        env = env_set(env, "ANTHROPIC_API_KEY", "")
+      }
+      ClaudeAuth::Both => {
+        env = env_set(env, "ANTHROPIC_AUTH_TOKEN", key_or_none)
+        env = env_set(env, "ANTHROPIC_API_KEY", key_or_none)
+      }
+    }
+    if src.session_header {
+      env = env_set(env, "ANTHROPIC_CUSTOM_HEADERS", "x-opencode-session: {route}")
+    }
+    match model {
+      Some(m) => {
+        env = env_set(env, "ANTHROPIC_DEFAULT_HAIKU_MODEL", m)
+        env = env_set(env, "ANTHROPIC_SMALL_FAST_MODEL", m)
+      }
+      None => ()
+    }
+    env = env_set(env, "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+    return env
+  }
+  if runtime_kind_eq(runtime, RuntimeKind::Dsh) {
+    let base = Profile::default("", Some(RuntimeKind::Dsh), "")
+    let probe = Profile::{
+      id: base.id,
+      runtime: base.runtime,
+      home: base.home,
+      enabled: base.enabled,
+      machine: base.machine,
+      fast: base.fast,
+      model: base.model,
+      models: base.models,
+      access_kind: AccessKind::ApiProvider,
+      access_key: base.access_key,
+      access_provider: via.provider,
+      access_endpoint: via.endpoint,
+      access_protocol: via.protocol,
+      access_service: base.access_service,
+      access_login: base.access_login,
+      env: base.env,
+      borrowed: base.borrowed,
+      share_workspaces: base.share_workspaces,
+      withheld: base.withheld,
+      max_concurrent_sessions: base.max_concurrent_sessions,
+    }
+    match dsh_route(probe) {
+      None => return []
+      Some(DshRoute::Deepseek) => return [("DEEPSEEK_API_KEY", key_or_none)]
+      Some(DshRoute::Pi(_, _, _, _)) => return [(DSH_KEY, key_or_none)]
+    }
+  }
+  if runtime_kind_eq(runtime, RuntimeKind::Pi) {
+    let base = Profile::default("", Some(RuntimeKind::Pi), "")
+    let probe = Profile::{
+      id: base.id,
+      runtime: base.runtime,
+      home: base.home,
+      enabled: base.enabled,
+      machine: base.machine,
+      fast: base.fast,
+      model: base.model,
+      models: base.models,
+      access_kind: AccessKind::ApiProvider,
+      access_key: base.access_key,
+      access_provider: via.provider,
+      access_endpoint: via.endpoint,
+      access_protocol: via.protocol,
+      access_service: base.access_service,
+      access_login: base.access_login,
+      env: base.env,
+      borrowed: base.borrowed,
+      share_workspaces: base.share_workspaces,
+      withheld: base.withheld,
+      max_concurrent_sessions: base.max_concurrent_sessions,
+    }
+    match pi_route(probe) {
+      None => return []
+      Some(_) => return [(PI_KEY, key_or_none)]
+    }
+  }
+  if !opt_str_is_some(at.responses) {
+    return []
+  }
+  let mut env : Array[(String, String)] = [(CODEX_KEY, key_or_none)]
+  if src.session_header {
+    env = env_set(env, "OPENCODE_SESSION", "stillfail-{route}")
+  }
+  env
+}
+
+/// Sorted TOML `-c` overrides for `codex app-server`.
+pub fn codex_overrides(kind : AccessKind, model : Option[String], via : Via) -> Array[(String, String)] {
+  let out : Array[(String, String)] = [
+    ("features.apps", "false"),
+    ("features.recommended_plugins", "false"),
+  ]
+  if access_kind_eq(kind, AccessKind::ApiProvider) {
+    match api_source(via) {
+      Some((src, at)) => match at.responses {
+        Some(resp) => {
+          match model {
+            Some(m) => out.push(("model", json_escape_str(m)))
+            None => ()
+          }
+          out.push(("model_provider", "\"api\""))
+          out.push(("model_providers.api.base_url", json_escape_str(resp)))
+          if src.session_header {
+            out.push(("model_providers.api.env_http_headers", "{\"x-opencode-session\"=\"OPENCODE_SESSION\"}"))
+          }
+          out.push(("model_providers.api.env_key", "\"" + CODEX_KEY + "\""))
+          out.push(("model_providers.api.name", json_escape_str(src.name)))
+          out.push(("model_providers.api.wire_api", "\"responses\""))
+        }
+        None => ()
+      }
+      None => ()
+    }
+    return sort_pairs_by_key(out)
+  }
+  if access_kind_eq(kind, AccessKind::OpencodeGo) {
+    match model {
+      Some(m) => out.push(("model", json_escape_str(m)))
+      None => ()
+    }
+    out.push(("model_provider", "\"opencode-go\""))
+    out.push(("model_providers.opencode-go.base_url", "\"" + OPENCODE + "/v1\""))
+    out.push(("model_providers.opencode-go.env_http_headers", "{\"x-opencode-session\"=\"OPENCODE_SESSION\"}"))
+    out.push(("model_providers.opencode-go.env_key", "\"OPENCODE_GO_KEY\""))
+    out.push(("model_providers.opencode-go.name", "\"OpenCode Go\""))
+    out.push(("model_providers.opencode-go.wire_api", "\"responses\""))
+    return sort_pairs_by_key(out)
+  }
+  sort_pairs_by_key(out)
+}
+
+pub fn sort_pairs_by_key(pairs : Array[(String, String)]) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<pairs.length() {
+    out.push(pairs[i])
+  }
+  let n = out.length()
+  let mut i = 1
+  while i < n {
+    let cur = out[i]
+    let mut j = i - 1
+    while j >= 0 && out[j].0 > cur.0 {
+      out[j + 1] = out[j]
+      j = j - 1
+    }
+    out[j + 1] = cur
+    i = i + 1
+  }
+  out
+}
+
+pub fn profile_env(p : Profile, runtime : RuntimeKind, sep : String) -> Array[(String, String)] {
+  if !profile_supports_runtime(p, runtime) {
+    return []
+  }
+  let key = str_trim(p.access_key)
+  let via = profile_via(p)
+  let mut env = access_env(runtime, p.access_kind, key, p.model, via)
+  if runtime_kind_eq(runtime, RuntimeKind::Agy) &&
+  access_kind_eq(p.access_kind, AccessKind::ApiProvider) &&
+  opt_str_eq(via.provider, Some("google-vertex")) {
+    match vertex_account_project(key) {
+      Some(project) => {
+        env = env_set(env, "AGY_ADC_AUTH", "1")
+        env = env_set(env, "GOOGLE_CLOUD_PROJECT", project)
+        env = env_set(env, "GOOGLE_CLOUD_LOCATION", "global")
+        env = env_set(env, "GOOGLE_APPLICATION_CREDENTIALS", vertex_key_file(p.home, sep))
+      }
+      None => ()
+    }
+  }
+  if opt_str_is_some(key_file(p, sep)) {
+    env = env_delete(env, "ANTHROPIC_AUTH_TOKEN")
+    env = env_delete(env, "ANTHROPIC_API_KEY")
+  }
+  for i in 0..<p.env.length() {
+    let (k, v) = p.env[i]
+    if p.borrowed && machine_proxy(k) {
+      continue
+    }
+    env = env_set(env, k, v)
+  }
+  env
+}
+
+pub fn expand_route(env : Array[(String, String)], route : String) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  for i in 0..<env.length() {
+    let (k, v) = env[i]
+    out.push((k, str_replace_all(v, "{route}", route)))
+  }
+  out
+}

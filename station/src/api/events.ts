@@ -76,65 +76,95 @@ const DISK_HYSTERESIS_DIVISOR = 4;
 /// Bucket size for when a healthy backup place was last brought level: the row says it as "N minutes ago"
 /// (client/core-ts/src/copies.ts), so it is told again as it moves on, not at every pass.
 const COPIES_AT_STEP_MS = 10 * 60_000;
+/// Viewers whose overview one round makes together before letting the event loop go (`Events.flush`).
+export const OVERVIEW_VIEWER_BATCH = 4;
 
 function pctDiskStep(total: number): number {
   return Math.min(PCT_DISK_MAX_STEP, Math.max(PCT_DISK_MIN_STEP, Math.floor(total / 100)));
 }
 
-function previousDiskBucket(previous: string | undefined): { regime: "low" | "pct"; index: number; total: number } | null {
+/// The free-disk bucket a comparable overview was told with (`low:<n>` / `pct:<n>`), kept for hysteresis.
+export type DiskBucket = { regime: "low" | "pct"; index: number; total: number };
+/// A comparable overview as told to a viewer: its text, its disk bucket, and where in the text each top-level key's
+/// serialized value is (`[start, end)`), so the next telling needs no `JSON.parse` of the last one (`Events.flush`)
+/// and no second copy of it. Null `keys`: not a plain object.
+export type OverviewMemo = { text: string; disk: DiskBucket | null; keys: Map<string, [number, number]> | null };
+
+/// The bucket a told disk's `freeBytes` and `totalBytes` say, as they read back from its JSON text.
+function diskBucketOf(freeBytes: unknown, totalBytes: unknown): DiskBucket | null {
+  if (typeof freeBytes !== "string") return null;
+  const match = /^(low|pct):(-?\d+)$/.exec(freeBytes);
+  if (match === null) return null;
+  return {
+    regime: match[1] as "low" | "pct",
+    index: Number(match[2]),
+    // JSON tells a number that is not finite as `null`.
+    total: typeof totalBytes === "number" && Number.isFinite(totalBytes) ? totalBytes : 0,
+  };
+}
+
+function previousDiskBucket(previous: string | undefined): DiskBucket | null {
   if (previous === undefined) return null;
   try {
     const parsed = JSON.parse(previous);
     const disk = parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? (parsed as Record<string, unknown>).disk : null;
     if (disk === null || typeof disk !== "object" || Array.isArray(disk)) return null;
     const d = disk as Record<string, unknown>;
-    if (typeof d.freeBytes !== "string") return null;
-    const match = /^(low|pct):(-?\d+)$/.exec(d.freeBytes);
-    if (match === null) return null;
-    return {
-      regime: match[1] as "low" | "pct",
-      index: Number(match[2]),
-      total: typeof d.totalBytes === "number" ? d.totalBytes : 0,
-    };
+    return diskBucketOf(d.freeBytes, d.totalBytes);
   } catch {
     return null;
   }
 }
 
-function diskStepBucket(regime: "low" | "pct", free: number, step: number, previous: string | undefined): string {
-  const prev = previousDiskBucket(previous);
+function diskStepBucket(regime: "low" | "pct", free: number, step: number, total: unknown, prev: DiskBucket | null): { label: string; bucket: DiskBucket | null } {
+  const told = (index: number) => {
+    const label = `${regime}:${index}`;
+    return { label, bucket: diskBucketOf(label, total) };
+  };
   if (prev !== null && prev.regime === regime) {
     const prevStep = regime === "low" ? LOW_DISK_STEP : (prev.total > 0 ? pctDiskStep(prev.total) : 0);
     if (prevStep === step) {
       const margin = Math.floor(step / DISK_HYSTERESIS_DIVISOR);
       if (free > prev.index * step - margin && free < (prev.index + 1) * step + margin) {
-        return `${regime}:${prev.index}`;
+        return told(prev.index);
       }
     }
   }
-  return `${regime}:${Math.floor(free / step)}`;
+  return told(Math.floor(free / step));
 }
 
 /// Comparable snapshot of an overview for `overviewTold` deduplication: omits volatile machine telemetry, process
 /// RSS drift, and healthy backup progress ticks. Normalizes free-disk bytes into step buckets with hysteresis against
 /// `previous` while preserving immediate warning-level transitions. The emitted event keeps the exact overview.
 export function overviewComparable(value: unknown, previous?: string): string {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) return JSON.stringify(value);
+  return overviewComparableMemo(value, previousDiskBucket(previous)).text;
+}
+
+/// `overviewComparable` against an already parsed previous disk bucket, serialized once key by key: its text is byte
+/// for byte `JSON.stringify` of the normalized overview (a plain object: keys whose value serializes to nothing are
+/// left out), and the keys' serialized values compare the next telling without parsing this one.
+export function overviewComparableMemo(value: unknown, prevDisk: DiskBucket | null): OverviewMemo {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return { text: JSON.stringify(value), disk: null, keys: null };
   const src = value as Record<string, unknown>;
   const out: Record<string, unknown> = { ...src };
   delete out.machine;
+  let told: DiskBucket | null = null;
   const disk = src.disk;
   if (disk !== null && typeof disk === "object" && !Array.isArray(disk)) {
     const d = disk as Record<string, unknown>;
     const free = d.freeBytes;
     if (typeof free === "number") {
       const total = typeof d.totalBytes === "number" ? d.totalBytes : 0;
-      let bucket: string;
-      if (free <= LOW_DISK_BYTES) bucket = diskStepBucket("low", free, LOW_DISK_STEP, previous);
-      else if (total > 0 && free * 10 <= total) bucket = diskStepBucket("pct", free, pctDiskStep(total), previous);
-      else bucket = "ok";
+      let bucket = "ok";
+      const stepped = free <= LOW_DISK_BYTES ? diskStepBucket("low", free, LOW_DISK_STEP, d.totalBytes, prevDisk)
+        : total > 0 && free * 10 <= total ? diskStepBucket("pct", free, pctDiskStep(total), d.totalBytes, prevDisk)
+        : null;
+      if (stepped !== null) {
+        bucket = stepped.label;
+        told = stepped.bucket;
+      }
       out.disk = { ...d, freeBytes: bucket };
-    }
+    } else told = diskBucketOf(free, d.totalBytes);
   }
   if (Array.isArray(src.processes)) {
     out.processes = src.processes.map((p) => {
@@ -164,7 +194,33 @@ export function overviewComparable(value: unknown, previous?: string): string {
     }
     out.copies = normCopies;
   }
-  return JSON.stringify(out);
+  // (one telling itself what it is: serialized as a whole, as before)
+  if (typeof out.toJSON === "function") return { text: JSON.stringify(out), disk: told, keys: null };
+  const keys = new Map<string, [number, number]>();
+  const parts: string[] = [];
+  let offset = 1; // after `{`
+  for (const key of Object.keys(out)) {
+    const serialized = JSON.stringify(out[key]) as string | undefined;
+    if (serialized === undefined) continue;
+    const prefix = `${JSON.stringify(key)}:`;
+    if (parts.length > 0) offset += 1; // `,`
+    const start = offset + prefix.length;
+    const end = start + serialized.length;
+    keys.set(key, [start, end]);
+    parts.push(prefix + serialized);
+    offset = end;
+  }
+  return { text: `{${parts.join(",")}}`, disk: told, keys };
+}
+
+/// `overviewChangedKeys` of two memoed tellings, from where each key's value is in their texts, parsing neither.
+export function changedKeysFromMemos(prev: OverviewMemo, next: OverviewMemo): string[] {
+  const changed: string[] = [];
+  const differs = (a: [number, number] | undefined, b: [number, number] | undefined) =>
+    a === undefined || b === undefined || a[1] - a[0] !== b[1] - b[0] || prev.text.slice(a[0], a[1]) !== next.text.slice(b[0], b[1]);
+  for (const [key, at] of prev.keys!) if (differs(at, next.keys!.get(key))) changed.push(key);
+  for (const key of next.keys!.keys()) if (!prev.keys!.has(key)) changed.push(key);
+  return changed.sort();
 }
 
 /// Top-level keys whose serialized value differs between two comparable overview snapshots (names only, never values).
@@ -355,6 +411,9 @@ export class Events {
   private sharedReading: Promise<void> | null = null;
   private openingShared = 0;
   private overviewTold = new Map<string, string>();
+  /// What each `overviewTold` text was made with (its disk bucket, its keys serialized), in this process alone: a
+  /// memo whose text is not the told one is not used.
+  private overviewMemo = new Map<string, OverviewMemo>();
   private deps: EventsDeps;
   /// What changed since the last round: sessions (their events), the overview, and the sessions and threads whose rows
   /// of the shared chat list to read again (`items`), or all of it (`whole`).
@@ -450,6 +509,7 @@ export class Events {
           const overviews = new Map<string, string>(handed.overviews);
           this.log = taken;
           this.overviewTold = overviews;
+          this.overviewMemo.clear();
           this.last = handed.last;
           if (handed.last?.lang) this.langs.add(handed.last.lang);
           if (Array.isArray(handed.langs)) for (const l of handed.langs) if (l === "zh" || l === "en") this.langs.add(l);
@@ -671,6 +731,7 @@ export class Events {
       this.log.clear();
       this.sharedTold = null;
       this.overviewTold.clear();
+      this.overviewMemo.clear();
       this.langs.clear();
     });
   }
@@ -748,7 +809,10 @@ export class Events {
       client.send("missed", {});
     }
     // Afresh: their overview is told as it next is.
-    if (!resumes) this.overviewTold.delete(k);
+    if (!resumes) {
+      this.overviewTold.delete(k);
+      this.overviewMemo.delete(k);
+    }
     // The sessions at work its viewer sees, as each is now: from here on what each does comes as it does it (heldTold).
     if (follows && this.deps.heldNow !== undefined) {
       const keys = this.deps.held!().filter((key) => this.sees(client, { session: key }) && (spared === null || spared.has(key)));
@@ -1179,29 +1243,46 @@ export class Events {
       let suppressed = 0;
       let initial = 0;
       let totalBytes = 0;
-      await Promise.all(
-        viewers.map(async ({ viewer, lang }) => {
-          try {
-            const value = await this.deps.overview!(viewer, lang);
-            // Told only as it changed for them: a stream that comes back has every viewer's made again.
-            const k = viewerKey(viewer, lang);
-            const prev = this.overviewTold.get(k);
-            const text = overviewComparable(value, prev);
-            if (prev === text) {
-              suppressed++;
-              return;
+      // A few viewers at a time, the event loop let go between them: each viewer's overview is made whole (some
+      // 160 KB), and made for every viewer at once they would all be held, and the thread with them, together.
+      for (let i = 0; i < viewers.length; i += OVERVIEW_VIEWER_BATCH) {
+        if (!this.listening()) break;
+        const chunk = viewers.slice(i, i + OVERVIEW_VIEWER_BATCH);
+        await Promise.all(
+          chunk.map(async ({ viewer, lang }) => {
+            try {
+              const value = await this.deps.overview!(viewer, lang);
+              if (!this.listening()) return;
+              // Told only as it changed for them: a stream that comes back has every viewer's made again.
+              const k = viewerKey(viewer, lang);
+              const prev = this.overviewTold.get(k);
+              const prevMemo = this.overviewMemo.get(k);
+              const memoed = prevMemo !== undefined && prevMemo.text === prev;
+              // What was told is parsed only when this process did not make it (taken up from the one before).
+              const prevDisk = prev === undefined ? null : memoed ? prevMemo.disk : previousDiskBucket(prev);
+              const next = overviewComparableMemo(value, prevDisk);
+              if (prev === next.text) {
+                if (prev !== undefined) this.overviewMemo.set(k, next);
+                suppressed++;
+                return;
+              }
+              if (prev === undefined) initial++;
+              else {
+                const keys = memoed && prevMemo.keys !== null && next.keys !== null ? changedKeysFromMemos(prevMemo, next) : overviewChangedKeys(prev, next.text);
+                for (const key of keys) changedKeys.add(key);
+              }
+              pushed++;
+              totalBytes += Buffer.byteLength(next.text);
+              this.overviewTold.set(k, next.text);
+              this.overviewMemo.set(k, next);
+              this.emit("overview", value, { viewer: k }, `overview\0${k}`);
+            } catch (error) {
+              log.warn("events", "overview not told", { error: (error as Error).message });
             }
-            if (prev === undefined) initial++;
-            else for (const key of overviewChangedKeys(prev, text)) changedKeys.add(key);
-            pushed++;
-            totalBytes += Buffer.byteLength(text);
-            this.overviewTold.set(k, text);
-            this.emit("overview", value, { viewer: k }, `overview\0${k}`);
-          } catch (error) {
-            log.warn("events", "overview not told", { error: (error as Error).message });
-          }
-        }),
-      );
+          }),
+        );
+        if (i + OVERVIEW_VIEWER_BATCH < viewers.length) await new Promise<void>((resolve) => setImmediate(resolve));
+      }
       if (pushed > 0) {
         const triggers = [...dirty.overviewReasons].sort();
         log.info("events", "overview pushed", {

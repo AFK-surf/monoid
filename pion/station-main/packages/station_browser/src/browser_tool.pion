@@ -1,0 +1,499 @@
+// MCP `browser` tool input validation, action dispatch, and guidance text
+// (`station/src/browser/tool.ts`, `service.ts`, `farview.ts::farviewHowTo`).
+
+import "base_codec"
+
+pub let BROWSER_TOOL_NAME : String = "browser"
+
+pub let BROWSER_TOOL_DESCRIPTION : String = "This chat's own browser (Chrome, or Farview where the station has it), its sign-ins this chat's alone until it is archived. action endpoint (default) starts it and says how to drive it; tabs lists its tabs; status says whether it runs; stop closes it (sign-ins stay). Skill stillfail-browser. Sign in to a site with `sign_in` on its sign-in page; a captcha or consent: give a person the tab with `screen`."
+
+pub fn browser_tool_schema_json() -> base_codec::Json {
+  base_codec::json_obj(
+    [
+      ("type", base_codec::json_str("object")),
+      (
+        "properties",
+        base_codec::json_obj(
+          [
+            (
+              "action",
+              base_codec::json_obj(
+                [
+                  ("type", base_codec::json_str("string")),
+                  (
+                    "enum",
+                    base_codec::json_arr(
+                      [
+                        base_codec::json_str("endpoint"),
+                        base_codec::json_str("tabs"),
+                        base_codec::json_str("status"),
+                        base_codec::json_str("stop"),
+                        base_codec::json_str("open"),
+                        base_codec::json_str("close"),
+                      ],
+                    ),
+                  ),
+                  ("description", base_codec::json_str("Default endpoint. open, close: Farview's.")),
+                ],
+              ),
+            ),
+            (
+              "tab",
+              base_codec::json_obj(
+                [
+                  ("type", base_codec::json_str("string")),
+                  ("description", base_codec::json_str("Farview tab id (default: first).")),
+                ],
+              ),
+            ),
+            ("url", base_codec::json_obj([("type", base_codec::json_str("string"))])),
+            (
+              "engine",
+              base_codec::json_obj(
+                [
+                  ("type", base_codec::json_str("string")),
+                  (
+                    "enum",
+                    base_codec::json_arr(
+                      [base_codec::json_str("chrome"), base_codec::json_str("farview")],
+                    ),
+                  ),
+                  ("description", base_codec::json_str("This chat's browser from now on.")),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      ("additionalProperties", base_codec::json_bool(false)),
+    ],
+  )
+}
+
+pub struct BrowserToolArgs {
+  pub action : String
+  pub tab : String
+  pub url : String
+  pub engine : Option[BrowserEngine]
+}
+
+/// Strictly validate MCP `browser` tool input JSON (`additionalProperties: false`).
+pub fn parse_browser_tool_args(raw : base_codec::Json) -> Result[BrowserToolArgs, String] {
+  let fields = match raw {
+    base_codec::Json::Obj(fs) => fs
+    _ => return Err("browser tool arguments must be a JSON object")
+  }
+  let mut action = "endpoint"
+  let mut tab = ""
+  let mut url = ""
+  let mut engine : Option[BrowserEngine] = None
+  let mut i = 0
+  while i < fields.length() {
+    let (k, v) = fields[i]
+    if k == "action" {
+      match v {
+        base_codec::Json::Str(s) => action = s
+        _ => return Err("action must be a string")
+      }
+    } else if k == "tab" {
+      match v {
+        base_codec::Json::Str(s) => tab = s
+        _ => return Err("tab must be a string")
+      }
+    } else if k == "url" {
+      match v {
+        base_codec::Json::Str(s) => url = s
+        _ => return Err("url must be a string")
+      }
+    } else if k == "engine" {
+      match v {
+        base_codec::Json::Str(s) => {
+          if s == "chrome" {
+            engine = Some(BrowserEngine::Chrome)
+          } else if s == "farview" {
+            engine = Some(BrowserEngine::Farview)
+          } else {
+            return Err("engine must be \"chrome\" or \"farview\"")
+          }
+        }
+        _ => return Err("engine must be a string")
+      }
+    } else {
+      return Err("unknown property: " + k)
+    }
+    i = i + 1
+  }
+  Ok(BrowserToolArgs::{ action: action, tab: tab, url: url, engine: engine })
+}
+
+/// This session's WebSocket address of the browser (`tool.ts::sessionWs`), from the door's MCP URL.
+pub fn session_ws(door_url : Option[String], session : String) -> Option[String] {
+  let raw = match door_url {
+    Some(u) => u
+    None => return None
+  }
+  let with_ws = if raw.starts_with("http:") {
+    "ws:" + raw.to_bytes().slice(5, raw.to_bytes().length()).to_string()
+  } else {
+    raw
+  }
+  let base = if with_ws.ends_with("/mcp") {
+    with_ws.to_bytes().slice(0, with_ws.to_bytes().length() - 4).to_string()
+  } else {
+    with_ws
+  }
+  Some(base + session_path(session))
+}
+
+/// Guidance text for Chrome `browser` action `endpoint` (`tool.ts::howTo`).
+pub fn how_to(s : BrowserStatus, ws : Option[String]) -> String {
+  let http_addr = match s.http {
+    Some(h) => h
+    None => ""
+  }
+  let at = match ws {
+    Some(w) => w
+    None => http_addr
+  }
+  let bin = if s.binary.length() > 0 { s.binary } else { "Chrome" }
+  let headless_note = if s.headless { ", headless" } else { "" }
+  let lines : Array[String] = [
+    "This chat's browser runs (" + bin + headless_note + ").",
+    "DevTools for this chat: " + at,
+    "",
+    "Connect with your own client at this address:",
+    match ws {
+      Some(w) => "- chrome-devtools-mcp: `npx -y chrome-devtools-mcp@latest --wsEndpoint " + w + "`"
+      None => "- chrome-devtools-mcp: `npx -y chrome-devtools-mcp@latest --browserUrl " + http_addr + "`"
+    },
+    "- Playwright: `const browser = await chromium.connectOverCDP(\"" +
+    at +
+    "\"); const page = await browser.contexts()[0].newPage();` — the default context holds the sign-ins; a new context has none.",
+    "",
+    "It is this chat's alone: its sign-ins are the ones made in it (none of another chat's). Close the tabs you are done with.",
+    "Never launch another Chrome for work that needs a login: this one keeps them.",
+    "To be signed in to a site, open its sign-in page here and call `sign_in {site, reason}`: it asks for the sign-in the vault keeps, or has the person sign in from a card with their own password manager. Never ask for a password in the chat.",
+    "When a page needs a person for anything else (a captcha, a consent), give them that tab with the `screen` tool (a link to see and drive it from their app), ask in the chat (need_human), and end your turn; carry on when they say it is done.",
+    match ws {
+      Some(_) => "If the connection drops (the browser was restarted or closed after a long idle, the station restarted), connect again to the same address: it starts the browser if needed."
+      None => "If the connection drops (the browser was restarted or closed after a long idle), call browser again: the address usually stays the same."
+    },
+  ]
+  join_lines(lines)
+}
+
+/// Guidance text for Farview `browser` action `endpoint` (`farview.ts::farviewHowTo`).
+pub fn farview_how_to(config : FarviewConfig, tabs : Array[FarviewTab]) -> String {
+  let first_port = if tabs.length() > 0 { tabs[0].agent } else { 0 }
+  let run_cmd = config.agent + " 127.0.0.1 " + first_port.to_string()
+  let lines : Array[String] = [
+    "This chat's browser runs: Farview (a browser whose pages run on this station and draw on people's devices).",
+    "Its tabs (`browser` action tabs lists them again):",
+  ]
+  let mut i = 0
+  while i < tabs.length() {
+    let t = tabs[i]
+    let title_part = if t.title.length() > 0 {
+      " " + base_codec::json_stringify(base_codec::json_str(t.title))
+    } else {
+      ""
+    }
+    let url_part = if t.url.length() > 0 { t.url } else { BLANK_PAGE }
+    lines.push("- " + t.id + title_part + " " + url_part + " — agent port " + t.agent.to_string())
+    i = i + 1
+  }
+  lines.push(
+    "Drive a tab with: `" +
+    run_cmd +
+    " <step>...` (that tab's agent port) — each step prints what the page says after it (its address, title and an outline of its content).",
+  )
+  lines.push(
+    "Steps: `look`, `go:<address>`, `click:<selector>`, `fill:<selector>=<words>`, `submit:<selector>`, `key:<key>` or `key:<key>@<selector>`, `back`, `forward`, `reload`, `wait:<ms>`, `shot:<file.png>`, `eval:<js>` (its result as JSON).",
+  )
+  lines.push(
+    "Files: `upload:<selector>=<file>[,<file>...]` gives a file input those files of this machine, as if a person chose them (the page sees them chosen: its input and change events, input.files, a form's upload). What a page downloads is saved, not shown, in its tab's own `downloads/` directory; the step `downloads` lists each file saved there, its name, size and path.",
+  )
+  lines.push("For example: `" + run_cmd + " go:https://example.com look`.")
+  lines.push(
+    "More tabs: `browser` action open (with `url`) opens one and gives its port; action close (with `tab`) closes one. A page that opens a new window (a link to _blank, window.open) gets a tab of its own: action tabs shows it.",
+  )
+  lines.push("There is no DevTools address: Playwright and chrome-devtools-mcp do not drive it.")
+  lines.push(
+    "Its tabs share one profile: cookies, storage and passkeys are this chat's alone and stay until the chat is archived. A site's sign-in: `sign_in` puts one the vault keeps into it, or asks a person on a card, as with Chrome. A site's passkey sign-in (or its \"add a passkey\") is done by Farview's own authenticator with no prompt, as Chrome's is.",
+  )
+  lines.push(
+    "A person can see and drive each tab from their app (the `screen` tool gives the link, by the tab's id); when they act on it, it is theirs: the agent is told \"the person took the tab back\" and waits until they say it is done.",
+  )
+  lines.push("`browser` with engine chrome gives this chat Chrome instead (Farview's tabs end; its profile stays).")
+  join_lines(lines)
+}
+
+fn join_lines(lines : Array[String]) -> String {
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < lines.length() {
+    if i > 0 {
+      sb.write_string("\n")
+    }
+    sb.write_string(lines[i])
+    i = i + 1
+  }
+  sb.to_string()
+}
+
+fn chrome_tabs_text(tabs : Array[TabInfo]) -> String {
+  if tabs.length() == 0 {
+    return "No tabs open (or the browser is not running)."
+  }
+  let lines : Array[String] = []
+  let mut i = 0
+  while i < tabs.length() {
+    let t = tabs[i]
+    let title_part = if t.title.length() > 0 {
+      base_codec::json_stringify(base_codec::json_str(t.title)) + " "
+    } else {
+      ""
+    }
+    let att = if t.attached { " (a client is attached)" } else { "" }
+    lines.push("- " + t.id + " " + title_part + t.url + att)
+    i = i + 1
+  }
+  join_lines(lines)
+}
+
+fn farview_tabs_text(tabs : Array[FarviewTab]) -> String {
+  if tabs.length() == 0 {
+    return "No tabs open (or the browser is not running): `browser` (action endpoint) starts it."
+  }
+  let lines : Array[String] = []
+  let mut i = 0
+  while i < tabs.length() {
+    let t = tabs[i]
+    let title_part = if t.title.length() > 0 {
+      base_codec::json_stringify(base_codec::json_str(t.title)) + " "
+    } else {
+      ""
+    }
+    lines.push("- " + t.id + " " + title_part + t.url + " (agent port " + t.agent.to_string() + ")")
+    i = i + 1
+  }
+  join_lines(lines)
+}
+
+/// Injectable Chrome backend port for `dispatch_browser_tool`.
+pub struct ChromeToolPort {
+  pub endpoint : (String) -> Result[BrowserStatus, String]
+  pub tabs : (String) -> Array[TabInfo]
+  pub status : (String) -> BrowserStatus
+  pub stop : (String) -> Result[Unit, String]
+}
+
+/// Injectable Farview backend port for `dispatch_browser_tool`.
+pub struct FarviewToolPort {
+  pub active : () -> Option[FarviewConfig]
+  pub active_for : (String) -> Bool
+  pub choose : (String, BrowserEngine) -> Result[Unit, String]
+  pub endpoint : (String) -> Result[BrowserStatus, String]
+  pub tabs : (String) -> Array[FarviewTab]
+  pub open : (String, String) -> Result[FarviewTab, String]
+  pub close_tab : (String, String) -> Result[Unit, String]
+  pub status : (String) -> BrowserStatus
+  pub stop : (String) -> Result[Unit, String]
+  pub agent_port : (String, String) -> Option[Int]
+}
+
+/// Dispatch an MCP `browser` tool call (`tool.ts::browserTools`).
+pub fn dispatch_browser_tool(
+  chrome : ChromeToolPort,
+  door_url : Option[String],
+  farview : Option[FarviewToolPort],
+  session : String,
+  raw_args : base_codec::Json,
+) -> Result[String, String] {
+  let args = match parse_browser_tool_args(raw_args) {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+  match args.engine {
+    Some(eng) => {
+      match farview {
+        None => {
+          return Err(
+            "This station has no Farview (config.json `browser.farview` is false, or no release for this system): this chat's browser is Chrome.",
+          )
+        }
+        Some(fv) => {
+          let has_active = match (fv.active)() {
+            Some(_) => true
+            None => false
+          }
+          if !has_active {
+            return Err(
+              "This station has no Farview (config.json `browser.farview` is false, or no release for this system): this chat's browser is Chrome.",
+            )
+          }
+          match (fv.choose)(session, eng) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          match eng {
+            BrowserEngine::Farview => {
+              match (chrome.stop)(session) {
+                Ok(_) => ()
+                Err(e) => return Err(e)
+              }
+            }
+            BrowserEngine::Chrome => ()
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  match farview {
+    Some(fv) => {
+      match (fv.active)() {
+        Some(cfg) => {
+          if (fv.active_for)(session) {
+            return dispatch_farview_tool(fv, cfg, session, args.action, args.tab, args.url)
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  if args.action == "endpoint" {
+    let st = match (chrome.endpoint)(session) {
+      Ok(s) => s
+      Err(e) => return Err(e)
+    }
+    return Ok(how_to(st, session_ws(door_url, session)))
+  }
+  if args.action == "tabs" {
+    return Ok(chrome_tabs_text((chrome.tabs)(session)))
+  }
+  if args.action == "status" {
+    let s = (chrome.status)(session)
+    if !s.running {
+      return Ok("Not running: `browser` (action endpoint) starts it.")
+    }
+    let addr = match session_ws(door_url, session) {
+      Some(w) => w
+      None => {
+        match s.http {
+          Some(h) => h
+          None => ""
+        }
+      }
+    }
+    let hl = if s.headless { ", headless" } else { "" }
+    return Ok(
+      "Running: " +
+      addr +
+      ", " +
+      s.tabs.to_string() +
+      " tab(s), " +
+      s.viewing.to_string() +
+      " view(s) by people" +
+      hl +
+      ".",
+    )
+  }
+  if args.action == "stop" {
+    match (chrome.stop)(session) {
+      Ok(_) => return Ok("This chat's browser is closed (its profile and sign-ins stay).")
+      Err(e) => return Err(e)
+    }
+  }
+  if args.action == "open" || args.action == "close" {
+    return Err(
+      args.action + " is Farview's: in Chrome, open and close tabs over its DevTools (action endpoint)",
+    )
+  }
+  Err("unknown action " + args.action + ": endpoint, tabs, status or stop")
+}
+
+fn dispatch_farview_tool(
+  fv : FarviewToolPort,
+  cfg : FarviewConfig,
+  session : String,
+  action : String,
+  tab : String,
+  url_str : String,
+) -> Result[String, String] {
+  if action == "endpoint" {
+    match (fv.endpoint)(session) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let has_port = match (fv.agent_port)(session, tab) {
+      Some(_) => true
+      None => false
+    }
+    if tab.length() > 0 && !has_port {
+      return Err("no such tab in this chat's browser: " + tab)
+    }
+    return Ok(farview_how_to(cfg, (fv.tabs)(session)))
+  }
+  if action == "tabs" {
+    return Ok(farview_tabs_text((fv.tabs)(session)))
+  }
+  if action == "open" {
+    match (fv.endpoint)(session) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    let t = match (fv.open)(session, url_str) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    let shown_url = if url_str.length() > 0 { url_str } else { BLANK_PAGE }
+    return Ok(
+      "Opened " +
+      t.id +
+      " on " +
+      shown_url +
+      ". Drive it with: `" +
+      cfg.agent +
+      " 127.0.0.1 " +
+      t.agent.to_string() +
+      " <step>...`",
+    )
+  }
+  if action == "close" {
+    if tab.length() == 0 {
+      return Err("close: say which tab (`tab`, an id from tabs)")
+    }
+    match (fv.close_tab)(session, tab) {
+      Ok(_) => return Ok("Closed " + tab + ".")
+      Err(e) => return Err(e)
+    }
+  }
+  if action == "status" {
+    let s = (fv.status)(session)
+    if !s.running {
+      return Ok("Not running: `browser` (action endpoint) starts it.")
+    }
+    let port_part = match (fv.agent_port)(session, tab) {
+      Some(p) => ", agent port " + p.to_string()
+      None => ""
+    }
+    return Ok(
+      "Running: Farview, " +
+      s.tabs.to_string() +
+      " tab(s)" +
+      port_part +
+      ", " +
+      s.viewing.to_string() +
+      " view(s) by people.",
+    )
+  }
+  if action == "stop" {
+    match (fv.stop)(session) {
+      Ok(_) => return Ok("This chat's browser is closed (its cookies and storage stay).")
+      Err(e) => return Err(e)
+    }
+  }
+  Err("unknown action " + action + ": endpoint, tabs, open, close, status or stop")
+}

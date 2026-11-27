@@ -19,7 +19,8 @@ test("a station release includes every worker built, including workers in new di
     for (const path of ["bin/stillfail", "bin/stillfail.cmd", "bin/stillfail.ps1", ".node-version", "natives/stillfail-station",
       "natives/stillfail-station-w.exe", "natives/mesh.node", "natives/stillfail-runner", "natives/stillfail-screen.exe",
       "natives/stillfail-screen-linux", "natives/agent-desktop.exe", "natives/stillfail-reader", "natives/stillfail-reader.exe",
-      "natives/stillfail-pion", "natives/stillfail-pion.exe", "natives/still.fail Helper.app/Contents/MacOS/helper"]) file(path);
+      "natives/stillfail-pion", "natives/stillfail-pion.exe", "natives/stillfail-station-pion", "natives/stillfail-station-pion.exe",
+      "natives/still.fail Helper.app/Contents/MacOS/helper"]) file(path);
     // the lock's and vault's rules in Pion (shared/rules-runtime.ts PION_RULES_AT), copied whole beside main.js
     for (const path of ["pion/rules/js/rules-wasm.mjs", "pion/rules/js/pion_wasm_rt.mjs", "pion/rules/js/rules.wasm"]) file(path, path);
     // A release may run after a different build in the same checkout; its files must not leak into this one.
@@ -30,7 +31,7 @@ case "$1" in
   */posthog-key.ts) mkdir -p "$BUNDLE_TEST_ROOT/dist/admin"; printf '{}' > "$BUNDLE_TEST_ROOT/dist/admin/posthog.json" ;;
   */native.ts) case "$3" in
     launcher) name=stillfail-station ;; mesh) name=mesh.node ;; runner) name=stillfail-runner ;;
-    helper) name='still.fail Helper.app' ;; reader) name=stillfail-reader; [ "$4" = win32-x64 ] && name=stillfail-reader.exe ;; pion-reader) name=stillfail-pion; [ "$4" = win32-x64 ] && name=stillfail-pion.exe ;; screen) name=stillfail-screen.exe ;; screen-linux) name=stillfail-screen-linux ;; agent-desktop) name=agent-desktop.exe ;;
+    helper) name='still.fail Helper.app' ;; reader) name=stillfail-reader; [ "$4" = win32-x64 ] && name=stillfail-reader.exe ;; pion-reader) name=stillfail-pion; [ "$4" = win32-x64 ] && name=stillfail-pion.exe ;; station-pion) name=stillfail-station-pion; [ "$4" = win32-x64 ] && name=stillfail-station-pion.exe ;; screen) name=stillfail-screen.exe ;; screen-linux) name=stillfail-screen-linux ;; agent-desktop) name=agent-desktop.exe ;;
     *) exit 1 ;;
   esac; printf '%s/natives/%s\\n' "$BUNDLE_TEST_ROOT" "$name" ;;
   */installers.ts) : ;;
@@ -62,9 +63,10 @@ done
       assert.equal(existsSync(join(station, "linux-portal.py")), platform.startsWith("linux-"));
       assert.equal(existsSync(join(station, "linux-gamepad.py")), platform.startsWith("linux-"));
       assert.equal(existsSync(join(station, "stillfail-screen-linux")), platform.startsWith("linux-"), `${platform}: native Linux screen helper`);
-      // the reader in MoonBit (scripts/native.ts `reader`) and Pion (`pion-reader`), every platform's
+      // the reader in MoonBit (scripts/native.ts `reader`), Pion (`pion-reader`), and opt-in full Pion station (`station-pion`), every platform's
       assert.ok(existsSync(join(station, platform === "win32-x64" ? "stillfail-reader.exe" : "stillfail-reader")), `${platform}: the MoonBit reader`);
       assert.ok(existsSync(join(station, platform === "win32-x64" ? "stillfail-pion.exe" : "stillfail-pion")), `${platform}: the Pion reader`);
+      assert.ok(existsSync(join(station, platform === "win32-x64" ? "stillfail-station-pion.exe" : "stillfail-station-pion")), `${platform}: the Pion station`);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -82,7 +84,7 @@ test("a bundle told the station is built takes dist/admin and station/dist as th
     mkdirSync(join(root, "scripts"), { recursive: true });
     cpSync(fileURLToPath(new URL("../../scripts/station-bundle.sh", import.meta.url)), join(root, "scripts/station-bundle.sh"));
     for (const path of ["bin/stillfail", ".node-version", "natives/stillfail-station", "natives/mesh.node", "natives/stillfail-runner",
-      "natives/stillfail-reader", "natives/stillfail-pion", "natives/stillfail-screen-linux", "pion/rules/js/rules-wasm.mjs", "pion/rules/js/pion_wasm_rt.mjs",
+      "natives/stillfail-reader", "natives/stillfail-pion", "natives/stillfail-station-pion", "natives/stillfail-screen-linux", "pion/rules/js/rules-wasm.mjs", "pion/rules/js/pion_wasm_rt.mjs",
       "pion/rules/js/rules.wasm"]) file(path);
     file("dist/admin/posthog.json", "built before");
     file("station/dist/main.js", "built before");
@@ -91,7 +93,7 @@ set -eu
 case "$1" in
   */posthog-key.ts) echo "posthog-key.ts run again" >&2; exit 9 ;;
   */native.ts) case "$3" in
-    launcher) name=stillfail-station ;; mesh) name=mesh.node ;; runner) name=stillfail-runner ;; reader) name=stillfail-reader ;; pion-reader) name=stillfail-pion ;;
+    launcher) name=stillfail-station ;; mesh) name=mesh.node ;; runner) name=stillfail-runner ;; reader) name=stillfail-reader ;; pion-reader) name=stillfail-pion ;; station-pion) name=stillfail-station-pion ;;
     screen-linux) name=stillfail-screen-linux ;; *) exit 1 ;;
   esac; printf '%s/natives/%s\\n' "$BUNDLE_TEST_ROOT" "$name" ;;
   */installers.ts) : ;;

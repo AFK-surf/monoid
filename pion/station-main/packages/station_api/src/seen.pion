@@ -1,0 +1,229 @@
+// Workspace visibility & cross-workspace isolation (`station/src/api/seen.ts`).
+
+/// Handed-over chat destination returned in 409 `moved` responses.
+pub struct MovedTarget {
+  pub session : String
+  pub station : String
+  pub thread : Option[Int]
+  pub there : Option[Int]
+}
+
+/// Handed-over record kept for a migrated session.
+pub struct HandedRecord {
+  pub ws : Option[String]
+  pub station : String
+  pub thread : Option[Int]
+  pub there : Option[Int]
+}
+
+/// Injectable store lookup port for workspace visibility checks.
+pub struct SeenStore {
+  pub session_exists : (String) -> Bool
+  pub session_ws : (String) -> Option[Option[String]]
+  pub thread_exists : (Int) -> Bool
+  pub thread_sessions : (Int) -> Array[String]
+  pub job_session : (String) -> Option[String]
+  pub handed_to : (String) -> Option[HandedRecord]
+}
+
+pub fn SeenStore::empty() -> SeenStore {
+  SeenStore::{
+    session_exists: fn(_k : String) -> Bool { false },
+    session_ws: fn(_k : String) -> Option[Option[String]] { None },
+    thread_exists: fn(_id : Int) -> Bool { false },
+    thread_sessions: fn(_id : Int) -> Array[String] { [] },
+    job_session: fn(_id : String) -> Option[String] { None },
+    handed_to: fn(_k : String) -> Option[HandedRecord] { None },
+  }
+}
+
+/// Extract `<workspace>` from `remote:<workspace>:<station>:<session>` (`station/src/store/rows.ts` `remoteWs`).
+pub fn remote_ws(key : String) -> Option[String] {
+  if !key.starts_with("remote:") {
+    return None
+  }
+  let rest = key.slice(7, key.length())
+  let c1 = rest.index_of(":")
+  if c1 <= 0 {
+    return None
+  }
+  let ws = rest.slice(0, c1)
+  if ws.index_of("/") >= 0 {
+    return None
+  }
+  let after_ws = rest.slice(c1 + 1, rest.length())
+  let c2 = after_ws.index_of(":")
+  if c2 <= 0 {
+    return None
+  }
+  let station = after_ws.slice(0, c2)
+  if station.index_of("/") >= 0 {
+    return None
+  }
+  let sess = after_ws.slice(c2 + 1, after_ws.length())
+  if sess.length() == 0 {
+    return None
+  }
+  Some(ws)
+}
+
+/// Visibility of a session key not present in the local store (`station/src/store/rows.ts` `seesMissing`):
+/// another station's task belongs strictly to its `<ws>`, whichever this station's home is.
+pub fn sees_missing(viewer : Viewer, key : String) -> Bool {
+  match remote_ws(key) {
+    Some(ws) => ws == viewer.workspace
+    None => sees_workspace(viewer, None)
+  }
+}
+
+pub fn session_seen(store : SeenStore, viewer : Viewer, key : String) -> Bool {
+  match (store.session_ws)(key) {
+    None => sees_missing(viewer, key)
+    Some(ws) => sees_workspace(viewer, ws)
+  }
+}
+
+pub fn thread_seen(store : SeenStore, viewer : Viewer, id : Int) -> Bool {
+  let members = (store.thread_sessions)(id)
+  if members.length() == 0 {
+    return sees_workspace(viewer, None)
+  }
+  let mut i = 0
+  while i < members.length() {
+    if session_seen(store, viewer, members[i]) {
+      return true
+    }
+    i = i + 1
+  }
+  false
+}
+
+pub fn job_seen(store : SeenStore, viewer : Viewer, id : String) -> Bool {
+  match (store.job_session)(id) {
+    None => true
+    Some(session_key) => session_seen(store, viewer, session_key)
+  }
+}
+
+/// Screen source visibility metadata.
+pub struct ScreenVisibility {
+  pub user_tab : Bool
+  pub opened_by : Option[String]
+  pub workspace : Option[Option[String]]
+}
+
+pub fn screen_seen(store : SeenStore, viewer : Viewer, src : ScreenVisibility) -> Bool {
+  if src.user_tab {
+    return true
+  }
+  match src.opened_by {
+    Some(session_key) => {
+      if session_key.length() > 0 {
+        return session_seen(store, viewer, session_key)
+      }
+    }
+    None => ()
+  }
+  match src.workspace {
+    Some(ws) => sees_workspace(viewer, ws)
+    None => true
+  }
+}
+
+/// Extract `(kind, decoded_id)` from `/sessions/:key...`, `/threads/:id...`, or `/jobs/:id...`.
+fn parse_named_resource(path : String) -> Option[(String, String)] {
+  let parts = path.split("/")
+  let non_empty : Array[String] = []
+  let mut i = 0
+  while i < parts.length() {
+    if parts[i].length() > 0 {
+      non_empty.push(parts[i])
+      if non_empty.length() >= 2 {
+        break
+      }
+    }
+    i = i + 1
+  }
+  if non_empty.length() < 2 {
+    return None
+  }
+  let kind = non_empty[0]
+  if kind == "sessions" || kind == "threads" || kind == "jobs" {
+    Some((kind, segment_decode(non_empty[1])))
+  } else {
+    None
+  }
+}
+
+/// Returns a 404 message if the path names a resource that exists in another workspace; `None` otherwise.
+pub fn elsewhere(store : SeenStore, path : String, viewer : Viewer) -> Option[String] {
+  match parse_named_resource(path) {
+    None => None
+    Some((kind, id)) => {
+      if kind == "sessions" {
+        if (store.session_exists)(id) && !session_seen(store, viewer, id) {
+          Some("unknown session " + id)
+        } else {
+          None
+        }
+      } else if kind == "threads" {
+        match parse_uint_str(id) {
+          Some(tid) => {
+            if (store.thread_exists)(tid) && !thread_seen(store, viewer, tid) {
+              Some("unknown thread " + id)
+            } else {
+              None
+            }
+          }
+          None => None
+        }
+      } else if job_seen(store, viewer, id) {
+        None
+      } else {
+        Some("no job " + id)
+      }
+    }
+  }
+}
+
+/// Returns the handed-over target if the path names a chat handed to another station of `viewer`'s workspace.
+pub fn went(store : SeenStore, path : String, viewer : Viewer) -> Option[MovedTarget] {
+  match parse_named_resource(path) {
+    None => None
+    Some((kind, id)) => {
+      let keys : Array[String] = if kind == "sessions" {
+        [id]
+      } else if kind == "threads" {
+        match parse_uint_str(id) {
+          Some(tid) => (store.thread_sessions)(tid)
+          None => []
+        }
+      } else {
+        []
+      }
+      let mut i = 0
+      while i < keys.length() {
+        let key = keys[i]
+        match (store.handed_to)(key) {
+          Some(h) => {
+            let is_handed_ws = match (store.session_ws)(key) {
+              Some(Some(ws_str)) => ws_str.starts_with("handed:")
+              _ => false
+            }
+            if is_handed_ws && sees_workspace(viewer, h.ws) {
+              return Some(MovedTarget::{
+                session: key,
+                station: h.station,
+                thread: h.thread,
+                there: h.there,
+              })
+            }
+          }
+          None => ()
+        }
+        i = i + 1
+      }
+      None
+    }
+  }
+}

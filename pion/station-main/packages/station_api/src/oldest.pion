@@ -1,0 +1,92 @@
+// `OLDEST_CORE` version floor gating (`station/src/api/oldest.ts`).
+
+import "base_codec"
+import "station_http"
+
+pub let BUILD_HEADER : String = "stillfail-build"
+
+/// Oldest core build answered; 0 disables gating.
+pub let OLDEST_CORE : Int = 7917
+
+/// Builds below this threshold are dev / TestFlight builds and are never gated.
+pub let COUNTED_FROM : Int = 1000
+
+fn parse_bounded_build_int(s : String) -> Option[Int] {
+  if s.length() == 0 || s.length() > 9 {
+    return None
+  }
+  match parse_digits_i64(s) {
+    Some(b) => {
+      if b <= 2147483647L {
+        Some(b.to_int())
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+/// Parse build number from `0.<m>.<n>` or `<n>`, returning `None` if absent, malformed, or overflowing Int.
+pub fn build_of(said : Option[String]) -> Option[Int] {
+  match said {
+    None => None
+    Some(raw) => {
+      let s = raw.trim()
+      if s.length() == 0 {
+        return None
+      }
+      if s.starts_with("0.") {
+        let rest = s.slice(2, s.length())
+        let dot = rest.index_of(".")
+        if dot <= 0 || dot + 1 >= rest.length() {
+          return None
+        }
+        let minor = rest.slice(0, dot)
+        let build_str = rest.slice(dot + 1, rest.length())
+        match (parse_bounded_build_int(minor), parse_bounded_build_int(build_str)) {
+          (Some(_), Some(b)) => Some(b)
+          _ => None
+        }
+      } else {
+        parse_bounded_build_int(s)
+      }
+    }
+  }
+}
+
+/// Whether a core advertising `stillfail-build` is older than `oldest`.
+/// Cores omitting the header or reporting `< COUNTED_FROM` are not gated.
+pub fn core_too_old(req : station_http::HttpRequest, oldest : Int) -> Bool {
+  if oldest <= 0 {
+    return false
+  }
+  match build_of(req.header(BUILD_HEADER)) {
+    Some(b) => b >= COUNTED_FROM && b < oldest
+    None => false
+  }
+}
+
+/// Return a 426 Upgrade Required response with `update: true` and an actionable localized prompt.
+pub fn check_core_version(
+  req : station_http::HttpRequest,
+  oldest : Int,
+  station_build : String,
+  lang : Lang,
+) -> Option[station_http::HttpResponse] {
+  if !core_too_old(req, oldest) {
+    return None
+  }
+  let msg = match lang {
+    Lang::Zh => "请更新应用后再连接此站点"
+    Lang::En => "Update the app to connect to this station"
+  }
+  let payload = base_codec::json_obj([
+    ("error", base_codec::json_str(msg)),
+    ("update", base_codec::json_bool(true)),
+  ])
+  let resp = json_status(426, payload)
+  .with_header(BUILD_HEADER, station_build)
+  .with_header("stillfail-idempotent", "1")
+  Some(resp)
+}

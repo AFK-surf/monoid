@@ -43,10 +43,10 @@ decide() {
   station=false
   # The station in TypeScript, its native parts (vendor/: the mesh addon's iroh), its programs in MoonBit (station/mb: the
   # shell they link, client/shell and the Cargo files of its workspace, the base's packages they take, libs/base, and mbui's effect), its Pion reader/builder
-  # (pion/station and pion/base/packages/base_codec), the rules it checks the lock and
+  # (pion/station and pion/base/packages/base_codec), its opt-in full Pion station (pion/station-main and pion/rules/packages), the rules it checks the lock and
   # vaults by (rules/js, pion/rules/js: the default engine it bundles as pion-rules/), what it shares with the core (shared/, client/core-ts/src: scripts/plan-covers.ts finds which), the words it says, the installer it carries (cloud/src/install*.ts: scripts/installers.ts), its deltas (scripts/delta.ts, delta-fast.c, release-deltas.ts).
   if has '^(station/(src|native|mb|assets)/|shared/|libs/base/(src/|moon\.mod$)|client/shell/|libs/mesh-transport/|libs/ui/src/effect/|rules/js/|pion/rules/js/|client/core-ts/src/(shapes/[^/]+|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records|features|model-speed)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|client/Cargo\.(toml|lock)$|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|scripts/delta-fast\.c$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
-  if has_but '^(pion/station/(TOOLCHAIN$|pion\.(toml|lock)$|scripts/(build|ensure-pionc)\.sh$|packages/)|pion/base/packages/base_codec/)' '(_test\.(pion|c)$|/README\.md$)'; then station=true; fi
+  if has_but '^(pion/station/(TOOLCHAIN$|pion\.(toml|lock)$|scripts/(build|ensure-pionc)\.sh$|packages/)|pion/station-main/|pion/rules/packages/|pion/base/packages/base_codec/)' '(_test\.(pion|c)$|-interop\.mjs$|/README\.md$)'; then station=true; fi
   # The beta Android app: mbui's in the Kotlin one's place (scripts/release.sh --beta android), released for a
   # change to what apps/mbui's beta is made of (scripts/beta.sh APP_SRC: its code, mbui's with its Android host's
   # Java, JZlib among it, the client's, media's, vendor's), to the tool that packs and repacks its APK (mbui's

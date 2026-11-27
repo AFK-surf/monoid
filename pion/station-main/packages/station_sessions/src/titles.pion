@@ -1,0 +1,185 @@
+// Chat title rules (`titles.ts`), title completion endpoint validation (`title-completion.ts`),
+// and regenerate-title cleanup & ordering (`regenerate-title.ts`).
+
+import "js_json"
+
+pub let TITLE_LONGEST : Int = 30
+pub let SAID_BEFORE_TITLE_CHANGE : Int = 5
+pub let MAX_AUTO_TITLE_CHANGES : Int = 2
+
+/// Cleans a chat title (`titles.ts` `cleanTitle` 1:1):
+/// - Collapses whitespace to single spaces
+/// - Strips trailing `.` and `。`
+/// - Truncates to at most `TITLE_LONGEST` (30) Unicode code points
+pub fn clean_title(raw : String) -> String {
+  let pts = js_json::points(raw)
+  let collapsed : Array[String] = []
+  let mut in_ws = true
+  for i in 0..<pts.length() {
+    let ch = pts[i]
+    let ws = ch == " " || ch == "\t" || ch == "\n" || ch == "\r" || ch == "\u{3000}"
+    if ws {
+      if !in_ws {
+        collapsed.push(" ")
+        in_ws = true
+      }
+    } else {
+      in_ws = false
+      collapsed.push(ch)
+    }
+  }
+  let mut end = collapsed.length()
+  while end > 0 && (collapsed[end - 1] == " " || collapsed[end - 1] == "." || collapsed[end - 1] == "。") {
+    end = end - 1
+  }
+  let limit = if end > TITLE_LONGEST { TITLE_LONGEST } else { end }
+  let mut final_end = limit
+  while final_end > 0 && collapsed[final_end - 1] == " " {
+    final_end = final_end - 1
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<final_end {
+    sb.write_string(collapsed[i])
+  }
+  sb.to_string()
+}
+
+pub enum TitleDecision {
+  Apply(String)
+  NoChange
+  Refused(String)
+}
+
+/// Evaluates whether an agent may set/change a chat's auto-title (`titles.ts` `mayName` 1:1):
+/// - Never overwrites a human-given title (`human_title`).
+/// - Allows at most `MAX_AUTO_TITLE_CHANGES` (2) changes after the first auto-title.
+/// - Requires at least `SAID_BEFORE_TITLE_CHANGE` (5) person messages since the previous
+///   auto-title, unless a watch job is active in the thread (`has_active_watch == true`).
+pub fn may_name_chat(
+  thread_exists : Bool,
+  human_title : Option[String],
+  current_auto_title : Option[String],
+  auto_changes : Int,
+  people_said_after : Int,
+  has_active_watch : Bool,
+  given_title : String,
+) -> TitleDecision {
+  let title = clean_title(given_title)
+  if title.length() == 0 {
+    return TitleDecision::NoChange
+  }
+  if !thread_exists {
+    return TitleDecision::Refused("the chat is gone")
+  }
+  match human_title {
+    Some(ht) => if js_json::trim_js(ht).length() > 0 {
+      return TitleDecision::Refused("people named this chat")
+    }
+    None => ()
+  }
+  match current_auto_title {
+    None => TitleDecision::Apply(title)
+    Some(prev) => {
+      if prev == title {
+        return TitleDecision::NoChange
+      }
+      if auto_changes >= MAX_AUTO_TITLE_CHANGES {
+        return TitleDecision::Refused("it has been changed as often as it may be")
+      }
+      if people_said_after < SAID_BEFORE_TITLE_CHANGE && !has_active_watch {
+        return TitleDecision::Refused(
+          "people have said too little since it was given; change it only when it no longer says what the chat is about",
+        )
+      }
+      TitleDecision::Apply(title)
+    }
+  }
+}
+
+/// Cleans a regenerated title output (`regenerate-title.ts` 1:1):
+/// rejects multi-line answers, strips surrounding quote pairs, and applies `clean_title`.
+pub fn clean_regenerated_title(raw : String) -> Option[String] {
+  let line = js_json::trim_js(raw)
+  if line.length() == 0 {
+    return None
+  }
+  for i in 0..<line.length() {
+    let c = line.code_unit_at(i)
+    if c == 10 || c == 13 {
+      return None
+    }
+  }
+  let pts = js_json::points(line)
+  let mut start = 0
+  let mut end = pts.length()
+  while start < end && is_open_quote(pts[start]) {
+    start = start + 1
+  }
+  while end > start && is_close_quote(pts[end - 1]) {
+    end = end - 1
+  }
+  let sb = StringBuilder::new()
+  for i in start..<end {
+    sb.write_string(pts[i])
+  }
+  let cleaned = clean_title(sb.to_string())
+  if cleaned.length() == 0 { None } else { Some(cleaned) }
+}
+
+fn is_open_quote(ch : String) -> Bool {
+  ch == "\"" || ch == "'" || ch == "“" || ch == "‘" || ch == "「" || ch == "『"
+}
+
+fn is_close_quote(ch : String) -> Bool {
+  ch == "\"" || ch == "'" || ch == "”" || ch == "’" || ch == "」" || ch == "』"
+}
+
+/// Validates a title-completion base URL (`title-completion.ts` 1:1):
+/// must be HTTPS or loopback HTTP (`localhost`, `127.0.0.1`, `[::1]`) with no credentials, query, or fragment.
+pub fn title_completion_endpoint(base_url : String) -> Option[String] {
+  let cfg = DecisionConfig::{
+    provider: DecisionProvider::ChatLogprobs,
+    endpoint: base_url,
+    model: "title",
+    api_key: "",
+    session_header: false,
+    threshold: 0.85,
+  }
+  match validate_decision_config(cfg) {
+    Err(_) => None
+    Ok(()) => {
+      let mut end = base_url.length()
+      while end > 0 && base_url.code_unit_at(end - 1) == 47 {
+        end = end - 1
+      }
+      Some(base_url.slice(0, end) + "/chat/completions")
+    }
+  }
+}
+
+/// Tracks latest regenerate-title request id per thread so a slower earlier request
+/// cannot overwrite a newer request's result (`regenerate-title.ts` 1:1).
+pub struct RegenerateTracker {
+  pub pending : Map[Int, String]
+}
+
+pub fn RegenerateTracker::new() -> RegenerateTracker {
+  RegenerateTracker::{ pending: Map::new() }
+}
+
+pub fn RegenerateTracker::start(self : RegenerateTracker, thread_id : Int, req_id : String) -> Unit {
+  self.pending.set(thread_id, req_id)
+}
+
+pub fn RegenerateTracker::is_current(self : RegenerateTracker, thread_id : Int, req_id : String) -> Bool {
+  match self.pending.get(thread_id) {
+    Some(cur) => cur == req_id
+    None => false
+  }
+}
+
+pub fn RegenerateTracker::finish(self : RegenerateTracker, thread_id : Int, req_id : String) -> Unit {
+  if self.is_current(thread_id, req_id) {
+    let _ = self.pending.remove(thread_id)
+  }
+}

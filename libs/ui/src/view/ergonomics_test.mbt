@@ -235,7 +235,7 @@ test "View::pick(keeps=true) wakes parked inner show changes immediately without
 }
 
 ///|
-test "View::switch_by(keeps=true, keeps_max=2) evicts LRU branch and releases all parked branches when parent dies" {
+test "View::switch_by(keeps=true, keeps_max=3) evicts LRU branch and releases all parked branches when parent dies" {
   let alive = @signals.signal(true, same=fn(a, b) { a == b })
   let tab = @signals.signal("a", same=fn(a, b) { a == b })
   let made : Map[String, Int] = Map([])
@@ -251,7 +251,7 @@ test "View::switch_by(keeps=true, keeps_max=2) evicts LRU branch and releases al
             v.height(Is(Some(30.0))).words(Is(k)) |> ignore
           },
           keeps=true,
-          keeps_max=2,
+          keeps_max=3,
         )
       })
     },
@@ -259,7 +259,7 @@ test "View::switch_by(keeps=true, keeps_max=2) evicts LRU branch and releases al
   )
   t.frame(300.0, 200.0, now=0.0) |> ignore
   let na = nodes["a"]
-  // a -> b -> c: parked = [a, b], active = c.
+  // a -> b -> c: total non-pin = 3 (parked = [a, b], active = c).
   t.event(16.0, fn() { tab.set("b") })
   t.frame(300.0, 200.0, now=16.0) |> ignore
   let nb = nodes["b"]
@@ -272,7 +272,7 @@ test "View::switch_by(keeps=true, keeps_max=2) evicts LRU branch and releases al
   t.frame(300.0, 200.0, now=48.0) |> ignore
   assert_eq(made.get("a"), Some(1))
   assert_true(na.alive() && nb.alive() && nc.alive())
-  // a -> d: parks "a", parked exceeds 2 -> evicts LRU "b"; parked = [c, a], active = d.
+  // a -> d: parks "a", total non-pin exceeds 3 -> evicts LRU "b"; parked = [c, a], active = d.
   t.event(64.0, fn() { tab.set("d") })
   t.frame(300.0, 200.0, now=64.0) |> ignore
   let nd = nodes["d"]

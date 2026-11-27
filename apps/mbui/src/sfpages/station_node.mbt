@@ -2413,6 +2413,8 @@ fn software_row_node(
       // the station's own: which releases it takes, and whether it takes them by itself
       u.show(switches, fn(sw) {
         @sf.style_node(sw, fn() { sw_switches })
+        // (each switch with its word whole: on a line of their own where the two do not fit side by side)
+        sw.wraps(Is(Some(sw_switches_lines))) |> ignore
         sw.show(fn() { own && beta() && has(v(), "channel") }, fn(l) {
           software_switch_node(
             l,
@@ -2636,7 +2638,7 @@ fn software_action_node(e : @view.View, label : () -> String, press : () -> Unit
 }
 
 ///|
-/// One of the station's own switches under its version (software_row's): its `word`, a small switch (read out
+/// One of the station's own switches under its version (software_row's): its `word`, a switch (read out
 /// `label`), on as `on` says, `turn` told what it is to be; a ring before it while what it set is on its way (`doing`),
 /// not turned while the station's software is (`busy`); what it means (`tip`) beside it under the hand.
 fn software_switch_node(
@@ -2655,7 +2657,7 @@ fn software_switch_node(
     line.points(Is(true)) |> ignore
     @sf.words_node(line, word, fn() { sw_switch_word }) |> ignore
     line.show(doing, fn(s) { @sf.spinner_node(s, size=@sf.spinner_inline) |> ignore })
-    @sf.switch_node(line, on, turn, label, small=true, disabled=fn() { busy() || doing() })
+    @sf.switch_node(line, on, turn, label, disabled=fn() { busy() || doing() })
     @sf.tip_node(tips, line, tip) |> ignore
   })
   |> ignore

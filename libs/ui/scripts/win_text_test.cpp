@@ -5,7 +5,7 @@
 //   out/text/win_text_test.exe
 // Verifies:
 // 1. fine_cover_from_sum / fine_downsample_nogrow matches original float rounding for all 0..4080 sums.
-// 2. draw_fine with grow <= 0 allocates no float buffers, and with grow > 0 reuses Target::fine_a / fine_g.
+// 2. draw_fine with grow <= 0 allocates no float buffers, and with grow > 0 reuses Target::fine_a (no fine_g).
 // 3. drawn_ahead never blocks when drawing_mask has the requested phase set; marks skip_mask and worker frees safely.
 // 4. mb_host_glyphs_ahead and rasterize preheat only 1 phase on first sight, and enqueue remaining phases only on a 2nd
 //    distinct subpixel phase.
@@ -96,24 +96,168 @@ static void test_fine_math_and_reuse(void) {
   measure_bounds(l, 400, &cb);
   int pw = 24, ph = 32;
   uint8_t *out = (uint8_t *)calloc((size_t)pw * ph, 4);
-  CHECK(main_target.fine_a == NULL && main_target.fine_g == NULL && main_target.fine_cap == 0);
+  CHECK(main_target.fine_a == NULL && main_target.fine_cap == 0);
   CHECK(draw_fine(l, 2.0, cb.x0, cb.y0, 0.0, pw, ph, 0.0, &main_target, out));
-  CHECK(main_target.fine_a == NULL && main_target.fine_g == NULL && main_target.fine_cap == 0);
+  CHECK(main_target.fine_a == NULL && main_target.fine_cap == 0);
   int nonzero = 0;
   for (int i = 0; i < pw * ph; i++) {
     if (out[i * 4 + 3] > 0) nonzero++;
   }
   CHECK(nonzero > 0);
 
-  // Now with grow > 0: allocates once, then reuses the exact same pointers for same/smaller dimensions.
+  // Now with grow > 0: allocates once, then reuses the exact same pointer for same/smaller dimensions.
   CHECK(draw_fine(l, 2.0, cb.x0, cb.y0, 0.0, pw, ph, 0.5, &main_target, out));
   float *pa = main_target.fine_a;
-  float *pg = main_target.fine_g;
   size_t pcap = main_target.fine_cap;
-  CHECK(pa != NULL && pg != NULL && pcap >= (size_t)(pw * FINE) * (size_t)(ph * FINE));
+  CHECK(pa != NULL && pcap >= (size_t)(pw * FINE) * (size_t)(ph * FINE));
   CHECK(draw_fine(l, 2.0, cb.x0, cb.y0, 0.0, pw - 2, ph - 2, 0.5, &main_target, out));
-  CHECK(main_target.fine_a == pa && main_target.fine_g == pg && main_target.fine_cap == pcap);
+  CHECK(main_target.fine_a == pa && main_target.fine_cap == pcap);
   free(out);
+}
+
+static void ref_fine_downsample_grow(const uint8_t *src, UINT stride, int pw, int ph, double grow, uint8_t *px) {
+  int fw = pw * FINE, fh = ph * FINE;
+  size_t need = (size_t)fw * (size_t)fh;
+  float *a = (float *)malloc(sizeof(float) * need);
+  float *g = (float *)malloc(sizeof(float) * need);
+  for (int y = 0; y < fh; y++) {
+    const uint8_t *s = src + (size_t)y * stride;
+    for (int x = 0; x < fw; x++) a[(size_t)y * fw + x] = (255 - s[x * 4 + 1]) / 255.0f;
+  }
+  float delta = (float)(2.0 * grow);
+  for (int y = 0; y < fh; y++) {
+    for (int x = 0; x < fw; x++) {
+      size_t i = (size_t)y * fw + x;
+      float gx = ((x + 1 < fw ? a[i + 1] : 0.0f) - (x > 0 ? a[i - 1] : 0.0f)) * 0.5f;
+      float gy = ((y + 1 < fh ? a[i + fw] : 0.0f) - (y > 0 ? a[i - fw] : 0.0f)) * 0.5f;
+      float v = a[i] + delta * sqrtf(gx * gx + gy * gy);
+      g[i] = v > 1.0f ? 1.0f : v;
+    }
+  }
+  for (int y = 0; y < ph; y++) {
+    for (int x = 0; x < pw; x++) {
+      float sum = 0;
+      for (int j = 0; j < FINE; j++) {
+        const float *row = g + (size_t)(y * FINE + j) * fw + x * FINE;
+        for (int k = 0; k < FINE; k++) sum += row[k];
+      }
+      int c = (int)(sum * (255.0f / (FINE * FINE)) + 0.5f);
+      uint8_t *o = px + ((size_t)y * pw + x) * 4;
+      o[0] = o[1] = o[2] = o[3] = (uint8_t)(c > 255 ? 255 : c);
+    }
+  }
+  free(a);
+  free(g);
+}
+
+static void check_fine_grow_pair(const uint8_t *src, UINT stride, int pw, int ph, double grow, float **buf,
+                                 size_t *cap) {
+  size_t out_bytes = (size_t)pw * (size_t)ph * 4;
+  uint8_t *got = (uint8_t *)calloc(out_bytes, 1);
+  uint8_t *want = (uint8_t *)calloc(out_bytes, 1);
+  CHECK(fine_downsample_grow(src, stride, pw, ph, grow, buf, cap, got));
+  ref_fine_downsample_grow(src, stride, pw, ph, grow, want);
+  CHECK(memcmp(got, want, out_bytes) == 0);
+  free(got);
+  free(want);
+}
+
+static void test_fine_downsample_grow_bit_exact(void) {
+  float *buf = NULL;
+  size_t cap = 0;
+
+  // 1. 1x1 cell (4x4 fine) with mixed gray levels.
+  {
+    uint8_t src[FINE * FINE * 4];
+    for (int i = 0; i < FINE * FINE; i++) {
+      uint8_t g = (uint8_t)((i * 17) & 0xFF);
+      src[i * 4 + 0] = g;
+      src[i * 4 + 1] = g;
+      src[i * 4 + 2] = g;
+      src[i * 4 + 3] = 255;
+    }
+    check_fine_grow_pair(src, FINE * 4, 1, 1, 0.35, &buf, &cap);
+  }
+
+  // 2. All-white (empty) and all-black (solid) 8x8 pixel cells.
+  {
+    int pw = 8, ph = 8;
+    int fw = pw * FINE, fh = ph * FINE;
+    UINT stride = (UINT)(fw * 4);
+    uint8_t *src = (uint8_t *)malloc((size_t)fh * stride);
+    memset(src, 255, (size_t)fh * stride);
+    check_fine_grow_pair(src, stride, pw, ph, 0.5, &buf, &cap);
+    memset(src, 0, (size_t)fh * stride);
+    check_fine_grow_pair(src, stride, pw, ph, 0.5, &buf, &cap);
+
+    // 3. Thin diagonal line (edge pixels with gradients).
+    memset(src, 255, (size_t)fh * stride);
+    for (int y = 0; y < fh; y++) {
+      for (int x = 0; x < fw; x++) {
+        int d = x - y;
+        if (d < 0) d = -d;
+        uint8_t g = d == 0 ? 0 : (d == 1 ? 128 : 255);
+        uint8_t *p = src + (size_t)y * stride + (size_t)x * 4;
+        p[0] = p[1] = p[2] = g;
+        p[3] = 255;
+      }
+    }
+    check_fine_grow_pair(src, stride, pw, ph, 0.45, &buf, &cap);
+    free(src);
+  }
+
+  // 4. Real DirectWrite Medium (weight=500) CJK, Latin, and punctuation at 1.5x and 2.0x.
+  if (dw && d2d && wic) {
+    const WCHAR s_cjk[] = {0x4E2D, 0};
+    const WCHAR s_lat[] = {L'M', 0};
+    const WCHAR s_punc[] = {L'%', 0};
+    const WCHAR *samples[3] = {s_cjk, s_lat, s_punc};
+    const double scales[2] = {1.5, 2.0};
+    int dw_checked = 0;
+    for (int si = 0; si < 3; si++) {
+      for (int sci = 0; sci < 2; sci++) {
+        double sc = scales[sci];
+        IDWriteTextLayout *l = make_layout(samples[si], 1, 16.0, 500, 0);
+        CHECK(l != NULL);
+        if (!l) continue;
+        ClusterBounds cb = {};
+        measure_bounds(l, 500, &cb);
+        int px0 = (int)floor(cb.x0 * sc) - 1, px1 = (int)ceil(cb.x1 * sc) + 1;
+        int py0 = (int)floor((cb.y0 - cb.base) * sc) - 1, py1 = (int)ceil((cb.y1 - cb.base) * sc) + 1;
+        int pw = px1 - px0, ph = py1 - py0;
+        double grow = grown_fine(&cb, 16.0, 500, sc);
+        if (grow <= 0.0) grow = 0.35;
+        if (pw > 0 && ph > 0 && pw <= RT_SIZE && ph <= RT_SIZE) {
+          int fw = pw * FINE, fh = ph * FINE;
+          CHECK(fine_ensure(&main_target, sc, fw + 1, fh + 1));
+          ID2D1RenderTarget *rt = main_target.fine_rt;
+          rt->BeginDraw();
+          rt->PushAxisAlignedClip(
+              D2D1::RectF(0.0f, 0.0f, (FLOAT)((fw + 1) / (sc * FINE)), (FLOAT)((fh + 1) / (sc * FINE))),
+              D2D1_ANTIALIAS_MODE_ALIASED);
+          rt->Clear(D2D1::ColorF(1, 1, 1, 1));
+          rt->DrawTextLayout(D2D1::Point2F((FLOAT)(-px0 / sc), (FLOAT)-(cb.base + py0 / sc)), l,
+                             main_target.fine_black, D2D1_DRAW_TEXT_OPTIONS_NO_SNAP);
+          rt->PopAxisAlignedClip();
+          CHECK(SUCCEEDED(rt->EndDraw()));
+          WICRect r = {0, 0, fw, fh};
+          IWICBitmapLock *lock = NULL;
+          if (SUCCEEDED(main_target.fine_bitmap->Lock(&r, WICBitmapLockRead, &lock))) {
+            UINT stride = 0, bytes = 0;
+            BYTE *src = NULL;
+            lock->GetStride(&stride);
+            lock->GetDataPointer(&bytes, &src);
+            check_fine_grow_pair(src, stride, pw, ph, grow, &buf, &cap);
+            dw_checked++;
+            lock->Release();
+          }
+        }
+        l->Release();
+      }
+    }
+    CHECK(dw_checked == 6);
+  }
+  free(buf);
 }
 
 static void drain_ahead_queues_test(void) {
@@ -285,7 +429,6 @@ static void target_release_test(Target *t) {
   if (t->fine_rt) t->fine_rt->Release();
   if (t->fine_bitmap) t->fine_bitmap->Release();
   free(t->fine_a);
-  free(t->fine_g);
   *t = {};
 }
 
@@ -634,10 +777,82 @@ static void test_ahead_reenqueue_after_eviction(void) {
   drain_ahead_queues_test();
 }
 
+static void test_order_slot_o1_cleanup(void) {
+  ahead_forget();
+  drain_ahead_queues_test();
+  text_scale = 2.0;
+
+  // 1. Enqueue 300 distinct glyphs (> 256 initial order_cap) to exercise ahead_order growth and order_slot reindexing.
+  const int N = 300;
+  int keys[N];
+  for (int i = 0; i < N; i++) {
+    WCHAR ch[3] = {(WCHAR)(0x4E00 + i), (WCHAR)(L'A' + (i % 26)), 0};
+    keys[i] = mb_host_text_key(ch, 16.0, 400, 0);
+    CHECK(keys[i] >= 0);
+    int32_t req = keys[i] | (0 << 26);
+    mb_host_glyphs_ahead(&req, 1);
+  }
+  CHECK(order_cap >= 512);
+  CHECK(order_n == N);
+  for (int i = 0; i < N; i++) {
+    Ahead *a = ahead_of[keys[i]];
+    CHECK(a != NULL);
+    if (a) {
+      CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
+      CHECK(ahead_order[a->order_slot] == a);
+    }
+  }
+
+  // 2. Out-of-order drawn_ahead removal (middle, back, front) clears exact slot in O(1) with no dangling pointers.
+  int remove_idx[5] = {150, N - 1, 0, 255, 77};
+  for (int r = 0; r < 5; r++) {
+    int k = keys[remove_idx[r]];
+    Ahead *a = ahead_of[k];
+    CHECK(a != NULL);
+    if (!a) continue;
+    int old_slot = a->order_slot;
+    Drawn d = {};
+    CHECK(!drawn_ahead(k, 0, &d));
+    CHECK(ahead_of[k] == NULL);
+    CHECK(ahead_order[old_slot] == NULL);
+  }
+  // Remaining live entries must still point to their exact slot.
+  for (int i = 0; i < N; i++) {
+    Ahead *a = ahead_of[keys[i]];
+    if (!a) continue;
+    CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
+    CHECK(ahead_order[a->order_slot] == a);
+  }
+
+  // 3. Evict via drop_oldest_drawn() and verify front slot cleared cleanly.
+  int live_before = 0;
+  for (int i = 0; i < N; i++)
+    if (ahead_of[keys[i]]) live_before++;
+  CHECK(drop_oldest_drawn());
+  int live_after = 0;
+  for (int i = 0; i < N; i++) {
+    Ahead *a = ahead_of[keys[i]];
+    if (!a) continue;
+    live_after++;
+    CHECK(a->order_slot >= 0 && a->order_slot < order_cap);
+    CHECK(ahead_order[a->order_slot] == a);
+  }
+  CHECK(live_after == live_before - 1);
+
+  // 4. ahead_forget() clears all remaining slots cleanly.
+  ahead_forget();
+  drain_ahead_queues_test();
+  CHECK(order_n == 0);
+  for (int i = 0; i < N; i++) CHECK(ahead_of[keys[i]] == NULL);
+  for (int i = 0; i < order_cap; i++) CHECK(ahead_order[i] == NULL);
+}
+
 int main(void) {
   test_fine_math_and_reuse();
+  test_fine_downsample_grow_bit_exact();
   test_ahead_single_phase_and_nonblocking();
   test_ahead_reenqueue_after_eviction();
+  test_order_slot_o1_cleanup();
   test_color_probe_and_weight();
   test_lazy_target_and_failure_zero();
   test_cross_phase_bounds_reuse();

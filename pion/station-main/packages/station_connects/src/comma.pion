@@ -1,0 +1,1007 @@
+// Comma Tasks connector (`<server>/v1/connect`, origin-normalized URL, bearer
+// auth + instance id, explicit post-handle `commit_put` for at-least-once
+// `task.put`, `task.invite` validation, `task.status`, `task.leave`,
+// `task.hello`, `task.posted_file` verification, and `question` card support).
+
+import "base_codec"
+import "crypto"
+
+pub let COMMA_TASK_CHANNEL : String = "TASK"
+pub let COMMA_PING_MS : Int64 = 15000.to_int64()
+pub let COMMA_STALE_MS : Int64 = 45000.to_int64()
+pub let COMMA_FILE_PART_BYTES : Int = 262144
+pub let COMMA_POST_FILES_MAX : Int = 20
+pub let COMMA_TASKS_VERSION : Int = 2
+
+// ---------------------------------------------------------------------------
+// URL (origin-only, matching `new URL("/v1/connect", server)`), Auth & Helpers
+// ---------------------------------------------------------------------------
+
+/// Builds the Comma connector WebSocket URL, discarding any path/query/hash on
+/// `server` (matching `new URL("/v1/connect", server)`) and mapping `http://`
+/// to `ws://` and any other scheme to `wss://`.
+pub fn comma_connect_url(
+  server : String,
+  name : String,
+  workspace : Option[String] = None,
+  os : String = "linux",
+  arch : String = "x64",
+) -> String {
+  let trimmed = str_trim(server)
+  let scheme_idx = str_index_of(trimmed, "://", 0)
+  let (ws_scheme, authority_and_rest) = if scheme_idx >= 0 {
+    let scheme = str_to_lower_ascii(str_slice(trimmed, 0, scheme_idx))
+    let rest = str_slice(trimmed, scheme_idx + 3, trimmed.to_bytes().length())
+    (if scheme == "http" { "ws://" } else { "wss://" }, rest)
+  } else {
+    ("wss://", trimmed)
+  }
+  // Keep only authority (host[:port]), stripping any path, query, or fragment.
+  let raw = authority_and_rest.to_bytes()
+  let mut host_end = raw.length()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b == 47 || b == 63 || b == 35 {
+      host_end = i
+      break
+    }
+  }
+  let origin = ws_scheme + str_slice(authority_and_rest, 0, host_end)
+  let params : Array[(String, String)] = [("name", name)]
+  match workspace {
+    Some(w) => {
+      if w != "" {
+        params.push(("stillfail_workspace", w))
+      }
+    }
+    None => {}
+  }
+  params.push(("os", os))
+  params.push(("arch", arch))
+  origin + "/v1/connect?" + encode_form_params(params)
+}
+
+pub fn comma_auth_headers(
+  token : String,
+  instance_id : String,
+  station_version : String,
+) -> Array[(String, String)] {
+  [
+    ("authorization", "Bearer " + token),
+    ("x-salix-connector-instance-id", instance_id),
+    ("user-agent", "stillfail-station/" + station_version),
+  ]
+}
+
+fn hex_nibble(b : Int) -> Int {
+  if b >= 48 && b <= 57 {
+    b - 48
+  } else if b >= 97 && b <= 102 {
+    b - 87
+  } else if b >= 65 && b <= 70 {
+    b - 55
+  } else {
+    0
+  }
+}
+
+fn hex_u32_be(hex : String, byte_off : Int) -> Int64 {
+  let raw = hex.to_bytes()
+  let mut v : Int64 = 0.to_int64()
+  for i in 0..<4 {
+    let hi = hex_nibble(raw[(byte_off + i) * 2].to_int() & 0xFF)
+    let lo = hex_nibble(raw[(byte_off + i) * 2 + 1].to_int() & 0xFF)
+    v = (v << 8.to_int64()) | ((hi << 4) | lo).to_int64()
+  }
+  v
+}
+
+fn pad6(n : Int64) -> String {
+  let s = n.to_string()
+  let len = s.to_bytes().length()
+  if len >= 6 {
+    return s
+  }
+  let sb = StringBuilder::new()
+  for _ in 0..<(6 - len) {
+    sb.write_string("0")
+  }
+  sb.write_string(s)
+  sb.to_string()
+}
+
+/// Deterministic thread_ts for a Comma Task address: SHA-256 first two big-endian
+/// u32 words formatted as `<u32_0>.<u32_1 % 1_000_000 padded 6>`, matching
+/// `station/src/comma/tasks.ts` `threadTsOf`.
+pub fn comma_thread_ts(task : String) -> String {
+  let h = crypto::sha256_hex(task.to_bytes())
+  let secs = hex_u32_be(h, 0)
+  let micros = hex_u32_be(h, 4) % 1000000.to_int64()
+  secs.to_string() + "." + pad6(micros)
+}
+
+pub fn comma_seq_ts(seq : Int64) -> String {
+  seq.to_string() + ".000000"
+}
+
+fn cut_cps(s : String, max_cps : Int) -> String {
+  let cps = utf8_code_points(s)
+  if cps.length() > max_cps {
+    join_cps(cps, 0, max_cps)
+  } else {
+    s
+  }
+}
+
+/// Converts a still.fail options card into Comma's `ConversationQuestion`
+/// (2 to 6 choices), matching `station/src/comma/surface.ts` `questionOf`.
+pub fn comma_question_of(
+  card : base_codec::Json,
+  prompt : String,
+) -> Option[base_codec::Json] {
+  if json_str_field(card, "type") != "options" {
+    return None
+  }
+  let raw_opts = match base_codec::json_get(card, "options") {
+    Some(base_codec::Json::Arr(arr)) => arr
+    _ => return None
+  }
+  let valid : Array[base_codec::Json] = []
+  for i in 0..<raw_opts.length() {
+    let lbl = str_trim(json_str_field(raw_opts[i], "label"))
+    if lbl != "" {
+      valid.push(raw_opts[i])
+    }
+  }
+  if valid.length() < 2 || valid.length() > 6 {
+    return None
+  }
+  let choices : Array[base_codec::Json] = []
+  let fallback_sb = StringBuilder::new()
+  for i in 0..<valid.length() {
+    let o = valid[i]
+    let lbl = str_trim(json_str_field(o, "label"))
+    if i > 0 {
+      fallback_sb.write_string(" / ")
+    }
+    fallback_sb.write_string(lbl)
+    let cfields : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str("o" + (i + 1).to_string())),
+      ("label", base_codec::json_str(cut_cps(lbl, 100))),
+    ]
+    let detail = str_trim(json_str_field(o, "detail"))
+    if detail != "" {
+      cfields.push(("description", base_codec::json_str(cut_cps(detail, 300))))
+    }
+    if json_bool_field(o, "recommended") {
+      cfields.push(("recommended", base_codec::json_bool(true)))
+    }
+    choices.push(base_codec::json_obj(cfields))
+  }
+  let p_trim = str_trim(prompt)
+  let final_prompt = cut_cps(if p_trim != "" { p_trim } else { fallback_sb.to_string() }, 600)
+  Some(
+    base_codec::json_obj([
+      ("type", base_codec::json_str("question")),
+      ("prompt", base_codec::json_str(final_prompt)),
+      ("choices", base_codec::json_arr(choices)),
+      ("multi_select", base_codec::json_bool(false)),
+      ("allow_other", base_codec::json_bool(true)),
+    ]),
+  )
+}
+
+pub struct CommaTaskState {
+  pub task : String
+  pub thread_ts : String
+  pub requester : String
+  pub mut fetched : Int64
+  pub mut answered : Int64
+  pub mut left : Bool
+  pub mut running : Bool
+  pub mut pending : Int
+  pub mut for_ms : Option[Int64]
+  pub mut last_failure : Option[String]
+}
+
+struct PostedEntry {
+  task : String
+  files : Array[OutboundFile]
+}
+
+/// Returned by `handle_frame` for `task.put` BEFORE advancing `fetched` /
+/// `answered` or replying `{through}` (strict at-least-once semantics).
+/// Call `commit_put(transport, batch)` after handling `batch.events`.
+pub struct CommaPutBatch {
+  pub req_id : String
+  pub task : String
+  pub thread_ts : String
+  pub through : Option[Int64]
+  pub answered : Option[Int64]
+  pub events : Array[ChatEvent]
+  pub dedupe_keys : Array[String]
+}
+
+// ---------------------------------------------------------------------------
+// Comma Connector (WS JSON-RPC state machine + task registry + file sync)
+// ---------------------------------------------------------------------------
+
+pub struct CommaConnector {
+  pub connect_id : String
+  pub server : String
+  pub token : String
+  pub name : String
+  pub workspace : Option[String]
+  pub instance_id : String
+  pub station_version : String
+  pub mut ws_handle : Option[Int64]
+  pub mut machine : SocketMachine
+  pub mut dedupe : InboundDedupe
+  mut tasks : Map[String, CommaTaskState]
+  mut task_order : Array[String]
+  mut by_thread : Map[String, String]
+  mut posted_files : Map[String, PostedEntry]
+  mut next_req_id : Int64
+}
+
+pub fn CommaConnector::new(
+  connect_id : String,
+  server : String,
+  token : String,
+  name : String,
+  instance_id : String,
+  workspace : Option[String] = None,
+  station_version : String = "0.1.0",
+  ping_ms : Int64 = COMMA_PING_MS,
+  stale_ms : Int64 = COMMA_STALE_MS,
+) -> CommaConnector {
+  CommaConnector::{
+    connect_id: connect_id,
+    server: server,
+    token: token,
+    name: name,
+    workspace: workspace,
+    instance_id: instance_id,
+    station_version: station_version,
+    ws_handle: None,
+    machine: SocketMachine::new("comma", ReconnectPolicy::new(ping_ms, stale_ms)),
+    dedupe: InboundDedupe::new(),
+    tasks: Map::new(),
+    task_order: [],
+    by_thread: Map::new(),
+    posted_files: Map::new(),
+    next_req_id: 1.to_int64(),
+  }
+}
+
+pub fn CommaConnector::connect(
+  self : CommaConnector,
+  transport : ConnectTransport,
+) -> Result[Int64, String] {
+  let now = (transport.now_ms)()
+  self.machine.begin_connect(now)
+  let url = comma_connect_url(self.server, self.name, self.workspace)
+  let headers = comma_auth_headers(self.token, self.instance_id, self.station_version)
+  match (transport.ws_open)(WsOpenRequest::{ url: url, headers: headers, timeout_ms: self.machine.policy.stale_ms }) {
+    Ok(h) => {
+      self.ws_handle = Some(h)
+      self.machine.on_open((transport.now_ms)())
+      Ok(h)
+    }
+    Err(e) => {
+      self.machine.on_close((transport.now_ms)(), Some(e))
+      Err(e)
+    }
+  }
+}
+
+pub fn CommaConnector::get_task(self : CommaConnector, task : String) -> Option[CommaTaskState] {
+  self.tasks.get(task)
+}
+
+pub fn CommaConnector::task_by_thread(
+  self : CommaConnector,
+  thread_ts : String,
+) -> Option[CommaTaskState] {
+  match self.by_thread.get(thread_ts) {
+    Some(task) => self.tasks.get(task)
+    None => None
+  }
+}
+
+pub fn CommaConnector::set_task_runtime_status(
+  self : CommaConnector,
+  task : String,
+  running : Bool,
+  pending : Int,
+  for_ms : Option[Int64] = None,
+  last_failure : Option[String] = None,
+) -> Unit {
+  match self.tasks.get(task) {
+    Some(t) => {
+      t.running = running
+      t.pending = pending
+      t.for_ms = for_ms
+      t.last_failure = last_failure
+    }
+    None => {}
+  }
+}
+
+pub fn CommaConnector::leave_task(self : CommaConnector, task : String) -> Bool {
+  match self.tasks.get(task) {
+    Some(t) => {
+      t.left = true
+      true
+    }
+    None => false
+  }
+}
+
+pub fn CommaConnector::register_posted_files(
+  self : CommaConnector,
+  post_key : String,
+  task : String,
+  files : Array[OutboundFile],
+) -> Unit {
+  self.posted_files.set(post_key, PostedEntry::{ task: task, files: files })
+}
+
+pub fn CommaConnector::clear_posted_files(self : CommaConnector, post_key : String) -> Unit {
+  self.posted_files.remove(post_key)
+}
+
+fn comma_send_json(
+  self : CommaConnector,
+  transport : ConnectTransport,
+  j : base_codec::Json,
+) -> Unit {
+  match self.ws_handle {
+    Some(h) => {
+      let _ = (transport.ws_send)(h, WsFrame::Text(base_codec::json_stringify(j)))
+    }
+    None => {}
+  }
+}
+
+/// Explicitly advances `fetched`/`answered` (`tasks.given`) and sends the
+/// `task.put` response `{through}` AFTER the caller has durably handled
+/// `batch.events` (strict at-least-once semantics).
+pub fn CommaConnector::commit_put(
+  self : CommaConnector,
+  transport : ConnectTransport,
+  batch : CommaPutBatch,
+) -> Unit {
+  let now = (transport.now_ms)()
+  for i in 0..<batch.dedupe_keys.length() {
+    self.dedupe.remember(batch.dedupe_keys[i], now)
+  }
+  match self.tasks.get(batch.task) {
+    Some(t) => {
+      match batch.through {
+        Some(th) => {
+          if th > t.fetched {
+            t.fetched = th
+          }
+        }
+        None => {}
+      }
+      match batch.answered {
+        Some(ans) => {
+          if ans > t.answered {
+            t.answered = ans
+          }
+        }
+        None => {}
+      }
+    }
+    None => {}
+  }
+  let th_json = match batch.through {
+    Some(th) => base_codec::json_int64(th)
+    None => base_codec::json_null()
+  }
+  comma_send_json(
+    self,
+    transport,
+    base_codec::json_obj([
+      ("id", base_codec::json_str(batch.req_id)),
+      ("type", base_codec::json_str("response")),
+      ("result", base_codec::json_obj([("through", th_json)])),
+    ]),
+  )
+}
+
+fn comma_build_hello(self : CommaConnector) -> base_codec::Json {
+  let list : Array[base_codec::Json] = []
+  for i in 0..<self.task_order.length() {
+    match self.tasks.get(self.task_order[i]) {
+      Some(t) => {
+        if !t.left {
+          list.push(
+            base_codec::json_obj([
+              ("task", base_codec::json_str(t.task)),
+              ("fetched", base_codec::json_int64(t.fetched)),
+            ]),
+          )
+        }
+      }
+      None => {}
+    }
+  }
+  let req_id = "req-" + self.next_req_id.to_string()
+  self.next_req_id = self.next_req_id + 1.to_int64()
+  base_codec::json_obj([
+    ("id", base_codec::json_str(req_id)),
+    ("type", base_codec::json_str("request")),
+    ("method", base_codec::json_str("task.hello")),
+    ("params", base_codec::json_obj([("tasks", base_codec::json_arr(list))])),
+  ])
+}
+
+pub enum CommaStep {
+  NoOp
+  Connected(String)
+  HeartbeatAcked
+  TaskInvited(String, String)
+  /// Caller MUST process `batch.events` and then call `commit_put(transport, batch)`.
+  TaskPut(CommaPutBatch)
+  TaskLeft(String)
+  Response(String, base_codec::Json)
+  ErrorResponse(String, String)
+  Closed(Option[String])
+}
+
+pub fn CommaConnector::handle_frame(
+  self : CommaConnector,
+  transport : ConnectTransport,
+  frame : WsFrame,
+) -> CommaStep {
+  let now = (transport.now_ms)()
+  self.machine.on_heard(now)
+  match frame {
+    WsFrame::Ping => CommaStep::NoOp
+    WsFrame::Pong => CommaStep::NoOp
+    WsFrame::Binary(_) => CommaStep::NoOp
+    WsFrame::Close(_, reason) => {
+      match self.ws_handle {
+        Some(h) => {
+          (transport.ws_close)(h)
+          self.ws_handle = None
+        }
+        None => {}
+      }
+      let err = if reason != "" { Some(reason) } else { None }
+      self.machine.on_close(now, err)
+      CommaStep::Closed(err)
+    }
+    WsFrame::Text(raw) => {
+      let j = match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(v) => v
+        base_codec::JsonParseResult::Err(_) => return CommaStep::NoOp
+      }
+      let ftype = json_str_field(j, "type")
+      if ftype == "connected" {
+        let device_id = json_str_field(j, "device_id")
+        comma_send_json(self, transport, comma_build_hello(self))
+        return CommaStep::Connected(device_id)
+      }
+      if ftype == "heartbeat" {
+        comma_send_json(
+          self,
+          transport,
+          base_codec::json_obj([("type", base_codec::json_str("heartbeat"))]),
+        )
+        return CommaStep::HeartbeatAcked
+      }
+      if ftype == "close" {
+        match self.ws_handle {
+          Some(h) => {
+            (transport.ws_close)(h)
+            self.ws_handle = None
+          }
+          None => {}
+        }
+        self.machine.on_close(now, None)
+        return CommaStep::Closed(None)
+      }
+      if ftype == "response" {
+        let id = json_str_field(j, "id")
+        let res = match base_codec::json_get(j, "result") {
+          Some(r) => r
+          None => base_codec::json_null()
+        }
+        return CommaStep::Response(id, res)
+      }
+      if ftype == "error" {
+        let id = json_str_field(j, "id")
+        let err = json_str_field(j, "error")
+        return CommaStep::ErrorResponse(id, if err != "" { err } else { "Comma refused it" })
+      }
+      if ftype != "request" {
+        return CommaStep::NoOp
+      }
+
+      let id = json_str_field(j, "id")
+      let method = json_str_field(j, "method")
+      let params = match base_codec::json_get(j, "params") {
+        Some(p) => p
+        None => base_codec::json_obj([])
+      }
+
+      if method == "task.invite" {
+        let task = str_trim(json_str_field(params, "task"))
+        if task == "" {
+          comma_send_json(
+            self,
+            transport,
+            base_codec::json_obj([
+              ("id", base_codec::json_str(id)),
+              ("type", base_codec::json_str("error")),
+              ("error", base_codec::json_str("task is required")),
+            ]),
+          )
+          return CommaStep::NoOp
+        }
+        let start = match base_codec::json_get(params, "start") {
+          Some(base_codec::Json::Obj(fields)) => base_codec::Json::Obj(fields)
+          _ => {
+            comma_send_json(
+              self,
+              transport,
+              base_codec::json_obj([
+                ("id", base_codec::json_str(id)),
+                ("type", base_codec::json_str("error")),
+                ("error", base_codec::json_str("start is required")),
+              ]),
+            )
+            return CommaStep::NoOp
+          }
+        }
+        if json_bool_field(params, "replace") {
+          comma_send_json(
+            self,
+            transport,
+            base_codec::json_obj([
+              ("id", base_codec::json_str(id)),
+              ("type", base_codec::json_str("error")),
+              ("error", base_codec::json_str("a Comma Task runs one model")),
+            ]),
+          )
+          return CommaStep::NoOp
+        }
+        let requester = json_str_field(start, "requester")
+        let answered = match json_safe_count_field(params, "answered") {
+          Some(v) => v
+          None => 0.to_int64()
+        }
+        // Align with `comma/surface.ts:812`: if task already exists and is not left,
+        // return it as-is without mutating its `answered` watermark.
+        let tts = match self.tasks.get(task) {
+          Some(existing) => {
+            if existing.left {
+              existing.left = false
+              if answered > existing.answered {
+                existing.answered = answered
+              }
+            }
+            existing.thread_ts
+          }
+          None => {
+            let computed = comma_thread_ts(task)
+            let state = CommaTaskState::{
+              task: task,
+              thread_ts: computed,
+              requester: requester,
+              fetched: 0.to_int64(),
+              answered: answered,
+              left: false,
+              running: false,
+              pending: 0,
+              for_ms: None,
+              last_failure: None,
+            }
+            self.tasks.set(task, state)
+            self.task_order.push(task)
+            self.by_thread.set(computed, task)
+            computed
+          }
+        }
+        let session = self.connect_id + ":" + COMMA_TASK_CHANNEL + "/" + tts
+        let result = base_codec::json_obj([
+          ("session", base_codec::json_str(session)),
+          ("thread", base_codec::json_str(COMMA_TASK_CHANNEL + "/" + tts)),
+        ])
+        comma_send_json(
+          self,
+          transport,
+          base_codec::json_obj([
+            ("id", base_codec::json_str(id)),
+            ("type", base_codec::json_str("response")),
+            ("result", result),
+          ]),
+        )
+        return CommaStep::TaskInvited(task, COMMA_TASK_CHANNEL + "/" + tts)
+      }
+
+      if method == "task.put" {
+        let task = str_trim(json_str_field(params, "task"))
+        let t = match self.tasks.get(task) {
+          Some(st) => st
+          None => {
+            comma_send_json(
+              self,
+              transport,
+              base_codec::json_obj([
+                ("id", base_codec::json_str(id)),
+                ("type", base_codec::json_str("response")),
+                (
+                  "result",
+                  base_codec::json_obj([
+                    ("unknown", base_codec::json_bool(true)),
+                    ("gone", base_codec::json_bool(true)),
+                  ]),
+                ),
+              ]),
+            )
+            return CommaStep::NoOp
+          }
+        }
+        if t.left {
+          comma_send_json(
+            self,
+            transport,
+            base_codec::json_obj([
+              ("id", base_codec::json_str(id)),
+              ("type", base_codec::json_str("response")),
+              ("result", base_codec::json_obj([("gone", base_codec::json_bool(true))])),
+            ]),
+          )
+          return CommaStep::NoOp
+        }
+        let answered_opt = json_safe_count_field(params, "answered")
+        let answered_param = match answered_opt {
+          Some(v) => v
+          None => 0.to_int64()
+        }
+        let answered = if answered_param > t.answered { answered_param } else { t.answered }
+        let through_opt = json_safe_count_field(params, "through")
+        let my_session = self.connect_id + ":" + COMMA_TASK_CHANNEL + "/" + t.thread_ts
+
+        // Collect valid messages and sort by `seq` ascending (matching `comma/surface.ts:831`).
+        let sorted_msgs : Array[(Int64, base_codec::Json)] = []
+        match base_codec::json_get(params, "messages") {
+          Some(base_codec::Json::Arr(msgs)) => {
+            for i in 0..<msgs.length() {
+              match json_safe_count_field(msgs[i], "seq") {
+                Some(seq) => sorted_msgs.push((seq, msgs[i]))
+                None => {}
+              }
+            }
+          }
+          _ => {}
+        }
+        for i in 1..<sorted_msgs.length() {
+          let cur = sorted_msgs[i]
+          let mut j_idx = i - 1
+          while j_idx >= 0 && sorted_msgs[j_idx].0 > cur.0 {
+            sorted_msgs[j_idx + 1] = sorted_msgs[j_idx]
+            j_idx = j_idx - 1
+          }
+          sorted_msgs[j_idx + 1] = cur
+        }
+
+        let events : Array[ChatEvent] = []
+        let dedupe_keys : Array[String] = []
+        let batch_seen : Map[String, Bool] = Map::new()
+        for i in 0..<sorted_msgs.length() {
+          let (seq, m) = sorted_msgs[i]
+          let said = json_str_field(m, "text")
+          let author = match base_codec::json_get(m, "author") {
+            Some(a) => a
+            None => base_codec::json_obj([])
+          }
+          let author_session = json_str_field(author, "session")
+          if author_session != "" {
+            if author_session == my_session && is_notice(said) {
+              events.push(
+                ChatEvent::OwnNotice(
+                  InboundMessage::{
+                    channel: COMMA_TASK_CHANNEL,
+                    thread_ts: t.thread_ts,
+                    ts: comma_seq_ts(seq),
+                    user: "stillfail:" + self.connect_id,
+                    text: said,
+                    addressed: false,
+                    files: [],
+                    quoted: None,
+                  },
+                ),
+              )
+            }
+            continue
+          }
+          if seq <= answered {
+            continue
+          }
+          let dedupe_key = "comma:" + task + "#" + seq.to_string()
+          if self.dedupe.is_duplicate(dedupe_key, now) {
+            continue
+          }
+          match batch_seen.get(dedupe_key) {
+            Some(true) => continue
+            _ => {}
+          }
+          let files : Array[InboundFile] = []
+          match base_codec::json_get(m, "files") {
+            Some(base_codec::Json::Arr(farr)) => {
+              for fi in 0..<farr.length() {
+                let f = farr[fi]
+                let idx = match json_safe_count_field(f, "index") {
+                  Some(v) => v
+                  None => continue
+                }
+                let fname = json_str_field(f, "name")
+                let fsize = match json_safe_count_field(f, "size") {
+                  Some(v) => v
+                  None => continue
+                }
+                if fname != "" {
+                  files.push(
+                    InboundFile::{
+                      id: seq.to_string() + "-" + idx.to_string(),
+                      name: fname,
+                      size: fsize,
+                      url: None,
+                    },
+                  )
+                }
+              }
+            }
+            _ => {}
+          }
+          if said == "" && files.length() == 0 {
+            continue
+          }
+          batch_seen.set(dedupe_key, true)
+          dedupe_keys.push(dedupe_key)
+          let kind = json_str_field(author, "kind")
+          let aid = json_str_field(author, "id")
+          let raw_id = if aid != "" { aid } else { "comma" }
+          let user = if kind == "person" { raw_id } else { "agent:" + raw_id }
+          events.push(
+            ChatEvent::Message(
+              InboundMessage::{
+                channel: COMMA_TASK_CHANNEL,
+                thread_ts: t.thread_ts,
+                ts: comma_seq_ts(seq),
+                user: user,
+                text: said,
+                addressed: true,
+                files: files,
+                quoted: None,
+              },
+            ),
+          )
+        }
+
+        // Do NOT advance `fetched`/`answered`, record dedupe, or send `{through}` yet; caller calls `commit_put`.
+        return CommaStep::TaskPut(
+          CommaPutBatch::{
+            req_id: id,
+            task: task,
+            thread_ts: t.thread_ts,
+            through: through_opt,
+            answered: answered_opt,
+            events: events,
+            dedupe_keys: dedupe_keys,
+          },
+        )
+      }
+
+      if method == "task.leave" {
+        let task = str_trim(json_str_field(params, "task"))
+        let _ = self.leave_task(task)
+        comma_send_json(
+          self,
+          transport,
+          base_codec::json_obj([
+            ("id", base_codec::json_str(id)),
+            ("type", base_codec::json_str("response")),
+            ("result", base_codec::json_obj([])),
+          ]),
+        )
+        return CommaStep::TaskLeft(task)
+      }
+
+      if method == "task.status" {
+        let task = str_trim(json_str_field(params, "task"))
+        let res = match self.tasks.get(task) {
+          Some(t) => {
+            if t.left {
+              base_codec::json_obj([
+                ("state", base_codec::json_str("gone")),
+                ("pending", base_codec::json_int(0)),
+                ("for_ms", base_codec::json_null()),
+                ("last_failure", base_codec::json_null()),
+              ])
+            } else {
+              base_codec::json_obj([
+                ("state", base_codec::json_str(if t.running { "running" } else { "idle" })),
+                ("pending", base_codec::json_int(t.pending)),
+                (
+                  "for_ms",
+                  match t.for_ms {
+                    Some(ms) => base_codec::json_int64(ms)
+                    None => base_codec::json_null()
+                  },
+                ),
+                (
+                  "last_failure",
+                  match t.last_failure {
+                    Some(f) => base_codec::json_str(f)
+                    None => base_codec::json_null()
+                  },
+                ),
+              ])
+            }
+          }
+          None => {
+            base_codec::json_obj([
+              ("state", base_codec::json_str("gone")),
+              ("pending", base_codec::json_int(0)),
+              ("for_ms", base_codec::json_null()),
+              ("last_failure", base_codec::json_null()),
+            ])
+          }
+        }
+        comma_send_json(
+          self,
+          transport,
+          base_codec::json_obj([
+            ("id", base_codec::json_str(id)),
+            ("type", base_codec::json_str("response")),
+            ("result", res),
+          ]),
+        )
+        return CommaStep::NoOp
+      }
+
+      if method == "task.posted_file" {
+        let key = str_trim(json_str_field(params, "key"))
+        let req_task = str_trim(json_str_field(params, "task"))
+        let idx_opt = json_safe_count_field(params, "index")
+        let offset_opt = json_safe_count_field(params, "offset")
+        let res = match (self.posted_files.get(key), idx_opt) {
+          (Some(entry), Some(idx64)) => {
+            if entry.task != req_task {
+              base_codec::json_obj([("missing", base_codec::json_str("no such post"))])
+            } else if idx64 >= entry.files.length().to_int64() {
+              base_codec::json_obj([("missing", base_codec::json_str("no such file"))])
+            } else {
+              let f = entry.files[idx64.to_int()]
+              let total = f.bytes.length()
+              let off64 = match offset_opt {
+                Some(v) => v
+                None => 0.to_int64()
+              }
+              let start = if off64 > total.to_int64() { total } else { off64.to_int() }
+              let rem = total - start
+              let take = if rem > COMMA_FILE_PART_BYTES { COMMA_FILE_PART_BYTES } else { rem }
+              let part = Bytes::new(take)
+              for i in 0..<take {
+                part[i] = f.bytes[start + i]
+              }
+              base_codec::json_obj([
+                ("name", base_codec::json_str(f.name)),
+                ("size", base_codec::json_int(total)),
+                ("offset", base_codec::json_int(start)),
+                ("data", base_codec::json_str(base_codec::base64_encode(part))),
+              ])
+            }
+          }
+          _ => base_codec::json_obj([("missing", base_codec::json_str("no such post"))])
+        }
+        comma_send_json(
+          self,
+          transport,
+          base_codec::json_obj([
+            ("id", base_codec::json_str(id)),
+            ("type", base_codec::json_str("response")),
+            ("result", res),
+          ]),
+        )
+        return CommaStep::NoOp
+      }
+
+      comma_send_json(
+        self,
+        transport,
+        base_codec::json_obj([
+          ("id", base_codec::json_str(id)),
+          ("type", base_codec::json_str("error")),
+          ("error", base_codec::json_str(method + " is not something a still.fail station does")),
+        ]),
+      )
+      CommaStep::NoOp
+    }
+  }
+}
+
+/// Sends a `task.post` request frame over the active Comma socket (including
+/// optional `question` card via `comma_question_of`), returning the request id.
+pub fn CommaConnector::send_post(
+  self : CommaConnector,
+  transport : ConnectTransport,
+  thread : ThreadRef,
+  markdown : String,
+  post_key : String,
+  files : Array[OutboundFile] = [],
+  declared : Option[String] = None,
+  card : Option[base_codec::Json] = None,
+) -> Result[String, String] {
+  if files.length() > COMMA_POST_FILES_MAX {
+    return Err("a post brings at most " + COMMA_POST_FILES_MAX.to_string() + " files")
+  }
+  let t = match self.task_by_thread(thread.thread_ts) {
+    Some(st) => st
+    None => return Err("no Comma Task " + thread.channel + "/" + thread.thread_ts + " here")
+  }
+  if t.left {
+    return Err("Comma Task " + t.task + " has been left")
+  }
+  match self.ws_handle {
+    None => return Err("Comma is not connected")
+    Some(_) => {}
+  }
+  let session = self.connect_id + ":" + COMMA_TASK_CHANNEL + "/" + t.thread_ts
+  let params_fields : Array[(String, base_codec::Json)] = [
+    ("task", base_codec::json_str(t.task)),
+    ("session", base_codec::json_str(session)),
+    ("text", base_codec::json_str(markdown)),
+    ("key", base_codec::json_str(post_key)),
+    (
+      "declared",
+      match declared {
+        Some(d) => base_codec::json_str(d)
+        None => base_codec::json_null()
+      },
+    ),
+  ]
+  match card {
+    Some(c) => {
+      match comma_question_of(c, markdown) {
+        Some(q) => params_fields.push(("question", q))
+        None => {}
+      }
+    }
+    None => {}
+  }
+  if files.length() > 0 {
+    let fmeta : Array[base_codec::Json] = []
+    for i in 0..<files.length() {
+      fmeta.push(
+        base_codec::json_obj([
+          ("index", base_codec::json_int(i)),
+          ("name", base_codec::json_str(files[i].name)),
+          ("size", base_codec::json_int(files[i].bytes.length())),
+        ]),
+      )
+    }
+    params_fields.push(("files", base_codec::json_arr(fmeta)))
+    self.register_posted_files(post_key, t.task, files)
+  }
+  let req_id = "req-" + self.next_req_id.to_string()
+  self.next_req_id = self.next_req_id + 1.to_int64()
+  comma_send_json(
+    self,
+    transport,
+    base_codec::json_obj([
+      ("id", base_codec::json_str(req_id)),
+      ("type", base_codec::json_str("request")),
+      ("method", base_codec::json_str("task.post")),
+      ("params", base_codec::json_obj(params_fields)),
+    ]),
+  )
+  Ok(req_id)
+}

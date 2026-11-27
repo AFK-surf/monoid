@@ -1,0 +1,412 @@
+// AirPlay subdomain (`station/src/devices/airplay/{types,credentials,pairing,server}.ts`):
+// - Types, control actions, HTTP error-status mapping.
+// - Multi-protocol step-by-step `AirPlayPairingManager` with TTL expiry, skip, cancel,
+//   peek/consume credentials, and `commit_airplay_rebind` target-match validation.
+// - `parse_airplay_tunnel_reply` & HTTP control route validation (`GET /status`,
+//   `POST /action`, `POST /stream-audio` with safe extension check).
+
+import "base_codec"
+
+pub let AIRPLAY_DEFAULT_TTL_MS : Int64 = 300000.to_int64() // 5 * 60_000
+pub let AIRPLAY_MAX_JSON_BYTES : Int = 1048576
+pub let AIRPLAY_MAX_AUDIO_BYTES : Int = 104857600 // 100 MB
+
+pub struct AirPlayError {
+  pub code : String
+  pub message : String
+}
+
+pub fn is_airplay_protocol(p : String) -> Bool {
+  p == "airplay" || p == "companion" || p == "raop"
+}
+
+pub fn is_airplay_control_action(action : String) -> Bool {
+  action == "status" ||
+  action == "power" ||
+  action == "remote" ||
+  action == "apps" ||
+  action == "launch" ||
+  action == "playing" ||
+  action == "seek" ||
+  action == "volume" ||
+  action == "keyboard" ||
+  action == "play_url" ||
+  action == "stream_audio"
+}
+
+pub fn airplay_error_http_status(code : String) -> Int {
+  if code == "invalid_params" || code == "unknown_action" {
+    400
+  } else if code == "auth_failed" {
+    401
+  } else if code == "device_not_found" {
+    404
+  } else if code == "payload_too_large" {
+    413
+  } else if code == "not_supported" {
+    422
+  } else {
+    502
+  }
+}
+
+pub fn safe_audio_ext(filename : String) -> String {
+  let base = path_basename_any(filename)
+  let raw = base.to_bytes()
+  let mut dot = -1
+  let mut i = raw.length() - 1
+  while i >= 0 {
+    if (raw[i].to_int() & 0xFF) == 0x2E {
+      dot = i
+      break
+    }
+    i = i - 1
+  }
+  if dot < 0 {
+    return ".audio"
+  }
+  let ext = to_ascii_lower(slice_bytes_str(raw, dot, raw.length()))
+  let eb = ext.to_bytes()
+  if eb.length() < 2 || eb.length() > 9 {
+    return ".audio"
+  }
+  let mut j = 1
+  while j < eb.length() {
+    let b = eb[j].to_int() & 0xFF
+    if !(is_ascii_lower(b) || is_ascii_digit(b)) {
+      return ".audio"
+    }
+    j = j + 1
+  }
+  ext
+}
+
+pub struct AirPlayPairStep {
+  pub pair_id : String
+  pub done : Bool
+  pub step : Int
+  pub total : Int
+  pub protocol : Option[String]
+  pub device_provides_pin : Bool
+  pub protocols : Array[String]
+  pub paired_protocols : Array[String]
+}
+
+pub struct CompletedAirPlayPairing {
+  pub identifier : String
+  pub address : Option[String]
+  pub name : Option[String]
+  pub model : Option[String]
+  pub protocols : Array[String]
+  pub credentials : Array[(String, String)]
+}
+
+struct AirPlayPairSession {
+  pair_id : String
+  ws : String
+  identifier : String
+  address : Option[String]
+  name : Option[String]
+  model : Option[String]
+  protocols : Array[String]
+  mut index : Int
+  mut pair_token : Option[String]
+  mut device_provides_pin : Bool
+  mut paired_protocols : Array[String]
+  mut credentials : Array[(String, String)]
+  mut completed : Bool
+  mut expires_at_ms : Int64
+}
+
+pub struct AirPlayPairingManager {
+  ttl_ms : Int64
+  mut sessions : Array[AirPlayPairSession]
+  mut next_id : Int
+}
+
+pub fn AirPlayPairingManager::new(ttl_ms : Int64) -> AirPlayPairingManager {
+  AirPlayPairingManager::{
+    ttl_ms: if ttl_ms > 0.to_int64() { ttl_ms } else { AIRPLAY_DEFAULT_TTL_MS },
+    sessions: [],
+    next_id: 1,
+  }
+}
+
+pub fn AirPlayPairingManager::start(
+  self : AirPlayPairingManager,
+  ws : String,
+  identifier : String,
+  address : Option[String],
+  name : Option[String],
+  model : Option[String],
+  raw_protocols : Array[String],
+  first_token : Option[String],
+  device_provides_pin : Bool,
+  now_ms : Int64,
+) -> Result[AirPlayPairStep, AirPlayError] {
+  let id_trim = trim_ascii(identifier)
+  if id_trim == "" {
+    return Err(AirPlayError::{ code: "invalid_params", message: "identifier is required" })
+  }
+  let protocols : Array[String] = []
+  let mut i = 0
+  while i < raw_protocols.length() {
+    let p = raw_protocols[i]
+    if is_airplay_protocol(p) && !array_contains_str(protocols, p) {
+      protocols.push(p)
+    }
+    i = i + 1
+  }
+  let pair_id = "ap_" + self.next_id.to_string()
+  self.next_id = self.next_id + 1
+  if protocols.length() == 0 {
+    self.sessions.push(AirPlayPairSession::{
+      pair_id,
+      ws,
+      identifier: id_trim,
+      address,
+      name,
+      model,
+      protocols: [],
+      index: 0,
+      pair_token: None,
+      device_provides_pin: false,
+      paired_protocols: [],
+      credentials: [],
+      completed: true,
+      expires_at_ms: now_ms + self.ttl_ms,
+    })
+    return Ok(AirPlayPairStep::{
+      pair_id,
+      done: true,
+      step: 0,
+      total: 0,
+      protocol: None,
+      device_provides_pin: false,
+      protocols: [],
+      paired_protocols: [],
+    })
+  }
+  let first = protocols[0]
+  self.sessions.push(AirPlayPairSession::{
+    pair_id,
+    ws,
+    identifier: id_trim,
+    address,
+    name,
+    model,
+    protocols,
+    index: 0,
+    pair_token: first_token,
+    device_provides_pin,
+    paired_protocols: [],
+    credentials: [],
+    completed: false,
+    expires_at_ms: now_ms + self.ttl_ms,
+  })
+  Ok(AirPlayPairStep::{
+    pair_id,
+    done: false,
+    step: 1,
+    total: protocols.length(),
+    protocol: Some(first),
+    device_provides_pin,
+    protocols,
+    paired_protocols: [],
+  })
+}
+
+/// Advance the active protocol step (either storing `credential` or skipping it).
+pub fn AirPlayPairingManager::finish_step(
+  self : AirPlayPairingManager,
+  ws : String,
+  pair_id : String,
+  skip : Bool,
+  credential : Option[String],
+  next_token : Option[String],
+  next_device_provides_pin : Bool,
+  now_ms : Int64,
+) -> Result[AirPlayPairStep, AirPlayError] {
+  let mut idx = -1
+  let mut i = 0
+  while i < self.sessions.length() {
+    if self.sessions[i].pair_id == pair_id && self.sessions[i].ws == ws {
+      idx = i
+      break
+    }
+    i = i + 1
+  }
+  if idx < 0 {
+    return Err(AirPlayError::{ code: "invalid_pair_id", message: "pairing session not found or expired" })
+  }
+  let s = self.sessions[idx]
+  if s.completed {
+    return Ok(AirPlayPairStep::{
+      pair_id,
+      done: true,
+      step: s.protocols.length(),
+      total: s.protocols.length(),
+      protocol: None,
+      device_provides_pin: false,
+      protocols: s.protocols,
+      paired_protocols: s.paired_protocols,
+    })
+  }
+  s.expires_at_ms = now_ms + self.ttl_ms
+  let cur_proto = s.protocols[s.index]
+  if !skip {
+    match credential {
+      Some(cred) => {
+        s.credentials.push((cur_proto, cred))
+        if !array_contains_str(s.paired_protocols, cur_proto) {
+          s.paired_protocols.push(cur_proto)
+        }
+      }
+      None => return Err(AirPlayError::{ code: "invalid_params", message: "credentials required when not skipping" })
+    }
+  }
+  s.index = s.index + 1
+  if s.index < s.protocols.length() {
+    let next_proto = s.protocols[s.index]
+    s.pair_token = next_token
+    s.device_provides_pin = next_device_provides_pin
+    return Ok(AirPlayPairStep::{
+      pair_id,
+      done: false,
+      step: s.index + 1,
+      total: s.protocols.length(),
+      protocol: Some(next_proto),
+      device_provides_pin: next_device_provides_pin,
+      protocols: s.protocols,
+      paired_protocols: s.paired_protocols,
+    })
+  }
+  s.completed = true
+  s.pair_token = None
+  Ok(AirPlayPairStep::{
+    pair_id,
+    done: true,
+    step: s.protocols.length(),
+    total: s.protocols.length(),
+    protocol: None,
+    device_provides_pin: false,
+    protocols: s.protocols,
+    paired_protocols: s.paired_protocols,
+  })
+}
+
+pub fn AirPlayPairingManager::peek_credentials(
+  self : AirPlayPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Option[CompletedAirPlayPairing] {
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws && s.completed {
+      return Some(CompletedAirPlayPairing::{
+        identifier: s.identifier,
+        address: s.address,
+        name: s.name,
+        model: s.model,
+        protocols: s.paired_protocols,
+        credentials: s.credentials,
+      })
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn AirPlayPairingManager::consume_credentials(
+  self : AirPlayPairingManager,
+  ws : String,
+  pair_id : String,
+) -> Bool {
+  let kept : Array[AirPlayPairSession] = []
+  let mut removed = false
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if s.pair_id == pair_id && s.ws == ws && s.completed {
+      removed = true
+    } else {
+      kept.push(s)
+    }
+    i = i + 1
+  }
+  self.sessions = kept
+  removed
+}
+
+pub fn AirPlayPairingManager::expire_due(self : AirPlayPairingManager, now_ms : Int64) -> Array[String] {
+  let expired_tokens : Array[String] = []
+  let kept : Array[AirPlayPairSession] = []
+  let mut i = 0
+  while i < self.sessions.length() {
+    let s = self.sessions[i]
+    if now_ms >= s.expires_at_ms {
+      match s.pair_token {
+        Some(tok) => expired_tokens.push(tok)
+        None => ()
+      }
+    } else {
+      kept.push(s)
+    }
+    i = i + 1
+  }
+  self.sessions = kept
+  expired_tokens
+}
+
+/// Validate an AirPlay `/action` request payload; rejects `stream_audio` on `/action`.
+pub fn validate_airplay_action(action : String) -> Result[String, AirPlayError] {
+  let trimmed = trim_ascii(action)
+  if trimmed == "stream_audio" {
+    return Err(AirPlayError::{
+      code: "invalid_params",
+      message: "stream_audio is not allowed on /action; stream raw audio bytes to POST /stream-audio",
+    })
+  }
+  if !is_airplay_control_action(trimmed) {
+    return Err(AirPlayError::{ code: "unknown_action", message: "unsupported action: " + trimmed })
+  }
+  Ok(trimmed)
+}
+
+/// Parse HTTP JSON reply from an AirPlay control tunnel.
+pub fn parse_airplay_tunnel_reply(status : Int, raw : String) -> Result[base_codec::Json, AirPlayError] {
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(j) => {
+      if status >= 200 && status < 300 {
+        match json_bool_opt(j, "ok") {
+          Some(true) => {
+            match base_codec::json_get(j, "result") {
+              Some(res) => return Ok(res)
+              None => return Ok(base_codec::json_null())
+            }
+          }
+          _ => ()
+        }
+      }
+      match base_codec::json_get(j, "error") {
+        Some(err_obj) => {
+          let code = match json_str_opt(err_obj, "code") {
+            Some(c) => c
+            None => "http_" + status.to_string()
+          }
+          let msg = match json_str_opt(err_obj, "message") {
+            Some(m) => m
+            None => "AirPlay device request failed (HTTP " + status.to_string() + ")"
+          }
+          return Err(AirPlayError::{ code, message: msg })
+        }
+        None => ()
+      }
+    }
+    base_codec::JsonParseResult::Err(_) => ()
+  }
+  let trimmed = trim_ascii(raw)
+  let msg = if trimmed != "" { trimmed } else { "AirPlay device request failed (HTTP " + status.to_string() + ")" }
+  Err(AirPlayError::{ code: "http_" + status.to_string(), message: msg })
+}

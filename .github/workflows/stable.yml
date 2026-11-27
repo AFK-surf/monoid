@@ -591,7 +591,7 @@ jobs:
       contents: write # the release native-artifacts' assets
     env:
       WANT: >-
-        reader:linux-x64 pion-reader:linux-x64 launcher:linux-x64 mesh:linux-x64 runner:linux-x64 screen-linux:linux-x64 launcher:win32-x64
+        reader:linux-x64 pion-reader:linux-x64 station-pion:linux-x64 launcher:linux-x64 mesh:linux-x64 runner:linux-x64 screen-linux:linux-x64 launcher:win32-x64
         mesh:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
     steps: &station-natives-linux-steps
       - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
@@ -604,6 +604,11 @@ jobs:
         run: |
           missing=""
           for want in $WANT; do
+            case "${want%%:*}" in
+              station-pion|shell-apple-station)
+                grep -q stillfail-station-pion scripts/station-bundle.sh || { echo "$want: not bundled by this revision"; continue; }
+                ;;
+            esac
             # (a part the release's revision does not have yet, as screen-linux before #7581: not its station's. Any
             # other failure stops the job: never taken for "nothing missing". Not `native.ts parts`: newer than some
             # revisions released)
@@ -631,7 +636,7 @@ jobs:
       - if: steps.missing.outputs.list != ''
         uses: ./.ci-workflow/.github/actions/setup-native-linux
         with: { parts: "${{ steps.missing.outputs.list }}" }
-      - if: contains(steps.missing.outputs.list, 'pion-reader:')
+      - if: contains(steps.missing.outputs.list, 'pion-reader:') || contains(steps.missing.outputs.list, 'station-pion:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
@@ -659,7 +664,7 @@ jobs:
     permissions:
       contents: write # the release native-artifacts' assets
     env:
-      WANT: reader:linux-arm64 pion-reader:linux-arm64 launcher:linux-arm64 mesh:linux-arm64 runner:linux-arm64 screen-linux:linux-arm64
+      WANT: reader:linux-arm64 pion-reader:linux-arm64 station-pion:linux-arm64 launcher:linux-arm64 mesh:linux-arm64 runner:linux-arm64 screen-linux:linux-arm64
     steps: *station-natives-linux-steps
 
   station-natives-win:
@@ -669,7 +674,7 @@ jobs:
     permissions:
       contents: write # the release native-artifacts' assets
     env:
-      WANT: reader:win32-x64 pion-reader:win32-x64
+      WANT: reader:win32-x64 pion-reader:win32-x64 station-pion:win32-x64
     steps: *station-natives-linux-steps
 
   station-natives-mac:
@@ -679,7 +684,7 @@ jobs:
     permissions:
       contents: write # the release native-artifacts' assets
     env:
-      WANT: reader:darwin-arm64 pion-reader:darwin-arm64 launcher:darwin-arm64 mesh:darwin-arm64 runner:darwin-arm64 helper:darwin-arm64
+      WANT: reader:darwin-arm64 pion-reader:darwin-arm64 shell-apple-station:darwin-arm64 station-pion:darwin-arm64 launcher:darwin-arm64 mesh:darwin-arm64 runner:darwin-arm64 helper:darwin-arm64
     steps:
       - uses: actions/checkout@v5
         with:

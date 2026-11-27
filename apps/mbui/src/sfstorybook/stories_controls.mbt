@@ -48,7 +48,7 @@ fn stories_controls(_tips : @sf.TipLayer) -> Array[Story] {
               },
               extra=fn(k) {
                 guard k == "multi-session" else { None }
-                Some(fn(x) { @sf.switch_node(x, fn() { mention.get() }, fn(v) { mention.set(v) }, fn() { "只在被 @ 时回答" }, small=true) })
+                Some(fn(x) { @sf.switch_node(x, fn() { mention.get() }, fn(v) { mention.set(v) }, fn() { "只在被 @ 时回答" }) })
               },
               disabled=fn(k) { k == "single" },
             )

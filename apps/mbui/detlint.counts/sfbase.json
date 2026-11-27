@@ -21,5 +21,10 @@
       "src/sfbase/peek_cards_node.mbt": 2,
       "src/sfbase/viz_chart_node.mbt": 3
     }
+  },
+  "excused": {
+    "page-at-moment": {
+      "src/sfbase/updates.mbt": 1
+    }
   }
 }

@@ -185,6 +185,12 @@ pub fn filter_menu(
   src? : Source? = None,
   ws? : String = "",
 ) -> Unit {
+  let pressed : @signals.Signal[String?] = @signals.signal(None)
+  let choose = match src {
+    Some(s) if in_board && ws != "" && !s.read_only && (s.switches_ahead)() =>
+      board_scope_choice(s, ws, pressed, go)
+    _ => go
+  }
   let projects_on = match src {
     Some(s) if ws != "" => @signals.untracked(fn() { @sfbase.workspace_projects_on(s, ws) })
     _ => false
@@ -196,14 +202,14 @@ pub fn filter_menu(
           Node(v) => Node(v)
           At(x, y, w, h) => At(x, y, w, h)
         }
-        chats_view_panel(s, ws, anchor, shown, go, in_board~, along~)
+        chats_view_panel(s, ws, anchor, shown, pressed, choose, in_board~, along~)
         return
       }
       None => ()
     }
   }
   let item = fn(key : String, words : String) -> @sf.MenuItem? {
-    Some(@sf.menu_item_of(@sf.t(words), chosen=shown == key, fn() { go(key) }))
+    Some(@sf.menu_item_of(@sf.t(words), chosen=shown == key, fn() { choose(key) }))
   }
   let items : Array[@sf.MenuItem?] = []
   if in_board {
@@ -227,6 +233,40 @@ pub fn filter_menu(
   )
   filter_menu_serial.val = @sf.last_presented()
   filter_menu_opened.set(filter_menu_opened.untracked() + 1)
+}
+
+///|
+/// Switch the board to the chosen list when its first local answer is available. The open project
+/// panel can pick another scope before that answer comes.
+fn board_scope_choice(
+  src : Source,
+  ws : String,
+  pressed : @signals.Signal[String?],
+  go : (String) -> Unit,
+) -> (String) -> Unit {
+  let pending : Ref[@sfbase.PressWait?] = Ref(None)
+  fn(scope) {
+    if pending.val is Some(wait) {
+      pending.val = None
+      wait.give_up()
+    }
+    if scope != "all" && scope != "mine" {
+      go(scope)
+      return
+    }
+    pressed.set(Some(scope))
+    let wait = @sfbase.press_wait(fn() {
+      let query = { ..@sfbase.board_list_query(src, ws), filter: scope }
+      let list = src.topic("chats", @sfbase.chats_params_query(ws, query)).get()
+      @sfbase.opens_answered(list) || ((src.gates_opens)() && list.waiting)
+    }, fn() {
+      go(scope)
+      pressed.set(None)
+    }, let_go=fn() { pressed.set(None) })
+    if wait.waiting() {
+      pending.val = Some(wait)
+    }
+  }
 }
 
 ///|
@@ -398,6 +438,7 @@ fn chats_view_panel(
   ws : String,
   from : @sf.Anchor,
   shown : String,
+  pressed : @signals.Signal[String?],
   go : (String) -> Unit,
   in_board? : Bool = false,
   along? : @ui.Along = End,
@@ -410,7 +451,7 @@ fn chats_view_panel(
         if in_archive {
           "archive"
         } else if in_board {
-          @sfbase.board_filter_of(src, ws)
+          pressed.get().unwrap_or(@sfbase.board_filter_of(src, ws))
         } else {
           @sfbase.filter_of(src, ws)
         }

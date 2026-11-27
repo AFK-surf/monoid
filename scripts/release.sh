@@ -172,7 +172,7 @@ released() {
 # job's 10 (43460534865, 2026-11-13). One not got here is got (or built) there as before.
 for platform in $platforms; do
   case $platform in desktop | desktop-win | android) continue ;; esac
-  parts="launcher mesh runner reader pion-reader"
+  parts="launcher mesh runner reader pion-reader station-pion"
   [ "$platform" = darwin-arm64 ] && parts="$parts helper"
   [ "$platform" = win32-x64 ] && parts="$parts screen agent-desktop"
   case $platform in linux-*) parts="$parts screen-linux" ;; esac

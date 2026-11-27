@@ -1,0 +1,589 @@
+// Request context, viewer/role/workspace auth, percent-decoding, query parsing,
+// bounded JSON body parsing, and HTTP response helpers for `station_api`.
+
+import "base_codec"
+import "http1"
+import "station_http"
+
+/// Maximum accepted JSON request body size (1,000,000 bytes, matching `station/src/api/request.ts`).
+pub let MAX_JSON_BODY_BYTES : Int = 1000000
+
+/// Supported UI/error languages for API responses.
+pub enum Lang {
+  Zh
+  En
+}
+
+pub fn Lang::code(self : Lang) -> String {
+  match self {
+    Lang::Zh => "zh"
+    Lang::En => "en"
+  }
+}
+
+pub fn lang_of(raw : String) -> Lang {
+  let trimmed = raw.trim()
+  if station_http::ascii_starts_with_ci(trimmed, "en") {
+    Lang::En
+  } else {
+    Lang::Zh
+  }
+}
+
+/// Language a core asks in (`stillfail-lang`); Chinese for cores without the header.
+pub fn lang_of_core(req : station_http::HttpRequest) -> Lang {
+  match req.header("stillfail-lang") {
+    Some(v) => lang_of(v)
+    None => Lang::Zh
+  }
+}
+
+/// Authenticated viewer identity extracted from mesh peer credentials.
+pub struct Viewer {
+  pub email : String
+  pub sub : String
+  pub name : String
+  pub workspace : String
+  pub home : Bool
+  pub role : String
+  pub device : Option[String]
+}
+
+pub fn Viewer::member(email : String, workspace : String) -> Viewer {
+  Viewer::{
+    email: email,
+    sub: email,
+    name: email,
+    workspace: workspace,
+    home: true,
+    role: "member",
+    device: None,
+  }
+}
+
+pub fn Viewer::owner(email : String, workspace : String) -> Viewer {
+  Viewer::{
+    email: email,
+    sub: email,
+    name: email,
+    workspace: workspace,
+    home: true,
+    role: "owner",
+    device: None,
+  }
+}
+
+pub fn Viewer::read_only_viewer(email : String, workspace : String) -> Viewer {
+  Viewer::{
+    email: email,
+    sub: email,
+    name: email,
+    workspace: workspace,
+    home: true,
+    role: "viewer",
+    device: None,
+  }
+}
+
+/// Whether the viewer is a read-only member (`role == "viewer"`).
+pub fn Viewer::is_read_only(self : Viewer) -> Bool {
+  self.role == "viewer"
+}
+
+/// Whether the viewer is an owner or admin in their workspace.
+pub fn Viewer::is_manager(self : Viewer) -> Bool {
+  self.role == "owner" || self.role == "admin"
+}
+
+/// Whether the viewer manages this station (owner/admin of any workspace it belongs to,
+/// matching `station/src/mesh/credential.ts` `managesStation`).
+pub fn Viewer::manages_station(self : Viewer) -> Bool {
+  self.is_manager()
+}
+
+/// Whether `viewer` sees a resource scoped to workspace `ws` (`None` = home workspace).
+/// Note: `Some("")` compares `"" == viewer.workspace` and is NOT treated as home.
+pub fn sees_workspace(viewer : Viewer, ws : Option[String]) -> Bool {
+  match ws {
+    None => viewer.home
+    Some(w) => w == viewer.workspace
+  }
+}
+
+/// Count UTF-16 code units of a UTF-8 string (matching JS `string.length`).
+pub fn utf16_len(s : String) -> Int {
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut units = 0
+  while i < n {
+    let lead = b[i].to_int() & 0xFF
+    if lead < 0x80 {
+      units = units + 1
+      i = i + 1
+    } else if lead < 0xE0 {
+      units = units + 1
+      i = i + 2
+    } else if lead < 0xF0 {
+      units = units + 1
+      i = i + 3
+    } else {
+      units = units + 2
+      i = i + 4
+    }
+  }
+  units
+}
+
+/// Truncate `s` to at most `max_units` UTF-16 code units without splitting a UTF-8 codepoint.
+pub fn utf16_truncate(s : String, max_units : Int) -> String {
+  if max_units <= 0 {
+    return ""
+  }
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut units = 0
+  while i < n {
+    let lead = b[i].to_int() & 0xFF
+    let (step, u) = if lead < 0x80 {
+      (1, 1)
+    } else if lead < 0xE0 {
+      (2, 1)
+    } else if lead < 0xF0 {
+      (3, 1)
+    } else {
+      (4, 2)
+    }
+    if units + u > max_units || i + step > n {
+      break
+    }
+    units = units + u
+    i = i + step
+  }
+  s.slice(0, i)
+}
+
+/// Count Unicode scalar codepoints in a UTF-8 string.
+pub fn codepoint_count(s : String) -> Int {
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut count = 0
+  while i < n {
+    let lead = b[i].to_int() & 0xFF
+    let step = if lead < 0x80 {
+      1
+    } else if lead < 0xE0 {
+      2
+    } else if lead < 0xF0 {
+      3
+    } else {
+      4
+    }
+    count = count + 1
+    i = i + step
+  }
+  count
+}
+
+/// Slice a UTF-8 string by Unicode codepoint indices `[start_cp, end_cp)` safely.
+pub fn codepoint_slice(s : String, start_cp : Int, end_cp : Int) -> String {
+  let b = s.to_bytes()
+  let n = b.length()
+  let mut i = 0
+  let mut cp = 0
+  let mut byte_start = n
+  let mut byte_end = n
+  let s_cp = if start_cp < 0 { 0 } else { start_cp }
+  let e_cp = if end_cp < s_cp { s_cp } else { end_cp }
+  while i < n {
+    if cp == s_cp {
+      byte_start = i
+    }
+    if cp == e_cp {
+      byte_end = i
+      break
+    }
+    let lead = b[i].to_int() & 0xFF
+    let step = if lead < 0x80 {
+      1
+    } else if lead < 0xE0 {
+      2
+    } else if lead < 0xF0 {
+      3
+    } else {
+      4
+    }
+    cp = cp + 1
+    i = i + step
+  }
+  if cp == s_cp {
+    byte_start = n
+  }
+  if byte_start >= byte_end {
+    ""
+  } else {
+    s.slice(byte_start, byte_end)
+  }
+}
+
+/// Structured HTTP refusal error mapped to a JSON `{ "error": ... }` response.
+pub struct ApiError {
+  pub status : Int
+  pub message : String
+  pub no_cache : Bool
+}
+
+pub fn ApiError::new(status : Int, message : String) -> ApiError {
+  ApiError::{ status: status, message: message, no_cache: false }
+}
+
+pub fn ApiError::no_cache_err(status : Int, message : String) -> ApiError {
+  ApiError::{ status: status, message: message, no_cache: true }
+}
+
+/// Convert `Array[Byte]` to `Bytes`.
+pub fn bytes_from_array(arr : Array[Byte]) -> Bytes {
+  let buf = Bytes::new(arr.length())
+  let mut i = 0
+  while i < arr.length() {
+    buf[i] = arr[i]
+    i = i + 1
+  }
+  buf
+}
+
+/// Whether `Option[Bool]` is `Some(true)`.
+pub fn opt_bool_true(v : Option[Bool]) -> Bool {
+  match v {
+    Some(true) => true
+    _ => false
+  }
+}
+
+/// Whether `Option[String]` equals `expected`.
+pub fn opt_str_eq(v : Option[String], expected : String) -> Bool {
+  match v {
+    Some(s) => s == expected
+    None => false
+  }
+}
+
+/// Percent-decode `%XX` bytes and `+` as space (`station/src/api/request.ts` `percentDecode`).
+pub fn percent_decode(s : String) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < n {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x25 && i + 2 < n {
+      let hi = base_codec::hex_digit(raw[i + 1].to_int() & 0xFF)
+      let lo = base_codec::hex_digit(raw[i + 2].to_int() & 0xFF)
+      match (hi, lo) {
+        (Some(h), Some(l)) => {
+          out.push(((h << 4) | l).to_byte())
+          i = i + 3
+        }
+        _ => {
+          out.push(raw[i])
+          i = i + 1
+        }
+      }
+    } else if b == 0x2B {
+      out.push(0x20.to_byte())
+      i = i + 1
+    } else {
+      out.push(raw[i])
+      i = i + 1
+    }
+  }
+  bytes_from_array(out).to_string()
+}
+
+/// Decode a URL path segment preserving literal `+` (`station/src/api/request.ts` `segment`).
+pub fn segment_decode(s : String) -> String {
+  let raw = s.to_bytes()
+  let n = raw.length()
+  let out : Array[Byte] = []
+  let mut i = 0
+  while i < n {
+    let b = raw[i].to_int() & 0xFF
+    if b == 0x25 && i + 2 < n {
+      let hi = base_codec::hex_digit(raw[i + 1].to_int() & 0xFF)
+      let lo = base_codec::hex_digit(raw[i + 2].to_int() & 0xFF)
+      match (hi, lo) {
+        (Some(h), Some(l)) => {
+          out.push(((h << 4) | l).to_byte())
+          i = i + 3
+        }
+        _ => {
+          out.push(raw[i])
+          i = i + 1
+        }
+      }
+    } else {
+      out.push(raw[i])
+      i = i + 1
+    }
+  }
+  bytes_from_array(out).to_string()
+}
+
+/// Parse query string into ordered `(key, value)` pairs (`station/src/api/request.ts` `queryPairs`).
+pub fn query_pairs(query : String) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  if query.length() == 0 {
+    return out
+  }
+  let parts = query.split("&")
+  let mut i = 0
+  while i < parts.length() {
+    let p = parts[i]
+    if p.length() > 0 {
+      let at = p.index_of("=")
+      if at < 0 {
+        out.push((percent_decode(p), ""))
+      } else {
+        out.push((
+          percent_decode(p.slice(0, at)),
+          percent_decode(p.slice(at + 1, p.length())),
+        ))
+      }
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Normalized API request carrying the underlying `station_http::HttpRequest` plus viewer/language context.
+pub struct ApiRequest {
+  pub http : station_http::HttpRequest
+  pub method : String
+  pub path : String
+  pub query : Array[(String, String)]
+  pub search : String
+  pub headers : Array[http1::Header]
+  pub body : Bytes
+  pub viewer : Viewer
+  pub lang : Lang
+  pub background : Bool
+}
+
+/// Strip optional `/admin/api` prefix and normalize trailing empty query.
+pub fn normalize_api_path(raw_path : String) -> String {
+  if raw_path == "/admin/api" {
+    return "/"
+  }
+  if raw_path.starts_with("/admin/api/") {
+    return raw_path.slice(10, raw_path.length())
+  }
+  raw_path
+}
+
+pub fn ApiRequest::from_http(
+  req : station_http::HttpRequest,
+  viewer : Viewer,
+) -> ApiRequest {
+  let path = normalize_api_path(req.path)
+  let search = if req.query_raw.length() > 0 { "?" + req.query_raw } else { "" }
+  ApiRequest::{
+    http: req,
+    method: req.method,
+    path: path,
+    query: query_pairs(req.query_raw),
+    search: search,
+    headers: req.headers,
+    body: req.body,
+    viewer: viewer,
+    lang: lang_of_core(req),
+    background: false,
+  }
+}
+
+pub fn ApiRequest::header(self : ApiRequest, name : String) -> Option[String] {
+  let mut i = 0
+  while i < self.headers.length() {
+    if station_http::ascii_eq_ci(self.headers[i].name, name) {
+      return Some(self.headers[i].value)
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn ApiRequest::param(self : ApiRequest, name : String) -> Option[String] {
+  let mut i = 0
+  while i < self.query.length() {
+    let (k, v) = self.query[i]
+    if k == name {
+      return Some(v)
+    }
+    i = i + 1
+  }
+  None
+}
+
+pub fn ApiRequest::params_all(self : ApiRequest, name : String) -> Array[String] {
+  let out : Array[String] = []
+  let mut i = 0
+  while i < self.query.length() {
+    let (k, v) = self.query[i]
+    if k == name {
+      out.push(v)
+    }
+    i = i + 1
+  }
+  out
+}
+
+/// Parse request body as a JSON object (`station/src/api/request.ts` `input`):
+/// - `> 1_000_000` bytes -> 413 `"request too large"`
+/// - empty body -> `{}`
+/// - invalid JSON -> 400 `"invalid JSON"`
+/// - non-object JSON -> `{}`
+pub fn parse_json_object(body : Bytes) -> Result[base_codec::Json, ApiError] {
+  if body.length() > MAX_JSON_BODY_BYTES {
+    return Err(ApiError::new(413, "request too large"))
+  }
+  if body.length() == 0 {
+    return Ok(base_codec::json_obj([]))
+  }
+  match base_codec::json_parse(body.to_string()) {
+    base_codec::JsonParseResult::Err(_) => Err(ApiError::new(400, "invalid JSON"))
+    base_codec::JsonParseResult::Ok(v) => {
+      match v {
+        base_codec::Json::Obj(_) => Ok(v)
+        _ => Ok(base_codec::json_obj([]))
+      }
+    }
+  }
+}
+
+pub fn ApiRequest::json_input(self : ApiRequest) -> Result[base_codec::Json, ApiError] {
+  parse_json_object(self.body)
+}
+
+/// Canonical JSON response helper with `Content-Type: application/json` and `Cache-Control: no-store`.
+pub fn json_response(status : Int, body_json : String) -> station_http::HttpResponse {
+  station_http::HttpResponse::{
+    status: status,
+    reason: station_http::status_reason(status),
+    headers: [
+      http1::Header::new("content-type", "application/json"),
+      http1::Header::new("cache-control", "no-store"),
+    ],
+    body: body_json.to_bytes(),
+    chunked: false,
+    close_after: false,
+  }
+}
+
+pub fn json_ok(jval : base_codec::Json) -> station_http::HttpResponse {
+  json_response(200, base_codec::json_stringify(jval))
+}
+
+pub fn json_status(status : Int, jval : base_codec::Json) -> station_http::HttpResponse {
+  json_response(status, base_codec::json_stringify(jval))
+}
+
+pub fn json_error(status : Int, message : String) -> station_http::HttpResponse {
+  json_status(status, base_codec::json_obj([("error", base_codec::json_str(message))]))
+}
+
+pub fn api_error_response(err : ApiError) -> station_http::HttpResponse {
+  json_error(err.status, err.message)
+}
+
+/// Extract string field from JSON object.
+pub fn json_str_field(obj : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+/// Extract bool field from JSON object.
+pub fn json_bool_field(obj : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+/// Extract integer field from JSON object.
+pub fn json_int_field(obj : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(d, _)) => Some(d.to_int())
+    _ => None
+  }
+}
+
+/// Extract Int64 field from JSON object.
+pub fn json_int64_field(obj : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(d, raw)) => {
+      match base_codec::parse_int64_str(raw) {
+        Some(v) => Some(v)
+        None => Some(d.to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+/// Extract Double field from JSON object.
+pub fn json_double_field(obj : base_codec::Json, key : String) -> Option[Double] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(d, _)) => Some(d)
+    _ => None
+  }
+}
+
+/// Parse non-negative decimal integer string (strict ASCII digits, optional leading `+`).
+pub fn parse_uint_str(s : String) -> Option[Int] {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return None
+  }
+  let mut i = 0
+  if (b[0].to_int() & 0xFF) == 43 {
+    i = 1
+    if i >= b.length() {
+      return None
+    }
+  }
+  let mut acc : Int64 = 0L
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10L + (c - 48).to_int64()
+    if acc > 2147483647L {
+      return None
+    }
+    i = i + 1
+  }
+  Some(acc.to_int())
+}
+
+/// Parse strict unsigned decimal integer string into `Int64`.
+pub fn parse_digits_i64(s : String) -> Option[Int64] {
+  let b = s.to_bytes()
+  if b.length() == 0 {
+    return None
+  }
+  let mut acc : Int64 = 0L
+  let mut i = 0
+  while i < b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 48 || c > 57 {
+      return None
+    }
+    acc = acc * 10L + (c - 48).to_int64()
+    i = i + 1
+  }
+  Some(acc)
+}

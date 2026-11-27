@@ -183,6 +183,8 @@ fn reset_globals() -> Unit {
   text_cache.generation = -1
   text_cache.frame = 0
   text_cache.thinned = -1
+  text_cache.seg_thinned = -1
+  view_logic_at.val = 0.0
   web_lines.val = false
   faces_reset()
   text_table.val = None

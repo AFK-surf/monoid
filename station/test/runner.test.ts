@@ -1,14 +1,15 @@
 // Agents under runners (src/agents/runner.ts) with the real runner binary (STILLFAIL_RUNNER or native/runner's build):
 // lines in order, taken up again after a detach exactly where acknowledged, stdin, the exit after all output.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { test } from "node:test";
-import { ackedOffset, findRunner, outFile } from "../src/agents/process.ts";
-import { RunnerConnection, liveRunners, startRunner } from "../src/agents/runner.ts";
+import { ackedOffset, endRunner, findRunner, outFile } from "../src/agents/process.ts";
+import { RunnerConnection, liveRunners, runnersDir, startRunner } from "../src/agents/runner.ts";
+import { platform } from "../src/platform/index.ts";
 import { existingRunners } from "./runners-kept.ts";
 import { tempDir } from "./temp-dir.ts";
 
@@ -142,5 +143,54 @@ test("a long line given a piece at a time is joined once: what it copies is its 
   } finally {
     Buffer.concat = real;
     conn.detach();
+  }
+});
+
+test("endRunner waits for a dying runner whose socket is already unlinked, and skips a stale reused pid", { skip: process.platform === "win32" && "runner-windows.test.ts" }, async () => {
+  const data = tempDir(join(tmpdir(), "end-runner-"));
+  const dir = runnersDir(data);
+  mkdirSync(dir, { recursive: true });
+
+  // 1. Live process whose `.sock` is already gone (simulating `finish()` mid-teardown): `endRunner` stays waiting until
+  // the test kills it, then returns `false` once the process has exited.
+  const dying = spawn(process.execPath, ["-e", "setInterval(() => {}, 60_000)"], { stdio: "ignore" });
+  const dyingExited = new Promise<void>((resolve) => dying.once("exit", () => resolve()));
+  try {
+    assert.ok(dying.pid !== undefined);
+    writeFileSync(join(dir, "dying.json"), JSON.stringify({
+      id: "dying",
+      runner: dying.pid,
+      pid: dying.pid,
+      pgid: dying.pid,
+      startedAt: Date.now(),
+      program: process.execPath,
+      args: [],
+      socket: join(dir, "dying.sock"),
+    }));
+    const waiting = endRunner(data, "dying", "test-dying");
+    assert.equal(await Promise.race([waiting.then(() => "done"), sleep(80).then(() => "pending")]), "pending", "still waiting while the dying runner is alive");
+    dying.kill("SIGKILL");
+    assert.equal(await waiting, false, "already-exiting runner was not force-ended");
+    assert.throws(() => process.kill(dying.pid!, 0), "endRunner waited until the dying runner exited");
+  } finally {
+    try { dying.kill("SIGKILL"); } catch {}
+    await dyingExited;
+  }
+
+  // 2. Stale `.json` whose pid was reused by an unrelated process started much later: `endRunner` returns immediately.
+  if ((await platform.startTimeOf(process.pid).catch(() => null)) !== null) {
+    writeFileSync(join(dir, "reused.json"), JSON.stringify({
+      id: "reused",
+      runner: process.pid,
+      pid: process.pid,
+      pgid: process.pid,
+      startedAt: 1,
+      program: process.execPath,
+      args: [],
+      socket: join(dir, "reused.sock"),
+    }));
+    const before = performance.now();
+    assert.equal(await endRunner(data, "reused", "test-reused"), false);
+    assert.ok(performance.now() - before < 1000, "did not wait on a reused pid");
   }
 });

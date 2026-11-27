@@ -318,14 +318,25 @@ fn main {
 }
 
 ///|
-/// What a test that ended its program printed last (a halt's words and the line that said them, @halt.saying, its
-/// stack after them on native): the last of its lines, a few at most, its own and not the runtime's noise.
+/// The end of a stopped test's output for the failure summary. @halt.saying prints the reason and source location.
 fn ended_words(lines : Array[String]) -> Array[String] {
   let kept = lines.filter(fn(l) { l.trim(chars=" \t\r").to_owned() != "" })
   let most = 12
   if kept.length() <= most {
-    kept
-  } else {
-    kept[kept.length() - most:].to_owned()
+    return kept
   }
+  // The native runtime can print more stack frames than the whole summary holds. Keep those nearest the halt.
+  let mut stack_frames : Int? = None
+  let detail = kept.filter(fn(line) {
+    if line.trim(chars="\r") == "PanicError" {
+      stack_frames = Some(0)
+    } else if stack_frames is Some(n) && line.has_prefix("    at ") {
+      stack_frames = Some(n + 1)
+      return n < 4
+    } else {
+      stack_frames = None
+    }
+    true
+  })
+  detail[@cmp.maximum(0, detail.length() - most):].to_owned()
 }

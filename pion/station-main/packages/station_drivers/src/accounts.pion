@@ -1,0 +1,900 @@
+// Accounts, model catalog, multi-vendor quota & reset parsing (`claude`, `codex`,
+// `agy`, `opencode`, `kimi`, `colab`, `cursor`, `copilot`), pace weights, cooldowns,
+// and profile selection / failover with local + cross-station `maxConcurrentSessions`
+// slot coordination.
+
+import "base_codec"
+import "crypto"
+
+pub let DAY_MINUTES : Int = 1440
+pub let WEEK_MINUTES : Int = 10080
+pub let DAY_MS : Int64 = 86400000L
+pub let CROWDED_PERCENT : Int = 80
+pub let MIN_WEIGHT : Double = 0.01
+pub let CAPPED_ACCOUNT_MAX_PACE : Double = 1.0
+pub let DEFAULT_NEW_SUBSCRIPTION_MAX_CONCURRENT_SESSIONS : Int = 8
+
+// ---------------------------------------------------------------------------
+// Model Catalog (`station/src/accounts/catalog.ts`)
+// ---------------------------------------------------------------------------
+
+pub struct ModelCost {
+  pub input : Double
+  pub output : Double
+  pub cache_read : Option[Double]
+  pub cache_write : Option[Double]
+}
+
+pub struct ModelFacts {
+  pub name : Option[String]
+  pub maker : Option[String]
+  pub family : Option[String]
+  pub reasoning : Option[Bool]
+  pub efforts : Array[String]
+  pub context : Option[Int]
+  pub output : Option[Int]
+  pub cost : Option[ModelCost]
+}
+
+pub struct ModelCatalogStore {
+  pub mut version : Int
+  pub entries : Array[(String, ModelFacts)]
+}
+
+pub fn ModelCatalogStore::new() -> ModelCatalogStore {
+  ModelCatalogStore::{ version: 0, entries: [] }
+}
+
+pub fn normalize_model_key(model : String) -> String {
+  let mut s = ascii_lower(str_trim(model))
+  let slash = last_index_of_byte(s, 47)
+  if slash >= 0 {
+    s = str_slice_bytes(s, slash + 1, s.to_bytes().length())
+  }
+  let bracket = str_index_of(s, "[", 0)
+  if bracket >= 0 {
+    s = str_slice_bytes(s, 0, bracket)
+  }
+  s
+}
+
+fn last_index_of_byte(s : String, target : Int) -> Int {
+  let raw = s.to_bytes()
+  let mut i = raw.length() - 1
+  while i >= 0 {
+    if (raw[i].to_int() & 0xFF) == target {
+      return i
+    }
+    i = i - 1
+  }
+  -1
+}
+
+pub fn ModelCatalogStore::upsert(self : ModelCatalogStore, id : String, facts : ModelFacts) -> Unit {
+  let key = normalize_model_key(id)
+  for i in 0..<self.entries.length() {
+    if self.entries[i].0 == key {
+      self.entries[i] = (key, facts)
+      self.version = self.version + 1
+      return
+    }
+  }
+  self.entries.push((key, facts))
+  self.version = self.version + 1
+}
+
+pub fn ModelCatalogStore::facts(self : ModelCatalogStore, model : String) -> Option[ModelFacts] {
+  let bare = normalize_model_key(model)
+  for i in 0..<self.entries.length() {
+    if self.entries[i].0 == bare {
+      return Some(self.entries[i].1)
+    }
+  }
+  let (base, eff) = agy_base_model(bare)
+  if opt_str_is_some(eff) {
+    for i in 0..<self.entries.length() {
+      if self.entries[i].0 == base {
+        return Some(self.entries[i].1)
+      }
+    }
+  }
+  None
+}
+
+// ---------------------------------------------------------------------------
+// Multi-vendor Quota, Resets, and Pace
+// ---------------------------------------------------------------------------
+
+pub struct QuotaWindow {
+  pub label : String
+  pub used_percent : Int
+  pub resets_at : Option[Int64]
+  pub minutes : Option[Int]
+  pub model_scope : Option[String]
+}
+
+pub enum ResetKind {
+  Session
+  Weekly
+  Model
+  Full
+  Credit
+}
+
+pub fn reset_kind_to_str(k : ResetKind) -> String {
+  match k {
+    ResetKind::Session => "session"
+    ResetKind::Weekly => "weekly"
+    ResetKind::Model => "model"
+    ResetKind::Full => "full"
+    ResetKind::Credit => "credit"
+  }
+}
+
+pub struct QuotaReset {
+  pub id : String
+  pub kind : ResetKind
+  pub model : Option[String]
+  pub left : Int
+  pub usable : Bool
+}
+
+pub struct ProfileQuota {
+  pub state : String // "ok" | "unsupported" | "unavailable" | "blocked"
+  pub windows : Array[QuotaWindow]
+  pub scoped : Array[QuotaWindow]
+  pub resets : Array[QuotaReset]
+  pub extra_usage : Option[Bool]
+  pub detail : Option[String]
+  pub checked_at : Int64
+}
+
+pub struct ProfileCheck {
+  pub state : String // "ok" | "login" | "failed" | "unknown"
+  pub detail : String
+  pub models : Array[String]
+  pub checked_at : Int64
+}
+
+pub struct ProfileHealth {
+  pub check : Option[ProfileCheck]
+  pub quota : Option[ProfileQuota]
+  pub spent : Bool
+}
+
+pub fn ProfileHealth::ok(windows : Array[QuotaWindow]) -> ProfileHealth {
+  ProfileHealth::{
+    check: Some(ProfileCheck::{ state: "ok", detail: "", models: [], checked_at: 0L }),
+    quota: Some(ProfileQuota::{
+      state: "ok",
+      windows: windows,
+      scoped: [],
+      resets: [],
+      extra_usage: None,
+      detail: None,
+      checked_at: 0L,
+    }),
+    spent: false,
+  }
+}
+
+pub fn round_half_away(n : Double) -> Int {
+  if n >= 0.0 {
+    (n + 0.5).to_int()
+  } else {
+    0 - (0.0 - n + 0.5).to_int()
+  }
+}
+
+pub fn percent_clamped(n : Double) -> Int {
+  let r = round_half_away(n)
+  if r < 0 {
+    0
+  } else if r > 100 {
+    100
+  } else {
+    r
+  }
+}
+
+pub fn window_label(minutes : Option[Int], fallback : String) -> String {
+  match minutes {
+    None => fallback
+    Some(m) => {
+      if m <= 0 {
+        return fallback
+      }
+      if m <= 360 {
+        return round_half_away(m.to_double() / 60.0).to_string() + " 小时"
+      }
+      if m >= 6 * DAY_MINUTES && m <= 8 * DAY_MINUTES {
+        return "每周"
+      }
+      if m >= 27 * DAY_MINUTES {
+        return "每月"
+      }
+      round_half_away(m.to_double() / DAY_MINUTES.to_double()).to_string() + " 天"
+    }
+  }
+}
+
+pub fn is_account_blocked(text : String) -> Bool {
+  let lower = ascii_lower(text)
+  any_contains(
+    lower,
+    [
+      "on hold",
+      "restricted",
+      "suspend",
+      "disabled",
+      "deactivat",
+      "banned",
+      "terminated",
+      "violat",
+      "can't receive replies",
+      "cannot receive replies",
+      "verification portal",
+    ],
+  )
+}
+
+/// Parse Claude OAuth usage response (5-hour, weekly, scoped Fable, extra_usage,
+/// and `juniper_tide` / `cedar_ember` limit resets).
+pub fn parse_claude_usage(body : base_codec::Json) -> ProfileQuota {
+  let windows : Array[QuotaWindow] = []
+  let keys : Array[(String, String, Int)] = [
+    ("five_hour", "5 小时", 300),
+    ("seven_day", "每周", WEEK_MINUTES),
+    ("seven_day_opus", "每周 · Opus", WEEK_MINUTES),
+    ("seven_day_sonnet", "每周 · Sonnet", WEEK_MINUTES),
+  ]
+  for i in 0..<keys.length() {
+    let (k, label, mins) = keys[i]
+    match json_get_field(body, k) {
+      Some(obj) => {
+        match json_get_num(obj, "utilization") {
+          Some(u) => {
+            windows.push(QuotaWindow::{
+              label: label,
+              used_percent: percent_clamped(u),
+              resets_at: parse_epoch_ms(json_get_field(obj, "resets_at")),
+              minutes: Some(mins),
+              model_scope: None,
+            })
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  let scoped : Array[QuotaWindow] = []
+  match json_get_arr(body, "limits") {
+    Some(arr) => {
+      for i in 0..<arr.length() {
+        let item = arr[i]
+        if !opt_str_eq(json_get_str(item, "group"), Some("weekly")) {
+          continue
+        }
+        let name = match json_get_field(item, "scope") {
+          Some(sc) => match json_get_field(sc, "model") {
+            Some(m) => json_get_str(m, "display_name")
+            None => None
+          }
+          None => None
+        }
+        match name {
+          Some(nm) => {
+            let trimmed = str_trim(nm)
+            if trimmed != "" {
+              let pct = match json_get_num(item, "percent") {
+                Some(p) => percent_clamped(p)
+                None => 0
+              }
+              scoped.push(QuotaWindow::{
+                label: "每周 · " + trimmed,
+                used_percent: pct,
+                resets_at: parse_epoch_ms(json_get_field(item, "resets_at")),
+                minutes: Some(WEEK_MINUTES),
+                model_scope: Some(trimmed),
+              })
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  let extra_usage = match json_get_field(body, "extra_usage") {
+    Some(eu) => json_get_bool(eu, "is_enabled")
+    None => None
+  }
+  let resets : Array[QuotaReset] = []
+  match json_get_field(body, "juniper_tide") {
+    Some(tide) => {
+      if opt_bool_eq(json_get_bool(tide, "eligible"), Some(true)) &&
+      opt_str_eq(json_get_str(tide, "arm"), Some("reset")) &&
+      opt_bool_eq(json_get_bool(tide, "available"), Some(true)) {
+        resets.push(QuotaReset::{ id: "session", kind: ResetKind::Session, model: None, left: 1, usable: true })
+      }
+    }
+    None => ()
+  }
+  match json_get_field(body, "cedar_ember") {
+    Some(ember) => {
+      if opt_bool_eq(json_get_bool(ember, "eligible"), Some(true)) {
+        match json_get_arr(ember, "grants") {
+          Some(grants) => {
+            for i in 0..<grants.length() {
+              let g = grants[i]
+              let left = match json_get_num(g, "resets_left") {
+                Some(n) => n.to_int()
+                None => 0
+              }
+              if left <= 0 || opt_bool_eq(json_get_bool(g, "paused"), Some(true)) {
+                continue
+              }
+              let kind = if opt_bool_eq(json_get_bool(g, "gives_back_weekly"), Some(true)) || opt_str_eq(json_get_str(g, "type"), Some("fable")) {
+                ResetKind::Model
+              } else if opt_str_eq(json_get_str(g, "type"), Some("session")) {
+                ResetKind::Session
+              } else if opt_str_eq(json_get_str(g, "type"), Some("weekly")) {
+                ResetKind::Weekly
+              } else {
+                ResetKind::Full
+              }
+              let usable_now = opt_bool_eq(json_get_bool(g, "usable_now"), Some(true))
+              let m = match kind {
+                ResetKind::Model => Some("Fable")
+                _ => None
+              }
+              resets.push(QuotaReset::{
+                id: reset_kind_to_str(kind),
+                kind: kind,
+                model: m,
+                left: left,
+                usable: usable_now,
+              })
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  ProfileQuota::{
+    state: "ok",
+    windows: windows,
+    scoped: scoped,
+    resets: resets,
+    extra_usage: extra_usage,
+    detail: None,
+    checked_at: 0L,
+  }
+}
+
+/// Parse Codex `account/rateLimits/read` windows (`primary`, `secondary`).
+pub fn parse_codex_windows(result : base_codec::Json) -> Array[QuotaWindow] {
+  let limits = match json_get_field(result, "rateLimits") {
+    Some(rl) => rl
+    None => result
+  }
+  let out : Array[QuotaWindow] = []
+  let pairs : Array[(String, String, Int)] = [("primary", "5 小时", 300), ("secondary", "每周", WEEK_MINUTES)]
+  for i in 0..<pairs.length() {
+    let (k, fallback, def_mins) = pairs[i]
+    match json_get_field(limits, k) {
+      Some(w) => {
+        let mins = match json_get_num(w, "windowDurationMins") {
+          Some(n) => if n > 0.0 { n.to_int() } else { def_mins }
+          None => def_mins
+        }
+        let used = match json_get_num(w, "usedPercent") {
+          Some(u) => percent_clamped(u)
+          None => 0
+        }
+        out.push(QuotaWindow::{
+          label: window_label(Some(mins), fallback),
+          used_percent: used,
+          resets_at: parse_epoch_ms(json_get_field(w, "resetsAt")),
+          minutes: Some(mins),
+          model_scope: None,
+        })
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn agy_scope_for_model(model : String) -> String {
+  let bare = normalize_model_key(model)
+  if bare == "" || str_starts_with(bare, "gemini") || str_starts_with(bare, "gemma") {
+    "gemini"
+  } else {
+    "3p"
+  }
+}
+
+/// Kimi token renewal due check: less than half its life left (min 5 minutes).
+pub fn kimi_due(expires_at : Int64, life_ms : Int64, now_ms : Int64) -> Bool {
+  let half = life_ms / 2L
+  let margin = if half > 300000L { half } else { 300000L }
+  expires_at - now_ms < margin
+}
+
+/// Parse Colab `/tun/m/ccu-info` stripping Google's `)]}'\n` XSSI prefix.
+pub fn parse_colab_ccu_info(raw : String) -> Option[(Double, Double, Int)] {
+  let clean = if str_starts_with(raw, ")]}'\n") {
+    str_slice_bytes(raw, 5, raw.to_bytes().length())
+  } else {
+    raw
+  }
+  let v = match base_codec::json_parse(clean) {
+    base_codec::JsonParseResult::Ok(parsed) => parsed
+    base_codec::JsonParseResult::Err(_) => return None
+  }
+  let balance = match json_get_num(v, "currentBalance") {
+    Some(n) => n
+    None => 0.0
+  }
+  let rate = match json_get_num(v, "consumptionRateHourly") {
+    Some(n) => n
+    None => 0.0
+  }
+  let count = match json_get_num(v, "assignmentsCount") {
+    Some(n) => n.to_int()
+    None => 0
+  }
+  Some((balance, rate, count))
+}
+
+fn parse_epoch_ms(item : Option[base_codec::Json]) -> Option[Int64] {
+  match item {
+    Some(base_codec::Json::Num(n, _)) => {
+      if n > 1000000000000.0 {
+        Some(n.to_int64())
+      } else {
+        Some((n * 1000.0).to_int64())
+      }
+    }
+    _ => None
+  }
+}
+
+pub fn spend_scopes(runtime : String, model : String) -> Array[String] {
+  let bare = normalize_model_key(model)
+  if runtime == "claude" && (str_contains(bare, "fable") || str_contains(bare, "mythos")) {
+    return ["Fable", ""]
+  }
+  if runtime == "agy" {
+    if bare == "" || str_starts_with(bare, "gemini") || str_starts_with(bare, "gemma") {
+      if str_contains(bare, "argon") {
+        return ["gemini", "Argon"]
+      }
+      return ["gemini"]
+    }
+    return ["3p"]
+  }
+  [""]
+}
+
+// ---------------------------------------------------------------------------
+// Cooldowns, Pool Signals, Concurrency Slots & Profile Selection / Failover
+// ---------------------------------------------------------------------------
+
+pub struct AccountCooldown {
+  pub profile_id : String
+  pub until_ms : Int64
+  pub reason : FailureReason
+}
+
+pub struct AccountCooldowns {
+  pub entries : Array[AccountCooldown]
+}
+
+pub fn AccountCooldowns::new() -> AccountCooldowns {
+  AccountCooldowns::{ entries: [] }
+}
+
+pub fn AccountCooldowns::mark(self : AccountCooldowns, profile_id : String, until_ms : Int64, reason : FailureReason) -> Unit {
+  for i in 0..<self.entries.length() {
+    if self.entries[i].profile_id == profile_id {
+      self.entries[i] = AccountCooldown::{ profile_id: profile_id, until_ms: until_ms, reason: reason }
+      return
+    }
+  }
+  self.entries.push(AccountCooldown::{ profile_id: profile_id, until_ms: until_ms, reason: reason })
+}
+
+pub fn AccountCooldowns::is_cooling(self : AccountCooldowns, profile_id : String, now_ms : Int64) -> Bool {
+  for i in 0..<self.entries.length() {
+    if self.entries[i].profile_id == profile_id && self.entries[i].until_ms > now_ms {
+      return true
+    }
+  }
+  false
+}
+
+/// Injectable signals for profile selection, including local + cross-station
+/// active session slots (`local_active + remote_active`) for `maxConcurrentSessions`.
+pub struct PoolSignals {
+  pub now_ms : Int64
+  pub health_fn : (String) -> ProfileHealth
+  pub load_fn : (String) -> Int
+  pub local_active_fn : (String) -> Int
+  pub remote_active_fn : (String) -> Int
+  pub last_picked_fn : (String) -> Int64
+  pub max_sessions_fn : (String) -> Option[Int]
+}
+
+pub struct Urgency {
+  pub crowded : Bool
+  pub pace : Double
+  pub weight : Double
+}
+
+/// Whether a subscription profile has reached its local + cross-station concurrency cap.
+pub fn is_session_capped(profile : Profile, cap : Option[Int], total_active : Int) -> Bool {
+  if billed_per_use(profile) {
+    return false
+  }
+  match cap {
+    Some(c) => c > 0 && total_active >= c
+    None => false
+  }
+}
+
+fn fresh_windows(quota : Option[ProfileQuota], now_ms : Int64) -> Array[QuotaWindow] {
+  let out : Array[QuotaWindow] = []
+  match quota {
+    Some(q) => {
+      if q.state != "ok" {
+        return out
+      }
+      for i in 0..<q.windows.length() {
+        let w = q.windows[i]
+        let used = match w.resets_at {
+          Some(r) => if r <= now_ms { 0 } else { w.used_percent }
+          None => w.used_percent
+        }
+        out.push(QuotaWindow::{
+          label: w.label,
+          used_percent: used,
+          resets_at: w.resets_at,
+          minutes: w.minutes,
+          model_scope: w.model_scope,
+        })
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+pub fn quota_used_max(quota : Option[ProfileQuota], now_ms : Int64) -> Int {
+  let ws = fresh_windows(quota, now_ms)
+  if ws.length() == 0 {
+    return 50
+  }
+  let mut m = ws[0].used_percent
+  for i in 1..<ws.length() {
+    if ws[i].used_percent > m {
+      m = ws[i].used_percent
+    }
+  }
+  m
+}
+
+pub fn urgency(quota : Option[ProfileQuota], now_ms : Int64) -> Urgency {
+  let ws = fresh_windows(quota, now_ms)
+  let long_w : Array[QuotaWindow] = []
+  let short_w : Array[QuotaWindow] = []
+  for i in 0..<ws.length() {
+    match ws[i].minutes {
+      Some(mins) => if mins > 0 {
+        if mins.to_int64() * 60000L > DAY_MS {
+          long_w.push(ws[i])
+        } else {
+          short_w.push(ws[i])
+        }
+      }
+      None => ()
+    }
+  }
+  let mut crowded = false
+  let mut room = 1.0
+  if long_w.length() > 0 {
+    for i in 0..<short_w.length() {
+      if short_w[i].used_percent >= CROWDED_PERCENT {
+        crowded = true
+      }
+      let r = (100 - short_w[i].used_percent).to_double() / 100.0
+      let clamped = if r < 0.0 { 0.0 } else { r }
+      if clamped < room {
+        room = clamped
+      }
+    }
+  }
+  let target = if long_w.length() > 0 { long_w } else { short_w }
+  let mut have_pace = false
+  let mut min_pace = 1.0
+  for i in 0..<target.length() {
+    let w = target[i]
+    match (w.minutes, w.resets_at) {
+      (Some(mins), Some(resets_at)) => {
+        let left = if w.used_percent >= 100 { 0.0 } else { (100 - w.used_percent).to_double() / 100.0 }
+        let length = mins.to_int64() * 60000L
+        let raw_rem = resets_at - now_ms
+        let rem0 = if raw_rem > 0L { raw_rem } else { length }
+        let rem = if rem0 < length { rem0 } else { length }
+        let denom = if length > DAY_MS && rem < DAY_MS { DAY_MS } else { rem }
+        let p = left * length.to_double() / denom.to_double()
+        if !have_pace || p < min_pace {
+          min_pace = p
+          have_pace = true
+        }
+      }
+      _ => ()
+    }
+  }
+  let pace = if have_pace {
+    min_pace
+  } else {
+    (100 - quota_used_max(quota, now_ms)).to_double() / 100.0
+  }
+  let w_raw = pace * room
+  let weight = if w_raw < MIN_WEIGHT { MIN_WEIGHT } else { w_raw }
+  Urgency::{ crowded: crowded, pace: pace, weight: weight }
+}
+
+pub fn signs_in(h : ProfileHealth) -> Bool {
+  match h.check {
+    Some(c) => if c.state == "login" || c.state == "failed" { return false }
+    None => ()
+  }
+  match h.quota {
+    Some(q) => q.state != "blocked"
+    None => true
+  }
+}
+
+pub fn quota_unavailable(h : ProfileHealth) -> Bool {
+  match h.quota {
+    Some(q) => q.state == "unavailable"
+    None => false
+  }
+}
+
+pub fn profile_usable(h : ProfileHealth, now_ms : Int64) -> Bool {
+  !h.spent && signs_in(h) && quota_used_max(h.quota, now_ms) < 100
+}
+
+pub fn profile_serves_model(p : Profile, model : Option[String]) -> Bool {
+  match model {
+    None => true
+    Some(m) => {
+      if m == "" {
+        return true
+      }
+      let target = normalize_model_key(m)
+      match p.model {
+        Some(pm) => if normalize_model_key(pm) == target { return true }
+        None => ()
+      }
+      for i in 0..<p.models.length() {
+        if normalize_model_key(p.models[i]) == target {
+          return true
+        }
+      }
+      false
+    }
+  }
+}
+
+/// Pick the best profile matching `station/src/sessions/pool.ts` `pickProfile`,
+/// respecting paid-first tiers, healthy quota preference, local+cross-station
+/// `maxConcurrentSessions` caps, urgency weights, and least-recently-picked tie-breaking.
+pub fn pick_profile(
+  candidates : Array[Profile],
+  model : Option[String],
+  signals : PoolSignals,
+  strict : Bool,
+) -> Result[Profile, String] {
+  if candidates.length() == 0 {
+    return Err("no profile to run on")
+  }
+  let healths : Array[ProfileHealth] = []
+  let mut serving : Array[Int] = []
+  for i in 0..<candidates.length() {
+    let p = candidates[i]
+    healths.push((signals.health_fn)(p.id))
+    if profile_serves_model(p, model) {
+      serving.push(i)
+    }
+  }
+  if serving.length() == 0 {
+    if strict {
+      let name = match model {
+        Some(m) => m
+        None => ""
+      }
+      return Err("no profile has " + name + " enabled; enable it on a profile first")
+    }
+    for i in 0..<candidates.length() {
+      serving.push(i)
+    }
+  }
+  let now = signals.now_ms
+  let fit : Array[Int] = []
+  let paid : Array[Int] = []
+  let signed_in : Array[Int] = []
+  for k in 0..<serving.length() {
+    let i = serving[k]
+    let p = candidates[i]
+    let h = healths[i]
+    if signs_in(h) {
+      signed_in.push(i)
+    }
+    if profile_usable(h, now) {
+      fit.push(i)
+      if !billed_per_use(p) {
+        paid.push(i)
+      }
+    }
+  }
+  let filter_healthy = fn(list : Array[Int]) -> Array[Int] {
+    let out : Array[Int] = []
+    for k in 0..<list.length() {
+      if !quota_unavailable(healths[list[k]]) {
+        out.push(list[k])
+      }
+    }
+    out
+  }
+  let filter_uncapped = fn(list : Array[Int]) -> Array[Int] {
+    let out : Array[Int] = []
+    for k in 0..<list.length() {
+      let i = list[k]
+      let p = candidates[i]
+      let cap = match (signals.max_sessions_fn)(p.id) {
+        Some(c) => Some(c)
+        None => p.max_concurrent_sessions
+      }
+      let total_active = (signals.local_active_fn)(p.id) + (signals.remote_active_fn)(p.id)
+      if !is_session_capped(p, cap, total_active) {
+        out.push(i)
+      }
+    }
+    out
+  }
+  let paid_healthy = filter_healthy(paid)
+  let paid_healthy_uncapped = filter_uncapped(paid_healthy)
+  let paid_uncapped = filter_uncapped(paid)
+  let fit_healthy = filter_healthy(fit)
+  let signed_in_healthy = filter_healthy(signed_in)
+
+  let pool = if paid_healthy_uncapped.length() > 0 {
+    paid_healthy_uncapped
+  } else if paid_uncapped.length() > 0 {
+    paid_uncapped
+  } else if paid_healthy.length() > 0 {
+    paid_healthy
+  } else if paid.length() > 0 {
+    paid
+  } else if fit_healthy.length() > 0 {
+    fit_healthy
+  } else if fit.length() > 0 {
+    fit
+  } else if signed_in_healthy.length() > 0 {
+    signed_in_healthy
+  } else if signed_in.length() > 0 {
+    signed_in
+  } else {
+    serving
+  }
+
+  let mut best_idx = pool[0]
+  for k in 1..<pool.length() {
+    let idx = pool[k]
+    if rank_better(candidates, healths, signals, idx, best_idx) {
+      best_idx = idx
+    }
+  }
+  Ok(candidates[best_idx])
+}
+
+fn effective_urgency(p : Profile, h : ProfileHealth, signals : PoolSignals) -> Urgency {
+  let u = urgency(h.quota, signals.now_ms)
+  let cap = match (signals.max_sessions_fn)(p.id) {
+    Some(c) => Some(c)
+    None => p.max_concurrent_sessions
+  }
+  match cap {
+    Some(c) => if !billed_per_use(p) && c > 0 && u.pace > CAPPED_ACCOUNT_MAX_PACE {
+      let room = if u.pace > 0.0 { u.weight / u.pace } else { 1.0 }
+      let w = CAPPED_ACCOUNT_MAX_PACE * room
+      return Urgency::{
+        crowded: u.crowded,
+        pace: CAPPED_ACCOUNT_MAX_PACE,
+        weight: if w < MIN_WEIGHT { MIN_WEIGHT } else { w },
+      }
+    }
+    None => ()
+  }
+  u
+}
+
+fn rank_better(
+  candidates : Array[Profile],
+  healths : Array[ProfileHealth],
+  signals : PoolSignals,
+  a : Int,
+  b : Int,
+) -> Bool {
+  let pa = candidates[a]
+  let pb = candidates[b]
+  let ua = effective_urgency(pa, healths[a], signals)
+  let ub = effective_urgency(pb, healths[b], signals)
+  if ua.crowded != ub.crowded {
+    return !ua.crowded
+  }
+  let share_a = ((signals.load_fn)(pa.id) + 1).to_double() / ua.weight
+  let share_b = ((signals.load_fn)(pb.id) + 1).to_double() / ub.weight
+  if share_a != share_b {
+    return share_a < share_b
+  }
+  (signals.last_picked_fn)(pa.id) < (signals.last_picked_fn)(pb.id)
+}
+
+/// Failover to the next best profile after `failed_id` hit a limit or error.
+pub fn failover_profile(
+  candidates : Array[Profile],
+  failed_id : String,
+  model : Option[String],
+  signals : PoolSignals,
+  strict : Bool,
+) -> Result[Profile, String] {
+  let rest : Array[Profile] = []
+  for i in 0..<candidates.length() {
+    if candidates[i].id != failed_id {
+      rest.push(candidates[i])
+    }
+  }
+  pick_profile(rest, model, signals, strict)
+}
+
+/// 1:1 aligned with `station/src/sessions/config.ts` `profilesFor`:
+/// filters enabled profiles supporting `runtime` and allowed in `workspace` (given `home_workspace`).
+pub fn profiles_for(
+  profiles : Array[Profile],
+  runtime : RuntimeKind,
+  workspace : Option[String],
+  home_workspace : Option[String],
+) -> Array[Profile] {
+  let out : Array[Profile] = []
+  for i in 0..<profiles.length() {
+    let p = profiles[i]
+    if p.enabled && profile_supports_runtime(p, runtime) && allowed_in(p, workspace, home_workspace) {
+      out.push(p)
+    }
+  }
+  out
+}
+
+/// Workspace-scoped profile selection: enforces `profiles_for` (enabled + runtime + `allowed_in`)
+/// before ranking candidates via `pick_profile`.
+pub fn pick_profile_for_workspace(
+  profiles : Array[Profile],
+  runtime : RuntimeKind,
+  workspace : Option[String],
+  home_workspace : Option[String],
+  model : Option[String],
+  signals : PoolSignals,
+  strict : Bool,
+) -> Result[Profile, String] {
+  let eligible = profiles_for(profiles, runtime, workspace, home_workspace)
+  pick_profile(eligible, model, signals, strict)
+}

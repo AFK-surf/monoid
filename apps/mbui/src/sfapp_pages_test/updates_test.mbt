@@ -341,3 +341,126 @@ test "told a release may be out: a newer build asked for again at once, not as t
   t.frame()
   assert_eq(asked, ["1 false", "1 false", "1 false"])
 }
+
+///|
+test "perf57: hourly update_again and releases told trigger update_check with 0 Ctx rebuilds" {
+  let asked : Array[String] = []
+  let builds = Ref(0)
+  new_run()
+  let told = @signals.signal(3)
+  let base = fixture("home")
+  let src : @sfbase.Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "releases" {
+        { value: Some({ "told": Json::number(told.get().to_double()) }), error: None, version: 1 }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+  }
+  update_version.val = 1
+  set_update_source(
+    Some({
+      check: fn(version, now, done) {
+        asked.push("\{version} \{now}")
+        done(Ok(Json::null()))
+      },
+      url: fn(file) { "https://example.test/releases/" + file },
+    }),
+  )
+  let t = @ui.Tester::new(
+    fn(c) {
+      builds.val = builds.val + 1
+      view(c, src)
+    },
+    tree=app_tree(src),
+    w=390.0,
+    h=844.0,
+    platform=2,
+  )
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  t.frame()
+  assert_eq(asked, ["1 false"])
+  // Disable Tester's second verification-only full-build pass so `builds` measures real host Ctx builds.
+  t.check_looks(false)
+  let builds_settled = builds.val
+  // 1. Hourly timer firing causes 0 Ctx rebuilds
+  t.frame(ms=@sfbase.update_again_ms + 1000.0)
+  assert_eq(asked, ["1 false", "1 false"])
+  assert_eq(t.built_why(), "")
+  assert_eq(builds.val, builds_settled, msg="hourly update_again must not rebuild Ctx: \{t.built_why()}")
+  // 2. releases topic `told` increment causes 0 Ctx rebuilds
+  told.set(4)
+  t.frame()
+  assert_eq(asked, ["1 false", "1 false", "1 false"])
+  assert_eq(t.built_why(), "")
+  assert_eq(builds.val, builds_settled, msg="releases told update must not rebuild Ctx: \{t.built_why()}")
+}
+
+///|
+test "perf57: 8-hour sleep wakeup fires update_again once and reschedules +1h; shell switch preserves schedule" {
+  let asked : Array[String] = []
+  let t = updates_tester(Json::null(), asked)
+  t.frame()
+  assert_eq(asked, ["1 false"])
+  // 1. Single frame spanning 8 hours (Mac sleep wakeup) fires only once, then +1h fires next
+  t.frame(ms=8.0 * @sfbase.update_again_ms)
+  assert_eq(asked, ["1 false", "1 false"])
+  t.frame(ms=@sfbase.update_again_ms / 2.0)
+  assert_eq(asked, ["1 false", "1 false"])
+  t.frame(ms=@sfbase.update_again_ms / 2.0 + 1000.0)
+  assert_eq(asked, ["1 false", "1 false", "1 false"])
+  // 2. Narrow <-> wide shell switch mid-hour preserves remaining schedule without resetting or double-firing
+  t.frame(ms=@sfbase.update_again_ms / 2.0)
+  assert_eq(asked, ["1 false", "1 false", "1 false"])
+  t.resize(1200.0, 844.0)
+  t.frame()
+  assert_eq(asked, ["1 false", "1 false", "1 false"])
+  t.resize(390.0, 844.0)
+  t.frame()
+  assert_eq(asked, ["1 false", "1 false", "1 false"])
+  // Remaining ~0.5h elapses -> fires on original schedule
+  t.frame(ms=@sfbase.update_again_ms / 2.0 + 1000.0)
+  assert_eq(asked, ["1 false", "1 false", "1 false", "1 false"])
+}
+
+///|
+test "perf57: update_on_release_node activates reactively when set_update_source is registered after mount" {
+  let asked : Array[String] = []
+  new_run()
+  let told = @signals.signal(10)
+  let base = fixture("home")
+  let src : @sfbase.Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      if name == "releases" {
+        { value: Some({ "told": Json::number(told.get().to_double()) }), error: None, version: 1 }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+  }
+  update_version.val = 1
+  // Mount shell before registering update source: update_asks() is initially false
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.frame()
+  assert_eq(asked, [])
+  // Register update source after mount -> update_on_release_node must subscribe reactively
+  set_update_source(
+    Some({
+      check: fn(version, now, done) {
+        asked.push("\{version} \{now}")
+        done(Ok(Json::null()))
+      },
+      url: fn(file) { "https://example.test/releases/" + file },
+    }),
+  )
+  t.frame()
+  // First seen `told` (10) records baseline without firing an extra check
+  assert_eq(asked, [])
+  told.set(11)
+  t.frame()
+  assert_eq(asked, ["1 false"])
+}

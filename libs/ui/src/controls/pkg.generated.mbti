@@ -2902,14 +2902,10 @@ pub let switch_h : Double
 pub let switch_in : Double
 
 #callsite(autofill(loc))
-pub fn switch_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, small? : Bool, disabled? : () -> Bool, controlled? : Bool, loc~ : SourceLoc) -> Unit
+pub fn switch_node(@view.View, () -> Bool, (Bool) -> Unit, () -> String, disabled? : () -> Bool, controlled? : Bool, loc~ : SourceLoc) -> Unit
 
 #callsite(autofill(loc))
 pub fn switch_row_node(@view.View, () -> String, () -> Bool, (Bool) -> Unit, note? : () -> String, disabled? : () -> Bool, lead? : (@view.View) -> Unit, in_words? : Bool, busy? : () -> Bool, loc~ : SourceLoc) -> Unit
-
-pub let switch_small_h : Double
-
-pub let switch_small_w : Double
 
 pub let switch_w : Double
 

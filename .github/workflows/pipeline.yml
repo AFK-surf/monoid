@@ -29,11 +29,16 @@ permissions:
 env:
   # The parts a branch consumes, split between GitHub Linux and the Apple runners.
   BRANCH_NATIVES: archive-rs:linux-x64 shell-station:linux-x64 reader:linux-x64 iroh-wasm:wasm32 shell:android-arm64 engine:android-arm64 mesh:linux-x64 runner:linux-x64 launcher:linux-x64 mesh:win32-x64 launcher:win32-x64 runner:win32-x64 screen:win32-x64 agent-desktop:win32-x64
-  BRANCH_WIN_READER: reader:win32-x64 pion-reader:win32-x64
+  BRANCH_WIN_READER: reader:win32-x64 pion-reader:win32-x64 station-pion:win32-x64
   BRANCH_MAC_NATIVES: mesh:darwin-arm64 launcher:darwin-arm64 runner:darwin-arm64 archive-rs:darwin-arm64 shell-apple:darwin-arm64 helper:darwin-arm64
   # The Mac's readers, built in a job of their own (natives-mac-reader) beside natives-mac: desktop-build uses none of them
   # and waits for natives-mac alone, never for the reader's minutes; check-mac, mac-build and the station wait for both.
   BRANCH_MAC_READER: reader:darwin-arm64 pion-reader:darwin-arm64
+  # The Mac's station-enabled Apple shell and opt-in full Pion station, split into dedicated jobs
+  # (natives-mac-shell-station -> natives-mac-station-pion) so a cold client/shell rebuild never shares a 5-minute
+  # budget with reader/pion-reader, and neither desktop-build nor check-mac waits on them.
+  BRANCH_MAC_SHELL_STATION: shell-apple-station:darwin-arm64
+  BRANCH_MAC_STATION_PION: station-pion:darwin-arm64
   # The tests' MoonBit program (every package's harness, kept out of the reader: station/mb/src/reader_harness), which
   # only check-station runs, built beside natives in a job of its own (natives-harness), never in natives' list: there
   # it would hold every job that waits for the readers, and a branch missing only reader:linux-x64 off ubuntu-24.04.
@@ -57,6 +62,8 @@ jobs:
       win_beta: ${{ steps.plan.outputs.win_beta }}
       natives_mac: ${{ steps.natives.outputs.natives_mac }}
       natives_mac_reader: ${{ steps.natives.outputs.natives_mac_reader }}
+      natives_mac_shell_station: ${{ steps.natives.outputs.natives_mac_shell_station }}
+      natives_mac_station_pion: ${{ steps.natives.outputs.natives_mac_station_pion }}
       natives_win_reader: ${{ steps.natives.outputs.natives_win_reader }}
       natives_harness: ${{ steps.natives.outputs.natives_harness }}
       natives_mac_runner: ${{ steps.natives.outputs.natives_mac_runner }}
@@ -65,6 +72,8 @@ jobs:
       linux_readers_matrix: ${{ steps.natives.outputs.linux_readers_matrix }}
       missing_mac_list: ${{ steps.natives.outputs.missing_mac_list }}
       missing_mac_reader_list: ${{ steps.natives.outputs.missing_mac_reader_list }}
+      missing_mac_shell_station_list: ${{ steps.natives.outputs.missing_mac_shell_station_list }}
+      missing_mac_station_pion_list: ${{ steps.natives.outputs.missing_mac_station_pion_list }}
       missing_win_list: ${{ steps.natives.outputs.missing_win_list }}
       missing_harness_list: ${{ steps.natives.outputs.missing_harness_list }}
       windows_natives: ${{ steps.plan.outputs.windows_natives }}
@@ -116,7 +125,7 @@ jobs:
           else
             want="$BRANCH_NATIVES $BRANCH_WIN_READER $BRANCH_HARNESS"
             if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then
-              want="$want pion-reader:linux-x64 pion-reader:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
+              want="$want pion-reader:linux-x64 pion-reader:linux-arm64 station-pion:linux-x64 station-pion:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64 $BRANCH_MAC_SHELL_STATION $BRANCH_MAC_STATION_PION"
             fi
             # (check-station runs the Pion reader beside MoonBit's, scripts/check.sh station_natives: built for its tests
             # where the station's own release is not planned, a change to its tests alone)
@@ -127,19 +136,25 @@ jobs:
           fi
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             all_linux=$(non_apple)
-            missing=$(printf '%s\n' $all_linux | grep -vE '^(pion-)?reader:win32-x64$|^reader-harness:' || true)
-            missing_win=$(printf '%s\n' $all_linux | grep -E '^(pion-)?reader:win32-x64$' || true)
+            missing=$(printf '%s\n' $all_linux | grep -vE '^(pion-)?reader:win32-x64$|^station-pion:win32-x64$|^reader-harness:' || true)
+            missing_win=$(printf '%s\n' $all_linux | grep -E '^(pion-)?reader:win32-x64$|^station-pion:win32-x64$' || true)
             missing_harness=$(printf '%s\n' $all_linux | grep '^reader-harness:' || true)
             all_mac=$(apple)
-            missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$' || true)
+            missing_mac=$(printf '%s\n' $all_mac | grep -vE '^(pion-)?reader:darwin-arm64$|^(shell-apple-station|station-pion):darwin-arm64$' || true)
             missing_mac_reader=$(printf '%s\n' $all_mac | grep -E '^(pion-)?reader:darwin-arm64$' || true)
+            missing_mac_shell_station=$(printf '%s\n' $all_mac | grep -E '^shell-apple-station:darwin-arm64$' || true)
+            missing_mac_station_pion=$(printf '%s\n' $all_mac | grep -E '^station-pion:darwin-arm64$' || true)
           else
             missing_want="$BRANCH_NATIVES"
             if grep -qE '^station=true$' "$RUNNER_TEMP/plan"; then
-              missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
+              missing_want="$missing_want pion-reader:linux-x64 pion-reader:linux-arm64 station-pion:linux-x64 station-pion:linux-arm64 shell-station:linux-arm64 shell-station:win32-x64"
               missing_win=$(pick $BRANCH_WIN_READER)
+              missing_mac_shell_station=$(pick $BRANCH_MAC_SHELL_STATION)
+              missing_mac_station_pion=$(pick $BRANCH_MAC_STATION_PION)
             else
               missing_win=""
+              missing_mac_shell_station=""
+              missing_mac_station_pion=""
             fi
             if grep -qE '^station_tests=true$' "$RUNNER_TEMP/plan"; then missing_want="$missing_want pion-reader:linux-x64"; fi
             missing=$(pick $missing_want)
@@ -165,11 +180,11 @@ jobs:
               if [ -n "$has_mesh" ]; then
                 matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "mesh" --arg label "$target · mesh" --arg parts "$has_mesh" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
               fi
-              readers=$({ printf '%s\n' "$target_parts" | grep -E '^(pion-)?reader:' || true; } | xargs)
+              readers=$({ printf '%s\n' "$target_parts" | grep -E '^(pion-)?reader:|^station-pion:' || true; } | xargs)
               if [ -n "$readers" ]; then
                 reader_entries+=("$(jq -cn --arg target "$target" --arg parts "$readers" '{target: $target, parts: $parts}')")
               fi
-              other=$({ printf '%s\n' "$target_parts" | grep -vE '^(shell-station|mesh|reader|pion-reader):' || true; } | xargs)
+              other=$({ printf '%s\n' "$target_parts" | grep -vE '^(shell-station|mesh|reader|pion-reader|station-pion):' || true; } | xargs)
               if [ -n "$other" ]; then
                 matrix_entries+=("$(jq -cn --arg target "$target" --arg slot "other" --arg label "$target · other" --arg parts "$other" '{target: $target, slot: $slot, label: $label, parts: $parts}')")
               fi
@@ -192,10 +207,12 @@ jobs:
           echo "linux_readers_matrix=$readers_matrix" >> "$GITHUB_OUTPUT"
           echo "missing (linux jobs): $matrix"
           echo "missing (linux readers): $readers_matrix"
-          for kind in mac mac_reader win_reader harness; do
+          for kind in mac mac_reader mac_shell_station mac_station_pion win_reader harness; do
             case "$kind" in
               mac) list=$missing_mac; list_output=missing_mac_list ;;
               mac_reader) list=$missing_mac_reader; list_output=missing_mac_reader_list ;;
+              mac_shell_station) list=$missing_mac_shell_station; list_output=missing_mac_shell_station_list ;;
+              mac_station_pion) list=$missing_mac_station_pion; list_output=missing_mac_station_pion_list ;;
               win_reader) list=$missing_win; list_output=missing_win_list ;;
               harness) list=$missing_harness; list_output=missing_harness_list ;;
             esac
@@ -303,7 +320,7 @@ jobs:
           path: ${{ runner.temp }}/native-target/native/mesh-${{ matrix.target }}
           key: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-${{ hashFiles('station/native/mesh/Cargo.lock') }}
           restore-keys: native-mesh-cargo-v2-${{ matrix.target }}-${{ env.RUST_TOOLCHAIN }}-
-      - if: contains(matrix.parts, 'pion-reader:')
+      - if: contains(matrix.parts, 'pion-reader:') || contains(matrix.parts, 'station-pion:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
@@ -329,6 +346,9 @@ jobs:
           fi
           if printf '%s\n' "${parts[@]}" | grep -qx 'pion-reader:linux-arm64'; then
             file "$(node scripts/native.ts file pion-reader linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
+          fi
+          if printf '%s\n' "${parts[@]}" | grep -qx 'station-pion:linux-arm64'; then
+            file "$(node scripts/native.ts file station-pion linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
@@ -408,7 +428,7 @@ jobs:
         with: { tools: mbc }
       - uses: ./.github/actions/setup-native-linux
         with: { parts: "${{ env.PARTS }}" }
-      - if: contains(env.PARTS, 'pion-reader:')
+      - if: contains(env.PARTS, 'pion-reader:') || contains(env.PARTS, 'station-pion:')
         uses: actions/cache@v4
         with:
           path: ~/.cache/pion-station-toolchain
@@ -434,6 +454,9 @@ jobs:
           fi
           if printf '%s\n' "${parts[@]}" | grep -qx 'pion-reader:linux-arm64'; then
             file "$(node scripts/native.ts file pion-reader linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
+          fi
+          if printf '%s\n' "${parts[@]}" | grep -qx 'station-pion:linux-arm64'; then
+            file "$(node scripts/native.ts file station-pion linux-arm64)" | grep -E 'ELF 64-bit.*ARM aarch64'
           fi
       - name: Stage native archives in R2
         if: github.ref != 'refs/heads/main'
@@ -702,12 +725,135 @@ jobs:
           path: ~/.cache/stillfail-reader-mbc
           key: ${{ github.ref == 'refs/heads/main' && format('mbui-reader-mac-{0}', github.sha) || format('mbui-reader-mac-branch-v2-{0}', github.sha) }}
 
+  # The station-enabled Apple static shell (`shell-apple-station:darwin-arm64`), isolated in its own 5-minute job
+  # so a cold client/shell rebuild (or MINI1=off on macos-26) never competes with reader/pion-reader or natives-mac.
+  # Neither desktop-build nor check-mac waits for it.
+  natives-mac-shell-station:
+    needs: plan
+    if: needs.plan.outputs.natives_mac_shell_station == 'needed'
+    runs-on: ${{ fromJSON(needs.plan.outputs.natives_mac_reader_runner) }}
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
+    timeout-minutes: 5
+    permissions:
+      contents: write # the release native-artifacts' assets, on main only
+      id-token: write # the branch job can stage its native archives in R2
+    steps:
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-mac
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/node
+      - if: runner.environment != 'self-hosted'
+        run: |
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
+          echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: native-cargo-reg-v2-client-mac-${{ hashFiles('client/Cargo.lock') }}
+          restore-keys: native-cargo-reg-v2-client-mac-
+      - name: Get or build the Mac's station shell (shell-apple-station)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_RUNNER: ${{ runner.environment }}
+          MISSING_MAC: ${{ needs.plan.outputs.missing_mac_shell_station_list }}
+        run: |
+          limit=()
+          if [ "$GITHUB_RUNNER" != self-hosted ]; then
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
+            else
+              limit=(bash scripts/with-timeout.sh @$((JOB_END - 18)))
+            fi
+          fi
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            if [ "$GITHUB_RUNNER" = self-hosted ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+              node scripts/native.ts ensure --publish-store $MISSING_MAC
+            else
+              ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_MAC
+            fi
+          else
+            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $MISSING_MAC
+          fi
+      - name: Stage native archives in R2
+        if: github.ref != 'refs/heads/main'
+        env:
+          STILLFAIL_NATIVE_DIRECT_R2: ${{ runner.environment == 'self-hosted' && '1' || '0' }}
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-mac-shell-station.r2.json"
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: "natives-mac-shell-station-${{ github.sha }}", path: "${{ runner.temp }}/natives-mac-shell-station.r2.json", if-no-files-found: ignore, retention-days: 7 }
+
+  # The opt-in full Pion station for macOS (`station-pion:darwin-arm64`), built after natives-mac-shell-station
+  # restores/publishes shell-apple-station:darwin-arm64 so linking stays well under the 5-minute budget.
+  natives-mac-station-pion:
+    needs: [plan, natives-mac-shell-station]
+    if: ${{ !cancelled() && contains(fromJSON('["success","skipped"]'), needs.natives-mac-shell-station.result) && needs.plan.outputs.natives_mac_station_pion == 'needed' }}
+    runs-on: ${{ fromJSON(needs.plan.outputs.natives_mac_reader_runner) }}
+    environment: ${{ github.ref == 'refs/heads/main' && 'production' || '' }}
+    timeout-minutes: 5
+    permissions:
+      contents: write # the release native-artifacts' assets, on main only
+      id-token: write # the branch job can stage its native archives in R2
+    steps:
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v5
+      - if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/setup-mac
+      - if: runner.environment != 'self-hosted'
+        uses: ./.github/actions/node
+      - if: runner.environment != 'self-hosted'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pion-station-toolchain
+          key: pion-station-toolchain-darwin-arm64-v1-${{ hashFiles('pion/station/TOOLCHAIN') }}
+      - uses: ./.github/actions/natives
+        with: { targets: darwin-arm64 }
+      - name: Get or build the Mac's Pion station (station-pion)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          GITHUB_RUNNER: ${{ runner.environment }}
+          MISSING_MAC: ${{ needs.plan.outputs.missing_mac_station_pion_list }}
+        run: |
+          limit=()
+          if [ "$GITHUB_RUNNER" != self-hosted ]; then
+            if [ "$GITHUB_REF" = refs/heads/main ]; then
+              limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
+            else
+              limit=(bash scripts/with-timeout.sh @$((JOB_END - 18)))
+            fi
+          fi
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            if [ "$GITHUB_RUNNER" = self-hosted ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+              node scripts/native.ts ensure --publish-store $MISSING_MAC
+            else
+              ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --publish $MISSING_MAC
+            fi
+          else
+            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/native-out" $MISSING_MAC
+          fi
+      - name: Stage native archives in R2
+        if: github.ref != 'refs/heads/main'
+        env:
+          STILLFAIL_NATIVE_DIRECT_R2: ${{ runner.environment == 'self-hosted' && '1' || '0' }}
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/native-out" "$RUNNER_TEMP/natives-mac-station-pion.r2.json"
+      - if: github.ref != 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with: { name: "natives-mac-station-pion-${{ github.sha }}", path: "${{ runner.temp }}/natives-mac-station-pion.r2.json", if-no-files-found: ignore, retention-days: 7 }
+
   # A branch's the rest of main's Apple parts, into macos-ci's cache, only while vars.MINI1 is 'on': a job queued for
   # macos-ci with Mini1 away held the branch's run in progress, its concurrency group with it (2026-11-17), and a
   # branch's checks need none of it.
   natives-mac-main:
-    needs: [plan, natives-mac, natives-mac-reader]
-    if: ${{ !cancelled() && vars.MINI1 == 'on' && (needs.plan.outputs.natives_mac == 'needed' || needs.plan.outputs.natives_mac_reader == 'needed') && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) }}
+    needs: [plan, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion]
+    if: ${{ !cancelled() && vars.MINI1 == 'on' && (needs.plan.outputs.natives_mac == 'needed' || needs.plan.outputs.natives_mac_reader == 'needed' || needs.plan.outputs.natives_mac_shell_station == 'needed' || needs.plan.outputs.natives_mac_station_pion == 'needed') && github.ref != 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-shell-station.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-station-pion.result) }}
     runs-on: [self-hosted, macos-ci]
     timeout-minutes: 5
     steps:
@@ -859,7 +1005,7 @@ jobs:
   # four in its station job (stable.yml). Seconds when the store has them. Node alone: release-put.sh goes through
   # Cloudflare's API with the token.
   natives-store:
-    needs: [plan, api, natives, natives-win-reader-main, natives-mac, natives-mac-reader]
+    needs: [plan, api, natives, natives-win-reader-main, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion]
     if: always() && !cancelled() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.api.result)
     runs-on: ubuntu-24.04
     environment: production
@@ -1325,8 +1471,8 @@ jobs:
   # nothing sent). On GitHub's macos-15 (free for a public repository): unsigned, it needs nothing of macos-ci's (main's
   # signed builds stay there, with its keychain). (The apps are mbui's: their builds are this workflow's desktop job's, preview.yml's and mbui-host-mac's.)
   mac-build:
-    needs: [plan, natives, natives-win-reader, natives-mac, natives-mac-reader]
-    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && github.ref != 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
+    needs: [plan, natives, natives-win-reader, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion]
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-shell-station.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-station-pion.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && github.ref != 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
     runs-on: macos-15
     timeout-minutes: 5
     steps:
@@ -1348,7 +1494,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives-build, natives-linux-readers, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives-build, natives-linux-readers, natives, natives-win-reader, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, windows-natives, launcher-windows, ui-windows, check-base, check-rust, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -1622,8 +1768,8 @@ jobs:
 
   # The station's (darwin-arm64, linux-x64, linux-arm64, win32-x64): what a station on the test channel updates to.
   station:
-    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-mac, natives-mac-reader]
-    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && github.ref == 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion]
+    if: ${{ !cancelled() && !failure() && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-shell-station.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-station-pion.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && github.ref == 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
     # (GitHub's Mac, as desktop's signing: on Mini1 its four packages, ~150 MB, went up to the bucket over the home
     # line in what was left of its five minutes after 31 s of building, cut there, and took that line from android's
     # upload beside it, cut too: main 44147606865, 2026-11-17)
@@ -1899,6 +2045,7 @@ jobs:
       - uses: ./.github/actions/setup
         with: { pnpm: 'false' }
       - uses: ./.github/actions/natives
+        with: { exclude-parts: 'reader,pion-reader,shell-apple-station,station-pion' }
       - name: The macOS shell and core native keys
         id: native-keys
         run: |
@@ -2923,8 +3070,8 @@ jobs:
 
   # main, once all of it is out: the tag the next run's range starts from, and what is left to do by hand.
   done:
-    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, monoid-ui, station, android, desktop-build, desktop, desktop-win, put]
-    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-ui.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, check, check-mac, check-linux, check-station, check-core, api, static, monoid-api, monoid-static, monoid-kit, monoid-ui, station, android, desktop-build, desktop, desktop-win, put]
+    if: always() && github.ref == 'refs/heads/main' && contains(fromJSON('["success","skipped"]'), needs.natives.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-win-reader-main.result) && contains(fromJSON('["success","skipped"]'), needs.natives-harness.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-reader.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-shell-station.result) && contains(fromJSON('["success","skipped"]'), needs.natives-mac-station-pion.result) && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-api.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-static.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-kit.result) && contains(fromJSON('["success","skipped"]'), needs.monoid-ui.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.put.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result)
     runs-on: [self-hosted, quick]
     timeout-minutes: 5
     permissions:
@@ -2949,7 +3096,7 @@ jobs:
   # How long this run took against its budget (scripts/ci-time.ts): in the run's summary, and a warning when over. A
   # station's watch reads the same of every run and has an agent find why one went over.
   timing:
-    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, check, check-mac, check-linux, check-station, check-core, bundle, mac-build, api, static, monoid-api, monoid-static, station, station-update, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win, put, release-prune, changelog, done]
+    needs: [plan, natives, natives-win-reader, natives-win-reader-main, natives-harness, natives-mac, natives-mac-reader, natives-mac-shell-station, natives-mac-station-pion, check, check-mac, check-linux, check-station, check-core, bundle, mac-build, api, static, monoid-api, monoid-static, station, station-update, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win, put, release-prune, changelog, done]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

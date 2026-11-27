@@ -1,0 +1,84 @@
+// Per-session rules folder planning for runtimes that load rules from a project
+// directory (Cursor's `.cursor`, Devin's `.devin`) — 1:1 aligned with
+// `station/src/agents/rules-folder.ts`.
+
+import "crypto"
+import "nodepath"
+
+pub struct RulesFolderPlan {
+  pub dir : String
+  pub rules_dir : String
+  pub rule_file_path : String
+  pub rule_text : String
+  pub remove_agents_md_path : String
+  pub skills_source : Option[String]
+  pub skills_link_path : Option[String]
+  pub runtime_name : String
+}
+
+/// Deterministic per-session rules directory: `<runtime_home>/station/<sha256(key)[0..16]>`.
+pub fn rules_folder_dir(runtime_home : String, key : String, sep : String) -> String {
+  let hash = str_slice_bytes(crypto::sha256_hex(key.to_bytes()), 0, 16)
+  nodepath::join(sep, [runtime_home, "station", hash])
+}
+
+pub fn plan_rules_folder(
+  runtime_home : String,
+  key : String,
+  dot : String,
+  rule_file : String,
+  rule_text : String,
+  runtime_name : String,
+  skills : Option[String],
+  sep : String,
+) -> RulesFolderPlan {
+  let dir = rules_folder_dir(runtime_home, key, sep)
+  let rules_dir = nodepath::join(sep, [dir, dot, "rules"])
+  let rule_file_path = nodepath::join(sep, [rules_dir, rule_file])
+  let remove_agents_md_path = nodepath::join(sep, [dir, "AGENTS.md"])
+  let skills_link_path = match skills {
+    Some(_) => Some(nodepath::join(sep, [dir, dot, "skills"]))
+    None => None
+  }
+  RulesFolderPlan::{
+    dir: dir,
+    rules_dir: rules_dir,
+    rule_file_path: rule_file_path,
+    rule_text: rule_text,
+    remove_agents_md_path: remove_agents_md_path,
+    skills_source: skills,
+    skills_link_path: skills_link_path,
+    runtime_name: runtime_name,
+  }
+}
+
+pub fn plan_cursor_rules_folder(
+  profile_home : String,
+  key : String,
+  instructions : String,
+  skills : Option[String],
+  sep : String,
+) -> RulesFolderPlan {
+  let rule = "---\ndescription: still.fail station\nalwaysApply: true\n---\n" + instructions + "\n"
+  plan_rules_folder(nodepath::join(sep, [profile_home, "cursor"]), key, ".cursor", "stillfail.mdc", rule, "Cursor", skills, sep)
+}
+
+pub fn devin_rules_text(instructions : String) -> String {
+  let suffix = "The station's tools (chat_post, chat_state and the others named in these instructions) are the stillfail MCP server's: call one by its name (mcp__stillfail__chat_post and so on) without listing the server's tools first."
+  if instructions == "" {
+    suffix
+  } else {
+    instructions + "\n\n" + suffix
+  }
+}
+
+pub fn plan_devin_rules_folder(
+  profile_home : String,
+  key : String,
+  instructions : String,
+  skills : Option[String],
+  sep : String,
+) -> RulesFolderPlan {
+  let rule = "---\ndescription: still.fail station\ntrigger: always_on\n---\n" + devin_rules_text(instructions) + "\n"
+  plan_rules_folder(nodepath::join(sep, [profile_home, "devin"]), key, ".devin", "stillfail.md", rule, "Devin", skills, sep)
+}
