@@ -2,7 +2,7 @@
 // Composite 3x native OS chrome onto pure apps/mbui 3x captures before mapping onto official 3D CAD meshes:
 //   - duo:     Apple iPhone 18 Pro Max (1170x2544 @3x = 390x848; Apple USDZ provides real 3D Dynamic Island)
 //   - android: Samsung Galaxy S25+ (1170x2532 @3x = 390x844; status bar + gesture pill, pure apps/mbui)
-//   - desk:    the desktop app maximized on a Windows 11 laptop, 3:2 (4320x2880 @3x = 1440x960; title bar + taskbar)
+//   - desk:    the desktop app maximized on a Windows 11 laptop, 3:2 (4320x2880 @3x = 1440x960; app + taskbar)
 //   - web:     the web app in a full-screen browser on a MacBook Air 15" (2940x1908 @2x = 1470x954; notch band + bar)
 // Usage: node website/devices-chrome.mjs <raw-screens-dir> <out-screens-dir> [keys...]
 import { execFile } from "node:child_process";
@@ -86,23 +86,13 @@ function makeHtml(key) {
   const dateStr = isZh ? "2026/11/28" : "11/28/2026";
 
   if (dev === "desk") {
-    // The desktop app on a Windows 11 laptop (3:2, 1440x960 @3x = 4320x2880), maximized: a 32px title bar, the
-    // 1440x880 apps/mbui capture 1:1, and the 48px taskbar with the app running.
+    // The desktop app on a Windows 11 laptop (3:2, 1440x960 @3x = 4320x2880), maximized: the 1440x912 apps/mbui
+    // capture 1:1 (filmed as Windows with an inset window, so the app draws its own minimize/maximize/close in its top
+    // row, as the Windows app does) over the 48px taskbar with the app running.
     return {
       w: 1440, h: 960, dpr: 3,
       html: `<!doctype html><html><body style="margin:0;width:1440px;height:960px;overflow:hidden;position:relative;font-family:${font};background:#F5F3EF;">
-      <div style="height:32px;background:#EBE8E1;display:flex;align-items:center;justify-content:space-between;padding:0 0 0 12px;color:#2B2926;">
-        <div style="display:flex;align-items:center;gap:8px;font-size:12px;">
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8.5" fill="#1C1B1A"/><circle cx="7.4" cy="9.6" r="1.25" fill="#FFFFFF"/><circle cx="12.6" cy="9.6" r="1.25" fill="#FFFFFF"/><path d="M7.5 12.8h5" stroke="#EF6334" stroke-width="1.5" stroke-linecap="round"/></svg>
-          <span>monoid</span>
-        </div>
-        <div style="display:flex;align-items:center;height:100%;">
-          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1"/></svg></div>
-          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" rx="0.8" fill="none" stroke="currentColor" stroke-width="1"/></svg></div>
-          <div style="width:46px;height:100%;display:flex;align-items:center;justify-content:center;"><svg width="10" height="10" viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1" stroke-linecap="round"/></svg></div>
-        </div>
-      </div>
-      <img src="${imgUrl}" style="display:block;width:1440px;height:880px;">
+      <img src="${imgUrl}" style="display:block;width:1440px;height:912px;">
       <div style="position:absolute;left:0;right:0;bottom:0;height:48px;background:rgba(238,236,232,0.96);border-top:1px solid rgba(28,27,26,0.10);box-sizing:border-box;display:flex;align-items:center;justify-content:center;padding:0 16px;">
         <div style="display:flex;align-items:center;gap:10px;">
           <div style="width:30px;height:30px;border-radius:6px;display:flex;align-items:center;justify-content:center;">
