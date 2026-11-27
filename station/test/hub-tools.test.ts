@@ -1683,9 +1683,8 @@ test("a chat opened on another station whose turn ends before its first message'
     if (request.method === CREATE) return createForPeer(far.hub, "near", request);
     if (messageDown) throw new Error("peer unavailable");
     const answer = await fromPeer(far.hub, "near", request);
-    // Its turn there ends, and that station tells this one, before this message's answer arrives.
-    const [child] = far.store.listSessions().map((s) => s.key);
-    told = noticeForPeer(near.hub, "far", { session: child, to: keyA, state: "all_done", words: "演练完成" });
+    // The first chat's turn there ends, and that station tells this one, before this message's answer arrives.
+    if (told === null) told = noticeForPeer(near.hub, "far", { session: request.to, to: keyA, state: "all_done", words: "演练完成" });
     return answer;
   });
   await near.call(keyA, "chat_create", { for: "me", key: "drill", station: "orchard", runtime: "claude", text: "run the drill", title: "演练" });
