@@ -8,7 +8,12 @@ builders_core = { workspace = true }
 crypto = { workspace = true }
 host_shim = { workspace = true }
 nodepath = { workspace = true }
+station_browser = { workspace = true }
+station_connects = { workspace = true }
+station_devices = { workspace = true }
 station_drivers = { workspace = true }
+station_http = { workspace = true }
 station_ops = { workspace = true }
+station_replica = { workspace = true }
 station_screens = { workspace = true }
 station_sys = { workspace = true }

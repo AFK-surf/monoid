@@ -1,0 +1,694 @@
+// Comprehensive unit tests for Wave 16C-Edge-OS production adapters:
+// - `connects_os.pion` (`ConnectMuxBridge`, `ConnectsOsRuntime`)
+// - `replica_os.pion` (`os_s3_client`, `ReplicaTargetPort`, `ReplicaOsRuntime`, `ShareOsSync`)
+// - `browser_os.pion` (`validate_browser_navigation_url`, `open_cdp_session_os`, `BrowserOsManager`,
+//   `build_signin_form_port`, `BrowserProxyOsAdapter`)
+// - `devices_os.pion` (`TerminalsOsRuntime`, `LoginsOsRuntime`, `DevicesOsRuntime`)
+
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "host_shim"
+import "station_browser"
+import "station_connects"
+import "station_devices"
+import "station_http"
+import "station_ops"
+import "station_replica"
+import "station_sys"
+
+fn edge_assert(cond : Bool) -> Unit {
+  if !cond {
+    panic("edge assertion failed")
+  }
+}
+
+fn edge_bytes_eq(a : Bytes, b : Bytes) -> Bool {
+  if a.length() != b.length() {
+    return false
+  }
+  for i in 0..<a.length() {
+    if a[i] != b[i] {
+      return false
+    }
+  }
+  true
+}
+
+struct MockMuxClock {
+  mut now : Int64
+}
+
+fn MockMuxClock::new(start : Int64) -> MockMuxClock {
+  MockMuxClock::{ now: start }
+}
+
+struct MockMuxHarness {
+  pub clock : MockMuxClock
+  pub ops : Array[String]
+  pub jsons : Array[String]
+  pub cancels : Array[String]
+  pub queue : Array[host_shim::HostEvent]
+  pub mux : builders_core::ShellMux
+}
+
+fn MockMuxHarness::new(
+  start_ms : Int64,
+  handler : (Int64, String, String, Option[Bytes], Array[host_shim::HostEvent]) -> Unit,
+) -> MockMuxHarness {
+  let clock = MockMuxClock::new(start_ms)
+  let ops : Array[String] = []
+  let jsons : Array[String] = []
+  let cancels : Array[String] = []
+  let queue : Array[host_shim::HostEvent] = []
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, json : String, payload : Option[Bytes]) -> Unit {
+      ops.push(op)
+      jsons.push(json)
+      handler(id, op, json, payload, queue)
+    },
+    call_sync: fn(op : String, json : String) -> String {
+      if op == "fetch.cancel" {
+        cancels.push(json)
+      }
+      "{\"value\":true}"
+    },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_hdr : Array[(String, base_codec::Json)], _payload : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { clock.now },
+    wall_ms: fn() -> Int64 { clock.now },
+    wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
+      if queue.length() > 0 {
+        let first = queue[0]
+        let rest : Array[host_shim::HostEvent] = []
+        for i in 1..<queue.length() {
+          rest.push(queue[i])
+        }
+        queue.clear()
+        for i in 0..<rest.length() {
+          queue.push(rest[i])
+        }
+        return Some(first)
+      }
+      clock.now = clock.now + (if ms > 0L { ms } else { 10L })
+      None
+    },
+  }
+  let mux = builders_core::ShellMux::new(transport, start_stdin=false)
+  MockMuxHarness::{
+    clock: clock,
+    ops: ops,
+    jsons: jsons,
+    cancels: cancels,
+    queue: queue,
+    mux: mux,
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Connects OS adapter tests
+// ---------------------------------------------------------------------------
+
+test "connects_os_transport_guards_body_cap_timeout_and_runtime_lifecycle" {
+  let mem = station_ops::MemFs::new()
+  mem.put_dir("/att")
+  let _ = mem.put_file("/att/hello.txt", "attachment-bytes".to_bytes())
+  let _ = mem.put_file("/att/big.bin", Bytes::new(2048))
+
+  let mut ws_seq = 10
+  let mut drop_next_fetch = false
+  let h = MockMuxHarness::new(
+    1000L,
+    fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "fetch" {
+        if drop_next_fetch {
+          return
+        }
+        if json.contains("oversize") {
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{
+                id: id,
+                json: "{\"status\":200,\"headers\":[[\"content-type\",\"application/octet-stream\"]],\"redirected\":false}",
+                error: "",
+                bytes: Some(Bytes::new(512)),
+              },
+            ),
+          )
+        } else if json.contains("apps.connections.open") {
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{
+                id: id,
+                json: "{\"status\":200,\"headers\":[[\"content-type\",\"application/json\"]],\"redirected\":false}",
+                error: "",
+                bytes: Some("{\"ok\":true,\"url\":\"wss://wss-primary.slack.com/link/?ticket=t1\"}".to_bytes()),
+              },
+            ),
+          )
+        } else if json.contains("chat.postMessage") {
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{
+                id: id,
+                json: "{\"status\":200,\"headers\":[],\"redirected\":false}",
+                error: "",
+                bytes: Some("{\"ok\":true,\"ts\":\"1700000001.000100\"}".to_bytes()),
+              },
+            ),
+          )
+        } else {
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{
+                id: id,
+                json: "{\"status\":200,\"headers\":[[\"x-test\",\"ok\"]],\"redirected\":false}",
+                error: "",
+                bytes: Some("{\"ok\":true}".to_bytes()),
+              },
+            ),
+          )
+        }
+      } else if op == "ws.open" {
+        let wid = ws_seq
+        ws_seq = ws_seq + 1
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"id\":" + wid.to_string() + "}", error: "", bytes: None },
+          ),
+        )
+      } else if op == "ws.send" || op == "ws.ping" || op == "ws.close" {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None },
+          ),
+        )
+      }
+    },
+  )
+
+  let bridge = ConnectMuxBridge::new(
+    h.mux,
+    mem.ops(),
+    max_body_bytes=128,
+    default_timeout_ms=500L,
+    now_fn=fn() -> Int64 { h.clock.now },
+  )
+
+  // Fail-closed URL scheme rejection
+  let bad_http = bridge.fetch(station_connects::HttpRequest::new("GET", "file:///etc/passwd"))
+  edge_assert(bad_http.error is Some(_))
+  edge_assert(bridge.ws_open(station_connects::WsOpenRequest::{ url: "http://example.com", headers: [], timeout_ms: 100L }) is Err(_))
+
+  // Status + header passthrough
+  let ok_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/ok"))
+  edge_assert(ok_resp.error is None && ok_resp.status == 200)
+  edge_assert(match station_connects::header_get(ok_resp.headers, "x-test") { Some(v) => v == "ok" None => false })
+
+  // Oversize response body rejected
+  let big_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/oversize"))
+  edge_assert(big_resp.error is Some(_))
+
+  // Request timeout triggers `fetch.cancel`
+  drop_next_fetch = true
+  let to_resp = bridge.fetch(station_connects::HttpRequest::new("GET", "https://example.com/hang", timeout_ms=200L))
+  edge_assert(to_resp.error is Some(_))
+  edge_assert(h.cancels.length() >= 1)
+  drop_next_fetch = false
+
+  // Attachment loader via OpsFs + size limit
+  match bridge.load_outbound_file("/att/hello.txt", mime="text/plain", max_bytes=1024) {
+    Ok(f) => edge_assert(f.name == "hello.txt" && f.bytes.length() == 16)
+    Err(e) => panic("load_outbound_file failed: " + e)
+  }
+  edge_assert(bridge.load_outbound_file("/att/big.bin", max_bytes=1024) is Err(_))
+
+  // ConnectsOsRuntime: register Slack + Comma, start, pump inbound frame, send downlink, stop()
+  let received_events : Array[String] = []
+  let disconnects : Array[String] = []
+  let cbs = ConnectsCallbacks::{
+    on_event: fn(cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Unit {
+      match ev {
+        station_connects::ChatEvent::Message(m) => received_events.push(cid + ":" + m.text)
+        _ => received_events.push(cid + ":other")
+      }
+    },
+    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Unit {},
+    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Unit {},
+    on_disconnect: fn(cid : String, reason : String) -> Unit {
+      disconnects.push(cid + ":" + reason)
+    },
+  }
+  let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
+  edge_assert(rt.register_slack("sl-1", "xapp-1-valid", "xoxb-1-valid") is Ok(_))
+  rt.register_comma("cm-1", "https://comma.example", "tok-1", "station-1", "inst-1")
+  edge_assert(rt.connector_count() == 2)
+  edge_assert(rt.start_connect("sl-1") is Ok(_))
+  edge_assert(bridge.open_ws_count() == 1)
+
+  // Feed an inbound Slack message via `handle_mux_reply`
+  let slack_env = "{\"envelope_id\":\"env-1\",\"type\":\"events_api\",\"payload\":{\"event\":{\"type\":\"app_mention\",\"channel\":\"C123\",\"ts\":\"1700000000.000100\",\"thread_ts\":\"1700000000.000100\",\"user\":\"U1\",\"text\":\"hello bot\"}}}"
+  let handled = rt.handle_mux_reply(
+    builders_core::MuxToken::Tagged(10, CONNECTS_TOK_WS_NEXT, 10L),
+    host_shim::ShellDone::{
+      id: 99L,
+      json: "{\"text\":" + base_codec::json_stringify(base_codec::json_str(slack_env)) + "}",
+      error: "",
+      bytes: None,
+    },
+  )
+  edge_assert(handled)
+  edge_assert(received_events.length() == 1 && received_events[0].contains("hello bot"))
+
+  // Downlink message send
+  match rt.send_message("sl-1", station_connects::ThreadRef::new("C123", "1700000000.000100"), "hi there") {
+    Ok(ts) => edge_assert(ts == "1700000001.000100")
+    Err(e) => panic("send_message failed: " + e)
+  }
+
+  // Graceful stop closes all open WebSockets
+  rt.stop()
+  edge_assert(rt.is_stopped())
+  edge_assert(bridge.open_ws_count() == 0)
+}
+
+// ---------------------------------------------------------------------------
+// 2. Replica OS adapter tests
+// ---------------------------------------------------------------------------
+
+test "replica_os_s3_transport_aead_tamper_move_hooks_and_share_sync" {
+  // Real SigV4 S3 client over mock ShellMux
+  let s3_store : Map[String, Bytes] = Map::new()
+  let h = MockMuxHarness::new(
+    1700000000000L,
+    fn(id : Int64, op : String, json : String, payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "fetch" {
+        let parsed = match base_codec::json_parse(json) {
+          base_codec::JsonParseResult::Ok(j) => j
+          _ => base_codec::json_null()
+        }
+        let method_name = match base_codec::json_get(parsed, "method") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => "GET"
+        }
+        let url = match base_codec::json_get(parsed, "url") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        if method_name == "PUT" {
+          let body = match payload {
+            Some(b) => b
+            None => Bytes::new(0)
+          }
+          s3_store.set(url, body)
+          q.push(
+            host_shim::HostEvent::ShellDone(
+              host_shim::ShellDone::{ id: id, json: "{\"status\":200,\"headers\":[]}", error: "", bytes: None },
+            ),
+          )
+        } else if method_name == "GET" {
+          match s3_store.get(url) {
+            Some(b) => q.push(
+              host_shim::HostEvent::ShellDone(
+                host_shim::ShellDone::{ id: id, json: "{\"status\":200,\"headers\":[]}", error: "", bytes: Some(b) },
+              ),
+            )
+            None => q.push(
+              host_shim::HostEvent::ShellDone(
+                host_shim::ShellDone::{ id: id, json: "{\"status\":404,\"headers\":[]}", error: "", bytes: None },
+              ),
+            )
+          }
+        }
+      }
+    },
+  )
+
+  let key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let enc_key = match station_replica::parse_encryption_key(key_hex) {
+    Ok(k) => k
+    Err(e) => panic(e)
+  }
+  let target_cfg = station_replica::NormalizedS3Target::{
+    id: "s3-test",
+    name: "Test S3",
+    endpoint: "http://127.0.0.1:19000",
+    region: "auto",
+    bucket: "backup-bucket",
+    prefix: "sf",
+    force_path_style: true,
+    access_key_id: "AKIA_TEST",
+    secret_access_key: "SECRET_TEST",
+    encryption_key: key_hex,
+    include_transcripts: true,
+  }
+  let s3 = os_s3_client(target_cfg, h.mux, now_fn=fn() -> Int64 { h.clock.now })
+  let s3_port = ReplicaTargetPort::s3(s3)
+
+  // SFB1 stream seal -> S3 PUT -> S3 GET -> stream open roundtrip + 1-byte tamper AEAD rejection
+  let ctx = station_replica::Sfb1Context::{ ws: "ws-1", origin: "st-a", logical_path: "files/doc.txt" }
+  let salt = crypto::sha256("salt-1".to_bytes()).slice(0, 16)
+  let plain = "confidential replica payload 0123456789".to_bytes()
+  let sealed = match station_replica::sfb1_seal(enc_key, ctx, plain, salt) {
+    Ok(c) => c
+    Err(e) => panic(e)
+  }
+  edge_assert((s3_port.put_object)("obj/doc.sfb1", sealed) is Ok(_))
+  let fetched = match (s3_port.get_object)("obj/doc.sfb1") {
+    Ok(b) => b
+    Err(e) => panic(e)
+  }
+  match station_replica::sfb1_open(enc_key, ctx, fetched) {
+    Ok(opened) => edge_assert(edge_bytes_eq(opened, plain))
+    Err(e) => panic("sfb1_open failed: " + e)
+  }
+  // Flip 1 byte of ciphertext -> AEAD must strictly reject
+  let tampered = Bytes::new(fetched.length())
+  for i in 0..<fetched.length() {
+    tampered[i] = fetched[i]
+  }
+  let last = tampered.length() - 1
+  tampered[last] = ((tampered[last].to_int() & 0xFF) ^ 0x01) as Byte
+  edge_assert(station_replica::sfb1_open(enc_key, ctx, tampered) is Err(_))
+
+  // Local target path-traversal guard
+  let mem = station_ops::MemFs::new()
+  mem.put_dir("/rep")
+  let local_port = ReplicaTargetPort::local("/rep", mem.ops())
+  edge_assert((local_port.put_object)("../escape.bin", plain) is Err(_))
+  edge_assert((local_port.put_object)("ok/a.bin", plain) is Ok(_))
+  edge_assert(match (local_port.get_object)("ok/a.bin") { Ok(b) => edge_bytes_eq(b, plain) Err(_) => false })
+
+  // MoveScheduler + ReplicaOsRuntime `before_store` -> `take_back_soon` hook
+  let mut back_calls = 0
+  let mut item_there = true
+  let chat_item = station_replica::MoveItem::{
+    module_id: "chats",
+    id: "chat-42",
+    label: "Chat 42",
+    needs: [],
+    cannot: None,
+    again: false,
+    size: Some(1024L),
+    leaves: None,
+  }
+  let chat_mod = station_replica::MoveModule::{
+    id: "chats",
+    needs: [],
+    plan: fn(_ws : String, _to : String) -> Result[Array[station_replica::MoveItem], String] {
+      Ok([chat_item])
+    },
+    move_item: fn(_it : station_replica::MoveItem, _to : String, _w : Option[station_replica::MoveWaits]) -> Result[Unit, String] {
+      item_there = true
+      Ok(())
+    },
+    back_item: fn(_it : station_replica::MoveItem, _from : String, _w : Option[station_replica::MoveWaits]) -> Result[Unit, String] {
+      back_calls = back_calls + 1
+      item_there = false
+      Ok(())
+    },
+    state: fn(_it : station_replica::MoveItem) -> station_replica::MoveItemStateKind {
+      if item_there {
+        station_replica::MoveItemStateKind::There
+      } else {
+        station_replica::MoveItemStateKind::Here
+      }
+    },
+    usable_here: fn(_it : station_replica::MoveItem) -> Bool { !item_there },
+    usable_there: fn(_it : station_replica::MoveItem) -> Bool { item_there },
+    can_lend: fn(_it : station_replica::MoveItem) -> Bool { false },
+    lend: fn(_it : station_replica::MoveItem, _to : String, _ns : Array[station_replica::MoveNeed]) -> Result[Unit, String] { Ok(()) },
+    left: fn(_ns : Array[station_replica::MoveNeed]) -> Result[Unit, String] { Ok(()) },
+    has_stop: false,
+    stop_item: fn(_it : station_replica::MoveItem, _w : station_replica::MoveWaits) -> Result[Unit, String] { Ok(()) },
+    resume_item: fn(_it : station_replica::MoveItem) -> Result[Unit, String] { Ok(()) },
+    abandon: fn() -> Unit {},
+  }
+  let sched = match station_replica::MoveScheduler::new([chat_mod]) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let rep_rt = ReplicaOsRuntime::new(mem.ops(), "/rep/ledger")
+  rep_rt.attach_scheduler(sched)
+  rep_rt.mark_moving("chats", "chat-42", "st-b")
+  match rep_rt.before_store("ws-1", "st-a", "chats", "chat-42", 2000L) {
+    Ok(seq) => {
+      edge_assert(seq == 1L)
+      edge_assert(back_calls == 1)
+      edge_assert(!item_there)
+      edge_assert(rep_rt.kept_log.has("takeback:chats:chat-42"))
+    }
+    Err(e) => panic("before_store failed: " + e)
+  }
+  rep_rt.after_store("ws-1", "st-a", 2010L)
+
+  // Cross-station ShareOsSync (memory 3-way merge + presets + stars + progress)
+  let share = ShareOsSync::new(mem.ops(), "epoch-1")
+  match share.merge_and_save_memory("/rep/MEMORY.md", "line1\n", "line1\nline2\n", "line1\nline3\n", Some("st-a"), Some("st-b")) {
+    Ok(m) => edge_assert(m.contains("line2") && m.contains("line3"))
+    Err(e) => panic(e)
+  }
+  let prog = station_replica::ProgressPrefs::{ minutes: 15, strength: "remind", rev: 1, at: 1000L }
+  edge_assert(share.apply_progress(prog) is Ok(_))
+}
+
+// ---------------------------------------------------------------------------
+// 3. Browser OS adapter tests
+// ---------------------------------------------------------------------------
+
+test "browser_os_url_policy_cdp_roundtrip_gate_isolation_signin_and_proxy" {
+  // Fail-closed URL policy
+  edge_assert(validate_browser_navigation_url("javascript:alert(1)") is Err(_))
+  edge_assert(validate_browser_navigation_url("file:///etc/passwd") is Err(_))
+  edge_assert(validate_browser_navigation_url("data:text/html,hi") is Err(_))
+  edge_assert(validate_browser_navigation_url("chrome://settings") is Err(_))
+  edge_assert(validate_browser_navigation_url("http://127.0.0.1:9222/json") is Err(_))
+  edge_assert(validate_browser_navigation_url("http://10.0.0.5/admin") is Err(_))
+  edge_assert(validate_browser_navigation_url("http://192.168.1.1/") is Err(_))
+  edge_assert(validate_browser_navigation_url("http://172.16.0.1/") is Err(_))
+  edge_assert(validate_browser_navigation_url("http://127.0.0.1:9222/json", allow_private=true) is Ok(_))
+  edge_assert(validate_browser_navigation_url("https://example.com/path") is Ok(_))
+
+  // CDP WS roundtrip over mock ShellMux + loopback guard
+  let cdp_sent : Array[String] = []
+  let h = MockMuxHarness::new(
+    5000L,
+    fn(id : Int64, op : String, json : String, _payload : Option[Bytes], q : Array[host_shim::HostEvent]) -> Unit {
+      if op == "ws.open" {
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"id\":77}", error: "", bytes: None }))
+      } else if op == "ws.send" {
+        cdp_sent.push(json)
+        q.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, json: "{\"ok\":true}", error: "", bytes: None }))
+      } else if op == "ws.next" {
+        let reply = "{\"id\":1,\"result\":{\"product\":\"Chrome/130\"}}"
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{
+              id: id,
+              json: "{\"text\":" + base_codec::json_stringify(base_codec::json_str(reply)) + "}",
+              error: "",
+              bytes: None,
+            },
+          ),
+        )
+      } else if op == "fetch" && json.contains("/json/version") {
+        q.push(
+          host_shim::HostEvent::ShellDone(
+            host_shim::ShellDone::{
+              id: id,
+              json: "{\"status\":200,\"headers\":[]}",
+              error: "",
+              bytes: Some("{\"Browser\":\"Chrome/130\",\"webSocketDebuggerUrl\":\"ws://127.0.0.1:9222/devtools/browser/abc\"}".to_bytes()),
+            },
+          ),
+        )
+      }
+    },
+  )
+
+  // Non-loopback CDP WS must be refused
+  edge_assert(open_cdp_session_os(h.mux, "ws://10.0.0.2:9222/devtools/browser/1", now_fn=fn() -> Int64 { h.clock.now }) is Err(_))
+  edge_assert(fetch_devtools_version(h.mux, 9222, now_fn=fn() -> Int64 { h.clock.now }) is Ok(_))
+
+  let (ws_id, cdp) = match open_cdp_session_os(h.mux, "ws://127.0.0.1:9222/devtools/browser/abc", now_fn=fn() -> Int64 { h.clock.now }) {
+    Ok(pair) => pair
+    Err(e) => panic("open_cdp_session_os failed: " + e)
+  }
+  edge_assert(ws_id == 77)
+  let req_id = match cdp.send("Browser.getVersion", base_codec::json_obj([]), None, 5000L) {
+    Ok(rid) => rid
+    Err(e) => panic(e)
+  }
+  edge_assert(req_id == 1L && cdp_sent.length() == 1)
+  edge_assert(pump_cdp_session_once(h.mux, ws_id, cdp, now_fn=fn() -> Int64 { h.clock.now }) is Ok(true))
+  let settled = cdp.take_settled()
+  edge_assert(settled.length() == 1 && settled[0].id == 1L)
+  let _ = cdp.close()
+
+  // BrowserOsManager tab ownership isolation + Gate
+  let hold_hub = station_browser::AgentHoldHubPort::{
+    people_views: fn(_t : String) -> Array[station_browser::ScreenWatcherView] { [] },
+    has_taken_view: fn(_t : String) -> Bool { false },
+    yield_to_agent: fn(_t : String, _n : String) -> Int { 1 },
+    join_agent: fn(_t : String, _n : String) -> Int { 1 },
+    leave_agent: fn(_t : String, _tok : Int) -> Unit {},
+  }
+  let mgr = BrowserOsManager::new(
+    h.mux,
+    hold_hub,
+    fn(s : String) -> String { "agent-" + s },
+    fn(ctx : String) -> Option[String] { if ctx == "ctx-a" { Some("sess-a") } else { None } },
+    now_fn=fn() -> Int64 { h.clock.now },
+  )
+  mgr.tabs.on_target_created(
+    station_browser::TargetSnapshot::{
+      target_id: "t-a",
+      target_type: "page",
+      title: "A",
+      url: "https://example.com",
+      attached: false,
+      opener_id: None,
+      browser_context_id: Some("ctx-a"),
+    },
+  )
+  mgr.tabs.on_target_created(
+    station_browser::TargetSnapshot::{
+      target_id: "t-b",
+      target_type: "page",
+      title: "B",
+      url: "https://other.com",
+      attached: false,
+      opener_id: None,
+      browser_context_id: Some("ctx-b"),
+    },
+  )
+  edge_assert(mgr.tabs.of_session("sess-a").length() == 1)
+  edge_assert(mgr.tabs.of_session("sess-b").length() == 0)
+
+  // SignInFormPort origin-locked autofill refuses wrong site
+  let form_port = build_signin_form_port(
+    fn(expr : String) -> String {
+      if expr == "location.hostname" { "evil.com" } else { "https://evil.com/login" }
+    },
+    fn(_v : String) -> Bool { true },
+    fn() -> Unit {},
+  )
+  edge_assert(!(form_port.on_site)("example.com"))
+  edge_assert(!(form_port.type_field)(station_browser::FormField::Password, "example.com", "secret"))
+
+  // BrowserProxyOsAdapter forwarding
+  let proxy = station_browser::BrowserProxy::new(
+    fn(s : String) -> Bool { s == "sess-a" },
+    fn(s : String) -> Result[station_browser::OpenedBrowser, String] {
+      Ok(station_browser::OpenedBrowser::{ ws_url: "ws://127.0.0.1:9222/b", gate: mgr.gate_for(s, "ctx-a") })
+    },
+  )
+  let adapter = BrowserProxyOsAdapter::new(proxy, h.mux)
+  adapter.bind_upstream(1, 77)
+  let client_msgs : Array[String] = []
+  let dispatched = adapter.apply_actions(
+    [
+      station_browser::ProxyAction::SendToUpstreamText(1, "{\"id\":1}"),
+      station_browser::ProxyAction::SendToClientText(1, "{\"ok\":true}"),
+    ],
+    fn(_cid : Int, txt : String) -> Unit { client_msgs.push(txt) },
+    fn(_cid : Int, _b : Bytes) -> Unit {},
+    fn(_cid : Int, _code : Int, _r : String) -> Unit {},
+  )
+  edge_assert(dispatched == 2 && client_msgs.length() == 1)
+}
+
+// ---------------------------------------------------------------------------
+// 4. Devices OS adapter tests
+// ---------------------------------------------------------------------------
+
+test "devices_os_terminals_logins_grants_pairing_and_aggregated_sources" {
+  // TerminalsOsRuntime resize validation + registry wiring
+  let terms = TerminalsOsRuntime::new("/home/tester")
+  edge_assert(terms.resize("nonexistent", 0, 0) is Err(_))
+  edge_assert(terms.live_count() == 0)
+
+  // LoginsOsRuntime + LoginRun URL extraction & callback validation
+  let logins = LoginsOsRuntime::new(Some(station_devices::LoginPages::new(true)))
+  let starter = station_devices::LoginStarter::{
+    by: station_devices::LoginPerson::{ email: "alice@example.com", name: "Alice" },
+    workspace: Some("ws-1"),
+    chat: Some("c-1"),
+    chat_title: Some("Login"),
+  }
+  let view = match logins.manager.start("gh auth login", starter, None, false, 1000L) {
+    Ok(v) => v
+    Err(r) => panic("manager.start failed: " + r.message)
+  }
+  let run = match logins.manager.get_run(view.id) {
+    Some(r) => r
+    None => panic("missing LoginRun")
+  }
+  run.output("Open https://github.com/login/device and enter code ABCD-1234\n")
+  let _ = run.on_settled(None)
+  edge_assert(match run.url { Some(u) => u.contains("github.com") None => false })
+
+  // DevicesOsRuntime: DeviceRegistry + PhoneGrants expiry/revocation + Pairing + DeviceSources
+  let devs = DevicesOsRuntime::new()
+  let spec = station_devices::DeviceSpec::{
+    id: "0123456789abcdef",
+    name: "Pixel 9",
+    kind: station_devices::DeviceKind::Adb,
+    target: "127.0.0.1:5037",
+    baud: None,
+    model: Some("Pixel 9"),
+    protocols: None,
+    paired: None,
+  }
+  edge_assert(devs.registry.add("ws-1", "sub-1", "alice@example.com", "Alice", spec, 100L) is Ok(_))
+
+  let rig_spec = station_devices::DeviceSpec::{
+    id: "fedcba9876543210",
+    name: "Rig Board",
+    kind: station_devices::DeviceKind::Serial,
+    target: "/dev/ttyUSB0",
+    baud: Some(115200),
+    model: None,
+    protocols: None,
+    paired: None,
+  }
+  devs.set_rig_devices(
+    "rig-shanghai",
+    [
+      station_devices::KeptDevice::{
+        device: rig_spec,
+        ws: "ws-1",
+        owner_sub: "sub-2",
+        owner_email: "bob@example.com",
+        owner_name: "Bob",
+        at_secs: 100L,
+      },
+    ],
+  )
+
+  // PhoneGrants: ask -> decide(Hour) -> held before expiry -> expired after 1h+
+  let req = match devs.phone_grants.ask("sess-1", "c-1", "ws-1", "alice@example.com", "test app", 10000L) {
+    Ok(r) => r
+    Err(e) => panic(e)
+  }
+  edge_assert(devs.phone_grants.decide("alice@example.com", req.id, Some(station_devices::PhoneScope::Hour), "ws-1", 10000L) is None)
+  let sources_active = devs.aggregate_sources("ws-1", "sess-1", 20000L)
+  edge_assert(sources_active.length() == 3)
+  edge_assert(!sources_active[0].requires_approval) // WholeStationOpen
+  edge_assert(sources_active[1].requires_approval) // RigApprovalRequired
+  edge_assert(sources_active[2].requires_approval && sources_active[2].active_grant_id is Some(_))
+
+  // After 2 hours, Hour grant has expired and disappears from active sources
+  let sources_expired = devs.aggregate_sources("ws-1", "sess-1", 10000L + 7200000L)
+  edge_assert(sources_expired.length() == 2)
+
+  // Android TV & AirPlay pairing + frame encoding
+  let atv_frame = encode_android_tv_pairing_start_frame("stillfail", "station")
+  edge_assert(atv_frame.length() > 4)
+  edge_assert(encode_android_tv_key_frame("home", 3) is Ok(_))
+  edge_assert(encode_android_tv_key_frame("definitely_not_a_real_key_xyz", 3) is Err(_))
+  let ap_step = devs.airplay_pairing.start("ws-1", "ap-1", Some("192.168.1.50"), Some("Living Room"), None, ["airplay"], Some("tok"), true, 1000L)
+  edge_assert(ap_step is Ok(_))
+  let (expired_ap, _) = devs.tick_expiry(1000L + 200000L)
+  edge_assert(expired_ap == 1)
+}

@@ -1,0 +1,1051 @@
+// Production OS adapter for `station_connects`:
+// - Real `ConnectTransport` over `builders_core::ShellMux` (`fetch`, `ws.open`/`ws.next`/`ws.send`/
+//   `ws.ping`/`ws.close`) + `host_shim::now_ms` + `station_ops::OpsFs` attachment I/O.
+// - Enforces fail-closed URL scheme validation, request timeout with `mux.cancel`, response body
+//   size cap, HTTP status/header passthrough, WebSocket frame pumping, and disconnect callbacks.
+// - `ConnectsOsRuntime` manages multiple connectors (`SlackConnector`, `FeishuConnector`,
+//   `CommaConnector`, `GroupConnector`) with config-driven start/stop, standardized inbound event
+//   & card-answer callbacks, downlink send/attachment/update helpers, `handle_mux_reply`,
+//   `tick(now_ms)` (Feishu token refresh + exponential-backoff reconnect + ping/stale), and
+//   graceful `stop()` closing all WebSockets and cancelling all in-flight calls.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "nodepath"
+import "station_connects"
+import "station_http"
+import "station_ops"
+
+pub let CONNECTS_DEFAULT_TIMEOUT_MS : Int64 = 30000L
+pub let CONNECTS_DEFAULT_MAX_BODY_BYTES : Int = 16777216
+pub let CONNECTS_MAX_ATTACHMENT_BYTES : Int = 52428800
+
+pub let CONNECTS_TOK_FETCH : Int = 3101
+pub let CONNECTS_TOK_WS_OPEN : Int = 3102
+pub let CONNECTS_TOK_WS_NEXT : Int = 3103
+pub let CONNECTS_TOK_WS_SEND : Int = 3104
+pub let CONNECTS_TOK_WS_PING : Int = 3105
+pub let CONNECTS_TOK_WS_CLOSE : Int = 3106
+
+fn conn_is_http_url(url : String) -> Bool {
+  url.starts_with("http://") || url.starts_with("https://")
+}
+
+fn conn_is_ws_url(url : String) -> Bool {
+  url.starts_with("ws://") || url.starts_with("wss://")
+}
+
+fn conn_encode_headers(headers : Array[(String, String)]) -> base_codec::Json {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<headers.length() {
+    let (k, v) = headers[i]
+    arr.push(base_codec::json_arr([base_codec::json_str(k), base_codec::json_str(v)]))
+  }
+  base_codec::json_arr(arr)
+}
+
+fn conn_clamp_i32(ms : Int64) -> Int {
+  if ms < 0L {
+    0
+  } else if ms > 2147483647L {
+    2147483647
+  } else {
+    ms.to_int()
+  }
+}
+
+fn conn_build_fetch_json(req : station_connects::HttpRequest, timeout_ms : Int64) -> String {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("method", base_codec::json_str(req.method)),
+    ("url", base_codec::json_str(req.url)),
+    ("redirect", base_codec::json_str("manual")),
+    ("timeoutMs", base_codec::json_int(conn_clamp_i32(timeout_ms))),
+  ]
+  if req.headers.length() > 0 {
+    fields.push(("headers", conn_encode_headers(req.headers)))
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+fn conn_build_ws_open_json(req : station_connects::WsOpenRequest, timeout_ms : Int64) -> String {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("url", base_codec::json_str(req.url)),
+    ("binary", base_codec::json_bool(true)),
+    ("control", base_codec::json_bool(true)),
+    ("timeoutMs", base_codec::json_int(conn_clamp_i32(timeout_ms))),
+  ]
+  if req.headers.length() > 0 {
+    fields.push(("headers", conn_encode_headers(req.headers)))
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+/// Real `ConnectTransport` bridge over `builders_core::ShellMux` + `station_ops::OpsFs`.
+pub struct ConnectMuxBridge {
+  pub mux : builders_core::ShellMux
+  pub fs : station_ops::OpsFs
+  pub max_body_bytes : Int
+  pub default_timeout_ms : Int64
+  pub now_fn : () -> Int64
+  pub mut on_ws_disconnect : Option[(Int64, String) -> Unit]
+  open_ws : Map[Int64, Bool]
+  in_flight_calls : Map[Int64, Bool]
+  ws_inbox : Map[Int64, Array[station_connects::WsFrame]]
+  mut next_req_id : Int
+}
+
+pub fn ConnectMuxBridge::new(
+  mux : builders_core::ShellMux,
+  fs : station_ops::OpsFs,
+  max_body_bytes : Int = CONNECTS_DEFAULT_MAX_BODY_BYTES,
+  default_timeout_ms : Int64 = CONNECTS_DEFAULT_TIMEOUT_MS,
+  now_fn : () -> Int64 = host_shim::now_ms,
+) -> ConnectMuxBridge {
+  ConnectMuxBridge::{
+    mux: mux,
+    fs: fs,
+    max_body_bytes: if max_body_bytes > 0 { max_body_bytes } else { CONNECTS_DEFAULT_MAX_BODY_BYTES },
+    default_timeout_ms: if default_timeout_ms > 0L { default_timeout_ms } else { CONNECTS_DEFAULT_TIMEOUT_MS },
+    now_fn: now_fn,
+    on_ws_disconnect: None,
+    open_ws: Map::new(),
+    in_flight_calls: Map::new(),
+    ws_inbox: Map::new(),
+    next_req_id: 1,
+  }
+}
+
+pub fn ConnectMuxBridge::host(
+  mux : builders_core::ShellMux,
+  max_body_bytes : Int = CONNECTS_DEFAULT_MAX_BODY_BYTES,
+  default_timeout_ms : Int64 = CONNECTS_DEFAULT_TIMEOUT_MS,
+) -> ConnectMuxBridge {
+  ConnectMuxBridge::new(
+    mux,
+    station_ops::shell_ops_fs(),
+    max_body_bytes=max_body_bytes,
+    default_timeout_ms=default_timeout_ms,
+    now_fn=host_shim::now_ms,
+  )
+}
+
+pub fn ConnectMuxBridge::open_ws_count(self : ConnectMuxBridge) -> Int {
+  self.open_ws.length()
+}
+
+pub fn ConnectMuxBridge::in_flight_count(self : ConnectMuxBridge) -> Int {
+  self.in_flight_calls.length()
+}
+
+/// Push a pre-received WebSocket frame into a handle's inbox (used when async `handle_mux_reply`
+/// pumps frames ahead of `ws_next`).
+pub fn ConnectMuxBridge::push_ws_frame(
+  self : ConnectMuxBridge,
+  handle : Int64,
+  frame : station_connects::WsFrame,
+) -> Unit {
+  match self.ws_inbox.get(handle) {
+    Some(q) => q.push(frame)
+    None => self.ws_inbox.set(handle, [frame])
+  }
+}
+
+fn ConnectMuxBridge::await_call(
+  self : ConnectMuxBridge,
+  call_id : Int64,
+  timeout_ms : Int64,
+) -> Result[host_shim::ShellDone, String] {
+  self.in_flight_calls.set(call_id, true)
+  let eff_timeout = if timeout_ms > 0L { timeout_ms } else { self.default_timeout_ms }
+  let deadline = (self.now_fn)() + eff_timeout
+  let mut result : Option[host_shim::ShellDone] = None
+  while result is None {
+    let now = (self.now_fn)()
+    let rem = deadline - now
+    if rem <= 0L {
+      self.in_flight_calls.remove(call_id)
+      let _ = self.mux.cancel(call_id)
+      return Err("connect transport call timed out")
+    }
+    let slice = if rem > 250L { 250L } else { rem }
+    let progressed = self.mux.step(
+      slice,
+      fn(_line : String) -> Unit {},
+      fn() -> Unit {},
+      fn(_tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+        if done.id == call_id {
+          result = Some(done)
+        }
+      },
+    )
+    if !progressed && (self.now_fn)() >= deadline {
+      self.in_flight_calls.remove(call_id)
+      let _ = self.mux.cancel(call_id)
+      return Err("connect transport call timed out")
+    }
+  }
+  self.in_flight_calls.remove(call_id)
+  match result {
+    Some(done) => Ok(done)
+    None => Err("connect transport call abandoned")
+  }
+}
+
+/// Execute an HTTP request over `ShellMux` `fetch` with URL scheme guard, timeout, and body cap.
+pub fn ConnectMuxBridge::fetch(
+  self : ConnectMuxBridge,
+  req : station_connects::HttpRequest,
+) -> station_connects::HttpResponse {
+  if !conn_is_http_url(req.url) {
+    return station_connects::HttpResponse::fail("disallowed HTTP URL scheme: " + req.url)
+  }
+  let timeout_ms = if req.timeout_ms > 0L { req.timeout_ms } else { self.default_timeout_ms }
+  let rid = self.next_req_id
+  self.next_req_id = self.next_req_id + 1
+  let cid = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(rid, CONNECTS_TOK_FETCH, 0L),
+    "fetch",
+    conn_build_fetch_json(req, timeout_ms),
+    req.body,
+  )
+  match self.await_call(cid, timeout_ms) {
+    Err(e) => station_connects::HttpResponse::fail(e)
+    Ok(done) => match station_http::decode_fetch_done(done) {
+      Err(e) => station_connects::HttpResponse::fail(e.message)
+      Ok(resp) => {
+        if resp.body.length() > self.max_body_bytes {
+          return station_connects::HttpResponse::fail(
+            "response body exceeded max_body_bytes ("
+            + resp.body.length().to_string()
+            + " > "
+            + self.max_body_bytes.to_string()
+            + ")",
+          )
+        }
+        station_connects::HttpResponse::ok(
+          resp.status,
+          resp.body,
+          headers=resp.headers,
+          redirected=resp.redirected,
+        )
+      }
+    }
+  }
+}
+
+/// Open a WebSocket over `ShellMux` `ws.open` (fail-closed to `ws://` / `wss://`).
+pub fn ConnectMuxBridge::ws_open(
+  self : ConnectMuxBridge,
+  req : station_connects::WsOpenRequest,
+) -> Result[Int64, String] {
+  if !conn_is_ws_url(req.url) {
+    return Err("disallowed WebSocket URL scheme: " + req.url)
+  }
+  let timeout_ms = if req.timeout_ms > 0L { req.timeout_ms } else { self.default_timeout_ms }
+  let rid = self.next_req_id
+  self.next_req_id = self.next_req_id + 1
+  let cid = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(rid, CONNECTS_TOK_WS_OPEN, 0L),
+    "ws.open",
+    conn_build_ws_open_json(req, timeout_ms),
+    None,
+  )
+  match self.await_call(cid, timeout_ms) {
+    Err(e) => Err(e)
+    Ok(done) => match station_http::decode_ws_open_done(done) {
+      Err(e) => Err(e.message)
+      Ok(ws_id) => {
+        let h = ws_id.to_int64()
+        self.open_ws.set(h, true)
+        Ok(h)
+      }
+    }
+  }
+}
+
+fn conn_ws_event_to_frame(ev : station_http::WsClientEvent) -> station_connects::WsFrame {
+  match ev {
+    station_http::WsClientEvent::Text(s) => station_connects::WsFrame::Text(s)
+    station_http::WsClientEvent::Binary(b) => station_connects::WsFrame::Binary(b)
+    station_http::WsClientEvent::Ping => station_connects::WsFrame::Ping
+    station_http::WsClientEvent::Pong => station_connects::WsFrame::Pong
+    station_http::WsClientEvent::Closed(code_opt, reason) => {
+      let code = match code_opt {
+        Some(c) => c
+        None => 1006
+      }
+      station_connects::WsFrame::Close(code, reason)
+    }
+  }
+}
+
+/// Receive next WebSocket frame from inbox or via `ShellMux` `ws.next`.
+pub fn ConnectMuxBridge::ws_next(
+  self : ConnectMuxBridge,
+  handle : Int64,
+) -> Result[Option[station_connects::WsFrame], String] {
+  match self.ws_inbox.get(handle) {
+    Some(q) => {
+      if q.length() > 0 {
+        let first = q[0]
+        let rest : Array[station_connects::WsFrame] = []
+        for i in 1..<q.length() {
+          rest.push(q[i])
+        }
+        self.ws_inbox.set(handle, rest)
+        return Ok(Some(first))
+      }
+    }
+    None => ()
+  }
+  if !self.open_ws.contains(handle) {
+    return Err("websocket handle not open")
+  }
+  let cid = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_NEXT, handle),
+    "ws.next",
+    "{\"id\":" + handle.to_string() + "}",
+    None,
+  )
+  match self.await_call(cid, self.default_timeout_ms) {
+    Err(e) => Err(e)
+    Ok(done) => match station_http::decode_ws_next_done(done) {
+      Err(e) => {
+        self.open_ws.remove(handle)
+        match self.on_ws_disconnect {
+          Some(cb) => cb(handle, e.message)
+          None => ()
+        }
+        Err(e.message)
+      }
+      Ok(ev) => {
+        let frame = conn_ws_event_to_frame(ev)
+        match frame {
+          station_connects::WsFrame::Close(_, reason) => {
+            self.open_ws.remove(handle)
+            match self.on_ws_disconnect {
+              Some(cb) => cb(handle, reason)
+              None => ()
+            }
+          }
+          _ => ()
+        }
+        Ok(Some(frame))
+      }
+    }
+  }
+}
+
+/// Send a WebSocket frame (`Text`, `Binary`, `Ping`, `Close`) via `ShellMux`.
+pub fn ConnectMuxBridge::ws_send(
+  self : ConnectMuxBridge,
+  handle : Int64,
+  frame : station_connects::WsFrame,
+) -> Result[Unit, String] {
+  if !self.open_ws.contains(handle) {
+    return Err("websocket handle not open")
+  }
+  let (op, json_str, payload) : (String, String, Option[Bytes]) = match frame {
+    station_connects::WsFrame::Text(t) => {
+      let args = base_codec::json_obj([
+        ("id", base_codec::json_int(handle.to_int())),
+        ("text", base_codec::json_str(t)),
+      ])
+      ("ws.send", base_codec::json_stringify(args), None)
+    }
+    station_connects::WsFrame::Binary(b) => ("ws.send", "{\"id\":" + handle.to_string() + "}", Some(b))
+    station_connects::WsFrame::Ping => ("ws.ping", "{\"id\":" + handle.to_string() + "}", None)
+    station_connects::WsFrame::Pong => return Ok(())
+    station_connects::WsFrame::Close(_, _) => {
+      self.ws_close(handle)
+      return Ok(())
+    }
+  }
+  let cid = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_SEND, handle),
+    op,
+    json_str,
+    payload,
+  )
+  match self.await_call(cid, self.default_timeout_ms) {
+    Err(e) => Err(e)
+    Ok(done) => {
+      if done.error.length() > 0 {
+        Err(done.error)
+      } else {
+        Ok(())
+      }
+    }
+  }
+}
+
+pub fn ConnectMuxBridge::ws_ping(self : ConnectMuxBridge, handle : Int64) -> Result[Unit, String] {
+  self.ws_send(handle, station_connects::WsFrame::Ping)
+}
+
+pub fn ConnectMuxBridge::ws_close(self : ConnectMuxBridge, handle : Int64) -> Unit {
+  if self.open_ws.contains(handle) {
+    self.open_ws.remove(handle)
+  }
+  self.ws_inbox.remove(handle)
+  let _ = self.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_CLOSE, handle),
+    "ws.close",
+    "{\"id\":" + handle.to_string() + "}",
+    None,
+  )
+}
+
+/// Close all open WebSockets and cancel every in-flight `ShellMux` call.
+pub fn ConnectMuxBridge::close_all(self : ConnectMuxBridge) -> Unit {
+  let ws_ids = self.open_ws.keys()
+  for i in 0..<ws_ids.length() {
+    self.ws_close(ws_ids[i])
+  }
+  let call_ids = self.in_flight_calls.keys()
+  for i in 0..<call_ids.length() {
+    let cid = call_ids[i]
+    self.in_flight_calls.remove(cid)
+    let _ = self.mux.cancel(cid)
+  }
+}
+
+/// Build a `station_connects::ConnectTransport` backed by this `ConnectMuxBridge`.
+pub fn ConnectMuxBridge::transport(self : ConnectMuxBridge) -> station_connects::ConnectTransport {
+  station_connects::ConnectTransport::{
+    fetch: fn(req : station_connects::HttpRequest) -> station_connects::HttpResponse {
+      self.fetch(req)
+    },
+    ws_open: fn(req : station_connects::WsOpenRequest) -> Result[Int64, String] {
+      self.ws_open(req)
+    },
+    ws_next: fn(h : Int64) -> Result[Option[station_connects::WsFrame], String] {
+      self.ws_next(h)
+    },
+    ws_send: fn(h : Int64, f : station_connects::WsFrame) -> Result[Unit, String] {
+      self.ws_send(h, f)
+    },
+    ws_ping: fn(h : Int64) -> Result[Unit, String] {
+      self.ws_ping(h)
+    },
+    ws_close: fn(h : Int64) -> Unit {
+      self.ws_close(h)
+    },
+    now_ms: self.now_fn,
+  }
+}
+
+/// Load a local file into an `OutboundFile` via `OpsFs` with strict attachment size limit.
+pub fn ConnectMuxBridge::load_outbound_file(
+  self : ConnectMuxBridge,
+  path : String,
+  mime : String = "application/octet-stream",
+  max_bytes : Int = CONNECTS_MAX_ATTACHMENT_BYTES,
+) -> Result[station_connects::OutboundFile, String] {
+  match (self.fs.read_bytes)(path) {
+    Err(e) => Err("failed to read attachment " + path + ": " + station_ops::fs_err_msg(e))
+    Ok(raw) => {
+      if raw.length() > max_bytes {
+        return Err("attachment exceeds max size: " + raw.length().to_string())
+      }
+      let name = nodepath::basename("/", path)
+      Ok(station_connects::OutboundFile::{ name: name, mime: mime, bytes: raw })
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Multi-connector runtime (`ConnectsOsRuntime`)
+// ---------------------------------------------------------------------------
+
+pub struct ConnectsCallbacks {
+  pub on_event : (String, station_connects::ConnectPlatform, station_connects::ChatEvent) -> Unit
+  pub on_card_answer : (String, station_connects::FeishuCardAnswer) -> Unit
+  pub on_interactive : (String, String, base_codec::Json) -> Unit
+  pub on_disconnect : (String, String) -> Unit
+}
+
+pub fn ConnectsCallbacks::noop() -> ConnectsCallbacks {
+  ConnectsCallbacks::{
+    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, _ev : station_connects::ChatEvent) -> Unit {},
+    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Unit {},
+    on_interactive: fn(_cid : String, _eid : String, _payload : base_codec::Json) -> Unit {},
+    on_disconnect: fn(_cid : String, _reason : String) -> Unit {},
+  }
+}
+
+pub enum ConnectorEntry {
+  Slack(station_connects::SlackConnector)
+  Feishu(station_connects::FeishuConnector)
+  Comma(station_connects::CommaConnector)
+  Group(station_connects::GroupConnector)
+}
+
+pub struct ConnectsOsRuntime {
+  pub bridge : ConnectMuxBridge
+  pub callbacks : ConnectsCallbacks
+  pub workspace : station_connects::ConnectWorkspace
+  connectors : Map[String, ConnectorEntry]
+  statuses : Map[String, station_connects::ConnectStatus]
+  ws_to_connect : Map[Int64, String]
+  async_ws_next : Map[Int64, Int64]
+  mut stopped : Bool
+}
+
+pub fn ConnectsOsRuntime::new(
+  bridge : ConnectMuxBridge,
+  here_station : String,
+  callbacks : ConnectsCallbacks,
+) -> ConnectsOsRuntime {
+  ConnectsOsRuntime::{
+    bridge: bridge,
+    callbacks: callbacks,
+    workspace: station_connects::ConnectWorkspace::new(here_station),
+    connectors: Map::new(),
+    statuses: Map::new(),
+    ws_to_connect: Map::new(),
+    async_ws_next: Map::new(),
+    stopped: false,
+  }
+}
+
+pub fn ConnectsOsRuntime::is_stopped(self : ConnectsOsRuntime) -> Bool {
+  self.stopped
+}
+
+pub fn ConnectsOsRuntime::connector_count(self : ConnectsOsRuntime) -> Int {
+  self.connectors.length()
+}
+
+pub fn ConnectsOsRuntime::status_of(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+) -> Option[station_connects::ConnectStatus] {
+  self.statuses.get(connect_id)
+}
+
+pub fn ConnectsOsRuntime::register_slack(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  app_token : String,
+  bot_token : String,
+  base_url : String = "https://slack.com/api",
+) -> Result[Unit, String] {
+  match station_connects::SlackConnector::new(app_token, bot_token, base_url=base_url) {
+    Err(e) => Err(e)
+    Ok(c) => {
+      self.connectors.set(connect_id, ConnectorEntry::Slack(c))
+      self.statuses.set(connect_id, station_connects::ConnectStatus::Disabled)
+      Ok(())
+    }
+  }
+}
+
+pub fn ConnectsOsRuntime::register_feishu(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  app_id : String,
+  app_secret : String,
+  domain : station_connects::FeishuDomain = station_connects::FeishuDomain::Feishu,
+  base_url : Option[String] = None,
+) -> Result[Unit, String] {
+  match station_connects::FeishuConnector::new(app_id, app_secret, domain=domain, base_url=base_url) {
+    Err(e) => Err(e)
+    Ok(c) => {
+      self.connectors.set(connect_id, ConnectorEntry::Feishu(c))
+      self.statuses.set(connect_id, station_connects::ConnectStatus::Disabled)
+      Ok(())
+    }
+  }
+}
+
+pub fn ConnectsOsRuntime::register_comma(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  server : String,
+  token : String,
+  name : String,
+  instance_id : String,
+  workspace : Option[String] = None,
+) -> Unit {
+  let c = station_connects::CommaConnector::new(
+    connect_id,
+    server,
+    token,
+    name,
+    instance_id,
+    workspace=workspace,
+  )
+  self.connectors.set(connect_id, ConnectorEntry::Comma(c))
+  self.statuses.set(connect_id, station_connects::ConnectStatus::Disabled)
+}
+
+pub fn ConnectsOsRuntime::register_group(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  anchor_url : String,
+  seed_hex : String,
+  bot_user_id : String,
+  bot_name : String,
+) -> Result[Unit, String] {
+  match station_connects::GroupConnector::new(connect_id, anchor_url, seed_hex, bot_user_id, bot_name) {
+    Err(e) => Err(e)
+    Ok(c) => {
+      self.connectors.set(connect_id, ConnectorEntry::Group(c))
+      self.statuses.set(connect_id, station_connects::ConnectStatus::Disabled)
+      Ok(())
+    }
+  }
+}
+
+fn ConnectsOsRuntime::arm_ws_next(self : ConnectsOsRuntime, handle : Int64) -> Int64 {
+  let cid = self.bridge.mux.call_async_raw(
+    builders_core::MuxToken::Tagged(handle.to_int(), CONNECTS_TOK_WS_NEXT, handle),
+    "ws.next",
+    "{\"id\":" + handle.to_string() + "}",
+    None,
+  )
+  self.async_ws_next.set(handle, cid)
+  cid
+}
+
+/// Start a registered connector (opens its WebSocket / SSE connection and arms `ws.next`).
+pub fn ConnectsOsRuntime::start_connect(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+) -> Result[Unit, String] {
+  if self.stopped {
+    return Err("connects runtime is stopped")
+  }
+  let entry = match self.connectors.get(connect_id) {
+    Some(e) => e
+    None => return Err("unknown connect_id: " + connect_id)
+  }
+  let tr = self.bridge.transport()
+  self.statuses.set(connect_id, station_connects::ConnectStatus::Starting)
+  match entry {
+    ConnectorEntry::Slack(s) => match s.connect(tr) {
+      Ok(h) => {
+        self.ws_to_connect.set(h, connect_id)
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
+        let _ = self.arm_ws_next(h)
+        Ok(())
+      }
+      Err(e) => {
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e))
+        Err(e)
+      }
+    }
+    ConnectorEntry::Feishu(f) => match f.connect(tr) {
+      Ok(h) => {
+        self.ws_to_connect.set(h, connect_id)
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
+        let _ = self.arm_ws_next(h)
+        Ok(())
+      }
+      Err(e) => {
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e))
+        Err(e)
+      }
+    }
+    ConnectorEntry::Comma(c) => match c.connect(tr) {
+      Ok(h) => {
+        self.ws_to_connect.set(h, connect_id)
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
+        let _ = self.arm_ws_next(h)
+        Ok(())
+      }
+      Err(e) => {
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(e))
+        Err(e)
+      }
+    }
+    ConnectorEntry::Group(g) => {
+      g.machine.on_open((self.bridge.now_fn)())
+      self.statuses.set(connect_id, station_connects::ConnectStatus::Connected)
+      Ok(())
+    }
+  }
+}
+
+/// Stop a single connector cleanly, closing its WebSocket handle if open.
+pub fn ConnectsOsRuntime::stop_connect(self : ConnectsOsRuntime, connect_id : String) -> Unit {
+  match self.connectors.get(connect_id) {
+    None => ()
+    Some(entry) => {
+      let ws_opt : Option[Int64] = match entry {
+        ConnectorEntry::Slack(s) => {
+          let h = s.ws_handle
+          s.ws_handle = None
+          h
+        }
+        ConnectorEntry::Feishu(f) => {
+          let h = f.ws_handle
+          f.ws_handle = None
+          h
+        }
+        ConnectorEntry::Comma(c) => {
+          let h = c.ws_handle
+          c.ws_handle = None
+          h
+        }
+        ConnectorEntry::Group(_) => None
+      }
+      match ws_opt {
+        Some(h) => {
+          self.ws_to_connect.remove(h)
+          self.async_ws_next.remove(h)
+          self.bridge.ws_close(h)
+        }
+        None => ()
+      }
+      self.statuses.set(connect_id, station_connects::ConnectStatus::Disabled)
+    }
+  }
+}
+
+fn ConnectsOsRuntime::dispatch_ws_frame(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  frame : station_connects::WsFrame,
+) -> Bool {
+  let entry = match self.connectors.get(connect_id) {
+    Some(e) => e
+    None => return false
+  }
+  let tr = self.bridge.transport()
+  match entry {
+    ConnectorEntry::Slack(s) => match s.handle_frame(tr, frame) {
+      station_connects::SlackStep::Event(eid, ev) => {
+        (self.callbacks.on_event)(connect_id, station_connects::ConnectPlatform::Slack, ev)
+        let _ = s.ack(tr, eid)
+        true
+      }
+      station_connects::SlackStep::Interactive(eid, payload) => {
+        (self.callbacks.on_interactive)(connect_id, eid, payload)
+        let _ = s.ack(tr, eid)
+        true
+      }
+      station_connects::SlackStep::SlashCommand(eid, payload) => {
+        (self.callbacks.on_interactive)(connect_id, eid, payload)
+        let _ = s.ack(tr, eid)
+        true
+      }
+      station_connects::SlackStep::DuplicateIgnored(eid, _) => {
+        let _ = s.ack(tr, eid)
+        true
+      }
+      station_connects::SlackStep::IgnoredEnvelope(eid) => {
+        let _ = s.ack(tr, eid)
+        true
+      }
+      station_connects::SlackStep::Closed(reason_opt) => {
+        let reason = match reason_opt {
+          Some(r) => r
+          None => "closed"
+        }
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
+        (self.callbacks.on_disconnect)(connect_id, reason)
+        false
+      }
+      station_connects::SlackStep::ReconnectRequested(reason) => {
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
+        (self.callbacks.on_disconnect)(connect_id, reason)
+        false
+      }
+      _ => true
+    }
+    ConnectorEntry::Feishu(f) => match f.handle_frame(tr, frame) {
+      station_connects::FeishuStep::Event(req, dedupe_key, ev) => {
+        let plat = match f.domain {
+          station_connects::FeishuDomain::Feishu => station_connects::ConnectPlatform::Feishu
+          station_connects::FeishuDomain::Lark => station_connects::ConnectPlatform::Lark
+        }
+        (self.callbacks.on_event)(connect_id, plat, ev)
+        let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key=dedupe_key)
+        true
+      }
+      station_connects::FeishuStep::CardAction(req, dedupe_key, ans) => {
+        (self.callbacks.on_card_answer)(connect_id, ans)
+        let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key=dedupe_key)
+        true
+      }
+      station_connects::FeishuStep::DuplicateIgnored(req, dedupe_key) => {
+        let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key=dedupe_key)
+        true
+      }
+      station_connects::FeishuStep::IgnoredFrame(req) => {
+        let _ = f.ack_frame(tr, req, code=200, answer_json=None, dedupe_key="")
+        true
+      }
+      station_connects::FeishuStep::Closed(reason_opt) => {
+        let reason = match reason_opt {
+          Some(r) => r
+          None => "closed"
+        }
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
+        (self.callbacks.on_disconnect)(connect_id, reason)
+        false
+      }
+      _ => true
+    }
+    ConnectorEntry::Comma(c) => match c.handle_frame(tr, frame) {
+      station_connects::CommaStep::TaskPut(batch) => {
+        for i in 0..<batch.events.length() {
+          (self.callbacks.on_event)(
+            connect_id,
+            station_connects::ConnectPlatform::Comma,
+            batch.events[i],
+          )
+        }
+        c.commit_put(tr, batch)
+        true
+      }
+      station_connects::CommaStep::Closed(reason_opt) => {
+        let reason = match reason_opt {
+          Some(r) => r
+          None => "closed"
+        }
+        self.statuses.set(connect_id, station_connects::ConnectStatus::Reconnecting(reason))
+        (self.callbacks.on_disconnect)(connect_id, reason)
+        false
+      }
+      _ => true
+    }
+    ConnectorEntry::Group(_) => true
+  }
+}
+
+/// Handle an asynchronous `ShellMux` completion belonging to `ConnectsOsRuntime`.
+/// Returns `true` if the token belonged to this runtime and was handled.
+pub fn ConnectsOsRuntime::handle_mux_reply(
+  self : ConnectsOsRuntime,
+  tok : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+) -> Bool {
+  match tok {
+    builders_core::MuxToken::Tagged(_, kind, handle) => {
+      if kind == CONNECTS_TOK_WS_NEXT {
+        let connect_id = match self.ws_to_connect.get(handle) {
+          Some(cid) => cid
+          None => return true
+        }
+        self.async_ws_next.remove(handle)
+        match station_http::decode_ws_next_done(done) {
+          Err(e) => {
+            self.ws_to_connect.remove(handle)
+            self.bridge.open_ws.remove(handle)
+            let _ = self.dispatch_ws_frame(
+              connect_id,
+              station_connects::WsFrame::Close(1006, e.message),
+            )
+          }
+          Ok(ev) => {
+            let frame = conn_ws_event_to_frame(ev)
+            let keep_open = self.dispatch_ws_frame(connect_id, frame)
+            if keep_open && !self.stopped && self.bridge.open_ws.contains(handle) {
+              let _ = self.arm_ws_next(handle)
+            } else {
+              self.ws_to_connect.remove(handle)
+            }
+          }
+        }
+        return true
+      }
+      if kind == CONNECTS_TOK_WS_CLOSE || kind == CONNECTS_TOK_WS_SEND || kind == CONNECTS_TOK_WS_PING {
+        return true
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+/// Feed a Group SSE text chunk into a registered `GroupConnector`.
+pub fn ConnectsOsRuntime::feed_group_sse(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  chunk : String,
+  now_ms : Int64,
+) -> Result[Int, String] {
+  match self.connectors.get(connect_id) {
+    Some(ConnectorEntry::Group(g)) => {
+      let evs = g.sse.feed(chunk)
+      let mut delivered = 0
+      for i in 0..<evs.length() {
+        match g.take_sse(evs[i], now_ms) {
+          station_connects::GroupStep::Event(ev) => {
+            (self.callbacks.on_event)(connect_id, station_connects::ConnectPlatform::Group, ev)
+            delivered = delivered + 1
+          }
+          _ => ()
+        }
+      }
+      Ok(delivered)
+    }
+    _ => Err("not a group connector: " + connect_id)
+  }
+}
+
+/// Downlink send a message (with optional attachments) through any registered connector.
+pub fn ConnectsOsRuntime::send_message(
+  self : ConnectsOsRuntime,
+  connect_id : String,
+  thread : station_connects::ThreadRef,
+  markdown : String,
+  files : Array[station_connects::OutboundFile] = [],
+  post_key : String = "",
+) -> Result[String, String] {
+  let entry = match self.connectors.get(connect_id) {
+    Some(e) => e
+    None => return Err("unknown connect_id: " + connect_id)
+  }
+  let tr = self.bridge.transport()
+  match entry {
+    ConnectorEntry::Slack(s) => s.post_message(tr, thread, markdown, files=files)
+    ConnectorEntry::Feishu(f) => {
+      let reply_root = if thread.thread_ts.length() > 0 { Some(thread.thread_ts) } else { None }
+      f.post_text(tr, thread.channel, reply_root, markdown)
+    }
+    ConnectorEntry::Comma(c) => {
+      let pk = if post_key.length() > 0 { post_key } else { thread.channel + "/" + thread.thread_ts }
+      c.send_post(tr, thread, markdown, pk, files=files)
+    }
+    ConnectorEntry::Group(g) => g.post_message(tr, thread, markdown, files=files)
+  }
+}
+
+/// Periodic maintenance tick: drives exponential-backoff reconnects, pings, stale detection,
+/// Feishu tenant token refresh, and dedupe/fragment pruning. Returns action log entries.
+pub fn ConnectsOsRuntime::tick(self : ConnectsOsRuntime, now_ms : Int64) -> Array[String] {
+  let actions : Array[String] = []
+  if self.stopped {
+    return actions
+  }
+  let tr = self.bridge.transport()
+  let ids = self.connectors.keys()
+  for i in 0..<ids.length() {
+    let cid = ids[i]
+    match self.connectors.get(cid) {
+      None => ()
+      Some(ConnectorEntry::Slack(s)) => {
+        s.dedupe.prune(now_ms)
+        match s.machine.tick(now_ms) {
+          station_connects::SocketAction::SendPing => {
+            match s.ws_handle {
+              Some(h) => {
+                let _ = self.bridge.ws_ping(h)
+                actions.push(cid + ":ping")
+              }
+              None => ()
+            }
+          }
+          station_connects::SocketAction::ReconnectNow => {
+            let _ = self.start_connect(cid)
+            actions.push(cid + ":reconnect")
+          }
+          station_connects::SocketAction::FailStale(reason) => {
+            s.machine.on_close(now_ms, Some(reason))
+            self.stop_connect(cid)
+            self.statuses.set(cid, station_connects::ConnectStatus::Reconnecting(reason))
+            actions.push(cid + ":stale")
+          }
+          station_connects::SocketAction::FailOpenTimeout(reason) => {
+            s.machine.on_close(now_ms, Some(reason))
+            self.stop_connect(cid)
+            self.statuses.set(cid, station_connects::ConnectStatus::Reconnecting(reason))
+            actions.push(cid + ":open_timeout")
+          }
+          station_connects::SocketAction::Idle => ()
+        }
+      }
+      Some(ConnectorEntry::Feishu(f)) => {
+        f.dedupe.prune(now_ms)
+        f.parts.drop_before(now_ms - 60000L)
+        if f.tokens.cached(now_ms) is None && f.machine.is_connected() {
+          match f.tokens.get_or_refresh(tr) {
+            Ok(_) => actions.push(cid + ":token_refreshed")
+            Err(_) => actions.push(cid + ":token_refresh_failed")
+          }
+        }
+        match f.machine.tick(now_ms) {
+          station_connects::SocketAction::SendPing => {
+            match f.ws_handle {
+              Some(h) => {
+                let ping_bytes = station_connects::build_feishu_ping_frame(f.service_id)
+                let _ = self.bridge.ws_send(h, station_connects::WsFrame::Binary(ping_bytes))
+                actions.push(cid + ":ping")
+              }
+              None => ()
+            }
+          }
+          station_connects::SocketAction::ReconnectNow => {
+            let _ = self.start_connect(cid)
+            actions.push(cid + ":reconnect")
+          }
+          station_connects::SocketAction::FailStale(reason) => {
+            f.machine.on_close(now_ms, Some(reason))
+            self.stop_connect(cid)
+            self.statuses.set(cid, station_connects::ConnectStatus::Reconnecting(reason))
+            actions.push(cid + ":stale")
+          }
+          station_connects::SocketAction::FailOpenTimeout(reason) => {
+            f.machine.on_close(now_ms, Some(reason))
+            self.stop_connect(cid)
+            self.statuses.set(cid, station_connects::ConnectStatus::Reconnecting(reason))
+            actions.push(cid + ":open_timeout")
+          }
+          station_connects::SocketAction::Idle => ()
+        }
+      }
+      Some(ConnectorEntry::Comma(c)) => {
+        c.dedupe.prune(now_ms)
+        match c.machine.tick(now_ms) {
+          station_connects::SocketAction::SendPing => {
+            match c.ws_handle {
+              Some(h) => {
+                let _ = self.bridge.ws_ping(h)
+                actions.push(cid + ":ping")
+              }
+              None => ()
+            }
+          }
+          station_connects::SocketAction::ReconnectNow => {
+            let _ = self.start_connect(cid)
+            actions.push(cid + ":reconnect")
+          }
+          station_connects::SocketAction::FailStale(reason) => {
+            c.machine.on_close(now_ms, Some(reason))
+            self.stop_connect(cid)
+            self.statuses.set(cid, station_connects::ConnectStatus::Reconnecting(reason))
+            actions.push(cid + ":stale")
+          }
+          station_connects::SocketAction::FailOpenTimeout(reason) => {
+            c.machine.on_close(now_ms, Some(reason))
+            self.stop_connect(cid)
+            self.statuses.set(cid, station_connects::ConnectStatus::Reconnecting(reason))
+            actions.push(cid + ":open_timeout")
+          }
+          station_connects::SocketAction::Idle => ()
+        }
+      }
+      Some(ConnectorEntry::Group(g)) => {
+        g.dedupe.prune(now_ms)
+      }
+    }
+  }
+  actions
+}
+
+/// Gracefully shut down every connector, closing all WebSockets and cancelling in-flight calls.
+pub fn ConnectsOsRuntime::stop(self : ConnectsOsRuntime) -> Unit {
+  self.stopped = true
+  let ids = self.connectors.keys()
+  for i in 0..<ids.length() {
+    self.stop_connect(ids[i])
+  }
+  self.ws_to_connect.clear()
+  self.async_ws_next.clear()
+  self.bridge.close_all()
+}

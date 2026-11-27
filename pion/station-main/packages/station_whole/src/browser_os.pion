@@ -1,0 +1,736 @@
+// Production OS adapter for `station_browser`:
+// - Real `CdpWsPort` over `builders_core::ShellMux` (`ws.open`/`ws.next`/`ws.send`/`ws.close` +
+//   HTTP `fetch` `/json/version` and `/json/list` strictly on loopback `127.0.0.1`/`localhost`).
+// - Real browser process lifecycle (`BrowserOsManager`) over `station_sys::proc_spawn` with
+//   `new_pgid: true` and `ChildProcess::kill(..., group=true)` + `close()` so Chrome / Farview
+//   never leave orphan renderer/GPU processes on exit.
+// - Wires `BrowserAgentHold`, `TabsState` + `TabOwners`, `UserTabsState`, fail-closed `Gate` &
+//   URL/scheme/private-network policy, `SignInFormPort` vault autofill bridge, and `BrowserProxy`
+//   forwarding adapter.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "station_browser"
+import "station_http"
+import "station_sys"
+
+pub let BROWSER_OS_FETCH_TIMEOUT_MS : Int64 = 10000L
+pub let BROWSER_OS_TOK_FETCH : Int = 3301
+pub let BROWSER_OS_TOK_WS_OPEN : Int = 3302
+pub let BROWSER_OS_TOK_WS_NEXT : Int = 3303
+pub let BROWSER_OS_TOK_WS_SEND : Int = 3304
+pub let BROWSER_OS_TOK_WS_CLOSE : Int = 3305
+
+fn brw_is_loopback_ws(url : String) -> Bool {
+  url.starts_with("ws://127.0.0.1:")
+  || url.starts_with("ws://localhost:")
+  || url.starts_with("ws://[::1]:")
+}
+
+fn brw_ascii_lower(s : String) -> String {
+  let raw = s.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<raw.length() {
+    let c = raw[i].to_int() & 0xFF
+    if c >= 65 && c <= 90 {
+      sb.write_byte((c + 32) as Byte)
+    } else {
+      sb.write_byte(raw[i])
+    }
+  }
+  sb.to_string()
+}
+
+fn brw_is_private_or_loopback_host(host : String) -> Bool {
+  let h = brw_ascii_lower(host)
+  if h == "localhost"
+  || h == "127.0.0.1"
+  || h == "::1"
+  || h == "0.0.0.0"
+  || h.starts_with("127.")
+  || h.starts_with("10.")
+  || h.starts_with("192.168.")
+  || h.starts_with("169.254.")
+  || h.ends_with(".local")
+  || h.ends_with(".internal") {
+    return true
+  }
+  if h.starts_with("172.") {
+    let raw = h.to_bytes()
+    let mut dot2 = -1
+    for i in 4..<raw.length() {
+      if (raw[i].to_int() & 0xFF) == 46 {
+        dot2 = i
+        break
+      }
+    }
+    if dot2 > 4 {
+      let oct = h.slice(4, dot2)
+      match base_codec::parse_int64_str(oct) {
+        Some(n) => if n >= 16L && n <= 31L { return true }
+        None => ()
+      }
+    }
+  }
+  false
+}
+
+fn brw_extract_host(url : String) -> Option[String] {
+  let start = if url.starts_with("https://") {
+    8
+  } else if url.starts_with("http://") {
+    7
+  } else {
+    return None
+  }
+  let raw = url.to_bytes()
+  let mut end = raw.length()
+  for i in start..<raw.length() {
+    let c = raw[i].to_int() & 0xFF
+    if c == 47 || c == 63 || c == 35 {
+      end = i
+      break
+    }
+  }
+  let auth = url.slice(start, end)
+  // Strip optional userinfo@
+  let at_idx = auth.index_of("@")
+  let hostport = if at_idx >= 0 { auth.slice(at_idx + 1, auth.length()) } else { auth }
+  if hostport.starts_with("[") {
+    let close = hostport.index_of("]")
+    if close > 1 {
+      return Some(hostport.slice(1, close))
+    }
+    return None
+  }
+  let colon = hostport.index_of(":")
+  if colon >= 0 {
+    Some(hostport.slice(0, colon))
+  } else {
+    Some(hostport)
+  }
+}
+
+/// Fail-closed URL policy check: normalizes URL via `station_browser::normalize_browser_url`,
+/// strictly allows only `http://` / `https://`, and blocks private/loopback networks unless
+/// `allow_private` is explicitly enabled.
+pub fn validate_browser_navigation_url(
+  raw_url : String,
+  allow_private : Bool = false,
+) -> Result[String, String] {
+  let norm = match station_browser::normalize_browser_url(raw_url) {
+    Some(u) => u
+    None => return Err("rejected browser URL (invalid or disallowed scheme): " + raw_url)
+  }
+  if !norm.starts_with("http://") && !norm.starts_with("https://") {
+    return Err("disallowed browser URL scheme: " + norm)
+  }
+  if !allow_private {
+    match brw_extract_host(norm) {
+      Some(host) => {
+        if brw_is_private_or_loopback_host(host) {
+          return Err("blocked private/loopback browser target: " + host)
+        }
+      }
+      None => return Err("missing host in browser URL: " + norm)
+    }
+  }
+  Ok(norm)
+}
+
+// ---------------------------------------------------------------------------
+// 1. Real `CdpWsPort` & DevTools HTTP/WS Bridge over `builders_core::ShellMux`
+// ---------------------------------------------------------------------------
+
+fn brw_await_mux_call(
+  mux : builders_core::ShellMux,
+  call_id : Int64,
+  now_fn : () -> Int64,
+  timeout_ms : Int64,
+) -> Result[host_shim::ShellDone, String] {
+  let deadline = now_fn() + (if timeout_ms > 0L { timeout_ms } else { BROWSER_OS_FETCH_TIMEOUT_MS })
+  let mut done_opt : Option[host_shim::ShellDone] = None
+  while done_opt is None {
+    let rem = deadline - now_fn()
+    if rem <= 0L {
+      let _ = mux.cancel(call_id)
+      return Err("browser mux call timed out")
+    }
+    let slice = if rem > 200L { 200L } else { rem }
+    let progressed = mux.step(
+      slice,
+      fn(_line : String) -> Unit {},
+      fn() -> Unit {},
+      fn(_tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Unit {
+        if done.id == call_id {
+          done_opt = Some(done)
+        }
+      },
+    )
+    if !progressed && now_fn() >= deadline {
+      let _ = mux.cancel(call_id)
+      return Err("browser mux call timed out")
+    }
+  }
+  match done_opt {
+    Some(d) => Ok(d)
+    None => Err("browser mux call abandoned")
+  }
+}
+
+/// Fetch `http://127.0.0.1:<port>/json/version` via `ShellMux` `fetch` and return parsed JSON.
+pub fn fetch_devtools_version(
+  mux : builders_core::ShellMux,
+  port : Int,
+  now_fn : () -> Int64 = host_shim::now_ms,
+  timeout_ms : Int64 = BROWSER_OS_FETCH_TIMEOUT_MS,
+) -> Result[base_codec::Json, String] {
+  if port <= 0 || port > 65535 {
+    return Err("invalid DevTools port")
+  }
+  let url = "http://127.0.0.1:" + port.to_string() + "/json/version"
+  let args = base_codec::json_obj([
+    ("method", base_codec::json_str("GET")),
+    ("url", base_codec::json_str(url)),
+    ("timeoutMs", base_codec::json_int(timeout_ms.to_int())),
+  ])
+  let cid = mux.call_async_raw(
+    builders_core::MuxToken::Tagged(port, BROWSER_OS_TOK_FETCH, 0L),
+    "fetch",
+    base_codec::json_stringify(args),
+    None,
+  )
+  match brw_await_mux_call(mux, cid, now_fn, timeout_ms) {
+    Err(e) => Err(e)
+    Ok(done) => match station_http::decode_fetch_done(done) {
+      Err(e) => Err(e.message)
+      Ok(resp) => {
+        if resp.status != 200 {
+          return Err("DevTools /json/version HTTP " + resp.status.to_string())
+        }
+        match base_codec::json_parse(resp.body_text()) {
+          base_codec::JsonParseResult::Ok(j) => Ok(j)
+          base_codec::JsonParseResult::Err(e) => Err("invalid /json/version JSON: " + e)
+        }
+      }
+    }
+  }
+}
+
+/// Fetch `http://127.0.0.1:<port>/json/list` via `ShellMux` `fetch`.
+pub fn fetch_devtools_list(
+  mux : builders_core::ShellMux,
+  port : Int,
+  now_fn : () -> Int64 = host_shim::now_ms,
+  timeout_ms : Int64 = BROWSER_OS_FETCH_TIMEOUT_MS,
+) -> Result[base_codec::Json, String] {
+  if port <= 0 || port > 65535 {
+    return Err("invalid DevTools port")
+  }
+  let url = "http://127.0.0.1:" + port.to_string() + "/json/list"
+  let args = base_codec::json_obj([
+    ("method", base_codec::json_str("GET")),
+    ("url", base_codec::json_str(url)),
+    ("timeoutMs", base_codec::json_int(timeout_ms.to_int())),
+  ])
+  let cid = mux.call_async_raw(
+    builders_core::MuxToken::Tagged(port, BROWSER_OS_TOK_FETCH, 1L),
+    "fetch",
+    base_codec::json_stringify(args),
+    None,
+  )
+  match brw_await_mux_call(mux, cid, now_fn, timeout_ms) {
+    Err(e) => Err(e)
+    Ok(done) => match station_http::decode_fetch_done(done) {
+      Err(e) => Err(e.message)
+      Ok(resp) => {
+        if resp.status != 200 {
+          return Err("DevTools /json/list HTTP " + resp.status.to_string())
+        }
+        match base_codec::json_parse(resp.body_text()) {
+          base_codec::JsonParseResult::Ok(j) => Ok(j)
+          base_codec::JsonParseResult::Err(e) => Err("invalid /json/list JSON: " + e)
+        }
+      }
+    }
+  }
+}
+
+/// Build a real `station_browser::CdpWsPort` bound to an open `ShellMux` WebSocket `ws_id`.
+pub fn cdp_ws_port_for_mux(mux : builders_core::ShellMux, ws_id : Int) -> station_browser::CdpWsPort {
+  station_browser::CdpWsPort::{
+    send_text: fn(text : String) -> Bool {
+      let args = base_codec::json_obj([
+        ("id", base_codec::json_int(ws_id)),
+        ("text", base_codec::json_str(text)),
+      ])
+      let _ = mux.call_async_raw(
+        builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_SEND, 0L),
+        "ws.send",
+        base_codec::json_stringify(args),
+        None,
+      )
+      true
+    },
+    close_ws: fn() -> Unit {
+      let _ = mux.call_async_raw(
+        builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_CLOSE, 0L),
+        "ws.close",
+        "{\"id\":" + ws_id.to_string() + "}",
+        None,
+      )
+    },
+  }
+}
+
+/// Open a loopback CDP WebSocket via `ShellMux` `ws.open` and return `(ws_id, CdpSession)`.
+/// Rejects non-loopback WebSocket URLs (fail-closed).
+pub fn open_cdp_session_os(
+  mux : builders_core::ShellMux,
+  ws_url : String,
+  now_fn : () -> Int64 = host_shim::now_ms,
+  timeout_ms : Int64 = BROWSER_OS_FETCH_TIMEOUT_MS,
+) -> Result[(Int, station_browser::CdpSession), String] {
+  if !brw_is_loopback_ws(ws_url) {
+    return Err("CDP WebSocket URL must be loopback: " + ws_url)
+  }
+  let args = base_codec::json_obj([
+    ("url", base_codec::json_str(ws_url)),
+    ("binary", base_codec::json_bool(false)),
+    ("control", base_codec::json_bool(true)),
+    ("timeoutMs", base_codec::json_int(timeout_ms.to_int())),
+  ])
+  let cid = mux.call_async_raw(
+    builders_core::MuxToken::Tagged(1, BROWSER_OS_TOK_WS_OPEN, 0L),
+    "ws.open",
+    base_codec::json_stringify(args),
+    None,
+  )
+  match brw_await_mux_call(mux, cid, now_fn, timeout_ms) {
+    Err(e) => Err(e)
+    Ok(done) => match station_http::decode_ws_open_done(done) {
+      Err(e) => Err(e.message)
+      Ok(ws_id) => {
+        let port = cdp_ws_port_for_mux(mux, ws_id)
+        let sess = station_browser::CdpSession::new(port)
+        Ok((ws_id, sess))
+      }
+    }
+  }
+}
+
+/// Read one frame from `ws_id` via `ShellMux` `ws.next` and feed it into `CdpSession`.
+pub fn pump_cdp_session_once(
+  mux : builders_core::ShellMux,
+  ws_id : Int,
+  session : station_browser::CdpSession,
+  now_fn : () -> Int64 = host_shim::now_ms,
+  timeout_ms : Int64 = BROWSER_OS_FETCH_TIMEOUT_MS,
+) -> Result[Bool, String] {
+  let cid = mux.call_async_raw(
+    builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_NEXT, 0L),
+    "ws.next",
+    "{\"id\":" + ws_id.to_string() + "}",
+    None,
+  )
+  match brw_await_mux_call(mux, cid, now_fn, timeout_ms) {
+    Err(e) => Err(e)
+    Ok(done) => match station_http::decode_ws_next_done(done) {
+      Err(e) => {
+        let _ = session.close()
+        Err(e.message)
+      }
+      Ok(station_http::WsClientEvent::Text(raw)) => {
+        session.on_message(raw)
+        Ok(true)
+      }
+      Ok(station_http::WsClientEvent::Closed(_, _)) => {
+        let _ = session.close()
+        Ok(false)
+      }
+      Ok(_) => Ok(true)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Managed Browser Processes + Domain State (`BrowserOsManager`)
+// ---------------------------------------------------------------------------
+
+pub struct ManagedBrowserProc {
+  pub session : String
+  pub engine : station_browser::BrowserEngine
+  pub binary : String
+  pub profile_dir : String
+  pub port : Int
+  pub headless : Bool
+  pub child : station_sys::ChildProcess
+  pub started_at_ms : Int64
+  pub mut last_use_ms : Int64
+}
+
+pub struct BrowserOsManager {
+  pub mux : builders_core::ShellMux
+  pub now_fn : () -> Int64
+  pub owners : station_browser::TabOwners
+  pub tabs : station_browser::TabsState
+  pub user_tabs : station_browser::UserTabsState
+  pub agent_hold : station_browser::BrowserAgentHold
+  pub authenticators : station_browser::AuthenticatorsState
+  procs : Map[String, ManagedBrowserProc]
+  gates : Map[String, station_browser::Gate]
+  mut next_event_id : Int64
+}
+
+pub fn BrowserOsManager::new(
+  mux : builders_core::ShellMux,
+  hold_hub : station_browser::AgentHoldHubPort,
+  name_of : (String) -> String,
+  context_owner : (String) -> Option[String],
+  idle_ms : Int64 = station_browser::BROWSER_IDLE_MS,
+  now_fn : () -> Int64 = host_shim::now_ms,
+) -> BrowserOsManager {
+  let owners = station_browser::TabOwners::new()
+  let tabs = station_browser::TabsState::new(owners, context_owner)
+  BrowserOsManager::{
+    mux: mux,
+    now_fn: now_fn,
+    owners: owners,
+    tabs: tabs,
+    user_tabs: station_browser::UserTabsState::new(idle_ms),
+    agent_hold: station_browser::BrowserAgentHold::new(hold_hub, name_of),
+    authenticators: station_browser::AuthenticatorsState::new(),
+    procs: Map::new(),
+    gates: Map::new(),
+    next_event_id: 700001L,
+  }
+}
+
+pub fn BrowserOsManager::running_count(self : BrowserOsManager) -> Int {
+  self.procs.length()
+}
+
+/// Spawn a managed Chrome process via `station_sys::proc_spawn` using `ChromeArgsOptions` and
+/// `new_pgid: true` so teardown cleanly kills the entire process group.
+pub fn BrowserOsManager::spawn_chrome(
+  self : BrowserOsManager,
+  session : String,
+  binary : String,
+  opts : station_browser::ChromeArgsOptions,
+  cwd : String,
+) -> Result[station_browser::BrowserStatus, String] {
+  if self.procs.contains(session) {
+    return self.status_of(session)
+  }
+  let argv = station_browser::chrome_args(opts)
+  let ev_id = self.next_event_id
+  self.next_event_id = self.next_event_id + 1L
+  let spawn_opts = station_sys::SpawnOptions::{
+    program: binary,
+    args: argv,
+    env: None,
+    cwd: cwd,
+    new_pgid: true,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: false,
+    pipe_stdout: true,
+    pipe_stderr: true,
+  }
+  let child = match station_sys::proc_spawn(ev_id, spawn_opts) {
+    Ok(c) => c
+    Err(e) => return Err("spawn chrome failed: " + e)
+  }
+  let now = (self.now_fn)()
+  self.procs.set(
+    session,
+    ManagedBrowserProc::{
+      session: session,
+      engine: station_browser::BrowserEngine::Chrome,
+      binary: binary,
+      profile_dir: opts.profile,
+      port: opts.port,
+      headless: opts.headless,
+      child: child,
+      started_at_ms: now,
+      last_use_ms: now,
+    },
+  )
+  self.status_of(session)
+}
+
+/// Spawn a managed Farview host process via `station_sys::proc_spawn` using `FarviewConfig` and
+/// `new_pgid: true`.
+pub fn BrowserOsManager::spawn_farview(
+  self : BrowserOsManager,
+  session : String,
+  cfg : station_browser::FarviewConfig,
+  port : Int,
+  cwd : String,
+) -> Result[station_browser::BrowserStatus, String] {
+  if self.procs.contains(session) {
+    return self.status_of(session)
+  }
+  let profile = station_browser::farview_profile_dir(cfg.dir, session)
+  let ev_id = self.next_event_id
+  self.next_event_id = self.next_event_id + 1L
+  let spawn_opts = station_sys::SpawnOptions::{
+    program: cfg.host,
+    args: ["--profile=" + profile, "--port=" + port.to_string()],
+    env: None,
+    cwd: cwd,
+    new_pgid: true,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: false,
+    pipe_stdout: true,
+    pipe_stderr: true,
+  }
+  let child = match station_sys::proc_spawn(ev_id, spawn_opts) {
+    Ok(c) => c
+    Err(e) => return Err("spawn farview failed: " + e)
+  }
+  let now = (self.now_fn)()
+  self.procs.set(
+    session,
+    ManagedBrowserProc::{
+      session: session,
+      engine: station_browser::BrowserEngine::Farview,
+      binary: cfg.host,
+      profile_dir: profile,
+      port: port,
+      headless: true,
+      child: child,
+      started_at_ms: now,
+      last_use_ms: now,
+    },
+  )
+  self.status_of(session)
+}
+
+pub fn BrowserOsManager::status_of(
+  self : BrowserOsManager,
+  session : String,
+) -> Result[station_browser::BrowserStatus, String] {
+  match self.procs.get(session) {
+    None => Ok(station_browser::BrowserStatus::stopped())
+    Some(p) => {
+      let http_opt = if p.port > 0 {
+        Some("http://127.0.0.1:" + p.port.to_string())
+      } else {
+        None
+      }
+      Ok(
+        station_browser::BrowserStatus::{
+          running: true,
+          http: http_opt,
+          ws: None,
+          binary: p.binary,
+          headless: p.headless,
+          pid: Some(p.child.pid.to_int64()),
+          tabs: self.tabs.of_session(session).length(),
+          viewing: 0,
+          last_use: Some(p.last_use_ms),
+        },
+      )
+    }
+  }
+}
+
+/// Create or fetch a fail-closed `Gate` isolated to `context_id` for `session`.
+pub fn BrowserOsManager::gate_for(
+  self : BrowserOsManager,
+  session : String,
+  context_id : String,
+) -> station_browser::Gate {
+  match self.gates.get(session) {
+    Some(g) => g
+    None => {
+      let hooks = station_browser::GateHooks::{
+        context_of: fn(target_id : String) -> Option[String] {
+          self.tabs.context_of(target_id)
+        },
+        on_opened: fn(target_id : String) -> Unit {
+          let _ = self.owners.set(target_id, session)
+        },
+        on_used: fn(_target_id : String, _method : Option[String]) -> Unit {
+          match self.procs.get(session) {
+            Some(p) => p.last_use_ms = (self.now_fn)()
+            None => ()
+          }
+        },
+        on_act: fn(target_id : String, method : String) -> Option[String] {
+          self.agent_hold.act(session, target_id, method, (self.now_fn)())
+        },
+      }
+      let gate = station_browser::Gate::new(context_id, hooks)
+      self.gates.set(session, gate)
+      gate
+    }
+  }
+}
+
+/// Terminate a session's browser process group (`SIGTERM` then `SIGKILL` + `close()`) and release
+/// its agent hold, gate, and virtual authenticators.
+pub fn BrowserOsManager::stop_session(self : BrowserOsManager, session : String) -> Bool {
+  self.agent_hold.release_session(session)
+  self.gates.remove(session)
+  self.authenticators.forget(session)
+  match self.procs.get(session) {
+    None => false
+    Some(p) => {
+      self.procs.remove(session)
+      let _ = p.child.kill(station_sys::SIG_TERM, true)
+      let _ = p.child.kill(station_sys::SIG_KILL, true)
+      let _ = p.child.close()
+      true
+    }
+  }
+}
+
+/// Stop every managed browser process and release all holds.
+pub fn BrowserOsManager::stop_all(self : BrowserOsManager) -> Unit {
+  let keys = self.procs.keys()
+  for i in 0..<keys.length() {
+    let _ = self.stop_session(keys[i])
+  }
+  self.agent_hold.close()
+}
+
+// ---------------------------------------------------------------------------
+// 3. `SignInFormPort` Vault Autofill Bridge & `BrowserProxy` Forwarding Adapter
+// ---------------------------------------------------------------------------
+
+/// Build a `station_browser::SignInFormPort` bridged to a `CdpSession` (via an evaluation runner
+/// that executes `Runtime.evaluate` / `Input.insertText` on the target page).
+pub fn build_signin_form_port(
+  eval_str : (String) -> String,
+  insert_text : (String) -> Bool,
+  send_enter : () -> Unit,
+) -> station_browser::SignInFormPort {
+  station_browser::SignInFormPort::{
+    get_url: fn() -> String { eval_str("location.href") },
+    on_site: fn(site : String) -> Bool {
+      let cur = eval_str("location.hostname")
+      station_browser::of_sites(cur, [site])
+    },
+    look: fn() -> station_browser::FormAsks {
+      let raw = eval_str("__sf_look_form()")
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(j) => {
+          let get_b = fn(k : String) -> Bool {
+            match base_codec::json_get(j, k) {
+              Some(base_codec::Json::Bool(b)) => b
+              _ => false
+            }
+          }
+          station_browser::FormAsks::{
+            username: get_b("username"),
+            password: get_b("password"),
+            code: get_b("code"),
+            blocked: get_b("blocked"),
+          }
+        }
+        _ => station_browser::FormAsks::{ username: false, password: false, code: false, blocked: true }
+      }
+    },
+    type_field: fn(field : station_browser::FormField, site : String, value : String) -> Bool {
+      let cur = eval_str("location.hostname")
+      if !station_browser::of_sites(cur, [site]) {
+        return false
+      }
+      let focused = eval_str("__sf_focus(" + base_codec::json_stringify(base_codec::json_str(station_browser::form_field_name(field))) + ")")
+      if focused != "ok" {
+        return false
+      }
+      insert_text(value)
+    },
+    enter: send_enter,
+    press: fn() -> Bool { eval_str("__sf_press_submit()") == "ok" },
+    mark: fn() -> Unit { let _ = eval_str("__sf_mark()") },
+    marked: fn() -> Bool { eval_str("__sf_marked()") == "true" },
+  }
+}
+
+/// Forwarding adapter bridging `station_browser::BrowserProxy` actions to `ShellMux` WebSockets.
+pub struct BrowserProxyOsAdapter {
+  pub proxy : station_browser::BrowserProxy
+  pub mux : builders_core::ShellMux
+  upstream_ws : Map[Int, Int]
+}
+
+pub fn BrowserProxyOsAdapter::new(
+  proxy : station_browser::BrowserProxy,
+  mux : builders_core::ShellMux,
+) -> BrowserProxyOsAdapter {
+  BrowserProxyOsAdapter::{ proxy: proxy, mux: mux, upstream_ws: Map::new() }
+}
+
+pub fn BrowserProxyOsAdapter::bind_upstream(
+  self : BrowserProxyOsAdapter,
+  client_conn_id : Int,
+  upstream_ws_id : Int,
+) -> Unit {
+  self.upstream_ws.set(client_conn_id, upstream_ws_id)
+}
+
+/// Execute `ProxyAction` list emitted by `BrowserProxy` over `ShellMux` WebSocket calls.
+/// Returns the number of actions dispatched.
+pub fn BrowserProxyOsAdapter::apply_actions(
+  self : BrowserProxyOsAdapter,
+  actions : Array[station_browser::ProxyAction],
+  send_client_text : (Int, String) -> Unit,
+  send_client_binary : (Int, Bytes) -> Unit,
+  close_client : (Int, Int, String) -> Unit,
+) -> Int {
+  let mut count = 0
+  for i in 0..<actions.length() {
+    match actions[i] {
+      station_browser::ProxyAction::SendToClientText(cid, text) => {
+        send_client_text(cid, text)
+        count = count + 1
+      }
+      station_browser::ProxyAction::SendToClientBinary(cid, data) => {
+        send_client_binary(cid, data)
+        count = count + 1
+      }
+      station_browser::ProxyAction::SendToUpstreamText(cid, text) => {
+        match self.upstream_ws.get(cid) {
+          Some(ws_id) => {
+            let args = base_codec::json_obj([
+              ("id", base_codec::json_int(ws_id)),
+              ("text", base_codec::json_str(text)),
+            ])
+            let _ = self.mux.call_async_raw(
+              builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_SEND, cid.to_int64()),
+              "ws.send",
+              base_codec::json_stringify(args),
+              None,
+            )
+            count = count + 1
+          }
+          None => ()
+        }
+      }
+      station_browser::ProxyAction::CloseClient(cid, code, reason) => {
+        close_client(cid, code, reason)
+        count = count + 1
+      }
+      station_browser::ProxyAction::CloseUpstream(cid) => {
+        match self.upstream_ws.get(cid) {
+          Some(ws_id) => {
+            self.upstream_ws.remove(cid)
+            let _ = self.mux.call_async_raw(
+              builders_core::MuxToken::Tagged(ws_id, BROWSER_OS_TOK_WS_CLOSE, cid.to_int64()),
+              "ws.close",
+              "{\"id\":" + ws_id.to_string() + "}",
+              None,
+            )
+            count = count + 1
+          }
+          None => ()
+        }
+      }
+    }
+  }
+  count
+}
