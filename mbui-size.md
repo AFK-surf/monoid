@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b1d1d6c1c](https://github.com/AFK-surf/monoid/commit/b1d1d6c1cd280efcd84bbe20f4c52b9bbc66a506) feat(ui,mbui,core): Markdown marks and lists in th | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 102.09 | 138.12 |
 | [af3969628](https://github.com/AFK-surf/monoid/commit/af396962837fed9c56ccb914c2816c3399efd84b) feat(mbui): migrate pollers, subject-keyed screen  | 2.66 | 3.6 | 14.94 | 37.92 | 58.09 | 33.23 | 67.87 | 102.09 | 138.12 |
 | [5a3e3166e](https://github.com/AFK-surf/monoid/commit/5a3e3166eac49e576ec3cac9e9f5db2064eb827a) ci(mbui): trim Actions cache footprint below GitHu | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.79 | 102.06 | 130.96 |
 | [3ac73fc9f](https://github.com/AFK-surf/monoid/commit/3ac73fc9f057a7f2c9cfa83099b721d0c155a2fe) perf(pion-station): single-pass JSON stringify, fa | 2.66 | 3.59 | 14.9 | 37.88 | 57.97 | 33.2 | 67.79 | 102.06 | 130.96 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1afb96bec](https://github.com/AFK-surf/monoid/commit/1afb96bec74ed022c8ac2856f9526d6578da8830) feat(station): bundle and sign opt-in stillfail-st | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.65 | 131.48 |
 | [d79f39aa4](https://github.com/AFK-surf/monoid/commit/d79f39aa42f44a7379be26c2ec3297218e6fc561) fix(mbui): build the Apple core for local Mac e2e  | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.6 | 129.9 |
 | [4434a902f](https://github.com/AFK-surf/monoid/commit/4434a902ffce7f55898c765c51cfc73bf6ad5c6e) perf(ui,mbui): optimize composite CJK text shaping | 2.64 | 3.57 | 14.78 | 37.74 | 57.62 | 33.05 | 67.5 | 101.6 | 129.9 |
-| [199a359ec](https://github.com/AFK-surf/monoid/commit/199a359ec39bdd4f6691d5b6b1474c5f6249cadf) fix(ci): keep the halt reason in native test failu | 2.64 | 3.57 | 14.77 | 37.74 | 57.6 | 33.05 | 67.49 | 101.6 | 115.56 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b1d1d6c1c](https://github.com/AFK-surf/monoid/commit/b1d1d6c1cd280efcd84bbe20f4c52b9bbc66a506) feat(ui,mbui,core): Markdown marks and lists in th | 0.59 | 0.77 | 3.02 | 4.05 | 7.5 | 2.22 | 6.28 | 57.56 |
 | [af3969628](https://github.com/AFK-surf/monoid/commit/af396962837fed9c56ccb914c2816c3399efd84b) feat(mbui): migrate pollers, subject-keyed screen  | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.75 |
 | [5a3e3166e](https://github.com/AFK-surf/monoid/commit/5a3e3166eac49e576ec3cac9e9f5db2064eb827a) ci(mbui): trim Actions cache footprint below GitHu | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.84 |
 | [3ac73fc9f](https://github.com/AFK-surf/monoid/commit/3ac73fc9f057a7f2c9cfa83099b721d0c155a2fe) perf(pion-station): single-pass JSON stringify, fa | 0.59 | 0.77 | 3.01 | 4.04 | 7.48 | 2.22 | 6.28 | 57.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1afb96bec](https://github.com/AFK-surf/monoid/commit/1afb96bec74ed022c8ac2856f9526d6578da8830) feat(station): bundle and sign opt-in stillfail-st | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.48 |
 | [d79f39aa4](https://github.com/AFK-surf/monoid/commit/d79f39aa42f44a7379be26c2ec3297218e6fc561) fix(mbui): build the Apple core for local Mac e2e  | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.61 |
 | [4434a902f](https://github.com/AFK-surf/monoid/commit/4434a902ffce7f55898c765c51cfc73bf6ad5c6e) perf(ui,mbui): optimize composite CJK text shaping | 0.59 | 0.77 | 2.98 | 4.02 | 7.42 | 2.21 | 6.24 | 57.57 |
-| [199a359ec](https://github.com/AFK-surf/monoid/commit/199a359ec39bdd4f6691d5b6b1474c5f6249cadf) fix(ci): keep the halt reason in native test failu | 0.58 | 0.76 | 2.97 | 4.02 | 7.4 | 2.2 | 6.23 | 57.72 |
