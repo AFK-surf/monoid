@@ -1777,6 +1777,98 @@ pub fn is_valid_chats_snapshot_payload(snapshot : base_codec::Json) -> Bool {
   }
 }
 
+/// Strictly validate a `GET /threads/<id>/entries` payload aligned with `station/mb/src/readops/entries.mbt:370-392`:
+/// - Root MUST be a JSON object containing an `"entries"` array (empty `{}` or missing `entries` is rejected!).
+/// - Every element of `"entries"` MUST be a JSON object, and if it carries a non-null `"thread"` field,
+///   that field MUST be numeric and equal `expected_thread`.
+/// - Valid empty arrays such as `{"last": 0, "entries": []}` return `true`.
+pub fn is_valid_thread_entries_payload(payload : base_codec::Json, expected_thread : Int) -> Bool {
+  match payload {
+    base_codec::Json::Obj(_) => ()
+    _ => return false
+  }
+  let entries = match base_codec::json_get(payload, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return false
+  }
+  for i in 0..<entries.length() {
+    let item = entries[i]
+    match item {
+      base_codec::Json::Obj(_) => ()
+      _ => return false
+    }
+    match base_codec::json_get(item, "thread") {
+      None | Some(base_codec::Json::Null) => ()
+      Some(base_codec::Json::Num(n, _)) => if n.to_int() != expected_thread {
+        return false
+      }
+      _ => return false
+    }
+  }
+  true
+}
+
+/// Apply a validated `GET /threads/<expected_thread>/entries` `{last, entries}` response in a single
+/// `sql::Burst` transaction, storing every entry under `expected_thread` and emitting `EntryAdded`.
+/// Rejects malformed payloads or cross-thread entries without mutating SQLite.
+pub fn StationEvents::apply_thread_entries(
+  self : StationEvents,
+  expected_thread : Int,
+  payload : base_codec::Json,
+) -> sql::SqlResult[Int] {
+  if !is_valid_thread_entries_payload(payload, expected_thread) {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "malformed_thread_entries" })
+  }
+  let entries = match base_codec::json_get(payload, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  let added_entries : Array[(Int, store::Entry, Option[String])] = []
+  let burst = sql::Burst::new(self.db)
+  let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
+    let mut count = 0
+    for i in 0..<entries.length() {
+      let item = entries[i]
+      let n = j_int(item, "n")
+      let raw = base_codec::json_stringify(item)
+      match b.run(sql_entry_put(), params=[
+        base_codec::json_str(self.station),
+        base_codec::json_int(expected_thread),
+        base_codec::json_int(n),
+        base_codec::json_str(raw),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => {
+          let ck = match j_opt_str(item, "clientKey") {
+            Some(k) => Some(k)
+            None => j_opt_str(item, "idem")
+          }
+          match ck {
+            Some(key) => {
+              let cb = self.on_entry_client_key
+              cb(b, expected_thread, n, key)
+            }
+            None => ()
+          }
+          added_entries.push((expected_thread, store::Entry::of_json(n, item), ck))
+          count += 1
+        }
+      }
+    }
+    sql::SqlResult::Ok(count)
+  })
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(count) => {
+      for i in 0..<added_entries.length() {
+        let (th, entry, ck) = added_entries[i]
+        self.outbox.tell(CoreEvent::EntryAdded(self.station, th, entry, ck))
+      }
+      sql::SqlResult::Ok(count)
+    }
+  }
+}
+
 /// Ingest an initial or refreshed snapshot (`GET /chats` top-level JSON array `[...]` matching
 /// `station/mb/src/readops/viewerrows.mbt:249`, OR `{chats, threads, entries, sessions, jobs}`
 /// object wrapper) in a single `sql::Burst` transaction and emit coalesced `CoreEvent` notifications.

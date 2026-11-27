@@ -85,6 +85,7 @@ pub struct ClientCore {
   mut on_workspace_dropped : Option[(String, Array[String]) -> Unit]
   mut on_accounts_persisted : Option[(base_codec::Json) -> Result[Unit, String]]
   mut on_confirmation_refresh : Option[(String) -> Unit]
+  mut on_session_invalidated : Option[(String) -> Unit]
   pub lock_pending : views::LockPendingQueue
   pub auth_store : views::AccountStore
   pub account_sessions : Map[String, String]
@@ -201,6 +202,7 @@ pub fn ClientCore::new(
     on_workspace_dropped: None,
     on_accounts_persisted: None,
     on_confirmation_refresh: None,
+    on_session_invalidated: None,
     lock_pending: views::LockPendingQueue::new(),
     auth_store: views::AccountStore::new(),
     account_sessions: Map::new(),
@@ -412,15 +414,15 @@ fn ClientCore::wire_station_hooks(
   })
   let canon_st = canonical_station(target_ws, station)
   sync.set_snapshot_confirmed_hook(fn(read_gen : Int, tr_epoch : Int64) -> Unit {
-    if self.confirm_workspace_auth(target_ws, confirm_key_chats(canon_st), read_gen, transport_epoch=tr_epoch) {
+    if self.confirm_workspace_auth(target_ws, confirm_key_chats(canon_st), read_gen, station=canon_st, transport_epoch=tr_epoch) {
       self.trigger_unconfirmed_open_chats_for_station(target_ws, station)
       self.notify_confirmation_refresh("chats")
     }
   })
   sync.set_thread_confirmed_hook(fn(th : Int, read_gen : Int, tr_epoch : Int64) -> Unit {
-    let c1 = self.confirm_workspace_auth(target_ws, confirm_key_chat_thread(canon_st, th), read_gen, transport_epoch=tr_epoch)
+    let c1 = self.confirm_workspace_auth(target_ws, confirm_key_chat_thread(canon_st, th), read_gen, station=canon_st, transport_epoch=tr_epoch)
     let c2 = match self.lookup_session_for_thread(station, th) {
-      Some(sk) => self.confirm_workspace_auth(target_ws, confirm_key_chat_session(canon_st, sk), read_gen, transport_epoch=tr_epoch)
+      Some(sk) => self.confirm_workspace_auth(target_ws, confirm_key_chat_session(canon_st, sk), read_gen, station=canon_st, transport_epoch=tr_epoch)
       None => false
     }
     if c1 || c2 {
@@ -1504,6 +1506,7 @@ pub fn ClientCore::set_db_account_sub(
   self : ClientCore,
   sub : String,
   host_purges_doc : Option[base_codec::Json] = None,
+  host_purges_shared : Bool = false,
 ) -> Result[Unit, String] {
   if sub.length() == 0 {
     return Err("account_sub_mismatch: empty account sub")
@@ -1514,7 +1517,7 @@ pub fn ClientCore::set_db_account_sub(
     }
     None => ()
   }
-  match self.membership.bind_account_sub(sub, db=Some(self.db), host_purges_doc=host_purges_doc) {
+  match self.membership.bind_account_sub(sub, db=Some(self.db), host_purges_doc=host_purges_doc, host_purges_shared=host_purges_shared) {
     Err(msg) => Err(msg)
     Ok(_) => {
       self.db_account_sub = Some(sub)
@@ -1558,6 +1561,10 @@ pub fn ClientCore::set_on_confirmation_refresh(self : ClientCore, cb : (String) 
   self.on_confirmation_refresh = Some(cb)
 }
 
+pub fn ClientCore::set_on_session_invalidated(self : ClientCore, cb : (String) -> Unit) -> Unit {
+  self.on_session_invalidated = Some(cb)
+}
+
 pub fn ClientCore::can_read_workspace(self : ClientCore, ws : String) -> Bool {
   self.membership.is_workspace_readable(ws)
 }
@@ -1576,14 +1583,15 @@ pub fn ClientCore::can_read_station_resource(self : ClientCore, st : String, _re
   self.can_read_station(st)
 }
 
-/// Single confirmation entry point matching TS `inner.confirmWorkspaceAuth`:
-/// verifies `auth.workspace_auth_gen(ws) == read_gen` AND (for station reads)
-/// `transport_epoch >= pending.min_transport_epoch`.
+/// Single confirmation entry point matching TS `inner.confirmWorkspaceAuth` (`core.ts:357, 437-440`):
+/// verifies `auth.workspace_auth_gen(ws) == read_gen && read_gen >= pending.gen` AND (for station reads)
+/// `transport_epoch >= pending.station_min_epoch[canon_station]`.
 pub fn ClientCore::confirm_workspace_auth(
   self : ClientCore,
   ws : String,
   confirm_key : String,
   read_gen : Int,
+  station : String = "",
   transport_epoch : Int64 = 0L,
   require_transport_epoch : Bool = true,
 ) -> Bool {
@@ -1592,6 +1600,7 @@ pub fn ClientCore::confirm_workspace_auth(
     confirm_key,
     self.auth.workspace_auth_gen(ws),
     read_gen,
+    station=station,
     transport_epoch=transport_epoch,
     require_transport_epoch=require_transport_epoch,
   )
@@ -1885,8 +1894,9 @@ pub fn ClientCore::bump_workspace_transport_epochs(self : ClientCore, ws : Strin
 }
 
 /// Called by `core_runtime` once a fresh member credential has been installed on `station`:
-/// advances `station`'s `transport_epoch`, raises `pending_auth_confirm[ws].min_transport_epoch`
-/// so responses from the prior credential/link cannot confirm, and re-schedules `GET /chats` + open chats.
+/// advances ONLY `station`'s `transport_epoch`, updates ONLY `station`'s `station_min_epoch`
+/// (clearing prior `confirmed_keys` for that station without blocking sibling stations!),
+/// and re-schedules `GET /chats` + open chats on that station.
 pub fn ClientCore::on_station_credential_installed(
   self : ClientCore,
   ws : String,
@@ -1899,7 +1909,8 @@ pub fn ClientCore::on_station_credential_installed(
     Some(sy) => {
       sy.bump_epoch()
       let next_ep = sy.transport_epoch()
-      self.membership.advance_pending_confirm_transport_epoch(ws, next_ep)
+      let canon_st = canonical_station(ws, station)
+      self.membership.on_station_credential_installed(ws, canon_st, next_ep)
       if self.membership.has_pending_auth_confirm(ws) {
         let _ = self.rt.fork_quiet_named("post-cred-snapshot:" + station, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
           sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
@@ -2046,9 +2057,9 @@ pub fn ClientCore::drop_workspace(self : ClientCore, ws : String) -> Result[Unit
     }
   }
 
-  // 1. Latch revocation + account-scoped pending purge in ONE SQLite tx BEFORE touching caches,
-  //    plus best-effort per-account host mirror (`device/pending_purges/<sanitized_sub>`).
-  self.membership.latch_purge(ws, stations)
+  // 1. Latch revocation + account-scoped pending purge (with monotonic `op_gen`) in ONE SQLite tx
+  //    BEFORE touching caches, plus best-effort per-account host mirror (`device/pending_purges/<sanitized_sub>`).
+  let op_gen = self.membership.latch_purge(ws, stations)
   let latch_persist_err : Option[String] = match self.membership.persist_pending_purges(self.db) {
     Ok(_) => None
     Err(msg) => Some(msg)
@@ -2202,20 +2213,23 @@ pub fn ClientCore::drop_workspace(self : ClientCore, ws : String) -> Result[Unit
       return Err(e.to_string())
     }
     sql::SqlResult::Ok(_) => {
-      // Unbind `ws` stations (quarantining multi-owner bare aliases) and atomically persist
-      // `revoked` + cleared `pending_purges` + updated `station_bindings` in ONE SQLite transaction!
+      // Unbind `ws` stations (quarantining multi-owner bare aliases), record `completed_purge_gen[ws] >= op_gen`,
+      // and atomically persist `revoked` + cleared `pending_purges` + `completed_purge_gen` + `station_bindings`
+      // in ONE SQLite transaction!
       self.membership.unbind_workspace_stations(ws)
-      self.membership.clear_pending_purge(ws)
+      let prev_completed = self.membership.complete_purge(ws, op_gen)
       let burst = sql::Burst::new(self.db)
       let meta_commit = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
         self.membership.persist_meta_state_in_burst(b, include_bindings=true)
       })
       // Best-effort mirror to per-account host key (`device/pending_purges/<sanitized_sub>`):
       // if ONLY host backup warns while SQLite succeeded, record warning without re-latching `pending_purges`!
+      // Any stale host mirror with `op_gen <= completed_purge_gen[ws]` will be discarded on restart!
       let _ = self.membership.sync_host_pending_purges()
       match meta_commit {
         sql::SqlResult::Err(e) => {
-          self.membership.latch_purge(ws, stations)
+          self.membership.restore_completed_purge_gen(ws, prev_completed)
+          self.membership.restore_pending_purge(ws, op_gen, stations)
           return Err(e.to_string())
         }
         sql::SqlResult::Ok(_) => match latch_persist_err {
@@ -2249,10 +2263,13 @@ pub fn ClientCore::retry_pending_purges(self : ClientCore) -> Result[Int, String
 }
 
 /// Handle a Cloud membership role downgrade (`owner`/`admin` -> `member`), aligned 1:1 with TS `pendingAuthConfirm`:
-/// 1. Advance `workspace` + `aggregate` authGen and bump `transport_epoch` across attached stations of `ws`;
-/// 2. Latch memory-only `PendingAuthConfirm(gen=new_gen, min_transport_epoch=min_ep)` and bump `cred_epoch[ws]`;
-/// 3. Trigger `fresh=true` mesh credential refresh & Cloud workspace refresh;
-/// 4. Proactively schedule `GET /chats` and currently open `chat` confirmations on the new epoch.
+/// 1. Install `PendingAuthConfirm` BEFORE `auth.bump_workspace(ws)` so synchronous boundary re-projection
+///    already hits the gate (0 stale flash!), initializing per-station `station_min_epoch[st] = cur_epoch + 1L`
+///    so fast pre-credential old-link responses can NEVER falsely confirm and fast stations never block slow stations;
+/// 2. Advance `workspace` + `aggregate` authGen;
+/// 3. Trigger `fresh=true` mesh credential refresh & Cloud workspace refresh (once each station installs its
+///    new credential via `on_station_credential_installed`, its `transport_epoch` advances to satisfy `station_min_epoch`
+///    and triggers fresh `GET /chats` + open chats).
 pub fn ClientCore::handle_role_downgrade(
   self : ClientCore,
   ws : String,
@@ -2263,10 +2280,23 @@ pub fn ClientCore::handle_role_downgrade(
   if is_valid_workspace_role(new_role) {
     self.membership.set_role(ws, new_role)
   }
+  self.auth.ensure_workspace(ws)
+  let next_gen = self.auth.workspace_auth_gen(ws) + 1
+  let attached = self.collect_attached_stations_for_workspace(ws)
+  let station_min_epochs : Map[String, Int64] = Map::new()
+  for i in 0..<attached.length() {
+    let st = attached[i]
+    let canon = canonical_station(ws, st)
+    match self.station_sync(st) {
+      Some(sy) => if canon.length() > 0 {
+        station_min_epochs.set(canon, sy.transport_epoch() + 1L)
+      }
+      None => ()
+    }
+  }
+  // Install `PendingAuthConfirm` BEFORE `bump_workspace(ws)` so synchronous boundary re-projection sees the latch!
+  let _ = self.membership.mark_downgraded(ws, next_gen, station_min_epochs=Some(station_min_epochs))
   let _ = self.auth.bump_workspace(ws)
-  let new_gen = self.auth.workspace_auth_gen(ws)
-  let min_ep = self.bump_workspace_transport_epochs(ws)
-  let _ = self.membership.mark_downgraded(ws, new_gen, min_transport_epoch=min_ep)
   match self.on_credential_refresh {
     Some(cb) => cb(ws)
     None => ()
@@ -2274,78 +2304,6 @@ pub fn ClientCore::handle_role_downgrade(
   match self.on_workspace_refresh {
     Some(cb) => cb(ws)
     None => ()
-  }
-  // Proactively refresh `GET /chats` snapshots on every attached station of `ws`.
-  let attached = self.collect_attached_stations_for_workspace(ws)
-  for i in 0..<attached.length() {
-    let st = attached[i]
-    match self.station_sync(st) {
-      Some(sy) => {
-        let _ = self.rt.fork_quiet_named("downgrade-snapshot:" + st, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-          sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
-            k(effect::Exit::Succeeded(()))
-          })
-        })
-      }
-      None => ()
-    }
-  }
-  // Proactively refresh currently open chats in `ws` from both `self.router` and `core_runtime` (`on_runtime_open_chats`),
-  // supporting BOTH `{station, thread}` AND `{station, session}` (`chat_model.mbt:1295`).
-  let open_chats : Array[(String, Option[Int], Option[String])] = []
-  let subs = self.router.active_subs_snapshot()
-  for i in 0..<subs.length() {
-    let (_, topic) = subs[i]
-    if topic.name == "chat" {
-      let st = match topic.param("station") {
-        Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { self.station }
-        _ => self.station
-      }
-      if self.membership.station_workspace(st, fallback_ws=self.workspace) == ws {
-        let th_opt : Option[Int] = match topic.param("thread") {
-          Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
-          _ => None
-        }
-        let sess_opt : Option[String] = match topic.param("session") {
-          Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
-          _ => match topic.param("key") {
-            Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
-            _ => None
-          }
-        }
-        open_chats.push((st, th_opt, sess_opt))
-      }
-    }
-  }
-  match self.on_runtime_open_chats {
-    Some(cb) => {
-      let rt_chats = cb(ws)
-      for i in 0..<rt_chats.length() {
-        open_chats.push(rt_chats[i])
-      }
-    }
-    None => ()
-  }
-  let fetched_keys : Map[String, Bool] = Map::new()
-  for i in 0..<open_chats.length() {
-    let (st, th_opt, sess_opt) = open_chats[i]
-    let resolved_th : Option[Int] = match th_opt {
-      Some(th) => Some(th)
-      None => match sess_opt {
-        Some(sk) => self.lookup_thread_for_session(st, sk)
-        None => None
-      }
-    }
-    match resolved_th {
-      Some(th) => {
-        let fk = st + ":" + th.to_string()
-        if fetched_keys.get(fk).is_none() {
-          fetched_keys.set(fk, true)
-          self.request_chat_confirmation_fetch(st, Some(th), sess_opt)
-        }
-      }
-      None => ()
-    }
   }
 }
 
@@ -2361,7 +2319,7 @@ pub fn ClientCore::commit_cloud_me(
   req_seq : Int64 = 0L,
   now_ms : Int64 = 0L,
 ) -> Result[Bool, String] {
-  // 0. Immutable account/DB binding check BEFORE any state change, pending_purges load, or retain/drop!
+  // 0. Immutable account/DB binding & session validity check BEFORE any state change, pending_purges load, or retain/drop!
   if me.sub.length() == 0 {
     return Err("account_sub_mismatch: empty /v1/me sub")
   }
@@ -2370,6 +2328,9 @@ pub fn ClientCore::commit_cloud_me(
       return Err("account_sub_mismatch: expected " + existing + ", got " + me.sub)
     }
     None => ()
+  }
+  if self.membership.is_session_invalidated() {
+    return Err("session_invalidated")
   }
   if !self.membership.can_commit_cloud_me(req_seq) {
     return Ok(false)
@@ -2385,6 +2346,8 @@ pub fn ClientCore::commit_cloud_me(
 
   // Detect removed workspaces (`retain`): compare strictly against SQLite `workspace` rows + `pending_purges`
   // + active non-revoked station bindings (NEVER re-drop already-dropped revoked workspaces!).
+  // Per-workspace seq comparison ensures a newer `/v1/workspaces/B` commit (e.g. seq=11) NEVER cancels
+  // `/v1/me` (seq=10)'s removal of workspace A!
   let existing_ws : Array[String] = []
   match store::list_workspaces(self.db) {
     sql::SqlResult::Ok(rows) => {
@@ -2408,7 +2371,7 @@ pub fn ClientCore::commit_cloud_me(
   let mut drop_err : Option[String] = None
   for i in 0..<existing_ws.length() {
     let wid = existing_ws[i]
-    if raw_me_ws_ids.get(wid).is_none() {
+    if raw_me_ws_ids.get(wid).is_none() && self.membership.should_apply_me_workspace(wid, req_seq) {
       match self.drop_workspace(wid) {
         Ok(_) => ()
         Err(msg) => {
@@ -2426,6 +2389,9 @@ pub fn ClientCore::commit_cloud_me(
   let rejoined : Array[String] = []
   for i in 0..<me.workspaces.length() {
     let wid = me.workspaces[i].id
+    if !self.membership.should_apply_me_workspace(wid, req_seq) {
+      continue
+    }
     let was_pending = self.membership.has_pending_purge(wid)
     let was_revoked = self.membership.is_revoked(wid)
     if was_pending {
@@ -2439,23 +2405,25 @@ pub fn ClientCore::commit_cloud_me(
     }
   }
 
-  // Step 2 & Step 3: Atomically persist `account_doc("me")` AND clear persisted `revoked` + `pending_purges`
-  // markers for rejoined workspaces inside ONE single SQLite transaction!
+  // Step 2 & Step 3: Atomically persist `account_doc("me")`, `completed_purge_gen`, AND clear persisted
+  // `revoked` + `pending_purges` markers for rejoined workspaces inside ONE single SQLite transaction!
   // Only AFTER this SQLite transaction commits do we release in-memory gates & bump generations.
   let eff_now = if now_ms > 0L { now_ms } else { self.rt.now() }
   let raw_json = base_codec::json_stringify(me.raw)
   let saved_revoked : Array[String] = []
-  let saved_pending : Array[(String, Array[String])] = []
+  let saved_pending : Array[(String, Int64, Array[String])] = []
+  let saved_completed : Array[(String, Option[Int64])] = []
   for i in 0..<rejoined.length() {
     let wid = rejoined[i]
     if self.membership.is_revoked(wid) {
       saved_revoked.push(wid)
     }
-    if self.membership.has_pending_purge(wid) {
-      saved_pending.push((wid, self.membership.stations_to_purge(wid)))
+    match self.membership.pending_purge_op_gen_of(wid) {
+      Some(og) => saved_pending.push((wid, og, self.membership.stations_to_purge(wid)))
+      None => ()
     }
-    self.membership.clear_pending_purge(wid)
-    self.membership.clear_revoked(wid)
+    let prev_comp = self.membership.record_rejoin_completed_gen(wid)
+    saved_completed.push((wid, prev_comp))
   }
   let burst = sql::Burst::new(self.db)
   match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
@@ -2476,13 +2444,18 @@ pub fn ClientCore::commit_cloud_me(
     sql::SqlResult::Ok(())
   }) {
     sql::SqlResult::Err(e) => {
-      // Restore in-memory latches if the atomic SQLite commit failed!
+      // Restore in-memory latches & `completed_purge_gen` if the atomic SQLite commit failed!
+      for i in 0..<saved_completed.length() {
+        self.membership.restore_completed_purge_gen(saved_completed[i].0, saved_completed[i].1)
+      }
       for i in 0..<saved_pending.length() {
-        self.membership.latch_purge(saved_pending[i].0, saved_pending[i].1)
+        self.membership.restore_pending_purge(saved_pending[i].0, saved_pending[i].1, saved_pending[i].2)
       }
       for i in 0..<saved_revoked.length() {
-        self.membership.latch_purge(saved_revoked[i], [])
-        self.membership.clear_pending_purge(saved_revoked[i])
+        if !self.membership.has_pending_purge(saved_revoked[i]) {
+          let _ = self.membership.latch_purge(saved_revoked[i], [])
+          self.membership.clear_pending_purge(saved_revoked[i])
+        }
       }
       return Err(e.to_string())
     }
@@ -2505,9 +2478,13 @@ pub fn ClientCore::commit_cloud_me(
     }
   }
 
-  // Detect role downgrades (latch `PendingAuthConfirm`) and upgrades (immediately clear `PendingAuthConfirm`).
+  // Detect role downgrades (latch `PendingAuthConfirm`) and upgrades (immediately clear `PendingAuthConfirm`)
+  // ONLY for workspaces where `req_seq > ws_commit_seq[ws]` (preserving newer `/v1/workspaces/B` observations!).
   for i in 0..<me.workspaces.length() {
     let wref = me.workspaces[i]
+    if !self.membership.should_apply_me_workspace(wref.id, req_seq) {
+      continue
+    }
     let was_rejoined = contains_str_ma(rejoined, wref.id)
     if !was_rejoined {
       match self.membership.role_of(wref.id) {
@@ -2532,8 +2509,7 @@ pub fn ClientCore::commit_cloud_me(
     }
   }
 
-  // Step 5: Advance unified monotonic `cloud_commit_seq` AND `ws_commit_seq` for ALL workspaces
-  // (current AND dropped) so an older `/v1/workspaces/<id>` response can NEVER overwrite a newer `/v1/me`!
+  // Step 5: Advance `cloud_commit_seq` and per-workspace `ws_commit_seq` (monotonic max, never regressing newer ws commits!).
   self.membership.advance_cloud_me_seq(req_seq)
   for i in 0..<me.workspaces.length() {
     self.membership.advance_workspace_seq(me.workspaces[i].id, req_seq)
@@ -2559,6 +2535,9 @@ pub fn ClientCore::commit_cloud_workspace(
   req_seq : Int64 = 0L,
   now_ms : Int64 = 0L,
 ) -> Result[Bool, String] {
+  if self.membership.is_session_invalidated() {
+    return Err("session_invalidated")
+  }
   if !self.membership.can_commit_workspace(ws.id, req_seq) {
     return Ok(false)
   }
@@ -2751,6 +2730,10 @@ pub fn ClientCore::invalidate_session(
     None => true
   }
   if affects_active_db {
+    match self.on_session_invalidated {
+      Some(cb) => cb(sub)
+      None => ()
+    }
     self.membership.mark_session_invalidated()
     self.stop()
     let _ = self.auth.bump_all()
@@ -4843,10 +4826,33 @@ fn ClientCore::apply_lock_chain_for_workspace(
         None => false
       }
       if full_changed {
+        let next_gen = self.auth.workspace_auth_gen(target_ws) + 1
+        let reanchored = self.membership.reanchor_pending_auth_confirm(target_ws, next_gen)
         if sec_changed {
           let _ = self.auth.bump_workspace_and_vault(target_ws)
         } else {
           let _ = self.auth.bump_workspace(target_ws)
+        }
+        if reanchored {
+          match self.on_workspace_refresh {
+            Some(cb) => cb(target_ws)
+            None => ()
+          }
+          let attached = self.collect_attached_stations_for_workspace(target_ws)
+          for ai in 0..<attached.length() {
+            let st = attached[ai]
+            match self.station_sync(st) {
+              Some(sy) => {
+                let _ = self.rt.fork_quiet_named("lock-reanchor-snapshot:" + st, fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+                  sy.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+                    k(effect::Exit::Succeeded(()))
+                  })
+                })
+                self.trigger_unconfirmed_open_chats_for_station(target_ws, st)
+              }
+              None => ()
+            }
+          }
         }
       }
       self.outbox.tell(CoreEvent::LockUpdated(

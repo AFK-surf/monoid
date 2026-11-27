@@ -390,39 +390,82 @@ test("Slice 2B real TS accounts.ts parity: Pion serialize_stored_accounts (acces
   assert.equal(ulidRes.valid, true);
   assert.match(ulidRes.ulid, /^[0-9A-HJKMNP-TV-Z]{26}$/);
 
-  // 5. Verify strict `/v1/me` (missing sub, bad role, duplicate ws id, bad elem) and `/v1/workspaces/<id>` rejection via Pion CLI.
+  // 5. Verify strict `/v1/me` (26-char Crockford Base32 ULID workspace IDs, required `created_at`/`stations`/`members`,
+  // missing sub, bad role, duplicate ws id, bad elem) and `/v1/workspaces/<id>` rejection via Pion CLI.
+  const validWs1 = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+  const validWs2 = "01ARZ3NDEKTSV4RRFFQ69G5FBW";
+  const okMe = await rpc.call("membership.parseCloudMeStrict", {
+    payload: {
+      user: { sub: "u1" },
+      workspaces: [{ id: validWs1, name: "OK", role: "owner", created_at: 1700000000, stations: 1, members: 2 }],
+    },
+  });
+  assert.equal(okMe.ok, true);
+  const badMeNonUlid = await rpc.call("membership.parseCloudMeStrict", {
+    payload: {
+      user: { sub: "u1" },
+      workspaces: [{ id: "ws-1", name: "Bad", role: "owner", created_at: 1700000000, stations: 1, members: 1 }],
+    },
+  });
+  assert.equal(badMeNonUlid.ok, false);
+  const badMeMissingCreatedAt = await rpc.call("membership.parseCloudMeStrict", {
+    payload: {
+      user: { sub: "u1" },
+      workspaces: [{ id: validWs1, name: "NoCreated", role: "owner", stations: 1, members: 1 }],
+    },
+  });
+  assert.equal(badMeMissingCreatedAt.ok, false);
+  const badMeMissingStations = await rpc.call("membership.parseCloudMeStrict", {
+    payload: {
+      user: { sub: "u1" },
+      workspaces: [{ id: validWs1, name: "NoSt", role: "owner", created_at: 1700000000, members: 1 }],
+    },
+  });
+  assert.equal(badMeMissingStations.ok, false);
+  const badMeMissingMembers = await rpc.call("membership.parseCloudMeStrict", {
+    payload: {
+      user: { sub: "u1" },
+      workspaces: [{ id: validWs1, name: "NoMem", role: "owner", created_at: 1700000000, stations: 1 }],
+    },
+  });
+  assert.equal(badMeMissingMembers.ok, false);
   const badMeElem = await rpc.call("membership.parseCloudMeStrict", {
-    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "OK", role: "owner" }, { bad: true }] },
+    payload: { user: { sub: "u1" }, workspaces: [{ id: validWs1, name: "OK", role: "owner", created_at: 1, stations: 0, members: 1 }, { bad: true }] },
   });
   assert.equal(badMeElem.ok, false);
   const badMeNoSub = await rpc.call("membership.parseCloudMeStrict", {
-    payload: { workspaces: [{ id: "ws-1", name: "OK", role: "owner" }] },
+    payload: { workspaces: [{ id: validWs1, name: "OK", role: "owner", created_at: 1, stations: 0, members: 1 }] },
   });
   assert.equal(badMeNoSub.ok, false);
   const badMeRole = await rpc.call("membership.parseCloudMeStrict", {
-    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "OK", role: "superadmin" }] },
+    payload: { user: { sub: "u1" }, workspaces: [{ id: validWs1, name: "OK", role: "superadmin", created_at: 1, stations: 0, members: 1 }] },
   });
   assert.equal(badMeRole.ok, false);
   const badMeDup = await rpc.call("membership.parseCloudMeStrict", {
-    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "A", role: "owner" }, { id: "ws-1", name: "B", role: "member" }] },
+    payload: { user: { sub: "u1" }, workspaces: [{ id: validWs1, name: "A", role: "owner", created_at: 1, stations: 0, members: 1 }, { id: validWs1, name: "B", role: "member", created_at: 1, stations: 0, members: 1 }] },
   });
   assert.equal(badMeDup.ok, false);
   const badMeSlashId = await rpc.call("membership.parseCloudMeStrict", {
-    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws/evil", name: "Bad", role: "owner" }] },
+    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws/evil", name: "Bad", role: "owner", created_at: 1, stations: 0, members: 1 }] },
   });
   assert.equal(badMeSlashId.ok, false);
   const badMeEmptyName = await rpc.call("membership.parseCloudMeStrict", {
-    payload: { user: { sub: "u1" }, workspaces: [{ id: "ws-1", name: "", role: "owner" }] },
+    payload: { user: { sub: "u1" }, workspaces: [{ id: validWs1, name: "", role: "owner", created_at: 1, stations: 0, members: 1 }] },
   });
   assert.equal(badMeEmptyName.ok, false);
   const badWs = await rpc.call("membership.parseCloudWorkspaceStrict", {
-    payload: { id: "ws-other", name: "Wrong", stations: [] },
-    requestedWs: "ws-1",
+    payload: { id: validWs2, name: "Wrong", stations: [] },
+    requestedWs: validWs1,
   });
   assert.equal(badWs.ok, false);
-  const badWsStationPrefix = await rpc.call("membership.parseCloudWorkspaceStrict", {
-    payload: { id: "ws-1", name: "OK", stations: [{ id: "ws-2/st-evil", name: "Evil" }] },
+  const badWsNonUlid = await rpc.call("membership.parseCloudWorkspaceStrict", {
+    payload: { id: "ws-1", name: "NonUlid", stations: [] },
     requestedWs: "ws-1",
+  });
+  assert.equal(badWsNonUlid.ok, false);
+  const badWsStationPrefix = await rpc.call("membership.parseCloudWorkspaceStrict", {
+    payload: { id: validWs1, name: "OK", stations: [{ id: validWs2 + "/st-evil", name: "Evil" }] },
+    requestedWs: validWs1,
   });
   assert.equal(badWsStationPrefix.ok, false);
 });

@@ -806,7 +806,10 @@ pub fn SyncScheduler::fetch_thread_k(
           if self.current_cred_epoch() != enqueue_cred_epoch {
             return Err("cred_epoch_changed")
           }
-          match self.events.apply_snapshot(j) {
+          if !is_valid_thread_entries_payload(j, thread) {
+            return Err("malformed_thread_entries")
+          }
+          match self.events.apply_thread_entries(thread, j) {
             sql::SqlResult::Err(e) => Err(e.to_string())
             sql::SqlResult::Ok(n) => {
               self.pending_refresh.remove(key)

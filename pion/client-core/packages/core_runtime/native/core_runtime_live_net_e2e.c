@@ -111,6 +111,7 @@ typedef struct fake_server {
     char pending_sse_event[1024];
     _Atomic int got_me;
     _Atomic int got_ws;
+    _Atomic int got_auth_token;
     _Atomic int got_events;
     _Atomic int got_post_msg;
 } fake_server_t;
@@ -187,21 +188,37 @@ static void *handle_client_thread(void *arg) {
             200,
             "OK",
             "{\"user\":{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},"
-            "\"workspaces\":[{\"id\":\"ws-live\",\"name\":\"Live Workspace\",\"role\":\"owner\"}],"
+            "\"workspaces\":[{\"id\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"name\":\"Live Workspace\",\"role\":\"owner\",\"created_at\":1700000000,\"stations\":1,\"members\":1}],"
             "\"relay_urls\":[\"https://relay.live.example\"]}");
         close(fd);
         return NULL;
     }
 
-    if (strncmp(buf, "GET /v1/workspaces/ws-live ", 27) == 0) {
+    if (strncmp(buf, "GET /v1/workspaces/01ARZ3NDEKTSV4RRFFQ69G5FAV ", 46) == 0) {
         atomic_fetch_add(&g_srv.got_ws, 1);
         send_http_json(
             fd,
             200,
             "OK",
-            "{\"id\":\"ws-live\",\"name\":\"Live Workspace\",\"rev\":1,"
+            "{\"id\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\",\"name\":\"Live Workspace\",\"rev\":1,"
             "\"members\":[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],"
             "\"stations\":[{\"id\":\"st-local\",\"name\":\"Live Station\",\"online\":true}]}");
+        close(fd);
+        return NULL;
+    }
+
+    if (strncmp(buf, "POST /v1/auth/token ", 20) == 0) {
+        const char *body = buf + header_end;
+        assert(strstr(body, "\"code\":\"live_oauth_code_42\"") != NULL);
+        assert(strstr(body, "\"code_verifier\":\"") != NULL);
+        assert(strstr(body, "\"redirect_uri\":\"stillfail://auth/callback\"") != NULL);
+        atomic_fetch_add(&g_srv.got_auth_token, 1);
+        send_http_json(
+            fd,
+            200,
+            "OK",
+            "{\"access_token\":\"acc-exchanged-42\",\"refresh_token\":\"ref-exchanged-42\","
+            "\"subject\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"expires_at\":1900000000}");
         close(fd);
         return NULL;
     }
@@ -349,13 +366,18 @@ int main(void) {
     mb_core_attach_pion_runtime();
     mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
 
-    // 1. Real Rust `fetch` -> GET /v1/me + GET /v1/workspaces/ws-live -> persisted to SQLite WAL
-    send_json("{\"id\":1,\"call\":\"cloud.sync\",\"params\":{\"token\":\"tok-live\",\"workspace\":\"ws-live\"}}");
-    char *m_cloud = wait_for_matching_msg(&g_host, "\"id\":1", "\"workspace\":\"ws-live\"", 10);
+    // 1. Real Rust `fetch` -> GET /v1/me + GET /v1/workspaces/01ARZ3NDEKTSV4RRFFQ69G5FAV -> persisted to SQLite WAL
+    send_json("{\"id\":1,\"call\":\"cloud.sync\",\"params\":{\"token\":\"tok-live\",\"workspace\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"}}");
+    char *m_cloud = wait_for_matching_msg(&g_host, "\"id\":1", "\"workspace\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"", 10);
     printf("[live_net_e2e] #1 cloud.sync -> %s\n", m_cloud);
     assert(strstr(m_cloud, "\"email\":\"alice@still.fail\"") != NULL);
     assert(strstr(m_cloud, "\"stations\":1") != NULL);
     assert(atomic_load(&g_srv.got_me) >= 1 && atomic_load(&g_srv.got_ws) >= 1);
+
+    // 1b. Pinned trusted origin guard: foreign origin in `cloud.sync` MUST be rejected with `origin_mismatch`!
+    send_json("{\"id\":101,\"call\":\"cloud.sync\",\"params\":{\"origin\":\"https://evil.example\"}}");
+    char *m_bad_orig = wait_for_matching_msg(&g_host, "\"id\":101", "origin_mismatch", 10);
+    printf("[live_net_e2e] #101 cloud.sync foreign origin rejected -> %s\n", m_bad_orig);
 
     // 2. Subscribe to real `packages/views` projections: workspaces, stations, chats, chat, lock, vaults
     send_json("{\"id\":10,\"subscribe\":{\"topic\":\"workspaces\"},\"keyed\":true}");
@@ -363,11 +385,11 @@ int main(void) {
     printf("[live_net_e2e] #10 subscribe workspaces -> %s\n", m_ws_sub);
     assert(strstr(m_ws_sub, "Live Workspace") != NULL);
 
-    send_json("{\"id\":11,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"ws-live\"},\"keyed\":true}");
+    send_json("{\"id\":11,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"},\"keyed\":true}");
     char *m_st_sub = wait_for_matching_msg(&g_host, "\"id\":11", "Live Station", 10);
     printf("[live_net_e2e] #11 subscribe stations -> %s\n", m_st_sub);
 
-    send_json("{\"id\":12,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-live\"},\"keyed\":true}");
+    send_json("{\"id\":12,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"},\"keyed\":true}");
     char *m_chats_sub = wait_for_matching_msg(&g_host, "\"id\":12", "\"days\"", 10);
     printf("[live_net_e2e] #12 subscribe chats -> %s\n", m_chats_sub);
 
@@ -375,16 +397,17 @@ int main(void) {
     char *m_chat_sub = wait_for_matching_msg(&g_host, "\"id\":13", "\"messages\"", 10);
     printf("[live_net_e2e] #13 subscribe chat -> %s\n", m_chat_sub);
 
-    send_json("{\"id\":14,\"subscribe\":{\"topic\":\"lock\",\"workspace\":\"ws-live\"},\"keyed\":true}");
+    send_json("{\"id\":14,\"subscribe\":{\"topic\":\"lock\",\"workspace\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"},\"keyed\":true}");
     char *m_lock_sub = wait_for_matching_msg(&g_host, "\"id\":14", "\"locked\":false", 10);
     printf("[live_net_e2e] #14 subscribe lock -> %s\n", m_lock_sub);
     assert(strstr(m_lock_sub, "\xe4\xb8\xaa\xe4\xba\xba\xe9\x94\x81") == NULL);
 
-    send_json("{\"id\":15,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-live\"},\"keyed\":true}");
+    send_json("{\"id\":15,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"},\"keyed\":true}");
     char *m_vaults_sub = wait_for_matching_msg(&g_host, "\"id\":15", "\"vaults\"", 10);
     printf("[live_net_e2e] #15 subscribe vaults -> %s\n", m_vaults_sub);
 
-    // 2b. Test `auth.begin` wire parity with `apps/mbui/core/smoke.m`: valid HTTP/HTTPS url, S256 challenge, NO verifier leak!
+    // 2b. Test `auth.begin` + pure-`query` `auth.complete` (`POST /v1/auth/token` code exchange):
+    // verifies real HTTP token exchange, `{account, returnTo}` reply, and zero token/code/verifier leak!
     send_json("{\"id\":20,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
     char *m_auth = wait_for_matching_msg(&g_host, "\"id\":20", "\"url\":\"http", 10);
     printf("[live_net_e2e] #20 auth.begin -> %s\n", m_auth);
@@ -393,6 +416,28 @@ int main(void) {
     assert(strstr(m_auth, "redirect_uri=stillfail://auth/callback") != NULL);
     assert(strstr(m_auth, "\"state\":\"") != NULL);
     assert(strstr(m_auth, "verifier") == NULL);
+    const char *st_p = strstr(m_auth, "\"state\":\"");
+    assert(st_p != NULL);
+    st_p += 9;
+    char oauth_state[128];
+    size_t oi = 0;
+    while (st_p[oi] != '\0' && st_p[oi] != '"' && oi + 1 < sizeof(oauth_state)) {
+        oauth_state[oi] = st_p[oi];
+        oi++;
+    }
+    oauth_state[oi] = '\0';
+    assert(oi > 0);
+    char complete_cmd[512];
+    snprintf(complete_cmd, sizeof(complete_cmd),
+             "{\"id\":21,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_42\"}}",
+             oauth_state);
+    send_json(complete_cmd);
+    char *m_auth_done = wait_for_matching_msg(&g_host, "\"id\":21", "\"email\":\"alice@still.fail\"", 10);
+    printf("[live_net_e2e] #21 auth.complete pure query -> %s\n", m_auth_done);
+    assert(strstr(m_auth_done, "\"returnTo\":\"/\"") != NULL);
+    assert(strstr(m_auth_done, "acc-exchanged-42") == NULL && strstr(m_auth_done, "ref-exchanged-42") == NULL);
+    assert(strstr(m_auth_done, "live_oauth_code_42") == NULL && strstr(m_auth_done, "verifier") == NULL);
+    assert(atomic_load(&g_srv.got_auth_token) == 1);
 
     // 3. Real Rust `stream.open` + `stream.read` -> first /events returns 503 -> native timer reconnects -> live `/events` SSE stream
     send_json("{\"id\":2,\"call\":\"station.connect\",\"params\":{}}");

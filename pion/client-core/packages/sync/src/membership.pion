@@ -19,6 +19,7 @@ import "store"
 import "views"
 
 pub let META_PENDING_PURGES_KEY : String = "membership:pending_purges"
+pub let META_COMPLETED_PURGE_GEN_KEY : String = "membership:completed_purge_gen"
 pub let META_STATION_BINDINGS_KEY : String = "membership:station_bindings"
 pub let META_REVOKED_WORKSPACES_KEY : String = "membership:revoked_workspaces"
 pub let HOST_PENDING_PURGES_PREFIX : String = "device/pending_purges/"
@@ -247,6 +248,11 @@ pub fn is_valid_ulid(s : String) -> Bool {
     }
   }
   true
+}
+
+/// Validate a Cloud workspace ID strictly matching `cloud/src/api.ts:412` (`^[0-9A-HJKMNP-TV-Z]{26}$`).
+pub fn is_valid_cloud_workspace_id(s : String) -> Bool {
+  is_valid_ulid(s)
 }
 
 /// Serialize `StoredAccount` array strictly matching `client/core-ts/src/accounts.ts:10, 50-69`:
@@ -549,7 +555,15 @@ pub fn exec_drop_workspace_sql(
   })
 }
 
-/// Encode `{ "<ws>": ["ws/st1", ...] }` for one account.
+/// Single workspace pending-purge record carrying a monotonic `op_gen` so stale host mirrors
+/// (`host.op_gen <= sqlite_meta.completed_purge_gen[ws]`) are discarded on restart instead of
+/// replaying over freshly rejoined workspace data.
+pub struct PendingPurgeEntry {
+  pub op_gen : Int64
+  pub stations : Array[String]
+}
+
+/// Encode `{ "<ws>": ["ws/st1", ...] }` for one account (legacy array helper).
 pub fn encode_account_purges_obj(purges : Map[String, Array[String]]) -> base_codec::Json {
   let ws_keys = purges.keys()
   let fields : Array[(String, base_codec::Json)] = []
@@ -569,9 +583,81 @@ pub fn encode_account_purges_obj(purges : Map[String, Array[String]]) -> base_co
   base_codec::json_obj(fields)
 }
 
-/// Parse a per-account `{ "<ws>": ["ws/st1", ...] }` map.
-pub fn extract_flat_ws_purges(doc : base_codec::Json) -> Map[String, Array[String]] {
-  let out : Map[String, Array[String]] = Map::new()
+/// Encode `{ "<ws>": { "op_gen": N, "stations": ["ws/st1", ...] } }` for one account.
+pub fn encode_account_purge_entries_obj(purges : Map[String, PendingPurgeEntry]) -> base_codec::Json {
+  let ws_keys = purges.keys()
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<ws_keys.length() {
+    let ws = ws_keys[i]
+    match purges.get(ws) {
+      Some(entry) => {
+        let arr : Array[base_codec::Json] = []
+        for j in 0..<entry.stations.length() {
+          arr.push(base_codec::json_str(entry.stations[j]))
+        }
+        fields.push((
+          ws,
+          base_codec::json_obj([
+            ("op_gen", base_codec::json_int64(entry.op_gen)),
+            ("stations", base_codec::json_arr(arr)),
+          ]),
+        ))
+      }
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Parse one workspace pending-purge entry:
+/// - New object format `{ "op_gen": N, "stations": ["ws/st1", ...] }` (missing `op_gen` defaults to `0L`).
+/// - Legacy array format `["ws/st1", ...]` (treated as `op_gen = 0L`).
+/// Returns `None` for any other JSON shape (including nested `{ sub: { ws: ... } }` objects).
+pub fn parse_ws_purge_entry(v : base_codec::Json) -> Option[PendingPurgeEntry] {
+  match v {
+    base_codec::Json::Arr(xs) => {
+      let sts : Array[String] = []
+      for j in 0..<xs.length() {
+        match xs[j] {
+          base_codec::Json::Str(s) => push_unique_str_ma(sts, s)
+          _ => ()
+        }
+      }
+      Some(PendingPurgeEntry::{ op_gen: 0L, stations: sts })
+    }
+    base_codec::Json::Obj(_) => match base_codec::json_get(v, "stations") {
+      Some(base_codec::Json::Arr(xs)) => {
+        let sts : Array[String] = []
+        for j in 0..<xs.length() {
+          match xs[j] {
+            base_codec::Json::Str(s) => push_unique_str_ma(sts, s)
+            _ => ()
+          }
+        }
+        let op_gen = match base_codec::json_get(v, "op_gen") {
+          Some(base_codec::Json::Num(n, repr)) => {
+            if repr.length() > 0 && !repr.contains(".") && !repr.contains("e") && !repr.contains("E") {
+              match base_codec::parse_int64_str(repr) {
+                Some(g) => g
+                None => n.to_int64()
+              }
+            } else {
+              n.to_int64()
+            }
+          }
+          _ => 0L
+        }
+        Some(PendingPurgeEntry::{ op_gen: op_gen, stations: sts })
+      }
+      _ => None
+    }
+    _ => None
+  }
+}
+
+/// Parse a flat per-account `{ "<ws>": { "op_gen": N, "stations": [...] } | [...] }` map.
+pub fn extract_flat_ws_purge_entries(doc : base_codec::Json) -> Map[String, PendingPurgeEntry] {
+  let out : Map[String, PendingPurgeEntry] = Map::new()
   match doc {
     base_codec::Json::Obj(ws_pairs) => {
       for i in 0..<ws_pairs.length() {
@@ -579,22 +665,27 @@ pub fn extract_flat_ws_purges(doc : base_codec::Json) -> Map[String, Array[Strin
         if ws.length() == 0 {
           continue
         }
-        match entry_v {
-          base_codec::Json::Arr(xs) => {
-            let sts : Array[String] = []
-            for j in 0..<xs.length() {
-              match xs[j] {
-                base_codec::Json::Str(s) => push_unique_str_ma(sts, s)
-                _ => ()
-              }
-            }
-            out.set(ws, sts)
-          }
-          _ => ()
+        match parse_ws_purge_entry(entry_v) {
+          Some(entry) => out.set(ws, entry)
+          None => ()
         }
       }
     }
     _ => ()
+  }
+  out
+}
+
+/// Parse a flat per-account `{ "<ws>": ["ws/st1", ...] }` map (stations-only projection).
+pub fn extract_flat_ws_purges(doc : base_codec::Json) -> Map[String, Array[String]] {
+  let entries = extract_flat_ws_purge_entries(doc)
+  let out : Map[String, Array[String]] = Map::new()
+  let ks = entries.keys()
+  for i in 0..<ks.length() {
+    match entries.get(ks[i]) {
+      Some(e) => out.set(ks[i], e.stations)
+      None => ()
+    }
   }
   out
 }
@@ -626,50 +717,89 @@ pub fn merge_host_pending_purges(
   base_codec::json_obj(out_fields)
 }
 
-/// Extract ONLY `account_sub`'s pending purges from `{ "<sub1>": { "<ws>": [...] } }`.
-/// Returns an empty map when `account_sub` is empty (no `__default__` fallback).
-pub fn extract_account_pending_purges(
+fn encode_meta_pending_purge_entries_doc(
+  account_sub : String,
+  purges : Map[String, PendingPurgeEntry],
+) -> base_codec::Json {
+  if account_sub.length() == 0 || purges.keys().length() == 0 {
+    return base_codec::json_obj([])
+  }
+  base_codec::json_obj([(account_sub, encode_account_purge_entries_obj(purges))])
+}
+
+/// Strictly extract ONLY `account_sub`'s pending purge entries from a shared/meta document
+/// (`device/pending_purges` or SQLite `meta("membership:pending_purges")`).
+/// ONLY accepts the exact outer key `doc[account_sub]`; NEVER guesses flat `{ws: ...}` shapes!
+pub fn extract_account_pending_purge_entries(
   doc : base_codec::Json,
   account_sub : String,
-) -> Map[String, Array[String]] {
-  let out : Map[String, Array[String]] = Map::new()
+) -> Map[String, PendingPurgeEntry] {
+  let out : Map[String, PendingPurgeEntry] = Map::new()
   if account_sub.length() == 0 {
     return out
   }
   match doc {
     base_codec::Json::Obj(_) =>
     match base_codec::json_get(doc, account_sub) {
-      Some(sub_obj) => extract_flat_ws_purges(sub_obj)
+      Some(sub_obj) =>
+      match sub_obj {
+        base_codec::Json::Obj(_) =>
+        // Ensure `sub_obj` is an account map `{ ws: ... }` and not itself a stray flat `{op_gen, stations}` entry.
+        if parse_ws_purge_entry(sub_obj).is_some() {
+          out
+        } else {
+          extract_flat_ws_purge_entries(sub_obj)
+        }
+        _ => out
+      }
       None => out
     }
     _ => out
   }
 }
 
-/// Extract pending purges for `account_sub` from either the per-account format
-/// `{ "<ws>": [...] }` (stored under `device/pending_purges/<sanitized_sub>`) or the nested
-/// account-scoped format `{ "<sub1>": { "<ws>": [...] } }`.
-fn extract_purges_for_sub(doc : base_codec::Json, account_sub : String) -> Map[String, Array[String]] {
+/// Extract ONLY `account_sub`'s pending purge station lists from `{ "<sub1>": { "<ws>": ... } }`.
+/// Returns an empty map when `account_sub` is empty or the outer key is missing (no flat fallback).
+pub fn extract_account_pending_purges(
+  doc : base_codec::Json,
+  account_sub : String,
+) -> Map[String, Array[String]] {
+  let entries = extract_account_pending_purge_entries(doc, account_sub)
+  let out : Map[String, Array[String]] = Map::new()
+  let ks = entries.keys()
+  for i in 0..<ks.length() {
+    match entries.get(ks[i]) {
+      Some(e) => out.set(ks[i], e.stations)
+      None => ()
+    }
+  }
+  out
+}
+
+/// Extract pending purge entries ONLY from a dedicated per-account host storage document
+/// (`device/pending_purges/<sanitized_sub>`): accepts either flat `{ "<ws>": ... }` OR
+/// account-wrapped `{ "<account_sub>": { "<ws>": ... } }` matching `account_sub`.
+fn extract_per_account_host_purge_entries(
+  doc : base_codec::Json,
+  account_sub : String,
+) -> Map[String, PendingPurgeEntry] {
   if account_sub.length() == 0 {
     return Map::new()
   }
   match doc {
-    base_codec::Json::Obj(pairs) => {
-      let mut has_nested_obj = false
-      for i in 0..<pairs.length() {
-        match pairs[i].1 {
-          base_codec::Json::Obj(_) => {
-            has_nested_obj = true
-            break
+    base_codec::Json::Obj(_) => {
+      match base_codec::json_get(doc, account_sub) {
+        Some(sub_obj) =>
+        match sub_obj {
+          base_codec::Json::Obj(_) =>
+          if parse_ws_purge_entry(sub_obj).is_none() {
+            return extract_flat_ws_purge_entries(sub_obj)
           }
           _ => ()
         }
+        None => ()
       }
-      if has_nested_obj {
-        extract_account_pending_purges(doc, account_sub)
-      } else {
-        extract_flat_ws_purges(doc)
-      }
+      extract_flat_ws_purge_entries(doc)
     }
     _ => Map::new()
   }
@@ -677,11 +807,12 @@ fn extract_purges_for_sub(doc : base_codec::Json, account_sub : String) -> Map[S
 
 /// Single TS-aligned post-downgrade confirmation record (`client/core-ts/src/core.ts:353-363, 1539-1596`).
 /// Memory-only: gates ONLY resources that have active production fetchers triggered on downgrade
-/// (`workspace`, `chats`, and open/newly-opened `chat`), anchored to both `authGen` and `min_transport_epoch`
-/// so fast pre-downgrade / old-link responses can never falsely confirm.
+/// (`workspace`, `chats`, and open/newly-opened `chat`), anchored to `authGen` and per-station
+/// `station_min_epoch` (initialized to each station's `transport_epoch + 1L` so old-link responses
+/// before credential installation can never falsely confirm and fast stations never block slow stations).
 pub struct PendingAuthConfirm {
-  pub gen : Int
-  pub mut min_transport_epoch : Int64
+  pub mut gen : Int
+  pub station_min_epoch : Map[String, Int64]
   pub confirmed_keys : Map[String, Bool]
 }
 
@@ -690,7 +821,8 @@ pub struct PendingAuthConfirm {
 pub struct MembershipAuthority {
   pub mut account_sub : String
   revoked : Map[String, Bool]
-  pending_purges : Map[String, Array[String]]
+  pending_purges : Map[String, PendingPurgeEntry]
+  completed_purge_gen : Map[String, Int64]
   station_ws : Map[String, String]
   ws_stations : Map[String, Array[String]]
   ws_bare_stations : Map[String, Array[String]]
@@ -703,7 +835,6 @@ pub struct MembershipAuthority {
   mut next_seq : Int64
   mut cloud_commit_seq : Int64
   ws_commit_seq : Map[String, Int64]
-  mut max_ws_seq : Int64
   mut session_invalidated : Bool
   mut last_host_persist_warn : Option[String]
   mut on_host_pending_purges_read : Option[(String) -> HostStorageRead]
@@ -715,6 +846,7 @@ pub fn MembershipAuthority::new(account_sub : String = "") -> MembershipAuthorit
     account_sub: account_sub,
     revoked: Map::new(),
     pending_purges: Map::new(),
+    completed_purge_gen: Map::new(),
     station_ws: Map::new(),
     ws_stations: Map::new(),
     ws_bare_stations: Map::new(),
@@ -727,7 +859,6 @@ pub fn MembershipAuthority::new(account_sub : String = "") -> MembershipAuthorit
     next_seq: 1L,
     cloud_commit_seq: 0L,
     ws_commit_seq: Map::new(),
-    max_ws_seq: 0L,
     session_invalidated: false,
     last_host_persist_warn: None,
     on_host_pending_purges_read: None,
@@ -956,10 +1087,10 @@ pub fn MembershipAuthority::canonical_stations_for(
     None => ()
   }
   match self.pending_purges.get(ws) {
-    Some(xs) => {
-      for i in 0..<xs.length() {
-        if xs[i].starts_with(prefix) {
-          push_unique_str_ma(out, xs[i])
+    Some(entry) => {
+      for i in 0..<entry.stations.length() {
+        if entry.stations[i].starts_with(prefix) {
+          push_unique_str_ma(out, entry.stations[i])
         }
       }
     }
@@ -1019,9 +1150,9 @@ pub fn MembershipAuthority::stations_to_purge(
     None => ()
   }
   match self.pending_purges.get(ws) {
-    Some(xs) => {
-      for i in 0..<xs.length() {
-        let s = xs[i]
+    Some(entry) => {
+      for i in 0..<entry.stations.length() {
+        let s = entry.stations[i]
         if s.contains("/") {
           if s.starts_with(prefix) {
             push_unique_str_ma(out, s)
@@ -1128,8 +1259,23 @@ fn MembershipAuthority::encode_pending_purges_meta_json(self : MembershipAuthori
   if sub.length() == 0 {
     return Err("account_sub_unbound")
   }
-  let doc = merge_host_pending_purges(None, sub, self.pending_purges)
+  let doc = encode_meta_pending_purge_entries_doc(sub, self.pending_purges)
   Ok(base_codec::json_stringify(doc))
+}
+
+fn MembershipAuthority::encode_completed_purge_gen_json(self : MembershipAuthority) -> String {
+  let gen_fields : Array[(String, base_codec::Json)] = []
+  let ks = self.completed_purge_gen.keys()
+  for i in 0..<ks.length() {
+    match self.completed_purge_gen.get(ks[i]) {
+      Some(g) => gen_fields.push((ks[i], base_codec::json_int64(g)))
+      None => ()
+    }
+  }
+  base_codec::json_stringify(base_codec::json_obj([
+    ("sub", base_codec::json_str(self.account_sub)),
+    ("gens", base_codec::json_obj(gen_fields)),
+  ]))
 }
 
 /// Persist `(ws -> { canonical, bare })` bindings + quarantined bare aliases into SQLite `meta`.
@@ -1148,8 +1294,9 @@ pub fn MembershipAuthority::persist_revoked_state(
   store::put_meta(db, META_REVOKED_WORKSPACES_KEY, self.encode_revoked_json())
 }
 
-/// Atomically persist `revoked`, `pending_purges`, and optionally `station_bindings` inside
-/// an existing SQLite `Burst` transaction. Refuses to write flat unbound meta before `account_sub` is bound.
+/// Atomically persist `revoked`, `pending_purges`, `completed_purge_gen`, and optionally
+/// `station_bindings` inside an existing SQLite `Burst` transaction.
+/// Refuses to write flat unbound meta before `account_sub` is bound.
 pub fn MembershipAuthority::persist_meta_state_in_burst(
   self : MembershipAuthority,
   b : sql::Burst,
@@ -1172,6 +1319,13 @@ pub fn MembershipAuthority::persist_meta_state_in_burst(
         sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
         sql::SqlResult::Ok(_) => ()
       }
+      match b.run(store::sql_meta_put(), params=[
+        base_codec::json_str(META_COMPLETED_PURGE_GEN_KEY),
+        base_codec::json_str(self.encode_completed_purge_gen_json()),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
       if include_bindings {
         match b.run(store::sql_meta_put(), params=[
           base_codec::json_str(META_STATION_BINDINGS_KEY),
@@ -1186,15 +1340,15 @@ pub fn MembershipAuthority::persist_meta_state_in_burst(
   }
 }
 
-/// Persist this account's pending purges to its dedicated per-account host storage key
-/// `device/pending_purges/<sanitized_sub>` (zero cross-account RMW contention!).
+/// Persist this account's pending purges (with monotonic `op_gen`) to its dedicated per-account
+/// host storage key `device/pending_purges/<sanitized_sub>` (zero cross-account RMW contention!).
 /// Records `last_host_persist_warn` on error and returns `Err(msg)`.
 pub fn MembershipAuthority::sync_host_pending_purges(self : MembershipAuthority) -> Result[Unit, String] {
   let key = host_pending_purges_key_for_sub(self.account_sub)
   if key.length() == 0 {
     return Err("account_sub_unbound")
   }
-  let payload = encode_account_purges_obj(self.pending_purges)
+  let payload = encode_account_purge_entries_obj(self.pending_purges)
   match self.on_host_pending_purges_save {
     Some(hook) =>
     match hook(key, payload) {
@@ -1211,8 +1365,8 @@ pub fn MembershipAuthority::sync_host_pending_purges(self : MembershipAuthority)
   }
 }
 
-/// Persist account-scoped `pending_purges` + `revoked` to SQLite `meta` in ONE transaction,
-/// and mirror to per-account host storage `device/pending_purges/<sanitized_sub>`.
+/// Persist account-scoped `pending_purges` + `completed_purge_gen` + `revoked` to SQLite `meta` in
+/// ONE transaction, and mirror to per-account host storage `device/pending_purges/<sanitized_sub>`.
 /// Refuses unbound accounts (never writes flat `{ws:[...]}` before `account_sub` is bound).
 /// Succeeds when SQLite commit succeeded even if optional host backup write warned;
 /// returns `Err` when SQLite write fails.
@@ -1240,41 +1394,53 @@ pub fn MembershipAuthority::persist_pending_purges(
   }
 }
 
-fn MembershipAuthority::apply_pending_purges_map(
+/// Merge parsed pending-purge entries into memory, discarding any entry superseded by
+/// `completed_purge_gen[ws]` (`entry.op_gen <= completed`). Returns `true` iff at least one
+/// stale entry was discarded so callers can scrub stale host mirrors.
+fn MembershipAuthority::apply_pending_purge_entries_map(
   self : MembershipAuthority,
-  mine : Map[String, Array[String]],
-) -> Unit {
+  mine : Map[String, PendingPurgeEntry],
+) -> Bool {
+  let mut discarded_stale = false
   let ws_keys = mine.keys()
   for i in 0..<ws_keys.length() {
     let ws = ws_keys[i]
     match mine.get(ws) {
-      Some(sts) => {
-        let merged = match self.pending_purges.get(ws) {
-          Some(existing) => existing
-          None => {
-            let xs : Array[String] = []
-            self.pending_purges.set(ws, xs)
-            xs
-          }
+      Some(entry) => {
+        let is_superseded = match self.completed_purge_gen.get(ws) {
+          Some(comp) => entry.op_gen <= comp
+          None => false
         }
-        for j in 0..<sts.length() {
-          match resolve_station_for_workspace(ws, sts[j]) {
+        if is_superseded {
+          discarded_stale = true
+          continue
+        }
+        let (prev_gen, merged_sts) = match self.pending_purges.get(ws) {
+          Some(existing) => (existing.op_gen, existing.stations)
+          None => (entry.op_gen, [])
+        }
+        let next_gen = if entry.op_gen > prev_gen { entry.op_gen } else { prev_gen }
+        for j in 0..<entry.stations.length() {
+          match resolve_station_for_workspace(ws, entry.stations[j]) {
             Ok(_) => {
-              push_unique_str_ma(merged, sts[j])
-              let _ = self.bind_station_checked(ws, sts[j])
+              push_unique_str_ma(merged_sts, entry.stations[j])
+              let _ = self.bind_station_checked(ws, entry.stations[j])
             }
             Err(_) => ()
           }
         }
+        self.pending_purges.set(ws, PendingPurgeEntry::{ op_gen: next_gen, stations: merged_sts })
         self.revoked.set(ws, true)
       }
       None => ()
     }
   }
+  discarded_stale
 }
 
-/// Load persisted station bindings (including quarantined bare aliases), pending purges,
-/// and revoked latches from SQLite (`meta` + `workspace`) into O(1) memory mirrors.
+/// Load persisted station bindings (including quarantined bare aliases), `completed_purge_gen`,
+/// pending purges, and revoked latches from SQLite (`meta` + `workspace`) into O(1) memory mirrors.
+/// SQLite `meta("membership:pending_purges")` strictly requires outer key `doc[account_sub]`.
 pub fn MembershipAuthority::load_from_db(self : MembershipAuthority, db : sql::Sql) -> Unit {
   // 1. Hydrate `(ws -> stations)` from persisted `workspace` rows (with strict prefix validation).
   match store::list_workspaces(db) {
@@ -1351,20 +1517,62 @@ pub fn MembershipAuthority::load_from_db(self : MembershipAuthority, db : sql::S
     }
     _ => ()
   }
-  // 3. Hydrate SQLite `meta` pending_purges (strictly scoped to `self.account_sub`).
+  // 3. Hydrate `completed_purge_gen` FIRST so subsequent pending-purge reconciliation discards superseded entries!
   if self.account_sub.length() > 0 {
-    match store::get_meta(db, META_PENDING_PURGES_KEY) {
+    match store::get_meta(db, META_COMPLETED_PURGE_GEN_KEY) {
       sql::SqlResult::Ok(Some(raw)) =>
       match base_codec::json_parse(raw) {
         base_codec::JsonParseResult::Ok(doc) => {
-          self.apply_pending_purges_map(extract_purges_for_sub(doc, self.account_sub))
+          let doc_sub = j_str(doc, "sub")
+          if doc_sub.length() == 0 || doc_sub == self.account_sub {
+            match base_codec::json_get(doc, "gens") {
+              Some(base_codec::Json::Obj(pairs)) => {
+                for i in 0..<pairs.length() {
+                  let (ws, v) = pairs[i]
+                  if ws.length() > 0 {
+                    match v {
+                      base_codec::Json::Num(n, repr) => {
+                        let g = if repr.length() > 0 && !repr.contains(".") {
+                          match base_codec::parse_int64_str(repr) {
+                            Some(pv) => pv
+                            None => n.to_int64()
+                          }
+                        } else {
+                          n.to_int64()
+                        }
+                        match self.completed_purge_gen.get(ws) {
+                          Some(cur) => if g > cur { self.completed_purge_gen.set(ws, g) }
+                          None => self.completed_purge_gen.set(ws, g)
+                        }
+                      }
+                      _ => ()
+                    }
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
         }
         base_codec::JsonParseResult::Err(_) => ()
       }
       _ => ()
     }
   }
-  // 4. Hydrate persisted `revoked` latches (`meta("membership:revoked_workspaces")`).
+  // 4. Hydrate SQLite `meta` pending_purges (STRICTLY outer key `doc[self.account_sub]`, NEVER flat!).
+  if self.account_sub.length() > 0 {
+    match store::get_meta(db, META_PENDING_PURGES_KEY) {
+      sql::SqlResult::Ok(Some(raw)) =>
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(doc) => {
+          let _ = self.apply_pending_purge_entries_map(extract_account_pending_purge_entries(doc, self.account_sub))
+        }
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+      _ => ()
+    }
+  }
+  // 5. Hydrate persisted `revoked` latches (`meta("membership:revoked_workspaces")`).
   match store::get_meta(db, META_REVOKED_WORKSPACES_KEY) {
     sql::SqlResult::Ok(Some(raw)) =>
     match base_codec::json_parse(raw) {
@@ -1391,20 +1599,34 @@ pub fn MembershipAuthority::load_from_db(self : MembershipAuthority, db : sql::S
   }
 }
 
-/// Merge a host pending-purges document for `self.account_sub` (supports both per-account
-/// `{ "<ws>": [...] }` from `device/pending_purges/<sanitized_sub>` and legacy nested format).
+/// Reconcile a host pending-purges document against `self.completed_purge_gen` strictly by source:
+/// - `is_shared_storage == true` (legacy shared `device/pending_purges`): ONLY accepts `doc[account_sub]`,
+///   NEVER guesses flat `{ws: ...}` shapes!
+/// - `is_shared_storage == false` (dedicated `device/pending_purges/<sanitized_sub>`): accepts flat
+///   `{ws: ...}` or matching `{account_sub: {ws: ...}}`.
+/// Discards any entry with `host.op_gen <= completed_purge_gen[ws]` and best-effort scrubs the host mirror!
 pub fn MembershipAuthority::merge_host_pending_purges_doc(
   self : MembershipAuthority,
   doc : base_codec::Json,
+  is_shared_storage : Bool = false,
 ) -> Unit {
   if self.account_sub.length() == 0 {
     return
   }
-  self.apply_pending_purges_map(extract_purges_for_sub(doc, self.account_sub))
+  let entries = if is_shared_storage {
+    extract_account_pending_purge_entries(doc, self.account_sub)
+  } else {
+    extract_per_account_host_purge_entries(doc, self.account_sub)
+  }
+  let discarded = self.apply_pending_purge_entries_map(entries)
+  if discarded {
+    let _ = self.sync_host_pending_purges()
+  }
 }
 
 /// Read this account's dedicated host pending-purges key (`device/pending_purges/<sanitized_sub>`)
-/// via the registered reader, strictly distinguishing `Absent` from `ReadError`.
+/// via the registered reader, strictly distinguishing `Absent` from `ReadError`, and falling back
+/// to the legacy shared `device/pending_purges` (strictly keyed by `account_sub`!) only on `Absent`.
 pub fn MembershipAuthority::load_host_pending_purges(self : MembershipAuthority) -> Result[Unit, String] {
   let key = host_pending_purges_key_for_sub(self.account_sub)
   if key.length() == 0 {
@@ -1413,10 +1635,20 @@ pub fn MembershipAuthority::load_host_pending_purges(self : MembershipAuthority)
   match self.on_host_pending_purges_read {
     Some(reader) => match reader(key) {
       HostStorageRead::Found(doc) => {
-        self.merge_host_pending_purges_doc(doc)
+        self.merge_host_pending_purges_doc(doc, is_shared_storage=false)
         Ok(())
       }
-      HostStorageRead::Absent => Ok(())
+      HostStorageRead::Absent => match reader(HOST_PENDING_PURGES_KEY) {
+        HostStorageRead::Found(shared_doc) => {
+          self.merge_host_pending_purges_doc(shared_doc, is_shared_storage=true)
+          Ok(())
+        }
+        HostStorageRead::Absent => Ok(())
+        HostStorageRead::ReadError(reason) => {
+          self.last_host_persist_warn = Some(reason)
+          Err(reason)
+        }
+      }
       HostStorageRead::ReadError(reason) => {
         self.last_host_persist_warn = Some(reason)
         Err(reason)
@@ -1429,13 +1661,14 @@ pub fn MembershipAuthority::load_host_pending_purges(self : MembershipAuthority)
 /// Immutably bind this authority (and its SQLite DB handle) to `sub`:
 /// - Rejects empty `sub` with `Err("account_sub_mismatch")`.
 /// - If already bound to a different `sub`, returns `Err("account_sub_mismatch")` with 0 side effects!
-/// - On first bind (from unbound `""`), binds `sub`, loads per-account host pending purges
-///   (or explicit `host_purges_doc`), and hydrates SQLite `meta`.
+/// - Hydrates SQLite `meta` (including `completed_purge_gen`) FIRST, THEN reconciles host pending
+///   purges so any stale host mirror (`op_gen <= completed_purge_gen[ws]`) is discarded and scrubbed!
 pub fn MembershipAuthority::bind_account_sub(
   self : MembershipAuthority,
   sub : String,
   db : Option[sql::Sql] = None,
   host_purges_doc : Option[base_codec::Json] = None,
+  host_purges_shared : Bool = false,
 ) -> Result[Unit, String] {
   if sub.length() == 0 {
     return Err("account_sub_mismatch: empty account sub")
@@ -1444,13 +1677,13 @@ pub fn MembershipAuthority::bind_account_sub(
     return Err("account_sub_mismatch: expected " + self.account_sub + ", got " + sub)
   }
   self.account_sub = sub
-  match host_purges_doc {
-    Some(doc) => self.merge_host_pending_purges_doc(doc)
-    None => { let _ = self.load_host_pending_purges() }
-  }
   match db {
     Some(d) => self.load_from_db(d)
     None => ()
+  }
+  match host_purges_doc {
+    Some(doc) => self.merge_host_pending_purges_doc(doc, is_shared_storage=host_purges_shared)
+    None => { let _ = self.load_host_pending_purges() }
   }
   Ok(())
 }
@@ -1461,8 +1694,9 @@ pub fn MembershipAuthority::set_account_sub(
   sub : String,
   db : Option[sql::Sql] = None,
   host_purges_doc : Option[base_codec::Json] = None,
+  host_purges_shared : Bool = false,
 ) -> Result[Unit, String] {
-  self.bind_account_sub(sub, db=db, host_purges_doc=host_purges_doc)
+  self.bind_account_sub(sub, db=db, host_purges_doc=host_purges_doc, host_purges_shared=host_purges_shared)
 }
 
 // ── Unified O(1) Read Gate (NEVER queries SQLite!) ──
@@ -1521,15 +1755,37 @@ pub fn MembershipAuthority::pending_purge_workspaces(self : MembershipAuthority)
   self.pending_purges.keys()
 }
 
-/// Record `ws` as revoked and latched in `pending_purges` (with its canonical/owned stations).
+pub fn MembershipAuthority::completed_purge_gen_of(self : MembershipAuthority, ws : String) -> Option[Int64] {
+  self.completed_purge_gen.get(ws)
+}
+
+pub fn MembershipAuthority::pending_purge_op_gen_of(self : MembershipAuthority, ws : String) -> Option[Int64] {
+  match self.pending_purges.get(ws) {
+    Some(e) => Some(e.op_gen)
+    None => None
+  }
+}
+
+/// Record `ws` as revoked and latched in `pending_purges` with a strictly monotonic `op_gen`
+/// (`max(completed_purge_gen[ws], pending_op_gen) + 1L`). Returns the allocated `op_gen`.
 pub fn MembershipAuthority::latch_purge(
   self : MembershipAuthority,
   ws : String,
   stations : Array[String],
-) -> Unit {
+) -> Int64 {
   if ws.length() == 0 {
-    return
+    return 0L
   }
+  let comp = match self.completed_purge_gen.get(ws) {
+    Some(g) => g
+    None => 0L
+  }
+  let pend = match self.pending_purges.get(ws) {
+    Some(e) => e.op_gen
+    None => 0L
+  }
+  let base = if comp >= pend { comp } else { pend }
+  let op_gen = base + 1L
   self.revoked.set(ws, true)
   let prefix = ws + "/"
   let copy : Array[String] = []
@@ -1539,8 +1795,74 @@ pub fn MembershipAuthority::latch_purge(
       push_unique_str_ma(copy, s)
     }
   }
-  self.pending_purges.set(ws, copy)
+  self.pending_purges.set(ws, PendingPurgeEntry::{ op_gen: op_gen, stations: copy })
   self.pending_auth_confirm.remove(ws)
+  op_gen
+}
+
+/// Restore a previously latched pending purge entry verbatim (used on SQLite meta commit rollback).
+pub fn MembershipAuthority::restore_pending_purge(
+  self : MembershipAuthority,
+  ws : String,
+  op_gen : Int64,
+  stations : Array[String],
+) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  self.revoked.set(ws, true)
+  self.pending_purges.set(ws, PendingPurgeEntry::{ op_gen: op_gen, stations: stations })
+}
+
+/// Record `completed_purge_gen[ws] = max(prev, op_gen)` and clear `pending_purges[ws]` AFTER
+/// SQLite cleanup succeeded. Returns previous `completed_purge_gen[ws]` for rollback on tx error.
+pub fn MembershipAuthority::complete_purge(
+  self : MembershipAuthority,
+  ws : String,
+  op_gen : Int64,
+) -> Option[Int64] {
+  let prev = self.completed_purge_gen.get(ws)
+  let prev_v = match prev {
+    Some(g) => g
+    None => 0L
+  }
+  let next_g = if op_gen > prev_v { op_gen } else if prev.is_none() && op_gen == 0L { 1L } else { prev_v }
+  self.completed_purge_gen.set(ws, next_g)
+  self.pending_purges.remove(ws)
+  prev
+}
+
+/// Record rejoin completion watermark (`completed_purge_gen[ws] >= max(prev, pending_op_gen, 1L)`),
+/// clearing `pending_purges[ws]` and `revoked[ws]`. Returns previous `completed_purge_gen[ws]` for rollback.
+pub fn MembershipAuthority::record_rejoin_completed_gen(self : MembershipAuthority, ws : String) -> Option[Int64] {
+  let prev = self.completed_purge_gen.get(ws)
+  let prev_v = match prev {
+    Some(g) => g
+    None => 0L
+  }
+  let pend_v = match self.pending_purges.get(ws) {
+    Some(e) => e.op_gen
+    None => 0L
+  }
+  let mut next_g = if prev_v >= pend_v { prev_v } else { pend_v }
+  if next_g < 1L {
+    next_g = 1L
+  }
+  self.completed_purge_gen.set(ws, next_g)
+  self.pending_purges.remove(ws)
+  self.revoked.remove(ws)
+  prev
+}
+
+pub fn MembershipAuthority::restore_completed_purge_gen(
+  self : MembershipAuthority,
+  ws : String,
+  prev : Option[Int64],
+) -> Unit {
+  match prev {
+    Some(g) => self.completed_purge_gen.set(ws, g)
+    None => self.completed_purge_gen.remove(ws)
+  }
 }
 
 /// Clear `ws` from `pending_purges` AFTER SQLite cleanup succeeded.
@@ -1600,32 +1922,70 @@ pub fn confirm_key_chat_session(canon_station : String, session : String) -> Str
   "chat:" + canon_station + ":s:" + session
 }
 
-/// Latch TS-aligned `PendingAuthConfirm` for `ws` on a privilege downgrade,
-/// anchored to `auth_gen` and `min_transport_epoch`, and advance `cred_epoch[ws]`.
+/// Latch TS-aligned `PendingAuthConfirm` for `ws` BEFORE `auth.bump_workspace(ws)` fires,
+/// anchored to `auth_gen` and per-station `station_min_epoch` (initialized to each station's
+/// `transport_epoch + 1L` so old-link responses before credential install can never confirm),
+/// and advance `cred_epoch[ws]`.
 pub fn MembershipAuthority::mark_downgraded(
   self : MembershipAuthority,
   ws : String,
   auth_gen : Int,
-  min_transport_epoch : Int64 = 0L,
+  station_min_epochs : Option[Map[String, Int64]] = None,
 ) -> Int64 {
+  let epochs = match station_min_epochs {
+    Some(m) => m
+    None => Map::new()
+  }
   self.pending_auth_confirm.set(ws, PendingAuthConfirm::{
     gen: auth_gen,
-    min_transport_epoch: min_transport_epoch,
+    station_min_epoch: epochs,
     confirmed_keys: Map::new(),
   })
   self.bump_cred_epoch(ws)
 }
 
-/// Raise `pending_auth_confirm[ws].min_transport_epoch` when a refreshed member credential
-/// is installed on a station transport so in-flight responses from the old link cannot confirm.
-pub fn MembershipAuthority::advance_pending_confirm_transport_epoch(
+/// Re-anchor an active `PendingAuthConfirm` when an intervening lock update advances `authGen`
+/// during downgrade confirmation (`client/core-ts/src/core.ts:1589`): updates `pending.gen` to
+/// `new_gen` and clears pre-lock `confirmed_keys` while preserving per-station `station_min_epoch`.
+pub fn MembershipAuthority::reanchor_pending_auth_confirm(
   self : MembershipAuthority,
   ws : String,
-  min_transport_epoch : Int64,
-) -> Unit {
+  new_gen : Int,
+) -> Bool {
   match self.pending_auth_confirm.get(ws) {
-    Some(p) => if min_transport_epoch > p.min_transport_epoch {
-      p.min_transport_epoch = min_transport_epoch
+    Some(pending) => {
+      pending.gen = new_gen
+      pending.confirmed_keys.clear()
+      true
+    }
+    None => false
+  }
+}
+
+/// Record that `canon_station` installed a fresh member credential and advanced its own
+/// `transport_epoch` to `new_transport_epoch`: updates ONLY that station's `station_min_epoch`
+/// and clears ONLY that station's prior `confirmed_keys` (fast stations never block slow stations!).
+pub fn MembershipAuthority::on_station_credential_installed(
+  self : MembershipAuthority,
+  ws : String,
+  canon_station : String,
+  new_transport_epoch : Int64,
+) -> Unit {
+  if ws.length() == 0 || canon_station.length() == 0 {
+    return
+  }
+  match self.pending_auth_confirm.get(ws) {
+    Some(pending) => {
+      pending.station_min_epoch.set(canon_station, new_transport_epoch)
+      let chats_k = confirm_key_chats(canon_station)
+      let chat_pref = "chat:" + canon_station + ":"
+      let ks = pending.confirmed_keys.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        if k == chats_k || k.starts_with(chat_pref) {
+          pending.confirmed_keys.remove(k)
+        }
+      }
     }
     None => ()
   }
@@ -1640,10 +2000,10 @@ pub fn MembershipAuthority::has_pending_auth_confirm(self : MembershipAuthority,
   self.pending_auth_confirm.get(ws).is_some()
 }
 
-/// Single confirmation entry point matching TS `inner.confirmWorkspaceAuth`:
+/// Single confirmation entry point matching TS `inner.confirmWorkspaceAuth` (`core.ts:357, 437-440`):
 /// confirms `confirm_key` iff `ws` has an active `PendingAuthConfirm` AND
-/// `current_auth_gen == read_gen && pending.gen == read_gen` AND (for station reads)
-/// `transport_epoch >= pending.min_transport_epoch`.
+/// `current_auth_gen == read_gen && read_gen >= pending.gen` AND (for station reads)
+/// `transport_epoch >= pending.station_min_epoch[canon_station]`.
 /// Returns `true` iff `confirm_key` transitioned from unconfirmed to confirmed.
 pub fn MembershipAuthority::confirm_workspace_auth(
   self : MembershipAuthority,
@@ -1651,6 +2011,7 @@ pub fn MembershipAuthority::confirm_workspace_auth(
   confirm_key : String,
   current_auth_gen : Int,
   read_gen : Int,
+  station : String = "",
   transport_epoch : Int64 = 0L,
   require_transport_epoch : Bool = true,
 ) -> Bool {
@@ -1660,11 +2021,22 @@ pub fn MembershipAuthority::confirm_workspace_auth(
   match self.pending_auth_confirm.get(ws) {
     None => false
     Some(pending) => {
-      if current_auth_gen != read_gen || pending.gen != read_gen {
+      if current_auth_gen != read_gen || read_gen < pending.gen {
         return false
       }
-      if require_transport_epoch && transport_epoch < pending.min_transport_epoch {
-        return false
+      if require_transport_epoch {
+        let canon = if station.length() > 0 { canonical_station(ws, station) } else { "" }
+        let min_ep = if canon.length() > 0 {
+          match pending.station_min_epoch.get(canon) {
+            Some(v) => v
+            None => 0L
+          }
+        } else {
+          0L
+        }
+        if transport_epoch < min_ep {
+          return false
+        }
       }
       if pending.confirmed_keys.get(confirm_key).is_some() {
         return false
@@ -1818,24 +2190,31 @@ pub fn MembershipAuthority::ws_commit_seq_of(self : MembershipAuthority, ws : St
   }
 }
 
-pub fn MembershipAuthority::max_ws_commit_seq(self : MembershipAuthority) -> Int64 {
-  self.max_ws_seq
-}
-
-/// Bidirectional sequence guard for `/v1/me`: rejects responses older than EITHER
-/// the last committed `/v1/me` OR any newer `/v1/workspaces/<id>` commit.
+/// Monotonicity check for `/v1/me` itself: rejects older `/v1/me` snapshots without letting
+/// a newer `/v1/workspaces/B` detail commit cancel `/v1/me`'s removal of workspace A!
 pub fn MembershipAuthority::can_commit_cloud_me(self : MembershipAuthority, req_seq : Int64) -> Bool {
-  req_seq <= 0L || (req_seq >= self.cloud_commit_seq && req_seq >= self.max_ws_seq)
+  req_seq <= 0L || req_seq > self.cloud_commit_seq
 }
 
-/// Bidirectional sequence guard for `/v1/workspaces/<id>`: rejects responses older than EITHER
+/// Per-workspace check inside `commit_cloud_me`: returns true iff `req_seq` is newer than the
+/// latest committed sequence for `ws` (so newer `/v1/workspaces/B` details are preserved while
+/// removed workspace `A` is still dropped).
+pub fn MembershipAuthority::should_apply_me_workspace(
+  self : MembershipAuthority,
+  ws : String,
+  req_seq : Int64,
+) -> Bool {
+  req_seq <= 0L || req_seq > self.ws_commit_seq_of(ws)
+}
+
+/// Sequence guard for `/v1/workspaces/<id>`: rejects responses older than EITHER
 /// `ws_commit_seq[ws]` OR the last committed `/v1/me`.
 pub fn MembershipAuthority::can_commit_workspace(
   self : MembershipAuthority,
   ws : String,
   req_seq : Int64,
 ) -> Bool {
-  req_seq <= 0L || (req_seq >= self.ws_commit_seq_of(ws) && req_seq >= self.cloud_commit_seq)
+  req_seq <= 0L || (req_seq > self.ws_commit_seq_of(ws) && req_seq >= self.cloud_commit_seq)
 }
 
 pub fn MembershipAuthority::advance_cloud_me_seq(self : MembershipAuthority, req_seq : Int64) -> Unit {
@@ -1854,9 +2233,6 @@ pub fn MembershipAuthority::advance_workspace_seq(
   let cur = self.ws_commit_seq_of(ws)
   let next = if req_seq > cur { req_seq } else if req_seq <= 0L { cur + 1L } else { cur }
   self.ws_commit_seq.set(ws, next)
-  if next > self.max_ws_seq {
-    self.max_ws_seq = next
-  }
 }
 
 pub fn MembershipAuthority::mark_session_invalidated(self : MembershipAuthority) -> Unit {
