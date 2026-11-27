@@ -51,6 +51,55 @@ test "the chats' lists at each width and with either hand: its days and rows; a 
 }
 
 ///|
+test "Home keeps its displayed row as a chat slides over it and shows the latest row on back" {
+  for early_back in [false, true] {
+    new_run()
+    let base = fixture("home")
+    let read = @signals.signal(false)
+    let src : Source = {
+      ..base,
+      topic_read: fn(name, params) {
+        guard name == "chats" else { return (base.topic_read)(name, params) }
+        let seen = read.get()
+        let row = @sffixture.row("c1", "整理发布清单", "ws1/st1", "2 分钟前", {
+          "unread": Json::boolean(!seen),
+          "last": @sffixture.last(if seen { "最新的列表摘要" } else { "离开时的列表摘要" }),
+        })
+        { value: Some({ "days": [{ "daysAgo": 0, "items": [row] }] }), error: None, version: if seen { 2 } else { 1 } }
+      },
+    }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    t.draw()
+    assert_true(t.find("离开时的列表摘要") is Some(_))
+    t.tap_text("整理发布清单")
+    let opened = t.time()
+    let slide = @ui.move_ms(390.0)
+    t.frame_at(opened + slide / 4.0)
+    read.set(true)
+    t.draw()
+    assert_true(t.find("离开时的列表摘要") is Some(_), msg="the visible row changed during the push")
+    if !early_back {
+      t.frame_at(opened + slide)
+    }
+    t.back()
+    t.run_for(slide)
+    assert_true(t.find("最新的列表摘要") is Some(_), msg="Home returned with the old row")
+  }
+}
+
+///|
+test "Home draws its first rows under a chat opened before the first frame" {
+  new_run()
+  let src = fixture("chat")
+  open_fixture_over("chat", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.draw()
+  t.run_for(@ui.move_ms(390.0) / 8.0)
+  assert_true(app.nav.top() is Chat(_) && app.nav.root_shows(), msg="the chat is sliding over Home")
+  assert_true(t.find("首页的列表改成按天分组") is Some(_), msg="the Home row under the arriving chat was never drawn")
+}
+
+///|
 test "a row's menu at each width and with either hand: held by a finger, right clicked by a mouse; the same items" {
   for case in one_page_cases {
     let (w, platform, regular, _) = case

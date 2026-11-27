@@ -1,5 +1,5 @@
-// Entrypoint for `stillfail-station-pion` (W12-Rig-Main: `roles:rig` daemon + W10-A/W10-B smoke).
-// Advertises only `roles:rig` and empty `commands:` until subsequent wave gates land.
+// Entrypoint for `stillfail-station-pion` (W12-Rig-Main + W12-CLI-Main: `roles:rig` daemon,
+// all 8 CLI subcommands `id,status,lock,channel,enroll,update,heap,admin`, and W10-A/W10-B smoke).
 
 import "base_codec"
 import "builders_core"
@@ -9,11 +9,11 @@ import "station_http"
 import "station_sys"
 
 pub fn version_line() -> String {
-  "stillfail-station-pion 0.1.0 roles:rig commands:"
+  "stillfail-station-pion 0.1.0 roles:rig commands:id,status,lock,channel,enroll,update,heap,admin"
 }
 
 pub fn usage_line() -> String {
-  "usage: stillfail-station-pion --version | run [--app DIR] [--port N] [--data DIR] [--control-fd N]"
+  "usage: stillfail-station-pion --version | run [--app DIR] [--port N] [--data DIR] [--control-fd N] | id | status | lock status|reset | channel [stable|beta] | enroll <cloud> <token> | update [--beta|--stable] --app DIR | heap | admin ..."
 }
 
 fn run_smoke_sys() -> Int {
@@ -529,12 +529,32 @@ fn main(_world : World) -> Unit {
     }
     return
   }
-  if argv.length() >= 2 && argv[1] == "run" {
-    let rc = run_rig_daemon(argv)
-    if rc != 0 {
-      host_shim::exit_process(rc)
+  if argv.length() >= 2 {
+    let cli_args : Array[String] = []
+    let mut i = 1
+    while i < argv.length() {
+      cli_args.push(argv[i])
+      i = i + 1
     }
-    return
+    match find_main_subcommand(cli_args) {
+      Some("run") => {
+        let rc = run_rig_daemon(argv)
+        if rc != 0 {
+          host_shim::exit_process(rc)
+        }
+        return
+      }
+      Some(cmd) => {
+        if is_cli_command(cmd) {
+          let rc = run_cli_main(argv)
+          if rc != 0 {
+            host_shim::exit_process(rc)
+          }
+          return
+        }
+      }
+      None => ()
+    }
   }
   let _ = host_shim::write_stderr((usage_line() + "\n").to_bytes())
   host_shim::exit_process(2)

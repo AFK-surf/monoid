@@ -21,6 +21,8 @@ pub(all) struct ListsNodeFrame {
   shown : () -> Int
   at : @sf.ListAt
   watched : () -> Bool
+  section_rows : () -> (Int, Int)
+  section_chrome_suppress : () -> Bool
 }
 
 ///|
@@ -41,6 +43,7 @@ pub fn chats_lists_node(
   frame : ListsNodeFrame,
   tips : @sf.TipLayer,
   stint : () -> Int,
+  keep_rows? : () -> Bool = fn() { false },
 ) -> Unit {
   // (as large as what holds it gives it: over all of it, its frame's)
   v.clips(Is(true)) |> ignore
@@ -183,7 +186,7 @@ pub fn chats_lists_node(
       lane.show(fn() { shown_once[i].get() }, at_once=true, fn(l) {
         l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         if i < list_filters.length() {
-          chats_pane_node(l, src, id, list_filters[i], key, frame, fn() { (frame.shown)() == i }, tips, stint)
+          chats_pane_node(l, src, id, list_filters[i], key, frame, fn() { (frame.shown)() == i }, tips, stint, keep_rows)
         } else {
           (frame.others[i - list_filters.length()])(l)
         }
@@ -276,6 +279,7 @@ fn chats_pane_node(
   current : () -> Bool,
   tips : @sf.TipLayer,
   stint : () -> Int,
+  keep_rows : () -> Bool,
 ) -> Unit {
   let query = fn() { @sfbase.pane_list_query(src, id, filter) }
   let pane_grouped = @signals.untracked(fn() { query().group_by == "project" })
@@ -354,7 +358,8 @@ fn chats_pane_node(
         Some(view) => (view.days, view.syncing is Some(_))
         None => ([], false)
       }
-      if !physical_equal(days, seen.val) {
+      // Keep rows already on screen during the push. A chat opened before the first frame still has Home under it.
+      if !physical_equal(days, seen.val) && (seen.val.is_empty() || !keep_rows()) {
         seen.val = days
         stamp.val += 1
       }
@@ -941,6 +946,37 @@ fn chats_pane_node(
       _ => false
     }
   })
+  // Boundary heading keys for desktop/medium docked stacks (updated only when the boundary heading changes so
+  // crisp 0.5pt hairlines ride glued to the sticky heading itself with zero relayout and zero sizes_steady drift).
+  let top_edge_key : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let bot_edge_key : @signals.Signal[String?] = @signals.signal(None, same=fn(a, b) { a == b })
+  // Register virtualized bidirectional section stacking ONLY in project-grouped mode so flat mode keeps
+  // zero extra nodes, zero extra bindings, and zero NodeId shift.
+  if pane_grouped {
+    list_place.set_sections(
+      fn(k) { k.has_prefix("h/") },
+      tail=fn(k) { k == "load_more" || k == "foot" },
+      top_edge=match frame.at {
+        Whole => frame.under
+        Side | Tape => frame.top
+      },
+      bottom_edge=frame.foot,
+      rows=frame.section_rows,
+      air=match frame.at {
+        Whole => fn(_) { (frame.under)() - (frame.top)() }
+        Side | Tape => fn(_) { 0.0 }
+      },
+      chrome=fn(host, read_chrome) {
+        section_chrome_node(host, read_chrome, frame, days, fn() { is_grouped.get() }, list_place, top_edge_key, bot_edge_key)
+      },
+    )
+  }
+  let on_press_group_heading = fn(gk : String) {
+    match list_place.section_state("h/" + gk) {
+      Above | Below => list_place.bring_section("h/" + gk, glide=true)
+      Flow | Active => on_toggle_collapse(gk)
+    }
+  }
   v.scrolls_window(
     scroll,
     keys,
@@ -1097,7 +1133,11 @@ fn chats_pane_node(
           if !pane_grouped {
             @sf.list_heading_node(line, fn() { k.exact_view(start=2).to_owned() }, frame.at)
           } else {
-            list_day_or_group_heading_node(line, src, id, fn() { k.exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_toggle_collapse)
+            if frame.at != Whole {
+              line.sticky_section().ground(By(frame.ground)) |> ignore
+              sticky_heading_rules_node(line, fn() { k }, top_edge_key, bot_edge_key)
+            }
+            list_day_or_group_heading_node(line, src, id, fn() { k.exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_press_group_heading)
           }
         _ if k.has_prefix("sub/") => {
           let rest = k.exact_view(start=4)
@@ -1137,7 +1177,11 @@ fn chats_pane_node(
           if !pane_grouped {
             @sf.list_heading_node(line, fn() { key().exact_view(start=2).to_owned() }, frame.at)
           } else {
-            list_day_or_group_heading_node(line, src, id, fn() { key().exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_toggle_collapse)
+            if frame.at != Whole {
+              line.sticky_section().ground(By(frame.ground)) |> ignore
+              sticky_heading_rules_node(line, key, top_edge_key, bot_edge_key)
+            }
+            list_day_or_group_heading_node(line, src, id, fn() { key().exact_view(start=2).to_owned() }, days, fn() { is_grouped.get() }, frame.at, tips, on_press_group_heading)
           }
         } else {
           row_line(line, key)
@@ -1412,6 +1456,202 @@ fn day_keys(days : Array[ChatDay]) -> Array[String] {
     }
   }
   out
+}
+
+///|
+/// Crisp 0.5pt optical boundary hairlines glued directly to a desktop/medium sticky heading row:
+/// draws a bottom hairline only when this heading is the bottom-most top-docked row, and a top hairline only when this
+/// heading is the top-most bottom-docked row (zero double lines, zero relayout, zero sizes_steady drift).
+fn sticky_heading_rules_node(
+  line : @view.View,
+  key : () -> String,
+  top_edge_key : @signals.Signal[String?],
+  bot_edge_key : @signals.Signal[String?],
+) -> Unit {
+  line.box(fn(bot_line) {
+    bot_line
+    .over(Is(true), edges=(Some(0.0), None, Some(0.0), Some(0.0)))
+    .height(Is(Some(0.5)))
+    .ground(By(fn() { @sf.theme().p.line }))
+    .alpha(By(fn() { if top_edge_key.get() == Some(key()) { 1.0 } else { 0.0 } }))
+    .points(Is(false))
+    |> ignore
+  })
+  |> ignore
+  line.box(fn(top_line) {
+    top_line
+    .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), None))
+    .height(Is(Some(0.5)))
+    .ground(By(fn() { @sf.theme().p.line }))
+    .alpha(By(fn() { if bot_edge_key.get() == Some(key()) { 1.0 } else { 0.0 } }))
+    .points(Is(false))
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// List-owned overlay chrome for grouped sticky sections:
+/// - `Side | Tape`: opaque `[0, top_edge]` top-band mask when top headings are docked (prevents rows from peeking
+///   behind the sidebar top band while leaving `scroll = 0` and tucked search untouched), and publishes boundary heading
+///   keys for crisp 0.5pt sticky-row hairlines (zero floating pills over chat rows).
+/// - `Whole`: Apple iOS 26 Liquid Glass floating group indicator pill centered cleanly below the top glass bar once the
+///   active group's in-flow heading scrolls past `frame.under`, dissolving smoothly before the next in-flow heading
+///   approaches (zero opaque walls, zero bottom double-decker clutter); tapping opens an anchored native group-jump menu.
+fn section_chrome_node(
+  host : @view.View,
+  read_chrome : () -> @view.SectionChrome[String],
+  frame : ListsNodeFrame,
+  days : () -> Array[ChatDay],
+  is_grouped : () -> Bool,
+  list_place : @view.ListPlace[String],
+  top_edge_key : @signals.Signal[String?],
+  bot_edge_key : @signals.Signal[String?],
+) -> Unit {
+  match frame.at {
+    Side | Tape => {
+      host.reacts(
+        fn() {
+          if !is_grouped() {
+            (None, None)
+          } else {
+            let c = read_chrome()
+            (c.top_edge_key, c.bot_edge_key)
+          }
+        },
+        fn(pair) {
+          top_edge_key.set(pair.0)
+          bot_edge_key.set(pair.1)
+        },
+      )
+      // Mask the soft-fade region [0, top_edge] behind the top band once any section is top-docked so scrolled body
+      // rows never reappear above the pinned top section header under the translucent band fade.
+      host.box(fn(cap) {
+        cap
+        .over(Is(true), edges=(Some(0.0), Some(0.0), Some(0.0), None))
+        .height(By(fn() {
+          let c = read_chrome()
+          Some(if is_grouped() && c.top_stack_h > 0.0 { c.top_edge } else { 0.0 })
+        }))
+        .ground(By(frame.ground))
+        .points(Is(false))
+        |> ignore
+      })
+      |> ignore
+    }
+    Whole => {
+      // Geometry constants for the centered Liquid Glass floating group indicator pill:
+      // top gap under the top glass bar (`8pt`), minimum capsule height (`34pt`, scaling cleanly with text scale),
+      // and scroll-coupled enter/exit dissolve windows (`20pt` / `24pt`) keeping an `8pt` optical clearance before the
+      // next in-flow group heading arrives.
+      let pill_top_gap = 8.0
+      let pill_min_h = 34.0
+      let pill_vpad = 5.0
+      let pill_line_h_1x = 19.0
+      let pill_fade_in_px = 20.0
+      let pill_fade_out_px = 24.0
+      let pill_exit_gap = 8.0
+      let menu_serial : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+      let own_menu_drawn = fn() {
+        let s = menu_serial.get()
+        s != 0 && @sf.presented_drawn_of(s)
+      }
+      let pill_vis = @signals.computed(fn(_) {
+        if !is_grouped() || ((frame.section_chrome_suppress)() && !own_menu_drawn()) {
+          return 0.0
+        }
+        let c = read_chrome()
+        guard c.active is Some(_) else { return 0.0 }
+        let pill_h = dmax(pill_min_h, (pill_line_h_1x * host.words_scale()).ceil() + pill_vpad * 2.0)
+        let enter = clamp01((c.top_edge - c.active_bottom) / pill_fade_in_px)
+        let pill_bot = c.top_edge + pill_top_gap + pill_h
+        let exit = clamp01((c.next_top - (pill_bot + pill_exit_gap)) / pill_fade_out_px)
+        dmin(enter, exit)
+      })
+      host
+      .lies_along(Is(Start))
+      .lines_up(Is(Some(Middle)))
+      .padding(By(fn() { (16.0, (frame.under)() + pill_top_gap, 16.0, 0.0) }))
+      |> ignore
+      host.show(fn() { pill_vis.get() > 0.02 || own_menu_drawn() }, at_once=true, fn(slot) {
+        slot
+        .alpha(By(fn() { pill_vis.get() }))
+        .shrink(Is(1.0))
+        .min_width(Is(Some(0.0)))
+        |> ignore
+        let last_key = Ref("")
+        let active_day = fn() -> ChatDay? {
+          let gk = match read_chrome().active {
+            Some(k) if k.has_prefix("h/") => {
+              let s = k.exact_view(start=2).to_owned()
+              last_key.val = s
+              s
+            }
+            _ => last_key.val
+          }
+          if gk == "" {
+            None
+          } else {
+            days().iter().find_first(fn(d) { d.key == gk })
+          }
+        }
+        let name_label = fn() { active_day().map_or("", fn(d) { d.label }) }
+        let count_label = fn() { active_day().map_or("", fn(d) { d.chat_count.to_string() }) }
+        let a11y_label = fn() {
+          let nm = name_label()
+          let cnt = count_label()
+          if nm == "" { "" } else if cnt == "" { nm } else { nm + " " + cnt }
+        }
+        let btn = @sf.action_box_node(
+          slot,
+          a11y_label,
+          fn(anchor) {
+            let cur_days = @signals.untracked(days)
+            guard !cur_days.is_empty() else { return }
+            let cur_active = @signals.untracked(fn() { read_chrome().active })
+            let items : Array[@sf.MenuItem?] = cur_days.map(fn(d) {
+              let hk = "h/" + d.key
+              let item_label = d.label + "  " + d.chat_count.to_string()
+              Some(
+                @sf.menu_item_of(
+                  item_label,
+                  fn() { list_place.bring_section(hk, glide=true) },
+                  chosen=cur_active == Some(hk),
+                ),
+              )
+            })
+            @signals.start_batch()
+            @sf.menu(items, from=Node(anchor), along=Middle, side=Bottom)
+            menu_serial.set(@sf.last_presented())
+            @signals.end_batch()
+          },
+          fn(pill) {
+            @sf.glass_capsule_node(pill, min_height=Some(pill_min_h), radius=Some(999.0), interactive=true, trigger=true)
+            .row(Is(true))
+            .lines_up(Is(Some(Middle)))
+            .gap(Is(6.0))
+            .padding(Is((13.0, pill_vpad, 10.0, pill_vpad)))
+            .max_width(Is(Some(220.0)))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            |> ignore
+            @sf.words_node(pill, name_label, fn() { proj_group_heading_style })
+            .cuts(Is(true))
+            .allow_ellipsis(Is(true))
+            .shrink(Is(1.0))
+            .min_width(Is(Some(0.0)))
+            |> ignore
+            @sf.words_node(pill, count_label, fn() { proj_row_count }).shrink(Is(0.0)) |> ignore
+            @sf.icon_node(pill, "chevron-down", 12.0, By(fn() { @sf.theme().p.muted })).shrink(Is(0.0)) |> ignore
+          },
+        )
+        btn
+        .presses(By(fn() { pill_vis.get() > 0.5 }))
+        .hides(By(fn() { pill_vis.get() <= 0.5 }))
+        |> ignore
+      })
+    }
+  }
 }
 
 ///|

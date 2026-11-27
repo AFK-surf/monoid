@@ -503,6 +503,8 @@ static const char *FS =
     "  if (s1 <= s0) return 0.0;\n"
     "  return max(scale * (mb_bevel_F(s1, w0_pt, L_pt) - mb_bevel_F(s0, w0_pt, L_pt)), 0.0);\n"
     "}\n"
+    "#endif\n"
+    "#if MB_HAS_LIQUID && MB_HAS_DROPLET\n"
     "float mb_snell_intersect(float s, float ior, float H_opt) {\n"
     "  float invLen = inversesqrt(1.0 + s * s);\n"
     "  float cosI = invLen;\n"
@@ -706,12 +708,11 @@ static const char *FS =
     "  if (kind == 6) {\n"
     "    // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass\n"
     "    // liquid_glass_final_render_core.glsl, Apache-2.0.\n"
-    "    float k = v_pad.w;\n"
-    "    vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);\n"
     "    float d;\n"
     "    float halfMinor = 1e9;\n"
     "    vec2 extSpineVec = vec2(0.0, 0.0);\n"
     "#if MB_LIQUID_SINGLE\n"
+    "    vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);\n"
     "    d = sd_rr(p, v_rect, s_rr);\n"
     "    vec2 hs = v_rect.zw * 0.5;\n"
     "    halfMinor = min(hs.x, hs.y);\n"
@@ -719,34 +720,26 @@ static const char *FS =
     "    vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));\n"
     "    extSpineVec = p - clamp(p, ct - ch, ct + ch);\n"
     "#else\n"
-    "    if (k <= 0.0) {\n"
-    "      d = sd_rr(p, v_rect, s_rr);\n"
-    "      vec2 hs = v_rect.zw * 0.5;\n"
-    "      halfMinor = min(hs.x, hs.y);\n"
-    "      vec2 ct = v_rect.xy + hs;\n"
-    "      vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));\n"
-    "      extSpineVec = p - clamp(p, ct - ch, ct + ch);\n"
-    "    } else {\n"
-    "      d = 1e9;\n"
-    "      for (int i = 0; i < 8; i++) {\n"
-    "        if (i >= u_n) break;\n"
-    "        float di = sd_rr(p, u_shape[i], u_rad[i]);\n"
-    "        vec2 hsi = u_shape[i].zw * 0.5;\n"
-    "        float hi = min(hsi.x, hsi.y);\n"
-    "        vec2 cti = u_shape[i].xy + hsi;\n"
-    "        vec2 chi = max(hsi - vec2(hi, hi), vec2(0.0, 0.0));\n"
-    "        vec2 vi = p - clamp(p, cti - chi, cti + chi);\n"
-    "        if (i == 0) {\n"
-    "          d = di;\n"
-    "          halfMinor = hi;\n"
-    "          extSpineVec = vi;\n"
-    "        } else {\n"
-    "          float h = max(k - abs(d - di), 0.0) / k;\n"
-    "          float w = d < di ? 0.5 * h : 1.0 - 0.5 * h;\n"
-    "          d = min(d, di) - h * h * k * 0.25;\n"
-    "          halfMinor = mix(halfMinor, hi, w);\n"
-    "          extSpineVec = mix(extSpineVec, vi, w);\n"
-    "        }\n"
+    "    float k = v_pad.w;\n"
+    "    d = 1e9;\n"
+    "    for (int i = 0; i < 8; i++) {\n"
+    "      if (i >= u_n) break;\n"
+    "      float di = sd_rr(p, u_shape[i], u_rad[i]);\n"
+    "      vec2 hsi = u_shape[i].zw * 0.5;\n"
+    "      float hi = min(hsi.x, hsi.y);\n"
+    "      vec2 cti = u_shape[i].xy + hsi;\n"
+    "      vec2 chi = max(hsi - vec2(hi, hi), vec2(0.0, 0.0));\n"
+    "      vec2 vi = p - clamp(p, cti - chi, cti + chi);\n"
+    "      if (i == 0) {\n"
+    "        d = di;\n"
+    "        halfMinor = hi;\n"
+    "        extSpineVec = vi;\n"
+    "      } else {\n"
+    "        float h = max(k - abs(d - di), 0.0) / k;\n"
+    "        float w = d < di ? 0.5 * h : 1.0 - 0.5 * h;\n"
+    "        d = min(d, di) - h * h * k * 0.25;\n"
+    "        halfMinor = mix(halfMinor, hi, w);\n"
+    "        extSpineVec = mix(extSpineVec, vi, w);\n"
     "      }\n"
     "    }\n"
     "#endif\n"
@@ -764,11 +757,9 @@ static const char *FS =
     "    float spot_raw = is_adaptive ? (-v_c2.z - 1.0) : v_c2.z;\n"
     "    bool is_dark = (!is_clear && luma(col.rgb) < 0.35);\n"
     "    float clearVeil = is_clear ? smoothstep(0.005, 0.102, col.a) : 0.0;\n"
+    "#if MB_HAS_DROPLET\n"
     "    float droplet = is_clear ? (1.0 - clearVeil) : 0.0;\n"
-    "#if MB_LIQUID_SINGLE\n"
     "    bool is_drop = (droplet > 0.001);\n"
-    "#else\n"
-    "    bool is_drop = (droplet > 0.001) && (k <= 0.0);\n"
     "#endif\n"
     "    float inward = max(-d, 0.0);\n"
     "    float rawBevel = max(v_c2.y, 0.0);\n"
@@ -785,7 +776,11 @@ static const char *FS =
     "    vec2 surfaceNormal = vec2(0.0, 0.0);\n"
     "    float shortening = 0.0;\n"
     "    vec2 disp = vec2(0.0, 0.0);\n"
+    "#if MB_HAS_DROPLET\n"
     "    bool need_grad = (inward < max(bevel, 23.0)) || (ext_cov > 0.0) || is_drop;\n"
+    "#else\n"
+    "    bool need_grad = (inward < max(bevel, 23.0)) || (ext_cov > 0.0);\n"
+    "#endif\n"
     "    if (need_grad) {\n"
     "      float e = 0.5;\n"
     "#if MB_LIQUID_SINGLE\n"
@@ -794,15 +789,10 @@ static const char *FS =
     "          sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)\n"
     "        ) / (2.0 * e);\n"
     "#else\n"
-    "      vec2 grad = k <= 0.0\n"
-    "        ? vec2(\n"
-    "            sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),\n"
-    "            sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)\n"
-    "          ) / (2.0 * e)\n"
-    "        : vec2(\n"
-    "            sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),\n"
-    "            sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)\n"
-    "          ) / (2.0 * e);\n"
+    "      vec2 grad = vec2(\n"
+    "          sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),\n"
+    "          sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)\n"
+    "        ) / (2.0 * e);\n"
     "#endif\n"
     "      float gradLen = length(grad);\n"
     "      surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);\n"
@@ -822,6 +812,16 @@ static const char *FS =
     "    int dropRole = (v_p.w <= -8.0) ? int(floor((-v_p.w + 4.0) / 16.0)) : 0;\n"
     "    float rawZoomDelta = (v_p.w <= -8.0) ? ((-v_p.w) - float(dropRole) * 16.0) : ((v_p.w < 0.0) ? (-v_p.w) : 0.0);\n"
     "    float lensZoom = clamp(1.0 + rawZoomDelta, 1.0, 3.0);\n"
+    "    vec2 sampleBase = p;\n"
+    "    if (lensZoom > 1.0001) {\n"
+    "#if MB_LIQUID_SINGLE\n"
+    "      vec2 zoomC = v_rect.xy + v_rect.zw * 0.5;\n"
+    "#else\n"
+    "      vec2 zoomC = (u_gb.xy + u_gb.zw) * 0.5;\n"
+    "#endif\n"
+    "      sampleBase = zoomC + (p - zoomC) / lensZoom;\n"
+    "    }\n"
+    "#if MB_HAS_DROPLET\n"
     "    bool isRoleSlid = (dropRole == 1);\n"
     "    bool isRoleSw = (dropRole == 2);\n"
     "    bool isRoleSeg = (dropRole == 3);\n"
@@ -829,15 +829,6 @@ static const char *FS =
     "    bool isModernDrop = is_drop && (dropRole >= 1) && (dropRole <= 4);\n"
     "    float snellSLip = 0.0;\n"
     "    float snellDmag = 0.0;\n"
-    "    vec2 sampleBase = p;\n"
-    "    if (lensZoom > 1.0001) {\n"
-    "#if MB_LIQUID_SINGLE\n"
-    "      vec2 zoomC = v_rect.xy + v_rect.zw * 0.5;\n"
-    "#else\n"
-    "      vec2 zoomC = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);\n"
-    "#endif\n"
-    "      sampleBase = zoomC + (p - zoomC) / lensZoom;\n"
-    "    }\n"
     "    float dropHairline = 0.0;\n"
     "    float pressAmt = 0.0;\n"
     "    float menAA = 0.0;\n"
@@ -941,6 +932,19 @@ static const char *FS =
     "        refractColor = mix(refractColor, iconRGB, isInsidePlatter * bevelGate);\n"
     "      }\n"
     "    }\n"
+    "#else\n"
+    "    vec3 refractColor;\n"
+    "    if (inward >= bevel || abs(v_pad.z) * (1.0 - regMix) * amount * u_scale <= 0.25) {\n"
+    "      refractColor = backdrop(sampleBase + disp);\n"
+    "    } else {\n"
+    "      float ds = v_pad.z * 0.5 * (1.0 - regMix);\n"
+    "      refractColor = vec3(\n"
+    "        backdrop(sampleBase + disp * (1.0 + ds)).r,\n"
+    "        backdrop(sampleBase + disp).g,\n"
+    "        backdrop(sampleBase + disp * (1.0 - ds)).b\n"
+    "      );\n"
+    "    }\n"
+    "#endif\n"
     "    float bgA = (u_through > 0.5) ? clamp(backdrop4(sampleBase + disp).a, 0.0, 1.0) : 1.0;\n"
     "    vec3 emission;\n"
     "    float transmittance;\n"
@@ -976,8 +980,8 @@ static const char *FS =
     "      vec2 ac = v_rect.xy + v_rect.zw * 0.5;\n"
     "      float ar = max(min(v_rect.z, v_rect.w) * 0.5, 1.0) * 0.5;\n"
     "#else\n"
-    "      vec2 ac = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);\n"
-    "      float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;\n"
+    "      vec2 ac = (u_gb.xy + u_gb.zw) * 0.5;\n"
+    "      float ar = max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0) * 0.5;\n"
     "#endif\n"
     "      float val = ad_sample(ac, ar, is_dark, col.a);\n"
     "      if (u_through > 0.5) val *= bgA;\n"
@@ -1381,6 +1385,7 @@ static const char *FS =
     "        }\n"
     "      }\n"
     "    }\n"
+    "#if MB_HAS_DROPLET\n"
     "    if (isModernDrop) {\n"
     "      float backdropLuma = clamp(Y, 0.0, 1.0);\n"
     "      float brightBg = smoothstep(0.35, 0.75, backdropLuma);\n"
@@ -1497,6 +1502,7 @@ static const char *FS =
     "        result = max(result - vec3(shade * dropHairline), vec3(0.0));\n"
     "      }\n"
     "    }\n"
+    "#endif\n"
     "    result = clamp(result + mb_dither(p * u_scale) / 255.0, 0.0, 1.0);\n"
     "    // (c) External dark contour (iOS 27.0: Regular controls place their bevel contour strictly outside the silhouette so circles keep full geometric width)\n"
     "    float extUseCov = ext_cov;\n"
@@ -2363,7 +2369,8 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_BACKDROP 1\n"
                "#define MB_HAS_BOX 1\n"
                "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
+               "#define MB_LIQUID_SINGLE 0\n"
+               "#define MB_HAS_DROPLET 0\n");
       break;
     case MB_PROG_LIQUID_MERGED:
       s.tag = "liquid_merged";
@@ -2376,7 +2383,8 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_BACKDROP 1\n"
                "#define MB_HAS_BOX 0\n"
                "#define MB_HAS_GROUP 1\n"
-               "#define MB_LIQUID_SINGLE 0\n");
+               "#define MB_LIQUID_SINGLE 0\n"
+               "#define MB_HAS_DROPLET 0\n");
       break;
     case MB_PROG_LIQUID_SINGLE:
       s.tag = "liquid_single";
@@ -2389,7 +2397,8 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_BACKDROP 1\n"
                "#define MB_HAS_BOX 0\n"
                "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 1\n");
+               "#define MB_LIQUID_SINGLE 1\n"
+               "#define MB_HAS_DROPLET 1\n");
       break;
     case MB_PROG_LENS:
       s.tag = "lens";
@@ -2402,7 +2411,8 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_BACKDROP 1\n"
                "#define MB_HAS_BOX 0\n"
                "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
+               "#define MB_LIQUID_SINGLE 0\n"
+               "#define MB_HAS_DROPLET 0\n");
       break;
     case MB_PROG_PATH:
       s.tag = "path";
@@ -2417,7 +2427,8 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_BACKDROP 0\n"
                "#define MB_HAS_BOX 0\n"
                "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
+               "#define MB_LIQUID_SINGLE 0\n"
+               "#define MB_HAS_DROPLET 0\n");
       break;
     case MB_PROG_PATH_AD:
       s.tag = "path_ad";
@@ -2432,7 +2443,8 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_BACKDROP 0\n"
                "#define MB_HAS_BOX 0\n"
                "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
+               "#define MB_LIQUID_SINGLE 0\n"
+               "#define MB_HAS_DROPLET 0\n");
       break;
     case MB_PROG_UI_AD:
       s.tag = "ui_ad";
@@ -2447,7 +2459,8 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_BACKDROP 0\n"
                "#define MB_HAS_BOX 1\n"
                "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
+               "#define MB_LIQUID_SINGLE 0\n"
+               "#define MB_HAS_DROPLET 0\n");
       break;
     case MB_PROG_UI:
     default:
@@ -2463,7 +2476,8 @@ static prog_src prog_src_of(int slot, char *fs_head, size_t fs_head_n) {
                "#define MB_HAS_BACKDROP 0\n"
                "#define MB_HAS_BOX 1\n"
                "#define MB_HAS_GROUP 0\n"
-               "#define MB_LIQUID_SINGLE 0\n");
+               "#define MB_LIQUID_SINGLE 0\n"
+               "#define MB_HAS_DROPLET 0\n");
       break;
   }
   return s;

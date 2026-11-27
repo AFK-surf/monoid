@@ -1477,6 +1477,7 @@ fn View::scrolls_window_ids(
   let pinned_sections : @signals.Signal[Array[Int]] = @signals.signal([], same=fn(a, b) { a == b })
   let section_pin : Ref[(Int, Double, Double, Double, Double, Bool)?] = Ref(None)
   let section_pin_active = Ref(false)
+  let section_pin_span0 : Ref[Double?] = Ref(None)
   let pin_gen = Ref(0)
   let pin_x = Ref(0.0)
   let places_of : Ref[(Column[Int]) -> Places[Int]] = Ref(fn(c) { Places::counted(c) })
@@ -1779,6 +1780,7 @@ fn View::scrolls_window_ids(
           let next_tx = dmax(0.0, base_x - removed_above + added_above)
           section_pin.val = Some((pk, raw_proj_y, x_then, r_j, next_tx, was_pushed))
           section_pin_active.val = true
+          section_pin_span0.val = None
         }
         _ => ()
       }
@@ -2288,7 +2290,7 @@ fn View::scrolls_window_ids(
     cur_tx : Double,
     was_pushed : Bool,
   ) -> Double {
-    sec_host.solve_pin_x(all, vh, pk, raw_proj_y, r_j, cur_tx, was_pushed)
+    sec_host.solve_pin_x(all, vh, pk, raw_proj_y, r_j, cur_tx, was_pushed, section_pin_span0)
   }
   // (where it is scrolled to, as what it holds is drawn now)
   let at = fn() { s.drawn(self.tree) }
@@ -2557,6 +2559,7 @@ fn View::scrolls_window_ids(
     pin.val = None
     section_pin.val = None
     section_pin_active.val = false
+    section_pin_span0.val = None
   }
   let clear_section_pin = fn() {
     if section_pin.val is Some(_) || section_pin_active.val {
@@ -2565,6 +2568,7 @@ fn View::scrolls_window_ids(
       unpin.val = fn() {  }
       section_pin.val = None
       section_pin_active.val = false
+      section_pin_span0.val = None
     }
   }
   // (where it was scrolled to as it was pressed: moved from there by the hand, held no more; and how many blocks it had,
@@ -2878,6 +2882,9 @@ fn View::scrolls_window_ids(
   // (the glide back to its foot it is on (ListPlace::to_end), while it is: gone on toward where its foot is as that
   // moves, in its fill; none once another way is in its place (the hand, the wheel, another ask) or it is at rest)
   let end_glide : Ref[Notch?] = Ref(None)
+  // (the glide to a brought key (ListPlace::bring / bring_section, glide=true), redirected in fill as newly measured
+  // blocks above the target shift its top so the glide lands with zero overshoot)
+  let bring_glide : Ref[(Notch, Int, Double)?] = Ref(None)
   // (whether one is said, told as that changes: what reads whether it glides there (follows_now) told it)
   let end_glide_said = @signals.signal(false, same=fn(a, b) { a == b })
   let end_glide_set = fn(g : Notch?) {
@@ -3332,6 +3339,10 @@ fn View::scrolls_window_ids(
                 _ => None
               },
             )
+            bring_glide.val = match (ask, s.notch.untracked()) {
+              (Bring(k, off, false), Some(n)) => Some((n, k, off))
+              _ => None
+            }
             true
           }
           _ => false
@@ -5324,6 +5335,35 @@ fn View::scrolls_window_ids(
         (Some(_), _) => end_glide_set(None)
         _ => ()
       }
+      // (gliding to a brought key: redirect smoothly as newly measured blocks above it shift its top, preventing
+      // overshoot when jumping across unmeasured variable-height rows)
+      match (bring_glide.val, s.notch.untracked()) {
+        (Some((g, bk, boff)), Some(n)) if physical_equal(g, n) && vh > 0.0 =>
+          match laid_at.get(bk) {
+            Some(bi) if bi < all.length() => {
+              let most = dmax(0.0, whole_now() - vh)
+              let top = dmin(@signals.untracked(fn() { s.top_now() }), most)
+              let cover = @signals.untracked(fn() { s.top_covered() })
+              let to = dclamp(all.top(bi) + boff - cover, top, most)
+              if (n.x0 + n.total - to).abs() > 1.0 / 128.0 {
+                let t = dmax(self.tree.drawn_said(), n.t0)
+                let (came, _) = ease_state(n.total, n.v0, t - n.t0, tau=n.tau)
+                if n.total >= 0.0 && to >= n.x0 + came {
+                  s.glide_on(self, t, to, most)
+                } else {
+                  s.glide_to(self, t, to)
+                }
+                bring_glide.val = match s.notch.untracked() {
+                  Some(nn) => Some((nn, bk, boff))
+                  None => None
+                }
+              }
+            }
+            _ => bring_glide.val = None
+          }
+        (Some(_), _) => bring_glide.val = None
+        _ => ()
+      }
     }
   }
   s.whole = Some(whole_now)
@@ -7230,12 +7270,18 @@ fn View::scrolls_window_ids(
         }
       })
       |> ignore
-      if place_at.sections is Some(_) {
-        let _ = sec_indices_now(places(laid.untracked()))
-        if sec_head_set.contains(k) {
-          self.tree.section_slots[sat] = (sgen, hat, k)
-          bind_oob()
+      match place_at.sections {
+        Some(sec) => {
+          let (tc, bc) = @signals.untracked(sec.rows)
+          if tc > 0 || bc > 0 {
+            let _ = sec_indices_now(places(laid.untracked()))
+            if sec_head_set.contains(k) {
+              self.tree.section_slots[sat] = (sgen, hat, k)
+              bind_oob()
+            }
+          }
         }
+        None => ()
       }
       // (the first slice of a key kept as a later one of its has a slot (`keep_first`): shown all the while, laid over
       // where it rests, from the top of what holds the slots, taking no room. Bound lazily when `pinned_key` first

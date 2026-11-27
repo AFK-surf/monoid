@@ -65,10 +65,9 @@ fn View::sticky_foot_extra(self : View, extra : Double) -> Unit {
 }
 
 ///|
-/// Whether node `id` is held at a top (View::sticky, said Some) or is a currently displaced section heading
-/// (View::sticky_section with `dy != 0`), or holds one that is: what is drawn of it changes as what scrolls it moves,
-/// so nothing of it is kept drawn and moved whole (a page's list's row, its list drawn as one). When all section
-/// headings have `dy == 0` (flat mode or top of list), returns false so the kept-drawn fast path stays active.
+/// Whether node `id` is held at a top (View::sticky, said Some) or holds a currently displaced section heading
+/// (View::sticky_section with `dy != 0`): what is drawn of it changes as what scrolls it moves, so nothing holding it
+/// is kept drawn and moved whole while displaced. At `x == 0` (`dy == 0`) static ancestors retain kept-drawn caching.
 pub fn Tree::has_sticky_in(self : Tree, id : NodeId) -> Bool {
   if self.stickies.is_empty() && self.section_stickies.is_empty() {
     return false
@@ -113,6 +112,15 @@ pub fn Tree::has_sticky_in(self : Tree, id : NodeId) -> Bool {
 }
 
 ///|
+/// Whether node `id` itself is the scrollable `held` column of a list with active sticky section headings
+/// (`rows != (0, 0)`): used solely by `view_host`'s `offsets` callback to opt that scrollable column out of rigid
+/// `ListRiding` group translation so looks-only scroll frames crossing `dy == 0 -> dy != 0` never translate headings
+/// rigidly, while keeping every ancestor's `whole` grouping and `ride_kept` caching untouched.
+pub fn Tree::is_section_sticky_scroll(self : Tree, id : NodeId) -> Bool {
+  !self.section_stickies.is_empty() && self.section_lists.contains(id.at) && self.alive_id(id)
+}
+
+///|
 /// Whether node `id` itself is held at a top (View::sticky, said Some) or is a currently displaced section sticky node
 /// (View::sticky_section with `dy != 0`): where it is drawn down what holds it is the hold's (sizes_steady's).
 pub fn Tree::is_sticky(self : Tree, id : NodeId) -> Bool {
@@ -149,11 +157,7 @@ pub fn Tree::sticks_drawn(self : Tree) -> Bool {
     }
   }
   for at, g in self.section_stickies {
-    if at < n &&
-      self.order_of[at] >= 0 &&
-      self.nodes[at].live &&
-      self.nodes[at].gen == g &&
-      self.section_sticky_dy(at) != 0.0 {
+    if at < n && self.order_of[at] >= 0 && self.nodes[at].live && self.nodes[at].gen == g && self.section_sticky_dy(at) != 0.0 {
       return true
     }
   }

@@ -484,6 +484,70 @@ static void test_win_drive_io_and_reparse(void) {
     assert(sts_rmdir(dir) == 1);
 }
 
+static void test_win_cli_prims(void) {
+    char dir[256];
+    win_make_temp_dir(dir, sizeof(dir));
+
+    // 200-byte basename atomic write + strict read roundtrip (independent short temp filename).
+    char name200[201];
+    memset(name200, 'a', 196);
+    memcpy(name200 + 196, ".bin", 5);
+    char long_file[512];
+    int n = snprintf(long_file, sizeof(long_file), "%s\\%s", dir, name200);
+    assert(n > 0 && (size_t)n < sizeof(long_file));
+    const uint8_t payload[4] = { 0xDE, 0xAD, 0xBE, 0xEF };
+    assert(sts_write_file_atomic(long_file, payload, 4, -1) == 1);
+    int64_t rlen = 0;
+    int32_t rerr = 0;
+    uint8_t *got = (uint8_t *)sts_read_file_strict(long_file, &rlen, &rerr);
+    assert(got != NULL && rlen == 4 && rerr == 0 && memcmp(got, payload, 4) == 0);
+    sts_free(got);
+    assert(sts_unlink(long_file) == 1);
+
+    // Drive-relative path atomic write (e.g. "C:sf_drive_rel_test_<pid>.bin"): temp file stays on same drive.
+    {
+        int64_t cwd_len = 0;
+        char *cwd = (char *)sts_getcwd(&cwd_len);
+        assert(cwd != NULL && cwd_len >= 2 && cwd[1] == ':');
+        char drive_rel[64];
+        snprintf(drive_rel, sizeof(drive_rel), "%c:sf_drive_rel_test_%lu.bin", cwd[0], (unsigned long)GetCurrentProcessId());
+        sts_free(cwd);
+        assert(sts_write_file_atomic(drive_rel, payload, 4, -1) == 1);
+        int64_t dlen = 0;
+        int32_t derr = 0;
+        uint8_t *dgot = (uint8_t *)sts_read_file_strict(drive_rel, &dlen, &derr);
+        assert(dgot != NULL && dlen == 4 && derr == 0 && memcmp(dgot, payload, 4) == 0);
+        sts_free(dgot);
+        assert(sts_unlink(drive_rel) == 1);
+    }
+
+    // Dangling directory symlink & dangling file symlink (`sts_is_dir_symlink` without following target).
+    char dlink[320], flink[320];
+    snprintf(dlink, sizeof(dlink), "%s\\dangling_dir_link", dir);
+    snprintf(flink, sizeof(flink), "%s\\dangling_file_link", dir);
+    if (sts_symlink("nonexistent_dir_target", dlink, 1) == 1) {
+        assert(sts_is_dir_symlink(dlink) == 1);
+        assert(RemoveDirectoryA(dlink) != 0);
+    } else if (GetLastError() == ERROR_PRIVILEGE_NOT_HELD) {
+        printf("  [SKIP] win dangling dir symlink (ERROR_PRIVILEGE_NOT_HELD)\n");
+    } else {
+        fprintf(stderr, "sts_symlink(dir) failed unexpectedly: err=%lu\n", (unsigned long)GetLastError());
+        assert(0);
+    }
+    if (sts_symlink("nonexistent_file_target", flink, 0) == 1) {
+        assert(sts_is_dir_symlink(flink) == 0);
+        assert(DeleteFileA(flink) != 0);
+    } else if (GetLastError() == ERROR_PRIVILEGE_NOT_HELD) {
+        printf("  [SKIP] win dangling file symlink (ERROR_PRIVILEGE_NOT_HELD)\n");
+    } else {
+        fprintf(stderr, "sts_symlink(file) failed unexpectedly: err=%lu\n", (unsigned long)GetLastError());
+        assert(0);
+    }
+
+    assert(RemoveDirectoryA(dir) != 0);
+    printf("  [PASS] win cli prims (200B atomic write + dangling dir/file symlink)\n");
+}
+
 int main(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
     test_win_fs_watch();
@@ -491,6 +555,7 @@ int main(void) {
     test_win_proc_and_pty();
     test_win_udp_and_info();
     test_win_drive_io_and_reparse();
+    test_win_cli_prims();
     assert(sts_wait_detached_for_test(5000) == 1);
     printf("station_sys_test (windows): ALL PASSED\n");
     return 0;
@@ -1831,6 +1896,91 @@ int main(void) {
         assert(sts_mkdir_exclusive(excl_dir) == 0);
         assert(sts_rmdir(excl_dir) == 1);
         unlink(drv_file);
+    }
+
+    // 10. Atomic sts_mkdir_mode, sts_symlink, sts_getcwd, sts_read_file_strict, sts_write_file_atomic
+    {
+        int64_t cwd_len = 0;
+        char *cwd = (char *)sts_getcwd(&cwd_len);
+        assert(cwd != NULL && cwd_len > 0 && cwd[0] == '/');
+        sts_free(cwd);
+
+        char tmp_dir[256];
+        snprintf(tmp_dir, sizeof(tmp_dir), "/tmp/sts_cli_prims_%ld", (long)getpid());
+        rmdir(tmp_dir);
+        assert(sts_mkdir_mode(tmp_dir, 0700) == 1);
+        assert(sts_mkdir_mode(tmp_dir, 0700) == -2); // EEXIST
+        struct stat dst;
+        assert(stat(tmp_dir, &dst) == 0 && (dst.st_mode & 0777) == 0700);
+
+        char sec_file[320];
+        snprintf(sec_file, sizeof(sec_file), "%s/secret.bin", tmp_dir);
+        const uint8_t bin_payload[4] = { 0x00, 0xFF, 0x7F, 0x80 };
+        assert(sts_write_file_atomic(sec_file, bin_payload, 4, 0600) == 1);
+        assert(stat(sec_file, &dst) == 0 && (dst.st_mode & 0777) == 0600 && dst.st_size == 4);
+
+        int64_t flen = 0;
+        int32_t ferr = 0;
+        uint8_t *got = (uint8_t *)sts_read_file_strict(sec_file, &flen, &ferr);
+        assert(got != NULL && flen == 4 && ferr == 0 && memcmp(got, bin_payload, 4) == 0);
+        sts_free(got);
+
+        char missing_file[320];
+        snprintf(missing_file, sizeof(missing_file), "%s/missing.bin", tmp_dir);
+        assert(sts_read_file_strict(missing_file, &flen, &ferr) == NULL && ferr == 1); // ENOENT
+
+        if (geteuid() != 0) {
+            assert(chmod(sec_file, 0000) == 0);
+            assert(sts_read_file_strict(sec_file, &flen, &ferr) == NULL && ferr == 2); // EACCES
+            assert(chmod(sec_file, 0600) == 0);
+        }
+
+        char sym_p[320];
+        snprintf(sym_p, sizeof(sym_p), "%s/link.bin", tmp_dir);
+        assert(sts_symlink("./secret.bin", sym_p, 0) == 1);
+        assert(sts_is_dir_symlink(sym_p) == 0);
+        int64_t rl_len = 0;
+        char *rl = (char *)sts_readlink(sym_p, &rl_len);
+        assert(rl != NULL && rl_len == 12 && strcmp(rl, "./secret.bin") == 0);
+        sts_free(rl);
+
+        // Long basename (240 B & 255 B = NAME_MAX) atomic write must never fail with ENAMETOOLONG.
+        const size_t long_lens[2] = { 240, 255 };
+        for (int li = 0; li < 2; li++) {
+            size_t blen = long_lens[li];
+            char bname[256];
+            memset(bname, 'x', blen - 4);
+            memcpy(bname + blen - 4, ".bin", 4);
+            bname[blen] = '\0';
+            char lpath[640];
+            snprintf(lpath, sizeof(lpath), "%s/%s", tmp_dir, bname);
+            assert(sts_write_file_atomic(lpath, bin_payload, 4, -1) == 1);
+            int64_t llen = 0;
+            int32_t lerr = 0;
+            uint8_t *lgot = (uint8_t *)sts_read_file_strict(lpath, &llen, &lerr);
+            assert(lgot != NULL && llen == 4 && lerr == 0 && memcmp(lgot, bin_payload, 4) == 0);
+            sts_free(lgot);
+            assert(unlink(lpath) == 0);
+        }
+
+        // Negative mode (-1) must respect process umask without fchmod override.
+        {
+            char um_file[320];
+            snprintf(um_file, sizeof(um_file), "%s/umask_test.cfg", tmp_dir);
+            mode_t saved_um = umask(0077);
+            assert(sts_write_file_atomic(um_file, bin_payload, 4, -1) == 1);
+            assert(stat(um_file, &dst) == 0 && (dst.st_mode & 0777) == 0600);
+            assert(unlink(um_file) == 0);
+            umask(0022);
+            assert(sts_write_file_atomic(um_file, bin_payload, 4, -1) == 1);
+            assert(stat(um_file, &dst) == 0 && (dst.st_mode & 0777) == 0644);
+            assert(unlink(um_file) == 0);
+            umask(saved_um);
+        }
+
+        unlink(sym_p);
+        unlink(sec_file);
+        rmdir(tmp_dir);
     }
 
     assert(sts_wait_detached_for_test(5000) == 1);

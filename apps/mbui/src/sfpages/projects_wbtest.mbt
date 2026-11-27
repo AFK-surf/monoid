@@ -1089,6 +1089,8 @@ test "collapsed project keeps active chat visible and detail rename uses native 
         shown: fn() { 0 },
         at: Side,
         watched: fn() { true },
+        section_rows: fn() { (2, 2) },
+        section_chrome_suppress: fn() { false },
       }
       root.box(fn(col) {
         col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
@@ -1422,6 +1424,8 @@ test "PR2 W1: grouped chat list curtain collapse/expand, disclosure header ancho
         shown: fn() { 0 },
         at: Side,
         watched: fn() { true },
+        section_rows: fn() { (2, 2) },
+        section_chrome_suppress: fn() { false },
       }
       root.box(fn(o) {
         o.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
@@ -1753,6 +1757,8 @@ test "grouped list load_more stays reachable when expanded group has >=8 rows an
         shown: fn() { 0 },
         at: Side,
         watched: fn() { true },
+        section_rows: fn() { (2, 2) },
+        section_chrome_suppress: fn() { false },
       }
       root.box(fn(o) {
         o.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore

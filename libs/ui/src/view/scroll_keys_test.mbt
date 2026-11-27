@@ -6,6 +6,7 @@
 priv struct KeysCase {
   tree : @view.Tree
   a : @view.Scroll
+  a_at : Int
   inner : @view.Scroll
   b : @view.Scroll
   b_row : Ref[@view.NodeId?]
@@ -15,6 +16,7 @@ priv struct KeysCase {
 fn keys_case() -> KeysCase {
   let now = Ref(0.0)
   let a = @view.Scroll::new()
+  let a_at = Ref(-1)
   let inner = @view.Scroll::new()
   let b = @view.Scroll::new()
   let b_row : Ref[@view.NodeId?] = Ref(None)
@@ -23,6 +25,7 @@ fn keys_case() -> KeysCase {
       root.box(fn(o) {
         o.width(Is(Some(300.0))).height(Is(Some(400.0))) |> ignore
         o.box(fn(v) {
+          a_at.val = v.at
           v
           .height(Is(Some(100.0)))
           .scrolls(a, fn(held) {
@@ -72,7 +75,7 @@ fn keys_case() -> KeysCase {
     time=fn() { now.val },
   )
   tree.frame(390.0, 844.0) |> ignore
-  { tree, a, inner, b, b_row }
+  { tree, a, a_at: a_at.val, inner, b, b_row }
 }
 
 ///|
@@ -112,6 +115,24 @@ test "the column the focus is in takes a column's key before the one under the p
   ignore(k.tree.focus_to(k.b_row.val))
   let took = keys_at(k, 16, 10.0)
   assert_eq((took, k.a.at(k.tree), k.b.at(k.tree)), (true, 0.0, 60.0))
+}
+
+///|
+test "only a key that moves this column records a new scroll for its motion checks" {
+  let k = keys_case()
+  k.tree.point_at(150.0, 60.0)
+  // Page Down, Down, End, End at the foot, Page Up, Up, Home, Up at the top.
+  for (key, time, last_move) in [
+    (16, 10.0, 10.0), (6, 20.0, 20.0), (9, 30.0, 30.0), (9, 40.0, 30.0),
+    (15, 50.0, 50.0), (5, 60.0, 60.0), (8, 70.0, 70.0), (5, 80.0, 70.0),
+  ] {
+    assert_true(keys_at(k, key, time))
+    assert_eq(k.tree.scroll_put_at(k.a_at), last_move, msg="key \{key} at \{time}")
+  }
+  assert_false(keys_at(k, 6, 90.0, facts=["Field"]))
+  k.tree.point_at(150.0, 150.0)
+  assert_true(keys_at(k, 6, 100.0))
+  assert_eq((k.b.at(k.tree), k.tree.scroll_put_at(k.a_at)), (40.0, 70.0))
 }
 
 ///|

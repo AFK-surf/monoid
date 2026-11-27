@@ -183,6 +183,23 @@ int32_t sts_write_file_mode(
 void *sts_read_dir(const char *path, int64_t *out_len);
 int32_t sts_mkdir_p(const char *path);
 int32_t sts_mkdir_exclusive(const char *path);
+// Atomic single-directory creation with explicit POSIX mode (0700 etc.):
+// returns 1 on success, -2 on EEXIST, -3 on EACCES/EPERM, -4 on ENOENT, 0 on other error.
+int32_t sts_mkdir_mode(const char *path, int32_t mode);
+// Create a symbolic link at `link_path` pointing to `target` (`is_dir != 0` sets directory flag on Windows).
+int32_t sts_symlink(const char *target, const char *link_path, int32_t is_dir);
+// Return 1 if `path` is a Windows directory symlink / junction (reparse point + directory,
+// without following the target so dangling directory symlinks return 1), 0 otherwise (always 0 on POSIX).
+int32_t sts_is_dir_symlink(const char *path);
+// Return current working directory (heap-allocated UTF-8, free via `sts_free`).
+void *sts_getcwd(int64_t *out_len);
+// Read whole regular file strictly distinguishing ENOENT (*out_err=1) vs EACCES/EPERM (*out_err=2) vs other (*out_err=3).
+// Returns heap buffer (free via `sts_free`, *out_err=0) on success, or NULL on error.
+void *sts_read_file_strict(const char *path, int64_t *out_len, int32_t *out_err);
+// Atomic file write: short unique temp file in same parent dir (`<parent>.sf-tmp.<pid>.<16hex>`)
+// + write + fsync/FlushFileBuffers + atomic rename (unlinks tmp on error).
+// On POSIX: `mode < 0` opens with 0666 and respects process umask (no fchmod); `mode >= 0` enforces `mode & 0777`.
+int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len, int32_t mode);
 int32_t sts_rename(const char *old_path, const char *new_path);
 int32_t sts_random_bytes(uint8_t *buf, int64_t len);
 

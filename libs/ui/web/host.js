@@ -31,6 +31,11 @@
   const MB_PROG_LIQUID_SINGLE = 6;
   const MB_PROG_LENS = 7;
   const MB_PROGS = 8;
+  // Heavy glass shaders first so parallel WebGL compiler threads finish them before the first panel/bar frame needs them.
+  const PREWARM_ORDER = [
+    MB_PROG_LIQUID_MERGED, MB_PROG_LIQUID_SINGLE, MB_PROG_UI_AD,
+    MB_PROG_FROSTED, MB_PROG_PATH_AD, MB_PROG_PATH, MB_PROG_LENS,
+  ];
   const GLASS_SLOTS = 32;
   // bare adaptive text (kind 7, slot 23 below 0): one box for the whole text, its centre in 21-22 and half its
   // width and height packed in 23 as -(hw * 4096 + hh) (ui's bare_text_ink)
@@ -45,7 +50,9 @@
       under: null, underN: 0, whole: 0, picked: 0, h1: 0, h2: 0, grab: null, key: null, valid: false, used: 0, lastFrame: 0,
     }));
   }
-  let canvas, gl, vs, vsAd, prog, progs = new Array(MB_PROGS).fill(null), progFlat, ufVp, progGen = 0, progNow = null, post, vao, instBuf, atlasTex, ta;
+  let canvas, gl, vs, vsAd, pvs = null, prog, progs = new Array(MB_PROGS).fill(null), progFlat, ufVp, progGen = 0, progNow = null, post, vao, instBuf, atlasTex, ta;
+  let parallelExt = null, glGen = 0, prewarmQueued = false;
+  let pendingProgs = new Array(MB_PROGS).fill(null), pendingFlat = null, pendingPost = null, pendingAd = null;
   let U = {}, PU = {};
   let cssW = 0, cssH = 0, dpr = 1;
   let rectLeft = 0, rectTop = 0, rectValid = false;
@@ -1215,6 +1222,8 @@
     if (s1 <= s0) return 0.0;
     return max(scale * (mb_bevel_F(s1, w0_pt, L_pt) - mb_bevel_F(s0, w0_pt, L_pt)), 0.0);
   }
+  #endif
+  #if MB_HAS_LIQUID && MB_HAS_DROPLET
   float mb_snell_intersect(float s, float ior, float H_opt) {
     float invLen = inversesqrt(1.0 + s * s);
     float cosI = invLen;
@@ -1409,12 +1418,11 @@
     if (kind == 6) {
       // Copyright 2025, Tim Lehmann for whynotmake.it. Adapted from flutter_liquid_glass
       // liquid_glass_final_render_core.glsl, Apache-2.0.
-      float k = v_pad.w;
-      vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
       float d;
       float halfMinor = 1e9;
       vec2 extSpineVec = vec2(0.0, 0.0);
       #if MB_LIQUID_SINGLE
+      vec4 s_rr = max(max(v_rr.x, v_rr.y), max(v_rr.z, v_rr.w)) > 0.0 ? v_rr : vec4(v_p.x);
       d = sd_rr(p, v_rect, s_rr);
       vec2 hs = v_rect.zw * 0.5;
       halfMinor = min(hs.x, hs.y);
@@ -1422,34 +1430,26 @@
       vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));
       extSpineVec = p - clamp(p, ct - ch, ct + ch);
       #else
-      if (k <= 0.0) {
-        d = sd_rr(p, v_rect, s_rr);
-        vec2 hs = v_rect.zw * 0.5;
-        halfMinor = min(hs.x, hs.y);
-        vec2 ct = v_rect.xy + hs;
-        vec2 ch = max(hs - vec2(halfMinor, halfMinor), vec2(0.0, 0.0));
-        extSpineVec = p - clamp(p, ct - ch, ct + ch);
-      } else {
-        d = 1e9;
-        for (int i = 0; i < 8; i++) {
-          if (i >= u_n) break;
-          float di = sd_rr(p, u_shape[i], u_rad[i]);
-          vec2 hsi = u_shape[i].zw * 0.5;
-          float hi = min(hsi.x, hsi.y);
-          vec2 cti = u_shape[i].xy + hsi;
-          vec2 chi = max(hsi - vec2(hi, hi), vec2(0.0, 0.0));
-          vec2 vi = p - clamp(p, cti - chi, cti + chi);
-          if (i == 0) {
-            d = di;
-            halfMinor = hi;
-            extSpineVec = vi;
-          } else {
-            float h = max(k - abs(d - di), 0.0) / k;
-            float w = d < di ? 0.5 * h : 1.0 - 0.5 * h;
-            d = min(d, di) - h * h * k * 0.25;
-            halfMinor = mix(halfMinor, hi, w);
-            extSpineVec = mix(extSpineVec, vi, w);
-          }
+      float k = v_pad.w;
+      d = 1e9;
+      for (int i = 0; i < 8; i++) {
+        if (i >= u_n) break;
+        float di = sd_rr(p, u_shape[i], u_rad[i]);
+        vec2 hsi = u_shape[i].zw * 0.5;
+        float hi = min(hsi.x, hsi.y);
+        vec2 cti = u_shape[i].xy + hsi;
+        vec2 chi = max(hsi - vec2(hi, hi), vec2(0.0, 0.0));
+        vec2 vi = p - clamp(p, cti - chi, cti + chi);
+        if (i == 0) {
+          d = di;
+          halfMinor = hi;
+          extSpineVec = vi;
+        } else {
+          float h = max(k - abs(d - di), 0.0) / k;
+          float w = d < di ? 0.5 * h : 1.0 - 0.5 * h;
+          d = min(d, di) - h * h * k * 0.25;
+          halfMinor = mix(halfMinor, hi, w);
+          extSpineVec = mix(extSpineVec, vi, w);
         }
       }
       #endif
@@ -1467,11 +1467,9 @@
       float spot_raw = is_adaptive ? (-v_c2.z - 1.0) : v_c2.z;
       bool is_dark = (!is_clear && luma(col.rgb) < 0.35);
       float clearVeil = is_clear ? smoothstep(0.005, 0.102, col.a) : 0.0;
+      #if MB_HAS_DROPLET
       float droplet = is_clear ? (1.0 - clearVeil) : 0.0;
-      #if MB_LIQUID_SINGLE
       bool is_drop = (droplet > 0.001);
-      #else
-      bool is_drop = (droplet > 0.001) && (k <= 0.0);
       #endif
       float inward = max(-d, 0.0);
       float rawBevel = max(v_c2.y, 0.0);
@@ -1488,7 +1486,11 @@
       vec2 surfaceNormal = vec2(0.0, 0.0);
       float shortening = 0.0;
       vec2 disp = vec2(0.0, 0.0);
+      #if MB_HAS_DROPLET
       bool need_grad = (inward < max(bevel, 23.0)) || (ext_cov > 0.0) || is_drop;
+      #else
+      bool need_grad = (inward < max(bevel, 23.0)) || (ext_cov > 0.0);
+      #endif
       if (need_grad) {
         float e = 0.5;
         #if MB_LIQUID_SINGLE
@@ -1497,15 +1499,10 @@
             sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
           ) / (2.0 * e);
         #else
-        vec2 grad = k <= 0.0
-          ? vec2(
-              sd_rr(p + vec2(e, 0.0), v_rect, s_rr) - sd_rr(p - vec2(e, 0.0), v_rect, s_rr),
-              sd_rr(p + vec2(0.0, e), v_rect, s_rr) - sd_rr(p - vec2(0.0, e), v_rect, s_rr)
-            ) / (2.0 * e)
-          : vec2(
-              sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
-              sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)
-            ) / (2.0 * e);
+        vec2 grad = vec2(
+            sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
+            sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k)
+          ) / (2.0 * e);
         #endif
         float gradLen = length(grad);
         surfaceNormal = gradLen > 0.0001 ? grad / gradLen : vec2(0.0, 0.0);
@@ -1525,6 +1522,16 @@
       int dropRole = (v_p.w <= -8.0) ? int(floor((-v_p.w + 4.0) / 16.0)) : 0;
       float rawZoomDelta = (v_p.w <= -8.0) ? ((-v_p.w) - float(dropRole) * 16.0) : ((v_p.w < 0.0) ? (-v_p.w) : 0.0);
       float lensZoom = clamp(1.0 + rawZoomDelta, 1.0, 3.0);
+      vec2 sampleBase = p;
+      if (lensZoom > 1.0001) {
+        #if MB_LIQUID_SINGLE
+        vec2 zoomC = v_rect.xy + v_rect.zw * 0.5;
+        #else
+        vec2 zoomC = (u_gb.xy + u_gb.zw) * 0.5;
+        #endif
+        sampleBase = zoomC + (p - zoomC) / lensZoom;
+      }
+      #if MB_HAS_DROPLET
       bool isRoleSlid = (dropRole == 1);
       bool isRoleSw = (dropRole == 2);
       bool isRoleSeg = (dropRole == 3);
@@ -1532,15 +1539,6 @@
       bool isModernDrop = is_drop && (dropRole >= 1) && (dropRole <= 4);
       float snellSLip = 0.0;
       float snellDmag = 0.0;
-      vec2 sampleBase = p;
-      if (lensZoom > 1.0001) {
-        #if MB_LIQUID_SINGLE
-        vec2 zoomC = v_rect.xy + v_rect.zw * 0.5;
-        #else
-        vec2 zoomC = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
-        #endif
-        sampleBase = zoomC + (p - zoomC) / lensZoom;
-      }
       float dropHairline = 0.0;
       float pressAmt = 0.0;
       float menAA = 0.0;
@@ -1644,6 +1642,19 @@
           refractColor = mix(refractColor, iconRGB, isInsidePlatter * bevelGate);
         }
       }
+      #else
+      vec3 refractColor;
+      if (inward >= bevel || abs(v_pad.z) * (1.0 - regMix) * amount * u_scale <= 0.25) {
+        refractColor = backdrop(sampleBase + disp);
+      } else {
+        float ds = v_pad.z * 0.5 * (1.0 - regMix);
+        refractColor = vec3(
+          backdrop(sampleBase + disp * (1.0 + ds)).r,
+          backdrop(sampleBase + disp).g,
+          backdrop(sampleBase + disp * (1.0 - ds)).b
+        );
+      }
+      #endif
       float bgA = (u_through > 0.5) ? clamp(backdrop4(sampleBase + disp).a, 0.0, 1.0) : 1.0;
       vec3 emission;
       float transmittance;
@@ -1679,8 +1690,8 @@
         vec2 ac = v_rect.xy + v_rect.zw * 0.5;
         float ar = max(min(v_rect.z, v_rect.w) * 0.5, 1.0) * 0.5;
         #else
-        vec2 ac = (k <= 0.0) ? (v_rect.xy + v_rect.zw * 0.5) : ((u_gb.xy + u_gb.zw) * 0.5);
-        float ar = ((k <= 0.0) ? max(min(v_rect.z, v_rect.w) * 0.5, 1.0) : max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0)) * 0.5;
+        vec2 ac = (u_gb.xy + u_gb.zw) * 0.5;
+        float ar = max(min(u_gb.z - u_gb.x, u_gb.w - u_gb.y) * 0.5, 1.0) * 0.5;
         #endif
         float val = ad_sample(ac, ar, is_dark, col.a);
         if (u_through > 0.5) val *= bgA;
@@ -2084,6 +2095,7 @@
           }
         }
       }
+      #if MB_HAS_DROPLET
       if (isModernDrop) {
         float backdropLuma = clamp(Y, 0.0, 1.0);
         float brightBg = smoothstep(0.35, 0.75, backdropLuma);
@@ -2200,6 +2212,7 @@
           result = max(result - vec3(shade * dropHairline), vec3(0.0));
         }
       }
+      #endif
       result = clamp(result + mb_dither(p * u_scale) / 255.0, 0.0, 1.0);
       // (c) External dark contour (iOS 27.0: Regular controls place their bevel contour strictly outside the silhouette so circles keep full geometric width)
       float extUseCov = ext_cov;
@@ -2712,12 +2725,56 @@
     o = vec4(mb_pack16(nextT), latch, clamp(bgL, 0.0, 1.0));
   }`;
 
-  function compile(type, src) {
+  function compileRaw(type, src) {
     const s = gl.createShader(type);
     gl.shaderSource(s, src);
     gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
     return s;
+  }
+
+  function startLink(vsShader, fsSrc, label) {
+    const fs = compileRaw(gl.FRAGMENT_SHADER, fsSrc);
+    const p = gl.createProgram();
+    gl.attachShader(p, vsShader);
+    gl.attachShader(p, fs);
+    gl.linkProgram(p);
+    return { p, vs: vsShader, fs, label };
+  }
+
+  function finishLink(pend) {
+    const { p, vs: vsShader, fs, label } = pend;
+    try {
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+        if (gl.isContextLost && gl.isContextLost()) {
+          gl.deleteProgram(p);
+          return null;
+        }
+        const pLog = gl.getProgramInfoLog(p) || '';
+        const vLog = vsShader && !gl.getShaderParameter(vsShader, gl.COMPILE_STATUS) ? (gl.getShaderInfoLog(vsShader) || '') : '';
+        const fLog = fs && !gl.getShaderParameter(fs, gl.COMPILE_STATUS) ? (gl.getShaderInfoLog(fs) || '') : '';
+        gl.deleteProgram(p);
+        throw new Error(`${label}: ${[pLog, vLog, fLog].filter(Boolean).join('\n') || 'link failed'}`);
+      }
+      return p;
+    } finally {
+      if (fs) gl.deleteShader(fs);
+    }
+  }
+
+  function dropPending(pend, g = gl) {
+    if (!pend || !g) return;
+    try { if (pend.p) g.deleteProgram(pend.p); } catch (e) { /* context gone */ }
+    try { if (pend.fs) g.deleteShader(pend.fs); } catch (e) { /* context gone */ }
+  }
+
+  function resetPendingState() {
+    glGen++;
+    prewarmQueued = false;
+    pendingProgs = new Array(MB_PROGS).fill(null);
+    pendingFlat = null;
+    pendingPost = null;
+    pendingAd = null;
+    if (veil) veil.pending = null;
   }
 
   function groupOfKind(kind, padW) {
@@ -2730,48 +2787,47 @@
     return MB_PROG_UI;
   }
 
-  function makeProg(group) {
+  function startProg(group) {
     let vsShader = vs;
     let fsHead;
     switch (group) {
       case MB_PROG_FROSTED:
-        fsHead = '#version 300 es\n#define ONE_KIND 5\n#define MB_HAS(K) ((K) == 5)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND 5\n#define MB_HAS(K) ((K) == 5)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n#define MB_HAS_DROPLET 0\n';
         break;
       case MB_PROG_LIQUID_MERGED:
-        fsHead = '#version 300 es\n#define ONE_KIND 6\n#define MB_HAS(K) ((K) == 6)\n#define MB_HAS_LIQUID 1\n#define MB_HAS_ADAPTIVE 1\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 1\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND 6\n#define MB_HAS(K) ((K) == 6)\n#define MB_HAS_LIQUID 1\n#define MB_HAS_ADAPTIVE 1\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 1\n#define MB_LIQUID_SINGLE 0\n#define MB_HAS_DROPLET 0\n';
         break;
       case MB_PROG_LIQUID_SINGLE:
-        fsHead = '#version 300 es\n#define ONE_KIND 13\n#define MB_HAS(K) ((K) == 6)\n#define MB_HAS_LIQUID 1\n#define MB_HAS_ADAPTIVE 1\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 1\n';
+        fsHead = '#version 300 es\n#define ONE_KIND 13\n#define MB_HAS(K) ((K) == 6)\n#define MB_HAS_LIQUID 1\n#define MB_HAS_ADAPTIVE 1\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 1\n#define MB_HAS_DROPLET 1\n';
         break;
       case MB_PROG_LENS:
-        fsHead = '#version 300 es\n#define ONE_KIND 8\n#define MB_HAS(K) ((K) == 8)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND 8\n#define MB_HAS(K) ((K) == 8)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 1\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n#define MB_HAS_DROPLET 0\n';
         break;
       case MB_PROG_PATH:
         vsShader = vs;
-        fsHead = '#version 300 es\n#define ONE_KIND 11\n#define MB_HAS(K) ((K) == 11)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND 11\n#define MB_HAS(K) ((K) == 11)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n#define MB_HAS_DROPLET 0\n';
         break;
       case MB_PROG_PATH_AD:
         vsShader = vsAd;
-        fsHead = '#version 300 es\n#define ONE_KIND 11\n#define MB_HAS(K) ((K) == 11)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND 11\n#define MB_HAS(K) ((K) == 11)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 0\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n#define MB_HAS_DROPLET 0\n';
         break;
       case MB_PROG_UI_AD:
         vsShader = vsAd;
-        fsHead = '#version 300 es\n#define ONE_KIND -2\n#define MB_HAS(K) ((K) == 0 || (K) == 2 || (K) == 7 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND -2\n#define MB_HAS(K) ((K) == 0 || (K) == 2 || (K) == 7 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n#define MB_HAS_DROPLET 0\n';
         break;
       case MB_PROG_UI:
       default:
         vsShader = vs;
-        fsHead = '#version 300 es\n#define ONE_KIND -1\n#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 9 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n';
+        fsHead = '#version 300 es\n#define ONE_KIND -1\n#define MB_HAS(K) ((K) == 0 || (K) == 1 || (K) == 2 || (K) == 3 || (K) == 4 || (K) == 9 || (K) == 10)\n#define MB_HAS_LIQUID 0\n#define MB_HAS_ADAPTIVE 0\n#define MB_HAS_BACKDROP 0\n#define MB_HAS_BOX 1\n#define MB_HAS_GROUP 0\n#define MB_LIQUID_SINGLE 0\n#define MB_HAS_DROPLET 0\n';
         break;
     }
     const src = fsHead + FS.slice('#version 300 es\n'.length);
-    const fs = compile(gl.FRAGMENT_SHADER, src);
-    const p = gl.createProgram();
-    gl.attachShader(p, vsShader);
-    gl.attachShader(p, fs);
-    gl.linkProgram(p);
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
-    gl.deleteShader(fs);
+    return startLink(vsShader, src, 'prog:' + group);
+  }
+
+  function finishProg(group, pend) {
+    const p = finishLink(pend);
+    if (!p) return null;
     const u = {};
     for (const n of ['u_vp', 'u_origin', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_glight', 'u_through', 'u_segs', 'u_ad', 'u_ad_box', 'u_ad_n', 'u_ad_cur', 'u_veil']) {
       u[n] = gl.getUniformLocation(p, n);
@@ -2790,12 +2846,76 @@
   function getProg(group) {
     const idx = (group >= 0 && group < MB_PROGS) ? group : MB_PROG_UI;
     let k = progs[idx];
-    if (!k) k = progs[idx] = makeProg(idx);
+    if (k) return k;
+    const pend = pendingProgs[idx];
+    pendingProgs[idx] = null;
+    k = finishProg(idx, pend || startProg(idx));
+    if (k) progs[idx] = k;
     return k;
+  }
+
+  function ensureProgFlat() {
+    if (progFlat) return true;
+    const pend = pendingFlat;
+    pendingFlat = null;
+    const p = finishLink(pend || startLink(vs, FS_FLAT, 'flat'));
+    if (!p) return false;
+    progFlat = p;
+    ufVp = gl.getUniformLocation(progFlat, 'u_vp');
+    return true;
+  }
+
+  function ensurePost() {
+    if (post) return true;
+    const pend = pendingPost;
+    pendingPost = null;
+    const p = finishLink(pend || startLink(pvs, PFS, 'post'));
+    if (!p) return false;
+    post = p;
+    PU = {};
+    for (const n of ['u_src', 'u_lv1', 'u_lv2', 'u_lv3', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
+    return true;
+  }
+
+  function ensureAdProg() {
+    if (adProg) return true;
+    const pend = pendingAd;
+    pendingAd = null;
+    const p = finishLink(pend || startLink(pvs, AD_FS, 'adaptive'));
+    if (!p) return false;
+    adProg = p;
+    ADU = {};
+    for (const n of ['u_bd', 'u_prev', 'u_map', 'u_uvc', 'u_box', 'u_param']) ADU[n] = gl.getUniformLocation(adProg, n);
+    return true;
+  }
+
+  // Gate background prewarm on KHR_parallel_shader_compile as a driver-support signal; we intentionally do not poll
+  // COMPLETION_STATUS_KHR and instead let finishLink() block only if a shader is needed before background link finishes.
+  function canPrewarm() {
+    return !!(parallelExt && typeof parallelExt.COMPLETION_STATUS_KHR === 'number' &&
+      shotAt < 0 && !globalThis.__mbrender &&
+      !(typeof navigator !== 'undefined' && navigator.webdriver));
+  }
+
+  function schedulePrewarm() {
+    if (prewarmQueued || !canPrewarm()) return;
+    prewarmQueued = true;
+    const wid = winActive;
+    const gen = glGen;
+    queueMicrotask(() => {
+      inWin(wid, () => {
+        if (!gl || glGen !== gen || (gl.isContextLost && gl.isContextLost())) return;
+        for (const g of PREWARM_ORDER) {
+          if (!progs[g] && !pendingProgs[g]) pendingProgs[g] = startProg(g);
+        }
+        startVeilProg();
+      });
+    });
   }
 
   function useProg(group) {
     const k = getProg(group);
+    if (!k) return;
     if (progNow === k.p && k.gen === progGen) return;
     if (progNow !== k.p) {
       progNow = k.p;
@@ -2827,37 +2947,31 @@
     gl = canvas.getContext('webgl2', { premultipliedAlpha: true, antialias: false, alpha: true });
     cv = null;
     cvOk = false;
+    resetPendingState();
+    const ext = gl.getExtension('KHR_parallel_shader_compile');
+    parallelExt = ext && typeof ext.COMPLETION_STATUS_KHR === 'number' ? ext : null;
     const vsBody = VS.slice('#version 300 es\n'.length);
-    vs = compile(gl.VERTEX_SHADER, '#version 300 es\n#define MB_VS_ADAPTIVE 0\n' + vsBody);
-    vsAd = compile(gl.VERTEX_SHADER, '#version 300 es\n#define MB_VS_ADAPTIVE 1\n' + vsBody);
+    // Batch all initial shader compiles & links before querying LINK_STATUS so ANGLE/WebKit compile them in parallel.
+    vs = compileRaw(gl.VERTEX_SHADER, '#version 300 es\n#define MB_VS_ADAPTIVE 0\n' + vsBody);
+    vsAd = compileRaw(gl.VERTEX_SHADER, '#version 300 es\n#define MB_VS_ADAPTIVE 1\n' + vsBody);
+    pvs = compileRaw(gl.VERTEX_SHADER, PVS);
     progs = new Array(MB_PROGS).fill(null);
-    progs[MB_PROG_UI] = makeProg(MB_PROG_UI);
-    prog = progs[MB_PROG_UI].p;
-    U = progs[MB_PROG_UI].u;
-    const fsFlat = compile(gl.FRAGMENT_SHADER, FS_FLAT);
-    progFlat = gl.createProgram();
-    gl.attachShader(progFlat, vs);
-    gl.attachShader(progFlat, fsFlat);
-    gl.linkProgram(progFlat);
-    if (!gl.getProgramParameter(progFlat, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(progFlat));
-    gl.deleteShader(fsFlat);
-    ufVp = gl.getUniformLocation(progFlat, 'u_vp');
+    progFlat = null;
+    ufVp = null;
+    post = null;
+    PU = {};
+    adProg = null;
+    ADU = {};
+    const uiPend = startProg(MB_PROG_UI);
+    pendingFlat = startLink(vs, FS_FLAT, 'flat');
+    pendingPost = startLink(pvs, PFS, 'post');
+    pendingAd = startLink(pvs, AD_FS, 'adaptive');
+    const uiK = finishProg(MB_PROG_UI, uiPend);
+    progs[MB_PROG_UI] = uiK;
+    prog = uiK ? uiK.p : null;
+    U = uiK ? uiK.u : {};
     progGen++;
     progNow = null;
-    const pvs = compile(gl.VERTEX_SHADER, PVS);
-    post = gl.createProgram();
-    gl.attachShader(post, pvs);
-    gl.attachShader(post, compile(gl.FRAGMENT_SHADER, PFS));
-    gl.linkProgram(post);
-    if (!gl.getProgramParameter(post, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(post));
-    for (const n of ['u_src', 'u_lv1', 'u_lv2', 'u_lv3', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
-    adProg = gl.createProgram();
-    gl.attachShader(adProg, pvs);
-    gl.attachShader(adProg, compile(gl.FRAGMENT_SHADER, AD_FS));
-    gl.linkProgram(adProg);
-    if (!gl.getProgramParameter(adProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(adProg));
-    ADU = {};
-    for (const n of ['u_bd', 'u_prev', 'u_map', 'u_uvc', 'u_box', 'u_param']) ADU[n] = gl.getUniformLocation(adProg, n);
     veil = makeVeil();
     glassLost();
     vao = gl.createVertexArray();
@@ -2928,7 +3042,7 @@
   function makeVeil() {
     const slots = [];
     for (let i = 0; i < VEIL_MAX; i++) slots.push({ who: 0, isNew: false, seen: 0, updated: 0, settleLeft: 0, cx: 0, cy: 0, hx: 0, hy: 0 });
-    return { prog: null, U: {}, tex: [null, null], fb: [null, null], cur: 0, slots };
+    return { prog: null, pending: null, U: {}, tex: [null, null], fb: [null, null], cur: 0, slots };
   }
   let veil = makeVeil();
   function veilForget() {
@@ -2952,14 +3066,17 @@
     }
     veil.cur = 0;
   }
-  // (made as bare words first come: no start pays for it)
+  function startVeilProg() {
+    if (veil.prog || veil.pending || !pvs) return;
+    veil.pending = startLink(pvs, VEIL_FS, 'veil');
+  }
+  // (made as bare words first come, or adopted from background prewarm)
   function ensureVeilProg() {
     if (veil.prog) return;
-    const p = gl.createProgram();
-    gl.attachShader(p, compile(gl.VERTEX_SHADER, PVS));
-    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, VEIL_FS));
-    gl.linkProgram(p);
-    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+    const pend = veil.pending;
+    veil.pending = null;
+    const p = finishLink(pend || startLink(pvs, VEIL_FS, 'veil'));
+    if (!p) return;
     veil.prog = p;
     for (const n of ['u_bd', 'u_prev', 'u_map', 'u_uvc', 'u_box', 'u_ink', 'u_param']) veil.U[n] = gl.getUniformLocation(p, n);
   }
@@ -3235,7 +3352,7 @@
     return false;
   }
   function adRunUpdates(pend, dt) {
-    if (!pend.length || !bdTex || !adProg) return;
+    if (!pend.length || !bdTex || !ensureAdProg()) return;
     ensureAdTex();
     const cur = adCur, nxt = 1 - cur;
     gl.disable(gl.BLEND);
@@ -3726,6 +3843,7 @@
     gl.bindFramebuffer(gl.DRAW_FRAMEBUFFER, lv[0].fb);
     // Skip gl.invalidateFramebuffer here too (see postPass).
     gl.blitFramebuffer(m.px0, m.pb0, m.px0 + w, m.pb0 + h, 0, 0, w, h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
+    if (!ensurePost()) return;
     gl.useProgram(post);
     unbindPostExtra();
     const [lw, lh] = grabLevels(m);
@@ -4516,17 +4634,19 @@
       if (n < 0) continue;
       if (i > s) drawRun(s, i - s);
       gl.enable(gl.SCISSOR_TEST);
+      let prevFlat = false;
       for (let k = 0; k < n; k++) {
         const o = k * 5;
-        const flat = bandOut[o + 4];
-        if (k === 0 || flat !== bandOut[o - 1]) {
+        const flat = !!(bandOut[o + 4] && ensureProgFlat());
+        if (k === 0 || flat !== prevFlat) {
           gl.useProgram(flat ? progFlat : progNow);
           if (flat) gl.uniform2f(ufVp, W / dpr, Hh / dpr);
+          prevFlat = flat;
         }
         gl.scissor(bandOut[o], Hh - bandOut[o + 3], bandOut[o + 2] - bandOut[o], bandOut[o + 3] - bandOut[o + 1]);
         drawRun(i, 1);
       }
-      if (n > 0 && bandOut[(n - 1) * 5 + 4]) gl.useProgram(progNow);
+      if (prevFlat) gl.useProgram(progNow);
       if (cutOn) gl.scissor(cut[0], cut[1], cut[2], cut[3]);
       else gl.disable(gl.SCISSOR_TEST);
       s = i + 1;
@@ -4573,6 +4693,7 @@
       missing = drewMissing;
       adFinalizeFrame(true, adFrameSerial);
       glassIdleTick();
+      schedulePrewarm();
       return;
     }
     ensureCanvas();
@@ -4589,6 +4710,7 @@
       missing = drewMissing;
       adFinalizeFrame(true, adFrameSerial);
       glassIdleTick();
+      schedulePrewarm();
       return;
     }
     const parts = takeParts(cvOk);
@@ -4624,6 +4746,7 @@
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.blitFramebuffer(0, 0, cv.w, cv.h, 0, 0, cv.w, cv.h, gl.COLOR_BUFFER_BIT, gl.NEAREST);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    schedulePrewarm();
   }
 
   // A frame presented: whole-screen frames straight onto the default framebuffer (null); once the app reports partial
@@ -4775,7 +4898,7 @@
         }
         // Pass 2: separable Gaussian blur in RGBA8
         const sp = blurPt * scF;
-        if (sp > 0.25) {
+        if (sp > 0.25 && ensurePost()) {
           gl.disable(gl.BLEND);
           gl.useProgram(post);
           unbindPostExtra();
@@ -7025,6 +7148,7 @@
   let contextLoser = null, contextAnew = false;
   const contextLost = (e) => {
     e.preventDefault();
+    inWin(0, resetPendingState);
     // (one lost by H.drive gives itself back; not within this event: allowed only once preventDefault has been seen)
     if (contextLoser) requestAnimationFrame(() => contextLoser.restoreContext());
   };
@@ -7749,7 +7873,8 @@
   const rolesKept = new Map();
   function winSave(s) {
     Object.assign(s, {
-      canvas, gl, vs, vsAd, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
+      canvas, gl, vs, vsAd, pvs, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
+      parallelExt, glGen, prewarmQueued, pendingProgs, pendingFlat, pendingPost, pendingAd,
       cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
       lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, veil, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
       cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
@@ -7759,7 +7884,8 @@
   }
   function winLoad(s) {
     ({
-      canvas, gl, vs, vsAd, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
+      canvas, gl, vs, vsAd, pvs, prog, progs, progFlat, ufVp, progGen, progNow, post, adProg, vao, instBuf, atlasTex, ta, U, PU, ADU,
+      parallelExt, glGen, prewarmQueued, pendingProgs, pendingFlat, pendingPost, pendingAd,
       cssW, cssH, dpr, rectLeft, rectTop, rectValid, sizeDirty, sizeObserver,
       lv, lvW, lvH, bdTex, glassSlots, glassSlotsClock, adTex, adFb, adCur, adSlots, veil, adLastTime, adFrameSerial, adSettling, adRaf, lastN, lastR, lastG, lastB, lastF32,
       cv, cvOk, target, dirty, dirtyWhole, dirtyTold, missing, drewMissing, cutOn,
@@ -7917,16 +8043,28 @@
         if (s.instBuf) sg.deleteBuffer(s.instBuf);
         if (s.vao) sg.deleteVertexArray(s.vao);
         for (const kp of s.progs || []) if (kp && kp.p) sg.deleteProgram(kp.p);
+        for (const pend of s.pendingProgs || []) dropPending(pend, sg);
+        dropPending(s.pendingFlat, sg);
+        dropPending(s.pendingPost, sg);
+        dropPending(s.pendingAd, sg);
+        if (s.veil) {
+          dropPending(s.veil.pending, sg);
+          if (s.veil.prog) sg.deleteProgram(s.veil.prog);
+        }
         if (s.progFlat) sg.deleteProgram(s.progFlat);
         if (s.post) sg.deleteProgram(s.post);
+        if (s.adProg) sg.deleteProgram(s.adProg);
         if (s.vs) sg.deleteShader(s.vs);
         if (s.vsAd) sg.deleteShader(s.vsAd);
+        if (s.pvs) sg.deleteShader(s.pvs);
         const loser = sg.getExtension('WEBGL_lose_context');
         if (loser) loser.loseContext();
       } catch (err) { /* its context gone */ }
     }
     Object.assign(s, {
-      gl: null, vs: null, vsAd: null, prog: null, progs: new Array(MB_PROGS).fill(null), progFlat: null, ufVp: null,
+      gl: null, vs: null, vsAd: null, pvs: null, prog: null, progs: new Array(MB_PROGS).fill(null), progFlat: null, ufVp: null,
+      parallelExt: null, glGen: (s.glGen || 0) + 1, prewarmQueued: false, pendingProgs: new Array(MB_PROGS).fill(null),
+      pendingFlat: null, pendingPost: null, pendingAd: null,
       progGen: 0, progNow: null, post: null, vao: null, instBuf: null, atlasTex: null, segsTex: null, segsHad: null,
       lv: null, lvW: 0, lvH: 0, bdTex: null, glassSlots: makeGlassSlots(), glassSlotsClock: 0,
       adProg: null, ADU: {}, adTex: [null, null], adFb: [null, null], adCur: 0, adSlots: makeAdSlots(), veil: makeVeil(),
@@ -8043,7 +8181,9 @@
     const s = {
       wid, win: child, role, minW, minH, closed: false, closing: false, pending: false, raf: 0, wake: { at: -1 },
       texs: new Map(),
-      canvas: ccanvas, gl: null, vs: null, vsAd: null, prog: null, progs: new Array(MB_PROGS).fill(null), progFlat: null,
+      canvas: ccanvas, gl: null, vs: null, vsAd: null, pvs: null, prog: null, progs: new Array(MB_PROGS).fill(null), progFlat: null,
+      parallelExt: null, glGen: 0, prewarmQueued: false, pendingProgs: new Array(MB_PROGS).fill(null),
+      pendingFlat: null, pendingPost: null, pendingAd: null,
       ufVp: null, progGen: 0, progNow: null, post: null, vao: null, instBuf: null, atlasTex: null, ta: cta,
       U: {}, PU: {}, cssW: 0, cssH: 0, dpr: child.devicePixelRatio || 1, rectLeft: 0, rectTop: 0, rectValid: false,
       sizeDirty: true, sizeObserver: null,
@@ -8097,7 +8237,7 @@
         if (dw || dh) { try { win.resizeBy(dw, dh); } catch (e) { /* the browser's to refuse */ } }
       });
     }
-    s.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); });
+    s.canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); inWin(wid, resetPendingState); });
     s.canvas.addEventListener('webglcontextrestored', () => inWin(wid, () => {
       setupGL();
       glassLost();

@@ -303,6 +303,7 @@ fn fetch_feed_json(channel : String, base : String, ports : CliPorts) -> Result[
       timeout_ms: Some(FEED_TIMEOUT_MS),
       proxy: None,
       ca_pem: None,
+      redirect: "follow",
     }
     let res = (ports.http)(req)
     let retry_err : Option[String] = match res {
@@ -509,6 +510,7 @@ fn download_verified(
       timeout_ms: Some(timeout_ms),
       proxy: None,
       ca_pem: None,
+      redirect: "follow",
     }
     let retry_err : Option[String] = match (ports.http)(req) {
       Ok(resp) => {
@@ -778,7 +780,7 @@ pub fn prepare_replace(
     if !ports.fs.exists(stage_ch) && ports.fs.exists(app_ch) {
       match (ports.fs.read_bytes)(app_ch) {
         Ok(b) => {
-          let _ = (ports.fs.write_bytes)(stage_ch, b, 420)
+          let _ = (ports.fs.write_bytes)(stage_ch, b, -1)
         }
         Err(_) => ()
       }
@@ -841,7 +843,7 @@ pub fn prepare_replace(
           Ok(b) => b
           Err(_) => return fail_clean("--main not found: " + m_path)
         }
-        match (ports.fs.write_bytes)(nodepath::join(ports.sep, [stage_station, "main.js"]), bytes, 420) {
+        match (ports.fs.write_bytes)(nodepath::join(ports.sep, [stage_station, "main.js"]), bytes, -1) {
           Ok(_) => ()
           Err(e) => return fail_clean(station_ops::fs_err_msg(e))
         }
@@ -887,7 +889,7 @@ pub fn prepare_replace(
     },
   }
   let ov_text = station_ops::format_config_json(override_to_json(meta))
-  match ports.fs.write_text(nodepath::join(ports.sep, [stage, "OVERRIDE"]), ov_text, 420) {
+  match ports.fs.write_text(nodepath::join(ports.sep, [stage, "OVERRIDE"]), ov_text, -1) {
     Ok(_) => ()
     Err(e) => return fail_clean(station_ops::fs_err_msg(e))
   }

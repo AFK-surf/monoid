@@ -13,6 +13,7 @@ import "lock"
 import "mesh_door"
 import "mesh_wire"
 import "nodepath"
+import "station_cli"
 import "station_cloud"
 import "station_http"
 import "station_jobs"
@@ -33,6 +34,7 @@ let MUX_TAG_MESH : Int64 = 2L
 // Fixed `station_sys` event IDs.
 let EV_CTRL : Int64 = 10L
 let EV_SIG : Int64 = 11L
+let EV_RUN_WATCH : Int64 = 12L
 // Disjoint positive event IDs for Vault subprocesses (matched via `active_vault_runs.contains(ev_id)`).
 let VAULT_EV_START : Int64 = 1000000001L
 
@@ -473,6 +475,7 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
 
   // Standalone exclusive lock when not started by the launcher.
   let mut held_lock : Option[station_ops::HeldLock] = None
+  let mut run_watcher : Option[station_sys::FsWatchHandle] = None
   if !parsed.launcher.linked() {
     match station_ops::held_by(ops_fs, data, self_pid, sep=sep) {
       Some(other_pid) => {
@@ -511,6 +514,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       rig_log(msg)
       let _ = control.failed(msg)
       control.close()
+      match run_watcher {
+        Some(w) => {
+          let _ = w.close()
+        }
+        None => ()
+      }
       match held_lock {
         Some(h) => {
           let _ = h.release()
@@ -536,6 +545,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     rig_log(msg)
     let _ = control.failed(msg)
     control.close()
+    match run_watcher {
+      Some(w) => {
+        let _ = w.close()
+      }
+      None => ()
+    }
     match held_lock {
       Some(h) => {
         let _ = h.release()
@@ -573,6 +588,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       rig_log(msg)
       let _ = control.failed(msg)
       control.close()
+      match run_watcher {
+        Some(w) => {
+          let _ = w.close()
+        }
+        None => ()
+      }
       match held_lock {
         Some(h) => {
           let _ = h.release()
@@ -593,6 +614,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       rig_log(msg)
       let _ = control.failed(msg)
       control.close()
+      match run_watcher {
+        Some(w) => {
+          let _ = w.close()
+        }
+        None => ()
+      }
       match held_lock {
         Some(h) => {
           let _ = h.release()
@@ -625,6 +652,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
       let _ = control.failed(msg)
       store.close()
       control.close()
+      match run_watcher {
+        Some(w) => {
+          let _ = w.close()
+        }
+        None => ()
+      }
       match held_lock {
         Some(h) => {
           let _ = h.release()
@@ -1301,6 +1334,70 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   let front_out_by_sock : Map[Int64, Int64] = Map::new()
   let front_early_out_socks : Map[Int64, Int64] = Map::new()
 
+  let daemon_start_ms = host_shim::now_ms()
+  run_watcher = station_sys::fs_watch_open(EV_RUN_WATCH, run_dir)
+  let cli_ops_fs = build_cli_ops_fs(station_ops::detect_os(), sep)
+  let answer_rig_heap = fn() -> Unit {
+    let rig_heap_ports = station_cli::CliPorts::{
+      fs: cli_ops_fs,
+      cloud_fs: station_cli::cloud_fs_from_ops(cli_ops_fs, sep=sep),
+      key_fs: station_cli::key_fs_from_ops(
+        cli_ops_fs,
+        fn(n : Int) -> Result[Bytes, String] { station_sys::random_bytes(n) },
+        sep=sep,
+      ),
+      http: fn(_req : station_cli::CliHttpRequest) -> Result[station_cli::CliHttpResponse, String] {
+        Err("http unused in daemon heap handler")
+      },
+      now_ms: host_shim::wall_ms,
+      pid_alive: fn(_p : Int) -> Bool { false },
+      is_launcher: fn(_p : Int) -> Bool { false },
+      ask_launcher_hup: fn(_p : Int) -> Result[Unit, String] { Err("unused") },
+      wait_for_file: fn(_p : String, _ms : Int64) -> Option[String] { None },
+      touch_file: fn(_p : String, _ms : Int64) -> Unit {},
+      sleep_ms: fn(_ms : Int64) -> Unit {},
+      self_pid: self_pid,
+      platform_os: station_ops::detect_os(),
+      arch: station_sys::arch_name(),
+      sep: sep,
+      default_app: "",
+      verify_fn: None,
+      random_hex: fn(n : Int) -> String {
+        match station_sys::random_hex(n) {
+          Ok(h) => h
+          Err(e) => panic("OS CSPRNG failed: " + e)
+        }
+      },
+      tmpdir: station_sys::tmpdir(),
+      copy_dir: None,
+      extract_archive: None,
+      remove_tree: None,
+      mkdir_exclusive: None,
+      symlink_dir: None,
+      heap_stats: Some(fn() -> station_cli::HeapDiagSnapshot {
+        let usage_json = station_sys::process_usage_json([self_pid])
+        let (rss, cpu_ns) = parse_process_usage_entry(usage_json, host_shim::rss_bytes())
+        let up = host_shim::now_ms() - daemon_start_ms
+        let obj_count = (
+          job_mgr.jobs.length() +
+          remote_mgr.tasks.length() +
+          active_conns.length() +
+          active_streams.length()
+        ).to_int64()
+        station_cli::HeapDiagSnapshot::{
+          pid: self_pid,
+          rss_bytes: rss,
+          open_fds: host_shim::open_fd_count(),
+          cpu_ns: cpu_ns,
+          uptime_ms: if up < 0L { 0L } else { up },
+          objects: obj_count,
+        }
+      }),
+    }
+    let _ = station_cli::answer_heap_request(data, rig_heap_ports)
+  }
+  answer_rig_heap()
+
   control.on("drain", fn() -> Unit {
     let drained_path = nodepath::join(sep, [run_dir, "drained"])
     let _ = ops_fs.write_text(drained_path, "idle\n", 420)
@@ -1310,6 +1407,38 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
   control.on("handover", fn() -> Unit { stopping = true })
   control.on("hup", fn() -> Unit {
     rig_log("received hup")
+    let ask_path = nodepath::join(sep, [run_dir, station_cli::CHANNEL_ASK])
+    match cli_ops_fs.read_text(ask_path) {
+      Ok(raw_ask) => {
+        let _ = (cli_ops_fs.remove)(ask_path)
+        let trimmed = station_cli::cli_trim(raw_ask)
+        let answer = match station_cli::channel_of_id(trimmed) {
+          Some(ch) => {
+            match station_ops::ConfigFile::open(
+              cli_ops_fs,
+              data,
+              env_config=env_cfg,
+              pid=self_pid,
+              sep=sep,
+            ) {
+              Ok(cfg_f) => {
+                match cfg_f.update(fn(raw : base_codec::Json) -> base_codec::Json {
+                  station_cli::cli_set_json_field(raw, "updateChannel", base_codec::json_str(ch))
+                }) {
+                  Ok(_) => "ok " + ch + "\n"
+                  Err(e) => "error " + station_ops::config_err_msg(e) + "\n"
+                }
+              }
+              Err(e) => "error " + station_ops::config_err_msg(e) + "\n"
+            }
+          }
+          None => "error unknown channel: " + trimmed + "\n"
+        }
+        let ans_path = nodepath::join(sep, [run_dir, station_cli::CHANNEL_ANSWER])
+        let _ = station_ops::write_private(cli_ops_fs, ans_path, answer.to_bytes(), self_pid, 1, sep=sep)
+      }
+      Err(_) => ()
+    }
   })
 
   // Three non-overlapping tagged ShellMux instances backed by a single host_shim::wait loop.
@@ -2339,6 +2468,8 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
           Some(sev) => {
             if ev_id == EV_CTRL || ev_id == EV_SIG {
               control.feed_sys_event(sev)
+            } else if ev_id == EV_RUN_WATCH {
+              answer_rig_heap()
             } else if active_vault_runs.contains(ev_id) {
               match active_vault_runs.get(ev_id) {
                 Some(run) => {
@@ -4221,6 +4352,12 @@ pub fn run_rig_daemon(argv : Array[String]) -> Int {
     Err(_) => ()
   }
 
+  match run_watcher {
+    Some(w) => {
+      let _ = w.close()
+    }
+    None => ()
+  }
   match held_lock {
     Some(h) => {
       let _ = h.release()

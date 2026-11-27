@@ -3000,6 +3000,207 @@ int32_t sts_random_bytes(uint8_t *buf, int64_t len) {
     return st == 0 ? 1 : 0;
 }
 
+int32_t sts_mkdir_mode(const char *path, int32_t mode) {
+    (void)mode;
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    BOOL ok = CreateDirectoryW(w, NULL);
+    DWORD gle = ok ? 0 : GetLastError();
+    free(w);
+    if (ok) return 1;
+    if (gle == ERROR_ALREADY_EXISTS) return -2;
+    if (gle == ERROR_ACCESS_DENIED) return -3;
+    if (gle == ERROR_PATH_NOT_FOUND) return -4;
+    return 0;
+}
+
+int32_t sts_symlink(const char *target, const char *link_path, int32_t is_dir) {
+    if (target == NULL || link_path == NULL || link_path[0] == '\0') return 0;
+    wchar_t *wt = utf8_to_wide(target);
+    wchar_t *wl = utf8_to_wide(link_path);
+    if (wt == NULL || wl == NULL) {
+        free(wt);
+        free(wl);
+        return 0;
+    }
+    DWORD base_flags = is_dir ? 0x1u : 0u; // SYMBOLIC_LINK_FLAG_DIRECTORY
+    DWORD unpriv_flag = 0x2u;              // SYMBOLIC_LINK_FLAG_ALLOW_UNPRIVILEGED_CREATE
+    BOOLEAN ok = CreateSymbolicLinkW(wl, wt, base_flags | unpriv_flag);
+    if (!ok && GetLastError() == ERROR_INVALID_PARAMETER) {
+        ok = CreateSymbolicLinkW(wl, wt, base_flags);
+    }
+    free(wt);
+    free(wl);
+    return ok ? 1 : 0;
+}
+
+int32_t sts_is_dir_symlink(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return 0;
+    DWORD attr = GetFileAttributesW(w);
+    free(w);
+    if (attr == INVALID_FILE_ATTRIBUTES) return 0;
+    return ((attr & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && (attr & FILE_ATTRIBUTE_DIRECTORY) != 0) ? 1 : 0;
+}
+
+void *sts_getcwd(int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    DWORD need = GetCurrentDirectoryW(0, NULL);
+    if (need == 0) return NULL;
+    wchar_t *w = (wchar_t *)malloc((size_t)(need + 1) * sizeof(wchar_t));
+    if (w == NULL) return NULL;
+    DWORD got = GetCurrentDirectoryW(need + 1, w);
+    if (got == 0 || got > need) {
+        free(w);
+        return NULL;
+    }
+    char *u8 = wide_to_utf8(w);
+    free(w);
+    if (u8 == NULL) return NULL;
+    if (out_len != NULL) *out_len = (int64_t)strlen(u8);
+    return u8;
+}
+
+void *sts_read_file_strict(const char *path, int64_t *out_len, int32_t *out_err) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = 3;
+    if (path == NULL || path[0] == '\0') return NULL;
+    wchar_t *w = utf8_to_wide(path);
+    if (w == NULL) return NULL;
+    HANDLE h = CreateFileW(
+        w,
+        GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL);
+    DWORD gle = (h == INVALID_HANDLE_VALUE) ? GetLastError() : 0;
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        if (out_err != NULL) {
+            if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND) *out_err = 1;
+            else if (gle == ERROR_ACCESS_DENIED) *out_err = 2;
+            else *out_err = 3;
+        }
+        return NULL;
+    }
+    LARGE_INTEGER fsz;
+    if (!GetFileSizeEx(h, &fsz) || fsz.QuadPart < 0 || fsz.QuadPart > (1LL << 30)) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    size_t sz = (size_t)fsz.QuadPart;
+    uint8_t *buf = (uint8_t *)malloc(sz + 1);
+    if (buf == NULL) {
+        CloseHandle(h);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    size_t off = 0;
+    while (off < sz) {
+        DWORD chunk = (DWORD)((sz - off) > 0x7fffffffULL ? 0x7fffffffULL : (sz - off));
+        DWORD got = 0;
+        if (!ReadFile(h, buf + off, chunk, &got, NULL)) {
+            free(buf);
+            CloseHandle(h);
+            if (out_err != NULL) *out_err = 3;
+            return NULL;
+        }
+        if (got == 0) break;
+        off += (size_t)got;
+    }
+    CloseHandle(h);
+    buf[off] = 0;
+    if (out_len != NULL) *out_len = (int64_t)off;
+    if (out_err != NULL) *out_err = 0;
+    return buf;
+}
+
+int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len, int32_t mode) {
+    (void)mode;
+    if (path == NULL || path[0] == '\0' || len < 0) return 0;
+    const char *last_sep = NULL;
+    for (const char *p = path; *p != '\0'; p++) {
+        if (*p == '/' || *p == '\\') last_sep = p;
+    }
+    size_t dir_len = 0;
+    if (last_sep != NULL) {
+        dir_len = (size_t)(last_sep - path) + 1;
+    } else if (((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':') {
+        // Drive-relative Windows path (e.g. "D:result.bin"): preserve "D:" prefix
+        // so the temp file stays on the same volume and in the same target directory.
+        dir_len = 2;
+    }
+    wchar_t *wdst = utf8_to_wide(path);
+    if (wdst == NULL) return 0;
+
+    static const char hx[] = "0123456789abcdef";
+    HANDLE h = INVALID_HANDLE_VALUE;
+    wchar_t *wtmp = NULL;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            free(wdst);
+            return 0;
+        }
+        char hex[17];
+        for (int i = 0; i < 8; i++) {
+            hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
+            hex[i * 2 + 1] = hx[rnd[i] & 0xF];
+        }
+        hex[16] = '\0';
+        size_t tmp_cap = dir_len + 64;
+        char *tmp = (char *)malloc(tmp_cap);
+        if (tmp == NULL) {
+            free(wdst);
+            return 0;
+        }
+        snprintf(tmp, tmp_cap, "%.*s.sf-tmp.%lu.%s", (int)dir_len, path, (unsigned long)GetCurrentProcessId(), hex);
+        wtmp = utf8_to_wide(tmp);
+        free(tmp);
+        if (wtmp == NULL) {
+            free(wdst);
+            return 0;
+        }
+        h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (h != INVALID_HANDLE_VALUE) break;
+        DWORD gle = GetLastError();
+        free(wtmp);
+        wtmp = NULL;
+        if (gle != ERROR_FILE_EXISTS) {
+            free(wdst);
+            return 0;
+        }
+    }
+    if (h == INVALID_HANDLE_VALUE || wtmp == NULL) {
+        free(wtmp);
+        free(wdst);
+        return 0;
+    }
+    int64_t off = 0;
+    BOOL ok = TRUE;
+    while (off < len) {
+        DWORD chunk = (DWORD)((len - off) > 0x7fffffffLL ? 0x7fffffffLL : (len - off));
+        DWORD wrote = 0;
+        if (!WriteFile(h, data + off, chunk, &wrote, NULL)) {
+            ok = FALSE;
+            break;
+        }
+        off += (int64_t)wrote;
+    }
+    if (ok) ok = FlushFileBuffers(h);
+    CloseHandle(h);
+    if (ok) ok = MoveFileExW(wtmp, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+    if (!ok) DeleteFileW(wtmp);
+    free(wtmp);
+    free(wdst);
+    return ok ? 1 : 0;
+}
+
 // ---------------------------------------------------------------------------
 // 6. Windows peer_process (unsupported -> NULL)
 // ---------------------------------------------------------------------------
@@ -6646,6 +6847,166 @@ int32_t sts_random_bytes(uint8_t *buf, int64_t len) {
     close(fd);
     return 1;
 #endif
+}
+
+int32_t sts_mkdir_mode(const char *path, int32_t mode) {
+    if (path == NULL || path[0] == '\0') return 0;
+    mode_t m = mode > 0 ? (mode_t)(mode & 0777) : (mode_t)0700;
+    if (mkdir(path, m) == 0) {
+        return 1;
+    }
+    if (errno == EEXIST) return -2;
+    if (errno == EACCES || errno == EPERM) return -3;
+    if (errno == ENOENT) return -4;
+    return 0;
+}
+
+int32_t sts_symlink(const char *target, const char *link_path, int32_t is_dir) {
+    (void)is_dir;
+    if (target == NULL || link_path == NULL || link_path[0] == '\0') return 0;
+    return symlink(target, link_path) == 0 ? 1 : 0;
+}
+
+int32_t sts_is_dir_symlink(const char *path) {
+    (void)path;
+    return 0;
+}
+
+void *sts_getcwd(int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    char buf[4096];
+    if (getcwd(buf, sizeof(buf)) == NULL) return NULL;
+    size_t n = strlen(buf);
+    char *out = (char *)malloc(n + 1);
+    if (out == NULL) return NULL;
+    memcpy(out, buf, n + 1);
+    if (out_len != NULL) *out_len = (int64_t)n;
+    return out;
+}
+
+void *sts_read_file_strict(const char *path, int64_t *out_len, int32_t *out_err) {
+    if (out_len != NULL) *out_len = 0;
+    if (out_err != NULL) *out_err = 3;
+    if (path == NULL || path[0] == '\0') return NULL;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd < 0) {
+        if (out_err != NULL) {
+            if (errno == ENOENT || errno == ENOTDIR) *out_err = 1;
+            else if (errno == EACCES || errno == EPERM) *out_err = 2;
+            else *out_err = 3;
+        }
+        return NULL;
+    }
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
+        close(fd);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    if (st.st_size < 0 || (uint64_t)st.st_size > (1ULL << 30)) {
+        close(fd);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    size_t cap = (size_t)st.st_size;
+    uint8_t *buf = (uint8_t *)malloc(cap + 1);
+    if (buf == NULL) {
+        close(fd);
+        if (out_err != NULL) *out_err = 3;
+        return NULL;
+    }
+    size_t off = 0;
+    while (off < cap) {
+        ssize_t n = read(fd, buf + off, cap - off);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            free(buf);
+            close(fd);
+            if (out_err != NULL) *out_err = 3;
+            return NULL;
+        }
+        if (n == 0) break;
+        off += (size_t)n;
+    }
+    close(fd);
+    buf[off] = 0;
+    if (out_len != NULL) *out_len = (int64_t)off;
+    if (out_err != NULL) *out_err = 0;
+    return buf;
+}
+
+int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len, int32_t mode) {
+    if (path == NULL || path[0] == '\0' || len < 0) return 0;
+    const char *slash = strrchr(path, '/');
+    size_t dir_len = slash != NULL ? (size_t)(slash - path) + 1 : 0;
+    int enforce_mode = mode >= 0;
+    mode_t open_mode = enforce_mode ? (mode_t)(mode & 0777) : (mode_t)0666;
+
+    static const char hx[] = "0123456789abcdef";
+    size_t tmp_cap = dir_len + 64;
+    char *tmp = (char *)malloc(tmp_cap);
+    if (tmp == NULL) return 0;
+    int fd = -1;
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[8];
+        if (!sts_random_bytes(rnd, 8)) {
+            free(tmp);
+            return 0;
+        }
+        char hex[17];
+        for (int i = 0; i < 8; i++) {
+            hex[i * 2] = hx[(rnd[i] >> 4) & 0xF];
+            hex[i * 2 + 1] = hx[rnd[i] & 0xF];
+        }
+        hex[16] = '\0';
+        snprintf(tmp, tmp_cap, "%.*s.sf-tmp.%ld.%s", (int)dir_len, path, (long)getpid(), hex);
+        fd = open(tmp, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, open_mode);
+        if (fd >= 0) break;
+        if (errno != EEXIST) {
+            free(tmp);
+            return 0;
+        }
+    }
+    if (fd < 0) {
+        free(tmp);
+        return 0;
+    }
+    if (enforce_mode && fchmod(fd, open_mode) != 0) {
+        close(fd);
+        unlink(tmp);
+        free(tmp);
+        return 0;
+    }
+    int64_t off = 0;
+    while (off < len) {
+        ssize_t w = write(fd, data + off, (size_t)(len - off));
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            close(fd);
+            unlink(tmp);
+            free(tmp);
+            return 0;
+        }
+        off += (int64_t)w;
+    }
+    if (fsync(fd) != 0) {
+        close(fd);
+        unlink(tmp);
+        free(tmp);
+        return 0;
+    }
+    if (close(fd) != 0) {
+        unlink(tmp);
+        free(tmp);
+        return 0;
+    }
+    if (rename(tmp, path) != 0) {
+        unlink(tmp);
+        free(tmp);
+        return 0;
+    }
+    free(tmp);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------

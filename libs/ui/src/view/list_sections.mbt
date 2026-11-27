@@ -31,6 +31,12 @@ pub(all) struct SectionChrome[K] {
   below_overflow : Int
   top_edge : Double
   bottom_edge : Double
+  top_stack_h : Double
+  bot_stack_h : Double
+  top_edge_key : K?
+  bot_edge_key : K?
+  active_bottom : Double
+  next_top : Double
 }
 
 ///|
@@ -87,6 +93,12 @@ priv struct SectionSolved {
   below_overflow : Int
   top_edge : Double
   bottom_edge : Double
+  top_stack_h : Double
+  bot_stack_h : Double
+  top_edge_idx : Int
+  bot_edge_idx : Int
+  active_bottom : Double
+  next_top : Double
 }
 
 ///|
@@ -114,6 +126,12 @@ fn SectionSolved::empty(top_edge : Double, bottom_edge : Double) -> SectionSolve
     below_overflow: 0,
     top_edge,
     bottom_edge,
+    top_stack_h: 0.0,
+    bot_stack_h: 0.0,
+    top_edge_idx: -1,
+    bot_edge_idx: -1,
+    active_bottom: 0.0,
+    next_top: @double.infinity,
   }
 }
 
@@ -428,12 +446,22 @@ fn solve_sections(
         active_idx = j
       }
     }
+  } else if tail_end > l_edge + 1.0e-6 {
+    for j in 0..<g {
+      if ps[j] <= l_edge + 1.0e-6 {
+        active_idx = j
+      }
+    }
   }
   let mounted_keys : Array[Int] = []
   let mut above_count = 0
   let mut below_count = 0
   let mut above_overflow = 0
   let mut below_overflow = 0
+  let mut top_stack_end = l_edge
+  let mut bot_stack_start = b_edge
+  let mut top_edge_idx = -1
+  let mut bot_edge_idx = -1
   for j in 0..<g {
     let dy = dys[j]
     if is_above_ovf[j] {
@@ -443,9 +471,17 @@ fn solve_sections(
       states[j] = Above
       above_count = above_count + 1
       mounted_keys.push(keys[j])
+      if drawn[j] + rs[j] >= top_stack_end {
+        top_stack_end = drawn[j] + rs[j]
+        top_edge_idx = j
+      }
     } else if is_top_arr[j] && j == active_idx && dy > 1.0e-6 {
       states[j] = Active
       mounted_keys.push(keys[j])
+      if drawn[j] + rs[j] >= top_stack_end {
+        top_stack_end = drawn[j] + rs[j]
+        top_edge_idx = j
+      }
     } else if is_below_ovf[j] {
       states[j] = if is_bot_arr[j] && dy < -1.0e-6 { Below } else { Flow }
       below_overflow = below_overflow + 1
@@ -453,9 +489,21 @@ fn solve_sections(
       states[j] = Below
       below_count = below_count + 1
       mounted_keys.push(keys[j])
+      if drawn[j] <= bot_stack_start {
+        bot_stack_start = drawn[j]
+        bot_edge_idx = j
+      }
     } else {
       states[j] = Flow
     }
+  }
+  let top_stack_h = dmax(0.0, top_stack_end - l_edge)
+  let bot_stack_h = dmax(0.0, b_edge - bot_stack_start)
+  let active_bottom = if active_idx >= 0 { ps[active_idx] + rs[active_idx] - x } else { 0.0 }
+  let next_top = if active_idx >= 0 && active_idx + 1 < g {
+    ps[active_idx + 1] - x
+  } else {
+    @double.infinity
   }
   {
     keys,
@@ -480,6 +528,12 @@ fn solve_sections(
     below_overflow,
     top_edge: te,
     bottom_edge: be,
+    top_stack_h,
+    bot_stack_h,
+    top_edge_idx,
+    bot_edge_idx,
+    active_bottom,
+    next_top,
   }
 }
 
@@ -519,6 +573,12 @@ pub fn[K] ListPlace::set_sections(
           below_overflow: c.below_overflow,
           top_edge: c.top_edge,
           bottom_edge: c.bottom_edge,
+          top_stack_h: c.top_stack_h,
+          bot_stack_h: c.bot_stack_h,
+          top_edge_key: c.top_edge_key.map(key_of),
+          bot_edge_key: c.bot_edge_key.map(key_of),
+          active_bottom: c.active_bottom,
+          next_top: c.next_top,
         }
       })
     }
@@ -713,6 +773,7 @@ fn SectionWindowHost::solve_pin_x(
   r_j : Double,
   cur_tx : Double,
   was_pushed : Bool,
+  pin_span0 : Ref[Double?],
 ) -> Double {
   guard self.place_at.sections is Some(_) else { return cur_tx }
   guard self.laid_at.get(pk) is Some(pi) && pi < all.length() else { return cur_tx }
@@ -741,12 +802,27 @@ fn SectionWindowHost::solve_pin_x(
   if was_pushed {
     dmax(0.0, e_j - cur_r_j - raw_proj_y)
   } else {
-    let lo = p_j - c
+    let lo_eff = dmax(0.0, p_j - c)
     let hi = e_j - cur_r_j - c
-    if hi < lo {
-      dmax(0.0, lo)
+    let span = hi - lo_eff
+    if span <= 0.0 {
+      lo_eff
     } else {
-      dmax(0.0, dclamp(cur_tx, lo, hi))
+      let span0 = match pin_span0.val {
+        Some(s0) => s0
+        None => {
+          pin_span0.val = Some(span)
+          span
+        }
+      }
+      // Proportionally contract `x` within `[lo_eff, hi(t)]` along the curtain S-curve so the sticky heading stays
+      // pinned at `y = c` on every frame while avoiding the C1 velocity kink of hitting `cur_tx == hi(t)` mid-collapse.
+      if cur_tx > lo_eff && span0 > 0.0 && span < span0 {
+        let frac = dclamp((cur_tx - lo_eff) / span0, 0.0, 1.0)
+        lo_eff + frac * span
+      } else {
+        dclamp(cur_tx, lo_eff, hi)
+      }
     }
   }
 }
@@ -760,31 +836,37 @@ fn SectionWindowHost::sync_slots(
 ) -> Unit {
   let hat = held.at
   let tree = self.list.tree
-  match self.place_at.sections {
-    Some(_) =>
-      for k, sv in slot_views {
-        if sv.alive() && self.sec_head_set.contains(k) {
-          tree.section_slots[sv.at] = (sv.gen, hat, k)
-          match slot_oob_bind.get(k) {
-            Some(bind) => bind()
-            None => ()
-          }
-        } else if sv.alive() {
-          match tree.section_slots.get(sv.at) {
-            Some((g, h, _)) if g == sv.gen && h == hat => tree.section_slots.remove(sv.at)
-            _ => ()
-          }
+  let stacking = match self.place_at.sections {
+    Some(sec) => {
+      let (tc, bc) = @signals.untracked(sec.rows)
+      tc > 0 || bc > 0
+    }
+    None => false
+  }
+  if stacking {
+    for k, sv in slot_views {
+      if sv.alive() && self.sec_head_set.contains(k) {
+        tree.section_slots[sv.at] = (sv.gen, hat, k)
+        match slot_oob_bind.get(k) {
+          Some(bind) => bind()
+          None => ()
+        }
+      } else if sv.alive() {
+        match tree.section_slots.get(sv.at) {
+          Some((g, h, _)) if g == sv.gen && h == hat => tree.section_slots.remove(sv.at)
+          _ => ()
         }
       }
-    None =>
-      for _, sv in slot_views {
-        if sv.alive() {
-          match tree.section_slots.get(sv.at) {
-            Some((g, h, _)) if g == sv.gen && h == hat => tree.section_slots.remove(sv.at)
-            _ => ()
-          }
+    }
+  } else {
+    for _, sv in slot_views {
+      if sv.alive() {
+        match tree.section_slots.get(sv.at) {
+          Some((g, h, _)) if g == sv.gen && h == hat => tree.section_slots.remove(sv.at)
+          _ => ()
         }
       }
+    }
   }
 }
 
@@ -939,6 +1021,8 @@ fn SectionWindowHost::ensure_hooks(
         if cfg_watch_init.val {
           cfg_watch_init.val = false
         } else {
+          self.sync_slots(held, slot_views, slot_oob_bind)
+          tree.order_marked_in(held_at)
           self.config_ver.set(self.config_ver.untracked() + 1)
           laid_again()
         }
@@ -1023,6 +1107,12 @@ fn SectionWindowHost::sync_chrome(
             below_overflow: solved.below_overflow,
             top_edge: solved.top_edge,
             bottom_edge: solved.bottom_edge,
+            top_stack_h: solved.top_stack_h,
+            bot_stack_h: solved.bot_stack_h,
+            top_edge_key: if solved.top_edge_idx >= 0 { Some(solved.keys[solved.top_edge_idx]) } else { None },
+            bot_edge_key: if solved.bot_edge_idx >= 0 { Some(solved.keys[solved.bot_edge_idx]) } else { None },
+            active_bottom: solved.active_bottom,
+            next_top: solved.next_top,
           }
         }
         make_chrome(host, read_chrome)
