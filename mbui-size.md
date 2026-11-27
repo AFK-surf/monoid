@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bff3776c0](https://github.com/AFK-surf/monoid/commit/bff3776c07fe17c788bc520301ea165eae8444a5) fix(station): stop ambiguous connect.event timeout | 2.74 | 3.7 | 15.37 | 38.48 | 59.48 | 33.74 | 69 | 103.68 | 136.41 |
 | [d23b63109](https://github.com/AFK-surf/monoid/commit/d23b6310954fb5b08211962bf80afe84d5811956) fix(ui): fixed short dialog titles, concentric ver | 2.74 | 3.7 | 15.37 | 38.48 | 59.48 | 33.74 | 69 | 103.68 | 136.41 |
 | [caa0645c9](https://github.com/AFK-surf/monoid/commit/caa0645c917ba4038b8555f390aa77bc970256e1) fix(ci,station): split station-pion side suite, us | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.71 | 131.96 |
 | [dd7569046](https://github.com/AFK-surf/monoid/commit/dd7569046e59c718ad3345d0ab4e3f1045ab2cdb) fix(station-main): remove duplicate device field i | 2.73 | 3.7 | 15.36 | 38.46 | 59.4 | 33.71 | 68.93 | 103.71 | 131.96 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e65a7cd01](https://github.com/AFK-surf/monoid/commit/e65a7cd01f8b7a0b511c6ab99689af00a795534b) feat(pion-core): unshadow runtime stubs and close  | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
 | [deaa0f205](https://github.com/AFK-surf/monoid/commit/deaa0f205acec647467c79c8f9addb3baca1ee74) chore(mbui): clean up mbt2pion publish diagnostics | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.17 | 132.24 |
 | [a3fbb3cea](https://github.com/AFK-surf/monoid/commit/a3fbb3cea7aec57ad9595b3b3da2e5d58984ebcf) feat(mbui): add grouped '+' tab picker to the righ | 2.7 | 3.66 | 15.2 | 38.25 | 58.9 | 33.51 | 68.53 | 103.11 | 130.82 |
-| [e37478849](https://github.com/AFK-surf/monoid/commit/e374788490f89c16fd776c274863811a7f9e49d5) perf(ui/gles): batch independent glass captures, d | 2.7 | 3.66 | 15.2 | 38.24 | 58.88 | 33.5 | 68.53 | 103.14 | 128.79 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bff3776c0](https://github.com/AFK-surf/monoid/commit/bff3776c07fe17c788bc520301ea165eae8444a5) fix(station): stop ambiguous connect.event timeout | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.61 |
 | [d23b63109](https://github.com/AFK-surf/monoid/commit/d23b6310954fb5b08211962bf80afe84d5811956) fix(ui): fixed short dialog titles, concentric ver | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.85 |
 | [caa0645c9](https://github.com/AFK-surf/monoid/commit/caa0645c917ba4038b8555f390aa77bc970256e1) fix(ci,station): split station-pion side suite, us | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [dd7569046](https://github.com/AFK-surf/monoid/commit/dd7569046e59c718ad3345d0ab4e3f1045ab2cdb) fix(station-main): remove duplicate device field i | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e65a7cd01](https://github.com/AFK-surf/monoid/commit/e65a7cd01f8b7a0b511c6ab99689af00a795534b) feat(pion-core): unshadow runtime stubs and close  | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
 | [deaa0f205](https://github.com/AFK-surf/monoid/commit/deaa0f205acec647467c79c8f9addb3baca1ee74) chore(mbui): clean up mbt2pion publish diagnostics | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
 | [a3fbb3cea](https://github.com/AFK-surf/monoid/commit/a3fbb3cea7aec57ad9595b3b3da2e5d58984ebcf) feat(mbui): add grouped '+' tab picker to the righ | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 58 |
-| [e37478849](https://github.com/AFK-surf/monoid/commit/e374788490f89c16fd776c274863811a7f9e49d5) perf(ui/gles): batch independent glass captures, d | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.67 |
