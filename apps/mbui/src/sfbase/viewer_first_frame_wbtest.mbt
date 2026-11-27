@@ -161,13 +161,24 @@ test "tab_viewer revokes on workspace owner change and tab_full_close does not s
   full_lone.val = false
   tab_full_close()
   assert_false(tv_a.goes_on, msg="tab_full_close must not set goes_on when chat is covered by another page")
-  // When chat IS the foreground top page -> tab_full_close DOES preserve playback (sets goes_on).
+  // When chat IS the foreground top page -> tab_full_close DOES preserve playback (sets goes_on),
+  // AND if no node takes over by after_drawn_frame (e.g. layout tears down fullscreen without mounting side panel),
+  // the end-of-frame fallback resets goes_on and pauses playback so audio never leaks.
   app.nav.pop() |> ignore
   tab_full.set(Some({ chat: chat_ref, tab }))
   full_lone.val = false
   tab_full_close()
   assert_true(tv_a.goes_on, msg="tab_full_close must set goes_on when chat is the foreground page")
-  tv_a.goes_on = false
+  tv_a.drawn = 0
+  let pause_cmd = "control \{vid_a} 2 0"
+  let pauses_before = t.views().filter(fn(s) { s == pause_cmd }).length()
+  t.draw()
+  assert_false(tv_a.goes_on, msg="after_drawn_frame fallback must clear goes_on when no node took over")
+  assert_true(
+    t.views().filter(fn(s) { s == pause_cmd }).length() > pauses_before,
+    msg="after_drawn_frame fallback must pause player when no node took over",
+  )
+  tv_a.drawn = 1
   // Workspace owner revocation synchronously pauses & releases old TabViewer AND unmounts mounted viewer_tab_node.
   assert_true(t.find("clip.mp4") is Some(_), msg="viewer_tab_node should be mounted before revocation")
   workspace_owner_set("ws1", "acct-b")

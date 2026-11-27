@@ -1130,9 +1130,15 @@ fn screen_lease_apply_hidden(src : Source, key : String) -> Unit {
 }
 
 ///|
-/// Bumped whenever any screen session is revoked so live mounted `screen_pane_node` views re-mount against the active
-/// principal cleanly.
+/// Bumped whenever any screen session is revoked or a revoked workspace is restored so live mounted `screen_pane_node`
+/// and `lone_tree` views re-evaluate against the active principal cleanly.
 let screen_revokes : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// Trackable reader of `screen_revokes` (used by `sfapp`'s `lone_tree` to verify standalone window ownership).
+pub fn screen_revokes_now() -> Int {
+  screen_revokes.get()
+}
 
 ///|
 fn screen_leases_settle() -> Unit {
@@ -1162,13 +1168,37 @@ fn screen_leases_settle() -> Unit {
       empty_keys.push(key)
     }
     if keep_alive {
-      if visible {
-        match screen_uis.get(key) {
-          Some(u) => u.covered.set(false)
+      if visible || held_by_window {
+        match screens_open.get(key) {
+          Some(s) => s.passkey_muted = false
+          None => ()
+        }
+        if visible {
+          match screen_uis.get(key) {
+            Some(u) => u.covered.set(false)
+            None => ()
+          }
+        }
+      } else if lease.passkey_keepalive {
+        // Covered/hidden while kept alive solely by passkey keepalive: keep WebAuthn/control alive, but mute audio
+        // so background audio never leaks while the screen is out of sight.
+        match screens_open.get(key) {
+          Some(s) =>
+            if !s.passkey_muted {
+              s.passkey_muted = true
+              match s.stream {
+                Some(st) => st.audio(Bytes::make(0, b'\x00'))
+                None => ()
+              }
+            }
           None => ()
         }
       }
     } else if !held_by_window {
+      match screens_open.get(key) {
+        Some(s) => s.passkey_muted = false
+        None => ()
+      }
       screen_lease_apply_hidden(lease.src, key)
     }
   }
@@ -1358,6 +1388,9 @@ fn screen_revoke_workspace_owner(ws : String, old_owner : String, _new_owner : S
     }
   }
   screen_revoke_keys(drop_keys)
+  if old_owner == "\u{3}revoked" && drop_keys.is_empty() {
+    screen_revokes.set(screen_revokes.untracked() + 1)
+  }
 }
 
 ///|
@@ -1446,6 +1479,7 @@ pub fn screen_left_key(
   station : String,
   screen : String,
   excluding_holder? : Int = 0,
+  leaving_holder_released? : Bool = false,
 ) -> Unit {
   let owner = match screens_open.get(key) {
     Some(s) => s.account
@@ -1453,6 +1487,8 @@ pub fn screen_left_key(
   }
   let other_visible = if excluding_holder > 0 {
     screen_lease_visible_count_except(key, excluding_holder) > 0
+  } else if leaving_holder_released {
+    screen_lease_visible_count(key) > 0
   } else {
     screen_lease_visible_count(key) > 1
   }

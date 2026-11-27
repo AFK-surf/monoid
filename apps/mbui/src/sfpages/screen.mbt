@@ -218,6 +218,8 @@ priv struct ScreenSess {
   mut passkey_owner_principal : String
   /// lease key held for in-flight passkey keepalive (`""` when idle)
   mut passkey_keepalive_key : String
+  /// silently muted while kept alive solely by passkey_keepalive with no visible UI holder
+  mut passkey_muted : Bool
   /// a child browser popup opened from this tab while driving (`childOpened` / `childScreen`), to open over it once built
   mut child_screen : String?
 }
@@ -376,6 +378,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         passkey_gen: 0,
         passkey_owner_principal: "",
         passkey_keepalive_key: "",
+        passkey_muted: false,
         child_screen: None,
       }
       screens_open[key] = s
@@ -1490,7 +1493,7 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
       )
     None => ()
   }
-  if o.contains("audio") && @signals.untracked(fn() { self.audio_ready.get() && !self.audio_muted.get() }) {
+  if o.contains("audio") && !self.passkey_muted && @signals.untracked(fn() { self.audio_ready.get() && !self.audio_muted.get() }) {
     match (self.stream, bytes) { (Some(st), Some(data)) => st.audio(data); _ => () }
   }
   // (the engine's own read of the view numbers what it says: those after it the host may take, ScreenSess::route)

@@ -253,6 +253,9 @@ fn init {
   })
   on_workspace_owner_change(fn(ws, old_owner, _new_owner) {
     tab_viewers_revoke_matching(fn(t) { t.ws == ws && t.owner == old_owner })
+    if old_owner == "\u{3}revoked" {
+      tab_viewer_revokes.set(tab_viewer_revokes.untracked() + 1)
+    }
   })
 }
 
@@ -322,8 +325,22 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
 /// Tab `tab` of chat `chat` about to move between its panel and the whole window (tab_full.mbt): what it plays goes on
 /// there as it was, playing or paused, not paused as the node that drew it goes.
 fn tab_viewer_moves(chat : String, tab : String) -> Unit {
-  match tab_viewers.get(tab_viewer_id(chat, tab)) {
-    Some(t) => t.goes_on = true
+  let id = tab_viewer_id(chat, tab)
+  match tab_viewers.get(id) {
+    Some(t) => {
+      t.goes_on = true
+      // End-of-frame fallback: if no side-panel/fullscreen node actually takes over playback by the end of the
+      // navigation/layout frame (e.g. layout change tears down fullscreen layer), pause so audio never leaks.
+      @ui.after_drawn_frame(fn() {
+        match tab_viewers.get(id) {
+          Some(cur) if cur.goes_on && cur.drawn <= 0 => {
+            cur.goes_on = false
+            cur.viewer.pause_player()
+          }
+          _ => ()
+        }
+      })
+    }
     None => ()
   }
 }

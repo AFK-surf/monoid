@@ -432,6 +432,25 @@ pub fn window_has_screen_for_owner(owner : String, station : String, screen : St
 }
 
 ///|
+/// Whether standalone window `wid`'s creation owner still matches `station`'s current active workspace owner.
+/// Returns `true` for the primary window (`wid <= 0`).
+pub fn window_here_owner_matches(wid : Int, station : String) -> Bool {
+  if wid <= 0 {
+    return true
+  }
+  match windows_here_owner.get(wid) {
+    Some(owner) => {
+      let ws = match station.find("/") {
+        Some(i) => station.exact_view(end=i).to_owned()
+        None => ""
+      }
+      !workspace_is_revoked(ws) && workspace_owner_of(ws) == owner
+    }
+    None => true
+  }
+}
+
+///|
 /// Whether a window of this run beside its first shows `terminal` on `station` now.
 pub fn window_has_terminal(station : String, terminal : String) -> Bool {
   windows_here_show.values().any(fn(p) { p is Terminal(at) && at.station == station && at.terminal == terminal })

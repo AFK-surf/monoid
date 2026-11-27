@@ -3160,6 +3160,26 @@ test "real workspaces JSON snapshot revokes on A->B owner change and on workspac
   let s_refused = screen_sess(src, "ws-1/st-1", "browser:snap-1")
   s_refused.open(src)
   assert_eq(opens.val, 2, msg="revoked workspace must refuse to reopen screen.view")
+  // (c) Live mounted screen_node on ws-1 recovers automatically when ws-1 reappears in workspaces snapshot!
+  let at_live : ScreenAt = { station: "ws-1/st-1", screen: "browser:snap-1", title: "Snap", until_gone: false }
+  let t = @ui.Tester::tree(
+    fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      screen_node(root, src, at_live, fn() { @sf.no_frame }, in_tab=true)
+    },
+    w=900.0,
+    h=600.0,
+    platform=0,
+    keeps_sources=true,
+  )
+  t.draw()
+  t.draw()
+  assert_eq(opens.val, 2, msg="mounted screen_node in revoked workspace must stay refused")
+  @sfbase.workspace_owners_sync_json(Some(snap_b))
+  t.draw()
+  t.draw()
+  assert_false(@sfbase.workspace_is_revoked("ws-1"), msg="restored workspace must clear revoked flag")
+  assert_eq(opens.val, 3, msg="mounted screen_node must automatically reopen when workspace reappears in snapshot")
   @ui.run_let_go()
 }
 

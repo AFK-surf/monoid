@@ -1007,6 +1007,20 @@ pub fn remote_workbench_node(
   // (a screen tab closed from the workbench is let go via screen_left; visibility/pausing across tabs, parking and
   // handoffs is governed by `screen_pane_node`'s multi-holder visibility lease)
   let prev_front : Ref[(String, @sfbase.RemoteTab)?] = Ref(None)
+  let captured_screen_keys : Map[(String, String), String] = Map([])
+  v.reacts(fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0) }, fn(now) {
+    match now.0 {
+      Some((_, Screen(at))) => captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
+      _ => ()
+    }
+    for k in now.1 {
+      if @sfbase.remote_tab_parse(k) is Some(Screen(at)) {
+        if !captured_screen_keys.contains((at.station, at.screen)) {
+          captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
+        }
+      }
+    }
+  })
   v.reacts(
     fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0, shown()) },
     fn(cur) {
@@ -1024,7 +1038,8 @@ pub fn remote_workbench_node(
                 (@sfbase.remote_tab_parse(k) is Some(Screen(x)) && x.station == old_at.station && x.screen == old_at.screen)
               })
             if !kept {
-              screen_left(src, old_at.station, old_at.screen)
+              let key = captured_screen_keys.get((old_at.station, old_at.screen)).unwrap_or_else(fn() { screen_key(old_at.station, old_at.screen) })
+              screen_left_key(src, key, old_at.station, old_at.screen, leaving_holder_released=true)
             }
           }
         }
@@ -1033,20 +1048,6 @@ pub fn remote_workbench_node(
       prev_front.val = if is_shown { now } else { prev_front.val }
     },
   )
-  let captured_screen_keys : Map[(String, String), String] = Map([])
-  v.reacts(fn() { (front.get(), @sfbase.remote_tabs_raw(src, ws()).0) }, fn(now) {
-    match now.0 {
-      Some((_, Screen(at))) => captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
-      _ => ()
-    }
-    for k in now.1 {
-      if @sfbase.remote_tab_parse(k) is Some(Screen(at)) {
-        if !captured_screen_keys.contains((at.station, at.screen)) {
-          captured_screen_keys[(at.station, at.screen)] = screen_key(at.station, at.screen)
-        }
-      }
-    }
-  })
   v.owns(fn() {
     let seen : Array[(String, String)] = []
     let take = fn(at : ScreenAt) {

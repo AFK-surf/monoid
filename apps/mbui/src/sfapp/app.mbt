@@ -950,6 +950,15 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         v.reacts(fn() { src.topic("workspaces", {}).get().value }, fn(ws) {
           @sfbase.workspace_owners_sync_json(ws)
         })
+        // notify workspace switches across ALL entrypoints (switcher, deep links, history restore, notifications)
+        let prev_picked = Ref(@sfbase.app.picked.untracked())
+        v.reacts(fn() { @sfbase.app.picked.get() }, fn(now) {
+          let was = prev_picked.val
+          prev_picked.val = now
+          if was != "" && now != "" && was != now {
+            (@sfbase.on_workspace_switched.val)(was, now)
+          }
+        })
         let shell_was : Ref[ShellIs] = Ref(Unsized)
         v.pick(fn() { shell_is(src, v.window_w()) }, fn(s, shell) {
           // Resizing into the tape keeps the page being read in front, not the sidebar's old selection.
@@ -1014,8 +1023,14 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   v.pick(
     at_once=true,
     fn() {
+      @sfpages.screen_revokes_now() |> ignore
       match shown.get() {
-        Some(Screen(at)) => Some(@sfbase.Page::Screen(at))
+        Some(Screen(at)) =>
+          if @sfbase.window_here_owner_matches(wid, at.station) {
+            Some(@sfbase.Page::Screen(at))
+          } else {
+            None
+          }
         Some(Terminal(at)) => Some(@sfbase.Page::Terminal(at))
         Some(SideTab(f)) => Some(@sfbase.Page::SideTab(f))
         _ => None

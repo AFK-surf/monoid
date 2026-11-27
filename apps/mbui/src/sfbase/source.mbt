@@ -562,8 +562,16 @@ pub fn workspace_owners_sync_json(v : Json?) -> Unit {
     }
   }
   for ws, owner in seen {
+    let was_revoked = workspace_revoked.get(ws) == Some(true)
     workspace_revoked.remove(ws)
-    workspace_owner_set(ws, owner)
+    if was_revoked {
+      workspace_owners[ws] = owner
+      for f in workspace_owner_change_listeners {
+        f(ws, "\u{3}revoked", owner)
+      }
+    } else {
+      workspace_owner_set(ws, owner)
+    }
   }
 }
 
