@@ -317,8 +317,8 @@ test "wide cold-open budget: Large (1280x800) full Place and key sub-page cold-o
   let alive_pre_sta = @ui.view_tree().unwrap().alive()
   let m_sta = wide_go_place(t_sta, "stations", chat_sta)
   wide_cold_record("large/stations(list+st1)", m_sta, t_sta, c_sta, alive_pre_sta)
-  // Exclude only the intentional 12px pane-resize drag handle (pane_view.mbt:1062 / edge_node.mbt:37) straddling the 6px seam.
-  let non_pane_seam = fn(s : String) { !(s.contains("edge_node.mbt:37") && s.contains("pane_view.mbt:1062")) }
+  // Exclude only the intentional 12px pane-resize drag handle (pane_view.mbt's edge_node / edge_node.mbt:37) straddling the 6px seam.
+  let non_pane_seam = fn(s : String) { !(s.contains("edge_node.mbt:37") && s.contains("stillfail/src/sfdesk/pane_view.mbt:")) }
   assert_eq(t_sta.audit().filter(non_pane_seam), [])
   let alive_pre_sta2 = @ui.view_tree().unwrap().alive()
   let m_sta2 = wide_pick_station(t_sta, src_sta, ws_sta, stations[1])

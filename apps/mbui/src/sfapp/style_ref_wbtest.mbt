@@ -53,40 +53,42 @@ test "styles: the lock's waiting page, every state, drawn as before" {
     }
   }
   // Home narrow top bar uses pure progressive scroll-edge glass + adaptive ink/pills.
+  // The folded rail rests on the page's ground, with no line or shadow of its own.
   inspect(out.to_string(), content=(
     #|waiting narrow 28740:fe38e6d9
-    #|waiting wide 65715:fecec222
+    #|waiting wide 65573:89448a95
     #|waiting-dark narrow 28659:c8554067
-    #|waiting-dark wide 65546:1baa3fe0
+    #|waiting-dark wide 65458:98f11ef6
     #|finding narrow 46541:447aedfb
-    #|finding wide 84583:a8d475b5
+    #|finding wide 84433:89b7e6a0
     #|finding-dark narrow 46595:53883c63
-    #|finding-dark wide 84549:803a7c53
+    #|finding-dark wide 84453:febf0c11
     #|code narrow 32718:54f00286
-    #|code wide 69833:7b0d732e
+    #|code wide 69691:b37b9637
     #|code-dark narrow 32594:9ab800e0
-    #|code-dark wide 69621:76e1d126
+    #|code-dark wide 69533:827d0fc
     #|wrong narrow 28705:894df07b
-    #|wrong wide 65853:134bd288
+    #|wrong wide 65711:6abcf27f
     #|wrong-dark narrow 28808:a66a7d2e
-    #|wrong-dark wide 65868:1e5c25ad
+    #|wrong-dark wide 65780:eebec65f
     #|checking narrow 35810:c522aa8d
-    #|checking wide 73808:a69ef9e6
+    #|checking wide 73658:d7f7a351
     #|checking-dark narrow 35903:f9d5cfd4
-    #|checking-dark wide 73813:a43c825b
+    #|checking-dark wide 73717:e34ce70d
     #|none narrow 39576:f3f46d2c
-    #|none wide 76824:f66b8e56
+    #|none wide 76682:37f4847b
     #|none-dark narrow 39455:ebf0e07
-    #|none-dark wide 76615:b50ddd9
+    #|none-dark wide 76527:f40ea85f
     #|failed narrow 23967:58b14959
-    #|failed wide 60511:b82a3014
+    #|failed wide 60369:53f7d1a3
     #|failed-dark narrow 23970:4557bf59
-    #|failed-dark wide 60426:de6932f8
+    #|failed-dark wide 60338:716d68ae
     #|nocode narrow 28740:fe38e6d9
-    #|nocode wide 65715:fecec222
+    #|nocode wide 65573:89448a95
     #|nocode-dark narrow 28659:c8554067
-    #|nocode-dark wide 65546:1baa3fe0
+    #|nocode-dark wide 65458:98f11ef6
     #|
+
 
 
 
@@ -174,20 +176,22 @@ test "styles: screens with kit's components (switches, a sheet), drawn as before
   // The settings' list has one more row, MCP 服务.
   // Pure progressive scroll-edge blur + bare adaptive ink + adaptive bar pills on narrow page_node bars.
   // The rail's workspace letter bare at rest, its ring only pointed at.
+  // The folded rail rests on the page's ground, with no line or shadow of its own.
   inspect(out.to_string(), content=(
     #|settings narrow 116777:56ee14b1
     #|station narrow 97469:2987ccf7
     #|me-reading narrow 31397:fa2b2609
-    #|settings wide 217971:2fabbc07
-    #|station wide 289879:1d76cbdf
-    #|me-reading wide 212690:7149de90
+    #|settings wide 217828:d983f8a4
+    #|station wide 289720:3ed0807e
+    #|me-reading wide 212547:7254168f
     #|settings-dark narrow 117012:c3e49cc1
     #|station-dark narrow 97277:c47c7a1e
     #|me-reading-dark narrow 31529:73f4c577
-    #|settings-dark wide 217831:3f003495
-    #|station-dark wide 289477:98cc3260
-    #|me-reading-dark wide 212616:2246834b
+    #|settings-dark wide 217742:aa543119
+    #|station-dark wide 289372:3f320694
+    #|me-reading-dark wide 212527:a243b99d
     #|
+
 
   ))
 }
