@@ -1949,7 +1949,6 @@
       }
       if (regMix > 0.001) {
         float regDark = is_dark ? 1.0 : darkMixSaved;
-        float regDarkRim = regDark * tintDarkEnv;
         float tintChroma = smoothstep(0.08, 0.16, colChroma);
         if (v_c2.x > 0.01 && inward < 12.0 && solidFade > 0.001) {
           float along = -rn.y;
@@ -1966,19 +1965,19 @@
           float regTail = mix(regTailLight, regTailDark, regDark);
           float resY = luma(result);
           float regEaseLight = 1.0 / max(1.0 - 0.75 * resY, 0.25);
-          float regEase = mix(regEaseLight, pow(max(1.0 - resY, 0.0), 0.25), regDarkRim);
+          float regEase = mix(regEaseLight, pow(max(1.0 - resY, 0.0), 0.25), regDark);
           float regRimGain = 1.0 * clamp(v_c2.x / 0.6, 0.0, 1.5);
           float regCoreW = mix(0.21, 0.24, regDark) * (1.0 - tintChroma);
           float regTailW = mix(0.030, 0.055, regDark) * (1.0 - tintChroma);
           float lipY = resY;
-          if (inward < 3.0 && regDarkRim < 0.999 && tintChroma < 0.999) {
+          if (inward < 3.0 && regDark < 0.999 && tintChroma < 0.999) {
             vec2 tang = vec2(-surfaceNormal.y, surfaceNormal.x) * 3.0;
             vec3 lt1 = backdrop(sampleBase + disp + tang);
             vec3 lt2 = backdrop(sampleBase + disp - tang);
             float avgBgY = (Y + luma(lt1) + luma(lt2)) * (1.0 / 3.0);
             lipY = clamp(luma(emission) + clamp(avgBgY * (1.0 + lift * (1.0 - avgBgY)) * transmittance, 0.0, 1.0), 0.0, 1.0);
           }
-          float brightLip = smoothstep(0.77, 0.92, lipY) * (1.0 - regDarkRim) * (1.0 - tintChroma);
+          float brightLip = smoothstep(0.77, 0.92, lipY) * (1.0 - regDark) * (1.0 - tintChroma);
           float lipProfile = exp(-max(0.0, inward - 0.70) / 0.55);
           float regRim = (regRimGain * regLobe * (regEase * (regCoreW * regCore + regTailW * regTail) + 0.72 * brightLip * lipProfile) + spot * 0.10 * regCore) * solidFade * regMix;
           float regDarkEff = is_dark ? (1.0 - brightTSaved) : darkMixSaved;
@@ -2158,8 +2157,9 @@
       float extUseCov = ext_cov;
       float contourDir = mix(1.0, tangency, contourDirAmt);
       if (regMix > 0.001 && solidFade > 0.001) {
-        float extAcross = pow(max(1.0 - rn.y * rn.y, 0.0), mix(1.6, 2.2, regDarkContour));
-        float extRegDir = mix(mix(0.30, 1.0, extAcross), extAcross, regDarkContour);
+        float regDarkDir = max(is_dark ? 1.0 : darkMixSaved, regDarkContour);
+        float extAcross = pow(max(1.0 - rn.y * rn.y, 0.0), mix(1.6, 2.2, regDarkDir));
+        float extRegDir = mix(mix(0.30, 1.0, extAcross), extAcross, regDarkDir);
         float extW0 = mix(0.28, 0.36, extAcross);
         float extL  = mix(0.08, 0.14, extAcross);
         float regExtCov = mb_bevel_cov(outward, u_scale, extW0, extL);

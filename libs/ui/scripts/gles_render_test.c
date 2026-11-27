@@ -5063,7 +5063,7 @@ int main(void) {
       CHECK(l_side_out <= 14.0 && l_side_out < l_mid - 40.0);
       CHECK(l_side_in >= l_mid - 6.0);
       free(pxd);
-      // V10-Dark-On-Bright: Dark Regular glass on #F2F3F0 bright backdrop has no dead-black contour (>= 120/255) and bright top rim.
+      // V10-Dark-On-Bright: Dark Regular glass on #F2F3F0 bright backdrop keeps tight dark inner rim, no dead-black side contour, and zero top/bottom outer dark line.
       double rgdb[2 * MB_INST];
       V_RECT(rgdb, 0, 0, VW, VH, 0, 242.0 / 255.0, 243.0 / 255.0, 240.0 / 255.0, 0);
       V_RECT(rgdb + MB_INST, 20, 10, 120, 60, 6, 32.0 / 255.0, 32.0 / 255.0, 32.0 / 255.0, -72);
@@ -5075,14 +5075,20 @@ int main(void) {
       unsigned char *pxdb = pixels_of_fb(vfb);
       unsigned char *db_mid = V_PX(pxdb, 80 * 2, 40 * 2);
       unsigned char *db_top = V_PX(pxdb, 80 * 2, 10 * 2);
+      unsigned char *db_tail = V_PX(pxdb, 80 * 2, 13 * 2);
+      unsigned char *db_top_out = V_PX(pxdb, 80 * 2, 9 * 2);
       unsigned char *db_side_out = V_PX(pxdb, 140 * 2, 40 * 2);
       int db_out_min = db_side_out[0] < db_side_out[1] ? db_side_out[0] : db_side_out[1];
       if (db_side_out[2] < db_out_min) db_out_min = db_side_out[2];
       double db_l_mid = 0.2126 * db_mid[0] + 0.7152 * db_mid[1] + 0.0722 * db_mid[2];
       double db_l_top = 0.2126 * db_top[0] + 0.7152 * db_top[1] + 0.0722 * db_top[2];
-      printf("gles_render: v10_reg_dark_on_bright_2x out_min=%d top=%.1f mid=%.1f\n", db_out_min, db_l_top, db_l_mid);
+      double db_l_tail = 0.2126 * db_tail[0] + 0.7152 * db_tail[1] + 0.0722 * db_tail[2];
+      double db_l_top_out = 0.2126 * db_top_out[0] + 0.7152 * db_top_out[1] + 0.0722 * db_top_out[2];
+      printf("gles_render: v10_reg_dark_on_bright_2x out_min=%d top=%.1f tail=%.1f mid=%.1f top_out=%.1f\n", db_out_min, db_l_top, db_l_tail, db_l_mid, db_l_top_out);
       CHECK(db_out_min >= 120);
-      CHECK(db_l_top > db_l_mid + 20.0);
+      CHECK(db_l_top >= db_l_mid + 10.0 && db_l_top <= db_l_mid + 26.0);
+      CHECK(db_l_tail <= db_l_mid + 6.0);
+      CHECK(db_l_top_out >= 238.0);
       free(pxdb);
       // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes must preserve contrast
       V_SETUP(3);

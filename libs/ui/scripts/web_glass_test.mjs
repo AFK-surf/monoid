@@ -641,7 +641,9 @@ function runGlassVectorsInPage() {
     roi.v10_reg_dark_on_bright = {
       outMin: Math.min(dbOut[0], dbOut[1], dbOut[2]),
       lTop: lumaOf(pxAt(shotdb, 80 * 2, 10 * 2)),
+      lTail: lumaOf(pxAt(shotdb, 80 * 2, 13 * 2)),
       lMid: lumaOf(pxAt(shotdb, 80 * 2, 40 * 2)),
+      lTopOut: lumaOf(pxAt(shotdb, 80 * 2, 9 * 2)),
     };
     // V12-AntiSmear: Regular Light blur=1.2pt at 3x over 2pt alternating dark/light strokes
     {
@@ -1713,7 +1715,11 @@ check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 150.0 && 
 // (its ROI hash Metal's: the 1-point rim of what is outside it, glass_reflect_cases.h, moved 66 pixels 1 LSB)
 check(roi.v10_reg_dark.lTop > roi.v10_reg_dark.lMid + 20.0 && roi.v10_reg_dark.lSideOut <= 14.0 && roi.v10_reg_dark.lSideOut < roi.v10_reg_dark.lMid - 40.0 && roi.v10_reg_dark.lSideIn >= roi.v10_reg_dark.lMid - 6.0 && roi.v10_reg_dark.roiFnv1a === '0xe6ce81e8141ce998',
   `v10_reg_dark=${JSON.stringify(roi.v10_reg_dark)}`);
-check(roi.v10_reg_dark_on_bright.outMin >= 120 && roi.v10_reg_dark_on_bright.lTop > roi.v10_reg_dark_on_bright.lMid + 20.0,
+check(roi.v10_reg_dark_on_bright.outMin >= 120 &&
+  roi.v10_reg_dark_on_bright.lTop >= roi.v10_reg_dark_on_bright.lMid + 10.0 &&
+  roi.v10_reg_dark_on_bright.lTop <= roi.v10_reg_dark_on_bright.lMid + 26.0 &&
+  roi.v10_reg_dark_on_bright.lTail <= roi.v10_reg_dark_on_bright.lMid + 6.0 &&
+  roi.v10_reg_dark_on_bright.lTopOut >= 238.0,
   `v10_reg_dark_on_bright=${JSON.stringify(roi.v10_reg_dark_on_bright)}`);
 check(roi.v12_reg_antismear.delta >= 4.0 && roi.v12_reg_antismear.minL >= 170.0,
   `v12_reg_antismear=${JSON.stringify(roi.v12_reg_antismear)}`);
