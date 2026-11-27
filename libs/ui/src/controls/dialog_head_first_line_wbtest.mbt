@@ -72,3 +72,40 @@ test "a step's back key in a dialog and on a sheet stands on its title's first l
     assert_eq(two, one, msg="\{w}")
   }
 }
+
+///|
+test "a sheet's step's back key stands concentric with the sheet's top corner, the title of one line or of two" {
+  for title in ["申请钥匙", head_long_title] {
+    let open = fn(_ : Anchor) {
+      panel_nodes("第一步", from=Unanchored, steps=true, fn(v, _) {
+        v.box(fn(b) { words_node(b, fn() { "内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+      })
+      panel_go_nodes(title, fn(v, _) {
+        v.box(fn(b) { words_node(b, fn() { "下一步的内容" }, fn() { dialog_lead }) |> ignore }) |> ignore
+      })
+    }
+    presenters_reset()
+    let back = t("common.back")
+    let tt = @ui.Tester::new(
+      fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
+      tree=presented_tree(presenting_view(open)),
+      w=390.0,
+      h=800.0,
+      platform=0,
+    )
+    tt.check_looks(false)
+    tt.draw()
+    tt.tap_text("打开")
+    tt.run_for(@ui.move_most_ms)
+    tt.leave()
+    tt.draw()
+    let key = tt.all(Button, label=back)
+    let sheet = tt.all(Dialog, label=title)
+    guard key.length() == 1 && sheet.length() == 1 else {
+      @halt.saying("no back key or sheet: \{key.length()} \{sheet.length()}")
+    }
+    let (kx, ky, _, _) = key[0].rect
+    let (sx, sy, _, _) = sheet[0].rect
+    assert_eq(((kx - sx).round(), (ky - sy).round()), (26.0, 26.0), msg=title)
+  }
+}

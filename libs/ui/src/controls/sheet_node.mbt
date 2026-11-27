@@ -1194,12 +1194,15 @@ fn sheet_node(
                     }
                   }
                   // (a step further in: its back key before its title, as a step's head has it (step_head), the row no
-                  // taller for it)
+                  // taller for it; the key concentric with the sheet's top corner (sheet_step_key_at), its title on the
+                  // key's line beside it)
                   let step_row = fn(r : @view.View) {
-                    style_node(r, fn() { sheet_title_row.then(step_head_gap) })
+                    style_node(r, fn() { sheet_title_row.then(step_head_gap).then(sheet_step_row_over()) })
                     r.box(fn(key) {
                       style_node(key, fn() {
-                        in_line(step_back_side - @ui.tree_theme().text_size(Title).1).then(@ui.style(ml=room(-step_back_in)))
+                        in_line(step_back_side - @ui.tree_theme().text_size(Title).1).then(
+                          @ui.style(ml=room(sheet_step_key_at - sheet_panel_sides)),
+                        )
                       })
                       icon_button_node(key, "chevron-left", fn() { t("common.back") }, go_back, size=step_back_side) |> ignore
                     })
@@ -1633,4 +1636,17 @@ priv struct SheetItem {
 ///|
 impl Eq for SheetItem with equal(a, b) {
   a.pg.n == b.pg.n
+}
+
+///|
+/// How far in from a sheet's side and top its step's back key stands (step_row's): concentric with the sheet's corner
+/// (capsule_in: 42 round, a key 32 across, 26 in each way), as a dialog's close button stands in its corner.
+let sheet_step_key_at : Double = @ui.capsule_in(pane_corner, step_back_side)
+
+///|
+/// The room over a sheet's step's head row (sheet_title_row's own, made up to it): its back key, a line of its title
+/// tall in the row (in_line), as far under the sheet's top as sheet_step_key_at, under its grabber (sheet_grab_h).
+fn sheet_step_row_over() -> @ui.Style {
+  let line = @ui.tree_theme().text_size(Title).1
+  @ui.style(pt=room(dmax(0.0, sheet_step_key_at - sheet_grab_h + (step_back_side - line) / 2.0)))
 }
