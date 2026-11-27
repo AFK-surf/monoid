@@ -578,6 +578,10 @@ let fx_connects_waiting : Ref[Bool] = Ref(false)
 let fx_station_many_profiles : Ref[Bool] = Ref(false)
 
 ///|
+/// Bilingual station overview showcase for monoid.build (settings-station-site).
+let fx_station_site : Ref[Bool] = Ref(false)
+
+///|
 /// A station whose update failed because its state could not be read.
 let fx_station_update_failed : Ref[Bool] = Ref(false)
 
@@ -623,6 +627,7 @@ fn fixture_reset() -> Unit {
   devices_fixture_reset()
   fx_many_kept.val = false
   fx_station_many_profiles.val = false
+  fx_station_site.val = false
   fx_station_update_failed.val = false
   fx_station_updated.val = false
   fx_station_back.val = ""
@@ -1071,6 +1076,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings-adb-chats-long" => up("", "settings/adb/", 4)
     "settings-station-mark" => up("mark", "", 0)
     "settings-station-many-profiles" => fx_station_many_profiles.val = true
+    "settings-station-site" => fx_station_site.val = true
     "settings-station-gpu" => fx.gpus = true
     "settings-stations-low" => fx.low_meters = true
     // (Willow on Linux, its GPUs', Maple a Mac, Cedar on Windows: their systems apart)
@@ -1528,7 +1534,7 @@ pub fn fixture_page(mode : String) -> String {
       "home"
     // (the notifications' page; the system having refused them: its banner's way to allow them)
     "settings-notify" | "settings-notify-denied" => "notifications"
-    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" | "settings-station-unprotected-blocked" => "station:ws1/st1"
+    "settings-station" | "settings-station-site" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" | "settings-station-unprotected-blocked" => "station:ws1/st1"
     "settings-stations-unprotected" => "stations"
     "settings-station-offline" => "station:ws1/st2"
     "settings-memory" => "memory:ws1/st1"
@@ -3768,7 +3774,9 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       )
     }
     "stations" =>
-      if fx.none {
+      if fx_station_site.val {
+        Some(Json::array(fx_site_stations()))
+      } else if fx.none {
         Some([])
       } else {
         // (settings-stations-motion: 3 comes, then Maple goes)
@@ -3965,6 +3973,21 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
             ("control", Json::boolean(true)),
             ("known", Json::boolean(true)),
             ("confirmed", Json::boolean(true)),
+          ]),
+        )
+      } else if fx_station_site.val && @sf.language() == "en" {
+        Some(
+          obj([
+            (
+              "screens",
+              [
+                obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Willow's Display")), ("width", Json::number(3024.0)), ("height", Json::number(1964.0)), ("line", str("3024 × 1964 · Idle")), ("link", str(""))]),
+                obj([("id", str("browser:t1")), ("kind", str("browser")), ("title", str("Release checklist - Docs")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("Browser tab · 1280 × 800")), ("link", str(""))]),
+              ],
+            ),
+            ("outdated", Json::boolean(false)),
+            ("control", Json::boolean(true)),
+            ("known", Json::boolean(true)),
           ]),
         )
       } else {

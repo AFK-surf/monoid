@@ -397,22 +397,10 @@
   function initScrolly() {
     const { gsap, ScrollTrigger } = window;
     gsap.registerPlugin(ScrollTrigger);
-    const show = $(".dv-show"), stage = $(".dv-stage", show), view = $(".dv-view", show);
+    const show = $(".dv-show"), stage = $(".dv-stage", show);
     const steps = $$(".dv-step", show), rail = $$(".dv-rail li", show);
     const devices = $$(".dv-view > .d", show);
     const navH = () => $("#nav").offsetHeight;
-
-    // Each device at the size that fills the panel (a margin round it), never over 1:1, in its middle. Read as the
-    // trigger refreshes (after layout), never while the page parses.
-    const fit = () => {
-      const W = view.clientWidth, H = view.clientHeight, side = 40, edge = 40;
-      for (const d of devices) {
-        const k = Math.min((W - 2 * side) / d.offsetWidth, (H - 2 * edge) / d.offsetHeight, 1);
-        d.style.setProperty("--k", k.toFixed(3));
-      }
-    };
-    fit();
-    ScrollTrigger.addEventListener("refreshInit", fit);
 
     gsap.set(steps.slice(1), { autoAlpha: 0, y: 12 });
     gsap.set(devices.slice(1), { autoAlpha: 0, "--ty": "12px" });

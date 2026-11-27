@@ -231,7 +231,7 @@
         <article class="cell" data-seq="1500 4200">
           <div class="vis">
             <div class="tp frame mk tp-ws" aria-hidden="true">
-              <div class="mk-rail"><span class="mk-ri"><i class="mk-i bell"></i></span><span class="mk-ri on"><i class="mk-i chats"></i></span><span class="mk-ri"><i class="mk-i folder"></i></span><span class="mk-ri"><i class="mk-i glyph"></i></span><span class="mk-ri"><i class="mk-i quota"></i></span></div>
+              <div class="mk-rail"><span class="mk-ri"><i class="mk-i bell"></i></span><span class="mk-ri on"><i class="mk-i chats"></i></span><span class="mk-ri"><i class="mk-i folder"></i></span><span class="mk-ri"><i class="mk-i monitor"></i></span><span class="mk-ri"><i class="mk-i glyph"></i></span><span class="mk-ri"><i class="mk-i quota"></i></span></div>
               <div class="ws-side">
                 <div class="mk-nav"><i class="mk-i compose"></i><span data-t="teams.new-chat.009b">New chat</span><i class="mk-i filter"></i></div>
                 <div class="mk-day"><span data-t="teams.today.2434">Today</span></div>
@@ -300,116 +300,12 @@
           </ol>
           <div class="dv-bar" aria-hidden="true"><i></i></div>
         </div>
-        <!-- One device a step, upright and whole, in the middle of the stage at the size that fills it (main.js: --k);
-             the steps cross-fade as the scroll moves. -->
+        <!-- One device a step: 3D hardware studio renders with real apps/mbui screens; cross-faded as the scroll moves. -->
         <div class="dv-view" aria-hidden="true">
-          <div class="d d-duo">
-            <div class="duo" aria-hidden="true">
-              <!-- Opened as a book (its inner screen 890 × 626 points, apps/mbui sfapp/tabletop_wbtest.mbt): the desktop's
-                   structure with touch's sizes, the panes as cards across (native_in 4 apart), the sidebar ending on the
-                   fold (sfdesk/frame.mbt side_on_fold); no rail of the app's own: iOS 27.1 lays the places, the chat's
-                   actions, the bell and the new chat out in its own glass down the trailing edge (sf/native_bars.mbt,
-                   host/ios_nav.h), the status bar in that column, the composer level with the round new-chat button. -->
-              <div class="duo-scr mk mk-m">
-                <div class="dc side">
-                  <div class="dws"><span class="gl ws"><i class="b">A</i>Acme<i class="mk-i chevd"></i></span><i class="mk-i filter"></i></div>
-                  <div class="mk-search"><i class="mk-i search"></i><span data-t="devices-stage.search-everything.09d8">Search everything</span></div>
-                  <div class="mk-mday"><span data-t="devices-stage.today.2434">Today</span></div>
-                  <div class="mk-mrow on"><div class="l1"><i class="mk-busy"></i><b><span data-t="devices-stage.login-page-on-phones.36b2">Login page on phones</span></b></div><div class="l2"><span><span data-t="devices-stage.the-login-button-was.490b">The login button was fixed at 320px wide on phones, wider than the screen.</span></span><span class="mk-aside"><i class="mk-lg a"></i><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i><i class="mk-face z"><span data-t="devices-stage.n.b51a">N</span></i></span></div></div>
-                  <div class="mk-mrow unread"><div class="l1"><i class="mk-dot"></i><b><span data-t="devices-stage.csv-export-for-orders.a0f6">CSV export for orders</span></b></div><div class="l2"><i class="mk-i check"></i><span><span data-t="devices-stage.the-export-streams-by.f3ba">the export streams by the current filters…</span></span><span class="mk-aside"><i class="mk-lg o"></i><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i></span></div></div>
-                  <div class="mk-mrow unread"><div class="l1"><i class="mk-dot r"></i><b><span data-t="devices-stage.weekly-dependency-updates.8446">Weekly dependency updates</span></b></div><div class="l2"><span><span data-t="devices-stage.the-other-23-packages.dae7">The other 23 packages are updated…</span></span><span class="mk-aside"><i class="mk-lg a"></i><i class="mk-face z"><span data-t="devices-stage.n.b51a">N</span></i></span></div></div>
-                </div>
-                <div class="dc page">
-                  <div class="dbar"><h4><span data-t="devices-stage.login-page-on-phones.36b2">Login page on phones</span></h4><span class="mk-faces"><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i><i class="mk-face z"><span data-t="devices-stage.n.b51a">N</span></i></span><span class="mk-pill"><span class="lg"><i class="mk-lg a"></i><i class="mk-busy"></i></span><span>Willow</span></span></div>
-                  <div class="mk-mmsgs">
-                    <div class="mk-mmsg"><div class="hd"><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i><b><span data-t="devices-stage.lin-xiao.c10a">Lin Xiao</span></b><span class="tm"><span data-t="devices-stage.9-min-ago.3dae">9 min ago</span></span></div><div class="bd"><span data-t="devices-stage.the-login-page-looks.605b">The login page looks wrong on phones, can you fix it?</span></div></div>
-                    <div class="mk-mmsg"><div class="hd"><i class="mk-av"><i class="mk-lg a"></i></i><b>Opus 5.5</b><span class="tm"><span data-t="devices-stage.6-min-ago.0787">6 min ago</span></span></div><div class="bd md"><p><span data-t="devices-stage.the-login-button-was.490b">The login button was fixed at 320px wide on phones, wider than the screen.</span></p><ul><li><span data-t="devices-stage.it-now-fills-its.2b23">It now fills its container; checked in a screenshot at 375px, it fits</span></li><li><span data-t="devices-stage.branch.1627">Branch </span><code>fix/login-button</code></li></ul></div></div>
-                    <div class="act"><i class="mk-av ag"><i class="mk-lg a"></i></i><span><span data-t="devices-stage.running-pnpm-test-login.e38c">Running pnpm test login</span></span><span class="t">12s</span></div>
-                  </div>
-                  <div class="mk-mcomp"><i class="b"><i class="mk-i plus"></i></i><span class="ph"><span data-t="devices-stage.message.68f4">Message</span></span><i class="b send"><i class="mk-i up"></i></i></div>
-                </div>
-                <div class="dcol">
-                  <div class="dst"><b>9:41</b><span><i class="wifi"></i><i class="bat"></i></span></div>
-                  <span class="gl two"><i class="mk-i more"></i><i class="mk-i info"></i><i class="mk-i panel"></i></span><span class="gl tabs"><span class="on"><i class="mk-i chats"></i></span><span><i class="mk-i folder"></i></span><span><i class="mk-i glyph"></i></span><span><i class="mk-i gear"></i></span><span><i class="mk-i bell"></i></span></span><span class="new"><i class="mk-i plus"></i></span>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="d d-android">
-            <div class="mk-phone droid" aria-hidden="true">
-              <span class="isl"></span><span class="gest"></span>
-              <div class="mk mk-m">
-                <div class="mk-sb"><span>9:41<i class="ni"></i></span><span class="ic"><i class="sig"></i><i class="wifi"></i><i class="bat"></i></span></div>
-                <div class="mk-mchat-top"><span class="back"><i class="mk-i chevl"></i></span><h4><span data-t="devices-stage.login-page-on-phones.36b2">Login page on phones</span></h4><span class="mk-faces"><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i><i class="mk-face z"><span data-t="devices-stage.n.b51a">N</span></i></span><span class="mk-pill"><span class="lg"><i class="mk-lg a"></i><i class="mk-busy"></i></span><span>Willow</span></span><span class="keys"><i class="mk-i info"></i><i class="mk-i more"></i></span></div>
-                <div class="mk-mmsgs">
-                  <div class="mk-mmsg"><div class="hd"><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i><b><span data-t="devices-stage.lin-xiao.c10a">Lin Xiao</span></b><span class="tm"><span data-t="devices-stage.9-min-ago.3dae">9 min ago</span></span></div><div class="bd"><span data-t="devices-stage.the-login-page-looks.605b">The login page looks wrong on phones, can you fix it?</span></div></div>
-                  <div class="mk-mmsg"><div class="hd"><i class="mk-av"><i class="mk-lg a"></i></i><b>Opus 5.5</b><span class="tm"><span data-t="devices-stage.6-min-ago.0787">6 min ago</span></span></div><div class="bd"><span data-t="devices-stage.the-login-button-was.50b4">The login button was fixed at 320px wide on phones, wider than the screen. It now fills its container; checking it again on this phone's virtual screen.</span></div></div>
-                  <div class="act"><i class="mk-av ag"><i class="mk-lg a"></i></i><span><span data-t="devices-stage.screenshot-login-page-at.9c76">Screenshot: login page at 375px</span></span><span class="t">4s</span></div>
-                </div>
-                <div class="mk-mcomp"><i class="b"><i class="mk-i plus"></i></i><span class="ph"><span data-t="devices-stage.message.68f4">Message</span></span><i class="b send"><i class="mk-i up"></i></i></div>
-              </div>
-              <!-- Android's notification shade over the app, with the share's ongoing notification as AdbShare.java
-                   builds it for chats' grants (low importance: no pop-up; its small icon in the status bar) -->
-              <div class="shade"><div class="qs"><b>9:41</b><span data-t="devices-stage.fri-nov-6.63fd">Fri, Nov 6</span></div><p class="sil"><span data-t="devices-stage.silent.aa93">Silent</span></p><div class="notif"><i class="si"></i><div><span class="app">monoid · <span data-t="devices-stage.2m.aeae">2m</span><i class="mk-i chevd"></i></span><b><span data-t="devices-stage.debugging-shared-with-2.22ad">Debugging shared with 2 chats</span></b><span class="m"><span data-t="devices-stage.login-page-on-phones.3581">“Login page on phones” is using a virtual screen in the background</span></span><span class="acts"><span data-t="devices-stage.turn-off-debug-sharing.296a">Turn off debug sharing</span></span></div></div></div>
-            </div>
-          </div>
-          <div class="d d-desk">
-            <div class="mk mk-win">
-              <div class="mk-app mac">
-                <div class="mk-dock">
-                  <span class="mk-tl"><i></i><i></i><i></i></span>
-                  <div class="mk-rail"><span class="mk-ri"><i class="mk-i bell"></i></span><span class="mk-ri"><i class="mk-i chats"></i></span><span class="mk-ri"><i class="mk-i folder"></i></span><span class="mk-ri on"><i class="mk-i glyph"></i></span><span class="mk-ri"><i class="mk-i quota"></i></span><span class="mk-ri"><i class="mk-i connects"></i></span><span class="mk-ri"><i class="mk-i chart"></i></span><span class="mk-ws">A</span><span class="mk-ri"><i class="mk-i gear"></i></span></div>
-                  <div class="mk-side st">
-                    <div class="mk-nav"><i class="mk-i plus"></i><span data-t="devices-stage.add-station.a826">Add station</span></div>
-                    <div class="mk-row on"><div class="l1"><i class="mk-st willow"><i class="mk-i monitor"></i></i><b>Willow</b><span class="run"><span data-t="devices-stage.1-running.1e6f">1 running</span></span></div><div class="chips"><span class="mk-chip"><span class="meter"><i style="width:19%"></i></span>CPU<span>81%</span></span><span class="mk-chip"><span class="meter"><i style="width:43%"></i></span><span data-t="devices-stage.mem.2555">Mem</span><span>36.6G</span></span><span class="mk-chip"><span class="meter"><i style="width:38%"></i></span><span data-t="devices-stage.disk.ef99">Disk</span><span>612G</span></span></div><div class="l3"><span data-t="devices-stage.direct-12-ms.9f57">Direct · 12 ms</span></div></div>
-                    <div class="mk-row"><div class="l1"><i class="mk-st mini"><i class="mk-i mini"></i></i><b>Mini</b><span class="ok"></span></div><div class="chips"><span class="mk-chip"><span class="meter"><i style="width:12%"></i></span>CPU<span>88%</span></span><span class="mk-chip"><span class="meter"><i style="width:61%"></i></span><span data-t="devices-stage.mem.2555">Mem</span><span>6.2G</span></span><span class="mk-chip"><span class="meter"><i style="width:58%"></i></span><span data-t="devices-stage.disk.ef99">Disk</span><span>214G</span></span></div><div class="l3"><span data-t="devices-stage.direct-18-ms.60e9">Direct · 18 ms</span></div></div>
-                    <div class="mk-row"><div class="l1"><i class="mk-st laptop"><i class="mk-i laptop"></i></i><b><span data-t="devices-stage.laptop.ed91">Laptop</span></b><span class="ok"></span></div><div class="chips"><span class="mk-chip"><span class="meter"><i style="width:8%"></i></span>CPU<span>92%</span></span><span class="mk-chip"><span class="meter"><i style="width:61%"></i></span><span data-t="devices-stage.mem.2555">Mem</span><span>14.1G</span></span><span class="mk-chip"><span class="meter"><i style="width:61%"></i></span><span data-t="devices-stage.disk.ef99">Disk</span><span>388G</span></span></div><div class="l3"><span data-t="devices-stage.direct-9-ms.b605">Direct · 9 ms</span></div></div>
-                    <div class="mk-row"><div class="l1"><i class="mk-st server"><i class="mk-i server"></i></i><b><span data-t="devices-stage.server.cb0c">Server</span></b><span class="run"><span data-t="devices-stage.1-running.1e6f">1 running</span></span></div><div class="chips"><span class="mk-chip"><span class="meter"><i style="width:37%"></i></span>CPU<span>63%</span></span><span class="mk-chip"><span class="meter"><i style="width:45%"></i></span><span data-t="devices-stage.mem.2555">Mem</span><span>71G</span></span><span class="mk-chip rd"><span class="meter"><i style="width:99%"></i></span><span data-t="devices-stage.disk.ef99">Disk</span><span>1.4G</span></span></div><div class="l3"><span data-t="devices-stage.relay-46-ms.b49c">Relay · 46 ms</span></div></div>
-                  </div>
-                </div>
-                <div class="mk-page">
-                  <div class="mk-pg">
-                    <div class="hd"><span class="tile"><i class="mk-st willow"><i class="mk-i monitor"></i></i></span><div><h4>Willow</h4><p><span class="dot"></span><span data-t="devices-stage.idle-apple-m4-max.fad1">Idle · Apple M4 Max · 64 GB · macOS 26.6.2</span></p></div><i class="mk-i more"></i></div>
-                    <div class="mk-seg"><span class="on"><span data-t="devices-stage.overview.0efc">Overview</span></span><span><span data-t="devices-stage.processes.ed73">Processes</span></span><span><span data-t="devices-stage.settings.c7f7">Settings</span></span><span><span data-t="devices-stage.software-device.3ae6">Software &amp; device</span></span></div>
-                    <h5><span data-t="devices-stage.resources.87df">Resources</span></h5>
-                    <div class="mk-dials">
-                      <div class="mk-dial"><b>81<small>%</small></b><span class="cells" style="--n:2"></span><span class="lb"><span data-t="devices-stage.cpu-idle.1a5d">CPU idle</span></span><span class="sb"><span data-t="devices-stage.load-3-1.0a75">Load 3.1</span></span></div>
-                      <div class="mk-dial"><b>36.6<small>GB</small></b><span class="cells" style="--n:4"></span><span class="lb"><span data-t="devices-stage.memory-left.1fac">Memory left</span></span><span class="sb"><span data-t="devices-stage.of-64-gb.28fa">of 64 GB</span></span></div>
-                      <div class="mk-dial"><b>612<small>GB</small></b><span class="cells" style="--n:4"></span><span class="lb"><span data-t="devices-stage.disk-left.f33b">Disk left</span></span><span class="sb"><span data-t="devices-stage.of-994-gb.5bad">of 994 GB</span></span></div>
-                    </div>
-                    <div class="mk-net"><span><span data-t="devices-stage.direct.bc81">Direct</span></span><span>↑ <b>0.4 KB/s</b></span><span><span data-t="devices-stage.latency.3e39">Latency</span> <b>12 ms</b></span><span>↓ <b>1.2 KB/s</b></span></div><p class="mk-line"><span data-t="devices-stage.3-agent-processes-266.ea19">3 agent processes 266 MB</span></p><p class="mk-uses"><span><span data-t="devices-stage.monoid-uses.2425">monoid uses</span></span><span>CPU <b>134%</b></span><span><span data-t="devices-stage.memory.89c8">Memory</span> <b>2.59 GB</b></span><span><span data-t="devices-stage.network.53eb">Network</span> <b>903 KB/s</b></span><i class="mk-i chevr"></i></p>
-                    <h5>Profile<span class="n">1</span></h5>
-                    <div class="mk-plist"><div class="mk-prow"><i class="pm"><i class="mk-lg a"></i></i><span class="t"><span class="tt">lin@acme.dev<span class="mk-rt"><i class="cc"></i>CC</span></span><small><span data-t="devices-stage.subscription-2-13-models.02cd">Subscription · 2 / 13 models on</span></small></span><i class="mk-i chevr"></i></div></div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div class="d d-web">
-            <div class="mk mk-win web">
-              <div class="mk-browser"><span class="tl"><i></i><i></i><i></i></span><span class="nav"><i class="mk-i chevl"></i><i class="mk-i chevr"></i></span><span class="mk-url"><i class="mk-i lock"></i>app.monoid.build</span></div>
-              <div class="mk-app">
-                <div class="mk-dock">
-                  <div class="mk-rail"><span class="mk-ri"><i class="mk-i bell"></i></span><span class="mk-ri on"><i class="mk-i chats"></i></span><span class="mk-ri"><i class="mk-i folder"></i></span><span class="mk-ri"><i class="mk-i glyph"></i></span><span class="mk-ri"><i class="mk-i quota"></i></span><span class="mk-ri"><i class="mk-i connects"></i></span><span class="mk-ri"><i class="mk-i chart"></i></span><span class="mk-ws">A</span><span class="mk-ri"><i class="mk-i gear"></i></span></div>
-                  <div class="mk-side">
-                    <div class="mk-nav"><i class="mk-i compose"></i><span data-t="devices-stage.new-chat.009b">New chat</span><i class="mk-i filter"></i></div>
-                    <div class="mk-day"><span data-t="devices-stage.today.2434">Today</span></div>
-                    <div class="mk-row"><div class="l1"><i class="mk-busy"></i><b><span data-t="devices-stage.login-page-on-phones.36b2">Login page on phones</span></b></div><div class="l2"><span><span data-t="devices-stage.the-login-button-was.490b">The login button was fixed at 320px wide on phones, wider than the screen.</span></span><span class="mk-aside"><i class="mk-lg a"></i><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i><i class="mk-face z"><span data-t="devices-stage.n.b51a">N</span></i></span></div></div>
-                    <div class="mk-row on"><div class="l1"><i class="mk-slot"></i><b><span data-t="devices-stage.csv-export-for-orders.a0f6">CSV export for orders</span></b></div><div class="l2"><i class="mk-i check"></i><span><span data-t="devices-stage.the-export-streams-by.f3ba">the export streams by the current filters…</span></span><span class="mk-aside"><i class="mk-lg o"></i><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i></span></div></div>
-                    <div class="mk-row unread"><div class="l1"><i class="mk-dot r"></i><b><span data-t="devices-stage.weekly-dependency-updates.8446">Weekly dependency updates</span></b></div><div class="l2"><span><span data-t="devices-stage.the-other-23-packages.dae7">The other 23 packages are updated…</span></span><span class="mk-aside"><i class="mk-lg a"></i><i class="mk-face z"><span data-t="devices-stage.n.b51a">N</span></i></span></div></div>
-                  </div>
-                </div>
-                <div class="mk-page">
-                  <div class="mk-bar"><h4><span data-t="devices-stage.csv-export-for-orders.a0f6">CSV export for orders</span></h4><span class="mk-faces"><i class="mk-face"><span data-t="devices-stage.x.c032">X</span></i></span><span class="mk-pill"><span class="lg"><i class="mk-lg o"></i></span><span>Mini</span></span><span class="end"><i class="mk-i more"></i><i class="mk-i panel"></i></span></div>
-                  <div class="mk-msgs">
-                    <div class="mk-mine"><div class="bub"><span data-t="devices-stage.add-a-csv-export.1b4f">Add a CSV export to the orders list</span></div><span class="tm"><span data-t="devices-stage.26-min-ago.8b19">26 min ago</span></span></div>
-                    <div class="mk-msg"><i class="mk-av"><i class="mk-lg o"></i></i><div class="hd"><b>Codex</b><span class="tm"><span data-t="devices-stage.3-min-ago.ffa4">3 min ago</span></span></div><div class="bd md"><span data-t="devices-stage.done-the-export-streams.6fe0">Done: the export streams rows by the current filters, 100k rows in about 2.3 s, merged into main (<code>a3f9c21</code>).</span></div></div>
-                  </div>
-                  <div class="mk-composer"><i class="b"><i class="mk-i plus"></i></i><span class="ph"><span data-t="devices-stage.press-space-to-type.eb5a">Press Space to type</span></span><i class="b send"><i class="mk-i up"></i></i></div>
-                </div>
-              </div>
-            </div>
-          </div>
+          <div class="d d-duo"><img class="dv-shot" src="assets/shots/duo-en.webp" srcset="assets/shots/duo-en-1x.webp 1000w, assets/shots/duo-en.webp 2000w" sizes="(min-width: 1024px) 62vw, (min-width: 900px) 58vw, 92vw" width="2000" height="1500" alt="" decoding="async"></div>
+          <div class="d d-android"><img class="dv-shot" src="assets/shots/android-en.webp" srcset="assets/shots/android-en-1x.webp 1000w, assets/shots/android-en.webp 2000w" sizes="(min-width: 1024px) 62vw, (min-width: 900px) 58vw, 92vw" width="2000" height="1500" alt="" decoding="async"></div>
+          <div class="d d-desk"><img class="dv-shot" src="assets/shots/desk-en.webp" srcset="assets/shots/desk-en-1x.webp 1000w, assets/shots/desk-en.webp 2000w" sizes="(min-width: 1024px) 62vw, (min-width: 900px) 58vw, 92vw" width="2000" height="1500" alt="" decoding="async"></div>
+          <div class="d d-web"><img class="dv-shot" src="assets/shots/web-en.webp" srcset="assets/shots/web-en-1x.webp 1000w, assets/shots/web-en.webp 2000w" sizes="(min-width: 1024px) 62vw, (min-width: 900px) 58vw, 92vw" width="2000" height="1500" alt="" decoding="async"></div>
         </div>
       </div>
     </template>
@@ -426,37 +322,8 @@
           <p><span data-t="devices.chats-on-the-left.1f45">Chats on the left, the running chat on the right; for now, the web app on your home screen.</span></p>
           <div class="actions"><a class="btn btn-ink" data-app href="https://app.monoid.build"><span data-t="devices.open-on-iphone.0e24">Open on iPhone</span><svg class="ico arr"><use href="#i-arrow"/></svg></a></div>
         </div>
-        <div class="vis">
-          <div class="duo" aria-hidden="true">
-            <!-- Opened as a book (its inner screen 890 × 626 points, apps/mbui sfapp/tabletop_wbtest.mbt): the desktop's
-                 structure with touch's sizes, the panes as cards across (native_in 4 apart), the sidebar ending on the
-                 fold (sfdesk/frame.mbt side_on_fold); no rail of the app's own: iOS 27.1 lays the places, the chat's
-                 actions, the bell and the new chat out in its own glass down the trailing edge (sf/native_bars.mbt,
-                 host/ios_nav.h), the status bar in that column, the composer level with the round new-chat button. -->
-            <div class="duo-scr mk mk-m">
-              <div class="dc side">
-                <div class="dws"><span class="gl ws"><i class="b">A</i>Acme<i class="mk-i chevd"></i></span><i class="mk-i filter"></i></div>
-                <div class="mk-search"><i class="mk-i search"></i><span data-t="devices.search-everything.09d8">Search everything</span></div>
-                <div class="mk-mday"><span data-t="devices.today.2434">Today</span></div>
-                <div class="mk-mrow on"><div class="l1"><i class="mk-busy"></i><b><span data-t="devices.login-page-on-phones.36b2">Login page on phones</span></b></div><div class="l2"><span><span data-t="devices.the-login-button-was.490b">The login button was fixed at 320px wide on phones, wider than the screen.</span></span><span class="mk-aside"><i class="mk-lg a"></i><i class="mk-face"><span data-t="devices.x.c032">X</span></i><i class="mk-face z"><span data-t="devices.n.b51a">N</span></i></span></div></div>
-                <div class="mk-mrow unread"><div class="l1"><i class="mk-dot"></i><b><span data-t="devices.csv-export-for-orders.a0f6">CSV export for orders</span></b></div><div class="l2"><i class="mk-i check"></i><span><span data-t="devices.the-export-streams-by.f3ba">the export streams by the current filters…</span></span><span class="mk-aside"><i class="mk-lg o"></i><i class="mk-face"><span data-t="devices.x.c032">X</span></i></span></div></div>
-                <div class="mk-mrow unread"><div class="l1"><i class="mk-dot r"></i><b><span data-t="devices.weekly-dependency-updates.8446">Weekly dependency updates</span></b></div><div class="l2"><span><span data-t="devices.the-other-23-packages.dae7">The other 23 packages are updated…</span></span><span class="mk-aside"><i class="mk-lg a"></i><i class="mk-face z"><span data-t="devices.n.b51a">N</span></i></span></div></div>
-              </div>
-              <div class="dc page">
-                <div class="dbar"><h4><span data-t="devices.login-page-on-phones.36b2">Login page on phones</span></h4><span class="mk-faces"><i class="mk-face"><span data-t="devices.x.c032">X</span></i><i class="mk-face z"><span data-t="devices.n.b51a">N</span></i></span><span class="mk-pill"><span class="lg"><i class="mk-lg a"></i><i class="mk-busy"></i></span><span>Willow</span></span></div>
-                <div class="mk-mmsgs">
-                  <div class="mk-mmsg"><div class="hd"><i class="mk-face"><span data-t="devices.x.c032">X</span></i><b><span data-t="devices.lin-xiao.c10a">Lin Xiao</span></b><span class="tm"><span data-t="devices.9-min-ago.3dae">9 min ago</span></span></div><div class="bd"><span data-t="devices.the-login-page-looks.605b">The login page looks wrong on phones, can you fix it?</span></div></div>
-                  <div class="mk-mmsg"><div class="hd"><i class="mk-av"><i class="mk-lg a"></i></i><b>Opus 5.5</b><span class="tm"><span data-t="devices.6-min-ago.0787">6 min ago</span></span></div><div class="bd md"><p><span data-t="devices.the-login-button-was.490b">The login button was fixed at 320px wide on phones, wider than the screen.</span></p><ul><li><span data-t="devices.it-now-fills-its.2b23">It now fills its container; checked in a screenshot at 375px, it fits</span></li><li><span data-t="devices.branch.1627">Branch </span><code>fix/login-button</code></li></ul></div></div>
-                  <div class="act"><i class="mk-av ag"><i class="mk-lg a"></i></i><span><span data-t="devices.running-pnpm-test-login.e38c">Running pnpm test login</span></span><span class="t">12s</span></div>
-                </div>
-                <div class="mk-mcomp"><i class="b"><i class="mk-i plus"></i></i><span class="ph"><span data-t="devices.message.68f4">Message</span></span><i class="b send"><i class="mk-i up"></i></i></div>
-              </div>
-              <div class="dcol">
-                <div class="dst"><b>9:41</b><span><i class="wifi"></i><i class="bat"></i></span></div>
-                <span class="gl two"><i class="mk-i more"></i><i class="mk-i info"></i><i class="mk-i panel"></i></span><span class="gl tabs"><span class="on"><i class="mk-i chats"></i></span><span><i class="mk-i folder"></i></span><span><i class="mk-i glyph"></i></span><span><i class="mk-i gear"></i></span><span><i class="mk-i bell"></i></span></span><span class="new"><i class="mk-i plus"></i></span>
-              </div>
-            </div>
-          </div>
+        <div class="vis" aria-hidden="true">
+          <img class="dv-shot" src="assets/shots/duo-en.webp" srcset="assets/shots/duo-en-1x.webp 1000w, assets/shots/duo-en.webp 2000w" sizes="(min-width: 900px) 58vw, 92vw" width="2000" height="1500" alt="" decoding="async">
         </div>
       </div>
 
@@ -471,23 +338,8 @@
             <span class="qr"><img src="assets/android-qr.svg" alt="" width="72" height="72"><span data-t="devices.scan-to-download.a9f8">Scan to download</span></span>
           </div>
         </div>
-        <div class="vis">
-          <div class="mk-phone droid" aria-hidden="true">
-            <span class="isl"></span><span class="gest"></span>
-            <div class="mk mk-m">
-              <div class="mk-sb"><span>9:41<i class="ni"></i></span><span class="ic"><i class="sig"></i><i class="wifi"></i><i class="bat"></i></span></div>
-              <div class="mk-mchat-top"><span class="back"><i class="mk-i chevl"></i></span><h4><span data-t="devices.login-page-on-phones.36b2">Login page on phones</span></h4><span class="mk-faces"><i class="mk-face"><span data-t="devices.x.c032">X</span></i><i class="mk-face z"><span data-t="devices.n.b51a">N</span></i></span><span class="mk-pill"><span class="lg"><i class="mk-lg a"></i><i class="mk-busy"></i></span><span>Willow</span></span><span class="keys"><i class="mk-i info"></i><i class="mk-i more"></i></span></div>
-              <div class="mk-mmsgs">
-                <div class="mk-mmsg"><div class="hd"><i class="mk-face"><span data-t="devices.x.c032">X</span></i><b><span data-t="devices.lin-xiao.c10a">Lin Xiao</span></b><span class="tm"><span data-t="devices.9-min-ago.3dae">9 min ago</span></span></div><div class="bd"><span data-t="devices.the-login-page-looks.605b">The login page looks wrong on phones, can you fix it?</span></div></div>
-                <div class="mk-mmsg"><div class="hd"><i class="mk-av"><i class="mk-lg a"></i></i><b>Opus 5.5</b><span class="tm"><span data-t="devices.6-min-ago.0787">6 min ago</span></span></div><div class="bd"><span data-t="devices.the-login-button-was.50b4">The login button was fixed at 320px wide on phones, wider than the screen. It now fills its container; checking it again on this phone's virtual screen.</span></div></div>
-                <div class="act"><i class="mk-av ag"><i class="mk-lg a"></i></i><span><span data-t="devices.screenshot-login-page-at.9c76">Screenshot: login page at 375px</span></span><span class="t">4s</span></div>
-              </div>
-              <div class="mk-mcomp"><i class="b"><i class="mk-i plus"></i></i><span class="ph"><span data-t="devices.message.68f4">Message</span></span><i class="b send"><i class="mk-i up"></i></i></div>
-            </div>
-            <!-- Android's notification shade over the app, with the share's ongoing notification as AdbShare.java
-                 builds it for chats' grants (low importance: no pop-up; its small icon in the status bar) -->
-            <div class="shade"><div class="qs"><b>9:41</b><span data-t="devices.fri-nov-6.63fd">Fri, Nov 6</span></div><p class="sil"><span data-t="devices.silent.aa93">Silent</span></p><div class="notif"><i class="si"></i><div><span class="app">monoid · <span data-t="devices.2m.aeae">2m</span><i class="mk-i chevd"></i></span><b><span data-t="devices.debugging-shared-with-2.22ad">Debugging shared with 2 chats</span></b><span class="m"><span data-t="devices.login-page-on-phones.3581">“Login page on phones” is using a virtual screen in the background</span></span><span class="acts"><span data-t="devices.turn-off-debug-sharing.296a">Turn off debug sharing</span></span></div></div></div>
-          </div>
+        <div class="vis" aria-hidden="true">
+          <img class="dv-shot" src="assets/shots/android-en.webp" srcset="assets/shots/android-en-1x.webp 1000w, assets/shots/android-en.webp 2000w" sizes="(min-width: 900px) 58vw, 92vw" width="2000" height="1500" alt="" decoding="async">
         </div>
       </div>
 
@@ -502,37 +354,8 @@
             <a class="btn btn-line" href="https://app.monoid.build/releases/latest/win"><svg><use href="#b-windows"/></svg>Windows</a>
           </div>
         </div>
-        <div class="vis">
-          <div class="mk-fit" aria-hidden="true"><div class="mk mk-win">
-            <div class="mk-app mac">
-              <div class="mk-dock">
-                <span class="mk-tl"><i></i><i></i><i></i></span>
-                <div class="mk-rail"><span class="mk-ri"><i class="mk-i bell"></i></span><span class="mk-ri"><i class="mk-i chats"></i></span><span class="mk-ri"><i class="mk-i folder"></i></span><span class="mk-ri on"><i class="mk-i glyph"></i></span><span class="mk-ri"><i class="mk-i quota"></i></span><span class="mk-ri"><i class="mk-i connects"></i></span><span class="mk-ri"><i class="mk-i chart"></i></span><span class="mk-ws">A</span><span class="mk-ri"><i class="mk-i gear"></i></span></div>
-                <div class="mk-side st">
-                  <div class="mk-nav"><i class="mk-i plus"></i><span data-t="devices.add-station.a826">Add station</span></div>
-                  <div class="mk-row on"><div class="l1"><i class="mk-st willow"><i class="mk-i monitor"></i></i><b>Willow</b><span class="run"><span data-t="devices.1-running.1e6f">1 running</span></span></div><div class="chips"><span class="mk-chip"><span class="meter"><i style="width:19%"></i></span>CPU<span>81%</span></span><span class="mk-chip"><span class="meter"><i style="width:43%"></i></span><span data-t="devices.mem.2555">Mem</span><span>36.6G</span></span><span class="mk-chip"><span class="meter"><i style="width:38%"></i></span><span data-t="devices.disk.ef99">Disk</span><span>612G</span></span></div><div class="l3"><span data-t="devices.direct-12-ms.9f57">Direct · 12 ms</span></div></div>
-                  <div class="mk-row"><div class="l1"><i class="mk-st mini"><i class="mk-i mini"></i></i><b>Mini</b><span class="ok"></span></div><div class="chips"><span class="mk-chip"><span class="meter"><i style="width:12%"></i></span>CPU<span>88%</span></span><span class="mk-chip"><span class="meter"><i style="width:61%"></i></span><span data-t="devices.mem.2555">Mem</span><span>6.2G</span></span><span class="mk-chip"><span class="meter"><i style="width:58%"></i></span><span data-t="devices.disk.ef99">Disk</span><span>214G</span></span></div><div class="l3"><span data-t="devices.direct-18-ms.60e9">Direct · 18 ms</span></div></div>
-                  <div class="mk-row"><div class="l1"><i class="mk-st laptop"><i class="mk-i laptop"></i></i><b><span data-t="devices.laptop.ed91">Laptop</span></b><span class="ok"></span></div><div class="chips"><span class="mk-chip"><span class="meter"><i style="width:8%"></i></span>CPU<span>92%</span></span><span class="mk-chip"><span class="meter"><i style="width:61%"></i></span><span data-t="devices.mem.2555">Mem</span><span>14.1G</span></span><span class="mk-chip"><span class="meter"><i style="width:61%"></i></span><span data-t="devices.disk.ef99">Disk</span><span>388G</span></span></div><div class="l3"><span data-t="devices.direct-9-ms.b605">Direct · 9 ms</span></div></div>
-                  <div class="mk-row"><div class="l1"><i class="mk-st server"><i class="mk-i server"></i></i><b><span data-t="devices.server.cb0c">Server</span></b><span class="run"><span data-t="devices.1-running.1e6f">1 running</span></span></div><div class="chips"><span class="mk-chip"><span class="meter"><i style="width:37%"></i></span>CPU<span>63%</span></span><span class="mk-chip"><span class="meter"><i style="width:45%"></i></span><span data-t="devices.mem.2555">Mem</span><span>71G</span></span><span class="mk-chip rd"><span class="meter"><i style="width:99%"></i></span><span data-t="devices.disk.ef99">Disk</span><span>1.4G</span></span></div><div class="l3"><span data-t="devices.relay-46-ms.b49c">Relay · 46 ms</span></div></div>
-                </div>
-              </div>
-              <div class="mk-page">
-                <div class="mk-pg">
-                  <div class="hd"><span class="tile"><i class="mk-st willow"><i class="mk-i monitor"></i></i></span><div><h4>Willow</h4><p><span class="dot"></span><span data-t="devices.idle-apple-m4-max.fad1">Idle · Apple M4 Max · 64 GB · macOS 26.6.2</span></p></div><i class="mk-i more"></i></div>
-                  <div class="mk-seg"><span class="on"><span data-t="devices.overview.0efc">Overview</span></span><span><span data-t="devices.processes.ed73">Processes</span></span><span><span data-t="devices.settings.c7f7">Settings</span></span><span><span data-t="devices.software-device.3ae6">Software &amp; device</span></span></div>
-                  <h5><span data-t="devices.resources.87df">Resources</span></h5>
-                  <div class="mk-dials">
-                    <div class="mk-dial"><b>81<small>%</small></b><span class="cells" style="--n:2"></span><span class="lb"><span data-t="devices.cpu-idle.1a5d">CPU idle</span></span><span class="sb"><span data-t="devices.load-3-1.0a75">Load 3.1</span></span></div>
-                    <div class="mk-dial"><b>36.6<small>GB</small></b><span class="cells" style="--n:4"></span><span class="lb"><span data-t="devices.memory-left.1fac">Memory left</span></span><span class="sb"><span data-t="devices.of-64-gb.28fa">of 64 GB</span></span></div>
-                    <div class="mk-dial"><b>612<small>GB</small></b><span class="cells" style="--n:4"></span><span class="lb"><span data-t="devices.disk-left.f33b">Disk left</span></span><span class="sb"><span data-t="devices.of-994-gb.5bad">of 994 GB</span></span></div>
-                  </div>
-                  <div class="mk-net"><span><span data-t="devices.direct.bc81">Direct</span></span><span>↑ <b>0.4 KB/s</b></span><span><span data-t="devices.latency.3e39">Latency</span> <b>12 ms</b></span><span>↓ <b>1.2 KB/s</b></span></div><p class="mk-line"><span data-t="devices.3-agent-processes-266.ea19">3 agent processes 266 MB</span></p><p class="mk-uses"><span><span data-t="devices.monoid-uses.2425">monoid uses</span></span><span>CPU <b>134%</b></span><span><span data-t="devices.memory.89c8">Memory</span> <b>2.59 GB</b></span><span><span data-t="devices.network.53eb">Network</span> <b>903 KB/s</b></span><i class="mk-i chevr"></i></p>
-                  <h5>Profile<span class="n">1</span></h5>
-                  <div class="mk-plist"><div class="mk-prow"><i class="pm"><i class="mk-lg a"></i></i><span class="t"><span class="tt">lin@acme.dev<span class="mk-rt"><i class="cc"></i>CC</span></span><small><span data-t="devices.subscription-2-13-models.02cd">Subscription · 2 / 13 models on</span></small></span><i class="mk-i chevr"></i></div></div>
-                </div>
-              </div>
-            </div>
-          </div></div>
+        <div class="vis" aria-hidden="true">
+          <img class="dv-shot" src="assets/shots/desk-en.webp" srcset="assets/shots/desk-en-1x.webp 1000w, assets/shots/desk-en.webp 2000w" sizes="(min-width: 900px) 58vw, 92vw" width="2000" height="1500" alt="" decoding="async" loading="lazy">
         </div>
       </div>
 
@@ -544,30 +367,8 @@
           <p><span data-t="devices.the-apps-interface-with.0328">The apps' interface with nothing to install, on Linux and iPad too.</span></p>
           <div class="actions"><a class="btn btn-ink" data-app href="https://app.monoid.build"><span data-t="devices.open-the-web-app.7646">Open the web app</span><svg class="ico arr"><use href="#i-arrow"/></svg></a></div>
         </div>
-        <div class="vis">
-          <div class="mk-fit" aria-hidden="true"><div class="mk mk-win web">
-            <div class="mk-browser"><span class="tl"><i></i><i></i><i></i></span><span class="nav"><i class="mk-i chevl"></i><i class="mk-i chevr"></i></span><span class="mk-url"><i class="mk-i lock"></i>app.monoid.build</span></div>
-            <div class="mk-app">
-              <div class="mk-dock">
-                <div class="mk-rail"><span class="mk-ri"><i class="mk-i bell"></i></span><span class="mk-ri on"><i class="mk-i chats"></i></span><span class="mk-ri"><i class="mk-i folder"></i></span><span class="mk-ri"><i class="mk-i glyph"></i></span><span class="mk-ri"><i class="mk-i quota"></i></span><span class="mk-ri"><i class="mk-i connects"></i></span><span class="mk-ri"><i class="mk-i chart"></i></span><span class="mk-ws">A</span><span class="mk-ri"><i class="mk-i gear"></i></span></div>
-                <div class="mk-side">
-                  <div class="mk-nav"><i class="mk-i compose"></i><span data-t="devices.new-chat.009b">New chat</span><i class="mk-i filter"></i></div>
-                  <div class="mk-day"><span data-t="devices.today.2434">Today</span></div>
-                  <div class="mk-row"><div class="l1"><i class="mk-busy"></i><b><span data-t="devices.login-page-on-phones.36b2">Login page on phones</span></b></div><div class="l2"><span><span data-t="devices.the-login-button-was.490b">The login button was fixed at 320px wide on phones, wider than the screen.</span></span><span class="mk-aside"><i class="mk-lg a"></i><i class="mk-face"><span data-t="devices.x.c032">X</span></i><i class="mk-face z"><span data-t="devices.n.b51a">N</span></i></span></div></div>
-                  <div class="mk-row on"><div class="l1"><i class="mk-slot"></i><b><span data-t="devices.csv-export-for-orders.a0f6">CSV export for orders</span></b></div><div class="l2"><i class="mk-i check"></i><span><span data-t="devices.the-export-streams-by.f3ba">the export streams by the current filters…</span></span><span class="mk-aside"><i class="mk-lg o"></i><i class="mk-face"><span data-t="devices.x.c032">X</span></i></span></div></div>
-                  <div class="mk-row unread"><div class="l1"><i class="mk-dot r"></i><b><span data-t="devices.weekly-dependency-updates.8446">Weekly dependency updates</span></b></div><div class="l2"><span><span data-t="devices.the-other-23-packages.dae7">The other 23 packages are updated…</span></span><span class="mk-aside"><i class="mk-lg a"></i><i class="mk-face z"><span data-t="devices.n.b51a">N</span></i></span></div></div>
-                </div>
-              </div>
-              <div class="mk-page">
-                <div class="mk-bar"><h4><span data-t="devices.csv-export-for-orders.a0f6">CSV export for orders</span></h4><span class="mk-faces"><i class="mk-face"><span data-t="devices.x.c032">X</span></i></span><span class="mk-pill"><span class="lg"><i class="mk-lg o"></i></span><span>Mini</span></span><span class="end"><i class="mk-i more"></i><i class="mk-i panel"></i></span></div>
-                <div class="mk-msgs">
-                  <div class="mk-mine"><div class="bub"><span data-t="devices.add-a-csv-export.1b4f">Add a CSV export to the orders list</span></div><span class="tm"><span data-t="devices.26-min-ago.8b19">26 min ago</span></span></div>
-                  <div class="mk-msg"><i class="mk-av"><i class="mk-lg o"></i></i><div class="hd"><b>Codex</b><span class="tm"><span data-t="devices.3-min-ago.ffa4">3 min ago</span></span></div><div class="bd md"><span data-t="devices.done-the-export-streams.6fe0">Done: the export streams rows by the current filters, 100k rows in about 2.3 s, merged into main (<code>a3f9c21</code>).</span></div></div>
-                </div>
-                <div class="mk-composer"><i class="b"><i class="mk-i plus"></i></i><span class="ph"><span data-t="devices.press-space-to-type.eb5a">Press Space to type</span></span><i class="b send"><i class="mk-i up"></i></i></div>
-              </div>
-            </div>
-          </div></div>
+        <div class="vis" aria-hidden="true">
+          <img class="dv-shot" src="assets/shots/web-en.webp" srcset="assets/shots/web-en-1x.webp 1000w, assets/shots/web-en.webp 2000w" sizes="(min-width: 900px) 58vw, 92vw" width="2000" height="1500" alt="" decoding="async" loading="lazy">
         </div>
       </div>
       </div>

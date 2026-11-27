@@ -15,17 +15,8 @@
 .dv-swipe .fpanels:focus-visible { outline: 2px solid var(--ring); outline-offset: -2px; border-radius: 22px; }
 .fpanel { scroll-snap-align: start; scroll-snap-stop: always; display: flex; flex-direction: column; min-width: 0;
   background: #fff; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); isolation: isolate; }
-/* A card's picture is laid out only once main.js marks it near the one in view ([data-near]); without the script,
-   always. The pictures' outer boxes have fixed sizes, so the card keeps its size either way. */
-:root:not(.no-js) .fpanel:not([data-near]) .vis > * > * { content-visibility: hidden; }
-.fpanel .vis { order: -1; position: relative; display: grid; place-items: center; --vis-h: clamp(260px, 72vw, 320px); height: var(--vis-h); padding: 20px; overflow: hidden;
-  background: var(--dots), var(--panel); }
-/* A phone stands whole in the picture, at the zoom its height leaves (935 high at 1:1; the picture's height less its
-   padding, by the breakpoints that set that height). */
-.fpanel .vis > .mk-phone { --z: .235; box-shadow: inset 0 0 0 1.5px #3A3B3F, 0 30px 60px -30px rgb(28 27 26 / .45); }
-@media (min-width: 390px) { .fpanel .vis > .mk-phone { --z: .255; } }
-@media (min-width: 420px) { .fpanel .vis > .mk-phone { --z: .275; } }
-@media (min-width: 444px) { .fpanel .vis > .mk-phone { --z: .295; } }
+.fpanel .vis { order: -1; position: relative; aspect-ratio: 4 / 3; overflow: hidden; background: #EAE2D6; }
+.dv-shot { display: block; width: 100%; height: 100%; object-fit: cover; object-position: center; -webkit-user-select: none; user-select: none; pointer-events: none; }
 .fpanel .txt { flex: 1; display: flex; flex-direction: column; gap: 10px; padding: 20px 20px 24px; }
 .fpanel .txt h3 { font-family: var(--serif); font-size: 24px; line-height: 1.16; letter-spacing: -.01em; font-weight: 400; text-wrap: balance; }
 :root:is(:lang(zh), :lang(ja), :lang(ko)) :is(.fpanel .txt h3, .dv-step h3) { font-weight: 500; letter-spacing: 0; }
@@ -44,10 +35,6 @@
 }
 /* The QR code is for a phone to scan from a screen: never shown on the phone itself. */
 @media (pointer: coarse), (max-width: 899px) { .fpanel .qr { display: none; } }
-/* The pictures' own loops (spinners, the notification sliding in) run only on the card in view, while it is on screen. */
-.dv-swipe .fpanel:not([data-on]) *, .dv-swipe .fpanel:not([data-on]) *::after,
-.dv-swipe:not(.play) *, .dv-swipe:not(.play) *::after,
-.dv-swipe:not(.play) .mk-av.ag::after, .dv-swipe .fpanel:not([data-on]) .mk-av.ag::after { animation-play-state: paused; }
 
 /* Below: dots that follow the swipe (a pill slides between them as the cards move), the count, and, for a mouse, arrows. */
 .dv-nav { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
@@ -84,16 +71,13 @@
   .dv-swipe .fpanels { --peek: 96px; gap: 16px; }
   .fpanel .txt { padding: 24px 28px 28px; }
   .fpanel .txt h3 { font-size: 28px; }
-  .fpanel .vis { --vis-h: 400px; }
-  .fpanel .vis > .mk-phone { --z: .38; }
 }
 @media (min-width: 900px) {
   .dv-swipe .fpanels { --peek: clamp(120px, 12vw, 240px); gap: 20px; }
-  .fpanel { display: grid; grid-template-columns: minmax(0, 9fr) minmax(0, 13fr); min-height: clamp(440px, 36vw, 560px); border-radius: 16px; }
-  .fpanel .vis { order: 0; height: auto; padding: clamp(28px, 3vw, 56px); }
-  .fpanel .vis > .mk-phone { --z: .41; }
-  .fpanel .txt { padding: clamp(28px, 3.4vw, 56px); gap: 16px; justify-content: flex-start; }
-  .fpanel .txt h3 { font-size: 32px; line-height: 1.12; letter-spacing: -.01em; }
+  .fpanel { display: grid; grid-template-columns: minmax(0, 7fr) minmax(0, 12fr); align-items: stretch; border-radius: 16px; }
+  .fpanel .vis { order: 0; aspect-ratio: auto; min-width: 0; width: 100%; height: 100%; }
+  .fpanel .txt { padding: clamp(24px, 2.8vw, 44px); gap: 14px; justify-content: flex-start; }
+  .fpanel .txt h3 { font-size: 30px; line-height: 1.12; letter-spacing: -.01em; }
   .fpanel .txt p { font-size: var(--t-body); }
   .dv-nav { margin-top: 20px; }
 }
@@ -101,9 +85,7 @@
 @media (orientation: landscape) and (max-height: 500px) and (max-width: 899px) {
   .dv-swipe .fpanels { --peek: 72px; }
   .fpanel { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .fpanel .vis { order: 0; height: auto; min-height: min(280px, calc(100svh - 120px)); padding: 16px; }
-  .fpanel .vis > .mk-phone { --z: .25; }
-  .fpanel .vis > :is(.duo, .mk-fit) { zoom: var(--dz, .23); } /* by the half-width picture's own width (05-components) */
+  .fpanel .vis { order: 0; aspect-ratio: auto; height: 100%; min-height: min(260px, calc(100svh - 120px)); }
   .fpanel .txt { padding: 18px 20px 20px; gap: 8px; }
   .fpanel .txt h3 { font-size: 20px; }
   .fpanel .txt p { font-size: 14.5px; }
@@ -112,8 +94,8 @@
 .qr { display: flex; align-items: center; gap: 12px; font-size: var(--t-small); color: var(--graphite); }
 .qr img { width: 72px; height: 72px; padding: 6px; border-radius: 10px; outline: 1px solid oklch(0 0 0 / .1); outline-offset: -1px; background: #fff; }
 /* ---------- Every device, as one scene played by scrolling (html.scrolly: large screens, motion allowed) ----------
-   One device a step, upright and whole, in the middle of the stage's picture side; the steps cross-fade as the scroll
-   moves (main.js). Each device is drawn at its 1:1 size and scaled as a whole (--k, from the room it gets). */
+   One device a step, rendered in its 3D hardware shell on the stage's picture side; the steps cross-fade as the scroll
+   moves (main.js). */
 .dv-show { display: none; }
 /* Only while the screen is still the scene's (the head script tests it once; a window can be made smaller). */
 @media (min-width: 1024px) and (min-height: 760px) {
@@ -122,11 +104,11 @@
   .scrolly .dv-show { display: block; height: 400vh; }
 }
 /* The words on the paper at the left (7U, never under 340 px), level with the section's headline; the devices on a
-   dotted panel taking the rest and the full height.
+   framed studio stage taking the rest and the full height.
    svh: the stage's foot (rail, links) stays above Safari's toolbar on iPad; vh only where svh is unknown. */
 .dv-stage { position: sticky; top: calc(var(--nav) + 16px); height: calc(100vh - var(--nav) - 32px); height: calc(100svh - var(--nav) - 32px);
-  display: grid; grid-template-columns: max(calc(6 * var(--u)), 340px) minmax(0, 1fr); gap: clamp(24px, 3vw, 48px); color: var(--ink); }
-.dv-copy { position: relative; display: flex; flex-direction: column; padding: 8px 0 4px; min-width: 0; }
+  display: grid; grid-template-columns: clamp(310px, 28%, 360px) minmax(0, 1fr); align-items: center; gap: clamp(24px, 2.5vw, 40px); color: var(--ink); }
+.dv-copy { position: relative; display: flex; flex-direction: column; align-self: stretch; padding: 8px 0 4px; min-width: 0; }
 /* The step's number is the band's one accent. */
 .dv-no { font-family: var(--mono); font-size: 13px; color: var(--graphite); }
 .dv-no b { font-weight: 500; color: var(--brand-deep); font-size: 14px; }
@@ -149,11 +131,8 @@
 .dv-rail li[data-on] button { color: var(--ink); transform: translateX(6px); }
 .dv-bar { height: 1px; margin-top: 14px; background: var(--guide); overflow: hidden; }
 .dv-bar i { display: block; height: 100%; background: var(--ink); transform-origin: left; transform: scaleX(0); }
-.dv-view { position: relative; min-width: 0; border-radius: 16px; overflow: hidden; isolation: isolate; background: var(--dots), var(--panel); }
-/* Each device's centre on the panel's, at --k; the cross-fade moves only its opacity and --ty (at most 12 px). */
-.dv-view .d { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) translateY(var(--ty, 0px)) scale(var(--k, .5));
-  will-change: transform, opacity; }
+.dv-view { position: relative; min-width: 0; width: 100%; max-width: calc((100svh - var(--nav) - 32px) * 4 / 3); aspect-ratio: 4 / 3; justify-self: center;
+  border-radius: 16px; overflow: hidden; isolation: isolate; background: #EAE2D6; }
+/* Full-bleed studio shot inside .dv-view; the cross-fade moves only opacity and --ty (at most 12 px). */
+.dv-view .d { position: absolute; inset: 0; transform: translateY(var(--ty, 0px)); will-change: transform, opacity; }
 .dv-view .d:not(.d-duo) { opacity: 0; visibility: hidden; }
-.dv-view .d-android .mk-phone { --z: 1; }
-.dv-view .mk-win { box-shadow: 0 0 0 .5px rgb(0 0 0 / .2), 0 40px 80px -40px rgb(28 27 26 / .4); }
-@media (min-width: 1400px) { .fpanel .vis > .mk-phone { --z: .46; } }

@@ -6,7 +6,8 @@
 #   MBUI_MEDIA_RUNTIME  Optional path to a prebuilt sffilm executable (skips wasm-film-build.sh).
 set -euo pipefail
 
-export PATH="$HOME/.moon/bin:/opt/homebrew/bin:$PATH"
+# Keep $HOME/.moon/bin at the end as a fallback so MBUI_TOOLS / newer toolchains win.
+export PATH="/opt/homebrew/bin:$PATH:${MOON_HOME:-$HOME/.moon}/bin"
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 MBUI="$ROOT/apps/mbui"
@@ -23,6 +24,26 @@ DRIVE="$WORK/drive"
 cat > "$DRIVE" <<'EOF'
 timeout 8000
 wait 1200
+exit
+EOF
+
+# Scroll chat-md and chat-view-side-mbui up slightly so the top message header /
+# inline mbui card header sits cleanly below the floating Liquid Glass top bar.
+DRIVE_CHAT="$WORK/drive-chat"
+cat > "$DRIVE_CHAT" <<'EOF'
+timeout 8000
+wait 800
+wheelat -28 对比了三种做法
+wait 600
+exit
+EOF
+
+DRIVE_VIZ="$WORK/drive-viz"
+cat > "$DRIVE_VIZ" <<'EOF'
+timeout 8000
+wait 800
+wheelat -180 Wasm 复核
+wait 600
 exit
 EOF
 
@@ -52,6 +73,7 @@ encode_pair() {
 
 capture() {
   local name=$1 fixture=$2 dark=$3 win=$4 scale=$5 platform=$6 input=$7 half_w=$8
+  local drive=${9:-$DRIVE}
   local png="$WORK/${name}.png"
   echo "→ capturing $name (fixture=$fixture dark=$dark win=$win @${scale}x)"
   env MBUI_MEDIA_RUNTIME="$RUNTIME" \
@@ -63,7 +85,7 @@ capture() {
     MBUI_FILM_SCALE="$scale" \
     MBUI_FILM_PLATFORM="$platform" \
     MBUI_NATIVE_INPUT="$input" \
-    bash "$MBUI/scripts/media.sh" picture "$png" "$DRIVE" >/dev/null
+    bash "$MBUI/scripts/media.sh" picture "$png" "$drive" >/dev/null
   encode_pair "$name" "$png" "$half_w" "$fixture"
 }
 
@@ -87,12 +109,12 @@ capture_right_crop() {
 }
 
 # 1. Hero Tab 1: chat-md (1120x700 @2x = 2240x1400, 1x = 1120w)
-capture "chat-dark"     "chat-md"              1 "1120x700" 2 0 "mouse" 1120
-capture "chat-light"    "chat-md"              0 "1120x700" 2 0 "mouse" 1120
+capture "chat-dark"     "chat-md"              1 "1120x700" 2 0 "mouse" 1120 "$DRIVE_CHAT"
+capture "chat-light"    "chat-md"              0 "1120x700" 2 0 "mouse" 1120 "$DRIVE_CHAT"
 
 # 2. Hero Tab 2: chat-view-side-mbui (1120x700 @2x = 2240x1400, 1x = 1120w)
-capture "viz-dark"      "chat-view-side-mbui"  1 "1120x700" 2 0 "mouse" 1120
-capture "viz-light"     "chat-view-side-mbui"  0 "1120x700" 2 0 "mouse" 1120
+capture "viz-dark"      "chat-view-side-mbui"  1 "1120x700" 2 0 "mouse" 1120 "$DRIVE_VIZ"
+capture "viz-light"     "chat-view-side-mbui"  0 "1120x700" 2 0 "mouse" 1120 "$DRIVE_VIZ"
 
 # 3. Hero Tab 3: settings-station (1120x700 @2x = 2240x1400, 1x = 1120w)
 capture "station-dark"  "settings-station"     1 "1120x700" 2 0 "mouse" 1120

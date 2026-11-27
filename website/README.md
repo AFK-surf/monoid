@@ -7,9 +7,14 @@ python3 -m http.server -d website 4173      # or any static server: the folder w
 node website/build.mjs                      # → dist/website: monoid.build (a page per language + assets + sitemap.xml, robots.txt, _headers)
 node website/build.mjs --site still.fail --out dist/site   # classic single-page still.fail (youdid.wtf: --site youdid.wtf --out dist/site-beta)
 bash website/stillfail/shots.sh             # recapture real apps/mbui offscreen WebP screenshots for still.fail / youdid.wtf
+bash website/devices.sh                     # capture apps/mbui 3x screens + render official 3D device shots via Blender Cycles (EN + ZH)
 node website/og.mjs [site…]                 # the share cards again (Chrome, playwright-core)
 node website/build.mjs --check              # translations: missing, extra, stale, markup, glyphs (exit 1 on any)
 ```
+
+Device showcase renders (`website/assets/shots/{duo,android,desk,web}-{en,zh}{,-1x}.webp`) ship in English and Chinese,
+matching `apps/mbui`'s two UI locales (`en` and `zh-CN`): `zh-CN` and `zh-TW` pages receive `-zh` renders, while `en`,
+`ja`, and `ko` pages receive `-en` renders. Size metadata is tracked in `website/shots-sizes.txt` (excluded from CDN output).
 
 ## Changing the copy
 
