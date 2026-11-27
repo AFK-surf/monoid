@@ -425,16 +425,21 @@ test "大屏: side_panel_node on_take preserves 140ms directional slide+fade ani
   side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") }) |> ignore
   let jobs_rest_x = t.find("后台任务").unwrap().0
   assert_true(t.at_rest(), msg="settled on jobs before hot-return animation check")
-  // 1. Hot-return right-to-left: jobs (idx 1) -> s-c1 (idx 0), dir = -1.0 (starts shifted left by -8px).
+  // 1. Hot-return right-to-left: jobs (idx 1) -> s-c1 (idx 0), dir = -1.0 (starts shifted left by -8px at t=0).
   t.tree_frames_from_now()
   @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") })
   t.draw()
   assert_false(t.at_rest(), msg="on_take 140ms transition must be running at t=0")
+  let hist_t0_x = t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试").unwrap().0
+  assert_true(
+    (hist_t0_x - (hist_rest_x - 8.0)).abs() < 1.0,
+    msg="leftward hot return must start at -8px on t=0 frame (t0=\{hist_t0_x}, rest=\{hist_rest_x})",
+  )
   t.run_for(quarter_enter_ms)
   let hist_mid_x = t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试").unwrap().0
   assert_true(
-    hist_mid_x < hist_rest_x - 0.5,
-    msg="leftward hot return must approach from left (mid=\{hist_mid_x}, rest=\{hist_rest_x})",
+    hist_mid_x < hist_rest_x - 0.5 && hist_mid_x > hist_t0_x,
+    msg="leftward hot return must advance smoothly from -8px toward rest (t0=\{hist_t0_x}, mid=\{hist_mid_x}, rest=\{hist_rest_x})",
   )
   t.run_for(@ui.move_most_ms)
   let hist_end_x = t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试").unwrap().0
@@ -443,16 +448,21 @@ test "大屏: side_panel_node on_take preserves 140ms directional slide+fade ani
   assert_true(made_left <= 6, msg="leftward hot return must not rebuild body (made=\{made_left})")
   assert_true(t.at_rest(), msg="at rest after leftward 140ms transition")
   assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 residual timers after leftward transition")
-  // 2. Hot-return left-to-right: s-c1 (idx 0) -> jobs (idx 1), dir = +1.0 (starts shifted right by +8px).
+  // 2. Hot-return left-to-right: s-c1 (idx 0) -> jobs (idx 1), dir = +1.0 (starts shifted right by +8px at t=0).
   t.tree_frames_from_now()
   @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") })
   t.draw()
   assert_false(t.at_rest(), msg="on_take 140ms transition must be running at t=0 (rightward)")
+  let jobs_t0_x = t.find("后台任务").unwrap().0
+  assert_true(
+    (jobs_t0_x - (jobs_rest_x + 8.0)).abs() < 1.0,
+    msg="rightward hot return must start at +8px on t=0 frame (t0=\{jobs_t0_x}, rest=\{jobs_rest_x})",
+  )
   t.run_for(quarter_enter_ms)
   let jobs_mid_x = t.find("后台任务").unwrap().0
   assert_true(
-    jobs_mid_x > jobs_rest_x + 0.5,
-    msg="rightward hot return must approach from right (mid=\{jobs_mid_x}, rest=\{jobs_rest_x})",
+    jobs_mid_x > jobs_rest_x + 0.5 && jobs_mid_x < jobs_t0_x,
+    msg="rightward hot return must advance smoothly from +8px toward rest (t0=\{jobs_t0_x}, mid=\{jobs_mid_x}, rest=\{jobs_rest_x})",
   )
   t.run_for(@ui.move_most_ms)
   let jobs_end_x = t.find("后台任务").unwrap().0
@@ -461,6 +471,30 @@ test "大屏: side_panel_node on_take preserves 140ms directional slide+fade ani
   assert_true(made_right <= 6, msg="rightward hot return must not rebuild body (made=\{made_right})")
   assert_true(t.at_rest(), msg="at rest after rightward 140ms transition")
   assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 residual timers after rightward transition")
+  // 3. Mid-transition interruption: switch away at t=35ms while 140ms way is still running -> on_rest cancels it immediately (0 parked timers).
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") })
+  t.draw()
+  t.run_for(quarter_enter_ms)
+  assert_false(t.at_rest(), msg="s-c1 transition still in flight at t=35ms before interruption")
+  let due_mid = tree.due_count()
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") })
+  t.draw()
+  assert_false(t.at_rest(), msg="jobs transition still in flight right after interrupting s-c1")
+  let jobs_interrupt_t0_x = t.find("后台任务").unwrap().0
+  assert_true(
+    (jobs_interrupt_t0_x - (jobs_rest_x + 8.0)).abs() < 1.0,
+    msg="interrupted switch to jobs must start cleanly at +8px (t0=\{jobs_interrupt_t0_x}, rest=\{jobs_rest_x})",
+  )
+  // Tree::hand_at_end keeps one unowned hover-recheck entry for s-c1's original deadline until t0+140ms,
+  // so cancelling s-c1's NodeWay on park yields due_mid + 1 (not due_mid + 2).
+  assert_eq(
+    tree.due_count(),
+    due_mid + 1,
+    msg="interrupting s-c1 mid-transition must cancel its NodeWay on park (due=\{tree.due_count()}, due_mid=\{due_mid})",
+  )
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.at_rest(), msg="at rest after mid-transition interruption")
+  assert_eq(tree.due_count(), t.subtree_timeline_count(tree.root()), msg="0 residual timers after interruption")
 }
 
 ///|
@@ -508,10 +542,39 @@ test "大屏: side_panel_node drops external-resource tabs (view_tab_file/servic
   assert_true(term_leave_lg > 10, msg="leaving terminal tab must drop it (let_go=\{term_leave_lg})")
   let (term_back_made, _) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, term_tab) })
   assert_true(term_back_made > 10, msg="revisiting unparked terminal tab must rebuild (made=\{term_back_made})")
+  // 5. Closing a background parked passive tab (`files`) and reopening it must rebuild fresh (never reuse old parked branch).
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("files")) }) |> ignore
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") }) |> ignore
+  side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "close", Some("files")) }) |> ignore
+  let (files_reopen_made, _) = side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "open", Some("files")) })
+  assert_true(
+    files_reopen_made > 20,
+    msg="reopening a previously closed background-parked tab must rebuild fresh (made=\{files_reopen_made})",
+  )
+  // 6. Moving a parked passive `history` tab (`s-c1`) into a standalone window (`window_has_tab`) and returning it
+  // to the side panel must rebuild fresh rather than reusing the old parked branch.
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") }) |> ignore
+  side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "jobs") }) |> ignore
+  let opened_win = @sfbase.open_window(SideTab({ chat: side_tab_chat, tab: "s-c1" }))
+  assert_true(opened_win, msg="s-c1 opened in standalone window")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.window_has_tab("ws1/st1", "s-c1", "s-c1"), msg="window_has_tab true for s-c1")
+  let (wid, _) = t.windows_beside()[0]
+  @sfbase.window_gives_back(wid)
+  t.close_window_beside(wid)
+  t.run_for(@ui.move_most_ms)
+  assert_false(@sfbase.window_has_tab("ws1/st1", "s-c1", "s-c1"), msg="window_has_tab cleared after return")
+  let (hist_reopen_made, _) = side_kept_step(t, fn() { @sfdesk.side_front_pressed(src, side_tab_chat, "s-c1") })
+  assert_true(
+    hist_reopen_made > 20,
+    msg="returning parked s-c1 from standalone window must rebuild fresh (made=\{hist_reopen_made})",
+  )
 }
 
 ///|
-test "大屏: parked passive live tabs (history/files) do not render stale text while awaiting Core first value after wake" {
+test "大屏: parked passive live tabs preserve #7344 history continuity and never draw stale drive entries while awaiting Core" {
   let live_ready : @signals.Signal[Bool] = @signals.signal(true)
   let (t, src) = side_kept_tester(mode="chat-tabs-side", live_ready~)
   // Populate both live tabs (history + files) while live_ready == true.
@@ -524,19 +587,19 @@ test "大屏: parked passive live tabs (history/files) do not render stale text 
   assert_true(t.find("后台任务") is Some(_), msg="jobs active while history & files parked")
   // Simulate live topics having released subscriptions on park and Core not yet answering on wake.
   live_ready.set(false)
-  // Wake history: must NOT render stale history step text while live value is None.
+  // Wake history: per #7344, history keeps its last steps without flashing skeleton while awaiting Core's first answer.
   side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "front", Some("s-c1")) }) |> ignore
   assert_true(
-    t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试") is None,
-    msg="woken live history tab must not render stale text before Core answers",
+    t.find("读了 src/ui/list.mbt 等 2 个文件，跑了测试") is Some(_),
+    msg="woken history tab preserves last steps without flashing skeleton (#7344)",
   )
-  // Wake files: must NOT render stale folder entry text while live value is None.
+  // Wake files (`drive` live topic): must NOT render stale folder entry text while live value is None.
   side_kept_step(t, fn() { @sfdesk.side_change(src, side_tab_chat, "front", Some("files")) }) |> ignore
   assert_true(
     t.find("下载") is None,
     msg="woken live files tab must not render stale text before Core answers",
   )
-  // Once Core answers with fresh values, both render cleanly again.
+  // Once Core answers with fresh values, both render cleanly.
   live_ready.set(true)
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("下载") is Some(_), msg="files renders once Core answers")

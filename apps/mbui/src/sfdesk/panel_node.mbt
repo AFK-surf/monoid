@@ -385,7 +385,44 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         })
       })
       let prev_front : Ref[(String, Int)?] = Ref(None)
-      let tab_ways : Map[String, (@motion.NodeWay, Ref[Double])] = Map([])
+      let tab_ways : Map[(String, Int), (@motion.NodeWay, Ref[Double])] = Map([])
+      // Per-tab open generation: incremented whenever a tab leaves `side_now` (closed, even while parked in background)
+      // or moves into a standalone window (`window_has_tab`), so reopening it never reuses a stale parked branch.
+      let tab_gens : Map[String, Int] = Map([])
+      let tab_gens_rev : @signals.Signal[Int] = @signals.signal(0)
+      let tab_was_open : Ref[Array[String]] = Ref([])
+      let tab_was_win : Map[String, Bool] = Map([])
+      p.reacts(
+        fn() {
+          let open = side_now(src, r).0
+          let in_win = open.map(fn(t) { (t, @sfbase.window_has_tab(r.station, r.session, t)) })
+          (open, in_win)
+        },
+        fn(now) {
+          let (open, in_win) = now
+          let mut bumped = false
+          for prev_t in tab_was_open.val {
+            if !open.contains(prev_t) {
+              tab_gens[prev_t] = tab_gens.get(prev_t).unwrap_or(0) + 1
+              tab_was_win.remove(prev_t)
+              bumped = true
+            }
+          }
+          for pair in in_win {
+            let (t, w) = pair
+            let was_w = tab_was_win.get(t).unwrap_or(false)
+            if w && !was_w {
+              tab_gens[t] = tab_gens.get(t).unwrap_or(0) + 1
+              bumped = true
+            }
+            tab_was_win[t] = w
+          }
+          tab_was_open.val = open
+          if bumped {
+            tab_gens_rev.set(tab_gens_rev.untracked() + 1)
+          }
+        },
+      )
       let tab_enter = fn(q : @view.View, agent : String, way : @motion.NodeWay, dir : Ref[Double]) {
         let (tabs, front) = @signals.untracked(fn() { side_shown(src, r) })
         let cur_idx = tabs.search(front).unwrap_or(0)
@@ -399,8 +436,14 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         prev_front.val = if agent == "" || agent == tab_full_mark { None } else { Some((agent, cur_idx)) }
       }
       p.pick_kept(
-        fn() { history_in_front(src, r) },
-        fn(q, agent) {
+        fn() {
+          tab_gens_rev.get() |> ignore
+          let agent = history_in_front(src, r)
+          let gen = if agent == "" || agent == tab_full_mark { 0 } else { tab_gens.get(agent).unwrap_or(0) }
+          (agent, gen)
+        },
+        fn(q, tab_key) {
+          let (agent, _) = tab_key
           q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
           let way = @motion.NodeWay::new(1.0)
           let dir = Ref(1.0)
@@ -412,8 +455,13 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           // Cancel any in-flight 140ms transition on park so parked branches leave 0 timers on Tree::timeline.
           q.on_rest(fn() { way.put(1.0) }) |> ignore
           if agent != "" && agent != tab_full_mark {
-            tab_ways[agent] = (way, dir)
-            q.owns(fn() { tab_ways.remove(agent) }) |> ignore
+            tab_ways[tab_key] = (way, dir)
+            q.owns(fn() {
+              if tab_ways.get(tab_key) is Some((w, _)) && physical_equal(w, way) {
+                tab_ways.remove(tab_key)
+              }
+            })
+            |> ignore
           }
           tab_enter(q, agent, way, dir)
           if agent == tab_full_mark {
@@ -449,24 +497,27 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
         },
         at_once=true,
         keeps_max=6,
-        keep_if=fn(agent) {
+        keep_if=fn(tab_key) {
+          let (agent, gen) = tab_key
           // Check fullscreen/window handoff signals (`tab_full`/`window_has_tab`, never `held_full`) first so
           // `held_beside` clears immediately without deadlocking the fullscreen overlay.
           if @signals.untracked(fn() {
               @sfbase.tab_full_is(r.station, r.session, agent) ||
               @sfbase.window_has_tab(r.station, r.session, agent) ||
-              !side_now(src, r).0.contains(agent)
+              !side_now(src, r).0.contains(agent) ||
+              tab_gens.get(agent).unwrap_or(0) != gen
             }) {
             return false
           }
           side_tab_passive(agent)
         },
-        on_take=fn(q, agent) {
-          match tab_ways.get(agent) {
+        on_take=fn(q, tab_key) {
+          let (agent, _) = tab_key
+          match tab_ways.get(tab_key) {
             Some((way, dir)) => tab_enter(q, agent, way, dir)
             None => ()
           }
-          // Release any ahead-read handed over by `side_front_pressed` after the frame draws.
+          // Wait for the first woken frame to finish drawing before releasing the ahead-read handed over by `side_front_pressed`.
           @ui.after_drawn_frame(fn() { @sfbase.shown_read(side_tab_shown_at(r, agent)) })
         },
       )
