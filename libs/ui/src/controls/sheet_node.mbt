@@ -1197,10 +1197,10 @@ fn sheet_node(
                   // taller for it; the key concentric with the sheet's top corner (sheet_step_key_at), its title on the
                   // key's line beside it)
                   let step_row = fn(r : @view.View) {
-                    style_node(r, fn() { sheet_title_row.then(step_head_gap).then(sheet_step_row_over()) })
+                    style_node(r, fn() { sheet_title_row.then(step_head_gap).then(sheet_step_row_over(r)) })
                     r.box(fn(key) {
                       style_node(key, fn() {
-                        in_line(step_back_side - @ui.tree_theme().text_size(Title).1).then(
+                        in_line(step_back_side - node_sp(key, @ui.tree_theme().text_size(Title).1)).then(
                           @ui.style(ml=room(sheet_step_key_at - sheet_panel_sides)),
                         )
                       })
@@ -1645,8 +1645,16 @@ let sheet_step_key_at : Double = @ui.capsule_in(pane_corner, step_back_side)
 
 ///|
 /// The room over a sheet's step's head row (sheet_title_row's own, made up to it): its back key, a line of its title
-/// tall in the row (in_line), as far under the sheet's top as sheet_step_key_at, under its grabber (sheet_grab_h).
-fn sheet_step_row_over() -> @ui.Style {
-  let line = @ui.tree_theme().text_size(Title).1
-  @ui.style(pt=room(dmax(0.0, sheet_step_key_at - sheet_grab_h + (step_back_side - line) / 2.0)))
+/// tall in the row (in_line) at the size of words of `v`'s tree, as far under the sheet's top as sheet_step_key_at,
+/// under its grabber (sheet_grab_h).
+fn sheet_step_row_over(v : @view.View) -> @ui.Style {
+  @ui.style(pt=room(sheet_step_over(v)))
+}
+
+///|
+/// sheet_step_row_over's room, in points: the key's top (sheet_step_key_at) less the grabber's and less how far the key
+/// stands out over its line (in_line's half).
+fn sheet_step_over(v : @view.View) -> Double {
+  let line = node_sp(v, @ui.tree_theme().text_size(Title).1)
+  dmax(0.0, sheet_step_key_at - sheet_grab_h + (step_back_side - line) / 2.0)
 }

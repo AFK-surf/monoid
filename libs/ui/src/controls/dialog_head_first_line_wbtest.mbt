@@ -5,8 +5,15 @@
 
 ///|
 /// How far the middle of the button called `button` stands under the middle of the first line of `title` in what `open`
-/// presents on a window `w` wide (中屏 a dialog, 小屏 a sheet), opened by 打开.
-fn head_button_off(open : (Anchor) -> Unit, title : String, button : String, w? : Double = 1200.0) -> (Double, Int) {
+/// presents on a window `w` wide (中屏 a dialog, 小屏 a sheet) at the system's size of words `scale`, opened by 打开; and
+/// how many lines the title takes.
+fn head_button_off(
+  open : (Anchor) -> Unit,
+  title : String,
+  button : String,
+  w? : Double = 1200.0,
+  scale? : Double = 1.0,
+) -> (Double, Int) {
   presenters_reset()
   let t = @ui.Tester::new(
     fn(c) { c.with_theme(ui_theme(), fn() { @ui.old_views_here(c) }) },
@@ -16,6 +23,7 @@ fn head_button_off(open : (Anchor) -> Unit, title : String, button : String, w? 
     platform=0,
   )
   t.check_looks(false)
+  t.set_font_scale(scale)
   t.draw()
   t.tap_text("打开")
   t.run_for(@ui.move_most_ms)
@@ -65,11 +73,15 @@ test "a step's back key in a dialog and on a sheet stands on its title's first l
       })
     }
   }
+  // (on the first line's middle itself, at any size of words: a key a line of words tall, in_line's)
   for w in [1200.0, 390.0] {
-    let (one, one_lines) = head_button_off(stepped("申请钥匙"), "申请钥匙", back, w~)
-    let (two, two_lines) = head_button_off(stepped(head_long_title), head_long_title, back, w~)
-    assert_eq((one_lines, two_lines >= 2), (1, true), msg="\{w}")
-    assert_eq(two, one, msg="\{w}")
+    for scale in [0.85, 1.0, 1.3, 1.8, 2.0] {
+      let at = "\{w} \{scale}"
+      let (one, one_lines) = head_button_off(stepped("申请钥匙"), "申请钥匙", back, w~, scale~)
+      let (two, two_lines) = head_button_off(stepped(head_long_title), head_long_title, back, w~, scale~)
+      assert_eq((one_lines, two_lines >= 2), (1, true), msg=at)
+      assert_eq((one, two), (0.0, 0.0), msg=at)
+    }
   }
 }
 

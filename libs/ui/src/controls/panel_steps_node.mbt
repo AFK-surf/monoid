@@ -330,7 +330,7 @@ fn step_page_node(
         line.box(fn(key) {
           // (out of the words' line by as far as its chevron stands in, the row no taller for it: step_head's)
           style_node(key, fn() {
-            in_line(step_back_side - @ui.tree_theme().text_size(Heading).1).then(@ui.style(ml=room(-step_back_in)))
+            in_line(step_back_side - node_sp(key, @ui.tree_theme().text_size(Heading).1)).then(@ui.style(ml=room(-step_back_in)))
           }, in_row=true)
           icon_button_node(key, "chevron-left", fn() { t("common.back") }, back, size=step_back_side) |> ignore
         })
