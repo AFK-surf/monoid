@@ -5,20 +5,19 @@
 #include "station_sys.h"
 
 #include <limits.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
-
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#else
-#include <pthread.h>
-#endif
 
 typedef struct sqlite3 sqlite3;
 typedef struct sqlite3_context sqlite3_context;
 typedef struct sqlite3_value sqlite3_value;
+struct sqlite3_api_routines;
 typedef void (*sqlite3_destructor_type)(void *);
+typedef int (*sts_sqlite3_loadext_entry)(
+    sqlite3 *db,
+    char **pzErrMsg,
+    const struct sqlite3_api_routines *pApi);
 
 #define STS_SQLITE_OK 0
 #define STS_SQLITE_NULL 5
@@ -112,7 +111,11 @@ static void sts_sqlite_js_lower_fn(
     sqlite3_result_text(ctx, (const char *)heap_buf, (int)out_len, sqlite3_free);
 }
 
-static int sts_js_lower_auto_ext(sqlite3 *db, char **pzErrMsg, const void *pApi) {
+static int sts_js_lower_auto_ext(
+    sqlite3 *db,
+    char **pzErrMsg,
+    const struct sqlite3_api_routines *pApi
+) {
     (void)pzErrMsg;
     (void)pApi;
     return sqlite3_create_function_v2(
@@ -127,33 +130,19 @@ static int sts_js_lower_auto_ext(sqlite3 *db, char **pzErrMsg, const void *pApi)
         NULL);
 }
 
-static int32_t g_sts_js_lower_rc = 0;
-
-static void sts_do_register_sqlite_js_lower(void) {
-    typedef void (*sts_auto_ext_ep)(void);
-    sts_auto_ext_ep ep = (sts_auto_ext_ep)(uintptr_t)&sts_js_lower_auto_ext;
-    int rc = sqlite3_auto_extension(ep);
-    g_sts_js_lower_rc = (rc == STS_SQLITE_OK) ? 0 : (int32_t)rc;
-}
-
-#ifdef _WIN32
-static INIT_ONCE g_sts_js_lower_once = INIT_ONCE_STATIC_INIT;
-static BOOL CALLBACK sts_register_once_win(PINIT_ONCE once, PVOID param, PVOID *ctx) {
-    (void)once;
-    (void)param;
-    (void)ctx;
-    sts_do_register_sqlite_js_lower();
-    return TRUE;
-}
-#else
-static pthread_once_t g_sts_js_lower_once = PTHREAD_ONCE_INIT;
-#endif
+static _Atomic int g_sts_js_lower_ok = 0;
 
 int32_t sts_register_sqlite_js_lower(void) {
-#ifdef _WIN32
-    InitOnceExecuteOnce(&g_sts_js_lower_once, sts_register_once_win, NULL, NULL);
-#else
-    pthread_once(&g_sts_js_lower_once, sts_do_register_sqlite_js_lower);
-#endif
-    return g_sts_js_lower_rc;
+    if (atomic_load_explicit(&g_sts_js_lower_ok, memory_order_acquire) != 0) {
+        return 0;
+    }
+    typedef void (*sts_auto_ext_ep)(void);
+    sts_sqlite3_loadext_entry entry = sts_js_lower_auto_ext;
+    sts_auto_ext_ep ep = (sts_auto_ext_ep)(uintptr_t)entry;
+    int rc = sqlite3_auto_extension(ep);
+    if (rc == STS_SQLITE_OK) {
+        atomic_store_explicit(&g_sts_js_lower_ok, 1, memory_order_release);
+        return 0;
+    }
+    return (int32_t)rc;
 }
