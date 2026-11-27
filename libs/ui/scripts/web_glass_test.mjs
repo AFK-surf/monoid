@@ -1382,6 +1382,47 @@ function runGlassVectorsInPage() {
         full95: { ink: lumOf(s95, 72, 150), glass: lumOf(s95, 310, 150) },
       };
     }
+    // v10_through_hole_adaptive_ink: adaptive Light liquid glass over a real kind==9 native-view hole
+    // keeps light glass + dark ink/bar, while an identical capsule on the opaque black stage flips dark + white ink.
+    {
+      const th = new Float32Array(8 * INST);
+      rect(th, 0 * INST, 0, 0, 400, 240, 0, 0, 0, 0, 1, 0);
+      rect(th, 1 * INST, 0, 0, 400, 120, 9, 0, 0, 0, 1, 0);
+      rect(th, 2 * INST, 40, 36, 320, 48, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, tid--);
+      th[2 * INST + 4] = 24; th[2 * INST + 6] = 1; th[2 * INST + 7] = 2;
+      th[2 * INST + 12] = 0; th[2 * INST + 13] = 14; th[2 * INST + 14] = -1; th[2 * INST + 15] = 1;
+      rect(th, 3 * INST, 88, 50, 24, 20, 10, 24 / 255, 24 / 255, 27 / 255, 1, 0);
+      th[3 * INST + 4] = 6;
+      th[3 * INST + 12] = 0.1; th[3 * INST + 13] = 0.5; th[3 * INST + 14] = 0.9; th[3 * INST + 15] = 0.5;
+      th[3 * INST + 21] = 200; th[3 * INST + 22] = 60; th[3 * INST + 23] = 48;
+      rect(th, 4 * INST, 180, 52, 120, 16, 0, 24 / 255, 24 / 255, 27 / 255, 1, 0);
+      th[4 * INST + 4] = 8;
+      th[4 * INST + 21] = 200; th[4 * INST + 22] = 60; th[4 * INST + 23] = -48;
+      rect(th, 5 * INST, 40, 156, 320, 48, 6, 253 / 255, 252 / 255, 253 / 255, 0x67 / 255, tid--);
+      th[5 * INST + 4] = 24; th[5 * INST + 6] = 1; th[5 * INST + 7] = 2;
+      th[5 * INST + 12] = 0; th[5 * INST + 13] = 14; th[5 * INST + 14] = -1; th[5 * INST + 15] = 1;
+      rect(th, 6 * INST, 88, 170, 24, 20, 10, 24 / 255, 24 / 255, 27 / 255, 1, 0);
+      th[6 * INST + 4] = 6;
+      th[6 * INST + 12] = 0.1; th[6 * INST + 13] = 0.5; th[6 * INST + 14] = 0.9; th[6 * INST + 15] = 0.5;
+      th[6 * INST + 21] = 200; th[6 * INST + 22] = 180; th[6 * INST + 23] = 48;
+      rect(th, 7 * INST, 180, 172, 120, 16, 0, 24 / 255, 24 / 255, 27 / 255, 1, 0);
+      th[7 * INST + 4] = 8;
+      th[7 * INST + 21] = 200; th[7 * INST + 22] = 180; th[7 * INST + 23] = -48;
+      H.renderInit(400, 240, 2);
+      H.present(th, 8, 0, 0, 0);
+      const shot = H.renderPixels();
+      const rgbaAt = (x, y) => {
+        const i = (y * 2 * shot.w + x * 2) * 4;
+        return [shot.px[i], shot.px[i + 1], shot.px[i + 2], shot.px[i + 3]];
+      };
+      const lumN = (c) => (0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]) / 255;
+      const aGl = rgbaAt(150, 60), aTx = rgbaAt(100, 60), aBr = rgbaAt(240, 60);
+      const bGl = rgbaAt(150, 180), bTx = rgbaAt(100, 180), bBr = rgbaAt(240, 180);
+      roi.v10_through_hole_adaptive_ink = {
+        aGlR: aGl[0], aGlA: aGl[3], aTxL: lumN(aTx), aBrL: lumN(aBr),
+        bGlA: bGl[3], bGlL: lumN(bGl), bTxL: lumN(bTx), bBrL: lumN(bBr),
+      };
+    }
   }
   return { gl: H.renderInfo(), out, roi };
 }
@@ -1759,6 +1800,14 @@ for (const t of roi.v11_top) {
     for (const r of lf.frostRes) check(r.ink < 0.25 && r.glass > 0.56, `light_adaptive_frost_half=${JSON.stringify(r)}`);
     check(lf.full65.ink < 0.25 && lf.full65.glass > 0.72, `light_adaptive_frost_65=${JSON.stringify(lf.full65)}`);
     check(lf.full95.ink < 0.25 && lf.full95.glass > 0.85, `light_adaptive_frost_95=${JSON.stringify(lf.full95)}`);
+  }
+  {
+    const th = roi.v10_through_hole_adaptive_ink;
+    console.log(`web_glass_test: v10_through_hole_adaptive_ink hole=(gl=${th.aGlR}/${th.aGlA} tx=${th.aTxL.toFixed(3)} br=${th.aBrL.toFixed(3)}) stage=(gl=${th.bGlL.toFixed(3)} tx=${th.bTxL.toFixed(3)} br=${th.bBrL.toFixed(3)})`);
+    check(th.aGlA >= 100 && th.aGlA <= 170 && th.aGlR >= th.aGlA - 12, `v10_through_hole_adaptive_ink_a_gl=${JSON.stringify(th)}`);
+    check(th.aTxL < 0.25 && th.aBrL < 0.25, `v10_through_hole_adaptive_ink_a_ink=${JSON.stringify(th)}`);
+    check(th.bGlA === 255 && th.bGlL < 0.35, `v10_through_hole_adaptive_ink_b_gl=${JSON.stringify(th)}`);
+    check(th.bTxL > 0.75 && th.bBrL > 0.75, `v10_through_hole_adaptive_ink_b_ink=${JSON.stringify(th)}`);
   }
 }
 if (failed) process.exit(1);
