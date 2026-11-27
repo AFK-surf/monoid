@@ -155,6 +155,18 @@ test("ensure refuses --publish with --publish-store", { skip: process.platform =
   assert.deepEqual(w.asked, []);
 });
 
+test("cache-only ensure skips GitHub and store probes for already-cached parts", { skip: process.platform === "win32" }, async (t) => {
+  const w = await world(t, new Set());
+  const run = await w.ensure("launcher:linux-x64", "runner:linux-x64");
+  assert.equal(run.status, 0, `stdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
+  assert.match(run.stdout, /launcher linux-x64 [0-9a-f]{24}: cached \(\d+ s\)/);
+  assert.match(run.stdout, /runner linux-x64 [0-9a-f]{24}: cached \(\d+ s\)/);
+  assert.deepEqual(w.puts(), []);
+  assert.deepEqual(w.ghCalls(), []);
+  assert.deepEqual(w.github, []);
+  assert.deepEqual(w.asked, []);
+});
+
 test("cloud releaseType accepts every part and target native.ts can publish to the store", () => {
   const sampleKey = "0".repeat(24);
   for (const part of partNames()) {
