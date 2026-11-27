@@ -566,6 +566,57 @@ int main(void) {
     send_json("{\"id\":42,\"unsubscribe\":true}");
 
     mb_core_stop();
+
+    // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),
+    //    and `connSeq` MUST persist to `device/conn_seq_floor` and stay strictly monotonic across restarts!
+    {
+        FILE *f = fopen(dev_auth_path, "w");
+        assert(f != NULL);
+        fputs("{corrupt-ts-device-auth capRev:ws-99", f);
+        fclose(f);
+    }
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] restart #3 (corrupt device/auth) handshake -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
+    long long conn3 = extract_conn_seq(m->json);
+    assert(conn3 > conn2);
+    // Verify `device/auth` was NOT overwritten!
+    {
+        FILE *f = fopen(dev_auth_path, "r");
+        assert(f != NULL);
+        char buf3[512];
+        size_t n3 = fread(buf3, 1, sizeof(buf3) - 1, f);
+        fclose(f);
+        buf3[n3] = '\0';
+        assert(strcmp(buf3, "{corrupt-ts-device-auth capRev:ws-99") == 0);
+    }
+    // Verify `device/conn_seq_floor` was persisted at `data_dir/device%2Fconn_seq_floor` with `"connSeq":<conn3>`!
+    char floor_path[256];
+    snprintf(floor_path, sizeof(floor_path), "%s/device%%2Fconn_seq_floor", data_dir);
+    {
+        FILE *f = fopen(floor_path, "r");
+        assert(f != NULL);
+        char fbuf[256];
+        size_t fn = fread(fbuf, 1, sizeof(fbuf) - 1, f);
+        fclose(f);
+        fbuf[fn] = '\0';
+        char conn3_kv[64];
+        snprintf(conn3_kv, sizeof(conn3_kv), "\"connSeq\":%lld", conn3);
+        assert(strstr(fbuf, conn3_kv) != NULL);
+    }
+    mb_core_stop();
+
+    // Restart #4 while `device/auth` is still corrupt -> reads `device/conn_seq_floor` and increments `conn4 > conn3`!
+    atomic_store(&g_ctx.stopped, 0);
+    mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] restart #4 (floor recovery) handshake -> %s\n", m->json);
+    long long conn4 = extract_conn_seq(m->json);
+    assert(conn4 > conn3);
+    mb_core_stop();
+
     printf("[core_runtime_e2e] ALL REAL core_api.h + libstillfail_shell.so E2E CHECKS PASSED (msgs=%d, post_stop=%d)\n",
            g_ctx.count, atomic_load(&g_ctx.post_stop_count));
     return 0;

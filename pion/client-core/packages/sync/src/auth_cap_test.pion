@@ -21,6 +21,7 @@ import "base_codec"
 import "effect"
 import "form"
 import "lock"
+import "outbox"
 import "protocol"
 import "shell"
 import "sql"
@@ -671,8 +672,8 @@ test "auth_cap 5: StationEvents SSE WorkspaceCapability guard allows event:lock,
   // 2. Bump workspace authGen (1 -> 2) while SSE stream is open!
   let _ = core.auth.bump_workspace("ws-sse-cap")
 
-  // 3. `event: lock` control event on the SAME open stream MUST STILL be delivered (never blocked)
-  station.push_sse("event: lock\ndata: {\"workspace\":\"ws-sse-cap\",\"entries\":[]}\n\n")
+  // 3. `event: lock` control event ({workspace, head} notification) on the SAME open stream MUST STILL be delivered
+  station.push_sse("event: lock\ndata: {\"workspace\":\"ws-sse-cap\",\"head\":{\"seq\":1,\"hash\":\"h1\"}}\n\n")
   let _ = env.rt.run_ready()
   debug_assert(lock_seen[0] == 1, "event:lock control event allowed through on stale SSE stream")
   debug_assert(sse_paths().length() == 1, "event:lock alone did not abort open stream")
@@ -1147,4 +1148,276 @@ test "auth_cap 9: cross-ws identical-payload kept isolation, CompositeCapability
   debug_assert(store::parse_conn_seq_raw("{\"conn\":42}") == 42L, "parses legacy conn field")
   debug_assert(store::parse_conn_seq_raw("77") == 77L, "parses plain integer string")
   core.stop()
+}
+
+test "auth_cap 10: real SSE event:lock {workspace, head} triggers ungated GET /lock, and same-chunk lock+data segments validate cap" {
+  let env = CapSimEnv::new()
+  let station = SimStation::new(env.rt)
+
+  let seed = make_seed(91)
+  let key_id = ed25519_key_id(seed)
+  let g0 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-evlock")),
+      ("seq", form::Json::Num(0.0)),
+      ("prev", form::Json::Null),
+      ("at", form::Json::Num(1790000000.0)),
+      ("kind", form::Json::Str("genesis")),
+      ("body", form::Json::Obj([
+        ("owner", form::Json::Str("alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("app.still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+        ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(key_id))])])),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let root = match lock::entry_hash(g0, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root") }
+  let e1 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-evlock")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("c"))), ("name", form::Json::Str("Station 1"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h1 = match lock::entry_hash(e1, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h1") }
+  let e2 = match sign_lock_entry(
+    seed,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-evlock")),
+      ("seq", form::Json::Num(2.0)),
+      ("prev", form::Json::Str(h1)),
+      ("at", form::Json::Num(1790000020.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("d"))), ("name", form::Json::Str("Station 2"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+  let h2 = match lock::entry_hash(e2, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("h2") }
+
+  // Seed genesis on station before start
+  station.lock_json = Some(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(0)), ("hash", base_codec::json_str(root)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0)])),
+  ]))
+  let core = ClientCore::new("ws-evlock", "ws-evlock/st-1", env.rt, env.db, station.transport(), fn() -> Unit {})
+  core.start()
+  env.rt.advance(50)
+  debug_assert(core.auth.workspace_auth_gen("ws-evlock") == 1, "initial genesis seeded at authGen=1")
+
+  // 10a. Real station SSE `event: lock` with `{workspace, head}` (NO `entries`) triggers ungated GET /lock
+  station.lock_json = Some(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(1)), ("hash", base_codec::json_str(h1)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1)])),
+  ]))
+  station.push_sse("event: lock\ndata: {\"workspace\":\"ws-evlock\",\"head\":{\"seq\":1,\"hash\":\"" + h1 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  env.rt.advance(50)
+  debug_assert(core.auth.workspace_auth_gen("ws-evlock") == 2, "SSE {workspace, head} notification triggered GET /lock and bumped authGen 1 -> 2")
+  let seq1 = match core.current_lock() { Some(st) => st.seq.to_int(); None => -1 }
+  debug_assert(seq1 == 1, "lock state updated to seq=1 from GET /lock")
+
+  // 10b. Even on an ALREADY stale SSE stream (stream_cap=1, authGen=2), another `{workspace, head}` notification
+  //      STILL triggers ungated GET /lock and bumps authGen 2 -> 3!
+  station.lock_json = Some(base_codec::json_obj([
+    ("head", base_codec::json_obj([("seq", base_codec::json_int(2)), ("hash", base_codec::json_str(h2)), ("genesis", base_codec::json_str(root))])),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1), form_to_codec(e2)])),
+  ]))
+  station.push_sse("event: lock\ndata: {\"workspace\":\"ws-evlock\",\"head\":{\"seq\":2,\"hash\":\"" + h2 + "\",\"genesis\":\"" + root + "\"}}\n\n")
+  env.rt.advance(50)
+  debug_assert(core.auth.workspace_auth_gen("ws-evlock") == 3, "second SSE {workspace, head} on stale stream STILL triggered GET /lock and bumped authGen 2 -> 3")
+  core.stop()
+
+  // 10c. Same-chunk segmentation (Codex P2 #1): ONE SSE chunk carrying
+  //      [event: thread (valid ev-before), event: lock (inline entry bumping authGen), event: thread (stale ev-after)]
+  //      MUST commit ev-before (cursor="ev-before"), apply lock (bumping authGen), drop ev-after (0 writes, cursor stays "ev-before"),
+  //      and reconnect with `?since=ev-before`!
+  let env2 = CapSimEnv::new()
+  let st2 = SimStation::new(env2.rt)
+  let core2 = ClientCore::new("ws-evlock", "ws-evlock/st-2", env2.rt, env2.db, st2.transport(), fn() -> Unit {})
+  match core2.apply_lock_chain([g0], root) { Ok(_) => (); Err(e) => panic(e) }
+  core2.events.start(env2.rt)
+  env2.rt.advance(20)
+  let inline_lock_json = base_codec::json_stringify(base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-evlock")),
+    ("root", base_codec::json_str(root)),
+    ("entries", base_codec::json_arr([form_to_codec(g0), form_to_codec(e1)])),
+  ]))
+  let combined_chunk =
+  "id: ev-before\nevent: thread\ndata: {\"workspace\":\"ws-evlock\",\"id\":9,\"entries\":[{\"n\":1,\"thread\":9,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"pre-lock\",\"at\":100}]}\n\n" +
+  "event: lock\ndata: " + inline_lock_json + "\n\n" +
+  "id: ev-after\nevent: thread\ndata: {\"workspace\":\"ws-evlock\",\"id\":9,\"entries\":[{\"n\":2,\"thread\":9,\"kind\":\"message\",\"authorKind\":\"person\",\"author\":\"alice\",\"text\":\"post-lock-stale\",\"at\":200}]}\n\n"
+  st2.push_sse(combined_chunk)
+  let _ = env2.rt.run_ready()
+  debug_assert(core2.auth.workspace_auth_gen("ws-evlock") == 2, "inline lock inside combined chunk bumped authGen 1 -> 2")
+  let n_entries = match env2.sim_db.entries.get("ws-evlock/st-2 9") { Some(xs) => xs.length(); None => 0 }
+  debug_assert(n_entries == 1, "pre-lock event committed while post-lock stale event in SAME chunk was dropped")
+  let cur_id = match core2.events.last_id() { Some(c) => c; None => "" }
+  debug_assert(cur_id == "ev-before", "resume cursor advanced to ev-before and NOT ev-after")
+  env2.rt.advance(2200)
+  env2.rt.advance(10)
+  let mut saw_reconn = false
+  for i in 0..<st2.requests_seen.length() {
+    if st2.requests_seen[i] == "SSE /events?since=ev-before" {
+      saw_reconn = true
+    }
+  }
+  debug_assert(saw_reconn, "same-chunk stale post-lock data triggered reconnect from ?since=ev-before")
+  core2.stop()
+}
+
+test "auth_cap 11: transient SQLite lock read error never caches empty slot or overwrites existing pin, and queued SyncScheduler task respects enqueue_epoch" {
+  let rt = effect::Runtime::new()
+  let sim_db = SimAccountDb::new(rt)
+  let fail_pref_read = [false]
+  let sh = shell::Shell::stood_in(
+    rt,
+    fn(_id : Int64, _op : String, _args : base_codec::Json, _bytes : Option[Bytes]) -> Unit {},
+    fn(op : String, args : base_codec::Json) -> shell::AskResult {
+      if fail_pref_read[0] && op == "sql.all" {
+        match base_codec::json_get(args, "sql") {
+          Some(base_codec::Json::Str(s)) => {
+            if s.contains("workspace_pref") {
+              return shell::AskResult::Err(shell::ShellError::{ message: "injected sqlite busy on read" })
+            }
+          }
+          _ => ()
+        }
+      }
+      sim_db.answer(op, args)
+    },
+    fn(n : Int) -> Bytes { Bytes::new(n) },
+  )
+  let db = match sql::Sql::open(sh, "acct-lock-read-err") {
+    sql::SqlResult::Ok(d) => d
+    sql::SqlResult::Err(e) => panic("sql open: " + e.to_string())
+  }
+  let st = SimStation::new(rt)
+
+  // Build valid genesis pinned to root_good and forged/evil genesis root_evil for ws-B
+  let seed_good = make_seed(101)
+  let seed_evil = make_seed(102)
+  let key_good = ed25519_key_id(seed_good)
+  let key_evil = ed25519_key_id(seed_evil)
+  let make_gen = fn(s : Bytes, kid : String) -> form::Json {
+    match sign_lock_entry(
+      s,
+      form::Json::Obj([
+        ("v", form::Json::Num(1.0)),
+        ("ws", form::Json::Str("ws-B")),
+        ("seq", form::Json::Num(0.0)),
+        ("prev", form::Json::Null),
+        ("at", form::Json::Num(1790000000.0)),
+        ("kind", form::Json::Str("genesis")),
+        ("body", form::Json::Obj([
+          ("owner", form::Json::Str("alice")),
+          ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+          ("rp_id", form::Json::Str("app.still.fail")),
+          ("cloud_keys", form::Json::Obj([])),
+          ("members", form::Json::Arr([form::Json::Obj([("sub", form::Json::Str("alice")), ("email", form::Json::Str("alice@example.com")), ("role", form::Json::Str("owner"))])])),
+          ("devices", form::Json::Arr([form::Json::Obj([("id", form::Json::Str(hex_64("a"))), ("sub", form::Json::Str("alice")), ("kind", form::Json::Str("app")), ("label", form::Json::Str("Mac")), ("sign_key", form::Json::Str(kid))])])),
+          ("passkeys", form::Json::Arr([])),
+          ("stations", form::Json::Arr([])),
+          ("gateways", form::Json::Arr([])),
+        ])),
+      ]),
+    ) { Ok(e) => e; Err(e) => panic(e) }
+  }
+  let g_good = make_gen(seed_good, key_good)
+  let g_evil = make_gen(seed_evil, key_evil)
+  let root_good = match lock::entry_hash(g_good, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root_good") }
+  let root_evil = match lock::entry_hash(g_evil, native_lock_crypto()) { Ok(h) => h; Err(_) => panic("root_evil") }
+  let e1_good = match sign_lock_entry(
+    seed_good,
+    form::Json::Obj([
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str("ws-B")),
+      ("seq", form::Json::Num(1.0)),
+      ("prev", form::Json::Str(root_good)),
+      ("at", form::Json::Num(1790000010.0)),
+      ("kind", form::Json::Str("station")),
+      ("body", form::Json::Obj([("key", form::Json::Str(hex_64("f"))), ("name", form::Json::Str("Good Station"))])),
+    ]),
+  ) { Ok(e) => e; Err(e) => panic(e) }
+
+  // Persist real pinned lock for ws-B in SQLite
+  let seeder = ClientCore::new("ws-B", "ws-B/st-b", rt, db, st.transport(), fn() -> Unit {})
+  match seeder.apply_lock_chain([g_good], root_good) { Ok(_) => (); Err(e) => panic(e) }
+  seeder.stop()
+
+  // 11a. Extra workspace transient read error: MUST refuse evil chain without caching empty slot!
+  let core_a = ClientCore::new("ws-A", "ws-A/st-a", rt, db, st.transport(), fn() -> Unit {})
+  fail_pref_read[0] = true
+  let err_during_busy = match core_a.apply_lock_chain([g_evil], root_evil, workspace="ws-B") {
+    Err(_) => true
+    Ok(_) => false
+  }
+  debug_assert(err_during_busy, "transient SQLite read error refuses lock write for extra workspace ws-B")
+
+  // Recover SQLite read: next attempt MUST load real pinned root_good from SQLite and reject root_evil!
+  fail_pref_read[0] = false
+  let evil_rejected_after_recover = match core_a.apply_lock_chain([g_evil], root_evil, workspace="ws-B") {
+    Err(msg) => msg.contains("mismatch")
+    Ok(_) => false
+  }
+  debug_assert(evil_rejected_after_recover, "after read recovery, true pinned root_good is loaded and rejects root_evil")
+  match core_a.apply_lock_chain([g_good, e1_good], root_good, workspace="ws-B") {
+    Ok(v) => debug_assert(v.state.seq.to_int() == 1, "valid extension on root_good succeeds after read recovery")
+    Err(e) => panic("valid extension should succeed: " + e)
+  }
+  debug_assert(core_a.auth.workspace_auth_gen("ws-B") == 2, "valid extension bumped ws-B authGen after recovery")
+  core_a.stop()
+
+  // 11b. Queued SyncScheduler task respects enqueue_epoch (Codex P2 #2):
+  //      Fill width=1 lane with a delayed task, enqueue a second task at epoch 1, call bump_epoch()
+  //      BEFORE the queued task is dequeued -> queued task MUST fail with transport_epoch_changed and 0 HTTP calls!
+  let blocker_done : effect::Deferred[HttpReply] = effect::Deferred::new()
+  let req_paths : Array[String] = []
+  let tr_q = StationTransport::{
+    request_k: fn(_m : String, path : String, _h : Array[(String, String)], _b : Bytes, rk : (effect::Exit[HttpReply]) -> Unit) -> Unit {
+      req_paths.push(path)
+      if path == "/chats" {
+        blocker_done.wait_k(rk)
+      } else {
+        rk(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() }))
+      }
+    },
+    stream_k: st.transport().stream_k,
+  }
+  let outbox_q : outbox::FrameOutbox[CoreEvent] = outbox::FrameOutbox::new(fn() -> Unit {})
+  let ev_q = StationEvents::new("ws-q", "ws-q/st-q", db, outbox_q, tr_q)
+  let sy_q = SyncScheduler::new("ws-q", "ws-q/st-q", ev_q, tr_q, width=1, urgent_room=0)
+  let queued_aborted = [false]
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sy_q.fetch_snapshot_k(effect::priority_shown(), fn(_ : effect::Exit[Int]) -> Unit {
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  // Lane width=1 is now occupied by /chats. Enqueue thread:55 at epoch 1, then bump_epoch() BEFORE releasing lane!
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sy_q.fetch_thread_k(55, effect::priority_shown(), false, fn(ex : effect::Exit[Int]) -> Unit {
+      match ex {
+        effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")) => { queued_aborted[0] = true }
+        _ => ()
+      }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  sy_q.bump_epoch()
+  let _ = blocker_done.succeed(HttpReply::{ status: 200, headers: [], body: "{\"chats\":[]}".to_bytes() })
+  let _ = rt.run_ready()
+  debug_assert(queued_aborted[0], "queued task aborted with transport_epoch_changed on dequeue after bump_epoch")
+  debug_assert(req_paths.length() == 1 && req_paths[0] == "/chats", "aborted queued task NEVER issued HTTP request for /threads/55/entries")
 }

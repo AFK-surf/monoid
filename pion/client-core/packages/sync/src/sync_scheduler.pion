@@ -104,14 +104,18 @@ pub fn SyncScheduler::fetch_lock_k(
   k : (effect::Exit[Bool]) -> Unit,
 ) -> Unit {
   let key = self.task_key("lock")
+  let enqueue_epoch = self.transport_epoch
   self.lane.run_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Bool]) -> Unit) -> Unit {
-      let ep = self.transport_epoch
+      if self.transport_epoch != enqueue_epoch {
+        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+        return
+      }
       let req_fn = self.transport.request_k
       req_fn("GET", "/lock", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-        if self.transport_epoch != ep {
+        if self.transport_epoch != enqueue_epoch {
           tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
           return
         }
@@ -131,7 +135,7 @@ pub fn SyncScheduler::fetch_lock_k(
             match base_codec::json_parse(bytes_to_str(reply.body)) {
               base_codec::JsonParseResult::Err(e) => tk(effect::Exit::Failed(effect::EffectError::Custom(e)))
               base_codec::JsonParseResult::Ok(j) => {
-                if self.transport_epoch != ep {
+                if self.transport_epoch != enqueue_epoch {
                   tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
                   return
                 }
@@ -180,17 +184,23 @@ pub fn SyncScheduler::fetch_marks_k(
     path_sb.write_string(threads[i].to_string())
   }
   let req_path = path_sb.to_string()
-  let run_ep : Array[Int64] = [self.transport_epoch]
+  let enqueue_epoch = self.transport_epoch
   self.lane.run_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Array[String]]) -> Unit) -> Unit {
-      let ep = self.transport_epoch
-      run_ep[0] = ep
+      if self.transport_epoch != enqueue_epoch {
+        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+        return
+      }
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        if self.transport_epoch != enqueue_epoch {
+          fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          return
+        }
         let req_fn = self.transport.request_k
         req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-          if self.transport_epoch != ep {
+          if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
             return
           }
@@ -211,7 +221,7 @@ pub fn SyncScheduler::fetch_marks_k(
         })
       }
       let apply_json = fn(j : base_codec::Json) -> Result[Array[String], String] {
-        if self.transport_epoch != ep {
+        if self.transport_epoch != enqueue_epoch {
           return Err("transport_epoch_changed")
         }
         match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
@@ -236,7 +246,7 @@ pub fn SyncScheduler::fetch_marks_k(
             },
             tk,
             on_exhausted_stale=Some(fn() -> Unit {
-              if self.transport_epoch == ep {
+              if self.transport_epoch == enqueue_epoch {
                 self.pending_refresh.set(key, true)
               }
             }),
@@ -259,7 +269,7 @@ pub fn SyncScheduler::fetch_marks_k(
     fn(ex : effect::Exit[Array[String]]) -> Unit {
       match ex {
         effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
-          if self.pending_refresh.get(key).is_some() && self.transport_epoch == run_ep[0] {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
             self.pending_refresh.remove(key)
             self.fetch_marks_k(priority, k, sessions=sessions, threads=threads)
             return
@@ -283,17 +293,23 @@ pub fn SyncScheduler::fetch_snapshot_k(
   k : (effect::Exit[Int]) -> Unit,
 ) -> Unit {
   let key = self.task_key("snapshot")
-  let run_ep : Array[Int64] = [self.transport_epoch]
+  let enqueue_epoch = self.transport_epoch
   self.lane.run_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
-      let ep = self.transport_epoch
-      run_ep[0] = ep
+      if self.transport_epoch != enqueue_epoch {
+        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+        return
+      }
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        if self.transport_epoch != enqueue_epoch {
+          fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          return
+        }
         let req_fn = self.transport.request_k
         req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-          if self.transport_epoch != ep {
+          if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
             return
           }
@@ -314,7 +330,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
         })
       }
       let apply_json = fn(j : base_codec::Json) -> Result[Int, String] {
-        if self.transport_epoch != ep {
+        if self.transport_epoch != enqueue_epoch {
           return Err("transport_epoch_changed")
         }
         match self.events.apply_snapshot(j) {
@@ -339,7 +355,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
             },
             tk,
             on_exhausted_stale=Some(fn() -> Unit {
-              if self.transport_epoch == ep {
+              if self.transport_epoch == enqueue_epoch {
                 self.pending_refresh.set(key, true)
               }
             }),
@@ -362,7 +378,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
     fn(ex : effect::Exit[Int]) -> Unit {
       match ex {
         effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
-          if self.pending_refresh.get(key).is_some() && self.transport_epoch == run_ep[0] {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
             self.pending_refresh.remove(key)
             self.fetch_snapshot_k(priority, k)
             return
@@ -394,18 +410,24 @@ pub fn SyncScheduler::fetch_thread_k(
   } else {
     None
   }
-  let run_ep : Array[Int64] = [self.transport_epoch]
+  let enqueue_epoch = self.transport_epoch
   self.lane.run_k(
     key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
-      let ep = self.transport_epoch
-      run_ep[0] = ep
+      if self.transport_epoch != enqueue_epoch {
+        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+        return
+      }
       let path = "/threads/" + thread.to_string() + "/entries"
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        if self.transport_epoch != enqueue_epoch {
+          fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          return
+        }
         let req_fn = self.transport.request_k
         req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
-          if self.transport_epoch != ep {
+          if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
             return
           }
@@ -426,7 +448,7 @@ pub fn SyncScheduler::fetch_thread_k(
         })
       }
       let apply_json = fn(j : base_codec::Json) -> Result[Int, String] {
-        if self.transport_epoch != ep {
+        if self.transport_epoch != enqueue_epoch {
           return Err("transport_epoch_changed")
         }
         match self.events.apply_snapshot(j) {
@@ -451,7 +473,7 @@ pub fn SyncScheduler::fetch_thread_k(
             },
             tk,
             on_exhausted_stale=Some(fn() -> Unit {
-              if self.transport_epoch == ep {
+              if self.transport_epoch == enqueue_epoch {
                 self.pending_refresh.set(key, true)
               }
             }),
@@ -478,7 +500,7 @@ pub fn SyncScheduler::fetch_thread_k(
       }
       match ex {
         effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
-          if self.pending_refresh.get(key).is_some() && self.transport_epoch == run_ep[0] {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
             self.pending_refresh.remove(key)
             self.fetch_thread_k(thread, priority, false, k)
             return
@@ -503,20 +525,26 @@ pub fn SyncScheduler::prefetch_idle_k(
   k : (effect::Exit[Int]) -> Unit,
 ) -> Unit {
   let key = self.task_key("idle:" + thread.to_string())
-  let run_ep : Array[Int64] = [self.transport_epoch]
+  let enqueue_epoch = self.transport_epoch
   self.lane.run_k(
     key,
     effect::priority_idle(),
     fn(preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
+      if self.transport_epoch != enqueue_epoch {
+        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+        return
+      }
       if preempt.is_preempted() {
         self.idle_preempted_count += 1
         tk(effect::Exit::Failed(effect::EffectError::Custom("preempted")))
         return
       }
-      let ep = self.transport_epoch
-      run_ep[0] = ep
       let path = "/threads/" + thread.to_string() + "/entries"
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+        if self.transport_epoch != enqueue_epoch {
+          fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          return
+        }
         let req_fn = self.transport.request_k
         effect::race_first_k(
           fn(rk : (effect::Exit[Option[HttpReply]]) -> Unit) -> Unit {
@@ -538,7 +566,7 @@ pub fn SyncScheduler::prefetch_idle_k(
             })
           },
           fn(rex : effect::Exit[Option[HttpReply]]) -> Unit {
-            if self.transport_epoch != ep {
+            if self.transport_epoch != enqueue_epoch {
               fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
               return
             }
@@ -564,7 +592,7 @@ pub fn SyncScheduler::prefetch_idle_k(
         )
       }
       let apply_idle = fn(j : base_codec::Json) -> Result[Int, String] {
-        if self.transport_epoch != ep {
+        if self.transport_epoch != enqueue_epoch {
           return Err("transport_epoch_changed")
         }
         match self.events.apply_snapshot(j) {
@@ -589,7 +617,7 @@ pub fn SyncScheduler::prefetch_idle_k(
             },
             tk,
             on_exhausted_stale=Some(fn() -> Unit {
-              if self.transport_epoch == ep {
+              if self.transport_epoch == enqueue_epoch {
                 self.pending_refresh.set(key, true)
               }
             }),
@@ -612,7 +640,7 @@ pub fn SyncScheduler::prefetch_idle_k(
     fn(ex : effect::Exit[Int]) -> Unit {
       match ex {
         effect::Exit::Failed(effect::EffectError::Custom("preempted")) => {
-          if self.transport_epoch == run_ep[0] {
+          if self.transport_epoch == enqueue_epoch {
             // Re-queue behind foreground work once the lane is idle again.
             self.prefetch_idle_k(thread, k)
           } else {
@@ -621,7 +649,7 @@ pub fn SyncScheduler::prefetch_idle_k(
           }
         }
         effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
-          if self.pending_refresh.get(key).is_some() && self.transport_epoch == run_ep[0] {
+          if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
             self.pending_refresh.remove(key)
             self.prefetch_idle_k(thread, k)
             return
