@@ -510,3 +510,46 @@ test "sizes steady: a page's list given the same keys again as another array whi
   assert_true(shown > 0.0, msg="the thumb not shown as the row grows: " + found)
   assert_true(stepped.length() > 0, msg="the thumb stepping with the same keys given again: no jolt found: " + found)
 }
+
+///|
+test "sizes steady measures a list band from the rows it follows when older rows arrive" {
+  let ink = 0x336699FFL
+  let keys = @signals.signal(Array::makei(24, fn(k) { k }), same=fn(a, b) { a == b })
+  let inset = @signals.signal(0.0, same=fn(a, b) { a == b })
+  let place : @view.ListPlace[Int] = @view.ListPlace::new()
+  let t = Tester::new(fn(_) {  }, w=400.0, h=200.0, words_over_held=false)
+  t.check_looks(false)
+  set_view_app(fn(root) {
+    root.scrolls_window(
+      @view.Scroll::list(),
+      fn() { keys.get() },
+      est=40.0,
+      place~,
+      bands=(
+        fn() { [{ from: 12, upto: 13, top: inset.get(), foot: inset.get() }] },
+        fn(b, _) { b.ground(Is(ink)) |> ignore },
+      ),
+      fn(b, k) { b.height(Is(Some(40.0))).words(Is("row \{k}")) |> ignore },
+    )
+    |> ignore
+  })
+  t.draw()
+  place.bring(11)
+  steady_faults(t, 5) |> ignore
+  let band = fn() { t.drawn_rects().filter(fn(r) { r.4 == ink }).map(fn(r) { (r.1, r.3) }) }
+  let row = t.drawn_of("row 12").unwrap()
+  assert_eq(band(), [(40.0, 80.0)])
+  keys.set(Array::makei(26, fn(k) { k - 2 }))
+  let corrected = steady_faults(t, 5)
+  assert_eq(t.drawn_of("row 12"), Some(row))
+  assert_eq(band(), [(40.0, 80.0)])
+  view_event(fn() {
+    keys.set(Array::makei(28, fn(k) { k - 4 }))
+    inset.set(12.0)
+  })
+  let stepped = steady_faults(t, 5)
+  assert_eq(t.drawn_of("row 12"), Some(row))
+  assert_eq(band(), [(52.0, 80.0)])
+  assert_true(stepped.any(fn(f) { f.contains("its place in its row") }), msg=Repr(stepped).to_string())
+  assert_eq(corrected, [])
+}

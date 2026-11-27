@@ -853,7 +853,14 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         // (nor what is off the window to a side: a page slid off out of its sheet, an old view's held in it)
         left0 + nw > 0.0 &&
         left0 < self.width
-      let row_top = row_at[i]
+      // A list band draws its ground across the rows it follows. The list's scroll correction keeps those rows in place.
+      let row_top = if !words && p >= 0 && p < k && self.nodes[p].tree_rows &&
+        (tree, tree_frame_ids.get(i), tree_frame_ids.get(p)) is (Some(tr), Some(id), Some(holder)) &&
+        tr.ground_follows_placed(id, holder) {
+        row_at[p]
+      } else {
+        row_at[i]
+      }
       let row_left = if in_row[i] { col_at[i] } else { 0.0 }
       let in_row = in_row[i]
       // (words: where they stand, down and where they start across; how tall is how many lines they take, no motion's;

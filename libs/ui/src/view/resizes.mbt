@@ -147,6 +147,13 @@ pub fn View::ground_by_placed(self : View, of : View) -> View {
 }
 
 ///|
+/// Whether the positions of the children of `holder` set the ground of `id`.
+pub fn Tree::ground_follows_placed(self : Tree, id : NodeId, holder : NodeId) -> Bool {
+  self.alive_id(id) && self.alive_id(holder) &&
+  self.placed_followers.get(holder.at) is Some(followers) && followers.contains(id.at)
+}
+
+///|
 /// Node `at` placed: what draws its ground by where the boxes beside it are drawn (View::ground_by_placed, of the box
 /// that lays it out, past any slot) drawn again, its ground alone, no place of it moved (as Tree::flip_in_by's ground).
 fn Tree::placed_told(self : Tree, at : Int) -> Unit {
