@@ -3,7 +3,9 @@
 // the turn is over saying how long it took and where its steps can be read. The card is a CardKit entity, changed by
 // its id as often as needed (a message's own edits run out after a few dozen); where the app may not make those (no
 // cardkit:card:write), a card message changed in place instead. A turn for a message that did not call the bot shows
-// no card until it does more than think and read the chat; a turn that said nothing takes its card back.
+// no card until it does more than think and read the chat; a turn that said nothing takes its card back. A turn for
+// nothing a person said here (a letter, a station notice) shows none at all: Feishu leaves 「消息已撤回」 for each
+// card taken back, and a chat leading others is woken that way again and again (FB-61).
 import { type Run, StatusLine } from "../connects/status.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -20,6 +22,8 @@ export type StatusCalls = {
   send(msgType: string, content: string): Promise<string>;
   /// Whether this message called the bot (an @, a direct message, a card's answer).
   called(ts: string): boolean;
+  /// Whether a person said this message in the chat (called or not).
+  heard(ts: string): boolean;
 };
 
 /// One thread's line. `say("")` ends it.
@@ -62,7 +66,9 @@ export class FeishuStatus extends StatusLine {
       }
       this.startedAt ??= now;
       if (this.card === null) {
-        if (this.idle(status) && (this.messageTs === null || !this.calls.called(this.messageTs))) return true;
+        const ts = this.messageTs;
+        const called = ts !== null && this.calls.called(ts);
+        if (!called && (ts === null || !this.calls.heard(ts) || this.idle(status))) return true;
         this.card = await this.open(workingCard(status));
         return true;
       }

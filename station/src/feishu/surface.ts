@@ -133,6 +133,8 @@ export class FeishuSurface extends ConnectedSurface {
   private readonly directThreads: boolean;
   /// The messages that called it, the latest kept: a turn for one of them shows its status card at once.
   private called = new Set<string>();
+  /// The messages people said in its chats, the latest kept: a turn for none of them (a letter, a notice) shows no card.
+  private said = new Set<string>();
   /// Chats as Feishu says: their name, whether they are a topic group (each topic its own conversation), a direct one.
   private chats = new Map<string, { name: string | null; topics: boolean; p2p: boolean }>();
   /// The chat a person was last heard in: where their name is looked up when the contacts API will not say it.
@@ -308,12 +310,19 @@ export class FeishuSurface extends ConnectedSurface {
     if (this.called.size > 500) this.called.delete(this.called.keys().next().value!);
   }
 
+  private wasSaid(ts: string) {
+    this.said.add(ts);
+    // The oldest go once there are many: a turn still working for one of those shows no card.
+    if (this.said.size > 500) this.said.delete(this.said.keys().next().value!);
+  }
+
   /// Which thread a message is in (「会话怎么分」): a topic group's topic is its own; in thread mode a
   /// group's thread is, by its first message (one that @s the bot outside a thread begins one, a reply quoting another
   /// too), and so a direct chat's with its threads on (each message there calls the bot); anything else said in
   /// the chat is the chat's conversation now, begun by the first message that @s the bot (or a new one asked for).
   private async heard(m: FeishuMessage, handler: Handler) {
     this.heardIn.set(m.user, m.chat);
+    this.wasSaid(m.id);
     if (m.addressed) this.wasCalled(m.id);
     const kept = this.threads.taking(this.connect, m.chat, m.id, m.at);
     let threadTs: string;
@@ -721,6 +730,6 @@ export class FeishuSurface extends ConnectedSurface {
   }
 
   protected statusLine(thread: ThreadRef) {
-    return new FeishuStatus({ api: (method, path, body) => this.client.api(method, path, body), send: (type, content) => this.send(thread, type, content), called: (ts) => this.called.has(ts) }, this.run);
+    return new FeishuStatus({ api: (method, path, body) => this.client.api(method, path, body), send: (type, content) => this.send(thread, type, content), called: (ts) => this.called.has(ts), heard: (ts) => this.said.has(ts) }, this.run);
   }
 }
