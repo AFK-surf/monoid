@@ -458,6 +458,47 @@ test("stationSearch_wordsKind_tracks_each_station_independently_and_skips_stale_
   assert.deepEqual(host.takeEmitted(), [[1, value(4, { items: ["hit-a"] })]]);
 });
 
+test("workspaces_lasting_kept_survives_workspace_switch_but_clears_on_global_and_workspace_auth_boundaries", async () => {
+  const { host, store, pass } = setup();
+  const wsTopic: Topic = { topic: "workspaces" };
+  const chatsA: Topic = { topic: "chats", scope: "wsA", mine: false };
+  const chatsB: Topic = { topic: "chats", scope: "wsB", mine: false };
+  store.registerClient(1, 1);
+  store.authGen.syncAccounts(["acc-1"]);
+  store.authGen.syncWorkspace("wsA", "owner:acc-1:role:owner");
+  store.authGen.syncWorkspace("wsB", "owner:acc-1:role:member");
+
+  store.subscribe(1, 1, wsTopic);
+  store.set(wsTopic, { ok: { workspaces: [{ id: "wsA" }, { id: "wsB" }] } });
+  await pass(COALESCE_MS * 2);
+  store.unsubscribe(1, 1, true);
+  assert.ok(store.keptValueOf(1, wsTopic) !== undefined, "workspaces must be retained in #kept");
+
+  // Routine workspace switch (wsA -> wsB) must NOT clear workspaces #kept.
+  store.subscribe(1, 2, chatsA);
+  store.set(chatsA, { ok: { days: [] } });
+  await pass(COALESCE_MS * 2);
+  store.unsubscribe(1, 2, true);
+  store.subscribe(1, 3, chatsB);
+  store.set(chatsB, { ok: { days: [] } });
+  await pass(COALESCE_MS * 2);
+  assert.ok(store.keptValueOf(1, wsTopic) !== undefined, "routine workspace switch must not clear workspaces #kept");
+
+  // Workspace permission change must clear workspaces #kept synchronously.
+  store.authGen.syncWorkspace("wsB", "owner:acc-1:role:removed");
+  assert.equal(store.keptValueOf(1, wsTopic), undefined, "workspace auth boundary must clear workspaces #kept");
+
+  // Re-retain workspaces, then switch account (Global boundary): must clear workspaces #kept synchronously.
+  store.subscribe(1, 4, wsTopic);
+  store.set(wsTopic, { ok: { workspaces: [{ id: "wsA" }] } });
+  await pass(COALESCE_MS * 2);
+  store.unsubscribe(1, 4, true);
+  assert.ok(store.keptValueOf(1, wsTopic) !== undefined);
+  store.authGen.syncAccounts(["acc-2"]);
+  assert.equal(store.keptValueOf(1, wsTopic), undefined, "global account switch must clear workspaces #kept");
+  host.takeEmitted();
+});
+
 test("topics_changed_together_go_out_together_in_order", async () => {
   const { host, store, pass } = setup();
   const session: Topic = { topic: "session", station: "ws/st", key: "k" };

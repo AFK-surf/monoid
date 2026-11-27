@@ -19,6 +19,13 @@ pub impl Eq for Read with equal(a, b) {
 }
 
 ///|
+/// Whether this read is a retained/unconfirmed value (`version < 0`: `LastSaid` or `Client::show_kept`)
+/// rather than a fresh value confirmed by the core (`version >= 0`).
+pub fn Read::is_retained(self : Read) -> Bool {
+  self.version < 0
+}
+
+///|
 /// What the pages need of the app around them.
 pub(all) struct Core {
   /// the topic `name` with its params (the core's `subscribe`)

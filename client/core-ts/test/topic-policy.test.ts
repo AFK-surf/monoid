@@ -51,6 +51,7 @@ const EXPECTED_LASTING = [
   "terminals",
   "usage",
   "workspace",
+  "workspaces",
 ];
 
 const EXPECTED_HOME_LASTING = ["changelog", "chats", "longJobs"];
@@ -64,14 +65,30 @@ const EXPECTED_VIEWS_KEPT: Record<string, number> = {
   connect: 16,
   connectCandidates: 8,
   drivePlace: 24,
+  fonts: 4,
+  otherPresets: 8,
   pick: 12,
+  presets: 8,
   profile: 16,
+  profilesOverview: 4,
   project: 16,
   projects: 8,
   railCard: 16,
+  releases: 4,
   station: 16,
   tags: 8,
 };
+
+const EXPECTED_B2B_POLICY_GATED = [
+  "chatFeedback",
+  "fonts",
+  "jobLog",
+  "otherPresets",
+  "presets",
+  "profilesOverview",
+  "releases",
+  "workspaces",
+];
 
 describe("topic-policy SSOT", () => {
   it("matches TOPICS bidirectionally across all 125 protocol topics", () => {
@@ -117,21 +134,25 @@ describe("topic-policy SSOT", () => {
     assert.equal(sensitive.length, 21);
     assert.deepEqual(sensitive, EXPECTED_SENSITIVE);
     for (const name of EXPECTED_SENSITIVE) {
-      const ev = evaluateTopicPolicy(name, { workspace: "w1", scope: "w1" });
-      assert.equal(ev.retention, "sensitive", `${name} must be sensitive`);
-      assert.equal(ev.sensitive, true);
-      assert.equal(ev.keep, 0);
-      assert.equal(ev.keepBeforeViews, 0);
-      assert.equal(ev.lasting, false);
-      assert.equal(ev.showKept, false);
+      for (const topicPolicy of [true, false]) {
+        const ev = evaluateTopicPolicy(name, { workspace: "w1", scope: "w1" }, { topicPolicy });
+        assert.equal(ev.retention, "sensitive", `${name} must be sensitive (topicPolicy=${topicPolicy})`);
+        assert.equal(ev.sensitive, true);
+        assert.equal(ev.keep, 0);
+        assert.equal(ev.keepBeforeViews, 0);
+        assert.equal(ev.lasting, false);
+        assert.equal(ev.showKept, false);
+      }
     }
 
     for (const part of ["machineLogins", "logins"]) {
-      const ev = evaluateTopicPolicy("stationPart", { scope: "w1", station: "w1/s1", part });
-      assert.equal(ev.retention, "sensitive");
-      assert.equal(ev.sensitive, true);
-      assert.equal(ev.keep, 0);
-      assert.equal(ev.showKept, false);
+      for (const topicPolicy of [true, false]) {
+        const ev = evaluateTopicPolicy("stationPart", { scope: "w1", station: "w1/s1", part }, { topicPolicy });
+        assert.equal(ev.retention, "sensitive");
+        assert.equal(ev.sensitive, true);
+        assert.equal(ev.keep, 0);
+        assert.equal(ev.showKept, false);
+      }
     }
     for (const part of ["archiving", "automaticDecisions", "unknownPart", ""]) {
       const ev = evaluateTopicPolicy("stationPart", { scope: "w1", station: "w1/s1", part });
@@ -264,6 +285,54 @@ describe("topic-policy SSOT", () => {
       const withEmptyQuery = evaluateTopicPolicy(name as TopicName, { scope: "w1", query: "" });
       assert.equal(withEmptyQuery.keep, cap);
       assert.equal(withEmptyQuery.showKept, true);
+    }
+  });
+
+  it("gates PR-B2b upgraded topics under MBUI_TOPIC_POLICY (on/off) while preserving lazyWhenIdle and delta rules", () => {
+    const gated = [...topicsWhere((p) => p.topicPolicy === true)].sort();
+    assert.deepEqual(gated, EXPECTED_B2B_POLICY_GATED);
+
+    // When MBUI_TOPIC_POLICY is OFF, all 8 PR-B2b topics downgrade to live (keep=0, showKept=false, lasting=false).
+    for (const name of EXPECTED_B2B_POLICY_GATED) {
+      const off = evaluateTopicPolicy(name, { scope: "w1" }, { topicPolicy: false });
+      assert.equal(off.retention, "live", `${name} must be live when topicPolicy=false`);
+      assert.equal(off.sensitive, false);
+      assert.equal(off.lasting, false);
+      assert.equal(off.keep, 0);
+      assert.equal(off.keepBeforeViews, 0);
+      assert.equal(off.showKept, false);
+    }
+    // profilesOverview retains lazyWhenIdle=true in both switch states.
+    assert.equal(evaluateTopicPolicy("profilesOverview", { scope: "w1" }, { topicPolicy: false }).lazyWhenIdle, true);
+    assert.equal(evaluateTopicPolicy("profilesOverview", { scope: "w1" }, { topicPolicy: true }).lazyWhenIdle, true);
+
+    // When MBUI_TOPIC_POLICY is ON (default):
+    const ws = evaluateTopicPolicy("workspaces", {});
+    assert.equal(ws.retention, "swr");
+    assert.equal(ws.lasting, true);
+    assert.equal(ws.keep, LASTING_KEPT);
+    assert.equal(ws.showKept, false);
+
+    for (const name of ["jobLog", "chatFeedback"] as const) {
+      const ev = evaluateTopicPolicy(name, { station: "w1/s1", id: "j1" });
+      assert.equal(ev.retention, "delta");
+      assert.equal(ev.keep, 8);
+      assert.equal(ev.showKept, false);
+      assert.equal(ev.lasting, false);
+    }
+
+    for (const [name, cap] of [
+      ["profilesOverview", 4],
+      ["presets", 8],
+      ["otherPresets", 8],
+      ["releases", 4],
+      ["fonts", 4],
+    ] as const) {
+      const ev = evaluateTopicPolicy(name, { scope: "w1" });
+      assert.equal(ev.retention, "swr");
+      assert.equal(ev.keep, cap);
+      assert.equal(ev.showKept, true);
+      assert.equal(ev.lasting, false);
     }
   });
 });

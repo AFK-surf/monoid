@@ -948,6 +948,12 @@ fn all_screens_v(core : Core, address : String) -> Json? {
 }
 
 ///|
+/// Whether `screens` is currently showing a retained/unconfirmed value (`version < 0`).
+fn all_screens_retained(core : Core, address : String) -> Bool {
+  (core.topic)("screens", { "station": str(address) }).get().is_retained()
+}
+
+///|
 /// How many 屏幕、浏览器与终端 counts: its screens, the agents' tabs and its terminals.
 fn all_screens_count(core : Core, address : String, s : () -> Json?) -> Int {
   let v = all_screens_v(core, address)
@@ -1033,7 +1039,7 @@ fn all_screens_row_node(row : @view.View, core : Core, here : () -> Here, s : ()
             p,
             fn() { text(sv(), "title") },
             fn() {
-              if !own {
+              if !own && !@signals.untracked(fn() { all_screens_retained(core, address) }) {
                 @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
               }
             },
@@ -1052,7 +1058,11 @@ fn all_screens_row_node(row : @view.View, core : Core, here : () -> Here, s : ()
       @sf.link_row_node(
         row,
         fn() { @sf.t("web-pages.screen.openBrowserRow") },
-        fn() { @settings.open_station_browser(core, address) },
+        fn() {
+          if !@signals.untracked(fn() { all_screens_retained(core, address) }) {
+            @settings.open_station_browser(core, address)
+          }
+        },
         note=fn() { browser_tabs_note(user_tabs().length()) },
         lead=LeadLine(fn(l) { st_mark_node(l, fn() { "web" }) }),
       )
@@ -1105,7 +1115,11 @@ fn station_user_pages_node(b : @view.View, core : Core, here : () -> Here, s : (
       @sf.link_row_node(
         g,
         fn() { @sf.t("web-pages.screen.openBrowserRow") },
-        fn() { @settings.open_station_browser(core, address) },
+        fn() {
+          if !@signals.untracked(fn() { all_screens_retained(core, address) }) {
+            @settings.open_station_browser(core, address)
+          }
+        },
         note=fn() { browser_tabs_note(tabs().length()) },
         lead=LeadLine(fn(l) { st_mark_node(l, fn() { "web" }) }),
       )
@@ -1140,7 +1154,9 @@ fn station_browser_row_node(row : @view.View, core : Core, here : () -> Here, ad
         p,
         fn() { text(sv(), "title") },
         fn() {
-          @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: true }))
+          if !@signals.untracked(fn() { all_screens_retained(core, address) }) {
+            @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: true }))
+          }
         },
         note=fn() { text(sv(), "line") },
         lead=LeadLine(fn(l) { st_mark_node(l, fn() { screen_row_icon(sv()) }) }),
@@ -1151,8 +1167,13 @@ fn station_browser_row_node(row : @view.View, core : Core, here : () -> Here, ad
             @sf.row_end_button_node(
               e,
               fn() { @sf.t("web-pages.screen.closeTab") },
-              fn() { @settings.act(core, what, "screen.close", obj([("station", str(address)), ("screen", str(id))])) },
+              fn() {
+                if !@signals.untracked(fn() { all_screens_retained(core, address) }) {
+                  @settings.act(core, what, "screen.close", obj([("station", str(address)), ("screen", str(id))]))
+                }
+              },
               busy=fn() { is_doing(core, ["screen.close"], on) },
+              disabled=fn() { all_screens_retained(core, address) },
             )
             |> ignore
           })
@@ -1190,7 +1211,7 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
             p,
             fn() { text(sv(), "title") },
             fn() {
-              if !own {
+              if !own && !@signals.untracked(fn() { all_screens_retained(core, address) }) {
                 @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
               }
             },
@@ -1218,6 +1239,9 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
 fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : String, screen : () -> Json?) -> Unit {
   let id = text(@signals.untracked(screen), "id")
   let asked = fn(name : String, what : String, params : Array[(String, Json)]) {
+    if @signals.untracked(fn() { all_screens_retained(core, address) }) {
+      return
+    }
     @settings.act(core, what, name, obj([("station", str(address)), ("screen", str(id)), ("account", str(@signals.untracked(here).sub)), ..params]))
   }
   g.each(fn() { items(screen(), "views") }, fn(v) { text(Some(v), "id") }, fn(row, vs) {
@@ -1241,15 +1265,25 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
           @sf.line_end_node(e, fn(l) {
             l.show(fn() { flag(vv(), "control") }, fn(w) {
               let what = @sf.t("web-pages.screen.viewWatchOnly")
-              @sf.button_node(w, fn() { what }, fn() { asked("screen.watchOnly", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
-                is_doing(core, ["screen.watchOnly"], on)
-              })
+              @sf.button_node(
+                w,
+                fn() { what },
+                fn() { asked("screen.watchOnly", what, [("view", str(view))]) },
+                tone=Ghost,
+                busy=fn() { is_doing(core, ["screen.watchOnly"], on) },
+                disabled=fn() { all_screens_retained(core, address) },
+              )
               |> ignore
             })
             let what = @sf.t("web-pages.screen.viewEnd")
-            @sf.button_node(l, fn() { what }, fn() { asked("screen.endView", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
-              is_doing(core, ["screen.endView"], on)
-            })
+            @sf.button_node(
+              l,
+              fn() { what },
+              fn() { asked("screen.endView", what, [("view", str(view))]) },
+              tone=Ghost,
+              busy=fn() { is_doing(core, ["screen.endView"], on) },
+              disabled=fn() { all_screens_retained(core, address) },
+            )
             |> ignore
           })
         },
@@ -1260,9 +1294,14 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
     let what = @sf.t("web-pages.screen.viewsEndAll")
     @sf.link_row_node(r, fn() { "" }, fn() {  }, goes=false, tail=fn(e) {
       @sf.line_end_node(e, fn(l) {
-        @sf.button_node(l, fn() { what }, fn() { asked("screen.endViews", what, []) }, tone=Ghost, busy=fn() {
-          is_doing(core, ["screen.endViews"], [("screen", id)])
-        })
+        @sf.button_node(
+          l,
+          fn() { what },
+          fn() { asked("screen.endViews", what, []) },
+          tone=Ghost,
+          busy=fn() { is_doing(core, ["screen.endViews"], [("screen", id)]) },
+          disabled=fn() { all_screens_retained(core, address) },
+        )
         |> ignore
       })
     })

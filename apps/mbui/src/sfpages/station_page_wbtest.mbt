@@ -1728,3 +1728,113 @@ test "Settings MCP tab: lists stations, toggles shared/enabled, reconnects, dele
     assert_eq(t_ro.audit(), [], msg="ro audit: \{w}")
   }
 }
+
+///|
+test "screens and terminals kept state (version < 0) show read-only list but disable actions until fresh (version >= 0)" {
+  let prev_terminals_here = terminals_here_kept.val
+  terminals_here_kept.val = Some(true)
+  let screens_ver : @signals.Signal[Int] = @signals.signal(-2)
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-2)
+  let calls : Array[(String, Json)] = []
+  let screens_topic : Json = {
+    "known": true,
+    "outdated": false,
+    "browser": true,
+    "control": true,
+    "screens": [
+      {
+        "id": "display:1",
+        "kind": "display",
+        "title": "Willow 的屏幕",
+        "width": 1920.0,
+        "height": 1080.0,
+        "line": "1920 × 1080",
+        "link": "",
+      },
+      {
+        "id": "browser:t1",
+        "kind": "browser",
+        "closable": true,
+        "title": "Sign in · Anthropic",
+        "width": 1280.0,
+        "height": 800.0,
+        "line": "浏览器标签页 · 1280 × 800",
+        "link": "",
+      },
+    ],
+  }
+  let terms_topic : Json = {
+    "known": true,
+    "outdated": false,
+    "open": true,
+    "terminals": [
+      {
+        "id": "term-1",
+        "cwd": "/work/proj",
+        "ended": false,
+        "looking": [],
+      },
+    ],
+  }
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let tp = base.topic(name, params).get().snapshot()
+      if name == "screens" {
+        { value: Some(screens_topic), error: None, version: screens_ver.get() }
+      } else if name == "terminals" {
+        { value: Some(terms_topic), error: None, version: terms_ver.get() }
+      } else {
+        tp
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  }
+  let core = @sfbase.settings_core(src, rig_workspace)
+  let here = fn() { @settings.here_of(core, rig_workspace.id, rig_workspace.name) }
+  let s = fn() { @settings.station_of(core, here(), "ws1/st1") }
+  let t = station_part_tester(fn(p) {
+    p.gap(Is(20.0)) |> ignore
+    station_all_screens_node(p, core, here, s)
+  }, w=420.0, h=900.0, platform=0)
+
+  // Retained (version = -2): read-only list items are still rendered (no bones/empty list).
+  assert_true(t.find("Willow 的屏幕") is Some(_))
+  assert_true(t.find("Sign in · Anthropic") is Some(_))
+  assert_true(t.find("打开浏览器") is Some(_))
+  assert_true(t.find("proj") is Some(_))
+  assert_true(t.find("打开终端") is Some(_))
+
+  let nav_before = @sfbase.app.nav.pages().length()
+  // Tapping screen, browser, closeTab, terminal, or openTerminal while retained triggers 0 calls and 0 navigation.
+  t.tap_text("关闭标签页")
+  t.draw()
+  t.tap_text("打开浏览器")
+  t.draw()
+  t.tap_text("Willow 的屏幕")
+  t.draw()
+  t.tap_text("proj")
+  t.draw()
+  t.tap_text("打开终端")
+  t.draw()
+  assert_eq(calls.length(), 0)
+  assert_eq(@sfbase.app.nav.pages().length(), nav_before)
+
+  // Fresh Core answers arrive (version >= 0): interactive actions recover immediately.
+  screens_ver.set(1)
+  terms_ver.set(1)
+  t.draw()
+
+  t.tap_text("关闭标签页")
+  t.draw()
+  assert_true(calls.iter().any(fn(c) { c.0 == "screen.close" }))
+
+  t.tap_text("打开终端")
+  t.draw()
+  assert_true(@sfbase.app.nav.pages().length() > nav_before)
+  terminals_here_kept.val = prev_terminals_here
+}

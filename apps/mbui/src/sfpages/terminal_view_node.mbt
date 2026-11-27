@@ -695,7 +695,11 @@ pub fn terminal_pane_node(
     @sfbase.toast_later(@sf.t("web-pages.remote.linkCopied"))
   }
   let open_url_in_station_browser = fn(url : String) {
-    let scs = items(@signals.untracked(fn() { screens_topic.get().value }), "screens")
+    let sr = @signals.untracked(fn() { screens_topic.get() })
+    if sr.is_retained() {
+      return
+    }
+    let scs = items(sr.value, "screens")
     let listed_ids = scs.filter(fn(sc) {
       flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_")
     }).map(fn(sc) { text(Some(sc), "id") })
@@ -895,7 +899,9 @@ pub fn terminal_pane_node(
       @sf.t("web-pages.screen.panel"),
       fn(p, done) {
         let terms = fn() { items(listed.get().value, "terminals") }
+        let terms_retained = fn() { listed.get().is_retained() }
         let scs = fn() { items(screens_topic.get().value, "screens") }
+        let screens_retained = fn() { screens_topic.get().is_retained() }
         let can_browser = fn() { flag(screens_topic.get().value, "browser") && flag(screens_topic.get().value, "control") }
         let other_scs = fn() { scs().filter(fn(sc) { text(Some(sc), "kind") != "browser" }) }
         let user_browser_ids = fn() {
@@ -912,6 +918,9 @@ pub fn terminal_pane_node(
                 row,
                 fn() { text(sv(), "title") },
                 fn() {
+                  if @signals.untracked(screens_retained) {
+                    return
+                  }
                   done()
                   switch_page(Screen({ station: at.station, screen: sid, title: stitle, until_gone: false }))
                 },
@@ -923,6 +932,9 @@ pub fn terminal_pane_node(
                 br,
                 fn() { @sf.t("web-pages.remote.openBrowser") },
                 fn() {
+                  if @signals.untracked(screens_retained) {
+                    return
+                  }
                   done()
                   let ids = @signals.untracked(user_browser_ids)
                   let target = match @settings.browser_tab_to_open(at.station, ids) {
@@ -942,6 +954,9 @@ pub fn terminal_pane_node(
                 row,
                 fn() { terminal_title(tv()) },
                 fn() {
+                  if @signals.untracked(terms_retained) {
+                    return
+                  }
                   done()
                   if !@signals.untracked(here) {
                     go_terminal(tid, !flag(listed.untracked().value, "open"), text(@signals.untracked(tv), "cwd"))
@@ -952,6 +967,9 @@ pub fn terminal_pane_node(
               )
             })
             let open_new_browser = fn() {
+              if @signals.untracked(screens_retained) {
+                return
+              }
               let ids = @signals.untracked(user_browser_ids)
               let target = @settings.new_browser_tab(
                 src.call,
@@ -968,7 +986,11 @@ pub fn terminal_pane_node(
               may,
               can_browser,
               done,
-              fn() { go_terminal("new", false, @signals.untracked(cwd)) },
+              fn() {
+                if !@signals.untracked(terms_retained) {
+                  go_terminal("new", false, @signals.untracked(cwd))
+                }
+              },
               open_new_browser,
             )
           })

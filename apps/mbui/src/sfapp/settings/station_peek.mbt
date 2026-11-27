@@ -186,7 +186,11 @@ pub fn new_browser_tab(
 /// at last, else its newest, else a new one; never a question first.
 pub fn open_station_browser(core : Core, address : String, from? : @sf.Anchor = Unanchored) -> Unit {
   ignore(from)
-  let listed = items((core.topic)("screens", { "station": str(address) }).get().value, "screens").filter(fn(sc) {
+  let screens_read = (core.topic)("screens", { "station": str(address) }).get()
+  if screens_read.is_retained() {
+    return
+  }
+  let listed = items(screens_read.value, "screens").filter(fn(sc) {
     flag(Some(sc), "userTab") || text(Some(sc), "id").has_prefix("browser:u_")
   }).map(fn(sc) { text(Some(sc), "id") })
   let screen = match browser_tab_to_open(address, listed) {
@@ -216,7 +220,13 @@ pub fn browser_tab_to_open(address : String, listed : Array[String]) -> String? 
 ///|
 /// Its screens as its card's 屏幕 offers them (`screens`, the core's for it): its browser (a person's own pages there, one
 /// item opening it), agent pages, and physical/simulator screens; none, why (the core's note) or that it has none, not to be chosen.
-fn peek_screen_items(core : Core, address : String, screens : Json?, close : () -> Unit) -> Array[@sf.MenuItem?] {
+fn peek_screen_items(
+  core : Core,
+  address : String,
+  screens : Json?,
+  close : () -> Unit,
+  screens_retained? : Bool = false,
+) -> Array[@sf.MenuItem?] {
   let screen_items : Array[@sf.MenuItem?] = []
   let user_tabs : Array[Json] = []
   let agent_tabs : Array[Json] = []
@@ -244,7 +254,10 @@ fn peek_screen_items(core : Core, address : String, screens : Json?, close : () 
     for screen in other_screens {
       let sc = Some(screen)
       let icon = if text(sc, "kind") == "simulator" { "phone" } else { "monitor" }
-      screen_items.push(Some(@sf.menu_item_of(text(sc, "title"), icon~, fn() {
+      screen_items.push(Some(@sf.menu_item_of(text(sc, "title"), icon~, disabled=screens_retained, fn() {
+        if screens_retained {
+          return
+        }
         close()
         (core.open_screen)(address, text(sc, "id"))
       })))
@@ -259,20 +272,28 @@ fn peek_screen_items(core : Core, address : String, screens : Json?, close : () 
     }
     for screen in agent_tabs {
       let sc = Some(screen)
-      screen_items.push(Some(@sf.menu_item_of(text(sc, "title"), icon="web", fn() {
+      screen_items.push(Some(@sf.menu_item_of(text(sc, "title"), icon="web", disabled=screens_retained, fn() {
+        if screens_retained {
+          return
+        }
         close()
         (core.open_screen)(address, text(sc, "id"))
       })))
     }
     if has_user {
-      screen_items.push(Some(@sf.menu_item_of(tr("web-pages.screen.openBrowserRow"), icon="web", fn() {
+      screen_items.push(Some(@sf.menu_item_of(tr("web-pages.screen.openBrowserRow"), icon="web", disabled=screens_retained, fn() {
+        if screens_retained {
+          return
+        }
         close()
         open_station_browser(core, address)
       })))
     }
   }
   if (core.terminals_on)() {
-    let terms = (core.topic)("terminals", { "station": str(address) }).get().value
+    let terms_read = (core.topic)("terminals", { "station": str(address) }).get()
+    let terms = terms_read.value
+    let terms_retained = terms_read.is_retained()
     if flag(terms, "known") && !flag(terms, "outdated") {
       let open_terms = items(terms, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
       let can_term = flag(terms, "open")
@@ -286,13 +307,19 @@ fn peek_screen_items(core : Core, address : String, screens : Json?, close : () 
           let cwd = text(tv, "cwd")
           let parts = cwd.split("/").collect().filter(fn(p) { p.length() > 0 })
           let label = match parts.last() { Some(last) => last.to_owned(); None => if cwd == "" { tr("web-pages.remote.openTerminal") } else { cwd } }
-          screen_items.push(Some(@sf.menu_item_of(label, icon="terminal", fn() {
+          screen_items.push(Some(@sf.menu_item_of(label, icon="terminal", disabled=terms_retained, fn() {
+            if terms_retained {
+              return
+            }
             close()
             (open_terminal_of.val)(address, tid, cwd)
           })))
         }
         if can_term {
-          screen_items.push(Some(@sf.menu_item_of(tr("web-pages.remote.openTerminal"), icon="terminal", fn() {
+          screen_items.push(Some(@sf.menu_item_of(tr("web-pages.remote.openTerminal"), icon="terminal", disabled=terms_retained, fn() {
+            if terms_retained {
+              return
+            }
             close()
             (open_terminal_of.val)(address, "new", "")
           })))
@@ -409,7 +436,8 @@ fn station_peek_node(v : @view.View, core : Core, address : String, close : () -
     // its foot: concentric with its foot corners)
     @sf.dialog_foot_rows_node(b, peek_rows, fn(r) {
       @sf.submenu_row_node(r, fn() { tr("android-misc.screen.section") }, fn() {
-        peek_screen_items(core, address, screens.get().value, close)
+        let sr = screens.get()
+        peek_screen_items(core, address, sr.value, close, screens_retained=sr.is_retained())
       })
       r.show(fn() { field(field(s(), "overview"), "drive") is Some(Object(_)) }, fn(d) {
         @sf.submenu_row_node(d, fn() { tr("android-misc.drive.title") }, fn() {

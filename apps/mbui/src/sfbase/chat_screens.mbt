@@ -103,6 +103,7 @@ fn chat_remote_menu_show(
   terminals_val : Json?,
   from : @sf.Beside,
   along : @ui.Along,
+  terms_retained? : Bool = false,
 ) -> Unit {
   let term_ok = can_terminal && (terminals_capable_fn.val)()
   if !can_browser && !term_ok {
@@ -176,8 +177,10 @@ fn chat_remote_menu_show(
       items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openTerminal"), heading=true, fn() { })))
     }
     if term_ok {
-      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", fn() {
-        open_terminal(r.station, "new", "", r.session)
+      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", disabled=terms_retained, fn() {
+        if !terms_retained {
+          open_terminal(r.station, "new", "", r.session)
+        }
       })))
     }
     for t in open_terms {
@@ -185,8 +188,10 @@ fn chat_remote_menu_show(
       let tid = text(tv, "id")
       let cwd = text(tv, "cwd")
       let label = chat_terminal_short(cwd) + (if text(tv, "chat") == r.session && r.session != "" { " · " + r.title } else { "" })
-      items_out.push(Some(@sf.menu_item_of(label, icon="terminal", fn() {
-        open_terminal(r.station, tid, cwd, text(tv, "chat"))
+      items_out.push(Some(@sf.menu_item_of(label, icon="terminal", disabled=terms_retained, fn() {
+        if !terms_retained {
+          open_terminal(r.station, tid, cwd, text(tv, "chat"))
+        }
       })))
     }
   }
@@ -227,9 +232,9 @@ pub fn chat_remote_open(
   press_wait(
     fn() { opens_answered(sub.get()) },
     fn() {
-      let val = @signals.untracked(fn() { sub.get().value })
+      let st = @signals.untracked(fn() { sub.get() })
       let_go(src, scope)
-      chat_remote_menu_show(Some(src), r, v.screens, v.can_browser(), true, val, from, along)
+      chat_remote_menu_show(Some(src), r, v.screens, v.can_browser(), true, st.value, from, along, terms_retained=st.is_retained())
     },
     let_go=fn() { let_go(src, scope) },
     most=@sf.open_hold_ms,

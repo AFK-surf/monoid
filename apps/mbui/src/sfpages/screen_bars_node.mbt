@@ -1403,8 +1403,12 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
   @sfbase.press_wait(
     fn() { @sfbase.opens_answered(sub_t.get()) && @sfbase.opens_answered(sub_s.get()) },
     fn() {
-      let tval = @signals.untracked(fn() { sub_t.get().value })
-      let sval = @signals.untracked(fn() { sub_s.get().value })
+      let ts = @signals.untracked(fn() { sub_t.get() })
+      let ss = @signals.untracked(fn() { sub_s.get() })
+      let tval = ts.value
+      let sval = ss.value
+      let t_retained = ts.is_retained()
+      let s_retained = ss.is_retained()
       @sfbase.let_go(s.src, scope)
       let go_page = fn(next : @sfbase.Page) {
         if pg.lone {
@@ -1426,16 +1430,16 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
         let title = text(Some(sc), "title")
         let here = sid == s.screen
         let icon = if here { "check" } else if text(Some(sc), "kind") == "simulator" { "phone" } else { "monitor" }
-        menu_items.push(Some(@sf.menu_item_of(title, icon~, fn() {
-          if !here {
+        menu_items.push(Some(@sf.menu_item_of(title, icon~, disabled=s_retained, fn() {
+          if !here && !s_retained {
             go_page(Screen({ station: s.station, screen: sid, title, until_gone: false }))
           }
         })))
       }
       if !user_ids.is_empty() || can_browse {
         let in_browser = s.screen.has_prefix("browser:") || text(s.state, "kind") == "browser"
-        menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, fn() {
-          if !s.is_active_principal() {
+        menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openBrowser"), icon=if in_browser { "check" } else { "web" }, disabled=s_retained, fn() {
+          if s_retained || !s.is_active_principal() {
             return
           }
           if !in_browser {
@@ -1456,8 +1460,10 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           let tv = Some(t)
           let tid = text(tv, "id")
           let cwd = text(tv, "cwd")
-          menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", fn() {
-            go_page(Terminal({ station: s.station, terminal: tid, watch: !can_term, cwd }))
+          menu_items.push(Some(@sf.menu_item_of(terminal_title(tv), icon="terminal", disabled=t_retained, fn() {
+            if !t_retained {
+              go_page(Terminal({ station: s.station, terminal: tid, watch: !can_term, cwd }))
+            }
           })))
         }
       }
@@ -1466,10 +1472,12 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           menu_items.push(None)
         }
         let open_new_terminal = fn() {
-          go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
+          if !t_retained {
+            go_page(Terminal({ station: s.station, terminal: "new", watch: false, cwd: "" }))
+          }
         }
         let open_new_browser = fn() {
-          if !s.is_active_principal() {
+          if s_retained || !s.is_active_principal() {
             return
           }
           let target = @settings.new_browser_tab(
@@ -1483,11 +1491,11 @@ fn station_sessions_open(pg : ScreenPage, from : @view.View) -> Unit {
           go_page(Screen({ station: s.station, screen: target, title: "", until_gone: false }))
         }
         if can_term && can_browse {
-          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.newSession"), icon="plus", further=true, fn() {
+          menu_items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.newSession"), icon="plus", further=true, disabled=t_retained && s_retained, fn() {
             @sf.menu(
               [
-                Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", open_new_terminal)),
-                Some(@sf.menu_item_of(@sf.t("web-pages.remote.newBrowser"), icon="web", open_new_browser)),
+                Some(@sf.menu_item_of(@sf.t("web-pages.terminal.new"), icon="terminal", disabled=t_retained, open_new_terminal)),
+                Some(@sf.menu_item_of(@sf.t("web-pages.remote.newBrowser"), icon="web", disabled=s_retained, open_new_browser)),
               ],
               from=@sf.Beside::Node(from),
               title=@sf.t("web-pages.remote.newSession"),

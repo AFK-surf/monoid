@@ -45,6 +45,13 @@ pub fn TopicState::kept(self : TopicState) -> Bool {
 }
 
 ///|
+/// Whether the topic state is a retained/unconfirmed value (`LastSaid` or `Client::show_kept`, `version < 0`)
+/// rather than a fresh answer confirmed by the core (`version >= 0`).
+pub fn TopicState::is_retained(self : TopicState) -> Bool {
+  self.kept() || self.version < 0
+}
+
+///|
 /// A legacy topic read leaves by name; an owned read releases only the supplied, independently owned reader.
 pub(all) enum TopicLeave {
   Legacy
@@ -345,7 +352,7 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
     }
   }
   // (a view's own source reads through the one it is of, which keeps them: topic_scope none)
-  if src.topic_scope is None && !topic_policy_sensitive(name, Json::object(params)) && topic_policy_lasting(name, Json::object(params)) && (src.reads_ahead)() {
+  if src.topic_scope is None && !topic_policy_sensitive(name, Json::object(params)) && topic_policy_lasting_by(name, Json::object(params), (topic_policy_enabled.val)()) && (src.reads_ahead)() {
     let key = topic_key(name, params)
     match (topic.value, topic.error) {
       (Some(value), _) => last_put(src, name, params, key, value)
@@ -362,6 +369,13 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
   }
   { value: topic.value, error: topic.error, version: topic.version, waiting }
 }
+
+///|
+/// Whether `MBUI_TOPIC_POLICY` (PR-B2b extended read-only/delta retention) is enabled for this run.
+/// Production (`stillfail`) keeps it `true`; `sfreplay` wires it to `@sfcore.trace_switch("MBUI_TOPIC_POLICY")`.
+/// Never gates the unconditional `sensitive` security ceiling.
+// kept across runs: wired once by host/replay init
+pub let topic_policy_enabled : Ref[() -> Bool] = Ref(fn() { true })
 
 ///|
 // kept across runs: a value (nothing of it changes)

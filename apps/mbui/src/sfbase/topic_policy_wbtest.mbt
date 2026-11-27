@@ -36,10 +36,10 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
   let with_empty_query = Json::object({ "scope": Json::string("w1"), "query": Json::string("") })
 
   let expected_lasting : Array[String] = [
-    "workspace", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "usage",
+    "workspace", "workspaces", "stations", "stationNet", "screens", "terminals", "profiles", "connects", "usage",
     "archive", "chats", "longJobs", "changelog", "stationUpdates",
   ]
-  assert_eq(expected_lasting.length(), 13)
+  assert_eq(expected_lasting.length(), 14)
   for name in expected_lasting {
     assert_false(topic_policy_sensitive(name, empty))
     assert_true(topic_policy_lasting(name, empty))
@@ -62,18 +62,23 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
   assert_eq(expected_sensitive.length(), 21)
   for name in expected_sensitive {
     assert_true(topic_policy_sensitive(name, empty))
-    assert_false(topic_policy_lasting(name, empty))
-    assert_eq(topic_kept_by(name, empty, true), 0)
-    assert_eq(topic_kept_by(name, empty, false), 0)
-    assert_false(topic_policy_show_kept(name, empty, true))
+    for policy in [true, false] {
+      assert_false(topic_policy_lasting_by(name, empty, policy))
+      assert_eq(topic_policy_keep_by(name, empty, true, policy), 0)
+      assert_eq(topic_policy_keep_by(name, empty, false, policy), 0)
+      assert_false(topic_policy_show_kept_by(name, empty, true, policy))
+      assert_false(topic_policy_show_kept_by(name, empty, false, policy))
+    }
   }
 
   // stationPart byParam branches
   for part in ["machineLogins", "logins"] {
     let p = Json::object({ "scope": Json::string("w1"), "station": Json::string("w1/s1"), "part": Json::string(part) })
     assert_true(topic_policy_sensitive("stationPart", p))
-    assert_eq(topic_kept_by("stationPart", p, true), 0)
-    assert_false(topic_policy_show_kept("stationPart", p, true))
+    for policy in [true, false] {
+      assert_eq(topic_policy_keep_by("stationPart", p, true, policy), 0)
+      assert_false(topic_policy_show_kept_by("stationPart", p, true, policy))
+    }
   }
   for part in ["archiving", "automaticDecisions", "unknownPart"] {
     let p = Json::object({ "scope": Json::string("w1"), "station": Json::string("w1/s1"), "part": Json::string(part) })
@@ -106,6 +111,11 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
     ("railCard", 16),
     ("station", 16),
     ("profile", 16),
+    ("profilesOverview", 4),
+    ("presets", 8),
+    ("otherPresets", 8),
+    ("releases", 4),
+    ("fonts", 4),
     ("connect", 16),
     ("connectCandidates", 8),
     ("pick", 12),
@@ -115,7 +125,7 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
     ("project", 16),
     ("tags", 8),
   ]
-  assert_eq(expected_views.length(), 15)
+  assert_eq(expected_views.length(), 20)
   for kv in expected_views {
     let (name, cap) = kv
     assert_false(topic_policy_lasting(name, empty))
@@ -136,12 +146,82 @@ test "topic_policy_gen matches lasting, home_lasting, views_kept, chat, and q/qu
   assert_false(topic_shown_kept("chat"))
   assert_false(topic_policy_lasting("chat", empty))
 
+  // PR-B2b delta topics (showKept = false, keep = 8 when policy=true, 0 when policy=false)
+  for name in ["jobLog", "chatFeedback"] {
+    assert_false(topic_policy_lasting_by(name, empty, true))
+    assert_false(topic_policy_show_kept_by(name, empty, true, true))
+    assert_eq(topic_policy_keep_by(name, empty, true, true), 8)
+    assert_eq(topic_policy_keep_by(name, empty, false, true), 8)
+    assert_eq(topic_policy_keep_by(name, empty, true, false), 0)
+    assert_eq(topic_policy_keep_by(name, empty, false, false), 0)
+  }
+
+  // PR-B2b MBUI_TOPIC_POLICY switch off downgrades all 8 upgraded topics to live (0 / false)
+  assert_true(topic_policy_lasting_by("workspaces", empty, true))
+  assert_false(topic_policy_lasting_by("workspaces", empty, false))
+  assert_eq(topic_policy_keep_by("workspaces", empty, true, true), 64)
+  assert_eq(topic_policy_keep_by("workspaces", empty, true, false), 0)
+  for name in ["profilesOverview", "presets", "otherPresets", "releases", "fonts"] {
+    assert_true(topic_policy_show_kept_by(name, empty, true, true))
+    assert_false(topic_policy_show_kept_by(name, empty, true, false))
+    assert_eq(topic_policy_keep_by(name, empty, true, false), 0)
+  }
+
   assert_eq(kept_most_by(true), 96)
   assert_eq(kept_most_by(false), 64)
 
-  for name in ["accounts", "workspaces", "chatSearch", "search", "chatSubchats", "profilesOverview", "notify"] {
+  for name in ["accounts", "chatSearch", "search", "stationSearch", "chatSubchats", "notify"] {
     assert_false(topic_policy_lasting(name, empty))
     assert_eq(topic_kept_by(name, empty, true), 0)
     assert_false(topic_shown_kept(name))
   }
+}
+
+///|
+test "drivePlace kept state (version < 0) displays retained place but suppresses drive.place writes until fresh (version >= 0)" {
+  let place_ver : Ref[Int] = Ref(-1)
+  let place_val : Ref[Json?] = Ref(Some({ "at": 42.0, "of": 100.0 }))
+  let calls : Array[(String, Json)] = []
+  let base = made_source(call=fn(name, params, done) {
+    calls.push((name, params))
+    done(Ok(Json::null()))
+  })
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, _params) {
+      if name == "drivePlace" {
+        { value: place_val.val, error: None, version: place_ver.val }
+      } else {
+        { value: None, error: None, version: 0 }
+      }
+    },
+  }
+  let at : DriveAt = { station: "w1/s1", root: Some("home"), path: "book.txt" }
+  let vf = drive_viewer_file(src, at)
+
+  // While drivePlace is retained (version = -1), read-only place() still renders the retained position.
+  match (vf.place)() {
+    LeftAt(at_pos, of_pos) => {
+      assert_eq(at_pos, 42.0)
+      assert_eq(of_pos, 100.0)
+    }
+    _ => fail("expected LeftAt(42.0, 100.0) while retained")
+  }
+
+  // Writing drive.place while retained must be suppressed (0 calls).
+  (vf.keep_place)(55.0, 100.0)
+  assert_eq(calls.length(), 0)
+
+  // Also test LastSaid version (< -1).
+  place_ver.val = -3
+  (vf.keep_place)(58.0, 100.0)
+  assert_eq(calls.length(), 0)
+
+  // Once the core answers with a fresh version (>= 0), drive.place write-back resumes normally.
+  place_ver.val = 1
+  (vf.keep_place)(60.0, 100.0)
+  assert_eq(calls.length(), 1)
+  assert_eq(calls[0].0, "drive.place")
+  assert_eq(number(Some(calls[0].1), "at"), 60.0)
+  assert_eq(number(Some(calls[0].1), "of"), 100.0)
 }
