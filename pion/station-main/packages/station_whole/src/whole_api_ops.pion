@@ -755,22 +755,13 @@ fn update_config_with(
       None => return Err(station_api::ApiError::new(500, "config file is not configured"))
     }
   }
-  match cfg.reload_now() {
-    Ok(_) => ()
-    Err(e) => return Err(config_error_to_api_error(e))
-  }
-  // Validate BEFORE calling `cfg.update(...)` so invalid requests NEVER write disk or trigger listeners!
-  match mutate(cfg.raw()) {
-    Err(e) => return Err(e)
-    Ok(_) => ()
-  }
   let mut validation_err : Option[station_api::ApiError] = None
-  let res = cfg.update(fn(raw : base_codec::Json) -> base_codec::Json {
+  let res = cfg.try_update(fn(raw : base_codec::Json) -> Result[base_codec::Json, String] {
     match mutate(raw) {
-      Ok(next) => next
+      Ok(next) => Ok(next)
       Err(e) => {
         validation_err = Some(e)
-        raw
+        Err(e.message)
       }
     }
   })
@@ -1431,25 +1422,8 @@ pub fn dispatch_extra_read_op(
   let data_dir = agents.config.data_dir
 
   if op == "memory" {
-    // Strictly isolate MEMORY.md per workspace (aligned 1:1 with `station/src/api/routes/usage.ts:55-62`):
-    // non-home workspaces read ONLY `<data>/agent/workspaces/<ws>/MEMORY.md` and never home's MEMORY.md.
-    let content = if req.viewer.home {
-      let p1 = nodepath::join(fs.sep, [data_dir, "agent", "MEMORY.md"])
-      match (fs.read_file)(p1) {
-        Some(s) => s
-        None => match (fs.read_file)(nodepath::join(fs.sep, [data_dir, "MEMORY.md"])) {
-          Some(s) => s
-          None => ""
-        }
-      }
-    } else {
-      let p_ws = nodepath::join(fs.sep, [data_dir, "agent", "workspaces", sanitize_ws_key(req.viewer.workspace), "MEMORY.md"])
-      match (fs.read_file)(p_ws) {
-        Some(s) => s
-        None => ""
-      }
-    }
-    return Some(Ok(base_codec::json_obj([("memory", base_codec::json_str(content))])))
+    // Honest 501 until `readops_local` `{global, skills}` contract is wired end-to-end.
+    return Some(Err(err_not_implemented(op)))
   }
   if op == "changed.chats" || op == "changed.sharedChats" || op == "changed.threads" {
     return Some((port.changed_threads)(req.viewer.workspace))
@@ -1587,27 +1561,8 @@ pub fn dispatch_extra_call_op(
   let data_dir = agents.config.data_dir
 
   // 3. Settings & Configuration persisted via unified `ConfigFile`
-  if op == "search.settings" {
-    let personal = match json_field_bool(body, "personal") {
-      Some(b) => b
-      None => return Some(Err(station_api::ApiError::new(400, "personal is true or false")))
-    }
-    match update_config_key(cfg_opt, cfg_open_err, "searchPersonal", Some(base_codec::json_bool(personal))) {
-      Ok(_) => {
-        hooks_notify_overview(hooks, "search")
-        return Some(Ok(base_codec::json_obj([("personal", base_codec::json_bool(personal))])))
-      }
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "network.settings.put" {
-    match update_config_key(cfg_opt, cfg_open_err, "network", Some(body)) {
-      Ok(_) => {
-        hooks_notify_overview(hooks, "network")
-        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true)), ("network", body)])))
-      }
-      Err(e) => return Some(Err(e))
-    }
+  if op == "search.settings" || op == "network.settings.put" || op == "context.settings.put" || op == "diagnostics.settings.put" {
+    return Some(Err(err_not_implemented(op)))
   }
   if op == "network.station.restart" {
     match hooks.on_restart {
@@ -1616,24 +1571,6 @@ pub fn dispatch_extra_call_op(
         Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
       }
       None => return Some(Err(err_not_implemented(op)))
-    }
-  }
-  if op == "context.settings.put" {
-    match update_config_key(cfg_opt, cfg_open_err, "context", Some(body)) {
-      Ok(_) => {
-        hooks_notify_overview(hooks, "context")
-        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true)), ("context", body)])))
-      }
-      Err(e) => return Some(Err(e))
-    }
-  }
-  if op == "diagnostics.settings.put" {
-    match update_config_key(cfg_opt, cfg_open_err, "diagnostics", Some(body)) {
-      Ok(_) => {
-        hooks_notify_overview(hooks, "diagnostics")
-        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true)), ("diagnostics", body)])))
-      }
-      Err(e) => return Some(Err(e))
     }
   }
   if op == "agentEnv.put" {
@@ -1719,86 +1656,9 @@ pub fn dispatch_extra_call_op(
       Err(e) => return Some(Err(e))
     }
   }
-  if op == "mcpServers.get" {
-    let raw = read_config_raw(cfg_opt)
-    let servers = match base_codec::json_get(raw, "mcpServers") {
-      Some(v) => redact_mcp_servers_view(v)
-      None => base_codec::json_obj([])
-    }
-    return Some(Ok(base_codec::json_obj([("servers", servers)])))
-  }
-  if op == "mcpServers.put" {
-    let patch_entries = match base_codec::json_get(body, "servers") {
-      Some(base_codec::Json::Obj(ps)) => ps
-      _ => return Some(Err(station_api::ApiError::new(400, "servers: a map of server names to configurations, or null to remove")))
-    }
-    let mut final_servers_raw : base_codec::Json = base_codec::json_obj([])
-    match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
-      let cur_map : Map[String, base_codec::Json] = Map::new()
-      match base_codec::json_get(raw, "mcpServers") {
-        Some(base_codec::Json::Obj(existing)) => {
-          for i in 0..<existing.length() {
-            cur_map.set(existing[i].0, existing[i].1)
-          }
-        }
-        _ => ()
-      }
-      for pi in 0..<patch_entries.length() {
-        let name = patch_entries[pi].0
-        let entry = patch_entries[pi].1
-        if name.length() == 0 || name.length() > 128 {
-          return Err(station_api::ApiError::new(400, "invalid MCP server name"))
-        }
-        match entry {
-          base_codec::Json::Null => cur_map.remove(name)
-          base_codec::Json::Obj(ef) => {
-            let has_cmd = match json_field_str(entry, "command") { Some(s) => s.length() > 0, None => false }
-            let has_url = match json_field_str(entry, "url") { Some(s) => s.length() > 0, None => false }
-            if !has_cmd && !has_url {
-              return Err(station_api::ApiError::new(400, "MCP server " + name + " requires command or url"))
-            }
-            let prev_entry = cur_map.get(name)
-            let merged_fields : Array[(String, base_codec::Json)] = []
-            for fi in 0..<ef.length() {
-              let fk = ef[fi].0
-              let fv = ef[fi].1
-              if fk == "env" || fk == "headers" {
-                let prev_sub = match prev_entry {
-                  Some(pe) => base_codec::json_get(pe, fk)
-                  None => None
-                }
-                merged_fields.push((fk, merge_masked_map(prev_sub, fv)))
-              } else {
-                merged_fields.push((fk, fv))
-              }
-            }
-            cur_map.set(name, base_codec::json_obj(merged_fields))
-          }
-          _ => return Err(station_api::ApiError::new(400, "MCP server " + name + " must be an object or null"))
-        }
-      }
-      let ks = cur_map.keys()
-      if ks.length() == 0 {
-        final_servers_raw = base_codec::json_obj([])
-        Ok(json_obj_set(raw, "mcpServers", None))
-      } else {
-        let out_entries : Array[(String, base_codec::Json)] = []
-        for i in 0..<ks.length() {
-          match cur_map.get(ks[i]) {
-            Some(v) => out_entries.push((ks[i], v))
-            None => ()
-          }
-        }
-        final_servers_raw = base_codec::json_obj(out_entries)
-        Ok(json_obj_set(raw, "mcpServers", Some(final_servers_raw)))
-      }
-    }) {
-      Ok(_) => {
-        hooks_notify_overview(hooks, "mcpServers")
-        return Some(Ok(base_codec::json_obj([("servers", redact_mcp_servers_view(final_servers_raw))])))
-      }
-      Err(e) => return Some(Err(e))
-    }
+  if op == "mcpServers.get" || op == "mcpServers.put" {
+    // Honest 501 until managed-mcp-config.ts / routes/mcp-servers.ts full schema & response contract is ported.
+    return Some(Err(err_not_implemented(op)))
   }
   if op == "tools.access.get" {
     let raw = read_config_raw(cfg_opt)
@@ -1832,34 +1692,12 @@ pub fn dispatch_extra_call_op(
     }
   }
 
-  // 4. Accounts / Archive Policy (profiles CRUD and unvalidated config writers return honest 501 until full schema/array parity)
+  // 4. Accounts / Archive Policy (honest 501 until full Node schema/policy validation & review hooks are ported)
   if op.starts_with("accounts.") {
-    if op == "accounts.automaticDecisions.policy.put" {
-      // Aligned 1:1 with `station/src/store/store.ts:3691-3694`: home workspace stores SQL NULL for `ws`,
-      // and `author` stores a JSON actor object `{ email, sub, name }`.
-      let policy_text = match json_field_str(body, "policy") {
-        Some(s) => s
-        None => base_codec::json_stringify(body)
-      }
-      let summary_text = match json_field_str(body, "summary") { Some(s) => s, None => "" }
-      let ws_opt : Option[String] = if req.viewer.home { None } else { Some(req.viewer.workspace) }
-      let author_json = base_codec::json_stringify(base_codec::json_obj([
-        ("email", base_codec::json_str(req.viewer.email)),
-        ("sub", base_codec::json_str(req.viewer.sub)),
-        ("name", base_codec::json_str(req.viewer.name)),
-      ]))
-      match (port.put_archive_policy)(ws_opt, policy_text, author_json, summary_text, now_ms) {
-        Ok(_) => {
-          hooks_notify_overview(hooks, "automaticDecisions")
-          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true)), ("workspace", base_codec::json_str(req.viewer.workspace))])))
-        }
-        Err(e) => return Some(Err(e))
-      }
-    }
     return Some(Err(err_not_implemented(op)))
   }
 
-  // 5. Projects write ops (strictly workspace-scoped + CRDT rename events)
+  // 5. Projects write ops (strictly workspace-scoped; rename/merge stay 501 until cross-station CRDT sync consumer is wired)
   if op == "projects.info.put" {
     let name = match json_field_str(body, "name") {
       Some(raw_n) => match station_api::normalize_project_name(raw_n) {
@@ -1886,26 +1724,7 @@ pub fn dispatch_extra_call_op(
     }
   }
   if op == "projects.rename" || op == "projects.merge" {
-    let from_name = match json_field_str(body, "from") {
-      Some(s) => s
-      None => return Some(Err(station_api::ApiError::new(400, "from is required")))
-    }
-    let to_name = match json_field_str(body, "to") {
-      Some(raw_t) => match station_api::normalize_project_name(raw_t) {
-        Ok(clean) => clean
-        Err(e) => return Some(Err(station_api::ApiError::new(400, e)))
-      }
-      None => return Some(Err(station_api::ApiError::new(400, "to is required")))
-    }
-    let action = if op == "projects.merge" { "merge" } else { "rename" }
-    match (port.project_rename)(req.viewer.workspace, action, from_name, to_name, now_ms) {
-      Ok(_) => return Some(Ok(base_codec::json_obj([
-        ("ok", base_codec::json_bool(true)),
-        ("from", base_codec::json_str(from_name)),
-        ("to", base_codec::json_str(to_name)),
-      ])))
-      Err(e) => return Some(Err(e))
-    }
+    return Some(Err(err_not_implemented(op)))
   }
 
   // 6. Hub & Marks ops (strict workspace isolation on every session/thread/job mutation)
@@ -2147,7 +1966,7 @@ pub fn dispatch_extra_call_op(
     return Some(Err(err_not_implemented(op)))
   }
 
-  // 9. Drive roots (manager-gated, MOST_ROOTS=64, absolute-path checkRoot validation, home vs joined isolation + live hot-update)
+  // 9. Drive roots (manager-gated, MOST_ROOTS=64, startup-aligned OS absolute-path validation & normalization, home vs joined isolation + live hot-update)
   if op == "drive.roots.put" {
     if !req.viewer.manages_station() {
       return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage drive roots")))
@@ -2159,6 +1978,29 @@ pub fn dispatch_extra_call_op(
     if raw_roots.length() > 64 {
       return Some(Err(station_api::ApiError::new(400, "roots: at most 64 paths")))
     }
+    let is_win = fs.sep == "\\"
+    let sep = fs.sep
+    let is_abs_for_os = fn(p : String) -> Bool {
+      if p.length() == 0 {
+        return false
+      }
+      if !is_win {
+        return p.starts_with("/")
+      }
+      let c0 = p.code_unit_at(0)
+      if p.length() >= 2 && c0 == 92 && p.code_unit_at(1) == 92 {
+        return true
+      }
+      if p.length() >= 3 {
+        let is_alpha = (c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122)
+        let c1 = p.code_unit_at(1)
+        let c2 = p.code_unit_at(2)
+        if is_alpha && c1 == 58 && (c2 == 47 || c2 == 92) {
+          return true
+        }
+      }
+      false
+    }
     let roots_arr : Array[String] = []
     let seen_roots : Map[String, Bool] = Map::new()
     for i in 0..<raw_roots.length() {
@@ -2168,20 +2010,35 @@ pub fn dispatch_extra_call_op(
           if p.length() == 0 || p.length() > 4096 || p.contains("\x00") {
             return Some(Err(station_api::ApiError::new(400, "invalid drive root path")))
           }
-          let is_abs = p.starts_with("/") || (p.length() >= 3 && p.code_unit_at(1) == 58 && (p.code_unit_at(2) == 47 || p.code_unit_at(2) == 92))
-          if !is_abs {
+          if !is_abs_for_os(p) {
             return Some(Err(station_api::ApiError::new(400, "drive root must be an absolute path: " + p)))
           }
-          // Reject path traversal segments `..`
-          let segs = p.split("/")
-          for si in 0..<segs.length() {
-            if segs[si] == ".." {
-              return Some(Err(station_api::ApiError::new(400, "drive root must not contain '..': " + p)))
+          // Reject path traversal segments `..` across both `/` and `\` separators
+          let segs_slash = p.split("/")
+          for si in 0..<segs_slash.length() {
+            let sub_segs = segs_slash[si].split("\\")
+            for bi in 0..<sub_segs.length() {
+              if sub_segs[bi] == ".." {
+                return Some(Err(station_api::ApiError::new(400, "drive root must not contain '..': " + p)))
+              }
             }
           }
-          if !seen_roots.contains(p) {
-            seen_roots.set(p, true)
-            roots_arr.push(p)
+          let mut norm = nodepath::join(sep, [p])
+          if !is_win {
+            while norm.length() > 1 && norm.ends_with("/") {
+              norm = norm.slice(0, norm.length() - 1)
+            }
+          } else {
+            while norm.length() > 3 && (norm.ends_with("\\") || norm.ends_with("/")) {
+              norm = norm.slice(0, norm.length() - 1)
+            }
+          }
+          if !is_abs_for_os(norm) {
+            return Some(Err(station_api::ApiError::new(400, "drive root must be an absolute path: " + p)))
+          }
+          if !seen_roots.contains(norm) {
+            seen_roots.set(norm, true)
+            roots_arr.push(norm)
           }
         }
         _ => return Some(Err(station_api::ApiError::new(400, "each drive root must be a string")))

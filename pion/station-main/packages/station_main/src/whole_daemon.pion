@@ -1456,6 +1456,7 @@ struct WholeRuntimeState {
   mcp_cb : station_http::ServerCallbacks
   serve : station_mesh::ServeEndpoint
   admin_conns : Map[Int64, AdminConnState]
+  seen_members : Map[String, Map[String, (String, String)]]
   admin_streams : Map[Int64, AdminStreamState]
   proxy_streams : Map[Int64, ProxyStreamState]
   proxy_by_sock : Map[Int64, Int64]
@@ -3369,11 +3370,20 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             } else {
               base_role
             }
+            match state_opt {
+              Some(st) => record_seen_member(st.seen_members, sess.workspace, sess.user_sub, sess.email, aconn.effective_role)
+              None => ()
+            }
             true
           }
           Ok(None) => {
             if aconn.cred_role.length() > 0 {
               aconn.effective_role = aconn.cred_role
+            }
+            let r = if aconn.effective_role.length() > 0 { aconn.effective_role } else { sess.role }
+            match state_opt {
+              Some(st) => record_seen_member(st.seen_members, sess.workspace, sess.user_sub, sess.email, r)
+              None => ()
             }
             true
           }
@@ -3994,6 +4004,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     aconn.effective_role = vm.session.role
                     aconn.lock_base = vm.lock_base
                     aconn.lock_proof = vm.lock_proof
+                    record_seen_member(st.seen_members, vm.session.workspace, vm.session.user_sub, vm.session.email, vm.session.role)
                     let reply = base_codec::json_obj([
                       ("ok", base_codec::json_bool(true)),
                       ("station", base_codec::json_str(st.core.config.station_id)),
@@ -4018,6 +4029,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     aconn.effective_role = vm.session.role
                     aconn.lock_base = vm.lock_base
                     aconn.lock_proof = vm.lock_proof
+                    record_seen_member(st.seen_members, vm.session.workspace, vm.session.user_sub, vm.session.email, vm.session.role)
                     let reply = base_codec::json_obj([
                       ("ok", base_codec::json_bool(true)),
                       ("station", base_codec::json_str(st.core.config.station_id)),
@@ -6118,7 +6130,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       }
 
       let now0 = host_shim::now_ms()
-      wire_whole_core_runtime_hooks(ctx, core, logins, browser)
+      let seen_members : Map[String, Map[String, (String, String)]] = Map::new()
+      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
@@ -6140,6 +6153,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         mcp_cb: mcp_cb,
         serve: station_mesh::ServeEndpoint::new(),
         admin_conns: Map::new(),
+        seen_members: seen_members,
         admin_streams: Map::new(),
         proxy_streams: Map::new(),
         proxy_by_sock: Map::new(),

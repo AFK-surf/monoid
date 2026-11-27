@@ -5,7 +5,9 @@
 // - AsyncUpkeepRunner non-blocking repo discovery & queue
 
 import "base_codec"
+import "form"
 import "station_api"
+import "station_cloud"
 import "station_devices"
 import "station_jobs"
 import "station_mesh"
@@ -287,5 +289,163 @@ test "wave17c2 AsyncUpkeepRunner discovers shared clone repos without blocking" 
   runner.clear_pending()
   if runner.pending_count() != 0 {
     panic("expected clear_pending to clear pending queue")
+  }
+}
+
+fn w17c2_person_genesis(sub : String, dev_pub : String) -> (String, Array[form::Json]) {
+  let dev_key = "ed25519:" + dev_pub
+  let entry = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:" + sub)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str(sub)),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(dev_key)),
+        ("id", form::Json::Str(dev_pub)),
+        ("label", form::Json::Str("Mac")),
+        ("sign_key", form::Json::Str(dev_key)),
+      ])),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(dev_key)),
+      ("alg", form::Json::Str("Ed25519")),
+      ("sig", form::Json::Str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
+    ])),
+  ])
+  ("gen-" + sub, [entry])
+}
+
+test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin roles, isolates GET /vault/boxes chains, and never falls back on broken workspace lock" {
+  let cloud_fs = station_cloud::CloudFs::{
+    read_text: fn(_p : String) -> Result[Option[String], String] { Ok(None) },
+    write_private_text: fn(_p : String, _s : String) -> Result[Unit, String] { Ok(()) },
+    remove_file: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    rename_file: fn(_a : String, _b : String) -> Result[Unit, String] { Ok(()) },
+    mkdir_p: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    exists: fn(_p : String) -> Bool { false },
+  }
+  let vf = Some(fn(_alg : String, _key : Bytes, _sig : Bytes, _msg : Bytes) -> Bool { true })
+  let cloud = station_cloud::CloudStore::open("/tmp/w17c2-vault-lock", cloud_fs, verify_fn=vf)
+  // Enroll home workspace ws-A and joined workspace ws-B (both full memberships, security mode OFF)
+  let joined_b = station_cloud::Joined::{
+    workspace: "ws-B",
+    workspace_name: "Workspace B",
+    workspace_emoji: None,
+    workspace_icon: None,
+    name: "st-b",
+    peers: [],
+    revocations: [],
+    locked: false,
+    rigs: None,
+    ways: None,
+    rig: None,
+  }
+  cloud.state = Some(station_cloud::CloudState::{
+    provider: None,
+    origin: "https://cloud.example",
+    station: "st-1",
+    workspace: "ws-A",
+    workspace_name: "Workspace A",
+    workspace_emoji: None,
+    workspace_icon: None,
+    name: "st-a",
+    relay_url: "",
+    relay_urls: [],
+    stillfail_relays: None,
+    mesh_relays: None,
+    grant_keys: base_codec::json_null(),
+    peers: [],
+    revocations: [],
+    gateway_keys: None,
+    removed_at: None,
+    removed_code: None,
+    joined: [joined_b],
+    rigs: [],
+    ways: None,
+    rig: None,
+    rig_pending: Map::new(),
+    rig_due: [],
+    full_pending: Map::new(),
+  })
+  // Three person chains: u-owner (owner in ws-A), u-admin (admin in ws-A), u-other (owner in ws-B only)
+  let c_owner = w17c2_person_genesis("u-owner", "0101010101010101010101010101010101010101010101010101010101010101")
+  let c_admin = w17c2_person_genesis("u-admin", "0202020202020202020202020202020202020202020202020202020202020202")
+  let c_other = w17c2_person_genesis("u-other", "0303030303030303030303030303030303030303030303030303030303030303")
+  cloud.set_person_chains([c_owner, c_admin, c_other])
+
+  let seen_members : Map[String, Map[String, (String, String)]] = Map::new()
+  record_seen_member(seen_members, "ws-A", "u-owner", "owner@a.test", "owner")
+  record_seen_member(seen_members, "ws-A", "u-admin", "admin@a.test", "admin")
+  record_seen_member(seen_members, "ws-B", "u-other", "other@b.test", "owner")
+
+  let known_members = fn(ws : String) -> (Map[String, String], Map[String, String]) {
+    let emails : Map[String, String] = Map::new()
+    let roles : Map[String, String] = Map::new()
+    match seen_members.get(ws) {
+      Some(m) => {
+        let ks = m.keys()
+        for i in 0..<ks.length() {
+          match m.get(ks[i]) {
+            Some((em, rl)) => {
+              emails.set(ks[i], em)
+              roles.set(ks[i], rl)
+            }
+            None => ()
+          }
+        }
+      }
+      None => ()
+    }
+    (emails, roles)
+  }
+
+  // 1. ws-A personal lock preserves owner & admin roles and excludes ws-B's u-other
+  match resolve_vault_lock_for_ws(cloud, None, known_members, "ws-A", 1700000100.0, vf) {
+    Some(ls) => {
+      match ls.members.get("u-owner") {
+        Some(m) => if m.role != "owner" || m.email != "owner@a.test" { panic("owner role/email must be preserved, got " + m.role) }
+        None => panic("missing u-owner in ws-A personal lock")
+      }
+      match ls.members.get("u-admin") {
+        Some(m) => if m.role != "admin" || m.email != "admin@a.test" { panic("admin role/email must be preserved, got " + m.role) }
+        None => panic("missing u-admin in ws-A personal lock")
+      }
+      if ls.members.contains("u-other") || ls.persons.contains("u-other") {
+        panic("ws-A personal lock must not include ws-B member u-other")
+      }
+    }
+    None => panic("expected personal vault lock for ws-A when security mode is off")
+  }
+
+  // 2. ws-A GET /vault/boxes chains contain u-owner & u-admin and MUST NOT contain ws-B's u-other
+  let chains_a = resolve_vault_chains_for_ws(cloud, None, known_members, "ws-A", 1700000100.0, vf)
+  if form::json_field(Some(chains_a), "u-owner") is None || form::json_field(Some(chains_a), "u-admin") is None {
+    panic("expected u-owner and u-admin chains in ws-A")
+  }
+  if !(form::json_field(Some(chains_a), "u-other") is None) {
+    panic("ws-A chains leaked ws-B member u-other!")
+  }
+
+  // 3. Unknown workspace returns None / {}
+  if !(resolve_vault_lock_for_ws(cloud, None, known_members, "ws-unknown", 1700000100.0, vf) is None) {
+    panic("unknown workspace must not get a vault lock")
+  }
+
+  // 4. Broken workspace lock (security mode ON, state: None) MUST NOT fall back to personal lock!
+  cloud.lock = Some(station_cloud::KeptLock::{
+    entries: [],
+    aside: [],
+    state: None,
+  })
+  if !(resolve_vault_lock_for_ws(cloud, None, known_members, "ws-A", 1700000100.0, vf) is None) {
+    panic("broken workspace lock must fail closed (None), never fall back to personal lock")
+  }
+  let chains_broken = resolve_vault_chains_for_ws(cloud, None, known_members, "ws-A", 1700000100.0, vf)
+  if !(form::json_field(Some(chains_broken), "u-owner") is None) {
+    panic("broken workspace lock must return empty chains {}")
   }
 }

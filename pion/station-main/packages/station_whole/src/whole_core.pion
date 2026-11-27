@@ -733,7 +733,7 @@ pub fn WholeCore::init_pre_handover(
             waiting_tracker.note("session", Some(k))
             api.note_waiting_session(k)
           } else {
-            waiting_tracker.note("session", None)
+            waiting_tracker.reset()
             api.note_waiting_all()
           }
         }
@@ -743,12 +743,12 @@ pub fn WholeCore::init_pre_handover(
               waiting_tracker.note("session", Some(k))
               api.note_waiting_session(k)
             } else {
-              waiting_tracker.note("session", None)
+              waiting_tracker.reset()
               api.note_waiting_all()
             }
           }
           _ => {
-            waiting_tracker.note("session", None)
+            waiting_tracker.reset()
             api.note_waiting_all()
           }
         }

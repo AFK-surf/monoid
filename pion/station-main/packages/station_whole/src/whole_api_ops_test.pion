@@ -258,6 +258,15 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
     "vault.plain.PUT",
     "vault.plain.item.get",
     "vault.plain.grants.post",
+    "search.settings",
+    "network.settings.put",
+    "context.settings.put",
+    "diagnostics.settings.put",
+    "mcpServers.get",
+    "mcpServers.put",
+    "accounts.automaticDecisions.policy.put",
+    "projects.rename",
+    "projects.merge",
   ]
   for i in 0..<unimplemented_call_ops.length() {
     let op = unimplemented_call_ops[i]
@@ -268,8 +277,8 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
   }
 }
 
-test "wave17c2 R3: vault structured JSON error payloads, memory cross-ws isolation, drive.roots.put validation, and EventsHub WaitingTracker refresh" {
-  let (_, agents, api, _, _, hooks) = make_mem_whole_api_fixture()
+test "wave17c2 R4: vault structured JSON errors, ConfigFile::try_update atomic abort, drive.roots.put OS validation, and production thread event WaitingTracker reset" {
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
   let alice = make_test_viewer("alice@example.com", "u-alice", "ws-main", true, "owner")
   let joined_member = make_test_viewer("bob@example.com", "u-bob", "ws-other", false, "member")
 
@@ -299,19 +308,31 @@ test "wave17c2 R3: vault structured JSON error payloads, memory cross-ws isolati
     Ok(_) => panic("expected 409")
   }
 
-  // 3. `memory` strict workspace isolation: non-home workspace MUST NEVER read home MEMORY.md!
-  let _ = (agents.jobs.fs.mkdir_p)("/tmp/w17c2-api-test/agent")
-  let _ = (agents.jobs.fs.write_file)("/tmp/w17c2-api-test/agent/MEMORY.md", "HOME-SECRET-MEMORY")
+  // 3. `memory` returns honest 501 until `readops_local` `{global, skills}` contract is wired
   match (api.admin.host.read_op)("memory", make_test_api_req_as("GET", "/memory", alice), base_codec::json_obj([])) {
-    Ok(res) => if json_field_str(res, "memory") != Some("HOME-SECRET-MEMORY") { panic("home viewer must read home MEMORY.md") }
-    Err(e) => panic("home memory read failed: " + e.message)
-  }
-  match (api.admin.host.read_op)("memory", make_test_api_req_as("GET", "/memory", joined_member), base_codec::json_obj([])) {
-    Ok(res) => if json_field_str(res, "memory") != Some("") { panic("joined viewer leaked home MEMORY.md!") }
-    Err(e) => panic("joined memory read failed: " + e.message)
+    Err(e) => if e.status != 501 { panic("memory must return honest 501, got " + e.status.to_string()) }
+    Ok(_) => panic("memory must return honest 501")
   }
 
-  // 4. `drive.roots.put`: non-manager rejected 403, relative path rejected 400, traversal rejected 400
+  // 4. `ConfigFile::try_update` aborts atomically on Err without writing disk or firing listeners
+  let cfg_file = match station_ops::ConfigFile::open(mem_fs.ops(), "/tmp/w17c2-api-test") {
+    Ok(c) => c
+    Err(_) => panic("failed to open ConfigFile in fixture")
+  }
+  let mut listener_calls = 0
+  let _ = cfg_file.listen(fn(_j : base_codec::Json) -> Unit { listener_calls = listener_calls + 1 })
+  let edits_before = cfg_file.edits
+  match cfg_file.try_update(fn(_raw : base_codec::Json) -> Result[base_codec::Json, String] {
+    Err("rejected by validation")
+  }) {
+    Err(station_ops::ConfigError::CheckFailed(_)) => ()
+    _ => panic("expected CheckFailed from ConfigFile::try_update")
+  }
+  if cfg_file.edits != edits_before || listener_calls != 0 {
+    panic("ConfigFile::try_update must not write disk or fire listeners on Err")
+  }
+
+  // 5. `drive.roots.put`: non-manager 403, relative 400, traversal 400, POSIX Windows drive-letter 400, normalization
   match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", joined_member), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/ok")]))])) {
     Err(e) => if e.status != 403 { panic("non-manager drive.roots.put must return 403") }
     Ok(_) => panic("non-manager drive.roots.put must be rejected")
@@ -324,8 +345,16 @@ test "wave17c2 R3: vault structured JSON error payloads, memory cross-ws isolati
     Err(e) => if e.status != 400 { panic("traversal drive root must return 400") }
     Ok(_) => panic("traversal drive root must be rejected")
   }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", alice), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/tmp\\..\\etc")]))])) {
+    Err(e) => if e.status != 400 { panic("backslash traversal drive root must return 400") }
+    Ok(_) => panic("backslash traversal drive root must be rejected")
+  }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", alice), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("C:\\Users\\alice")]))])) {
+    Err(e) => if e.status != 400 { panic("Windows drive-letter path must be rejected 400 on POSIX") }
+    Ok(_) => panic("Windows drive-letter path must be rejected on POSIX")
+  }
 
-  // 5. EventsHub::emit live WaitingTracker refresh (empty -> turn enters need_human -> reads -> turn exits -> empty)
+  // 6. EventsHub::emit production-format `"thread"` `{id, entries}` (no `key`/`session`) resets WaitingTracker
   let mut live_waiting : Array[station_api::WaitingSessionInfo] = []
   let wt = station_api::WaitingTracker::new(station_api::WaitingStorePort::{
     waiting_for_people: fn(_since, _lim) { live_waiting },
@@ -338,23 +367,34 @@ test "wave17c2 R3: vault structured JSON error payloads, memory cross-ws isolati
   })
   api.waiting_trackers.set("ws-main", wt)
   api.events.on_emit = Some(fn(ev : String, data : base_codec::Json) -> Unit {
-    if ev == "turn" || ev == "session" {
+    if ev == "turn" || ev == "session" || ev == "thread" || ev == "sessionRemoved" {
       match base_codec::json_get(data, "key") {
-        Some(base_codec::Json::Str(k)) => api.note_waiting_session(k)
+        Some(base_codec::Json::Str(k)) => {
+          if k.length() > 0 { api.note_waiting_session(k) } else { api.note_waiting_all() }
+        }
         _ => api.note_waiting_all()
       }
     }
   })
   if wt.read(0L, 10).length() != 0 { panic("expected empty waiting initially") }
+  // Production `"thread"` event payload has `{id, entries}` with no `key` field
   live_waiting = [station_api::WaitingSessionInfo::{ key: "s-live", title: Some("Need"), need: Some("approve"), ended_at: 5000L }]
-  let _ = api.events.emit("turn", base_codec::json_obj([("key", base_codec::json_str("s-live"))]), station_api::EventTarget::everyone(), 5000L, None)
-  if wt.read(0L, 10).length() != 1 { panic("expected WaitingTracker to refresh after turn emit") }
+  let prod_thread_ev = base_codec::json_obj([
+    ("id", base_codec::json_int(42)),
+    ("entries", base_codec::json_arr([base_codec::json_obj([("kind", base_codec::json_str("state")), ("state", base_codec::json_str("need_human"))])])),
+  ])
+  let _ = api.events.emit("thread", prod_thread_ev, station_api::EventTarget::everyone(), 5000L, None)
+  if wt.read(0L, 10).length() != 1 { panic("expected WaitingTracker to reset and detect need_human after production thread event") }
   live_waiting = []
-  let _ = api.events.emit("turn", base_codec::json_obj([("key", base_codec::json_str("s-live"))]), station_api::EventTarget::everyone(), 6000L, None)
-  if wt.read(0L, 10).length() != 0 { panic("expected WaitingTracker to clear after turn exit emit") }
+  let prod_thread_done = base_codec::json_obj([
+    ("id", base_codec::json_int(42)),
+    ("entries", base_codec::json_arr([base_codec::json_obj([("kind", base_codec::json_str("state")), ("state", base_codec::json_str("all_done"))])])),
+  ])
+  let _ = api.events.emit("thread", prod_thread_done, station_api::EventTarget::everyone(), 6000L, None)
+  if wt.read(0L, 10).length() != 0 { panic("expected WaitingTracker to reset and clear after production thread exit event") }
 }
 
-test "wave17c2 redaction (mcpServers, agentEnv, copies.settings), workspace drive.roots.put, presets RMW, and cross-ws rejection" {
+test "wave17c2 redaction (agentEnv, copies.settings), workspace drive.roots.put, presets RMW, and cross-ws rejection" {
   // SeenStore: session "s-main" & thread 10 belong to ws-main; "s-other" & thread 20 belong to ws-other
   let seen = station_api::SeenStore::{
     session_exists: fn(k : String) -> Bool { k == "s-main" || k == "s-other" },
@@ -390,39 +430,7 @@ test "wave17c2 redaction (mcpServers, agentEnv, copies.settings), workspace driv
     Ok(_) => panic("cross-ws marks.thread.title must be rejected")
   }
 
-  // 2. mcpServers PUT/GET redaction + null deletion
-  let mcp_body = base_codec::json_obj([
-    ("servers", base_codec::json_obj([
-      ("srv1", base_codec::json_obj([
-        ("command", base_codec::json_str("npx")),
-        ("env", base_codec::json_obj([("API_KEY", base_codec::json_str("secret-12345"))])),
-      ])),
-    ])),
-  ])
-  match (api.admin.host.call)("mcpServers.put", make_test_api_req_as("PUT", "/mcp-servers", home_owner), [], mcp_body) {
-    Ok(res) => {
-      let s = base_codec::json_stringify(res)
-      if s.contains("secret-12345") { panic("mcpServers.put leaked raw secret env") }
-    }
-    Err(e) => panic("mcpServers.put failed: " + e.message)
-  }
-  match (api.admin.host.call)("mcpServers.get", make_test_api_req_as("GET", "/mcp-servers", home_owner), [], base_codec::json_obj([])) {
-    Ok(res) => {
-      let s = base_codec::json_stringify(res)
-      if s.contains("secret-12345") { panic("mcpServers.get leaked raw secret env") }
-    }
-    Err(e) => panic("mcpServers.get failed: " + e.message)
-  }
-  // Delete srv1 via null
-  let mcp_del = base_codec::json_obj([("servers", base_codec::json_obj([("srv1", base_codec::json_null())]))])
-  match (api.admin.host.call)("mcpServers.put", make_test_api_req_as("PUT", "/mcp-servers", home_owner), [], mcp_del) {
-    Ok(res) => {
-      if base_codec::json_stringify(res).contains("srv1") { panic("mcpServers.put null must delete server") }
-    }
-    Err(e) => panic("mcpServers.put delete failed: " + e.message)
-  }
-
-  // 3. agentEnv.put parse_env_text_lines + secret masking
+  // 2. agentEnv.put parse_env_text_lines + secret masking
   match (api.admin.host.call)("agentEnv.put", make_test_api_req_as("PUT", "/agent-env", home_owner), [], base_codec::json_obj([("text", base_codec::json_str("FOO=bar\nMY_SECRET_TOKEN=tok_abcdef99"))])) {
     Ok(res) => {
       let s = base_codec::json_stringify(res)
@@ -431,11 +439,17 @@ test "wave17c2 redaction (mcpServers, agentEnv, copies.settings), workspace driv
     Err(e) => panic("agentEnv.put failed: " + e.message)
   }
 
-  // 4. drive.roots.put home vs joined workspace isolation + live callback
+  // 3. drive.roots.put home vs joined workspace isolation + normalization + live callback
   let mut updated_ws = ""
   hooks.on_drive_roots_changed = Some(fn(ws : String, _roots : Array[String]) -> Unit { updated_ws = ws })
-  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", home_owner), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/home-dir")]))])) {
-    Ok(_) => if updated_ws != "ws-main" { panic("expected home drive roots hook") }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", home_owner), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/home-dir//sub/"), base_codec::json_str("/home-dir/sub")]))])) {
+    Ok(res) => {
+      if updated_ws != "ws-main" { panic("expected home drive roots hook") }
+      match base_codec::json_get(res, "roots") {
+        Some(base_codec::Json::Arr(xs)) => if xs.length() != 1 { panic("expected normalized deduped drive roots") }
+        _ => panic("missing roots array")
+      }
+    }
     Err(e) => panic("home drive.roots.put failed: " + e.message)
   }
   match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", joined_owner), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/joined-dir")]))])) {
@@ -445,7 +459,7 @@ test "wave17c2 redaction (mcpServers, agentEnv, copies.settings), workspace driv
   match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
     Ok(cfg_b) => {
       let cfg_txt = cfg_b.to_string()
-      if !cfg_txt.contains("/home-dir") || !cfg_txt.contains("ws-other") || !cfg_txt.contains("/joined-dir") {
+      if !cfg_txt.contains("/home-dir/sub") || !cfg_txt.contains("ws-other") || !cfg_txt.contains("/joined-dir") {
         panic("config.json must isolate drive.roots and drive.workspaces[ws-other], got: " + cfg_txt)
       }
     }

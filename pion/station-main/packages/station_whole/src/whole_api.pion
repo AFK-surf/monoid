@@ -1070,7 +1070,7 @@ pub fn WholeApi::note_waiting_all(self : WholeApi) -> Unit {
   let ks = self.waiting_trackers.keys()
   for i in 0..<ks.length() {
     match self.waiting_trackers.get(ks[i]) {
-      Some(wt) => wt.note("session", None)
+      Some(wt) => wt.reset()
       None => ()
     }
   }

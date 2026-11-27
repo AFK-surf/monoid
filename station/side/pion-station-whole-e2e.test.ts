@@ -2971,41 +2971,31 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
   assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
 
-  // 1. Vault HTTP routes wired with structured JSON `code: "vault_needs_lock"` (never flattened!)
+  // 1. Vault HTTP routes wired live over personal vault lock outside security mode
   for (const path of ["/vault/vaults", "/vault/discover", "/vault/asks", "/vault/joins", "/vault/items", "/vault/boxes"]) {
     const r = await adminCall(conn, "GET", path);
-    assert.equal(r.status, 409, `GET ${path} expected 409 vault_needs_lock, got ${r.status}: ${r.body.toString()}`);
-    const j = JSON.parse(r.body.toString("utf8"));
-    assert.equal(j.code, "vault_needs_lock", `GET ${path} must preserve structured code: ${r.body.toString()}`);
+    assert.equal(r.status, 200, `GET ${path} expected 200 over personal vault lock, got ${r.status}: ${r.body.toString()}`);
   }
-  // Unimplemented ops return honest 501 (ZERO fake 200 stubs!)
-  for (const [m, p] of [
-    ["GET", "/vault/uses"],
-    ["GET", "/vault/plain"],
-    ["GET", "/stars"],
-    ["GET", "/resources"],
-    ["POST", "/updates"],
-    ["POST", "/updates/check"],
+  const unknownVaultItems = await adminCall(conn, "GET", "/vault/items?vault=nonexistent");
+  assert.equal(unknownVaultItems.status, 404, `GET /vault/items?vault=nonexistent expected 404, got ${unknownVaultItems.status}: ${unknownVaultItems.body.toString()}`);
+
+  // Unimplemented / unported partial ops return honest 501 (ZERO fake 200 stubs!)
+  for (const [m, p, body] of [
+    ["GET", "/vault/uses", undefined],
+    ["GET", "/vault/plain", undefined],
+    ["GET", "/stars", undefined],
+    ["GET", "/resources", undefined],
+    ["GET", "/memory", undefined],
+    ["GET", "/mcp-servers", undefined],
+    ["PUT", "/mcp-servers", JSON.stringify({ servers: {} })],
+    ["POST", "/updates", "{}"],
+    ["POST", "/updates/check", "{}"],
   ] as const) {
-    const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, m === "POST" ? Buffer.from("{}") : undefined);
+    const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 501, `${m} ${p} expected honest 501, got ${resp.status}: ${resp.body.toString()}`);
   }
 
-  // 2. Unified ConfigFile settings mutations with redaction (`mcpServers`, `agentEnv`, `updates.channel`, `drive.roots`)
-  const putMcp = await adminCall(
-    conn,
-    "PUT",
-    "/mcp-servers",
-    { "content-type": "application/json" },
-    Buffer.from(JSON.stringify({ servers: { demo: { command: "echo", env: { SECRET_KEY: "raw-mcp-secret-777" } } } })),
-  );
-  assert.equal(putMcp.status, 200, `PUT /mcp-servers failed: ${putMcp.body.toString()}`);
-  assert.ok(!putMcp.body.toString().includes("raw-mcp-secret-777"), "PUT /mcp-servers must redact env secrets");
-  const getMcp = await adminCall(conn, "GET", "/mcp-servers");
-  assert.equal(getMcp.status, 200, `GET /mcp-servers failed: ${getMcp.body.toString()}`);
-  assert.ok(getMcp.body.toString().includes("demo"), `GET /mcp-servers missing persisted server: ${getMcp.body.toString()}`);
-  assert.ok(!getMcp.body.toString().includes("raw-mcp-secret-777"), "GET /mcp-servers must redact env secrets");
-
+  // 2. Unified ConfigFile settings mutations with redaction (`agentEnv`, `updates.channel`, `drive.roots`)
   const putEnv = await adminCall(
     conn,
     "PUT",
@@ -3026,8 +3016,6 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(putCh.status, 200, `POST /updates/channel failed: ${putCh.body.toString()}`);
   const cfgDisk = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
   assert.equal(cfgDisk.updateChannel, "beta");
-  assert.equal(cfgDisk.mcpServers?.demo?.command, "echo");
-  assert.equal(cfgDisk.mcpServers?.demo?.env?.SECRET_KEY, "raw-mcp-secret-777");
   assert.equal(cfgDisk.agentEnv?.MY_API_TOKEN, "tok_secret_888");
 
   // 3. `GET /status` WaitingTracker runs real SQLite turns join with zero SQL errors + `/workspaces`

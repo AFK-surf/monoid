@@ -185,16 +185,80 @@ pub fn parse_device_tunnel_http_req(carry : Bytes) -> Option[(String, String, Ar
 // 2. Wire WholeCore Runtime Hooks (`CloudStore` lock_of, restart, logins, signins)
 // ---------------------------------------------------------------------------
 
-fn build_personal_lock_sources(
-  ctx : DaemonCtx,
-  core : station_whole::WholeCore,
+pub fn record_seen_member(
+  seen_members : Map[String, Map[String, (String, String)]],
   ws : String,
+  sub : String,
+  email : String,
+  role : String,
+) -> Unit {
+  if ws.length() == 0 || sub.length() == 0 {
+    return
+  }
+  let m = match seen_members.get(ws) {
+    Some(existing) => existing
+    None => {
+      let fresh : Map[String, (String, String)] = Map::new()
+      seen_members.set(ws, fresh)
+      fresh
+    }
+  }
+  m.set(sub, (email, role))
+}
+
+fn person_chain_sub(chain : Array[form::Json]) -> Option[String] {
+  if chain.length() == 0 {
+    return None
+  }
+  match form::json_field(Some(chain[0]), "ws") {
+    Some(form::Json::Str(ws)) => {
+      if ws.starts_with("person:") {
+        Some(ws.slice(7, ws.length()))
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn is_full_membership_ws(
+  cloud : station_cloud::CloudStore,
+  ws : String,
+  now_secs : Double,
+) -> Bool {
+  if ws.length() == 0 {
+    return false
+  }
+  let ms = cloud.full_memberships(now_secs)
+  for i in 0..<ms.length() {
+    if ms[i].workspace == ws {
+      return true
+    }
+  }
+  false
+}
+
+fn build_personal_lock_sources(
+  cloud : station_cloud::CloudStore,
+  vault_store : Option[station_vault::VaultStore],
+  known_members : (String) -> (Map[String, String], Map[String, String]),
+  ws : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
 ) -> station_cloud::PersonalLockSources {
-  let member_emails : Map[String, String] = Map::new()
-  let member_roles : Map[String, String] = Map::new()
+  let (member_emails, member_roles) = known_members(ws)
+  let ws_subs : Map[String, Bool] = Map::new()
+  let ek = member_emails.keys()
+  for i in 0..<ek.length() {
+    ws_subs.set(ek[i], true)
+  }
+  let rk = member_roles.keys()
+  for i in 0..<rk.length() {
+    ws_subs.set(rk[i], true)
+  }
   let vault_summaries : Array[station_cloud::VaultRecordSummary] = []
   let box_summaries : Array[station_cloud::BoxCertSummary] = []
-  match core.store.vault_store {
+  match vault_store {
     Some(vs) => {
       match vs.vaults(ws) {
         Ok(vs_list) => {
@@ -208,12 +272,20 @@ fn build_personal_lock_sources(
               Some(form::Json::Arr(xs)) => {
                 for j in 0..<xs.length() {
                   match xs[j] {
-                    form::Json::Str(s) => mem_arr.push(s)
+                    form::Json::Str(s) => {
+                      mem_arr.push(s)
+                      if !del && s.length() > 0 {
+                        ws_subs.set(s, true)
+                      }
+                    }
                     _ => ()
                   }
                 }
               }
               _ => ()
+            }
+            if !del && owner.length() > 0 {
+              ws_subs.set(owner, true)
             }
             vault_summaries.push(station_cloud::VaultRecordSummary::{
               owner: owner,
@@ -239,16 +311,102 @@ fn build_personal_lock_sources(
     }
     None => ()
   }
-  let vf = core.api.auth_policy.verify_fn
+  // Filter `person_chains` strictly to members belonging to target workspace `ws`
+  // so another workspace's personal chains never leak into this workspace's vault lock or GET /vault/boxes.
+  let filtered_chains : Array[(String, Array[form::Json])] = []
+  for ci in 0..<cloud.person_chains.length() {
+    let (g, ch) = cloud.person_chains[ci]
+    match person_chain_sub(ch) {
+      Some(sub) => {
+        if ws_subs.contains(sub) {
+          filtered_chains.push((g, ch))
+        }
+      }
+      None => ()
+    }
+  }
   station_cloud::PersonalLockSources::{
-    chains: ctx.cloud.person_chains,
+    chains: filtered_chains,
     member_emails: member_emails,
     member_roles: member_roles,
     vaults: vault_summaries,
     boxes: box_summaries,
     cert_ok: fn(l : lock::LockState, b : station_cloud::BoxCertSummary) -> Bool {
-      station_vault::cert_ok_for_lock(l, b.raw, verify_fn=vf)
+      station_vault::cert_ok_for_lock(l, b.raw, verify_fn=verify_fn)
     },
+  }
+}
+
+/// Resolve the effective Vault `LockState` for `ws`, sharing the exact live lock state as Mesh
+/// admission (`cloud.locked(now_secs, ws=joined_ws)`):
+/// - If `ws` is not a full membership of this station: `None`.
+/// - If workspace security mode is active (`Some(eff)`): returns `eff.state` when `!eff.waiting`,
+///   and `None` when `eff.waiting` or broken (`eff.state == None`), NEVER falling back to personal lock.
+/// - Only when security mode is explicitly off (`None`): builds `personal_vault_lock` scoped strictly
+///   to `ws`'s verified members, roles, vaults, and person chains.
+pub fn resolve_vault_lock_for_ws(
+  cloud : station_cloud::CloudStore,
+  vault_store : Option[station_vault::VaultStore],
+  known_members : (String) -> (Map[String, String], Map[String, String]),
+  ws : String,
+  now_secs : Double,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Option[lock::LockState] {
+  if !is_full_membership_ws(cloud, ws, now_secs) {
+    return None
+  }
+  let home_ws = match cloud.home() {
+    Some(h) => h
+    None => ""
+  }
+  let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
+  match cloud.locked(now_secs, ws=joined_ws) {
+    Some(eff) => if eff.waiting { None } else { eff.state }
+    None => {
+      let sources = build_personal_lock_sources(cloud, vault_store, known_members, ws, verify_fn)
+      if sources.chains.length() > 0 || sources.member_emails.keys().length() > 0 || sources.member_roles.keys().length() > 0 || sources.vaults.length() > 0 {
+        Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=verify_fn))
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// Resolve the selected personal chains for `GET /vault/boxes` in `ws`:
+/// returns `{}` whenever `ws` is not a full membership or security mode is not explicitly off,
+/// and otherwise returns strictly the chains belonging to `ws`'s members.
+pub fn resolve_vault_chains_for_ws(
+  cloud : station_cloud::CloudStore,
+  vault_store : Option[station_vault::VaultStore],
+  known_members : (String) -> (Map[String, String], Map[String, String]),
+  ws : String,
+  now_secs : Double,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> form::Json {
+  if !is_full_membership_ws(cloud, ws, now_secs) {
+    return form::Json::Obj([])
+  }
+  let home_ws = match cloud.home() {
+    Some(h) => h
+    None => ""
+  }
+  let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
+  match cloud.locked(now_secs, ws=joined_ws) {
+    Some(_) => form::Json::Obj([])
+    None => {
+      let sources = build_personal_lock_sources(cloud, vault_store, known_members, ws, verify_fn)
+      let picked = station_cloud::personal_vault_chains(ws, sources, verify_fn=verify_fn)
+      let fields : Array[(String, form::Json)] = []
+      let ks = picked.keys()
+      for i in 0..<ks.length() {
+        match picked.get(ks[i]) {
+          Some(ch) => fields.push((ks[i], form::Json::Arr(ch)))
+          None => ()
+        }
+      }
+      form::Json::Obj(fields)
+    }
   }
 }
 
@@ -257,43 +415,36 @@ pub fn wire_whole_core_runtime_hooks(
   core : station_whole::WholeCore,
   logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
+  seen_members : Map[String, Map[String, (String, String)]],
 ) -> Unit {
   let _ = browser
-  core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
-    match ctx.cloud.lock_of(Some(ws)) {
-      Some(kept) => match kept.state {
-        Some(l) => Some(l)
-        None => {
-          let sources = build_personal_lock_sources(ctx, core, ws)
-          if sources.chains.length() > 0 {
-            Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=core.api.auth_policy.verify_fn))
-          } else {
-            None
+  let known_members = fn(ws : String) -> (Map[String, String], Map[String, String]) {
+    let emails : Map[String, String] = Map::new()
+    let roles : Map[String, String] = Map::new()
+    match seen_members.get(ws) {
+      Some(m) => {
+        let subs = m.keys()
+        for i in 0..<subs.length() {
+          match m.get(subs[i]) {
+            Some((em, rl)) => {
+              emails.set(subs[i], em)
+              roles.set(subs[i], rl)
+            }
+            None => ()
           }
         }
       }
-      None => {
-        let sources = build_personal_lock_sources(ctx, core, ws)
-        if sources.chains.length() > 0 {
-          Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=core.api.auth_policy.verify_fn))
-        } else {
-          None
-        }
-      }
+      None => ()
     }
+    (emails, roles)
+  }
+  core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
+    let now_s = (host_shim::wall_ms() / 1000L).to_double()
+    resolve_vault_lock_for_ws(ctx.cloud, core.store.vault_store, known_members, ws, now_s, core.api.auth_policy.verify_fn)
   })
   core.api.hooks.chains_of = Some(fn(ws : String) -> form::Json {
-    let sources = build_personal_lock_sources(ctx, core, ws)
-    let picked = station_cloud::personal_vault_chains(ws, sources, verify_fn=core.api.auth_policy.verify_fn)
-    let fields : Array[(String, form::Json)] = []
-    let ks = picked.keys()
-    for i in 0..<ks.length() {
-      match picked.get(ks[i]) {
-        Some(ch) => fields.push((ks[i], form::Json::Arr(ch)))
-        None => ()
-      }
-    }
-    form::Json::Obj(fields)
+    let now_s = (host_shim::wall_ms() / 1000L).to_double()
+    resolve_vault_chains_for_ws(ctx.cloud, core.store.vault_store, known_members, ws, now_s, core.api.auth_policy.verify_fn)
   })
   // Honest 501 until real hot handover restart is wired (never fake restart by stopping the daemon).
   core.api.hooks.on_restart = None
