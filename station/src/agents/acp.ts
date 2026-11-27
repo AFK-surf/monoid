@@ -479,8 +479,8 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
     return { kind: "acp", flavor: this.runtime(), kept: this.keepsTranscript };
   }
 
-  /// A session of it, not open yet.
-  protected abstract session(options: OpenOptions, events: Events): S;
+  /// A session of it, not open yet (`start`: what `starting` built when opening a new process).
+  protected abstract session(options: OpenOptions, events: Events, start?: AcpStart): S;
   /// How its process is started for a session (`probe`: one opened only to learn what it offers, with no tools of the
   /// station's, nothing of it kept). What must be there first is made here; a session it would not find to load fails
   /// here, before anything starts, so that the caller starts afresh.
@@ -505,7 +505,7 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
     let failed = false;
     const session = this.session(options, (event) => {
       if (!failed) events(event);
-    });
+    }, start);
     session.toolsUrl = options.mcpUrl;
     await this.start(session, options, start.command, start.args, start.env);
     const signal = options.signal;
@@ -553,7 +553,7 @@ export abstract class AcpDriver<S extends AcpSession> extends OwnProcessDriver<S
     return session;
   }
 
-  protected crashed(options: OpenOptions, replayed: Replayed, _info: RunnerInfo, events: Events): S {
+  protected crashed(options: OpenOptions, replayed: Replayed, _info: RunnerInfo, events: Events): S | Promise<S> {
     const session = this.session(options, events);
     session.model = options.model ?? profileModel(options.profile) ?? session.model;
     session.replayed(replayed, options.resume);

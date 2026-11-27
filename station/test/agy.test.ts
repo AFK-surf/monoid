@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
-import { AGY_SKILL_BUDGET, agySkillBytes, agySkills, agySkillsFitted, agyWithOmittedSkills, AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTakeBack, agyTokenReady, agyKeychain, goKeyringValue, readLinuxAgyKeyring, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
+import { AGY_SKILL_BUDGET, AGY_STOP_COMMAND, AGY_STOP_HOOK, agySkillBytes, agySkills, agySkillsFitted, agyWithOmittedSkills, AGY_CATALOG_RETRY_MS, AGY_FILE_TOKENS, AGY_TOOL_BUDGET, AGY_TOOL_CEILING, AGY_TOOL_WRAP, AgyDriver, AgyNoCatalog, SESSIONS, agyAccountFile, agyBringIn, agyLentFile, agyPlan, agyPlanIn, agyRenew, agySessionPlan, agyTakeBack, agyTokenReady, agyKeychain, goKeyringValue, readLinuxAgyKeyring, agyBaseModel, agyCatalog, agyConversations, agyEnv, agyHome, agyToken, agyVariant, classifyFailure, geminiDir, noticeFailure } from "../src/agents/agy.ts";
 import { REPO_RULES_HOOK } from "../src/agents/repo-rules.ts";
 import type { OpenOptions, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
@@ -1973,6 +1974,9 @@ test("opening Antigravity sessions keeps --gemini-dir/config/hooks.json enabled 
   assert.equal(cmd.includes(REPO_RULES_HOOK), true);
   assert.match(cmd, platform.os === "windows" ? /^call ".*" ".*" 2>nul \|\| echo \{\}$/ : /\|\| printf '\{\}'$/);
   assert.equal(hooks.stillfail.PostInvocation[0].command, cmd);
+  const stopCmd: string = hooks.stillfail.Stop[0].command;
+  assert.equal(stopCmd.includes(AGY_STOP_HOOK), true);
+  assert.match(stopCmd, platform.os === "windows" ? /^call ".*" ".*" 2>nul \|\| echo \{\}$/ : /\|\| printf '\{\}'$/);
 
   // Opening a terminal-continued session (`instructions: ""`) on the same profile home while `s` is alive leaves
   // shared `hooks.json` enabled and silences only that process's hook via `STILLFAIL_REPO_RULES=0` (scrubbed otherwise).
@@ -1981,6 +1985,7 @@ test("opening Antigravity sessions keeps --gemini-dir/config/hooks.json enabled 
   try {
     const afterTerm = JSON.parse(readFileSync(hooksFile, "utf8"));
     assert.equal(Array.isArray(afterTerm.stillfail?.PostToolUse), true);
+    assert.equal(Array.isArray(afterTerm.stillfail?.Stop), true);
     assert.equal(afterTerm.stillfail?.enabled, undefined);
   } finally {
     await s2.dispose();
@@ -1989,12 +1994,17 @@ test("opening Antigravity sessions keeps --gemini-dir/config/hooks.json enabled 
 
   assert.equal(agyEnv({ ...options, instructions: "" }).STILLFAIL_REPO_RULES, "0");
   const prev = process.env.STILLFAIL_REPO_RULES;
+  const prevState = process.env.STILLFAIL_AGY_STATE_DIR;
   process.env.STILLFAIL_REPO_RULES = "0";
+  process.env.STILLFAIL_AGY_STATE_DIR = "/tmp/leaked-agy-state";
   try {
     assert.equal(agyEnv(options).STILLFAIL_REPO_RULES, undefined);
+    assert.equal(agyEnv(options).STILLFAIL_AGY_STATE_DIR, undefined);
   } finally {
     if (prev === undefined) delete process.env.STILLFAIL_REPO_RULES;
     else process.env.STILLFAIL_REPO_RULES = prev;
+    if (prevState === undefined) delete process.env.STILLFAIL_AGY_STATE_DIR;
+    else process.env.STILLFAIL_AGY_STATE_DIR = prevState;
   }
 });
 
@@ -2419,4 +2429,100 @@ test("agy tells the session when workspace skills are omitted from .agent/skills
   const sTerm = await term.driver.open({ ...term.options, cwd: termWs, skills: shared, instructions: "" }, () => {});
   assert.equal(rpc(term.dump).find((m) => m.method === "session/new").params._meta, undefined);
   await sTerm.dispose();
+});
+
+function invokeStopHook(stateDir: string, conversationId: string, fullyIdle: boolean) {
+  const shell = process.platform === "win32" ? ["cmd", ["/c", AGY_STOP_COMMAND]] as const : ["sh", ["-c", AGY_STOP_COMMAND]] as const;
+  const ran = spawnSync(shell[0], shell[1], {
+    input: JSON.stringify({ conversationId, hookEventName: "Stop", fullyIdle, terminationReason: "NO_TOOL_CALL", cwd: data }),
+    env: { ...process.env, STILLFAIL_AGY_STATE_DIR: stateDir },
+  });
+  assert.equal(ran.status, 0, ran.stderr.toString());
+}
+
+test("Antigravity Stop hook tracks background work before turnEnded, ignores subagent stops, clears via watcher while idle, and cleans up on dispose", async () => {
+  const { options, events, driver, dump } = setup();
+  let bgAtTurnEnd: ReturnType<Awaited<ReturnType<AgyDriver["open"]>>["background"]> | null = null;
+  let session!: Awaited<ReturnType<AgyDriver["open"]>>;
+  session = await driver.open(options, (e) => {
+    events.push(e);
+    if (e.type === "turnEnded" && bgAtTurnEnd === null) bgAtTurnEnd = session.background();
+  });
+  const started = JSON.parse(readFileSync(dump, "utf8").trim().split("\n")[0]!);
+  assert.equal(typeof started.stateDir, "string");
+  const stateDir: string = started.stateDir;
+  assert.deepEqual(session.background(), []);
+
+  // Turn ends with fullyIdle: false (subagent / background command / schedule active).
+  await session.prompt("bg-hold");
+  await until(() => ended(events).length === 1);
+  // `settled()` must have read the Stop hook's file BEFORE `turnEnded` reached the listener (zero race with evictIdle).
+  assert.equal(bgAtTurnEnd!.length, 1);
+  assert.equal(bgAtTurnEnd![0]!.id, "agy-background");
+  assert.equal(bgAtTurnEnd![0]!.kind, "command");
+  assert.equal(typeof bgAtTurnEnd![0]!.startedAt, "number");
+  assert.equal(session.background().length, 1);
+  const taskEvents = () => events.filter((e) => e.type === "live" && e.event.kind === "tasks").map((e) => (e as Extract<RuntimeEvent, { type: "live" }>).event);
+  assert.equal((taskEvents().at(-1) as { tasks: unknown[] } | undefined)?.tasks.length, 1);
+
+  // A subagent's own Stop hook with fullyIdle: true must not clear the parent's holding state.
+  await session.prompt("bg-subagent-stop");
+  await until(() => ended(events).length === 2);
+  assert.equal(session.background().length, 1);
+
+  // Later, while idle (no new prompt), the parent's reactive turn finishes and runs Stop with fullyIdle: true.
+  invokeStopHook(stateDir, session.id(), true);
+  await until(() => session.background().length === 0);
+  assert.deepEqual(session.background(), []);
+  assert.deepEqual((taskEvents().at(-1) as { tasks: unknown[] }).tasks, []);
+
+  // Disposing removes the per-process state directory.
+  await session.dispose();
+  assert.equal(existsSync(stateDir), false);
+});
+
+test("Antigravity handover and crash recovery preserve background holding state and clear via watcher when fullyIdle turns true", async () => {
+  // 1. Handover (with snapshot)
+  const { options, events, driver, dump } = setup();
+  const s1 = await driver.open(options, (e) => events.push(e));
+  const stateDir: string = JSON.parse(readFileSync(dump, "utf8").trim().split("\n")[0]!).stateDir;
+  await s1.prompt("bg-hold");
+  await until(() => ended(events).length === 1);
+  assert.equal(s1.background().length, 1);
+
+  await driver.freeze();
+  const snap = s1.snapshot();
+  driver.detach();
+  await allLeft();
+  assert.equal(existsSync(stateDir), true, "handover keeps stateDir for the live process");
+
+  const driver2 = new AgyDriver({ data });
+  drivers.push(driver2);
+  const events2: RuntimeEvent[] = [];
+  const s2 = await driver2.adopt(options, snap, (e) => events2.push(e));
+  assert.equal(s2.background().length, 1, "adopted session preserves holding state across handover");
+  invokeStopHook(stateDir, s2.id(), true);
+  await until(() => s2.background().length === 0);
+  assert.deepEqual(s2.background(), []);
+  await s2.dispose();
+  assert.equal(existsSync(stateDir), false);
+
+  // 2. Crash recovery (no snapshot)
+  const c = setup();
+  const c1 = await c.driver.open(c.options, (e) => c.events.push(e));
+  const cStateDir: string = JSON.parse(readFileSync(c.dump, "utf8").trim().split("\n")[0]!).stateDir;
+  await c1.prompt("bg-hold");
+  await until(() => ended(c.events).length === 1);
+  assert.equal(c1.background().length, 1);
+
+  c.driver.detach();
+  await allLeft();
+  const cDriver2 = new AgyDriver({ data });
+  drivers.push(cDriver2);
+  const c2 = await cDriver2.adopt(c.options, null, () => {});
+  assert.equal(c2.background().length, 1, "crash recovery discovers stateDir and restores holding state");
+  invokeStopHook(cStateDir, c2.id(), true);
+  await until(() => c2.background().length === 0);
+  await c2.dispose();
+  assert.equal(existsSync(cStateDir), false);
 });

@@ -9,6 +9,7 @@
 // (session/new, session/load) of all its processes answer as 1.5.9 does with its backend not reached: no models, and
 // every model refused after (counted in FAKE_DUMP.offline). FAKE_AGY_SILENT: initialize never answered (its backend out of
 // reach as it starts), nothing written.
+import { spawnSync } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -237,7 +238,22 @@ const update = (u) => say({ method: 'session/update', params: { sessionId, updat
 const dir = args[args.indexOf('--gemini-dir') + 1];
 const conversations = join(dir, 'antigravity-cli', 'conversations');
 mkdirSync(conversations, { recursive: true });
-if (dump) appendFileSync(dump, JSON.stringify({ args, key: process.env.GEMINI_API_KEY ?? null, adcAuth: process.env.AGY_ADC_AUTH ?? null, project: process.env.GOOGLE_CLOUD_PROJECT ?? null, location: process.env.GOOGLE_CLOUD_LOCATION ?? null, credentials: process.env.GOOGLE_APPLICATION_CREDENTIALS ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null, forceFileTokens: process.env.AGY_CLI_FORCE_FILE_TOKEN_STORAGE ?? null }) + '\n');
+function runStopHooks(convId, fullyIdle) {
+  const file = join(dir, 'config', 'hooks.json');
+  if (!existsSync(file)) return;
+  let hooks;
+  try { hooks = JSON.parse(readFileSync(file, 'utf8')); } catch { return; }
+  const payload = JSON.stringify({ conversationId: convId, hookEventName: 'Stop', fullyIdle, terminationReason: 'NO_TOOL_CALL', cwd: process.cwd() });
+  for (const cfg of Object.values(hooks ?? {})) {
+    if (!cfg || typeof cfg !== 'object' || cfg.enabled === false || !Array.isArray(cfg.Stop)) continue;
+    for (const h of cfg.Stop) {
+      if (typeof h?.command !== 'string') continue;
+      if (process.platform === 'win32') spawnSync('cmd', ['/c', h.command], { input: payload, env: process.env });
+      else spawnSync('sh', ['-c', h.command], { input: payload, env: process.env });
+    }
+  }
+}
+if (dump) appendFileSync(dump, JSON.stringify({ args, key: process.env.GEMINI_API_KEY ?? null, adcAuth: process.env.AGY_ADC_AUTH ?? null, project: process.env.GOOGLE_CLOUD_PROJECT ?? null, location: process.env.GOOGLE_CLOUD_LOCATION ?? null, credentials: process.env.GOOGLE_APPLICATION_CREDENTIALS ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null, forceFileTokens: process.env.AGY_CLI_FORCE_FILE_TOKEN_STORAGE ?? null, stateDir: process.env.STILLFAIL_AGY_STATE_DIR ?? null }) + '\n');
 const models = process.env.FAKE_AGY_SUBSCRIPTION
   ? {
       currentModelId: 'gemini-4-carbon-high',
@@ -316,6 +332,9 @@ for await (const line of createInterface({ input: process.stdin })) {
     if (text === 'quota-said') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota-after-calls') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Reading it.' } }); update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } }); update({ sessionUpdate: 'tool_call', toolCallId: 'q1', title: 'view_file', kind: 'read', status: 'in_progress', rawInput: { AbsolutePath: '/a.txt' } }); update({ sessionUpdate: 'tool_call_update', toolCallId: 'q1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'file contents' } }] }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 22m58s.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota') { say({ id: m.id, error: { code: -32603, message: 'RESOURCE_EXHAUSTED: You have exhausted your capacity on this model. Your quota will reset after 4h.' } }); held = null; continue; }
+    if (text === 'bg-hold') { runStopHooks(sessionId, false); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'waiting on subagent' } }); reply(m.id, { stopReason: 'end_turn', usage: { totalTokens: 100, inputTokens: 80, outputTokens: 20 } }); held = null; continue; }
+    if (text === 'bg-subagent-stop') { runStopHooks(randomUUID(), true); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'subagent done' } }); reply(m.id, { stopReason: 'end_turn', usage: { totalTokens: 100, inputTokens: 80, outputTokens: 20 } }); held = null; continue; }
+    if (text === 'bg-clear') { runStopHooks(sessionId, true); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'all background done' } }); reply(m.id, { stopReason: 'end_turn', usage: { totalTokens: 100, inputTokens: 80, outputTokens: 20 } }); held = null; continue; }
     update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } });
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first ' } });
     if (text === 'hold' || text === 'hold-steer' || text.includes('hold-turn')) continue;
