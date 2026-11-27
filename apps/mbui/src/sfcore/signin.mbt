@@ -640,9 +640,9 @@ pub let trace_switches : Array[String] = [
   // asked with the start. Only the replay reads it: a trace without it has its replay open the page as a step
   // (Flow::open_page), as its run's old view, built only once drawn, asked nothing of it till then)
   "MBUI_START_PAGE",
-  // (PR-B2b extended read-only/delta topic retention: `workspaces` lasting, `jobLog`/`chatFeedback` delta keep=8,
-  // `profilesOverview`/`presets`/`otherPresets`/`releases`/`fonts` showKept; unconditional `sensitive` cap is never
-  // gated by this switch. A trace without it keeps the pre-B2b retention table so historical replays stay identical)
+  // (PR-B2b extended read-only/delta topic retention: `jobLog`/`chatFeedback` delta keep=8,
+  // `profilesOverview`/`presets`/`otherPresets`/`releases`/`fonts` showKept; `workspaces` stays LIVE and
+  // unconditional `sensitive` cap is never gated by this switch. A trace without it keeps the pre-B2b retention table)
   "MBUI_TOPIC_POLICY",
 ]
 

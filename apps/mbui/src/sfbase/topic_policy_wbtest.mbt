@@ -309,3 +309,53 @@ test "chat_remote_open press_wait waits while terminals is retained (-2) and ope
   t.draw()
   assert_true(@sf.last_presented() > before)
 }
+
+///|
+test "chat_remote_open timeout menu keeps live terminals guard and recovers when fresh arrives" {
+  let prev_cap = terminals_capable_fn.val
+  terminals_capable_fn.val = fn() { true }
+  defer {
+    terminals_capable_fn.val = prev_cap
+    @sf.presenters_reset()
+  }
+  let t = @ui.Tester::new(fn(_) {  }, tree=fn(_) {  })
+  let tree = @ui.view_tree().unwrap()
+  let terms_ver : @signals.Signal[Int] = @signals.signal(-2)
+  let terms_open : @signals.Signal[Bool] = @signals.signal(true)
+  let base = made_source()
+  let src : Source = {
+    ..base,
+    asks_terminals: fn() { true },
+    topic_read: fn(name, _params) {
+      if name == "terminals" {
+        {
+          value: Some({ "known": true, "outdated": false, "open": terms_open.get(), "terminals": [] }),
+          error: None,
+          version: terms_ver.get(),
+        }
+      } else {
+        { value: None, error: None, version: 0 }
+      }
+    },
+  }
+  let r : ChatRef = { station: "w1/s1", session: "c-1", title: "Chat", station_name: "Studio" }
+  let v = chat_view_made({ "key": "c-2", "canTerminal": true, "canBrowser": false, "screens": [] })
+  chat_remote_caps[v.key] = (false, true)
+  defer { chat_remote_caps.remove(v.key) }
+  let before = @sf.last_presented()
+  tree.event(t.time(), fn() {
+    chat_remote_open(src, r, v, from=@sf.at_point(20.0, 20.0))
+  })
+  t.draw()
+  assert_eq(@sf.last_presented(), before)
+
+  // Advance past press_wait deadline: menu opens after timeout while terminals is still retained (-2).
+  t.run_for(@sf.open_hold_ms + 50.0)
+  assert_true(@sf.last_presented() > before)
+
+  // Fresh arrival (version = 1) with open: true makes live sub confirmed and capable while menu is still open.
+  tree.event(t.time() + 10.0, fn() { terms_ver.set(1) })
+  t.draw()
+  let live_st = src.topic("terminals", { "station": Json::string("w1/s1") }).get()
+  assert_true(live_st.is_confirmed() && flag(live_st.value, "open"))
+}

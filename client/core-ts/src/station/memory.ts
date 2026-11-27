@@ -108,6 +108,29 @@ export class Memory {
     if (kept) this.#keeper?.write(key, undefined);
   }
 
+  /// Deletes all in-memory and keeper-persisted keys starting with `prefix` (including entries not yet loaded into memory).
+  deletePrefix(prefix: string): void {
+    for (const k of [...this.#values.keys()]) {
+      if (k.startsWith(prefix)) this.#values.delete(k);
+    }
+    for (const k of [...this.#looked]) {
+      if (k.startsWith(prefix)) this.#looked.delete(k);
+    }
+    for (const k of [...this.#fresh]) {
+      if (k.startsWith(prefix)) this.#fresh.delete(k);
+    }
+    for (const k of [...this.#held]) {
+      if (k.startsWith(prefix)) this.#held.delete(k);
+    }
+    for (const k of [...this.#due]) {
+      if (k.startsWith(prefix)) this.#due.delete(k);
+    }
+    for (const k of [...this.#written.keys()]) {
+      if (k.startsWith(prefix)) this.#written.delete(k);
+    }
+    this.#keeper?.bound(prefix, 0);
+  }
+
   #boundedRule(key: string): readonly [string, number] | undefined {
     for (const rule of this.#bounded) if (key.startsWith(rule[0])) return rule;
     return undefined;

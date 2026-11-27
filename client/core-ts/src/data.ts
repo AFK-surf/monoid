@@ -1673,6 +1673,16 @@ export class Data {
     this.of(station)?.boundStationDocs(station, `${MEMORY}${prefix}`, most);
   }
 
+  /// Drops persisted station memory entries matching any of `prefixes` across `ws` (or all workspaces when `ws === null`),
+  /// including offline or not-yet-linked stations so unloaded disk entries cannot resurrect after an auth boundary.
+  clearStationMemory(ws: string | null, prefixes: readonly string[]): void {
+    for (const db of this.#dbs.values()) {
+      for (const prefix of prefixes) {
+        db.dropWorkspaceStationDocs(ws, `${MEMORY}${prefix}`);
+      }
+    }
+  }
+
   // ── records by table and key: the account's own and the device's ──
 
   /// A value the core keeps itself: `me` by account; a new chat's picks (`choice`), chats' links and the chats opened

@@ -2033,3 +2033,137 @@ test "remote_front_in and remote_row_step skip retained rows and select once con
   screens_ver.set(1)
   assert_true(remote_front_in(src, "ws1", lines) is Some(_))
 }
+
+///|
+test "remote_row_close re-verifies live target existence and capability at invocation time" {
+  let screens_val : @signals.Signal[Json] = @signals.signal({
+    "known": true,
+    "outdated": false,
+    "browser": true,
+    "control": false,
+    "screens": [{ "id": "browser:u_1", "kind": "browser", "userTab": true, "closable": true, "title": "Docs" }],
+  })
+  let terms_val : @signals.Signal[Json] = @signals.signal({
+    "known": true,
+    "outdated": false,
+    "open": false,
+    "terminals": [{ "id": "term-1", "cwd": "/work/proj", "ended": false }],
+  })
+  let calls : Array[(String, Json)] = []
+  let base = @sffixture.fixture("settings")
+  let src : Source = {
+    ..base,
+    asks_terminals: fn() { true },
+    topic_read: fn(name, params) {
+      if name == "screens" {
+        { value: Some(screens_val.get()), error: None, version: 1 }
+      } else if name == "terminals" {
+        { value: Some(terms_val.get()), error: None, version: 1 }
+      } else {
+        (base.topic_read)(name, params)
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      done(Ok(Json::null()))
+    },
+  }
+  let term_row : RemoteRow = {
+    key: "t/ws1/st1/term-1",
+    station: "ws1/st1",
+    kind: "terminal",
+    id: "term-1",
+    icon: "terminal",
+    title: "proj",
+    under: "/work/proj",
+    agent: false,
+    closable: true,
+    cwd: "/work/proj",
+    watch: false,
+    last: true,
+  }
+  let tab_row : RemoteRow = {
+    key: "s/ws1/st1/browser:u_1",
+    station: "ws1/st1",
+    kind: "browser",
+    id: "browser:u_1",
+    icon: "web",
+    title: "Docs",
+    under: "",
+    agent: false,
+    closable: true,
+    cwd: "",
+    watch: false,
+    last: true,
+  }
+  // 1. Fresh but capability revoked (open: false / control: false): 0 write calls.
+  remote_row_close(src, "ws1", term_row)
+  remote_row_close(src, "ws1", tab_row)
+  assert_eq(calls.length(), 0)
+
+  // 2. Fresh and capable, but target ended/removed or closable: false: still 0 write calls.
+  terms_val.set({ "known": true, "outdated": false, "open": true, "terminals": [{ "id": "term-1", "cwd": "/work/proj", "ended": true }] })
+  screens_val.set({ "known": true, "outdated": false, "browser": true, "control": true, "screens": [{ "id": "browser:u_1", "kind": "browser", "closable": false, "title": "Docs" }] })
+  remote_row_close(src, "ws1", term_row)
+  remote_row_close(src, "ws1", tab_row)
+  assert_eq(calls.length(), 0)
+}
+
+///|
+test "preset_others_content reactively updates as otherPresets topic changes" {
+  let state : @signals.Signal[@sfbase.TopicState?] = @signals.signal(
+    Some({
+      value: Some({
+        "reading": false,
+        "presets": [{ "id": "p1", "station": "ws1/st1", "name": "Alpha Preset", "whose": "Bob", "summary": "app" }],
+      }),
+      error: None,
+      version: 1,
+      waiting: false,
+    }),
+  )
+  let base = @sffixture.fixture("settings")
+  let t = station_part_tester(fn(p) {
+    preset_others_content(
+      p,
+      base,
+      rig_workspace,
+      "ws1/st1",
+      [],
+      "",
+      state.untracked(),
+      fn() { state.get() },
+      fn() {  },
+      fn() {  },
+      false,
+      false,
+    )
+  }, w=420.0, h=600.0, platform=0)
+  assert_true(t.find("Alpha Preset") is Some(_))
+  assert_true(t.find("Beta Preset") is None)
+
+  // Late station answer arrives: Beta Preset appears reactively without reopening the panel.
+  state.set(
+    Some({
+      value: Some({
+        "reading": false,
+        "presets": [
+          { "id": "p1", "station": "ws1/st1", "name": "Alpha Preset", "whose": "Bob", "summary": "app" },
+          { "id": "p2", "station": "ws1/st2", "name": "Beta Preset", "whose": "Eve", "summary": "lib" },
+        ],
+      }),
+      error: None,
+      version: 2,
+      waiting: false,
+    }),
+  )
+  t.draw()
+  assert_true(t.find("Alpha Preset") is Some(_))
+  assert_true(t.find("Beta Preset") is Some(_))
+
+  // Auth invalidation / removal clears list reactively.
+  state.set(Some({ value: Some({ "reading": false, "presets": [] }), error: None, version: 3, waiting: false }))
+  t.draw()
+  assert_true(t.find("Alpha Preset") is None)
+  assert_true(t.find("Beta Preset") is None)
+}

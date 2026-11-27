@@ -457,3 +457,45 @@ test("presets_and_jobLog_clear_link_memory_on_same_owner_downgrade_and_do_not_fa
   assert.ok(lMsg?.error !== undefined, `jobLog must surface error instead of stale value, got ${JSON.stringify(emitted)}`);
   core.close();
 });
+
+test("unloaded_persisted_jobLog_is_wiped_from_disk_on_same_owner_downgrade_and_sse_clears_old_error", async () => {
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /overview": { ...overview, profiles: [profile] },
+    "GET /presets": { presets: [preset("app", "App")], candidates: [candidate] },
+    "GET /jobs/j-disk/log?lines=200": { text: "fresh-after-downgrade\n", outputAt: 2, follows: false },
+  };
+  const { host, core, push } = await started(said as never);
+
+  // Persist a jobLog directly to the keeper disk layer WITHOUT loading it into link.memory in-memory map.
+  const diskKey = logKey("j-disk", 200);
+  core.inner.data.keepStationMemory(S, diskKey, { lines: [{ n: 0, runs: [{ text: "old-disk-secret" }] }], outputAt: 1 });
+  assert.ok(core.inner.data.stationMemory(S, diskKey) !== undefined, "seeded persisted jobLog on disk");
+
+  // Same-owner downgrade bumps workspace authGen: disk record must be wiped before any lazy memory.get().
+  core.inner.store.authGen.syncWorkspace("ws", "owner:a@x.com:role:restricted");
+  assert.equal(core.inner.data.stationMemory(S, diskKey), undefined, "unloaded persisted jobLog must be deleted from disk on auth boundary");
+  const link = core.inner.stations.link(S);
+  assert.ok(link);
+  assert.equal(link.memory.get(diskKey), undefined, "lazy memory.get() must not resurrect old persisted jobLog after downgrade");
+
+  // Verify SSE job-log clears any stale link.errors entry for that jobLog topic and projects the new log.
+  const ui = core.connect();
+  const values = new Map<number, unknown>();
+  stationLater(host, (req) => {
+    if (req.method === "GET" && req.url.includes("/admin/api/jobs/j-disk/log")) {
+      return Promise.resolve(jsonResponse(403, { error: "forbidden" }));
+    }
+    return undefined;
+  });
+  subscribe(core, ui, 1, { topic: "jobLog", station: S, job: "j-disk", lines: 200 });
+  await host.settle();
+  const errMsgs = host.takeEmitted().map(([, m]) => m as { id?: number; error?: unknown });
+  assert.ok(errMsgs.some((m) => m.id === 1 && m.error !== undefined), "initial 403 error recorded");
+
+  push("job-log", { id: "j-disk", lines: 200, text: "sse-live-line\n", outputAt: 3 });
+  await host.settle();
+  apply(host, values);
+  assert.equal(v(values, 1).lines[0].runs[0].text, "sse-live-line", "SSE job-log must clear old error and project new log");
+  core.close();
+});

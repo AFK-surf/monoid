@@ -788,5 +788,50 @@ test("otherPresets_clears_cache_on_auth_boundary_and_drops_stale_inflight_respon
   d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:changed-again");
   release();
   await d.settle();
-  assert.deepEqual(others().presets, [], "stale in-flight otherPresets response must be dropped after authGen bump");
+  assert.deepEqual(others().presets.map((p) => p.id), [theirs.id], "active subscription auto-recovers after authGen boundary");
+
+  // Once stopped, subsequent boundary clears cache without auto-restarting a read.
+  d.views.stop({ topic: "otherPresets", scope: WS });
+  d.inner.store.authGen.syncWorkspace(WS, "owner:me:role:stopped-boundary");
+  assert.deepEqual(others().presets, [], "stopped subscription stays cleared after boundary");
+  await d.settle();
+  assert.deepEqual(others().presets, [], "stopped subscription must not auto-refetch after boundary");
+});
+
+test("readOthers_routine_refresh_while_queued_preserves_at_and_never_drops_stations", async () => {
+  const a = station("a");
+  const b = station("b");
+  const boA = device(YOU, [a]);
+  const boB = device(YOU, [b]);
+  await boA.open(a);
+  await boB.open(b);
+  const onA = ok(await boA.call("add", a.address, { name: "Bo on A", dirs: ["/src/a"] })) as { id: string };
+  const onB = ok(await boB.call("add", b.address, { name: "Bo on B", dirs: ["/src/b"] })) as { id: string };
+
+  let releaseB!: () => void;
+  const gateB = new Promise<void>((resolve) => { releaseB = resolve; });
+  const origB = b.answer;
+  let holdB = true;
+  b.answer = (viewer) => (method, path, body) => {
+    if (path === "/presets/others" && holdB) {
+      holdB = false;
+      return Effect.flatMap(Effect.promise(() => gateB), () => origB(viewer)(method, path, body));
+    }
+    return origB(viewer)(method, path, body);
+  };
+
+  const d = device(ME, [a, b], true);
+  const others = () => (d.views.compute({ topic: "otherPresets", scope: WS }) as { ok: { reading: boolean; presets: { id: string }[] } }).ok;
+  d.views.start({ topic: "otherPresets", scope: WS });
+  await d.host.time.pass(20);
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "station a answered while b is still in flight");
+
+  // Routine presets event triggers readOthers while b is still in flight: must NOT flash empty or drop b.
+  d.views.readOthers(WS);
+  assert.deepEqual(others().presets.map((p) => p.id), [onA.id], "routine readOthers must preserve already-received presets");
+
+  releaseB();
+  await d.host.time.pass(20);
+  await d.settle();
+  assert.deepEqual(others().presets.map((p) => p.id).sort(), [onA.id, onB.id].sort(), "both station a and station b presets must be present");
 });

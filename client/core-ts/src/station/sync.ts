@@ -2185,8 +2185,10 @@ export class StationsSync {
         if (id && lines !== null && link) {
           // (its lines numbered on from what it said before: log-lines.ts)
           const key = logKey(id, lines);
+          const tKey = topicKey({ topic: "jobLog", station: address, job: id, lines });
+          link.errors.delete(tKey);
           link.memory.set(key, logged(link.memory.get(key), str(get(data, "text")) ?? "", get(data, "outputAt") ?? null));
-          this.onChange(address, "log", topicKey({ topic: "jobLog", station: address, job: id, lines }));
+          this.onChange(address, "log", tKey);
         }
         return;
       }
@@ -3241,17 +3243,19 @@ export class StationsSync {
 
   /// Clears cached `presets` and `jobLog` entries from `link.memory` for stations matching `ws` (or all stations when `ws === null`).
   clearProtectedMemory(ws: string | null): void {
+    // Wipe persisted PRESETS and jobLog entries across all stations of `ws` (including offline/unlinked stations)
+    // so unloaded keeper records cannot lazily resurrect after an auth boundary.
+    this.#core.data.clearStationMemory(ws, [PRESETS, LOG_KEY]);
     for (const link of this.#links.values()) {
       const address = link.addr.toString();
       if (ws !== null && ofAddress(address) !== ws) continue;
       const presetsKey = topicKey({ topic: "presets", station: address });
       link.memory.delete(PRESETS);
+      link.memory.deletePrefix(LOG_KEY);
       link.errors.delete(presetsKey);
-      for (const k of [...link.memory.keys()]) {
-        if (k.startsWith(LOG_KEY)) link.memory.delete(k);
-      }
       for (const k of [...link.errors.keys()]) {
-        if (k.startsWith("jobLog\u0000")) link.errors.delete(k);
+        const parsed = parseJson(k);
+        if (isObject(parsed) && parsed.topic === "jobLog") link.errors.delete(k);
       }
     }
   }

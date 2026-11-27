@@ -103,7 +103,8 @@ fn chat_remote_menu_show(
   terminals_val : Json?,
   from : @sf.Beside,
   along : @ui.Along,
-  terms_confirmed? : Bool = true,
+  terms_sig? : @signals.Computed[TopicState]? = None,
+  on_gone? : () -> Unit = fn() {  },
 ) -> Unit {
   let term_ok = can_terminal && (terminals_capable_fn.val)()
   if !can_browser && !term_ok {
@@ -185,21 +186,37 @@ fn chat_remote_menu_show(
       items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openTerminal"), heading=true, fn() { })))
     }
     if term_ok {
-      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", disabled=!terms_confirmed, fn() {
-        if terms_confirmed {
-          open_terminal(r.station, "new", "", r.session)
+      // Never statically disable on timeout: re-check live confirmed `terminals` + `open` at click time so late fresh arrival recovers.
+      items_out.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openChatTerminal"), icon="terminal", fn() {
+        match terms_sig {
+          Some(sig) => {
+            let st = sig.untracked()
+            if !st.is_confirmed() || !flag(st.value, "open") {
+              return
+            }
+          }
+          None => ()
         }
+        open_terminal(r.station, "new", "", r.session)
       })))
     }
     for t in open_terms {
       let tv = Some(t)
       let tid = text(tv, "id")
       let cwd = text(tv, "cwd")
-      let label = chat_terminal_short(cwd) + (if text(tv, "chat") == r.session && r.session != "" { " · " + r.title } else { "" })
-      items_out.push(Some(@sf.menu_item_of(label, icon="terminal", disabled=!terms_confirmed, fn() {
-        if terms_confirmed {
-          open_terminal(r.station, tid, cwd, text(tv, "chat"))
+      let chat_id = text(tv, "chat")
+      let label = chat_terminal_short(cwd) + (if chat_id == r.session && r.session != "" { " · " + r.title } else { "" })
+      items_out.push(Some(@sf.menu_item_of(label, icon="terminal", fn() {
+        match terms_sig {
+          Some(sig) => {
+            let st = sig.untracked()
+            if !st.is_confirmed() || !items(st.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
+              return
+            }
+          }
+          None => ()
         }
+        open_terminal(r.station, tid, cwd, chat_id)
       })))
     }
   }
@@ -209,7 +226,9 @@ fn chat_remote_menu_show(
     } else {
       @sf.t("web-pages.chat.screen")
     }
-    @sf.menu(items_out, from~, title=menu_title, along~)
+    @sf.menu(items_out, from~, title=menu_title, along~, gone=on_gone)
+  } else {
+    on_gone()
   }
 }
 
@@ -244,9 +263,18 @@ pub fn chat_remote_open(
     },
     fn() {
       let st = @signals.untracked(fn() { sub.get() })
-      let_go(src, scope)
-      let confirmed = st.is_confirmed()
-      chat_remote_menu_show(Some(src), r, v.screens, v.can_browser(), true, st.value, from, along, terms_confirmed=confirmed)
+      chat_remote_menu_show(
+        Some(src),
+        r,
+        v.screens,
+        v.can_browser(),
+        true,
+        st.value,
+        from,
+        along,
+        terms_sig=Some(sub),
+        on_gone=fn() { let_go(src, scope) },
+      )
     },
     let_go=fn() { let_go(src, scope) },
     most=@sf.open_hold_ms,

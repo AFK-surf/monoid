@@ -399,7 +399,9 @@ pub fn terminal_pane_node(
   }
   let listed = src.topic("terminals", { "station": str(at.station) })
   let screens_topic = src.topic("screens", { "station": str(at.station) })
-  let may = fn() {
+  // Display/layout capability (avoids strip-height jump while retained); write actions must use `may_act`.
+  let may = fn() { flag(listed.get().value, "open") }
+  let may_act = fn() {
     let st = listed.get()
     st.is_confirmed() && flag(st.value, "open")
   }
@@ -723,14 +725,14 @@ pub fn terminal_pane_node(
     None => ""
   }
   let set_control = fn(control : Bool) {
-    if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may) {
+    if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may_act) {
       return
     }
     cur_watch.val = !control
     (src.call)("terminal.take", obj([("view", str(sess.view)), ("control", Json::boolean(control))]), @sfbase.answer_unread)
   }
   let take = fn() {
-    if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may) {
+    if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may_act) {
       return
     }
     cur_watch.val = false
@@ -1004,7 +1006,7 @@ pub fn terminal_pane_node(
               can_browser,
               done,
               fn() {
-                if !@signals.untracked(may) {
+                if !@signals.untracked(may_act) {
                   return
                 }
                 go_terminal("new", false, @signals.untracked(cwd))
@@ -1138,7 +1140,7 @@ pub fn terminal_pane_node(
               e,
               fn() { @sf.t("web-pages.terminal.end") },
               fn() {
-                if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may) {
+                if @sfbase.is_window_switching_away(v, station_ws) || !@signals.untracked(may_act) {
                   return
                 }
                 let id = @signals.untracked(cur_terminal_id)

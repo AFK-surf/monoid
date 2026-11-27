@@ -764,9 +764,11 @@ fn preset_others_content(
   small : Bool,
   draw_head : Bool,
 ) -> Unit {
-  let others = match said {
-    Some({ value, .. }) => items(value, "presets")
-    _ => []
+  let cur_others = fn() -> Array[Json] {
+    match cur_said() {
+      Some(st) if st.is_confirmed() => items(st.value, "presets")
+      _ => []
+    }
   }
   let cur_has = fn(id : String, at : String) -> Bool {
     match @signals.untracked(cur_said) {
@@ -778,14 +780,17 @@ fn preset_others_content(
       _ => false
     }
   }
-  let has_search = others.length() >= 5
+  let has_search = match said {
+    Some({ value, .. }) => items(value, "presets").length() >= 5
+    _ => false
+  }
   let query_field = @ui.Field::new()
   let search_at : @signals.Signal[Int] = @signals.signal(0)
   let searching = fn() { query_field.text().trim().to_owned() != "" }
   let visible = fn() -> Array[Json] {
     let q = query_field.text()
     let out : Array[Json] = []
-    for p in others {
+    for p in cur_others() {
       let po = Some(p)
       if preset_matches(q, [text(po, "name"), text(po, "whose"), text(po, "summary"), text(po, "stationName")]) {
         out.push(p)
@@ -854,97 +859,110 @@ fn preset_others_content(
     })
     |> ignore
   }
-  match said {
-    Some({ error: Some(e), .. }) =>
-      b.box(fn(eb) {
-        @sf.style_node(eb, fn() { preset_empty_box })
-        @sf.words_node(eb, fn() { error_words(e) }, fn() { preset_empty_hint }) |> ignore
-      })
-      |> ignore
-    Some({ value: _, .. }) =>
-      if others.length() == 0 {
-        b.box(fn(eb) {
-          @sf.style_node(eb, fn() { preset_empty_box })
-          @sf.words_node(eb, fn() { @sf.t("web-main.preset.othersNone") }, fn() { preset_empty_hint }) |> ignore
-        })
-        |> ignore
-      } else {
-        @sf.capped_node(b, fn() { if small { 360.0 } else { dmin(440.0, dmax(220.0, @sf.over_room(b).1 * 0.55)) } }, fn(list) {
-          let other_key = fn(p : Json) -> String {
-            let po = Some(p)
-            text(po, "station") + "\n" + text(po, "id")
-          }
-          let matched_rows = fn() -> Array[Json] {
-            let q = query_field.text().trim().to_owned()
-            let out : Array[Json] = []
-            for p in others {
-              let po = Some(p)
-              if preset_matches(q, [text(po, "name"), text(po, "whose"), text(po, "summary"), text(po, "stationName")]) {
-                out.push(p)
-              }
-            }
-            out
-          }
-          let lit = list.selected(fn() {
-            if !searching() {
-              None
-            } else {
-              let r = matched_rows()
-              let idx = search_at.get()
-              if idx >= 0 && idx < r.length() { Some(other_key(r[idx])) } else { None }
-            }
-          })
-          list.each(matched_rows, other_key, fn(row_box, item) {
-            let p = item.untracked()
-            let po = Some(p)
-            let id = text(po, "id")
-            let at = text(po, "station")
-            let my_key = at + "\n" + id
-            let name = text(po, "name")
-            let sub = preset_join_meta(text(po, "whose"), text(po, "summary"))
-            let dir_name = text(po, "dirName")
-            let dir_repo = text(po, "dirRepo")
-            let maker_id = text(field(po, "maker"), "id")
-            let rt = text(po, "runtime")
-            preset_picker_row_node(
-              row_box,
-              fn() { name },
-              fn() { sub },
-              fn() { dir_name },
-              fn() { dir_repo },
-              fn() { maker_id },
-              fn() { rt },
-              fn() { id == picked },
-              fn() { lit(my_key) },
-              fn() {
-                if !cur_has(id, at) {
-                  return
-                }
-                let_go()
-                preset_pick(src, w, id, at)()
-                close()
-              },
-              action=(
-                "copy",
-                fn() { @sf.t("web-main.preset.copyItem", args=[("name", name)]) },
-                fn(_) {
-                  if !cur_has(id, at) {
-                    return
-                  }
-                  preset_copy_run(src, w, address, id, stations, close)
-                },
-              ),
-            )
-          })
-          list.show(at_once=true, fn() { searching() && matched_rows().is_empty() }, fn(eb) {
-            @sf.style_node(eb, fn() { preset_empty_box })
-            @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
-          })
-        })
-        |> ignore
+  b.show(fn() {
+    match cur_said() {
+      Some({ error: Some(_), .. }) => true
+      _ => false
+    }
+  }, fn(eb) {
+    @sf.style_node(eb, fn() { preset_empty_box })
+    @sf.words_node(eb, fn() {
+      match cur_said() {
+        Some({ error: Some(e), .. }) => error_words(e)
+        _ => ""
       }
-    None => ()
-  }
+    }, fn() { preset_empty_hint })
+    |> ignore
+  })
+  b.show(fn() {
+    match cur_said() {
+      Some({ error: None, .. }) => cur_others().is_empty()
+      _ => false
+    }
+  }, fn(eb) {
+    @sf.style_node(eb, fn() { preset_empty_box })
+    @sf.words_node(eb, fn() { @sf.t("web-main.preset.othersNone") }, fn() { preset_empty_hint }) |> ignore
+  })
+  b.show(fn() {
+    match cur_said() {
+      Some({ error: None, .. }) => !cur_others().is_empty()
+      _ => false
+    }
+  }, fn(host) {
+    @sf.capped_node(host, fn() { if small { 360.0 } else { dmin(440.0, dmax(220.0, @sf.over_room(host).1 * 0.55)) } }, fn(list) {
+      let other_key = fn(p : Json) -> String {
+        let po = Some(p)
+        text(po, "station") + "\n" + text(po, "id")
+      }
+      let matched_rows = fn() -> Array[Json] {
+        let q = query_field.text().trim().to_owned()
+        let out : Array[Json] = []
+        for p in cur_others() {
+          let po = Some(p)
+          if preset_matches(q, [text(po, "name"), text(po, "whose"), text(po, "summary"), text(po, "stationName")]) {
+            out.push(p)
+          }
+        }
+        out
+      }
+      let lit = list.selected(fn() {
+        if !searching() {
+          None
+        } else {
+          let r = matched_rows()
+          let idx = search_at.get()
+          if idx >= 0 && idx < r.length() { Some(other_key(r[idx])) } else { None }
+        }
+      })
+      list.each(matched_rows, other_key, fn(row_box, item) {
+        let p = item.untracked()
+        let po = Some(p)
+        let id = text(po, "id")
+        let at = text(po, "station")
+        let my_key = at + "\n" + id
+        let name = text(po, "name")
+        let sub = preset_join_meta(text(po, "whose"), text(po, "summary"))
+        let dir_name = text(po, "dirName")
+        let dir_repo = text(po, "dirRepo")
+        let maker_id = text(field(po, "maker"), "id")
+        let rt = text(po, "runtime")
+        preset_picker_row_node(
+          row_box,
+          fn() { name },
+          fn() { sub },
+          fn() { dir_name },
+          fn() { dir_repo },
+          fn() { maker_id },
+          fn() { rt },
+          fn() { id == picked },
+          fn() { lit(my_key) },
+          fn() {
+            if !cur_has(id, at) {
+              return
+            }
+            let_go()
+            preset_pick(src, w, id, at)()
+            close()
+          },
+          action=(
+            "copy",
+            fn() { @sf.t("web-main.preset.copyItem", args=[("name", name)]) },
+            fn(_) {
+              if !cur_has(id, at) {
+                return
+              }
+              preset_copy_run(src, w, address, id, stations, close)
+            },
+          ),
+        )
+      })
+      list.show(at_once=true, fn() { searching() && matched_rows().is_empty() }, fn(eb) {
+        @sf.style_node(eb, fn() { preset_empty_box })
+        @sf.words_node(eb, fn() { @sf.t("web-main.preset.noMatch") }, fn() { preset_empty_hint }) |> ignore
+      })
+    })
+    |> ignore
+  })
 }
 
 ///|

@@ -416,19 +416,22 @@ export class PresetViews implements Owner {
   readonly #inner: Inner;
   readonly #marks = new Marks();
   readonly #others = new Map<string, OthersRead>();
+  readonly #activeOthers = new Set<string>();
   #reads = 0;
 
   constructor(inner: Inner) {
     this.#inner = inner;
     inner.store?.authGen?.onBoundary((event) => {
       if (event.kind === "global") {
-        const scopes = [...this.#others.keys()];
+        const scopes = new Set([...this.#others.keys(), ...this.#activeOthers]);
         this.#others.clear();
         for (const ws of scopes) this.#marks.touch(ws);
+        for (const ws of this.#activeOthers) this.readOthers(ws);
       } else if (event.kind === "workspace") {
-        if (this.#others.delete(event.workspace)) {
-          this.#marks.touch(event.workspace);
-        }
+        const had = this.#others.delete(event.workspace);
+        const active = this.#activeOthers.has(event.workspace);
+        if (had || active) this.#marks.touch(event.workspace);
+        if (active) this.readOthers(event.workspace);
       }
     });
   }
@@ -438,7 +441,17 @@ export class PresetViews implements Owner {
   }
 
   start(topic: Topic): void {
-    if (topic.topic === "otherPresets") this.readOthers(topic.scope as string);
+    if (topic.topic === "otherPresets") {
+      const ws = topic.scope as string;
+      this.#activeOthers.add(ws);
+      this.readOthers(ws);
+    }
+  }
+
+  stop(topic: Topic): void {
+    if (topic.topic === "otherPresets") {
+      this.#activeOthers.delete(topic.scope as string);
+    }
   }
 
   compute(topic: Topic): Value | undefined {
@@ -458,23 +471,31 @@ export class PresetViews implements Owner {
     const inner = this.#inner;
     const startGen = inner.store?.authGen?.workspaceAuthGen(ws) ?? 0;
     const startOwner = whoIn(inner, ws);
-    const read: OthersRead = { at: new Map(), reading: new Map() };
-    this.#others.set(ws, read);
+    // Keep existing `at` across routine refreshes within the same auth generation (only onBoundary clears `#others`).
+    let read = this.#others.get(ws);
+    if (!read) {
+      read = { at: new Map(), reading: new Map() };
+      this.#others.set(ws, read);
+    }
+    const slot = read;
     const n = ++this.#reads;
     const done = (address: string) =>
       Effect.sync(() => {
-        if (this.#others.get(ws) !== read || read.reading.get(address) !== n) return;
-        read.reading.delete(address);
+        if (this.#others.get(ws) !== slot) return;
+        if (slot.reading.get(address) !== n) return;
+        slot.reading.delete(address);
         this.#marks.touch(ws);
       });
     for (const s of stationsOf(inner, ws)) {
       if (!reached(inner, s.address)) continue;
-      read.reading.set(s.address, n);
+      // If a read for this station is already queued/running in the same generation slot, let it finish without dropping its `done`.
+      if (slot.reading.has(s.address)) continue;
+      slot.reading.set(s.address, n);
       inner.scheduler.enqueue(
         s.address,
-        `otherPresets/${s.address}`,
+        `otherPresets/${startGen}/${s.address}`,
         Priority.shown,
-        Effect.ensuring(Effect.ignore(this.#readOthersOf(ws, s.address, startGen, startOwner, read)), done(s.address)),
+        Effect.ensuring(Effect.ignore(this.#readOthersOf(ws, s.address, startGen, startOwner, slot)), done(s.address)),
       );
       inner.runner.fork(Effect.andThen(Effect.sleep(OTHERS_WAIT_MS), done(s.address))); // timer: a deadline on a station's answer
     }
