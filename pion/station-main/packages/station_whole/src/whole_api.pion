@@ -196,10 +196,13 @@ pub fn build_overview_with_counts(
   warm_sess : Int,
   viewer : station_api::Viewer,
   lang : station_api::Lang,
+  profile_quotas : Map[String, base_codec::Json] = Map::new(),
+  profile_login_of : Option[(String, Bool) -> Option[base_codec::Json]] = None,
 ) -> base_codec::Json {
   let raw_cfg = read_config_raw(cfg_opt)
   let raw_profiles = read_profiles_array(raw_cfg)
   let profile_inputs : Array[station_api::ProfileOverviewInput] = []
+  let manages = viewer.manages_station()
   for pi in 0..<raw_profiles.length() {
     let pe = raw_profiles[pi]
     if !live_profile_visible_in_ws(pe, viewer.workspace) {
@@ -218,6 +221,10 @@ pub fn build_overview_with_counts(
       }
       None => None
     }
+    let login_opt : Option[base_codec::Json] = match profile_login_of {
+      Some(f) => f(pid, manages)
+      None => None
+    }
     profile_inputs.push(station_api::ProfileOverviewInput::{
       id: pid,
       runtime: prt,
@@ -226,6 +233,8 @@ pub fn build_overview_with_counts(
       models: [],
       api_key: api_key_opt,
       refresh_token: None,
+      quota: profile_quotas.get(pid),
+      login: login_opt,
     })
   }
   let base_in = station_api::OverviewInput::minimal()
@@ -303,7 +312,7 @@ fn build_whole_overview(
     }
     Err(_) => ()
   }
-  let _ = hooks
+  let profile_quotas = load_all_profile_quotas_sql(whole_store)
   Ok(build_overview_with_counts(
     station_id_str,
     home_ws_str,
@@ -315,6 +324,8 @@ fn build_whole_overview(
     warm_sess,
     viewer,
     lang,
+    profile_quotas=profile_quotas,
+    profile_login_of=hooks.profile_login_of,
   ))
 }
 

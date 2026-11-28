@@ -3075,19 +3075,12 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   for (const [m, p, body] of [
     ["POST", "/mcp-servers/reload", "{}"],
     ["POST", "/mcp-servers/s1/reload", "{}"],
-    ["GET", "/profiles/pace?v=2", undefined],
-    ["POST", "/profiles/p1/quota", "{}"],
-    ["POST", "/profiles/p1/reset-quota", "{}"],
-    ["POST", "/profiles/p1/login", "{}"],
-    ["GET", "/profiles/p1/login", undefined],
-    ["DELETE", "/profiles/p1/login", undefined],
-    ["POST", "/profiles/p1/login-code", JSON.stringify({ code: "123456" })],
+    ["POST", "/profiles/p1/login-browser", "{}"],
     ["POST", "/copies/restore", JSON.stringify({ station: "st-1", gen: "g1", from: { s3: "r2" } })],
     ["PUT", "/xshare/hosts", JSON.stringify({ workspace: "ws-partner", name: "Partner", station: "st-partner", stationName: "Box" })],
     ["POST", "/workspaces/join", JSON.stringify({ token: "tok-1" })],
   ] as const) {
     const hdrs: Record<string, string> = { "content-type": "application/json" };
-    if (p.endsWith("/reset-quota")) hdrs["idempotency-key"] = "test-idem-1";
     const resp = await adminCall(conn, m, p, hdrs, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 501, `${m} ${p} expected honest 501, got ${resp.status}: ${resp.body.toString()}`);
   }
@@ -3152,6 +3145,283 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(compactMiss.status, 501, `hub.session.compact must return honest 501 until Wave 17E, got ${compactMiss.status}`);
 
   await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("W17E4C.15: live Accounts quota/resetQuota non-blocking HTTP, pace persistence & SSE, interactive login CLI lifecycle & zero-orphan cleanup", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = freshDir("w17e4c");
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const epViewer = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner, epViewer);
+
+  const ws = "ws-w17e4c";
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
+
+  // Seed profiles in config.json + Claude OAuth credentials in homes/p-claude/.credentials.json
+  const claudeHome = join(data, "homes", "p-claude");
+  const cancelHome = join(data, "homes", "p-cancel");
+  mkdirSync(claudeHome, { recursive: true });
+  mkdirSync(cancelHome, { recursive: true });
+  writeFileSync(
+    join(claudeHome, ".credentials.json"),
+    JSON.stringify({ claudeAiOauth: { accessToken: "oauth-test-token-w17e4c" } }),
+    { mode: 0o600 },
+  );
+  const cfgPath = join(data, "config.json");
+  const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+  cfg.profiles = [
+    { id: "p-claude", name: "Test Claude", runtime: "claude", access: { kind: "subscription" }, home: "homes/p-claude", env: {} },
+    { id: "p-cancel", name: "Cancel Claude", runtime: "claude", access: { kind: "subscription" }, home: "homes/p-cancel", env: {} },
+    { id: "p-borrowed", name: "Borrowed Claude", runtime: "claude", access: { kind: "subscription" }, home: "homes/p-borrowed", env: {}, share: { borrowed: true, host: "other-st" } },
+  ];
+  writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+
+  // Mock slow Anthropic quota & reset server (700ms delay on first usage read to prove non-blocking event loop)
+  let quotaPercent = 82;
+  let usageHits = 0;
+  let resetHits = 0;
+  const mockQuotaServer = createHttpServer((req, res) => {
+    const auth = req.headers.authorization;
+    if (auth !== "Bearer oauth-test-token-w17e4c") {
+      res.writeHead(401, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "unauthorized" }));
+      return;
+    }
+    if (req.method === "GET" && req.url?.startsWith("/api/oauth/usage")) {
+      usageHits += 1;
+      const delay = usageHits === 1 ? 750 : 20;
+      setTimeout(() => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({
+          five_hour: { utilization: quotaPercent, resets_at: "2026-11-28T20:00:00Z" },
+          seven_day: { utilization: 24, resets_at: "2026-12-05T00:00:00Z" },
+          juniper_tide: { eligible: true, arm: "reset", available: quotaPercent > 0 },
+        }));
+      }, delay);
+      return;
+    }
+    if (req.method === "GET" && req.url === "/api/oauth/profile") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ organization: { uuid: "org-w17e4c-1" } }));
+      return;
+    }
+    if (req.method === "POST" && req.url === "/api/organizations/org-w17e4c-1/reset_rate_limits") {
+      resetHits += 1;
+      quotaPercent = 0;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ result: "reset" }));
+      return;
+    }
+    res.writeHead(404);
+    res.end("not found");
+  });
+  await new Promise<void>((resolve) => mockQuotaServer.listen(0, "127.0.0.1", () => resolve()));
+  servers.push(mockQuotaServer);
+  const quotaPort = (mockQuotaServer.address() as { port: number }).port;
+
+  // Mock interactive Claude login CLI script (records PID + handles code submission or spawns sleeper for cancel test)
+  const mockCliPath = join(base, "mock-claude-login.sh");
+  writeFileSync(
+    mockCliPath,
+    `#!/bin/sh
+echo "$$" > "$CLAUDE_CONFIG_DIR/login.pid"
+if [ "$(basename "$CLAUDE_CONFIG_DIR")" = "p-cancel" ]; then
+  sleep 60 &
+  echo "$!" > "$CLAUDE_CONFIG_DIR/child.pid"
+  printf 'Open https://claude.ai/oauth/authorize?client_id=test&state=cancelState1\\nPaste code here:\\n'
+  wait
+  exit 0
+fi
+printf 'Open https://claude.ai/oauth/authorize?client_id=test&state=e2eState1\\nPaste code here:\\n'
+IFS= read -r line
+if [ "$line" = "CODE123#e2eState1" ]; then
+  echo "ok" > "$CLAUDE_CONFIG_DIR/login.done"
+  exit 0
+fi
+echo "invalid code: $line" >&2
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(mockCliPath, 0o755);
+
+  const wd = startWholeDaemon(bin, data, {
+    STILLFAIL_QUOTA_ANTHROPIC_URL: `http://127.0.0.1:${quotaPort}`,
+    STILLFAIL_LOGIN_CLAUDE_CMD: mockCliPath,
+  });
+  await until("w17e4c daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("w17e4c mesh bound", () => wd.meshAddr());
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const jwtViewer = signMemberJwt({ ws, device: epViewer.id(), sub: "u-viewer", email: "viewer@example.com", name: "Viewer", role: "viewer" });
+  const { conn: ownerConn, helloReply: hOwner } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(hOwner?.ok, true, JSON.stringify(hOwner));
+  const { conn: viewerConn, helloReply: hViewer } = await openAdminConn(epViewer, stationId, meshAddr, jwtViewer);
+  assert.equal(hViewer?.ok, true, JSON.stringify(hViewer));
+
+  // Open SSE stream for owner to verify overview updates fire on quota/reset/login changes
+  const sseStream = await ownerConn.openBi();
+  const sseReader = new Reader(sseStream);
+  await writeLine(sseStream, { method: "GET", path: "/events", headers: {} });
+  const sseHeadLine = (await sseReader.line()) as { status?: number } | null;
+  assert.equal(sseHeadLine?.status, 200);
+  let sseBuf = sseReader.carry.toString("utf8");
+  const sseReadLoop = (async () => {
+    try {
+      while (true) {
+        const chunk = await sseStream.read();
+        if (chunk === null) break;
+        sseBuf += chunk.toString("utf8");
+      }
+    } catch {}
+  })();
+
+  // 1. Non-blocking slow `POST /profiles/p-claude/quota` + concurrent `GET /status`
+  const t0 = Date.now();
+  const quotaPromise = adminCall(ownerConn, "POST", "/profiles/p-claude/quota", { "content-type": "application/json" }, Buffer.from("{}"));
+  await new Promise((r) => setTimeout(r, 80));
+  const statusDuringQuota = await adminCall(ownerConn, "GET", "/status");
+  const statusElapsed = Date.now() - t0;
+  assert.equal(statusDuringQuota.status, 200, `concurrent GET /status failed: ${statusDuringQuota.body.toString()}`);
+  assert.ok(statusElapsed < 550, `GET /status was blocked by slow quota fetch! elapsed=${statusElapsed}ms`);
+
+  const quotaResp = await quotaPromise;
+  assert.equal(quotaResp.status, 200, `POST /profiles/p-claude/quota failed: ${quotaResp.body.toString()}`);
+  const quotaJson = JSON.parse(quotaResp.body.toString("utf8"));
+  assert.equal(quotaJson.state, "ok");
+  assert.equal(quotaJson.windows[0].usedPercent, 82);
+  assert.equal(quotaJson.resetCount, 1);
+
+  // 2. `GET /profiles/pace` persistence + `v=2` + `sinceRev` unchanged
+  const paceV1 = await adminCall(ownerConn, "GET", "/profiles/pace");
+  assert.equal(paceV1.status, 200, `GET /profiles/pace failed: ${paceV1.body.toString()}`);
+  const paceV1Json = JSON.parse(paceV1.body.toString("utf8"));
+  assert.ok(paceV1Json.profiles["p-claude"]?.quotas?.length >= 1, `pace v1 missing p-claude quota: ${paceV1.body.toString()}`);
+
+  const paceV2 = await adminCall(ownerConn, "GET", "/profiles/pace?v=2");
+  assert.equal(paceV2.status, 200);
+  const paceV2Json = JSON.parse(paceV2.body.toString("utf8"));
+  assert.ok(typeof paceV2Json.rev === "string" && paceV2Json.rev.length > 0);
+  const paceUnchanged = await adminCall(ownerConn, "GET", `/profiles/pace?v=2&sinceRev=${encodeURIComponent(paceV2Json.rev)}`);
+  assert.equal(paceUnchanged.status, 200);
+  assert.equal(JSON.parse(paceUnchanged.body.toString("utf8")).unchanged, true);
+
+  // 3. Non-blocking `POST /profiles/p-claude/reset-quota` + idempotency replay + pace v2 delta + SSE
+  const resetResp = await adminCall(
+    ownerConn,
+    "POST",
+    "/profiles/p-claude/reset-quota",
+    { "content-type": "application/json", "idempotency-key": "w17e4c-reset-1" },
+    Buffer.from(JSON.stringify({ reset: "session" })),
+  );
+  assert.equal(resetResp.status, 200, `reset-quota failed: ${resetResp.body.toString()}`);
+  assert.equal(JSON.parse(resetResp.body.toString("utf8")).outcome, "reset");
+  assert.equal(resetHits, 1);
+
+  // Replay with same Idempotency-Key returns cached 200 without hitting upstream again
+  const resetReplay = await adminCall(
+    ownerConn,
+    "POST",
+    "/profiles/p-claude/reset-quota",
+    { "content-type": "application/json", "idempotency-key": "w17e4c-reset-1" },
+    Buffer.from(JSON.stringify({ reset: "session" })),
+  );
+  assert.equal(resetReplay.status, 200);
+  assert.equal(resetHits, 1, "idempotent replay must not re-execute reset");
+
+  const paceDelta = await adminCall(ownerConn, "GET", `/profiles/pace?v=2&sinceRev=${encodeURIComponent(paceV2Json.rev)}`);
+  assert.equal(paceDelta.status, 200);
+  const paceDeltaJson = JSON.parse(paceDelta.body.toString("utf8"));
+  assert.equal(paceDeltaJson.delta, true, `expected delta response, got: ${paceDelta.body.toString()}`);
+  assert.equal(paceDeltaJson.profiles["p-claude"].quotas[0].windows[0].usedPercent, 0);
+
+  // SSE stream must have received overview updates
+  await until("SSE overview event", () => sseBuf.includes("event: overview"), 5_000);
+
+  // Borrowed profile refused with 409 on reset-quota & login; read-only viewer refused with 403
+  const borReset = await adminCall(
+    ownerConn,
+    "POST",
+    "/profiles/p-borrowed/reset-quota",
+    { "content-type": "application/json", "idempotency-key": "w17e4c-bor-1" },
+    Buffer.from("{}"),
+  );
+  assert.equal(borReset.status, 409);
+  const borLogin = await adminCall(ownerConn, "POST", "/profiles/p-borrowed/login", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(borLogin.status, 409);
+  const roLogin = await adminCall(viewerConn, "POST", "/profiles/p-claude/login", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(roLogin.status, 403);
+
+  // 4. Interactive login full lifecycle: login -> login.get (role redaction!) -> login-code -> done
+  const startLogin = await adminCall(ownerConn, "POST", "/profiles/p-claude/login", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(startLogin.status, 200, `POST /profiles/p-claude/login failed: ${startLogin.body.toString()}`);
+
+  const needsCodeJob = await until("login reaches needs_code", async () => {
+    const r = await adminCall(ownerConn, "GET", "/profiles/p-claude/login");
+    if (r.status !== 200) return null;
+    const j = JSON.parse(r.body.toString("utf8")).job;
+    return j?.state === "needs_code" ? j : null;
+  }, 10_000);
+  assert.ok(needsCodeJob.url?.includes("state=e2eState1"), JSON.stringify(needsCodeJob));
+
+  // Read-only viewer GET /profiles/p-claude/login MUST redact url & userCode!
+  const roLoginGet = await adminCall(viewerConn, "GET", "/profiles/p-claude/login");
+  assert.equal(roLoginGet.status, 200);
+  const roJob = JSON.parse(roLoginGet.body.toString("utf8")).job;
+  assert.equal(roJob.state, "needs_code");
+  assert.equal(roJob.url, null, `read-only viewer saw login URL: ${roLoginGet.body.toString()}`);
+  assert.equal(roJob.userCode, null);
+
+  // Submit code -> verifying -> done
+  const submitResp = await adminCall(
+    ownerConn,
+    "POST",
+    "/profiles/p-claude/login-code",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ code: "CODE123#e2eState1" })),
+  );
+  assert.equal(submitResp.status, 200, `POST /profiles/p-claude/login-code failed: ${submitResp.body.toString()}`);
+  await until("login reaches done", async () => {
+    const r = await adminCall(ownerConn, "GET", "/profiles/p-claude/login");
+    const j = JSON.parse(r.body.toString("utf8")).job;
+    return j?.state === "done" ? j : null;
+  }, 10_000);
+  assert.ok(existsSync(join(claudeHome, "login.done")), "mock CLI should have received CODE123#e2eState1");
+
+  // 5. Cancel login -> kills entire process group, zero orphan processes!
+  const startCancel = await adminCall(ownerConn, "POST", "/profiles/p-cancel/login", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(startCancel.status, 200);
+  const cancelChildPid = await until("cancel mock CLI wrote child.pid", () => {
+    const p = join(cancelHome, "child.pid");
+    if (!existsSync(p)) return null;
+    const n = Number(readFileSync(p, "utf8").trim());
+    return Number.isInteger(n) && n > 1 ? n : null;
+  }, 10_000);
+  const cancelParentPid = Number(readFileSync(join(cancelHome, "login.pid"), "utf8").trim());
+  assert.ok(isAlive(cancelParentPid), "mock CLI parent should be alive before cancel");
+  assert.ok(isAlive(cancelChildPid), "mock CLI child sleeper should be alive before cancel");
+
+  const delResp = await adminCall(ownerConn, "DELETE", "/profiles/p-cancel/login");
+  assert.equal(delResp.status, 200, `DELETE /profiles/p-cancel/login failed: ${delResp.body.toString()}`);
+  assert.equal(JSON.parse(delResp.body.toString("utf8")).job.state, "cancelled");
+  await until("cancel process group exited with zero orphans", () => !isAlive(cancelParentPid) && !isAlive(cancelChildPid), 5_000);
+
+  try { sseStream.end(); } catch {}
+  await ownerConn.close(0, "done");
+  await viewerConn.close(0, "done");
+  await sseReadLoop;
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
 });

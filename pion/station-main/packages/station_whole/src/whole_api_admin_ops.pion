@@ -461,6 +461,7 @@ fn dispatch_accounts_op(
   req : station_api::ApiRequest,
   params : Array[String],
   body : base_codec::Json,
+  whole_store : WholeStore,
   agents : WholeAgents,
   cfg_opt : Option[station_ops::ConfigFile],
   cfg_open_err : Option[station_ops::ConfigError],
@@ -930,8 +931,8 @@ fn dispatch_accounts_op(
     }
   }
 
-  // Wave 17D-2 live `accounts.profiles.*` ops
-  match dispatch_live_accounts_op(op, req, params, body, agents, cfg_opt, cfg_open_err, hooks, now_ms) {
+  // Wave 17D-2 / 17E-4C live `accounts.profiles.*` ops
+  match dispatch_live_accounts_op(op, req, params, body, port.accounts_store, agents, cfg_opt, cfg_open_err, hooks, now_ms) {
     Some(r) => return Some(r)
     None => ()
   }
@@ -3096,7 +3097,7 @@ pub fn dispatch_admin_ops(
     Some(r) => return Some(r)
     None => ()
   }
-  match dispatch_accounts_op(op, req, params, body, agents, cfg_opt, cfg_open_err, hooks, port, now_ms) {
+  match dispatch_accounts_op(op, req, params, body, whole_store, agents, cfg_opt, cfg_open_err, hooks, port, now_ms) {
     Some(r) => return Some(r)
     None => ()
   }

@@ -3389,6 +3389,7 @@ pub fn run_vault_decisions_sqlite_selftest() -> Result[Unit, String] {
     vault_plain: vp,
     readops: port.readops,
     vault_decisions: vd,
+    accounts_store: port.accounts_store,
   }
   let auth_policy = PeerAuthPolicy::{
     station_id: "st-smoke",

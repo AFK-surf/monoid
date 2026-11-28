@@ -70,12 +70,15 @@ test "wave17d2 r3: accounts.profiles (real overview with new profile, ignore nam
   // Wire `overview_for` to the REAL `api.admin.host.overview` (as production `whole_daemon_wiring` does!)
   hooks.overview_for = Some(api.admin.host.overview)
 
-  // 1. Withdrawn ops MUST return honest 501
-  for op in ["accounts.profiles.quota", "accounts.profiles.resetQuota", "accounts.profiles.pace"] {
-    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles", owner), ["p1"], base_codec::json_obj([])) {
-      Err(e) => if e.status != 501 { panic("withdrawn " + op + " must return 501, got " + e.status.to_string()) }
-      Ok(_) => panic("withdrawn " + op + " returned fake 200")
+  // 1. `accounts.profiles.pace` now works live in Wave 17E-4C (returns 200 with workspace-scoped pace view)
+  match (api.admin.host.call)("accounts.profiles.pace", make_test_api_req_as("GET", "/profiles/pace", owner), [], base_codec::json_obj([])) {
+    Ok(v) => {
+      let s = base_codec::json_stringify(v)
+      if !s.contains("\"profiles\":{}") || !s.contains("\"nowAt\":") {
+        panic("accounts.profiles.pace returned unexpected payload: " + s)
+      }
     }
+    Err(e) => panic("accounts.profiles.pace failed: " + e.message)
   }
 
   // 2. `createKeyed`: `openai-api` key is optional; ignores caller-supplied `name`; returns REAL `overview` containing new profile!
@@ -183,19 +186,22 @@ test "wave17d2 r3: accounts.profiles (real overview with new profile, ignore nam
     Err(e) => panic("hooked createMachine failed: " + e.message)
   }
 
-  // 6. All profile login ops (`login`, `login.get`, `login.delete`, `login-code`, `login-browser`) return honest 501 until Wave 17E
+  // 6. `login-browser` remains honest 501; unknown profile `login*` returns 404 (not fake 200)
   let _ = mem_fs
   let _ = ro
+  match (api.admin.host.call)("accounts.profiles.login-browser", make_test_api_req_as("POST", "/profiles/sub-claude/login-browser", owner), ["sub-claude"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 501 { panic("login-browser must return honest 501, got " + e.status.to_string()) }
+    Ok(_) => panic("login-browser returned fake 200")
+  }
   for op in [
     "accounts.profiles.login",
     "accounts.profiles.login.get",
     "accounts.profiles.login.delete",
     "accounts.profiles.login-code",
-    "accounts.profiles.login-browser",
   ] {
     match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles/sub-claude/login", owner), ["sub-claude"], base_codec::json_obj([])) {
-      Err(e) => if e.status != 501 { panic(op + " must return honest 501, got " + e.status.to_string()) }
-      Ok(_) => panic(op + " returned fake 200")
+      Err(e) => if e.status != 404 { panic(op + " for unknown profile must return 404, got " + e.status.to_string()) }
+      Ok(_) => panic(op + " for unknown profile returned fake 200")
     }
   }
 }

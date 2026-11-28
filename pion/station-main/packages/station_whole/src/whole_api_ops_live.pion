@@ -697,11 +697,12 @@ pub fn dispatch_live_accounts_op(
   req : station_api::ApiRequest,
   params : Array[String],
   body : base_codec::Json,
+  accounts_store : AccountsStorePort,
   agents : WholeAgents,
   cfg_opt : Option[station_ops::ConfigFile],
   cfg_open_err : Option[station_ops::ConfigError],
   hooks : WholeApiRuntimeHooks,
-  _now_ms : Int64,
+  now_ms : Int64,
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
   let ops_lang = api_lang_to_ops(req.lang)
 
@@ -964,9 +965,212 @@ pub fn dispatch_live_accounts_op(
     }
   }
 
-  // `accounts.profiles.login` / `login.get` / `login.delete` / `login-code` / `login-browser`
-  // remain honest 501 until Wave 17E lands the dedicated `LoginJob` state machine & role-partitioned SSE cache.
-  let _ = params
+  // 3. `accounts.profiles.pace` (`GET /profiles/pace`, v1 + v2 with `sinceRev` delta/unchanged)
+  if op == "accounts.profiles.pace" {
+    let raw_profiles = read_profiles_array(read_config_raw(cfg_opt))
+    let visible : Array[String] = []
+    for i in 0..<raw_profiles.length() {
+      if live_profile_visible_in_ws(raw_profiles[i], req.viewer.workspace) {
+        match json_field_str(raw_profiles[i], "id") {
+          Some(pid) if pid.length() > 0 => visible.push(pid)
+          _ => ()
+        }
+      }
+    }
+    return Some(compute_pace_response(
+      accounts_store,
+      hooks.pace_cache,
+      visible,
+      req.viewer.workspace,
+      req.param("v"),
+      req.param("sinceRev"),
+      now_ms,
+    ))
+  }
+
+  // Helper to resolve a workspace-visible profile entry from `config.json`.
+  let find_visible_profile = fn(id : String) -> Result[base_codec::Json, station_api::ApiError] {
+    let cur = read_profiles_array(read_config_raw(cfg_opt))
+    let idx = find_profile_index(cur, id)
+    if idx < 0 || !live_profile_visible_in_ws(cur[idx], req.viewer.workspace) {
+      return Err(station_api::ApiError::new(404, "unknown profile " + id))
+    }
+    Ok(cur[idx])
+  }
+
+  // 4. `accounts.profiles.quota` (`POST /profiles/:id/quota`)
+  if op == "accounts.profiles.quota" && params.length() >= 1 {
+    if req.viewer.is_read_only() {
+      return Some(Err(station_api::ApiError::new(403, "read-only member cannot refresh profile quota")))
+    }
+    let id = params[0]
+    let entry = match find_visible_profile(id) {
+      Ok(e) => e
+      Err(e) => return Some(Err(e))
+    }
+    if json_field_bool(entry, "enabled") == Some(false) {
+      let cached = match (accounts_store.load_quota)(id) {
+        Some(q) => q
+        None => base_codec::json_null()
+      }
+      return Some(Ok(cached))
+    }
+    let kind = live_profile_access_kind(entry)
+    let rt = match json_field_str(entry, "runtime") { Some(s) => s, None => "" }
+    let prov = match base_codec::json_get(entry, "access") {
+      Some(acc) => match json_field_str(acc, "provider") { Some(s) => s, None => "" }
+      None => ""
+    }
+    let is_plan_provider = kind == "api-provider" && (prov == "kimi-code" || prov == "minimax-cn" || prov == "zai-coding-cn")
+    if kind == "anthropic-api" || (kind == "api-provider" && !is_plan_provider) {
+      let q = make_quota_json("unsupported", [], Some(station_ops::tr(ops_lang, "station.quota.payAsYouGo")), now_ms)
+      let _ = (accounts_store.save_quota)(id, q, now_ms)
+      hooks_notify_overview(hooks, "profiles")
+      return Some(Ok(q))
+    }
+    if kind == "env" {
+      let q = make_quota_json("unsupported", [], Some(station_ops::tr(ops_lang, "station.quota.envUnsupported")), now_ms)
+      let _ = (accounts_store.save_quota)(id, q, now_ms)
+      hooks_notify_overview(hooks, "profiles")
+      return Some(Ok(q))
+    }
+    if kind == "subscription" && rt == "cursor" {
+      let q = make_quota_json("unsupported", [], Some(station_ops::tr(ops_lang, "station.quota.cursorUnsupported")), now_ms)
+      let _ = (accounts_store.save_quota)(id, q, now_ms)
+      hooks_notify_overview(hooks, "profiles")
+      return Some(Ok(q))
+    }
+    if kind == "subscription" && rt == "devin" {
+      let q = make_quota_json("unsupported", [], Some(station_ops::tr(ops_lang, "station.quota.devinUnsupported")), now_ms)
+      let _ = (accounts_store.save_quota)(id, q, now_ms)
+      hooks_notify_overview(hooks, "profiles")
+      return Some(Ok(q))
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => return Some(f(op, [id], body, req.viewer, req.lang))
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // 5. `accounts.profiles.resetQuota` (`POST /profiles/:id/reset-quota`)
+  if op == "accounts.profiles.resetQuota" && params.length() >= 1 {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can reset profile quota")))
+    }
+    let idem_ok = match req.header("idempotency-key") {
+      Some(k) => k.length() > 0 && k.length() <= 200
+      None => false
+    }
+    if !idem_ok {
+      return Some(Err(station_api::ApiError::new(400, "reset requires an idempotency key")))
+    }
+    let id = params[0]
+    let entry = match find_visible_profile(id) {
+      Ok(e) => e
+      Err(e) => return Some(Err(e))
+    }
+    if is_profile_borrowed(entry) {
+      return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.share.borrowedEdit"))))
+    }
+    let kind = live_profile_access_kind(entry)
+    let rt = match json_field_str(entry, "runtime") { Some(s) => s, None => "" }
+    if kind != "subscription" || (rt != "claude" && rt != "codex") {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.quota.resetSubscriptionOnly"))))
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => return Some(f(op, [id], body, req.viewer, req.lang))
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // 6. `accounts.profiles.login` (`POST /profiles/:id/login`)
+  if op == "accounts.profiles.login" && params.length() >= 1 {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can start profile login")))
+    }
+    let id = params[0]
+    let entry = match find_visible_profile(id) {
+      Ok(e) => e
+      Err(e) => return Some(Err(e))
+    }
+    if is_profile_borrowed(entry) {
+      return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.share.borrowedEdit"))))
+    }
+    if json_field_bool(entry, "machine") == Some(true) {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginOnMachine"))))
+    }
+    let kind = live_profile_access_kind(entry)
+    let rt = match json_field_str(entry, "runtime") { Some(s) => s, None => "" }
+    if kind != "subscription" || !live_supports_cli_login(rt) {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginSubscriptionOnly"))))
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => return Some(f(op, [id], entry, req.viewer, req.lang))
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // 7. `accounts.profiles.login.get` (`GET /profiles/:id/login`) — role-safe redaction enforced!
+  if op == "accounts.profiles.login.get" && params.length() >= 1 {
+    let id = params[0]
+    let _ = match find_visible_profile(id) {
+      Ok(e) => e
+      Err(e) => return Some(Err(e))
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => match f(op, [id], body, req.viewer, req.lang) {
+        Ok(res) => {
+          let job_j = match base_codec::json_get(res, "job") {
+            Some(base_codec::Json::Null) | None => base_codec::json_null()
+            Some(j) => station_api::redact_login_job_json(j, req.viewer.manages_station())
+          }
+          return Some(Ok(base_codec::json_obj([("job", job_j)])))
+        }
+        Err(e) => return Some(Err(e))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // 8. `accounts.profiles.login.delete` (`DELETE /profiles/:id/login`)
+  if op == "accounts.profiles.login.delete" && params.length() >= 1 {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can cancel profile login")))
+    }
+    let id = params[0]
+    let entry = match find_visible_profile(id) {
+      Ok(e) => e
+      Err(e) => return Some(Err(e))
+    }
+    if is_profile_borrowed(entry) {
+      return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.share.borrowedEdit"))))
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => return Some(f(op, [id], body, req.viewer, req.lang))
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // 9. `accounts.profiles.login-code` (`POST /profiles/:id/login-code`)
+  if op == "accounts.profiles.login-code" && params.length() >= 1 {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can submit login code")))
+    }
+    let id = params[0]
+    let entry = match find_visible_profile(id) {
+      Ok(e) => e
+      Err(e) => return Some(Err(e))
+    }
+    if is_profile_borrowed(entry) {
+      return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.share.borrowedEdit"))))
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => return Some(f(op, [id], body, req.viewer, req.lang))
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // `accounts.profiles.login-browser` remains honest 501.
   None
 }
 

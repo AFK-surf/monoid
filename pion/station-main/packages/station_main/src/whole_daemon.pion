@@ -1840,6 +1840,7 @@ struct WholeRuntimeState {
   devices : station_whole::DevicesOsRuntime
   terminals : station_whole::TerminalsOsRuntime
   logins : station_whole::LoginsOsRuntime
+  accounts_logins : station_whole::AccountsLoginManager
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
   upkeep : AsyncUpkeepRunner
@@ -4511,7 +4512,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         && (norm_path == "/updates/check"
           || norm_path == "/copies/s3/test"
           || norm_path == "/profiles")
-        if is_live_async_route {
+        let accounts_async_route = if head.method == "POST" {
+          parse_async_accounts_profile_route(norm_path)
+        } else {
+          None
+        }
+        if is_live_async_route || accounts_async_route.is_some() {
           match check_oldest_core_fast(st, head.method, head.path, head.headers) {
             Some(old_resp) => {
               send_admin_resp_and_finish(ctx, astream.sid, old_resp)
@@ -4527,7 +4533,17 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           // Authorization MUST run BEFORE idempotency claim/replay so a downgraded member
           // can never replay a cached 200 admin response with a prior Idempotency-Key!
-          if !v.manages_station() {
+          let is_quota_only = match accounts_async_route {
+            Some((_, sub)) => sub == "quota"
+            None => false
+          }
+          if is_quota_only {
+            if v.is_read_only() {
+              astream.mode = AdminStreamMode::Done
+              send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "read-only member cannot refresh profile quota"))
+              return
+            }
+          } else if !v.manages_station() {
             astream.mode = AdminStreamMode::Done
             send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "only workspace owners and admins can perform this action"))
             return
@@ -4553,7 +4569,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               return
             }
           }
-          match try_intercept_async_admin_op(ctx, st, astream.sid, astream.conn_id, head.method, norm_path, body, v, req_lang, idem_claim) {
+          let intercepted = if accounts_async_route.is_some() {
+            try_intercept_async_accounts_op(ctx, st, astream.sid, astream.conn_id, head.method, norm_path, head.headers, body, v, req_lang, idem_claim)
+          } else {
+            try_intercept_async_admin_op(ctx, st, astream.sid, astream.conn_id, head.method, norm_path, body, v, req_lang, idem_claim)
+          }
+          match intercepted {
             Some(Ok(async_st)) => {
               astream.mode = AdminStreamMode::WaitingAsyncOp(async_st)
               return
@@ -5924,7 +5945,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         // Wave 17D-2 R6: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
         // - Sets `Done` BEFORE `send_admin_resp_and_finish` so >64 KiB backpressured `SendingBody` is preserved!
         // - If `stream.open` arrives with no active op, decodes and immediately `stream.close`s.
-        if kind == LIVE_OP_TOK_HTTP_OPEN || kind == LIVE_OP_TOK_HTTP_READ {
+        if kind == LIVE_OP_TOK_HTTP_OPEN || kind == LIVE_OP_TOK_HTTP_READ || kind == ACCOUNTS_TOK_HTTP_OPEN || kind == ACCOUNTS_TOK_HTTP_READ {
           let mut handled = false
           match st.admin_streams.get(sid) {
             None => ()
@@ -5942,7 +5963,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               _ => ()
             }
           }
-          if !handled && kind == LIVE_OP_TOK_HTTP_OPEN {
+          if !handled && (kind == LIVE_OP_TOK_HTTP_OPEN || kind == ACCOUNTS_TOK_HTTP_OPEN) {
             close_orphaned_async_stream_open(ctx, d)
           }
           return
@@ -7677,7 +7698,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       live_runners_cell[0] = Some(live_runners)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
-      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
+      let accounts_logins = station_whole::AccountsLoginManager::production()
+      wire_whole_core_runtime_hooks(ctx, core, logins, accounts_logins, browser, seen_members)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
@@ -7685,6 +7707,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         devices: devices,
         terminals: terminals,
         logins: logins,
+        accounts_logins: accounts_logins,
         browser: browser,
         connects: connects,
         upkeep: upkeep,
@@ -9066,6 +9089,15 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.terminals.handle_sys_event(ev_id, sev, now_sys) {
             return
           }
+          if station_whole::is_accounts_live_event_id(ev_id) {
+            let (handled, changed) = st.accounts_logins.handle_sys_event(ev_id, sev)
+            if changed {
+              st.core.api.events.overview_changed("profiles")
+            }
+            if handled {
+              return
+            }
+          }
           if st.logins.handle_sys_event(ev_id, sev, now_sys) {
             return
           }
@@ -9171,6 +9203,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.devices.adb_runner.tick(now)
           let _ = st.terminals.tick(now)
           let _ = st.logins.tick(now)
+          if st.accounts_logins.tick(now) {
+            st.core.api.events.overview_changed("profiles")
+          }
           let _ = st.browser.tick(now)
           let _ = st.connects.tick(now)
           // `#8886`: poll `PeerChangeNotifier` and `CommaUnreadRetry` due retries.
@@ -9545,6 +9580,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           st.adopted_runners.clear()
           st.adopted_runner_by_sock.clear()
+          st.accounts_logins.stop_all()
           st.admin_conns.clear()
           st.drive_rpc_puts.clear()
           st.rig_put_streams.clear()

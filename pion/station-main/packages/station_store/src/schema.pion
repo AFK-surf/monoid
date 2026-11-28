@@ -173,6 +173,11 @@ pub fn core_schema_ddl() -> String {
   "CREATE TABLE IF NOT EXISTS profile_status (" +
   "  profile TEXT PRIMARY KEY, check_json TEXT, checked_at INTEGER, quota_json TEXT, quota_at INTEGER" +
   ");" +
+  "CREATE TABLE IF NOT EXISTS profile_quota_hours (" +
+  "  profile TEXT NOT NULL, hour INTEGER NOT NULL, windows_json TEXT NOT NULL, at INTEGER NOT NULL," +
+  "  PRIMARY KEY (profile, hour)" +
+  ") WITHOUT ROWID;" +
+  "CREATE INDEX IF NOT EXISTS profile_quota_hours_hour ON profile_quota_hours (hour);" +
   "CREATE TABLE IF NOT EXISTS bindings (" +
   "  connect TEXT PRIMARY KEY, session_key TEXT NOT NULL" +
   ");" +

@@ -12,6 +12,7 @@
 import "base_codec"
 import "builders_core"
 import "host_shim"
+import "http1"
 import "nodepath"
 import "station_api"
 import "station_cli"
@@ -26,6 +27,9 @@ import "station_whole"
 /// Disjoint `MuxToken::Tagged` kinds on `ctx.mux_role` for non-blocking live admin HTTP ops.
 pub let LIVE_OP_TOK_HTTP_OPEN : Int = 5210
 pub let LIVE_OP_TOK_HTTP_READ : Int = 5211
+/// Pre-allocated disjoint `MuxToken::Tagged` kinds (`5320..5329`) for Wave 17E-4C Accounts HTTP ops.
+pub let ACCOUNTS_TOK_HTTP_OPEN : Int = 5320
+pub let ACCOUNTS_TOK_HTTP_READ : Int = 5321
 
 /// Dynamic platform string matching release manifest keys (`darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`).
 pub fn live_current_platform(os_name : String, arch_name : String) -> String {
@@ -47,6 +51,11 @@ pub enum AsyncAdminOpKind {
   UpdatesCheck(String)
   CopiesS3Test(station_replica::NormalizedS3Target)
   ProfileCreateKeyed(String, Option[String], Option[String], Option[String], String, Option[String], String, String, Bool)
+  /// `(profile_id, provider_kind, include_resets)`
+  ProfileQuota(String, String, Bool)
+  /// `(profile_id, runtime, base_url, token, idem_key, reset_kind, step, carried)`
+  /// step 0: Claude GET usage -> claim; step 1: Claude GET profile -> org; step 2: POST reset; step 3: GET usage refresh
+  ProfileResetQuota(String, String, String, String, String, Option[String], Int, Option[String])
 }
 
 pub struct AsyncAdminHttpState {
@@ -57,6 +66,8 @@ pub struct AsyncAdminHttpState {
   pub mut op : AsyncAdminOpKind
   pub viewer : station_api::Viewer
   pub lang : station_api::Lang
+  pub tok_open : Int
+  pub tok_read : Int
   pub mut stream_id : Option[Int]
   pub mut status : Int
   pub body_chunks : Array[Bytes]
@@ -415,9 +426,11 @@ fn start_async_http_stream(
   max_bytes : Int,
   timeout_ms : Int64,
   idem_claim : Option[(String, String)],
+  tok_open : Int = LIVE_OP_TOK_HTTP_OPEN,
+  tok_read : Int = LIVE_OP_TOK_HTTP_READ,
 ) -> AsyncAdminHttpState {
   let _ = ctx.mux_role.call_async_raw(
-    builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_OPEN, sid),
+    builders_core::MuxToken::Tagged(0, tok_open, sid),
     "stream.open",
     live_build_stream_open_args(http_method, url, headers, timeout_ms),
     body_opt,
@@ -430,6 +443,8 @@ fn start_async_http_stream(
     op: op,
     viewer: viewer,
     lang: lang,
+    tok_open: tok_open,
+    tok_read: tok_read,
     stream_id: None,
     status: 0,
     body_chunks: [],
@@ -438,6 +453,398 @@ fn start_async_http_stream(
     deadline_ms: host_shim::now_ms() + timeout_ms,
     idem_claim: idem_claim,
   }
+}
+
+fn live_strip_trailing_slash(s : String) -> String {
+  let mut out = s.trim()
+  while out.length() > 0 && out.ends_with("/") {
+    out = out.slice(0, out.length() - 1)
+  }
+  out
+}
+
+fn live_env_or(key : String, fallback : String) -> String {
+  match station_sys::env_get(key) {
+    Some(v) if v.trim().length() > 0 => live_strip_trailing_slash(v)
+    _ => fallback
+  }
+}
+
+fn live_claude_version() -> Option[String] {
+  match station_sys::env_get("STILLFAIL_QUOTA_CLAUDE_VERSION") {
+    Some(v) if v.trim().length() > 0 => Some(v.trim())
+    _ => Some("2.1.321")
+  }
+}
+
+fn live_claude_headers(token : String, version_opt : Option[String]) -> Array[(String, String)] {
+  let hdrs : Array[(String, String)] = [
+    ("authorization", "Bearer " + token),
+    ("anthropic-beta", "oauth-2025-04-20"),
+  ]
+  match version_opt {
+    Some(v) if v.length() > 0 => hdrs.push(("user-agent", "claude-cli/" + v + " (external, cli)"))
+    _ => ()
+  }
+  hdrs
+}
+
+fn live_profile_home_path(ctx : DaemonCtx, entry : base_codec::Json, id : String) -> String {
+  let raw_home = match live_json_str_f(entry, "home") {
+    Some(h) if h.trim().length() > 0 => h.trim()
+    _ => "homes/" + id
+  }
+  if raw_home.starts_with("/") || (raw_home.length() >= 2 && raw_home.code_unit_at(1) == 58) {
+    raw_home
+  } else {
+    nodepath::join(ctx.sep, [ctx.data, raw_home])
+  }
+}
+
+fn live_read_claude_token(ctx : DaemonCtx, entry : base_codec::Json, id : String) -> Option[String] {
+  let is_machine = live_json_bool_f(entry, "machine") == Some(true)
+  let cred_path = if is_machine {
+    let home = match station_sys::env_get("HOME") {
+      Some(h) if h.length() > 0 => h
+      _ => match station_sys::env_get("USERPROFILE") { Some(h) => h, None => "." }
+    }
+    nodepath::join(ctx.sep, [home, ".claude", ".credentials.json"])
+  } else {
+    nodepath::join(ctx.sep, [live_profile_home_path(ctx, entry, id), ".credentials.json"])
+  }
+  match ctx.ops_fs.read_text(cred_path) {
+    Ok(raw) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "claudeAiOauth") {
+        Some(oa) => match live_json_str_f(oa, "accessToken") {
+          Some(tok) if tok.trim().length() > 0 => Some(tok.trim())
+          _ => None
+        }
+        None => None
+      }
+      base_codec::JsonParseResult::Err(_) => None
+    }
+    Err(_) => None
+  }
+}
+
+fn live_read_codex_tokens(ctx : DaemonCtx, entry : base_codec::Json, id : String) -> Option[(String, Option[String])] {
+  let is_machine = live_json_bool_f(entry, "machine") == Some(true)
+  let auth_path = if is_machine {
+    let ch = match station_sys::env_get("CODEX_HOME") {
+      Some(c) if c.trim().length() > 0 => c.trim()
+      _ => {
+        let home = match station_sys::env_get("HOME") {
+          Some(h) if h.length() > 0 => h
+          _ => match station_sys::env_get("USERPROFILE") { Some(h) => h, None => "." }
+        }
+        nodepath::join(ctx.sep, [home, ".codex"])
+      }
+    }
+    nodepath::join(ctx.sep, [ch, "auth.json"])
+  } else {
+    nodepath::join(ctx.sep, [live_profile_home_path(ctx, entry, id), "auth.json"])
+  }
+  match ctx.ops_fs.read_text(auth_path) {
+    Ok(raw) => match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "tokens") {
+        Some(toks) => match live_json_str_f(toks, "access_token") {
+          Some(tok) if tok.trim().length() > 0 => {
+            let acct = match live_json_str_f(toks, "account_id") {
+              Some(a) if a.trim().length() > 0 => Some(a.trim())
+              _ => None
+            }
+            Some((tok.trim(), acct))
+          }
+          _ => None
+        }
+        None => None
+      }
+      base_codec::JsonParseResult::Err(_) => None
+    }
+    Err(_) => None
+  }
+}
+
+fn live_profile_visible_ws(entry : base_codec::Json, ws : String) -> Bool {
+  match base_codec::json_get(entry, "withheld") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(w) if w == ws => return false
+          _ => ()
+        }
+      }
+      true
+    }
+    _ => true
+  }
+}
+
+fn live_find_profile_by_id(raw_cfg : base_codec::Json, id : String) -> Option[base_codec::Json] {
+  match base_codec::json_get(raw_cfg, "profiles") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        if live_json_str_f(xs[i], "id") == Some(id) {
+          return Some(xs[i])
+        }
+      }
+      None
+    }
+    _ => None
+  }
+}
+
+/// Match `/profiles/<id>/quota` or `/profiles/<id>/reset-quota` -> `Some((id, sub))`.
+pub fn parse_async_accounts_profile_route(norm_path : String) -> Option[(String, String)] {
+  if !norm_path.starts_with("/profiles/") {
+    return None
+  }
+  let rest = norm_path.slice(10, norm_path.length())
+  let parts = rest.split("/")
+  if parts.length() < 2 {
+    return None
+  }
+  let id = station_api::segment_decode(parts[0])
+  let sub = parts[1]
+  if id.length() == 0 {
+    return None
+  }
+  if sub == "quota" || sub == "reset-quota" {
+    return Some((id, sub))
+  }
+  None
+}
+
+fn live_valid_reset_kind(s : String) -> Bool {
+  if s.length() == 0 || s.length() > 20 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c < 97 || c > 122 {
+      return false
+    }
+  }
+  true
+}
+
+fn live_valid_org_uuid(s : String) -> Bool {
+  if s.length() == 0 || s.length() > 64 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+/// Non-blocking interceptor for `POST /profiles/:id/quota` and `POST /profiles/:id/reset-quota`.
+/// Uses `ACCOUNTS_TOK_HTTP_OPEN` (`5320`) / `ACCOUNTS_TOK_HTTP_READ` (`5321`) on `ctx.mux_role`.
+pub fn try_intercept_async_accounts_op(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  sid : Int64,
+  conn_id : Int64,
+  method_name : String,
+  norm_path : String,
+  headers : Array[http1::Header],
+  body_bytes : Bytes,
+  viewer : station_api::Viewer,
+  lang : station_api::Lang,
+  idem_claim : Option[(String, String)],
+) -> Option[Result[AsyncAdminHttpState, station_http::HttpResponse]] {
+  if method_name != "POST" {
+    return None
+  }
+  let (id, sub) = match parse_async_accounts_profile_route(norm_path) {
+    Some(p) => p
+    None => return None
+  }
+  let ops_lang = match lang { station_api::Lang::Zh => station_ops::Lang::Zh, station_api::Lang::En => station_ops::Lang::En }
+  let raw_cfg = ctx.config_file.raw()
+  let entry = match live_find_profile_by_id(raw_cfg, id) {
+    Some(e) if live_profile_visible_ws(e, viewer.workspace) => e
+    _ => return Some(Err(station_api::json_error(404, "unknown profile " + id)))
+  }
+  let acc_kind = match base_codec::json_get(entry, "access") {
+    Some(acc) => match live_json_str_f(acc, "kind") { Some(k) => k, None => "" }
+    None => ""
+  }
+  let acc_key = match base_codec::json_get(entry, "access") {
+    Some(acc) => match live_json_str_f(acc, "key") { Some(k) => k.trim(), None => "" }
+    None => ""
+  }
+  let acc_prov = match base_codec::json_get(entry, "access") {
+    Some(acc) => match live_json_str_f(acc, "provider") { Some(p) => p.trim(), None => "" }
+    None => ""
+  }
+  let rt = match live_json_str_f(entry, "runtime") { Some(r) => r, None => "" }
+  let now_w = host_shim::wall_ms()
+
+  if sub == "quota" {
+    if live_json_bool_f(entry, "enabled") == Some(false) {
+      let cached = match station_whole::load_profile_quota_sql(st.core.store, id) {
+        Some(q) => q
+        None => base_codec::json_null()
+      }
+      return Some(Err(station_api::json_ok(cached)))
+    }
+    if acc_kind == "opencode-go" {
+      let base = live_env_or("STILLFAIL_QUOTA_OPENCODE_URL", "https://opencode.ai/zen/go")
+      let state = start_async_http_stream(
+        ctx, sid, conn_id, method_name, norm_path,
+        AsyncAdminOpKind::ProfileQuota(id, "opencode-go", false),
+        viewer, lang,
+        "GET", base + "/v1/usage", [("authorization", "Bearer " + acc_key)], None,
+        65536, 15000L, idem_claim,
+        tok_open=ACCOUNTS_TOK_HTTP_OPEN, tok_read=ACCOUNTS_TOK_HTTP_READ,
+      )
+      return Some(Ok(state))
+    }
+    if acc_kind == "api-provider" && acc_prov == "kimi-code" {
+      let base = live_env_or("STILLFAIL_QUOTA_KIMI_URL", "https://api.kimi.com/coding/v1")
+      let state = start_async_http_stream(
+        ctx, sid, conn_id, method_name, norm_path,
+        AsyncAdminOpKind::ProfileQuota(id, "kimi-code", false),
+        viewer, lang,
+        "GET", base + "/usages", [("authorization", "Bearer " + acc_key), ("accept", "application/json")], None,
+        65536, 15000L, idem_claim,
+        tok_open=ACCOUNTS_TOK_HTTP_OPEN, tok_read=ACCOUNTS_TOK_HTTP_READ,
+      )
+      return Some(Ok(state))
+    }
+    if acc_kind == "subscription" && rt == "claude" {
+      let tok = match live_read_claude_token(ctx, entry, id) {
+        Some(t) => t
+        None => {
+          let q = station_whole::make_quota_json("unavailable", [], Some(station_ops::tr(ops_lang, "station.quota.signInExpired")), now_w)
+          let _ = station_whole::save_profile_quota_sql(st.core.store, id, q, now_w)
+          st.core.api.events.overview_changed("profiles")
+          return Some(Err(station_api::json_ok(q)))
+        }
+      }
+      let base = live_env_or("STILLFAIL_QUOTA_ANTHROPIC_URL", "https://api.anthropic.com")
+      let ver = live_claude_version()
+      let path = if ver.is_some() { "/api/oauth/usage?at_wall=1" } else { "/api/oauth/usage" }
+      let state = start_async_http_stream(
+        ctx, sid, conn_id, method_name, norm_path,
+        AsyncAdminOpKind::ProfileQuota(id, "claude", ver.is_some()),
+        viewer, lang,
+        "GET", base + path, live_claude_headers(tok, ver), None,
+        65536, 15000L, idem_claim,
+        tok_open=ACCOUNTS_TOK_HTTP_OPEN, tok_read=ACCOUNTS_TOK_HTTP_READ,
+      )
+      return Some(Ok(state))
+    }
+    if acc_kind == "subscription" && rt == "codex" {
+      let (tok, acct_opt) = match live_read_codex_tokens(ctx, entry, id) {
+        Some(p) => p
+        None => {
+          let q = station_whole::make_quota_json("unavailable", [], Some(station_ops::tr(ops_lang, "station.quota.codexLogin")), now_w)
+          let _ = station_whole::save_profile_quota_sql(st.core.store, id, q, now_w)
+          st.core.api.events.overview_changed("profiles")
+          return Some(Err(station_api::json_ok(q)))
+        }
+      }
+      let base = live_env_or("STILLFAIL_QUOTA_CHATGPT_URL", "https://chatgpt.com")
+      let hdrs : Array[(String, String)] = [
+        ("authorization", "Bearer " + tok),
+        ("user-agent", "codex_cli_rs"),
+      ]
+      match acct_opt {
+        Some(a) => hdrs.push(("chatgpt-account-id", a))
+        None => ()
+      }
+      let state = start_async_http_stream(
+        ctx, sid, conn_id, method_name, norm_path,
+        AsyncAdminOpKind::ProfileQuota(id, "codex", false),
+        viewer, lang,
+        "GET", base + "/backend-api/wham/usage", hdrs, None,
+        65536, 15000L, idem_claim,
+        tok_open=ACCOUNTS_TOK_HTTP_OPEN, tok_read=ACCOUNTS_TOK_HTTP_READ,
+      )
+      return Some(Ok(state))
+    }
+    // Unsupported / env / cursor / devin -> fall through to synchronous handler!
+    return None
+  }
+
+  // `POST /profiles/:id/reset-quota`
+  if station_whole::is_profile_borrowed(entry) {
+    return Some(Err(station_api::json_error(409, station_ops::tr(ops_lang, "station.share.borrowedEdit"))))
+  }
+  if acc_kind != "subscription" || (rt != "claude" && rt != "codex") {
+    return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.quota.resetSubscriptionOnly"))))
+  }
+  let mut idem_key = ""
+  for hi in 0..<headers.length() {
+    if station_http::ascii_eq_ci(headers[hi].name, "idempotency-key") {
+      idem_key = headers[hi].value
+      break
+    }
+  }
+  if idem_key.length() == 0 || idem_key.length() > 200 {
+    return Some(Err(station_api::json_error(400, "reset requires an idempotency key")))
+  }
+  let mut reset_kind : Option[String] = None
+  let raw_body = body_bytes.to_string().trim()
+  if raw_body.length() > 0 {
+    match base_codec::json_parse(raw_body) {
+      base_codec::JsonParseResult::Ok(j) => match live_json_str_f(j, "reset") {
+        Some(rk) if live_valid_reset_kind(rk) => reset_kind = Some(rk)
+        _ => ()
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
+  }
+
+  if rt == "claude" {
+    let tok = match live_read_claude_token(ctx, entry, id) {
+      Some(t) => t
+      None => return Some(Err(station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.signInExpired"))))
+    }
+    let base = live_env_or("STILLFAIL_QUOTA_ANTHROPIC_URL", "https://api.anthropic.com")
+    let ver = live_claude_version()
+    let state = start_async_http_stream(
+      ctx, sid, conn_id, method_name, norm_path,
+      AsyncAdminOpKind::ProfileResetQuota(id, "claude", base, tok, idem_key, reset_kind, 0, None),
+      viewer, lang,
+      "GET", base + "/api/oauth/usage?at_wall=1", live_claude_headers(tok, ver), None,
+      65536, 25000L, idem_claim,
+      tok_open=ACCOUNTS_TOK_HTTP_OPEN, tok_read=ACCOUNTS_TOK_HTTP_READ,
+    )
+    return Some(Ok(state))
+  }
+
+  // Codex subscription reset
+  let (tok, acct_opt) = match live_read_codex_tokens(ctx, entry, id) {
+    Some(p) => p
+    None => return Some(Err(station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.codexLogin"))))
+  }
+  let base = live_env_or("STILLFAIL_QUOTA_CHATGPT_URL", "https://chatgpt.com")
+  let hdrs : Array[(String, String)] = [
+    ("authorization", "Bearer " + tok),
+    ("user-agent", "codex_cli_rs"),
+    ("content-type", "application/json"),
+    ("idempotency-key", idem_key),
+  ]
+  match acct_opt {
+    Some(a) => hdrs.push(("chatgpt-account-id", a))
+    None => ()
+  }
+  let state = start_async_http_stream(
+    ctx, sid, conn_id, method_name, norm_path,
+    AsyncAdminOpKind::ProfileResetQuota(id, "codex", base, tok, idem_key, reset_kind, 2, None),
+    viewer, lang,
+    "POST", base + "/backend-api/wham/rate-limit-reset", hdrs, Some("{}".to_bytes()),
+    65536, 25000L, idem_claim,
+    tok_open=ACCOUNTS_TOK_HTTP_OPEN, tok_read=ACCOUNTS_TOK_HTTP_READ,
+  )
+  Some(Ok(state))
 }
 
 /// Close any open `stream.open` handle and abort any in-flight idempotency claim when an admin stream
@@ -805,18 +1212,45 @@ pub fn apply_updates_check_result(
   true
 }
 
+/// Continue an `AsyncAdminHttpState` onto a next non-blocking HTTP step (for multi-step `ProfileResetQuota`).
+fn continue_async_http_step(
+  ctx : DaemonCtx,
+  state : AsyncAdminHttpState,
+  next_op : AsyncAdminOpKind,
+  http_method : String,
+  url : String,
+  headers : Array[(String, String)],
+  body_opt : Option[Bytes],
+) -> Unit {
+  state.op = next_op
+  state.stream_id = None
+  state.status = 0
+  state.body_chunks.clear()
+  state.total_bytes = 0
+  let rem = state.deadline_ms - host_shim::now_ms()
+  let timeout = if rem > 1000L { rem } else { 1000L }
+  let _ = ctx.mux_role.call_async_raw(
+    builders_core::MuxToken::Tagged(0, state.tok_open, state.sid),
+    "stream.open",
+    live_build_stream_open_args(http_method, url, headers, timeout),
+    body_opt,
+  )
+}
+
 /// Complete an async admin HTTP op once the response body (or error) has arrived.
+/// Returns `None` when a multi-step op (`ProfileResetQuota`) launched its next non-blocking HTTP step.
 fn complete_async_admin_op(
   ctx : DaemonCtx,
   st : WholeRuntimeState,
   state : AsyncAdminHttpState,
   fetch_res : Result[(Int, Bytes), String],
-) -> station_http::HttpResponse {
+) -> Option[station_http::HttpResponse] {
   let ops_lang = match state.lang { station_api::Lang::Zh => station_ops::Lang::Zh, station_api::Lang::En => station_ops::Lang::En }
+  let now_w = host_shim::wall_ms()
   let resp = match state.op {
     AsyncAdminOpKind::UpdatesCheck(req_ch) => {
       if !live_viewer_still_manager(st, state) {
-        return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
+        return Some(finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active")))
       }
       refresh_runtime_install_paths(st.core.updates, ctx.ops_fs, ctx.sep)
       let raw_cfg = ctx.config_file.raw()
@@ -858,29 +1292,24 @@ fn complete_async_admin_op(
 
     AsyncAdminOpKind::ProfileCreateKeyed(kind, prov_opt, clean_ep, final_proto, key, env_rt, label, base_slug, is_api_provider) => {
       if !live_viewer_still_manager(st, state) {
-        return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
+        return Some(finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active")))
       }
-      // 1:1 with Node `accounts/index.ts:841`:
-      // - For `api-provider` (`is_api_provider`), only `state == "failed"` (auth 401/403) refuses creation;
-      //   providers without a model list (404/405/5xx/network) leave check state `"unknown"` and succeed.
-      // - For legacy keyed kinds (`anthropic-api`, `openai-api`, `opencode-go`), non-2xx or network error refuses.
       match fetch_res {
         Err(e) => {
           if !is_api_provider {
-            return finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + ": " + e))
+            return Some(finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + ": " + e)))
           }
         }
         Ok((status, _)) => {
           if is_api_provider {
             if status == 401 || status == 403 {
-              return finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + " (HTTP " + status.to_string() + ")"))
+              return Some(finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + " (HTTP " + status.to_string() + ")")))
             }
           } else if status < 200 || status >= 300 {
-            return finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + " (HTTP " + status.to_string() + ")"))
+            return Some(finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + " (HTTP " + status.to_string() + ")")))
           }
         }
       }
-      // Key verified! Create home dir (never swallow failure) and persist atomically to config.json.
       let mut created_id = ""
       let mut fail_err : Option[station_api::ApiError] = None
       match ctx.config_file.try_update(fn(raw : base_codec::Json) -> Result[base_codec::Json, String] {
@@ -943,11 +1372,232 @@ fn complete_async_admin_op(
         }
       }
     }
+
+    AsyncAdminOpKind::ProfileQuota(profile_id, provider_kind, include_resets) => {
+      match fetch_res {
+        Err(_) => {
+          let detail = station_ops::tr(ops_lang, "station.quota.unreachable")
+          let q = station_whole::make_quota_json("unavailable", [], Some(detail), now_w)
+          let _ = station_whole::save_profile_quota_sql(st.core.store, profile_id, q, now_w)
+          st.core.api.events.overview_changed("profiles")
+          station_api::json_error(502, detail)
+        }
+        Ok((status, body_b)) => {
+          let text = body_b.to_string()
+          if status < 200 || status >= 300 {
+            let prov_name = if provider_kind == "claude" {
+              "Anthropic "
+            } else if provider_kind == "codex" {
+              "ChatGPT "
+            } else if provider_kind == "kimi-code" {
+              "Kimi Code "
+            } else {
+              "OpenCode Go "
+            }
+            let (q, _signed_out, unanswered) = station_whole::accounts_refused_quota(prov_name, status, text, now_w, ops_lang)
+            let _ = station_whole::save_profile_quota_sql(st.core.store, profile_id, q, now_w)
+            st.core.api.events.overview_changed("profiles")
+            if unanswered {
+              let d = match live_json_str_f(q, "detail") { Some(s) => s, None => prov_name + "HTTP " + status.to_string() }
+              station_api::json_error(502, d)
+            } else {
+              station_api::json_ok(q)
+            }
+          } else {
+            let parsed = match base_codec::json_parse(text) {
+              base_codec::JsonParseResult::Ok(j) => {
+                if provider_kind == "opencode-go" {
+                  station_whole::parse_opencode_quota(j, now_w)
+                } else if provider_kind == "claude" {
+                  station_whole::parse_claude_quota(j, now_w, include_resets)
+                } else if provider_kind == "codex" {
+                  station_whole::parse_codex_quota(j, now_w, ops_lang)
+                } else if provider_kind == "kimi-code" {
+                  station_whole::parse_kimi_quota(j, now_w, ops_lang)
+                } else {
+                  station_whole::make_quota_json("unsupported", [], None, now_w)
+                }
+              }
+              base_codec::JsonParseResult::Err(_) => {
+                station_whole::make_quota_json("unavailable", [], Some("invalid quota JSON"), now_w)
+              }
+            }
+            let _ = station_whole::save_profile_quota_sql(st.core.store, profile_id, parsed, now_w)
+            st.core.api.events.overview_changed("profiles")
+            station_api::json_ok(parsed)
+          }
+        }
+      }
+    }
+
+    AsyncAdminOpKind::ProfileResetQuota(profile_id, rt, base_url, token, idem_key, reset_kind, step, carried) => {
+      if !live_viewer_still_manager(st, state) {
+        return Some(finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active")))
+      }
+      if step == 3 {
+        // Step 3: post-reset quota refresh (best-effort) -> return `{ outcome }`
+        match fetch_res {
+          Ok((status, body_b)) if status >= 200 && status < 300 => {
+            match base_codec::json_parse(body_b.to_string()) {
+              base_codec::JsonParseResult::Ok(j) => {
+                let q = if rt == "claude" {
+                  station_whole::parse_claude_quota(j, now_w, true)
+                } else {
+                  station_whole::parse_codex_quota(j, now_w, ops_lang)
+                }
+                let _ = station_whole::save_profile_quota_sql(st.core.store, profile_id, q, now_w)
+                st.core.api.events.overview_changed("profiles")
+              }
+              base_codec::JsonParseResult::Err(_) => ()
+            }
+          }
+          _ => ()
+        }
+        let outcome = match carried { Some(o) => o, None => "reset" }
+        station_api::json_ok(base_codec::json_obj([("outcome", base_codec::json_str(outcome))]))
+      } else if rt == "claude" && step == 0 {
+        // Step 0: GET /api/oauth/usage?at_wall=1 -> select claim
+        match fetch_res {
+          Err(_) => station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.unreachable"))
+          Ok((status, body_b)) => {
+            if status == 401 {
+              station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.signInExpired"))
+            } else if status < 200 || status >= 300 {
+              station_api::json_error(502, "Anthropic " + status.to_string())
+            } else {
+              let usage_j = match base_codec::json_parse(body_b.to_string()) {
+                base_codec::JsonParseResult::Ok(j) => j
+                base_codec::JsonParseResult::Err(_) => base_codec::json_null()
+              }
+              match station_whole::claude_claim(usage_j, idem_key, reset_kind) {
+                station_whole::ClaudeClaimResult::NoneAvailable => {
+                  station_api::json_error(409, station_ops::tr(ops_lang, "station.quota.nothingToReset"))
+                }
+                station_whole::ClaudeClaimResult::NoCredit => {
+                  station_api::json_error(409, station_ops::tr(ops_lang, "station.quota.noCredit"))
+                }
+                station_whole::ClaudeClaimResult::Claim(claim_j) => {
+                  let ver = live_claude_version()
+                  continue_async_http_step(
+                    ctx,
+                    state,
+                    AsyncAdminOpKind::ProfileResetQuota(profile_id, rt, base_url, token, idem_key, reset_kind, 1, Some(base_codec::json_stringify(claim_j))),
+                    "GET",
+                    base_url + "/api/oauth/profile",
+                    live_claude_headers(token, ver),
+                    None,
+                  )
+                  return None
+                }
+              }
+            }
+          }
+        }
+      } else if rt == "claude" && step == 1 {
+        // Step 1: GET /api/oauth/profile -> extract organization.uuid -> POST reset_rate_limits
+        match fetch_res {
+          Err(_) => station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.unreachable"))
+          Ok((status, body_b)) => {
+            if status == 401 {
+              station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.signInExpired"))
+            } else if status < 200 || status >= 300 {
+              station_api::json_error(502, "Anthropic did not say the account's organization (" + status.to_string() + ")")
+            } else {
+              let org_opt : Option[String] = match base_codec::json_parse(body_b.to_string()) {
+                base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "organization") {
+                  Some(o) => live_json_str_f(o, "uuid")
+                  None => None
+                }
+                base_codec::JsonParseResult::Err(_) => None
+              }
+              match org_opt {
+                Some(org) if live_valid_org_uuid(org) => {
+                  let ver = live_claude_version()
+                  let hdrs = live_claude_headers(token, ver)
+                  hdrs.push(("content-type", "application/json"))
+                  let claim_str = match carried { Some(s) => s, None => "{}" }
+                  continue_async_http_step(
+                    ctx,
+                    state,
+                    AsyncAdminOpKind::ProfileResetQuota(profile_id, rt, base_url, token, idem_key, reset_kind, 2, None),
+                    "POST",
+                    base_url + "/api/organizations/" + org + "/reset_rate_limits",
+                    hdrs,
+                    Some(claim_str.to_bytes()),
+                  )
+                  return None
+                }
+                _ => station_api::json_error(502, "Anthropic did not say the account's organization (" + status.to_string() + ")")
+              }
+            }
+          }
+        }
+      } else {
+        // Step 2: POST reset_rate_limits (Claude) or rate-limit-reset (Codex)
+        match fetch_res {
+          Err(_) => station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.unreachable"))
+          Ok((status, body_b)) => {
+            if status == 401 {
+              station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.signInExpired"))
+            } else if status == 429 {
+              station_api::json_error(409, station_ops::tr(ops_lang, "station.quota.resetUnavailable"))
+            } else if status < 200 || status >= 300 {
+              station_api::json_error(502, "provider HTTP " + status.to_string())
+            } else {
+              let outcome = match base_codec::json_parse(body_b.to_string()) {
+                base_codec::JsonParseResult::Ok(j) => {
+                  if rt == "claude" {
+                    station_whole::claude_claim_outcome(live_json_str_f(j, "result"))
+                  } else {
+                    match live_json_str_f(j, "outcome") { Some(o) => o, None => "unconfirmed" }
+                  }
+                }
+                base_codec::JsonParseResult::Err(_) => "unconfirmed"
+              }
+              if outcome == "reset" || outcome == "alreadyRedeemed" {
+                // Step 3: refresh quota before answering
+                if rt == "claude" {
+                  let ver = live_claude_version()
+                  continue_async_http_step(
+                    ctx,
+                    state,
+                    AsyncAdminOpKind::ProfileResetQuota(profile_id, rt, base_url, token, idem_key, reset_kind, 3, Some(outcome)),
+                    "GET",
+                    base_url + "/api/oauth/usage?at_wall=1",
+                    live_claude_headers(token, ver),
+                    None,
+                  )
+                } else {
+                  continue_async_http_step(
+                    ctx,
+                    state,
+                    AsyncAdminOpKind::ProfileResetQuota(profile_id, rt, base_url, token, idem_key, reset_kind, 3, Some(outcome)),
+                    "GET",
+                    base_url + "/backend-api/wham/usage",
+                    [("authorization", "Bearer " + token), ("user-agent", "codex_cli_rs")],
+                    None,
+                  )
+                }
+                return None
+              } else if outcome == "nothingToReset" {
+                station_api::json_error(409, station_ops::tr(ops_lang, "station.quota.nothingToReset"))
+              } else if outcome == "noCredit" {
+                station_api::json_error(409, station_ops::tr(ops_lang, "station.quota.noCredit"))
+              } else if outcome == "unavailable" {
+                station_api::json_error(409, station_ops::tr(ops_lang, "station.quota.resetUnavailable"))
+              } else {
+                station_api::json_error(502, station_ops::tr(ops_lang, "station.quota.resetUnconfirmed"))
+              }
+            }
+          }
+        }
+      }
+    }
   }
-  finish_idem_claim(st, state, resp)
+  Some(finish_idem_claim(st, state, resp))
 }
 
-/// Drive one non-blocking `LIVE_OP_TOK_HTTP_OPEN` / `LIVE_OP_TOK_HTTP_READ` completion on `ctx.mux_role`.
+/// Drive one non-blocking `LIVE_OP_TOK_HTTP_OPEN`/`READ` or `ACCOUNTS_TOK_HTTP_OPEN`/`READ` completion on `ctx.mux_role`.
 /// Returns `Some(resp)` when the op has finished and the response should be sent on `state.sid`.
 pub fn step_async_admin_http_done(
   ctx : DaemonCtx,
@@ -956,9 +1606,9 @@ pub fn step_async_admin_http_done(
   state : AsyncAdminHttpState,
   d : host_shim::ShellDone,
 ) -> Option[station_http::HttpResponse] {
-  if kind == LIVE_OP_TOK_HTTP_OPEN {
+  if kind == state.tok_open {
     match station_http::decode_stream_open_done(d) {
-      Err(e) => return Some(complete_async_admin_op(ctx, st, state, Err(e.message)))
+      Err(e) => return complete_async_admin_op(ctx, st, state, Err(e.message))
       Ok(head) => {
         state.stream_id = Some(head.id)
         state.status = head.status
@@ -971,7 +1621,7 @@ pub fn step_async_admin_http_done(
             }
             None => ()
           }
-          return Some(complete_async_admin_op(ctx, st, state, Err("request timed out")))
+          return complete_async_admin_op(ctx, st, state, Err("request timed out"))
         }
         let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
         let read_args = base_codec::json_stringify(base_codec::json_obj([
@@ -979,7 +1629,7 @@ pub fn step_async_admin_http_done(
           ("stallMs", base_codec::json_int(stall)),
         ]))
         let _ = ctx.mux_role.call_async_raw(
-          builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_READ, state.sid),
+          builders_core::MuxToken::Tagged(0, state.tok_read, state.sid),
           "stream.read",
           read_args,
           None,
@@ -988,7 +1638,7 @@ pub fn step_async_admin_http_done(
       }
     }
   }
-  if kind == LIVE_OP_TOK_HTTP_READ {
+  if kind == state.tok_read {
     match station_http::decode_stream_read_done(d) {
       Err(e) => {
         match state.stream_id {
@@ -998,7 +1648,7 @@ pub fn step_async_admin_http_done(
           }
           None => ()
         }
-        return Some(complete_async_admin_op(ctx, st, state, Err(e.message)))
+        return complete_async_admin_op(ctx, st, state, Err(e.message))
       }
       Ok(chunk) => {
         match chunk {
@@ -1011,7 +1661,7 @@ pub fn step_async_admin_http_done(
               None => ()
             }
             let full = live_concat_chunks(state.body_chunks, state.total_bytes)
-            return Some(complete_async_admin_op(ctx, st, state, Ok((state.status, full))))
+            return complete_async_admin_op(ctx, st, state, Ok((state.status, full)))
           }
           station_http::StreamChunk::Data(data) => {
             if data.length() > 0 {
@@ -1023,7 +1673,7 @@ pub fn step_async_admin_http_done(
                   }
                   None => ()
                 }
-                return Some(complete_async_admin_op(ctx, st, state, Err("response body exceeded limit")))
+                return complete_async_admin_op(ctx, st, state, Err("response body exceeded limit"))
               }
               state.body_chunks.push(data)
               state.total_bytes = state.total_bytes + data.length()
@@ -1039,16 +1689,16 @@ pub fn step_async_admin_http_done(
             }
             None => ()
           }
-          return Some(complete_async_admin_op(ctx, st, state, Err("request timed out")))
+          return complete_async_admin_op(ctx, st, state, Err("request timed out"))
         }
-        let stream_id = match state.stream_id { Some(id) => id, None => return Some(complete_async_admin_op(ctx, st, state, Err("stream closed"))) }
+        let stream_id = match state.stream_id { Some(id) => id, None => return complete_async_admin_op(ctx, st, state, Err("stream closed")) }
         let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
         let read_args = base_codec::json_stringify(base_codec::json_obj([
           ("id", base_codec::json_int(stream_id)),
           ("stallMs", base_codec::json_int(stall)),
         ]))
         let _ = ctx.mux_role.call_async_raw(
-          builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_READ, state.sid),
+          builders_core::MuxToken::Tagged(0, state.tok_read, state.sid),
           "stream.read",
           read_args,
           None,

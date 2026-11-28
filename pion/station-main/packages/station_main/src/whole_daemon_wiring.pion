@@ -742,6 +742,7 @@ pub fn wire_whole_core_runtime_hooks(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
   logins : station_whole::LoginsOsRuntime,
+  accounts_logins : station_whole::AccountsLoginManager,
   browser : station_whole::BrowserOsManager,
   seen_members : Map[String, Map[String, Map[String, SeenMember]]],
 ) -> Unit {
@@ -856,17 +857,77 @@ pub fn wire_whole_core_runtime_hooks(
   core.api.hooks.on_workspace_join = None
   core.api.hooks.on_updates_op = None
 
-  // Wave 17D-2 R6: Live `accounts.profiles.createMachine` executor:
-  // parses real credential JSON (rejects empty/corrupt files), distinguishes `notSignedIn` vs `keychain`,
-  // extracts real email (including Codex JWT id_token), and symlinks Codex `auth.json`.
-  // (`accounts.profiles.login*` remain honest 501 until Wave 17E lands the dedicated `LoginJob` runtime.)
+  // Wave 17E-4C: Expose role-redacted active/finished profile login jobs in `/overview`!
+  core.api.hooks.profile_login_of = Some(fn(pid : String, manages : Bool) -> Option[base_codec::Json] {
+    match accounts_logins.get(pid) {
+      Some(j) => Some(j.to_json(manages))
+      None => None
+    }
+  })
+
+  // Wave 17D-2 R6 + Wave 17E-4C: Live `accounts.profiles.createMachine` & `accounts.profiles.login*` executor.
   core.api.hooks.on_profile_live_op = Some(fn(
     op : String,
-    _params : Array[String],
+    params : Array[String],
     body : base_codec::Json,
-    _viewer : station_api::Viewer,
-    _lang : station_api::Lang,
+    viewer : station_api::Viewer,
+    lang : station_api::Lang,
   ) -> Result[base_codec::Json, station_api::ApiError] {
+    let ops_lang = match lang { station_api::Lang::Zh => station_ops::Lang::Zh, station_api::Lang::En => station_ops::Lang::En }
+    if op == "accounts.profiles.login" && params.length() >= 1 {
+      let id = params[0]
+      let rt = match base_codec::json_get(body, "runtime") { Some(base_codec::Json::Str(s)) => s, _ => "claude" }
+      let raw_home = match base_codec::json_get(body, "home") {
+        Some(base_codec::Json::Str(h)) if h.trim().length() > 0 => h.trim()
+        _ => "homes/" + id
+      }
+      let home_dir = if raw_home.starts_with("/") || (raw_home.length() >= 2 && raw_home.code_unit_at(1) == 58) {
+        raw_home
+      } else {
+        nodepath::join(ctx.sep, [ctx.data, raw_home])
+      }
+      let email_opt : Option[String] = match base_codec::json_get(body, "name") {
+        Some(base_codec::Json::Str(s)) if s.contains("@") => Some(s.trim())
+        _ => None
+      }
+      let job = accounts_logins.start(id, rt, home_dir, email_opt, ctx.sep, host_shim::now_ms(), host_shim::wall_ms(), ops_lang)
+      core.api.events.overview_changed("profiles")
+      return Ok(base_codec::json_obj([("job", job.to_json(viewer.manages_station()))]))
+    }
+    if op == "accounts.profiles.login.get" && params.length() >= 1 {
+      let id = params[0]
+      let job_j = match accounts_logins.get(id) {
+        Some(j) => j.to_json(viewer.manages_station())
+        None => base_codec::json_null()
+      }
+      return Ok(base_codec::json_obj([("job", job_j)]))
+    }
+    if op == "accounts.profiles.login.delete" && params.length() >= 1 {
+      let id = params[0]
+      if accounts_logins.cancel(id) {
+        core.api.events.overview_changed("profiles")
+      }
+      let job_j = match accounts_logins.get(id) {
+        Some(j) => j.to_json(viewer.manages_station())
+        None => base_codec::json_null()
+      }
+      return Ok(base_codec::json_obj([("job", job_j)]))
+    }
+    if op == "accounts.profiles.login-code" && params.length() >= 1 {
+      let id = params[0]
+      let raw_code = match base_codec::json_get(body, "code") {
+        Some(base_codec::Json::Str(s)) => s
+        Some(base_codec::Json::Null) | None => ""
+        Some(other) => base_codec::json_stringify(other)
+      }
+      match accounts_logins.submit_code(id, raw_code, host_shim::now_ms(), ops_lang) {
+        Ok(job) => {
+          core.api.events.overview_changed("profiles")
+          return Ok(base_codec::json_obj([("job", job.to_json(viewer.manages_station()))]))
+        }
+        Err(e) => return Err(e)
+      }
+    }
     if op == "accounts.profiles.createMachine" {
       let rt = match base_codec::json_get(body, "runtime") { Some(base_codec::Json::Str(s)) => s, _ => "" }
       let home = match station_sys::env_get("HOME") {

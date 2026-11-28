@@ -44,6 +44,8 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_updates_op : Option[(String, base_codec::Json, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut is_update_override_present : Option[() -> Bool]
   pub mut on_profile_live_op : Option[(String, Array[String], base_codec::Json, station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
+  pub mut profile_login_of : Option[(String, Bool) -> Option[base_codec::Json]]
+  pub pace_cache : AccountsPaceCache
   pub mut overview_for : Option[(station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut on_screens_browser_open : Option[(String, Option[String]) -> Result[String, station_api::ApiError]]
   pub mut drive_for_ws : Option[(String) -> station_screens::Drive]
@@ -72,6 +74,8 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_updates_op: None,
     is_update_override_present: None,
     on_profile_live_op: None,
+    profile_login_of: None,
+    pace_cache: AccountsPaceCache::new("boot"),
     overview_for: None,
     on_screens_browser_open: None,
     drive_for_ws: None,
@@ -140,6 +144,7 @@ pub struct WholeApiRuntimePort {
   pub vault_plain : VaultPlainStorePort
   pub readops : ReadOpsPort
   pub vault_decisions : VaultDecisionsPort
+  pub accounts_store : AccountsStorePort
 }
 
 pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
@@ -257,6 +262,7 @@ pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
     vault_plain: vp,
     readops: ReadOpsPort::in_memory(),
     vault_decisions: vd,
+    accounts_store: AccountsStorePort::in_memory(),
   }
 }
 
@@ -695,6 +701,7 @@ pub fn WholeApiRuntimePort::production(
     vault_plain: VaultPlainStorePort::production(whole_store),
     readops: ReadOpsPort::production(whole_store, agents, home_ws_str, shared_transfers),
     vault_decisions: VaultDecisionsPort::production(whole_store),
+    accounts_store: AccountsStorePort::production(whole_store),
   }
 }
 

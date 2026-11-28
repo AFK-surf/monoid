@@ -1,0 +1,2328 @@
+// Wave 17E-4C: Accounts Quota / ResetQuota / Pace & Interactive LoginJob Runtime (`station_whole`).
+// 1:1 aligned with Node `station/src/accounts/{quota,agy-quota,claude-reset,pace,login}.ts`,
+// `station/src/api/routes/accounts.ts`, and `client/core-ts/src/shapes/profiles.ts`.
+//
+// Invariants:
+// - Pre-allocated disjoint `station_sys` `event_id` range: `[14 << 32, 15 << 32)`
+//   (`ACCOUNTS_LIVE_EVENT_BASE = 60129542144L`, `ACCOUNTS_LIVE_EVENT_END = 64424509440L`).
+// - Zero main-loop blocking: child processes run asynchronously via `station_sys::proc_spawn`
+//   (`new_pgid: true`, `pipe_stdin/stdout/stderr: true`), with non-blocking `write_stdin` and
+//   process-group termination (`kill(SIG_TERM/SIG_KILL, true)` + `close()`) on cancel/timeout/shutdown.
+// - Role-safe view redaction: non-manager / read-only viewers NEVER see login `url`, `userCode`,
+//   OAuth tokens, or sensitive credentials.
+
+import "base_codec"
+import "crypto"
+import "nodepath"
+import "station_api"
+import "station_drivers"
+import "station_ops"
+import "station_sys"
+
+/// Pre-allocated disjoint `station_sys` `event_id` interval `[14 << 32, 15 << 32)` for Accounts LoginJobs.
+pub let ACCOUNTS_LIVE_EVENT_BASE : Int64 = 60129542144L
+pub let ACCOUNTS_LIVE_EVENT_END : Int64 = 64424509440L
+
+/// Strict half-open interval membership check for Accounts `station_sys` events.
+pub fn is_accounts_live_event_id(ev_id : Int64) -> Bool {
+  ev_id >= ACCOUNTS_LIVE_EVENT_BASE && ev_id < ACCOUNTS_LIVE_EVENT_END
+}
+
+pub let ACCOUNTS_PACE_HOURS : Int = 192
+pub let ACCOUNTS_HOUR_MS : Int64 = 3600000L
+pub let ACCOUNTS_SPEED_QUARTER_HOURS : Int = 8
+pub let ACCOUNTS_LOGIN_TIMEOUT_MS : Int64 = 900000L
+pub let ACCOUNTS_LOGIN_VERIFY_WAIT_MS : Int64 = 90000L
+let ACCOUNTS_DAY_MINUTES : Int = 1440
+let ACCOUNTS_WEEK_MINUTES : Int = 10080
+
+// ---------------------------------------------------------------------------
+// 1. Quota & Claude Reset Parsers (1:1 with quota.ts, claude-reset.ts, agy-quota.ts)
+// ---------------------------------------------------------------------------
+
+fn acc_round_half_away(n : Double) -> Int {
+  if n >= 0.0 {
+    (n + 0.5).to_int()
+  } else {
+    -(((-n) + 0.5).to_int())
+  }
+}
+
+fn acc_parse_double_str(s : String) -> Option[Double] {
+  let t = s.trim()
+  if t.length() == 0 {
+    return None
+  }
+  match base_codec::json_parse(t) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Num(d, _)) => Some(d)
+    _ => None
+  }
+}
+
+/// Clamp a provider utilization value to integer `[0, 100]` (round halves away from zero).
+pub fn accounts_clamp_percent(v : base_codec::Json) -> Int {
+  let n : Double = match v {
+    base_codec::Json::Num(d, _) => d
+    base_codec::Json::Str(s) => match acc_parse_double_str(s) {
+      Some(d) => d
+      None => 0.0
+    }
+    _ => 0.0
+  }
+  let r = acc_round_half_away(n)
+  if r < 0 { 0 } else if r > 100 { 100 } else { r }
+}
+
+fn acc_json_num(v : base_codec::Json) -> Option[Double] {
+  match v {
+    base_codec::Json::Num(d, _) => Some(d)
+    base_codec::Json::Str(s) => acc_parse_double_str(s)
+    _ => None
+  }
+}
+
+fn acc_is_leap_year(y : Int) -> Bool {
+  (y % 4 == 0 && y % 100 != 0) || (y % 400 == 0)
+}
+
+fn acc_days_before_month(y : Int, m : Int) -> Int {
+  let base = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+  if m < 1 || m > 12 {
+    return 0
+  }
+  let d = base[m - 1]
+  if m > 2 && acc_is_leap_year(y) { d + 1 } else { d }
+}
+
+fn acc_days_since_epoch(y : Int, m : Int, d : Int) -> Int64 {
+  let mut days : Int64 = 0L
+  if y >= 1970 {
+    let mut yr = 1970
+    while yr < y {
+      days = days + (if acc_is_leap_year(yr) { 366L } else { 365L })
+      yr = yr + 1
+    }
+  } else {
+    let mut yr = y
+    while yr < 1970 {
+      days = days - (if acc_is_leap_year(yr) { 366L } else { 365L })
+      yr = yr + 1
+    }
+  }
+  days + acc_days_before_month(y, m).to_int64() + (d - 1).to_int64()
+}
+
+fn acc_parse_digits(s : String, start : Int, len : Int) -> Option[Int] {
+  if start < 0 || start + len > s.length() {
+    return None
+  }
+  let mut v = 0
+  for i in 0..<len {
+    let c = s.code_unit_at(start + i)
+    if c < 48 || c > 57 {
+      return None
+    }
+    v = v * 10 + (c - 48)
+  }
+  Some(v)
+}
+
+/// Parse an RFC 3339 / ISO-8601 timestamp (`YYYY-MM-DDTHH:MM:SS[.sss](Z|+HH:MM|-HH:MM)`) into epoch ms.
+pub fn accounts_parse_iso_ms(text : String) -> Option[Int64] {
+  let s = text.trim()
+  if s.length() < 19 {
+    return None
+  }
+  if s.code_unit_at(4) != 45 || s.code_unit_at(7) != 45 || (s.code_unit_at(10) != 84 && s.code_unit_at(10) != 116) || s.code_unit_at(13) != 58 || s.code_unit_at(16) != 58 {
+    return None
+  }
+  let y = match acc_parse_digits(s, 0, 4) { Some(v) => v, None => return None }
+  let mo = match acc_parse_digits(s, 5, 2) { Some(v) => v, None => return None }
+  let d = match acc_parse_digits(s, 8, 2) { Some(v) => v, None => return None }
+  let h = match acc_parse_digits(s, 11, 2) { Some(v) => v, None => return None }
+  let mi = match acc_parse_digits(s, 14, 2) { Some(v) => v, None => return None }
+  let sec = match acc_parse_digits(s, 17, 2) { Some(v) => v, None => return None }
+  if mo < 1 || mo > 12 || d < 1 || d > 31 || h > 23 || mi > 59 || sec > 60 {
+    return None
+  }
+  let mut pos = 19
+  let mut ms = 0
+  if pos < s.length() && s.code_unit_at(pos) == 46 {
+    pos = pos + 1
+    let mut scale = 100
+    while pos < s.length() {
+      let c = s.code_unit_at(pos)
+      if c >= 48 && c <= 57 {
+        if scale > 0 {
+          ms = ms + (c - 48) * scale
+          scale = scale / 10
+        }
+        pos = pos + 1
+      } else {
+        break
+      }
+    }
+  }
+  let mut tz_off_sec : Int64 = 0L
+  if pos < s.length() {
+    let tz = s.code_unit_at(pos)
+    if tz == 90 || tz == 122 {
+      // 'Z' / 'z'
+      tz_off_sec = 0L
+    } else if tz == 43 || tz == 45 {
+      let sign : Int64 = if tz == 43 { 1L } else { -1L }
+      let tzh = match acc_parse_digits(s, pos + 1, 2) { Some(v) => v, None => return None }
+      let mut tzm = 0
+      if pos + 5 < s.length() && s.code_unit_at(pos + 3) == 58 {
+        tzm = match acc_parse_digits(s, pos + 4, 2) { Some(v) => v, None => return None }
+      } else if pos + 4 < s.length() {
+        tzm = match acc_parse_digits(s, pos + 3, 2) { Some(v) => v, None => return None }
+      }
+      tz_off_sec = sign * (tzh.to_int64() * 3600L + tzm.to_int64() * 60L)
+    }
+  }
+  let days = acc_days_since_epoch(y, mo, d)
+  let total_sec = days * 86400L + h.to_int64() * 3600L + mi.to_int64() * 60L + sec.to_int64() - tz_off_sec
+  Some(total_sec * 1000L + ms.to_int64())
+}
+
+/// Parse a provider timestamp (epoch seconds, epoch ms, or ISO-8601 string) to epoch ms.
+pub fn accounts_parse_time_at(v : base_codec::Json) -> Option[Int64] {
+  match v {
+    base_codec::Json::Num(d, _) => {
+      if d > 1000000000000.0 {
+        Some(d.to_int64())
+      } else {
+        Some((d * 1000.0).to_int64())
+      }
+    }
+    base_codec::Json::Str(s) if s.length() > 0 => accounts_parse_iso_ms(s)
+    _ => None
+  }
+}
+
+/// Window label matching `station/src/accounts/quota.ts:75` (`windowLabel`).
+pub fn accounts_window_label(minutes_opt : Option[Int], fallback : String) -> String {
+  match minutes_opt {
+    Some(minutes) if minutes > 0 => {
+      if minutes <= 360 {
+        acc_round_half_away(minutes.to_double() / 60.0).to_string() + " 小时"
+      } else if minutes >= 8640 && minutes <= 11520 {
+        "每周"
+      } else if minutes >= 38880 {
+        "每月"
+      } else {
+        acc_round_half_away(minutes.to_double() / 1440.0).to_string() + " 天"
+      }
+    }
+    _ => fallback
+  }
+}
+
+/// Whether provider error text indicates the account itself is blocked/restricted (`quota.ts:84`).
+pub fn accounts_is_blocked_text(text : String) -> Bool {
+  let lower = admin_ascii_lower(text)
+  let needles = [
+    "on hold",
+    "restricted",
+    "suspend",
+    "disabled",
+    "deactivat",
+    "banned",
+    "terminated",
+    "violat",
+    "can't receive replies",
+    "cannot receive replies",
+    "verification portal",
+  ]
+  for i in 0..<needles.length() {
+    if lower.contains(needles[i]) {
+      return true
+    }
+  }
+  false
+}
+
+fn acc_extract_error_message(text : String) -> Option[String] {
+  match base_codec::json_parse(text) {
+    base_codec::JsonParseResult::Ok(j) => {
+      let mut said : Option[String] = None
+      match base_codec::json_get(j, "error") {
+        Some(base_codec::Json::Str(s)) => said = Some(s)
+        Some(err_obj) => match json_field_str(err_obj, "message") {
+          Some(s) => said = Some(s)
+          None => ()
+        }
+        None => ()
+      }
+      if said.is_none() {
+        said = match json_field_str(j, "detail") {
+          Some(s) => Some(s)
+          None => json_field_str(j, "message")
+        }
+      }
+      match said {
+        Some(s) => Some(if s.length() > 200 { s.slice(0, 200) } else { s })
+        None => None
+      }
+    }
+    base_codec::JsonParseResult::Err(_) => None
+  }
+}
+
+/// Build a canonical `ProfileQuota` JSON object.
+pub fn make_quota_json(
+  state : String,
+  windows : Array[base_codec::Json],
+  detail : Option[String],
+  checked_at : Int64,
+) -> base_codec::Json {
+  let fs : Array[(String, base_codec::Json)] = [
+    ("state", base_codec::json_str(state)),
+    ("windows", base_codec::json_arr(windows)),
+    ("detail", match detail { Some(d) => base_codec::json_str(d), None => base_codec::json_null() }),
+    ("checkedAt", base_codec::json_int64(checked_at)),
+  ]
+  base_codec::json_obj(fs)
+}
+
+pub fn make_quota_window_json(
+  label : String,
+  used_percent : Int,
+  resets_at : Option[Int64],
+  minutes : Option[Int],
+  scope_opt : Option[String],
+) -> base_codec::Json {
+  let fs : Array[(String, base_codec::Json)] = [
+    ("label", base_codec::json_str(label)),
+    ("usedPercent", base_codec::json_int(used_percent)),
+    ("resetsAt", match resets_at { Some(t) => base_codec::json_int64(t), None => base_codec::json_null() }),
+    ("minutes", match minutes { Some(m) => base_codec::json_int(m), None => base_codec::json_null() }),
+  ]
+  match scope_opt {
+    Some(sc) if sc.length() > 0 => fs.push(("scope", base_codec::json_str(sc)))
+    _ => ()
+  }
+  base_codec::json_obj(fs)
+}
+
+/// Map a non-2xx provider HTTP response to `(ProfileQuota, signed_out, unanswered)`.
+pub fn accounts_refused_quota(
+  provider : String,
+  status : Int,
+  body_text : String,
+  now_ms : Int64,
+  lang : station_ops::Lang,
+) -> (base_codec::Json, Bool, Bool) {
+  let clip = if body_text.length() > 500 { body_text.slice(0, 500) } else { body_text }
+  if accounts_is_blocked_text(clip) || status == 403 {
+    let detail = match acc_extract_error_message(clip) {
+      Some(said) => provider + "refused (" + status.to_string() + "): " + said
+      None => provider + "refused (" + status.to_string() + ")"
+    }
+    return (make_quota_json("blocked", [], Some(detail), now_ms), false, false)
+  }
+  if status == 401 {
+    return (make_quota_json("unavailable", [], Some(station_ops::tr(lang, "station.quota.signInExpired")), now_ms), true, false)
+  }
+  let troubled = status == 429 || status >= 500
+  let detail = provider + "HTTP " + status.to_string()
+  (make_quota_json("unavailable", [], Some(detail), now_ms), false, troubled)
+}
+
+/// Parse OpenCode Go `/v1/usage` response (`quota.ts:135`).
+pub fn parse_opencode_quota(body : base_codec::Json, now_ms : Int64) -> base_codec::Json {
+  let windows : Array[base_codec::Json] = []
+  match base_codec::json_get(body, "usage") {
+    Some(base_codec::Json::Obj(fs)) => {
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        let label = if k == "rolling" { "5 小时" } else if k == "weekly" { "每周" } else if k == "monthly" { "每月" } else { k }
+        let mins : Option[Int] = if k == "rolling" { Some(300) } else if k == "weekly" { Some(ACCOUNTS_WEEK_MINUTES) } else if k == "monthly" { Some(30 * ACCOUNTS_DAY_MINUTES) } else { None }
+        let pct = match base_codec::json_get(v, "percent") { Some(pv) => accounts_clamp_percent(pv), None => 0 }
+        let resets = match base_codec::json_get(v, "resetsAt") { Some(rv) => accounts_parse_time_at(rv), None => None }
+        windows.push(make_quota_window_json(label, pct, resets, mins, None))
+      }
+    }
+    _ => ()
+  }
+  make_quota_json("ok", windows, None, now_ms)
+}
+
+/// Classify a Claude `cedar_ember` grant kind (`claude-reset.ts:52`).
+pub fn claude_grant_kind(g : base_codec::Json) -> String {
+  if json_field_bool(g, "gives_back_weekly") == Some(true) || json_field_str(g, "type") == Some("fable") {
+    return "model"
+  }
+  match json_field_str(g, "type") {
+    Some(t) if t == "session" || t == "weekly" || t == "full" => return t
+    _ => ()
+  }
+  let mut has_session = false
+  let mut has_other = false
+  match base_codec::json_get(g, "clears") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => {
+            if s == "five_hour" { has_session = true } else { has_other = true }
+          }
+          _ => has_other = true
+        }
+      }
+    }
+    _ => ()
+  }
+  if has_session && !has_other {
+    "session"
+  } else if has_other && !has_session {
+    "weekly"
+  } else {
+    "full"
+  }
+}
+
+fn claude_tide_ready(tide : base_codec::Json) -> Bool {
+  json_field_bool(tide, "eligible") == Some(true)
+  && json_field_str(tide, "arm") == Some("reset")
+  && json_field_bool(tide, "available") == Some(true)
+}
+
+fn claude_grant_live(g : base_codec::Json) -> Bool {
+  let has_id = json_field_str(g, "id").is_some()
+  let left = match base_codec::json_get(g, "resets_left") {
+    Some(base_codec::Json::Num(d, _)) => d.to_int()
+    _ => 0
+  }
+  let paused = json_field_bool(g, "paused") == Some(true)
+  has_id && left > 0 && !paused
+}
+
+fn acc_sort_i64(xs : Array[Int64]) -> Array[Int64] {
+  let out : Array[Int64] = []
+  for i in 0..<xs.length() {
+    out.push(xs[i])
+  }
+  let mut i = 1
+  while i < out.length() {
+    let cur = out[i]
+    let mut pos = i
+    while pos > 0 && out[pos - 1] > cur {
+      out[pos] = out[pos - 1]
+      pos = pos - 1
+    }
+    out[pos] = cur
+    i = i + 1
+  }
+  out
+}
+
+/// Extract available Claude limit resets by kind (`claude-reset.ts:74`).
+pub fn claude_resets_from_body(body : base_codec::Json, model_opt : Option[String]) -> (Array[base_codec::Json], Int, Array[Int64]) {
+  let order = ["session", "weekly", "model", "full", "credit"]
+  let left_by : Map[String, Int] = Map::new()
+  let usable_by : Map[String, Bool] = Map::new()
+  let exp_by : Map[String, Array[Int64]] = Map::new()
+  let add = fn(kind : String, left : Int, usable : Bool, ends : Option[Int64]) -> Unit {
+    let prev_l = match left_by.get(kind) { Some(n) => n, None => 0 }
+    left_by.set(kind, prev_l + left)
+    let prev_u = match usable_by.get(kind) { Some(b) => b, None => false }
+    usable_by.set(kind, prev_u || usable)
+    match ends {
+      Some(e) => {
+        let arr = match exp_by.get(kind) { Some(a) => a, None => [] }
+        for _ in 0..<left {
+          arr.push(e)
+        }
+        exp_by.set(kind, arr)
+      }
+      None => ()
+    }
+  }
+  match base_codec::json_get(body, "juniper_tide") {
+    Some(tide) if claude_tide_ready(tide) => add("session", 1, true, None)
+    _ => ()
+  }
+  match base_codec::json_get(body, "cedar_ember") {
+    Some(ember) if json_field_bool(ember, "eligible") == Some(true) => {
+      match base_codec::json_get(ember, "grants") {
+        Some(base_codec::Json::Arr(grants)) => {
+          for i in 0..<grants.length() {
+            let g = grants[i]
+            if claude_grant_live(g) {
+              let left = match base_codec::json_get(g, "resets_left") {
+                Some(base_codec::Json::Num(d, _)) => d.to_int()
+                _ => 0
+              }
+              let usable = json_field_bool(g, "usable_now") == Some(true)
+              let ends = match json_field_str(g, "ends_at") {
+                Some(s) => accounts_parse_iso_ms(s)
+                None => None
+              }
+              add(claude_grant_kind(g), left, usable, ends)
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    _ => ()
+  }
+  let out : Array[base_codec::Json] = []
+  let mut total_count = 0
+  let all_exp : Array[Int64] = []
+  for oi in 0..<order.length() {
+    let k = order[oi]
+    match left_by.get(k) {
+      Some(left) if left > 0 => {
+        total_count = total_count + left
+        let usable = match usable_by.get(k) { Some(b) => b, None => false }
+        let fs : Array[(String, base_codec::Json)] = [
+          ("id", base_codec::json_str(k)),
+          ("kind", base_codec::json_str(k)),
+          ("left", base_codec::json_int(left)),
+          ("usable", base_codec::json_bool(usable)),
+        ]
+        if k == "model" {
+          let mname = match model_opt { Some(m) if m.length() > 0 => m, _ => "Fable" }
+          fs.push(("model", base_codec::json_str(mname)))
+        }
+        match exp_by.get(k) {
+          Some(es) if es.length() > 0 => {
+            let sorted = acc_sort_i64(es)
+            let jarr : Array[base_codec::Json] = []
+            for j in 0..<sorted.length() {
+              jarr.push(base_codec::json_int64(sorted[j]))
+              all_exp.push(sorted[j])
+            }
+            fs.push(("expiries", base_codec::json_arr(jarr)))
+          }
+          _ => ()
+        }
+        out.push(base_codec::json_obj(fs))
+      }
+      _ => ()
+    }
+  }
+  (out, total_count, acc_sort_i64(all_exp))
+}
+
+pub enum ClaudeClaimResult {
+  Claim(base_codec::Json)
+  NoneAvailable
+  NoCredit
+}
+
+/// Select the next usable Claude reset claim (`claude-reset.ts:96`).
+pub fn claude_claim(body : base_codec::Json, idem_key : String, kind_opt : Option[String]) -> ClaudeClaimResult {
+  let matches_session = match kind_opt {
+    None => true
+    Some(k) => k == "session"
+  }
+  let mut tide_eligible = false
+  match base_codec::json_get(body, "juniper_tide") {
+    Some(tide) => {
+      tide_eligible = json_field_bool(tide, "eligible") == Some(true)
+      if matches_session && claude_tide_ready(tide) {
+        return ClaudeClaimResult::Claim(base_codec::json_obj([("program", base_codec::json_str("juniper_tide"))]))
+      }
+    }
+    None => ()
+  }
+  let live_grants : Array[base_codec::Json] = []
+  let mut next_grant_id : Option[String] = None
+  match base_codec::json_get(body, "cedar_ember") {
+    Some(ember) if json_field_bool(ember, "eligible") == Some(true) => {
+      next_grant_id = json_field_str(ember, "next_grant_id")
+      match base_codec::json_get(ember, "grants") {
+        Some(base_codec::Json::Arr(gs)) => {
+          for i in 0..<gs.length() {
+            let g = gs[i]
+            if claude_grant_live(g) {
+              let gk = claude_grant_kind(g)
+              let ok_kind = match kind_opt { None => true, Some(k) => gk == k }
+              if ok_kind {
+                live_grants.push(g)
+              }
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    _ => ()
+  }
+  // Pick usable grant: prefer `next_grant_id`, else earliest `ends_at`.
+  let mut best_id : Option[String] = None
+  let mut best_ends : Int64 = 9223372036854775807L
+  for i in 0..<live_grants.length() {
+    let g = live_grants[i]
+    if json_field_bool(g, "usable_now") != Some(true) {
+      continue
+    }
+    let gid = match json_field_str(g, "id") { Some(s) => s, None => continue }
+    if next_grant_id == Some(gid) {
+      best_id = Some(gid)
+      break
+    }
+    let ends = match json_field_str(g, "ends_at") {
+      Some(s) => match accounts_parse_iso_ms(s) { Some(t) => t, None => 9223372036854775807L }
+      None => 9223372036854775807L
+    }
+    if best_id.is_none() || ends < best_ends {
+      best_id = Some(gid)
+      best_ends = ends
+    }
+  }
+  match best_id {
+    Some(gid) => {
+      let req_id = crypto::sha256_hex(idem_key.to_bytes())
+      ClaudeClaimResult::Claim(base_codec::json_obj([
+        ("program", base_codec::json_str("cedar_ember")),
+        ("grant_id", base_codec::json_str(gid)),
+        ("request_id", base_codec::json_str(req_id)),
+      ]))
+    }
+    None => {
+      if live_grants.length() > 0 || (matches_session && tide_eligible) {
+        ClaudeClaimResult::NoneAvailable
+      } else {
+        ClaudeClaimResult::NoCredit
+      }
+    }
+  }
+}
+
+/// Map Claude reset claim response `result` to station `outcome` (`claude-reset.ts:109`).
+pub fn claude_claim_outcome(result : Option[String]) -> String {
+  match result {
+    Some("reset") => "reset"
+    Some("already_used") => "alreadyRedeemed"
+    Some("not_limited") => "nothingToReset"
+    Some("cooldown") | Some("ineligible") => "unavailable"
+    _ => "unconfirmed"
+  }
+}
+
+/// Parse Claude `/api/oauth/usage` response (`quota.ts:176-190`).
+pub fn parse_claude_quota(
+  body : base_codec::Json,
+  now_ms : Int64,
+  include_resets : Bool,
+) -> base_codec::Json {
+  let windows : Array[base_codec::Json] = []
+  let seen_labels : Array[String] = []
+  let keys = [
+    ("five_hour", "5 小时", 300),
+    ("seven_day", "每周", ACCOUNTS_WEEK_MINUTES),
+    ("seven_day_opus", "每周 · Opus", ACCOUNTS_WEEK_MINUTES),
+    ("seven_day_sonnet", "每周 · Sonnet", ACCOUNTS_WEEK_MINUTES),
+  ]
+  for ki in 0..<keys.length() {
+    let (k, label, mins) = keys[ki]
+    match base_codec::json_get(body, k) {
+      Some(base_codec::Json::Obj(_)) => match base_codec::json_get(body, k) {
+        Some(obj) => {
+          let pct = match base_codec::json_get(obj, "utilization") { Some(v) => accounts_clamp_percent(v), None => 0 }
+          let resets = match base_codec::json_get(obj, "resets_at") { Some(v) => accounts_parse_time_at(v), None => None }
+          windows.push(make_quota_window_json(label, pct, resets, Some(mins), None))
+          seen_labels.push(label)
+        }
+        None => ()
+      }
+      _ => ()
+    }
+  }
+  let scoped : Array[base_codec::Json] = []
+  let mut single_scope : Option[String] = None
+  match base_codec::json_get(body, "limits") {
+    Some(base_codec::Json::Arr(ls)) => {
+      for i in 0..<ls.length() {
+        let l = ls[i]
+        if json_field_str(l, "group") != Some("weekly") {
+          continue
+        }
+        let mname = match base_codec::json_get(l, "scope") {
+          Some(sc) => match base_codec::json_get(sc, "model") {
+            Some(mo) => match json_field_str(mo, "display_name") { Some(s) => s.trim(), None => "" }
+            None => ""
+          }
+          None => ""
+        }
+        if mname.length() == 0 {
+          continue
+        }
+        let label = "每周 · " + mname
+        let mut dup = false
+        for si in 0..<seen_labels.length() {
+          if seen_labels[si] == label {
+            dup = true
+            break
+          }
+        }
+        if !dup {
+          let pct = match base_codec::json_get(l, "percent") { Some(v) => accounts_clamp_percent(v), None => 0 }
+          let resets = match base_codec::json_get(l, "resets_at") { Some(v) => accounts_parse_time_at(v), None => None }
+          scoped.push(make_quota_window_json(label, pct, resets, Some(ACCOUNTS_WEEK_MINUTES), Some(mname)))
+          if scoped.length() == 1 {
+            single_scope = Some(mname)
+          } else {
+            single_scope = None
+          }
+        }
+      }
+    }
+    _ => ()
+  }
+  let fs : Array[(String, base_codec::Json)] = [
+    ("state", base_codec::json_str("ok")),
+    ("windows", base_codec::json_arr(windows)),
+    ("detail", base_codec::json_null()),
+    ("checkedAt", base_codec::json_int64(now_ms)),
+  ]
+  if scoped.length() > 0 {
+    fs.push(("scoped", base_codec::json_arr(scoped)))
+  }
+  match base_codec::json_get(body, "extra_usage") {
+    Some(eu) => match json_field_bool(eu, "is_enabled") {
+      Some(b) => fs.push(("extraUsage", base_codec::json_bool(b)))
+      None => ()
+    }
+    None => ()
+  }
+  if include_resets {
+    let (resets, rcount, rexp) = claude_resets_from_body(body, single_scope)
+    if resets.length() > 0 {
+      fs.push(("resets", base_codec::json_arr(resets)))
+      fs.push(("resetCount", base_codec::json_int(rcount)))
+      if rexp.length() > 0 {
+        let earr : Array[base_codec::Json] = []
+        for i in 0..<rexp.length() {
+          earr.push(base_codec::json_int64(rexp[i]))
+        }
+        fs.push(("resetExpiries", base_codec::json_arr(earr)))
+      }
+    }
+  }
+  base_codec::json_obj(fs)
+}
+
+/// Parse ChatGPT/Codex `/backend-api/wham/usage` response (`quota.ts:576-594`).
+pub fn parse_codex_quota(body : base_codec::Json, now_ms : Int64, lang : station_ops::Lang) -> base_codec::Json {
+  let windows : Array[base_codec::Json] = []
+  let rl = match base_codec::json_get(body, "rate_limit") {
+    Some(v) => v
+    None => base_codec::json_null()
+  }
+  let specs = [("primary_window", "5 小时", 300), ("secondary_window", "每周", ACCOUNTS_WEEK_MINUTES)]
+  for si in 0..<specs.length() {
+    let (key, fallback, def_mins) = specs[si]
+    match base_codec::json_get(rl, key) {
+      Some(base_codec::Json::Obj(_)) => match base_codec::json_get(rl, key) {
+        Some(w) => {
+          let mins = match base_codec::json_get(w, "limit_window_seconds") {
+            Some(base_codec::Json::Num(secs, _)) if secs > 0.0 => (secs / 60.0).to_int()
+            _ => def_mins
+          }
+          let pct = match base_codec::json_get(w, "used_percent") { Some(v) => accounts_clamp_percent(v), None => 0 }
+          let resets = match base_codec::json_get(w, "reset_at") { Some(v) => accounts_parse_time_at(v), None => None }
+          windows.push(make_quota_window_json(accounts_window_label(Some(mins), fallback), pct, resets, Some(mins), None))
+        }
+        None => ()
+      }
+      _ => ()
+    }
+  }
+  let mut state = if windows.length() == 0 { "unavailable" } else { "ok" }
+  let mut detail : Option[String] = if windows.length() == 0 { Some(station_ops::tr(lang, "station.quota.chatgptNoWindows")) } else { None }
+  let fs : Array[(String, base_codec::Json)] = []
+  match base_codec::json_get(body, "credits") {
+    Some(c) => match c {
+      base_codec::Json::Obj(_) => {
+        let has = match json_field_bool(c, "hasCredits") {
+          Some(b) => b
+          None => json_field_bool(c, "has_credits") == Some(true)
+        }
+        let unlim = json_field_bool(c, "unlimited") == Some(true)
+        let bal : base_codec::Json = match base_codec::json_get(c, "balance") {
+          Some(base_codec::Json::Str(s)) => base_codec::json_str(s)
+          Some(base_codec::Json::Num(d, raw)) => base_codec::json_str(if raw.length() > 0 { raw } else { d.to_string() })
+          _ => base_codec::json_null()
+        }
+        fs.push(("credits", base_codec::json_obj([
+          ("hasCredits", base_codec::json_bool(has)),
+          ("unlimited", base_codec::json_bool(unlim)),
+          ("balance", bal),
+        ])))
+        state = "ok"
+        detail = None
+      }
+      _ => ()
+    }
+    None => ()
+  }
+  match base_codec::json_get(body, "rate_limit_reset_credits") {
+    Some(rc) => {
+      let count_opt : Option[Int] = match base_codec::json_get(rc, "availableCount") {
+        Some(base_codec::Json::Num(d, _)) if d >= 0.0 => Some(d.to_int())
+        _ => match base_codec::json_get(rc, "available_count") {
+          Some(base_codec::Json::Num(d, _)) if d >= 0.0 => Some(d.to_int())
+          _ => None
+        }
+      }
+      match count_opt {
+        Some(cnt) => {
+          fs.push(("resetCount", base_codec::json_int(cnt)))
+          state = "ok"
+          detail = None
+          if cnt > 0 {
+            match base_codec::json_get(rc, "credits") {
+              Some(base_codec::Json::Arr(cs)) => {
+                let exps : Array[Int64] = []
+                for ci in 0..<cs.length() {
+                  if json_field_str(cs[ci], "status") == Some("available") {
+                    let eo = match base_codec::json_get(cs[ci], "expiresAt") {
+                      Some(v) => accounts_parse_time_at(v)
+                      None => match base_codec::json_get(cs[ci], "expires_at") {
+                        Some(v) => accounts_parse_time_at(v)
+                        None => None
+                      }
+                    }
+                    match eo {
+                      Some(t) if t > 0L => exps.push(t)
+                      _ => ()
+                    }
+                  }
+                }
+                if exps.length() > 0 {
+                  let sorted = acc_sort_i64(exps)
+                  let take = if sorted.length() < cnt { sorted.length() } else { cnt }
+                  let jarr : Array[base_codec::Json] = []
+                  for ei in 0..<take {
+                    jarr.push(base_codec::json_int64(sorted[ei]))
+                  }
+                  fs.push(("resetExpiries", base_codec::json_arr(jarr)))
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  match json_field_str(body, "plan_type") {
+    Some(p) if p.trim().length() > 0 => fs.push(("plan", base_codec::json_str(p.trim())))
+    _ => ()
+  }
+  fs.push(("state", base_codec::json_str(state)))
+  fs.push(("windows", base_codec::json_arr(windows)))
+  fs.push(("detail", match detail { Some(d) => base_codec::json_str(d), None => base_codec::json_null() }))
+  fs.push(("checkedAt", base_codec::json_int64(now_ms)))
+  base_codec::json_obj(fs)
+}
+
+/// Parse Kimi Code `/coding/v1/usages` response (`quota.ts:424-464`).
+pub fn parse_kimi_quota(body : base_codec::Json, now_ms : Int64, lang : station_ops::Lang) -> base_codec::Json {
+  let has_usage = match base_codec::json_get(body, "usage") {
+    Some(base_codec::Json::Null) | None => false
+    _ => true
+  }
+  let limits_arr = match base_codec::json_get(body, "limits") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
+  if !has_usage && limits_arr.length() == 0 {
+    return make_quota_json("unsupported", [], Some(station_ops::tr(lang, "station.quota.kimiNone")), now_ms)
+  }
+  let one = fn(d : base_codec::Json, mins : Option[Int], fallback : String) -> Option[base_codec::Json] {
+    let lim = match base_codec::json_get(d, "limit") { Some(v) => acc_json_num(v), None => None }
+    let limit = match lim { Some(x) if x > 0.0 => x, _ => return None }
+    let used_opt : Option[Double] = match base_codec::json_get(d, "used") {
+      Some(v) => acc_json_num(v)
+      None => match base_codec::json_get(d, "remaining") {
+        Some(v) => match acc_json_num(v) { Some(rem) => Some(limit - rem), None => None }
+        None => None
+      }
+    }
+    let used = match used_opt { Some(x) => x, None => return None }
+    let resets = match base_codec::json_get(d, "resetTime") {
+      Some(v) => accounts_parse_time_at(v)
+      None => match base_codec::json_get(d, "reset_time") {
+        Some(v) => accounts_parse_time_at(v)
+        None => match base_codec::json_get(d, "resetAt") {
+          Some(v) => accounts_parse_time_at(v)
+          None => match base_codec::json_get(d, "reset_at") { Some(v) => accounts_parse_time_at(v), None => None }
+        }
+      }
+    }
+    let pct = accounts_clamp_percent(base_codec::json_num((used / limit) * 100.0))
+    Some(make_quota_window_json(accounts_window_label(mins, fallback), pct, resets, mins, None))
+  }
+  let windows : Array[base_codec::Json] = []
+  for i in 0..<limits_arr.length() {
+    let item = limits_arr[i]
+    let win = match base_codec::json_get(item, "window") {
+      Some(base_codec::Json::Obj(_)) => match base_codec::json_get(item, "window") { Some(w) => w, None => item }
+      _ => item
+    }
+    let dur = match base_codec::json_get(win, "duration") { Some(v) => acc_json_num(v), None => None }
+    let unit = match json_field_str(win, "timeUnit") { Some(s) => s, None => "" }
+    let mins : Option[Int] = match dur {
+      None => None
+      Some(d) => {
+        if unit.contains("MINUTE") {
+          Some(d.to_int())
+        } else if unit.contains("HOUR") {
+          Some((d * 60.0).to_int())
+        } else if unit.contains("DAY") {
+          Some((d * ACCOUNTS_DAY_MINUTES.to_double()).to_int())
+        } else {
+          Some((d / 60.0).to_int())
+        }
+      }
+    }
+    let detail_obj = match base_codec::json_get(item, "detail") {
+      Some(base_codec::Json::Obj(_)) => match base_codec::json_get(item, "detail") { Some(x) => x, None => item }
+      _ => item
+    }
+    match one(detail_obj, mins, "限额") {
+      Some(w) => windows.push(w)
+      None => ()
+    }
+  }
+  match base_codec::json_get(body, "usage") {
+    Some(u) => match one(u, Some(ACCOUNTS_WEEK_MINUTES), "每周") {
+      Some(w) => windows.push(w)
+      None => ()
+    }
+    None => ()
+  }
+  if windows.length() == 0 {
+    make_quota_json("unavailable", [], Some(station_ops::tr(lang, "station.quota.kimiNoWindows")), now_ms)
+  } else {
+    make_quota_json("ok", windows, None, now_ms)
+  }
+}
+
+/// Extract compact hour windows stored in `profile_quota_hours` (`profile-hours.ts:85`).
+pub fn extract_hour_windows(quota : base_codec::Json) -> Array[base_codec::Json] {
+  let out : Array[base_codec::Json] = []
+  let collect = fn(arr : Array[base_codec::Json]) -> Unit {
+    for i in 0..<arr.length() {
+      let w = arr[i]
+      let used_opt = match base_codec::json_get(w, "usedPercent") {
+        Some(v) => acc_json_num(v)
+        None => None
+      }
+      match used_opt {
+        None => ()
+        Some(used) => {
+          let label = match json_field_str(w, "label") { Some(s) => s, None => "" }
+          let scope_j : base_codec::Json = match json_field_str(w, "scope") {
+            Some(s) if s.length() > 0 => base_codec::json_str(s)
+            _ => base_codec::json_null()
+          }
+          let resets_j : base_codec::Json = match base_codec::json_get(w, "resetsAt") {
+            Some(base_codec::Json::Num(d, _)) => base_codec::json_int64(d.to_int64())
+            _ => base_codec::json_null()
+          }
+          let mins_j : base_codec::Json = match base_codec::json_get(w, "minutes") {
+            Some(base_codec::Json::Num(d, _)) => base_codec::json_int(d.to_int())
+            _ => base_codec::json_null()
+          }
+          out.push(base_codec::json_obj([
+            ("label", base_codec::json_str(label)),
+            ("scope", scope_j),
+            ("usedPercent", base_codec::json_num(used)),
+            ("resetsAt", resets_j),
+            ("minutes", mins_j),
+          ]))
+        }
+      }
+    }
+  }
+  match base_codec::json_get(quota, "windows") {
+    Some(base_codec::Json::Arr(xs)) => collect(xs)
+    _ => ()
+  }
+  match base_codec::json_get(quota, "scoped") {
+    Some(base_codec::Json::Arr(xs)) => collect(xs)
+    _ => ()
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// 2. SQLite Persistence for `profile_status` & `profile_quota_hours` + Pace Engine
+// ---------------------------------------------------------------------------
+
+pub fn ensure_profile_quota_hours_table(store : WholeStore) -> Result[Unit, String] {
+  match store.require_open() {
+    Err(e) => Err(e)
+    Ok(st) => {
+      let _ = st.db.run(
+        "CREATE TABLE IF NOT EXISTS profile_quota_hours (" +
+        "  profile TEXT NOT NULL, hour INTEGER NOT NULL, windows_json TEXT NOT NULL, at INTEGER NOT NULL," +
+        "  PRIMARY KEY (profile, hour)" +
+        ") WITHOUT ROWID",
+        [],
+      )
+      let _ = st.db.run(
+        "CREATE INDEX IF NOT EXISTS profile_quota_hours_hour ON profile_quota_hours (hour)",
+        [],
+      )
+      Ok(())
+    }
+  }
+}
+
+/// Persist a profile's quota into `profile_status` and `profile_quota_hours` (pruning hours older than 192h).
+pub fn save_profile_quota_sql(
+  store : WholeStore,
+  profile_id : String,
+  quota : base_codec::Json,
+  now_ms : Int64,
+) -> Result[Unit, String] {
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let _ = ensure_profile_quota_hours_table(store)
+  let q_str = base_codec::json_stringify(quota)
+  match st.db.run(
+    "INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?1, ?2, ?3) " +
+    "ON CONFLICT(profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at",
+    [base_codec::json_str(profile_id), base_codec::json_str(q_str), base_codec::json_int64(now_ms)],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err("profile_status write failed: " + e.message)
+  }
+  let hour_wins = extract_hour_windows(quota)
+  if hour_wins.length() > 0 {
+    let hour = now_ms / ACCOUNTS_HOUR_MS
+    let wins_str = base_codec::json_stringify(base_codec::json_arr(hour_wins))
+    let _ = st.db.run(
+      "INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?1, ?2, ?3, ?4) " +
+      "ON CONFLICT(profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at",
+      [
+        base_codec::json_str(profile_id),
+        base_codec::json_int64(hour),
+        base_codec::json_str(wins_str),
+        base_codec::json_int64(now_ms),
+      ],
+    )
+    let cutoff = hour - ACCOUNTS_PACE_HOURS.to_int64()
+    let _ = st.db.run(
+      "DELETE FROM profile_quota_hours WHERE profile = ?1 AND hour < ?2",
+      [base_codec::json_str(profile_id), base_codec::json_int64(cutoff)],
+    )
+  }
+  Ok(())
+}
+
+/// Load a profile's cached quota from `profile_status`.
+pub fn load_profile_quota_sql(store : WholeStore, profile_id : String) -> Option[base_codec::Json] {
+  match store.require_open() {
+    Err(_) => None
+    Ok(st) => match st.db.first(
+      "SELECT quota_json FROM profile_status WHERE profile = ?1 LIMIT 1",
+      [base_codec::json_str(profile_id)],
+    ) {
+      Ok(Some(row)) => match row.get("quota_json") {
+        Some(base_codec::Json::Str(s)) if s.length() > 0 => match base_codec::json_parse(s) {
+          base_codec::JsonParseResult::Ok(j) => Some(j)
+          base_codec::JsonParseResult::Err(_) => None
+        }
+        _ => None
+      }
+      _ => None
+    }
+  }
+}
+
+/// Load all cached profile quotas from `profile_status` (for `/overview`).
+pub fn load_all_profile_quotas_sql(store : WholeStore) -> Map[String, base_codec::Json] {
+  let out : Map[String, base_codec::Json] = Map::new()
+  match store.require_open() {
+    Err(_) => out
+    Ok(st) => match st.db.all("SELECT profile, quota_json FROM profile_status WHERE quota_json IS NOT NULL", []) {
+      Ok(rows) => {
+        for i in 0..<rows.length() {
+          let pid = match rows[i].get("profile") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let qstr = match rows[i].get("quota_json") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          if pid.length() > 0 && qstr.length() > 0 {
+            match base_codec::json_parse(qstr) {
+              base_codec::JsonParseResult::Ok(j) => out.set(pid, j)
+              base_codec::JsonParseResult::Err(_) => ()
+            }
+          }
+        }
+        out
+      }
+      Err(_) => out
+    }
+  }
+}
+
+/// Compact a `HourWindow` for `GET /profiles/pace?v=2` (`pace.ts:50`).
+pub fn pace_compact_window(w : base_codec::Json) -> base_codec::Json {
+  let mins = match base_codec::json_get(w, "minutes") {
+    Some(base_codec::Json::Null) | None => None
+    Some(v) => Some(v)
+  }
+  let scope_str = match json_field_str(w, "scope") { Some(s) => s.trim(), None => "" }
+  let label_str = match json_field_str(w, "label") { Some(s) => s, None => "" }
+  let omit_label = mins.is_some() && (scope_str.length() > 0 || !label_str.contains(" · "))
+  let scope_j = match base_codec::json_get(w, "scope") { Some(v) => v, None => base_codec::json_null() }
+  let used_j = match base_codec::json_get(w, "usedPercent") { Some(v) => v, None => base_codec::json_int(0) }
+  let resets_j = match base_codec::json_get(w, "resetsAt") { Some(v) => v, None => base_codec::json_null() }
+  let mins_j = match base_codec::json_get(w, "minutes") { Some(v) => v, None => base_codec::json_null() }
+  if omit_label {
+    base_codec::json_obj([
+      ("scope", scope_j),
+      ("usedPercent", used_j),
+      ("resetsAt", resets_j),
+      ("minutes", mins_j),
+    ])
+  } else {
+    base_codec::json_obj([
+      ("label", base_codec::json_str(label_str)),
+      ("scope", scope_j),
+      ("usedPercent", used_j),
+      ("resetsAt", resets_j),
+      ("minutes", mins_j),
+    ])
+  }
+}
+
+/// Model spend scopes (`pace.ts:175`).
+pub fn pace_spend_scopes(runtime : String, model_opt : Option[String]) -> Array[String] {
+  let raw = match model_opt { Some(m) => admin_ascii_lower(m.trim()), None => "" }
+  let mut bare = raw
+  let br = bare.index_of("[")
+  if br >= 0 {
+    bare = bare.slice(0, br)
+  }
+  let slash_parts = bare.split("/")
+  if slash_parts.length() > 0 {
+    bare = slash_parts[slash_parts.length() - 1]
+  }
+  let at_idx = bare.index_of("@")
+  if at_idx >= 0 {
+    bare = bare.slice(0, at_idx)
+  }
+  if runtime == "claude" && (bare.contains("fable") || bare.contains("mythos")) {
+    return ["Fable", ""]
+  }
+  if runtime == "agy" {
+    if bare.length() == 0 || bare.starts_with("gemini") || bare.starts_with("gemma") {
+      return if bare.contains("argon") { ["gemini", "Argon"] } else { ["gemini"] }
+    }
+    return ["3p"]
+  }
+  [""]
+}
+
+/// Per-workspace v2 pace revision cache (supports `v=2&sinceRev=` unchanged & delta responses).
+pub struct PaceV2Snap {
+  pub rev : String
+  pub profile_hashes : Map[String, String]
+  pub speed_hours_hash : String
+  pub speed_quarters_hash : String
+  pub from_hour : Int64
+}
+
+pub struct PaceScopeState {
+  pub scope_hash : String
+  pub mut current : PaceV2Snap
+  pub mut v2 : base_codec::Json
+  pub history : Map[String, PaceV2Snap]
+  pub history_order : Array[String]
+}
+
+pub struct AccountsPaceCache {
+  pub boot_epoch : String
+  pub mut seq : Int64
+  pub scopes : Map[String, PaceScopeState]
+}
+
+pub fn AccountsPaceCache::new(boot_epoch : String) -> AccountsPaceCache {
+  AccountsPaceCache::{
+    boot_epoch: boot_epoch,
+    seq: 0L,
+    scopes: Map::new(),
+  }
+}
+
+fn pace_sha16(j : base_codec::Json) -> String {
+  crypto::sha256_hex(base_codec::json_stringify(j).to_bytes()).slice(0, 16)
+}
+
+/// Storage port for Accounts quota/pace persistence (SQLite in production, in-memory in pure DI tests).
+pub struct AccountsStorePort {
+  pub save_quota : (String, base_codec::Json, Int64) -> Result[Unit, String]
+  pub load_quota : (String) -> Option[base_codec::Json]
+  pub load_all_quotas : () -> Map[String, base_codec::Json]
+  /// Returns `(quota_rows, spend_rows)` where:
+  /// - `quota_rows`: `(profile, hour, at, windows_json)`
+  /// - `spend_rows`: `(profile, hour, runtime, model_opt, weight)`
+  pub read_pace_rows : (Int64) -> (Array[(String, Int64, Int64, base_codec::Json)], Array[(String, Int64, String, Option[String], Double)])
+}
+
+pub fn AccountsStorePort::in_memory() -> AccountsStorePort {
+  let quotas : Map[String, base_codec::Json] = Map::new()
+  let hours : Map[String, (String, Int64, Int64, base_codec::Json)] = Map::new()
+  AccountsStorePort::{
+    save_quota: fn(pid : String, q : base_codec::Json, now_ms : Int64) -> Result[Unit, String] {
+      quotas.set(pid, q)
+      let hw = extract_hour_windows(q)
+      if hw.length() > 0 {
+        let hr = now_ms / ACCOUNTS_HOUR_MS
+        hours.set(pid + ":" + hr.to_string(), (pid, hr, now_ms, base_codec::json_arr(hw)))
+      }
+      Ok(())
+    },
+    load_quota: fn(pid : String) -> Option[base_codec::Json] { quotas.get(pid) },
+    load_all_quotas: fn() -> Map[String, base_codec::Json] { quotas },
+    read_pace_rows: fn(from_hour : Int64) -> (Array[(String, Int64, Int64, base_codec::Json)], Array[(String, Int64, String, Option[String], Double)]) {
+      let qout : Array[(String, Int64, Int64, base_codec::Json)] = []
+      let ks = hours.keys()
+      for i in 0..<ks.length() {
+        match hours.get(ks[i]) {
+          Some((pid, hr, at_v, wj)) if hr >= from_hour => qout.push((pid, hr, at_v, wj))
+          _ => ()
+        }
+      }
+      (qout, [])
+    },
+  }
+}
+
+pub fn AccountsStorePort::production(store : WholeStore) -> AccountsStorePort {
+  AccountsStorePort::{
+    save_quota: fn(pid : String, q : base_codec::Json, now_ms : Int64) -> Result[Unit, String] {
+      save_profile_quota_sql(store, pid, q, now_ms)
+    },
+    load_quota: fn(pid : String) -> Option[base_codec::Json] {
+      load_profile_quota_sql(store, pid)
+    },
+    load_all_quotas: fn() -> Map[String, base_codec::Json] {
+      load_all_profile_quotas_sql(store)
+    },
+    read_pace_rows: fn(from_hour : Int64) -> (Array[(String, Int64, Int64, base_codec::Json)], Array[(String, Int64, String, Option[String], Double)]) {
+      read_pace_rows_sql(store, from_hour)
+    },
+  }
+}
+
+fn read_pace_rows_sql(
+  store : WholeStore,
+  from_hour : Int64,
+) -> (Array[(String, Int64, Int64, base_codec::Json)], Array[(String, Int64, String, Option[String], Double)]) {
+  let qout : Array[(String, Int64, Int64, base_codec::Json)] = []
+  let sout : Array[(String, Int64, String, Option[String], Double)] = []
+  match store.require_open() {
+    Err(_) => (qout, sout)
+    Ok(st) => {
+      let _ = ensure_profile_quota_hours_table(store)
+      match st.db.all(
+        "SELECT profile, hour, at, windows_json FROM profile_quota_hours WHERE hour >= ?1 ORDER BY profile, hour",
+        [base_codec::json_int64(from_hour)],
+      ) {
+        Ok(rows) => {
+          for i in 0..<rows.length() {
+            let pid = match rows[i].get("profile") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let hr = match rows[i].get("hour") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+            let at_v = match rows[i].get("at") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+            let wins_j = match rows[i].get("windows_json") {
+              Some(base_codec::Json::Str(s)) => match base_codec::json_parse(s) {
+                base_codec::JsonParseResult::Ok(j) => j
+                base_codec::JsonParseResult::Err(_) => base_codec::json_arr([])
+              }
+              _ => base_codec::json_arr([])
+            }
+            if pid.length() > 0 {
+              qout.push((pid, hr, at_v, wins_j))
+            }
+          }
+        }
+        Err(_) => ()
+      }
+      let from_ms = from_hour * ACCOUNTS_HOUR_MS
+      match st.db.all(
+        "SELECT (at / 3600000) AS hour, profile, runtime, model, fast, " +
+        "SUM(input) AS input, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write, " +
+        "SUM(cache_write_long) AS cache_write_long, SUM(output) AS output " +
+        "FROM usage WHERE at >= ?1 AND profile IS NOT NULL AND profile <> '' " +
+        "GROUP BY 1, 2, 3, 4, 5 ORDER BY profile, hour",
+        [base_codec::json_int64(from_ms)],
+      ) {
+        Ok(urows) => {
+          for i in 0..<urows.length() {
+            let pid = match urows[i].get("profile") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let hr = match urows[i].get("hour") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+            let rt = match urows[i].get("runtime") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let mo = match urows[i].get("model") { Some(base_codec::Json::Str(s)) => Some(s), _ => None }
+            let fast = match urows[i].get("fast") { Some(base_codec::Json::Num(d, _)) => d.to_int() != 0, _ => false }
+            let inp = match urows[i].get("input") { Some(base_codec::Json::Num(d, _)) => d, _ => 0.0 }
+            let cr = match urows[i].get("cache_read") { Some(base_codec::Json::Num(d, _)) => d, _ => 0.0 }
+            let cw = match urows[i].get("cache_write") { Some(base_codec::Json::Num(d, _)) => d, _ => 0.0 }
+            let cwl = match urows[i].get("cache_write_long") { Some(base_codec::Json::Num(d, _)) => d, _ => 0.0 }
+            let out_tok = match urows[i].get("output") { Some(base_codec::Json::Num(d, _)) => d, _ => 0.0 }
+            let writes = cw * 1.25 + cwl * 2.0
+            let raw_w = ((inp + cr * 0.1 + writes + out_tok * 5.0) / 1000000.0) * (if fast { 2.0 } else { 1.0 })
+            if pid.length() > 0 && raw_w > 0.0 {
+              sout.push((pid, hr, rt, mo, raw_w))
+            }
+          }
+        }
+        Err(_) => ()
+      }
+      (qout, sout)
+    }
+  }
+}
+
+/// Compute `GET /profiles/pace` (v1 or v2 with `sinceRev` unchanged/delta) strictly scoped to `visible_profiles`.
+pub fn compute_pace_response(
+  accounts_store : AccountsStorePort,
+  cache : AccountsPaceCache,
+  visible_profiles : Array[String],
+  workspace_key : String,
+  v_param : Option[String],
+  since_rev : Option[String],
+  now_ms : Int64,
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let now_hour = now_ms / ACCOUNTS_HOUR_MS
+  let from_hour = now_hour - ACCOUNTS_PACE_HOURS.to_int64()
+  let allowed : Map[String, Bool] = Map::new()
+  for i in 0..<visible_profiles.length() {
+    allowed.set(visible_profiles[i], true)
+  }
+  let quotas_by_profile : Map[String, Array[base_codec::Json]] = Map::new()
+  let spend_by_profile : Map[String, Array[base_codec::Json]] = Map::new()
+  let (qrows, srows) = (accounts_store.read_pace_rows)(from_hour)
+  for i in 0..<qrows.length() {
+    let (pid, hr, at_v, wins_j) = qrows[i]
+    if !allowed.get(pid).is_some() {
+      continue
+    }
+    let list = match quotas_by_profile.get(pid) { Some(xs) => xs, None => [] }
+    list.push(base_codec::json_obj([
+      ("hour", base_codec::json_int64(hr)),
+      ("at", base_codec::json_int64(at_v)),
+      ("windows", wins_j),
+    ]))
+    quotas_by_profile.set(pid, list)
+  }
+  for i in 0..<srows.length() {
+    let (pid, hr, rt, mo, raw_w) = srows[i]
+    if !allowed.get(pid).is_some() || raw_w <= 0.0 {
+      continue
+    }
+    let scopes = pace_spend_scopes(rt, mo)
+    let list = match spend_by_profile.get(pid) { Some(xs) => xs, None => [] }
+    for si in 0..<scopes.length() {
+      list.push(base_codec::json_obj([
+        ("hour", base_codec::json_int64(hr)),
+        ("scope", base_codec::json_str(scopes[si])),
+        ("weight", base_codec::json_num(raw_w)),
+      ]))
+    }
+    spend_by_profile.set(pid, list)
+  }
+
+  let all_pids : Array[String] = []
+  let qks = quotas_by_profile.keys()
+  for i in 0..<qks.length() {
+    all_pids.push(qks[i])
+  }
+  let sks = spend_by_profile.keys()
+  for i in 0..<sks.length() {
+    if !quotas_by_profile.get(sks[i]).is_some() {
+      all_pids.push(sks[i])
+    }
+  }
+  // Sort profile IDs deterministically
+  let mut si = 1
+  while si < all_pids.length() {
+    let cur = all_pids[si]
+    let mut pos = si
+    while pos > 0 && all_pids[pos - 1] > cur {
+      all_pids[pos] = all_pids[pos - 1]
+      pos = pos - 1
+    }
+    all_pids[pos] = cur
+    si = si + 1
+  }
+
+  let speed_hours = base_codec::json_arr([])
+  let speed_quarters = base_codec::json_arr([])
+
+  if v_param != Some("2") {
+    let p_fields : Array[(String, base_codec::Json)] = []
+    for i in 0..<all_pids.length() {
+      let pid = all_pids[i]
+      let qs = match quotas_by_profile.get(pid) { Some(xs) => xs, None => [] }
+      let sp = match spend_by_profile.get(pid) { Some(xs) => xs, None => [] }
+      p_fields.push((pid, base_codec::json_obj([
+        ("quotas", base_codec::json_arr(qs)),
+        ("spend", base_codec::json_arr(sp)),
+      ])))
+    }
+    return Ok(base_codec::json_obj([
+      ("nowAt", base_codec::json_int64(now_ms)),
+      ("fromHour", base_codec::json_int64(from_hour)),
+      ("profiles", base_codec::json_obj(p_fields)),
+      ("speedHours", speed_hours),
+      ("speedQuarters", speed_quarters),
+    ]))
+  }
+
+  // v2 with compact windows, per-profile hashes, unchanged & delta support
+  let v2_p_fields : Array[(String, base_codec::Json)] = []
+  let v2_p_map : Map[String, base_codec::Json] = Map::new()
+  let profile_hashes : Map[String, String] = Map::new()
+  for i in 0..<all_pids.length() {
+    let pid = all_pids[i]
+    let qs = match quotas_by_profile.get(pid) { Some(xs) => xs, None => [] }
+    let v2_qs : Array[base_codec::Json] = []
+    for qi in 0..<qs.length() {
+      let q = qs[qi]
+      let cwins : Array[base_codec::Json] = []
+      match base_codec::json_get(q, "windows") {
+        Some(base_codec::Json::Arr(ws)) => {
+          for wi in 0..<ws.length() {
+            cwins.push(pace_compact_window(ws[wi]))
+          }
+        }
+        _ => ()
+      }
+      let hr_j = match base_codec::json_get(q, "hour") { Some(v) => v, None => base_codec::json_int(0) }
+      let at_j = match base_codec::json_get(q, "at") { Some(v) => v, None => base_codec::json_int(0) }
+      v2_qs.push(base_codec::json_obj([
+        ("hour", hr_j),
+        ("at", at_j),
+        ("windows", base_codec::json_arr(cwins)),
+      ]))
+    }
+    let sp = match spend_by_profile.get(pid) { Some(xs) => xs, None => [] }
+    let p_obj = base_codec::json_obj([
+      ("quotas", base_codec::json_arr(v2_qs)),
+      ("spend", base_codec::json_arr(sp)),
+    ])
+    v2_p_fields.push((pid, p_obj))
+    v2_p_map.set(pid, p_obj)
+    profile_hashes.set(pid, pace_sha16(p_obj))
+  }
+  let sh_hash = pace_sha16(speed_hours)
+  let sq_hash = pace_sha16(speed_quarters)
+
+  let scope_state = match cache.scopes.get(workspace_key) {
+    Some(existing) => {
+      let cur = existing.current
+      let mut same = cur.from_hour == from_hour
+      && cur.speed_hours_hash == sh_hash
+      && cur.speed_quarters_hash == sq_hash
+      && cur.profile_hashes.keys().length() == profile_hashes.keys().length()
+      if same {
+        for i in 0..<all_pids.length() {
+          let pid = all_pids[i]
+          if cur.profile_hashes.get(pid) != profile_hashes.get(pid) {
+            same = false
+            break
+          }
+        }
+      }
+      if !same {
+        cache.seq = cache.seq + 1L
+        let rev = cache.boot_epoch + ":" + existing.scope_hash + ":" + cache.seq.to_string()
+        let v2_obj = base_codec::json_obj([
+          ("rev", base_codec::json_str(rev)),
+          ("nowAt", base_codec::json_int64(now_ms)),
+          ("fromHour", base_codec::json_int64(from_hour)),
+          ("profiles", base_codec::json_obj(v2_p_fields)),
+          ("speedHours", speed_hours),
+          ("speedQuarters", speed_quarters),
+        ])
+        let snap = PaceV2Snap::{
+          rev: rev,
+          profile_hashes: profile_hashes,
+          speed_hours_hash: sh_hash,
+          speed_quarters_hash: sq_hash,
+          from_hour: from_hour,
+        }
+        existing.current = snap
+        existing.v2 = v2_obj
+        existing.history.set(rev, snap)
+        existing.history_order.push(rev)
+        while existing.history_order.length() > 16 {
+          let drop_rev = existing.history_order[0]
+          let next_ord : Array[String] = []
+          for oi in 1..<existing.history_order.length() {
+            next_ord.push(existing.history_order[oi])
+          }
+          existing.history_order.clear()
+          for oi in 0..<next_ord.length() {
+            existing.history_order.push(next_ord[oi])
+          }
+          existing.history.remove(drop_rev)
+        }
+      }
+      existing
+    }
+    None => {
+      let sh = crypto::sha256_hex(workspace_key.to_bytes()).slice(0, 8)
+      cache.seq = cache.seq + 1L
+      let rev = cache.boot_epoch + ":" + sh + ":" + cache.seq.to_string()
+      let v2_obj = base_codec::json_obj([
+        ("rev", base_codec::json_str(rev)),
+        ("nowAt", base_codec::json_int64(now_ms)),
+        ("fromHour", base_codec::json_int64(from_hour)),
+        ("profiles", base_codec::json_obj(v2_p_fields)),
+        ("speedHours", speed_hours),
+        ("speedQuarters", speed_quarters),
+      ])
+      let snap = PaceV2Snap::{
+        rev: rev,
+        profile_hashes: profile_hashes,
+        speed_hours_hash: sh_hash,
+        speed_quarters_hash: sq_hash,
+        from_hour: from_hour,
+      }
+      let hist : Map[String, PaceV2Snap] = Map::new()
+      hist.set(rev, snap)
+      let st = PaceScopeState::{
+        scope_hash: sh,
+        current: snap,
+        v2: v2_obj,
+        history: hist,
+        history_order: [rev],
+      }
+      cache.scopes.set(workspace_key, st)
+      st
+    }
+  }
+
+  match since_rev {
+    Some(sr) if sr == scope_state.current.rev => {
+      return Ok(base_codec::json_obj([
+        ("unchanged", base_codec::json_bool(true)),
+        ("rev", base_codec::json_str(scope_state.current.rev)),
+      ]))
+    }
+    Some(sr) => match scope_state.history.get(sr) {
+      Some(base) => {
+        let keep : Array[base_codec::Json] = []
+        let changed_profiles : Array[(String, base_codec::Json)] = []
+        let cur_ks = scope_state.current.profile_hashes.keys()
+        for i in 0..<cur_ks.length() {
+          let pid = cur_ks[i]
+          if base.profile_hashes.get(pid) == scope_state.current.profile_hashes.get(pid) {
+            keep.push(base_codec::json_str(pid))
+          } else {
+            match v2_p_map.get(pid) {
+              Some(po) => changed_profiles.push((pid, po))
+              None => ()
+            }
+          }
+        }
+        let dfs : Array[(String, base_codec::Json)] = [
+          ("delta", base_codec::json_bool(true)),
+          ("base", base_codec::json_str(sr)),
+          ("rev", base_codec::json_str(scope_state.current.rev)),
+          ("nowAt", base_codec::json_int64(now_ms)),
+          ("fromHour", base_codec::json_int64(from_hour)),
+          ("keep", base_codec::json_arr(keep)),
+          ("profiles", base_codec::json_obj(changed_profiles)),
+        ]
+        if scope_state.current.speed_hours_hash != base.speed_hours_hash {
+          dfs.push(("speedHours", speed_hours))
+        }
+        if scope_state.current.speed_quarters_hash != base.speed_quarters_hash {
+          dfs.push(("speedQuarters", speed_quarters))
+        }
+        return Ok(base_codec::json_obj(dfs))
+      }
+      None => ()
+    }
+    None => ()
+  }
+  Ok(scope_state.v2)
+}
+
+// ---------------------------------------------------------------------------
+// 3. Interactive LoginJob State Machine & Non-Blocking Process Manager
+// ---------------------------------------------------------------------------
+
+pub struct ProfileLoginJob {
+  pub profile : String
+  pub runtime : Option[String]
+  pub provider : Option[String]
+  pub mut state : String
+  pub mut url : Option[String]
+  pub mut user_code : Option[String]
+  pub mut error : Option[String]
+  pub started_at : Int64
+  pub mut expires_at : Int64
+}
+
+pub fn ProfileLoginJob::clone(self : ProfileLoginJob) -> ProfileLoginJob {
+  ProfileLoginJob::{
+    profile: self.profile,
+    runtime: self.runtime,
+    provider: self.provider,
+    state: self.state,
+    url: self.url,
+    user_code: self.user_code,
+    error: self.error,
+    started_at: self.started_at,
+    expires_at: self.expires_at,
+  }
+}
+
+/// Convert `ProfileLoginJob` to JSON aligned 1:1 with `client/core-ts/src/shapes/profiles.ts:79-92`,
+/// applying role-safe redaction (`manages == false` hides `url` and `userCode`).
+pub fn ProfileLoginJob::to_json(self : ProfileLoginJob, manages : Bool) -> base_codec::Json {
+  let fs : Array[(String, base_codec::Json)] = [
+    ("profile", base_codec::json_str(self.profile)),
+  ]
+  match self.runtime {
+    Some(r) => fs.push(("runtime", base_codec::json_str(r)))
+    None => ()
+  }
+  match self.provider {
+    Some(p) => fs.push(("provider", base_codec::json_str(p)))
+    None => ()
+  }
+  fs.push(("state", base_codec::json_str(self.state)))
+  fs.push(("url", match self.url { Some(u) => base_codec::json_str(u), None => base_codec::json_null() }))
+  fs.push(("userCode", match self.user_code { Some(c) => base_codec::json_str(c), None => base_codec::json_null() }))
+  fs.push(("error", match self.error { Some(e) => base_codec::json_str(e), None => base_codec::json_null() }))
+  fs.push(("startedAt", base_codec::json_int64(self.started_at)))
+  fs.push(("expiresAt", base_codec::json_int64(self.expires_at)))
+  station_api::redact_login_job_json(base_codec::json_obj(fs), manages)
+}
+
+/// Strip ANSI CSI (`ESC [ ... letter`) and OSC (`ESC ] ... BEL/ST`) escape sequences (`login.ts:1129`).
+pub fn login_strip_ansi(text : String) -> String {
+  let b = text.to_bytes()
+  let n = b.length()
+  let out = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    let c = b[i].to_int() & 0xFF
+    if c == 27 && i + 1 < n {
+      let next = b[i + 1].to_int() & 0xFF
+      if next == 93 {
+        // OSC: ESC ] ... BEL (7) or ESC \ (27, 92)
+        i = i + 2
+        while i < n {
+          let ch = b[i].to_int() & 0xFF
+          if ch == 7 {
+            i = i + 1
+            break
+          }
+          if ch == 27 && i + 1 < n && (b[i + 1].to_int() & 0xFF) == 92 {
+            i = i + 2
+            break
+          }
+          i = i + 1
+        }
+        continue
+      }
+      if next == 91 {
+        // CSI: ESC [ params final
+        i = i + 2
+        while i < n {
+          let ch = b[i].to_int() & 0xFF
+          i = i + 1
+          if (ch >= 65 && ch <= 90) || (ch >= 97 && ch <= 122) {
+            break
+          }
+          if !((ch >= 48 && ch <= 57) || ch == 59 || ch == 63) {
+            break
+          }
+        }
+        continue
+      }
+    }
+    // Emit UTF-8 byte sequence safely by copying slices of non-ESC spans
+    let start = i
+    while i < n && (b[i].to_int() & 0xFF) != 27 {
+      i = i + 1
+    }
+    let span = Bytes::new(i - start)
+    for j in 0..<(i - start) {
+      span[j] = b[start + j]
+    }
+    out.write_string(span.to_string())
+  }
+  out.to_string()
+}
+
+fn login_is_upper_alnum(s : String) -> Bool {
+  if s.length() == 0 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if !((c >= 65 && c <= 90) || (c >= 48 && c <= 57)) {
+      return false
+    }
+  }
+  true
+}
+
+/// Extract a device code like `ABCD-12345` (`login.ts:1116`).
+pub fn login_device_code(output : String) -> Option[String] {
+  let n = output.length()
+  let mut i = 0
+  while i < n {
+    let mut j = i
+    while j < n {
+      let c = output.code_unit_at(j)
+      let ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95 || c == 45
+      if !ok {
+        break
+      }
+      j = j + 1
+    }
+    if j > i {
+      let word = output.slice(i, j)
+      let parts = word.split("-")
+      let mut pi = 0
+      while pi + 1 < parts.length() {
+        let p0 = parts[pi]
+        let p1 = parts[pi + 1]
+        if p0.length() == 4 && p1.length() >= 4 && p1.length() <= 6 && login_is_upper_alnum(p0) && login_is_upper_alnum(p1) {
+          return Some(p0 + "-" + p1)
+        }
+        pi = pi + 1
+      }
+    }
+    i = j + 1
+  }
+  None
+}
+
+fn login_extract_urls(output : String) -> Array[String] {
+  let out : Array[String] = []
+  let n = output.length()
+  let mut i = 0
+  while i < n {
+    while i < n {
+      let c = output.code_unit_at(i)
+      if c != 32 && c != 9 && c != 10 && c != 13 {
+        break
+      }
+      i = i + 1
+    }
+    let start = i
+    while i < n {
+      let c = output.code_unit_at(i)
+      if c == 32 || c == 9 || c == 10 || c == 13 {
+        break
+      }
+      i = i + 1
+    }
+    if i > start {
+      let w = output.slice(start, i)
+      let idx = w.index_of("https://")
+      if idx >= 0 {
+        out.push(w.slice(idx, w.length()))
+      }
+    }
+  }
+  out
+}
+
+/// Parse CLI login output to transition `starting` -> `needs_code` / `needs_approval` (`login.ts:1020`).
+pub fn parse_login_output(job : ProfileLoginJob, output : String) -> Bool {
+  if job.state != "starting" {
+    return false
+  }
+  let urls = login_extract_urls(output)
+  let lower = admin_ascii_lower(output)
+  match job.runtime {
+    Some("claude") => {
+      for i in 0..<urls.length() {
+        let u = urls[i]
+        if u.contains("/oauth/authorize?") && !u.ends_with("?") && lower.contains("paste code") {
+          job.url = Some(u)
+          job.state = "needs_code"
+          return true
+        }
+      }
+      false
+    }
+    Some("agy") => {
+      for i in 0..<urls.length() {
+        let u = urls[i]
+        if u.starts_with("https://accounts.google.com/o/oauth2/") && u.contains("antigravity.google%2Foauth-callback") && lower.contains("authorization code") {
+          job.url = Some(u)
+          job.state = "needs_code"
+          return true
+        }
+      }
+      false
+    }
+    Some("devin") => {
+      for i in 0..<urls.length() {
+        let u = urls[i]
+        if u.starts_with("https://app.devin.ai/auth/cli/") && u.contains("code_challenge=") && lower.contains("paste it") {
+          job.url = Some(u)
+          job.state = "needs_code"
+          return true
+        }
+      }
+      false
+    }
+    _ => {
+      let site = if job.runtime == Some("grok") { "https://accounts.x.ai/" } else { "https://auth.openai.com/" }
+      let mut found_url : Option[String] = None
+      for i in 0..<urls.length() {
+        let u = urls[i]
+        if u.starts_with(site) && u.contains("device") {
+          found_url = Some(u)
+          break
+        }
+      }
+      match (found_url, login_device_code(output)) {
+        (Some(u), Some(code)) => {
+          job.url = Some(u)
+          job.user_code = Some(code)
+          job.state = "needs_approval"
+          true
+        }
+        _ => false
+      }
+    }
+  }
+}
+
+fn login_url_query_param(url : String, key : String) -> Option[String] {
+  let q = url.index_of("?")
+  if q < 0 {
+    return None
+  }
+  let mut qs = url.slice(q + 1, url.length())
+  let h = qs.index_of("#")
+  if h >= 0 {
+    qs = qs.slice(0, h)
+  }
+  let pairs = qs.split("&")
+  for i in 0..<pairs.length() {
+    let eq = pairs[i].index_of("=")
+    if eq > 0 {
+      let k = pairs[i].slice(0, eq)
+      if k == key {
+        return Some(pairs[i].slice(eq + 1, pairs[i].length()).trim())
+      }
+    }
+  }
+  None
+}
+
+/// Validate and normalize pasted Claude auth code (`code#state` or callback URL, `login.ts:1065`).
+pub fn claude_code_of(clean : String, auth_url : Option[String], lang : station_ops::Lang) -> Result[String, String] {
+  let expected = match auth_url {
+    Some(u) => match login_url_query_param(u, "state") { Some(s) => s, None => "" }
+    None => ""
+  }
+  let lower = admin_ascii_lower(clean)
+  let mut code = ""
+  let mut state = ""
+  if lower.starts_with("http://") || lower.starts_with("https://") {
+    let q = clean.index_of("?")
+    let path_part = if q >= 0 { clean.slice(0, q) } else { clean }
+    let is_authorize = path_part.ends_with("/authorize") || path_part.ends_with("/authorize/")
+    if !is_authorize {
+      code = match login_url_query_param(clean, "code") { Some(s) => s, None => "" }
+    }
+    state = match login_url_query_param(clean, "state") { Some(s) => s, None => "" }
+  } else {
+    let parts = clean.split("#")
+    if parts.length() != 2 {
+      return Err(station_ops::tr(lang, "station.login.claudeIncompleteCode"))
+    }
+    code = parts[0].trim()
+    state = parts[1].trim()
+  }
+  if code.length() == 0 || state.length() == 0 {
+    return Err(station_ops::tr(lang, "station.login.claudeIncompleteCode"))
+  }
+  if expected.length() > 0 && state != expected {
+    return Err(station_ops::tr(lang, "station.login.claudeWrongState"))
+  }
+  Ok(code + "#" + state)
+}
+
+fn login_last_lines(output : String) -> String {
+  let raw_lines = output.trim().split("\n")
+  let non_empty : Array[String] = []
+  for i in 0..<raw_lines.length() {
+    let l = raw_lines[i].trim()
+    if l.length() > 0 {
+      non_empty.push(l)
+    }
+  }
+  let start = if non_empty.length() > 4 { non_empty.length() - 4 } else { 0 }
+  let sb = StringBuilder::new()
+  for i in start..<non_empty.length() {
+    if i > start {
+      sb.write_string("\n")
+    }
+    sb.write_string(non_empty[i])
+  }
+  let s = sb.to_string()
+  if s.length() > 600 { s.slice(0, 600) } else { s }
+}
+
+/// Injectable process backend for `AccountsLoginManager` (real `station_sys` in production, fake in unit tests).
+pub struct LoginProcBackend {
+  pub spawn_proc : (Int64, station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String]
+  pub write_stdin : (station_sys::ChildProcess, Bytes) -> Bool
+  pub kill : (station_sys::ChildProcess, Int, Bool) -> Int
+  pub close : (station_sys::ChildProcess) -> Bool
+  pub mkdir_p : (String) -> Bool
+  pub env_get : (String) -> Option[String]
+}
+
+pub fn LoginProcBackend::production() -> LoginProcBackend {
+  LoginProcBackend::{
+    spawn_proc: fn(ev_id : Int64, opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
+      station_sys::proc_spawn(ev_id, opts)
+    },
+    write_stdin: fn(ch : station_sys::ChildProcess, data : Bytes) -> Bool {
+      ch.write_stdin(data)
+    },
+    kill: fn(ch : station_sys::ChildProcess, sig : Int, group : Bool) -> Int {
+      ch.kill(sig, group)
+    },
+    close: fn(ch : station_sys::ChildProcess) -> Bool {
+      ch.close()
+    },
+    mkdir_p: fn(dir : String) -> Bool {
+      match station_sys::mkdir_mode(dir, mode=448) {
+        station_sys::MkdirModeResult::Ok | station_sys::MkdirModeResult::AlreadyExists => true
+        _ => false
+      }
+    },
+    env_get: fn(k : String) -> Option[String] {
+      station_sys::env_get(k)
+    },
+  }
+}
+
+struct RunningProfileLogin {
+  profile : String
+  event_id : Int64
+  child : station_sys::ChildProcess
+  job : ProfileLoginJob
+  mut raw : String
+  mut output : String
+  mut said_after_code : Option[String]
+  mut exited : Bool
+  lang : station_ops::Lang
+  expires_mono_ms : Int64
+  mut verify_deadline_ms : Option[Int64]
+}
+
+/// Non-blocking interactive CLI login manager for subscription profiles.
+/// Owns `station_sys` `event_id` interval `[ACCOUNTS_LIVE_EVENT_BASE, ACCOUNTS_LIVE_EVENT_END)`.
+pub struct AccountsLoginManager {
+  pub backend : LoginProcBackend
+  pub timeout_ms : Int64
+  pub verify_wait_ms : Int64
+  pub mut next_event_id : Int64
+  active : Map[String, RunningProfileLogin]
+  by_event : Map[Int64, String]
+  finished : Map[String, ProfileLoginJob]
+}
+
+pub fn AccountsLoginManager::new(
+  backend : LoginProcBackend,
+  timeout_ms : Int64 = ACCOUNTS_LOGIN_TIMEOUT_MS,
+  verify_wait_ms : Int64 = ACCOUNTS_LOGIN_VERIFY_WAIT_MS,
+) -> AccountsLoginManager {
+  AccountsLoginManager::{
+    backend: backend,
+    timeout_ms: timeout_ms,
+    verify_wait_ms: verify_wait_ms,
+    next_event_id: ACCOUNTS_LIVE_EVENT_BASE,
+    active: Map::new(),
+    by_event: Map::new(),
+    finished: Map::new(),
+  }
+}
+
+pub fn AccountsLoginManager::production() -> AccountsLoginManager {
+  AccountsLoginManager::new(LoginProcBackend::production())
+}
+
+pub fn AccountsLoginManager::active_count(self : AccountsLoginManager) -> Int {
+  self.active.keys().length()
+}
+
+fn AccountsLoginManager::alloc_event_id(self : AccountsLoginManager) -> Int64 {
+  let ev = self.next_event_id
+  let next = ev + 1L
+  self.next_event_id = if next >= ACCOUNTS_LIVE_EVENT_END { ACCOUNTS_LIVE_EVENT_BASE } else { next }
+  ev
+}
+
+fn AccountsLoginManager::terminate_running(
+  self : AccountsLoginManager,
+  running : RunningProfileLogin,
+  state : String,
+  error : Option[String],
+) -> ProfileLoginJob {
+  self.active.remove(running.profile)
+  self.by_event.remove(running.event_id)
+  if !running.exited {
+    running.exited = true
+    let _ = (self.backend.kill)(running.child, station_sys::SIG_TERM, true)
+    let _ = (self.backend.kill)(running.child, station_sys::SIG_KILL, true)
+  }
+  let _ = (self.backend.close)(running.child)
+  let done = running.job.clone()
+  done.state = state
+  done.error = error
+  self.finished.set(running.profile, done)
+  done
+}
+
+pub fn AccountsLoginManager::get(self : AccountsLoginManager, profile : String) -> Option[ProfileLoginJob] {
+  match self.active.get(profile) {
+    Some(r) => Some(r.job.clone())
+    None => match self.finished.get(profile) {
+      Some(f) => Some(f.clone())
+      None => None
+    }
+  }
+}
+
+fn login_command_for_runtime(
+  runtime : String,
+  email_opt : Option[String],
+  env_get : (String) -> Option[String],
+) -> (String, Array[String]) {
+  if runtime == "claude" {
+    let cmd = match env_get("STILLFAIL_LOGIN_CLAUDE_CMD") {
+      Some(v) if v.trim().length() > 0 => v.trim()
+      _ => "claude"
+    }
+    let args : Array[String] = ["auth", "login", "--claudeai"]
+    match email_opt {
+      Some(em) if em.trim().length() > 0 => {
+        args.push("--email")
+        args.push(em.trim())
+      }
+      _ => ()
+    }
+    (cmd, args)
+  } else if runtime == "grok" {
+    let cmd = match env_get("STILLFAIL_LOGIN_GROK_CMD") {
+      Some(v) if v.trim().length() > 0 => v.trim()
+      _ => "grok"
+    }
+    (cmd, ["login", "--device-auth"])
+  } else if runtime == "devin" {
+    let cmd = match env_get("STILLFAIL_LOGIN_DEVIN_CMD") {
+      Some(v) if v.trim().length() > 0 => v.trim()
+      _ => "devin"
+    }
+    (cmd, ["auth", "login", "--force-manual-token-flow"])
+  } else if runtime == "agy" {
+    let cmd = match env_get("STILLFAIL_LOGIN_AGY_CMD") {
+      Some(v) if v.trim().length() > 0 => v.trim()
+      _ => "agy"
+    }
+    (cmd, [])
+  } else {
+    let cmd = match env_get("STILLFAIL_LOGIN_CODEX_CMD") {
+      Some(v) if v.trim().length() > 0 => v.trim()
+      _ => "codex"
+    }
+    (cmd, ["login", "--device-auth"])
+  }
+}
+
+fn login_build_env(
+  runtime : String,
+  home_dir : String,
+  sep : String,
+  env_get : (String) -> Option[String],
+) -> Array[String] {
+  let out : Array[String] = []
+  let keep_keys = ["PATH", "HOME", "USER", "SHELL", "TERM", "LANG", "LC_ALL", "TMPDIR", "SYSTEMROOT", "COMSPEC"]
+  for i in 0..<keep_keys.length() {
+    let k = keep_keys[i]
+    match env_get(k) {
+      Some(v) => out.push(k + "=" + v)
+      None => ()
+    }
+  }
+  out.push("BROWSER=true")
+  if runtime == "claude" {
+    out.push("CLAUDE_CONFIG_DIR=" + home_dir)
+  } else if runtime == "grok" {
+    out.push("GROK_HOME=" + nodepath::join(sep, [home_dir, "grok"]))
+    out.push("GROK_DISABLE_AUTOUPDATER=1")
+  } else if runtime == "devin" {
+    out.push("XDG_DATA_HOME=" + nodepath::join(sep, [home_dir, "devin", "data"]))
+  } else if runtime == "agy" {
+    out.push("AGY_CLI_DISABLE_AUTO_UPDATE=1")
+  } else {
+    out.push("CODEX_HOME=" + home_dir)
+  }
+  out
+}
+
+/// Start an interactive CLI login for a subscription profile, replacing any existing active login.
+pub fn AccountsLoginManager::start(
+  self : AccountsLoginManager,
+  profile_id : String,
+  runtime : String,
+  home_dir : String,
+  email_opt : Option[String],
+  sep : String,
+  now_mono_ms : Int64,
+  now_wall_ms : Int64,
+  lang : station_ops::Lang,
+) -> ProfileLoginJob {
+  let _ = self.cancel(profile_id)
+  self.finished.remove(profile_id)
+  let _ = (self.backend.mkdir_p)(home_dir)
+  if runtime == "grok" {
+    let _ = (self.backend.mkdir_p)(nodepath::join(sep, [home_dir, "grok"]))
+  } else if runtime == "devin" {
+    let _ = (self.backend.mkdir_p)(nodepath::join(sep, [home_dir, "devin", "data"]))
+  }
+  let (cmd, args) = login_command_for_runtime(runtime, email_opt, self.backend.env_get)
+  let ev_id = self.alloc_event_id()
+  let opts = station_sys::SpawnOptions::{
+    program: cmd,
+    args: args,
+    cwd: home_dir,
+    env: Some(login_build_env(runtime, home_dir, sep, self.backend.env_get)),
+    new_pgid: true,
+    strip_malloc_space_efficient: false,
+    pipe_stdin: true,
+    pipe_stdout: true,
+    pipe_stderr: true,
+  }
+  let job = ProfileLoginJob::{
+    profile: profile_id,
+    runtime: Some(runtime),
+    provider: None,
+    state: "starting",
+    url: None,
+    user_code: None,
+    error: None,
+    started_at: now_wall_ms,
+    expires_at: now_wall_ms + self.timeout_ms,
+  }
+  match (self.backend.spawn_proc)(ev_id, opts) {
+    Err(err_msg) => {
+      job.state = "failed"
+      job.error = Some("cannot run login command: " + err_msg)
+      self.finished.set(profile_id, job)
+      job.clone()
+    }
+    Ok(child) => {
+      let running = RunningProfileLogin::{
+        profile: profile_id,
+        event_id: ev_id,
+        child: child,
+        job: job,
+        raw: "",
+        output: "",
+        said_after_code: None,
+        exited: false,
+        lang: lang,
+        expires_mono_ms: now_mono_ms + self.timeout_ms,
+        verify_deadline_ms: None,
+      }
+      self.active.set(profile_id, running)
+      self.by_event.set(ev_id, profile_id)
+      job.clone()
+    }
+  }
+}
+
+/// Submit an authorization code (or project) to an active `needs_code` / `needs_project` login job.
+pub fn AccountsLoginManager::submit_code(
+  self : AccountsLoginManager,
+  profile_id : String,
+  raw_code : String,
+  now_mono_ms : Int64,
+  lang : station_ops::Lang,
+) -> Result[ProfileLoginJob, station_api::ApiError] {
+  let running = match self.active.get(profile_id) {
+    Some(r) => r
+    None => return Err(station_api::ApiError::new(400, station_ops::tr(lang, "station.login.notWaitingForCode")))
+  }
+  if running.job.state != "needs_code" && running.job.state != "needs_project" {
+    return Err(station_api::ApiError::new(400, station_ops::tr(lang, "station.login.notWaitingForCode")))
+  }
+  let trimmed = raw_code.trim()
+  if trimmed.length() == 0 {
+    return Err(station_api::ApiError::new(400, station_ops::tr(lang, "station.login.emptyCode")))
+  }
+  let clean = if running.job.runtime == Some("claude") {
+    match claude_code_of(trimmed, running.job.url, lang) {
+      Ok(c) => c
+      Err(msg) => return Err(station_api::ApiError::new(400, msg))
+    }
+  } else {
+    trimmed
+  }
+  running.job.state = "verifying"
+  if running.job.runtime == Some("claude") {
+    running.said_after_code = Some("")
+  }
+  if running.job.runtime == Some("claude") || running.job.runtime == Some("devin") {
+    running.verify_deadline_ms = Some(now_mono_ms + self.verify_wait_ms)
+  }
+  let eol = if running.job.runtime == Some("devin") || running.job.runtime == Some("agy") { "\r" } else { "\n" }
+  let payload = (clean + eol).to_bytes()
+  if !(self.backend.write_stdin)(running.child, payload) {
+    let _ = self.terminate_running(running, "failed", Some("failed to write code to login process"))
+    return Err(station_api::ApiError::new(400, "failed to write code to login process"))
+  }
+  Ok(running.job.clone())
+}
+
+/// Cancel an active login job (killing its entire process group) or clear a finished record.
+pub fn AccountsLoginManager::cancel(self : AccountsLoginManager, profile_id : String) -> Bool {
+  match self.active.get(profile_id) {
+    Some(running) => {
+      let _ = self.terminate_running(running, "cancelled", None)
+      true
+    }
+    None => {
+      if self.finished.get(profile_id).is_some() {
+        self.finished.remove(profile_id)
+        true
+      } else {
+        false
+      }
+    }
+  }
+}
+
+/// Handle one `station_sys::SysEvent` strictly within `[ACCOUNTS_LIVE_EVENT_BASE, ACCOUNTS_LIVE_EVENT_END)`.
+/// Returns `(handled, changed)` so the daemon knows whether to emit an overview SSE update.
+pub fn AccountsLoginManager::handle_sys_event(
+  self : AccountsLoginManager,
+  ev_id : Int64,
+  sev : station_sys::SysEvent,
+) -> (Bool, Bool) {
+  if !is_accounts_live_event_id(ev_id) {
+    return (false, false)
+  }
+  let profile_id = match self.by_event.get(ev_id) {
+    Some(pid) => pid
+    None => return (true, false)
+  }
+  let running = match self.active.get(profile_id) {
+    Some(r) => r
+    None => {
+      self.by_event.remove(ev_id)
+      return (true, false)
+    }
+  }
+  match sev {
+    station_sys::SysEvent::ProcStdout(data) | station_sys::SysEvent::ProcStderr(data) => {
+      let chunk = data.to_string()
+      running.raw = running.raw + chunk
+      if running.raw.length() > 16384 {
+        running.raw = running.raw.slice(running.raw.length() - 16384, running.raw.length())
+      }
+      running.output = login_strip_ansi(running.raw)
+      if running.job.state == "verifying" {
+        match running.said_after_code {
+          Some(prev) => {
+            let mut next_said = prev + chunk
+            if next_said.length() > 4096 {
+              next_said = next_said.slice(next_said.length() - 4096, next_said.length())
+            }
+            running.said_after_code = Some(next_said)
+            if admin_ascii_lower(login_strip_ansi(next_said)).contains("make sure the full code was copied") {
+              let _ = self.terminate_running(running, "failed", Some(station_ops::tr(running.lang, "station.login.claudeIncompleteCode")))
+              return (true, true)
+            }
+          }
+          None => ()
+        }
+      }
+      let changed = parse_login_output(running.job, running.output)
+      (true, changed)
+    }
+    station_sys::SysEvent::ProcExit(exit_st) => {
+      running.exited = true
+      if exit_st.code == 0 && exit_st.signal == 0 {
+        let _ = self.terminate_running(running, "done", None)
+      } else {
+        let said = login_last_lines(running.output)
+        let msg = if said.length() > 0 {
+          said
+        } else if exit_st.signal != 0 {
+          "login process exited (signal " + exit_st.signal_name + ")"
+        } else {
+          "login process exited (" + exit_st.code.to_string() + ")"
+        }
+        let _ = self.terminate_running(running, "failed", Some(msg))
+      }
+      (true, true)
+    }
+    _ => (true, false)
+  }
+}
+
+/// Enforce monotonic login and code-verification deadlines; returns `true` if any job timed out.
+pub fn AccountsLoginManager::tick(self : AccountsLoginManager, now_mono_ms : Int64) -> Bool {
+  let mut changed = false
+  let ks = self.active.keys()
+  for i in 0..<ks.length() {
+    match self.active.get(ks[i]) {
+      Some(running) => {
+        if now_mono_ms >= running.expires_mono_ms {
+          let _ = self.terminate_running(running, "failed", Some(station_ops::tr(running.lang, "station.login.timedOut")))
+          changed = true
+        } else {
+          match running.verify_deadline_ms {
+            Some(vd) if running.job.state == "verifying" && now_mono_ms >= vd => {
+              let _ = self.terminate_running(running, "failed", Some(station_ops::tr(running.lang, "station.login.verifyTimedOut")))
+              changed = true
+            }
+            _ => ()
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  changed
+}
+
+/// Terminate every active login child process group cleanly (called from `on_shutdown`).
+pub fn AccountsLoginManager::stop_all(self : AccountsLoginManager) -> Unit {
+  let ks = self.active.keys()
+  for i in 0..<ks.length() {
+    let _ = self.cancel(ks[i])
+  }
+}
+
+/// Check if a profile JSON entry in `config.json` is borrowed from another station (`accounts/index.ts:218`).
+pub fn is_profile_borrowed(entry : base_codec::Json) -> Bool {
+  match base_codec::json_get(entry, "share") {
+    Some(sh) => json_field_bool(sh, "borrowed") == Some(true)
+    None => false
+  }
+}

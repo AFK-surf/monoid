@@ -1,0 +1,426 @@
+// Wave 17E-4C unit tests for Accounts Quota / ResetQuota / Pace & Interactive LoginJob Runtime:
+// - Quota & reset parsers (OpenCode Go, Claude + scoped + resets/claim/outcome, Codex, Kimi, refused/blocked)
+// - Pace v1 / v2 / sinceRev unchanged & delta + workspace visibility isolation
+// - LoginJob lifecycle (Claude needs_code -> submit_code -> verifying -> done; Codex needs_approval;
+//   timeout, verify-timeout, cancel, stop_all process-group kill & handle close)
+// - Disjoint `event_id` interval `[14 << 32, 15 << 32)` enforcement
+// - Role-safe view redaction & `OverviewRound` manager/non-manager cache partitioning
+// - Borrowed profile 409 isolation & permission gates (403/400)
+
+import "base_codec"
+import "http1"
+import "station_api"
+import "station_ops"
+import "station_sys"
+
+test "wave17e4c: disjoint event_id interval [14<<32, 15<<32) strict half-open check" {
+  if ACCOUNTS_LIVE_EVENT_BASE != 60129542144L || ACCOUNTS_LIVE_EVENT_END != 64424509440L {
+    panic("unexpected ACCOUNTS_LIVE_EVENT interval constants")
+  }
+  if is_accounts_live_event_id(ACCOUNTS_LIVE_EVENT_BASE - 1L) {
+    panic("BASE - 1 must NOT be in interval")
+  }
+  if !is_accounts_live_event_id(ACCOUNTS_LIVE_EVENT_BASE) {
+    panic("BASE must be in interval")
+  }
+  if !is_accounts_live_event_id(ACCOUNTS_LIVE_EVENT_END - 1L) {
+    panic("END - 1 must be in interval")
+  }
+  if is_accounts_live_event_id(ACCOUNTS_LIVE_EVENT_END) {
+    panic("END must NOT be in half-open interval")
+  }
+}
+
+test "wave17e4c: quota parsers (opencode, claude + scoped + resets, codex, kimi, refused/blocked)" {
+  let now_ms = 1795862100000L
+
+  // 1. OpenCode Go
+  let oc_raw = match base_codec::json_parse("{\"usage\":{\"rolling\":{\"percent\":42.6,\"resetsAt\":1795880000},\"weekly\":{\"percent\":15,\"resetsAt\":\"2026-12-01T00:00:00Z\"}}}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("parse failed")
+  }
+  let oc_q = parse_opencode_quota(oc_raw, now_ms)
+  if json_field_str(oc_q, "state") != Some("ok") {
+    panic("opencode quota state should be ok")
+  }
+  let oc_s = base_codec::json_stringify(oc_q)
+  if !oc_s.contains("\"usedPercent\":43") || !oc_s.contains("\"label\":\"5 小时\"") || !oc_s.contains("\"label\":\"每周\"") {
+    panic("unexpected opencode quota JSON: " + oc_s)
+  }
+
+  // 2. Claude usage + scoped + resets + claim + outcome
+  let cl_body_str = "{" +
+  "\"five_hour\":{\"utilization\":80,\"resets_at\":\"2026-11-28T15:00:00Z\"}," +
+  "\"seven_day\":{\"utilization\":25,\"resets_at\":\"2026-12-05T00:00:00Z\"}," +
+  "\"limits\":[{\"group\":\"weekly\",\"percent\":60,\"resets_at\":\"2026-12-05T00:00:00Z\",\"scope\":{\"model\":{\"display_name\":\"Fable\"}}}]," +
+  "\"extra_usage\":{\"is_enabled\":true}," +
+  "\"juniper_tide\":{\"eligible\":true,\"arm\":\"reset\",\"available\":true}," +
+  "\"cedar_ember\":{\"eligible\":true,\"next_grant_id\":\"g2\",\"grants\":[" +
+  "{\"id\":\"g1\",\"type\":\"weekly\",\"resets_left\":1,\"usable_now\":true,\"ends_at\":\"2026-12-02T00:00:00Z\"}," +
+  "{\"id\":\"g2\",\"type\":\"weekly\",\"resets_left\":2,\"usable_now\":true,\"ends_at\":\"2026-12-10T00:00:00Z\"}" +
+  "]}" +
+  "}"
+  let cl_raw = match base_codec::json_parse(cl_body_str) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("claude parse failed")
+  }
+  let cl_q = parse_claude_quota(cl_raw, now_ms, true)
+  let cl_s = base_codec::json_stringify(cl_q)
+  if !cl_s.contains("\"resetCount\":4") || !cl_s.contains("\"extraUsage\":true") || !cl_s.contains("\"scope\":\"Fable\"") {
+    panic("unexpected claude quota JSON: " + cl_s)
+  }
+  // Claim with kind=None prefers juniper_tide
+  match claude_claim(cl_raw, "idem-1", None) {
+    ClaudeClaimResult::Claim(c) => if json_field_str(c, "program") != Some("juniper_tide") { panic("expected juniper_tide") }
+    _ => panic("expected Claim for juniper_tide")
+  }
+  // Claim with kind=Some("weekly") prefers next_grant_id="g2" and hashes idem key
+  match claude_claim(cl_raw, "idem-2", Some("weekly")) {
+    ClaudeClaimResult::Claim(c) => {
+      if json_field_str(c, "program") != Some("cedar_ember") || json_field_str(c, "grant_id") != Some("g2") {
+        panic("expected cedar_ember g2, got: " + base_codec::json_stringify(c))
+      }
+      match json_field_str(c, "request_id") {
+        Some(rid) if rid.length() == 64 => ()
+        _ => panic("expected 64-hex sha256 request_id")
+      }
+    }
+    _ => panic("expected Claim for weekly grant")
+  }
+  if claude_claim_outcome(Some("reset")) != "reset"
+  || claude_claim_outcome(Some("already_used")) != "alreadyRedeemed"
+  || claude_claim_outcome(Some("not_limited")) != "nothingToReset"
+  || claude_claim_outcome(Some("cooldown")) != "unavailable"
+  || claude_claim_outcome(None) != "unconfirmed" {
+    panic("claude_claim_outcome mismatch")
+  }
+
+  // 3. Codex usage
+  let cx_raw = match base_codec::json_parse("{\"plan_type\":\"pro\",\"rate_limit\":{\"primary_window\":{\"used_percent\":30,\"limit_window_seconds\":18000,\"reset_at\":1795880000}},\"credits\":{\"has_credits\":true,\"unlimited\":false,\"balance\":\"12.50\"},\"rate_limit_reset_credits\":{\"available_count\":1,\"credits\":[{\"status\":\"available\",\"expires_at\":1796000000}]}}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("codex parse failed")
+  }
+  let cx_q = parse_codex_quota(cx_raw, now_ms, station_ops::Lang::En)
+  let cx_s = base_codec::json_stringify(cx_q)
+  if !cx_s.contains("\"plan\":\"pro\"") || !cx_s.contains("\"resetCount\":1") || !cx_s.contains("\"balance\":\"12.50\"") {
+    panic("unexpected codex quota JSON: " + cx_s)
+  }
+
+  // 4. Kimi usage
+  let km_raw = match base_codec::json_parse("{\"usage\":{\"limit\":100,\"used\":25,\"reset_at\":1796000000}}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => panic("kimi parse failed")
+  }
+  let km_q = parse_kimi_quota(km_raw, now_ms, station_ops::Lang::En)
+  if json_field_str(km_q, "state") != Some("ok") {
+    panic("kimi quota should be ok")
+  }
+
+  // 5. Refused / blocked / 401 / 503
+  let (blk_q, blk_so, blk_un) = accounts_refused_quota("Anthropic ", 403, "{\"error\":{\"message\":\"account suspended\"}}", now_ms, station_ops::Lang::En)
+  if json_field_str(blk_q, "state") != Some("blocked") || blk_so || blk_un {
+    panic("403 suspended must be blocked")
+  }
+  let (unauth_q, unauth_so, _) = accounts_refused_quota("Anthropic ", 401, "unauthorized", now_ms, station_ops::Lang::En)
+  if json_field_str(unauth_q, "state") != Some("unavailable") || !unauth_so {
+    panic("401 must be unavailable + signed_out")
+  }
+  let (_, _, srv_un) = accounts_refused_quota("Anthropic ", 503, "down", now_ms, station_ops::Lang::En)
+  if !srv_un {
+    panic("503 must be unanswered=true")
+  }
+}
+
+test "wave17e4c: pace v1/v2/sinceRev unchanged & delta + workspace isolation" {
+  let store_port = AccountsStorePort::in_memory()
+  let cache = AccountsPaceCache::new("ep1")
+  let now_ms = 1795862100000L
+
+  let q1 = make_quota_json("ok", [make_quota_window_json("5 小时", 20, Some(now_ms + 3600000L), Some(300), None)], None, now_ms)
+  let q2 = make_quota_json("ok", [make_quota_window_json("5 小时", 50, Some(now_ms + 3600000L), Some(300), None)], None, now_ms)
+  let _ = (store_port.save_quota)("p-visible", q1, now_ms)
+  let _ = (store_port.save_quota)("p-hidden", q2, now_ms)
+
+  // v1 only returns visible profiles
+  let v1 = match compute_pace_response(store_port, cache, ["p-visible"], "ws-main", None, None, now_ms) {
+    Ok(v) => v
+    Err(e) => panic("pace v1 failed: " + e.message)
+  }
+  let v1_s = base_codec::json_stringify(v1)
+  if !v1_s.contains("\"p-visible\"") || v1_s.contains("\"p-hidden\"") {
+    panic("pace v1 violated workspace isolation: " + v1_s)
+  }
+
+  // v2 full -> unchanged -> update p-visible -> delta
+  let v2 = match compute_pace_response(store_port, cache, ["p-visible"], "ws-main", Some("2"), None, now_ms) {
+    Ok(v) => v
+    Err(e) => panic("pace v2 failed: " + e.message)
+  }
+  let rev1 = match json_field_str(v2, "rev") { Some(r) => r, None => panic("missing rev in pace v2") }
+
+  let unch = match compute_pace_response(store_port, cache, ["p-visible"], "ws-main", Some("2"), Some(rev1), now_ms) {
+    Ok(v) => v
+    Err(e) => panic("pace v2 unchanged failed: " + e.message)
+  }
+  if json_field_bool(unch, "unchanged") != Some(true) || json_field_str(unch, "rev") != Some(rev1) {
+    panic("expected unchanged=true for same sinceRev: " + base_codec::json_stringify(unch))
+  }
+
+  // Mutate p-visible quota -> delta response!
+  let q1_next = make_quota_json("ok", [make_quota_window_json("5 小时", 75, Some(now_ms + 3600000L), Some(300), None)], None, now_ms + 60000L)
+  let _ = (store_port.save_quota)("p-visible", q1_next, now_ms + 60000L)
+  let delta = match compute_pace_response(store_port, cache, ["p-visible"], "ws-main", Some("2"), Some(rev1), now_ms + 60000L) {
+    Ok(v) => v
+    Err(e) => panic("pace v2 delta failed: " + e.message)
+  }
+  let delta_s = base_codec::json_stringify(delta)
+  if json_field_bool(delta, "delta") != Some(true) || json_field_str(delta, "base") != Some(rev1) || !delta_s.contains("75") {
+    panic("expected delta with updated usedPercent 75: " + delta_s)
+  }
+}
+
+test "wave17e4c: LoginJob lifecycle (claude code flow, codex device flow, timeout, cancel, stop_all, role redaction)" {
+  let spawned_ev_ids : Array[Int64] = []
+  let stdin_writes : Array[String] = []
+  let kills : Array[(Int, Int, Bool)] = []
+  let closed_handles : Array[Int64] = []
+  let next_pid : Array[Int] = [4100]
+
+  let backend = LoginProcBackend::{
+    spawn_proc: fn(ev_id : Int64, _opts : station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String] {
+      spawned_ev_ids.push(ev_id)
+      let p = next_pid[0]
+      next_pid[0] = p + 1
+      Ok(station_sys::ChildProcess::{ handle: p.to_int64(), pid: p })
+    },
+    write_stdin: fn(_ch : station_sys::ChildProcess, data : Bytes) -> Bool {
+      stdin_writes.push(data.to_string())
+      true
+    },
+    kill: fn(ch : station_sys::ChildProcess, sig : Int, group : Bool) -> Int {
+      kills.push((ch.pid, sig, group))
+      0
+    },
+    close: fn(ch : station_sys::ChildProcess) -> Bool {
+      closed_handles.push(ch.handle)
+      true
+    },
+    mkdir_p: fn(_dir : String) -> Bool { true },
+    env_get: fn(_k : String) -> Option[String] { None },
+  }
+
+  let mgr = AccountsLoginManager::new(backend, timeout_ms=5000L, verify_wait_ms=1000L)
+
+  // 1. Start Claude login -> allocates event_id in [14<<32, 15<<32)
+  let j0 = mgr.start("p-claude", "claude", "/tmp/home-claude", None, "/", 1000L, 1795862100000L, station_ops::Lang::En)
+  if j0.state != "starting" || mgr.active_count() != 1 {
+    panic("expected starting state and active_count=1")
+  }
+  let ev1 = spawned_ev_ids[0]
+  if !is_accounts_live_event_id(ev1) {
+    panic("spawned event_id out of [14<<32, 15<<32): " + ev1.to_string())
+  }
+
+  // Out-of-range event_id must NOT be handled
+  let (h_bad, _) = mgr.handle_sys_event(ACCOUNTS_LIVE_EVENT_BASE - 1L, station_sys::SysEvent::ProcStdout("hi".to_bytes()))
+  if h_bad {
+    panic("out-of-range event_id must return handled=false")
+  }
+
+  // Stdout with ANSI + authorize URL + "Paste code" transitions to needs_code
+  let out_msg = "\u{1b}[32mOpen https://claude.ai/oauth/authorize?client_id=abc&state=st123\u{1b}[0m\nPaste code here:"
+  let (h1, c1) = mgr.handle_sys_event(ev1, station_sys::SysEvent::ProcStdout(out_msg.to_bytes()))
+  if !h1 || !c1 {
+    panic("expected handled=true, changed=true on authorize URL")
+  }
+  let j_needs = match mgr.get("p-claude") { Some(j) => j, None => panic("missing job") }
+  if j_needs.state != "needs_code" || j_needs.url != Some("https://claude.ai/oauth/authorize?client_id=abc&state=st123") {
+    panic("expected needs_code with parsed URL")
+  }
+
+  // Role-safe redaction: manager sees URL, non-manager/read-only sees url:null
+  let mgr_json = base_codec::json_stringify(j_needs.to_json(true))
+  let ro_json = base_codec::json_stringify(j_needs.to_json(false))
+  if !mgr_json.contains("https://claude.ai/oauth/authorize") {
+    panic("manager view must include authorize URL")
+  }
+  if ro_json.contains("https://claude.ai/oauth/authorize") || !ro_json.contains("\"url\":null") {
+    panic("read-only/non-manager view leaked authorize URL: " + ro_json)
+  }
+
+  // Wrong state rejected (400), valid callback URL normalized to `code#state\n`
+  match mgr.submit_code("p-claude", "mycode#wrongstate", 1100L, station_ops::Lang::En) {
+    Err(e) if e.status == 400 => ()
+    _ => panic("wrong state must be rejected with 400")
+  }
+  match mgr.submit_code("p-claude", "https://console.anthropic.com/oauth/code/callback?code=GOODCODE&state=st123", 1200L, station_ops::Lang::En) {
+    Ok(jv) => if jv.state != "verifying" { panic("expected verifying state") }
+    Err(e) => panic("valid callback URL failed: " + e.message)
+  }
+  if stdin_writes.length() != 1 || stdin_writes[0] != "GOODCODE#st123\n" {
+    panic("expected stdin write GOODCODE#st123\\n")
+  }
+
+  // ProcExit(0) -> done & handle closed
+  let (_, c_done) = mgr.handle_sys_event(ev1, station_sys::SysEvent::ProcExit(station_sys::ExitStatus::{ code: 0, signal: 0, signal_name: "" }))
+  if !c_done || mgr.active_count() != 0 {
+    panic("expected done transition and active_count=0")
+  }
+  let j_done = match mgr.get("p-claude") { Some(j) => j, None => panic("missing finished job") }
+  if j_done.state != "done" || closed_handles.length() != 1 {
+    panic("expected done state and closed handle")
+  }
+
+  // 2. Codex device flow + timeout kills process group!
+  let _ = mgr.start("p-codex", "codex", "/tmp/home-codex", None, "/", 2000L, 1795862101000L, station_ops::Lang::En)
+  let ev2 = spawned_ev_ids[1]
+  let cx_out = "Visit https://auth.openai.com/codex/device and enter code WXYZ-98765"
+  let (_, c2) = mgr.handle_sys_event(ev2, station_sys::SysEvent::ProcStdout(cx_out.to_bytes()))
+  if !c2 {
+    panic("expected codex needs_approval transition")
+  }
+  let j_cx = match mgr.get("p-codex") { Some(j) => j, None => panic("missing codex job") }
+  if j_cx.state != "needs_approval" || j_cx.user_code != Some("WXYZ-98765") {
+    panic("expected needs_approval with userCode WXYZ-98765")
+  }
+  if base_codec::json_stringify(j_cx.to_json(false)).contains("WXYZ-98765") {
+    panic("non-manager view leaked userCode!")
+  }
+  // Tick past timeout (2000 + 5000 = 7000) -> kills process group (group=true) & marks failed
+  if !mgr.tick(7001L) {
+    panic("expected tick to time out p-codex")
+  }
+  if mgr.active_count() != 0 {
+    panic("timed out job must be removed from active")
+  }
+  let mut saw_group_kill = false
+  for i in 0..<kills.length() {
+    if kills[i].2 {
+      saw_group_kill = true
+    }
+  }
+  if !saw_group_kill {
+    panic("timeout must kill process group (group=true)")
+  }
+
+  // 3. Cancel & stop_all kill process groups cleanly
+  let _ = mgr.start("p-cancel", "claude", "/tmp/home-c", None, "/", 8000L, 1795862108000L, station_ops::Lang::En)
+  let _ = mgr.start("p-shut", "codex", "/tmp/home-s", None, "/", 8000L, 1795862108000L, station_ops::Lang::En)
+  if !mgr.cancel("p-cancel") {
+    panic("cancel must return true")
+  }
+  match mgr.get("p-cancel") {
+    Some(jc) if jc.state == "cancelled" => ()
+    _ => panic("cancelled job must have state cancelled")
+  }
+  mgr.stop_all()
+  if mgr.active_count() != 0 {
+    panic("stop_all must terminate all active login jobs")
+  }
+}
+
+test "wave17e4c: borrowed profile 409, role gates 403, overview cache role partitioning" {
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
+  let owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  let member = make_test_viewer("member@example.com", "u-member", "ws-main", true, "member")
+  let ro = make_test_viewer("ro@example.com", "u-ro", "ws-main", true, "viewer")
+
+  let cfg = "{" +
+  "\"profiles\":[" +
+  "{\"id\":\"p-own\",\"name\":\"Own Claude\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"home\":\"homes/p-own\",\"env\":{}}," +
+  "{\"id\":\"p-bor\",\"name\":\"Borrowed Claude\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"home\":\"homes/p-bor\",\"env\":{},\"share\":{\"borrowed\":true,\"host\":\"s-other\"}}" +
+  "]" +
+  "}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", cfg, 384)
+
+  // Borrowed profile MUST be rejected with 409 on login, login.delete, login-code, resetQuota
+  for op in ["accounts.profiles.login", "accounts.profiles.login.delete", "accounts.profiles.login-code"] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles/p-bor/login", owner), ["p-bor"], base_codec::json_obj([])) {
+      Err(e) if e.status == 409 => ()
+      Err(e) => panic("borrowed " + op + " expected 409, got " + e.status.to_string())
+      Ok(_) => panic("borrowed " + op + " must fail with 409")
+    }
+  }
+  let reset_req_bor = station_api::ApiRequest::{
+    ..make_test_api_req_as("POST", "/profiles/p-bor/reset-quota", owner),
+    headers: [http1::Header::{ name: "idempotency-key", value: "rk-1" }],
+  }
+  match (api.admin.host.call)("accounts.profiles.resetQuota", reset_req_bor, ["p-bor"], base_codec::json_obj([])) {
+    Err(e) if e.status == 409 => ()
+    _ => panic("borrowed resetQuota must return 409")
+  }
+
+  // Non-manager rejected with 403 on login/resetQuota; read-only rejected with 403 on quota
+  match (api.admin.host.call)("accounts.profiles.login", make_test_api_req_as("POST", "/profiles/p-own/login", member), ["p-own"], base_codec::json_obj([])) {
+    Err(e) if e.status == 403 => ()
+    _ => panic("non-manager login must return 403")
+  }
+  match (api.admin.host.call)("accounts.profiles.quota", make_test_api_req_as("POST", "/profiles/p-own/quota", ro), ["p-own"], base_codec::json_obj([])) {
+    Err(e) if e.status == 403 => ()
+    _ => panic("read-only quota must return 403")
+  }
+
+  // `login.get` redacts url & userCode for non-manager / read-only viewer
+  hooks.on_profile_live_op = Some(fn(op : String, ps : Array[String], _b : base_codec::Json, _v : station_api::Viewer, _l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+    if op == "accounts.profiles.login.get" {
+      return Ok(base_codec::json_obj([
+        ("job", base_codec::json_obj([
+          ("profile", base_codec::json_str(ps[0])),
+          ("runtime", base_codec::json_str("claude")),
+          ("state", base_codec::json_str("needs_code")),
+          ("url", base_codec::json_str("https://claude.ai/oauth/authorize?state=SECRET")),
+          ("userCode", base_codec::json_str("SECR-9999")),
+          ("error", base_codec::json_null()),
+          ("startedAt", base_codec::json_int64(1000L)),
+          ("expiresAt", base_codec::json_int64(9000L)),
+        ])),
+      ]))
+    }
+    Err(station_api::ApiError::new(501, "unhandled"))
+  })
+  match (api.admin.host.call)("accounts.profiles.login.get", make_test_api_req_as("GET", "/profiles/p-own/login", owner), ["p-own"], base_codec::json_obj([])) {
+    Ok(v) => if !base_codec::json_stringify(v).contains("SECRET") { panic("owner must see login url") }
+    Err(e) => panic("owner login.get failed: " + e.message)
+  }
+  match (api.admin.host.call)("accounts.profiles.login.get", make_test_api_req_as("GET", "/profiles/p-own/login", ro), ["p-own"], base_codec::json_obj([])) {
+    Ok(v) => {
+      let s = base_codec::json_stringify(v)
+      if s.contains("SECRET") || s.contains("SECR-9999") {
+        panic("read-only login.get leaked secret url/userCode: " + s)
+      }
+    }
+    Err(e) => panic("ro login.get failed: " + e.message)
+  }
+
+  // `OverviewRound` MUST partition `profiles` cache by manager role so manager's URL never leaks to read-only viewer!
+  let round = station_api::OverviewRound::new()
+  let input = station_api::OverviewInput::{
+    ..station_api::OverviewInput::minimal(),
+    profiles: [
+      station_api::ProfileOverviewInput::{
+        id: "p-own",
+        runtime: "claude",
+        label: "Own Claude",
+        status: "ok",
+        models: [],
+        api_key: None,
+        refresh_token: None,
+        quota: None,
+        login: Some(base_codec::json_obj([
+          ("profile", base_codec::json_str("p-own")),
+          ("state", base_codec::json_str("needs_code")),
+          ("url", base_codec::json_str("https://claude.ai/oauth/authorize?state=ROUND_SECRET")),
+          ("userCode", base_codec::json_str("RND1-2345")),
+        ])),
+      },
+    ],
+  }
+  let ov_owner = base_codec::json_stringify(station_api::build_overview_in_round(input, owner, station_api::Lang::En, Some(round)))
+  let ov_ro = base_codec::json_stringify(station_api::build_overview_in_round(input, ro, station_api::Lang::En, Some(round)))
+  if !ov_owner.contains("ROUND_SECRET") {
+    panic("owner overview must contain login url")
+  }
+  if ov_ro.contains("ROUND_SECRET") || ov_ro.contains("RND1-2345") {
+    panic("OverviewRound leaked manager login URL/userCode to read-only viewer: " + ov_ro)
+  }
+}

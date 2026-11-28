@@ -264,10 +264,50 @@ pub struct ProfileOverviewInput {
   pub models : Array[String]
   pub api_key : Option[String]
   pub refresh_token : Option[String]
+  pub quota : Option[base_codec::Json]
+  pub login : Option[base_codec::Json]
 }
 
-/// Sanitize account profiles: expose only `hasKey` / masked hint, NEVER raw `apiKey` or `refreshToken`.
-pub fn sanitize_profiles(profiles : Array[ProfileOverviewInput]) -> base_codec::Json {
+/// Redact a `LoginJob` JSON object for non-manager / read-only viewers:
+/// managers see full interactive sign-in fields (`url`, `userCode`); non-managers NEVER see
+/// authorize URLs, one-time device codes, OAuth tokens, or sensitive credentials.
+pub fn redact_login_job_json(job : base_codec::Json, manages : Bool) -> base_codec::Json {
+  if manages {
+    return job
+  }
+  match job {
+    base_codec::Json::Obj(fs) => {
+      let out : Array[(String, base_codec::Json)] = []
+      let mut i = 0
+      while i < fs.length() {
+        let (k, v) = fs[i]
+        if k == "url" || k == "userCode" {
+          out.push((k, base_codec::json_null()))
+        } else if k == "error" {
+          match v {
+            base_codec::Json::Str(s) => {
+              if s.contains("http://") || s.contains("https://") || is_secret_key_or_value("error", s) {
+                out.push((k, base_codec::json_str("sign-in error")))
+              } else {
+                out.push((k, v))
+              }
+            }
+            _ => out.push((k, v))
+          }
+        } else {
+          out.push((k, v))
+        }
+        i = i + 1
+      }
+      base_codec::json_obj(out)
+    }
+    _ => base_codec::json_null()
+  }
+}
+
+/// Sanitize account profiles for a specific viewer role: expose only `hasKey` / masked hint,
+/// NEVER raw `apiKey` or `refreshToken`, and redact `login.url`/`login.userCode` for non-managers.
+pub fn sanitize_profiles_for_viewer(profiles : Array[ProfileOverviewInput], manages : Bool) -> base_codec::Json {
   let out : Array[base_codec::Json] = []
   let mut i = 0
   while i < profiles.length() {
@@ -298,10 +338,23 @@ pub fn sanitize_profiles(profiles : Array[ProfileOverviewInput]) -> base_codec::
       }
       None => ()
     }
+    match p.quota {
+      Some(q) => fields.push(("quota", q))
+      None => ()
+    }
+    match p.login {
+      Some(l) => fields.push(("login", redact_login_job_json(l, manages)))
+      None => ()
+    }
     out.push(base_codec::json_obj(fields))
     i = i + 1
   }
   base_codec::json_arr(out)
+}
+
+/// Sanitize account profiles (defaults to non-manager redaction for safety).
+pub fn sanitize_profiles(profiles : Array[ProfileOverviewInput]) -> base_codec::Json {
+  sanitize_profiles_for_viewer(profiles, false)
 }
 
 pub struct ConnectOverviewInput {
@@ -566,8 +619,8 @@ pub fn build_overview_in_round(
     base_codec::json_obj(drive_fields)
   })
 
-  let profiles_json = round_cached(round, "ws:profiles:" + ws_scope, fn() -> base_codec::Json {
-    sanitize_profiles(input.profiles)
+  let profiles_json = round_cached(round, "ws:profiles:" + ws_scope + "\u{0}" + mgr_scope, fn() -> base_codec::Json {
+    sanitize_profiles_for_viewer(input.profiles, viewer.manages_station())
   })
   let archiving_json = round_cached(round, "mgr:archiving:" + mgr_scope, fn() -> base_codec::Json {
     base_codec::json_obj([
