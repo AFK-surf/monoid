@@ -12,12 +12,13 @@ node website/og.mjs [site…]                 # the share cards again (Chrome, p
 node website/build.mjs --check              # translations: missing, extra, stale, markup, glyphs (exit 1 on any)
 ```
 
-Device showcase renders (`website/assets/shots/{duo,android,desk,web}-{en,zh}{,-1x}.webp`) ship in English and Chinese,
+Device showcase renders (`website/assets/shots/{duo,android,mac,linux,win,web}-{en,zh}{,-1920,-1x}.webp`) ship in English and Chinese,
 matching `apps/mbui`'s two UI locales (`en` and `zh-CN`): `zh-CN` and `zh-TW` pages receive `-zh` renders, while `en`,
 `ja`, and `ko` pages receive `-en` renders. Size metadata is tracked in `website/shots-sizes.txt` (excluded from CDN output).
-The four slots show an iPhone, a Galaxy S25+, a Windows laptop (the desktop app in a window) and a MacBook Air (the web
-app in a full-screen browser); the Windows laptop is "Modern Slim Laptop" by Mraz3D under CC BY 4.0, credited in the page footer, so keep that
-credit while the model is used. Regenerating them with `bash website/devices.sh` requires Blender 4.2+, `ffmpeg`, `node`, `curl`, and Chromium
+The six slots show an iPhone, a Galaxy S25+, the desktop app in a window on a MacBook Air, a Linux laptop and a Windows
+laptop (each as that system draws it), and a MacBook Air with the web app in a full-screen browser; the Linux and Windows
+laptops are "Modern Slim Laptop" by Mraz3D under CC BY 4.0, credited in the page footer, so keep that credit while the
+model is used. Regenerating them with `bash website/devices.sh` requires Blender 4.2+, `ffmpeg`, `node`, `curl`, and Chromium
 (`CHROMIUM_BIN`, with CJK system fonts such as PingFang SC or Noto Sans CJK SC installed for `-zh` OS chrome).
 
 ## Changing the copy

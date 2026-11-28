@@ -3,8 +3,9 @@
 # OS chrome (website/devices-chrome.mjs), downloads the device models, renders each device in Blender Cycles
 # (website/render-devices.py) at 3840x2880 and encodes 3840x2880 (2x) + 1280x960 (1x) WebPs into website/assets/shots/.
 #
-# Slots: duo = iPhone 18 Pro Max, android = Galaxy S25+, desk = the desktop app in a window on a Windows laptop,
-# web = the web app in a full-screen browser on a MacBook Air 15".
+# Slots: duo = iPhone 18 Pro Max, android = Galaxy S25+, then the desktop app in a window as each system draws it:
+# mac on a MacBook Air 15", linux on a light laptop, win on a graphite Windows laptop; web = the web app in a
+# full-screen browser on a MacBook Air 15".
 #
 # Usage:
 #   bash website/devices.sh
@@ -68,10 +69,23 @@ for loc_tag in "en:en" "zh:zh-CN"; do
     MBUI_FILM_PLATFORM="2" MBUI_NATIVE_INPUT="finger" \
     bash "$MBUI/scripts/media.sh" picture "$RAW/android-${tag}.png" "$WORK/drive" >/dev/null
 
+  # macOS: an inset window with 16pt corners (the window's buttons are AppKit's, added by devices-chrome.mjs)
+  env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-mac" MBUI_DARK="0" MBUI_LOCALE="$loc" \
+    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1280x800" MBUI_FILM_SCALE="2" \
+    MBUI_FILM_PLATFORM="0" MBUI_FILM_INSET="1" MBUI_FILM_WINDOW_CORNER="16" MBUI_NATIVE_INPUT="mouse" \
+    bash "$MBUI/scripts/media.sh" picture "$RAW/mac-${tag}.png" "$WORK/drive" >/dev/null
+
+  # Linux (GTK): an inset window with square corners; the app draws its own minimize/maximize/close
+  env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-linux" MBUI_DARK="0" MBUI_LOCALE="$loc" \
+    MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1520x980" MBUI_FILM_SCALE="2" \
+    MBUI_FILM_PLATFORM="5" MBUI_FILM_INSET="1" MBUI_FILM_WINDOW_CORNER="0" MBUI_NATIVE_INPUT="mouse" \
+    bash "$MBUI/scripts/media.sh" picture "$RAW/linux-${tag}.png" "$WORK/drive" >/dev/null
+
+  # Windows: an inset window with Windows 11's 8pt corners; the app draws its own minimize/maximize/close
   env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-web" MBUI_DARK="0" MBUI_LOCALE="$loc" \
     MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1520x980" MBUI_FILM_SCALE="2" \
     MBUI_FILM_PLATFORM="3" MBUI_FILM_INSET="1" MBUI_FILM_WINDOW_CORNER="8" MBUI_NATIVE_INPUT="mouse" \
-    bash "$MBUI/scripts/media.sh" picture "$RAW/desk-${tag}.png" "$WORK/drive" >/dev/null
+    bash "$MBUI/scripts/media.sh" picture "$RAW/win-${tag}.png" "$WORK/drive" >/dev/null
 
   env MBUI_MEDIA_RUNTIME="$RUNTIME" MBUI_FIXTURE="chat-site-android" MBUI_DARK="0" MBUI_LOCALE="$loc" \
     MBUI_FILM_ALLOW_CORNER_FAULTS="1" MBUI_WIN="1470x882" MBUI_FILM_SCALE="2" \
@@ -100,21 +114,23 @@ fetch "$CACHE/slim-laptop.glb" \
 fetch "$CACHE/studio_small_09_4k.exr" \
   "https://dl.polyhaven.org/file/ph-assets/HDRIs/exr/4k/studio_small_09_4k.exr"
 
-# 4. Render the 8 plates (3840x2880)
+# 4. Render the 12 plates (3840x2880)
 render() {
   "$BLENDER" -b -P "$ROOT/website/render-devices.py" -- --models "$CACHE" --size 3840x2880 --samples "$SAMPLES" "$@"
 }
 for lang in en zh; do
   render --device iphone --screen "$SCREENS/duo-$lang.png" --out "$RENDERS/duo-$lang.png" --fr 0.18 --k 1.4 --dist 51
   render --device android --screen "$SCREENS/android-$lang.png" --out "$RENDERS/android-$lang.png" --dist 51
-  render --device windows --screen "$SCREENS/desk-$lang.png" --out "$RENDERS/desk-$lang.png" --dist 90 --tz -3.5 --ty -2
+  render --device mac --screen "$SCREENS/mac-$lang.png" --out "$RENDERS/mac-$lang.png" --dist 92 --tz -3.5 --ty -2
+  render --device linux --screen "$SCREENS/linux-$lang.png" --out "$RENDERS/linux-$lang.png" --dist 90 --tz -3.5 --ty -2
+  render --device windows --screen "$SCREENS/win-$lang.png" --out "$RENDERS/win-$lang.png" --dist 90 --tz -3.5 --ty -2
   render --device mac --screen "$SCREENS/web-$lang.png" --out "$RENDERS/web-$lang.png" --dist 92 --tz -3.5 --ty -2
 done
 
 # 5. Encode 3840x2880 (4K), 1920x1440 and 1280x960 (1x) WebPs (Lanczos, so the browser never shrinks the 4K plate
 #    by 2-3x itself, which steps the edges) and record website/shots-sizes.txt
 rm -f "$SIZES_TXT"
-for dev in duo android desk web; do
+for dev in duo android mac linux win web; do
   for lang in en zh; do
     name="${dev}-${lang}"
     src="$RENDERS/${name}.png"

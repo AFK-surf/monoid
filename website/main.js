@@ -362,7 +362,7 @@
       on = i;
       cards.forEach((c, k) => c.toggleAttribute("data-on", k === i));
       // Only the card in view has its picture laid out at once (the first time, a frame after the section itself);
-      // its neighbours follow a moment later, so the four pictures never land in one frame (60-devices.css: [data-near]).
+      // its neighbours follow a moment later, so the pictures never land in one frame (60-devices.css: [data-near]).
       const first = !nearT;
       clearTimeout(nearT);
       const near = () => cards[on].setAttribute("data-near", "");
@@ -387,8 +387,8 @@
   // ---- Every device, as one scene played by scrolling (large screens with motion allowed: html.scrolly, set in the head) ----
   // The stage stays on screen with CSS (position: sticky in a tall track, sized from the first paint, so nothing moves
   // when the script arrives); GSAP's ScrollTrigger scrubs one timeline through it and snaps to each step. One device a
-  // step, upright and whole in the middle of the picture side: iPhone, Android, the desktop app on a Windows laptop, the
-  // web app on a Mac; between steps the words and the device cross-fade. GSAP is fetched only as the section comes near.
+  // step, upright and whole in the middle of the picture side: iPhone, Android, the desktop app on a Mac, a Linux laptop
+  // and a Windows laptop, the web app on a Mac; between steps the words and the device cross-fade. GSAP is fetched only as the section comes near.
   const loadScript = (src) => new Promise((ok, fail) => {
     const s = document.createElement("script");
     s.src = src; s.onload = ok; s.onerror = fail;
@@ -406,7 +406,7 @@
     gsap.set(devices.slice(1), { autoAlpha: 0, "--ty": "12px" });
 
     const tl = gsap.timeline({ defaults: { ease: "power2.out" } });
-    const names = ["open", "android", "desktop", "web"], labels = [];
+    const names = ["open", "android", "mac", "linux", "windows", "web"], labels = [];
     const stop = (name) => { tl.addLabel(name); labels.push(name); };
     stop(names[0]);
     for (let i = 1; i < names.length; i++) {
@@ -479,7 +479,7 @@
       if (started) return;
       started = true;
       // The scene, from its template, into its placeholder (which already has its height: nothing moves). Not before:
-      // its four devices would be styled and laid out in the frames after the first paint, screens before they show.
+      // its six devices would be styled and laid out in the frames after the first paint, screens before they show.
       $(".dv-show").append($("#dv-stage").content.cloneNode(true));
       loadScript("assets/vendor/gsap.min.js")
         .then(() => loadScript("assets/vendor/ScrollTrigger.min.js"))

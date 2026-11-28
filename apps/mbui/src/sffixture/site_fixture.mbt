@@ -2,6 +2,8 @@
 // - chat-site-duo: iPhone chat (Login page on phones)
 // - chat-site-android: Android phone chat (Login page on phones, virtual screen test)
 // - chat-site-web: Web browser chat (CSV export for orders, Markdown table + code)
+// - chat-site-mac: macOS app chat (Why API p99 got slow)
+// - chat-site-linux: Linux app chat (Home page first paint)
 // - settings-station-site: Desktop station overview (Willow / Mini / Laptop / Server)
 // Kept separate from test fixtures so existing snapshots and checks stay unchanged.
 
@@ -10,13 +12,19 @@ fn site_mode(mode : String) -> Bool {
   mode == "chat-site-duo" ||
   mode == "chat-site-android" ||
   mode == "chat-site-web" ||
+  mode == "chat-site-mac" ||
+  mode == "chat-site-linux" ||
   mode == "settings-station-site" ||
   mode == "place-stations-site"
 }
 
 ///|
 fn site_chat_mode(mode : String) -> Bool {
-  mode == "chat-site-duo" || mode == "chat-site-android" || mode == "chat-site-web"
+  mode == "chat-site-duo" ||
+  mode == "chat-site-android" ||
+  mode == "chat-site-web" ||
+  mode == "chat-site-mac" ||
+  mode == "chat-site-linux"
 }
 
 ///|
@@ -294,10 +302,127 @@ let site_and_md_zh : String =
   #|[["p",[[0,5],["code",{"content":[6,19]}],[20,24],["code",{"content":[25,29]}],[30,42],["code",{"content":[43,59]}],[60,79]]]]
 
 ///|
+/// A finished chat of plain messages (who said it: a person, else the agent; its words; when) with one idle agent,
+/// its last message the agent's all-done: the macOS slot's API p99 chat and the Linux slot's home page chat.
+fn site_done_chat(
+  id : Int,
+  title : String,
+  agent : (String, String, String, String),
+  people : Array[Json],
+  said : Array[(Bool, String, String)],
+) -> Json {
+  let en = @sf.language() == "en"
+  let (name, maker, maker_name, runtime) = agent
+  let key = "s-c\{id}"
+  let by = site_by_agent(name, maker, runtime, key)
+  let me = by_person(if en { "Lin Xiao" } else { "林晓" })
+  let messages : Array[Json] = []
+  for i, m in said {
+    let (person, words, when) = m
+    let more : Map[String, Json] = if person {
+      { "mine": true, "author": "lin@acme.dev" }
+    } else if i == said.length() - 1 {
+      { "ending": "all_done" }
+    } else {
+      Map([])
+    }
+    messages.push(
+      msg(i + 1, if person { "person" } else { "agent" }, if person { me } else { by }, words, when, more),
+    )
+  }
+  {
+    "archived": false,
+    "me": { "email": "lin@acme.dev" },
+    "thread": { "id": Json::number(id.to_double()), "unread": 0 },
+    "title": Json::string(title),
+    "people": Json::array(people),
+    "agents": [
+      {
+        "session": {
+          "key": Json::string(key),
+          "runtime": Json::string(runtime),
+          "maker": { "id": Json::string(maker), "name": Json::string(maker_name) },
+          "agentText": Json::string(name),
+          "statusText": Json::string(if en { "Idle" } else { "空闲" }),
+          "tone": "neutral",
+        },
+        "status": "idle",
+      },
+    ],
+    "messages": Json::array(messages),
+    "more": false,
+    "newer": false,
+    "outbox": [],
+    "offline": false,
+    "archivable": true,
+    "asks": [],
+    "askClear": true,
+  }
+}
+
+///|
 fn site_chat(mode : String) -> Json {
   let en = @sf.language() == "en"
   let lin = site_person("lin@acme.dev", if en { "Lin Xiao" } else { "林晓" }, true, en)
   let zhou = site_person("zhou@acme.dev", if en { "Zhou Ning" } else { "周宁" }, false, en)
+  if mode == "chat-site-mac" {
+    let ana = site_person("ana@acme.dev", "Ana", false, en)
+    return site_done_chat(
+      4,
+      if en { "Why API p99 got slow" } else { "排查 API p99 变慢" },
+      ("DeepSeek", "deepseek", "DeepSeek", "dsh"),
+      [lin, ana],
+      if en {
+        [
+          (true, "API p99 has been around 900 ms since yesterday afternoon. Can you find out why?", "3h ago"),
+          (false, "Compared the slow logs: GET /orders is 87% of slow requests, each a full scan of orders (12M rows).", "3h ago"),
+          (false, "It began with the 14:00 release: the new customer filter sorts by created_at with no user_id index.", "3h ago"),
+          (true, "Don't change the schema yet. Tell me how long an index would lock the table first.", "2h ago"),
+          (false, "Built concurrently, it doesn't block writes: 4 min 10 s on staging's 12M rows, p99 870 → 120 ms.", "2h ago"),
+          (false, "Done: added an index on orders (user_id, created_at) at 15:40. p99 has held at 140 ms, no full scans.", "2h ago"),
+        ]
+      } else {
+        [
+          (true, "API 的 p99 从昨天下午开始一直在 900ms 左右，帮忙查一下原因。", "3 小时前"),
+          (false, "对比了前后两天的慢查询日志：GET /orders 占了慢请求的 87%，每次都在全表扫描 orders（1200 万行）。", "3 小时前"),
+          (false, "时间点对得上昨天 14:00 的发布：订单列表加了按客户筛选，这条查询按 created_at 排序，却没有覆盖 user_id 的索引。", "3 小时前"),
+          (true, "先别改表结构，加索引前告诉我会锁表多久。", "2 小时前"),
+          (false, "用并发方式建索引，不会锁写入。在预发环境 1200 万行上建了 4 分 10 秒，p99 从 870ms 降到 120ms。", "2 小时前"),
+          (false, "做完了：15:40 已给 orders 补上 (user_id, created_at) 联合索引。之后一小时 p99 稳定在 140ms，慢查询日志里不再有全表扫描。", "2 小时前"),
+        ]
+      },
+    )
+  }
+  if mode == "chat-site-linux" {
+    let ana = site_person("ana@acme.dev", "Ana", false, en)
+    return site_done_chat(
+      7,
+      if en { "Home page first paint" } else { "首页首屏加载" },
+      ("Opus 5.5", "anthropic", "Anthropic", "claude"),
+      [lin, ana],
+      if en {
+        [
+          (true, "The home page takes over two seconds to show on a phone over 4G. What can we do?", "Yesterday"),
+          (false, "Ran Lighthouse five times on simulated 4G: median LCP 2.4 s. Two things hold it up: 380 KB of render-blocking CSS, and the chart library loading before first paint.", "Yesterday"),
+          (false, "Only 22 KB of that CSS styles what's above the fold. The charts are below it but load synchronously in the head.", "Yesterday"),
+          (true, "The charts can come in later, but the layout must not jump.", "Yesterday"),
+          (false, "Sure. The chart area keeps its final size as a placeholder and the chart replaces it in place, so nothing below moves.", "Yesterday"),
+          (true, "Check the dark theme too, Ana changed its colors last week.", "Yesterday"),
+          (false, "Done: inlined the critical CSS and deferred the rest and the charts. LCP 2.4 s → 1.1 s, CLS stays 0, light and dark both checked. Merged into main.", "Yesterday"),
+        ]
+      } else {
+        [
+          (true, "首页在手机 4G 下要等两秒多才出来，看看能怎么优化。", "昨天"),
+          (false, "在模拟 4G 下用 Lighthouse 跑了 5 次，LCP 中位数 2.4 秒。主要卡在两处：380 KB 的 CSS 阻塞渲染，图表库在首屏前就同步加载。", "昨天"),
+          (false, "这 380 KB 里首屏真正用到的只有 22 KB；图表在首屏以下，却放在 head 里同步加载。", "昨天"),
+          (true, "图表可以晚点出来，但首屏布局不能跳。", "昨天"),
+          (false, "好的，图表区域先按最终尺寸占位，加载完原地替换，下面的内容不会被挤动。", "昨天"),
+          (true, "深色主题也看一下，Ana 上周刚改过配色。", "昨天"),
+          (false, "做完了：关键 CSS 内联，其余 CSS 和图表延后加载，LCP 从 2.4 秒降到 1.1 秒，CLS 保持 0，浅色和深色都核对过，已合进 main。", "昨天"),
+        ]
+      },
+    )
+  }
   if mode == "chat-site-web" {
     let codex = site_by_agent("Codex", "openai", "codex", "s-c2")
     let answer = if en { site_web_answer_en } else { site_web_answer_zh }

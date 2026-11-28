@@ -338,9 +338,27 @@ pub fn open_fixture_mode(mode : String) -> Unit {
     title: "整理发布清单",
     station_name: "Willow",
   }
-  if mode == "chat-site-duo" || mode == "chat-site-android" || mode == "chat-site-web" {
+  if mode == "chat-site-duo" ||
+    mode == "chat-site-android" ||
+    mode == "chat-site-web" ||
+    mode == "chat-site-mac" ||
+    mode == "chat-site-linux" {
     let en = @sf.language() == "en"
-    let site_ref : ChatRef = if mode == "chat-site-web" {
+    let site_ref : ChatRef = if mode == "chat-site-mac" {
+      {
+        station: "ws1/st1",
+        session: "s-c4",
+        title: if en { "Why API p99 got slow" } else { "排查 API p99 变慢" },
+        station_name: "Willow",
+      }
+    } else if mode == "chat-site-linux" {
+      {
+        station: "ws1/st1",
+        session: "s-c7",
+        title: if en { "Home page first paint" } else { "首页首屏加载" },
+        station_name: "Willow",
+      }
+    } else if mode == "chat-site-web" {
       {
         station: "ws1/st1",
         session: "s-c2",

@@ -1,6 +1,6 @@
 """Dark-studio renders of the #devices shots: a real device model with an apps/mbui screen on it.
 
-  blender -b -P website/render-devices.py -- --models DIR --device iphone|android|mac|windows \
+  blender -b -P website/render-devices.py -- --models DIR --device iphone|android|mac|linux|windows \
       --screen screen.png --out out.png [--size 3840x2880] [--samples 256]
 
 Models (website/devices.sh downloads them into --models): Apple's iPhone 18 Pro and MacBook Air 15" AR models
@@ -493,7 +493,8 @@ def windows():
             co = me.vertices[me.loops[li].vertex_index].co
             uv[li].uv = ((co.x - x0) / (x1 - x0), (co.z - z0) / (z1 - z0))
     scr.data.materials.clear(); scr.data.materials.append(screen_material(SCREEN))
-    body = arg("--body", "dark")
+    # the Windows laptop is graphite; the Linux one keeps the model's own light finish, so the two never look alike
+    body = arg("--body", "light" if DEVICE == "linux" else "dark")
     for o in objs:
         if o.type != "MESH":
             continue
@@ -521,4 +522,4 @@ def windows():
     render()
 
 
-{"iphone": iphone, "android": android, "mac": mac, "windows": windows}[DEVICE]()
+{"iphone": iphone, "android": android, "mac": mac, "windows": windows, "linux": windows}[DEVICE]()

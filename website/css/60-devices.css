@@ -101,7 +101,7 @@
 @media (min-width: 1024px) and (min-height: 760px) {
   .scrolly .dv-swipe { display: none; }
   .scrolly #devices { content-visibility: visible; }
-  .scrolly .dv-show { display: block; height: 400vh; }
+  .scrolly .dv-show { display: block; height: 600vh; }
 }
 /* The words on the paper at the left (7U, never under 340 px), level with the section's headline; the devices on a
    framed studio stage taking the rest and the full height.

@@ -2,7 +2,9 @@
 // Composite 3x native OS chrome onto pure apps/mbui 3x captures before mapping onto official 3D CAD meshes:
 //   - duo:     Apple iPhone 18 Pro Max (1170x2544 @3x = 390x848; Apple USDZ provides real 3D Dynamic Island)
 //   - android: Samsung Galaxy S25+ (1170x2532 @3x = 390x844; status bar + gesture pill, pure apps/mbui)
-//   - desk:    the desktop app in a window on a Windows 11 laptop, 3:2 (3840x2560 @2x = 1920x1280; desktop + taskbar)
+//   - mac:     the desktop app in a window on a MacBook Air 15" (2940x1908 @2x = 1470x954; menu bar + Dock)
+//   - linux:   the desktop app in a window on a GNOME laptop, 3:2 (3840x2560 @2x = 1920x1280; top bar + dock)
+//   - win:     the desktop app in a window on a Windows 11 laptop, 3:2 (3840x2560 @2x = 1920x1280; desktop + taskbar)
 //   - web:     the web app in a full-screen browser on a MacBook Air 15" (2940x1908 @2x = 1470x954; notch band + bar)
 // Usage: node website/devices-chrome.mjs <raw-screens-dir> <out-screens-dir> [keys...]
 import { execFile } from "node:child_process";
@@ -19,7 +21,7 @@ if (!rawDir || !outDir) {
 }
 mkdirSync(outDir, { recursive: true });
 
-const ALL_KEYS = ["duo-en", "duo-zh", "android-en", "android-zh", "desk-en", "desk-zh", "web-en", "web-zh"];
+const ALL_KEYS = ["duo", "android", "mac", "linux", "win", "web"].flatMap((d) => [`${d}-en`, `${d}-zh`]);
 const CHROMIUM = process.env.CHROMIUM_BIN || "chromium";
 
 function phoneStatusIcons(scale = 1) {
@@ -81,11 +83,98 @@ function makeHtml(key) {
     };
   }
 
+  // The app's icon (assets/mark.svg) at a size, for a dock or a taskbar.
+  const markAt = (px) => readFileSync(path.join(path.dirname(new URL(import.meta.url).pathname), "assets/mark.svg"), "utf8")
+    .replace(/<title>.*?<\/title>/, "").replace('width="32" height="32"', `width="${px}" height="${px}"`);
+  // Plain icons for the other apps in a dock (a folder, a browser, a terminal, settings): no other maker's art.
+  const tile = (px, bg, inner) => `<div style="width:${px}px;height:${px}px;border-radius:${px * 0.225}px;background:${bg};display:flex;align-items:center;justify-content:center;box-shadow:0 1px 2px rgba(0,0,0,.25);">${inner}</div>`;
+  const dockApps = (px) => [
+    tile(px, "linear-gradient(#5AB8F7,#2B7CE0)", `<svg width="${px * 0.6}" height="${px * 0.6}" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z" fill="#fff" fill-opacity=".92"/></svg>`),
+    tile(px, "linear-gradient(#FFFFFF,#E4E6EA)", `<svg width="${px * 0.66}" height="${px * 0.66}" viewBox="0 0 24 24" fill="none" stroke="#2F7DE1" stroke-width="1.6"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3Z"/></svg>`),
+    tile(px, "linear-gradient(#3A3B3F,#1E1F22)", `<svg width="${px * 0.56}" height="${px * 0.56}" viewBox="0 0 24 24" fill="none" stroke="#E8E8EA" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8l4 4-4 4M12 17h7"/></svg>`),
+    tile(px, "linear-gradient(#B9BDC4,#7D838C)", `<svg width="${px * 0.62}" height="${px * 0.62}" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v3M12 18.2v3M2.8 12h3M18.2 12h3M5.5 5.5l2.1 2.1M16.4 16.4l2.1 2.1M5.5 18.5l2.1-2.1M16.4 7.6l2.1-2.1"/></svg>`),
+  ];
+
+  if (dev === "mac") {
+    // The desktop app in a window on a MacBook Air 15" (1470x954 @2x = 2940x1908): the 1280x800 apps/mbui capture 1:1,
+    // filmed as macOS with an inset window (the app leaves the top left of its top row to the window's buttons, which
+    // AppKit puts 16 in from the left, centred on the first 44: mac_app.m), its 16pt corners and the shadow macOS gives
+    // a window, over the wallpaper, the menu bar (the notch sits in its middle) and the Dock with the app running.
+    const menus = isZh ? ["文件", "编辑", "显示", "窗口", "帮助"] : ["File", "Edit", "View", "Window", "Help"];
+    const clock = isZh ? "11月28日 周六 9:41" : "Sat Nov 28  9:41 AM";
+    const light = (c, x) => `<span style="position:absolute;left:${x}px;top:16px;width:12px;height:12px;border-radius:6px;background:${c};box-shadow:inset 0 0 0 .5px rgba(0,0,0,.18);"></span>`;
+    return {
+      w: 1470, h: 954, dpr: 2,
+      html: `<!doctype html><html><body style="margin:0;width:1470px;height:954px;overflow:hidden;position:relative;font-family:${font};background:#141826;">
+      <div style="position:absolute;inset:0;background:
+        radial-gradient(ellipse 70% 60% at 22% 85%, rgba(232,120,90,0.55) 0%, rgba(120,50,90,0) 70%),
+        radial-gradient(ellipse 65% 55% at 78% 30%, rgba(90,110,230,0.60) 0%, rgba(40,40,120,0) 70%),
+        radial-gradient(ellipse 50% 45% at 50% 60%, rgba(160,80,200,0.40) 0%, rgba(60,30,90,0) 70%),
+        linear-gradient(170deg,#1b2140 0%,#2a1f45 50%,#12142a 100%);"></div>
+      <div style="position:absolute;left:0;right:0;top:0;height:37px;background:rgba(20,20,30,0.28);backdrop-filter:blur(30px);display:flex;align-items:center;padding:0 14px;box-sizing:border-box;color:#fff;font-size:13.5px;">
+        <svg width="15" height="17" viewBox="0 0 24 24" style="margin:0 18px 2px 6px;"><use href="#apple"/></svg>
+        <b style="margin-right:20px;font-weight:700;">monoid</b>
+        ${menus.map((m) => `<span style="margin-right:20px;">${m}</span>`).join("")}
+        <div style="margin-left:auto;display:flex;align-items:center;gap:16px;">
+          <svg width="17" height="13" viewBox="0 0 16 12" fill="none"><path d="M8 11.2a1.1 1.1 0 1 0 0-2.2 1.1 1.1 0 0 0 0 2.2ZM4.6 7.4a4.8 4.8 0 0 1 6.8 0M2 4.8a8.5 8.5 0 0 1 12 0" stroke="#fff" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <svg width="26" height="12" viewBox="0 0 26 12" fill="none"><rect x=".75" y=".75" width="21.5" height="10.5" rx="3" stroke="#fff" stroke-opacity=".55" stroke-width="1.2"/><rect x="2.6" y="2.6" width="15" height="6.8" rx="1.6" fill="#fff"/><path d="M24 4.2v3.6" stroke="#fff" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="#fff" stroke-width="1.4"><rect x="1" y="1" width="14" height="5" rx="2.5"/><rect x="1" y="8" width="14" height="5" rx="2.5"/><circle cx="4.5" cy="3.5" r="1.2" fill="#fff"/><circle cx="11.5" cy="10.5" r="1.2" fill="#fff"/></svg>
+          <span style="font-variant-numeric:tabular-nums;">${clock}</span>
+        </div>
+      </div>
+      <svg width="0" height="0" style="position:absolute"><symbol id="apple" viewBox="0 0 24 24"><path fill="#fff" d="M16.4 12.6c0-2.4 2-3.5 2-3.6-1.1-1.6-2.8-1.8-3.4-1.8-1.4-.1-2.8.9-3.5.9s-1.9-.9-3.1-.8C6.8 7.3 5.3 8.2 4.5 9.6c-1.7 2.9-.4 7.2 1.2 9.6.8 1.2 1.8 2.5 3 2.4 1.2 0 1.7-.8 3.1-.8s1.9.8 3.1.8c1.3 0 2.1-1.2 2.9-2.4.9-1.3 1.3-2.6 1.3-2.7 0 0-2.7-1-2.7-3.9ZM14.1 5.5c.6-.8 1.1-1.9 1-3-.9 0-2.1.6-2.7 1.4-.6.7-1.1 1.8-1 2.9 1 .1 2.1-.5 2.7-1.3Z"/></symbol></svg>
+      <div style="position:absolute;left:95px;top:58px;width:1280px;height:800px;border-radius:16px;box-shadow:0 0 0 .5px rgba(0,0,0,.45),0 0 0 1px rgba(255,255,255,.08) inset,0 28px 70px rgba(0,0,0,.55),0 10px 24px rgba(0,0,0,.3);overflow:hidden;">
+        <img src="${imgUrl}" style="display:block;width:1280px;height:800px;">
+        ${light("#FF5F57", 16)}${light("#FEBC2E", 36)}${light("#28C840", 56)}
+      </div>
+      <div style="position:absolute;left:50%;bottom:5px;transform:translateX(-50%);height:66px;padding:0 9px;border-radius:20px;background:rgba(255,255,255,0.20);backdrop-filter:blur(30px);box-shadow:0 0 0 .5px rgba(255,255,255,.28) inset,0 0 0 .5px rgba(0,0,0,.3);display:flex;align-items:center;gap:8px;">
+        ${dockApps(50).join("")}
+        <div style="position:relative;width:50px;height:50px;border-radius:11.25px;box-shadow:0 0 0 1px rgba(255,255,255,.16),0 1px 2px rgba(0,0,0,.25);">${markAt(50)}<span style="position:absolute;left:50%;bottom:-6px;width:4px;height:4px;margin-left:-2px;border-radius:2px;background:rgba(255,255,255,.85);"></span></div>
+      </div>
+    </body></html>`
+    };
+  }
+
+  if (dev === "linux") {
+    // The desktop app in a window on a GNOME laptop's desktop (3:2, 1920x1280 @2x = 3840x2560): the 1520x980
+    // apps/mbui capture 1:1, filmed as Linux with an inset window (GTK's title bar hidden, the app draws its own
+    // minimize/maximize/close: linux_app.c, corner_of.mbt) and square corners (mb_host_window_corner 0), with a GTK
+    // shadow, over the wallpaper, the top bar and a dock on the left with the app running.
+    const clock = isZh ? "11月28日 09:41" : "Nov 28  09:41";
+    return {
+      w: 1920, h: 1280, dpr: 2,
+      html: `<!doctype html><html><body style="margin:0;width:1920px;height:1280px;overflow:hidden;position:relative;font-family:'Cantarell','Noto Sans','Noto Sans CJK SC',${font};background:#101418;">
+      <div style="position:absolute;inset:0;background:
+        radial-gradient(ellipse 60% 55% at 70% 70%, rgba(40,170,150,0.50) 0%, rgba(20,80,90,0) 70%),
+        radial-gradient(ellipse 55% 50% at 25% 25%, rgba(70,90,200,0.45) 0%, rgba(30,40,110,0) 70%),
+        radial-gradient(ellipse 45% 40% at 85% 15%, rgba(220,120,80,0.30) 0%, rgba(90,40,30,0) 70%),
+        linear-gradient(160deg,#141a2a 0%,#13263a 50%,#0c1418 100%);"></div>
+      <div style="position:absolute;left:0;right:0;top:0;height:32px;background:#0a0a0b;color:#f2f2f2;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;">
+        <div style="position:absolute;left:14px;display:flex;align-items:center;gap:5px;">
+          <span style="width:30px;height:8px;border-radius:4px;background:#f2f2f2;"></span><span style="width:8px;height:8px;border-radius:4px;background:rgba(242,242,242,.45);"></span><span style="width:8px;height:8px;border-radius:4px;background:rgba(242,242,242,.45);"></span>
+        </div>
+        <span style="font-variant-numeric:tabular-nums;">${clock}</span>
+        <div style="position:absolute;right:12px;display:flex;align-items:center;gap:12px;padding:0 4px;">
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="#f2f2f2"><path d="M8 13.5 1 5.6a10.6 10.6 0 0 1 14 0L8 13.5Z"/></svg>
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 6h2.6L8 3v10L4.6 10H2V6Z" fill="#f2f2f2"/><path d="M10.6 5.2a4 4 0 0 1 0 5.6M12.4 3.4a6.5 6.5 0 0 1 0 9.2" stroke="#f2f2f2" stroke-width="1.3" stroke-linecap="round"/></svg>
+          <svg width="18" height="16" viewBox="0 0 18 16" fill="none"><rect x="1" y="4" width="14" height="8" rx="1.6" stroke="#f2f2f2" stroke-width="1.2"/><rect x="2.8" y="5.8" width="9" height="4.4" rx=".6" fill="#f2f2f2"/><path d="M16.5 6.5v3" stroke="#f2f2f2" stroke-width="1.4" stroke-linecap="round"/></svg>
+        </div>
+      </div>
+      <div style="position:absolute;left:0;top:32px;bottom:0;width:72px;background:rgba(20,20,22,0.78);display:flex;flex-direction:column;align-items:center;gap:12px;padding-top:14px;box-sizing:border-box;">
+        ${dockApps(46).join("")}
+        <div style="position:relative;width:46px;height:46px;border-radius:10.35px;box-shadow:0 0 0 1px rgba(255,255,255,.16),0 1px 2px rgba(0,0,0,.25);">${markAt(46)}<span style="position:absolute;left:-12px;top:50%;width:4px;height:4px;margin-top:-2px;border-radius:2px;background:#f2f2f2;"></span></div>
+        <div style="margin-top:auto;margin-bottom:16px;display:grid;grid-template-columns:repeat(3,6px);gap:5px;">${'<span style="width:6px;height:6px;border-radius:1.5px;background:#e6e6e6;"></span>'.repeat(9)}</div>
+      </div>
+      <img src="${imgUrl}" style="position:absolute;left:236px;top:166px;width:1520px;height:980px;box-shadow:0 0 0 1px rgba(0,0,0,0.35),0 14px 42px rgba(0,0,0,0.5),0 4px 12px rgba(0,0,0,0.3);">
+    </body></html>`
+    };
+  }
+
   const searchLabel = isZh ? "搜索" : "Search";
   const timeStr = "09:41";
   const dateStr = isZh ? "2026/11/28" : "11/28/2026";
 
-  if (dev === "desk") {
+  if (dev === "win") {
     // The desktop app in a window on a Windows 11 laptop's desktop (3:2, 1920x1280 @2x = 3840x2560): the 1520x980
     // apps/mbui capture 1:1, filmed as Windows with an inset window (the app draws its own minimize/maximize/close in
     // its top row, as the Windows app does), with the corners and shadow Windows 11 gives a window, over the
