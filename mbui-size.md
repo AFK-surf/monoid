@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [eb8640e16](https://github.com/AFK-surf/monoid/commit/eb8640e1621fb1bf208ce0da5bea70ed05b8bc9f) feat(station): wire Wave 17C-3A ReadOps, CRDT reco | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.86 | 134.86 |
 | [439eb89e1](https://github.com/AFK-surf/monoid/commit/439eb89e193662fcccc755821cc07dff97273fef) feat(station-pion): wire Wave 17C-3B admin setting | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.86 | 134.86 |
 | [9c220ed9b](https://github.com/AFK-surf/monoid/commit/9c220ed9b2b5fb4b3120d15b67fdbd95a221dc6f) refactor(ui): name kit and controls keys and types | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.86 | 134.86 |
 | [365cbebe5](https://github.com/AFK-surf/monoid/commit/365cbebe507252b8cafce8b2579221bb8e9332fe) perf(ui): cache iOS 27 prominent-tab overflow chec | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.6 | 128.41 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a93db9c1d](https://github.com/AFK-surf/monoid/commit/a93db9c1d22daed4cc35a4f90254216426dd4e5f) feat(ui): add View::covered_box, SleepScope.frozen | 2.71 | 3.68 | 15.26 | 38.39 | 59.13 | 33.63 | 68.73 | 103.7 | 128.94 |
 | [b504fd14e](https://github.com/AFK-surf/monoid/commit/b504fd14ef3e5f49e3ebd883363b7946a0641e93) feat(mbui): pick a preset's stations in the statio | 2.72 | 3.68 | 15.26 | 38.39 | 59.12 | 33.64 | 68.73 | 103.5 | 141.68 |
 | [bbd8d2fc0](https://github.com/AFK-surf/monoid/commit/bbd8d2fc064414d898ae25517f296fdcbcf3a5c2) feat(mbui): align Profiles quota share picture wit | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.63 | 68.71 | 103.48 | 113.86 |
-| [835f3aec8](https://github.com/AFK-surf/monoid/commit/835f3aec8d4510ceadc415b02a745a65247b977d) fix(cloud): drain queued frames and skip duplicate | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.63 | 68.71 | 103.48 | 113.86 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [eb8640e16](https://github.com/AFK-surf/monoid/commit/eb8640e1621fb1bf208ce0da5bea70ed05b8bc9f) feat(station): wire Wave 17C-3A ReadOps, CRDT reco | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.84 |
 | [439eb89e1](https://github.com/AFK-surf/monoid/commit/439eb89e193662fcccc755821cc07dff97273fef) feat(station-pion): wire Wave 17C-3B admin setting | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.85 |
 | [9c220ed9b](https://github.com/AFK-surf/monoid/commit/9c220ed9b2b5fb4b3120d15b67fdbd95a221dc6f) refactor(ui): name kit and controls keys and types | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.69 |
 | [365cbebe5](https://github.com/AFK-surf/monoid/commit/365cbebe507252b8cafce8b2579221bb8e9332fe) perf(ui): cache iOS 27 prominent-tab overflow chec | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.9 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a93db9c1d](https://github.com/AFK-surf/monoid/commit/a93db9c1d22daed4cc35a4f90254216426dd4e5f) feat(ui): add View::covered_box, SleepScope.frozen | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.57 |
 | [b504fd14e](https://github.com/AFK-surf/monoid/commit/b504fd14ef3e5f49e3ebd883363b7946a0641e93) feat(mbui): pick a preset's stations in the statio | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.62 |
 | [bbd8d2fc0](https://github.com/AFK-surf/monoid/commit/bbd8d2fc064414d898ae25517f296fdcbcf3a5c2) feat(mbui): align Profiles quota share picture wit | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.74 |
-| [835f3aec8](https://github.com/AFK-surf/monoid/commit/835f3aec8d4510ceadc415b02a745a65247b977d) fix(cloud): drain queued frames and skip duplicate | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.43 |
