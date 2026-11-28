@@ -1864,6 +1864,7 @@ struct WholeRuntimeState {
   adopted_runners : Map[Int, AdoptedRunnerConn]
   adopted_runner_by_sock : Map[Int64, Int]
   live_runners : LiveRunnerManager
+  secret_runs : SecretRunManager
   mut next_runner_conn_id : Int
   mut carried_handover_failed : Option[String]
   mut mcp_announced : Bool
@@ -5920,6 +5921,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     if st.live_runners.handle_role_done(ctx, st.core, tok, d, host_shim::now_ms(), host_shim::wall_ms()) {
       return
     }
+    if st.secret_runs.handle_role_done(st.mcp_srv, st.mcp_cb, ctx.mux_role, tok, d, host_shim::now_ms(), host_shim::wall_ms()) {
+      return
+    }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
         // Wave 17D-2 R6: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
@@ -7255,6 +7259,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
+      let secret_runs = SecretRunManager::new(ctx.data, ctx.sep)
+      secret_runs.attach_store(core.store)
+      let mcp_cb_cell : Array[Option[station_http::ServerCallbacks]] = [None]
       let mcp_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
         if req.method == "GET" && req.path == "/healthz" {
           return station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok"))
@@ -7471,7 +7478,17 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               None => ()
             }
           }
-          let mresp = core.handle_mcp_http(
+          // Unified `/mcp` gate (Wave 17E-1 R2): EVERY request (including `secret_run` and
+          // `station_tool` forwarding `secret_run`) goes through `WholeCore::handle_mcp_http_or_defer`
+          // -> `McpServer::handle_or_defer`, guaranteeing identical HTTP method/path,
+          // `check_local_origin`, Bearer auth, notification 202 (no `id` -> no exec, no grant spend),
+          // `bump_heard`, `station_tool` unwrap, schema coercion, and `outward` `UNBOUND_REFUSAL`!
+          let this_station_name = match base_codec::json_get(ctx.cfg_raw, "name") {
+            Some(base_codec::Json::Str(s)) => s.trim()
+            _ => ""
+          }
+          let mut mresp_opt : Option[station_whole::McpHttpResponse] = None
+          match core.handle_mcp_http_or_defer(
             req.method,
             req.path,
             host_hdr,
@@ -7479,7 +7496,108 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             auth_hdr,
             req_body,
             host_shim::wall_ms(),
-          )
+            ["secret_run"],
+            station_name=this_station_name,
+          ) {
+            station_whole::McpHttpOrDefer::DeferredCall(sr_sess, _sr_tool, sr_args, sr_rpc_id, ended_meta) => {
+              let now_m = host_shim::now_ms()
+              let wall_m = host_shim::wall_ms()
+              match station_whole::prepare_secret_run(
+                core.store,
+                sr_sess,
+                core.config.home_workspace,
+                core.config.station_id,
+                sr_args,
+                wall_m,
+                this_station_name=this_station_name,
+              ) {
+                Ok(prep) => {
+                  match secret_runs.start_run(ctx.mux_role, req.conn_id, sr_rpc_id, ended_meta, prep, now_m, wall_m) {
+                    Ok(_) => return station_http::HandlerAction::Defer
+                    Err(e) => {
+                      let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true, ended_meta=ended_meta)
+                      return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
+                    }
+                  }
+                }
+                Err(e) => {
+                  let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true, ended_meta=ended_meta)
+                  return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
+                }
+              }
+            }
+            station_whole::McpHttpOrDefer::Immediate(r) => mresp_opt = Some(r)
+          }
+          let mresp = match mresp_opt {
+            Some(r) => r
+            None => return station_http::HandlerAction::Respond(station_http::HttpResponse::json(500, "{\"error\":\"missing mcp response\"}"))
+          }
+          // Drain outbound Vault approval cards queued on non-`chat` surfaces (Slack/Feishu/Comma/Group)
+          // ONLY when the MCP call succeeded (HTTP 200 and not `isError`), using the exact committed target!
+          if core.store.pending_vault_connect_posts.length() > 0 {
+            let vposts : Array[station_whole::PendingVaultConnectPost] = []
+            for vi in 0..<core.store.pending_vault_connect_posts.length() {
+              vposts.push(core.store.pending_vault_connect_posts[vi])
+            }
+            core.store.pending_vault_connect_posts.clear()
+            let mcp_ok = mresp.status == 200 && match base_codec::json_parse(mresp.body) {
+              base_codec::JsonParseResult::Ok(rj) => match base_codec::json_get(rj, "result") {
+                Some(res_obj) => match base_codec::json_get(res_obj, "isError") {
+                  Some(base_codec::Json::Bool(true)) => false
+                  _ => true
+                }
+                None => false
+              }
+              _ => false
+            }
+            if mcp_ok {
+              for vi in 0..<vposts.length() {
+                let vp = vposts[vi]
+                let cid = vp.connect_id
+                if cid.length() > 0 {
+                  if connects.has_connect(cid) {
+                    let tref = station_connects::ThreadRef::new(vp.channel, vp.thread_ts, reply_to=None)
+                    let pkey = vp.thread_id.to_string() + ":" + vp.n_seq.to_string()
+                    match connects.send_message(cid, tref, vp.text, post_key=pkey, card=vp.card) {
+                      Ok(_) => ()
+                      Err(err_msg) => ctx.log("[vault.connect] post for " + vp.req_id + " via " + cid + " failed: " + err_msg)
+                    }
+                  } else {
+                    match remote_connects.get(cid) {
+                      Some(rec) => {
+                        let at_idx = station_connects::str_index_of(cid, "@", 0)
+                        let raw_id = if at_idx > 0 { station_connects::str_slice(cid, 0, at_idx) } else { cid }
+                        let raw_origin = if at_idx > 0 { station_connects::str_slice(cid, at_idx + 1, cid.to_bytes().length()) } else { rec.station }
+                        let ws_for = if vp.ws.length() > 0 { vp.ws } else { core.config.home_workspace }
+                        let call_req = build_connect_call_post_request(
+                          ws_for,
+                          raw_id,
+                          raw_origin,
+                          vp.channel,
+                          vp.thread_ts,
+                          None,
+                          vp.text,
+                          vp.card,
+                        )
+                        ctx.ask_peer_rpc(
+                          rec.station,
+                          ws_for,
+                          call_req,
+                          fn(res : Result[base_codec::Json, String]) -> Unit {
+                            match res {
+                              Ok(_) => ()
+                              Err(err_msg) => ctx.log("[vault.connect.call] remote post for " + vp.req_id + " to " + rec.station + " failed: " + err_msg)
+                            }
+                          },
+                        )
+                      }
+                      None => ctx.log("[vault.connect] unknown connect " + cid + " for request " + vp.req_id)
+                    }
+                  }
+                }
+              }
+            }
+          }
           // Forward successful `chat_post` (including card-only posts with empty/omitted text!)
           // to local external connects or via `connect.call` peer RPC to the origin station,
           // and apply `#9052` Feishu status-card gating on `chat_post` / `chat_state`.
@@ -7676,6 +7794,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
       let live_runners = LiveRunnerManager::new()
       live_runners_cell[0] = Some(live_runners)
+      mcp_cb_cell[0] = Some(mcp_cb)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
       let dsb = wire_whole_core_runtime_hooks(ctx, core, devices, logins, browser, seen_members)
@@ -7710,6 +7829,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         adopted_runners: Map::new(),
         adopted_runner_by_sock: Map::new(),
         live_runners: live_runners,
+        secret_runs: secret_runs,
         next_runner_conn_id: 1,
         carried_handover_failed: None,
         mcp_announced: false,
@@ -9077,6 +9197,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.live_runners.handle_sys_event(ctx, st.core, ev_id, sev, now_sys, host_shim::wall_ms()) {
             return
           }
+          if st.secret_runs.handle_sys_event(st.mcp_srv, st.mcp_cb, ctx.mux_role, ev_id, sev, host_shim::wall_ms()) {
+            return
+          }
           let _ = st.core.agents.jobs.handle_sys_event(ev_id, sev, host_shim::wall_ms())
         }
         None => ()
@@ -9167,6 +9290,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           st.live_runners.tick(ctx, st.core, now, wall)
           st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), now, wall)
+          st.secret_runs.tick(st.mcp_srv, st.mcp_cb, ctx.mux_role, now, wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)
@@ -9489,6 +9613,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     on_shutdown: fn(ctx : DaemonCtx) -> Unit {
       match state_opt {
         Some(st) => {
+          st.secret_runs.shutdown(ctx.mux_role)
           let as_keys = st.admin_streams.keys()
           for ai in 0..<as_keys.length() {
             let sid = as_keys[ai]

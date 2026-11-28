@@ -1284,8 +1284,8 @@ pub let MDNS_SCAN_MIN_TIMEOUT_MS : Int64 = 300L
 pub let MDNS_SCAN_MAX_TIMEOUT_MS : Int64 = 10000L
 /// Retention TTL for unclaimed completed mDNS scan results before `tick_expiry_with` evicts them.
 pub let MDNS_RESULT_TTL_MS : Int64 = 60000L
-/// Disjoint event_id base (`8 << 32`, clear of `whole_daemon`'s `1<<32..7<<32`).
-pub let MDNS_EVENT_ID_BASE : Int64 = 34359738368L
+/// Disjoint event_id base (`10 << 32`, clear of `whole_daemon`'s `1<<32..9<<32` & `secret_run`'s `11<<32`).
+pub let MDNS_EVENT_ID_BASE : Int64 = 42949672960L
 pub let MDNS_BIND_ADDR : String = "0.0.0.0"
 
 struct ActiveMdnsScan {

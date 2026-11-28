@@ -697,3 +697,105 @@ test "w17d3 R5: feedback signed_post_headers matches independent Cloud Ed25519 +
     panic("independent Ed25519 verification of feedback signature failed")
   }
 }
+
+test "w17e1 R3: all 11 daemon event_id segments (production constants) are pairwise disjoint & env filter preserves approved overrides" {
+  let step : Int64 = 4294967296L // 1 << 32
+  let bases : Array[(String, Int64)] = [
+    ("jobs", 4294967296L),
+    ("browser", 8589934592L),
+    ("terminals", 12884901888L),
+    ("logins", 17179869184L),
+    ("adb", 21474836480L),
+    ("restore", 25769803776L),
+    ("dns", 30064771072L),
+    ("live_runner", LIVE_RUNNER_EV_BASE),
+    ("upkeep", UPKEEP_EVENT_ID_BASE),
+    ("mdns", station_whole::MDNS_EVENT_ID_BASE),
+    ("secret_run", SECRET_RUN_EVENT_BASE),
+  ]
+  if SECRET_RUN_EVENT_BASE == UPKEEP_EVENT_ID_BASE {
+    panic("SECRET_RUN_EVENT_BASE must NOT collide with UPKEEP_EVENT_ID_BASE")
+  }
+  if station_whole::MDNS_EVENT_ID_BASE == LIVE_RUNNER_EV_BASE {
+    panic("MDNS_EVENT_ID_BASE must NOT collide with LIVE_RUNNER_EV_BASE")
+  }
+  if SECRET_RUN_EVENT_END != SECRET_RUN_EVENT_BASE + step {
+    panic("SECRET_RUN_EVENT_END must equal SECRET_RUN_EVENT_BASE + (1 << 32)")
+  }
+  for i in 0..<bases.length() {
+    for j in (i + 1)..<bases.length() {
+      let a = bases[i].1
+      let b = bases[j].1
+      if a == b || (a >= b && a < b + step) || (b >= a && b < a + step) {
+        panic("event_id segment collision between " + bases[i].0 + " and " + bases[j].0)
+      }
+    }
+  }
+  // Verify Node `incoming.ts:28-30` sensitive env prefix filter strips inherited keys
+  // while explicitly approved grant overrides (e.g. `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`) ARE delivered!
+  let base_env = [
+    "PATH=/usr/bin",
+    "STILLFAIL_TOKEN=station-secret",
+    "OPENAI_API_KEY=inherited-station-openai",
+    "ANTHROPIC_API_KEY=inherited-station-anthropic",
+    "CLAUDE_CODE_OAUTH=inherited-claude",
+    "CODEX_HOME=/tmp/codex",
+  ]
+  let child_env = build_child_env_from(base_env, [("OPENAI_API_KEY", "sk-approved-123"), ("STILLFAIL_SECRET", "sk-approved-123")])
+  let mut has_path = false
+  let mut has_approved_openai = false
+  for i in 0..<child_env.length() {
+    let e = child_env[i]
+    if e == "PATH=/usr/bin" { has_path = true }
+    if e == "OPENAI_API_KEY=sk-approved-123" { has_approved_openai = true }
+    if e.starts_with("STILLFAIL_TOKEN=") || e.starts_with("ANTHROPIC_API_KEY=") || e.starts_with("CLAUDE_") || e.starts_with("CODEX_") {
+      panic("inherited sensitive env leaked into child: " + e)
+    }
+    if e == "OPENAI_API_KEY=inherited-station-openai" {
+      panic("inherited OPENAI_API_KEY leaked instead of approved override")
+    }
+  }
+  if !has_path || !has_approved_openai {
+    panic("expected PATH and approved OPENAI_API_KEY override in child env")
+  }
+}
+
+test "w17e1 R4: secret_run NEVER attaches claude/endTurn: true on success, error, or timeout & ssh close scrubs key" {
+  let claude_ended = Some(base_codec::json_obj([("claude/endTurn", base_codec::json_bool(true))]))
+  let ok_rpc = encode_mcp_tool_rpc_result(base_codec::json_int(1), "exit code 0\nok", false, ended_meta=claude_ended)
+  let err_rpc = encode_mcp_tool_rpc_result(base_codec::json_int(2), "refused: browser grant", true, ended_meta=claude_ended)
+  let timeout_rpc = encode_mcp_tool_rpc_result(base_codec::json_int(3), "stopped: it ran too long", false, ended_meta=claude_ended)
+  if ok_rpc.contains("claude/endTurn") {
+    panic("secret_run success reply must NEVER contain claude/endTurn: " + ok_rpc)
+  }
+  if err_rpc.contains("claude/endTurn") {
+    panic("secret_run error reply must NEVER contain claude/endTurn: " + err_rpc)
+  }
+  if timeout_rpc.contains("claude/endTurn") {
+    panic("secret_run timeout reply must NEVER contain claude/endTurn: " + timeout_rpc)
+  }
+  // Verify `SshAgentServer::close` immediately zeroes key seed & blob in memory.
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = (i + 7) as Byte
+  }
+  let key = match station_vault::SshEd25519Key::from_seed(seed, "test") {
+    Ok(k) => k
+    Err(e) => panic("from_seed failed: " + e)
+  }
+  let ag = station_vault::SshAgentServer::new("/tmp/sf-r4-test-never-bound.sock", key)
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
+    call_sync: fn(_op : String, _json_str : String) -> String { "{\"value\":{}}" },
+    write_stdout_line: fn(_line : String) -> Bool { true },
+    write_stdout_frame: fn(_fields : Array[(String, base_codec::Json)], _body : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { 1000L },
+    wall_ms: fn() -> Int64 { 1790000000000L },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] { None },
+  }
+  let mux = builders_core::ShellMux::new(transport, start_stdin=false)
+  ag.close(mux)
+  if ag.key.seed.length() != 0 || ag.key.blob.length() != 0 {
+    panic("SshAgentServer::close must immediately scrub key.seed and key.blob")
+  }
+}

@@ -51,6 +51,7 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_session_compact : Option[(String) -> Result[Unit, station_api::ApiError]]
   pub mut on_project_rename_merge : Option[(String, String, String, String, Option[String]) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut on_vault_decision_notify : Option[(String, String) -> Unit]
+  pub mut on_vault_box : Option[(lock::LockState, form::Json, Int64) -> Bool]
   pub mut on_links_preview : Option[(String) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut on_feedback_report : Option[(station_api::ApiRequest, Int, Int) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut read_only_handover_cell : Array[Bool]
@@ -79,6 +80,7 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_session_compact: None,
     on_project_rename_merge: None,
     on_vault_decision_notify: None,
+    on_vault_box: None,
     on_links_preview: None,
     on_feedback_report: None,
     read_only_handover_cell: [true],
@@ -1280,7 +1282,10 @@ fn dispatch_vault_op(
       let _ = events.emit(ev.event, payload, ev_target, now_ms, dedupe)
     }),
     before_write: Some(fn() -> Bool { !hooks.read_only_handover_cell[0] }),
-    boxed: None,
+    boxed: match hooks.on_vault_box {
+      Some(f) => Some(fn(l : lock::LockState, cert_f : form::Json) -> Bool { f(l, cert_f, now_ms) })
+      None => None
+    },
     verify_fn: auth_policy.verify_fn,
   }
   let vviewer = vault_viewer_of(req)

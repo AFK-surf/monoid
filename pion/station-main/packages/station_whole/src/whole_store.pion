@@ -466,6 +466,21 @@ pub fn WholeHandoverSnapshot::from_json(raw : String) -> Result[WholeHandoverSna
   })
 }
 
+/// Outbound Vault card/notice post queued for non-`chat` surfaces (Slack/Feishu/Comma/Group)
+/// to be forwarded via `whole_daemon`'s Connects / `connect.call` path strictly AFTER SQLite commit.
+pub struct PendingVaultConnectPost {
+  pub ws : String
+  pub req_id : String
+  pub session : String
+  pub thread_id : Int64
+  pub channel : String
+  pub thread_ts : String
+  pub connect_id : String
+  pub n_seq : Int64
+  pub text : String
+  pub card : Option[base_codec::Json]
+}
+
 /// Primary SQLite + Vault + Handover state container for the full station.
 pub struct WholeStore {
   pub data_dir : String
@@ -485,6 +500,8 @@ pub struct WholeStore {
   /// Preserved Node `Held` envelope metadata (`request_json, grant_json, until_opt`) per grant id
   /// for lossless Node↔Pion `{ vault: { keeper: { boxes, held }, unsaved } }` handover roundtrip.
   pub vault_held_meta : Map[String, (base_codec::Json, base_codec::Json, Option[Int64])]
+  /// Queued outbound Connects posts for Vault approval cards on non-`chat` surfaces.
+  pub pending_vault_connect_posts : Array[PendingVaultConnectPost]
   pub mut vault_plain_schema_ready : Bool
   pub mut before_store_ran : Bool
   pub mut last_restored_handover_at : Option[Int64]
@@ -509,6 +526,7 @@ pub fn WholeStore::new_pre_handover_with_sep(data_dir : String, sep : String) ->
     vault_unsaved: Map::new(),
     vault_unsaved_scopes: Map::new(),
     vault_held_meta: Map::new(),
+    pending_vault_connect_posts: [],
     vault_plain_schema_ready: false,
     before_store_ran: false,
     last_restored_handover_at: None,

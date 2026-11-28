@@ -1,0 +1,183 @@
+// Wave 17E-1: Pure unit tests for `whole_vault_mcp.pion` (zero SQLite FFI).
+
+import "station_vault"
+
+fn vmcp_assert(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("ASSERT FAILED: " + msg)
+  }
+}
+
+fn vmcp_assert_eq_str(got : String, want : String, label : String) -> Unit {
+  if got != want {
+    panic("ASSERT FAILED (" + label + "): got `" + got + "`, want `" + want + "`")
+  }
+}
+
+test "vault_ulid produces valid 26-char Crockford Base32 IDs" {
+  let mut seq = 1
+  let rng = fn(n : Int) -> Result[Bytes, String] {
+    let b = Bytes::new(n)
+    for i in 0..<n {
+      b[i] = ((seq * 17 + i * 31) & 0xFF) as Byte
+    }
+    seq = seq + 1
+    Ok(b)
+  }
+  let u1 = match vault_ulid(1700000000000L, rng) {
+    Ok(u) => u
+    Err(e) => panic("vault_ulid failed: " + e)
+  }
+  let u2 = match vault_ulid(1700000001000L, rng) {
+    Ok(u) => u
+    Err(e) => panic("vault_ulid failed: " + e)
+  }
+  vmcp_assert(u1.length() == 26, "u1 len 26")
+  vmcp_assert(u2.length() == 26, "u2 len 26")
+  vmcp_assert(u2 > u1, "u2 > u1")
+  vmcp_assert(station_vault::is_vault_id("v_" + u1), "u1 crockford")
+  vmcp_assert(station_vault::is_vault_id("v_" + u2), "u2 crockford")
+  for i in 0..<26 {
+    let c = u1.code_unit_at(i)
+    vmcp_assert(c != 73 && c != 76 && c != 79 && c != 85, "no I/L/O/U")
+  }
+}
+
+test "vault_iso_utc formats unix epoch seconds accurately" {
+  vmcp_assert_eq_str(vault_iso_utc(0L), "1970-01-01T00:00:00.000Z", "epoch 0")
+  vmcp_assert_eq_str(vault_iso_utc(1700000000L), "2023-11-14T22:13:20.000Z", "2023")
+  vmcp_assert_eq_str(vault_iso_utc(1795857074L), "2026-11-28T09:11:14.000Z", "2026")
+}
+
+test "vault_safe_secret_filename rejects path traversal and NUL" {
+  vmcp_assert_eq_str(vault_safe_secret_filename(None), "secret", "none")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("")), "secret", "empty")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some(".")), "secret", "dot")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("..")), "secret", "dotdot")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("../etc/passwd")), "secret", "traversal")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("dir/file.json")), "secret", "slash")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("dir\\file.json")), "secret", "backslash")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("kubeconfig.yaml")), "kubeconfig.yaml", "plain name")
+}
+
+test "format_secret_run_output matches Node secrets.ts wording" {
+  vmcp_assert_eq_str(format_secret_run_output(Some(0), None, false, false, "ok"), "exit code 0\nok", "exit 0")
+  vmcp_assert_eq_str(format_secret_run_output(Some(1), None, false, true, "a\n…(cut)…\nb"), "exit code 1 (output cut in the middle)\na\n…(cut)…\nb", "cut")
+  vmcp_assert_eq_str(format_secret_run_output(None, Some("SIGKILL"), true, false, "partial"), "stopped: it ran too long\npartial", "timeout")
+  vmcp_assert_eq_str(format_secret_run_output(None, Some("SIGTERM"), false, false, ""), "ended by SIGTERM\n", "signal")
+}
+
+test "wired_mcp_tool_names includes all 8 vault secret tools" {
+  let names = wired_mcp_tool_names()
+  let required = [
+    "secret_list",
+    "secret_use",
+    "secret_save",
+    "secret_describe",
+    "secret_delete",
+    "secret_cancel",
+    "secret_reask",
+    "secret_run",
+  ]
+  for i in 0..<required.length() {
+    let mut found = false
+    for j in 0..<names.length() {
+      if names[j] == required[i] {
+        found = true
+        break
+      }
+    }
+    vmcp_assert(found, "missing tool " + required[i])
+  }
+}
+
+test "w17e1 R3: vault_resolve_cwd_in_workspace_with rejects escape, out-of-workspace, & symlink escape" {
+  // Mock OS realpath: `/tmp/ws-1/escape-link` is a symlink pointing to `/etc`!
+  let mock_rp = fn(p : String) -> Result[String, Int] {
+    if p == "/tmp/ws-1/escape-link" {
+      Ok("/etc")
+    } else if p.starts_with("/tmp/ws-1/escape-link/") {
+      Err(-2) // ENOENT so ancestor walk resolves `/tmp/ws-1/escape-link` -> `/etc`!
+    } else if p == "/tmp/ws-1" || p == "/tmp/ws-1/sub" || p == "/tmp/ws-1/sub/dir" || p == "/etc" || p == "/tmp/ws-2" || p == "/tmp/ws-10" || p == "/tmp" {
+      Ok(p)
+    } else {
+      Err(-2)
+    }
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", None, mock_rp) {
+    Ok(p) => vmcp_assert_eq_str(p, "/tmp/ws-1", "default cwd")
+    Err(e) => panic("expected default cwd ok, got: " + e)
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("sub/dir"), mock_rp) {
+    Ok(p) => vmcp_assert_eq_str(p, "/tmp/ws-1/sub/dir", "subdir cwd")
+    Err(e) => panic("expected subdir cwd ok, got: " + e)
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("escape-link"), mock_rp) {
+    Ok(p) => panic("must reject direct symlink escape, got: " + p)
+    Err(_) => ()
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("escape-link/nested/newdir"), mock_rp) {
+    Ok(p) => panic("must reject non-existent child under symlink escape, got: " + p)
+    Err(_) => ()
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("../ws-2"), mock_rp) {
+    Ok(p) => panic("must reject .. escape, got: " + p)
+    Err(_) => ()
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("/etc"), mock_rp) {
+    Ok(p) => panic("must reject absolute path outside workspace, got: " + p)
+    Err(_) => ()
+  }
+  match vault_resolve_cwd_in_workspace_with("/tmp/ws-1", Some("/tmp/ws-10"), mock_rp) {
+    Ok(p) => panic("must reject prefix-sibling path, got: " + p)
+    Err(_) => ()
+  }
+}
+
+test "w17e1 R2: McpServer::handle_or_defer returns 202 for notification without id on secret_run" {
+  let srv = station_tools::McpServer::new()
+  let mut called = false
+  let host = station_tools::ToolsHost::{
+    resolve_token: fn(tok : String) -> Option[String] {
+      if tok == "tok-1" { Some("s-1") } else { None }
+    },
+    call_context: fn(s : String) -> station_tools::CallContext {
+      station_tools::CallContext::{ session: s, unbound_reason: None }
+    },
+    static_tools: fn() -> Array[station_tools::ToolDecl] { wired_station_tools() },
+    dynamic_tools: fn(_s : String) -> Array[station_tools::ToolDecl] { [] },
+    listing_of: fn(_s : String) -> Option[station_tools::Listing] { None },
+    call_tool: fn(_s : String, _t : String, _a : base_codec::Json) -> station_tools::ToolReply {
+      called = true
+      station_tools::text_reply("should-not-run")
+    },
+  }
+  // 1. Notification (NO `id`) -> MUST return Immediate(202), NEVER DeferredCall, NEVER call_tool!
+  let notif_body = "{\"jsonrpc\":\"2.0\",\"method\":\"tools/call\",\"params\":{\"name\":\"secret_run\",\"arguments\":{\"grant\":\"r_01\",\"command\":\"echo hi\"}}}"
+  match srv.handle_or_defer("POST", Some("Bearer tok-1"), notif_body, host, ["secret_run"]) {
+    station_tools::McpResolveResult::Immediate(r) => {
+      vmcp_assert(r.status == 202, "notification without id must return HTTP 202, got " + r.status.to_string())
+      vmcp_assert(!called, "notification must not invoke call_tool")
+    }
+    station_tools::McpResolveResult::DeferredCall(_, _, _, _, _) => {
+      panic("notification without id must NEVER defer/execute secret_run")
+    }
+  }
+  // 2. Valid request WITH `id` -> returns DeferredCall("s-1", "secret_run", ...)
+  let req_body = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"secret_run\",\"arguments\":{\"grant\":\"r_01\",\"command\":\"echo hi\"}}}"
+  match srv.handle_or_defer("POST", Some("Bearer tok-1"), req_body, host, ["secret_run"]) {
+    station_tools::McpResolveResult::DeferredCall(s, t, _, _, _) => {
+      vmcp_assert_eq_str(s, "s-1", "deferred session")
+      vmcp_assert_eq_str(t, "secret_run", "deferred tool")
+    }
+    station_tools::McpResolveResult::Immediate(_) => {
+      panic("valid secret_run request with id must return DeferredCall")
+    }
+  }
+}
+
+test "w17e1 R4: vault_is_this_station matches station_id and case-insensitive station_name" {
+  vmcp_assert(vault_is_this_station("st-id-1", "st-id-1", "MyStation"), "match by id")
+  vmcp_assert(vault_is_this_station("mystation", "st-id-1", "MyStation"), "match by name case-insensitive")
+  vmcp_assert(!vault_is_this_station("other-box", "st-id-1", "MyStation"), "reject remote station")
+}

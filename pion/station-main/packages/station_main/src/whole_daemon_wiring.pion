@@ -832,6 +832,17 @@ pub fn wire_whole_core_runtime_hooks(
       host_shim::wall_ms(),
     )
   })
+  core.api.hooks.on_vault_box = Some(fn(l : lock::LockState, cert_f : form::Json, now_ms : Int64) -> Bool {
+    station_whole::vault_rebox_for_cert(
+      core.store,
+      Some(core.api.events),
+      l,
+      cert_f,
+      station_sys::random_bytes,
+      core.api.auth_policy.verify_fn,
+      now_ms,
+    )
+  })
   core.api.hooks.on_logins_op = Some(fn(
     op : String,
     params : Array[String],

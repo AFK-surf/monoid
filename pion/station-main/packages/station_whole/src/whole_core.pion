@@ -1247,6 +1247,54 @@ pub fn WholeCore::handle_mcp_http_with_handlers(
   )
 }
 
+/// Dispatch a local `/mcp` HTTP request via `WholeAgents`, optionally deferring
+/// specific tool names AFTER all `/mcp` auth/origin/notification/guard checks pass.
+pub fn WholeCore::handle_mcp_http_or_defer(
+  self : WholeCore,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  now_ms : Int64,
+  defer_tools : Array[String],
+  station_name : String = "",
+) -> McpHttpOrDefer {
+  if self.shut_down || !self.ready {
+    return McpHttpOrDefer::Immediate(
+      McpHttpResponse::{
+        status: 503,
+        content_type: "application/json",
+        body: base_codec::json_stringify(
+          base_codec::json_obj([("error", base_codec::json_str("station is not ready for MCP requests"))]),
+        ),
+      },
+    )
+  }
+  let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
+  let vdeps = VaultMcpDeps::{
+    lock_of: self.api.hooks.lock_of,
+    events: Some(self.api.events),
+    verify_fn: self.api.auth_policy.verify_fn,
+    station_id: self.config.station_id,
+    station_name: station_name,
+    secret_run_exec: None,
+  }
+  self.agents.handle_mcp_http_or_defer(
+    self.store,
+    method,
+    path,
+    host_header,
+    origin_header,
+    authorization,
+    body,
+    eff_now,
+    defer_tools,
+    vault_deps=Some(vdeps),
+  )
+}
+
 /// Dispatch a local `/mcp` HTTP request via `WholeAgents`.
 /// Refuses requests with HTTP 503 until `open_after_predecessor_gone` completes cleanly (`self.ready`).
 pub fn WholeCore::handle_mcp_http(
@@ -1259,26 +1307,23 @@ pub fn WholeCore::handle_mcp_http(
   body : String,
   now_ms : Int64,
 ) -> McpHttpResponse {
-  if self.shut_down || !self.ready {
-    return McpHttpResponse::{
-      status: 503,
-      content_type: "application/json",
-      body: base_codec::json_stringify(
-        base_codec::json_obj([("error", base_codec::json_str("station is not ready for MCP requests"))]),
-      ),
-    }
-  }
-  let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
-  self.agents.handle_mcp_http(
-    self.store,
+  match self.handle_mcp_http_or_defer(
     method,
     path,
     host_header,
     origin_header,
     authorization,
     body,
-    eff_now,
-  )
+    now_ms,
+    [],
+  ) {
+    McpHttpOrDefer::Immediate(r) => r
+    McpHttpOrDefer::DeferredCall(_, _, _, _, _) => McpHttpResponse::{
+      status: 500,
+      content_type: "application/json",
+      body: "{\"error\":\"unexpected deferred call\"}",
+    }
+  }
 }
 
 /// Periodic maintenance tick driven by `daemon_core`'s event loop (never spawns background timers).

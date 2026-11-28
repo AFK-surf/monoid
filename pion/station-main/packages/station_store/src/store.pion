@@ -725,78 +725,87 @@ fn bring_back_in_tx(
 /// - Numbers `n = MAX(entries.n) + 1` when entries exist, or `last_known(thread) + 1` when empty.
 /// - Complements `options` <-> `card` JSON when only one is supplied.
 /// - Persists `agent_identity`, enqueues `deliver_to`, and runs `#bringBack` for auto-archived chats.
+/// Insert a message inside an caller-owned write transaction (for atomic card + vault_requests commit).
+pub fn insert_message_in_tx(
+  t : sql_db::Db,
+  msg : NewMessage,
+  deliver_to : Array[String] = [],
+) -> Result[(Int64, Bool), sql_db::SqlError] {
+  let tid_j = sql_db::int64_to_json(msg.thread)
+  match msg.ts {
+    Some(ts_val) => {
+      match t.first(
+        "SELECT n FROM entries WHERE thread = ?1 AND ts = ?2 LIMIT 1",
+        [tid_j, base_codec::json_str(ts_val)],
+      ) {
+        Ok(Some(r)) => return Ok((row_i64(r, "n", 0.to_int64()), false))
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    None => ()
+  }
+  let max_entry_opt = match t.first("SELECT MAX(n) AS n FROM entries WHERE thread = ?1", [tid_j]) {
+    Ok(Some(r)) => row_i64_opt(r, "n")
+    Ok(None) => None
+    Err(e) => return Err(e)
+  }
+  let base_n = match max_entry_opt {
+    Some(v) => v
+    None => match last_known_in_tx(t, msg.thread) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+  }
+  let next_n = base_n + 1.to_int64()
+  let (eff_card, eff_options) = complement_card_options(msg.card, msg.options)
+  match t.run(
+    "INSERT INTO entries (thread, n, kind, ts, author_kind, author, agent_identity, text, attachments, quotes, declared, at, client, options, card, proposal)" +
+    " VALUES (?1, ?2, 'message', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+    [
+      tid_j,
+      sql_db::int64_to_json(next_n),
+      opt_str_to_json(msg.ts),
+      base_codec::json_str(msg.author_kind),
+      base_codec::json_str(msg.author),
+      opt_str_to_json(msg.agent_identity),
+      opt_str_to_json(msg.text),
+      opt_str_to_json(msg.attachments),
+      opt_str_to_json(msg.quotes),
+      opt_str_to_json(msg.declared),
+      sql_db::int64_to_json(msg.at),
+      opt_str_to_json(msg.client),
+      opt_str_to_json(eff_options),
+      opt_str_to_json(eff_card),
+      opt_str_to_json(msg.proposal),
+    ],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  for i in 0..<deliver_to.length() {
+    match t.run(
+      "INSERT OR IGNORE INTO deliveries (thread, n, session) VALUES (?1, ?2, ?3)",
+      [tid_j, sql_db::int64_to_json(next_n), base_codec::json_str(deliver_to[i])],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  match bring_back_in_tx(t, msg.thread, msg.author_kind, msg.author) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  Ok((next_n, true))
+}
+
 pub fn Store::insert_message(
   self : Store,
   msg : NewMessage,
   deliver_to : Array[String] = [],
 ) -> Result[(Int64, Bool), sql_db::SqlError] {
   with_write_tx(self.db, "st_insert_message", fn(t : sql_db::Db) -> Result[(Int64, Bool), sql_db::SqlError] {
-    let tid_j = sql_db::int64_to_json(msg.thread)
-    match msg.ts {
-      Some(ts_val) => {
-        match t.first(
-          "SELECT n FROM entries WHERE thread = ?1 AND ts = ?2 LIMIT 1",
-          [tid_j, base_codec::json_str(ts_val)],
-        ) {
-          Ok(Some(r)) => return Ok((row_i64(r, "n", 0.to_int64()), false))
-          Ok(None) => ()
-          Err(e) => return Err(e)
-        }
-      }
-      None => ()
-    }
-    let max_entry_opt = match t.first("SELECT MAX(n) AS n FROM entries WHERE thread = ?1", [tid_j]) {
-      Ok(Some(r)) => row_i64_opt(r, "n")
-      Ok(None) => None
-      Err(e) => return Err(e)
-    }
-    let base_n = match max_entry_opt {
-      Some(v) => v
-      None => match last_known_in_tx(t, msg.thread) {
-        Ok(v) => v
-        Err(e) => return Err(e)
-      }
-    }
-    let next_n = base_n + 1.to_int64()
-    let (eff_card, eff_options) = complement_card_options(msg.card, msg.options)
-    match t.run(
-      "INSERT INTO entries (thread, n, kind, ts, author_kind, author, agent_identity, text, attachments, quotes, declared, at, client, options, card, proposal)" +
-      " VALUES (?1, ?2, 'message', ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-      [
-        tid_j,
-        sql_db::int64_to_json(next_n),
-        opt_str_to_json(msg.ts),
-        base_codec::json_str(msg.author_kind),
-        base_codec::json_str(msg.author),
-        opt_str_to_json(msg.agent_identity),
-        opt_str_to_json(msg.text),
-        opt_str_to_json(msg.attachments),
-        opt_str_to_json(msg.quotes),
-        opt_str_to_json(msg.declared),
-        sql_db::int64_to_json(msg.at),
-        opt_str_to_json(msg.client),
-        opt_str_to_json(eff_options),
-        opt_str_to_json(eff_card),
-        opt_str_to_json(msg.proposal),
-      ],
-    ) {
-      Ok(_) => ()
-      Err(e) => return Err(e)
-    }
-    for i in 0..<deliver_to.length() {
-      match t.run(
-        "INSERT OR IGNORE INTO deliveries (thread, n, session) VALUES (?1, ?2, ?3)",
-        [tid_j, sql_db::int64_to_json(next_n), base_codec::json_str(deliver_to[i])],
-      ) {
-        Ok(_) => ()
-        Err(e) => return Err(e)
-      }
-    }
-    match bring_back_in_tx(t, msg.thread, msg.author_kind, msg.author) {
-      Ok(_) => ()
-      Err(e) => return Err(e)
-    }
-    Ok((next_n, true))
+    insert_message_in_tx(t, msg, deliver_to=deliver_to)
   })
 }
 

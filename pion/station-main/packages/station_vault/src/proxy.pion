@@ -649,6 +649,12 @@ pub struct VaultProxy {
   pub ca : CertKeyPair
   pub leaf_cache : LeafCache
   pub policy : NonAllowlistedPolicy
+  pub mut upstream_ca_pem : Option[String]
+  /// Optional live grant-active check `(grant_id) -> Bool` evaluated on CONNECT and
+  /// immediately before credential injection so archive/revocation takes effect immediately.
+  pub mut check_active : Option[(String) -> Bool]
+  /// Optional callback `(grant_id, host) -> Unit` invoked when a secret is actually injected.
+  pub mut on_use : Option[(String, String) -> Unit]
   mut listener_id : Int
   mut port : Int
   mut closed : Bool
@@ -685,6 +691,9 @@ pub fn VaultProxy::new_with_seed(
     ca: ca,
     leaf_cache: LeafCache::new(ca),
     policy: policy,
+    upstream_ca_pem: None,
+    check_active: None,
+    on_use: None,
     listener_id: -1,
     port: 0,
     closed: false,
@@ -693,6 +702,16 @@ pub fn VaultProxy::new_with_seed(
     runs: Map::new(),
     conns: Map::new(),
   })
+}
+
+fn VaultProxy::is_run_allowed(self : VaultProxy, run : ProxyRun, now_sec : Int64) -> Bool {
+  if run.revoked {
+    return false
+  }
+  match self.check_active {
+    Some(f) => f(run.grant_id)
+    None => run.is_allowed(now_sec)
+  }
 }
 
 pub fn VaultProxy::port(self : VaultProxy) -> Int {
@@ -719,7 +738,7 @@ pub fn VaultProxy::purge_expired_runs(self : VaultProxy, now_sec : Int64) -> Int
     let tok = keys[i]
     match self.runs.get(tok) {
       Some(r) => {
-        if !r.is_allowed(now_sec) {
+        if !self.is_run_allowed(r, now_sec) {
           doomed.push(tok)
         }
       }
@@ -1268,7 +1287,7 @@ fn VaultProxy::handle_client_bytes(
         }
       }
       // Enforce grant expiry/revocation BEFORE passthrough tunneling so expired tokens cannot proxy at all.
-      if !run.is_allowed(now_sec) {
+      if !self.is_run_allowed(run, now_sec) {
         let _ = self.revoke_token(run_token)
         self.reply_and_close(
           mux,
@@ -1356,7 +1375,7 @@ fn VaultProxy::handle_client_bytes(
           return
         }
       }
-      if !run.is_allowed(now_sec) {
+      if !self.is_run_allowed(run, now_sec) {
         let _ = self.revoke_token(run_token)
         self.reply_and_close(
           mux,
@@ -1383,15 +1402,20 @@ fn VaultProxy::handle_client_bytes(
       }
       conn.buf = Bytes::new(0)
       conn.phase = ProxyConnPhase::ConnectingUpstream(host, port, run_token, req)
+      let tls_args_fs : Array[(String, base_codec::Json)] = [
+        ("host", base_codec::json_str(host)),
+        ("port", base_codec::json_int(port)),
+        ("sni", base_codec::json_str(host)),
+      ]
+      match self.upstream_ca_pem {
+        Some(ca_pem) if ca_pem.length() > 0 => tls_args_fs.push(("caPem", base_codec::json_str(ca_pem)))
+        _ => ()
+      }
       let _ = mux_call(
         mux,
         builders_core::MuxToken::Tagged(PROXY_MUX_TAG_TLS_CONNECT, cid, 0.to_int64()),
         "tls.connect",
-        base_codec::json_obj([
-          ("host", base_codec::json_str(host)),
-          ("port", base_codec::json_int(port)),
-          ("sni", base_codec::json_str(host)),
-        ]),
+        base_codec::json_obj(tls_args_fs),
         None,
       )
     }
@@ -1603,7 +1627,7 @@ fn VaultProxy::handle_tls_connect_done(
       return
     }
   }
-  if !run.is_allowed(now_sec) {
+  if !self.is_run_allowed(run, now_sec) {
     let _ = self.revoke_token(run_token)
     let _ = mux_call(
       mux,
@@ -1637,6 +1661,10 @@ fn VaultProxy::handle_tls_connect_done(
   }
   if swapped {
     run.uses = run.uses + 1
+    match self.on_use {
+      Some(cb) => cb(run.grant_id, host)
+      None => ()
+    }
   }
   let _ = mux_call(
     mux,

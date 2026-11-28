@@ -421,10 +421,12 @@ test "whole_agents_mcp_token_lifecycle_wired_catalog_and_strict_state_validation
     handlers,
   )
   wc_assert(ok_list.status == 200, "valid tools/list must return 200")
-  wc_assert(ok_list.body.contains("\"chat_post\""), "wired chat_post must be listed")
-  wc_assert(ok_list.body.contains("\"project_manage\""), "wired project_manage must be listed")
-  wc_assert(!ok_list.body.contains("\"browser\""), "unwired browser tool must NOT be advertised")
-  wc_assert(!ok_list.body.contains("\"slack_api\""), "unwired slack_api tool must NOT be advertised")
+  wc_assert(ok_list.body.contains("\"name\":\"chat_post\""), "wired chat_post must be listed")
+  wc_assert(ok_list.body.contains("\"name\":\"project_manage\""), "wired project_manage must be listed")
+  wc_assert(ok_list.body.contains("\"name\":\"secret_list\""), "wired secret_list must be listed")
+  wc_assert(ok_list.body.contains("\"name\":\"secret_run\""), "wired secret_run must be listed")
+  wc_assert(!ok_list.body.contains("\"name\":\"browser\""), "unwired browser tool must NOT be advertised")
+  wc_assert(!ok_list.body.contains("\"name\":\"slack_api\""), "unwired slack_api tool must NOT be advertised")
 
   // Strict `parse_turn_declared` rejects invalid `kind`.
   wc_assert(parse_turn_declared("all_done", base_codec::json_obj([])).is_ok(), "all_done valid")

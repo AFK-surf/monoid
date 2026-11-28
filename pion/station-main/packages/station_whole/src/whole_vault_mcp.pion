@@ -1,0 +1,4324 @@
+// Wave 17E-1: Production Vault MCP runtime for all 8 `DomainHandlers.secret` tools:
+// - `secret_list` (local plain/encrypted + cross-workspace listings, `other_workspaces` browse, active grants, vault status)
+// - `secret_use` (authorized listing resolver, vault-owner/member assignee, CSPRNG X25519 box, card + SSE)
+// - `secret_save` (CSPRNG 26-char ULID `i_<ULID>`, lock-aware personal vault selection, device sealing + `VaultRouteCtx.boxed` reboxing + `SaveScope[]`)
+// - `secret_describe` / `secret_delete` / `secret_cancel` / `secret_reask`
+// - `secret_run` pre-validation, grant spending, and pure execution preparation (`PreparedSecretRun`, non-blocking!)
+//
+// 1:1 aligned with Node `station/src/vault/{secrets.ts,tool.ts,keeper.ts,plain.ts,run.ts}`.
+// Security invariants:
+// - NEVER calls `host_shim::wait` (zero event-loop blocking, zero `HostEvent::Sys` swallowing).
+// - NEVER downgrades `proxy`/`ssh`/`browser` grants to plaintext environment variables.
+// - Rejects `browser` grants and remote-`runOn` grants BEFORE spending the grant.
+// - Enforces `#personFor` (starter or still.fail participant only) and strict `item.epoch == vault.epoch` filtering.
+
+import "base64"
+import "base_codec"
+import "crypto"
+import "form"
+import "jscase"
+import "lock"
+import "nodepath"
+import "sql_db"
+import "station_api"
+import "station_rules_bridge"
+import "station_store"
+import "station_sys"
+import "station_tools"
+import "station_vault"
+import "vault"
+
+let VAULT_CROCKFORD : String = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+let VAULT_PENDING_SECS : Int64 = 86400L
+let VAULT_FILE_MOST : Int = 65536
+let VAULT_RUN_DEFAULT_MS : Int64 = 600000L
+let VAULT_RUN_MAX_MS : Int64 = 3600000L
+
+pub let VAULT_SECRET_VAR : String = "STILLFAIL_SECRET"
+pub let VAULT_ACCOUNT_VAR : String = "STILLFAIL_USERNAME"
+
+pub let VAULT_UNDECIDED_NOTICE : String =
+"Non-blocking: stop and wait (end your turn with chat_state need_human) or work on something else; you will be notified in this session once decided."
+
+// ---------------------------------------------------------------------------
+// ULID & Crypto Helpers (1:1 `secrets.ts:155-164` & `pion/rules/vault.pion`)
+// ---------------------------------------------------------------------------
+
+/// Generate a standard 26-character Crockford Base32 ULID (10-char 48-bit ms timestamp + 16-char CSPRNG).
+pub fn vault_ulid(now_ms : Int64, rng : (Int) -> Result[Bytes, String]) -> Result[String, String] {
+  let rand = match rng(16) {
+    Ok(b) => if b.length() >= 16 { b } else { return Err("CSPRNG returned fewer than 16 bytes for ULID") }
+    Err(e) => return Err("CSPRNG failed for ULID: " + e)
+  }
+  let alpha = VAULT_CROCKFORD.to_bytes()
+  let out = Bytes::new(26)
+  let mut v = if now_ms < 0L { 0L } else { now_ms }
+  let mut i = 9
+  while i >= 0 {
+    out[i] = alpha[(v % 32L).to_int()]
+    v = v / 32L
+    i = i - 1
+  }
+  for j in 0..<16 {
+    out[10 + j] = alpha[(rand[j].to_int() & 0xFF) % 32]
+  }
+  Ok(out.to_string())
+}
+
+pub fn vault_save_context(ws : String, request_id : String) -> String {
+  "stillfail-vault-save/1\x00" + ws + "\x00" + request_id
+}
+
+fn vault_new_box_pair(rng : (Int) -> Result[Bytes, String]) -> Result[(Bytes, String), String] {
+  let priv = match rng(32) {
+    Ok(b) => if b.length() >= 32 { b } else { return Err("CSPRNG returned fewer than 32 bytes for box key") }
+    Err(e) => return Err("CSPRNG failed for box key: " + e)
+  }
+  let pub_key = match vault_box_public(priv) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  Ok((priv, pub_key))
+}
+
+fn vault_seal_to_cert(
+  cert_device : String,
+  cert_box : String,
+  ws : String,
+  req_id : String,
+  fields : Map[String, String],
+  rng : (Int) -> Result[Bytes, String],
+) -> Result[base_codec::Json, String] {
+  let eph = match rng(32) {
+    Ok(b) => if b.length() >= 32 { b } else { return Err("CSPRNG returned fewer than 32 bytes for seal") }
+    Err(e) => return Err("CSPRNG failed for seal: " + e)
+  }
+  let plain = base_codec::json_stringify(vd_fields_map_to_json(fields)).to_bytes()
+  let sealed = match vault_seal_with(cert_box, plain, vault_save_context(ws, req_id), eph) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  Ok(
+    base_codec::json_obj([
+      ("device", base_codec::json_str(cert_device)),
+      ("box", base_codec::json_str(cert_box)),
+      ("secret", base_codec::json_str(sealed)),
+    ]),
+  )
+}
+
+// ---------------------------------------------------------------------------
+// ISO-8601 UTC timestamp formatting for `secret_list` grant `until`
+// ---------------------------------------------------------------------------
+
+fn pad2(n : Int) -> String {
+  if n < 10 { "0" + n.to_string() } else { n.to_string() }
+}
+
+fn pad4(n : Int) -> String {
+  let s = n.to_string()
+  if s.length() == 1 {
+    "000" + s
+  } else if s.length() == 2 {
+    "00" + s
+  } else if s.length() == 3 {
+    "0" + s
+  } else {
+    s
+  }
+}
+
+/// Convert Unix epoch seconds to ISO-8601 UTC string (`YYYY-MM-DDTHH:MM:SS.000Z`).
+pub fn vault_iso_utc(sec : Int64) -> String {
+  let s = if sec < 0L { 0L } else { sec }
+  let days = s / 86400L
+  let rem = (s % 86400L).to_int()
+  let hour = rem / 3600
+  let minute = (rem % 3600) / 60
+  let second = rem % 60
+  // Howard Hinnant civil_from_days algorithm (exact proleptic Gregorian calendar).
+  let z = days + 719468L
+  let era = if z >= 0L { z / 146097L } else { (z - 146096L) / 146097L }
+  let doe = (z - era * 146097L).to_int()
+  let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365
+  let y = yoe + (era * 400L).to_int()
+  let doy = doe - (365 * yoe + yoe / 4 - yoe / 100)
+  let mp = (5 * doy + 2) / 153
+  let d = doy - (153 * mp + 2) / 5 + 1
+  let m = if mp < 10 { mp + 3 } else { mp - 9 }
+  let year = if m <= 2 { y + 1 } else { y }
+  pad4(year) +
+  "-" +
+  pad2(m) +
+  "-" +
+  pad2(d) +
+  "T" +
+  pad2(hour) +
+  ":" +
+  pad2(minute) +
+  ":" +
+  pad2(second) +
+  ".000Z"
+}
+
+// ---------------------------------------------------------------------------
+// `#personFor` & Lock Membership Helpers (1:1 `secrets.ts:818-826,1831-1879`)
+// ---------------------------------------------------------------------------
+
+fn vault_member_sub_by_email(l : lock::LockState, email_lower : String) -> Option[String] {
+  let entries = l.members.entries()
+  for i in 0..<entries.length() {
+    let (sub, m) = entries[i]
+    if jscase::lower(m.email.trim()) == email_lower {
+      return Some(sub)
+    }
+  }
+  None
+}
+
+fn vault_session_starter(st : station_store::Store, session : String) -> Result[Option[String], String] {
+  let srow = match st.get_session(session) {
+    Ok(Some(r)) => r
+    Ok(None) => return Err("unknown session " + session)
+    Err(e) => return Err("session lookup failed: " + e.message)
+  }
+  match srow.created_by {
+    Some(cb) => {
+      let clean = jscase::lower(cb.trim())
+      if clean.length() > 0 {
+        return Ok(Some(clean))
+      }
+    }
+    None => ()
+  }
+  // Fallback to earliest still.fail participant in this session's threads (1:1 `store.ts:4237`).
+  match st.db.first(
+    "SELECT e.author FROM entries e JOIN thread_sessions ts ON ts.thread = e.thread JOIN threads t ON t.id = e.thread" +
+    " WHERE ts.session = ?1 AND t.surface = 'chat' AND e.kind = 'message' AND e.author_kind = 'person' AND e.author IS NOT NULL AND e.author != ''" +
+    " ORDER BY e.at ASC, e.n ASC LIMIT 1",
+    [base_codec::json_str(session)],
+  ) {
+    Ok(Some(row)) => match row.get("author") {
+      Some(base_codec::Json::Str(a)) => {
+        let clean = jscase::lower(a.trim())
+        if clean.length() > 0 { Ok(Some(clean)) } else { Ok(None) }
+      }
+      _ => Ok(None)
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err("starter participant lookup failed: " + e.message)
+  }
+}
+
+fn vault_session_participants(st : station_store::Store, session : String) -> Result[Array[String], String] {
+  let rows = match st.db.all(
+    "SELECT LOWER(e.author) AS author, MIN(e.at) AS first_at FROM entries e" +
+    " JOIN thread_sessions ts ON ts.thread = e.thread JOIN threads t ON t.id = e.thread" +
+    " WHERE ts.session = ?1 AND t.surface = 'chat' AND e.kind = 'message' AND e.author_kind = 'person'" +
+    " AND e.author IS NOT NULL AND e.author != '' GROUP BY LOWER(e.author) ORDER BY first_at ASC, author ASC",
+    [base_codec::json_str(session)],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err("participants lookup failed: " + e.message)
+  }
+  let out : Array[String] = []
+  for i in 0..<rows.length() {
+    match rows[i].get("author") {
+      Some(base_codec::Json::Str(a)) => {
+        let p = a.trim()
+        if p.contains("@") && !p.contains(":") {
+          out.push(p)
+        }
+      }
+      _ => ()
+    }
+  }
+  Ok(out)
+}
+
+/// Strict `#personFor` verification (1:1 Node `secrets.ts:818-826`):
+/// Only accepts the chat starter or an email of someone who actually wrote in this chat
+/// from the still.fail app; any external email is strictly refused.
+pub fn vault_person_for(
+  st : station_store::Store,
+  session : String,
+  person_opt : Option[String],
+) -> Result[Option[String], String] {
+  let starter = match vault_session_starter(st, session) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let raw_person = match person_opt {
+    Some(p) => p
+    None => ""
+  }
+  let named = jscase::lower(raw_person.trim())
+  if named.length() == 0 {
+    return Ok(starter)
+  }
+  match starter {
+    Some(s) if s == named => return Ok(starter)
+    _ => ()
+  }
+  let people = match vault_session_participants(st, session) {
+    Ok(ps) => ps
+    Err(e) => return Err(e)
+  }
+  for i in 0..<people.length() {
+    if people[i] == named {
+      return Ok(Some(named))
+    }
+  }
+  let who = if people.length() > 0 {
+    "the people who wrote in it from still.fail: " + vd_join_strs(people, ", ")
+  } else {
+    "no one has written in it from still.fail yet: ask them to write in this chat in the still.fail app, then name them"
+  }
+  Err(
+    raw_person +
+    " has not written in this chat: name one of " +
+    who +
+    "; or leave person out for whoever started it.",
+  )
+}
+
+fn vault_is_session_ended(st : station_store::Store, session : String) -> Bool {
+  match st.get_session(session) {
+    Ok(Some(r)) => r.archived_at.is_some()
+    _ => true
+  }
+}
+
+fn vault_certs_of(
+  vstore : station_vault::VaultStore,
+  l : lock::LockState,
+  sub : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Array[(String, String)] {
+  let lv = station_vault::lock_view_of(l)
+  let vc = station_rules_bridge::vault_crypto_with(verify_fn)
+  let dev_ids : Array[String] = []
+  let d_entries = l.devices.entries()
+  for i in 0..<d_entries.length() {
+    let (did, dev) = d_entries[i]
+    if dev.sub == sub && dev.kind == "app" {
+      dev_ids.push(did)
+    }
+  }
+  // Sort device IDs lexicographically (matches Node `[...devicesFor(lock, sub)].sort()`).
+  let n = dev_ids.length()
+  let mut i = 1
+  while i < n {
+    let key = dev_ids[i]
+    let mut j = i - 1
+    while j >= 0 && dev_ids[j] > key {
+      dev_ids[j + 1] = dev_ids[j]
+      j = j - 1
+    }
+    dev_ids[j + 1] = key
+    i = i + 1
+  }
+  let out : Array[(String, String)] = []
+  for k in 0..<dev_ids.length() {
+    let did = dev_ids[k]
+    match vstore.box_cert(l.ws, did) {
+      Ok(Some(cert_f)) => {
+        match vault::cert_ok(lv, Some(cert_f), false, vc) {
+          None => {
+            let c_dev = match form::json_field(Some(cert_f), "device") {
+              Some(form::Json::Str(s)) => s
+              _ => ""
+            }
+            let c_box = match form::json_field(Some(cert_f), "box") {
+              Some(form::Json::Str(s)) => s
+              _ => ""
+            }
+            match l.devices.get(c_dev) {
+              Some(d) if d.sub == sub && c_box.length() > 0 => out.push((c_dev, c_box))
+              _ => ()
+            }
+          }
+          Some(_) => ()
+        }
+      }
+      _ => ()
+    }
+  }
+  out
+}
+
+fn vault_is_healthy_personal(
+  l : lock::LockState,
+  lv : vault::LockView,
+  vc : vault::Crypto,
+  v_f : form::Json,
+) -> Bool {
+  match form::json_field(Some(v_f), "members") {
+    Some(form::Json::Arr(ms)) => {
+      for i in 0..<ms.length() {
+        match ms[i] {
+          form::Json::Str(m) => if !l.members.contains(m) { return false }
+          _ => return false
+        }
+      }
+    }
+    _ => return false
+  }
+  match form::json_field(Some(v_f), "keys") {
+    Some(form::Json::Arr(ks)) => {
+      for i in 0..<ks.length() {
+        let cert_opt = form::json_field(Some(ks[i]), "cert")
+        let c_dev = match form::json_field(cert_opt, "device") {
+          Some(form::Json::Str(s)) => s
+          _ => return false
+        }
+        if !l.devices.contains(c_dev) {
+          return false
+        }
+        match cert_opt {
+          Some(cf) => match vault::cert_ok(lv, Some(cf), true, vc) {
+            None => ()
+            Some(_) => return false
+          }
+          None => return false
+        }
+      }
+    }
+    _ => ()
+  }
+  true
+}
+
+/// Select `sub`'s personal vault keyed to one of their valid box-cert devices (1:1 Node `#vaultFor`).
+/// NEVER picks a workspace vault, NEVER picks another person's vault, and NEVER falls back to `"plain"`.
+fn vault_choose_personal_for(
+  vstore : station_vault::VaultStore,
+  l : lock::LockState,
+  sub : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> String {
+  let certs = vault_certs_of(vstore, l, sub, verify_fn)
+  if certs.length() == 0 {
+    return ""
+  }
+  let dev_set : Map[String, Bool] = Map::new()
+  for i in 0..<certs.length() {
+    dev_set.set(certs[i].0, true)
+  }
+  let lv = station_vault::lock_view_of(l)
+  let vc = station_rules_bridge::vault_crypto_with(verify_fn)
+  let vaults = match vstore.vaults(l.ws) {
+    Ok(vs) => vs
+    Err(_) => return ""
+  }
+  let mut first_healthy = ""
+  let mut first_fallback = ""
+  let mut owned_fallback = ""
+  for i in 0..<vaults.length() {
+    let v_f = vaults[i]
+    let is_del = match form::json_field(Some(v_f), "deleted") {
+      Some(form::Json::Bool(true)) => true
+      _ => false
+    }
+    if is_del {
+      continue
+    }
+    let is_ws_scope = match form::json_field(Some(v_f), "scope") {
+      Some(form::Json::Str(s)) => s == "workspace"
+      _ => false
+    }
+    if is_ws_scope {
+      continue
+    }
+    let members = vd_form_str_arr(v_f, "members")
+    if !vd_has_str(members, sub) {
+      continue
+    }
+    let mut keyed_to_user = false
+    match form::json_field(Some(v_f), "keys") {
+      Some(form::Json::Arr(ks)) => {
+        for ki in 0..<ks.length() {
+          let c_dev = match form::json_field(form::json_field(Some(ks[ki]), "cert"), "device") {
+            Some(form::Json::Str(s)) => s
+            _ => ""
+          }
+          if dev_set.contains(c_dev) {
+            keyed_to_user = true
+            break
+          }
+        }
+      }
+      _ => ()
+    }
+    if !keyed_to_user {
+      continue
+    }
+    let vid = match form::json_field(Some(v_f), "id") {
+      Some(form::Json::Str(s)) => s
+      _ => ""
+    }
+    if vid.length() == 0 {
+      continue
+    }
+    let owner_sub = match form::json_field(Some(v_f), "owner") {
+      Some(form::Json::Str(s)) => s
+      _ => ""
+    }
+    let ok = vault_is_healthy_personal(l, lv, vc, v_f)
+    if ok && first_healthy.length() == 0 {
+      first_healthy = vid
+    } else if !ok && first_fallback.length() == 0 {
+      first_fallback = vid
+    }
+    if owner_sub == sub {
+      if ok {
+        return vid
+      }
+      if owned_fallback.length() == 0 {
+        owned_fallback = vid
+      }
+    }
+  }
+  if owned_fallback.length() > 0 {
+    owned_fallback
+  } else if first_healthy.length() > 0 {
+    first_healthy
+  } else {
+    first_fallback
+  }
+}
+
+fn vault_status_for(
+  whole_store : WholeStore,
+  lock_opt : Option[lock::LockState],
+  email_opt : Option[String],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> String {
+  let email = match email_opt {
+    Some(e) if e.length() > 0 => e
+    _ => return "none"
+  }
+  let l = match lock_opt {
+    Some(ls) => ls
+    None => return "plain"
+  }
+  let sub = match vault_member_sub_by_email(l, email) {
+    Some(s) => s
+    None => return if l.genesis.length() == 0 { "off" } else { "none" }
+  }
+  match whole_store.vault_store {
+    Some(vs) => if vault_choose_personal_for(vs, l, sub, verify_fn).length() > 0 { "on" } else { "off" }
+    None => "off"
+  }
+}
+
+fn vault_status_words(status : String) -> String {
+  if status == "on" {
+    "Their vault is on: secret_save keeps a credential in it once they approve."
+  } else if status == "plain" {
+    "The workspace has no security mode: secret_save keeps a credential in their library on this station, unencrypted, once they approve."
+  } else if status == "off" {
+    "Their vault is not turned on: secret_save's card offers them to turn it on in the still.fail app, then keeps the credential."
+  } else {
+    "No one started this chat who could keep a credential (secret_save is refused)."
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Authorized Listing Resolver (`#listingsAt`, `#vaultListings`, `#crossListings`, `#findListing`)
+// ---------------------------------------------------------------------------
+
+pub struct VaultListed {
+  pub vault : String
+  pub vault_name : Option[String]
+  pub vault_scope : Option[String]
+  pub item : String
+  pub owner : Option[String]
+  pub listing : base_codec::Json
+  /// `(sourceWs, sourceWsName, vaultName)` when cross-workspace.
+  pub cross : Option[(String, String, String)]
+  pub vault_lasts : Option[String]
+}
+
+fn form_opt_i64(j : form::Json, key : String) -> Option[Int64] {
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Num(n)) => Some(n.to_int64())
+    _ => None
+  }
+}
+
+fn vault_cross_listings(
+  st : station_store::Store,
+  ws : String,
+  session : String,
+  owner_filter : Option[String],
+) -> Array[VaultListed] {
+  if vault_is_session_ended(st, session) {
+    return []
+  }
+  let rows = match st.db.all(
+    "SELECT body FROM vault_cross_listings WHERE ws = ?1 AND session = ?2 ORDER BY item",
+    [base_codec::json_str(ws), base_codec::json_str(session)],
+  ) {
+    Ok(rs) => rs
+    Err(_) => return []
+  }
+  let want = match owner_filter {
+    Some(o) => Some(jscase::lower(o.trim()))
+    None => None
+  }
+  let out : Array[VaultListed] = []
+  for i in 0..<rows.length() {
+    let raw = match rows[i].get("body") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => continue
+    }
+    let j = match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(v) => v
+      _ => continue
+    }
+    let entry_owner = json_field_str(j, "owner")
+    match want {
+      Some(w) => match entry_owner {
+        Some(eo) if jscase::lower(eo.trim()) == w => ()
+        _ => continue
+      }
+      None => ()
+    }
+    let listing = match base_codec::json_get(j, "listing") {
+      Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+      _ => continue
+    }
+    let v_id = match json_field_str(j, "vault") { Some(s) => s, None => continue }
+    let v_name = match json_field_str(j, "vaultName") { Some(s) => s, None => "" }
+    let it_id = match json_field_str(j, "item") { Some(s) => s, None => continue }
+    let src_ws = match json_field_str(j, "sourceWs") { Some(s) => s, None => "" }
+    let src_ws_name = match json_field_str(j, "sourceWsName") { Some(s) => s, None => "" }
+    let eff_owner = match entry_owner {
+      Some(eo) => Some(jscase::lower(eo.trim()))
+      None => want
+    }
+    out.push(VaultListed::{
+      vault: v_id,
+      vault_name: Some(v_name),
+      vault_scope: Some("personal"),
+      item: it_id,
+      owner: eff_owner,
+      listing: listing,
+      cross: Some((src_ws, src_ws_name, v_name)),
+      vault_lasts: json_field_str(j, "vaultLasts"),
+    })
+  }
+  out
+}
+
+/// Authorized local + cross listings for `(ws, lock_opt, session, email_opt)` (1:1 `secrets.ts:863-900`).
+pub fn vault_mcp_listings(
+  whole_store : WholeStore,
+  st : station_store::Store,
+  ws : String,
+  lock_opt : Option[lock::LockState],
+  session : String,
+  email_opt : Option[String],
+) -> Array[VaultListed] {
+  let email = match email_opt {
+    Some(e) if e.length() > 0 => e
+    _ => return []
+  }
+  let out : Array[VaultListed] = []
+  match lock_opt {
+    None => {
+      // Plain library: strictly scoped to `(ws, email)`.
+      let rows = match st.db.all(
+        "SELECT body FROM vault_plain WHERE ws = ?1 AND LOWER(owner) = ?2 ORDER BY id",
+        [base_codec::json_str(ws), base_codec::json_str(email)],
+      ) {
+        Ok(rs) => rs
+        Err(_) => []
+      }
+      for i in 0..<rows.length() {
+        let raw = match rows[i].get("body") { Some(base_codec::Json::Str(s)) => s, _ => continue }
+        let j = match base_codec::json_parse(raw) { base_codec::JsonParseResult::Ok(v) => v, _ => continue }
+        if json_field_bool(j, "deleted") == Some(true) {
+          continue
+        }
+        let listing = match base_codec::json_get(j, "listing") {
+          Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+          _ => continue
+        }
+        let it_id = match json_field_str(j, "id") { Some(s) => s, None => continue }
+        let it_owner = match json_field_str(j, "owner") { Some(s) => Some(jscase::lower(s)), None => Some(email) }
+        out.push(VaultListed::{
+          vault: "plain",
+          vault_name: None,
+          vault_scope: None,
+          item: it_id,
+          owner: it_owner,
+          listing: listing,
+          cross: None,
+          vault_lasts: None,
+        })
+      }
+    }
+    Some(l) => {
+      match vault_member_sub_by_email(l, email) {
+        Some(sub) => {
+          match whole_store.vault_store {
+            Some(vs) => {
+              let vaults = match vs.vaults(l.ws) {
+                Ok(xs) => xs
+                Err(_) => []
+              }
+              for vi in 0..<vaults.length() {
+                let v_f = vaults[vi]
+                let is_del = match form::json_field(Some(v_f), "deleted") {
+                  Some(form::Json::Bool(true)) => true
+                  _ => false
+                }
+                if is_del {
+                  continue
+                }
+                let members = vd_form_str_arr(v_f, "members")
+                if !vd_has_str(members, sub) {
+                  continue
+                }
+                let vid = match form::json_field(Some(v_f), "id") { Some(form::Json::Str(s)) => s, _ => continue }
+                let vname = match form::json_field(Some(v_f), "name") { Some(form::Json::Str(s)) => s, _ => "" }
+                let vscope = match form::json_field(Some(v_f), "scope") {
+                  Some(form::Json::Str(s)) if s == "workspace" => "workspace"
+                  _ => "personal"
+                }
+                let v_owner_sub = match form::json_field(Some(v_f), "owner") { Some(form::Json::Str(s)) => s, _ => "" }
+                let v_owner_email = vd_lock_member_email(l, v_owner_sub)
+                let v_epoch = form_opt_i64(v_f, "epoch")
+                let v_lasts = match form::json_field(Some(v_f), "lasts") { Some(form::Json::Str(s)) => Some(s), _ => None }
+                let items = match vs.items(l.ws, vid) {
+                  Ok(xs) => xs
+                  Err(_) => []
+                }
+                for ii in 0..<items.length() {
+                  let it_f = items[ii]
+                  let it_del = match form::json_field(Some(it_f), "deleted") {
+                    Some(form::Json::Bool(true)) => true
+                    _ => false
+                  }
+                  if it_del {
+                    continue
+                  }
+                  // Strict epoch isolation (1:1 Node `secrets.ts:886`: `item.epoch === vault.epoch`).
+                  let it_epoch = form_opt_i64(it_f, "epoch")
+                  if it_epoch != v_epoch {
+                    continue
+                  }
+                  let listing_f = match form::json_field(Some(it_f), "listing") {
+                    Some(form::Json::Obj(fs)) => form::Json::Obj(fs)
+                    _ => continue
+                  }
+                  let it_id = match form::json_field(Some(it_f), "id") { Some(form::Json::Str(s)) => s, _ => continue }
+                  out.push(VaultListed::{
+                    vault: vid,
+                    vault_name: Some(vname),
+                    vault_scope: Some(vscope),
+                    item: it_id,
+                    owner: v_owner_email,
+                    listing: station_rules_bridge::form_to_base(listing_f),
+                    cross: None,
+                    vault_lasts: v_lasts,
+                  })
+                }
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
+  }
+  let cross = vault_cross_listings(st, ws, session, Some(email))
+  for ci in 0..<cross.length() {
+    out.push(cross[ci])
+  }
+  out
+}
+
+fn vault_mcp_find_listing(
+  whole_store : WholeStore,
+  st : station_store::Store,
+  ws : String,
+  lock_opt : Option[lock::LockState],
+  session : String,
+  wanted_raw : String,
+  person_opt : Option[String],
+) -> Result[(Option[VaultListed], Option[String]), String] {
+  let email_opt = match vault_person_for(st, session, person_opt) {
+    Ok(e) => e
+    Err(e) => return Err(e)
+  }
+  if email_opt.is_none() {
+    return Ok((None, None))
+  }
+  let wanted = jscase::lower(wanted_raw.trim())
+  if wanted.length() == 0 {
+    return Ok((None, email_opt))
+  }
+  let all = vault_mcp_listings(whole_store, st, ws, lock_opt, session, email_opt)
+  let locals : Array[VaultListed] = []
+  let crosses : Array[VaultListed] = []
+  for i in 0..<all.length() {
+    if all[i].cross.is_some() {
+      crosses.push(all[i])
+    } else {
+      locals.push(all[i])
+    }
+  }
+  // Search local listings in exact list order; check cross-workspace name collision.
+  for i in 0..<locals.length() {
+    let l = locals[i]
+    let id_match = jscase::lower(l.item) == wanted
+    let lname = match json_field_str(l.listing, "name") { Some(s) => s, None => "" }
+    let name_match = jscase::lower(lname) == wanted
+    if id_match {
+      return Ok((Some(l), email_opt))
+    }
+    if name_match {
+      let cross_same : Array[VaultListed] = []
+      for ci in 0..<crosses.length() {
+        let cname = match json_field_str(crosses[ci].listing, "name") { Some(s) => s, None => "" }
+        if jscase::lower(cname) == wanted {
+          cross_same.push(crosses[ci])
+        }
+      }
+      if cross_same.length() > 0 {
+        let choices : Array[String] = [l.item + " (this workspace)"]
+        for ci in 0..<cross_same.length() {
+          match cross_same[ci].cross {
+            Some((_, ws_n, v_n)) => choices.push(cross_same[ci].item + " (" + ws_n + " / " + v_n + ")")
+            None => ()
+          }
+        }
+        return Err(
+          "Multiple secrets named " +
+          base_codec::json_stringify(base_codec::json_str(lname)) +
+          ": pass the item id instead: " +
+          vd_join_strs(choices, ", ") +
+          ".",
+        )
+      }
+      return Ok((Some(l), email_opt))
+    }
+  }
+  // Search cross-workspace listings by exact id first, then by unique name.
+  for ci in 0..<crosses.length() {
+    if jscase::lower(crosses[ci].item) == wanted {
+      return Ok((Some(crosses[ci]), email_opt))
+    }
+  }
+  let cross_name_hits : Array[VaultListed] = []
+  for ci in 0..<crosses.length() {
+    let cname = match json_field_str(crosses[ci].listing, "name") { Some(s) => s, None => "" }
+    if jscase::lower(cname) == wanted {
+      cross_name_hits.push(crosses[ci])
+    }
+  }
+  if cross_name_hits.length() == 1 {
+    return Ok((Some(cross_name_hits[0]), email_opt))
+  }
+  if cross_name_hits.length() > 1 {
+    let cname = match json_field_str(cross_name_hits[0].listing, "name") { Some(s) => s, None => "" }
+    let choices : Array[String] = []
+    for ci in 0..<cross_name_hits.length() {
+      match cross_name_hits[ci].cross {
+        Some((_, ws_n, v_n)) => choices.push(cross_name_hits[ci].item + " (" + ws_n + " / " + v_n + ")")
+        None => ()
+      }
+    }
+    return Err(
+      "Multiple cross-workspace secrets are named " +
+      base_codec::json_stringify(base_codec::json_str(cname)) +
+      ": pass the item id instead: " +
+      vd_join_strs(choices, ", ") +
+      ".",
+    )
+  }
+  Ok((None, email_opt))
+}
+
+// ---------------------------------------------------------------------------
+// Card Posting, Persistence & SSE Helpers
+// ---------------------------------------------------------------------------
+
+struct VaultSessionThread {
+  id : Int64
+  surface : String
+  channel : String
+  thread_ts : String
+  connect : String
+}
+
+fn vault_latest_thread(st : station_store::Store, session : String) -> Option[VaultSessionThread] {
+  match st.db.first(
+    "SELECT t.id, t.surface, t.channel, t.thread_ts, ts.connect FROM threads t" +
+    " JOIN thread_sessions ts ON ts.thread = t.id WHERE ts.session = ?1 AND ts.left_at IS NULL" +
+    " ORDER BY ts.joined_at DESC, t.id DESC LIMIT 1",
+    [base_codec::json_str(session)],
+  ) {
+    Ok(Some(r)) => {
+      let tid = match r.get("id") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+      let surf = match r.get("surface") { Some(base_codec::Json::Str(s)) => s, _ => "chat" }
+      let ch = match r.get("channel") { Some(base_codec::Json::Str(s)) => s, _ => "CHAT" }
+      let tts = match r.get("thread_ts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      let cid = match r.get("connect") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      if tid > 0L {
+        Some(VaultSessionThread::{ id: tid, surface: surf, channel: ch, thread_ts: tts, connect: cid })
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn vault_session_thread_by_id(
+  st : station_store::Store,
+  session : String,
+  thread_id : Int64,
+) -> Option[VaultSessionThread] {
+  match st.db.first(
+    "SELECT t.id, t.surface, t.channel, t.thread_ts, ts.connect FROM threads t" +
+    " JOIN thread_sessions ts ON ts.thread = t.id WHERE ts.session = ?1 AND t.id = ?2 AND ts.left_at IS NULL LIMIT 1",
+    [base_codec::json_str(session), sql_db::int64_to_json(thread_id)],
+  ) {
+    Ok(Some(r)) => {
+      let tid = match r.get("id") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+      let surf = match r.get("surface") { Some(base_codec::Json::Str(s)) => s, _ => "chat" }
+      let ch = match r.get("channel") { Some(base_codec::Json::Str(s)) => s, _ => "CHAT" }
+      let tts = match r.get("thread_ts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      let cid = match r.get("connect") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      if tid > 0L {
+        Some(VaultSessionThread::{ id: tid, surface: surf, channel: ch, thread_ts: tts, connect: cid })
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+/// Authoritative pending-card check in `thread_id` (1:1 Node `card-place.ts:17-25` +
+/// `station/src/store/card-kinds.ts` + `store.ts:4439-4463`):
+/// Checks waiting system cards (`vault`/`login`/`rig`/`phone`/`signIn`, which are NEVER closed
+/// by human messages) BEFORE conversational cards, so a newer answered conversational card
+/// can NEVER shadow an earlier waiting system card!
+fn vault_pending_card_ts_in_db(db : sql_db::Db, thread_id : Int64) -> Result[Option[String], sql_db::SqlError] {
+  let tid_j = sql_db::int64_to_json(thread_id)
+  // 1. Check `pending_system_cards` projection first when installed.
+  match db.has_schema("table", "pending_system_cards") {
+    Ok(true) => {
+      match db.first(
+        "SELECT e.ts FROM pending_system_cards p JOIN entries e ON e.thread = p.thread AND e.n = p.n" +
+        " WHERE p.thread = ?1 AND NOT EXISTS (SELECT 1 FROM closed_cards cc WHERE cc.thread = p.thread AND cc.n = p.n)" +
+        " ORDER BY p.n DESC LIMIT 1",
+        [tid_j],
+      ) {
+        Ok(Some(r)) => match r.get("ts") {
+          Some(base_codec::Json::Str(ts)) if ts.length() > 0 => return Ok(Some(ts))
+          _ => ()
+        }
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    _ => ()
+  }
+  // 2. Scan unclosed card-bearing messages in `thread_id` (system cards take precedence over conversational).
+  let rows = match db.all(
+    "SELECT e.n, e.ts, e.card FROM entries e" +
+    " WHERE e.thread = ?1 AND e.kind = 'message' AND e.card IS NOT NULL" +
+    " AND NOT EXISTS (SELECT 1 FROM closed_cards cc WHERE cc.thread = e.thread AND cc.n = e.n)" +
+    " ORDER BY e.n DESC LIMIT 32",
+    [tid_j],
+  ) {
+    Ok(rs) => rs
+    Err(e) => return Err(e)
+  }
+  let mut conv_ts : Option[String] = None
+  for i in 0..<rows.length() {
+    let r = rows[i]
+    let msg_n = match r.get("n") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+    let msg_ts = match r.get("ts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let card_raw = match r.get("card") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    if msg_n <= 0L || msg_ts.length() == 0 {
+      continue
+    }
+    let is_system_card = match base_codec::json_parse(card_raw) {
+      base_codec::JsonParseResult::Ok(cj) => {
+        base_codec::json_get(cj, "vault").is_some()
+        || base_codec::json_get(cj, "login").is_some()
+        || base_codec::json_get(cj, "rig").is_some()
+        || base_codec::json_get(cj, "phone").is_some()
+        || base_codec::json_get(cj, "signIn").is_some()
+      }
+      _ => false
+    }
+    if is_system_card {
+      return Ok(Some(msg_ts))
+    }
+    if conv_ts.is_none() {
+      match db.first(
+        "SELECT 1 FROM entries WHERE thread = ?1 AND n > ?2 AND kind = 'message' AND author_kind IN ('person', 'human') LIMIT 1",
+        [tid_j, sql_db::int64_to_json(msg_n)],
+      ) {
+        Ok(Some(_)) => ()
+        Ok(None) => conv_ts = Some(msg_ts)
+        Err(e) => return Err(e)
+      }
+    }
+  }
+  Ok(conv_ts)
+}
+
+/// Shared local-station matcher for `secret_use` and `secret_run` (matches either `station_id`
+/// or case-insensitive `station_name`).
+pub fn vault_is_this_station(given : String, station_id : String, station_name : String) -> Bool {
+  let tr = given.trim()
+  if tr.length() == 0 {
+    return true
+  }
+  tr == station_id || (station_name.length() > 0 && jscase::lower(tr) == jscase::lower(station_name))
+}
+
+fn vault_card_ts_format(now_ms : Int64, n : Int64) -> String {
+  let sec = now_ms / 1000L
+  let ms = (now_ms % 1000L).to_int()
+  let ms_s = if ms < 10 {
+    "00" + ms.to_string()
+  } else if ms < 100 {
+    "0" + ms.to_string()
+  } else {
+    ms.to_string()
+  }
+  sec.to_string() + "." + ms_s + n.to_string()
+}
+
+/// Post a vault approval card into the session's thread via `Store::insert_message`,
+/// emitting a `"thread"` SSE event on `events_opt`, queuing outbound Connects delivery
+/// for non-`chat` surfaces, and returning `Some(card_ts)`.
+fn vault_mcp_post_card(
+  whole_store : WholeStore,
+  st : station_store::Store,
+  events_opt : Option[station_api::EventsHub],
+  ws : String,
+  req_id : String,
+  session : String,
+  thr : VaultSessionThread,
+  text : String,
+  card_opt : Option[base_codec::Json],
+  now_ms : Int64,
+) -> Result[Option[String], String] {
+  let card_str_opt : Option[String] = match card_opt {
+    Some(c) => Some(base_codec::json_stringify(c))
+    None => None
+  }
+  let next_n_est : Int64 = match st.db.first(
+    "SELECT COALESCE(MAX(n), 0) + 1 AS nn FROM entries WHERE thread = ?1",
+    [sql_db::int64_to_json(thr.id)],
+  ) {
+    Ok(Some(r)) => match r.get("nn") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 1L }
+    _ => 1L
+  }
+  let ts_str = vault_card_ts_format(now_ms, next_n_est)
+  let msg = station_store::NewMessage::{
+    thread: thr.id,
+    ts: Some(ts_str),
+    author_kind: "agent",
+    author: session,
+    agent_identity: None,
+    text: Some(text),
+    attachments: None,
+    quotes: None,
+    declared: None,
+    client: None,
+    card: card_str_opt,
+    options: None,
+    proposal: None,
+    at: now_ms,
+  }
+  let (n, _) = match st.insert_message(msg) {
+    Ok(res) => res
+    Err(e) => return Err("vault card insert_message failed: " + e.message)
+  }
+  if thr.surface != "chat" && thr.connect.length() > 0 {
+    whole_store.pending_vault_connect_posts.push(
+      PendingVaultConnectPost::{
+        ws: ws,
+        req_id: req_id,
+        session: session,
+        thread_id: thr.id,
+        channel: thr.channel,
+        thread_ts: thr.thread_ts,
+        connect_id: thr.connect,
+        n_seq: n,
+        text: text,
+        card: card_opt,
+      },
+    )
+  }
+  match events_opt {
+    Some(ev) => {
+      let entry_fs : Array[(String, base_codec::Json)] = [
+        ("thread", sql_db::int64_to_json(thr.id)),
+        ("n", sql_db::int64_to_json(n)),
+        ("kind", base_codec::json_str("message")),
+        ("ts", base_codec::json_str(ts_str)),
+        ("authorKind", base_codec::json_str("agent")),
+        ("author", base_codec::json_str(session)),
+        ("text", base_codec::json_str(text)),
+        ("at", sql_db::int64_to_json(now_ms)),
+      ]
+      match card_opt {
+        Some(c) => entry_fs.push(("card", c))
+        None => ()
+      }
+      let ev_target = station_api::EventTarget::{
+        lang: None,
+        viewer: None,
+        device: None,
+        email: None,
+        workspace: None,
+        subs: None,
+        read_only: None,
+        managers: None,
+        vault: None,
+        sees_ws: None,
+        sees_session: None,
+        sees_thread: Some(thr.id.to_int()),
+        sees_job: None,
+      }
+      let _ = ev.emit(
+        "thread",
+        base_codec::json_obj([
+          ("id", sql_db::int64_to_json(thr.id)),
+          ("entries", base_codec::json_arr([base_codec::json_obj(entry_fs)])),
+        ]),
+        ev_target,
+        now_ms,
+        None,
+      )
+    }
+    None => ()
+  }
+  if card_opt.is_some() {
+    Ok(Some(ts_str))
+  } else {
+    Ok(None)
+  }
+}
+
+fn vault_save_request_row(
+  st : station_store::Store,
+  req_body : base_codec::Json,
+  ws : String,
+  id : String,
+  session : String,
+  thread_opt : Option[Int64],
+  card_ts_opt : Option[String],
+  audit_event : String,
+  audit_detail : String,
+  now_sec : Int64,
+) -> Result[Unit, String] {
+  let raw_body = base_codec::json_stringify(req_body)
+  let vault_id = match json_field_str(req_body, "vault") { Some(s) => s, None => "" }
+  let item_id = match json_field_str(req_body, "item") { Some(s) => s, None => "" }
+  let tid_j = match thread_opt { Some(t) => sql_db::int64_to_json(t), None => base_codec::json_null() }
+  let cts_j = match card_ts_opt { Some(c) => base_codec::json_str(c), None => base_codec::json_null() }
+  match st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match txdb.run(
+      "INSERT INTO vault_requests (ws, id, session, status, body, thread, card_ts) VALUES (?1, ?2, ?3, 'pending', ?4, ?5, ?6)",
+      [
+        base_codec::json_str(ws),
+        base_codec::json_str(id),
+        base_codec::json_str(session),
+        base_codec::json_str(raw_body),
+        tid_j,
+        cts_j,
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    match txdb.run(
+      "INSERT INTO vault_audit (at, ws, vault, item, request, session, kind, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+      [
+        sql_db::int64_to_json(now_sec),
+        base_codec::json_str(ws),
+        base_codec::json_str(vault_id),
+        base_codec::json_str(item_id),
+        base_codec::json_str(id),
+        base_codec::json_str(session),
+        base_codec::json_str(audit_event),
+        base_codec::json_str(audit_detail),
+      ],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  }) {
+    Ok(_) => Ok(())
+    Err(e) => Err("failed to save vault request: " + e.message)
+  }
+}
+
+fn vault_emit_req_sse(
+  events_opt : Option[station_api::EventsHub],
+  req_body : base_codec::Json,
+  now_ms : Int64,
+) -> Unit {
+  match events_opt {
+    Some(ev) => vd_emit_request_event(ev, req_body, now_ms)
+    None => ()
+  }
+}
+
+fn vault_how_words(mode : String, hosts : Array[String]) -> String {
+  if mode == "proxy" {
+    "代理（限 " + vd_join_strs(hosts, ", ") + "）"
+  } else if mode == "ssh" {
+    "ssh-agent（私钥不出 station）"
+  } else if mode == "file" {
+    "文件（命令运行时临时写出，可读取内容）"
+  } else if mode == "browser" {
+    "放进这个对话的浏览器（限 " + vd_join_strs(hosts, ", ") + "，到期取出）"
+  } else {
+    "环境变量（命令可读取明文）"
+  }
+}
+
+fn vault_kind_words(kind : String) -> String {
+  if kind == "token" {
+    "Token"
+  } else if kind == "login" {
+    "登录"
+  } else if kind == "ssh_key" {
+    "SSH 密钥"
+  } else if kind == "file" {
+    "文件"
+  } else if kind == "browser" {
+    "登录态"
+  } else {
+    kind
+  }
+}
+
+fn vault_scope_option(g_scope : String, recommended : Bool) -> base_codec::Json {
+  let (label, detail) = if g_scope == "once" {
+    ("仅本次", "只给这一条命令用，下次还要再批准")
+  } else if g_scope == "hour" {
+    ("本对话 1 小时内", "1 小时内这个对话可以反复使用，不用再批准")
+  } else {
+    ("本对话直到归档", "这个对话归档或删除前都能用，最长 30 天")
+  }
+  let fs : Array[(String, base_codec::Json)] = [
+    ("label", base_codec::json_str(label)),
+    ("detail", base_codec::json_str(detail)),
+  ]
+  if recommended {
+    fs.push(("recommended", base_codec::json_bool(true)))
+  }
+  base_codec::json_obj(fs)
+}
+
+fn vault_lasts_of(
+  whole_store : WholeStore,
+  st : station_store::Store,
+  ws : String,
+  vault_id : String,
+  owner_opt : Option[String],
+  listing : base_codec::Json,
+  vault_lasts_opt : Option[String],
+) -> Option[String] {
+  match json_field_str(listing, "lasts") {
+    Some(l) if l.length() > 0 => return Some(l)
+    _ => ()
+  }
+  match vault_lasts_opt {
+    Some(l) if l.length() > 0 => return Some(l)
+    _ => ()
+  }
+  if vault_id == "plain" {
+    match owner_opt {
+      Some(own) => match st.db.first(
+        "SELECT lasts FROM vault_plain_lasts WHERE ws = ?1 AND LOWER(owner) = ?2",
+        [base_codec::json_str(ws), base_codec::json_str(jscase::lower(own))],
+      ) {
+        Ok(Some(r)) => match r.get("lasts") {
+          Some(base_codec::Json::Str(s)) if s.length() > 0 => return Some(s)
+          _ => ()
+        }
+        _ => ()
+      }
+      None => ()
+    }
+    None
+  } else {
+    match whole_store.vault_store {
+      Some(vs) => match vs.vault(ws, vault_id) {
+        Ok(Some(vf)) => match form::json_field(Some(vf), "lasts") {
+          Some(form::Json::Str(s)) if s.length() > 0 => Some(s)
+          _ => None
+        }
+        _ => None
+      }
+      None => None
+    }
+  }
+}
+
+fn vault_build_use_card_and_text(
+  whole_store : WholeStore,
+  st : station_store::Store,
+  ws : String,
+  req_body : base_codec::Json,
+  listing : base_codec::Json,
+  decider_opt : Option[String],
+  vault_lasts_opt : Option[String],
+  is_stillfail : Bool,
+) -> (String, Option[base_codec::Json]) {
+  let req_id = match json_field_str(req_body, "id") { Some(s) => s, None => "" }
+  let vault_id = match json_field_str(req_body, "vault") { Some(s) => s, None => "" }
+  let mode = match json_field_str(req_body, "mode") { Some(s) => s, None => "env" }
+  let reason = match json_field_str(req_body, "reason") { Some(s) => s, None => "" }
+  let cmd_opt = json_field_str(req_body, "command")
+  let hosts = match vd_str_arr(req_body, "hosts") {
+    Some(hs) => hs
+    None => match vd_str_arr(listing, "hosts") { Some(hs) => hs, None => [] }
+  }
+  let lname = match json_field_str(listing, "name") { Some(s) => s, None => "" }
+  let cross_ws_name : Option[String] = match base_codec::json_get(req_body, "cross") {
+    Some(c) => json_field_str(c, "workspaceName")
+    None => None
+  }
+  let run_on_name : Option[String] = match base_codec::json_get(req_body, "runOn") {
+    Some(ro) => json_field_str(ro, "name")
+    None => None
+  }
+  let parts : Array[String] = []
+  let cross_suffix = match cross_ws_name {
+    Some(wn) if wn.length() > 0 => "（来自「" + wn + "」）"
+    _ => ""
+  }
+  parts.push("申请使用「" + lname + "」" + cross_suffix + "：" + reason)
+  match cmd_opt {
+    Some(c) if c.length() > 0 => parts.push("命令：`" + c + "`")
+    _ => ()
+  }
+  parts.push("方式：" + vault_how_words(mode, hosts))
+  match run_on_name {
+    Some(rn) if rn.length() > 0 => parts.push("运行在：" + rn)
+    _ => ()
+  }
+  match base_codec::json_get(req_body, "timeout") {
+    Some(t_obj) => {
+      let tk = match json_field_str(t_obj, "kind") { Some(s) => s, None => "idle" }
+      let ts = match vd_safe_int64(t_obj, "seconds") { Some(v) => v, None => 3600L }
+      parts.push("申请时限：" + (if tk == "idle" { "闲置" } else { "固定" }) + " " + (ts / 60L).to_string() + " 分钟")
+    }
+    None => ()
+  }
+  if !is_stillfail {
+    parts.push("请在 still.fail 客户端的「密钥」中批准。")
+    return (vd_join_strs(parts, "\n\n"), None)
+  }
+  let lasts = vault_lasts_of(whole_store, st, ws, vault_id, decider_opt, listing, vault_lasts_opt)
+  let all_scopes = ["once", "hour", "chat"]
+  let allowed_scopes : Array[String] = []
+  for i in 0..<all_scopes.length() {
+    if vd_allows_scope(lasts, all_scopes[i]) {
+      allowed_scopes.push(all_scopes[i])
+    }
+  }
+  let options : Array[base_codec::Json] = []
+  for i in 0..<allowed_scopes.length() {
+    options.push(vault_scope_option(allowed_scopes[i], i == allowed_scopes.length() - 1))
+  }
+  options.push(
+    base_codec::json_obj([
+      ("label", base_codec::json_str("拒绝")),
+      ("detail", base_codec::json_str("通知 agent 已拒绝")),
+    ]),
+  )
+  let v_fs : Array[(String, base_codec::Json)] = [
+    ("request", base_codec::json_str(req_id)),
+    ("name", base_codec::json_str(lname)),
+    ("reason", base_codec::json_str(reason)),
+    ("mode", base_codec::json_str(mode)),
+    ("hosts", if vd_hosted(mode) { json_str_array(hosts) } else { base_codec::json_arr([]) }),
+  ]
+  match cmd_opt {
+    Some(c) if c.length() > 0 => v_fs.push(("command", base_codec::json_str(c)))
+    _ => ()
+  }
+  match run_on_name {
+    Some(rn) if rn.length() > 0 => v_fs.push(("station", base_codec::json_str(rn)))
+    _ => ()
+  }
+  match base_codec::json_get(req_body, "timeout") {
+    Some(t_obj) => v_fs.push(("timeout", t_obj))
+    None => ()
+  }
+  match base_codec::json_get(req_body, "cross") {
+    Some(c_obj) => v_fs.push(("cross", c_obj))
+    None => ()
+  }
+  let card_fs : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("options")),
+    ("options", base_codec::json_arr(options)),
+    ("vault", base_codec::json_obj(v_fs)),
+  ]
+  match decider_opt {
+    Some(d) if d.length() > 0 => card_fs.push(("assignee", base_codec::json_str(jscase::lower(d))))
+    _ => ()
+  }
+  (vd_join_strs(parts, "\n\n"), Some(base_codec::json_obj(card_fs)))
+}
+
+fn vault_build_save_card_and_text(
+  req_body : base_codec::Json,
+  is_stillfail : Bool,
+) -> (String, Option[base_codec::Json]) {
+  let req_id = match json_field_str(req_body, "id") { Some(s) => s, None => "" }
+  let reason = match json_field_str(req_body, "reason") { Some(s) => s, None => "" }
+  let owner = match json_field_str(req_body, "owner") { Some(s) => s, None => "" }
+  let save_obj = match base_codec::json_get(req_body, "save") {
+    Some(v) => v
+    None => base_codec::json_obj([])
+  }
+  let s_kind = match json_field_str(save_obj, "kind") { Some(s) => s, None => "token" }
+  let s_name = match json_field_str(save_obj, "name") { Some(s) => s, None => "" }
+  let s_about = json_field_str(save_obj, "about")
+  let s_user = json_field_str(save_obj, "username")
+  let s_file = json_field_str(save_obj, "filename")
+  let s_typed = json_field_bool(save_obj, "typed") == Some(true)
+  let s_modes = match vd_str_arr(save_obj, "modes") { Some(ms) => ms, None => ["env"] }
+  let s_hosts = match vd_str_arr(save_obj, "hosts") { Some(hs) => hs, None => [] }
+  let first_mode = if s_modes.length() > 0 { s_modes[0] } else { "env" }
+  let extra_meta = match s_user {
+    Some(u) if u.length() > 0 => " · " + u
+    _ => match s_file {
+      Some(f) if f.length() > 0 => " · " + f
+      _ => ""
+    }
+  }
+  let kind_str = "（" + vault_kind_words(s_kind) + extra_meta + "）"
+  let parts : Array[String] = []
+  if s_typed {
+    parts.push("请填入「" + s_name + "」" + kind_str + "并存入密钥库：" + reason)
+  } else {
+    parts.push("申请将「" + s_name + "」存入密钥库" + kind_str + "：" + reason)
+  }
+  match s_about {
+    Some(ab) if ab.length() > 0 => parts.push("说明：" + ab)
+    _ => ()
+  }
+  if !is_stillfail {
+    parts.push(if s_typed { "请在 still.fail 客户端的「密钥」中填写并存入。" } else { "请在 still.fail 客户端的「密钥」中批准。" })
+    return (vd_join_strs(parts, "\n\n"), None)
+  }
+  let save_card_fs : Array[(String, base_codec::Json)] = [("kind", base_codec::json_str(s_kind))]
+  match s_user { Some(u) if u.length() > 0 => save_card_fs.push(("username", base_codec::json_str(u))), _ => () }
+  match s_file { Some(f) if f.length() > 0 => save_card_fs.push(("filename", base_codec::json_str(f))), _ => () }
+  if s_typed {
+    save_card_fs.push(("typed", base_codec::json_bool(true)))
+  }
+  let v_fs : Array[(String, base_codec::Json)] = [
+    ("request", base_codec::json_str(req_id)),
+    ("name", base_codec::json_str(s_name)),
+    ("reason", base_codec::json_str(reason)),
+    ("mode", base_codec::json_str(first_mode)),
+    ("hosts", if vd_hosted(first_mode) { json_str_array(s_hosts) } else { base_codec::json_arr([]) }),
+    ("save", base_codec::json_obj(save_card_fs)),
+  ]
+  match s_about { Some(ab) if ab.length() > 0 => v_fs.push(("about", base_codec::json_str(ab))), _ => () }
+  let card = base_codec::json_obj([
+    ("type", base_codec::json_str("options")),
+    (
+      "options",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("label", base_codec::json_str("存入密钥库")),
+          ("detail", base_codec::json_str("agent 之后每次使用仍需你批准")),
+          ("recommended", base_codec::json_bool(true)),
+        ]),
+        base_codec::json_obj([
+          ("label", base_codec::json_str("拒绝")),
+          ("detail", base_codec::json_str("不保存，通知 agent")),
+        ]),
+      ]),
+    ),
+    ("assignee", base_codec::json_str(jscase::lower(owner))),
+    ("vault", base_codec::json_obj(v_fs)),
+  ])
+  (vd_join_strs(parts, "\n\n"), Some(card))
+}
+
+fn vault_build_describe_card_and_text(
+  req_body : base_codec::Json,
+  decider_opt : Option[String],
+  is_stillfail : Bool,
+) -> (String, Option[base_codec::Json]) {
+  let req_id = match json_field_str(req_body, "id") { Some(s) => s, None => "" }
+  let reason = match json_field_str(req_body, "reason") { Some(s) => s, None => "" }
+  let mode = match json_field_str(req_body, "mode") { Some(s) => s, None => "env" }
+  let d_obj = match base_codec::json_get(req_body, "describe") { Some(v) => v, None => base_codec::json_obj([]) }
+  let name = match json_field_str(d_obj, "name") { Some(s) => s, None => "" }
+  let about = match json_field_str(d_obj, "about") { Some(s) => s, None => "" }
+  let was_obj = match base_codec::json_get(d_obj, "was") { Some(v) => v, None => base_codec::json_obj([]) }
+  let was_name = match json_field_str(was_obj, "name") { Some(s) => s, None => "" }
+  let was_about = match json_field_str(was_obj, "about") { Some(s) => s, None => "" }
+  let what = if name != was_name && about != was_about {
+    "名称与说明"
+  } else if name != was_name {
+    "名称"
+  } else {
+    "说明"
+  }
+  let parts : Array[String] = ["申请修改密钥「" + was_name + "」的" + what + "：" + reason]
+  if name != was_name {
+    parts.push("名称改为：" + name)
+  }
+  if about != was_about {
+    parts.push(if about.length() == 0 { "清除说明" } else { "说明改为：" + about })
+  }
+  if !is_stillfail {
+    parts.push("请在 still.fail 客户端的「密钥」中批准。")
+    return (vd_join_strs(parts, "\n\n"), None)
+  }
+  let card_fs : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("options")),
+    (
+      "options",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("label", base_codec::json_str("确认修改")),
+          ("detail", base_codec::json_str("按以上内容修改名称与说明")),
+          ("recommended", base_codec::json_bool(true)),
+        ]),
+        base_codec::json_obj([
+          ("label", base_codec::json_str("保持不变")),
+          ("detail", base_codec::json_str("不作修改，通知 agent")),
+        ]),
+      ]),
+    ),
+    (
+      "vault",
+      base_codec::json_obj([
+        ("request", base_codec::json_str(req_id)),
+        ("name", base_codec::json_str(was_name)),
+        ("reason", base_codec::json_str(reason)),
+        ("mode", base_codec::json_str(mode)),
+        ("hosts", base_codec::json_arr([])),
+        (
+          "describe",
+          base_codec::json_obj([
+            ("name", base_codec::json_str(name)),
+            ("about", base_codec::json_str(about)),
+            ("wasAbout", base_codec::json_str(was_about)),
+          ]),
+        ),
+      ]),
+    ),
+  ]
+  match decider_opt {
+    Some(d) if d.length() > 0 => card_fs.push(("assignee", base_codec::json_str(jscase::lower(d))))
+    _ => ()
+  }
+  (vd_join_strs(parts, "\n\n"), Some(base_codec::json_obj(card_fs)))
+}
+
+fn vault_build_remove_card_and_text(
+  req_body : base_codec::Json,
+  decider_opt : Option[String],
+  is_stillfail : Bool,
+) -> (String, Option[base_codec::Json]) {
+  let req_id = match json_field_str(req_body, "id") { Some(s) => s, None => "" }
+  let reason = match json_field_str(req_body, "reason") { Some(s) => s, None => "" }
+  let mode = match json_field_str(req_body, "mode") { Some(s) => s, None => "env" }
+  let r_obj = match base_codec::json_get(req_body, "remove") { Some(v) => v, None => base_codec::json_obj([]) }
+  let name = match json_field_str(r_obj, "name") { Some(s) => s, None => "" }
+  let parts : Array[String] = ["申请删除密钥「" + name + "」：" + reason]
+  if !is_stillfail {
+    parts.push("请在 still.fail 客户端的「密钥」中批准。")
+    return (vd_join_strs(parts, "\n\n"), None)
+  }
+  let card_fs : Array[(String, base_codec::Json)] = [
+    ("type", base_codec::json_str("options")),
+    (
+      "options",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("label", base_codec::json_str("删除")),
+          ("detail", base_codec::json_str("从密钥库删除这条密钥")),
+          ("recommended", base_codec::json_bool(true)),
+        ]),
+        base_codec::json_obj([
+          ("label", base_codec::json_str("保留")),
+          ("detail", base_codec::json_str("不删除，通知 agent")),
+        ]),
+      ]),
+    ),
+    (
+      "vault",
+      base_codec::json_obj([
+        ("request", base_codec::json_str(req_id)),
+        ("name", base_codec::json_str(name)),
+        ("reason", base_codec::json_str(reason)),
+        ("mode", base_codec::json_str(mode)),
+        ("hosts", base_codec::json_arr([])),
+        ("remove", base_codec::json_obj([("name", base_codec::json_str(name))])),
+      ]),
+    ),
+  ]
+  match decider_opt {
+    Some(d) if d.length() > 0 => card_fs.push(("assignee", base_codec::json_str(jscase::lower(d))))
+    _ => ()
+  }
+  (vd_join_strs(parts, "\n\n"), Some(base_codec::json_obj(card_fs)))
+}
+
+fn vault_build_browse_card_and_text(
+  req_body : base_codec::Json,
+  is_stillfail : Bool,
+) -> (String, Option[base_codec::Json]) {
+  let req_id = match json_field_str(req_body, "id") { Some(s) => s, None => "" }
+  let reason = match json_field_str(req_body, "reason") { Some(s) => s, None => "" }
+  let owner = match json_field_str(req_body, "owner") { Some(s) => s, None => "" }
+  let b_obj = match base_codec::json_get(req_body, "browse") { Some(v) => v, None => base_codec::json_obj([]) }
+  let hint = json_field_str(b_obj, "workspace")
+  let parts : Array[String] = ["申请查看你在其它工作区的个人密钥列表：" + reason]
+  match hint {
+    Some(h) if h.length() > 0 => parts.push("目标工作区：" + h)
+    _ => ()
+  }
+  if !is_stillfail {
+    parts.push("请在 still.fail 客户端的「密钥」中批准。")
+    return (vd_join_strs(parts, "\n\n"), None)
+  }
+  let card = base_codec::json_obj([
+    ("type", base_codec::json_str("options")),
+    (
+      "options",
+      base_codec::json_arr([
+        base_codec::json_obj([
+          ("label", base_codec::json_str("允许查看")),
+          ("detail", base_codec::json_str("仅向本对话提供名称与说明，不含密钥明文")),
+          ("recommended", base_codec::json_bool(true)),
+        ]),
+        base_codec::json_obj([
+          ("label", base_codec::json_str("拒绝")),
+          ("detail", base_codec::json_str("不提供，通知 agent")),
+        ]),
+      ]),
+    ),
+    ("assignee", base_codec::json_str(jscase::lower(owner))),
+    (
+      "vault",
+      base_codec::json_obj([
+        ("request", base_codec::json_str(req_id)),
+        ("name", base_codec::json_str("其它工作区的个人密钥")),
+        ("reason", base_codec::json_str(reason)),
+        ("mode", base_codec::json_str("browse")),
+        ("hosts", base_codec::json_arr([])),
+        ("browse", b_obj),
+      ]),
+    ),
+  ])
+  (vd_join_strs(parts, "\n\n"), Some(card))
+}
+
+// ---------------------------------------------------------------------------
+// `VaultRouteCtx.boxed` Reboxing Hook (1:1 Node `secrets.ts:2101-2209`)
+// ---------------------------------------------------------------------------
+
+/// Rebox all pending `secret_save` requests owned by the device's member when a new
+/// device box certificate is published via `PUT /vault/boxes`.
+pub fn vault_rebox_for_cert(
+  whole_store : WholeStore,
+  events_opt : Option[station_api::EventsHub],
+  l : lock::LockState,
+  cert_form : form::Json,
+  rng : (Int) -> Result[Bytes, String],
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+  now_ms : Int64,
+) -> Bool {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(_) => return true
+  }
+  let vstore = match whole_store.require_vault_store() {
+    Ok(vs) => vs
+    Err(_) => return true
+  }
+  let lv = station_vault::lock_view_of(l)
+  let vc = station_rules_bridge::vault_crypto_with(verify_fn)
+  match vault::cert_ok(lv, Some(cert_form), false, vc) {
+    Some(_) => return true
+    None => ()
+  }
+  let cert_dev = match form::json_field(Some(cert_form), "device") { Some(form::Json::Str(s)) => s, _ => return true }
+  let cert_box = match form::json_field(Some(cert_form), "box") { Some(form::Json::Str(s)) => s, _ => return true }
+  let sub = match l.devices.get(cert_dev) {
+    Some(d) => d.sub
+    None => return true
+  }
+  let email = match vd_lock_member_email(l, sub) {
+    Some(e) => e
+    None => return true
+  }
+  // Collect unsaved request IDs scoped to `(l.ws, email)` (or unscoped carried saves).
+  let cand_ids : Array[String] = []
+  let ukeys = whole_store.vault_unsaved.keys()
+  for i in 0..<ukeys.length() {
+    let id = ukeys[i]
+    match whole_store.vault_unsaved_scopes.get(id) {
+      Some(scopes) if scopes.length() > 0 => {
+        let mut matched = false
+        for si in 0..<scopes.length() {
+          if scopes[si].0 == l.ws && jscase::lower(scopes[si].1) == email {
+            matched = true
+            break
+          }
+        }
+        if matched {
+          cand_ids.push(id)
+        }
+      }
+      _ => cand_ids.push(id)
+    }
+  }
+  if cand_ids.length() == 0 {
+    return true
+  }
+  let mut all_ok = true
+  for i in 0..<cand_ids.length() {
+    let id = cand_ids[i]
+    let fields = match whole_store.vault_unsaved.get(id) {
+      Some(f) => f
+      None => continue
+    }
+    let row = match st.db.first(
+      "SELECT body, thread, card_ts FROM vault_requests WHERE ws = ?1 AND id = ?2 AND status = 'pending'",
+      [base_codec::json_str(l.ws), base_codec::json_str(id)],
+    ) {
+      Ok(Some(r)) => r
+      Ok(None) => continue
+      Err(_) => {
+        all_ok = false
+        continue
+      }
+    }
+    let raw_body = match row.get("body") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => {
+        all_ok = false
+        continue
+      }
+    }
+    let req_thread_j = match row.get("thread") { Some(v) => v, None => base_codec::json_null() }
+    let req_card_ts_j = match row.get("card_ts") { Some(v) => v, None => base_codec::json_null() }
+    let req_j = match base_codec::json_parse(raw_body) {
+      base_codec::JsonParseResult::Ok(v) => v
+      _ => {
+        all_ok = false
+        continue
+      }
+    }
+    if base_codec::json_get(req_j, "save").is_none() {
+      continue
+    }
+    let req_vault = match json_field_str(req_j, "vault") { Some(s) => s, None => "" }
+    if req_vault == "plain" {
+      continue
+    }
+    let req_owner = match json_field_str(req_j, "owner") { Some(s) => jscase::lower(s), None => "" }
+    if req_owner != email {
+      continue
+    }
+    // Skip if already sealed to this exact `cert_box`.
+    let mut already = false
+    let kept_sealed : Array[base_codec::Json] = []
+    match base_codec::json_get(req_j, "sealed") {
+      Some(base_codec::Json::Arr(xs)) => {
+        for si in 0..<xs.length() {
+          let sb = match json_field_str(xs[si], "box") { Some(s) => s, None => "" }
+          let sd = match json_field_str(xs[si], "device") { Some(s) => s, None => "" }
+          if sb == cert_box {
+            already = true
+            break
+          }
+          if sd != cert_dev {
+            kept_sealed.push(xs[si])
+          }
+        }
+      }
+      _ => ()
+    }
+    if already {
+      continue
+    }
+    let sealed_entry = match vault_seal_to_cert(cert_dev, cert_box, l.ws, id, fields, rng) {
+      Ok(se) => se
+      Err(_) => {
+        all_ok = false
+        continue
+      }
+    }
+    kept_sealed.push(sealed_entry)
+    let mut next_j = json_obj_set(req_j, "sealed", Some(base_codec::json_arr(kept_sealed)))
+    if req_vault.length() == 0 {
+      let chosen = vault_choose_personal_for(vstore, l, sub, verify_fn)
+      if chosen.length() > 0 {
+        next_j = json_obj_set(next_j, "vault", Some(base_codec::json_str(chosen)))
+      }
+    }
+    let next_raw = base_codec::json_stringify(next_j)
+    let updated = match st.db.tx(fn(txdb : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+      txdb.run(
+        "UPDATE vault_requests SET body = ?1 WHERE ws = ?2 AND id = ?3 AND status = 'pending' AND body = ?4 AND thread IS ?5 AND card_ts IS ?6",
+        [
+          base_codec::json_str(next_raw),
+          base_codec::json_str(l.ws),
+          base_codec::json_str(id),
+          base_codec::json_str(raw_body),
+          req_thread_j,
+          req_card_ts_j,
+        ],
+      )
+    }) {
+      Ok(n) => n
+      Err(_) => 0
+    }
+    if updated > 0 {
+      vault_emit_req_sse(events_opt, next_j, now_ms)
+    } else {
+      all_ok = false
+    }
+  }
+  all_ok
+}
+
+// ---------------------------------------------------------------------------
+// `secret_run` Pre-Validation & Grant Spending (Non-Blocking!)
+// ---------------------------------------------------------------------------
+
+/// Validated, grant-spent execution plan produced by `prepare_secret_run` and executed
+/// asynchronously by `SecretRunManager` in `whole_daemon_secret_run.pion` (ZERO `host_shim::wait`).
+pub struct PreparedSecretRun {
+  pub grant_id : String
+  pub session : String
+  pub ws : String
+  pub mode : station_vault::DeliveryMode
+  pub hosts : Array[String]
+  pub secret_value : String
+  pub secret_kind : String
+  pub secret_filename : Option[String]
+  pub account : Option[String]
+  pub target_env : Option[String]
+  pub command : String
+  pub workspace : String
+  pub cwd : String
+  pub timeout_ms : Int64
+  pub expires_sec : Int64
+}
+
+/// Safe filename for `mode == "file"` (1:1 Node `run.ts:119-122`).
+pub fn vault_safe_secret_filename(name_opt : Option[String]) -> String {
+  let n = match name_opt {
+    Some(s) => s.trim()
+    None => ""
+  }
+  if n.length() == 0 || n == "." || n == ".." {
+    return "secret"
+  }
+  let bs = n.to_bytes()
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int() & 0xFF
+    if b == 47 || b == 92 || b == 0 {
+      return "secret"
+    }
+  }
+  n
+}
+
+fn vault_normalize_path(sep : String, raw : String) -> String {
+  let is_abs = raw.starts_with(sep)
+  let parts = raw.split(sep)
+  let stack : Array[String] = []
+  for i in 0..<parts.length() {
+    let seg = parts[i]
+    if seg.length() == 0 || seg == "." {
+      continue
+    }
+    if seg == ".." {
+      if stack.length() > 0 && stack[stack.length() - 1] != ".." {
+        let _ = stack.pop()
+      } else if !is_abs {
+        stack.push("..")
+      }
+    } else {
+      stack.push(seg)
+    }
+  }
+  let joined = vd_join_strs(stack, sep)
+  if is_abs { sep + joined } else { joined }
+}
+
+fn vault_last_sep_idx(s : String, sep : String) -> Int {
+  let sep_cu = sep.code_unit_at(0)
+  let mut idx = s.length() - 1
+  while idx >= 0 {
+    if s.code_unit_at(idx) == sep_cu {
+      return idx
+    }
+    idx = idx - 1
+  }
+  -1
+}
+
+fn vault_canonicalize_with_ancestor(
+  sep : String,
+  raw : String,
+  realpath_fn : (String) -> Result[String, Int],
+) -> Result[String, String] {
+  let norm = vault_normalize_path(sep, raw)
+  match realpath_fn(norm) {
+    Ok(c) => return Ok(vault_normalize_path(sep, c))
+    Err(-2) => () // ENOENT: walk up to nearest existing ancestor
+    Err(code) => return Err("cwd realpath failed (" + code.to_string() + ")")
+  }
+  let mut cur = norm
+  let tail : Array[String] = []
+  while true {
+    let idx = vault_last_sep_idx(cur, sep)
+    if idx < 0 {
+      return Err("cwd has no existing ancestor")
+    }
+    let seg = cur.slice(idx + 1, cur.length())
+    let parent = if idx == 0 { sep } else { cur.slice(0, idx) }
+    if seg.length() > 0 {
+      tail.push(seg)
+    }
+    match realpath_fn(parent) {
+      Ok(cp) => {
+        let mut out = vault_normalize_path(sep, cp)
+        let mut ti = tail.length() - 1
+        while ti >= 0 {
+          out = if out == sep { sep + tail[ti] } else { out + sep + tail[ti] }
+          ti = ti - 1
+        }
+        return Ok(vault_normalize_path(sep, out))
+      }
+      Err(-2) => {
+        if parent == cur {
+          return Err("cwd has no existing ancestor")
+        }
+        cur = parent
+      }
+      Err(code) => return Err("cwd ancestor realpath failed (" + code.to_string() + ")")
+    }
+  }
+  Err("cwd canonicalization failed")
+}
+
+/// Pure DI canonical `cwd` workspace-boundary check (resolves symlinks via `realpath_fn`,
+/// walking existing ancestors so symlinks pointing outside `workspace` are always rejected).
+pub fn vault_resolve_cwd_in_workspace_with(
+  workspace : String,
+  raw_cwd : Option[String],
+  realpath_fn : (String) -> Result[String, Int],
+) -> Result[String, String] {
+  let ws_norm = workspace.trim()
+  if ws_norm.length() == 0 {
+    return Err("session workspace is empty")
+  }
+  let sep = if ws_norm.contains("\\") { "\\" } else { "/" }
+  let candidate = match raw_cwd {
+    Some(c) => {
+      let tr = c.trim()
+      if tr.length() == 0 {
+        ws_norm
+      } else if tr.starts_with("/") || tr.starts_with("\\") || (tr.length() >= 2 && tr.code_unit_at(1) == 58) {
+        tr
+      } else {
+        nodepath::join(sep, [ws_norm, tr])
+      }
+    }
+    None => ws_norm
+  }
+  let ws_clean = match vault_canonicalize_with_ancestor(sep, ws_norm, realpath_fn) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  let cand_clean = match vault_canonicalize_with_ancestor(sep, candidate, realpath_fn) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  if cand_clean == ws_clean || cand_clean.starts_with(ws_clean + sep) {
+    Ok(cand_clean)
+  } else {
+    Err("cwd must be inside the session workspace")
+  }
+}
+
+/// Validate that `raw_cwd` resolves inside `workspace` using real OS `station_sys::realpath_err`.
+pub fn vault_resolve_cwd_in_workspace(workspace : String, raw_cwd : Option[String]) -> Result[String, String] {
+  vault_resolve_cwd_in_workspace_with(workspace, raw_cwd, station_sys::realpath_err)
+}
+
+/// Live grant-active check for `VaultProxy` / `SshAgentServer` (immediately reflects
+/// archive/revocation/expiry, not just a stale expiry copy).
+pub fn vault_is_grant_active_live(
+  whole_store : WholeStore,
+  session : String,
+  grant_id : String,
+  now_sec : Int64,
+) -> Bool {
+  match whole_store.vault_grants.get_record(grant_id) {
+    Some(rec) => {
+      if rec.session != session || rec.revoked || rec.expires_sec <= now_sec {
+        return false
+      }
+      match whole_store.require_open() {
+        Ok(st) => {
+          if vault_is_session_ended(st, session) {
+            return false
+          }
+          true
+        }
+        Err(_) => false
+      }
+    }
+    None => false
+  }
+}
+
+/// Record a `vault_audit` row (`kind`: `"use"` or `"run"`, matching Node `secrets.ts:2642-2646`).
+pub fn vault_record_audit_by_grant(
+  whole_store : WholeStore,
+  session : String,
+  grant_id : String,
+  kind : String,
+  detail : String,
+  now_sec : Int64,
+) -> Unit {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(_) => return
+  }
+  let (ws, vault_id, item_id) = match whole_store.vault_held_meta.get(grant_id) {
+    Some((req_j, _, _)) => (
+      match json_field_str(req_j, "ws") { Some(s) => s, None => "" },
+      match json_field_str(req_j, "vault") { Some(s) => s, None => "" },
+      match json_field_str(req_j, "item") { Some(s) => s, None => "" },
+    )
+    None => ("", "", "")
+  }
+  let clipped = if detail.length() > 500 { detail.slice(0, 500) } else { detail }
+  let _ = st.db.run(
+    "INSERT INTO vault_audit(ws, at, kind, session, vault, item, request, detail) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    [
+      base_codec::json_str(ws),
+      sql_db::int64_to_json(now_sec),
+      base_codec::json_str(kind),
+      base_codec::json_str(session),
+      base_codec::json_str(vault_id),
+      base_codec::json_str(item_id),
+      base_codec::json_str(grant_id),
+      base_codec::json_str(clipped),
+    ],
+  )
+}
+
+/// Renew an idle grant on real proxy/SSH use (for plain grants, SQLite CAS MUST commit BEFORE
+/// updating in-memory `expires_sec`!) and record a `"use"` audit row.
+pub fn vault_renew_and_audit_use(
+  whole_store : WholeStore,
+  session : String,
+  grant_id : String,
+  detail : String,
+  now_sec : Int64,
+) -> Unit {
+  match whole_store.vault_grants.get_record(grant_id) {
+    Some(rec) => {
+      if rec.session == session && !rec.revoked && rec.idle_sec > 0L {
+        let next_exp = now_sec + rec.idle_sec
+        let mut is_plain = false
+        let mut req_ws = ""
+        match whole_store.vault_held_meta.get(grant_id) {
+          Some((req_j, _, _)) => {
+            is_plain = match json_field_str(req_j, "vault") { Some("plain") => true, _ => false }
+            req_ws = match json_field_str(req_j, "ws") { Some(s) => s, None => "" }
+          }
+          None => ()
+        }
+        if is_plain {
+          // SQLite CAS is authoritative for plain grants: only advance memory expiry if CAS commits!
+          let persisted_ok = match whole_store.require_open() {
+            Ok(st) if req_ws.length() > 0 => {
+              match st.db.first(
+                "SELECT body FROM vault_grants WHERE ws = ?1 AND id = ?2",
+                [base_codec::json_str(req_ws), base_codec::json_str(grant_id)],
+              ) {
+                Ok(Some(row)) => match row.get("body") {
+                  Some(base_codec::Json::Str(raw_body)) => match base_codec::json_parse(raw_body) {
+                    base_codec::JsonParseResult::Ok(stored) => {
+                      let next_obj = json_obj_set(stored, "until", Some(sql_db::int64_to_json(next_exp)))
+                      match st.db.run(
+                        "UPDATE vault_grants SET body = ?1 WHERE ws = ?2 AND id = ?3 AND body = ?4",
+                        [
+                          base_codec::json_str(base_codec::json_stringify(next_obj)),
+                          base_codec::json_str(req_ws),
+                          base_codec::json_str(grant_id),
+                          base_codec::json_str(raw_body),
+                        ],
+                      ) {
+                        Ok(n) => n > 0
+                        Err(_) => false
+                      }
+                    }
+                    _ => false
+                  }
+                  _ => false
+                }
+                _ => false
+              }
+            }
+            _ => false
+          }
+          if persisted_ok {
+            rec.expires_sec = next_exp
+          }
+        } else {
+          rec.expires_sec = next_exp
+        }
+      }
+    }
+    None => ()
+  }
+  vault_record_audit_by_grant(whole_store, session, grant_id, "use", detail, now_sec)
+}
+
+/// Atomic SQLite CAS spend for plain grants (`secrets.ts:355-377`), fail-closed on missing row,
+/// malformed `uses`/`until`, or identity mismatch (`ws`/`session`/`id`/`vault`/`item`/`mode`).
+fn vault_spend_plain_grant_cas(
+  st : station_store::Store,
+  ws : String,
+  session : String,
+  grant_id : String,
+  expected_item : String,
+  expected_mode : String,
+  is_once : Bool,
+  renew_now_idle_sec : Int64,
+  now_sec : Int64,
+) -> Result[Unit, String] {
+  let row = match st.db.first(
+    "SELECT body FROM vault_grants WHERE ws = ?1 AND id = ?2",
+    [base_codec::json_str(ws), base_codec::json_str(grant_id)],
+  ) {
+    Ok(Some(r)) => r
+    Ok(None) => return Err("persisted plain grant missing: ask again")
+    Err(e) => return Err("plain grant lookup failed: " + e.message)
+  }
+  let raw_body = match row.get("body") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => return Err("malformed persisted plain grant")
+  }
+  let stored = match base_codec::json_parse(raw_body) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return Err("malformed persisted plain grant JSON")
+  }
+  // Verify stored request & grant identity matches `(ws, session, grant_id, "plain", item, mode)`.
+  match base_codec::json_get(stored, "request") {
+    Some(rj) => {
+      let r_id = match json_field_str(rj, "id") { Some(s) => s, None => "" }
+      let r_ws = match json_field_str(rj, "ws") { Some(s) => s, None => "" }
+      let r_sess = match json_field_str(rj, "session") { Some(s) => s, None => "" }
+      let r_vault = match json_field_str(rj, "vault") { Some(s) => s, None => "" }
+      let r_item = match json_field_str(rj, "item") { Some(s) => s, None => "" }
+      if r_id != grant_id
+      || r_ws != ws
+      || r_sess != session
+      || r_vault != "plain"
+      || (expected_item.length() > 0 && r_item != expected_item) {
+        return Err("persisted plain grant identity mismatch")
+      }
+    }
+    None => return Err("malformed persisted plain grant (missing request)")
+  }
+  let grant_exp : Int64 = match base_codec::json_get(stored, "grant") {
+    Some(gj) => {
+      let gm = match json_field_str(gj, "mode") { Some(s) => s, None => "" }
+      if gm != expected_mode {
+        return Err("persisted plain grant mode mismatch")
+      }
+      match vd_safe_int64(gj, "exp") {
+        Some(e) if e > 0L => e
+        _ => return Err("malformed persisted plain grant exp")
+      }
+    }
+    None => return Err("malformed persisted plain grant (missing grant)")
+  }
+  let cur_uses = match vd_safe_int64(stored, "uses") {
+    Some(u) if u >= 0L => u
+    _ => return Err("malformed persisted plain grant uses")
+  }
+  if is_once && cur_uses != 0L {
+    return Err("this grant was for one use and is used: ask again")
+  }
+  // Treat malformed `until` as corrupt (fail-closed) rather than falling back to `grant.exp`!
+  let exp_sec : Int64 = match base_codec::json_get(stored, "until") {
+    None => grant_exp
+    Some(_) => match vd_safe_int64(stored, "until") {
+      Some(u) if u > 0L => u
+      _ => return Err("malformed persisted plain grant until")
+    }
+  }
+  if exp_sec <= now_sec {
+    return Err("this grant ran out: ask again")
+  }
+  let mut next_obj = json_obj_set(stored, "uses", Some(sql_db::int64_to_json(cur_uses + 1L)))
+  if renew_now_idle_sec > 0L {
+    next_obj = json_obj_set(next_obj, "until", Some(sql_db::int64_to_json(now_sec + renew_now_idle_sec)))
+  }
+  let next_body = base_codec::json_stringify(next_obj)
+  let changed = match st.db.run(
+    "UPDATE vault_grants SET body = ?1 WHERE ws = ?2 AND id = ?3 AND body = ?4",
+    [
+      base_codec::json_str(next_body),
+      base_codec::json_str(ws),
+      base_codec::json_str(grant_id),
+      base_codec::json_str(raw_body),
+    ],
+  ) {
+    Ok(n) => n
+    Err(e) => return Err("plain grant CAS failed: " + e.message)
+  }
+  if changed == 0 {
+    return Err("this grant was concurrently spent or revoked: ask again")
+  }
+  Ok(())
+}
+
+/// Validate a `secret_run` call, enforce all security preconditions BEFORE consuming the grant
+/// (including rejecting `browser` grants, remote/unverified `runOn` grants, unsupported SSH key
+/// formats, and out-of-workspace `cwd`), atomically spend the grant, and return a `PreparedSecretRun`.
+pub fn prepare_secret_run(
+  whole_store : WholeStore,
+  session : String,
+  home_ws : String,
+  this_station_id : String,
+  args : base_codec::Json,
+  now_ms : Int64,
+  this_station_name : String = "",
+) -> Result[PreparedSecretRun, String] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let srow = match st.get_session(session) {
+    Ok(Some(r)) => r
+    Ok(None) => return Err("unknown session " + session)
+    Err(e) => return Err("session lookup failed: " + e.message)
+  }
+  if srow.archived_at.is_some() {
+    return Err("this grant ended with its chat (archived): ask again")
+  }
+  let ws = match srow.ws {
+    Some(w) if w.length() > 0 => w
+    _ => home_ws
+  }
+  let grant_id = match mcp_arg_str(args, "grant") {
+    Some(g) => g.trim()
+    None => ""
+  }
+  if grant_id.length() == 0 {
+    return Err("grant is required")
+  }
+  let command = match mcp_arg_str(args, "command") {
+    Some(c) => c
+    None => ""
+  }
+  if command.trim().length() == 0 {
+    return Err("command is required")
+  }
+  let env_opt : Option[String] = match mcp_arg_str(args, "env") {
+    Some(e) => {
+      let tr = e.trim()
+      if tr.length() > 0 {
+        if !vd_is_valid_env_var(tr) {
+          return Err("env must be a variable name")
+        }
+        Some(tr)
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+  let now_sec = now_ms / 1000L
+  let g = match whole_store.vault_grants.get_record(grant_id) {
+    Some(rec) => rec
+    None => return Err("no such grant here: secret_list shows the grants you hold (a restart of the station forgets them; ask again)")
+  }
+  if g.session != session {
+    return Err("this grant is another session's")
+  }
+  if g.revoked || g.expires_sec <= now_sec {
+    let _ = whole_store.vault_grants.revoke(grant_id)
+    return Err("this grant ran out: ask again")
+  }
+  let is_once = match g.grant_scope {
+    station_vault::GrantScope::Once => {
+      if g.uses > 0 {
+        return Err("this grant was for one use and is used: ask again")
+      }
+      true
+    }
+    _ => false
+  }
+  // Security check BEFORE spending: `browser` grants are NEVER run with `secret_run`!
+  match g.mode {
+    station_vault::DeliveryMode::Browser => {
+      return Err("A sign-in is not run with: it is in this chat's browser (the `browser` tool) while its grant lasts.")
+    }
+    _ => ()
+  }
+  // Security check BEFORE spending: grants bound to another station (`runOn: { id, name }` or legacy)
+  // MUST NOT run locally, and unverified `runOn` is refused!
+  let mut req_vault = ""
+  let mut req_item = ""
+  match whole_store.vault_held_meta.get(grant_id) {
+    Some((req_j, _, _)) => {
+      req_vault = match json_field_str(req_j, "vault") { Some(s) => s, None => "" }
+      req_item = match json_field_str(req_j, "item") { Some(s) => s, None => "" }
+      match base_codec::json_get(req_j, "runOn") {
+        Some(base_codec::Json::Null) | None => ()
+        Some(ro) => {
+          let ro_id = match json_field_str(ro, "id") {
+            Some(s) if s.trim().length() > 0 => s.trim()
+            _ => match json_field_str(ro, "station") {
+              Some(s) if s.trim().length() > 0 => s.trim()
+              _ => ""
+            }
+          }
+          let ro_name = match json_field_str(ro, "name") { Some(s) if s.trim().length() > 0 => s.trim(), _ => ro_id }
+          if ro_id.length() == 0 || !vault_is_this_station(ro_id, this_station_id, this_station_name) {
+            let label = if ro_name.length() > 0 { ro_name } else { "another station" }
+            return Err("This grant is for commands on " + label + ": remote secret_run is not supported on this station yet.")
+          }
+        }
+      }
+    }
+    None => ()
+  }
+  match mcp_arg_str(args, "station") {
+    Some(st_req) => {
+      let tr = st_req.trim()
+      if tr.length() > 0 && !vault_is_this_station(tr, this_station_id, this_station_name) {
+        return Err("This grant is for commands on this station: to run them on " + tr + ", ask again with secret_use {station: \"" + tr + "\"}.")
+      }
+    }
+    None => ()
+  }
+  let secret_val = match g.secret.value() {
+    Some(v) => v
+    None => return Err("the grant's secret has no value to use")
+  }
+  // Security check BEFORE spending: SSH mode requires a supported unencrypted Ed25519 key.
+  match g.mode {
+    station_vault::DeliveryMode::Ssh => {
+      match station_vault::parse_openssh_ed25519_key(secret_val) {
+        Ok(_) => ()
+        Err(e) => return Err("SSH agent currently supports unencrypted Ed25519 keys only: " + e)
+      }
+    }
+    _ => ()
+  }
+  // Resolve timeout_seconds (default 600s, min 1s, max 3600s).
+  let timeout_ms : Int64 = match base_codec::json_get(args, "timeout_seconds") {
+    Some(base_codec::Json::Num(n, raw)) => {
+      if raw.contains(".") || raw.contains("e") || raw.contains("E") {
+        VAULT_RUN_DEFAULT_MS
+      } else {
+        let sec = n.to_int64()
+        let clamped = if sec < 1L { 1L } else if sec > 3600L { 3600L } else { sec }
+        clamped * 1000L
+      }
+    }
+    _ => VAULT_RUN_DEFAULT_MS
+  }
+  // Security check BEFORE spending: `cwd` MUST be strictly inside the session workspace.
+  let cwd = match vault_resolve_cwd_in_workspace(srow.workspace, mcp_arg_str(args, "cwd")) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  // Resolve & validate default env variable BEFORE spending (fail-closed on invalid default name!).
+  let eff_env : Option[String] = match env_opt {
+    Some(e) => Some(e)
+    None => match g.env_var {
+      Some(ev) if ev.trim().length() > 0 => {
+        let tr = ev.trim()
+        if !vd_is_valid_env_var(tr) {
+          return Err("default env variable name is invalid: " + tr)
+        }
+        Some(tr)
+      }
+      _ => None
+    }
+  }
+  // For `env`/`file`, delivery happens immediately at spawn; for `proxy`/`ssh`, idle renewal happens
+  // on actual proxy swap / SSH sign (`vault_renew_and_audit_use`).
+  let renew_now_idle : Int64 = match g.mode {
+    station_vault::DeliveryMode::Proxy | station_vault::DeliveryMode::Ssh => 0L
+    _ => g.idle_sec
+  }
+  // For plain grants, atomically CAS-spend in SQLite (`secrets.ts:355-377`).
+  if req_vault == "plain" {
+    match vault_spend_plain_grant_cas(st, ws, session, grant_id, req_item, g.mode.as_str(), is_once, renew_now_idle, now_sec) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // All preconditions satisfied -> spend the in-memory grant now!
+  g.uses = g.uses + 1
+  if renew_now_idle > 0L {
+    let next_exp = now_sec + renew_now_idle
+    g.expires_sec = next_exp
+  }
+  let fname = g.secret.fields.get("filename")
+  Ok(PreparedSecretRun::{
+    grant_id: grant_id,
+    session: session,
+    ws: ws,
+    mode: g.mode,
+    hosts: g.hosts,
+    secret_value: secret_val,
+    secret_kind: g.secret.kind,
+    secret_filename: fname,
+    account: g.secret.account(),
+    target_env: eff_env,
+    command: command,
+    workspace: srow.workspace,
+    cwd: cwd,
+    timeout_ms: timeout_ms,
+    expires_sec: g.expires_sec,
+  })
+}
+
+/// Format a `secret_run` completion result 1:1 with Node `secrets.ts:2763-2766`.
+pub fn format_secret_run_output(
+  exit_code : Option[Int],
+  signal_name : Option[String],
+  timed_out : Bool,
+  cut : Bool,
+  output : String,
+) -> String {
+  let end_str = if timed_out {
+    "stopped: it ran too long"
+  } else {
+    match exit_code {
+      Some(c) => "exit code " + c.to_string()
+      None => match signal_name {
+        Some(sig) if sig.length() > 0 => "ended by " + sig
+        _ => "ended"
+      }
+    }
+  }
+  let cut_str = if cut { " (output cut in the middle)" } else { "" }
+  end_str + cut_str + "\n" + output
+}
+
+// ---------------------------------------------------------------------------
+// Main `DomainHandlers.secret` Dispatcher (All 8 MCP Tools)
+// ---------------------------------------------------------------------------
+
+pub struct VaultMcpDeps {
+  pub lock_of : Option[(String) -> Option[lock::LockState]]
+  pub events : Option[station_api::EventsHub]
+  pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
+  pub station_id : String
+  pub station_name : String
+  /// Optional sync/test executor for `secret_run` (in production daemon, `/mcp` intercepts
+  /// `secret_run` asynchronously with `HandlerAction::Defer` + `SecretRunManager`).
+  pub secret_run_exec : Option[(PreparedSecretRun) -> Result[String, String]]
+}
+
+pub fn VaultMcpDeps::empty() -> VaultMcpDeps {
+  VaultMcpDeps::{
+    lock_of: None,
+    events: None,
+    verify_fn: None,
+    station_id: "",
+    station_name: "",
+    secret_run_exec: None,
+  }
+}
+
+pub fn handle_vault_mcp_tool(
+  whole_store : WholeStore,
+  rng : (Int) -> Result[Bytes, String],
+  home_ws : String,
+  deps : VaultMcpDeps,
+  session : String,
+  tool : String,
+  args : base_codec::Json,
+  now_ms : Int64,
+) -> station_tools::ToolReply {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return station_tools::error_reply(e)
+  }
+  let ws = match session_effective_ws(st, session, home_ws) {
+    Ok(Some(w)) => w
+    Ok(None) => return station_tools::error_reply("unknown session " + session)
+    Err(e) => return station_tools::error_reply(e)
+  }
+  let lock_opt : Option[lock::LockState] = match deps.lock_of {
+    Some(f) => f(ws)
+    None => None
+  }
+  let now_sec = now_ms / 1000L
+
+  // ── 1. secret_list ──
+  if tool == "secret_list" {
+    if mcp_arg_bool(args, "other_workspaces") == Some(true) {
+      let email_opt = match vault_person_for(st, session, mcp_arg_str(args, "person")) {
+        Ok(e) => e
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let email = match email_opt {
+        Some(e) => e
+        None => return station_tools::error_reply("No one started this chat: there is no one to ask for other workspaces' personal secrets; name the person (person).")
+      }
+      let reason = match mcp_arg_str(args, "reason") { Some(r) => r.trim(), None => "" }
+      if reason.length() == 0 {
+        return station_tools::error_reply("reason is required: why you need to browse their personal secrets in other workspaces")
+      }
+      let uid = match vault_ulid(now_ms, rng) {
+        Ok(u) => u
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let req_id = "r_" + uid
+      let hint = match mcp_arg_str(args, "workspace") { Some(w) => w.trim(), None => "" }
+      let browse_obj = if hint.length() > 0 {
+        base_codec::json_obj([("workspace", base_codec::json_str(hint))])
+      } else {
+        base_codec::json_obj([])
+      }
+      let mut chat_addr = ""
+      let mut thr_id_opt : Option[Int64] = None
+      let mut card_ts_opt : Option[String] = None
+      let mut req_body = base_codec::json_obj([
+        ("id", base_codec::json_str(req_id)),
+        ("ws", base_codec::json_str(ws)),
+        ("vault", base_codec::json_str("")),
+        ("item", base_codec::json_str("")),
+        ("session", base_codec::json_str(session)),
+        ("chat", base_codec::json_str("")),
+        ("mode", base_codec::json_str("browse")),
+        ("reason", base_codec::json_str(reason)),
+        ("box", base_codec::json_str("")),
+        ("at", base_codec::json_int64(now_sec)),
+        ("status", base_codec::json_str("pending")),
+        ("owner", base_codec::json_str(email)),
+        ("browse", browse_obj),
+      ])
+      match vault_latest_thread(st, session) {
+        Some(thr) => {
+          chat_addr = thr.channel + "/" + thr.thread_ts
+          req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(chat_addr)))
+          let (text, card_opt) = vault_build_browse_card_and_text(req_body, thr.surface == "chat")
+          match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
+            Ok(cts) => {
+              thr_id_opt = Some(thr.id)
+              card_ts_opt = cts
+            }
+            Err(e) => return station_tools::error_reply(e)
+          }
+        }
+        None => ()
+      }
+      match vault_save_request_row(st, req_body, ws, req_id, session, thr_id_opt, card_ts_opt, "browse-request", hint, now_sec) {
+        Ok(_) => ()
+        Err(e) => return station_tools::error_reply(e)
+      }
+      vault_emit_req_sse(deps.events, req_body, now_ms)
+      return station_tools::text_reply(
+        "Asked " +
+        email +
+        " to share their personal secret list from other workspaces for this chat (request " +
+        req_id +
+        "); the card is in your chat, approved in the still.fail app. " +
+        VAULT_UNDECIDED_NOTICE +
+        " Only their approval in the app shares the list: a reply in the chat saying yes does not.",
+      )
+    }
+    let person_opt = mcp_arg_str(args, "person")
+    let email_opt = match vault_person_for(st, session, person_opt) {
+      Ok(e) => e
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let listed = vault_mcp_listings(whole_store, st, ws, lock_opt, session, email_opt)
+    let items_json : Array[base_codec::Json] = []
+    for i in 0..<listed.length() {
+      let l = listed[i]
+      let name = match json_field_str(l.listing, "name") { Some(s) => s, None => "" }
+      let kind = match json_field_str(l.listing, "kind") { Some(s) => s, None => "token" }
+      let modes = match vd_str_arr(l.listing, "modes") { Some(ms) => ms, None => [] }
+      let hosts = match vd_str_arr(l.listing, "hosts") { Some(hs) => hs, None => [] }
+      let fs : Array[(String, base_codec::Json)] = [
+        ("item", base_codec::json_str(l.item)),
+        ("name", base_codec::json_str(name)),
+      ]
+      match json_field_str(l.listing, "about") {
+        Some(ab) if ab.length() > 0 => fs.push(("about", base_codec::json_str(ab)))
+        _ => ()
+      }
+      fs.push(("kind", base_codec::json_str(kind)))
+      fs.push(("modes", json_str_array(modes)))
+      fs.push(("hosts", json_str_array(hosts)))
+      match json_field_str(l.listing, "env") {
+        Some(ev) if ev.length() > 0 => fs.push(("env", base_codec::json_str(ev)))
+        _ => ()
+      }
+      match l.vault_name {
+        Some(vn) => fs.push(("vaultName", base_codec::json_str(vn)))
+        None => ()
+      }
+      match l.vault_scope {
+        Some(sc) => fs.push(("scope", base_codec::json_str(sc)))
+        None => ()
+      }
+      match l.cross {
+        Some((cws, cws_name, _)) => {
+          fs.push(("crossWorkspace", base_codec::json_bool(true)))
+          fs.push(("workspace", base_codec::json_str(cws)))
+          fs.push(("workspaceName", base_codec::json_str(cws_name)))
+        }
+        None => ()
+      }
+      items_json.push(base_codec::json_obj(fs))
+    }
+    let active_grants = whole_store.vault_grants.list_for_session(session, now_sec)
+    let grants_json : Array[base_codec::Json] = []
+    for i in 0..<active_grants.length() {
+      let g = active_grants[i]
+      let mode_s = g.mode.as_str()
+      let scope_s = match g.grant_scope {
+        station_vault::GrantScope::Once => "once"
+        station_vault::GrantScope::Hour => "hour"
+        station_vault::GrantScope::Chat => "chat"
+      }
+      let mut item_id = ""
+      let mut timeout_opt : Option[base_codec::Json] = None
+      let mut station_opt : Option[String] = None
+      match whole_store.vault_held_meta.get(g.id) {
+        Some((req_j, grant_j, _)) => {
+          match json_field_str(req_j, "item") { Some(s) => item_id = s, None => () }
+          timeout_opt = base_codec::json_get(grant_j, "timeout")
+          match base_codec::json_get(req_j, "runOn") {
+            Some(ro) => station_opt = json_field_str(ro, "name")
+            None => ()
+          }
+        }
+        None => ()
+      }
+      let gfs : Array[(String, base_codec::Json)] = [
+        ("grant", base_codec::json_str(g.id)),
+        ("item", base_codec::json_str(item_id)),
+        ("mode", base_codec::json_str(mode_s)),
+        ("hosts", json_str_array(g.hosts)),
+        ("scope", base_codec::json_str(scope_s)),
+        ("until", base_codec::json_str(vault_iso_utc(g.expires_sec))),
+      ]
+      match timeout_opt {
+        Some(t) => gfs.push(("timeout", t))
+        None => ()
+      }
+      if mode_s == "proxy" {
+        gfs.push(("placeholder", base_codec::json_str(station_vault::placeholder(g.id))))
+      }
+      match station_opt {
+        Some(sn) if sn.length() > 0 => gfs.push(("station", base_codec::json_str(sn)))
+        _ => ()
+      }
+      match g.secret.account() {
+        Some(u) => gfs.push(("username", base_codec::json_str(u)))
+        None => ()
+      }
+      grants_json.push(base_codec::json_obj(gfs))
+    }
+    let v_status = vault_status_for(whole_store, lock_opt, email_opt, deps.verify_fn)
+    let v_words = vault_status_words(v_status)
+    if items_json.length() == 0 && grants_json.length() == 0 {
+      let who_str = match person_opt {
+        Some(p) if p.trim().length() > 0 => p.trim()
+        _ => "whoever started this chat"
+      }
+      return station_tools::text_reply(
+        "No secrets may be asked for here: this station holds none of the vault's items open to agents for " +
+        who_str +
+        ". One kept on another station of the workspace reaches this one once a device of its owner's still.fail app has been online with both. " +
+        v_words,
+      )
+    }
+    return station_tools::text_reply(
+      base_codec::json_stringify(
+        base_codec::json_obj([
+          ("secrets", base_codec::json_arr(items_json)),
+          ("grants", base_codec::json_arr(grants_json)),
+          ("vault", base_codec::json_str(v_words)),
+        ]),
+      ),
+    )
+  }
+
+  // ── 2. secret_use ──
+  if tool == "secret_use" {
+    let item_arg = match mcp_arg_str(args, "item") { Some(s) => s, None => "" }
+    let reason = match mcp_arg_str(args, "reason") { Some(s) => s.trim(), None => "" }
+    let person_opt = mcp_arg_str(args, "person")
+    let (found_opt, email_opt) = match vault_mcp_find_listing(whole_store, st, ws, lock_opt, session, item_arg, person_opt) {
+      Ok(res) => res
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let found = match found_opt {
+      Some(f) => f
+      None => return station_tools::error_reply("No secret named " + base_codec::json_stringify(base_codec::json_str(item_arg)) + " may be asked for here: secret_list lists those that may.")
+    }
+    // Determine card assignee (decider): named person > vault member starter (shared vault) > vault owner (1:1 `secrets.ts:1265-1275`).
+    let decider_opt : Option[String] = match person_opt {
+      Some(p) if p.trim().length() > 0 => email_opt
+      _ => {
+        let mut starter_in_vault = false
+        match (email_opt, lock_opt, whole_store.vault_store) {
+          (Some(se), Some(l), Some(vs)) if found.vault != "plain" => {
+            match vault_member_sub_by_email(l, se) {
+              Some(ssub) => {
+                starter_in_vault = vs.in_vault(ws, ssub, found.vault)
+              }
+              None => ()
+            }
+          }
+          _ => ()
+        }
+        if starter_in_vault {
+          email_opt
+        } else {
+          found.owner
+        }
+      }
+    }
+    // Reject remote `station` requests up front at `secret_use` time until cross-station execution is wired.
+    // Recognize both `deps.station_id` and `deps.station_name` (case-insensitive) as this station.
+    match mcp_arg_str(args, "station") {
+      Some(stn) if stn.trim().length() > 0 => {
+        let tr = stn.trim()
+        let is_local = tr == deps.station_id
+        || (deps.station_name.length() > 0 && jscase::lower(tr) == jscase::lower(deps.station_name))
+        if !is_local {
+          return station_tools::error_reply(
+            "Remote station execution (" + tr + ") is not supported yet on this station; omit station to run locally.",
+          )
+        }
+      }
+      _ => ()
+    }
+    let listing_modes = match vd_str_arr(found.listing, "modes") { Some(ms) => ms, None => [] }
+    let listing_hosts = match vd_str_arr(found.listing, "hosts") { Some(hs) => hs, None => [] }
+    let listing_name = match json_field_str(found.listing, "name") { Some(s) => s, None => "" }
+    let mode = match mcp_arg_str(args, "mode") {
+      Some(m) if m.trim().length() > 0 => m.trim()
+      _ => if listing_modes.length() > 0 { listing_modes[0] } else { "env" }
+    }
+    if !vd_has_str(listing_modes, mode) {
+      return station_tools::error_reply("「" + listing_name + "」 is given only by " + vd_join_strs(listing_modes, ", ") + ".")
+    }
+    if reason.length() == 0 {
+      return station_tools::error_reply("reason is required: why you need it, for the person deciding")
+    }
+    let timeout_j : base_codec::Json = match base_codec::json_get(args, "timeout") {
+      None => base_codec::json_obj([("kind", base_codec::json_str("idle")), ("seconds", base_codec::json_int(3600))])
+      Some(t_obj) => {
+        let tk = match json_field_str(t_obj, "kind") { Some(s) => s, None => "" }
+        let ts = match vd_safe_int64(t_obj, "seconds") { Some(v) => v, None => -1L }
+        if (tk != "idle" && tk != "fixed") || ts < 60L || ts > 2592000L || (ts % 60L) != 0L {
+          return station_tools::error_reply("timeout must be idle or fixed, in whole minutes from 1 minute to 30 days")
+        }
+        base_codec::json_obj([("kind", base_codec::json_str(tk)), ("seconds", base_codec::json_int64(ts))])
+      }
+    }
+    let hosts : Array[String] = match vd_str_arr(args, "hosts") {
+      Some(hs) if hs.length() > 0 => {
+        let norm : Array[String] = []
+        for i in 0..<hs.length() {
+          let h = jscase::lower(hs[i].trim())
+          if h.length() > 0 { norm.push(h) }
+        }
+        norm
+      }
+      _ => if vd_hosted(mode) { listing_hosts } else { [] }
+    }
+    let uid = match vault_ulid(now_ms, rng) {
+      Ok(u) => u
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let req_id = "r_" + uid
+    let is_plain = found.cross.is_none() && found.vault == "plain"
+    let mut box_pub = ""
+    if !is_plain {
+      let (priv, pub_k) = match vault_new_box_pair(rng) {
+        Ok(pair) => pair
+        Err(e) => return station_tools::error_reply(e)
+      }
+      whole_store.vault_boxes.set(req_id, priv)
+      box_pub = pub_k
+    }
+    let owner_email : Option[String] = if found.cross.is_some() {
+      match decider_opt { Some(d) => Some(jscase::lower(d)), None => found.owner }
+    } else if is_plain {
+      found.owner
+    } else {
+      None
+    }
+    let req_fs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(req_id)),
+      ("ws", base_codec::json_str(ws)),
+      ("vault", base_codec::json_str(found.vault)),
+      ("item", base_codec::json_str(found.item)),
+      ("session", base_codec::json_str(session)),
+      ("chat", base_codec::json_str("")),
+      ("mode", base_codec::json_str(mode)),
+      ("reason", base_codec::json_str(reason)),
+      ("timeout", timeout_j),
+      ("box", base_codec::json_str(box_pub)),
+      ("at", base_codec::json_int64(now_sec)),
+      ("status", base_codec::json_str("pending")),
+    ]
+    match mcp_arg_str(args, "command") {
+      Some(c) if c.length() > 0 => req_fs.push(("command", base_codec::json_str(c)))
+      _ => ()
+    }
+    if hosts.length() > 0 {
+      req_fs.push(("hosts", json_str_array(hosts)))
+    }
+    match mcp_arg_str(args, "station") {
+      Some(stn) if stn.trim().length() > 0 && stn.trim() != deps.station_id => {
+        let s_clean = stn.trim()
+        req_fs.push((
+          "runOn",
+          base_codec::json_obj([("id", base_codec::json_str(s_clean)), ("name", base_codec::json_str(s_clean))]),
+        ))
+      }
+      _ => ()
+    }
+    match owner_email {
+      Some(oe) if oe.length() > 0 => req_fs.push(("owner", base_codec::json_str(oe)))
+      _ => ()
+    }
+    match found.cross {
+      Some((cws, cws_n, cv_n)) => {
+        req_fs.push((
+          "cross",
+          base_codec::json_obj([
+            ("workspace", base_codec::json_str(cws)),
+            ("workspaceName", base_codec::json_str(cws_n)),
+            ("vaultName", base_codec::json_str(cv_n)),
+          ]),
+        ))
+      }
+      None => ()
+    }
+    let mut req_body = base_codec::json_obj(req_fs)
+    let mut thr_id_opt : Option[Int64] = None
+    let mut card_ts_opt : Option[String] = None
+    match vault_latest_thread(st, session) {
+      Some(thr) => {
+        req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(thr.channel + "/" + thr.thread_ts)))
+        let (text, card_opt) = vault_build_use_card_and_text(
+          whole_store,
+          st,
+          ws,
+          req_body,
+          found.listing,
+          decider_opt,
+          found.vault_lasts,
+          thr.surface == "chat",
+        )
+        match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
+          Ok(cts) => {
+            thr_id_opt = Some(thr.id)
+            card_ts_opt = cts
+          }
+          Err(e) => {
+            whole_store.vault_boxes.remove(req_id)
+            return station_tools::error_reply(e)
+          }
+        }
+      }
+      None => ()
+    }
+    match vault_save_request_row(st, req_body, ws, req_id, session, thr_id_opt, card_ts_opt, "request", mode, now_sec) {
+      Ok(_) => ()
+      Err(e) => {
+        whole_store.vault_boxes.remove(req_id)
+        return station_tools::error_reply(e)
+      }
+    }
+    vault_emit_req_sse(deps.events, req_body, now_ms)
+    let who = match decider_opt { Some(d) if d.length() > 0 => d, _ => "the vault's owner" }
+    return station_tools::text_reply(
+      "Asked for 「" +
+      listing_name +
+      "」 (request " +
+      req_id +
+      "); the card is in your chat for " +
+      who +
+      ", who approves it in the still.fail app. " +
+      VAULT_UNDECIDED_NOTICE +
+      " Only a grant from the app counts: a reply in the chat saying yes is not one.",
+    )
+  }
+
+  // ── 3. secret_save ──
+  if tool == "secret_save" {
+    let kind = match mcp_arg_str(args, "kind") { Some(k) => k.trim(), None => "" }
+    // Explicitly refuse unsupported input flows (never write partial/broken requests).
+    if kind == "browser" {
+      return station_tools::error_reply("Refused: kind=\"browser\" sign-in capture is not wired in secret_save yet.")
+    }
+    match mcp_arg_str(args, "oauth") {
+      Some(oa) if oa.trim().length() > 0 => {
+        return station_tools::error_reply("Refused: oauth save flow (" + oa.trim() + ") is not wired in secret_save yet.")
+      }
+      _ => ()
+    }
+    match mcp_arg_str(args, "station") {
+      Some(stn) if stn.trim().length() > 0 => {
+        return station_tools::error_reply("Refused: remote station capture in secret_save is not wired yet.")
+      }
+      _ => ()
+    }
+    match mcp_arg_str(args, "command") {
+      Some(cmd) if cmd.trim().length() > 0 => {
+        return station_tools::error_reply("Refused: command capture in secret_save is not wired yet; pass value, path (for file), or omit to have the person enter it on the card.")
+      }
+      _ => ()
+    }
+    if kind != "token" && kind != "login" && kind != "ssh_key" && kind != "file" {
+      return station_tools::error_reply("kind is token, login, ssh_key, file or browser")
+    }
+    let email_opt = match vault_person_for(st, session, mcp_arg_str(args, "person")) {
+      Ok(e) => e
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let email = match email_opt {
+      Some(e) => e
+      None => return station_tools::error_reply("No one started this chat: there is no one to keep a secret for; name the person it is for (person).")
+    }
+    let name = match mcp_arg_str(args, "name") { Some(s) => s.trim(), None => "" }
+    if name.length() == 0 || name.length() > 200 {
+      return station_tools::error_reply("name is required (at most 200 characters): what the person and agents will know it by")
+    }
+    let reason = match mcp_arg_str(args, "reason") { Some(s) => s.trim(), None => "" }
+    if reason.length() == 0 {
+      return station_tools::error_reply("reason is required: why it is worth keeping, for the person deciding")
+    }
+    let about = match mcp_arg_str(args, "about") { Some(s) => s.trim(), None => "" }
+    if about.length() == 0 {
+      return station_tools::error_reply("about is required: what it is for and how it is used, for whoever uses it next")
+    }
+    if about.length() > VAULT_ABOUT_MOST {
+      return station_tools::error_reply("about is at most " + VAULT_ABOUT_MOST.to_string() + " characters")
+    }
+    let path_opt = mcp_arg_str(args, "path")
+    let value_opt = mcp_arg_str(args, "value")
+    if path_opt.is_some() && kind != "file" {
+      return station_tools::error_reply("path is a file's: give kind file")
+    }
+    if path_opt.is_some() && value_opt.is_some() {
+      return station_tools::error_reply("Give a file as path, command or value, one of them.")
+    }
+    let hosts : Array[String] = []
+    match vd_str_arr(args, "hosts") {
+      Some(hs) => {
+        for i in 0..<hs.length() {
+          let h = jscase::lower(hs[i].trim())
+          if h.length() > 0 && !vd_has_str(hosts, h) {
+            if !vd_is_listing_host(h) {
+              return station_tools::error_reply("a listing's hosts are host names")
+            }
+            hosts.push(h)
+          }
+        }
+      }
+      None => ()
+    }
+    let modes : Array[String] = match vd_str_arr(args, "modes") {
+      Some(ms) if ms.length() > 0 => {
+        let dedup : Array[String] = []
+        for i in 0..<ms.length() {
+          let m = ms[i].trim()
+          if m != "proxy" && m != "ssh" && m != "env" && m != "file" && m != "browser" {
+            return station_tools::error_reply("modes are proxy, ssh, env, file or browser")
+          }
+          if !vd_has_str(dedup, m) {
+            dedup.push(m)
+          }
+        }
+        dedup
+      }
+      _ => if kind == "ssh_key" {
+        ["ssh"]
+      } else if kind == "file" {
+        ["file"]
+      } else if hosts.length() > 0 {
+        ["proxy"]
+      } else {
+        ["env"]
+      }
+    }
+    if vd_has_str(modes, "ssh") != (kind == "ssh_key") {
+      return station_tools::error_reply("an SSH key is given by ssh (or env), and only an SSH key is")
+    }
+    if kind == "file" && (modes.length() != 1 || modes[0] != "file") {
+      return station_tools::error_reply("a file is given as a file (modes: [\"file\"])")
+    }
+    if vd_has_str(modes, "file") && kind != "file" {
+      return station_tools::error_reply("a file is given as a file, and only a file is")
+    }
+    if vd_has_str(modes, "proxy") && hosts.length() == 0 {
+      return station_tools::error_reply("given through the proxy, it names its hosts")
+    }
+    let env_opt : Option[String] = match mcp_arg_str(args, "env") {
+      Some(e) => {
+        let tr = e.trim()
+        if tr.length() > 0 {
+          if !vd_is_valid_env_var(tr) {
+            return station_tools::error_reply("env is a variable's name")
+          }
+          Some(tr)
+        } else {
+          None
+        }
+      }
+      None => None
+    }
+    // Check lock & member eligibility BEFORE creating any request or box.
+    let sub_opt : Option[String] = match lock_opt {
+      Some(l) => vault_member_sub_by_email(l, email)
+      None => None
+    }
+    match lock_opt {
+      Some(l) => {
+        if sub_opt.is_none() && l.genesis.length() > 0 {
+          return station_tools::error_reply(email + " is not in the workspace's security mode: there is no vault of theirs to keep it in.")
+        }
+      }
+      None => ()
+    }
+    let typed = value_opt.is_none() && path_opt.is_none()
+    let mut secret_val = ""
+    let mut filename = match mcp_arg_str(args, "filename") { Some(f) => f.trim(), None => "" }
+    if kind == "file" {
+      match path_opt {
+        Some(p) => {
+          let srow = match st.get_session(session) {
+            Ok(Some(r)) => r
+            _ => return station_tools::error_reply("unknown session " + session)
+          }
+          let sep = if srow.workspace.contains("\\") { "\\" } else { "/" }
+          let full_p = if p.starts_with("/") || p.starts_with("\\") || (p.length() >= 2 && p.code_unit_at(1) == 58) {
+            p
+          } else {
+            nodepath::join(sep, [srow.workspace, p])
+          }
+          if filename.length() == 0 {
+            let parts = full_p.split(sep)
+            if parts.length() > 0 {
+              filename = parts[parts.length() - 1]
+            }
+          }
+          // Single-handle bounded read (max `64 KiB + 1` bytes, O_NOFOLLOW + S_ISREG; never reads unbounded files).
+          match station_sys::file_open_ro(full_p) {
+            Ok(rof) => {
+              let read_res = rof.pread(0L, (VAULT_FILE_MOST + 1).to_int64())
+              rof.close()
+              match read_res {
+                Ok(raw_bytes) => {
+                  if raw_bytes.length() > VAULT_FILE_MOST {
+                    return station_tools::error_reply("The file is more than 64 KB; nothing was kept.")
+                  }
+                  secret_val = base64::encode(raw_bytes)
+                }
+                Err(_) => return station_tools::error_reply("The file could not be read; nothing was kept.")
+              }
+            }
+            Err(_) => return station_tools::error_reply("The file could not be read; nothing was kept.")
+          }
+        }
+        None => match value_opt {
+          Some(v) => {
+            let raw_bytes = v.to_bytes()
+            if raw_bytes.length() > VAULT_FILE_MOST {
+              return station_tools::error_reply("The file is more than 64 KB; nothing was kept.")
+            }
+            secret_val = base64::encode(raw_bytes)
+          }
+          None => ()
+        }
+      }
+      if filename.length() > 200 || filename == "." || filename == ".." || filename.contains("/") || filename.contains("\\") {
+        return station_tools::error_reply("a file's name is a name, not a path")
+      }
+    } else {
+      match value_opt {
+        Some(v) => secret_val = v
+        None => ()
+      }
+    }
+    if !typed && secret_val.length() == 0 {
+      return station_tools::error_reply("The secret is empty; nothing was kept.")
+    }
+    let item_uid = match vault_ulid(now_ms, rng) {
+      Ok(u) => u
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let req_uid = match vault_ulid(now_ms, rng) {
+      Ok(u) => u
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let item_id = "i_" + item_uid
+    let req_id = "r_" + req_uid
+    // Choose target vault strictly from real lock state + `#personFor` (NEVER ws first vault, NEVER fallback to `plain`).
+    let target_vault = match lock_opt {
+      None => "plain"
+      Some(l) => match (sub_opt, whole_store.vault_store) {
+        (Some(sub), Some(vs)) => vault_choose_personal_for(vs, l, sub, deps.verify_fn)
+        _ => ""
+      }
+    }
+    let fields_opt : Option[Map[String, String]] = if typed {
+      None
+    } else {
+      let fm : Map[String, String] = Map::new()
+      if kind == "token" {
+        fm.set("value", secret_val)
+      } else if kind == "login" {
+        match mcp_arg_str(args, "username") {
+          Some(u) if u.length() > 0 => fm.set("username", u)
+          _ => ()
+        }
+        fm.set("password", secret_val)
+      } else if kind == "file" {
+        fm.set("content", secret_val)
+        if filename.length() > 0 {
+          fm.set("filename", filename)
+        }
+      } else {
+        fm.set("private_key", secret_val)
+        match mcp_arg_str(args, "public_key") {
+          Some(pk) if pk.length() > 0 => fm.set("public_key", pk)
+          _ => ()
+        }
+      }
+      Some(fm)
+    }
+    let mut box_pub = ""
+    if lock_opt.is_some() {
+      let (priv, pub_k) = match vault_new_box_pair(rng) {
+        Ok(pair) => pair
+        Err(e) => return station_tools::error_reply(e)
+      }
+      whole_store.vault_boxes.set(req_id, priv)
+      box_pub = pub_k
+    }
+    let sealed_opt : Option[Array[base_codec::Json]] = match (lock_opt, fields_opt) {
+      (Some(l), Some(fm)) => {
+        let sealed_arr : Array[base_codec::Json] = []
+        match (sub_opt, whole_store.vault_store) {
+          (Some(sub), Some(vs)) => {
+            let certs = vault_certs_of(vs, l, sub, deps.verify_fn)
+            for ci in 0..<certs.length() {
+              let (c_dev, c_box) = certs[ci]
+              match vault_seal_to_cert(c_dev, c_box, ws, req_id, fm, rng) {
+                Ok(se) => sealed_arr.push(se)
+                Err(e) => {
+                  whole_store.vault_boxes.remove(req_id)
+                  return station_tools::error_reply(e)
+                }
+              }
+            }
+          }
+          _ => ()
+        }
+        Some(sealed_arr)
+      }
+      _ => None
+    }
+    let save_fs : Array[(String, base_codec::Json)] = [
+      ("kind", base_codec::json_str(kind)),
+      ("name", base_codec::json_str(name)),
+      ("modes", json_str_array(modes)),
+      ("hosts", json_str_array(hosts)),
+      ("about", base_codec::json_str(about)),
+    ]
+    match env_opt { Some(e) => save_fs.push(("env", base_codec::json_str(e))), None => () }
+    match mcp_arg_str(args, "username") { Some(u) if u.length() > 0 => save_fs.push(("username", base_codec::json_str(u))), _ => () }
+    match mcp_arg_str(args, "public_key") { Some(pk) if pk.length() > 0 => save_fs.push(("public_key", base_codec::json_str(pk))), _ => () }
+    if filename.length() > 0 { save_fs.push(("filename", base_codec::json_str(filename))) }
+    if typed { save_fs.push(("typed", base_codec::json_bool(true))) }
+
+    let req_fs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(req_id)),
+      ("ws", base_codec::json_str(ws)),
+      ("vault", base_codec::json_str(target_vault)),
+      ("item", base_codec::json_str(item_id)),
+      ("session", base_codec::json_str(session)),
+      ("chat", base_codec::json_str("")),
+      ("mode", base_codec::json_str(modes[0])),
+      ("reason", base_codec::json_str(reason)),
+      ("box", base_codec::json_str(box_pub)),
+      ("at", base_codec::json_int64(now_sec)),
+      ("status", base_codec::json_str("pending")),
+      ("owner", base_codec::json_str(email)),
+      ("save", base_codec::json_obj(save_fs)),
+    ]
+    if hosts.length() > 0 {
+      req_fs.push(("hosts", json_str_array(hosts)))
+    }
+    match sealed_opt {
+      Some(sarr) => req_fs.push(("sealed", base_codec::json_arr(sarr)))
+      None => ()
+    }
+    let mut req_body = base_codec::json_obj(req_fs)
+    let mut thr_id_opt : Option[Int64] = None
+    let mut card_ts_opt : Option[String] = None
+    match vault_latest_thread(st, session) {
+      Some(thr) => {
+        req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(thr.channel + "/" + thr.thread_ts)))
+        let (text, card_opt) = vault_build_save_card_and_text(req_body, thr.surface == "chat")
+        match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
+          Ok(cts) => {
+            thr_id_opt = Some(thr.id)
+            card_ts_opt = cts
+          }
+          Err(e) => {
+            whole_store.vault_boxes.remove(req_id)
+            return station_tools::error_reply(e)
+          }
+        }
+      }
+      None => ()
+    }
+    match vault_save_request_row(st, req_body, ws, req_id, session, thr_id_opt, card_ts_opt, "save-request", vd_join_strs(modes, " "), now_sec) {
+      Ok(_) => ()
+      Err(e) => {
+        whole_store.vault_boxes.remove(req_id)
+        return station_tools::error_reply(e)
+      }
+    }
+    match fields_opt {
+      Some(fm) => {
+        whole_store.vault_unsaved.set(req_id, fm)
+        whole_store.vault_unsaved_scopes.set(req_id, [(ws, email)])
+      }
+      None => ()
+    }
+    vault_emit_req_sse(deps.events, req_body, now_ms)
+    let off = if target_vault.length() == 0 && !typed {
+      " Their vault is not turned on yet: the card lets them turn it on in the still.fail app, and then keep it."
+    } else {
+      ""
+    }
+    let asked = if typed {
+      "Asked " +
+      email +
+      " to type 「" +
+      name +
+      "」 in (request " +
+      req_id +
+      "): its card has a field for it, and what they type goes into their vault as they approve it in the still.fail app (turning their vault on first where it is not), never to you."
+    } else {
+      "Asked to keep 「" +
+      name +
+      "」 (request " +
+      req_id +
+      "); the card is in your chat for " +
+      email +
+      ", who approves it in the still.fail app." +
+      off
+    }
+    return station_tools::text_reply(
+      asked + " " + VAULT_UNDECIDED_NOTICE + " Only their approval in the app keeps it: a reply in the chat saying yes does not.",
+    )
+  }
+
+  // ── 4. secret_describe ──
+  if tool == "secret_describe" {
+    let item_arg = match mcp_arg_str(args, "item") { Some(s) => s, None => "" }
+    let person_opt = mcp_arg_str(args, "person")
+    let (found_opt, email_opt) = match vault_mcp_find_listing(whole_store, st, ws, lock_opt, session, item_arg, person_opt) {
+      Ok(res) => res
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let found = match found_opt {
+      Some(f) => f
+      None => return station_tools::error_reply("No secret named " + base_codec::json_stringify(base_codec::json_str(item_arg)) + " is listed here: secret_list lists those that are.")
+    }
+    match found.cross {
+      Some((_, cws_name, _)) => {
+        return station_tools::error_reply("Cross-workspace personal secrets are read-only here: edit or delete it in its own workspace (" + cws_name + ").")
+      }
+      None => ()
+    }
+    let decider_opt = match person_opt {
+      Some(p) if p.trim().length() > 0 => email_opt
+      _ => found.owner
+    }
+    let was_name = match json_field_str(found.listing, "name") { Some(s) => s, None => "" }
+    let was_about = match json_field_str(found.listing, "about") { Some(s) => s, None => "" }
+    let next_name = match mcp_arg_str(args, "name") { Some(s) => s.trim(), None => was_name }
+    let next_about = match mcp_arg_str(args, "about") { Some(s) => s.trim(), None => was_about }
+    if next_name.length() == 0 || next_name.length() > 200 {
+      return station_tools::error_reply("name is at most 200 characters, and not empty: what the person and agents will know it by")
+    }
+    if next_about.length() > VAULT_ABOUT_MOST {
+      return station_tools::error_reply("about is at most " + VAULT_ABOUT_MOST.to_string() + " characters")
+    }
+    if next_name == was_name && next_about == was_about {
+      return station_tools::error_reply("「" + was_name + "」 is named and described so already: nothing to change.")
+    }
+    let reason = match mcp_arg_str(args, "reason") { Some(s) => s.trim(), None => "" }
+    if reason.length() == 0 {
+      return station_tools::error_reply("reason is required: why, for the person deciding")
+    }
+    let uid = match vault_ulid(now_ms, rng) { Ok(u) => u, Err(e) => return station_tools::error_reply(e) }
+    let req_id = "r_" + uid
+    let modes = match vd_str_arr(found.listing, "modes") { Some(ms) if ms.length() > 0 => ms, _ => ["env"] }
+    let req_fs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(req_id)),
+      ("ws", base_codec::json_str(ws)),
+      ("vault", base_codec::json_str(found.vault)),
+      ("item", base_codec::json_str(found.item)),
+      ("session", base_codec::json_str(session)),
+      ("chat", base_codec::json_str("")),
+      ("mode", base_codec::json_str(modes[0])),
+      ("reason", base_codec::json_str(reason)),
+      ("box", base_codec::json_str("")),
+      ("at", base_codec::json_int64(now_sec)),
+      ("status", base_codec::json_str("pending")),
+      (
+        "describe",
+        base_codec::json_obj([
+          ("name", base_codec::json_str(next_name)),
+          ("about", base_codec::json_str(next_about)),
+          ("was", base_codec::json_obj([("name", base_codec::json_str(was_name)), ("about", base_codec::json_str(was_about))])),
+        ]),
+      ),
+    ]
+    if found.vault == "plain" {
+      match found.owner { Some(o) => req_fs.push(("owner", base_codec::json_str(o))), None => () }
+    }
+    let mut req_body = base_codec::json_obj(req_fs)
+    let mut thr_id_opt : Option[Int64] = None
+    let mut card_ts_opt : Option[String] = None
+    match vault_latest_thread(st, session) {
+      Some(thr) => {
+        req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(thr.channel + "/" + thr.thread_ts)))
+        let (text, card_opt) = vault_build_describe_card_and_text(req_body, decider_opt, thr.surface == "chat")
+        match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
+          Ok(cts) => { thr_id_opt = Some(thr.id); card_ts_opt = cts }
+          Err(e) => return station_tools::error_reply(e)
+        }
+      }
+      None => ()
+    }
+    match vault_save_request_row(st, req_body, ws, req_id, session, thr_id_opt, card_ts_opt, "describe-request", if next_name == was_name { "about" } else { "name " + next_name }, now_sec) {
+      Ok(_) => ()
+      Err(e) => return station_tools::error_reply(e)
+    }
+    vault_emit_req_sse(deps.events, req_body, now_ms)
+    let for_who = match decider_opt { Some(d) if d.length() > 0 => " It is for " + d + " to decide.", _ => "" }
+    return station_tools::text_reply(
+      "Asked to change 「" +
+      was_name +
+      "」 (request " +
+      req_id +
+      "); the card is in your chat, approved in the still.fail app. " +
+      VAULT_UNDECIDED_NOTICE +
+      " Only their approval in the app changes it: a reply in the chat saying yes does not." +
+      for_who,
+    )
+  }
+
+  // ── 5. secret_delete ──
+  if tool == "secret_delete" {
+    let item_arg = match mcp_arg_str(args, "item") { Some(s) => s, None => "" }
+    let person_opt = mcp_arg_str(args, "person")
+    let (found_opt, email_opt) = match vault_mcp_find_listing(whole_store, st, ws, lock_opt, session, item_arg, person_opt) {
+      Ok(res) => res
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let found = match found_opt {
+      Some(f) => f
+      None => return station_tools::error_reply("No secret named " + base_codec::json_stringify(base_codec::json_str(item_arg)) + " is listed here: secret_list lists those that are.")
+    }
+    match found.cross {
+      Some((_, cws_name, _)) => {
+        return station_tools::error_reply("Cross-workspace personal secrets are read-only here: edit or delete it in its own workspace (" + cws_name + ").")
+      }
+      None => ()
+    }
+    let reason = match mcp_arg_str(args, "reason") { Some(s) => s.trim(), None => "" }
+    if reason.length() == 0 {
+      return station_tools::error_reply("reason is required: why, for the person deciding")
+    }
+    let decider_opt = match person_opt {
+      Some(p) if p.trim().length() > 0 => email_opt
+      _ => found.owner
+    }
+    let lname = match json_field_str(found.listing, "name") { Some(s) => s, None => "" }
+    let uid = match vault_ulid(now_ms, rng) { Ok(u) => u, Err(e) => return station_tools::error_reply(e) }
+    let req_id = "r_" + uid
+    let modes = match vd_str_arr(found.listing, "modes") { Some(ms) if ms.length() > 0 => ms, _ => ["env"] }
+    let req_fs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(req_id)),
+      ("ws", base_codec::json_str(ws)),
+      ("vault", base_codec::json_str(found.vault)),
+      ("item", base_codec::json_str(found.item)),
+      ("session", base_codec::json_str(session)),
+      ("chat", base_codec::json_str("")),
+      ("mode", base_codec::json_str(modes[0])),
+      ("reason", base_codec::json_str(reason)),
+      ("box", base_codec::json_str("")),
+      ("at", base_codec::json_int64(now_sec)),
+      ("status", base_codec::json_str("pending")),
+      ("remove", base_codec::json_obj([("name", base_codec::json_str(lname))])),
+    ]
+    if found.vault == "plain" {
+      match found.owner { Some(o) => req_fs.push(("owner", base_codec::json_str(o))), None => () }
+    }
+    let mut req_body = base_codec::json_obj(req_fs)
+    let mut thr_id_opt : Option[Int64] = None
+    let mut card_ts_opt : Option[String] = None
+    match vault_latest_thread(st, session) {
+      Some(thr) => {
+        req_body = json_obj_set(req_body, "chat", Some(base_codec::json_str(thr.channel + "/" + thr.thread_ts)))
+        let (text, card_opt) = vault_build_remove_card_and_text(req_body, decider_opt, thr.surface == "chat")
+        match vault_mcp_post_card(whole_store, st, deps.events, ws, req_id, session, thr, text, card_opt, now_ms) {
+          Ok(cts) => { thr_id_opt = Some(thr.id); card_ts_opt = cts }
+          Err(e) => return station_tools::error_reply(e)
+        }
+      }
+      None => ()
+    }
+    match vault_save_request_row(st, req_body, ws, req_id, session, thr_id_opt, card_ts_opt, "remove-request", "", now_sec) {
+      Ok(_) => ()
+      Err(e) => return station_tools::error_reply(e)
+    }
+    vault_emit_req_sse(deps.events, req_body, now_ms)
+    let for_who = match decider_opt { Some(d) if d.length() > 0 => " It is for " + d + " to decide.", _ => "" }
+    return station_tools::text_reply(
+      "Asked to delete 「" +
+      lname +
+      "」 (request " +
+      req_id +
+      "); the card is in your chat, approved in the still.fail app. " +
+      VAULT_UNDECIDED_NOTICE +
+      " Only their approval in the app deletes it: a reply in the chat saying yes does not." +
+      for_who,
+    )
+  }
+
+  // ── 6. secret_cancel ──
+  if tool == "secret_cancel" {
+    let req_id = match mcp_arg_str(args, "request") { Some(s) => s.trim(), None => "" }
+    let row = match st.db.first(
+      "SELECT session, status, body, thread, card_ts FROM vault_requests WHERE ws = ?1 AND id = ?2",
+      [base_codec::json_str(ws), base_codec::json_str(req_id)],
+    ) {
+      Ok(Some(r)) => r
+      Ok(None) => return station_tools::error_reply("No such request in this chat: give the id (r_…) secret_list, secret_use, secret_save, secret_describe or secret_delete answered.")
+      Err(e) => return station_tools::error_reply("secret_cancel lookup failed: " + e.message)
+    }
+    let row_sess = match row.get("session") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    if row_sess != session {
+      return station_tools::error_reply("No such request in this chat: give the id (r_…) secret_list, secret_use, secret_save, secret_describe or secret_delete answered.")
+    }
+    let row_status = match row.get("status") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    if row_status != "pending" {
+      return station_tools::error_reply("Request " + req_id + " is no longer pending (" + row_status + "): nothing to withdraw.")
+    }
+    let raw_body = match row.get("body") { Some(base_codec::Json::Str(s)) => s, _ => "{}" }
+    let req_j = match base_codec::json_parse(raw_body) {
+      base_codec::JsonParseResult::Ok(v) => v
+      _ => base_codec::json_obj([])
+    }
+    let next_j = json_obj_set(req_j, "status", Some(base_codec::json_str("withdrawn")))
+    let next_raw = base_codec::json_stringify(next_j)
+    let tid_opt : Option[Int64] = match row.get("thread") { Some(base_codec::Json::Num(d, _)) => Some(d.to_int64()), _ => None }
+    let cts_opt : Option[String] = match row.get("card_ts") { Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s), _ => None }
+    let updated = match st.db.tx(fn(txdb : sql_db::Db) -> Result[Int, sql_db::SqlError] {
+      let n = match txdb.run(
+        "UPDATE vault_requests SET status = 'withdrawn', body = ?1 WHERE ws = ?2 AND id = ?3 AND status = 'pending' AND body = ?4",
+        [base_codec::json_str(next_raw), base_codec::json_str(ws), base_codec::json_str(req_id), base_codec::json_str(raw_body)],
+      ) {
+        Ok(c) => c
+        Err(e) => return Err(e)
+      }
+      if n > 0 {
+        match (tid_opt, cts_opt) {
+          (Some(tid), Some(cts)) => {
+            match station_store::install_card_outbox(txdb) { Ok(_) => (), Err(e) => return Err(e) }
+            match station_store::enqueue_card_outcome(txdb, tid, cts, session, "vault", true, "{\"status\":\"withdrawn\"}", dedup=true) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          _ => ()
+        }
+      }
+      Ok(n)
+    }) {
+      Ok(n) => n
+      Err(e) => return station_tools::error_reply("secret_cancel failed: " + e.message)
+    }
+    if updated == 0 {
+      return station_tools::error_reply("Request " + req_id + " changed while it was withdrawn; try again.")
+    }
+    whole_store.vault_boxes.remove(req_id)
+    whole_store.vault_unsaved.remove(req_id)
+    whole_store.vault_unsaved_scopes.remove(req_id)
+    let _ = drain_card_outbox_once(whole_store, deps.events, now_ms)
+    vault_emit_req_sse(deps.events, next_j, now_ms)
+    return station_tools::text_reply("Withdrew request " + req_id + ": its card is closed and its owner no longer sees it waiting.")
+  }
+
+  // ── 7. secret_reask ──
+  if tool == "secret_reask" {
+    let req_id = match mcp_arg_str(args, "request") { Some(s) => s.trim(), None => "" }
+    let row = match st.db.first(
+      "SELECT session, status, body, thread, card_ts FROM vault_requests WHERE ws = ?1 AND id = ?2",
+      [base_codec::json_str(ws), base_codec::json_str(req_id)],
+    ) {
+      Ok(Some(r)) => r
+      Ok(None) => return station_tools::error_reply("No such request in this chat.")
+      Err(e) => return station_tools::error_reply("secret_reask lookup failed: " + e.message)
+    }
+    let row_sess = match row.get("session") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    if row_sess != session {
+      return station_tools::error_reply("No such request in this chat.")
+    }
+    let row_status = match row.get("status") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    if row_status != "pending" {
+      return station_tools::error_reply("Request " + req_id + " is no longer pending (" + row_status + ").")
+    }
+    let raw_body = match row.get("body") { Some(base_codec::Json::Str(s)) => s, _ => "{}" }
+    let req_j = match base_codec::json_parse(raw_body) {
+      base_codec::JsonParseResult::Ok(v) => v
+      _ => return station_tools::error_reply("malformed request body")
+    }
+    let req_at = match vd_safe_int64(req_j, "at") { Some(a) => a, None => 0L }
+    if req_at + VAULT_PENDING_SECS <= now_sec || vault_is_session_ended(st, session) {
+      return station_tools::error_reply("Request " + req_id + " is no longer pending (expired).")
+    }
+    let old_tid_opt : Option[Int64] = match row.get("thread") { Some(base_codec::Json::Num(d, _)) => Some(d.to_int64()), _ => None }
+    let old_cts_opt : Option[String] = match row.get("card_ts") { Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s), _ => None }
+    // Align 1:1 with Node `card-place.ts:19-26`: use the EXACT original `(thread, card_ts)`!
+    let (old_tid, old_cts) = match (old_tid_opt, old_cts_opt) {
+      (Some(tid), Some(cts)) => (tid, cts)
+      _ => return station_tools::error_reply("This request has no card in the chat to ask again.")
+    }
+    let thr = match vault_session_thread_by_id(st, session, old_tid) {
+      Some(t) => t
+      None => return station_tools::error_reply("the original conversation is no longer available to this session")
+    }
+    // Authoritative pending-card check via `closed_cards` + `entries` (NEVER string-matching `"closed":true`!).
+    match vault_pending_card_ts_in_db(st.db, thr.id) {
+      Ok(Some(cur_ts)) => {
+        if cur_ts == old_cts {
+          return station_tools::text_reply("The card for request " + req_id + " is already pending in the chat.")
+        } else {
+          return station_tools::error_reply("Another card is pending in that conversation. Resolve or withdraw it before asking this again.")
+        }
+      }
+      Ok(None) => ()
+      Err(e) => return station_tools::error_reply("pending card lookup failed: " + e.message)
+    }
+    // Close old card via `card_outbox` BEFORE posting the new card (if any).
+    match (old_tid_opt, old_cts_opt) {
+      (Some(otid), Some(octs)) => {
+        match st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+          match station_store::install_card_outbox(txdb) { Ok(_) => (), Err(e) => return Err(e) }
+          match station_store::enqueue_card_outcome(txdb, otid, octs, session, "vault", true, "{\"status\":\"reasked\"}", dedup=true) {
+            Ok(_) => Ok(())
+            Err(e) => Err(e)
+          }
+        }) {
+          Ok(_) => { let _ = drain_card_outbox_once(whole_store, deps.events, now_ms) }
+          Err(e) => return station_tools::error_reply("secret_reask failed to close previous card: " + e.message)
+        }
+      }
+      _ => ()
+    }
+    let decider_opt : Option[String] = match json_field_str(req_j, "owner") {
+      Some(o) if o.length() > 0 => Some(o)
+      _ => match (lock_opt, whole_store.vault_store, json_field_str(req_j, "vault")) {
+        (Some(l), Some(vs), Some(vid)) => match vs.vault(ws, vid) {
+          Ok(Some(vf)) => match form::json_field(Some(vf), "owner") {
+            Some(form::Json::Str(osub)) => vd_lock_member_email(l, osub)
+            _ => None
+          }
+          _ => None
+        }
+        _ => None
+      }
+    }
+    let (text, card_opt) = if base_codec::json_get(req_j, "save").is_some() {
+      vault_build_save_card_and_text(req_j, thr.surface == "chat")
+    } else if base_codec::json_get(req_j, "browse").is_some() {
+      vault_build_browse_card_and_text(req_j, thr.surface == "chat")
+    } else if base_codec::json_get(req_j, "describe").is_some() {
+      vault_build_describe_card_and_text(req_j, decider_opt, thr.surface == "chat")
+    } else if base_codec::json_get(req_j, "remove").is_some() {
+      vault_build_remove_card_and_text(req_j, decider_opt, thr.surface == "chat")
+    } else {
+      // `secret_use`: resolve current listing for the item.
+      let v_id = match json_field_str(req_j, "vault") { Some(s) => s, None => "" }
+      let it_id = match json_field_str(req_j, "item") { Some(s) => s, None => "" }
+      let listing_opt : Option[base_codec::Json] = if base_codec::json_get(req_j, "cross").is_some() {
+        let cs = vault_cross_listings(st, ws, session, None)
+        let mut found_l : Option[base_codec::Json] = None
+        for ci in 0..<cs.length() {
+          if cs[ci].item == it_id { found_l = Some(cs[ci].listing); break }
+        }
+        found_l
+      } else if v_id == "plain" {
+        match st.db.first("SELECT body FROM vault_plain WHERE ws = ?1 AND id = ?2", [base_codec::json_str(ws), base_codec::json_str(it_id)]) {
+          Ok(Some(r)) => match r.get("body") {
+            Some(base_codec::Json::Str(b)) => match base_codec::json_parse(b) {
+              base_codec::JsonParseResult::Ok(j) => base_codec::json_get(j, "listing")
+              _ => None
+            }
+            _ => None
+          }
+          _ => None
+        }
+      } else {
+        match whole_store.vault_store {
+          Some(vs) => match vs.item_snapshot(ws, v_id, it_id) {
+            Ok(Some(snap)) => match form::json_field(Some(snap.value), "listing") {
+              Some(lf) => Some(station_rules_bridge::form_to_base(lf))
+              None => None
+            }
+            _ => None
+          }
+          None => None
+        }
+      }
+      let listing = match listing_opt {
+        Some(l) => l
+        None => return station_tools::error_reply("The secret is no longer available to request.")
+      }
+      vault_build_use_card_and_text(whole_store, st, ws, req_j, listing, decider_opt, None, thr.surface == "chat")
+    }
+    // Atomic SQLite transaction (R4 P1-4): re-verify pending-card slot, insert the new card
+    // message via `insert_message_in_tx`, and CAS-update `vault_requests` in ONE transaction!
+    // On any conflict or error, the transaction rolls back with ZERO orphan unapprovable cards;
+    // SSE & Connects are emitted ONLY AFTER the transaction commits.
+    let card_str_opt : Option[String] = match card_opt {
+      Some(c) => Some(base_codec::json_stringify(c))
+      None => None
+    }
+    let old_tid_j = match old_tid_opt { Some(id) => sql_db::int64_to_json(id), None => base_codec::json_null() }
+    let old_cts_j = match old_cts_opt { Some(s) => base_codec::json_str(s), None => base_codec::json_null() }
+    let mut committed_n = 0L
+    let mut committed_ts = ""
+    let mut tx_conflict_msg = ""
+    match st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      match vault_pending_card_ts_in_db(txdb, thr.id) {
+        Ok(Some(_)) => {
+          tx_conflict_msg = "Another card is pending in that conversation. Resolve or withdraw it before asking this again."
+          return Err(sql_db::SqlError::{ code: 19, message: "card_occupied" })
+        }
+        Ok(None) => ()
+        Err(e) => return Err(e)
+      }
+      let next_n_est : Int64 = match txdb.first(
+        "SELECT COALESCE(MAX(n), 0) + 1 AS nn FROM entries WHERE thread = ?1",
+        [sql_db::int64_to_json(thr.id)],
+      ) {
+        Ok(Some(r)) => match r.get("nn") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 1L }
+        Ok(None) => 1L
+        Err(e) => return Err(e)
+      }
+      let ts_str = vault_card_ts_format(now_ms, next_n_est)
+      let msg = station_store::NewMessage::{
+        thread: thr.id,
+        ts: Some(ts_str),
+        author_kind: "agent",
+        author: session,
+        agent_identity: None,
+        text: Some(text),
+        attachments: None,
+        quotes: None,
+        declared: None,
+        client: None,
+        card: card_str_opt,
+        options: None,
+        proposal: None,
+        at: now_ms,
+      }
+      let (ins_n, _) = match station_store::insert_message_in_tx(txdb, msg) {
+        Ok(res) => res
+        Err(e) => return Err(e)
+      }
+      let new_cts_j = if card_opt.is_some() { base_codec::json_str(ts_str) } else { base_codec::json_null() }
+      let changed = match txdb.run(
+        "UPDATE vault_requests SET thread = ?1, card_ts = ?2 WHERE ws = ?3 AND id = ?4 AND status = 'pending' AND body = ?5 AND thread IS ?6 AND card_ts IS ?7",
+        [
+          sql_db::int64_to_json(thr.id),
+          new_cts_j,
+          base_codec::json_str(ws),
+          base_codec::json_str(req_id),
+          base_codec::json_str(raw_body),
+          old_tid_j,
+          old_cts_j,
+        ],
+      ) {
+        Ok(n) => n
+        Err(e) => return Err(e)
+      }
+      if changed == 0 {
+        tx_conflict_msg = "Request " + req_id + " changed while the card was posted; try again."
+        return Err(sql_db::SqlError::{ code: 19, message: "reask_cas_conflict" })
+      }
+      committed_n = ins_n
+      committed_ts = ts_str
+      Ok(())
+    }) {
+      Ok(_) => ()
+      Err(e) => {
+        let msg = if tx_conflict_msg.length() > 0 { tx_conflict_msg } else { "secret_reask failed: " + e.message }
+        return station_tools::error_reply(msg)
+      }
+    }
+    // Transaction committed cleanly -> emit `"thread"` SSE & queue Connects outbound post!
+    if thr.surface != "chat" && thr.connect.length() > 0 {
+      whole_store.pending_vault_connect_posts.push(
+        PendingVaultConnectPost::{
+          ws: ws,
+          req_id: req_id,
+          session: session,
+          thread_id: thr.id,
+          channel: thr.channel,
+          thread_ts: thr.thread_ts,
+          connect_id: thr.connect,
+          n_seq: committed_n,
+          text: text,
+          card: card_opt,
+        },
+      )
+    }
+    match deps.events {
+      Some(ev) => {
+        let entry_fs : Array[(String, base_codec::Json)] = [
+          ("thread", sql_db::int64_to_json(thr.id)),
+          ("n", sql_db::int64_to_json(committed_n)),
+          ("kind", base_codec::json_str("message")),
+          ("ts", base_codec::json_str(committed_ts)),
+          ("authorKind", base_codec::json_str("agent")),
+          ("author", base_codec::json_str(session)),
+          ("text", base_codec::json_str(text)),
+          ("at", sql_db::int64_to_json(now_ms)),
+        ]
+        match card_opt {
+          Some(c) => entry_fs.push(("card", c))
+          None => ()
+        }
+        let ev_target = station_api::EventTarget::{
+          lang: None,
+          viewer: None,
+          device: None,
+          email: None,
+          workspace: None,
+          subs: None,
+          read_only: None,
+          managers: None,
+          vault: None,
+          sees_ws: None,
+          sees_session: None,
+          sees_thread: Some(thr.id.to_int()),
+          sees_job: None,
+        }
+        let _ = ev.emit(
+          "thread",
+          base_codec::json_obj([
+            ("id", sql_db::int64_to_json(thr.id)),
+            ("entries", base_codec::json_arr([base_codec::json_obj(entry_fs)])),
+          ]),
+          ev_target,
+          now_ms,
+          None,
+        )
+      }
+      None => ()
+    }
+    return station_tools::text_reply(
+      "The card for request " + req_id + " is in the chat again. It is the same request; no secret was read again. " + VAULT_UNDECIDED_NOTICE,
+    )
+  }
+
+  // ── 8. secret_run ──
+  if tool == "secret_run" {
+    // Check executor availability BEFORE calling `prepare_secret_run` so we NEVER spend a grant
+    // when no synchronous executor is wired!
+    let exec_fn = match deps.secret_run_exec {
+      Some(f) => f
+      None => return station_tools::error_reply("secret_run requires the async daemon runtime (not available in synchronous handler)")
+    }
+    let prep = match prepare_secret_run(whole_store, session, home_ws, deps.station_id, args, now_ms) {
+      Ok(p) => p
+      Err(e) => return station_tools::error_reply(e)
+    }
+    match exec_fn(prep) {
+      Ok(out) => return station_tools::text_reply(out)
+      Err(e) => return station_tools::error_reply(e)
+    }
+  }
+
+  station_tools::error_reply("unsupported secret tool: " + tool)
+}
+
+// ---------------------------------------------------------------------------
+// Real SQLite Adversarial & Integration Selftest (`--smoke-vault-sqlite`)
+// ---------------------------------------------------------------------------
+
+fn vmcp_reply_text(r : station_tools::ToolReply) -> String {
+  if r.content.length() == 0 {
+    return ""
+  }
+  match r.content[0] {
+    station_tools::ContentItem::Text(s) => s
+    _ => ""
+  }
+}
+
+fn vmcp_sign(body : base_codec::Json, tag : String, seed : Bytes, pub_hex : String) -> base_codec::Json {
+  let fields : Array[(String, form::Json)] = match station_rules_bridge::base_to_form(body) {
+    form::Json::Obj(fs) => fs
+    _ => []
+  }
+  match station_vault::sign_record_ed25519(seed, pub_hex, fields, tag) {
+    Ok(signed_f) => station_rules_bridge::form_to_base(signed_f)
+    Err(_) => body
+  }
+}
+
+/// Real SQLite adversarial & end-to-end selftest for all 8 `DomainHandlers.secret` tools
+/// and `VaultRouteCtx.boxed`, invoked by `stillfail-station-pion --smoke-vault-sqlite`.
+pub fn run_vault_mcp_sqlite_selftest() -> Result[Unit, String] {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let tmp_dir = nodepath::join(
+    sep,
+    [station_sys::tmpdir(), "stillfail-vault-mcp-e2e-" + host_shim::pid().to_string() + "-" + host_shim::wall_ms().to_string()],
+  )
+  let _ = station_sys::mkdir_mode(tmp_dir, 448)
+  let ws = "ws_mcp_e2e"
+  let now_ms = 1795857074000L
+  let now_sec = now_ms / 1000L
+
+  let ws_store = WholeStore::new_pre_handover_with_sep(tmp_dir, sep)
+  match ws_store.open_primary_after_predecessor_gone(true, fn(_d) { Ok(()) }, wait_ms=2000, now_ms=now_ms) {
+    Ok(_) => ()
+    Err(e) => return Err("vault-mcp open_primary failed: " + e)
+  }
+  let st = match ws_store.require_open() { Ok(s) => s, Err(e) => return Err(e) }
+  let vstore = match ws_store.require_vault_store() { Ok(v) => v, Err(e) => return Err(e) }
+
+  // Seed two members (Alice & Bob) with Ed25519 keys + X25519 device box certs.
+  let alice_ed = Bytes::new(32)
+  let bob_ed = Bytes::new(32)
+  let alice_box_priv = Bytes::new(32)
+  let alice_box2_priv = Bytes::new(32)
+  let bob_box_priv = Bytes::new(32)
+  for i in 0..<32 {
+    alice_ed[i] = (11 + i) as Byte
+    bob_ed[i] = (43 + i) as Byte
+    alice_box_priv[i] = (71 + i) as Byte
+    alice_box2_priv[i] = (103 + i) as Byte
+    bob_box_priv[i] = (135 + i) as Byte
+  }
+  let alice_ed_pub = match crypto::ed25519_public_key(alice_ed) { Ok(p) => crypto::bytes_to_hex(p), Err(_) => return Err("alice ed pub") }
+  let bob_ed_pub = match crypto::ed25519_public_key(bob_ed) { Ok(p) => crypto::bytes_to_hex(p), Err(_) => return Err("bob ed pub") }
+  let alice_box_pub = match vault_box_public(alice_box_priv) { Ok(p) => p, Err(e) => return Err(e) }
+  let alice_box2_pub = match vault_box_public(alice_box2_priv) { Ok(p) => p, Err(e) => return Err(e) }
+  let bob_box_pub = match vault_box_public(bob_box_priv) { Ok(p) => p, Err(e) => return Err(e) }
+
+  let dev_a1 = crypto::sha256_hex("dev-a1".to_bytes())
+  let dev_a2 = crypto::sha256_hex("dev-a2".to_bytes())
+  let dev_b1 = crypto::sha256_hex("dev-b1".to_bytes())
+
+  let members : form::OrderedMap[lock::Member] = form::OrderedMap::new()
+  members.set("u-alice", lock::Member::{ sub: "u-alice", email: "alice@test.io", role: "owner" })
+  members.set("u-bob", lock::Member::{ sub: "u-bob", email: "bob@test.io", role: "member" })
+  let devices : form::OrderedMap[lock::Device] = form::OrderedMap::new()
+  devices.set(dev_a1, lock::Device::{ id: dev_a1, sub: "u-alice", kind: "app", label: "A1", sign_key: Some("ed25519:" + alice_ed_pub), endpoints: Some(["ep-a1"]), exp: None, by: None, own: true })
+  devices.set(dev_a2, lock::Device::{ id: dev_a2, sub: "u-alice", kind: "app", label: "A2", sign_key: Some("ed25519:" + alice_ed_pub), endpoints: Some(["ep-a2"]), exp: None, by: None, own: true })
+  devices.set(dev_b1, lock::Device::{ id: dev_b1, sub: "u-bob", kind: "app", label: "B1", sign_key: Some("ed25519:" + bob_ed_pub), endpoints: Some(["ep-b1"]), exp: None, by: None, own: true })
+  let sign_keys : form::OrderedMap[Array[String]] = form::OrderedMap::new()
+  sign_keys.set("ed25519:" + alice_ed_pub, [dev_a1, dev_a2])
+  sign_keys.set("ed25519:" + bob_ed_pub, [dev_b1])
+  let persons : form::OrderedMap[String] = form::OrderedMap::new()
+  persons.set("u-alice", "gen-a")
+  persons.set("u-bob", "gen-b")
+  let lock_s = lock::LockState::{
+    ws: ws,
+    seq: 1.0,
+    head: "head-mcp",
+    genesis: "gen-mcp",
+    origins: [],
+    rp_id: "",
+    cloud_keys: form::Json::Null,
+    members: members,
+    devices: devices,
+    sign_keys: sign_keys,
+    passkeys: form::OrderedMap::new(),
+    signed: form::OrderedMap::new(),
+    stations: form::OrderedMap::new(),
+    gateways: form::OrderedMap::new(),
+    persons: persons,
+    disabled: false,
+    moved: None,
+  }
+
+  // Put box cert for dev_a1 (dev_a2 will be published later to test `boxed` reboxing!).
+  let cert_a1 = vmcp_sign(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("device", base_codec::json_str(dev_a1)),
+      ("box", base_codec::json_str(alice_box_pub)),
+      ("at", base_codec::json_int64(now_sec)),
+    ]),
+    station_vault::TAG_BOX,
+    alice_ed,
+    alice_ed_pub,
+  )
+  let _ = vstore.put_box(station_rules_bridge::base_to_form(cert_a1))
+
+  // Seed 3 vaults: workspace vault (shared), Alice's personal vault (epoch 2), Bob's personal vault (epoch 1).
+  let v_ws_id = "v_01J00000000000000000000001"
+  let v_alice_id = "v_01J00000000000000000000002"
+  let v_bob_id = "v_01J00000000000000000000003"
+  let v_ws = vmcp_sign(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("id", base_codec::json_str(v_ws_id)),
+      ("version", base_codec::json_int(1)),
+      ("name", base_codec::json_str("Team Shared")),
+      ("scope", base_codec::json_str("workspace")),
+      ("owner", base_codec::json_str("u-alice")),
+      ("members", base_codec::json_arr([base_codec::json_str("u-alice"), base_codec::json_str("u-bob")])),
+      ("keys", base_codec::json_arr([base_codec::json_obj([("cert", cert_a1), ("key", base_codec::json_str("wrapped"))])])),
+      ("epoch", base_codec::json_int(1)),
+      ("at", base_codec::json_int64(now_sec)),
+    ]),
+    station_vault::TAG_VAULT,
+    alice_ed,
+    alice_ed_pub,
+  )
+  let v_alice = vmcp_sign(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("id", base_codec::json_str(v_alice_id)),
+      ("version", base_codec::json_int(1)),
+      ("name", base_codec::json_str("Alice Personal")),
+      ("scope", base_codec::json_str("personal")),
+      ("owner", base_codec::json_str("u-alice")),
+      ("members", base_codec::json_arr([base_codec::json_str("u-alice")])),
+      ("keys", base_codec::json_arr([base_codec::json_obj([("cert", cert_a1), ("key", base_codec::json_str("wrapped"))])])),
+      ("epoch", base_codec::json_int(2)),
+      ("at", base_codec::json_int64(now_sec)),
+    ]),
+    station_vault::TAG_VAULT,
+    alice_ed,
+    alice_ed_pub,
+  )
+  let v_bob = vmcp_sign(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("id", base_codec::json_str(v_bob_id)),
+      ("version", base_codec::json_int(1)),
+      ("name", base_codec::json_str("Bob Personal")),
+      ("scope", base_codec::json_str("personal")),
+      ("owner", base_codec::json_str("u-bob")),
+      ("members", base_codec::json_arr([base_codec::json_str("u-bob")])),
+      ("epoch", base_codec::json_int(1)),
+      ("at", base_codec::json_int64(now_sec)),
+    ]),
+    station_vault::TAG_VAULT,
+    bob_ed,
+    bob_ed_pub,
+  )
+  let _ = vstore.put_vault(station_rules_bridge::base_to_form(v_ws))
+  let _ = vstore.put_vault(station_rules_bridge::base_to_form(v_alice))
+  let _ = vstore.put_vault(station_rules_bridge::base_to_form(v_bob))
+
+  // Seed items: Alice epoch 2 (visible), Alice stale epoch 1 (MUST NOT be listed!), Bob item (MUST NOT leak to Alice!).
+  let va_body = match vstore.vault_snapshot(ws, v_alice_id) { Ok(Some(s)) => s.body, _ => "" }
+  let vb_body = match vstore.vault_snapshot(ws, v_bob_id) { Ok(Some(s)) => s.body, _ => "" }
+  let it_a_good = vmcp_sign(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("vault", base_codec::json_str(v_alice_id)),
+      ("id", base_codec::json_str("i_01J0000000000000000000000A")),
+      ("version", base_codec::json_int(1)),
+      ("epoch", base_codec::json_int(2)),
+      ("listing", base_codec::json_obj([
+        ("name", base_codec::json_str("GitHub Token")),
+        ("about", base_codec::json_str("CI access")),
+        ("kind", base_codec::json_str("token")),
+        ("modes", base_codec::json_arr([base_codec::json_str("proxy")])),
+        ("hosts", base_codec::json_arr([base_codec::json_str("api.github.com")])),
+        ("env", base_codec::json_str("GH_TOKEN")),
+      ])),
+      ("at", base_codec::json_int64(now_sec)),
+    ]),
+    station_vault::TAG_ITEM,
+    alice_ed,
+    alice_ed_pub,
+  )
+  let it_a_stale = vmcp_sign(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("vault", base_codec::json_str(v_alice_id)),
+      ("id", base_codec::json_str("i_01J0000000000000000000000S")),
+      ("version", base_codec::json_int(1)),
+      ("epoch", base_codec::json_int(1)),
+      ("listing", base_codec::json_obj([
+        ("name", base_codec::json_str("Stale Epoch Secret")),
+        ("kind", base_codec::json_str("token")),
+        ("modes", base_codec::json_arr([base_codec::json_str("env")])),
+        ("hosts", base_codec::json_arr([])),
+      ])),
+      ("at", base_codec::json_int64(now_sec)),
+    ]),
+    station_vault::TAG_ITEM,
+    alice_ed,
+    alice_ed_pub,
+  )
+  let it_bob = vmcp_sign(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("vault", base_codec::json_str(v_bob_id)),
+      ("id", base_codec::json_str("i_01J0000000000000000000000B")),
+      ("version", base_codec::json_int(1)),
+      ("epoch", base_codec::json_int(1)),
+      ("listing", base_codec::json_obj([
+        ("name", base_codec::json_str("Bob Private Key")),
+        ("kind", base_codec::json_str("token")),
+        ("modes", base_codec::json_arr([base_codec::json_str("env")])),
+        ("hosts", base_codec::json_arr([])),
+      ])),
+      ("at", base_codec::json_int64(now_sec)),
+    ]),
+    station_vault::TAG_ITEM,
+    bob_ed,
+    bob_ed_pub,
+  )
+  let _ = vstore.put_item_if(station_rules_bridge::base_to_form(it_a_good), va_body, None)
+  let _ = vstore.put_item_if(station_rules_bridge::base_to_form(it_a_stale), va_body, None)
+  let _ = vstore.put_item_if(station_rules_bridge::base_to_form(it_bob), vb_body, None)
+
+  // Seed session started by Alice + thread 800.
+  let _ = st.db.run(
+    "INSERT INTO sessions (key, connect, scope, created_by, runtime, profile, workspace, token, created_at, last_active_at, ws) VALUES ('s-mcp', 'chat', 'all', 'alice@test.io', 'claude', 'default', ?1, 'tok-mcp', ?2, ?2, ?3)",
+    [base_codec::json_str(tmp_dir), sql_db::int64_to_json(now_ms), base_codec::json_str(ws)],
+  )
+  let _ = st.db.run(
+    "INSERT INTO threads (id, surface, channel, thread_ts, title, created_by, created_at) VALUES (800, 'chat', 'CHAT', '800.1', 'MCP Vault Test', 'alice@test.io', ?1)",
+    [sql_db::int64_to_json(now_ms)],
+  )
+  let _ = st.db.run(
+    "INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (800, 's-mcp', 'chat', ?1)",
+    [sql_db::int64_to_json(now_ms)],
+  )
+
+  let events = station_api::EventsHub::new("st-mcp", station_api::EventKeeps::default())
+  let deps = VaultMcpDeps::{
+    lock_of: Some(fn(_w : String) -> Option[lock::LockState] { Some(lock_s) }),
+    events: Some(events),
+    verify_fn: None,
+    station_id: "st-mcp",
+    station_name: "st-mcp",
+    secret_run_exec: None,
+  }
+
+  // 1. Adversarial `secret_list`: external person refused; Bob (not yet in chat) refused; Alice sees ONLY epoch-2 item!
+  let bad_person = handle_vault_mcp_tool(ws_store, station_sys::random_bytes, ws, deps, "s-mcp", "secret_list", base_codec::json_obj([("person", base_codec::json_str("eve@evil.io"))]), now_ms)
+  if !bad_person.is_error || !vmcp_reply_text(bad_person).contains("has not written in this chat") {
+    let _ = ws_store.close()
+    return Err("secret_list must refuse arbitrary external email")
+  }
+  let bob_before = handle_vault_mcp_tool(ws_store, station_sys::random_bytes, ws, deps, "s-mcp", "secret_list", base_codec::json_obj([("person", base_codec::json_str("bob@test.io"))]), now_ms)
+  if !bob_before.is_error {
+    let _ = ws_store.close()
+    return Err("secret_list must refuse non-participant bob@test.io")
+  }
+  let alice_list = handle_vault_mcp_tool(ws_store, station_sys::random_bytes, ws, deps, "s-mcp", "secret_list", base_codec::json_obj([]), now_ms)
+  let alice_txt = vmcp_reply_text(alice_list)
+  if alice_list.is_error || !alice_txt.contains("GitHub Token") || alice_txt.contains("Stale Epoch Secret") || alice_txt.contains("Bob Private Key") {
+    let _ = ws_store.close()
+    return Err("secret_list epoch/person isolation failed: " + alice_txt)
+  }
+
+  // 2. `secret_use`: creates r_<26-ULID>, stores X25519 box, posts card with assignee=alice@test.io, emits SSE.
+  let use_res = handle_vault_mcp_tool(
+    ws_store,
+    station_sys::random_bytes,
+    ws,
+    deps,
+    "s-mcp",
+    "secret_use",
+    base_codec::json_obj([
+      ("item", base_codec::json_str("GitHub Token")),
+      ("reason", base_codec::json_str("Check PR")),
+      ("command", base_codec::json_str("gh pr view")),
+    ]),
+    now_ms,
+  )
+  let use_txt = vmcp_reply_text(use_res)
+  if use_res.is_error || !use_txt.contains("request r_") {
+    let _ = ws_store.close()
+    return Err("secret_use failed: " + use_txt)
+  }
+  if ws_store.vault_boxes.length() != 1 {
+    let _ = ws_store.close()
+    return Err("secret_use did not store ephemeral X25519 box")
+  }
+
+  // 3. `secret_save`: refuse `kind="browser"` & `oauth` without writing rows; real save produces 26-char ULID,
+  //    selects Alice's personal vault (NOT workspace vault, NOT plain), seals to dev_a1, and `boxed` reboxes to dev_a2!
+  let br_refuse = handle_vault_mcp_tool(
+    ws_store,
+    station_sys::random_bytes,
+    ws,
+    deps,
+    "s-mcp",
+    "secret_save",
+    base_codec::json_obj([
+      ("name", base_codec::json_str("GH Cookie")),
+      ("about", base_codec::json_str("Browser login")),
+      ("kind", base_codec::json_str("browser")),
+      ("reason", base_codec::json_str("test")),
+    ]),
+    now_ms,
+  )
+  if !br_refuse.is_error {
+    let _ = ws_store.close()
+    return Err("secret_save must refuse kind=browser")
+  }
+  let save_res = handle_vault_mcp_tool(
+    ws_store,
+    station_sys::random_bytes,
+    ws,
+    deps,
+    "s-mcp",
+    "secret_save",
+    base_codec::json_obj([
+      ("name", base_codec::json_str("Stripe Key")),
+      ("about", base_codec::json_str("Billing API")),
+      ("kind", base_codec::json_str("token")),
+      ("value", base_codec::json_str("sk_live_test_999")),
+      ("reason", base_codec::json_str("Save billing token")),
+      ("modes", base_codec::json_arr([base_codec::json_str("proxy")])),
+      ("hosts", base_codec::json_arr([base_codec::json_str("api.stripe.com")])),
+    ]),
+    now_ms,
+  )
+  if save_res.is_error {
+    let _ = ws_store.close()
+    return Err("secret_save failed: " + vmcp_reply_text(save_res))
+  }
+  let save_row = match st.db.first("SELECT id, body FROM vault_requests WHERE ws = ?1 AND body LIKE '%Stripe Key%' LIMIT 1", [base_codec::json_str(ws)]) {
+    Ok(Some(r)) => r
+    _ => { let _ = ws_store.close(); return Err("secret_save did not persist vault_requests row") }
+  }
+  let save_req_id = match save_row.get("id") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+  let save_raw = match save_row.get("body") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+  let save_j = match base_codec::json_parse(save_raw) { base_codec::JsonParseResult::Ok(v) => v, _ => base_codec::json_obj([]) }
+  let save_item_id = match json_field_str(save_j, "item") { Some(s) => s, None => "" }
+  let save_vault_id = match json_field_str(save_j, "vault") { Some(s) => s, None => "" }
+  if !save_item_id.starts_with("i_") || save_item_id.length() != 28 {
+    let _ = ws_store.close()
+    return Err("secret_save item id is not i_<26-ULID>: " + save_item_id)
+  }
+  if save_vault_id != v_alice_id {
+    let _ = ws_store.close()
+    return Err("secret_save chose wrong target vault (expected Alice personal vault): " + save_vault_id)
+  }
+  // Decrypt `sealed[0].secret` using `alice_box_priv` to verify real client-readable seal!
+  let sealed_ok = match base_codec::json_get(save_j, "sealed") {
+    Some(base_codec::Json::Arr(xs)) if xs.length() == 1 => match json_field_str(xs[0], "secret") {
+      Some(ct) => match vault_open_seal(alice_box_priv, ct, vault_save_context(ws, save_req_id)) {
+        Ok(pt) => pt.to_string().contains("sk_live_test_999")
+        Err(_) => false
+      }
+      None => false
+    }
+    _ => false
+  }
+  if !sealed_ok {
+    let _ = ws_store.close()
+    return Err("secret_save sealed payload failed to open with dev_a1 key")
+  }
+  // Publish dev_a2 box cert and trigger `vault_rebox_for_cert` (`VaultRouteCtx.boxed`)!
+  let cert_a2 = vmcp_sign(
+    base_codec::json_obj([
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("device", base_codec::json_str(dev_a2)),
+      ("box", base_codec::json_str(alice_box2_pub)),
+      ("at", base_codec::json_int64(now_sec + 1L)),
+    ]),
+    station_vault::TAG_BOX,
+    alice_ed,
+    alice_ed_pub,
+  )
+  let _ = vstore.put_box(station_rules_bridge::base_to_form(cert_a2))
+  let reboxed = vault_rebox_for_cert(ws_store, Some(events), lock_s, station_rules_bridge::base_to_form(cert_a2), station_sys::random_bytes, None, now_ms + 1000L)
+  if !reboxed {
+    let _ = ws_store.close()
+    return Err("vault_rebox_for_cert returned false")
+  }
+  match st.db.first("SELECT body FROM vault_requests WHERE ws = ?1 AND id = ?2", [base_codec::json_str(ws), base_codec::json_str(save_req_id)]) {
+    Ok(Some(r)) => match r.get("body") {
+      Some(base_codec::Json::Str(b)) => if !b.contains(dev_a2) {
+        let _ = ws_store.close()
+        return Err("vault_rebox_for_cert did not append dev_a2 seal")
+      }
+      _ => ()
+    }
+    _ => ()
+  }
+
+  // 4. `secret_reask`: vault cards are system cards — even a human message does NOT close them,
+  //    so `secret_reask` returns "already pending" until the card is actually closed in `closed_cards`;
+  //    once closed in `closed_cards`, `secret_reask` reposts with CAS; `secret_cancel` withdraws & closes!
+  let reask_same = handle_vault_mcp_tool(ws_store, station_sys::random_bytes, ws, deps, "s-mcp", "secret_reask", base_codec::json_obj([("request", base_codec::json_str(save_req_id))]), now_ms + 1500L)
+  if reask_same.is_error || !vmcp_reply_text(reask_same).contains("already pending") {
+    let _ = ws_store.close()
+    return Err("secret_reask on open same card must return already pending, got: " + vmcp_reply_text(reask_same))
+  }
+  let _ = st.db.run(
+    "INSERT OR IGNORE INTO closed_cards (thread, n, viewer, at) SELECT thread, n, 's-mcp', ?1 FROM entries WHERE thread = 800 AND card IS NOT NULL",
+    [sql_db::int64_to_json(now_ms + 1800L)],
+  )
+  let reask_res = handle_vault_mcp_tool(ws_store, station_sys::random_bytes, ws, deps, "s-mcp", "secret_reask", base_codec::json_obj([("request", base_codec::json_str(save_req_id))]), now_ms + 2000L)
+  if reask_res.is_error {
+    let _ = ws_store.close()
+    return Err("secret_reask failed: " + vmcp_reply_text(reask_res))
+  }
+  match st.db.first("SELECT COUNT(*) AS cnt FROM closed_cards WHERE thread = 800", []) {
+    Ok(Some(r)) => match r.get("cnt") {
+      Some(base_codec::Json::Num(d, _)) if d.to_int64() >= 1L => ()
+      _ => { let _ = ws_store.close(); return Err("secret_reask did not close previous card via card_outbox") }
+    }
+    _ => ()
+  }
+  let cancel_res = handle_vault_mcp_tool(ws_store, station_sys::random_bytes, ws, deps, "s-mcp", "secret_cancel", base_codec::json_obj([("request", base_codec::json_str(save_req_id))]), now_ms + 3000L)
+  if cancel_res.is_error || ws_store.vault_unsaved.contains(save_req_id) {
+    let _ = ws_store.close()
+    return Err("secret_cancel failed or left unsaved secret in memory")
+  }
+  // 4b. `secret_use` refuses remote `station` up front.
+  let remote_use = handle_vault_mcp_tool(
+    ws_store,
+    station_sys::random_bytes,
+    ws,
+    deps,
+    "s-mcp",
+    "secret_use",
+    base_codec::json_obj([
+      ("item", base_codec::json_str("GitHub PAT")),
+      ("reason", base_codec::json_str("remote test")),
+      ("station", base_codec::json_str("other-station")),
+    ]),
+    now_ms + 3500L,
+  )
+  if !remote_use.is_error {
+    let _ = ws_store.close()
+    return Err("secret_use must refuse unsupported remote station up front")
+  }
+
+  // 5. `prepare_secret_run` refuses `browser` and remote `runOn` BEFORE spending grant!
+  let br_fields : Map[String, String] = Map::new()
+  br_fields.set("cookies", "[{\"name\":\"sid\",\"value\":\"v\"}]")
+  let br_grant = station_vault::GrantRecord::{
+    id: "r_browser_1",
+    session: "s-mcp",
+    mode: station_vault::DeliveryMode::Browser,
+    grant_scope: station_vault::GrantScope::Once,
+    hosts: ["github.com"],
+    env_var: None,
+    secret: station_vault::VaultSecret::{ kind: "browser", name: "GH Login", fields: br_fields },
+    expires_sec: now_sec + 3600L,
+    idle_sec: 0L,
+    uses: 0,
+    revoked: false,
+  }
+  let _ = ws_store.register_vault_grant(br_grant, now_sec)
+  match prepare_secret_run(ws_store, "s-mcp", ws, "st-mcp", base_codec::json_obj([("grant", base_codec::json_str("r_browser_1")), ("command", base_codec::json_str("echo hi"))]), now_ms) {
+    Ok(_) => { let _ = ws_store.close(); return Err("prepare_secret_run must refuse browser grant") }
+    Err(_) => ()
+  }
+  match ws_store.vault_grants.get_record("r_browser_1") {
+    Some(rec) if rec.uses == 0 => ()
+    _ => { let _ = ws_store.close(); return Err("browser grant was consumed despite refusal!") }
+  }
+  // 6. R4 regression: verify `WholeAgents::build_domain_handlers` still dispatches `sign_in`
+  //    through `signin_tool_override` alongside all 8 Vault MCP tools!
+  let agents_r4 = WholeAgents::new(
+    WholeAgentsConfig::{
+      data_dir: tmp_dir,
+      assets_dir: tmp_dir,
+      runner_bin: "",
+      mcp_port: 0,
+      home_ws: ws,
+    },
+  )
+  let mut sign_in_seen = false
+  agents_r4.signin_tool_override = Some(
+    fn(_s : String, t : String, _a : base_codec::Json) -> station_tools::ToolReply {
+      if t == "sign_in" {
+        sign_in_seen = true
+      }
+      station_tools::text_reply("sign-in-ok")
+    },
+  )
+  let r4_handlers = agents_r4.build_domain_handlers(ws_store, now_ms)
+  let r4_reply = (r4_handlers.secret)("s-mcp", "sign_in", base_codec::json_obj([]))
+  if !sign_in_seen || r4_reply.is_error {
+    let _ = ws_store.close()
+    return Err("sign_in did not dispatch through signin_tool_override")
+  }
+  let _ = ws_store.close()
+  Ok(())
+}

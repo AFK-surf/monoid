@@ -204,6 +204,14 @@ pub fn wired_mcp_tool_names() -> Array[String] {
     "job_log",
     "job_stop",
     "project_manage",
+    "secret_list",
+    "secret_use",
+    "secret_save",
+    "secret_describe",
+    "secret_delete",
+    "secret_cancel",
+    "secret_reask",
+    "secret_run",
   ]
 }
 
@@ -2196,9 +2204,14 @@ fn WholeAgents::build_domain_handlers(
   self : WholeAgents,
   whole_store : WholeStore,
   now_ms : Int64,
+  vault_deps : Option[VaultMcpDeps] = None,
 ) -> station_tools::DomainHandlers {
   let base = station_tools::default_domain_handlers()
   let home_ws = self.config.home_ws
+  let eff_vault_deps = match vault_deps {
+    Some(d) => d
+    None => VaultMcpDeps::empty()
+  }
 
   let chat_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
     let st = match whole_store.require_open() {
@@ -3579,8 +3592,27 @@ fn WholeAgents::build_domain_handlers(
     if tool == "sign_in" {
       match self.signin_tool_override {
         Some(f) => return f(session, tool, args)
-        None => ()
+        None => return (base.secret)(session, tool, args)
       }
+    }
+    if tool == "secret_list"
+    || tool == "secret_use"
+    || tool == "secret_save"
+    || tool == "secret_describe"
+    || tool == "secret_delete"
+    || tool == "secret_cancel"
+    || tool == "secret_reask"
+    || tool == "secret_run" {
+      return handle_vault_mcp_tool(
+        whole_store,
+        self.random_bytes_fn,
+        home_ws,
+        eff_vault_deps,
+        session,
+        tool,
+        args,
+        now_ms,
+      )
     }
     (base.secret)(session, tool, args)
   }
@@ -3613,8 +3645,14 @@ fn WholeAgents::build_domain_handlers(
   }
 }
 
-/// Pure dependency-injected `/mcp` HTTP handler (no SQLite FFI references).
-pub fn WholeAgents::handle_mcp_http_with_handlers(
+/// Outcome of `/mcp` HTTP routing with optional async tool deferral (`secret_run`).
+pub enum McpHttpOrDefer {
+  Immediate(McpHttpResponse)
+  DeferredCall(String, String, base_codec::Json, base_codec::Json, Option[base_codec::Json])
+}
+
+/// Pure dependency-injected `/mcp` HTTP handler with optional async deferral (no SQLite FFI).
+pub fn WholeAgents::handle_mcp_http_with_handlers_or_defer(
   self : WholeAgents,
   method : String,
   path : String,
@@ -3623,21 +3661,26 @@ pub fn WholeAgents::handle_mcp_http_with_handlers(
   authorization : Option[String],
   body : String,
   handlers : station_tools::DomainHandlers,
-) -> McpHttpResponse {
+  defer_tools : Array[String],
+) -> McpHttpOrDefer {
   if path != "/mcp" {
-    return McpHttpResponse::{
-      status: 404,
-      content_type: "application/json",
-      body: base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str("not found"))])),
-    }
+    return McpHttpOrDefer::Immediate(
+      McpHttpResponse::{
+        status: 404,
+        content_type: "application/json",
+        body: base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str("not found"))])),
+      },
+    )
   }
   match station_tools::check_local_origin(host_header, origin_header, [self.config.mcp_port]) {
     Some(err_msg) => {
-      return McpHttpResponse::{
-        status: 403,
-        content_type: "application/json",
-        body: base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str(err_msg))])),
-      }
+      return McpHttpOrDefer::Immediate(
+        McpHttpResponse::{
+          status: 403,
+          content_type: "application/json",
+          body: base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str(err_msg))])),
+        },
+      )
     }
     None => ()
   }
@@ -3666,9 +3709,72 @@ pub fn WholeAgents::handle_mcp_http_with_handlers(
       station_tools::dispatch_tool(handlers, session, tool, args)
     },
   }
-  let reply = self.mcp.handle(method, authorization, body, tools_host)
-  let (st, ct, text) = station_tools::encode_json_reply(reply)
-  McpHttpResponse::{ status: st, content_type: ct, body: text }
+  match self.mcp.handle_or_defer(method, authorization, body, tools_host, defer_tools) {
+    station_tools::McpResolveResult::Immediate(reply) => {
+      let (st, ct, text) = station_tools::encode_json_reply(reply)
+      McpHttpOrDefer::Immediate(McpHttpResponse::{ status: st, content_type: ct, body: text })
+    }
+    station_tools::McpResolveResult::DeferredCall(sess, tname, coerced, req_id, ended_meta) => {
+      McpHttpOrDefer::DeferredCall(sess, tname, coerced, req_id, ended_meta)
+    }
+  }
+}
+
+/// Pure dependency-injected `/mcp` HTTP handler (no SQLite FFI references).
+pub fn WholeAgents::handle_mcp_http_with_handlers(
+  self : WholeAgents,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  handlers : station_tools::DomainHandlers,
+) -> McpHttpResponse {
+  match self.handle_mcp_http_with_handlers_or_defer(
+    method,
+    path,
+    host_header,
+    origin_header,
+    authorization,
+    body,
+    handlers,
+    [],
+  ) {
+    McpHttpOrDefer::Immediate(r) => r
+    McpHttpOrDefer::DeferredCall(_, _, _, _, _) => McpHttpResponse::{
+      status: 500,
+      content_type: "application/json",
+      body: "{\"error\":\"unexpected deferred call\"}",
+    }
+  }
+}
+
+/// Handle a local HTTP request to `/mcp` with optional async deferral (`secret_run`).
+pub fn WholeAgents::handle_mcp_http_or_defer(
+  self : WholeAgents,
+  whole_store : WholeStore,
+  method : String,
+  path : String,
+  host_header : Option[String],
+  origin_header : Option[String],
+  authorization : Option[String],
+  body : String,
+  now_ms : Int64,
+  defer_tools : Array[String],
+  vault_deps : Option[VaultMcpDeps] = None,
+) -> McpHttpOrDefer {
+  let handlers = self.build_domain_handlers(whole_store, now_ms, vault_deps=vault_deps)
+  self.handle_mcp_http_with_handlers_or_defer(
+    method,
+    path,
+    host_header,
+    origin_header,
+    authorization,
+    body,
+    handlers,
+    defer_tools,
+  )
 }
 
 /// Handle a local HTTP request to `/mcp` against live SQLite `WholeStore` + `SessionHub` + `JobManager`.
@@ -3682,15 +3788,25 @@ pub fn WholeAgents::handle_mcp_http(
   authorization : Option[String],
   body : String,
   now_ms : Int64,
+  vault_deps : Option[VaultMcpDeps] = None,
 ) -> McpHttpResponse {
-  let handlers = self.build_domain_handlers(whole_store, now_ms)
-  self.handle_mcp_http_with_handlers(
+  match self.handle_mcp_http_or_defer(
+    whole_store,
     method,
     path,
     host_header,
     origin_header,
     authorization,
     body,
-    handlers,
-  )
+    now_ms,
+    [],
+    vault_deps=vault_deps,
+  ) {
+    McpHttpOrDefer::Immediate(r) => r
+    McpHttpOrDefer::DeferredCall(_, _, _, _, _) => McpHttpResponse::{
+      status: 500,
+      content_type: "application/json",
+      body: "{\"error\":\"unexpected deferred call\"}",
+    }
+  }
 }

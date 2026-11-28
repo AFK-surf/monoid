@@ -163,7 +163,7 @@ fn rpc_error_reply(status : Int, id : base_codec::Json, code : Int, message : St
   }
 }
 
-fn tool_result_json(reply : ToolReply, ended_meta : Option[base_codec::Json]) -> base_codec::Json {
+pub fn tool_result_json(reply : ToolReply, ended_meta : Option[base_codec::Json]) -> base_codec::Json {
   let content_arr : Array[base_codec::Json] = []
   for i in 0..<reply.content.length() {
     content_arr.push(content_item_to_json(reply.content[i]))
@@ -288,37 +288,61 @@ pub fn McpServer::listed(
   }
 }
 
-/// Handle one HTTP request to `/mcp` using the injected `ToolsHost`.
-pub fn McpServer::handle(
+/// Outcome of `McpServer::handle_or_defer`: either an immediate HTTP reply, or a
+/// validated, authenticated, guard-checked `tools/call` delegated to an async runtime
+/// (e.g. `secret_run`) without bypassing any `/mcp` security gate.
+pub enum McpResolveResult {
+  Immediate(HttpReply)
+  DeferredCall(String, String, base_codec::Json, base_codec::Json, Option[base_codec::Json])
+}
+
+fn mcp_str_in_list(list : Array[String], needle : String) -> Bool {
+  for i in 0..<list.length() {
+    if list[i] == needle {
+      return true
+    }
+  }
+  false
+}
+
+/// Handle one HTTP request to `/mcp` using the injected `ToolsHost`, optionally deferring
+/// specific tool names (after ALL auth, notification, `station_tool` unwrapping, schema
+/// coercion, `bump_heard`, and `outward` call-guard checks have succeeded).
+pub fn McpServer::handle_or_defer(
   self : McpServer,
   http_method : String,
   authorization : Option[String],
   body : String,
   host : ToolsHost,
-) -> HttpReply {
+  defer_tools : Array[String],
+) -> McpResolveResult {
   if http_method != "POST" {
-    return HttpReply::{ status: 405, body: None }
+    return McpResolveResult::Immediate(HttpReply::{ status: 405, body: None })
   }
   let token = extract_bearer_token(authorization)
   let session = if token.length() == 0 { None } else { (host.resolve_token)(token) }
   let session_key = match session {
     Some(s) => s
-    None => return HttpReply::{
-      status: 401,
-      body: Some(base_codec::json_obj([("error", base_codec::json_str("unknown session token"))])),
-    }
+    None => return McpResolveResult::Immediate(
+      HttpReply::{
+        status: 401,
+        body: Some(base_codec::json_obj([("error", base_codec::json_str("unknown session token"))])),
+      },
+    )
   }
   let msg = match base_codec::json_parse(body) {
     base_codec::JsonParseResult::Ok(v) => v
-    base_codec::JsonParseResult::Err(_) => return rpc_error_reply(400, base_codec::json_null(), -32700, "parse error")
+    base_codec::JsonParseResult::Err(_) => return McpResolveResult::Immediate(
+      rpc_error_reply(400, base_codec::json_null(), -32700, "parse error"),
+    )
   }
   let msg_fields = match msg {
     base_codec::Json::Obj(f) => f
-    _ => return HttpReply::{ status: 202, body: None }
+    _ => return McpResolveResult::Immediate(HttpReply::{ status: 202, body: None })
   }
   let req_id = match base_codec::json_obj_get(msg_fields, "id") {
     Some(id) => id
-    None => return HttpReply::{ status: 202, body: None }
+    None => return McpResolveResult::Immediate(HttpReply::{ status: 202, body: None })
   }
   let rpc_method = match base_codec::json_obj_get(msg_fields, "method") {
     Some(base_codec::Json::Str(m)) => m
@@ -334,28 +358,30 @@ pub fn McpServer::handle(
       Some(base_codec::Json::Str(v)) => v
       _ => "2025-06-18"
     }
-    return rpc_result_reply(
-      req_id,
-      base_codec::json_obj(
-        [
-          ("protocolVersion", base_codec::json_str(proto_ver)),
-          ("capabilities", base_codec::json_obj([("tools", base_codec::json_obj([]))])),
-          (
-            "serverInfo",
-            base_codec::json_obj(
-              [
-                ("name", base_codec::json_str(self.server_name)),
-                ("version", base_codec::json_str(self.server_version)),
-              ],
+    return McpResolveResult::Immediate(
+      rpc_result_reply(
+        req_id,
+        base_codec::json_obj(
+          [
+            ("protocolVersion", base_codec::json_str(proto_ver)),
+            ("capabilities", base_codec::json_obj([("tools", base_codec::json_obj([]))])),
+            (
+              "serverInfo",
+              base_codec::json_obj(
+                [
+                  ("name", base_codec::json_str(self.server_name)),
+                  ("version", base_codec::json_str(self.server_version)),
+                ],
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     )
   }
 
   if rpc_method == "ping" {
-    return rpc_result_reply(req_id, base_codec::json_obj([]))
+    return McpResolveResult::Immediate(rpc_result_reply(req_id, base_codec::json_obj([])))
   }
 
   if rpc_method == "tools/list" {
@@ -365,9 +391,11 @@ pub fn McpServer::handle(
     let extra = (host.dynamic_tools)(session_key)
     let listing = (host.listing_of)(session_key)
     let tools_json = self.listed(ctx, base, extra, listing)
-    return rpc_result_reply(
-      req_id,
-      base_codec::json_obj([("tools", base_codec::json_arr(tools_json))]),
+    return McpResolveResult::Immediate(
+      rpc_result_reply(
+        req_id,
+        base_codec::json_obj([("tools", base_codec::json_arr(tools_json))]),
+      ),
     )
   }
 
@@ -401,22 +429,24 @@ pub fn McpServer::handle(
         Some(t) => t
         None => {
           let err_msg = "No station tool " + base_codec::json_stringify(target_name_json) + ": name one listed in station_tool's description."
-          return rpc_result_reply(req_id, tool_result_json(error_reply(err_msg), None))
+          return McpResolveResult::Immediate(rpc_result_reply(req_id, tool_result_json(error_reply(err_msg), None)))
         }
       }
       match base_codec::json_get(given, "arguments") {
         None | Some(base_codec::Json::Null) => {
           let info = base_codec::json_stringify(declared_json(named, None))
-          return rpc_result_reply(req_id, tool_result_json(text_reply(info), None))
+          return McpResolveResult::Immediate(rpc_result_reply(req_id, tool_result_json(text_reply(info), None)))
         }
         Some(base_codec::Json::Obj(inner_args)) => {
           tool_name = named.name
           given = base_codec::json_obj(inner_args)
         }
         Some(_) => {
-          return rpc_result_reply(
-            req_id,
-            tool_result_json(error_reply("arguments must be an object."), None),
+          return McpResolveResult::Immediate(
+            rpc_result_reply(
+              req_id,
+              tool_result_json(error_reply("arguments must be an object."), None),
+            ),
           )
         }
       }
@@ -424,13 +454,23 @@ pub fn McpServer::handle(
 
     let tool = match find_tool(all_tools, tool_name) {
       Some(t) => t
-      None => return rpc_error_reply(200, req_id, -32602, "unknown tool " + tool_name)
+      None => return McpResolveResult::Immediate(rpc_error_reply(200, req_id, -32602, "unknown tool " + tool_name))
     }
 
     let coerced = typed_args(given, tool.input_schema)
     match check_call_guard(ctx, tool.name, tool.outward, coerced) {
-      Some(refusal) => return rpc_result_reply(req_id, tool_result_json(error_reply(refusal), None))
+      Some(refusal) => return McpResolveResult::Immediate(
+        rpc_result_reply(req_id, tool_result_json(error_reply(refusal), None)),
+      )
       None => ()
+    }
+
+    if mcp_str_in_list(defer_tools, tool.name) {
+      let ended_meta = match (host.listing_of)(session_key) {
+        Some(l) => l.ended
+        None => None
+      }
+      return McpResolveResult::DeferredCall(session_key, tool.name, coerced, req_id, ended_meta)
     }
 
     let reply = (host.call_tool)(session_key, tool.name, coerced)
@@ -438,10 +478,24 @@ pub fn McpServer::handle(
       Some(l) => l.ended
       None => None
     }
-    return rpc_result_reply(req_id, tool_result_json(reply, ended_meta))
+    return McpResolveResult::Immediate(rpc_result_reply(req_id, tool_result_json(reply, ended_meta)))
   }
 
-  rpc_error_reply(200, req_id, -32601, "method not found: " + rpc_method)
+  McpResolveResult::Immediate(rpc_error_reply(200, req_id, -32601, "method not found: " + rpc_method))
+}
+
+/// Handle one HTTP request to `/mcp` using the injected `ToolsHost`.
+pub fn McpServer::handle(
+  self : McpServer,
+  http_method : String,
+  authorization : Option[String],
+  body : String,
+  host : ToolsHost,
+) -> HttpReply {
+  match self.handle_or_defer(http_method, authorization, body, host, []) {
+    McpResolveResult::Immediate(r) => r
+    McpResolveResult::DeferredCall(_, _, _, req_id, _) => rpc_error_reply(200, req_id, -32603, "unexpected deferred call")
+  }
 }
 
 // ── Local agents' door HTTP helpers (`station/src/tools/http.ts`) ──

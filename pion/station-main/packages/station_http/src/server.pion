@@ -1796,6 +1796,13 @@ pub fn HttpServer::handle_done(
 }
 
 /// Resume connections whose pipelined `rx_buf` hit the per-tick step budget.
+pub fn HttpServer::has_live_conn(self : HttpServer, conn_id : Int) -> Bool {
+  match self.conns.get(conn_id) {
+    Some(c) => !c.closed
+    None => false
+  }
+}
+
 pub fn HttpServer::drain_pending_rx(self : HttpServer, callbacks : ServerCallbacks) -> Bool {
   if self.pending_rx_conns.length() == 0 {
     return false

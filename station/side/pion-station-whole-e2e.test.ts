@@ -22,6 +22,7 @@ import { createHash, generateKeyPairSync, randomBytes, sign as cryptoSign } from
 import { createSocket as createUdpSocket } from "node:dgram";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, request as httpRequest, type Server as HttpServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { createConnection, createServer as createNetServer, type Server as NetServer } from "node:net";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,6 +37,8 @@ import { PEER_BYTES_ALPN } from "../src/mesh/peer.ts";
 import { PEER_HTTP_ALPN } from "../src/mesh/peer-http.ts";
 import { ALPN as ADMIN_ALPN } from "../src/mesh/serve.ts";
 import { Reader, writeLine } from "../src/mesh/wire.ts";
+import { grantContext, seal as vaultSeal, TAG as VAULT_TAG } from "../src/vault/crypto.ts";
+import { makeCa as makeTestCa, makeLeaf as makeTestLeaf, pem as pemCert } from "../src/vault/x509.ts";
 
 const root = fileURLToPath(new URL("../..", import.meta.url));
 const dirs: string[] = [];
@@ -3280,6 +3283,401 @@ CREATE INDEX IF NOT EXISTS devices_by_ws ON devices (ws);`);
   } finally {
     dbCheckR2.close();
   }
+
+  await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("Wave 17E-1: Vault MCP 8 tools + real proxy/file/env secret_run + non-blocking GET /status", async () => {
+  const bin = resolvePionBinary();
+  assert.ok(existsSync(bin), `missing built binary: ${bin}`);
+
+  const smokeRes = spawnSync(bin, ["--smoke-vault-sqlite"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(smokeRes.status, 0, `--smoke-vault-sqlite failed: ${smokeRes.stderr}`);
+  const smokeJson = JSON.parse(smokeRes.stdout.trim());
+  assert.equal(smokeJson.ok, true);
+  assert.equal(smokeJson.sqlite_vault_mcp, true);
+
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = mkdtempSync(join(tmpdir(), "stillfail-w17e1-e2e-"));
+  dirs.push(base);
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  // Create test CA + leaf certs for `localhost` (allowlisted) and `127.0.0.1` (non-allowlisted).
+  const nowMs = Date.now();
+  const testCa = makeTestCa(nowMs, "w17e1-test-ca");
+  const testCaPem = pemCert(testCa.cert);
+  const testCaPath = join(base, "test-ca.pem");
+  writeFileSync(testCaPath, testCaPem, "utf8");
+
+  const leafAllowed = makeTestLeaf(testCa, "w17e1-test-ca", "localhost", nowMs);
+  const leafBlocked = makeTestLeaf(testCa, "w17e1-test-ca", "127.0.0.1", nowMs);
+
+  let allowedAuthHeader = "";
+  const allowedSrv = createHttpsServer(
+    {
+      key: leafAllowed.key.export({ format: "pem", type: "pkcs8" }),
+      cert: pemCert(leafAllowed.cert) + testCaPem,
+    },
+    (req, res) => {
+      allowedAuthHeader = String(req.headers.authorization ?? "");
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("allowed-ok");
+    },
+  );
+  servers.push(allowedSrv);
+  await new Promise<void>((resolve) => allowedSrv.listen(0, "127.0.0.1", () => resolve()));
+  const allowedPort = (allowedSrv.address() as { port: number }).port;
+
+  let blockedAuthHeader = "";
+  const blockedSrv = createHttpsServer(
+    {
+      key: leafBlocked.key.export({ format: "pem", type: "pkcs8" }),
+      cert: pemCert(leafBlocked.cert) + testCaPem,
+    },
+    (req, res) => {
+      blockedAuthHeader = String(req.headers.authorization ?? "");
+      res.writeHead(200, { "content-type": "text/plain" });
+      res.end("blocked-ok");
+    },
+  );
+  servers.push(blockedSrv);
+  await new Promise<void>((resolve) => blockedSrv.listen(0, "127.0.0.1", () => resolve()));
+  const blockedPort = (blockedSrv.address() as { port: number }).port;
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner);
+
+  const ws = "ws-w17e1";
+  // Create a real workspace lock with owner Ed25519 key so encrypted vault grants verify cryptographically.
+  const ownerKp = generateKeyPairSync("ed25519");
+  const ownerPubRaw = ownerKp.publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  const ownerKeyId = `ed25519:${ownerPubRaw.toString("hex")}`;
+  const ownerDevId = epOwner.id();
+
+  const signVaultObj = (obj: Record<string, unknown>) => {
+    const canonical = (v: unknown): string => {
+      if (v === null || typeof v !== "object") return JSON.stringify(v);
+      if (Array.isArray(v)) return `[${v.map(canonical).join(",")}]`;
+      const keys = Object.keys(v as Record<string, unknown>).sort();
+      return `{${keys.map((k) => `${JSON.stringify(k)}:${canonical((v as Record<string, unknown>)[k])}`).join(",")}}`;
+    };
+    const tag = String(obj.__tag);
+    const body: Record<string, unknown> = { ...obj };
+    delete body.__tag;
+    const digest = createHash("sha256").update(canonical(body), "utf8").digest();
+    const msg = Buffer.concat([Buffer.from(`${tag}\0`, "utf8"), digest]);
+    const sigHex = cryptoSign(null, msg, ownerKp.privateKey).toString("hex");
+    return { ...body, sig: { key: ownerKeyId, alg: "Ed25519", sig: sigHex } };
+  };
+
+  // Seed a minimal workspace lock chain (genesis) on disk before daemon startup.
+  const signLockEntry = (e: Record<string, unknown>): Entry => {
+    const raw = { ...e } as unknown as Entry;
+    const sigHex = cryptoSign(null, signedBytes(entryHash(raw)), ownerKp.privateKey).toString("hex");
+    return { ...raw, sig: { key: ownerKeyId, alg: "Ed25519", sig: sigHex } } as unknown as Entry;
+  };
+  const wsGen = signLockEntry({
+    v: 1,
+    ws,
+    seq: 0,
+    prev: null,
+    at: Math.floor(nowMs / 1000) - 10,
+    kind: "genesis",
+    body: {
+      owner: "u-owner",
+      origins: ["https://app.still.fail"],
+      rp_id: "app.still.fail",
+      cloud_keys: grantKeys,
+      members: [{ sub: "u-owner", email: "owner@example.com", role: "owner" }],
+      devices: [
+        { id: ownerDevId, sub: "u-owner", kind: "app", label: "Owner App", sign_key: ownerKeyId },
+      ],
+      passkeys: [],
+      stations: [{ key: stationId, name: "pion-w17e1" }],
+      gateways: [],
+    },
+  });
+  assert.ok(lockGenesis(wsGen), "genesis lock must be valid");
+
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
+  writeFileSync(join(data, "mesh/lock.json"), JSON.stringify({ entries: [wsGen] }), { mode: 0o600 });
+
+  const wd = startWholeDaemon(bin, data, { STILLFAIL_VAULT_PROXY_CA: testCaPath });
+  await until("w17e1 daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const mcpMsg = await until("w17e1 mcp port", () => wd.messages.find((m) => m.serving === "mcp" && Number(m.port) > 0));
+  const mcpPort = Number(mcpMsg.port);
+  const meshAddr = await until("w17e1 mesh bound", () => wd.meshAddr());
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+
+  // Create a chat session via Admin API and read its bearer token from SQLite.
+  const sessResp = await adminCall(
+    conn,
+    "POST",
+    "/sessions",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ title: "W17E1 Vault E2E", runtime: "claude" })),
+  );
+  assert.equal(sessResp.status, 200, `POST /sessions failed: ${sessResp.body.toString()}`);
+  const sessJson = JSON.parse(sessResp.body.toString());
+  const sessionKey = String(sessJson.key ?? sessJson.session ?? "");
+  assert.ok(sessionKey.length > 0, `missing session key: ${sessResp.body.toString()}`);
+
+  const db = new DatabaseSync(join(data, "stillfail.db"), { readOnly: true });
+  const tokenRow = db.prepare("SELECT token FROM sessions WHERE key = ?").get(sessionKey) as { token: string } | undefined;
+  db.close();
+  assert.ok(tokenRow?.token, "missing session MCP token");
+  const mcpToken = tokenRow.token;
+
+  const mcpCall = async (toolName: string, args: Record<string, unknown>, id = 1) => {
+    const res = await httpCall(
+      mcpPort,
+      "POST",
+      "/mcp",
+      {
+        "content-type": "application/json",
+        authorization: `Bearer ${mcpToken}`,
+      },
+      JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name: toolName, arguments: args } }),
+    );
+    assert.equal(res.status, 200, `MCP ${toolName} HTTP ${res.status}: ${res.body.toString()}`);
+    const parsed = JSON.parse(res.body.toString());
+    return {
+      isError: parsed.result?.isError === true,
+      text: String(parsed.result?.content?.[0]?.text ?? ""),
+    };
+  };
+
+  // Seed encrypted vault + 3 items (proxy, file, env) via Admin API.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ownerBoxKp = generateKeyPairSync("x25519");
+  const ownerBoxPubRaw = ownerBoxKp.publicKey.export({ format: "der", type: "spki" }).subarray(-32);
+  const ownerBoxPub = `x25519:${ownerBoxPubRaw.toString("hex")}`;
+  const boxCert = signVaultObj({
+    __tag: VAULT_TAG.box,
+    v: 1,
+    ws,
+    device: ownerDevId,
+    box: ownerBoxPub,
+    at: nowSec,
+  });
+  const putBox = await adminCall(
+    conn,
+    "PUT",
+    "/vault/boxes",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify(boxCert)),
+  );
+  assert.equal(putBox.status, 200, `PUT /vault/boxes failed: ${putBox.body.toString()}`);
+
+  const vId = "v_01J99999999999999999999991";
+  const putVault = await adminCall(
+    conn,
+    "PUT",
+    "/vault/vaults",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify(signVaultObj({
+      __tag: VAULT_TAG.vault,
+      v: 1,
+      ws,
+      id: vId,
+      seq: 0,
+      epoch: 1,
+      name: "Owner Personal",
+      owner: "u-owner",
+      members: ["u-owner"],
+      keys: [{ cert: boxCert, wrapped: Buffer.alloc(64, 7).toString("base64url") }],
+      at: nowSec,
+    }))),
+  );
+  assert.equal(putVault.status, 200, `PUT /vault/vaults failed: ${putVault.body.toString()}`);
+
+  const seedItem = async (id: string, listing: Record<string, unknown>) => {
+    const r = await adminCall(
+      conn,
+      "PUT",
+      "/vault/items",
+      { "content-type": "application/json" },
+      Buffer.from(JSON.stringify(signVaultObj({
+        __tag: VAULT_TAG.item,
+        v: 1,
+        ws,
+        vault: vId,
+        id,
+        version: 0,
+        epoch: 1,
+        ct: Buffer.alloc(48, 9).toString("base64url"),
+        listing,
+        at: nowSec,
+      }))),
+    );
+    assert.equal(r.status, 200, `PUT /vault/items ${id} failed: ${r.body.toString()}`);
+  };
+
+  const proxyItemId = "i_01J9999999999999999999999A";
+  const fileItemId = "i_01J9999999999999999999999B";
+  const envItemId = "i_01J9999999999999999999999C";
+  await seedItem(proxyItemId, { name: "ProxyAPI", kind: "token", modes: ["proxy"], hosts: ["localhost"], env: "PROXY_TOK" });
+  await seedItem(fileItemId, { name: "KubeFile", kind: "file", modes: ["file"], hosts: [], env: "KUBE_FILE" });
+  await seedItem(envItemId, { name: "EnvSecret", kind: "token", modes: ["env"], hosts: [], env: "MY_ENV_TOK" });
+
+  // Helper to request via `secret_use` and approve via real `POST /vault/grants`.
+  const grantSecret = async (itemName: string, mode: string, hosts: string[], secretObj: Record<string, unknown>) => {
+    const ask = await mcpCall("secret_use", { item: itemName, reason: "w17e1 e2e", mode, ...(hosts.length ? { hosts } : {}) });
+    assert.equal(ask.isError, false, `secret_use ${itemName} failed: ${ask.text}`);
+    const m = /request (r_[0-9A-Z]{26})/.exec(ask.text);
+    assert.ok(m, `missing request id in: ${ask.text}`);
+    const reqId = m[1]!;
+
+    const reqsResp = await adminCall(conn, "GET", "/vault/requests");
+    assert.equal(reqsResp.status, 200);
+    const reqsJson = JSON.parse(reqsResp.body.toString());
+    const reqObj = (reqsJson.requests as { id: string; item: string; box: string }[]).find((r) => r.id === reqId);
+    assert.ok(reqObj?.box, `missing box on pending request ${reqId}`);
+
+    const sealed = vaultSeal(reqObj.box, Buffer.from(JSON.stringify(secretObj), "utf8"), grantContext(ws, reqId));
+    const grantBody = signVaultObj({
+      __tag: VAULT_TAG.grant,
+      v: 1,
+      ws,
+      request: reqId,
+      vault: vId,
+      item: reqObj.item,
+      mode,
+      hosts,
+      scope: "hour",
+      exp: nowSec + 3600,
+      timeout: { kind: "idle", seconds: 3600 },
+      secret: sealed,
+      at: nowSec,
+    });
+    const gResp = await adminCall(conn, "POST", "/vault/grants", { "content-type": "application/json" }, Buffer.from(JSON.stringify(grantBody)));
+    assert.equal(gResp.status, 200, `POST /vault/grants failed: ${gResp.body.toString()}`);
+    return reqId;
+  };
+
+  // 1. Real `proxy` mode: secret NEVER in child env; allowlisted host gets real secret; non-allowlisted host gets placeholder only!
+  const proxySecret = "sk_proxy_real_w17e1_987654";
+  const proxyGrantId = await grantSecret("ProxyAPI", "proxy", ["localhost"], {
+    kind: "token",
+    name: "ProxyAPI",
+    fields: { value: proxySecret },
+  });
+  const proxyCmd = `node -e '
+    const https = require("node:https");
+    const http = require("node:http");
+    const proxyUrl = new URL(process.env.HTTPS_PROXY);
+    const auth = "Basic " + Buffer.from(decodeURIComponent(proxyUrl.username) + ":" + decodeURIComponent(proxyUrl.password)).toString("base64");
+    const envHasReal = Object.values(process.env).some((v) => String(v).includes("${proxySecret}"));
+    console.log("ENV_HAS_REAL=" + envHasReal);
+    console.log("PLACEHOLDER_OK=" + String(process.env.STILLFAIL_SECRET || "").startsWith("stillfail-secret:"));
+    function viaProxy(host, port) {
+      return new Promise((resolve, reject) => {
+        const req = http.request({
+          host: proxyUrl.hostname,
+          port: Number(proxyUrl.port),
+          method: "CONNECT",
+          path: host + ":" + port,
+          headers: { "Proxy-Authorization": auth },
+        });
+        req.on("connect", (res, socket) => {
+          if (res.statusCode !== 200) return reject(new Error("CONNECT " + res.statusCode));
+          const tlsReq = https.request({
+            host,
+            port,
+            ...(host === "127.0.0.1" ? { checkServerIdentity: () => undefined } : { servername: host }),
+            socket,
+            agent: false,
+            path: "/check",
+            headers: { Authorization: "Bearer " + process.env.STILLFAIL_SECRET },
+          }, (r) => {
+            let body = "";
+            r.on("data", (d) => body += d);
+            r.on("end", () => resolve(r.statusCode + ":" + body));
+          });
+          tlsReq.on("error", reject);
+          tlsReq.end();
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    }
+    Promise.all([viaProxy("localhost", ${allowedPort}), viaProxy("127.0.0.1", ${blockedPort})])
+      .then(([a, b]) => console.log("ALLOWED=" + a + " BLOCKED=" + b))
+      .catch((e) => { console.error(e); process.exit(1); });
+  '`;
+  const proxyRun = await mcpCall("secret_run", { grant: proxyGrantId, command: proxyCmd, timeout_seconds: 30 }, 10);
+  assert.equal(proxyRun.isError, false, `proxy secret_run failed: ${proxyRun.text}`);
+  assert.ok(proxyRun.text.includes("ENV_HAS_REAL=false"), `real secret leaked into child env: ${proxyRun.text}`);
+  assert.ok(proxyRun.text.includes("PLACEHOLDER_OK=true"), `missing placeholder in child env: ${proxyRun.text}`);
+  assert.ok(proxyRun.text.includes("ALLOWED=200:allowed-ok"), `allowlisted proxy request failed: ${proxyRun.text}`);
+  assert.ok(proxyRun.text.includes("BLOCKED=200:blocked-ok"), `non-allowlisted tunnel request failed: ${proxyRun.text}`);
+  assert.equal(allowedAuthHeader, `Bearer ${proxySecret}`, "allowlisted host must receive replaced secret");
+  assert.equal(blockedAuthHeader, `Bearer stillfail-secret:${proxyGrantId}`, "non-allowlisted host MUST receive placeholder only, NEVER real secret");
+
+  // 2. Real `file` mode: 0600 permissions + temp file deleted after exit!
+  const fileContent = "apiVersion: v1\nsecret: file_tok_w17e1_4455\n";
+  const fileGrantId = await grantSecret("KubeFile", "file", [], {
+    kind: "file",
+    name: "KubeFile",
+    fields: { content: Buffer.from(fileContent, "utf8").toString("base64"), filename: "kube.yaml" },
+  });
+  const fileRun = await mcpCall(
+    "secret_run",
+    {
+      grant: fileGrantId,
+      command: `node -e 'const fs=require("node:fs"); const p=process.env.STILLFAIL_SECRET; const st=fs.statSync(p); console.log("MODE=" + (st.mode & 0o777).toString(8)); console.log("PATH=" + p); console.log("LEN=" + fs.readFileSync(p, "utf8").length);'`,
+      timeout_seconds: 15,
+    },
+    11,
+  );
+  assert.equal(fileRun.isError, false, `file secret_run failed: ${fileRun.text}`);
+  assert.ok(fileRun.text.includes("MODE=600"), `expected 0600 temp file mode: ${fileRun.text}`);
+  assert.ok(fileRun.text.includes(`LEN=${fileContent.length}`), `file content length mismatch: ${fileRun.text}`);
+  const pathMatch = /PATH=([^\n]+)/.exec(fileRun.text);
+  assert.ok(pathMatch, `missing PATH in file output: ${fileRun.text}`);
+  assert.equal(existsSync(pathMatch[1]!.trim()), false, `temp secret file was NOT cleaned up: ${pathMatch[1]}`);
+
+  // 3. Real `env` mode + output scrubbing + concurrent non-blocking `GET /status`!
+  const envSecret = "sk_env_real_w17e1_112233";
+  const envGrantId = await grantSecret("EnvSecret", "env", [], {
+    kind: "token",
+    name: "EnvSecret",
+    fields: { value: envSecret },
+  });
+  const slowPromise = mcpCall(
+    "secret_run",
+    {
+      grant: envGrantId,
+      command: `sleep 1.2 && printf 'LEAK=%s\\n' "$MY_ENV_TOK"`,
+      timeout_seconds: 15,
+    },
+    12,
+  );
+  // While `secret_run` is sleeping for 1.2s, `GET /status` MUST return 200 immediately (< 600 ms)!
+  await new Promise((r) => setTimeout(r, 150));
+  const t0 = Date.now();
+  const statusDuringRun = await adminCall(conn, "GET", "/status");
+  const statusMs = Date.now() - t0;
+  assert.equal(statusDuringRun.status, 200, `GET /status during slow secret_run failed: ${statusDuringRun.body.toString()}`);
+  assert.ok(statusMs < 600, `GET /status blocked by secret_run (${statusMs}ms >= 600ms)!`);
+
+  const slowRes = await slowPromise;
+  assert.equal(slowRes.isError, false, `env secret_run failed: ${slowRes.text}`);
+  assert.ok(!slowRes.text.includes(envSecret), `env secret was NOT scrubbed from output: ${slowRes.text}`);
+  assert.ok(slowRes.text.includes("[已隐藏]"), `expected [已隐藏] redaction marker: ${slowRes.text}`);
 
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
