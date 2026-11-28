@@ -1971,14 +1971,19 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
     }
     Err(_) => panic("missing handover state file for successor 1")
   }
-  // Matches runner started within handover window (<= before_ms + 10s), rejects newer replacement (> before_ms + 10s)!
+  // Matches runner started within unified 30s `LIVE_RUNNER_READY_MS` window (incl. +15s late-ready),
+  // rejects newer replacement (> before_ms + 30s)!
   assert_true(
     mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000015000", "r-spawn-r13", 1700000015000L),
-    "adopt must match Spawning rid@before_ms within 10s window",
+    "adopt must match Spawning rid@before_ms at +5s",
   )
   assert_true(
-    !mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000025000", "r-spawn-r13", 1700000025000L),
-    "newer replacement runner after handover window must NOT be killed by Spawning rid@before_ms",
+    mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000025000", "r-spawn-r13", 1700000025000L),
+    "adopt must match late-ready Spawning rid@before_ms at +15s (within 30s LIVE_RUNNER_READY_MS)",
+  )
+  assert_true(
+    !mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000045000", "r-spawn-r13", 1700000045000L),
+    "newer replacement runner after 30s window must NOT be killed by Spawning rid@before_ms",
   )
   // Because `is_draining_stop_target` is read-only, if successor 1 crashes before `attach/TERM/Exit`,
   // the marker and file are STILL intact on disk!
@@ -2018,28 +2023,47 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   mgr4.draining_stopping_ids.set("r-old:5000:1700000001000", true)
   mgr4.draining_stopping_ids.set("rid:r-late@1700000001000", true)
   assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "write stop markers")
-  // At t + 5s with PID 5000 still alive: NEITHER marker is removed!
+  // At t + 5s with PID 5000 alive (or start_time unknown -> None): NEITHER marker is removed!
   assert_true(
-    !mgr4.sweep_draining_stop_markers(1700000006000L, check_pid_alive=fn(p, _s) { p == 5000 }),
-    "must not sweep live exact id or Spawning rid@t at t+5s",
+    !mgr4.sweep_draining_stop_markers(
+      1700000006000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, true, None) },
+    ),
+    "unknown proc_start_time_ms (None) must NEVER clear exact stop marker",
   )
-  assert_true(mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "live exact id kept")
+  assert_true(mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "unknown-start exact id kept")
   assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t kept at t+5s")
-  // Once PID 5000 exits (at t + 10s): exact id removed, Spawning rid@t STILL kept!
+  // Once PID 5000 is confirmed dead (at t + 10s): exact id removed, Spawning rid@t STILL kept!
   assert_true(
-    mgr4.sweep_draining_stop_markers(1700000011000L, check_pid_alive=fn(_p, _s) { false }),
-    "dead exact id swept",
+    mgr4.sweep_draining_stop_markers(
+      1700000011000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, false, None) },
+    ),
+    "confirmed-dead exact id swept",
   )
   assert_true(!mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "dead exact id removed")
   assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t still kept at t+10s")
   // At t + 31s: Spawning rid@t finally expires -> file unlinked!
   assert_true(
-    mgr4.sweep_draining_stop_markers(1700000032000L, check_pid_alive=fn(_p, _s) { false }),
+    mgr4.sweep_draining_stop_markers(
+      1700000032000L,
+      check_pid_dead=fn(_p, _s) { true },
+    ),
     "Spawning rid@t swept at t+31s",
   )
   assert_true(!mgr4.has_handover_carry_state(), "all markers swept")
   assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "unlink after sweep")
   assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked after sweep")
+
+  // 5. R15 P1-1/2: `should_delete_runner_launch_on_pending_replay` & tri-state PID death semantics
+  assert_true(!should_delete_runner_launch_on_pending_replay(true, false, false), "already_ended replay must NOT delete runner_launches")
+  assert_true(!should_delete_runner_launch_on_pending_replay(false, true, false), "active turn in mem must NOT delete runner_launches")
+  assert_true(!should_delete_runner_launch_on_pending_replay(false, false, true), "live session instance must NOT delete runner_launches")
+  assert_true(should_delete_runner_launch_on_pending_replay(false, false, false), "only newly-committed dead instance deletes runner_launches")
+  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, true, None), "alive + None start_time != dead")
+  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, true, Some(103000L)), "alive + within 5s != dead")
+  assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, true, Some(106000L)), "alive + >5s skew => PID reused => confirmed dead")
+  assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, false, None), "proc_kill!=0 => confirmed dead")
 }
 
 test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_draining preserves stop marker on socket error" {

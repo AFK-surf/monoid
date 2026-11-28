@@ -1918,15 +1918,15 @@ fn match_rid_stop_key(key : String, runner_id : String, started_at : Int64) -> B
   }
   let suffix = key.slice(prefix.length(), key.length())
   match parse_i64_decimal(suffix) {
-    Some(before_ms) => started_at <= before_ms + 10000L
+    Some(before_ms) => started_at <= before_ms + LIVE_RUNNER_READY_MS
     None => false
   }
 }
 
-/// R13 P1-2: Read-only check whether `(inst_id, runner_id, started_at)` matches a predecessor
+/// R13/R15 P1-2: Read-only check whether `(inst_id, runner_id, started_at)` matches a predecessor
 /// draining/stopping runner (exact `inst_id`, or `Spawning`-only `"rid:<rid>@<before_ms>"` with
-/// `started_at <= before_ms + 10s`). Does NOT remove the marker; removal happens only on confirmed
-/// exit (`finish_draining`) or startup orphan prune (`prune_orphaned_draining_stops`).
+/// `started_at <= before_ms + LIVE_RUNNER_READY_MS`). Does NOT remove the marker; removal happens
+/// only on confirmed exit (`finish_draining`) or `tick()` `sweep_draining_stop_markers`.
 pub fn LiveRunnerManager::is_draining_stop_target(
   self : LiveRunnerManager,
   inst_id : String,
@@ -1978,18 +1978,67 @@ pub fn LiveRunnerManager::clear_draining_stop_target(
   removed
 }
 
-/// R14 Invariant 2: Strict OS liveness + start-time identity check (`±5s` symmetric window).
-fn live_runner_pid_alive_strict(pid : Int, started_at : Int64) -> Bool {
-  if pid <= 1 {
-    return false
+/// R15 P1-2: Pure tri-state PID confirmed-dead check:
+/// - `pid <= 1` or `!proc_alive` (`proc_kill(pid, 0, false) != 0`) -> `true` (confirmed dead);
+/// - `start_ms_opt == Some(actual)` with `abs(actual - started_at) > 5000L` -> `true` (PID reused -> original dead);
+/// - `start_ms_opt == None` (unknown) or timestamp matches -> `false` (NEVER treat unknown as dead!).
+pub fn live_runner_pid_confirmed_dead_with(
+  pid : Int,
+  started_at : Int64,
+  proc_alive : Bool,
+  start_ms_opt : Option[Int64],
+) -> Bool {
+  if pid <= 1 || !proc_alive {
+    return true
   }
-  if station_sys::proc_kill(pid, 0, false) != 0 {
-    return false
-  }
-  match station_sys::proc_start_time_ms(pid) {
-    Some(actual_ms) => (actual_ms - started_at).abs() <= 5000L
+  match start_ms_opt {
+    Some(actual_ms) => (actual_ms - started_at).abs() > 5000L
     None => false
   }
+}
+
+fn live_runner_pid_confirmed_dead(pid : Int, started_at : Int64) -> Bool {
+  if pid <= 1 {
+    return true
+  }
+  let proc_alive = station_sys::proc_kill(pid, 0, false) == 0
+  if !proc_alive {
+    return true
+  }
+  live_runner_pid_confirmed_dead_with(pid, started_at, true, station_sys::proc_start_time_ms(pid))
+}
+
+/// R15 P1-1: Pure guard ensuring `runner_launches` is NEVER deleted on an `already_ended` replay,
+/// while a newer turn is active in memory, or while the instance is still live in `sessions`.
+pub fn should_delete_runner_launch_on_pending_replay(
+  already_ended : Bool,
+  has_active_turn_in_mem : Bool,
+  instance_live_in_sessions : Bool,
+) -> Bool {
+  !already_ended && !has_active_turn_in_mem && !instance_live_in_sessions
+}
+
+fn LiveRunnerManager::has_live_session_instance(self : LiveRunnerManager, inst_id : String) -> Bool {
+  let skeys = self.sessions.keys()
+  for i in 0..<skeys.length() {
+    match self.sessions.get(skeys[i]) {
+      Some(s) => {
+        match live_runner_info_of(s.phase) {
+          Some(info) => {
+            if station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at) == inst_id {
+              return true
+            }
+          }
+          None => ()
+        }
+        if s.adopted_instance_id == Some(inst_id) {
+          return true
+        }
+      }
+      None => ()
+    }
+  }
+  false
 }
 
 fn parse_rid_stop_key_before_ms(key : String) -> Option[(String, Int64)] {
@@ -2072,15 +2121,15 @@ fn LiveRunnerManager::has_runner_id_tracked(self : LiveRunnerManager, runner_id 
   false
 }
 
-/// R14 Invariant 2: Safely sweeps expired/exited draining stop markers in `tick()`:
+/// R14/R15 Invariant 2: Safely sweeps expired/exited draining stop markers in `tick()`:
 /// - Exact `instance_id` (`<id>:<pid>:<started_at>`): removed ONLY once OS confirms process dead
-///   or PID reused (`!check_pid_alive(pid, started_at)`).
-/// - `Spawning` `"rid:<id>@<before_ms>"`: removed ONLY after `wall_ms > before_ms + 30_000L`
+///   or PID reused (`check_pid_dead(pid, started_at)`; `None` start-time is unknown -> NEVER removed!).
+/// - `Spawning` `"rid:<id>@<before_ms>"`: removed ONLY after `wall_ms > before_ms + LIVE_RUNNER_READY_MS`
 ///   so late-ready runners appearing after startup discovery are still caught and stopped!
 pub fn LiveRunnerManager::sweep_draining_stop_markers(
   self : LiveRunnerManager,
   wall_ms : Int64,
-  check_pid_alive~ : (Int, Int64) -> Bool = live_runner_pid_alive_strict,
+  check_pid_dead~ : (Int, Int64) -> Bool = live_runner_pid_confirmed_dead,
 ) -> Bool {
   let keys = self.draining_stopping_ids.keys()
   let mut removed = false
@@ -2088,14 +2137,14 @@ pub fn LiveRunnerManager::sweep_draining_stop_markers(
     let k = keys[i]
     match parse_rid_stop_key_before_ms(k) {
       Some((_, before_ms)) => {
-        if wall_ms > before_ms + 30000L {
+        if wall_ms > before_ms + LIVE_RUNNER_READY_MS {
           self.draining_stopping_ids.remove(k)
           removed = true
         }
       }
       None => match parse_runner_instance_id_pid_start(k) {
         Some((pid, started_at)) => {
-          if !check_pid_alive(pid, started_at) {
+          if check_pid_dead(pid, started_at) {
             self.draining_stopping_ids.remove(k)
             removed = true
           }
@@ -2975,17 +3024,23 @@ fn live_runner_commit_manager_pending_end_turn(
         Ok(already_ended) => {
           mgr.pending_end_turns.remove(mpend.session_key)
           let _ = mgr.sync_handover_state_with_ctx(ctx)
-          match mpend.launch_instance_id {
-            Some(inst_id) => core.agents.delete_runner_launch(inst_id)
-            None => ()
-          }
           let has_active_turn_in_mem = match mgr.sessions.get(mpend.session_key) {
             Some(cur) => cur.current_turn_id is Some(_)
             None => false
           }
-          // R14 Invariant 1: ZERO side effects on newer turns when replaying an already-ended turn
-          // or when a newer turn is already active in memory!
+          // R14/R15 Invariant 1: ZERO side effects on newer turns or live runners when replaying an
+          // already-ended turn or when a newer turn is already active in memory!
           if !already_ended && !has_active_turn_in_mem {
+            match mpend.launch_instance_id {
+              Some(inst_id) => if should_delete_runner_launch_on_pending_replay(
+                already_ended,
+                has_active_turn_in_mem,
+                mgr.has_live_session_instance(inst_id),
+              ) {
+                core.agents.delete_runner_launch(inst_id)
+              }
+              None => ()
+            }
             core.agents.codex_active_turns.remove(mpend.session_key)
             let actor = core.agents.hub.ensure_actor(mpend.session_key, mpend.runtime_str)
             actor.phase = station_sessions::ActorPhase::Idle
@@ -5444,9 +5499,10 @@ pub fn LiveRunnerManager::tick(
     let _ = self.sync_handover_state_with_ctx(ctx)
   }
 
-  // 0c. R14 Invariant 2: While any `Spawning` `"rid:<id>@<before_ms>"` marker is within its 30s window,
-  // re-scan disk for late-ready runners that finished spawning after startup discovery and stop them!
-  if self.has_rid_stop_markers() {
+  // 0c. R15 P1-2/3: While ANY draining stop marker exists (exact `instance_id` OR `Spawning` `rid:`)
+  // and primary store is open, re-scan disk for untracked matching runners (e.g. after transient socket
+  // error or late-ready spawn) and re-enter `adopt_live_runner` (`attach + TERM -> 5s grace -> KILL`)!
+  if self.draining_stopping_ids.length() > 0 && core.store.require_open() is Ok(_) {
     let late_runners = discover_live_runners(ctx.ops_fs, ctx.data, ctx.sep)
     let late_cfg = live_config_raw(core, ctx.cfg_raw)
     for lri in 0..<late_runners.length() {
@@ -5461,13 +5517,9 @@ pub fn LiveRunnerManager::tick(
               _ => None
             }
           }
-          let adopted = match skey_opt {
-            Some(sk) => self.adopt_live_runner(ctx, core, late_cfg, rinfo, sk, now_ms, wall_ms)
-            None => false
-          }
-          if !adopted {
-            ctx.log("[live-runner] late-ready Spawning stop target " + iid + " has no session mapping; stopping via safe_kill_runner_info")
-            safe_kill_runner_info(rinfo)
+          match skey_opt {
+            Some(sk) => { let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, sk, now_ms, wall_ms) }
+            None => ()
           }
         }
       }
@@ -5511,7 +5563,7 @@ pub fn LiveRunnerManager::tick(
               ctx.log("[live-runner] KILL send failed for " + dsess.session_key + "; immediate strict fallback")
               live_runner_close_sock(ctx, cid, sock_id)
               safe_kill_runner_info(info)
-              let confirmed = !live_runner_pid_alive_strict(info.runner_pid, info.started_at)
+              let confirmed = live_runner_pid_confirmed_dead(info.runner_pid, info.started_at)
               dsess.phase = LiveRunnerPhase::Exited
               self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=confirmed)
               match core.agents.hub.actors.get(dsess.session_key) {
@@ -5523,7 +5575,7 @@ pub fn LiveRunnerManager::tick(
             ctx.log("[live-runner] stopping runner 1s KILL flush expired for " + dsess.session_key + "; strict fallback")
             live_runner_close_sock(ctx, cid, sock_id)
             safe_kill_runner_info(info)
-            let confirmed = !live_runner_pid_alive_strict(info.runner_pid, info.started_at)
+            let confirmed = live_runner_pid_confirmed_dead(info.runner_pid, info.started_at)
             dsess.phase = LiveRunnerPhase::Exited
             self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=confirmed)
             match core.agents.hub.actors.get(dsess.session_key) {
