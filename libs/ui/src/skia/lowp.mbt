@@ -1,43 +1,42 @@
 // tiny-skia's low precision pipeline: 16 pixels at a time in u16 lanes holding 0..=255,
 // wrapping as Rust's u16 does in release. Where Rust keeps two float vectors in the bits of the u16 registers (split
 // and join: x in r and g, y in b and a) they are kept as floats beside them.
-// Optimized with module-level scratch buffers, inlined blend stages (zero closures),
-// and direct horizontal scanline fast paths for common 2D canvas solid/AA/mask fills.
-// Invariant: module-level scratch buffers (`lowp_r`..`lowp_mask_c`) rely on single-threaded,
-// non-reentrant execution of `lowp_start_generic` and every stage writing all lanes/channels it reads.
+// Optimized with per-blitter reusable scratch buffers (`LowPScratch`, zero global mutable state,
+// thread-safe and reentrant across concurrent draws), inlined blend stages (zero closures),
+// and direct horizontal scanline fast paths for common 2D canvas solid/AA/mask/gradient fills.
+// Invariant: every stage writes all lanes/channels it reads before reading them.
 
 ///|
-let lowp_r : FixedArray[Int] = FixedArray::make(16, 0)
+priv struct LowPScratch {
+  r : FixedArray[Int]
+  g : FixedArray[Int]
+  b : FixedArray[Int]
+  a : FixedArray[Int]
+  dr : FixedArray[Int]
+  dg : FixedArray[Int]
+  db : FixedArray[Int]
+  da : FixedArray[Int]
+  fx : FixedArray[Float]
+  fy : FixedArray[Float]
+  mask_c : FixedArray[Int]
+}
 
 ///|
-let lowp_g : FixedArray[Int] = FixedArray::make(16, 0)
-
-///|
-let lowp_b : FixedArray[Int] = FixedArray::make(16, 0)
-
-///|
-let lowp_a : FixedArray[Int] = FixedArray::make(16, 0)
-
-///|
-let lowp_dr : FixedArray[Int] = FixedArray::make(16, 0)
-
-///|
-let lowp_dg : FixedArray[Int] = FixedArray::make(16, 0)
-
-///|
-let lowp_db : FixedArray[Int] = FixedArray::make(16, 0)
-
-///|
-let lowp_da : FixedArray[Int] = FixedArray::make(16, 0)
-
-///|
-let lowp_fx : FixedArray[Float] = FixedArray::make(16, 0.0)
-
-///|
-let lowp_fy : FixedArray[Float] = FixedArray::make(16, 0.0)
-
-///|
-let lowp_mask_c : FixedArray[Int] = FixedArray::make(16, 0)
+fn LowPScratch::new() -> LowPScratch {
+  {
+    r: FixedArray::make(16, 0),
+    g: FixedArray::make(16, 0),
+    b: FixedArray::make(16, 0),
+    a: FixedArray::make(16, 0),
+    dr: FixedArray::make(16, 0),
+    dg: FixedArray::make(16, 0),
+    db: FixedArray::make(16, 0),
+    da: FixedArray::make(16, 0),
+    fx: FixedArray::make(16, 0.0),
+    fy: FixedArray::make(16, 0.0),
+    mask_c: FixedArray::make(16, 0),
+  }
+}
 
 ///|
 priv struct LowP {
@@ -52,6 +51,7 @@ priv struct LowP {
   /// the floats in r and g, in b and a
   fx : FixedArray[Float]
   fy : FixedArray[Float]
+  mask_c : FixedArray[Int]
   mut tail : Int
   mut dx : Int
   mut dy : Int
@@ -69,18 +69,20 @@ fn lowp_start_generic(
   mask_ctx : MaskCtx,
   ctx : Context,
   dst : SubPixmap,
+  scratch : LowPScratch,
 ) -> Unit {
   let p : LowP = {
-    r: lowp_r,
-    g: lowp_g,
-    b: lowp_b,
-    a: lowp_a,
-    dr: lowp_dr,
-    dg: lowp_dg,
-    db: lowp_db,
-    da: lowp_da,
-    fx: lowp_fx,
-    fy: lowp_fy,
+    r: scratch.r,
+    g: scratch.g,
+    b: scratch.b,
+    a: scratch.a,
+    dr: scratch.dr,
+    dg: scratch.dg,
+    db: scratch.db,
+    da: scratch.da,
+    fx: scratch.fx,
+    fy: scratch.fy,
+    mask_c: scratch.mask_c,
     tail: 0,
     dx: 0,
     dy: 0,
@@ -416,6 +418,7 @@ fn lowp_start(
   mask_ctx : MaskCtx,
   ctx : Context,
   dst : SubPixmap,
+  scratch : PipelineScratch,
 ) -> Unit {
   let slen = stages.length()
   if slen >= 3 && stages[0] is SeedShader {
@@ -721,7 +724,7 @@ fn lowp_start(
       _ => ()
     }
   }
-  lowp_start_generic(stages, rect, aa_mask_ctx, mask_ctx, ctx, dst)
+  lowp_start_generic(stages, rect, aa_mask_ctx, mask_ctx, ctx, dst, scratch.lowp())
 }
 
 ///|
@@ -808,7 +811,7 @@ fn LowP::stage(self : LowP, s : Stage) -> Bool {
       let mut all_zero = true
       for i in 0..<16 {
         let v = if i < p.tail { p.mask_ctx.data[o + i].to_int() } else { 0 }
-        lowp_mask_c[i] = v
+        p.mask_c[i] = v
         if v != 0 {
           all_zero = false
         }
@@ -817,7 +820,7 @@ fn LowP::stage(self : LowP, s : Stage) -> Bool {
         return false
       }
       for i in 0..<16 {
-        let ci = lowp_mask_c[i]
+        let ci = p.mask_c[i]
         p.r[i] = div255(mul16(p.r[i], ci))
         p.g[i] = div255(mul16(p.g[i], ci))
         p.b[i] = div255(mul16(p.b[i], ci))

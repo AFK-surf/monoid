@@ -84,8 +84,8 @@ test "highp gather-translate fast paths byte-exact equivalence with generic stag
     let ctx = Context::new()
     ctx.transform = ts
     ctx.current_coverage = cov
-    highp_start(stages, rect, aa_mask_none, mask_none, ctx, src, dst_fast.as_subpixmap())
-    highp_start_generic(stages, rect, aa_mask_none, mask_none, ctx, src, dst_ref.as_subpixmap())
+    highp_start(stages, rect, aa_mask_none, mask_none, ctx, src, dst_fast.as_subpixmap(), PipelineScratch::new())
+    highp_start_generic(stages, rect, aa_mask_none, mask_none, ctx, src, dst_ref.as_subpixmap(), HighPScratch::new())
     assert_bytes_eq(dst_fast.data, dst_ref.data)
   }
 
@@ -121,8 +121,26 @@ test "highp gather-translate fast paths byte-exact equivalence with generic stag
   let ctx_alias = Context::new()
   ctx_alias.transform = Transform::from_translate(-2.0, 0.0)
   let r_alias = ScreenIntRect::from_xywh(0, 0, sw, sh).unwrap()
-  highp_start([SeedShader, StTransform, Gather, Store], r_alias, aa_mask_none, mask_none, ctx_alias, self_fast, self_fast.as_subpixmap())
-  highp_start_generic([SeedShader, StTransform, Gather, Store], r_alias, aa_mask_none, mask_none, ctx_alias, self_ref, self_ref.as_subpixmap())
+  highp_start(
+    [SeedShader, StTransform, Gather, Store],
+    r_alias,
+    aa_mask_none,
+    mask_none,
+    ctx_alias,
+    self_fast,
+    self_fast.as_subpixmap(),
+    PipelineScratch::new(),
+  )
+  highp_start_generic(
+    [SeedShader, StTransform, Gather, Store],
+    r_alias,
+    aa_mask_none,
+    mask_none,
+    ctx_alias,
+    self_ref,
+    self_ref.as_subpixmap(),
+    HighPScratch::new(),
+  )
   assert_bytes_eq(self_fast.data, self_ref.data)
 }
 
@@ -344,6 +362,7 @@ test "highp inlined blend stages match closure reference bit-for-bit" {
         rdb[i] = d_b
         rda[i] = d_a
       }
+      let s = HighPScratch::new()
       let p : HighP = {
         r,
         g,
@@ -353,6 +372,13 @@ test "highp inlined blend stages match closure reference bit-for-bit" {
         dg,
         db,
         da,
+        mask_c: s.mask_c,
+        cx: s.cx,
+        cy: s.cy,
+        xs: s.xs,
+        ys: s.ys,
+        wx: s.wx,
+        wy: s.wy,
         tail: 8,
         dx: 0,
         dy: 0,
@@ -429,8 +455,8 @@ test "highp gather-translate edge cases: subpixmap offset/stride, non-unit cov, 
       let ctx = Context::new()
       ctx.transform = Transform::from_translate(-3.0, -2.0)
       ctx.current_coverage = cov
-      highp_start(stages, blit_rect, aa_mask_none, mask_none, ctx, src, sub_fast)
-      highp_start_generic(stages, blit_rect, aa_mask_none, mask_none, ctx, src, sub_ref)
+      highp_start(stages, blit_rect, aa_mask_none, mask_none, ctx, src, sub_fast, PipelineScratch::new())
+      highp_start_generic(stages, blit_rect, aa_mask_none, mask_none, ctx, src, sub_ref, HighPScratch::new())
       assert_bytes_eq(backing_fast.data, backing_ref.data)
     }
   }
@@ -453,8 +479,8 @@ test "highp gather-translate edge cases: subpixmap offset/stride, non-unit cov, 
       [SeedShader, StTransform, Gather, SourceOverRgba],
       [SeedShader, StTransform, Gather, Scale1Float, SourceOverRgba],
     ] {
-      highp_start(stages, r, aa_mask_none, mask_none, ctx, s, df.as_subpixmap())
-      highp_start_generic(stages, r, aa_mask_none, mask_none, ctx, s, dr.as_subpixmap())
+      highp_start(stages, r, aa_mask_none, mask_none, ctx, s, df.as_subpixmap(), PipelineScratch::new())
+      highp_start_generic(stages, r, aa_mask_none, mask_none, ctx, s, dr.as_subpixmap(), HighPScratch::new())
       assert_bytes_eq(df.data, dr.data)
     }
   }
@@ -499,7 +525,7 @@ test "Pixmap::draw_pixmap fast path matches generic highp pipeline byte-for-byte
         match src_rect.intersect(dst_bounds) {
           Some(ir) =>
             match ir.to_screen_int_rect() {
-              Some(sr) => highp_start_generic(rp.stages, sr, aa_mask_none, mask_none, rp.ctx, src, dst_ref.as_subpixmap())
+              Some(sr) => highp_start_generic(rp.stages, sr, aa_mask_none, mask_none, rp.ctx, src, dst_ref.as_subpixmap(), HighPScratch::new())
               None => ()
             }
           None => ()
@@ -611,6 +637,7 @@ test "highp allocation-free sampler matches reference bit-for-bit across Pad/Rep
           rr[i] = tx
           rg[i] = ty
         }
+        let s = HighPScratch::new()
         let p : HighP = {
           r,
           g,
@@ -620,6 +647,13 @@ test "highp allocation-free sampler matches reference bit-for-bit across Pad/Rep
           dg: FixedArray::make(8, 0.0),
           db: FixedArray::make(8, 0.0),
           da: FixedArray::make(8, 0.0),
+          mask_c: s.mask_c,
+          cx: s.cx,
+          cy: s.cy,
+          xs: s.xs,
+          ys: s.ys,
+          wx: s.wx,
+          wy: s.wy,
           tail,
           dx: 3,
           dy: 5,
@@ -640,4 +674,108 @@ test "highp allocation-free sampler matches reference bit-for-bit across Pad/Rep
       }
     }
   }
+}
+
+///|
+test "HighP per-blitter scratch isolates interleaved pipelines and allocates lazily" {
+  // 1. Interleaved stage-by-stage execution of two independent HighP instances must not cross-talk.
+  let dst1 = Pixmap::new(12, 2).unwrap()
+  let dst2 = Pixmap::new(12, 2).unwrap()
+  let ref1 = Pixmap::new(12, 2).unwrap()
+  let ref2 = Pixmap::new(12, 2).unwrap()
+  fill_pattern_pixmap(dst1)
+  fill_pattern_pixmap(ref1)
+  fill_pattern_pixmap(dst2)
+  fill_pattern_pixmap(ref2)
+
+  let m1 = Mask::new(12, 2).unwrap()
+  let m2 = Mask::new(12, 2).unwrap()
+  for i in 0..<24 {
+    m1.data[i] = ((i * 29 + 13) % 256).to_byte()
+    m2.data[i] = ((i * 71 + 201) % 256).to_byte()
+  }
+
+  let ctx1 = Context::new()
+  ctx1.uniform = (0.85, 0.10, 0.05, 0.90)
+  let ctx2 = Context::new()
+  ctx2.uniform = (0.05, 0.25, 0.75, 0.80)
+
+  let s1 = HighPScratch::new()
+  let s2 = HighPScratch::new()
+  assert_true(!physical_equal(s1.r, s2.r))
+  assert_true(!physical_equal(s1.mask_c, s2.mask_c))
+  assert_true(!physical_equal(s1.wx, s2.wx))
+
+  let p1 : HighP = {
+    r: s1.r,
+    g: s1.g,
+    b: s1.b,
+    a: s1.a,
+    dr: s1.dr,
+    dg: s1.dg,
+    db: s1.db,
+    da: s1.da,
+    mask_c: s1.mask_c,
+    cx: s1.cx,
+    cy: s1.cy,
+    xs: s1.xs,
+    ys: s1.ys,
+    wx: s1.wx,
+    wy: s1.wy,
+    tail: 8,
+    dx: 0,
+    dy: 0,
+    ctx: ctx1,
+    mask_ctx: m1.mask_ctx(),
+    aa_mask_ctx: aa_mask_none,
+    src: empty_src,
+    dst: dst1.as_subpixmap(),
+  }
+  let p2 : HighP = {
+    r: s2.r,
+    g: s2.g,
+    b: s2.b,
+    a: s2.a,
+    dr: s2.dr,
+    dg: s2.dg,
+    db: s2.db,
+    da: s2.da,
+    mask_c: s2.mask_c,
+    cx: s2.cx,
+    cy: s2.cy,
+    xs: s2.xs,
+    ys: s2.ys,
+    wx: s2.wx,
+    wy: s2.wy,
+    tail: 8,
+    dx: 0,
+    dy: 0,
+    ctx: ctx2,
+    mask_ctx: m2.mask_ctx(),
+    aa_mask_ctx: aa_mask_none,
+    src: empty_src,
+    dst: dst2.as_subpixmap(),
+  }
+  let stages : Array[Stage] = [UniformColor, MaskU8, LoadDestination, StSourceOver, Store]
+  for st in stages {
+    assert_true(p1.stage(st))
+    assert_true(p2.stage(st))
+  }
+  let r8 = ScreenIntRect::from_xywh(0, 0, 8, 1).unwrap()
+  highp_start_generic(stages, r8, aa_mask_none, m1.mask_ctx(), ctx1, empty_src, ref1.as_subpixmap(), HighPScratch::new())
+  highp_start_generic(stages, r8, aa_mask_none, m2.mask_ctx(), ctx2, empty_src, ref2.as_subpixmap(), HighPScratch::new())
+  assert_bytes_eq(dst1.data, ref1.data)
+  assert_bytes_eq(dst2.data, ref2.data)
+
+  // 2. PipelineScratch stays None on fast path and reuses one HighPScratch across generic runs.
+  let ps = PipelineScratch::new()
+  let src = Pixmap::new(8, 2).unwrap()
+  fill_pattern_pixmap(src)
+  highp_start([SeedShader, Gather, Store], r8, aa_mask_none, mask_none, Context::new(), src, dst1.as_subpixmap(), ps)
+  assert_true(ps.highp is None)
+  highp_start(stages, r8, aa_mask_none, m1.mask_ctx(), ctx1, empty_src, dst1.as_subpixmap(), ps)
+  let first = ps.highp.unwrap()
+  highp_start(stages, r8, aa_mask_none, m1.mask_ctx(), ctx1, empty_src, dst1.as_subpixmap(), ps)
+  let second = ps.highp.unwrap()
+  assert_true(physical_equal(first.r, second.r))
 }

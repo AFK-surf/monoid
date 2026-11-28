@@ -51,8 +51,8 @@ test "lowp fast paths byte-exact equivalence with generic stage pipeline" {
     let ctx = Context::new()
     ctx.uniform_rgba = rgba
     ctx.current_coverage = cov
-    lowp_start(stages, r, aa, mask_none, ctx, pm_fast.as_subpixmap())
-    lowp_start_generic(stages, r, aa, mask_none, ctx, pm_ref.as_subpixmap())
+    lowp_start(stages, r, aa, mask_none, ctx, pm_fast.as_subpixmap(), PipelineScratch::new())
+    lowp_start_generic(stages, r, aa, mask_none, ctx, pm_ref.as_subpixmap(), LowPScratch::new())
     assert_bytes_eq(pm_fast.data, pm_ref.data)
   }
 
@@ -70,8 +70,8 @@ test "lowp fast paths byte-exact equivalence with generic stage pipeline" {
     let ctx = Context::new()
     ctx.uniform_rgba = rgba
     ctx.current_coverage = cov
-    lowp_start(stages, r, aa, mask_none, ctx, m_fast.as_subpixmap())
-    lowp_start_generic(stages, r, aa, mask_none, ctx, m_ref.as_subpixmap())
+    lowp_start(stages, r, aa, mask_none, ctx, m_fast.as_subpixmap(), PipelineScratch::new())
+    lowp_start_generic(stages, r, aa, mask_none, ctx, m_ref.as_subpixmap(), LowPScratch::new())
     assert_bytes_eq(m_fast.data, m_ref.data)
   }
 
@@ -370,6 +370,7 @@ test "lowp inlined blend stages match closure reference" {
         da,
         fx: FixedArray::make(16, 0.0),
         fy: FixedArray::make(16, 0.0),
+        mask_c: FixedArray::make(16, 0),
         tail: 16,
         dx: 0,
         dy: 0,
@@ -470,8 +471,8 @@ test "lowp gradient fast paths byte-exact equivalence with generic stage pipelin
     let pm_ref = Pixmap::new(w, h).unwrap()
     fill_pattern_pixmap(pm_fast)
     fill_pattern_pixmap(pm_ref)
-    lowp_start(rp.stages, rect, aa_mask_none, mask_none, rp.ctx, pm_fast.as_subpixmap())
-    lowp_start_generic(rp.stages, rect, aa_mask_none, mask_none, rp.ctx, pm_ref.as_subpixmap())
+    lowp_start(rp.stages, rect, aa_mask_none, mask_none, rp.ctx, pm_fast.as_subpixmap(), PipelineScratch::new())
+    lowp_start_generic(rp.stages, rect, aa_mask_none, mask_none, rp.ctx, pm_ref.as_subpixmap(), LowPScratch::new())
     assert_bytes_eq(pm_fast.data, pm_ref.data)
   }
 
@@ -508,4 +509,94 @@ test "lowp gradient fast paths byte-exact equivalence with generic stage pipelin
       check_shader(rsh, SourceOver, 0.79, true)
     }
   }
+}
+
+///|
+test "LowP per-blitter scratch isolates interleaved pipelines and allocates lazily" {
+  let dst1 = Pixmap::new(16, 2).unwrap()
+  let dst2 = Pixmap::new(16, 2).unwrap()
+  let ref1 = Pixmap::new(16, 2).unwrap()
+  let ref2 = Pixmap::new(16, 2).unwrap()
+  fill_pattern_pixmap(dst1)
+  fill_pattern_pixmap(ref1)
+  fill_pattern_pixmap(dst2)
+  fill_pattern_pixmap(ref2)
+
+  let m1 = Mask::new(16, 2).unwrap()
+  let m2 = Mask::new(16, 2).unwrap()
+  for i in 0..<32 {
+    m1.data[i] = ((i * 37 + 19) % 256).to_byte()
+    m2.data[i] = ((i * 83 + 101) % 256).to_byte()
+  }
+
+  let ctx1 = Context::new()
+  ctx1.uniform_rgba = (200, 30, 10, 220)
+  let ctx2 = Context::new()
+  ctx2.uniform_rgba = (15, 70, 190, 210)
+
+  let s1 = LowPScratch::new()
+  let s2 = LowPScratch::new()
+  assert_true(!physical_equal(s1.r, s2.r))
+  assert_true(!physical_equal(s1.mask_c, s2.mask_c))
+
+  let p1 : LowP = {
+    r: s1.r,
+    g: s1.g,
+    b: s1.b,
+    a: s1.a,
+    dr: s1.dr,
+    dg: s1.dg,
+    db: s1.db,
+    da: s1.da,
+    fx: s1.fx,
+    fy: s1.fy,
+    mask_c: s1.mask_c,
+    tail: 16,
+    dx: 0,
+    dy: 0,
+    ctx: ctx1,
+    mask_ctx: m1.mask_ctx(),
+    aa_mask_ctx: aa_mask_none,
+    dst: dst1.as_subpixmap(),
+  }
+  let p2 : LowP = {
+    r: s2.r,
+    g: s2.g,
+    b: s2.b,
+    a: s2.a,
+    dr: s2.dr,
+    dg: s2.dg,
+    db: s2.db,
+    da: s2.da,
+    fx: s2.fx,
+    fy: s2.fy,
+    mask_c: s2.mask_c,
+    tail: 16,
+    dx: 0,
+    dy: 0,
+    ctx: ctx2,
+    mask_ctx: m2.mask_ctx(),
+    aa_mask_ctx: aa_mask_none,
+    dst: dst2.as_subpixmap(),
+  }
+  let stages : Array[Stage] = [UniformColor, MaskU8, LoadDestination, StSourceOver, Store]
+  for st in stages {
+    assert_true(p1.stage(st))
+    assert_true(p2.stage(st))
+  }
+  let r16 = ScreenIntRect::from_xywh(0, 0, 16, 1).unwrap()
+  lowp_start_generic(stages, r16, aa_mask_none, m1.mask_ctx(), ctx1, ref1.as_subpixmap(), LowPScratch::new())
+  lowp_start_generic(stages, r16, aa_mask_none, m2.mask_ctx(), ctx2, ref2.as_subpixmap(), LowPScratch::new())
+  assert_bytes_eq(dst1.data, ref1.data)
+  assert_bytes_eq(dst2.data, ref2.data)
+
+  // PipelineScratch stays None on fast path and reuses one LowPScratch across generic runs.
+  let ps = PipelineScratch::new()
+  lowp_start([UniformColor, SourceOverRgba], r16, aa_mask_none, mask_none, ctx1, dst1.as_subpixmap(), ps)
+  assert_true(ps.lowp is None)
+  lowp_start(stages, r16, aa_mask_none, m1.mask_ctx(), ctx1, dst1.as_subpixmap(), ps)
+  let first = ps.lowp.unwrap()
+  lowp_start(stages, r16, aa_mask_none, m1.mask_ctx(), ctx1, dst1.as_subpixmap(), ps)
+  let second = ps.lowp.unwrap()
+  assert_true(physical_equal(first.r, second.r))
 }
