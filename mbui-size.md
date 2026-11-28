@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9c220ed9b](https://github.com/AFK-surf/monoid/commit/9c220ed9b2b5fb4b3120d15b67fdbd95a221dc6f) refactor(ui): name kit and controls keys and types | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.86 | 134.86 |
 | [365cbebe5](https://github.com/AFK-surf/monoid/commit/365cbebe507252b8cafce8b2579221bb8e9332fe) perf(ui): cache iOS 27 prominent-tab overflow chec | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.6 | 128.41 |
 | [4ac7045e1](https://github.com/AFK-surf/monoid/commit/4ac7045e15b94f8570e1a881c394919358e71de1) fix(ci): skip remote release and store probes in c | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.47 | 125.35 |
 | [5d4555094](https://github.com/AFK-surf/monoid/commit/5d455509408ddd187d8cfc85d0be971565a07702) refactor(ui): spell out ambiguous constructors and | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.53 | 135.34 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bbd8d2fc0](https://github.com/AFK-surf/monoid/commit/bbd8d2fc064414d898ae25517f296fdcbcf3a5c2) feat(mbui): align Profiles quota share picture wit | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.63 | 68.71 | 103.48 | 113.86 |
 | [835f3aec8](https://github.com/AFK-surf/monoid/commit/835f3aec8d4510ceadc415b02a745a65247b977d) fix(cloud): drain queued frames and skip duplicate | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.63 | 68.71 | 103.48 | 113.86 |
 | [e352d3138](https://github.com/AFK-surf/monoid/commit/e352d3138e4714abbf6309d4b0183a5a34d1828b) fix(cloud): allow rig owners to upload custom stat | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.61 | 68.66 | 103.7 | 129.79 |
-| [7d10e1bae](https://github.com/AFK-surf/monoid/commit/7d10e1bae342fcc0f29ad04552f8dc2e0b6ee29b) perf(ui/text): O(1) CJK range lookup, lazy rich li | 2.71 | 3.67 | 15.25 | 38.38 | 59.11 | 33.61 | 68.66 | 103.7 | 129.79 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9c220ed9b](https://github.com/AFK-surf/monoid/commit/9c220ed9b2b5fb4b3120d15b67fdbd95a221dc6f) refactor(ui): name kit and controls keys and types | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.69 |
 | [365cbebe5](https://github.com/AFK-surf/monoid/commit/365cbebe507252b8cafce8b2579221bb8e9332fe) perf(ui): cache iOS 27 prominent-tab overflow chec | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.9 |
 | [4ac7045e1](https://github.com/AFK-surf/monoid/commit/4ac7045e15b94f8570e1a881c394919358e71de1) fix(ci): skip remote release and store probes in c | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.53 |
 | [5d4555094](https://github.com/AFK-surf/monoid/commit/5d455509408ddd187d8cfc85d0be971565a07702) refactor(ui): spell out ambiguous constructors and | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.79 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bbd8d2fc0](https://github.com/AFK-surf/monoid/commit/bbd8d2fc064414d898ae25517f296fdcbcf3a5c2) feat(mbui): align Profiles quota share picture wit | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.74 |
 | [835f3aec8](https://github.com/AFK-surf/monoid/commit/835f3aec8d4510ceadc415b02a745a65247b977d) fix(cloud): drain queued frames and skip duplicate | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.43 |
 | [e352d3138](https://github.com/AFK-surf/monoid/commit/e352d3138e4714abbf6309d4b0183a5a34d1828b) fix(cloud): allow rig owners to upload custom stat | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.75 |
-| [7d10e1bae](https://github.com/AFK-surf/monoid/commit/7d10e1bae342fcc0f29ad04552f8dc2e0b6ee29b) perf(ui/text): O(1) CJK range lookup, lazy rich li | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.93 |
