@@ -948,12 +948,13 @@ pub fn dispatch_live_accounts_op(
     }
   }
 
-  // 3-6. `accounts.profiles.login` / `login.get` / `login.delete` / `login-code` (strict ws + read-only isolation)
-  if (op == "accounts.profiles.login" || op == "accounts.profiles.login.get" || op == "accounts.profiles.login.delete" || op == "accounts.profiles.login-code") && params.length() >= 1 {
+  // 3-5. `accounts.profiles.login` / `login.get` / `login.delete` (strict ws + read-only isolation;
+  // `login-code` and `login-browser` remain honest 501 until Wave 17E interactive paste state machine lands).
+  if (op == "accounts.profiles.login" || op == "accounts.profiles.login.get" || op == "accounts.profiles.login.delete") && params.length() >= 1 {
     let id = params[0]
     let read_only = admin_is_read_only(req.viewer)
-    if (op == "accounts.profiles.login" || op == "accounts.profiles.login.delete" || op == "accounts.profiles.login-code") && read_only {
-      return Some(Err(station_api::ApiError::new(403, "read-only members cannot start, answer, or cancel profile logins")))
+    if (op == "accounts.profiles.login" || op == "accounts.profiles.login.delete") && read_only {
+      return Some(Err(station_api::ApiError::new(403, "read-only members cannot start or cancel profile logins")))
     }
     let cur = read_profiles_array(read_config_raw(cfg_opt))
     let idx = find_profile_index(cur, id)
@@ -963,18 +964,6 @@ pub fn dispatch_live_accounts_op(
     let entry = cur[idx]
     let rt = match json_field_str(entry, "runtime") { Some(s) => s, None => "" }
     let prof_home = match json_field_str(entry, "home") { Some(s) => s, None => "" }
-    if op == "accounts.profiles.login-code" {
-      let code_s = match json_field_str(body, "code") {
-        Some(c) if c.trim().length() > 0 => c.trim()
-        _ => match json_field_str(body, "text") {
-          Some(c) if c.trim().length() > 0 => c.trim()
-          _ => ""
-        }
-      }
-      if code_s.length() == 0 {
-        return Some(Err(station_api::ApiError::new(400, "code is required")))
-      }
-    }
     if op == "accounts.profiles.login" {
       let kind = live_profile_access_kind(entry)
       if kind != "subscription" {

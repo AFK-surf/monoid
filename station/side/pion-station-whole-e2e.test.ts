@@ -3081,6 +3081,8 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     ["POST", "/profiles/p1/reset-quota", "{}"],
     ["POST", "/copies/restore", JSON.stringify({ station: "st-1", gen: "g1", from: { s3: "r2" } })],
     ["PUT", "/xshare/hosts", JSON.stringify({ workspace: "ws-partner", name: "Partner", station: "st-partner", stationName: "Box" })],
+    ["POST", "/workspaces/join", JSON.stringify({ token: "tok-1" })],
+    ["POST", "/profiles/p1/login-code", JSON.stringify({ code: "123456" })],
   ] as const) {
     const hdrs: Record<string, string> = { "content-type": "application/json" };
     if (p.endsWith("/reset-quota")) hdrs["idempotency-key"] = "test-idem-1";

@@ -264,6 +264,7 @@ pub struct ProfileOverviewInput {
   pub models : Array[String]
   pub api_key : Option[String]
   pub refresh_token : Option[String]
+  pub login : Option[base_codec::Json]
 }
 
 /// Sanitize account profiles: expose only `hasKey` / masked hint, NEVER raw `apiKey` or `refreshToken`.
@@ -296,6 +297,10 @@ pub fn sanitize_profiles(profiles : Array[ProfileOverviewInput]) -> base_codec::
           fields.push(("keyHint", base_codec::json_str(mask_secret(k))))
         }
       }
+      None => ()
+    }
+    match p.login {
+      Some(lj) => fields.push(("login", lj))
       None => ()
     }
     out.push(base_codec::json_obj(fields))

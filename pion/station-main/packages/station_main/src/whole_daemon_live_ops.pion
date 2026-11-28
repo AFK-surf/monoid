@@ -47,7 +47,6 @@ pub fn live_current_platform(os_name : String, arch_name : String) -> String {
 pub enum AsyncAdminOpKind {
   UpdatesCheck(String)
   CopiesS3Test(station_replica::NormalizedS3Target)
-  WorkspacesJoin(station_cloud::PreparedJoinRequest, Int, Option[String], Option[String])
   ProfileCreateKeyed(String, Option[String], Option[String], Option[String], String, Option[String], String, String, Bool)
 }
 
@@ -66,16 +65,28 @@ pub struct AsyncAdminHttpState {
   pub max_bytes : Int
   pub deadline_ms : Int64
   pub mut idem_claim : Option[(String, String)]
-  pub mut client_disconnected : Bool
 }
 
-/// Whether this async admin op is an in-flight `WorkspacesJoin` (which MUST finish applying
-/// locally on cloud 2xx even if the client stream disconnects mid-flight).
-pub fn is_join_async_op(state : AsyncAdminHttpState) -> Bool {
-  match state.op {
-    AsyncAdminOpKind::WorkspacesJoin(_, _, _, _) => true
-    _ => false
+/// Resolve the active Station update channel 1:1 with `station/src/updates/versions.ts:48-69`:
+/// `config.updateChannel` -> `<app>/CHANNEL` (`station_ops::station_channel`) -> `"stable"`.
+pub fn resolve_station_update_channel(
+  raw_cfg : base_codec::Json,
+  fs : station_ops::OpsFs,
+  app_opt : Option[String],
+  sep : String,
+) -> String {
+  match live_json_str_f(raw_cfg, "updateChannel") {
+    Some(c) if c == "beta" || c == "stable" => return c
+    _ => ()
   }
+  match app_opt {
+    Some(app_dir) => match station_ops::station_channel(fs, app_dir, sep=sep) {
+      Some(c) => return c
+      None => ()
+    }
+    None => ()
+  }
+  "stable"
 }
 
 /// Numeric version comparison 1:1 with Node `station/src/updates/versions.ts:76` (`newer(current, latest)`):
@@ -427,7 +438,6 @@ fn start_async_http_stream(
     max_bytes: max_bytes,
     deadline_ms: host_shim::now_ms() + timeout_ms,
     idem_claim: idem_claim,
-    client_disconnected: false,
   }
 }
 
@@ -541,10 +551,15 @@ pub fn try_intercept_async_admin_op(
     if !viewer.manages_station() {
       return Some(Err(station_api::json_error(403, station_ops::tr(ops_lang, "station.admin.updatesManagersOnly"))))
     }
-    let ch = match live_json_str_f(ctx.config_file.raw(), "updateChannel") {
-      Some(c) if c == "beta" || c == "stable" => c
-      _ => "stable"
+    if st.core.updates.station.version is None {
+      match ctx.args.app {
+        Some(app_dir) => {
+          st.core.updates.station.version = station_ops::station_version(ctx.ops_fs, app_dir, sep=ctx.sep)
+        }
+        None => ()
+      }
     }
+    let ch = resolve_station_update_channel(ctx.config_file.raw(), ctx.ops_fs, ctx.args.app, ctx.sep)
     let feed_url = match live_release_feed_url(ctx, ch) {
       Some(u) => u
       None => return Some(Err(station_api::json_error(404, "station is not enrolled in a release feed")))
@@ -614,70 +629,7 @@ pub fn try_intercept_async_admin_op(
     return Some(Ok(state))
   }
 
-  // 3. `POST /workspaces/join` (2-phase `station_cloud::prepare_join_workspace` BEFORE HTTP -> `/v1/stations/join` + `"locks": true`!)
-  if method_name == "POST" && norm_path == "/workspaces/join" {
-    if !viewer.manages_station() {
-      return Some(Err(station_api::json_error(403, "only the owners and admins of this station's workspaces add it to another workspace")))
-    }
-    let body = match parse_body() { Ok(j) => j, Err(r) => return Some(Err(r)) }
-    let token = match live_json_str_f(body, "token") {
-      Some(t) if t.length() > 0 => t
-      _ => return Some(Err(station_api::json_error(400, "token is required")))
-    }
-    let lock_opt : Option[String] = match base_codec::json_get(body, "lock") {
-      None | Some(base_codec::Json::Null) => None
-      Some(base_codec::Json::Str(lh)) if live_is_hex64(lh) => Some(lh)
-      _ => return Some(Err(station_api::json_error(400, "lock: a lock's hash")))
-    }
-    let rig_person_opt : Option[String] = match live_json_bool_f(body, "rig") {
-      Some(true) => match live_json_str_f(body, "person") {
-        Some(ph) if live_is_hex64(ph) => Some(ph)
-        _ => return Some(Err(station_api::json_error(400, "person: owner's personal lock hash")))
-      }
-      _ => None
-    }
-    let now_secs = host_shim::wall_ms() / 1000L
-    // Run ALL local pre-checks (enrolled, not removed, locked-workspace rule) BEFORE any network I/O!
-    let prep = match station_cloud::prepare_join_workspace(
-      ctx.data,
-      ctx.cloud.fs,
-      ctx.station_key,
-      token,
-      st.core.api.auth_policy.station_build,
-      now_secs,
-      lock_hash=lock_opt,
-      rig_person_hash=rig_person_opt,
-      store=Some(ctx.cloud),
-      verify_fn=st.core.api.auth_policy.verify_fn,
-      sep=ctx.sep,
-    ) {
-      Ok(p) => p
-      Err(e) => return Some(Err(station_api::json_error(409, e)))
-    }
-    if prep.bodies.length() == 0 {
-      return Some(Err(station_api::json_error(500, "no join request body prepared")))
-    }
-    let state = start_async_http_stream(
-      ctx,
-      sid,
-      conn_id,
-      method_name,
-      norm_path,
-      AsyncAdminOpKind::WorkspacesJoin(prep, 0, lock_opt, rig_person_opt),
-      viewer,
-      lang,
-      "POST",
-      prep.url,
-      [("content-type", "application/json")],
-      Some(prep.bodies[0].to_bytes()),
-      262144,
-      20000L,
-      idem_claim,
-    )
-    return Some(Ok(state))
-  }
-
-  // 4. `POST /profiles` (`accounts.profiles.createKeyed`: non-blocking provider key verification)
+  // 3. `POST /profiles` (`accounts.profiles.createKeyed`: non-blocking provider key verification)
   if method_name == "POST" && norm_path == "/profiles" {
     if !viewer.manages_station() {
       return Some(Err(station_api::json_error(403, "only workspace owners and admins can manage profiles")))
@@ -875,77 +827,6 @@ fn complete_async_admin_op(
       }
     }
 
-    AsyncAdminOpKind::WorkspacesJoin(prep, _prefix_idx, lock_opt, rig_person_opt) => {
-      // Authorization was verified BEFORE sending the one-time token to the cloud: once the cloud
-      // consumes the token and returns 2xx, ALWAYS apply locally (even if client disconnected or role
-      // changed mid-flight) so cloud membership and local state never diverge!
-      let (status, body_b) = match fetch_res {
-        Ok(p) => p
-        Err(_) => return finish_idem_claim(st, state, station_api::json_error(409, "control plane unreachable"))
-      }
-      if status < 200 || status >= 300 {
-        // Never echo upstream body (may reflect enrollment token)!
-        return finish_idem_claim(st, state, station_api::json_error(409, controlled_join_error_message(status)))
-      }
-      let resp_text = body_b.to_string()
-      let now_secs = host_shim::wall_ms() / 1000L
-      let join_res = station_cloud::apply_join_workspace_response(
-        ctx.data,
-        ctx.cloud.fs,
-        prep,
-        status,
-        resp_text,
-        now_secs,
-        lock_hash=lock_opt,
-        at_machine=false,
-        rig_person_hash=rig_person_opt,
-        sep=ctx.sep,
-      )
-      // Reload cloud state & dynamically admit ALL current memberships (handles both Ok and KeptLock!)
-      match station_cloud::read_state(ctx.data, ctx.cloud.fs, sep=ctx.sep) {
-        Ok(Some(cs)) => {
-          ctx.cloud.state = Some(cs)
-          let ms_now = ctx.cloud.memberships(now_secs.to_double())
-          for i in 0..<ms_now.length() {
-            st.core.api.auth_policy.add_workspace(ms_now[i].workspace)
-          }
-        }
-        _ => ()
-      }
-      match join_res {
-        Err(e) => {
-          st.core.api.events.overview_changed("workspaces")
-          station_api::json_error(409, e)
-        }
-        Ok(joined) => {
-          st.core.api.auth_policy.add_workspace(joined.workspace)
-          st.core.api.events.overview_changed("workspaces")
-          let ms = ctx.cloud.memberships(now_secs.to_double())
-          let ws_arr : Array[base_codec::Json] = []
-          for i in 0..<ms.length() {
-            let m = ms[i]
-            let mode = match m.rig { Some(_) => "tasks", None => "full" }
-            ws_arr.push(base_codec::json_obj([
-              ("workspace", base_codec::json_str(m.workspace)),
-              ("workspaceName", base_codec::json_str(m.workspace_name)),
-              ("name", base_codec::json_str(m.name)),
-              ("home", base_codec::json_bool(m.home)),
-              ("mode", base_codec::json_str(mode)),
-            ]))
-          }
-          station_api::json_ok(base_codec::json_obj([
-            ("joined", base_codec::json_obj([
-              ("workspace", base_codec::json_str(joined.workspace)),
-              ("workspaceName", base_codec::json_str(joined.workspace_name)),
-              ("name", base_codec::json_str(joined.name)),
-            ])),
-            ("workspaces", base_codec::json_arr(ws_arr)),
-            ("canJoin", base_codec::json_bool(true)),
-          ]))
-        }
-      }
-    }
-
     AsyncAdminOpKind::ProfileCreateKeyed(kind, prov_opt, clean_ep, final_proto, key, env_rt, label, base_slug, is_api_provider) => {
       if !live_viewer_still_manager(st, state) {
         return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
@@ -1101,35 +982,6 @@ pub fn step_async_admin_http_done(
               None => ()
             }
             let full = live_concat_chunks(state.body_chunks, state.total_bytes)
-            // Multi-prefix fallback for `WorkspacesJoin` on 401 `invalid_signature` (1:1 with `join_workspace`)
-            match state.op {
-              AsyncAdminOpKind::WorkspacesJoin(prep, pidx, lock_opt, rig_opt) => {
-                if state.status == 401 && pidx + 1 < prep.bodies.length() {
-                  let err_code = match base_codec::json_parse(full.to_string()) {
-                    base_codec::JsonParseResult::Ok(j) => match live_json_str_f(j, "error") { Some(s) => s, None => "" }
-                    base_codec::JsonParseResult::Err(_) => ""
-                  }
-                  if err_code == "invalid_signature" {
-                    let next_idx = pidx + 1
-                    state.body_chunks.clear()
-                    state.total_bytes = 0
-                    state.status = 0
-                    let rem = state.deadline_ms - host_shim::now_ms()
-                    if rem > 0L {
-                      state.op = AsyncAdminOpKind::WorkspacesJoin(prep, next_idx, lock_opt, rig_opt)
-                      let _ = ctx.mux_role.call_async_raw(
-                        builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_OPEN, state.sid),
-                        "stream.open",
-                        live_build_stream_open_args("POST", prep.url, [("content-type", "application/json")], rem),
-                        Some(prep.bodies[next_idx].to_bytes()),
-                      )
-                      return None
-                    }
-                  }
-                }
-              }
-              _ => ()
-            }
             return Some(complete_async_admin_op(ctx, st, state, Ok((state.status, full))))
           }
           station_http::StreamChunk::Data(data) => {

@@ -44,6 +44,7 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_updates_op : Option[(String, base_codec::Json, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut is_update_override_present : Option[() -> Bool]
   pub mut on_profile_live_op : Option[(String, Array[String], base_codec::Json, station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
+  pub mut profile_login_for : Option[(String, String, Bool) -> Option[base_codec::Json]]
   pub mut overview_for : Option[(station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut on_screens_browser_open : Option[(String, Option[String]) -> Result[String, station_api::ApiError]]
   pub mut drive_for_ws : Option[(String) -> station_screens::Drive]
@@ -69,6 +70,7 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_updates_op: None,
     is_update_override_present: None,
     on_profile_live_op: None,
+    profile_login_for: None,
     overview_for: None,
     on_screens_browser_open: None,
     drive_for_ws: None,

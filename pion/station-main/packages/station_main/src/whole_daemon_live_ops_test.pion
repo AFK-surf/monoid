@@ -229,6 +229,26 @@ test "wave17d2 r4: updates.check feed URL uses station_cli::feed_url, live_versi
   if !live_is_executable_file(mfs.ops(), "/bin/is-exec", "/") {
     panic("0755 file should be executable")
   }
+  // `<app>/BUILD` + `<app>/CHANNEL` resolution (`station/src/updates/versions.ts:48-69`)
+  let _ = mfs.put_text("/app/BUILD", "11999\n", 420)
+  let _ = mfs.put_text("/app/CHANNEL", "beta\n", 420)
+  let cur_ver = match station_ops::station_version(mfs.ops(), "/app", sep="/") {
+    Some(v) => v
+    None => panic("expected 0.1.11999 from /app/BUILD")
+  }
+  if cur_ver != "0.1.11999" || !live_version_newer(cur_ver, "0.1.12005") || live_version_newer(cur_ver, "0.1.11998") {
+    panic("installed version newer() check failed for " + cur_ver)
+  }
+  // When config.updateChannel is absent, resolve_station_update_channel falls back to `<app>/CHANNEL` ("beta")
+  let ch_from_app = resolve_station_update_channel(base_codec::json_obj([]), mfs.ops(), Some("/app"), "/")
+  if ch_from_app != "beta" {
+    panic("expected beta from /app/CHANNEL, got " + ch_from_app)
+  }
+  // Explicit config.updateChannel overrides `<app>/CHANNEL`
+  let ch_from_cfg = resolve_station_update_channel(base_codec::json_obj([("updateChannel", base_codec::json_str("stable"))]), mfs.ops(), Some("/app"), "/")
+  if ch_from_cfg != "stable" {
+    panic("expected stable from config.updateChannel, got " + ch_from_cfg)
+  }
 }
 
 test "wave17d2 r4: downgraded member rejected before idempotency replay & join detaches on disconnect" {

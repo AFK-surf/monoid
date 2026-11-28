@@ -810,7 +810,14 @@ pub fn wire_whole_core_runtime_hooks(
 
   // Wire `overview_for` so `accounts.profiles.createKeyed` / `createMachine` return `{ id, overview }` (1:1 with Node).
   core.api.hooks.overview_for = Some(core.api.admin.host.overview)
-  // Wire real `<app>/OVERRIDE` detection so `updates.wait` matches Node `updates.ts` override protection.
+  // Populate installed Station version from `<app>/BUILD` (`station/src/updates/versions.ts:66-69`).
+  match ctx.args.app {
+    Some(app_dir) => {
+      core.updates.station.version = station_ops::station_version(ctx.ops_fs, app_dir, sep=ctx.sep)
+    }
+    None => ()
+  }
+  // Wire real `<app>/OVERRIDE` detection so `updates` helpers match Node override protection.
   core.api.hooks.is_update_override_present = Some(fn() -> Bool {
     match ctx.args.app {
       Some(app_dir) => station_cli::read_override(ctx.ops_fs, app_dir, sep=ctx.sep).is_some()
@@ -1089,29 +1096,19 @@ pub fn wire_whole_core_runtime_hooks(
         None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
       }
     }
-    if op == "accounts.profiles.login-code" {
-      let code_s = match base_codec::json_get(body, "code") {
-        Some(base_codec::Json::Str(c)) if c.trim().length() > 0 => c.trim()
-        _ => match base_codec::json_get(body, "text") {
-          Some(base_codec::Json::Str(c)) if c.trim().length() > 0 => c.trim()
-          _ => return Err(station_api::ApiError::new(400, "code is required"))
-        }
-      }
-      match profile_login_ids.get(scope_key) {
-        Some(lid) => {
-          let who = Some(station_devices::LoginPerson::{ email: viewer.email, name: viewer.name })
-          match profile_logins.manager.answer(lid, code_s, who) {
-            Ok(view) => {
-              let _ = profile_logins.flush_writes(lid)
-              return Ok(base_codec::json_obj([("job", login_view_to_json(view, false))]))
-            }
-            Err(refused) => return Err(station_api::ApiError::new(refused.status, refused.message))
-          }
-        }
-        None => return Err(station_api::ApiError::new(404, "no active login for profile " + id))
-      }
-    }
     Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
+  })
+  // Project active `(ws, profile_id)` login state from isolated `profile_logins` into `overview.profiles[].login`
+  // (read-only members receive `login_limited` projection; aligns with `apps/mbui/src/sfpages/accounts.mbt:764`).
+  core.api.hooks.profile_login_for = Some(fn(ws : String, pid : String, ro : Bool) -> Option[base_codec::Json] {
+    let sk = ws + "\x00" + pid
+    match profile_login_ids.get(sk) {
+      Some(lid) => match profile_logins.manager.get(lid) {
+        Some(view) => Some(login_view_to_json(view, ro))
+        None => None
+      }
+      None => None
+    }
   })
 }
 

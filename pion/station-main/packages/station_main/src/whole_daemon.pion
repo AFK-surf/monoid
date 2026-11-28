@@ -1804,7 +1804,6 @@ struct WholeRuntimeState {
   terminals : station_whole::TerminalsOsRuntime
   logins : station_whole::LoginsOsRuntime
   profile_logins : station_whole::LoginsOsRuntime
-  detached_async_ops : Map[Int64, AsyncAdminHttpState]
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
   upkeep : AsyncUpkeepRunner
@@ -4475,7 +4474,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         let is_live_async_route = head.method == "POST"
         && (norm_path == "/updates/check"
           || norm_path == "/copies/s3/test"
-          || norm_path == "/workspaces/join"
           || norm_path == "/profiles")
         if is_live_async_route {
           match check_oldest_core_fast(st, head.method, head.path, head.headers) {
@@ -5655,11 +5653,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
-        // Wave 17D-2 R4: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
+        // Wave 17D-2 R5: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
         // - Sets `Done` BEFORE `send_admin_resp_and_finish` so >64 KiB backpressured `SendingBody` is preserved!
-        // - Also drives `st.detached_async_ops` so an in-flight `WorkspacesJoin` still completes local apply
-        //   on cloud 2xx even after the client stream closed!
-        // - If `stream.open` arrives with no active or detached op, decodes and immediately `stream.close`s.
+        // - If `stream.open` arrives with no active op, decodes and immediately `stream.close`s.
         if kind == LIVE_OP_TOK_HTTP_OPEN || kind == LIVE_OP_TOK_HTTP_READ {
           let mut handled = false
           match st.admin_streams.get(sid) {
@@ -5676,18 +5672,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 }
               }
               _ => ()
-            }
-          }
-          if !handled {
-            match st.detached_async_ops.get(sid) {
-              Some(detached_st) => {
-                handled = true
-                match step_async_admin_http_done(ctx, st, kind, detached_st, d) {
-                  Some(_) => st.detached_async_ops.remove(sid)
-                  None => ()
-                }
-              }
-              None => ()
             }
           }
           if !handled && kind == LIVE_OP_TOK_HTTP_OPEN {
@@ -7208,7 +7192,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         terminals: terminals,
         logins: logins,
         profile_logins: profile_logins,
-        detached_async_ops: Map::new(),
         browser: browser,
         connects: connects,
         upkeep: upkeep,
@@ -8376,14 +8359,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   false
                 }
                 AdminStreamMode::WaitingAsyncOp(async_st) => {
-                  if is_join_async_op(async_st) {
-                    // Never cancel an in-flight cloud join on client disconnect: let it finish
-                    // applying locally so cloud membership and local state never diverge!
-                    async_st.client_disconnected = true
-                    st.detached_async_ops.set(sid, async_st)
-                  } else {
-                    cancel_async_admin_op(ctx, st, async_st)
-                  }
+                  cancel_async_admin_op(ctx, st, async_st)
                   false
                 }
                 _ => false
@@ -8579,19 +8555,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   }
                 }
                 _ => ()
-              }
-              None => ()
-            }
-          }
-          let det_sids = st.detached_async_ops.keys()
-          for di in 0..<det_sids.length() {
-            let dsid = det_sids[di]
-            match st.detached_async_ops.get(dsid) {
-              Some(det_st) => {
-                if now >= det_st.deadline_ms {
-                  cancel_async_admin_op(ctx, st, det_st)
-                  st.detached_async_ops.remove(dsid)
-                }
               }
               None => ()
             }
@@ -8976,15 +8939,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
           // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
           st.connects.stop()
-          // Cancel any detached in-flight async ops on shutdown.
-          let det_shutdown_sids = st.detached_async_ops.keys()
-          for dsi in 0..<det_shutdown_sids.length() {
-            match st.detached_async_ops.get(det_shutdown_sids[dsi]) {
-              Some(det_st) => cancel_async_admin_op(ctx, st, det_st)
-              None => ()
-            }
-          }
-          st.detached_async_ops.clear()
           st.upkeep.shutdown()
           st.browser.stop_all()
           let _ = st.browser.drain_kills_with_hub(max_ms=500L)

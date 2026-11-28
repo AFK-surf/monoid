@@ -196,10 +196,12 @@ pub fn build_overview_with_counts(
   warm_sess : Int,
   viewer : station_api::Viewer,
   lang : station_api::Lang,
+  profile_login_for : Option[(String, String, Bool) -> Option[base_codec::Json]] = None,
 ) -> base_codec::Json {
   let raw_cfg = read_config_raw(cfg_opt)
   let raw_profiles = read_profiles_array(raw_cfg)
   let profile_inputs : Array[station_api::ProfileOverviewInput] = []
+  let read_only = viewer.is_read_only()
   for pi in 0..<raw_profiles.length() {
     let pe = raw_profiles[pi]
     if !live_profile_visible_in_ws(pe, viewer.workspace) {
@@ -218,6 +220,10 @@ pub fn build_overview_with_counts(
       }
       None => None
     }
+    let login_opt : Option[base_codec::Json] = match profile_login_for {
+      Some(f) => f(viewer.workspace, pid, read_only)
+      None => None
+    }
     profile_inputs.push(station_api::ProfileOverviewInput::{
       id: pid,
       runtime: prt,
@@ -226,6 +232,7 @@ pub fn build_overview_with_counts(
       models: [],
       api_key: api_key_opt,
       refresh_token: None,
+      login: login_opt,
     })
   }
   let base_in = station_api::OverviewInput::minimal()
@@ -273,6 +280,7 @@ fn build_whole_overview(
   home_ws_str : String,
   viewer_drive_roots : Array[String],
   cfg_opt : Option[station_ops::ConfigFile],
+  hooks : WholeApiRuntimeHooks,
   viewer : station_api::Viewer,
   lang : station_api::Lang,
 ) -> Result[base_codec::Json, station_api::ApiError] {
@@ -313,6 +321,7 @@ fn build_whole_overview(
     warm_sess,
     viewer,
     lang,
+    profile_login_for=hooks.profile_login_for,
   ))
 }
 
@@ -1811,7 +1820,7 @@ pub fn WholeApi::new(
         req.viewer,
         req.lang,
         fn(v : station_api::Viewer, l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
-          build_whole_overview(whole_store, agents, station_id_str, home_ws_str, drive_roots, config_file, v, l)
+          build_whole_overview(whole_store, agents, station_id_str, home_ws_str, drive_roots, config_file, hooks, v, l)
         },
       )
     }
@@ -1867,7 +1876,7 @@ pub fn WholeApi::new(
       Some(r) => r
       None => []
     }
-    build_whole_overview(whole_store, agents, station_id_str, home_ws_str, viewer_drive_roots, config_file, viewer, lang)
+    build_whole_overview(whole_store, agents, station_id_str, home_ws_str, viewer_drive_roots, config_file, hooks, viewer, lang)
   }
 
   let host_sample_fn = fn(_lang : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {

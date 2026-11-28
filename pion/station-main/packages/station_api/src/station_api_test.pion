@@ -294,6 +294,7 @@ test "overview_never_leaks_plaintext_secrets" {
         models: ["claude-opus-5-5"],
         api_key: Some("sk-ant-api03-PLAINTEXT-API-KEY-666"),
         refresh_token: Some("rt-PLAINTEXT-REFRESH-TOKEN-555"),
+        login: None,
       },
     ],
     mcp_servers: [

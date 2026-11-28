@@ -198,18 +198,40 @@ test "wave17d2 r3: accounts.profiles (real overview with new profile, ignore nam
     }
     Err(e) => panic("read-only login.get failed: " + e.message)
   }
-  // `accounts.profiles.login-code`: read-only 403, missing code 400, valid code 200
-  match (api.admin.host.call)("accounts.profiles.login-code", make_test_api_req_as("POST", "/profiles/sub-claude/login-code", ro), ["sub-claude"], base_codec::json_obj([("code", base_codec::json_str("123456"))])) {
-    Err(e) => if e.status != 403 { panic("read-only login-code must return 403") }
-    Ok(_) => panic("expected 403")
+  // `accounts.profiles.login-code` and `login-browser` return honest 501 until Wave 17E interactive paste state machine lands
+  for op in ["accounts.profiles.login-code", "accounts.profiles.login-browser"] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles/sub-claude/login-code", owner), ["sub-claude"], base_codec::json_obj([("code", base_codec::json_str("123456"))])) {
+      Err(e) => if e.status != 501 { panic(op + " must return honest 501, got " + e.status.to_string()) }
+      Ok(_) => panic(op + " returned fake 200")
+    }
   }
-  match (api.admin.host.call)("accounts.profiles.login-code", make_test_api_req_as("POST", "/profiles/sub-claude/login-code", owner), ["sub-claude"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 400 { panic("empty login-code must return 400") }
-    Ok(_) => panic("expected 400")
+  // `overview.profiles[].login` projects active profile login state (redacted for read-only members!)
+  hooks.profile_login_for = Some(fn(ws : String, pid : String, is_ro : Bool) -> Option[base_codec::Json] {
+    if ws == "ws-main" && pid == "sub-claude" {
+      if is_ro {
+        return Some(base_codec::json_obj([("id", base_codec::json_str("plogin-1")), ("state", base_codec::json_str("code"))]))
+      }
+      return Some(base_codec::json_obj([("id", base_codec::json_str("plogin-1")), ("state", base_codec::json_str("code")), ("code", base_codec::json_str("WXYZ-9999"))]))
+    }
+    None
+  })
+  match (api.admin.host.overview)(owner, station_api::Lang::En) {
+    Ok(ov) => {
+      let s = base_codec::json_stringify(ov)
+      if !s.contains("\"login\":") || !s.contains("WXYZ-9999") {
+        panic("owner overview missing profile.login: " + s)
+      }
+    }
+    Err(e) => panic("owner overview failed: " + e.message)
   }
-  match (api.admin.host.call)("accounts.profiles.login-code", make_test_api_req_as("POST", "/profiles/sub-claude/login-code", owner), ["sub-claude"], base_codec::json_obj([("code", base_codec::json_str("123456"))])) {
-    Ok(_) => ()
-    Err(e) => panic("hooked login-code failed: " + e.message)
+  match (api.admin.host.overview)(ro, station_api::Lang::En) {
+    Ok(ov) => {
+      let s = base_codec::json_stringify(ov)
+      if !s.contains("\"login\":") || s.contains("WXYZ-9999") {
+        panic("read-only overview must include limited profile.login without secret code: " + s)
+      }
+    }
+    Err(e) => panic("read-only overview failed: " + e.message)
   }
 }
 
