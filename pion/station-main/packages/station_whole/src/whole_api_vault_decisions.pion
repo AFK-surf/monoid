@@ -1,0 +1,3451 @@
+// Wave 17D-1: Production HTTP API handlers for all 11 Vault approval decision `call_op`s:
+// - Encrypted Vault (6): `vault.grants.post`, `vault.denials.post`, `vault.saves.post`,
+//   `vault.described.post`, `vault.removed.post`, `vault.browses.post`
+// - Plain Vault (5): `vault.plain.grants.post`, `vault.plain.denials.post`, `vault.plain.saves.post`,
+//   `vault.plain.described.post`, `vault.plain.removed.post`
+//
+// 1:1 aligned with Node `station/src/api/routes/vault-requests.ts`, `station/src/vault/secrets.ts`,
+// `station/src/vault/keeper.ts`, `station/src/vault/crypto.ts`, and `station/src/vault/plain.ts`.
+//
+// Security invariants:
+// - Encrypted Vault decisions verify lock membership/owner AND Ed25519/ES256 signatures against
+//   the workspace/personal `LockState` (fail-closed 403 on auth/signature failure).
+// - Zero cross-user / cross-workspace approval, zero replay of settled requests (atomic SQLite
+//   `WHERE ws = ? AND id = ? AND status = 'pending' AND body = ?`), strict plain/encrypted isolation.
+// - Zero secret values ever written to errors, logs, SSE events, or `vault_grants` SQLite rows.
+// - All SQLite transactions go exclusively through `sql_db::Db::tx` (zero raw transaction SQL).
+
+import "base_codec"
+import "crypto"
+import "form"
+import "lock"
+import "nodepath"
+import "sql_db"
+import "station_api"
+import "station_rules_bridge"
+import "station_store"
+import "station_sys"
+import "station_vault"
+import "vault"
+
+pub let VAULT_TAG_DENY : String = "stillfail-vault-deny/1"
+pub let VAULT_TAG_BROWSE : String = "stillfail-vault-browse/1"
+let VAULT_SEAL_INFO : String = "stillfail-vault-seal/1"
+let VAULT_GRANT_SLACK_SEC : Int64 = 60L
+let VAULT_TYPED_MOST : Int = 65536
+let VAULT_ABOUT_MOST : Int = 2000
+
+// ---------------------------------------------------------------------------
+// Base64url + X25519 / HKDF-SHA256 / ChaCha20-Poly1305 Seal (1:1 crypto.ts)
+// ---------------------------------------------------------------------------
+
+pub fn vault_base64url_encode(data : Bytes) -> String {
+  let alpha = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+  let n = data.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i + 3 <= n {
+    let b0 = data[i].to_int() & 0xFF
+    let b1 = data[i + 1].to_int() & 0xFF
+    let b2 = data[i + 2].to_int() & 0xFF
+    let v = (b0 << 16) | (b1 << 8) | b2
+    sb.write_byte(alpha.code_unit_at((v >> 18) & 63).to_byte())
+    sb.write_byte(alpha.code_unit_at((v >> 12) & 63).to_byte())
+    sb.write_byte(alpha.code_unit_at((v >> 6) & 63).to_byte())
+    sb.write_byte(alpha.code_unit_at(v & 63).to_byte())
+    i = i + 3
+  }
+  let rem = n - i
+  if rem == 1 {
+    let b0 = data[i].to_int() & 0xFF
+    sb.write_byte(alpha.code_unit_at((b0 >> 2) & 63).to_byte())
+    sb.write_byte(alpha.code_unit_at((b0 << 4) & 63).to_byte())
+  } else if rem == 2 {
+    let b0 = data[i].to_int() & 0xFF
+    let b1 = data[i + 1].to_int() & 0xFF
+    sb.write_byte(alpha.code_unit_at((b0 >> 2) & 63).to_byte())
+    sb.write_byte(alpha.code_unit_at(((b0 << 4) | (b1 >> 4)) & 63).to_byte())
+    sb.write_byte(alpha.code_unit_at((b1 << 2) & 63).to_byte())
+  }
+  sb.to_string()
+}
+
+pub fn vault_grant_context(ws : String, request_id : String) -> String {
+  "stillfail-vault-grant/1\x00" + ws + "\x00" + request_id
+}
+
+pub fn vault_box_public(priv : Bytes) -> Result[String, String] {
+  match crypto::x25519_public_key(priv) {
+    Ok(pub_raw) => Ok("x25519:" + crypto::bytes_to_hex(pub_raw))
+    Err(_) => Err("invalid x25519 private key")
+  }
+}
+
+fn vault_seal_derive_key(shared : Bytes, eph_pub : Bytes, to_pub : Bytes) -> Result[Bytes, String] {
+  let salt = Bytes::new(eph_pub.length() + to_pub.length())
+  for i in 0..<eph_pub.length() {
+    salt[i] = eph_pub[i]
+  }
+  for i in 0..<to_pub.length() {
+    salt[eph_pub.length() + i] = to_pub[i]
+  }
+  match crypto::hkdf_sha256(salt, shared, VAULT_SEAL_INFO.to_bytes(), 32) {
+    Ok(k) => Ok(k)
+    Err(_) => Err("hkdf derivation failed")
+  }
+}
+
+/// Seal `plain` to `pub_key` (`x25519:<64hex>`) under `context` using ephemeral key `eph_priv`.
+/// Exact wire compatibility with Node `station/src/vault/crypto.ts` `sealWith`.
+pub fn vault_seal_with(
+  pub_key : String,
+  plain : Bytes,
+  context : String,
+  eph_priv : Bytes,
+) -> Result[String, String] {
+  if !station_vault::is_box_key_format(pub_key) {
+    return Err("not an x25519 key")
+  }
+  let to_pub = match crypto::hex_to_bytes(pub_key.slice(7, pub_key.length())) {
+    Some(b) => b
+    None => return Err("not an x25519 key")
+  }
+  let eph_pub = match crypto::x25519_public_key(eph_priv) {
+    Ok(b) => b
+    Err(_) => return Err("invalid ephemeral x25519 key")
+  }
+  let shared = match crypto::x25519(eph_priv, to_pub) {
+    Ok(b) => b
+    Err(_) => return Err("x25519 exchange failed")
+  }
+  let key = match vault_seal_derive_key(shared, eph_pub, to_pub) {
+    Ok(k) => k
+    Err(e) => return Err(e)
+  }
+  let nonce = Bytes::new(12)
+  let ct_tag = match crypto::chacha20_poly1305_seal(key, nonce, context.to_bytes(), plain) {
+    Ok(b) => b
+    Err(_) => return Err("chacha20-poly1305 seal failed")
+  }
+  let out = Bytes::new(32 + ct_tag.length())
+  for i in 0..<32 {
+    out[i] = eph_pub[i]
+  }
+  for i in 0..<ct_tag.length() {
+    out[32 + i] = ct_tag[i]
+  }
+  Ok(vault_base64url_encode(out))
+}
+
+/// Open a sealed payload created by `seal`/`sealWith` using `priv` under `context`.
+/// Exact wire compatibility with Node `station/src/vault/crypto.ts` `openSeal`.
+pub fn vault_open_seal(
+  priv : Bytes,
+  sealed_b64url : String,
+  context : String,
+) -> Result[Bytes, String] {
+  let raw = match station_rules_bridge::decode_base64url_flex(sealed_b64url) {
+    Ok(b) => b
+    Err(_) => return Err("the grant's secret does not open")
+  }
+  if raw.length() < 48 {
+    return Err("the grant's secret does not open")
+  }
+  let eph_pub = Bytes::new(32)
+  for i in 0..<32 {
+    eph_pub[i] = raw[i]
+  }
+  let ct_tag_len = raw.length() - 32
+  let ct_tag = Bytes::new(ct_tag_len)
+  for i in 0..<ct_tag_len {
+    ct_tag[i] = raw[32 + i]
+  }
+  let to_pub = match crypto::x25519_public_key(priv) {
+    Ok(b) => b
+    Err(_) => return Err("the grant's secret does not open")
+  }
+  let shared = match crypto::x25519(priv, eph_pub) {
+    Ok(b) => b
+    Err(_) => return Err("the grant's secret does not open")
+  }
+  let key = match vault_seal_derive_key(shared, eph_pub, to_pub) {
+    Ok(k) => k
+    Err(_) => return Err("the grant's secret does not open")
+  }
+  let nonce = Bytes::new(12)
+  match crypto::chacha20_poly1305_open(key, nonce, context.to_bytes(), ct_tag) {
+    Ok(plain) => Ok(plain)
+    Err(_) => Err("the grant's secret does not open")
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Decision Storage & Atomic Transaction Port (`VaultDecisionsPort`)
+// ---------------------------------------------------------------------------
+
+pub struct VaultRequestRow {
+  pub ws : String
+  pub id : String
+  pub session : String
+  pub status : String
+  pub body : base_codec::Json
+  pub raw_body : String
+  pub thread : Option[Int64]
+  pub card_ts : Option[String]
+}
+
+pub enum VaultSettleEffect {
+  NoEffect
+  CheckVaultAndItem(String, String, String, String)
+  CheckCrossListing(String, String, String, String)
+  PutCrossListings(String, Array[(String, base_codec::Json)], Int64)
+  PutPlainGrant(String, String, String, base_codec::Json)
+  PutPlainItemAndGrant(String, String, Int, base_codec::Json, String, base_codec::Json)
+  UpdatePlainItemCas(String, String, String, Int, base_codec::Json)
+}
+
+pub struct VaultDecisionsPort {
+  pub get_request : (String, String) -> Result[Option[VaultRequestRow], station_api::ApiError]
+  pub is_session_ended : (String) -> Bool
+  pub get_box_priv : (String) -> Option[Bytes]
+  pub set_box_priv : (String, Bytes) -> Unit
+  pub drop_box_priv : (String) -> Unit
+  pub get_unsaved_fields : (String) -> Option[Map[String, String]]
+  pub set_unsaved_fields : (String, Map[String, String]) -> Unit
+  pub drop_unsaved_fields : (String) -> Unit
+  pub get_cross_listing : (String, String, String) -> Result[Option[base_codec::Json], station_api::ApiError]
+  pub get_plain_item_snapshot : (String, String) -> Result[Option[(base_codec::Json, String)], station_api::ApiError]
+  pub settle_request_tx : (
+    String,
+    String,
+    String,
+    String,
+    base_codec::Json,
+    base_codec::Json,
+    Option[Int64],
+    Option[String],
+    String,
+    String,
+    Int64,
+    VaultSettleEffect,
+  ) -> Result[Bool, station_api::ApiError]
+  pub seed_request : (VaultRequestRow) -> Result[Unit, station_api::ApiError]
+  pub mark_session_ended_for_test : (String) -> Unit
+  pub list_persisted_grants : (String) -> Result[Array[base_codec::Json], station_api::ApiError]
+  pub list_audit : (String) -> Result[Array[base_codec::Json], station_api::ApiError]
+  pub list_card_outcomes : () -> Array[(Int64, String, String)]
+}
+
+fn vd_k2(a : String, b : String) -> String {
+  a + "\x00" + b
+}
+
+fn vd_k3(a : String, b : String, c : String) -> String {
+  a + "\x00" + b + "\x00" + c
+}
+
+pub fn VaultDecisionsPort::in_memory(vault_plain : VaultPlainStorePort) -> VaultDecisionsPort {
+  let requests : Map[String, VaultRequestRow] = Map::new()
+  let ended_sessions : Map[String, Bool] = Map::new()
+  let boxes : Map[String, Bytes] = Map::new()
+  let unsaved : Map[String, Map[String, String]] = Map::new()
+  let cross_listings : Map[String, base_codec::Json] = Map::new()
+  let persisted_grants : Map[String, base_codec::Json] = Map::new()
+  let audits : Array[(String, base_codec::Json)] = []
+  let card_outcomes : Array[(Int64, String, String)] = []
+
+  VaultDecisionsPort::{
+    get_request: fn(ws : String, id : String) -> Result[Option[VaultRequestRow], station_api::ApiError] {
+      Ok(requests.get(vd_k2(ws, id)))
+    },
+    is_session_ended: fn(session : String) -> Bool {
+      ended_sessions.contains(session)
+    },
+    get_box_priv: fn(req_id : String) -> Option[Bytes] {
+      boxes.get(req_id)
+    },
+    set_box_priv: fn(req_id : String, priv : Bytes) -> Unit {
+      boxes.set(req_id, priv)
+    },
+    drop_box_priv: fn(req_id : String) -> Unit {
+      boxes.remove(req_id)
+    },
+    get_unsaved_fields: fn(req_id : String) -> Option[Map[String, String]] {
+      unsaved.get(req_id)
+    },
+    set_unsaved_fields: fn(req_id : String, fields : Map[String, String]) -> Unit {
+      unsaved.set(req_id, fields)
+    },
+    drop_unsaved_fields: fn(req_id : String) -> Unit {
+      unsaved.remove(req_id)
+    },
+    get_cross_listing: fn(ws : String, session : String, item : String) -> Result[Option[base_codec::Json], station_api::ApiError] {
+      Ok(cross_listings.get(vd_k3(ws, session, item)))
+    },
+    get_plain_item_snapshot: fn(ws : String, id : String) -> Result[Option[(base_codec::Json, String)], station_api::ApiError] {
+      match (vault_plain.get_item)(ws, id) {
+        Ok(Some(item)) => Ok(Some((item, base_codec::json_stringify(item))))
+        Ok(None) => Ok(None)
+        Err(e) => Err(e)
+      }
+    },
+    settle_request_tx: fn(
+      ws : String,
+      id : String,
+      expected_raw : String,
+      next_status : String,
+      next_body : base_codec::Json,
+      outcome_json : base_codec::Json,
+      thread_opt : Option[Int64],
+      card_ts_opt : Option[String],
+      audit_kind : String,
+      audit_detail : String,
+      now_sec : Int64,
+      effect : VaultSettleEffect,
+    ) -> Result[Bool, station_api::ApiError] {
+      let rk = vd_k2(ws, id)
+      let cur = match requests.get(rk) {
+        Some(r) => r
+        None => return Ok(false)
+      }
+      if cur.status != "pending" || cur.raw_body != expected_raw {
+        return Ok(false)
+      }
+      match effect {
+        VaultSettleEffect::NoEffect => ()
+        VaultSettleEffect::CheckVaultAndItem(_, _, _, _) => ()
+        VaultSettleEffect::CheckCrossListing(sess, item_id, exp_src_ws, exp_vault) => {
+          match cross_listings.get(vd_k3(ws, sess, item_id)) {
+            Some(entry) => {
+              if json_field_str(entry, "sourceWs") != Some(exp_src_ws) ||
+              json_field_str(entry, "vault") != Some(exp_vault) {
+                return Err(vault_err_json(409, "vault_refused", "the cross-workspace secret is no longer listed for this chat"))
+              }
+            }
+            None => return Err(vault_err_json(409, "vault_refused", "the cross-workspace secret is no longer listed for this chat"))
+          }
+        }
+        VaultSettleEffect::PutCrossListings(sess, entries, _at) => {
+          for i in 0..<entries.length() {
+            let (item_id, entry_j) = entries[i]
+            cross_listings.set(vd_k3(ws, sess, item_id), entry_j)
+          }
+        }
+        VaultSettleEffect::PutPlainGrant(item_id, exp_body, _sess, grant_body) => {
+          match (vault_plain.get_item)(ws, item_id) {
+            Ok(Some(cur_item)) => {
+              if base_codec::json_stringify(cur_item) != exp_body {
+                return Err(vault_err_json(409, "vault_refused", "the item changed; try again"))
+              }
+            }
+            Ok(None) => return Err(vault_err_json(409, "vault_refused", "the item changed; try again"))
+            Err(e) => return Err(e)
+          }
+          persisted_grants.set(vd_k2(ws, id), grant_body)
+        }
+        VaultSettleEffect::PutPlainItemAndGrant(item_id, owner, ver, next_item, _sess, grant_body) => {
+          match (vault_plain.get_item)(ws, item_id) {
+            Ok(Some(_)) => return Err(vault_err_json(409, "vault_refused", "the item is there already"))
+            Ok(None) => ()
+            Err(e) => return Err(e)
+          }
+          match (vault_plain.put_item)(ws, item_id, owner, ver, next_item) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          persisted_grants.set(vd_k2(ws, id), grant_body)
+        }
+        VaultSettleEffect::UpdatePlainItemCas(item_id, exp_body, owner, ver, next_item) => {
+          match (vault_plain.get_item)(ws, item_id) {
+            Ok(Some(cur_item)) => {
+              if base_codec::json_stringify(cur_item) != exp_body {
+                return Err(vault_err_json(409, "vault_refused", "the item changed; try again"))
+              }
+            }
+            Ok(None) => return Err(vault_err_json(409, "vault_refused", "the item changed; try again"))
+            Err(e) => return Err(e)
+          }
+          match (vault_plain.put_item)(ws, item_id, owner, ver, next_item) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      let next_raw = base_codec::json_stringify(next_body)
+      let updated = VaultRequestRow::{
+        ws: cur.ws,
+        id: cur.id,
+        session: cur.session,
+        status: next_status,
+        body: next_body,
+        raw_body: next_raw,
+        thread: cur.thread,
+        card_ts: cur.card_ts,
+      }
+      requests.set(rk, updated)
+      (vault_plain.seed_request_for_test)(ws, id, cur.session, next_status, next_body)
+      let vid = match json_field_str(next_body, "vault") { Some(s) => s, None => "" }
+      let iid = match json_field_str(next_body, "item") { Some(s) => s, None => "" }
+      audits.push((
+        ws,
+        base_codec::json_obj([
+          ("ws", base_codec::json_str(ws)),
+          ("at", base_codec::json_int64(now_sec)),
+          ("request", base_codec::json_str(id)),
+          ("vault", base_codec::json_str(vid)),
+          ("item", base_codec::json_str(iid)),
+          ("session", base_codec::json_str(cur.session)),
+          ("kind", base_codec::json_str(audit_kind)),
+          ("detail", base_codec::json_str(audit_detail)),
+        ]),
+      ))
+      match (thread_opt, card_ts_opt) {
+        (Some(tid), Some(cts)) => card_outcomes.push((tid, cts, base_codec::json_stringify(outcome_json)))
+        _ => ()
+      }
+      Ok(true)
+    },
+    seed_request: fn(row : VaultRequestRow) -> Result[Unit, station_api::ApiError] {
+      requests.set(vd_k2(row.ws, row.id), row)
+      (vault_plain.seed_request_for_test)(row.ws, row.id, row.session, row.status, row.body)
+      Ok(())
+    },
+    mark_session_ended_for_test: fn(session : String) -> Unit {
+      ended_sessions.set(session, true)
+    },
+    list_persisted_grants: fn(ws : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
+      let out : Array[base_codec::Json] = []
+      let ks = persisted_grants.keys()
+      for i in 0..<ks.length() {
+        if ks[i].starts_with(ws + "\x00") {
+          match persisted_grants.get(ks[i]) {
+            Some(g) => out.push(g)
+            None => ()
+          }
+        }
+      }
+      Ok(out)
+    },
+    list_audit: fn(ws : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
+      let out : Array[base_codec::Json] = []
+      for i in 0..<audits.length() {
+        if audits[i].0 == ws {
+          out.push(audits[i].1)
+        }
+      }
+      Ok(out)
+    },
+    list_card_outcomes: fn() -> Array[(Int64, String, String)] {
+      let out : Array[(Int64, String, String)] = []
+      for i in 0..<card_outcomes.length() {
+        out.push(card_outcomes[i])
+      }
+      out
+    },
+  }
+}
+
+pub fn VaultDecisionsPort::production(whole_store : WholeStore) -> VaultDecisionsPort {
+  let boxes : Map[String, Bytes] = Map::new()
+  let unsaved : Map[String, Map[String, String]] = Map::new()
+
+  VaultDecisionsPort::{
+    get_request: fn(ws : String, id : String) -> Result[Option[VaultRequestRow], station_api::ApiError] {
+      let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
+      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match st.db.first(
+        "SELECT session, status, body, thread, card_ts FROM vault_requests WHERE ws = ?1 AND id = ?2",
+        [base_codec::json_str(ws), base_codec::json_str(id)],
+      ) {
+        Ok(Some(row)) => {
+          let sess = match row.get("session") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let status = match row.get("status") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let raw = match row.get("body") { Some(base_codec::Json::Str(s)) => s, _ => return Ok(None) }
+          let parsed = match base_codec::json_parse(raw) {
+            base_codec::JsonParseResult::Ok(j) => j
+            _ => return Ok(None)
+          }
+          let thread_opt : Option[Int64] = match row.get("thread") {
+            Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+            _ => None
+          }
+          let card_ts_opt : Option[String] = match row.get("card_ts") {
+            Some(base_codec::Json::Str(s)) => Some(s)
+            _ => None
+          }
+          Ok(Some(VaultRequestRow::{
+            ws: ws,
+            id: id,
+            session: sess,
+            status: status,
+            body: parsed,
+            raw_body: raw,
+            thread: thread_opt,
+            card_ts: card_ts_opt,
+          }))
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    is_session_ended: fn(session : String) -> Bool {
+      match whole_store.require_open() {
+        Ok(st) => match st.get_session(session) {
+          Ok(Some(row)) => row.archived_at.is_some()
+          Ok(None) => true
+          Err(_) => false
+        }
+        Err(_) => false
+      }
+    },
+    get_box_priv: fn(req_id : String) -> Option[Bytes] {
+      boxes.get(req_id)
+    },
+    set_box_priv: fn(req_id : String, priv : Bytes) -> Unit {
+      boxes.set(req_id, priv)
+    },
+    drop_box_priv: fn(req_id : String) -> Unit {
+      boxes.remove(req_id)
+    },
+    get_unsaved_fields: fn(req_id : String) -> Option[Map[String, String]] {
+      unsaved.get(req_id)
+    },
+    set_unsaved_fields: fn(req_id : String, fields : Map[String, String]) -> Unit {
+      unsaved.set(req_id, fields)
+    },
+    drop_unsaved_fields: fn(req_id : String) -> Unit {
+      unsaved.remove(req_id)
+    },
+    get_cross_listing: fn(ws : String, session : String, item : String) -> Result[Option[base_codec::Json], station_api::ApiError] {
+      let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
+      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match st.db.first(
+        "SELECT body FROM vault_cross_listings WHERE ws = ?1 AND session = ?2 AND item = ?3",
+        [base_codec::json_str(ws), base_codec::json_str(session), base_codec::json_str(item)],
+      ) {
+        Ok(Some(row)) => match row.get("body") {
+          Some(base_codec::Json::Str(raw)) => match base_codec::json_parse(raw) {
+            base_codec::JsonParseResult::Ok(j) => Ok(Some(j))
+            _ => Ok(None)
+          }
+          _ => Ok(None)
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    get_plain_item_snapshot: fn(ws : String, id : String) -> Result[Option[(base_codec::Json, String)], station_api::ApiError] {
+      let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
+      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match st.db.first(
+        "SELECT body FROM vault_plain WHERE ws = ?1 AND id = ?2",
+        [base_codec::json_str(ws), base_codec::json_str(id)],
+      ) {
+        Ok(Some(row)) => match row.get("body") {
+          Some(base_codec::Json::Str(raw)) => match base_codec::json_parse(raw) {
+            base_codec::JsonParseResult::Ok(j) => Ok(Some((j, raw)))
+            _ => Ok(None)
+          }
+          _ => Ok(None)
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    settle_request_tx: fn(
+      ws : String,
+      id : String,
+      expected_raw : String,
+      next_status : String,
+      next_body : base_codec::Json,
+      outcome_json : base_codec::Json,
+      thread_opt : Option[Int64],
+      card_ts_opt : Option[String],
+      audit_kind : String,
+      audit_detail : String,
+      now_sec : Int64,
+      effect : VaultSettleEffect,
+    ) -> Result[Bool, station_api::ApiError] {
+      let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
+      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      let next_raw = base_codec::json_stringify(next_body)
+      let sess = match json_field_str(next_body, "session") { Some(s) => s, None => "" }
+      let vid = match json_field_str(next_body, "vault") { Some(s) => s, None => "" }
+      let iid = match json_field_str(next_body, "item") { Some(s) => s, None => "" }
+      let mut refused_msg : Option[String] = None
+      let tx_res = st.db.tx(fn(txdb : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+        // 1. Re-verify pending row + exact body inside write tx (prevents replay / race)
+        let cur_row = match txdb.first(
+          "SELECT thread, card_ts FROM vault_requests WHERE ws = ?1 AND id = ?2 AND status = 'pending' AND body = ?3",
+          [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(expected_raw)],
+        ) {
+          Ok(r) => r
+          Err(e) => return Err(e)
+        }
+        if cur_row is None {
+          return Ok(false)
+        }
+        // 2. Apply side effect atomically
+        match effect {
+          VaultSettleEffect::NoEffect => ()
+          VaultSettleEffect::CheckVaultAndItem(cv_id, ci_id, exp_v_body, exp_i_body) => {
+            let v_ok = match txdb.first(
+              "SELECT 1 AS ok FROM vaults WHERE ws = ?1 AND id = ?2 AND body = ?3",
+              [base_codec::json_str(ws), base_codec::json_str(cv_id), base_codec::json_str(exp_v_body)],
+            ) {
+              Ok(Some(_)) => true
+              Ok(None) => false
+              Err(e) => return Err(e)
+            }
+            let i_ok = match txdb.first(
+              "SELECT 1 AS ok FROM vault_items WHERE ws = ?1 AND vault = ?2 AND id = ?3 AND body = ?4",
+              [base_codec::json_str(ws), base_codec::json_str(cv_id), base_codec::json_str(ci_id), base_codec::json_str(exp_i_body)],
+            ) {
+              Ok(Some(_)) => true
+              Ok(None) => false
+              Err(e) => return Err(e)
+            }
+            if !v_ok || !i_ok {
+              refused_msg = Some("the request's vault or item changed; try again")
+              return Err(sql_db::sql_error(1, "vault_refused"))
+            }
+          }
+          VaultSettleEffect::CheckCrossListing(csess, citem, exp_src_ws, exp_vault) => {
+            let row = match txdb.first(
+              "SELECT body FROM vault_cross_listings WHERE ws = ?1 AND session = ?2 AND item = ?3",
+              [base_codec::json_str(ws), base_codec::json_str(csess), base_codec::json_str(citem)],
+            ) {
+              Ok(r) => r
+              Err(e) => return Err(e)
+            }
+            let ok = match row {
+              Some(r) => match r.get("body") {
+                Some(base_codec::Json::Str(raw)) => match base_codec::json_parse(raw) {
+                  base_codec::JsonParseResult::Ok(j) => json_field_str(j, "sourceWs") == Some(exp_src_ws) && json_field_str(j, "vault") == Some(exp_vault)
+                  _ => false
+                }
+                _ => false
+              }
+              None => false
+            }
+            if !ok {
+              refused_msg = Some("the cross-workspace secret is no longer listed for this chat")
+              return Err(sql_db::sql_error(1, "vault_refused"))
+            }
+          }
+          VaultSettleEffect::PutCrossListings(csess, entries, at_sec) => {
+            for i in 0..<entries.length() {
+              let (citem, entry_j) = entries[i]
+              match txdb.run(
+                "INSERT OR REPLACE INTO vault_cross_listings (ws, session, item, body, at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                [
+                  base_codec::json_str(ws),
+                  base_codec::json_str(csess),
+                  base_codec::json_str(citem),
+                  base_codec::json_str(base_codec::json_stringify(entry_j)),
+                  sql_db::int64_to_json(at_sec),
+                ],
+              ) {
+                Ok(_) => ()
+                Err(e) => return Err(e)
+              }
+            }
+          }
+          VaultSettleEffect::PutPlainGrant(item_id, exp_body, gsess, grant_body) => {
+            let still = match txdb.first(
+              "SELECT 1 AS ok FROM vault_plain WHERE ws = ?1 AND id = ?2 AND body = ?3",
+              [base_codec::json_str(ws), base_codec::json_str(item_id), base_codec::json_str(exp_body)],
+            ) {
+              Ok(Some(_)) => true
+              Ok(None) => false
+              Err(e) => return Err(e)
+            }
+            if !still {
+              refused_msg = Some("the item changed; try again")
+              return Err(sql_db::sql_error(1, "vault_refused"))
+            }
+            match txdb.run(
+              "INSERT INTO vault_grants (ws, id, session, body) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (ws, id) DO UPDATE SET body = excluded.body",
+              [
+                base_codec::json_str(ws),
+                base_codec::json_str(id),
+                base_codec::json_str(gsess),
+                base_codec::json_str(base_codec::json_stringify(grant_body)),
+              ],
+            ) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          VaultSettleEffect::PutPlainItemAndGrant(item_id, owner, ver, next_item, gsess, grant_body) => {
+            let exists = match txdb.first(
+              "SELECT 1 AS ok FROM vault_plain WHERE ws = ?1 AND id = ?2",
+              [base_codec::json_str(ws), base_codec::json_str(item_id)],
+            ) {
+              Ok(Some(_)) => true
+              Ok(None) => false
+              Err(e) => return Err(e)
+            }
+            if exists {
+              refused_msg = Some("the item is there already")
+              return Err(sql_db::sql_error(1, "vault_refused"))
+            }
+            let kept = vp_normalize_kept(ws, item_id, owner, ver, next_item)
+            match txdb.run(
+              "INSERT INTO vault_plain (ws, id, owner, version, body) VALUES (?1, ?2, ?3, ?4, ?5)",
+              [
+                base_codec::json_str(ws),
+                base_codec::json_str(item_id),
+                base_codec::json_str(owner),
+                base_codec::json_int(ver),
+                base_codec::json_str(base_codec::json_stringify(kept)),
+              ],
+            ) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+            match txdb.run(
+              "INSERT INTO vault_grants (ws, id, session, body) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (ws, id) DO UPDATE SET body = excluded.body",
+              [
+                base_codec::json_str(ws),
+                base_codec::json_str(id),
+                base_codec::json_str(gsess),
+                base_codec::json_str(base_codec::json_stringify(grant_body)),
+              ],
+            ) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          VaultSettleEffect::UpdatePlainItemCas(item_id, exp_body, owner, ver, next_item) => {
+            let kept = vp_normalize_kept(ws, item_id, owner, ver, next_item)
+            let changed = match txdb.run(
+              "UPDATE vault_plain SET version = ?1, body = ?2 WHERE ws = ?3 AND id = ?4 AND body = ?5",
+              [
+                base_codec::json_int(ver),
+                base_codec::json_str(base_codec::json_stringify(kept)),
+                base_codec::json_str(ws),
+                base_codec::json_str(item_id),
+                base_codec::json_str(exp_body),
+              ],
+            ) {
+              Ok(r) => r
+              Err(e) => return Err(e)
+            }
+            if changed == 0 {
+              refused_msg = Some("the item changed; try again")
+              return Err(sql_db::sql_error(1, "vault_refused"))
+            }
+          }
+        }
+        // 3. Conditional UPDATE on `vault_requests`
+        let updated = match txdb.run(
+          "UPDATE vault_requests SET status = ?1, body = ?2 WHERE ws = ?3 AND id = ?4 AND status = 'pending' AND body = ?5",
+          [
+            base_codec::json_str(next_status),
+            base_codec::json_str(next_raw),
+            base_codec::json_str(ws),
+            base_codec::json_str(id),
+            base_codec::json_str(expected_raw),
+          ],
+        ) {
+          Ok(r) => r
+          Err(e) => return Err(e)
+        }
+        if updated == 0 {
+          return Ok(false)
+        }
+        // 4. Audit trail
+        match txdb.run(
+          "INSERT INTO vault_audit (ws, at, request, vault, item, session, kind, detail) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+          [
+            base_codec::json_str(ws),
+            sql_db::int64_to_json(now_sec),
+            base_codec::json_str(id),
+            base_codec::json_str(vid),
+            base_codec::json_str(iid),
+            base_codec::json_str(sess),
+            base_codec::json_str(audit_kind),
+            base_codec::json_str(audit_detail),
+          ],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+        // 5. Enqueue `card_outbox` outcome atomically inside same tx if card exists
+        match (thread_opt, card_ts_opt) {
+          (Some(tid), Some(cts)) => {
+            match station_store::install_card_outbox(txdb) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+            match station_store::enqueue_card_outcome(
+              txdb,
+              tid,
+              cts,
+              sess,
+              "vault",
+              true,
+              base_codec::json_stringify(outcome_json),
+              dedup=true,
+            ) {
+              Ok(_) => ()
+              Err(e) => return Err(e)
+            }
+          }
+          _ => ()
+        }
+        Ok(true)
+      })
+      match tx_res {
+        Ok(b) => Ok(b)
+        Err(e) => match refused_msg {
+          Some(msg) => Err(vault_err_json(409, "vault_refused", msg))
+          None => Err(station_api::ApiError::new(500, e.message))
+        }
+      }
+    },
+    seed_request: fn(row : VaultRequestRow) -> Result[Unit, station_api::ApiError] {
+      let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
+      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      let t_json = match row.thread { Some(t) => sql_db::int64_to_json(t), None => base_codec::json_null() }
+      let c_json = match row.card_ts { Some(c) => base_codec::json_str(c), None => base_codec::json_null() }
+      match st.db.run(
+        "INSERT INTO vault_requests (ws, id, session, status, body, thread, card_ts) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) ON CONFLICT (ws, id) DO UPDATE SET status = excluded.status, body = excluded.body, thread = excluded.thread, card_ts = excluded.card_ts",
+        [
+          base_codec::json_str(row.ws),
+          base_codec::json_str(row.id),
+          base_codec::json_str(row.session),
+          base_codec::json_str(row.status),
+          base_codec::json_str(row.raw_body),
+          t_json,
+          c_json,
+        ],
+      ) {
+        Ok(_) => Ok(())
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    mark_session_ended_for_test: fn(_s : String) -> Unit { () },
+    list_persisted_grants: fn(ws : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
+      let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
+      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match st.db.all("SELECT body FROM vault_grants WHERE ws = ?1 ORDER BY id", [base_codec::json_str(ws)]) {
+        Ok(rows) => {
+          let out : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            match rows[i].get("body") {
+              Some(base_codec::Json::Str(raw)) => match base_codec::json_parse(raw) {
+                base_codec::JsonParseResult::Ok(j) => out.push(j)
+                _ => ()
+              }
+              _ => ()
+            }
+          }
+          Ok(out)
+        }
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    list_audit: fn(ws : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
+      let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
+      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match st.db.all("SELECT ws, at, request, vault, item, session, kind, detail FROM vault_audit WHERE ws = ?1 ORDER BY rowid", [base_codec::json_str(ws)]) {
+        Ok(rows) => {
+          let out : Array[base_codec::Json] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            out.push(base_codec::json_obj([
+              ("ws", match r.get("ws") { Some(v) => v, None => base_codec::json_str("") }),
+              ("at", match r.get("at") { Some(v) => v, None => base_codec::json_int(0) }),
+              ("request", match r.get("request") { Some(v) => v, None => base_codec::json_str("") }),
+              ("vault", match r.get("vault") { Some(v) => v, None => base_codec::json_str("") }),
+              ("item", match r.get("item") { Some(v) => v, None => base_codec::json_str("") }),
+              ("session", match r.get("session") { Some(v) => v, None => base_codec::json_str("") }),
+              ("kind", match r.get("kind") { Some(v) => v, None => base_codec::json_str("") }),
+              ("detail", match r.get("detail") { Some(v) => v, None => base_codec::json_str("") }),
+            ]))
+          }
+          Ok(out)
+        }
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    list_card_outcomes: fn() -> Array[(Int64, String, String)] { [] },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Validation Helpers (1:1 with `keeper.ts`, `crypto.ts`, `secrets.ts`)
+// ---------------------------------------------------------------------------
+
+fn vd_scope_lasts_sec(g_scope : String) -> Option[Int64] {
+  if g_scope == "once" {
+    Some(3600L)
+  } else if g_scope == "hour" {
+    Some(3600L)
+  } else if g_scope == "chat" {
+    Some(2592000L) // 30 * 86400
+  } else {
+    None
+  }
+}
+
+fn vd_scope_rank(g_scope : String) -> Int {
+  if g_scope == "once" {
+    0
+  } else if g_scope == "hour" {
+    1
+  } else if g_scope == "chat" {
+    2
+  } else {
+    -1
+  }
+}
+
+fn vd_allows_scope(lasts_opt : Option[String], g_scope : String) -> Bool {
+  let sr = vd_scope_rank(g_scope)
+  if sr < 0 {
+    return false
+  }
+  let max_r = match lasts_opt {
+    Some(l) => vd_scope_rank(l)
+    None => 2
+  }
+  sr <= max_r
+}
+
+fn vd_hosted(mode : String) -> Bool {
+  mode == "proxy" || mode == "browser"
+}
+
+fn vd_str_arr(j : base_codec::Json, key : String) -> Option[Array[String]] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Arr(xs)) => {
+      let out : Array[String] = []
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => return None
+        }
+      }
+      Some(out)
+    }
+    _ => None
+  }
+}
+
+fn vd_form_str_arr(j : form::Json, key : String) -> Array[String] {
+  let out : Array[String] = []
+  match form::json_field(Some(j), key) {
+    Some(form::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          form::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn vd_has_str(xs : Array[String], target : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == target {
+      return true
+    }
+  }
+  false
+}
+
+fn vd_safe_int64(j : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(j, key) {
+    Some(base_codec::Json::Num(d, _)) => {
+      let v = d.to_int64()
+      if d == d && v.to_double() == d { Some(v) } else { None }
+    }
+    _ => None
+  }
+}
+
+fn vd_host_allowed(host : String, patterns : Array[String]) -> Bool {
+  let mut h = admin_ascii_lower(host)
+  if h.ends_with(".") {
+    h = h.slice(0, h.length() - 1)
+  }
+  for i in 0..<patterns.length() {
+    let p = admin_ascii_lower(patterns[i])
+    if p.starts_with("*.") {
+      let suffix = p.slice(1, p.length())
+      if h.ends_with(suffix) && h.length() > suffix.length() {
+        return true
+      }
+    } else if h == p {
+      return true
+    }
+  }
+  false
+}
+
+fn vd_hosts_subset_ok(grant_hosts : Array[String], listing_hosts : Array[String]) -> Bool {
+  for i in 0..<grant_hosts.length() {
+    let h = grant_hosts[i]
+    let ok = vd_has_str(listing_hosts, h) || (!h.starts_with("*.") && vd_host_allowed(h, listing_hosts))
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn vd_is_listing_host(h : String) -> Bool {
+  if h.length() == 0 || h.length() > 253 {
+    return false
+  }
+  let s = if h.starts_with("*.") { h.slice(2, h.length()) } else { h }
+  if s.length() == 0 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    let ok = (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 46 || c == 45
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+fn vd_is_valid_env_var(s : String) -> Bool {
+  if s.length() == 0 || s.length() > 100 {
+    return false
+  }
+  let c0 = s.code_unit_at(0)
+  if !((c0 >= 65 && c0 <= 90) || (c0 >= 97 && c0 <= 122) || c0 == 95) {
+    return false
+  }
+  for i in 1..<s.length() {
+    let c = s.code_unit_at(i)
+    if !((c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 95) {
+      return false
+    }
+  }
+  true
+}
+
+/// 1:1 with `station/src/vault/crypto.ts` `listingOk`.
+fn vd_validate_listing(l : base_codec::Json) -> Option[String] {
+  match l {
+    base_codec::Json::Obj(_) => ()
+    _ => return Some("a listing is an object")
+  }
+  match json_field_str(l, "name") {
+    Some(n) if n.trim().length() > 0 && n.length() <= 200 => ()
+    _ => return Some("a listing names the item")
+  }
+  let kind = match json_field_str(l, "kind") {
+    Some(k) if k == "token" || k == "ssh_key" || k == "login" || k == "file" || k == "browser" => k
+    _ => return Some("a listing's kind is token, ssh_key, login, file or browser")
+  }
+  let modes = match vd_str_arr(l, "modes") {
+    Some(ms) if ms.length() > 0 => ms
+    _ => return Some("a listing's modes are proxy, ssh, env, file or browser")
+  }
+  for i in 0..<modes.length() {
+    let m = modes[i]
+    if m != "proxy" && m != "ssh" && m != "env" && m != "file" && m != "browser" {
+      return Some("a listing's modes are proxy, ssh, env, file or browser")
+    }
+  }
+  let has_file = vd_has_str(modes, "file")
+  if has_file != (kind == "file") || (kind == "file" && modes.length() > 1) {
+    return Some("a file is given as a file, and only a file is")
+  }
+  let hosts = match vd_str_arr(l, "hosts") {
+    Some(hs) => hs
+    None => return Some("a listing's hosts are host names")
+  }
+  for i in 0..<hosts.length() {
+    if !vd_is_listing_host(hosts[i]) {
+      return Some("a listing's hosts are host names")
+    }
+  }
+  if vd_has_str(modes, "proxy") && hosts.length() == 0 {
+    return Some("given through the proxy, it names its hosts")
+  }
+  match vault::browser_listing_ok(kind, modes, hosts) {
+    Some(why) => return Some(why)
+    None => ()
+  }
+  match base_codec::json_get(l, "env") {
+    None | Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Str(e)) if vd_is_valid_env_var(e) => ()
+    _ => return Some("env is a variable's name")
+  }
+  match base_codec::json_get(l, "lasts") {
+    None | Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Str(s)) if is_valid_plain_scope(s) => ()
+    _ => return Some("lasts is once, hour or chat")
+  }
+  match base_codec::json_get(l, "about") {
+    None | Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Str(a)) if a.length() <= VAULT_ABOUT_MOST => ()
+    _ => return Some("about is at most 2000 characters of text")
+  }
+  None
+}
+
+fn vd_secret_field_for_kind(kind : String) -> String {
+  if kind == "ssh_key" {
+    "private_key"
+  } else if kind == "login" {
+    "password"
+  } else if kind == "file" {
+    "content"
+  } else if kind == "browser" {
+    "cookies"
+  } else {
+    "value"
+  }
+}
+
+/// 1:1 with `station/src/vault/secrets.ts` `typedFields`.
+fn vd_validate_typed_fields(kind : String, v_opt : Option[base_codec::Json]) -> Option[Map[String, String]] {
+  let fs = match v_opt {
+    Some(base_codec::Json::Obj(xs)) => xs
+    _ => return None
+  }
+  let out : Map[String, String] = Map::new()
+  let mut total_size = 0
+  for i in 0..<fs.length() {
+    let (k, v) = fs[i]
+    match v {
+      base_codec::Json::Str(sv) => {
+        out.set(k, sv)
+        total_size = total_size + k.length() + sv.length()
+      }
+      _ => return None
+    }
+  }
+  let sf = vd_secret_field_for_kind(kind)
+  let secret_nonempty = match out.get(sf) {
+    Some(sv) => sv.trim().length() > 0
+    None => false
+  }
+  if !secret_nonempty {
+    return None
+  }
+  if kind != "file" && total_size > VAULT_TYPED_MOST {
+    return None
+  }
+  Some(out)
+}
+
+fn vd_fields_map_to_json(m : Map[String, String]) -> base_codec::Json {
+  let ks = m.keys()
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<ks.length() {
+    match m.get(ks[i]) {
+      Some(v) => out.push((ks[i], base_codec::json_str(v)))
+      None => ()
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+fn vd_parse_vault_secret(j : base_codec::Json) -> Option[station_vault::VaultSecret] {
+  match j {
+    base_codec::Json::Obj(_) => ()
+    _ => return None
+  }
+  let kind = match json_field_str(j, "kind") { Some(s) => s, None => return None }
+  let name = match json_field_str(j, "name") { Some(s) => s, None => "" }
+  let fields : Map[String, String] = Map::new()
+  match base_codec::json_get(j, "fields") {
+    Some(base_codec::Json::Obj(fs)) => {
+      for i in 0..<fs.length() {
+        match fs[i].1 {
+          base_codec::Json::Str(sv) => fields.set(fs[i].0, sv)
+          _ => ()
+        }
+      }
+    }
+    _ => return None
+  }
+  let sec = station_vault::VaultSecret::{ kind: kind, name: name, fields: fields }
+  match sec.value() {
+    Some(_) => Some(sec)
+    None => None
+  }
+}
+
+fn vd_validate_timeout_obj(
+  timeout_opt : Option[base_codec::Json],
+  g_scope : String,
+  max_sec : Int64,
+  check_exp : Option[(Int64, Int64)],
+) -> Result[Option[(String, Int64)], String] {
+  match timeout_opt {
+    None | Some(base_codec::Json::Null) => Ok(None)
+    Some(base_codec::Json::Obj(_)) => {
+      let t = match timeout_opt { Some(x) => x, None => base_codec::json_obj([]) }
+      if g_scope == "once" {
+        return Err("invalid grant timeout")
+      }
+      let tkind = match json_field_str(t, "kind") {
+        Some(k) if k == "idle" || k == "fixed" => k
+        _ => return Err("invalid grant timeout")
+      }
+      let secs = match vd_safe_int64(t, "seconds") {
+        Some(s) if s >= 1L && s <= max_sec => s
+        _ => return Err("invalid grant timeout")
+      }
+      match check_exp {
+        Some((at_sec, exp_sec)) => {
+          if exp_sec != at_sec + secs {
+            return Err("invalid grant timeout")
+          }
+        }
+        None => ()
+      }
+      Ok(Some((tkind, secs)))
+    }
+    Some(_) => Err("invalid grant timeout")
+  }
+}
+
+fn vd_lock_member_email(l : lock::LockState, sub : String) -> Option[String] {
+  match l.members.get(sub) {
+    Some(m) => Some(admin_ascii_lower(m.email))
+    None => None
+  }
+}
+
+fn vd_lock_devices_count_for_sub(l : lock::LockState, sub : String) -> Int {
+  let mut count = 0
+  let ds = l.devices.entries()
+  for i in 0..<ds.length() {
+    if ds[i].1.sub == sub {
+      count = count + 1
+    }
+  }
+  count
+}
+
+fn vd_sig_key_of(obj : form::Json) -> String {
+  match form::json_field(form::json_field(Some(obj), "sig"), "key") {
+    Some(form::Json::Str(k)) => k
+    _ => ""
+  }
+}
+
+/// Verify an item stored in `VaultStore` is still cryptographically signed by a current member
+/// of `vault_members` under `TAG_ITEM`.
+fn vd_verify_stored_item_sig(
+  lv : vault::LockView,
+  vault_members : Array[String],
+  item_form : form::Json,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Bool {
+  if !station_vault::record_signed_ok(item_form, station_vault::TAG_ITEM, verify_fn=verify_fn) {
+    return false
+  }
+  let sig_key = vd_sig_key_of(item_form)
+  match vault::signer_of(lv, sig_key) {
+    Some((sub, _)) => vd_has_str(vault_members, sub)
+    None => false
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SSE & Session Notification Helpers (zero secret leakage)
+// ---------------------------------------------------------------------------
+
+fn vd_emit_request_event(
+  events : station_api::EventsHub,
+  req_body : base_codec::Json,
+  now_ms : Int64,
+) -> Unit {
+  let ws = match json_field_str(req_body, "ws") { Some(s) => s, None => return }
+  let id = match json_field_str(req_body, "id") { Some(s) => s, None => return }
+  let vid = match json_field_str(req_body, "vault") { Some(s) => s, None => "" }
+  let is_owner_only = vid == "plain" ||
+  json_is_truthy(req_body, "save") ||
+  json_is_non_null(req_body, "browse") ||
+  json_is_non_null(req_body, "cross")
+  let ev_target = if !is_owner_only {
+    station_api::EventTarget::{
+      lang: None,
+      viewer: None,
+      device: None,
+      email: None,
+      workspace: Some(ws),
+      subs: None,
+      read_only: None,
+      managers: None,
+      vault: Some(vid),
+      sees_ws: Some(Some(ws)),
+      sees_session: None,
+      sees_thread: None,
+      sees_job: None,
+    }
+  } else {
+    let owner_em = match json_field_str(req_body, "owner") {
+      Some(o) if o.length() > 0 => admin_ascii_lower(o)
+      _ => return
+    }
+    station_api::EventTarget::{
+      lang: None,
+      viewer: None,
+      device: None,
+      email: Some(owner_em),
+      workspace: Some(ws),
+      subs: None,
+      read_only: None,
+      managers: None,
+      vault: None,
+      sees_ws: Some(Some(ws)),
+      sees_session: None,
+      sees_thread: None,
+      sees_job: None,
+    }
+  }
+  let _ = events.emit("vault-request", req_body, ev_target, now_ms, Some("vault-request\x00" + id))
+}
+
+fn vd_emit_plain_event(
+  events : station_api::EventsHub,
+  item : base_codec::Json,
+  now_ms : Int64,
+) -> Unit {
+  let ws = match json_field_str(item, "ws") { Some(s) => s, None => return }
+  let id = match json_field_str(item, "id") { Some(s) => s, None => return }
+  let owner = match json_field_str(item, "owner") { Some(s) => admin_ascii_lower(s), None => return }
+  let shown = plain_item_shown(item)
+  let ev_target = station_api::EventTarget::{
+    lang: None,
+    viewer: None,
+    device: None,
+    email: Some(owner),
+    workspace: Some(ws),
+    subs: None,
+    read_only: None,
+    managers: None,
+    vault: None,
+    sees_ws: Some(Some(ws)),
+    sees_session: None,
+    sees_thread: None,
+    sees_job: None,
+  }
+  let _ = events.emit("vault-plain", shown, ev_target, now_ms, Some("vault-plain\x00" + id))
+}
+
+fn vd_notify_session(
+  hooks : WholeApiRuntimeHooks,
+  session : String,
+  notice : String,
+) -> Unit {
+  match hooks.on_vault_decision_notify {
+    Some(f) => f(session, notice)
+    None => ()
+  }
+  hooks_notify_session(hooks, session)
+}
+
+fn vd_format_decision_notice(req_body : base_codec::Json, status : String) -> String {
+  let id = match json_field_str(req_body, "id") { Some(s) => s, None => "" }
+  let item_id = match json_field_str(req_body, "item") { Some(s) => s, None => "" }
+  if json_is_truthy(req_body, "save") {
+    let name = match base_codec::json_get(req_body, "save") {
+      Some(s) => match json_field_str(s, "name") { Some(n) => n, None => item_id }
+      None => item_id
+    }
+    if status == "granted" {
+      "Kept: \"" + name + "\" is in the vault now (item " + item_id + ")."
+    } else {
+      "The person chose not to keep \"" + name + "\" (request " + id + ")."
+    }
+  } else if json_is_non_null(req_body, "browse") {
+    if status == "granted" {
+      "Approved (request " + id + "): personal secrets from other workspaces are now listed for this chat."
+    } else {
+      "The person chose not to share their personal secrets from other workspaces (request " + id + ")."
+    }
+  } else if json_is_non_null(req_body, "describe") {
+    let name = match base_codec::json_get(req_body, "describe") {
+      Some(d) => match json_field_str(d, "name") { Some(n) => n, None => item_id }
+      None => item_id
+    }
+    if status == "granted" {
+      "Changed: the item " + item_id + " is \"" + name + "\" now."
+    } else {
+      "The person chose not to change item " + item_id + " (request " + id + ")."
+    }
+  } else if json_is_non_null(req_body, "remove") {
+    let name = match base_codec::json_get(req_body, "remove") {
+      Some(rm) => match json_field_str(rm, "name") { Some(n) => n, None => item_id }
+      None => item_id
+    }
+    if status == "granted" {
+      "Deleted: \"" + name + "\" (" + item_id + ") is no longer in the vault."
+    } else {
+      "The person chose to keep \"" + name + "\" (request " + id + "): it stays in the vault."
+    }
+  } else if status == "granted" {
+    "Granted: request " + id + " for item " + item_id + " is ready to use with secret_run."
+  } else {
+    "The request " + id + " was " + (if status == "denied" { "refused" } else { status }) + "."
+  }
+}
+
+fn vd_expire_if_ended(
+  row : VaultRequestRow,
+  vd : VaultDecisionsPort,
+  events : station_api::EventsHub,
+  now_ms : Int64,
+  now_sec : Int64,
+) -> Option[station_api::ApiError] {
+  if !(vd.is_session_ended)(row.session) {
+    return None
+  }
+  let expired_body = json_obj_set(row.body, "status", Some(base_codec::json_str("expired")))
+  let outcome = base_codec::json_obj([("status", base_codec::json_str("expired"))])
+  match (vd.settle_request_tx)(
+    row.ws,
+    row.id,
+    row.raw_body,
+    "expired",
+    expired_body,
+    outcome,
+    row.thread,
+    row.card_ts,
+    "expired",
+    "",
+    now_sec,
+    VaultSettleEffect::NoEffect,
+  ) {
+    Ok(true) => {
+      (vd.drop_box_priv)(row.id)
+      (vd.drop_unsaved_fields)(row.id)
+      vd_emit_request_event(events, expired_body, now_ms)
+      Some(vault_err_json(409, "vault_refused", "the request is expired"))
+    }
+    Ok(false) => Some(vault_err_json(409, "vault_refused", "the request changed; try again"))
+    Err(e) => Some(e)
+  }
+}
+
+fn vd_decision_changed_err(vd : VaultDecisionsPort, ws : String, id : String) -> station_api::ApiError {
+  match (vd.get_request)(ws, id) {
+    Ok(Some(cur)) => {
+      if cur.status == "pending" {
+        vault_err_json(409, "vault_refused", "the request changed; try again")
+      } else {
+        vault_err_json(409, "vault_refused", "the request is " + cur.status)
+      }
+    }
+    Ok(None) => vault_err_json(409, "vault_refused", "no such request")
+    Err(e) => e
+  }
+}
+
+/// Validate and open an encrypted grant payload (normal or cross-workspace), returning the
+/// `GrantRecord` ready to register in `WholeStore::register_vault_grant`.
+fn vd_prepare_encrypted_grant(
+  lock_state : lock::LockState,
+  req_body : base_codec::Json,
+  grant_json : base_codec::Json,
+  listing_json : base_codec::Json,
+  vault_lasts : Option[String],
+  allowed_signers : Option[Array[String]],
+  expected_sub : Option[String],
+  cross_source_ws : Option[String],
+  vd : VaultDecisionsPort,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+  now_sec : Int64,
+) -> Result[(station_vault::GrantRecord, String, Option[base_codec::Json]), station_api::ApiError] {
+  match grant_json {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err(vault_err_json(409, "vault_refused", "a grant is {v: 1, ...}"))
+  }
+  if vd_safe_int64(grant_json, "v") != Some(1L) {
+    return Err(vault_err_json(409, "vault_refused", "a grant is {v: 1, ...}"))
+  }
+  let r_ws = match json_field_str(req_body, "ws") { Some(s) => s, None => "" }
+  let r_id = match json_field_str(req_body, "id") { Some(s) => s, None => "" }
+  let r_vault = match json_field_str(req_body, "vault") { Some(s) => s, None => "" }
+  let r_item = match json_field_str(req_body, "item") { Some(s) => s, None => "" }
+  let r_mode = match json_field_str(req_body, "mode") { Some(s) => s, None => "" }
+  let r_session = match json_field_str(req_body, "session") { Some(s) => s, None => "" }
+
+  if json_field_str(grant_json, "ws") != Some(r_ws) ||
+  json_field_str(grant_json, "request") != Some(r_id) ||
+  json_field_str(grant_json, "vault") != Some(r_vault) ||
+  json_field_str(grant_json, "item") != Some(r_item) ||
+  json_field_str(grant_json, "mode") != Some(r_mode) {
+    return Err(vault_err_json(409, "vault_refused", "the grant is not for this request as asked"))
+  }
+  match cross_source_ws {
+    Some(src_ws) => {
+      if json_field_str(grant_json, "sourceWs") != Some(src_ws) {
+        return Err(vault_err_json(409, "vault_refused", "the grant's source workspace does not match the request"))
+      }
+    }
+    None => ()
+  }
+  let listing_modes = match vd_str_arr(listing_json, "modes") { Some(ms) => ms, None => [] }
+  if !vd_has_str(listing_modes, r_mode) {
+    return Err(vault_err_json(409, "vault_refused", "the item is not given by " + r_mode))
+  }
+  let g_scope = match json_field_str(grant_json, "scope") {
+    Some(s) if is_valid_plain_scope(s) => s
+    _ => return Err(vault_err_json(409, "vault_refused", "scope is once, hour or chat"))
+  }
+  let max_sec = match vd_scope_lasts_sec(g_scope) {
+    Some(ms) => ms
+    None => return Err(vault_err_json(409, "vault_refused", "scope is once, hour or chat"))
+  }
+  let req_has_timeout = json_is_non_null(req_body, "timeout")
+  let g_timeout_opt = base_codec::json_get(grant_json, "timeout")
+  if req_has_timeout && g_scope != "once" && (g_timeout_opt is None || g_timeout_opt is Some(base_codec::Json::Null)) {
+    return Err(vault_err_json(409, "vault_refused", "this request needs an approval with its timeout; update the app"))
+  }
+  let g_at = match vd_safe_int64(grant_json, "at") {
+    Some(a) => a
+    None => return Err(vault_err_json(409, "vault_refused", "invalid grant timeout"))
+  }
+  let g_exp = match vd_safe_int64(grant_json, "exp") {
+    Some(e) => e
+    None => return Err(vault_err_json(409, "vault_refused", "the grant's expiry is out of range for its scope"))
+  }
+  let parsed_timeout = match vd_validate_timeout_obj(g_timeout_opt, g_scope, max_sec, Some((g_at, g_exp))) {
+    Ok(t) => t
+    Err(msg) => return Err(vault_err_json(409, "vault_refused", msg))
+  }
+  let item_lasts = json_field_str(listing_json, "lasts")
+  let eff_lasts = match item_lasts { Some(l) => Some(l), None => vault_lasts }
+  if !vd_allows_scope(eff_lasts, g_scope) {
+    let l_str = match eff_lasts { Some(s) => s, None => "chat" }
+    return Err(vault_err_json(409, "vault_refused", "the item is granted for " + l_str + " at most"))
+  }
+  if g_exp <= now_sec || g_exp > now_sec + max_sec + VAULT_GRANT_SLACK_SEC {
+    return Err(vault_err_json(409, "vault_refused", "the grant's expiry is out of range for its scope"))
+  }
+  let g_hosts = match vd_str_arr(grant_json, "hosts") {
+    Some(hs) => hs
+    None => return Err(vault_err_json(409, "vault_refused", "the grant's hosts are not all the item's"))
+  }
+  let listing_hosts = match vd_str_arr(listing_json, "hosts") { Some(hs) => hs, None => [] }
+  if !vd_hosts_subset_ok(g_hosts, listing_hosts) {
+    return Err(vault_err_json(409, "vault_refused", "the grant's hosts are not all the item's"))
+  }
+  if r_mode == "proxy" && g_hosts.length() == 0 {
+    return Err(vault_err_json(409, "vault_refused", "a grant through the proxy names its hosts"))
+  }
+  if r_mode == "browser" && g_hosts.length() == 0 {
+    return Err(vault_err_json(409, "vault_refused", "a sign-in's grant names its sites"))
+  }
+
+  // Cryptographic signer + signature verification (fail-closed 403!)
+  let g_form = station_rules_bridge::base_to_form(grant_json)
+  let lv = station_vault::lock_view_of(lock_state)
+  let sig_key = vd_sig_key_of(g_form)
+  let signer_sub = match vault::signer_of(lv, sig_key) {
+    Some((sub, _)) => sub
+    None => return Err(vault_err_json(403, "vault_forbidden", "a grant is signed by an authorized device in the lock"))
+  }
+  match expected_sub {
+    Some(esub) => {
+      if signer_sub != esub {
+        return Err(vault_err_json(403, "vault_forbidden", "a cross-workspace grant is signed by its owner's device in the lock"))
+      }
+    }
+    None => ()
+  }
+  match allowed_signers {
+    Some(ms) => {
+      if !vd_has_str(ms, signer_sub) {
+        return Err(vault_err_json(403, "vault_forbidden", "a grant is signed by a vault member's device in the lock"))
+      }
+    }
+    None => ()
+  }
+  if !station_vault::record_signed_ok(g_form, station_vault::TAG_GRANT, verify_fn=verify_fn) {
+    return Err(vault_err_json(403, "vault_forbidden", "the grant's signature is invalid"))
+  }
+
+  // Open sealed secret from the request's in-memory box
+  let box_priv = match (vd.get_box_priv)(r_id) {
+    Some(b) => b
+    None => return Err(vault_err_json(409, "vault_refused", "this station no longer holds the request's box (it restarted): ask again"))
+  }
+  let sealed_s = match json_field_str(grant_json, "secret") {
+    Some(s) => s
+    None => return Err(vault_err_json(409, "vault_refused", "the grant's secret does not open"))
+  }
+  let plain_bytes = match vault_open_seal(box_priv, sealed_s, vault_grant_context(r_ws, r_id)) {
+    Ok(b) => b
+    Err(msg) => return Err(vault_err_json(409, "vault_refused", msg))
+  }
+  let secret_json = match base_codec::json_parse(plain_bytes.to_string()) {
+    base_codec::JsonParseResult::Ok(j) => j
+    _ => return Err(vault_err_json(409, "vault_refused", "the grant's secret does not open"))
+  }
+  let secret = match vd_parse_vault_secret(secret_json) {
+    Some(s) => s
+    None => return Err(vault_err_json(409, "vault_refused", "the grant's secret has no value to use"))
+  }
+  let dmode = match station_vault::DeliveryMode::parse(r_mode) {
+    Some(m) => m
+    None => return Err(vault_err_json(409, "vault_refused", "unsupported delivery mode"))
+  }
+  let gscope = match station_vault::GrantScope::parse(g_scope) {
+    Some(s) => s
+    None => return Err(vault_err_json(409, "vault_refused", "scope is once, hour or chat"))
+  }
+  let idle_sec : Int64 = match parsed_timeout {
+    Some((tkind, secs)) if tkind == "idle" => secs
+    _ => 0L
+  }
+  let env_var = json_field_str(listing_json, "env")
+  let rec = station_vault::GrantRecord::{
+    id: r_id,
+    session: r_session,
+    mode: dmode,
+    grant_scope: gscope,
+    hosts: g_hosts,
+    env_var: env_var,
+    secret: secret,
+    expires_sec: g_exp,
+    idle_sec: idle_sec,
+    uses: 0,
+    revoked: false,
+  }
+  let timeout_out = match parsed_timeout {
+    Some((tkind, secs)) => Some(base_codec::json_obj([("kind", base_codec::json_str(tkind)), ("seconds", base_codec::json_int64(secs))]))
+    None => None
+  }
+  Ok((rec, g_scope, timeout_out))
+}
+
+// ---------------------------------------------------------------------------
+// Main Dispatcher for all 11 Vault Decision `call_op`s
+// ---------------------------------------------------------------------------
+
+pub fn dispatch_vault_decisions_op(
+  op : String,
+  req : station_api::ApiRequest,
+  body : base_codec::Json,
+  whole_store : WholeStore,
+  auth_policy : PeerAuthPolicy,
+  events : station_api::EventsHub,
+  hooks : WholeApiRuntimeHooks,
+  port : WholeApiRuntimePort,
+  now_ms : Int64,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  let is_enc = op == "vault.grants.post" ||
+  op == "vault.denials.post" ||
+  op == "vault.saves.post" ||
+  op == "vault.described.post" ||
+  op == "vault.removed.post" ||
+  op == "vault.browses.post"
+  let is_plain = op == "vault.plain.grants.post" ||
+  op == "vault.plain.denials.post" ||
+  op == "vault.plain.saves.post" ||
+  op == "vault.plain.described.post" ||
+  op == "vault.plain.removed.post"
+  if !is_enc && !is_plain {
+    return None
+  }
+
+  if hooks.read_only_handover_cell[0] {
+    return Some(Err(vault_err_json(503, "vault_handover", "station handover in progress")))
+  }
+  match body {
+    base_codec::Json::Obj(_) => ()
+    _ => return Some(Err(vault_err_json(400, "vault_invalid", "a decision, as JSON")))
+  }
+
+  let ws = req.viewer.workspace
+  let owner = admin_ascii_lower(req.viewer.email)
+  let now_sec = now_ms / 1000L
+  let vd = port.vault_decisions
+  let vp = port.vault_plain
+  let lock_state : Option[lock::LockState] = match hooks.lock_of {
+    Some(f) => f(ws)
+    None => None
+  }
+
+  // =========================================================================
+  // ENCRYPTED VAULT DECISIONS (6 ops)
+  // =========================================================================
+  if is_enc {
+    let l = match lock_state {
+      Some(ls) => ls
+      None => return Some(Err(vault_err_json(409, "vault_needs_lock", "the vault needs the workspace's security mode (its lock) pinned on this station")))
+    }
+    let vstore = match whole_store.require_vault_store() {
+      Ok(vs) => vs
+      Err(e) => return Some(Err(station_api::ApiError::new(503, e)))
+    }
+    let lv = station_vault::lock_view_of(l)
+    let verify_fn = auth_policy.verify_fn
+
+    // -----------------------------------------------------------------------
+    // 1. `vault.grants.post` (POST /vault/grants)
+    // -----------------------------------------------------------------------
+    if op == "vault.grants.post" {
+      let req_id = match json_field_str(body, "request") {
+        Some(s) if s.length() > 0 => s
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request")))
+      }
+      let row = match (vd.get_request)(ws, req_id) {
+        Ok(Some(r)) => r
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request")))
+        Err(e) => return Some(Err(e))
+      }
+      if json_is_truthy(row.body, "save") {
+        return Some(Err(vault_err_json(409, "vault_refused", "a secret to keep is approved by POST vault/saves")))
+      }
+      if json_is_non_null(row.body, "browse") {
+        return Some(Err(vault_err_json(409, "vault_refused", "a browse request is approved by POST vault/browses")))
+      }
+      if json_is_non_null(row.body, "describe") {
+        return Some(Err(vault_err_json(409, "vault_refused", "a request to rename an item grants nothing: it is approved by POST vault/described")))
+      }
+      if json_is_non_null(row.body, "remove") {
+        return Some(Err(vault_err_json(409, "vault_refused", "a request to delete an item grants nothing: it is approved by POST vault/removed")))
+      }
+      if json_field_str(row.body, "vault") == Some("plain") {
+        return Some(Err(vault_err_json(409, "vault_refused", "plain-library requests are approved by POST vault/plain/grants")))
+      }
+      if row.status != "pending" {
+        return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+      }
+
+      if json_is_non_null(row.body, "cross") {
+        // Cross-workspace personal secret grant
+        let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+        if vd_lock_member_email(l, req.viewer.sub) != Some(r_owner) {
+          return Some(Err(vault_err_json(403, "vault_forbidden", "only the owner decides cross-workspace secret requests")))
+        }
+        match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+          Some(err) => return Some(Err(err))
+          None => ()
+        }
+        let r_item = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+        let r_vault = match json_field_str(row.body, "vault") { Some(s) => s, None => "" }
+        let cross_ws = match base_codec::json_get(row.body, "cross") {
+          Some(c) => match json_field_str(c, "workspace") { Some(s) => s, None => "" }
+          None => ""
+        }
+        let entry = match (vd.get_cross_listing)(ws, row.session, r_item) {
+          Ok(Some(e)) => e
+          Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "the cross-workspace secret is no longer listed for this chat")))
+          Err(e) => return Some(Err(e))
+        }
+        let entry_owner = match json_field_str(entry, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+        if entry_owner != r_owner || json_field_str(entry, "sourceWs") != Some(cross_ws) || json_field_str(entry, "vault") != Some(r_vault) {
+          return Some(Err(vault_err_json(409, "vault_refused", "the cross-workspace secret is no longer listed for this chat")))
+        }
+        let entry_listing = match base_codec::json_get(entry, "listing") {
+          Some(lj) => lj
+          None => return Some(Err(vault_err_json(409, "vault_refused", "the cross-workspace secret is no longer listed for this chat")))
+        }
+        let (grant_rec, g_scope, timeout_out) = match vd_prepare_encrypted_grant(
+          l,
+          row.body,
+          body,
+          entry_listing,
+          json_field_str(entry, "vaultLasts"),
+          None,
+          Some(req.viewer.sub),
+          Some(cross_ws),
+          vd,
+          verify_fn,
+          now_sec,
+        ) {
+          Ok(res) => res
+          Err(e) => return Some(Err(e))
+        }
+        let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("granted")))
+        let out_fs : Array[(String, base_codec::Json)] = [
+          ("status", base_codec::json_str("granted")),
+          ("scope", base_codec::json_str(g_scope)),
+        ]
+        match timeout_out { Some(t) => out_fs.push(("timeout", t)), None => () }
+        match (vd.settle_request_tx)(
+          ws,
+          req_id,
+          row.raw_body,
+          "granted",
+          next_body,
+          base_codec::json_obj(out_fs),
+          row.thread,
+          row.card_ts,
+          "granted",
+          "",
+          now_sec,
+          VaultSettleEffect::CheckCrossListing(row.session, r_item, cross_ws, r_vault),
+        ) {
+          Ok(true) => {
+            (vd.drop_box_priv)(req_id)
+            match whole_store.register_vault_grant(grant_rec, now_sec) {
+              Ok(_) => ()
+              Err(msg) => return Some(Err(vault_err_json(409, "vault_refused", msg)))
+            }
+            vd_emit_request_event(events, next_body, now_ms)
+            vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+            return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+          }
+          Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+          Err(e) => return Some(Err(e))
+        }
+      }
+
+      // Standard encrypted vault grant
+      let r_vault = match json_field_str(row.body, "vault") { Some(s) => s, None => "" }
+      let r_item = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+      let v_snap = match vstore.vault_snapshot(ws, r_vault) {
+        Ok(Some(s)) => s
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "the request's vault or item is gone")))
+        Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+      }
+      let i_snap = match vstore.item_snapshot(ws, r_vault, r_item) {
+        Ok(Some(s)) => s
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "the request's vault or item is gone")))
+        Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+      }
+      let v_members = vd_form_str_arr(v_snap.value, "members")
+      if !vd_has_str(v_members, req.viewer.sub) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "only the vault's members decide its requests")))
+      }
+      match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+        Some(err) => return Some(Err(err))
+        None => ()
+      }
+      let item_base = station_rules_bridge::form_to_base(i_snap.value)
+      if json_field_bool(item_base, "deleted") == Some(true) {
+        return Some(Err(vault_err_json(409, "vault_refused", "the item is not one agents may ask for")))
+      }
+      let item_listing = match base_codec::json_get(item_base, "listing") {
+        Some(lj) => lj
+        None => return Some(Err(vault_err_json(409, "vault_refused", "the item is not one agents may ask for")))
+      }
+      let vault_base = station_rules_bridge::form_to_base(v_snap.value)
+      let vault_lasts = json_field_str(vault_base, "lasts")
+      let (grant_rec, g_scope, timeout_out) = match vd_prepare_encrypted_grant(
+        l,
+        row.body,
+        body,
+        item_listing,
+        vault_lasts,
+        Some(v_members),
+        None,
+        None,
+        vd,
+        verify_fn,
+        now_sec,
+      ) {
+        Ok(res) => res
+        Err(e) => return Some(Err(e))
+      }
+      let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("granted")))
+      let out_fs : Array[(String, base_codec::Json)] = [
+        ("status", base_codec::json_str("granted")),
+        ("scope", base_codec::json_str(g_scope)),
+      ]
+      match timeout_out { Some(t) => out_fs.push(("timeout", t)), None => () }
+      match (vd.settle_request_tx)(
+        ws,
+        req_id,
+        row.raw_body,
+        "granted",
+        next_body,
+        base_codec::json_obj(out_fs),
+        row.thread,
+        row.card_ts,
+        "granted",
+        "",
+        now_sec,
+        VaultSettleEffect::CheckVaultAndItem(r_vault, r_item, v_snap.body, i_snap.body),
+      ) {
+        Ok(true) => {
+          (vd.drop_box_priv)(req_id)
+          match whole_store.register_vault_grant(grant_rec, now_sec) {
+            Ok(_) => ()
+            Err(msg) => return Some(Err(vault_err_json(409, "vault_refused", msg)))
+          }
+          vd_emit_request_event(events, next_body, now_ms)
+          vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+        }
+        Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+        Err(e) => return Some(Err(e))
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. `vault.denials.post` (POST /vault/denials)
+    // -----------------------------------------------------------------------
+    if op == "vault.denials.post" {
+      let req_id = match json_field_str(body, "request") {
+        Some(s) if s.length() > 0 => s
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request")))
+      }
+      let row = match (vd.get_request)(ws, req_id) {
+        Ok(Some(r)) => r
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request")))
+        Err(e) => return Some(Err(e))
+      }
+      if json_field_str(row.body, "vault") == Some("plain") {
+        return Some(Err(vault_err_json(409, "vault_refused", "plain-library requests are denied by POST vault/plain/denials")))
+      }
+      if vd_safe_int64(body, "v") != Some(1L) || json_field_str(body, "ws") != Some(l.ws) {
+        return Some(Err(vault_err_json(409, "vault_refused", "a refusal is {v: 1, ws, request, at, sig} of this workspace")))
+      }
+      let d_form = station_rules_bridge::base_to_form(body)
+      let sig_key = vd_sig_key_of(d_form)
+      let signer_opt = vault::signer_of(lv, sig_key)
+      let owner_only = json_is_truthy(row.body, "save") ||
+      json_is_non_null(row.body, "browse") ||
+      json_is_non_null(row.body, "cross")
+      if owner_only {
+        let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+        if l.genesis == "" && vd_lock_devices_count_for_sub(l, req.viewer.sub) == 0 {
+          if owner != r_owner {
+            return Some(Err(vault_err_json(403, "vault_forbidden", "only the person it is kept for decides it")))
+          }
+        } else {
+          if vd_lock_member_email(l, req.viewer.sub) != Some(r_owner) {
+            return Some(Err(vault_err_json(403, "vault_forbidden", "only the person it is kept for decides it")))
+          }
+          match signer_opt {
+            Some((by_sub, _)) if by_sub == req.viewer.sub => ()
+            _ => return Some(Err(vault_err_json(403, "vault_forbidden", "a refusal is signed by one of their devices in the lock")))
+          }
+        }
+      } else {
+        let r_vault = match json_field_str(row.body, "vault") { Some(s) => s, None => "" }
+        let v_opt = match vstore.vault(ws, r_vault) {
+          Ok(v) => v
+          Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+        }
+        let v_members = match v_opt {
+          Some(v) => vd_form_str_arr(v, "members")
+          None => return Some(Err(vault_err_json(403, "vault_forbidden", "only the vault's members decide its requests")))
+        }
+        if !vd_has_str(v_members, req.viewer.sub) {
+          return Some(Err(vault_err_json(403, "vault_forbidden", "only the vault's members decide its requests")))
+        }
+        match signer_opt {
+          Some((by_sub, _)) if vd_has_str(v_members, by_sub) => ()
+          _ => return Some(Err(vault_err_json(403, "vault_forbidden", "a refusal is signed by a vault member's device in the lock")))
+        }
+      }
+      if !station_vault::record_signed_ok(d_form, VAULT_TAG_DENY, verify_fn=verify_fn) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "the refusal's signature is invalid")))
+      }
+      if row.status != "pending" {
+        return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+      }
+      let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("denied")))
+      let outcome = base_codec::json_obj([("status", base_codec::json_str("denied"))])
+      match (vd.settle_request_tx)(
+        ws,
+        req_id,
+        row.raw_body,
+        "denied",
+        next_body,
+        outcome,
+        row.thread,
+        row.card_ts,
+        "denied",
+        "",
+        now_sec,
+        VaultSettleEffect::NoEffect,
+      ) {
+        Ok(true) => {
+          (vd.drop_box_priv)(req_id)
+          (vd.drop_unsaved_fields)(req_id)
+          let _ = whole_store.vault_grants.revoke(req_id)
+          vd_emit_request_event(events, next_body, now_ms)
+          vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "denied"))
+          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+        }
+        Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+        Err(e) => return Some(Err(e))
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. `vault.saves.post` (POST /vault/saves)
+    // -----------------------------------------------------------------------
+    if op == "vault.saves.post" {
+      let req_id = match json_field_str(body, "request") {
+        Some(s) if s.length() > 0 => s
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to keep a secret in a vault")))
+      }
+      let row = match (vd.get_request)(ws, req_id) {
+        Ok(Some(r)) => r
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request to keep a secret in a vault")))
+        Err(e) => return Some(Err(e))
+      }
+      if !json_is_truthy(row.body, "save") || json_field_str(row.body, "vault") == Some("plain") {
+        return Some(Err(vault_err_json(409, "vault_refused", "no such request to keep a secret in a vault")))
+      }
+      let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+      if vd_lock_member_email(l, req.viewer.sub) != Some(r_owner) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "only the person it is kept for decides it")))
+      }
+      if row.status != "pending" {
+        return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+      }
+      match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+        Some(err) => return Some(Err(err))
+        None => ()
+      }
+      let target_vault_id = match json_field_str(body, "vault") {
+        Some(s) if s.length() > 0 => s
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "no such vault of theirs here")))
+      }
+      let v_snap = match vstore.vault_snapshot(ws, target_vault_id) {
+        Ok(Some(s)) => s
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such vault of theirs here")))
+        Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+      }
+      let v_members = vd_form_str_arr(v_snap.value, "members")
+      if !vd_has_str(v_members, req.viewer.sub) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "no such vault of theirs here")))
+      }
+      let r_item = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+      let i_snap = match vstore.item_snapshot(ws, target_vault_id, r_item) {
+        Ok(Some(s)) => s
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "the item is not in that vault here: bring its copy first")))
+        Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+      }
+      if !vd_verify_stored_item_sig(lv, v_members, i_snap.value, verify_fn) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "the item's signature is invalid")))
+      }
+      let item_base = station_rules_bridge::form_to_base(i_snap.value)
+      let save_name = match base_codec::json_get(row.body, "save") {
+        Some(s) => json_field_str(s, "name")
+        None => None
+      }
+      let item_listing_opt = base_codec::json_get(item_base, "listing")
+      let item_listing_name = match item_listing_opt { Some(lj) => json_field_str(lj, "name"), None => None }
+      if json_field_bool(item_base, "deleted") == Some(true) || item_listing_name != save_name {
+        return Some(Err(vault_err_json(409, "vault_refused", "the item is not in that vault here: bring its copy first")))
+      }
+      // Optional grant bundled with save (kept all the same if grant doesn't hold, 1:1 secrets.ts:2228)
+      let mut bundled_grant : Option[station_vault::GrantRecord] = None
+      match base_codec::json_get(body, "grant") {
+        Some(g_json) if !(g_json is base_codec::Json::Null) => {
+          match item_listing_opt {
+            Some(lj) => {
+              let req_with_vault = json_obj_set(row.body, "vault", Some(base_codec::json_str(target_vault_id)))
+              let vault_lasts = json_field_str(station_rules_bridge::form_to_base(v_snap.value), "lasts")
+              match vd_prepare_encrypted_grant(
+                l,
+                req_with_vault,
+                g_json,
+                lj,
+                vault_lasts,
+                Some(v_members),
+                None,
+                None,
+                vd,
+                verify_fn,
+                now_sec,
+              ) {
+                Ok((grec, _, _)) => bundled_grant = Some(grec)
+                Err(_) => ()
+              }
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+      let next_body = json_obj_set(
+        json_obj_set(row.body, "status", Some(base_codec::json_str("granted"))),
+        "vault",
+        Some(base_codec::json_str(target_vault_id)),
+      )
+      let outcome = base_codec::json_obj([("status", base_codec::json_str("granted"))])
+      match (vd.settle_request_tx)(
+        ws,
+        req_id,
+        row.raw_body,
+        "granted",
+        next_body,
+        outcome,
+        row.thread,
+        row.card_ts,
+        "granted",
+        "",
+        now_sec,
+        VaultSettleEffect::CheckVaultAndItem(target_vault_id, r_item, v_snap.body, i_snap.body),
+      ) {
+        Ok(true) => {
+          (vd.drop_box_priv)(req_id)
+          (vd.drop_unsaved_fields)(req_id)
+          match bundled_grant {
+            Some(grec) => {
+              let _ = whole_store.register_vault_grant(grec, now_sec)
+            }
+            None => ()
+          }
+          vd_emit_request_event(events, next_body, now_ms)
+          vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+        }
+        Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+        Err(e) => return Some(Err(e))
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. `vault.described.post` (POST /vault/described)
+    // -----------------------------------------------------------------------
+    if op == "vault.described.post" {
+      let req_id = match json_field_str(body, "request") {
+        Some(s) if s.length() > 0 => s
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to rename an item of a vault")))
+      }
+      let row = match (vd.get_request)(ws, req_id) {
+        Ok(Some(r)) => r
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request to rename an item of a vault")))
+        Err(e) => return Some(Err(e))
+      }
+      let want = match base_codec::json_get(row.body, "describe") {
+        Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to rename an item of a vault")))
+      }
+      let r_vault = match json_field_str(row.body, "vault") { Some(s) => s, None => "" }
+      if r_vault == "plain" {
+        return Some(Err(vault_err_json(409, "vault_refused", "no such request to rename an item of a vault")))
+      }
+      if row.status != "pending" {
+        return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+      }
+      let v_snap = match vstore.vault_snapshot(ws, r_vault) {
+        Ok(Some(s)) => s
+        Ok(None) => return Some(Err(vault_err_json(403, "vault_forbidden", "only the vault's members decide its requests")))
+        Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+      }
+      let v_members = vd_form_str_arr(v_snap.value, "members")
+      if !vd_has_str(v_members, req.viewer.sub) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "only the vault's members decide its requests")))
+      }
+      match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+        Some(err) => return Some(Err(err))
+        None => ()
+      }
+      let r_item = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+      let i_snap = match vstore.item_snapshot(ws, r_vault, r_item) {
+        Ok(Some(s)) => s
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "the item does not say so here: bring its copy first")))
+        Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+      }
+      if !vd_verify_stored_item_sig(lv, v_members, i_snap.value, verify_fn) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "the item's signature is invalid")))
+      }
+      let item_base = station_rules_bridge::form_to_base(i_snap.value)
+      let want_name = match json_field_str(want, "name") { Some(s) => s, None => "" }
+      let want_about = match json_field_str(want, "about") { Some(s) => s, None => "" }
+      let cur_listing = match base_codec::json_get(item_base, "listing") {
+        Some(lj) => lj
+        None => return Some(Err(vault_err_json(409, "vault_refused", "the item does not say so here: bring its copy first")))
+      }
+      let cur_about = match json_field_str(cur_listing, "about") { Some(s) => s, None => "" }
+      if json_field_bool(item_base, "deleted") == Some(true) ||
+      json_field_str(cur_listing, "name") != Some(want_name) ||
+      cur_about != want_about {
+        return Some(Err(vault_err_json(409, "vault_refused", "the item does not say so here: bring its copy first")))
+      }
+      let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("granted")))
+      let outcome = base_codec::json_obj([("status", base_codec::json_str("granted"))])
+      match (vd.settle_request_tx)(
+        ws,
+        req_id,
+        row.raw_body,
+        "granted",
+        next_body,
+        outcome,
+        row.thread,
+        row.card_ts,
+        "granted",
+        "",
+        now_sec,
+        VaultSettleEffect::CheckVaultAndItem(r_vault, r_item, v_snap.body, i_snap.body),
+      ) {
+        Ok(true) => {
+          vd_emit_request_event(events, next_body, now_ms)
+          vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+        }
+        Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+        Err(e) => return Some(Err(e))
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. `vault.removed.post` (POST /vault/removed)
+    // -----------------------------------------------------------------------
+    if op == "vault.removed.post" {
+      let req_id = match json_field_str(body, "request") {
+        Some(s) if s.length() > 0 => s
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to delete an item of a vault")))
+      }
+      let row = match (vd.get_request)(ws, req_id) {
+        Ok(Some(r)) => r
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request to delete an item of a vault")))
+        Err(e) => return Some(Err(e))
+      }
+      if !json_is_non_null(row.body, "remove") {
+        return Some(Err(vault_err_json(409, "vault_refused", "no such request to delete an item of a vault")))
+      }
+      let r_vault = match json_field_str(row.body, "vault") { Some(s) => s, None => "" }
+      if r_vault == "plain" {
+        return Some(Err(vault_err_json(409, "vault_refused", "no such request to delete an item of a vault")))
+      }
+      if row.status != "pending" {
+        return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+      }
+      let v_opt = match vstore.vault(ws, r_vault) {
+        Ok(v) => v
+        Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+      }
+      let v_members = match v_opt {
+        Some(v) => vd_form_str_arr(v, "members")
+        None => return Some(Err(vault_err_json(403, "vault_forbidden", "only the vault's members decide its requests")))
+      }
+      if !vd_has_str(v_members, req.viewer.sub) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "only the vault's members decide its requests")))
+      }
+      match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+        Some(err) => return Some(Err(err))
+        None => ()
+      }
+      let r_item = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+      let i_snap_opt = match vstore.item_snapshot(ws, r_vault, r_item) {
+        Ok(s) => s
+        Err(e) => return Some(Err(station_api::ApiError::new(500, e)))
+      }
+      match i_snap_opt {
+        Some(i_snap) => {
+          if !vd_verify_stored_item_sig(lv, v_members, i_snap.value, verify_fn) {
+            return Some(Err(vault_err_json(403, "vault_forbidden", "the item's signature is invalid")))
+          }
+          let item_base = station_rules_bridge::form_to_base(i_snap.value)
+          if json_field_bool(item_base, "deleted") != Some(true) {
+            return Some(Err(vault_err_json(409, "vault_refused", "the item is not deleted here: bring its copy first")))
+          }
+        }
+        None => ()
+      }
+      let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("granted")))
+      let outcome = base_codec::json_obj([("status", base_codec::json_str("granted"))])
+      match (vd.settle_request_tx)(
+        ws,
+        req_id,
+        row.raw_body,
+        "granted",
+        next_body,
+        outcome,
+        row.thread,
+        row.card_ts,
+        "granted",
+        "",
+        now_sec,
+        VaultSettleEffect::NoEffect,
+      ) {
+        Ok(true) => {
+          vd_emit_request_event(events, next_body, now_ms)
+          vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+        }
+        Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+        Err(e) => return Some(Err(e))
+      }
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. `vault.browses.post` (POST /vault/browses)
+    // -----------------------------------------------------------------------
+    if op == "vault.browses.post" {
+      if vd_safe_int64(body, "v") != Some(1L) {
+        return Some(Err(vault_err_json(409, "vault_refused", "a browse answer is {v: 1, ws, request, items, at, sig}")))
+      }
+      let a_ws = match json_field_str(body, "ws") {
+        Some(s) => s
+        None => return Some(Err(vault_err_json(409, "vault_refused", "a browse answer is {v: 1, ws, request, items, at, sig}")))
+      }
+      let req_id = match json_field_str(body, "request") {
+        Some(s) if s.length() > 0 => s
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "a browse answer is {v: 1, ws, request, items, at, sig}")))
+      }
+      let row = match (vd.get_request)(ws, req_id) {
+        Ok(Some(r)) => r
+        Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such cross-workspace browse request")))
+        Err(e) => return Some(Err(e))
+      }
+      if !json_is_non_null(row.body, "browse") || json_field_str(row.body, "ws") != Some(a_ws) {
+        return Some(Err(vault_err_json(409, "vault_refused", "no such cross-workspace browse request")))
+      }
+      if row.status != "pending" {
+        return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+      }
+      let raw_items = match base_codec::json_get(body, "items") {
+        Some(base_codec::Json::Arr(xs)) if xs.length() >= 1 && xs.length() <= 500 => xs
+        _ => return Some(Err(vault_err_json(409, "vault_refused", "items must contain 1 to 500 cross-workspace listings")))
+      }
+      match vd_safe_int64(body, "at") {
+        Some(_) => ()
+        None => return Some(Err(vault_err_json(409, "vault_refused", "at is unix seconds")))
+      }
+      // Cryptographic owner & signature check (fail-closed 403!)
+      let a_form = station_rules_bridge::base_to_form(body)
+      let sig_key = vd_sig_key_of(a_form)
+      let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+      match vault::signer_of(lv, sig_key) {
+        Some((by_sub, _)) if by_sub == req.viewer.sub && vd_lock_member_email(l, req.viewer.sub) == Some(r_owner) => ()
+        _ => return Some(Err(vault_err_json(403, "vault_forbidden", "only the owner's device in the lock may answer a browse request")))
+      }
+      if !station_vault::record_signed_ok(a_form, VAULT_TAG_BROWSE, verify_fn=verify_fn) {
+        return Some(Err(vault_err_json(403, "vault_forbidden", "the browse answer's signature is invalid")))
+      }
+      match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+        Some(err) => return Some(Err(err))
+        None => ()
+      }
+      let ws_seen : Map[String, Bool] = Map::new()
+      let checked : Array[(String, base_codec::Json)] = []
+      for i in 0..<raw_items.length() {
+        let e = raw_items[i]
+        match e {
+          base_codec::Json::Obj(_) => ()
+          _ => return Some(Err(vault_err_json(409, "vault_refused", "each cross-workspace listing must be an object")))
+        }
+        let src_ws = match json_field_str(e, "sourceWs") {
+          Some(s) if s.trim().length() > 0 && s != ws => s
+          _ => return Some(Err(vault_err_json(409, "vault_refused", "sourceWs must name another workspace")))
+        }
+        match json_field_str(e, "sourceWsName") {
+          Some(s) if s.trim().length() > 0 => ()
+          _ => return Some(Err(vault_err_json(409, "vault_refused", "sourceWsName is required")))
+        }
+        match json_field_str(e, "vault") {
+          Some(s) if s.trim().length() > 0 => ()
+          _ => return Some(Err(vault_err_json(409, "vault_refused", "vault is required")))
+        }
+        match json_field_str(e, "vaultName") {
+          Some(s) if s.trim().length() > 0 => ()
+          _ => return Some(Err(vault_err_json(409, "vault_refused", "vaultName is required")))
+        }
+        let item_id = match json_field_str(e, "item") {
+          Some(s) if s.trim().length() > 0 => s
+          _ => return Some(Err(vault_err_json(409, "vault_refused", "item is required")))
+        }
+        match base_codec::json_get(e, "vaultLasts") {
+          None | Some(base_codec::Json::Null) => ()
+          Some(base_codec::Json::Str(vl)) if is_valid_plain_scope(vl) => ()
+          _ => return Some(Err(vault_err_json(409, "vault_refused", "vaultLasts must be once, hour or chat")))
+        }
+        let lj = match base_codec::json_get(e, "listing") {
+          Some(x) => x
+          None => return Some(Err(vault_err_json(409, "vault_refused", "a listing is an object")))
+        }
+        match vd_validate_listing(lj) {
+          Some(why) => return Some(Err(vault_err_json(409, "vault_refused", why)))
+          None => ()
+        }
+        ws_seen.set(src_ws, true)
+        let stored_e = if r_owner.length() > 0 { json_obj_set(e, "owner", Some(base_codec::json_str(r_owner))) } else { e }
+        checked.push((item_id, stored_e))
+      }
+      let cur_browse = match base_codec::json_get(row.body, "browse") {
+        Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+        _ => base_codec::json_obj([])
+      }
+      let next_browse = json_obj_set(
+        json_obj_set(cur_browse, "workspaces", Some(base_codec::json_int(ws_seen.keys().length()))),
+        "items",
+        Some(base_codec::json_int(checked.length())),
+      )
+      let next_body = json_obj_set(
+        json_obj_set(row.body, "status", Some(base_codec::json_str("granted"))),
+        "browse",
+        Some(next_browse),
+      )
+      let outcome = base_codec::json_obj([
+        ("status", base_codec::json_str("granted")),
+        ("browse", next_browse),
+      ])
+      match (vd.settle_request_tx)(
+        ws,
+        req_id,
+        row.raw_body,
+        "granted",
+        next_body,
+        outcome,
+        row.thread,
+        row.card_ts,
+        "browse_granted",
+        "",
+        now_sec,
+        VaultSettleEffect::PutCrossListings(row.session, checked, now_sec),
+      ) {
+        Ok(true) => {
+          vd_emit_request_event(events, next_body, now_ms)
+          vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+          return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+        }
+        Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+        Err(e) => return Some(Err(e))
+      }
+    }
+  }
+
+  // =========================================================================
+  // PLAIN VAULT DECISIONS (5 ops)
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // 7. `vault.plain.grants.post` (POST /vault/plain/grants)
+  // -------------------------------------------------------------------------
+  if op == "vault.plain.grants.post" {
+    let req_id = match json_field_str(body, "request") {
+      Some(s) if s.length() > 0 => s
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request of the plain library")))
+    }
+    let row = match (vd.get_request)(ws, req_id) {
+      Ok(Some(r)) => r
+      Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request of the plain library")))
+      Err(e) => return Some(Err(e))
+    }
+    if json_field_str(row.body, "vault") != Some("plain") {
+      return Some(Err(vault_err_json(409, "vault_refused", "no such request of the plain library")))
+    }
+    if json_is_truthy(row.body, "save") {
+      return Some(Err(vault_err_json(409, "vault_refused", "a secret to keep is approved by POST vault/plain/saves")))
+    }
+    if json_is_non_null(row.body, "describe") {
+      return Some(Err(vault_err_json(409, "vault_refused", "a request to rename an item grants nothing: it is approved by POST vault/plain/described")))
+    }
+    if json_is_non_null(row.body, "remove") {
+      return Some(Err(vault_err_json(409, "vault_refused", "a request to delete an item grants nothing: it is approved by POST vault/plain/removed")))
+    }
+    if row.status != "pending" {
+      return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+    }
+    let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+    if r_owner != owner {
+      return Some(Err(vault_err_json(403, "vault_forbidden", "only the item's owner decides its requests")))
+    }
+    if lock_state.is_some() {
+      return Some(Err(vault_err_json(409, "vault_refused", "plain-library secrets are moved into the encrypted vault, not given out")))
+    }
+    match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+      Some(err) => return Some(Err(err))
+      None => ()
+    }
+    let r_item = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+    let r_mode = match json_field_str(row.body, "mode") { Some(s) => s, None => "" }
+    let (item_j, item_raw) = match (vd.get_plain_item_snapshot)(ws, r_item) {
+      Ok(Some(p)) => p
+      Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "the item is gone, or not one agents may ask for")))
+      Err(e) => return Some(Err(e))
+    }
+    let item_owner = match json_field_str(item_j, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+    let item_listing = match base_codec::json_get(item_j, "listing") {
+      Some(lj) if item_owner == owner && json_field_bool(item_j, "deleted") != Some(true) => lj
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "the item is gone, or not one agents may ask for")))
+    }
+    let g_scope = match json_field_str(body, "scope") {
+      Some(s) if is_valid_plain_scope(s) => s
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "scope is once, hour or chat")))
+    }
+    let max_sec = match vd_scope_lasts_sec(g_scope) {
+      Some(ms) => ms
+      None => return Some(Err(vault_err_json(409, "vault_refused", "scope is once, hour or chat")))
+    }
+    let req_has_timeout = json_is_non_null(row.body, "timeout")
+    let d_timeout_opt = base_codec::json_get(body, "timeout")
+    if req_has_timeout && g_scope != "once" && (d_timeout_opt is None || d_timeout_opt is Some(base_codec::Json::Null)) {
+      return Some(Err(vault_err_json(409, "vault_refused", "this request needs an approval with its timeout; update the app")))
+    }
+    let parsed_timeout = match vd_validate_timeout_obj(d_timeout_opt, g_scope, max_sec, None) {
+      Ok(t) => t
+      Err(msg) => return Some(Err(vault_err_json(409, "vault_refused", msg)))
+    }
+    let owner_lasts = match (vp.get_lasts)(ws, owner) {
+      Ok(Some((l, _))) => Some(l)
+      Ok(None) => None
+      Err(e) => return Some(Err(e))
+    }
+    let eff_lasts = match json_field_str(item_listing, "lasts") { Some(l) => Some(l), None => owner_lasts }
+    if !vd_allows_scope(eff_lasts, g_scope) {
+      let l_str = match eff_lasts { Some(s) => s, None => "chat" }
+      return Some(Err(vault_err_json(409, "vault_refused", "the item is granted for " + l_str + " at most")))
+    }
+    let listing_modes = match vd_str_arr(item_listing, "modes") { Some(ms) => ms, None => [] }
+    if r_mode == "browse" {
+      return Some(Err(vault_err_json(409, "vault_refused", "browse requests cannot be granted")))
+    }
+    if !vd_has_str(listing_modes, r_mode) {
+      return Some(Err(vault_err_json(409, "vault_refused", "the item is not given by " + r_mode)))
+    }
+    let listing_hosts = match vd_str_arr(item_listing, "hosts") { Some(hs) => hs, None => [] }
+    let grant_hosts = if vd_hosted(r_mode) {
+      match vd_str_arr(row.body, "hosts") { Some(hs) => hs, None => listing_hosts }
+    } else {
+      []
+    }
+    if !vd_hosts_subset_ok(grant_hosts, listing_hosts) {
+      return Some(Err(vault_err_json(409, "vault_refused", "the hosts are not all the item's")))
+    }
+    if r_mode == "proxy" && grant_hosts.length() == 0 {
+      return Some(Err(vault_err_json(409, "vault_refused", "given through the proxy, it names its hosts")))
+    }
+    if r_mode == "browser" && grant_hosts.length() == 0 {
+      return Some(Err(vault_err_json(409, "vault_refused", "a sign-in's grant names its sites")))
+    }
+    let secret = match vd_parse_vault_secret(item_j) {
+      Some(s) => s
+      None => return Some(Err(vault_err_json(409, "vault_refused", "the item has no value to use")))
+    }
+    let dmode = match station_vault::DeliveryMode::parse(r_mode) {
+      Some(m) => m
+      None => return Some(Err(vault_err_json(409, "vault_refused", "unsupported delivery mode")))
+    }
+    let gscope = match station_vault::GrantScope::parse(g_scope) {
+      Some(s) => s
+      None => return Some(Err(vault_err_json(409, "vault_refused", "scope is once, hour or chat")))
+    }
+    let exp_sec = match parsed_timeout {
+      Some((_, secs)) => now_sec + secs
+      None => now_sec + max_sec
+    }
+    let idle_sec : Int64 = match parsed_timeout {
+      Some((tkind, secs)) if tkind == "idle" => secs
+      _ => 0L
+    }
+    let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("granted")))
+    // Build persisted grant record WITHOUT secret (1:1 secrets.ts:340-342)
+    let grant_meta_fs : Array[(String, base_codec::Json)] = [
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("request", base_codec::json_str(req_id)),
+      ("vault", base_codec::json_str("plain")),
+      ("item", base_codec::json_str(r_item)),
+      ("mode", base_codec::json_str(r_mode)),
+      ("hosts", json_str_array(grant_hosts)),
+      ("scope", base_codec::json_str(g_scope)),
+      ("exp", base_codec::json_int64(exp_sec)),
+      ("at", base_codec::json_int64(now_sec)),
+    ]
+    let outcome_fs : Array[(String, base_codec::Json)] = [
+      ("status", base_codec::json_str("granted")),
+      ("scope", base_codec::json_str(g_scope)),
+    ]
+    match parsed_timeout {
+      Some((tkind, secs)) => {
+        let tj = base_codec::json_obj([("kind", base_codec::json_str(tkind)), ("seconds", base_codec::json_int64(secs))])
+        grant_meta_fs.push(("timeout", tj))
+        outcome_fs.push(("timeout", tj))
+      }
+      None => ()
+    }
+    let persisted_grant_body = base_codec::json_obj([
+      ("request", next_body),
+      ("grant", base_codec::json_obj(grant_meta_fs)),
+      ("uses", base_codec::json_int(0)),
+    ])
+    let grant_rec = station_vault::GrantRecord::{
+      id: req_id,
+      session: row.session,
+      mode: dmode,
+      grant_scope: gscope,
+      hosts: grant_hosts,
+      env_var: json_field_str(item_listing, "env"),
+      secret: secret,
+      expires_sec: exp_sec,
+      idle_sec: idle_sec,
+      uses: 0,
+      revoked: false,
+    }
+    match (vd.settle_request_tx)(
+      ws,
+      req_id,
+      row.raw_body,
+      "granted",
+      next_body,
+      base_codec::json_obj(outcome_fs),
+      row.thread,
+      row.card_ts,
+      "granted",
+      "",
+      now_sec,
+      VaultSettleEffect::PutPlainGrant(r_item, item_raw, row.session, persisted_grant_body),
+    ) {
+      Ok(true) => {
+        match whole_store.register_vault_grant(grant_rec, now_sec) {
+          Ok(_) => ()
+          Err(msg) => return Some(Err(vault_err_json(409, "vault_refused", msg)))
+        }
+        vd_emit_request_event(events, next_body, now_ms)
+        vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      }
+      Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 8. `vault.plain.denials.post` (POST /vault/plain/denials)
+  // -------------------------------------------------------------------------
+  if op == "vault.plain.denials.post" {
+    let req_id = match json_field_str(body, "request") {
+      Some(s) if s.length() > 0 => s
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request of the plain library")))
+    }
+    let row = match (vd.get_request)(ws, req_id) {
+      Ok(Some(r)) => r
+      Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request of the plain library")))
+      Err(e) => return Some(Err(e))
+    }
+    if json_field_str(row.body, "vault") != Some("plain") {
+      return Some(Err(vault_err_json(409, "vault_refused", "no such request of the plain library")))
+    }
+    let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+    if r_owner != owner {
+      return Some(Err(vault_err_json(403, "vault_forbidden", "only the item's owner decides its requests")))
+    }
+    if row.status != "pending" {
+      return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+    }
+    let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("denied")))
+    let outcome = base_codec::json_obj([("status", base_codec::json_str("denied"))])
+    match (vd.settle_request_tx)(
+      ws,
+      req_id,
+      row.raw_body,
+      "denied",
+      next_body,
+      outcome,
+      row.thread,
+      row.card_ts,
+      "denied",
+      "",
+      now_sec,
+      VaultSettleEffect::NoEffect,
+    ) {
+      Ok(true) => {
+        (vd.drop_unsaved_fields)(req_id)
+        let _ = whole_store.vault_grants.revoke(req_id)
+        vd_emit_request_event(events, next_body, now_ms)
+        vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "denied"))
+        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      }
+      Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 9. `vault.plain.saves.post` (POST /vault/plain/saves)
+  // -------------------------------------------------------------------------
+  if op == "vault.plain.saves.post" {
+    let req_id = match json_field_str(body, "request") {
+      Some(s) if s.length() > 0 => s
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to keep a secret")))
+    }
+    let row = match (vd.get_request)(ws, req_id) {
+      Ok(Some(r)) => r
+      Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request to keep a secret")))
+      Err(e) => return Some(Err(e))
+    }
+    let save_obj = match base_codec::json_get(row.body, "save") {
+      Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to keep a secret")))
+    }
+    if json_field_str(row.body, "vault") != Some("plain") {
+      return Some(Err(vault_err_json(409, "vault_refused", "no such request to keep a secret")))
+    }
+    let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+    if r_owner != owner {
+      return Some(Err(vault_err_json(403, "vault_forbidden", "only the person it is kept for decides it")))
+    }
+    if lock_state.is_some() {
+      return Some(Err(vault_err_json(409, "vault_refused", "secrets now go into the encrypted vault")))
+    }
+    if row.status != "pending" {
+      return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+    }
+    match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+      Some(err) => return Some(Err(err))
+      None => ()
+    }
+    let kind = match json_field_str(save_obj, "kind") { Some(s) => s, None => "" }
+    let name = match json_field_str(save_obj, "name") { Some(s) => s, None => "" }
+    let modes = match vd_str_arr(save_obj, "modes") { Some(ms) => ms, None => [] }
+    let hosts = match vd_str_arr(save_obj, "hosts") { Some(hs) => hs, None => [] }
+    let about = match json_field_str(save_obj, "about") { Some(s) => s, None => "" }
+    let env_opt = json_field_str(save_obj, "env")
+    let is_typed = json_field_bool(save_obj, "typed") == Some(true)
+    let fields_map = if is_typed {
+      match vd_validate_typed_fields(kind, base_codec::json_get(body, "fields")) {
+        Some(m) => m
+        None => return Some(Err(vault_err_json(409, "vault_refused", "this secret is typed in on its card, and sent with its fields")))
+      }
+    } else {
+      match (vd.get_unsaved_fields)(req_id) {
+        Some(m) => m
+        None => return Some(Err(vault_err_json(409, "vault_refused", "the secret is gone (the station restarted): the agent asks again")))
+      }
+    }
+    let item_id = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+    let listing_fs : Array[(String, base_codec::Json)] = [
+      ("name", base_codec::json_str(name)),
+      ("kind", base_codec::json_str(kind)),
+      ("modes", json_str_array(modes)),
+      ("hosts", json_str_array(hosts)),
+    ]
+    match env_opt { Some(e) if e.length() > 0 => listing_fs.push(("env", base_codec::json_str(e))), _ => () }
+    if about.length() > 0 {
+      listing_fs.push(("about", base_codec::json_str(about)))
+    }
+    let next_item = base_codec::json_obj([
+      ("ws", base_codec::json_str(ws)),
+      ("id", base_codec::json_str(item_id)),
+      ("owner", base_codec::json_str(owner)),
+      ("version", base_codec::json_int(0)),
+      ("kind", base_codec::json_str(kind)),
+      ("name", base_codec::json_str(name)),
+      ("fields", vd_fields_map_to_json(fields_map)),
+      ("notes", base_codec::json_str(about)),
+      ("listing", base_codec::json_obj(listing_fs)),
+      ("at", base_codec::json_int64(now_sec)),
+    ])
+    match (vd.get_plain_item_snapshot)(ws, item_id) {
+      Ok(Some(_)) => return Some(Err(vault_err_json(409, "vault_refused", "the item is there already")))
+      Ok(None) => ()
+      Err(e) => return Some(Err(e))
+    }
+    match validate_plain_item(None, next_item, owner) {
+      Some(why) => return Some(Err(vault_err_json(409, "vault_refused", why)))
+      None => ()
+    }
+    let owner_lasts = match (vp.get_lasts)(ws, owner) {
+      Ok(Some((l, _))) => Some(l)
+      Ok(None) => None
+      Err(e) => return Some(Err(e))
+    }
+    let auto_scope = if vd_allows_scope(owner_lasts, "hour") { "hour" } else { "once" }
+    let first_mode = if modes.length() > 0 { modes[0] } else { "env" }
+    let grant_hosts = if vd_hosted(first_mode) { hosts } else { [] }
+    let exp_sec = now_sec + 3600L
+    let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("granted")))
+    let grant_meta_fs : Array[(String, base_codec::Json)] = [
+      ("v", base_codec::json_int(1)),
+      ("ws", base_codec::json_str(ws)),
+      ("request", base_codec::json_str(req_id)),
+      ("vault", base_codec::json_str("plain")),
+      ("item", base_codec::json_str(item_id)),
+      ("mode", base_codec::json_str(first_mode)),
+      ("hosts", json_str_array(grant_hosts)),
+      ("scope", base_codec::json_str(auto_scope)),
+      ("exp", base_codec::json_int64(exp_sec)),
+      ("at", base_codec::json_int64(now_sec)),
+    ]
+    let outcome_fs : Array[(String, base_codec::Json)] = [("status", base_codec::json_str("granted"))]
+    if auto_scope == "hour" {
+      let tj = base_codec::json_obj([("kind", base_codec::json_str("idle")), ("seconds", base_codec::json_int(3600))])
+      grant_meta_fs.push(("timeout", tj))
+      outcome_fs.push(("timeout", tj))
+    }
+    let persisted_grant_body = base_codec::json_obj([
+      ("request", next_body),
+      ("grant", base_codec::json_obj(grant_meta_fs)),
+      ("uses", base_codec::json_int(0)),
+    ])
+    match (vd.settle_request_tx)(
+      ws,
+      req_id,
+      row.raw_body,
+      "granted",
+      next_body,
+      base_codec::json_obj(outcome_fs),
+      row.thread,
+      row.card_ts,
+      "granted",
+      "",
+      now_sec,
+      VaultSettleEffect::PutPlainItemAndGrant(item_id, owner, 0, next_item, row.session, persisted_grant_body),
+    ) {
+      Ok(true) => {
+        (vd.drop_unsaved_fields)(req_id)
+        match (station_vault::DeliveryMode::parse(first_mode), station_vault::GrantScope::parse(auto_scope)) {
+          (Some(dmode), Some(gscope)) => {
+            let sec = station_vault::VaultSecret::{ kind: kind, name: name, fields: fields_map }
+            let grec = station_vault::GrantRecord::{
+              id: req_id,
+              session: row.session,
+              mode: dmode,
+              grant_scope: gscope,
+              hosts: grant_hosts,
+              env_var: env_opt,
+              secret: sec,
+              expires_sec: exp_sec,
+              idle_sec: if auto_scope == "hour" { 3600L } else { 0L },
+              uses: 0,
+              revoked: false,
+            }
+            let _ = whole_store.register_vault_grant(grec, now_sec)
+          }
+          _ => ()
+        }
+        vd_emit_plain_event(events, next_item, now_ms)
+        vd_emit_request_event(events, next_body, now_ms)
+        vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      }
+      Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 10. `vault.plain.described.post` (POST /vault/plain/described)
+  // -------------------------------------------------------------------------
+  if op == "vault.plain.described.post" {
+    let req_id = match json_field_str(body, "request") {
+      Some(s) if s.length() > 0 => s
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to rename an item of the plain library")))
+    }
+    let row = match (vd.get_request)(ws, req_id) {
+      Ok(Some(r)) => r
+      Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request to rename an item of the plain library")))
+      Err(e) => return Some(Err(e))
+    }
+    let want = match base_codec::json_get(row.body, "describe") {
+      Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to rename an item of the plain library")))
+    }
+    if json_field_str(row.body, "vault") != Some("plain") {
+      return Some(Err(vault_err_json(409, "vault_refused", "no such request to rename an item of the plain library")))
+    }
+    let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+    if r_owner != owner {
+      return Some(Err(vault_err_json(403, "vault_forbidden", "only the item's owner decides its requests")))
+    }
+    if lock_state.is_some() {
+      return Some(Err(vault_err_json(409, "vault_refused", "the item is in the encrypted vault, changed by the app")))
+    }
+    if row.status != "pending" {
+      return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+    }
+    match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+      Some(err) => return Some(Err(err))
+      None => ()
+    }
+    let item_id = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+    let (prev, prev_raw) = match (vd.get_plain_item_snapshot)(ws, item_id) {
+      Ok(Some(p)) => p
+      Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "the item is gone, or not one agents may ask for")))
+      Err(e) => return Some(Err(e))
+    }
+    let prev_listing = match base_codec::json_get(prev, "listing") {
+      Some(lj) if json_field_str(prev, "owner") == Some(owner) && json_field_bool(prev, "deleted") != Some(true) => lj
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "the item is gone, or not one agents may ask for")))
+    }
+    let want_name = match json_field_str(want, "name") { Some(s) => s, None => "" }
+    let want_about = match json_field_str(want, "about") { Some(s) => s, None => "" }
+    let next_ver = match admin_json_num_field(prev, "version") { Some(d) => d.to_int() + 1, None => 1 }
+    let next_listing = json_obj_set(
+      json_obj_set(prev_listing, "name", Some(base_codec::json_str(want_name))),
+      "about",
+      if want_about.length() > 0 { Some(base_codec::json_str(want_about)) } else { None },
+    )
+    let next_item = json_obj_set(
+      json_obj_set(
+        json_obj_set(
+          json_obj_set(
+            json_obj_set(prev, "version", Some(base_codec::json_int(next_ver))),
+            "name",
+            Some(base_codec::json_str(want_name)),
+          ),
+          "notes",
+          Some(base_codec::json_str(want_about)),
+        ),
+        "listing",
+        Some(next_listing),
+      ),
+      "at",
+      Some(base_codec::json_int64(now_sec)),
+    )
+    match validate_plain_item(Some(prev), next_item, owner) {
+      Some(why) => return Some(Err(vault_err_json(409, "vault_refused", why)))
+      None => ()
+    }
+    let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("granted")))
+    let outcome = base_codec::json_obj([("status", base_codec::json_str("granted"))])
+    match (vd.settle_request_tx)(
+      ws,
+      req_id,
+      row.raw_body,
+      "granted",
+      next_body,
+      outcome,
+      row.thread,
+      row.card_ts,
+      "granted",
+      "",
+      now_sec,
+      VaultSettleEffect::UpdatePlainItemCas(item_id, prev_raw, owner, next_ver, next_item),
+    ) {
+      Ok(true) => {
+        vd_emit_plain_event(events, next_item, now_ms)
+        vd_emit_request_event(events, next_body, now_ms)
+        vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      }
+      Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 11. `vault.plain.removed.post` (POST /vault/plain/removed)
+  // -------------------------------------------------------------------------
+  if op == "vault.plain.removed.post" {
+    let req_id = match json_field_str(body, "request") {
+      Some(s) if s.length() > 0 => s
+      _ => return Some(Err(vault_err_json(409, "vault_refused", "no such request to delete an item of the plain library")))
+    }
+    let row = match (vd.get_request)(ws, req_id) {
+      Ok(Some(r)) => r
+      Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "no such request to delete an item of the plain library")))
+      Err(e) => return Some(Err(e))
+    }
+    if !json_is_non_null(row.body, "remove") || json_field_str(row.body, "vault") != Some("plain") {
+      return Some(Err(vault_err_json(409, "vault_refused", "no such request to delete an item of the plain library")))
+    }
+    let r_owner = match json_field_str(row.body, "owner") { Some(o) => admin_ascii_lower(o), None => "" }
+    if r_owner != owner {
+      return Some(Err(vault_err_json(403, "vault_forbidden", "only the item's owner decides its requests")))
+    }
+    if row.status != "pending" {
+      return Some(Err(vault_err_json(409, "vault_refused", "the request is " + row.status)))
+    }
+    match vd_expire_if_ended(row, vd, events, now_ms, now_sec) {
+      Some(err) => return Some(Err(err))
+      None => ()
+    }
+    let item_id = match json_field_str(row.body, "item") { Some(s) => s, None => "" }
+    let (prev, prev_raw) = match (vd.get_plain_item_snapshot)(ws, item_id) {
+      Ok(Some(p)) => p
+      Ok(None) => return Some(Err(vault_err_json(409, "vault_refused", "the item is gone already")))
+      Err(e) => return Some(Err(e))
+    }
+    if json_field_str(prev, "owner") != Some(owner) || json_field_bool(prev, "deleted") == Some(true) {
+      return Some(Err(vault_err_json(409, "vault_refused", "the item is gone already")))
+    }
+    let next_ver = match admin_json_num_field(prev, "version") { Some(d) => d.to_int() + 1, None => 1 }
+    let kind = match json_field_str(prev, "kind") { Some(k) => k, None => "token" }
+    let next_item = base_codec::json_obj([
+      ("ws", base_codec::json_str(ws)),
+      ("id", base_codec::json_str(item_id)),
+      ("owner", base_codec::json_str(owner)),
+      ("version", base_codec::json_int(next_ver)),
+      ("kind", base_codec::json_str(kind)),
+      ("name", base_codec::json_str("")),
+      ("fields", base_codec::json_obj([])),
+      ("notes", base_codec::json_str("")),
+      ("at", base_codec::json_int64(now_sec)),
+      ("deleted", base_codec::json_bool(true)),
+    ])
+    match validate_plain_item(Some(prev), next_item, owner) {
+      Some(why) => return Some(Err(vault_err_json(409, "vault_refused", why)))
+      None => ()
+    }
+    let next_body = json_obj_set(row.body, "status", Some(base_codec::json_str("granted")))
+    let outcome = base_codec::json_obj([("status", base_codec::json_str("granted"))])
+    match (vd.settle_request_tx)(
+      ws,
+      req_id,
+      row.raw_body,
+      "granted",
+      next_body,
+      outcome,
+      row.thread,
+      row.card_ts,
+      "granted",
+      "",
+      now_sec,
+      VaultSettleEffect::UpdatePlainItemCas(item_id, prev_raw, owner, next_ver, next_item),
+    ) {
+      Ok(true) => {
+        vd_emit_plain_event(events, next_item, now_ms)
+        vd_emit_request_event(events, next_body, now_ms)
+        vd_notify_session(hooks, row.session, vd_format_decision_notice(next_body, "granted"))
+        return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      }
+      Ok(false) => return Some(Err(vd_decision_changed_err(vd, ws, req_id)))
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  None
+}
+
+// ---------------------------------------------------------------------------
+// Real SQLite End-to-End Smoke Test (called by `--smoke-vault-sqlite`)
+// ---------------------------------------------------------------------------
+
+pub fn run_vault_decisions_sqlite_selftest() -> Result[Unit, String] {
+  let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
+  let tmp_dir = nodepath::join(
+    sep,
+    [station_sys::tmpdir(), "stillfail-vault-dec-smoke-" + host_shim::pid().to_string() + "-" + host_shim::wall_ms().to_string()],
+  )
+  let _ = station_sys::mkdir_mode(tmp_dir, 448)
+  let ws = "ws_smoke_dec"
+  let now_ms = 1700000000000L
+  let now_sec = now_ms / 1000L
+  let store = WholeStore::new_pre_handover_with_sep(tmp_dir, sep)
+  match store.open_primary_after_predecessor_gone(true, fn(_d : String) -> Result[Unit, String] { Ok(()) }) {
+    Ok(_) => ()
+    Err(e) => return Err("open_primary failed: " + e)
+  }
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(e) => {
+      store.close()
+      return Err("require_open failed: " + e)
+    }
+  }
+  // Ensure schema & verify new `vault_requests` indexes exist in `sqlite_master`
+  match ensure_vault_plain_schema(st.db) {
+    Ok(_) => ()
+    Err(e) => {
+      store.close()
+      return Err("ensure_vault_plain_schema failed: " + e.message)
+    }
+  }
+  match st.db.first(
+    "SELECT COUNT(*) AS cnt FROM sqlite_master WHERE type = 'index' AND name IN ('vault_requests_ws_status_id', 'vault_requests_ws_owner', 'vault_requests_ws_vault')",
+    [],
+  ) {
+    Ok(Some(row)) => match row.get("cnt") {
+      Some(base_codec::Json::Num(n, _)) if n.to_int() == 3 => ()
+      _ => {
+        store.close()
+        return Err("missing vault_requests indexes in sqlite_master")
+      }
+    }
+    _ => {
+      store.close()
+      return Err("failed querying sqlite_master for vault_requests indexes")
+    }
+  }
+  // Create a live session row so `is_session_ended` sees an active chat
+  match st.db.run(
+    "INSERT INTO sessions (key, connect, scope, runtime, profile, model, workspace, token, cwd, ws, created_at, last_active_at) VALUES ('s-smoke', 'chat', 'chat', 'claude', 'default', 'opus', '/tmp', 'tok-smoke', '/tmp', ?1, ?2, ?2)",
+    [base_codec::json_str(ws), sql_db::int64_to_json(now_ms)],
+  ) {
+    Ok(_) => ()
+    Err(e) => {
+      store.close()
+      return Err("insert session failed: " + e.message)
+    }
+  }
+
+  let vp = VaultPlainStorePort::production(store)
+  let vd = VaultDecisionsPort::production(store)
+  let events = station_api::EventsHub::new("st-smoke", station_api::EventKeeps::default())
+  let hooks = WholeApiRuntimeHooks::new()
+  hooks.read_only_handover_cell[0] = false
+  let notices : Array[String] = []
+  hooks.on_vault_decision_notify = Some(fn(_sess : String, msg : String) -> Unit { notices.push(msg) })
+  let mut port = WholeApiRuntimePort::in_memory()
+  port = WholeApiRuntimePort::{
+    os_name: port.os_name,
+    random_hex: port.random_hex,
+    random_hex_checked: port.random_hex_checked,
+    machine_stats: port.machine_stats,
+    process_usage: port.process_usage,
+    running_on_runtime: port.running_on_runtime,
+    changed_threads: port.changed_threads,
+    changed_sessions: port.changed_sessions,
+    thread_letters: port.thread_letters,
+    session_exists_info: port.session_exists_info,
+    project_rename: port.project_rename,
+    handed_stations: port.handed_stations,
+    create_thread_session: port.create_thread_session,
+    archive_session: port.archive_session,
+    unarchive_session: port.unarchive_session,
+    update_session_field: port.update_session_field,
+    archive_thread: port.archive_thread,
+    set_thread_title: port.set_thread_title,
+    read_adopted_output: port.read_adopted_output,
+    get_stars: port.get_stars,
+    put_stars: port.put_stars,
+    get_progress: port.get_progress,
+    put_progress: port.put_progress,
+    get_preset_projects: port.get_preset_projects,
+    put_preset_projects: port.put_preset_projects,
+    get_board_drafts: port.get_board_drafts,
+    put_board_drafts: port.put_board_drafts,
+    get_widget_state: port.get_widget_state,
+    put_widget_state: port.put_widget_state,
+    put_archive_policy: port.put_archive_policy,
+    vault_plain: vp,
+    vault_decisions: vd,
+  }
+  let auth_policy = PeerAuthPolicy::{
+    station_id: "st-smoke",
+    station_build: "9.9.9",
+    home_workspace: ws,
+    allowed_workspaces: [ws],
+    verify_fn: None,
+  }
+  let alice = station_api::Viewer::{
+    email: "alice@example.com",
+    sub: "u-alice",
+    name: "Alice",
+    workspace: ws,
+    home: true,
+    role: "owner",
+    device: Some("dev-alice"),
+    lock_base: None,
+    lock_proof: None,
+  }
+  let mk_req = fn(path : String) -> station_api::ApiRequest {
+    let (norm_path, norm_query_raw, norm_query) = station_http::parse_request_target(path)
+    let http_req = station_http::HttpRequest::{
+      conn_id: 0,
+      method: "POST",
+      raw_target: path,
+      path: norm_path,
+      query_raw: norm_query_raw,
+      query: norm_query,
+      version: http1::Version::Http11,
+      headers: [],
+      body: Bytes::new(0),
+      peer: "",
+      raw_head: Bytes::new(0),
+    }
+    station_api::ApiRequest::from_http(http_req, alice)
+  }
+
+  // 1. Plain Vault Save + Grant + Describe + Remove on real SQLite
+  let item_id = "i_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+  let save_req_id = "r_01ARZ3NDEKTSV4RRFFQ69G5SV1"
+  let save_req_body = base_codec::json_obj([
+    ("id", base_codec::json_str(save_req_id)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("plain")),
+    ("item", base_codec::json_str(item_id)),
+    ("session", base_codec::json_str("s-smoke")),
+    ("mode", base_codec::json_str("proxy")),
+    ("reason", base_codec::json_str("save stripe key")),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    (
+      "save",
+      base_codec::json_obj([
+        ("kind", base_codec::json_str("token")),
+        ("name", base_codec::json_str("Stripe Key")),
+        ("modes", base_codec::json_arr([base_codec::json_str("proxy")])),
+        ("hosts", base_codec::json_arr([base_codec::json_str("api.stripe.com")])),
+        ("typed", base_codec::json_bool(true)),
+      ]),
+    ),
+  ])
+  let _ = (vd.seed_request)(VaultRequestRow::{
+    ws: ws,
+    id: save_req_id,
+    session: "s-smoke",
+    status: "pending",
+    body: save_req_body,
+    raw_body: base_codec::json_stringify(save_req_body),
+    thread: Some(1L),
+    card_ts: Some("1700.001"),
+  })
+  let save_decision = base_codec::json_obj([
+    ("request", base_codec::json_str(save_req_id)),
+    ("fields", base_codec::json_obj([("value", base_codec::json_str("sk_live_smoke_secret_999"))])),
+  ])
+  match dispatch_vault_decisions_op("vault.plain.saves.post", mk_req("/vault/plain/saves"), save_decision, store, auth_policy, events, hooks, port, now_ms) {
+    Some(Ok(_)) => ()
+    Some(Err(e)) => {
+      store.close()
+      return Err("smoke plain.saves failed: " + e.message)
+    }
+    None => {
+      store.close()
+      return Err("smoke plain.saves returned None")
+    }
+  }
+  // Verify replay returns 409
+  match dispatch_vault_decisions_op("vault.plain.saves.post", mk_req("/vault/plain/saves"), save_decision, store, auth_policy, events, hooks, port, now_ms) {
+    Some(Err(e)) if e.status == 409 => ()
+    _ => {
+      store.close()
+      return Err("smoke plain.saves replay must return 409")
+    }
+  }
+  // Verify `vault_grants` row persisted in SQLite WITHOUT secret value, and `GrantStore` holds active grant!
+  match (vd.list_persisted_grants)(ws) {
+    Ok(gs) if gs.length() == 1 => {
+      if base_codec::json_stringify(gs[0]).contains("sk_live_smoke_secret_999") {
+        store.close()
+        return Err("SECURITY VIOLATION: secret value leaked into vault_grants SQLite row")
+      }
+    }
+    _ => {
+      store.close()
+      return Err("expected 1 persisted grant in vault_grants")
+    }
+  }
+  if !store.vault_grants.is_active(save_req_id, now_sec) {
+    store.close()
+    return Err("expected GrantStore to hold active grant after plain save")
+  }
+  // Verify `card_outbox` has enqueued outcome for thread 1, ts 1700.001
+  match station_store::card_outcome_heads(st.db, "0", limit=16) {
+    Ok(heads) if heads.length() == 1 && heads[0].ts == "1700.001" => ()
+    _ => {
+      store.close()
+      return Err("expected 1 card_outbox head for settled vault save")
+    }
+  }
+
+  // 2. Encrypted Vault Grant on real SQLite with real Ed25519 + X25519/HKDF/ChaCha20-Poly1305 seal!
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = ((i * 11 + 7) & 0xFF).to_byte()
+  }
+  let kp = match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(k) => k
+    Err(_) => {
+      store.close()
+      return Err("ed25519 keygen failed")
+    }
+  }
+  let pub_hex = crypto::bytes_to_hex(kp.public_key())
+  let sign_key = "ed25519:" + pub_hex
+  let members : form::OrderedMap[lock::Member] = form::OrderedMap::new()
+  members.set("u-alice", lock::Member::{ sub: "u-alice", email: "alice@example.com", role: "owner" })
+  let devices : form::OrderedMap[lock::Device] = form::OrderedMap::new()
+  devices.set(
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    lock::Device::{
+      id: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      sub: "u-alice",
+      kind: "app",
+      label: "Alice Mac",
+      sign_key: Some(sign_key),
+      endpoints: Some(["ep-1"]),
+      exp: None,
+      by: None,
+      own: true,
+    },
+  )
+  let lock_state = lock::LockState::{
+    ws: ws,
+    seq: 1.0,
+    head: "h1",
+    genesis: "g1",
+    origins: [],
+    rp_id: "",
+    cloud_keys: form::Json::Null,
+    members: members,
+    devices: devices,
+    sign_keys: form::OrderedMap::new(),
+    passkeys: form::OrderedMap::new(),
+    signed: form::OrderedMap::new(),
+    stations: form::OrderedMap::new(),
+    gateways: form::OrderedMap::new(),
+    persons: form::OrderedMap::new(),
+    disabled: false,
+    moved: None,
+  }
+  hooks.lock_of = Some(fn(_w : String) -> Option[lock::LockState] { Some(lock_state) })
+
+  let vstore = match store.require_vault_store() {
+    Ok(vs) => vs
+    Err(e) => {
+      store.close()
+      return Err("require_vault_store failed: " + e)
+    }
+  }
+  let vid = "v_01ARZ3NDEKTSV4RRFFQ69G5VA1"
+  let v_form = match station_vault::sign_record_ed25519(
+    seed,
+    pub_hex,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("id", form::Json::Str(vid)),
+      ("seq", form::Json::Num(0.0)),
+      ("owner", form::Json::Str("u-alice")),
+      ("name", form::Json::Str("Personal")),
+      ("members", form::Json::Arr([form::Json::Str("u-alice")])),
+      ("epoch", form::Json::Num(0.0)),
+      ("keys", form::Json::Arr([])),
+      ("at", form::Json::Num(now_sec.to_double())),
+    ],
+    station_vault::TAG_VAULT,
+  ) {
+    Ok(v) => v
+    Err(e) => {
+      store.close()
+      return Err(e)
+    }
+  }
+  let _ = vstore.put_vault(v_form)
+  let v_body = match vstore.vault_snapshot(ws, vid) {
+    Ok(Some(s)) => s.body
+    _ => {
+      store.close()
+      return Err("missing vault snapshot after put_vault")
+    }
+  }
+  let enc_item_id = "i_01ARZ3NDEKTSV4RRFFQ69G5EN1"
+  let enc_item_form = match station_vault::sign_record_ed25519(
+    seed,
+    pub_hex,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("vault", form::Json::Str(vid)),
+      ("id", form::Json::Str(enc_item_id)),
+      ("version", form::Json::Num(0.0)),
+      ("epoch", form::Json::Num(0.0)),
+      ("ct", form::Json::Str("AAAA")),
+      (
+        "listing",
+        form::Json::Obj([
+          ("name", form::Json::Str("GH Token")),
+          ("kind", form::Json::Str("token")),
+          ("modes", form::Json::Arr([form::Json::Str("proxy")])),
+          ("hosts", form::Json::Arr([form::Json::Str("api.github.com")])),
+        ]),
+      ),
+      ("at", form::Json::Num(now_sec.to_double())),
+    ],
+    station_vault::TAG_ITEM,
+  ) {
+    Ok(it) => it
+    Err(e) => {
+      store.close()
+      return Err(e)
+    }
+  }
+  let _ = vstore.put_item_if(enc_item_form, v_body, None)
+
+  let box_priv = Bytes::new(32)
+  let eph_priv = Bytes::new(32)
+  for i in 0..<32 {
+    box_priv[i] = ((i * 5 + 13) & 0xFF).to_byte()
+    eph_priv[i] = ((i * 9 + 29) & 0xFF).to_byte()
+  }
+  let box_pub = match vault_box_public(box_priv) {
+    Ok(p) => p
+    Err(e) => {
+      store.close()
+      return Err(e)
+    }
+  }
+  let enc_req_id = "r_01ARZ3NDEKTSV4RRFFQ69G5GR1"
+  (vd.set_box_priv)(enc_req_id, box_priv)
+  let enc_req_body = base_codec::json_obj([
+    ("id", base_codec::json_str(enc_req_id)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str(vid)),
+    ("item", base_codec::json_str(enc_item_id)),
+    ("session", base_codec::json_str("s-smoke")),
+    ("mode", base_codec::json_str("proxy")),
+    ("reason", base_codec::json_str("call github")),
+    ("hosts", base_codec::json_arr([base_codec::json_str("api.github.com")])),
+    ("box", base_codec::json_str(box_pub)),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+  ])
+  let _ = (vd.seed_request)(VaultRequestRow::{
+    ws: ws,
+    id: enc_req_id,
+    session: "s-smoke",
+    status: "pending",
+    body: enc_req_body,
+    raw_body: base_codec::json_stringify(enc_req_body),
+    thread: Some(1L),
+    card_ts: Some("1700.002"),
+  })
+  let secret_plain = "{\"kind\":\"token\",\"name\":\"GH Token\",\"fields\":{\"value\":\"ghp_smoke_enc_secret_42\"}}"
+  let sealed = match vault_seal_with(box_pub, secret_plain.to_bytes(), vault_grant_context(ws, enc_req_id), eph_priv) {
+    Ok(s) => s
+    Err(e) => {
+      store.close()
+      return Err(e)
+    }
+  }
+  let signed_grant = match station_vault::sign_record_ed25519(
+    seed,
+    pub_hex,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("request", form::Json::Str(enc_req_id)),
+      ("vault", form::Json::Str(vid)),
+      ("item", form::Json::Str(enc_item_id)),
+      ("mode", form::Json::Str("proxy")),
+      ("hosts", form::Json::Arr([form::Json::Str("api.github.com")])),
+      ("scope", form::Json::Str("hour")),
+      ("exp", form::Json::Num((now_sec + 3600L).to_double())),
+      ("secret", form::Json::Str(sealed)),
+      ("at", form::Json::Num(now_sec.to_double())),
+    ],
+    station_vault::TAG_GRANT,
+  ) {
+    Ok(g) => station_rules_bridge::form_to_base(g)
+    Err(e) => {
+      store.close()
+      return Err(e)
+    }
+  }
+  match dispatch_vault_decisions_op("vault.grants.post", mk_req("/vault/grants"), signed_grant, store, auth_policy, events, hooks, port, now_ms) {
+    Some(Ok(_)) => ()
+    Some(Err(e)) => {
+      store.close()
+      return Err("smoke vault.grants failed: " + e.message)
+    }
+    None => {
+      store.close()
+      return Err("smoke vault.grants returned None")
+    }
+  }
+  if !store.vault_grants.is_active(enc_req_id, now_sec) {
+    store.close()
+    return Err("expected GrantStore to hold active encrypted grant")
+  }
+  if notices.length() < 2 {
+    store.close()
+    return Err("expected session decision notices to fire")
+  }
+  store.close()
+  let _ = station_sys::unlink(nodepath::join(sep, [tmp_dir, "stillfail.db"]))
+  let _ = station_sys::unlink(nodepath::join(sep, [tmp_dir, "stillfail.db-wal"]))
+  let _ = station_sys::unlink(nodepath::join(sep, [tmp_dir, "stillfail.db-shm"]))
+  let _ = station_sys::rmdir(tmp_dir)
+  Ok(())
+}

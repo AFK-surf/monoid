@@ -34,3 +34,4 @@ station_store = { workspace = true }
 station_sys = { workspace = true }
 station_tools = { workspace = true }
 station_vault = { workspace = true }
+vault = { workspace = true }

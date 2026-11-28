@@ -1,0 +1,951 @@
+// Wave 17D-1 unit tests covering all 11 encrypted & plain Vault approval decision `call_op`s,
+// Ed25519 signature + lock fail-closed 403 checks, X25519/HKDF/ChaCha20-Poly1305 seal roundtrip,
+// replay / cross-owner / cross-workspace / plain-vs-encrypted isolation, card_outbox & SSE events,
+// and zero secret leakage.
+
+import "base_codec"
+import "crypto"
+import "form"
+import "lock"
+import "station_api"
+import "station_rules_bridge"
+import "station_vault"
+
+fn vd_test_seed(salt : Int) -> Bytes {
+  let b = Bytes::new(32)
+  for i in 0..<32 {
+    b[i] = ((i * 13 + salt * 7 + 5) & 0xFF).to_byte()
+  }
+  b
+}
+
+fn vd_test_ed25519(salt : Int) -> (Bytes, String) {
+  let seed = vd_test_seed(salt)
+  let kp = match crypto::Ed25519KeyPair::from_seed(seed) {
+    Ok(k) => k
+    Err(_) => panic("ed25519 keygen failed")
+  }
+  (seed, crypto::bytes_to_hex(kp.public_key()))
+}
+
+fn vd_test_lock_state(
+  ws : String,
+  alice_pub : String,
+  bob_pub : String,
+) -> lock::LockState {
+  let members : form::OrderedMap[lock::Member] = form::OrderedMap::new()
+  members.set("u-alice", lock::Member::{ sub: "u-alice", email: "alice@example.com", role: "owner" })
+  members.set("u-bob", lock::Member::{ sub: "u-bob", email: "bob@example.com", role: "member" })
+  let devices : form::OrderedMap[lock::Device] = form::OrderedMap::new()
+  devices.set(
+    "1111111111111111111111111111111111111111111111111111111111111111",
+    lock::Device::{
+      id: "1111111111111111111111111111111111111111111111111111111111111111",
+      sub: "u-alice",
+      kind: "app",
+      label: "Alice Mac",
+      sign_key: Some("ed25519:" + alice_pub),
+      endpoints: Some(["ep-alice"]),
+      exp: None,
+      by: None,
+      own: true,
+    },
+  )
+  devices.set(
+    "2222222222222222222222222222222222222222222222222222222222222222",
+    lock::Device::{
+      id: "2222222222222222222222222222222222222222222222222222222222222222",
+      sub: "u-bob",
+      kind: "app",
+      label: "Bob Mac",
+      sign_key: Some("ed25519:" + bob_pub),
+      endpoints: Some(["ep-bob"]),
+      exp: None,
+      by: None,
+      own: true,
+    },
+  )
+  lock::LockState::{
+    ws: ws,
+    seq: 1.0,
+    head: "h1",
+    genesis: "g1",
+    origins: [],
+    rp_id: "",
+    cloud_keys: form::Json::Null,
+    members: members,
+    devices: devices,
+    sign_keys: form::OrderedMap::new(),
+    passkeys: form::OrderedMap::new(),
+    signed: form::OrderedMap::new(),
+    stations: form::OrderedMap::new(),
+    gateways: form::OrderedMap::new(),
+    persons: form::OrderedMap::new(),
+    disabled: false,
+    moved: None,
+  }
+}
+
+fn vd_seed_req(
+  port : WholeApiRuntimePort,
+  ws : String,
+  id : String,
+  session : String,
+  body : base_codec::Json,
+  thread_opt : Option[Int64] = Some(10L),
+  card_ts_opt : Option[String] = Some("1700.100"),
+) -> Unit {
+  let _ = (port.vault_decisions.seed_request)(VaultRequestRow::{
+    ws: ws,
+    id: id,
+    session: session,
+    status: "pending",
+    body: body,
+    raw_body: base_codec::json_stringify(body),
+    thread: thread_opt,
+    card_ts: card_ts_opt,
+  })
+}
+
+test "wave17d1: encrypted vault.grants.post & vault.denials.post full crypto, auth, replay, and isolation" {
+  let (store, _, api, _, _, hooks, port) = make_mem_whole_api_fixture_full()
+  let (alice_seed, alice_pub) = vd_test_ed25519(1)
+  let (bob_seed, bob_pub) = vd_test_ed25519(2)
+  let ws = "ws-main"
+  let now_sec = 1700000000L
+  let alice = make_test_viewer("alice@example.com", "u-alice", ws, true, "owner")
+  let bob = make_test_viewer("bob@example.com", "u-bob", ws, true, "member")
+  let lock_state = vd_test_lock_state(ws, alice_pub, bob_pub)
+
+  let notices : Array[(String, String)] = []
+  hooks.on_vault_decision_notify = Some(fn(s : String, m : String) -> Unit { notices.push((s, m)) })
+
+  // 1. Missing lock returns 409 vault_needs_lock
+  hooks.lock_of = None
+  match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 409 { panic("expected 409 vault_needs_lock, got " + e.status.to_string()) }
+    Ok(_) => panic("missing lock must fail")
+  }
+
+  hooks.lock_of = Some(fn(w : String) -> Option[lock::LockState] { if w == ws { Some(lock_state) } else { None } })
+
+  // Seed vault (alice only) + signed item
+  let vstore = match store.vault_store { Some(v) => v, None => panic("missing vault_store") }
+  let vid = "v_01ARZ3NDEKTSV4RRFFQ69G5V01"
+  let iid = "i_01ARZ3NDEKTSV4RRFFQ69G5I01"
+  let v_form = match station_vault::sign_record_ed25519(
+    alice_seed,
+    alice_pub,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("id", form::Json::Str(vid)),
+      ("seq", form::Json::Num(0.0)),
+      ("owner", form::Json::Str("u-alice")),
+      ("name", form::Json::Str("Alice Personal")),
+      ("members", form::Json::Arr([form::Json::Str("u-alice")])),
+      ("epoch", form::Json::Num(0.0)),
+      ("keys", form::Json::Arr([])),
+      ("at", form::Json::Num(now_sec.to_double())),
+    ],
+    station_vault::TAG_VAULT,
+  ) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  let _ = vstore.put_vault(v_form)
+  let v_body = match vstore.vault_snapshot(ws, vid) { Ok(Some(s)) => s.body, _ => panic("missing v_body") }
+  let i_form = match station_vault::sign_record_ed25519(
+    alice_seed,
+    alice_pub,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("vault", form::Json::Str(vid)),
+      ("id", form::Json::Str(iid)),
+      ("version", form::Json::Num(0.0)),
+      ("epoch", form::Json::Num(0.0)),
+      ("ct", form::Json::Str("AAAA")),
+      (
+        "listing",
+        form::Json::Obj([
+          ("name", form::Json::Str("Stripe Prod")),
+          ("kind", form::Json::Str("token")),
+          ("modes", form::Json::Arr([form::Json::Str("proxy")])),
+          ("hosts", form::Json::Arr([form::Json::Str("api.stripe.com")])),
+          ("lasts", form::Json::Str("hour")),
+        ]),
+      ),
+      ("at", form::Json::Num(now_sec.to_double())),
+    ],
+    station_vault::TAG_ITEM,
+  ) {
+    Ok(it) => it
+    Err(e) => panic(e)
+  }
+  let _ = vstore.put_item_if(i_form, v_body, None)
+
+  let box_priv = vd_test_seed(10)
+  let eph_priv = vd_test_seed(11)
+  let box_pub = match vault_box_public(box_priv) { Ok(p) => p, Err(e) => panic(e) }
+  let rid = "r_01ARZ3NDEKTSV4RRFFQ69G5R01"
+  (port.vault_decisions.set_box_priv)(rid, box_priv)
+  let req_body = base_codec::json_obj([
+    ("id", base_codec::json_str(rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str(vid)),
+    ("item", base_codec::json_str(iid)),
+    ("session", base_codec::json_str("s-enc-1")),
+    ("mode", base_codec::json_str("proxy")),
+    ("reason", base_codec::json_str("charge customer")),
+    ("hosts", base_codec::json_arr([base_codec::json_str("api.stripe.com")])),
+    ("box", base_codec::json_str(box_pub)),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+  ])
+  vd_seed_req(port, ws, rid, "s-enc-1", req_body)
+
+  let secret_json = "{\"kind\":\"token\",\"name\":\"Stripe Prod\",\"fields\":{\"value\":\"sk_live_super_secret_123\"}}"
+  let sealed = match vault_seal_with(box_pub, secret_json.to_bytes(), vault_grant_context(ws, rid), eph_priv) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let grant_fields : Array[(String, form::Json)] = [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("request", form::Json::Str(rid)),
+    ("vault", form::Json::Str(vid)),
+    ("item", form::Json::Str(iid)),
+    ("mode", form::Json::Str("proxy")),
+    ("hosts", form::Json::Arr([form::Json::Str("api.stripe.com")])),
+    ("scope", form::Json::Str("hour")),
+    ("exp", form::Json::Num((now_sec + 3600L).to_double())),
+    ("secret", form::Json::Str(sealed)),
+    ("at", form::Json::Num(now_sec.to_double())),
+  ]
+  let valid_grant = match station_vault::sign_record_ed25519(alice_seed, alice_pub, grant_fields, station_vault::TAG_GRANT) {
+    Ok(g) => station_rules_bridge::form_to_base(g)
+    Err(e) => panic(e)
+  }
+
+  // 2. Non-member bob attempting to approve -> fail-closed 403
+  match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", bob), [], valid_grant) {
+    Err(e) => if e.status != 403 { panic("bob non-member grant must return 403, got " + e.status.to_string()) }
+    Ok(_) => panic("bob non-member grant must fail")
+  }
+
+  // 3. Forged signature (signed by bob's key, submitted by alice) -> fail-closed 403
+  let bob_signed_grant = match station_vault::sign_record_ed25519(bob_seed, bob_pub, grant_fields, station_vault::TAG_GRANT) {
+    Ok(g) => station_rules_bridge::form_to_base(g)
+    Err(e) => panic(e)
+  }
+  match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], bob_signed_grant) {
+    Err(e) => if e.status != 403 { panic("forged signer grant must return 403, got " + e.status.to_string()) }
+    Ok(_) => panic("forged signer grant must fail")
+  }
+
+  // 4. Tampered payload (scope changed after signing) -> fail-closed 403
+  let tampered_grant = json_obj_set(valid_grant, "scope", Some(base_codec::json_str("once")))
+  match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], tampered_grant) {
+    Err(e) => if e.status != 403 { panic("tampered sig grant must return 403, got " + e.status.to_string()) }
+    Ok(_) => panic("tampered sig grant must fail")
+  }
+
+  // 5. Scope exceeding listing.lasts ("chat" > "hour") -> 409
+  let chat_fields : Array[(String, form::Json)] = [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("request", form::Json::Str(rid)),
+    ("vault", form::Json::Str(vid)),
+    ("item", form::Json::Str(iid)),
+    ("mode", form::Json::Str("proxy")),
+    ("hosts", form::Json::Arr([form::Json::Str("api.stripe.com")])),
+    ("scope", form::Json::Str("chat")),
+    ("exp", form::Json::Num((now_sec + 7200L).to_double())),
+    ("secret", form::Json::Str(sealed)),
+    ("at", form::Json::Num(now_sec.to_double())),
+  ]
+  let chat_grant = match station_vault::sign_record_ed25519(alice_seed, alice_pub, chat_fields, station_vault::TAG_GRANT) {
+    Ok(g) => station_rules_bridge::form_to_base(g)
+    Err(e) => panic(e)
+  }
+  match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], chat_grant) {
+    Err(e) => if e.status != 409 { panic("scope exceeding lasts must return 409, got " + e.status.to_string()) }
+    Ok(_) => panic("scope exceeding lasts must fail")
+  }
+
+  // 6. Plain route called on encrypted request -> 409
+  match (api.admin.host.call)(
+    "vault.plain.grants.post",
+    make_test_api_req_as("POST", "/vault/plain/grants", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(rid)), ("scope", base_codec::json_str("once"))]),
+  ) {
+    Err(e) => if e.status != 409 { panic("plain route on encrypted req must return 409, got " + e.status.to_string()) }
+    Ok(_) => panic("plain route on encrypted req must fail")
+  }
+
+  // 7. Valid grant succeeds -> 200, GrantStore active, box dropped, card_outcome queued, notice sent, no secret leak
+  match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], valid_grant) {
+    Ok(res) => {
+      if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+      if base_codec::json_stringify(res).contains("sk_live_super_secret_123") { panic("secret leaked in response") }
+    }
+    Err(e) => panic("valid vault.grants.post failed: " + e.message)
+  }
+  if !store.vault_grants.is_active(rid, now_sec) {
+    panic("expected GrantStore to hold active grant after vault.grants.post")
+  }
+  if !(port.vault_decisions.get_box_priv)(rid).is_none() {
+    panic("expected box private key to be dropped after grant")
+  }
+  if (port.vault_decisions.list_card_outcomes)().length() != 1 {
+    panic("expected 1 card outcome queued")
+  }
+  if notices.length() != 1 || notices[0].1.contains("sk_live_super_secret_123") {
+    panic("expected clean session notice without secret")
+  }
+
+  // 8. Replay of already-granted request -> 409
+  match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], valid_grant) {
+    Err(e) => if e.status != 409 { panic("replay must return 409, got " + e.status.to_string()) }
+    Ok(_) => panic("replay must fail")
+  }
+
+  // 9. `vault.denials.post` on a second pending request
+  let rid2 = "r_01ARZ3NDEKTSV4RRFFQ69G5R02"
+  let req_body2 = json_obj_set(req_body, "id", Some(base_codec::json_str(rid2)))
+  vd_seed_req(port, ws, rid2, "s-enc-1", req_body2)
+  let deny_fields : Array[(String, form::Json)] = [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("request", form::Json::Str(rid2)),
+    ("at", form::Json::Num(now_sec.to_double())),
+  ]
+  let bob_deny = match station_vault::sign_record_ed25519(bob_seed, bob_pub, deny_fields, VAULT_TAG_DENY) {
+    Ok(d) => station_rules_bridge::form_to_base(d)
+    Err(e) => panic(e)
+  }
+  match (api.admin.host.call)("vault.denials.post", make_test_api_req_as("POST", "/vault/denials", bob), [], bob_deny) {
+    Err(e) => if e.status != 403 { panic("bob non-member deny must return 403") }
+    Ok(_) => panic("bob non-member deny must fail")
+  }
+  let alice_deny = match station_vault::sign_record_ed25519(alice_seed, alice_pub, deny_fields, VAULT_TAG_DENY) {
+    Ok(d) => station_rules_bridge::form_to_base(d)
+    Err(e) => panic(e)
+  }
+  match (api.admin.host.call)("vault.denials.post", make_test_api_req_as("POST", "/vault/denials", alice), [], alice_deny) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true for deny") }
+    Err(e) => panic("valid vault.denials.post failed: " + e.message)
+  }
+  // Replay deny -> 409
+  match (api.admin.host.call)("vault.denials.post", make_test_api_req_as("POST", "/vault/denials", alice), [], alice_deny) {
+    Err(e) => if e.status != 409 { panic("deny replay must return 409") }
+    Ok(_) => panic("deny replay must fail")
+  }
+}
+
+test "wave17d1: encrypted vault.saves.post, vault.described.post, vault.removed.post, and vault.browses.post + cross-grant" {
+  let (store, _, api, _, _, hooks, port) = make_mem_whole_api_fixture_full()
+  let (alice_seed, alice_pub) = vd_test_ed25519(3)
+  let (bob_seed, bob_pub) = vd_test_ed25519(4)
+  let ws = "ws-main"
+  let now_sec = 1700000000L
+  let alice = make_test_viewer("alice@example.com", "u-alice", ws, true, "owner")
+  let bob = make_test_viewer("bob@example.com", "u-bob", ws, true, "member")
+  let lock_state = vd_test_lock_state(ws, alice_pub, bob_pub)
+  hooks.lock_of = Some(fn(w : String) -> Option[lock::LockState] { if w == ws { Some(lock_state) } else { None } })
+
+  let vstore = match store.vault_store { Some(v) => v, None => panic("missing vault_store") }
+  let vid = "v_01ARZ3NDEKTSV4RRFFQ69G5V02"
+  let iid = "i_01ARZ3NDEKTSV4RRFFQ69G5I02"
+  let v_form = match station_vault::sign_record_ed25519(
+    alice_seed,
+    alice_pub,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("id", form::Json::Str(vid)),
+      ("seq", form::Json::Num(0.0)),
+      ("owner", form::Json::Str("u-alice")),
+      ("name", form::Json::Str("Alice Vault")),
+      ("members", form::Json::Arr([form::Json::Str("u-alice")])),
+      ("epoch", form::Json::Num(0.0)),
+      ("keys", form::Json::Arr([])),
+      ("at", form::Json::Num(now_sec.to_double())),
+    ],
+    station_vault::TAG_VAULT,
+  ) {
+    Ok(v) => v
+    Err(e) => panic(e)
+  }
+  let _ = vstore.put_vault(v_form)
+  let v_body = match vstore.vault_snapshot(ws, vid) { Ok(Some(s)) => s.body, _ => panic("missing v_body") }
+
+  // 1. `vault.saves.post`: fails before item copy arrives, succeeds after signed item is stored
+  let save_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5SV2"
+  let save_req = base_codec::json_obj([
+    ("id", base_codec::json_str(save_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("")),
+    ("item", base_codec::json_str(iid)),
+    ("session", base_codec::json_str("s-enc-2")),
+    ("mode", base_codec::json_str("env")),
+    ("reason", base_codec::json_str("keep api key")),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    (
+      "save",
+      base_codec::json_obj([
+        ("kind", base_codec::json_str("token")),
+        ("name", base_codec::json_str("API Key")),
+        ("modes", base_codec::json_arr([base_codec::json_str("env")])),
+        ("hosts", base_codec::json_arr([])),
+      ]),
+    ),
+  ])
+  vd_seed_req(port, ws, save_rid, "s-enc-2", save_req)
+  // Missing item -> 409
+  match (api.admin.host.call)(
+    "vault.saves.post",
+    make_test_api_req_as("POST", "/vault/saves", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(save_rid)), ("vault", base_codec::json_str(vid))]),
+  ) {
+    Err(e) => if e.status != 409 { panic("expected 409 before item copy") }
+    Ok(_) => panic("expected 409 before item copy")
+  }
+  // Store signed item v0
+  let i_v0 = match station_vault::sign_record_ed25519(
+    alice_seed,
+    alice_pub,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("vault", form::Json::Str(vid)),
+      ("id", form::Json::Str(iid)),
+      ("version", form::Json::Num(0.0)),
+      ("epoch", form::Json::Num(0.0)),
+      ("ct", form::Json::Str("AAAA")),
+      (
+        "listing",
+        form::Json::Obj([
+          ("name", form::Json::Str("API Key")),
+          ("kind", form::Json::Str("token")),
+          ("modes", form::Json::Arr([form::Json::Str("env")])),
+          ("hosts", form::Json::Arr([])),
+        ]),
+      ),
+      ("at", form::Json::Num(now_sec.to_double())),
+    ],
+    station_vault::TAG_ITEM,
+  ) {
+    Ok(it) => it
+    Err(e) => panic(e)
+  }
+  let _ = vstore.put_item_if(i_v0, v_body, None)
+  let i_v0_body = match vstore.item_snapshot(ws, vid, iid) { Ok(Some(s)) => s.body, _ => panic("missing i_v0_body") }
+  // Wrong owner bob -> 403
+  match (api.admin.host.call)(
+    "vault.saves.post",
+    make_test_api_req_as("POST", "/vault/saves", bob),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(save_rid)), ("vault", base_codec::json_str(vid))]),
+  ) {
+    Err(e) => if e.status != 403 { panic("bob save must return 403") }
+    Ok(_) => panic("bob save must fail")
+  }
+  // Owner alice -> 200
+  match (api.admin.host.call)(
+    "vault.saves.post",
+    make_test_api_req_as("POST", "/vault/saves", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(save_rid)), ("vault", base_codec::json_str(vid))]),
+  ) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("valid vault.saves.post failed: " + e.message)
+  }
+
+  // 2. `vault.described.post`
+  let desc_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5DS2"
+  let desc_req = base_codec::json_obj([
+    ("id", base_codec::json_str(desc_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str(vid)),
+    ("item", base_codec::json_str(iid)),
+    ("session", base_codec::json_str("s-enc-2")),
+    ("mode", base_codec::json_str("env")),
+    ("reason", base_codec::json_str("rename key")),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    (
+      "describe",
+      base_codec::json_obj([
+        ("name", base_codec::json_str("API Key Renamed")),
+        ("about", base_codec::json_str("Used for staging")),
+        ("was", base_codec::json_obj([("name", base_codec::json_str("API Key")), ("about", base_codec::json_str(""))])),
+      ]),
+    ),
+  ])
+  vd_seed_req(port, ws, desc_rid, "s-enc-2", desc_req)
+  // Before update -> 409
+  match (api.admin.host.call)(
+    "vault.described.post",
+    make_test_api_req_as("POST", "/vault/described", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(desc_rid))]),
+  ) {
+    Err(e) => if e.status != 409 { panic("expected 409 before item renamed") }
+    Ok(_) => panic("expected 409 before item renamed")
+  }
+  let i_v1 = match station_vault::sign_record_ed25519(
+    alice_seed,
+    alice_pub,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("vault", form::Json::Str(vid)),
+      ("id", form::Json::Str(iid)),
+      ("version", form::Json::Num(1.0)),
+      ("epoch", form::Json::Num(0.0)),
+      ("ct", form::Json::Str("BBBB")),
+      (
+        "listing",
+        form::Json::Obj([
+          ("name", form::Json::Str("API Key Renamed")),
+          ("about", form::Json::Str("Used for staging")),
+          ("kind", form::Json::Str("token")),
+          ("modes", form::Json::Arr([form::Json::Str("env")])),
+          ("hosts", form::Json::Arr([])),
+        ]),
+      ),
+      ("at", form::Json::Num((now_sec + 1L).to_double())),
+    ],
+    station_vault::TAG_ITEM,
+  ) {
+    Ok(it) => it
+    Err(e) => panic(e)
+  }
+  let _ = vstore.put_item_if(i_v1, v_body, Some(i_v0_body))
+  let i_v1_body = match vstore.item_snapshot(ws, vid, iid) { Ok(Some(s)) => s.body, _ => panic("missing i_v1_body") }
+  match (api.admin.host.call)(
+    "vault.described.post",
+    make_test_api_req_as("POST", "/vault/described", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(desc_rid))]),
+  ) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("valid vault.described.post failed: " + e.message)
+  }
+
+  // 3. `vault.removed.post`
+  let rem_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5RM2"
+  let rem_req = base_codec::json_obj([
+    ("id", base_codec::json_str(rem_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str(vid)),
+    ("item", base_codec::json_str(iid)),
+    ("session", base_codec::json_str("s-enc-2")),
+    ("mode", base_codec::json_str("env")),
+    ("reason", base_codec::json_str("rotate out")),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("remove", base_codec::json_obj([("name", base_codec::json_str("API Key Renamed"))])),
+  ])
+  vd_seed_req(port, ws, rem_rid, "s-enc-2", rem_req)
+  // Not deleted yet -> 409
+  match (api.admin.host.call)(
+    "vault.removed.post",
+    make_test_api_req_as("POST", "/vault/removed", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(rem_rid))]),
+  ) {
+    Err(e) => if e.status != 409 { panic("expected 409 before item deleted") }
+    Ok(_) => panic("expected 409 before item deleted")
+  }
+  let i_v2_del = match station_vault::sign_record_ed25519(
+    alice_seed,
+    alice_pub,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("vault", form::Json::Str(vid)),
+      ("id", form::Json::Str(iid)),
+      ("version", form::Json::Num(2.0)),
+      ("epoch", form::Json::Num(0.0)),
+      ("deleted", form::Json::Bool(true)),
+      ("ct", form::Json::Str("")),
+      ("at", form::Json::Num((now_sec + 2L).to_double())),
+    ],
+    station_vault::TAG_ITEM,
+  ) {
+    Ok(it) => it
+    Err(e) => panic(e)
+  }
+  let _ = vstore.put_item_if(i_v2_del, v_body, Some(i_v1_body))
+  match (api.admin.host.call)(
+    "vault.removed.post",
+    make_test_api_req_as("POST", "/vault/removed", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(rem_rid))]),
+  ) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("valid vault.removed.post failed: " + e.message)
+  }
+
+  // 4. `vault.browses.post` + cross-workspace `vault.grants.post`
+  let br_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5BR2"
+  let br_req = base_codec::json_obj([
+    ("id", base_codec::json_str(br_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("")),
+    ("item", base_codec::json_str("")),
+    ("session", base_codec::json_str("s-enc-2")),
+    ("mode", base_codec::json_str("browse")),
+    ("reason", base_codec::json_str("need personal github token")),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("browse", base_codec::json_obj([])),
+  ])
+  vd_seed_req(port, ws, br_rid, "s-enc-2", br_req)
+  let cross_item_id = "i_01ARZ3NDEKTSV4RRFFQ69G5XR1"
+  let cross_vault_id = "v_01ARZ3NDEKTSV4RRFFQ69G5XV1"
+  let browse_fields : Array[(String, form::Json)] = [
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ws)),
+    ("request", form::Json::Str(br_rid)),
+    (
+      "items",
+      form::Json::Arr([
+        form::Json::Obj([
+          ("sourceWs", form::Json::Str("ws-personal")),
+          ("sourceWsName", form::Json::Str("Personal WS")),
+          ("vault", form::Json::Str(cross_vault_id)),
+          ("vaultName", form::Json::Str("My Keys")),
+          ("item", form::Json::Str(cross_item_id)),
+          (
+            "listing",
+            form::Json::Obj([
+              ("name", form::Json::Str("Personal GH")),
+              ("kind", form::Json::Str("token")),
+              ("modes", form::Json::Arr([form::Json::Str("proxy")])),
+              ("hosts", form::Json::Arr([form::Json::Str("api.github.com")])),
+            ]),
+          ),
+        ]),
+      ]),
+    ),
+    ("at", form::Json::Num(now_sec.to_double())),
+  ]
+  let bob_browse = match station_vault::sign_record_ed25519(bob_seed, bob_pub, browse_fields, VAULT_TAG_BROWSE) {
+    Ok(b) => station_rules_bridge::form_to_base(b)
+    Err(e) => panic(e)
+  }
+  match (api.admin.host.call)("vault.browses.post", make_test_api_req_as("POST", "/vault/browses", bob), [], bob_browse) {
+    Err(e) => if e.status != 403 { panic("bob browse must return 403") }
+    Ok(_) => panic("bob browse must fail")
+  }
+  let alice_browse = match station_vault::sign_record_ed25519(alice_seed, alice_pub, browse_fields, VAULT_TAG_BROWSE) {
+    Ok(b) => station_rules_bridge::form_to_base(b)
+    Err(e) => panic(e)
+  }
+  match (api.admin.host.call)("vault.browses.post", make_test_api_req_as("POST", "/vault/browses", alice), [], alice_browse) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("valid vault.browses.post failed: " + e.message)
+  }
+  // Cross-workspace grant using that newly persisted cross-listing!
+  let x_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5XG1"
+  let x_box_priv = vd_test_seed(20)
+  let x_eph_priv = vd_test_seed(21)
+  let x_box_pub = match vault_box_public(x_box_priv) { Ok(p) => p, Err(e) => panic(e) }
+  (port.vault_decisions.set_box_priv)(x_rid, x_box_priv)
+  let x_req = base_codec::json_obj([
+    ("id", base_codec::json_str(x_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str(cross_vault_id)),
+    ("item", base_codec::json_str(cross_item_id)),
+    ("session", base_codec::json_str("s-enc-2")),
+    ("mode", base_codec::json_str("proxy")),
+    ("reason", base_codec::json_str("use personal gh")),
+    ("hosts", base_codec::json_arr([base_codec::json_str("api.github.com")])),
+    ("box", base_codec::json_str(x_box_pub)),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    (
+      "cross",
+      base_codec::json_obj([
+        ("workspace", base_codec::json_str("ws-personal")),
+        ("workspaceName", base_codec::json_str("Personal WS")),
+        ("vaultName", base_codec::json_str("My Keys")),
+      ]),
+    ),
+  ])
+  vd_seed_req(port, ws, x_rid, "s-enc-2", x_req)
+  let x_sealed = match vault_seal_with(
+    x_box_pub,
+    "{\"kind\":\"token\",\"name\":\"Personal GH\",\"fields\":{\"value\":\"ghp_cross_secret_99\"}}".to_bytes(),
+    vault_grant_context(ws, x_rid),
+    x_eph_priv,
+  ) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let x_grant = match station_vault::sign_record_ed25519(
+    alice_seed,
+    alice_pub,
+    [
+      ("v", form::Json::Num(1.0)),
+      ("ws", form::Json::Str(ws)),
+      ("request", form::Json::Str(x_rid)),
+      ("vault", form::Json::Str(cross_vault_id)),
+      ("item", form::Json::Str(cross_item_id)),
+      ("sourceWs", form::Json::Str("ws-personal")),
+      ("mode", form::Json::Str("proxy")),
+      ("hosts", form::Json::Arr([form::Json::Str("api.github.com")])),
+      ("scope", form::Json::Str("once")),
+      ("exp", form::Json::Num((now_sec + 3600L).to_double())),
+      ("secret", form::Json::Str(x_sealed)),
+      ("at", form::Json::Num(now_sec.to_double())),
+    ],
+    station_vault::TAG_GRANT,
+  ) {
+    Ok(g) => station_rules_bridge::form_to_base(g)
+    Err(e) => panic(e)
+  }
+  match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], x_grant) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true for cross-grant") }
+    Err(e) => panic("cross-workspace vault.grants.post failed: " + e.message)
+  }
+  if !store.vault_grants.is_active(x_rid, now_sec) {
+    panic("expected active cross-workspace grant in GrantStore")
+  }
+}
+
+test "wave17d1: all 5 plain vault decisions (saves, grants, described, removed, denials) with owner/lock/replay/expiry/zero-leak" {
+  let (store, _, api, _, _, hooks, port) = make_mem_whole_api_fixture_full()
+  let (_, alice_pub) = vd_test_ed25519(5)
+  let (_, bob_pub) = vd_test_ed25519(6)
+  let ws = "ws-main"
+  let now_sec = 1700000000L
+  let alice = make_test_viewer("alice@example.com", "u-alice", ws, true, "owner")
+  let bob = make_test_viewer("bob@example.com", "u-bob", ws, true, "member")
+  hooks.lock_of = None
+
+  // 1. `vault.plain.saves.post` (typed)
+  let item_id = "i_01ARZ3NDEKTSV4RRFFQ69G5PL1"
+  let save_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5PS1"
+  let save_req = base_codec::json_obj([
+    ("id", base_codec::json_str(save_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("plain")),
+    ("item", base_codec::json_str(item_id)),
+    ("session", base_codec::json_str("s-plain-1")),
+    ("mode", base_codec::json_str("proxy")),
+    ("reason", base_codec::json_str("keep stripe test key")),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    (
+      "save",
+      base_codec::json_obj([
+        ("kind", base_codec::json_str("token")),
+        ("name", base_codec::json_str("Stripe Plain")),
+        ("modes", base_codec::json_arr([base_codec::json_str("proxy")])),
+        ("hosts", base_codec::json_arr([base_codec::json_str("api.stripe.com")])),
+        ("typed", base_codec::json_bool(true)),
+      ]),
+    ),
+  ])
+  vd_seed_req(port, ws, save_rid, "s-plain-1", save_req)
+  let save_body = base_codec::json_obj([
+    ("request", base_codec::json_str(save_rid)),
+    ("fields", base_codec::json_obj([("value", base_codec::json_str("sk_plain_never_leak_777"))])),
+  ])
+  // Wrong owner bob -> 403
+  match (api.admin.host.call)("vault.plain.saves.post", make_test_api_req_as("POST", "/vault/plain/saves", bob), [], save_body) {
+    Err(e) => if e.status != 403 { panic("bob plain save must return 403") }
+    Ok(_) => panic("bob plain save must fail")
+  }
+  // Alice approves -> 200, item created, persisted grant has NO secret, GrantStore active
+  match (api.admin.host.call)("vault.plain.saves.post", make_test_api_req_as("POST", "/vault/plain/saves", alice), [], save_body) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("plain.saves failed: " + e.message)
+  }
+  if !store.vault_grants.is_active(save_rid, now_sec) {
+    panic("expected auto-grant active after plain.saves")
+  }
+  match (port.vault_decisions.list_persisted_grants)(ws) {
+    Ok(gs) => {
+      if gs.length() != 1 { panic("expected 1 persisted grant") }
+      if base_codec::json_stringify(gs[0]).contains("sk_plain_never_leak_777") {
+        panic("secret leaked into persisted vault_grants!")
+      }
+    }
+    Err(e) => panic(e.message)
+  }
+
+  // 2. `vault.plain.grants.post`
+  let grant_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5PG1"
+  let grant_req = base_codec::json_obj([
+    ("id", base_codec::json_str(grant_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("plain")),
+    ("item", base_codec::json_str(item_id)),
+    ("session", base_codec::json_str("s-plain-1")),
+    ("mode", base_codec::json_str("proxy")),
+    ("reason", base_codec::json_str("run payment")),
+    ("hosts", base_codec::json_arr([base_codec::json_str("api.stripe.com")])),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("owner", base_codec::json_str("alice@example.com")),
+  ])
+  vd_seed_req(port, ws, grant_rid, "s-plain-1", grant_req)
+  let grant_body = base_codec::json_obj([
+    ("request", base_codec::json_str(grant_rid)),
+    ("scope", base_codec::json_str("hour")),
+    ("timeout", base_codec::json_obj([("kind", base_codec::json_str("idle")), ("seconds", base_codec::json_int(1800))])),
+  ])
+  match (api.admin.host.call)("vault.plain.grants.post", make_test_api_req_as("POST", "/vault/plain/grants", alice), [], grant_body) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("plain.grants failed: " + e.message)
+  }
+  if !store.vault_grants.is_active(grant_rid, now_sec) {
+    panic("expected plain grant active in GrantStore")
+  }
+  // Replay -> 409
+  match (api.admin.host.call)("vault.plain.grants.post", make_test_api_req_as("POST", "/vault/plain/grants", alice), [], grant_body) {
+    Err(e) => if e.status != 409 { panic("plain grant replay must return 409") }
+    Ok(_) => panic("plain grant replay must fail")
+  }
+
+  // 3. `vault.plain.described.post`
+  let desc_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5PD1"
+  let desc_req = base_codec::json_obj([
+    ("id", base_codec::json_str(desc_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("plain")),
+    ("item", base_codec::json_str(item_id)),
+    ("session", base_codec::json_str("s-plain-1")),
+    ("mode", base_codec::json_str("proxy")),
+    ("reason", base_codec::json_str("clarify name")),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    (
+      "describe",
+      base_codec::json_obj([
+        ("name", base_codec::json_str("Stripe Staging")),
+        ("about", base_codec::json_str("Staging billing")),
+        ("was", base_codec::json_obj([("name", base_codec::json_str("Stripe Plain")), ("about", base_codec::json_str(""))])),
+      ]),
+    ),
+  ])
+  vd_seed_req(port, ws, desc_rid, "s-plain-1", desc_req)
+  match (api.admin.host.call)(
+    "vault.plain.described.post",
+    make_test_api_req_as("POST", "/vault/plain/described", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(desc_rid))]),
+  ) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("plain.described failed: " + e.message)
+  }
+  match (port.vault_plain.get_item)(ws, item_id) {
+    Ok(Some(it)) => {
+      if json_field_str(it, "name") != Some("Stripe Staging") { panic("plain item name not updated") }
+    }
+    _ => panic("missing updated plain item")
+  }
+
+  // 4. `vault.plain.denials.post`
+  let deny_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5PN1"
+  let deny_req = json_obj_set(grant_req, "id", Some(base_codec::json_str(deny_rid)))
+  vd_seed_req(port, ws, deny_rid, "s-plain-1", deny_req)
+  match (api.admin.host.call)(
+    "vault.plain.denials.post",
+    make_test_api_req_as("POST", "/vault/plain/denials", bob),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(deny_rid))]),
+  ) {
+    Err(e) => if e.status != 403 { panic("bob plain deny must return 403") }
+    Ok(_) => panic("bob plain deny must fail")
+  }
+  match (api.admin.host.call)(
+    "vault.plain.denials.post",
+    make_test_api_req_as("POST", "/vault/plain/denials", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(deny_rid))]),
+  ) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("plain.denials failed: " + e.message)
+  }
+
+  // 5. `vault.plain.removed.post` works even when security mode is ON (delete-only)
+  let lock_state = vd_test_lock_state(ws, alice_pub, bob_pub)
+  hooks.lock_of = Some(fn(w : String) -> Option[lock::LockState] { if w == ws { Some(lock_state) } else { None } })
+  let rem_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5PR1"
+  let rem_req = base_codec::json_obj([
+    ("id", base_codec::json_str(rem_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("plain")),
+    ("item", base_codec::json_str(item_id)),
+    ("session", base_codec::json_str("s-plain-1")),
+    ("mode", base_codec::json_str("proxy")),
+    ("reason", base_codec::json_str("migrated to encrypted")),
+    ("box", base_codec::json_str("")),
+    ("at", base_codec::json_int64(now_sec)),
+    ("status", base_codec::json_str("pending")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("remove", base_codec::json_obj([("name", base_codec::json_str("Stripe Staging"))])),
+  ])
+  vd_seed_req(port, ws, rem_rid, "s-plain-1", rem_req)
+  match (api.admin.host.call)(
+    "vault.plain.removed.post",
+    make_test_api_req_as("POST", "/vault/plain/removed", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(rem_rid))]),
+  ) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok:true") }
+    Err(e) => panic("plain.removed under lock failed: " + e.message)
+  }
+  match (port.vault_plain.get_item)(ws, item_id) {
+    Ok(Some(it)) => {
+      if json_field_bool(it, "deleted") != Some(true) { panic("expected plain item deleted:true") }
+    }
+    _ => panic("missing tombstone plain item")
+  }
+
+  // 6. Archived/ended session expires pending request on decision attempt -> 409
+  hooks.lock_of = None
+  let exp_rid = "r_01ARZ3NDEKTSV4RRFFQ69G5PE1"
+  let exp_req = json_obj_set(
+    json_obj_set(grant_req, "id", Some(base_codec::json_str(exp_rid))),
+    "session",
+    Some(base_codec::json_str("s-archived")),
+  )
+  vd_seed_req(port, ws, exp_rid, "s-archived", exp_req)
+  (port.vault_decisions.mark_session_ended_for_test)("s-archived")
+  match (api.admin.host.call)(
+    "vault.plain.grants.post",
+    make_test_api_req_as("POST", "/vault/plain/grants", alice),
+    [],
+    base_codec::json_obj([("request", base_codec::json_str(exp_rid)), ("scope", base_codec::json_str("once"))]),
+  ) {
+    Err(e) => if e.status != 409 { panic("archived session grant must return 409") }
+    Ok(_) => panic("archived session grant must fail")
+  }
+  match (port.vault_decisions.get_request)(ws, exp_rid) {
+    Ok(Some(r)) => if r.status != "expired" { panic("expected request status=expired, got " + r.status) }
+    _ => panic("missing expired request row")
+  }
+}

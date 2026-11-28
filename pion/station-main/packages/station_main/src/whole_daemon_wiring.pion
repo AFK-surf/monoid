@@ -757,6 +757,13 @@ pub fn wire_whole_core_runtime_hooks(
   // `on_screens_browser_open` and `on_signins_op` remain None (honest 501) until real Chrome/CDP/ScreenHub & SignInFormPort flows are wired end-to-end.
   core.api.hooks.on_screens_browser_open = None
   core.api.hooks.on_signins_op = None
+  core.api.hooks.on_vault_decision_notify = Some(fn(session_key : String, notice : String) -> Unit {
+    let _ = notice
+    match core.api.hooks.on_session_changed {
+      Some(f) => f(session_key)
+      None => ()
+    }
+  })
   core.api.hooks.on_logins_op = Some(fn(
     op : String,
     params : Array[String],

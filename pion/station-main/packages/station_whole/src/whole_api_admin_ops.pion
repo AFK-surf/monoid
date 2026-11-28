@@ -2076,7 +2076,37 @@ let VAULT_PLAIN_AND_REQUESTS_SCHEMA : String =
 "  thread INTEGER,\n" +
 "  card_ts TEXT,\n" +
 "  PRIMARY KEY (ws, id)\n" +
-");\n"
+");\n" +
+"CREATE INDEX IF NOT EXISTS vault_requests_ws_status_id ON vault_requests (ws, status, id);\n" +
+"CREATE INDEX IF NOT EXISTS vault_requests_ws_owner ON vault_requests (ws, lower(json_extract(body, '$.owner')), id);\n" +
+"CREATE INDEX IF NOT EXISTS vault_requests_ws_vault ON vault_requests (ws, json_extract(body, '$.vault'), id);\n" +
+"CREATE TABLE IF NOT EXISTS vault_grants (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  id TEXT NOT NULL,\n" +
+"  session TEXT NOT NULL,\n" +
+"  body TEXT NOT NULL,\n" +
+"  PRIMARY KEY (ws, id)\n" +
+");\n" +
+"CREATE INDEX IF NOT EXISTS vault_grants_session ON vault_grants (session);\n" +
+"CREATE TABLE IF NOT EXISTS vault_audit (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  at INTEGER NOT NULL,\n" +
+"  request TEXT NOT NULL,\n" +
+"  vault TEXT NOT NULL,\n" +
+"  item TEXT NOT NULL,\n" +
+"  session TEXT NOT NULL,\n" +
+"  kind TEXT NOT NULL,\n" +
+"  detail TEXT NOT NULL\n" +
+");\n" +
+"CREATE TABLE IF NOT EXISTS vault_cross_listings (\n" +
+"  ws TEXT NOT NULL,\n" +
+"  session TEXT NOT NULL,\n" +
+"  item TEXT NOT NULL,\n" +
+"  body TEXT NOT NULL,\n" +
+"  at INTEGER NOT NULL,\n" +
+"  PRIMARY KEY (ws, session, item)\n" +
+") WITHOUT ROWID;\n" +
+"CREATE INDEX IF NOT EXISTS vault_cross_listings_session ON vault_cross_listings (session, ws, item);\n"
 
 fn vault_err_json(status : Int, code : String, message : String, extra : Array[(String, base_codec::Json)] = []) -> station_api::ApiError {
   let fs : Array[(String, base_codec::Json)] = [
@@ -2644,6 +2674,7 @@ fn dispatch_vault_requests_and_plain_op(
   req : station_api::ApiRequest,
   body : base_codec::Json,
   whole_store : WholeStore,
+  auth_policy : PeerAuthPolicy,
   events : station_api::EventsHub,
   hooks : WholeApiRuntimeHooks,
   port : WholeApiRuntimePort,
@@ -2834,20 +2865,10 @@ fn dispatch_vault_requests_and_plain_op(
     return Some(Ok(base_codec::json_obj([("uses", base_codec::json_arr(uses))])))
   }
 
-  // Vault approval decision routes require full signature verification, conditional `WHERE status='pending'`
-  // updates, and `vault_grants` persistence — return honest 501 until full Secrets keeper is ported.
-  if op == "vault.grants.post" ||
-  op == "vault.denials.post" ||
-  op == "vault.saves.post" ||
-  op == "vault.described.post" ||
-  op == "vault.removed.post" ||
-  op == "vault.browses.post" ||
-  op == "vault.plain.grants.post" ||
-  op == "vault.plain.denials.post" ||
-  op == "vault.plain.saves.post" ||
-  op == "vault.plain.described.post" ||
-  op == "vault.plain.removed.post" {
-    return Some(Err(err_not_implemented(op)))
+  // Wave 17D-1: All 11 encrypted & plain Vault approval decision routes
+  match dispatch_vault_decisions_op(op, req, body, whole_store, auth_policy, events, hooks, port, now_ms) {
+    Some(r) => return Some(r)
+    None => ()
   }
 
   None
@@ -2975,7 +2996,7 @@ pub fn dispatch_admin_ops(
     Some(r) => return Some(r)
     None => ()
   }
-  match dispatch_vault_requests_and_plain_op(op, req, body, whole_store, events, hooks, port, now_ms) {
+  match dispatch_vault_requests_and_plain_op(op, req, body, whole_store, auth_policy, events, hooks, port, now_ms) {
     Some(r) => return Some(r)
     None => ()
   }

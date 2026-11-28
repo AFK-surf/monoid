@@ -46,6 +46,7 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_session_retry : Option[(String, Int64, Int64) -> Result[Unit, station_api::ApiError]]
   pub mut on_session_compact : Option[(String) -> Result[Unit, station_api::ApiError]]
   pub mut on_project_rename_merge : Option[(String, String, String, String, Option[String]) -> Result[base_codec::Json, station_api::ApiError]]
+  pub mut on_vault_decision_notify : Option[(String, String) -> Unit]
   pub mut read_only_handover_cell : Array[Bool]
 }
 
@@ -67,6 +68,7 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_session_retry: None,
     on_session_compact: None,
     on_project_rename_merge: None,
+    on_vault_decision_notify: None,
     read_only_handover_cell: [true],
   }
 }
@@ -125,6 +127,7 @@ pub struct WholeApiRuntimePort {
   pub put_archive_policy : (Option[String], String, String, String, Int64) -> Result[Unit, station_api::ApiError]
   pub vault_plain : VaultPlainStorePort
   pub readops : ReadOpsPort
+  pub vault_decisions : VaultDecisionsPort
 }
 
 pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
@@ -135,6 +138,8 @@ pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
   let widgets_mem : Map[String, base_codec::Json] = Map::new()
   let policy_mem : Map[String, String] = Map::new()
   let rng_counter : Array[Int] = [1]
+  let vp = VaultPlainStorePort::in_memory()
+  let vd = VaultDecisionsPort::in_memory(vp)
   WholeApiRuntimePort::{
     os_name: fn() -> String { "linux" },
     random_hex: fn(_n : Int) -> String {
@@ -237,8 +242,9 @@ pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
       policy_mem.set(k, policy)
       Ok(())
     },
-    vault_plain: VaultPlainStorePort::in_memory(),
+    vault_plain: vp,
     readops: ReadOpsPort::in_memory(),
+    vault_decisions: vd,
   }
 }
 
@@ -676,6 +682,7 @@ pub fn WholeApiRuntimePort::production(
     },
     vault_plain: VaultPlainStorePort::production(whole_store),
     readops: ReadOpsPort::production(whole_store, agents, home_ws_str, shared_transfers),
+    vault_decisions: VaultDecisionsPort::production(whole_store),
   }
 }
 
