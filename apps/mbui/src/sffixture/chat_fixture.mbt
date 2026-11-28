@@ -524,7 +524,9 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
   }
   match name {
     "chat" =>
-      if board_mode(f.mode) && session != "" && !session.has_prefix("new:") {
+      if site_chat_mode(f.mode) {
+        Some(fix_window_of(site_chat(f.mode), session))
+      } else if board_mode(f.mode) && session != "" && !session.has_prefix("new:") {
         Some(fix_window_of(with_cards(f, with_sent(board_chat(f, session), session), session), session))
       } else if f.mode == "chat-loading" {
         None
@@ -962,6 +964,7 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
     "machineLogins" =>
       Some({ "supported": true, "loaded": true, "canLogin": false, "canRelay": false, "logins": [], "tools": [] })
     // chat-working: its agent's step, said in more words than a phone's line has room for
+    "live" if site_chat_mode(f.mode) => site_live_activity(f.mode)
     "live" if f.mode == "chat-working" && text(Some(Json::object(params)), "key") == "s-c1" =>
       Some({ "loaded": true, "activity": { "now": { "key": fix_working_now.val.0, "text": fix_working_now.val.1, "important": fix_working_important.val } } })
     // chat-feedback: the still.fail team replied on a bug report sent from the chat (sfpages feedback_replies.mbt);

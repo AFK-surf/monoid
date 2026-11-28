@@ -1341,6 +1341,9 @@ fn long_number(f : Fixture, session : String) -> Int? {
 ///|
 /// The first days of made-up chats, of every mode (fixture_days: those and long_days more).
 fn fixture_days_head(f : Fixture) -> Array[Json] {
+  if site_mode(f.mode) {
+    return site_days(f.mode)
+  }
   if f.mode == "webdemo" {
     return webdemo_days()
   }
@@ -2348,7 +2351,9 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
       Some([
         {
           "account": account,
-          "workspaces": if f.mode == "webdemo" {
+          "workspaces": if site_mode(f.mode) {
+            [{ "id": "ws1", "name": Json::string(if @sf.language() == "en" { "Acme" } else { "星火" }), "stations": 4, "members": 3 }]
+          } else if f.mode == "webdemo" {
             [{ "id": "ws1", "name": "Acme", "stations": 1, "members": 3 }]
           } else if f.mode == "chat-screen-tab" ||
             f.mode == "chat-browser-tab" ||

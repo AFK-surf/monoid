@@ -313,6 +313,10 @@ export function render(tpl, cfg, loc, dict) {
     .replace(/<html lang="[^"]*"/, `<html lang="${loc.htmlLang}"`)
     // Terms, privacy and trademark: in Chinese at /terms…, in English at /en/terms… (still.fail's web/public).
     .replace(/href="(?:\/en)?(\/[a-z]+)" data-legal/g, (_, p) => `href="${loc.legal}${p}" data-legal`);
+  // Device 3D studio renders ship in English and Chinese; Chinese locales use the Chinese screen captures.
+  if (loc.code.startsWith("zh")) {
+    html = html.replace(/assets\/shots\/([a-z0-9-]+)-en((?:-1x|-1920)?\.webp)/g, "assets/shots/$1-zh$2");
+  }
   return { html, missing: [...missing] };
 }
 
@@ -393,9 +397,16 @@ function finish(html, css, js, cfg) {
     .replace('<link rel="stylesheet" href="styles.css">', () => `<style>${css}</style>`)
     .replace('<script src="main.js" defer></script>', () => `<script>${js}</script>`)
     .replace(/(\s(?:href|src)=")assets\//g, "$1/assets/")
+    .replace(/(\ssrcset=")([^"]+)(")/g, (_, a, v, c) => a + v.replace(/(^|,\s*)assets\//g, "$1/assets/") + c)
     .split("\n").map((l) => l.trim()).filter(Boolean).join("\n");
   if (html.includes('href="styles.css"') || html.includes('src="main.js"')) throw new Error("index.html: stylesheet or script tag not found");
   if (/\s(?:href|src)="(?!\/|#|https?:|mailto:)/.test(html)) throw new Error("index.html: a relative URL is left; /zh/ and the others would miss it");
+  for (const m of html.matchAll(/\ssrcset="([^"]+)"/g)) {
+    for (const part of m[1].split(",")) {
+      const url = part.trim().split(/\s+/)[0];
+      if (url && !/^(?:\/|https?:)/.test(url)) throw new Error(`index.html: a relative srcset URL is left (${url})`);
+    }
+  }
   return html;
 }
 
@@ -621,11 +632,15 @@ function main(argv) {
     const dir = out + loc.prefix.slice(1);
     mkdirSync(dir, { recursive: true });
     const page = rebrand(finish(html, css, js, cfg), site);
+    const missingShots = [...new Set([...page.matchAll(/\/assets\/shots\/[^\s"']+\.webp/g)].map((m) => m[0]))]
+      .filter((p) => !existsSync(here(p.slice(1))));
+    if (missingShots.length) throw new Error(`${loc.code}: missing device shot(s): ${missingShots.join(", ")}`);
     writeFileSync(dir + "index.html", page);
     console.log(`${outDir}${loc.prefix}index.html`.padEnd(36) + `${kb(bytes(page))}  (gzip ${kb(gzipSync(page).length)})`);
   }
   // The assets, of the share cards and Android codes only this site's (the template's: og/*.png, android-qr.svg).
   const notMine = (rel) => {
+    if (/^\/shots\/.*\.txt$/.test(rel)) return true;
     const of = /^\/og\/([^/]+)$/.exec(rel)?.[1] ?? /^\/android-qr-(.+)\.svg$/.exec(rel)?.[1];
     if (of && of in SITES) return of !== site;
     return site !== TEMPLATE_SITE && (/^\/og\/[^/]+\.png$/.test(rel) || rel === "/android-qr.svg");
@@ -656,7 +671,7 @@ function main(argv) {
   // Cache-Control for the same path ("*" spans slashes: /assets/*.png covers the og images too).
   writeFileSync(out + "_headers", [
     "/assets/fonts/*", "  Cache-Control: public, max-age=31536000, immutable",
-    ...["/assets/*.svg", "/assets/*.png", "/assets/vendor/*"].flatMap((p) => [p, "  Cache-Control: public, max-age=86400"]),
+    ...["/assets/*.svg", "/assets/*.png", "/assets/shots/*", "/assets/vendor/*"].flatMap((p) => [p, "  Cache-Control: public, max-age=86400"]),
     "/*", "  X-Content-Type-Options: nosniff", "",
   ].join("\n"));
   for (const f of faces) console.log(`${f.padEnd(36)}${kb(statSync(out + `assets/fonts/${f}.woff2`).size)}`);

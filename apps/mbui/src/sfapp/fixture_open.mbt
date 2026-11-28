@@ -338,7 +338,43 @@ pub fn open_fixture_mode(mode : String) -> Unit {
     title: "整理发布清单",
     station_name: "Willow",
   }
-  if mode == "chat-flash" || mode == "chat-flash-mine" || mode == "chat-flash-notice" {
+  if mode == "chat-site-duo" ||
+    mode == "chat-site-android" ||
+    mode == "chat-site-web" ||
+    mode == "chat-site-mac" ||
+    mode == "chat-site-linux" {
+    let en = @sf.language() == "en"
+    let site_ref : ChatRef = if mode == "chat-site-mac" {
+      {
+        station: "ws1/st1",
+        session: "s-c4",
+        title: if en { "Why API p99 got slow" } else { "排查 API p99 变慢" },
+        station_name: "Willow",
+      }
+    } else if mode == "chat-site-linux" {
+      {
+        station: "ws1/st1",
+        session: "s-c7",
+        title: if en { "Home page first paint" } else { "首页首屏加载" },
+        station_name: "Willow",
+      }
+    } else if mode == "chat-site-web" {
+      {
+        station: "ws1/st1",
+        session: "s-c2",
+        title: if en { "CSV export for orders" } else { "订单导出支持 CSV" },
+        station_name: "Mini",
+      }
+    } else {
+      {
+        station: "ws1/st1",
+        session: "s-c1",
+        title: if en { "Login page on phones" } else { "手机上的登录页" },
+        station_name: "Willow",
+      }
+    }
+    open_chat(site_ref)
+  } else if mode == "chat-flash" || mode == "chat-flash-mine" || mode == "chat-flash-notice" {
     // opened from a notification at a message (Ana's, yours, or still.fail's notice), its flash held at its peak
     // (slice 10's)
     let seq = match mode {
@@ -831,6 +867,10 @@ pub fn open_mode(mode : String) -> Unit {
     // 已归档: on the wide frame the sidebar's list of them, the newest beside it (lists.mbt archive_pane); laid out
     // Small its page
     app.nav.push(Archived)
+  } else if mode == "place-stations-site" {
+    @settings.fixture_page("settings-station-site") |> ignore
+    app.nav.replace(Place("stations"))
+    @sfdesk.place_pick_station("ws1", "ws1/st1")
   } else if mode == "place-stations-tasks" {
     // the stations' place with those that only run tasks in its list (the settings' rigs_fixture.mbt), the first of
     // them picked: its page beside the list
