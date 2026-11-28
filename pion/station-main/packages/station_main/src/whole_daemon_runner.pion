@@ -285,17 +285,14 @@ pub fn server_session_workspace_dir(
   station_whole::server_session_workspace_dir(data_dir, ws, session_key, sep)
 }
 
-/// Verifies a pre-existing legacy `row.workspace` ONLY if:
-///   1. It is non-empty, contains no `..`, and canonicalizes strictly inside `<data>/sessions/`,
-///   2. It already exists on disk as a real non-symlink directory, AND
-///   3. SQLite confirms NO other workspace's session points to the same `workspace`.
-pub fn verify_legacy_session_workspace(
-  st_opt : Option[station_store::Store],
+/// Pure canonical cross-workspace collision check for a pre-existing legacy `row.workspace`:
+/// verifies `row_workspace` is a real non-symlink directory strictly inside `<data>/sessions/` and
+/// does NOT share, contain, or lie inside any canonicalized `other_ws_workspaces` entry (fail-closed).
+pub fn verify_legacy_session_workspace_against(
   ops_fs : station_ops::OpsFs,
   row_workspace : String,
   data_dir : String,
-  sess_ws : String,
-  home_ws : String,
+  other_ws_workspaces : Array[String],
   sep : String,
 ) -> Option[String] {
   let trimmed = row_workspace.trim()
@@ -321,33 +318,68 @@ pub fn verify_legacy_session_workspace(
   if canon_ws == canon_sessions || !is_path_within_root(canon_ws, canon_sessions, sep) {
     return None
   }
+  for i in 0..<other_ws_workspaces.length() {
+    let other_raw = other_ws_workspaces[i].trim()
+    if other_raw.length() == 0 {
+      continue
+    }
+    match canonicalize_with_existing_ancestor(ops_fs.realpath, other_raw, sep) {
+      Ok(other_canon) => {
+        if canon_ws == other_canon
+        || is_path_within_root(canon_ws, other_canon, sep)
+        || is_path_within_root(other_canon, canon_ws, sep) {
+          return None
+        }
+      }
+      Err(_) => return None
+    }
+  }
+  Some(canon_ws)
+}
+
+/// Verifies a pre-existing legacy `row.workspace` against all other workspaces' sessions in SQLite.
+pub fn verify_legacy_session_workspace(
+  st_opt : Option[station_store::Store],
+  ops_fs : station_ops::OpsFs,
+  row_workspace : String,
+  data_dir : String,
+  sess_ws : String,
+  home_ws : String,
+  sep : String,
+) -> Option[String] {
   match st_opt {
     Some(st) => {
       let eff_ws = if sess_ws.length() > 0 { sess_ws } else { home_ws }
-      match st.db.first(
-        "SELECT 1 FROM sessions WHERE workspace = ?1 AND COALESCE(NULLIF(ws, ''), ?2) != ?3 LIMIT 1",
+      match st.db.all(
+        "SELECT workspace FROM sessions WHERE COALESCE(NULLIF(ws, ''), ?1) != ?2",
         [
-          base_codec::json_str(trimmed),
           base_codec::json_str(home_ws),
           base_codec::json_str(eff_ws),
         ],
       ) {
-        Ok(None) => Some(canon_ws)
-        _ => None
+        Ok(rows) => {
+          let others : Array[String] = []
+          for i in 0..<rows.length() {
+            match rows[i].get("workspace") {
+              Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { others.push(s.trim()) }
+              _ => ()
+            }
+          }
+          verify_legacy_session_workspace_against(ops_fs, row_workspace, data_dir, others, sep)
+        }
+        Err(_) => None
       }
     }
     None => None
   }
 }
 
-/// Canonical CWD authorization (R6/R7 Invariant 1):
+/// Canonical CWD authorization (R6/R7/R8 Invariant 1):
 /// NEVER trusts `row.workspace` as an arbitrary root, NEVER permits `<data_dir>`, and NEVER
 /// grants a blind `<data>/sessions/<sanitize(key)>/workspace` legacy exemption.
-/// Allowed roots are strictly:
-///   1. The collision-free server-owned directory for THIS `(sess_ws, session_key)`, OR
-///   2. An explicitly verified existing legacy `row.workspace` (`verified_legacy_ws`, strictly under
-///      `<data>/sessions/`, existing on disk, unreferenced by any other workspace), OR
-///   3. This workspace's own Drive roots (from `parse_drive_roots_for_workspace_pure`).
+/// Anchors the modern hashed root strictly to `<canon_sessions>/s-<hash32>/workspace` so symlink
+/// swaps on `s-<hash32>` or `workspace` are rejected with `Err("server session workspace symlink escape")`.
+/// For legacy Node Connects sessions (`row_cwd` is `None`/empty), prefers `verified_legacy_ws` when valid.
 pub fn resolve_canonical_session_cwd(
   realpath_fn : (String) -> Result[String, station_ops::FsErr],
   row_cwd : Option[String],
@@ -362,28 +394,33 @@ pub fn resolve_canonical_session_cwd(
   if session_key.length() == 0 {
     return Err("session_key is required for CWD authorization")
   }
+  let sessions_root = nodepath::join(sep, [data_dir, "sessions"])
+  let canon_sessions = match canonicalize_with_existing_ancestor(realpath_fn, sessions_root, sep) {
+    Ok(c) => c
+    Err(e) => return Err("cannot canonicalize sessions root: " + e)
+  }
   let own_dir = server_session_workspace_dir(data_dir, sess_ws, session_key, sep)
   let canon_own_ws = match canonicalize_with_existing_ancestor(realpath_fn, own_dir, sep) {
     Ok(c) => c
     Err(e) => return Err("cannot canonicalize server session workspace: " + e)
   }
-  let sessions_root = nodepath::join(sep, [data_dir, "sessions"])
-  let canon_sessions_opt : Option[String] = match canonicalize_with_existing_ancestor(realpath_fn, sessions_root, sep) {
-    Ok(c) => Some(c)
-    Err(_) => None
+  let own_hash_seg = nodepath::basename(sep, nodepath::dirname(sep, own_dir))
+  let expected_own = nodepath::join(sep, [canon_sessions, own_hash_seg, "workspace"])
+  if canon_own_ws != expected_own {
+    return Err("server session workspace symlink escape")
   }
-  let canon_legacy_opt : Option[String] = match (verified_legacy_ws, canon_sessions_opt) {
-    (Some(v), Some(cs)) => {
+  let canon_legacy_opt : Option[String] = match verified_legacy_ws {
+    Some(v) => {
       if v.length() > 0 && !path_has_parent_traversal(v) {
         match canonicalize_with_existing_ancestor(realpath_fn, v, sep) {
-          Ok(cv) => if cv != cs && is_path_within_root(cv, cs, sep) { Some(cv) } else { None }
+          Ok(cv) => if cv != canon_sessions && is_path_within_root(cv, canon_sessions, sep) { Some(cv) } else { None }
           Err(_) => None
         }
       } else {
         None
       }
     }
-    _ => None
+    None => None
   }
   match row_cwd {
     Some(rc) => {
@@ -427,7 +464,10 @@ pub fn resolve_canonical_session_cwd(
     }
     None => ()
   }
-  Ok(canon_own_ws)
+  match canon_legacy_opt {
+    Some(cl) => Ok(cl)
+    None => Ok(canon_own_ws)
+  }
 }
 
 /// Pure newline-boundary ACK calculation (Abstraction 2):
@@ -487,24 +527,29 @@ pub fn format_message_envelope(
   sb.to_string()
 }
 
-/// Queries local SQLite `handed_over` for the destination station of a moved thread
-/// (1:1 with Node `station/src/sessions/hub.ts:801-810` `movedTo`).
+/// Queries local SQLite `handed_over` for the destination station of a moved thread,
+/// strictly scoped to `eff_ws` (`s.ws` and `h.ws`, 1:1 with Node `hub.ts:801-810` `movedTo`).
 pub fn query_thread_moved_to(
   st : station_store::Store,
   surface : String,
   connect_id : String,
   channel : String,
   thread_ts : String,
+  eff_ws : String,
+  home_ws : String,
 ) -> Option[String] {
   let surf_key = if surface.contains(":") { surface } else { surface + ":" + connect_id }
+  let target_ws = if eff_ws.length() > 0 { eff_ws } else { home_ws }
   match st.db.first(
-    "SELECT h.station AS station FROM threads t JOIN thread_sessions ts ON ts.thread = t.id AND ts.left_at IS NULL JOIN sessions s ON s.key = ts.session JOIN handed_over h ON h.session = s.key WHERE (t.surface = ?1 OR t.surface = ?2) AND t.channel = ?3 AND t.thread_ts = ?4 AND ts.connect = ?5 AND (s.ws IS NULL OR s.ws NOT LIKE 'coming:%') LIMIT 1",
+    "SELECT h.station AS station FROM threads t JOIN thread_sessions ts ON ts.thread = t.id AND ts.left_at IS NULL JOIN sessions s ON s.key = ts.session JOIN handed_over h ON h.session = s.key WHERE (t.surface = ?1 OR t.surface = ?2) AND t.channel = ?3 AND t.thread_ts = ?4 AND ts.connect = ?5 AND (s.ws IS NULL OR s.ws NOT LIKE 'coming:%') AND COALESCE(NULLIF(s.ws, ''), ?6) = ?7 AND (h.ws IS NULL OR h.ws = '' OR h.ws = ?7) LIMIT 1",
     [
       base_codec::json_str(surf_key),
       base_codec::json_str(surface),
       base_codec::json_str(channel),
       base_codec::json_str(thread_ts),
       base_codec::json_str(connect_id),
+      base_codec::json_str(home_ws),
+      base_codec::json_str(target_ws),
     ],
   ) {
     Ok(Some(row)) => match row.get("station") {
@@ -1509,9 +1554,27 @@ pub fn resolve_authorized_profile(
   Ok(station_drivers::Profile::default(safe_id, Some(runtime_kind), fallback_home))
 }
 
-/// Safely signals ONLY the `is_runner_live_strict`-verified `runner_pid` (5s slack, fail-closed
-/// when OS start time is missing; never signals an unverified independent agent PGID).
+/// Safely hard-kills BOTH the `is_runner_live_strict`-verified child process group (`info.pgid`,
+/// verifying `info.pid` start time within `STRICT_KILL_SLACK_MS` = 5s) AND `info.runner_pid`
+/// with `SIGKILL` when socket-based TERM/KILL escalation has timed out or failed.
 fn safe_kill_runner_info(info : station_drivers::RunnerInfo) -> Unit {
+  if info.pid > 1 && info.pgid > 1 {
+    if station_sys::proc_kill(info.pid, 0, false) == 0 {
+      match station_sys::proc_start_time_ms(info.pid) {
+        Some(child_start) => {
+          let diff = if child_start >= info.started_at {
+            child_start - info.started_at
+          } else {
+            info.started_at - child_start
+          }
+          if diff <= station_drivers::STRICT_KILL_SLACK_MS {
+            let _ = station_sys::proc_kill(info.pgid, station_sys::SIG_KILL, true)
+          }
+        }
+        None => ()
+      }
+    }
+  }
   if info.runner_pid <= 1 {
     return
   }
@@ -1523,7 +1586,7 @@ fn safe_kill_runner_info(info : station_drivers::RunnerInfo) -> Unit {
   if !station_drivers::is_runner_live_strict(info, true, os_start) {
     return
   }
-  let _ = station_sys::proc_kill(info.runner_pid, station_sys::SIG_TERM, false)
+  let _ = station_sys::proc_kill(info.runner_pid, station_sys::SIG_KILL, false)
 }
 
 /// Unified live session authorization & path policy (Abstraction 1: single entry point shared by
@@ -1674,6 +1737,9 @@ struct LiveRunnerSession {
   mut dropping_oversized_out_line : Bool
   mut stopping : Bool
   mut runner_exited : Bool
+  mut identity_verified : Bool
+  mut adopted_passive_only : Bool
+  mut prompt_write_pending : Bool
   mut pending_end_turn : Option[PendingEndTurn]
   mut adopted_db_out : Int64
 }
@@ -1780,14 +1846,17 @@ fn LiveRunnerManager::finish_draining(self : LiveRunnerManager, conn_id : Int) -
   self.by_conn_id.remove(conn_id)
 }
 
-/// R7 P1-3: Single real-time policy + `(profile_id, runtime_str, cwd)` identity check shared by
-/// `Running steer`, `live_runner_flush_ready`, and delayed steer flushes.
+/// R7/R8 P1-3: Single real-time policy + `identity_verified` + `(profile_id, runtime_str, cwd)` check
+/// shared by `Running steer`, `live_runner_flush_ready`, same-runner `Reprompt`, and delayed steer flushes.
 fn live_runner_verify_session_policy(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
   cfg_raw : base_codec::Json,
   sess : LiveRunnerSession,
 ) -> Bool {
+  if !sess.identity_verified || sess.stopping {
+    return false
+  }
   let st_db = match core.store.require_open() {
     Ok(s) => s
     Err(_) => return false
@@ -1930,6 +1999,7 @@ fn live_runner_on_write_done(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id 
     sess.write_inflight = false
     sess.write_inflight_bytes = 0
     sess.write_queue_bytes = 0
+    sess.prompt_write_pending = false
     if sess.close_after_write && sock_id >= 0L {
       live_runner_close_sock(ctx, sess.conn_id, sock_id)
     }
@@ -2201,33 +2271,40 @@ fn live_runner_finish_turn(
       match sess.phase {
         LiveRunnerPhase::Ready(_, sock_id) => {
           if !sess.runner_exited {
-            // Same-runner live reprompt: advance actor reprompt counter and send directly.
-            let act = actor.on_turn_ended(false, wall_ms)
-            match act {
-              station_sessions::TurnEndAction::Reprompt(_) => {
-                sess.prompt_seq = sess.prompt_seq + 1
-                let rsid = match sess.runtime_session_id {
-                  Some(s) => s
-                  None => ""
+            // R8 P1-2: Verify live policy + verified identity BEFORE sending same-runner Reprompt!
+            if !live_runner_verify_session_policy(ctx, core, ctx.cfg_raw, sess) {
+              ctx.log("[live-runner] live policy revoked or identity unverified before same-runner reprompt for " + sess.session_key + "; reclaiming runner")
+              mgr.reclaim_session(ctx, core, sess.session_key, sess, now_ms)
+            } else {
+              // Same-runner live reprompt: advance actor reprompt counter and send directly.
+              let act = actor.on_turn_ended(false, wall_ms)
+              match act {
+                station_sessions::TurnEndAction::Reprompt(_) => {
+                  sess.adopted_passive_only = false
+                  sess.prompt_seq = sess.prompt_seq + 1
+                  let rsid = match sess.runtime_session_id {
+                    Some(s) => s
+                    None => ""
+                  }
+                  let frame = encode_runtime_prompt(sess.runtime_kind, reminder, rsid, sess.prompt_seq)
+                  if sess.is_acp {
+                    let _ = sess.acp_guard.on_prompt(now_ms)
+                  } else {
+                    sess.stop_guard.busy = true
+                  }
+                  if live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
+                    return
+                  }
+                  // Write queue overflow: close socket and fall through to commit failed/ended turn.
+                  live_runner_close_sock(ctx, sess.conn_id, sock_id)
+                  sess.phase = LiveRunnerPhase::Exited
+                  actor.has_process = false
                 }
-                let frame = encode_runtime_prompt(sess.runtime_kind, reminder, rsid, sess.prompt_seq)
-                if sess.is_acp {
-                  let _ = sess.acp_guard.on_prompt(now_ms)
-                } else {
-                  sess.stop_guard.busy = true
-                }
-                if live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
-                  return
-                }
-                // Write queue overflow: close socket and fall through to commit failed/ended turn.
-                live_runner_close_sock(ctx, sess.conn_id, sock_id)
-                sess.phase = LiveRunnerPhase::Exited
-                actor.has_process = false
+                station_sessions::TurnEndAction::Finish(d) => eff_declared = d
+                station_sessions::TurnEndAction::ForceAllDone => eff_declared = station_sessions::TurnDeclared::AllDone("done")
+                station_sessions::TurnEndAction::ForceNeedHuman => eff_declared = station_sessions::TurnDeclared::NeedHuman("input needed")
+                station_sessions::TurnEndAction::EndUndeclared => eff_declared = station_sessions::TurnDeclared::None
               }
-              station_sessions::TurnEndAction::Finish(d) => eff_declared = d
-              station_sessions::TurnEndAction::ForceAllDone => eff_declared = station_sessions::TurnDeclared::AllDone("done")
-              station_sessions::TurnEndAction::ForceNeedHuman => eff_declared = station_sessions::TurnDeclared::NeedHuman("input needed")
-              station_sessions::TurnEndAction::EndUndeclared => eff_declared = station_sessions::TurnDeclared::None
             }
           } else if mgr.consume_reprompt_restart_budget(sess.session_key) {
             reprompt_reminder = Some(reminder)
@@ -2540,11 +2617,14 @@ fn live_runner_flush_ready(
     Some(text) => {
       let next_seq = sess.prompt_seq + 1
       let frame = encode_runtime_prompt(sess.runtime_kind, text, rsid, next_seq)
-      // Abstraction 2: Only consume `pending_prompt` AFTER `live_runner_send_sess` returns true!
+      // Abstraction 2 / R8 P1-4: Only consume `pending_prompt` AFTER `live_runner_send_sess` returns true,
+      // and mark `prompt_write_pending = true` until `live_runner_on_write_done` flushes the socket!
       if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
         return false
       }
       sess.pending_prompt = None
+      sess.prompt_write_pending = true
+      sess.adopted_passive_only = false
       sess.prompt_seq = next_seq
       if sess.is_acp {
         let _ = sess.acp_guard.on_prompt(now_ms)
@@ -3052,8 +3132,9 @@ pub fn LiveRunnerManager::adopt_live_runner(
     Some(w) => if w.length() > 0 { w } else { core.config.home_workspace }
     None => core.config.home_workspace
   }
-  // R5/R7 Invariant 1 & P1-3: Verify real-time launch policy AND runner actual CWD (`info.cwd` or
-  // Linux `/proc/<pid>/cwd`) BEFORE adopting ANY live runner (NEVER skip policy errors for idle!).
+  // R5/R7/R8 Invariant 1 & P1-2: Verify real-time launch policy AND persisted launch identity
+  // (`adopted-runners.db` `runner_launches`) + `rinfo.cwd` BEFORE adopting ANY live runner!
+  let inst_id = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
   let live_cfg = live_config_raw(core, cfg_raw)
   let legacy_ws = verify_legacy_session_workspace(
     Some(st),
@@ -3092,38 +3173,6 @@ pub fn LiveRunnerManager::adopt_live_runner(
     }
     None => None
   }
-  let mut unauthorized_stop = false
-  let mut eff_cwd = match runner_actual_cwd {
-    Some(c) => c
-    None => match row.cwd {
-      Some(c) => if c.length() > 0 { c } else { row.workspace }
-      None => row.workspace
-    }
-  }
-  match policy_res {
-    Ok(pol) => {
-      match runner_actual_cwd {
-        Some(rcwd) => {
-          if rcwd != pol.cwd {
-            ctx.log("[live-runner] adopt runner cwd mismatch for " + session_key + " (runner=" + rcwd + ", policy=" + pol.cwd + "); stopping runner via socket")
-            unauthorized_stop = true
-            eff_cwd = rcwd
-          } else {
-            eff_cwd = pol.cwd
-          }
-        }
-        None => eff_cwd = pol.cwd
-      }
-    }
-    Err(e) => {
-      ctx.log("[live-runner] adopt policy denied for " + session_key + " (" + e + "); will stop runner via socket")
-      unauthorized_stop = true
-    }
-  }
-  if !unauthorized_stop && core.agents.token_for_session(session_key) is None && row.token.length() > 0 {
-    core.agents.register_adopted_token(session_key, row.token)
-  }
-  let rt_sid_opt = query_persisted_runtime_session_id(st, session_key)
   let (open_turn_id, open_turn_started) : (Option[String], Int64) = match st.db.first(
     "SELECT id, started_at FROM turns WHERE session_key = ?1 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
     [base_codec::json_str(session_key)],
@@ -3141,6 +3190,81 @@ pub fn LiveRunnerManager::adopt_live_runner(
     }
     _ => (None, wall_ms)
   }
+  let launch_rec_opt : Option[station_whole::RunnerLaunchRecord] = match core.agents.get_runner_launch(inst_id) {
+    Ok(r) => r
+    Err(_) => None
+  }
+  let mut unauthorized_stop = false
+  let mut identity_verified = false
+  let mut eff_profile_id = row.profile
+  let mut eff_runtime_str = row.runtime
+  let mut eff_cwd = match runner_actual_cwd {
+    Some(c) => c
+    None => ""
+  }
+  match launch_rec_opt {
+    Some(launch) => {
+      // Pion-spawned runner: populate true launch identity from persisted `runner_launches`!
+      identity_verified = true
+      eff_profile_id = launch.profile_id
+      eff_runtime_str = launch.runtime
+      eff_cwd = launch.cwd
+      match runner_actual_cwd {
+        Some(rcwd) => if rcwd != launch.cwd {
+          ctx.log("[live-runner] adopt runner OS cwd mismatch vs launch record for " + session_key + " (os=" + rcwd + ", launch=" + launch.cwd + "); stopping runner via socket")
+          unauthorized_stop = true
+        }
+        None => ()
+      }
+      match policy_res {
+        Ok(pol) => {
+          if launch.session_key != session_key
+          || launch.ws != sess_ws
+          || launch.profile_id != pol.profile.id
+          || launch.runtime != row.runtime
+          || launch.cwd != pol.cwd {
+            ctx.log("[live-runner] adopt launch identity drifted from live policy for " + session_key + "; stopping runner via socket")
+            unauthorized_stop = true
+          }
+        }
+        Err(e) => {
+          ctx.log("[live-runner] adopt policy denied for " + session_key + " (" + e + "); stopping runner via socket")
+          unauthorized_stop = true
+        }
+      }
+    }
+    None => {
+      // Unverified external/Node runner: NEVER fabricate `pol.cwd` as verified identity!
+      // Passive read-only output collection (`adopted_passive_only = true`, `identity_verified = false`)
+      // is allowed ONLY when policy is valid (and for active turns, `rinfo.cwd` matches `pol.cwd`);
+      // `identity_verified = false` strictly blocks any prompt/steer/reprompt reuse.
+      identity_verified = false
+      let is_active_turn = open_turn_id is Some(_) || row.running
+      match policy_res {
+        Ok(pol) => {
+          if is_active_turn {
+            match runner_actual_cwd {
+              Some(rcwd) => {
+                if rcwd != pol.cwd {
+                  ctx.log("[live-runner] adopt unverified active runner cwd mismatch for " + session_key + " (runner=" + rcwd + ", policy=" + pol.cwd + "); stopping runner via socket")
+                  unauthorized_stop = true
+                }
+              }
+              None => ()
+            }
+          }
+        }
+        Err(e) => {
+          ctx.log("[live-runner] adopt policy denied for " + session_key + " (" + e + "); stopping runner via socket")
+          unauthorized_stop = true
+        }
+      }
+    }
+  }
+  if !unauthorized_stop && core.agents.token_for_session(session_key) is None && row.token.length() > 0 {
+    core.agents.register_adopted_token(session_key, row.token)
+  }
+  let rt_sid_opt = query_persisted_runtime_session_id(st, session_key)
   let tid_opt : Option[Int64] = match st.db.first(
     "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL LIMIT 1",
     [base_codec::json_str(session_key)],
@@ -3151,7 +3275,6 @@ pub fn LiveRunnerManager::adopt_live_runner(
     }
     _ => None
   }
-  let inst_id = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
   let cid = self.next_conn_id
   self.next_conn_id = self.next_conn_id + 1
   let is_acp = is_acp_runtime(rt_kind)
@@ -3161,12 +3284,12 @@ pub fn LiveRunnerManager::adopt_live_runner(
     conn_id: cid,
     session_key: session_key,
     ws: sess_ws,
-    profile_id: row.profile,
+    profile_id: eff_profile_id,
     model_opt: row.model,
     person_opt: row.created_by,
     thread_id_opt: tid_opt,
     runtime_kind: rt_kind,
-    runtime_str: row.runtime,
+    runtime_str: eff_runtime_str,
     runner_id: rinfo.id,
     is_acp: is_acp,
     is_codex: is_codex,
@@ -3211,6 +3334,9 @@ pub fn LiveRunnerManager::adopt_live_runner(
     dropping_oversized_out_line: false,
     stopping: unauthorized_stop,
     runner_exited: false,
+    identity_verified: identity_verified,
+    adopted_passive_only: open_turn_id is None && !row.running,
+    prompt_write_pending: false,
     pending_end_turn: None,
     adopted_db_out: 0L,
   }
@@ -3333,8 +3459,10 @@ pub fn LiveRunnerManager::pump(
                       None => true
                     }
                     if codex_missing_tid {
+                      sess.adopted_passive_only = false
                       sess.pending_steers.push(wrapped_steer)
                     } else {
+                      sess.adopted_passive_only = false
                       sess.prompt_seq = sess.prompt_seq + 1
                       let rsid = match sess.runtime_session_id {
                         Some(s) => s
@@ -3462,8 +3590,10 @@ fn LiveRunnerManager::dispatch_prompt(
 
   let fail_before_spawn = fn(reason : String) -> Unit {
     ctx.log("[live-runner] cannot start runner for " + session_key + ": " + reason)
-    // P1-2: Never silently swallow the user's message — record failed turn + error notice + running=0.
-    let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    // P1-2 / R8 P1-4: Never silently swallow the user's message OR a SQLite rollback error —
+    // if `st.tx` fails, enqueue a manager-level `PendingEndTurn` for retry in `tick()` so DB
+    // never retains an orphaned `running=1` / open turn!
+    match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
       let person_j = match eff_person {
         Some(p) => if p.length() > 0 { base_codec::json_str(p) } else { base_codec::json_null() }
         None => base_codec::json_null()
@@ -3495,7 +3625,33 @@ fn LiveRunnerManager::dispatch_prompt(
         Ok(_) => ()
       }
       Ok(())
-    })
+    }) {
+      Ok(_) => ()
+      Err(e) => {
+        ctx.log("[live-runner] fail_before_spawn SQLite rollback failed for " + session_key + ": " + e.message + "; deferring in pending_end_turns")
+        self.pending_end_turns.set(
+          session_key,
+          ManagerPendingEndTurn::{
+            session_key: session_key,
+            ws: sess_ws,
+            runtime_str: row.runtime,
+            pend: PendingEndTurn::{
+              turn_id: Some(turn_id),
+              outcome: "failed",
+              detail: Some(reason),
+              declared_str: None,
+              need_opt: None,
+              wait_secs_opt: None,
+              wait_for_opt: None,
+              wait_watch_opt: None,
+              wall_ms: wall_ms,
+              was_completed: false,
+              reprompt_reminder: None,
+            },
+          },
+        )
+      }
+    }
     match tid_opt {
       Some(tid) => {
         let notice_txt = "Could not start agent: " + reason
@@ -3570,16 +3726,17 @@ fn LiveRunnerManager::dispatch_prompt(
   let profile = policy.profile
   let cwd = policy.cwd
 
-  // If a live runner is already attached and ready/starting for this session, verify its
-  // `(profile_id, runtime_str, cwd)` still matches the live policy! If drifted, reclaim & respawn.
+  // If a live runner is already attached and ready/starting for this session, verify it is
+  // `identity_verified` AND its `(profile_id, runtime_str, cwd)` still matches the live policy!
   match self.sessions.get(session_key) {
     Some(existing) => {
-      let identity_ok = existing.profile_id == profile.id
+      let identity_ok = existing.identity_verified
+      && existing.profile_id == profile.id
       && existing.runtime_str == row.runtime
       && existing.cwd == cwd
       && !existing.stopping
       if !identity_ok {
-        ctx.log("[live-runner] live policy drifted or stopping for " + session_key + "; moving stale runner to draining")
+        ctx.log("[live-runner] live policy drifted, unverified, or stopping for " + session_key + "; moving stale runner to draining")
         self.reclaim_session(ctx, core, session_key, existing, now_ms)
         // Re-queue prompt so it starts cleanly AFTER the old instance finishes draining!
         if is_internal_prompt {
@@ -3591,6 +3748,7 @@ fn LiveRunnerManager::dispatch_prompt(
         actor.pump_next_prompt()
         return
       } else {
+        existing.adopted_passive_only = false
         match existing.phase {
           LiveRunnerPhase::Ready(_, sock_id) => {
             // R6 Invariant 3: `turn_start` SQLite failure MUST abort (no running SSE, no prompt write!).
@@ -3886,6 +4044,9 @@ fn LiveRunnerManager::dispatch_prompt(
         dropping_oversized_out_line: false,
         stopping: false,
         runner_exited: false,
+        identity_verified: true,
+        adopted_passive_only: false,
+        prompt_write_pending: false,
         pending_end_turn: None,
         adopted_db_out: 0L,
       }
@@ -3940,6 +4101,19 @@ pub fn LiveRunnerManager::handle_sys_event(
               // `stillfail-runner` terminate its own child process group (NEVER kill controller first!).
               let _ = child.close()
               self.by_spawn_ev.remove(ev_id)
+              // R8 P1-2: Persist true launch identity in `adopted-runners.db` `runner_launches` for handover verification!
+              let inst_id = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
+              let _ = core.agents.record_runner_launch(
+                station_whole::RunnerLaunchRecord::{
+                  instance_id: inst_id,
+                  session_key: sess.session_key,
+                  ws: sess.ws,
+                  profile_id: sess.profile_id,
+                  runtime: sess.runtime_str,
+                  cwd: sess.cwd,
+                  created_at: wall_ms,
+                },
+              )
               sess.phase = LiveRunnerPhase::Connecting(info)
               let _ = ctx.mux_role.call_async_raw(
                 builders_core::MuxToken::Tagged(sess.conn_id, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
@@ -4083,10 +4257,9 @@ pub fn LiveRunnerManager::handle_role_done(
                 }
                 if usid >= 0L {
                   if sess.stopping || is_draining {
-                    // R5/R6 Invariant 2 & 3: Send `signal TERM group:true` + `done` and enter `Stopping`
-                    // waiting for `stillfail-runner` to terminate its own child process group!
-                    let stop_payload = station_drivers::encode_runner_signal("TERM", true) + station_drivers::encode_runner_done()
-                    let _ = live_runner_send_sess(ctx, sess, usid, stop_payload)
+                    // R5/R6/R8 P1-3: Send ONLY `signal TERM group:true` (NEVER `done` before `Exit` +
+                    // durable SQLite `endTurn` commit!) and enter `Stopping` waiting for runner Exit.
+                    let _ = live_runner_send_sess(ctx, sess, usid, station_drivers::encode_runner_signal("TERM", true))
                     // timer: 5s grace before KILL escalation while waiting for runner to stop child group
                     sess.phase = LiveRunnerPhase::Stopping(info, usid, now_ms + station_drivers::KILL_GRACE_MS, false)
                     if !is_draining {
@@ -4245,15 +4418,10 @@ pub fn LiveRunnerManager::handle_role_done(
                   Ok(_) => {
                     pending_adopted_batch = []
                     sess.adopted_db_out = batch_db_out
-                    // R7 P1-4: Advance runner `acked_out` on `\n` boundaries (`batch_nl_out`) for all active
-                    // turns and non-`adopted_only` runners; passive `adopted_only` log collectors with no
-                    // active turn (`keep: 0`) ACK `batch_db_out` after durable `adopted-runners.db` commit.
-                    let is_adopted_only = sess.is_adopted
-                    && sess.adopted_instance_id is Some(_)
-                    && sess.current_turn_id is None
-                    && sess.pending_prompt is None
-                    && !sess.stopping
-                    let target_out = if is_adopted_only { batch_db_out } else { batch_nl_out }
+                    // R7/R8 P1-4: Advance runner `acked_out` on `\n` boundaries (`batch_nl_out`) for all active
+                    // turns and reused runners; explicit `adopted_passive_only` read-only collectors (`keep: 0`)
+                    // ACK `batch_db_out` after durable `adopted-runners.db` commit.
+                    let target_out = if sess.adopted_passive_only && !sess.stopping { batch_db_out } else { batch_nl_out }
                     if target_out > sess.acked_out {
                       sess.acked_out = target_out
                       ack_dirty = true
@@ -4581,6 +4749,13 @@ pub fn LiveRunnerManager::handle_role_done(
                   }
                   live_runner_finish_turn(self, ctx, core, sess, out_str, det_opt, now_ms, wall_ms)
                 }
+                match cur_info_opt {
+                  Some(info) => {
+                    let del_inst = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
+                    core.agents.delete_runner_launch(del_inst)
+                  }
+                  None => ()
+                }
                 if sess.pending_end_turn is None {
                   let _ = live_runner_send_sess(ctx, sess, cur_sock, station_drivers::encode_runner_done())
                   live_runner_close_sock(ctx, conn_id, cur_sock)
@@ -4739,8 +4914,8 @@ pub fn LiveRunnerManager::stop_session(
     }
     station_drivers::AbortAction::KillImmediately(_) => {
       sess.stopping = true
-      let stop_payload = station_drivers::encode_runner_signal("TERM", true) + station_drivers::encode_runner_done()
-      let _ = live_runner_send_sess(ctx, sess, sock_id, stop_payload)
+      // R8 P1-3: Send ONLY `signal TERM group:true` (NEVER `done` before `Exit` + durable SQLite `endTurn` commit!).
+      let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
       match live_runner_info_of(sess.phase) {
         Some(info) => {
           // timer: kill grace escalation after SIGTERM (5s) while runner stops its child group
@@ -4779,8 +4954,8 @@ fn LiveRunnerManager::reclaim_session(
     | LiveRunnerPhase::CodexInit(info, sock_id)
     | LiveRunnerPhase::CodexOpening(info, sock_id)
     | LiveRunnerPhase::Ready(info, sock_id) => {
-      let stop_payload = station_drivers::encode_runner_signal("TERM", true) + station_drivers::encode_runner_done()
-      let _ = live_runner_send_sess(ctx, sess, sock_id, stop_payload)
+      // R8 P1-3: Send ONLY `signal TERM group:true` (NEVER `done` before `Exit` + durable SQLite `endTurn` commit!).
+      let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_signal("TERM", true))
       // timer: 5s grace before KILL escalation while waiting for runner to stop child group
       sess.phase = LiveRunnerPhase::Stopping(info, sock_id, now_ms + station_drivers::KILL_GRACE_MS, false)
       self.move_to_draining(skey, sess)
@@ -5050,12 +5225,13 @@ pub fn LiveRunnerManager::detach_all_for_handover(
           | LiveRunnerPhase::AcpOpening(_, _)
           | LiveRunnerPhase::CodexInit(_, _)
           | LiveRunnerPhase::CodexOpening(_, _) => true
-          _ => sess.pending_prompt is Some(_)
+          _ => sess.pending_prompt is Some(_) || sess.prompt_write_pending
         }
         if pre_delivery && sess.current_turn_id is Some(tid) {
+          let mut closed_in_db = false
           match core.store.require_open() {
             Ok(st) => {
-              let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+              match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
                 match t.run(
                   "UPDATE turns SET ended_at = ?2, outcome = 'failed', detail = 'handover before prompt delivery' WHERE id = ?1 AND ended_at IS NULL",
                   [base_codec::json_str(tid), sql_db::int64_to_json(wall_ms)],
@@ -5071,18 +5247,48 @@ pub fn LiveRunnerManager::detach_all_for_handover(
                   Ok(_) => ()
                 }
                 Ok(())
-              })
+              }) {
+                Ok(_) => closed_in_db = true
+                Err(e) => {
+                  ctx.log("[live-runner] handover pre-delivery SQLite close failed for " + skey + ": " + e.message + "; recording in pending_end_turns")
+                  self.pending_end_turns.set(
+                    skey,
+                    ManagerPendingEndTurn::{
+                      session_key: skey,
+                      ws: sess.ws,
+                      runtime_str: sess.runtime_str,
+                      pend: PendingEndTurn::{
+                        turn_id: Some(tid),
+                        outcome: "failed",
+                        detail: Some("handover before prompt delivery"),
+                        declared_str: None,
+                        need_opt: None,
+                        wait_secs_opt: None,
+                        wait_for_opt: None,
+                        wait_watch_opt: None,
+                        wall_ms: wall_ms,
+                        was_completed: false,
+                        reprompt_reminder: None,
+                      },
+                    },
+                  )
+                }
+              }
             }
-            Err(_) => ()
-          }
-          match core.agents.hub.actors.get(skey) {
-            Some(actor) => {
-              actor.phase = station_sessions::ActorPhase::Idle
-              actor.has_process = false
+            Err(e) => {
+              ctx.log("[live-runner] handover pre-delivery store not open for " + skey + ": " + e)
             }
-            None => ()
           }
-          sess.current_turn_id = None
+          if closed_in_db {
+            match core.agents.hub.actors.get(skey) {
+              Some(actor) => {
+                actor.phase = station_sessions::ActorPhase::Idle
+                actor.has_process = false
+              }
+              None => ()
+            }
+            sess.current_turn_id = None
+          }
         }
         sess.detached_for_handover = true
         sess.stop_guard.on_handover_or_dispose()

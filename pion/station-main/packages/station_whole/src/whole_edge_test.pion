@@ -305,15 +305,15 @@ test "connects_os_shared_hub_sys_zero_drop_utf8_and_group_sse_reconnect" {
   let received_events : Array[String] = []
   let disconnects : Array[String] = []
   let cbs = ConnectsCallbacks::{
-    on_event: fn(cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Bool {
+    on_event: fn(cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
       match ev {
         station_connects::ChatEvent::Message(m) => received_events.push(cid + ":" + m.text)
         _ => received_events.push(cid + ":other")
       }
-      true
+      on_done(true)
     },
-    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool { true },
-    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Bool { true },
+    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer, on_done : (Bool) -> Unit) -> Unit { on_done(true) },
+    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json, on_done : (Bool) -> Unit) -> Unit { on_done(true) },
     on_disconnect: fn(cid : String, reason : String) -> Unit { disconnects.push(cid + ":" + reason) },
   }
   let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
@@ -932,23 +932,37 @@ test "connects_os_fail_closed_ack_on_callback_false" {
   )
   let bridge = ConnectMuxBridge::with_hub(h2.hub, mem.ops())
   let allow_deliver : Array[Bool] = [false]
+  let deferred_done : Array[Option[(Bool) -> Unit]] = [None]
+  let defer_mode : Array[Bool] = [false]
   let cbs = ConnectsCallbacks::{
-    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, _ev : station_connects::ChatEvent) -> Bool {
-      allow_deliver[0]
+    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, _ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
+      if defer_mode[0] {
+        deferred_done[0] = Some(on_done)
+      } else {
+        on_done(allow_deliver[0])
+      }
     },
-    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer) -> Bool { false },
-    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json) -> Bool { false },
+    on_card_answer: fn(_cid : String, _ans : station_connects::FeishuCardAnswer, on_done : (Bool) -> Unit) -> Unit { on_done(false) },
+    on_interactive: fn(_cid : String, _eid : String, _p : base_codec::Json, on_done : (Bool) -> Unit) -> Unit { on_done(false) },
     on_disconnect: fn(_cid : String, _r : String) -> Unit {},
   }
   let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)
   edge_assert(rt.register_slack("sl-1", "xapp-test", "xoxb-test", base_url="http://127.0.0.1:9998") is Ok(_))
   edge_assert(rt.start_connect("sl-1") is Ok(_))
-  // First event: callback returns false -> NO ACK sent!
+  // First event: callback calls on_done(false) -> NO ACK sent!
   let _ = h2.hub.pump_one(10L)
   edge_assert(ack_count == 0)
-  // Second event: callback returns true -> ACK sent!
-  allow_deliver[0] = true
+  // Second event: deferred async forward (pending) -> NO ACK until remote confirms on_done(true)!
+  defer_mode[0] = true
   let _ = h2.hub.pump_one(10L)
+  edge_assert(ack_count == 0)
+  match deferred_done[0] {
+    Some(cb) => {
+      cb(true)
+      deferred_done[0] = None
+    }
+    None => panic("expected deferred on_done callback")
+  }
   edge_assert(ack_count == 1)
   rt.stop()
 }
@@ -962,19 +976,20 @@ test "connects_os_group_hex64_endpoint_and_cursor_retry_on_callback_false" {
   let persisted : Array[String] = []
   let disconnects : Array[String] = []
   let cbs = ConnectsCallbacks::{
-    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent) -> Bool {
+    on_event: fn(_cid : String, _p : station_connects::ConnectPlatform, ev : station_connects::ChatEvent, on_done : (Bool) -> Unit) -> Unit {
       calls[0] = calls[0] + 1
       if !allow[0] {
-        return false
+        on_done(false)
+        return
       }
       match ev {
         station_connects::ChatEvent::Message(m) => persisted.push(m.text)
         _ => ()
       }
-      true
+      on_done(true)
     },
-    on_card_answer: fn(_cid, _ans) -> Bool { false },
-    on_interactive: fn(_cid, _eid, _p) -> Bool { false },
+    on_card_answer: fn(_cid, _ans, on_done) -> Unit { on_done(false) },
+    on_interactive: fn(_cid, _eid, _p, on_done) -> Unit { on_done(false) },
     on_disconnect: fn(_cid, r) -> Unit { disconnects.push(r) },
   }
   let rt = ConnectsOsRuntime::new(bridge, "st-here", cbs)

@@ -533,8 +533,9 @@ fn handle_slack_interactive_payload(
   envelope_id : String,
   payload : base_codec::Json,
   now_ms : Int64,
-  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json) -> Bool] = None,
-) -> Bool {
+  on_done : (Bool) -> Unit,
+  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json, (Bool) -> Unit) -> Unit] = None,
+) -> Unit {
   let get_s = fn(obj : base_codec::Json, k : String) -> String {
     match base_codec::json_get(obj, k) {
       Some(base_codec::Json::Str(s)) => s
@@ -593,7 +594,8 @@ fn handle_slack_interactive_payload(
     _ => ()
   }
   if ch.length() == 0 || tts.length() == 0 || choice.length() == 0 {
-    return false
+    on_done(false)
+    return
   }
   let ts = if action_ts.length() > 0 {
     "card-" + action_ts
@@ -620,7 +622,7 @@ fn handle_slack_interactive_payload(
       },
     },
   )
-  handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms, on_moved_to=on_moved_to)
+  let _ = handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms, on_done=Some(on_done), on_moved_to=on_moved_to)
 }
 
 pub fn parse_wire_chat_event(ev : base_codec::Json) -> Option[station_connects::ChatEvent] {
@@ -775,6 +777,30 @@ pub fn encode_wire_chat_event(ev : station_connects::ChatEvent) -> base_codec::J
   }
 }
 
+/// R8 P1-5: Shared `connect.event` peer RPC payload builder (1:1 with TS `knownOf(id, here)` and
+/// receiver `validate_connect_event`: `connect` is ALWAYS `{"id": connect_id, "origin": origin_station}`).
+pub fn encode_connect_event_rpc(
+  connect_id : String,
+  origin_station : String,
+  ws : String,
+  described : base_codec::Json,
+  event : base_codec::Json,
+) -> base_codec::Json {
+  base_codec::json_obj([
+    ("method", base_codec::json_str("connect.event")),
+    ("workspace", base_codec::json_str(ws)),
+    (
+      "connect",
+      base_codec::json_obj([
+        ("id", base_codec::json_str(connect_id)),
+        ("origin", base_codec::json_str(origin_station)),
+      ]),
+    ),
+    ("described", described),
+    ("event", event),
+  ])
+}
+
 fn describe_connect_meta(connect_id : String, meta : ConnectMeta) -> base_codec::Json {
   let parts = meta.config_surface.split(":")
   let kind = if parts.length() > 0 && parts[0].length() > 0 { parts[0] } else { "slack" }
@@ -865,15 +891,23 @@ fn handle_connect_inbound_event(
   now_ms : Int64,
   on_stop_session : (String) -> Unit = fn(_s : String) -> Unit { () },
   on_login_code : (String, String) -> Unit = fn(_lid : String, _code : String) -> Unit { () },
-  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json) -> Bool] = None,
+  on_done : Option[(Bool) -> Unit] = None,
+  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json, (Bool) -> Unit) -> Unit] = None,
 ) -> Bool {
+  let finish = fn(ok : Bool) -> Bool {
+    match on_done {
+      Some(cb) => cb(ok)
+      None => ()
+    }
+    ok
+  }
   let meta = match connect_meta.get(connect_id) {
     Some(m) => m
-    None => return false
+    None => return finish(false)
   }
   let st_db = match core.store.require_open() {
     Ok(s) => s
-    Err(_) => return false
+    Err(_) => return finish(false)
   }
   let (ch, tts) = match ev {
     station_connects::ChatEvent::Message(m) => (m.channel, m.thread_ts)
@@ -882,18 +916,6 @@ fn handle_connect_inbound_event(
     station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
     station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
   }
-  // R6/R7 Invariant 4 & P1-5: Query local SQLite `handed_over` directly; when moved to another station,
-  // forward via the shared `connect.event` peer RPC path when `on_moved_to` is provided!
-  let moved_station_opt = query_thread_moved_to(st_db, meta.config_surface, connect_id, ch, tts)
-  match (moved_station_opt, on_moved_to) {
-    (Some(target_station), Some(fwd_fn)) => {
-      if fwd_fn(target_station, meta.ws, describe_connect_meta(connect_id, meta), encode_wire_chat_event(ev)) {
-        return true
-      }
-    }
-    _ => ()
-  }
-  let routed_elsewhere = moved_station_opt is Some(_)
   let existing_tid : Option[Int64] = match st_db.db.first(
     "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3 LIMIT 1",
     [
@@ -908,8 +930,8 @@ fn handle_connect_inbound_event(
     }
     _ => None
   }
-  // Security (P0-1): Never allow an inbound connect event from workspace A to touch or inject
-  // into a thread owned by workspace B!
+  // Security (P0-1 / R8 P1-5): Enforce workspace visibility FIRST (BEFORE `query_thread_moved_to`
+  // or attachment download) so an inbound event from workspace A NEVER forwards or touches a thread owned by B!
   match existing_tid {
     Some(id) => {
       let vis = match station_whole::thread_visible_in_ws(st_db, id, meta.ws, core.config.home_workspace) {
@@ -917,11 +939,63 @@ fn handle_connect_inbound_event(
         Err(_) => false
       }
       if !vis {
-        return false
+        return finish(false)
       }
     }
     None => ()
   }
+  // R6/R7/R8 P1-5: Query local SQLite `handed_over` scoped strictly to `meta.ws`; when moved to
+  // another station, forward asynchronously via `ask_peer_rpc` and ONLY ACK the provider inside `on_done`!
+  let moved_station_opt = query_thread_moved_to(
+    st_db,
+    meta.config_surface,
+    connect_id,
+    ch,
+    tts,
+    meta.ws,
+    core.config.home_workspace,
+  )
+  match (moved_station_opt, on_moved_to) {
+    (Some(target_station), Some(fwd_fn)) => {
+      let done_cb = match on_done {
+        Some(cb) => cb
+        None => fn(_ok : Bool) -> Unit { () }
+      }
+      fwd_fn(target_station, meta.ws, describe_connect_meta(connect_id, meta), encode_wire_chat_event(ev), done_cb)
+      return true
+    }
+    _ => ()
+  }
+  let routed_elsewhere = moved_station_opt is Some(_)
+  let ok = handle_connect_inbound_event_local(
+    core,
+    connects,
+    meta,
+    st_db,
+    connect_id,
+    ev,
+    now_ms,
+    routed_elsewhere,
+    existing_tid,
+    on_stop_session,
+    on_login_code,
+  )
+  finish(ok)
+}
+
+fn handle_connect_inbound_event_local(
+  core : station_whole::WholeCore,
+  connects : station_whole::ConnectsOsRuntime,
+  meta : ConnectMeta,
+  st_db : station_store::Store,
+  connect_id : String,
+  ev : station_connects::ChatEvent,
+  now_ms : Int64,
+  routed_elsewhere : Bool,
+  existing_tid : Option[Int64],
+  on_stop_session : (String) -> Unit,
+  on_login_code : (String, String) -> Unit,
+) -> Bool {
   match decide_connect_inbound(meta.single, meta.require_mention, routed_elsewhere, existing_tid is Some(_), ev) {
     ConnectInboundDecision::IgnoreAndAck => true
     ConnectInboundDecision::RefuseNoAck => false
@@ -1281,8 +1355,9 @@ fn handle_feishu_card_answer(
   connect_id : String,
   ans : station_connects::FeishuCardAnswer,
   now_ms : Int64,
-  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json) -> Bool] = None,
-) -> Bool {
+  on_done : (Bool) -> Unit,
+  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json, (Bool) -> Unit) -> Unit] = None,
+) -> Unit {
   let tts = if ans.thread_ts.length() > 0 { ans.thread_ts } else { ans.message_id }
   let ts = if ans.event_id.length() > 0 { "card-" + ans.event_id } else { "card-" + now_ms.to_string() }
   let ev = station_connects::ChatEvent::Message(
@@ -1297,7 +1372,7 @@ fn handle_feishu_card_answer(
       quoted: if ans.message_id.length() > 0 { Some(ans.message_id) } else { None },
     },
   )
-  handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms, on_moved_to=on_moved_to)
+  let _ = handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms, on_done=Some(on_done), on_moved_to=on_moved_to)
 }
 
 /// Local attachment chunk reader for Comma `task.read_file` & `comma.read_file`
@@ -3405,7 +3480,14 @@ fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : Strin
     }
     let cwd_opt = match base_codec::json_get(j, "cwd") {
       Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { Some(s.trim()) } else { None }
-      _ => None
+      _ => if pid > 1 && pid != rpid {
+        match station_sys::readlink("/proc/" + pid.to_string() + "/cwd") {
+          Some(p) => if p.trim().length() > 0 { Some(p.trim()) } else { None }
+          None => None
+        }
+      } else {
+        None
+      }
     }
     let info = station_drivers::RunnerInfo::{
       id: id,
@@ -6182,25 +6264,22 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       let connect_bridge = station_whole::ConnectMuxBridge::with_hub(ctx.edge_hub, ctx.ops_fs)
       let connects_cell : Array[Option[station_whole::ConnectsOsRuntime]] = [None]
       let live_runners_cell : Array[Option[LiveRunnerManager]] = [None]
-      let make_local_moved_fwd = fn(connect_id : String) -> (String, String, base_codec::Json, base_codec::Json) -> Bool {
-        fn(target_station : String, ws : String, desc : base_codec::Json, ev_j : base_codec::Json) -> Bool {
+      let make_local_moved_fwd = fn(connect_id : String) -> (String, String, base_codec::Json, base_codec::Json, (Bool) -> Unit) -> Unit {
+        fn(target_station : String, ws : String, desc : base_codec::Json, ev_j : base_codec::Json, on_done : (Bool) -> Unit) -> Unit {
           if target_station.length() == 0 || target_station == ctx.station_key.id {
-            return false
+            on_done(false)
+            return
           }
-          let fwd_req = base_codec::json_obj([
-            ("method", base_codec::json_str("connect.event")),
-            ("workspace", base_codec::json_str(ws)),
-            ("connect", base_codec::json_str(connect_id)),
-            ("described", desc),
-            ("event", ev_j),
-          ])
+          let fwd_req = encode_connect_event_rpc(connect_id, ctx.station_key.id, ws, desc, ev_j)
           ctx.ask_peer_rpc(target_station, ws, fwd_req, fn(res : Result[base_codec::Json, String]) -> Unit {
             match res {
-              Ok(_) => ()
-              Err(e) => ctx.log("[connects] local movedTo forward to " + target_station + " failed: " + e)
+              Ok(_) => on_done(true)
+              Err(e) => {
+                ctx.log("[connects] local movedTo forward to " + target_station + " failed: " + e)
+                on_done(false)
+              }
             }
           })
-          true
         }
       }
       let connect_cbs = station_whole::ConnectsCallbacks::{
@@ -6208,32 +6287,36 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           connect_id : String,
           _platform : station_connects::ConnectPlatform,
           ev : station_connects::ChatEvent,
-        ) -> Bool {
+          on_done : (Bool) -> Unit,
+        ) -> Unit {
           match connects_cell[0] {
-            Some(crt) => handle_connect_inbound_event(
-              core,
-              crt,
-              connect_meta,
-              connect_id,
-              ev,
-              host_shim::wall_ms(),
-              on_stop_session=fn(skey : String) -> Unit {
-                match live_runners_cell[0] {
-                  Some(lr) => {
-                    let _ = lr.stop_session(ctx, skey, host_shim::now_ms())
+            Some(crt) => {
+              let _ = handle_connect_inbound_event(
+                core,
+                crt,
+                connect_meta,
+                connect_id,
+                ev,
+                host_shim::wall_ms(),
+                on_stop_session=fn(skey : String) -> Unit {
+                  match live_runners_cell[0] {
+                    Some(lr) => {
+                      let _ = lr.stop_session(ctx, skey, host_shim::now_ms())
+                    }
+                    None => ()
                   }
-                  None => ()
-                }
-              },
-              on_login_code=fn(lid : String, code : String) -> Unit {
-                let _ = logins.send_input(lid, Some(code), None)
-              },
-              on_moved_to=Some(make_local_moved_fwd(connect_id)),
-            )
-            None => false
+                },
+                on_login_code=fn(lid : String, code : String) -> Unit {
+                  let _ = logins.send_input(lid, Some(code), None)
+                },
+                on_done=Some(on_done),
+                on_moved_to=Some(make_local_moved_fwd(connect_id)),
+              )
+            }
+            None => on_done(false)
           }
         },
-        on_card_answer: fn(cid : String, ans : station_connects::FeishuCardAnswer) -> Bool {
+        on_card_answer: fn(cid : String, ans : station_connects::FeishuCardAnswer, on_done : (Bool) -> Unit) -> Unit {
           match connects_cell[0] {
             Some(crt) => handle_feishu_card_answer(
               core,
@@ -6242,12 +6325,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               cid,
               ans,
               host_shim::wall_ms(),
+              on_done,
               on_moved_to=Some(make_local_moved_fwd(cid)),
             )
-            None => false
+            None => on_done(false)
           }
         },
-        on_interactive: fn(cid : String, eid : String, payload : base_codec::Json) -> Bool {
+        on_interactive: fn(cid : String, eid : String, payload : base_codec::Json, on_done : (Bool) -> Unit) -> Unit {
           match connects_cell[0] {
             Some(crt) => handle_slack_interactive_payload(
               core,
@@ -6257,9 +6341,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               eid,
               payload,
               host_shim::wall_ms(),
+              on_done,
               on_moved_to=Some(make_local_moved_fwd(cid)),
             )
-            None => false
+            None => on_done(false)
           }
         },
         on_disconnect: fn(_cid : String, _reason : String) -> Unit {},
@@ -7322,7 +7407,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                           Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "slack" }
                           _ => "slack"
                         }
-                        query_thread_moved_to(st_db, desc_surf, remote_cid, ev_ch, ev_tts)
+                        query_thread_moved_to(st_db, desc_surf, remote_cid, ev_ch, ev_tts, ws, st.core.config.home_workspace)
                       }
                       Err(_) => None
                     }

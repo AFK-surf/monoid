@@ -2534,6 +2534,7 @@ rl.on("line", async (line) => {
   if (msg.type === "user") {
     turnNum += 1;
     if (turnNum === 1) {
+      fs.writeFileSync(releaseFlag + ".started", "1");
       while (!fs.existsSync(releaseFlag)) {
         await new Promise((r) => setTimeout(r, 80));
       }
@@ -2901,6 +2902,9 @@ setInterval(() => {}, 60000);
       liveRunnerPgid = runnerInfo.pgid;
       extraPids.push(liveRunnerPid);
       if (liveRunnerPgid > 1) extraPids.push(liveRunnerPgid);
+
+      // Wait until Turn 1 prompt is actually delivered and in-flight before triggering SIGUSR2 handover!
+      await until("W17C-1 S3 turn1 prompt delivered", () => (existsSync(releaseFlag + ".started") ? true : null), 15_000);
 
       // Trigger graceful SIGUSR2 handover on launcher!
       launcher.kill("SIGUSR2");

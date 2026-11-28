@@ -1258,6 +1258,14 @@ fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String
     "CREATE TABLE IF NOT EXISTS runner_session_totals (" +
     "session_key TEXT PRIMARY KEY, " +
     "total_bytes INTEGER NOT NULL DEFAULT 0);",
+    "CREATE TABLE IF NOT EXISTS runner_launches (" +
+    "instance_id TEXT PRIMARY KEY, " +
+    "session_key TEXT NOT NULL, " +
+    "ws TEXT NOT NULL, " +
+    "profile_id TEXT NOT NULL, " +
+    "runtime TEXT NOT NULL, " +
+    "cwd TEXT NOT NULL, " +
+    "created_at INTEGER NOT NULL);",
   ]
   for i in 0..<init_sqls.length() {
     match db.exec(init_sqls[i]) {
@@ -1359,6 +1367,104 @@ fn WholeAgents::open_adopted_db(self : WholeAgents) -> Result[sql_db::Db, String
   }
   self.adopted_db = Some(db)
   Ok(db)
+}
+
+/// Persisted launch identity of a Pion-spawned `stillfail-runner` instance in `adopted-runners.db`
+/// so `SIGUSR2` handover adoption verifies the runner's true `(session_key, ws, profile_id, runtime, cwd)`.
+pub struct RunnerLaunchRecord {
+  pub instance_id : String
+  pub session_key : String
+  pub ws : String
+  pub profile_id : String
+  pub runtime : String
+  pub cwd : String
+  pub created_at : Int64
+}
+
+pub fn WholeAgents::record_runner_launch(
+  self : WholeAgents,
+  rec : RunnerLaunchRecord,
+) -> Result[Unit, String] {
+  let db = match self.open_adopted_db() {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  match db.tx(fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match tx.run(
+      "INSERT OR REPLACE INTO runner_launches (instance_id, session_key, ws, profile_id, runtime, cwd, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+      [
+        base_codec::json_str(rec.instance_id),
+        base_codec::json_str(rec.session_key),
+        base_codec::json_str(rec.ws),
+        base_codec::json_str(rec.profile_id),
+        base_codec::json_str(rec.runtime),
+        base_codec::json_str(rec.cwd),
+        sql_db::int64_to_json(rec.created_at),
+      ],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  }) {
+    Ok(_) => Ok(())
+    Err(e) => Err("record_runner_launch failed: " + e.message)
+  }
+}
+
+pub fn WholeAgents::get_runner_launch(
+  self : WholeAgents,
+  instance_id : String,
+) -> Result[Option[RunnerLaunchRecord], String] {
+  let db = match self.open_adopted_db() {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  match db.first(
+    "SELECT instance_id, session_key, ws, profile_id, runtime, cwd, created_at FROM runner_launches WHERE instance_id = ?1 LIMIT 1",
+    [base_codec::json_str(instance_id)],
+  ) {
+    Ok(Some(row)) => {
+      let get_s = fn(k : String) -> String {
+        match row.get(k) {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+      }
+      Ok(
+        Some(RunnerLaunchRecord::{
+          instance_id: get_s("instance_id"),
+          session_key: get_s("session_key"),
+          ws: get_s("ws"),
+          profile_id: get_s("profile_id"),
+          runtime: get_s("runtime"),
+          cwd: get_s("cwd"),
+          created_at: adopted_row_i64(row, "created_at"),
+        }),
+      )
+    }
+    Ok(None) => Ok(None)
+    Err(e) => Err("get_runner_launch failed: " + e.message)
+  }
+}
+
+pub fn WholeAgents::delete_runner_launch(
+  self : WholeAgents,
+  instance_id : String,
+) -> Unit {
+  if instance_id.length() == 0 {
+    return
+  }
+  match self.open_adopted_db() {
+    Ok(db) => {
+      let _ = db.tx(fn(tx : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+        match tx.run("DELETE FROM runner_launches WHERE instance_id = ?1", [base_codec::json_str(instance_id)]) {
+          Ok(_) => Ok(())
+          Err(e) => Err(e)
+        }
+      })
+    }
+    Err(_) => ()
+  }
 }
 
 /// Atomically look up or initialize a runner instance row in `<data_dir>/run/adopted-runners.db`.

@@ -1682,3 +1682,130 @@ test "W17C-1 R7 collision-free session workspace encoding, no blind legacy exemp
     _ => panic("expected Stop roundtrip")
   }
 }
+
+test "W17C-1 R8 P0 modern root symlink anchor, legacy Node Connects cwd=NULL, encode_connect_event_rpc roundtrip" {
+  // 1. Modern hashed root symlink escape MUST be rejected even when `row_cwd` is None!
+  let own_s1 = server_session_workspace_dir("/data", "ws-a", "s1", "/")
+  let escaped_realpath = fn(p : String) -> Result[String, station_ops::FsErr] {
+    if p == "/data" { Ok("/real/data") }
+    else if p == "/data/sessions" { Ok("/real/data/sessions") }
+    else if p == own_s1 { Ok("/real/data/sessions/s-victim/workspace") }
+    else { Err(station_ops::FsErr::NotFound) }
+  }
+  match resolve_canonical_session_cwd(escaped_realpath, None, own_s1, "/data", [], "/", session_key="s1", sess_ws="ws-a") {
+    Err(msg) => assert_str_eq(msg, "server session workspace symlink escape")
+    Ok(c) => panic("expected symlink escape error, got: " + c)
+  }
+
+  // 2. Legacy Node Connects row (`cwd = None`, verified `row.workspace` on disk) resolves to legacy dir, NOT empty hash dir!
+  let leg_dir = "/data/sessions/slack-1/C1-1700/workspace"
+  let ok_realpath = fn(p : String) -> Result[String, station_ops::FsErr] {
+    if p == "/data" { Ok("/real/data") }
+    else if p == "/data/sessions" { Ok("/real/data/sessions") }
+    else if p == leg_dir { Ok("/real/data/sessions/slack-1/C1-1700/workspace") }
+    else { Err(station_ops::FsErr::NotFound) }
+  }
+  match resolve_canonical_session_cwd(
+    ok_realpath,
+    None,
+    leg_dir,
+    "/data",
+    [],
+    "/",
+    session_key="slack-1:C1/1700",
+    sess_ws="ws-a",
+    verified_legacy_ws=Some(leg_dir),
+  ) {
+    Ok(c) => assert_str_eq(c, "/real/data/sessions/slack-1/C1-1700/workspace")
+    Err(e) => panic("expected verified legacy dir for cwd=None, got: " + e)
+  }
+
+  // 3. `encode_connect_event_rpc` round-trips directly into `validate_connect_event` with `connect: {id, origin}`!
+  let desc = describe_connect_meta(
+    "sl-1",
+    ConnectMeta::{
+      ws: "ws-1",
+      config_surface: "slack:T1",
+      single: false,
+      require_mention: true,
+      runtime: "claude",
+      profile: "default",
+      cwd: None,
+    },
+  )
+  let ev_j = encode_wire_chat_event(
+    station_connects::ChatEvent::Message(
+      station_connects::InboundMessage::{
+        channel: "C1",
+        thread_ts: "100.1",
+        ts: "100.2",
+        user: "U1",
+        text: "moved msg",
+        addressed: true,
+        files: [],
+        quoted: None,
+      },
+    ),
+  )
+  let rpc = encode_connect_event_rpc("sl-1", "st-origin", "ws-1", desc, ev_j)
+  let has_local = fn(_id : String) -> Bool { false }
+  let local_ws = fn(_id : String) -> Option[String] { None }
+  match validate_connect_event(rpc, "ws-1", "st-dest", has_local, local_ws) {
+    ConnectEventValidation::LearnAndDeliver(cid, _) => assert_str_eq(cid, "sl-1@st-origin")
+    ConnectEventValidation::Reject(e) => panic("expected LearnAndDeliver, got Reject: " + e)
+    _ => panic("expected LearnAndDeliver")
+  }
+}
+
+test "W17C-1 R8 canonical legacy cross-ws symlink & parent/child collision checks" {
+  let base_ops = station_ops::MemFs::new().ops()
+  let custom_ops = station_ops::OpsFs::{
+    ..base_ops,
+    lstat: fn(p : String) -> Result[station_ops::FileMeta, station_ops::FsErr] {
+      if p == "/data/sessions/real-dir/workspace"
+      || p == "/data/sessions/parent-dir/workspace"
+      || p == "/data/sessions/parent-dir/workspace/sub"
+      || p == "/data/sessions/unique-a/workspace" {
+        Ok(station_ops::FileMeta::{ is_file: false, is_dir: true, is_link: false, size: 0L, mtime_ms: 0L, mtime_exact: "", ino: 0L, mode: 493 })
+      } else {
+        Err(station_ops::FsErr::NotFound)
+      }
+    },
+    realpath: fn(p : String) -> Result[String, station_ops::FsErr] {
+      if p == "/data" { Ok("/real/data") }
+      else if p == "/data/sessions" { Ok("/real/data/sessions") }
+      else if p == "/data/sessions/real-dir/workspace" { Ok("/real/data/sessions/real-dir/workspace") }
+      else if p == "/data/sessions/alias-link/workspace" { Ok("/real/data/sessions/real-dir/workspace") }
+      else if p == "/data/sessions/parent-dir/workspace" { Ok("/real/data/sessions/parent-dir/workspace") }
+      else if p == "/data/sessions/parent-dir/workspace/sub" { Ok("/real/data/sessions/parent-dir/workspace/sub") }
+      else if p == "/data/sessions/unique-a/workspace" { Ok("/real/data/sessions/unique-a/workspace") }
+      else { Err(station_ops::FsErr::NotFound) }
+    },
+  }
+  let other_ws_dirs = ["/data/sessions/alias-link/workspace", "/data/sessions/parent-dir/workspace/sub"]
+  // (1) Same physical dir referenced by ws-b via ancestor symlink alias -> MUST reject!
+  assert_true(
+    verify_legacy_session_workspace_against(custom_ops, "/data/sessions/real-dir/workspace", "/data", other_ws_dirs, "/") is None,
+    "symlink alias collision with ws-b must be rejected",
+  )
+  // (2) Parent contains ws-b child dir -> MUST reject!
+  assert_true(
+    verify_legacy_session_workspace_against(custom_ops, "/data/sessions/parent-dir/workspace", "/data", other_ws_dirs, "/") is None,
+    "parent containing ws-b child must be rejected",
+  )
+  // (3) Child inside ws-b parent dir -> MUST reject!
+  assert_true(
+    verify_legacy_session_workspace_against(custom_ops, "/data/sessions/parent-dir/workspace/sub", "/data", ["/data/sessions/parent-dir/workspace"], "/") is None,
+    "child inside ws-b parent must be rejected",
+  )
+  // (4) Uncanonicalizable other workspace path -> fail-closed None!
+  assert_true(
+    verify_legacy_session_workspace_against(custom_ops, "/data/sessions/unique-a/workspace", "/data", ["/unresolvable/path"], "/") is None,
+    "uncanonicalizable other workspace path must fail closed",
+  )
+  // (5) Unshared existing dir under <data>/sessions/ -> allowed!
+  match verify_legacy_session_workspace_against(custom_ops, "/data/sessions/unique-a/workspace", "/data", other_ws_dirs, "/") {
+    Some(c) => assert_str_eq(c, "/real/data/sessions/unique-a/workspace")
+    None => panic("expected unshared existing legacy dir to be allowed")
+  }
+}
