@@ -2656,12 +2656,21 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     9999,
     fn(_m) {},
     now_ms_fn=fn() -> Int64 { now_a },
-    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
-      if spawn_dead_a { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
+    verify_spawn_id=fn(p, _ms, _b, _t) -> SpawnIdentityVerdict {
+      if p == 4601 {
+        if spawn_dead_a { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
+      } else {
+        if conn_dead_a { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
+      }
     },
-    check_pid_dead=fn(_p, _st) -> Bool { conn_dead_a },
     probe_runner_fn=fn(_fs, _d, _sep, rid) -> RunnerFileProbe {
-      if rid == "r-sp-a" { RunnerFileProbe::Live(sp_rinfo_a) } else { RunnerFileProbe::ConfirmedAbsent }
+      if rid == "r-sp-a" {
+        RunnerFileProbe::Live(sp_rinfo_a)
+      } else if rid == "r-cn-a" {
+        RunnerFileProbe::Live(cn_rinfo_a)
+      } else {
+        RunnerFileProbe::ConfirmedAbsent
+      }
     },
     close_child_fn=fn(_c) { closed_child_count_a = closed_child_count_a + 1 },
     max_wait_ms=500L,
@@ -2707,7 +2716,7 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
   let hub_b = station_whole::EdgeMuxHub::from_transport(tr_b)
   let mgr_b = LiveRunnerManager::new()
   mgr_b.set_handover_state_path("/data/run/whole-live-runners.json")
-  let cn_sess_b = make_sess(403, "s-cn-b", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), false)
+  let cn_sess_b = make_sess(403, "s-cn-b", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), true)
   mgr_b.sessions.set("s-cn-b", cn_sess_b)
   let ok_b = mgr_b.stop_all_on_shutdown_with(
     hub_b,
@@ -2718,8 +2727,7 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     fn(_m) {},
     now_ms_fn=fn() -> Int64 { now_b },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
-    check_pid_dead=fn(_p, _st) -> Bool { false },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::ConfirmedAbsent },
+    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
     close_child_fn=fn(_c) {},
     max_wait_ms=200L,
     flush_ms=50L,
@@ -2727,6 +2735,208 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
   assert_true(!ok_b, "R26 1B: Connecting runner still alive after tcp.write ack MUST return false (exit code 1)")
   assert_true(mgr_b.draining_stopping_ids.length() == 1, "R26 1B: unconfirmed Connecting stop marker preserved")
   assert_true(ops_b.read_text("/data/run/whole-live-runners.json").is_ok(), "R26 1B: unconfirmed marker persisted to disk")
+
+  // ---- Test 1C-i (R27 P1-1): Connecting with active turn + SQLite commit SUCCEEDS -> sends `done` & returns true ----
+  let mem_c1 = station_ops::MemFs::new()
+  let ops_c1 = mem_c1.ops()
+  let events_c1 : Array[host_shim::HostEvent] = []
+  let mut ev_idx_c1 = 0
+  let mut now_c1 = 1000L
+  let mut c1_dead = false
+  let mut c1_saw_done = false
+  let tr_c1 = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      now_c1 = now_c1 + 25L
+      if ev_idx_c1 < events_c1.length() {
+        let ev = events_c1[ev_idx_c1]
+        ev_idx_c1 = ev_idx_c1 + 1
+        Some(ev)
+      } else {
+        None
+      }
+    },
+    call_async: fn(id : Int64, op : String, _json_str : String, payload : Option[Bytes]) -> Unit {
+      if op == "unix.open" {
+        events_c1.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{\"id\":610}", bytes: None }))
+      } else if op == "tcp.write" {
+        match payload {
+          Some(b) => {
+            let txt = b.to_string()
+            assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\""), "1C-i must send TERM")
+            if txt.contains("\"op\":\"done\"") { c1_saw_done = true }
+          }
+          None => panic("expected payload")
+        }
+        c1_dead = true
+        events_c1.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
+      }
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_c1 },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_c1 = station_whole::EdgeMuxHub::from_transport(tr_c1)
+  let mgr_c1 = LiveRunnerManager::new()
+  mgr_c1.set_handover_state_path("/data/run/whole-live-runners.json")
+  let cn_sess_c1 = make_sess(411, "s-c1", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), true)
+  cn_sess_c1.current_turn_id = Some("turn-c1")
+  mgr_c1.sessions.set("s-c1", cn_sess_c1)
+  let ok_c1 = mgr_c1.stop_all_on_shutdown_with(
+    hub_c1,
+    ops_c1,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    commit_turn_fn=fn(s) -> Bool {
+      s.current_turn_id = None
+      true
+    },
+    now_ms_fn=fn() -> Int64 { now_c1 },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
+      if c1_dead { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
+    },
+    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=300L,
+    flush_ms=50L,
+  )
+  assert_true(ok_c1 && c1_saw_done, "R27 1C-i: committed active turn sends done, exits, and returns true")
+  assert_true(mgr_c1.draining_stopping_ids.length() == 0, "R27 1C-i: stop marker cleared")
+
+  // ---- Test 1C-ii (R27 P1-1): Connecting with active turn + SQLite commit FAILS -> NO `done`, preserves pending_end_turns, returns false ----
+  let mem_c2 = station_ops::MemFs::new()
+  let ops_c2 = mem_c2.ops()
+  let events_c2 : Array[host_shim::HostEvent] = []
+  let mut ev_idx_c2 = 0
+  let mut now_c2 = 1000L
+  let mut c2_writes = 0
+  let tr_c2 = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      now_c2 = now_c2 + 50L
+      if ev_idx_c2 < events_c2.length() {
+        let ev = events_c2[ev_idx_c2]
+        ev_idx_c2 = ev_idx_c2 + 1
+        Some(ev)
+      } else {
+        None
+      }
+    },
+    call_async: fn(id : Int64, op : String, _json_str : String, payload : Option[Bytes]) -> Unit {
+      if op == "unix.open" {
+        events_c2.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "{\"id\":620}", bytes: None }))
+      } else if op == "tcp.write" {
+        c2_writes = c2_writes + 1
+        match payload {
+          Some(b) => {
+            let txt = b.to_string()
+            assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\"") && txt.contains("\"group\":true"), "1C-ii must send TERM group:true")
+            assert_true(!txt.contains("\"op\":\"done\""), "R27 1C-ii: uncommitted turn MUST NEVER send done!")
+          }
+          None => panic("expected payload")
+        }
+        events_c2.push(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{ id: id, error: "", json: "true", bytes: None }))
+      }
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_c2 },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_c2 = station_whole::EdgeMuxHub::from_transport(tr_c2)
+  let mgr_c2 = LiveRunnerManager::new()
+  mgr_c2.set_handover_state_path("/data/run/whole-live-runners.json")
+  let cn_sess_c2 = make_sess(412, "s-c2", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), true)
+  cn_sess_c2.current_turn_id = Some("turn-c2-fail")
+  mgr_c2.sessions.set("s-c2", cn_sess_c2)
+  let ok_c2 = mgr_c2.stop_all_on_shutdown_with(
+    hub_c2,
+    ops_c2,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    commit_turn_fn=fn(s) -> Bool {
+      s.pending_end_turn = Some(PendingEndTurn::{
+        turn_id: s.current_turn_id,
+        outcome: "aborted",
+        detail: Some("station shutdown"),
+        declared_str: None,
+        need_opt: None,
+        wait_secs_opt: None,
+        wait_for_opt: None,
+        wait_watch_opt: None,
+        wall_ms: 1700000010000L,
+        was_completed: false,
+        reprompt_reminder: None,
+      })
+      s.current_turn_id = None
+      mgr_c2.preserve_pending_end_turn(s)
+      false
+    },
+    now_ms_fn=fn() -> Int64 { now_c2 },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
+    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=200L,
+    flush_ms=50L,
+  )
+  assert_true(!ok_c2, "R27 1C-ii: failed turn commit MUST return false (exit code 1)")
+  assert_true(c2_writes == 1, "R27 1C-ii: sent 1 TERM-only tcp.write without done")
+  assert_true(mgr_c2.pending_end_turns.contains("s-c2"), "R27 1C-ii: uncommitted turn preserved in pending_end_turns")
+  assert_true(ops_c2.read_text("/data/run/whole-live-runners.json").is_ok(), "R27 1C-ii: pending_end_turns persisted to disk")
+
+  // ---- Test 1D (R27 P1-2): Unknown OS identity for Spawning + Connecting -> 0 unix.open, 0 tcp.write, keeps markers, returns false ----
+  let mem_d = station_ops::MemFs::new()
+  let ops_d = mem_d.ops()
+  let mut now_d = 1000L
+  let mut d_opens = 0
+  let mut d_writes = 0
+  let tr_d = builders_core::MuxTransport::{
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] {
+      now_d = now_d + 50L
+      None
+    },
+    call_async: fn(_id : Int64, op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {
+      if op == "unix.open" { d_opens = d_opens + 1 }
+      if op == "tcp.write" { d_writes = d_writes + 1 }
+    },
+    call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_d },
+    wall_ms: fn() -> Int64 { 1700000010000L },
+  }
+  let hub_d = station_whole::EdgeMuxHub::from_transport(tr_d)
+  let mgr_d = LiveRunnerManager::new()
+  mgr_d.set_handover_state_path("/data/run/whole-live-runners.json")
+  let sp_sess_d = make_sess(421, "s-sp-d", "r-sp-a", 4601, LiveRunnerPhase::Spawning(8002L, child_a, Bytes::new(0), Bytes::new(0), 99999L), false)
+  let cn_sess_d = make_sess(422, "s-cn-d", "r-cn-a", 4603, LiveRunnerPhase::Connecting(cn_rinfo_a), false)
+  mgr_d.sessions.set("s-sp-d", sp_sess_d)
+  mgr_d.sessions.set("s-cn-d", cn_sess_d)
+  let ok_d = mgr_d.stop_all_on_shutdown_with(
+    hub_d,
+    ops_d,
+    "/data",
+    "/",
+    9999,
+    fn(_m) {},
+    now_ms_fn=fn() -> Int64 { now_d },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::Unknown },
+    probe_runner_fn=fn(_fs, _d, _sep, rid) -> RunnerFileProbe {
+      if rid == "r-sp-a" { RunnerFileProbe::Live(sp_rinfo_a) } else { RunnerFileProbe::Live(cn_rinfo_a) }
+    },
+    close_child_fn=fn(_c) {},
+    max_wait_ms=150L,
+    flush_ms=50L,
+  )
+  assert_true(!ok_d, "R27 1D: Unknown OS identity MUST return false")
+  assert_true(d_opens == 0 && d_writes == 0, "R27 1D: Unknown OS identity MUST issue 0 unix.open and 0 tcp.write")
+  assert_true(mgr_d.draining_stopping_ids.length() == 2, "R27 1D: both stop markers preserved")
+  assert_true(ops_d.read_text("/data/run/whole-live-runners.json").is_ok(), "R27 1D: markers persisted to disk")
 
   // ---- Test 2: REAL `register_adopted_runner_with` + REAL `ShellMux` single stop-owner guard ----
   let mut adopt_opens = 0

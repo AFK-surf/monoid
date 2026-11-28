@@ -4211,6 +4211,23 @@ pub fn LiveRunnerManager::adopt_live_runner_outcome(
   let is_acp = is_acp_runtime(rt_kind)
   let is_codex = is_codex_runtime(rt_kind)
   let restored_codex_tid = core.agents.codex_active_turns.get(session_key)
+  let mut adopt_os_start_ms = 0L
+  let mut adopt_boot_id : Option[String] = None
+  let mut adopt_start_ticks : Option[Int64] = None
+  if rinfo.runner_pid > 1
+  && rinfo.started_at > 0L
+  && station_sys::proc_kill(rinfo.runner_pid, station_sys::SIG_PROBE, false) == 0 {
+    match station_sys::proc_start_time_ms(rinfo.runner_pid) {
+      Some(os_ms) => {
+        if os_ms > 0L && os_ms <= rinfo.started_at + station_drivers::STARTED_SLACK_MS {
+          adopt_os_start_ms = os_ms
+          adopt_boot_id = station_sys::boot_id()
+          adopt_start_ticks = station_sys::proc_start_ticks(rinfo.runner_pid)
+        }
+      }
+      None => ()
+    }
+  }
   let sess = LiveRunnerSession::{
     conn_id: cid,
     session_key: session_key,
@@ -4223,9 +4240,9 @@ pub fn LiveRunnerManager::adopt_live_runner_outcome(
     runtime_str: eff_runtime_str,
     runner_id: rinfo.id,
     spawn_pid: rinfo.runner_pid,
-    spawn_os_start_ms: rinfo.started_at,
-    spawn_boot_id: None,
-    spawn_start_ticks: None,
+    spawn_os_start_ms: adopt_os_start_ms,
+    spawn_boot_id: adopt_boot_id,
+    spawn_start_ticks: adopt_start_ticks,
     is_acp: is_acp,
     is_codex: is_codex,
     is_adopted: true,
@@ -6878,15 +6895,15 @@ struct PendingShutdownRunner {
   attach_payload : String
 }
 
-/// R26 P1-1 & P1-2: Unified full-shutdown engine over `edge_hub` (ZERO `ctx.mux_role` mismatch!).
+/// R26/R27 P1-1 & P1-2: Unified full-shutdown engine over `edge_hub`:
+/// - Commits/aborts open or pending turns via `commit_turn_fn` BEFORE deciding `done` vs `term_only`;
+///   if SQLite commit fails, omits `done`, preserves `pending_end_turns`, and returns `false`!
 /// - Clears any active `edge_hub` router so all `LIVE_RUNNER_TOK_SHUTDOWN_OPEN`/`WRITE` replies
 ///   land directly in `edge_hub.drain_deferred_done`.
-/// - Treats BOTH `Spawning` and `Connecting(info)` as pre-delivery runners: records stop markers,
-///   sends `attach + signal TERM group:true + done` via `edge_hub`, checks `ShellDone` acks, and
-///   waits up to `max_wait_ms` (2000ms) for OS exit confirmation (`ConfirmedDeadOrReused` /
-///   `check_pid_dead`).
-/// - Returns `true` iff EVERY `Spawning`/`Connecting` runner is OS-confirmed exited AND any
-///   remaining unconfirmed stop markers were durably persisted.
+/// - Enforces the SAME 3-state `verify_spawn_id` + `<rid>.json` re-verification for BOTH `Spawning`
+///   and `Connecting`: `Unknown` NEVER opens a socket or sends `TERM`; `ConfirmedSame` re-verifies
+///   both before `unix.open` and again before `tcp.write`; returns `true` iff zero `Spawning`/`Connecting`
+///   runners remain unconfirmed dead, zero uncommitted turns remain, and any remaining markers persisted.
 pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   self : LiveRunnerManager,
   edge_hub : station_whole::EdgeMuxHub,
@@ -6895,9 +6912,9 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   sep : String,
   self_pid : Int,
   log_fn : (String) -> Unit,
+  commit_turn_fn~ : (LiveRunnerSession) -> Bool = fn(_s) { true },
   now_ms_fn~ : () -> Int64 = fn() -> Int64 { host_shim::now_ms() },
   verify_spawn_id~ : (Int, Int64, Option[String], Option[Int64]) -> SpawnIdentityVerdict = verify_spawn_os_identity,
-  check_pid_dead~ : (Int, Int64) -> Bool = live_runner_pid_confirmed_dead,
   probe_runner_fn~ : (station_ops::OpsFs, String, String, String) -> RunnerFileProbe = probe_runner_file,
   close_child_fn~ : (station_sys::ChildProcess) -> Unit = fn(c) { let _ = c.close() },
   max_wait_ms~ : Int64 = 2000L,
@@ -6925,12 +6942,20 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   let pending_shutdown : Array[PendingShutdownRunner] = []
   let term_only_payload = station_drivers::encode_runner_signal("TERM", true)
   let term_and_done_payload = term_only_payload + station_drivers::encode_runner_done()
-  let attach_term_done_payload = station_drivers::encode_runner_attach() + term_and_done_payload
   let mut persisted_marker = false
+  let mut any_uncommitted_turn = false
   for i in 0..<all_sess.length() {
     let sess = all_sess[i]
-    let has_uncommitted_turn = !(sess.current_turn_id is None) || !(sess.pending_end_turn is None)
+    let committed_ok = commit_turn_fn(sess)
+    let has_uncommitted_turn = !committed_ok
+    || !(sess.current_turn_id is None)
+    || !(sess.pending_end_turn is None)
+    || self.pending_end_turns.contains(sess.session_key)
+    if has_uncommitted_turn {
+      any_uncommitted_turn = true
+    }
     let stop_payload = if has_uncommitted_turn { term_only_payload } else { term_and_done_payload }
+    let attach_stop_payload = station_drivers::encode_runner_attach() + stop_payload
     sess.stopping = true
     sess.stop_guard.on_handover_or_dispose()
     sess.acp_guard.on_handover_or_dispose()
@@ -6950,7 +6975,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           ev_id: ev_id,
           child_opt: Some(child),
           info_opt: None,
-          attach_payload: attach_term_done_payload,
+          attach_payload: attach_stop_payload,
         })
       }
       LiveRunnerPhase::Connecting(info) => {
@@ -6963,7 +6988,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           ev_id: 0L,
           child_opt: None,
           info_opt: Some(info),
-          attach_payload: attach_term_done_payload,
+          attach_payload: attach_stop_payload,
         })
       }
       LiveRunnerPhase::AcpInit(_, sock_id)
@@ -6988,10 +7013,10 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
       LiveRunnerPhase::Exited => ()
     }
   }
-  if persisted_marker {
+  if persisted_marker || any_uncommitted_turn {
     let _ = self.sync_handover_state_file(ops_fs, self_pid, sep, log_fn=log_fn)
   }
-  let open_inflight : Map[Int, String] = Map::new()
+  let open_inflight : Map[Int, PendingShutdownRunner] = Map::new()
   let write_inflight : Map[Int, Int64] = Map::new()
   let write_acked : Map[Int, Bool] = Map::new()
   let confirmed_dead : Map[Int, Bool] = Map::new()
@@ -7004,8 +7029,34 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
       )
     }
   }
+  let verify_disk_match = fn(pr : PendingShutdownRunner) -> Option[String] {
+    let psess = pr.sess
+    if !(verify_spawn_id(psess.spawn_pid, psess.spawn_os_start_ms, psess.spawn_boot_id, psess.spawn_start_ticks) is SpawnIdentityVerdict::ConfirmedSame) {
+      return None
+    }
+    match probe_runner_fn(ops_fs, data, sep, psess.runner_id) {
+      RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
+        if rinfo.id != psess.runner_id
+        || rinfo.runner_pid != psess.spawn_pid
+        || rinfo.started_at <= 0L
+        || rinfo.socket.length() == 0 {
+          return None
+        }
+        match pr.info_opt {
+          Some(cached) => {
+            if rinfo.started_at != cached.started_at || rinfo.socket != cached.socket {
+              return None
+            }
+          }
+          None => ()
+        }
+        Some(rinfo.socket)
+      }
+      _ => None
+    }
+  }
   if pending_shutdown.length() > 0 {
-    // timer: bounded 2s wait for Spawning/Connecting runners to open socket, ack TERM+done, and confirm OS exit
+    // timer: bounded 2s wait for Spawning/Connecting runners to verify identity, ack TERM(+done), and confirm OS exit
     let spawn_deadline = now_ms_fn() + max_wait_ms
     while true {
       for pi in 0..<pending_shutdown.length() {
@@ -7015,65 +7066,32 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
         if confirmed_dead.contains(cid) {
           continue
         }
-        if pr.is_spawning {
-          match verify_spawn_id(psess.spawn_pid, psess.spawn_os_start_ms, psess.spawn_boot_id, psess.spawn_start_ticks) {
-            SpawnIdentityVerdict::ConfirmedDeadOrReused => {
-              confirmed_dead.set(cid, true)
-              let _ = self.clear_draining_stop_target(None, psess.runner_id, psess.spawn_pid)
+        match verify_spawn_id(psess.spawn_pid, psess.spawn_os_start_ms, psess.spawn_boot_id, psess.spawn_start_ticks) {
+          SpawnIdentityVerdict::ConfirmedDeadOrReused => {
+            confirmed_dead.set(cid, true)
+            let iid_opt = match pr.info_opt {
+              Some(info) => Some(station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at))
+              None => None
             }
-            SpawnIdentityVerdict::ConfirmedSame => {
-              if !open_inflight.contains(cid) && !write_inflight.contains(cid) && !write_acked.contains(cid) {
-                match probe_runner_fn(ops_fs, data, sep, psess.runner_id) {
-                  RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
-                    if rinfo.id == psess.runner_id
-                    && rinfo.runner_pid == psess.spawn_pid
-                    && rinfo.started_at > 0L
-                    && rinfo.socket.length() > 0 {
-                      let _ = edge_hub.call_async_raw(
-                        builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_SHUTDOWN_OPEN, 0L),
-                        "unix.open",
-                        base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
-                        None,
-                      )
-                      open_inflight.set(cid, pr.attach_payload)
-                    }
-                  }
-                  _ => ()
+            let _ = self.clear_draining_stop_target(iid_opt, psess.runner_id, psess.spawn_pid)
+          }
+          SpawnIdentityVerdict::ConfirmedSame => {
+            if !open_inflight.contains(cid) && !write_inflight.contains(cid) && !write_acked.contains(cid) {
+              match verify_disk_match(pr) {
+                Some(sock_path) => {
+                  let _ = edge_hub.call_async_raw(
+                    builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_SHUTDOWN_OPEN, 0L),
+                    "unix.open",
+                    base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(sock_path))])),
+                    None,
+                  )
+                  open_inflight.set(cid, pr)
                 }
+                None => ()
               }
             }
-            SpawnIdentityVerdict::Unknown => ()
           }
-        } else {
-          match pr.info_opt {
-            Some(info) => {
-              let has_linux_id = match (psess.spawn_boot_id, psess.spawn_start_ticks) {
-                (Some(b), Some(t)) => b.length() > 0 && t >= 0L
-                _ => false
-              }
-              let dead = if has_linux_id {
-                verify_spawn_id(psess.spawn_pid, psess.spawn_os_start_ms, psess.spawn_boot_id, psess.spawn_start_ticks)
-                is SpawnIdentityVerdict::ConfirmedDeadOrReused
-              } else {
-                check_pid_dead(info.runner_pid, info.started_at)
-              }
-              if dead {
-                confirmed_dead.set(cid, true)
-                let iid = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
-                let _ = self.clear_draining_stop_target(Some(iid), info.id, info.runner_pid)
-              } else if !open_inflight.contains(cid) && !write_inflight.contains(cid) && !write_acked.contains(cid)
-              && info.socket.length() > 0 {
-                let _ = edge_hub.call_async_raw(
-                  builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_SHUTDOWN_OPEN, 0L),
-                  "unix.open",
-                  base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(info.socket))])),
-                  None,
-                )
-                open_inflight.set(cid, pr.attach_payload)
-              }
-            }
-            None => ()
-          }
+          SpawnIdentityVerdict::Unknown => ()
         }
       }
       let mut all_dead = true
@@ -7096,22 +7114,27 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
             builders_core::MuxToken::Tagged(cid, kind, _) => {
               if kind == LIVE_RUNNER_TOK_SHUTDOWN_OPEN {
                 match open_inflight.get(cid) {
-                  Some(payload) => {
+                  Some(pr) => {
                     open_inflight.remove(cid)
                     match builders_core::decode_shell_done(d) {
                       Ok((Some(v), _)) => match base_codec::json_get(v, "id") {
                         Some(base_codec::Json::Num(n, _)) => {
                           let sid = n.to_int64()
                           if sid >= 0L {
-                            let _ = edge_hub.call_async_raw(
-                              builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_SHUTDOWN_WRITE, sid),
-                              "tcp.write",
-                              base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
-                              Some(payload.to_bytes()),
-                            )
-                            write_inflight.set(cid, sid)
-                            to_close.push(sid)
-                            need_flush = true
+                            // R27 P1-2: Re-verify positive OS identity + disk `<rid>.json` immediately before sending `TERM`!
+                            if verify_disk_match(pr) is Some(_) {
+                              let _ = edge_hub.call_async_raw(
+                                builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_SHUTDOWN_WRITE, sid),
+                                "tcp.write",
+                                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+                                Some(pr.attach_payload.to_bytes()),
+                              )
+                              write_inflight.set(cid, sid)
+                              to_close.push(sid)
+                              need_flush = true
+                            } else {
+                              close_sock(sid)
+                            }
                           }
                         }
                         _ => ()
@@ -7203,17 +7226,19 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
       unresolved_count = unresolved_count + 1
     }
   }
-  let has_unconfirmed_markers = self.draining_stopping_ids.length() > 0
+  let has_unconfirmed_markers = self.draining_stopping_ids.length() > 0 || self.pending_end_turns.length() > 0
   let saved_ok = if self.has_handover_carry_state() || self.handover_state_dirty {
     self.sync_handover_state_file(ops_fs, self_pid, sep, log_fn=log_fn).is_ok()
   } else {
     true
   }
-  let all_ok = evaluate_shutdown_spawning_ok(unresolved_count, has_unconfirmed_markers, saved_ok)
+  let all_ok = !any_uncommitted_turn && evaluate_shutdown_spawning_ok(unresolved_count, has_unconfirmed_markers, saved_ok)
   if !all_ok {
     log_fn(
       "[live-runner] shutdown stop incomplete: unresolved_runners="
       + unresolved_count.to_string()
+      + " uncommitted_turns="
+      + any_uncommitted_turn.to_string()
       + " unconfirmed_markers="
       + self.draining_stopping_ids.length().to_string()
       + " saved_ok="
@@ -7230,7 +7255,77 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
 pub fn LiveRunnerManager::stop_all_on_shutdown(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  wall_ms : Int64,
 ) -> Bool {
+  let commit_turn_fn = fn(sess : LiveRunnerSession) -> Bool {
+    match sess.pending_end_turn {
+      Some(pend) => {
+        live_runner_commit_end_turn(self, ctx, core, sess, pend)
+        if sess.pending_end_turn is Some(_) {
+          self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
+          return false
+        }
+      }
+      None => ()
+    }
+    match sess.current_turn_id {
+      Some(tid) => {
+        let mut committed = false
+        match core.store.require_open() {
+          Ok(st) => {
+            match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+              match t.run(
+                "UPDATE turns SET ended_at = ?2, outcome = 'aborted', detail = 'station shutdown' WHERE id = ?1 AND ended_at IS NULL",
+                [base_codec::json_str(tid), sql_db::int64_to_json(wall_ms)],
+              ) {
+                Err(e) => return Err(e)
+                Ok(_) => ()
+              }
+              match t.run(
+                "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
+                [base_codec::json_str(sess.session_key), sql_db::int64_to_json(wall_ms)],
+              ) {
+                Err(e) => return Err(e)
+                Ok(_) => ()
+              }
+              Ok(())
+            }) {
+              Ok(_) => committed = true
+              Err(e) => {
+                ctx.log("[live-runner] shutdown turn commit failed for " + sess.session_key + ": " + e.message)
+              }
+            }
+          }
+          Err(e) => {
+            ctx.log("[live-runner] shutdown turn commit store unavailable for " + sess.session_key + ": " + e)
+          }
+        }
+        if committed {
+          sess.current_turn_id = None
+          true
+        } else {
+          sess.pending_end_turn = Some(PendingEndTurn::{
+            turn_id: Some(tid),
+            outcome: "aborted",
+            detail: Some("station shutdown"),
+            declared_str: None,
+            need_opt: None,
+            wait_secs_opt: None,
+            wait_for_opt: None,
+            wait_watch_opt: None,
+            wall_ms: wall_ms,
+            was_completed: false,
+            reprompt_reminder: None,
+          })
+          sess.current_turn_id = None
+          self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
+          false
+        }
+      }
+      None => sess.pending_end_turn is None
+    }
+  }
   self.stop_all_on_shutdown_with(
     ctx.edge_hub,
     ctx.ops_fs,
@@ -7238,5 +7333,6 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
     ctx.sep,
     ctx.self_pid,
     fn(m) { ctx.log(m) },
+    commit_turn_fn=commit_turn_fn,
   )
 }

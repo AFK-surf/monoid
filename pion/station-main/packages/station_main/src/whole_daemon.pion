@@ -8807,7 +8807,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             st.live_runners.detach_all_for_handover(ctx, st.core, host_shim::wall_ms())
             st.core.agents.jobs.detach_all_for_handover()
           } else {
-            let runner_stop_ok = st.live_runners.stop_all_on_shutdown(ctx)
+            let runner_stop_ok = st.live_runners.stop_all_on_shutdown(ctx, st.core, host_shim::wall_ms())
             if !runner_stop_ok {
               ctx.log("[whole-daemon] ERROR: full shutdown failed to confirm stop/persistence of all spawning runners")
               shutdown_exit_code = 1
