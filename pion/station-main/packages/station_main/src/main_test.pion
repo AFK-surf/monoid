@@ -1983,14 +1983,26 @@ test "W17C-1 R12..R21 whole-live-runners.json persists across crash/restart & ex
     "R21 Test 1: ENOENT at +45s must NEVER clear spawn: marker while PID 4321 is alive",
   )
   assert_true(mgr2.has_pending_draining_stop_for_session("s-r12"), "s-r12 still gated at +45s")
-  // Metadata publishes late at +45s with exact PID 4321 -> matches; different PID 9999 -> does NOT match!
+  // Metadata publishes late at +45s with exact PID 4321 -> matches; different PID 9999 or stale startedAt -> does NOT match!
   let late_iid = "r-spawn-r21:4321:" + (t0 + 45000L).to_string()
-  assert_true(mgr2.is_draining_stop_target(late_iid, "r-spawn-r21", 4321), "matches exact (rid, pid=4321) even at +45s")
-  assert_true(!mgr2.is_draining_stop_target("r-spawn-r21:9999:" + (t0 + 45000L).to_string(), "r-spawn-r21", 9999), "different PID 9999 must NOT match")
-  match mgr2.find_draining_stop_session(late_iid, "r-spawn-r21", 4321) {
+  assert_true(mgr2.is_draining_stop_target(late_iid, "r-spawn-r21", 4321, t0 + 45000L), "matches exact (rid, pid=4321, startedAt>=t0-5s) even at +45s")
+  assert_true(!mgr2.is_draining_stop_target("r-spawn-r21:9999:" + (t0 + 45000L).to_string(), "r-spawn-r21", 9999, t0 + 45000L), "different PID 9999 must NOT match")
+  assert_true(!mgr2.is_draining_stop_target("r-spawn-r21:4321:" + (t0 - 10000L).to_string(), "r-spawn-r21", 4321, t0 - 10000L), "R22: stale metadata (startedAt < spawn_start_ms - 5s) must NOT match spawn:")
+  match mgr2.find_draining_stop_session(late_iid, "r-spawn-r21", 4321, t0 + 45000L) {
     Some(sk) => assert_str_eq(sk, "s-r12")
     None => panic("expected s-r12 from find_draining_stop_session")
   }
+  // R22: PID reuse (`actual > spawn_start_ms + STARTED_SLACK_MS`) clears spawn: marker via sweep!
+  let mgr_reuse = LiveRunnerManager::new()
+  mgr_reuse.record_draining_stop_marker("spawn:r-reuse:4399:" + t0.to_string(), "s-reuse")
+  assert_true(
+    mgr_reuse.sweep_draining_stop_markers(
+      t0 + 120000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(t0 + station_drivers::STARTED_SLACK_MS + 1000L)) },
+    ),
+    "R22: PID reuse triggers sweep_draining_stop_markers cleanup",
+  )
+  assert_true(!mgr_reuse.has_pending_draining_stop_for_session("s-reuse"), "R22: PID reuse unblocks session")
   // Because `is_draining_stop_target` is read-only, file stays on disk until confirmed exit!
   assert_true(mgr2.sync_handover_state_file(ops, 1002, "/").is_ok(), "sync keeps file on disk")
   assert_true(ops.read_text(ho_file).is_ok(), "file must remain on disk before runner Exit")
