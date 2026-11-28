@@ -1370,8 +1370,8 @@ fn strip_trailing_slash_rt(s : String) -> String {
   s.slice(0, end)
 }
 
-fn ws_confirm_401_key(ws_id : String, cred_epoch : Int64) -> String {
-  ws_id + "|" + cred_epoch.to_string()
+fn ws_confirm_401_key(ws_id : String, boundary_id : Int64) -> String {
+  ws_id + "|" + boundary_id.to_string()
 }
 
 fn clear_ws_confirm_401_state(sess : RuntimeSession, ws_id : String) -> Unit {
@@ -1444,14 +1444,16 @@ fn needs_workspace_cloud_confirm(sess : RuntimeSession, ws_id : String) -> Bool 
     !sess.core.can_read_confirmed_key(ws_id, "stations:" + ws_id))
 }
 
-/// Handle HTTP 401 on `/v1/workspaces/<ws>` with live `(bearer_gen, cred_epoch)` boundary gating,
-/// per-boundary in-flight deduplication (`ws_id|cred_epoch`), and separate budgets for post-rotation
-/// persistent 401s (max 2 rotations per boundary) vs transient OAuth refresh failures (max 2 bounded
-/// backoff retries, never locking out the current bearer or touching a newer boundary's budget).
+/// Single Cloud `/v1/workspaces/<ws>` 401 coordinator across ALL 3 fetch entrypoints
+/// (`trigger_workspace_confirm_fetch`, `cloud.sync`, and live `CloudSync` WS refreshes).
+/// Keyed on immutable `(ws_id, PendingAuthConfirm.boundary_seq)` (unaffected by mesh `fresh`
+/// `bump_cred_epoch`), gated on live `bearer_gen`, deduplicated per-bearer in-flight, and split
+/// between post-rotation persistent 401 budget (max 2 rotations/boundary) vs transient refresh
+/// failure backoff (max 2 bounded retries, never locking out the current bearer).
 fn handle_workspace_confirm_401(
   sess : RuntimeSession,
   ws_id : String,
-  orig_cred_epoch : Int64,
+  orig_boundary_id : Int64,
   orig_bearer_gen : Int64,
   orig_session_gen : Int64,
 ) -> Unit {
@@ -1459,10 +1461,10 @@ fn handle_workspace_confirm_401(
     return
   }
   // Stale 401 from an older bearer or older confirmation boundary MUST NOT touch current budget!
-  if orig_bearer_gen != sess.bearer_gen || sess.core.membership.cred_epoch_of(ws_id) != orig_cred_epoch {
+  if orig_bearer_gen != sess.bearer_gen || sess.core.membership.pending_auth_boundary_id(ws_id) != orig_boundary_id {
     return
   }
-  let bkey = ws_confirm_401_key(ws_id, orig_cred_epoch)
+  let bkey = ws_confirm_401_key(ws_id, orig_boundary_id)
   match sess.ws_confirm_401_inflight_gen.get(bkey) {
     Some(g) => if g == orig_bearer_gen { return }
     None => ()
@@ -1484,7 +1486,7 @@ fn handle_workspace_confirm_401(
     if sess.stopped ||
       sess.session_gen != orig_session_gen ||
       sess.core.membership.is_session_invalidated() ||
-      sess.core.membership.cred_epoch_of(ws_id) != orig_cred_epoch {
+      sess.core.membership.pending_auth_boundary_id(ws_id) != orig_boundary_id {
       return
     }
     match res {
@@ -1511,7 +1513,7 @@ fn handle_workspace_confirm_401(
                   if !sess.stopped &&
                     sess.session_gen == orig_session_gen &&
                     !sess.core.membership.is_session_invalidated() &&
-                    sess.core.membership.cred_epoch_of(ws_id) == orig_cred_epoch &&
+                    sess.core.membership.pending_auth_boundary_id(ws_id) == orig_boundary_id &&
                     sess.bearer_gen == orig_bearer_gen &&
                     needs_workspace_cloud_confirm(sess, ws_id) {
                     trigger_workspace_confirm_fetch(sess, ws_id)
@@ -1540,6 +1542,7 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
     Some(cs) => {
       let base_seq = ws_confirm_base_seq(sess, ws_id)
       let captured_cred_epoch = sess.core.membership.cred_epoch_of(ws_id)
+      let captured_boundary_id = sess.core.membership.pending_auth_boundary_id(ws_id)
       let orig_gen = sess.session_gen
       let orig_bearer_gen = sess.bearer_gen
       let dkey = orig_gen.to_string() + "|" + ws_id + "|" + base_seq.to_string() + "|" + captured_cred_epoch.to_string() + "|" + orig_bearer_gen.to_string()
@@ -1584,7 +1587,7 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
                 if herr.status == 403 || herr.status == 404 {
                   cs.trigger_me_reconcile()
                 } else if herr.status == 401 {
-                  handle_workspace_confirm_401(sess, ws_id, captured_cred_epoch, orig_bearer_gen, orig_gen)
+                  handle_workspace_confirm_401(sess, ws_id, captured_boundary_id, orig_bearer_gen, orig_gen)
                 }
               }
               _ => ()
@@ -1710,6 +1713,13 @@ fn wire_live_cloud_sync(
         runtime_refresh_account_token(sess, active_sub, fn(_ : Result[String, String]) -> Unit {})
       }
     }),
+    on_workspace_unauthorized=Some(fn(wid : String, b_id : Int64, b_gen : Int64, _herr : sync::CloudHttpError) -> Unit {
+      handle_workspace_confirm_401(sess, wid, b_id, b_gen, sess.session_gen)
+    }),
+  )
+  cs.set_workspace_auth_context_getters(
+    fn() -> Int64 { sess.bearer_gen },
+    fn(wid : String) -> Int64 { sess.core.membership.pending_auth_boundary_id(wid) },
   )
 }
 
@@ -3302,6 +3312,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
               Some(wid) => {
                 let ws_seq = sess.core.membership.next_cloud_seq()
                 let ws_cred_ep = sess.core.membership.cred_epoch_of(wid)
+                let ws_boundary_id = sess.core.membership.pending_auth_boundary_id(wid)
                 let ws_bearer_gen = sess.bearer_gen
                 sync::fetch_workspace_structured_k(
                   sess.sh,
@@ -3328,7 +3339,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                           // Reconcile via `/v1/me` on 403/404; NEVER directly call `drop_workspace`!
                           cs.trigger_me_reconcile()
                         } else if herr.status == 401 {
-                          handle_workspace_confirm_401(sess, wid, ws_cred_ep, ws_bearer_gen, req_session_gen)
+                          handle_workspace_confirm_401(sess, wid, ws_boundary_id, ws_bearer_gen, req_session_gen)
                         }
                         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: herr.message })
                         let (out_j, out_b) = protocol::encode_core_event(ev)

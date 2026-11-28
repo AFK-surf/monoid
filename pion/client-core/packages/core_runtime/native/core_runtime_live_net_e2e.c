@@ -155,12 +155,18 @@ typedef struct fake_server {
     int refresh_gate_enabled;
     int refresh_budget;
     char ws1_expected_bearer[64];
+    char ws1_custom_name[64];
+    char ws1_custom_station[64];
+    int cloud_ws_push_ready;
+    char pending_cloud_ws_msg[512];
+    _Atomic int cloud_ws_connected;
+    _Atomic int enable_cloud_ws;
     _Atomic int refresh_fail_500_remaining;
     _Atomic int ws1_403_once;
     _Atomic int active_http_conns;
     _Atomic int drop_ws2_in_me;
     _Atomic int serve_ws1_lock;
-    _Atomic int ws1_downgrade_member;
+    _Atomic int ws1_downgrade_member; // 0=owner, 1=member, 2=admin
     _Atomic int ws1_require_rotated_token;
     _Atomic int ws1_always_401;
     _Atomic int allow_refresh_rotate;
@@ -222,6 +228,85 @@ static void write_all_fd(int fd, const char *buf, size_t len) {
     }
 }
 
+static uint32_t sha1_rol(uint32_t v, unsigned bits) {
+    return (v << bits) | (v >> (32U - bits));
+}
+
+static void sha1_digest(const uint8_t *msg, size_t len, uint8_t out[20]) {
+    uint32_t h0 = 0x67452301U, h1 = 0xEFCDAB89U, h2 = 0x98BADCFEU, h3 = 0x10325476U, h4 = 0xC3D2E1F0U;
+    size_t padded_len = ((len + 9U + 63U) / 64U) * 64U;
+    uint8_t *buf = (uint8_t *)calloc(1, padded_len);
+    assert(buf != NULL);
+    memcpy(buf, msg, len);
+    buf[len] = 0x80U;
+    uint64_t bit_len = (uint64_t)len * 8ULL;
+    for (int i = 0; i < 8; i++) {
+        buf[padded_len - 1 - (size_t)i] = (uint8_t)(bit_len >> (i * 8));
+    }
+    for (size_t off = 0; off < padded_len; off += 64U) {
+        uint32_t w[80];
+        for (int i = 0; i < 16; i++) {
+            w[i] = ((uint32_t)buf[off + i * 4] << 24) |
+                   ((uint32_t)buf[off + i * 4 + 1] << 16) |
+                   ((uint32_t)buf[off + i * 4 + 2] << 8) |
+                   ((uint32_t)buf[off + i * 4 + 3]);
+        }
+        for (int i = 16; i < 80; i++) {
+            w[i] = sha1_rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+        }
+        uint32_t a = h0, b = h1, c = h2, d = h3, e = h4;
+        for (int i = 0; i < 80; i++) {
+            uint32_t f, k;
+            if (i < 20) { f = (b & c) | ((~b) & d); k = 0x5A827999U; }
+            else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1U; }
+            else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDCU; }
+            else { f = b ^ c ^ d; k = 0xCA62C1D6U; }
+            uint32_t tmp = sha1_rol(a, 5) + f + e + k + w[i];
+            e = d; d = c; c = sha1_rol(b, 30); b = a; a = tmp;
+        }
+        h0 += a; h1 += b; h2 += c; h3 += d; h4 += e;
+    }
+    free(buf);
+    uint32_t hs[5] = { h0, h1, h2, h3, h4 };
+    for (int i = 0; i < 5; i++) {
+        out[i * 4] = (uint8_t)(hs[i] >> 24);
+        out[i * 4 + 1] = (uint8_t)(hs[i] >> 16);
+        out[i * 4 + 2] = (uint8_t)(hs[i] >> 8);
+        out[i * 4 + 3] = (uint8_t)(hs[i]);
+    }
+}
+
+static void base64_encode_20(const uint8_t in[20], char out[32]) {
+    static const char tbl[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    int o = 0;
+    for (int i = 0; i < 20; i += 3) {
+        uint32_t v = ((uint32_t)in[i] << 16) |
+                     ((i + 1 < 20 ? (uint32_t)in[i + 1] : 0U) << 8) |
+                     (i + 2 < 20 ? (uint32_t)in[i + 2] : 0U);
+        out[o++] = tbl[(v >> 18) & 63U];
+        out[o++] = tbl[(v >> 12) & 63U];
+        out[o++] = (i + 1 < 20) ? tbl[(v >> 6) & 63U] : '=';
+        out[o++] = (i + 2 < 20) ? tbl[v & 63U] : '=';
+    }
+    out[o] = '\0';
+}
+
+static void ws_send_text_frame(int fd, const char *text) {
+    size_t len = strlen(text);
+    uint8_t hdr[4];
+    size_t hlen = 0;
+    hdr[hlen++] = 0x81U; // FIN + text opcode
+    if (len < 126U) {
+        hdr[hlen++] = (uint8_t)len;
+    } else {
+        hdr[hlen++] = 126U;
+        hdr[hlen++] = (uint8_t)(len >> 8);
+        hdr[hlen++] = (uint8_t)(len & 0xFFU);
+    }
+    write_all_fd(fd, (const char *)hdr, hlen);
+    write_all_fd(fd, text, len);
+}
+
 static void send_http_json(int fd, int status, const char *status_text, const char *body) {
     char resp[4096];
     int n = snprintf(
@@ -273,12 +358,72 @@ static void *handle_client_body(int fd, int *counted) {
         return NULL;
     }
 
+    if (strncmp(buf, "GET /v1/events", 14) == 0 && atomic_load(&g_srv.enable_cloud_ws)) {
+        const char *kh = strstr(buf, "Sec-WebSocket-Key:");
+        if (kh == NULL) kh = strstr(buf, "sec-websocket-key:");
+        if (kh != NULL) {
+            kh += 18;
+            while (*kh == ' ' || *kh == '\t') kh++;
+            char key[128];
+            size_t ki = 0;
+            while (kh[ki] != '\0' && kh[ki] != '\r' && kh[ki] != '\n' && ki + 1 < sizeof(key)) {
+                key[ki] = kh[ki];
+                ki++;
+            }
+            key[ki] = '\0';
+            char concat[256];
+            snprintf(concat, sizeof(concat), "%s258EAFA5-E914-47DA-95CA-C5AB0DC85B11", key);
+            uint8_t sha[20];
+            sha1_digest((const uint8_t *)concat, strlen(concat), sha);
+            char accept_b64[32];
+            base64_encode_20(sha, accept_b64);
+            char resp[512];
+            snprintf(
+                resp,
+                sizeof(resp),
+                "HTTP/1.1 101 Switching Protocols\r\n"
+                "Upgrade: websocket\r\n"
+                "Connection: Upgrade\r\n"
+                "Sec-WebSocket-Accept: %s\r\n"
+                "Sec-WebSocket-Protocol: stillfail-events\r\n\r\n",
+                accept_b64);
+            write_all_fd(fd, resp, strlen(resp));
+            int my_ws_gen = 0;
+            if (*counted) {
+                *counted = 0;
+                pthread_mutex_lock(&g_srv.mu);
+                atomic_fetch_sub(&g_srv.active_http_conns, 1);
+                my_ws_gen = atomic_fetch_add(&g_srv.cloud_ws_connected, 1) + 1;
+                pthread_cond_broadcast(&g_srv.cv);
+                pthread_mutex_unlock(&g_srv.mu);
+            }
+            pthread_mutex_lock(&g_srv.mu);
+            while (!g_srv.shutdown && atomic_load(&g_srv.enable_cloud_ws) && atomic_load(&g_srv.cloud_ws_connected) == my_ws_gen) {
+                if (g_srv.cloud_ws_push_ready) {
+                    char msg[512];
+                    memcpy(msg, g_srv.pending_cloud_ws_msg, sizeof(msg));
+                    g_srv.cloud_ws_push_ready = 0;
+                    pthread_cond_broadcast(&g_srv.cv);
+                    pthread_mutex_unlock(&g_srv.mu);
+                    ws_send_text_frame(fd, msg);
+                    pthread_mutex_lock(&g_srv.mu);
+                } else {
+                    pthread_cond_wait(&g_srv.cv, &g_srv.mu);
+                }
+            }
+            pthread_mutex_unlock(&g_srv.mu);
+            close(fd);
+            return NULL;
+        }
+    }
+
     if (strncmp(buf, "GET /v1/me ", 11) == 0) {
         pthread_mutex_lock(&g_srv.mu);
         atomic_fetch_add(&g_srv.got_me, 1);
         pthread_cond_broadcast(&g_srv.cv);
         pthread_mutex_unlock(&g_srv.mu);
-        const char *ws1_role = atomic_load(&g_srv.ws1_downgrade_member) ? "member" : "owner";
+        int rmode = atomic_load(&g_srv.ws1_downgrade_member);
+        const char *ws1_role = (rmode == 2) ? "admin" : ((rmode == 1) ? "member" : "owner");
         if (atomic_load(&g_srv.drop_ws2_in_me)) {
             char body[1024];
             snprintf(
@@ -349,25 +494,47 @@ static void *handle_client_body(int fd, int *counted) {
             }
             pthread_mutex_lock(&g_srv.mu);
             atomic_fetch_add(&g_srv.got_ws1_rotated_ok, 1);
+            char wname[64], sname[64];
+            snprintf(wname, sizeof(wname), "%s", g_srv.ws1_custom_name[0] ? g_srv.ws1_custom_name : "Live Member Workspace");
+            snprintf(sname, sizeof(sname), "%s", g_srv.ws1_custom_station[0] ? g_srv.ws1_custom_station : "Live Member Station");
             pthread_cond_broadcast(&g_srv.cv);
             pthread_mutex_unlock(&g_srv.mu);
-            send_http_json(
-                fd,
-                200,
-                "OK",
-                "{\"id\":\"" WS1_ID "\",\"name\":\"Live Member Workspace\",\"rev\":2,\"role\":\"member\","
-                "\"members\":[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"role\":\"member\"}],"
-                "\"stations\":[{\"id\":\"st-local\",\"name\":\"Live Member Station\",\"online\":true}]}");
+            int rmode = atomic_load(&g_srv.ws1_downgrade_member);
+            const char *role_str = (rmode == 2) ? "admin" : ((rmode == 1) ? "member" : "owner");
+            char wbody[1024];
+            snprintf(
+                wbody,
+                sizeof(wbody),
+                "{\"id\":\"" WS1_ID "\",\"name\":\"%s\",\"rev\":2,\"role\":\"%s\","
+                "\"members\":[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"role\":\"%s\"}],"
+                "\"stations\":[{\"id\":\"st-local\",\"name\":\"%s\",\"online\":true}]}",
+                wname,
+                role_str,
+                role_str,
+                sname);
+            send_http_json(fd, 200, "OK", wbody);
             close(fd);
             return NULL;
         }
-        send_http_json(
-            fd,
-            200,
-            "OK",
-            "{\"id\":\"" WS1_ID "\",\"name\":\"Live Workspace\",\"rev\":1,"
-            "\"members\":[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],"
-            "\"stations\":[{\"id\":\"st-local\",\"name\":\"Live Station\",\"online\":true}]}");
+        pthread_mutex_lock(&g_srv.mu);
+        char wname[64], sname[64];
+        snprintf(wname, sizeof(wname), "%s", g_srv.ws1_custom_name[0] ? g_srv.ws1_custom_name : "Live Workspace");
+        snprintf(sname, sizeof(sname), "%s", g_srv.ws1_custom_station[0] ? g_srv.ws1_custom_station : "Live Station");
+        pthread_mutex_unlock(&g_srv.mu);
+        int rmode = atomic_load(&g_srv.ws1_downgrade_member);
+        const char *role_str = (rmode == 2) ? "admin" : ((rmode == 1) ? "member" : "owner");
+        char wbody[1024];
+        snprintf(
+            wbody,
+            sizeof(wbody),
+            "{\"id\":\"" WS1_ID "\",\"name\":\"%s\",\"rev\":1,\"role\":\"%s\","
+            "\"members\":[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"role\":\"%s\"}],"
+            "\"stations\":[{\"id\":\"st-local\",\"name\":\"%s\",\"online\":true}]}",
+            wname,
+            role_str,
+            role_str,
+            sname);
+        send_http_json(fd, 200, "OK", wbody);
         close(fd);
         return NULL;
     }
@@ -1491,8 +1658,15 @@ int main(void) {
         atomic_store(&g_srv.ws1_downgrade_member, 0);
         atomic_store(&g_srv.ws1_require_rotated_token, 0);
         atomic_store(&g_srv.allow_refresh_rotate, 1);
+        atomic_store(&g_srv.enable_cloud_ws, 1);
+        atomic_store(&g_srv.cloud_ws_connected, 0);
         atomic_store(&g_srv.got_ws1_401, 0);
         atomic_store(&g_srv.got_ws1_rotated_ok, 0);
+        pthread_mutex_lock(&g_srv.mu);
+        g_srv.ws1_custom_name[0] = '\0';
+        g_srv.ws1_custom_station[0] = '\0';
+        g_srv.cloud_ws_push_ready = 0;
+        pthread_mutex_unlock(&g_srv.mu);
 
         reset_host_ctx(&g_host);
         mb_core_start(phase11_dir, origin, 1, on_host_message, &g_host);
@@ -1604,7 +1778,7 @@ int main(void) {
             g_srv.refresh_budget = 0;
             pthread_mutex_unlock(&g_srv.mu);
 
-            atomic_store(&g_srv.ws1_downgrade_member, 1);
+            atomic_store(&g_srv.ws1_downgrade_member, 2); // owner -> admin (Boundary 1)
             atomic_store(&g_srv.ws1_always_401, 1);
             send_json("{\"id\":806,\"call\":\"cloud.sync\",\"params\":{}}");
 
@@ -1665,41 +1839,61 @@ int main(void) {
             printf("[live_net_e2e] Phase 11b-2 PASSED (deterministic latch + runtime/server drain fence converged at EXACTLY %d refreshes)\n", refreshes_after_cb);
         }
 
-        // Phase 11b-3 (R7 Codex P1-2): Cross-boundary 401 budget reset!
-        // Boundary 1 just exhausted BOTH 2 rotated refreshes above. Now confirm via live `CloudSync`
-        // reconcile (triggered by 403 on `cloud.sync`, so `cloud.sync` itself NEVER received `Ok(true)`!)
-        // and enter Boundary 2 (new `cred_epoch`): first 401 on Boundary 2 MUST get a fresh refresh budget
-        // and confirm `workspace` & `stations`!
+        // Phase 11b-3 (R8 Codex P2): Keep Boundary 1 at `role="admin"` (NEVER upgrade to `"owner"`!),
+        // confirm Boundary 1 via live `CloudSync` WebSocket `WorkspaceChanged` push -> `on_workspace_fetched_with_epoch`
+        // (`Ok(true)` clears Boundary 1's 401 state!), then enter Boundary 2 via second downgrade `admin -> member`
+        // (brand-new `boundary_seq`), verify 401 -> refresh -> AND assert on CLIENT SIDE that BOTH `workspace`
+        // and `stations` topics become readable & confirmed!
         {
-            int me_base = atomic_load(&g_srv.got_me);
+            wait_srv_atomic_ge(&g_srv.cloud_ws_connected, 1, 10);
+            // Step A: Confirm Boundary 1 while STAYING `role="admin"` via real `CloudSync` WS push!
             atomic_store(&g_srv.ws1_always_401, 0);
-            atomic_store(&g_srv.ws1_downgrade_member, 0);
-            atomic_store(&g_srv.ws1_403_once, 1);
-            send_json("{\"id\":810,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
-            wait_for_matching_msg(&g_host, "\"id\":810,", "trigger_reconcile (403)", 10);
-            // Wait for `CloudSync::trigger_me_reconcile()` to fetch `/v1/me` (owner) and commit upgrade!
-            wait_srv_atomic_ge(&g_srv.got_me, me_base + 2, 10);
-            wait_srv_atomic_eq(&g_srv.active_http_conns, 0, 10);
-            send_json("{\"id\":8101,\"call\":\"workspaces.list\",\"params\":{}}");
-            wait_for_matching_msg(&g_host, "\"id\":8101,", "\"ok\":{", 10);
+            atomic_store(&g_srv.ws1_require_rotated_token, 0);
+            atomic_store(&g_srv.ws1_downgrade_member, 2); // stays "admin"!
+            pthread_mutex_lock(&g_srv.mu);
+            snprintf(g_srv.ws1_custom_name, sizeof(g_srv.ws1_custom_name), "Live Admin B1 Confirmed");
+            snprintf(g_srv.ws1_custom_station, sizeof(g_srv.ws1_custom_station), "Live Admin B1 Station");
+            snprintf(g_srv.pending_cloud_ws_msg, sizeof(g_srv.pending_cloud_ws_msg), "{\"type\":\"workspace\",\"id\":\"" WS1_ID "\"}");
+            g_srv.cloud_ws_push_ready = 1;
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
 
-            // Enter Boundary 2 (`owner -> member`, new `cred_epoch`) with rotated bearer required!
+            // Client-side assertion: live `CloudSync` WS push confirmed Boundary 1 (`admin`) on BOTH topics!
+            wait_for_matching_msg(&g_host, "\"id\":811,", "Live Admin B1 Confirmed", 10);
+            wait_for_matching_msg(&g_host, "\"id\":812,", "Live Admin B1 Station", 10);
+            wait_srv_atomic_eq(&g_srv.active_http_conns, 0, 10);
+
+            // Step B: Enter Boundary 2 via second downgrade `admin -> member` (new `boundary_seq`, NEVER upgraded!)
             int ref_base_b2 = atomic_load(&g_srv.got_auth_refresh);
             int rot_ok_base_b2 = atomic_load(&g_srv.got_ws1_rotated_ok);
             int next_seq_b2 = atomic_load(&g_srv.refresh_rotate_seq) + 1;
             pthread_mutex_lock(&g_srv.mu);
             snprintf(g_srv.ws1_expected_bearer, sizeof(g_srv.ws1_expected_bearer), "acc-rotated-%d", 99 + next_seq_b2);
+            snprintf(g_srv.ws1_custom_name, sizeof(g_srv.ws1_custom_name), "Live Member B2 Confirmed");
+            snprintf(g_srv.ws1_custom_station, sizeof(g_srv.ws1_custom_station), "Live Member B2 Station");
             pthread_mutex_unlock(&g_srv.mu);
-            atomic_store(&g_srv.ws1_downgrade_member, 1);
+            atomic_store(&g_srv.ws1_downgrade_member, 1); // admin -> member!
             atomic_store(&g_srv.ws1_require_rotated_token, 1);
 
-            send_json("{\"id\":8110,\"call\":\"cloud.sync\",\"params\":{}}");
-            wait_for_matching_msg(&g_host, "\"id\":8110,", "token_expired (401)", 10);
+            // Trigger Boundary 2 downgrade via real `CloudSync` WS `workspaces` push -> `/v1/me` -> 401 -> refresh -> 200!
+            pthread_mutex_lock(&g_srv.mu);
+            snprintf(g_srv.pending_cloud_ws_msg, sizeof(g_srv.pending_cloud_ws_msg), "{\"type\":\"workspaces\"}");
+            g_srv.cloud_ws_push_ready = 1;
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
+
+            // Client-side assertions: BOTH `workspace` and `stations` become readable & confirmed on Boundary 2!
+            wait_for_matching_msg(&g_host, "\"id\":811,", "Live Member B2 Confirmed", 10);
+            wait_for_matching_msg(&g_host, "\"id\":812,", "Live Member B2 Station", 10);
             wait_srv_atomic_ge(&g_srv.got_auth_refresh, ref_base_b2 + 1, 10);
             wait_srv_atomic_ge(&g_srv.got_ws1_rotated_ok, rot_ok_base_b2 + 1, 10);
             wait_srv_atomic_eq(&g_srv.active_http_conns, 0, 10);
             assert(atomic_load(&g_srv.got_auth_refresh) - ref_base_b2 == 1);
-            printf("[live_net_e2e] Phase 11b-3 PASSED (cross-boundary cred_epoch reset gave Boundary 2 fresh 401 refresh budget & confirmed)\n");
+            atomic_store(&g_srv.enable_cloud_ws, 0);
+            pthread_mutex_lock(&g_srv.mu);
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
+            printf("[live_net_e2e] Phase 11b-3 PASSED (admin CloudSync WS confirmed B1 -> member B2 fresh 401 budget -> client workspace & stations confirmed)\n");
         }
     }
 

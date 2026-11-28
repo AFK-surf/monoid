@@ -3389,6 +3389,17 @@ pub fn MembershipAuthority::has_pending_auth_confirm(self : MembershipAuthority,
   self.pending_auth_confirm.get(ws).is_some()
 }
 
+/// Immutable `boundary_seq` of the active `PendingAuthConfirm` for `ws` (`0L` when none).
+/// Unlike `cred_epoch` (which advances on mesh `fresh` credential fetches), `boundary_seq`
+/// stays constant for the lifetime of a confirmation boundary and advances only when a new
+/// downgrade/Safe-Mode boundary is installed.
+pub fn MembershipAuthority::pending_auth_boundary_id(self : MembershipAuthority, ws : String) -> Int64 {
+  match self.pending_auth_confirm.get(ws) {
+    Some(p) => p.boundary_seq
+    None => 0L
+  }
+}
+
 pub fn MembershipAuthority::required_cred_epoch_of(
   self : MembershipAuthority,
   ws : String,

@@ -136,6 +136,7 @@ pub struct ClientCore {
   mut lock_kept_entries : Array[form::Json]
   mut lock_kept_aside : Array[form::Json]
   mut person_lock_entries : Array[base_codec::Json]
+  mut person_lock_aside : Array[base_codec::Json]
   mut lock_seen : Option[base_codec::Json]
   mut lock_corrupt : Bool
   mut lock_read_pending : Bool
@@ -269,6 +270,7 @@ pub fn ClientCore::new(
     lock_kept_entries: [],
     lock_kept_aside: [],
     person_lock_entries: [],
+    person_lock_aside: [],
     lock_seen: None,
     lock_corrupt: false,
     lock_read_pending: false,
@@ -2006,6 +2008,7 @@ pub fn ClientCore::clear_account_scoped_runtime_state(self : ClientCore) -> Unit
   self.lock_kept_entries = []
   self.lock_kept_aside = []
   self.person_lock_entries = []
+  self.person_lock_aside = []
   self.lock_seen = None
   self.lock_corrupt = false
   self.lock_read_pending = false
@@ -2419,7 +2422,9 @@ pub fn ClientCore::absorb_mesh_admission_lock(
     Some(p_arr) => {
       let sub = self.membership.effective_sub()
       if sub.length() > 0 {
-        let (_, changed) = self.load_person_lock_json_inner(p_arr, sub)
+        // Untrusted station refusal MUST NOT pin an initial personal genesis (`allow_initial_pin=false`):
+        // it only reconciles updates/removals onto an already-pinned local personal lock via `lock::person_chain`.
+        let (_, changed) = self.load_person_lock_json_inner(p_arr, sub, false)
         if changed {
           advanced = true
         }
@@ -5986,40 +5991,22 @@ fn validate_person_lock_entries_one(
   }
 }
 
-/// Strict deterministic total order for equal-length same-genesis personal lock chains:
-/// returns `true` iff `cand` has a strictly smaller canonical entry hash at the first
-/// divergence index from `held` (asymmetric & transitive, preventing A->B->A oscillation).
-fn person_chain_first_diff_lt(
-  cand : Array[base_codec::Json],
-  held : Array[base_codec::Json],
-  c : lock::Crypto,
-) -> Bool {
-  let n = cand.length()
-  if n != held.length() {
-    return false
-  }
-  for i in 0..<n {
-    let ch = lock_entry_hash(codec_to_form(cand[i]), c)
-    let hh = lock_entry_hash(codec_to_form(held[i]), c)
-    if ch != hh {
-      return ch < hh
-    }
-  }
-  false
-}
-
-/// Validate and store the viewer's personal lock chain (`personal-lock-<hex(sub)>` flat entry array
-/// OR real `station/src/mesh/serve.ts:150-151` `[{ genesis, entries }, ...]` chain array) via
-/// `lock::fold_person` / `verify_person_lock`, aligned with `client/core-ts/src/personal-lock.ts:519-555`:
-/// 1. Once a local chain is held (`cur_genesis != ""`), strictly pin genesis — reject every foreign
-///    `vg != cur_genesis` chain even if longer.
-/// 2. Strictly monotonic anti-rollback: ignore shorter lagging prefixes (`cand.length() < held.length()`).
-/// 3. Equal-length same-genesis competing forks converge one-way via `person_chain_first_diff_lt`.
-/// Returns `(valid, changed)` and wakes paused stations ONLY when the stored chain actually advances.
+/// Reconcile a personal lock chain (`personal-lock-<hex(sub)>` flat entry array OR real
+/// `station/src/mesh/serve.ts:150-151` `[{ genesis, entries }, ...]` chain array) using the
+/// canonical protocol engine `lock::person_chain` + `lock::fold_person` (matching
+/// `station/src/mesh/person-sync.ts:20` and `client/core-ts/src/personal-lock.ts` `#chosen`/`keep`):
+/// - `allow_initial_pin = false` (untrusted station refusal observations): NEVER pins a genesis
+///   when local `self.person_lock_entries` is empty (returns `(false, false)`).
+/// - Once pinned (`cur_genesis != ""`): rejects foreign genesis chains (`vg != cur_genesis`),
+///   deduplicates `self.person_lock_entries ∪ self.person_lock_aside ∪ incoming`, runs
+///   `lock::person_chain(combined, cur_genesis, c)` (`device.remove` priority + canonical fork
+///   choice), keeps beaten aside branches up to `ASIDE_MOST` (256), and wakes paused stations ONLY
+///   when the canonical active chain actually changes.
 fn ClientCore::load_person_lock_json_inner(
   self : ClientCore,
   raw : base_codec::Json,
   sub : String,
+  allow_initial_pin : Bool,
 ) -> (Bool, Bool) {
   if sub.length() == 0 {
     return (false, false)
@@ -6048,99 +6035,181 @@ fn ClientCore::load_person_lock_json_inner(
       _ => ()
     }
   }
-  let candidate_opt : Option[(String, Array[base_codec::Json])] = if is_chain_obj_array {
-    let mut best_g = ""
-    let mut best_entries : Option[Array[base_codec::Json]] = None
+
+  // Unpinned state: ONLY trusted local/cloud entrypoints (`allow_initial_pin = true`) may pin a genesis.
+  if cur_genesis.length() == 0 {
+    if !allow_initial_pin {
+      return (false, false)
+    }
+    let init_opt : Option[Array[base_codec::Json]] = if is_chain_obj_array {
+      let mut found : Option[Array[base_codec::Json]] = None
+      for i in 0..<xs.length() {
+        let item = xs[i]
+        let item_entries = match base_codec::json_get(item, "entries") {
+          Some(base_codec::Json::Arr(es)) => es
+          _ => continue
+        }
+        let g_opt = proto_str(item, "genesis")
+        match validate_person_lock_entries_one(item_entries, sub, g_opt, c) {
+          Some((_, ventries)) => {
+            found = Some(ventries)
+            break
+          }
+          None => ()
+        }
+      }
+      found
+    } else {
+      match validate_person_lock_entries_one(xs, sub, None, c) {
+        Some((_, ventries)) => Some(ventries)
+        None => None
+      }
+    }
+    match init_opt {
+      None => return (false, false)
+      Some(validated) => {
+        self.person_lock_entries = validated
+        self.person_lock_aside = []
+        self.wake_paused_stations_on_lock_change("")
+        return (true, true)
+      }
+    }
+  }
+
+  // Pinned state (`cur_genesis != ""`): filter strictly to `cur_genesis` and reconcile via `lock::person_chain`.
+  let incoming_form : Array[form::Json] = []
+  let mut matched_genesis = false
+  if is_chain_obj_array {
     for i in 0..<xs.length() {
       let item = xs[i]
       let item_entries = match base_codec::json_get(item, "entries") {
         Some(base_codec::Json::Arr(es)) => es
         _ => continue
       }
-      let g_opt = proto_str(item, "genesis")
-      match validate_person_lock_entries_one(item_entries, sub, g_opt, c) {
-        Some((vg, ventries)) => {
-          // Law 1 (Pinned genesis): once holding a personal lock chain, NEVER accept a foreign genesis!
-          if cur_genesis.length() > 0 && vg != cur_genesis {
-            continue
-          }
-          let take = match best_entries {
-            None => true
-            Some(prev) =>
-            if ventries.length() > prev.length() {
-              true
-            } else if ventries.length() == prev.length() {
-              if vg == best_g {
-                person_chain_first_diff_lt(ventries, prev, c)
-              } else {
-                vg < best_g
-              }
-            } else {
-              false
-            }
-          }
-          if take {
-            best_g = vg
-            best_entries = Some(ventries)
-          }
-        }
+      if item_entries.length() == 0 {
+        continue
+      }
+      match proto_str(item, "genesis") {
+        Some(g) => if g.length() > 0 && g != cur_genesis { continue }
         None => ()
       }
-    }
-    match best_entries {
-      Some(be) => Some((best_g, be))
-      None => None
+      let mut foreign = false
+      let item_form : Array[form::Json] = []
+      for j in 0..<item_entries.length() {
+        let fe = codec_to_form(item_entries[j])
+        if lock_entry_seq(fe) == 0 && lock_entry_hash(fe, c) != cur_genesis {
+          foreign = true
+          break
+        }
+        item_form.push(fe)
+      }
+      if foreign {
+        continue
+      }
+      matched_genesis = true
+      for j in 0..<item_form.length() {
+        incoming_form.push(item_form[j])
+      }
     }
   } else {
-    match validate_person_lock_entries_one(xs, sub, None, c) {
-      Some((vg, ventries)) =>
-      if cur_genesis.length() > 0 && vg != cur_genesis {
-        None
-      } else {
-        Some((vg, ventries))
+    let mut foreign = false
+    for j in 0..<xs.length() {
+      let fe = codec_to_form(xs[j])
+      if lock_entry_seq(fe) == 0 && lock_entry_hash(fe, c) != cur_genesis {
+        foreign = true
+        break
       }
-      None => None
+      incoming_form.push(fe)
+    }
+    if !foreign && incoming_form.length() > 0 {
+      matched_genesis = true
     }
   }
-  match candidate_opt {
-    None => (false, false)
-    Some((_, validated)) => {
-      if self.person_lock_entries.length() == 0 {
-        self.person_lock_entries = validated
-        self.wake_paused_stations_on_lock_change("")
-        return (true, true)
-      }
-      let prev_fp = person_lock_entries_fingerprint(self.person_lock_entries, c)
-      let next_fp = person_lock_entries_fingerprint(validated, c)
-      if prev_fp == next_fp {
-        return (true, false)
-      }
-      // Law 2 (Anti-rollback): lagging prefix or shorter fork MUST NOT roll back held chain!
-      if validated.length() < self.person_lock_entries.length() {
-        return (true, false)
-      }
-      // Law 3 (Equal-length competing fork): one-way convergence only via deterministic total order.
-      if validated.length() == self.person_lock_entries.length() {
-        if !person_chain_first_diff_lt(validated, self.person_lock_entries, c) {
-          return (true, false)
+  if !matched_genesis || incoming_form.length() == 0 {
+    return (false, false)
+  }
+
+  // Merge `person_lock_entries ∪ person_lock_aside ∪ incoming_form` deduplicated by `entry_hash`.
+  let seen : Map[String, Bool] = Map::new()
+  let combined : Array[form::Json] = []
+  let push_unique = fn(fe : form::Json) -> Unit {
+    let h = lock_entry_hash(fe, c)
+    if h.length() > 0 && seen.get(h).is_none() {
+      seen.set(h, true)
+      combined.push(fe)
+    }
+  }
+  for i in 0..<self.person_lock_entries.length() {
+    push_unique(codec_to_form(self.person_lock_entries[i]))
+  }
+  for i in 0..<self.person_lock_aside.length() {
+    push_unique(codec_to_form(self.person_lock_aside[i]))
+  }
+  for i in 0..<incoming_form.length() {
+    push_unique(incoming_form[i])
+  }
+
+  let ch = match lock::person_chain(combined, cur_genesis, c) {
+    Ok(x) => x
+    Err(_) => return (false, false)
+  }
+  match lock::fold_person(ch.entries, sub, c) {
+    Ok(_) => ()
+    Err(_) => return (false, false)
+  }
+
+  let next_active : Array[base_codec::Json] = []
+  for i in 0..<ch.entries.length() {
+    next_active.push(form_to_codec(ch.entries[i]))
+  }
+  // Retain beaten/below aside branches up to `ASIDE_MOST` (256), pruning orphans (`lock-keep.ts:91-104`).
+  let side_raw : Array[form::Json] = []
+  for i in 0..<ch.off.length() {
+    let (idx, why) = ch.off[i]
+    if lock_is_aside_off(why) && idx >= 0 && idx < combined.length() {
+      side_raw.push(combined[idx])
+    }
+  }
+  lock_sort_by_seq(side_raw)
+  let side_start = if side_raw.length() > lock_aside_most() { side_raw.length() - lock_aside_most() } else { 0 }
+  let kept_hashes : Map[String, Bool] = Map::new()
+  for i in 0..<ch.hashes.length() {
+    kept_hashes.set(ch.hashes[i], true)
+  }
+  let next_aside : Array[base_codec::Json] = []
+  for i in side_start..<side_raw.length() {
+    let e = side_raw[i]
+    match lock_entry_prev(e) {
+      Some(p) => if kept_hashes.get(p).is_some() {
+        let h = lock_entry_hash(e, c)
+        if h.length() > 0 {
+          kept_hashes.set(h, true)
+          next_aside.push(form_to_codec(e))
         }
       }
-      // Law 4 (Strict extension or winning equal-length fork of same genesis): advance & wake once!
-      self.person_lock_entries = validated
-      self.wake_paused_stations_on_lock_change("")
-      (true, true)
+      None => ()
     }
   }
+  self.person_lock_aside = next_aside
+
+  let prev_fp = person_lock_entries_fingerprint(self.person_lock_entries, c)
+  let next_fp = person_lock_entries_fingerprint(next_active, c)
+  if prev_fp == next_fp {
+    return (true, false)
+  }
+  self.person_lock_entries = next_active
+  self.wake_paused_stations_on_lock_change("")
+  (true, true)
 }
 
-/// Validate and store the viewer's personal lock chain (`personal-lock-<hex(sub)>`) via `lock::fold_person`.
+/// Validate and store the viewer's personal lock chain (`personal-lock-<hex(sub)>`) via `lock::person_chain`.
 /// Rejects malformed or cryptographically invalid chains without overwriting existing state.
 pub fn ClientCore::load_person_lock_json(
   self : ClientCore,
   raw : base_codec::Json,
   sub : String,
 ) -> Bool {
-  self.load_person_lock_json_inner(raw, sub).0
+  self.load_person_lock_json_inner(raw, sub, true).0
 }
 
 /// Return the validated personal lock chain entries kept for `hello.lock.person`.
