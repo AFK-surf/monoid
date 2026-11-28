@@ -253,7 +253,7 @@ test "wave17d2 r4: updates.check feed URL uses station_cli::feed_url, live_versi
   }
 }
 
-test "wave17d2 r4: downgraded member rejected before idempotency replay & join detaches on disconnect" {
+test "wave17d2 r4: downgraded member rejected before idempotency replay" {
   let host = station_api::ApiHost::stub()
   let seen = station_api::SeenStore::empty()
   let admin = station_api::AdminApi::new(host, seen, "9999")
@@ -345,5 +345,29 @@ test "wave17d2 r6: updates.check binds beta channel without updateChannel and dr
   )
   if applied_stale_err || updates.station.latest != Some("0.1.12050") || updates.station.failed_text.is_some() {
     panic("stale cross-channel error must not clear or overwrite active channel state")
+  }
+
+  // R7 P1: Switch channel from `beta` to `stable` (with no `stable` check run yet):
+  // a late `beta` completion is discarded, AND `updates_view_json(..., resolved_channel=Some("stable"))`
+  // MUST mask the cached `beta` `latest`/`newer`/`failed` so it never leaks under `"channel":"stable"`!
+  let late_beta_applied = apply_updates_check_result(
+    updates,
+    "beta",
+    "stable",
+    Ok((200, make_signed_feed("0.1.12099", 12099).to_bytes())),
+    trusted,
+    always_ok,
+  )
+  if late_beta_applied {
+    panic("late beta completion after switching to stable must be discarded")
+  }
+  let stable_cfg = base_codec::json_obj([("updateChannel", base_codec::json_str("stable"))])
+  let stable_view_s = base_codec::json_stringify(station_whole::updates_view_json(updates, stable_cfg, resolved_channel=Some("stable")))
+  if !stable_view_s.contains("\"channel\":\"stable\"") ||
+  !stable_view_s.contains("\"newer\":false") ||
+  !stable_view_s.contains("\"state\":\"idle\"") ||
+  stable_view_s.contains("\"latest\":") ||
+  stable_view_s.contains("\"message\":") {
+    panic("stable view leaked cached beta check state: " + stable_view_s)
   }
 }

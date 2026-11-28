@@ -6,9 +6,8 @@
 // - Enforces unified read-only handover write barrier, `AdminApi` idempotency claim/complete/abort,
 //   active manager role re-verification before committing side effects, and orphaned `stream.open`
 //   handle closure (`close_orphaned_async_stream_open`) on disconnect/timeout/shutdown.
-// - `workspaces.join` strictly reuses `station_cloud::prepare_join_workspace` (`/v1/stations/join` +
-//   `"locks": true` + all local pre-checks before network I/O) and `apply_join_workspace_response`.
-// - `updates.install` is withdrawn to honest 501 until a full verified installer loop lands.
+// - `updates.install`, `updates.wait`, `workspaces.join`, and `accounts.profiles.login*` remain
+//   honest 501 until their dedicated Wave 17E runtimes land.
 
 import "base_codec"
 import "builders_core"
@@ -514,11 +513,10 @@ fn finish_idem_claim(
   resp
 }
 
-/// Intercept the 4 network-bound live ops BEFORE synchronous `handle_peer_http` so the
+/// Intercept the 3 network-bound live ops BEFORE synchronous `handle_peer_http` so the
 /// main event loop NEVER blocks on external HTTP:
 /// - `POST /updates/check`
 /// - `POST /copies/s3/test`
-/// - `POST /workspaces/join`
 /// - `POST /profiles` (for keyed profiles requiring HTTP validation)
 /// Unified read-only handover write barrier & `Idempotency-Key` claim are enforced by the caller
 /// (`whole_daemon.pion`) before invoking this function.
@@ -764,6 +762,7 @@ pub fn apply_updates_check_result(
   if req_channel != current_channel {
     return false
   }
+  updates.station.checked_channel = Some(req_channel)
   match fetch_res {
     Err(e) => {
       // Clear stale `latest`/`updatable` on fetch failure so UI never sees an outdated update prompt!

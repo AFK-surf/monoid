@@ -1,15 +1,14 @@
-// Wave 17D-2 R2 live HTTP API handlers for the 10 production-backed `call_op`s:
-// 1. Updates (3): `updates.wait`, `updates.check`, `updates.install`
-// 2. Accounts & Profiles (5): `accounts.profiles.createKeyed`, `accounts.profiles.createMachine`,
-//    `accounts.profiles.login`, `accounts.profiles.login.get`, `accounts.profiles.login.delete`
+// Wave 17D-2 R7 live HTTP API handlers for the 4 production-backed `call_op`s:
+// 1. Updates (1): `updates.check`
+// 2. Accounts & Profiles (2): `accounts.profiles.createKeyed`, `accounts.profiles.createMachine`
 // 3. Copies S3 Test (1): `copies.s3.test`
-// 4. Workspaces Join (1): `workspaces.join` (dispatched in `whole_api_admin_ops.pion` + non-blocking daemon handler)
 //
 // ZERO fake 200 stubs:
-// - The 7 ops awaiting Wave 17E runtimes (`mcpServers.reloadAll/One`, `accounts.profiles.quota/resetQuota/pace`,
-//   `copies.restore`, `xshare.hosts.put`) remain honest 501.
-// - All network-bound ops (`updates.check`, `updates.install`, `copies.s3.test`, `workspaces.join`, keyed profile
-//   validation) run non-blockingly in `whole_daemon_live_ops.pion` via `AdminStreamMode::WaitingAsyncOp`
+// - All ops awaiting Wave 17E runtimes (`updates.wait`, `updates.install`, `workspaces.join`,
+//   `accounts.profiles.{login*,quota,resetQuota,pace}`, `mcpServers.reloadAll/One`, `copies.restore`,
+//   `xshare.hosts.put`) remain honest 501.
+// - All network-bound ops (`updates.check`, `copies.s3.test`, keyed profile validation) run
+//   non-blockingly in `whole_daemon_live_ops.pion` via `AdminStreamMode::WaitingAsyncOp`
 //   (zero `await_call` / zero `host_shim::wait`), and return honest 501 in unhooked pure DI fixtures.
 
 import "base_codec"
@@ -432,12 +431,22 @@ pub fn updates_view_json(
     _ => ()
   }
   let st = updates.station
-  let st_state = if st.updating.is_some() { "updating" } else if st.failed_key.is_some() || st.failed_text.is_some() { "failed" } else { "idle" }
+  // Scope cached check results strictly to `st.checked_channel` (`station/src/updates/updates.ts:614-620`):
+  // never present a cached beta `latest`/`newer`/`failed` result under `"channel": "stable"` (or vice versa).
+  let ch_matches = match st.checked_channel {
+    Some(cc) => cc == channel
+    None => true
+  }
+  let eff_updatable = if ch_matches { st.updatable } else { false }
+  let eff_latest = if ch_matches { st.latest } else { None }
+  let eff_failed_key = if ch_matches { st.failed_key } else { None }
+  let eff_failed_text = if ch_matches { st.failed_text } else { None }
+  let st_state = if st.updating.is_some() { "updating" } else if eff_failed_key.is_some() || eff_failed_text.is_some() { "failed" } else { "idle" }
   let st_fields : Array[(String, base_codec::Json)] = [
     ("id", base_codec::json_str("station")),
     ("name", base_codec::json_str("station")),
     ("installed", base_codec::json_bool(true)),
-    ("newer", base_codec::json_bool(st.updatable)),
+    ("newer", base_codec::json_bool(eff_updatable)),
     ("downgrade", base_codec::json_bool(false)),
     ("channel", base_codec::json_str(channel)),
     ("auto", base_codec::json_bool(auto_on)),
@@ -449,7 +458,7 @@ pub fn updates_view_json(
     Some(v) => st_fields.push(("version", base_codec::json_str(v)))
     None => ()
   }
-  match st.latest {
+  match eff_latest {
     Some(l) => st_fields.push(("latest", base_codec::json_str(l)))
     None => ()
   }
@@ -458,7 +467,7 @@ pub fn updates_view_json(
   } else if has_auto_when {
     st_fields.push(("autoHeld", base_codec::json_bool(true)))
   }
-  match st.failed_text {
+  match eff_failed_text {
     Some(m) => st_fields.push(("message", base_codec::json_str(m)))
     None => ()
   }
