@@ -3412,27 +3412,231 @@ fn encode_ws_proxy_frame(kind : Int, payload : Bytes) -> Bytes {
 /// `WholeCore::open_after_predecessor_gone` (`whole_agents.pion:807`).
 /// Prioritizes native `stillfail-runner` field `"runner"` (`station/native/runner/src/main.rs:376`),
 /// falling back to `"runnerPid"` / `"runner_pid"` for compatibility.
+pub enum RunnerPidStatus {
+  Alive
+  ConfirmedDead
+  Unknown
+}
+
+/// R20: Unified tri-state runner PID liveness probe:
+/// - `rpid <= 1` or `station_sys::proc_kill_is_esrch(kill_rc)` (`-3`) -> `ConfirmedDead`
+/// - `kill_rc != 0` (POSIX `EPERM` `-1`, Win32 `WAIT_FAILED`/unknown `-1`) -> `Unknown` (NEVER dead!)
+/// - `kill_rc == 0`: PID reused (`actual > started_at + STARTED_SLACK_MS`) -> `ConfirmedDead`, else `Alive`
+pub fn probe_runner_pid_status(
+  rpid : Int,
+  started_at : Int64,
+  kill_rc : Int,
+  os_start_time_ms : Option[Int64],
+) -> RunnerPidStatus {
+  if rpid <= 1 || station_sys::proc_kill_is_esrch(kill_rc) {
+    return RunnerPidStatus::ConfirmedDead
+  }
+  if kill_rc != 0 {
+    return RunnerPidStatus::Unknown
+  }
+  match os_start_time_ms {
+    Some(actual) => if actual > started_at + station_drivers::STARTED_SLACK_MS {
+      RunnerPidStatus::ConfirmedDead
+    } else {
+      RunnerPidStatus::Alive
+    }
+    None => RunnerPidStatus::Alive
+  }
+}
+
+pub enum RunnerFileProbe {
+  Live(station_drivers::RunnerInfo)
+  ConfirmedAbsent
+  ConfirmedDead
+  Uncertain(String, Option[station_drivers::RunnerInfo])
+}
+
 pub struct RunnerScanResult {
   pub runners : Array[station_drivers::RunnerInfo]
   pub complete : Bool
   pub error : Option[String]
 }
 
-/// R18/R19: Error-preserving runner directory scan that ALWAYS retains all valid live runners while
-/// tracking exact completeness via `realpath_fn` (`sys_realpath_checked` / `station_sys::realpath_err`):
-/// - `readdir` failure is treated as absent (`complete = true, runners = []`) ONLY when `realpath_fn(rdir)`
-///   confirms true `ENOENT` (`FsErr::NotFound`); if `rdir` exists (`Ok(_)`, e.g. `EACCES`) or `realpath`
-///   errors otherwise, returns `complete = false`.
-/// - Single `.json` read failure is treated as vanished ONLY when `realpath_fn(fpath)` confirms true `ENOENT`;
-///   if `fpath` still exists (`Ok(_)`, e.g. `EACCES`/`EMFILE`) or parse/`id` fails, marks `complete = false`
-///   and continues collecting all other valid runners!
+fn is_safe_runner_id(runner_id : String) -> Bool {
+  if runner_id.length() == 0 {
+    return false
+  }
+  if runner_id.contains("/") || runner_id.contains("\\") || runner_id.contains("..") {
+    return false
+  }
+  true
+}
+
+/// R20: Single-file runner metadata + tri-state PID probe:
+/// - `read_text` failure is `ConfirmedAbsent` ONLY when `realpath_fn(fpath)` confirms true `FsErr::NotFound`;
+///   existing unreadable file (`Ok(_)`) or un-traversable parent (`PermissionDenied`/etc.) returns `Uncertain(_, None)`.
+/// - Corrupt JSON, missing `id`, `expected_id` mismatch, or `rpid <= 1` returns `Uncertain(_, None)`.
+/// - Uses tri-state `probe_runner_pid_status` so `Unknown` (`kill_rc == -1`) returns `Uncertain(..., Some(info))`
+///   instead of silently dropping a live runner as dead!
+pub fn probe_runner_metadata_file_with(
+  ops_fs : station_ops::OpsFs,
+  fpath : String,
+  expected_id : Option[String],
+  realpath_fn : (String) -> Result[String, station_ops::FsErr],
+  readlink_fn : (String) -> Option[String],
+  kill_probe_fn : (Int) -> Int,
+  start_time_fn : (Int) -> Option[Int64],
+) -> RunnerFileProbe {
+  let raw = match ops_fs.read_text(fpath) {
+    Ok(s) => s
+    Err(e) => match realpath_fn(fpath) {
+      Err(station_ops::FsErr::NotFound) => return RunnerFileProbe::ConfirmedAbsent
+      Ok(_) => return RunnerFileProbe::Uncertain("read " + fpath + " failed while file exists: " + station_ops::fs_err_msg(e), None)
+      Err(re) => return RunnerFileProbe::Uncertain("read/realpath " + fpath + ": " + station_ops::fs_err_msg(re), None)
+    }
+  }
+  let j = match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(v) => v
+    base_codec::JsonParseResult::Err(e) => return RunnerFileProbe::Uncertain("parse " + fpath + ": " + e, None)
+  }
+  let id = match base_codec::json_get(j, "id") {
+    Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { return RunnerFileProbe::Uncertain("empty id in " + fpath, None) }
+    _ => return RunnerFileProbe::Uncertain("missing id in " + fpath, None)
+  }
+  match expected_id {
+    Some(eid) => if id != eid {
+      return RunnerFileProbe::Uncertain("id mismatch in " + fpath + ": expected " + eid + ", got " + id, None)
+    }
+    None => ()
+  }
+  let rpid = match base_codec::json_get(j, "runner") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => match base_codec::json_get(j, "runnerPid") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int()
+      _ => match base_codec::json_get(j, "runner_pid") {
+        Some(base_codec::Json::Num(n, _)) => n.to_int()
+        _ => 0
+      }
+    }
+  }
+  if rpid <= 1 {
+    return RunnerFileProbe::Uncertain("invalid runner pid in " + fpath, None)
+  }
+  let pid = match base_codec::json_get(j, "pid") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => rpid
+  }
+  let pgid = match base_codec::json_get(j, "pgid") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => pid
+  }
+  let started_at = match base_codec::json_get(j, "startedAt") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int64()
+    _ => match base_codec::json_get(j, "started_at") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int64()
+      _ => 0L
+    }
+  }
+  let program = match base_codec::json_get(j, "program") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let args : Array[String] = []
+  match base_codec::json_get(j, "args") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for ai in 0..<arr.length() {
+        match arr[ai] {
+          base_codec::Json::Str(s) => args.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  let socket = match base_codec::json_get(j, "socket") {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+  let keeps = match base_codec::json_get(j, "keeps") {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+  let pty = match base_codec::json_get(j, "pty") {
+    Some(base_codec::Json::Bool(b)) => b
+    _ => false
+  }
+  let cwd_opt = match base_codec::json_get(j, "cwd") {
+    Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { Some(s.trim()) } else { None }
+    _ => if pid > 1 && pid != rpid {
+      match readlink_fn("/proc/" + pid.to_string() + "/cwd") {
+        Some(p) => if p.trim().length() > 0 { Some(p.trim()) } else { None }
+        None => None
+      }
+    } else {
+      None
+    }
+  }
+  let info = station_drivers::RunnerInfo::{
+    id: id,
+    runner_pid: rpid,
+    pid: pid,
+    pgid: pgid,
+    started_at: started_at,
+    program: program,
+    args: args,
+    socket: socket,
+    keeps: keeps,
+    pty: pty,
+    cwd: cwd_opt,
+  }
+  let kill_rc = kill_probe_fn(rpid)
+  let os_start = if kill_rc == 0 { start_time_fn(rpid) } else { None }
+  match probe_runner_pid_status(rpid, started_at, kill_rc, os_start) {
+    RunnerPidStatus::ConfirmedDead => RunnerFileProbe::ConfirmedDead
+    RunnerPidStatus::Alive => RunnerFileProbe::Live(info)
+    RunnerPidStatus::Unknown => RunnerFileProbe::Uncertain("pid probe uncertain rc=" + kill_rc.to_string(), Some(info))
+  }
+}
+
+pub fn probe_runner_file_with(
+  ops_fs : station_ops::OpsFs,
+  data : String,
+  sep : String,
+  runner_id : String,
+  realpath_fn : (String) -> Result[String, station_ops::FsErr],
+  readlink_fn : (String) -> Option[String],
+  kill_probe_fn : (Int) -> Int,
+  start_time_fn : (Int) -> Option[Int64],
+) -> RunnerFileProbe {
+  if !is_safe_runner_id(runner_id) {
+    return RunnerFileProbe::Uncertain("invalid runner id", None)
+  }
+  let fpath = nodepath::join(sep, [station_drivers::runners_dir(data, sep), runner_id + ".json"])
+  probe_runner_metadata_file_with(ops_fs, fpath, Some(runner_id), realpath_fn, readlink_fn, kill_probe_fn, start_time_fn)
+}
+
+pub fn probe_runner_file(
+  ops_fs : station_ops::OpsFs,
+  data : String,
+  sep : String,
+  runner_id : String,
+) -> RunnerFileProbe {
+  probe_runner_file_with(
+    ops_fs,
+    data,
+    sep,
+    runner_id,
+    sys_realpath_checked,
+    station_sys::readlink,
+    fn(p : Int) -> Int { station_sys::proc_kill(p, station_sys::SIG_PROBE, false) },
+    station_sys::proc_start_time_ms,
+  )
+}
+
+/// R18/R19/R20: Startup directory scan reusing `probe_runner_metadata_file_with` + tri-state `kill_probe_fn`.
+/// Retains both `Live(info)` and `Uncertain(msg, Some(info))` (never drops a runner on Win32/POSIX `-1`!).
 pub fn discover_live_runners_scan_with(
   ops_fs : station_ops::OpsFs,
   data : String,
   sep : String,
   realpath_fn : (String) -> Result[String, station_ops::FsErr],
   readlink_fn : (String) -> Option[String],
-  is_alive_fn : (Int) -> Bool,
+  kill_probe_fn : (Int) -> Int,
   start_time_fn : (Int) -> Option[Int64],
 ) -> RunnerScanResult {
   let out : Array[station_drivers::RunnerInfo] = []
@@ -3459,115 +3663,14 @@ pub fn discover_live_runners_scan_with(
       continue
     }
     let fpath = nodepath::join(sep, [rdir, name])
-    let raw = match ops_fs.read_text(fpath) {
-      Ok(s) => s
-      Err(e) => match realpath_fn(fpath) {
-        Err(station_ops::FsErr::NotFound) => continue
-        Ok(_) => {
-          mark_incomplete("read " + fpath + " failed while file exists: " + station_ops::fs_err_msg(e))
-          continue
-        }
-        Err(re) => {
-          mark_incomplete("read/realpath " + fpath + ": " + station_ops::fs_err_msg(re))
-          continue
-        }
+    match probe_runner_metadata_file_with(ops_fs, fpath, None, realpath_fn, readlink_fn, kill_probe_fn, start_time_fn) {
+      RunnerFileProbe::Live(info) => out.push(info)
+      RunnerFileProbe::Uncertain(msg, Some(info)) => {
+        out.push(info)
+        mark_incomplete(msg)
       }
-    }
-    let j = match base_codec::json_parse(raw) {
-      base_codec::JsonParseResult::Ok(v) => v
-      base_codec::JsonParseResult::Err(e) => {
-        mark_incomplete("parse " + fpath + ": " + e)
-        continue
-      }
-    }
-    let id = match base_codec::json_get(j, "id") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => {
-        mark_incomplete("missing id in " + fpath)
-        continue
-      }
-    }
-    let rpid = match base_codec::json_get(j, "runner") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int()
-      _ => match base_codec::json_get(j, "runnerPid") {
-        Some(base_codec::Json::Num(n, _)) => n.to_int()
-        _ => match base_codec::json_get(j, "runner_pid") {
-          Some(base_codec::Json::Num(n, _)) => n.to_int()
-          _ => 0
-        }
-      }
-    }
-    let pid = match base_codec::json_get(j, "pid") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int()
-      _ => rpid
-    }
-    let pgid = match base_codec::json_get(j, "pgid") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int()
-      _ => pid
-    }
-    let started_at = match base_codec::json_get(j, "startedAt") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int64()
-      _ => match base_codec::json_get(j, "started_at") {
-        Some(base_codec::Json::Num(n, _)) => n.to_int64()
-        _ => 0L
-      }
-    }
-    let program = match base_codec::json_get(j, "program") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => ""
-    }
-    let args : Array[String] = []
-    match base_codec::json_get(j, "args") {
-      Some(base_codec::Json::Arr(arr)) => {
-        for ai in 0..<arr.length() {
-          match arr[ai] {
-            base_codec::Json::Str(s) => args.push(s)
-            _ => ()
-          }
-        }
-      }
-      _ => ()
-    }
-    let socket = match base_codec::json_get(j, "socket") {
-      Some(base_codec::Json::Str(s)) => s
-      _ => ""
-    }
-    let keeps = match base_codec::json_get(j, "keeps") {
-      Some(base_codec::Json::Bool(b)) => b
-      _ => false
-    }
-    let pty = match base_codec::json_get(j, "pty") {
-      Some(base_codec::Json::Bool(b)) => b
-      _ => false
-    }
-    let cwd_opt = match base_codec::json_get(j, "cwd") {
-      Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { Some(s.trim()) } else { None }
-      _ => if pid > 1 && pid != rpid {
-        match readlink_fn("/proc/" + pid.to_string() + "/cwd") {
-          Some(p) => if p.trim().length() > 0 { Some(p.trim()) } else { None }
-          None => None
-        }
-      } else {
-        None
-      }
-    }
-    let info = station_drivers::RunnerInfo::{
-      id: id,
-      runner_pid: rpid,
-      pid: pid,
-      pgid: pgid,
-      started_at: started_at,
-      program: program,
-      args: args,
-      socket: socket,
-      keeps: keeps,
-      pty: pty,
-      cwd: cwd_opt,
-    }
-    let alive = rpid > 1 && is_alive_fn(rpid)
-    let os_start = if alive { start_time_fn(rpid) } else { None }
-    if station_drivers::is_runner_live(info, alive, os_start) {
-      out.push(info)
+      RunnerFileProbe::Uncertain(msg, None) => mark_incomplete(msg)
+      RunnerFileProbe::ConfirmedAbsent | RunnerFileProbe::ConfirmedDead => ()
     }
   }
   RunnerScanResult::{ runners: out, complete: complete, error: first_err }
@@ -3584,7 +3687,7 @@ pub fn discover_live_runners_scan(
     sep,
     sys_realpath_checked,
     station_sys::readlink,
-    station_ops::is_pid_alive,
+    fn(p : Int) -> Int { station_sys::proc_kill(p, station_sys::SIG_PROBE, false) },
     station_sys::proc_start_time_ms,
   )
 }

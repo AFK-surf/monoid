@@ -185,12 +185,17 @@ fn run_smoke_sys() -> Int {
             }
           }
           if r10_ok && station_sys::geteuid() > 0 {
-            // R19 real OS FS check: `chmod 0000` `.json` + valid `.json` through an OpsFs that
-            // collapses read errors to `NotFound` (mirroring `shell_ops_fs()`): `discover_live_runners_scan`
-            // MUST use real OS `sys_realpath_checked` to return `complete == false` while preserving valid runners!
+            // R19/R20 real OS FS check:
+            // (1) `r-locked.json` (`chmod 0000`) + `r-smoke-19.json` (valid) through a `shell_ops_fs`-like
+            //     `OpsFs` collapsing read errors to `NotFound`:
+            //     - `discover_live_runners_scan` -> `complete == false`, retains `r-smoke-19`;
+            //     - `probe_runner_file(..., "r-absent")` -> `ConfirmedAbsent` (not blocked by `r-locked.json`);
+            //     - `probe_runner_file(..., "r-locked")` -> `Uncertain(_, None)`.
+            // (2) `runners` directory itself `chmod 0000`:
+            //     - `probe_runner_file(..., "r-absent")` -> `Uncertain(_, None)`.
             let r19_rdir = vroot + "/run/runners"
-            let r19_good = r19_rdir + "/good.json"
-            let r19_locked = r19_rdir + "/locked.json"
+            let r19_good = r19_rdir + "/r-smoke-19.json"
+            let r19_locked = r19_rdir + "/r-locked.json"
             let my_start = match station_sys::proc_start_time_ms(pid) {
               Some(ms) => ms
               None => host_shim::wall_ms()
@@ -201,14 +206,14 @@ fn run_smoke_sys() -> Int {
             && station_sys::write_file_atomic(r19_locked, good_body.to_bytes(), 384)
             if !r19_setup {
               r10_ok = false
-              r10_step = "r19 setup failed"
+              r10_step = "r20 setup failed"
             } else {
               let _ = station_sys::chmod(r19_locked, 0)
               let shell_like_ops = station_ops::OpsFs::{
                 ..station_ops::MemFs::new().ops(),
                 readdir: fn(p : String) -> Result[Array[String], station_ops::FsErr] {
                   if p == r19_rdir {
-                    Ok(["good.json", "locked.json"])
+                    Ok(["r-smoke-19.json", "r-locked.json"])
                   } else {
                     Err(station_ops::FsErr::NotFound)
                   }
@@ -223,10 +228,24 @@ fn run_smoke_sys() -> Int {
               let scan = discover_live_runners_scan(shell_like_ops, vroot, "/")
               if scan.complete {
                 r10_ok = false
-                r10_step = "r19 chmod 0000 file must mark scan.complete == false"
+                r10_step = "r20 chmod 0000 file must mark scan.complete == false"
               } else if scan.runners.length() != 1 || scan.runners[0].id != "r-smoke-19" {
                 r10_ok = false
-                r10_step = "r19 valid runner lost alongside chmod 0000 file: len=" + scan.runners.length().to_string()
+                r10_step = "r20 valid runner lost alongside chmod 0000 file: len=" + scan.runners.length().to_string()
+              } else if !(probe_runner_file(shell_like_ops, vroot, "/", "r-absent") is RunnerFileProbe::ConfirmedAbsent) {
+                r10_ok = false
+                r10_step = "r20 r-absent must be ConfirmedAbsent despite unrelated r-locked.json"
+              } else if !(probe_runner_file(shell_like_ops, vroot, "/", "r-locked") is RunnerFileProbe::Uncertain(_, None)) {
+                r10_ok = false
+                r10_step = "r20 r-locked (chmod 0000) must be Uncertain(_, None)"
+              }
+              if r10_ok {
+                let _ = station_sys::chmod(r19_rdir, 0)
+                if !(probe_runner_file(shell_like_ops, vroot, "/", "r-absent") is RunnerFileProbe::Uncertain(_, None)) {
+                  r10_ok = false
+                  r10_step = "r20 chmod 0000 runners dir must make r-absent Uncertain(_, None)"
+                }
+                let _ = station_sys::chmod(r19_rdir, 448)
               }
               let _ = station_sys::chmod(r19_locked, 384)
               let _ = station_sys::unlink(r19_locked)
