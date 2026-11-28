@@ -6913,6 +6913,77 @@ struct ShutdownRunnerRecord {
 ///    `runner_sock_send_verified_fn` (`SO_PEERCRED` / `LOCAL_PEERPID` / `GetNamedPipeServerProcessId`).
 /// 4. Returns `true` iff EVERY runner is OS-confirmed exited, zero uncommitted turns remain, and any
 ///    remaining markers were durably persisted.
+/// R31 P1-2: Pure in-memory deterministic runner socket path (0 disk I/O), matching
+/// `station/native/runner/src/sys/unix.rs:21` (`<runners_dir>/<rid>.sock`) on POSIX and
+/// `station/native/runner/src/sys/windows.rs:62` (`\\.\pipe\stillfail-runner-<fnv1a64_lower_utf16(runners_dir)>-<rid>`) on Windows.
+pub fn runner_deterministic_socket_path(
+  data : String,
+  sep : String,
+  runner_id : String,
+  is_windows : Bool,
+) -> Option[String] {
+  if !is_safe_runner_id(runner_id) {
+    return None
+  }
+  let rdir = station_drivers::runners_dir(data, sep)
+  if !is_windows {
+    return Some(nodepath::join(sep, [rdir, runner_id + ".sock"]))
+  }
+  let lowered = jscase::lower(rdir)
+  let bytes = lowered.to_bytes()
+  let mut h : UInt64 = (0xcbf29ce4L.to_uint64() << 32) | 0x84222325L.to_uint64()
+  let prime : UInt64 = 0x00000100000001b3L.to_uint64()
+  let feed_u16 = fn(unit : Int) -> Unit {
+    let lo : UInt64 = (unit & 0xFF).to_int64().to_uint64()
+    let hi : UInt64 = ((unit >> 8) & 0xFF).to_int64().to_uint64()
+    h = (h ^ lo) * prime
+    h = (h ^ hi) * prime
+  }
+  let mut i = 0
+  let n = bytes.length()
+  while i < n {
+    let b0 = bytes[i].to_int()
+    let mut cp = 0xFFFD
+    if b0 < 0x80 {
+      cp = b0
+      i = i + 1
+    } else if (b0 & 0xE0) == 0xC0 && i + 1 < n {
+      let b1 = bytes[i + 1].to_int()
+      cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F)
+      i = i + 2
+    } else if (b0 & 0xF0) == 0xE0 && i + 2 < n {
+      let b1 = bytes[i + 1].to_int()
+      let b2 = bytes[i + 2].to_int()
+      cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F)
+      i = i + 3
+    } else if (b0 & 0xF8) == 0xF0 && i + 3 < n {
+      let b1 = bytes[i + 1].to_int()
+      let b2 = bytes[i + 2].to_int()
+      let b3 = bytes[i + 3].to_int()
+      cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)
+      i = i + 4
+    } else {
+      i = i + 1
+    }
+    if cp <= 0xFFFF {
+      feed_u16(cp)
+    } else {
+      let adj = cp - 0x10000
+      feed_u16(0xD800 + (adj >> 10))
+      feed_u16(0xDC00 + (adj & 0x3FF))
+    }
+  }
+  let hex_digits = "0123456789abcdef"
+  let sb = StringBuilder::new()
+  let mut shift = 60
+  while shift >= 0 {
+    let nib = ((h >> shift) & 0xFL.to_uint64()).to_int()
+    sb.write_byte(hex_digits[nib] as Byte)
+    shift = shift - 4
+  }
+  Some("\\\\.\\pipe\\stillfail-runner-" + sb.to_string() + "-" + runner_id)
+}
+
 pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   self : LiveRunnerManager,
   edge_hub : station_whole::EdgeMuxHub,
@@ -6924,9 +6995,9 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   commit_turn_fn~ : (LiveRunnerSession) -> Bool = fn(_s) { true },
   now_ms_fn~ : () -> Int64 = fn() -> Int64 { host_shim::now_ms() },
   verify_spawn_id~ : (Int, Int64, Option[String], Option[Int64]) -> SpawnIdentityVerdict = verify_spawn_os_identity,
-  probe_runner_fn~ : (station_ops::OpsFs, String, String, String) -> RunnerFileProbe = probe_runner_file,
   runner_sock_send_verified_fn~ : (String, Int, Bytes, Int) -> Int = station_sys::runner_sock_send_verified,
   close_child_fn~ : (station_sys::ChildProcess) -> Unit = fn(c) { let _ = c.close() },
+  is_windows~ : Bool = sep == "\\",
   max_wait_ms~ : Int64 = 2000L,
 ) -> Bool {
   edge_hub.clear_router()
@@ -7057,32 +7128,9 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
     let _ = self.sync_handover_state_file(ops_fs, self_pid, sep, log_fn=log_fn)
   }
 
-  let verify_disk_match = fn(rec : ShutdownRunnerRecord) -> Option[String] {
-    match probe_runner_fn(ops_fs, data, sep, rec.sess.runner_id) {
-      RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
-        if rinfo.id != rec.sess.runner_id
-        || rinfo.runner_pid != rec.expected_pid
-        || rinfo.started_at <= 0L
-        || rinfo.socket.length() == 0 {
-          return None
-        }
-        match rec.socket_opt {
-          Some(cached_sock) => {
-            if (rec.expected_started_at > 0L && rinfo.started_at != rec.expected_started_at)
-            || rinfo.socket != cached_sock {
-              return None
-            }
-          }
-          None => ()
-        }
-        Some(rinfo.socket)
-      }
-      _ => None
-    }
-  }
-
-  // Step 2: Single unified bounded loop (0ms overhead when `records.length() == 0`),
-  // clamping every I/O timeout strictly to remaining global budget (`shutdown_deadline - now`).
+  // Step 2: Single unified bounded loop (0ms overhead when `records.length() == 0`, 0 disk reads
+  // of `<rid>.json`), using deterministic in-memory socket paths + kernel peer-PID verification
+  // and clamping every I/O timeout strictly to remaining global budget (`shutdown_deadline - now`).
   if records.length() > 0 {
     // timer: bounded 2s wait for all runners to pass kernel-verified stop and confirm OS exit on full shutdown
     let shutdown_deadline = now_ms_fn() + max_wait_ms
@@ -7105,20 +7153,21 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           SpawnIdentityVerdict::Unknown => ()
           SpawnIdentityVerdict::ConfirmedSame => {
             if !rec.term_sent {
-              let rem_ms = shutdown_deadline - now_ms_fn()
-              if rem_ms <= 0L {
+              let rem_send = shutdown_deadline - now_ms_fn()
+              if rem_send <= 0L {
                 budget_exhausted = true
                 break
               }
-              match verify_disk_match(rec) {
+              let sock_opt = match rec.socket_opt {
+                Some(s) => if s.length() > 0 {
+                  Some(s)
+                } else {
+                  runner_deterministic_socket_path(data, sep, rec.sess.runner_id, is_windows)
+                }
+                None => runner_deterministic_socket_path(data, sep, rec.sess.runner_id, is_windows)
+              }
+              match sock_opt {
                 Some(sock_path) => {
-                  // R30 P1-2: Recompute remaining budget AFTER `verify_disk_match` disk I/O and immediately
-                  // before `runner_sock_send_verified_fn` so disk probe latency can never overrun deadline.
-                  let rem_send = shutdown_deadline - now_ms_fn()
-                  if rem_send <= 0L {
-                    budget_exhausted = true
-                    break
-                  }
                   let step_ms = if rem_send < 200L { rem_send.to_int() } else { 200 }
                   let rc = runner_sock_send_verified_fn(sock_path, rec.expected_pid, rec.attach_payload.to_bytes(), step_ms)
                   if rc == 0 {

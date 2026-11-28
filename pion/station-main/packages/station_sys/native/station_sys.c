@@ -10335,7 +10335,7 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
         goto done;
     }
     EnterCriticalSection(&ctx->lock);
-    if (InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
+    if (ctx->cancelled != 0 || GetTickCount64() >= ctx->deadline_ms) {
         LeaveCriticalSection(&ctx->lock);
         CloseHandle(h);
         goto done;
@@ -10351,28 +10351,35 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
 
     int64_t off = 0;
     while (off < ctx->len) {
-        if (InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
-            rc = -1;
-            goto close_h;
-        }
-        ULONGLONG now_ms = GetTickCount64();
-        if (now_ms >= ctx->deadline_ms) {
-            rc = -1;
-            goto close_h;
-        }
-        ULONGLONG rem64 = ctx->deadline_ms - now_ms;
-        DWORD rem = (rem64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (DWORD)rem64;
         DWORD chunk = (ctx->len - off > 65536) ? 65536U : (DWORD)(ctx->len - off);
         (void)ResetEvent(ctx->io_ev);
         ZeroMemory(&ctx->ov, sizeof(ctx->ov));
         ctx->ov.hEvent = ctx->io_ev;
         DWORD written = 0;
-        BOOL ok = WriteFile(h, ctx->buf + off, chunk, &written, &ctx->ov);
+        BOOL ok = FALSE;
+        DWORD werr = 0;
+        ULONGLONG rem64 = 0;
+        /* R31 P1-1: Serialize cancellation/deadline check with non-blocking overlapped WriteFile
+           submission under ctx->lock so caller timeout + CancelIoEx(ctx->h, NULL) has a total
+           order with every IRP submission (never submits after cancel; never misses an IRP). */
+        EnterCriticalSection(&ctx->lock);
+        ULONGLONG now_ms = GetTickCount64();
+        if (ctx->cancelled != 0 || now_ms >= ctx->deadline_ms) {
+            LeaveCriticalSection(&ctx->lock);
+            rc = -1;
+            goto close_h;
+        }
+        rem64 = ctx->deadline_ms - now_ms;
+        ok = WriteFile(h, ctx->buf + off, chunk, &written, &ctx->ov);
+        werr = ok ? 0U : GetLastError();
+        LeaveCriticalSection(&ctx->lock);
+
         if (!ok) {
-            if (GetLastError() != ERROR_IO_PENDING) {
+            if (werr != ERROR_IO_PENDING) {
                 rc = -1;
                 goto close_h;
             }
+            DWORD rem = (rem64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (DWORD)rem64;
             DWORD wrc = WaitForSingleObject(ctx->io_ev, rem);
             if (wrc != WAIT_OBJECT_0 || InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
                 (void)CancelIoEx(h, &ctx->ov);
@@ -10475,8 +10482,8 @@ int32_t sts_runner_sock_send_verified(
         win_verified_send_ctx_release(ctx);
         return rc;
     }
-    InterlockedExchange(&ctx->cancelled, 1);
     EnterCriticalSection(&ctx->lock);
+    InterlockedExchange(&ctx->cancelled, 1);
     if (ctx->h != INVALID_HANDLE_VALUE) {
         (void)CancelIoEx(ctx->h, NULL);
     }

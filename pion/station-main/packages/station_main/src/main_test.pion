@@ -2612,22 +2612,13 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
         if conn_dead_a { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
       }
     },
-    probe_runner_fn=fn(_fs, _d, _sep, rid) -> RunnerFileProbe {
-      if rid == "r-sp-a" {
-        RunnerFileProbe::Live(sp_rinfo_a)
-      } else if rid == "r-cn-a" {
-        RunnerFileProbe::Live(cn_rinfo_a)
-      } else {
-        RunnerFileProbe::ConfirmedAbsent
-      }
-    },
     runner_sock_send_verified_fn=fn(sock, pid, payload, _to) -> Int {
       let txt = payload.to_string()
       assert_true(txt.contains("\"op\":\"attach\""), "shutdown send must include attach")
       assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\"") && txt.contains("\"group\":true"), "shutdown send must include TERM group:true")
       assert_true(txt.contains("\"op\":\"done\""), "shutdown send must include done when committed")
       verified_sends_a = verified_sends_a + 1
-      if sock == "/tmp/r-sp-a.sock" && pid == 4601 { spawn_dead_a = true }
+      if sock == "/data/run/runners/r-sp-a.sock" && pid == 4601 { spawn_dead_a = true }
       if sock == "/tmp/r-cn-a.sock" && pid == 4603 { conn_dead_a = true }
       0
     },
@@ -2669,7 +2660,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     fn(_m) {},
     now_ms_fn=fn() -> Int64 { now_b },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
     runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int { 0 },
     close_child_fn=fn(_c) {},
     max_wait_ms=200L,
@@ -2717,7 +2707,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
       if c1_dead { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
     },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
     runner_sock_send_verified_fn=fn(_s, _p, b, _t) -> Int {
       let txt = b.to_string()
       assert_true(txt.contains("\"op\":\"signal\"") && txt.contains("\"TERM\""), "1C-i must send TERM")
@@ -2781,7 +2770,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     },
     now_ms_fn=fn() -> Int64 { now_c2 },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
     runner_sock_send_verified_fn=fn(_s, _p, b, _t) -> Int {
       c2_writes = c2_writes + 1
       let txt = b.to_string()
@@ -2850,15 +2838,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     fn(_m) {},
     now_ms_fn=fn() -> Int64 { now_d },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::Unknown },
-    probe_runner_fn=fn(_fs, _d, _sep, rid) -> RunnerFileProbe {
-      if rid == "r-sp-a" {
-        RunnerFileProbe::Live(sp_rinfo_a)
-      } else if rid == "r-rd-d" {
-        RunnerFileProbe::Live(rd_rinfo_d)
-      } else {
-        RunnerFileProbe::Live(cn_rinfo_a)
-      }
-    },
     runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int {
       d_sends = d_sends + 1
       0
@@ -2902,7 +2881,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     fn(_m) {},
     now_ms_fn=fn() -> Int64 { now_e },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
     runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int { -2 },
     close_child_fn=fn(_c) {},
     max_wait_ms=150L,
@@ -2946,7 +2924,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     fn(_m) {},
     now_ms_fn=fn() -> Int64 { now_f1 },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
     runner_sock_send_verified_fn=fn(_s, _p, _b, _t) -> Int { -1 },
     close_child_fn=fn(_c) {},
     max_wait_ms=150L,
@@ -2989,7 +2966,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
       if f2_dead { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
     },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
     runner_sock_send_verified_fn=fn(_s, _p, b, _t) -> Int {
       let txt = b.to_string()
       assert_true(txt.contains("\"op\":\"attach\"") && txt.contains("\"op\":\"done\""), "R29 1F-ok: Ready sends attach+TERM+done via verified path")
@@ -3070,7 +3046,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
       if fp_dead { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
     },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe { RunnerFileProbe::Live(cn_rinfo_a) },
     runner_sock_send_verified_fn=fn(_s, _p, b, _t) -> Int {
       let txt = b.to_string()
       assert_true(txt.contains("\"op\":\"attach\"") && txt.contains("\"op\":\"signal\"") && txt.contains("\"op\":\"done\""), "R30 1F-pend: sends attach+TERM+done via verified path")
@@ -3125,15 +3100,6 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
     fn(_m) {},
     now_ms_fn=fn() -> Int64 { now_g },
     verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
-    probe_runner_fn=fn(_fs, _d, _sep, rid) -> RunnerFileProbe {
-      if rid == "r-g1" {
-        RunnerFileProbe::Live(r_g1)
-      } else if rid == "r-g2" {
-        RunnerFileProbe::Live(r_g2)
-      } else {
-        RunnerFileProbe::Live(r_g3)
-      }
-    },
     runner_sock_send_verified_fn=fn(_s, _p, _b, to_ms) -> Int {
       let rem_before = (deadline_g - now_g).to_int()
       assert_true(to_ms > 0 && to_ms <= rem_before, "R29 1G: send timeout_ms must be <= remaining global budget")
@@ -3148,53 +3114,80 @@ test "W17C-1 R25/R26: real EdgeMuxHub stop_all_on_shutdown_with (Spawning+Connec
   assert_true(seen_timeouts_g.length() == 2, "R29 1G: stops immediately once budget hits 0 (3rd runner not called past deadline)")
   assert_true(seen_timeouts_g[0] == 150 && seen_timeouts_g[1] == 70, "R29 1G: remaining budget clamped from 150ms -> 70ms")
 
-  // Subcase 1G-probe (R30 P1-2): `verify_disk_match` (`probe_runner_fn`) exhausting global budget
-  // MUST perform 0 calls to `runner_sock_send_verified_fn` and exit loop immediately.
-  let mem_gp = station_ops::MemFs::new()
-  let ops_gp = mem_gp.ops()
-  let mut now_gp = 1000L
-  let mut gp_send_calls = 0
-  let mut gp_probe_calls = 0
-  let tr_gp = builders_core::MuxTransport::{
+  // ---- Test 1H (R31 P1-2): Deterministic in-memory socket path (POSIX + Windows FNV-1a + unsafe IDs)
+  //      & ZERO disk reads of `<rid>.json` during shutdown ----
+  assert_true(
+    runner_deterministic_socket_path("/data", "/", "r-sp-a", false) == Some("/data/run/runners/r-sp-a.sock"),
+    "R31 1H: POSIX deterministic socket path matches unix.rs:21",
+  )
+  assert_true(
+    runner_deterministic_socket_path("C:\\Users\\Alice\\Data", "\\", "r-win-1", true)
+    == Some("\\\\.\\pipe\\stillfail-runner-49c454acdf177aea-r-win-1"),
+    "R31 1H: Windows deterministic pipe path matches windows.rs:62 FNV-1a vector #1",
+  )
+  assert_true(
+    runner_deterministic_socket_path("C:\\Data", "\\", "r1", true)
+    == Some("\\\\.\\pipe\\stillfail-runner-771d445c4308a80a-r1"),
+    "R31 1H: Windows deterministic pipe path matches windows.rs:62 FNV-1a vector #2",
+  )
+  assert_true(runner_deterministic_socket_path("/data", "/", "../escape", false) is None, "R31 1H: rejects .. traversal")
+  assert_true(runner_deterministic_socket_path("/data", "/", "a/b", false) is None, "R31 1H: rejects slash in runner_id")
+  assert_true(runner_deterministic_socket_path("/data", "/", "", false) is None, "R31 1H: rejects empty runner_id")
+
+  let mem_h = station_ops::MemFs::new()
+  let base_ops_h = mem_h.ops()
+  let mut h_disk_reads = 0
+  let ops_h = station_ops::OpsFs::{
+    ..base_ops_h,
+    read_bytes: fn(_p : String) -> Result[Bytes, station_ops::FsErr] {
+      h_disk_reads = h_disk_reads + 1
+      Err(station_ops::FsErr::NotFound)
+    },
+  }
+  let mut now_h = 1000L
+  let mut h_dead = false
+  let mut h_seen_sock = ""
+  let tr_h = builders_core::MuxTransport::{
     wait: fn(ms : Int64) -> Option[host_shim::HostEvent] {
-      now_gp = now_gp + ms
+      now_h = now_h + ms
       None
     },
     call_async: fn(_id : Int64, _op : String, _json_str : String, _payload : Option[Bytes]) -> Unit {},
     call_sync: fn(_op : String, _json : String) -> String { "{\"ok\":true}" },
     write_stdout_line: fn(_s : String) -> Bool { true },
     write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
-    now_ms: fn() -> Int64 { now_gp },
+    now_ms: fn() -> Int64 { now_h },
     wall_ms: fn() -> Int64 { 1700000010000L },
   }
-  let hub_gp = station_whole::EdgeMuxHub::from_transport(tr_gp)
-  let mgr_gp = LiveRunnerManager::new()
-  mgr_gp.set_handover_state_path("/data/run/whole-live-runners.json")
-  mgr_gp.sessions.set("s-gp1", make_sess(454, "s-gp1", "r-g1", 4701, LiveRunnerPhase::Connecting(r_g1), true))
-  mgr_gp.sessions.set("s-gp2", make_sess(455, "s-gp2", "r-g2", 4702, LiveRunnerPhase::Connecting(r_g2), true))
-  let ok_gp = mgr_gp.stop_all_on_shutdown_with(
-    hub_gp,
-    ops_gp,
+  let hub_h = station_whole::EdgeMuxHub::from_transport(tr_h)
+  let mgr_h = LiveRunnerManager::new()
+  mgr_h.set_handover_state_path("/data/run/whole-live-runners.json")
+  let sp_sess_h = make_sess(461, "s-sp-h", "r-sp-nodisk", 4801, LiveRunnerPhase::Spawning(8009L, child_a, Bytes::new(0), Bytes::new(0), 99999L), true)
+  mgr_h.sessions.set("s-sp-h", sp_sess_h)
+  let ok_h = mgr_h.stop_all_on_shutdown_with(
+    hub_h,
+    ops_h,
     "/data",
     "/",
     9999,
     fn(_m) {},
-    now_ms_fn=fn() -> Int64 { now_gp },
-    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict { SpawnIdentityVerdict::ConfirmedSame },
-    probe_runner_fn=fn(_fs, _d, _sep, _rid) -> RunnerFileProbe {
-      gp_probe_calls = gp_probe_calls + 1
-      now_gp = now_gp + 200L
-      RunnerFileProbe::Live(r_g1)
+    now_ms_fn=fn() -> Int64 { now_h },
+    verify_spawn_id=fn(_p, _ms, _b, _t) -> SpawnIdentityVerdict {
+      if h_dead { SpawnIdentityVerdict::ConfirmedDeadOrReused } else { SpawnIdentityVerdict::ConfirmedSame }
     },
-    runner_sock_send_verified_fn=fn(_s, _p, _b, _to_ms) -> Int {
-      gp_send_calls = gp_send_calls + 1
-      -1
+    runner_sock_send_verified_fn=fn(sock, pid, _b, _to_ms) -> Int {
+      h_seen_sock = sock
+      assert_true(pid == 4801, "R31 1H: verified send uses expected_pid")
+      h_dead = true
+      0
     },
     close_child_fn=fn(_c) {},
-    max_wait_ms=150L,
+    max_wait_ms=200L,
   )
-  assert_true(!ok_gp, "R30 1G-probe: exhausted budget during verify_disk_match returns false")
-  assert_true(gp_probe_calls == 1 && gp_send_calls == 0, "R30 1G-probe: 0 verified sends and immediate break when probe exhausts budget")
+  assert_true(ok_h, "R31 1H: shutdown succeeds with 0 disk reads even when all read_bytes fail")
+  assert_true(h_disk_reads == 0, "R31 1H: shutdown performs strictly 0 disk reads of <rid>.json")
+  assert_true(h_seen_sock == "/data/run/runners/r-sp-nodisk.sock", "R31 1H: uses deterministic POSIX socket path")
+  assert_true(mgr_h.draining_stopping_ids.length() == 0, "R31 1H: stop marker cleared after OS exit")
 
   // ---- Test 2: REAL `register_adopted_runner_with` + REAL `ShellMux` single stop-owner guard ----
   let mut adopt_opens = 0
