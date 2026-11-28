@@ -640,8 +640,8 @@ priv struct BarModel {
   /// target tab key armed by a finger tap on a non-active tab, cleared on consumption or any new gesture
   mut tap_pending_key : String
   mut active_was : String
-  /// a finger: where it has the ball (-1 none), its height once the panel is its own
-  mut drag : Double
+  /// a finger: where it has the ball (None none), its height once the panel is its own
+  mut drag : Double?
   mut drag_y : Double
   mut holds : Bool
   mut from_open : Bool
@@ -922,7 +922,7 @@ let bar : BarModel = {
   drag_last_vx: 0.0,
   tap_pending_key: "",
   active_was: "",
-  drag: -1.0,
+  drag: None,
   drag_y: -1.0,
   holds: false,
   from_open: false,
@@ -996,7 +996,7 @@ fn bar_reset() -> Unit {
   bar.drag_last_vx = 0.0
   bar.tap_pending_key = ""
   bar.active_was = ""
-  bar.drag = -1.0
+  bar.drag = None
   bar.drag_y = -1.0
   bar.holds = false
   bar.from_open = false
@@ -1287,7 +1287,7 @@ fn bar_set_collapsed(collapsed : Bool, at : Double) -> Unit {
     return
   }
   if collapsed {
-    if m.mode.untracked() || m.holds || m.drag >= 0.0 || m.o.value_at(at) > 0.01 {
+    if m.mode.untracked() || m.holds || m.drag is Some(_) || m.o.value_at(at) > 0.01 {
       return
     }
     match m.told {
@@ -1442,7 +1442,7 @@ fn bar_action_run(src : Source, ws : Workspace, t : Double) -> Unit {
     Some(told) => told
     None => return
   }
-  if !told.shown || bar.drag >= 0.0 || bar.holds || bar.k_at(t) <= 0.9 {
+  if !told.shown || bar.drag is Some(_) || bar.holds || bar.k_at(t) <= 0.9 {
     return
   }
   match told.action {
@@ -1555,7 +1555,7 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
       m.mode.set(false)
       m.o.go(0.0, 320.0, 26.0, at~)
     }
-    m.drag = -1.0
+    m.drag = None
     m.drag_y = -1.0
     m.holds = false
     m.drag_last_x = -1.0
@@ -1593,7 +1593,7 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   let active_key = told.active.unwrap_or("")
   let w = told.width
   let row_top = bar_row_top(told.sets.length())
-  let sliding = m.drag >= 0.0
+  let sliding = m.drag is Some(_)
   let raised = m.holds || sliding
   bar_raised.set(raised)
   // The bar rises while a finger has it, returning on release (taps never raise the bar).
@@ -1615,24 +1615,24 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
       None => {
         let final_cs = bar_centres(w, m.k_end(), items.length())
         let now_cs = bar_centres(w, m.k_at(at), items.length())
-        let (gx, goal_y) = match bar_finger(told, now_cs, m.drag, m.drag_y) {
-          Some((cx, cy, set, _)) => {
+        let (gx, goal_y) = match (m.drag, bar_finger(told, now_cs, m.drag, m.drag_y)) {
+          (Some(drag_x), Some((cx, cy, set, _))) => {
             let target_x = if set == told.cur && items.length() > 0 {
               let lo = final_cs[0]
               let hi = final_cs[imin(items.length() - 1, final_cs.length() - 1)]
-              if m.drag < lo {
-                lo + bar_rubber(m.drag - lo, 12.0)
-              } else if m.drag > hi {
-                hi + bar_rubber(m.drag - hi, 12.0)
+              if drag_x < lo {
+                lo + bar_rubber(drag_x - lo, 12.0)
+              } else if drag_x > hi {
+                hi + bar_rubber(drag_x - hi, 12.0)
               } else {
-                m.drag
+                drag_x
               }
             } else {
-              cx + (m.drag - cx) * lean
+              cx + (drag_x - cx) * lean
             }
             (target_x, cy + ((if m.drag_y >= 0.0 { m.drag_y } else { row_top + bar_track / 2.0 }) - cy) * lean)
           }
-          None => (final_cs[if ai < 0 { 0 } else { ai }], row_top + bar_track / 2.0)
+          _ => (final_cs[if ai < 0 { 0 } else { ai }], row_top + bar_track / 2.0)
         }
         goal_x = gx
         if m.placed && m.width != w {
@@ -1702,7 +1702,6 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
         m.ball_held_up.put(0.0)
         m.ball_held_dn.put(0.0)
         m.lift_started_at = -1.0
-        m.flex_wall.put(0.0)
       } else {
         let elapsed = if m.lift_started_at >= 0.0 {
           dmax(0.0, at - m.lift_started_at)
@@ -1733,8 +1732,12 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
         } else {
           m.pulse_flex_drag(-0.025, at)
         }
-        m.flex_wall.go(0.0, @motion.liquid_wall_flex_out_spring, at~)
       }
+    }
+    if w <= 0.0 {
+      m.flex_wall.put(0.0)
+    } else if m.flex_wall.target() != 0.0 {
+      m.flex_wall.go(0.0, @motion.liquid_wall_flex_out_spring, at~)
     }
   }
   // each place lit as it is the one under the finger, else the one shown, in the bar and in the panel's rows (300 ms,
@@ -1761,7 +1764,7 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   }
   // the ball shown where a place of the bar is
   let ball_shown = ai >= 0 ||
-    m.drag >= 0.0 ||
+    m.drag is Some(_) ||
     (match m.swap_at(at) {
       Some({ key: Some(_), .. }) => true
       _ => false
@@ -1791,16 +1794,17 @@ fn bar_retell(at : Double) -> Unit {
 }
 
 ///|
-/// The finger's place on the bar (`drag` across, `drag_y` down once the panel is its own; -1 none), and the place a
+/// The finger's place on the bar (`drag` across, `drag_y` down once the panel is its own; None none), and the place a
 /// let-go would choose: where it is, its bar and its key. The bar's places at `final_cs`.
 fn bar_finger(
   told : BarTold,
   final_cs : Array[Double],
-  drag : Double,
+  drag : Double?,
   drag_y : Double,
 ) -> (Double, Double, Int, String)? {
-  if drag < 0.0 {
-    return None
+  let drag = match drag {
+    Some(x) => x
+    None => return None
   }
   let sets = told.sets
   let items = sets[told.cur]
@@ -2026,7 +2030,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
   }
   let ended = fn() {
     m.holds = false
-    m.drag = -1.0
+    m.drag = None
     m.drag_y = -1.0
   }
   // a tap on the bar's places where they are at `t` (the notch open as far as it is then)
@@ -2189,7 +2193,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
       }
       m.drag_last_x = px
       m.drag_last_t = t
-      m.drag = px
+      m.drag = Some(px)
       m.drag_y = if l.multi && m.holds && m.open {
         dclamp(py, over + bar_row / 2.0, l.row_top + bar_track / 2.0)
       } else {
@@ -2205,7 +2209,7 @@ fn bar_finger_at(src : Source, ws : Workspace, d : @view.Drag, how : BarFingerIs
       m.drag_speed_ref = 0.0
       m.drag_last_vx = 0.0
       if !m.holds && py >= l.row_top - 4.0 {
-        m.drag = px
+        m.drag = Some(px)
         m.drag_y = -1.0
         took = l.items.length() > 0
       }

@@ -426,7 +426,7 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
         None => false
       }
     }))
-    .takes(fn(w, h, at) { if bar.drag < 0.0 && !bar.holds && bar.k_at(at) > 0.9 { [(0.0, 0.0, w, h)] } else { [] } })
+    .takes(fn(w, h, at) { if bar.drag is None && !bar.holds && bar.k_at(at) > 0.9 { [(0.0, 0.0, w, h)] } else { [] } })
     .on_press(fn() {
       match ws() {
         Some(w) => bar_action_run(src, w, d.cause_at())

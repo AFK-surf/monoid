@@ -66,6 +66,9 @@ let ios27_fast_flick_steps : Array[Int] = [1, 2, 3, 4]
 let ios27_panel_pull_steps : Array[Int] = [1, 2, 3, 4, 5, 6]
 
 ///|
+let ios27_left_over_steps : Array[Int] = [1, 2, 3, 4, 5, 6]
+
+///|
 let ios27_touch_rates_hz : Array[Int] = [60, 120, 240]
 
 ///|
@@ -739,4 +742,202 @@ test "bar ios27: pulling multi-bar panel up from past-edge drag releases flex_wa
   t.release(xs[3] + 60.0, y - 64.0)
   to_bar_rest(t)
   assert_true(bar.flex_wall.value_at(t.time()).abs() < 0.001)
+}
+
+///|
+fn assert_tab0_concentric_at_rest(t : @ui.Tester, label : String) -> Unit raise {
+  let laid = bar_laid_now()
+  let rest_a = bar_ball_at(t.time())
+  assert_true(
+    bar.flex_at(t.time()).abs() < 0.001,
+    msg="\{label}: flex_at did not settle to 0: \{bar.flex_at(t.time())}",
+  )
+  assert_true(
+    (rest_a.sx - 1.0).abs() < 0.001 && (rest_a.sy - 1.0).abs() < 0.001,
+    msg="\{label}: rest scale not (1, 1): (\{rest_a.sx}, \{rest_a.sy})",
+  )
+  assert_eq(bar.held_at(t.time()), 0.0)
+  let (cx, _, sw, sh) = bar_ball_frame(rest_a, laid, false)
+  let left = cx - sw / 2.0
+  let top = (bar_track - sh) / 2.0
+  let r_inner = dmin(sw, sh) / 2.0
+  assert_true(
+    (left - pill_inset).abs() <= 0.01,
+    msg="\{label}: left inset \{left} != \{pill_inset}",
+  )
+  assert_true(
+    (top - pill_inset).abs() <= 0.01,
+    msg="\{label}: top inset \{top} != \{pill_inset}",
+  )
+  assert_true(
+    (r_inner - (rad - pill_inset)).abs() <= 0.01,
+    msg="\{label}: inner radius \{r_inner} != \{rad - pill_inset}",
+  )
+}
+
+///|
+test "bar ios27: dragging left past capsule edge (px < 0) keeps lens active, releases C0-continuously, and settles strictly concentric" {
+  let (t, _) = bar_at_rest()
+  let (xs, y) = bar_places_at()
+  let laid = bar_laid_now()
+  let final_cs = bar_centres(laid.w, bar.k_end(), laid.items.length())
+  t.press_at(xs[0], y)
+  t.run_for(bar_hold_ms)
+  t.frame()
+  let target_x = xs[0] - 46.0
+  for step in ios27_left_over_steps {
+    let frac = step.to_double() / 6.0
+    let x = xs[0] + (target_x - xs[0]) * frac
+    t.move_to(x, y)
+    t.run_for(ios27_step_ms)
+  }
+  assert_true(bar.drag is Some(_), msg="px < 0 left drag must keep bar.drag as Some(_)")
+  assert_true(bar.ball_held_active, msg="px < 0 left drag must keep ball_held_active == true")
+  let past = final_cs[0] - bar.ball_x.to
+  assert_true(past > 6.0 && past <= 12.01, msg="left rubber-band offset \{past}pt out of (6, 12.01]")
+  assert_true(bar.flex_wall.target() < -0.05, msg="expected negative wall flex at px < 0, got \{bar.flex_wall.target()}")
+  t.run_for(ios27_wall_hold_ms)
+  let rel_t = t.time()
+  let (cx0, _, sw0, _) = bar_ball_frame(bar_ball_at(rel_t), laid, true)
+  let left0 = cx0 - sw0 / 2.0
+  let right0 = cx0 + sw0 / 2.0
+  t.touch_at(2, target_x, y, rel_t)
+  assert_eq(bar.flex_wall.target(), 0.0, msg="release from px < 0 must reset flex_wall target to 0.0")
+  let (cx1, _, sw1, _) = bar_ball_frame(bar_ball_at(rel_t), laid, true)
+  let left1 = cx1 - sw1 / 2.0
+  let right1 = cx1 + sw1 / 2.0
+  assert_true(
+    (cx1 - cx0).abs() <= 0.01 && (left1 - left0).abs() <= 0.01 && (right1 - right0).abs() <= 0.01,
+    msg="left-edge release lens jumped: before=(\{cx0}, [\{left0}, \{right0}]) after=(\{cx1}, [\{left1}, \{right1}])",
+  )
+  to_bar_rest(t)
+  assert_tab0_concentric_at_rest(t, "left-drag release")
+  t.assert_idle()
+}
+
+///|
+test "bar ios27: px < 0 left drag interrupted by touch cancel (Off) or page push resets flex_wall and settles strictly concentric" {
+  // 1. System touch cancel (Off, kind == 3) while dragged past left edge (px < 0)
+  let (t1, _) = bar_at_rest()
+  let (xs1, y1) = bar_places_at()
+  t1.press_at(xs1[0], y1)
+  t1.run_for(bar_hold_ms)
+  t1.frame()
+  let target_x1 = xs1[0] - 46.0
+  for step in ios27_left_over_steps {
+    let frac = step.to_double() / 6.0
+    t1.move_to(xs1[0] + (target_x1 - xs1[0]) * frac, y1)
+    t1.run_for(ios27_step_ms)
+  }
+  assert_true(bar.flex_wall.target() < -0.05, msg="cancel case: expected negative wall flex")
+  t1.touch_at(3, target_x1, y1, t1.time())
+  assert_true(bar.drag is None, msg="cancel case: bar.drag must reset to None")
+  assert_eq(bar.flex_wall.target(), 0.0, msg="cancel case: flex_wall target must reset to 0.0")
+  to_bar_rest(t1)
+  assert_tab0_concentric_at_rest(t1, "left-drag cancel")
+  t1.assert_idle()
+  // 2. Mid-drag page push hiding the bar, then popping back to Home
+  let (t2, _) = bar_at_rest()
+  let (xs2, y2) = bar_places_at()
+  t2.press_at(xs2[0], y2)
+  t2.run_for(bar_hold_ms)
+  t2.frame()
+  let target_x2 = xs2[0] - 46.0
+  for step in ios27_left_over_steps {
+    let frac = step.to_double() / 6.0
+    t2.move_to(xs2[0] + (target_x2 - xs2[0]) * frac, y2)
+    t2.run_for(ios27_step_ms)
+  }
+  assert_true(bar.flex_wall.target() < -0.05, msg="push case: expected negative wall flex")
+  app.nav.push(Settings)
+  t2.draw()
+  assert_true(bar.drag is None, msg="push case: bar.drag must reset to None when hidden")
+  assert_eq(bar.flex_wall.target(), 0.0, msg="push case: flex_wall target must reset to 0.0 when hidden")
+  t2.run_for(@ui.move_most_ms)
+  app.nav.pop() |> ignore
+  t2.draw()
+  to_bar_rest(t2)
+  assert_tab0_concentric_at_rest(t2, "left-drag push-pop")
+  t2.assert_idle()
+}
+
+///|
+test "bar ios27: cross-tab drag from tab 1 past left edge (px < 0), return inside capsule, and multi-bar panel pull all settle strictly concentric" {
+  // 1. Start on tab 1 (xs[1]), drag left past capsule edge (px < 0), then release back to tab 0 (flex_brake + flex_wall)
+  let (t1, _) = bar_at_rest()
+  let (xs1, y1) = bar_places_at()
+  t1.tap(xs1[1], y1)
+  to_bar_rest(t1)
+  let cs1 = bar_centres(bar_laid_now().w, bar.k_at(t1.time()), bar_laid_now().items.length()).map(fn(x) { x + 22.0 })
+  t1.press_at(cs1[1], y1)
+  t1.run_for(bar_hold_ms)
+  t1.frame()
+  let target_x1 = xs1[0] - 46.0
+  for step in ios27_left_over_steps {
+    let frac = step.to_double() / 6.0
+    t1.move_to(cs1[1] + (target_x1 - cs1[1]) * frac, y1)
+    t1.run_for(ios27_step_ms)
+  }
+  assert_true(bar.drag is Some(_), msg="cross-tab left drag: bar.drag must stay Some(_)")
+  assert_true(bar.ball_held_active, msg="cross-tab left drag: ball_held_active must stay true")
+  assert_true(bar.flex_wall.target() < -0.05, msg="cross-tab left drag: expected negative flex_wall")
+  t1.release(target_x1, y1)
+  assert_eq(bar.flex_wall.target(), 0.0, msg="cross-tab left drag release: flex_wall target must reset to 0.0")
+  to_bar_rest(t1)
+  assert_eq(bar.told.unwrap().active, Some("chats"))
+  assert_tab0_concentric_at_rest(t1, "cross-tab left-drag release")
+  t1.assert_idle()
+  // 2. Drag past left edge (px < 0) then slide back inside capsule without releasing (over_edge <= 0 branch)
+  let (t2, _) = bar_at_rest()
+  let (xs2, y2) = bar_places_at()
+  t2.press_at(xs2[0], y2)
+  t2.run_for(bar_hold_ms)
+  t2.frame()
+  let target_x2 = xs2[0] - 46.0
+  for step in ios27_left_over_steps {
+    let frac = step.to_double() / 6.0
+    t2.move_to(xs2[0] + (target_x2 - xs2[0]) * frac, y2)
+    t2.run_for(ios27_step_ms)
+  }
+  assert_true(bar.flex_wall.target() < -0.05, msg="return-inside case: expected negative flex_wall at px < 0")
+  for step in ios27_left_over_steps {
+    let frac = step.to_double() / 6.0
+    t2.move_to(target_x2 + (xs2[0] - target_x2) * frac, y2)
+    t2.run_for(ios27_step_ms)
+  }
+  assert_true(bar.ball_held_active, msg="return-inside case: ball_held_active must stay true")
+  assert_eq(bar.flex_wall.target(), 0.0, msg="return-inside case: flex_wall target must reset to 0.0")
+  t2.run_for(ios27_stop_settle_ms)
+  t2.release(xs2[0], y2)
+  to_bar_rest(t2)
+  assert_tab0_concentric_at_rest(t2, "left-drag return inside")
+  t2.assert_idle()
+  // 3. Multi-bar pull up from px < 0 left drag (m.holds branch releases flex_wall), then close panel & settle
+  let (t3, _) = bar_at_rest()
+  let (xs3, y3) = bar_places_at()
+  t3.press_at(xs3[0], y3)
+  t3.run_for(bar_hold_ms)
+  t3.frame()
+  let target_x3 = xs3[0] - 46.0
+  for step in ios27_left_over_steps {
+    let frac = step.to_double() / 6.0
+    t3.move_to(xs3[0] + (target_x3 - xs3[0]) * frac, y3)
+    t3.run_for(ios27_step_ms)
+  }
+  assert_true(bar.flex_wall.target() < -0.05, msg="panel-pull case: expected negative flex_wall at px < 0")
+  for step in ios27_panel_pull_steps {
+    let py = y3 - 64.0 * step.to_double() / 6.0
+    t3.move_to(target_x3, py)
+    t3.run_for(ios27_step_ms)
+  }
+  assert_true(bar.holds, msg="panel-pull case: pulling up must engage m.holds")
+  assert_eq(bar.flex_wall.target(), 0.0, msg="panel-pull case: m.holds must release flex_wall target to 0.0")
+  t3.release(target_x3, y3 - 64.0)
+  to_bar_rest(t3)
+  if bar.mode.get() {
+    t3.tap(100.0, 200.0)
+    to_bar_rest(t3)
+  }
+  assert_tab0_concentric_at_rest(t3, "left-drag panel pull")
+  t3.assert_idle()
 }
