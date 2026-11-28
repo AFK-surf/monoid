@@ -375,6 +375,11 @@ int32_t sts_file_fsync_publish_noreplace_async(
     const char *root,
     const char *part_rel,
     const char *dst_rel);
+// Atomically cancel an in-flight async fsync/publish task by `event_id` so the worker aborts
+// before publishing (`linkat` / `SetFileInformationByHandle`), cleans up `.part`, and closes its handle.
+int32_t sts_fsync_cancel(uint64_t event_id);
+// Deterministic self-test exercising `sts_fsync_cancel` atomic gate before publish. Returns 0 on pass.
+int32_t sts_selftest_fsync_cancel_gate(const char *root);
 
 // Replace the current process in-place:
 // - POSIX: `execv(program, argv)` preserving PID, PGID, signal mask, and inherited FDs (e.g. launcher 3/4/5).

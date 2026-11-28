@@ -386,38 +386,72 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
   outbox_reload.record_use("ws-1", "sess-r4", "rig-2")
   match outbox_reload.lookup_outgoing(push_ref) {
     Some(found) => {
-      // Feed real rig wire JSON `{ key, job: { state: "exited", exitCode: 0 }, log, notices }`
+      // R6 P1-1: Push #1 starts task.get #1; Push #2 arrives while #1 is in-flight (sets dirty bit);
+      // #1 returns `running` -> RequeryNow; transitional `stopping` is NOT settled; #2 returns `exited` -> Settled!
+      let running_reply = match base_codec::json_parse("{\"key\":\"build-job\",\"job\":{\"state\":\"running\"},\"log\":\"\",\"notices\":[]}") {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => panic("bad running json")
+      }
+      let stopping_reply = match base_codec::json_parse("{\"key\":\"build-job\",\"job\":{\"state\":\"stopping\"},\"log\":\"\",\"notices\":[]}") {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => panic("bad stopping json")
+      }
       let wire_reply = match base_codec::json_parse(
         "{\"key\":\"build-job\",\"job\":{\"state\":\"exited\",\"exitCode\":0},\"log\":\"ok\",\"notices\":[\"all tests passed\"]}",
       ) {
         base_codec::JsonParseResult::Ok(j) => j
         _ => panic("bad wire json")
       }
-      r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "first inflight mark succeeds")
-      r2_assert(!outbox_reload.mark_task_get_inflight(push_ref), "duplicate inflight coalesced")
-      // Transient delivery failure must NOT unfollow!
+      r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "push #1 marks inflight")
+      r2_assert(!outbox_reload.mark_task_get_inflight(push_ref), "push #2 coalesced & sets dirty bit")
+      let out_running = process_task_changed_get_reply(
+        outbox_reload,
+        push_ref,
+        found,
+        Ok(running_reply),
+        1000L,
+        fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { true },
+      )
+      r2_assert(out_running is TaskChangedOutcome::RequeryNow, "dirty running reply must trigger immediate requery")
+      // Transitional `stopping` must NOT settle!
+      r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "requery marks inflight")
+      let out_stopping = process_task_changed_get_reply(
+        outbox_reload,
+        push_ref,
+        found,
+        Ok(stopping_reply),
+        1000L,
+        fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { true },
+      )
+      r2_assert(out_stopping is TaskChangedOutcome::StillRunning && outbox_reload.lookup_outgoing(push_ref) is Some(_), "stopping must not unfollow")
+      // Transient delivery failure schedules backoff retry and does NOT unfollow!
+      r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "re-mark for delivery test")
       let failed_deliv = process_task_changed_get_reply(
         outbox_reload,
         push_ref,
         found,
         Ok(wire_reply),
+        1000L,
         fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { false },
       )
-      r2_assert(!failed_deliv && outbox_reload.lookup_outgoing(push_ref) is Some(_), "failed delivery retains outgoing")
+      r2_assert(failed_deliv is TaskChangedOutcome::RetryLater && outbox_reload.lookup_outgoing(push_ref) is Some(_), "failed delivery retains outgoing & schedules retry")
+      // Backoff retry becomes due at 1000 + 5000 = 6000ms
+      let due_retries = outbox_reload.due_task_get_retries(6500L)
+      r2_assert(due_retries.length() == 1 && due_retries[0].push_ref == push_ref, "retry due after backoff")
       // Successful internal notice delivery settles and unfollows!
       let mut delivered_text = ""
-      r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "re-mark after failed delivery")
       let ok_deliv = process_task_changed_get_reply(
         outbox_reload,
         push_ref,
         found,
         Ok(wire_reply),
+        6500L,
         fn(_r : station_whole::RemoteOutgoingTask, n : String) -> Bool {
           delivered_text = n
           true
         },
       )
-      r2_assert(ok_deliv, "real rig wire reply must deliver notice")
+      r2_assert(ok_deliv is TaskChangedOutcome::Settled, "real rig wire reply must settle")
       r2_assert(
         delivered_text.contains("compile (build-job)") &&
         delivered_text.contains("gpu-rig") &&
@@ -430,10 +464,12 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
     None => panic("expected persisted outgoing task lookup")
   }
 
-  // 3. Archive persists `closing` BEFORE sending `session.close`; failed first attempt retries and clears on success!
-  let pending_peers = outbox_reload.begin_session_close("sess-r4", 1000L)
+  // 3. Archive atomically persists `closing` BEFORE deleting `used` & sending `session.close`;
+  //    failed first attempt retries, survives restart, and respects 7-day / roster pruning;
+  //    startup also reconciles `used/` entries whose session is already archived in SQLite!
+  let pending_peers = outbox_reload.begin_session_close("sess-r4", 1000L, now_wall_ms=100000L)
   r2_assert(pending_peers.length() == 2, "restart-merged used peers must keep both rig-1 and rig-2")
-  let due1 = outbox_reload.due_session_closes(1000L)
+  let due1 = outbox_reload.due_session_closes(1000L, now_wall_ms=100000L)
   r2_assert(due1.length() == 2, "both peers due immediately")
   let close_s = base_codec::json_stringify(build_session_close_rpc_payload(due1[0].1, "sess-r4"))
   r2_assert(close_s.contains("\"method\":\"session.close\"") && close_s.contains("\"session\":\"sess-r4\""), "session.close wire payload")
@@ -451,11 +487,17 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
     "closed:true removes rig-2",
   )
   r2_assert(outbox_reload.pending_close_count() == 1, "rig-1 still pending in closing")
-  // Simulate daemon restart: reload closing/*.json from disk -> rig-1 still pending!
+  // Simulate crash after SQLite archive for `sess-crashed` (still in `used/`, not yet in `closing/`)
+  outbox_reload.record_use("ws-1", "sess-crashed", "rig-3")
+  // Simulate daemon restart: reload closing/*.json AND reconcile archived `used/` entries!
   let outbox_restart = station_whole::RemoteTaskOutbox::new("/tmp/r4-outbox", fs)
-  outbox_restart.load_pending_closes(20000L)
-  let due2 = outbox_restart.due_session_closes(20000L)
-  r2_assert(due2.length() == 1 && due2[0].2 == "rig-1", "restarted outbox reloads pending rig-1 close")
+  outbox_restart.load_pending_closes(
+    20000L,
+    now_wall_ms=120000L,
+    is_session_archived=Some(fn(s : String) -> Bool { s == "sess-crashed" }),
+  )
+  let due2 = outbox_restart.due_session_closes(20000L, now_wall_ms=120000L)
+  r2_assert(due2.length() == 2, "restarted outbox reloads rig-1 and reconciles archived sess-crashed/rig-3")
   r2_assert(
     settle_session_close_reply(
       outbox_restart,
@@ -467,7 +509,10 @@ test "w17e2a_r4 remote task push ref, task.changed notice, session.close on arch
     ),
     "retry closed:true clears rig-1",
   )
-  r2_assert(outbox_restart.pending_close_count() == 0, "all closes settled and cleaned")
+  // Simulate peer `rig-3` expiring past 7-day cap -> automatically dropped!
+  r2_assert(!settle_session_close_reply(outbox_restart, "sess-crashed", "ws-1", "rig-3", Err("offline"), 20000L), "offline retries")
+  let due3 = outbox_restart.due_session_closes(90000L, now_wall_ms=120000L + station_whole::SESSION_CLOSE_MAX_AGE_MS + 1L)
+  r2_assert(due3.length() == 0 && outbox_restart.pending_close_count() == 0, "7-day cap prunes permanently offline peer")
 
   // 4. Dual-path `task.prepare`:
   // (a) Supported target: prepare -> upload -> start succeeds cleanly

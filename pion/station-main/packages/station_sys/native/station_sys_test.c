@@ -2654,7 +2654,9 @@ int main(void) {
         assert(sts_unlink_under_nofollow(rdir, "sub/idpub.part") == -2);
         assert(sts_unlink_under_nofollow(rdir, "sub/idpub_final.txt") == 0);
 
-        /* Concurrent replacement attack: replace sub/race.part with a different inode before publish -> MUST reject with -5! */
+        /* Concurrent replacement attack: replace sub/race.part with a different inode before publish.
+         * On Linux, `/proc/self/fd/<fd>` directly links the legitimate open `fd` ("hello ", NEVER "IMPOSTER");
+         * on non-Linux fallback, inode mismatch rejects with -5. In ALL cases "IMPOSTER" is never published! */
         int64_t rwh3 = sts_create_excl_open_under_nofollow(rdir, "sub/race.part", 0600, &rw_err);
         assert(rwh3 > 0 && rw_err == 0);
         assert(sts_file_pwrite(rwh3, c1, 6, 0) == 0);
@@ -2675,9 +2677,37 @@ int main(void) {
                 sth_free(ev);
             }
         }
-        assert(race_rc == -5);
-        assert(sts_unlink_under_nofollow(rdir, "sub/race_dst.txt") == -2);
+        if (race_rc == 0) {
+            /* Linux /proc/self/fd direct link: MUST have published legitimate "hello " and left imposter untouched */
+            char race_dst[512];
+            snprintf(race_dst, sizeof(race_dst), "%s/sub/race_dst.txt", rdir);
+            rlen = 0;
+            rerr = 0;
+            char *rd = (char *)sts_read_file_strict(race_dst, &rlen, &rerr);
+            assert(rd != NULL && rerr == 0 && rlen == 6 && memcmp(rd, "hello ", 6) == 0);
+            sts_free(rd);
+            assert(sts_unlink_under_nofollow(rdir, "sub/race_dst.txt") == 0);
+        } else {
+            assert(race_rc == -5);
+            assert(sts_unlink_under_nofollow(rdir, "sub/race_dst.txt") == -2);
+        }
         assert(sts_unlink_under_nofollow(rdir, "sub/race.part") == 0);
+
+        /* R6 P1-3: deterministic atomic cancel gate prevents publish and cleans up .part */
+        assert(sts_selftest_fsync_cancel_gate(rdir) == 0);
+        int cancel_rc = -999;
+        fdl = sth_now_ms() + 1000;
+        while (cancel_rc == -999 && sth_now_ms() < fdl) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(100, &ev_len);
+            if (ev != NULL) {
+                if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_FSYNC_DONE) {
+                    cancel_rc = (int32_t)((uint32_t)ev[10] | ((uint32_t)ev[11] << 8) | ((uint32_t)ev[12] << 16) | ((uint32_t)ev[13] << 24));
+                }
+                sth_free(ev);
+            }
+        }
+        assert(cancel_rc == -9);
 
         char subdir[256];
         snprintf(subdir, sizeof(subdir), "%s/sub", rdir);

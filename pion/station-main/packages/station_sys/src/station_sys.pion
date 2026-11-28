@@ -220,6 +220,7 @@ extern "C" fn sts_file_fsync_publish_noreplace_async(
   part_rel : Ptr,
   dst_rel : Ptr,
 ) -> Int
+extern "C" fn sts_fsync_cancel(event_id : Int64) -> Int
 extern "C" fn sts_exec_replace(program : Ptr, argv_nul : Ptr, argv_len : Int64) -> Int
 extern "C" fn sts_utimes_now(path : Ptr) -> Int
 extern "C" fn sts_utimes_dir_children_now(dir_path : Ptr) -> Int
@@ -1295,6 +1296,11 @@ pub fn file_fsync_publish_noreplace_async(
   let _ = part_rel.length()
   let _ = dst_rel.length()
   ok != 0
+}
+
+/// Atomically cancel an in-flight `file_fsync_publish_noreplace_async` task before it publishes.
+pub fn fsync_cancel(event_id : Int64) -> Bool {
+  sts_fsync_cancel(event_id) != 0
 }
 
 /// Exclusively create a new regular file under `root` (`O_CREAT|O_EXCL|O_NOFOLLOW` / `CREATE_NEW`),

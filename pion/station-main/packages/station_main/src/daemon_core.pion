@@ -4145,7 +4145,16 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                         requeue_outbound(ob)
                                       }
                                     }
-                                    None => ()
+                                    None => {
+                                      // Late `out_connect` success after 15s timeout evicted `oid`: close connection immediately!
+                                      let fconn = match base_codec::json_get(ok_val, "conn") {
+                                        Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                                        _ => -1L
+                                      }
+                                      if fconn >= 0L {
+                                        front_send_ask("conn.close", [("conn", base_codec::json_int64(fconn))], "out_close", 0L)
+                                      }
+                                    }
                                   }
                                 } else if k == "out_open" && oid > 0L {
                                   match active_outbounds.get(oid) {

@@ -610,8 +610,9 @@ pub fn wire_daemon_mcp_remote_system(
   })
   core.agents.on_session_archived = Some(fn(session : String) -> Unit {
     let now_m = host_shim::now_ms()
-    let _ = remote_outbox.begin_session_close(session, now_m)
-    dispatch_pending_session_closes(ctx, remote_outbox, now_m)
+    let now_w = host_shim::wall_ms()
+    let _ = remote_outbox.begin_session_close(session, now_m, now_wall_ms=now_w)
+    dispatch_pending_session_closes(ctx, remote_outbox, now_m, now_w)
   })
 }
 
@@ -792,8 +793,14 @@ fn cleanup_aborted_mcp_req(
   if req.ask_id > 0L {
     let _ = ctx.cancel_peer_rpc(req.ask_id)
   }
+  if req.fsync_ev_id > 0L {
+    // Atomically cancel any in-flight async fsync+publish worker BEFORE it links the destination!
+    let _ = station_sys::fsync_cancel(req.fsync_ev_id)
+  }
   close_mcp_req_handles(req)
-  cleanup_mcp_req_part(fs, req)
+  if req.fsync_ev_id == 0L {
+    cleanup_mcp_req_part(fs, req)
+  }
 }
 
 /// Handle HTTP client disconnect on `/mcp`: cancel mesh RPC, close upload/part FDs, and remove any residual `.part` file.
@@ -938,13 +945,42 @@ pub fn settle_session_close_reply(
   }
 }
 
+/// Check whether `peer_id` is still known in `ws`'s live `CloudStore` membership (peers or rigs).
+fn is_peer_in_cloud_roster(ctx : DaemonCtx, ws : String, peer_id : String, now_wall_ms : Int64) -> Bool {
+  let now_secs = (now_wall_ms / 1000L).to_double()
+  match ctx.cloud.membership(ws, now_secs) {
+    None => false
+    Some(m) => {
+      for i in 0..<m.peers.length() {
+        if dm_json_str(m.peers[i], "id") == peer_id {
+          return true
+        }
+      }
+      match m.rigs {
+        Some(rigs) => {
+          for i in 0..<rigs.length() {
+            if rigs[i].id == peer_id {
+              return true
+            }
+          }
+        }
+        None => ()
+      }
+      false
+    }
+  }
+}
+
 /// Dispatch all due persistent `session.close` retries to remote peers (called on archive, startup, and tick).
+/// Prunes peers older than 7 days or no longer present in the workspace roster.
 pub fn dispatch_pending_session_closes(
   ctx : DaemonCtx,
   remote_outbox : station_whole::RemoteTaskOutbox,
   now_mono_ms : Int64,
+  now_wall_ms : Int64,
 ) -> Unit {
-  let due = remote_outbox.due_session_closes(now_mono_ms)
+  let roster_check = fn(ws : String, pid : String) -> Bool { is_peer_in_cloud_roster(ctx, ws, pid, now_wall_ms) }
+  let due = remote_outbox.due_session_closes(now_mono_ms, now_wall_ms=now_wall_ms, is_peer_in_roster=Some(roster_check))
   for i in 0..<due.length() {
     let (session, ws, peer_id) = due[i]
     let close_req = build_session_close_rpc_payload(ws, session)
@@ -982,35 +1018,111 @@ pub fn deliver_remote_task_notice_to_session(
   true
 }
 
-/// Pure `task.get` reply processor for `task.changed` (parses real `{ key, job: { state, exitCode }, log, notices }`,
-/// coalesces inflight state, and only calls `unfollow` AFTER successful notice delivery).
+/// Outcome of processing a `task.get` reply triggered by `task.changed`.
+pub enum TaskChangedOutcome {
+  Settled
+  RequeryNow
+  RetryLater
+  StillRunning
+}
+
+/// Pure `task.get` reply processor for `task.changed`:
+/// - Parses real `{ key, job: { state, exitCode }, log, notices }`.
+/// - Excludes transitional states (`running`, `queued`, `preparing`, `prepared`, `syncing`, `stopping`).
+/// - If non-terminal AND another `task.changed` arrived while in-flight (dirty bit), returns `RequeryNow`.
+/// - If RPC or delivery fails transiently, schedules backoff retry and returns `RetryLater` (never drops tracking).
 pub fn process_task_changed_get_reply(
   remote_outbox : station_whole::RemoteTaskOutbox,
   ref_id : String,
   rec : station_whole::RemoteOutgoingTask,
   res : Result[base_codec::Json, String],
+  now_mono_ms : Int64,
   deliver : (station_whole::RemoteOutgoingTask, String) -> Bool,
-) -> Bool {
-  remote_outbox.clear_task_get_inflight(ref_id)
+) -> TaskChangedOutcome {
+  let was_dirty = remote_outbox.finish_task_get_inflight(ref_id)
   match res {
     Ok(ans) => {
       let (state, exit_code, notices) = station_whole::parse_remote_task_get_outcome(ans)
-      let is_done = state.length() > 0 && state != "running" && state != "queued" && state != "preparing" && state != "syncing"
+      let is_done = state.length() > 0 &&
+      state != "running" &&
+      state != "queued" &&
+      state != "preparing" &&
+      state != "prepared" &&
+      state != "syncing" &&
+      state != "stopping"
       if is_done {
         let notice = station_whole::format_remote_task_changed_notice(rec, state, exit_code, notices=notices)
         if deliver(rec, notice) {
           remote_outbox.unfollow(ref_id)
-          return true
+          return TaskChangedOutcome::Settled
+        }
+        remote_outbox.schedule_task_get_retry(ref_id, now_mono_ms)
+        return TaskChangedOutcome::RetryLater
+      }
+      if was_dirty {
+        TaskChangedOutcome::RequeryNow
+      } else {
+        TaskChangedOutcome::StillRunning
+      }
+    }
+    Err(_) => {
+      remote_outbox.schedule_task_get_retry(ref_id, now_mono_ms)
+      TaskChangedOutcome::RetryLater
+    }
+  }
+}
+
+fn dispatch_task_changed_get_now(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  remote_outbox : station_whole::RemoteTaskOutbox,
+  rec : station_whole::RemoteOutgoingTask,
+) -> Unit {
+  let get_req = base_codec::json_obj([
+    ("method", base_codec::json_str("task.get")),
+    ("workspace", base_codec::json_str(rec.workspace)),
+    ("session", base_codec::json_str(rec.session)),
+    ("key", base_codec::json_str(rec.key)),
+  ])
+  let _ = ctx.ask_peer_rpc_cancellable(
+    rec.peer_id,
+    rec.workspace,
+    get_req,
+    fn(res : Result[base_codec::Json, String]) -> Unit {
+      let outcome = process_task_changed_get_reply(
+        remote_outbox,
+        rec.push_ref,
+        rec,
+        res,
+        host_shim::now_ms(),
+        fn(r : station_whole::RemoteOutgoingTask, text : String) -> Bool {
+          deliver_remote_task_notice_to_session(core, r, text)
+        },
+      )
+      if outcome is TaskChangedOutcome::RequeryNow {
+        if remote_outbox.mark_task_get_inflight(rec.push_ref) {
+          dispatch_task_changed_get_now(ctx, core, remote_outbox, rec)
         }
       }
-      false
-    }
-    Err(_) => false
+    },
+  )
+}
+
+/// Retry any failed `task.changed` `task.get` queries whose backoff has elapsed (called from `on_tick`).
+pub fn dispatch_due_task_get_retries(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  remote_outbox : station_whole::RemoteTaskOutbox,
+  now_mono_ms : Int64,
+) -> Unit {
+  let due = remote_outbox.due_task_get_retries(now_mono_ms)
+  for i in 0..<due.length() {
+    dispatch_task_changed_get_now(ctx, core, remote_outbox, due[i])
   }
 }
 
 /// Handle inbound `task.changed` peer RPC from a remote rig/station: verifies `(ws, peer_id, ref)`,
-/// coalesces in-flight `task.get`, and delivers an internal agent notice on completion.
+/// marks dirty bit if a `task.get` is already in-flight, and delivers an internal agent notice on completion.
 pub fn handle_inbound_task_changed(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
@@ -1034,28 +1146,7 @@ pub fn handle_inbound_task_changed(
   if !remote_outbox.mark_task_get_inflight(ref_id) {
     return true
   }
-  let get_req = base_codec::json_obj([
-    ("method", base_codec::json_str("task.get")),
-    ("workspace", base_codec::json_str(rec.workspace)),
-    ("session", base_codec::json_str(rec.session)),
-    ("key", base_codec::json_str(rec.key)),
-  ])
-  let _ = ctx.ask_peer_rpc_cancellable(
-    rec.peer_id,
-    rec.workspace,
-    get_req,
-    fn(res : Result[base_codec::Json, String]) -> Unit {
-      let _ = process_task_changed_get_reply(
-        remote_outbox,
-        ref_id,
-        rec,
-        res,
-        fn(r : station_whole::RemoteOutgoingTask, text : String) -> Bool {
-          deliver_remote_task_notice_to_session(core, r, text)
-        },
-      )
-    },
-  )
+  dispatch_task_changed_get_now(ctx, core, remote_outbox, rec)
   let _ = now_ms
   true
 }
@@ -1654,6 +1745,7 @@ fn pump_async_file_download_stream(
             }
             let _ = mcp_pending.touch(conn_id, req_gen, host_shim::now_ms() + station_whole::MCP_FILE_CHUNK_IDLE_MS)
             let ev_id = mcp_pending.alloc_fsync_event_id()
+            mcp_pending.set_fsync_ev_id(conn_id, req_gen, ev_id)
             mcp_pending.register_fsync(
               ev_id,
               station_whole::PendingFsyncEntry::{
