@@ -4532,6 +4532,17 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             astream.mode = AdminStreamMode::Done
             return
           }
+          // Fail-closed if an outbound HTTP/HTTPS/ALL proxy is configured in the environment:
+          // `client/shell` reqwest client inherits env proxies which would bypass `EntryResolver` IP pinning!
+          if station_whole::link_preview_proxy_blocked(fn(k : String) -> Option[String] { station_sys::env_get(k) }) {
+            send_admin_resp_and_finish(
+              ctx,
+              astream.sid,
+              station_api::json_error(503, "link preview is disabled when an outbound HTTP/HTTPS/ALL proxy is configured"),
+            )
+            astream.mode = AdminStreamMode::Done
+            return
+          }
           match station_whole::validate_link_preview_url(raw_url) {
             Err(_) => {
               send_admin_resp_and_finish(ctx, astream.sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
@@ -4624,7 +4635,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 return
               }
             }
-            // Enforce provider feedback spec + stable channel gate (aligned with `station/src/feedback/module.ts:27`).
+            // Enforce provider feedback spec + stable channel gate BEFORE any DB or log read!
             let provider_fb = match ctx.cloud.provider() {
               station_cloud::Provider::Stillfail => station_cloud::stillfail_spec().feedback
               station_cloud::Provider::Comma => station_cloud::comma_spec().feedback
@@ -4633,7 +4644,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               Some(base_codec::Json::Str(s)) if s.length() > 0 => s
               _ => "stable"
             }
-            // Bounded small log tail (<= 64 KiB) to avoid stalling event loop; scrubbed inside `prepare_feedback_notice_report`.
+            if !provider_fb || upd_ch != "stable" {
+              send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, "feedback reporting is only enabled on stable still.fail stations"))
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            // Bounded small log tail (<= 64 KiB) to avoid stalling event loop; filtered & scrubbed inside `prepare_feedback_notice_report`.
             let log_path = nodepath::join(ctx.sep, [ctx.data, "stillfail.log"])
             let log_tail : Option[String] = match (st.core.agents.jobs.fs.stat)(log_path) {
               Some(fst) if fst.size > 0L => {
@@ -4663,11 +4679,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 return
               }
               Ok((report_j, _)) => {
-                if !provider_fb || upd_ch != "stable" {
-                  send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, "feedback reporting is only enabled on stable still.fail stations"))
-                  astream.mode = AdminStreamMode::Done
-                  return
-                }
                 if ctx.cloud.removed() {
                   send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(502, "this station was removed from its workspace"))
                   astream.mode = AdminStreamMode::Done
@@ -4682,12 +4693,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   }
                 }
                 let payload_str = base_codec::json_stringify(report_j)
+                // Cloud `cloud/src/tracing.ts:190-196` verifies Unix SECONDS (matching Node `nowSecs()`).
                 let hdrs = match station_cloud::signed_post_headers(
                   origin,
                   st_id,
                   "stillfail-station-feedback-v1",
                   payload_str,
-                  host_shim::wall_ms(),
+                  host_shim::wall_ms() / 1000L,
                   ctx.station_key,
                 ) {
                   Ok(h) => h
@@ -5957,7 +5969,16 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   }
                 }
               }
-              _ => ()
+              _ => {
+                // Late `stream.open` completion after stream transitioned out of `WaitingLinkPreview` (e.g. tick timeout -> `Done`):
+                // must still close the opened Rust stream handle immediately to prevent leaks.
+                match station_http::decode_stream_open_done(d) {
+                  Ok(h) if h.id > 0 => {
+                    let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + h.id.to_string() + "}", None)
+                  }
+                  _ => ()
+                }
+              }
             }
           }
           return
@@ -7641,8 +7662,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           let lr_ho_path = nodepath::join(ctx.sep, [ctx.run_dir, WHOLE_LIVE_RUNNERS_HANDOVER_FILE])
           st.live_runners.set_handover_state_path(lr_ho_path)
-          // PR #9161 P2: Clean stale `<data>/tmp/tar-extract-*.bin` ONLY AFTER predecessor is gone.
-          let _ = st.upkeep.cleanup_stale_tar_extracts(host_shim::wall_ms(), min_age_ms=0L)
+          // PR #9161 P2: Clean stale `<data>/tmp/tar-extract-*.bin` ONLY AFTER predecessor is gone
+          // via dirfd-relative `O_DIRECTORY|O_NOFOLLOW` + `unlinkat` (zero parent-symlink escape).
+          let _ = station_sys::cleanup_stale_tar_extracts_dir(
+            nodepath::join(ctx.sep, [ctx.data, "tmp"]),
+            host_shim::wall_ms(),
+            0L,
+          )
           match ctx.ops_fs.read_text(lr_ho_path) {
             Ok(lr_raw) => {
               match base_codec::json_parse(lr_raw) {
@@ -8190,6 +8216,48 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 }
                 return
               }
+            }
+          }
+
+          // Cross-station project rename/merge peer RPC (`thread.classify` with `{ rename: { from, to, action, opId, renamedAt, wallAt, originSeq } }`).
+          if method == "thread.classify" {
+            if ctx.cloud.rig_in(ws).is_some() {
+              ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("rig does not manage workspace projects", v2_bytes), None, v2_bytes, is_front)
+              return
+            }
+            match base_codec::json_get(req, "rename") {
+              Some(ren_j) => {
+                let r_from = match base_codec::json_get(ren_j, "from") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                let r_to = match base_codec::json_get(ren_j, "to") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                let r_act = match base_codec::json_get(ren_j, "action") { Some(base_codec::Json::Str(s)) if s == "merge" => "merge", _ => "rename" }
+                let r_op_id = match base_codec::json_get(ren_j, "opId") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                let r_at = match base_codec::json_get(ren_j, "renamedAt") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => now_w }
+                let r_wall = match base_codec::json_get(ren_j, "wallAt") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => now_w }
+                let r_oseq = match base_codec::json_get(ren_j, "originSeq") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+                match station_whole::apply_incoming_project_rename_peer(
+                  st.core.store,
+                  st.core.config.home_workspace,
+                  st.core.api.events,
+                  ws,
+                  r_act,
+                  r_from,
+                  r_to,
+                  r_op_id,
+                  r_at,
+                  r_wall,
+                  r_oseq,
+                  now_w,
+                ) {
+                  Ok(res_j) => {
+                    ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+                  }
+                  Err(e) => {
+                    ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(e.message, v2_bytes), None, v2_bytes, is_front)
+                  }
+                }
+                return
+              }
+              None => ()
             }
           }
 

@@ -3214,8 +3214,29 @@ fn live_runner_commit_end_turn(
       match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
         match pend.turn_id {
           Some(tid) => {
+            // Bind `about_thread` & `about_n` when a turn ends failed or unanswered so Pion's own
+            // `hub.session.retry` gate can verify the exact failure notice entry `(thread, seq)`.
+            let mut about_t_j = base_codec::json_null()
+            let mut about_n_j = base_codec::json_null()
+            if pend.outcome == "failed" || (pend.outcome == "completed" && pend.declared_str is None) {
+              match t.first(
+                "SELECT tr.thread AS th, e.n AS en FROM turns tr JOIN entries e ON e.thread = tr.thread WHERE tr.id = ?1 AND e.author_kind = 'station' ORDER BY e.n DESC LIMIT 1",
+                [base_codec::json_str(tid)],
+              ) {
+                Ok(Some(erow)) => {
+                  match (erow.get("th"), erow.get("en")) {
+                    (Some(base_codec::Json::Num(thv, _)), Some(base_codec::Json::Num(nv, _))) => {
+                      about_t_j = sql_db::int64_to_json(thv.to_int64())
+                      about_n_j = sql_db::int64_to_json(nv.to_int64())
+                    }
+                    _ => ()
+                  }
+                }
+                _ => ()
+              }
+            }
             match t.run(
-              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9 WHERE id = ?1",
+              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9, about_thread = COALESCE(about_thread, ?10), about_n = COALESCE(about_n, ?11) WHERE id = ?1",
               [
                 base_codec::json_str(tid),
                 sql_db::int64_to_json(pend.wall_ms),
@@ -3226,6 +3247,8 @@ fn live_runner_commit_end_turn(
                 wsec_j,
                 wfor_j,
                 wwatch_j,
+                about_t_j,
+                about_n_j,
               ],
             ) {
               Err(e) => return Err(e)
@@ -3397,8 +3420,27 @@ fn live_runner_commit_manager_pending_end_turn(
             if already_ended {
               return Ok(true)
             }
+            let mut about_t_j = base_codec::json_null()
+            let mut about_n_j = base_codec::json_null()
+            if pend.outcome == "failed" || (pend.outcome == "completed" && pend.declared_str is None) {
+              match t.first(
+                "SELECT tr.thread AS th, e.n AS en FROM turns tr JOIN entries e ON e.thread = tr.thread WHERE tr.id = ?1 AND e.author_kind = 'station' ORDER BY e.n DESC LIMIT 1",
+                [base_codec::json_str(tid)],
+              ) {
+                Ok(Some(erow)) => {
+                  match (erow.get("th"), erow.get("en")) {
+                    (Some(base_codec::Json::Num(thv, _)), Some(base_codec::Json::Num(nv, _))) => {
+                      about_t_j = sql_db::int64_to_json(thv.to_int64())
+                      about_n_j = sql_db::int64_to_json(nv.to_int64())
+                    }
+                    _ => ()
+                  }
+                }
+                _ => ()
+              }
+            }
             match t.run(
-              "INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, declared, need, wait_seconds, wait_for, wait_watch, profile, person, thread) VALUES (?1, ?2, 'prompt', ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, outcome = excluded.outcome, detail = excluded.detail, declared = excluded.declared, need = excluded.need, wait_seconds = excluded.wait_seconds, wait_for = excluded.wait_for, wait_watch = excluded.wait_watch WHERE turns.ended_at IS NULL",
+              "INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, declared, need, wait_seconds, wait_for, wait_watch, profile, person, thread, about_thread, about_n) VALUES (?1, ?2, 'prompt', ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, outcome = excluded.outcome, detail = excluded.detail, declared = excluded.declared, need = excluded.need, wait_seconds = excluded.wait_seconds, wait_for = excluded.wait_for, wait_watch = excluded.wait_watch, about_thread = COALESCE(turns.about_thread, excluded.about_thread), about_n = COALESCE(turns.about_n, excluded.about_n) WHERE turns.ended_at IS NULL",
               [
                 base_codec::json_str(tid),
                 base_codec::json_str(mpend.session_key),
@@ -3413,6 +3455,8 @@ fn live_runner_commit_manager_pending_end_turn(
                 base_codec::json_str(mpend.profile_id),
                 person_j,
                 thread_j,
+                about_t_j,
+                about_n_j,
               ],
             ) {
               Err(e) => return Err(e)
@@ -3696,7 +3740,6 @@ fn live_runner_handle_agent_line(
   wall_ms : Int64,
 ) -> Unit {
   let actor = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
-  actor.compacting = false
   actor.on_live_event(now_ms)
   if sess.is_acp {
     let _ = sess.acp_guard.on_output_heard(now_ms)
@@ -6026,19 +6069,37 @@ pub fn LiveRunnerManager::retry_failed_session(
     }
     _ => return Err(station_api::ApiError::new(404, "unknown failure notice"))
   }
-  // Verify target notice `(thread_id, seq)` matches THIS session's last failed turn
-  // (`about_thread` & `about_n` on the latest turn row) so stale notices or other agents'
-  // warnings in the same thread can never trigger a spurious retry.
-  match st.db.first(
-    "SELECT outcome, about_thread, about_n FROM turns WHERE session_key = ?1 ORDER BY started_at DESC LIMIT 1",
+  // Verify target notice `(thread_id, seq)` matches THIS session's latest retryable turn
+  // (1:1 with `station/mb/src/reader/actor_run.mbt:158-197`: `failedAgain` || `givenUp` || `cutOffByRestart` || `session_cap`).
+  // Never retry errors that require human intervention (auth, spent/quota, refused).
+  let recovery_prompt = match st.db.first(
+    "SELECT outcome, declared, detail, about_thread, about_n FROM turns WHERE session_key = ?1 ORDER BY started_at DESC LIMIT 1",
     [base_codec::json_str(session_key)],
   ) {
     Ok(Some(trow)) => {
       let outc = match trow.get("outcome") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      let decl = match trow.get("declared") { Some(base_codec::Json::Str(s)) => s.trim(), _ => "" }
+      let det = match trow.get("detail") { Some(base_codec::Json::Str(s)) => s.trim(), _ => "" }
       let at_id = match trow.get("about_thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => -1L }
       let an_seq = match trow.get("about_n") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => -1L }
-      if outc != "failed" || at_id != thread_id || an_seq != seq {
-        return Err(station_api::ApiError::new(409, "failure notice is no longer the latest failed turn for this session"))
+      if at_id != thread_id || an_seq != seq {
+        return Err(station_api::ApiError::new(409, "failure notice is no longer the latest retryable turn for this session"))
+      }
+      let cut_off_by_restart = outc == "failed" && (det == "interrupted: restart" || det.starts_with("restart"))
+      let cap_paused = outc == "failed" && det == "other: session_cap"
+      let failed_again = outc == "failed" &&
+      decl.length() == 0 &&
+      (det.starts_with("network:") || det.starts_with("model:") || det.starts_with("other:") || det.starts_with("exited:"))
+      let given_up = outc == "completed" && decl.length() == 0
+      if !cut_off_by_restart && !cap_paused && !failed_again && !given_up {
+        return Err(station_api::ApiError::new(409, "last turn is not retryable (requires human action or already resolved)"))
+      }
+      if cut_off_by_restart {
+        station_drivers::RESUME_AFTER_RESTART
+      } else if given_up {
+        station_drivers::GO_ON_AFTER_UNANSWERED
+      } else {
+        station_drivers::GO_ON_AFTER_FAILED
       }
     }
     Ok(None) => return Err(station_api::ApiError::new(409, "no failed turn to retry for this session"))
@@ -6059,10 +6120,8 @@ pub fn LiveRunnerManager::retry_failed_session(
     None => ()
   }
   actor.start_failed = false
-  // Enqueue as an internal station recovery notice (`ActorWork::InternalPrompt`, NEVER a fake user prompt).
-  actor.enqueue(station_sessions::ActorWork::InternalPrompt(
-    "[station] Your previous turn stopped after an error and the person asked to retry from where it left off. Continue the task and finish with chat_post or chat_state.",
-  ))
+  // Enqueue using canonical `station_drivers` recovery instructions (`ActorWork::InternalPrompt`).
+  actor.enqueue(station_sessions::ActorWork::InternalPrompt(recovery_prompt))
   actor.pump_next_prompt()
   let _ = st.db.run(
     "UPDATE sessions SET last_active_at = ?1 WHERE key = ?2",
@@ -6139,6 +6198,8 @@ pub fn LiveRunnerManager::compact_session(
               actor.compacting = false
               return Err(station_api::ApiError::new(500, "failed to send compact command to runner"))
             }
+            sess.current_turn_id = Some("compact-" + sess.prompt_seq.to_string())
+            actor.phase = station_sessions::ActorPhase::Running
             return Ok(())
           }
           _ => ()
@@ -6172,6 +6233,8 @@ pub fn LiveRunnerManager::compact_session(
               actor.compacting = false
               return Err(station_api::ApiError::new(500, "failed to send thread/compact/start to codex runner"))
             }
+            sess.current_turn_id = Some("compact-" + sess.prompt_seq.to_string())
+            actor.phase = station_sessions::ActorPhase::Running
             Ok(())
           }
           _ => Err(station_api::ApiError::new(409, "codex runner is not ready for compaction"))
@@ -7523,8 +7586,29 @@ fn commit_pending_end_turn_db_only(
       match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
         match pend.turn_id {
           Some(tid) => {
+            // Bind `about_thread` & `about_n` when a turn ends failed or unanswered so Pion's own
+            // `hub.session.retry` gate can verify the exact failure notice entry `(thread, seq)`.
+            let mut about_t_j = base_codec::json_null()
+            let mut about_n_j = base_codec::json_null()
+            if pend.outcome == "failed" || (pend.outcome == "completed" && pend.declared_str is None) {
+              match t.first(
+                "SELECT tr.thread AS th, e.n AS en FROM turns tr JOIN entries e ON e.thread = tr.thread WHERE tr.id = ?1 AND e.author_kind = 'station' ORDER BY e.n DESC LIMIT 1",
+                [base_codec::json_str(tid)],
+              ) {
+                Ok(Some(erow)) => {
+                  match (erow.get("th"), erow.get("en")) {
+                    (Some(base_codec::Json::Num(thv, _)), Some(base_codec::Json::Num(nv, _))) => {
+                      about_t_j = sql_db::int64_to_json(thv.to_int64())
+                      about_n_j = sql_db::int64_to_json(nv.to_int64())
+                    }
+                    _ => ()
+                  }
+                }
+                _ => ()
+              }
+            }
             match t.run(
-              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9 WHERE id = ?1",
+              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9, about_thread = COALESCE(about_thread, ?10), about_n = COALESCE(about_n, ?11) WHERE id = ?1",
               [
                 base_codec::json_str(tid),
                 sql_db::int64_to_json(pend.wall_ms),
@@ -7535,6 +7619,8 @@ fn commit_pending_end_turn_db_only(
                 wsec_j,
                 wfor_j,
                 wwatch_j,
+                about_t_j,
+                about_n_j,
               ],
             ) {
               Err(e) => return Err(e)

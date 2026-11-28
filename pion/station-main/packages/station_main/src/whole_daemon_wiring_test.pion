@@ -662,3 +662,66 @@ test "wave17c3b R2: hot handover restart rejects Windows (501) and non-launcher 
     None => panic("missing ws-1 after pruning")
   }
 }
+
+test "w17d3 R4: feedback signed_post_headers uses Unix seconds and verifies; SessionActor queues input while compacting" {
+  // 1. Cloud-equivalent signature verification for `POST /v1/feedback` (`x-stillfail-ts` MUST be Unix seconds, not ms!)
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = (i + 7).to_byte()
+  }
+  let sk = match station_cloud::StationKey::from_seed(seed) {
+    Ok(k) => k
+    Err(e) => panic("StationKey::from_seed failed: " + e)
+  }
+  let wall_ms = 1795850000123L
+  let ts_secs = wall_ms / 1000L
+  let body = "{\"thread\":1,\"notice\":\"boom\"}"
+  let hdrs = match station_cloud::signed_post_headers(
+    "https://api.still.fail",
+    "st-r4",
+    "stillfail-station-feedback-v1",
+    body,
+    ts_secs,
+    sk,
+  ) {
+    Ok(h) => h
+    Err(e) => panic("signed_post_headers failed: " + e)
+  }
+  let mut got_ts = ""
+  let mut got_sig = ""
+  for i in 0..<hdrs.length() {
+    if hdrs[i].0 == "x-stillfail-ts" { got_ts = hdrs[i].1 }
+    if hdrs[i].0 == "x-stillfail-signature" { got_sig = hdrs[i].1 }
+  }
+  if got_ts != "1795850000" {
+    panic("x-stillfail-ts must be Unix seconds (1795850000), got: " + got_ts)
+  }
+  let expected_sig = match station_cloud::signed_post_signature(
+    "https://api.still.fail",
+    "st-r4",
+    "stillfail-station-feedback-v1",
+    body,
+    ts_secs,
+    sk,
+  ) {
+    Ok(s) => s
+    Err(e) => panic("signed_post_signature failed: " + e)
+  }
+  if got_sig.length() == 0 || got_sig != expected_sig {
+    panic("feedback signature mismatch")
+  }
+
+  // 2. SessionActor queues ordinary user input while `compacting == true` (never starts/steers into compacting runner)
+  let actor = station_sessions::SessionActor::new("s-compact", "claude")
+  actor.compacting = true
+  if !actor.is_busy() {
+    panic("actor.is_busy() must be true while compacting")
+  }
+  match actor.submit_input("hello while compacting") {
+    station_sessions::InputRoute::Queue => ()
+    _ => panic("submit_input while compacting MUST return InputRoute::Queue")
+  }
+  if actor.queue.length() != 1 {
+    panic("expected 1 queued prompt while compacting")
+  }
+}

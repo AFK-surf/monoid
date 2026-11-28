@@ -963,19 +963,9 @@ pub fn ReadOpsPort::production(
             let _ = (agents.jobs.fs.remove_dir_all)(dst)
           }
           if station_sys::rename(src, dst) {
-            // PR #9161 P2: refresh mtime (`utimes`) of every file inside `.gone/<h(draftId)>`
-            // AND the directory itself so upkeep (`GONE_FILES_MS`) never reclaims freshly
-            // put-aside files prematurely due to stale original mtimes.
-            match (agents.jobs.fs.read_dir)(dst) {
-              Some(entries) => {
-                for ei in 0..<entries.length() {
-                  let fpath = nodepath::join(sep, [dst, entries[ei]])
-                  let _ = station_sys::utimes_now(fpath)
-                }
-              }
-              None => ()
-            }
-            let _ = station_sys::utimes_now(dst)
+            // PR #9161 P2: refresh mtime of every non-symlink file inside `.gone/<h(draftId)>`
+            // AND the directory itself via dirfd-relative `utimensat`/`futimens` (O_NOFOLLOW).
+            let _ = station_sys::utimes_dir_children_now(dst)
           }
         }
       }

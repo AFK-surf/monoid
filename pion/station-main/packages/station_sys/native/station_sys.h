@@ -213,6 +213,8 @@ int32_t sts_write_file_atomic(const char *path, const uint8_t *data, int64_t len
 int32_t sts_rename(const char *old_path, const char *new_path);
 // Update a file or directory's access & modification timestamps to current wall time (1 on success, 0 on error).
 int32_t sts_utimes_now(const char *path);
+int32_t sts_utimes_dir_children_now(const char *dir_path);
+int32_t sts_cleanup_stale_tar_extracts_dir(const char *tmp_dir, int64_t now_ms, int64_t min_age_ms);
 int32_t sts_random_bytes(uint8_t *buf, int64_t len);
 
 // 6. Unix domain socket peer identity (JSON `{"pid":N,"auditToken":...|null}` or NULL).

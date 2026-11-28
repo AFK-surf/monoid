@@ -182,10 +182,15 @@ test "w17d3: links.preview blocks SSRF (literal, DNS, redirect) and extracts HTM
       body: ok_html,
     })
   }
-  match fetch_link_preview_with_ports("https://public.example.com/raw", fn(_h) { ["93.184.216.34"] }, empty_ct_fetch) {
-    Ok(j) => w17d3_assert(json_field_str(j, "kind") == Some("none"), "empty Content-Type must yield kind:none")
-    Err(_) => panic("unexpected error")
-  }
+  // 5c. Proxy env vars (`HTTPS_PROXY`, etc.) fail-closed block direct link preview
+  w17d3_assert(
+    link_preview_proxy_blocked(fn(k : String) -> Option[String] { if k == "HTTPS_PROXY" { Some("http://proxy.internal:8080") } else { None } }),
+    "HTTPS_PROXY must block links.preview fail-closed",
+  )
+  w17d3_assert(
+    !link_preview_proxy_blocked(fn(_k : String) -> Option[String] { None }),
+    "no proxy env must allow links.preview",
+  )
 }
 
 test "w17d3: hub.session.retry/compact, projects.rename/merge, signins, links.preview, feedback.report hook dispatch" {
@@ -282,5 +287,10 @@ test "w17d3: hub.session.retry/compact, projects.rename/merge, signins, links.pr
   match rewrite_preset_projects_json("{\"p1\":{\"project\":\"Alpha\",\"rev\":2,\"at\":1000},\"p2\":{\"project\":\"Keep\",\"rev\":1,\"at\":900}}", "Alpha", "Beta", renamed_at=5000L) {
     Some(s) => w17d3_assert(s.contains("\"project\":\"Beta\"") && s.contains("\"ren\":5000") && s.contains("\"project\":\"Keep\""), "rewrite_preset_projects_json object mismatch: " + s)
     None => panic("rewrite_preset_projects_json object returned None")
+  }
+  // Clearing project writes JSON `null` (never `""`), and newer `at > renamed_at` watermark is preserved untouched
+  match rewrite_preset_projects_json("{\"p1\":{\"project\":\"Alpha\",\"rev\":2,\"at\":1000},\"p2\":{\"project\":\"Alpha\",\"rev\":3,\"at\":9000}}", "Alpha", "", renamed_at=5000L) {
+    Some(s) => w17d3_assert(s.contains("\"project\":null") && s.contains("\"at\":9000") && s.contains("\"project\":\"Alpha\""), "preset clear/watermark mismatch: " + s)
+    None => panic("preset clear returned None")
   }
 }

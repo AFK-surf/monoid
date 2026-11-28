@@ -2516,9 +2516,34 @@ int main(void) {
         (void)sts_utimes_now(usym);
         struct stat st_tgt;
         assert(stat(utgt, &st_tgt) == 0 && st_tgt.st_mtime == 1000000000);
+        // Dirfd-relative `sts_utimes_dir_children_now`: refreshes child & dir, rejects symlinked parent dir.
+        char ulinkdir[300];
+        snprintf(ulinkdir, sizeof(ulinkdir), "%s_sym", udir);
+        assert(symlink(udir, ulinkdir) == 0);
+        assert(sts_utimes_dir_children_now(ulinkdir) == 0);
+        assert(sts_utimes_dir_children_now(udir) == 1);
+        assert(unlink(ulinkdir) == 0);
+        // Dirfd-relative `sts_cleanup_stale_tar_extracts_dir`: unlinks regular tar-extract-*.bin, skips dir/symlink, rejects symlink parent.
+        char tfile[300], tkeep[300], tsym[300], tsub[300];
+        snprintf(tfile, sizeof(tfile), "%s/tar-extract-stale.bin", udir);
+        snprintf(tkeep, sizeof(tkeep), "%s/keep.bin", udir);
+        snprintf(tsym, sizeof(tsym), "%s/tar-extract-sym.bin", udir);
+        snprintf(tsub, sizeof(tsub), "%s/tar-extract-sub.bin", udir);
+        assert(sts_write_file_atomic(tfile, msg, (int64_t)(sizeof(msg) - 1), 0644) == 1);
+        assert(sts_write_file_atomic(tkeep, msg, (int64_t)(sizeof(msg) - 1), 0644) == 1);
+        assert(symlink(tkeep, tsym) == 0);
+        assert(mkdir(tsub, 0755) == 0);
+        assert(symlink(udir, ulinkdir) == 0);
+        assert(sts_cleanup_stale_tar_extracts_dir(ulinkdir, 2000000000000LL, 0) == -1);
+        assert(sts_cleanup_stale_tar_extracts_dir(udir, 2000000000000LL, 0) == 1);
+        assert(access(tfile, F_OK) != 0);
+        assert(access(tkeep, F_OK) == 0);
+        assert(access(tsym, F_OK) == 0);
+        assert(access(tsub, F_OK) == 0);
+        assert(unlink(ulinkdir) == 0 && unlink(tsym) == 0 && rmdir(tsub) == 0 && unlink(tkeep) == 0);
         assert(unlink(usym) == 0 && unlink(utgt) == 0);
         assert(unlink(uf) == 0 && rmdir(udir) == 0);
-        printf("  [PASS] sts_utimes_now (file mtime refresh, dir, symlink nofollow, missing, null/empty)\n");
+        printf("  [PASS] sts_utimes_now & dirfd-relative cleanup/utimes (symlink parent/child nofollow)\n");
     }
 
     assert(sts_selftest_verified_send_cancel() == 0);

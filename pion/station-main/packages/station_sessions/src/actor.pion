@@ -333,6 +333,12 @@ fn SessionActor::start_prompt_now(self : SessionActor, text : String, is_interna
 /// - Running -> steers active turn (`Steer`)
 /// - Starting/Stopping/Closed -> enqueues on serial queue (`Queue`)
 pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRoute {
+  // Never start or steer user input into a session that is currently compacting:
+  // queue it in strict FIFO order until compaction completes.
+  if self.compacting {
+    self.queue.push(ActorWork::Prompt(text))
+    return InputRoute::Queue
+  }
   let route = route_input(self.phase)
   match route {
     InputRoute::StartPrompt => {
