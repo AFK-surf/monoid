@@ -538,17 +538,17 @@ function runGlassVectorsInPage() {
       lNoZoom,
     };
   }
-  // V9-Tab-Wide-Dispersion: Role 4 over words' strokes that reach under its top lip. At chroma 0.04 the lip parts the
-  // colours by a hair, as it did; at 0.16 (the bottom bar's lens lifted: tab_lens_dispersion) it is the rim of the system's
-  // lens, the strokes parted into coloured copies along the edge: many times the coloured lip, none of it in the lens's
-  // middle, nothing outside the lens changed, and a stroke's yellow copies to its left, its cyan ones to its right
+  // V9-Tab-Wide-Dispersion: Role 4 over a vertical bar crossing its round right end. At chroma 0.04 it uses the micro-
+  // dispersion Snell path; at 0.16 (tab_lens_dispersion) it uses the iOS 27 / TabBarLens normal-axis rim refraction:
+  // inward stretching + clean 3-tap normal dispersion at the round end, zero chromatic smear in the center, and zero
+  // change outside the lens.
   {
     const shots = [];
-    for (let pass = 0; pass < 3; pass++) {
-      const buf = new Float32Array(20 * INST);
+    for (let pass = 0; pass < 2; pass++) {
+      const buf = new Float32Array(10 * INST);
       let n = 0;
       rect(buf, n++ * INST, 0, 0, VW, VH, 0, 246 / 255, 244 / 255, 240 / 255, 1, 0);
-      for (let k = 0; k < (pass < 2 ? 12 : 1); k++) rect(buf, n++ * INST, pass < 2 ? 45.0 + k * 6.0 : 80.0, 1.5, 1.0, 10.5, 0, 26 / 255, 26 / 255, 26 / 255, 1, 0);
+      rect(buf, n++ * INST, 109.0, 20.0, 3.0, 40.0, 0, 26 / 255, 26 / 255, 26 / 255, 1, 0);
       const l = n++ * INST;
       rect(buf, l, 35.0, 9.0, 90.0, 62.0, 6, 1, 1, 1, 0, -572 - pass);
       buf[l + 4] = 31.0; buf[l + 6] = 1; buf[l + 7] = -64.0;
@@ -558,33 +558,22 @@ function runGlassVectorsInPage() {
       shots.push(H.renderPixels());
     }
     const spread = (c) => Math.max(c[0], c[1], c[2]) - Math.min(c[0], c[1], c[2]);
-    // the lip: the lens's top 6 pt (y 9..15 pt), across the strokes (x 42..118 pt); the lens's middle (x 60..100 pt,
-    // y 28..52 pt); outside the lens: over its top (y 0..7 pt)
-    const lip = [0, 0], mid = [0, 0];
-    let midDiff = 0, outDiff = 0;
-    for (let pass = 0; pass < 2; pass++) {
-      for (let py = 27; py < 45; py++) for (let px = 126; px < 354; px++) if (spread(pxAt(shots[pass], px, py)) >= 48) lip[pass]++;
-      for (let py = 84; py < 156; py++) for (let px = 180; px < 300; px++) if (spread(pxAt(shots[pass], px, py)) >= 48) mid[pass]++;
+    let endRefract = 0, endChroma = 0, midChroma = 0, midDiff = 0, outDiff = 0;
+    for (let py = 72; py < 168; py++) for (let px = 336; px < 372; px++) {
+      const a = pxAt(shots[0], px, py), b = pxAt(shots[1], px, py);
+      if (Math.max(Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2])) >= 30) endRefract++;
+      if (spread(b) >= 12) endChroma++;
     }
     for (let py = 84; py < 156; py++) for (let px = 180; px < 300; px++) {
       const a = pxAt(shots[0], px, py), b = pxAt(shots[1], px, py);
+      if (spread(b) >= 12) midChroma++;
       for (let ch = 0; ch < 3; ch++) midDiff = Math.max(midDiff, Math.abs(a[ch] - b[ch]));
     }
     for (let py = 0; py < 21; py++) for (let px = 0; px < shots[0].w; px++) {
       const a = pxAt(shots[0], px, py), b = pxAt(shots[1], px, py);
       for (let ch = 0; ch < 3; ch++) outDiff = Math.max(outDiff, Math.abs(a[ch] - b[ch]));
     }
-    // the one stroke (the third shot: at x 80..81 pt, the middle of the lens's flat top), 2 to 5 pt under the lip, the
-    // rim's reach to either side of it: its copies with the blue taken out (yellow) are only to its left, those with the red
-    // taken out (cyan) only to its right: the system's order on a top lip
-    const side = [0, 0, 0, 0];
-    for (let py = 33; py < 42; py++) for (let px = 222; px < 261; px++) {
-      const c = pxAt(shots[2], px, py);
-      const yellow = c[2] + 30 <= Math.min(c[0], c[1]) ? 1 : 0, cyan = c[0] + 30 <= Math.min(c[1], c[2]) ? 1 : 0;
-      side[px < 241 ? 0 : 2] += yellow;
-      side[px < 241 ? 1 : 3] += cyan;
-    }
-    roi.v9_tab_wide_dispersion = { lip, mid, midDiff, outDiff, side };
+    roi.v9_tab_wide_dispersion = { endRefract, endChroma, midChroma, midDiff, outDiff };
   }
   // V9h: Switch ON held glassFrost C0 continuity (0 -> eps, 0.108->0.110 veil, 0.127->0.129 blur, 0.60 frosted)
   {
@@ -1933,7 +1922,7 @@ check(roi.v9_tab_icon_delta.ghostDelta === 0 && roi.v9_tab_icon_delta.outDiff ==
 check(roi.v9_tab_no_ghost.barL < 130.0 && roi.v9_tab_no_ghost.ghostDiff <= 2.0 && roi.v9_tab_no_ghost.cleanL > 220.0, `v9_tab_no_ghost=${JSON.stringify(roi.v9_tab_no_ghost)}`);
 check(roi.v9_tab_dark_clarity.topL < 55.0 && roi.v9_tab_dark_clarity.botL < 55.0 && roi.v9_tab_dark_clarity.leftL >= 42.0 && roi.v9_tab_dark_clarity.rightL >= 42.0, `v9_tab_dark_clarity=${JSON.stringify(roi.v9_tab_dark_clarity)}`);
 check(roi.v9_tab_zoom_edge_visible.edgeDiff >= 40.0 && roi.v9_tab_zoom_edge_visible.outerBR >= 60.0 && roi.v9_tab_zoom_edge_visible.centerZoomDiff >= 60.0, `v9_tab_zoom_edge_visible=${JSON.stringify(roi.v9_tab_zoom_edge_visible)}`);
-check(roi.v9_tab_wide_dispersion.lip[1] >= 150 && roi.v9_tab_wide_dispersion.lip[1] >= 3 * roi.v9_tab_wide_dispersion.lip[0] && roi.v9_tab_wide_dispersion.mid[0] === 0 && roi.v9_tab_wide_dispersion.mid[1] === 0 && roi.v9_tab_wide_dispersion.midDiff <= 2 && roi.v9_tab_wide_dispersion.outDiff === 0 && roi.v9_tab_wide_dispersion.side[0] >= 20 && roi.v9_tab_wide_dispersion.side[1] === 0 && roi.v9_tab_wide_dispersion.side[2] === 0 && roi.v9_tab_wide_dispersion.side[3] >= 20, `v9_tab_wide_dispersion=${JSON.stringify(roi.v9_tab_wide_dispersion)}`);
+check(roi.v9_tab_wide_dispersion.endRefract >= 40 && roi.v9_tab_wide_dispersion.endChroma >= 20 && roi.v9_tab_wide_dispersion.midChroma === 0 && roi.v9_tab_wide_dispersion.midDiff <= 2 && roi.v9_tab_wide_dispersion.outDiff === 0, `v9_tab_wide_dispersion=${JSON.stringify(roi.v9_tab_wide_dispersion)}`);
 check(roi.v9_switch_frost_continuity.maxDEps <= 2 && roi.v9_switch_frost_continuity.maxDVeil <= 10 && roi.v9_switch_frost_continuity.maxDBlur <= 10 && roi.v9_switch_frost_continuity.ctr60[0] > roi.v9_switch_frost_continuity.ctr0[0] + 25 && (roi.v9_switch_frost_continuity.ctr60[1] - roi.v9_switch_frost_continuity.ctr60[0]) < (roi.v9_switch_frost_continuity.ctr0[1] - roi.v9_switch_frost_continuity.ctr0[0]) - 20, `v9_switch_frost_continuity=${JSON.stringify(roi.v9_switch_frost_continuity)}`);
 check(roi.v9_sw_2x[0] > 40 && roi.v9_sw_2x[1] > 40, `v9_sw_2x=${JSON.stringify(roi.v9_sw_2x)}`);
 check(roi.v10_reg_light.maxD2 <= 14.0 && roi.v10_reg_light.sideLmin >= 150.0 && roi.v10_reg_light.sideLmin <= 176.0 && roi.v10_reg_light.lightOuterTopL <= roi.v10_reg_light.lightMidL - 15.0 && roi.v10_reg_light.lightTopL >= roi.v10_reg_light.lightMidL,

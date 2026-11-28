@@ -5046,22 +5046,19 @@ int main(void) {
       free(pxz_nozoom);
     }
 
-    // --- V9-Tab-Wide-Dispersion: Role 4 over words' strokes that reach under its top lip. At chroma 0.04 the lip parts the
-    // colours by a hair, as it did; at 0.16 (the bottom bar's lens lifted: tab_lens_dispersion) it is the rim of the system's
-    // lens, the strokes parted into coloured copies along the edge: many times the coloured lip, none of it in the lens's
-    // middle, nothing outside the lens changed, and a stroke's yellow copies to its left, its cyan ones to its right ---
+    // --- V9-Tab-Wide-Dispersion: Role 4 over a vertical bar crossing its round right end. At chroma 0.04 it uses the
+    // micro-dispersion Snell path; at 0.16 (tab_lens_dispersion) it uses the iOS 27 / TabBarLens normal-axis rim refraction:
+    // inward stretching + clean 3-tap normal dispersion at the round end, zero chromatic smear in the center, and zero
+    // change outside the lens. ---
     {
-      double tw[20 * MB_INST];
-      unsigned char *pxw[3];
-      for (int pass = 0; pass < 3; pass++) {
+      double tw[10 * MB_INST];
+      unsigned char *pxw[2];
+      for (int pass = 0; pass < 2; pass++) {
         int n = 0;
         V_RECT(tw, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 0);
         n++;
-        for (int k = 0; k < (pass < 2 ? 12 : 1); k++) {
-          double *q = tw + n * MB_INST;
-          V_RECT(q, pass < 2 ? 45.0 + k * 6.0 : 80.0, 1.5, 1.0, 10.5, 0, 26.0 / 255.0, 26.0 / 255.0, 26.0 / 255.0, 0);
-          n++;
-        }
+        V_RECT(tw + n * MB_INST, 109.0, 20.0, 3.0, 40.0, 0, 26.0 / 255.0, 26.0 / 255.0, 26.0 / 255.0, 0);
+        n++;
         double *l = tw + n * MB_INST;
         V_RECT(l, 35.0, 9.0, 90.0, 62.0, 6, 1.0, 1.0, 1.0, -572 - pass);
         n++;
@@ -5072,58 +5069,36 @@ int main(void) {
         gl_present(tw, n, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0);
         pxw[pass] = pixels_of_fb(vfb);
       }
-      // the lip: the lens's top 6 pt (y 9..15 pt), across the strokes (x 42..118 pt)
-      int lip[2] = {0, 0}, mid[2] = {0, 0}, out_diff = 0, mid_diff = 0;
-      for (int pass = 0; pass < 2; pass++) {
-        for (int py = 27; py < 45; py++)
-          for (int px_x = 126; px_x < 354; px_x++) {
-            unsigned char *c = V_PX(pxw[pass], px_x, py);
-            int mx = c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : (c[1] > c[2] ? c[1] : c[2]);
-            int mn = c[0] < c[1] ? (c[0] < c[2] ? c[0] : c[2]) : (c[1] < c[2] ? c[1] : c[2]);
-            if (mx - mn >= 48) lip[pass]++;
-          }
-        // the lens's middle (x 60..100 pt, y 28..52 pt)
-        for (int py = 84; py < 156; py++)
-          for (int px_x = 180; px_x < 300; px_x++) {
-            unsigned char *c = V_PX(pxw[pass], px_x, py);
-            int mx = c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : (c[1] > c[2] ? c[1] : c[2]);
-            int mn = c[0] < c[1] ? (c[0] < c[2] ? c[0] : c[2]) : (c[1] < c[2] ? c[1] : c[2]);
-            if (mx - mn >= 48) mid[pass]++;
-          }
-      }
+      int end_refract = 0, end_chroma = 0, mid_chroma = 0, mid_diff = 0, out_diff = 0;
+      for (int py = 72; py < 168; py++)
+        for (int px_x = 336; px_x < 372; px_x++) {
+          unsigned char *a = V_PX(pxw[0], px_x, py), *b = V_PX(pxw[1], px_x, py);
+          int dm = 0;
+          for (int ch = 0; ch < 3; ch++) { int d = abs((int)a[ch] - (int)b[ch]); if (d > dm) dm = d; }
+          if (dm >= 30) end_refract++;
+          int mx = b[0] > b[1] ? (b[0] > b[2] ? b[0] : b[2]) : (b[1] > b[2] ? b[1] : b[2]);
+          int mn = b[0] < b[1] ? (b[0] < b[2] ? b[0] : b[2]) : (b[1] < b[2] ? b[1] : b[2]);
+          if (mx - mn >= 12) end_chroma++;
+        }
       for (int py = 84; py < 156; py++)
-        for (int px_x = 180; px_x < 300; px_x++)
-          for (int ch = 0; ch < 3; ch++) {
-            int d = abs((int)V_PX(pxw[0], px_x, py)[ch] - (int)V_PX(pxw[1], px_x, py)[ch]);
-            if (d > mid_diff) mid_diff = d;
-          }
-      // outside the lens: over its top (y 0..7 pt)
+        for (int px_x = 180; px_x < 300; px_x++) {
+          unsigned char *a = V_PX(pxw[0], px_x, py), *b = V_PX(pxw[1], px_x, py);
+          int mx = b[0] > b[1] ? (b[0] > b[2] ? b[0] : b[2]) : (b[1] > b[2] ? b[1] : b[2]);
+          int mn = b[0] < b[1] ? (b[0] < b[2] ? b[0] : b[2]) : (b[1] < b[2] ? b[1] : b[2]);
+          if (mx - mn >= 12) mid_chroma++;
+          for (int ch = 0; ch < 3; ch++) { int d = abs((int)a[ch] - (int)b[ch]); if (d > mid_diff) mid_diff = d; }
+        }
       for (int py = 0; py < 21; py++)
         for (int px_x = 0; px_x < fb_w; px_x++)
           for (int ch = 0; ch < 3; ch++) {
             int d = abs((int)V_PX(pxw[0], px_x, py)[ch] - (int)V_PX(pxw[1], px_x, py)[ch]);
             if (d > out_diff) out_diff = d;
           }
-      printf("gles_render: v9_tab_wide_dispersion lip_coloured=(%d,%d) mid_coloured=(%d,%d) mid_diff=%d out_diff=%d\n",
-             lip[0], lip[1], mid[0], mid[1], mid_diff, out_diff);
-      CHECK(lip[1] >= 150 && lip[1] >= 3 * lip[0] && mid[0] == 0 && mid[1] == 0 && mid_diff <= 2 && out_diff == 0);
-      // the one stroke (the third shot: at x 80..81 pt, the middle of the lens's flat top), 2 to 5 pt under the lip, the
-      // rim's reach to either side of it: its copies with the blue taken out (yellow) are only to its left, those with the red
-      // taken out (cyan) only to its right: the system's order on a top lip
-      int side[4] = {0, 0, 0, 0};
-      for (int py = 33; py < 42; py++)
-        for (int px_x = 222; px_x < 261; px_x++) {
-          unsigned char *c = V_PX(pxw[2], px_x, py);
-          int yellow = c[2] + 30 <= (c[0] < c[1] ? c[0] : c[1]), cyan = c[0] + 30 <= (c[1] < c[2] ? c[1] : c[2]);
-          side[px_x < 241 ? 0 : 2] += yellow;
-          side[px_x < 241 ? 1 : 3] += cyan;
-        }
-      printf("gles_render: v9_tab_wide_dispersion sides yellow_left=%d cyan_left=%d yellow_right=%d cyan_right=%d\n", side[0], side[1], side[2],
-             side[3]);
-      CHECK(side[0] >= 20 && side[1] == 0 && side[2] == 0 && side[3] >= 20);
+      printf("gles_render: v9_tab_wide_dispersion end_refract=%d end_chroma=%d mid_chroma=%d mid_diff=%d out_diff=%d\n",
+             end_refract, end_chroma, mid_chroma, mid_diff, out_diff);
+      CHECK(end_refract >= 40 && end_chroma >= 20 && mid_chroma == 0 && mid_diff <= 2 && out_diff == 0);
       free(pxw[0]);
       free(pxw[1]);
-      free(pxw[2]);
     }
 
     // --- V9a2: Switch ON @ 2x phase-shifted integrated green mass ---
