@@ -582,9 +582,6 @@ fn runtime_attach_mesh_station(
     admitted_cred_epoch_getter=Some(fn() -> Int64 { ctrl.live_admitted_cred_epoch() }),
     serving_link_getter=Some(fn() -> (Int, Int64) { ctrl.live_link_identity() }),
   )
-  if sess.live_sync_enabled && sess.core.membership.has_pending_auth_confirm(target_ws) {
-    drive_mesh_admission(sess, target_ws, target_st, ctrl, sess.session_gen)
-  }
 }
 
 fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
@@ -1405,9 +1402,10 @@ fn needs_workspace_cloud_confirm(sess : RuntimeSession, ws_id : String) -> Bool 
     !sess.core.can_read_confirmed_key(ws_id, "stations:" + ws_id))
 }
 
-/// Deduplicated `/v1/workspaces/<ws>` refresh helper keyed on `(session_gen, ws, base_seq, cred_epoch)`:
+/// Deduplicated `/v1/workspaces/<ws>` refresh helper keyed on `(session_gen, ws, base_seq, cred_epoch, bearer_gen)`:
 /// guarantees that an in-flight detail response rejected with `Ok(false)` (e.g. because a same-role
-/// `/v1/me` advanced `ws_commit_seq` mid-flight) never strands `PendingAuthConfirm` Cloud confirmation.
+/// `/v1/me` advanced `ws_commit_seq` mid-flight) or a 401 followed by OAuth bearer rotation never
+/// strands `PendingAuthConfirm` Cloud confirmation.
 fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Unit {
   if sess.stopped || sess.core.membership.is_session_invalidated() {
     return
@@ -1418,7 +1416,8 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
       let base_seq = ws_confirm_base_seq(sess, ws_id)
       let captured_cred_epoch = sess.core.membership.cred_epoch_of(ws_id)
       let orig_gen = sess.session_gen
-      let dkey = orig_gen.to_string() + "|" + ws_id + "|" + base_seq.to_string() + "|" + captured_cred_epoch.to_string()
+      let orig_bearer_gen = sess.bearer_gen
+      let dkey = orig_gen.to_string() + "|" + ws_id + "|" + base_seq.to_string() + "|" + captured_cred_epoch.to_string() + "|" + orig_bearer_gen.to_string()
       if sess.inflight_ws_confirm.get(dkey).is_some() {
         return
       }
@@ -1472,6 +1471,52 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
         )
       })
     }
+  }
+}
+
+/// Re-queue any Cloud `/v1/me` or `/v1/workspaces/<ws>` confirmations still pending after a
+/// bearer token rotation/adoption (even if `/v1/events` WebSocket stayed open with no new WS event).
+fn requeue_pending_cloud_confirmations(sess : RuntimeSession) -> Unit {
+  if sess.stopped || sess.core.membership.is_unauthenticated() || sess.core.membership.is_session_invalidated() {
+    return
+  }
+  let cs = match sess.cloud {
+    Some(c) => c
+    None => return
+  }
+  let candidate_ws : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  let add_ws = fn(wid : String) -> Unit {
+    if wid.length() > 0 && seen.get(wid).is_none() {
+      seen.set(wid, true)
+      candidate_ws.push(wid)
+    }
+  }
+  add_ws(sess.core.workspace)
+  let known = sess.core.membership.known_workspaces()
+  for i in 0..<known.length() {
+    add_ws(known[i])
+  }
+  match store::list_workspaces(sess.db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        add_ws(rows[i].id)
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  let mut any_pending = false
+  for i in 0..<candidate_ws.length() {
+    let wid = candidate_ws[i]
+    if sess.core.membership.has_pending_auth_confirm(wid) {
+      any_pending = true
+    }
+    if needs_workspace_cloud_confirm(sess, wid) {
+      trigger_workspace_confirm_fetch(sess, wid)
+    }
+  }
+  if any_pending {
+    cs.trigger_me_reconcile()
   }
 }
 
@@ -1617,6 +1662,7 @@ fn runtime_make_refresh_host(
               let _ = cs.bind_account_context(updated.sub, session=new_sid)
             }
             cs.set_origin_and_token("", updated.access)
+            requeue_pending_cloud_confirmations(sess)
           }
           None => ()
         }
@@ -2581,6 +2627,27 @@ pub extern "C" fn pion_core_runtime_start(
   })
   core.set_on_workspace_refresh(fn(ws : String) -> Unit {
     trigger_workspace_confirm_fetch(sess, ws)
+  })
+  core.set_on_station_admission_needed(fn(st : String) -> Unit {
+    match sess.mesh_transports.get(st) {
+      Some(ctrl) => {
+        let ws = sess.core.membership.station_workspace(st, fallback_ws=sess.core.workspace)
+        drive_mesh_admission(sess, ws, st, ctrl, sess.session_gen)
+      }
+      None => ()
+    }
+  })
+  core.set_on_workspace_lock_changed(fn(ws : String) -> Unit {
+    let mkeys = sess.mesh_transports.keys()
+    for i in 0..<mkeys.length() {
+      let st = mkeys[i]
+      if ws.length() == 0 || sess.core.membership.station_workspace(st, fallback_ws=sess.core.workspace) == ws {
+        match sess.mesh_transports.get(st) {
+          Some(ctrl) => ctrl.clear_lock_admission_block()
+          None => ()
+        }
+      }
+    }
   })
   // Wire production CloudSync commit hooks, monotonic seq provider, cred_epoch guard, and
   // dynamic-token `/v1/events` WebSocket consumption when signed in with an access token.

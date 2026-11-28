@@ -702,6 +702,21 @@ pub struct JobStatus {
   pub chat : Option[String]
 }
 
+enum StagedJobOp {
+  Upsert(String, Bool, base_codec::Json, JobStatus)
+  Remove(String)
+}
+
+struct MergedJobRow {
+  id : String
+  session : Option[String]
+  open : Bool
+  ord : Double
+  chat : Option[String]
+  raw_sql : String
+  view_json : base_codec::Json
+}
+
 pub struct StationEvents {
   pub workspace : String
   pub station : String
@@ -721,6 +736,9 @@ pub struct StationEvents {
   mut authoritative_jobs_loaded : Bool
   authoritative_jobs_by_id : Map[String, base_codec::Json]
   authoritative_jobs_order : Array[String]
+  mut jobs_sse_seq : Int64
+  mut jobs_snapshot_inflight : Int
+  jobs_sse_journal : Array[(Int64, StagedJobOp)]
   dirty_threads : Map[Int, Bool]
   mut resync_needed : Int
   mut marks_dirty_count : Int
@@ -733,6 +751,7 @@ pub struct StationEvents {
   mut on_marks_dirty : (String, base_codec::Json) -> Unit
   mut on_marks_applied : (base_codec::Json, Bool, Array[String], Array[String], Array[Int]) -> Unit
   mut on_thread_dirty : (Int) -> Unit
+  mut on_admission_needed : (String) -> Unit
   mut auth : Option[AuthGenTracker]
   mut admitted_gate : Option[() -> Bool]
   mut serving_link_getter : Option[() -> (Int, Int64)]
@@ -770,6 +789,9 @@ pub fn StationEvents::new(
     authoritative_jobs_loaded: false,
     authoritative_jobs_by_id: Map::new(),
     authoritative_jobs_order: [],
+    jobs_sse_seq: 0L,
+    jobs_snapshot_inflight: 0,
+    jobs_sse_journal: [],
     dirty_threads: Map::new(),
     resync_needed: 0,
     marks_dirty_count: 0,
@@ -782,6 +804,7 @@ pub fn StationEvents::new(
     on_marks_dirty: fn(_ev : String, _j : base_codec::Json) -> Unit {},
     on_marks_applied: fn(_j : base_codec::Json, _whole : Bool, _affected : Array[String], _sessions : Array[String], _threads : Array[Int]) -> Unit {},
     on_thread_dirty: fn(_th : Int) -> Unit {},
+    on_admission_needed: fn(_st : String) -> Unit {},
     auth: None,
     admitted_gate: None,
     serving_link_getter: None,
@@ -791,6 +814,49 @@ pub fn StationEvents::new(
     stream_fiber: None,
     active_stream_fiber: None,
     active_cancel: None,
+  }
+}
+
+pub fn StationEvents::set_on_admission_needed(self : StationEvents, cb : (String) -> Unit) -> Unit {
+  self.on_admission_needed = cb
+}
+
+pub fn StationEvents::jobs_sse_seq(self : StationEvents) -> Int64 {
+  self.jobs_sse_seq
+}
+
+/// Mark the start of an in-flight `GET /jobs?chats=0` snapshot fetch, returning the SSE commit
+/// sequence cut point so any SSE job events committed after this cut are replayed on top of the snapshot.
+pub fn StationEvents::begin_jobs_snapshot(self : StationEvents) -> Int64 {
+  self.jobs_snapshot_inflight += 1
+  self.jobs_sse_seq
+}
+
+/// Balance `begin_jobs_snapshot`; clears the bounded in-flight SSE replay journal once the last
+/// in-flight snapshot finishes.
+pub fn StationEvents::end_jobs_snapshot(self : StationEvents) -> Unit {
+  if self.jobs_snapshot_inflight > 0 {
+    self.jobs_snapshot_inflight -= 1
+  }
+  if self.jobs_snapshot_inflight == 0 {
+    self.jobs_sse_journal.clear()
+  }
+}
+
+fn StationEvents::apply_committed_job_op(self : StationEvents, op : StagedJobOp) -> Unit {
+  self.jobs_sse_seq += 1L
+  match op {
+    StagedJobOp::Upsert(jid, open, payload, status) => {
+      self.track_job(status)
+      self.sync_authoritative_job_live(jid, open, Some(payload))
+    }
+    StagedJobOp::Remove(jid) => {
+      self.jobs.remove(jid)
+      self.sync_authoritative_job_live(jid, false, None)
+    }
+  }
+  if self.jobs_snapshot_inflight > 0 {
+    self.jobs_sse_journal.push((self.jobs_sse_seq, op))
   }
 }
 
@@ -924,6 +990,9 @@ pub fn StationEvents::reset_state(self : StationEvents) -> Unit {
   self.authoritative_jobs_loaded = false
   self.authoritative_jobs_by_id.clear()
   self.authoritative_jobs_order.clear()
+  self.jobs_sse_seq = 0L
+  self.jobs_snapshot_inflight = 0
+  self.jobs_sse_journal.clear()
   self.dirty_threads.clear()
   self.resync_needed = 0
   self.marks_dirty_count = 0
@@ -2044,11 +2113,15 @@ pub fn is_valid_jobs_payload(payload : base_codec::Json) -> Bool {
   true
 }
 
-/// Apply a validated `GET /jobs?chats=0` response in one `sql::Burst` transaction,
-/// replacing open jobs for this station and emitting `JobChanged` events.
-pub fn StationEvents::apply_jobs(
+/// Apply a validated `GET /jobs?chats=0` response captured at SSE sequence `cut_seq`:
+/// merges the snapshot with every SSE job op committed AFTER `cut_seq` (`jobs_sse_journal`) in
+/// commit order (so deleted jobs never resurrect, closed jobs never reopen, and newly started SSE
+/// jobs are never lost), persists the merged single truth in ONE `sql::Burst` transaction, and
+/// atomically updates in-memory authoritative jobs + `self.jobs` ONLY after SQLite COMMIT.
+pub fn StationEvents::apply_jobs_at_cut(
   self : StationEvents,
   payload : base_codec::Json,
+  cut_seq : Int64,
 ) -> sql::SqlResult[Int] {
   if !is_valid_jobs_payload(payload) {
     return sql::SqlResult::Err(shell::ShellError::{ message: "malformed_jobs_payload" })
@@ -2057,55 +2130,129 @@ pub fn StationEvents::apply_jobs(
     base_codec::Json::Arr(xs) => xs
     _ => []
   }
-  let seen_ids : Map[String, Bool] = Map::new()
+  let merged : Map[String, MergedJobRow] = Map::new()
+  let merged_order : Array[String] = []
+  let deleted_ids : Map[String, Bool] = Map::new()
+  let deleted_order : Array[String] = []
+
+  for i in 0..<jobs.length() {
+    let item = jobs[i]
+    let jid = match j_id_text(item, "id") { Some(s) => s; None => continue }
+    if merged.get(jid).is_some() {
+      continue
+    }
+    let sess = j_opt_str(item, "session")
+    let st = j_str(item, "state")
+    let open = st == "running" || (st == "exited" && !j_is_null_or_absent(item, "port")) || j_bool(item, "open")
+    let ord = j_double(item, "ord", fallback=(i + 1).to_double())
+    let chat = match base_codec::json_get(item, "chat") {
+      Some(base_codec::Json::Null) | None => None
+      Some(base_codec::Json::Str(s)) => Some(s)
+      Some(v) => Some(base_codec::json_stringify(v))
+    }
+    let job_only = j_without_keys(item, ["chat"])
+    let raw_sql = base_codec::json_stringify(job_only)
+    let view_json = j_set_field(item, "station", base_codec::json_str(self.station))
+    merged_order.push(jid)
+    merged.set(jid, MergedJobRow::{
+      id: jid,
+      session: sess,
+      open: open,
+      ord: ord,
+      chat: chat,
+      raw_sql: raw_sql,
+      view_json: view_json,
+    })
+  }
+
+  // Replay all SSE job mutations committed strictly AFTER `cut_seq` in exact commit order!
+  for i in 0..<self.jobs_sse_journal.length() {
+    let (seq, op) = self.jobs_sse_journal[i]
+    if seq <= cut_seq {
+      continue
+    }
+    match op {
+      StagedJobOp::Upsert(jid, open, sse_payload, status) => {
+        deleted_ids.remove(jid)
+        let prev_opt = merged.get(jid)
+        let ord = match prev_opt { Some(p) => p.ord; None => 0.0 }
+        let chat = match prev_opt { Some(p) => p.chat; None => status.chat }
+        let raw_sql = base_codec::json_stringify(j_without_keys(sse_payload, ["chat"]))
+        let view_json = j_set_field(sse_payload, "station", base_codec::json_str(self.station))
+        if prev_opt.is_none() {
+          merged_order.push(jid)
+        }
+        merged.set(jid, MergedJobRow::{
+          id: jid,
+          session: status.session,
+          open: open,
+          ord: ord,
+          chat: chat,
+          raw_sql: raw_sql,
+          view_json: view_json,
+        })
+      }
+      StagedJobOp::Remove(jid) => {
+        merged.remove(jid)
+        if deleted_ids.get(jid).is_none() {
+          deleted_order.push(jid)
+        }
+        deleted_ids.set(jid, true)
+      }
+    }
+  }
+
   let job_events : Array[CoreEvent] = []
   let tracked : Array[JobStatus] = []
   let next_raw_jobs : Array[(String, base_codec::Json)] = []
   let burst = sql::Burst::new(self.db)
   let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
     let mut count = 0
-    for i in 0..<jobs.length() {
-      let item = jobs[i]
-      let jid = match j_id_text(item, "id") { Some(s) => s; None => continue }
-      if seen_ids.get(jid).is_some() {
-        continue
-      }
-      seen_ids.set(jid, true)
-      let sess = j_opt_str(item, "session")
-      let st = j_str(item, "state")
-      let open = st == "running" || (st == "exited" && !j_is_null_or_absent(item, "port")) || j_bool(item, "open")
-      let ord = j_double(item, "ord", fallback=(i + 1).to_double())
-      let chat = match base_codec::json_get(item, "chat") {
-        Some(base_codec::Json::Null) | None => None
-        Some(base_codec::Json::Str(s)) => Some(s)
-        Some(v) => Some(base_codec::json_stringify(v))
-      }
-      let job_only = j_without_keys(item, ["chat"])
-      let raw = base_codec::json_stringify(job_only)
-      match b.run(sql_job_upsert(), params=[
-        base_codec::json_str(self.station),
-        base_codec::json_str(jid),
-        opt_str_json(sess),
-        base_codec::json_int(if open { 1 } else { 0 }),
-        base_codec::json_num(ord),
-        opt_str_json(chat),
-        base_codec::json_str(raw),
-      ]) {
-        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-        sql::SqlResult::Ok(_) => {
-          tracked.push(JobStatus::{ id: jid, session: sess, open: open, chat: chat })
-          if open {
-            next_raw_jobs.push((jid, j_set_field(item, "station", base_codec::json_str(self.station))))
+    for i in 0..<merged_order.length() {
+      let jid = merged_order[i]
+      match merged.get(jid) {
+        None => continue
+        Some(row) => {
+          match b.run(sql_job_upsert(), params=[
+            base_codec::json_str(self.station),
+            base_codec::json_str(row.id),
+            opt_str_json(row.session),
+            base_codec::json_int(if row.open { 1 } else { 0 }),
+            base_codec::json_num(row.ord),
+            opt_str_json(row.chat),
+            base_codec::json_str(row.raw_sql),
+          ]) {
+            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+            sql::SqlResult::Ok(_) => {
+              tracked.push(JobStatus::{ id: row.id, session: row.session, open: row.open, chat: row.chat })
+              if row.open {
+                next_raw_jobs.push((row.id, row.view_json))
+              }
+              job_events.push(CoreEvent::JobChanged(self.station, row.id, row.open))
+              count += 1
+            }
           }
-          job_events.push(CoreEvent::JobChanged(self.station, jid, open))
-          count += 1
         }
       }
     }
-    // Close any previously-open jobs absent from the fresh station jobs list.
+    for i in 0..<deleted_order.length() {
+      let did = deleted_order[i]
+      if deleted_ids.get(did).is_some() {
+        match b.run("DELETE FROM job WHERE station = ? AND id = ?", params=[
+          base_codec::json_str(self.station),
+          base_codec::json_str(did),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => {
+            job_events.push(CoreEvent::JobChanged(self.station, did, false))
+          }
+        }
+      }
+    }
+    // Close any previously-open jobs absent from both the fresh snapshot and post-cut SSE replays.
     for i in 0..<self.job_order.length() {
       let old_id = self.job_order[i]
-      if seen_ids.get(old_id).is_none() {
+      if merged.get(old_id).is_none() && deleted_ids.get(old_id).is_none() {
         match self.jobs.get(old_id) {
           Some(old_j) => if old_j.open {
             match b.run("UPDATE job SET open = 0 WHERE station = ? AND id = ?", params=[
@@ -2136,6 +2283,24 @@ pub fn StationEvents::apply_jobs(
         self.authoritative_jobs_order.push(jid)
       }
       self.authoritative_jobs_loaded = true
+      if deleted_order.length() > 0 {
+        for i in 0..<deleted_order.length() {
+          let did = deleted_order[i]
+          if deleted_ids.get(did).is_some() {
+            self.jobs.remove(did)
+          }
+        }
+        let kept_ord : Array[String] = []
+        for i in 0..<self.job_order.length() {
+          if deleted_ids.get(self.job_order[i]).is_none() {
+            kept_ord.push(self.job_order[i])
+          }
+        }
+        self.job_order.clear()
+        for i in 0..<kept_ord.length() {
+          self.job_order.push(kept_ord[i])
+        }
+      }
       for i in 0..<tracked.length() {
         self.track_job(tracked[i])
       }
@@ -2145,6 +2310,14 @@ pub fn StationEvents::apply_jobs(
       sql::SqlResult::Ok(count)
     }
   }
+}
+
+/// Apply a validated `GET /jobs?chats=0` response at the current SSE sequence cut point.
+pub fn StationEvents::apply_jobs(
+  self : StationEvents,
+  payload : base_codec::Json,
+) -> sql::SqlResult[Int] {
+  self.apply_jobs_at_cut(payload, self.jobs_sse_seq)
 }
 
 /// Apply a validated `GET /threads/<expected_thread>/entries` `{last, entries}` response in a single
@@ -2698,6 +2871,7 @@ fn StationEvents::apply_sse_job(
   b : sql::Burst,
   payload : base_codec::Json,
   pending_events : Array[CoreEvent],
+  staged_job_ops : Array[StagedJobOp],
 ) -> sql::SqlResult[Int] {
   let jid = match j_id_text(payload, "id") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
   let sess = match j_opt_str(payload, "session") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
@@ -2710,8 +2884,7 @@ fn StationEvents::apply_sse_job(
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(rows) => if rows.length() > 0 { Some(rows[0]) } else { None }
   }
-  let was_open = match existing { Some(r) => sql::col_int(r, 3) == 1; None => false }
-  let now_open = if open && was_open { 1 } else { 0 }
+  let now_open = if open { 1 } else { 0 }
   let ord = match existing { Some(r) => sql::col_double(r, 0); None => 0.0 }
   let chat = match existing { Some(r) => sql::col_opt_text(r, 2); None => None }
   let raw = base_codec::json_stringify(payload)
@@ -2733,9 +2906,13 @@ fn StationEvents::apply_sse_job(
       sql::SqlResult::Ok(_) => ()
     }
   }
-  self.sync_authoritative_job_live(jid, open, Some(payload))
-  self.track_job(JobStatus::{ id: jid, session: Some(sess), open: now_open == 1, chat: chat })
-  pending_events.push(CoreEvent::JobChanged(self.station, jid, open || now_open == 1))
+  staged_job_ops.push(StagedJobOp::Upsert(
+    jid,
+    open,
+    payload,
+    JobStatus::{ id: jid, session: Some(sess), open: open, chat: chat },
+  ))
+  pending_events.push(CoreEvent::JobChanged(self.station, jid, open))
   sql::SqlResult::Ok(1)
 }
 
@@ -2750,6 +2927,7 @@ fn StationEvents::apply_one_sse_event(
   marks_dirty : Array[(String, base_codec::Json)],
   newly_dirty : Array[Int],
   lock_payloads : Array[base_codec::Json],
+  staged_job_ops : Array[StagedJobOp],
 ) -> sql::SqlResult[Int] {
   if ev_name == "thread" {
     return self.apply_sse_thread(b, payload, pending_events, newly_dirty)
@@ -2949,7 +3127,7 @@ fn StationEvents::apply_one_sse_event(
     return sql::SqlResult::Ok(1)
   }
   if ev_name == "job" {
-    return self.apply_sse_job(b, payload, pending_events)
+    return self.apply_sse_job(b, payload, pending_events, staged_job_ops)
   }
   if ev_name == "job-removed" {
     let jid = match j_id_text(payload, "id") { Some(s) => s; None => return sql::SqlResult::Ok(0) }
@@ -2959,8 +3137,7 @@ fn StationEvents::apply_one_sse_event(
     ]) {
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => {
-        self.sync_authoritative_job_live(jid, false, None)
-        self.jobs.remove(jid)
+        staged_job_ops.push(StagedJobOp::Remove(jid))
         pending_events.push(CoreEvent::JobChanged(self.station, jid, false))
         return sql::SqlResult::Ok(1)
       }
@@ -3261,6 +3438,7 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
   let marks_dirty : Array[(String, base_codec::Json)] = []
   let newly_dirty : Array[Int] = []
   let lock_payloads : Array[base_codec::Json] = []
+  let staged_job_ops : Array[StagedJobOp] = []
   let mut pending_last_event_id : Option[String] = None
   let burst = sql::Burst::new(self.db)
   let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
@@ -3290,7 +3468,7 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
         }
         None => ()
       }
-      match self.apply_one_sse_event(b, ev.name, payload, changed_chats, pending_events, missed_flag, marks_dirty, newly_dirty, lock_payloads) {
+      match self.apply_one_sse_event(b, ev.name, payload, changed_chats, pending_events, missed_flag, marks_dirty, newly_dirty, lock_payloads, staged_job_ops) {
         sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
         sql::SqlResult::Ok(n) => { applied += n }
       }
@@ -3303,6 +3481,9 @@ pub fn StationEvents::apply_sse_batch(self : StationEvents, events : Array[wire:
       match pending_last_event_id {
         Some(eid) => self.last_event_id = Some(eid)
         None => ()
+      }
+      for i in 0..<staged_job_ops.length() {
+        self.apply_committed_job_op(staged_job_ops[i])
       }
       if changed_chats.length() > 0 {
         self.outbox.tell(CoreEvent::ChatsChanged(self.station, changed_chats))
@@ -3488,6 +3669,8 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
     self.paused_for_admission = true
     self.stream_fiber = None
     self.set_state(ConnectionState::Disconnected("awaiting_admission"))
+    let on_need = self.on_admission_needed
+    on_need(self.station)
     k(effect::Exit::Succeeded(()))
     return
   }
@@ -3602,6 +3785,8 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
       self.paused_for_admission = true
       self.stream_fiber = None
       self.set_state(ConnectionState::Disconnected("awaiting_admission"))
+      let on_need = self.on_admission_needed
+      on_need(self.station)
       k(effect::Exit::Succeeded(()))
       return
     }

@@ -1269,12 +1269,26 @@ pub fn SyncScheduler::fetch_jobs_k(
         let start_link_uid_box : Array[Int] = [0]
         let start_admitted_box : Array[Int64] = [0L]
         let start_acct_box : Array[Int64] = [0L]
+        let cut_seq_box : Array[Int64] = [0L]
+        let cut_active_box : Array[Bool] = [false]
+        let release_cut = fn() -> Unit {
+          if cut_active_box[0] {
+            cut_active_box[0] = false
+            self.events.end_jobs_snapshot()
+          }
+        }
+        let on_attempt_done_guarded = fn(ex : effect::Exit[Int]) -> Unit {
+          release_cut()
+          on_attempt_done(ex)
+        }
         let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
           if self.transport_epoch != enqueue_epoch {
+            release_cut()
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
             return
           }
           if self.current_cred_epoch() != enqueue_cred_epoch {
+            release_cut()
             fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
             return
           }
@@ -1282,26 +1296,41 @@ pub fn SyncScheduler::fetch_jobs_k(
           start_link_uid_box[0] = suid
           start_admitted_box[0] = sadm
           start_acct_box[0] = self.current_account_epoch()
+          release_cut()
+          cut_seq_box[0] = self.events.begin_jobs_snapshot()
+          cut_active_box[0] = true
           let req_fn = self.transport.request_k
           req_fn("GET", "/jobs?chats=0", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
             if self.transport_epoch != enqueue_epoch {
+              release_cut()
               fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
               return
             }
             if self.current_cred_epoch() != enqueue_cred_epoch {
+              release_cut()
               fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
               return
             }
             match ex {
-              effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
-              effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => {
+                release_cut()
+                fk(effect::Exit::Interrupted)
+              }
+              effect::Exit::Failed(e) => {
+                release_cut()
+                fk(effect::Exit::Failed(e))
+              }
               effect::Exit::Succeeded(reply) => {
                 if reply.status < 200 || reply.status >= 300 {
+                  release_cut()
                   fk(effect::Exit::Failed(effect::EffectError::Custom("jobs fetch status " + reply.status.to_string())))
                   return
                 }
                 match base_codec::json_parse(bytes_to_str(reply.body)) {
-                  base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                  base_codec::JsonParseResult::Err(e) => {
+                    release_cut()
+                    fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                  }
                   base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
                 }
               }
@@ -1309,19 +1338,26 @@ pub fn SyncScheduler::fetch_jobs_k(
           })
         }
         let apply_json = fn(cap_gen : Int64, j : base_codec::Json) -> Result[Int, String] {
+          let cut_seq = cut_seq_box[0]
           if self.transport_epoch != enqueue_epoch {
+            release_cut()
             return Err("transport_epoch_changed")
           }
           if self.current_cred_epoch() != enqueue_cred_epoch {
+            release_cut()
             return Err("cred_epoch_changed")
           }
           if !self.is_admitted_for_commit(start_link_uid_box[0], start_admitted_box[0], start_acct_box[0]) {
+            release_cut()
             return Err("admitted_cred_epoch_stale")
           }
           if !is_valid_jobs_payload(j) {
+            release_cut()
             return Err("malformed_jobs_payload")
           }
-          match self.events.apply_jobs(j) {
+          let res = self.events.apply_jobs_at_cut(j, cut_seq)
+          release_cut()
+          match res {
             sql::SqlResult::Err(e) => Err(e.to_string())
             sql::SqlResult::Ok(n) => {
               self.pending_refresh.remove(key)
@@ -1352,8 +1388,9 @@ pub fn SyncScheduler::fetch_jobs_k(
               fn(cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
                 apply_json(cap.auth_gen.to_int64(), j)
               },
-              on_attempt_done,
+              on_attempt_done_guarded,
               on_exhausted_stale=Some(fn() -> Unit {
+                release_cut()
                 if self.transport_epoch == enqueue_epoch {
                   self.pending_refresh.set(key, true)
                 }
@@ -1363,12 +1400,12 @@ pub fn SyncScheduler::fetch_jobs_k(
           None =>
           do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
             match ex {
-              effect::Exit::Interrupted => on_attempt_done(effect::Exit::Interrupted)
-              effect::Exit::Failed(e) => on_attempt_done(effect::Exit::Failed(e))
+              effect::Exit::Interrupted => on_attempt_done_guarded(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => on_attempt_done_guarded(effect::Exit::Failed(e))
               effect::Exit::Succeeded(j) =>
               match apply_json(self.current_auth_gen(), j) {
-                Ok(n) => on_attempt_done(effect::Exit::Succeeded(n))
-                Err(msg) => on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+                Ok(n) => on_attempt_done_guarded(effect::Exit::Succeeded(n))
+                Err(msg) => on_attempt_done_guarded(effect::Exit::Failed(effect::EffectError::Custom(msg)))
               }
             }
           })

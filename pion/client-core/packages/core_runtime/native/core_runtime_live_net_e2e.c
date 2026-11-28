@@ -152,6 +152,11 @@ typedef struct fake_server {
     int slow_refresh_release;
     _Atomic int drop_ws2_in_me;
     _Atomic int serve_ws1_lock;
+    _Atomic int ws1_downgrade_member;
+    _Atomic int ws1_require_rotated_token;
+    _Atomic int allow_refresh_rotate;
+    _Atomic int got_ws1_401;
+    _Atomic int got_ws1_rotated_ok;
     _Atomic int got_me;
     _Atomic int got_ws;
     _Atomic int got_auth_token;
@@ -227,25 +232,30 @@ static void *handle_client_thread(void *arg) {
 
     if (strncmp(buf, "GET /v1/me ", 11) == 0) {
         atomic_fetch_add(&g_srv.got_me, 1);
+        const char *ws1_role = atomic_load(&g_srv.ws1_downgrade_member) ? "member" : "owner";
         if (atomic_load(&g_srv.drop_ws2_in_me)) {
-            send_http_json(
-                fd,
-                200,
-                "OK",
+            char body[1024];
+            snprintf(
+                body,
+                sizeof(body),
                 "{\"user\":{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},"
-                "\"workspaces\":[{\"id\":\"" WS1_ID "\",\"name\":\"Live Workspace\",\"role\":\"owner\",\"created_at\":1700000000,\"stations\":1,\"members\":1}],"
-                "\"relay_urls\":[\"https://relay.live.example\"]}");
+                "\"workspaces\":[{\"id\":\"" WS1_ID "\",\"name\":\"Live Workspace\",\"role\":\"%s\",\"created_at\":1700000000,\"stations\":1,\"members\":1}],"
+                "\"relay_urls\":[\"https://relay.live.example\"]}",
+                ws1_role);
+            send_http_json(fd, 200, "OK", body);
         } else {
-            send_http_json(
-                fd,
-                200,
-                "OK",
+            char body[1024];
+            snprintf(
+                body,
+                sizeof(body),
                 "{\"user\":{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},"
                 "\"workspaces\":["
-                "{\"id\":\"" WS1_ID "\",\"name\":\"Live Workspace\",\"role\":\"owner\",\"created_at\":1700000000,\"stations\":1,\"members\":1},"
+                "{\"id\":\"" WS1_ID "\",\"name\":\"Live Workspace\",\"role\":\"%s\",\"created_at\":1700000000,\"stations\":1,\"members\":1},"
                 "{\"id\":\"" WS2_ID "\",\"name\":\"Drop Me WS\",\"role\":\"member\",\"created_at\":1700000001,\"stations\":1,\"members\":2}"
                 "],"
-                "\"relay_urls\":[\"https://relay.live.example\"]}");
+                "\"relay_urls\":[\"https://relay.live.example\"]}",
+                ws1_role);
+            send_http_json(fd, 200, "OK", body);
         }
         close(fd);
         return NULL;
@@ -253,6 +263,24 @@ static void *handle_client_thread(void *arg) {
 
     if (strncmp(buf, "GET /v1/workspaces/" WS1_ID " ", 46) == 0) {
         atomic_fetch_add(&g_srv.got_ws, 1);
+        if (atomic_load(&g_srv.ws1_require_rotated_token)) {
+            if (strstr(buf, "Bearer acc-rotated-99") == NULL) {
+                atomic_fetch_add(&g_srv.got_ws1_401, 1);
+                send_http_json(fd, 401, "Unauthorized", "{\"error\":\"token_expired\"}");
+                close(fd);
+                return NULL;
+            }
+            atomic_fetch_add(&g_srv.got_ws1_rotated_ok, 1);
+            send_http_json(
+                fd,
+                200,
+                "OK",
+                "{\"id\":\"" WS1_ID "\",\"name\":\"Live Member Workspace\",\"rev\":2,\"role\":\"member\","
+                "\"members\":[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"role\":\"member\"}],"
+                "\"stations\":[{\"id\":\"st-local\",\"name\":\"Live Member Station\",\"online\":true}]}");
+            close(fd);
+            return NULL;
+        }
         send_http_json(
             fd,
             200,
@@ -342,7 +370,16 @@ static void *handle_client_thread(void *arg) {
             }
         }
         pthread_mutex_unlock(&g_srv.mu);
-        send_http_json(fd, 401, "Unauthorized", "{\"error\":\"invalid_grant\"}");
+        if (atomic_load(&g_srv.allow_refresh_rotate) && strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL) {
+            send_http_json(
+                fd,
+                200,
+                "OK",
+                "{\"access_token\":\"acc-rotated-99\",\"refresh_token\":\"ref-rotated-99\","
+                "\"expires_at\":1900001000,\"name\":\"Alice\"}");
+        } else {
+            send_http_json(fd, 401, "Unauthorized", "{\"error\":\"invalid_grant\"}");
+        }
         close(fd);
         return NULL;
     }
@@ -1301,6 +1338,74 @@ int main(void) {
         char *m_conn10 = wait_for_matching_msg(&g_host, "\"id\":713,", NULL, 10);
         assert(strstr(m_conn10, WS1_ID) == NULL);
         printf("[live_net_e2e] Phase 10 PASSED (sibling 401 filter, startup sync_dir fail-closed, native lock hydration & prefs workspace isolation)\n");
+    }
+
+    // ── Phase 11 (R4 Test 5): Cloud `/v1/workspaces/<ws>` 401 -> OAuth refresh 200 -> `on_adopt_or_update`
+    // auto-requeues pending workspace confirmation with rotated bearer token (no external WS event!) ──
+    {
+        atomic_store(&g_host.stopped, 1);
+        mb_core_stop();
+
+        char phase11_dir[256];
+        snprintf(phase11_dir, sizeof(phase11_dir), "/tmp/pion_live_net_e2e_p11_%d", (int)getpid());
+        mkdir(phase11_dir, 0700);
+        atomic_store(&g_srv.drop_ws2_in_me, 1);
+        atomic_store(&g_srv.serve_ws1_lock, 0);
+        atomic_store(&g_srv.ws1_downgrade_member, 0);
+        atomic_store(&g_srv.ws1_require_rotated_token, 0);
+        atomic_store(&g_srv.allow_refresh_rotate, 1);
+        atomic_store(&g_srv.got_ws1_401, 0);
+        atomic_store(&g_srv.got_ws1_rotated_ok, 0);
+
+        reset_host_ctx(&g_host);
+        mb_core_start(phase11_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+
+        // Sign in Alice with `acc-exchanged-42` / `ref-exchanged-42`
+        send_json("{\"id\":801,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+        char *m_b11 = wait_for_matching_msg(&g_host, "\"id\":801,", "\"state\":\"", 10);
+        const char *sp11 = strstr(m_b11, "\"state\":\"");
+        assert(sp11 != NULL);
+        sp11 += 9;
+        char st11[128];
+        size_t s11i = 0;
+        while (sp11[s11i] != '\0' && sp11[s11i] != '"' && s11i + 1 < sizeof(st11)) {
+            st11[s11i] = sp11[s11i];
+            s11i++;
+        }
+        st11[s11i] = '\0';
+        char comp11[512];
+        snprintf(comp11, sizeof(comp11),
+                 "{\"id\":802,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_42\"}}",
+                 st11);
+        send_json(comp11);
+        wait_for_matching_msg(&g_host, "\"id\":802,", "\"email\":\"alice@still.fail\"", 10);
+
+        // Sync initial owner workspace + subscribe `workspace` & `stations`
+        send_json("{\"id\":803,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":803,", "\"ok\":{", 10);
+        send_json("{\"id\":811,\"subscribe\":{\"topic\":\"workspace\",\"workspace\":\"" WS1_ID "\"},\"keyed\":true}");
+        wait_for_matching_msg(&g_host, "\"id\":811,", "Live Workspace", 10);
+        send_json("{\"id\":812,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"" WS1_ID "\"},\"keyed\":true}");
+        wait_for_matching_msg(&g_host, "\"id\":812,", "Live Station", 10);
+
+        // Arm downgrade (`owner -> member`) AND require rotated bearer token `acc-rotated-99` on `/v1/workspaces/WS1_ID`!
+        atomic_store(&g_srv.ws1_downgrade_member, 1);
+        atomic_store(&g_srv.ws1_require_rotated_token, 1);
+
+        // Trigger `/v1/me` downgrade -> `on_workspace_refresh` hits 401 -> `POST /v1/auth/refresh` 200 ->
+        // `on_adopt_or_update` calls `requeue_pending_cloud_confirmations` -> retries `/v1/workspaces/WS1_ID`
+        // with `acc-rotated-99` -> confirms BOTH `workspace:` and `stations:`!
+        send_json("{\"id\":804,\"call\":\"cloud.sync\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":811,", "\"waiting\":true", 10);
+        wait_for_matching_msg(&g_host, "\"id\":812,", "\"waiting\":true", 10);
+        wait_for_matching_msg(&g_host, "\"id\":804,", "token_expired (401)", 10);
+        wait_for_matching_msg(&g_host, "\"id\":811,", "Live Member Workspace", 10);
+        wait_for_matching_msg(&g_host, "\"id\":812,", "Live Member Station", 10);
+
+        assert(atomic_load(&g_srv.got_ws1_401) >= 1);
+        assert(atomic_load(&g_srv.got_ws1_rotated_ok) >= 1);
+        printf("[live_net_e2e] Phase 11 PASSED (401 -> bearer refresh -> requeue_pending_cloud_confirmations confirmed workspace & stations)\n");
     }
 
     atomic_store(&g_host.stopped, 1);

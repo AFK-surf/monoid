@@ -85,6 +85,8 @@ pub struct ClientCore {
   mut extra_subs_provider : Option[() -> Array[protocol::Topic]]
   mut on_credential_refresh : Option[(String) -> Unit]
   mut on_workspace_refresh : Option[(String) -> Unit]
+  mut on_station_admission_needed : Option[(String) -> Unit]
+  mut on_workspace_lock_changed : Option[(String) -> Unit]
   mut on_workspace_dropped : Option[(String, Array[String]) -> Unit]
   mut on_accounts_persisted : Option[(base_codec::Json) -> Result[Unit, String]]
   mut on_session_invalidated : Option[(String) -> Unit]
@@ -216,6 +218,8 @@ pub fn ClientCore::new(
     extra_subs_provider: None,
     on_credential_refresh: None,
     on_workspace_refresh: None,
+    on_station_admission_needed: None,
+    on_workspace_lock_changed: None,
     on_workspace_dropped: None,
     on_accounts_persisted: None,
     on_session_invalidated: None,
@@ -454,6 +458,9 @@ fn ClientCore::wire_station_hooks(
   })
   events.set_admitted_gate(fn() -> Bool {
     self.is_station_admitted_for_pending(station)
+  })
+  events.set_on_admission_needed(fn(st : String) -> Unit {
+    self.notify_station_admission_needed(st)
   })
 }
 
@@ -2249,6 +2256,69 @@ pub fn ClientCore::set_on_workspace_refresh(self : ClientCore, cb : (String) -> 
   self.on_workspace_refresh = Some(cb)
 }
 
+/// Single ownership hook invoked whenever any station's SSE stream enters `paused_for_admission`
+/// (`awaiting_admission`) — covering initial `station.connect`, post-downgrade `drop_link`,
+/// natural link drop (`!link.usable()`), and lock-change unblocking.
+pub fn ClientCore::set_on_station_admission_needed(self : ClientCore, cb : (String) -> Unit) -> Unit {
+  self.on_station_admission_needed = Some(cb)
+  self.events.set_on_admission_needed(fn(st : String) -> Unit {
+    self.notify_station_admission_needed(st)
+  })
+  let ks = self.extra_events.keys()
+  for i in 0..<ks.length() {
+    match self.extra_events.get(ks[i]) {
+      Some(ev) => ev.set_on_admission_needed(fn(st : String) -> Unit {
+        self.notify_station_admission_needed(st)
+      })
+      None => ()
+    }
+  }
+}
+
+/// Hook notified whenever workspace or personal lock state changes (used to clear
+/// `lock_unconfirmed` admission blocks before waking paused stations).
+pub fn ClientCore::set_on_workspace_lock_changed(self : ClientCore, cb : (String) -> Unit) -> Unit {
+  self.on_workspace_lock_changed = Some(cb)
+}
+
+fn ClientCore::notify_station_admission_needed(self : ClientCore, station : String) -> Unit {
+  if !self.live || self.membership.is_unauthenticated() || self.membership.is_session_invalidated() {
+    return
+  }
+  if !self.can_read_station(station) {
+    return
+  }
+  match self.on_station_admission_needed {
+    Some(cb) => cb(station)
+    None => ()
+  }
+}
+
+/// Clear lock-refusal admission blocks and re-trigger `on_station_admission_needed` for every
+/// live station in `ws` (or all workspaces when `ws == ""`) currently paused for admission.
+pub fn ClientCore::wake_paused_stations_on_lock_change(self : ClientCore, ws : String) -> Unit {
+  match self.on_workspace_lock_changed {
+    Some(cb) => cb(ws)
+    None => ()
+  }
+  if !self.live {
+    return
+  }
+  if (ws.length() == 0 || self.events.workspace == ws) && self.events.is_paused_for_admission() {
+    self.notify_station_admission_needed(self.station)
+  }
+  let ks = self.extra_events.keys()
+  for i in 0..<ks.length() {
+    let st = ks[i]
+    match self.extra_events.get(st) {
+      Some(ev) => if (ws.length() == 0 || ev.workspace == ws) && ev.is_paused_for_admission() {
+        self.notify_station_admission_needed(st)
+      }
+      None => ()
+    }
+  }
+}
+
 pub fn ClientCore::set_on_workspace_dropped(
   self : ClientCore,
   cb : (String, Array[String]) -> Unit,
@@ -3609,6 +3679,9 @@ pub fn ClientCore::commit_cloud_workspace(
   }
   if resume_streams_after {
     self.resume_workspace_streams(ws.id)
+  }
+  if pause_streams_after || resume_streams_after {
+    self.wake_paused_stations_on_lock_change(ws.id)
   }
   if re_fetch_ws_after {
     match self.on_workspace_refresh {
@@ -5738,6 +5811,7 @@ pub fn ClientCore::load_person_lock_json(
       match lock::fold_person(form_entries, sub, native_lock_crypto()) {
         Ok(_) => {
           self.person_lock_entries = xs
+          self.wake_paused_stations_on_lock_change("")
           true
         }
         Err(_) => false
@@ -6163,6 +6237,7 @@ fn ClientCore::apply_lock_chain_for_workspace(
         v.state.seq,
         v.state.members.length(),
       ))
+      self.wake_paused_stations_on_lock_change(target_ws)
       Ok(v)
     }
   }

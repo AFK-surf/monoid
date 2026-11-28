@@ -475,6 +475,7 @@ pub struct MeshStationTransport {
   mut admission_drive_fiber : Option[effect::Fiber[Unit]]
   mut admission_drive_target : Int64
   mut admission_drive_gen : Int64
+  mut admission_blocked_by_lock : Bool
   mut closed : Bool
 }
 
@@ -497,6 +498,7 @@ pub fn MeshStationTransport::new(
     admission_drive_fiber: None,
     admission_drive_target: 0L,
     admission_drive_gen: 0L,
+    admission_blocked_by_lock: false,
     closed: false,
   }
 }
@@ -554,6 +556,20 @@ fn MeshStationTransport::current_cred_epoch(self : MeshStationTransport) -> Int6
   }
 }
 
+/// Whether the admission reconnect driver stopped because the station refused with `lock_unconfirmed`.
+pub fn MeshStationTransport::is_admission_blocked_by_lock(self : MeshStationTransport) -> Bool {
+  self.admission_blocked_by_lock
+}
+
+/// Clear the `lock_unconfirmed` admission block when workspace or personal lock state changes,
+/// allowing the admission driver to re-dial cleanly.
+pub fn MeshStationTransport::clear_lock_admission_block(self : MeshStationTransport) -> Unit {
+  self.admission_blocked_by_lock = false
+  if self.is_lock_unconfirmed() {
+    self.last_admission = None
+  }
+}
+
 /// Cancel any active scoped admission reconnect driver fiber.
 pub fn MeshStationTransport::cancel_admission_drive(self : MeshStationTransport) -> Unit {
   self.admission_drive_gen += 1L
@@ -570,14 +586,16 @@ pub fn MeshStationTransport::cancel_admission_drive(self : MeshStationTransport)
 /// Deduplicated, scoped post-downgrade admission reconnect driver:
 /// dials ONLY `connect_k` -> `Link::admitted_k` (never business reads) until the live serving link
 /// reaches `admitted_cred_epoch >= required_epoch`, using bounded exponential backoff `500ms..15000ms`
-/// ONLY after failure/unadmitted dial, and stopping immediately on admission, `close_k`, or `!can_continue()`.
+/// ONLY after transient failure/unadmitted dial. Stops immediately on `lock_unconfirmed` refusal
+/// (setting `admission_blocked_by_lock = true` with 0 backoff timers until lock state changes),
+/// on admission, on `close_k`, or when `!can_continue()`.
 pub fn MeshStationTransport::ensure_admitted_for_epoch(
   self : MeshStationTransport,
   rt : effect::Runtime,
   required_epoch : Int64,
   can_continue : () -> Bool,
 ) -> Unit {
-  if self.closed || required_epoch <= 0L || !can_continue() {
+  if self.closed || self.admission_blocked_by_lock || required_epoch <= 0L || !can_continue() {
     return
   }
   if self.live_admitted_cred_epoch() >= required_epoch {
@@ -593,7 +611,7 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
   let drive_gen = self.admission_drive_gen
   let mut step : (Int, (effect::Exit[Unit]) -> Unit) -> Unit = fn(_d : Int, _fk : (effect::Exit[Unit]) -> Unit) -> Unit {}
   step = fn(delay_ms : Int, fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    if self.closed || effect::is_interrupted() || self.admission_drive_gen != drive_gen || !can_continue() {
+    if self.closed || self.admission_blocked_by_lock || effect::is_interrupted() || self.admission_drive_gen != drive_gen || !can_continue() {
       if self.admission_drive_gen == drive_gen {
         self.admission_drive_fiber = None
       }
@@ -621,6 +639,16 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
       }
       let cur_target = self.admission_drive_target
       if cur_target <= 0L || self.live_admitted_cred_epoch() >= cur_target {
+        if self.admission_drive_gen == drive_gen {
+          self.admission_drive_fiber = None
+        }
+        fk(effect::Exit::Succeeded(()))
+        return
+      }
+      // [Opus R3 P2-1] Stop immediately on `lock_unconfirmed` refusal (no 15s backoff storm);
+      // resumed cleanly via `clear_lock_admission_block()` when lock state changes.
+      if self.is_lock_unconfirmed() {
+        self.admission_blocked_by_lock = true
         if self.admission_drive_gen == drive_gen {
           self.admission_drive_fiber = None
         }
@@ -655,7 +683,7 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
   let f = rt.fork_quiet_named("mesh-admit-drive:" + self.config.peer_id, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
     step(500, fk)
   })
-  if self.admission_drive_gen == drive_gen && !self.closed && self.live_admitted_cred_epoch() < self.admission_drive_target {
+  if self.admission_drive_gen == drive_gen && !self.closed && !self.admission_blocked_by_lock && self.live_admitted_cred_epoch() < self.admission_drive_target {
     self.admission_drive_fiber = Some(f)
   }
 }
@@ -888,6 +916,7 @@ pub fn MeshStationTransport::connect_k(
                           self.active_transport = Some(StationTransport::from_link(link))
                           let uid = link.uid
                           if adm.error_code.is_none() && !adm.lock_unconfirmed {
+                            self.admission_blocked_by_lock = false
                             if presented_epoch_box[0] > 0L {
                               let prev = match self.link_admitted_epochs.get(uid) { Some(v) => v; None => 0L }
                               let next_ep = if presented_epoch_box[0] > prev { presented_epoch_box[0] } else { prev }
@@ -1026,6 +1055,7 @@ pub fn MeshStationTransport::close_k(
   reason : String = "closed",
 ) -> Unit {
   self.closed = true
+  self.admission_blocked_by_lock = false
   self.cancel_admission_drive()
   self.link_admitted_epochs.clear()
   self.drop_link(reason=reason)
