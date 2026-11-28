@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [61f498278](https://github.com/AFK-surf/monoid/commit/61f498278d600851896ab5354143636d4d1e7a7b) perf(cloud): add SQLite indexes for hot Directory  | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [90c65ef4a](https://github.com/AFK-surf/monoid/commit/90c65ef4a7bf6a97695a910e98f370d1458d03e2) feat(pion-core): add PendingAuthConfirm, admitted_ | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [c09350c0b](https://github.com/AFK-surf/monoid/commit/c09350c0bc20bc276d00dd73d913c9319c8fb6b1) fix(cloud): match weak If-None-Match headers and c | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [02544a117](https://github.com/AFK-surf/monoid/commit/02544a11796d97f393e109172f7fd1d7a00a8d25) fix(install): stage unpacked release on data files | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8fa48d56b](https://github.com/AFK-surf/monoid/commit/8fa48d56b62d2b727cfa67c5ce85239bbbc415d2) feat(station): add CoW worktree command, clone pri | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.76 | 127.04 |
 | [84182f16d](https://github.com/AFK-surf/monoid/commit/84182f16d5ef5d6bd20e5f7d29b874c4a87427a9) fix(ci): parse Node-Station-Only trailers in GitHu | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.76 | 127.04 |
 | [0887a2f25](https://github.com/AFK-surf/monoid/commit/0887a2f25da434e8ebb4273626be14e3f8e180d4) fix(ui,mbui): dock tall auto-height phone sheets f | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.56 | 127.37 |
-| [bff3776c0](https://github.com/AFK-surf/monoid/commit/bff3776c07fe17c788bc520301ea165eae8444a5) fix(station): stop ambiguous connect.event timeout | 2.74 | 3.7 | 15.37 | 38.48 | 59.48 | 33.74 | 69 | 103.68 | 136.41 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [61f498278](https://github.com/AFK-surf/monoid/commit/61f498278d600851896ab5354143636d4d1e7a7b) perf(cloud): add SQLite indexes for hot Directory  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.87 |
 | [90c65ef4a](https://github.com/AFK-surf/monoid/commit/90c65ef4a7bf6a97695a910e98f370d1458d03e2) feat(pion-core): add PendingAuthConfirm, admitted_ | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.56 |
 | [c09350c0b](https://github.com/AFK-surf/monoid/commit/c09350c0bc20bc276d00dd73d913c9319c8fb6b1) fix(cloud): match weak If-None-Match headers and c | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.95 |
 | [02544a117](https://github.com/AFK-surf/monoid/commit/02544a11796d97f393e109172f7fd1d7a00a8d25) fix(install): stage unpacked release on data files | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.82 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [8fa48d56b](https://github.com/AFK-surf/monoid/commit/8fa48d56b62d2b727cfa67c5ce85239bbbc415d2) feat(station): add CoW worktree command, clone pri | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
 | [84182f16d](https://github.com/AFK-surf/monoid/commit/84182f16d5ef5d6bd20e5f7d29b874c4a87427a9) fix(ci): parse Node-Station-Only trailers in GitHu | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
 | [0887a2f25](https://github.com/AFK-surf/monoid/commit/0887a2f25da434e8ebb4273626be14e3f8e180d4) fix(ui,mbui): dock tall auto-height phone sheets f | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.53 |
-| [bff3776c0](https://github.com/AFK-surf/monoid/commit/bff3776c07fe17c788bc520301ea165eae8444a5) fix(station): stop ambiguous connect.event timeout | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.61 |
