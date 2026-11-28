@@ -1,0 +1,1539 @@
+// Wave 17D-3: Interactive `call_op` handlers (isolated file to avoid merge conflicts with
+// parallel Wave 17D-1 / 17D-2 work):
+// 1. `screens.browser.open` (`BrowserOsManager` + `ScreenHub` + strict URL policy)
+// 2. `signins.fill` / `signins.self` / `signins.deny` (SQLite `signin_asks` + memory-only held
+//    credentials, strict viewer/workspace/assignee/expiry checks, `SignInFormPort` autofill)
+// 3. `projects.rename` / `projects.merge` (idempotency key, atomic SQLite `threads` +
+//    `preset_projects` + `project_rename_events`, atomic `PROJECTS.jsonl` migration + peer hook)
+// 4. `links.preview` (strict SSRF defense across literal hosts, DNS IPs, and multi-hop redirects,
+//    byte/timeout bounds, identity encoding, HTML `<head>` title/description/site/image extraction)
+// 5. `feedback.report` (failure notice verification, `$HOME`-scrubbed log tail via
+//    `station_api::build_notice_report`, cloud signed POST response parsing)
+
+import "base_codec"
+import "nodepath"
+import "sql_db"
+import "station_api"
+import "station_browser"
+import "station_jobs"
+import "station_screens"
+import "station_sys"
+
+// ============================================================================
+// 1. `screens.browser.open`
+// ============================================================================
+
+/// Opens or focuses a persistent user tab in `BrowserOsManager` and registers its
+/// `ScreenKind::Browser` source in `ScreenHub`, enforcing `validate_browser_navigation_url`.
+pub fn open_browser_screen_interactive(
+  browser : BrowserOsManager,
+  screens : station_screens::ScreenHub,
+  raw_url : String,
+  requested_id : Option[String],
+  now_ms : Int64,
+  random_hex : (Int) -> String,
+) -> Result[String, station_api::ApiError] {
+  let clean_url = match validate_browser_navigation_url(raw_url, allow_private=false) {
+    Ok(u) => u
+    Err(msg) => return Err(station_api::ApiError::new(400, msg))
+  }
+  let key = match requested_id {
+    Some(id) => id
+    None => {
+      let h = random_hex(6)
+      let suffix = if h.length() >= 12 { h.slice(0, 12) } else { h }
+      "u_" + suffix
+    }
+  }
+  let target_id = "target-" + key
+  let screen_id = match browser.open_user_tab_checked(key, clean_url, target_id, now_ms, allow_private=false) {
+    Ok(sid) => sid
+    Err(msg) => return Err(station_api::ApiError::new(400, msg))
+  }
+  match screens.get(screen_id) {
+    Some(existing) => {
+      existing.address = Some(clean_url)
+      existing.sleeping = false
+      let parsed_host = match parse_strict_url(clean_url) {
+        Ok(p) => Some(p.host)
+        Err(_) => None
+      }
+      existing.site = parsed_host
+    }
+    None => {
+      let parsed_host = match parse_strict_url(clean_url) {
+        Ok(p) => Some(p.host)
+        Err(_) => None
+      }
+      let title = match parsed_host {
+        Some(h) => h
+        None => clean_url
+      }
+      screens.add(station_screens::RegisteredSource::{
+        id: screen_id,
+        kind: station_screens::ScreenKind::Browser,
+        title: title,
+        width: 1280,
+        height: 800,
+        access: None,
+        clipboard: [station_screens::ClipType::Text, station_screens::ClipType::Png],
+        reveal: true,
+        peek: false,
+        farview: false,
+        closable: true,
+        user_tab: true,
+        sleeping: false,
+        site: parsed_host,
+        address: Some(clean_url),
+        open_url: true,
+        debug_install_folder: None,
+        poses: false,
+        model: None,
+        opened_by: None,
+        since: Some(now_ms),
+        workspace: None,
+      })
+    }
+  }
+  Ok(screen_id)
+}
+
+// ============================================================================
+// 2. `signins.fill` / `signins.self` / `signins.deny`
+// ============================================================================
+
+pub let SIGNIN_PENDING_SECS : Int64 = 86400L
+pub let SIGNIN_MAX_VALUE_LEN : Int = 4096
+
+pub struct SignInAskRecord {
+  pub id : String
+  pub session : String
+  pub chat : String
+  pub owner : String
+  pub site : String
+  pub tab : String
+  pub reason : String
+  pub at : Int64
+  pub mut status : String
+  pub mut why : Option[String]
+  pub mut keep : Option[Bool]
+}
+
+struct HeldSignInCreds {
+  mut username : Option[String]
+  mut password : Option[String]
+  mut code : Option[String]
+  used : Map[String, Bool]
+}
+
+/// Persistent SQLite `signin_asks` + memory-only credential holder (1:1 with `station/src/vault/signin.ts`).
+/// Plaintext passwords/codes/usernames are NEVER persisted to SQLite, NEVER logged, and NEVER returned.
+pub struct SignInAsksStore {
+  held : Map[String, HeldSignInCreds]
+}
+
+pub fn SignInAsksStore::new() -> SignInAsksStore {
+  SignInAsksStore::{ held: Map::new() }
+}
+
+fn ensure_signin_asks_schema(db : sql_db::Db) -> Result[Unit, String] {
+  match db.exec(
+    "CREATE TABLE IF NOT EXISTS signin_asks (" +
+    "  id TEXT PRIMARY KEY, session TEXT NOT NULL, owner TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL" +
+    ");" +
+    "CREATE INDEX IF NOT EXISTS signin_asks_by_session ON signin_asks (session, status);",
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e.message)
+  }
+}
+
+fn signin_ask_to_json(a : SignInAskRecord) -> base_codec::Json {
+  let fs : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(a.id)),
+    ("session", base_codec::json_str(a.session)),
+    ("chat", base_codec::json_str(a.chat)),
+    ("owner", base_codec::json_str(a.owner)),
+    ("site", base_codec::json_str(a.site)),
+    ("tab", base_codec::json_str(a.tab)),
+    ("reason", base_codec::json_str(a.reason)),
+    ("at", base_codec::json_int64(a.at)),
+    ("status", base_codec::json_str(a.status)),
+  ]
+  match a.why {
+    Some(w) => fs.push(("why", base_codec::json_str(w)))
+    None => ()
+  }
+  match a.keep {
+    Some(k) => fs.push(("keep", base_codec::json_bool(k)))
+    None => ()
+  }
+  base_codec::json_obj(fs)
+}
+
+fn signin_ask_from_json(j : base_codec::Json) -> Option[SignInAskRecord] {
+  let id = match json_field_str(j, "id") { Some(s) => s, None => return None }
+  let session = match json_field_str(j, "session") { Some(s) => s, None => return None }
+  let chat = match json_field_str(j, "chat") { Some(s) => s, None => "" }
+  let owner = match json_field_str(j, "owner") { Some(s) => s, None => return None }
+  let site = match json_field_str(j, "site") { Some(s) => s, None => "" }
+  let tab = match json_field_str(j, "tab") { Some(s) => s, None => "" }
+  let reason = match json_field_str(j, "reason") { Some(s) => s, None => "" }
+  let at = match ro_json_i64_field(j, "at") { Some(v) => v, None => 0L }
+  let status = match json_field_str(j, "status") { Some(s) => s, None => "pending" }
+  let why = json_field_str(j, "why")
+  let keep = json_field_bool(j, "keep")
+  Some(SignInAskRecord::{
+    id: id,
+    session: session,
+    chat: chat,
+    owner: owner,
+    site: site,
+    tab: tab,
+    reason: reason,
+    at: at,
+    status: status,
+    why: why,
+    keep: keep,
+  })
+}
+
+pub fn SignInAsksStore::save(self : SignInAsksStore, db : sql_db::Db, a : SignInAskRecord) -> Result[Unit, String] {
+  let _ = self
+  match ensure_signin_asks_schema(db) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
+  let body_str = base_codec::json_stringify(signin_ask_to_json(a))
+  match db.run(
+    "INSERT INTO signin_asks (id, session, owner, status, body) VALUES (?1, ?2, ?3, ?4, ?5) " +
+    "ON CONFLICT (id) DO UPDATE SET status = excluded.status, body = excluded.body",
+    [
+      base_codec::json_str(a.id),
+      base_codec::json_str(a.session),
+      base_codec::json_str(ro_ascii_lower(a.owner)),
+      base_codec::json_str(a.status),
+      base_codec::json_str(body_str),
+    ],
+  ) {
+    Ok(_) => Ok(())
+    Err(e) => Err(e.message)
+  }
+}
+
+pub fn SignInAsksStore::get(self : SignInAsksStore, db : sql_db::Db, id : String) -> Option[SignInAskRecord] {
+  let _ = self
+  match ensure_signin_asks_schema(db) {
+    Ok(_) => ()
+    Err(_) => return None
+  }
+  match db.first("SELECT body FROM signin_asks WHERE id = ?1", [base_codec::json_str(id)]) {
+    Ok(Some(row)) => match row.get("body") {
+      Some(base_codec::Json::Str(s)) => match base_codec::json_parse(s) {
+        base_codec::JsonParseResult::Ok(j) => signin_ask_from_json(j)
+        _ => None
+      }
+      _ => None
+    }
+    _ => None
+  }
+}
+
+pub fn SignInAsksStore::has_held(self : SignInAsksStore, id : String) -> Bool {
+  self.held.contains(id)
+}
+
+fn signin_is_open_status(status : String) -> Bool {
+  status == "pending" || status == "filling" || status == "code" || status == "person" || status == "left"
+}
+
+fn signin_refused_error(why : String) -> station_api::ApiError {
+  station_api::ApiError::json(
+    409,
+    base_codec::json_obj([
+      ("error", base_codec::json_str(why)),
+      ("code", base_codec::json_str("signin_refused")),
+    ]),
+  )
+}
+
+fn signin_theirs(
+  store : SignInAsksStore,
+  db : sql_db::Db,
+  session_ws_of : (String) -> Option[String],
+  viewer_email : String,
+  viewer_ws : String,
+  id : String,
+  now_ms : Int64,
+) -> Result[SignInAskRecord, station_api::ApiError] {
+  let ask = match store.get(db, id) {
+    Some(a) => a
+    None => return Err(signin_refused_error("no such sign-in"))
+  }
+  match session_ws_of(ask.session) {
+    Some(sws) => if sws != viewer_ws { return Err(signin_refused_error("no such sign-in")) }
+    None => return Err(signin_refused_error("no such sign-in"))
+  }
+  if ro_ascii_lower(ask.owner) != ro_ascii_lower(viewer_email) {
+    return Err(signin_refused_error("only the person the chat's agent works for signs it in"))
+  }
+  if !signin_is_open_status(ask.status) {
+    return Err(signin_refused_error("the sign-in is " + ask.status + " already"))
+  }
+  let now_secs = now_ms / 1000L
+  if ask.status == "pending" && ask.at + SIGNIN_PENDING_SECS < now_secs {
+    ask.status = "expired"
+    ask.why = None
+    let _ = store.save(db, ask)
+    store.held.remove(id)
+    return Err(signin_refused_error("the sign-in was let go (a day undecided)"))
+  }
+  Ok(ask)
+}
+
+/// Handles `signins.fill`, `signins.self`, and `signins.deny` (1:1 with `station/src/vault/signin.ts`).
+pub fn dispatch_signins_interactive(
+  store : SignInAsksStore,
+  db : sql_db::Db,
+  session_ws_of : (String) -> Option[String],
+  notify_session : (String, String) -> Unit,
+  form_port_of : (String, String) -> Option[station_browser::SignInFormPort],
+  op : String,
+  params : Array[String],
+  body : base_codec::Json,
+  now_ms : Int64,
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let id = if params.length() > 0 { params[0] } else { "" }
+  if id.length() == 0 {
+    return Err(signin_refused_error("no such sign-in"))
+  }
+  let viewer_email = match json_field_str(body, "_viewerEmail") { Some(s) => s, None => "" }
+  let viewer_ws = match json_field_str(body, "_viewerWorkspace") { Some(s) => s, None => "" }
+  if viewer_email.length() == 0 {
+    return Err(signin_refused_error("only the person the chat's agent works for signs it in"))
+  }
+  let ask = match signin_theirs(store, db, session_ws_of, viewer_email, viewer_ws, id, now_ms) {
+    Ok(a) => a
+    Err(e) => return Err(e)
+  }
+
+  if op == "signins.fill" {
+    if ask.status == "filling" {
+      return Err(signin_refused_error("the sign-in is being filled"))
+    }
+    let clean_field = fn(k : String) -> Option[String] {
+      match json_field_str(body, k) {
+        Some(v) => if v.length() > 0 && v.to_bytes().length() <= SIGNIN_MAX_VALUE_LEN { Some(v) } else { None }
+        None => None
+      }
+    }
+    let given_user = clean_field("username")
+    let given_pass = clean_field("password")
+    let given_code = clean_field("code")
+    if given_user is None && given_pass is None && given_code is None {
+      return Err(signin_refused_error("nothing to fill: give username, password or code"))
+    }
+    let held = match store.held.get(id) {
+      Some(h) => h
+      None => HeldSignInCreds::{ username: None, password: None, code: None, used: Map::new() }
+    }
+    match given_user { Some(u) => held.username = Some(u), None => () }
+    match given_pass { Some(p) => held.password = Some(p), None => () }
+    match given_code {
+      Some(c) => {
+        held.used.remove("code")
+        held.code = Some(c)
+      }
+      None => ()
+    }
+    store.held.set(id, held)
+    match json_field_bool(body, "keep") {
+      Some(k) => ask.keep = Some(k)
+      None => ()
+    }
+    ask.status = "filling"
+    ask.why = None
+    match store.save(db, ask) {
+      Ok(_) => ()
+      Err(e) => return Err(station_api::ApiError::new(500, e))
+    }
+    // Drive the form port if a live browser tab form is attached; otherwise hand off to person screen.
+    match form_port_of(ask.session, ask.tab) {
+      Some(port) => {
+        let values = station_browser::FormValues::{
+          username: held.username,
+          password: held.password,
+          code: held.code,
+        }
+        let driven = station_browser::drive_signin_form(port, ask.site, values, held.used, fn(_ms : Int64) -> Unit { () })
+        match driven {
+          station_browser::Driven::Code => {
+            ask.status = "code"
+            ask.why = None
+            let _ = store.save(db, ask)
+          }
+          station_browser::Driven::Person(why) => {
+            let why_s = match why {
+              station_browser::DrivenWhy::Blocked => "blocked"
+              station_browser::DrivenWhy::Refused => "refused"
+              station_browser::DrivenWhy::Stuck => "stuck"
+              station_browser::DrivenWhy::Elsewhere => "elsewhere"
+            }
+            ask.status = "person"
+            ask.why = Some(why_s)
+            let _ = store.save(db, ask)
+          }
+          station_browser::Driven::Left => {
+            ask.status = "left"
+            ask.why = None
+            let _ = store.save(db, ask)
+            notify_session(
+              ask.session,
+              "The sign-in form of " + ask.site + " on tab " + ask.tab + " was filled and sent, and the page has left its sign-in.",
+            )
+          }
+        }
+      }
+      None => {
+        ask.status = "person"
+        ask.why = Some("stuck")
+        let _ = store.save(db, ask)
+      }
+    }
+    return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+  }
+
+  if op == "signins.self" {
+    let done = match json_field_bool(body, "done") { Some(true) => true, _ => false }
+    if !done {
+      ask.status = "person"
+      ask.why = Some("self")
+      match store.save(db, ask) {
+        Ok(_) => return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+        Err(e) => return Err(station_api::ApiError::new(500, e))
+      }
+    }
+    ask.status = "left"
+    ask.why = None
+    match store.save(db, ask) {
+      Ok(_) => {
+        notify_session(
+          ask.session,
+          ask.owner + " says they signed in to " + ask.site + " themselves on tab " + ask.tab + ".",
+        )
+        return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+      }
+      Err(e) => return Err(station_api::ApiError::new(500, e))
+    }
+  }
+
+  if op == "signins.deny" {
+    ask.status = "denied"
+    ask.why = None
+    store.held.remove(id)
+    match store.save(db, ask) {
+      Ok(_) => {
+        notify_session(ask.session, ask.owner + " chose not to sign in to " + ask.site + " (" + ask.id + ").")
+        return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+      }
+      Err(e) => return Err(station_api::ApiError::new(500, e))
+    }
+  }
+
+  Err(err_not_implemented(op))
+}
+
+// ============================================================================
+// 3. `projects.rename` & `projects.merge`
+// ============================================================================
+
+pub struct ProjectRenamePeerResult {
+  pub id : String
+  pub name : Option[String]
+  pub status : String
+  pub updated : Int
+  pub error : Option[String]
+}
+
+fn project_rename_peer_to_json(p : ProjectRenamePeerResult) -> base_codec::Json {
+  let fs : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(p.id)),
+    ("status", base_codec::json_str(p.status)),
+    ("updated", base_codec::json_int(p.updated)),
+  ]
+  match p.name { Some(n) => fs.push(("name", base_codec::json_str(n))), None => () }
+  match p.error { Some(e) => fs.push(("error", base_codec::json_str(e))), None => () }
+  base_codec::json_obj(fs)
+}
+
+fn migrate_projects_jsonl_rename_merge(
+  parsed : station_api::ParsedProjectsJsonl,
+  from_name : String,
+  to_name : String,
+  renamed_at : Int64,
+) -> (station_api::ParsedProjectsJsonl, Bool) {
+  let mut from_entry : Option[station_api::ProjectInfoEntry] = None
+  let mut to_entry : Option[station_api::ProjectInfoEntry] = None
+  let rest : Array[station_api::ProjectInfoEntry] = []
+  for i in 0..<parsed.entries.length() {
+    let e = parsed.entries[i]
+    if e.name == from_name {
+      from_entry = Some(e)
+    } else if to_name.length() > 0 && e.name == to_name {
+      to_entry = Some(e)
+    } else {
+      rest.push(e)
+    }
+  }
+  let mut changed = false
+  if from_entry.is_some() {
+    changed = true
+  }
+  let next_entries : Array[station_api::ProjectInfoEntry] = []
+  for i in 0..<rest.length() {
+    next_entries.push(rest[i])
+  }
+  if to_name.length() > 0 {
+    match (from_entry, to_entry) {
+      (Some(fe), None) => {
+        next_entries.push(station_api::ProjectInfoEntry::{
+          name: to_name,
+          note: fe.note,
+          note_at: fe.note_at,
+          refs: fe.refs,
+          refs_at: fe.refs_at,
+          ref_ats: fe.ref_ats,
+          updated_at: Some(renamed_at),
+          note_cleared_at: fe.note_cleared_at,
+          refs_cleared_at: fe.refs_cleared_at,
+          applied_op_ids: fe.applied_op_ids,
+        })
+      }
+      (Some(fe), Some(te)) => {
+        let merged_note = match te.note { Some(n) => Some(n), None => fe.note }
+        let merged_note_at = match te.note { Some(_) => te.note_at, None => fe.note_at }
+        let merged_refs : Array[String] = []
+        let merged_ref_ats : Array[(String, Int64)] = []
+        for i in 0..<te.refs.length() {
+          merged_refs.push(te.refs[i])
+        }
+        for i in 0..<te.ref_ats.length() {
+          merged_ref_ats.push(te.ref_ats[i])
+        }
+        for i in 0..<fe.refs.length() {
+          let r = fe.refs[i]
+          let mut dup = false
+          for j in 0..<merged_refs.length() {
+            if merged_refs[j] == r { dup = true; break }
+          }
+          if !dup && merged_refs.length() < station_api::MAX_PROJECT_REFS {
+            merged_refs.push(r)
+            merged_ref_ats.push((r, renamed_at))
+          }
+        }
+        next_entries.push(station_api::ProjectInfoEntry::{
+          name: to_name,
+          note: merged_note,
+          note_at: merged_note_at,
+          refs: merged_refs,
+          refs_at: if merged_refs.length() > 0 { Some(renamed_at) } else { te.refs_at },
+          ref_ats: merged_ref_ats,
+          updated_at: Some(renamed_at),
+          note_cleared_at: te.note_cleared_at,
+          refs_cleared_at: te.refs_cleared_at,
+          applied_op_ids: te.applied_op_ids,
+        })
+      }
+      (None, Some(te)) => next_entries.push(te)
+      (None, None) => ()
+    }
+  }
+  let next_tombstones : Array[(String, Int64)] = []
+  for i in 0..<parsed.tombstones.length() {
+    let tb = parsed.tombstones[i]
+    if tb.0 != from_name && (to_name.length() == 0 || tb.0 != to_name) {
+      next_tombstones.push(tb)
+    }
+  }
+  next_tombstones.push((from_name, renamed_at))
+  let out = station_api::ParsedProjectsJsonl::{
+    entries: next_entries,
+    tombstones: next_tombstones,
+    tombstone_op_ids: parsed.tombstone_op_ids,
+    preserved_raw_lines: parsed.preserved_raw_lines,
+  }
+  (out, changed)
+}
+
+fn rewrite_preset_projects_json(raw_json : String, from_name : String, to_name : String) -> Option[String] {
+  let j = match base_codec::json_parse(raw_json) {
+    base_codec::JsonParseResult::Ok(v) => v
+    _ => return None
+  }
+  match j {
+    base_codec::Json::Obj(entries) => {
+      let mut changed = false
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<entries.length() {
+        let (k, v) = entries[i]
+        match v {
+          base_codec::Json::Str(s) => {
+            if s == from_name {
+              changed = true
+              if to_name.length() > 0 {
+                out.push((k, base_codec::json_str(to_name)))
+              }
+            } else {
+              out.push((k, v))
+            }
+          }
+          _ => out.push((k, v))
+        }
+      }
+      if changed { Some(base_codec::json_stringify(base_codec::json_obj(out))) } else { None }
+    }
+    _ => None
+  }
+}
+
+/// Real production `projects.rename` / `projects.merge` executor:
+/// - Enforces idempotency key (`op_key`) and rename target uniqueness (409 on conflict)
+/// - Atomically updates local SQLite `threads.project`, `preset_projects`, and `project_rename_events`
+/// - Atomically updates workspace `PROJECTS.jsonl` (migrating/merging metadata + tombstone)
+/// - Invokes cross-station peer sync hook and emits `projectsChanged` SSE event
+pub fn execute_project_rename_merge(
+  whole_store : WholeStore,
+  fs : station_jobs::FsPort,
+  data_dir : String,
+  home_ws : String,
+  events : station_api::EventsHub,
+  write_file_atomic : (String, Bytes) -> Result[Unit, String],
+  on_peer_sync : (String, String, String, String, Int64) -> Array[ProjectRenamePeerResult],
+  ws : String,
+  action : String,
+  from_name : String,
+  to_name : String,
+  idem_key : Option[String],
+  now_ms : Int64,
+) -> Result[base_codec::Json, station_api::ApiError] {
+  if ws.length() == 0 {
+    return Err(station_api::ApiError::new(400, "workspace is required"))
+  }
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(station_api::ApiError::new(503, e))
+  }
+  let op_key : Option[String] = match idem_key {
+    Some(k) => {
+      let tk = k.trim()
+      if tk.length() > 0 { Some(action + "\u{0000}" + tk) } else { None }
+    }
+    None => None
+  }
+  // 1. Check idempotency key in `project_rename_events`
+  match op_key {
+    Some(ok_str) => {
+      match st.db.first(
+        "SELECT action, from_name, to_name FROM project_rename_events WHERE workspace = ?1 AND op_key = ?2 LIMIT 1",
+        [base_codec::json_str(ws), base_codec::json_str(ok_str)],
+      ) {
+        Ok(Some(row)) => {
+          let prev_act = match row.get("action") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let prev_from = match row.get("from_name") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let prev_to = match row.get("to_name") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          if prev_act != action || prev_from != from_name || prev_to != to_name {
+            return Err(station_api::ApiError::new(409, "idempotency key already used for a different project rename/merge"))
+          }
+          return Ok(base_codec::json_obj([
+            ("action", base_codec::json_str(action)),
+            ("from", base_codec::json_str(from_name)),
+            ("to", base_codec::json_str(to_name)),
+            ("local", base_codec::json_obj([
+              ("updated", base_codec::json_int(0)),
+              ("skippedLocked", base_codec::json_int(0)),
+            ])),
+            ("peers", base_codec::json_arr([])),
+          ]))
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+
+  let fake_viewer = station_api::Viewer::{
+    email: "",
+    sub: "",
+    name: "",
+    workspace: ws,
+    home: ws == home_ws,
+    role: "owner",
+    device: None,
+    lock_base: None,
+    lock_proof: None,
+  }
+  let (jsonl_path, parsed_info) = match read_workspace_projects_jsonl(fs, data_dir, fake_viewer) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+
+  // 2. For `rename`, reject if `to_name` already exists in local threads or PROJECTS.jsonl
+  if action == "rename" {
+    let mut exists_in_info = false
+    for i in 0..<parsed_info.entries.length() {
+      if parsed_info.entries[i].name == to_name {
+        exists_in_info = true
+        break
+      }
+    }
+    let mut exists_in_db = false
+    match st.db.first(
+      "SELECT 1 AS hit FROM threads WHERE project = ?1 AND (CASE" +
+      " WHEN threads.home IS NOT NULL THEN EXISTS (SELECT 1 FROM sessions h WHERE h.key = threads.home AND COALESCE(h.ws, ?2) = ?3)" +
+      " WHEN NOT EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = threads.id) THEN ?3 = ?2" +
+      " ELSE EXISTS (SELECT 1 FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session WHERE ts.thread = threads.id AND COALESCE(s.ws, ?2) = ?3) END) LIMIT 1",
+      [base_codec::json_str(to_name), base_codec::json_str(home_ws), base_codec::json_str(ws)],
+    ) {
+      Ok(Some(_)) => exists_in_db = true
+      _ => ()
+    }
+    if exists_in_info || exists_in_db {
+      return Err(station_api::ApiError::new(409, "project \"" + to_name + "\" already exists; use merge instead"))
+    }
+  }
+
+  // 3. Atomic SQLite transaction: threads.project + preset_projects + monotonic project_rename_events
+  let updated_cell : Array[Int] = [0]
+  let renamed_at_cell : Array[Int64] = [now_ms]
+  let ws_scope_sql =
+  " (CASE" +
+  " WHEN threads.home IS NOT NULL THEN EXISTS (SELECT 1 FROM sessions h WHERE h.key = threads.home AND COALESCE(h.ws, ?3) = ?4)" +
+  " WHEN NOT EXISTS (SELECT 1 FROM thread_sessions ts WHERE ts.thread = threads.id) THEN ?4 = ?3" +
+  " ELSE EXISTS (SELECT 1 FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session WHERE ts.thread = threads.id AND COALESCE(s.ws, ?3) = ?4) END)"
+  let tx_res = st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    match txdb.first(
+      "SELECT COUNT(*) AS cnt FROM threads WHERE project = ?1 AND" + ws_scope_sql,
+      [
+        base_codec::json_str(from_name),
+        base_codec::json_str(from_name),
+        base_codec::json_str(home_ws),
+        base_codec::json_str(ws),
+      ],
+    ) {
+      Ok(Some(row)) => match row.get("cnt") {
+        Some(base_codec::Json::Num(n, _)) => updated_cell[0] = n.to_int()
+        _ => ()
+      }
+      Ok(None) => ()
+      Err(e) => return Err(e)
+    }
+    let target_project_val : base_codec::Json = if to_name.length() > 0 {
+      base_codec::json_str(to_name)
+    } else {
+      base_codec::json_null()
+    }
+    match txdb.run(
+      "UPDATE threads SET project = ?1 WHERE project = ?2 AND" + ws_scope_sql,
+      [
+        target_project_val,
+        base_codec::json_str(from_name),
+        base_codec::json_str(home_ws),
+        base_codec::json_str(ws),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+    // Update carried `preset_projects` defaults pointing to `from_name`
+    match txdb.all(
+      "SELECT sub, json FROM preset_projects WHERE workspace = ?1",
+      [base_codec::json_str(ws)],
+    ) {
+      Ok(prows) => {
+        for pi in 0..<prows.length() {
+          let sub = match prows[pi].get("sub") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let raw = match prows[pi].get("json") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          if sub.length() > 0 && raw.length() > 0 {
+            match rewrite_preset_projects_json(raw, from_name, to_name) {
+              Some(next_json) => {
+                match txdb.run(
+                  "UPDATE preset_projects SET json = ?1 WHERE workspace = ?2 AND sub = ?3",
+                  [base_codec::json_str(next_json), base_codec::json_str(ws), base_codec::json_str(sub)],
+                ) {
+                  Ok(_) => ()
+                  Err(e) => return Err(e)
+                }
+              }
+              None => ()
+            }
+          }
+        }
+      }
+      Err(_) => ()
+    }
+    // Strictly monotonic `renamed_at` per workspace
+    let mut last_at = 0L
+    match txdb.first(
+      "SELECT MAX(renamed_at) AS mx FROM project_rename_events WHERE workspace = ?1",
+      [base_codec::json_str(ws)],
+    ) {
+      Ok(Some(row)) => match row.get("mx") {
+        Some(base_codec::Json::Num(n, _)) => last_at = n.to_int64()
+        _ => ()
+      }
+      _ => ()
+    }
+    let eff_at = if now_ms > last_at { now_ms } else { last_at + 1L }
+    renamed_at_cell[0] = eff_at
+    let op_key_val : base_codec::Json = match op_key {
+      Some(s) => base_codec::json_str(s)
+      None => base_codec::json_null()
+    }
+    match txdb.run(
+      "INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, op_key, local_updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+      [
+        base_codec::json_str(ws),
+        base_codec::json_str(action),
+        base_codec::json_str(from_name),
+        base_codec::json_str(to_name),
+        sql_db::int64_to_json(eff_at),
+        sql_db::int64_to_json(now_ms),
+        op_key_val,
+        base_codec::json_int(updated_cell[0]),
+      ],
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e)
+    }
+  })
+  match tx_res {
+    Ok(_) => ()
+    Err(e) => return Err(station_api::ApiError::new(500, e.message))
+  }
+
+  // 4. Atomically update `PROJECTS.jsonl`
+  let (migrated_info, _) = migrate_projects_jsonl_rename_merge(parsed_info, from_name, to_name, renamed_at_cell[0])
+  let mut info_error : Option[String] = None
+  match station_api::serialize_projects_jsonl(migrated_info) {
+    Ok(text) => {
+      let bytes = text.to_bytes()
+      if bytes.length() > station_api::PROJECTS_INFO_MAX_BYTES {
+        info_error = Some("PROJECTS.jsonl exceeds maximum size")
+      } else {
+        match write_file_atomic(jsonl_path, bytes) {
+          Ok(_) => ()
+          Err(e) => info_error = Some(e)
+        }
+      }
+    }
+    Err(e) => info_error = Some(e)
+  }
+
+  // 5. Cross-station peer sync hook & SSE notification
+  let peer_results = on_peer_sync(ws, action, from_name, to_name, renamed_at_cell[0])
+  let peers_j : Array[base_codec::Json] = []
+  for i in 0..<peer_results.length() {
+    peers_j.push(project_rename_peer_to_json(peer_results[i]))
+  }
+  ro_emit_projects_event(events, ws, now_ms)
+
+  let out_fields : Array[(String, base_codec::Json)] = [
+    ("action", base_codec::json_str(action)),
+    ("from", base_codec::json_str(from_name)),
+    ("to", base_codec::json_str(to_name)),
+    ("local", base_codec::json_obj([
+      ("updated", base_codec::json_int(updated_cell[0])),
+      ("skippedLocked", base_codec::json_int(0)),
+    ])),
+    ("peers", base_codec::json_arr(peers_j)),
+  ]
+  match info_error {
+    Some(ie) => out_fields.push(("infoError", base_codec::json_str(ie)))
+    None => ()
+  }
+  Ok(base_codec::json_obj(out_fields))
+}
+
+// ============================================================================
+// 4. `links.preview` (Strict SSRF Defense + HTML `<head>` Extraction)
+// ============================================================================
+
+pub let LINK_PREVIEW_MAX_URL_LEN : Int = 4096
+pub let LINK_PREVIEW_MAX_HOPS : Int = 4
+pub let LINK_PREVIEW_MAX_BYTES : Int = 262144
+pub let LINK_PREVIEW_TIMEOUT_MS : Int64 = 6000L
+
+/// Validates a URL for `links.preview`: strictly `http://` or `https://`, <= 4096 bytes,
+/// no userinfo (`@`), no control chars/backslashes, and not a private/loopback/link-local/
+/// metadata/multicast/reserved literal host or IP.
+pub fn validate_link_preview_url(raw_url : String) -> Result[ParsedAuthorityUrl, String] {
+  let u = raw_url.trim()
+  if u.length() == 0 || u.to_bytes().length() > LINK_PREVIEW_MAX_URL_LEN {
+    return Err("an http(s) url is required")
+  }
+  let parsed = match parse_strict_url(u) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  if parsed.scheme != "http" && parsed.scheme != "https" {
+    return Err("an http(s) url is required")
+  }
+  if parsed.has_userinfo {
+    return Err("url userinfo is not allowed")
+  }
+  if brw_is_private_or_reserved_host(parsed.host) {
+    return Err("blocked private or reserved host: " + parsed.host)
+  }
+  Ok(parsed)
+}
+
+/// Returns true iff `ip` is a valid public IPv4 or IPv6 literal (not private/loopback/
+/// link-local/metadata/multicast/reserved). Fails closed on invalid strings.
+pub fn is_public_link_preview_ip(ip : String) -> Bool {
+  let trimmed = ip.trim()
+  if trimmed.length() == 0 {
+    return false
+  }
+  let clean = if trimmed.starts_with("[") && trimmed.ends_with("]") && trimmed.length() > 2 {
+    trimmed.slice(1, trimmed.length() - 1)
+  } else {
+    trimmed
+  }
+  if clean.contains(":") {
+    return !brw_is_private_or_reserved_host(clean)
+  }
+  match brw_parse_ipv4(clean) {
+    Some(_) => !brw_is_private_or_reserved_host(clean)
+    None => false
+  }
+}
+
+/// Resolves a `Location` redirect header against `base_url`.
+pub fn resolve_redirect_url(base_url : String, location : String) -> Option[String] {
+  let loc = location.trim()
+  if loc.length() == 0 {
+    return None
+  }
+  let low = ro_ascii_lower(loc)
+  if low.starts_with("http://") || low.starts_with("https://") {
+    return Some(loc)
+  }
+  if loc.contains("://") || low.starts_with("javascript:") || low.starts_with("data:") || low.starts_with("file:") {
+    return None
+  }
+  let base = match parse_strict_url(base_url) {
+    Ok(b) => b
+    Err(_) => return None
+  }
+  if loc.starts_with("//") {
+    return Some(base.scheme + ":" + loc)
+  }
+  let host_part = if base.host.contains(":") { "[" + base.host + "]" } else { base.host }
+  let port_part = match base.port {
+    Some(p) => ":" + p.to_string()
+    None => ""
+  }
+  let origin = base.scheme + "://" + host_part + port_part
+  if loc.starts_with("/") {
+    return Some(origin + loc)
+  }
+  let base_path = if base.path.length() == 0 { "/" } else { base.path }
+  let q_idx = base_path.index_of("?")
+  let clean_path = if q_idx >= 0 { base_path.slice(0, q_idx) } else { base_path }
+  let mut last_slash = -1
+  let pb = clean_path.to_bytes()
+  for i in 0..<pb.length() {
+    if (pb[i].to_int() & 0xFF) == 47 {
+      last_slash = i
+    }
+  }
+  let dir = if last_slash >= 0 { clean_path.slice(0, last_slash + 1) } else { "/" }
+  Some(origin + dir + loc)
+}
+
+fn lp_collapse_ws(s : String) -> String {
+  let b = s.to_bytes()
+  let sb = StringBuilder::new()
+  let mut in_ws = true
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c == 32 || c == 9 || c == 10 || c == 13 {
+      if !in_ws {
+        sb.write_char(' ')
+        in_ws = true
+      }
+    } else {
+      sb.write_byte(b[i])
+      in_ws = false
+    }
+  }
+  sb.to_string().trim()
+}
+
+/// Decodes common HTML entities (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`, `&#...;`, `&#x...;`)
+/// and collapses whitespace.
+pub fn decode_html_entities(raw : String) -> String {
+  let mut out = raw
+  .replace("&amp;", "&")
+  .replace("&lt;", "<")
+  .replace("&gt;", ">")
+  .replace("&quot;", "\"")
+  .replace("&#34;", "\"")
+  .replace("&apos;", "'")
+  .replace("&#39;", "'")
+  .replace("&#x27;", "'")
+  .replace("&nbsp;", " ")
+  out = lp_collapse_ws(out)
+  out
+}
+
+fn lp_truncate(s : String, max_len : Int) -> String {
+  if s.length() <= max_len {
+    return s
+  }
+  s.slice(0, max_len) + "…"
+}
+
+fn lp_find_ci(haystack_lower : String, needle_lower : String, start : Int) -> Int {
+  if start >= haystack_lower.length() {
+    return -1
+  }
+  let rest = haystack_lower.slice(start, haystack_lower.length())
+  let idx = rest.index_of(needle_lower)
+  if idx < 0 { -1 } else { start + idx }
+}
+
+fn lp_extract_attr(tag : String, attr_name_lower : String) -> Option[String] {
+  let tag_low = ro_ascii_lower(tag)
+  let mut pos = 0
+  let nlen = attr_name_lower.length()
+  while pos < tag_low.length() {
+    let idx = lp_find_ci(tag_low, attr_name_lower, pos)
+    if idx < 0 {
+      return None
+    }
+    let prev_ok = if idx == 0 {
+      true
+    } else {
+      let pc = tag_low.code_unit_at(idx - 1)
+      pc == 32 || pc == 9 || pc == 10 || pc == 13 || pc == 60
+    }
+    let after = idx + nlen
+    if !prev_ok || after >= tag.length() {
+      pos = idx + 1
+      continue
+    }
+    let mut i = after
+    while i < tag.length() && (tag.code_unit_at(i) == 32 || tag.code_unit_at(i) == 9 || tag.code_unit_at(i) == 10 || tag.code_unit_at(i) == 13) {
+      i = i + 1
+    }
+    if i >= tag.length() || tag.code_unit_at(i) != 61 {
+      pos = idx + 1
+      continue
+    }
+    i = i + 1
+    while i < tag.length() && (tag.code_unit_at(i) == 32 || tag.code_unit_at(i) == 9 || tag.code_unit_at(i) == 10 || tag.code_unit_at(i) == 13) {
+      i = i + 1
+    }
+    if i >= tag.length() {
+      return None
+    }
+    let q = tag.code_unit_at(i)
+    if q == 34 || q == 39 {
+      let start_val = i + 1
+      let mut end_val = start_val
+      while end_val < tag.length() && tag.code_unit_at(end_val) != q {
+        end_val = end_val + 1
+      }
+      return Some(tag.slice(start_val, end_val))
+    } else {
+      let start_val = i
+      let mut end_val = start_val
+      while end_val < tag.length() {
+        let c = tag.code_unit_at(end_val)
+        if c == 32 || c == 9 || c == 10 || c == 13 || c == 62 {
+          break
+        }
+        end_val = end_val + 1
+      }
+      return Some(tag.slice(start_val, end_val))
+    }
+  }
+  None
+}
+
+/// Extracts `{ kind: "page", url, title, description?, site?, image? }` from an HTML document's
+/// `<head>` (or `{ kind: "none" }` when no title is found).
+pub fn parse_link_preview_html(html : String, final_url : String) -> base_codec::Json {
+  let low = ro_ascii_lower(html)
+  let head_end = low.index_of("</head>")
+  let head = if head_end >= 0 { html.slice(0, head_end) } else { html }
+  let head_low = if head_end >= 0 { low.slice(0, head_end) } else { low }
+
+  let metas : Array[(String, String)] = []
+  let mut pos = 0
+  while pos < head_low.length() {
+    let mstart = lp_find_ci(head_low, "<meta", pos)
+    if mstart < 0 {
+      break
+    }
+    let mend = lp_find_ci(head_low, ">", mstart + 5)
+    if mend < 0 {
+      break
+    }
+    let tag = head.slice(mstart, mend + 1)
+    let key_opt = match lp_extract_attr(tag, "property") {
+      Some(p) => Some(ro_ascii_lower(p.trim()))
+      None => match lp_extract_attr(tag, "name") {
+        Some(n) => Some(ro_ascii_lower(n.trim()))
+        None => None
+      }
+    }
+    match (key_opt, lp_extract_attr(tag, "content")) {
+      (Some(k), Some(v)) => {
+        let dec = decode_html_entities(v)
+        if k.length() > 0 && dec.length() > 0 {
+          metas.push((k, dec))
+        }
+      }
+      _ => ()
+    }
+    pos = mend + 1
+  }
+
+  let find_meta = fn(keys : Array[String]) -> Option[String] {
+    for ki in 0..<keys.length() {
+      let target = keys[ki]
+      for mi in 0..<metas.length() {
+        if metas[mi].0 == target {
+          return Some(metas[mi].1)
+        }
+      }
+    }
+    None
+  }
+
+  let mut title_opt = find_meta(["og:title", "twitter:title"])
+  if title_opt is None {
+    let tstart = lp_find_ci(head_low, "<title", 0)
+    if tstart >= 0 {
+      let tclose_open = lp_find_ci(head_low, ">", tstart + 6)
+      if tclose_open >= 0 {
+        let tend = lp_find_ci(head_low, "</title>", tclose_open + 1)
+        if tend > tclose_open {
+          let t = decode_html_entities(head.slice(tclose_open + 1, tend))
+          if t.length() > 0 {
+            title_opt = Some(t)
+          }
+        }
+      }
+    }
+  }
+
+  let title = match title_opt {
+    Some(t) => lp_truncate(t, 200)
+    None => return base_codec::json_obj([("kind", base_codec::json_str("none"))])
+  }
+  let desc_opt = find_meta(["og:description", "description", "twitter:description"])
+  let site_opt = find_meta(["og:site_name"])
+  let img_raw = find_meta(["og:image:secure_url", "og:image", "og:image:url", "twitter:image", "twitter:image:src"])
+  let img_opt : Option[String] = match img_raw {
+    Some(raw) => match resolve_redirect_url(final_url, raw) {
+      Some(resolved) => match validate_link_preview_url(resolved) {
+        Ok(_) => Some(resolved)
+        Err(_) => None
+      }
+      None => None
+    }
+    None => None
+  }
+
+  let fields : Array[(String, base_codec::Json)] = [
+    ("kind", base_codec::json_str("page")),
+    ("url", base_codec::json_str(final_url)),
+    ("title", base_codec::json_str(title)),
+  ]
+  match desc_opt { Some(d) => fields.push(("description", base_codec::json_str(lp_truncate(d, 300)))), None => () }
+  match site_opt { Some(s) => fields.push(("site", base_codec::json_str(lp_truncate(s, 60)))), None => () }
+  match img_opt { Some(img) => fields.push(("image", base_codec::json_str(img))), None => () }
+  base_codec::json_obj(fields)
+}
+
+pub struct LinkPreviewHopResponse {
+  pub status : Int
+  pub content_type : String
+  pub content_encoding : String
+  pub location : Option[String]
+  pub body : String
+}
+
+/// Deterministic multi-hop SSRF-verified link preview engine (for unit tests and injected transports).
+/// Verifies scheme, literal host, DNS-resolved IPs, and every redirect hop (max 4 hops).
+pub fn fetch_link_preview_with_ports(
+  raw_url : String,
+  resolve_host : (String) -> Array[String],
+  fetch_hop : (String, Array[String]) -> Option[LinkPreviewHopResponse],
+) -> Result[base_codec::Json, station_api::ApiError] {
+  let trimmed = raw_url.trim()
+  if trimmed.length() == 0 || trimmed.to_bytes().length() > LINK_PREVIEW_MAX_URL_LEN {
+    return Err(station_api::ApiError::new(400, "an http(s) url is required"))
+  }
+  let low0 = ro_ascii_lower(trimmed)
+  if !low0.starts_with("http://") && !low0.starts_with("https://") {
+    return Err(station_api::ApiError::new(400, "an http(s) url is required"))
+  }
+  let mut cur_url = trimmed
+  let mut hop = 0
+  while hop < LINK_PREVIEW_MAX_HOPS {
+    let parsed = match validate_link_preview_url(cur_url) {
+      Ok(p) => p
+      Err(_) => return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    let ips = resolve_host(parsed.host)
+    if ips.length() == 0 {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    for i in 0..<ips.length() {
+      if !is_public_link_preview_ip(ips[i]) {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+      }
+    }
+    let resp = match fetch_hop(cur_url, ips) {
+      Some(r) => r
+      None => return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    let enc = ro_ascii_lower(resp.content_encoding.trim())
+    if enc.length() > 0 && enc != "identity" {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    if resp.status >= 300 && resp.status < 400 {
+      match resp.location {
+        Some(loc) => match resolve_redirect_url(cur_url, loc) {
+          Some(next_url) => {
+            cur_url = next_url
+            hop = hop + 1
+            continue
+          }
+          None => return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+        }
+        None => return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+      }
+    }
+    if resp.status < 200 || resp.status >= 300 {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    let ct = ro_ascii_lower(resp.content_type)
+    if ct.length() > 0 && !ct.contains("text/html") && !ct.contains("application/xhtml") {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+    }
+    let capped = if resp.body.length() > LINK_PREVIEW_MAX_BYTES {
+      resp.body.slice(0, LINK_PREVIEW_MAX_BYTES)
+    } else {
+      resp.body
+    }
+    return Ok(parse_link_preview_html(capped, cur_url))
+  }
+  Ok(base_codec::json_obj([("kind", base_codec::json_str("none"))]))
+}
+
+// ============================================================================
+// 5. `feedback.report`
+// ============================================================================
+
+/// Validates the thread and failure notice entry in SQLite and builds the scrubbed
+/// feedback report payload via `station_api::build_notice_report`.
+pub fn prepare_feedback_notice_report(
+  whole_store : WholeStore,
+  thread_id : Int,
+  entry_n : Int,
+  viewer : station_api::Viewer,
+  os_name : String,
+  arch_name : String,
+  home_dir : String,
+  log_tail : Option[String],
+) -> Result[(base_codec::Json, Option[String]), station_api::ApiError] {
+  let st = match whole_store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(station_api::ApiError::new(503, e))
+  }
+  let (t_channel, t_ts) = match st.db.first(
+    "SELECT channel, thread_ts FROM threads WHERE id = ?1 LIMIT 1",
+    [base_codec::json_int(thread_id)],
+  ) {
+    Ok(Some(row)) => (
+      match row.get("channel") { Some(base_codec::Json::Str(s)) => s, _ => "" },
+      match row.get("thread_ts") { Some(base_codec::Json::Str(s)) => s, _ => "" },
+    )
+    Ok(None) => return Err(station_api::ApiError::new(404, "unknown thread " + thread_id.to_string()))
+    Err(e) => return Err(station_api::ApiError::new(500, e.message))
+  }
+  let (author_kind, entry_text, entry_at) = match st.db.first(
+    "SELECT author_kind, text, at FROM entries WHERE thread = ?1 AND n = ?2 LIMIT 1",
+    [base_codec::json_int(thread_id), base_codec::json_int(entry_n)],
+  ) {
+    Ok(Some(row)) => (
+      match row.get("author_kind") { Some(base_codec::Json::Str(s)) => s, _ => "" },
+      match row.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" },
+      match row.get("at") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 0L },
+    )
+    Ok(None) => return Err(station_api::ApiError::new(404, "station.feedback.notAFailure"))
+    Err(e) => return Err(station_api::ApiError::new(500, e.message))
+  }
+  if !station_api::is_failure_notice_entry(author_kind, entry_text) {
+    return Err(station_api::ApiError::new(404, "station.feedback.notAFailure"))
+  }
+
+  let mut sess_key : Option[String] = None
+  let mut sess_ws : Option[String] = None
+  let mut sess_rt : Option[String] = None
+  let mut sess_prof : Option[String] = None
+  let mut sess_model : Option[String] = None
+  let mut turn_detail : Option[String] = None
+
+  match st.db.first(
+    "SELECT s.key, s.ws, s.runtime, s.profile, s.model FROM thread_sessions ts JOIN sessions s ON s.key = ts.session WHERE ts.thread = ?1 ORDER BY ts.joined_at ASC LIMIT 1",
+    [base_codec::json_int(thread_id)],
+  ) {
+    Ok(Some(srow)) => {
+      let sk = match srow.get("key") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      if sk.length() > 0 {
+        sess_key = Some(sk)
+        sess_ws = match srow.get("ws") { Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s), _ => None }
+        sess_rt = match srow.get("runtime") { Some(base_codec::Json::Str(s)) => Some(s), _ => None }
+        sess_prof = match srow.get("profile") { Some(base_codec::Json::Str(s)) => Some(s), _ => None }
+        sess_model = match srow.get("model") { Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s), _ => None }
+        match st.db.first(
+          "SELECT detail FROM turns WHERE session = ?1 AND outcome = 'failed' ORDER BY ended_at DESC LIMIT 1",
+          [base_codec::json_str(sk)],
+        ) {
+          Ok(Some(trow)) => {
+            match trow.get("detail") {
+              Some(base_codec::Json::Str(d)) if d.trim().length() > 0 => turn_detail = Some(d.trim())
+              _ => ()
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+
+  let report = station_api::build_notice_report(station_api::NoticeReportInput::{
+    thread_id: thread_id,
+    thread_channel: t_channel,
+    thread_ts: t_ts,
+    entry_n: entry_n,
+    entry_text: entry_text,
+    entry_at_ms: entry_at,
+    session_key: sess_key,
+    session_ws: sess_ws,
+    session_runtime: sess_rt,
+    session_profile: sess_prof,
+    session_model: sess_model,
+    turn_detail: turn_detail,
+    viewer_name: viewer.name,
+    viewer_email: viewer.email,
+    os: os_name,
+    arch: arch_name,
+    log_tail: log_tail,
+    home: home_dir,
+  })
+  Ok((report, sess_ws))
+}
+
+/// Parses cloud `/v1/feedback` response into `{ number, duplicate? }` or a structured 502 error.
+pub fn parse_feedback_cloud_response(
+  status : Int,
+  body_text : String,
+) -> Result[base_codec::Json, station_api::ApiError] {
+  if status < 200 || status >= 300 {
+    let msg = "feedback upstream returned HTTP " + status.to_string()
+    return Err(station_api::ApiError::json(
+      502,
+      base_codec::json_obj([
+        ("error", base_codec::json_str(msg)),
+        ("code", base_codec::json_str("feedback_not_sent")),
+        ("upstreamStatus", base_codec::json_int(status)),
+      ]),
+    ))
+  }
+  let parsed = match base_codec::json_parse(body_text) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => {
+      return Err(station_api::ApiError::json(
+        502,
+        base_codec::json_obj([
+          ("error", base_codec::json_str("invalid feedback response JSON")),
+          ("code", base_codec::json_str("feedback_not_sent")),
+        ]),
+      ))
+    }
+  }
+  let num = match ro_json_int_field(parsed, "number") {
+    Some(n) if n >= 0 => n
+    _ => {
+      return Err(station_api::ApiError::json(
+        502,
+        base_codec::json_obj([
+          ("error", base_codec::json_str("missing feedback report number")),
+          ("code", base_codec::json_str("feedback_not_sent")),
+        ]),
+      ))
+    }
+  }
+  let out : Array[(String, base_codec::Json)] = [("number", base_codec::json_int(num))]
+  match json_field_bool(parsed, "duplicate") {
+    Some(true) => out.push(("duplicate", base_codec::json_bool(true)))
+    _ => ()
+  }
+  Ok(base_codec::json_obj(out))
+}
+
+// ============================================================================
+// 6. Dispatch entry point called from `whole_api_readops.pion`
+// ============================================================================
+
+pub fn dispatch_interactive_call_op(
+  op : String,
+  req : station_api::ApiRequest,
+  params : Array[String],
+  body : base_codec::Json,
+  hooks : WholeApiRuntimeHooks,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  if op == "links.preview" {
+    match hooks.on_links_preview {
+      Some(f) => {
+        let url = match req.param("url") { Some(u) => u.trim(), None => "" }
+        let low = ro_ascii_lower(url)
+        if (!low.starts_with("http://") && !low.starts_with("https://")) || url.to_bytes().length() > LINK_PREVIEW_MAX_URL_LEN {
+          return Some(Err(station_api::ApiError::new(400, "an http(s) url is required")))
+        }
+        return Some(f(url))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  if op == "feedback.report" {
+    match hooks.on_feedback_report {
+      Some(f) => {
+        let tid_str = if params.length() > 0 { params[0] } else { "" }
+        let tid = match base_codec::parse_int64_str(tid_str) {
+          Some(v) if v > 0L && v <= 2147483647L => v.to_int()
+          _ => return Some(Err(station_api::ApiError::new(404, "unknown thread " + tid_str)))
+        }
+        let entry_n = match ro_json_int_field(body, "n") {
+          Some(n) if n >= 1 => n
+          _ => return Some(Err(station_api::ApiError::new(400, "n must be a positive integer")))
+        }
+        return Some(f(req, tid, entry_n))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  None
+}
+
+// ============================================================================
+// 7. Real SQLite + Real FS Selftest for Wave 17D-3 (called by `--smoke-w17c3a-sqlite`)
+// ============================================================================
+
+pub fn run_w17d3_sqlite_selftest(root_tmp : String) -> Result[Unit, String] {
+  let fs = station_jobs::sys_fs("/")
+  let d_root = root_tmp + "/w17d3"
+  let _ = station_sys::mkdir_p(d_root + "/agent")
+  let _ = station_sys::write_file_atomic(
+    d_root + "/agent/PROJECTS.jsonl",
+    "{\"name\":\"Alpha\",\"note\":\"Alpha note\",\"refs\":[\"repo/a\"]}\n{\"name\":\"Beta\",\"note\":\"Beta note\",\"refs\":[\"repo/b\"]}\n".to_bytes(),
+    420,
+  )
+  let store = WholeStore::new_pre_handover_with_sep(d_root, "/")
+  match store.open_primary_after_predecessor_gone(true, fn(_d) { Ok(()) }) {
+    Ok(_) => ()
+    Err(e) => return Err("w17d3 open_primary failed: " + e)
+  }
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err("w17d3 require_open failed: " + e)
+  }
+  let _ = st.db.run(
+    "INSERT INTO sessions (key, connect, scope, workspace, token, runtime, profile, running, created_at, last_active_at, ws) VALUES ('s1', 'chat', 'chat', '/tmp/w', 'tok1', 'claude', 'default', 0, 100, 100, 'ws-main')",
+    [],
+  )
+  let _ = st.db.run(
+    "INSERT INTO threads (id, surface, channel, thread_ts, created_at, home, project) VALUES (1, 'stillfail', 'CHAT', '1', 100, 's1', 'Alpha')",
+    [],
+  )
+  let _ = st.db.run("INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (1, 's1', 'chat', 100)", [])
+  let _ = st.db.run("INSERT INTO entries (thread, n, kind, author_kind, author, text, at) VALUES (1, 1, 'message', 'station', 'station', '⚠️ Turn failed: boom', 200)", [])
+  let _ = st.db.run("INSERT INTO preset_projects (workspace, sub, json) VALUES ('ws-main', 'u1', '{\"p1\":\"Alpha\"}')", [])
+
+  // 1. Real SQLite `signins.fill` / `self` / `deny` + zero password persistence
+  let si_store = SignInAsksStore::new()
+  let ask = SignInAskRecord::{
+    id: "g_smoke1", session: "s1", chat: "CHAT/1", owner: "alice@example.com",
+    site: "github.com", tab: "t1", reason: "login", at: 1700000000L, status: "pending", why: None, keep: None,
+  }
+  match si_store.save(st.db, ask) {
+    Ok(_) => ()
+    Err(e) => return Err("signins save failed: " + e)
+  }
+  let ws_of = fn(k : String) -> Option[String] { if k == "s1" { Some("ws-main") } else { None } }
+  let no_form = fn(_s : String, _t : String) -> Option[station_browser::SignInFormPort] { None }
+  let fill_b = base_codec::json_obj([
+    ("_viewerEmail", base_codec::json_str("alice@example.com")),
+    ("_viewerWorkspace", base_codec::json_str("ws-main")),
+    ("password", base_codec::json_str("SMOKE_SECRET_PW")),
+  ])
+  match dispatch_signins_interactive(si_store, st.db, ws_of, fn(_s, _m) { () }, no_form, "signins.fill", ["g_smoke1"], fill_b, 1700000010000L) {
+    Ok(r) => if base_codec::json_stringify(r).contains("SMOKE_SECRET_PW") { return Err("signins response leaked password") }
+    Err(e) => return Err("signins.fill failed: " + e.message)
+  }
+  match st.db.first("SELECT body FROM signin_asks WHERE id = 'g_smoke1'", []) {
+    Ok(Some(row)) => match row.get("body") {
+      Some(base_codec::Json::Str(raw)) => if raw.contains("SMOKE_SECRET_PW") { return Err("SQLite leaked password") }
+      _ => return Err("missing signin_asks body")
+    }
+    _ => return Err("missing signin_asks row")
+  }
+  match dispatch_signins_interactive(si_store, st.db, ws_of, fn(_s, _m) { () }, no_form, "signins.deny", ["g_smoke1"], fill_b, 1700000020000L) {
+    Ok(_) => if si_store.has_held("g_smoke1") { return Err("signins.deny did not wipe held creds") }
+    Err(e) => return Err("signins.deny failed: " + e.message)
+  }
+
+  // 2. Real SQLite + atomic `PROJECTS.jsonl` `projects.rename` & `projects.merge`
+  let events = station_api::EventsHub::new("st-smoke", station_api::EventKeeps::default())
+  let write_atomic = fn(p : String, b : Bytes) -> Result[Unit, String] {
+    if station_sys::write_file_atomic(p, b, 420) { Ok(()) } else { Err("write failed") }
+  }
+  let peer_sync = fn(_ws : String, _act : String, _f : String, _t : String, _at : Int64) -> Array[ProjectRenamePeerResult] { [] }
+  match execute_project_rename_merge(store, fs, d_root, "ws-main", events, write_atomic, peer_sync, "ws-main", "rename", "Alpha", "Gamma", Some("sm-1"), 2000L) {
+    Ok(r) => if !base_codec::json_stringify(r).contains("\"updated\":1") { return Err("projects.rename expected updated:1") }
+    Err(e) => return Err("projects.rename failed: " + e.message)
+  }
+  match execute_project_rename_merge(store, fs, d_root, "ws-main", events, write_atomic, peer_sync, "ws-main", "merge", "Gamma", "Beta", None, 3000L) {
+    Ok(r) => if !base_codec::json_stringify(r).contains("\"updated\":1") { return Err("projects.merge expected updated:1") }
+    Err(e) => return Err("projects.merge failed: " + e.message)
+  }
+
+  // 3. Real SQLite `feedback.report` notice preparation & `$HOME` scrubbing
+  let viewer = station_api::Viewer::{
+    email: "alice@example.com", sub: "u1", name: "Alice", workspace: "ws-main", home: true, role: "member", device: None, lock_base: None, lock_proof: None,
+  }
+  match prepare_feedback_notice_report(store, 1, 1, viewer, "linux", "x64", "/home/alice", Some("2026-11-28 ERROR agents::claude s1 /home/alice/x")) {
+    Ok((rep, _)) => {
+      let rs = base_codec::json_stringify(rep)
+      if rs.contains("/home/alice") || !rs.contains("~/x") { return Err("feedback report failed to scrub home path") }
+    }
+    Err(e) => return Err("feedback prepare failed: " + e.message)
+  }
+
+  // 4. PR #9161 P2 #1: `station_sys::utimes_now` on real file & dir
+  let uf = d_root + "/utimes-probe"
+  if !station_sys::write_file_atomic(uf, "ok".to_bytes(), 420) || !station_sys::utimes_now(uf) || !station_sys::utimes_now(d_root) {
+    return Err("station_sys::utimes_now selftest failed")
+  }
+  Ok(())
+}

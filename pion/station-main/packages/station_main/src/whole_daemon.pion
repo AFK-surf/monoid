@@ -88,6 +88,10 @@ let RUNNER_TOK_UNIX_CLOSE : Int = 5104
 
 // `mux_role` token for async `tar.file` archived session upload extraction (Wave 17C-3A R4 N1).
 let SESSION_TOK_TAR_FILE : Int = 5201
+// `mux_role` tokens for non-blocking async `GET /link-preview` & `POST /threads/:id/report` (Wave 17D-3).
+let LINK_PREVIEW_TOK_OPEN : Int = 5202
+let LINK_PREVIEW_TOK_READ : Int = 5203
+let FEEDBACK_TOK_POST : Int = 5204
 
 struct AdoptedRunnerConn {
   runner_id : String
@@ -150,6 +154,26 @@ struct AdminReqHead {
   expected_cl : Option[Int64]
 }
 
+fn wd_ascii_lower(s : String) -> String {
+  let b = s.to_bytes()
+  let out = Bytes::new(b.length())
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    out[i] = if c >= 65 && c <= 90 { (c + 32).to_byte() } else { b[i] }
+  }
+  out.to_string()
+}
+
+struct LinkPreviewAsyncState {
+  mut hop : Int
+  mut url : String
+  mut dns_ev_id : Int64
+  mut stream_id : Int
+  mut content_type : String
+  mut body_buf : Bytes
+  deadline_ms : Int64
+}
+
 enum AdminStreamMode {
   ControlStream
   ReadingHeadLine
@@ -158,6 +182,8 @@ enum AdminStreamMode {
   DriveDownloading(DriveDownloadStreamState)
   SessionFileDownloading(SessionFileDownloadState)
   WaitingArchiveExtract(station_whole::SessionArchiveExtractSpec)
+  WaitingLinkPreview(LinkPreviewAsyncState)
+  WaitingFeedbackReport
   SendingBody(AdminBodySendingState)
   SseStreaming(Int)
   Done
@@ -4455,6 +4481,192 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       None => ()
     }
 
+    // Wave 17D-3: Non-blocking async `GET /link-preview?url=` (strict SSRF DNS + multi-hop redirect check, zero `host_shim::wait`).
+    if head.method == "GET" && norm_path == "/link-preview" {
+      match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+        Some(old_resp) => {
+          send_admin_resp_and_finish(ctx, astream.sid, old_resp)
+          astream.mode = AdminStreamMode::Done
+          return
+        }
+        None => ()
+      }
+      match peer_id {
+        station_whole::PeerIdentity::AuthenticatedMember(_, _) => {
+          let (_, _, lp_q) = station_http::parse_request_target(norm_raw)
+          let raw_url = match lp_q.get("url") {
+            Some(u) => u.trim()
+            None => ""
+          }
+          let low_u = wd_ascii_lower(raw_url)
+          if (!low_u.starts_with("http://") && !low_u.starts_with("https://")) || raw_url.to_bytes().length() > station_whole::LINK_PREVIEW_MAX_URL_LEN {
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "an http(s) url is required"))
+            astream.mode = AdminStreamMode::Done
+            return
+          }
+          match station_whole::validate_link_preview_url(raw_url) {
+            Err(_) => {
+              send_admin_resp_and_finish(ctx, astream.sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            Ok(parsed) => {
+              let ev_id = st.next_dns_ev_id
+              st.next_dns_ev_id = ev_id + 1L
+              let lp_state = LinkPreviewAsyncState::{
+                hop: 0,
+                url: raw_url,
+                dns_ev_id: ev_id,
+                stream_id: 0,
+                content_type: "",
+                body_buf: Bytes::new(0),
+                deadline_ms: host_shim::now_ms() + station_whole::LINK_PREVIEW_TIMEOUT_MS,
+              }
+              astream.mode = AdminStreamMode::WaitingLinkPreview(lp_state)
+              st.dns_streams.set(ev_id, astream.sid)
+              if !station_sys::resolve_host_for_tunnel_async(ev_id, parsed.host, true) {
+                st.dns_streams.remove(ev_id)
+                send_admin_resp_and_finish(ctx, astream.sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                astream.mode = AdminStreamMode::Done
+              }
+              return
+            }
+          }
+        }
+        _ => {
+          send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "unauthenticated peer rejected"))
+          astream.mode = AdminStreamMode::Done
+          return
+        }
+      }
+    }
+
+    // Wave 17D-3: Non-blocking async `POST /threads/:id/report` (read-only allowed, signed POST to cloud `/v1/feedback`, zero `host_shim::wait`).
+    if head.method == "POST" && norm_path.starts_with("/threads/") && norm_path.ends_with("/report") {
+      let trimmed_r = norm_path.slice(9, norm_path.length() - 7)
+      if trimmed_r.length() > 0 && !trimmed_r.contains("/") {
+        match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+          Some(old_resp) => {
+            send_admin_resp_and_finish(ctx, astream.sid, old_resp)
+            astream.mode = AdminStreamMode::Done
+            return
+          }
+          None => ()
+        }
+        match peer_id {
+          station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
+            let tid = match base_codec::parse_int64_str(trimmed_r) {
+              Some(n) if n > 0L && n <= 2147483647L => n.to_int()
+              _ => {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, "unknown thread " + trimmed_r))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+            }
+            let body_j = match base_codec::json_parse(body.to_string()) {
+              base_codec::JsonParseResult::Ok(j) => j
+              _ => {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "invalid JSON"))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+            }
+            let entry_n = match base_codec::json_get(body_j, "n") {
+              Some(base_codec::Json::Num(d, _)) if d.to_int().to_double() == d && d.to_int() >= 1 => d.to_int()
+              _ => {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "n must be a positive integer"))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+            }
+            let log_path = nodepath::join(ctx.sep, [ctx.data, "stillfail.log"])
+            let log_tail : Option[String] = match (st.core.agents.jobs.fs.stat)(log_path) {
+              Some(fst) if fst.size > 0L => {
+                let tail_max = 131072L
+                let off = if fst.size > tail_max { fst.size - tail_max } else { 0L }
+                let len = fst.size - off
+                match (st.core.agents.jobs.fs.read_range)(log_path, off, len) {
+                  Some(b) => Some(b.to_string())
+                  None => None
+                }
+              }
+              _ => None
+            }
+            match station_whole::prepare_feedback_notice_report(
+              st.core.store,
+              tid,
+              entry_n,
+              v,
+              station_sys::os_name(),
+              station_sys::arch_name(),
+              station_sys::homedir(),
+              log_tail,
+            ) {
+              Err(e) => {
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(e.status, e.message))
+                astream.mode = AdminStreamMode::Done
+                return
+              }
+              Ok((report_j, _)) => {
+                if ctx.cloud.removed() {
+                  send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(502, "this station was removed from its workspace"))
+                  astream.mode = AdminStreamMode::Done
+                  return
+                }
+                let (origin, st_id) = match ctx.cloud.state {
+                  Some(cs) if cs.origin.length() > 0 && cs.station.length() > 0 => (cs.origin, cs.station)
+                  _ => {
+                    send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(502, "station is not enrolled with cloud"))
+                    astream.mode = AdminStreamMode::Done
+                    return
+                  }
+                }
+                let payload_str = base_codec::json_stringify(report_j)
+                let hdrs = match station_cloud::signed_post_headers(
+                  origin,
+                  st_id,
+                  "stillfail-station-feedback-v1",
+                  payload_str,
+                  host_shim::wall_ms(),
+                  ctx.station_key,
+                ) {
+                  Ok(h) => h
+                  Err(e) => {
+                    send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(502, "feedback signing failed: " + e))
+                    astream.mode = AdminStreamMode::Done
+                    return
+                  }
+                }
+                let hdr_fields : Array[(String, base_codec::Json)] = []
+                for hi in 0..<hdrs.length() {
+                  hdr_fields.push((hdrs[hi].0, base_codec::json_str(hdrs[hi].1)))
+                }
+                let fetch_args = base_codec::json_obj([
+                  ("url", base_codec::json_str(origin + "/v1/feedback")),
+                  ("method", base_codec::json_str("POST")),
+                  ("headers", base_codec::json_obj(hdr_fields)),
+                  ("timeoutMs", base_codec::json_int(15000)),
+                ])
+                astream.mode = AdminStreamMode::WaitingFeedbackReport
+                let _ = ctx.mux_role.call_async_raw(
+                  builders_core::MuxToken::Tagged(0, FEEDBACK_TOK_POST, astream.sid),
+                  "http.fetch",
+                  base_codec::json_stringify(fetch_args),
+                  Some(payload_str.to_bytes()),
+                )
+                return
+              }
+            }
+          }
+          _ => {
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "unauthenticated peer rejected"))
+            astream.mode = AdminStreamMode::Done
+            return
+          }
+        }
+      }
+    }
+
     let action = st.core.handle_peer_http(peer_id, head.method, head.path, head.headers, body, now_w)
     match action {
       station_http::HandlerAction::Respond(resp) => {
@@ -4782,6 +4994,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       | AdminStreamMode::DriveDownloading(_)
       | AdminStreamMode::SessionFileDownloading(_)
       | AdminStreamMode::WaitingArchiveExtract(_)
+      | AdminStreamMode::WaitingLinkPreview(_)
+      | AdminStreamMode::WaitingFeedbackReport
       | AdminStreamMode::SendingBody(_) => {
         astream.rx_buf = Bytes::new(0)
         return Ok(())
@@ -5564,6 +5778,190 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
+        // Async `GET /link-preview` stream.open completion (Wave 17D-3).
+        if kind == LINK_PREVIEW_TOK_OPEN {
+          match st.admin_streams.get(sid) {
+            None => ()
+            Some(astream) => match astream.mode {
+              AdminStreamMode::WaitingLinkPreview(lp) => {
+                match station_http::decode_stream_open_done(d) {
+                  Err(_) => {
+                    send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                    astream.mode = AdminStreamMode::Done
+                  }
+                  Ok(head_info) => {
+                    lp.stream_id = head_info.id
+                    let mut ct = ""
+                    let mut enc = ""
+                    let mut loc : Option[String] = None
+                    for hi in 0..<head_info.headers.length() {
+                      let hk = wd_ascii_lower(head_info.headers[hi].0)
+                      let hv = head_info.headers[hi].1
+                      if hk == "content-type" { ct = hv }
+                      else if hk == "content-encoding" { enc = wd_ascii_lower(hv.trim()) }
+                      else if hk == "location" { loc = Some(hv) }
+                    }
+                    let close_lp = fn() -> Unit {
+                      if lp.stream_id > 0 {
+                        let _ = ctx.edge_hub.call_async_discard(
+                          "stream.close",
+                          "{\"id\":" + lp.stream_id.to_string() + "}",
+                          None,
+                        )
+                        lp.stream_id = 0
+                      }
+                    }
+                    if enc.length() > 0 && enc != "identity" {
+                      close_lp()
+                      send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                      astream.mode = AdminStreamMode::Done
+                      return
+                    }
+                    if head_info.status >= 300 && head_info.status < 400 {
+                      close_lp()
+                      let next_hop = lp.hop + 1
+                      if next_hop >= station_whole::LINK_PREVIEW_MAX_HOPS {
+                        send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                        astream.mode = AdminStreamMode::Done
+                        return
+                      }
+                      match loc {
+                        Some(l) => match station_whole::resolve_redirect_url(lp.url, l) {
+                          Some(next_url) => match station_whole::validate_link_preview_url(next_url) {
+                            Ok(parsed) => {
+                              let ev_id = st.next_dns_ev_id
+                              st.next_dns_ev_id = ev_id + 1L
+                              lp.hop = next_hop
+                              lp.url = next_url
+                              lp.dns_ev_id = ev_id
+                              st.dns_streams.set(ev_id, sid)
+                              if !station_sys::resolve_host_for_tunnel_async(ev_id, parsed.host, true) {
+                                st.dns_streams.remove(ev_id)
+                                send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                                astream.mode = AdminStreamMode::Done
+                              }
+                            }
+                            Err(_) => {
+                              send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                              astream.mode = AdminStreamMode::Done
+                            }
+                          }
+                          None => {
+                            send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                            astream.mode = AdminStreamMode::Done
+                          }
+                        }
+                        None => {
+                          send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                          astream.mode = AdminStreamMode::Done
+                        }
+                      }
+                      return
+                    }
+                    let ct_low = wd_ascii_lower(ct)
+                    if head_info.status < 200 || head_info.status >= 300 || (ct_low.length() > 0 && !ct_low.contains("text/html") && !ct_low.contains("application/xhtml")) {
+                      close_lp()
+                      send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                      astream.mode = AdminStreamMode::Done
+                      return
+                    }
+                    lp.content_type = ct
+                    let rem = lp.deadline_ms - host_shim::now_ms()
+                    let stall = if rem > 0L && rem < 6000L { rem.to_int() } else { 6000 }
+                    let _ = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(0, LINK_PREVIEW_TOK_READ, sid),
+                      "stream.read",
+                      base_codec::json_stringify(base_codec::json_obj([
+                        ("id", base_codec::json_int(lp.stream_id)),
+                        ("stallMs", base_codec::json_int(stall)),
+                      ])),
+                      None,
+                    )
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+          return
+        }
+        // Async `GET /link-preview` stream.read completion (Wave 17D-3).
+        if kind == LINK_PREVIEW_TOK_READ {
+          match st.admin_streams.get(sid) {
+            None => ()
+            Some(astream) => match astream.mode {
+              AdminStreamMode::WaitingLinkPreview(lp) => {
+                let finish_lp = fn() -> Unit {
+                  if lp.stream_id > 0 {
+                    let _ = ctx.edge_hub.call_async_discard(
+                      "stream.close",
+                      "{\"id\":" + lp.stream_id.to_string() + "}",
+                      None,
+                    )
+                    lp.stream_id = 0
+                  }
+                  let res_j = station_whole::parse_link_preview_html(lp.body_buf.to_string(), lp.url)
+                  send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, base_codec::json_stringify(res_j)))
+                  astream.mode = AdminStreamMode::Done
+                }
+                match station_http::decode_stream_read_done(d) {
+                  Err(_) | Ok(station_http::StreamChunk::End) => finish_lp()
+                  Ok(station_http::StreamChunk::Data(chunk)) => {
+                    lp.body_buf = concat_bytes_local(lp.body_buf, chunk)
+                    let cur_s = wd_ascii_lower(lp.body_buf.to_string())
+                    if lp.body_buf.length() >= station_whole::LINK_PREVIEW_MAX_BYTES || cur_s.contains("</head>") || host_shim::now_ms() >= lp.deadline_ms {
+                      finish_lp()
+                    } else {
+                      let rem = lp.deadline_ms - host_shim::now_ms()
+                      let stall = if rem > 0L && rem < 6000L { rem.to_int() } else { 1000 }
+                      let _ = ctx.mux_role.call_async_raw(
+                        builders_core::MuxToken::Tagged(0, LINK_PREVIEW_TOK_READ, sid),
+                        "stream.read",
+                        base_codec::json_stringify(base_codec::json_obj([
+                          ("id", base_codec::json_int(lp.stream_id)),
+                          ("stallMs", base_codec::json_int(stall)),
+                        ])),
+                        None,
+                      )
+                    }
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+          return
+        }
+        // Async `POST /threads/:id/report` cloud feedback completion (Wave 17D-3).
+        if kind == FEEDBACK_TOK_POST {
+          match st.admin_streams.get(sid) {
+            None => ()
+            Some(astream) => match astream.mode {
+              AdminStreamMode::WaitingFeedbackReport => {
+                match station_http::decode_fetch_done(d) {
+                  Err(e) => {
+                    send_admin_resp_and_finish(ctx, sid, station_api::json_error(502, "feedback transport error: " + e.message))
+                  }
+                  Ok(resp) => {
+                    match station_whole::parse_feedback_cloud_response(resp.status, resp.body_text()) {
+                      Ok(j) => send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, base_codec::json_stringify(j)))
+                      Err(e) => {
+                        let body_s = match e.raw_body {
+                          Some(rb) => base_codec::json_stringify(rb)
+                          None => base_codec::json_stringify(base_codec::json_obj([("error", base_codec::json_str(e.message))]))
+                        }
+                        send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(e.status, body_s))
+                      }
+                    }
+                  }
+                }
+                astream.mode = AdminStreamMode::Done
+              }
+              _ => ()
+            }
+          }
+          return
+        }
         // Async `tar.file` archived session upload completion (Wave 17C-3A R4 N1).
         if kind == SESSION_TOK_TAR_FILE {
           match st.admin_streams.get(sid) {
@@ -7065,8 +7463,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       live_runners_cell[0] = Some(live_runners)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
-      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
+      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members, live_runners=Some(live_runners))
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
+      let _ = upkeep.cleanup_stale_tar_extracts(host_shim::wall_ms(), min_age_ms=0L)
       state_opt = Some(WholeRuntimeState::{
         core: core,
         replica: replica,
@@ -8098,6 +8497,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 | AdminStreamMode::DriveDownloading(_)
                 | AdminStreamMode::SessionFileDownloading(_)
                 | AdminStreamMode::WaitingArchiveExtract(_)
+                | AdminStreamMode::WaitingLinkPreview(_)
+                | AdminStreamMode::WaitingFeedbackReport
                 | AdminStreamMode::SendingBody(_) => {
                   return Ok(())
                 }
@@ -8238,6 +8639,19 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   let _ = (st.core.agents.jobs.fs.remove_file)(spec.out_path)
                   false
                 }
+                AdminStreamMode::WaitingLinkPreview(lp) => {
+                  if lp.dns_ev_id > 0L {
+                    st.dns_streams.remove(lp.dns_ev_id)
+                  }
+                  if lp.stream_id > 0 {
+                    let _ = ctx.edge_hub.call_async_discard(
+                      "stream.close",
+                      "{\"id\":" + lp.stream_id.to_string() + "}",
+                      None,
+                    )
+                  }
+                  false
+                }
                 _ => false
               }
               if !is_ctrl {
@@ -8303,6 +8717,42 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               match st.dns_streams.get(ev_id) {
                 Some(sid) => {
                   st.dns_streams.remove(ev_id)
+                  match st.admin_streams.get(sid) {
+                    Some(astream) => match astream.mode {
+                      AdminStreamMode::WaitingLinkPreview(lp) => {
+                        if lp.dns_ev_id == ev_id {
+                          lp.dns_ev_id = 0L
+                          if rc != 1 || !station_whole::is_public_link_preview_ip(ip) {
+                            send_admin_resp_and_finish(ctx, sid, station_http::HttpResponse::json(200, "{\"kind\":\"none\"}"))
+                            astream.mode = AdminStreamMode::Done
+                          } else {
+                            let rem = lp.deadline_ms - host_shim::now_ms()
+                            let tmo = if rem > 0L && rem < 6000L { rem.to_int() } else { 6000 }
+                            let open_args = base_codec::json_obj([
+                              ("url", base_codec::json_str(lp.url)),
+                              ("method", base_codec::json_str("GET")),
+                              ("redirect", base_codec::json_str("manual")),
+                              ("headers", base_codec::json_obj([
+                                ("user-agent", base_codec::json_str("stillfail-station (link preview)")),
+                                ("accept", base_codec::json_str("text/html,application/xhtml+xml")),
+                                ("accept-encoding", base_codec::json_str("identity")),
+                              ])),
+                              ("timeoutMs", base_codec::json_int(tmo)),
+                            ])
+                            let _ = ctx.mux_role.call_async_raw(
+                              builders_core::MuxToken::Tagged(0, LINK_PREVIEW_TOK_OPEN, sid),
+                              "stream.open",
+                              base_codec::json_stringify(open_args),
+                              None,
+                            )
+                          }
+                          return
+                        }
+                      }
+                      _ => ()
+                    }
+                    None => ()
+                  }
                   match st.proxy_streams.get(sid) {
                     Some(pstream) => match pstream.mode {
                       ProxyStreamMode::ResolvingHost(cur_ev, host, port, is_probe, carry, peer_ended) => {

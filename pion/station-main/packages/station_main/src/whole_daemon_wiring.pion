@@ -13,6 +13,7 @@ import "host_shim"
 import "lock"
 import "nodepath"
 import "station_api"
+import "station_browser"
 import "station_cloud"
 import "station_devices"
 import "station_jobs"
@@ -726,8 +727,9 @@ pub fn wire_whole_core_runtime_hooks(
   logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
   seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  live_runners~ : Option[LiveRunnerManager] = None,
 ) -> Unit {
-  let _ = browser
+  let signins_store = station_whole::SignInAsksStore::new()
   core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
     let now_s = host_shim::wall_ms().to_double() / 1000.0
     let _ = prune_expired_seen_members(seen_members, now_s)
@@ -754,9 +756,171 @@ pub fn wire_whole_core_runtime_hooks(
       fn(pid : Int) -> Int { station_sys::proc_kill(pid, station_sys::SIG_USR2, false) },
     )
   })
-  // `on_screens_browser_open` and `on_signins_op` remain None (honest 501) until real Chrome/CDP/ScreenHub & SignInFormPort flows are wired end-to-end.
-  core.api.hooks.on_screens_browser_open = None
-  core.api.hooks.on_signins_op = None
+  // Wave 17D-3: Wire `screens.browser.open` (`BrowserOsManager` + `ScreenHub` + strict URL policy).
+  core.api.hooks.on_screens_browser_open = Some(fn(
+    url : String,
+    tab_id : Option[String],
+  ) -> Result[String, station_api::ApiError] {
+    station_whole::open_browser_screen_interactive(
+      browser,
+      core.api.screens,
+      url,
+      tab_id,
+      host_shim::wall_ms(),
+      fn(n : Int) -> String {
+        match station_sys::random_bytes(n) {
+          Ok(b) => base_codec::hex_encode(b)
+          Err(_) => "000000000000"
+        }
+      },
+    )
+  })
+  // Wave 17D-3: Wire `signins.fill` / `signins.self` / `signins.deny` (SQLite `signin_asks` + memory-only creds).
+  core.api.hooks.on_signins_op = Some(fn(
+    op : String,
+    params : Array[String],
+    body : base_codec::Json,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    let st = match core.store.require_open() {
+      Ok(s) => s
+      Err(e) => return Err(station_api::ApiError::new(503, e))
+    }
+    let home_ws = core.config.home_workspace
+    let session_ws_of = fn(skey : String) -> Option[String] {
+      match st.get_session(skey) {
+        Ok(Some(row)) => match row.ws {
+          Some(w) if w.length() > 0 => Some(w)
+          _ => Some(home_ws)
+        }
+        _ => None
+      }
+    }
+    let notify_session = fn(skey : String, msg : String) -> Unit {
+      match st.get_session(skey) {
+        Ok(Some(row)) => {
+          let actor = core.agents.hub.ensure_actor(skey, row.runtime)
+          let _ = actor.submit_input(msg)
+        }
+        _ => ()
+      }
+    }
+    station_whole::dispatch_signins_interactive(
+      signins_store,
+      st.db,
+      session_ws_of,
+      notify_session,
+      fn(_s : String, _t : String) -> Option[station_browser::SignInFormPort] { None },
+      op,
+      params,
+      body,
+      host_shim::wall_ms(),
+    )
+  })
+  // Wave 17D-3: Wire `projects.rename` & `projects.merge` (atomic SQLite + `PROJECTS.jsonl` + peer sync hook).
+  core.api.hooks.on_project_rename_merge = Some(fn(
+    ws : String,
+    action : String,
+    from_name : String,
+    to_name : String,
+    idem_key : Option[String],
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    let write_atomic = fn(path : String, data : Bytes) -> Result[Unit, String] {
+      let dir = nodepath::dirname(ctx.sep, path)
+      let _ = station_sys::mkdir_p(dir)
+      if station_sys::write_file_atomic(path, data, 420) {
+        Ok(())
+      } else {
+        Err("failed to atomically write " + path)
+      }
+    }
+    let peer_sync = fn(
+      target_ws : String,
+      _act : String,
+      _from_n : String,
+      _to_n : String,
+      _renamed_at : Int64,
+    ) -> Array[station_whole::ProjectRenamePeerResult] {
+      let out : Array[station_whole::ProjectRenamePeerResult] = []
+      let self_id = core.config.station_id
+      let now_s = host_shim::wall_ms().to_double() / 1000.0
+      let ms = ctx.cloud.full_memberships(now_s)
+      for mi in 0..<ms.length() {
+        if ms[mi].workspace == target_ws {
+          for pi in 0..<ms[mi].peers.length() {
+            let pj = ms[mi].peers[pi]
+            let pid = match base_codec::json_get(pj, "id") {
+              Some(base_codec::Json::Str(s)) => s
+              _ => ""
+            }
+            let pname = match base_codec::json_get(pj, "name") {
+              Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s)
+              _ => None
+            }
+            if pid.length() > 0 && pid != self_id {
+              out.push(station_whole::ProjectRenamePeerResult::{
+                id: pid,
+                name: pname,
+                status: "queued",
+                updated: 0,
+                error: None,
+              })
+            }
+          }
+          break
+        }
+      }
+      out
+    }
+    station_whole::execute_project_rename_merge(
+      core.store,
+      core.agents.jobs.fs,
+      ctx.data,
+      core.config.home_workspace,
+      core.api.events,
+      write_atomic,
+      peer_sync,
+      ws,
+      action,
+      from_name,
+      to_name,
+      idem_key,
+      host_shim::wall_ms(),
+    )
+  })
+  // Wave 17D-3: Wire `hub.session.retry` & `hub.session.compact` through `LiveRunnerManager`.
+  match live_runners {
+    Some(lrm) => {
+      core.api.hooks.on_session_retry = Some(fn(
+        key : String,
+        tid : Int64,
+        seq : Int64,
+      ) -> Result[Unit, station_api::ApiError] {
+        lrm.retry_failed_session(
+          ctx,
+          core,
+          ctx.cfg_raw,
+          key,
+          tid,
+          seq,
+          host_shim::now_ms(),
+          host_shim::wall_ms(),
+        )
+      })
+      core.api.hooks.on_session_compact = Some(fn(
+        key : String,
+      ) -> Result[Unit, station_api::ApiError] {
+        lrm.compact_session(
+          ctx,
+          core,
+          ctx.cfg_raw,
+          key,
+          host_shim::now_ms(),
+          host_shim::wall_ms(),
+        )
+      })
+    }
+    None => ()
+  }
   core.api.hooks.on_logins_op = Some(fn(
     op : String,
     params : Array[String],
@@ -940,6 +1104,47 @@ pub fn AsyncUpkeepRunner::new(
   }
 }
 
+/// PR #9161 P2: Clean up stale `<data>/tmp/tar-extract-*` temporary files/directories left by
+/// interrupted archived-upload extractions. At startup pass `min_age_ms=0L`; during periodic
+/// upkeep pass `min_age_ms=3600000L` so in-flight extractions are untouched.
+pub fn AsyncUpkeepRunner::cleanup_stale_tar_extracts(
+  self : AsyncUpkeepRunner,
+  now_ms : Int64,
+  min_age_ms~ : Int64 = 0L,
+) -> Int {
+  let tmp_dir = nodepath::join(self.sep, [self.data_dir, "tmp"])
+  let names = match (self.fs.read_dir)(tmp_dir) {
+    Some(ns) => ns
+    None => return 0
+  }
+  let mut removed = 0
+  for i in 0..<names.length() {
+    let name = names[i]
+    if !name.starts_with("tar-extract-") {
+      continue
+    }
+    let full = nodepath::join(self.sep, [tmp_dir, name])
+    let mut is_dir = false
+    let mut stale = min_age_ms <= 0L
+    match (self.fs.lstat)(full) {
+      Some(st) => {
+        is_dir = st.kind == "dir"
+        if !stale && now_ms - st.mtime_ms >= min_age_ms {
+          stale = true
+        }
+      }
+      None => stale = false
+    }
+    if stale {
+      let ok = if is_dir { (self.fs.remove_dir_all)(full) } else { (self.fs.remove_file)(full) }
+      if ok {
+        removed = removed + 1
+      }
+    }
+  }
+  removed
+}
+
 /// Discover shared clone repos under `<data>/repos` and enqueue them for non-blocking `git gc --auto`.
 pub fn AsyncUpkeepRunner::discover_repos(self : AsyncUpkeepRunner, daily : Bool) -> Int {
   let repos_dir = nodepath::join(self.sep, [self.data_dir, "repos"])
@@ -1039,10 +1244,11 @@ pub fn AsyncUpkeepRunner::tick(
   if clones_active {
     return
   }
-  // 2. Schedule periodic discovery pass
+  // 2. Schedule periodic discovery pass & stale tar-extract cleanup
   if self.pending_repos.length() == 0 && now_ms >= self.next_pass_ms {
     // timer: periodic async shared-clone pack upkeep interval (1h)
     self.next_pass_ms = now_ms + ASYNC_UPKEEP_INTERVAL_MS
+    let _ = self.cleanup_stale_tar_extracts(host_shim::wall_ms(), min_age_ms=3600000L)
     let _ = self.discover_repos(false)
   }
   // 3. Pop next repo and spawn async `git gc --auto --quiet`

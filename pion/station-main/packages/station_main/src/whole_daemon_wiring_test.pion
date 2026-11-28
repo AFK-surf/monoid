@@ -294,6 +294,66 @@ test "wave17c2 AsyncUpkeepRunner discovers shared clone repos without blocking" 
   }
 }
 
+test "w17d3 PR #9161 P2: AsyncUpkeepRunner cleans stale tar-extract-* entries on startup and upkeep" {
+  let removed_files : Array[String] = []
+  let removed_dirs : Array[String] = []
+  let dirs : Map[String, Array[String]] = Map::new()
+  dirs.set("/data/tmp", ["tar-extract-old.bin", "tar-extract-fresh.bin", "tar-extract-dir", "keep-other.bin"])
+  let fs = station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if p == "/data/tmp/tar-extract-old.bin" {
+        Some(station_jobs::FsStat::{ kind: "file", size: 10L, executable: false, mode: 420, mtime_ms: 1000L, dev: 1L, ino: 1L })
+      } else if p == "/data/tmp/tar-extract-fresh.bin" {
+        Some(station_jobs::FsStat::{ kind: "file", size: 10L, executable: false, mode: 420, mtime_ms: 9999000L, dev: 1L, ino: 2L })
+      } else if p == "/data/tmp/tar-extract-dir" {
+        Some(station_jobs::FsStat::{ kind: "dir", size: 0L, executable: true, mode: 493, mtime_ms: 1000L, dev: 1L, ino: 3L })
+      } else if p == "/data/tmp/keep-other.bin" {
+        Some(station_jobs::FsStat::{ kind: "file", size: 10L, executable: false, mode: 420, mtime_ms: 1000L, dev: 1L, ino: 4L })
+      } else {
+        None
+      }
+    },
+    lstat_err: None,
+    stat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
+    read_dir: fn(p : String) -> Option[Array[String]] { dirs.get(p) },
+    read_file: fn(_p : String) -> Option[String] { None },
+    read_bytes: fn(_p : String) -> Option[Bytes] { None },
+    read_range: fn(_p : String, _o : Int64, _l : Int64) -> Option[Bytes] { None },
+    write_file: fn(_p : String, _s : String) -> Bool { true },
+    write_bytes: fn(_p : String, _b : Bytes) -> Bool { true },
+    write_file_mode: fn(_p : String, _b : Bytes, _m : Int, _a : Bool) -> Bool { true },
+    append_file: fn(_p : String, _s : String) -> Bool { true },
+    truncate_in_place: fn(_p : String) -> Bool { true },
+    mkdir_p: fn(_p : String) -> Bool { true },
+    remove_file: fn(p : String) -> Bool { removed_files.push(p); true },
+    rmdir: fn(_p : String) -> Bool { true },
+    remove_dir_all: fn(p : String) -> Bool { removed_dirs.push(p); true },
+    rename: fn(_a : String, _b : String) -> Bool { true },
+    realpath: fn(p : String) -> Option[String] { Some(p) },
+    readlink: fn(_p : String) -> Option[String] { None },
+    chmod: fn(_p : String, _m : Int) -> Bool { true },
+    exists: fn(_p : String) -> Bool { true },
+    now_ms: fn() -> Int64 { 10000000L },
+  }
+  let runner = AsyncUpkeepRunner::new("/data", "/", fs, 10000000L)
+  // Periodic upkeep (`min_age_ms=3600000L`): removes old file + old dir, skips fresh file and non-tar-extract file
+  let n_periodic = runner.cleanup_stale_tar_extracts(10000000L, min_age_ms=3600000L)
+  if n_periodic != 2 || removed_files.length() != 1 || removed_dirs.length() != 1 {
+    panic("periodic cleanup expected 2 removed (1 file + 1 dir), got " + n_periodic.to_string())
+  }
+  if removed_files[0] != "/data/tmp/tar-extract-old.bin" || removed_dirs[0] != "/data/tmp/tar-extract-dir" {
+    panic("periodic cleanup removed wrong paths")
+  }
+  // Startup cleanup (`min_age_ms=0L`): removes all 3 tar-extract-* entries, still spares keep-other.bin
+  removed_files.clear()
+  removed_dirs.clear()
+  let n_startup = runner.cleanup_stale_tar_extracts(10000000L, min_age_ms=0L)
+  if n_startup != 3 || removed_files.length() != 2 || removed_dirs.length() != 1 {
+    panic("startup cleanup expected 3 removed (2 files + 1 dir), got " + n_startup.to_string())
+  }
+}
+
 fn w17c2_person_genesis(sub : String, dev_pub : String) -> (String, Array[form::Json]) {
   let dev_key = "ed25519:" + dev_pub
   let entry = form::Json::Obj([

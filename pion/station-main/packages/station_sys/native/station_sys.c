@@ -10706,4 +10706,29 @@ int32_t sts_runner_sock_send_verified(
 #endif
 }
 
+int32_t sts_utimes_now(const char *path) {
+    if (path == NULL || path[0] == '\0') return 0;
+#ifdef _WIN32
+    wchar_t *wp = sts_utf8_to_wide(path);
+    if (wp == NULL) return 0;
+    HANDLE h = CreateFileW(
+        wp,
+        FILE_WRITE_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS,
+        NULL);
+    free(wp);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    BOOL ok = SetFileTime(h, NULL, &ft, &ft);
+    CloseHandle(h);
+    return ok ? 1 : 0;
+#else
+    return utimensat(AT_FDCWD, path, NULL, 0) == 0 ? 1 : 0;
+#endif
+}
+
 #include "station_js_lower.h"

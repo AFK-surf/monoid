@@ -197,6 +197,7 @@ extern "C" fn sts_resolve_host_for_tunnel_async(
   reject_loopback_or_unspec : Int,
 ) -> Int
 extern "C" fn sts_exec_replace(program : Ptr, argv_nul : Ptr, argv_len : Int64) -> Int
+extern "C" fn sts_utimes_now(path : Ptr) -> Int
 extern "C" fn sts_free(ptr : Ptr) -> Unit
 
 // ---------------------------------------------------------------------------
@@ -1664,6 +1665,13 @@ pub fn resolve_host_for_tunnel_async(
   )
   let _ = host.length()
   ok != 0
+}
+
+/// Update a file or directory's atime/mtime to current wall time (`utimes(path, NULL)` / `SetFileTime`).
+pub fn utimes_now(path : String) -> Bool {
+  let rc = sts_utimes_now(path.as_cstr())
+  let _ = path.length()
+  rc == 1
 }
 
 /// Replace the current process in-place:

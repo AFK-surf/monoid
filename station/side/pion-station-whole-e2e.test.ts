@@ -3052,6 +3052,35 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(wsResp.status, 200, `GET /workspaces failed: ${wsResp.body.toString()}`);
   assert.ok(wsResp.body.toString().includes(ws), `GET /workspaces missing ${ws}: ${wsResp.body.toString()}`);
 
+  // 4. Wave 17D-3: Live Admin/1 interactive ops (screens.browser.open, signins.*, projects.rename, links.preview SSRF, feedback.report, retry/compact)
+  const brwBad = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "file:///etc/passwd" })));
+  assert.equal(brwBad.status, 400, `file:// browser open must return 400, got ${brwBad.status}`);
+  const brwOk = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "https://example.com/w17d3" })));
+  assert.equal(brwOk.status, 200, `POST /screens/browser failed: ${brwOk.status} ${brwOk.body.toString()}`);
+  assert.ok(brwOk.body.toString().includes("browser:u_"), `expected browser:u_ screen id: ${brwOk.body.toString()}`);
+
+  const siMiss = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/fill", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ code: "123456" })));
+  assert.equal(siMiss.status, 409, `signins.fill unknown id must return 409 (not 501), got ${siMiss.status}`);
+  assert.ok(siMiss.body.toString().includes("signin_refused"), `expected signin_refused: ${siMiss.body.toString()}`);
+
+  const lpSsrf = await adminCall(conn, "GET", "/link-preview?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F");
+  assert.equal(lpSsrf.status, 200, `links.preview SSRF must return 200 kind:none, got ${lpSsrf.status}`);
+  assert.equal(JSON.parse(lpSsrf.body.toString()).kind, "none");
+  const lpBad = await adminCall(conn, "GET", "/link-preview?url=file%3A%2F%2F%2Fetc%2Fpasswd");
+  assert.equal(lpBad.status, 400, `links.preview file:// must return 400, got ${lpBad.status}`);
+
+  const fbMiss = await adminCall(conn, "POST", "/threads/99999/report", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ n: 1 })));
+  assert.equal(fbMiss.status, 404, `feedback.report unknown thread must return 404 (not 501), got ${fbMiss.status}`);
+
+  const projRen = await adminCall(conn, "POST", "/projects/rename", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ from: "OldW17D3", to: "NewW17D3" })));
+  assert.equal(projRen.status, 200, `POST /projects/rename failed: ${projRen.status} ${projRen.body.toString()}`);
+  assert.equal(JSON.parse(projRen.body.toString()).action, "rename");
+
+  const retryMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/retry", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: 1, seq: 1 })));
+  assert.equal(retryMiss.status, 404, `hub.session.retry unknown session must return 404 (not 501), got ${retryMiss.status}`);
+  const compactMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/compact", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(compactMiss.status, 404, `hub.session.compact unknown session must return 404 (not 501), got ${compactMiss.status}`);
+
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
