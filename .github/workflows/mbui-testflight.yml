@@ -47,6 +47,7 @@ jobs:
     outputs:
       products: ${{ steps.products.outputs.products }}
     steps:
+      - run: sudo -n sysctl -qw net.ipv4.tcp_syn_retries=3 || true
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}
@@ -105,6 +106,8 @@ jobs:
       RELEASE_PRODUCT: ${{ matrix.product }}
       RELEASE_SKIP_TESTS: ${{ inputs.skip_tests }}
     steps:
+      - if: runner.environment != 'self-hosted'
+        run: sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
         with:
           ref: ${{ github.sha }}

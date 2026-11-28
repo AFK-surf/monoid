@@ -9,17 +9,24 @@ import { keyId, verifyFeed } from "../shared/release-signed.ts";
 import { buildReleaseIncluded, writeReleaseIncluded } from "./release-included.ts";
 import { doomedOf } from "./release-prune.ts";
 
+function cleanEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of Object.keys(env)) {
+    if (k.startsWith("GIT_")) delete env[k];
+  }
+  return { ...env, ...extra };
+}
+
 function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, {
     cwd,
     encoding: "utf8",
-    env: {
-      ...process.env,
+    env: cleanEnv({
       GIT_AUTHOR_NAME: "Test",
       GIT_AUTHOR_EMAIL: "test@example.com",
       GIT_COMMITTER_NAME: "Test",
       GIT_COMMITTER_EMAIL: "test@example.com",
-    },
+    }),
   }).trim();
 }
 
@@ -95,6 +102,9 @@ test("release-sign + verifyFeed: signs and verifies included manifest, and stays
     const pem = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
     const rawPub = Buffer.from(publicKey.export({ format: "jwk" }).x as string, "base64url").toString("base64");
     const trusted = new Map([[keyId(rawPub), rawPub]]);
+    // Unset CI so release-sign.ts allows the test's ephemeral key (not in production RELEASE_KEYS).
+    const signEnv = cleanEnv({ RELEASE_SIGNING_KEY: pem });
+    delete signEnv.CI;
 
     const incDir = join(dir, "inc");
     const feedWith = join(dir, "station-with.json");
@@ -114,7 +124,7 @@ test("release-sign + verifyFeed: signs and verifies included manifest, and stays
         repo,
         `linux-x64=${archive}`,
       ],
-      { env: { ...process.env, RELEASE_SIGNING_KEY: pem }, stdio: "pipe" },
+      { env: signEnv, stdio: "pipe" },
     );
 
     const parsedWith = JSON.parse(readFileSync(feedWith, "utf8"));
@@ -137,7 +147,7 @@ test("release-sign + verifyFeed: signs and verifies included manifest, and stays
         commit,
         `linux-x64=${archive}`,
       ],
-      { env: { ...process.env, RELEASE_SIGNING_KEY: pem }, stdio: "pipe" },
+      { env: signEnv, stdio: "pipe" },
     );
     const verifiedWithout = verifyFeed(JSON.parse(readFileSync(feedWithout, "utf8")), trusted);
     assert.equal(verifiedWithout.included, undefined);

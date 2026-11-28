@@ -32,13 +32,30 @@ export type WrittenReleaseIncluded = {
 const CHERRY_PICK = /cherry picked from commit ([0-9a-f]{7,40})/gi;
 const SUBJECT_PR = /\(#(\d+)\)/g;
 
+const GIT_REPO_ENV = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_COMMON_DIR",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_PREFIX",
+  "GIT_SUPER_PREFIX",
+];
+
+function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of GIT_REPO_ENV) delete env[k];
+  return env;
+}
+
 function git(repo: string, ...args: string[]): string {
-  return execFileSync("git", args, { cwd: repo, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
+  return execFileSync("git", args, { cwd: repo, env: gitEnv(), encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
 }
 
 function gitMaybe(repo: string, ...args: string[]): string | null {
   try {
-    return execFileSync("git", args, { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync("git", args, { cwd: repo, env: gitEnv(), encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return null;
   }
