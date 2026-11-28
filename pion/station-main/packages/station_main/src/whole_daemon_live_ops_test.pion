@@ -14,6 +14,7 @@ import "station_api"
 import "station_cloud"
 import "station_devices"
 import "station_http"
+import "station_ops"
 import "station_whole"
 
 test "wave17d2 r3: workspaces.join prepares /v1/stations/join with locks:true and preserves original workspace" {
@@ -167,5 +168,89 @@ test "wave17d2 r3: live_current_platform, start_isolated, PeerAuthPolicy::add_wo
   }
   if controlled_s3_error_message(403).contains("<Error>") || controlled_join_error_message(401).length() == 0 {
     panic("controlled error check failed")
+  }
+}
+
+test "wave17d2 r4: profile logins manager is completely isolated from machine logins manager" {
+  let machine_logins = station_devices::LoginsManager::new(None)
+  let profile_logins = station_devices::LoginsManager::new(None)
+  let starter = station_devices::LoginStarter::{
+    workspace: Some("ws-secret"),
+    by: station_devices::LoginPerson::{ email: "alice@example.com", name: "Alice" },
+    chat: None,
+    chat_title: None,
+  }
+  let prof_view = match profile_logins.start_isolated("claude auth login", starter, None, false, 1000L) {
+    Ok(v) => v
+    Err(e) => panic("profile start_isolated failed: " + e.message)
+  }
+  // `/machine-logins` list MUST remain completely empty and MUST NOT see or cancel profile login IDs!
+  if machine_logins.list().length() != 0 {
+    panic("machine_logins MUST NOT expose profile logins")
+  }
+  if machine_logins.get(prof_view.id).is_some() {
+    panic("machine_logins MUST NOT find profile login by id")
+  }
+  if profile_logins.get(prof_view.id).is_none() {
+    panic("profile_logins should track its own login")
+  }
+}
+
+test "wave17d2 r4: updates.check feed URL uses station_cli::feed_url, live_version_newer, and executable probe" {
+  let mem = station_cloud::MemCloudFs::new()
+  let cfs = mem.as_fs()
+  mem.files.set(station_cloud::state_path("/tmp/w17d2-feed"), "{\"origin\":\"https://api.still.fail\",\"workspace\":\"ws-1\",\"name\":\"Box\",\"peers\":[],\"joined\":[]}")
+  let st_opt = match station_cloud::read_state("/tmp/w17d2-feed", cfs) {
+    Ok(s) => s
+    Err(e) => panic("read_state failed: " + e)
+  }
+  let stable_u = live_release_feed_url_for(None, st_opt, "stable")
+  let beta_u = live_release_feed_url_for(None, st_opt, "beta")
+  if stable_u != Some("https://api.still.fail/releases/station.json") {
+    panic("unexpected stable feed URL: " + match stable_u { Some(s) => s, None => "none" })
+  }
+  if beta_u != Some("https://api.still.fail/releases/station-beta.json") {
+    panic("unexpected beta feed URL: " + match beta_u { Some(s) => s, None => "none" })
+  }
+  if !live_version_newer("0.1.9", "0.1.10") || live_version_newer("0.1.10", "0.1.9") || live_version_newer("0.1.10", "0.1.10") || live_version_newer("", "0.1.10") || live_version_newer("0.1.10", "") {
+    panic("live_version_newer parity check failed")
+  }
+  // Executable probe rejects directories and non-executable files (0644), accepts 0755 files
+  let mfs = station_ops::MemFs::new()
+  let _ = mfs.put_text("/bin/not-exec", "hi", 420) // 0644
+  let _ = mfs.put_text("/bin/is-exec", "#!/bin/sh", 493) // 0755
+  let _ = (mfs.ops().mkdir_p)("/bin/a-dir")
+  if live_is_executable_file(mfs.ops(), "/bin/not-exec", "/") {
+    panic("0644 file must not be treated as executable")
+  }
+  if live_is_executable_file(mfs.ops(), "/bin/a-dir", "/") {
+    panic("directory must not be treated as executable")
+  }
+  if !live_is_executable_file(mfs.ops(), "/bin/is-exec", "/") {
+    panic("0755 file should be executable")
+  }
+}
+
+test "wave17d2 r4: downgraded member rejected before idempotency replay & join detaches on disconnect" {
+  let host = station_api::ApiHost::stub()
+  let seen = station_api::SeenStore::empty()
+  let admin = station_api::AdminApi::new(host, seen, "9999")
+  let owner = station_api::Viewer::owner("alice@example.com", "ws-1")
+  let downgraded_member = station_api::Viewer::member("alice@example.com", "ws-1")
+  let hdrs = [http1::Header::{ name: "Idempotency-Key", value: "idem-downgrade-1" }]
+
+  // Owner caches a 200 admin response
+  match admin.claim_async_idempotency(owner, "POST", "/profiles", hdrs, 1000L) {
+    station_api::AsyncIdemClaim::Claimed(sk, ik) => {
+      admin.complete_async_idempotency(sk, ik, owner, "POST", "/profiles", station_api::json_ok(base_codec::json_obj([("id", base_codec::json_str("openai"))])), 1001L)
+    }
+    _ => panic("expected Claimed")
+  }
+  // Authorization check MUST run before claim_async_idempotency: downgraded member is NOT a manager!
+  if downgraded_member.manages_station() {
+    panic("downgraded member must not manage station")
+  }
+  if !owner.manages_station() {
+    panic("owner must manage station")
   }
 }

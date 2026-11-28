@@ -1803,6 +1803,8 @@ struct WholeRuntimeState {
   devices : station_whole::DevicesOsRuntime
   terminals : station_whole::TerminalsOsRuntime
   logins : station_whole::LoginsOsRuntime
+  profile_logins : station_whole::LoginsOsRuntime
+  detached_async_ops : Map[Int64, AsyncAdminHttpState]
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
   upkeep : AsyncUpkeepRunner
@@ -4485,8 +4487,15 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             None => ()
           }
           if st.core.api.read_only_handover {
-            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "station is in read-only handover mode"))
             astream.mode = AdminStreamMode::Done
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "station is in read-only handover mode"))
+            return
+          }
+          // P1-5: Authorization MUST run BEFORE idempotency claim/replay so a downgraded member
+          // can never replay a cached 200 admin response with a prior Idempotency-Key!
+          if !v.manages_station() {
+            astream.mode = AdminStreamMode::Done
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "only workspace owners and admins can perform this action"))
             return
           }
           let idem_claim : Option[(String, String)] = match st.core.api.admin.claim_async_idempotency(
@@ -4499,13 +4508,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             station_api::AsyncIdemClaim::NotKeyed => None
             station_api::AsyncIdemClaim::Claimed(sk, ik) => Some((sk, ik))
             station_api::AsyncIdemClaim::Replay(cached_resp) => {
-              send_admin_resp_and_finish(ctx, astream.sid, cached_resp)
+              // Set Done BEFORE send_admin_resp_and_finish so >64 KiB backpressured SendingBody is preserved!
               astream.mode = AdminStreamMode::Done
+              send_admin_resp_and_finish(ctx, astream.sid, cached_resp)
               return
             }
             station_api::AsyncIdemClaim::Conflict(conf_resp) => {
-              send_admin_resp_and_finish(ctx, astream.sid, conf_resp)
               astream.mode = AdminStreamMode::Done
+              send_admin_resp_and_finish(ctx, astream.sid, conf_resp)
               return
             }
           }
@@ -4519,8 +4529,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 Some((sk, ik)) => st.core.api.admin.complete_async_idempotency(sk, ik, v, head.method, norm_path, resp, now_w)
                 None => ()
               }
-              send_admin_resp_and_finish(ctx, astream.sid, resp)
               astream.mode = AdminStreamMode::Done
+              send_admin_resp_and_finish(ctx, astream.sid, resp)
               return
             }
             None => {
@@ -5645,9 +5655,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
-        // Wave 17D-2 R3: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
-        // If `stream.open` arrives AFTER disconnect/timeout/shutdown, decode and immediately `stream.close`
-        // so the Rust response handle NEVER leaks!
+        // Wave 17D-2 R4: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
+        // - Sets `Done` BEFORE `send_admin_resp_and_finish` so >64 KiB backpressured `SendingBody` is preserved!
+        // - Also drives `st.detached_async_ops` so an in-flight `WorkspacesJoin` still completes local apply
+        //   on cloud 2xx even after the client stream closed!
+        // - If `stream.open` arrives with no active or detached op, decodes and immediately `stream.close`s.
         if kind == LIVE_OP_TOK_HTTP_OPEN || kind == LIVE_OP_TOK_HTTP_READ {
           let mut handled = false
           match st.admin_streams.get(sid) {
@@ -5657,13 +5669,25 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 handled = true
                 match step_async_admin_http_done(ctx, st, kind, async_st, d) {
                   Some(resp) => {
-                    send_admin_resp_and_finish(ctx, sid, resp)
                     astream.mode = AdminStreamMode::Done
+                    send_admin_resp_and_finish(ctx, sid, resp)
                   }
                   None => ()
                 }
               }
               _ => ()
+            }
+          }
+          if !handled {
+            match st.detached_async_ops.get(sid) {
+              Some(detached_st) => {
+                handled = true
+                match step_async_admin_http_done(ctx, st, kind, detached_st, d) {
+                  Some(_) => st.detached_async_ops.remove(sid)
+                  None => ()
+                }
+              }
+              None => ()
             }
           }
           if !handled && kind == LIVE_OP_TOK_HTTP_OPEN {
@@ -6545,6 +6569,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       let devices = station_whole::DevicesOsRuntime::new()
       let terminals = station_whole::TerminalsOsRuntime::new(ctx.data)
       let logins = station_whole::LoginsOsRuntime::new(None)
+      // Isolated `LoginsOsRuntime` (`10 << 32` event_id base) exclusively for `/profiles/:id/login*`
+      // so `/machine-logins` NEVER sees or controls workspace-scoped profile logins!
+      let profile_logins = station_whole::LoginsOsRuntime::new(None, start_event_id=42949672960L)
       let hold_hub = station_browser::AgentHoldHubPort::{
         people_views: fn(_sid : String) -> Array[station_browser::ScreenWatcherView] { [] },
         has_taken_view: fn(_sid : String) -> Bool { false },
@@ -7172,7 +7199,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       live_runners_cell[0] = Some(live_runners)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
-      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
+      wire_whole_core_runtime_hooks(ctx, core, logins, profile_logins, browser, seen_members)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
@@ -7180,6 +7207,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         devices: devices,
         terminals: terminals,
         logins: logins,
+        profile_logins: profile_logins,
+        detached_async_ops: Map::new(),
         browser: browser,
         connects: connects,
         upkeep: upkeep,
@@ -8347,7 +8376,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   false
                 }
                 AdminStreamMode::WaitingAsyncOp(async_st) => {
-                  cancel_async_admin_op(ctx, st, async_st)
+                  if is_join_async_op(async_st) {
+                    // Never cancel an in-flight cloud join on client disconnect: let it finish
+                    // applying locally so cloud membership and local state never diverge!
+                    async_st.client_disconnected = true
+                    st.detached_async_ops.set(sid, async_st)
+                  } else {
+                    cancel_async_admin_op(ctx, st, async_st)
+                  }
                   false
                 }
                 _ => false
@@ -8469,6 +8505,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.logins.handle_sys_event(ev_id, sev, now_sys) {
             return
           }
+          if st.profile_logins.handle_sys_event(ev_id, sev, now_sys) {
+            return
+          }
           if st.browser.handle_sys_event(ev_id, sev) {
             return
           }
@@ -8535,11 +8574,24 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 AdminStreamMode::WaitingAsyncOp(async_st) => {
                   if now >= async_st.deadline_ms {
                     cancel_async_admin_op(ctx, st, async_st)
-                    send_admin_resp_and_finish(ctx, asid, station_api::json_error(504, "request timed out"))
                     astream.mode = AdminStreamMode::Done
+                    send_admin_resp_and_finish(ctx, asid, station_api::json_error(504, "request timed out"))
                   }
                 }
                 _ => ()
+              }
+              None => ()
+            }
+          }
+          let det_sids = st.detached_async_ops.keys()
+          for di in 0..<det_sids.length() {
+            let dsid = det_sids[di]
+            match st.detached_async_ops.get(dsid) {
+              Some(det_st) => {
+                if now >= det_st.deadline_ms {
+                  cancel_async_admin_op(ctx, st, det_st)
+                  st.detached_async_ops.remove(dsid)
+                }
               }
               None => ()
             }
@@ -8552,6 +8604,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.devices.adb_runner.tick(now)
           let _ = st.terminals.tick(now)
           let _ = st.logins.tick(now)
+          let _ = st.profile_logins.tick(now)
           let _ = st.browser.tick(now)
           let _ = st.connects.tick(now)
           // `#8886`: poll `PeerChangeNotifier` and `CommaUnreadRetry` due retries.
@@ -8866,6 +8919,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   AdminStreamMode::SseStreaming(cid) => {
                     let _ = st.core.api.events.disconnect(cid)
                   }
+                  AdminStreamMode::WaitingAsyncOp(async_st) => {
+                    // Cancel/close any open async stream BEFORE removing from `admin_streams`!
+                    cancel_async_admin_op(ctx, st, async_st)
+                  }
                   _ => ()
                 }
               }
@@ -8919,17 +8976,15 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
           // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
           st.connects.stop()
-          // Cancel any in-flight async admin HTTP ops on shutdown.
-          let shutdown_sids = st.admin_streams.keys()
-          for ssi in 0..<shutdown_sids.length() {
-            match st.admin_streams.get(shutdown_sids[ssi]) {
-              Some(astream) => match astream.mode {
-                AdminStreamMode::WaitingAsyncOp(async_st) => cancel_async_admin_op(ctx, st, async_st)
-                _ => ()
-              }
+          // Cancel any detached in-flight async ops on shutdown.
+          let det_shutdown_sids = st.detached_async_ops.keys()
+          for dsi in 0..<det_shutdown_sids.length() {
+            match st.detached_async_ops.get(det_shutdown_sids[dsi]) {
+              Some(det_st) => cancel_async_admin_op(ctx, st, det_st)
               None => ()
             }
           }
+          st.detached_async_ops.clear()
           st.upkeep.shutdown()
           st.browser.stop_all()
           let _ = st.browser.drain_kills_with_hub(max_ms=500L)
@@ -8937,6 +8992,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.terminals.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
           st.logins.stop_all(host_shim::now_ms())
           let _ = st.logins.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
+          st.profile_logins.stop_all(host_shim::now_ms())
+          let _ = st.profile_logins.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
           let _ = st.devices.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
           if st.replica.kept_log.entries.length() > 0 {
             let _ = st.replica.persist_kept_log()

@@ -468,6 +468,7 @@ pub struct LoginsOsRuntime {
 pub fn LoginsOsRuntime::new(
   pages : Option[station_devices::LoginPages],
   now_fn : () -> Int64 = host_shim::now_ms,
+  start_event_id : Int64 = 17179869184L,
 ) -> LoginsOsRuntime {
   LoginsOsRuntime::{
     manager: station_devices::LoginsManager::new(pages),
@@ -475,7 +476,7 @@ pub fn LoginsOsRuntime::new(
     by_id: Map::new(),
     by_event: Map::new(),
     pending_kills: Map::new(),
-    next_event_id: 17179869184L,
+    next_event_id: start_event_id,
   }
 }
 

@@ -731,6 +731,7 @@ pub fn wire_whole_core_runtime_hooks(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
   logins : station_whole::LoginsOsRuntime,
+  profile_logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
   seen_members : Map[String, Map[String, Map[String, SeenMember]]],
 ) -> Unit {
@@ -994,12 +995,18 @@ pub fn wire_whole_core_runtime_hooks(
     }
 
     if op == "accounts.profiles.login" {
-      // Deduplicate active login per `(ws, profile_id)`: reuse existing active job instead of spawning orphan duplicates!
+      // Deduplicate active login per `(ws, profile_id)` across ALL active LoginState variants
+      // (`starting`, `browser`, `code`, `input`, `verifying`): reuse existing active job!
       match profile_login_ids.get(scope_key) {
-        Some(existing_lid) => match logins.manager.get(existing_lid) {
+        Some(existing_lid) => match profile_logins.manager.get(existing_lid) {
           Some(existing_view) => {
-            let st_s = existing_view.state.as_str()
-            if st_s == "starting" || st_s == "running" || st_s == "waiting" {
+            let is_active = match existing_view.state {
+              station_devices::LoginState::Done
+              | station_devices::LoginState::Failed
+              | station_devices::LoginState::Cancelled => false
+              _ => true
+            }
+            if is_active {
               return Ok(base_codec::json_obj([("job", login_view_to_json(existing_view, false))]))
             }
           }
@@ -1051,7 +1058,7 @@ pub fn wire_whole_core_runtime_hooks(
         chat: None,
         chat_title: None,
       }
-      match logins.start_login_isolated(cmd, starter, home_dir, env_pairs, host_shim::now_ms()) {
+      match profile_logins.start_login_isolated(cmd, starter, home_dir, env_pairs, host_shim::now_ms()) {
         Ok(view) => {
           profile_login_ids.set(scope_key, view.id)
           return Ok(base_codec::json_obj([("job", login_view_to_json(view, false))]))
@@ -1061,7 +1068,7 @@ pub fn wire_whole_core_runtime_hooks(
     }
     if op == "accounts.profiles.login.get" {
       match profile_login_ids.get(scope_key) {
-        Some(lid) => match logins.manager.get(lid) {
+        Some(lid) => match profile_logins.manager.get(lid) {
           Some(view) => return Ok(base_codec::json_obj([("job", login_view_to_json(view, read_only))]))
           None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
         }
@@ -1072,14 +1079,36 @@ pub fn wire_whole_core_runtime_hooks(
       match profile_login_ids.get(scope_key) {
         Some(lid) => {
           let who = Some(station_devices::LoginPerson::{ email: viewer.email, name: viewer.name })
-          let _ = logins.cancel_login(lid, who, host_shim::now_ms())
-          let job_j = match logins.manager.get(lid) {
+          let _ = profile_logins.cancel_login(lid, who, host_shim::now_ms())
+          let job_j = match profile_logins.manager.get(lid) {
             Some(view) => login_view_to_json(view, false)
             None => base_codec::json_null()
           }
           return Ok(base_codec::json_obj([("job", job_j)]))
         }
         None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
+      }
+    }
+    if op == "accounts.profiles.login-code" {
+      let code_s = match base_codec::json_get(body, "code") {
+        Some(base_codec::Json::Str(c)) if c.trim().length() > 0 => c.trim()
+        _ => match base_codec::json_get(body, "text") {
+          Some(base_codec::Json::Str(c)) if c.trim().length() > 0 => c.trim()
+          _ => return Err(station_api::ApiError::new(400, "code is required"))
+        }
+      }
+      match profile_login_ids.get(scope_key) {
+        Some(lid) => {
+          let who = Some(station_devices::LoginPerson::{ email: viewer.email, name: viewer.name })
+          match profile_logins.manager.answer(lid, code_s, who) {
+            Ok(view) => {
+              let _ = profile_logins.flush_writes(lid)
+              return Ok(base_codec::json_obj([("job", login_view_to_json(view, false))]))
+            }
+            Err(refused) => return Err(station_api::ApiError::new(refused.status, refused.message))
+          }
+        }
+        None => return Err(station_api::ApiError::new(404, "no active login for profile " + id))
       }
     }
     Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))

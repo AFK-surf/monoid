@@ -2998,7 +2998,7 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const unknownVaultItems = await adminCall(conn, "GET", "/vault/items?vault=nonexistent");
   assert.equal(unknownVaultItems.status, 404, `GET /vault/items?vault=nonexistent expected 404, got ${unknownVaultItems.status}: ${unknownVaultItems.body.toString()}`);
 
-  // 1b. Routes implemented in W17C-3A (#9161), W17C-3B (#9162), and W17D-2 R2 return 200
+  // 1b. Routes implemented in W17C-3A (#9161), W17C-3B (#9162), and W17D-2 R4 return 200
   for (const [m, p, body] of [
     ["GET", "/vault/uses", undefined],
     ["GET", "/vault/plain", undefined],
@@ -3007,25 +3007,25 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     ["GET", "/memory", undefined],
     ["GET", "/mcp-servers", undefined],
     ["PUT", "/mcp-servers", JSON.stringify({ servers: {} })],
-    ["POST", "/updates/wait", JSON.stringify({ wait: ["pr:9145"] })],
-    ["POST", "/updates/wait", JSON.stringify({ wait: null })],
   ] as const) {
     const hdrs: Record<string, string> = { "content-type": "application/json" };
     if (p.endsWith("/reset-quota")) hdrs["idempotency-key"] = "test-idem-1";
     const resp = await adminCall(conn, m, p, hdrs, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 200, `${m} ${p} expected 200, got ${resp.status}: ${resp.body.toString()}`);
   }
-  // `updates.wait` with `null` must NOT force `autoUpdate: true` when default was false
-  const cfgAfterWait = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
-  assert.notEqual(cfgAfterWait.autoUpdate, true, "clearing updates.wait must not force autoUpdate=true");
 
   // `POST /updates/check` when unenrolled (no cloud url configured) returns 404 (aligned with Node updates.ts)
   const checkUnenrolled = await adminCall(conn, "POST", "/updates/check", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(checkUnenrolled.status, 404, `POST /updates/check unenrolled expected 404, got ${checkUnenrolled.status}: ${checkUnenrolled.body.toString()}`);
 
-  // `POST /updates` (`updates.install`) returns honest 501 until a full verified installer loop lands
-  const updatesInstallResp = await adminCall(conn, "POST", "/updates", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ id: "station" })));
-  assert.equal(updatesInstallResp.status, 501, `POST /updates expected honest 501, got ${updatesInstallResp.status}: ${updatesInstallResp.body.toString()}`);
+  // `POST /updates` (`updates.install`) and `POST /updates/wait` (`updates.wait`) return honest 501 until Wave 17E updater loop lands
+  for (const [p, body] of [
+    ["/updates", JSON.stringify({ id: "station" })],
+    ["/updates/wait", JSON.stringify({ wait: ["pr:9145"] })],
+  ] as const) {
+    const uResp = await adminCall(conn, "POST", p, { "content-type": "application/json" }, Buffer.from(body));
+    assert.equal(uResp.status, 501, `POST ${p} expected honest 501, got ${uResp.status}: ${uResp.body.toString()}`);
+  }
 
   // Non-blocking concurrency check: a slow external `POST /copies/s3/test` (default path-style!) MUST actually hit
   // the 1200ms slow S3 server AND MUST NOT block concurrent `GET /status`!

@@ -56,7 +56,7 @@ pub struct AsyncAdminHttpState {
   pub conn_id : Int64
   pub method_name : String
   pub norm_path : String
-  pub op : AsyncAdminOpKind
+  pub mut op : AsyncAdminOpKind
   pub viewer : station_api::Viewer
   pub lang : station_api::Lang
   pub mut stream_id : Option[Int]
@@ -66,6 +66,55 @@ pub struct AsyncAdminHttpState {
   pub max_bytes : Int
   pub deadline_ms : Int64
   pub mut idem_claim : Option[(String, String)]
+  pub mut client_disconnected : Bool
+}
+
+/// Whether this async admin op is an in-flight `WorkspacesJoin` (which MUST finish applying
+/// locally on cloud 2xx even if the client stream disconnects mid-flight).
+pub fn is_join_async_op(state : AsyncAdminHttpState) -> Bool {
+  match state.op {
+    AsyncAdminOpKind::WorkspacesJoin(_, _, _, _) => true
+    _ => false
+  }
+}
+
+/// Numeric version comparison 1:1 with Node `station/src/updates/versions.ts:76` (`newer(current, latest)`):
+/// returns `false` when either string is empty, splits on non-digits, compares numeric parts,
+/// and considers a longer version with the same prefix newer.
+fn live_version_parts(v : String) -> Array[Int64] {
+  let out : Array[Int64] = []
+  let mut cur = 0L
+  let mut in_num = false
+  for i in 0..<v.length() {
+    let c = v.code_unit_at(i)
+    if c >= 48 && c <= 57 {
+      cur = cur * 10L + (c - 48).to_int64()
+      in_num = true
+    } else if in_num {
+      out.push(cur)
+      cur = 0L
+      in_num = false
+    }
+  }
+  if in_num {
+    out.push(cur)
+  }
+  out
+}
+
+pub fn live_version_newer(current : String, latest : String) -> Bool {
+  if current.trim().length() == 0 || latest.trim().length() == 0 {
+    return false
+  }
+  let a = live_version_parts(latest)
+  let b = live_version_parts(current)
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  for i in 0..<n {
+    if a[i] != b[i] {
+      return a[i] > b[i]
+    }
+  }
+  a.length() > b.length()
 }
 
 fn live_json_str_f(obj : base_codec::Json, key : String) -> Option[String] {
@@ -131,21 +180,48 @@ fn live_trusted_release_keys() -> Map[String, String] {
   station_cli::trusted_release_keys(env_m)
 }
 
-fn live_release_feed_url(ctx : DaemonCtx, ch : String) -> Option[String] {
-  let base_opt : Option[String] = match station_sys::env_get("STILLFAIL_RELEASE_URL") {
+/// Build the canonical release feed URL using `station_cloud::release_base_for` + `station_cli::feed_url`
+/// (`/releases/station.json` for stable, `/releases/station-beta.json` for beta).
+pub fn live_release_feed_url_for(
+  override_url : Option[String],
+  cloud_state : Option[station_cloud::CloudState],
+  ch : String,
+) -> Option[String] {
+  let base_opt : Option[String] = match override_url {
     Some(u) if u.trim().length() > 0 => Some(u.trim())
-    _ => match ctx.cloud.state {
-      Some(cs) if cs.origin.trim().length() > 0 => Some(cs.origin.trim() + "/downloads/station")
+    _ => match cloud_state {
+      Some(cs) if cs.origin.trim().length() > 0 => {
+        let mut origin = cs.origin.trim()
+        while origin.length() > 0 && origin.ends_with("/") {
+          origin = origin.slice(0, origin.length() - 1)
+        }
+        let prov = match cs.provider { Some(p) => p, None => station_cloud::Provider::Stillfail }
+        let spec = station_cloud::spec_of(prov)
+        Some(station_cloud::release_base_for(spec, origin))
+      }
       _ => None
     }
   }
   match base_opt {
     Some(base) => {
-      let clean = if base.ends_with("/") { base.slice(0, base.length() - 1) } else { base }
-      let suffix = if ch == "beta" { "/beta/latest.json" } else { "/latest.json" }
-      Some(clean + suffix)
+      let mut clean = base
+      while clean.length() > 0 && clean.ends_with("/") {
+        clean = clean.slice(0, clean.length() - 1)
+      }
+      Some(station_cli::feed_url(ch, clean))
     }
     None => None
+  }
+}
+
+fn live_release_feed_url(ctx : DaemonCtx, ch : String) -> Option[String] {
+  live_release_feed_url_for(station_sys::env_get("STILLFAIL_RELEASE_URL"), ctx.cloud.state, ch)
+}
+
+fn live_is_executable_file(fs : station_ops::OpsFs, path : String, sep : String) -> Bool {
+  match (fs.stat)(path) {
+    Ok(meta) => meta.is_file && (sep == "\\" || (meta.mode & 73) != 0)
+    Err(_) => false
   }
 }
 
@@ -162,7 +238,7 @@ fn live_find_in_path(fs : station_ops::OpsFs, bin : String, sep : String) -> Opt
       continue
     }
     let cand = nodepath::join(sep, [d, bin])
-    if fs.exists(cand) {
+    if live_is_executable_file(fs, cand, sep) {
       return Some(cand)
     }
   }
@@ -351,6 +427,7 @@ fn start_async_http_stream(
     max_bytes: max_bytes,
     deadline_ms: host_shim::now_ms() + timeout_ms,
     idem_claim: idem_claim,
+    client_disconnected: false,
   }
 }
 
@@ -753,7 +830,7 @@ fn complete_async_admin_op(
                   Ok(rel) => {
                     st.core.updates.station.latest = Some(rel.version)
                     let cur_v = match st.core.updates.station.version { Some(v) => v, None => "" }
-                    st.core.updates.station.updatable = rel.version != cur_v
+                    st.core.updates.station.updatable = live_version_newer(cur_v, rel.version)
                     st.core.updates.station.failed_text = None
                   }
                   Err(ve) => {
@@ -799,9 +876,9 @@ fn complete_async_admin_op(
     }
 
     AsyncAdminOpKind::WorkspacesJoin(prep, _prefix_idx, lock_opt, rig_person_opt) => {
-      if !live_viewer_still_manager(st, state) {
-        return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
-      }
+      // Authorization was verified BEFORE sending the one-time token to the cloud: once the cloud
+      // consumes the token and returns 2xx, ALWAYS apply locally (even if client disconnected or role
+      // changed mid-flight) so cloud membership and local state never diverge!
       let (status, body_b) = match fetch_res {
         Ok(p) => p
         Err(_) => return finish_idem_claim(st, state, station_api::json_error(409, "control plane unreachable"))
@@ -1039,14 +1116,13 @@ pub fn step_async_admin_http_done(
                     state.status = 0
                     let rem = state.deadline_ms - host_shim::now_ms()
                     if rem > 0L {
+                      state.op = AsyncAdminOpKind::WorkspacesJoin(prep, next_idx, lock_opt, rig_opt)
                       let _ = ctx.mux_role.call_async_raw(
                         builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_OPEN, state.sid),
                         "stream.open",
                         live_build_stream_open_args("POST", prep.url, [("content-type", "application/json")], rem),
                         Some(prep.bodies[next_idx].to_bytes()),
                       )
-                      // Update state.op via returning None (next attempt uses next_idx)
-                      let _ = (lock_opt, rig_opt)
                       return None
                     }
                   }

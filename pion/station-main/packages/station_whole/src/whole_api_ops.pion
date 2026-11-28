@@ -1381,7 +1381,7 @@ fn dispatch_updates_op(
     return None
   }
   let ops_lang = api_lang_to_ops(req.lang)
-  if op == "updates.check" || op == "updates.wait" {
+  if op == "updates.check" {
     let ov_present = match hooks.is_update_override_present {
       Some(f) => f()
       None => false

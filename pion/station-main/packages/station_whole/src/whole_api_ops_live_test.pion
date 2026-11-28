@@ -23,69 +23,26 @@ fn w17d2_readonly(ws : String) -> station_api::Viewer {
   make_test_viewer("ro@example.com", "u-ro", ws, ws == "ws-main", "viewer")
 }
 
-test "wave17d2 r3: updates.wait (default autoUpdate=false, real override_present), updates.check, and updates.install honest 501" {
-  let (_, _, api, updates, mem_fs, hooks) = make_mem_whole_api_fixture()
+test "wave17d2 r4: updates.check (403/501/200) and updates.wait / updates.install honest 501" {
+  let (_, _, api, updates, _mem_fs, hooks) = make_mem_whole_api_fixture()
   let owner = w17d2_owner("ws-main")
   let member = w17d2_member("ws-main")
 
-  // 1. Manager-only 403 on updates.wait and updates.check
-  for op in ["updates.wait", "updates.check"] {
-    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/updates", member), [], base_codec::json_obj([])) {
-      Err(e) => if e.status != 403 { panic("expected 403 for non-manager " + op) }
-      Ok(_) => panic("non-manager " + op + " must fail")
+  // 1. Manager-only 403 on updates.check
+  match (api.admin.host.call)("updates.check", make_test_api_req_as("POST", "/updates/check", member), [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 403 { panic("expected 403 for non-manager updates.check") }
+    Ok(_) => panic("non-manager updates.check must fail")
+  }
+
+  // 2. Both `updates.install` and `updates.wait` return honest 501 until Wave 17E updater loop lands
+  for op in ["updates.install", "updates.wait"] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/updates", owner), [], base_codec::json_obj([("id", base_codec::json_str("station"))])) {
+      Err(e) => if e.status != 501 { panic(op + " must return honest 501, got " + e.status.to_string()) }
+      Ok(_) => panic(op + " must not return fake 200")
     }
   }
 
-  // 2. `updates.install` is withdrawn to honest 501 (no fake 200 or exit-2 stub)
-  match (api.admin.host.call)("updates.install", make_test_api_req_as("POST", "/updates", owner), [], base_codec::json_obj([("id", base_codec::json_str("station"))])) {
-    Err(e) => if e.status != 501 { panic("updates.install must return honest 501, got " + e.status.to_string()) }
-    Ok(_) => panic("updates.install must not return fake 200")
-  }
-
-  // 3. `updates.wait`: valid specs persist `autoUpdateWhen`; `null` does NOT force `autoUpdate: true`
-  let wait_body = base_codec::json_obj([
-    ("wait", base_codec::json_arr([
-      base_codec::json_str("pr:9145"),
-      base_codec::json_str("fix:FB-123"),
-      base_codec::json_str("version:0.1.999"),
-      base_codec::json_str("after:0.1.900"),
-    ])),
-  ])
-  match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], wait_body) {
-    Ok(res) => {
-      let s = base_codec::json_stringify(res)
-      if !s.contains("#9145") || !s.contains("FB-123") || !s.contains(">= 0.1.999") || !s.contains("> 0.1.900") {
-        panic("updates.wait response missing formatted conditions: " + s)
-      }
-    }
-    Err(e) => panic("updates.wait valid failed: " + e.message)
-  }
-  match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], base_codec::json_obj([("wait", base_codec::json_null())])) {
-    Ok(_) => ()
-    Err(e) => panic("updates.wait null failed: " + e.message)
-  }
-  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
-    Ok(b) => {
-      let txt = b.to_string()
-      if txt.contains("autoUpdateWhen") || txt.contains("\"autoUpdate\": true") {
-        panic("updates.wait null must NOT force autoUpdate: true when default was false: " + txt)
-      }
-    }
-    Err(_) => panic("config.json missing")
-  }
-
-  // 4. `is_update_override_present` hook is respected
-  let mut override_checked = false
-  hooks.is_update_override_present = Some(fn() -> Bool {
-    override_checked = true
-    true
-  })
-  let _ = (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], base_codec::json_obj([("wait", base_codec::json_arr([base_codec::json_str("pr:9176")]))]))
-  if !override_checked {
-    panic("updates.wait must consult hooks.is_update_override_present")
-  }
-
-  // 5. Unhooked `updates.check` returns honest 501; hooked returns 200
+  // 3. Unhooked `updates.check` returns honest 501; hooked returns 200
   match (api.admin.host.call)("updates.check", make_test_api_req_as("POST", "/updates/check", owner), [], base_codec::json_obj([])) {
     Err(e) => if e.status != 501 { panic("unhooked updates.check must return 501") }
     Ok(_) => panic("unhooked updates.check returned fake 200")
@@ -240,6 +197,19 @@ test "wave17d2 r3: accounts.profiles (real overview with new profile, ignore nam
       }
     }
     Err(e) => panic("read-only login.get failed: " + e.message)
+  }
+  // `accounts.profiles.login-code`: read-only 403, missing code 400, valid code 200
+  match (api.admin.host.call)("accounts.profiles.login-code", make_test_api_req_as("POST", "/profiles/sub-claude/login-code", ro), ["sub-claude"], base_codec::json_obj([("code", base_codec::json_str("123456"))])) {
+    Err(e) => if e.status != 403 { panic("read-only login-code must return 403") }
+    Ok(_) => panic("expected 403")
+  }
+  match (api.admin.host.call)("accounts.profiles.login-code", make_test_api_req_as("POST", "/profiles/sub-claude/login-code", owner), ["sub-claude"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 400 { panic("empty login-code must return 400") }
+    Ok(_) => panic("expected 400")
+  }
+  match (api.admin.host.call)("accounts.profiles.login-code", make_test_api_req_as("POST", "/profiles/sub-claude/login-code", owner), ["sub-claude"], base_codec::json_obj([("code", base_codec::json_str("123456"))])) {
+    Ok(_) => ()
+    Err(e) => panic("hooked login-code failed: " + e.message)
   }
 }
 
