@@ -2075,16 +2075,43 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, 0, Some(106000L)), "alive + >5s skew => PID reused => confirmed dead")
   assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, -3, None), "ESRCH (-3) => confirmed dead")
 
-  // R16 P1-1: Late-ready Spawning runner absent from startup discovery resolves session_key via `draining_stop_sessions`!
+  // R16/R17 P1-1/2: Late-ready Spawning runner resolves session_key via `draining_stop_sessions`,
+  // blocks replacement launch via `has_pending_draining_stop_for_session`, and promotes `rid:` -> exact `inst_id`
+  // so it survives past `before_ms + 30s` until confirmed dead/exited!
   let mgr5 = LiveRunnerManager::new()
+  mgr5.set_handover_state_path(ho_file)
   mgr5.record_draining_stop_marker("rid:r-late-r16@1700000010000", "s-late-r16")
   let carried_r16 = mgr5.export_handover_state_json()
   let mgr6 = LiveRunnerManager::new()
+  mgr6.set_handover_state_path(ho_file)
   mgr6.import_handover_state_json(carried_r16)
-  match mgr6.find_draining_stop_session("r-late-r16:7777:1700000025000", "r-late-r16", 1700000025000L) {
+  assert_true(mgr6.has_pending_draining_stop_for_session("s-late-r16"), "pending stop marker blocks replacement launch for s-late-r16")
+  assert_true(!mgr6.has_pending_draining_stop_for_session("s-other"), "unrelated session is not blocked")
+  let late_inst = "r-late-r16:7777:1700000025000"
+  match mgr6.find_draining_stop_session(late_inst, "r-late-r16", 1700000025000L) {
     Some(sk) => assert_str_eq(sk, "s-late-r16")
     None => panic("expected late-ready Spawning runner to resolve session_key from draining_stop_sessions")
   }
+  assert_true(
+    mgr6.promote_rid_stop_marker(late_inst, "r-late-r16", 1700000025000L, "s-late-r16"),
+    "rid: stop marker promotes into exact inst_id",
+  )
+  assert_true(!mgr6.draining_stopping_ids.contains("rid:r-late-r16@1700000010000"), "old rid: key removed after promotion")
+  assert_true(mgr6.draining_stopping_ids.contains(late_inst), "exact inst_id recorded after promotion")
+  assert_true(mgr6.has_pending_draining_stop_for_session("s-late-r16"), "promoted exact inst_id still blocks replacement launch")
+  assert_true(mgr6.sync_handover_state_file(ops, 1006, "/").is_ok(), "promoted exact inst_id persisted")
+  // Past before_ms + 30s (at +60s) with PID 7777 still alive: promoted exact inst_id MUST NOT expire!
+  assert_true(
+    !mgr6.sweep_draining_stop_markers(
+      1700000070000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(1700000025000L)) },
+    ),
+    "promoted exact inst_id must survive past 30s while PID is alive",
+  )
+  assert_true(mgr6.draining_stopping_ids.contains(late_inst), "promoted exact inst_id still present after +60s")
+  assert_true(mgr6.clear_draining_stop_target(Some(late_inst), "r-late-r16"), "confirmed exit clears promoted inst_id")
+  assert_true(!mgr6.has_pending_draining_stop_for_session("s-late-r16"), "clearing stop marker unblocks replacement launch")
+  assert_true(mgr6.sync_handover_state_file(ops, 1006, "/").is_ok(), "unlink after promoted clear")
 }
 
 test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_draining preserves stop marker on socket error" {

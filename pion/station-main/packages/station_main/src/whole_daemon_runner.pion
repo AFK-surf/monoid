@@ -1991,6 +1991,60 @@ pub fn LiveRunnerManager::find_draining_stop_session(
   None
 }
 
+/// R17 P1-1: Returns true if any persisted draining/stopping marker is still pending for `session_key`.
+pub fn LiveRunnerManager::has_pending_draining_stop_for_session(
+  self : LiveRunnerManager,
+  session_key : String,
+) -> Bool {
+  if session_key.length() == 0 {
+    return false
+  }
+  let keys = self.draining_stop_sessions.keys()
+  for i in 0..<keys.length() {
+    match self.draining_stop_sessions.get(keys[i]) {
+      Some(sk) => if sk == session_key { return true }
+      None => ()
+    }
+  }
+  false
+}
+
+/// R17 P1-2: Promotes any matching `Spawning` `"rid:<id>@<before_ms>"` stop marker into the exact
+/// non-expiring `inst_id -> session_key` marker once the late-ready runner is discovered on disk,
+/// so reconnect-to-stop survives past the 30s spawn window until confirmed OS death/exit!
+pub fn LiveRunnerManager::promote_rid_stop_marker(
+  self : LiveRunnerManager,
+  inst_id : String,
+  runner_id : String,
+  started_at : Int64,
+  session_key : String,
+) -> Bool {
+  if runner_id.length() == 0 || inst_id.length() == 0 {
+    return false
+  }
+  let keys = self.draining_stopping_ids.keys()
+  let mut promoted = false
+  let mut eff_skey = session_key
+  for i in 0..<keys.length() {
+    let k = keys[i]
+    if match_rid_stop_key(k, runner_id, started_at) {
+      if eff_skey.length() == 0 {
+        match self.draining_stop_sessions.get(k) {
+          Some(sk) => eff_skey = sk
+          None => ()
+        }
+      }
+      self.draining_stopping_ids.remove(k)
+      self.draining_stop_sessions.remove(k)
+      promoted = true
+    }
+  }
+  if promoted {
+    self.record_draining_stop_marker(inst_id, eff_skey)
+  }
+  promoted
+}
+
 /// R13/R16 P1-2: Removes any draining/stopping markers (and session mappings) matching `inst_id_opt` or `"rid:<runner_id>@..."`.
 pub fn LiveRunnerManager::clear_draining_stop_target(
   self : LiveRunnerManager,
@@ -3754,7 +3808,12 @@ pub fn LiveRunnerManager::adopt_live_runner(
   }
   let mut unauthorized_stop = false
   if self.is_draining_stop_target(inst_id, rinfo.id, rinfo.started_at) {
-    // R13 P1-2: Do NOT clear the marker yet — keep it persisted until confirmed exit in `finish_draining`!
+    // R13/R17 P1-2: Do NOT clear the marker yet — keep it persisted until confirmed exit in `finish_draining`!
+    // If matched via a 30s-bounded `Spawning` `"rid:<id>@<before_ms>"` marker, promote it immediately
+    // into the exact `inst_id -> session_key` marker and persist to disk so reconnect-to-stop survives past 30s!
+    if self.promote_rid_stop_marker(inst_id, rinfo.id, rinfo.started_at, session_key) {
+      let _ = self.sync_handover_state_with_ctx(ctx)
+    }
     ctx.log("[live-runner] adopt runner " + inst_id + " (rid=" + rinfo.id + ") matched predecessor stop marker; continuing stop via socket")
     unauthorized_stop = true
   }
@@ -3953,9 +4012,12 @@ pub fn LiveRunnerManager::pump(
     if actor.archived {
       continue
     }
-    // R6/R7 Invariant 2: NEVER spawn or pump a new instance while an old instance of `key` is still draining
-    // OR while a manager-level uncommitted `PendingEndTurn` is still retrying!
-    if self.has_draining_session(key) || self.pending_end_turns.get(key) is Some(_) {
+    // R6/R7/R17 Invariant 2: NEVER spawn or pump a new instance while an old instance of `key` is still draining,
+    // while a manager-level uncommitted `PendingEndTurn` is still retrying, OR while a persisted stop marker
+    // for `key` has not yet been confirmed exited!
+    if self.has_draining_session(key)
+    || self.pending_end_turns.get(key) is Some(_)
+    || self.has_pending_draining_stop_for_session(key) {
       continue
     }
     // R5 Invariant 2: NEVER start a new prompt or steer while an `endTurn` SQLite commit is still pending!
