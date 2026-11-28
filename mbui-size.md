@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [546256e51](https://github.com/AFK-surf/monoid/commit/546256e51f492d8fd08fd4a8d3778407924acb7f) perf(cloud): batch feedbackOf queries and prefilte | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [f15c1b48b](https://github.com/AFK-surf/monoid/commit/f15c1b48b489d114894328d54adf3c6ca340e1a6) perf(cloud): reuse alike view across changed and v | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [b36540849](https://github.com/AFK-surf/monoid/commit/b36540849e22ddfc78085d85b6f90f63d3b22beb) perf(cloud): skip no-op storage writes and Directo | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
 | [61f498278](https://github.com/AFK-surf/monoid/commit/61f498278d600851896ab5354143636d4d1e7a7b) perf(cloud): add SQLite indexes for hot Directory  | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.7 | 130.13 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fea98115c](https://github.com/AFK-surf/monoid/commit/fea98115ca6fd391e7b69bc53bfdf1c68077e029) feat(station): fetch platform attachments on deman | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.89 | 120.7 |
 | [541965cbc](https://github.com/AFK-surf/monoid/commit/541965cbc2e72f42e091e9b56234d811355cbc64) feat(pion-station): wire production HTTP API ops,  | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.89 | 120.7 |
 | [e0ccfd141](https://github.com/AFK-surf/monoid/commit/e0ccfd1416b509ba58bb2e5ee9fd41263146be46) perf(core): batch opened sub-chat lookups in chat  | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.89 | 120.7 |
-| [8fa48d56b](https://github.com/AFK-surf/monoid/commit/8fa48d56b62d2b727cfa67c5ce85239bbbc415d2) feat(station): add CoW worktree command, clone pri | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.76 | 127.04 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [546256e51](https://github.com/AFK-surf/monoid/commit/546256e51f492d8fd08fd4a8d3778407924acb7f) perf(cloud): batch feedbackOf queries and prefilte | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.59 |
 | [f15c1b48b](https://github.com/AFK-surf/monoid/commit/f15c1b48b489d114894328d54adf3c6ca340e1a6) perf(cloud): reuse alike view across changed and v | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.8 |
 | [b36540849](https://github.com/AFK-surf/monoid/commit/b36540849e22ddfc78085d85b6f90f63d3b22beb) perf(cloud): skip no-op storage writes and Directo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 65.03 |
 | [61f498278](https://github.com/AFK-surf/monoid/commit/61f498278d600851896ab5354143636d4d1e7a7b) perf(cloud): add SQLite indexes for hot Directory  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.87 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fea98115c](https://github.com/AFK-surf/monoid/commit/fea98115ca6fd391e7b69bc53bfdf1c68077e029) feat(station): fetch platform attachments on deman | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.59 |
 | [541965cbc](https://github.com/AFK-surf/monoid/commit/541965cbc2e72f42e091e9b56234d811355cbc64) feat(pion-station): wire production HTTP API ops,  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 58.03 |
 | [e0ccfd141](https://github.com/AFK-surf/monoid/commit/e0ccfd1416b509ba58bb2e5ee9fd41263146be46) perf(core): batch opened sub-chat lookups in chat  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
-| [8fa48d56b](https://github.com/AFK-surf/monoid/commit/8fa48d56b62d2b727cfa67c5ce85239bbbc415d2) feat(station): add CoW worktree command, clone pri | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
