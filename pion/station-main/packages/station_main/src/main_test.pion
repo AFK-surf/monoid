@@ -2023,23 +2023,30 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   mgr4.draining_stopping_ids.set("r-old:5000:1700000001000", true)
   mgr4.draining_stopping_ids.set("rid:r-late@1700000001000", true)
   assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "write stop markers")
-  // At t + 5s with PID 5000 alive (or start_time unknown -> None): NEITHER marker is removed!
+  // At t + 5s with PID 5000 alive (or start_time unknown -> None) or EPERM (-1): NEITHER marker is removed!
   assert_true(
     !mgr4.sweep_draining_stop_markers(
       1700000006000L,
-      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, true, None) },
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, None) },
     ),
     "unknown proc_start_time_ms (None) must NEVER clear exact stop marker",
   )
-  assert_true(mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "unknown-start exact id kept")
+  assert_true(
+    !mgr4.sweep_draining_stop_markers(
+      1700000006000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, -1, None) },
+    ),
+    "EPERM (-1) must NEVER clear exact stop marker",
+  )
+  assert_true(mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "unknown/EPERM exact id kept")
   assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t kept at t+5s")
-  // Once PID 5000 is confirmed dead (at t + 10s): exact id removed, Spawning rid@t STILL kept!
+  // Once PID 5000 returns ESRCH (-3) at t + 10s: exact id removed, Spawning rid@t STILL kept!
   assert_true(
     mgr4.sweep_draining_stop_markers(
       1700000011000L,
-      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, false, None) },
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, -3, None) },
     ),
-    "confirmed-dead exact id swept",
+    "ESRCH (-3) confirmed-dead exact id swept",
   )
   assert_true(!mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "dead exact id removed")
   assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t still kept at t+10s")
@@ -2055,15 +2062,29 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "unlink after sweep")
   assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked after sweep")
 
-  // 5. R15 P1-1/2: `should_delete_runner_launch_on_pending_replay` & tri-state PID death semantics
-  assert_true(!should_delete_runner_launch_on_pending_replay(true, false, false), "already_ended replay must NOT delete runner_launches")
-  assert_true(!should_delete_runner_launch_on_pending_replay(false, true, false), "active turn in mem must NOT delete runner_launches")
-  assert_true(!should_delete_runner_launch_on_pending_replay(false, false, true), "live session instance must NOT delete runner_launches")
-  assert_true(should_delete_runner_launch_on_pending_replay(false, false, false), "only newly-committed dead instance deletes runner_launches")
-  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, true, None), "alive + None start_time != dead")
-  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, true, Some(103000L)), "alive + within 5s != dead")
-  assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, true, Some(106000L)), "alive + >5s skew => PID reused => confirmed dead")
-  assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, false, None), "proc_kill!=0 => confirmed dead")
+  // 5. R15/R16: `should_delete_runner_launch_on_pending_replay`, ESRCH (-3) vs EPERM (-1),
+  // and `draining_stop_sessions` round-trip for late-ready Spawning runners!
+  assert_true(!should_delete_runner_launch_on_pending_replay(true, false, false, true), "already_ended replay must NOT delete runner_launches")
+  assert_true(!should_delete_runner_launch_on_pending_replay(false, true, false, true), "active turn in mem must NOT delete runner_launches")
+  assert_true(!should_delete_runner_launch_on_pending_replay(false, false, true, true), "live/draining instance must NOT delete runner_launches")
+  assert_true(!should_delete_runner_launch_on_pending_replay(false, false, false, false), "unconfirmed-dead PID must NOT delete runner_launches")
+  assert_true(should_delete_runner_launch_on_pending_replay(false, false, false, true), "only newly-committed confirmed-dead untracked instance deletes runner_launches")
+  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, 0, None), "alive + None start_time != dead")
+  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, -1, None), "EPERM (-1) != dead")
+  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, 0, Some(103000L)), "alive + within 5s != dead")
+  assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, 0, Some(106000L)), "alive + >5s skew => PID reused => confirmed dead")
+  assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, -3, None), "ESRCH (-3) => confirmed dead")
+
+  // R16 P1-1: Late-ready Spawning runner absent from startup discovery resolves session_key via `draining_stop_sessions`!
+  let mgr5 = LiveRunnerManager::new()
+  mgr5.record_draining_stop_marker("rid:r-late-r16@1700000010000", "s-late-r16")
+  let carried_r16 = mgr5.export_handover_state_json()
+  let mgr6 = LiveRunnerManager::new()
+  mgr6.import_handover_state_json(carried_r16)
+  match mgr6.find_draining_stop_session("r-late-r16:7777:1700000025000", "r-late-r16", 1700000025000L) {
+    Some(sk) => assert_str_eq(sk, "s-late-r16")
+    None => panic("expected late-ready Spawning runner to resolve session_key from draining_stop_sessions")
+  }
 }
 
 test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_draining preserves stop marker on socket error" {
@@ -2171,10 +2192,18 @@ test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_d
     adopted_db_out: 0L,
   }
   mgr2.draining.set(99, dummy_sess)
+  // R16 P1-2: While `inst` is in `draining`, `has_live_session_instance` MUST return true so
+  // `pending_end_turns` commit does NOT prematurely delete `runner_launches`!
+  assert_true(mgr2.has_live_session_instance(inst), "draining instance counts as live for runner_launches protection")
+  assert_true(
+    !should_delete_runner_launch_on_pending_replay(false, false, mgr2.has_live_session_instance(inst), true),
+    "draining instance must NOT delete runner_launches on pending_end_turns commit",
+  )
   mgr2.finish_draining(99, confirmed_exited=false)
   assert_true(mgr2.draining_stopping_ids.contains(inst), "socket error/EOF must NOT clear stop marker")
   // Now on confirmed exit, marker IS cleared!
   mgr2.draining.set(100, dummy_sess)
   mgr2.finish_draining(100, confirmed_exited=true)
   assert_true(!mgr2.draining_stopping_ids.contains(inst), "confirmed exit MUST clear stop marker")
+  assert_true(!mgr2.has_live_session_instance(inst), "after finish_draining instance is no longer live")
 }

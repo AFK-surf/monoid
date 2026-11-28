@@ -1801,6 +1801,7 @@ pub struct LiveRunnerManager {
   by_spawn_ev : Map[Int64, Int]
   pending_end_turns : Map[String, ManagerPendingEndTurn]
   draining_stopping_ids : Map[String, Bool]
+  draining_stop_sessions : Map[String, String]
   mut handover_state_path : Option[String]
   mut handover_state_dirty : Bool
   reprompt_restarts : Map[String, Int]
@@ -1817,6 +1818,7 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     by_spawn_ev: Map::new(),
     pending_end_turns: Map::new(),
     draining_stopping_ids: Map::new(),
+    draining_stop_sessions: Map::new(),
     handover_state_path: None,
     handover_state_dirty: false,
     reprompt_restarts: Map::new(),
@@ -1947,7 +1949,49 @@ pub fn LiveRunnerManager::is_draining_stop_target(
   false
 }
 
-/// R13 P1-2: Removes any draining/stopping markers matching `inst_id_opt` or `"rid:<runner_id>@..."`.
+pub fn LiveRunnerManager::record_draining_stop_marker(
+  self : LiveRunnerManager,
+  key : String,
+  session_key : String,
+) -> Unit {
+  if key.length() == 0 {
+    return
+  }
+  self.draining_stopping_ids.set(key, true)
+  if session_key.length() > 0 {
+    self.draining_stop_sessions.set(key, session_key)
+  }
+}
+
+/// R16 P1-1: Looks up the `session_key` associated with a draining/stopping marker (exact `inst_id`
+/// or matching `"rid:<runner_id>@<before_ms>"`) so late-ready runners can be adopted into `draining`
+/// even when absent from startup discovery.
+pub fn LiveRunnerManager::find_draining_stop_session(
+  self : LiveRunnerManager,
+  inst_id : String,
+  runner_id : String,
+  started_at : Int64,
+) -> Option[String] {
+  match self.draining_stop_sessions.get(inst_id) {
+    Some(sk) => if sk.length() > 0 { return Some(sk) }
+    None => ()
+  }
+  if runner_id.length() > 0 {
+    let keys = self.draining_stopping_ids.keys()
+    for i in 0..<keys.length() {
+      let k = keys[i]
+      if match_rid_stop_key(k, runner_id, started_at) {
+        match self.draining_stop_sessions.get(k) {
+          Some(sk) => if sk.length() > 0 { return Some(sk) }
+          None => ()
+        }
+      }
+    }
+  }
+  None
+}
+
+/// R13/R16 P1-2: Removes any draining/stopping markers (and session mappings) matching `inst_id_opt` or `"rid:<runner_id>@..."`.
 pub fn LiveRunnerManager::clear_draining_stop_target(
   self : LiveRunnerManager,
   inst_id_opt : Option[String],
@@ -1960,6 +2004,7 @@ pub fn LiveRunnerManager::clear_draining_stop_target(
         self.draining_stopping_ids.remove(iid)
         removed = true
       }
+      self.draining_stop_sessions.remove(iid)
     }
     None => ()
   }
@@ -1971,6 +2016,7 @@ pub fn LiveRunnerManager::clear_draining_stop_target(
       let k = keys[i]
       if k == legacy_key || k.starts_with(prefix) {
         self.draining_stopping_ids.remove(k)
+        self.draining_stop_sessions.remove(k)
         removed = true
       }
     }
@@ -1978,18 +2024,22 @@ pub fn LiveRunnerManager::clear_draining_stop_target(
   removed
 }
 
-/// R15 P1-2: Pure tri-state PID confirmed-dead check:
-/// - `pid <= 1` or `!proc_alive` (`proc_kill(pid, 0, false) != 0`) -> `true` (confirmed dead);
-/// - `start_ms_opt == Some(actual)` with `abs(actual - started_at) > 5000L` -> `true` (PID reused -> original dead);
-/// - `start_ms_opt == None` (unknown) or timestamp matches -> `false` (NEVER treat unknown as dead!).
+/// R15/R16 P1-3: Pure tri-state PID confirmed-dead check:
+/// - `pid <= 1` or `station_sys::proc_kill_is_esrch(kill_rc)` (`-3`) -> `true` (confirmed dead);
+/// - `kill_rc != 0` (e.g. `EPERM = -1`) -> `false` (NEVER treat permission error as dead!);
+/// - `kill_rc == 0` and `start_ms_opt == Some(actual)` with `abs(actual - started_at) > 5000L` -> `true` (PID reused -> original dead);
+/// - `kill_rc == 0` and `start_ms_opt == None` (unknown) or timestamp matches -> `false`.
 pub fn live_runner_pid_confirmed_dead_with(
   pid : Int,
   started_at : Int64,
-  proc_alive : Bool,
+  kill_rc : Int,
   start_ms_opt : Option[Int64],
 ) -> Bool {
-  if pid <= 1 || !proc_alive {
+  if pid <= 1 || station_sys::proc_kill_is_esrch(kill_rc) {
     return true
+  }
+  if kill_rc != 0 {
+    return false
   }
   match start_ms_opt {
     Some(actual_ms) => (actual_ms - started_at).abs() > 5000L
@@ -2001,24 +2051,29 @@ fn live_runner_pid_confirmed_dead(pid : Int, started_at : Int64) -> Bool {
   if pid <= 1 {
     return true
   }
-  let proc_alive = station_sys::proc_kill(pid, 0, false) == 0
-  if !proc_alive {
+  let rc = station_sys::proc_kill(pid, 0, false)
+  if station_sys::proc_kill_is_esrch(rc) {
     return true
   }
-  live_runner_pid_confirmed_dead_with(pid, started_at, true, station_sys::proc_start_time_ms(pid))
+  if rc != 0 {
+    return false
+  }
+  live_runner_pid_confirmed_dead_with(pid, started_at, rc, station_sys::proc_start_time_ms(pid))
 }
 
-/// R15 P1-1: Pure guard ensuring `runner_launches` is NEVER deleted on an `already_ended` replay,
-/// while a newer turn is active in memory, or while the instance is still live in `sessions`.
+/// R15/R16 P1-2: Pure guard ensuring `runner_launches` is NEVER deleted on an `already_ended` replay,
+/// while a newer turn is active in memory, while the instance is live in `sessions` or `draining`,
+/// or while the OS process is not confirmed dead.
 pub fn should_delete_runner_launch_on_pending_replay(
   already_ended : Bool,
   has_active_turn_in_mem : Bool,
-  instance_live_in_sessions : Bool,
+  instance_live_in_sessions_or_draining : Bool,
+  pid_confirmed_dead : Bool,
 ) -> Bool {
-  !already_ended && !has_active_turn_in_mem && !instance_live_in_sessions
+  !already_ended && !has_active_turn_in_mem && !instance_live_in_sessions_or_draining && pid_confirmed_dead
 }
 
-fn LiveRunnerManager::has_live_session_instance(self : LiveRunnerManager, inst_id : String) -> Bool {
+pub fn LiveRunnerManager::has_live_session_instance(self : LiveRunnerManager, inst_id : String) -> Bool {
   let skeys = self.sessions.keys()
   for i in 0..<skeys.length() {
     match self.sessions.get(skeys[i]) {
@@ -2032,6 +2087,25 @@ fn LiveRunnerManager::has_live_session_instance(self : LiveRunnerManager, inst_i
           None => ()
         }
         if s.adopted_instance_id == Some(inst_id) {
+          return true
+        }
+      }
+      None => ()
+    }
+  }
+  let dcids = self.draining.keys()
+  for i in 0..<dcids.length() {
+    match self.draining.get(dcids[i]) {
+      Some(ds) => {
+        match live_runner_info_of(ds.phase) {
+          Some(info) => {
+            if station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at) == inst_id {
+              return true
+            }
+          }
+          None => ()
+        }
+        if ds.adopted_instance_id == Some(inst_id) {
           return true
         }
       }
@@ -2139,6 +2213,7 @@ pub fn LiveRunnerManager::sweep_draining_stop_markers(
       Some((_, before_ms)) => {
         if wall_ms > before_ms + LIVE_RUNNER_READY_MS {
           self.draining_stopping_ids.remove(k)
+          self.draining_stop_sessions.remove(k)
           removed = true
         }
       }
@@ -2146,6 +2221,7 @@ pub fn LiveRunnerManager::sweep_draining_stop_markers(
         Some((pid, started_at)) => {
           if check_pid_dead(pid, started_at) {
             self.draining_stopping_ids.remove(k)
+            self.draining_stop_sessions.remove(k)
             removed = true
           }
         }
@@ -3028,16 +3104,23 @@ fn live_runner_commit_manager_pending_end_turn(
             Some(cur) => cur.current_turn_id is Some(_)
             None => false
           }
-          // R14/R15 Invariant 1: ZERO side effects on newer turns or live runners when replaying an
-          // already-ended turn or when a newer turn is already active in memory!
+          // R14/R15/R16 Invariant 1: ZERO side effects on newer turns or live/draining runners when
+          // replaying an already-ended turn or when a newer turn is already active in memory!
           if !already_ended && !has_active_turn_in_mem {
             match mpend.launch_instance_id {
-              Some(inst_id) => if should_delete_runner_launch_on_pending_replay(
-                already_ended,
-                has_active_turn_in_mem,
-                mgr.has_live_session_instance(inst_id),
-              ) {
-                core.agents.delete_runner_launch(inst_id)
+              Some(inst_id) => {
+                let pid_dead = match parse_runner_instance_id_pid_start(inst_id) {
+                  Some((rpid, rstart)) => live_runner_pid_confirmed_dead(rpid, rstart)
+                  None => false
+                }
+                if should_delete_runner_launch_on_pending_replay(
+                  already_ended,
+                  has_active_turn_in_mem,
+                  mgr.has_live_session_instance(inst_id),
+                  pid_dead,
+                ) {
+                  core.agents.delete_runner_launch(inst_id)
+                }
               }
               None => ()
             }
@@ -5510,11 +5593,14 @@ pub fn LiveRunnerManager::tick(
       if rinfo.socket.length() > 0 && !self.has_runner_id_tracked(rinfo.id) {
         let iid = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
         if self.is_draining_stop_target(iid, rinfo.id, rinfo.started_at) {
-          let skey_opt = match core.agents.adopted_session_by_runner_id.get(rinfo.id) {
+          let skey_opt = match self.find_draining_stop_session(iid, rinfo.id, rinfo.started_at) {
             Some(sk) => Some(sk)
-            None => match core.agents.get_runner_launch(iid) {
-              Ok(Some(rec)) => Some(rec.session_key)
-              _ => None
+            None => match core.agents.adopted_session_by_runner_id.get(rinfo.id) {
+              Some(sk) => Some(sk)
+              None => match core.agents.get_runner_launch(iid) {
+                Ok(Some(rec)) => Some(rec.session_key)
+                _ => None
+              }
             }
           }
           match skey_opt {
@@ -5798,9 +5884,19 @@ pub fn LiveRunnerManager::export_handover_state_json(self : LiveRunnerManager) -
   for i in 0..<dkeys.length() {
     d_ids.push(base_codec::json_str(dkeys[i]))
   }
+  let d_sess_fields : Array[(String, base_codec::Json)] = []
+  let dskeys = self.draining_stop_sessions.keys()
+  for i in 0..<dskeys.length() {
+    let dk = dskeys[i]
+    match self.draining_stop_sessions.get(dk) {
+      Some(sk) => if sk.length() > 0 { d_sess_fields.push((dk, base_codec::json_str(sk))) }
+      None => ()
+    }
+  }
   base_codec::json_obj([
     ("pendingEndTurns", base_codec::json_arr(pends)),
     ("drainingStoppingIds", base_codec::json_arr(d_ids)),
+    ("drainingStopSessions", base_codec::json_obj(d_sess_fields)),
   ])
 }
 
@@ -5884,6 +5980,20 @@ pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j
     }
     _ => ()
   }
+  match base_codec::json_get(j, "drainingStopSessions") {
+    Some(base_codec::Json::Obj(fields)) => {
+      for i in 0..<fields.length() {
+        let (mk, mv) = fields[i]
+        match mv {
+          base_codec::Json::Str(sk) => if mk.length() > 0 && sk.length() > 0 {
+            self.draining_stop_sessions.set(mk, sk)
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
 }
 
 /// R11 P1-1: Prepare live runners for handover BEFORE snapshot export:
@@ -5909,18 +6019,18 @@ pub fn LiveRunnerManager::prepare_handover(
     }
   }
   let record_stopping_ids = fn(s : LiveRunnerSession) -> Unit {
-    // R13 P1-2: When exact `instance_id` is known (`RunnerInfo` or `adopted_instance_id`),
-    // record ONLY that exact instance ID (NEVER a cross-instance `rid:` key).
-    // Record `"rid:<runner_id>@<wall_ms>"` ONLY for startup-phase `Spawning` sessions lacking `RunnerInfo`.
+    // R13/R16 P1-1: When exact `instance_id` is known (`RunnerInfo` or `adopted_instance_id`),
+    // record ONLY that exact instance ID + `session_key` (NEVER a cross-instance `rid:` key).
+    // Record `"rid:<runner_id>@<wall_ms>"` + `session_key` ONLY for startup-phase `Spawning` sessions.
     match live_runner_info_of(s.phase) {
       Some(info) => {
         let iid = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
-        self.draining_stopping_ids.set(iid, true)
+        self.record_draining_stop_marker(iid, s.session_key)
       }
       None => match s.adopted_instance_id {
-        Some(iid) => self.draining_stopping_ids.set(iid, true)
+        Some(iid) => self.record_draining_stop_marker(iid, s.session_key)
         None => if s.runner_id.length() > 0 {
-          self.draining_stopping_ids.set("rid:" + s.runner_id + "@" + wall_ms.to_string(), true)
+          self.record_draining_stop_marker("rid:" + s.runner_id + "@" + wall_ms.to_string(), s.session_key)
         }
       }
     }

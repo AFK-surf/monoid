@@ -610,8 +610,18 @@ pub fn ChildProcess::close(self : ChildProcess) -> Bool {
   sts_proc_close(self.handle) != 0
 }
 
+pub let ERR_ESRCH : Int = -3
+pub let ERR_EPERM : Int = -1
+
 pub fn proc_kill(pid : Int, sig : Int, group : Bool) -> Int {
   sts_proc_kill(pid, sig, if group { 1 } else { 0 })
+}
+
+/// Returns true ONLY when `proc_kill(pid, SIG_PROBE, false)` confirmed the target process does not exist
+/// (POSIX `-ESRCH == -3`; Windows `STS_SIG_PROBE` returns `0` on `ERROR_ACCESS_DENIED` and `-3` when exited/missing).
+/// `EPERM` (`-1`) returns `false` so permission errors are NEVER misclassified as process death.
+pub fn proc_kill_is_esrch(rc : Int) -> Bool {
+  rc == ERR_ESRCH
 }
 
 pub fn proc_start_time_ms(pid : Int) -> Option[Int64] {

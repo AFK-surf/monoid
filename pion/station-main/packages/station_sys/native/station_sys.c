@@ -1794,10 +1794,10 @@ int32_t sts_proc_kill(int32_t pid, int32_t sig, int32_t group) {
     }
     if (sig == STS_SIG_PROBE) {
         HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
-        if (h == NULL) return GetLastError() == ERROR_ACCESS_DENIED ? 0 : -1;
+        if (h == NULL) return GetLastError() == ERROR_ACCESS_DENIED ? 0 : -3;
         int alive = (WaitForSingleObject(h, 0) == WAIT_TIMEOUT);
         CloseHandle(h);
-        return alive ? 0 : -1;
+        return alive ? 0 : -3;
     }
     if (group) {
         wchar_t line[96];
