@@ -2334,14 +2334,22 @@ test "Slice 2B-1 R8: full hydration lock root & transport recovery, rejected tup
   debug_assert(core.db_account_sub.is_none(), "UnauthMemory unbinds db_account_sub")
   debug_assert(core.lock_root.is_none(), "UnauthMemory unmounted old DB lock root")
 
-  // Simulate peer rotation takeover: unified full hydration re-attaches `acct_db`, clears stale rejected meta,
-  // switches back to `ULID_WS1` (restoring pinned lock root!), re-attaches transport, and delivers frames!
-  let _ = clear_rejected_tuples_in_db(acct_db)
-  debug_assert(!is_tuple_rejected_in_db(acct_db, "sid-1", "ref-1"), "clear_rejected_tuples_in_db cleared old records")
+  // Aborted / cancelled staging (read-only check on `meta("membership:rejected_tuples")` followed by
+  // publication-boundary discard / login_gen cancel) MUST preserve `membership:rejected_tuples` intact
+  // so a subsequent restart still rejects the old `(sid-1, ref-1)` tuple!
+  debug_assert(!is_tuple_rejected_in_db(acct_db, "sid-2", "ref-2"), "staging read-only check accepts newer candidate")
+  // (Staging aborted before commit — `clear_rejected_tuples_in_db` NOT called yet!)
+  debug_assert(is_tuple_rejected_in_db(acct_db, "sid-1", "ref-1"), "aborted staging MUST preserve rejected_tuples in meta for restart")
+
+  // Simulate committed peer rotation takeover: unified full hydration installs `acct_db`, clears stale
+  // rejected meta ONLY on committed install, switches back to active workspace (restoring pinned lock root!),
+  // re-attaches transport, and delivers frames!
   match core.switch_account_db(acct_db, "u-alice") {
     Ok(_) => ()
     Err(e) => panic("full hydration switch_account_db failed: " + e)
   }
+  let _ = clear_rejected_tuples_in_db(acct_db)
+  debug_assert(!is_tuple_rejected_in_db(acct_db, "sid-1", "ref-1"), "committed activation cleared old rejected tuples")
   core.switch_workspace(ULID_WS1)
   let _ = core.membership.bind_station_checked(ULID_WS1, "st-1")
   match core.lock_root {

@@ -82,6 +82,7 @@ struct RuntimeSession {
   mut accounts_init_pending : Bool
   mut startup_activate_sibling : Bool
   mut quarantined_sub : String
+  mut quarantined_workspace : String
   mut lifecycle_reconciling : Bool
   mut lifecycle_fiber : Option[effect::Fiber[Unit]]
   mut stopped : Bool
@@ -504,7 +505,9 @@ fn runtime_publish_active_account_now(
   sess.accounts_init_pending = false
   sess.startup_activate_sibling = false
   let prev_quarantined = sess.quarantined_sub
+  let prev_quarantined_ws = if prev_quarantined == active.sub { sess.quarantined_workspace } else { "" }
   sess.quarantined_sub = ""
+  sess.quarantined_workspace = ""
   if prev_quarantined.length() > 0 && prev_quarantined != active.sub {
     sess.desired_mesh_stations.clear()
     sess.desired_live_sync = false
@@ -512,7 +515,7 @@ fn runtime_publish_active_account_now(
   sess.active_account_gen += 1L
   let _ = bump_runtime_session_gen(sess)
   sess.bearer_gen += 1L
-  match runtime_install_staged_db_now(sess, active.sub, staged_opt) {
+  match runtime_install_staged_db_now(sess, active.sub, staged_opt, preferred_ws=prev_quarantined_ws) {
     Err(msg) => return Err(msg)
     Ok(_) => ()
   }
@@ -653,6 +656,7 @@ fn runtime_reconcile_from_disk_k(
       sess.accounts_init_pending = false
       sess.startup_activate_sibling = false
       sess.quarantined_sub = ""
+      sess.quarantined_workspace = ""
       done_k(effect::Exit::Succeeded(()))
     }
     sync::HostStorageRead::Found(j) => {
@@ -1419,6 +1423,8 @@ fn runtime_stage_account_db_k(
       return
     }
   }
+  // Pure read-only check during staging: NEVER clear `membership:rejected_tuples` before the
+  // activation/login transaction actually commits in `runtime_install_staged_db_now`!
   match check_rejected {
     Some((cand_sid, cand_ref)) => {
       if sync::is_tuple_rejected_in_db(new_db, cand_sid, cand_ref) {
@@ -1426,11 +1432,8 @@ fn runtime_stage_account_db_k(
         k(StageAccountDbResult::RejectedTuple)
         return
       }
-      let _ = sync::clear_rejected_tuples_in_db(new_db)
     }
-    None => {
-      let _ = sync::clear_rejected_tuples_in_db(new_db)
-    }
+    None => ()
   }
   let sub_host_key = sync::host_pending_purges_key_for_sub(subject)
   let finish_with_purges = fn(host_purges_read : sync::HostStorageRead, is_shared : Bool) -> Unit {
@@ -1477,6 +1480,7 @@ fn runtime_install_staged_db_now(
   sess : RuntimeSession,
   subject : String,
   staged_opt : Option[StagedAccountDb],
+  preferred_ws : String = "",
 ) -> Result[Unit, String] {
   match staged_opt {
     None => {
@@ -1486,6 +1490,7 @@ fn runtime_install_staged_db_now(
         }
         None => return Err("account_sub_unbound: staged db missing")
       }
+      let _ = sync::clear_rejected_tuples_in_db(sess.db)
       sess.core.membership.set_unauthenticated(false)
       sess.core.membership.clear_session_invalidated()
       Ok(())
@@ -1531,6 +1536,8 @@ fn runtime_install_staged_db_now(
         }
         Ok(_) => ()
       }
+      // Clear stale rejected tuples ONLY after activation has committed into `sess.core`!
+      let _ = sync::clear_rejected_tuples_in_db(new_db)
       sess.db = new_db
       match sess.cloud {
         Some(cs) => cs.switch_db(new_db)
@@ -1544,6 +1551,9 @@ fn runtime_install_staged_db_now(
         let mut target_ws = match sess.prefs.get("workspace") {
           Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "" }
           _ => ""
+        }
+        if target_ws.length() == 0 && preferred_ws.length() > 0 && preferred_ws != "ws-default" {
+          target_ws = preferred_ws
         }
         if target_ws.length() == 0 {
           match store::list_workspaces(new_db) {
@@ -1917,6 +1927,7 @@ fn runtime_make_refresh_host(
           let should_activate_sibling = sess.startup_activate_sibling && remaining_accts.length() > 0
           if sess.quarantined_sub == inv_sub {
             sess.quarantined_sub = ""
+            sess.quarantined_workspace = ""
             sess.desired_mesh_stations.clear()
             sess.desired_live_sync = false
           }
@@ -2335,8 +2346,6 @@ pub extern "C" fn pion_core_runtime_start(
           is_unauth = true
           accounts.clear()
           db_res = open_and_migrate_account_db(sh, ":memory:")
-        } else {
-          let _ = sync::clear_rejected_tuples_in_db(cand_db)
         }
       }
       Err(_) => ()
@@ -2616,6 +2625,8 @@ pub extern "C" fn pion_core_runtime_start(
       host_purges_shared=host_purges_shared,
       host_purges_read=Some(host_purges_read),
     )
+    // Clear stale rejected tuples ONLY after cold-boot account DB activation is committed!
+    let _ = sync::clear_rejected_tuples_in_db(db)
     core.set_viewer(a0.email, sub=a0.sub, role="owner")
     match read_storage_json(sh, sync::person_lock_storage_key(a0.sub)) {
       Some(pjson) => {
@@ -2710,6 +2721,7 @@ pub extern "C" fn pion_core_runtime_start(
     accounts_init_pending: accounts_init_pending,
     startup_activate_sibling: startup_activate_sibling,
     quarantined_sub: "",
+    quarantined_workspace: "",
     lifecycle_reconciling: false,
     lifecycle_fiber: None,
     stopped: false,
@@ -2898,6 +2910,7 @@ pub extern "C" fn pion_core_runtime_start(
             None => ()
           }
           sess.quarantined_sub = inv_sub
+          sess.quarantined_workspace = if sess.core.workspace != "ws-default" { sess.core.workspace } else { "" }
           runtime_switch_to_unauth_memory_db(sess, clear_desired_stations=false)
           emit_topic_refresh(sess, "accounts")
           emit_topic_refresh(sess, "workspaces")
@@ -3420,6 +3433,7 @@ fn finish_verified_auth_complete_k(
             sess.desired_live_sync = false
           }
           sess.quarantined_sub = ""
+          sess.quarantined_workspace = ""
           match sess.lifecycle_fiber {
             Some(fib) => {
               fib.interrupt()
@@ -4271,6 +4285,7 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
       sess.accounts_init_pending = false
       sess.startup_activate_sibling = false
       sess.quarantined_sub = ""
+      sess.quarantined_workspace = ""
       match sess.lifecycle_fiber {
         Some(fib) => {
           fib.interrupt()
