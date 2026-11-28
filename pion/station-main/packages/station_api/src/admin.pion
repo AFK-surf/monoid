@@ -104,6 +104,14 @@ pub struct KeptSend {
   pub body_b64 : String
 }
 
+/// Async idempotency claim result for non-blocking daemon ops (`AdminStreamMode::WaitingAsyncOp`).
+pub enum AsyncIdemClaim {
+  NotKeyed
+  Claimed(String, String)
+  Replay(station_http::HttpResponse)
+  Conflict(station_http::HttpResponse)
+}
+
 /// Main Admin API controller built on `station_http::Router`.
 pub struct AdminApi {
   pub host : ApiHost
@@ -111,6 +119,7 @@ pub struct AdminApi {
   pub station_build : String
   pub oldest_core : Int
   slots : Array[IdempotencySlot]
+  in_flight_slots : Map[String, Bool]
 }
 
 pub fn AdminApi::new(
@@ -124,6 +133,7 @@ pub fn AdminApi::new(
     station_build: station_build,
     oldest_core: OLDEST_CORE,
     slots: [],
+    in_flight_slots: Map::new(),
   }
 }
 
@@ -139,7 +149,87 @@ pub fn AdminApi::with_oldest_core(
     station_build: station_build,
     oldest_core: oldest_core,
     slots: [],
+    in_flight_slots: Map::new(),
   }
+}
+
+/// Claim an `Idempotency-Key` slot before starting an asynchronous write op.
+pub fn AdminApi::claim_async_idempotency(
+  self : AdminApi,
+  viewer : Viewer,
+  method_name : String,
+  path : String,
+  headers : Array[http1::Header],
+  now_ms : Int64,
+) -> AsyncIdemClaim {
+  if method_name == "GET" || method_name == "HEAD" || is_reads_post_path(path) {
+    return AsyncIdemClaim::NotKeyed
+  }
+  let mut idem_key = ""
+  for i in 0..<headers.length() {
+    if station_http::ascii_eq_ci(headers[i].name, ONCE_HEADER) {
+      idem_key = headers[i].value.trim()
+      break
+    }
+  }
+  if idem_key.length() == 0 || idem_key.length() > 200 {
+    return AsyncIdemClaim::NotKeyed
+  }
+  self.evict_expired_slots(now_ms)
+  let slot_key = viewer.email + "\u{0}" + viewer.workspace + "\u{0}" + method_name + "\u{0}" + path + "\u{0}" + idem_key
+  match self.find_slot(slot_key) {
+    Some(slot) => {
+      let replayed = station_http::HttpResponse::{
+        status: slot.status,
+        reason: station_http::status_reason(slot.status),
+        headers: slot.headers,
+        body: slot.body,
+        chunked: false,
+        close_after: false,
+      }
+      return AsyncIdemClaim::Replay(replayed)
+    }
+    None => ()
+  }
+  if self.in_flight_slots.get(slot_key).is_some() {
+    return AsyncIdemClaim::Conflict(json_error(409, "request with this idempotency key is already in progress"))
+  }
+  self.in_flight_slots.set(slot_key, true)
+  AsyncIdemClaim::Claimed(slot_key, idem_key)
+}
+
+/// Complete a claimed async idempotency slot (caches `< 500` responses; releases in-flight lock).
+pub fn AdminApi::complete_async_idempotency(
+  self : AdminApi,
+  slot_key : String,
+  idem_key : String,
+  viewer : Viewer,
+  method_name : String,
+  path : String,
+  resp : station_http::HttpResponse,
+  now_ms : Int64,
+) -> Unit {
+  self.in_flight_slots.remove(slot_key)
+  if resp.status < 500 {
+    self.slots.push(IdempotencySlot::{
+      slot_key: slot_key,
+      viewer_email: viewer.email,
+      workspace: viewer.workspace,
+      method: method_name,
+      path: path,
+      idem_key: idem_key,
+      at_ms: now_ms,
+      body_hash: None,
+      status: resp.status,
+      headers: resp.headers,
+      body: resp.body,
+    })
+  }
+}
+
+/// Release an in-flight async idempotency claim on disconnect/timeout/cancellation.
+pub fn AdminApi::abort_async_idempotency(self : AdminApi, slot_key : String) -> Unit {
+  self.in_flight_slots.remove(slot_key)
 }
 
 /// Build a `station_http::Router` binding this `AdminApi` with a viewer extractor and clock.

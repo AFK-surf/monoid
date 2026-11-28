@@ -3023,12 +3023,15 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const checkUnenrolled = await adminCall(conn, "POST", "/updates/check", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(checkUnenrolled.status, 404, `POST /updates/check unenrolled expected 404, got ${checkUnenrolled.status}: ${checkUnenrolled.body.toString()}`);
 
-  // Invalid `POST /updates` input returns 400 (strictly validated; never 501 or fake 200!)
-  const badUpdateResp = await adminCall(conn, "POST", "/updates", { "content-type": "application/json" }, Buffer.from("{}"));
-  assert.equal(badUpdateResp.status, 400, `POST /updates {} expected 400, got ${badUpdateResp.status}: ${badUpdateResp.body.toString()}`);
+  // `POST /updates` (`updates.install`) returns honest 501 until a full verified installer loop lands
+  const updatesInstallResp = await adminCall(conn, "POST", "/updates", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ id: "station" })));
+  assert.equal(updatesInstallResp.status, 501, `POST /updates expected honest 501, got ${updatesInstallResp.status}: ${updatesInstallResp.body.toString()}`);
 
-  // Non-blocking concurrency check: a slow external `POST /copies/s3/test` MUST NOT block concurrent `GET /status`!
-  const slowS3 = createHttpServer((_req, res) => {
+  // Non-blocking concurrency check: a slow external `POST /copies/s3/test` (default path-style!) MUST actually hit
+  // the 1200ms slow S3 server AND MUST NOT block concurrent `GET /status`!
+  let slowS3Hit = false;
+  const slowS3 = createHttpServer((req, res) => {
+    if (req.url?.startsWith("/test-bkt")) slowS3Hit = true;
     setTimeout(() => {
       res.writeHead(403, { "content-type": "application/xml" });
       res.end("<Error><Code>AccessDenied</Code><Message>AKIA_LEAK_GUARD</Message></Error>");
@@ -3056,6 +3059,9 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     assert.equal(concurrentStatus.status, 200, `concurrent GET /status failed: ${concurrentStatus.body.toString()}`);
     assert.ok(elapsedStatus < 900, `GET /status was blocked by slow copies.s3.test! elapsed=${elapsedStatus}ms`);
     const slowResp = await slowPromise;
+    const elapsedTotal = Date.now() - t0;
+    assert.equal(slowS3Hit, true, "copies.s3.test with default forcePathStyle=true MUST hit /test-bkt on slowS3");
+    assert.ok(elapsedTotal >= 1000, `copies.s3.test returned too early (${elapsedTotal}ms) instead of awaiting 1200ms S3 response`);
     assert.equal(slowResp.status, 200, `POST /copies/s3/test expected 200 ok:false, got ${slowResp.status}: ${slowResp.body.toString()}`);
     const slowJson = JSON.parse(slowResp.body.toString("utf8"));
     assert.equal(slowJson.ok, false);

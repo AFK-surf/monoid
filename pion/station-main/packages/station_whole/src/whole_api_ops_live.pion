@@ -90,13 +90,51 @@ fn live_replace_all(haystack : String, needle : String, replacement : String) ->
   sb.to_string()
 }
 
-/// Normalize an S3 endpoint for strict cross-endpoint equality comparison (trim + strip trailing `/`).
+/// Normalize an S3 endpoint for strict cross-endpoint equality comparison:
+/// lowercases ONLY scheme + authority (host:port) and strips trailing `/`, while preserving URL path case!
 fn live_norm_s3_endpoint(raw : String) -> String {
   let mut s = raw.trim()
   while s.length() > 0 && s.ends_with("/") {
     s = s.slice(0, s.length() - 1)
   }
-  admin_ascii_lower(s)
+  // Find `://` separator
+  let mut scheme_end = -1
+  for i in 0..<s.length() {
+    if i + 2 < s.length() && s.code_unit_at(i) == 58 && s.code_unit_at(i + 1) == 47 && s.code_unit_at(i + 2) == 47 {
+      scheme_end = i + 3
+      break
+    }
+  }
+  if scheme_end < 0 {
+    return s
+  }
+  let mut path_start = s.length()
+  for i in scheme_end..<s.length() {
+    if s.code_unit_at(i) == 47 {
+      path_start = i
+      break
+    }
+  }
+  admin_ascii_lower(s.slice(0, path_start)) + s.slice(path_start, s.length())
+}
+
+/// Validate Google Vertex AI service account JSON structure (`station/src/accounts/profiles.ts:303` `vertexAccount`).
+pub fn live_validate_vertex_key(raw_key : String) -> Bool {
+  let trimmed = raw_key.trim()
+  if trimmed.length() == 0 {
+    return false
+  }
+  match base_codec::json_parse(trimmed) {
+    base_codec::JsonParseResult::Ok(j) => {
+      let typ = match json_field_str(j, "type") { Some(s) => s.trim(), None => "" }
+      let proj = match json_field_str(j, "project_id") { Some(s) => s.trim(), None => "" }
+      let email = match json_field_str(j, "client_email") { Some(s) => s.trim(), None => "" }
+      let pkey = match json_field_str(j, "private_key") { Some(s) => s.trim(), None => "" }
+      let pem_start = "BE" + "GIN"
+      typ == "service_account" && proj.length() > 0 && email.length() > 0 && pkey.contains(pem_start) && pkey.contains("PRIVATE KEY")
+    }
+    base_codec::JsonParseResult::Err(_) => false
+  }
 }
 
 /// Scrub S3 credentials from any error message returned by `copies.s3.test`.
@@ -139,7 +177,7 @@ pub fn prepare_s3_test_target(
     }
     None => ()
   }
-  // Security invariant: never forward saved credentials to a different endpoint or bucket!
+  // Security invariant: never forward saved credentials to a different endpoint, bucket, or path-style mode!
   let mut reuse_saved_creds = true
   match prev_opt {
     Some(prev) => {
@@ -158,6 +196,14 @@ pub fn prepare_s3_test_target(
           }
         }
         _ => ()
+      }
+      match json_field_bool(body, "forcePathStyle") {
+        Some(fps) => {
+          if fps != prev.force_path_style {
+            reuse_saved_creds = false
+          }
+        }
+        None => ()
       }
     }
     None => reuse_saved_creds = false
@@ -189,7 +235,7 @@ pub fn prepare_s3_test_target(
       "forcePathStyle",
       base_codec::json_bool(match json_field_bool(body, "forcePathStyle") {
         Some(b) => b
-        None => match prev_opt { Some(p) => p.force_path_style, None => false }
+        None => match prev_opt { Some(p) => p.force_path_style, None => true }
       }),
     ),
     ("accessKeyId", base_codec::json_str(pick_str("accessKeyId", fallback_ak))),
@@ -455,7 +501,7 @@ pub fn dispatch_live_updates_op(
   now_ms : Int64,
   override_present : Bool = false,
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
-  if op != "updates.check" && op != "updates.wait" && op != "updates.install" {
+  if op != "updates.check" && op != "updates.wait" {
     return None
   }
   let ops_lang = api_lang_to_ops(req.lang)
@@ -707,7 +753,11 @@ pub fn dispatch_live_accounts_op(
       source_opt = Some(src)
     }
     let key = match json_field_str(acc, "key") { Some(s) => s.trim(), None => "" }
-    let key_required = if kind == "env" {
+    let is_vertex = match source_opt {
+      Some(src) => src.id == "google-vertex"
+      None => false
+    }
+    let key_required = if kind == "env" || kind == "openai-api" {
       false
     } else {
       match source_opt {
@@ -717,6 +767,12 @@ pub fn dispatch_live_accounts_op(
     }
     if key_required && key.length() == 0 {
       return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.keyRequired"))))
+    }
+    // Google Vertex service-account JSON structural validation (1:1 with `station/src/accounts/profiles.ts:303`)
+    if is_vertex {
+      if !live_validate_vertex_key(key) {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.vertexKeyInvalid"))))
+      }
     }
     let env_runtime : Option[String] = if kind == "env" {
       match json_field_str(body, "runtime") {
@@ -729,9 +785,9 @@ pub fn dispatch_live_accounts_op(
     } else {
       None
     }
-    // Live key verification is mandatory for keyed profiles (honest 501 if check hook is not wired;
-    // returns 400 `station.profile.checkFailed` without writing config.json on bad key).
-    if key_required {
+    // Live key verification is mandatory for keyed profiles except `google-vertex` (validated structurally above)
+    // and optional-key profiles when key is omitted.
+    if !is_vertex && key.length() > 0 && kind != "env" {
       match hooks.on_profile_live_op {
         Some(f) => match f("accounts.profiles.createKeyed.check", [], body, req.viewer, req.lang) {
           Ok(_) => ()
@@ -740,19 +796,17 @@ pub fn dispatch_live_accounts_op(
         None => return Some(Err(err_not_implemented(op)))
       }
     }
-    let label = match json_field_str(body, "name") {
-      Some(n) if n.trim().length() > 0 => live_trim_max(n, 120)
-      _ => match source_opt {
-        Some(src) => src.name
-        None => if kind == "opencode-go" {
-          "OpenCode Go"
-        } else if kind == "anthropic-api" {
-          "Anthropic API"
-        } else if kind == "openai-api" {
-          "OpenAI API"
-        } else {
-          match env_runtime { Some(r) => r + " env", None => "Custom env" }
-        }
+    // 1:1 with Node `station/src/accounts/index.ts:846-852`: ignore caller-supplied `name`.
+    let label = match source_opt {
+      Some(src) => src.name
+      None => if kind == "opencode-go" {
+        "OpenCode Go"
+      } else if kind == "anthropic-api" {
+        "Anthropic API"
+      } else if kind == "openai-api" {
+        "OpenAI API"
+      } else {
+        match env_runtime { Some(r) => r + " env", None => "Custom env" }
       }
     }
     let base_slug = match source_opt {

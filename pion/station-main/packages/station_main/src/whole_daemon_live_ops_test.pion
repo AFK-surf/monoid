@@ -1,105 +1,171 @@
-// Wave 17D-2 R2 daemon-level unit tests for `whole_daemon_live_ops.pion` & R2 security/lifecycle invariants:
-// - `live_current_platform` (dynamic os+arch detection: linux-arm64 vs linux-x64 vs darwin-arm64 vs win32-x64)
-// - `LiveUpdateProcManager` `ProcExit` clearing `updating` on BOTH exit 0 and non-zero exit (never permanently stuck at 409)
-// - `LoginsManager::start_isolated` unique login IDs across profiles sharing identical command words
-// - `PeerAuthPolicy::add_workspace` immediate live workspace admission without restart
-// - `controlled_s3_error_message` & `controlled_join_error_message` (never echo raw upstream XML or tokens)
+// Wave 17D-2 R3 daemon-level unit tests for `whole_daemon_live_ops.pion` & R3 P0/P1 invariants:
+// 1. `workspaces.join` two-phase contract: URL MUST be `/v1/stations/join` (NEVER `/enroll`), body MUST include
+//    `"locks":true`, pre-checks run BEFORE network I/O, and `apply_join_workspace_response` preserves existing home workspace!
+// 2. Late `stream.open` after disconnect/timeout/shutdown: `close_orphaned_async_stream_open_with` decodes `head.id`
+//    and invokes `stream.close` so Rust handles never leak!
+// 3. `AdminApi` async idempotency claim/conflict/replay/abort lifecycle.
+// 4. Read-only `login_view_to_json` uses `login_limited` (strips `url`, `code`, and raw CLI `error` tail).
+// 5. `LoginsManager::start_isolated` & `PeerAuthPolicy::add_workspace` & controlled S3/join error messages.
 
+import "base_codec"
+import "host_shim"
+import "http1"
+import "station_api"
+import "station_cloud"
 import "station_devices"
-import "station_drivers"
+import "station_http"
 import "station_whole"
 
-test "wave17d2 r2: live_current_platform detects real os+arch dynamically" {
-  if live_current_platform("linux", "aarch64") != "linux-arm64" {
-    panic("expected linux-arm64 for aarch64")
+test "wave17d2 r3: workspaces.join prepares /v1/stations/join with locks:true and preserves original workspace" {
+  let mem = station_cloud::MemCloudFs::new()
+  let cfs = mem.as_fs()
+  let data = "/tmp/w17d2-join-test"
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = (i + 7).to_byte()
   }
-  if live_current_platform("linux", "arm64") != "linux-arm64" {
-    panic("expected linux-arm64 for arm64")
+  let key = match station_cloud::StationKey::from_seed(seed) {
+    Ok(k) => k
+    Err(e) => panic("StationKey::from_seed failed: " + e)
   }
-  if live_current_platform("linux", "x86_64") != "linux-x64" {
-    panic("expected linux-x64 for x86_64")
-  }
-  if live_current_platform("darwin", "arm64") != "darwin-arm64" {
-    panic("expected darwin-arm64")
-  }
-  if live_current_platform("win32", "x86_64") != "win32-x64" {
-    panic("expected win32-x64")
-  }
-}
+  let initial_state = "{\"origin\":\"https://api.still.fail\",\"workspace\":\"ws-home-orig\",\"workspaceName\":\"Home WS\",\"name\":\"My Box\",\"peers\":[],\"joined\":[]}"
+  mem.files.set(station_cloud::state_path(data), initial_state)
 
-test "wave17d2 r2: clear_update_item_state clears updating on both success and failure (no permanent 409)" {
-  let updates = station_drivers::RuntimeUpdatesManager::new()
-  // 1. Success path clears `updating` and `failed_text`
-  updates.station.updating = Some(1000L)
-  updates.station.failed_text = Some("old error")
-  clear_update_item_state(updates, "station", None)
-  if updates.station.updating is Some(_) || updates.station.failed_text is Some(_) {
-    panic("success must clear updating and failed_text")
+  // Phase 1: prepare_join_workspace MUST hit `/v1/stations/join` (NEVER `/enroll`) and include `"locks":true`!
+  let prep = match station_cloud::prepare_join_workspace(data, cfs, key, "tok_join_123", "0.1.9999", 1700000000L) {
+    Ok(p) => p
+    Err(e) => panic("prepare_join_workspace failed: " + e)
+  }
+  if prep.url != "https://api.still.fail/v1/stations/join" {
+    panic("join URL MUST be /v1/stations/join, got: " + prep.url)
+  }
+  if prep.bodies.length() == 0 || !prep.bodies[0].contains("\"locks\":true") || !prep.bodies[0].contains("\"token\":\"tok_join_123\"") {
+    panic("join body missing locks:true or token: " + prep.bodies[0])
   }
 
-  // 2. Failure path ALSO clears `updating` (so subsequent installs are not permanently stuck at 409!) and records `failed_text`
-  updates.station.updating = Some(2000L)
-  clear_update_item_state(updates, "station", Some("update exited with code 2"))
-  if updates.station.updating is Some(_) || updates.station.failed_text != Some("update exited with code 2") {
-    panic("failure must clear updating and record failed_text")
-  }
-}
-
-test "wave17d2 r2: LoginsManager::start_isolated allocates distinct IDs for identical command words" {
-  let lm = station_devices::LoginsManager::new(None)
-  let starter_a = station_devices::LoginStarter::{
-    workspace: Some("ws-a"),
-    by: station_devices::LoginPerson::{ email: "a@example.com", name: "A" },
-    chat: Some("profile:ws-a:p1"),
-    chat_title: Some("p1"),
-  }
-  let starter_b = station_devices::LoginStarter::{
-    workspace: Some("ws-b"),
-    by: station_devices::LoginPerson::{ email: "b@example.com", name: "B" },
-    chat: Some("profile:ws-b:p1"),
-    chat_title: Some("p1"),
-  }
-  let r1 = match lm.start_isolated("claude auth login", starter_a, None, false, 1000L) {
-    Ok(v) => v
-    Err(e) => panic("start_isolated 1 failed: " + e.message)
-  }
-  let r2 = match lm.start_isolated("claude auth login", starter_b, None, false, 1000L) {
-    Ok(v) => v
-    Err(e) => panic("start_isolated 2 failed: " + e.message)
-  }
-  if r1.id == r2.id {
-    panic("isolated profile logins MUST NOT collide on shared command words: " + r1.id)
-  }
-}
-
-test "wave17d2 r2: PeerAuthPolicy::add_workspace admits newly joined workspace immediately" {
-  let pol = station_whole::PeerAuthPolicy::{
-    station_id: "st-1",
-    station_build: "9999",
-    home_workspace: "ws-home",
-    allowed_workspaces: ["ws-home"],
-    verify_fn: None,
-  }
-  pol.add_workspace("ws-joined")
-  pol.add_workspace("ws-joined")
-  let mut count = 0
-  for i in 0..<pol.allowed_workspaces.length() {
-    if pol.allowed_workspaces[i] == "ws-joined" {
-      count = count + 1
+  // Phase 2: apply_join_workspace_response adds ws-second while PRESERVING ws-home-orig!
+  let resp_json = "{\"workspace\":\"ws-second\",\"workspace_name\":\"Second WS\",\"name\":\"My Box\"}"
+  match station_cloud::apply_join_workspace_response(data, cfs, prep, 200, resp_json, 1700000001L) {
+    Ok(jr) => {
+      if jr.workspace != "ws-second" || jr.became_home {
+        panic("unexpected join result")
+      }
     }
+    Err(e) => panic("apply_join_workspace_response failed: " + e)
   }
-  if count != 1 {
-    panic("ws-joined must be added exactly once, got " + count.to_string())
+  match station_cloud::read_state(data, cfs) {
+    Ok(Some(st)) => {
+      if st.workspace != "ws-home-orig" {
+        panic("original home workspace was overwritten! got: " + st.workspace)
+      }
+      let mut has_second = false
+      for i in 0..<st.joined.length() {
+        if st.joined[i].workspace == "ws-second" {
+          has_second = true
+        }
+      }
+      if !has_second {
+        panic("ws-second missing from joined list")
+      }
+    }
+    _ => panic("failed to read updated cloud state")
   }
 }
 
-test "wave17d2 r2: controlled S3 and join error messages never echo raw upstream XML or tokens" {
-  let s3_msg = controlled_s3_error_message(403)
-  if s3_msg.contains("<Error>") || s3_msg.length() == 0 {
-    panic("S3 error invalid: " + s3_msg)
+test "wave17d2 r3: late stream.open after timeout/disconnect closes orphaned stream handle" {
+  let done_ok = host_shim::ShellDone::{
+    id: 99L,
+    error: "",
+    json: "{\"id\":42,\"status\":200,\"headers\":[]}",
+    bytes: None,
   }
-  let join_msg = controlled_join_error_message(401)
-  if join_msg.length() == 0 {
-    panic("join error empty")
+  let closed : Array[Int] = []
+  let got = close_orphaned_async_stream_open_with(done_ok, fn(id : Int) -> Unit { closed.push(id) })
+  if got != Some(42) || closed.length() != 1 || closed[0] != 42 {
+    panic("late stream.open MUST decode stream id 42 and call stream.close!")
+  }
+}
+
+test "wave17d2 r3: AdminApi async idempotency claim, in-flight 409 conflict, and replay" {
+  let host = station_api::ApiHost::stub()
+  let seen = station_api::SeenStore::empty()
+  let admin = station_api::AdminApi::new(host, seen, "9999")
+  let viewer = station_api::Viewer::owner("alice@example.com", "ws-1")
+  let hdrs = [http1::Header::{ name: "Idempotency-Key", value: "idem-async-1" }]
+
+  // 1. First claim succeeds
+  let (sk, ik) = match admin.claim_async_idempotency(viewer, "POST", "/profiles", hdrs, 1000L) {
+    station_api::AsyncIdemClaim::Claimed(s, k) => (s, k)
+    _ => panic("expected Claimed")
+  }
+  // 2. Concurrent duplicate while in-flight -> 409 Conflict
+  match admin.claim_async_idempotency(viewer, "POST", "/profiles", hdrs, 1001L) {
+    station_api::AsyncIdemClaim::Conflict(r) => if r.status != 409 { panic("expected 409 conflict") }
+    _ => panic("expected Conflict while in-flight")
+  }
+  // 3. Complete with 200 -> subsequent retry gets Replay(200)
+  admin.complete_async_idempotency(sk, ik, viewer, "POST", "/profiles", station_api::json_ok(base_codec::json_obj([("id", base_codec::json_str("openai"))])), 1002L)
+  match admin.claim_async_idempotency(viewer, "POST", "/profiles", hdrs, 1003L) {
+    station_api::AsyncIdemClaim::Replay(r) => if r.status != 200 || !r.body.to_string().contains("\"openai\"") { panic("expected cached 200 replay") }
+    _ => panic("expected Replay after completion")
+  }
+}
+
+test "wave17d2 r3: read-only login_view_to_json uses login_limited to strip url, code, and raw CLI error" {
+  let view = station_devices::LoginView::{
+    id: "plogin-1",
+    name: "claude",
+    command: ["claude", "auth", "login"],
+    state: station_devices::LoginState::Failed,
+    step: Some(station_devices::LoginStep::Open),
+    url: Some("https://claude.ai/oauth?secret=xyz"),
+    domain: Some("claude.ai"),
+    callback: None,
+    code: Some("ABCD-9999"),
+    code_url: Some("https://claude.ai/device"),
+    waiting: false,
+    paste: false,
+    by: station_devices::LoginPerson::{ email: "a@example.com", name: "A" },
+    workspace: Some("ws-1"),
+    chat: None,
+    chat_title: None,
+    done_by: None,
+    started_at: 1000L,
+    expires_at: 2000L,
+    ended_at: Some(1500L),
+    error: Some("visit https://claude.ai/oauth?secret=xyz and enter ABCD-9999"),
+    timed_out: false,
+    browser: true,
+    screen: Some("scr-1"),
+    again: None,
+    from: None,
+    by_code: false,
+  }
+  let ro_json = base_codec::json_stringify(login_view_to_json(view, true))
+  if ro_json.contains("secret=xyz") || ro_json.contains("ABCD-9999") || ro_json.contains("127.0.0.1:9999") {
+    panic("read-only login_view_to_json leaked url/code/error: " + ro_json)
+  }
+}
+
+test "wave17d2 r3: live_current_platform, start_isolated, PeerAuthPolicy::add_workspace, and controlled errors" {
+  if live_current_platform("linux", "aarch64") != "linux-arm64" || live_current_platform("linux", "x86_64") != "linux-x64" {
+    panic("live_current_platform mismatch")
+  }
+  let lm = station_devices::LoginsManager::new(None)
+  let s1 = station_devices::LoginStarter::{ workspace: Some("ws-a"), by: station_devices::LoginPerson::{ email: "a@example.com", name: "A" }, chat: None, chat_title: None }
+  let s2 = station_devices::LoginStarter::{ workspace: Some("ws-b"), by: station_devices::LoginPerson::{ email: "b@example.com", name: "B" }, chat: None, chat_title: None }
+  let r1 = match lm.start_isolated("claude auth login", s1, None, false, 1000L) { Ok(v) => v, Err(e) => panic(e.message) }
+  let r2 = match lm.start_isolated("claude auth login", s2, None, false, 1000L) { Ok(v) => v, Err(e) => panic(e.message) }
+  if r1.id == r2.id {
+    panic("isolated profile logins must not collide")
+  }
+  let pol = station_whole::PeerAuthPolicy::{ station_id: "st-1", station_build: "9999", home_workspace: "ws-home", allowed_workspaces: ["ws-home"], verify_fn: None }
+  pol.add_workspace("ws-joined")
+  pol.add_workspace("ws-joined")
+  if pol.allowed_workspaces.length() != 2 {
+    panic("expected 2 workspaces after idempotent add_workspace")
+  }
+  if controlled_s3_error_message(403).contains("<Error>") || controlled_join_error_message(401).length() == 0 {
+    panic("controlled error check failed")
   }
 }

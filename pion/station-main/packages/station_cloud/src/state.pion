@@ -2556,26 +2556,37 @@ pub fn name_joined_lock(
   }
 }
 
-/// Join one more workspace using its one-time token (1:1 with `station/src/cli.ts` `joinWorkspace`).
-/// Consumed directly by Wave 12 `station_rig`.
-/// `post_redeem`: `(url, body_json) -> Result[(status_code, response_text), String]`.
-/// Pass `store = Some(cs)` so moved workspaces (`moved {root}`) are checked by effective state (`locked`).
-pub fn join_workspace(
+/// Prepared two-phase join request returned by `prepare_join_workspace`.
+/// Separating pre-checks + request construction from response application lets non-blocking
+/// HTTP callers (e.g. `whole_daemon_live_ops`) enforce every local invariant BEFORE network I/O
+/// and reuse the exact `/v1/stations/join` URL, signed body (`"locks": true`), and workspace-preserving
+/// state update logic without duplicating a single line.
+pub struct PreparedJoinRequest {
+  pub state : CloudState
+  pub provider : Provider
+  pub plane : ProviderSpec
+  pub url : String
+  pub bodies : Array[String]
+  pub is_rig : Bool
+  pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
+}
+
+/// Phase 1 of `join_workspace`: run all local pre-checks (enrolled, not removed, locked-workspace
+/// requirement) and build the `/v1/stations/join` URL and signed JSON request bodies (one per
+/// `plane.enroll_prefixes`, always including `"locks": true`).
+pub fn prepare_join_workspace(
   data : String,
   fs : CloudFs,
   key : StationKey,
   token : String,
   version : String,
   now_secs : Int64,
-  post_redeem : (String, String) -> Result[(Int, String), String],
   lock_hash : Option[String] = None,
-  at_machine : Bool = false,
   rig_person_hash : Option[String] = None,
-  expected_workspace : Option[String] = None,
   store : Option[CloudStore] = None,
   verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
   sep : String = "/",
-) -> Result[JoinWorkspaceResult, String] {
+) -> Result[PreparedJoinRequest, String] {
   let eff_vf = match verify_fn {
     Some(_) => verify_fn
     None => match store {
@@ -2637,8 +2648,7 @@ pub fn join_workspace(
     None => false
   }
   let url = state.origin + plane.join_path
-  let mut last_status = 0
-  let mut last_text = ""
+  let bodies : Array[String] = []
   let mut pi = 0
   while pi < plane.enroll_prefixes.length() {
     let prefix = plane.enroll_prefixes[pi]
@@ -2656,25 +2666,38 @@ pub fn join_workspace(
     if is_rig {
       req_fields.push(("rig", base_codec::json_bool(true)))
     }
-    let req_body = base_codec::json_stringify(base_codec::json_obj(req_fields))
-    let (status, resp_text) = match post_redeem(url, req_body) {
-      Ok(r) => r
-      Err(e) => return Err(e)
-    }
-    last_status = status
-    last_text = resp_text
-    if pi == plane.enroll_prefixes.length() - 1 || status != 401 {
-      break
-    }
-    let err_code = match base_codec::json_parse(resp_text) {
-      base_codec::JsonParseResult::Ok(j) => json_str_or(base_codec::json_get(j, "error"), "")
-      base_codec::JsonParseResult::Err(_) => ""
-    }
-    if err_code != "invalid_signature" {
-      return Err(plane.name + " answered " + status.to_string() + ": " + resp_text)
-    }
+    bodies.push(base_codec::json_stringify(base_codec::json_obj(req_fields)))
     pi = pi + 1
   }
+  Ok(PreparedJoinRequest::{
+    state: state,
+    provider: provider,
+    plane: plane,
+    url: url,
+    bodies: bodies,
+    is_rig: is_rig,
+    verify_fn: eff_vf,
+  })
+}
+
+/// Phase 2 of `join_workspace`: validate the HTTP response from `/v1/stations/join` and atomically
+/// update `state.json` + lock files while preserving all existing workspace memberships.
+pub fn apply_join_workspace_response(
+  data : String,
+  fs : CloudFs,
+  prep : PreparedJoinRequest,
+  last_status : Int,
+  last_text : String,
+  now_secs : Int64,
+  lock_hash : Option[String] = None,
+  at_machine : Bool = false,
+  rig_person_hash : Option[String] = None,
+  expected_workspace : Option[String] = None,
+  sep : String = "/",
+) -> Result[JoinWorkspaceResult, String] {
+  let state = prep.state
+  let plane = prep.plane
+  let eff_vf = prep.verify_fn
   if last_status == 404 {
     if !last_text.contains("enrollment_not_found") {
       return Err(plane.name + " cannot add a station to more than one workspace yet; nothing changed")
@@ -2937,4 +2960,77 @@ pub fn join_workspace(
     owner: owner_display,
     became_home: false,
   })
+}
+
+/// Join one more workspace using its one-time token (1:1 with `station/src/cli.ts` `joinWorkspace`).
+/// Consumed directly by Wave 12 `station_rig`.
+/// `post_redeem`: `(url, body_json) -> Result[(status_code, response_text), String]`.
+/// Pass `store = Some(cs)` so moved workspaces (`moved {root}`) are checked by effective state (`locked`).
+pub fn join_workspace(
+  data : String,
+  fs : CloudFs,
+  key : StationKey,
+  token : String,
+  version : String,
+  now_secs : Int64,
+  post_redeem : (String, String) -> Result[(Int, String), String],
+  lock_hash : Option[String] = None,
+  at_machine : Bool = false,
+  rig_person_hash : Option[String] = None,
+  expected_workspace : Option[String] = None,
+  store : Option[CloudStore] = None,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+  sep : String = "/",
+) -> Result[JoinWorkspaceResult, String] {
+  let prep = match prepare_join_workspace(
+    data,
+    fs,
+    key,
+    token,
+    version,
+    now_secs,
+    lock_hash=lock_hash,
+    rig_person_hash=rig_person_hash,
+    store=store,
+    verify_fn=verify_fn,
+    sep=sep,
+  ) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let mut last_status = 0
+  let mut last_text = ""
+  let mut pi = 0
+  while pi < prep.bodies.length() {
+    let (status, resp_text) = match post_redeem(prep.url, prep.bodies[pi]) {
+      Ok(r) => r
+      Err(e) => return Err(e)
+    }
+    last_status = status
+    last_text = resp_text
+    if pi == prep.bodies.length() - 1 || status != 401 {
+      break
+    }
+    let err_code = match base_codec::json_parse(resp_text) {
+      base_codec::JsonParseResult::Ok(j) => json_str_or(base_codec::json_get(j, "error"), "")
+      base_codec::JsonParseResult::Err(_) => ""
+    }
+    if err_code != "invalid_signature" {
+      return Err(prep.plane.name + " answered " + status.to_string() + ": " + resp_text)
+    }
+    pi = pi + 1
+  }
+  apply_join_workspace_response(
+    data,
+    fs,
+    prep,
+    last_status,
+    last_text,
+    now_secs,
+    lock_hash=lock_hash,
+    at_machine=at_machine,
+    rig_person_hash=rig_person_hash,
+    expected_workspace=expected_workspace,
+    sep=sep,
+  )
 }

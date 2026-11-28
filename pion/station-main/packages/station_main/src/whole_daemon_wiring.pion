@@ -645,7 +645,9 @@ fn is_unix_launcher_pid(pid : Int) -> Bool {
   }
 }
 
-fn login_view_to_json(item : station_devices::LoginView, read_only : Bool) -> base_codec::Json {
+fn login_view_to_json(raw_item : station_devices::LoginView, read_only : Bool) -> base_codec::Json {
+  // 1:1 with Node: read-only members MUST receive `login_limited` projection (strips url, callback, code, code_url, error, browser, screen).
+  let item = if read_only { station_devices::login_limited(raw_item) } else { raw_item }
   let cmd_arr : Array[base_codec::Json] = []
   for ci in 0..<item.command.length() {
     cmd_arr.push(base_codec::json_str(item.command[ci]))
@@ -807,6 +809,13 @@ pub fn wire_whole_core_runtime_hooks(
 
   // Wire `overview_for` so `accounts.profiles.createKeyed` / `createMachine` return `{ id, overview }` (1:1 with Node).
   core.api.hooks.overview_for = Some(core.api.admin.host.overview)
+  // Wire real `<app>/OVERRIDE` detection so `updates.wait` matches Node `updates.ts` override protection.
+  core.api.hooks.is_update_override_present = Some(fn() -> Bool {
+    match ctx.args.app {
+      Some(app_dir) => station_cli::read_override(ctx.ops_fs, app_dir, sep=ctx.sep).is_some()
+      None => false
+    }
+  })
 
   // Wave 17D-2 R2: The 7 ops awaiting Wave 17E runtimes (`mcpServers.reload*`, `accounts.profiles.{pace,quota,resetQuota}`,
   // `copies.restore`, `xshare.hosts.put`) remain honest 501 (hooks stay `None`).
@@ -950,12 +959,19 @@ pub fn wire_whole_core_runtime_hooks(
             }
           }
         }
-        // `linkCodexAuthSoon`: ensure `<data>/homes/machine-codex/auth.json` is linked/copied to machine's `auth.json`
+        // `linkCodexAuthSoon`: link `<data>/homes/machine-codex/auth.json` to machine's `auth.json` (NEVER copy,
+        // because Codex rotates single-use refresh tokens!). Propagate any mkdir/symlink error so config is not written.
         let target_home = nodepath::join(ctx.sep, [ctx.data, "homes", "machine-codex"])
-        let _ = (ctx.ops_fs.mkdir_p)(target_home)
+        match (ctx.ops_fs.mkdir_p)(target_home) {
+          Ok(_) => ()
+          Err(e) => return Err(station_api::ApiError::new(500, "failed to create Codex profile home: " + station_ops::fs_err_msg(e)))
+        }
         let target_auth = nodepath::join(ctx.sep, [target_home, "auth.json"])
-        if !ctx.ops_fs.exists(target_auth) {
-          let _ = (ctx.ops_fs.write_bytes)(target_auth, raw_txt.to_bytes(), 384)
+        if ctx.ops_fs.exists(target_auth) {
+          let _ = (core.agents.jobs.fs.remove_file)(target_auth)
+        }
+        if !station_sys::symlink(auth_path, target_auth, is_dir=false) {
+          return Err(station_api::ApiError::new(500, "failed to link Codex machine auth.json"))
         }
         return Ok(base_codec::json_obj([
           ("loggedIn", base_codec::json_bool(true)),
@@ -978,6 +994,19 @@ pub fn wire_whole_core_runtime_hooks(
     }
 
     if op == "accounts.profiles.login" {
+      // Deduplicate active login per `(ws, profile_id)`: reuse existing active job instead of spawning orphan duplicates!
+      match profile_login_ids.get(scope_key) {
+        Some(existing_lid) => match logins.manager.get(existing_lid) {
+          Some(existing_view) => {
+            let st_s = existing_view.state.as_str()
+            if st_s == "starting" || st_s == "running" || st_s == "waiting" {
+              return Ok(base_codec::json_obj([("job", login_view_to_json(existing_view, false))]))
+            }
+          }
+          None => ()
+        }
+        None => ()
+      }
       let rt = match base_codec::json_get(body, "_profileRuntime") { Some(base_codec::Json::Str(s)) => s, _ => "" }
       let raw_home = match base_codec::json_get(body, "_profileHome") { Some(base_codec::Json::Str(s)) => s.trim(), _ => "" }
       let home_dir = if raw_home.length() == 0 {
@@ -990,22 +1019,28 @@ pub fn wire_whole_core_runtime_hooks(
       if (ctx.ops_fs.mkdir_p)(home_dir) is Err(_) {
         return Err(station_api::ApiError::new(500, "failed to create profile home directory"))
       }
-      // 1:1 with `station/src/accounts/profiles.ts:170-179`
+      // 1:1 with `station/src/accounts/profiles.ts:170-179` & `agents/agy.ts:37`
       let (cmd, env_pairs) : (String, Array[(String, String)]) = if rt == "claude" {
         ("claude auth login", [("CLAUDE_CONFIG_DIR", home_dir)])
       } else if rt == "codex" {
         ("codex login", [("CODEX_HOME", home_dir)])
       } else if rt == "grok" {
         let ghome = nodepath::join(ctx.sep, [home_dir, "grok"])
-        let _ = (ctx.ops_fs.mkdir_p)(ghome)
+        if (ctx.ops_fs.mkdir_p)(ghome) is Err(_) {
+          return Err(station_api::ApiError::new(500, "failed to create grok home directory"))
+        }
         ("grok login --device-auth", [("GROK_HOME", ghome)])
       } else if rt == "devin" {
         let dhome = nodepath::join(ctx.sep, [home_dir, "xdg-data"])
-        let _ = (ctx.ops_fs.mkdir_p)(dhome)
+        if (ctx.ops_fs.mkdir_p)(dhome) is Err(_) {
+          return Err(station_api::ApiError::new(500, "failed to create devin home directory"))
+        }
         ("devin auth login --force-manual-token-flow", [("XDG_DATA_HOME", dhome)])
       } else if rt == "agy" {
-        let ahome = nodepath::join(ctx.sep, [home_dir, "home"])
-        let _ = (ctx.ops_fs.mkdir_p)(ahome)
+        let ahome = nodepath::join(ctx.sep, [home_dir, "agy"])
+        if (ctx.ops_fs.mkdir_p)(ahome) is Err(_) {
+          return Err(station_api::ApiError::new(500, "failed to create agy home directory"))
+        }
         ("agy", [("AGY_CLI_FORCE_FILE_TOKEN_STORAGE", "1"), ("SSH_CLIENT", "127.0.0.1 0 22"), ("HOME", ahome)])
       } else {
         return Err(station_api::ApiError::new(400, "runtime " + rt + " does not support CLI login"))

@@ -1806,7 +1806,6 @@ struct WholeRuntimeState {
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
   upkeep : AsyncUpkeepRunner
-  update_procs : LiveUpdateProcManager
   connect_meta : Map[String, ConnectMeta]
   remote_connects : Map[String, RemoteConnectRecord]
   remote_connects_path : String
@@ -4457,8 +4456,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       None => ()
     }
 
-    // Wave 17D-2 R2: Non-blocking async interception for network/subprocess-bound live ops
-    // (`updates.check`, `updates.install`, `copies.s3.test`, `workspaces.join`, `accounts.profiles.createKeyed`).
+    // Wave 17D-2 R3: Non-blocking async interception for network-bound live ops
+    // (`updates.check`, `copies.s3.test`, `workspaces.join`, `accounts.profiles.createKeyed`).
+    // Enforces unified `OLDEST_CORE`, `read_only_handover` write barrier, and `AdminApi` idempotency BEFORE async I/O.
     match peer_id {
       station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
         let mut req_lang = station_api::Lang::En
@@ -4472,7 +4472,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         }
         let is_live_async_route = head.method == "POST"
         && (norm_path == "/updates/check"
-          || norm_path == "/updates"
           || norm_path == "/copies/s3/test"
           || norm_path == "/workspaces/join"
           || norm_path == "/profiles")
@@ -4485,17 +4484,51 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             }
             None => ()
           }
-          match try_intercept_async_admin_op(ctx, st, astream.sid, head.method, norm_path, body, v, req_lang) {
+          if st.core.api.read_only_handover {
+            send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(403, "station is in read-only handover mode"))
+            astream.mode = AdminStreamMode::Done
+            return
+          }
+          let idem_claim : Option[(String, String)] = match st.core.api.admin.claim_async_idempotency(
+            v,
+            head.method,
+            norm_path,
+            head.headers,
+            now_w,
+          ) {
+            station_api::AsyncIdemClaim::NotKeyed => None
+            station_api::AsyncIdemClaim::Claimed(sk, ik) => Some((sk, ik))
+            station_api::AsyncIdemClaim::Replay(cached_resp) => {
+              send_admin_resp_and_finish(ctx, astream.sid, cached_resp)
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            station_api::AsyncIdemClaim::Conflict(conf_resp) => {
+              send_admin_resp_and_finish(ctx, astream.sid, conf_resp)
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+          }
+          match try_intercept_async_admin_op(ctx, st, astream.sid, astream.conn_id, head.method, norm_path, body, v, req_lang, idem_claim) {
             Some(Ok(async_st)) => {
               astream.mode = AdminStreamMode::WaitingAsyncOp(async_st)
               return
             }
             Some(Err(resp)) => {
+              match idem_claim {
+                Some((sk, ik)) => st.core.api.admin.complete_async_idempotency(sk, ik, v, head.method, norm_path, resp, now_w)
+                None => ()
+              }
               send_admin_resp_and_finish(ctx, astream.sid, resp)
               astream.mode = AdminStreamMode::Done
               return
             }
-            None => ()
+            None => {
+              match idem_claim {
+                Some((sk, _)) => st.core.api.admin.abort_async_idempotency(sk)
+                None => ()
+              }
+            }
           }
         }
       }
@@ -5612,12 +5645,16 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
-        // Wave 17D-2 R2: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
+        // Wave 17D-2 R3: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
+        // If `stream.open` arrives AFTER disconnect/timeout/shutdown, decode and immediately `stream.close`
+        // so the Rust response handle NEVER leaks!
         if kind == LIVE_OP_TOK_HTTP_OPEN || kind == LIVE_OP_TOK_HTTP_READ {
+          let mut handled = false
           match st.admin_streams.get(sid) {
             None => ()
             Some(astream) => match astream.mode {
               AdminStreamMode::WaitingAsyncOp(async_st) => {
+                handled = true
                 match step_async_admin_http_done(ctx, st, kind, async_st, d) {
                   Some(resp) => {
                     send_admin_resp_and_finish(ctx, sid, resp)
@@ -5628,6 +5665,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               }
               _ => ()
             }
+          }
+          if !handled && kind == LIVE_OP_TOK_HTTP_OPEN {
+            close_orphaned_async_stream_open(ctx, d)
           }
           return
         }
@@ -7143,7 +7183,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         browser: browser,
         connects: connects,
         upkeep: upkeep,
-        update_procs: LiveUpdateProcManager::new(),
         connect_meta: connect_meta,
         remote_connects: remote_connects,
         remote_connects_path: remote_connects_path,
@@ -8308,7 +8347,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   false
                 }
                 AdminStreamMode::WaitingAsyncOp(async_st) => {
-                  cancel_async_admin_op(ctx, async_st)
+                  cancel_async_admin_op(ctx, st, async_st)
                   false
                 }
                 _ => false
@@ -8424,11 +8463,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.upkeep.handle_sys_event(ev_id, sev) {
             return
           }
-          if st.update_procs.handle_sys_event(ev_id, sev, st.core.updates, fn() {
-            st.core.api.events.overview_changed("updates")
-          }) {
-            return
-          }
           if st.terminals.handle_sys_event(ev_id, sev, now_sys) {
             return
           }
@@ -8492,9 +8526,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             }
           }
           st.upkeep.tick(now, clones_active)
-          st.update_procs.tick(now, st.core.updates, fn() {
-            st.core.api.events.overview_changed("updates")
-          })
           // Enforce per-request deadlines on any in-flight `WaitingAsyncOp` streams.
           let async_sids = st.admin_streams.keys()
           for asi in 0..<async_sids.length() {
@@ -8503,7 +8534,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               Some(astream) => match astream.mode {
                 AdminStreamMode::WaitingAsyncOp(async_st) => {
                   if now >= async_st.deadline_ms {
-                    cancel_async_admin_op(ctx, async_st)
+                    cancel_async_admin_op(ctx, st, async_st)
                     send_admin_resp_and_finish(ctx, asid, station_api::json_error(504, "request timed out"))
                     astream.mode = AdminStreamMode::Done
                   }
@@ -8888,8 +8919,18 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
           // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
           st.connects.stop()
+          // Cancel any in-flight async admin HTTP ops on shutdown.
+          let shutdown_sids = st.admin_streams.keys()
+          for ssi in 0..<shutdown_sids.length() {
+            match st.admin_streams.get(shutdown_sids[ssi]) {
+              Some(astream) => match astream.mode {
+                AdminStreamMode::WaitingAsyncOp(async_st) => cancel_async_admin_op(ctx, st, async_st)
+                _ => ()
+              }
+              None => ()
+            }
+          }
           st.upkeep.shutdown()
-          st.update_procs.shutdown(st.core.updates)
           st.browser.stop_all()
           let _ = st.browser.drain_kills_with_hub(max_ms=500L)
           st.terminals.stop_all()

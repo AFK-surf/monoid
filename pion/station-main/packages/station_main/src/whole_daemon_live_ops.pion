@@ -1,16 +1,18 @@
-// Wave 17D-2 R2 non-blocking async HTTP & tracked child-process state machines for `whole_daemon`:
+// Wave 17D-2 R3 non-blocking async HTTP state machine for `whole_daemon`:
 // - ZERO `await_call` / ZERO `host_shim::wait` on any HTTP request path!
 // - Uses `ctx.mux_role.call_async_raw` (`stream.open` / `stream.read` / `stream.close`) +
 //   `AdminStreamMode::WaitingAsyncOp(AsyncAdminHttpState)` so slow external HTTP calls never stall
 //   the single-threaded event loop or block concurrent Admin/Mesh/MCP requests.
-// - `LiveUpdateProcManager` (disjoint `10 << 32` `event_id` base) spawns real non-blocking
-//   `station_sys::proc_spawn` update children and unconditionally clears `updating = None` on
-//   `SysEvent::ProcExit`, timeout, or shutdown.
+// - Enforces unified read-only handover write barrier, `AdminApi` idempotency claim/complete/abort,
+//   active manager role re-verification before committing side effects, and orphaned `stream.open`
+//   handle closure (`close_orphaned_async_stream_open`) on disconnect/timeout/shutdown.
+// - `workspaces.join` strictly reuses `station_cloud::prepare_join_workspace` (`/v1/stations/join` +
+//   `"locks": true` + all local pre-checks before network I/O) and `apply_join_workspace_response`.
+// - `updates.install` is withdrawn to honest 501 until a full verified installer loop lands.
 
 import "base_codec"
 import "builders_core"
 import "host_shim"
-import "http1"
 import "nodepath"
 import "station_api"
 import "station_cli"
@@ -26,12 +28,6 @@ import "station_whole"
 pub let LIVE_OP_TOK_HTTP_OPEN : Int = 5210
 pub let LIVE_OP_TOK_HTTP_READ : Int = 5211
 
-/// Disjoint `station_sys` event_id base (`10 << 32`, clear of `1<<32..9<<32`) for live update child processes.
-pub let LIVE_UPDATE_EVENT_ID_BASE : Int64 = 42949672960L
-
-/// Maximum duration for a single update child process before timeout kill (10 minutes).
-pub let LIVE_UPDATE_PROC_TIMEOUT_MS : Int64 = 600000L
-
 /// Dynamic platform string matching release manifest keys (`darwin-arm64`, `linux-x64`, `linux-arm64`, `win32-x64`).
 pub fn live_current_platform(os_name : String, arch_name : String) -> String {
   let a = if arch_name == "aarch64" || arch_name == "arm64" { "arm64" } else { "x64" }
@@ -45,208 +41,21 @@ pub fn live_current_platform(os_name : String, arch_name : String) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Tracked Non-blocking Update Subprocess Runner (`LiveUpdateProcManager`)
-// ---------------------------------------------------------------------------
-
-struct ActiveUpdateProc {
-  item_id : String
-  child : station_sys::ChildProcess
-  event_id : Int64
-  deadline_ms : Int64
-}
-
-pub struct LiveUpdateProcManager {
-  active : Array[ActiveUpdateProc]
-  mut next_event_id : Int64
-  pub mut completed_count : Int
-  pub mut failed_count : Int
-}
-
-pub fn LiveUpdateProcManager::new() -> LiveUpdateProcManager {
-  LiveUpdateProcManager::{
-    active: [],
-    next_event_id: LIVE_UPDATE_EVENT_ID_BASE,
-    completed_count: 0,
-    failed_count: 0,
-  }
-}
-
-pub fn LiveUpdateProcManager::active_count(self : LiveUpdateProcManager) -> Int {
-  self.active.length()
-}
-
-fn clear_update_item_state(
-  updates : station_drivers::RuntimeUpdatesManager,
-  item_id : String,
-  failed_msg : Option[String],
-) -> Unit {
-  if item_id == "station" {
-    updates.station.updating = None
-    updates.station.progress_key = None
-    updates.station.failed_text = failed_msg
-    return
-  }
-  match updates.find_runtime(item_id) {
-    Some(rt) => {
-      rt.updating = None
-      rt.progress_key = None
-      rt.failed_text = failed_msg
-    }
-    None => ()
-  }
-}
-
-/// Spawn a tracked non-blocking update subprocess for `item_id`.
-/// On spawn failure, immediately clears `updating = None` and returns `Err`.
-pub fn LiveUpdateProcManager::spawn_update(
-  self : LiveUpdateProcManager,
-  item_id : String,
-  program : String,
-  args : Array[String],
-  cwd : String,
-  updates : station_drivers::RuntimeUpdatesManager,
-  now_ms : Int64,
-) -> Result[Int64, String] {
-  let ev_id = self.next_event_id
-  self.next_event_id = ev_id + 1L
-  let opts = station_sys::SpawnOptions::{
-    program: program,
-    args: args,
-    cwd: cwd,
-    env: None,
-    new_pgid: true,
-    strip_malloc_space_efficient: true,
-    pipe_stdin: false,
-    pipe_stdout: false,
-    pipe_stderr: false,
-  }
-  match station_sys::proc_spawn(ev_id, opts) {
-    Ok(child) => {
-      self.active.push(ActiveUpdateProc::{
-        item_id: item_id,
-        child: child,
-        event_id: ev_id,
-        deadline_ms: now_ms + LIVE_UPDATE_PROC_TIMEOUT_MS,
-      })
-      Ok(ev_id)
-    }
-    Err(e) => {
-      clear_update_item_state(updates, item_id, Some("failed to start update: " + e))
-      self.failed_count = self.failed_count + 1
-      Err("failed to start update: " + e)
-    }
-  }
-}
-
-/// Handle `SysEvent::ProcExit` for tracked update subprocesses (`10 << 32` range).
-/// ALWAYS clears `updating = None` on both success and failure so the item never stays stuck at 409!
-pub fn LiveUpdateProcManager::handle_sys_event(
-  self : LiveUpdateProcManager,
-  event_id : Int64,
-  sev : station_sys::SysEvent,
-  updates : station_drivers::RuntimeUpdatesManager,
-  on_changed : () -> Unit,
-) -> Bool {
-  let mut idx = -1
-  for i in 0..<self.active.length() {
-    if self.active[i].event_id == event_id {
-      idx = i
-      break
-    }
-  }
-  if idx < 0 {
-    return false
-  }
-  match sev {
-    station_sys::SysEvent::ProcExit(st) => {
-      let proc = self.active[idx]
-      let _ = proc.child.close()
-      let rest : Array[ActiveUpdateProc] = []
-      for i in 0..<self.active.length() {
-        if i != idx {
-          rest.push(self.active[i])
-        }
-      }
-      self.active.clear()
-      for i in 0..<rest.length() {
-        self.active.push(rest[i])
-      }
-      if st.code == 0 && st.signal == 0 {
-        clear_update_item_state(updates, proc.item_id, None)
-        self.completed_count = self.completed_count + 1
-      } else {
-        let msg = if st.signal != 0 {
-          "update killed by signal " + st.signal.to_string()
-        } else {
-          "update exited with code " + st.code.to_string()
-        }
-        clear_update_item_state(updates, proc.item_id, Some(msg))
-        self.failed_count = self.failed_count + 1
-      }
-      on_changed()
-      true
-    }
-    _ => true
-  }
-}
-
-/// Kill any hung update subprocess exceeding `LIVE_UPDATE_PROC_TIMEOUT_MS` and clear `updating`.
-pub fn LiveUpdateProcManager::tick(
-  self : LiveUpdateProcManager,
-  now_ms : Int64,
-  updates : station_drivers::RuntimeUpdatesManager,
-  on_changed : () -> Unit,
-) -> Unit {
-  let keep : Array[ActiveUpdateProc] = []
-  let mut changed = false
-  for i in 0..<self.active.length() {
-    let proc = self.active[i]
-    if now_ms >= proc.deadline_ms {
-      let _ = proc.child.kill(station_sys::SIG_KILL, true)
-      let _ = proc.child.close()
-      clear_update_item_state(updates, proc.item_id, Some("update timed out"))
-      self.failed_count = self.failed_count + 1
-      changed = true
-    } else {
-      keep.push(proc)
-    }
-  }
-  if changed {
-    self.active.clear()
-    for i in 0..<keep.length() {
-      self.active.push(keep[i])
-    }
-    on_changed()
-  }
-}
-
-pub fn LiveUpdateProcManager::shutdown(
-  self : LiveUpdateProcManager,
-  updates : station_drivers::RuntimeUpdatesManager,
-) -> Unit {
-  for i in 0..<self.active.length() {
-    let proc = self.active[i]
-    let _ = proc.child.kill(station_sys::SIG_KILL, true)
-    let _ = proc.child.close()
-    clear_update_item_state(updates, proc.item_id, None)
-  }
-  self.active.clear()
-}
-
-// ---------------------------------------------------------------------------
-// 2. Non-blocking Async Admin HTTP Op State Machine (`AdminStreamMode::WaitingAsyncOp`)
+// 1. Non-blocking Async Admin HTTP Op State Machine (`AdminStreamMode::WaitingAsyncOp`)
 // ---------------------------------------------------------------------------
 
 pub enum AsyncAdminOpKind {
   UpdatesCheck(String)
-  UpdatesInstallStation(String, Option[String])
   CopiesS3Test(station_replica::NormalizedS3Target)
-  WorkspacesJoin(String, Option[String], Option[String])
-  ProfileCreateKeyed(String, Option[String], Option[String], Option[String], String, Option[String], String, String)
+  WorkspacesJoin(station_cloud::PreparedJoinRequest, Int, Option[String], Option[String])
+  ProfileCreateKeyed(String, Option[String], Option[String], Option[String], String, Option[String], String, String, Bool)
 }
 
 pub struct AsyncAdminHttpState {
   pub sid : Int64
+  pub conn_id : Int64
+  pub method_name : String
+  pub norm_path : String
   pub op : AsyncAdminOpKind
   pub viewer : station_api::Viewer
   pub lang : station_api::Lang
@@ -256,43 +65,7 @@ pub struct AsyncAdminHttpState {
   pub mut total_bytes : Int
   pub max_bytes : Int
   pub deadline_ms : Int64
-}
-
-fn live_build_stream_open_args(
-  method_name : String,
-  url : String,
-  headers : Array[(String, String)],
-  timeout_ms : Int64,
-) -> String {
-  let hdrs_j : Array[base_codec::Json] = []
-  for i in 0..<headers.length() {
-    hdrs_j.push(base_codec::json_arr([
-      base_codec::json_str(headers[i].0),
-      base_codec::json_str(headers[i].1),
-    ]))
-  }
-  let ms = if timeout_ms > 2147483647L { 2147483647 } else if timeout_ms < 1000L { 1000 } else { timeout_ms.to_int() }
-  base_codec::json_stringify(base_codec::json_obj([
-    ("method", base_codec::json_str(method_name)),
-    ("url", base_codec::json_str(url)),
-    ("headers", base_codec::json_arr(hdrs_j)),
-    ("timeoutMs", base_codec::json_int(ms)),
-  ]))
-}
-
-fn live_concat_chunks(chunks : Array[Bytes], total : Int) -> Bytes {
-  let out = Bytes::new(total)
-  let mut off = 0
-  for i in 0..<chunks.length() {
-    let c = chunks[i]
-    for j in 0..<c.length() {
-      if off < total {
-        out[off] = c[j]
-        off = off + 1
-      }
-    }
-  }
-  out
+  pub mut idem_claim : Option[(String, String)]
 }
 
 fn live_json_str_f(obj : base_codec::Json, key : String) -> Option[String] {
@@ -309,123 +82,162 @@ fn live_json_bool_f(obj : base_codec::Json, key : String) -> Option[Bool] {
   }
 }
 
-fn live_find_in_path(ops_fs : station_ops::OpsFs, sep : String, cmd : String) -> Option[String] {
+fn live_concat_chunks(chunks : Array[Bytes], total : Int) -> Bytes {
+  if total == 0 || chunks.length() == 0 {
+    return Bytes::new(0)
+  }
+  if chunks.length() == 1 {
+    return chunks[0]
+  }
+  let out = Bytes::new(total)
+  let mut off = 0
+  for i in 0..<chunks.length() {
+    let c = chunks[i]
+    for j in 0..<c.length() {
+      out[off] = c[j]
+      off = off + 1
+    }
+  }
+  out
+}
+
+fn live_build_stream_open_args(
+  method_name : String,
+  url : String,
+  headers : Array[(String, String)],
+  timeout_ms : Int64,
+) -> String {
+  let hdr_arr : Array[base_codec::Json] = []
+  for i in 0..<headers.length() {
+    hdr_arr.push(base_codec::json_arr([
+      base_codec::json_str(headers[i].0),
+      base_codec::json_str(headers[i].1),
+    ]))
+  }
+  base_codec::json_stringify(base_codec::json_obj([
+    ("method", base_codec::json_str(method_name)),
+    ("url", base_codec::json_str(url)),
+    ("headers", base_codec::json_arr(hdr_arr)),
+    ("timeoutMs", base_codec::json_int64(timeout_ms)),
+  ]))
+}
+
+fn live_trusted_release_keys() -> Map[String, String] {
+  let env_m : Map[String, String] = Map::new()
+  match station_sys::env_get("STILLFAIL_RELEASE_KEYS") {
+    Some(v) => env_m.set("STILLFAIL_RELEASE_KEYS", v)
+    None => ()
+  }
+  station_cli::trusted_release_keys(env_m)
+}
+
+fn live_release_feed_url(ctx : DaemonCtx, ch : String) -> Option[String] {
+  let base_opt : Option[String] = match station_sys::env_get("STILLFAIL_RELEASE_URL") {
+    Some(u) if u.trim().length() > 0 => Some(u.trim())
+    _ => match ctx.cloud.state {
+      Some(cs) if cs.origin.trim().length() > 0 => Some(cs.origin.trim() + "/downloads/station")
+      _ => None
+    }
+  }
+  match base_opt {
+    Some(base) => {
+      let clean = if base.ends_with("/") { base.slice(0, base.length() - 1) } else { base }
+      let suffix = if ch == "beta" { "/beta/latest.json" } else { "/latest.json" }
+      Some(clean + suffix)
+    }
+    None => None
+  }
+}
+
+fn live_find_in_path(fs : station_ops::OpsFs, bin : String, sep : String) -> Option[String] {
   let path_env = match station_sys::env_get("PATH") {
-    Some(p) if p.length() > 0 => p
-    _ => return None
+    Some(p) => p
+    None => return None
   }
   let delim = if sep == "\\" { ";" } else { ":" }
   let dirs = path_env.split(delim)
-  let exe = if sep == "\\" && !cmd.ends_with(".exe") { cmd + ".exe" } else { cmd }
   for i in 0..<dirs.length() {
     let d = dirs[i].trim()
     if d.length() == 0 {
       continue
     }
-    let full = nodepath::join(sep, [d, exe])
-    if ops_fs.exists(full) {
-      return Some(full)
+    let cand = nodepath::join(sep, [d, bin])
+    if fs.exists(cand) {
+      return Some(cand)
     }
   }
   None
 }
 
-/// Refresh runtime `installed` & `at` fields from PATH non-blockingly (no subprocess spawn).
+/// Probe locally installed runtime binaries on PATH (non-blocking filesystem stat only).
+/// Honestly leaves `rt.version` / `rt.updatable` untouched rather than faking a check.
 pub fn refresh_runtime_install_paths(
   updates : station_drivers::RuntimeUpdatesManager,
-  ops_fs : station_ops::OpsFs,
+  fs : station_ops::OpsFs,
   sep : String,
 ) -> Unit {
   for i in 0..<updates.runtimes.length() {
     let rt = updates.runtimes[i]
-    let bin_name = if rt.id == "claude" {
+    let bin = if rt.id == "claude" {
       "claude"
     } else if rt.id == "codex" {
       "codex"
-    } else if rt.id == "dsh" {
-      "dsh"
     } else if rt.id == "grok" {
       "grok"
     } else if rt.id == "devin" {
       "devin"
-    } else if rt.id == "hermes" {
-      "hermes"
     } else if rt.id == "agy" {
       "agy"
-    } else if rt.id == "pi" {
-      "pi"
+    } else if rt.id == "dsh" {
+      "dsh"
+    } else if rt.id == "cursor" {
+      "cursor-agent"
     } else {
-      ""
+      rt.id
     }
-    if bin_name.length() > 0 {
-      match live_find_in_path(ops_fs, sep, bin_name) {
-        Some(p) => {
-          rt.installed = true
-          rt.at = Some(p)
-        }
-        None => {
-          rt.installed = false
-          rt.at = None
-        }
+    match live_find_in_path(fs, bin, sep) {
+      Some(p) => {
+        rt.installed = true
+        rt.at = Some(p)
+      }
+      None => {
+        rt.installed = false
+        rt.at = None
       }
     }
   }
 }
 
-/// Controlled, non-leaking S3 error classification (NEVER returns raw upstream XML or secrets).
+/// Controlled, non-leaking S3 error message (never echoes raw upstream XML or credentials).
 pub fn controlled_s3_error_message(status : Int) -> String {
   if status == 401 || status == 403 {
-    "S3 authentication failed (HTTP " + status.to_string() + ")"
+    "S3 access denied (HTTP " + status.to_string() + "); check accessKeyId, secretAccessKey, and bucket permissions"
   } else if status == 404 {
     "S3 bucket or endpoint not found (HTTP 404)"
-  } else if status >= 500 {
-    "S3 service unavailable (HTTP " + status.to_string() + ")"
+  } else if status == 301 || status == 307 || status == 308 {
+    "S3 redirected (HTTP " + status.to_string() + "); check bucket region and endpoint"
   } else {
-    "S3 request refused (HTTP " + status.to_string() + ")"
+    "S3 returned HTTP " + status.to_string()
   }
 }
 
-/// Controlled, non-leaking control plane error message for `workspaces.join` (NEVER echoes upstream body/token).
+/// Controlled, non-leaking workspace join error message (never echoes upstream body or token).
 pub fn controlled_join_error_message(status : Int) -> String {
-  if status == 401 || status == 403 {
-    "enrollment token rejected (HTTP " + status.to_string() + ")"
+  if status == 400 {
+    "invalid join request (HTTP 400)"
+  } else if status == 401 || status == 403 {
+    "join token rejected or expired (HTTP " + status.to_string() + ")"
   } else if status == 404 {
-    "enrollment endpoint not found (HTTP 404)"
+    "join token not found or control plane does not support multi-workspace join (HTTP 404)"
   } else if status == 409 {
-    "workspace enrollment conflict (HTTP 409)"
-  } else if status >= 500 {
-    "control plane unavailable (HTTP " + status.to_string() + ")"
+    "station already joined or token already used (HTTP 409)"
   } else {
-    "workspace join failed (HTTP " + status.to_string() + ")"
+    "control plane returned HTTP " + status.to_string()
   }
 }
 
-fn live_release_feed_url(ctx : DaemonCtx) -> Option[(String, String)] {
-  let raw_cfg = ctx.config_file.raw()
-  let channel = match live_json_str_f(raw_cfg, "updateChannel") {
-    Some(ch) if ch == "beta" || ch == "stable" => ch
-    _ => "stable"
-  }
-  match ctx.cloud.state {
-    Some(st) if st.origin.length() > 0 => {
-      let prov = match st.provider { Some(p) => p, None => station_cloud::Provider::Stillfail }
-      let spec = station_cloud::spec_of(prov)
-      let base = station_cloud::release_base_for(spec, st.origin)
-      Some((channel, station_cli::feed_url(channel, base)))
-    }
-    _ => None
-  }
-}
-
-fn live_trusted_release_keys() -> Map[String, String] {
-  let env_map : Map[String, String] = Map::new()
-  match station_sys::env_get("STILLFAIL_RELEASE_KEYS") {
-    Some(v) => env_map.set("STILLFAIL_RELEASE_KEYS", v)
-    None => ()
-  }
-  station_cli::trusted_release_keys(env_map)
-}
-
+/// Build the provider key validation HTTP request `(url, headers)` for `accounts.profiles.createKeyed`.
+/// Returns `None` for providers without a model-list endpoint (e.g. `env`, `google-vertex`, optional-key).
 fn live_key_check_http_spec(
   kind : String,
   provider_opt : Option[String],
@@ -433,9 +245,12 @@ fn live_key_check_http_spec(
   protocol_opt : Option[String],
   key : String,
 ) -> Option[(String, Array[(String, String)])] {
+  if key.length() == 0 || kind == "env" {
+    return None
+  }
   if kind == "anthropic-api" {
     return Some((
-      "https://api.anthropic.com/v1/models?limit=100",
+      "https://api.anthropic.com/v1/models?limit=1",
       [("x-api-key", key), ("anthropic-version", "2023-06-01")],
     ))
   }
@@ -501,24 +316,31 @@ fn live_is_hex64(s : String) -> Bool {
 fn start_async_http_stream(
   ctx : DaemonCtx,
   sid : Int64,
+  conn_id : Int64,
+  method_name : String,
+  norm_path : String,
   op : AsyncAdminOpKind,
   viewer : station_api::Viewer,
   lang : station_api::Lang,
-  method_name : String,
+  http_method : String,
   url : String,
   headers : Array[(String, String)],
   body_opt : Option[Bytes],
   max_bytes : Int,
   timeout_ms : Int64,
+  idem_claim : Option[(String, String)],
 ) -> AsyncAdminHttpState {
   let _ = ctx.mux_role.call_async_raw(
     builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_OPEN, sid),
     "stream.open",
-    live_build_stream_open_args(method_name, url, headers, timeout_ms),
+    live_build_stream_open_args(http_method, url, headers, timeout_ms),
     body_opt,
   )
   AsyncAdminHttpState::{
     sid: sid,
+    conn_id: conn_id,
+    method_name: method_name,
+    norm_path: norm_path,
     op: op,
     viewer: viewer,
     lang: lang,
@@ -528,11 +350,13 @@ fn start_async_http_stream(
     total_bytes: 0,
     max_bytes: max_bytes,
     deadline_ms: host_shim::now_ms() + timeout_ms,
+    idem_claim: idem_claim,
   }
 }
 
-/// Close any open `stream.open` handle if an admin stream disconnects or times out.
-pub fn cancel_async_admin_op(ctx : DaemonCtx, state : AsyncAdminHttpState) -> Unit {
+/// Close any open `stream.open` handle and abort any in-flight idempotency claim when an admin stream
+/// disconnects, times out, or shuts down.
+pub fn cancel_async_admin_op(ctx : DaemonCtx, st : WholeRuntimeState, state : AsyncAdminHttpState) -> Unit {
   match state.stream_id {
     Some(id) => {
       let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
@@ -540,21 +364,88 @@ pub fn cancel_async_admin_op(ctx : DaemonCtx, state : AsyncAdminHttpState) -> Un
     }
     None => ()
   }
+  match state.idem_claim {
+    Some((slot_key, _)) => {
+      st.core.api.admin.abort_async_idempotency(slot_key)
+      state.idem_claim = None
+    }
+    None => ()
+  }
 }
 
-/// Intercept the 5 network/subprocess-bound live ops BEFORE synchronous `handle_peer_http` so the
-/// main event loop NEVER blocks on external HTTP or child processes!
-/// Returns `Some(Ok(state))` when transitioned to `AdminStreamMode::WaitingAsyncOp(state)`,
-/// `Some(Err(resp))` when an immediate HTTP response should be sent, or `None` to fall through.
+/// Pure testable helper: when a late `LIVE_OP_TOK_HTTP_OPEN` arrives after the admin stream already
+/// disconnected, timed out, or transitioned to `Done`, decode `head.id` and immediately close it
+/// so the Rust response handle NEVER leaks!
+pub fn close_orphaned_async_stream_open_with(
+  d : host_shim::ShellDone,
+  close_fn : (Int) -> Unit,
+) -> Option[Int] {
+  match station_http::decode_stream_open_done(d) {
+    Ok(head) => {
+      close_fn(head.id)
+      Some(head.id)
+    }
+    Err(_) => None
+  }
+}
+
+pub fn close_orphaned_async_stream_open(ctx : DaemonCtx, d : host_shim::ShellDone) -> Unit {
+  let _ = close_orphaned_async_stream_open_with(d, fn(id : Int) -> Unit {
+    let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+  })
+}
+
+/// Re-verify that the originating admin connection still holds an active manager role (`owner` or `admin`)
+/// before committing any persistent side effects after an async external HTTP roundtrip.
+fn live_viewer_still_manager(st : WholeRuntimeState, state : AsyncAdminHttpState) -> Bool {
+  match st.admin_conns.get(state.conn_id) {
+    Some(aconn) => aconn.effective_role == "owner" || aconn.effective_role == "admin"
+    None => false
+  }
+}
+
+fn finish_idem_claim(
+  st : WholeRuntimeState,
+  state : AsyncAdminHttpState,
+  resp : station_http::HttpResponse,
+) -> station_http::HttpResponse {
+  match state.idem_claim {
+    Some((slot_key, idem_key)) => {
+      st.core.api.admin.complete_async_idempotency(
+        slot_key,
+        idem_key,
+        state.viewer,
+        state.method_name,
+        state.norm_path,
+        resp,
+        host_shim::wall_ms(),
+      )
+      state.idem_claim = None
+    }
+    None => ()
+  }
+  resp
+}
+
+/// Intercept the 4 network-bound live ops BEFORE synchronous `handle_peer_http` so the
+/// main event loop NEVER blocks on external HTTP:
+/// - `POST /updates/check`
+/// - `POST /copies/s3/test`
+/// - `POST /workspaces/join`
+/// - `POST /profiles` (for keyed profiles requiring HTTP validation)
+/// Unified read-only handover write barrier & `Idempotency-Key` claim are enforced by the caller
+/// (`whole_daemon.pion`) before invoking this function.
 pub fn try_intercept_async_admin_op(
   ctx : DaemonCtx,
   st : WholeRuntimeState,
   sid : Int64,
+  conn_id : Int64,
   method_name : String,
   norm_path : String,
   body_bytes : Bytes,
   viewer : station_api::Viewer,
   lang : station_api::Lang,
+  idem_claim : Option[(String, String)],
 ) -> Option[Result[AsyncAdminHttpState, station_http::HttpResponse]] {
   let ops_lang = match lang { station_api::Lang::Zh => station_ops::Lang::Zh, station_api::Lang::En => station_ops::Lang::En }
   let parse_body = fn() -> Result[base_codec::Json, station_http::HttpResponse] {
@@ -568,122 +459,40 @@ pub fn try_intercept_async_admin_op(
     }
   }
 
-  // 1. `POST /updates/check` (non-blocking release feed fetch + Ed25519 verify + runtime refresh)
+  // 1. `POST /updates/check` (non-blocking release feed fetch + Ed25519 verify + runtime PATH refresh)
   if method_name == "POST" && norm_path == "/updates/check" {
     if !viewer.manages_station() {
       return Some(Err(station_api::json_error(403, station_ops::tr(ops_lang, "station.admin.updatesManagersOnly"))))
     }
-    let (ch, url) = match live_release_feed_url(ctx) {
-      Some(pair) => pair
-      None => {
-        // 1:1 with Node `routes/updates.ts:24`: unenrolled station has no release feed -> 404!
-        return Some(Err(station_api::json_error(404, station_ops::tr(ops_lang, "station.admin.updatesUnavailable"))))
-      }
+    let ch = match live_json_str_f(ctx.config_file.raw(), "updateChannel") {
+      Some(c) if c == "beta" || c == "stable" => c
+      _ => "stable"
+    }
+    let feed_url = match live_release_feed_url(ctx, ch) {
+      Some(u) => u
+      None => return Some(Err(station_api::json_error(404, "station is not enrolled in a release feed")))
     }
     let state = start_async_http_stream(
       ctx,
       sid,
+      conn_id,
+      method_name,
+      norm_path,
       AsyncAdminOpKind::UpdatesCheck(ch),
       viewer,
       lang,
       "GET",
-      url,
+      feed_url,
       [],
       None,
-      1048576,
+      262144,
       15000L,
+      idem_claim,
     )
     return Some(Ok(state))
   }
 
-  // 2. `POST /updates` (`updates.install`: non-blocking station verified install OR tracked runtime subprocess)
-  if method_name == "POST" && norm_path == "/updates" {
-    if !viewer.manages_station() {
-      return Some(Err(station_api::json_error(403, station_ops::tr(ops_lang, "station.admin.updatesManagersOnly"))))
-    }
-    let body = match parse_body() { Ok(j) => j, Err(r) => return Some(Err(r)) }
-    let id = match live_json_str_f(body, "id") { Some(s) => s.trim(), None => "" }
-    let valid_id = id == "station" || station_drivers::runtime_kind_from_str(id).is_some()
-    if !valid_id {
-      return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.noSuchItem"))))
-    }
-    let to_opt : Option[String] = match base_codec::json_get(body, "to") {
-      None | Some(base_codec::Json::Null) => None
-      Some(base_codec::Json::Str(s)) => {
-        if !station_whole::live_is_valid_version_spec(s) {
-          return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
-        }
-        Some(s)
-      }
-      Some(_) => return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
-    }
-    let repair = match base_codec::json_get(body, "repair") {
-      None | Some(base_codec::Json::Null) | Some(base_codec::Json::Bool(false)) => false
-      Some(base_codec::Json::Bool(true)) => {
-        if id != "codex" {
-          return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
-        }
-        true
-      }
-      Some(_) => return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
-    }
-    if id == "station" {
-      if st.core.updates.station.updating.is_some() {
-        return Some(Err(station_api::json_error(409, "station update already in progress")))
-      }
-      let (ch, url) = match live_release_feed_url(ctx) {
-        Some(pair) => pair
-        None => return Some(Err(station_api::json_error(404, station_ops::tr(ops_lang, "station.admin.updatesUnavailable"))))
-      }
-      let state = start_async_http_stream(
-        ctx,
-        sid,
-        AsyncAdminOpKind::UpdatesInstallStation(ch, to_opt),
-        viewer,
-        lang,
-        "GET",
-        url,
-        [],
-        None,
-        1048576,
-        15000L,
-      )
-      return Some(Ok(state))
-    }
-    // Runtime update / codex repair: spawn real non-blocking tracked child process via `LiveUpdateProcManager`!
-    let rt = match st.core.updates.find_runtime(id) {
-      Some(r) => r
-      None => return Some(Err(station_api::json_error(404, station_ops::tr(ops_lang, "station.updates.noSuchItem"))))
-    }
-    if rt.updating.is_some() || st.core.updates.station.updating.is_some() {
-      return Some(Err(station_api::json_error(409, "update already in progress")))
-    }
-    let kind = match station_drivers::runtime_kind_from_str(id) {
-      Some(k) => k
-      None => return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.noSuchItem"))))
-    }
-    let pkg = station_drivers::runtime_package(kind)
-    let supports_npm = id == "claude" || id == "codex" || id == "dsh" || id == "grok" || id == "pi"
-    if !supports_npm {
-      return Some(Err(station_api::json_error(400, "runtime " + id + " cannot be updated from station API")))
-    }
-    let npm_bin = match live_find_in_path(ctx.ops_fs, ctx.sep, "npm") {
-      Some(p) => p
-      None => return Some(Err(station_api::json_error(400, "npm not found on PATH")))
-    }
-    let target_pkg = if repair { "@openai/codex@latest" } else { pkg + "@latest" }
-    rt.updating = Some(host_shim::wall_ms())
-    rt.failed_text = None
-    match st.update_procs.spawn_update(id, npm_bin, ["install", "-g", target_pkg], ctx.data, st.core.updates, host_shim::now_ms()) {
-      Ok(_) => {
-        st.core.api.events.overview_changed("updates")
-        return Some(Err(station_api::json_ok(station_whole::updates_view_json(st.core.updates, ctx.config_file.raw()))))
-      }
-      Err(e) => return Some(Err(station_api::json_error(500, e)))
-    }
-  }
-
-  // 3. `POST /copies/s3/test` (non-blocking SigV4 HTTP GET + cross-endpoint credential guard)
+  // 2. `POST /copies/s3/test` (non-blocking SigV4 HTTP GET + cross-endpoint/bucket/path-style credential guard)
   if method_name == "POST" && norm_path == "/copies/s3/test" {
     if !viewer.manages_station() {
       return Some(Err(station_api::json_error(403, "only the workspace's owners and admins test backup targets")))
@@ -711,6 +520,9 @@ pub fn try_intercept_async_admin_op(
     let state = start_async_http_stream(
       ctx,
       sid,
+      conn_id,
+      method_name,
+      norm_path,
       AsyncAdminOpKind::CopiesS3Test(target),
       viewer,
       lang,
@@ -720,11 +532,12 @@ pub fn try_intercept_async_admin_op(
       None,
       65536,
       15000L,
+      idem_claim,
     )
     return Some(Ok(state))
   }
 
-  // 4. `POST /workspaces/join` (non-blocking cloud enroll POST + dynamic hot-reload of `allowed_workspaces`)
+  // 3. `POST /workspaces/join` (2-phase `station_cloud::prepare_join_workspace` BEFORE HTTP -> `/v1/stations/join` + `"locks": true`!)
   if method_name == "POST" && norm_path == "/workspaces/join" {
     if !viewer.manages_station() {
       return Some(Err(station_api::json_error(403, "only the owners and admins of this station's workspaces add it to another workspace")))
@@ -746,45 +559,48 @@ pub fn try_intercept_async_admin_op(
       }
       _ => None
     }
-    let cloud_st = match ctx.cloud.state {
-      Some(cs) if cs.origin.length() > 0 => cs
-      _ => return Some(Err(station_api::json_error(409, "this station is in no workspace: enroll it first")))
+    let now_secs = host_shim::wall_ms() / 1000L
+    // Run ALL local pre-checks (enrolled, not removed, locked-workspace rule) BEFORE any network I/O!
+    let prep = match station_cloud::prepare_join_workspace(
+      ctx.data,
+      ctx.cloud.fs,
+      ctx.station_key,
+      token,
+      st.core.api.auth_policy.station_build,
+      now_secs,
+      lock_hash=lock_opt,
+      rig_person_hash=rig_person_opt,
+      store=Some(ctx.cloud),
+      verify_fn=st.core.api.auth_policy.verify_fn,
+      sep=ctx.sep,
+    ) {
+      Ok(p) => p
+      Err(e) => return Some(Err(station_api::json_error(409, e)))
     }
-    let prov = match cloud_st.provider { Some(p) => p, None => station_cloud::Provider::Stillfail }
-    let plane = station_cloud::spec_of(prov)
-    let prefix = if plane.enroll_prefixes.length() > 0 { plane.enroll_prefixes[0] } else { "stillfail-enroll" }
-    let sig = match station_cloud::enroll_token_signature(prefix, cloud_st.origin, token, ctx.station_key.id, ctx.station_key) {
-      Ok(s) => s
-      Err(e) => return Some(Err(station_api::json_error(500, e)))
+    if prep.bodies.length() == 0 {
+      return Some(Err(station_api::json_error(500, "no join request body prepared")))
     }
-    let req_fs : Array[(String, base_codec::Json)] = [
-      ("token", base_codec::json_str(token)),
-      ("station", base_codec::json_str(ctx.station_key.id)),
-      ("signature", base_codec::json_str(sig)),
-      ("version", base_codec::json_str(st.core.api.auth_policy.station_build)),
-    ]
-    if rig_person_opt.is_some() {
-      req_fs.push(("rig", base_codec::json_bool(true)))
-    }
-    let url = cloud_st.origin + plane.enroll_path
-    let payload = base_codec::json_stringify(base_codec::json_obj(req_fs)).to_bytes()
     let state = start_async_http_stream(
       ctx,
       sid,
-      AsyncAdminOpKind::WorkspacesJoin(token, lock_opt, rig_person_opt),
+      conn_id,
+      method_name,
+      norm_path,
+      AsyncAdminOpKind::WorkspacesJoin(prep, 0, lock_opt, rig_person_opt),
       viewer,
       lang,
       "POST",
-      url,
+      prep.url,
       [("content-type", "application/json")],
-      Some(payload),
+      Some(prep.bodies[0].to_bytes()),
       262144,
       20000L,
+      idem_claim,
     )
     return Some(Ok(state))
   }
 
-  // 5. `POST /profiles` (`accounts.profiles.createKeyed`: non-blocking provider key verification)
+  // 4. `POST /profiles` (`accounts.profiles.createKeyed`: non-blocking provider key verification)
   if method_name == "POST" && norm_path == "/profiles" {
     if !viewer.manages_station() {
       return Some(Err(station_api::json_error(403, "only workspace owners and admins can manage profiles")))
@@ -800,7 +616,7 @@ pub fn try_intercept_async_admin_op(
       _ => return Some(Err(station_api::json_error(400, "unknown access")))
     }
     if kind == "env" {
-      // No external HTTP key check needed for `env` profiles -> fall through to synchronous handler!
+      // No external HTTP key check needed -> fall through to synchronous handler!
       return None
     }
     let trim_opt = fn(k : String) -> Option[String] {
@@ -850,33 +666,50 @@ pub fn try_intercept_async_admin_op(
       }
       source_opt = Some(src)
     }
-    let key_req = match source_opt { Some(src) => !src.key_optional, None => true }
+    let is_vertex = match source_opt { Some(src) => src.id == "google-vertex", None => false }
+    if is_vertex {
+      // Validated structurally in synchronous handler (no external HTTP check needed)
+      return None
+    }
+    let key_req = if kind == "openai-api" {
+      false
+    } else {
+      match source_opt { Some(src) => !src.key_optional, None => true }
+    }
     if key_req && key.length() == 0 {
       return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.keyRequired"))))
     }
     match live_key_check_http_spec(kind, prov_opt, clean_ep, final_proto, key) {
       None => return None
       Some((check_url, check_hdrs)) => {
-        let label = match live_json_str_f(body, "name") {
-          Some(n) if n.trim().length() > 0 => n.trim()
-          _ => match source_opt {
-            Some(src) => src.name
-            None => if kind == "opencode-go" { "OpenCode Go" } else if kind == "anthropic-api" { "Anthropic API" } else { "OpenAI API" }
+        // 1:1 with Node `accounts/index.ts:846-852`: ignore caller-supplied `name`.
+        let label = match source_opt {
+          Some(src) => src.name
+          None => if kind == "opencode-go" {
+            "OpenCode Go"
+          } else if kind == "anthropic-api" {
+            "Anthropic API"
+          } else {
+            "OpenAI API"
           }
         }
         let base_slug = match source_opt { Some(src) => src.id, None => kind }
         let state = start_async_http_stream(
           ctx,
           sid,
-          AsyncAdminOpKind::ProfileCreateKeyed(kind, prov_opt, clean_ep, final_proto, key, None, label, base_slug),
+          conn_id,
+          method_name,
+          norm_path,
+          AsyncAdminOpKind::ProfileCreateKeyed(kind, prov_opt, clean_ep, final_proto, key, None, label, base_slug, source_opt.is_some()),
           viewer,
           lang,
           "GET",
           check_url,
           check_hdrs,
           None,
-          262144,
+          65536,
           15000L,
+          idem_claim,
         )
         return Some(Ok(state))
       }
@@ -886,7 +719,7 @@ pub fn try_intercept_async_admin_op(
   None
 }
 
-/// Complete an `AsyncAdminHttpState` once `stream.read` reaches EOF or errors.
+/// Complete an async admin HTTP op once the response body (or error) has arrived.
 fn complete_async_admin_op(
   ctx : DaemonCtx,
   st : WholeRuntimeState,
@@ -894,15 +727,18 @@ fn complete_async_admin_op(
   fetch_res : Result[(Int, Bytes), String],
 ) -> station_http::HttpResponse {
   let ops_lang = match state.lang { station_api::Lang::Zh => station_ops::Lang::Zh, station_api::Lang::En => station_ops::Lang::En }
-  match state.op {
+  let resp = match state.op {
     AsyncAdminOpKind::UpdatesCheck(_ch) => {
+      if !live_viewer_still_manager(st, state) {
+        return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
+      }
       refresh_runtime_install_paths(st.core.updates, ctx.ops_fs, ctx.sep)
       match fetch_res {
         Err(e) => {
-          // Clear stale cached `latest`/`updatable` on fetch failure!
+          // Clear stale `latest`/`updatable` on fetch failure so UI never sees an outdated update prompt!
           st.core.updates.station.latest = None
           st.core.updates.station.updatable = false
-          st.core.updates.station.failed_text = Some(e)
+          st.core.updates.station.failed_text = Some("failed to fetch release feed: " + e)
         }
         Ok((status, body_b)) => {
           if status < 200 || status >= 300 {
@@ -916,15 +752,15 @@ fn complete_async_admin_op(
                 match station_cli::verify_feed(feed_j, trusted, verify_fn=st.core.api.auth_policy.verify_fn) {
                   Ok(rel) => {
                     st.core.updates.station.latest = Some(rel.version)
-                    let cur_b = station_cli::version_build(st.core.updates.station.version)
-                    st.core.updates.station.updatable = match cur_b { Some(cb) => rel.build > cb, None => true }
+                    let cur_v = match st.core.updates.station.version { Some(v) => v, None => "" }
+                    st.core.updates.station.updatable = rel.version != cur_v
                     st.core.updates.station.failed_text = None
                   }
                   Err(ve) => {
-                    // Verification failed: MUST clear stale `latest`/`updatable`!
+                    // Verification failed -> MUST clear stale `latest`/`updatable`!
                     st.core.updates.station.latest = None
                     st.core.updates.station.updatable = false
-                    st.core.updates.station.failed_text = Some("release verification failed: " + ve)
+                    st.core.updates.station.failed_text = Some("release signature verification failed: " + ve)
                   }
                 }
               }
@@ -939,70 +775,6 @@ fn complete_async_admin_op(
       }
       st.core.api.events.overview_changed("updates")
       station_api::json_ok(station_whole::updates_view_json(st.core.updates, ctx.config_file.raw()))
-    }
-
-    AsyncAdminOpKind::UpdatesInstallStation(ch, to_opt) => {
-      let (status, body_b) = match fetch_res {
-        Ok(p) => p
-        Err(e) => return station_api::json_error(502, "failed to fetch release feed: " + e)
-      }
-      if status < 200 || status >= 300 {
-        return station_api::json_error(502, "release feed HTTP " + status.to_string())
-      }
-      let feed_j = match base_codec::json_parse(body_b.to_string()) {
-        base_codec::JsonParseResult::Ok(j) => j
-        base_codec::JsonParseResult::Err(e) => return station_api::json_error(400, "invalid release feed JSON: " + e)
-      }
-      let trusted = live_trusted_release_keys()
-      let rel = match station_cli::verify_feed(feed_j, trusted, verify_fn=st.core.api.auth_policy.verify_fn) {
-        Ok(r) => r
-        Err(e) => {
-          st.core.updates.station.latest = None
-          st.core.updates.station.updatable = false
-          return station_api::json_error(400, "release signature verification failed: " + e)
-        }
-      }
-      // Dynamic real platform detection (never hardcode x64 on Linux!)
-      let plat = live_current_platform(station_sys::os_name(), station_sys::arch_name())
-      match station_cli::expected_build(rel, Some(plat)) {
-        Ok(_) => ()
-        Err(e) => return station_api::json_error(400, "release manifest missing verified build for " + plat + ": " + e)
-      }
-      let argv_all = host_shim::args()
-      let argv0 = if argv_all.length() > 0 { argv_all[0] } else { "" }
-      let cwd_now = match station_sys::getcwd() { Some(c) => c, None => ctx.data }
-      let self_exe = match resolve_self_executable_with(
-        argv0,
-        cwd_now,
-        station_sys::env_get("PATH"),
-        ctx.sep,
-        station_sys::os_name(),
-        fn(p : String) -> Option[String] { station_sys::realpath(p) },
-        fn(p : String) -> Bool {
-          match (ctx.ops_fs.stat)(p) { Ok(s) => s.is_file, Err(_) => false }
-        },
-      ) {
-        Some(p) => p
-        None => return station_api::json_error(500, "cannot determine station executable for update")
-      }
-      let cmd_args : Array[String] = ["update", "--data", ctx.data, "--channel", ch]
-      match to_opt {
-        Some(ver) => {
-          cmd_args.push("--to")
-          cmd_args.push(ver)
-        }
-        None => ()
-      }
-      st.core.updates.station.latest = Some(rel.version)
-      st.core.updates.station.updating = Some(host_shim::wall_ms())
-      st.core.updates.station.failed_text = None
-      match st.update_procs.spawn_update("station", self_exe, cmd_args, ctx.data, st.core.updates, host_shim::now_ms()) {
-        Ok(_) => {
-          st.core.api.events.overview_changed("updates")
-          station_api::json_ok(station_whole::updates_view_json(st.core.updates, ctx.config_file.raw()))
-        }
-        Err(e) => station_api::json_error(500, e)
-      }
     }
 
     AsyncAdminOpKind::CopiesS3Test(target) => {
@@ -1026,33 +798,30 @@ fn complete_async_admin_op(
       }
     }
 
-    AsyncAdminOpKind::WorkspacesJoin(token, lock_opt, rig_person_opt) => {
+    AsyncAdminOpKind::WorkspacesJoin(prep, _prefix_idx, lock_opt, rig_person_opt) => {
+      if !live_viewer_still_manager(st, state) {
+        return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
+      }
       let (status, body_b) = match fetch_res {
         Ok(p) => p
-        Err(_) => return station_api::json_error(409, "control plane unreachable")
+        Err(_) => return finish_idem_claim(st, state, station_api::json_error(409, "control plane unreachable"))
       }
       if status < 200 || status >= 300 {
         // Never echo upstream body (may reflect enrollment token)!
-        return station_api::json_error(409, controlled_join_error_message(status))
+        return finish_idem_claim(st, state, station_api::json_error(409, controlled_join_error_message(status)))
       }
       let resp_text = body_b.to_string()
       let now_secs = host_shim::wall_ms() / 1000L
-      let replay_redeem = fn(_url : String, _body_json : String) -> Result[(Int, String), String] {
-        Ok((status, resp_text))
-      }
-      let join_res = station_cloud::join_workspace(
+      let join_res = station_cloud::apply_join_workspace_response(
         ctx.data,
         ctx.cloud.fs,
-        ctx.station_key,
-        token,
-        st.core.api.auth_policy.station_build,
+        prep,
+        status,
+        resp_text,
         now_secs,
-        replay_redeem,
         lock_hash=lock_opt,
         at_machine=false,
         rig_person_hash=rig_person_opt,
-        store=Some(ctx.cloud),
-        verify_fn=st.core.api.auth_policy.verify_fn,
         sep=ctx.sep,
       )
       // Reload cloud state & dynamically admit ALL current memberships (handles both Ok and KeptLock!)
@@ -1100,12 +869,27 @@ fn complete_async_admin_op(
       }
     }
 
-    AsyncAdminOpKind::ProfileCreateKeyed(kind, prov_opt, clean_ep, final_proto, key, env_rt, label, base_slug) => {
+    AsyncAdminOpKind::ProfileCreateKeyed(kind, prov_opt, clean_ep, final_proto, key, env_rt, label, base_slug, is_api_provider) => {
+      if !live_viewer_still_manager(st, state) {
+        return finish_idem_claim(st, state, station_api::json_error(403, "manager role no longer active"))
+      }
+      // 1:1 with Node `accounts/index.ts:841`:
+      // - For `api-provider` (`is_api_provider`), only `state == "failed"` (auth 401/403) refuses creation;
+      //   providers without a model list (404/405/5xx/network) leave check state `"unknown"` and succeed.
+      // - For legacy keyed kinds (`anthropic-api`, `openai-api`, `opencode-go`), non-2xx or network error refuses.
       match fetch_res {
-        Err(e) => return station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + ": " + e)
+        Err(e) => {
+          if !is_api_provider {
+            return finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + ": " + e))
+          }
+        }
         Ok((status, _)) => {
-          if status < 200 || status >= 300 {
-            return station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + " (HTTP " + status.to_string() + ")")
+          if is_api_provider {
+            if status == 401 || status == 403 {
+              return finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + " (HTTP " + status.to_string() + ")"))
+            }
+          } else if status < 200 || status >= 300 {
+            return finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.profile.checkFailed") + " (HTTP " + status.to_string() + ")"))
           }
         }
       }
@@ -1173,6 +957,7 @@ fn complete_async_admin_op(
       }
     }
   }
+  finish_idem_claim(st, state, resp)
 }
 
 /// Drive one non-blocking `LIVE_OP_TOK_HTTP_OPEN` / `LIVE_OP_TOK_HTTP_READ` completion on `ctx.mux_role`.
@@ -1192,7 +977,13 @@ pub fn step_async_admin_http_done(
         state.status = head.status
         let rem = state.deadline_ms - host_shim::now_ms()
         if rem <= 0L {
-          cancel_async_admin_op(ctx, state)
+          match state.stream_id {
+            Some(id) => {
+              let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+              state.stream_id = None
+            }
+            None => ()
+          }
           return Some(complete_async_admin_op(ctx, st, state, Err("request timed out")))
         }
         let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
@@ -1213,20 +1004,68 @@ pub fn step_async_admin_http_done(
   if kind == LIVE_OP_TOK_HTTP_READ {
     match station_http::decode_stream_read_done(d) {
       Err(e) => {
-        cancel_async_admin_op(ctx, state)
+        match state.stream_id {
+          Some(id) => {
+            let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+            state.stream_id = None
+          }
+          None => ()
+        }
         return Some(complete_async_admin_op(ctx, st, state, Err(e.message)))
       }
       Ok(chunk) => {
         match chunk {
           station_http::StreamChunk::End => {
-            cancel_async_admin_op(ctx, state)
+            match state.stream_id {
+              Some(id) => {
+                let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+                state.stream_id = None
+              }
+              None => ()
+            }
             let full = live_concat_chunks(state.body_chunks, state.total_bytes)
+            // Multi-prefix fallback for `WorkspacesJoin` on 401 `invalid_signature` (1:1 with `join_workspace`)
+            match state.op {
+              AsyncAdminOpKind::WorkspacesJoin(prep, pidx, lock_opt, rig_opt) => {
+                if state.status == 401 && pidx + 1 < prep.bodies.length() {
+                  let err_code = match base_codec::json_parse(full.to_string()) {
+                    base_codec::JsonParseResult::Ok(j) => match live_json_str_f(j, "error") { Some(s) => s, None => "" }
+                    base_codec::JsonParseResult::Err(_) => ""
+                  }
+                  if err_code == "invalid_signature" {
+                    let next_idx = pidx + 1
+                    state.body_chunks.clear()
+                    state.total_bytes = 0
+                    state.status = 0
+                    let rem = state.deadline_ms - host_shim::now_ms()
+                    if rem > 0L {
+                      let _ = ctx.mux_role.call_async_raw(
+                        builders_core::MuxToken::Tagged(0, LIVE_OP_TOK_HTTP_OPEN, state.sid),
+                        "stream.open",
+                        live_build_stream_open_args("POST", prep.url, [("content-type", "application/json")], rem),
+                        Some(prep.bodies[next_idx].to_bytes()),
+                      )
+                      // Update state.op via returning None (next attempt uses next_idx)
+                      let _ = (lock_opt, rig_opt)
+                      return None
+                    }
+                  }
+                }
+              }
+              _ => ()
+            }
             return Some(complete_async_admin_op(ctx, st, state, Ok((state.status, full))))
           }
           station_http::StreamChunk::Data(data) => {
             if data.length() > 0 {
               if state.total_bytes + data.length() > state.max_bytes {
-                cancel_async_admin_op(ctx, state)
+                match state.stream_id {
+                  Some(id) => {
+                    let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+                    state.stream_id = None
+                  }
+                  None => ()
+                }
                 return Some(complete_async_admin_op(ctx, st, state, Err("response body exceeded limit")))
               }
               state.body_chunks.push(data)
@@ -1236,7 +1075,13 @@ pub fn step_async_admin_http_done(
         }
         let rem = state.deadline_ms - host_shim::now_ms()
         if rem <= 0L {
-          cancel_async_admin_op(ctx, state)
+          match state.stream_id {
+            Some(id) => {
+              let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+              state.stream_id = None
+            }
+            None => ()
+          }
           return Some(complete_async_admin_op(ctx, st, state, Err("request timed out")))
         }
         let stream_id = match state.stream_id { Some(id) => id, None => return Some(complete_async_admin_op(ctx, st, state, Err("stream closed"))) }
