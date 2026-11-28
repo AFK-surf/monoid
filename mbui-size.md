@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [541965cbc](https://github.com/AFK-surf/monoid/commit/541965cbc2e72f42e091e9b56234d811355cbc64) feat(pion-station): wire production HTTP API ops,  | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.89 | 120.7 |
 | [e0ccfd141](https://github.com/AFK-surf/monoid/commit/e0ccfd1416b509ba58bb2e5ee9fd41263146be46) perf(core): batch opened sub-chat lookups in chat  | 2.74 | 3.71 | 15.38 | 38.49 | 59.49 | 33.74 | 69.01 | 103.89 | 120.7 |
 | [8fa48d56b](https://github.com/AFK-surf/monoid/commit/8fa48d56b62d2b727cfa67c5ce85239bbbc415d2) feat(station): add CoW worktree command, clone pri | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.76 | 127.04 |
 | [84182f16d](https://github.com/AFK-surf/monoid/commit/84182f16d5ef5d6bd20e5f7d29b874c4a87427a9) fix(ci): parse Node-Station-Only trailers in GitHu | 2.74 | 3.71 | 15.38 | 38.48 | 59.49 | 33.74 | 69.01 | 103.76 | 127.04 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [89089da80](https://github.com/AFK-surf/monoid/commit/89089da803552093d1ba066dc83c94f3d1c0aaf1) ci(mbui): speed up pages test build on release/* a | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.7 | 124.28 |
 | [2bfbbefca](https://github.com/AFK-surf/monoid/commit/2bfbbefca014ba5add4b7d96d5b50aa0e476c075) chore(ui/ui): eliminate remaining mbt2pion publish | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.7 | 124.28 |
 | [6dfc70c60](https://github.com/AFK-surf/monoid/commit/6dfc70c60e598dd23c945bfee1153f829d9203c0) feat(core,mbui): PR-B2b topic policy evolution, MB | 2.71 | 3.67 | 15.23 | 38.36 | 59.04 | 33.61 | 68.66 | 103.52 | 111.06 |
-| [6c31cadf0](https://github.com/AFK-surf/monoid/commit/6c31cadf0c75ed2e9e19c8f16e784377010ead51) feat(mbui): jump to NewChat with current chat @ref | 2.7 | 3.66 | 15.2 | 38.26 | 58.91 | 33.51 | 68.53 | 103.3 | 126.98 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [541965cbc](https://github.com/AFK-surf/monoid/commit/541965cbc2e72f42e091e9b56234d811355cbc64) feat(pion-station): wire production HTTP API ops,  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 58.03 |
 | [e0ccfd141](https://github.com/AFK-surf/monoid/commit/e0ccfd1416b509ba58bb2e5ee9fd41263146be46) perf(core): batch opened sub-chat lookups in chat  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
 | [8fa48d56b](https://github.com/AFK-surf/monoid/commit/8fa48d56b62d2b727cfa67c5ce85239bbbc415d2) feat(station): add CoW worktree command, clone pri | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
 | [84182f16d](https://github.com/AFK-surf/monoid/commit/84182f16d5ef5d6bd20e5f7d29b874c4a87427a9) fix(ci): parse Node-Station-Only trailers in GitHu | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [89089da80](https://github.com/AFK-surf/monoid/commit/89089da803552093d1ba066dc83c94f3d1c0aaf1) ci(mbui): speed up pages test build on release/* a | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 57.77 |
 | [2bfbbefca](https://github.com/AFK-surf/monoid/commit/2bfbbefca014ba5add4b7d96d5b50aa0e476c075) chore(ui/ui): eliminate remaining mbt2pion publish | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.29 | 58.31 |
 | [6dfc70c60](https://github.com/AFK-surf/monoid/commit/6dfc70c60e598dd23c945bfee1153f829d9203c0) feat(core,mbui): PR-B2b topic policy evolution, MB | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.98 |
-| [6c31cadf0](https://github.com/AFK-surf/monoid/commit/6c31cadf0c75ed2e9e19c8f16e784377010ead51) feat(mbui): jump to NewChat with current chat @ref | 0.59 | 0.78 | 3.02 | 4.06 | 7.52 | 2.23 | 6.31 | 57.82 |
