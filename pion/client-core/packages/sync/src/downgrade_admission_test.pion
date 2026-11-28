@@ -2310,11 +2310,12 @@ test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-fli
     h6.core.membership.pending_auth_boundary_id(DA_WS1) == b1,
     "pending_auth_boundary_id (boundary_seq) stays strictly unchanged across mesh fresh bump_cred_epoch!",
   )
-  // Verify `CloudSync` WS WorkspaceChanged 401 routes to `on_workspace_unauthorized(ws, boundary_id, bearer_gen, herr)`
+  // Verify `CloudSync` WS WorkspaceChanged 401 routes to `on_workspace_unauthorized(ws, boundary_id, bearer_gen, req_seq, herr)`
   // instead of generic `on_unauthorized_err`, and survives mid-flight `bump_cred_epoch`!
   let mut ws_401_wid = ""
   let mut ws_401_bid = 0L
   let mut ws_401_bgen = 0L
+  let mut ws_401_seq = 0L
   let mut generic_401_calls = 0
   let mut pending_ws_read_id : Option[Int64] = None
   let mut pending_ws_fetch_id : Option[Int64] = None
@@ -2355,16 +2356,18 @@ test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-fli
     sql::SqlResult::Err(e) => panic(e.to_string())
   }
   let cs = CloudSync::new(cs_sh, cs_db, "https://cloud.test", token="tok-1", bound_sub="sub-alice", bound_session="s1")
+  cs.set_seq_provider(fn() -> Int64 { h6.core.membership.next_cloud_seq() })
   cs.set_workspace_auth_context_getters(
     fn() -> Int64 { 7L },
     fn(wid : String) -> Int64 { h6.core.membership.pending_auth_boundary_id(wid) },
   )
   cs.set_commit_hooks(
     on_unauthorized_err=Some(fn(_ : CloudHttpError) -> Unit { generic_401_calls += 1 }),
-    on_workspace_unauthorized=Some(fn(wid : String, bid : Int64, bgen : Int64, _ : CloudHttpError) -> Unit {
+    on_workspace_unauthorized=Some(fn(wid : String, bid : Int64, bgen : Int64, rseq : Int64, _ : CloudHttpError) -> Unit {
       ws_401_wid = wid
       ws_401_bid = bid
       ws_401_bgen = bgen
+      ws_401_seq = rseq
     }),
   )
   cs.start_events_ws(fn(_ : CloudEvent) -> Unit {})
@@ -2394,7 +2397,7 @@ test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-fli
     None => panic("expected in-flight CloudSync workspace fetch")
   }
   let _ = h6.rt.run_ready()
-  debug_assert(ws_401_wid == DA_WS1 && ws_401_bid == b1 && ws_401_bgen == 7L, "CloudSync 401 routed to single coordinator with exact boundary_seq & bearer_gen")
+  debug_assert(ws_401_wid == DA_WS1 && ws_401_bid == b1 && ws_401_bgen == 7L && ws_401_seq > 0L, "CloudSync 401 routed to single coordinator with exact boundary_seq, bearer_gen & req_seq")
   debug_assert(h6.core.membership.pending_auth_boundary_id(DA_WS1) == ws_401_bid, "coordinator boundary check STILL passes after mid-flight mesh fresh bump_cred_epoch")
   debug_assert(generic_401_calls == 0, "CloudSync workspace 401 did NOT bypass coordinator via generic on_unauthorized_err")
   cs.stop()

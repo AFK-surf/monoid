@@ -1182,7 +1182,7 @@ pub struct CloudSync {
   mut on_workspace_fetched : Option[(CloudWorkspace, Int64) -> Unit]
   mut on_workspace_fetched_with_epoch : Option[(CloudWorkspace, Int64, Int64) -> Unit]
   mut on_unauthorized_err : Option[(CloudHttpError) -> Unit]
-  mut on_workspace_unauthorized : Option[(String, Int64, Int64, CloudHttpError) -> Unit]
+  mut on_workspace_unauthorized : Option[(String, Int64, Int64, Int64, CloudHttpError) -> Unit]
 }
 
 pub fn CloudSync::new(
@@ -1348,7 +1348,7 @@ pub fn CloudSync::set_commit_hooks(
   on_workspace_fetched : Option[(CloudWorkspace, Int64) -> Unit] = None,
   on_unauthorized_err : Option[(CloudHttpError) -> Unit] = None,
   on_workspace_fetched_with_epoch : Option[(CloudWorkspace, Int64, Int64) -> Unit] = None,
-  on_workspace_unauthorized : Option[(String, Int64, Int64, CloudHttpError) -> Unit] = None,
+  on_workspace_unauthorized : Option[(String, Int64, Int64, Int64, CloudHttpError) -> Unit] = None,
 ) -> Unit {
   self.on_me_fetched = on_me_fetched
   self.on_workspace_fetched = on_workspace_fetched
@@ -1578,7 +1578,7 @@ pub fn CloudSync::start_events_ws(
                       self.trigger_me_reconcile()
                     } else if herr.status == 401 {
                       match self.on_workspace_unauthorized {
-                        Some(cb) => cb(wid, captured_boundary_id, captured_bearer_gen, herr)
+                        Some(cb) => cb(wid, captured_boundary_id, captured_bearer_gen, req_seq, herr)
                         None => match self.on_unauthorized_err {
                           Some(cb) => cb(herr)
                           None => ()
@@ -1628,7 +1628,7 @@ pub fn CloudSync::start_events_ws(
                         self.trigger_me_reconcile()
                       } else if herr.status == 401 {
                         match self.on_workspace_unauthorized {
-                          Some(cb) => cb(wid, captured_boundary_id, captured_bearer_gen, herr)
+                          Some(cb) => cb(wid, captured_boundary_id, captured_bearer_gen, req_seq, herr)
                           None => match self.on_unauthorized_err {
                             Some(cb) => cb(herr)
                             None => ()

@@ -69,7 +69,7 @@ struct RuntimeSession {
   mesh_transports : Map[String, sync::MeshStationTransport]
   desired_mesh_stations : Map[String, DesiredMeshStation]
   inflight_ws_confirm : Map[String, Bool]
-  pending_live_ws_replay : Map[String, Bool]
+  pending_live_ws_replay_seq : Map[String, Int64]
   ws_confirm_401_rotated_count : Map[String, Int]
   ws_confirm_401_inflight_gen : Map[String, Int64]
   ws_confirm_401_transient_count : Map[String, Int]
@@ -1375,8 +1375,7 @@ fn ws_confirm_401_key(ws_id : String, boundary_id : Int64) -> String {
   ws_id + "|" + boundary_id.to_string()
 }
 
-fn clear_ws_confirm_401_state(sess : RuntimeSession, ws_id : String) -> Unit {
-  sess.pending_live_ws_replay.remove(ws_id)
+fn clear_ws_confirm_401_counters(sess : RuntimeSession, ws_id : String) -> Unit {
   let prefix = ws_id + "|"
   let rks = sess.ws_confirm_401_rotated_count.keys()
   for i in 0..<rks.length() {
@@ -1398,8 +1397,35 @@ fn clear_ws_confirm_401_state(sess : RuntimeSession, ws_id : String) -> Unit {
   }
 }
 
+fn record_live_ws_replay(sess : RuntimeSession, ws_id : String, req_seq : Int64) -> Unit {
+  let prev = match sess.pending_live_ws_replay_seq.get(ws_id) {
+    Some(s) => s
+    None => 0L
+  }
+  let next = if req_seq > prev { req_seq } else { prev }
+  sess.pending_live_ws_replay_seq.set(ws_id, next)
+}
+
+fn clear_ws_confirm_401_state(
+  sess : RuntimeSession,
+  ws_id : String,
+  committed_req_seq : Int64 = -1L,
+) -> Unit {
+  clear_ws_confirm_401_counters(sess, ws_id)
+  if committed_req_seq < 0L {
+    sess.pending_live_ws_replay_seq.remove(ws_id)
+  } else {
+    match sess.pending_live_ws_replay_seq.get(ws_id) {
+      Some(pending_seq) => if committed_req_seq >= pending_seq {
+        sess.pending_live_ws_replay_seq.remove(ws_id)
+      }
+      None => ()
+    }
+  }
+}
+
 fn clear_all_ws_confirm_401_state(sess : RuntimeSession) -> Unit {
-  sess.pending_live_ws_replay.clear()
+  sess.pending_live_ws_replay_seq.clear()
   sess.ws_confirm_401_rotated_count.clear()
   sess.ws_confirm_401_inflight_gen.clear()
   sess.ws_confirm_401_transient_count.clear()
@@ -1453,60 +1479,71 @@ fn needs_workspace_cloud_confirm(sess : RuntimeSession, ws_id : String) -> Bool 
 /// `bump_cred_epoch`), gated on live `bearer_gen`, deduplicated per-bearer in-flight, and split
 /// between post-rotation persistent 401 budget (max 2 rotations/boundary) vs transient refresh
 /// failure backoff (max 2 bounded retries, never locking out the current bearer).
-/// Any live workspace detail 401 records `pending_live_ws_replay[ws_id] = true` (regardless of
-/// `boundary_id`) and keeps it live until `commit_cloud_workspace` succeeds (`Ok(true)`) or
-/// circuit-breaker / session reset clears it.
+/// Any live workspace detail 401 monotonically records `max(prev, req_seq)` into
+/// `pending_live_ws_replay_seq[ws_id]` and keeps it live until a `commit_cloud_workspace` with
+/// `committed_req_seq >= pending_seq` succeeds (`Ok(true)`) or circuit-breaker / session reset clears it.
 fn handle_workspace_confirm_401(
   sess : RuntimeSession,
   ws_id : String,
   orig_boundary_id : Int64,
   orig_bearer_gen : Int64,
   orig_session_gen : Int64,
+  req_seq : Int64,
 ) -> Unit {
   if sess.stopped || sess.session_gen != orig_session_gen || sess.core.membership.is_session_invalidated() {
     return
   }
   if !sess.core.can_read_workspace(ws_id) {
-    sess.pending_live_ws_replay.remove(ws_id)
+    sess.pending_live_ws_replay_seq.remove(ws_id)
     return
   }
   let cur_boundary_id = sess.core.membership.pending_auth_boundary_id(ws_id)
   // Late 401 from an older bearer after another workspace/call already rotated `sess.bearer_gen`:
-  // NEVER consume rotation budget or trigger another refresh; keep `pending_live_ws_replay` and
+  // NEVER consume rotation budget or trigger another refresh; keep `pending_live_ws_replay_seq` and
   // immediately replay once with the live bearer (deduped by `dkey` containing `sess.bearer_gen`).
   if orig_bearer_gen != sess.bearer_gen {
     let cur_bkey = ws_confirm_401_key(ws_id, cur_boundary_id)
     let cur_rot = match sess.ws_confirm_401_rotated_count.get(cur_bkey) { Some(c) => c; None => 0 }
     if cur_rot >= 2 {
-      sess.pending_live_ws_replay.remove(ws_id)
+      sess.pending_live_ws_replay_seq.remove(ws_id)
       return
     }
-    sess.pending_live_ws_replay.set(ws_id, true)
+    record_live_ws_replay(sess, ws_id, req_seq)
     trigger_workspace_confirm_fetch(sess, ws_id)
     return
   }
-  // Stale 401 from an older confirmation boundary MUST NOT touch current boundary budget!
+  // Same-bearer 401 crossing a live boundary change (e.g. role upgrade `boundary_1 -> 0L` or
+  // newer downgrade): NEVER consume `cur_boundary_id`'s rotation budget; retain the readable
+  // workspace detail demand and re-issue once under `cur_boundary_id`.
   if cur_boundary_id != orig_boundary_id {
+    let cur_bkey = ws_confirm_401_key(ws_id, cur_boundary_id)
+    let cur_rot = match sess.ws_confirm_401_rotated_count.get(cur_bkey) { Some(c) => c; None => 0 }
+    if cur_rot >= 2 {
+      sess.pending_live_ws_replay_seq.remove(ws_id)
+      return
+    }
+    record_live_ws_replay(sess, ws_id, req_seq)
+    trigger_workspace_confirm_fetch(sess, ws_id)
     return
   }
   let bkey = ws_confirm_401_key(ws_id, orig_boundary_id)
   match sess.ws_confirm_401_inflight_gen.get(bkey) {
     Some(g) => if g == orig_bearer_gen {
-      sess.pending_live_ws_replay.set(ws_id, true)
+      record_live_ws_replay(sess, ws_id, req_seq)
       return
     }
     None => ()
   }
   let rotated_cnt = match sess.ws_confirm_401_rotated_count.get(bkey) { Some(c) => c; None => 0 }
   if rotated_cnt >= 2 {
-    sess.pending_live_ws_replay.remove(ws_id)
+    sess.pending_live_ws_replay_seq.remove(ws_id)
     return
   }
   let sub_now = sess.core.membership.effective_sub()
   if sub_now.length() == 0 {
     return
   }
-  sess.pending_live_ws_replay.set(ws_id, true)
+  record_live_ws_replay(sess, ws_id, req_seq)
   sess.ws_confirm_401_inflight_gen.set(bkey, orig_bearer_gen)
   runtime_refresh_account_token(sess, sub_now, fn(res : Result[String, String]) -> Unit {
     match sess.ws_confirm_401_inflight_gen.get(bkey) {
@@ -1532,7 +1569,7 @@ fn handle_workspace_confirm_401(
         // or permanently lock out `orig_bearer_gen`; schedule bounded backoff retry (<= 2 tries).
         let t_cnt = match sess.ws_confirm_401_transient_count.get(bkey) { Some(c) => c; None => 0 }
         let want_retry = needs_workspace_cloud_confirm(sess, ws_id) ||
-          sess.pending_live_ws_replay.get(ws_id).is_some()
+          sess.pending_live_ws_replay_seq.get(ws_id).is_some()
         if t_cnt < 2 && sess.bearer_gen == orig_bearer_gen && want_retry {
           sess.ws_confirm_401_transient_count.set(bkey, t_cnt + 1)
           let delay_ms = if t_cnt == 0 { 150 } else { 400 }
@@ -1543,7 +1580,7 @@ fn handle_workspace_confirm_401(
                 effect::Exit::Interrupted => rfk(effect::Exit::Interrupted)
                 _ => {
                   let still_want = needs_workspace_cloud_confirm(sess, ws_id) ||
-                    sess.pending_live_ws_replay.get(ws_id).is_some()
+                    sess.pending_live_ws_replay_seq.get(ws_id).is_some()
                   if !sess.stopped &&
                     sess.session_gen == orig_session_gen &&
                     !sess.core.membership.is_session_invalidated() &&
@@ -1603,13 +1640,13 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
               effect::Exit::Succeeded(Ok(cws)) => {
                 match sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=captured_cred_epoch) {
                   Ok(true) => {
-                    clear_ws_confirm_401_state(sess, ws_id)
+                    clear_ws_confirm_401_state(sess, ws_id, committed_req_seq=req_seq)
                     emit_topic_refresh(sess, "workspace")
                     emit_topic_refresh(sess, "stations")
                   }
                   Ok(false) => {
                     if (needs_workspace_cloud_confirm(sess, ws_id) ||
-                        sess.pending_live_ws_replay.get(ws_id).is_some()) &&
+                        sess.pending_live_ws_replay_seq.get(ws_id).is_some()) &&
                       (ws_confirm_base_seq(sess, ws_id) > base_seq ||
                         sess.core.membership.cred_epoch_of(ws_id) > captured_cred_epoch) {
                       trigger_workspace_confirm_fetch(sess, ws_id)
@@ -1622,7 +1659,7 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
                 if herr.status == 403 || herr.status == 404 {
                   cs.trigger_me_reconcile()
                 } else if herr.status == 401 {
-                  handle_workspace_confirm_401(sess, ws_id, captured_boundary_id, orig_bearer_gen, orig_gen)
+                  handle_workspace_confirm_401(sess, ws_id, captured_boundary_id, orig_bearer_gen, orig_gen, req_seq)
                 }
               }
               _ => ()
@@ -1678,13 +1715,13 @@ fn requeue_pending_cloud_confirmations(sess : RuntimeSession) -> Unit {
       trigger_workspace_confirm_fetch(sess, wid)
     }
   }
-  // Keep `pending_live_ws_replay` alive across dispatch so a mid-replay `/v1/me` fence (`Ok(false)`)
-  // automatically continues with the updated `base_seq` until `commit_cloud_workspace` returns `Ok(true)`!
-  let live_ks = sess.pending_live_ws_replay.keys()
+  // Keep `pending_live_ws_replay_seq` alive across dispatch so a mid-replay `/v1/me` fence (`Ok(false)`)
+  // or an older in-flight commit (`committed_req_seq < pending_seq`) never retires the newer replay demand!
+  let live_ks = sess.pending_live_ws_replay_seq.keys()
   for i in 0..<live_ks.length() {
     let wid = live_ks[i]
     if wid.length() == 0 || !sess.core.can_read_workspace(wid) {
-      sess.pending_live_ws_replay.remove(wid)
+      sess.pending_live_ws_replay_seq.remove(wid)
     } else if replayed.get(wid).is_none() {
       trigger_workspace_confirm_fetch(sess, wid)
     }
@@ -1738,14 +1775,14 @@ fn wire_live_cloud_sync(
       }
       match sess.core.commit_cloud_workspace(ws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=cap_ep) {
         Ok(true) => {
-          clear_ws_confirm_401_state(sess, ws.id)
+          clear_ws_confirm_401_state(sess, ws.id, committed_req_seq=req_seq)
           emit_topic_refresh(sess, "workspaces")
           emit_topic_refresh(sess, "workspace")
           emit_topic_refresh(sess, "stations")
           emit_topic_refresh(sess, "chats")
         }
         Ok(false) => {
-          if needs_workspace_cloud_confirm(sess, ws.id) || sess.pending_live_ws_replay.get(ws.id).is_some() {
+          if needs_workspace_cloud_confirm(sess, ws.id) || sess.pending_live_ws_replay_seq.get(ws.id).is_some() {
             trigger_workspace_confirm_fetch(sess, ws.id)
           }
         }
@@ -1761,8 +1798,8 @@ fn wire_live_cloud_sync(
         runtime_refresh_account_token(sess, active_sub, fn(_ : Result[String, String]) -> Unit {})
       }
     }),
-    on_workspace_unauthorized=Some(fn(wid : String, b_id : Int64, b_gen : Int64, _herr : sync::CloudHttpError) -> Unit {
-      handle_workspace_confirm_401(sess, wid, b_id, b_gen, sess.session_gen)
+    on_workspace_unauthorized=Some(fn(wid : String, b_id : Int64, b_gen : Int64, r_seq : Int64, _herr : sync::CloudHttpError) -> Unit {
+      handle_workspace_confirm_401(sess, wid, b_id, b_gen, sess.session_gen, r_seq)
     }),
   )
   cs.set_workspace_auth_context_getters(
@@ -2636,7 +2673,7 @@ pub extern "C" fn pion_core_runtime_start(
     mesh_transports: Map::new(),
     desired_mesh_stations: Map::new(),
     inflight_ws_confirm: Map::new(),
-    pending_live_ws_replay: Map::new(),
+    pending_live_ws_replay_seq: Map::new(),
     ws_confirm_401_rotated_count: Map::new(),
     ws_confirm_401_inflight_gen: Map::new(),
     ws_confirm_401_transient_count: Map::new(),
@@ -2674,7 +2711,7 @@ pub extern "C" fn pion_core_runtime_start(
   core.set_on_auth_key_confirmed(fn(ws : String, key : String) -> Unit {
     if key.starts_with("workspace:") {
       if ws.length() > 0 {
-        clear_ws_confirm_401_state(sess, ws)
+        clear_ws_confirm_401_counters(sess, ws)
       }
       emit_topic_refresh(sess, "workspace")
       emit_topic_refresh(sess, "settings")
@@ -3388,7 +3425,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                           // Reconcile via `/v1/me` on 403/404; NEVER directly call `drop_workspace`!
                           cs.trigger_me_reconcile()
                         } else if herr.status == 401 {
-                          handle_workspace_confirm_401(sess, wid, ws_boundary_id, ws_bearer_gen, req_session_gen)
+                          handle_workspace_confirm_401(sess, wid, ws_boundary_id, ws_bearer_gen, req_session_gen, ws_seq)
                         }
                         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: herr.message })
                         let (out_j, out_b) = protocol::encode_core_event(ev)
@@ -3403,7 +3440,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                           }
                           Ok(false) => {
                             // Explicitly treat rejected/stale workspace commit as stale without returning rejected metadata!
-                            if needs_workspace_cloud_confirm(sess, ws.id) || sess.pending_live_ws_replay.get(ws.id).is_some() {
+                            if needs_workspace_cloud_confirm(sess, ws.id) || sess.pending_live_ws_replay_seq.get(ws.id).is_some() {
                               trigger_workspace_confirm_fetch(sess, ws.id)
                             }
                             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
@@ -3419,7 +3456,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                             emit_topic_refresh(sess, "workspaces")
                           }
                           Ok(true) => {
-                            clear_ws_confirm_401_state(sess, ws.id)
+                            clear_ws_confirm_401_state(sess, ws.id, committed_req_seq=ws_seq)
                             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
                               ("sub", base_codec::json_str(me.sub)),
                               ("email", base_codec::json_str(me.email)),
