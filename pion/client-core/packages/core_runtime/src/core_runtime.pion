@@ -73,6 +73,7 @@ struct RuntimeSession {
   mut origin : String
   mut session_gen : Int64
   mut login_gen : Int64
+  mut active_account_gen : Int64
   mut bearer_gen : Int64
   mut stopped : Bool
   mut device_conn_seq : Int64
@@ -80,6 +81,8 @@ struct RuntimeSession {
   mut desired_live_sync : Bool
   mut reconcile_requeue_pending : Bool
   mut accounts_dir_sync_needed : Bool
+  mut startup_sync_pending : Bool
+  mut startup_sync_fiber : Option[effect::Fiber[Unit]]
   mut device_app : String
   mut device_locale : String
 }
@@ -1202,6 +1205,7 @@ fn runtime_switch_to_unauth_memory_db(
   }
   sess.cloud = None
   sess.live_sync_enabled = false
+  sess.active_account_gen += 1L
   clear_runtime_ephemeral_caches(sess)
 
   let old_db = sess.db
@@ -1907,11 +1911,13 @@ pub extern "C" fn pion_core_runtime_start(
   }
   // Startup directory durability fence (Codex P1-4): confirm `<dir>` metadata is synced BEFORE
   // reading `<dir>/accounts` so any prior `-2` rename/unlink is durable before any token is used.
-  // If `<dir>` cannot be fsynced at all, fail closed into unauthenticated `:memory:`!
-  let accounts = if sync_accounts_dir(dir) == 0 {
+  // If `<dir>` cannot be fsynced transiently, stay fail-closed in `:memory:` and arm an in-instance
+  // exponential-backoff retry fiber until `sync_accounts_dir` succeeds.
+  let startup_dir_sync_ok = sync_accounts_dir(dir) == 0
+  let accounts = if startup_dir_sync_ok {
     read_accounts_file_sync(dir)
   } else {
-    log_runtime_warn("startup data_dir fsync failed; staying fail-closed unauthenticated")
+    log_runtime_warn("startup data_dir fsync failed; staying fail-closed unauthenticated with backoff retry")
     []
   }
   let prefs_map : Map[String, base_codec::Json] = Map::new()
@@ -2259,6 +2265,7 @@ pub extern "C" fn pion_core_runtime_start(
     origin: origin,
     session_gen: 1L,
     login_gen: 1L,
+    active_account_gen: 1L,
     bearer_gen: 1L,
     stopped: false,
     device_conn_seq: device_conn_seq,
@@ -2266,6 +2273,8 @@ pub extern "C" fn pion_core_runtime_start(
     desired_live_sync: false,
     reconcile_requeue_pending: false,
     accounts_dir_sync_needed: false,
+    startup_sync_pending: !startup_dir_sync_ok,
+    startup_sync_fiber: None,
     device_app: "desktop",
     device_locale: "",
   }
@@ -2426,7 +2435,215 @@ pub extern "C" fn pion_core_runtime_start(
   g_session[0] = Some(sess)
   // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
   let _ = core.emit_auth_handshake()
+  if sess.startup_sync_pending {
+    start_startup_dir_sync_retry(sess)
+    let _ = sess.core.rt.run_ready()
+  }
   1
+}
+
+fn cancel_startup_dir_sync_retry(sess : RuntimeSession) -> Unit {
+  sess.startup_sync_pending = false
+  match sess.startup_sync_fiber {
+    Some(f) => f.interrupt()
+    None => ()
+  }
+  sess.startup_sync_fiber = None
+}
+
+fn startup_dir_sync_retry_step(
+  sess : RuntimeSession,
+  start_account_gen : Int64,
+  delay_ms : Int,
+  fk : (effect::Exit[Unit]) -> Unit,
+) -> Unit {
+  if sess.stopped || !sess.startup_sync_pending || sess.active_account_gen != start_account_gen || sess.core.db_account_sub.is_some() {
+    sess.startup_sync_fiber = None
+    fk(effect::Exit::Succeeded(()))
+    return
+  }
+  // timer: retry after a failure, with a backoff
+  effect::sleep_k(delay_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+    match sex {
+      effect::Exit::Interrupted => {
+        sess.startup_sync_fiber = None
+        fk(effect::Exit::Interrupted)
+        return
+      }
+      _ => ()
+    }
+    if sess.stopped || !sess.startup_sync_pending || sess.active_account_gen != start_account_gen || sess.core.db_account_sub.is_some() {
+      sess.startup_sync_fiber = None
+      fk(effect::Exit::Succeeded(()))
+      return
+    }
+    let next_delay = if delay_ms * 2 > 2000 { 2000 } else { delay_ms * 2 }
+    if sync_accounts_dir(sess.dir) != 0 {
+      startup_dir_sync_retry_step(sess, start_account_gen, next_delay, fk)
+      return
+    }
+    let raw_doc = match read_accounts_file_state(sess.dir) {
+      sync::HostStorageRead::Found(j) => filter_rejected_tuples_from_doc(sess.rejected_tuples_in_memory, j)
+      sync::HostStorageRead::Absent => {
+        sess.startup_sync_pending = false
+        sess.startup_sync_fiber = None
+        fk(effect::Exit::Succeeded(()))
+        return
+      }
+      sync::HostStorageRead::ReadError(_) => {
+        startup_dir_sync_retry_step(sess, start_account_gen, next_delay, fk)
+        return
+      }
+    }
+    let recovered = parse_stored_accounts(raw_doc)
+    if recovered.length() == 0 {
+      sess.startup_sync_pending = false
+      sess.startup_sync_fiber = None
+      fk(effect::Exit::Succeeded(()))
+      return
+    }
+    let a0 = recovered[0]
+    runtime_stage_account_db_k(sess, a0.sub, fn(stage_res : Result[Option[StagedAccountDb], String]) -> Unit {
+      let staged_opt = match stage_res {
+        Ok(s) => s
+        Err(_) => {
+          startup_dir_sync_retry_step(sess, start_account_gen, next_delay, fk)
+          return
+        }
+      }
+      if sess.stopped || !sess.startup_sync_pending || sess.active_account_gen != start_account_gen || sess.core.db_account_sub.is_some() {
+        close_staged_db(staged_opt)
+        sess.startup_sync_fiber = None
+        fk(effect::Exit::Succeeded(()))
+        return
+      }
+      match staged_opt {
+        Some(st) => {
+          let new_db = st.new_db
+          let _ = store::put_account_doc(new_db, "conn_seq", sess.device_conn_seq.to_string())
+          match store::get_device_prefs(new_db) {
+            sql::SqlResult::Ok(pj) => match base_codec::json_get(pj, "lang") {
+              Some(base_codec::Json::Str(s)) => { sess.core.lang = if s == "en" { "en" } else { "zh" } }
+              _ => ()
+            }
+            _ => ()
+          }
+          clear_runtime_ephemeral_caches(sess)
+          let old_db = sess.db
+          match sess.core.switch_account_db(
+            new_db,
+            a0.sub,
+            host_purges_shared=st.host_purges_shared,
+            host_purges_read=Some(st.host_purges_read),
+            emit_auth_boundary=false,
+          ) {
+            Err(_) => {
+              new_db.close()
+              startup_dir_sync_retry_step(sess, start_account_gen, next_delay, fk)
+              return
+            }
+            Ok(_) => ()
+          }
+          sess.db = new_db
+          old_db.close()
+          match st.person_lock_opt {
+            Some(pjson) => { let _ = sess.core.load_person_lock_json(pjson, a0.sub) }
+            None => ()
+          }
+          let target_ws = resolve_account_default_workspace(new_db, sess.prefs, core_opt=Some(sess.core))
+          let target_st = resolve_default_station_for_ws(new_db, target_ws)
+          sess.core.rebind_default_station(target_st, target_ws)
+        }
+        None => ()
+      }
+      sess.startup_sync_pending = false
+      sess.startup_sync_fiber = None
+      sess.accounts_dir_sync_needed = false
+      sess.active_account_gen += 1L
+      let _ = bump_runtime_session_gen(sess)
+      sess.bearer_gen += 1L
+      let stored_list : Array[views::StoredAccount] = []
+      let sessions_map : Map[String, String] = Map::new()
+      for i in 0..<recovered.length() {
+        let ai = recovered[i]
+        stored_list.push(views::StoredAccount::{
+          sub: ai.sub,
+          email: ai.email,
+          name: ai.name,
+          picture: ai.picture,
+          access: ai.access,
+          refresh: ai.refresh,
+          access_expires: ai.access_expires,
+        })
+        if ai.session.length() > 0 {
+          sessions_map.set(ai.sub, ai.session)
+        }
+      }
+      sync_mem_accounts_from_list(sess, stored_list, sessions_map)
+      let verified_role = match sess.core.membership.role_of(sess.core.workspace) {
+        Some(r) => if sync::is_valid_workspace_role(r) { r } else { "member" }
+        None => "member"
+      }
+      sess.core.set_viewer(a0.email, sub=a0.sub, role=verified_role)
+      let _ = store::put_account_doc(
+        sess.db,
+        "accounts",
+        base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+      )
+      if a0.access.length() > 0 && sess.origin.length() > 0 {
+        let cs = match sess.cloud {
+          Some(existing) => {
+            existing.switch_db(sess.db)
+            let _ = existing.bind_account_context(a0.sub, session=a0.session)
+            existing.set_origin_and_token("", a0.access)
+            existing
+          }
+          None => {
+            let created = sync::CloudSync::new(
+              sess.sh,
+              sess.db,
+              sess.origin,
+              token=a0.access,
+              bound_sub=a0.sub,
+              bound_session=a0.session,
+            )
+            wire_live_cloud_sync(sess, created, a0.sub, a0.session)
+            sess.cloud = Some(created)
+            created
+          }
+        }
+        if cs.origin().length() > 0 {
+          cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+        }
+      }
+      if is_loopback_http_url(sess.origin) {
+        let http_tr = sync::shell_http_transport(sess.sh, sess.origin)
+        sess.core.events.set_transport(http_tr)
+        sess.core.sync.set_transport(http_tr)
+      }
+      let _ = sess.core.auth.bump_all()
+      emit_topic_refresh(sess, "accounts")
+      emit_topic_refresh(sess, "workspaces")
+      emit_topic_refresh(sess, "workspace")
+      emit_topic_refresh(sess, "stations")
+      emit_topic_refresh(sess, "chats")
+      emit_topic_refresh(sess, "notify")
+      emit_topic_refresh(sess, "lock")
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+}
+
+/// Bounded exponential-backoff recovery when startup `sync_accounts_dir` transiently fails (Codex P1-4):
+/// stays fail-closed in `:memory:` until `sync_accounts_dir` succeeds, then opens & mounts the persisted
+/// active account in-place. Guards against committed login/logout via `sess.active_account_gen` (never
+/// cancelled by `auth.begin`/`auth.cancel`), and interrupts immediately on `stop()`.
+fn start_startup_dir_sync_retry(sess : RuntimeSession) -> Unit {
+  let start_account_gen = sess.active_account_gen
+  let fib = sess.core.rt.fork_quiet_named("startup-dir-sync-retry", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    startup_dir_sync_retry_step(sess, start_account_gen, 100, fk)
+  })
+  sess.startup_sync_fiber = Some(fib)
 }
 
 fn affected_topic_for_call(call_name : String) -> Option[String] {
@@ -2818,6 +3035,20 @@ fn finish_verified_auth_complete_k(
       done()
       return
     }
+    match sess.core.db_account_sub {
+      Some(existing) => if existing != new_stored.sub {
+        close_staged_db(staged_opt)
+        let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+          code: "account_sub_mismatch",
+          message: "account_sub_mismatch: expected " + existing + ", got " + new_stored.sub,
+        })
+        let (out_j, out_b) = protocol::encode_core_event(ev)
+        emit_wire(out_j, payload=out_b)
+        done()
+        return
+      }
+      None => ()
+    }
     // Step 2: Under single-owner `refresh_coord` lock, verify `login_gen` & `db_account_sub` and
     // atomically commit `[new_stored, ...others]` to `<dir>/accounts` (handling `-1` vs `-2` cleanly
     // so memory and visible disk stay 100% consistent!).
@@ -2843,12 +3074,18 @@ fn finish_verified_auth_complete_k(
             sess.accounts_dir_sync_needed = false
             wk(Ok(()))
           } else {
-            // Try rolling back `<dir>/accounts` to the pre-login snapshot:
-            // - If rollback returns `0` (confirmed restored): return `storage_error` (memory == disk).
-            // - If rollback ALSO fails (new verified login remains visible on disk): keep memory in sync
-            //   by activating with `accounts_dir_sync_needed = true` + warning (next refresh fences via `sync_dir`)!
+            // Try rolling back `<dir>/accounts` to the filtered pre-login snapshot (never re-writing
+            // any 401-rejected tuple from `rejected_tuples_in_memory`, without exempting `new_stored.sub`):
+            // - `0`: rollback confirmed durable on disk -> fail closed (`storage_error`).
+            // - `-2`: rollback rename/unlink succeeded visibly on disk (only dir fsync failed) -> disk
+            //   now visibly holds the pre-login state, NEVER publish the unconfirmed new login!
+            // - `-1`: rollback failed BEFORE rename/unlink -> the newly verified login remains visibly
+            //   on disk, so activate it with `accounts_dir_sync_needed = true` to match visible disk.
             let rb_rc = match prev_accounts_snap[0] {
-              Some(sync::HostStorageRead::Found(prev_j)) => write_accounts_file_raw(sess.dir, prev_j)
+              Some(sync::HostStorageRead::Found(prev_j)) => {
+                let clean_prev = filter_rejected_tuples_from_doc(sess.rejected_tuples_in_memory, prev_j)
+                write_accounts_file_raw(sess.dir, clean_prev)
+              }
               Some(sync::HostStorageRead::Absent) => {
                 let dbs = sess.dir.to_bytes()
                 let r = pion_core_accounts_remove_atomic(bytes_data_ptr(dbs), dbs.length().to_int64())
@@ -2859,6 +3096,9 @@ fn finish_verified_auth_complete_k(
             }
             if rb_rc == 0 {
               sess.accounts_dir_sync_needed = false
+              wk(Err("dir_fsync_uncertain"))
+            } else if rb_rc == -2 {
+              sess.accounts_dir_sync_needed = true
               wk(Err("dir_fsync_uncertain"))
             } else {
               log_runtime_warn("auth.complete dir fsync & rollback failed; keeping verified login active with pending dir sync")
@@ -2960,7 +3200,9 @@ fn finish_verified_auth_complete_k(
                 sess.core.membership.clear_session_invalidated()
               }
             }
+            cancel_startup_dir_sync_retry(sess)
             sess.login_gen += 1L
+            sess.active_account_gen += 1L
             let _ = bump_runtime_session_gen(sess)
             sess.bearer_gen += 1L
             sync_mem_accounts_from_list(sess, all_accts, all_sessions)
@@ -3828,6 +4070,7 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
   match g_session[0] {
     Some(sess) => {
       sess.stopped = true
+      cancel_startup_dir_sync_retry(sess)
       let _ = bump_runtime_session_gen(sess)
       sess.live_sync_enabled = false
       sess.desired_live_sync = false

@@ -1155,7 +1155,9 @@ int main(void) {
         atomic_store(&g_host.stopped, 1);
         mb_core_stop();
 
-        // 10b: Startup `sync_accounts_dir` fail-closed + native verified login Ed25519 lock-root hydration!
+        // 10b: Startup `sync_accounts_dir` transient fail-closed + `auth.complete` `-2` rollback `-2`
+        //      refuses publishing new login (P1-1) + same-instance backoff auto-recovery (P1-4) +
+        //      native verified login Ed25519 lock-root hydration!
         const char *alice_only_b =
             "[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
             "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
@@ -1175,16 +1177,52 @@ int main(void) {
         send_json("{\"id\":706,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
         char *m_sync_fail = wait_for_matching_msg(&g_host, "\"id\":706,", NULL, 10);
         assert(strstr(m_sync_fail, "persisted-alice-draft") == NULL);
-        atomic_store(&g_host.stopped, 1);
-        mb_core_stop();
-        pion_core_test_set_fail_dir_fsync(0);
 
-        // Boot Alice cleanly, pin real Ed25519 genesis on `WS1_ID` via `GET /lock`, then 401 -> `:memory:` ->
-        // real verified `auth.complete` (with `GET /lock` disabled = 404!) and verify `lock.status` STILL
-        // reports `locked:true` + exact pinned genesis hash hydrated from `account-u-live.db`!
-        reset_host_ctx(&g_host);
-        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
-        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        // `auth.begin` + `auth.cancel` while startup sync is pending MUST NOT cancel startup backoff retry!
+        send_json("{\"id\":7061,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":7061,", "\"state\":\"", 10);
+        send_json("{\"id\":7062,\"call\":\"auth.cancel\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":7062,", "\"ok\":", 10);
+
+        // P1-1 E2E: `auth.complete` while dir fsync fails (`-2` write -> `-2` rollback visibly restores Alice):
+        // MUST return `storage_error` and NEVER activate Bob!
+        send_json("{\"id\":7063,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+        char *m_rb_b = wait_for_matching_msg(&g_host, "\"id\":7063,", "\"state\":\"", 10);
+        const char *rbp = strstr(m_rb_b, "\"state\":\"");
+        assert(rbp != NULL);
+        rbp += 9;
+        char rb_state[128];
+        size_t rbi = 0;
+        while (rbp[rbi] != '\0' && rbp[rbi] != '"' && rbi + 1 < sizeof(rb_state)) {
+            rb_state[rbi] = rbp[rbi];
+            rbi++;
+        }
+        rb_state[rbi] = '\0';
+        char rb_comp[512];
+        snprintf(rb_comp, sizeof(rb_comp),
+                 "{\"id\":7064,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_bob\"}}",
+                 rb_state);
+        send_json(rb_comp);
+        wait_for_matching_msg(&g_host, "\"id\":7064,", "\"storage_error\"", 10);
+
+        // P1-4 E2E: Clear transient dir fsync failure WITHOUT restarting this running core instance!
+        // The in-instance backoff retry fiber MUST automatically mount Alice and restore `account.doc("me")`,
+        // `workspaces.list`, and `persisted-alice-draft`!
+        send_json("{\"id\":7065,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}");
+        wait_for_matching_msg(&g_host, "\"id\":7065,", "\"value\":[]", 10);
+        pion_core_test_set_fail_dir_fsync(0);
+        wait_for_matching_msg(&g_host, "\"id\":7065,", "alice@still.fail", 10);
+        send_json("{\"id\":7066,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}");
+        char *m_rec_me = wait_for_matching_msg(&g_host, "\"id\":7066,", "alice@still.fail", 10);
+        assert(strstr(m_rec_me, "\"ok\":null") == NULL);
+        send_json("{\"id\":7067,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":7067,", "persisted-alice-draft", 10);
+        send_json("{\"id\":7068,\"call\":\"workspaces.list\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":7068,", WS1_ID, 10);
+
+        // Persist `workspace = WS1_ID` pref on the recovered Alice instance, then restart with `serve_ws1_lock = 1`
+        // to pin real Ed25519 genesis on `WS1_ID` via `GET /lock`, then 401 -> `:memory:` -> real verified
+        // `auth.complete` (with `GET /lock` disabled = 404!) and verify `lock.status` STILL reports `locked:true`!
         send_json("{\"id\":707,\"call\":\"prefs.set\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
         wait_for_matching_msg(&g_host, "\"id\":707,", "\"ok\":", 10);
         atomic_store(&g_host.stopped, 1);
