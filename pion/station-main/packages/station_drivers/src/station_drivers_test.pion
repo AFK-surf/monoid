@@ -473,18 +473,6 @@ test "drivers: all 11 runtimes argv, env, MCP injection, and subagent silent gua
   }
   expect(str_contains(cop_setup, "\"silent\"") && str_contains(cop_setup, "chat_post"), "copilot silent config carries SPEAKS")
 
-  let guest_profile = Profile::{ ..p_cop, borrowed: true }
-  let guest = OpenOptions::{ ..o_cop, profile: guest_profile, copilot_token: None }
-  let lent = match build_driver_launch(RuntimeKind::Copilot, guest) {
-    Ok(spec) => spec
-    Err(e) => panic(e)
-  }
-  expect(!opt_str_is_some(env_get(lent.env, "STILLFAIL_COPILOT_TOKEN")), "borrowed driver has no GitHub login")
-  match lent.setup_json {
-    Some(line) => expect(str_contains(line, "\"borrowed\"") && str_contains(line, "chat:c-5"), "borrowed bridge uses the session door")
-    None => panic("missing borrowed setup")
-  }
-
   // 6) Pi
   let p_pi = make_profile("p-pi", Some(RuntimeKind::Pi), "/homes/pi", true, false, Some("deepseek-r2"), AccessKind::OpencodeGo, "ocg-key", None, None, [], None)
   let o_pi = make_opts("chat:c-6", p_pi, "/ws/6", "http://127.0.0.1:9000/mcp", "tok-pi", None, Some("high"), None, None, false, "", false, [], None, None, None)

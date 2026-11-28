@@ -24,7 +24,6 @@ import { PiDriver } from "../agents/pi.ts";
 import { AGY_TOOL_BUDGET, AgyDriver, agyRenew } from "../agents/agy.ts";
 import { type RuntimeKind, runtimeKind } from "../agents/runtime.ts";
 import { DevinDriver } from "../agents/devin.ts";
-import { copilotDoor } from "../share/copilot-door.ts";
 import { CopilotDriver } from "../agents/copilot.ts";
 import { Jobs, notifyEndpoint, screenEndpoint } from "../jobs/jobs.ts";
 import { liveMemory } from "../jobs/memory.ts";
@@ -285,7 +284,7 @@ export const AgentsLive = (control: Control) =>
       // What other stations of the workspace share with this one, and what it shares (made below, once the accounts are).
       let sharing: Sharing | null = null;
       const borrowed = (p: unknown) => sharing?.borrowedSubscription(p) === true;
-      const copilot = new CopilotDriver({ data, lend: (p) => sharing!.lendCopilot(p) });
+      const copilot = new CopilotDriver({ data });
       const hermes = new HermesDriver({ data });
       const agy = new AgyDriver({ data, lent: { borrowed: (p) => borrowed(p), write: (p) => sharing!.lendAgy(p) } });
       // What the station before this one left, taken up (`start`): until then the codex app-servers its runners keep are
@@ -1053,14 +1052,6 @@ export const AgentsLive = (control: Control) =>
 
       let door: AgentsDoor | null = null;
       const peerRoute = () => peers.route;
-      parts.door(copilotDoor((key, id) => {
-        const row = store.getSession(key);
-        if (!row || row.archivedAt !== null || !bound() || !inItsWorkspace(key)) return undefined;
-        const profile = settings().profiles.find((p) => p.id === id);
-        if (!profile || !borrowed(profile) || profile.enabled === false || !allowedIn(profile, row.ws, homeWorkspace())) return undefined;
-        if (row.profile !== id || row.runtime !== "copilot") return undefined;
-        return row.token;
-      }, async (id) => sharing!.lendCopilot(settings().profiles.find((p) => p.id === id))));
       const partRoutes = () => parts.doorRoutes();
       let handing = false;
       // Taken up once the previous process is gone; then the door opens, and what was cut off resumes.
