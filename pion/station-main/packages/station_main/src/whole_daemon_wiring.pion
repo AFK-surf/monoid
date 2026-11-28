@@ -550,14 +550,25 @@ pub fn resolve_vault_lock_for_ws(
   }
   let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
   match cloud.locked(now_secs, ws=joined_ws) {
-    Some(eff) => if eff.waiting { None } else { eff.state }
-    None => {
-      let sources = build_personal_lock_sources(cloud, vault_store, known_members, ws, verify_fn)
-      if sources.chains.length() > 0 || sources.member_emails.keys().length() > 0 || sources.member_roles.keys().length() > 0 {
-        Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=verify_fn))
+    Some(eff) => {
+      if eff.waiting {
+        // 1:1 with Node `cloud/state.ts:677-684`: a moved chain in `waiting` state admits nobody
+        // but is STILL a non-null `LockState` so plain-vault decisions fail closed (never fail-open).
+        match eff.state {
+          Some(s) => Some(s)
+          None => Some(station_cloud::personal_vault_lock(ws, station_cloud::PersonalLockSources::empty(), verify_fn=verify_fn))
+        }
       } else {
-        None
+        // `None` only when the workspace lock is broken (`l.state === null` in Node).
+        eff.state
       }
+    }
+    None => {
+      // 1:1 with Node `cloud/state.ts:683` & `cloud/vault-lock.ts:32,130`: any joined workspace
+      // outside security mode ALWAYS returns a non-null personal `LockState` (even with empty
+      // sources, admitting nobody), so plain-vault decisions never fail-open on joined stations.
+      let sources = build_personal_lock_sources(cloud, vault_store, known_members, ws, verify_fn)
+      Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=verify_fn))
     }
   }
 }
@@ -758,11 +769,15 @@ pub fn wire_whole_core_runtime_hooks(
   core.api.hooks.on_screens_browser_open = None
   core.api.hooks.on_signins_op = None
   core.api.hooks.on_vault_decision_notify = Some(fn(session_key : String, notice : String) -> Unit {
-    let _ = notice
-    match core.api.hooks.on_session_changed {
-      Some(f) => f(session_key)
-      None => ()
-    }
+    station_whole::deliver_vault_decision_own_notice(
+      core.agents,
+      core.store,
+      core.api.events,
+      core.api.hooks,
+      session_key,
+      notice,
+      host_shim::wall_ms(),
+    )
   })
   core.api.hooks.on_logins_op = Some(fn(
     op : String,

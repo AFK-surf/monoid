@@ -2078,8 +2078,8 @@ let VAULT_PLAIN_AND_REQUESTS_SCHEMA : String =
 "  PRIMARY KEY (ws, id)\n" +
 ");\n" +
 "CREATE INDEX IF NOT EXISTS vault_requests_ws_status_id ON vault_requests (ws, status, id);\n" +
-"CREATE INDEX IF NOT EXISTS vault_requests_ws_owner ON vault_requests (ws, lower(json_extract(body, '$.owner')), id);\n" +
-"CREATE INDEX IF NOT EXISTS vault_requests_ws_vault ON vault_requests (ws, json_extract(body, '$.vault'), id);\n" +
+"CREATE INDEX IF NOT EXISTS vault_requests_ws_owner ON vault_requests (ws, lower(json_extract(body, '$.owner')), id) WHERE json_valid(body);\n" +
+"CREATE INDEX IF NOT EXISTS vault_requests_ws_vault ON vault_requests (ws, json_extract(body, '$.vault'), id) WHERE json_valid(body);\n" +
 "CREATE TABLE IF NOT EXISTS vault_grants (\n" +
 "  ws TEXT NOT NULL,\n" +
 "  id TEXT NOT NULL,\n" +
@@ -2494,11 +2494,27 @@ fn ensure_vault_plain_schema(db : sql_db::Db) -> Result[Unit, station_api::ApiEr
   }
 }
 
+/// One-time guarded schema check: startup (`WholeStore::open_primary_after_predecessor_gone`)
+/// runs the DDL once and sets `vault_plain_schema_ready = true`, so request paths never re-run
+/// synchronous `CREATE TABLE`/`CREATE INDEX` scans.
+fn ensure_vault_plain_schema_once(whole_store : WholeStore, db : sql_db::Db) -> Result[Unit, station_api::ApiError] {
+  if whole_store.vault_plain_schema_ready {
+    return Ok(())
+  }
+  match ensure_vault_plain_schema(db) {
+    Ok(_) => {
+      whole_store.vault_plain_schema_ready = true
+      Ok(())
+    }
+    Err(e) => Err(e)
+  }
+}
+
 pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainStorePort {
   VaultPlainStorePort::{
     list_items: fn(ws : String, owner : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
-      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match ensure_vault_plain_schema_once(whole_store, st.db) { Ok(_) => (), Err(e) => return Err(e) }
       match st.db.all("SELECT body FROM vault_plain WHERE ws = ?1 AND owner = ?2 ORDER BY id", [base_codec::json_str(ws), base_codec::json_str(owner)]) {
         Ok(rows) => {
           let out : Array[base_codec::Json] = []
@@ -2518,7 +2534,7 @@ pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainSt
     },
     get_item: fn(ws : String, id : String) -> Result[Option[base_codec::Json], station_api::ApiError] {
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
-      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match ensure_vault_plain_schema_once(whole_store, st.db) { Ok(_) => (), Err(e) => return Err(e) }
       match st.db.first("SELECT body FROM vault_plain WHERE ws = ?1 AND id = ?2", [base_codec::json_str(ws), base_codec::json_str(id)]) {
         Ok(Some(row)) => match row.get("body") {
           Some(base_codec::Json::Str(raw)) => match base_codec::json_parse(raw) {
@@ -2534,7 +2550,7 @@ pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainSt
     put_item: fn(ws : String, id : String, owner : String, version : Int, item : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
       let kept = vp_normalize_kept(ws, id, owner, version, item)
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
-      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match ensure_vault_plain_schema_once(whole_store, st.db) { Ok(_) => (), Err(e) => return Err(e) }
       match st.db.run(
         "INSERT INTO vault_plain (ws, id, owner, version, body) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT (ws, id) DO UPDATE SET version = excluded.version, body = excluded.body",
         [base_codec::json_str(ws), base_codec::json_str(id), base_codec::json_str(owner), base_codec::json_int(version), base_codec::json_str(base_codec::json_stringify(kept))],
@@ -2545,7 +2561,7 @@ pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainSt
     },
     get_lasts: fn(ws : String, owner : String) -> Result[Option[(String, Int64)], station_api::ApiError] {
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
-      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match ensure_vault_plain_schema_once(whole_store, st.db) { Ok(_) => (), Err(e) => return Err(e) }
       match st.db.first("SELECT lasts, at FROM vault_plain_lasts WHERE ws = ?1 AND owner = ?2", [base_codec::json_str(ws), base_codec::json_str(owner)]) {
         Ok(Some(row)) => {
           let l = match row.get("lasts") { Some(base_codec::Json::Str(s)) => s, _ => return Ok(None) }
@@ -2558,7 +2574,7 @@ pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainSt
     },
     set_lasts: fn(ws : String, owner : String, lasts : String, at : Int64) -> Result[Unit, station_api::ApiError] {
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
-      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match ensure_vault_plain_schema_once(whole_store, st.db) { Ok(_) => (), Err(e) => return Err(e) }
       match st.db.run(
         "INSERT INTO vault_plain_lasts (ws, owner, lasts, at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT (ws, owner) DO UPDATE SET lasts = excluded.lasts, at = excluded.at WHERE excluded.at >= vault_plain_lasts.at",
         [base_codec::json_str(ws), base_codec::json_str(owner), base_codec::json_str(lasts), sql_db::int64_to_json(at)],
@@ -2569,7 +2585,7 @@ pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainSt
     },
     list_pending: fn(ws : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
-      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      match ensure_vault_plain_schema_once(whole_store, st.db) { Ok(_) => (), Err(e) => return Err(e) }
       match st.db.all("SELECT body FROM vault_requests WHERE ws = ?1 AND status = 'pending' ORDER BY id LIMIT 200", [base_codec::json_str(ws)]) {
         Ok(rows) => {
           let out : Array[base_codec::Json] = []
@@ -2589,8 +2605,8 @@ pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainSt
     },
     list_decided_requests: fn(ws : String, vault_opt : Option[String], owner_opt : Option[String], cross_only : Bool) -> Result[Array[base_codec::Json], station_api::ApiError] {
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
-      match ensure_vault_plain_schema(st.db) { Ok(_) => (), Err(e) => return Err(e) }
-      let mut sql = "SELECT status, body FROM vault_requests WHERE ws = ?1 AND status IN ('granted', 'denied')"
+      match ensure_vault_plain_schema_once(whole_store, st.db) { Ok(_) => (), Err(e) => return Err(e) }
+      let mut sql = "SELECT status, body FROM vault_requests WHERE ws = ?1 AND status IN ('granted', 'denied') AND json_valid(body)"
       let qparams : Array[base_codec::Json] = [base_codec::json_str(ws)]
       let mut p_idx = 2
       match vault_opt {
@@ -2815,16 +2831,76 @@ fn dispatch_vault_requests_and_plain_op(
     return Some(Ok(base_codec::json_obj([("item", shown)])))
   }
 
-  // --- Vault Requests, Uses, Cross-Uses (strictly authorized & minimal projection, aligned with secrets.ts:1143-1192) ---
+  // --- Vault Requests, Uses, Cross-Uses (strictly authorized & minimal projection, aligned with secrets.ts:1102-1192) ---
   if op == "vault.requests.get" {
     let all_pending = match (vp.list_pending)(ws) {
       Ok(xs) => xs
       Err(e) => return Some(Err(e))
     }
+    let now_sec = now_ms / 1000L
+    let vd = port.vault_decisions
     let visible : Array[base_codec::Json] = []
     for i in 0..<all_pending.length() {
-      if viewer_can_see_vault_req(all_pending[i], ws, req.viewer, whole_store, is_locked) {
-        visible.push(all_pending[i])
+      let r_json = all_pending[i]
+      let r_id = match json_field_str(r_json, "id") { Some(s) => s, None => "" }
+      let r_sess = match json_field_str(r_json, "session") { Some(s) => s, None => "" }
+      let r_at : Int64 = match admin_json_num_field(r_json, "at") { Some(d) => d.to_int64(), None => now_sec }
+      let r_vault = match json_field_str(r_json, "vault") { Some(s) => s, None => "" }
+      // 1:1 Node `secrets.ts:1128-1140` `#requestLive` / `#recoverable` / `#needsHeld`:
+      let sess_ended = match (vd.is_session_ended)(r_sess) {
+        Ok(b) => b
+        Err(e) => return Some(Err(e))
+      }
+      let needs_held = match base_codec::json_get(r_json, "save") {
+        Some(base_codec::Json::Obj(fs)) => {
+          let s_obj = base_codec::json_obj(fs)
+          let typed = json_field_bool(s_obj, "typed") == Some(true)
+          let has_sealed = match base_codec::json_get(r_json, "sealed") {
+            Some(base_codec::Json::Arr(xs)) => xs.length() > 0
+            _ => false
+          }
+          !typed && !(r_vault != "plain" && has_sealed)
+        }
+        _ => false
+      }
+      let recoverable = !needs_held || (vd.get_unsaved_fields)(r_id).is_some()
+      let live = !sess_ended && (r_at + 86400L > now_sec) && recoverable
+      if !live {
+        if r_id.length() > 0 {
+          match (vd.get_request)(ws, r_id) {
+            Ok(Some(row)) if row.status == "pending" => {
+              let expired_body = json_obj_set(row.body, "status", Some(base_codec::json_str("expired")))
+              let outcome = base_codec::json_obj([("status", base_codec::json_str("expired"))])
+              match (vd.settle_request_tx)(
+                row.ws,
+                row.id,
+                row.raw_body,
+                "expired",
+                expired_body,
+                outcome,
+                row.thread,
+                row.card_ts,
+                "expired",
+                "",
+                now_sec,
+                VaultSettleEffect::NoEffect,
+              ) {
+                Ok(true) => {
+                  (vd.drop_box_priv)(row.id)
+                  (vd.drop_unsaved_fields)(row.id)
+                  let _ = whole_store.vault_grants.revoke(row.id)
+                  vd_emit_request_event(events, expired_body, now_ms)
+                }
+                _ => ()
+              }
+            }
+            _ => ()
+          }
+        }
+        continue
+      }
+      if viewer_can_see_vault_req(r_json, ws, req.viewer, whole_store, is_locked) {
+        visible.push(r_json)
       }
     }
     return Some(Ok(base_codec::json_obj([("requests", base_codec::json_arr(visible))])))

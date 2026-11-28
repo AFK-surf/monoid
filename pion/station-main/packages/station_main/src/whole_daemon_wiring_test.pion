@@ -476,10 +476,14 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
     panic("revoking sid-owner-1 must keep u-owner chain in GET /vault/boxes via sid-owner-2")
   }
 
-  // Revoking the second (last) session `sid-owner-2` now removes u-owner completely
+  // Revoking the second (last) session `sid-owner-2` now removes u-owner completely, while keeping
+  // a non-null empty `LockState` (1:1 Node `personalVaultLock`: admits nobody, plain vault stays fail-closed).
   revoke_seen_member_session(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-2", 11L))
-  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) is None) {
-    panic("after all active sessions expired/revoked, personal_vault_lock must be None (no historical fallback)")
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) {
+    Some(ls) => if ls.members.contains("u-owner") || ls.persons.contains("u-owner") || ls.devices.entries().length() != 0 {
+      panic("after all active sessions expired/revoked, personal_vault_lock must admit nobody (no historical fallback)")
+    }
+    None => panic("joined workspace with empty personal lock sources must still return non-null empty LockState (fail-closed for plain vault)")
   }
   let chains_revoked = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
   if !(form::json_field(Some(chains_revoked), "u-owner") is None) {
@@ -509,8 +513,11 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
     }
     None => ()
   }
-  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) is None) {
-    panic("cloud sid revocation on sid-shared must filter all connections sharing sid-shared")
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) {
+    Some(ls) => if ls.members.contains("u-owner") || ls.persons.contains("u-owner") {
+      panic("cloud sid revocation on sid-shared must filter all connections sharing sid-shared")
+    }
+    None => panic("joined workspace must still return non-null empty LockState after sid revocation")
   }
   let chains_sid_rev = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
   if !(form::json_field(Some(chains_sid_rev), "u-owner") is None) {
@@ -553,6 +560,40 @@ test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin role
   let chains_broken = resolve_vault_chains_for_ws(cloud, None, known_at(t1), "ws-A", t1, vf)
   if !(form::json_field(Some(chains_broken), "u-owner") is None) {
     panic("broken workspace lock must return empty chains {}")
+  }
+
+  // 7. P1-1 regression: moved chain in `waiting` state MUST return a non-null empty `LockState`
+  //    (admitting nobody, NEVER None) so plain-vault decisions stay fail-closed!
+  let moved_state = station_cloud::personal_vault_lock("ws-A", station_cloud::PersonalLockSources::empty(), verify_fn=vf)
+  let moved_waiting = lock::LockState::{
+    ws: "ws-A",
+    seq: moved_state.seq,
+    head: moved_state.head,
+    genesis: "gen-moved",
+    origins: moved_state.origins,
+    rp_id: moved_state.rp_id,
+    cloud_keys: moved_state.cloud_keys,
+    members: moved_state.members,
+    devices: moved_state.devices,
+    sign_keys: moved_state.sign_keys,
+    passkeys: moved_state.passkeys,
+    signed: moved_state.signed,
+    stations: moved_state.stations,
+    gateways: moved_state.gateways,
+    persons: moved_state.persons,
+    disabled: false,
+    moved: Some("root-missing"),
+  }
+  cloud.lock = Some(station_cloud::KeptLock::{
+    entries: [],
+    aside: [],
+    state: Some(moved_waiting),
+  })
+  match resolve_vault_lock_for_ws(cloud, None, known_at(t1), "ws-A", t1, vf) {
+    Some(ls) => if ls.members.entries().length() != 0 || ls.devices.entries().length() != 0 {
+      panic("waiting moved-chain lock must admit nobody")
+    }
+    None => panic("waiting moved-chain lock must return non-null empty LockState (fail-closed for plain vault)")
   }
 }
 

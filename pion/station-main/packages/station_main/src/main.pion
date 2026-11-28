@@ -1318,8 +1318,14 @@ fn main(_world : World) -> Unit {
   if argv.length() == 2 && argv[1] == "--smoke-vault-sqlite" {
     match station_vault::run_vault_sqlite_selftest() {
       Ok(_) => match station_whole::run_vault_decisions_sqlite_selftest() {
-        Ok(_) => {
-          let _ = host_shim::write_stdout_line("{\"ok\":true,\"sqlite_vault\":true,\"sqlite_vault_decisions\":true}")
+        Ok(_) => match station_whole::run_vault_daemon_e2e_selftest() {
+          Ok(_) => {
+            let _ = host_shim::write_stdout_line("{\"ok\":true,\"sqlite_vault\":true,\"sqlite_vault_decisions\":true,\"sqlite_vault_daemon_e2e\":true}")
+          }
+          Err(e) => {
+            let _ = host_shim::write_stderr_line("smoke-vault-sqlite daemon e2e: " + e)
+            host_shim::exit_process(1)
+          }
         }
         Err(e) => {
           let _ = host_shim::write_stderr_line("smoke-vault-sqlite decisions: " + e)

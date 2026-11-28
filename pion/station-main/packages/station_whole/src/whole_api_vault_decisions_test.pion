@@ -228,26 +228,26 @@ test "wave17d1: encrypted vault.grants.post & vault.denials.post full crypto, au
     Err(e) => panic(e)
   }
 
-  // 2. Non-member bob attempting to approve -> fail-closed 403
+  // 2. Non-member bob attempting to approve -> fail-closed 409 `vault_refused` (1:1 Node `vault-requests.ts:73`)
   match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", bob), [], valid_grant) {
-    Err(e) => if e.status != 403 { panic("bob non-member grant must return 403, got " + e.status.to_string()) }
+    Err(e) => if e.status != 409 { panic("bob non-member grant must return 409, got " + e.status.to_string()) }
     Ok(_) => panic("bob non-member grant must fail")
   }
 
-  // 3. Forged signature (signed by bob's key, submitted by alice) -> fail-closed 403
+  // 3. Forged signature (signed by bob's key, submitted by alice) -> fail-closed 409 `vault_refused`
   let bob_signed_grant = match station_vault::sign_record_ed25519(bob_seed, bob_pub, grant_fields, station_vault::TAG_GRANT) {
     Ok(g) => station_rules_bridge::form_to_base(g)
     Err(e) => panic(e)
   }
   match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], bob_signed_grant) {
-    Err(e) => if e.status != 403 { panic("forged signer grant must return 403, got " + e.status.to_string()) }
+    Err(e) => if e.status != 409 { panic("forged signer grant must return 409, got " + e.status.to_string()) }
     Ok(_) => panic("forged signer grant must fail")
   }
 
-  // 4. Tampered payload (scope changed after signing) -> fail-closed 403
+  // 4. Tampered payload (scope changed after signing) -> fail-closed 409 `vault_refused`
   let tampered_grant = json_obj_set(valid_grant, "scope", Some(base_codec::json_str("once")))
   match (api.admin.host.call)("vault.grants.post", make_test_api_req_as("POST", "/vault/grants", alice), [], tampered_grant) {
-    Err(e) => if e.status != 403 { panic("tampered sig grant must return 403, got " + e.status.to_string()) }
+    Err(e) => if e.status != 409 { panic("tampered sig grant must return 409, got " + e.status.to_string()) }
     Ok(_) => panic("tampered sig grant must fail")
   }
 
@@ -327,7 +327,7 @@ test "wave17d1: encrypted vault.grants.post & vault.denials.post full crypto, au
     Err(e) => panic(e)
   }
   match (api.admin.host.call)("vault.denials.post", make_test_api_req_as("POST", "/vault/denials", bob), [], bob_deny) {
-    Err(e) => if e.status != 403 { panic("bob non-member deny must return 403") }
+    Err(e) => if e.status != 409 { panic("bob non-member deny must return 409") }
     Ok(_) => panic("bob non-member deny must fail")
   }
   let alice_deny = match station_vault::sign_record_ed25519(alice_seed, alice_pub, deny_fields, VAULT_TAG_DENY) {
@@ -454,7 +454,7 @@ test "wave17d1: encrypted vault.saves.post, vault.described.post, vault.removed.
     [],
     base_codec::json_obj([("request", base_codec::json_str(save_rid)), ("vault", base_codec::json_str(vid))]),
   ) {
-    Err(e) => if e.status != 403 { panic("bob save must return 403") }
+    Err(e) => if e.status != 409 { panic("bob save must return 409") }
     Ok(_) => panic("bob save must fail")
   }
   // Owner alice -> 200
@@ -648,7 +648,7 @@ test "wave17d1: encrypted vault.saves.post, vault.described.post, vault.removed.
     Err(e) => panic(e)
   }
   match (api.admin.host.call)("vault.browses.post", make_test_api_req_as("POST", "/vault/browses", bob), [], bob_browse) {
-    Err(e) => if e.status != 403 { panic("bob browse must return 403") }
+    Err(e) => if e.status != 409 { panic("bob browse must return 409") }
     Ok(_) => panic("bob browse must fail")
   }
   let alice_browse = match station_vault::sign_record_ed25519(alice_seed, alice_pub, browse_fields, VAULT_TAG_BROWSE) {
@@ -771,7 +771,7 @@ test "wave17d1: all 5 plain vault decisions (saves, grants, described, removed, 
   ])
   // Wrong owner bob -> 403
   match (api.admin.host.call)("vault.plain.saves.post", make_test_api_req_as("POST", "/vault/plain/saves", bob), [], save_body) {
-    Err(e) => if e.status != 403 { panic("bob plain save must return 403") }
+    Err(e) => if e.status != 409 { panic("bob plain save must return 409") }
     Ok(_) => panic("bob plain save must fail")
   }
   // Alice approves -> 200, item created, persisted grant has NO secret, GrantStore active
@@ -877,7 +877,7 @@ test "wave17d1: all 5 plain vault decisions (saves, grants, described, removed, 
     [],
     base_codec::json_obj([("request", base_codec::json_str(deny_rid))]),
   ) {
-    Err(e) => if e.status != 403 { panic("bob plain deny must return 403") }
+    Err(e) => if e.status != 409 { panic("bob plain deny must return 409") }
     Ok(_) => panic("bob plain deny must fail")
   }
   match (api.admin.host.call)(
@@ -947,5 +947,143 @@ test "wave17d1: all 5 plain vault decisions (saves, grants, described, removed, 
   match (port.vault_decisions.get_request)(ws, exp_rid) {
     Ok(Some(r)) => if r.status != "expired" { panic("expected request status=expired, got " + r.status) }
     _ => panic("missing expired request row")
+  }
+}
+
+test "w17d1 R2: GrantStore host parity, session ownership/archive checks, handover Carried merge, and 24h request expiry" {
+  let now_sec = 1700000000L
+  let now_ms = now_sec * 1000L
+
+  // 1. P1-3: Single-label wildcard host (`*.internal`) accepted by `GrantStore::validate_grant` (1:1 Node `plain.ts:85`)
+  let fm : Map[String, String] = Map::new()
+  fm.set("value", "tok_internal_123")
+  let sec = station_vault::VaultSecret::{ kind: "token", name: "Internal API", fields: fm }
+  let g_wild = station_vault::GrantRecord::{
+    id: "g-wild",
+    session: "s-1",
+    mode: station_vault::DeliveryMode::Proxy,
+    grant_scope: station_vault::GrantScope::Once,
+    hosts: ["*.internal"],
+    env_var: Some("INT_TOK"),
+    secret: sec,
+    expires_sec: now_sec + 3600L,
+    idle_sec: 0L,
+    uses: 0,
+    revoked: false,
+  }
+  match station_vault::GrantStore::validate_grant(g_wild, now_sec) {
+    Ok(_) => ()
+    Err(e) => panic("*.internal must be accepted by validate_grant: " + e)
+  }
+
+  // 2. P1-5: `GrantStore::authorize_use` enforces session ownership AND non-archived check
+  let gs = station_vault::GrantStore::new()
+  let fm2 : Map[String, String] = Map::new()
+  fm2.set("value", "tok_env_456")
+  let g_env = station_vault::GrantRecord::{
+    id: "g-env",
+    session: "s-owner",
+    mode: station_vault::DeliveryMode::Env,
+    grant_scope: station_vault::GrantScope::Hour,
+    hosts: [],
+    env_var: Some("API_TOK"),
+    secret: station_vault::VaultSecret::{ kind: "token", name: "API", fields: fm2 },
+    expires_sec: now_sec + 3600L,
+    idle_sec: 0L,
+    uses: 0,
+    revoked: false,
+  }
+  match gs.register(g_env, now_sec) { Ok(_) => (), Err(e) => panic(e) }
+  // Wrong session refused
+  match gs.authorize_use("g-env", station_vault::DeliveryMode::Env, None, now_sec, session=Some("s-other")) {
+    Err(_) => ()
+    Ok(_) => panic("authorize_use must reject another session")
+  }
+  // Archived session refused and auto-revoked
+  match gs.authorize_use("g-env", station_vault::DeliveryMode::Env, None, now_sec, session=Some("s-owner"), session_ended=Some(fn(s) { s == "s-owner" })) {
+    Err(_) => ()
+    Ok(_) => panic("authorize_use must reject archived session")
+  }
+  if gs.is_active("g-env", now_sec) {
+    panic("archived session grant must be auto-revoked")
+  }
+
+  // 3. P1-2: Handover `Carried.{boxes, held}` roundtrip + `once` grant `uses` max-merge (1:1 `keeper.ts:337-349`)
+  let store1 = WholeStore::new_pre_handover_with_sep("/tmp/w17d1-ho1", "/")
+  let box_priv = vd_test_seed(42)
+  store1.vault_boxes.set("r_ho_1", box_priv)
+  let fm3 : Map[String, String] = Map::new()
+  fm3.set("value", "tok_once_789")
+  let g_once = station_vault::GrantRecord::{
+    id: "r_ho_once",
+    session: "s-ho",
+    mode: station_vault::DeliveryMode::Env,
+    grant_scope: station_vault::GrantScope::Once,
+    hosts: [],
+    env_var: Some("ONCE_TOK"),
+    secret: station_vault::VaultSecret::{ kind: "token", name: "Once", fields: fm3 },
+    expires_sec: now_sec + 3600L,
+    idle_sec: 0L,
+    uses: 1,
+    revoked: false,
+  }
+  match store1.register_vault_grant(g_once, now_sec) { Ok(_) => (), Err(e) => panic(e) }
+  let carried_j = store1.export_vault_carried_json()
+  let store2 = WholeStore::new_pre_handover_with_sep("/tmp/w17d1-ho2", "/")
+  // Pre-seed store2 with same once grant at uses=0 to verify max-merge raises uses to 1!
+  let g_once_zero = station_vault::GrantRecord::{
+    id: "r_ho_once",
+    session: "s-ho",
+    mode: station_vault::DeliveryMode::Env,
+    grant_scope: station_vault::GrantScope::Once,
+    hosts: [],
+    env_var: Some("ONCE_TOK"),
+    secret: station_vault::VaultSecret::{ kind: "token", name: "Once", fields: fm3 },
+    expires_sec: now_sec + 3600L,
+    idle_sec: 0L,
+    uses: 0,
+    revoked: false,
+  }
+  match store2.register_vault_grant(g_once_zero, now_sec) { Ok(_) => (), Err(e) => panic(e) }
+  store2.import_vault_carried_json(carried_j, now_sec)
+  match store2.vault_boxes.get("r_ho_1") {
+    Some(b) => if crypto::bytes_to_hex(b) != crypto::bytes_to_hex(box_priv) { panic("box priv mismatch after handover") }
+    None => panic("missing box priv after handover")
+  }
+  match store2.vault_grants.get_record("r_ho_once") {
+    Some(g) => if g.uses != 1 { panic("once grant uses must merge to max(0, 1) = 1, got " + g.uses.to_string()) }
+    None => panic("missing once grant after handover")
+  }
+
+  // 4. P1-5: `vault.requests.get` expires requests older than 24h (86400s)
+  let ws = "ws-main"
+  let (_, _, api, _, _, hooks, port) = make_mem_whole_api_fixture_full()
+  hooks.lock_of = None
+  let alice = make_test_viewer("alice@example.com", "u-alice", ws, true, "owner")
+  let old_rid = "r_old_25h"
+  let old_req = base_codec::json_obj([
+    ("id", base_codec::json_str(old_rid)),
+    ("ws", base_codec::json_str(ws)),
+    ("vault", base_codec::json_str("plain")),
+    ("item", base_codec::json_str("i-1")),
+    ("session", base_codec::json_str("s-live")),
+    ("mode", base_codec::json_str("env")),
+    ("reason", base_codec::json_str("stale")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("status", base_codec::json_str("pending")),
+    ("at", base_codec::json_int64(now_sec - 90000L)),
+  ])
+  vd_seed_req(port, ws, old_rid, "s-live", old_req)
+  let _ = now_ms
+  match (api.admin.host.call)("vault.requests.get", make_test_api_req_as("GET", "/vault/requests", alice), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "requests") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 0 { panic("25h-old pending request must be expired on GET /vault/requests") }
+      _ => panic("missing requests array")
+    }
+    Err(e) => panic("vault.requests.get failed: " + e.message)
+  }
+  match (port.vault_decisions.get_request)(ws, old_rid) {
+    Ok(Some(r)) => if r.status != "expired" { panic("25h-old request must be settled to expired") }
+    _ => panic("missing settled old request")
   }
 }

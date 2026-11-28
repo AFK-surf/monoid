@@ -33,6 +33,17 @@ pub struct PersonalLockSources {
   pub cert_ok : (lock::LockState, BoxCertSummary) -> Bool
 }
 
+pub fn PersonalLockSources::empty() -> PersonalLockSources {
+  PersonalLockSources::{
+    chains: [],
+    member_emails: Map::new(),
+    member_roles: Map::new(),
+    vaults: [],
+    boxes: [],
+    cert_ok: fn(_l : lock::LockState, _c : BoxCertSummary) -> Bool { false },
+  }
+}
+
 struct FoldedPerson {
   genesis : String
   head : String

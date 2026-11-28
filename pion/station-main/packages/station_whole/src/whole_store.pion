@@ -478,6 +478,9 @@ pub struct WholeStore {
   pub mut vault_backfill_last_error : Option[String]
   pub vault_grants : station_vault::GrantStore
   pub vault_incoming : station_vault::IncomingRegistry
+  pub vault_boxes : Map[String, Bytes]
+  pub vault_unsaved : Map[String, Map[String, String]]
+  pub mut vault_plain_schema_ready : Bool
   pub mut before_store_ran : Bool
   pub mut last_restored_handover_at : Option[Int64]
   pub mut active_vault_grant_ids : Array[String]
@@ -497,6 +500,9 @@ pub fn WholeStore::new_pre_handover_with_sep(data_dir : String, sep : String) ->
     vault_backfill_last_error: None,
     vault_grants: station_vault::GrantStore::new(),
     vault_incoming: station_vault::IncomingRegistry::new(),
+    vault_boxes: Map::new(),
+    vault_unsaved: Map::new(),
+    vault_plain_schema_ready: false,
     before_store_ran: false,
     last_restored_handover_at: None,
     active_vault_grant_ids: [],
@@ -592,8 +598,16 @@ pub fn WholeStore::open_primary_after_predecessor_gone(
           return Err("failed to initialize SQLite VaultStore: " + e)
         }
       }
+      match st.db.exec(VAULT_PLAIN_AND_REQUESTS_SCHEMA) {
+        Ok(_) => ()
+        Err(e) => {
+          let _ = st.close()
+          return Err("failed to initialize vault plain/requests schema: " + e.message)
+        }
+      }
       self.store = Some(st)
       self.vault_store = Some(vs)
+      self.vault_plain_schema_ready = true
       self.phase = StorePhase::PrimaryOpen
       Ok(())
     }

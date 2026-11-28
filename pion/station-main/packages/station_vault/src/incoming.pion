@@ -760,7 +760,30 @@ pub fn GrantStore::len(self : GrantStore) -> Int {
   self.grants.length()
 }
 
-pub fn GrantStore::register(self : GrantStore, grant : GrantRecord, now_sec : Int64) -> Result[Unit, String] {
+/// Validate a vault host pattern 1:1 with Node `station/src/vault/plain.ts:85`:
+/// `/^(\*\.)?[a-z0-9.-]+$/`, length `1..=253` (allows single-label wildcard suffixes like `*.internal`).
+pub fn is_valid_vault_host_pattern(raw : String) -> Bool {
+  let n = raw.length()
+  if n == 0 || n > 253 {
+    return false
+  }
+  let rest = if raw.starts_with("*.") { raw.slice(2, n) } else { raw }
+  let rb = rest.to_bytes()
+  if rb.length() == 0 {
+    return false
+  }
+  for i in 0..<rb.length() {
+    let b = rb[i].to_int() & 0xFF
+    if !(is_ascii_lower(b) || is_ascii_digit(b) || b == 45 || b == 46) {
+      return false
+    }
+  }
+  true
+}
+
+/// Pure pre-validation of `GrantRecord` (aligned with Node `plain.ts:85` host pattern rules)
+/// so callers can run all fallible checks BEFORE committing a SQLite transaction.
+pub fn GrantStore::validate_grant(grant : GrantRecord, now_sec : Int64) -> Result[Unit, String] {
   if grant.id.length() == 0 {
     return Err("grant id is required")
   }
@@ -784,14 +807,76 @@ pub fn GrantStore::register(self : GrantStore, grant : GrantRecord, now_sec : In
       return Err("host allowlist is required for network delivery mode")
     }
     for i in 0..<grant.hosts.length() {
-      match normalize_host_pattern(grant.hosts[i]) {
-        Some(_) => ()
-        None => return Err("invalid host pattern in grant")
+      if !is_valid_vault_host_pattern(grant.hosts[i]) {
+        return Err("invalid host pattern in grant")
       }
     }
   }
+  Ok(())
+}
+
+pub fn GrantStore::register(self : GrantStore, grant : GrantRecord, now_sec : Int64) -> Result[Unit, String] {
+  match GrantStore::validate_grant(grant, now_sec) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
+  }
   self.grants.set(grant.id, grant)
   Ok(())
+}
+
+pub fn GrantStore::get_record(self : GrantStore, grant_id : String) -> Option[GrantRecord] {
+  self.grants.get(grant_id)
+}
+
+pub fn GrantStore::all_records(self : GrantStore) -> Array[GrantRecord] {
+  let out : Array[GrantRecord] = []
+  let keys = self.grants.keys()
+  for i in 0..<keys.length() {
+    match self.grants.get(keys[i]) {
+      Some(g) => out.push(g)
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn GrantStore::list_for_session(self : GrantStore, session : String, now_sec : Int64) -> Array[GrantRecord] {
+  let _ = self.purge_expired(now_sec)
+  let out : Array[GrantRecord] = []
+  let keys = self.grants.keys()
+  for i in 0..<keys.length() {
+    match self.grants.get(keys[i]) {
+      Some(g) => {
+        if g.session == session && !g.revoked && g.expires_sec > now_sec {
+          let spent = match g.grant_scope {
+            GrantScope::Once => g.uses > 0
+            _ => false
+          }
+          if !spent {
+            out.push(g)
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  out
+}
+
+pub fn GrantStore::revoke_session(self : GrantStore, session : String) -> Int {
+  let to_drop : Array[String] = []
+  let keys = self.grants.keys()
+  for i in 0..<keys.length() {
+    let id = keys[i]
+    match self.grants.get(id) {
+      Some(g) => if g.session == session { to_drop.push(id) }
+      None => ()
+    }
+  }
+  for i in 0..<to_drop.length() {
+    let _ = self.revoke(to_drop[i])
+  }
+  to_drop.length()
 }
 
 pub fn GrantStore::revoke(self : GrantStore, grant_id : String) -> Bool {
@@ -852,10 +937,29 @@ pub fn GrantStore::authorize_use(
   requested_mode : DeliveryMode,
   target_host : Option[String],
   now_sec : Int64,
+  session : Option[String] = None,
+  session_ended : Option[(String) -> Bool] = None,
 ) -> Result[String, String] {
   let g = match self.grants.get(grant_id) {
     Some(rec) => rec
     None => return Err("grant not found")
+  }
+  match session {
+    Some(s) => {
+      if g.session != s {
+        return Err("this grant is another session's")
+      }
+    }
+    None => ()
+  }
+  match session_ended {
+    Some(ended) => {
+      if ended(g.session) {
+        let _ = self.revoke(grant_id)
+        return Err("this grant ended with its chat (archived): ask again")
+      }
+    }
+    None => ()
   }
   if g.revoked || g.expires_sec <= now_sec {
     let _ = self.revoke(grant_id)

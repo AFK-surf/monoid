@@ -819,6 +819,11 @@ pub fn WholeAgents::archive_session(
   for i in 0..<archived_keys.length() {
     let sk = archived_keys[i]
     let _ = self.revoke_session_token(sk)
+    // P1-5: Runtime vault cleanup on session archive (1:1 Node `secrets.ts:402-418`):
+    // revoke in-memory grants, clear cross-workspace listings, expire pending requests,
+    // and drop ephemeral boxes / unsaved fields for the archived session.
+    let _ = whole_store.vault_grants.revoke_session(sk)
+    let _ = expire_vault_state_for_archived_session(whole_store, sk, now_ms / 1000L)
     match self.hub.actors.get(sk) {
       Some(a) => {
         let _ = a.evict()
@@ -3524,11 +3529,13 @@ fn WholeAgents::build_domain_handlers(
     station_tools::error_reply("unsupported project_manage action: " + action)
   }
 
+  let secret_handler = build_secret_mcp_handler(whole_store, home_ws, fn() -> Int64 { now_ms })
+
   station_tools::DomainHandlers::{
     chat: chat_handler,
     job: job_handler,
     remote: base.remote,
-    secret: base.secret,
+    secret: secret_handler,
     device: base.device,
     screen: base.screen,
     browser: base.browser,
