@@ -244,97 +244,101 @@ fn film_impl(
     theme?,
     transitions_only?,
   )
-  defer { t.end_run(host) }
-  if !corners_held {
-    say("film: the corner rule not held (MBUI_FILM_ALLOW_CORNER_FAULTS)")
-  }
-  // The application's clock must advance at the film's rate too. Merely giving the encoder a higher rate would
-  // duplicate frames of a run still drawn at the Tester's default 60 Hz.
-  t.set_frame_period(1000.0 / fps.to_double())
-  if prepare != "" {
-    let setup = t.drive(prepare, max~)
-    if !drive_passed(setup) {
-      for l in setup {
-        if l.has_prefix("DRIVE") {
-          say(l)
-        }
-      }
-      say("film: preparation did not pass")
-      return false
+  // (the run ends on every way out of it, early ones too)
+  let made = (fn() -> Bool {
+    if !corners_held {
+      say("film: the corner rule not held (MBUI_FILM_ALLOW_CORNER_FAULTS)")
     }
-  }
-  let pw = (w * scale).round().to_int()
-  let ph = (h * scale).round().to_int()
-  if !open(out, pw, ph, fps) {
-    say("film: \{out}: not made")
-    return false
-  }
-  let buf = Ref(FixedArray::make(0, 0.0))
-  let drawn = Ref(0)
-  let put = Ref(0)
-  let run = t.film(
-    script,
-    fps=fps.to_double(),
-    max~,
-    draw=fn(t) {
-      if !allow_incomplete && !scene_drawable(t, "film", true) {
+    // The application's clock must advance at the film's rate too. Merely giving the encoder a higher rate would
+    // duplicate frames of a run still drawn at the Tester's default 60 Hz.
+    t.set_frame_period(1000.0 / fps.to_double())
+    if prepare != "" {
+      let setup = t.drive(prepare, max~)
+      if !drive_passed(setup) {
+        for l in setup {
+          if l.has_prefix("DRIVE") {
+            say(l)
+          }
+        }
+        say("film: preparation did not pass")
         return false
       }
-      if draw_frame(t, buf) {
-        drawn.val = drawn.val + 1
-        true
-      } else {
-        false
-      }
-    },
-    put=fn(k) {
-      if put_frame(k) {
-        put.val = put.val + 1
-        true
-      } else {
-        false
-      }
-    },
-  )
-  let logs = run.logs
-  let passed = drive_passed(logs)
-  let drawn_ok = run.failure is None && passed
-  // (the last frame as drawn, before the film is closed: what was drawn last is still the renderer's)
-  let shot = last == "" || (drawn_ok && drawn.val > 0 && snapshot(last))
-  let closed = close(put.val)
-  // (what the app put on the clipboard as a picture last, as the host drew it: a shot's, Ctx::take_shot)
-  let copy = copied == "" || (drawn_ok && closed &&
-    (match t.clipboard_png() {
-      Some(png) => write_text(copied, @codec.base64(png))
-      None => false
-    }))
-  let text = logs
-    .filter(fn(l) { l.has_prefix("TEXTREC ") })
-    .map(fn(l) { l.unsafe_substring(start=8, end=l.length()) })
-  let kept = drawn_ok && closed && shot && copy && write_text(out + ".textrec", text.join("\n") + "\n")
-  for l in logs {
-    if l.has_prefix("DRIVE") {
-      say(l)
     }
-  }
-  let ok = drawn_ok && closed && shot && copy && kept
-  let published = finish(ok)
-  let secs = put.val.to_double() / fps.to_double()
-  say(
-    "film: \{out}: \{put.val} frames (\{secs} s), \{drawn.val} drawn" +
-    (match run.failure {
-      Some(@ui.FilmFailure::Draw) => ", a frame could not be drawn"
-      Some(@ui.FilmFailure::Write(k)) => ", frame \{k} could not be written"
-      None => ""
-    }) +
-    (if closed { "" } else { ", not finished" }) +
-    (if kept { "" } else { ", its text not kept" }) +
-    (if shot { "" } else { ", its last frame not written" }) +
-    (if copy { "" } else { ", nothing copied to write" }) +
-    (if passed { "" } else { ", the script did not pass" }) +
-    (if published { "" } else { ", could not publish" }),
-  )
-  ok && published
+    let pw = (w * scale).round().to_int()
+    let ph = (h * scale).round().to_int()
+    if !open(out, pw, ph, fps) {
+      say("film: \{out}: not made")
+      return false
+    }
+    let buf = Ref(FixedArray::make(0, 0.0))
+    let drawn = Ref(0)
+    let put = Ref(0)
+    let run = t.film(
+      script,
+      fps=fps.to_double(),
+      max~,
+      draw=fn(t) {
+        if !allow_incomplete && !scene_drawable(t, "film", true) {
+          return false
+        }
+        if draw_frame(t, buf) {
+          drawn.val = drawn.val + 1
+          true
+        } else {
+          false
+        }
+      },
+      put=fn(k) {
+        if put_frame(k) {
+          put.val = put.val + 1
+          true
+        } else {
+          false
+        }
+      },
+    )
+    let logs = run.logs
+    let passed = drive_passed(logs)
+    let drawn_ok = run.failure is None && passed
+    // (the last frame as drawn, before the film is closed: what was drawn last is still the renderer's)
+    let shot = last == "" || (drawn_ok && drawn.val > 0 && snapshot(last))
+    let closed = close(put.val)
+    // (what the app put on the clipboard as a picture last, as the host drew it: a shot's, Ctx::take_shot)
+    let copy = copied == "" || (drawn_ok && closed &&
+      (match t.clipboard_png() {
+        Some(png) => write_text(copied, @codec.base64(png))
+        None => false
+      }))
+    let text = logs
+      .filter(fn(l) { l.has_prefix("TEXTREC ") })
+      .map(fn(l) { l.unsafe_substring(start=8, end=l.length()) })
+    let kept = drawn_ok && closed && shot && copy && write_text(out + ".textrec", text.join("\n") + "\n")
+    for l in logs {
+      if l.has_prefix("DRIVE") {
+        say(l)
+      }
+    }
+    let ok = drawn_ok && closed && shot && copy && kept
+    let published = finish(ok)
+    let secs = put.val.to_double() / fps.to_double()
+    say(
+      "film: \{out}: \{put.val} frames (\{secs} s), \{drawn.val} drawn" +
+      (match run.failure {
+        Some(@ui.FilmFailure::Draw) => ", a frame could not be drawn"
+        Some(@ui.FilmFailure::Write(k)) => ", frame \{k} could not be written"
+        None => ""
+      }) +
+      (if closed { "" } else { ", not finished" }) +
+      (if kept { "" } else { ", its text not kept" }) +
+      (if shot { "" } else { ", its last frame not written" }) +
+      (if copy { "" } else { ", nothing copied to write" }) +
+      (if passed { "" } else { ", the script did not pass" }) +
+      (if published { "" } else { ", could not publish" }),
+    )
+    ok && published
+  })()
+  t.end_run(host)
+  made
 }
 
 ///|
