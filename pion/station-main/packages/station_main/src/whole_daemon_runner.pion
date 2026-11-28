@@ -1865,6 +1865,7 @@ pub struct LiveRunnerManager {
   pending_end_turns : Map[String, ManagerPendingEndTurn]
   pending_compact_write : Map[String, String]
   force_session_cap_once : Map[String, Bool]
+  pending_handed_tokens : Map[String, Array[station_store::HandedToken]]
   draining_stopping_ids : Map[String, Bool]
   draining_stop_sessions : Map[String, String]
   mut handover_state_path : Option[String]
@@ -1884,6 +1885,7 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     pending_end_turns: Map::new(),
     pending_compact_write: Map::new(),
     force_session_cap_once: Map::new(),
+    pending_handed_tokens: Map::new(),
     draining_stopping_ids: Map::new(),
     draining_stop_sessions: Map::new(),
     handover_state_path: None,
@@ -3030,20 +3032,59 @@ pub fn make_station_notice_ts(wall_ms : Int64, salt : Int64) -> String {
   secs.to_string() + "." + ms_str
 }
 
-/// Resolves station notice language from live config (`"lang"` -> `Zh` / `En`, defaulting to `En`).
-fn live_runner_notice_lang(core : station_whole::WholeCore, cfg_raw : base_codec::Json) -> station_ops::Lang {
-  let cfg = live_config_raw(core, cfg_raw)
-  match base_codec::json_get(cfg, "lang") {
-    Some(base_codec::Json::Str(s)) => {
-      let l = s.trim()
-      if l == "zh" || l == "zh-CN" || l == "zh-Hans" {
-        station_ops::Lang::Zh
-      } else {
-        station_ops::Lang::En
-      }
+/// Inserts a station notice inside an active SQLite write transaction, retrying candidate
+/// `<secs>.<6-digit-micros>` timestamps until `station_store::insert_message_in_tx` confirms
+/// `fresh == true`. Guarantees a same-millisecond or salt-wrapped `ts` collision can NEVER
+/// reuse an existing user/ordinary entry for `turns.about_*` or emit a duplicate-seq SSE!
+pub fn insert_unique_station_notice_in_tx(
+  t : sql_db::Db,
+  thread : Int64,
+  wall_ms : Int64,
+  text : String,
+) -> Result[(Int64, String), sql_db::SqlError] {
+  let base_n = match t.first("SELECT COALESCE(MAX(n), 0) + 1 AS next_n FROM entries WHERE thread = ?1", [sql_db::int64_to_json(thread)]) {
+    Ok(Some(row)) => match row.get("next_n") {
+      Some(base_codec::Json::Num(n, _)) => n.to_int64()
+      _ => 1L
     }
-    _ => station_ops::Lang::En
+    Ok(None) => 1L
+    Err(e) => return Err(e)
   }
+  let mut cur_ms = wall_ms
+  let mut salt = if base_n >= 0L { base_n } else { 1L }
+  for attempt in 0..<2000 {
+    let cand_ts = make_station_notice_ts(cur_ms, salt)
+    match station_store::insert_message_in_tx(
+      t,
+      station_store::NewMessage::{
+        thread: thread,
+        ts: Some(cand_ts),
+        author_kind: "station",
+        author: "station",
+        agent_identity: None,
+        text: Some(text),
+        attachments: None,
+        quotes: None,
+        declared: None,
+        client: None,
+        card: None,
+        options: None,
+        proposal: None,
+        at: wall_ms,
+      },
+      deliver_to=[],
+    ) {
+      Ok((n, true)) => return Ok((n, cand_ts))
+      Ok((_, false)) => {
+        salt = salt + 1L
+        if attempt > 0 && salt % 1000L == 0L {
+          cur_ms = cur_ms + 1L
+        }
+      }
+      Err(e) => return Err(e)
+    }
+  }
+  Err(sql_db::SqlError::{ code: -1, message: "failed to allocate unique station notice ts" })
 }
 
 /// Formats the localized station notice text for a retryable turn outcome using `station_ops::tr`.
@@ -3145,40 +3186,11 @@ fn insert_retry_about_notice_in_tx(
     Some(id) => if id > 0L { id } else { return Ok(None) }
     None => return Ok(None)
   }
-  // Derive a unique monotonic station `ts` using current `MAX(n)` + 1 as microsecond salt.
-  let salt_n = match t.first("SELECT COALESCE(MAX(n), 0) + 1 AS next_n FROM entries WHERE thread = ?1", [sql_db::int64_to_json(tid)]) {
-    Ok(Some(row)) => match row.get("next_n") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int64()
-      _ => 1L
-    }
-    Ok(None) => 1L
-    Err(e) => return Err(e)
-  }
-  let notice_ts = make_station_notice_ts(wall_ms, salt_n)
   let notice_txt = match custom_text {
     Some(s) => if s.length() > 0 { s } else { live_runner_retry_notice_text(lang, outcome, detail) }
     None => live_runner_retry_notice_text(lang, outcome, detail)
   }
-  let (next_n, _inserted) = match station_store::insert_message_in_tx(
-    t,
-    station_store::NewMessage::{
-      thread: tid,
-      ts: Some(notice_ts),
-      author_kind: "station",
-      author: "station",
-      agent_identity: None,
-      text: Some(notice_txt),
-      attachments: None,
-      quotes: None,
-      declared: None,
-      client: None,
-      card: None,
-      options: None,
-      proposal: None,
-      at: wall_ms,
-    },
-    deliver_to=[],
-  ) {
+  let (next_n, notice_ts) = match insert_unique_station_notice_in_tx(t, tid, wall_ms, notice_txt) {
     Ok(v) => v
     Err(e) => return Err(e)
   }
@@ -3238,7 +3250,7 @@ pub fn live_runner_finish_compaction(
     }
     None => ()
   }
-  let lang = live_runner_notice_lang(core, ctx.cfg_raw)
+  let lang = station_ops::station_lang()
   let notice_txt = if ok {
     station_ops::tr(lang, "station.notice.compacted")
   } else {
@@ -3272,35 +3284,7 @@ pub fn live_runner_finish_compaction(
         }
         match tid_opt {
           Some(tid) => {
-            let salt_n = match t.first("SELECT COALESCE(MAX(n), 0) + 1 AS next_n FROM entries WHERE thread = ?1", [sql_db::int64_to_json(tid)]) {
-              Ok(Some(row)) => match row.get("next_n") {
-                Some(base_codec::Json::Num(n, _)) => n.to_int64()
-                _ => 1L
-              }
-              Ok(None) => 1L
-              Err(e) => return Err(e)
-            }
-            let notice_ts = make_station_notice_ts(wall_ms, salt_n)
-            let (next_n, _inserted) = match station_store::insert_message_in_tx(
-              t,
-              station_store::NewMessage::{
-                thread: tid,
-                ts: Some(notice_ts),
-                author_kind: "station",
-                author: "station",
-                agent_identity: None,
-                text: Some(notice_txt),
-                attachments: None,
-                quotes: None,
-                declared: None,
-                client: None,
-                card: None,
-                options: None,
-                proposal: None,
-                at: wall_ms,
-              },
-              deliver_to=[],
-            ) {
+            let (next_n, notice_ts) = match insert_unique_station_notice_in_tx(t, tid, wall_ms, notice_txt) {
               Ok(v) => v
               Err(e) => return Err(e)
             }
@@ -3613,7 +3597,7 @@ fn live_runner_commit_end_turn(
                 pend.detail,
                 pend.declared_str,
                 pend.wall_ms,
-                lang=live_runner_notice_lang(core, base_codec::json_obj([])),
+                lang=station_ops::station_lang(),
               ) {
                 Ok(n_opt) => about_notice = n_opt
                 Err(e) => return Err(e)
@@ -3820,7 +3804,7 @@ fn live_runner_commit_manager_pending_end_turn(
                 pend.detail,
                 pend.declared_str,
                 pend.wall_ms,
-                lang=live_runner_notice_lang(core, ctx.cfg_raw),
+                lang=station_ops::station_lang(),
               ) {
                 Ok(n_opt) => about_notice = n_opt
                 Err(e) => return Err(e)
@@ -3922,9 +3906,29 @@ fn live_runner_flush_ready(
       match encode_runtime_compact(sess.runtime_kind, rsid, req_id) {
         Some(frame) => {
           if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
+            let _ = live_runner_finish_compaction(
+              mgr,
+              ctx,
+              core,
+              Some(sess),
+              sess.session_key,
+              sess.ws,
+              sess.runtime_str,
+              false,
+              Some("runner write queue overflow"),
+              now_ms,
+              host_shim::wall_ms(),
+            )
             return false
           }
           mgr.pending_compact_write.remove(sess.session_key)
+          match core.agents.hub.actors.get(sess.session_key) {
+            Some(a) => match a.pending_compaction {
+              Some(pc) => pc.bootstrapping = false
+              None => ()
+            }
+            None => ()
+          }
           sess.adopted_passive_only = false
           if !sess.is_acp && !sess.is_codex {
             sess.claude_turn.compacting = Some(true)
@@ -3935,6 +3939,19 @@ fn live_runner_flush_ready(
         }
         None => {
           mgr.pending_compact_write.remove(sess.session_key)
+          let _ = live_runner_finish_compaction(
+            mgr,
+            ctx,
+            core,
+            Some(sess),
+            sess.session_key,
+            sess.ws,
+            sess.runtime_str,
+            false,
+            Some("unable to encode compact frame"),
+            now_ms,
+            host_shim::wall_ms(),
+          )
           return false
         }
       }
@@ -3949,6 +3966,20 @@ fn live_runner_flush_ready(
       // and mark `prompt_write_pending = true` until `live_runner_on_write_done` flushes the socket!
       if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
         return false
+      }
+      // P1-3: Commit SQLite `delivered_at` for queued `HandedToken`s ONLY AFTER the framed prompt
+      // is actually written to the runner socket (never before launch!).
+      match mgr.pending_handed_tokens.get(sess.session_key) {
+        Some(tokens) => {
+          mgr.pending_handed_tokens.remove(sess.session_key)
+          match core.store.require_open() {
+            Ok(st_db) => {
+              let _ = st_db.mark_handed_delivered(sess.session_key, tokens, host_shim::wall_ms())
+            }
+            Err(_) => ()
+          }
+        }
+        None => ()
       }
       sess.pending_prompt = None
       sess.prompt_write_pending = true
@@ -4186,6 +4217,25 @@ pub fn codex_turn_event_matches_session(
   true
 }
 
+/// Strict Codex compaction terminal-event correlation (P2-2):
+/// Requires `turn/started` to have captured `compact_turn_id` and rejects any `turn/completed`,
+/// `turn/failed`, or `turn/aborted` whose `threadId` or `turn.id` does not match!
+pub fn codex_compaction_event_matches(
+  ev_thread_id : Option[String],
+  ev_turn_id : Option[String],
+  sess_thread_id : Option[String],
+  compact_turn_id : Option[String],
+) -> Bool {
+  match (ev_thread_id, sess_thread_id) {
+    (Some(et), Some(st)) => if et.length() > 0 && st.length() > 0 && et != st { return false }
+    _ => ()
+  }
+  match (compact_turn_id, ev_turn_id) {
+    (Some(ctid), Some(etid)) => ctid.length() > 0 && etid == ctid
+    _ => false
+  }
+}
+
 /// Pure compaction stdout event classifier (zero FFI, shared by `live_runner_handle_agent_line`
 /// and unit tests):
 /// - Returns `None` for intermediate lines (`LiveActivity`, `CodexCompactAck`, `SessionId`,
@@ -4278,20 +4328,34 @@ fn live_runner_handle_agent_line(
 
   let in_compaction = (actor.compacting || actor.pending_compaction is Some(_)) && sess.current_turn_id is None
   let parsed_ev = parse_agent_stdout_line(sess.runtime_kind, line)
-  // P1-2: For Codex `turn/completed` / `turn/failed` / `turn/aborted`, verify `threadId` & `turn.id` belong to this session!
-  if sess.is_codex {
-    let is_codex_turn_end = match parsed_ev {
-      ParsedAgentEvent::TurnCompleted(_, _) | ParsedAgentEvent::TurnFailed(_, _) | ParsedAgentEvent::TurnAborted => true
-      _ => false
-    }
-    if is_codex_turn_end {
-      let (ev_th, ev_tid) = extract_codex_turn_ids(line)
-      if !codex_turn_event_matches_session(ev_th, ev_tid, sess.runtime_session_id, sess.codex_active_turn_id) {
-        return
+  if in_compaction {
+    // P2-2: Capture Codex compaction `turn/started` turn.id into `PendingCompaction` and
+    // require exact `turn.id` correlation on `turn/completed` / `turn/failed` / `turn/aborted`.
+    if sess.is_codex {
+      match parsed_ev {
+        ParsedAgentEvent::CodexTurnStarted(tid) => {
+          sess.codex_active_turn_id = Some(tid)
+          match actor.pending_compaction {
+            Some(pc) => pc.codex_turn_id = Some(tid)
+            None => ()
+          }
+          return
+        }
+        ParsedAgentEvent::TurnCompleted(_, _)
+        | ParsedAgentEvent::TurnFailed(_, _)
+        | ParsedAgentEvent::TurnAborted => {
+          let (ev_th, ev_tid) = extract_codex_turn_ids(line)
+          let pc_tid = match actor.pending_compaction {
+            Some(pc) => pc.codex_turn_id
+            None => None
+          }
+          if !codex_compaction_event_matches(ev_th, ev_tid, sess.runtime_session_id, pc_tid) {
+            return
+          }
+        }
+        _ => ()
       }
     }
-  }
-  if in_compaction {
     match classify_compaction_event(actor, sess.claude_turn, parsed_ev) {
       Some((ok, err_opt)) => {
         let _ = live_runner_finish_compaction(
@@ -4318,6 +4382,19 @@ fn live_runner_handle_agent_line(
           }
           _ => ()
         }
+        return
+      }
+    }
+  }
+  // P1-2: For non-compaction Codex `turn/completed` / `turn/failed` / `turn/aborted`, verify `threadId` & `turn.id`!
+  if sess.is_codex {
+    let is_codex_turn_end = match parsed_ev {
+      ParsedAgentEvent::TurnCompleted(_, _) | ParsedAgentEvent::TurnFailed(_, _) | ParsedAgentEvent::TurnAborted => true
+      _ => false
+    }
+    if is_codex_turn_end {
+      let (ev_th, ev_tid) = extract_codex_turn_ids(line)
+      if !codex_turn_event_matches_session(ev_th, ev_tid, sess.runtime_session_id, sess.codex_active_turn_id) {
         return
       }
     }
@@ -5178,6 +5255,143 @@ fn read_memory_entry_for_runner(
   }
 }
 
+/// Shared session instruction builder used by BOTH `dispatch_prompt` and cold Claude `compact_session`
+/// so a runner spawned for compaction carries full workspace, station, memory, and site instructions!
+fn build_session_launch_instructions(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  policy : SessionLaunchPolicy,
+  row : station_store::SessionRow,
+  session_key : String,
+  sess_ws : String,
+  eff_person : Option[String],
+) -> String {
+  let person_str = match eff_person {
+    Some(p) => p
+    None => ""
+  }
+  // Abstraction 1 (P0): Workspace-isolated agent home (`<data>/agent` for home ws,
+  // `<data>/agent/workspaces/<ws>` for joined ws) — NEVER leak home ws memory to joined ws!
+  let memory_path = nodepath::join(ctx.sep, [policy.agent_home, "MEMORY.md"])
+  let raw_mem = match (ctx.ops_fs.read_bytes)(memory_path) {
+    Ok(b) => b.to_string()
+    Err(_) => ""
+  }
+  let st_mem_path = nodepath::join(ctx.sep, [policy.agent_home, "skills", "machines", station_drivers::station_tag(core.config.station_id) + ".md"])
+  let st_mem_entry = read_memory_entry_for_runner(ctx.ops_fs, st_mem_path)
+  let ptag = station_drivers::person_tag(person_str)
+  let p_mem_entry = if ptag.length() > 0 {
+    read_memory_entry_for_runner(ctx.ops_fs, nodepath::join(ctx.sep, [policy.agent_home, "skills", "people", ptag + ".md"]))
+  } else {
+    None
+  }
+  let memory_text = station_drivers::read_memory(
+    memory_path,
+    raw_mem,
+    [],
+    core.config.station_id,
+    st_mem_entry,
+    person_str,
+    p_mem_entry,
+    ctx.sep,
+  )
+  let site_path = nodepath::join(ctx.sep, [policy.agent_home, "INSTRUCTIONS.md"])
+  let site_text = match (ctx.ops_fs.read_bytes)(site_path) {
+    Ok(b) => station_drivers::read_site_instructions(b.to_string())
+    Err(_) => ""
+  }
+  let projects_on = true
+  let eff_ws_dir = server_session_workspace_dir(ctx.data, sess_ws, session_key, ctx.sep)
+  station_drivers::session_instructions(
+    eff_ws_dir,
+    row.cwd,
+    nodepath::join(ctx.sep, [ctx.data, "repos"]),
+    memory_path,
+    memory_text,
+    site_text,
+    core.config.station_id,
+    true,
+    projects_on,
+    person_str,
+  )
+}
+
+/// Frames a batch of pending SQLite `HandedToken`s (messages + letters) with full author/ts/thread/
+/// attachments/letter headers so `cap_paused` recovery preserves all delivery metadata without
+/// marking `delivered_at` before the runner actually receives the prompt!
+fn format_handed_tokens_prompt(
+  st : station_store::Store,
+  tokens : Array[station_store::HandedToken],
+) -> (String, Bool) {
+  let sb = StringBuilder::new()
+  let mut all_letters = true
+  let mut count = 0
+  for i in 0..<tokens.length() {
+    let tok = tokens[i]
+    let (via, thread_addr) = match st.db.first(
+      "SELECT surface, channel, thread_ts FROM threads WHERE id = ?1 LIMIT 1",
+      [sql_db::int64_to_json(tok.thread)],
+    ) {
+      Ok(Some(tr)) => {
+        let surf = match tr.get("surface") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+        let ch = match tr.get("channel") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+        let tts = match tr.get("thread_ts") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+        let v = if surf.starts_with("slack:") { "slack" } else if surf.starts_with("feishu:") { "feishu" } else if surf.starts_with("comma:") { "comma" } else if surf.starts_with("group:") { "group" } else { "web" }
+        let addr = if ch.length() > 0 && tts.length() > 0 { ch + "/" + tts } else if tts.length() > 0 { "CHAT/" + tts } else { "CHAT/" + tok.thread.to_string() }
+        (v, addr)
+      }
+      _ => ("web", "CHAT/" + tok.thread.to_string())
+    }
+    if tok.apart {
+      match st.db.first(
+        "SELECT author, ts, text, attachments, at FROM letters WHERE thread = ?1 AND n = ?2 LIMIT 1",
+        [sql_db::int64_to_json(tok.thread), sql_db::int64_to_json(tok.n)],
+      ) {
+        Ok(Some(lr)) => {
+          let txt = match lr.get("text") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+          if txt.length() == 0 { continue }
+          let author = match lr.get("author") { Some(base_codec::Json::Str(s)) if s.length() > 0 => s; _ => "agent" }
+          let ts = match lr.get("ts") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+          let att = match lr.get("attachments") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+          if count > 0 { sb.write_string("\n\n") }
+          sb.write_string("<message via=\"" + via + "\" thread=\"" + thread_addr + "\" from=\"" + author + "\" bot")
+          if ts.length() > 0 { sb.write_string(" ts=\"" + ts + "\"") }
+          sb.write_string(">\n")
+          sb.write_string(txt)
+          if att.length() > 0 && att != "[]" { sb.write_string("\n[attachments: " + att + "]") }
+          sb.write_string("\n</message>")
+          count = count + 1
+        }
+        _ => ()
+      }
+    } else {
+      all_letters = false
+      match st.db.first(
+        "SELECT author, author_kind, ts, text, attachments, at FROM entries WHERE thread = ?1 AND n = ?2 LIMIT 1",
+        [sql_db::int64_to_json(tok.thread), sql_db::int64_to_json(tok.n)],
+      ) {
+        Ok(Some(er)) => {
+          let txt = match er.get("text") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+          let att = match er.get("attachments") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+          if txt.length() == 0 && (att.length() == 0 || att == "[]") { continue }
+          let author = match er.get("author") { Some(base_codec::Json::Str(s)) if s.length() > 0 => s; _ => "user" }
+          let ts = match er.get("ts") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+          if count > 0 { sb.write_string("\n\n") }
+          sb.write_string("<message via=\"" + via + "\" thread=\"" + thread_addr + "\" from=\"" + author + "\"")
+          if ts.length() > 0 { sb.write_string(" ts=\"" + ts + "\"") }
+          sb.write_string(">\n")
+          sb.write_string(txt)
+          if att.length() > 0 && att != "[]" { sb.write_string("\n[attachments: " + att + "]") }
+          sb.write_string("\n</message>")
+          count = count + 1
+        }
+        _ => ()
+      }
+    }
+  }
+  (sb.to_string(), all_letters && count > 0)
+}
+
 fn LiveRunnerManager::dispatch_prompt(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -5227,6 +5441,9 @@ fn LiveRunnerManager::dispatch_prompt(
   self.next_turn_seq = self.next_turn_seq + 1
 
   let fail_before_spawn = fn(reason : String) -> Unit {
+    // P1-3: Roll back any un-delivered `HandedToken` batch on launch failure so SQLite
+    // `delivered_at` remains NULL and queued messages/letters are never swallowed!
+    self.pending_handed_tokens.remove(session_key)
     ctx.log("[live-runner] cannot start runner for " + session_key + ": " + reason)
     let eff_detail = if reason.starts_with("network:")
     || reason.starts_with("model:")
@@ -5276,7 +5493,7 @@ fn LiveRunnerManager::dispatch_prompt(
         Some(eff_detail),
         None,
         wall_ms,
-        lang=live_runner_notice_lang(core, cfg_raw),
+        lang=station_ops::station_lang(),
       ) {
         Ok(n_opt) => n_opt
         Err(e) => return Err(e)
@@ -5456,8 +5673,40 @@ fn LiveRunnerManager::dispatch_prompt(
     None => ()
   }
 
-  if self.active_count() >= LIVE_RUNNER_MAX_CONCURRENT {
-    fail_before_spawn("max concurrent live runners reached")
+  // P1-3: Consume one-shot `force_session_cap_once` override (from `cap_paused` retry) and enforce
+  // both global `LIVE_RUNNER_MAX_CONCURRENT` and profile `maxConcurrentSessions` caps.
+  let cap_override = match self.force_session_cap_once.get(session_key) {
+    Some(true) => {
+      self.force_session_cap_once.remove(session_key)
+      true
+    }
+    _ => false
+  }
+  let mut profile_capped = false
+  match profile.max_concurrent_sessions {
+    Some(cap_n) => if cap_n >= 0 {
+      let mut prof_active = 0
+      let sks = self.sessions.keys()
+      for si in 0..<sks.length() {
+        if sks[si] == session_key { continue }
+        match self.sessions.get(sks[si]) {
+          Some(os) => if os.profile_id == profile.id && !os.runner_exited {
+            match os.phase {
+              LiveRunnerPhase::Exited => ()
+              _ => prof_active = prof_active + 1
+            }
+          }
+          None => ()
+        }
+      }
+      if prof_active >= cap_n {
+        profile_capped = true
+      }
+    }
+    None => ()
+  }
+  if !cap_override && (self.active_count() >= LIVE_RUNNER_MAX_CONCURRENT || profile_capped) {
+    fail_before_spawn("other: session_cap")
     return
   }
 
@@ -5474,54 +5723,8 @@ fn LiveRunnerManager::dispatch_prompt(
   let _ = station_sys::mkdir_p(rdir)
 
   let rt_sid_opt = query_persisted_runtime_session_id(st, session_key)
-  let person_str = match eff_person {
-    Some(p) => p
-    None => ""
-  }
-  // Abstraction 1 (P0): Workspace-isolated agent home (`<data>/agent` for home ws,
-  // `<data>/agent/workspaces/<ws>` for joined ws) — NEVER leak home ws memory to joined ws!
-  let memory_path = nodepath::join(ctx.sep, [policy.agent_home, "MEMORY.md"])
-  let raw_mem = match (ctx.ops_fs.read_bytes)(memory_path) {
-    Ok(b) => b.to_string()
-    Err(_) => ""
-  }
-  let st_mem_path = nodepath::join(ctx.sep, [policy.agent_home, "skills", "machines", station_drivers::station_tag(core.config.station_id) + ".md"])
-  let st_mem_entry = read_memory_entry_for_runner(ctx.ops_fs, st_mem_path)
-  let ptag = station_drivers::person_tag(person_str)
-  let p_mem_entry = if ptag.length() > 0 {
-    read_memory_entry_for_runner(ctx.ops_fs, nodepath::join(ctx.sep, [policy.agent_home, "skills", "people", ptag + ".md"]))
-  } else {
-    None
-  }
-  let memory_text = station_drivers::read_memory(
-    memory_path,
-    raw_mem,
-    [],
-    core.config.station_id,
-    st_mem_entry,
-    person_str,
-    p_mem_entry,
-    ctx.sep,
-  )
-  let site_path = nodepath::join(ctx.sep, [policy.agent_home, "INSTRUCTIONS.md"])
-  let site_text = match (ctx.ops_fs.read_bytes)(site_path) {
-    Ok(b) => station_drivers::read_site_instructions(b.to_string())
-    Err(_) => ""
-  }
   let projects_on = true
-  let eff_ws_dir = server_session_workspace_dir(ctx.data, sess_ws, session_key, ctx.sep)
-  let instr = station_drivers::session_instructions(
-    eff_ws_dir,
-    row.cwd,
-    nodepath::join(ctx.sep, [ctx.data, "repos"]),
-    memory_path,
-    memory_text,
-    site_text,
-    core.config.station_id,
-    true,
-    projects_on,
-    person_str,
-  )
+  let instr = build_session_launch_instructions(ctx, core, policy, row, session_key, sess_ws, eff_person)
   // Deliver any untold migration notes once and advance `sessions.told_notes`.
   let mut final_prompt = enveloped_prompt
   let cur_told = match st.db.first("SELECT told_notes FROM sessions WHERE key = ?1 LIMIT 1", [base_codec::json_str(session_key)]) {
@@ -5914,6 +6117,8 @@ pub fn LiveRunnerManager::handle_sys_event(
                   sess.phase = LiveRunnerPhase::Exited
                   if sess.current_turn_id is Some(_) {
                     live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start: " + detail), now_ms, wall_ms)
+                  } else if !is_draining {
+                    let _ = live_runner_finish_compaction(self, ctx, core, Some(sess), skey, sess.ws, sess.runtime_str, false, Some("runner did not start: " + detail), now_ms, wall_ms)
                   }
                   self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
                   if is_draining {
@@ -5939,6 +6144,8 @@ pub fn LiveRunnerManager::handle_sys_event(
                   sess.phase = LiveRunnerPhase::Exited
                   if sess.current_turn_id is Some(_) {
                     live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner stdout closed without ready: " + detail), now_ms, wall_ms)
+                  } else if !is_draining {
+                    let _ = live_runner_finish_compaction(self, ctx, core, Some(sess), skey, sess.ws, sess.runtime_str, false, Some("runner stdout closed without ready: " + detail), now_ms, wall_ms)
                   }
                   self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
                   if is_draining {
@@ -6997,43 +7204,21 @@ pub fn LiveRunnerManager::retry_session(
     Err(e) => return Err(station_api::ApiError::new(409, e))
   }
   if cap_paused {
-    // P1-5: Pass cap override to launch path and pump real SQLite pending messages/letters!
+    // P1-3: Pass one-shot cap override to launch path and frame ALL pending SQLite `HandedToken`s
+    // (messages + letters) with full headers — NEVER marking `delivered_at` until `live_runner_flush_ready`
+    // actually writes the prompt to the runner socket (so launch failure rolls back cleanly!).
     self.force_session_cap_once.set(session_key, true)
     if has_pending {
       if actor.queue.length() == 0 && db_has_pending {
-        match st.pending_handed(session_key, limit=1) {
+        match st.pending_handed(session_key, limit=100) {
           Ok(tokens) => if tokens.length() > 0 {
-            let tok = tokens[0]
-            if tok.apart {
-              match st.db.first(
-                "SELECT text FROM letters WHERE thread = ?1 AND n = ?2 LIMIT 1",
-                [sql_db::int64_to_json(tok.thread), sql_db::int64_to_json(tok.n)],
-              ) {
-                Ok(Some(lr)) => match lr.get("text") {
-                  Some(base_codec::Json::Str(txt)) if txt.length() > 0 => {
-                    let _ = st.db.run(
-                      "UPDATE letter_deliveries SET delivered_at = ?1 WHERE thread = ?2 AND n = ?3 AND session = ?4 AND delivered_at IS NULL",
-                      [sql_db::int64_to_json(wall_ms), sql_db::int64_to_json(tok.thread), sql_db::int64_to_json(tok.n), base_codec::json_str(session_key)],
-                    )
-                    actor.queue.push(station_sessions::ActorWork::InternalPrompt(txt))
-                  }
-                  _ => ()
-                }
-                _ => ()
-              }
-            } else {
-              match st.db.first(
-                "SELECT text FROM entries WHERE thread = ?1 AND n = ?2 LIMIT 1",
-                [sql_db::int64_to_json(tok.thread), sql_db::int64_to_json(tok.n)],
-              ) {
-                Ok(Some(er)) => match er.get("text") {
-                  Some(base_codec::Json::Str(txt)) if txt.length() > 0 => {
-                    let _ = st.mark_delivered(tok.thread, tok.n, session_key, wall_ms)
-                    actor.queue.push(station_sessions::ActorWork::Prompt(txt))
-                  }
-                  _ => ()
-                }
-                _ => ()
+            let (framed, all_letters) = format_handed_tokens_prompt(st, tokens)
+            if framed.length() > 0 {
+              self.pending_handed_tokens.set(session_key, tokens)
+              if all_letters {
+                actor.queue.push(station_sessions::ActorWork::InternalPrompt(framed))
+              } else {
+                actor.queue.push(station_sessions::ActorWork::Prompt(framed))
               }
             }
           }
@@ -7048,7 +7233,7 @@ pub fn LiveRunnerManager::retry_session(
     }
   }
   if !actor.start_resume(words) {
-    return Err(station_api::ApiError::new(409, station_ops::tr(live_runner_notice_lang(core, cfg_raw), "station.context.busy")))
+    return Err(station_api::ApiError::new(409, station_ops::tr(station_ops::station_lang(), "station.context.busy")))
   }
   self.pump(ctx, core, live_cfg, now_ms, wall_ms)
   Ok(())
@@ -7068,7 +7253,7 @@ pub fn LiveRunnerManager::compact_session(
   now_ms : Int64,
   wall_ms : Int64,
 ) -> Result[Unit, station_api::ApiError] {
-  let lang = live_runner_notice_lang(core, cfg_raw)
+  let lang = station_ops::station_lang()
   let st = match core.store.require_open() {
     Ok(s) => s
     Err(e) => return Err(station_api::ApiError::new(503, e))
@@ -7151,6 +7336,20 @@ pub fn LiveRunnerManager::compact_session(
     Ok(p) => p
     Err(e) => return Err(station_api::ApiError::new(409, e))
   }
+  // P1-4: Purge any residual `Exited` runner from `self.sessions` so it NEVER shadows cold Claude compact!
+  match self.sessions.get(session_key) {
+    Some(stale) => match stale.phase {
+      LiveRunnerPhase::Exited => {
+        self.by_conn_id.remove(stale.conn_id)
+        self.sessions.remove(session_key)
+      }
+      _ => if stale.runner_exited {
+        self.by_conn_id.remove(stale.conn_id)
+        self.sessions.remove(session_key)
+      }
+    }
+    None => ()
+  }
   // Hot path: live warm Ready runner matching live policy (Claude or Codex).
   match self.sessions.get(session_key) {
     Some(sess) => {
@@ -7170,7 +7369,7 @@ pub fn LiveRunnerManager::compact_session(
             Some(f) => f
             None => return Err(station_api::ApiError::new(409, station_ops::tr(lang, "station.context.cannotCompact", args=[("name", row.runtime)])))
           }
-          match actor.begin_compaction(req_id, row.runtime, now_ms) {
+          match actor.begin_compaction(req_id, row.runtime, now_ms, runner_conn_id=Some(sess.conn_id), bootstrapping=false) {
             Ok(_) => ()
             Err(e) => return Err(station_api::ApiError::new(409, e))
           }
@@ -7212,8 +7411,9 @@ pub fn LiveRunnerManager::compact_session(
     }
     None => ()
   }
-  // P2: Cold Claude with valid `runtimeSessionId` spawns a fresh `--resume` runner (`ensure_agent`)
-  // and queues `pending_compact_write` so `live_runner_flush_ready` sends `/compact` once connected.
+  // P1-4 / P2-3: Cold Claude with valid `runtimeSessionId` spawns a fresh `--resume` runner reusing
+  // the FULL `build_session_launch_instructions` + standard `station_drivers::runner_id` + `thread_id_opt`,
+  // so subsequent human turns reusing this runner never lose station rules or memory!
   if self.active_count() >= LIVE_RUNNER_MAX_CONCURRENT {
     return Err(station_api::ApiError::new(409, "max concurrent live runners reached"))
   }
@@ -7229,12 +7429,23 @@ pub fn LiveRunnerManager::compact_session(
   if core.agents.token_for_session(session_key) is None && row.token.length() > 0 {
     core.agents.register_adopted_token(session_key, row.token)
   }
+  let compact_tid_opt : Option[Int64] = match st.db.first(
+    "SELECT thread FROM thread_sessions WHERE session = ?1 AND left_at IS NULL ORDER BY joined_at DESC LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(tr)) => match tr.get("thread") {
+      Some(base_codec::Json::Num(n, _)) => if n.to_int64() > 0L { Some(n.to_int64()) } else { None }
+      _ => None
+    }
+    _ => None
+  }
+  let instr = build_session_launch_instructions(ctx, core, policy, row, session_key, sess_ws, row.created_by)
   let spec = match core.agents.build_driver_launch_spec(
     session_key,
     rt_kind,
     policy.profile,
     cwd,
-    instructions="",
+    instructions=instr,
     resume=Some(rsid),
     model=row.model,
     effort=row.effort,
@@ -7242,8 +7453,10 @@ pub fn LiveRunnerManager::compact_session(
     Ok(s) => s
     Err(e) => return Err(station_api::ApiError::new(409, e))
   }
+  let cid = self.next_conn_id
+  self.next_conn_id = self.next_conn_id + 1
   let req_id = "compact:1"
-  match actor.begin_compaction(req_id, row.runtime, now_ms) {
+  match actor.begin_compaction(req_id, row.runtime, now_ms, runner_conn_id=Some(cid), bootstrapping=true) {
     Ok(_) => ()
     Err(e) => return Err(station_api::ApiError::new(409, e))
   }
@@ -7252,7 +7465,7 @@ pub fn LiveRunnerManager::compact_session(
     let (ek, ev) = spec.env[ei]
     env_list.push(ek + "=" + ev)
   }
-  let rid = "r-" + sanitize_path_segment(session_key) + "-c-" + wall_ms.to_string()
+  let rid = station_drivers::runner_id(rt_kind, session_key)
   let ev_id = self.next_ev_id
   self.next_ev_id = self.next_ev_id + 1L
   let runner_args = build_live_runner_args(rdir, rid, cwd, spec.program, spec.args)
@@ -7273,8 +7486,6 @@ pub fn LiveRunnerManager::compact_session(
       Err(station_api::ApiError::new(409, "proc_spawn failed: " + e))
     }
     Ok(child) => {
-      let cid = self.next_conn_id
-      self.next_conn_id = self.next_conn_id + 1
       // timer: bounded deadline for stillfail-runner to report ready (30s)
       let deadline = now_ms + LIVE_RUNNER_READY_MS
       let spawn_os_start_ms = match station_sys::proc_start_time_ms(child.pid) {
@@ -7288,7 +7499,7 @@ pub fn LiveRunnerManager::compact_session(
         profile_id: policy.profile.id,
         model_opt: row.model,
         person_opt: row.created_by,
-        thread_id_opt: None,
+        thread_id_opt: compact_tid_opt,
         runtime_kind: rt_kind,
         runtime_str: row.runtime,
         runner_id: rid,
@@ -8023,6 +8234,43 @@ pub fn LiveRunnerManager::prepare_handover(
   core : station_whole::WholeCore,
   wall_ms : Int64,
 ) -> Unit {
+  // P1-2: Explicitly terminate any in-flight compaction BEFORE snapshot export so the successor
+  // daemon NEVER inherits `sessions.running = 1` without a turn ID / `PendingCompaction` (which would
+  // orphan the actor as `Running` and deadlock queued input). Reclaim the compacting runner into
+  // `draining` so its stop marker is carried across handover!
+  let ho_now_ms = host_shim::now_ms()
+  let compact_keys = core.agents.hub.actors.keys()
+  for ci in 0..<compact_keys.length() {
+    let akey = compact_keys[ci]
+    match core.agents.hub.actors.get(akey) {
+      Some(actor) => {
+        if actor.compacting || actor.pending_compaction is Some(_) {
+          let mut ws = core.config.home_workspace
+          match self.sessions.get(akey) {
+            Some(csess) => {
+              ws = csess.ws
+              self.reclaim_session(ctx, core, akey, csess, ho_now_ms)
+            }
+            None => ()
+          }
+          let _ = live_runner_finish_compaction(
+            self,
+            ctx,
+            core,
+            None,
+            akey,
+            ws,
+            actor.runtime,
+            false,
+            Some("interrupted by restart"),
+            ho_now_ms,
+            wall_ms,
+          )
+        }
+      }
+      None => ()
+    }
+  }
   let mkeys = self.pending_end_turns.keys()
   for mi in 0..<mkeys.length() {
     match self.pending_end_turns.get(mkeys[mi]) {
@@ -8711,7 +8959,7 @@ fn commit_pending_end_turn_db_only(
                 pend.detail,
                 pend.declared_str,
                 pend.wall_ms,
-                lang=live_runner_notice_lang(core, base_codec::json_obj([])),
+                lang=station_ops::station_lang(),
               ) {
                 Ok(n_opt) => about_notice = n_opt
                 Err(e) => return Err(e)
@@ -8752,6 +9000,182 @@ fn commit_pending_end_turn_db_only(
   }
 }
 
+/// P1-5: Shared `cutOffByRestart` turn settlement inside an active SQLite write transaction
+/// (1:1 with `actor_run.mbt:724-749`):
+/// - Checks the open turn's real `declared` column, session `archived_at`, and real pending
+///   `deliveries` + `letter_deliveries`!
+/// - Ends the open turn as `outcome = 'aborted', detail = 'other: cut off by restart'` and resets
+///   `sessions.running = 0, context_before = NULL`.
+/// - Inserts the bound station notice (`about_thread`, `about_n`, `about_ts`) ONLY when
+///   `!archived && declared is None && !has_pending`.
+fn settle_cut_off_turn_in_tx(
+  t : sql_db::Db,
+  session_key : String,
+  turn_id : String,
+  tid_opt : Option[Int64],
+  wall_ms : Int64,
+  lang : station_ops::Lang,
+) -> Result[Option[(Int64, Int64, String, String)], sql_db::SqlError] {
+  let mut real_declared : Option[String] = None
+  let mut real_tid = tid_opt
+  match t.first(
+    "SELECT declared, thread FROM turns WHERE id = ?1 AND ended_at IS NULL LIMIT 1",
+    [base_codec::json_str(turn_id)],
+  ) {
+    Ok(Some(tr)) => {
+      match tr.get("declared") {
+        Some(base_codec::Json::Str(s)) if s.length() > 0 => real_declared = Some(s)
+        _ => ()
+      }
+      if real_tid is None {
+        match tr.get("thread") {
+          Some(base_codec::Json::Num(n, _)) if n.to_int64() > 0L => real_tid = Some(n.to_int64())
+          _ => ()
+        }
+      }
+    }
+    Ok(None) => return Ok(None)
+    Err(e) => return Err(e)
+  }
+  match t.run(
+    "UPDATE turns SET ended_at = ?2, outcome = 'aborted', detail = 'other: cut off by restart' WHERE id = ?1 AND ended_at IS NULL",
+    [base_codec::json_str(turn_id), sql_db::int64_to_json(wall_ms)],
+  ) {
+    Err(e) => return Err(e)
+    Ok(_) => ()
+  }
+  match t.run(
+    "UPDATE sessions SET running = 0, context_before = NULL, last_active_at = ?2 WHERE key = ?1",
+    [base_codec::json_str(session_key), sql_db::int64_to_json(wall_ms)],
+  ) {
+    Err(e) => return Err(e)
+    Ok(_) => ()
+  }
+  let archived = match t.first(
+    "SELECT archived_at FROM sessions WHERE key = ?1 LIMIT 1",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(Some(sr)) => match sr.get("archived_at") {
+      Some(base_codec::Json::Num(_, _)) => true
+      _ => false
+    }
+    Ok(None) => true
+    Err(e) => return Err(e)
+  }
+  if archived || real_declared is Some(_) {
+    return Ok(None)
+  }
+  let has_pending_msg = match t.first(station_store::HAS_PENDING_MESSAGE_SQL, [base_codec::json_str(session_key)]) {
+    Ok(Some(_)) => true
+    Ok(None) => false
+    Err(e) => return Err(e)
+  }
+  let has_pending_letter = if has_pending_msg {
+    true
+  } else {
+    match t.first(station_store::HAS_PENDING_LETTER_SQL, [base_codec::json_str(session_key)]) {
+      Ok(Some(_)) => true
+      Ok(None) => false
+      Err(e) => return Err(e)
+    }
+  }
+  if has_pending_letter {
+    return Ok(None)
+  }
+  insert_retry_about_notice_in_tx(
+    t,
+    session_key,
+    turn_id,
+    real_tid,
+    "aborted",
+    Some("other: cut off by restart"),
+    None,
+    wall_ms,
+    lang=lang,
+  )
+}
+
+/// P1-5: Called on daemon startup right after runner adoption scans complete.
+/// Any open turn (`turns.ended_at IS NULL`) whose runner could NOT be adopted (e.g. station crash or
+/// host reboot) is settled via `settle_cut_off_turn_in_tx` (`other: cut off by restart` + bound notice),
+/// and any orphaned `sessions.running = 1` (e.g. crashed mid-compaction) is reset to `running = 0`.
+pub fn LiveRunnerManager::recover_orphan_open_turns_on_startup(
+  self : LiveRunnerManager,
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  wall_ms : Int64,
+) -> Int {
+  let st = match core.store.require_open() {
+    Ok(s) => s
+    Err(_) => return 0
+  }
+  let lang = station_ops::station_lang()
+  let mut settled = 0
+  let open_turns = match st.db.all(
+    "SELECT id, session_key, thread FROM turns WHERE ended_at IS NULL ORDER BY started_at ASC",
+    [],
+  ) {
+    Ok(rows) => rows
+    Err(_) => []
+  }
+  for i in 0..<open_turns.length() {
+    let r = open_turns[i]
+    let tid = match r.get("id") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+    let skey = match r.get("session_key") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+    let th_opt = match r.get("thread") { Some(base_codec::Json::Num(n, _)) if n.to_int64() > 0L => Some(n.to_int64()); _ => None }
+    if tid.length() == 0 || skey.length() == 0 { continue }
+    if self.sessions.get(skey) is Some(_)
+    || self.pending_end_turns.get(skey) is Some(_)
+    || self.has_draining_session(skey) {
+      continue
+    }
+    let sess_ws = match st.get_session(skey) {
+      Ok(Some(sr)) => match sr.ws { Some(w) if w.length() > 0 => w; _ => core.config.home_workspace }
+      _ => core.config.home_workspace
+    }
+    match st.tx(fn(t : sql_db::Db) -> Result[Option[(Int64, Int64, String, String)], sql_db::SqlError] {
+      settle_cut_off_turn_in_tx(t, skey, tid, th_opt, wall_ms, lang)
+    }) {
+      Ok(notice_opt) => {
+        settled = settled + 1
+        match notice_opt {
+          Some((ntid, nn, nts, ntxt)) => emit_thread_sse_event(core, sess_ws, ntid, nn, "message", "station", "station", ntxt, wall_ms, ts=Some(nts))
+          None => ()
+        }
+        live_runner_emit_session_event(core, sess_ws, skey, false, None, wall_ms)
+      }
+      Err(e) => ctx.log("[live-runner] startup orphan turn recovery failed for " + skey + ": " + e.message)
+    }
+  }
+  // Also clear any orphaned `sessions.running = 1` with no adopted live runner (e.g. crashed mid-compaction).
+  let running_rows = match st.db.all("SELECT key, ws FROM sessions WHERE running = 1", []) {
+    Ok(rows) => rows
+    Err(_) => []
+  }
+  for ri in 0..<running_rows.length() {
+    let r = running_rows[ri]
+    let skey = match r.get("key") { Some(base_codec::Json::Str(s)) => s; _ => "" }
+    if skey.length() == 0
+    || self.sessions.get(skey) is Some(_)
+    || self.pending_end_turns.get(skey) is Some(_)
+    || self.has_draining_session(skey) {
+      continue
+    }
+    let sess_ws = match r.get("ws") { Some(base_codec::Json::Str(w)) if w.length() > 0 => w; _ => core.config.home_workspace }
+    let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+      match t.run(
+        "UPDATE sessions SET running = 0, context_before = NULL, last_active_at = ?2 WHERE key = ?1 AND running = 1",
+        [base_codec::json_str(skey), sql_db::int64_to_json(wall_ms)],
+      ) {
+        Err(e) => Err(e)
+        Ok(_) => Ok(())
+      }
+    })
+    live_runner_emit_session_event(core, sess_ws, skey, false, None, wall_ms)
+  }
+  settled
+}
+
 pub fn LiveRunnerManager::stop_all_on_shutdown(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -8773,36 +9197,8 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
         let mut committed = false
         match core.store.require_open() {
           Ok(st) => {
-            match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-              match t.run(
-                "UPDATE turns SET ended_at = ?2, outcome = 'aborted', detail = 'other: cut off by restart' WHERE id = ?1 AND ended_at IS NULL",
-                [base_codec::json_str(tid), sql_db::int64_to_json(wall_ms)],
-              ) {
-                Err(e) => return Err(e)
-                Ok(_) => ()
-              }
-              match insert_retry_about_notice_in_tx(
-                t,
-                sess.session_key,
-                tid,
-                sess.thread_id_opt,
-                "aborted",
-                Some("other: cut off by restart"),
-                None,
-                wall_ms,
-                lang=live_runner_notice_lang(core, ctx.cfg_raw),
-              ) {
-                Ok(_) => ()
-                Err(e) => return Err(e)
-              }
-              match t.run(
-                "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
-                [base_codec::json_str(sess.session_key), sql_db::int64_to_json(wall_ms)],
-              ) {
-                Err(e) => return Err(e)
-                Ok(_) => ()
-              }
-              Ok(())
+            match st.tx(fn(t : sql_db::Db) -> Result[Option[(Int64, Int64, String, String)], sql_db::SqlError] {
+              settle_cut_off_turn_in_tx(t, sess.session_key, tid, sess.thread_id_opt, wall_ms, station_ops::station_lang())
             }) {
               Ok(_) => committed = true
               Err(e) => {

@@ -60,6 +60,9 @@ pub struct PendingCompaction {
   pub runtime : String
   pub started_at_ms : Int64
   pub deadline_ms : Int64
+  pub mut codex_turn_id : Option[String]
+  pub mut runner_conn_id : Option[Int]
+  pub mut bootstrapping : Bool
 }
 
 /// 1:1 with `station/src/sessions/actor.ts:50-54` (`failedAgain`):
@@ -457,6 +460,8 @@ pub fn SessionActor::begin_compaction(
   runtime : String,
   now_ms : Int64,
   timeout_ms~ : Int64 = COMPACT_TIMEOUT_MS,
+  runner_conn_id~ : Option[Int] = None,
+  bootstrapping~ : Bool = false,
 ) -> Result[PendingCompaction, String] {
   if self.compacting || self.pending_compaction is Some(_) {
     return Err("compaction already in progress")
@@ -473,6 +478,9 @@ pub fn SessionActor::begin_compaction(
     runtime: runtime,
     started_at_ms: now_ms,
     deadline_ms: now_ms + timeout_ms,
+    codex_turn_id: None,
+    runner_conn_id: runner_conn_id,
+    bootstrapping: bootstrapping,
   }
   self.compacting = true
   self.pending_compaction = Some(pc)

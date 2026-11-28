@@ -3243,7 +3243,8 @@ test("W17E-3A: real SQLite about.{thread,seq,ts}, retry (2 failures + ordinary n
   assert.equal(noticeEntry.author_kind, "station");
   assert.equal(noticeEntry.ts, newTurn.about_ts);
 
-  // 5. P1-5: `cap_paused` (`other: session_cap`) with pending SQLite `deliveries` message AND `letter_deliveries` letter
+  // 5. P1-3: `cap_paused` (`other: session_cap`) with pending SQLite `deliveries` message AND `letter_deliveries` letter
+  //    When runner launch fails before delivery (no claude binary), SQLite `delivered_at` MUST remain NULL (rolled back, never swallowed!).
   const capKey = "chat:w17e3a-cap-1";
   const capThread = 702;
   db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-cap', ?, ?, ?, 0, ?)`)
@@ -3260,8 +3261,11 @@ test("W17E-3A: real SQLite about.{thread,seq,ts}, retry (2 failures + ordinary n
 
   const capMsgRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(capKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: capThread, seq: 1 })));
   assert.equal(capMsgRetry.status, 200, `cap_paused with pending delivery must be 200, got ${capMsgRetry.status}: ${capMsgRetry.body.toString()}`);
+  await until("cap_paused retry recorded failed launch turn", () => {
+    return db.prepare(`SELECT id FROM turns WHERE session_key = ? AND id != 't-cap-1' LIMIT 1`).get(capKey);
+  }, 5_000);
   const delivRow = db.prepare(`SELECT delivered_at FROM deliveries WHERE thread = ? AND n = 2 AND session = ?`).get(capThread, capKey) as any;
-  assert.ok(delivRow.delivered_at != null, "cap_paused retry must dequeue & mark SQLite delivery delivered_at");
+  assert.equal(delivRow.delivered_at, null, "P1-3: launch failure MUST roll back / keep SQLite deliveries.delivered_at NULL (never swallow!)");
 
   // Also test `cap_paused` with pending `letter_deliveries`
   const capLetterKey = "chat:w17e3a-cap-letter";
@@ -3280,13 +3284,19 @@ test("W17E-3A: real SQLite about.{thread,seq,ts}, retry (2 failures + ordinary n
 
   const capLetterRetry = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(capLetterKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: capLetterThread, seq: 1 })));
   assert.equal(capLetterRetry.status, 200, `cap_paused with pending letter_delivery must be 200, got ${capLetterRetry.status}: ${capLetterRetry.body.toString()}`);
+  await until("cap_paused letter retry recorded failed launch turn", () => {
+    return db.prepare(`SELECT id FROM turns WHERE session_key = ? AND id != 't-cap-l-1' LIMIT 1`).get(capLetterKey);
+  }, 5_000);
   const letterDelivRow = db.prepare(`SELECT delivered_at FROM letter_deliveries WHERE thread = ? AND n = 1 AND session = ?`).get(capLetterThread, capLetterKey) as any;
-  assert.ok(letterDelivRow.delivered_at != null, "cap_paused retry must dequeue & mark SQLite letter_deliveries delivered_at");
+  assert.equal(letterDelivRow.delivered_at, null, "P1-3: launch failure MUST keep SQLite letter_deliveries.delivered_at NULL (never swallow!)");
 
-  // 6. Compact gates: Claude empty runtime_session_id -> 409 `No context yet`; cold Codex -> 409
+  // 6. Compact gates: Claude empty runtime_session_id -> 409 `station.context.empty` (localized default zh "暂无上下文"); cold Codex -> 409
   const compactEmpty = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(sessKey)}/compact`, { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(compactEmpty.status, 409, `Claude empty runtime_session_id must be 409, got ${compactEmpty.status}: ${compactEmpty.body.toString()}`);
-  assert.ok(compactEmpty.body.toString().includes("No context yet"), `expected 'No context yet', got ${compactEmpty.body.toString()}`);
+  assert.ok(
+    compactEmpty.body.toString().includes("暂无上下文") || compactEmpty.body.toString().includes("No context yet"),
+    `expected localized station.context.empty, got ${compactEmpty.body.toString()}`,
+  );
 
   const codexKey = "chat:w17e3a-codex-cold";
   db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, runtime_session_id, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'codex', 'default', ?, 'tok-cx', ?, 'th-cold-1', ?, ?, 0, ?)`)
@@ -3294,8 +3304,54 @@ test("W17E-3A: real SQLite about.{thread,seq,ts}, retry (2 failures + ordinary n
   const compactCodexCold = await adminCall(conn, "POST", `/sessions/${encodeURIComponent(codexKey)}/compact`, { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(compactCodexCold.status, 409, `cold Codex compact must be 409, got ${compactCodexCold.status}: ${compactCodexCold.body.toString()}`);
 
-  db.close();
+  // 7. P1-5 & P1-2: Real daemon restart with un-adoptable open turns (crash recovery) & orphaned running=1 compaction!
+  //    Stop daemon 1, seed open turns in SQLite with NO live runner on disk, then start daemon 2 and verify
+  //    real production `recover_orphan_open_turns_on_startup` settles them cleanly!
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
+
+  const orphanKey = "chat:w17e3a-orphan-restart";
+  const orphanThread = 704;
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-orph', ?, ?, ?, 1, ?)`)
+    .run(orphanKey, drive, drive, now, now, ws);
+  db.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Orphan Restart', ?)`)
+    .run(orphanThread, `${orphanThread}.000000`, now);
+  db.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(orphanThread, orphanKey, now);
+  db.prepare(`INSERT INTO turns (id, session_key, kind, started_at, profile, thread) VALUES ('t-orphan-1', ?, 'turn', ?, 'default', ?)`)
+    .run(orphanKey, now - 5000, orphanThread);
+
+  // Also seed a session with `running=1` and NO open turn (simulating crashed/interrupted compaction)
+  const orphanCompactKey = "chat:w17e3a-orphan-compact";
+  db.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, context_before, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-oc', ?, ?, ?, 1, 12345, ?)`)
+    .run(orphanCompactKey, drive, drive, now, now, ws);
+
+  const wd2 = startWholeDaemon(bin, data);
+  await until("w17e3a daemon 2 ready after restart", () => wd2.messages.find((m) => m.ready === true));
+  const meshAddr2 = await until("w17e3a daemon 2 mesh bound", () => wd2.meshAddr());
+  const { conn: conn2, helloReply: hello2 } = await openAdminConn(epOwner, stationId, meshAddr2, jwtOwner);
+  assert.equal(hello2?.ok, true, JSON.stringify(hello2));
+
+  // Verify real startup recovery settled `t-orphan-1` -> `aborted` + `other: cut off by restart` + bound station notice!
+  const recoveredTurn = db.prepare(`SELECT outcome, detail, about_thread, about_n, about_ts FROM turns WHERE id = 't-orphan-1'`).get() as any;
+  assert.equal(recoveredTurn.outcome, "aborted");
+  assert.equal(recoveredTurn.detail, "other: cut off by restart");
+  assert.equal(recoveredTurn.about_thread, orphanThread);
+  assert.ok(recoveredTurn.about_n != null && typeof recoveredTurn.about_ts === "string" && recoveredTurn.about_ts.includes("."), `expected bound about notice: ${JSON.stringify(recoveredTurn)}`);
+  const orphanSess = db.prepare(`SELECT running FROM sessions WHERE key = ?`).get(orphanKey) as any;
+  assert.equal(orphanSess.running, 0, "recovered orphan session must reset running=0");
+  // Verify retrying the real startup-recovered turn succeeds with 200!
+  const retryRecovered = await adminCall(conn2, "POST", `/sessions/${encodeURIComponent(orphanKey)}/retry`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: orphanThread, seq: recoveredTurn.about_n })));
+  assert.equal(retryRecovered.status, 200, `retry on startup-recovered cutOffByRestart must be 200, got ${retryRecovered.status}: ${retryRecovered.body.toString()}`);
+
+  // Verify crashed-compaction session was reset to running=0, context_before=NULL!
+  const orphanCompactSess = db.prepare(`SELECT running, context_before FROM sessions WHERE key = ?`).get(orphanCompactKey) as any;
+  assert.equal(orphanCompactSess.running, 0, "orphaned compacting session must reset running=0 on startup");
+  assert.equal(orphanCompactSess.context_before, null, "orphaned compacting session must clear context_before on startup");
+
+  db.close();
+  await conn2.close(0, "done");
+  wd2.sendCtrl({ op: "stop" });
+  assert.equal(await wd2.waitExit(), 0, wd2.stderr());
 });

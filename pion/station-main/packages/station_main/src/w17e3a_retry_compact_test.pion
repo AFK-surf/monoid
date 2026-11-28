@@ -338,3 +338,61 @@ test "w17e3a-r2: localized station notices, Codex thread/turn correlation, cap_p
     panic("ActorWork::Resume must preserve internal=true and kind=resume across requeue")
   }
 }
+
+test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction lifecycle, station_lang, and full instructions" {
+  // P2-2: Codex compaction MUST reject terminal events before `turn/started` or with wrong turn.id/threadId
+  if codex_compaction_event_matches(Some("th-A"), Some("turn-1"), Some("th-A"), None) {
+    panic("Codex compaction must reject turn/completed when compact_turn_id is None")
+  }
+  if codex_compaction_event_matches(Some("th-A"), Some("turn-other"), Some("th-A"), Some("turn-compact-1")) {
+    panic("Codex compaction must reject mismatched turn.id")
+  }
+  if codex_compaction_event_matches(Some("th-B"), Some("turn-compact-1"), Some("th-A"), Some("turn-compact-1")) {
+    panic("Codex compaction must reject mismatched threadId")
+  }
+  if !codex_compaction_event_matches(Some("th-A"), Some("turn-compact-1"), Some("th-A"), Some("turn-compact-1")) {
+    panic("Codex compaction must accept exact matching threadId and turn.id")
+  }
+
+  // P1-2 & P2-3: PendingCompaction carries runner_conn_id, bootstrapping, and codex_turn_id;
+  // timeout releases queued human prompt and late stale turn.id from reclaimed runner is rejected!
+  let a = station_sessions::SessionActor::new("s-r3-timeout", "codex")
+  match a.begin_compaction("compact:9", "codex", 1000L, runner_conn_id=Some(42), bootstrapping=true) {
+    Ok(pc) => {
+      if pc.runner_conn_id != Some(42) || !pc.bootstrapping || pc.codex_turn_id is Some(_) {
+        panic("PendingCompaction lifecycle fields mismatch")
+      }
+      pc.bootstrapping = false
+      pc.codex_turn_id = Some("turn-old-compact")
+    }
+    Err(e) => panic("begin_compaction failed: " + e)
+  }
+  let _ = a.submit_input("next human prompt after timeout")
+  match a.check_compaction_timeout(1000L + station_sessions::COMPACT_TIMEOUT_MS + 5L) {
+    Some(_) => ()
+    None => panic("expected compaction timeout")
+  }
+  if a.compacting || a.pending_compaction is Some(_) || a.started_prompts.length() != 1 {
+    panic("timeout must release compaction and start queued human prompt")
+  }
+  if codex_turn_event_matches_session(Some("th-A"), Some("turn-old-compact"), Some("th-A"), Some("turn-new-human")) {
+    panic("late turn/completed from timed-out compaction must NOT match new human turn")
+  }
+
+  // P2-1: `station_ops::station_lang()` defaults to Zh and respects `set_station_lang`
+  let prev_lang = station_ops::station_lang()
+  let _ = station_ops::set_station_lang(Some("en"))
+  let en_empty = station_ops::tr(station_ops::station_lang(), "station.context.empty")
+  let _ = station_ops::set_station_lang(Some("zh"))
+  let zh_empty = station_ops::tr(station_ops::station_lang(), "station.context.empty")
+  let _ = station_ops::set_station_lang(match prev_lang { station_ops::Lang::En => Some("en"); station_ops::Lang::Zh => Some("zh") })
+  if en_empty == zh_empty || en_empty.length() == 0 || zh_empty.length() == 0 {
+    panic("station_ops::station_lang must switch between distinct en/zh strings")
+  }
+
+  // P1-4: Cold Claude launch instructions must be non-empty (reusing `session_instructions`)
+  let full_instr = station_drivers::session_instructions("/tmp/ws", None, "/tmp/repos", "/tmp/MEMORY.md", "", "", "st-1", true, true, "alice@example.com")
+  if full_instr.length() == 0 {
+    panic("cold Claude compact instructions must never be empty")
+  }
+}
