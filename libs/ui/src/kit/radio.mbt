@@ -74,7 +74,8 @@ pub fn radio_group(
     })
   })
   c.semantics(gi, RadioGroup, label~, disabled~)
-  { value: now, response: { ..any, id, changed: now != value } }
+  let response : @ui.Response = { ..any, id, changed: now != value }
+  { value: now, response }
 }
 
 ///|

@@ -2139,17 +2139,276 @@ fn WholeAgents::build_domain_handlers(
         Ok(id) => id
         Err(e) => return station_tools::error_reply(e)
       }
+      let fetch_ids = if tool == "chat_history" { parse_str_array_field(args, "fetch") } else { [] }
+      let fetched_json : Array[base_codec::Json] = []
+      if fetch_ids.length() > 0 {
+        let sess_row = match st.get_session(session) {
+          Ok(Some(sr)) => sr
+          _ => return station_tools::error_reply("unknown session: " + session)
+        }
+        let thr_row = match st.get_thread(tid) {
+          Ok(Some(tr)) => tr
+          _ => return station_tools::error_reply("unknown thread")
+        }
+        let dl_scope = caller_ws + "\u{0000}" + thr_row.surface
+        let max_fetch = if fetch_ids.length() > 20 { 20 } else { fetch_ids.length() }
+        let sep = self.jobs.fs.sep
+        let uploads_dir = nodepath::join(sep, [sess_row.workspace, "uploads"])
+        for fi in 0..<max_fetch {
+          let fid = fetch_ids[fi].trim()
+          if fid.length() == 0 {
+            continue
+          }
+          let matches = match st.db.all(
+            "SELECT n, file_id, name, size, url, resolved_at FROM deferred_files WHERE thread = ?1 AND file_id = ?2 ORDER BY n, ord LIMIT 50",
+            [sql_db::int64_to_json(tid), base_codec::json_str(fid)],
+          ) {
+            Ok(ms) => ms
+            Err(e) => return station_tools::error_reply("deferred_files lookup failed: " + e.message)
+          }
+          if matches.length() == 0 {
+            fetched_json.push(
+              base_codec::json_obj([
+                ("id", base_codec::json_str(fid)),
+                ("error", base_codec::json_str("no unfetched file " + fid + " in thread")),
+              ]),
+            )
+            continue
+          }
+          let fname = match matches[0].get("name") {
+            Some(base_codec::Json::Str(s)) => s
+            _ => "attachment"
+          }
+          let sanitize_seg = fn(raw : String) -> String {
+            let bs = raw.to_bytes()
+            let sb = StringBuilder::new()
+            let mut written = 0
+            for bi in 0..<bs.length() {
+              if written >= 120 {
+                break
+              }
+              let b = bs[bi].to_int()
+              if b < 32 || b == 127 || b == 47 || b == 92 {
+                sb.write_char('_')
+              } else {
+                sb.write_byte(bs[bi])
+              }
+              written = written + 1
+            }
+            let out = sb.to_string()
+            if out.length() == 0 || out == "." || out == ".." { "file" } else { out }
+          }
+          let safe_fid = sanitize_seg(fid)
+          let safe_nm = sanitize_seg(fname)
+          let dest_path = nodepath::join(sep, [uploads_dir, safe_fid + "-" + safe_nm])
+          let mut ready_path : Option[String] = None
+          let mut ready_size = 0L
+          match (self.jobs.fs.lstat)(dest_path) {
+            Some(ls) => if ls.is_file() {
+              ready_path = Some(dest_path)
+              ready_size = ls.size
+            }
+            None => ()
+          }
+          if ready_path.is_none() {
+            match st.db.first(
+              "SELECT path, size FROM downloaded_files WHERE scope = ?1 AND file_id = ?2 LIMIT 1",
+              [base_codec::json_str(dl_scope), base_codec::json_str(fid)],
+            ) {
+              Ok(Some(cr)) => match cr.get("path") {
+                Some(base_codec::Json::Str(cpath)) => match (self.jobs.fs.lstat)(cpath) {
+                  Some(cs) => if cs.is_file() {
+                    if cpath == dest_path {
+                      ready_path = Some(dest_path)
+                      ready_size = cs.size
+                    } else {
+                      match (self.jobs.fs.read_bytes)(cpath) {
+                        Some(raw_bytes) => {
+                          let _ = (self.jobs.fs.mkdir_p)(uploads_dir)
+                          let part = dest_path + ".part-" + now_ms.to_string()
+                          if (self.jobs.fs.write_bytes)(part, raw_bytes) && (self.jobs.fs.rename)(part, dest_path) {
+                            ready_path = Some(dest_path)
+                            ready_size = raw_bytes.length().to_int64()
+                          } else {
+                            let _ = (self.jobs.fs.remove_file)(part)
+                          }
+                        }
+                        None => ()
+                      }
+                    }
+                  }
+                  None => ()
+                }
+                _ => ()
+              }
+              _ => ()
+            }
+          }
+          match ready_path {
+            None => fetched_json.push(
+              base_codec::json_obj([
+                ("id", base_codec::json_str(fid)),
+                ("error", base_codec::json_str("platform download unavailable for " + fid)),
+              ]),
+            )
+            Some(local_path) => {
+              let att_obj = base_codec::json_obj([
+                ("name", base_codec::json_str(fname)),
+                ("path", base_codec::json_str(local_path)),
+                ("size", base_codec::json_int64(ready_size)),
+              ])
+              match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+                let unresolved = match t.all(
+                  "SELECT DISTINCT n FROM deferred_files WHERE thread = ?1 AND file_id = ?2 AND resolved_at IS NULL ORDER BY n LIMIT 50",
+                  [sql_db::int64_to_json(tid), base_codec::json_str(fid)],
+                ) {
+                  Ok(ns) => ns
+                  Err(e) => return Err(e)
+                }
+                for ui in 0..<unresolved.length() {
+                  let target_n = match unresolved[ui].get("n") {
+                    Some(base_codec::Json::Num(v, _)) => v.to_int64()
+                    _ => continue
+                  }
+                  let msg_row = match t.first(
+                    "SELECT author_kind, author, text, attachments, quotes FROM entries WHERE thread = ?1 AND n = ?2 AND kind = 'message' LIMIT 1",
+                    [sql_db::int64_to_json(tid), sql_db::int64_to_json(target_n)],
+                  ) {
+                    Ok(Some(mr)) => mr
+                    _ => continue
+                  }
+                  let latest_edit = match t.first(
+                    "SELECT text, attachments FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
+                    [sql_db::int64_to_json(tid), sql_db::int64_to_json(target_n)],
+                  ) {
+                    Ok(le) => le
+                    Err(_) => None
+                  }
+                  let cur_text = match latest_edit {
+                    Some(le) => match le.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                    None => match msg_row.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                  }
+                  let cur_att_raw = match latest_edit {
+                    Some(le) => match le.get("attachments") { Some(base_codec::Json::Str(s)) => s, _ => "[]" }
+                    None => match msg_row.get("attachments") { Some(base_codec::Json::Str(s)) => s, _ => "[]" }
+                  }
+                  let att_list : Array[base_codec::Json] = match base_codec::json_parse(cur_att_raw) {
+                    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(arr)) => arr
+                    _ => []
+                  }
+                  let mut has_path = false
+                  for ai in 0..<att_list.length() {
+                    match base_codec::json_get(att_list[ai], "path") {
+                      Some(base_codec::Json::Str(p)) => if p == local_path { has_path = true }
+                      _ => ()
+                    }
+                  }
+                  if !has_path {
+                    att_list.push(att_obj)
+                    let next_n = match t.first(
+                      "SELECT COALESCE(MAX(n), 0) + 1 AS next_n FROM entries WHERE thread = ?1",
+                      [sql_db::int64_to_json(tid)],
+                    ) {
+                      Ok(Some(nr)) => match nr.get("next_n") { Some(base_codec::Json::Num(v, _)) => v.to_int64(), _ => 1L }
+                      _ => 1L
+                    }
+                    let ak = match msg_row.get("author_kind") { Some(base_codec::Json::Str(s)) => s, _ => "person" }
+                    let au = match msg_row.get("author") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+                    let qt = match msg_row.get("quotes") { Some(v) => v, None => base_codec::json_null() }
+                    match t.run(
+                      "INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, attachments, quotes, target, at) VALUES (?1, ?2, 'edit', NULL, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                      [
+                        sql_db::int64_to_json(tid),
+                        sql_db::int64_to_json(next_n),
+                        base_codec::json_str(ak),
+                        base_codec::json_str(au),
+                        base_codec::json_str(cur_text),
+                        base_codec::json_str(base_codec::json_stringify(base_codec::json_arr(att_list))),
+                        qt,
+                        sql_db::int64_to_json(target_n),
+                        sql_db::int64_to_json(now_ms),
+                      ],
+                    ) {
+                      Ok(_) => ()
+                      Err(e) => return Err(e)
+                    }
+                  }
+                }
+                match t.run(
+                  "UPDATE deferred_files SET resolved_at = ?1 WHERE thread = ?2 AND file_id = ?3 AND resolved_at IS NULL",
+                  [sql_db::int64_to_json(now_ms), sql_db::int64_to_json(tid), base_codec::json_str(fid)],
+                ) {
+                  Ok(_) => ()
+                  Err(e) => return Err(e)
+                }
+                Ok(())
+              }) {
+                Ok(()) => fetched_json.push(
+                  base_codec::json_obj([
+                    ("id", base_codec::json_str(fid)),
+                    ("name", base_codec::json_str(fname)),
+                    ("size", base_codec::json_int64(ready_size)),
+                    ("path", base_codec::json_str(local_path)),
+                  ]),
+                )
+                Err(e) => fetched_json.push(
+                  base_codec::json_obj([
+                    ("id", base_codec::json_str(fid)),
+                    ("error", base_codec::json_str("failed to record fetched file: " + e.message)),
+                  ]),
+                )
+              }
+            }
+          }
+        }
+        let has_before = mcp_arg_str(args, "before").is_some()
+        let has_limit = match base_codec::json_get(args, "limit") {
+          Some(base_codec::Json::Num(_, _)) => true
+          _ => false
+        }
+        if !has_before && !has_limit {
+          return station_tools::text_reply(
+            base_codec::json_stringify(
+              base_codec::json_obj([
+                ("thread", base_codec::json_int64(tid)),
+                ("fetched", base_codec::json_arr(fetched_json)),
+              ]),
+            ),
+          )
+        }
+      }
       let limit = mcp_arg_int(args, "limit", 30)
-      match st.db.all(
-        "SELECT n, author_kind, author, text, at FROM entries WHERE thread = ?1 AND kind = 'message' ORDER BY n DESC LIMIT ?2",
-        [sql_db::int64_to_json(tid), base_codec::json_int(limit)],
-      ) {
+      let before_n : Option[Int64] = match mcp_arg_str(args, "before") {
+        Some(bts) => if bts.length() > 0 {
+          match st.db.first(
+            "SELECT n FROM entries WHERE thread = ?1 AND ts = ?2 AND kind = 'message' LIMIT 1",
+            [sql_db::int64_to_json(tid), base_codec::json_str(bts)],
+          ) {
+            Ok(Some(br)) => match br.get("n") { Some(base_codec::Json::Num(v, _)) => Some(v.to_int64()), _ => None }
+            _ => None
+          }
+        } else { None }
+        None => None
+      }
+      let query_res = match before_n {
+        Some(bn) => st.db.all(
+          "SELECT n, author_kind, author, text, at FROM entries WHERE thread = ?1 AND kind = 'message' AND n < ?2 ORDER BY n DESC LIMIT ?3",
+          [sql_db::int64_to_json(tid), sql_db::int64_to_json(bn), base_codec::json_int(limit)],
+        )
+        None => st.db.all(
+          "SELECT n, author_kind, author, text, at FROM entries WHERE thread = ?1 AND kind = 'message' ORDER BY n DESC LIMIT ?2",
+          [sql_db::int64_to_json(tid), base_codec::json_int(limit)],
+        )
+      }
+      match query_res {
         Ok(rows) => {
           let msgs : Array[base_codec::Json] = []
+          let page_ns : Array[base_codec::Json] = []
           let mut idx = rows.length() - 1
           while idx >= 0 {
             let r = rows[idx]
             let n_j = match r.get("n") { Some(v) => v, None => base_codec::json_int(0) }
+            page_ns.push(n_j)
             let ak_j = match r.get("author_kind") { Some(v) => v, None => base_codec::json_str("") }
             let au_j = match r.get("author") { Some(v) => v, None => base_codec::json_str("") }
             let tx_j = match r.get("text") { Some(v) => v, None => base_codec::json_str("") }
@@ -2165,14 +2424,42 @@ fn WholeAgents::build_domain_handlers(
             )
             idx = idx - 1
           }
-          return station_tools::text_reply(
-            base_codec::json_stringify(
+          let deferred_rows = if page_ns.length() > 0 {
+            match st.db.all(
+              "SELECT n, file_id, name, size FROM deferred_files WHERE thread = ?1 AND n IN (SELECT value FROM json_each(?2)) AND resolved_at IS NULL ORDER BY n, ord LIMIT 200",
+              [sql_db::int64_to_json(tid), base_codec::json_str(base_codec::json_stringify(base_codec::json_arr(page_ns)))],
+            ) {
+              Ok(drows) => drows
+              Err(_) => []
+            }
+          } else {
+            []
+          }
+          let deferred_json : Array[base_codec::Json] = []
+          for di in 0..<deferred_rows.length() {
+            let dr = deferred_rows[di]
+            let dn = match dr.get("n") { Some(v) => v, None => base_codec::json_int(0) }
+            let did = match dr.get("file_id") { Some(v) => v, None => base_codec::json_str("") }
+            let dname = match dr.get("name") { Some(v) => v, None => base_codec::json_str("") }
+            let dsize = match dr.get("size") { Some(v) => v, None => base_codec::json_int(0) }
+            deferred_json.push(
               base_codec::json_obj([
-                ("thread", base_codec::json_int64(tid)),
-                ("messages", base_codec::json_arr(msgs)),
+                ("n", dn),
+                ("id", did),
+                ("name", dname),
+                ("size", dsize),
               ]),
-            ),
-          )
+            )
+          }
+          let out_fields : Array[(String, base_codec::Json)] = [
+            ("thread", base_codec::json_int64(tid)),
+            ("messages", base_codec::json_arr(msgs)),
+            ("deferredFiles", base_codec::json_arr(deferred_json)),
+          ]
+          if fetched_json.length() > 0 {
+            out_fields.push(("fetched", base_codec::json_arr(fetched_json)))
+          }
+          return station_tools::text_reply(base_codec::json_stringify(base_codec::json_obj(out_fields)))
         }
         Err(e) => return station_tools::error_reply("chat_history failed: " + e.message)
       }

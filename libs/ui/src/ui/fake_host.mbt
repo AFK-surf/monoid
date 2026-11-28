@@ -3052,11 +3052,13 @@ fn FakeHost::script_step(self : FakeHost, step : String, arg : String) -> String
             // (NAME:SIZE so many bytes; NAME:WxH a picture so many pixels across and down, as a picker gives a
             // photo: its bytes a PNG's)
             let said = part[i + 1:].to_owned()
+            let said_len = said.length()
             let bytes = match said.find("x") {
-              Some(k) => picked_picture(digits_of(said.unsafe_substring(start=0, end=k)), digits_of(said.unsafe_substring(start=k + 1, end=said.length())))
+              Some(k) => picked_picture(digits_of(said.unsafe_substring(start=0, end=k)), digits_of(said.unsafe_substring(start=k + 1, end=said_len)))
               None => Bytes::make(digits_of(said), b'x')
             }
-            self.picks.push({ name: part[:i].to_owned(), bytes, held: 0, size: bytes.length().to_double(), src: "" })
+            let n_bytes = bytes.length()
+            self.picks.push({ name: part[:i].to_owned(), bytes, held: 0, size: n_bytes.to_double(), src: "" })
           }
           None => ()
         }

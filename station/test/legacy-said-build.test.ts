@@ -11,7 +11,7 @@ function database() {
   const dir = mkdtempSync(join(tmpdir(),"legacy-said-"));
   const path = join(dir,"store.db");
   const db = new DatabaseSync(path);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE entries(thread INTEGER NOT NULL,n INTEGER NOT NULL,kind TEXT NOT NULL,
       author_kind TEXT NOT NULL,author TEXT NOT NULL,letter TEXT,ts TEXT,text TEXT,PRIMARY KEY(thread,n));
     CREATE UNIQUE INDEX entries_ts ON entries(thread,ts) WHERE ts IS NOT NULL`);
@@ -30,9 +30,11 @@ for (const recursive of [false,true]) test(`a legacy message index follows previ
   const { db } = rig;
   const old = new DatabaseSync(rig.path);
   try {
-    old.exec(`PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
+    old.exec(`PRAGMA synchronous=NORMAL; PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
+    db.exec("BEGIN");
     for (let n = 1; n <= 400; n++) row(db,1,n,`p-${n}`);
     row(db,2,1,"other");
+    db.exec("COMMIT");
     installLegacySaid(db);
     assert.equal(publishLegacySaid(db),false);
     assert.deepEqual(legacySaidStep(db,16),{ ready: false,visited: 16 });
@@ -62,7 +64,7 @@ for (const recursive of [false,true]) for (const alias of ["rowid", "_rowid_", "
   test(`an old writer replacing a message by ${alias} keeps the lookup exact (recursive triggers ${recursive})`, () => {
     const rig = database(), { db } = rig, old = new DatabaseSync(rig.path);
     try {
-      old.exec(`PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
+      old.exec(`PRAGMA synchronous=NORMAL; PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
       row(db,1,1,"first"); row(db,2,2,"displaced"); row(db,3,3,"other");
       while (!legacySaidStep(db,2).ready) { /* prepare */ }
       assert.equal(publishLegacySaid(db),true);
@@ -99,7 +101,9 @@ test("the view seeks one chat and its requested message range", () => {
   const rig = database();
   const { db } = rig;
   try {
+    db.exec("BEGIN");
     for (let n = 1; n <= 200; n++) { row(db,1,n,`a-${n}`); row(db,2,n,`b-${n}`); }
+    db.exec("COMMIT");
     while (!legacySaidStep(db,16).ready) { /* prepare */ }
     assert.equal(publishLegacySaid(db),true);
     db.prepare("DELETE FROM entries WHERE thread=1 AND n<=20").run();
@@ -115,7 +119,9 @@ test("the view seeks one chat and its requested message range", () => {
 test("the latest prepared message does not visit the rest of a chat's history", () => {
   const rig = database(), { db } = rig;
   try {
+    db.exec("BEGIN");
     for (let n = 1; n <= 400; n++) { if (n <= 40) row(db,1,n,"short"); row(db,2,n,"long"); }
+    db.exec("COMMIT");
     assert.equal(legacySaidStep(db,16).ready, false);
     let visited = 0, fallback = 0;
     db.function("visit_prepared_message", (_n) => { visited++; return 1; });
@@ -137,7 +143,9 @@ test("the latest prepared message does not visit the rest of a chat's history", 
 test("the latest message does not reread an older prepared key for every changed latest key", () => {
   const rig = database(), { db } = rig;
   try {
+    db.exec("BEGIN");
     for (let n = 1; n <= 400; n++) { if (n <= 40) row(db,1,n,"short"); row(db,2,n,"long"); }
+    db.exec("COMMIT");
     while (!legacySaidStep(db,16).ready) { /* prepare */ }
     db.prepare("UPDATE entries SET author='changed' WHERE thread IN (1,2)").run();
     let visited = 0;
@@ -156,9 +164,11 @@ test("the latest lookup agrees with entries across interleaved replacements and 
   const rig = database(), { db } = rig;
   try {
     const put = db.prepare("INSERT OR REPLACE INTO entries(thread,n,kind,author_kind,author,letter,ts) VALUES(?,?,?,?,?,?,?)");
+    db.exec("BEGIN");
     put.run(1,-9223372036854775808n,"message","person","minimum",null,"min");
     put.run(2,9223372036854775807n,"message","agent","maximum",null,"max");
     for (let n=1;n<=60;n++) put.run(1,n,"message","person",`p-${n%3}`,null,`t-${n}`);
+    db.exec("COMMIT");
     while (!legacySaidStep(db,8).ready) { /* prepare */ }
     const latest = db.prepare(LEGACY_SAID_LATEST);
     const expected = db.prepare("SELECT n,author_kind,author FROM entries WHERE thread=? AND kind='message' AND letter IS NULL ORDER BY n DESC LIMIT 1");
@@ -267,7 +277,9 @@ test("each old-message batch seeks its next key range", () => {
   const rig = database();
   const { db } = rig;
   try {
+    db.exec("BEGIN");
     for (let n=1;n<=400;n++) { row(db,1,n,"a"); row(db,2,n,"b"); }
+    db.exec("COMMIT");
     let visited = 0,queries = 0;
     db.function("visit_old_said", () => { visited++; return 1; });
     const counted = new Proxy(db, { get(target, property) {
@@ -297,7 +309,9 @@ test("unread counts correct only the changed keys in the requested range", () =>
   const rig = database();
   const { db } = rig;
   try {
+    db.exec("BEGIN");
     for (let n=1;n<=128;n++) { row(db,1,n,`p-${n%4}`); row(db,2,n,"other"); }
+    db.exec("COMMIT");
     while (!legacySaidStep(db,16).ready) { /* prepare */ }
     assert.equal(publishLegacySaid(db),true);
     db.prepare("DELETE FROM entries WHERE thread=1 AND n IN (2,5,127)").run();
@@ -329,6 +343,7 @@ test("the prepared count and its corrections use the same snapshot", () => {
   const { db } = rig;
   const old = new DatabaseSync(rig.path);
   try {
+    old.exec("PRAGMA synchronous=NORMAL");
     row(db,1,1,"self");
     row(db,1,2,"other");
     while (!legacySaidStep(db,8).ready) { /* prepare */ }

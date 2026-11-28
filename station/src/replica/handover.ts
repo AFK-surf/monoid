@@ -63,7 +63,7 @@ export const ROWS_MOST = 500;
 
 /// What a chat's station sends after it was shown where it went: what was said there meanwhile, and what its agents
 /// were counted to have spent as it went (the usage counter reads a transcript a while after its turn ended).
-const AFTER_SHOWN: readonly ChatTable[] = ["entries", "letters", "deliveries", ...USAGE_TABLES];
+const AFTER_SHOWN: readonly ChatTable[] = ["entries", "letters", "deferred_files", "deliveries", ...USAGE_TABLES];
 
 /// Why a chat cannot go to station `name`: a chat of its key is live there (`keys`), one that went on there apart from
 /// this one (the copy a retirement taken back left there, 2026-11-14): never merged into, whichever had more.
@@ -141,6 +141,8 @@ export type Out = {
   batched?: boolean;
   /// The station it goes to supports project classification columns and `proposal_outcomes` (`handover.begin`'s `projects`).
   projects?: boolean;
+  /// The station it goes to carries `deferred_files` (`handover.begin`'s `deferredFiles`).
+  deferredFiles?: boolean;
 };
 /// A step of one on the station it goes to: being put in (`coming`), shown (`shown`), taken out (`dropped`).
 /// `stoppedFor`: it arrives stopped, waiting for that; `bindings`: the single-session connects (as known here) bound to
@@ -920,6 +922,7 @@ export class Handover {
         o.usage = begun?.usage === true;
         o.batched = begun?.rows === ROWS_BATCHED;
         o.projects = begun?.projects === true;
+        o.deferredFiles = begun?.deferredFiles === true;
         if (!o.projects) {
           let hasClassificationOrProposal = false;
           let scanAfter = 0;
@@ -1219,7 +1222,9 @@ export class Handover {
         const lastL = await pages("letters", t, from === null ? null : was.letters);
         o.sent[String(t)] = { entries: Math.max(was.entries, Number(lastE?.n ?? 0)), letters: Math.max(was.letters, Number(lastL?.n ?? 0)) };
         if (from === null) {
-          for (const table of [...BY_N.filter((x) => x === "closed_cards" || ((x === "entry_proposals" || x === "proposal_outcomes") && o.projects === true)), ...MARKS]) await pages(table, t);
+          for (const table of [...BY_N.filter((x) => x === "closed_cards" || ((x === "entry_proposals" || x === "proposal_outcomes") && o.projects === true) || (x === "deferred_files" && o.deferredFiles === true)), ...MARKS]) await pages(table, t);
+        } else if (o.deferredFiles === true) {
+          await pages("deferred_files", t, was.entries);
         }
       }
       if (threads.length < 200) break;
@@ -1277,7 +1282,7 @@ export class Handover {
     for (const k of o.keys) d.hub.releaseChat(k);
     if (!o.caught) {
       // (only where something was taken: one page a thread and session at most to know it)
-      const since = Object.entries(o.sent).some(([t, was]) => d.store.chatPage("entries", Number(t), was.entries, 1, o.keys).length > 0 || d.store.chatPage("letters", Number(t), was.letters, 1, o.keys).length > 0)
+      const since = Object.entries(o.sent).some(([t, was]) => d.store.chatPage("entries", Number(t), was.entries, 1, o.keys).length > 0 || d.store.chatPage("letters", Number(t), was.letters, 1, o.keys).length > 0 || (o.deferredFiles === true && d.store.chatPage("deferred_files", Number(t), was.entries, 1, o.keys).length > 0))
         || o.keys.some((k) => d.store.chatPage("deliveries", k, null, 1, o.keys).length > 0)
         || (o.usage === true && o.keys.some((k) => d.store.chatPage("usage", k, o.usageSent?.[k] ?? null, 1).length > 0));
       if (since) {
@@ -1683,7 +1688,7 @@ export class Handover {
     await this.#saveIn(i);
     const [room, git] = await Promise.all([(this.#d.room ?? roomHere(this.#d.data))().catch(() => ({ free: null, total: null })), (this.#d.hasGit ?? (async () => true))().catch(() => false)]);
     // (`usage`: its calls are taken with its rows, and a chat's handed before as `handover.usage` brings them)
-    return { ok: true, free: room.free, total: room.total ?? null, git, usage: true, rows: ROWS_BATCHED, projects: true };
+    return { ok: true, free: room.free, total: room.total ?? null, git, usage: true, rows: ROWS_BATCHED, projects: true, deferredFiles: true };
   }
 
   async #place(i: In, carry: string): Promise<Json> {

@@ -786,13 +786,14 @@ test "review P1: station_tag and person_tag Unicode parity with TS" {
   expect(str_starts_with(istanbul, "_"), "İstanbul lowercased & hashed: " + istanbul)
 }
 
-test "review P1: migrations 121-196 verbatim and session_instructions full template" {
+test "review P1: migrations 121-197 verbatim and session_instructions full template" {
   let notes = migration_notes()
-  expect(notes.length() == 76, "all 76 notes 121..196 present")
+  expect(notes.length() == 77, "all 77 notes 121..197 present")
   expect(str_contains(notes[10].1, "station_use {station, reason, timeout?}"), "note 131 verbatim station_use")
   expect(str_contains(notes[12].1, "device_use {device, reason, timeout?}"), "note 133 verbatim device_use")
   expect(str_contains(notes[14].1, "relays {action: list|add|remove, url?}"), "note 135 verbatim relays")
-  expect(notes[notes.length() - 1].0 == 196 && str_contains(notes[notes.length() - 1].1, "stillfail -C <repos_dir>/<repo> worktree add --detach"), "note 196 present")
+  expect(notes[notes.length() - 2].0 == 196 && str_contains(notes[notes.length() - 2].1, "stillfail -C <repos_dir>/<repo> worktree add --detach"), "note 196 present")
+  expect(notes[notes.length() - 1].0 == 197 && str_contains(notes[notes.length() - 1].1, "Unfetched files"), "note 197 present")
 
   let inst = session_instructions("/ws/1", None, "/repos", "/mem/MEMORY.md", "", "", "gt1", true, true, "alice@example.com")
   expect(str_contains(inst, "End every turn with one state, given as kind on your last chat_post or with chat_state:"), "turn-ending section present")

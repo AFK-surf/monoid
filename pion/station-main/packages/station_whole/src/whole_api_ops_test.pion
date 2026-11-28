@@ -1,0 +1,515 @@
+// Wave 17C-2 R2 production HTTP API security, isolation, redaction, Vault, and honest-501 unit tests.
+
+import "base_codec"
+import "form"
+import "http1"
+import "lock"
+import "station_api"
+import "station_drivers"
+import "station_http"
+import "station_jobs"
+import "station_ops"
+import "station_screens"
+import "station_vault"
+
+fn make_test_api_req_as(
+  method : String,
+  path : String,
+  viewer : station_api::Viewer,
+) -> station_api::ApiRequest {
+  let (norm_path, norm_query_raw, norm_query) = station_http::parse_request_target(path)
+  let http_req = station_http::HttpRequest::{
+    conn_id: 0,
+    method: method,
+    raw_target: path,
+    path: norm_path,
+    query_raw: norm_query_raw,
+    query: norm_query,
+    version: http1::Version::Http11,
+    headers: [],
+    body: Bytes::new(0),
+    peer: "",
+    raw_head: Bytes::new(0),
+  }
+  station_api::ApiRequest::from_http(http_req, viewer)
+}
+
+fn make_test_viewer(
+  email : String,
+  sub : String,
+  ws : String,
+  home : Bool,
+  role : String,
+) -> station_api::Viewer {
+  station_api::Viewer::{
+    email: email,
+    sub: sub,
+    name: email,
+    workspace: ws,
+    home: home,
+    role: role,
+    device: Some("dev-1"),
+    lock_base: None,
+    lock_proof: None,
+  }
+}
+
+fn make_test_api_req(method : String, path : String) -> station_api::ApiRequest {
+  make_test_api_req_as(method, path, make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner"))
+}
+
+fn make_mem_whole_api_fixture_full(
+  seen_store_override : Option[station_api::SeenStore] = None,
+  job_fs_override : Option[station_jobs::FsPort] = None,
+) -> (WholeStore, WholeAgents, WholeApi, station_drivers::RuntimeUpdatesManager, station_ops::MemFs, WholeApiRuntimeHooks, WholeApiRuntimePort) {
+  let mem_fs = station_ops::MemFs::new()
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", "{}", 384)
+  let ops_fs = mem_fs.ops()
+  let cfg_file = match station_ops::ConfigFile::open(ops_fs, "/tmp/w17c2-api-test", sep="/") {
+    Ok(c) => c
+    Err(e) => panic("ConfigFile::open failed: " + station_ops::config_err_msg(e))
+  }
+  let store = WholeStore::new_pre_handover_with_sep("/tmp/w17c2-api-test", "/")
+  store.vault_store = Some(station_vault::VaultStore::in_memory())
+  let job_fs = match job_fs_override {
+    Some(f) => f
+    None => mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  }
+  let agents_cfg = WholeAgentsConfig::{
+    data_dir: "/tmp/w17c2-api-test",
+    assets_dir: "/tmp/w17c2-api-test/assets",
+    runner_bin: "/usr/bin/true",
+    mcp_port: 0,
+    home_ws: "ws-main",
+  }
+  let agents = WholeAgents::new_with_deps(
+    agents_cfg,
+    job_fs,
+    wc_noop_proc_backend(),
+    fn(n : Int) -> Result[Bytes, String] {
+      let b = Bytes::new(n)
+      for i in 0..<n { b[i] = (i % 251 + 1).to_byte() }
+      Ok(b)
+    },
+  )
+  let updates = station_drivers::RuntimeUpdatesManager::new()
+  let auth_policy = PeerAuthPolicy::{
+    station_id: "st-w17c2",
+    station_build: "9.9.9",
+    home_workspace: "ws-main",
+    allowed_workspaces: ["ws-main", "ws-other"],
+    verify_fn: None,
+  }
+  let drive_fs = station_screens::MemDriveFs::new().fs()
+  let drive = station_screens::Drive::new(
+    drive_fs,
+    ["/tmp/w17c2-api-test"],
+    ["/tmp/w17c2-api-test/data"],
+    false,
+    "/tmp/w17c2-api-test/trash",
+    station_screens::TrashKind::Freedesktop,
+  )
+  let screens = station_screens::ScreenHub::new()
+  let seen_store = match seen_store_override {
+    Some(s) => s
+    None => station_api::SeenStore::empty()
+  }
+  let events = station_api::EventsHub::with_visibility(
+    "st-w17c2",
+    station_api::EventKeeps::default(),
+    Some(seen_store),
+    Some(fn(v : station_api::Viewer, vid : String) -> Bool {
+      match store.vault_store {
+        Some(vs) => vs.in_vault(v.workspace, v.sub, vid)
+        None => false
+      }
+    }),
+  )
+  let hooks = WholeApiRuntimeHooks::new()
+  hooks.read_only_handover_cell[0] = false
+  let port = WholeApiRuntimePort::in_memory()
+  let di_host = station_api::ApiHost::{
+    read_op: fn(op : String, req : station_api::ApiRequest, args : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      match dispatch_extra_read_op(op, req, args, agents, seen_store, port) {
+        Some(res) => res
+        None => Err(station_api::ApiError::new(404, "unsupported read op: " + op))
+      }
+    },
+    call: fn(op : String, req : station_api::ApiRequest, params : Array[String], body : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      match dispatch_extra_call_op(
+        op,
+        req,
+        params,
+        body,
+        store,
+        agents,
+        auth_policy,
+        seen_store,
+        drive,
+        screens,
+        events,
+        updates,
+        Some(cfg_file),
+        None,
+        hooks,
+        port,
+        1700000000000L,
+      ) {
+        Some(res) => res
+        None => Err(station_api::ApiError::new(404, "unsupported api op: " + op))
+      }
+    },
+    overview: fn(_v : station_api::Viewer, _l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+      Ok(base_codec::json_obj([]))
+    },
+    host_sample: fn(_l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+      Ok(base_codec::json_obj([]))
+    },
+    search: fn(_q : String, _a : station_api::SearchAsker, _k : Array[String], _lim : Int, _off : Int, _arch : Bool) -> Result[station_api::SearchResult, station_api::ApiError] {
+      Ok(station_api::SearchResult::{ groups: [], building: false })
+    },
+    events: Some(events),
+    usage_reading_all: fn() -> Bool { false },
+    session_exists: fn(_k : String) -> Bool { true },
+    held_sessions: fn() -> Array[String] { [] },
+    dev_enabled: false,
+  }
+  let api = WholeApi::new_with_ports(
+    auth_policy,
+    drive,
+    ["/tmp/w17c2-api-test"],
+    None,
+    screens,
+    events,
+    seen_store,
+    di_host,
+  )
+  api.read_only_handover = false
+  api.hooks.read_only_handover_cell = hooks.read_only_handover_cell
+  (store, agents, api, updates, mem_fs, hooks, port)
+}
+
+fn make_mem_whole_api_fixture(
+  seen_store_override : Option[station_api::SeenStore] = None,
+) -> (WholeStore, WholeAgents, WholeApi, station_drivers::RuntimeUpdatesManager, station_ops::MemFs, WholeApiRuntimeHooks) {
+  let (store, agents, api, updates, mem_fs, hooks, _) = make_mem_whole_api_fixture_full(seen_store_override=seen_store_override)
+  (store, agents, api, updates, mem_fs, hooks)
+}
+
+test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
+  let (_, _, api, _, _, _) = make_mem_whole_api_fixture()
+  let req = make_test_api_req("POST", "/test")
+
+  // All read_ops are now wired (zero 501 read_ops remain in Wave 17C-3A).
+  let unimplemented_call_ops : Array[String] = [
+    "updates.install",
+    "updates.check",
+    "updates.wait",
+    "network.station.restart",
+    "workspaces.join",
+    "copies.restore",
+    "copies.s3.test",
+    "xshare.hosts.put",
+    "accounts.profiles.createKeyed",
+    "accounts.profiles.createMachine",
+    "accounts.profiles.pace",
+    "accounts.profiles.resetQuota",
+    "accounts.profiles.quota",
+    "accounts.profiles.login",
+    "accounts.profiles.login.get",
+    "accounts.profiles.login.delete",
+    "mcpServers.reloadAll",
+    "mcpServers.reloadOne",
+    "screens.browser.open",
+    "links.preview",
+    "feedback.report",
+    "signins.fill",
+    "logins.machine.list",
+    "hub.session.stop",
+    "hub.session.retry",
+    "hub.session.compact",
+    "vault.grants.post",
+    "vault.denials.post",
+    "vault.saves.post",
+    "vault.described.post",
+    "vault.removed.post",
+    "vault.browses.post",
+    "vault.plain.grants.post",
+    "vault.plain.denials.post",
+    "vault.plain.saves.post",
+    "vault.plain.described.post",
+    "vault.plain.removed.post",
+    "projects.rename",
+    "projects.merge",
+  ]
+  for i in 0..<unimplemented_call_ops.length() {
+    let op = unimplemented_call_ops[i]
+    match (api.admin.host.call)(op, req, ["p1", "p2"], base_codec::json_obj([])) {
+      Err(e) => if e.status != 501 { panic("expected 501 for call_op " + op + ", got " + e.status.to_string()) }
+      Ok(_) => panic("unimplemented call_op returned fake 200: " + op)
+    }
+  }
+}
+
+test "wave17c2 R4: vault structured JSON errors, ConfigFile::try_update atomic abort, drive.roots.put OS validation, and production thread event WaitingTracker reset" {
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
+  let alice = make_test_viewer("alice@example.com", "u-alice", "ws-main", true, "owner")
+  let joined_member = make_test_viewer("bob@example.com", "u-bob", "ws-other", false, "member")
+
+  // 1. Pre-handover returns structured 503 JSON with `code: "vault_handover"`
+  hooks.read_only_handover_cell[0] = true
+  match (api.admin.host.call)("vault.vaults.PUT", make_test_api_req_as("PUT", "/vault/vaults", alice), [], base_codec::json_obj([])) {
+    Err(e) => {
+      if e.status != 503 { panic("expected 503") }
+      match e.raw_body {
+        Some(b) => if json_field_str(b, "code") != Some("vault_handover") { panic("missing structured vault_handover code") }
+        None => panic("expected structured raw_body on vault error")
+      }
+    }
+    Ok(_) => panic("expected 503")
+  }
+
+  // 2. Missing lock returns structured 409 JSON with `code: "vault_needs_lock"`
+  hooks.read_only_handover_cell[0] = false
+  match (api.admin.host.call)("vault.vaults.GET", make_test_api_req_as("GET", "/vault/vaults", alice), [], base_codec::json_obj([])) {
+    Err(e) => {
+      if e.status != 409 { panic("expected 409") }
+      match e.raw_body {
+        Some(b) => if json_field_str(b, "code") != Some("vault_needs_lock") { panic("missing structured vault_needs_lock code") }
+        None => panic("expected structured raw_body on vault_needs_lock")
+      }
+    }
+    Ok(_) => panic("expected 409")
+  }
+
+  // 3. `memory` is now wired in Wave 17C-3A (`{global: {path, text}, skills: [...]}`)
+  match (api.admin.host.read_op)("memory", make_test_api_req_as("GET", "/memory", alice), base_codec::json_obj([])) {
+    Ok(res) => {
+      if base_codec::json_get(res, "global").is_none() || base_codec::json_get(res, "skills").is_none() {
+        panic("memory must return {global, skills}")
+      }
+    }
+    Err(e) => panic("memory failed: " + e.message)
+  }
+
+  // 4. `ConfigFile::try_update` aborts atomically on Err without writing disk or firing listeners,
+  //    AND while watched (`enable_virtual_watch`), unconditionally re-reads latest disk snapshot
+  //    (preserving undelivered external edits and refusing corrupt JSON without overwriting disk).
+  let cfg_file = match station_ops::ConfigFile::open(mem_fs.ops(), "/tmp/w17c2-api-test") {
+    Ok(c) => c
+    Err(_) => panic("failed to open ConfigFile in fixture")
+  }
+  let mut listener_calls = 0
+  let _ = cfg_file.listen(fn(_j : base_codec::Json) -> Unit { listener_calls = listener_calls + 1 })
+  let edits_before = cfg_file.edits
+  match cfg_file.try_update(fn(_raw : base_codec::Json) -> Result[base_codec::Json, String] {
+    Err("rejected by validation")
+  }) {
+    Err(station_ops::ConfigError::CheckFailed(_)) => ()
+    _ => panic("expected CheckFailed from ConfigFile::try_update")
+  }
+  if cfg_file.edits != edits_before || listener_calls != 0 {
+    panic("ConfigFile::try_update must not write disk or fire listeners on Err")
+  }
+  cfg_file.enable_virtual_watch()
+  // External process writes to disk before fs.watch delivers an event:
+  let _ = (mem_fs.ops().write_bytes)("/tmp/w17c2-api-test/config.json", "{\"externalKey\":\"from-outside\"}\n".to_bytes(), 384)
+  match cfg_file.try_update(fn(raw : base_codec::Json) -> Result[base_codec::Json, String] {
+    Ok(json_obj_set(raw, "localKey", Some(base_codec::json_str("from-api"))))
+  }) {
+    Ok(_) => {
+      match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+        Ok(b) => {
+          let txt = b.to_string()
+          if !txt.contains("externalKey") || !txt.contains("from-outside") || !txt.contains("localKey") || !txt.contains("from-api") {
+            panic("watched try_update overwrote external disk edit: " + txt)
+          }
+        }
+        Err(_) => panic("missing config.json after watched try_update")
+      }
+    }
+    Err(_) => panic("watched try_update failed on valid external disk JSON")
+  }
+  // External process writes corrupt JSON before fs.watch delivers an event:
+  let corrupt_txt = "{corrupt-json"
+  let _ = (mem_fs.ops().write_bytes)("/tmp/w17c2-api-test/config.json", corrupt_txt.to_bytes(), 384)
+  match cfg_file.try_update(fn(raw : base_codec::Json) -> Result[base_codec::Json, String] {
+    Ok(json_obj_set(raw, "shouldNotWrite", Some(base_codec::json_bool(true))))
+  }) {
+    Err(station_ops::ConfigError::InvalidJson(_)) => {
+      match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+        Ok(b) => if b.to_string() != corrupt_txt { panic("watched try_update must NOT overwrite corrupt disk JSON") }
+        Err(_) => panic("missing config.json")
+      }
+    }
+    _ => panic("watched try_update must fail with InvalidJson on corrupt disk JSON")
+  }
+  // Restore valid config.json for subsequent assertions
+  let _ = (mem_fs.ops().write_bytes)("/tmp/w17c2-api-test/config.json", "{}\n".to_bytes(), 384)
+
+  // 5. `drive.roots.put`: non-manager 403, relative 400, traversal 400, POSIX Windows drive-letter 400, normalization
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", joined_member), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/ok")]))])) {
+    Err(e) => if e.status != 403 { panic("non-manager drive.roots.put must return 403") }
+    Ok(_) => panic("non-manager drive.roots.put must be rejected")
+  }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", alice), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("relative/path")]))])) {
+    Err(e) => if e.status != 400 { panic("relative drive root must return 400") }
+    Ok(_) => panic("relative drive root must be rejected")
+  }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", alice), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/tmp/../etc")]))])) {
+    Err(e) => if e.status != 400 { panic("traversal drive root must return 400") }
+    Ok(_) => panic("traversal drive root must be rejected")
+  }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", alice), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/tmp\\..\\etc")]))])) {
+    Err(e) => if e.status != 400 { panic("backslash traversal drive root must return 400") }
+    Ok(_) => panic("backslash traversal drive root must be rejected")
+  }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", alice), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("C:\\Users\\alice")]))])) {
+    Err(e) => if e.status != 400 { panic("Windows drive-letter path must be rejected 400 on POSIX") }
+    Ok(_) => panic("Windows drive-letter path must be rejected on POSIX")
+  }
+
+  // 6. EventsHub::emit production-format `"thread"` `{id, entries}` (no `key`/`session`) resets WaitingTracker
+  let mut live_waiting : Array[station_api::WaitingSessionInfo] = []
+  let wt = station_api::WaitingTracker::new(station_api::WaitingStorePort::{
+    waiting_for_people: fn(_since, _lim) { live_waiting },
+    waiting_for_person_of: Some(fn(k, _since) {
+      for i in 0..<live_waiting.length() {
+        if live_waiting[i].key == k { return Some(live_waiting[i]) }
+      }
+      None
+    }),
+  })
+  api.waiting_trackers.set("ws-main", wt)
+  api.events.on_emit = Some(fn(ev : String, data : base_codec::Json) -> Unit {
+    if ev == "turn" || ev == "session" || ev == "thread" || ev == "sessionRemoved" {
+      match base_codec::json_get(data, "key") {
+        Some(base_codec::Json::Str(k)) => {
+          if k.length() > 0 { api.note_waiting_session(k) } else { api.note_waiting_all() }
+        }
+        _ => api.note_waiting_all()
+      }
+    }
+  })
+  if wt.read(0L, 10).length() != 0 { panic("expected empty waiting initially") }
+  // Production `"thread"` event payload has `{id, entries}` with no `key` field
+  live_waiting = [station_api::WaitingSessionInfo::{ key: "s-live", title: Some("Need"), need: Some("approve"), ended_at: 5000L }]
+  let prod_thread_ev = base_codec::json_obj([
+    ("id", base_codec::json_int(42)),
+    ("entries", base_codec::json_arr([base_codec::json_obj([("kind", base_codec::json_str("state")), ("state", base_codec::json_str("need_human"))])])),
+  ])
+  let _ = api.events.emit("thread", prod_thread_ev, station_api::EventTarget::everyone(), 5000L, None)
+  if wt.read(0L, 10).length() != 1 { panic("expected WaitingTracker to reset and detect need_human after production thread event") }
+  live_waiting = []
+  let prod_thread_done = base_codec::json_obj([
+    ("id", base_codec::json_int(42)),
+    ("entries", base_codec::json_arr([base_codec::json_obj([("kind", base_codec::json_str("state")), ("state", base_codec::json_str("all_done"))])])),
+  ])
+  let _ = api.events.emit("thread", prod_thread_done, station_api::EventTarget::everyone(), 6000L, None)
+  if wt.read(0L, 10).length() != 0 { panic("expected WaitingTracker to reset and clear after production thread exit event") }
+}
+
+test "wave17c2 redaction (agentEnv, copies.settings), workspace drive.roots.put, presets RMW, and cross-ws rejection" {
+  // SeenStore: session "s-main" & thread 10 belong to ws-main; "s-other" & thread 20 belong to ws-other
+  let seen = station_api::SeenStore::{
+    session_exists: fn(k : String) -> Bool { k == "s-main" || k == "s-other" },
+    session_ws: fn(k : String) -> Option[Option[String]] {
+      if k == "s-main" { Some(Some("ws-main")) } else if k == "s-other" { Some(Some("ws-other")) } else { None }
+    },
+    thread_exists: fn(tid : Int) -> Bool { tid == 10 || tid == 20 },
+    thread_sessions: fn(tid : Int) -> Array[String] {
+      if tid == 10 { ["s-main"] } else if tid == 20 { ["s-other"] } else { [] }
+    },
+    job_session: fn(_id : String) -> Option[String] { None },
+    handed_to: fn(_k : String) -> Option[station_api::HandedRecord] { None },
+  }
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture(seen_store_override=Some(seen))
+  let home_owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  let joined_owner = make_test_viewer("j@example.com", "u-joined", "ws-other", false, "owner")
+
+  // 1. Cross-workspace rejection on session/thread ops
+  match (api.admin.host.read_op)("session.transcript", make_test_api_req_as("GET", "/sessions/s-other/transcript", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-other"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws session.transcript must return 404") }
+    Ok(_) => panic("cross-ws session.transcript must be rejected")
+  }
+  match (api.admin.host.read_op)("thread.letters", make_test_api_req_as("GET", "/threads/20/letters", home_owner), base_codec::json_obj([("id", base_codec::json_str("20"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws thread.letters must return 404") }
+    Ok(_) => panic("cross-ws thread.letters must be rejected")
+  }
+  match (api.admin.host.call)("hub.session.delete", make_test_api_req_as("DELETE", "/sessions/s-other", home_owner), ["s-other"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 404 { panic("cross-ws hub.session.delete must return 404") }
+    Ok(_) => panic("cross-ws hub.session.delete must be rejected")
+  }
+  match (api.admin.host.call)("marks.thread.title", make_test_api_req_as("PUT", "/threads/20/title", home_owner), ["20"], base_codec::json_obj([("title", base_codec::json_str("hijack"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws marks.thread.title must return 404") }
+    Ok(_) => panic("cross-ws marks.thread.title must be rejected")
+  }
+
+  // 2. agentEnv.put parse_env_text_lines + secret masking
+  match (api.admin.host.call)("agentEnv.put", make_test_api_req_as("PUT", "/agent-env", home_owner), [], base_codec::json_obj([("text", base_codec::json_str("FOO=bar\nMY_SECRET_TOKEN=tok_abcdef99"))])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("tok_abcdef99") { panic("agentEnv.put leaked secret token") }
+    }
+    Err(e) => panic("agentEnv.put failed: " + e.message)
+  }
+
+  // 3. drive.roots.put home vs joined workspace isolation + normalization + live callback
+  let mut updated_ws = ""
+  hooks.on_drive_roots_changed = Some(fn(ws : String, _roots : Array[String]) -> Unit { updated_ws = ws })
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", home_owner), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/home-dir//sub/"), base_codec::json_str("/home-dir/sub")]))])) {
+    Ok(res) => {
+      if updated_ws != "ws-main" { panic("expected home drive roots hook") }
+      match base_codec::json_get(res, "roots") {
+        Some(base_codec::Json::Arr(xs)) => if xs.length() != 1 { panic("expected normalized deduped drive roots") }
+        _ => panic("missing roots array")
+      }
+    }
+    Err(e) => panic("home drive.roots.put failed: " + e.message)
+  }
+  match (api.admin.host.call)("drive.roots.put", make_test_api_req_as("PUT", "/drive/roots", joined_owner), [], base_codec::json_obj([("roots", base_codec::json_arr([base_codec::json_str("/joined-dir")]))])) {
+    Ok(_) => if updated_ws != "ws-other" { panic("expected joined drive roots hook") }
+    Err(e) => panic("joined drive.roots.put failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(cfg_b) => {
+      let cfg_txt = cfg_b.to_string()
+      if !cfg_txt.contains("/home-dir/sub") || !cfg_txt.contains("ws-other") || !cfg_txt.contains("/joined-dir") {
+        panic("config.json must isolate drive.roots and drive.workspaces[ws-other], got: " + cfg_txt)
+      }
+    }
+    Err(_) => panic("config.json missing")
+  }
+
+  // 5. presets read-modify-write & delete
+  let _ = (api.admin.host.call)("presets.create", make_test_api_req_as("POST", "/presets", home_owner), [], base_codec::json_obj([("id", base_codec::json_str("p1")), ("name", base_codec::json_str("One"))]))
+  let _ = (api.admin.host.call)("presets.create", make_test_api_req_as("POST", "/presets", home_owner), [], base_codec::json_obj([("id", base_codec::json_str("p2")), ("name", base_codec::json_str("Two"))]))
+  match (api.admin.host.call)("presets.list", make_test_api_req_as("GET", "/presets", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "presets") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 2 { panic("presets RMW must keep both p1 and p2") }
+      _ => panic("missing presets")
+    }
+    Err(e) => panic("presets.list failed: " + e.message)
+  }
+  let _ = (api.admin.host.call)("presets.item.DELETE", make_test_api_req_as("DELETE", "/presets/p1", home_owner), ["p1"], base_codec::json_obj([]))
+  match (api.admin.host.call)("presets.list", make_test_api_req_as("GET", "/presets", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "presets") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 1 || json_field_str(xs[0], "id") != Some("p2") { panic("presets DELETE must remove p1 and keep p2") }
+      _ => panic("missing presets")
+    }
+    Err(e) => panic("presets.list after delete failed: " + e.message)
+  }
+
+  // 6. hub.thread.create generates unique random keys (not timestamp-only)
+  let k1 = match (api.admin.host.call)("hub.thread.create", make_test_api_req_as("POST", "/threads", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match json_field_str(res, "key") { Some(k) => k, None => "" }
+    Err(e) => panic("hub.thread.create 1 failed: " + e.message)
+  }
+  let k2 = match (api.admin.host.call)("hub.thread.create", make_test_api_req_as("POST", "/threads", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match json_field_str(res, "key") { Some(k) => k, None => "" }
+    Err(e) => panic("hub.thread.create 2 failed: " + e.message)
+  }
+  if k1 == k2 || k1 == "c-1700000000000" {
+    panic("hub.thread.create must generate unique random keys, got: " + k1 + ", " + k2)
+  }
+}

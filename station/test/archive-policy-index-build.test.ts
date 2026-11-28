@@ -13,7 +13,9 @@ const insert = (db: DatabaseSync) => db.prepare("INSERT INTO archive_policy VALU
 const keys = (db: DatabaseSync, table: string) => db.prepare(`SELECT CAST(id AS TEXT) id,ws FROM ${table} ORDER BY id`).all().map(r => ({...r}));
 function seed(db: DatabaseSync, n: number) {
   const put = insert(db);
+  db.exec("BEGIN");
   for (let id=1; id<=n; id++) put.run(id,id,`policy${id}`,`author${id}`,`summary${id}`,id%3 === 0 ? null : `ws${id%3}`);
+  db.exec("COMMIT");
 }
 function finish(db: DatabaseSync, limit=7) {
   let batches=0;
@@ -73,8 +75,9 @@ for (const journal of ["DELETE","WAL"]) for (const recursive of [false,true]) {
     const dir=mkdtempSync(join(tmpdir(),"archive-policy-build-")),path=join(dir,"store.db");
     const db=new DatabaseSync(path),old=new DatabaseSync(path);
     try {
-      db.exec(`${schema} PRAGMA journal_mode=${journal}`);
-      old.exec(`PRAGMA recursive_triggers=${recursive ? 1 : 0}`);
+      const sync = journal === "WAL" ? "NORMAL" : "OFF";
+      db.exec(`${schema} PRAGMA journal_mode=${journal}; PRAGMA synchronous=${sync}`);
+      old.exec(`PRAGMA synchronous=${sync}; PRAGMA recursive_triggers=${recursive ? 1 : 0}`);
       const put=insert(old),replace=old.prepare("INSERT OR REPLACE INTO archive_policy VALUES(?,?,?,?,?,?)");
       seed(old,100);
       installArchivePolicyIndex(db);
@@ -153,7 +156,9 @@ for (const winner of ["old writes","native index","another opener"] as const) {
     const dir=mkdtempSync(join(tmpdir(),"archive-policy-race-")),path=join(dir,"store.db");
     const db=new DatabaseSync(path),old=new DatabaseSync(path,{timeout:5000});
     try {
-      db.exec(`${schema} PRAGMA journal_mode=WAL`); seed(db,winner === "old writes" ? 40 : 100);
+      db.exec(`${schema} PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL`);
+      old.exec("PRAGMA synchronous=NORMAL");
+      seed(db,winner === "old writes" ? 40 : 100);
       let intercepted=false;
       const observed=new Proxy(db,{get(target,property) {
         if (property === "exec") return (sql: string) => {

@@ -232,6 +232,8 @@ export type ThreadRow = {
   projectLocked?: boolean;
   /// Up to 3 short tags (omitted when empty).
   tags?: string[];
+  /// True when at least one unresolved platform file exists in `deferred_files` for this thread.
+  hasDeferred?: boolean;
 };
 
 /// The name a chat's agent gave it (Store::autoTitle).
@@ -309,7 +311,7 @@ export type CardChoice = { thread: number; n: number; ts: string | null; where: 
 export type CardAnswer = { question: MessageRow; card: Json; by: string; at: number; answer: MessageRow | null };
 
 /// A message a session has yet to read, with where it was said and how the session hears that thread.
-export type PendingMessage = { message: MessageRow; surface: string; channel: string; threadTs: string; connect: string };
+export type PendingMessage = { message: MessageRow; surface: string; channel: string; threadTs: string; connect: string; hasDeferred?: boolean };
 
 /// A message a session was handed, by where it is kept: a thread's entry, or a letter of its own log (`apart`,
 /// schema.ts LETTERS), each numbered in its own.
@@ -671,6 +673,7 @@ export function toThread(r: Json): ThreadRow {
     ...(typeof r.project === "string" ? { project: r.project } : {}),
     ...(r.project_locked === 1 ? { projectLocked: true } : {}),
     ...(tags !== undefined ? { tags } : {}),
+    ...(r.has_deferred === 1 ? { hasDeferred: true } : {}),
   };
 }
 

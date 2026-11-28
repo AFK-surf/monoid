@@ -789,7 +789,6 @@ export class AccountDb {
   chatCounted<P>(read: ChatRead<P>, p: P): SqlRow[] { return this.#chats.chatCounted(read, p); }
   heldChat(station: string, id: string): J { return this.#chats.heldChat(station, id); }
   chat(station: string, id: string): J { return this.#chats.chat(station, id); }
-  chatNamed(station: string, id: string): { row: J; archived: boolean } | undefined { return this.#chats.chatNamed(station, id); }
   chatOfThread(station: string, thread: number): J { return this.#chats.chatOfThread(station, thread); }
   chatsOf(station: string, of: { thread: number } | { session: string }): J[] { return this.#chats.chatsOf(station, of); }
   chatOfSession(station: string, session: string): J { return this.#chats.chatOfSession(station, session); }

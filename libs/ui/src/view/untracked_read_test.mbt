@@ -98,6 +98,8 @@ test "untracked read bars count distinct non-test places per file and default to
   assert_eq(@view.untracked_read_fault(second, [first], "fault"), Some("fault"))
   assert_eq(@view.untracked_read_fault("example/src/read_test.mbt:1", [], "fault"), None)
   assert_eq(@view.untracked_read_fault("example/src/read_wbtest.mbt:1", [], "fault"), None)
+  assert_eq(@view.untracked_read_fault("example/src/read_test.pion:1", [], "fault"), None)
+  assert_eq(@view.clock_read_fault("drawn_at", "example/src/read_test.pion:1", []), None)
 }
 
 ///|

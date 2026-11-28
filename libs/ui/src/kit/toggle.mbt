@@ -257,7 +257,8 @@ pub fn toggle_group(
   })
   c.semantics(gi, Group, label~, disabled~)
   let changed = now.length() != value.length() || now.iter().any(fn(v) { !value.contains(v) })
-  { value: now, response: { ..any, id, changed: changed } }
+  let response : @ui.Response = { ..any, id, changed: changed }
+  { value: now, response }
 }
 
 ///|

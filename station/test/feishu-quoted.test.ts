@@ -90,8 +90,17 @@ for (const threadMode of [false, true]) {
       assert.equal(rows.length, 1);
       assert.equal(rows[0]!.ts, "om_q");
       assert.equal(rows[0]!.text, "@Codex 机器人 这张图是什么");
-      assert.deepEqual(rows[0]!.attachments.map((a) => [a.name, a.size]), [["img_k.png", JPEG.length]]);
-      assert.deepEqual(new Uint8Array(await readFile(rows[0]!.attachments[0]!.path)), JPEG);
+      assert.equal(rows[0]!.attachments.length, 0, "quoted image is deferred until agent fetches it");
+      assert.equal(r.fake.calls("GET", "/open-apis/im/v1/messages/om_img/resources/img_k").length, 0);
+      const thread = r.rig.store.threadAt("feishu:fs", "oc_g", "om_q")!;
+      const deferred = r.rig.store.deferredFiles(thread.id, [rows[0]!.n]).get(rows[0]!.n) ?? [];
+      assert.deepEqual(deferred.map((f) => [f.id, f.name]), [["img_k", "img_k.png"]]);
+      const sessKey = r.rig.store.threadSessions(thread.id)[0]!.session;
+      const got = await r.rig.call(sessKey, "chat_history", { to: `oc_g/om_q`, fetch: ["img_k"] });
+      assert.ok(got.includes("img_k.png"), got);
+      const updated = r.said("om_q");
+      assert.deepEqual(updated[0]!.attachments.map((a) => [a.name, a.size]), [["img_k.png", JPEG.length]]);
+      assert.deepEqual(new Uint8Array(await readFile(updated[0]!.attachments[0]!.path)), JPEG);
       assert.equal(r.fake.calls("GET", "/open-apis/im/v1/messages/om_img/resources/img_k").length, 1);
     } finally {
       await r.close();

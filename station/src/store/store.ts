@@ -11,7 +11,7 @@ import { latest as latestNote } from "../agents/migrations.ts";
 // What changed is told to subscribers once the method's writes are done (Store::with): the same StoreChange values at
 // the same points as the Rust, in the same order.
 import type { Clock } from "effect";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -83,6 +83,13 @@ import { ensureCardScanGuard } from "./card-scan-guard.ts";
 import { completeCardOutcome, saveWithCardOutcome, type CardEditScan, type CardOutcome } from "./card-outbox.ts";
 import { type ChatListFilter, type RecentChatList, recentChatIds, searchChats } from "./chat-list.ts";
 import { dueChatShareRows, lapsedChatShareWorkspaces, liveChatShareRows } from "./chat-share-index.ts";
+
+/// Stable identifier for a deferred platform file: its platform id when non-empty, else a deterministic SHA-256 prefix
+/// derived from `(url, name, size)` so empty-id attachments are never silently dropped.
+export function deferredFileId(file: { id: string; name: string; size: number; url: string | null }): string {
+  if (file.id !== "") return file.id;
+  return createHash("sha256").update(`${file.url ?? ""}\0${file.name}\0${file.size}`).digest("hex").slice(0, 16);
+}
 
 /// A profile_quota_hours row as profileHours gives it.
 const quotaHourOf = (r: Json): QuotaHour => ({ profile: r.profile, hour: r.hour, at: r.at, windows: (parsed(r.windows_json) ?? []) as HourWindow[] });
@@ -2657,6 +2664,7 @@ export class Store {
           this.#run("DELETE FROM comma_router_connects WHERE thread = ?", thread);
           this.#run("DELETE FROM comma_task_participants WHERE thread = ?", thread);
           this.#run("DELETE FROM deliveries WHERE thread = ?", thread);
+          this.#run("DELETE FROM deferred_files WHERE thread = ?", thread);
           this.#run("DELETE FROM entries WHERE thread = ?", thread);
           this.#run("DELETE FROM letter_deliveries WHERE thread = ?", thread);
           this.#run("DELETE FROM letters WHERE thread = ?", thread);
@@ -3052,7 +3060,10 @@ export class Store {
 
   threadAt(surface: string, channel: string, threadTs: string): ThreadRow | null {
     surface = ownName(surface);
-    const r = this.#one("SELECT * FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?", surface, channel, threadTs);
+    const r = this.#one(
+      "SELECT t.*, EXISTS (SELECT 1 FROM deferred_files df WHERE df.thread = t.id AND df.resolved_at IS NULL) AS has_deferred FROM threads t WHERE t.surface = ? AND t.channel = ? AND t.thread_ts = ?",
+      surface, channel, threadTs,
+    );
     return r ? toThread(r) : null;
   }
 
@@ -3182,7 +3193,7 @@ export class Store {
   /// A thread of this session by the address the agent names it with, and how the session posts there.
   sessionThread(session: string, channel: string, threadTs: string): SessionThread | null {
     const r = this.#one(
-      "SELECT t.*, ts.connect FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.channel = ? AND t.thread_ts = ?",
+      "SELECT t.*, EXISTS (SELECT 1 FROM deferred_files df WHERE df.thread = t.id AND df.resolved_at IS NULL) AS has_deferred, ts.connect FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.channel = ? AND t.thread_ts = ?",
       session, channel, threadTs,
     );
     return r ? toSessionThread(r) : null;
@@ -3475,20 +3486,137 @@ export class Store {
   }
 
   /// Brings in what message n was recorded without (its files, the message it quotes): an edit entry, as a platform's.
+  /// Preserves any attachments already resolved on a prior edit so late completion never drops downloaded files.
   completeMessage(thread: number, n: number, text: string, attachments: Attachment[]): void {
     this.#with((changes) => {
       const row = this.#one("SELECT * FROM entries WHERE thread = ? AND n = ? AND kind = 'message'", thread, n);
       if (row === undefined) return;
       const message = toEntry(row);
-      if ((this.editedText(thread, n) ?? message.text) === text && attachments.length === 0) return;
+      const latestEdit = this.#one(
+        "SELECT text, attachments FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
+        thread,
+        n,
+      );
+      const currentText = latestEdit !== undefined ? String(latestEdit.text ?? "") : message.text;
+      const existingAttachments: Attachment[] = latestEdit !== undefined ? ((parsed(latestEdit.attachments) as Attachment[] | null) ?? []) : message.attachments;
+      const merged = [...existingAttachments];
+      for (const a of attachments) {
+        if (!merged.some((e) => e.path === a.path)) merged.push(a);
+      }
+      if (currentText === text && merged.length === existingAttachments.length) return;
       this.#append(
         {
           agentIdentity: undefined, thread, n: 0, kind: "edit", target: n, ts: null,
-          authorKind: message.authorKind, author: message.author, text, attachments, quotes: message.quotes,
+          authorKind: message.authorKind, author: message.author, text, attachments: merged, quotes: message.quotes,
           declared: null, client: null, profile: null, runtime: null, options: undefined, card: undefined, at: this.now(),
         },
         changes,
       );
+    });
+  }
+
+  /// Records unfetched platform files attached to message `n` in `thread`, preserving order and ignoring duplicates.
+  recordDeferredFiles(thread: number, n: number, files: readonly { id: string; name: string; size: number; url: string | null }[]): void {
+    if (files.length === 0) return;
+    this.#with((changes) => {
+      const existing = this.#one("SELECT COALESCE(MAX(ord), -1) AS max_ord FROM deferred_files WHERE thread = ? AND n = ?", thread, n);
+      let ord = Number(existing?.max_ord ?? -1) + 1;
+      for (const f of files) {
+        const fid = deferredFileId(f);
+        this.#run(
+          "INSERT OR IGNORE INTO deferred_files (thread, n, file_id, name, size, url, ord) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          thread, n, fid, f.name, f.size, f.url, ord++,
+        );
+      }
+      changes.push({ type: "thread", id: thread, entries: [] });
+    });
+  }
+
+  /// Unfetched platform files for the given message numbers in `thread`, in original order (indexed & bounded).
+  deferredFiles(thread: number, ns: readonly number[]): Map<number, { id: string; name: string; size: number; url: string | null }[]> {
+    const out = new Map<number, { id: string; name: string; size: number; url: string | null }[]>();
+    if (ns.length === 0) return out;
+    const rows = this.#all(
+      "SELECT n, file_id, name, size, url FROM deferred_files WHERE thread = ? AND n IN (SELECT value FROM json_each(?)) AND resolved_at IS NULL ORDER BY n, ord LIMIT 500",
+      thread,
+      JSON.stringify(ns),
+    );
+    for (const r of rows) {
+      const n = Number(r.n);
+      let list = out.get(n);
+      if (list === undefined) {
+        list = [];
+        out.set(n, list);
+      }
+      list.push({ id: String(r.file_id), name: String(r.name), size: Number(r.size), url: r.url === null ? null : String(r.url) });
+    }
+    return out;
+  }
+
+  /// All occurrences of `fileId` recorded for `thread` (resolved or unresolved), in message order (indexed & bounded).
+  deferredFilesById(thread: number, fileId: string): { n: number; resolvedAt: number | null; file: { id: string; name: string; size: number; url: string | null } }[] {
+    return this.#all(
+      "SELECT n, file_id, name, size, url, resolved_at FROM deferred_files WHERE thread = ? AND file_id = ? ORDER BY n, ord LIMIT 500",
+      thread,
+      fileId,
+    ).map((r) => ({
+      n: Number(r.n),
+      resolvedAt: r.resolved_at === null || r.resolved_at === undefined ? null : Number(r.resolved_at),
+      file: { id: String(r.file_id), name: String(r.name), size: Number(r.size), url: r.url === null ? null : String(r.url) },
+    }));
+  }
+
+  /// Atomically attaches a downloaded file to every unresolved message in `thread` referencing `fileId` (merging with
+  /// existing attachments and preserving the latest edited text) and marks those rows resolved.
+  resolveDeferredFile(thread: number, fileId: string, attachment: Attachment): number[] {
+    return this.#with((changes) => {
+      const ns = this.#all("SELECT DISTINCT n FROM deferred_files WHERE thread = ? AND file_id = ? AND resolved_at IS NULL ORDER BY n LIMIT 500", thread, fileId).map((r) => Number(r.n));
+      const now = this.now();
+      for (const n of ns) {
+        const row = this.#one("SELECT * FROM entries WHERE thread = ? AND n = ? AND kind = 'message'", thread, n);
+        if (row === undefined) continue;
+        const message = toEntry(row);
+        const latestEdit = this.#one(
+          "SELECT text, attachments FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
+          thread,
+          n,
+        );
+        const text = latestEdit !== undefined ? String(latestEdit.text ?? "") : message.text;
+        const current: Attachment[] = latestEdit !== undefined ? ((parsed(latestEdit.attachments) as Attachment[] | null) ?? []) : message.attachments;
+        if (!current.some((a) => a.path === attachment.path)) {
+          this.#append(
+            {
+              agentIdentity: undefined, thread, n: 0, kind: "edit", target: n, ts: null,
+              authorKind: message.authorKind, author: message.author, text, attachments: [...current, attachment], quotes: message.quotes,
+              declared: null, client: null, profile: null, runtime: null, options: undefined, card: undefined, at: now,
+            },
+            changes,
+          );
+        }
+      }
+      this.#run("UPDATE deferred_files SET resolved_at = ? WHERE thread = ? AND file_id = ? AND resolved_at IS NULL", now, thread, fileId);
+      if (ns.length > 0 && changes.length === 0) changes.push({ type: "thread", id: thread, entries: [] });
+      return ns;
+    });
+  }
+
+  /// Looks up a previously downloaded platform file on this station for `(scope, fileId)`.
+  downloadedFile(scope: string, fileId: string): { name: string; size: number; path: string } | null {
+    const r = this.#one("SELECT name, size, path FROM downloaded_files WHERE scope = ? AND file_id = ?", scope, fileId);
+    return r === undefined ? null : { name: String(r.name), size: Number(r.size), path: String(r.path) };
+  }
+
+  /// Records where a platform file was downloaded on this station so later or cross-session fetches reuse it, pruning
+  /// entries older than 30 days via the `downloaded_files_at` index so the table stays bounded.
+  recordDownloadedFile(scope: string, fileId: string, name: string, size: number, path: string): void {
+    const now = this.now();
+    const cutoff = now - 30 * 24 * 60 * 60 * 1000;
+    this.#with(() => {
+      this.#run(
+        "INSERT OR REPLACE INTO downloaded_files (scope, file_id, name, size, path, at) VALUES (?, ?, ?, ?, ?, ?)",
+        scope, fileId, name, size, path, now,
+      );
+      this.#run("DELETE FROM downloaded_files WHERE at < ?", cutoff);
     });
   }
 
@@ -3964,19 +4092,31 @@ export class Store {
   /// letters of their own logs among them by when each was kept.
   pendingMessages(session: string): PendingMessage[] {
     const said = this.#all(
-      `SELECT m.*, t.surface, t.channel, t.thread_ts, ts.connect FROM deliveries d
+      `SELECT m.*, t.surface, t.channel, t.thread_ts,
+        EXISTS (SELECT 1 FROM deferred_files df WHERE df.thread = t.id AND df.resolved_at IS NULL) AS has_deferred,
+        ts.connect FROM deliveries d
        JOIN merged m ON m.thread = d.thread AND m.n = d.n JOIN threads t ON t.id = d.thread
        JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session
        WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid`,
       session,
-    ).map((r) => ({ message: toMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect }));
+    ).map((r) => {
+      const item: PendingMessage = { message: toMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect };
+      // Non-enumerable so PendingMessage keeps the exact wire shape of MoonBit/Pion readers
+      // (`pending-delivery-reader.test.ts`). Callers fail open (query `deferred_files` directly) if spread/JSON-cloned.
+      Object.defineProperty(item, "hasDeferred", { value: r.has_deferred === 1, configurable: true });
+      return item;
+    });
     const letters = this.#all(
       `SELECT l.*, t.surface, t.channel, t.thread_ts, ts.connect FROM letter_deliveries d
        JOIN letters l ON l.thread = d.thread AND l.n = d.n JOIN threads t ON t.id = d.thread
        JOIN thread_sessions ts ON ts.thread = t.id AND ts.session = d.session
        WHERE d.session = ? AND d.delivered_at IS NULL ORDER BY d.rowid`,
       session,
-    ).map((r) => ({ message: letterMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect }));
+    ).map((r) => {
+      const item: PendingMessage = { message: letterMessage(r), surface: r.surface, channel: r.channel, threadTs: r.thread_ts, connect: r.connect };
+      Object.defineProperty(item, "hasDeferred", { value: false, configurable: true });
+      return item;
+    });
     if (letters.length === 0) return said;
     if (said.length === 0) return letters;
     // (each in the order handed over; the two together by when each was kept, a message first at the same time)

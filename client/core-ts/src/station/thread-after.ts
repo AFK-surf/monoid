@@ -64,7 +64,15 @@ export function threadAfter(held: unknown, entries: readonly unknown[], me: stri
     } else if (e.kind === "edit") {
       // An edit of its latest message is what that says now.
       if (lastMessage !== null && e.target === lastMessage.seq) {
-        lastMessage = { ...lastMessage, text: e.text ?? null, attachments: e.attachments ?? [], quotes: e.quotes ?? [], editedAt: e.at };
+        const nextText = e.text ?? null;
+        const textChanged = nextText !== lastMessage.text;
+        lastMessage = {
+          ...lastMessage,
+          text: nextText,
+          attachments: e.attachments ?? [],
+          quotes: e.quotes ?? [],
+          editedAt: textChanged ? e.at : lastMessage.editedAt,
+        };
       }
     } else {
       return null;

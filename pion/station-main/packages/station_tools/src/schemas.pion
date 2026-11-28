@@ -292,12 +292,13 @@ fn append_chat_tools(out : Array[ToolDecl]) -> Unit {
   out.push(
     make_tool_decl(
       "chat_history",
-      "Read earlier messages of one of your conversations, oldest first, your own posts included.",
+      "Read earlier messages of your conversation, oldest first, or download unfetched files.",
       s_obj(
         [
-          ("to", s_str("CHANNEL/THREAD_TS: the thread attribute of the message you are answering.")),
-          ("before", s_str("Only messages older than this message ts.")),
+          ("to", s_str("CHANNEL/THREAD_TS of the conversation.")),
+          ("before", s_str("Only messages older than this ts.")),
           ("limit", s_int_range(Some(1), Some(200), "Default 30.")),
+          ("fetch", s_str_arr("Unfetched file ids to download locally.")),
         ],
         ["to"],
       ),

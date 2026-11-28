@@ -475,8 +475,10 @@ for (const action of ["grant", "save"] as const) for (const changed of ["vault",
   test(`a queued vault ${action} checks a changed ${changed} before committing`, () => {
     const w = world(), dir = mkdtempSync(join(tmpdir(), "vault-decision-")), path = join(dir, "stillfail.db");
     const db = new DatabaseSync(path), vaults = new VaultStore(db);
+    db.exec("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL");
     vaults.putVault(w.vault); vaults.putItem(w.item);
     const other = new DatabaseSync(path), fromOther = new VaultStore(other);
+    other.exec("PRAGMA synchronous=NORMAL");
     const hub = { store: { getSession: () => ({ archivedAt: null }), subscribe: () => () => {} }, notify: () => {} };
     const cardOutcomes = { save: (_item: unknown, save: () => void) => {
       if (changed === "vault") fromOther.putVault({ ...w.vault, members: ["bob"] });

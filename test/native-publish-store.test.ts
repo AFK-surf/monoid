@@ -65,7 +65,7 @@ printf '{"success":true,"result":{"etag":"00000000000000000000000000000000"}}'
   await once(server, "listening");
   t.after(() => server.close());
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
-  const ensure = async (...args: string[]) => {
+  const ensureWithEnv = async (extraEnv: Record<string, string>, ...args: string[]) => {
     const child = spawn(process.execPath, [nativeScript, "ensure", ...args], {
       cwd: root,
       env: {
@@ -90,6 +90,7 @@ printf '{"success":true,"result":{"etag":"00000000000000000000000000000000"}}'
         CLOUDFLARE_ACCOUNT_ID: ACCOUNT,
         GH_TOKEN: "test-gh-token",
         GITHUB_TOKEN: "",
+        ...extraEnv,
       },
     });
     let stdout = "", stderr = "";
@@ -98,9 +99,10 @@ printf '{"success":true,"result":{"etag":"00000000000000000000000000000000"}}'
     const [status] = await once(child, "exit");
     return { status: status as number, stdout, stderr };
   };
+  const ensure = (...args: string[]) => ensureWithEnv({}, ...args);
   const puts = () => (existsSync(curlLog) ? readFileSync(curlLog, "utf8").split("\n").filter(Boolean) : []);
   const ghCalls = () => (existsSync(ghLog) ? readFileSync(ghLog, "utf8").split("\n").filter(Boolean) : []);
-  return { ensure, puts, ghCalls, github, asked, tmp };
+  return { ensure, ensureWithEnv, puts, ghCalls, github, asked, tmp, cacheDir };
 }
 
 const objectUrl = (name: string) => `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/r2/buckets/stillfail-releases/objects/natives/${name}`;
@@ -153,6 +155,37 @@ test("ensure refuses --publish with --publish-store", { skip: process.platform =
   assert.deepEqual(w.ghCalls(), []);
   assert.deepEqual(w.github, []);
   assert.deepEqual(w.asked, []);
+});
+
+test("cache-only ensure skips GitHub and store probes for already-cached parts", { skip: process.platform === "win32" }, async (t) => {
+  const w = await world(t, new Set());
+  const run = await w.ensure("launcher:linux-x64", "runner:linux-x64");
+  assert.equal(run.status, 0, `stdout:\n${run.stdout}\nstderr:\n${run.stderr}`);
+  assert.match(run.stdout, /launcher linux-x64 [0-9a-f]{24}: cached \(\d+ s\)/);
+  assert.match(run.stdout, /runner linux-x64 [0-9a-f]{24}: cached \(\d+ s\)/);
+  assert.deepEqual(w.puts(), []);
+  assert.deepEqual(w.ghCalls(), []);
+  assert.deepEqual(w.github, []);
+  assert.deepEqual(w.asked, []);
+});
+
+test("cache-only ensure parallel fan-out touches cached parts without probing store and fans out only uncached parts", { skip: process.platform === "win32" }, async (t) => {
+  const w = await world(t, new Set());
+  const run = await w.ensureWithEnv(
+    { STILLFAIL_NATIVE: "offline" },
+    "launcher:linux-x64",
+    "archive-rs:linux-x64",
+    "mesh-relay:linux-x64",
+  );
+  assert.notEqual(run.status, 0, "uncached parts should fail fast under STILLFAIL_NATIVE=offline");
+  assert.match(run.stdout, /launcher linux-x64 [0-9a-f]{24}: cached \(0 s\)/);
+  // Cached part must still have its .access record touched before sibling workers run trimCache().
+  const accessFile = join(w.cacheDir, ".access", "launcher", `linux-x64-${key("launcher", "linux-x64")}`);
+  assert.equal(existsSync(accessFile), true, `expected ${accessFile} to be touched`);
+  // Store probes must cover only the two uncached parts, never the already-cached launcher.
+  assert.ok(!w.asked.includes(asset("launcher")), `cached launcher must not be probed in store: ${w.asked.join(", ")}`);
+  assert.ok(w.asked.includes(asset("archive-rs")), `uncached archive-rs should be probed: ${w.asked.join(", ")}`);
+  assert.ok(w.asked.includes(asset("mesh-relay")), `uncached mesh-relay should be probed: ${w.asked.join(", ")}`);
 });
 
 test("cloud releaseType accepts every part and target native.ts can publish to the store", () => {

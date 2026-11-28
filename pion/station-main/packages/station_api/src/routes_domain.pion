@@ -185,8 +185,15 @@ pub fn dispatch_domain_route(
     }
   }
   if head == "copies" {
-    if n == 2 && m == "GET" && (segs[1] == "history" || segs[1] == "settings") {
-      return Some(call_with_json(host, "copies." + segs[1] + ".get", r, []))
+    if n == 2 && m == "GET" && segs[1] == "history" {
+      return Some(call_with_json(host, "copies.history.get", r, []))
+    }
+    if n == 2 && m == "GET" && segs[1] == "settings" {
+      match require_manager(r, "only workspace owners and admins can manage backup settings") {
+        Some(e) => return Some(RouteResult::err(e))
+        None => ()
+      }
+      return Some(call_with_json(host, "copies.settings.get", r, []))
     }
     if n == 2 && m == "PUT" && segs[1] == "settings" {
       match require_manager(r, "only workspace owners and admins can change backup settings") {

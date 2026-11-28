@@ -486,13 +486,6 @@ export class ChatsStore {
     return this.chatFound(CHAT_READS.row, { station, id })[0]?.record;
   }
 
-  /// The row of a chat a link names (its row's id, or its agent's session), listed or archived, and whether archived: a
-  /// row read, not the station's lists.
-  chatNamed(station: string, id: string): { row: J; archived: boolean } | undefined {
-    const found = this.chatFound(CHAT_READS.named, { station, id })[0];
-    return found?.record === undefined ? undefined : { row: found.record, archived: found.archived };
-  }
-
   /// The sidebar row of a thread.
   chatOfThread(station: string, thread: number): J {
     return this.chatFound(CHAT_READS.thread, { station, thread })[0]?.record;

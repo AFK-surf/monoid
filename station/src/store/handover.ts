@@ -16,10 +16,10 @@ type Row = Record<string, unknown>;
 /// The tables a chat's rows are in, in the order they are put in (what a row names before it).
 /// What its agents spent (`usage`, `usage_files`, `session_usage`) last, sent only to a station that says it takes them
 /// (`handover.begin`'s `usage`).
-export const CHAT_TABLES = ["threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats", "deliveries", "usage", "usage_files", "session_usage"] as const;
+export const CHAT_TABLES = ["threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats", "deliveries", "usage", "usage_files", "session_usage"] as const;
 export type ChatTable = (typeof CHAT_TABLES)[number];
 /// Of each thread: its own rows (by its log's number), and each viewer's marks of it.
-export const BY_N: readonly ChatTable[] = ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes"];
+export const BY_N: readonly ChatTable[] = ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files"];
 export const MARKS: readonly ChatTable[] = ["reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed"];
 /// What a session's calls are, sent after its other rows: their threads there are known by then.
 export const USAGE_TABLES: readonly ChatTable[] = ["usage", "usage_files", "session_usage"];
@@ -55,6 +55,13 @@ export function chatPage(db: DatabaseSync, table: ChatTable, of: number | string
     case "entry_proposals":
     case "proposal_outcomes":
       return all(`SELECT * FROM ${table} WHERE thread = ? AND n > ? ORDER BY n LIMIT ?`, of as number, (after as number | null) ?? -1, limit);
+    case "deferred_files": {
+      if (typeof after === "number") {
+        return all("SELECT * FROM deferred_files WHERE thread = ? AND n > ? ORDER BY n, file_id LIMIT ?", of as number, after, limit);
+      }
+      const [n, id] = (after as [number, string] | null) ?? [-1, ""];
+      return all("SELECT * FROM deferred_files WHERE thread = ? AND (n > ? OR (n = ? AND file_id > ?)) ORDER BY n, file_id LIMIT ?", of as number, n, n, id, limit);
+    }
     case "reads":
     case "hidden_chats":
     case "muted_chats":
@@ -105,6 +112,8 @@ export function afterOf(table: ChatTable, row: Row): After {
     case "entry_proposals":
     case "proposal_outcomes":
       return row.n;
+    case "deferred_files":
+      return [row.n, row.file_id];
     case "reads":
     case "hidden_chats":
     case "muted_chats":
@@ -253,7 +262,7 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
     else if (table === "dismissed") told({ type: "dismissed", viewer: k.viewer, card: { thread: k.thread, n: k.n } });
     else if (table === "pins") told({ type: "pins", viewer: k.viewer, session: k.session, at: null });
     else if (table === "closed_cards") told({ type: "thread", id: k.thread, entries: [], closed: k.n });
-    else if (table === "entry_proposals" || table === "proposal_outcomes") told({ type: "thread", id: k.thread, entries: [] });
+    else if (table === "entry_proposals" || table === "proposal_outcomes" || table === "deferred_files") told({ type: "thread", id: k.thread, entries: [] });
     else if (table === "turns" || table === "runtime_sessions") touched.sessions.add(String(k.session_key ?? ""));
   };
   for (const r0 of rows) {
@@ -516,6 +525,15 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         }
         break;
       }
+      case "deferred_files": {
+        const t = thread(r.thread);
+        if (t === undefined) break;
+        r.thread = t.id;
+        r.n = n(t, r.n);
+        if (insert(db, "deferred_files", r, " OR IGNORE").changes > 0) keep({ thread: r.thread, n: r.n, file_id: r.file_id });
+        else ctx.counts.rows.deferred_files = (ctx.counts.rows.deferred_files ?? 0) + 1;
+        break;
+      }
       case "reads": {
         const t = thread(r.thread);
         if (t === undefined) break;
@@ -694,7 +712,7 @@ export function dropEmptyThreads(db: DatabaseSync, ctx: ImportCtx): number[] {
   const gone: number[] = [];
   for (const t of Object.values(ctx.threads)) {
     if (!t.fresh || db.prepare("SELECT 1 FROM thread_sessions WHERE thread = ? LIMIT 1").get(t.id) !== undefined) continue;
-    for (const table of ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deliveries"]) db.prepare(`DELETE FROM ${table} WHERE thread = ?`).run(t.id);
+    for (const table of ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files", "deliveries"]) db.prepare(`DELETE FROM ${table} WHERE thread = ?`).run(t.id);
     db.prepare("DELETE FROM threads WHERE id = ?").run(t.id);
     gone.push(t.id);
   }

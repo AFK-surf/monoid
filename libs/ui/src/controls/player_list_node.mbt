@@ -324,6 +324,7 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
     live: None,
     tall: player_list_sheet,
     grows: false,
+    dock_first: false,
     focus: false,
     ruled: false,
     fade_out_together: false,

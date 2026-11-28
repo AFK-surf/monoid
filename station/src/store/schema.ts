@@ -165,6 +165,31 @@ CREATE TABLE IF NOT EXISTS proposal_outcomes (
 CREATE UNIQUE INDEX IF NOT EXISTS entries_ts ON entries (thread, ts) WHERE ts IS NOT NULL;
 -- The first person to answer a card is found by its entry number, without reading intervening agent messages.
 CREATE INDEX IF NOT EXISTS entries_people_by_n ON entries (thread, n) WHERE author_kind = 'person' AND kind = 'message';
+-- Platform files (Slack, Feishu, group, Comma) received with a message and fetched on demand by the agent.
+CREATE TABLE IF NOT EXISTS deferred_files (
+  thread INTEGER NOT NULL,
+  n INTEGER NOT NULL,
+  file_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  url TEXT,
+  ord INTEGER NOT NULL,
+  resolved_at INTEGER,
+  PRIMARY KEY (thread, n, file_id)
+);
+CREATE INDEX IF NOT EXISTS deferred_files_by_id ON deferred_files (thread, file_id, n, ord);
+CREATE INDEX IF NOT EXISTS deferred_files_unresolved ON deferred_files (thread, n, ord) WHERE resolved_at IS NULL;
+-- Station-wide index of platform files already downloaded into a session's uploads, keyed by workspace+surface and file_id.
+CREATE TABLE IF NOT EXISTS downloaded_files (
+  scope TEXT NOT NULL,
+  file_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  path TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  PRIMARY KEY (scope, file_id)
+);
+CREATE INDEX IF NOT EXISTS downloaded_files_at ON downloaded_files (at);
 -- The Router's idempotency key is committed with its message. Targets are kept only until delivery has been handed on.
 CREATE TABLE IF NOT EXISTS comma_router_once (
   -- A retry may still be finishing while an expired key is reused. Never reuse its identity.

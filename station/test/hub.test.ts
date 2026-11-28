@@ -14,7 +14,7 @@ import { marksDir, stateOf } from "./reference/transcripts.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { addToThread, autoArchive, archive, archiveBy, archiveChat, bindSingle, configure, deleteSession, newSession, openChat, say as sayIn } from "../src/sessions/lifecycle.ts";
-import { AUTO, MANUAL, archiveLookOf } from "../src/store/store.ts";
+import { AUTO, MANUAL, Store, archiveLookOf } from "../src/store/store.ts";
 import { FakeDriver, Rig, given, matches, message, reply, say, settle, testClock } from "./hub-fakes.ts";
 
 const chat = (runtime: "claude" | "codex" = "claude") => ({ runtime, createdBy: "local" });
@@ -85,7 +85,7 @@ test("a mention inside an existing thread records what was said before and tells
   await r.close();
 });
 
-test("files shared in Slack are fetched into the session's uploads and given to the agent, once", async () => {
+test("files shared in Slack are deferred until the agent fetches them via chat_history, and deduplicated by station", async () => {
   const r = new Rig();
   r.chat.shared.set("F1", "error overlay");
   const file = (id: string, name: string) => ({ id, name, size: 13, url: `https://files.slack.com/${id}` });
@@ -93,29 +93,131 @@ test("files shared in Slack are fetched into the session's uploads and given to 
   await r.accept(m);
   await r.accept(m);
   await settle();
-  assert.deepEqual(r.chat.downloads, ["F1", "F2"], "a message sent again is not fetched again");
+  // Station never eagerly downloads platform files on ingest.
+  assert.deepEqual(r.chat.downloads, [], "no eager download on message ingest");
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const to = `C1/${m.threadTs}`;
+  const prompt = r.claude.last().prompts[0]!;
+  assert.ok(prompt.includes(`Unfetched files (call chat_history with to="${to}" and fetch=["<id>"] to download what you need):`), prompt);
+  assert.ok(prompt.includes("- id=F1 (shot.png, 13 bytes)"), prompt);
+  assert.ok(prompt.includes("- id=F2 (log.txt, 13 bytes)"), prompt);
+
+  // Agent triggers download via chat_history { to, fetch }.
+  const fetched = await r.call(key, "chat_history", { to, fetch: ["F1", "F2"] });
+  assert.deepEqual(r.chat.downloads, ["F1", "F2"]);
   const [said] = r.said(r.thread("C1", m.threadTs).id);
-  assert.equal(said!.text, "<@UBOT> 看看\n\n[无法获取文件 log.txt：missing_scope]");
   assert.equal(said!.attachments.length, 1);
   const [shot] = said!.attachments;
   assert.equal(shot!.name, "shot.png");
-  assert.equal(dirname(shot!.path), join(r.session(sessionKey("cl", "C1", m.threadTs)).workspace, "uploads"));
+  assert.equal(dirname(shot!.path), join(r.session(key).workspace, "uploads"));
   assert.equal(readFileSync(shot!.path, "utf8"), "error overlay");
-  const prompt = r.claude.last().prompts[0]!;
-  assert.ok(prompt.includes(`Attached files:\n- ${shot!.path} (shot.png, 13 bytes)`), prompt);
-  assert.ok(prompt.includes("无法获取文件 log.txt"), prompt);
+  assert.ok(fetched.includes(`- F1: ${shot!.path} (shot.png, 13 bytes)`), fetched);
+  assert.ok(fetched.includes("- F2: missing_scope"), fetched);
+
+  // Calling fetch again for F1 reuses the local file with zero additional platform downloads.
+  const again = await r.call(key, "chat_history", { to, fetch: ["F1"] });
+  assert.deepEqual(r.chat.downloads, ["F1", "F2"], "station guarantees no duplicate download");
+  assert.ok(again.includes(`- F1: ${shot!.path} (shot.png, 13 bytes)`), again);
+
+  // History now shows F1 under Attached files and F2 still under Unfetched files (retryable).
+  const history = await r.call(key, "chat_history", { to });
+  assert.ok(history.includes(`Attached files:\n- ${shot!.path} (shot.png, 13 bytes)`), history);
+  assert.ok(history.includes("- id=F2 (log.txt, 13 bytes)"), history);
+  assert.ok(!history.includes("- id=F1 "), history);
   await r.close();
 });
 
-test("files shared before the station joined a thread are fetched with what was said", async () => {
+test("files shared before the station joined a thread are deferred during openSlackThread and fetched on demand", async () => {
   const r = new Rig();
   r.chat.shared.set("F3", "trace");
   r.chat.earlier.set("1.000002", [{ ts: "1.000002", user: "U2", text: "", fromBot: false, files: [{ id: "F3", name: "trace.txt", size: 5, url: "https://files.slack.com/F3" }] }]);
   await r.accept(message({ threadTs: "1.000002", ts: "5.000002" }));
   await settle();
+  assert.deepEqual(r.chat.downloads, [], "openSlackThread must not eagerly download historical attachments");
+  const key = sessionKey("cl", "C1", "1.000002");
+  const to = "C1/1.000002";
+  const before = await r.call(key, "chat_history", { to, before: "5.000002" });
+  assert.ok(before.includes("- id=F3 (trace.txt, 5 bytes)"), before);
+
+  const got = await r.call(key, "chat_history", { to, fetch: ["F3"] });
+  assert.deepEqual(r.chat.downloads, ["F3"]);
   const [first] = r.said(r.thread("C1", "1.000002").id);
   assert.equal(first!.attachments[0]!.name, "trace.txt");
   assert.equal(readFileSync(first!.attachments[0]!.path, "utf8"), "trace");
+  assert.ok(got.includes(first!.attachments[0]!.path), got);
+  await r.close();
+});
+
+test("concurrent and cross-session fetches of the same platform file coalesce into one download on the station", async () => {
+  const r = new Rig();
+  const gate = Promise.withResolvers<void>();
+  const started = Promise.withResolvers<void>();
+  r.chat.shared.set("FSF", "shared-bytes");
+  r.gptChat.shared.set("FSF", "shared-bytes");
+  const origDownload = r.chat.download.bind(r.chat);
+  r.chat.download = async (file) => {
+    started.resolve();
+    await gate.promise;
+    return origDownload(file);
+  };
+  const m = say("<@UBOT> check file", { files: [{ id: "FSF", name: "big.png", size: 12, url: "https://files.slack.com/FSF" }] });
+  await r.accept(m, "cl");
+  await r.accept({ ...m, text: "<@UGPT> check file", ts: "1001.000200", addressed: true }, "gpt");
+  await settle();
+  const clKey = sessionKey("cl", "C1", m.threadTs);
+  const gptKey = sessionKey("gpt", "C1", m.threadTs);
+  const to = `C1/${m.threadTs}`;
+
+  // Two concurrent fetches from two sessions in the same thread coalesce into ONE download.
+  const p1 = r.call(clKey, "chat_history", { to, fetch: ["FSF"] });
+  await started.promise;
+  const p2 = r.call(gptKey, "chat_history", { to, fetch: ["FSF"] });
+  gate.resolve();
+  const [res1, res2] = await Promise.all([p1, p2]);
+  assert.deepEqual(r.chat.downloads, ["FSF"], "single-flight downloaded once");
+  assert.deepEqual(r.gptChat.downloads, [], "second session reused first session's download");
+  assert.ok(res1.includes(join(r.session(clKey).workspace, "uploads")), res1);
+  assert.ok(res2.includes(join(r.session(gptKey).workspace, "uploads")), res2);
+  const clPath = res1.match(/FSF: ([^\s(]+)/)![1]!;
+  const gptPath = res2.match(/FSF: ([^\s(]+)/)![1]!;
+  assert.equal(readFileSync(gptPath, "utf8"), "shared-bytes");
+  // Cross-session copies must not share an inode (editing one session's upload must not mutate another's).
+  writeFileSync(gptPath, "mutated-by-gpt");
+  assert.equal(readFileSync(clPath, "utf8"), "shared-bytes", "cross-session upload copies are isolated");
+
+  // Another thread in the same workspace/surface cannot fetch FSF by ID because FSF never belonged to it.
+  const other = say("<@UBOT> unrelated thread", { channel: "C2", threadTs: "9999.000100", ts: "9999.000100" });
+  await r.accept(other, "cl");
+  await settle();
+  const otherKey = sessionKey("cl", "C2", "9999.000100");
+  const denied = await r.call(otherKey, "chat_history", { to: "C2/9999.000100", fetch: ["FSF"] });
+  assert.ok(denied.includes("no unfetched file FSF in C2/9999.000100"), denied);
+
+  // Platform edit and late completeMessage after fetching must preserve resolved attachments.
+  const tid = r.thread("C1", m.threadTs).id;
+  assert.equal(r.store.editMessage("slack:T1", "C1", m.threadTs, m.ts, "<@UBOT> edited text"), tid);
+  const afterEdit = r.said(tid).find((x) => x.ts === m.ts)!;
+  assert.equal(afterEdit.text, "<@UBOT> edited text");
+  assert.equal(afterEdit.attachments.length, 1, "platform edit preserves resolved attachment");
+  assert.equal(afterEdit.attachments[0]!.path, clPath);
+  r.store.completeMessage(tid, afterEdit.n, "<@UBOT> edited text with quote", []);
+  const afterComplete = r.said(tid).find((x) => x.ts === m.ts)!;
+  assert.equal(afterComplete.attachments.length, 1, "completeMessage preserves resolved attachment");
+  assert.equal(afterComplete.attachments[0]!.path, clPath);
+
+  // Handover consistency: a second Store opened BEFORE deferred files are written immediately sees hasDeferred + files.
+  const second = Store.open(join(r.dir, "stillfail.db"));
+  try {
+    const m2 = say("<@UBOT> after handover open", { channel: "C3", threadTs: "8888.000100", ts: "8888.000100", files: [{ id: "FHO", name: "handover.txt", size: 4, url: "https://files.slack.com/FHO" }] });
+    await r.accept(m2, "cl");
+    await settle();
+    const t2 = second.threadAt("slack:T1", "C3", "8888.000100")!;
+    assert.equal(t2.hasDeferred, true, "second process sees hasDeferred via deferred_files without stale cache");
+    const defs = second.deferredFiles(t2.id, [1]);
+    assert.equal(defs.get(1)?.[0]?.id, "FHO", "second process reads deferred_files written after open");
+  } finally {
+    second.close();
+  }
   await r.close();
 });
 

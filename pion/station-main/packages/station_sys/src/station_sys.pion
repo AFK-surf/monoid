@@ -30,6 +30,8 @@ extern "C" fn sts_proc_close(handle : Int64) -> Int
 extern "C" fn sts_proc_kill(pid : Int, sig : Int, group : Int) -> Int
 extern "C" fn sts_proc_start_time_ms(pid : Int) -> Int64
 extern "C" fn sts_proc_start_ticks(pid : Int) -> Int64
+extern "C" fn sts_proc_ppid() -> Int
+extern "C" fn sts_proc_cmdline(pid : Int, out_len : Ptr) -> Ptr
 extern "C" fn sts_boot_id(out_len : Ptr) -> Ptr
 
 extern "C" fn sts_ctrl_open_fd(event_id : Int64, fd : Int) -> Int64
@@ -619,6 +621,22 @@ pub fn proc_start_time_ms(pid : Int) -> Option[Int64] {
 pub fn proc_start_ticks(pid : Int) -> Option[Int64] {
   let t = sts_proc_start_ticks(pid)
   if t < 0.to_int64() { None } else { Some(t) }
+}
+
+/// Zero-wait synchronous parent PID lookup (`getppid()` on Unix, `0` on Windows).
+pub fn proc_ppid() -> Int {
+  sts_proc_ppid()
+}
+
+/// Zero-wait synchronous process command line / executable path lookup (`/proc/<pid>/cmdline` on
+/// Linux, `proc_pidpath` on macOS, `None` on Windows). Never spawns a child or calls `host_shim::wait`.
+pub fn proc_cmdline(pid : Int) -> Option[String] {
+  let out_len = ptr_alloc(8.to_int64())
+  ptr_write_i64(out_len, 0.to_int64(), 0.to_int64())
+  let p = sts_proc_cmdline(pid, out_len)
+  let n = ptr_read_i64(out_len, 0.to_int64())
+  sts_free(out_len)
+  take_owned_string(p, n)
 }
 
 pub fn boot_id() -> Option[String] {

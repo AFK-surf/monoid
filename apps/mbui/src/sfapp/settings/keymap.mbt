@@ -259,7 +259,7 @@ pub fn keymap_of(prefs : Json?, window_id? : Int) -> @view.Keymap {
     return @view.Keymap::new([])
   }
   let bindings : Array[@view.Binding] = []
-  let stroke = fn(code, mods) -> @view.Stroke { { code, mods } }
+  let stroke = fn(code : Int, mods : Int) -> @view.Stroke { { code, mods } }
   bindings.push({ keys: [stroke(@ui.key_escape, 0)], action: "frame.escape", when: Always })
   bindings.push({ keys: [stroke(@ui.key_forward, 0)], action: "nav.forward", when: Always })
   let held = if @ui.keys_system() == 0 { @ui.mod_ctrl } else { @ui.mod_alt }

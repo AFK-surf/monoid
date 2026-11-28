@@ -1,0 +1,808 @@
+// Wave 17C-3B R2 functional & security boundary regression tests for `whole_api_admin_ops.pion`:
+// - MCP Servers (URL userinfo redaction in GET, honest 501 on unhooked reload, manager 403, atomic abort)
+// - Accounts & Profiles (array preservation, unknown access subfield 400, borrowed profile delete 409,
+//   skills.share id preservation & symlink/missing SKILL.md rejection)
+// - Connects CRUD (`connects.put` preserves credentials/bind/stations/unknown fields & never overwrites
+//   `createdBy`, rejects bad `kind`, cross-ws 404, non-manager own edit vs routing 403)
+// - Settings & Copies/Backup (2 real PUTs preserve S3 secrets, CSPRNG failure fails closed 500 with 0 disk writes)
+// - Vault Plain CRUD & `vault.uses`/`cross-uses` (cross-person & cross-vault isolation, `vault=""` empty,
+//   unlocked encrypted vault empty, minimal `Use`/`CrossUse` projection, approval routes honest 501)
+
+import "base_codec"
+import "form"
+import "lock"
+import "station_api"
+import "station_jobs"
+import "station_ops"
+import "station_tools"
+
+fn w3b_member(ws : String) -> station_api::Viewer {
+  make_test_viewer("member@example.com", "u-member", ws, ws == "ws-main", "member")
+}
+
+fn w3b_owner(ws : String) -> station_api::Viewer {
+  make_test_viewer("owner@example.com", "u-owner", ws, ws == "ws-main", "owner")
+}
+
+fn w3b_lock_state(ws : String) -> lock::LockState {
+  lock::LockState::{
+    ws: ws,
+    seq: 0.0,
+    head: "",
+    genesis: "gen-1",
+    origins: [],
+    rp_id: "",
+    cloud_keys: form::Json::Null,
+    members: form::OrderedMap::new(),
+    devices: form::OrderedMap::new(),
+    sign_keys: form::OrderedMap::new(),
+    passkeys: form::OrderedMap::new(),
+    signed: form::OrderedMap::new(),
+    stations: form::OrderedMap::new(),
+    gateways: form::OrderedMap::new(),
+    persons: form::OrderedMap::new(),
+    disabled: false,
+    moved: None,
+  }
+}
+
+test "wave17c3b R2: MCP servers URL userinfo redaction, unhooked reload honest 501, and atomic abort" {
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
+  let owner = w3b_owner("ws-main")
+  let member = w3b_member("ws-main")
+
+  // Non-manager rejected 403
+  match (api.admin.host.call)("mcpServers.put", make_test_api_req_as("PUT", "/mcp-servers", member), [], base_codec::json_obj([("servers", base_codec::json_obj([]))])) {
+    Err(e) => if e.status != 403 { panic("expected 403 for non-manager mcpServers.put") }
+    Ok(_) => panic("non-manager mcpServers.put must fail")
+  }
+
+  // Unhooked reloadAll / reloadOne MUST return honest 501 (not fake 200)
+  match (api.admin.host.call)("mcpServers.reloadAll", make_test_api_req_as("POST", "/mcp-servers/reload", owner), [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 501 { panic("unhooked mcpServers.reloadAll must return 501, got " + e.status.to_string()) }
+    Ok(_) => panic("unhooked mcpServers.reloadAll returned fake 200")
+  }
+
+  // Put HTTP MCP server with userinfo in URL + secret header -> GET as regular member MUST strip userinfo!
+  let put_body = base_codec::json_obj([
+    ("servers", base_codec::json_obj([
+      ("remote1", base_codec::json_obj([
+        ("type", base_codec::json_str("http")),
+        ("url", base_codec::json_str("https://alice:topsecret_pass@mcp.example.com/v1")),
+        ("headers", base_codec::json_obj([("Authorization", base_codec::json_str("Bearer tok_secret_9999"))])),
+      ])),
+    ])),
+  ])
+  match (api.admin.host.call)("mcpServers.put", make_test_api_req_as("PUT", "/mcp-servers", owner), [], put_body) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("topsecret_pass") || s.contains("tok_secret_9999") {
+        panic("mcpServers.put leaked URL userinfo or header secret: " + s)
+      }
+    }
+    Err(e) => panic("mcpServers.put failed: " + e.message)
+  }
+  match (api.admin.host.call)("mcpServers.get", make_test_api_req_as("GET", "/mcp-servers", member), [], base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("topsecret_pass") || s.contains("alice:") || s.contains("tok_secret_9999") {
+        panic("mcpServers.get leaked URL userinfo/secret to regular member: " + s)
+      }
+      if !s.contains("https://mcp.example.com/v1") {
+        panic("mcpServers.get did not preserve sanitized URL: " + s)
+      }
+    }
+    Err(e) => panic("mcpServers.get failed: " + e.message)
+  }
+
+  // Wired reload hook succeeds on existing, 404 on unknown
+  let mut reloaded = ""
+  hooks.on_mcp_reload = Some(fn(name : Option[String]) -> Unit {
+    reloaded = match name { Some(n) => n, None => "*" }
+  })
+  match (api.admin.host.call)("mcpServers.reloadOne", make_test_api_req_as("POST", "/mcp-servers/remote1/reload", owner), ["remote1"], base_codec::json_obj([])) {
+    Ok(_) => if reloaded != "remote1" { panic("reload hook not called for remote1") }
+    Err(e) => panic("mcpServers.reloadOne failed: " + e.message)
+  }
+  match (api.admin.host.call)("mcpServers.reloadOne", make_test_api_req_as("POST", "/mcp-servers/nope/reload", owner), ["nope"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 404 { panic("expected 404 for unknown server") }
+    Ok(_) => panic("expected 404")
+  }
+
+  // Reserved server name aborts atomically without clobbering config.json
+  let bad_body = base_codec::json_obj([
+    ("servers", base_codec::json_obj([
+      ("stillfail", base_codec::json_obj([("command", base_codec::json_str("echo"))])),
+    ])),
+  ])
+  match (api.admin.host.call)("mcpServers.put", make_test_api_req_as("PUT", "/mcp-servers", owner), [], bad_body) {
+    Err(e) => if e.status != 400 { panic("expected 400") }
+    Ok(_) => panic("expected 400")
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => if !b.to_string().contains("remote1") { panic("atomic abort clobbered prior config") }
+    Err(_) => panic("config.json missing")
+  }
+}
+
+test "wave17c3b R2: Accounts profiles put/delete validation & skills.share id preservation + symlink SKILL.md rejection" {
+  let (_, agents, api, _, mem_fs, _) = make_mem_whole_api_fixture()
+  let owner = w3b_owner("ws-main")
+  let member = w3b_member("ws-main")
+
+  // Seed config.json with an own profile and a borrowed/shared profile in `profiles` JSON Array
+  let seed_cfg = "{\"profiles\":[{\"id\":\"p-own\",\"name\":\"Own\",\"access\":{\"kind\":\"anthropic-api\",\"key\":\"sk-ant-secret-123456\"},\"env\":{\"API_KEY\":\"secret_env_999\"}},{\"id\":\"p-borrowed\",\"name\":\"Borrowed\",\"sharedFrom\":\"st-other\"}]}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", seed_cfg, 384)
+
+  // Non-manager rejected 403
+  match (api.admin.host.call)("accounts.profiles.put", make_test_api_req_as("PUT", "/profiles/p-own", member), ["p-own"], base_codec::json_obj([("name", base_codec::json_str("Hacked"))])) {
+    Err(e) => if e.status != 403 { panic("expected 403") }
+    Ok(_) => panic("expected 403")
+  }
+  // Reject unknown access subfield 400
+  match (api.admin.host.call)("accounts.profiles.put", make_test_api_req_as("PUT", "/profiles/p-own", owner), ["p-own"], base_codec::json_obj([("access", base_codec::json_obj([("evilField", base_codec::json_str("x"))]))])) {
+    Err(e) => if e.status != 400 { panic("unknown access subfield must return 400") }
+    Ok(_) => panic("unknown access subfield must fail")
+  }
+  // Valid update preserves `profiles` as Array and preserves `access.key`
+  match (api.admin.host.call)("accounts.profiles.put", make_test_api_req_as("PUT", "/profiles/p-own", owner), ["p-own"], base_codec::json_obj([("name", base_codec::json_str("Own Updated"))])) {
+    Ok(res) => if base_codec::json_stringify(res).contains("sk-ant-secret-123456") { panic("profiles.put leaked API key") }
+    Err(e) => panic("profiles.put failed: " + e.message)
+  }
+  // Deleting borrowed profile rejected 409
+  match (api.admin.host.call)("accounts.profiles.delete", make_test_api_req_as("DELETE", "/profiles/p-borrowed", owner), ["p-borrowed"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 409 { panic("deleting borrowed profile must return 409") }
+    Ok(_) => panic("deleting borrowed profile must fail")
+  }
+  // Deleting own profile succeeds and keeps `profiles` as JSON Array
+  match (api.admin.host.call)("accounts.profiles.delete", make_test_api_req_as("DELETE", "/profiles/p-own", owner), ["p-own"], base_codec::json_obj([])) {
+    Ok(_) => ()
+    Err(e) => panic("profiles.delete failed: " + e.message)
+  }
+
+  // `accounts.skills.share`: missing SKILL.md rejected 409, valid skill creates id & preserves id on re-share!
+  match (api.admin.host.call)("accounts.skills.share", make_test_api_req_as("POST", "/skills/missing-skill/share", owner), ["missing-skill"], base_codec::json_obj([("on", base_codec::json_bool(true))])) {
+    Err(e) => if e.status != 409 { panic("missing SKILL.md must return 409, got " + e.status.to_string()) }
+    Ok(_) => panic("missing SKILL.md must be rejected")
+  }
+  // Create real skill dir + SKILL.md in agents.jobs.fs
+  let skill_dir = "/tmp/w17c2-api-test/agent/skills/good-skill"
+  let _ = (agents.jobs.fs.mkdir_p)(skill_dir)
+  let _ = (agents.jobs.fs.write_file)(skill_dir + "/SKILL.md", "# Good Skill\n")
+  match (api.admin.host.call)("accounts.skills.share", make_test_api_req_as("POST", "/skills/good-skill/share", owner), ["good-skill"], base_codec::json_obj([("on", base_codec::json_bool(true))])) {
+    Ok(_) => ()
+    Err(e) => panic("skills.share 1 failed: " + e.message)
+  }
+  let first_id = match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => match base_codec::json_parse(b.to_string()) {
+      base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "sharedSkills") {
+        Some(ss) => match base_codec::json_get(ss, "good-skill") {
+          Some(gs) => match json_field_str(gs, "id") { Some(id) if id.length() > 0 => id, _ => panic("missing skill share id") }
+          None => panic("missing good-skill")
+        }
+        None => panic("missing sharedSkills")
+      }
+      _ => panic("bad config json")
+    }
+    Err(_) => panic("missing config")
+  }
+  // Second share call MUST preserve `first_id`!
+  match (api.admin.host.call)("accounts.skills.share", make_test_api_req_as("POST", "/skills/good-skill/share", owner), ["good-skill"], base_codec::json_obj([("on", base_codec::json_bool(true))])) {
+    Ok(_) => ()
+    Err(e) => panic("skills.share 2 failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => match base_codec::json_parse(b.to_string()) {
+      base_codec::JsonParseResult::Ok(j) => match base_codec::json_get(j, "sharedSkills") {
+        Some(ss) => match base_codec::json_get(ss, "good-skill") {
+          Some(gs) => if json_field_str(gs, "id") != Some(first_id) { panic("skills.share overwrote existing id!") }
+          None => panic("missing good-skill")
+        }
+        None => panic("missing sharedSkills")
+      }
+      _ => panic("bad config json")
+    }
+    Err(_) => panic("missing config")
+  }
+}
+
+test "wave17c3b R2: connects.put preserves credentials, bind, stations, unknown fields, and createdBy" {
+  let (_, _, api, _, mem_fs, _) = make_mem_whole_api_fixture()
+  let owner = w3b_owner("ws-main")
+  let member = w3b_member("ws-main")
+  let other_owner = w3b_owner("ws-other")
+
+  // Seed a rich comma connect owned by alice@example.com with credentials, bind.model/effort/profiles, stations, and unknown field
+  let seed = "{\"connects\":[{\"id\":\"c-comma\",\"enabled\":true,\"kind\":\"comma\",\"mode\":\"multi-session\",\"requireMention\":true,\"createdBy\":{\"id\":\"alice@example.com\",\"name\":\"Alice\"},\"bind\":{\"runtime\":\"claude\",\"model\":\"claude-opus\",\"effort\":\"high\",\"profiles\":[\"p1\",\"p2\"]},\"stations\":[\"st-1\",\"st-2\"],\"station\":\"st-1\",\"comma\":{\"token\":\"comma_secret_tok_777\",\"endpoint\":\"https://comma.example\"},\"customExt\":{\"keep\":42}}]}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", seed, 384)
+
+  // Bad kind rejected 400
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/c-comma", owner), ["c-comma"], base_codec::json_obj([("kind", base_codec::json_str("bogus"))])) {
+    Err(e) => if e.status != 400 { panic("bad connect kind must return 400") }
+    Ok(_) => panic("bad connect kind must fail")
+  }
+  // Cross-workspace edit rejected 404
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/c-comma", other_owner), ["c-comma"], base_codec::json_obj([("enabled", base_codec::json_bool(false))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws connects.put must return 404") }
+    Ok(_) => panic("cross-ws connects.put must fail")
+  }
+  // Non-manager cannot change routing (`autoStation`) -> 403
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/c-comma", member), ["c-comma"], base_codec::json_obj([("autoStation", base_codec::json_bool(true))])) {
+    Err(e) => if e.status != 403 { panic("non-manager routing change must return 403") }
+    Ok(_) => panic("non-manager routing change must fail")
+  }
+
+  // Edit only `enabled: false` as `owner` -> MUST preserve comma.token, bind.model/effort/profiles, stations, customExt, AND createdBy=alice@example.com!
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/c-comma", owner), ["c-comma"], base_codec::json_obj([("enabled", base_codec::json_bool(false))])) {
+    Ok(res) => {
+      if base_codec::json_stringify(res).contains("comma_secret_tok_777") {
+        panic("connects.put leaked comma token in response")
+      }
+    }
+    Err(e) => panic("connects.put failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => {
+      let txt = b.to_string()
+      if !txt.contains("comma_secret_tok_777") ||
+      !txt.contains("claude-opus") ||
+      !txt.contains("high") ||
+      !txt.contains("p2") ||
+      !txt.contains("st-2") ||
+      !txt.contains("customExt") ||
+      !txt.contains("alice@example.com") {
+        panic("connects.put dropped existing fields or overwrote createdBy: " + txt)
+      }
+      if txt.contains("owner@example.com") {
+        panic("connects.put hijacked createdBy with editor email: " + txt)
+      }
+    }
+    Err(_) => panic("config.json missing")
+  }
+}
+
+test "wave17c3b R2: copies.settings.put 2 real PUTs preserve S3 secrets and CSPRNG failure fails closed with 0 writes" {
+  let (_, _, api, _, mem_fs, _, port) = make_mem_whole_api_fixture_full()
+  let owner = w3b_owner("ws-main")
+
+  // 1. First PUT creates S3 target and generates encryptionKey
+  let put1 = base_codec::json_obj([
+    ("acceptOthers", base_codec::json_bool(true)),
+    ("uploadMbps", base_codec::json_num(10.0)),
+    ("s3", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("r2-main")),
+        ("name", base_codec::json_str("R2 Main")),
+        ("endpoint", base_codec::json_str("https://s3.example.com")),
+        ("bucket", base_codec::json_str("my-backups")),
+        ("accessKeyId", base_codec::json_str("AKIAEXAMPLE12345")),
+        ("secretAccessKey", base_codec::json_str("super-secret-s3-key-999")),
+      ]),
+    ])),
+  ])
+  let gen_ek = match (api.admin.host.call)("copies.settings.put", make_test_api_req_as("PUT", "/copies/settings", owner), [], put1) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("super-secret-s3-key-999") { panic("copies.settings.put leaked secretAccessKey") }
+      match base_codec::json_get(res, "generatedKeys") {
+        Some(gk) => match json_field_str(gk, "r2-main") {
+          Some(k) if k.length() == 64 && k != "0000000000000000000000000000000000000000000000000000000000000000" => k
+          _ => panic("invalid generated encryptionKey")
+        }
+        None => panic("missing generatedKeys")
+      }
+    }
+    Err(e) => panic("copies.settings.put 1 failed: " + e.message)
+  }
+
+  // 2. Second REAL PUT omits secretAccessKey & encryptionKey -> BOTH preserved in config.json!
+  let put2 = base_codec::json_obj([
+    ("uploadMbps", base_codec::json_num(20.0)),
+    ("s3", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("r2-main")),
+        ("name", base_codec::json_str("R2 Renamed")),
+        ("endpoint", base_codec::json_str("https://s3.example.com")),
+        ("bucket", base_codec::json_str("my-backups")),
+      ]),
+    ])),
+  ])
+  match (api.admin.host.call)("copies.settings.put", make_test_api_req_as("PUT", "/copies/settings", owner), [], put2) {
+    Ok(res) => {
+      if base_codec::json_stringify(res).contains("super-secret-s3-key-999") {
+        panic("copies.settings.put 2 leaked secretAccessKey")
+      }
+    }
+    Err(e) => panic("copies.settings.put 2 failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => {
+      let txt = b.to_string()
+      if !txt.contains("super-secret-s3-key-999") || !txt.contains(gen_ek) || !txt.contains("R2 Renamed") {
+        panic("second copies.settings.put did not preserve S3 secrets: " + txt)
+      }
+    }
+    Err(_) => panic("missing config.json")
+  }
+
+  // 3. CSPRNG failure when creating a new S3 target MUST return 500 and write NOTHING (no all-zero key!)
+  let before_txt = match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") { Ok(b) => b.to_string(), Err(_) => "" }
+  port.random_hex_checked = fn(_n : Int) -> Result[String, String] { Err("entropy source unavailable") }
+  let put3 = base_codec::json_obj([
+    ("s3", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("r2-new")),
+        ("name", base_codec::json_str("R2 New")),
+        ("endpoint", base_codec::json_str("https://s3.example.com")),
+        ("bucket", base_codec::json_str("new-backups")),
+        ("accessKeyId", base_codec::json_str("AKIA2")),
+        ("secretAccessKey", base_codec::json_str("sec2")),
+      ]),
+    ])),
+  ])
+  match (api.admin.host.call)("copies.settings.put", make_test_api_req_as("PUT", "/copies/settings", owner), [], put3) {
+    Err(e) => if e.status != 500 { panic("CSPRNG failure must return 500, got " + e.status.to_string()) }
+    Ok(_) => panic("CSPRNG failure MUST fail closed, never generate all-zero encryptionKey!")
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => if b.to_string() != before_txt { panic("CSPRNG failure must not modify config.json") }
+    Err(_) => panic("missing config.json")
+  }
+}
+
+test "wave17c3b R2: Vault uses/cross-uses cross-person & cross-vault isolation + plain CRUD" {
+  let (store, _, api, _, _, hooks, port) = make_mem_whole_api_fixture_full()
+  let alice = make_test_viewer("alice@example.com", "u-alice", "ws-main", true, "owner")
+  let bob = make_test_viewer("bob@example.com", "u-bob", "ws-main", true, "member")
+
+  // Seed vault v-alice (only u-alice is member)
+  match store.vault_store {
+    Some(vs) => {
+      let _ = vs.put_vault(form::Json::Obj([
+        ("id", form::Json::Str("v-alice")),
+        ("ws", form::Json::Str("ws-main")),
+        ("owner", form::Json::Str("u-alice")),
+        ("members", form::Json::Arr([form::Json::Str("u-alice")])),
+        ("version", form::Json::Num(1.0)),
+        ("deleted", form::Json::Bool(false)),
+      ]))
+    }
+    None => ()
+  }
+  // Seed decided requests: alice's plain use, bob's plain use, alice's encrypted vault use, alice's cross use
+  (port.vault_plain.seed_request_for_test)("ws-main", "r-p-alice", "s1", "granted", base_codec::json_obj([
+    ("vault", base_codec::json_str("plain")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("item", base_codec::json_str("i-a")),
+    ("at", base_codec::json_int(100)),
+    ("session", base_codec::json_str("s1")),
+    ("mode", base_codec::json_str("env")),
+  ]))
+  (port.vault_plain.seed_request_for_test)("ws-main", "r-p-bob", "s2", "granted", base_codec::json_obj([
+    ("vault", base_codec::json_str("plain")),
+    ("owner", base_codec::json_str("bob@example.com")),
+    ("item", base_codec::json_str("i-b")),
+    ("at", base_codec::json_int(101)),
+    ("session", base_codec::json_str("s2")),
+    ("mode", base_codec::json_str("env")),
+  ]))
+  (port.vault_plain.seed_request_for_test)("ws-main", "r-v-alice", "s3", "denied", base_codec::json_obj([
+    ("vault", base_codec::json_str("v-alice")),
+    ("item", base_codec::json_str("i-va")),
+    ("at", base_codec::json_int(102)),
+    ("session", base_codec::json_str("s3")),
+    ("mode", base_codec::json_str("proxy")),
+  ]))
+  (port.vault_plain.seed_request_for_test)("ws-main", "r-x-alice", "s4", "granted", base_codec::json_obj([
+    ("vault", base_codec::json_str("v-alice")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("item", base_codec::json_str("i-x")),
+    ("at", base_codec::json_int(103)),
+    ("session", base_codec::json_str("s4")),
+    ("mode", base_codec::json_str("env")),
+    ("cross", base_codec::json_obj([("from", base_codec::json_str("ws-other"))])),
+  ]))
+
+  // 1. `vault=""` MUST return [] (never dump all workspace uses!)
+  match (api.admin.host.call)("vault.uses.get", make_test_api_req_as("GET", "/vault/uses", bob), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "uses") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 0 { panic("vault='' must return empty uses") }
+      _ => panic("missing uses")
+    }
+    Err(e) => panic("vault.uses.get failed: " + e.message)
+  }
+
+  // 2. `vault=plain` returns ONLY viewer's own uses (bob never sees alice's!)
+  match (api.admin.host.call)("vault.uses.get", make_test_api_req_as("GET", "/vault/uses?vault=plain", bob), [], base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("i-a") || !s.contains("i-b") { panic("plain vault.uses.get leaked cross-owner uses: " + s) }
+    }
+    Err(e) => panic("plain vault.uses.get failed: " + e.message)
+  }
+
+  // 3. Encrypted `vault=v-alice`: without lock returns []; with lock alice sees i-va, bob sees []!
+  match (api.admin.host.call)("vault.uses.get", make_test_api_req_as("GET", "/vault/uses?vault=v-alice", alice), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "uses") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 0 { panic("unlocked encrypted vault.uses.get must return []") }
+      _ => panic("missing uses")
+    }
+    Err(e) => panic("unlocked vault.uses.get failed: " + e.message)
+  }
+  hooks.lock_of = Some(fn(_ws : String) -> Option[lock::LockState] { Some(w3b_lock_state("ws-main")) })
+  match (api.admin.host.call)("vault.uses.get", make_test_api_req_as("GET", "/vault/uses?vault=v-alice", bob), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "uses") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 0 { panic("non-member bob saw v-alice uses!") }
+      _ => panic("missing uses")
+    }
+    Err(e) => panic("bob vault.uses.get failed: " + e.message)
+  }
+  match (api.admin.host.call)("vault.uses.get", make_test_api_req_as("GET", "/vault/uses?vault=v-alice", alice), [], base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if !s.contains("i-va") || s.contains("i-x") { panic("alice v-alice uses mismatch: " + s) }
+    }
+    Err(e) => panic("alice vault.uses.get failed: " + e.message)
+  }
+
+  // 4. `vault.cross-uses.get`: alice sees i-x, bob sees []!
+  match (api.admin.host.call)("vault.cross-uses.get", make_test_api_req_as("GET", "/vault/cross-uses", bob), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "uses") {
+      Some(base_codec::Json::Arr(xs)) => if xs.length() != 0 { panic("bob saw alice's cross-uses!") }
+      _ => panic("missing uses")
+    }
+    Err(e) => panic("bob cross-uses failed: " + e.message)
+  }
+  match (api.admin.host.call)("vault.cross-uses.get", make_test_api_req_as("GET", "/vault/cross-uses", alice), [], base_codec::json_obj([])) {
+    Ok(res) => if !base_codec::json_stringify(res).contains("i-x") { panic("alice missing cross-use i-x") }
+    Err(e) => panic("alice cross-uses failed: " + e.message)
+  }
+
+  // 5. Plain vault CRUD: PUT v0 omits fields, GET omits fields, item.get owner-only, CAS 409, locked delete-only
+  hooks.lock_of = None
+  let item_id = "i_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+  let v0 = base_codec::json_obj([
+    ("id", base_codec::json_str(item_id)),
+    ("version", base_codec::json_int(0)),
+    ("kind", base_codec::json_str("token")),
+    ("name", base_codec::json_str("Stripe Key")),
+    ("notes", base_codec::json_str("test")),
+    ("at", base_codec::json_int(1700000000)),
+    ("fields", base_codec::json_obj([("value", base_codec::json_str("sk_test_plaintext_secret_888"))])),
+  ])
+  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], v0) {
+    Ok(res) => if base_codec::json_stringify(res).contains("sk_test_plaintext_secret_888") { panic("vault.plain.PUT leaked secret") }
+    Err(e) => panic("vault.plain.PUT failed: " + e.message)
+  }
+  match (api.admin.host.call)("vault.plain.item.get", make_test_api_req_as("GET", "/vault/plain/item?id=" + item_id, bob), [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 404 { panic("non-owner item.get must return 404") }
+    Ok(_) => panic("non-owner item.get must fail")
+  }
+  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], v0) {
+    Err(e) => if e.status != 409 { panic("CAS conflict must return 409") }
+    Ok(_) => panic("CAS conflict must fail")
+  }
+  hooks.lock_of = Some(fn(_ws : String) -> Option[lock::LockState] { Some(w3b_lock_state("ws-main")) })
+  match (api.admin.host.call)("vault.plain.PUT", make_test_api_req_as("PUT", "/vault/plain", alice), [], json_obj_set(v0, "version", Some(base_codec::json_int(1)))) {
+    Err(e) => if e.status != 409 { panic("locked plain PUT must return 409") }
+    Ok(_) => panic("locked plain PUT must fail")
+  }
+}
+
+test "wave17c3b R2: accounts.skills.share rejects symlink SKILL.md and symlink skill dir" {
+  let owner = w3b_owner("ws-main")
+  let sym_stat = station_jobs::FsStat::{
+    kind: "symlink",
+    size: 0L,
+    mtime_ms: 0L,
+    mode: 41471,
+    executable: false,
+    dev: 0L,
+    ino: 0L,
+  }
+  let dir_stat = station_jobs::FsStat::{
+    kind: "dir",
+    size: 0L,
+    mtime_ms: 0L,
+    mode: 493,
+    executable: false,
+    dev: 0L,
+    ino: 0L,
+  }
+  let base_fs = mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  let custom_fs = station_jobs::FsPort::{
+    sep: base_fs.sep,
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if p.ends_with("/sym-dir") {
+        Some(sym_stat)
+      } else if p.ends_with("/sym-md") {
+        Some(dir_stat)
+      } else if p.ends_with("/sym-md/SKILL.md") {
+        Some(sym_stat)
+      } else {
+        (base_fs.lstat)(p)
+      }
+    },
+    lstat_err: base_fs.lstat_err,
+    stat: base_fs.stat,
+    read_dir: base_fs.read_dir,
+    read_file: base_fs.read_file,
+    read_bytes: base_fs.read_bytes,
+    read_range: base_fs.read_range,
+    write_file: base_fs.write_file,
+    write_bytes: base_fs.write_bytes,
+    write_file_mode: base_fs.write_file_mode,
+    append_file: base_fs.append_file,
+    truncate_in_place: base_fs.truncate_in_place,
+    mkdir_p: base_fs.mkdir_p,
+    remove_file: base_fs.remove_file,
+    rmdir: base_fs.rmdir,
+    remove_dir_all: base_fs.remove_dir_all,
+    rename: base_fs.rename,
+    realpath: base_fs.realpath,
+    readlink: base_fs.readlink,
+    chmod: base_fs.chmod,
+    exists: base_fs.exists,
+    now_ms: base_fs.now_ms,
+  }
+  let (_, _, api, _, _, _, _) = make_mem_whole_api_fixture_full(job_fs_override=Some(custom_fs))
+  match (api.admin.host.call)("accounts.skills.share", make_test_api_req_as("POST", "/skills/sym-dir/share", owner), ["sym-dir"], base_codec::json_obj([("on", base_codec::json_bool(true))])) {
+    Err(e) => if e.status != 409 { panic("symlink skill dir must return 409") }
+    Ok(_) => panic("symlink skill dir must be rejected")
+  }
+  match (api.admin.host.call)("accounts.skills.share", make_test_api_req_as("POST", "/skills/sym-md/share", owner), ["sym-md"], base_codec::json_obj([("on", base_codec::json_bool(true))])) {
+    Err(e) => if e.status != 409 { panic("symlink SKILL.md must return 409") }
+    Ok(_) => panic("symlink SKILL.md must be rejected")
+  }
+}
+
+test "wave17c3b R3: connects.put allowlist strips group.key/top-level secrets, preserves bind.cwd, validates station" {
+  let (_, _, api, _, mem_fs, _, _) = make_mem_whole_api_fixture_full()
+  let owner = w3b_owner("ws-main")
+  let seed = "{\"connects\":[{\"id\":\"grp-1\",\"enabled\":true,\"kind\":\"group\",\"mode\":\"multi-session\",\"requireMention\":true,\"bind\":{\"runtime\":\"claude\",\"cwd\":\"/repo/work\"},\"group\":{\"endpoint\":\"https://g.example\",\"name\":\"ops\",\"publicKey\":\"pub123\",\"key\":\"ed25519-private-seed-secret\"},\"botToken\":\"legacy-top-token\",\"secretHex\":\"deadbeef\"}]}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", seed, 384)
+  // Invalid station type -> 400
+  let bad_st = base_codec::json_obj([("station", base_codec::json_int(123))])
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/grp-1", owner), ["grp-1"], bad_st) {
+    Err(e) => if e.status != 400 { panic("invalid station must return 400") }
+    Ok(_) => panic("invalid station must fail")
+  }
+  // Valid partial edit preserves bind.cwd and disk secrets, while allowlist projection hides group.key & top-level secrets;
+  // HTTP request body MUST NOT be able to set or overwrite `bind.cwd` (even for regular members).
+  let member = w3b_member("ws-main")
+  let cwd_attack = base_codec::json_obj([
+    ("enabled", base_codec::json_bool(false)),
+    ("bind", base_codec::json_obj([
+      ("runtime", base_codec::json_str("claude")),
+      ("cwd", base_codec::json_str("/")),
+    ])),
+  ])
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/grp-1", member), ["grp-1"], cwd_attack) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("ed25519-private-seed-secret") || s.contains("legacy-top-token") || s.contains("deadbeef") {
+        panic("connect response leaked secret fields: " + s)
+      }
+      if !s.contains("pub123") || !s.contains("/repo/work") {
+        panic("connect response missing publicKey or preserved bind.cwd: " + s)
+      }
+      if s.contains("\"cwd\":\"/\"") {
+        panic("connects.put allowed HTTP body to overwrite bind.cwd: " + s)
+      }
+    }
+    Err(e) => panic("connects.put failed: " + e.message)
+  }
+  // Verify secrets & original bind.cwd are preserved on disk and "/" was never written
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => {
+      let saved = b.to_string()
+      if !saved.contains("ed25519-private-seed-secret") || !saved.contains("legacy-top-token") || !saved.contains("/repo/work") {
+        panic("connects.put lost preserved disk fields: " + saved)
+      }
+      if saved.contains("\"cwd\": \"/\"") {
+        panic("connects.put wrote attacker bind.cwd to disk: " + saved)
+      }
+    }
+    Err(_) => panic("read config failed")
+  }
+  // New connect created by member with bind.cwd="/" MUST NOT persist cwd
+  let new_conn = base_codec::json_obj([
+    ("kind", base_codec::json_str("comma")),
+    ("bind", base_codec::json_obj([
+      ("runtime", base_codec::json_str("claude")),
+      ("cwd", base_codec::json_str("/")),
+    ])),
+  ])
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/new-c", member), ["new-c"], new_conn) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("\"cwd\"") {
+        panic("new connect accepted bind.cwd from HTTP body: " + s)
+      }
+    }
+    Err(e) => panic("new connect put failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => {
+      let saved = b.to_string()
+      if saved.contains("\"cwd\": \"/\"") {
+        panic("new connect persisted bind.cwd=\"/\" to disk: " + saved)
+      }
+    }
+    Err(_) => panic("read config failed")
+  }
+}
+
+test "wave17c3b R3: accounts.profiles share.borrowed 409 & env merge/delete" {
+  let (_, _, api, _, mem_fs, _, _) = make_mem_whole_api_fixture_full()
+  let owner = w3b_owner("ws-main")
+  let seed = "{\"profiles\":[{\"id\":\"p-bor\",\"name\":\"Shared\",\"enabled\":true,\"share\":{\"borrowed\":true,\"from\":\"s2\"}},{\"id\":\"p-own\",\"name\":\"Mine\",\"enabled\":true,\"env\":{\"KEEP\":\"1\",\"DROP\":\"2\",\"API_TOKEN\":\"secret-xyz\"}}]}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", seed, 384)
+  // Borrowed profile cannot be deleted -> 409
+  match (api.admin.host.call)("accounts.profiles.delete", make_test_api_req_as("DELETE", "/profiles/p-bor", owner), ["p-bor"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 409 { panic("borrowed delete must return 409") }
+    Ok(_) => panic("borrowed delete must fail")
+  }
+  // Borrowed profile cannot change name -> 409
+  match (api.admin.host.call)("accounts.profiles.put", make_test_api_req_as("PUT", "/profiles/p-bor", owner), ["p-bor"], base_codec::json_obj([("name", base_codec::json_str("Hacked"))])) {
+    Err(e) => if e.status != 409 { panic("borrowed name edit must return 409") }
+    Ok(_) => panic("borrowed name edit must fail")
+  }
+  // Borrowed profile CAN toggle enabled -> 200
+  match (api.admin.host.call)("accounts.profiles.put", make_test_api_req_as("PUT", "/profiles/p-bor", owner), ["p-bor"], base_codec::json_obj([("enabled", base_codec::json_bool(false))])) {
+    Ok(_) => ()
+    Err(e) => panic("borrowed enabled toggle must succeed: " + e.message)
+  }
+  // Own profile env merges onto existing map: omitted KEEP & API_TOKEN preserved, DROP: null removed, ADD added
+  let env_patch = base_codec::json_obj([
+    ("env", base_codec::json_obj([
+      ("DROP", base_codec::json_null()),
+      ("ADD", base_codec::json_str("3")),
+    ])),
+  ])
+  match (api.admin.host.call)("accounts.profiles.put", make_test_api_req_as("PUT", "/profiles/p-own", owner), ["p-own"], env_patch) {
+    Ok(_) => ()
+    Err(e) => panic("own profile env merge failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => {
+      let saved = b.to_string()
+      if !saved.contains("\"KEEP\": \"1\"") || !saved.contains("\"ADD\": \"3\"") || !saved.contains("secret-xyz") {
+        panic("env merge lost existing/added keys: " + saved)
+      }
+      if saved.contains("\"DROP\"") {
+        panic("env null did not delete DROP: " + saved)
+      }
+    }
+    Err(_) => panic("read config failed")
+  }
+}
+
+test "wave17c3b R3: accounts.skills.share sh- prefix & config.agentHome" {
+  let (_, agents, api, _, mem_fs, _, _) = make_mem_whole_api_fixture_full()
+  let owner = w3b_owner("ws-main")
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", "{\"agentHome\":\"/custom-agent\"}", 384)
+  let _ = (agents.jobs.fs.write_file)("/custom-agent/skills/demo-sk/SKILL.md", "# demo")
+  match (api.admin.host.call)("accounts.skills.share", make_test_api_req_as("POST", "/skills/demo-sk/share", owner), ["demo-sk"], base_codec::json_obj([("on", base_codec::json_bool(true))])) {
+    Ok(_) => ()
+    Err(e) => panic("skills.share with agentHome failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => {
+      let saved = b.to_string()
+      if !saved.contains("\"id\": \"sh-") {
+        panic("skills.share id must start with sh-: " + saved)
+      }
+    }
+    Err(_) => panic("read config failed")
+  }
+}
+
+test "wave17c3b R3: vault.requests lock/owner boundary & cross-uses projection" {
+  let (_, _, api, _, _, _, port) = make_mem_whole_api_fixture_full()
+  let alice = w3b_owner("ws-main")
+  let bob = w3b_member("ws-main")
+  // Pending encrypted vault request without lock -> hidden even if member; save/browse/cross -> owner only
+  (port.vault_plain.seed_request_for_test)(
+    "ws-main",
+    "req-enc",
+    "s1",
+    "pending",
+    base_codec::json_obj([("id", base_codec::json_str("req-enc")), ("vault", base_codec::json_str("v_team")), ("owner", base_codec::json_str("owner@example.com"))]),
+  )
+  (port.vault_plain.seed_request_for_test)(
+    "ws-main",
+    "req-save",
+    "s1",
+    "pending",
+    base_codec::json_obj([("id", base_codec::json_str("req-save")), ("vault", base_codec::json_str("v_team")), ("owner", base_codec::json_str("owner@example.com")), ("save", base_codec::json_bool(true))]),
+  )
+  match (api.admin.host.call)("vault.requests.get", make_test_api_req_as("GET", "/vault/requests", bob), [], base_codec::json_obj([])) {
+    Ok(j) => {
+      let s = base_codec::json_stringify(j)
+      if s.contains("req-enc") || s.contains("req-save") {
+        panic("bob must not see unlocked or alice's save request: " + s)
+      }
+    }
+    Err(e) => panic("vault.requests.get failed: " + e.message)
+  }
+  match (api.admin.host.call)("vault.requests.get", make_test_api_req_as("GET", "/vault/requests", alice), [], base_codec::json_obj([])) {
+    Ok(j) => {
+      let s = base_codec::json_stringify(j)
+      if s.contains("req-enc") {
+        panic("unlocked encrypted vault request must be hidden: " + s)
+      }
+      if !s.contains("req-save") {
+        panic("owner alice must see her save request: " + s)
+      }
+    }
+    Err(e) => panic("vault.requests.get alice failed: " + e.message)
+  }
+  // Cross-uses: cross: null excluded, real cross object projects request/sourceWorkspace/sourceVault
+  (port.vault_plain.seed_request_for_test)(
+    "ws-main",
+    "req-null-cross",
+    "s1",
+    "granted",
+    base_codec::json_obj([
+      ("id", base_codec::json_str("req-null-cross")),
+      ("owner", base_codec::json_str("owner@example.com")),
+      ("cross", base_codec::json_null()),
+    ]),
+  )
+  (port.vault_plain.seed_request_for_test)(
+    "ws-main",
+    "req-real-cross",
+    "s1",
+    "granted",
+    base_codec::json_obj([
+      ("id", base_codec::json_str("req-real-cross")),
+      ("vault", base_codec::json_str("v-real")),
+      ("owner", base_codec::json_str("owner@example.com")),
+      ("item", base_codec::json_str("i_1")),
+      ("cross", base_codec::json_obj([
+        ("workspace", base_codec::json_str("ws-src")),
+        ("workspaceName", base_codec::json_str("Src")),
+        ("vaultName", base_codec::json_str("MyVault")),
+      ])),
+    ]),
+  )
+  match (api.admin.host.call)("vault.cross-uses.get", make_test_api_req_as("GET", "/vault/cross-uses", alice), [], base_codec::json_obj([])) {
+    Ok(j) => {
+      let s = base_codec::json_stringify(j)
+      if s.contains("req-null-cross") {
+        panic("cross: null must be excluded: " + s)
+      }
+      if !s.contains("\"request\":\"req-real-cross\"") || !s.contains("\"sourceWorkspace\":\"ws-src\"") || !s.contains("\"sourceVault\":\"v-real\"") {
+        panic("cross-uses missing projected fields: " + s)
+      }
+    }
+    Err(e) => panic("vault.cross-uses.get failed: " + e.message)
+  }
+}
+
+test "wave17c3b R3: MCP URL normalization and arbitrary-delimiter redaction" {
+  let (_, _, api, _, mem_fs, _, _) = make_mem_whole_api_fixture_full()
+  let owner = w3b_owner("ws-main")
+  let seed = "{\"mcpServers\":{\"s1\":{\"type\":\"http\",\"url\":\"  https://user:topsecret@api.example.com/v1\\t \"}}}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", seed, 384)
+  match (api.admin.host.call)("mcpServers.get", make_test_api_req_as("GET", "/mcp-servers", owner), [], base_codec::json_obj([])) {
+    Ok(j) => {
+      let s = base_codec::json_stringify(j)
+      if s.contains("topsecret") || s.contains("user:") {
+        panic("mcpServers.get leaked userinfo from whitespace-padded URL: " + s)
+      }
+      if !s.contains("https://api.example.com/v1") {
+        panic("mcpServers.get did not normalize URL: " + s)
+      }
+    }
+    Err(e) => panic("mcpServers.get failed: " + e.message)
+  }
+  let redacted = station_tools::redact_error_urls("bad url \"https://u:p,1;2%20+x@host.example/x\" and (http://a:b@other.example)")
+  if redacted.contains("u:p") || redacted.contains("a:b@") {
+    panic("redact_error_urls leaked userinfo in delimited URLs: " + redacted)
+  }
+  if !redacted.contains("\"https://host.example/x\"") || !redacted.contains("(http://other.example)") {
+    panic("redact_error_urls damaged surrounding delimiters: " + redacted)
+  }
+}

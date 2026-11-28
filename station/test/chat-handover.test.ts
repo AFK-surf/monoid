@@ -980,3 +980,44 @@ test("a hand-over given up whose drop has not reached the other station yet, the
   assert.deepEqual(filesOf(roomThere), filesOf(room), "its room there still, whole");
   assert.equal(b.rig.session(key).ws, null, "shown there");
 });
+
+test("a Slack thread with unfetched deferred_files carries them across handover so the target station can list and fetch them, and a failed handover rolls them back cleanly", async () => {
+  const w = world();
+  const a = w.get(A);
+  const b = w.get(B);
+  const payload = Buffer.from("deferred-handover-bytes");
+  a.rig.chat.download = async () => payload;
+  const first = message({
+    text: "<@UBOT> check this file later",
+    files: [{ id: "F-HANDOVER-1", name: "report.txt", size: payload.length, url: "https://files.slack.com/F-HANDOVER-1" }],
+  });
+  await a.connects.receive("cl", { type: "message", message: first });
+  const key = sessionKey("cl", first.channel, first.threadTs);
+  await endTurn(a, key);
+  const srcThread = a.rig.store.threadAt("slack:T1", first.channel, first.threadTs)!;
+  assert.equal(srcThread.hasDeferred, true, "source thread marks has_deferred");
+  assert.equal(a.rig.store.deferredFilesById(srcThread.id, "F-HANDOVER-1").length, 1);
+
+  // First try fails at counts: target station must drop deferred_files cleanly.
+  a.fails.add("counts");
+  const failed = await a.moves.handover.handOver(key, B, { wait: true }).then(() => null, (e: Error) => e.message);
+  assert.notEqual(failed, null);
+  await w.quiet();
+  assert.equal(b.rig.store.threadAt("slack:T1", first.channel, first.threadTs), null, "rolled back fresh thread on target");
+  assert.equal((b.rig.store.db.prepare("SELECT COUNT(*) AS n FROM deferred_files").get() as { n: number }).n, 0, "no deferred_files leaked on rollback");
+
+  // Second try succeeds: target station gets deferred_files + has_deferred = 1, lists and fetches via A's connect.
+  const out = await a.moves.scheduler.move(WS, B, { module: "chats", item: key });
+  await w.quiet();
+  assert.equal(out.failed, null, JSON.stringify(out));
+  const dstThread = b.rig.store.threadAt("slack:T1", first.channel, first.threadTs)!;
+  assert.equal(dstThread.hasDeferred, true, "target thread preserves has_deferred");
+  assert.equal(b.rig.store.deferredFilesById(dstThread.id, "F-HANDOVER-1").length, 1, "target preserves deferred_files row");
+
+  const listed = await b.rig.call(key, "chat_history", { to: `${first.channel}/${first.threadTs}` });
+  assert.match(listed, /F-HANDOVER-1/, "chat_history on target lists unfetched file");
+  const fetched = await b.rig.call(key, "chat_history", { to: `${first.channel}/${first.threadTs}`, fetch: ["F-HANDOVER-1"] });
+  assert.match(fetched, /report\.txt/, "target fetched deferred file via source station connect");
+  const dstThreadAfter = b.rig.store.threadAt("slack:T1", first.channel, first.threadTs)!;
+  assert.equal(dstThreadAfter.hasDeferred, undefined, "has_deferred cleared after fetch on target");
+});

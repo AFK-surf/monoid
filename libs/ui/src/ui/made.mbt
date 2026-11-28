@@ -565,7 +565,11 @@ fn island_said_id(kind : Int, id : Int) -> Unit {
       let k = (i.at, i.gen)
       match island_lists.get(k) {
         Some(m) => m[(kind, id)] = true
-        None => island_lists[k] = Map([((kind, id), true)])
+        None => {
+          let m : Map[(Int, Int), Bool] = Map([])
+          m[(kind, id)] = true
+          island_lists[k] = m
+        }
       }
     }
     None => ()

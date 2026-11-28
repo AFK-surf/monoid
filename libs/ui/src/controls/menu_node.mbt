@@ -677,14 +677,14 @@ fn menu_node_by(
                         fn() {
                           match cur_level() {
                             (lv_id, _, MenuItems(items, _), _) =>
-                              items.mapi(fn(i, x) { (lv_id, i, menu_row_kind(x, ticks)) })
+                              items.mapi(fn(i, x) { MenuRowKey::{ lv_id, idx: i, kind: menu_row_kind(x, ticks) } })
                             _ => []
                           }
                         },
                         fn(k) { k },
                         at_once=true,
                         fn(cell, k) {
-                          let (_, i, kind) = k.untracked()
+                          let { idx: i, kind, .. } = k.untracked()
                           let item = fn() {
                             match cur_items().get(i) {
                               Some(Some(item)) => item
@@ -1807,4 +1807,13 @@ fn menu_level_past(items : Array[MenuItem?], extra : (Int) -> MenuExtra, check_e
     }
   }
   (if lead { menu_check_w + gap } else { 0.0 }) + (if marked { menu_check_w + gap } else { 0.0 })
+}
+
+///|
+/// What a menu row is kept by: its level, its place in it and its kind (menu_row_kind).
+#derive(Eq, Hash)
+priv struct MenuRowKey {
+  lv_id : Int
+  idx : Int
+  kind : Int
 }

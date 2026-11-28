@@ -8,7 +8,7 @@ import { installLegacyAgent, legacyAgentDrain, legacyAgentStep, LEGACY_ASKED_DUR
 
 function database() {
   const dir = mkdtempSync(join(tmpdir(),"legacy-agent-")), path = join(dir,"store.db"), db = new DatabaseSync(path);
-  db.exec(`PRAGMA journal_mode=WAL;
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
     CREATE TABLE entries(thread INTEGER NOT NULL,n INTEGER NOT NULL,kind TEXT NOT NULL,author_kind TEXT NOT NULL,
       author TEXT NOT NULL,letter TEXT,ts TEXT,at INTEGER NOT NULL,text TEXT,PRIMARY KEY(thread,n));
     CREATE UNIQUE INDEX entries_ts ON entries(thread,ts) WHERE ts IS NOT NULL`);
@@ -25,8 +25,10 @@ const actual = (db: DatabaseSync,thread: number,from: number,to: number) => db.p
 for (const recursive of [false,true]) test(`an old agent-time lookup follows previous writers while preparing (recursive triggers ${recursive})`, () => {
   const rig = database(), { db } = rig, old = new DatabaseSync(rig.path);
   try {
-    old.exec(`PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
+    old.exec(`PRAGMA synchronous=NORMAL; PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
+    db.exec("BEGIN");
     for (let n=1;n<=400;n++) { put(db,1,n,500-n,"message",n%2 ? "agent" : "person"); if (n<=40) put(db,2,n,n); }
+    db.exec("COMMIT");
     installLegacyAgent(db);
     const same = () => {
       for (const thread of [1,2,3]) for (const [from,to] of [[0,100],[100,200],[200,500],[1,1000]]) {
@@ -59,6 +61,7 @@ for (const recursive of [false,true]) test(`an old agent-time lookup follows pre
 for (const alias of ["rowid","_rowid_","oid"]) test(`an old writer replacing an agent by ${alias} keeps time lookup exact`, () => {
   const rig = database(), { db } = rig, old = new DatabaseSync(rig.path);
   try {
+    old.exec("PRAGMA synchronous=NORMAL");
     put(db,1,1,10); put(db,2,2,20); put(db,3,3,30);
     while (!legacyAgentStep(db,2).ready) { /* prepare */ }
     const displaced = old.prepare("SELECT rowid id FROM entries WHERE thread=2 AND n=2").get()!.id;
@@ -71,7 +74,9 @@ for (const alias of ["rowid","_rowid_","oid"]) test(`an old writer replacing an 
 test("agent-time preparation rolls back its cursor and staged keys together", () => {
   const rig = database(), { db } = rig;
   try {
+    db.exec("BEGIN");
     for (let n=1;n<=40;n++) put(db,1,n,100-n);
+    db.exec("COMMIT");
     installLegacyAgent(db);
     db.exec(`CREATE TRIGGER fail_agent_batch BEFORE INSERT ON legacy_agent_build WHEN NEW.n=4 BEGIN
       SELECT RAISE(ABORT,'batch interrupted'); END`);
@@ -89,7 +94,9 @@ test("an old agent-time cleanup batch reads only a bounded number of dirty keys"
   for (const size of [80, 800]) {
     const rig = database(), { db } = rig;
     try {
+      db.exec("BEGIN");
       for (let n = 1; n <= size; n++) put(db, 1, n, n);
+      db.exec("COMMIT");
       installLegacyAgent(db);
       while (!legacyAgentStep(db).ready) { /* prepare */ }
       db.exec("UPDATE entries SET at=at+1000 WHERE thread=1");
@@ -149,7 +156,9 @@ test("unrelated edits and author changes do not add agent-time work", () => {
 test("agent-time lookup does not visit unrelated changed times", () => {
   const rig = database(), { db } = rig;
   try {
+    db.exec("BEGIN");
     for (let n=1;n<=400;n++) { if (n<=40) put(db,1,n,1000+n); put(db,2,n,1000+n); }
+    db.exec("COMMIT");
     while (!legacyAgentStep(db,16).ready) { /* prepare */ }
     db.exec("UPDATE entries SET at=at+1000");
     let visited = 0;
@@ -166,7 +175,9 @@ test("agent-time lookup does not visit unrelated changed times", () => {
 test("agent-time lookup seeks only the requested prepared time range", () => {
   const rig = database(), { db } = rig;
   try {
+    db.exec("BEGIN");
     for (let n=1;n<=400;n++) { if (n<=40) put(db,1,n,n); put(db,2,n,n); }
+    db.exec("COMMIT");
     while (!legacyAgentStep(db,16).ready) { /* prepare */ }
     let visited = 0;
     db.function("visit_prepared_agent", (_n) => { visited++; return 1; });
@@ -334,9 +345,11 @@ test("many changes to one agent time are removed in bounded batches", () => {
 for (const recursive of [false,true]) test(`time lookup agrees with entries through interleaved changes (recursive triggers ${recursive})`, () => {
   const rig = database(), { db } = rig, old = new DatabaseSync(rig.path);
   try {
-    old.exec(`PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
+    old.exec(`PRAGMA synchronous=NORMAL; PRAGMA recursive_triggers=${recursive ? "ON" : "OFF"}`);
+    db.exec("BEGIN");
     for (let thread=1;thread<=3;thread++) for (let n=1;n<=30;n++)
       put(db,thread,n,100-n,"message",n%2 ? "agent" : "person",`seed-${n}`);
+    db.exec("COMMIT");
     installLegacyAgent(db);
     const insert = old.prepare(`INSERT OR REPLACE INTO entries(thread,n,kind,author_kind,author,letter,ts,at)
       VALUES(?,?,?,?,'a',?,?,?)`);

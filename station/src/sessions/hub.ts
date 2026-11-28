@@ -19,9 +19,10 @@
 // every actor into <data>/run/handover.json; the runners keep the processes. A starting hub takes them up from that
 // file (`takeUp`), and from the runners a crashed station left (no snapshot), then `recover` resumes the turns marked
 // running that nothing took up.
-import { randomBytes } from "node:crypto";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
+import { copyFile, lstat, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { homedir } from "node:os";
 import { Clock, Effect, Fiber } from "effect";
 import { liveClock, wall, within } from "../ops/fibers.ts";
@@ -33,13 +34,14 @@ import { formatWorkspaceProjectsDelta, hasProposalMarker, type ProjectsToldState
 import { endRunner, runnerId } from "../agents/process.ts";
 import { RUNNER_LEFT_MS, allLeft, isTerminalRunner, liveRunners, type RunnerInfo } from "../agents/runner.ts";
 import { log } from "../ops/log.ts";
+import { samePath } from "../ops/paths.ts";
 import { type UpkeepState, readUpkeepState as defaultReadUpkeepState } from "../ops/upkeep-state.ts";
 import { tr, stationLang } from "../ops/i18n.ts";
 import { iso, sessionPlaces } from "../read/transcript.ts";
 import type { ReaderSelectConfig } from "../read/reader-select.ts";
 import * as titles from "../../../client/core-ts/src/titles.ts";
 import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
-import { type ArchivedWorkspace, type Attachment, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
+import { type ArchivedWorkspace, type Attachment, deferredFileId, MANUAL, type SessionRow, type Store, STILLFAIL_SURFACE, feishuSurface, commaSurface, groupSurface, slackSurface, type MessageRow, type ThreadRow, type ThreadSummary } from "../store/store.ts";
 import type { DeliveryCardState, InWorkspace, PendingMessage } from "../store/rows.ts";
 import { comingWs, handedWs, sees } from "../store/rows.ts";
 import { isNotice, markNotice } from "./chat.ts";
@@ -135,7 +137,55 @@ export interface ColdStorage {
 }
 
 /// The most of a shared file the station fetches, as much as an agent may attach.
-const MAX_INBOUND_FILE = 50 * 1024 * 1024;
+export const MAX_INBOUND_FILE = 50 * 1024 * 1024;
+
+/// Deterministic, path-safe filename inside `<workspace>/uploads` for a platform file `(id, name)`.
+function safeUploadName(id: string, name: string): string {
+  const clean = (s: string) => Array.from(s).map((c) => (c === "\\" || c === "/" || c.codePointAt(0)! < 0x20 ? "_" : c)).join("");
+  const stem = clean(id) || "file";
+  const safeName = clean(name) || "attachment";
+  const full = `${stem}-${safeName}`;
+  if (Buffer.byteLength(full, "utf8") <= 200) return full;
+  const dot = safeName.lastIndexOf(".");
+  const ext = dot > 0 && Buffer.byteLength(safeName.slice(dot), "utf8") <= 24 ? safeName.slice(dot) : "";
+  const hashTag = createHash("sha256").update(full).digest("hex").slice(0, 12);
+  const prefix = `${stem.slice(0, 48)}-${hashTag}`;
+  const room = Math.max(0, 196 - Buffer.byteLength(prefix + ext, "utf8"));
+  let cut = "";
+  for (const ch of safeName.slice(0, dot > 0 ? dot : safeName.length)) {
+    if (Buffer.byteLength(cut + ch, "utf8") > room) break;
+    cut += ch;
+  }
+  return cut ? `${prefix}-${cut}${ext}` : `${prefix}${ext}`;
+}
+
+/// Ephemeral end-to-end secrets (`group/surface.ts` `secret:<id>`) live only in RAM for a single immediate read and
+/// must never be persisted in `deferred_files` or shared across sessions via `downloaded_files`.
+function isEphemeralSecret(file: InboundFile): boolean {
+  return file.url?.startsWith("secret:") === true;
+}
+
+/// Atomically copies (CoW clone where supported) an already-downloaded regular file into another session's uploads
+/// directory without sharing an inode or following symlinks on the source path.
+async function placeDownloadedCopy(srcPath: string, destPath: string): Promise<void> {
+  if (samePath(srcPath, destPath)) return;
+  const srcStat = await lstat(srcPath);
+  if (!srcStat.isFile()) {
+    const err = new Error(`refusing to copy non-regular cached upload: ${srcPath}`) as NodeJS.ErrnoException;
+    err.code = "ENOENT";
+    throw err;
+  }
+  await mkdir(dirname(destPath), { recursive: true });
+  const part = `${destPath}.part-${randomBytes(4).toString("hex")}`;
+  try {
+    await copyFile(srcPath, part, fsConstants.COPYFILE_FICLONE);
+    await rename(part, destPath);
+  } catch (error) {
+    await rm(part, { force: true }).catch(() => {});
+    if ((await stat(destPath).catch(() => null))?.isFile()) return;
+    throw error;
+  }
+}
 /// How long transcripts' lengths are gathered before they are written (`noteLength`).
 export const LENGTHS_GATHER_MS = 5_000;
 
@@ -1313,24 +1363,49 @@ export class Hub {
     }
     const thread = existing ?? (await this.openSlackThread(chat, surface, message, createdBy, key));
     if (wanted) this.store.joinThread(thread.id, key, connect.id);
-    // Its files go where a session of the thread reads them; once (Slack sends a message again it was slow to hear of).
-    // Never to one archived by hand, whose workspace is put away: with no other there, they are only named.
+    // Platform files are recorded as deferred metadata and downloaded on demand by the agent (`chat_history {to, fetch}`),
+    // never eagerly downloaded during message ingestion. Quoted messages still bring in their blockquote text when an
+    // active agent is present (their files are deferred alongside the message's own files).
     const shown = wanted || threadHiddenByHand ? [] : members.filter((m) => this.store.getSession(m.session)?.archivedBy !== MANUAL);
     const into = wanted ? key : ((shown.find((m) => m.leftAt === null) ?? shown[0])?.session ?? null);
     const at = this.store.messageNumberAt(thread.id, message.ts);
-    // Recorded with its files only named, and now one it mentions is there (another bot's connect saw it first).
+    // Recorded without its quoted message while no agent was active, and now one it mentions is there.
     const late = wanted && at !== null && this.unfetched.has(`${thread.id}:${at}`);
     // Edited on its platform since (an edit of the thread waits its turn, `receive`), it reads as edited.
     const words = late ? (this.store.editedText(thread.id, at) ?? message.text) : message.text;
     let said: { text: string; attachments: Attachment[] } = { text: words, attachments: [] };
-    if (into === null) said.text = [message.text, ...(message.files ?? []).map((f) => tr(stationLang(), "station.slack.fileNotFetched", { name: f.name, error: tr(stationLang(), "station.slack.fileWhileArchived") }))].filter((t) => t !== "").join("\n\n");
-    else if (at === null || late) said = await this.fetched(chat, into, words, message.files);
-    if (into !== null && wanted && (at === null || late)) said = await this.withQuoted(chat, thread.id, here, into, message, said);
+    let quotedFiles: InboundFile[] = [];
+    const ephemeralFiles = (message.files ?? []).filter(isEphemeralSecret);
+    const deferredMessageFiles = (message.files ?? []).filter((f) => !isEphemeralSecret(f));
+    if (into !== null && (at === null || late)) {
+      if (ephemeralFiles.length > 0) {
+        said = await this.fetched(chat, into, said.text, ephemeralFiles, surface);
+      }
+      if (wanted) {
+        const quoted = await this.withQuoted(chat, thread.id, here, message, said);
+        said = { text: quoted.text, attachments: quoted.attachments };
+        quotedFiles = quoted.files;
+      }
+    } else if (into === null && at === null && ephemeralFiles.length > 0) {
+      // No active session can take an ephemeral in-memory secret: note it as unfetched and drain it from the surface
+      // so the secret bytes are not retained in RAM.
+      const missing: string[] = [];
+      for (const f of ephemeralFiles) {
+        missing.push(tr(stationLang(), "station.slack.fileNotFetched", { name: f.name, error: tr(stationLang(), "station.slack.fileWhileArchived") }));
+        void chat.download?.(f).catch(() => {});
+      }
+      said = { text: [said.text, ...missing].filter((t) => t !== "").join("\n\n"), attachments: said.attachments };
+    }
     const [n, fresh] = this.store.insertMessage({ thread: thread.id, ts: message.ts, authorKind: "person", author: message.user, ...said });
-    if (late) {
+    if (fresh) {
+      const deferred = [...quotedFiles, ...deferredMessageFiles];
+      if (deferred.length > 0) this.store.recordDeferredFiles(thread.id, n, deferred);
+    } else if (late) {
       this.store.completeMessage(thread.id, n, said.text, said.attachments);
+      if (quotedFiles.length > 0) this.store.recordDeferredFiles(thread.id, n, quotedFiles);
       this.unfetched.delete(`${thread.id}:${n}`);
-    } else if (fresh && into === null && ((message.files ?? []).length > 0 || message.quoted !== undefined)) {
+    }
+    if (fresh && into === null && message.quoted !== undefined) {
       this.unfetched.add(`${thread.id}:${n}`);
       if (this.unfetched.size > 2000) this.unfetched.delete(this.unfetched.keys().next().value!);
     }
@@ -1342,32 +1417,35 @@ export class Hub {
     this.deliver(thread.id, n, targets, words);
   }
 
-  /// The messages recorded with what they carry (files, a quote) left out, no one there to read it, as `thread:n` (the newest;
+  /// The messages recorded without a quoted message (no agent active when first seen), as `thread:n` (the newest;
   /// a restart forgets them). Brought in should another connect of theirs bring an agent it mentions (`acceptInTurn`).
   private readonly unfetched = new Set<string>();
 
   /// The quoted messages already brought in, as `thread:message` (the newest; a restart forgets them, and one is brought once more).
   private readonly quotedIn = new Set<string>();
 
+  /// In-flight platform downloads keyed by `${scope}\0${file.id}`, coalescing concurrent fetches on this station.
+  private readonly downloading = new Map<string, Promise<{ name: string; size: number; path: string }>>();
+
   /// A message that quotes one the conversation does not have (Feishu's 回复, `InboundMessage.quoted`) brings it in:
-  /// its words as a blockquote before the message's, its files fetched before the message's own.
-  private async withQuoted(chat: ChatSurface, thread: number, here: ThreadRef, into: string, message: InboundMessage, said: { text: string; attachments: Attachment[] }): Promise<{ text: string; attachments: Attachment[] }> {
-    if (message.quoted === undefined || !chat.quoted || this.store.messageNumberAt(thread, message.quoted) !== null) return said;
+  /// its words as a blockquote before the message's, its files deferred before the message's own.
+  private async withQuoted(chat: ChatSurface, thread: number, here: ThreadRef, message: InboundMessage, said: { text: string; attachments: Attachment[] }): Promise<{ text: string; attachments: Attachment[]; files: InboundFile[] }> {
+    if (message.quoted === undefined || !chat.quoted || this.store.messageNumberAt(thread, message.quoted) !== null) return { ...said, files: [] };
     // Once a conversation: every reply in a Feishu thread names the thread's first message as what it replies to.
     const once = `${thread}:${message.quoted}`;
-    if (this.quotedIn.has(once)) return said;
+    if (this.quotedIn.has(once)) return { ...said, files: [] };
     this.quotedIn.add(once);
     if (this.quotedIn.size > 2000) this.quotedIn.delete(this.quotedIn.keys().next().value!);
     const quoted = await chat.quoted(here, message.quoted);
-    if (quoted === null || (quoted.text === "" && (quoted.files ?? []).length === 0)) return said;
-    const its = await this.fetched(chat, into, quoted.text, quoted.files);
-    const block = its.text === "" ? "" : its.text.split("\n").map((line) => `> ${line}`).join("\n");
-    return { text: [block, said.text].filter((t) => t !== "").join("\n\n"), attachments: [...its.attachments, ...said.attachments] };
+    if (quoted === null || (quoted.text === "" && (quoted.files ?? []).length === 0)) return { ...said, files: [] };
+    const block = quoted.text === "" ? "" : quoted.text.split("\n").map((line) => `> ${line}`).join("\n");
+    return { text: [block, said.text].filter((t) => t !== "").join("\n\n"), attachments: said.attachments, files: quoted.files ?? [] };
   }
 
   /// A Slack thread the station starts following. When that happens mid-thread, what was said before is recorded first
   /// (without deliveries), so the thread on the pages and chat_history are complete and the log keeps Slack's order.
-  private async openSlackThread(chat: ChatSurface, surface: string, message: InboundMessage, createdBy: string, key: string): Promise<ThreadRow> {
+  /// Historical files are recorded as deferred metadata instead of eagerly downloaded during thread open.
+  private async openSlackThread(chat: ChatSurface, surface: string, message: InboundMessage, createdBy: string, _key: string): Promise<ThreadRow> {
     let earlier: { ts: string; user: string; text: string; files?: InboundFile[] }[] = [];
     if (message.ts !== message.threadTs) {
       try {
@@ -1377,37 +1455,135 @@ export class Hub {
       }
     }
     // Asked before the thread exists, so a connect seeing the same message meanwhile cannot record it ahead of these.
-    const said = [];
-    for (const m of earlier) said.push({ ...m, ...(await this.fetched(chat, key, m.text, m.files)) });
     const thread = this.store.openThread(surface, message.channel, message.threadTs, null, createdBy);
-    for (const m of said) this.store.insertMessage({ thread: thread.id, ts: m.ts, authorKind: "person", author: m.user, text: m.text, attachments: m.attachments });
+    for (const m of earlier) {
+      const [n, fresh] = this.store.insertMessage({ thread: thread.id, ts: m.ts, authorKind: "person", author: m.user, text: m.text, attachments: [] });
+      if (fresh && m.files && m.files.length > 0) this.store.recordDeferredFiles(thread.id, n, m.files);
+    }
     return thread;
   }
 
-  /// A message's text and its shared files, fetched into the session's uploads (as files sent in the station's own
-  /// chats are). A file that cannot be fetched is named in the text with why, so its reader knows one was there.
-  async fetched(chat: ChatSurface, key: string, text: string, files: InboundFile[] | undefined): Promise<{ text: string; attachments: Attachment[] }> {
-    const row = files && files.length > 0 ? this.store.getSession(key) : null;
-    if (!files || !row) return { text, attachments: [] };
-    // Just shown again (`archiveBy`): what is written as its workspace comes back could go with the one it replaces.
+  private downloadScope(key: string, surface: string): string {
+    return `${this.wsOf(key) ?? ""}\0${surface}`;
+  }
+
+  /// Downloads one platform file into session `key`'s uploads with station-level deduplication and single-flight
+  /// coalescing: repeated calls in the same session or across sessions in the same workspace reuse the local file
+  /// without downloading from the platform again.
+  private async downloadOne(chat: ChatSurface, key: string, surface: string, file: InboundFile): Promise<Attachment> {
+    const row = this.store.getSession(key);
+    if (!row) throw new Error("unknown session");
     await this.waitRestore(key);
     const dir = join(row.workspace, "uploads");
+    const fileId = deferredFileId(file);
+    const destPath = join(dir, safeUploadName(fileId, file.name));
+    const secret = isEphemeralSecret(file);
+    const cacheable = !secret && (file.id !== "" || (file.url !== null && file.url !== ""));
+    const scope = this.downloadScope(key, surface);
+    const flightKey = `${scope}\0${fileId}`;
+
+    // Fast path 1: already present in this session's uploads.
+    const localStat = await stat(destPath).catch(() => null);
+    if (localStat?.isFile()) {
+      return { name: file.name, path: destPath, size: localStat.size, ...(await shownFactsSoon(destPath)) };
+    }
+
+    // Fast path 2: already downloaded on this station in the same workspace+surface.
+    if (cacheable) {
+      const cached = this.store.downloadedFile(scope, fileId);
+      if (cached !== null) {
+        const cachedStat = await lstat(cached.path).catch(() => null);
+        if (cachedStat?.isFile()) {
+          try {
+            await placeDownloadedCopy(cached.path, destPath);
+            return { name: file.name, path: destPath, size: cachedStat.size, ...(await shownFactsSoon(destPath)) };
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+      }
+    }
+
+    // Single-flight path: join an in-flight download on this station if one is running. Callers sharing the same flight
+    // observe the same rejection if the platform download fails, and may retry independently once the flight clears.
+    if (cacheable) {
+      const existing = this.downloading.get(flightKey);
+      if (existing !== undefined) {
+        const ready = await existing;
+        const readyStat = await lstat(ready.path).catch(() => null);
+        if (readyStat?.isFile()) {
+          try {
+            await placeDownloadedCopy(ready.path, destPath);
+            return { name: file.name, path: destPath, size: readyStat.size, ...(await shownFactsSoon(destPath)) };
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+        }
+      }
+    }
+
+    const work = (async () => {
+      if (!chat.download) throw new Error("this platform does not give files");
+      if (file.size > MAX_INBOUND_FILE) throw new Error("over 50 MB");
+      const bytes = await chat.download(file);
+      if (bytes.length > MAX_INBOUND_FILE) throw new Error("over 50 MB");
+      await mkdir(dir, { recursive: true });
+      const part = `${destPath}.part-${randomBytes(4).toString("hex")}`;
+      try {
+        await writeFile(part, bytes);
+        await rename(part, destPath);
+      } catch (error) {
+        await rm(part, { force: true }).catch(() => {});
+        throw error;
+      }
+      if (cacheable) this.store.recordDownloadedFile(scope, fileId, file.name, bytes.length, destPath);
+      return { name: file.name, size: bytes.length, path: destPath };
+    })();
+    if (cacheable) this.downloading.set(flightKey, work);
+    try {
+      const done = await work;
+      return { name: file.name, path: done.path, size: done.size, ...(await shownFactsSoon(done.path)) };
+    } finally {
+      if (cacheable && this.downloading.get(flightKey) === work) this.downloading.delete(flightKey);
+    }
+  }
+
+  /// Agent-triggered download of a deferred platform file in `thread`: verifies the file belongs to `thread`, downloads
+  /// once via `downloadOne` (station-deduped and single-flight), attaches it to any unresolved messages in `thread`,
+  /// and marks those `deferred_files` rows resolved. Repeated or cross-session calls in the same thread reuse the local
+  /// copy with zero platform calls (or re-download if the earlier session's copy was cleaned up).
+  async fetchDeferredFile(key: string, thread: ThreadRow, connect: string, fileId: string): Promise<Attachment> {
+    const id = fileId.trim();
+    if (id === "") throw new Error("file id is empty");
+    const row = this.store.getSession(key);
+    if (!row) throw new Error("unknown session");
+    const matches = this.store.deferredFilesById(thread.id, id);
+    if (matches.length === 0) {
+      throw new Error(`no unfetched file ${id} in ${thread.channel}/${thread.threadTs}`);
+    }
+    const chat = this.chat(connect);
+    const attachment = await this.downloadOne(chat, key, thread.surface, matches[0]!.file);
+    if (matches.some((m) => m.resolvedAt === null)) {
+      this.store.resolveDeferredFile(thread.id, id, attachment);
+    }
+    return attachment;
+  }
+
+  /// Fetches explicit files (e.g. `slack_api save_files`) into the session's uploads with station-level deduplication.
+  /// A file that cannot be fetched is named in the text with why, so its reader knows one was there.
+  async fetched(chat: ChatSurface, key: string, text: string, files: InboundFile[] | undefined, surface?: string): Promise<{ text: string; attachments: Attachment[] }> {
+    const row = files && files.length > 0 ? this.store.getSession(key) : null;
+    if (!files || !row) return { text, attachments: [] };
+    const place = surface ?? (chat.workspace?.() ? `slack:${chat.workspace()}` : row.connect);
     const attachments: Attachment[] = [];
     const missing: string[] = [];
+    const seen = new Set<string>();
     for (const file of files) {
+      const dedupKey = file.id !== "" ? file.id : `${file.name}\0${file.url ?? ""}`;
+      if (seen.has(dedupKey)) continue;
+      seen.add(dedupKey);
       try {
-        if (!chat.download) throw new Error("this platform does not give files");
-        if (file.size > MAX_INBOUND_FILE) throw new Error("over 50 MB");
-        const bytes = await chat.download(file);
-        await mkdir(dir, { recursive: true });
-        const safe = Array.from(file.name)
-          .map((c) => (c === "\\" || c === "/" || c.codePointAt(0)! < 0x20 ? "_" : c))
-          .join("");
-        const path = join(dir, `${iso(this.now()).slice(0, 19).replace(/[:.]/g, "-")}-${file.id}-${safe}`);
-        // written and measured off the main thread: a file of up to 50 MB, a film's moov read from its end
-        await writeFile(path, bytes);
-        const attachment: Attachment = { name: file.name, path, size: bytes.length, ...(await shownFactsSoon(path)) };
-        attachments.push(attachment);
+        attachments.push(await this.downloadOne(chat, key, place, file));
       } catch (error) {
         log.warn("hub", "shared file not fetched", { session: key, file: file.id, error: (error as Error).message });
         missing.push(tr(stationLang(), "station.slack.fileNotFetched", { name: file.name, error: (error as Error).message }));

@@ -1,0 +1,531 @@
+// Wave 17C-3A R2 unit tests:
+// - Raw binary session file routes (`GET /sessions/:key/(files|parts|poster|open)` with `stillfail-*` headers,
+//   `304` on `have=`, `thumb=1|2`, archived `workspace.tar.zst`, symlink/traversal rejection)
+// - `drive.mkdir.post` strict workspace-scoped Drive isolation (joined ws blocked from home root)
+// - Shared `TransfersManager` cancel isolation (workspace + viewer)
+// - CRDT records (`stars`, `progress`, `presetProjects`, `board.drafts`) with 413 body limits,
+//   `board.drafts` `files: []` array contract, fail-closed corrupt store, `put_aside` on gone, `rev` monotonicity
+// - `projects.info.put` atomic write + 512 KiB cap
+// - `resources` single-`agents` folding + `resources.process.end` handle-bound stop
+// - Honest `501` when `links.preview`, `feedback.report`, `hub.session.retry`/`compact`, `projects.rename`/`merge` are unhooked
+
+import "base64"
+import "base_codec"
+import "http1"
+import "station_api"
+import "station_drivers"
+import "station_http"
+import "station_jobs"
+import "station_ops"
+import "station_screens"
+import "station_vault"
+
+fn make_w17c3a_r2_fixture(
+  fs_override : Option[station_jobs::FsPort] = None,
+  ro_override : Option[ReadOpsPort] = None,
+) -> (WholeApi, WholeApiRuntimePort, WholeApiRuntimeHooks, station_jobs::FsPort, station_screens::MemDriveFs) {
+  let seen = station_api::SeenStore::{
+    session_exists: fn(k : String) -> Bool { k == "s-main" || k == "s-other" },
+    session_ws: fn(k : String) -> Option[Option[String]] {
+      if k == "s-main" { Some(Some("ws-main")) } else if k == "s-other" { Some(Some("ws-other")) } else { None }
+    },
+    thread_exists: fn(tid : Int) -> Bool { tid == 10 || tid == 20 },
+    thread_sessions: fn(tid : Int) -> Array[String] {
+      if tid == 10 { ["s-main"] } else if tid == 20 { ["s-other"] } else { [] }
+    },
+    job_session: fn(_id : String) -> Option[String] { None },
+    handed_to: fn(_k : String) -> Option[station_api::HandedRecord] { None },
+  }
+  let mem_fs = station_ops::MemFs::new()
+  let _ = mem_fs.put_text("/tmp/w17c3a/config.json", "{}", 384)
+  let cfg_file = match station_ops::ConfigFile::open(mem_fs.ops(), "/tmp/w17c3a", sep="/") {
+    Ok(c) => c
+    Err(_) => panic("ConfigFile::open failed")
+  }
+  let store = WholeStore::new_pre_handover_with_sep("/tmp/w17c3a", "/")
+  store.vault_store = Some(station_vault::VaultStore::in_memory())
+  let job_fs = match fs_override {
+    Some(f) => f
+    None => mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  }
+  let agents = WholeAgents::new_with_deps(
+    WholeAgentsConfig::{
+      data_dir: "/tmp/w17c3a",
+      assets_dir: "/tmp/w17c3a/assets",
+      runner_bin: "/usr/bin/true",
+      mcp_port: 0,
+      home_ws: "ws-main",
+    },
+    job_fs,
+    wc_noop_proc_backend(),
+    fn(n : Int) -> Result[Bytes, String] {
+      let b = Bytes::new(n)
+      for i in 0..<n { b[i] = (i % 251 + 1).to_byte() }
+      Ok(b)
+    },
+  )
+  let updates = station_drivers::RuntimeUpdatesManager::new()
+  let auth_policy = PeerAuthPolicy::{
+    station_id: "st-w17c3a",
+    station_build: "9.9.9",
+    home_workspace: "ws-main",
+    allowed_workspaces: ["ws-main", "ws-other"],
+    verify_fn: None,
+  }
+  let dfs = station_screens::MemDriveFs::new()
+  let _ = (dfs.fs().mkdir_p)("/tmp/w17c3a/drive-home")
+  let _ = (dfs.fs().mkdir_p)("/tmp/w17c3a/drive-other")
+  let home_drive = station_screens::Drive::new(
+    dfs.fs(), ["/tmp/w17c3a/drive-home"], ["/tmp/w17c3a/data"], false, "/tmp/w17c3a/trash-home", station_screens::TrashKind::Freedesktop,
+  )
+  let other_drive = station_screens::Drive::new(
+    dfs.fs(), ["/tmp/w17c3a/drive-other"], ["/tmp/w17c3a/data"], false, "/tmp/w17c3a/trash-other", station_screens::TrashKind::Freedesktop,
+  )
+  let screens = station_screens::ScreenHub::new()
+  let events = station_api::EventsHub::with_visibility("st-w17c3a", station_api::EventKeeps::default(), Some(seen), None)
+  let hooks = WholeApiRuntimeHooks::new()
+  hooks.read_only_handover_cell[0] = false
+  hooks.drive_for_ws = Some(fn(ws : String) -> station_screens::Drive {
+    if ws == "ws-other" { other_drive } else { home_drive }
+  })
+  let base_port = WholeApiRuntimePort::in_memory()
+  let ro = match ro_override {
+    Some(r) => r
+    None => ReadOpsPort::{
+      ..ReadOpsPort::in_memory(),
+      session_workspace: fn(k : String) -> Result[Option[SessionWorkspaceInfo], station_api::ApiError] {
+        if k == "s-main" {
+          Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-main/workspace", runtime: "claude", cwd: None, archived: false, running: false }))
+        } else {
+          Ok(None)
+        }
+      },
+      write_file_atomic: fn(path : String, data : Bytes) -> Result[Unit, String] {
+        if (job_fs.write_bytes)(path, data) { Ok(()) } else { Err("write failed") }
+      },
+    }
+  }
+  let port = WholeApiRuntimePort::{ ..base_port, readops: ro }
+  let di_host = station_api::ApiHost::{
+    read_op: fn(op : String, req : station_api::ApiRequest, args : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      match dispatch_extra_read_op(op, req, args, agents, seen, port) {
+        Some(res) => res
+        None => Err(station_api::ApiError::new(404, "unsupported read op: " + op))
+      }
+    },
+    call: fn(op : String, req : station_api::ApiRequest, params : Array[String], body : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      match dispatch_extra_call_op(
+        op, req, params, body, store, agents, auth_policy, seen, home_drive, screens, events, updates,
+        Some(cfg_file), None, hooks, port, 1700000000000L,
+      ) {
+        Some(res) => res
+        None => Err(station_api::ApiError::new(404, "unsupported api op: " + op))
+      }
+    },
+    overview: fn(_v, _l) { Ok(base_codec::json_obj([])) },
+    host_sample: fn(_l) { Ok(base_codec::json_obj([])) },
+    search: fn(_q, _a, _k, _lim, _off, _arch) { Ok(station_api::SearchResult::{ groups: [], building: false }) },
+    events: Some(events),
+    usage_reading_all: fn() { false },
+    session_exists: seen.session_exists,
+    held_sessions: fn() { [] },
+    dev_enabled: false,
+  }
+  let api = WholeApi::new_with_ports(auth_policy, home_drive, ["/tmp/w17c3a/drive-home"], None, screens, events, seen, di_host)
+  api.read_only_handover = false
+  api.session_binary_fn = Some(fn(hreq : station_http::HttpRequest, v : station_api::Viewer) -> Option[station_http::HttpResponse] {
+    handle_session_binary_get(hreq, v, seen, agents, None, "9.9.9", port)
+  })
+  (api, port, hooks, job_fs, dfs)
+}
+
+fn find_header(headers : Array[http1::Header], name : String) -> Option[String] {
+  for i in 0..<headers.length() {
+    if headers[i].name == name { return Some(headers[i].value) }
+  }
+  None
+}
+
+test "w17c3a R2: raw binary session files/parts/poster/open + 304 have + archived tar.zst + symlink escape" {
+  let base_fs = mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  let _ = (base_fs.mkdir_p)("/tmp/w17c3a/sessions/s-main/workspace/uploads")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/sessions/s-main/workspace/uploads/hello.txt", "0123456789abcdef")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/sessions/s-main/workspace/notes.md", "hello-open-world")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/sessions/s-main/workspace/uploads/evil-link", "x")
+  let fs = station_jobs::FsPort::{
+    ..base_fs,
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if p.ends_with("evil-link") {
+        Some(station_jobs::FsStat::{ kind: "link", size: 1L, executable: false, mode: 420, mtime_ms: 1L, dev: 1L, ino: 1L })
+      } else { (base_fs.lstat)(p) }
+    },
+    realpath: fn(p : String) -> Option[String] {
+      if p.ends_with("evil-link") { Some("/etc/passwd") } else { Some(p) }
+    },
+  }
+  let ro = ReadOpsPort::{
+    ..ReadOpsPort::in_memory(),
+    session_workspace: fn(k : String) -> Result[Option[SessionWorkspaceInfo], station_api::ApiError] {
+      if k == "s-main" {
+        Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-main/workspace", runtime: "claude", cwd: None, archived: false, running: false }))
+      } else { Ok(None) }
+    },
+    resolve_session_place: fn(_req : station_api::ApiRequest, _k : String, rel : String) -> Result[SessionPlaceInfo, station_api::ApiError] {
+      if rel == "notes.md" {
+        Ok(SessionPlaceInfo::{ path: "/tmp/w17c3a/sessions/s-main/workspace/notes.md", name: "notes.md", dir: false, size: 16L, mtime: 555L, content_type: "text/plain; charset=utf-8" })
+      } else { Err(station_api::ApiError::new(404, "station.files.notFound")) }
+    },
+    read_archived_upload: fn(_room : String, rel : String) -> Option[Bytes] {
+      if rel == "uploads/packed.bin" { Some("PACKED-DATA".to_bytes()) } else { None }
+    },
+  }
+  let (api, _, _, _, _) = make_w17c3a_r2_fixture(fs_override=Some(fs), ro_override=Some(ro))
+  let key_id = "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let owner = PeerIdentity::AuthenticatedMember(make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner"), key_id)
+
+  // 1. Raw binary `GET /sessions/s-main/files?name=hello.txt` (NOT base64 JSON!)
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/files?name=hello.txt", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "0123456789abcdef" {
+        panic("expected raw bytes from /files, got status=" + r.status.to_string() + " body=" + r.body.to_string())
+      }
+    }
+    _ => panic("unexpected action")
+  }
+  // 2. Archived `workspace.tar.zst` fallback
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/files?name=packed.bin", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "PACKED-DATA" { panic("archived upload fallback failed") }
+    }
+    _ => panic("unexpected action")
+  }
+  // 3. Symlink escape rejected 403
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/files?name=evil-link", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => if r.status != 403 { panic("symlink escape must return 403") }
+    _ => panic("unexpected action")
+  }
+  // 4. Raw `GET /sessions/s-main/parts?name=hello.txt&offset=4&length=4` + `stillfail-total`
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/parts?name=hello.txt&offset=4&length=4", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "4567" || find_header(r.headers, "stillfail-total") != Some("16") {
+        panic("raw /parts mismatch")
+      }
+    }
+    _ => panic("unexpected action")
+  }
+  // 5. Raw `GET /sessions/s-main/open?path=notes.md&raw=1` + `have=555:16` -> 304 Not Modified
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/open?path=notes.md&raw=1", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "hello-open-world" || find_header(r.headers, "stillfail-name") != Some("notes.md") {
+        panic("raw /open mismatch")
+      }
+    }
+    _ => panic("unexpected action")
+  }
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/open?path=notes.md&raw=1&have=555:16", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => if r.status != 304 { panic("open raw=1 have= match must return 304") }
+    _ => panic("unexpected action")
+  }
+}
+
+test "w17c3a R2: drive.mkdir.post workspace isolation, shared transfers, CRDT 413 + board.drafts contract, resources.process.end" {
+  let mut stopped_pid = 0
+  let mut aside_count = 0
+  let ro = ReadOpsPort::{
+    ..ReadOpsPort::in_memory(),
+    end_session_process: fn(pid : Int, session : String, _now : Int64) -> Result[String, station_api::ApiError] {
+      if pid == 4242 && session == "s-main" { stopped_pid = pid; Ok("build-job") }
+      else { Err(station_api::ApiError::new(409, "process is not a tracked process for this session")) }
+    },
+    put_aside_draft_files: fn(_ws : String, _sub : String, ids : Array[String]) -> Unit {
+      aside_count = aside_count + ids.length()
+    },
+  }
+  let (api, port, _, _, _) = make_w17c3a_r2_fixture(ro_override=Some(ro))
+  let home_owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  let joined_owner = make_test_viewer("j@example.com", "u-joined", "ws-other", false, "owner")
+  let home_member = make_test_viewer("m@example.com", "u-member", "ws-main", true, "member")
+
+  // 1. P0 regression: joined workspace CANNOT mkdir inside home workspace's Drive root (403), CAN mkdir in own root (200)
+  match (api.admin.host.call)("drive.mkdir.post", make_test_api_req_as("POST", "/drive/mkdir", joined_owner), [], base_codec::json_obj([
+    ("root", base_codec::json_str("/tmp/w17c3a/drive-home")),
+    ("path", base_codec::json_str("escape")),
+  ])) {
+    Err(e) => if e.status != 404 && e.status != 403 { panic("joined ws mkdir in home drive root must return 404/403, got " + e.status.to_string()) }
+    Ok(_) => panic("joined ws mkdir in home drive root must be rejected")
+  }
+  match (api.admin.host.call)("drive.mkdir.post", make_test_api_req_as("POST", "/drive/mkdir", joined_owner), [], base_codec::json_obj([
+    ("root", base_codec::json_str("/tmp/w17c3a/drive-other")),
+    ("path", base_codec::json_str("allowed")),
+  ])) {
+    Ok(res) => if json_field_bool(res, "dir") != Some(true) { panic("joined ws mkdir in own root failed") }
+    Err(e) => panic("joined ws mkdir in own root failed: " + e.message)
+  }
+
+  // 2. Shared `transfers.cancel`: enforces workspace + viewer email isolation
+  let t = match port.readops.transfers.start(
+    "owner@example.com", "ws-main", true, true, false,
+    station_screens::TransferFrom::{ station: None, station_name: None, grant: None, root: "/tmp/w17c3a/drive-home", path: "", names: ["a.txt"] },
+    station_screens::TransferTo::{ root: "/tmp/w17c3a/drive-home", path: "sub" },
+    Map::new(), 1700000000000L,
+  ) {
+    Ok(tr) => tr
+    Err(e) => panic("start failed: " + e.message)
+  }
+  match (api.admin.host.call)("transfers.cancel", make_test_api_req_as("POST", "/drive/transfers/" + t.id + "/cancel", joined_owner), [t.id], base_codec::json_obj([])) {
+    Err(e) => if e.status != 404 { panic("cross-ws transfer cancel must return 404") }
+    Ok(_) => panic("cross-ws transfer cancel must be rejected")
+  }
+  match (api.admin.host.call)("transfers.cancel", make_test_api_req_as("POST", "/drive/transfers/" + t.id + "/cancel", home_owner), [t.id], base_codec::json_obj([])) {
+    Ok(res) => if !base_codec::json_stringify(res).contains("cancelled") { panic("expected cancelled transfer") }
+    Err(e) => panic("transfer cancel failed: " + e.message)
+  }
+
+  // 3. CRDT 413 body-size limit on `progress.PUT` (> 4096 bytes)
+  let huge_raw = Bytes::new(5000)
+  for i in 0..<5000 { huge_raw[i] = 97.to_byte() }
+  let (p_path, p_qraw, p_q) = station_http::parse_request_target("/progress")
+  let big_req = station_api::ApiRequest::from_http(
+    station_http::HttpRequest::{
+      conn_id: 0, method: "PUT", raw_target: "/progress", path: p_path, query_raw: p_qraw, query: p_q,
+      version: http1::Version::Http11, headers: [], body: huge_raw, peer: "", raw_head: Bytes::new(0),
+    },
+    home_owner,
+  )
+  match (api.admin.host.call)("progress.PUT", big_req, [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 413 { panic("oversized progress.PUT must return 413, got " + e.status.to_string()) }
+    Ok(_) => panic("oversized progress.PUT must be rejected 413")
+  }
+
+  // 4. `board.drafts`: `files` is `[]` (array, not `{}`), `:`/`.`, `draftOf` normalization, `put_aside` on gone
+  match (api.admin.host.call)("board.drafts.GET", make_test_api_req_as("GET", "/board/drafts", home_owner), [], base_codec::json_obj([])) {
+    Ok(res) => match base_codec::json_get(res, "files") {
+      Some(base_codec::Json::Arr(_)) => ()
+      _ => panic("board.drafts.GET files must be a JSON array, got " + base_codec::json_stringify(res))
+    }
+    Err(e) => panic("board.drafts.GET failed: " + e.message)
+  }
+  let d1 = base_codec::json_obj([("drafts", base_codec::json_arr([
+    base_codec::json_obj([
+      ("id", base_codec::json_str("new:board-1.2")),
+      ("owner", base_codec::json_str("u-owner")),
+      ("rev", base_codec::json_int(1)),
+      ("gone", base_codec::json_bool(false)),
+      ("at", base_codec::json_int(10)),
+      ("updatedAt", base_codec::json_int(10)),
+      ("title", base_codec::json_str("  Live  ")),
+      ("station", base_codec::json_str("st-w17c3a")),
+      ("extraJunk", base_codec::json_str("MUST-BE-STRIPPED")),
+    ]),
+  ]))])
+  match (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", home_owner), [], d1) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("MUST-BE-STRIPPED") || !s.contains("new:board-1.2") {
+        panic("draftOf normalization failed: " + s)
+      }
+    }
+    Err(e) => panic("board.drafts.PUT d1 failed: " + e.message)
+  }
+  let d1_gone = base_codec::json_obj([("drafts", base_codec::json_arr([
+    base_codec::json_obj([
+      ("id", base_codec::json_str("new:board-1.2")),
+      ("owner", base_codec::json_str("u-owner")),
+      ("rev", base_codec::json_int(2)),
+      ("gone", base_codec::json_bool(true)),
+      ("updatedAt", base_codec::json_int(20)),
+      ("title", base_codec::json_str("MUST-BE-DROPPED")),
+    ]),
+  ]))])
+  match (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", home_owner), [], d1_gone) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("MUST-BE-DROPPED") {
+        panic("gone draft must drop live fields: " + s)
+      }
+    }
+    Err(e) => panic("board.drafts.PUT d1_gone failed: " + e.message)
+  }
+  if aside_count != 1 { panic("expected put_aside_draft_files to be called when live draft becomes gone") }
+
+  // 5. `resources.process.end`: Node-aligned visibility (visible chat member can end; cross-ws 404; untracked 409)
+  match (api.admin.host.call)("resources.process.end", make_test_api_req_as("POST", "/resources/processes/4242/end", joined_owner), ["4242"], base_codec::json_obj([("session", base_codec::json_str("s-main"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws resources.process.end must return 404") }
+    Ok(_) => panic("cross-ws resources.process.end must be rejected")
+  }
+  match (api.admin.host.call)("resources.process.end", make_test_api_req_as("POST", "/resources/processes/4242/end", home_member), ["4242"], base_codec::json_obj([("session", base_codec::json_str("s-main"))])) {
+    Ok(res) => if stopped_pid != 4242 || json_field_bool(res, "ended") != Some(true) { panic("resources.process.end failed") }
+    Err(e) => panic("resources.process.end failed: " + e.message)
+  }
+}
+
+test "w17c3a R4: 32-hex poster path (non-realpath), >8MiB never 206 (honest 501 on sync fallback), empty draft 400, drive_for_ws fail-closed 500" {
+  let base_fs = mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  let _ = (base_fs.mkdir_p)("/tmp/w17c3a/sessions/s-main/workspace/uploads")
+  let _ = (base_fs.mkdir_p)("/tmp/w17c3a/thumbs")
+  let video_path = "/tmp/w17c3a/sessions/s-main/workspace/uploads/demo.mp4"
+  let _ = (base_fs.write_file)(video_path, "MP4")
+  let poster_hex = ro_poster_hash(video_path)
+  if poster_hex.length() != 32 { panic("poster hash must be 32 hex chars, got " + poster_hex.length().to_string()) }
+  let poster_path = "/tmp/w17c3a/thumbs/" + poster_hex + ".poster.jpg"
+  let _ = (base_fs.write_file)(poster_path, "SHA256-POSTER-32")
+  let fs = station_jobs::FsPort::{
+    ..base_fs,
+    realpath: fn(p : String) -> Option[String] {
+      // Simulate macOS `/tmp` -> `/private/tmp` realpath for both dir and file;
+      // poster MUST still hash the non-realpath `clean(uploads/base)` (`video_path`)!
+      if p.starts_with("/tmp/") { Some("/private" + p) } else { Some(p) }
+    },
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if p.ends_with("giant.bin") {
+        Some(station_jobs::FsStat::{ kind: "file", size: 9L * 1024L * 1024L, executable: false, mode: 420, mtime_ms: 1L, dev: 1L, ino: 1L })
+      } else { (base_fs.stat)(p) }
+    },
+    read_bytes: fn(p : String) -> Option[Bytes] {
+      if p.ends_with("giant.bin") { panic("MUST NEVER call read_bytes on >8MiB file!") }
+      (base_fs.read_bytes)(p)
+    },
+  }
+  let (api, _, hooks, _, _) = make_w17c3a_r2_fixture(fs_override=Some(fs))
+  let key_id = "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let owner = PeerIdentity::AuthenticatedMember(make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner"), key_id)
+
+  // B6: 32-hex sha256 poster hit using non-realpath `clean(uploads/base)`
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/poster?name=demo.mp4", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "SHA256-POSTER-32" {
+        panic("32-hex non-realpath poster failed: status=" + r.status.to_string())
+      }
+    }
+    _ => panic("unexpected action")
+  }
+  // N2: >8MiB MUST NEVER return 206 on sync fallback (returns honest 501 without calling read_bytes)
+  match api.handle_authenticated_api_with_status(owner, "GET", "/sessions/s-main/files?name=giant.bin", [], Bytes::new(0), 100L, fn(_v) { ([], []) }) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 501 {
+        panic("expected honest 501 (never 206!) for >8MiB file on sync fallback, got " + r.status.to_string())
+      }
+    }
+    _ => panic("unexpected action")
+  }
+  // B4: reject non-gone draft with empty title and empty files (400); allow 250-char owner (WHO_MOST=320)
+  let home_owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  match (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", home_owner), [], base_codec::json_obj([
+    ("drafts", base_codec::json_arr([
+      base_codec::json_obj([
+        ("id", base_codec::json_str("empty:1")),
+        ("owner", base_codec::json_str("u-owner")),
+        ("rev", base_codec::json_int(1)),
+        ("gone", base_codec::json_bool(false)),
+        ("at", base_codec::json_int(10)),
+        ("updatedAt", base_codec::json_int(10)),
+        ("title", base_codec::json_str("   ")),
+        ("station", base_codec::json_str("st-w17c3a")),
+      ]),
+    ])),
+  ])) {
+    Err(e) => if e.status != 400 { panic("empty non-gone draft must return 400, got " + e.status.to_string()) }
+    Ok(_) => panic("empty non-gone draft must be rejected 400")
+  }
+  // P2: drive.mkdir.post fails closed 500 when drive_for_ws is None
+  hooks.drive_for_ws = None
+  match (api.admin.host.call)("drive.mkdir.post", make_test_api_req_as("POST", "/drive/mkdir", home_owner), [], base_codec::json_obj([
+    ("root", base_codec::json_str("/tmp/w17c3a/drive-home")),
+    ("path", base_codec::json_str("x")),
+  ])) {
+    Err(e) => if e.status != 500 { panic("expected 500 when drive_for_ws is None, got " + e.status.to_string()) }
+    Ok(_) => panic("drive.mkdir.post must fail closed 500 when drive_for_ws is None")
+  }
+}
+
+test "w17c3a R4 N2: plan_daemon_session_file plans 200 OK streaming for >8MiB files/open and async tar.file for archives" {
+  let big_size : Int64 = 9L * 1024L * 1024L
+  let base_fs = mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  let fs = station_jobs::FsPort::{
+    ..base_fs,
+    exists: fn(p : String) -> Bool {
+      p == "/tmp/s-arch/workspace.tar.zst" || p == "/tmp/s-main/workspace/uploads/big.bin" || p == "/tmp/s-main/workspace/big.log"
+    },
+    read_bytes: fn(_p : String) -> Option[Bytes] { panic("MUST NOT call read_bytes on >8MiB file") },
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if p == "/tmp/s-main/workspace/uploads/big.bin" || p == "/tmp/s-main/workspace/big.log" {
+        Some(station_jobs::FsStat::{ kind: "file", size: big_size, executable: false, mode: 420, mtime_ms: 999L, dev: 1L, ino: 1L })
+      } else { None }
+    },
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if p == "/tmp/s-main/workspace/uploads/big.bin" {
+        Some(station_jobs::FsStat::{ kind: "file", size: big_size, executable: false, mode: 420, mtime_ms: 999L, dev: 1L, ino: 1L })
+      } else { None }
+    },
+    realpath: fn(p : String) -> Option[String] { Some(p) },
+  }
+  let agents = WholeAgents::new_with_deps(
+    WholeAgentsConfig::{
+      data_dir: "/tmp/w17c3a-r4",
+      assets_dir: "/tmp/w17c3a-r4/assets",
+      runner_bin: "/usr/bin/true",
+      mcp_port: 0,
+      home_ws: "ws-main",
+    },
+    fs,
+    wc_noop_proc_backend(),
+    fn(n : Int) -> Result[Bytes, String] { Ok(Bytes::new(n)) },
+  )
+  let seen = station_api::SeenStore::{
+    session_exists: fn(k : String) -> Bool { k == "s-main" || k == "s-arch" },
+    session_ws: fn(_k : String) -> Option[Option[String]] { Some(Some("ws-main")) },
+    thread_exists: fn(_t : Int) -> Bool { false },
+    thread_sessions: fn(_t : Int) -> Array[String] { [] },
+    job_session: fn(_id : String) -> Option[String] { None },
+    handed_to: fn(_k : String) -> Option[station_api::HandedRecord] { None },
+  }
+  let base_port = WholeApiRuntimePort::in_memory()
+  let ro = ReadOpsPort::{
+    ..ReadOpsPort::in_memory(),
+    session_workspace: fn(k : String) -> Result[Option[SessionWorkspaceInfo], station_api::ApiError] {
+      if k == "s-main" {
+        Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/s-main/workspace", runtime: "claude", cwd: None, archived: false, running: false }))
+      } else if k == "s-arch" {
+        Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/s-arch/workspace", runtime: "claude", cwd: None, archived: true, running: false }))
+      } else { Ok(None) }
+    },
+    resolve_session_place: fn(_req : station_api::ApiRequest, _k : String, rel : String) -> Result[SessionPlaceInfo, station_api::ApiError] {
+      if rel == "big.log" {
+        Ok(SessionPlaceInfo::{ path: "/tmp/s-main/workspace/big.log", name: "big.log", dir: false, size: big_size, mtime: 999L, content_type: "text/plain; charset=utf-8" })
+      } else { Err(station_api::ApiError::new(404, "not found")) }
+    },
+  }
+  let port = WholeApiRuntimePort::{ ..base_port, readops: ro }
+  let viewer = make_test_viewer("a@x.com", "u-a", "ws-main", true, "owner")
+  let mk_req = fn(target : String) -> station_http::HttpRequest {
+    let (p, qr, q) = station_http::parse_request_target(target)
+    station_http::HttpRequest::{
+      conn_id: 0, method: "GET", raw_target: target, path: p, query_raw: qr, query: q,
+      version: http1::Version::Http11, headers: [], body: Bytes::new(0), peer: "", raw_head: Bytes::new(0),
+    }
+  }
+  match plan_daemon_session_file(mk_req("/sessions/s-main/files?name=big.bin"), viewer, seen, agents, port, 10L) {
+    SessionFilePlan::StreamFile(spec) => {
+      if spec.total_size != big_size || spec.send_length != big_size || spec.start_offset != 0L {
+        panic("StreamFile spec mismatch for >8MiB files")
+      }
+    }
+    _ => panic("expected StreamFile for >8MiB /files")
+  }
+  match plan_daemon_session_file(mk_req("/sessions/s-main/open?path=big.log&raw=1"), viewer, seen, agents, port, 11L) {
+    SessionFilePlan::StreamFile(spec) => {
+      if spec.total_size != big_size || spec.send_length != big_size || spec.extra_headers.length() < 4 {
+        panic("StreamFile spec mismatch for >8MiB open?raw=1")
+      }
+    }
+    _ => panic("expected StreamFile for >8MiB /open?raw=1")
+  }
+  match plan_daemon_session_file(mk_req("/sessions/s-arch/files?name=packed.bin"), viewer, seen, agents, port, 12L) {
+    SessionFilePlan::ExtractArchive(spec) => {
+      if spec.archive_path != "/tmp/s-arch/workspace.tar.zst" || spec.wanted.length() != 2 || spec.wanted[0] != "uploads" || spec.wanted[1] != "packed.bin" {
+        panic("ExtractArchive spec mismatch")
+      }
+    }
+    _ => panic("expected ExtractArchive for archived workspace.tar.zst")
+  }
+}

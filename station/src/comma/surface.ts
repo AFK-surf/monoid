@@ -860,9 +860,9 @@ export class CommaSurface extends ConnectedSurface {
       const files: InboundFile[] = (Array.isArray(m.files) ? m.files : [])
         .filter((f) => count(f?.index) !== null && typeof f?.name === "string" && f.name !== "" && count(f?.size) !== null)
         .map((f) => {
-          const id = `${m.seq}-${f.index}`;
-          this.shared.set(id, { task, session, seq: m.seq, ...(typeof m.id === "string" ? { id: m.id } : {}), index: f.index });
-          return { id, name: f.name, size: f.size, url: null };
+          const id = `${task}:${m.seq}-${f.index}`;
+          const loc = { task, session, seq: m.seq, ...(typeof m.id === "string" ? { id: m.id } : {}), index: f.index };
+          return { id, name: f.name, size: f.size, url: `comma:${JSON.stringify(loc)}` };
         });
       if (said === "" && files.length === 0) continue;
       const user = this.learn(m.author);
@@ -871,7 +871,6 @@ export class CommaSurface extends ConnectedSurface {
         message: { channel: TASK_CHANNEL, threadTs: t.threadTs, ts: seqTs(m.seq), user, text: said, addressed: true, files, ...(first ? { model: this.choice(t.start) } : {}) },
       });
       first = false;
-      for (const f of files) this.shared.delete(f.id);
     }
     const effective = links ?? t.links ?? null;
     if (effective !== null) this.syncThreadLinks(t.threadTs, effective);
@@ -973,7 +972,15 @@ export class CommaSurface extends ConnectedSurface {
 
   /// A file of a Task's Message, read from Comma a part at a time.
   async download(file: InboundFile): Promise<Uint8Array> {
-    const at = this.shared.get(file.id);
+    let at = this.shared.get(file.id);
+    if (!at && typeof file.url === "string" && file.url.startsWith("comma:")) {
+      try {
+        const parsed = JSON.parse(file.url.slice("comma:".length));
+        if (typeof parsed?.task === "string" && typeof parsed?.session === "string" && count(parsed?.seq) !== null && count(parsed?.index) !== null) {
+          at = { task: parsed.task, session: parsed.session, seq: parsed.seq, ...(typeof parsed.id === "string" ? { id: parsed.id } : {}), index: parsed.index };
+        }
+      } catch {}
+    }
     if (!at) throw new Error("no such file of the Task");
     const parts: Buffer[] = [];
     for (let have = 0; have < file.size; ) {

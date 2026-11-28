@@ -9,7 +9,7 @@
 /// handover.ts CHAT_TABLES.
 pub let chat_tables : Array[String] = [
   "threads", "sessions", "thread_sessions", "entries", "letters", "turns", "runtime_sessions",
-  "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed",
+  "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed",
   "pins", "opened_chats", "deliveries", "usage", "usage_files", "session_usage",
 ]
 
@@ -74,6 +74,21 @@ pub fn chat_page(
         "SELECT * FROM \{table} WHERE thread = ? AND n > ? ORDER BY n LIMIT ?",
         [of, or_else(after, jnum(-1.0)), lim],
       )
+    "deferred_files" =>
+      match after {
+        Number(_, ..) =>
+          all(
+            "SELECT * FROM deferred_files WHERE thread = ? AND n > ? ORDER BY n, file_id LIMIT ?",
+            [of, after, lim],
+          )
+        _ => {
+          let (n, fid) = pair_of(after, jnum(-1.0), jstr(""))
+          all(
+            "SELECT * FROM deferred_files WHERE thread = ? AND (n > ? OR (n = ? AND file_id > ?)) ORDER BY n, file_id LIMIT ?",
+            [of, n, n, fid, lim],
+          )
+        }
+      }
     "reads" | "hidden_chats" | "muted_chats" | "kept_chats" =>
       all(
         "\{viewers_of(table)} SELECT * FROM \{table} WHERE viewer IN (SELECT viewer FROM viewers WHERE viewer IS NOT NULL) AND thread = ? AND viewer > ? ORDER BY viewer LIMIT ?",
@@ -141,6 +156,7 @@ pub fn after_of(table : String, row : Json) -> Json {
   let get = (k : String) => nullish(field(row, k))
   match table {
     "entries" | "letters" | "closed_cards" | "entry_proposals" | "proposal_outcomes" => get("n")
+    "deferred_files" => Json::array([get("n"), get("file_id")])
     "reads" | "hidden_chats" | "muted_chats" | "kept_chats" | "pins" =>
       get("viewer")
     "dismissed" => Json::array([get("viewer"), get("n")])
@@ -484,7 +500,7 @@ fn import_page(
           "entries": [],
           "closed": k("n"),
         })
-      "entry_proposals" | "proposal_outcomes" =>
+      "entry_proposals" | "proposal_outcomes" | "deferred_files" =>
         told({
           "type": "thread",
           "id": k("thread"),
@@ -975,6 +991,17 @@ fn import_page(
           count_up(count_rows, table)
         }
       }
+      "deferred_files" => {
+        let t = thread(get("thread"))
+        guard t is Some(t) else { continue }
+        r["thread"] = nullish(field(t, "id"))
+        r["n"] = n_of(Some(t), get("n"))
+        if insert_row(db, "deferred_files", r, " OR IGNORE").0 > 0 {
+          keep({ "thread": get("thread"), "n": get("n"), "file_id": get("file_id") })
+        } else {
+          count_up(count_rows, "deferred_files")
+        }
+      }
       "reads" => {
         let t = thread(get("thread"))
         guard t is Some(t) else { continue }
@@ -1350,7 +1377,7 @@ fn drop_empty_threads(db : @sql.Db, ctx : Json) -> Array[Json] raise {
       0 {
       continue
     }
-    for table in ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deliveries"] {
+    for table in ["entries", "letters", "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files", "deliveries"] {
       ignore(db.run("DELETE FROM \{table} WHERE thread = ?", [id]))
     }
     ignore(db.run("DELETE FROM threads WHERE id = ?", [id]))

@@ -1540,7 +1540,12 @@ pub fn chat_jobs_has_services(j : Json?) -> Bool {
     _ => {
       let list = items(j, "jobs")
       if list.length() > 0 {
-        list.iter().any(fn(x) { flag(Some(x), "service") })
+        for x in list {
+          if flag(Some(x), "service") {
+            return true
+          }
+        }
+        false
       } else {
         // Legacy summary payload from an older core / replay trace before `hasServices` existed
         flag(j, "hasJobs")

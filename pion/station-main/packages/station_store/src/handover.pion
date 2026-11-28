@@ -20,6 +20,7 @@ pub fn chat_tables() -> Array[String] {
     "closed_cards",
     "entry_proposals",
     "proposal_outcomes",
+    "deferred_files",
     "reads",
     "hidden_chats",
     "muted_chats",
@@ -384,6 +385,27 @@ pub fn chat_page(
     return db.all(
       "SELECT * FROM " + table + " WHERE thread = ?1 AND n > ?2 ORDER BY n LIMIT ?3",
       [target_id, sql_db::int64_to_json(cur_n), base_codec::json_int(limit)],
+    )
+  }
+  if table == "deferred_files" {
+    let is_num = match after_cursor {
+      Some(base_codec::Json::Num(_, _)) => true
+      _ => false
+    }
+    if is_num {
+      let cur_n = match after_cursor {
+        Some(c) => json_to_i64(c, after_n)
+        None => after_n
+      }
+      return db.all(
+        "SELECT * FROM deferred_files WHERE thread = ?1 AND n > ?2 ORDER BY n, file_id LIMIT ?3",
+        [target_id, sql_db::int64_to_json(cur_n), base_codec::json_int(limit)],
+      )
+    }
+    let (n_val, fid) = cursor_i64_str(after_cursor, after_n)
+    return db.all(
+      "SELECT * FROM deferred_files WHERE thread = ?1 AND (n > ?2 OR (n = ?2 AND file_id > ?3)) ORDER BY n, file_id LIMIT ?4",
+      [target_id, sql_db::int64_to_json(n_val), base_codec::json_str(fid), base_codec::json_int(limit)],
     )
   }
   if table == "reads" || table == "hidden_chats" || table == "muted_chats" || table == "kept_chats" {
@@ -1309,7 +1331,7 @@ fn import_other_row(
     }
     return Ok(0)
   }
-  if table == "closed_cards" || table == "entry_proposals" || table == "proposal_outcomes" || table == "dismissed" || table == "deliveries" {
+  if table == "closed_cards" || table == "entry_proposals" || table == "proposal_outcomes" || table == "deferred_files" || table == "dismissed" || table == "deliveries" {
     let tidx = find_mapped_thread_idx(next, row_i64(r, "thread", 0.to_int64()))
     if tidx < 0 { return Ok(0) }
     let tm = next.threads[tidx]
@@ -1330,6 +1352,8 @@ fn import_other_row(
         next.added_rows.push((table, [("viewer", sql_db::row_val(copy, "viewer")), ("thread", tid_j), ("n", n_j)]))
       } else if table == "deliveries" {
         next.added_rows.push((table, [("thread", tid_j), ("n", n_j), ("session", sql_db::row_val(copy, "session"))]))
+      } else if table == "deferred_files" {
+        next.added_rows.push((table, [("thread", tid_j), ("n", n_j), ("file_id", sql_db::row_val(copy, "file_id"))]))
       } else {
         next.added_rows.push((table, [("thread", tid_j), ("n", n_j)]))
       }

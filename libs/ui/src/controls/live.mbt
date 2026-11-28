@@ -187,7 +187,20 @@ pub fn[T] LiveArray::iter(self : LiveArray[T]) -> Iter[T] {
 
 ///|
 pub fn[T] LiveArray::iter2(self : LiveArray[T]) -> Iter2[Int, T] {
-  self.read().iter2()
+  let xs = self.read().copy()
+  let mut i = 0
+  Iter2(
+    Iter(fn() {
+      if i < xs.length() {
+        let v = xs[i]
+        let at = i
+        i = i + 1
+        Some((at, v))
+      } else {
+        None
+      }
+    }),
+  )
 }
 
 ///|
@@ -324,7 +337,16 @@ pub fn[T, A] LiveArray::fold(self : LiveArray[T], init~ : A, f : (A, T) -> A) ->
 
 ///|
 pub fn[T] LiveArray::rev_iter(self : LiveArray[T]) -> Iter[T] {
-  self.read().rev_iter()
+  let xs = self.read().copy()
+  let mut i = xs.length()
+  Iter(fn() {
+    if i > 0 {
+      i = i - 1
+      Some(xs[i])
+    } else {
+      None
+    }
+  })
 }
 
 ///|

@@ -2936,3 +2936,97 @@ test("W16B.13: ACID adopted-runners.db — (a) pre-ACKed real stillfail-runner +
   wdFail2.sendCtrl({ op: "stop" });
   assert.equal(await wdFail2.waitExit(), 0, wdFail2.stderr());
 });
+
+test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified ConfigFile settings (mcpServers/updates), and workspaces", { skip: process.platform === "win32" }, async () => {
+  const smokeRes = spawnSync(bin, ["--smoke-vault-sqlite"], { encoding: "utf8", timeout: 15_000 });
+  assert.equal(smokeRes.status, 0, `--smoke-vault-sqlite failed: ${smokeRes.stderr}`);
+  const smokeJson = JSON.parse(smokeRes.stdout.trim());
+  assert.equal(smokeJson.ok, true);
+  assert.equal(smokeJson.sqlite_vault, true);
+
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = mkdtempSync(join(tmpdir(), "stillfail-w17c2-e2e-"));
+  dirs.push(base);
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner);
+
+  const ws = "ws-w17c2";
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
+
+  const wd = startWholeDaemon(bin, data);
+  await until("w17c2 daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("w17c2 mesh bound", () => wd.meshAddr());
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+
+  // 1. Vault HTTP routes wired live over personal vault lock outside security mode
+  for (const path of ["/vault/vaults", "/vault/discover", "/vault/asks", "/vault/joins", "/vault/items", "/vault/boxes"]) {
+    const r = await adminCall(conn, "GET", path);
+    assert.equal(r.status, 200, `GET ${path} expected 200 over personal vault lock, got ${r.status}: ${r.body.toString()}`);
+  }
+  const unknownVaultItems = await adminCall(conn, "GET", "/vault/items?vault=nonexistent");
+  assert.equal(unknownVaultItems.status, 404, `GET /vault/items?vault=nonexistent expected 404, got ${unknownVaultItems.status}: ${unknownVaultItems.body.toString()}`);
+
+  // Unimplemented / unported partial ops return honest 501 (ZERO fake 200 stubs!)
+  for (const [m, p, body] of [
+    ["GET", "/vault/uses", undefined],
+    ["GET", "/vault/plain", undefined],
+    ["GET", "/stars", undefined],
+    ["GET", "/resources", undefined],
+    ["GET", "/memory", undefined],
+    ["GET", "/mcp-servers", undefined],
+    ["PUT", "/mcp-servers", JSON.stringify({ servers: {} })],
+    ["POST", "/updates", "{}"],
+    ["POST", "/updates/check", "{}"],
+  ] as const) {
+    const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
+    assert.equal(resp.status, 501, `${m} ${p} expected honest 501, got ${resp.status}: ${resp.body.toString()}`);
+  }
+
+  // 2. Unified ConfigFile settings mutations with redaction (`agentEnv`, `updates.channel`, `drive.roots`)
+  const putEnv = await adminCall(
+    conn,
+    "PUT",
+    "/agent-env",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ text: "PLAIN_VAR=hello\nMY_API_TOKEN=tok_secret_888" })),
+  );
+  assert.equal(putEnv.status, 200, `PUT /agent-env failed: ${putEnv.body.toString()}`);
+  assert.ok(!putEnv.body.toString().includes("tok_secret_888"), "PUT /agent-env must redact secret tokens");
+
+  const putCh = await adminCall(
+    conn,
+    "POST",
+    "/updates/channel",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ channel: "beta" })),
+  );
+  assert.equal(putCh.status, 200, `POST /updates/channel failed: ${putCh.body.toString()}`);
+  const cfgDisk = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+  assert.equal(cfgDisk.updateChannel, "beta");
+  assert.equal(cfgDisk.agentEnv?.MY_API_TOKEN, "tok_secret_888");
+
+  // 3. `GET /status` WaitingTracker runs real SQLite turns join with zero SQL errors + `/workspaces`
+  const statusResp = await adminCall(conn, "GET", "/status");
+  assert.equal(statusResp.status, 200, `GET /status WaitingTracker failed: ${statusResp.body.toString()}`);
+
+  const wsResp = await adminCall(conn, "GET", "/workspaces");
+  assert.equal(wsResp.status, 200, `GET /workspaces failed: ${wsResp.body.toString()}`);
+  assert.ok(wsResp.body.toString().includes(ws), `GET /workspaces missing ${ws}: ${wsResp.body.toString()}`);
+
+  await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+});

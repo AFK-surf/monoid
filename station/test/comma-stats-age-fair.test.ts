@@ -11,12 +11,15 @@ for (const changes of [1, 64, 65, 512]) test(`a build can finish while an older 
   const dir = mkdtempSync(join(tmpdir(), "comma-stats-fair-")), path = join(dir, "stats.db");
   const stats = new CommaStats(path, async () => ({ stations: [], unread: [] }), () => () => {});
   const writer = new DatabaseSync(path);
+  writer.exec("PRAGMA synchronous=OFF");
   let writing = true;
   try {
     const insert = writer.prepare("INSERT INTO stats_index (key, source, kind, rev, json) VALUES (?, 'stillfail', 'usage', ?, ?)");
+    writer.exec("BEGIN");
     for (let i = 1; i <= changes; i++) insert.run(`old-${i}`, i, JSON.stringify({ day: i === 1 ? "9999-12-31" : "1900-01-01" }));
     insert.run("recent", changes + 1, '{"day":"9999-12-31"}');
     writer.prepare("INSERT INTO meta (key, value) VALUES ('stats_index.rev', ?)").run(String(changes + 1));
+    writer.exec("COMMIT");
     const update = writer.prepare("UPDATE stats_index SET json = ? WHERE key = ?");
     let writes = 0, finished = false;
     const write = () => {
@@ -51,6 +54,7 @@ test("a single large burst from an older writer is classified in batches before 
   const dir = mkdtempSync(join(tmpdir(), "comma-stats-burst-")), path = join(dir, "stats.db");
   const stats = new CommaStats(path, async () => ({ stations: [], unread: [] }), () => () => {});
   const writer = new DatabaseSync(path);
+  writer.exec("PRAGMA synchronous=OFF");
   const parse = JSON.parse;
   let done = false, count = 0, max = 0;
   try {
@@ -131,11 +135,15 @@ test("old writers and a second schema change are followed while a renumbered ind
   const dir = mkdtempSync(join(tmpdir(), "comma-stats-rebuild-")), path = join(dir, "stats.db");
   const db = new DatabaseSync(path), writer = new DatabaseSync(path);
   try {
-    db.exec(`CREATE TABLE stats_index (key TEXT PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL,
+    db.exec(`PRAGMA synchronous=OFF;
+      CREATE TABLE stats_index (key TEXT PRIMARY KEY, source TEXT NOT NULL, kind TEXT NOT NULL,
       rev INTEGER NOT NULL, json TEXT NOT NULL, removed INTEGER NOT NULL DEFAULT 0)`);
+    writer.exec("PRAGMA synchronous=OFF");
     const put = writer.prepare("INSERT INTO stats_index (rowid, key, source, kind, rev, json) VALUES (?, ?, 'stillfail', 'usage', ?, ?)");
+    writer.exec("BEGIN");
     for (let i = 1; i <= 256; i++) put.run(i * 10, `old-${i}`, i, '{"day":"1900-01-01"}');
     put.run(2570, "recent", 257, '{"day":"9999-12-31"}');
+    writer.exec("COMMIT");
     installStatsAge(db);
     while (!statsAgeStep(db).done) { /* initial preparation */ }
     renumber(writer);
@@ -169,6 +177,7 @@ test("a later build removes a recent statistic after its prepared database is va
   let unread = ["away"];
   const stats = new CommaStats(path, async () => ({ stations: [], unread }), () => () => {});
   const writer = new DatabaseSync(path);
+  writer.exec("PRAGMA synchronous=OFF");
   try {
     const put = writer.prepare("INSERT INTO stats_index (rowid, key, source, kind, rev, json) VALUES (?, ?, 'stillfail', 'usage', ?, ?)");
     writer.exec("BEGIN");
@@ -203,6 +212,7 @@ test("a vacuumed copy does not trust the source database's prepared rowids", () 
     while (!statsAgeStep(db).done) { /* prepare the source */ }
     db.prepare("VACUUM INTO ?").run(path);
     copy = new DatabaseSync(path);
+    copy.exec("PRAGMA synchronous=OFF");
     const sourceId = (db.prepare("SELECT rowid AS id FROM stats_index WHERE key = 'recent'").get() as { id: number }).id;
     const copyId = (copy.prepare("SELECT rowid AS id FROM stats_index WHERE key = 'recent'").get() as { id: number }).id;
     if (sourceId !== copyId) assert.equal(statsAgeReady(copy, 0), false);

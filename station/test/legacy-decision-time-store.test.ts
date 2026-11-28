@@ -19,9 +19,11 @@ function oldStore(path: string, oldIndex = true): void {
         token: `token-${key}`, createdAt: 1, lastActiveAt: 1, ws });
     }
     const put = db.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES(?,?,?)");
+    db.exec("BEGIN");
     for (let i = 0; i < 130; i++) put.run(i % 2 ? "other" : "missing", i % 100, JSON.stringify({ i }));
     put.run("mine", 75, '{"mine":true}');
     put.run("home", 80, '{"home":true}');
+    db.exec("COMMIT");
     if (oldIndex) db.exec("CREATE INDEX decision_checks_at ON decision_checks(created_at)");
     db.exec("DROP INDEX decision_checks_lately");
   } finally { store.close(); }
@@ -50,6 +52,7 @@ for (const oldIndex of [false, true]) test(`old connections and snapshots remain
   const dir = mkdtempSync(join(tmpdir(), "decision-time-store-")), path = join(dir, "station.db");
   oldStore(path, oldIndex);
   const old = new DatabaseSync(path, { timeout: 5000 });
+  old.exec("PRAGMA synchronous=NORMAL");
   const write = old.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES(?,?,?)");
   let store: Store | null = null;
   try {
@@ -71,6 +74,7 @@ test("the decision-time worker waits for handover and continues saved batches af
   const dir = mkdtempSync(join(tmpdir(), "decision-time-worker-")), path = join(dir, "station.db");
   oldStore(path);
   const old = new DatabaseSync(path, { timeout: 5000 });
+  old.exec("PRAGMA synchronous=NORMAL");
   let store: Store | null = null, builder: ReturnType<typeof buildLegacyEntryLookups> | null = null;
   try {
     store = Store.open(path);
@@ -119,6 +123,7 @@ test("one read snapshot keeps its results as preparation finishes and an old wri
   const dir = mkdtempSync(join(tmpdir(), "decision-time-snapshot-")), path = join(dir, "station.db");
   oldStore(path);
   const old = new DatabaseSync(path, { timeout: 5000 }), reader = new DatabaseSync(path, { timeout: 5000 });
+  old.exec("PRAGMA synchronous=NORMAL");
   let store: Store | null = null;
   try {
     store = Store.open(path);
@@ -137,6 +142,7 @@ test("a scoped read never decodes another workspace's 64-bit decision id", () =>
   const dir = mkdtempSync(join(tmpdir(), "decision-time-int64-")), path = join(dir, "station.db");
   oldStore(path);
   const old = new DatabaseSync(path, { timeout: 5000 });
+  old.exec("PRAGMA synchronous=NORMAL");
   let store: Store | null = null;
   try {
     old.prepare("INSERT INTO decision_checks(id,session,created_at,result) VALUES(?,?,?,?)")
@@ -169,10 +175,13 @@ for (const prepared of [false, true]) test(`a small workspace avoids unrelated c
     const dir = mkdtempSync(join(tmpdir(), "decision-time-drop-scope-")), path = join(dir, "station.db");
     oldStore(path, false);
     const old = new DatabaseSync(path, { timeout: 5000 });
+    old.exec("PRAGMA synchronous=NORMAL");
     let store: Store | null = null;
     try {
       const put = old.prepare("INSERT INTO decision_checks(session,created_at,result) VALUES(?,?,?)");
+      old.exec("BEGIN");
       for (let i = 0; i < otherChecks; i++) put.run("other", 100, "{}");
+      old.exec("COMMIT");
       store = Store.open(path);
       if (prepared) while (!decisionTimeIndexStep(store.db, 64).done) { /* finish */ }
       store.db.exec("DROP INDEX legacy_decision_time_at");

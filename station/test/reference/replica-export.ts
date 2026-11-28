@@ -292,12 +292,13 @@ export const READS = {
   threadCards: "SELECT * FROM closed_cards WHERE thread = ?",
   threadEntryProposals: "SELECT * FROM entry_proposals WHERE thread = ?",
   threadProposals: "SELECT * FROM proposal_outcomes WHERE thread = ?",
+  threadDeferredFiles: "SELECT * FROM deferred_files WHERE thread = ?",
   threadEntries: "SELECT rowid AS _rowid, * FROM entries WHERE thread = ? AND n > ? ORDER BY n LIMIT ?",
   threadLetters: "SELECT rowid AS _rowid, * FROM letters WHERE thread = ? AND n > ? ORDER BY n LIMIT ?",
 } as const;
 
 /// The small tables read whole as the exporter starts, a page at a time by rowid.
-export const SMALL = ["sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats"] as const;
+export const SMALL = ["sessions", "threads", "thread_sessions", "runtime_sessions", "closed_cards", "entry_proposals", "proposal_outcomes", "deferred_files", "reads", "hidden_chats", "muted_chats", "kept_chats", "dismissed", "pins", "opened_chats"] as const;
 export const pageOf = (table: string) => `SELECT rowid AS _rowid, * FROM ${table} WHERE rowid > ? ORDER BY rowid LIMIT ?`;
 /// A viewer's marks of one thread (or pins of one session): the table's viewers one by one (a few), each its row by key.
 export const marksOf = (table: string, column: string) => `WITH RECURSIVE viewers(viewer) AS (
@@ -713,6 +714,9 @@ export class Exporter {
       if (this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'").get() !== undefined) {
         for (const r of all(READS.threadProposals, thread)) changed(ws, "proposal_outcomes", r);
       }
+      if (this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deferred_files'").get() !== undefined) {
+        for (const r of all(READS.threadDeferredFiles, thread)) changed(ws, "deferred_files", r);
+      }
       for (const table of THREAD_MARKS) for (const r of all(marksOf(table, "thread"), thread)) changed(ws, table, r);
     };
     // (its logs up to there a page at a time, in this pass and those after it, as a batch has room: `entering`)
@@ -785,8 +789,12 @@ export class Exporter {
       }
       // The small tables whole, once a run: what changed while no exporter ran, and what went.
       if (!this.#known) {
+        const hasEntryProposals = this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'entry_proposals'").get() !== undefined;
+        const hasProposalOutcomes = this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'proposal_outcomes'").get() !== undefined;
+        const hasDeferredFiles = this.#db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'deferred_files'").get() !== undefined;
         const seen = new Map<string, Set<string>>();
         for (const table of SMALL) {
+          if ((table === "entry_proposals" && !hasEntryProposals) || (table === "proposal_outcomes" && !hasProposalOutcomes) || (table === "deferred_files" && !hasDeferredFiles)) continue;
           for (let after = 0; ; ) {
             const rows = all(pageOf(table), after, PAGE);
             for (const r of rows) {

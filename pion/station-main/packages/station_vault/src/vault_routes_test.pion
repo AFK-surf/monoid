@@ -870,3 +870,115 @@ test "P2-4..P2-8: proof-verified viewer, box hooks/SSE, latest validation, befor
   let err_joins = handle_get_joins(bad_ctx, v_alice)
   assert(err_joins.status == 500 && form_str_is(err_joins.body, "code", "vault_error"))
 }
+
+test "W17C2 R2: handle_put_item / handle_get_items CAS + sig + 404 non-member, and handle_get_boxes certOk revocation filter" {
+  let ws = "ws_items_boxes_r2"
+  let alice = make_test_signer(21)
+  let bob = make_test_signer(22)
+  let carol = make_test_signer(23)
+  let store = VaultStore::in_memory()
+  let state = make_test_lock(ws, alice, bob, carol)
+  let events : Array[VaultRouteEvent] = []
+  let ctx = VaultRouteCtx::{
+    store: store,
+    lock_of: fn(w : String) -> Option[lock::LockState] { if w == ws { Some(state) } else { None } },
+    on_event: Some(fn(ev : VaultRouteEvent) -> Unit { events.push(ev) }),
+    before_write: None,
+    boxed: None,
+    verify_fn: None,
+  }
+  let v1_id = "v_01HZZZZZZZZZZZZZZZZZZZZZZ9"
+  let alice_cert = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(alice.device_id)), ("box", form::Json::Str(alice.box_pub)),
+    ("at", form::Json::Num(1000.0)),
+  ], TAG_BOX)
+  let bob_cert = sign_as(bob, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)),
+    ("device", form::Json::Str(bob.device_id)), ("box", form::Json::Str(bob.box_pub)),
+    ("at", form::Json::Num(1000.0)),
+  ], TAG_BOX)
+  let v_a = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("id", form::Json::Str(v1_id)),
+    ("seq", form::Json::Num(0.0)), ("owner", form::Json::Str("alice")), ("name", form::Json::Str("OnlyAlice")),
+    ("members", form::Json::Arr([form::Json::Str("alice")])),
+    ("epoch", form::Json::Num(0.0)),
+    ("keys", form::Json::Arr([form::Json::Obj([("cert", alice_cert), ("wrapped", form::Json::Str("AAAA"))])])),
+    ("at", form::Json::Num(1000.0)),
+  ], TAG_VAULT)
+  let v_alice = make_viewer(ws, "alice", "owner", alice.device_id)
+  let v_bob = make_viewer(ws, "bob", "member", bob.device_id)
+  assert(handle_put_vault(ctx, v_alice, v_a).status == 200)
+
+  // 1. Non-member GET /vault/items?vault=<id> MUST return 404 vault_unknown (NOT 200 [])
+  let non_mem_get = handle_get_items(ctx, v_bob, query=[("vault", v1_id)])
+  assert(non_mem_get.status == 404 && form_str_is(non_mem_get.body, "code", "vault_unknown"))
+
+  // 2. Invalid signature on PUT /vault/items MUST be rejected with 400 vault_invalid
+  let valid_ct = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  let bad_item = form::Json::Obj([
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(v1_id)),
+    ("id", form::Json::Str("i_01HZZZZZZZZZZZZZZZZZZZZZZ1")), ("version", form::Json::Num(0.0)),
+    ("epoch", form::Json::Num(0.0)), ("ct", form::Json::Str(valid_ct)),
+    ("at", form::Json::Num(1000.0)),
+    ("sig", form::Json::Obj([("key", form::Json::Str(alice.key_id)), ("sig", form::Json::Str("bad_sig"))])),
+  ])
+  let bad_put = handle_put_item(ctx, v_alice, bad_item)
+  assert(bad_put.status == 400 && form_str_is(bad_put.body, "code", "vault_invalid"))
+
+  // 3. Valid signed item v0 succeeds and emits `vault-item` targeted to vault
+  let good_item0 = sign_as(alice, [
+    ("v", form::Json::Num(1.0)), ("ws", form::Json::Str(ws)), ("vault", form::Json::Str(v1_id)),
+    ("id", form::Json::Str("i_01HZZZZZZZZZZZZZZZZZZZZZZ1")), ("version", form::Json::Num(0.0)),
+    ("epoch", form::Json::Num(0.0)), ("ct", form::Json::Str(valid_ct)),
+    ("at", form::Json::Num(1000.0)),
+  ], "stillfail-vault-item/1")
+  let ok_put = handle_put_item(ctx, v_alice, good_item0)
+  assert(ok_put.status == 200)
+  assert(events.length() >= 1 && events[events.length() - 1].event == "vault-item")
+  assert(events[events.length() - 1].target.vault == Some(v1_id))
+
+  // 4. Stale version v0 returns 409 vault_conflict WITH structured `item` payload
+  let conflict_put = handle_put_item(ctx, v_alice, good_item0)
+  assert(conflict_put.status == 409 && form_str_is(conflict_put.body, "code", "vault_conflict"))
+  assert(!(form::json_field(Some(conflict_put.body), "item") is None))
+
+  // 5. handle_get_boxes filters out certificates of devices removed from the lock via cert_ok(l, c)
+  assert(store.put_box(alice_cert) is Ok(_))
+  assert(store.put_box(bob_cert) is Ok(_))
+  let revoked_lock = lock::LockState::{
+    ws: state.ws, seq: state.seq, head: state.head, genesis: state.genesis,
+    origins: state.origins, rp_id: state.rp_id, cloud_keys: state.cloud_keys,
+    members: state.members,
+    devices: {
+      let dm : form::OrderedMap[lock::Device] = form::OrderedMap::new()
+      match state.devices.get(alice.device_id) {
+        Some(d) => dm.set(alice.device_id, d)
+        None => ()
+      }
+      dm
+    },
+    sign_keys: state.sign_keys, passkeys: state.passkeys, signed: state.signed,
+    stations: state.stations, gateways: state.gateways, persons: state.persons,
+    disabled: state.disabled, moved: state.moved,
+  }
+  let rev_ctx = VaultRouteCtx::{
+    store: store,
+    lock_of: fn(w : String) -> Option[lock::LockState] { if w == ws { Some(revoked_lock) } else { None } },
+    on_event: None, before_write: None, boxed: None, verify_fn: None,
+  }
+  let boxes_resp = handle_get_boxes(rev_ctx, v_alice)
+  assert(boxes_resp.status == 200)
+  match form::json_field(Some(boxes_resp.body), "boxes") {
+    Some(form::Json::Arr(bs)) => {
+      assert(bs.length() == 1)
+      assert(form_str_is(bs[0], "device", alice.device_id))
+    }
+    _ => panic("expected boxes array")
+  }
+
+  // 6. R3: `device_of_viewer` converts `now_ms` (Unix ms) to Unix seconds for `lock::admit`:
+  // a valid proof at `now_ms = 1700000000000L` (1700000000 s) MUST be admitted (not rejected as year 55843).
+  let admit_resp = handle_put_box(ctx, v_alice, alice_cert, now_ms=1700000000000L)
+  assert(admit_resp.status == 200)
+}

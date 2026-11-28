@@ -1178,7 +1178,7 @@ test("single-station routing: relayed ambiguous timeout pins to target station w
   await close();
 });
 
-test("connect.event acknowledges early within acceptWaitMs when openSlackThread downloads are slow, preventing RPC timeout and keeping thread serialized", async () => {
+test("connect.event acknowledges early within acceptWaitMs when openSlackThread history fetch is slow, preventing RPC timeout and keeping thread serialized", async () => {
   const { h, s, close } = workspace();
   h.rig.raw.connects.find((c: Json) => c.id === "cl").station = S;
   // Re-wire S's connects with a controlled acceptWaitMs deadline so the test stays deterministic.
@@ -1200,34 +1200,34 @@ test("connect.event acknowledges early within acceptWaitMs when openSlackThread 
   // Re-point S's hub to the new remote connects instance.
   s.rig.hub = s.rig.newHub({ chats: (c) => sConnects.remote.surface(c) });
 
-  // Simulate a mid-thread mention whose historical attachment download takes longer than acceptWaitMs.
-  const downloadGate = Promise.withResolvers<void>();
-  const downloadStarted = Promise.withResolvers<void>();
+  // Simulate a mid-thread mention whose historical thread history fetch takes longer than acceptWaitMs.
+  const historyGate = Promise.withResolvers<void>();
+  const historyStarted = Promise.withResolvers<void>();
   h.rig.chat.earlier.set("5201.1", [
     { ts: "5201.1", user: "U1", text: "earlier with 4K PNG", fromBot: false, files: [{ id: "F1", name: "4k.png", size: 9_000_000, url: "https://files.example/4k.png" }] },
   ]);
   h.rig.chat.shared.set("F1", "png-bytes");
-  const origDownload = h.rig.chat.download.bind(h.rig.chat);
-  h.rig.chat.download = async (file) => {
-    downloadStarted.resolve();
-    await downloadGate.promise;
-    return origDownload(file);
+  const origHistory = h.rig.chat.history.bind(h.rig.chat);
+  h.rig.chat.history = async (ref, before, limit) => {
+    historyStarted.resolve();
+    await historyGate.promise;
+    return origHistory(ref, before, limit);
   };
 
   const m = message({ text: "<@UBOT> take over", threadTs: "5201.1", ts: "5201.2" });
   const receiving = h.connects.receive("cl", { type: "message", message: m });
-  await downloadStarted.promise;
-  // acceptWaitMs elapses while the download is still in flight -> connect.event returns { ok: true } early.
+  await historyStarted.promise;
+  // acceptWaitMs elapses while history fetch is still in flight -> connect.event returns { ok: true } early.
   acceptDeadline.resolve();
   await receiving;
 
-  assert.equal(h.rig.store.connectThreadStation("cl", m.channel, m.threadTs), S, "pinned to S before download finished");
+  assert.equal(h.rig.store.connectThreadStation("cl", m.channel, m.threadTs), S, "pinned to S before history finished");
   assert.equal(h.rig.store.listSessions().length, 0, "never fell back to H");
 
-  // Companion duplicate event arrives while download is still in flight: routes to S and also returns promptly.
+  // Companion duplicate event arrives while history fetch is still in flight: routes to S and also returns promptly.
   await h.connects.receive("cl", { type: "message", message: m });
-  // Now let the download complete and drain S's thread queue.
-  downloadGate.resolve();
+  // Now let history complete and drain S's thread queue.
+  historyGate.resolve();
   await s.rig.hub.drained(`cl@${H}`, m.channel, m.threadTs);
   await settle();
 
@@ -1236,7 +1236,37 @@ test("connect.event acknowledges early within acceptWaitMs when openSlackThread 
   assert.equal(s.rig.store.listSessions().length, 1, "exactly one session on S");
   const thread = s.rig.store.threadAt("slack:T1", m.channel, m.threadTs)!;
   assert.deepEqual(s.rig.said(thread.id).map((x) => x.text), ["earlier with 4K PNG", "<@UBOT> take over"]);
-  assert.equal(s.rig.said(thread.id)[0]!.attachments.length, 1, "historical attachment preserved");
+  assert.deepEqual(h.rig.chat.downloads, [], "historical attachment deferred during openSlackThread");
+  // Agent on S fetches the historical attachment on demand across the mesh via chat_history { fetch }.
+  const fetched = await s.rig.call(key, "chat_history", { to: `${m.channel}/${m.threadTs}`, fetch: ["F1"] });
+  assert.deepEqual(h.rig.chat.downloads, ["F1"], "origin downloaded once on demand");
+  assert.ok(fetched.includes("4k.png"), fetched);
+  assert.equal(s.rig.said(thread.id)[0]!.attachments.length, 1, "historical attachment attached after on-demand fetch");
+
+  // Remote download failure must NOT produce an unhandledRejection on origin and must clean up downloadFlights so retry succeeds.
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    h.rig.chat.earlier.set("5202.1", [
+      { ts: "5202.1", user: "U1", text: "with missing file", fromBot: false, files: [{ id: "FFAIL", name: "fail.bin", size: 4, url: "https://files.example/fail.bin" }] },
+    ]);
+    const mFail = message({ text: "<@UBOT> check fail", threadTs: "5202.1", ts: "5202.2" });
+    await h.connects.receive("cl", { type: "message", message: mFail });
+    await s.rig.hub.drained(`cl@${H}`, mFail.channel, mFail.threadTs);
+    await settle();
+    const failKey = sessionKey(`cl@${H}`, mFail.channel, mFail.threadTs);
+    const errRes = await s.rig.call(failKey, "chat_history", { to: `${mFail.channel}/${mFail.threadTs}`, fetch: ["FFAIL"] });
+    assert.ok(errRes.includes("missing_scope"), errRes);
+    await new Promise((r) => setImmediate(r));
+    assert.equal(unhandled.length, 0, "remote download rejection must never leak unhandledRejection");
+    // Retry once available: flight entry was cleaned up so the second fetch succeeds.
+    h.rig.chat.shared.set("FFAIL", "recovered");
+    const okRes = await s.rig.call(failKey, "chat_history", { to: `${mFail.channel}/${mFail.threadTs}`, fetch: ["FFAIL"] });
+    assert.ok(okRes.includes("fail.bin"), okRes);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
   await close();
 });
 

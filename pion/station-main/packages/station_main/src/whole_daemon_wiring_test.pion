@@ -1,0 +1,602 @@
+// Wave 17C-2 unit tests for `whole_daemon_wiring.pion`:
+// - Devices OS tunnel resolution across all 5 kinds (zero 501 placeholders) + UdpClosed monotonic clock
+// - DaemonRelayRanker periodic RTT ranking & apply_public_relays retry
+// - WaitingTracker + EventsHub::flush_overviews incremental patch
+// - AsyncUpkeepRunner non-blocking repo discovery & queue
+
+import "base_codec"
+import "form"
+import "station_api"
+import "station_cloud"
+import "station_devices"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+import "station_vault"
+import "station_whole"
+
+fn w17c2_kept_device(ws : String, spec : station_devices::DeviceSpec) -> station_devices::KeptDevice {
+  station_devices::KeptDevice::{
+    device: spec,
+    ws: ws,
+    owner_sub: "u-owner",
+    owner_email: "owner@example.com",
+    owner_name: "Owner",
+    at_secs: 1700000000L,
+  }
+}
+
+test "wave17c2 devices tunnel resolves serial, airplay, android_tv via DevicesOsRuntime (zero 501)" {
+  let rt = station_whole::DevicesOsRuntime::new(now_fn=fn() -> Int64 { 1000L })
+
+  let serial_spec = w17c2_kept_device(
+    "ws-1",
+    station_devices::DeviceSpec::{
+      id: "0000000000000001",
+      name: "ESP32",
+      kind: station_devices::DeviceKind::Serial,
+      target: "/dev/ttyUSB0",
+      baud: Some(115200),
+      model: None,
+      paired: None,
+      protocols: None,
+    },
+  )
+  match resolve_device_tunnel_via_os(rt, serial_spec) {
+    ResolvedDeviceTunnel::Serial(p, b) => {
+      if p != "/dev/ttyUSB0" || b != 115200 {
+        panic("unexpected serial target: " + p)
+      }
+    }
+    _ => panic("expected Serial tunnel target, not 501")
+  }
+
+  let ap_spec = w17c2_kept_device(
+    "ws-1",
+    station_devices::DeviceSpec::{
+      id: "0000000000000002",
+      name: "Living Room TV",
+      kind: station_devices::DeviceKind::AirPlay,
+      target: "192.168.1.50:7000",
+      baud: None,
+      model: None,
+      paired: None,
+      protocols: None,
+    },
+  )
+  match resolve_device_tunnel_via_os(rt, ap_spec) {
+    ResolvedDeviceTunnel::AirPlay(r) => {
+      if r.id != "0000000000000002" || r.ws != "ws-1" {
+        panic("unexpected AirPlay ref")
+      }
+    }
+    _ => panic("expected AirPlay tunnel target, not 501")
+  }
+
+  let atv_spec = w17c2_kept_device(
+    "ws-1",
+    station_devices::DeviceSpec::{
+      id: "0000000000000003",
+      name: "Shield TV",
+      kind: station_devices::DeviceKind::AndroidTv,
+      target: "192.168.1.60:6466",
+      baud: None,
+      model: None,
+      paired: None,
+      protocols: Some(["atv_remote", "adb"]),
+    },
+  )
+  match resolve_device_tunnel_via_os(rt, atv_spec) {
+    ResolvedDeviceTunnel::AndroidTv(r, adb_host, adb_port) => {
+      if r.id != "0000000000000003" || r.protocols.length() != 2 || adb_host != "192.168.1.60" || adb_port <= 0 {
+        panic("unexpected AndroidTv ref")
+      }
+    }
+    _ => panic("expected AndroidTv tunnel target")
+  }
+
+  // Device spec refresh: updating target in SQLite refreshes OS registry cache
+  let ap_updated = w17c2_kept_device(
+    "ws-1",
+    station_devices::DeviceSpec::{
+      id: "0000000000000002",
+      name: "Living Room TV",
+      kind: station_devices::DeviceKind::AirPlay,
+      target: "192.168.1.99:7000",
+      baud: None,
+      model: None,
+      paired: None,
+      protocols: None,
+    },
+  )
+  match resolve_device_tunnel_via_os(rt, ap_updated) {
+    ResolvedDeviceTunnel::AirPlay(r) => {
+      if r.target != "192.168.1.99:7000" {
+        panic("expected refreshed AirPlay target 192.168.1.99:7000, got " + r.target)
+      }
+    }
+    _ => panic("expected refreshed AirPlay target")
+  }
+
+  // HTTP request parser vs raw ADB wire stream
+  let http_bytes = "POST /action HTTP/1.1\r\nHost: tv\r\nContent-Type: application/json\r\n\r\n{\"cmd\":\"play\"}".to_bytes()
+  match parse_device_tunnel_http_req(http_bytes) {
+    Some((m, p, hdrs, b)) => {
+      if m != "POST" || p != "/action" || hdrs.length() != 2 || b.to_string() != "{\"cmd\":\"play\"}" {
+        panic("unexpected parsed device tunnel HTTP request")
+      }
+    }
+    None => panic("expected valid HTTP request parse")
+  }
+  let adb_bytes = "000chost:version".to_bytes()
+  if !(parse_device_tunnel_http_req(adb_bytes) is None) {
+    panic("raw ADB wire bytes must not parse as HTTP")
+  }
+}
+
+test "wave17c2 DaemonRelayRanker ranks relays by RTT and retries apply_public_relays on failure" {
+  let dr = DaemonRelayRanker::new(1000L)
+  let relays = ["https://r-slow.example/", "https://r-fast.example/"]
+  if dr.tick(
+    15000L,
+    relays,
+    None,
+    true,
+    false,
+    fn(_rs) { [] },
+    fn(_u) { (true, Some(10L)) },
+    fn(_en) { true },
+  ) is Some(_) {
+    panic("expected no tick before 30s interval")
+  }
+  let mut apply_calls = 0
+  let res = dr.tick(
+    35000L,
+    relays,
+    None,
+    true,
+    false,
+    fn(_rs) {
+      [
+        station_mesh::RelayRankSample::{ relay: "https://r-slow.example/", rtt_ms: Some(120L) },
+        station_mesh::RelayRankSample::{ relay: "https://r-fast.example/", rtt_ms: Some(18L) },
+      ]
+    },
+    fn(_u) { (true, Some(18L)) },
+    fn(_en) {
+      apply_calls = apply_calls + 1
+      false
+    },
+  )
+  match res {
+    Some(o) => {
+      if !o.up {
+        panic("expected relay ranker outcome up=true")
+      }
+      if dr.ranker.preferred_relay() != Some("https://r-fast.example/") {
+        panic("expected fastest relay to be preferred")
+      }
+    }
+    None => panic("expected relay ranker tick to run at 35000ms")
+  }
+  if apply_calls == 0 {
+    panic("expected apply_public_relays callback to be invoked")
+  }
+}
+
+test "wave17c2 EventsHub flush_overviews emits incremental patch and WaitingTracker tracks session updates" {
+  let hub = station_api::EventsHub::new("st-w17c2", station_api::EventKeeps::default())
+  let viewer = station_api::Viewer::member("u@example.com", "ws-1")
+  let opened = hub.open_stream(
+    viewer,
+    station_api::Lang::En,
+    station_api::EventsOpenOptions::{
+      host: false,
+      since: None,
+      brief: false,
+      running: false,
+      spare: None,
+      held_keys: [],
+      supports_live_rates: true,
+      overview_patch: true,
+    },
+  )
+  let _ = opened
+  hub.overview_changed("session")
+  if !hub.is_overview_dirty() {
+    panic("expected overview dirty after overview_changed")
+  }
+  let stats = hub.flush_overviews(
+    1700000000000L,
+    fn(_v, _l, _r) {
+      Some(base_codec::json_obj([("total", base_codec::json_int(1))]))
+    },
+  )
+  if stats.pushed == 0 {
+    panic("expected flush_overviews to push initial overview to connected SSE client")
+  }
+
+  let mut waiting_rows : Array[station_api::WaitingSessionInfo] = [
+    station_api::WaitingSessionInfo::{ key: "s-1", title: Some("Ask"), need: Some("approve"), ended_at: 2000L },
+  ]
+  let tracker = station_api::WaitingTracker::new(station_api::WaitingStorePort::{
+    waiting_for_people: fn(_since, _lim) { waiting_rows },
+    waiting_for_person_of: Some(fn(k, _since) {
+      for i in 0..<waiting_rows.length() {
+        if waiting_rows[i].key == k {
+          return Some(waiting_rows[i])
+        }
+      }
+      None
+    }),
+  })
+  let first = tracker.read(1000L, 10)
+  if first.length() != 1 || first[0].key != "s-1" {
+    panic("expected WaitingTracker to seed 1 waiting session")
+  }
+  waiting_rows = []
+  tracker.note("session", Some("s-1"))
+  let second = tracker.read(1000L, 10)
+  if second.length() != 0 {
+    panic("expected WaitingTracker to clear s-1 after session change note")
+  }
+}
+
+test "wave17c2 AsyncUpkeepRunner discovers shared clone repos without blocking" {
+  let dirs : Map[String, Array[String]] = Map::new()
+  dirs.set("/data/repos", ["monoid", ".hidden", "not-a-repo"])
+  let stats : Map[String, Bool] = Map::new()
+  stats.set("/data/repos/monoid/.git", true)
+  let dir_stat = station_jobs::FsStat::{
+    kind: "dir",
+    size: 0L,
+    mtime_ms: 0L,
+    executable: false,
+    mode: 493,
+    dev: 0L,
+    ino: 0L,
+  }
+  let fs = station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(_p : String) -> Option[station_jobs::FsStat] { None },
+    lstat_err: None,
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if stats.contains(p) { Some(dir_stat) } else { None }
+    },
+    read_dir: fn(p : String) -> Option[Array[String]] { dirs.get(p) },
+    read_file: fn(_p : String) -> Option[String] { None },
+    read_bytes: fn(_p : String) -> Option[Bytes] { None },
+    read_range: fn(_p : String, _o : Int64, _l : Int64) -> Option[Bytes] { None },
+    write_file: fn(_p : String, _s : String) -> Bool { true },
+    write_bytes: fn(_p : String, _b : Bytes) -> Bool { true },
+    write_file_mode: fn(_p : String, _b : Bytes, _m : Int, _a : Bool) -> Bool { true },
+    append_file: fn(_p : String, _s : String) -> Bool { true },
+    truncate_in_place: fn(_p : String) -> Bool { true },
+    mkdir_p: fn(_p : String) -> Bool { true },
+    remove_file: fn(_p : String) -> Bool { true },
+    rmdir: fn(_p : String) -> Bool { true },
+    remove_dir_all: fn(_p : String) -> Bool { true },
+    rename: fn(_a : String, _b : String) -> Bool { true },
+    realpath: fn(p : String) -> Option[String] { Some(p) },
+    readlink: fn(_p : String) -> Option[String] { None },
+    chmod: fn(_p : String, _m : Int) -> Bool { true },
+    exists: fn(p : String) -> Bool { stats.contains(p) },
+    now_ms: fn() -> Int64 { 1000L },
+  }
+  let runner = AsyncUpkeepRunner::new("/data", "/", fs, 1000L)
+  let found = runner.discover_repos(false)
+  if found != 1 || runner.pending_count() != 1 {
+    panic("expected AsyncUpkeepRunner to discover exactly 1 git repo, got " + found.to_string())
+  }
+  runner.clear_pending()
+  if runner.pending_count() != 0 {
+    panic("expected clear_pending to clear pending queue")
+  }
+}
+
+fn w17c2_person_genesis(sub : String, dev_pub : String) -> (String, Array[form::Json]) {
+  let dev_key = "ed25519:" + dev_pub
+  let entry = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str("person:" + sub)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    ("body", form::Json::Obj([
+      ("sub", form::Json::Str(sub)),
+      ("device", form::Json::Obj([
+        ("key", form::Json::Str(dev_key)),
+        ("id", form::Json::Str(dev_pub)),
+        ("label", form::Json::Str("Mac")),
+        ("sign_key", form::Json::Str(dev_key)),
+      ])),
+    ])),
+    ("sig", form::Json::Obj([
+      ("key", form::Json::Str(dev_key)),
+      ("alg", form::Json::Str("Ed25519")),
+      ("sig", form::Json::Str("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")),
+    ])),
+  ])
+  ("gen-" + sub, [entry])
+}
+
+test "wave17c2 R4: dual-workspace personal vault lock preserves owner/admin roles, isolates GET /vault/boxes chains, and never falls back on broken workspace lock" {
+  let cloud_fs = station_cloud::CloudFs::{
+    read_text: fn(_p : String) -> Result[Option[String], String] { Ok(None) },
+    write_private_text: fn(_p : String, _s : String) -> Result[Unit, String] { Ok(()) },
+    remove_file: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    rename_file: fn(_a : String, _b : String) -> Result[Unit, String] { Ok(()) },
+    mkdir_p: fn(_p : String) -> Result[Unit, String] { Ok(()) },
+    exists: fn(_p : String) -> Bool { false },
+  }
+  let vf = Some(fn(_alg : String, _key : Bytes, _sig : Bytes, _msg : Bytes) -> Bool { true })
+  let cloud = station_cloud::CloudStore::open("/tmp/w17c2-vault-lock", cloud_fs, verify_fn=vf)
+  // Enroll home workspace ws-A and joined workspace ws-B (both full memberships, security mode OFF)
+  let joined_b = station_cloud::Joined::{
+    workspace: "ws-B",
+    workspace_name: "Workspace B",
+    workspace_emoji: None,
+    workspace_icon: None,
+    name: "st-b",
+    peers: [],
+    revocations: [],
+    locked: false,
+    rigs: None,
+    ways: None,
+    rig: None,
+  }
+  cloud.state = Some(station_cloud::CloudState::{
+    provider: None,
+    origin: "https://cloud.example",
+    station: "st-1",
+    workspace: "ws-A",
+    workspace_name: "Workspace A",
+    workspace_emoji: None,
+    workspace_icon: None,
+    name: "st-a",
+    relay_url: "",
+    relay_urls: [],
+    stillfail_relays: None,
+    mesh_relays: None,
+    grant_keys: base_codec::json_null(),
+    peers: [],
+    revocations: [],
+    gateway_keys: None,
+    removed_at: None,
+    removed_code: None,
+    joined: [joined_b],
+    rigs: [],
+    ways: None,
+    rig: None,
+    rig_pending: Map::new(),
+    rig_due: [],
+    full_pending: Map::new(),
+  })
+  // Four person chains: u-owner (owner in ws-A), u-admin (admin in ws-A), u-departed (historical vault owner only), u-other (ws-B only)
+  let c_owner = w17c2_person_genesis("u-owner", "0101010101010101010101010101010101010101010101010101010101010101")
+  let c_admin = w17c2_person_genesis("u-admin", "0202020202020202020202020202020202020202020202020202020202020202")
+  let c_departed = w17c2_person_genesis("u-departed", "0404040404040404040404040404040404040404040404040404040404040404")
+  let c_other = w17c2_person_genesis("u-other", "0303030303030303030303030303030303030303030303030303030303030303")
+  cloud.set_person_chains([c_owner, c_admin, c_departed, c_other])
+
+  // Real VaultStore containing a historical vault owned by departed member `u-departed`
+  let vs = station_vault::VaultStore::in_memory()
+  let departed_vault = form::Json::Obj([
+    ("id", form::Json::Str("v-hist")),
+    ("ws", form::Json::Str("ws-A")),
+    ("owner", form::Json::Str("u-departed")),
+    ("members", form::Json::Arr([form::Json::Str("u-departed")])),
+    ("version", form::Json::Num(1.0)),
+    ("deleted", form::Json::Bool(false)),
+  ])
+  match vs.put_vault(departed_vault) {
+    Ok(_) => ()
+    Err(e) => panic("put_vault failed: " + e)
+  }
+
+  let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
+  // u-owner holds 2 concurrent device sessions (`sid-owner-1` & `sid-owner-2`), both expire at 1700005000;
+  // u-admin expires at 1700000200 (tested at exact boundary `now_s == exp`).
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-1", 10L), "owner@a.test", "owner", 1700000000L, "sid-owner-1", 1700005000L)
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-2", 11L), "owner@a.test", "owner", 1700000010L, "sid-owner-2", 1700005000L)
+  record_seen_member(seen_members, "ws-A", "u-admin", seen_member_session_key("sid-admin", 12L), "admin@a.test", "admin", 1700000000L, "sid-admin", 1700000200L)
+  record_seen_member(seen_members, "ws-B", "u-other", seen_member_session_key("sid-other", 13L), "other@b.test", "owner", 1700000000L, "sid-other", 1700005000L)
+
+  let known_at = fn(now_s : Double) -> (String) -> (Map[String, String], Map[String, String]) {
+    fn(ws : String) -> (Map[String, String], Map[String, String]) {
+      active_seen_members_for_ws(seen_members, cloud, ws, now_s)
+    }
+  }
+
+  // 1. ws-A personal lock preserves owner & admin roles and excludes ws-B's u-other AND historical departed u-departed
+  let t1 = 1700000100.0
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf) {
+    Some(ls) => {
+      match ls.members.get("u-owner") {
+        Some(m) => if m.role != "owner" || m.email != "owner@a.test" { panic("owner role/email must be preserved, got " + m.role) }
+        None => panic("missing u-owner in ws-A personal lock")
+      }
+      match ls.members.get("u-admin") {
+        Some(m) => if m.role != "admin" || m.email != "admin@a.test" { panic("admin role/email must be preserved, got " + m.role) }
+        None => panic("missing u-admin in ws-A personal lock")
+      }
+      if ls.members.contains("u-other") || ls.persons.contains("u-other") {
+        panic("ws-A personal lock must not include ws-B member u-other")
+      }
+      if ls.members.contains("u-departed") || ls.persons.contains("u-departed") {
+        panic("ws-A personal lock must not re-admit historical departed vault member u-departed")
+      }
+    }
+    None => panic("expected personal vault lock for ws-A when security mode is off")
+  }
+
+  // 2. ws-A GET /vault/boxes chains contain u-owner & u-admin and MUST NOT contain ws-B's u-other or departed u-departed
+  let chains_a = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf)
+  if form::json_field(Some(chains_a), "u-owner") is None || form::json_field(Some(chains_a), "u-admin") is None {
+    panic("expected u-owner and u-admin chains in ws-A")
+  }
+  if !(form::json_field(Some(chains_a), "u-other") is None) {
+    panic("ws-A chains leaked ws-B member u-other!")
+  }
+  if !(form::json_field(Some(chains_a), "u-departed") is None) {
+    panic("ws-A chains leaked historical departed member u-departed!")
+  }
+
+  // 3. Exact Mesh expiry boundary: at t_exact = 1700000200.0 (`now_s == exp_unix`), u-admin is IMMEDIATELY excluded!
+  let t_exact = 1700000200.0
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) {
+    Some(ls) => {
+      if ls.members.contains("u-admin") || ls.persons.contains("u-admin") {
+        panic("member u-admin at exact boundary now_s == exp must be excluded from personal_vault_lock")
+      }
+      if !ls.members.contains("u-owner") {
+        panic("non-expired u-owner must remain")
+      }
+    }
+    None => panic("expected personal vault lock for remaining active u-owner")
+  }
+  let chains_t_exact = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if !(form::json_field(Some(chains_t_exact), "u-admin") is None) {
+    panic("member u-admin at exact boundary now_s == exp must be excluded from GET /vault/boxes chains")
+  }
+
+  // 4. Multi-session isolation: kicking/revoking ONLY `sid-owner-1` MUST keep `u-owner` active via `sid-owner-2`!
+  revoke_seen_member_session(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-1", 10L))
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) {
+    Some(ls) => {
+      if !ls.members.contains("u-owner") || !ls.persons.contains("u-owner") {
+        panic("revoking sid-owner-1 must NOT evict u-owner while sid-owner-2 is still valid")
+      }
+    }
+    None => panic("expected u-owner to stay in personal_vault_lock via sid-owner-2")
+  }
+  let chains_after_s1 = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if form::json_field(Some(chains_after_s1), "u-owner") is None {
+    panic("revoking sid-owner-1 must keep u-owner chain in GET /vault/boxes via sid-owner-2")
+  }
+
+  // Revoking the second (last) session `sid-owner-2` now removes u-owner completely
+  revoke_seen_member_session(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-2", 11L))
+  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) is None) {
+    panic("after all active sessions expired/revoked, personal_vault_lock must be None (no historical fallback)")
+  }
+  let chains_revoked = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if !(form::json_field(Some(chains_revoked), "u-owner") is None) {
+    panic("revoked member u-owner must disappear from GET /vault/boxes chains")
+  }
+
+  // 4b. Same `sid-shared` across 2 distinct Mesh connections (conn_id=101 old, conn_id=102 new):
+  // kicking conn_id=101 MUST keep conn_id=102 active; cloud `sid` revocation filters BOTH!
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-shared", 101L), "owner@a.test", "owner", 1700000000L, "sid-shared", 1700000200L)
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-shared", 102L), "owner@a.test", "owner", 1700000010L, "sid-shared", 1700005000L)
+  revoke_seen_member_session(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-shared", 101L))
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) {
+    Some(ls) => if !ls.members.contains("u-owner") || !ls.persons.contains("u-owner") {
+      panic("kicking conn_id=101 must NOT evict conn_id=102 sharing sid-shared")
+    }
+    None => panic("expected conn_id=102 sharing sid-shared to stay in personal_vault_lock")
+  }
+  let chains_shared_kept = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if form::json_field(Some(chains_shared_kept), "u-owner") is None {
+    panic("kicking conn_id=101 must keep conn_id=102 in GET /vault/boxes")
+  }
+  // Cloud `sid` revocation on `sid-shared` with `iat <= r.at` filters BOTH conn_id=101 and conn_id=102
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-shared", 101L), "owner@a.test", "owner", 1700000000L, "sid-shared", 1700005000L)
+  match cloud.state {
+    Some(st_cloud) => {
+      st_cloud.revocations = [station_cloud::Revocation::{ kind: "sid", id: "sid-shared", at: 1700000050L }]
+    }
+    None => ()
+  }
+  if !(resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf) is None) {
+    panic("cloud sid revocation on sid-shared must filter all connections sharing sid-shared")
+  }
+  let chains_sid_rev = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t_exact), "ws-A", t_exact, vf)
+  if !(form::json_field(Some(chains_sid_rev), "u-owner") is None) {
+    panic("cloud sid revocation on sid-shared must filter GET /vault/boxes")
+  }
+
+  // Also verify cloud `sub` revocation list filters even if still present in seen_members
+  record_seen_member(seen_members, "ws-A", "u-owner", seen_member_session_key("sid-owner-2", 11L), "owner@a.test", "owner", 1700000010L, "sid-owner-2", 1700005000L)
+  match cloud.state {
+    Some(st_cloud) => {
+      st_cloud.revocations = [station_cloud::Revocation::{ kind: "sub", id: "u-owner", at: 1700000050L }]
+    }
+    None => ()
+  }
+  match resolve_vault_lock_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf) {
+    Some(ls) => if ls.members.contains("u-owner") || ls.persons.contains("u-owner") {
+      panic("cloud-revoked u-owner must not appear in personal_vault_lock")
+    }
+    None => ()
+  }
+  let chains_cloud_rev = resolve_vault_chains_for_ws(cloud, Some(vs), known_at(t1), "ws-A", t1, vf)
+  if !(form::json_field(Some(chains_cloud_rev), "u-owner") is None) {
+    panic("cloud-revoked u-owner must not appear in GET /vault/boxes chains")
+  }
+
+  // 5. Unknown workspace returns None / {}
+  if !(resolve_vault_lock_for_ws(cloud, None, known_at(t1), "ws-unknown", t1, vf) is None) {
+    panic("unknown workspace must not get a vault lock")
+  }
+
+  // 6. Broken workspace lock (security mode ON, state: None) MUST NOT fall back to personal lock!
+  cloud.lock = Some(station_cloud::KeptLock::{
+    entries: [],
+    aside: [],
+    state: None,
+  })
+  if !(resolve_vault_lock_for_ws(cloud, None, known_at(t1), "ws-A", t1, vf) is None) {
+    panic("broken workspace lock must fail closed (None), never fall back to personal lock")
+  }
+  let chains_broken = resolve_vault_chains_for_ws(cloud, None, known_at(t1), "ws-A", t1, vf)
+  if !(form::json_field(Some(chains_broken), "u-owner") is None) {
+    panic("broken workspace lock must return empty chains {}")
+  }
+}
+
+test "wave17c3b R2: hot handover restart rejects Windows (501) and non-launcher PIDs (409), and prunes expired seen_members" {
+  let mem_fs = station_ops::MemFs::new()
+  let ops_fs = mem_fs.ops()
+  let data_dir = "/tmp/w17c3b-daemon-test"
+  let _ = mem_fs.put_text(data_dir + "/run/station.json", "{\"handoff\":1,\"pid\":4242}", 384)
+
+  // 1. Windows MUST return 501 and NEVER call send_usr2 (which calls TerminateProcess on Windows!)
+  let mut win_killed = false
+  match trigger_hot_handover_restart("win32", ops_fs, data_dir, "\\", fn(_p) { true }, fn(_p) { win_killed = true; 0 }) {
+    Err(e) => if e.status != 501 || win_killed { panic("Windows restart must return 501 without signaling") }
+    Ok(_) => panic("Windows restart must return 501")
+  }
+
+  // 2. Unix non-launcher PID (PID reuse!) MUST return 409 and NEVER send SIGUSR2!
+  let mut wrong_killed = false
+  match trigger_hot_handover_restart("linux", ops_fs, data_dir, "/", fn(_p) { false }, fn(_p) { wrong_killed = true; 0 }) {
+    Err(e) => if e.status != 409 || wrong_killed { panic("non-launcher PID must return 409 without signaling") }
+    Ok(_) => panic("non-launcher PID must be rejected")
+  }
+
+  // 3. Unix verified launcher PID 4242 -> sends SIGUSR2 to 4242
+  let mut signaled_pid = 0
+  match trigger_hot_handover_restart("linux", ops_fs, data_dir, "/", fn(p) { p == 4242 }, fn(p) { signaled_pid = p; 0 }) {
+    Ok(_) => if signaled_pid != 4242 { panic("expected SIGUSR2 to pid 4242") }
+    Err(e) => panic("expected hot handover restart Ok, got: " + e.message)
+  }
+
+  // 4. prune_expired_seen_members evicts expired entries & empty maps while keeping active sessions
+  let seen : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
+  record_seen_member(seen, "ws-1", "u-expired", "conn:1", "old@a.test", "member", 1700000000L, "sid-1", 1700000100L)
+  record_seen_member(seen, "ws-1", "u-active", "conn:2", "live@a.test", "owner", 1700000000L, "sid-2", 1700009000L)
+  let pruned = prune_expired_seen_members(seen, 1700000200.0)
+  if pruned != 1 {
+    panic("expected 1 expired seen_member pruned, got " + pruned.to_string())
+  }
+  match seen.get("ws-1") {
+    Some(by_sub) => {
+      if by_sub.contains("u-expired") || !by_sub.contains("u-active") {
+        panic("prune_expired_seen_members did not evict u-expired or keep u-active")
+      }
+    }
+    None => panic("missing ws-1 after pruning")
+  }
+}

@@ -48,6 +48,7 @@ const ASKED: J = {
   watching: false,
   threads: ["ws/maple\u00017"],
   sessions: ["ws/willow\u0001k-willow-2"],
+  pairs: [["ws/maple", "k-maple-1"], ["ws/willow", "k-willow-2"]],
   limit: 30,
   archived: false,
   from: 1_790_000_000_000,

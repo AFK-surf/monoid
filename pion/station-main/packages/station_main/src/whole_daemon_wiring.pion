@@ -1,0 +1,1105 @@
+// Wave 17C-2 production daemon wiring helpers (isolated from `whole_daemon.pion` to prevent
+// merge conflicts with parallel Wave 17C-1 work):
+// 1. Devices OS tunnel resolution (`DevicesOsRuntime::reach_device_os` for all 5 kinds, zero 501)
+// 2. Runtime hooks (`lock_of` from `CloudStore`, restart trigger, logins/signins bridges)
+// 3. Admin SSE outbox flush (delivers `EventsHub::flush_overviews` incremental patches + `vault*` SSE)
+// 4. `DaemonRelayRanker` (`station_mesh::RelayRanker` periodic 30s RTT ranking & public_relays toggle)
+// 5. `AsyncUpkeepRunner` (non-blocking `station_sys::proc_spawn` `git gc --auto` pack upkeep
+//    with disjoint `9 << 32` `event_id` base and 30-minute per-repo deadline — NEVER blocks loop!)
+
+import "base_codec"
+import "form"
+import "host_shim"
+import "lock"
+import "nodepath"
+import "station_api"
+import "station_cloud"
+import "station_devices"
+import "station_jobs"
+import "station_mesh"
+import "station_ops"
+import "station_sys"
+import "station_vault"
+import "station_whole"
+
+/// Disjoint event_id base for async upkeep child processes (`9 << 32`, clear of `1<<32..8<<32`).
+pub let UPKEEP_EVENT_ID_BASE : Int64 = 38654705664L
+
+/// Non-blocking per-repo `git gc --auto` deadline (30 minutes, matching `REPO_GC_TIMEOUT_MS`).
+pub let ASYNC_UPKEEP_GC_TIMEOUT_MS : Int64 = 1800000L
+
+/// Minimum interval between periodic async upkeep passes (1 hour).
+pub let ASYNC_UPKEEP_INTERVAL_MS : Int64 = 3600000L
+
+/// Periodic relay ranking check interval (30 seconds, 1:1 with `station/src/mesh/relays.ts`).
+pub let DAEMON_RELAY_CHECK_INTERVAL_MS : Int64 = 30000L
+
+// ---------------------------------------------------------------------------
+// 1. Devices OS Tunnel Resolution (replaces `501` placeholder in `whole_daemon.pion`)
+// ---------------------------------------------------------------------------
+
+pub enum ResolvedDeviceTunnel {
+  /// Dial a local/LAN TCP target `(ip_or_host, port)`.
+  Tcp(String, Int)
+  /// Serial port device ready (`(path, baud)`).
+  Serial(String, Int)
+  /// AirPlay HTTP control target handled by `DevicesOsRuntime::handle_airplay_http`.
+  AirPlay(station_whole::AirPlayDeviceRefOs)
+  /// Android TV HTTP/ADB multiplexed target `(dev_ref, adb_host, adb_port)`.
+  AndroidTv(station_whole::AndroidTvDeviceRefOs, String, Int)
+  /// Refusal `(http_status, message)`.
+  Refuse(Int, String)
+}
+
+fn str_array_eq(a : Option[Array[String]], b : Option[Array[String]]) -> Bool {
+  match (a, b) {
+    (None, None) => true
+    (Some(xs), Some(ys)) => {
+      if xs.length() != ys.length() {
+        return false
+      }
+      for i in 0..<xs.length() {
+        if xs[i] != ys[i] {
+          return false
+        }
+      }
+      true
+    }
+    _ => false
+  }
+}
+
+fn device_spec_changed(a : station_devices::DeviceSpec, b : station_devices::DeviceSpec) -> Bool {
+  a.name != b.name ||
+  a.target != b.target ||
+  a.baud != b.baud ||
+  a.model != b.model ||
+  a.paired != b.paired ||
+  !str_array_eq(a.protocols, b.protocols)
+}
+
+/// Sync `spec` into `devices.registry` (refreshing if changed in SQLite) and resolve via
+/// `DevicesOsRuntime::reach_device_os`.
+pub fn resolve_device_tunnel_via_os(
+  devices : station_whole::DevicesOsRuntime,
+  spec : station_devices::KeptDevice,
+) -> ResolvedDeviceTunnel {
+  let needs_sync = match devices.registry.get(spec.ws, spec.device.id) {
+    None => true
+    Some(existing) => device_spec_changed(existing.device, spec.device)
+  }
+  if needs_sync {
+    let _ = devices.registry.remove(spec.ws, spec.device.id)
+    match devices.registry.add(
+      spec.ws,
+      spec.owner_sub,
+      spec.owner_email,
+      spec.owner_name,
+      spec.device,
+      spec.at_secs,
+    ) {
+      Ok(_) => ()
+      Err(e) => return ResolvedDeviceTunnel::Refuse(422, e)
+    }
+  }
+  match devices.reach_device_os(spec.ws, spec.device.id) {
+    Ok(station_whole::DeviceTunnelTarget::TcpDial(host, port)) => ResolvedDeviceTunnel::Tcp(host, port)
+    Ok(station_whole::DeviceTunnelTarget::SerialPort(path, baud)) => ResolvedDeviceTunnel::Serial(path, baud)
+    Ok(station_whole::DeviceTunnelTarget::AirPlayHttp(dev_ref)) => ResolvedDeviceTunnel::AirPlay(dev_ref)
+    Ok(station_whole::DeviceTunnelTarget::AndroidTvDemux(dev_ref, _, _)) => {
+      let (adb_host, adb_port) = match station_devices::host_port(dev_ref.target) {
+        Some(hp) => (hp.host, 5555)
+        None => ("127.0.0.1", 5037)
+      }
+      ResolvedDeviceTunnel::AndroidTv(dev_ref, adb_host, adb_port)
+    }
+    Err((code, msg)) => ResolvedDeviceTunnel::Refuse(code, msg)
+  }
+}
+
+/// Parse an HTTP/1.1 request carried on a `device:` tunnel into `(method, path, headers, body)`.
+/// Returns `None` if `carry` does not begin with a valid HTTP request line (e.g. Android TV ADB wire stream).
+pub fn parse_device_tunnel_http_req(carry : Bytes) -> Option[(String, String, Array[(String, String)], Bytes)] {
+  let n = carry.length()
+  if n < 14 {
+    return None
+  }
+  // Find `\r\n\r\n` header terminator
+  let mut head_end = -1
+  let mut i = 0
+  while i + 3 < n {
+    if (carry[i].to_int() & 0xFF) == 13 &&
+    (carry[i + 1].to_int() & 0xFF) == 10 &&
+    (carry[i + 2].to_int() & 0xFF) == 13 &&
+    (carry[i + 3].to_int() & 0xFF) == 10 {
+      head_end = i
+      break
+    }
+    i = i + 1
+  }
+  if head_end <= 0 {
+    return None
+  }
+  let head_bytes = Bytes::new(head_end)
+  for j in 0..<head_end {
+    head_bytes[j] = carry[j]
+  }
+  let head_str = head_bytes.to_string()
+  let lines = head_str.split("\r\n")
+  if lines.length() == 0 {
+    return None
+  }
+  let parts = lines[0].split(" ")
+  if parts.length() < 3 || !parts[2].starts_with("HTTP/") {
+    return None
+  }
+  let method = parts[0].trim()
+  let path = parts[1].trim()
+  if method != "GET" && method != "POST" && method != "PUT" && method != "DELETE" && method != "HEAD" && method != "PATCH" && method != "OPTIONS" {
+    return None
+  }
+  let hdrs : Array[(String, String)] = []
+  for li in 1..<lines.length() {
+    let line = lines[li]
+    let mut colon = -1
+    for ci in 0..<line.length() {
+      if line.code_unit_at(ci) == 58 {
+        colon = ci
+        break
+      }
+    }
+    if colon > 0 {
+      hdrs.push((line.slice(0, colon).trim(), line.slice(colon + 1, line.length()).trim()))
+    }
+  }
+  let body_start = head_end + 4
+  let body_len = n - body_start
+  let body = Bytes::new(body_len)
+  for bi in 0..<body_len {
+    body[bi] = carry[body_start + bi]
+  }
+  Some((method, path, hdrs, body))
+}
+
+// ---------------------------------------------------------------------------
+// 2. Wire WholeCore Runtime Hooks (`CloudStore` lock_of, restart, logins, signins)
+// ---------------------------------------------------------------------------
+
+pub struct SeenMember {
+  pub email : String
+  pub role : String
+  pub iat : Int64
+  pub sid_claim : String
+  pub exp_unix : Int64
+}
+
+/// Always key per Mesh connection (`conn:<conn_id>`, aligned 1:1 with `station_mesh/src/serve.pion:182`)
+/// so kicking an older connection never deletes a newer connection sharing the same `sid_claim`;
+/// `SeenMember.sid_claim` is still retained for cloud `sid` revocation filtering.
+pub fn seen_member_session_key(_sid_claim : String, conn_id : Int64) -> String {
+  "conn:" + conn_id.to_string()
+}
+
+fn seen_role_rank(r : String) -> Int {
+  if r == "owner" { 3 } else if r == "admin" { 2 } else if r == "member" { 1 } else { 0 }
+}
+
+pub fn record_seen_member(
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  ws : String,
+  sub : String,
+  session_key : String,
+  email : String,
+  role : String,
+  iat : Int64,
+  sid_claim : String,
+  exp_unix : Int64,
+) -> Unit {
+  if ws.length() == 0 || sub.length() == 0 || session_key.length() == 0 {
+    return
+  }
+  let by_sub = match seen_members.get(ws) {
+    Some(existing) => existing
+    None => {
+      let fresh : Map[String, Map[String, SeenMember]] = Map::new()
+      seen_members.set(ws, fresh)
+      fresh
+    }
+  }
+  let by_sess = match by_sub.get(sub) {
+    Some(existing) => existing
+    None => {
+      let fresh : Map[String, SeenMember] = Map::new()
+      by_sub.set(sub, fresh)
+      fresh
+    }
+  }
+  by_sess.set(session_key, SeenMember::{
+    email: email,
+    role: role,
+    iat: iat,
+    sid_claim: sid_claim,
+    exp_unix: exp_unix,
+  })
+}
+
+/// Remove only the specific revoked/kicked session (`sid` or `conn_id`) for `(ws, sub)`,
+/// preserving any other active device sessions held by the same member.
+pub fn revoke_seen_member_session(
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  ws : String,
+  sub : String,
+  session_key : String,
+) -> Unit {
+  match seen_members.get(ws) {
+    Some(by_sub) => match by_sub.get(sub) {
+      Some(by_sess) => {
+        by_sess.remove(session_key)
+        if by_sess.keys().length() == 0 {
+          by_sub.remove(sub)
+        }
+      }
+      None => ()
+    }
+    None => ()
+  }
+}
+
+/// Periodically evict expired `SeenMember` entries (`exp_unix > 0 && now_secs >= exp_unix`)
+/// and prune empty sub/ws maps so long-running stations never accumulate stale sessions.
+pub fn prune_expired_seen_members(
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  now_secs : Double,
+) -> Int {
+  let mut removed = 0
+  let ws_keys = seen_members.keys()
+  for wi in 0..<ws_keys.length() {
+    let ws = ws_keys[wi]
+    match seen_members.get(ws) {
+      Some(by_sub) => {
+        let subs = by_sub.keys()
+        for si in 0..<subs.length() {
+          let sub = subs[si]
+          match by_sub.get(sub) {
+            Some(by_sess) => {
+              let skeys = by_sess.keys()
+              for ki in 0..<skeys.length() {
+                let sk = skeys[ki]
+                match by_sess.get(sk) {
+                  Some(sm) => {
+                    if sm.exp_unix > 0L && now_secs >= sm.exp_unix.to_double() {
+                      by_sess.remove(sk)
+                      removed = removed + 1
+                    }
+                  }
+                  None => ()
+                }
+              }
+              if by_sess.keys().length() == 0 {
+                by_sub.remove(sub)
+              }
+            }
+            None => ()
+          }
+        }
+        if by_sub.keys().length() == 0 {
+          seen_members.remove(ws)
+        }
+      }
+      None => ()
+    }
+  }
+  removed
+}
+
+/// Filter `seen_members` for `ws` against live `full_memberships(now_secs)`, exact Mesh credential
+/// expiry (`now_secs >= exp_unix`), and cloud revocations (`sub`/`sid` with `iat <= r.at`),
+/// aggregating all remaining valid sessions per `(ws, sub)`.
+pub fn active_seen_members_for_ws(
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  cloud : station_cloud::CloudStore,
+  ws : String,
+  now_secs : Double,
+) -> (Map[String, String], Map[String, String]) {
+  let emails : Map[String, String] = Map::new()
+  let roles : Map[String, String] = Map::new()
+  let ms = cloud.full_memberships(now_secs)
+  let mut revs : Option[Array[station_cloud::Revocation]] = None
+  for i in 0..<ms.length() {
+    if ms[i].workspace == ws {
+      revs = Some(ms[i].revocations)
+      break
+    }
+  }
+  let ws_revs = match revs {
+    Some(r) => r
+    None => return (emails, roles)
+  }
+  match seen_members.get(ws) {
+    Some(by_sub) => {
+      let subs = by_sub.keys()
+      for i in 0..<subs.length() {
+        let sub = subs[i]
+        match by_sub.get(sub) {
+          Some(by_sess) => {
+            let skeys = by_sess.keys()
+            let mut best : Option[SeenMember] = None
+            for si in 0..<skeys.length() {
+              match by_sess.get(skeys[si]) {
+                Some(sm) => {
+                  // Align 1:1 with `station_mesh/src/serve.pion:60`: `now >= exp` is expired.
+                  if sm.exp_unix > 0L && now_secs >= sm.exp_unix.to_double() {
+                    continue
+                  }
+                  let mut revoked = false
+                  for ri in 0..<ws_revs.length() {
+                    let r = ws_revs[ri]
+                    if sm.iat <= r.at
+                    && ((r.kind == "sub" && r.id == sub) || (r.kind == "sid" && r.id == sm.sid_claim && sm.sid_claim.length() > 0))
+                    {
+                      revoked = true
+                      break
+                    }
+                  }
+                  if !revoked {
+                    match best {
+                      None => best = Some(sm)
+                      Some(prev) => {
+                        let r_new = seen_role_rank(sm.role)
+                        let r_old = seen_role_rank(prev.role)
+                        if r_new > r_old || (r_new == r_old && sm.iat >= prev.iat) {
+                          best = Some(sm)
+                        }
+                      }
+                    }
+                  }
+                }
+                None => ()
+              }
+            }
+            match best {
+              Some(chosen) => {
+                emails.set(sub, chosen.email)
+                roles.set(sub, chosen.role)
+              }
+              None => ()
+            }
+          }
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+  (emails, roles)
+}
+
+fn person_chain_sub(chain : Array[form::Json]) -> Option[String] {
+  if chain.length() == 0 {
+    return None
+  }
+  match form::json_field(Some(chain[0]), "ws") {
+    Some(form::Json::Str(ws)) => {
+      if ws.starts_with("person:") {
+        Some(ws.slice(7, ws.length()))
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
+fn is_full_membership_ws(
+  cloud : station_cloud::CloudStore,
+  ws : String,
+  now_secs : Double,
+) -> Bool {
+  if ws.length() == 0 {
+    return false
+  }
+  let ms = cloud.full_memberships(now_secs)
+  for i in 0..<ms.length() {
+    if ms[i].workspace == ws {
+      return true
+    }
+  }
+  false
+}
+
+fn build_personal_lock_sources(
+  cloud : station_cloud::CloudStore,
+  vault_store : Option[station_vault::VaultStore],
+  known_members : (String) -> (Map[String, String], Map[String, String]),
+  ws : String,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> station_cloud::PersonalLockSources {
+  let (member_emails, member_roles) = known_members(ws)
+  // Active authorized subjects ONLY (never merge historical departed vault owners/members).
+  let ws_subs : Map[String, Bool] = Map::new()
+  let ek = member_emails.keys()
+  for i in 0..<ek.length() {
+    ws_subs.set(ek[i], true)
+  }
+  let rk = member_roles.keys()
+  for i in 0..<rk.length() {
+    ws_subs.set(rk[i], true)
+  }
+  let vault_summaries : Array[station_cloud::VaultRecordSummary] = []
+  let box_summaries : Array[station_cloud::BoxCertSummary] = []
+  match vault_store {
+    Some(vs) => {
+      match vs.vaults(ws) {
+        Ok(vs_list) => {
+          for i in 0..<vs_list.length() {
+            let v = vs_list[i]
+            let owner = match form::json_field(Some(v), "owner") { Some(form::Json::Str(s)) => s, _ => "" }
+            let del = match form::json_field(Some(v), "deleted") { Some(form::Json::Bool(true)) => true, _ => false }
+            let sk = match form::json_field(form::json_field(Some(v), "sig"), "key") { Some(form::Json::Str(s)) => s, _ => "" }
+            // Only keep vault records for currently active authorized subjects so historical
+            // departed members can never re-enter `personal_vault_lock` or `GET /vault/boxes`.
+            if !del && ws_subs.contains(owner) {
+              let mem_arr : Array[String] = []
+              match form::json_field(Some(v), "members") {
+                Some(form::Json::Arr(xs)) => {
+                  for j in 0..<xs.length() {
+                    match xs[j] {
+                      form::Json::Str(s) => {
+                        if ws_subs.contains(s) {
+                          mem_arr.push(s)
+                        }
+                      }
+                      _ => ()
+                    }
+                  }
+                }
+                _ => ()
+              }
+              vault_summaries.push(station_cloud::VaultRecordSummary::{
+                owner: owner,
+                deleted: false,
+                sig_key: sk,
+                members: mem_arr,
+              })
+            }
+          }
+        }
+        Err(_) => ()
+      }
+      match vs.boxes(ws) {
+        Ok(bs_list) => {
+          for i in 0..<bs_list.length() {
+            let b = bs_list[i]
+            let dev = match form::json_field(Some(b), "device") { Some(form::Json::Str(s)) => s, _ => "" }
+            let at = match form::json_field(Some(b), "at") { Some(form::Json::Num(n)) => n.to_int64(), _ => 0L }
+            box_summaries.push(station_cloud::BoxCertSummary::{ device: dev, at: at, raw: b })
+          }
+        }
+        Err(_) => ()
+      }
+    }
+    None => ()
+  }
+  // Filter `person_chains` strictly to currently active members of target workspace `ws`
+  // so revoked/expired/departed/other-workspace personal chains never leak into vault lock or GET /vault/boxes.
+  let filtered_chains : Array[(String, Array[form::Json])] = []
+  for ci in 0..<cloud.person_chains.length() {
+    let (g, ch) = cloud.person_chains[ci]
+    match person_chain_sub(ch) {
+      Some(sub) => {
+        if ws_subs.contains(sub) {
+          filtered_chains.push((g, ch))
+        }
+      }
+      None => ()
+    }
+  }
+  station_cloud::PersonalLockSources::{
+    chains: filtered_chains,
+    member_emails: member_emails,
+    member_roles: member_roles,
+    vaults: vault_summaries,
+    boxes: box_summaries,
+    cert_ok: fn(l : lock::LockState, b : station_cloud::BoxCertSummary) -> Bool {
+      station_vault::cert_ok_for_lock(l, b.raw, verify_fn=verify_fn)
+    },
+  }
+}
+
+/// Resolve the effective Vault `LockState` for `ws`, sharing the exact live lock state as Mesh
+/// admission (`cloud.locked(now_secs, ws=joined_ws)`):
+/// - If `ws` is not a full membership of this station: `None`.
+/// - If workspace security mode is active (`Some(eff)`): returns `eff.state` when `!eff.waiting`,
+///   and `None` when `eff.waiting` or broken (`eff.state == None`), NEVER falling back to personal lock.
+/// - Only when security mode is explicitly off (`None`): builds `personal_vault_lock` scoped strictly
+///   to `ws`'s active non-expired non-revoked members, roles, and person chains.
+pub fn resolve_vault_lock_for_ws(
+  cloud : station_cloud::CloudStore,
+  vault_store : Option[station_vault::VaultStore],
+  known_members : (String) -> (Map[String, String], Map[String, String]),
+  ws : String,
+  now_secs : Double,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> Option[lock::LockState] {
+  if !is_full_membership_ws(cloud, ws, now_secs) {
+    return None
+  }
+  let home_ws = match cloud.home() {
+    Some(h) => h
+    None => ""
+  }
+  let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
+  match cloud.locked(now_secs, ws=joined_ws) {
+    Some(eff) => if eff.waiting { None } else { eff.state }
+    None => {
+      let sources = build_personal_lock_sources(cloud, vault_store, known_members, ws, verify_fn)
+      if sources.chains.length() > 0 || sources.member_emails.keys().length() > 0 || sources.member_roles.keys().length() > 0 {
+        Some(station_cloud::personal_vault_lock(ws, sources, verify_fn=verify_fn))
+      } else {
+        None
+      }
+    }
+  }
+}
+
+/// Resolve the selected personal chains for `GET /vault/boxes` in `ws`:
+/// returns `{}` whenever `ws` is not a full membership or security mode is not explicitly off,
+/// and otherwise returns strictly the chains belonging to `ws`'s active non-expired non-revoked members.
+pub fn resolve_vault_chains_for_ws(
+  cloud : station_cloud::CloudStore,
+  vault_store : Option[station_vault::VaultStore],
+  known_members : (String) -> (Map[String, String], Map[String, String]),
+  ws : String,
+  now_secs : Double,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool],
+) -> form::Json {
+  if !is_full_membership_ws(cloud, ws, now_secs) {
+    return form::Json::Obj([])
+  }
+  let home_ws = match cloud.home() {
+    Some(h) => h
+    None => ""
+  }
+  let joined_ws : Option[String] = if ws == home_ws { None } else { Some(ws) }
+  match cloud.locked(now_secs, ws=joined_ws) {
+    Some(_) => form::Json::Obj([])
+    None => {
+      let sources = build_personal_lock_sources(cloud, vault_store, known_members, ws, verify_fn)
+      let picked = station_cloud::personal_vault_chains(ws, sources, verify_fn=verify_fn)
+      let fields : Array[(String, form::Json)] = []
+      let ks = picked.keys()
+      for i in 0..<ks.length() {
+        match picked.get(ks[i]) {
+          Some(ch) => fields.push((ks[i], form::Json::Arr(ch)))
+          None => ()
+        }
+      }
+      form::Json::Obj(fields)
+    }
+  }
+}
+
+/// Trigger a real `SIGUSR2` hot handover restart via launcher discovery (`station_ops::plan_page_restart`).
+/// - Windows: NEVER calls `proc_kill` (which runs `TerminateProcess` and kills the launcher); returns honest 501.
+/// - Unix: verifies launcher PID identity via `is_launcher` (`stillfail-station` process check, never bare `kill(pid, 0)`).
+pub fn trigger_hot_handover_restart(
+  os_name : String,
+  ops_fs : station_ops::OpsFs,
+  data_dir : String,
+  sep : String,
+  is_launcher : (Int) -> Bool,
+  send_usr2 : (Int) -> Int,
+) -> Result[Unit, station_api::ApiError] {
+  if os_name == "win32" {
+    return Err(station_api::ApiError::new(501, "network.station.restart is not yet implemented on Windows Pion station"))
+  }
+  match station_ops::plan_page_restart(ops_fs, data_dir, false, is_launcher, sep=sep) {
+    station_ops::RestartAction::Handover(pid) => {
+      if send_usr2(pid) == 0 {
+        Ok(())
+      } else {
+        Err(station_api::ApiError::new(500, "failed to signal launcher PID " + pid.to_string() + " with SIGUSR2"))
+      }
+    }
+    station_ops::RestartAction::RestartFrontAfter(_) => Ok(())
+    station_ops::RestartAction::NoneAvailable => Err(station_api::ApiError::new(409, "no launcher available for hot handover restart"))
+  }
+}
+
+fn is_unix_launcher_pid(pid : Int) -> Bool {
+  // Kernel-backed proof that `pid` is this daemon's live direct parent launcher (rules out stale
+  // `station.json` PIDs and PID reuse) AND its cmdline/executable contains `stillfail-station`.
+  if pid <= 1 || pid != station_sys::proc_ppid() {
+    return false
+  }
+  // Zero-wait synchronous check via `station_sys::proc_cmdline` (Linux `/proc/<pid>/cmdline`,
+  // macOS `proc_pidpath`): never spawns a child or calls `host_shim::wait`.
+  match station_sys::proc_cmdline(pid) {
+    Some(cmd) => cmd.contains("stillfail-station")
+    None => false
+  }
+}
+
+fn login_view_to_json(item : station_devices::LoginView, read_only : Bool) -> base_codec::Json {
+  let cmd_arr : Array[base_codec::Json] = []
+  for ci in 0..<item.command.length() {
+    cmd_arr.push(base_codec::json_str(item.command[ci]))
+  }
+  let fs : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(item.id)),
+    ("name", base_codec::json_str(item.name)),
+    ("command", base_codec::json_arr(cmd_arr)),
+    ("state", base_codec::json_str(item.state.as_str())),
+    ("waiting", base_codec::json_bool(item.waiting)),
+    ("paste", base_codec::json_bool(item.paste)),
+    ("by", base_codec::json_obj([("email", base_codec::json_str(item.by.email)), ("name", base_codec::json_str(item.by.name))])),
+    ("startedAt", base_codec::json_int64(item.started_at)),
+    ("expiresAt", base_codec::json_int64(item.expires_at)),
+    ("timedOut", base_codec::json_bool(item.timed_out)),
+    ("browser", base_codec::json_bool(item.browser)),
+    ("byCode", base_codec::json_bool(item.by_code)),
+  ]
+  match item.step {
+    Some(s) => fs.push(("step", base_codec::json_str(s.as_str())))
+    None => ()
+  }
+  match item.workspace {
+    Some(w) => fs.push(("workspace", base_codec::json_str(w)))
+    None => ()
+  }
+  match item.chat {
+    Some(c) => fs.push(("chat", base_codec::json_str(c)))
+    None => ()
+  }
+  match item.chat_title {
+    Some(ct) => fs.push(("chatTitle", base_codec::json_str(ct)))
+    None => ()
+  }
+  match item.done_by {
+    Some(db) => fs.push(("doneBy", base_codec::json_obj([("email", base_codec::json_str(db.email)), ("name", base_codec::json_str(db.name))])))
+    None => ()
+  }
+  match item.ended_at {
+    Some(ea) => fs.push(("endedAt", base_codec::json_int64(ea)))
+    None => ()
+  }
+  match item.error {
+    Some(er) => fs.push(("error", base_codec::json_str(er)))
+    None => ()
+  }
+  match item.screen {
+    Some(sc) => fs.push(("screen", base_codec::json_str(sc)))
+    None => ()
+  }
+  match item.again {
+    Some(ag) => fs.push(("again", base_codec::json_str(ag)))
+    None => ()
+  }
+  match item.from {
+    Some(fr) => fs.push(("from", base_codec::json_str(fr)))
+    None => ()
+  }
+  if !read_only {
+    match item.url {
+      Some(u) => fs.push(("url", base_codec::json_str(u)))
+      None => ()
+    }
+    match item.domain {
+      Some(d) => fs.push(("domain", base_codec::json_str(d)))
+      None => ()
+    }
+    match item.code {
+      Some(c) => fs.push(("code", base_codec::json_str(c)))
+      None => ()
+    }
+    match item.code_url {
+      Some(cu) => fs.push(("codeUrl", base_codec::json_str(cu)))
+      None => ()
+    }
+  }
+  base_codec::json_obj(fs)
+}
+
+pub fn wire_whole_core_runtime_hooks(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  logins : station_whole::LoginsOsRuntime,
+  browser : station_whole::BrowserOsManager,
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+) -> Unit {
+  let _ = browser
+  core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
+    let now_s = host_shim::wall_ms().to_double() / 1000.0
+    let _ = prune_expired_seen_members(seen_members, now_s)
+    let known_members = fn(target_ws : String) -> (Map[String, String], Map[String, String]) {
+      active_seen_members_for_ws(seen_members, ctx.cloud, target_ws, now_s)
+    }
+    resolve_vault_lock_for_ws(ctx.cloud, core.store.vault_store, known_members, ws, now_s, core.api.auth_policy.verify_fn)
+  })
+  core.api.hooks.chains_of = Some(fn(ws : String) -> form::Json {
+    let now_s = host_shim::wall_ms().to_double() / 1000.0
+    let _ = prune_expired_seen_members(seen_members, now_s)
+    let known_members = fn(target_ws : String) -> (Map[String, String], Map[String, String]) {
+      active_seen_members_for_ws(seen_members, ctx.cloud, target_ws, now_s)
+    }
+    resolve_vault_chains_for_ws(ctx.cloud, core.store.vault_store, known_members, ws, now_s, core.api.auth_policy.verify_fn)
+  })
+  core.api.hooks.on_restart = Some(fn() -> Result[Unit, station_api::ApiError] {
+    trigger_hot_handover_restart(
+      station_sys::os_name(),
+      ctx.ops_fs,
+      ctx.data,
+      ctx.sep,
+      is_unix_launcher_pid,
+      fn(pid : Int) -> Int { station_sys::proc_kill(pid, station_sys::SIG_USR2, false) },
+    )
+  })
+  // `on_screens_browser_open` and `on_signins_op` remain None (honest 501) until real Chrome/CDP/ScreenHub & SignInFormPort flows are wired end-to-end.
+  core.api.hooks.on_screens_browser_open = None
+  core.api.hooks.on_signins_op = None
+  core.api.hooks.on_logins_op = Some(fn(
+    op : String,
+    params : Array[String],
+    body : base_codec::Json,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    let id = if params.length() > 0 { params[0] } else { "" }
+    let read_only = match base_codec::json_get(body, "_viewerReadOnly") { Some(base_codec::Json::Bool(true)) => true, _ => false }
+    let viewer_email = match base_codec::json_get(body, "_viewerEmail") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let viewer_name = match base_codec::json_get(body, "_viewerName") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let who = Some(station_devices::LoginPerson::{ email: viewer_email, name: viewer_name })
+    if op == "logins.machine.list" {
+      let items = logins.manager.list()
+      let arr : Array[base_codec::Json] = []
+      for i in 0..<items.length() {
+        arr.push(login_view_to_json(items[i], read_only))
+      }
+      return Ok(base_codec::json_obj([("logins", base_codec::json_arr(arr))]))
+    }
+    if op == "logins.machine.get" {
+      match logins.manager.get(id) {
+        Some(item) => return Ok(login_view_to_json(item, read_only))
+        None => return Err(station_api::ApiError::new(404, "unknown login " + id))
+      }
+    }
+    if op == "logins.machine.delete" {
+      match logins.cancel_login(id, who, host_shim::now_ms()) {
+        Ok(_) => return Ok(base_codec::json_obj([("deleted", base_codec::json_bool(true)), ("id", base_codec::json_str(id))]))
+        Err(msg) => return Err(station_api::ApiError::new(404, msg))
+      }
+    }
+    if op == "logins.machine.answer" {
+      let text = match base_codec::json_get(body, "text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      match logins.manager.answer(id, text, who) {
+        Ok(view) => {
+          let _ = logins.flush_writes(id)
+          return Ok(login_view_to_json(view, read_only))
+        }
+        Err(refused) => return Err(station_api::ApiError::new(refused.status, refused.message))
+      }
+    }
+    Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 3. Admin SSE Outbox Flush (`flush_overviews` + `vault` / `vault-box` / `thread`)
+// ---------------------------------------------------------------------------
+
+/// Drain any queued SSE frames (including incremental `overview` patches produced by
+/// `WholeCore::on_tick`'s `flush_overviews` and live `vault` / `vault-box` / `thread` events)
+/// to every active `AdminStreamMode::SseStreaming(cid)` stream.
+pub fn flush_admin_sse_clients(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  admin_streams : Map[Int64, AdminStreamState],
+) -> Int {
+  let mut flushed = 0
+  let sids = admin_streams.keys()
+  for i in 0..<sids.length() {
+    let sid = sids[i]
+    match admin_streams.get(sid) {
+      Some(astream) => match astream.mode {
+        AdminStreamMode::SseStreaming(cid) => {
+          match core.api.events.get_client(cid) {
+            Some(client) => {
+              let frames = client.drain_outbox()
+              for fi in 0..<frames.length() {
+                if frames[fi].length() > 0 {
+                  ctx.write_peer_http_chunk(sid, frames[fi].to_bytes())
+                  flushed = flushed + 1
+                }
+              }
+            }
+            None => ()
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+  }
+  flushed
+}
+
+// ---------------------------------------------------------------------------
+// 4. `DaemonRelayRanker` (`station_mesh::RelayRanker` periodic RTT ranking)
+// ---------------------------------------------------------------------------
+
+pub struct DaemonRelayRanker {
+  pub ranker : station_mesh::RelayRanker
+  pub mut next_check_ms : Int64
+  pub mut last_outcome : Option[station_mesh::RelayPingOutcome]
+}
+
+pub fn DaemonRelayRanker::new(now_ms : Int64) -> DaemonRelayRanker {
+  DaemonRelayRanker::{
+    ranker: station_mesh::RelayRanker::new(),
+    // timer: periodic relay RTT ranking and fallback check (30s)
+    next_check_ms: now_ms + DAEMON_RELAY_CHECK_INTERVAL_MS,
+    last_outcome: None,
+  }
+}
+
+/// Run one non-blocking / bounded relay ranking tick when due (`now_ms >= next_check_ms`).
+/// Returns `Some(outcome)` when a check ran, `None` when not yet due or no relays configured.
+pub fn DaemonRelayRanker::tick(
+  self : DaemonRelayRanker,
+  now_ms : Int64,
+  relays : Array[String],
+  home : Option[String],
+  net_enabled : Bool,
+  all_ours_off : Bool,
+  rank_measure : (Array[String]) -> Array[station_mesh::RelayRankSample],
+  seq_ping : (String) -> (Bool, Option[Int64]),
+  apply_public_relays : (Bool) -> Bool,
+) -> Option[station_mesh::RelayPingOutcome] {
+  if now_ms < self.next_check_ms {
+    return None
+  }
+  // timer: periodic relay RTT ranking and fallback check (30s)
+  self.next_check_ms = now_ms + DAEMON_RELAY_CHECK_INTERVAL_MS
+  if relays.length() == 0 {
+    return None
+  }
+  let outcome = self.ranker.check_tick(
+    now_ms,
+    relays,
+    home,
+    net_enabled,
+    all_ours_off,
+    rank_measure,
+    seq_ping,
+    apply_public_relays=apply_public_relays,
+  )
+  self.last_outcome = Some(outcome)
+  Some(outcome)
+}
+
+// ---------------------------------------------------------------------------
+// 5. Non-blocking `AsyncUpkeepRunner` (`git gc --auto` via `station_sys::proc_spawn`)
+// ---------------------------------------------------------------------------
+
+struct ActiveUpkeepProc {
+  repo_path : String
+  child : station_sys::ChildProcess
+  event_id : Int64
+  deadline_ms : Int64
+}
+
+pub struct AsyncUpkeepRunner {
+  pub data_dir : String
+  pub sep : String
+  pub fs : station_jobs::FsPort
+  pub failed_repos : Map[String, Bool]
+  pending_repos : Array[String]
+  mut active : Option[ActiveUpkeepProc]
+  mut next_event_id : Int64
+  pub mut next_pass_ms : Int64
+  pub mut completed_count : Int
+  pub mut timed_out_count : Int
+}
+
+pub fn AsyncUpkeepRunner::new(
+  data_dir : String,
+  sep : String,
+  fs : station_jobs::FsPort,
+  now_ms : Int64,
+) -> AsyncUpkeepRunner {
+  AsyncUpkeepRunner::{
+    data_dir: data_dir,
+    sep: sep,
+    fs: fs,
+    failed_repos: Map::new(),
+    pending_repos: [],
+    active: None,
+    next_event_id: UPKEEP_EVENT_ID_BASE,
+    // timer: periodic async shared-clone pack upkeep interval (1h)
+    next_pass_ms: now_ms + ASYNC_UPKEEP_INTERVAL_MS,
+    completed_count: 0,
+    timed_out_count: 0,
+  }
+}
+
+/// Discover shared clone repos under `<data>/repos` and enqueue them for non-blocking `git gc --auto`.
+pub fn AsyncUpkeepRunner::discover_repos(self : AsyncUpkeepRunner, daily : Bool) -> Int {
+  let repos_dir = nodepath::join(self.sep, [self.data_dir, "repos"])
+  let names = match (self.fs.read_dir)(repos_dir) {
+    Some(ns) => ns
+    None => return 0
+  }
+  let mut added = 0
+  for i in 0..<names.length() {
+    let name = names[i]
+    if name.starts_with(".") {
+      continue
+    }
+    let repo_path = nodepath::join(self.sep, [repos_dir, name])
+    if (self.fs.stat)(nodepath::join(self.sep, [repo_path, ".git"])) is None {
+      continue
+    }
+    if !daily && self.failed_repos.contains(repo_path) {
+      continue
+    }
+    let mut dup = false
+    for j in 0..<self.pending_repos.length() {
+      if self.pending_repos[j] == repo_path {
+        dup = true
+        break
+      }
+    }
+    if !dup {
+      self.pending_repos.push(repo_path)
+      added = added + 1
+    }
+  }
+  added
+}
+
+pub fn AsyncUpkeepRunner::pending_count(self : AsyncUpkeepRunner) -> Int {
+  self.pending_repos.length()
+}
+
+pub fn AsyncUpkeepRunner::is_busy(self : AsyncUpkeepRunner) -> Bool {
+  self.active.is_some()
+}
+
+/// Handle `SysEvent::ProcExit` for async upkeep child processes (`9 << 32` range).
+pub fn AsyncUpkeepRunner::handle_sys_event(
+  self : AsyncUpkeepRunner,
+  event_id : Int64,
+  sev : station_sys::SysEvent,
+) -> Bool {
+  match self.active {
+    Some(proc) => {
+      if proc.event_id != event_id {
+        return false
+      }
+      match sev {
+        station_sys::SysEvent::ProcExit(st) => {
+          let _ = proc.child.close()
+          self.active = None
+          if st.code == 0 && st.signal == 0 {
+            let _ = self.failed_repos.remove(proc.repo_path)
+            self.completed_count = self.completed_count + 1
+          } else {
+            self.failed_repos.set(proc.repo_path, true)
+          }
+          return true
+        }
+        _ => return true
+      }
+    }
+    None => false
+  }
+}
+
+/// Advance async upkeep non-blockingly on each daemon tick:
+/// - Kills any child exceeding `ASYNC_UPKEEP_GC_TIMEOUT_MS` (never blocks main loop!)
+/// - Enqueues a new pass when `now_ms >= next_pass_ms`
+/// - Spawns at most one non-blocking `git gc --auto --quiet` child via `station_sys::proc_spawn`.
+pub fn AsyncUpkeepRunner::tick(
+  self : AsyncUpkeepRunner,
+  now_ms : Int64,
+  clones_active : Bool,
+) -> Unit {
+  // 1. Check active child deadline non-blockingly
+  match self.active {
+    Some(proc) => {
+      if now_ms >= proc.deadline_ms {
+        let _ = proc.child.kill(station_sys::SIG_KILL, true)
+        let _ = proc.child.close()
+        self.failed_repos.set(proc.repo_path, true)
+        self.active = None
+        self.timed_out_count = self.timed_out_count + 1
+      }
+      return
+    }
+    None => ()
+  }
+  if clones_active {
+    return
+  }
+  // 2. Schedule periodic discovery pass
+  if self.pending_repos.length() == 0 && now_ms >= self.next_pass_ms {
+    // timer: periodic async shared-clone pack upkeep interval (1h)
+    self.next_pass_ms = now_ms + ASYNC_UPKEEP_INTERVAL_MS
+    let _ = self.discover_repos(false)
+  }
+  // 3. Pop next repo and spawn async `git gc --auto --quiet`
+  if self.pending_repos.length() == 0 {
+    return
+  }
+  let repo_path = self.pending_repos[0]
+  let rest : Array[String] = []
+  for i in 1..<self.pending_repos.length() {
+    rest.push(self.pending_repos[i])
+  }
+  self.pending_repos.clear()
+  for i in 0..<rest.length() {
+    self.pending_repos.push(rest[i])
+  }
+  let ev_id = self.next_event_id
+  self.next_event_id = ev_id + 1L
+  let opts = station_sys::SpawnOptions::{
+    program: "git",
+    args: ["-c", "gc.autoDetach=false", "-C", repo_path, "gc", "--auto", "--quiet"],
+    cwd: repo_path,
+    env: None,
+    new_pgid: true,
+    strip_malloc_space_efficient: true,
+    pipe_stdin: false,
+    pipe_stdout: false,
+    pipe_stderr: false,
+  }
+  match station_sys::proc_spawn(ev_id, opts) {
+    Ok(child) => {
+      self.active = Some(ActiveUpkeepProc::{
+        repo_path: repo_path,
+        child: child,
+        event_id: ev_id,
+        deadline_ms: now_ms + ASYNC_UPKEEP_GC_TIMEOUT_MS,
+      })
+    }
+    Err(_) => {
+      self.failed_repos.set(repo_path, true)
+    }
+  }
+}
+
+/// Clear queued repos without touching OS child handles (safe in pure unit tests).
+pub fn AsyncUpkeepRunner::clear_pending(self : AsyncUpkeepRunner) -> Unit {
+  self.pending_repos.clear()
+}
+
+/// Clean shutdown: kill & close any active async upkeep child process immediately.
+pub fn AsyncUpkeepRunner::shutdown(self : AsyncUpkeepRunner) -> Unit {
+  match self.active {
+    Some(proc) => {
+      let _ = proc.child.kill(station_sys::SIG_KILL, true)
+      let _ = proc.child.close()
+      self.active = None
+    }
+    None => ()
+  }
+  self.clear_pending()
+}

@@ -85,6 +85,7 @@ export type SessionStore = {
   untoldMovedNote?(key: string): string | null;
   markMovedNoteTold?(key: string): void;
   heardThreads(key: string, threads: number[]): Set<number> | number[];
+  deferredFiles?(thread: number, ns: readonly number[]): Map<number, { id: string; name: string; size: number; url: string | null }[]>;
   postsAfter(key: string, messages: readonly { thread: number; n: number }[]): (string | null)[];
   cardEndedByMessage(thread: number, n: number): [MessageRow, any] | null;
   pendingCard(thread: number): [MessageRow, any] | null;
@@ -649,7 +650,23 @@ export async function formatDelivery(deps: SessionDeps, key: string, said: any[]
       : null;
     cards.set(m, { ended: state.ended, current: state.current, special });
   }
-  let text = formatInbound(said, newThreads, names, selves, posts, cards, key);
+  const deferred = new Map<string, { id: string; name: string; size: number; url: string | null }[]>();
+  const byThread = new Map<number, number[]>();
+  for (const m of fromChat) {
+    if (m.surface === STILLFAIL_SURFACE || m.hasDeferred === false) continue;
+    let ns = byThread.get(m.message.thread);
+    if (ns === undefined) {
+      ns = [];
+      byThread.set(m.message.thread, ns);
+    }
+    ns.push(m.message.n);
+  }
+  if (store.deferredFiles && byThread.size > 0) {
+    for (const [tid, ns] of byThread) {
+      for (const [n, files] of store.deferredFiles(tid, ns)) deferred.set(`${tid}:${n}`, files);
+    }
+  }
+  let text = formatInbound(said, newThreads, names, selves, posts, cards, key, deferred);
   if (deps.sessionSkills) {
     const humanTexts = said
       .filter((m) => m.message?.authorKind === "person" && typeof m.message?.text === "string")

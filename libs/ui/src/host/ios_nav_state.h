@@ -1,4 +1,5 @@
 // Pure Foundation/CoreGraphics state helpers for ios_nav.h, kept UIKit-free so macOS unit tests can verify them.
+#import <CommonCrypto/CommonDigest.h>
 #import <CoreGraphics/CoreGraphics.h>
 #import <Foundation/Foundation.h>
 #include <math.h>
@@ -27,6 +28,77 @@ static inline BOOL mb_ios_nav_needs_overflow_probe(BOOL bare, BOOL hasWindow, NS
          (tabsChanged || ![lkey isEqualToString:overflowLayoutKey]);
 }
 
+typedef enum {
+  MBIosNavOverflowActionNoOverflowCache = 0, // All places fit (or tabBar has no overflow); cache lkey.
+  MBIosNavOverflowActionNotLaidOut = 1,      // Regular tab frames are not laid out yet; clear cached lkey.
+  MBIosNavOverflowActionCollapse = 2,        // Genuine overflow: 0 < visiblePlaces < allPlacesCount.
+} MBIosNavOverflowAction;
+
+// Decide overflow outcome after measuring regular place tab frames. On iOS 27.1+ with a prominent action tab,
+// `tabBarItemCount < tabsCount` holds even when every regular place fits (`visiblePlaces >= allPlacesCount`);
+// caching `lkey` prevents repeated synchronous `layoutIfNeeded` overflow probes on every `nav_bar` spec change.
+static inline MBIosNavOverflowAction mb_ios_nav_overflow_action(NSUInteger tabBarItemCount, NSUInteger tabsCount,
+                                                                NSUInteger visiblePlaces, NSUInteger allPlacesCount) {
+  if (tabBarItemCount == 0 || tabBarItemCount >= tabsCount) return MBIosNavOverflowActionNoOverflowCache;
+  if (allPlacesCount == 0 || visiblePlaces >= allPlacesCount) return MBIosNavOverflowActionNoOverflowCache;
+  if (visiblePlaces == 0) return MBIosNavOverflowActionNotLaidOut;
+  return MBIosNavOverflowActionCollapse;
+}
+
+// Whether `checkOverflowAfterLayout` should inspect per-tab frames when uncollapsed. Skips once `overflowLayoutKey`
+// already matches `lkey` unless `provisional` is set (allowing one post-layout confirmation pass after `tabsChanged`
+// in case UIKit deferred prominent-bar layout past the synchronous `layoutIfNeeded`).
+static inline BOOL mb_ios_nav_should_check_overflow_after_layout(NSUInteger visibleRegularCap, NSString *lkey,
+                                                                 NSString *overflowLayoutKey, BOOL provisional,
+                                                                 NSUInteger tabBarItemCount, NSUInteger tabsCount) {
+  if (visibleRegularCap > 0) return NO;
+  if (!provisional && lkey.length && [lkey isEqualToString:overflowLayoutKey]) return NO;
+  return tabBarItemCount > 0 && tabBarItemCount < tabsCount;
+}
+
+// Deterministic length-prefixed key for displayed tab structure (regular places, overflow More tab, and action tab).
+// Intentionally omits accent color (`chosen_ink`) so accent/theme changes update tint/wash in place without tearing
+// down and rebuilding `UITabBarController.tabs`.
+static inline NSString *mb_ios_nav_tabs_key(NSArray<NSDictionary *> *visible, BOOL hasOverflow, NSString *moreId,
+                                            NSDictionary *act) {
+  NSMutableString *key = [NSMutableString string];
+  for (id row in visible) {
+    if (![row isKindOfClass:NSDictionary.class]) continue;
+    NSDictionary *t = (NSDictionary *)row;
+    NSString *ident = [t[@"id"] isKindOfClass:NSString.class] ? t[@"id"] : @"";
+    [key appendFormat:@"%lu:%@|", (unsigned long)ident.length, ident];
+  }
+  if (hasOverflow) {
+    NSString *mid = moreId ?: @"";
+    [key appendFormat:@"M%lu:%@|", (unsigned long)mid.length, mid];
+  }
+  if ([act isKindOfClass:NSDictionary.class]) {
+    NSString *aid = [act[@"id"] isKindOfClass:NSString.class] ? act[@"id"] : @"";
+    NSString *atitle = [act[@"title"] isKindOfClass:NSString.class] ? act[@"title"] : @"";
+    NSString *aicon = [act[@"icon"] isKindOfClass:NSString.class] ? act[@"icon"] : @"";
+    [key appendFormat:@"!%lu:%@|%lu:%@|%lu:%@", (unsigned long)aid.length, aid,
+         (unsigned long)atitle.length, atitle, (unsigned long)aicon.length, aicon];
+  }
+  return key;
+}
+
+// Whether `apply:` should synchronously invoke `washAction` to attach, hide, or re-tint the prominent tab's glass wash.
+static inline BOOL mb_ios_nav_wash_needed(BOOL tabsChanged, BOOL hiddenChanged, BOOL bare, BOOL hasActionInk,
+                                          BOOL washInWindow, BOOL washInkMatches) {
+  BOOL skipSyncWash = hiddenChanged && !bare && !tabsChanged;
+  if (skipSyncWash) return NO;
+  if (tabsChanged || hiddenChanged) return YES;
+  return hasActionInk && !bare && (!washInWindow || !washInkMatches);
+}
+
+// Whether `apply:` should also schedule an async follow-up `washAction` on the next runloop turn (only needed when
+// UIKit may still be creating or re-mounting the platter, not for an in-place re-tint of a mounted wash).
+static inline BOOL mb_ios_nav_wash_async_needed(BOOL tabsChanged, BOOL hiddenChanged, BOOL bare, BOOL hasActionInk,
+                                                BOOL washInWindow) {
+  if (!hasActionInk || bare) return NO;
+  return tabsChanged || hiddenChanged || !washInWindow;
+}
+
 // Whether a tab slot needs its navigation bar items synchronized to the latest `actsKey`.
 static inline BOOL mb_ios_nav_slot_needs_bar_items(NSString *appliedActsKey, NSString *actsKey, BOOL hasLastItems) {
   if (!hasLastItems || !actsKey.length) return NO;
@@ -36,6 +108,24 @@ static inline BOOL mb_ios_nav_slot_needs_bar_items(NSString *appliedActsKey, NSS
 // Cache key for rendered nav bar icon, badge, and letter images.
 static inline NSString *mb_ios_nav_icon_cache_key(char kind, CGFloat size, CGFloat scale, NSString *spec) {
   return [NSString stringWithFormat:@"%c:%.2f:%.2f:%@", kind, (double)size, (double)scale, spec ?: @""];
+}
+
+// Cache key for composite avatar icons (`nav_avatars`). Hashes specs longer than 256 characters (e.g. inline
+// base64 `data:` URLs) with SHA-256 so large URLs are not copied verbatim into NSCache keys on every lookup.
+static inline NSString *mb_ios_nav_avatar_cache_key(CGFloat size, CGFloat scale, NSString *spec) {
+  NSString *s = spec ?: @"";
+  if (s.length <= 256) return mb_ios_nav_icon_cache_key('a', size, scale, s);
+  NSData *utf8 = [s dataUsingEncoding:NSUTF8StringEncoding];
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(utf8.bytes, (CC_LONG)utf8.length, digest);
+  static const char hex[] = "0123456789abcdef";
+  char out[CC_SHA256_DIGEST_LENGTH * 2 + 1];
+  for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
+    out[i * 2] = hex[(digest[i] >> 4) & 0xF];
+    out[i * 2 + 1] = hex[digest[i] & 0xF];
+  }
+  out[CC_SHA256_DIGEST_LENGTH * 2] = '\0';
+  return [NSString stringWithFormat:@"a#:%.2f:%.2f:%lu:%s", (double)size, (double)scale, (unsigned long)utf8.length, out];
 }
 
 // Compact deterministic key for a floating glass button spec + ink RGBA value, avoiding multi-line NSDictionary

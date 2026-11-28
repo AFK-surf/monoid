@@ -197,6 +197,25 @@ export const CHAT_READS = {
     keys: (p: { station: string; id: string }): ReadKey[] => [[p.station, p.id]],
     of: (c: ChatKeys): ReadKey[] => [[c.station, c.id], ...(c.session !== null && c.session !== c.id ? [[c.station, c.session] as ReadKey] : [])],
   } satisfies ChatRead<{ station: string; id: string }>,
+  /// The chats many links name at once (each `pairs` entry a station and an id, as `named` is asked by), every candidate
+  /// `named` chooses among: by its id, listed or archived, and by its session; with the id it was asked by and its place
+  /// (`ord`), for Data.chatNamedMany to choose each one's first as `named` orders them. One statement for a chat's opened
+  /// chats rather than one for each (a chat that leads others opens hundreds).
+  namedMany: {
+    name: "$chat-named-many", bound: "one", records: true,
+    // (each pair's rows found by the primary key and through `chat_session`, as `named` finds one's)
+    // (CROSS JOIN: the pairs walked, each looked up in `chat`, never the other way)
+    sql: `SELECT c.station, c.archived, c.id, json_extract(k.value, '$[1]') AS req_id, c.ord
+        FROM json_each(?1) AS k CROSS JOIN chat AS c WHERE c.station = json_extract(k.value, '$[0]') AND c.archived IN (0, 1) AND c.id = json_extract(k.value, '$[1]')
+      UNION ALL SELECT c.station, c.archived, c.id, json_extract(k.value, '$[1]') AS req_id, c.ord
+        FROM json_each(?1) AS k CROSS JOIN chat AS c WHERE c.station = json_extract(k.value, '$[0]') AND c.session = json_extract(k.value, '$[1]')`,
+    params: (p: NamedMany) => {
+      const allowed = new Set(p.stations);
+      return [JSON.stringify(p.pairs.filter(([station]) => allowed.has(station)))];
+    },
+    keys: (p: NamedMany): ReadKey[] => p.pairs.map(([station, id]) => [station, id] as ReadKey),
+    of: (c: ChatKeys): ReadKey[] => [[c.station, c.id], ...(c.session !== null && c.session !== c.id ? [[c.station, c.session] as ReadKey] : [])],
+  } satisfies ChatRead<NamedMany>,
   /// The listed chat an agent's session is among the agents of, the first in the list's order (`chat_agent`), with its
   /// title and whether it is the viewer's own (`mine`).
   agent: {
@@ -505,5 +524,7 @@ const ofStation = (apart: readonly string[], station: string): string[] => apart
 /// Rows read apart from a read by their keys on their station (`station␁thread`, `station␁session`).
 type Apart = { threads: string[]; sessions: string[] };
 export type Overlaid = Stations & Apart & { archived: boolean };
+/// The links `namedMany` is asked by (station, id), of `stations` (those of other databases read in theirs).
+export type NamedMany = Stations & { pairs: readonly (readonly [station: string, id: string])[] };
 export type Archived = Stations & Apart & { limit: number };
 export type StationArchivedCount = { station: string; from: number; offset: number; day: number } & Apart;

@@ -105,10 +105,11 @@ pub fn dispatch_integration_route(
   if head == "vault" {
     if n == 2 {
       let sub = segs[1]
-      if (sub == "vaults" || sub == "items" || sub == "boxes" || sub == "plain") && (m == "GET" || m == "PUT") {
+      if (sub == "vaults" || sub == "items" || sub == "boxes" || sub == "plain" || sub == "asks" || sub == "joins") &&
+      (m == "GET" || m == "PUT") {
         return Some(call_with_json(host, "vault." + sub + "." + m, r, []))
       }
-      if m == "GET" && (sub == "requests" || sub == "uses" || sub == "cross-uses") {
+      if m == "GET" && (sub == "requests" || sub == "uses" || sub == "cross-uses" || sub == "discover") {
         return Some(call_with_json(host, "vault." + sub + ".get", r, []))
       }
       if m == "POST" &&
@@ -119,6 +120,9 @@ pub fn dispatch_integration_route(
     if n == 3 {
       if m == "POST" && segs[1] == "vaults" && segs[2] == "latest" {
         return Some(call_with_json(host, "vault.vaults.latest", r, []))
+      }
+      if m == "PUT" && segs[1] == "joins" && segs[2] == "dismiss" {
+        return Some(call_with_json(host, "vault.joins.dismiss.put", r, []))
       }
       if segs[1] == "plain" {
         let act = segs[2]

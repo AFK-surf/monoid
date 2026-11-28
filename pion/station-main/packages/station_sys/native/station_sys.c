@@ -1842,6 +1842,16 @@ int64_t sts_proc_start_ticks(int32_t pid) {
     return -1;
 }
 
+int32_t sts_proc_ppid(void) {
+    return 0;
+}
+
+void *sts_proc_cmdline(int32_t pid, int64_t *out_len) {
+    (void)pid;
+    if (out_len != NULL) *out_len = 0;
+    return NULL;
+}
+
 void *sts_boot_id(int64_t *out_len) {
     if (out_len != NULL) *out_len = 0;
     return NULL;
@@ -6265,6 +6275,46 @@ int64_t sts_proc_start_time_ms(int32_t pid) {
     fclose(sf);
     if (btime == 0) return -1;
     return (int64_t)(btime * 1000ULL + (starttime * 1000ULL) / (unsigned long long)clk);
+#endif
+}
+
+int32_t sts_proc_ppid(void) {
+    return (int32_t)getppid();
+}
+
+void *sts_proc_cmdline(int32_t pid, int64_t *out_len) {
+    if (out_len != NULL) *out_len = 0;
+    if (pid <= 0) return NULL;
+#ifdef __APPLE__
+    char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
+    int got = proc_pidpath((int)pid, pathbuf, (uint32_t)sizeof(pathbuf));
+    if (got <= 0) return NULL;
+    char *copy = (char *)malloc((size_t)got + 1);
+    if (copy == NULL) return NULL;
+    memcpy(copy, pathbuf, (size_t)got);
+    copy[got] = '\0';
+    if (out_len != NULL) *out_len = (int64_t)got;
+    return copy;
+#else
+    char proc_path[64];
+    snprintf(proc_path, sizeof(proc_path), "/proc/%d/cmdline", (int)pid);
+    FILE *f = fopen(proc_path, "rb");
+    if (f == NULL) return NULL;
+    char buf[4096];
+    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    if (n == 0) return NULL;
+    for (size_t i = 0; i < n; i++) {
+        if (buf[i] == '\0') buf[i] = ' ';
+    }
+    while (n > 0 && buf[n - 1] == ' ') n--;
+    if (n == 0) return NULL;
+    char *copy = (char *)malloc(n + 1);
+    if (copy == NULL) return NULL;
+    memcpy(copy, buf, n);
+    copy[n] = '\0';
+    if (out_len != NULL) *out_len = (int64_t)n;
+    return copy;
 #endif
 }
 

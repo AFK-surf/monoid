@@ -2192,9 +2192,17 @@ async function main(argv: string[]) {
       // Default: all of ours that this kind of machine builds (--windows: MSVC's; --mac: Apple's; --linux: ci-1's).
       if (wanted.length === 0) wanted.push(...defaults(windows, mac, linux));
       if (publish && publishStore) fail("cannot combine --publish and --publish-store");
-      // (--publish-store: the release not asked, only the store; what it lacks is built, the plan having found it in
-      // neither)
-      const listed = publishStore ? null : await published();
+      const needRemote = publish || publishStore || Boolean(outbox);
+      // Those not here yet, each in a process of its own, three side by side: one after another a branch that changed
+      // the shell built shell-station and the reader for each target in turn, its natives job stopped at its 5 minutes
+      // (opus-screen-audio 43149224744; the reader's three alone 217 s, mbui-halt-flush-prototype 43154389365,
+      // 2026-11-12). What two of them share (shell-apple, a reader's moon build) one takes and the other waits for
+      // (`get`'s lock, moon's).
+      const todo = wanted.filter(([p, t]) => !complete(cached(p, t, key(p, t)), p, t));
+      // (--publish-store: the release not asked, only the store; cache-only `ensure` with every wanted part already
+      // cached asks neither GitHub nor the store — probing the store serially for already-cached parts burned 62 s per
+      // part when R2 timed out from Shanghai, cutting natives-mac-main at 5 minutes, 46084334509)
+      const listed = publish || (!publishStore && (Boolean(outbox) || todo.length > 0)) ? await published() : null;
       const remote = listed ?? new Set<string>();
       // Its assets listed: it is there. Else asked again, and said missing only when GitHub says so: a request that did
       // not get through (EOF) was taken for a missing release (mbui-media-runtime 41457910309).
@@ -2207,12 +2215,6 @@ async function main(argv: string[]) {
         }
       }
       if (outbox) mkdirSync(outbox, { recursive: true });
-      // Those not here yet, each in a process of its own, three side by side: one after another a branch that changed
-      // the shell built shell-station and the reader for each target in turn, its natives job stopped at its 5 minutes
-      // (opus-screen-audio 43149224744; the reader's three alone 217 s, mbui-halt-flush-prototype 43154389365,
-      // 2026-11-12). What two of them share (shell-apple, a reader's moon build) one takes and the other waits for
-      // (`get`'s lock, moon's).
-      const todo = wanted.filter(([p, t]) => !complete(cached(p, t, key(p, t)), p, t));
       // The readers sharing the cores are those built here, not those asked for: a caller counts what the store and the
       // release lack, one of which may be in this machine's cache (stable's reader:linux-x64 on ci-1, its linux-arm64
       // left alone at -j 8 of 16, 130 s, the job cut at its 5 minutes, 44770813931).
@@ -2230,7 +2232,17 @@ async function main(argv: string[]) {
             { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, STILLFAIL_NATIVE_ONE: "1", STILLFAIL_NATIVE_READERS: String(readersToBuild) } });
           child.on("exit", (code) => done(code ?? 1));
         });
-        const queue = [...wanted];
+        if (!needRemote) {
+          for (const [p, t] of wanted) {
+            const k = key(p, t);
+            if (complete(cached(p, t, k), p, t)) {
+              // Go through get() so cache locking and noteUse() mark cached parts as used before workers run trimCache().
+              await get(p, t, "any");
+              console.log(`${p} ${t} ${k}: cached (0 s)`);
+            }
+          }
+        }
+        const queue = needRemote ? [...wanted] : [...todo];
         const failed: string[] = [];
         await Promise.all([0, 1, 2].map(async () => {
           for (let next = queue.shift(); next; next = queue.shift()) if (await one(...next)) failed.push(next.join(":"));
@@ -2245,13 +2257,14 @@ async function main(argv: string[]) {
         for (const [p, t] of wanted) {
           const k = key(p, t);
           const name = asset(p, t, k);
-          // (in the store, where store-sync keeps what the release pruned: not published again)
-          const there = remote.has(name) || (await inStore(name));
           const before = complete(cached(p, t, k), p, t);
-          const started = Date.now();
           // Known absent from the release and the store, and not in the inbox: built without asking the download endpoint
           // first, whose 404 its edge then kept serving to the jobs fetching the part just published (44892476775).
           const inboxed = Boolean(process.env.STILLFAIL_NATIVE_INBOX && existsSync(join(process.env.STILLFAIL_NATIVE_INBOX, name)));
+          // (in the store, where store-sync keeps what the release pruned: not published again; skip remote probes
+          // when warming the local cache alone and the part is already cached or in the inbox)
+          const there = needRemote || (!before && !inboxed) ? (remote.has(name) || (await inStore(name))) : false;
+          const started = Date.now();
           const dir = await get(p, t, !before && (listed !== null || publishStore) && !there && !inboxed ? "build" : "any");
           const took = ((Date.now() - started) / 1000).toFixed(0);
           const how = before ? "cached" : JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")).from === "built" ? "built" : "downloaded";

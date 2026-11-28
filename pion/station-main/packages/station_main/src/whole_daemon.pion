@@ -85,6 +85,9 @@ let RUNNER_TOK_UNIX_READ : Int = 5102
 let RUNNER_TOK_UNIX_WRITE : Int = 5103
 let RUNNER_TOK_UNIX_CLOSE : Int = 5104
 
+// `mux_role` token for async `tar.file` archived session upload extraction (Wave 17C-3A R4 N1).
+let SESSION_TOK_TAR_FILE : Int = 5201
+
 struct AdoptedRunnerConn {
   runner_id : String
   instance_id : String
@@ -127,6 +130,13 @@ struct DriveDownloadStreamState {
   mut remaining : Int64
 }
 
+struct SessionFileDownloadState {
+  path : String
+  mut cur_offset : Int64
+  mut remaining : Int64
+  unlink_on_done : Bool
+}
+
 struct AdminBodySendingState {
   body : Bytes
   mut offset : Int
@@ -145,6 +155,8 @@ enum AdminStreamMode {
   ReadingBody(AdminReqHead, Bytes)
   StreamingDriveUpload(DriveUploadStreamState)
   DriveDownloading(DriveDownloadStreamState)
+  SessionFileDownloading(SessionFileDownloadState)
+  WaitingArchiveExtract(station_whole::SessionArchiveExtractSpec)
   SendingBody(AdminBodySendingState)
   SseStreaming(Int)
   Done
@@ -920,25 +932,6 @@ fn handle_connect_inbound_event(
             Err(_) => return false
           }
         }
-        let att_opt : Option[String] = if m.files.length() > 0 {
-          let farr : Array[base_codec::Json] = []
-          for fi in 0..<m.files.length() {
-            let f = m.files[fi]
-            let ff : Array[(String, base_codec::Json)] = [
-              ("id", base_codec::json_str(f.id)),
-              ("name", base_codec::json_str(f.name)),
-              ("size", base_codec::json_int64(f.size)),
-            ]
-            match f.url {
-              Some(u) => ff.push(("url", base_codec::json_str(u)))
-              None => ()
-            }
-            farr.push(base_codec::json_obj(ff))
-          }
-          Some(base_codec::json_stringify(base_codec::json_arr(farr)))
-        } else {
-          None
-        }
         let msg = station_store::NewMessage::{
           thread: tid,
           ts: Some(m.ts),
@@ -946,7 +939,7 @@ fn handle_connect_inbound_event(
           author: m.user,
           agent_identity: None,
           text: Some(m.text),
-          attachments: att_opt,
+          attachments: None,
           quotes: m.quoted,
           declared: None,
           client: None,
@@ -958,6 +951,43 @@ fn handle_connect_inbound_event(
         match st_db.insert_message(msg, deliver_to=active_sessions) {
           Ok((n, fresh)) => {
             if fresh {
+              if m.files.length() > 0 {
+                let _ = st_db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+                  let mut ord = 0L
+                  for fi in 0..<m.files.length() {
+                    let f = m.files[fi]
+                    let is_secret = match f.url {
+                      Some(u) => u.starts_with("secret:")
+                      None => false
+                    }
+                    if is_secret {
+                      continue
+                    }
+                    let fid = if f.id.length() > 0 { f.id } else { "file-" + n.to_string() + "-" + fi.to_string() }
+                    let url_json = match f.url {
+                      Some(u) => base_codec::json_str(u)
+                      None => base_codec::json_null()
+                    }
+                    match t.run(
+                      "INSERT OR IGNORE INTO deferred_files (thread, n, file_id, name, size, url, ord) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                      [
+                        sql_db::int64_to_json(tid),
+                        sql_db::int64_to_json(n),
+                        base_codec::json_str(fid),
+                        base_codec::json_str(f.name),
+                        sql_db::int64_to_json(f.size),
+                        url_json,
+                        sql_db::int64_to_json(ord),
+                      ],
+                    ) {
+                      Ok(_) => ()
+                      Err(e) => return Err(e)
+                    }
+                    ord = ord + 1L
+                  }
+                  Ok(())
+                })
+              }
               for si in 0..<active_sessions.length() {
                 let actor = core.agents.hub.ensure_actor(active_sessions[si], meta.runtime)
                 let _ = actor.submit_input(m.text)
@@ -1011,15 +1041,21 @@ fn handle_connect_inbound_event(
           Some(v) => v
           None => base_codec::json_null()
         }
-        let latest_text = match st_db.db.first(
-          "SELECT text FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
+        let (latest_text, latest_att) = match st_db.db.first(
+          "SELECT text, attachments FROM entries WHERE thread = ?1 AND target = ?2 AND n > ?2 AND kind = 'edit' ORDER BY n DESC LIMIT 1",
           [sql_db::int64_to_json(tid), sql_db::int64_to_json(target_n)],
         ) {
-          Ok(Some(r)) => match r.get("text") {
-            Some(base_codec::Json::Str(s)) => s
-            _ => orig_text
-          }
-          _ => orig_text
+          Ok(Some(r)) => (
+            match r.get("text") {
+              Some(base_codec::Json::Str(s)) => s
+              _ => orig_text
+            },
+            match r.get("attachments") {
+              Some(v) => v
+              None => orig_att
+            },
+          )
+          _ => (orig_text, orig_att)
         }
         if latest_text == new_text {
           return true
@@ -1044,7 +1080,7 @@ fn handle_connect_inbound_event(
               base_codec::json_str(orig_ak),
               base_codec::json_str(orig_author),
               base_codec::json_str(new_text),
-              orig_att,
+              latest_att,
               orig_quotes,
               sql_db::int64_to_json(target_n),
               sql_db::int64_to_json(now_ms),
@@ -1444,6 +1480,7 @@ struct WholeRuntimeState {
   logins : station_whole::LoginsOsRuntime
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
+  upkeep : AsyncUpkeepRunner
   connect_meta : Map[String, ConnectMeta]
   remote_connects : Map[String, RemoteConnectRecord]
   remote_connects_path : String
@@ -1455,6 +1492,7 @@ struct WholeRuntimeState {
   mcp_cb : station_http::ServerCallbacks
   serve : station_mesh::ServeEndpoint
   admin_conns : Map[Int64, AdminConnState]
+  seen_members : Map[String, Map[String, Map[String, SeenMember]]]
   admin_streams : Map[Int64, AdminStreamState]
   proxy_streams : Map[Int64, ProxyStreamState]
   proxy_by_sock : Map[Int64, Int64]
@@ -1499,7 +1537,7 @@ fn lookup_registered_device_sql(
   store : station_whole::WholeStore,
   ws : String,
   dev_id : String,
-) -> Option[station_devices::DeviceSpec] {
+) -> Option[station_devices::KeptDevice] {
   match store.require_open() {
     Err(_) => None
     Ok(st_db) => {
@@ -1529,16 +1567,82 @@ fn lookup_registered_device_sql(
                 Some(base_codec::Json::Str(s)) => s.trim()
                 _ => ""
               }
+              let baud = match base_codec::json_get(j, "baud") {
+                Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+                _ => None
+              }
+              let model = match base_codec::json_get(j, "model") {
+                Some(base_codec::Json::Str(s)) => if s.length() > 0 { Some(s) } else { None }
+                _ => None
+              }
+              let protocols = match base_codec::json_get(j, "protocols") {
+                Some(base_codec::Json::Arr(xs)) => {
+                  let ps : Array[String] = []
+                  for pi in 0..<xs.length() {
+                    match xs[pi] {
+                      base_codec::Json::Str(s) => ps.push(s)
+                      _ => ()
+                    }
+                  }
+                  Some(ps)
+                }
+                _ => None
+              }
+              let paired = match base_codec::json_get(j, "paired") {
+                Some(base_codec::Json::Bool(b)) => Some(b)
+                _ => None
+              }
+              let owner_sub = match base_codec::json_get(j, "ownerSub") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => match base_codec::json_get(j, "owner") {
+                  Some(base_codec::Json::Obj(_)) => match base_codec::json_get(match base_codec::json_get(j, "owner") { Some(o) => o, None => base_codec::json_obj([]) }, "sub") {
+                    Some(base_codec::Json::Str(s)) => s
+                    _ => ""
+                  }
+                  _ => ""
+                }
+              }
+              let owner_email = match base_codec::json_get(j, "ownerEmail") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => match base_codec::json_get(j, "owner") {
+                  Some(base_codec::Json::Obj(_)) => match base_codec::json_get(match base_codec::json_get(j, "owner") { Some(o) => o, None => base_codec::json_obj([]) }, "email") {
+                    Some(base_codec::Json::Str(s)) => s
+                    _ => ""
+                  }
+                  _ => ""
+                }
+              }
+              let owner_name = match base_codec::json_get(j, "ownerName") {
+                Some(base_codec::Json::Str(s)) => s
+                _ => match base_codec::json_get(j, "owner") {
+                  Some(base_codec::Json::Obj(_)) => match base_codec::json_get(match base_codec::json_get(j, "owner") { Some(o) => o, None => base_codec::json_obj([]) }, "name") {
+                    Some(base_codec::Json::Str(s)) => s
+                    _ => ""
+                  }
+                  _ => ""
+                }
+              }
+              let at_secs = match base_codec::json_get(j, "at") {
+                Some(base_codec::Json::Num(n, _)) => n.to_int64()
+                _ => 0L
+              }
               match station_devices::parse_device_kind(kind_str) {
-                Some(kind) => Some(station_devices::DeviceSpec::{
-                  id: id,
-                  name: name,
-                  kind: kind,
-                  target: target,
-                  baud: None,
-                  model: None,
-                  protocols: None,
-                  paired: None,
+                Some(kind) => Some(station_devices::KeptDevice::{
+                  ws: ws,
+                  device: station_devices::DeviceSpec::{
+                    id: id,
+                    name: name,
+                    kind: kind,
+                    target: target,
+                    baud: baud,
+                    model: model,
+                    protocols: protocols,
+                    paired: paired,
+                  },
+                  owner_sub: owner_sub,
+                  owner_email: owner_email,
+                  owner_name: owner_name,
+                  at_secs: at_secs,
                 })
                 None => None
               }
@@ -1828,7 +1932,8 @@ fn handle_device_tunnel(
       send_refusal(ctx, pstream.sid, 404, "no such device on this station")
       pstream.mode = ProxyStreamMode::Done
     }
-    Some(spec) => {
+    Some(kept) => {
+      let spec = kept.device
       // Rig workspaces require explicit owner approval (fail-closed 403 here).
       if ctx.cloud.rig_in(ws) is Some(_) {
         send_refusal(ctx, pstream.sid, 403, "that machine refused: rig device requires owner approval")
@@ -1889,18 +1994,8 @@ fn handle_device_tunnel(
         station_devices::DeviceKind::Serial
         | station_devices::DeviceKind::AirPlay
         | station_devices::DeviceKind::AndroidTv => {
-          let kind_name = match spec.kind {
-            station_devices::DeviceKind::Serial => "serial"
-            station_devices::DeviceKind::AirPlay => "airplay"
-            station_devices::DeviceKind::AndroidTv => "android_tv"
-            _ => "unsupported"
-          }
-          send_refusal(
-            ctx,
-            pstream.sid,
-            501,
-            "device kind '" + kind_name + "' is not supported by pion whole station yet",
-          )
+          // Honest 501 until full streaming device tunnel state machines are wired.
+          send_refusal(ctx, pstream.sid, 501, "device tunnel for this device kind is not yet implemented on Pion station")
           pstream.mode = ProxyStreamMode::Done
           return
         }
@@ -3311,11 +3406,20 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             } else {
               base_role
             }
+            match state_opt {
+              Some(st) => record_seen_member(st.seen_members, sess.workspace, sess.user_sub, seen_member_session_key(aconn.sid_claim, aconn.conn_id), sess.email, aconn.effective_role, aconn.iat, aconn.sid_claim, sess.expires_unix)
+              None => ()
+            }
             true
           }
           Ok(None) => {
             if aconn.cred_role.length() > 0 {
               aconn.effective_role = aconn.cred_role
+            }
+            let r = if aconn.effective_role.length() > 0 { aconn.effective_role } else { sess.role }
+            match state_opt {
+              Some(st) => record_seen_member(st.seen_members, sess.workspace, sess.user_sub, seen_member_session_key(aconn.sid_claim, aconn.conn_id), sess.email, r, aconn.iat, aconn.sid_claim, sess.expires_unix)
+              None => ()
             }
             true
           }
@@ -3367,9 +3471,12 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
   ) -> station_whole::PeerIdentity {
     match st.serve.member_of(conn_id) {
       Some(sess) => {
-        let eff_role = match st.admin_conns.get(conn_id) {
-          Some(ac) => if ac.effective_role.length() > 0 { ac.effective_role } else { sess.role }
-          None => sess.role
+        let (eff_role, lock_base, lock_proof) = match st.admin_conns.get(conn_id) {
+          Some(ac) => {
+            let r = if ac.effective_role.length() > 0 { ac.effective_role } else { sess.role }
+            (r, ac.lock_base, ac.lock_proof)
+          }
+          None => (sess.role, None, None)
         }
         let is_home = sess.workspace == st.core.config.home_workspace
         let viewer = station_api::Viewer::{
@@ -3380,6 +3487,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           home: is_home,
           role: eff_role,
           device: Some(sess.device_id),
+          lock_base: lock_base,
+          lock_proof: lock_proof,
         }
         station_whole::PeerIdentity::AuthenticatedMember(viewer, "ed25519:" + remote_id)
       }
@@ -3458,6 +3567,96 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         astream.mode = AdminStreamMode::Done
       }
     }
+  }
+
+  // Pump AT MOST 1 x 64 KiB chunk per call for `GET /sessions/:key/(files|parts|open?raw=1)`
+  // (200 OK full Content-Length streaming with constant ~64 KiB memory, zero OOM, never 206).
+  let pump_session_file_download_chunk = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+    dl : SessionFileDownloadState,
+  ) -> Unit {
+    if dl.remaining <= 0L {
+      if dl.unlink_on_done {
+        let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+      }
+      ctx.finish_peer_http(astream.sid)
+      astream.mode = AdminStreamMode::Done
+      return
+    }
+    if ctx.peer_http_write_queued_bytes(astream.sid) > PEER_HTTP_WRITE_LOW_WATER {
+      return
+    }
+    let take = if dl.remaining > WHOLE_DRIVE_READ_CHUNK.to_int64() {
+      WHOLE_DRIVE_READ_CHUNK
+    } else {
+      dl.remaining.to_int()
+    }
+    match (st.core.agents.jobs.fs.read_range)(dl.path, dl.cur_offset, take.to_int64()) {
+      Some(cb) => {
+        if cb.length() == 0 {
+          if dl.unlink_on_done {
+            let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+          }
+          ctx.finish_peer_http(astream.sid)
+          astream.mode = AdminStreamMode::Done
+          return
+        }
+        dl.cur_offset = dl.cur_offset + cb.length().to_int64()
+        dl.remaining = dl.remaining - cb.length().to_int64()
+        ctx.write_peer_http_chunk(astream.sid, cb)
+        if dl.remaining <= 0L {
+          if dl.unlink_on_done {
+            let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+          }
+          ctx.finish_peer_http(astream.sid)
+          astream.mode = AdminStreamMode::Done
+        }
+      }
+      None => {
+        if dl.unlink_on_done {
+          let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+        }
+        ctx.close_peer_http(astream.sid)
+        astream.mode = AdminStreamMode::Done
+      }
+    }
+  }
+
+  let start_session_file_stream = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+    spec : station_whole::SessionFileStreamSpec,
+  ) -> Unit {
+    let ct = if spec.content_type.length() > 0 { spec.content_type } else { "application/octet-stream" }
+    let hdrs : Array[http1::Header] = [
+      http1::Header::new("content-type", ct),
+      http1::Header::new("cache-control", "private, max-age=3600"),
+      http1::Header::new("content-length", spec.send_length.to_string()),
+      http1::Header::new(station_api::BUILD_HEADER, st.core.config.station_build),
+    ]
+    for i in 0..<spec.extra_headers.length() {
+      hdrs.push(spec.extra_headers[i])
+    }
+    ctx.write_peer_http_chunk(astream.sid, encode_admin_head_line(200, hdrs, Some(spec.send_length)))
+    if spec.send_length <= 0L {
+      if spec.unlink_on_done {
+        let _ = (st.core.agents.jobs.fs.remove_file)(spec.path)
+      }
+      ctx.finish_peer_http(astream.sid)
+      astream.mode = AdminStreamMode::Done
+      return
+    }
+    let dl = SessionFileDownloadState::{
+      path: spec.path,
+      cur_offset: spec.start_offset,
+      remaining: spec.send_length,
+      unlink_on_done: spec.unlink_on_done,
+    }
+    astream.mode = AdminStreamMode::SessionFileDownloading(dl)
+    pump_session_file_download_chunk(ctx, st, astream, dl)
   }
 
   let dispatch_admin_request = fn(
@@ -3583,6 +3782,74 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           astream.mode = AdminStreamMode::Done
           return
         }
+      }
+    }
+
+    // Backpressured 64 KiB `200 OK` streaming for > 8 MiB `GET /sessions/:key/(files|open?raw=1)`
+    // and async `EdgeMuxHub` `tar.file` extraction for archived `workspace.tar.zst` uploads.
+    if head.method == "GET" && norm_path.starts_with("/sessions/") {
+      match st.core.api.session_plan_fn {
+        Some(plan_fn) => {
+          match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+            Some(old_resp) => {
+              send_admin_resp_and_finish(ctx, astream.sid, old_resp)
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            None => ()
+          }
+          match peer_id {
+            station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
+              let (s_path, s_qraw, s_q) = station_http::parse_request_target(norm_raw)
+              let probe_req = station_http::HttpRequest::{
+                conn_id: 0,
+                method: head.method,
+                raw_target: norm_raw,
+                path: s_path,
+                query_raw: s_qraw,
+                query: s_q,
+                version: http1::Version::Http11,
+                headers: head.headers,
+                body: Bytes::new(0),
+                peer: "",
+                raw_head: Bytes::new(0),
+              }
+              match plan_fn(probe_req, v, astream.sid) {
+                station_whole::SessionFilePlan::NotMatched => ()
+                station_whole::SessionFilePlan::ImmediateError(resp) => {
+                  send_admin_resp_and_finish(ctx, astream.sid, resp)
+                  astream.mode = AdminStreamMode::Done
+                  return
+                }
+                station_whole::SessionFilePlan::StreamFile(spec) => {
+                  start_session_file_stream(ctx, st, astream, spec)
+                  return
+                }
+                station_whole::SessionFilePlan::ExtractArchive(spec) => {
+                  astream.mode = AdminStreamMode::WaitingArchiveExtract(spec)
+                  let wanted_j : Array[base_codec::Json] = []
+                  for wi in 0..<spec.wanted.length() {
+                    wanted_j.push(base_codec::json_str(spec.wanted[wi]))
+                  }
+                  let tar_args = base_codec::json_obj([
+                    ("path", base_codec::json_str(spec.archive_path)),
+                    ("wanted", base_codec::json_arr(wanted_j)),
+                    ("out", base_codec::json_str(spec.out_path)),
+                  ])
+                  let _ = ctx.mux_role.call_async_raw(
+                    builders_core::MuxToken::Tagged(0, SESSION_TOK_TAR_FILE, astream.sid),
+                    "tar.file",
+                    base_codec::json_stringify(tar_args),
+                    None,
+                  )
+                  return
+                }
+              }
+            }
+            _ => ()
+          }
+        }
+        None => ()
       }
     }
 
@@ -3903,6 +4170,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       AdminStreamMode::Done
       | AdminStreamMode::SseStreaming(_)
       | AdminStreamMode::DriveDownloading(_)
+      | AdminStreamMode::SessionFileDownloading(_)
+      | AdminStreamMode::WaitingArchiveExtract(_)
       | AdminStreamMode::SendingBody(_) => {
         astream.rx_buf = Bytes::new(0)
         return Ok(())
@@ -3931,6 +4200,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     aconn.effective_role = vm.session.role
                     aconn.lock_base = vm.lock_base
                     aconn.lock_proof = vm.lock_proof
+                    record_seen_member(st.seen_members, vm.session.workspace, vm.session.user_sub, seen_member_session_key(vm.sid_claim, aconn.conn_id), vm.session.email, vm.session.role, vm.iat, vm.sid_claim, vm.session.expires_unix)
                     let reply = base_codec::json_obj([
                       ("ok", base_codec::json_bool(true)),
                       ("station", base_codec::json_str(st.core.config.station_id)),
@@ -3955,6 +4225,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                     aconn.effective_role = vm.session.role
                     aconn.lock_base = vm.lock_base
                     aconn.lock_proof = vm.lock_proof
+                    record_seen_member(st.seen_members, vm.session.workspace, vm.session.user_sub, seen_member_session_key(vm.sid_claim, aconn.conn_id), vm.session.email, vm.session.role, vm.iat, vm.sid_claim, vm.session.expires_unix)
                     let reply = base_codec::json_obj([
                       ("ok", base_codec::json_bool(true)),
                       ("station", base_codec::json_str(st.core.config.station_id)),
@@ -4680,6 +4951,68 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
   ) -> Unit {
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
+        // Async `tar.file` archived session upload completion (Wave 17C-3A R4 N1).
+        if kind == SESSION_TOK_TAR_FILE {
+          match st.admin_streams.get(sid) {
+            None => ()
+            Some(astream) => match astream.mode {
+              AdminStreamMode::WaitingArchiveExtract(spec) => {
+                let mut found_ok = false
+                match builders_core::decode_shell_done(d) {
+                  Ok((Some(v), _)) => {
+                    match base_codec::json_get(v, "found") {
+                      Some(base_codec::Json::Bool(true)) => found_ok = true
+                      _ => ()
+                    }
+                  }
+                  _ => ()
+                }
+                if !found_ok {
+                  let _ = (st.core.agents.jobs.fs.remove_file)(spec.out_path)
+                  send_admin_resp_and_finish(ctx, sid, station_api::json_error(404, "station.files.notFound"))
+                  astream.mode = AdminStreamMode::Done
+                  return
+                }
+                match (st.core.agents.jobs.fs.stat)(spec.out_path) {
+                  Some(fst) => {
+                    let total_sz = fst.size
+                    let start_off = if spec.is_parts {
+                      if spec.offset > total_sz { total_sz } else { spec.offset }
+                    } else {
+                      0L
+                    }
+                    let avail = if total_sz > start_off { total_sz - start_off } else { 0L }
+                    let send_len = if spec.is_parts {
+                      if spec.length < avail { spec.length } else { avail }
+                    } else {
+                      total_sz
+                    }
+                    start_session_file_stream(
+                      ctx,
+                      st,
+                      astream,
+                      station_whole::SessionFileStreamSpec::{
+                        path: spec.out_path,
+                        total_size: total_sz,
+                        content_type: spec.content_type,
+                        extra_headers: [http1::Header::new("stillfail-total", total_sz.to_string())],
+                        start_offset: start_off,
+                        send_length: send_len,
+                        unlink_on_done: true,
+                      },
+                    )
+                  }
+                  None => {
+                    send_admin_resp_and_finish(ctx, sid, station_api::json_error(404, "station.files.notFound"))
+                    astream.mode = AdminStreamMode::Done
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+          return
+        }
         // Adopted `stillfail-runner` Unix socket completions (`unix.open` / `unix.read` / `unix.write` / `unix.close`).
         if kind == RUNNER_TOK_UNIX_OPEN {
           match st.adopted_runners.get(owner_id) {
@@ -5467,6 +5800,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         cfg,
         thumb_port=thumb_port,
         verify_fn=verify_fn,
+        config_file_override=Some(ctx.config_file),
       )
       // Watch `config.json` directory so external edits hot-reload `disabledRuntimes` via `ConfigFile::listen`.
       match core.config_file {
@@ -6054,6 +6388,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       }
 
       let now0 = host_shim::now_ms()
+      let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
+      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
+      let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
         replica: replica,
@@ -6062,6 +6399,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         logins: logins,
         browser: browser,
         connects: connects,
+        upkeep: upkeep,
         connect_meta: connect_meta,
         remote_connects: remote_connects,
         remote_connects_path: remote_connects_path,
@@ -6073,6 +6411,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         mcp_cb: mcp_cb,
         serve: station_mesh::ServeEndpoint::new(),
         admin_conns: Map::new(),
+        seen_members: seen_members,
         admin_streams: Map::new(),
         proxy_streams: Map::new(),
         proxy_by_sock: Map::new(),
@@ -7027,6 +7366,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 AdminStreamMode::Done
                 | AdminStreamMode::SseStreaming(_)
                 | AdminStreamMode::DriveDownloading(_)
+                | AdminStreamMode::SessionFileDownloading(_)
+                | AdminStreamMode::WaitingArchiveExtract(_)
                 | AdminStreamMode::SendingBody(_) => {
                   return Ok(())
                 }
@@ -7157,6 +7498,16 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   let _ = st.core.api.events.disconnect(cid)
                   false
                 }
+                AdminStreamMode::SessionFileDownloading(dl) => {
+                  if dl.unlink_on_done {
+                    let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+                  }
+                  false
+                }
+                AdminStreamMode::WaitingArchiveExtract(spec) => {
+                  let _ = (st.core.agents.jobs.fs.remove_file)(spec.out_path)
+                  false
+                }
                 _ => false
               }
               if !is_ctrl {
@@ -7188,6 +7539,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               match astream.mode {
                 AdminStreamMode::DriveDownloading(dl) => {
                   pump_drive_download_chunk(ctx, st, astream, dl)
+                }
+                AdminStreamMode::SessionFileDownloading(dl) => {
+                  pump_session_file_download_chunk(ctx, st, astream, dl)
                 }
                 AdminStreamMode::SendingBody(bs) => {
                   pump_admin_body_chunk(ctx, astream, bs)
@@ -7261,7 +7615,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             _ => ()
           }
           let now_sys = host_shim::now_ms()
-          if st.devices.handle_sys_event(ev_id, sev) {
+          if st.devices.handle_sys_event(ev_id, sev, now_sys) {
+            return
+          }
+          if st.upkeep.handle_sys_event(ev_id, sev) {
             return
           }
           if st.terminals.handle_sys_event(ev_id, sev, now_sys) {
@@ -7314,6 +7671,15 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       match state_opt {
         Some(st) => {
           st.core.on_tick(wall)
+          let mut clones_active = false
+          let active_jobs = st.core.agents.jobs.list()
+          for ji in 0..<active_jobs.length() {
+            if active_jobs[ji].state == station_jobs::JobState::Running {
+              clones_active = true
+              break
+            }
+          }
+          st.upkeep.tick(now, clones_active)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)
@@ -7466,6 +7832,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                       mesh_door::StreamGuardVerdict::Allow => ()
                       mesh_door::StreamGuardVerdict::Close(code, reason) => {
                         ctx.log("kicking live admin connection " + cid.to_string() + ": " + reason)
+                        revoke_seen_member_session(st.seen_members, sess.workspace, sess.user_sub, seen_member_session_key(aconn.sid_claim, cid))
                         ctx.close_mesh_conn(cid, aconn.is_front, code, reason)
                         let _ = st.serve.close_connection(cid, aconn.remote_id)
                         st.admin_conns.remove(cid)
@@ -7662,6 +8029,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
           // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
           st.connects.stop()
+          st.upkeep.shutdown()
           st.browser.stop_all()
           let _ = st.browser.drain_kills_with_hub(max_ms=500L)
           st.terminals.stop_all()

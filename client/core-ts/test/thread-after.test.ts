@@ -32,7 +32,9 @@ test("what was said after it brings a thread's summary on: its last entry, its l
   assert.equal(mine.lastMessage.ending, "all_done");
   const historical = threadAfter(held(), [said(4, "agent", "k", "好", { authorModel: "opus", authorRuntime: "claude" })], "a@x")!;
   assert.deepEqual([historical.lastMessage.authorModel, historical.lastMessage.authorRuntime], ["opus", "claude"]);
-  // An edit of the latest message is what it says now; of an earlier one, nothing of the summary.
+  // An edit of the latest message is what it says now; attachment-only edit (same text) preserves editedAt.
+  const attOnly = threadAfter(held(), [{ ...said(4, "agent", "k", "好", { attachments: [{ name: "a.png", path: "/a.png", size: 5 }] }), kind: "edit", target: 3 }], "a@x")!;
+  assert.deepEqual([attOnly.last, attOnly.lastMessage.text, attOnly.lastMessage.editedAt, attOnly.lastMessage.attachments.length], [4, "好", null, 1]);
   const edited = threadAfter(held(), [{ ...said(4, "agent", "k", "好了"), kind: "edit", target: 3 }], "a@x")!;
   assert.deepEqual([edited.last, edited.unread, edited.lastMessage.text, edited.lastMessage.editedAt, edited.lastMessage.seq], [4, 0, "好了", 40, 3]);
   // The first thing a person said, where none had.

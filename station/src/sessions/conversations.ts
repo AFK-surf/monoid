@@ -795,6 +795,36 @@ export function chatLeave(hub: Hub, key: string, args: Args): string {
 export async function chatHistory(hub: Hub, key: string, args: Args): Promise<string> {
   const thread = target(hub, key, args.to);
   const to = args.to === undefined ? "" : jsString(args.to);
+  const rawFetch = Array.isArray(args.fetch) ? args.fetch : [];
+  if (rawFetch.length > 0) {
+    const ids: string[] = [];
+    const seenIds = new Set<string>();
+    for (const item of rawFetch) {
+      if (typeof item !== "string") continue;
+      const id = item.trim();
+      if (id === "" || seenIds.has(id)) continue;
+      seenIds.add(id);
+      ids.push(id);
+    }
+    if (ids.length > 20) throw new Error("at most 20 files may be fetched per chat_history call");
+    const fetched: string[] = [];
+    const failed: string[] = [];
+    for (const id of ids) {
+      try {
+        const a = await hub.fetchDeferredFile(key, thread.thread, thread.connect, id);
+        fetched.push(`- ${id}: ${a.path} (${a.name}, ${a.size} bytes)`);
+      } catch (error) {
+        failed.push(`- ${id}: ${(error as Error).message}`);
+      }
+    }
+    const parts: string[] = [];
+    if (fetched.length > 0) parts.push(`Fetched files:\n${fetched.join("\n")}`);
+    if (failed.length > 0) parts.push(`Not fetched:\n${failed.join("\n")}`);
+    const summary = parts.join("\n\n");
+    if (args.before === undefined && args.limit === undefined) return summary || "No file ids given.";
+    const history = await threadHistory(hub, key, thread.thread, thread.connect, to, args);
+    return summary === "" ? history : `${history}\n\n${summary}`;
+  }
   return threadHistory(hub, key, thread.thread, thread.connect, to, args);
 }
 
@@ -844,7 +874,8 @@ export async function threadHistory(hub: Hub, key: string, thread: ThreadRow, co
       cards.get(n)!.chose = { by: name !== null ? `${name} (${c.by})` : c.by, option: c.option };
     }
   }
-  return formatHistory(messages, thread.surface, threadAddress(thread.channel, thread.threadTs), key, names, cards);
+  const deferred = thread.surface === STILLFAIL_SURFACE || !thread.hasDeferred ? new Map() : hub.store.deferredFiles(thread.id, messages.map((m) => m.n));
+  return formatHistory(messages, thread.surface, threadAddress(thread.channel, thread.threadTs), key, names, cards, deferred);
 }
 
 /// The Slack connect a session calls as when it names none: its own, or (a still.fail chat) the station's Slack bot in its
@@ -956,7 +987,7 @@ export async function slackApi(hub: Hub, key: string, method: string, params: Re
       }
     }
   }
-  const saved = saveFiles ? await hub.fetched(chat, key, "", chat.answerFiles?.(result)) : null;
+  const saved = saveFiles ? await hub.fetched(chat, key, "", chat.answerFiles?.(result), surface) : null;
   const text = JSON.stringify(saved === null ? result : { saved_files: saved.attachments.map(({ name, path, size }) => ({ name, path, size })), not_saved: saved.text, ...result });
   const chars = Array.from(text);
   return chars.length > 60_000 ? `${chars.slice(0, 60_000).join("")}… (cut at 60000 characters; ask for less, e.g. a smaller limit)` : text;

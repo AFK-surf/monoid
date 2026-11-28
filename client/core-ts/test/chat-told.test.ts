@@ -81,6 +81,7 @@ function asked(row: J, station: string, archived: boolean): J[] {
     project: typeof row.project === "string" ? row.project : "monoid",
     projectMode: 2 as const,
     tag: Array.isArray(row.tags) && typeof row.tags[0] === "string" ? row.tags[0] : "bug",
+    pairs: [[station, String(row.id)]],
   };
   return [
     { ...keyed, mine: false, hidden: 0, watching: false, threads: [], sessions: [] },

@@ -1059,6 +1059,7 @@ pub struct EventsHub {
   mut last_opened : Option[EventsOpenResult]
   pub seen_store : Option[SeenStore]
   pub in_vault : Option[(Viewer, String) -> Bool]
+  pub mut on_emit : Option[(String, base_codec::Json) -> Unit]
 }
 
 pub fn EventsHub::new(run : String, keeps : EventKeeps) -> EventsHub {
@@ -1088,6 +1089,7 @@ pub fn EventsHub::new(run : String, keeps : EventKeeps) -> EventsHub {
     last_opened: None,
     seen_store: None,
     in_vault: None,
+    on_emit: None,
   }
 }
 
@@ -1123,6 +1125,7 @@ pub fn EventsHub::with_visibility(
     last_opened: None,
     seen_store: seen_store,
     in_vault: in_vault,
+    on_emit: None,
   }
 }
 
@@ -1905,6 +1908,10 @@ pub fn EventsHub::emit(
     return None
   }
   let logged = self.log.append(event, data, to, now, of_key)
+  match self.on_emit {
+    Some(f) => f(event, data)
+    None => ()
+  }
   let mut i = 0
   while i < self.clients.length() {
     let c = self.clients[i]

@@ -2986,7 +2986,11 @@ fn phone_player_node(
 /// `more` in from either side, and past what the system has at the window's sides while the app has turned the device
 /// sideways (sides_clear's, as numbers).
 fn sides_clear_of(more : Double) -> (Double, Double) {
-  let b = if @hostapi.turned_sideways() { @ui.system_bars() } else { { top: 0.0, bottom: 0.0, left: 0.0, right: 0.0 } }
+  let b = if @hostapi.turned_sideways() {
+    @ui.system_bars()
+  } else {
+    @ui.SystemBars::{ top: 0.0, bottom: 0.0, left: 0.0, right: 0.0 }
+  }
   (more + dmax(0.0, b.left), more + dmax(0.0, b.right))
 }
 

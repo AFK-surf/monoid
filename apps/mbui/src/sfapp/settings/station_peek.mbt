@@ -263,7 +263,7 @@ fn peek_screen_items(
       let icon = if text(sc, "kind") == "simulator" { "phone" } else { "monitor" }
       screen_items.push(Some(@sf.menu_item_of(text(sc, "title"), icon~, fn() {
         let sr = (core.topic)("screens", { "station": str(address) }).get()
-        if !sr.is_confirmed_known() || !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid && !flag(Some(x), "opening") }) {
+        if !sr.is_confirmed_known() || !has_active_item(items(sr.value, "screens"), sid, "opening") {
           return
         }
         close()
@@ -283,7 +283,7 @@ fn peek_screen_items(
       let sid = text(sc, "id")
       screen_items.push(Some(@sf.menu_item_of(text(sc, "title"), icon="web", fn() {
         let sr = (core.topic)("screens", { "station": str(address) }).get()
-        if !sr.is_confirmed_known() || !items(sr.value, "screens").iter().any(fn(x) { text(Some(x), "id") == sid && !flag(Some(x), "opening") }) {
+        if !sr.is_confirmed_known() || !has_active_item(items(sr.value, "screens"), sid, "opening") {
           return
         }
         close()
@@ -319,7 +319,7 @@ fn peek_screen_items(
           let label = match parts.last() { Some(last) => last.to_owned(); None => if cwd == "" { tr("web-pages.remote.openTerminal") } else { cwd } }
           screen_items.push(Some(@sf.menu_item_of(label, icon="terminal", fn() {
             let tr_now = (core.topic)("terminals", { "station": str(address) }).get()
-            if !tr_now.is_confirmed_known() || !items(tr_now.value, "terminals").iter().any(fn(x) { text(Some(x), "id") == tid && !flag(Some(x), "ended") }) {
+            if !tr_now.is_confirmed_known() || !has_active_item(items(tr_now.value, "terminals"), tid, "ended") {
               return
             }
             let watch = !flag(tr_now.value, "open")
@@ -577,4 +577,15 @@ fn sample_meters_node(p : @view.View) -> Unit {
     })
     |> ignore
   })
+}
+
+///|
+/// Whether `xs` has the item `id` not marked `blocked_key` (a screen not still opening, a terminal not ended).
+fn has_active_item(xs : Array[Json], id : String, blocked_key : String) -> Bool {
+  for x in xs {
+    if text(Some(x), "id") == id && !flag(Some(x), blocked_key) {
+      return true
+    }
+  }
+  false
 }

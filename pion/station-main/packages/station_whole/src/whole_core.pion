@@ -339,6 +339,8 @@ pub struct WholeCore {
   pub api : WholeApi
   pub remote : station_jobs::RemoteManager
   pub rig : station_rig::Rig
+  pub updates : station_drivers::RuntimeUpdatesManager
+  pub waiting_tracker : station_api::WaitingTracker
   pub clock_ms : () -> Int64
   pub mut started_at_ms : Int64
   pub mut ready : Bool
@@ -593,6 +595,11 @@ pub fn WholeCore::init_pre_handover_with_deps(
     station_rig::MemLogFs::new().backend(),
     held_rig,
   )
+  let updates = station_drivers::RuntimeUpdatesManager::new()
+  let waiting_tracker = station_api::WaitingTracker::new(build_empty_waiting_store_port())
+  api.waiting_tracker_factory = Some(fn(_ws : String) -> station_api::WaitingTracker {
+    station_api::WaitingTracker::new(build_empty_waiting_store_port())
+  })
   WholeCore::{
     config: config,
     config_file: cfg_opt,
@@ -601,6 +608,8 @@ pub fn WholeCore::init_pre_handover_with_deps(
     api: api,
     remote: remote,
     rig: rig,
+    updates: updates,
+    waiting_tracker: waiting_tracker,
     clock_ms: clock_ms,
     started_at_ms: clock_ms(),
     ready: false,
@@ -641,6 +650,7 @@ pub fn WholeCore::init_pre_handover(
   random_bytes_fn : Option[(Int) -> Result[Bytes, String]] = None,
   clock_ms : Option[() -> Int64] = None,
   use_mem_rig_log : Bool = false,
+  config_file_override : Option[station_ops::ConfigFile] = None,
 ) -> WholeCore {
   let live_clock : () -> Int64 = match clock_ms {
     Some(c) => c
@@ -678,12 +688,24 @@ pub fn WholeCore::init_pre_handover(
     allowed_workspaces: config.allowed_workspaces,
     verify_fn: verify_fn,
   }
-  let (cfg_opt, cfg_err) = match station_ops::ConfigFile::open(os_ops_fs(), config.data_dir, sep=sep) {
-    Ok(c) => {
+  let (cfg_opt, cfg_err) = match config_file_override {
+    Some(c) => {
       bind_config_file_disabled_runtimes(c, agents)
       (Some(c), None)
     }
-    Err(e) => (None, Some(e))
+    None => match station_ops::ConfigFile::open(os_ops_fs(), config.data_dir, sep=sep) {
+      Ok(c) => {
+        bind_config_file_disabled_runtimes(c, agents)
+        (Some(c), None)
+      }
+      Err(e) => (None, Some(e))
+    }
+  }
+  let updates = station_drivers::RuntimeUpdatesManager::new()
+  let home_ws_for_wt = config.home_workspace
+  let waiting_tracker = station_api::WaitingTracker::new(build_waiting_store_port(store, home_ws_for_wt, home_ws_for_wt))
+  let wt_factory = fn(ws : String) -> station_api::WaitingTracker {
+    station_api::WaitingTracker::new(build_waiting_store_port(store, ws, home_ws_for_wt))
   }
   let api = WholeApi::new(
     store,
@@ -695,7 +717,47 @@ pub fn WholeCore::init_pre_handover(
     thumb_port=thumb_port,
     config_file=cfg_opt,
     config_open_err=cfg_err,
+    updates=Some(updates),
+    waiting_tracker_factory=Some(wt_factory),
   )
+  api.hooks.on_session_changed = Some(fn(key : String) -> Unit {
+    waiting_tracker.note("session", Some(key))
+    api.note_waiting_session(key)
+    api.events.overview_changed("session")
+  })
+  api.events.on_emit = Some(fn(ev : String, data : base_codec::Json) -> Unit {
+    if ev == "session" || ev == "turn" || ev == "thread" || ev == "sessionRemoved" {
+      match base_codec::json_get(data, "key") {
+        Some(base_codec::Json::Str(k)) => {
+          if k.length() > 0 {
+            waiting_tracker.note("session", Some(k))
+            api.note_waiting_session(k)
+          } else {
+            waiting_tracker.reset()
+            api.note_waiting_all()
+          }
+        }
+        _ => match base_codec::json_get(data, "session") {
+          Some(base_codec::Json::Str(k)) => {
+            if k.length() > 0 {
+              waiting_tracker.note("session", Some(k))
+              api.note_waiting_session(k)
+            } else {
+              waiting_tracker.reset()
+              api.note_waiting_all()
+            }
+          }
+          _ => {
+            waiting_tracker.reset()
+            api.note_waiting_all()
+          }
+        }
+      }
+    }
+  })
+  api.hooks.on_overview_dirty = Some(fn(reason : String) -> Unit {
+    api.events.overview_changed(reason)
+  })
   let grants_path = nodepath::join(sep, [config.data_dir, "rig-grants.json"])
   let log_path = nodepath::join(sep, [config.data_dir, "rig-commands.jsonl"])
   let log_backend = if use_mem_rig_log {
@@ -734,6 +796,8 @@ pub fn WholeCore::init_pre_handover(
     api: api,
     remote: remote,
     rig: rig,
+    updates: updates,
+    waiting_tracker: waiting_tracker,
     clock_ms: live_clock,
     started_at_ms: live_clock(),
     ready: false,
@@ -1225,9 +1289,21 @@ pub fn WholeCore::on_tick(self : WholeCore, now_ms : Int64) -> Unit {
   let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
   self.rig.grants.tick()
   let _ = self.store.vault_grants.purge_expired(eff_now / 1000L)
+  let _ = self.store.backfill_vault_members_step(self.config.allowed_workspaces, limit=64, now_ms=eff_now)
   let _ = self.api.screens.prune_held(eff_now)
   let _ = self.agents.jobs.tick_stops(eff_now)
   let _ = self.agents.jobs.tick_restarts(eff_now)
+  if self.api.events.is_overview_dirty() || self.api.events.fire_overview_soon(eff_now) {
+    let _ = self.api.events.flush_overviews(
+      eff_now,
+      fn(viewer : station_api::Viewer, lang : station_api::Lang, _round : station_api::OverviewRound) -> Option[base_codec::Json] {
+        match (self.api.admin.host.overview)(viewer, lang) {
+          Ok(v) => Some(v)
+          Err(_) => None
+        }
+      },
+    )
+  }
 }
 
 /// Export a complete handover snapshot (all idempotency `kept_sends` without row cap, active

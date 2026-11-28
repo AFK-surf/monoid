@@ -141,9 +141,16 @@ fn sees_vault(v : form::Json, viewer : VaultViewer) -> Bool {
 }
 
 /// Cryptographically verify the lock device the request comes from via `lock::admit` (1:1 with `deviceOf`).
-fn device_of_viewer(ctx : VaultRouteCtx, l : lock::LockState, viewer : VaultViewer) -> Option[String] {
+/// Note: `lock::admit` checks expiry in Unix seconds (`now_s`), while HTTP routes carry `now_ms`.
+fn device_of_viewer(
+  ctx : VaultRouteCtx,
+  l : lock::LockState,
+  viewer : VaultViewer,
+  now_ms : Int64 = 0L,
+) -> Option[String] {
   let lc = station_rules_bridge::lock_crypto_with(ctx.verify_fn)
-  match lock::admit(l, viewer.sub, viewer.device, viewer.lock_base, viewer.lock_proof, 0.0, lc) {
+  let now_s = (now_ms / 1000L).to_double()
+  match lock::admit(l, viewer.sub, viewer.device, viewer.lock_base, viewer.lock_proof, now_s, lc) {
     Ok((dev, _)) => Some(dev.id)
     Err(_) => None
   }
@@ -837,6 +844,7 @@ pub fn handle_put_box(
   ctx : VaultRouteCtx,
   viewer : VaultViewer,
   cert : form::Json,
+  now_ms : Int64 = 0L,
 ) -> VaultRouteResponse {
   match check_before_write(ctx) {
     Some(r) => return r
@@ -856,7 +864,7 @@ pub fn handle_put_box(
     return route_refuse(400, "vault_invalid", "a box certificate's box is a canonical usable x25519 key")
   }
   let cert_dev = json_str_f(cert, "device")
-  let caller_dev = match device_of_viewer(ctx, l, viewer) {
+  let caller_dev = match device_of_viewer(ctx, l, viewer, now_ms=now_ms) {
     Some(d) => d
     None => ""
   }
@@ -997,6 +1005,7 @@ pub fn handle_put_ask(
   ctx : VaultRouteCtx,
   viewer : VaultViewer,
   next : form::Json,
+  now_ms : Int64 = 0L,
 ) -> VaultRouteResponse {
   match check_before_write(ctx) {
     Some(r) => return r
@@ -1012,7 +1021,7 @@ pub fn handle_put_ask(
     None => ()
   }
   let next_dev = json_str_f(next, "device")
-  let caller_dev = match device_of_viewer(ctx, l, viewer) {
+  let caller_dev = match device_of_viewer(ctx, l, viewer, now_ms=now_ms) {
     Some(d) => d
     None => ""
   }
@@ -1267,6 +1276,7 @@ pub fn handle_put_join(
   ctx : VaultRouteCtx,
   viewer : VaultViewer,
   next : form::Json,
+  now_ms : Int64 = 0L,
 ) -> VaultRouteResponse {
   match check_before_write(ctx) {
     Some(r) => return r
@@ -1284,7 +1294,7 @@ pub fn handle_put_join(
   }
   let next_dev = json_str_f(next, "device")
   let next_sub = json_str_f(next, "sub")
-  let caller_dev = match device_of_viewer(ctx, l, viewer) {
+  let caller_dev = match device_of_viewer(ctx, l, viewer, now_ms=now_ms) {
     Some(d) => d
     None => ""
   }
@@ -1381,6 +1391,7 @@ pub fn handle_put_join_dismiss(
   ctx : VaultRouteCtx,
   viewer : VaultViewer,
   next : form::Json,
+  now_ms : Int64 = 0L,
 ) -> VaultRouteResponse {
   match check_before_write(ctx) {
     Some(r) => return r
@@ -1395,7 +1406,7 @@ pub fn handle_put_join_dismiss(
   if next_vault == "" || next_sub == "" {
     return route_refuse(400, "vault_invalid", "a join dismiss is an object")
   }
-  if device_of_viewer(ctx, l, viewer) is None {
+  if device_of_viewer(ctx, l, viewer, now_ms=now_ms) is None {
     return route_refuse(403, "vault_not_device", "a lock app device signs join dismissals")
   }
   let lv = lock_view_of(l)
@@ -1460,4 +1471,261 @@ pub fn handle_put_join_dismiss(
     return route_ok(form::Json::Obj([("dismiss", next)]))
   }
   route_refuse(503, "vault_busy", "the join dismissal changed while it was being written")
+}
+
+/// Exact item fork-choice tie-breaker (`history::supersedes` on `version` + `deleted` + `epoch` + `form::mbt_str_cmp`).
+pub fn item_supersedes(a : form::Json, b : form::Json) -> Bool {
+  let ca = match form::canonical(a) {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let cb = match form::canonical(b) {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let cmp = form::mbt_str_cmp(ca, cb)
+  history::supersedes(
+    json_i64_f(a, "version"),
+    json_is_deleted(a),
+    json_i64_f(a, "epoch"),
+    json_i64_f(b, "version"),
+    json_is_deleted(b),
+    json_i64_f(b, "epoch"),
+    cmp,
+  )
+}
+
+/// `GET /vault/items`: items of one vault (`vault=`) or every vault the viewer is a member of.
+/// Returns `404 vault_unknown` if `vault=` is specified and the viewer is not a member.
+pub fn handle_get_items(
+  ctx : VaultRouteCtx,
+  viewer : VaultViewer,
+  query : Array[(String, String)] = [],
+) -> VaultRouteResponse {
+  let l = match locked_for(ctx, viewer) {
+    Ok(x) => x
+    Err(resp) => return resp
+  }
+  let of_opt = query_param(query, "vault")
+  let candidates : Array[form::Json] = match of_opt {
+    None => match ctx.store.member_vaults(l.ws, viewer.sub) {
+      Ok(vs) => vs
+      Err(e) => return route_refuse(500, "vault_error", e)
+    }
+    Some(vid) => match ctx.store.vault(l.ws, vid) {
+      Ok(Some(v)) => [v]
+      Ok(None) => []
+      Err(e) => return route_refuse(500, "vault_error", e)
+    }
+  }
+  let seen : Array[form::Json] = []
+  for i in 0..<candidates.length() {
+    let v = candidates[i]
+    let vid = json_str_f(v, "id")
+    let id_ok = match of_opt {
+      Some(want) => vid == want
+      None => true
+    }
+    if sees_vault(v, viewer) && id_ok {
+      seen.push(v)
+    }
+  }
+  if !(of_opt is None) && seen.length() == 0 {
+    return route_refuse(404, "vault_unknown", "no such vault here, or not one of yours")
+  }
+  let items : Array[form::Json] = []
+  for i in 0..<seen.length() {
+    let vid = json_str_f(seen[i], "id")
+    match ctx.store.items(l.ws, vid) {
+      Ok(xs) => {
+        for j in 0..<xs.length() {
+          items.push(xs[j])
+        }
+      }
+      Err(e) => return route_refuse(500, "vault_error", e)
+    }
+  }
+  route_ok(form::Json::Obj([("items", form::Json::Arr(items))]))
+}
+
+/// `PUT /vault/items`: item CAS write with `before_write`, `item_ok`, `version` CAS, `?copy=1`,
+/// deleted-vault check, 3-attempt retry, and `vault-item` SSE event to `vault` members.
+pub fn handle_put_item(
+  ctx : VaultRouteCtx,
+  viewer : VaultViewer,
+  next : form::Json,
+  query : Array[(String, String)] = [],
+) -> VaultRouteResponse {
+  match check_before_write(ctx) {
+    Some(r) => return r
+    None => ()
+  }
+  let l = match locked_for(ctx, viewer) {
+    Ok(x) => x
+    Err(resp) => return resp
+  }
+  let next_vault = json_str_f(next, "vault")
+  let next_id = json_str_f(next, "id")
+  if next_vault == "" || next_id == "" {
+    return route_refuse(400, "vault_invalid", "an item, as JSON")
+  }
+  let copy = match query_param(query, "copy") {
+    Some(s) => s == "1"
+    None => false
+  }
+  let lv = lock_view_of(l)
+  let vc = station_rules_bridge::vault_crypto_with(ctx.verify_fn)
+  for _attempt in 0..<3 {
+    let held_vault = match ctx.store.vault_snapshot(l.ws, next_vault) {
+      Ok(h) => h
+      Err(e) => return route_refuse(500, "vault_error", e)
+    }
+    let (v, v_body) = match held_vault {
+      Some(hv) => (hv.value, hv.body)
+      None => return route_refuse(404, "vault_unknown", "no such vault here, or not one of yours")
+    }
+    if !sees_vault(v, viewer) {
+      return route_refuse(404, "vault_unknown", "no such vault here, or not one of yours")
+    }
+    if json_is_deleted(v) {
+      return route_refuse(404, "vault_unknown", "that vault was deleted")
+    }
+    let held_item = match ctx.store.item_snapshot(l.ws, next_vault, next_id) {
+      Ok(h) => h
+      Err(e) => return route_refuse(500, "vault_error", e)
+    }
+    let prev_opt : Option[form::Json] = match held_item {
+      Some(h) => Some(h.value)
+      None => None
+    }
+    let prev_body : Option[String] = match held_item {
+      Some(h) => Some(h.body)
+      None => None
+    }
+    let mut sibling = false
+    let next_ver_ok = is_nonneg_safe_int(form::json_field(Some(next), "version"))
+    let next_ver = json_i64_f(next, "version")
+    match prev_opt {
+      Some(prev) => {
+        let prev_ver = json_i64_f(prev, "version")
+        if copy && next_ver_ok && next_ver <= prev_ver {
+          if next_ver < prev_ver || !item_supersedes(next, prev) {
+            return route_ok(form::Json::Obj([("item", prev)]))
+          }
+          sibling = true
+        }
+        if !copy && next_ver_ok && next_ver != prev_ver + 1L {
+          return route_refuse(
+            409,
+            "vault_conflict",
+            "version " + (prev_ver + 1L).to_string() + " is the one that follows",
+            extra=[("item", prev)],
+          )
+        }
+      }
+      None => {
+        if !copy && next_ver_ok && next_ver != 0L {
+          return route_refuse(409, "vault_conflict", "version 0 is the one that follows")
+        }
+      }
+    }
+    let check_prev = if sibling { None } else { prev_opt }
+    match vault::item_ok(lv, v, check_prev, next, copy, vc) {
+      Some(why) => return route_refuse(400, "vault_invalid", why)
+      None => ()
+    }
+    match ctx.store.put_item_if(next, v_body, prev_body) {
+      VaultWriteResult::Saved => ()
+      VaultWriteResult::Conflict | VaultWriteResult::DeletedWrite | VaultWriteResult::JoinCancelled => continue
+      VaultWriteResult::DbError(msg) => return route_refuse(500, "vault_error", msg)
+    }
+    emit_event(
+      ctx,
+      VaultRouteEvent::{
+        event: "vault-item",
+        data: next,
+        dedupe_key: "vault-item\x00" + next_vault + "\x00" + next_id,
+        target: VaultEventTarget::{ workspace: l.ws, subs: None, vault: Some(next_vault) },
+      },
+    )
+    return route_ok(form::Json::Obj([("item", next)]))
+  }
+  route_refuse(409, "vault_conflict", "the vault or item changed while it was being written")
+}
+
+/// Helper for callers without a direct `vault` package dependency to check a box cert against a lock.
+pub fn cert_ok_for_lock(
+  l : lock::LockState,
+  raw : form::Json,
+  verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool] = None,
+) -> Bool {
+  let lv = lock_view_of(l)
+  let vc = station_rules_bridge::vault_crypto_with(verify_fn)
+  vault::cert_ok(lv, Some(raw), false, vc) is None
+}
+
+/// `GET /vault/boxes`: device box certificates filtered by `cert_ok(l, c) == None` so revoked
+/// devices removed from the lock are never returned (1:1 with `station/src/api/routes/vault.ts:368-388`).
+pub fn handle_get_boxes(
+  ctx : VaultRouteCtx,
+  viewer : VaultViewer,
+  chains_fn : Option[(String) -> form::Json] = None,
+) -> VaultRouteResponse {
+  let l = match locked_for(ctx, viewer) {
+    Ok(x) => x
+    Err(resp) => return resp
+  }
+  let lv = lock_view_of(l)
+  let vc = station_rules_bridge::vault_crypto_with(ctx.verify_fn)
+  let dev_entries = l.devices.entries()
+  let raw_boxes = if dev_entries.length() <= 32 {
+    let dev_ids : Array[String] = []
+    for i in 0..<dev_entries.length() {
+      dev_ids.push(dev_entries[i].0)
+    }
+    match ctx.store.boxes_for(l.ws, dev_ids) {
+      Ok(bs) => bs
+      Err(e) => return route_refuse(500, "vault_error", e)
+    }
+  } else {
+    match ctx.store.boxes(l.ws) {
+      Ok(bs) => bs
+      Err(e) => return route_refuse(500, "vault_error", e)
+    }
+  }
+  let kept : Array[form::Json] = []
+  for i in 0..<raw_boxes.length() {
+    if vault::cert_ok(lv, Some(raw_boxes[i]), false, vc) is None {
+      kept.push(raw_boxes[i])
+    }
+  }
+  if l.genesis == "" {
+    let role_fields : Array[(String, form::Json)] = []
+    let mems = l.members.entries()
+    for i in 0..<mems.length() {
+      role_fields.push((mems[i].0, form::Json::Str(mems[i].1.role)))
+    }
+    let chain_fields : Array[(String, form::Json)] = []
+    match chains_fn {
+      Some(f) => match f(l.ws) {
+        form::Json::Obj(fs) => {
+          for i in 0..<fs.length() {
+            if l.members.contains(fs[i].0) {
+              chain_fields.push(fs[i])
+            }
+          }
+        }
+        _ => ()
+      }
+      None => ()
+    }
+    return route_ok(
+      form::Json::Obj([
+        ("boxes", form::Json::Arr(kept)),
+        ("chains", form::Json::Obj(chain_fields)),
+        ("roles", form::Json::Obj(role_fields)),
+      ]),
+    )
+  }
+  route_ok(form::Json::Obj([("boxes", form::Json::Arr(kept))]))
 }

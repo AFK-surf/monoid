@@ -88,6 +88,7 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
     live: None,
     tall,
     grows: false,
+    dock_first: false,
     focus: true,
     ruled: false,
     fade_out_together: false,
@@ -264,8 +265,11 @@ fn sheet_menu_node(
   loc~ : SourceLoc,
 ) -> Unit {
   col.box(made_for=loc, fn(rows) {
-    rows.each(fn() { items().mapi(fn(i, x) { (i, menu_kind(x)) }) }, fn(k) { k }, fn(cell, k) {
-      let (i, kind) = k.untracked()
+    rows.each(fn() { items().mapi(fn(i, x) { SheetRowKey::{ idx: i, kind: menu_kind(x) } }) }, fn(k) { k }, fn(
+      cell,
+      k,
+    ) {
+      let { idx: i, kind } = k.untracked()
       let item = fn() {
         match items().get(i) {
           Some(Some(item)) => item
@@ -545,4 +549,12 @@ fn sheet_row_node(
     }
   })
   |> ignore
+}
+
+///|
+/// What a sheet's row is kept by: its place and its kind (menu_kind).
+#derive(Eq, Hash)
+priv struct SheetRowKey {
+  idx : Int
+  kind : Int
 }

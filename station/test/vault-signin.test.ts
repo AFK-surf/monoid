@@ -196,10 +196,13 @@ test("a vault decision finds its sign-in without reading the session's completed
 
 test("a pending old sign-in decision is recovered after the previous station exits", async () => {
   const db = new DatabaseSync(dbFile("signin-recovered-"), { timeout: 5000 });
-  db.exec(`CREATE TABLE signin_asks (id TEXT PRIMARY KEY, session TEXT NOT NULL, owner TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL);
+  db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;
+    CREATE TABLE signin_asks (id TEXT PRIMARY KEY, session TEXT NOT NULL, owner TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL);
     CREATE INDEX signin_asks_by_session ON signin_asks (session, status);`);
   const insert = db.prepare("INSERT INTO signin_asks VALUES (?, 's1', 'pat@example.com', 'done', ?)");
+  db.exec("BEGIN");
   for (let n=0; n<130; n++) insert.run(`old-${n}`, JSON.stringify({ id:`old-${n}`, session:"s1", owner:"pat@example.com", status:"done", save:`save-${n}` }));
+  db.exec("COMMIT");
   const previous = Promise.withResolvers<void>();
   const w = world({ db, previousGone: previous.promise });
   try {

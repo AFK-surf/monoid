@@ -46,7 +46,7 @@ pub fn link_cards_node(
   let hands : Map[Int, HoverHand] = Map([])
   v.box(made_for=loc, fn(h) {
     h.over(Is(true)) |> ignore
-    h.each(shown, fn(l) { (l.2, l.0) }, fn(row, l) {
+    h.each(shown, fn(l) { LinkCardKey::{ first: l.2, href: l.0 } }, fn(row, l) {
       let (href, _, first) = l.untracked()
       let pointed = fn() { links.pointed.get() == first }
       let made : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
@@ -76,4 +76,12 @@ pub fn link_cards_node(
   })
   |> ignore
   hands
+}
+
+///|
+/// What a link card's row is kept by: where its link starts in the words, and where it goes.
+#derive(Eq, Hash)
+priv struct LinkCardKey {
+  first : Int
+  href : String
 }

@@ -107,15 +107,24 @@ static UIImage *nav_icon(NSString *data, CGFloat size) {
 // on its colour, the ones after a little over the one before, in their own colours (not the bar's tint).
 static UIImage *nav_picture(NSString *url, CGFloat size, BOOL round, void (^then)(void));
 static UIImage *nav_avatars(NSString *spec, CGFloat size, void (^then)(void)) {
+  if (spec.length < 8) return nil;
+  NSString *cacheKey = mb_ios_nav_avatar_cache_key(size, nav_display_scale(), spec);
+  UIImage *cached = [nav_img_cache() objectForKey:cacheKey];
+  if (cached) return cached;
   NSArray<NSString *> *each = [[spec substringFromIndex:8] componentsSeparatedByString:@"\x1d"];
   NSUInteger n = MIN(each.count, (NSUInteger)3);
   if (!n) return nil;
   CGFloat d = size, step = size * 0.6, ring = 1.5;
   CGSize all = CGSizeMake(d + step * (n - 1), d);
   NSMutableArray *faces = [NSMutableArray array];
+  BOOL allLoaded = YES;
   for (NSUInteger i = 0; i < n; i++) {
     NSRange pic = [each[i] rangeOfString:@"\x1f"];
-    UIImage *got = pic.location == NSNotFound ? nil : nav_picture([each[i] substringFromIndex:pic.location + 1], d, YES, then);
+    UIImage *got = nil;
+    if (pic.location != NSNotFound) {
+      got = nav_picture([each[i] substringFromIndex:pic.location + 1], d, YES, then);
+      if (!got) allLoaded = NO;
+    }
     [faces addObject:got ?: NSNull.null];
   }
   UIGraphicsImageRenderer *r = [[UIGraphicsImageRenderer alloc] initWithSize:all];
@@ -149,7 +158,9 @@ static UIImage *nav_avatars(NSString *spec, CGFloat size, void (^then)(void)) {
       [letter drawAtPoint:CGPointMake(CGRectGetMidX(disc) - s.width / 2, CGRectGetMidY(disc) - s.height / 2) withAttributes:attrs];
     }
   }];
-  return [img imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+  UIImage *out = [img imageWithRenderingMode:UIImageRenderingModeAlwaysOriginal];
+  if (out && allLoaded) [nav_img_cache() setObject:out forKey:cacheKey];
+  return out;
 }
 
 // A workspace's mark as an icon (`badge:rrggbbaa,letter`): its letter (or emoji) in white on a rounded square of its
@@ -285,8 +296,6 @@ static UIImage *nav_letter(NSString *title, CGFloat size) {
 @interface MBSlot : UIViewController
 @property(nonatomic, strong) NSDictionary<NSString *, UIBarButtonItem *> *barItems;
 @property(nonatomic, strong) NSDictionary<NSString *, NSDictionary *> *barSpecs;
-@property(nonatomic, strong) UIColor *barInk;
-@property(nonatomic, strong) UIColor *barAccent;
 @property(nonatomic, copy) NSString *appliedActsKey;
 @end
 
@@ -464,7 +473,9 @@ API_AVAILABLE(ios(18.0))
 @property(nonatomic, copy) NSDictionary *actSpec;
 @property(nonatomic, copy) NSString *selectedPlaceId;
 @property(nonatomic, copy) NSString *moreIconData;
-@property(nonatomic, strong) NSNumber *chosenInkNum;
+@property(nonatomic) BOOL hasActionTab;
+@property(nonatomic) BOOL appliedActionInkValid;
+@property(nonatomic) uint64_t appliedActionInkVal;
 @property(nonatomic) BOOL appliedColorsValid;
 @property(nonatomic) uint64_t appliedInkVal;
 @property(nonatomic) uint64_t appliedAccentVal;
@@ -477,6 +488,7 @@ API_AVAILABLE(ios(18.0))
 // Number of regular tabs shown directly alongside our own `nav_more_id` tab (0 = not collapsed, showing allPlaces).
 @property(nonatomic) NSUInteger visibleRegularCap;
 @property(nonatomic, copy) NSString *overflowLayoutKey;
+@property(nonatomic) BOOL overflowCheckProvisional;
 @property(nonatomic) BOOL reconcilingOverflow;
 @property(nonatomic) BOOL overflowCheckPending;
 @property(nonatomic) CGRect lastLayoutBounds;
@@ -554,9 +566,13 @@ static UIMenu *nav_menu(NSArray<NSDictionary *> *rows, void (^chosen)(NSString *
 }
 
 static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
+  if (!title.length) {
+    if (item.title != nil) item.title = nil;
+    if (item.titleView != nil) item.titleView = nil;
+    return;
+  }
   item.title = nil;
   item.titleView = nil;
-  if (!title.length) return;
 #ifdef __IPHONE_26_0
   if (@available(iOS 26.0, *)) {
     UILabel *l = [UILabel new];
@@ -659,25 +675,31 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   UITab *x = self.tabsById[self.action];
   CGRect r = x ? [x frameInView:self.view] : CGRectNull;
   MBActionWash *w = self.actionWash;
-  if (w && w.superview && w.window && w.superview.subviews.firstObject == w &&
-      [self.actionWashInk isEqual:self.actionInk]) {
+  UIView *p = nil;
+  if (w && w.superview && w.window && w.superview.subviews.firstObject == w) {
     CGRect washInRoot = [w.superview convertRect:w.superview.bounds toView:self.view];
     if (mb_ios_nav_wash_rect_matches(washInRoot, r)) {
-      if (!CGRectEqualToRect(w.frame, w.superview.bounds)) w.frame = w.superview.bounds;
+      if ([self.actionWashInk isEqual:self.actionInk]) {
+        if (!CGRectEqualToRect(w.frame, w.superview.bounds)) w.frame = w.superview.bounds;
 #ifdef __IPHONE_26_0
-      if (@available(iOS 26.0, *)) {
-        UIView *g = w.subviews.firstObject;
-        if (g && !CGRectEqualToRect(g.frame, w.bounds)) g.frame = w.bounds;
-      }
+        if (@available(iOS 26.0, *)) {
+          UIView *g = w.subviews.firstObject;
+          if (g && !CGRectEqualToRect(g.frame, w.bounds)) g.frame = w.bounds;
+        }
 #endif
-      return;
+        return;
+      }
+      // Platter is unchanged; reuse it in O(1) to update the tint color without walking the view hierarchy.
+      p = w.superview;
     }
   }
-  UIView *p = CGRectIsNull(r) || CGRectIsEmpty(r) ? nil : nav_platter(self.view, self.view, r);
-  if (!p && x) {
-    [self.tabBar layoutIfNeeded];
-    r = [x frameInView:self.view];
+  if (!p) {
     p = CGRectIsNull(r) || CGRectIsEmpty(r) ? nil : nav_platter(self.view, self.view, r);
+    if (!p && x) {
+      [self.tabBar layoutIfNeeded];
+      r = [x frameInView:self.view];
+      p = CGRectIsNull(r) || CGRectIsEmpty(r) ? nil : nav_platter(self.view, self.view, r);
+    }
   }
   if (!p) return;
   if (!w) {
@@ -719,6 +741,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     // (the glass seen through it, the page's words bent under it: not a disc of paint)
     w.backgroundColor = [self.actionInk colorWithAlphaComponent:0.6];
     w.layer.cornerRadius = MIN(p.bounds.size.width, p.bounds.size.height) / 2;
+    self.actionWashInk = self.actionInk;
   }
   if (w.superview == p) {
     if (!CGRectEqualToRect(w.frame, p.bounds)) w.frame = p.bounds;
@@ -771,12 +794,20 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   for (NSDictionary *d in items) {
     NSString *ident = d[@"id"];
     UIBarButtonItem *b = regroup ? nil : slot.barItems[ident];
-    BOOL reuse = b && [slot.barSpecs[ident] isEqual:d] && [slot.barInk isEqual:ink] && [slot.barAccent isEqual:accent];
-    if (!reuse) {
-      // (the same action said otherwise, its icon, words, menu or dot, in the same colours: the item there changed in
-      // place, not made anew, so the system swaps what it shows on the button there and fades none of the column's
-      // buttons, as Outlook's do: the user, 2026-10-31; a new item, even with its identifier, is faded in for the old)
-      UIBarButtonItem *was = b && [slot.barInk isEqual:ink] && [slot.barAccent isEqual:accent] ? b : nil;
+    BOOL specSame = b && [slot.barSpecs[ident] isEqual:d];
+    if (specSame) {
+#ifdef __IPHONE_26_0
+      if (@available(iOS 26.0, *)) {
+        BOOL prominent = [d[@"prominent"] boolValue];
+        UIColor *wantTint = prominent ? accent : ink;
+        if (!((b.tintColor == wantTint) || [b.tintColor isEqual:wantTint])) b.tintColor = wantTint;
+      }
+#endif
+    } else {
+      // (the same action said otherwise, its icon, words, menu or dot: the item there changed in place, not made anew,
+      // so the system swaps what it shows on the button there and fades none of the column's buttons, as Outlook's do:
+      // the user, 2026-10-31; a new item, even with its identifier, is faded in for the old)
+      UIBarButtonItem *was = b;
       // (a picture the host loads: drawn in once it is here, on the item, while it is shown and still said so)
       __block __weak UIBarButtonItem *drawn = nil;
       __weak MBSlot *slotWeak = slot;
@@ -898,8 +929,6 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   slot.barItems = keptItems;
   slot.barSpecs = keptSpecs;
-  slot.barInk = ink;
-  slot.barAccent = accent;
   slot.appliedActsKey = self.actsKey;
   // Only the visible tab transitions; initial setup and the other tabs take their items at once.
   BOOL animate = allowAnimate && nav == self.selectedViewController && nav.isViewLoaded && nav.view.window != nil &&
@@ -920,7 +949,8 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   // button on the inner one; the user, 2026-10-27. Shown with none it takes no room: there, its items are the column's.
   // Nor with no title either (a remote screen's 全屏): put away, the column showed the chat's actions under it; shown,
   // it is told they are gone, the user 2026-10-29)
-  [nav setNavigationBarHidden:(bare && made.count + lead.count == 0 && title.length > 0) animated:(bare && allowAnimate)];
+  BOOL navHidden = (bare && made.count + lead.count == 0 && title.length > 0);
+  if (nav.navigationBarHidden != navHidden) [nav setNavigationBarHidden:navHidden animated:(bare && allowAnimate)];
 }
 - (void)ensureSlotBarItemsForIdent:(NSString *)ident animate:(BOOL)allowAnimate {
   if (!ident.length) return;
@@ -1224,10 +1254,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   }
   NSDictionary *act = self.actSpec;
   UIColor *accent = self.barAccent ?: UIColor.tintColor;
-  NSMutableString *key = [NSMutableString string];
-  for (NSDictionary *t in visible) [key appendFormat:@"%@\x1e", t[@"id"]];
-  if (overflow.count) [key appendFormat:@"%@\x1e", nav_more_id];
-  if (act) [key appendFormat:@"!%@\x1f%@\x1f%@\x1f%@", act[@"id"], act[@"title"], act[@"icon"], self.chosenInkNum ?: @0];
+  NSString *key = mb_ios_nav_tabs_key(visible, overflow.count > 0, nav_more_id, act);
   BOOL tabsChanged = ![key isEqualToString:self.tabsKey];
   self.overflowPlaces = overflow;
   if (tabsChanged) {
@@ -1255,7 +1282,10 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     // glyph (iOS 27: white on its glass washed with the accent, washAction): never chosen, shouldSelectTab says it)
     self.action = act[@"id"];
     self.actionInk = nil;
+    self.hasActionTab = NO;
+    self.appliedActionInkValid = NO;
     if (act && ![seen containsObject:act[@"id"]]) {
+      self.hasActionTab = YES;
       UIImage *image = [nav_icon(act[@"icon"], 26) imageWithTintColor:accent renderingMode:UIImageRenderingModeAlwaysOriginal];
 #ifdef __IPHONE_27_0
       if (@available(iOS 27.0, *)) {
@@ -1263,6 +1293,8 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
         self.actionInk = accent;
       }
 #endif
+      self.appliedActionInkVal = self.appliedAccentVal;
+      self.appliedActionInkValid = YES;
       UITab *x = [self tabFor:act[@"id"] title:act[@"title"] image:image];
       x.preferredPlacement = UITabPlacementPinned;
       [made addObject:x];
@@ -1278,6 +1310,21 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 #endif
     self.customizableViewControllers = @[];
     self.choosing = NO;
+  } else if (self.hasActionTab && act &&
+             mb_ios_nav_color_changed(self.appliedActionInkValid, self.appliedActionInkVal, self.appliedAccentVal)) {
+    BOOL tintedWash = NO;
+#ifdef __IPHONE_27_0
+    if (@available(iOS 27.0, *)) {
+      tintedWash = YES;
+      self.actionInk = accent;
+    }
+#endif
+    if (!tintedWash) {
+      UITab *x = self.tabsById[act[@"id"]];
+      if (x) x.image = [nav_icon(act[@"icon"], 26) imageWithTintColor:accent renderingMode:UIImageRenderingModeAlwaysOriginal];
+    }
+    self.appliedActionInkVal = self.appliedAccentVal;
+    self.appliedActionInkValid = YES;
   }
   if (!self.icons) self.icons = [NSMutableDictionary dictionary];
   for (UITab *tab in self.tabs) {
@@ -1326,8 +1373,11 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 }
 - (void)collapseIfUIKitOverflowed:(NSString *)lkey {
   if (self.visibleRegularCap != 0) return;
-  if (self.tabBar.items.count == 0 || self.tabBar.items.count >= self.tabs.count) {
+  NSUInteger itemCount = self.tabBar.items.count;
+  NSUInteger tabCount = self.tabs.count;
+  if (itemCount == 0 || itemCount >= tabCount) {
     self.overflowLayoutKey = lkey;
+    self.overflowCheckProvisional = NO;
     return;
   }
   NSUInteger vis = 0;
@@ -1336,9 +1386,19 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     CGRect r = t ? [t frameInView:self.view] : CGRectZero;
     if (!CGRectIsNull(r) && !CGRectIsInfinite(r) && r.size.width > 0 && r.size.height > 0) vis++;
   }
-  if (vis == 0 || vis >= self.allPlaces.count) return;
+  MBIosNavOverflowAction action = mb_ios_nav_overflow_action(itemCount, tabCount, vis, self.allPlaces.count);
+  if (action == MBIosNavOverflowActionNoOverflowCache) {
+    self.overflowLayoutKey = lkey;
+    return;
+  }
+  if (action == MBIosNavOverflowActionNotLaidOut) {
+    self.overflowLayoutKey = nil;
+    self.overflowCheckProvisional = NO;
+    return;
+  }
   self.visibleRegularCap = vis;
   self.overflowLayoutKey = lkey;
+  self.overflowCheckProvisional = NO;
   [self rebuildDisplayedTabs];
   for (MBSlot *s in self.slotsById.allValues) s.appliedActsKey = nil;
   if (self.lastBarItems) {
@@ -1359,12 +1419,17 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     if (![lkey isEqualToString:self.overflowLayoutKey]) [self scheduleOverflowReconcile];
     return;
   }
-  if (self.tabBar.items.count > 0 && self.tabBar.items.count < self.tabs.count) {
+  NSUInteger itemCount = self.tabBar.items.count;
+  NSUInteger tabCount = self.tabs.count;
+  if (mb_ios_nav_should_check_overflow_after_layout(self.visibleRegularCap, lkey, self.overflowLayoutKey,
+                                                    self.overflowCheckProvisional, itemCount, tabCount)) {
     self.reconcilingOverflow = YES;
+    self.overflowCheckProvisional = NO;
     [self collapseIfUIKitOverflowed:lkey];
     self.reconcilingOverflow = NO;
-  } else if (self.tabBar.items.count > 0) {
-    self.overflowLayoutKey = lkey;
+  } else if (itemCount > 0 && itemCount >= tabCount) {
+    self.overflowCheckProvisional = NO;
+    if (![lkey isEqualToString:self.overflowLayoutKey]) self.overflowLayoutKey = lkey;
   }
 }
 - (void)reconcileOverflow {
@@ -1373,7 +1438,11 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   CGSize sz = self.view.bounds.size;
   if (sz.width <= 0 || sz.height <= 0) return;
   NSString *lkey = [self currentLayoutKey];
+  // Trait changes that leave lkey unchanged (e.g. Light/Dark) already call washAction in the trait handler and do not
+  // affect tab selection or overflow layout.
+  if (self.visibleRegularCap == 0 && !self.overflowCheckProvisional && [lkey isEqualToString:self.overflowLayoutKey]) return;
   self.reconcilingOverflow = YES;
+  self.overflowCheckProvisional = NO;
   if (self.visibleRegularCap > 0 && ![lkey isEqualToString:self.overflowLayoutKey]) {
     self.visibleRegularCap = 0;
     [self rebuildDisplayedTabs];
@@ -1401,11 +1470,15 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.actSpec = nil;
   self.action = nil;
   self.actionInk = nil;
+  self.hasActionTab = NO;
+  self.appliedActionInkValid = NO;
+  self.appliedActionInkVal = 0;
   [self.actionWash removeFromSuperview];
   self.selectedPlaceId = nil;
   self.overflowPlaces = @[];
   self.visibleRegularCap = 0;
   self.overflowLayoutKey = nil;
+  self.overflowCheckProvisional = NO;
   UINavigationController *nav = [self navFor:@""];
   if (self.tabsKey.length || !self.tabs.count) {
     self.tabsKey = @"";
@@ -1471,7 +1544,6 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.appliedColorsValid = YES;
   self.barInk = ink;
   self.barAccent = accent;
-  self.chosenInkNum = [b[@"chosen_ink"] isKindOfClass:NSNumber.class] ? b[@"chosen_ink"] : @0;
   self.moreIconData = [b[@"more_icon"] isKindOfClass:NSString.class] ? b[@"more_icon"] : @"";
   self.selectedPlaceId = [b[@"selected"] isKindOfClass:NSString.class] ? b[@"selected"] : @"";
   NSUInteger prevPlacesCount = self.allPlaces.count;
@@ -1511,9 +1583,16 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   self.lastBarTitle = title;
   [self barItems:buttons ink:ink accent:accent bare:bare title:title];
   self.overflowLayoutKey = mb_ios_nav_next_overflow_layout_key(bare, tabsChanged, self.overflowLayoutKey);
+  if (tabsChanged && !self.view.window) self.overflowLayoutKey = nil;
   if (mb_ios_nav_needs_overflow_probe(bare, self.view.window != nil, self.visibleRegularCap, places.count,
                                       tabsChanged, lkey, self.overflowLayoutKey)) {
+    if (getenv("MBUI_NAV_LOG")) {
+      say([NSString stringWithFormat:@"NAVLOG overflow probe tabsChanged=%d lkey=%@ prev=%@",
+                                     tabsChanged ? 1 : 0, lkey, self.overflowLayoutKey ?: @"nil"]);
+    }
     self.reconcilingOverflow = YES;
+    // Allow one O(n) post-layout confirmation pass after tabsChanged in case UIKit defers prominent-bar layout.
+    self.overflowCheckProvisional = tabsChanged;
     if (self.tabs.firstObject) [self ensureSlotBarItemsForIdent:self.tabs.firstObject.identifier animate:NO];
     if (self.tabs.firstObject && self.selectedTab != self.tabs.firstObject) {
       self.choosing = YES;
@@ -1523,11 +1602,16 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     [self.view layoutIfNeeded];
     [self collapseIfUIKitOverflowed:lkey];
     self.reconcilingOverflow = NO;
+    if (self.overflowCheckProvisional) {
+      __weak MBTabs *weakSelf = self;
+      dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf checkOverflowAfterLayout]; });
+    }
   }
-  BOOL skipSyncWash = hiddenChanged && !bare && !tabsChanged;
-  if (!skipSyncWash && (tabsChanged || hiddenChanged || (self.actionInk && !bare && !self.actionWash.window))) {
+  BOOL washInWindow = self.actionWash.window != nil;
+  BOOL washInkMatches = (self.actionWashInk == self.actionInk) || [self.actionWashInk isEqual:self.actionInk];
+  if (mb_ios_nav_wash_needed(tabsChanged, hiddenChanged, bare, self.actionInk != nil, washInWindow, washInkMatches)) {
     [self washAction];
-    if (self.actionInk && !bare) {
+    if (mb_ios_nav_wash_async_needed(tabsChanged, hiddenChanged, bare, self.actionInk != nil, washInWindow)) {
       __weak MBTabs *weakSelf = self;
       dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
     }
@@ -1563,6 +1647,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 }
 - (BOOL)tabBarController:(UITabBarController *)c shouldSelectViewController:(UIViewController *)vc {
   if (vc == self.moreNavigationController) {
+    self.overflowLayoutKey = nil;
     [self reconcileOverflow];
     UITab *moreTab = self.tabsById[nav_more_id];
     if (moreTab && !self.choosing) [self toggleMorePopover:moreTab];

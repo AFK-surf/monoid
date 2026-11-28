@@ -150,9 +150,12 @@ fn doing_now(src : Source) -> Json? {
 /// Whether one of `calls` about what `on` names is under way, as the core's `doing` says (doing.ts useDoing: its
 /// params as words).
 pub fn core_doing(src : Source, calls : Array[String], on : Array[(String, String)]) -> Bool {
-  items(doing_now(src), "doing").iter().any(fn(d) {
-    text(Some(d), "stage") != "failed" && doing_of(d, calls, on)
-  })
+  for d in items(doing_now(src), "doing") {
+    if text(Some(d), "stage") != "failed" && doing_of(d, calls, on) {
+      return true
+    }
+  }
+  false
 }
 
 ///|

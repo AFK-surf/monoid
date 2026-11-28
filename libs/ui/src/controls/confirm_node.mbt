@@ -241,7 +241,7 @@ fn confirm_panel(
   confirm : () -> Unit,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let theme = fn() { @ui.tree_theme() }
+  let theme : () -> @ui.Theme = fn() { @ui.tree_theme() }
   let cancel_at : Ref[@view.View?] = Ref(None)
   parent.box(made_for=loc, fn(d) {
     d

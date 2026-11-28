@@ -61,10 +61,14 @@ test("archiving by hand says nothing in the thread; what does not mention the ag
   assert.deepEqual(given(r.chat), before, "no notice");
   assert.deepEqual(r.chat.downloads, []);
   assert.ok(!existsSync(join(row.workspace, "uploads")));
-  const [plan, file] = r.said(r.thread("C1", m.threadTs).id).slice(-2);
-  assert.ok(plan!.text.startsWith("the plan is X\n\n") && plan!.text.includes("F1.txt"), plan!.text);
-  assert.ok(file!.text.includes("F1.txt"), file!.text);
+  const threadId = r.thread("C1", m.threadTs).id;
+  const [plan, file] = r.said(threadId).slice(-2);
+  assert.equal(plan!.text, "the plan is X");
+  assert.equal(file!.text, "");
   assert.deepEqual([plan!.attachments, file!.attachments], [[], []]);
+  const deferred = r.store.deferredFiles(threadId, [plan!.n, file!.n]);
+  assert.deepEqual(deferred.get(plan!.n)?.map((f) => f.name), ["F1.txt"]);
+  assert.deepEqual(deferred.get(file!.n)?.map((f) => f.name), ["F1.txt"]);
   assert.deepEqual(r.session(key), row, "archived, shown and last active as it was");
   assert.equal(r.store.pendingMessages(key).length, 0);
   assert.equal(heard(r.claude, "the plan is X"), 0);
@@ -72,7 +76,8 @@ test("archiving by hand says nothing in the thread; what does not mention the ag
   await settle();
   assert.equal(heard(r.claude, "do as said above"), 1);
   assert.equal(heard(r.claude, "the plan is X"), 0, "not given it");
-  assert.ok((await r.call(key, "chat_history", { to: `C1/${m.threadTs}` })).includes("the plan is X"));
+  const hist = await r.call(key, "chat_history", { to: `C1/${m.threadTs}` });
+  assert.ok(hist.includes("the plan is X") && hist.includes("F1.txt"), hist);
   await r.close();
 });
 
@@ -92,8 +97,11 @@ test("a mention restores an agent archived by hand: recorded and delivered, with
   assert.equal(r.store.getThread(home.id)!.hiddenAt, null, "its own chat too");
   assert.deepEqual(given(r.chat).posts, before.posts, "no notice");
   assert.equal(texts(r, m).filter((t) => t.includes("one more thing")).length, 1);
-  assert.deepEqual(r.chat.downloads, ["F1"]);
+  assert.deepEqual(r.chat.downloads, [], "deferred until fetched by agent");
   assert.equal(heard(r.claude, "one more thing"), 1);
+  assert.equal(heard(r.claude, "id=F1"), 1);
+  await r.call(key, "chat_history", { to: `C1/${m.threadTs}`, fetch: ["F1"] });
+  assert.deepEqual(r.chat.downloads, ["F1"]);
   await ended(r, r.claude, key);
   await r.accept(reply(m, "9999.2", "and another thing"));
   await settle();
@@ -135,6 +143,7 @@ for (const first of ["cl", "gpt"] as const) {
     assert.deepEqual(archived(r, key), [true, MANUAL]);
     assert.deepEqual([heard(r.codex, "anyone there?"), heard(r.claude, "anyone there?")], [1, 0]);
     assert.equal(r.store.pendingMessages(key).length, 0);
+    await r.call(other, "chat_history", { to: `C1/${m.threadTs}`, fetch: ["F1"] });
     const [file] = r.said(r.thread("C1", m.threadTs).id).find((e) => e.text === "anyone there?")!.attachments;
     assert.equal(dirname(file!.path), join(r.session(other).workspace, "uploads"));
     assert.deepEqual([given(r.chat).posts, given(r.gptChat).posts], before);
@@ -155,9 +164,12 @@ test("a mention of another bot that the archived one's connect saw first brings 
   await settle();
   const entry = r.said(r.thread("C1", m.threadTs).id).at(-1)!;
   assert.equal(entry.text, "> the quoted words\n\n<@UGPT> look at this");
-  assert.deepEqual(entry.attachments.map((a) => a.name), ["F1.txt"]);
-  assert.deepEqual(r.gptChat.downloads, ["F1"], "once");
+  assert.deepEqual(entry.attachments, []);
+  assert.deepEqual(r.gptChat.downloads, [], "deferred until fetched by agent");
   assert.deepEqual([heard(r.codex, "look at this"), heard(r.codex, "the quoted words"), heard(r.codex, "F1.txt")], [1, 1, 1]);
+  await r.call(sessionKey("gpt", "C1", m.threadTs), "chat_history", { to: `C1/${m.threadTs}`, fetch: ["F1"] });
+  assert.deepEqual(r.said(r.thread("C1", m.threadTs).id).at(-1)!.attachments.map((a) => a.name), ["F1.txt"]);
+  assert.deepEqual(r.gptChat.downloads, ["F1"], "once");
   assert.deepEqual(archived(r, key), [true, MANUAL]);
   await r.close();
 });
@@ -175,8 +187,11 @@ test("a mention recorded without its files and edited on its platform before the
     await settle();
     const entry = r.store.messageAt(r.thread("C1", m.threadTs).id, "9999.1")!;
     assert.equal(entry.text, `${quoted !== undefined ? "> the quoted words\n\n" : ""}<@UGPT> look at THAT instead`);
-    assert.deepEqual(entry.attachments.map((a) => a.name), ["F1.txt"]);
     assert.deepEqual([heard(r.codex, "THAT instead"), heard(r.codex, "look at this"), heard(r.codex, "F1.txt")], [1, 0, 1]);
+    await r.call(sessionKey("gpt", "C1", m.threadTs), "chat_history", { to: `C1/${m.threadTs}`, fetch: ["F1"] });
+    const after = r.store.messageAt(r.thread("C1", m.threadTs).id, "9999.1")!;
+    assert.equal(after.text, `${quoted !== undefined ? "> the quoted words\n\n" : ""}<@UGPT> look at THAT instead`);
+    assert.deepEqual(after.attachments.map((a) => a.name), ["F1.txt"]);
     await r.close();
   }
 });
@@ -268,12 +283,13 @@ test("another bot's first mention in the thread starts that bot alone; the one a
   assert.equal(heard(r.claude, "your turn"), 0);
   assert.equal(texts(r, m).filter((t) => t.includes("your turn")).length, 1);
   // What is said there reaches the other alone, its files too, whichever connect sees it first.
-  r.chat.shared.set("F1", "content");
+  for (const c of [r.chat, r.gptChat]) c.shared.set("F1", "content");
   await r.accept(reply(m, "9999.2", "see this", { files: [note("F1")] }));
   await settle();
   assert.deepEqual(archived(r, key), [true, MANUAL]);
   assert.equal(heard(r.codex, "see this"), 1);
   assert.equal(heard(r.claude, "see this"), 0);
+  await r.call(other, "chat_history", { to: `C1/${m.threadTs}`, fetch: ["F1"] });
   const [file] = r.said(r.thread("C1", m.threadTs).id).find((e) => e.text === "see this")!.attachments;
   assert.equal(dirname(file!.path), join(r.session(other).workspace, "uploads"));
   assert.ok(!existsSync(join(r.session(key).workspace, "uploads")), "nothing written where it is put away");
@@ -416,13 +432,16 @@ test("a file sent with the mention is written once the workspace put away is bac
   r.teamChat.shared.set("F2", "content");
   // (no agent opens meanwhile: one given the message too soon would wait on the restore, and `settle` on it)
   r.hub.hold("drain");
-  const first = r.accept(reply(m, "9999.1", "<@UTEAM> the first file", { addressed: true, files: [note("F1")] }), "team");
-  const second = r.accept(say("<@UTEAM> the second file", { channel: "C2", files: [note("F2")] }), "team");
+  const m2 = say("<@UTEAM> the second file", { channel: "C2", files: [note("F2")] });
+  await r.accept(reply(m, "9999.1", "<@UTEAM> the first file", { addressed: true, files: [note("F1")] }), "team");
+  await r.accept(m2, "team");
+  const fetchFirst = r.call(key, "chat_history", { to: `C1/${m.threadTs}`, fetch: ["F1"] });
+  const fetchSecond = r.call(key, "chat_history", { to: `C2/${m2.threadTs}`, fetch: ["F2"] });
   await settle();
   const early = [...r.teamChat.downloads];
   const shown = archived(r, key);
   back();
-  await Promise.all([first, second]);
+  await Promise.all([fetchFirst, fetchSecond]);
   r.hub.release("drain");
   await settle();
   assert.deepEqual(shown, [false, null], "shown at once");

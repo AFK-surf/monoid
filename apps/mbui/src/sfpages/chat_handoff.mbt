@@ -116,7 +116,12 @@ fn handoff_confirm(src : Source, r : ChatRef, thread : Double, to : @sfbase.Stat
     @sf.t("web-pages.chat.handoff.title"),
     fn(v, _) {
       station_info_card_node(v, [
-        station_info_from_source(src, r.station, from, role=@sf.t("common.confirmFact.sourceStation"), show=StationInfoShow::compact()),
+        // Source station resource capacity is irrelevant when moving work to another station; omit live meters so
+        // the card stays concise and height-stable.
+        station_info_from_source(src, r.station, from, role=@sf.t("common.confirmFact.sourceStation"), show={
+          ..StationInfoShow::compact(),
+          meters: false,
+        }),
         station_info_from_source(src, to.address, to.name, role=@sf.t("common.confirmFact.targetStation"), show=StationInfoShow::target()),
       ])
       for line in lines {

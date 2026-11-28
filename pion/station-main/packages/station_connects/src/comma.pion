@@ -789,12 +789,22 @@ pub fn CommaConnector::handle_frame(
                   None => continue
                 }
                 if fname != "" {
+                  let mid = json_str_field(m, "id")
+                  let loc_fields : Array[(String, base_codec::Json)] = [
+                    ("task", base_codec::json_str(task)),
+                    ("session", base_codec::json_str(my_session)),
+                    ("seq", base_codec::json_int64(seq)),
+                    ("index", base_codec::json_int64(idx)),
+                  ]
+                  if mid != "" {
+                    loc_fields.push(("id", base_codec::json_str(mid)))
+                  }
                   files.push(
                     InboundFile::{
-                      id: seq.to_string() + "-" + idx.to_string(),
+                      id: task + ":" + seq.to_string() + "-" + idx.to_string(),
                       name: fname,
                       size: fsize,
-                      url: None,
+                      url: Some("comma:" + base_codec::json_stringify(base_codec::json_obj(loc_fields))),
                     },
                   )
                 }

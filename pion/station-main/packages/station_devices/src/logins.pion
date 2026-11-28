@@ -1020,6 +1020,17 @@ pub fn LoginsManager::get(self : LoginsManager, id : String) -> Option[LoginView
   self.get_for(id, None)
 }
 
+pub fn LoginsManager::list(self : LoginsManager) -> Array[LoginView] {
+  let out : Array[LoginView] = []
+  for i in 0..<self.entries.length() {
+    out.push(self.shown_entry(self.entries[i]))
+  }
+  for j in 0..<self.history.length() {
+    out.push(self.history[j])
+  }
+  out
+}
+
 pub fn LoginsManager::get_for(self : LoginsManager, id : String, viewer : Option[InWorkspace]) -> Option[LoginView] {
   let mut i = 0
   while i < self.entries.length() {

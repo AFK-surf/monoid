@@ -63,8 +63,19 @@ test("a redelivered message does not fetch its files or merge its edits again", 
     rig.store.messageAt = () => { throw new Error("redelivery lookup merged edits"); };
     await rig.accept(m);
     await settle();
-    assert.deepEqual(rig.chat.downloads, ["F1"]);
+    assert.deepEqual(rig.chat.downloads, [], "files are deferred until fetched by the agent");
     assert.equal(rig.claude.last().prompts.length, 1);
+    const thread = rig.thread(m.channel, m.threadTs);
+    assert.equal(rig.store.deferredFilesById(thread.id, "F1").length, 1, "deferred file recorded once");
+    const byIdPlan = rig.store.db.prepare("EXPLAIN QUERY PLAN SELECT n, file_id, name, size, url, resolved_at FROM deferred_files WHERE thread = ? AND file_id = ? ORDER BY n, ord LIMIT 500").all(thread.id, "F1").map((row) => String(row.detail)).join("\n");
+    assert.match(byIdPlan, /SEARCH deferred_files USING INDEX deferred_files_by_id/);
+    assert.doesNotMatch(byIdPlan, /TEMP B-TREE/);
+    const byNsPlan = rig.store.db.prepare("EXPLAIN QUERY PLAN SELECT n, file_id, name, size, url FROM deferred_files WHERE thread = ? AND n IN (SELECT value FROM json_each(?)) AND resolved_at IS NULL ORDER BY n, ord LIMIT 500").all(thread.id, "[1]").map((row) => String(row.detail)).join("\n");
+    assert.match(byNsPlan, /SEARCH deferred_files USING INDEX deferred_files_unresolved/);
+    const dlPlan = rig.store.db.prepare("EXPLAIN QUERY PLAN SELECT name, size, path FROM downloaded_files WHERE scope = ? AND file_id = ?").all("ws\0slack:T1", "F1").map((row) => String(row.detail)).join("\n");
+    assert.match(dlPlan, /SEARCH downloaded_files USING INDEX sqlite_autoindex_downloaded_files_1/);
+    const prunePlan = rig.store.db.prepare("EXPLAIN QUERY PLAN DELETE FROM downloaded_files WHERE at < ?").all(1).map((row) => String(row.detail)).join("\n");
+    assert.match(prunePlan, /SEARCH downloaded_files USING INDEX downloaded_files_at/);
   } finally { await rig.close(); }
 });
 

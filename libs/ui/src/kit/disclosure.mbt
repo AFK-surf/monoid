@@ -209,7 +209,8 @@ pub fn accordion(
   })
   c.semantics(gi, Group, label~)
   let changed = now.length() != value.length() || now.iter().any(fn(v) { !value.contains(v) })
-  { value: now, response: { ..@ui.Response::none(), id, changed: changed } }
+  let response : @ui.Response = { ..@ui.Response::none(), id, changed: changed }
+  { value: now, response }
 }
 
 ///|
@@ -279,5 +280,6 @@ pub fn tabs(
     c.semantics(pi, TabPanel, label=shown)
   })
   |> ignore
-  { value: now, response: { ..@ui.Response::none(), id, changed: now != value } }
+  let response : @ui.Response = { ..@ui.Response::none(), id, changed: now != value }
+  { value: now, response }
 }

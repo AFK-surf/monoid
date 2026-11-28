@@ -319,6 +319,7 @@ pub struct ActiveOutbound {
   pub mut stream_id : Option[Int64]
   pub mut sock_id : Option[Int64]
   pub mut reply_buf : Bytes
+  pub mut sent : Bool
   pub on_ask_done : Option[(Result[base_codec::Json, String]) -> Unit]
 }
 
@@ -798,7 +799,8 @@ pub struct DaemonCtx {
   pub self_pid : Int
   pub ops_fs : station_ops::OpsFs
   pub shell_client : builders_core::ShellClient
-  pub cfg_raw : base_codec::Json
+  pub config_file : station_ops::ConfigFile
+  pub mut cfg_raw : base_codec::Json
   pub cloud : station_cloud::CloudStore
   pub station_key : station_cloud::StationKey
   pub control : station_ops::LauncherChannel
@@ -1186,16 +1188,16 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     }
   }
 
-  // Open `config.json`.
+  // Open unified `ConfigFile` (shared with `WholeCore` to eliminate dual-instance snapshot drift).
   let env_cfg = station_sys::env_get("STILLFAIL_CONFIG")
-  let cfg_raw = match station_ops::ConfigFile::open(
+  let config_file = match station_ops::ConfigFile::open(
     ops_fs,
     data,
     env_config=env_cfg,
     pid=self_pid,
     sep=sep,
   ) {
-    Ok(c) => c.value
+    Ok(c) => c
     Err(e) => {
       let msg = "failed to read config.json: " + station_ops::config_err_msg(e)
       log(msg)
@@ -1204,6 +1206,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       return 1
     }
   }
+  let cfg_raw = config_file.value
 
   // Open `cloud.json` and let the role validate mode compatibility.
   let shell_client = builders_core::ShellClient::new()
@@ -1420,6 +1423,15 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   }
 
   let requeue_outbound = fn(ob : ActiveOutbound) -> Unit {
+    // PR #9132: never auto-retry outbound `connect.call` RPCs after payload has been written (prevents duplicate posts),
+    // while still allowing pre-send connection/dial failures to retry.
+    if ob.method == "connect.call" && ob.sent {
+      match ob.on_ask_done {
+        Some(cb) => cb(Err("peer RPC " + ob.method + " to " + ob.peer + " failed after send (no auto-retry)"))
+        None => ()
+      }
+      return
+    }
     let now_t = host_shim::now_ms()
     if now_t - ob.created_at_ms >= TELL_RETRY_MAX_MS || outbound_queue.length() >= MAX_OUTBOUND_TELLS {
       match ob.on_ask_done {
@@ -1933,6 +1945,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     self_pid: self_pid,
     ops_fs: ops_fs,
     shell_client: shell_client,
+    config_file: config_file,
     cfg_raw: cfg_raw,
     cloud: cloud,
     station_key: station_key,
@@ -2242,6 +2255,9 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
     Some(s) => s.relay_urls
     None => []
   }
+  let _ = config_file.listen(fn(next_raw : base_codec::Json) -> Unit {
+    ctx.cfg_raw = next_raw
+  })
   let discovery = match station_sys::env_get("STILLFAIL_NO_DISCOVERY") {
     Some("1") => false
     _ => true
@@ -2605,6 +2621,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
               stream_id: None,
               sock_id: None,
               reply_buf: Bytes::new(0),
+              sent: false,
               on_ask_done: tell.on_ask_done,
             },
           )
@@ -3411,6 +3428,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                             }
                             if sid >= 0L {
                               ob.stream_id = Some(sid)
+                              ob.sent = true
                               call_envelope(mux_mesh, 0, MESH_TOK_OUT_WRITE, oid, mesh_door::direct_istream_write(sid, ob.payload))
                             } else {
                               match ob.conn_id {
@@ -3967,6 +3985,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                             front_early_out_socks.remove(fsid)
                                             front_out_by_sock.set(early_sock, oid)
                                             ob.sock_id = Some(early_sock)
+                                            ob.sent = true
                                             let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
                                             let _ = mux_mesh.call_async_raw(
                                               builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),
@@ -4170,6 +4189,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                     match active_outbounds.get(oid) {
                                       Some(ob) => {
                                         ob.sock_id = Some(sock_id)
+                                        ob.sent = true
                                         let framed = concat_bytes_local(front_encode_frames(ob.payload), front_encode_end_frame())
                                         let _ = mux_mesh.call_async_raw(
                                           builders_core::MuxToken::Tagged(0, FRONT_TOK_OUT_WRITE, oid),

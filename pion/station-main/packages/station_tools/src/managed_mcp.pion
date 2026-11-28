@@ -792,6 +792,92 @@ fn sort_str_pairs(pairs : Array[(String, String)]) -> Array[(String, String)] {
   out
 }
 
+/// Normalize URL text identically to `is_valid_http_url`: trim C0/space and strip ASCII tab/CR/LF.
+fn normalize_http_url_text(raw_url : String) -> String {
+  let trimmed = trim_c0_space(raw_url)
+  let clean_sb = StringBuilder::new()
+  for i in 0..<trimmed.length() {
+    let c = trimmed.code_unit_at(i)
+    if c != 9 && c != 10 && c != 13 {
+      clean_sb.write_byte(c as Byte)
+    }
+  }
+  clean_sb.to_string()
+}
+
+/// Strip `userinfo@` credentials from any `http://` or `https://` URL before exposing in views or errors.
+/// Applies identical normalization to `is_valid_http_url`; returns `"[redacted-url]"` if malformed.
+pub fn redact_url_userinfo(raw_url : String) -> String {
+  let url = normalize_http_url_text(raw_url)
+  let lower = ascii_lower(url)
+  let scheme_len = if str_starts_with(lower, "http://") {
+    7
+  } else if str_starts_with(lower, "https://") {
+    8
+  } else {
+    return "[redacted-url]"
+  }
+  let rest = url.slice(scheme_len, url.length())
+  let mut auth_end = rest.length()
+  for i in 0..<rest.length() {
+    let c = rest.code_unit_at(i)
+    if c == 47 || c == 63 || c == 35 || c == 92 {
+      auth_end = i
+      break
+    }
+  }
+  let authority = rest.slice(0, auth_end)
+  let mut at_idx = -1
+  for i in 0..<authority.length() {
+    if authority.code_unit_at(i) == 64 {
+      at_idx = i
+    }
+  }
+  if at_idx < 0 {
+    return url
+  }
+  url.slice(0, scheme_len) + rest.slice(at_idx + 1, rest.length())
+}
+
+fn is_url_authority_stop(c : Int) -> Bool {
+  // End authority only at whitespace/C0, path/query/fragment delimiters (`/`, `?`, `#`, `\`),
+  // quotes (`"`, `'`), or closing brackets (`)`, `]`, `}`, `>`), never truncating RFC 3986
+  // userinfo punctuation such as `:`, `.`, `-`, `+`, `%`, `,`, `;`.
+  c <= 32 || c == 47 || c == 63 || c == 35 || c == 92 || c == 34 || c == 39 || c == 41 || c == 93 || c == 125 || c == 62
+}
+
+/// Scan any error string for `://...userinfo@...` across arbitrary delimiters (quotes, parens, commas, etc.)
+/// and strip the `userinfo@` segment so credentials never leak in error messages.
+pub fn redact_error_urls(msg : String) -> String {
+  let n = msg.length()
+  let sb = StringBuilder::new()
+  let mut i = 0
+  while i < n {
+    if i + 2 < n && msg.code_unit_at(i) == 58 && msg.code_unit_at(i + 1) == 47 && msg.code_unit_at(i + 2) == 47 {
+      sb.write_string("://")
+      let auth_start = i + 3
+      let mut auth_end = auth_start
+      let mut last_at = -1
+      while auth_end < n && !is_url_authority_stop(msg.code_unit_at(auth_end)) {
+        if msg.code_unit_at(auth_end) == 64 {
+          last_at = auth_end
+        }
+        auth_end = auth_end + 1
+      }
+      if last_at >= auth_start {
+        sb.write_string(msg.slice(last_at + 1, auth_end))
+      } else {
+        sb.write_string(msg.slice(auth_start, auth_end))
+      }
+      i = auth_end
+    } else {
+      sb.write_byte(msg.code_unit_at(i) as Byte)
+      i = i + 1
+    }
+  }
+  sb.to_string()
+}
+
 /// Masked JSON view of one managed server config + runtime state (`managed-mcp-config.ts:249-285`).
 pub fn mask_server_view(
   name : String,
@@ -803,7 +889,7 @@ pub fn mask_server_view(
     tools_json.push(base_codec::json_str(runtime.tools[i]))
   }
   let err_json = match runtime.error {
-    Some(e) => base_codec::json_str(e)
+    Some(e) => base_codec::json_str(redact_error_urls(e))
     None => base_codec::json_null()
   }
   let status_str = if entry.enabled { runtime.status } else { "disabled" }
@@ -839,7 +925,7 @@ pub fn mask_server_view(
       fields.push(("transport", base_codec::json_str(t_str)))
       fields.push(("enabled", base_codec::json_bool(entry.enabled)))
       fields.push(("shared", base_codec::json_bool(entry.shared)))
-      fields.push(("url", base_codec::json_str(entry.url)))
+      fields.push(("url", base_codec::json_str(redact_url_userinfo(entry.url))))
       if entry.headers.length() > 0 {
         let sorted = sort_str_pairs(entry.headers)
         let hf : Array[(String, base_codec::Json)] = []

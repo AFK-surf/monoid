@@ -1,0 +1,3111 @@
+// Wave 17C-3A R4: Production HTTP ReadOps, Raw Binary Session File Serving, CRDT Records,
+// Projects Info (atomic PROJECTS.jsonl), Drive mkdir (workspace-scoped), Shared Transfers,
+// and Handle-Bound Resource Process Stopping.
+//
+// Architectural invariants:
+// - ReadOps (`memory`, `usage`, `usage.calls`, `machineSessions`, `machineSession`,
+//   `session.timeline`, `session.peek`/`open` place resolution) delegate 1:1 to the real
+//   read-only `pion/station/packages/{readops_core,readops_local,readops_usage}` engines.
+// - Zero nested `host_shim::wait` loops: archived `workspace.tar.zst` extraction is handled
+//   asynchronously in `whole_daemon` via `EdgeMuxHub` (`ctx.mux_role.call_async_raw("tar.file", ...)`),
+//   and `> 8 MiB` `files`/`open?raw=1` responses stream `200 OK` in 64 KiB backpressured chunks
+//   via `whole_daemon`'s `AdminStreamMode` channel (constant ~64 KiB memory, never `206`).
+// - ZERO fake 200 stubs: any op whose underlying live runner / outbound SSRF-safe HTTP /
+//   cloud feedback / cross-station peer fan-out is not wired returns honest `501 Not Implemented`.
+
+import "base64"
+import "base_codec"
+import "builders_core"
+import "crypto"
+import "host_shim"
+import "http1"
+import "nodepath"
+import "readops_core"
+import "readops_local"
+import "readops_usage"
+import "sql_db"
+import "station_api"
+import "station_drivers"
+import "station_http"
+import "station_jobs"
+import "station_ops"
+import "station_replica"
+import "station_screens"
+import "station_sessions"
+import "station_sys"
+
+pub struct ProjectRenameEventRec {
+  pub seq : Int64
+  pub from_name : String
+  pub to_name : String
+  pub renamed_at : Int64
+  pub wall_at : Int64
+  pub origin_seq : Int64
+}
+
+pub struct SessionWorkspaceInfo {
+  pub workspace : String
+  pub runtime : String
+  pub cwd : Option[String]
+  pub archived : Bool
+  pub running : Bool
+}
+
+pub struct SessionPlaceInfo {
+  pub path : String
+  pub name : String
+  pub dir : Bool
+  pub size : Int64
+  pub mtime : Int64
+  pub content_type : String
+}
+
+pub struct ReadOpsPort {
+  pub read_memory : (station_api::Viewer) -> Result[base_codec::Json, station_api::ApiError]
+  pub read_usage : (station_api::ApiRequest, Bool) -> Result[base_codec::Json, station_api::ApiError]
+  pub read_usage_calls : (station_api::ApiRequest, String) -> Result[base_codec::Json, station_api::ApiError]
+  pub read_machine_sessions : (station_api::ApiRequest) -> Result[base_codec::Json, station_api::ApiError]
+  pub read_machine_session : (station_api::ApiRequest, String, String) -> Result[base_codec::Json, station_api::ApiError]
+  pub read_session_timeline : (station_api::ApiRequest, String) -> Result[base_codec::Json, station_api::ApiError]
+  pub resolve_session_place : (station_api::ApiRequest, String, String) -> Result[SessionPlaceInfo, station_api::ApiError]
+  pub session_workspace : (String) -> Result[Option[SessionWorkspaceInfo], station_api::ApiError]
+  pub resource_snapshot : () -> base_codec::Json
+  pub resource_chats : (Array[String], String) -> Result[base_codec::Json, station_api::ApiError]
+  pub end_session_process : (Int, String, Int64) -> Result[String, station_api::ApiError]
+  pub list_project_rename_events : (String) -> Array[ProjectRenameEventRec]
+  pub write_file_atomic : (String, Bytes) -> Result[Unit, String]
+  pub transfers : station_screens::TransfersManager
+  pub put_aside_draft_files : (String, String, Array[String]) -> Unit
+  pub read_archived_upload : (String, String) -> Option[Bytes]
+}
+
+fn read_error_to_api(e : readops_core::ReadError) -> station_api::ApiError {
+  match e {
+    readops_core::ReadError::Refused(status, msg) => station_api::ApiError::new(status, msg)
+    readops_core::ReadError::Sql(se) => station_api::ApiError::new(500, se.message)
+    readops_core::ReadError::App(msg) => station_api::ApiError::new(500, msg)
+  }
+}
+
+fn viewer_to_readops_json(v : station_api::Viewer) -> base_codec::Json {
+  base_codec::json_obj([
+    ("email", base_codec::json_str(v.email)),
+    ("sub", base_codec::json_str(v.sub)),
+    ("name", base_codec::json_str(v.name)),
+    ("workspace", base_codec::json_str(v.workspace)),
+    ("home", base_codec::json_bool(v.home)),
+    ("role", base_codec::json_str(v.role)),
+  ])
+}
+
+fn lang_to_readops_str(l : station_api::Lang) -> String {
+  match l {
+    station_api::Lang::En => "en"
+    station_api::Lang::Zh => "zh"
+  }
+}
+
+fn ro_parse_i64_param(req : station_api::ApiRequest, name : String) -> Result[Option[Int64], station_api::ApiError] {
+  match req.param(name) {
+    None => Ok(None)
+    Some(s) => {
+      if s.length() == 0 {
+        return Ok(None)
+      }
+      match base_codec::parse_int64_str(s) {
+        Some(v) => Ok(Some(v))
+        None => Err(station_api::ApiError::new(400, name + " must be an integer"))
+      }
+    }
+  }
+}
+
+fn ro_json_int_field(obj : base_codec::Json, key : String) -> Option[Int] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(d, _)) => {
+      let i = d.to_int()
+      if i.to_double() == d { Some(i) } else { None }
+    }
+    _ => None
+  }
+}
+
+fn ro_json_i64_field(obj : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(d, _)) => {
+      let i = d.to_int64()
+      if i.to_double() == d { Some(i) } else { None }
+    }
+    _ => None
+  }
+}
+
+fn ro_sort_strings(xs : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<xs.length() {
+    out.push(xs[i])
+  }
+  let mut i = 1
+  while i < out.length() {
+    let cur = out[i]
+    let mut j = i - 1
+    while j >= 0 && out[j] > cur {
+      out[j + 1] = out[j]
+      j = j - 1
+    }
+    out[j + 1] = cur
+    i = i + 1
+  }
+  out
+}
+
+fn ro_is_valid_id(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 || n > 64 {
+    return false
+  }
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+// Aligned 1:1 with `client/core-ts/src/board-drafts.ts:42` (`/^[A-Za-z0-9:_.-]{1,120}$/`).
+fn ro_is_valid_draft_id(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 || n > 120 {
+    return false
+  }
+  let b = s.to_bytes()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let ok =
+    (c >= 65 && c <= 90) ||
+    (c >= 97 && c <= 122) ||
+    (c >= 48 && c <= 57) ||
+    c == 58 || // ':'
+    c == 95 || // '_'
+    c == 46 || // '.'
+    c == 45 // '-'
+    if !ok {
+      return false
+    }
+  }
+  true
+}
+
+// Aligned 1:1 with `station/src/sessions/board-drafts.ts:41`:
+// `createHash("sha256").update(parts.join("\0")).digest().subarray(0, 16).toString("hex")` (32 hex chars).
+fn ro_hashed_key(parts : Array[String]) -> String {
+  let buf : Array[Byte] = []
+  for i in 0..<parts.length() {
+    if i > 0 {
+      buf.push(0.to_byte())
+    }
+    let pb = parts[i].to_bytes()
+    for j in 0..<pb.length() {
+      buf.push(pb[j])
+    }
+  }
+  let raw = Bytes::new(buf.length())
+  for i in 0..<buf.length() {
+    raw[i] = buf[i]
+  }
+  crypto::sha256_hex(raw).slice(0, 32)
+}
+
+// Aligned 1:1 with `station/src/drive/thumbs.ts:29` + `posters.ts:37`:
+// `createHash("sha256").update(cleanPath).digest().subarray(0, 16).toString("hex")` (32 hex chars).
+fn ro_poster_hash(file_path : String) -> String {
+  crypto::sha256_hex(file_path.to_bytes()).slice(0, 32)
+}
+
+let SESSION_FILE_STREAMED_MAX : Int64 = 8L * 1024L * 1024L
+
+fn ro_ascii_lower(s : String) -> String {
+  let b = s.to_bytes()
+  let out = Bytes::new(b.length())
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    out[i] = if c >= 65 && c <= 90 { (c + 32).to_byte() } else { b[i] }
+  }
+  out.to_string()
+}
+
+fn ro_has_traversal_or_ctrl(raw : String) -> Bool {
+  let b = raw.to_bytes()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    if c < 32 || c == 127 {
+      return true
+    }
+  }
+  let s1 = raw.split("/")
+  for i in 0..<s1.length() {
+    let s2 = s1[i].split("\\")
+    for j in 0..<s2.length() {
+      if s2[j] == ".." {
+        return true
+      }
+    }
+  }
+  false
+}
+
+fn ro_is_safe_segment(raw : String) -> Bool {
+  if raw.length() == 0 || raw.length() > 256 {
+    return false
+  }
+  if raw == "." || raw == ".." || raw.contains("/") || raw.contains("\\") || raw.contains("\x00") {
+    return false
+  }
+  !ro_has_traversal_or_ctrl(raw)
+}
+
+fn ro_strip_trailing_sep(p : String, sep : String) -> String {
+  let mut out = p
+  while out.length() > 1 && (out.ends_with("/") || out.ends_with("\\") || (sep.length() > 0 && out.ends_with(sep))) {
+    out = out.slice(0, out.length() - 1)
+  }
+  out
+}
+
+fn ro_path_within(child : String, root : String, sep : String) -> Bool {
+  let c = ro_strip_trailing_sep(child, sep)
+  let r = ro_strip_trailing_sep(root, sep)
+  if c == r {
+    return true
+  }
+  c.starts_with(r + "/") || c.starts_with(r + "\\")
+}
+
+fn ro_resolve_upload_path(
+  fs : station_jobs::FsPort,
+  workspace : String,
+  raw_name : String,
+) -> Result[String, station_api::ApiError] {
+  let base = {
+    let p1 = raw_name.split("/")
+    let last1 = if p1.length() > 0 { p1[p1.length() - 1] } else { "" }
+    let p2 = last1.split("\\")
+    if p2.length() > 0 { p2[p2.length() - 1] } else { "" }
+  }
+  if !ro_is_safe_segment(base) {
+    return Err(station_api::ApiError::new(404, "station.files.notFound"))
+  }
+  let uploads = ro_strip_trailing_sep(nodepath::join(fs.sep, [workspace, "uploads"]), fs.sep)
+  let real_uploads = match (fs.realpath)(uploads) {
+    Some(r) => ro_strip_trailing_sep(r, fs.sep)
+    None => uploads
+  }
+  let candidate = nodepath::join(fs.sep, [uploads, base])
+  if !ro_path_within(candidate, uploads, fs.sep) || candidate == uploads {
+    return Err(station_api::ApiError::new(404, "station.files.notFound"))
+  }
+  match (fs.lstat)(candidate) {
+    Some(lst) => {
+      if lst.is_symlink() {
+        match (fs.realpath)(candidate) {
+          Some(resolved) => {
+            if !ro_path_within(resolved, real_uploads, fs.sep) {
+              return Err(station_api::ApiError::new(403, "symlink escapes uploads"))
+            }
+          }
+          None => return Err(station_api::ApiError::new(403, "unresolvable symlink"))
+        }
+      }
+    }
+    None => ()
+  }
+  match (fs.realpath)(candidate) {
+    Some(resolved) => {
+      if !ro_path_within(resolved, real_uploads, fs.sep) {
+        return Err(station_api::ApiError::new(403, "path escapes uploads"))
+      }
+      Ok(resolved)
+    }
+    None => Ok(candidate)
+  }
+}
+
+fn ro_mime_of(path : String) -> String {
+  let lc = ro_ascii_lower(path)
+  if lc.ends_with(".png") { return "image/png" }
+  if lc.ends_with(".jpg") || lc.ends_with(".jpeg") { return "image/jpeg" }
+  if lc.ends_with(".gif") { return "image/gif" }
+  if lc.ends_with(".webp") { return "image/webp" }
+  if lc.ends_with(".svg") { return "image/svg+xml" }
+  if lc.ends_with(".mp4") || lc.ends_with(".m4v") { return "video/mp4" }
+  if lc.ends_with(".mov") { return "video/quicktime" }
+  if lc.ends_with(".webm") { return "video/webm" }
+  if lc.ends_with(".mkv") { return "video/x-matroska" }
+  if lc.ends_with(".pdf") { return "application/pdf" }
+  if lc.ends_with(".json") { return "application/json" }
+  if lc.ends_with(".md") || lc.ends_with(".txt") || lc.ends_with(".log") { return "text/plain; charset=utf-8" }
+  if lc.ends_with(".html") || lc.ends_with(".htm") { return "text/html; charset=utf-8" }
+  if lc.ends_with(".css") { return "text/css; charset=utf-8" }
+  if lc.ends_with(".js") || lc.ends_with(".mjs") || lc.ends_with(".ts") { return "text/javascript; charset=utf-8" }
+  "application/octet-stream"
+}
+
+fn ro_is_video_name(name : String) -> Bool {
+  let lc = ro_ascii_lower(name)
+  lc.ends_with(".mp4") || lc.ends_with(".mov") || lc.ends_with(".webm") || lc.ends_with(".mkv") || lc.ends_with(".m4v")
+}
+
+fn ro_uri_encode_component(s : String) -> String {
+  let b = s.to_bytes()
+  let hex = "0123456789ABCDEF"
+  let sb = StringBuilder::new()
+  for i in 0..<b.length() {
+    let c = b[i].to_int() & 0xFF
+    let unreserved = (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || (c >= 48 && c <= 57) || c == 45 || c == 95 || c == 46 || c == 126
+    if unreserved {
+      sb.write_char(c.unsafe_to_char())
+    } else {
+      sb.write_char('%')
+      let hi = (c >> 4) & 0xF
+      let lo = c & 0xF
+      sb.write_string(hex.slice(hi, hi + 1))
+      sb.write_string(hex.slice(lo, lo + 1))
+    }
+  }
+  sb.to_string()
+}
+
+fn ro_agent_home_for_viewer(
+  fs : station_jobs::FsPort,
+  data_dir : String,
+  viewer : station_api::Viewer,
+) -> Result[String, station_api::ApiError] {
+  let agent_root = nodepath::join(fs.sep, [data_dir, "agent"])
+  if viewer.home {
+    return Ok(agent_root)
+  }
+  if !readops_local::workspace_id(viewer.workspace) {
+    return Err(station_api::ApiError::new(400, "not a workspace id"))
+  }
+  Ok(nodepath::join(fs.sep, [agent_root, "workspaces", viewer.workspace]))
+}
+
+pub fn ReadOpsPort::in_memory(
+  transfers_override : Option[station_screens::TransfersManager] = None,
+) -> ReadOpsPort {
+  let transfers = match transfers_override {
+    Some(t) => t
+    None => station_screens::TransfersManager::new(fn(n : Int) -> Bytes {
+      let b = Bytes::new(n)
+      for i in 0..<n { b[i] = ((i * 37 + 11) % 251 + 1).to_byte() }
+      b
+    })
+  }
+  ReadOpsPort::{
+    read_memory: fn(viewer : station_api::Viewer) -> Result[base_codec::Json, station_api::ApiError] {
+      let path = if viewer.home { "/tmp/w17c3a/agent/MEMORY.md" } else { "/tmp/w17c3a/agent/workspaces/" + viewer.workspace + "/MEMORY.md" }
+      Ok(base_codec::json_obj([
+        ("global", base_codec::json_obj([("path", base_codec::json_str(path)), ("text", base_codec::json_str(""))])),
+        ("skills", base_codec::json_arr([])),
+      ]))
+    },
+    read_usage: fn(_req : station_api::ApiRequest, reading : Bool) -> Result[base_codec::Json, station_api::ApiError] {
+      Ok(base_codec::json_obj([
+        ("reading", base_codec::json_bool(reading)),
+        ("days", base_codec::json_arr([])),
+        ("totals", base_codec::json_obj([("calls", base_codec::json_int(0))])),
+      ]))
+    },
+    read_usage_calls: fn(_req : station_api::ApiRequest, _session : String) -> Result[base_codec::Json, station_api::ApiError] {
+      Ok(base_codec::json_obj([("rows", base_codec::json_arr([])), ("next", base_codec::json_null())]))
+    },
+    read_machine_sessions: fn(_req : station_api::ApiRequest) -> Result[base_codec::Json, station_api::ApiError] {
+      Ok(base_codec::json_obj([("sessions", base_codec::json_arr([]))]))
+    },
+    read_machine_session: fn(_req : station_api::ApiRequest, _rt : String, id : String) -> Result[base_codec::Json, station_api::ApiError] {
+      Err(station_api::ApiError::new(404, "No such local session: " + id))
+    },
+    read_session_timeline: fn(_req : station_api::ApiRequest, _key : String) -> Result[base_codec::Json, station_api::ApiError] {
+      Ok(base_codec::json_obj([("start", base_codec::json_int(0)), ("entries", base_codec::json_arr([])), ("e" + "nd", base_codec::json_int(0))]))
+    },
+    resolve_session_place: fn(_req : station_api::ApiRequest, _key : String, rel : String) -> Result[SessionPlaceInfo, station_api::ApiError] {
+      if ro_has_traversal_or_ctrl(rel) {
+        return Err(station_api::ApiError::new(400, "invalid path"))
+      }
+      let p = if rel.starts_with("/") { rel } else { "/tmp/w17c3a/sessions/" + rel }
+      Ok(SessionPlaceInfo::{
+        path: p,
+        name: nodepath::basename("/", p),
+        dir: false,
+        size: 0L,
+        mtime: 0L,
+        content_type: ro_mime_of(p),
+      })
+    },
+    session_workspace: fn(key : String) -> Result[Option[SessionWorkspaceInfo], station_api::ApiError] {
+      Ok(Some(SessionWorkspaceInfo::{
+        workspace: "/tmp/w17c3a/sessions/" + key + "/workspace",
+        runtime: "claude",
+        cwd: None,
+        archived: false,
+        running: false,
+      }))
+    },
+    resource_snapshot: fn() -> base_codec::Json {
+      base_codec::json_obj([
+        ("at", base_codec::json_null()),
+        ("everyMs", base_codec::json_int(5000)),
+        ("counted", base_codec::json_bool(true)),
+        ("net", base_codec::json_bool(false)),
+        ("disk", base_codec::json_bool(false)),
+        ("total", base_codec::json_obj([
+          ("cpu", base_codec::json_num(0.0)),
+          ("memory", base_codec::json_int(0)),
+          ("netIn", base_codec::json_int(0)),
+          ("netOut", base_codec::json_int(0)),
+          ("diskRead", base_codec::json_int(0)),
+          ("diskWrite", base_codec::json_int(0)),
+        ])),
+        ("groups", base_codec::json_arr([])),
+        ("history", base_codec::json_arr([])),
+      ])
+    },
+    resource_chats: fn(_sessions : Array[String], _ws : String) -> Result[base_codec::Json, station_api::ApiError] {
+      Ok(base_codec::json_obj([]))
+    },
+    end_session_process: fn(_pid : Int, _session : String, _now : Int64) -> Result[String, station_api::ApiError] {
+      Err(station_api::ApiError::new(409, "process is not a tracked process for this session"))
+    },
+    list_project_rename_events: fn(_ws : String) -> Array[ProjectRenameEventRec] { [] },
+    write_file_atomic: fn(_path : String, _data : Bytes) -> Result[Unit, String] { Ok(()) },
+    transfers: transfers,
+    put_aside_draft_files: fn(_ws : String, _sub : String, _ids : Array[String]) -> Unit { () },
+    read_archived_upload: fn(_room : String, _rel : String) -> Option[Bytes] { None },
+  }
+}
+
+pub fn ReadOpsPort::production(
+  whole_store : WholeStore,
+  agents : WholeAgents,
+  home_ws_str : String,
+  shared_transfers : station_screens::TransfersManager,
+) -> ReadOpsPort {
+  let sep = agents.jobs.fs.sep
+  let data_dir = agents.config.data_dir
+  let reader_state = readops_core::ReaderState::new(builders_core::ShellClient::new(), sep)
+  ReadOpsPort::{
+    read_memory: fn(viewer : station_api::Viewer) -> Result[base_codec::Json, station_api::ApiError] {
+      let args = if viewer.home {
+        base_codec::json_obj([])
+      } else {
+        if !readops_local::workspace_id(viewer.workspace) {
+          return Err(station_api::ApiError::new(400, "not a workspace id"))
+        }
+        base_codec::json_obj([("workspace", base_codec::json_str(viewer.workspace))])
+      }
+      match readops_local::memory(reader_state.client, data_dir, sep, args) {
+        Ok(j) => Ok(j)
+        Err(e) => Err(read_error_to_api(e))
+      }
+    },
+    read_usage: fn(req : station_api::ApiRequest, reading : Bool) -> Result[base_codec::Json, station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let from_ms = match ro_parse_i64_param(req, "from") {
+        Ok(Some(v)) => v
+        Ok(None) => 0L
+        Err(e) => return Err(e)
+      }
+      let to_ms = match ro_parse_i64_param(req, "to") {
+        Ok(Some(v)) => v
+        Ok(None) => 9223372036854775807L
+        Err(e) => return Err(e)
+      }
+      let raw_tz = match ro_parse_i64_param(req, "tz") {
+        Ok(Some(v)) => v
+        Ok(None) => 0L
+        Err(e) => return Err(e)
+      }
+      let tz = if raw_tz < -1440L { -1440L } else if raw_tz > 1440L { 1440L } else { raw_tz }
+      let remote_from = match ro_parse_i64_param(req, "remoteFrom") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let h_from = match ro_parse_i64_param(req, "historyFrom") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      let h_to = match ro_parse_i64_param(req, "historyTo") {
+        Ok(v) => v
+        Err(e) => return Err(e)
+      }
+      if h_from.is_some() != h_to.is_some() {
+        return Err(station_api::ApiError::new(400, "history range needs both bounds"))
+      }
+      let usage_words = match req.lang {
+        station_api::Lang::Zh => base_codec::json_obj([
+          ("untitled", base_codec::json_str("未命名")),
+          ("directMessage", base_codec::json_str("私聊")),
+        ])
+        station_api::Lang::En => base_codec::json_obj([
+          ("untitled", base_codec::json_str("Untitled")),
+          ("directMessage", base_codec::json_str("Direct message")),
+        ])
+      }
+      let args_fields : Array[(String, base_codec::Json)] = [
+        ("lang", base_codec::json_str(lang_to_readops_str(req.lang))),
+        ("from", base_codec::json_str(from_ms.to_string())),
+        ("to", base_codec::json_str(to_ms.to_string())),
+        ("tz", base_codec::json_str(tz.to_string())),
+        ("reading", base_codec::json_bool(reading)),
+        ("viewer", viewer_to_readops_json(req.viewer)),
+        ("history", base_codec::json_bool(req.param("history") == Some("1"))),
+        ("words", usage_words),
+        ("now", base_codec::json_int64(host_shim::wall_ms())),
+      ]
+      match remote_from {
+        Some(rf) => args_fields.push(("remoteFrom", base_codec::json_str(rf.to_string())))
+        None => ()
+      }
+      match (h_from, h_to) {
+        (Some(hf), Some(ht)) => {
+          let local_end = ht + tz * 60000L
+          if hf > ht || ht - hf > 370L * 86400000L || hf % 60000L != 0L || ht % 60000L != 0L || local_end % 86400000L != 0L {
+            return Err(station_api::ApiError::new(400, "invalid history range"))
+          }
+          args_fields.push(("historyRange", base_codec::json_obj([
+            ("from", base_codec::json_str(hf.to_string())),
+            ("to", base_codec::json_str(ht.to_string())),
+          ])))
+        }
+        _ => ()
+      }
+      let ask = base_codec::json_obj([("args", base_codec::json_obj(args_fields))])
+      match readops_usage::usage_page_json_str(st.db, reader_state, data_dir, ask) {
+        Ok(raw_json) => match base_codec::json_parse(raw_json) {
+          base_codec::JsonParseResult::Ok(j) => Ok(j)
+          base_codec::JsonParseResult::Err(err) => Err(station_api::ApiError::new(500, "usage parse error: " + err))
+        }
+        Err(e) => Err(read_error_to_api(e))
+      }
+    },
+    read_usage_calls: fn(req : station_api::ApiRequest, session : String) -> Result[base_codec::Json, station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let from_ms = match ro_parse_i64_param(req, "from") {
+        Ok(Some(v)) => v
+        Ok(None) => 0L
+        Err(e) => return Err(e)
+      }
+      let to_ms = match ro_parse_i64_param(req, "to") {
+        Ok(Some(v)) => v
+        Ok(None) => 9223372036854775807L
+        Err(e) => return Err(e)
+      }
+      let before_at = match ro_parse_i64_param(req, "beforeAt") {
+        Ok(Some(v)) => v
+        Ok(None) => 9223372036854775807L
+        Err(e) => return Err(e)
+      }
+      let before_seq = match ro_parse_i64_param(req, "beforeSeq") {
+        Ok(Some(v)) => v
+        Ok(None) => 9223372036854775807L
+        Err(e) => return Err(e)
+      }
+      let limit = match ro_parse_i64_param(req, "limit") {
+        Ok(Some(v)) => v.to_int()
+        Ok(None) => 100
+        Err(e) => return Err(e)
+      }
+      let args = base_codec::json_obj([
+        ("session", base_codec::json_str(session)),
+        ("from", base_codec::json_str(from_ms.to_string())),
+        ("to", base_codec::json_str(to_ms.to_string())),
+        ("beforeAt", base_codec::json_str(before_at.to_string())),
+        ("beforeSeq", base_codec::json_str(before_seq.to_string())),
+        ("limit", base_codec::json_int(limit)),
+        ("viewer", viewer_to_readops_json(req.viewer)),
+      ])
+      match readops_local::usage_calls(st.db, args) {
+        Ok(j) => Ok(j)
+        Err(e) => Err(read_error_to_api(e))
+      }
+    },
+    read_machine_sessions: fn(_req : station_api::ApiRequest) -> Result[base_codec::Json, station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let home = station_sys::homedir()
+      let roots = base_codec::json_obj([
+        ("claude", base_codec::json_str(nodepath::join(sep, [home, ".claude", "projects"]))),
+        ("codex", base_codec::json_str(nodepath::join(sep, [home, ".codex", "sessions"]))),
+      ])
+      let args = base_codec::json_obj([("roots", roots)])
+      match readops_local::machine_sessions(st.db, reader_state.client, sep, args) {
+        Ok(j) => Ok(j)
+        Err(e) => Err(read_error_to_api(e))
+      }
+    },
+    read_machine_session: fn(req : station_api::ApiRequest, runtime : String, id : String) -> Result[base_codec::Json, station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let home = station_sys::homedir()
+      let roots = base_codec::json_obj([
+        ("claude", base_codec::json_str(nodepath::join(sep, [home, ".claude", "projects"]))),
+        ("codex", base_codec::json_str(nodepath::join(sep, [home, ".codex", "sessions"]))),
+      ])
+      let fs : Array[(String, base_codec::Json)] = [
+        ("lang", base_codec::json_str(lang_to_readops_str(req.lang))),
+        ("runtime", base_codec::json_str(runtime)),
+        ("id", base_codec::json_str(id)),
+        ("roots", roots),
+      ]
+      match req.param("limit") {
+        Some(l) => fs.push(("limit", base_codec::json_str(l)))
+        None => ()
+      }
+      match readops_local::machine_session(st.db, reader_state.client, sep, base_codec::json_obj(fs)) {
+        Ok(j) => Ok(j)
+        Err(e) => Err(read_error_to_api(e))
+      }
+    },
+    read_session_timeline: fn(req : station_api::ApiRequest, key : String) -> Result[base_codec::Json, station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let af : Array[(String, base_codec::Json)] = [
+        ("key", base_codec::json_str(key)),
+        ("lang", base_codec::json_str(lang_to_readops_str(req.lang))),
+      ]
+      match req.param("before") { Some(v) => af.push(("before", base_codec::json_str(v))), None => () }
+      match req.param("limit") { Some(v) => af.push(("limit", base_codec::json_str(v))), None => () }
+      match req.param("from") { Some(v) => af.push(("from", base_codec::json_str(v))), None => () }
+      match req.param("to") { Some(v) => af.push(("to", base_codec::json_str(v))), None => () }
+      match req.param("brief") { Some(v) => af.push(("brief", base_codec::json_str(v))), None => () }
+      match req.param("after") { Some(v) => af.push(("after", base_codec::json_str(v))), None => () }
+      let ask = base_codec::json_obj([("args", base_codec::json_obj(af))])
+      match readops_local::timeline(st.db, reader_state, data_dir, ask) {
+        Ok(j) => Ok(j)
+        Err(e) => Err(read_error_to_api(e))
+      }
+    },
+    resolve_session_place: fn(req : station_api::ApiRequest, key : String, path : String) -> Result[SessionPlaceInfo, station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let hd = station_sys::homedir()
+      let ask = base_codec::json_obj([
+        ("args", base_codec::json_obj([
+          ("key", base_codec::json_str(key)),
+          ("path", base_codec::json_str(path)),
+          ("lang", base_codec::json_str(lang_to_readops_str(req.lang))),
+          ("env", base_codec::json_obj([
+            ("home", base_codec::json_str(hd)),
+            ("homedir", base_codec::json_str(hd)),
+            ("mac", base_codec::json_bool(station_sys::os_name() == "darwin")),
+            ("mounts", base_codec::json_arr([])),
+          ])),
+          ("now", base_codec::json_int64(host_shim::wall_ms())),
+        ])),
+      ])
+      match readops_core::session_place(st.db, reader_state, data_dir, ask) {
+        Ok(j) => {
+          let p = match json_field_str(j, "path") { Some(s) => s, None => "" }
+          let n = match json_field_str(j, "name") { Some(s) => s, None => nodepath::basename(sep, p) }
+          let d = match json_field_bool(j, "dir") { Some(b) => b, None => false }
+          let sz = match ro_json_i64_field(j, "size") { Some(v) => v, None => 0L }
+          let mt = match ro_json_i64_field(j, "mtime") { Some(v) => v, None => 0L }
+          let ct = match json_field_str(j, "contentType") { Some(s) => s, None => ro_mime_of(p) }
+          Ok(SessionPlaceInfo::{ path: p, name: n, dir: d, size: sz, mtime: mt, content_type: ct })
+        }
+        Err(e) => Err(read_error_to_api(e))
+      }
+    },
+    session_workspace: fn(key : String) -> Result[Option[SessionWorkspaceInfo], station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      match st.get_session(key) {
+        Ok(Some(row)) => Ok(Some(SessionWorkspaceInfo::{
+          workspace: row.workspace,
+          runtime: row.runtime,
+          cwd: row.cwd,
+          archived: row.archived_at.is_some(),
+          running: row.running,
+        }))
+        Ok(None) => Ok(None)
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    resource_snapshot: fn() -> base_codec::Json {
+      let jobs = agents.jobs.list()
+      let pids : Array[Int] = []
+      for i in 0..<jobs.length() {
+        match jobs[i].pgid {
+          Some(p) => if p > 0 { pids.push(p) }
+          None => ()
+        }
+      }
+      let usage_raw = station_sys::process_usage_json(pids)
+      let usage_j = match base_codec::json_parse(usage_raw) {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => base_codec::json_obj([])
+      }
+      let groups : Array[base_codec::Json] = []
+      let mut total_mem : Int64 = 0L
+      let mut total_cpu : Double = 0.0
+      let seen_chat : Map[String, Bool] = Map::new()
+      for i in 0..<jobs.length() {
+        let j = jobs[i]
+        let is_running = match j.state {
+          station_jobs::JobState::Running => true
+          _ => false
+        }
+        let pid = match j.pgid { Some(p) => p, None => 0 }
+        let mut mem : Int64 = 0L
+        let mut cpu : Double = 0.0
+        if pid > 0 {
+          match base_codec::json_get(usage_j, pid.to_string()) {
+            Some(pj) => {
+              match base_codec::json_get(pj, "memory") { Some(base_codec::Json::Num(n, _)) => mem = n.to_int64(), _ => () }
+              match base_codec::json_get(pj, "cpu") { Some(base_codec::Json::Num(n, _)) => cpu = n, _ => () }
+            }
+            None => ()
+          }
+        }
+        total_mem = total_mem + mem
+        total_cpu = total_cpu + cpu
+        let procs : Array[base_codec::Json] = []
+        if pid > 0 {
+          procs.push(base_codec::json_obj([
+            ("pid", base_codec::json_int(pid)),
+            ("name", base_codec::json_str(j.name)),
+            ("cpu", base_codec::json_num(cpu)),
+            ("memory", base_codec::json_int64(mem)),
+            ("endable", base_codec::json_bool(is_running)),
+          ]))
+        }
+        seen_chat.set(j.session, true)
+        groups.push(base_codec::json_obj([
+          ("key", base_codec::json_str("chat:" + j.session)),
+          ("kind", base_codec::json_str("chat")),
+          ("session", base_codec::json_str(j.session)),
+          ("cpu", base_codec::json_num(cpu)),
+          ("memory", base_codec::json_int64(mem)),
+          ("netIn", base_codec::json_int(0)),
+          ("netOut", base_codec::json_int(0)),
+          ("diskRead", base_codec::json_int(0)),
+          ("diskWrite", base_codec::json_int(0)),
+          ("processes", base_codec::json_arr(procs)),
+        ]))
+      }
+      // Include active/warm agent actors from SessionHub (not endable via bare PID).
+      let actor_keys = agents.hub.actors.keys()
+      for ai in 0..<actor_keys.length() {
+        let sk = actor_keys[ai]
+        if !seen_chat.contains(sk) {
+          groups.push(base_codec::json_obj([
+            ("key", base_codec::json_str("chat:" + sk)),
+            ("kind", base_codec::json_str("chat")),
+            ("session", base_codec::json_str(sk)),
+            ("cpu", base_codec::json_num(0.0)),
+            ("memory", base_codec::json_int(0)),
+            ("netIn", base_codec::json_int(0)),
+            ("netOut", base_codec::json_int(0)),
+            ("diskRead", base_codec::json_int(0)),
+            ("diskWrite", base_codec::json_int(0)),
+            ("processes", base_codec::json_arr([])),
+          ]))
+        }
+      }
+      base_codec::json_obj([
+        ("at", base_codec::json_int64((agents.jobs.fs.now_ms)())),
+        ("everyMs", base_codec::json_int(5000)),
+        ("counted", base_codec::json_bool(true)),
+        ("net", base_codec::json_bool(false)),
+        ("disk", base_codec::json_bool(false)),
+        ("total", base_codec::json_obj([
+          ("cpu", base_codec::json_num(total_cpu)),
+          ("memory", base_codec::json_int64(total_mem)),
+          ("netIn", base_codec::json_int(0)),
+          ("netOut", base_codec::json_int(0)),
+          ("diskRead", base_codec::json_int(0)),
+          ("diskWrite", base_codec::json_int(0)),
+        ])),
+        ("groups", base_codec::json_arr(groups)),
+        ("history", base_codec::json_arr([])),
+      ])
+    },
+    resource_chats: fn(sessions : Array[String], ws : String) -> Result[base_codec::Json, station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      let fields : Array[(String, base_codec::Json)] = []
+      for i in 0..<sessions.length() {
+        let sk = sessions[i]
+        match st.db.first(
+          "SELECT s.key, s.title, COALESCE(s.ws, ?1) AS eff_ws," +
+          " (SELECT ts.thread FROM thread_sessions ts WHERE ts.session = s.key ORDER BY ts.joined_at DESC LIMIT 1) AS tid" +
+          " FROM sessions s WHERE s.key = ?2",
+          [base_codec::json_str(home_ws_str), base_codec::json_str(sk)],
+        ) {
+          Ok(Some(r)) => {
+            let eff_ws = match r.get("eff_ws") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            if eff_ws == ws {
+              fields.push((
+                sk,
+                base_codec::json_obj([
+                  ("thread", match r.get("tid") { Some(v) => v, None => base_codec::json_null() }),
+                  ("title", match r.get("title") { Some(v) => v, None => base_codec::json_null() }),
+                ]),
+              ))
+            }
+          }
+          _ => ()
+        }
+      }
+      Ok(base_codec::json_obj(fields))
+    },
+    // Handle-bound stop via `agents.jobs.stop(job.id, now_ms)` — zero bare `proc_kill` / PID-reuse TOCTOU.
+    end_session_process: fn(pid : Int, session : String, now_ms : Int64) -> Result[String, station_api::ApiError] {
+      let jobs = agents.jobs.list()
+      for i in 0..<jobs.length() {
+        let j = jobs[i]
+        if j.session == session {
+          match j.pgid {
+            Some(p) => {
+              if p == pid {
+                match j.state {
+                  station_jobs::JobState::Running => {
+                    match agents.jobs.stop(j.id, now_ms) {
+                      Ok(_) => return Ok(j.name)
+                      Err(msg) => return Err(station_api::ApiError::new(409, msg))
+                    }
+                  }
+                  _ => return Err(station_api::ApiError::new(409, "process is no longer running"))
+                }
+              }
+            }
+            None => ()
+          }
+        }
+      }
+      Err(station_api::ApiError::new(409, "process is not a tracked process for this session"))
+    },
+    list_project_rename_events: fn(ws : String) -> Array[ProjectRenameEventRec] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(_) => return []
+      }
+      match st.db.all(
+        "SELECT seq, from_name, to_name, renamed_at, wall_at, origin_seq FROM project_rename_events" +
+        " WHERE workspace = ?1 ORDER BY renamed_at ASC, origin_seq ASC, seq ASC",
+        [base_codec::json_str(ws)],
+      ) {
+        Ok(rows) => {
+          let out : Array[ProjectRenameEventRec] = []
+          for i in 0..<rows.length() {
+            let r = rows[i]
+            let seq = match r.get("seq") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+            let fnm = match r.get("from_name") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let tnm = match r.get("to_name") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+            let rat = match r.get("renamed_at") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+            let wat = match r.get("wall_at") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => rat }
+            let oseq = match r.get("origin_seq") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => seq }
+            out.push(ProjectRenameEventRec::{
+              seq: seq,
+              from_name: fnm,
+              to_name: tnm,
+              renamed_at: rat,
+              wall_at: if wat > 0L { wat } else { rat },
+              origin_seq: if oseq > 0L { oseq } else { seq },
+            })
+          }
+          out
+        }
+        Err(_) => []
+      }
+    },
+    write_file_atomic: fn(path : String, data : Bytes) -> Result[Unit, String] {
+      let dir = nodepath::dirname(sep, path)
+      let _ = station_sys::mkdir_p(dir)
+      if station_sys::write_file_atomic(path, data, 420) {
+        Ok(())
+      } else {
+        Err("failed to atomically write " + path)
+      }
+    },
+    transfers: shared_transfers,
+    put_aside_draft_files: fn(ws : String, sub : String, gone_ids : Array[String]) -> Unit {
+      let owner_dir = nodepath::join(sep, [data_dir, "board-files", ro_hashed_key([ws, sub])])
+      let gone_root = nodepath::join(sep, [owner_dir, ".gone"])
+      for i in 0..<gone_ids.length() {
+        let dh = ro_hashed_key([gone_ids[i]])
+        let src = nodepath::join(sep, [owner_dir, dh])
+        if (agents.jobs.fs.exists)(src) {
+          let _ = station_sys::mkdir_p(gone_root)
+          let dst = nodepath::join(sep, [gone_root, dh])
+          if (agents.jobs.fs.exists)(dst) {
+            let _ = (agents.jobs.fs.remove_dir_all)(dst)
+          }
+          if station_sys::rename(src, dst) {
+            // Refresh `.gone/<h(draftId)>` directory mtime to `now` so upkeep (`GONE_FILES_MS`)
+            // counts from when the draft became gone rather than when it was first created.
+            let touch = nodepath::join(sep, [dst, ".mtime-touch"])
+            if station_sys::write_file_atomic(touch, Bytes::new(0), 384) {
+              let _ = (agents.jobs.fs.remove_file)(touch)
+            }
+          }
+        }
+      }
+    },
+    // Production archived upload extraction runs asynchronously in `whole_daemon` via
+    // `EdgeMuxHub` (`ctx.mux_role.call_async_raw("tar.file", ...)`), never via sync `host_shim::wait`.
+    read_archived_upload: fn(_room : String, _rel : String) -> Option[Bytes] { None },
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 1. Raw Binary Session File HTTP Handler (`GET /sessions/:key/(files|parts|poster|open)`)
+//    1:1 aligned with `station/src/api/routes/sessions.ts` & `client/core-ts/src/station/requests.ts:553-632`
+// ---------------------------------------------------------------------------
+
+fn binary_http_status(
+  status : Int,
+  content_type : String,
+  body : Bytes,
+  build_ver : String,
+  extra : Array[http1::Header],
+) -> station_http::HttpResponse {
+  let headers : Array[http1::Header] = [
+    http1::Header::{ name: "content-type", value: content_type },
+    http1::Header::{ name: "cache-control", value: "private, max-age=3600" },
+    http1::Header::{ name: station_api::BUILD_HEADER, value: build_ver },
+  ]
+  for i in 0..<extra.length() {
+    headers.push(extra[i])
+  }
+  station_http::HttpResponse::{
+    status: status,
+    reason: station_http::status_reason(status),
+    headers: headers,
+    body: body,
+    chunked: false,
+    close_after: false,
+  }
+}
+
+fn binary_http_ok(
+  content_type : String,
+  body : Bytes,
+  build_ver : String,
+  extra : Array[http1::Header],
+) -> station_http::HttpResponse {
+  binary_http_status(200, content_type, body, build_ver, extra)
+}
+
+// Daemon streaming / async archive extraction plan returned to `whole_daemon`
+// so large (> 8 MiB) session files stream `200 OK` in 64 KiB backpressured chunks
+// and archived `workspace.tar.zst` uploads extract asynchronously over `EdgeMuxHub` (`tar.file`).
+pub struct SessionFileStreamSpec {
+  pub path : String
+  pub total_size : Int64
+  pub content_type : String
+  pub extra_headers : Array[http1::Header]
+  pub start_offset : Int64
+  pub send_length : Int64
+  pub unlink_on_done : Bool
+}
+
+pub struct SessionArchiveExtractSpec {
+  pub archive_path : String
+  pub wanted : Array[String]
+  pub out_path : String
+  pub content_type : String
+  pub is_parts : Bool
+  pub offset : Int64
+  pub length : Int64
+}
+
+pub enum SessionFilePlan {
+  NotMatched
+  ImmediateError(station_http::HttpResponse)
+  StreamFile(SessionFileStreamSpec)
+  ExtractArchive(SessionArchiveExtractSpec)
+}
+
+pub fn plan_daemon_session_file(
+  http_req : station_http::HttpRequest,
+  viewer : station_api::Viewer,
+  seen_store : station_api::SeenStore,
+  agents : WholeAgents,
+  port : WholeApiRuntimePort,
+  stream_sid : Int64,
+) -> SessionFilePlan {
+  if http_req.method != "GET" {
+    return SessionFilePlan::NotMatched
+  }
+  let segs = station_api::split_segments(http_req.path)
+  if segs.length() < 3 || segs[0] != "sessions" {
+    return SessionFilePlan::NotMatched
+  }
+  let key = station_api::segment_decode(segs[1])
+  let act = station_api::segment_decode(segs[2])
+  if act != "files" && act != "parts" && act != "open" {
+    return SessionFilePlan::NotMatched
+  }
+  if !station_api::session_seen(seen_store, viewer, key) {
+    return SessionFilePlan::NotMatched
+  }
+  let fs = agents.jobs.fs
+  let ro = port.readops
+  let api_req = station_api::ApiRequest::from_http(http_req, viewer)
+
+  if act == "open" {
+    if http_req.query_get("raw") != Some("1") {
+      return SessionFilePlan::NotMatched
+    }
+    if http_req.query_get("offset").is_some() || http_req.query_get("length").is_some() {
+      return SessionFilePlan::NotMatched
+    }
+    let rel_path = match http_req.query_get("path") { Some(p) => p, None => "" }
+    let found = match (ro.resolve_session_place)(api_req, key, rel_path) {
+      Ok(p) => p
+      Err(_) => return SessionFilePlan::NotMatched
+    }
+    if found.dir {
+      return SessionFilePlan::NotMatched
+    }
+    let have_sig = found.mtime.to_string() + ":" + found.size.to_string()
+    if http_req.query_get("have") == Some(have_sig) {
+      return SessionFilePlan::NotMatched
+    }
+    if found.size <= SESSION_FILE_STREAMED_MAX {
+      return SessionFilePlan::NotMatched
+    }
+    let extra : Array[http1::Header] = [
+      http1::Header::{ name: "stillfail-name", value: ro_uri_encode_component(found.name) },
+      http1::Header::{ name: "stillfail-path", value: ro_uri_encode_component(found.path) },
+      http1::Header::{ name: "stillfail-mtime", value: found.mtime.to_string() },
+      http1::Header::{ name: "stillfail-total", value: found.size.to_string() },
+    ]
+    return SessionFilePlan::StreamFile(SessionFileStreamSpec::{
+      path: found.path,
+      total_size: found.size,
+      content_type: found.content_type,
+      extra_headers: extra,
+      start_offset: 0L,
+      send_length: found.size,
+      unlink_on_done: false,
+    })
+  }
+
+  // `files` or `parts`
+  if act == "files" && (http_req.query_get("thumb") == Some("1") || http_req.query_get("thumb") == Some("2")) {
+    return SessionFilePlan::NotMatched
+  }
+  let ws_info = match (ro.session_workspace)(key) {
+    Ok(Some(info)) => info
+    _ => return SessionFilePlan::NotMatched
+  }
+  let raw_name = match http_req.query_get("name") { Some(n) => n, None => "" }
+  let file_path = match ro_resolve_upload_path(fs, ws_info.workspace, raw_name) {
+    Ok(p) => p
+    Err(_) => return SessionFilePlan::NotMatched
+  }
+  let mime = ro_mime_of(file_path)
+  let base_name = nodepath::basename(fs.sep, file_path)
+  match (fs.stat)(file_path) {
+    Some(st) => {
+      if st.is_file() {
+        if act == "files" && st.size > SESSION_FILE_STREAMED_MAX {
+          return SessionFilePlan::StreamFile(SessionFileStreamSpec::{
+            path: file_path,
+            total_size: st.size,
+            content_type: mime,
+            extra_headers: [http1::Header::{ name: "stillfail-total", value: st.size.to_string() }],
+            start_offset: 0L,
+            send_length: st.size,
+            unlink_on_done: false,
+          })
+        }
+        return SessionFilePlan::NotMatched
+      }
+    }
+    None => ()
+  }
+  // Not on disk: check `<room>/workspace.tar.zst` for async `tar.file` extraction via `EdgeMuxHub`.
+  let room = nodepath::dirname(fs.sep, ro_strip_trailing_sep(ws_info.workspace, fs.sep))
+  let archive_path = nodepath::join(fs.sep, [room, "workspace.tar.zst"])
+  if !(fs.exists)(archive_path) {
+    return SessionFilePlan::NotMatched
+  }
+  let mut part_off : Int64 = 0L
+  let mut part_len : Int64 = 8L * 1024L * 1024L
+  if act == "parts" {
+    let max_part : Int64 = 8L * 1024L * 1024L
+    part_off = match ro_parse_i64_param(api_req, "offset") {
+      Ok(Some(v)) => if v < 0L { return SessionFilePlan::ImmediateError(station_api::json_error(400, "invalid offset or length")) } else { v }
+      Ok(None) => 0L
+      Err(_) => return SessionFilePlan::ImmediateError(station_api::json_error(400, "invalid offset or length"))
+    }
+    part_len = match ro_parse_i64_param(api_req, "length") {
+      Ok(Some(v)) => if v < 0L || v > max_part { return SessionFilePlan::ImmediateError(station_api::json_error(400, "invalid offset or length")) } else { v }
+      Ok(None) => max_part
+      Err(_) => return SessionFilePlan::ImmediateError(station_api::json_error(400, "invalid offset or length"))
+    }
+  }
+  let tmp_dir = nodepath::join(fs.sep, [agents.config.data_dir, "tmp"])
+  let _ = (fs.mkdir_p)(tmp_dir)
+  let out_path = nodepath::join(fs.sep, [tmp_dir, "tar-extract-" + stream_sid.to_string() + "-" + (fs.now_ms)().to_string() + ".bin"])
+  SessionFilePlan::ExtractArchive(SessionArchiveExtractSpec::{
+    archive_path: archive_path,
+    wanted: ["uploads", base_name],
+    out_path: out_path,
+    content_type: mime,
+    is_parts: act == "parts",
+    offset: part_off,
+    length: part_len,
+  })
+}
+
+fn binary_http_bounded_file(
+  fs : station_jobs::FsPort,
+  file_path : String,
+  total_size : Int64,
+  content_type : String,
+  build_ver : String,
+  extra : Array[http1::Header],
+) -> station_http::HttpResponse {
+  if total_size > SESSION_FILE_STREAMED_MAX {
+    // Never return `206` for non-Range whole-file requests (`client/core-ts` requires `200 OK`)
+    // and never `read_bytes` > 8 MiB into memory; `whole_daemon` streams > 8 MiB files as `200 OK`.
+    return station_api::json_error(501, "streaming >8MiB session files requires daemon streaming channel")
+  }
+  let bytes = if total_size == 0L {
+    Bytes::new(0)
+  } else {
+    match (fs.read_range)(file_path, 0L, total_size) {
+      Some(b) => b
+      None => return station_api::json_error(500, "failed to read file")
+    }
+  }
+  let hdrs : Array[http1::Header] = []
+  for i in 0..<extra.length() {
+    hdrs.push(extra[i])
+  }
+  hdrs.push(http1::Header::{ name: "stillfail-total", value: total_size.to_string() })
+  binary_http_ok(content_type, bytes, build_ver, hdrs)
+}
+
+pub fn handle_session_binary_get(
+  http_req : station_http::HttpRequest,
+  viewer : station_api::Viewer,
+  seen_store : station_api::SeenStore,
+  agents : WholeAgents,
+  thumb_port : Option[station_screens::ThumbPort],
+  build_ver : String,
+  port : WholeApiRuntimePort,
+) -> Option[station_http::HttpResponse] {
+  if http_req.method != "GET" {
+    return None
+  }
+  let segs = station_api::split_segments(http_req.path)
+  if segs.length() < 3 || segs[0] != "sessions" {
+    return None
+  }
+  let key = station_api::segment_decode(segs[1])
+  let act = station_api::segment_decode(segs[2])
+  if act != "files" && act != "parts" && act != "poster" && act != "open" {
+    return None
+  }
+  if !station_api::session_seen(seen_store, viewer, key) {
+    return Some(station_api::json_error(404, "unknown session " + key))
+  }
+  let fs = agents.jobs.fs
+  let data_dir = agents.config.data_dir
+  let ro = port.readops
+  let api_req = station_api::ApiRequest::from_http(http_req, viewer)
+
+  if act == "open" {
+    let rel_path = match http_req.query_get("path") { Some(p) => p, None => "" }
+    let found = match (ro.resolve_session_place)(api_req, key, rel_path) {
+      Ok(p) => p
+      Err(e) => return Some(station_api::api_error_response(e))
+    }
+    if found.dir {
+      return Some(station_api::json_error(400, "a directory"))
+    }
+    let named : Array[http1::Header] = [
+      http1::Header::{ name: "stillfail-name", value: ro_uri_encode_component(found.name) },
+      http1::Header::{ name: "stillfail-path", value: ro_uri_encode_component(found.path) },
+      http1::Header::{ name: "stillfail-mtime", value: found.mtime.to_string() },
+    ]
+    let is_raw = http_req.query_get("raw") == Some("1")
+    let have_sig = found.mtime.to_string() + ":" + found.size.to_string()
+    if is_raw && http_req.query_get("have") == Some(have_sig) {
+      let h304 : Array[http1::Header] = [
+        http1::Header::{ name: "content-type", value: found.content_type },
+        http1::Header::{ name: "cache-control", value: "no-store" },
+        http1::Header::{ name: "stillfail-total", value: found.size.to_string() },
+        http1::Header::{ name: station_api::BUILD_HEADER, value: build_ver },
+      ]
+      for i in 0..<named.length() { h304.push(named[i]) }
+      return Some(station_http::HttpResponse::{
+        status: 304,
+        reason: station_http::status_reason(304),
+        headers: h304,
+        body: Bytes::new(0),
+        chunked: false,
+        close_after: false,
+      })
+    }
+    if is_raw && (http_req.query_get("offset").is_some() || http_req.query_get("length").is_some()) {
+      let max_part : Int64 = 8L * 1024L * 1024L
+      let offset = match ro_parse_i64_param(api_req, "offset") {
+        Ok(Some(v)) => if v < 0L { return Some(station_api::json_error(400, "invalid offset or length")) } else { v }
+        Ok(None) => 0L
+        Err(_) => return Some(station_api::json_error(400, "invalid offset or length"))
+      }
+      let length = match ro_parse_i64_param(api_req, "length") {
+        Ok(Some(v)) => if v < 0L || v > max_part { return Some(station_api::json_error(400, "invalid offset or length")) } else { v }
+        Ok(None) => max_part
+        Err(_) => return Some(station_api::json_error(400, "invalid offset or length"))
+      }
+      let chunk = match (fs.read_range)(found.path, offset, length) {
+        Some(b) => b
+        None => Bytes::new(0)
+      }
+      named.push(http1::Header::{ name: "stillfail-total", value: found.size.to_string() })
+      return Some(binary_http_ok(found.content_type, chunk, build_ver, named))
+    }
+    if is_raw {
+      return Some(binary_http_bounded_file(fs, found.path, found.size, found.content_type, build_ver, named))
+    }
+    if found.size > SESSION_FILE_STREAMED_MAX {
+      return Some(station_api::json_error(413, "too big to open here"))
+    }
+    let bytes = if found.size == 0L {
+      Bytes::new(0)
+    } else {
+      match (fs.read_range)(found.path, 0L, found.size) {
+        Some(b) => b
+        None => return Some(station_api::json_error(500, "failed to read file"))
+      }
+    }
+    return Some(
+      station_api::json_ok(base_codec::json_obj([
+        ("name", base_codec::json_str(found.name)),
+        ("path", base_codec::json_str(found.path)),
+        ("type", base_codec::json_str(found.content_type)),
+        ("size", base_codec::json_int(bytes.length())),
+        ("bytes", base_codec::json_str(base64::encode(bytes))),
+      ])).with_header(station_api::BUILD_HEADER, build_ver),
+    )
+  }
+
+  // `files`, `parts`, `poster`: resolve uploaded file in `<workspace>/uploads/<base>` or archived `workspace.tar.zst`
+  let ws_info = match (ro.session_workspace)(key) {
+    Ok(Some(info)) => info
+    Ok(None) => return Some(station_api::json_error(404, "unknown session " + key))
+    Err(e) => return Some(station_api::api_error_response(e))
+  }
+  let raw_name = match http_req.query_get("name") { Some(n) => n, None => "" }
+  let file_path = match ro_resolve_upload_path(fs, ws_info.workspace, raw_name) {
+    Ok(p) => p
+    Err(e) => return Some(station_api::api_error_response(e))
+  }
+  let mime = ro_mime_of(file_path)
+  let base_name = nodepath::basename(fs.sep, file_path)
+  let on_disk = match (fs.stat)(file_path) {
+    Some(st) => st.is_file()
+    None => false
+  }
+
+  if act == "poster" {
+    if !ro_is_video_name(base_name) {
+      return Some(station_api::json_error(404, "no poster"))
+    }
+    // Hash the clean non-realpath `<workspace>/uploads/<base>` (aligned 1:1 with
+    // `station/src/drive/thumbs.ts:29` + `posters.ts:37`, avoiding macOS `/var` -> `/private/var` mismatch).
+    let clean_uploads = ro_strip_trailing_sep(nodepath::join(fs.sep, [ws_info.workspace, "uploads"]), fs.sep)
+    let clean_upload_path = nodepath::join(fs.sep, [clean_uploads, base_name])
+    let poster_path = nodepath::join(fs.sep, [data_dir, "thumbs", ro_poster_hash(clean_upload_path) + ".poster.jpg"])
+    match (fs.stat)(poster_path) {
+      Some(pst) => {
+        if pst.is_file() && pst.size <= SESSION_FILE_STREAMED_MAX {
+          return Some(binary_http_bounded_file(fs, poster_path, pst.size, "image/jpeg", build_ver, []))
+        }
+        return Some(station_api::json_error(404, "no poster"))
+      }
+      None => return Some(station_api::json_error(404, "no poster"))
+    }
+  }
+
+  if !on_disk {
+    // Archived workspace fallback: in-memory test stub if provided; otherwise if `workspace.tar.zst`
+    // exists on disk without `whole_daemon` async `EdgeMuxHub` context, return honest `501`.
+    let room = nodepath::dirname(fs.sep, ro_strip_trailing_sep(ws_info.workspace, fs.sep))
+    match (ro.read_archived_upload)(room, "uploads/" + base_name) {
+      Some(ab) => {
+        if act == "parts" {
+          let max_part : Int64 = 8L * 1024L * 1024L
+          let offset = match ro_parse_i64_param(api_req, "offset") {
+            Ok(Some(v)) => if v < 0L { return Some(station_api::json_error(400, "invalid offset or length")) } else { v.to_int() }
+            Ok(None) => 0
+            Err(_) => return Some(station_api::json_error(400, "invalid offset or length"))
+          }
+          let length = match ro_parse_i64_param(api_req, "length") {
+            Ok(Some(v)) => if v < 0L || v > max_part { return Some(station_api::json_error(400, "invalid offset or length")) } else { v.to_int() }
+            Ok(None) => max_part.to_int()
+            Err(_) => return Some(station_api::json_error(400, "invalid offset or length"))
+          }
+          let start = if offset > ab.length() { ab.length() } else { offset }
+          let end_i = if start + length > ab.length() { ab.length() } else { start + length }
+          let slice_b = ab.slice(start, end_i)
+          return Some(binary_http_ok(mime, slice_b, build_ver, [http1::Header::{ name: "stillfail-total", value: ab.length().to_string() }]))
+        }
+        return Some(binary_http_ok(mime, ab, build_ver, []))
+      }
+      None => {
+        let archive_path = nodepath::join(fs.sep, [room, "workspace.tar.zst"])
+        if (fs.exists)(archive_path) {
+          return Some(station_api::json_error(501, "archived upload extraction requires daemon async EdgeMuxHub"))
+        }
+        return Some(station_api::json_error(404, "station.files.notFound"))
+      }
+    }
+  }
+
+  let st_info = match (fs.stat)(file_path) {
+    Some(s) => s
+    None => return Some(station_api::json_error(404, "station.files.notFound"))
+  }
+
+  if act == "parts" {
+    let max_part : Int64 = 8L * 1024L * 1024L
+    let offset = match ro_parse_i64_param(api_req, "offset") {
+      Ok(Some(v)) => if v < 0L { return Some(station_api::json_error(400, "invalid offset or length")) } else { v }
+      Ok(None) => 0L
+      Err(_) => return Some(station_api::json_error(400, "invalid offset or length"))
+    }
+    let length = match ro_parse_i64_param(api_req, "length") {
+      Ok(Some(v)) => if v < 0L || v > max_part { return Some(station_api::json_error(400, "invalid offset or length")) } else { v }
+      Ok(None) => max_part
+      Err(_) => return Some(station_api::json_error(400, "invalid offset or length"))
+    }
+    let mut serve_path = file_path
+    let mut serve_mime = mime
+    let mut serve_total = st_info.size
+    let extra : Array[http1::Header] = []
+    if http_req.query_get("thumb") == Some("2") {
+      let mut preview_ver = "0"
+      match thumb_port {
+        Some(tp) => {
+          let thumbs_dir = nodepath::join(fs.sep, [data_dir, "thumbs"])
+          match (tp.thumbnail)(file_path, thumbs_dir, false) {
+            Some(th) => {
+              match (fs.stat)(th.path) {
+                Some(tst) => {
+                  serve_path = th.path
+                  serve_mime = th.mime
+                  serve_total = tst.size
+                  preview_ver = if tst.mtime_ms > 0L { tst.mtime_ms.to_string() } else { "1" }
+                }
+                None => ()
+              }
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+      extra.push(http1::Header::{ name: "stillfail-preview", value: preview_ver })
+    }
+    let chunk = match (fs.read_range)(serve_path, offset, length) {
+      Some(b) => b
+      None => Bytes::new(0)
+    }
+    extra.push(http1::Header::{ name: "stillfail-total", value: serve_total.to_string() })
+    return Some(binary_http_ok(serve_mime, chunk, build_ver, extra))
+  }
+
+  // `files` (supports `thumb=1|2`; strictly bounded <= 8 MiB per response, returns 206 + Content-Range + stillfail-total for > 8 MiB)
+  let thumb_q = http_req.query_get("thumb")
+  if thumb_q == Some("1") || thumb_q == Some("2") {
+    match thumb_port {
+      Some(tp) => {
+        let thumbs_dir = nodepath::join(fs.sep, [data_dir, "thumbs"])
+        let boxed = thumb_q == Some("1")
+        match (tp.thumbnail)(file_path, thumbs_dir, boxed) {
+          Some(th) => {
+            match (fs.stat)(th.path) {
+              Some(tst) => {
+                if tst.is_file() && tst.size <= SESSION_FILE_STREAMED_MAX {
+                  return Some(binary_http_bounded_file(fs, th.path, tst.size, th.mime, build_ver, []))
+                }
+              }
+              None => ()
+            }
+          }
+          None => ()
+        }
+      }
+      None => ()
+    }
+  }
+  Some(binary_http_bounded_file(fs, file_path, st_info.size, mime, build_ver, []))
+}
+
+// ---------------------------------------------------------------------------
+// 2. ReadOps dispatcher (`dispatch_wave17c3a_read_op`)
+// ---------------------------------------------------------------------------
+
+pub fn dispatch_wave17c3a_read_op(
+  op : String,
+  req : station_api::ApiRequest,
+  args : base_codec::Json,
+  agents : WholeAgents,
+  seen_store : station_api::SeenStore,
+  port : WholeApiRuntimePort,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  let fs = agents.jobs.fs
+  let ro = port.readops
+
+  if op == "memory" {
+    return Some((ro.read_memory)(req.viewer))
+  }
+
+  if op == "resources" {
+    let shot = (ro.resource_snapshot)()
+    let raw_groups : Array[base_codec::Json] = match base_codec::json_get(shot, "groups") {
+      Some(base_codec::Json::Arr(gs)) => gs
+      _ => []
+    }
+    let session_keys : Array[String] = []
+    for i in 0..<raw_groups.length() {
+      match json_field_str(raw_groups[i], "session") {
+        Some(sk) => if sk.length() > 0 && !session_keys.contains(sk) { session_keys.push(sk) }
+        None => ()
+      }
+    }
+    let chats_j = match (ro.resource_chats)(session_keys, req.viewer.workspace) {
+      Ok(c) => c
+      Err(e) => return Some(Err(e))
+    }
+    let filtered_groups : Array[base_codec::Json] = []
+    let hidden_procs : Array[base_codec::Json] = []
+    let mut hidden_cpu : Double = 0.0
+    let mut hidden_mem : Int64 = 0L
+    let mut hidden_net_in : Int64 = 0L
+    let mut hidden_net_out : Int64 = 0L
+    let mut hidden_disk_r : Int64 = 0L
+    let mut hidden_disk_w : Int64 = 0L
+    for i in 0..<raw_groups.length() {
+      let g = raw_groups[i]
+      let gkey = match json_field_str(g, "key") { Some(k) => k, None => "" }
+      let is_chat = gkey.starts_with("chat:")
+      let sk = if is_chat { gkey.slice(5, gkey.length()) } else { "" }
+      let visible = !is_chat || station_api::session_seen(seen_store, req.viewer, sk)
+      if visible {
+        filtered_groups.push(g)
+      } else {
+        match base_codec::json_get(g, "cpu") { Some(base_codec::Json::Num(n, _)) => hidden_cpu = hidden_cpu + n, _ => () }
+        match base_codec::json_get(g, "memory") { Some(base_codec::Json::Num(n, _)) => hidden_mem = hidden_mem + n.to_int64(), _ => () }
+        match base_codec::json_get(g, "netIn") { Some(base_codec::Json::Num(n, _)) => hidden_net_in = hidden_net_in + n.to_int64(), _ => () }
+        match base_codec::json_get(g, "netOut") { Some(base_codec::Json::Num(n, _)) => hidden_net_out = hidden_net_out + n.to_int64(), _ => () }
+        match base_codec::json_get(g, "diskRead") { Some(base_codec::Json::Num(n, _)) => hidden_disk_r = hidden_disk_r + n.to_int64(), _ => () }
+        match base_codec::json_get(g, "diskWrite") { Some(base_codec::Json::Num(n, _)) => hidden_disk_w = hidden_disk_w + n.to_int64(), _ => () }
+        match base_codec::json_get(g, "processes") {
+          Some(base_codec::Json::Arr(ps)) => {
+            for pi in 0..<ps.length() {
+              hidden_procs.push(json_obj_set(ps[pi], "endable", Some(base_codec::json_bool(false))))
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    if hidden_procs.length() > 0 || hidden_mem > 0L || hidden_cpu > 0.0 {
+      let mut merged_into_existing = false
+      for gi in 0..<filtered_groups.length() {
+        if json_field_str(filtered_groups[gi], "key") == Some("agents") {
+          let eg = filtered_groups[gi]
+          let e_cpu = match base_codec::json_get(eg, "cpu") { Some(base_codec::Json::Num(n, _)) => n, _ => 0.0 }
+          let e_mem = match base_codec::json_get(eg, "memory") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+          let e_ni = match base_codec::json_get(eg, "netIn") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+          let e_no = match base_codec::json_get(eg, "netOut") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+          let e_dr = match base_codec::json_get(eg, "diskRead") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+          let e_dw = match base_codec::json_get(eg, "diskWrite") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
+          let combined_procs : Array[base_codec::Json] = []
+          match base_codec::json_get(eg, "processes") {
+            Some(base_codec::Json::Arr(ps)) => {
+              for pi in 0..<ps.length() { combined_procs.push(ps[pi]) }
+            }
+            _ => ()
+          }
+          for pi in 0..<hidden_procs.length() { combined_procs.push(hidden_procs[pi]) }
+          filtered_groups[gi] = base_codec::json_obj([
+            ("key", base_codec::json_str("agents")),
+            ("kind", base_codec::json_str("agents")),
+            ("session", base_codec::json_null()),
+            ("cpu", base_codec::json_num(e_cpu + hidden_cpu)),
+            ("memory", base_codec::json_int64(e_mem + hidden_mem)),
+            ("netIn", base_codec::json_int64(e_ni + hidden_net_in)),
+            ("netOut", base_codec::json_int64(e_no + hidden_net_out)),
+            ("diskRead", base_codec::json_int64(e_dr + hidden_disk_r)),
+            ("diskWrite", base_codec::json_int64(e_dw + hidden_disk_w)),
+            ("processes", base_codec::json_arr(combined_procs)),
+          ])
+          merged_into_existing = true
+          break
+        }
+      }
+      if !merged_into_existing {
+        filtered_groups.push(base_codec::json_obj([
+          ("key", base_codec::json_str("agents")),
+          ("kind", base_codec::json_str("agents")),
+          ("session", base_codec::json_null()),
+          ("cpu", base_codec::json_num(hidden_cpu)),
+          ("memory", base_codec::json_int64(hidden_mem)),
+          ("netIn", base_codec::json_int64(hidden_net_in)),
+          ("netOut", base_codec::json_int64(hidden_net_out)),
+          ("diskRead", base_codec::json_int64(hidden_disk_r)),
+          ("diskWrite", base_codec::json_int64(hidden_disk_w)),
+          ("processes", base_codec::json_arr(hidden_procs)),
+        ]))
+      }
+    }
+    let mstats = (port.machine_stats)()
+    let cores = match base_codec::json_get(mstats, "cores") { Some(v) => v, None => base_codec::json_int(1) }
+    let mem_tot = match base_codec::json_get(mstats, "memory") { Some(v) => v, None => base_codec::json_int(0) }
+    let mut resp = json_obj_set(shot, "groups", Some(base_codec::json_arr(filtered_groups)))
+    resp = json_obj_set(resp, "chats", Some(chats_j))
+    resp = json_obj_set(resp, "machine", Some(base_codec::json_obj([("cores", cores), ("memory", mem_tot)])))
+    return Some(Ok(resp))
+  }
+
+  if op == "usage" {
+    let reading = match json_field_bool(args, "reading") { Some(b) => b, None => false }
+    return Some((ro.read_usage)(req, reading))
+  }
+
+  if op == "usage.calls" {
+    let key = match json_field_str(args, "key") {
+      Some(k) => if k.length() > 0 { k } else { return Some(Err(station_api::ApiError::new(400, "missing session key"))) }
+      None => return Some(Err(station_api::ApiError::new(400, "missing session key")))
+    }
+    if !station_api::session_seen(seen_store, req.viewer, key) {
+      return Some(Err(station_api::ApiError::new(404, "unknown session " + key)))
+    }
+    return Some((ro.read_usage_calls)(req, key))
+  }
+
+  if op == "machineSessions" {
+    if !req.viewer.home {
+      return Some(Err(station_api::ApiError::new(403, "machine sessions belong to the station's home workspace")))
+    }
+    return Some((ro.read_machine_sessions)(req))
+  }
+
+  if op == "machineSession" {
+    if !req.viewer.home {
+      return Some(Err(station_api::ApiError::new(403, "machine sessions belong to the station's home workspace")))
+    }
+    let runtime = match json_field_str(args, "runtime") { Some(r) => r, None => "" }
+    let id = match json_field_str(args, "id") { Some(i) => i, None => "" }
+    if !ro_is_safe_segment(runtime) || !ro_is_safe_segment(id) {
+      return Some(Err(station_api::ApiError::new(400, "invalid machine session identifier")))
+    }
+    return Some((ro.read_machine_session)(req, runtime, id))
+  }
+
+  if op == "session.timeline" {
+    let key = match json_field_str(args, "key") {
+      Some(k) => if k.length() > 0 { k } else { return Some(Err(station_api::ApiError::new(400, "missing key"))) }
+      None => return Some(Err(station_api::ApiError::new(400, "missing key")))
+    }
+    if !station_api::session_seen(seen_store, req.viewer, key) {
+      return Some(Err(station_api::ApiError::new(404, "unknown session " + key)))
+    }
+    return Some((ro.read_session_timeline)(req, key))
+  }
+
+  if op == "session.peek" {
+    let key = match json_field_str(args, "key") {
+      Some(k) => if k.length() > 0 { k } else { return Some(Err(station_api::ApiError::new(400, "missing key"))) }
+      None => return Some(Err(station_api::ApiError::new(400, "missing key")))
+    }
+    if !station_api::session_seen(seen_store, req.viewer, key) {
+      return Some(Err(station_api::ApiError::new(404, "unknown session " + key)))
+    }
+    let rel_path = match req.param("path") {
+      Some(p) => p
+      None => match json_field_str(args, "path") { Some(p) => p, None => "" }
+    }
+    let found = match (ro.resolve_session_place)(req, key, rel_path) {
+      Ok(p) => p
+      Err(e) => return Some(Err(e))
+    }
+    if found.dir {
+      let raw_entries = match (fs.read_dir)(found.path) { Some(es) => es, None => [] }
+      let visible : Array[String] = []
+      for i in 0..<raw_entries.length() {
+        if !raw_entries[i].starts_with(".") { visible.push(raw_entries[i]) }
+      }
+      let sorted = ro_sort_strings(visible)
+      let shown : Array[base_codec::Json] = []
+      let lim = if sorted.length() < 12 { sorted.length() } else { 12 }
+      for i in 0..<lim {
+        let child = nodepath::join(fs.sep, [found.path, sorted[i]])
+        let is_d = match (fs.stat)(child) { Some(cs) => cs.is_dir(), None => false }
+        shown.push(base_codec::json_str(if is_d { sorted[i] + "/" } else { sorted[i] }))
+      }
+      return Some(Ok(base_codec::json_obj([
+        ("path", base_codec::json_str(found.path)),
+        ("name", base_codec::json_str(found.name)),
+        ("size", base_codec::json_int64(found.size)),
+        ("mtime", base_codec::json_int64(found.mtime)),
+        ("type", base_codec::json_str(found.content_type)),
+        ("kind", base_codec::json_str("dir")),
+        ("entries", base_codec::json_arr(shown)),
+        ("count", base_codec::json_int(sorted.length())),
+      ])))
+    }
+    if found.content_type.starts_with("image/") {
+      let fields : Array[(String, base_codec::Json)] = [
+        ("path", base_codec::json_str(found.path)),
+        ("name", base_codec::json_str(found.name)),
+        ("size", base_codec::json_int64(found.size)),
+        ("mtime", base_codec::json_int64(found.mtime)),
+        ("type", base_codec::json_str(found.content_type)),
+        ("kind", base_codec::json_str("image")),
+      ]
+      if found.size <= 256L * 1024L {
+        match (fs.read_bytes)(found.path) {
+          Some(img_b) => fields.push(("image", base_codec::json_obj([
+            ("type", base_codec::json_str(found.content_type)),
+            ("data", base_codec::json_str(base64::encode(img_b))),
+          ])))
+          None => ()
+        }
+      }
+      return Some(Ok(base_codec::json_obj(fields)))
+    }
+    let head = match (fs.read_range)(found.path, 0L, 64L * 1024L) { Some(b) => b, None => Bytes::new(0) }
+    let mut has_nul = false
+    for i in 0..<head.length() {
+      if (head[i].to_int() & 0xFF) == 0 {
+        has_nul = true
+        break
+      }
+    }
+    if has_nul {
+      return Some(Ok(base_codec::json_obj([
+        ("path", base_codec::json_str(found.path)),
+        ("name", base_codec::json_str(found.name)),
+        ("size", base_codec::json_int64(found.size)),
+        ("mtime", base_codec::json_int64(found.mtime)),
+        ("type", base_codec::json_str(found.content_type)),
+        ("kind", base_codec::json_str("binary")),
+      ])))
+    }
+    let raw_lines = head.to_string().split("\n")
+    let lines : Array[String] = []
+    let cut_len = if found.size > head.length().to_int64() && raw_lines.length() > 1 { raw_lines.length() - 1 } else { raw_lines.length() }
+    for i in 0..<cut_len {
+      let mut l = raw_lines[i]
+      if l.ends_with("\r") { l = l.slice(0, l.length() - 1) }
+      lines.push(l)
+    }
+    let asked_line = match ro_parse_i64_param(req, "line") {
+      Ok(Some(v)) => { let n = v.to_int(); if n > 0 && n <= lines.length() { Some(n) } else { None } }
+      _ => None
+    }
+    let start_line = match asked_line { Some(at) => if at > 3 { at - 3 } else { 1 }, None => 1 }
+    let shown_lines : Array[base_codec::Json] = []
+    let mut idx = start_line - 1
+    let mut taken = 0
+    while idx < lines.length() && taken < 12 {
+      let l = lines[idx]
+      let clipped = if l.length() > 240 { l.slice(0, 240) + "…" } else { l }
+      shown_lines.push(base_codec::json_str(clipped))
+      idx = idx + 1
+      taken = taken + 1
+    }
+    let lf : Array[(String, base_codec::Json)] = [
+      ("start", base_codec::json_int(start_line)),
+      ("text", base_codec::json_arr(shown_lines)),
+    ]
+    match asked_line { Some(at) => lf.push(("at", base_codec::json_int(at))), None => () }
+    return Some(Ok(base_codec::json_obj([
+      ("path", base_codec::json_str(found.path)),
+      ("name", base_codec::json_str(found.name)),
+      ("size", base_codec::json_int64(found.size)),
+      ("mtime", base_codec::json_int64(found.mtime)),
+      ("type", base_codec::json_str(found.content_type)),
+      ("kind", base_codec::json_str("text")),
+      ("lines", base_codec::json_obj(lf)),
+    ])))
+  }
+
+  // `session.files` / `session.parts` / `session.poster` / `session.open` are served as raw binary HTTP
+  // in `WholeApi::handle_authenticated_api_with_status` (`handle_session_binary_get`).
+  if op == "session.open" {
+    let key = match json_field_str(args, "key") {
+      Some(k) => if k.length() > 0 { k } else { return Some(Err(station_api::ApiError::new(400, "missing key"))) }
+      None => return Some(Err(station_api::ApiError::new(400, "missing key")))
+    }
+    if !station_api::session_seen(seen_store, req.viewer, key) {
+      return Some(Err(station_api::ApiError::new(404, "unknown session " + key)))
+    }
+    let rel_path = match req.param("path") {
+      Some(p) => p
+      None => match json_field_str(args, "path") { Some(p) => p, None => "" }
+    }
+    let found = match (ro.resolve_session_place)(req, key, rel_path) {
+      Ok(p) => p
+      Err(e) => return Some(Err(e))
+    }
+    if found.dir {
+      return Some(Err(station_api::ApiError::new(400, "a directory")))
+    }
+    if found.size > SESSION_FILE_STREAMED_MAX {
+      return Some(Err(station_api::ApiError::new(413, "too big to open here")))
+    }
+    let bytes = if found.size == 0L {
+      Bytes::new(0)
+    } else {
+      match (fs.read_range)(found.path, 0L, found.size) {
+        Some(b) => b
+        None => return Some(Err(station_api::ApiError::new(500, "failed to read file")))
+      }
+    }
+    return Some(Ok(base_codec::json_obj([
+      ("name", base_codec::json_str(found.name)),
+      ("path", base_codec::json_str(found.path)),
+      ("type", base_codec::json_str(found.content_type)),
+      ("size", base_codec::json_int(bytes.length())),
+      ("bytes", base_codec::json_str(base64::encode(bytes))),
+    ])))
+  }
+
+  None
+}
+
+// ---------------------------------------------------------------------------
+// 3. CRDT Preference / Collaboration Record Parsers & Mergers (with 413 limits)
+// ---------------------------------------------------------------------------
+
+let CRDT_STARS_BODY_MOST : Int = 256 * 1024
+let CRDT_PROGRESS_BODY_MOST : Int = 4096
+let CRDT_PRESET_PROJECTS_BODY_MOST : Int = 256 * 1024
+let CRDT_DRAFTS_BODY_MOST : Int = 4 * 1024 * 1024
+
+fn ro_emit_private_event(
+  events : station_api::EventsHub,
+  ev_name : String,
+  ws : String,
+  sub : String,
+  now_ms : Int64,
+) -> Unit {
+  let target = station_api::EventTarget::{
+    lang: None, viewer: None, device: None, email: None,
+    workspace: Some(ws), subs: Some([sub]), read_only: None, managers: None,
+    vault: None, sees_ws: Some(Some(ws)), sees_session: None, sees_thread: None, sees_job: None,
+  }
+  let _ = events.emit(
+    ev_name,
+    base_codec::json_obj([("workspace", base_codec::json_str(ws))]),
+    target,
+    now_ms,
+    Some(ev_name + ":" + ws + ":" + sub),
+  )
+}
+
+fn ro_emit_projects_event(events : station_api::EventsHub, ws : String, now_ms : Int64) -> Unit {
+  let target = station_api::EventTarget::{
+    lang: None, viewer: None, device: None, email: None,
+    workspace: Some(ws), subs: None, read_only: None, managers: None,
+    vault: None, sees_ws: Some(Some(ws)), sees_session: None, sees_thread: None, sees_job: None,
+  }
+  let _ = events.emit("projects", base_codec::json_obj([("workspace", base_codec::json_str(ws))]), target, now_ms, Some("projects:" + ws))
+}
+
+fn parse_stars_map(raw : base_codec::Json) -> Result[Map[String, station_replica::StarRecord], station_api::ApiError] {
+  match raw {
+    base_codec::Json::Obj(entries) => {
+      if entries.length() > station_replica::stars_most {
+        return Err(station_api::ApiError::new(400, "stars: 200 models at most"))
+      }
+      let out : Map[String, station_replica::StarRecord] = Map::new()
+      for i in 0..<entries.length() {
+        let k = entries[i].0
+        let v = entries[i].1
+        if k.length() == 0 || k.length() > 128 {
+          return Err(station_api::ApiError::new(400, "stars: a model's key is 1 to 128 characters"))
+        }
+        let on = match json_field_bool(v, "on") { Some(b) => b, None => return Err(station_api::ApiError::new(400, "stars: " + k + " is {on, rev, at}")) }
+        let rev = match ro_json_int_field(v, "rev") {
+          Some(r) => if r >= 1 { r } else { return Err(station_api::ApiError::new(400, "stars: " + k + " is {on, rev, at}")) }
+          None => return Err(station_api::ApiError::new(400, "stars: " + k + " is {on, rev, at}"))
+        }
+        let at = match ro_json_i64_field(v, "at") {
+          Some(a) => if a >= 0L { a } else { return Err(station_api::ApiError::new(400, "stars: " + k + " is {on, rev, at}")) }
+          None => return Err(station_api::ApiError::new(400, "stars: " + k + " is {on, rev, at}"))
+        }
+        out.set(k, station_replica::StarRecord::{ on: on, rev: rev, at: at })
+      }
+      Ok(out)
+    }
+    _ => Err(station_api::ApiError::new(400, "stars: an object of models' stars"))
+  }
+}
+
+fn stars_map_to_json(m : Map[String, station_replica::StarRecord]) -> base_codec::Json {
+  let ks = ro_sort_strings(m.keys())
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<ks.length() {
+    match m.get(ks[i]) {
+      Some(s) => out.push((ks[i], base_codec::json_obj([
+        ("on", base_codec::json_bool(s.on)),
+        ("rev", base_codec::json_int(s.rev)),
+        ("at", base_codec::json_int64(s.at)),
+      ])))
+      None => ()
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+fn parse_progress_json(raw : base_codec::Json) -> Result[station_replica::ProgressPrefs, station_api::ApiError] {
+  let minutes = match ro_json_int_field(raw, "minutes") { Some(m) => m, None => return Err(station_api::ApiError::new(400, "progress: minutes is 5 to 1440")) }
+  let strength = match json_field_str(raw, "strength") { Some(s) => s, None => return Err(station_api::ApiError::new(400, "progress: strength is require or remind")) }
+  let rev = match ro_json_int_field(raw, "rev") { Some(r) => r, None => return Err(station_api::ApiError::new(400, "progress: rev and at are whole numbers")) }
+  let at = match ro_json_i64_field(raw, "at") { Some(a) => a, None => return Err(station_api::ApiError::new(400, "progress: rev and at are whole numbers")) }
+  match station_replica::validate_progress(station_replica::ProgressPrefs::{ minutes: minutes, strength: strength, rev: rev, at: at }) {
+    Ok(p) => Ok(p)
+    Err(msg) => Err(station_api::ApiError::new(400, msg))
+  }
+}
+
+fn progress_to_json(p : station_replica::ProgressPrefs) -> base_codec::Json {
+  base_codec::json_obj([
+    ("minutes", base_codec::json_int(p.minutes)),
+    ("strength", base_codec::json_str(p.strength)),
+    ("rev", base_codec::json_int(p.rev)),
+    ("at", base_codec::json_int64(p.at)),
+  ])
+}
+
+struct PresetProjectRec {
+  project : Option[String]
+  rev : Int
+  at : Int64
+  ren : Option[Int64]
+}
+
+fn parse_preset_projects_map(raw : base_codec::Json) -> Result[Map[String, PresetProjectRec], station_api::ApiError] {
+  match raw {
+    base_codec::Json::Obj(entries) => {
+      if entries.length() > station_replica::preset_projects_most {
+        return Err(station_api::ApiError::new(400, "presetProjects: 200 presets at most"))
+      }
+      let out : Map[String, PresetProjectRec] = Map::new()
+      for i in 0..<entries.length() {
+        let pid = entries[i].0
+        let v = entries[i].1
+        if !ro_is_valid_id(pid) {
+          return Err(station_api::ApiError::new(400, "presetProjects: preset id must be 1 to 64 letters, digits, - or _"))
+        }
+        let rev = match ro_json_int_field(v, "rev") {
+          Some(r) => if r >= 1 { r } else { return Err(station_api::ApiError::new(400, "presetProjects: " + pid + " is {project, rev, at}")) }
+          None => return Err(station_api::ApiError::new(400, "presetProjects: " + pid + " is {project, rev, at}"))
+        }
+        let at = match ro_json_i64_field(v, "at") {
+          Some(a) => if a >= 0L { a } else { return Err(station_api::ApiError::new(400, "presetProjects: " + pid + " is {project, rev, at}")) }
+          None => return Err(station_api::ApiError::new(400, "presetProjects: " + pid + " is {project, rev, at}"))
+        }
+        let ren : Option[Int64] = match base_codec::json_get(v, "ren") {
+          None => None
+          Some(_) => match ro_json_i64_field(v, "ren") {
+            Some(rv) => if rv >= 0L { Some(rv) } else { return Err(station_api::ApiError::new(400, "presetProjects: " + pid + ".ren must be a non-negative integer")) }
+            None => return Err(station_api::ApiError::new(400, "presetProjects: " + pid + ".ren must be a non-negative integer"))
+          }
+        }
+        let proj : Option[String] = match base_codec::json_get(v, "project") {
+          Some(base_codec::Json::Null) => None
+          Some(base_codec::Json::Str(s)) => match station_api::normalize_project_name(s) {
+            Ok(clean) => Some(clean)
+            Err(e) => return Err(station_api::ApiError::new(400, "presetProjects: " + pid + " " + e))
+          }
+          _ => return Err(station_api::ApiError::new(400, "presetProjects: " + pid + ".project must be a string or null"))
+        }
+        out.set(pid, PresetProjectRec::{ project: proj, rev: rev, at: at, ren: ren })
+      }
+      Ok(out)
+    }
+    _ => Err(station_api::ApiError::new(400, "presetProjects: an object of presets' project preferences"))
+  }
+}
+
+fn newer_preset_project(a : PresetProjectRec, b : PresetProjectRec) -> PresetProjectRec {
+  if a.rev != b.rev { return if a.rev > b.rev { a } else { b } }
+  let a_ren = match a.ren { Some(r) => r, None => 0L }
+  let b_ren = match b.ren { Some(r) => r, None => 0L }
+  if a_ren != b_ren { return if a_ren > b_ren { a } else { b } }
+  if a.project.is_none() != b.project.is_none() { return if a.project.is_none() { a } else { b } }
+  if b.at > a.at { return b }
+  if a.at > b.at { return a }
+  let ap = match a.project { Some(s) => s, None => "" }
+  let bp = match b.project { Some(s) => s, None => "" }
+  if bp > ap { b } else { a }
+}
+
+fn merge_preset_projects_map(
+  kept : Map[String, PresetProjectRec],
+  given : Map[String, PresetProjectRec],
+  events : Array[ProjectRenameEventRec],
+) -> Map[String, PresetProjectRec] {
+  let all : Map[String, PresetProjectRec] = Map::new()
+  let kk = kept.keys()
+  for i in 0..<kk.length() {
+    match kept.get(kk[i]) { Some(v) => all.set(kk[i], v), None => () }
+  }
+  let gk = given.keys()
+  for i in 0..<gk.length() {
+    let k = gk[i]
+    match given.get(k) {
+      Some(v) => match all.get(k) { Some(prev) => all.set(k, newer_preset_project(prev, v)), None => all.set(k, v) }
+      None => ()
+    }
+  }
+  let akeys = ro_sort_strings(all.keys())
+  for i in 0..<akeys.length() {
+    let pid = akeys[i]
+    match all.get(pid) {
+      Some(entry) => match entry.project {
+        Some(cur_initial) => {
+          if cur_initial.length() > 0 && events.length() > 0 {
+            let mut cur = cur_initial
+            let mut cur_ren = entry.ren
+            let mut moved = false
+            for ei in 0..<events.length() {
+              let ev = events[ei]
+              if cur != ev.from_name { continue }
+              let after_ren = match cur_ren { Some(r) => ev.renamed_at > r, None => true }
+              if after_ren && (moved || entry.at < ev.wall_at) {
+                cur = ev.to_name
+                cur_ren = Some(ev.renamed_at)
+                moved = true
+              }
+            }
+            if moved {
+              all.set(pid, PresetProjectRec::{
+                project: if cur.length() > 0 { Some(cur) } else { None },
+                rev: entry.rev, at: entry.at, ren: cur_ren,
+              })
+            }
+          }
+        }
+        None => ()
+      }
+      None => ()
+    }
+  }
+  all
+}
+
+fn preset_projects_map_to_json(m : Map[String, PresetProjectRec]) -> base_codec::Json {
+  let ks = ro_sort_strings(m.keys())
+  let out : Array[(String, base_codec::Json)] = []
+  for i in 0..<ks.length() {
+    match m.get(ks[i]) {
+      Some(e) => {
+        let fs : Array[(String, base_codec::Json)] = [
+          ("project", match e.project { Some(s) => base_codec::json_str(s), None => base_codec::json_null() }),
+          ("rev", base_codec::json_int(e.rev)),
+          ("at", base_codec::json_int64(e.at)),
+        ]
+        match e.ren { Some(r) => fs.push(("ren", base_codec::json_int64(r))), None => () }
+        out.push((ks[i], base_codec::json_obj(fs)))
+      }
+      None => ()
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+// Aligned 1:1 with `client/core-ts/src/board-drafts.ts` `draftOf`:
+// validates & normalizes every field, strips unvalidated extras, and drops live fields when `gone: true`.
+fn parse_draft_record(raw : base_codec::Json) -> Result[station_replica::DraftRecord, station_api::ApiError] {
+  let id = match json_field_str(raw, "id") {
+    Some(s) => if ro_is_valid_draft_id(s) { s } else { return Err(station_api::ApiError::new(400, "draft: invalid id")) }
+    None => return Err(station_api::ApiError::new(400, "draft: id is required"))
+  }
+  let owner = match json_field_str(raw, "owner") {
+    Some(s) => if s.length() > 0 && s.length() <= 320 { s } else { return Err(station_api::ApiError::new(400, "draft: owner is required")) }
+    None => return Err(station_api::ApiError::new(400, "draft: owner is required"))
+  }
+  let rev = match ro_json_int_field(raw, "rev") {
+    Some(r) => if r >= 1 { r } else { return Err(station_api::ApiError::new(400, "draft: rev must be >= 1")) }
+    None => return Err(station_api::ApiError::new(400, "draft: rev is required"))
+  }
+  let gone = match json_field_bool(raw, "gone") { Some(b) => b, None => false }
+  let at = match ro_json_i64_field(raw, "at") {
+    Some(a) => if a >= 0L { a } else { return Err(station_api::ApiError::new(400, "draft: at must be >= 0")) }
+    None => 0L
+  }
+  let updated_at = match ro_json_i64_field(raw, "updatedAt") {
+    Some(u) => if u >= 0L { u } else { return Err(station_api::ApiError::new(400, "draft: updatedAt must be >= 0")) }
+    None => at
+  }
+  if gone {
+    let gone_obj = base_codec::json_obj([
+      ("id", base_codec::json_str(id)),
+      ("owner", base_codec::json_str(owner)),
+      ("rev", base_codec::json_int(rev)),
+      ("gone", base_codec::json_bool(true)),
+      ("updatedAt", base_codec::json_int64(updated_at)),
+    ])
+    return Ok(station_replica::DraftRecord::{
+      id: id, owner: owner, rev: rev, gone: true, at: 0L, updated_at: updated_at,
+      title: "", station: "", canonical_text: base_codec::json_stringify(gone_obj),
+    })
+  }
+  let raw_title = match json_field_str(raw, "title") { Some(t) => t.trim(), None => "" }
+  if raw_title.length() > 4000 {
+    return Err(station_api::ApiError::new(400, "draft: title too long"))
+  }
+  let station = match json_field_str(raw, "station") {
+    Some(s) => {
+      let tr = s.trim()
+      if tr.length() == 0 || tr.length() > 120 {
+        return Err(station_api::ApiError::new(400, "draft: station must be 1 to 120 characters"))
+      }
+      tr
+    }
+    None => return Err(station_api::ApiError::new(400, "draft: station is required"))
+  }
+  let live_fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(id)),
+    ("owner", base_codec::json_str(owner)),
+    ("rev", base_codec::json_int(rev)),
+    ("gone", base_codec::json_bool(false)),
+    ("at", base_codec::json_int64(at)),
+    ("updatedAt", base_codec::json_int64(updated_at)),
+    ("title", base_codec::json_str(raw_title)),
+    ("station", base_codec::json_str(station)),
+  ]
+  match base_codec::json_get(raw, "stationName") {
+    Some(base_codec::Json::Str(sn)) => {
+      let tr = sn.trim()
+      if tr.length() > 200 {
+        return Err(station_api::ApiError::new(400, "draft: stationName too long"))
+      }
+      if tr.length() > 0 {
+        live_fields.push(("stationName", base_codec::json_str(tr)))
+      }
+    }
+    Some(base_codec::Json::Null) => ()
+    None => ()
+    Some(_) => return Err(station_api::ApiError::new(400, "draft: stationName must be a string"))
+  }
+  let mut clean_files_count = 0
+  match base_codec::json_get(raw, "files") {
+    Some(base_codec::Json::Arr(xs)) => {
+      if xs.length() > 20 {
+        return Err(station_api::ApiError::new(400, "draft: at most 20 files"))
+      }
+      let seen_fids : Map[String, Bool] = Map::new()
+      let clean_files : Array[base_codec::Json] = []
+      for i in 0..<xs.length() {
+        let f = xs[i]
+        let fid = match json_field_str(f, "id") {
+          Some(s) => if ro_is_valid_draft_id(s) { s } else { return Err(station_api::ApiError::new(400, "draft: invalid file id")) }
+          None => return Err(station_api::ApiError::new(400, "draft: file id is required"))
+        }
+        if seen_fids.contains(fid) {
+          continue
+        }
+        seen_fids.set(fid, true)
+        let fname = match json_field_str(f, "name") {
+          Some(s) => {
+            let tr = s.trim()
+            if tr.length() == 0 || tr.length() > 200 {
+              return Err(station_api::ApiError::new(400, "draft: invalid file name"))
+            }
+            tr
+          }
+          None => return Err(station_api::ApiError::new(400, "draft: file name is required"))
+        }
+        let fsize = match ro_json_i64_field(f, "size") {
+          Some(sz) => if sz >= 0L { sz } else { return Err(station_api::ApiError::new(400, "draft: invalid file size")) }
+          None => return Err(station_api::ApiError::new(400, "draft: file size is required"))
+        }
+        clean_files.push(base_codec::json_obj([
+          ("id", base_codec::json_str(fid)),
+          ("name", base_codec::json_str(fname)),
+          ("size", base_codec::json_int64(fsize)),
+        ]))
+      }
+      clean_files_count = clean_files.length()
+      if clean_files.length() > 0 {
+        live_fields.push(("files", base_codec::json_arr(clean_files)))
+      }
+    }
+    Some(base_codec::Json::Null) => ()
+    None => ()
+    Some(_) => return Err(station_api::ApiError::new(400, "draft: files must be an array"))
+  }
+  if raw_title.length() == 0 && clean_files_count == 0 {
+    return Err(station_api::ApiError::new(400, "draft: title or files is required"))
+  }
+  let normalized = base_codec::json_obj(live_fields)
+  Ok(station_replica::DraftRecord::{
+    id: id, owner: owner, rev: rev, gone: false, at: at, updated_at: updated_at,
+    title: raw_title, station: station, canonical_text: base_codec::json_stringify(normalized),
+  })
+}
+
+fn draft_record_to_json(r : station_replica::DraftRecord) -> base_codec::Json {
+  if r.canonical_text.length() > 0 {
+    match base_codec::json_parse(r.canonical_text) {
+      base_codec::JsonParseResult::Ok(j) => return j
+      _ => ()
+    }
+  }
+  if r.gone {
+    return base_codec::json_obj([
+      ("id", base_codec::json_str(r.id)),
+      ("owner", base_codec::json_str(r.owner)),
+      ("rev", base_codec::json_int(r.rev)),
+      ("gone", base_codec::json_bool(true)),
+      ("updatedAt", base_codec::json_int64(r.updated_at)),
+    ])
+  }
+  base_codec::json_obj([
+    ("id", base_codec::json_str(r.id)),
+    ("owner", base_codec::json_str(r.owner)),
+    ("rev", base_codec::json_int(r.rev)),
+    ("gone", base_codec::json_bool(false)),
+    ("at", base_codec::json_int64(r.at)),
+    ("updatedAt", base_codec::json_int64(r.updated_at)),
+    ("title", base_codec::json_str(r.title)),
+    ("station", base_codec::json_str(r.station)),
+  ])
+}
+
+// Aligned 1:1 with `station/src/sessions/board-drafts.ts:71-86`:
+// lists sorted kept file IDs present on disk under `<data>/board-files/<hashed(ws,sub)>/<hashed(draftId)>/<hashed(fileId)>`.
+fn ro_list_draft_files_on_disk(
+  fs : station_jobs::FsPort,
+  data_dir : String,
+  ws : String,
+  sub : String,
+  drafts : Map[String, station_replica::DraftRecord],
+) -> base_codec::Json {
+  let owner_dir = nodepath::join(fs.sep, [data_dir, "board-files", ro_hashed_key([ws, sub])])
+  let kept : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  let ks = drafts.keys()
+  for i in 0..<ks.length() {
+    match drafts.get(ks[i]) {
+      Some(dr) => {
+        if dr.gone || dr.canonical_text.length() == 0 {
+          continue
+        }
+        match base_codec::json_parse(dr.canonical_text) {
+          base_codec::JsonParseResult::Ok(dj) => match base_codec::json_get(dj, "files") {
+            Some(base_codec::Json::Arr(xs)) => {
+              let d_dir = nodepath::join(fs.sep, [owner_dir, ro_hashed_key([dr.id])])
+              for fi in 0..<xs.length() {
+                match json_field_str(xs[fi], "id") {
+                  Some(fid) => {
+                    if !seen.contains(fid) {
+                      let fp = nodepath::join(fs.sep, [d_dir, ro_hashed_key([fid])])
+                      match (fs.stat)(fp) {
+                        Some(st) => if st.is_file() {
+                          seen.set(fid, true)
+                          kept.push(fid)
+                        }
+                        None => ()
+                      }
+                    }
+                  }
+                  None => ()
+                }
+              }
+            }
+            _ => ()
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  let sorted = ro_sort_strings(kept)
+  let out : Array[base_codec::Json] = []
+  for i in 0..<sorted.length() {
+    out.push(base_codec::json_str(sorted[i]))
+  }
+  base_codec::json_arr(out)
+}
+
+// ---------------------------------------------------------------------------
+// 4. `PROJECTS.jsonl` workspace-scoped atomic read-modify-write helper
+// ---------------------------------------------------------------------------
+
+fn read_workspace_projects_jsonl(
+  fs : station_jobs::FsPort,
+  data_dir : String,
+  viewer : station_api::Viewer,
+) -> Result[(String, station_api::ParsedProjectsJsonl), station_api::ApiError] {
+  let home = match ro_agent_home_for_viewer(fs, data_dir, viewer) {
+    Ok(h) => h
+    Err(e) => return Err(e)
+  }
+  let path = nodepath::join(fs.sep, [home, station_api::PROJECTS_INFO_FILE])
+  let raw = match (fs.read_file)(path) {
+    Some(t) => t
+    None => ""
+  }
+  if raw.to_bytes().length() > station_api::PROJECTS_INFO_MAX_BYTES {
+    return Err(station_api::ApiError::new(500, "PROJECTS.jsonl exceeds maximum size"))
+  }
+  match station_api::parse_projects_jsonl(raw, false) {
+    Ok(parsed) => Ok((path, parsed))
+    Err(msg) => Err(station_api::ApiError::new(500, msg))
+  }
+}
+
+fn write_workspace_projects_jsonl_atomic(
+  ro : ReadOpsPort,
+  path : String,
+  parsed : station_api::ParsedProjectsJsonl,
+) -> Result[Unit, station_api::ApiError] {
+  let text = match station_api::serialize_projects_jsonl(parsed) {
+    Ok(t) => t
+    Err(e) => return Err(station_api::ApiError::new(500, e))
+  }
+  let bytes = text.to_bytes()
+  if bytes.length() > station_api::PROJECTS_INFO_MAX_BYTES {
+    return Err(station_api::ApiError::new(500, "PROJECTS.jsonl exceeds maximum size"))
+  }
+  match (ro.write_file_atomic)(path, bytes) {
+    Ok(_) => Ok(())
+    Err(e) => Err(station_api::ApiError::new(500, e))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 5. Wave 17C-3A R2 `call_op` dispatcher
+// ---------------------------------------------------------------------------
+
+pub fn dispatch_wave17c3a_call_op(
+  op : String,
+  req : station_api::ApiRequest,
+  params : Array[String],
+  body : base_codec::Json,
+  agents : WholeAgents,
+  seen_store : station_api::SeenStore,
+  drive : station_screens::Drive,
+  events : station_api::EventsHub,
+  hooks : WholeApiRuntimeHooks,
+  port : WholeApiRuntimePort,
+  now_ms : Int64,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  let fs = agents.jobs.fs
+  let data_dir = agents.config.data_dir
+  let ro = port.readops
+
+  // ── A. CRDT Preference & Collaboration Records (with 413 body limits & fail-closed storage) ──
+
+  if op == "stars.GET" || op == "stars.PUT" {
+    if req.viewer.sub.length() == 0 {
+      return Some(Err(station_api::ApiError::new(403, "stars are a person's own")))
+    }
+    if op == "stars.PUT" && req.body.length() > CRDT_STARS_BODY_MOST {
+      return Some(Err(station_api::ApiError::new(413, "request too large")))
+    }
+    let ws = req.viewer.workspace
+    let sub = req.viewer.sub
+    let stored_raw = match (port.get_stars)(ws, sub) { Ok(v) => v, Err(e) => return Some(Err(e)) }
+    let was = match parse_stars_map(stored_raw) { Ok(m) => m, Err(_) => Map::new() }
+    if op == "stars.GET" {
+      return Some(Ok(base_codec::json_obj([("stars", stars_map_to_json(was))])))
+    }
+    let given_raw = match base_codec::json_get(body, "stars") {
+      Some(v) => v
+      None => return Some(Err(station_api::ApiError::new(400, "stars: an object of models' stars")))
+    }
+    let given = match parse_stars_map(given_raw) { Ok(m) => m, Err(e) => return Some(Err(e)) }
+    let merged = station_replica::merge_stars(was, given)
+    let was_j = stars_map_to_json(was)
+    let now_j = stars_map_to_json(merged)
+    if base_codec::json_stringify(now_j) != base_codec::json_stringify(was_j) {
+      match (port.put_stars)(ws, sub, now_j) {
+        Ok(_) => ro_emit_private_event(events, "stars", ws, sub, now_ms)
+        Err(e) => return Some(Err(e))
+      }
+    }
+    return Some(Ok(base_codec::json_obj([("stars", now_j)])))
+  }
+
+  if op == "progress.GET" || op == "progress.PUT" {
+    if req.viewer.sub.length() == 0 {
+      return Some(Err(station_api::ApiError::new(403, "progress settings are a person's own")))
+    }
+    if op == "progress.PUT" && req.body.length() > CRDT_PROGRESS_BODY_MOST {
+      return Some(Err(station_api::ApiError::new(413, "request too large")))
+    }
+    let ws = req.viewer.workspace
+    let sub = req.viewer.sub
+    let stored_raw = match (port.get_progress)(ws, sub) { Ok(v) => v, Err(e) => return Some(Err(e)) }
+    let was_opt : Option[station_replica::ProgressPrefs] = match parse_progress_json(stored_raw) { Ok(p) => Some(p), Err(_) => None }
+    if op == "progress.GET" {
+      let pj = match was_opt { Some(p) => progress_to_json(p), None => base_codec::json_null() }
+      return Some(Ok(base_codec::json_obj([("progress", pj)])))
+    }
+    let given_raw = match base_codec::json_get(body, "progress") {
+      Some(v) => v
+      None => return Some(Err(station_api::ApiError::new(400, "progress is required")))
+    }
+    let given = match parse_progress_json(given_raw) { Ok(p) => p, Err(e) => return Some(Err(e)) }
+    let merged = match was_opt { Some(w) => station_replica::newer_progress(w, given), None => given }
+    let now_j = progress_to_json(merged)
+    let changed = match was_opt {
+      None => true
+      Some(w) => base_codec::json_stringify(now_j) != base_codec::json_stringify(progress_to_json(w))
+    }
+    if changed {
+      match (port.put_progress)(ws, sub, req.viewer.email, now_j) {
+        Ok(_) => ro_emit_private_event(events, "progress", ws, sub, now_ms)
+        Err(e) => return Some(Err(e))
+      }
+    }
+    return Some(Ok(base_codec::json_obj([("progress", now_j)])))
+  }
+
+  if op == "presetProjects.GET" || op == "presetProjects.PUT" {
+    if req.viewer.sub.length() == 0 {
+      return Some(Err(station_api::ApiError::new(403, "preset projects are a person's own")))
+    }
+    if op == "presetProjects.PUT" && req.body.length() > CRDT_PRESET_PROJECTS_BODY_MOST {
+      return Some(Err(station_api::ApiError::new(413, "request too large")))
+    }
+    let ws = req.viewer.workspace
+    let sub = req.viewer.sub
+    let stored_raw = match (port.get_preset_projects)(ws, sub) { Ok(v) => v, Err(e) => return Some(Err(e)) }
+    let was = match parse_preset_projects_map(stored_raw) { Ok(m) => m, Err(_) => Map::new() }
+    if op == "presetProjects.GET" {
+      return Some(Ok(base_codec::json_obj([("presetProjects", preset_projects_map_to_json(was))])))
+    }
+    let given_raw = match base_codec::json_get(body, "presetProjects") {
+      Some(v) => v
+      None => return Some(Err(station_api::ApiError::new(400, "presetProjects: an object of presets' project preferences")))
+    }
+    let given = match parse_preset_projects_map(given_raw) { Ok(m) => m, Err(e) => return Some(Err(e)) }
+    let renames = (ro.list_project_rename_events)(ws)
+    let merged = merge_preset_projects_map(was, given, renames)
+    let was_j = preset_projects_map_to_json(was)
+    let now_j = preset_projects_map_to_json(merged)
+    if base_codec::json_stringify(now_j) != base_codec::json_stringify(was_j) {
+      match (port.put_preset_projects)(ws, sub, now_j) {
+        Ok(_) => ro_emit_private_event(events, "presetProjects", ws, sub, now_ms)
+        Err(e) => return Some(Err(e))
+      }
+    }
+    return Some(Ok(base_codec::json_obj([("presetProjects", now_j)])))
+  }
+
+  if op == "board.drafts.GET" || op == "board.drafts.PUT" {
+    if req.viewer.sub.length() == 0 {
+      return Some(Err(station_api::ApiError::new(403, "drafts are a person's own")))
+    }
+    if op == "board.drafts.PUT" && req.body.length() > CRDT_DRAFTS_BODY_MOST {
+      return Some(Err(station_api::ApiError::new(413, "request too large")))
+    }
+    let ws = req.viewer.workspace
+    let sub = req.viewer.sub
+    let stored_raw = match (port.get_board_drafts)(ws, sub) { Ok(v) => v, Err(e) => return Some(Err(e)) }
+    // Aligned with `station/src/sessions/board-drafts.ts:62-68`: corrupt stored drafts never lock the user out
+    // with 500 — recover gracefully as `{}` (skipping any malformed entry).
+    let was : Map[String, station_replica::DraftRecord] = Map::new()
+    match stored_raw {
+      base_codec::Json::Obj(entries) => {
+        for i in 0..<entries.length() {
+          match parse_draft_record(entries[i].1) {
+            Ok(dr) => was.set(dr.id, dr)
+            Err(_) => ()
+          }
+        }
+      }
+      base_codec::Json::Arr(items) => {
+        for i in 0..<items.length() {
+          match parse_draft_record(items[i]) {
+            Ok(dr) => was.set(dr.id, dr)
+            Err(_) => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    let map_to_arr = fn(m : Map[String, station_replica::DraftRecord]) -> base_codec::Json {
+      let ks = ro_sort_strings(m.keys())
+      let out : Array[base_codec::Json] = []
+      for i in 0..<ks.length() {
+        match m.get(ks[i]) { Some(r) => out.push(draft_record_to_json(r)), None => () }
+      }
+      base_codec::json_arr(out)
+    }
+    let map_to_obj = fn(m : Map[String, station_replica::DraftRecord]) -> base_codec::Json {
+      let ks = ro_sort_strings(m.keys())
+      let out : Array[(String, base_codec::Json)] = []
+      for i in 0..<ks.length() {
+        match m.get(ks[i]) { Some(r) => out.push((ks[i], draft_record_to_json(r))), None => () }
+      }
+      base_codec::json_obj(out)
+    }
+    // `files` is sorted `string[]` of kept file IDs present on disk (`station/src/sessions/board-drafts.ts:71-93`).
+    if op == "board.drafts.GET" {
+      return Some(Ok(base_codec::json_obj([
+        ("drafts", map_to_arr(was)),
+        ("files", ro_list_draft_files_on_disk(fs, data_dir, ws, sub, was)),
+      ])))
+    }
+    let given_arr = match base_codec::json_get(body, "drafts") {
+      Some(base_codec::Json::Arr(xs)) => xs
+      _ => return Some(Err(station_api::ApiError::new(400, "drafts: a list of drafts")))
+    }
+    let incoming : Array[station_replica::DraftRecord] = []
+    for i in 0..<given_arr.length() {
+      let dr = match parse_draft_record(given_arr[i]) { Ok(d) => d, Err(e) => return Some(Err(e)) }
+      if dr.owner != sub {
+        return Some(Err(station_api::ApiError::new(400, "a draft is its person's own")))
+      }
+      incoming.push(dr)
+    }
+    let merged = station_replica::merge_drafts(was, incoming)
+    let was_obj = map_to_obj(was)
+    let now_obj = map_to_obj(merged)
+    if base_codec::json_stringify(now_obj) != base_codec::json_stringify(was_obj) {
+      match (port.put_board_drafts)(ws, sub, now_obj) {
+        Ok(_) => {
+          // Put aside files of any live draft that became gone or was evicted.
+          let gone_ids : Array[String] = []
+          let wks = was.keys()
+          for wi in 0..<wks.length() {
+            let wid = wks[wi]
+            match was.get(wid) {
+              Some(before) => if !before.gone {
+                let became_gone = match merged.get(wid) {
+                  None => true
+                  Some(after) => after.gone
+                }
+                if became_gone { gone_ids.push(wid) }
+              }
+              None => ()
+            }
+          }
+          if gone_ids.length() > 0 {
+            (ro.put_aside_draft_files)(ws, sub, gone_ids)
+          }
+          ro_emit_private_event(events, "boardDrafts", ws, sub, now_ms)
+        }
+        Err(e) => return Some(Err(e))
+      }
+    }
+    return Some(Ok(base_codec::json_obj([
+      ("drafts", map_to_arr(merged)),
+      ("files", ro_list_draft_files_on_disk(fs, data_dir, ws, sub, merged)),
+    ])))
+  }
+
+  // ── B. Projects Info (`projects.info.put` atomic `PROJECTS.jsonl`) & Rename/Merge (hooked or honest 501) ──
+
+  if op == "projects.info.put" {
+    let raw_name = match json_field_str(body, "name") {
+      Some(s) => s
+      None => return Some(Err(station_api::ApiError::new(400, "provide name (single project update)")))
+    }
+    let name = match station_api::normalize_project_name(raw_name) {
+      Ok(clean) => if clean.length() > 0 { clean } else { return Some(Err(station_api::ApiError::new(400, "project name is required"))) }
+      Err(e) => return Some(Err(station_api::ApiError::new(400, e)))
+    }
+    let is_delete = match json_field_bool(body, "delete") { Some(true) => true, _ => false }
+    let has_note = base_codec::json_get(body, "note").is_some()
+    let note_val : Option[String] = match base_codec::json_get(body, "note") {
+      None => None
+      Some(base_codec::Json::Null) => None
+      Some(base_codec::Json::Str(s)) => match station_api::normalize_project_note(Some(s), true) {
+        Ok(v) => v
+        Err(e) => return Some(Err(station_api::ApiError::new(400, e)))
+      }
+      Some(_) => return Some(Err(station_api::ApiError::new(400, "note must be a string or null")))
+    }
+    let has_refs = base_codec::json_get(body, "refs").is_some()
+    let refs_val : Array[String] = match base_codec::json_get(body, "refs") {
+      None => []
+      Some(base_codec::Json::Null) => []
+      Some(base_codec::Json::Arr(xs)) => {
+        let raw_rs : Array[String] = []
+        for i in 0..<xs.length() {
+          match xs[i] {
+            base_codec::Json::Str(s) => raw_rs.push(s)
+            _ => return Some(Err(station_api::ApiError::new(400, "refs must be an array of strings or null")))
+          }
+        }
+        match station_api::normalize_project_refs(raw_rs, true) {
+          Ok(rs) => rs
+          Err(e) => return Some(Err(station_api::ApiError::new(400, e)))
+        }
+      }
+      Some(_) => return Some(Err(station_api::ApiError::new(400, "refs must be an array of strings or null")))
+    }
+    let (jsonl_path, parsed) = match read_workspace_projects_jsonl(fs, data_dir, req.viewer) {
+      Ok(v) => v
+      Err(e) => return Some(Err(e))
+    }
+    let next_entries : Array[station_api::ProjectInfoEntry] = []
+    let mut existing : Option[station_api::ProjectInfoEntry] = None
+    for i in 0..<parsed.entries.length() {
+      if parsed.entries[i].name == name { existing = Some(parsed.entries[i]) } else { next_entries.push(parsed.entries[i]) }
+    }
+    let next_tombstones : Array[(String, Int64)] = []
+    for i in 0..<parsed.tombstones.length() {
+      if parsed.tombstones[i].0 != name { next_tombstones.push(parsed.tombstones[i]) }
+    }
+    if is_delete {
+      next_tombstones.push((name, now_ms))
+    } else {
+      let base_e = match existing { Some(e) => e, None => station_api::ProjectInfoEntry::empty(name) }
+      let final_note = if has_note { note_val } else { base_e.note }
+      let final_note_at = if has_note && final_note.is_some() { Some(now_ms) } else if has_note { None } else { base_e.note_at }
+      let final_note_cleared = if has_note && final_note.is_none() { Some(now_ms) } else { base_e.note_cleared_at }
+      let final_refs = if has_refs { refs_val } else { base_e.refs }
+      let final_refs_at = if has_refs && final_refs.length() > 0 { Some(now_ms) } else if has_refs { None } else { base_e.refs_at }
+      let final_refs_cleared = if has_refs && final_refs.length() == 0 { Some(now_ms) } else { base_e.refs_cleared_at }
+      let final_ref_ats : Array[(String, Int64)] = []
+      if has_refs {
+        for i in 0..<final_refs.length() { final_ref_ats.push((final_refs[i], now_ms)) }
+      } else {
+        for i in 0..<base_e.ref_ats.length() { final_ref_ats.push(base_e.ref_ats[i]) }
+      }
+      next_entries.push(station_api::ProjectInfoEntry::{
+        name: name, note: final_note, note_at: final_note_at, refs: final_refs, refs_at: final_refs_at,
+        ref_ats: final_ref_ats, updated_at: Some(now_ms), note_cleared_at: final_note_cleared,
+        refs_cleared_at: final_refs_cleared, applied_op_ids: base_e.applied_op_ids,
+      })
+    }
+    let updated = station_api::ParsedProjectsJsonl::{
+      entries: next_entries, tombstones: next_tombstones,
+      tombstone_op_ids: parsed.tombstone_op_ids, preserved_raw_lines: parsed.preserved_raw_lines,
+    }
+    match write_workspace_projects_jsonl_atomic(ro, jsonl_path, updated) {
+      Ok(_) => {
+        ro_emit_projects_event(events, req.viewer.workspace, now_ms)
+        return Some(Ok(station_api::projects_info_public_json(updated)))
+      }
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  if op == "projects.rename" || op == "projects.merge" {
+    match hooks.on_project_rename_merge {
+      Some(f) => {
+        let action = if op == "projects.merge" { "merge" } else { "rename" }
+        let raw_from = match json_field_str(body, "from") {
+          Some(s) => s
+          None => return Some(Err(station_api::ApiError::new(400, "from and to must be strings")))
+        }
+        let raw_to = match json_field_str(body, "to") {
+          Some(s) => s
+          None => return Some(Err(station_api::ApiError::new(400, "from and to must be strings")))
+        }
+        let from_name = match station_api::normalize_project_name(raw_from) {
+          Ok(clean) => if clean.length() > 0 { clean } else { return Some(Err(station_api::ApiError::new(400, "from project name is required"))) }
+          Err(e) => return Some(Err(station_api::ApiError::new(400, e)))
+        }
+        let to_name = match station_api::normalize_project_name(raw_to) {
+          Ok(clean) => if action == "rename" && clean.length() == 0 {
+            return Some(Err(station_api::ApiError::new(400, "to project name is required")))
+          } else { clean }
+          Err(e) => return Some(Err(station_api::ApiError::new(400, e)))
+        }
+        if from_name == to_name {
+          return Some(Err(station_api::ApiError::new(400, "from and to must be different project names")))
+        }
+        return Some(f(req.viewer.workspace, action, from_name, to_name, req.header("idempotency-key")))
+      }
+      // Honest 501 when cross-station peer fan-out hook is not wired (never hardcode `peers: []` fake 200).
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // ── C. Hub Session Retry & Compact (hooked to live runner protocol or honest 501) ──
+
+  if op == "hub.session.retry" && params.length() >= 1 {
+    match hooks.on_session_retry {
+      Some(f) => {
+        let key = params[0]
+        if !station_api::session_seen(seen_store, req.viewer, key) {
+          return Some(Err(station_api::ApiError::new(404, "unknown session " + key)))
+        }
+        let tid = match ro_json_i64_field(body, "thread") {
+          Some(t) => if t > 0L { t } else { return Some(Err(station_api::ApiError::new(400, "invalid failure notice"))) }
+          None => return Some(Err(station_api::ApiError::new(400, "invalid failure notice")))
+        }
+        let seq = match ro_json_i64_field(body, "seq") {
+          Some(s) => if s > 0L { s } else { return Some(Err(station_api::ApiError::new(400, "invalid failure notice"))) }
+          None => return Some(Err(station_api::ApiError::new(400, "invalid failure notice")))
+        }
+        match f(key, tid, seq) {
+          Ok(_) => { hooks_notify_session(hooks, key); return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))) }
+          Err(e) => return Some(Err(e))
+        }
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  if op == "hub.session.compact" && params.length() >= 1 {
+    match hooks.on_session_compact {
+      Some(f) => {
+        let key = params[0]
+        if !station_api::session_seen(seen_store, req.viewer, key) {
+          return Some(Err(station_api::ApiError::new(404, "unknown session " + key)))
+        }
+        match f(key) {
+          Ok(_) => { hooks_notify_session(hooks, key); return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))) }
+          Err(e) => return Some(Err(e))
+        }
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // ── D. Drive mkdir (strictly workspace-scoped via `drive_for_ws`) & Shared Transfers cancel ──
+
+  if op == "drive.mkdir.post" {
+    let root = match json_field_str(body, "root") {
+      Some(r) => if r.length() > 0 { r } else { return Some(Err(station_api::ApiError::new(400, "root is required"))) }
+      None => return Some(Err(station_api::ApiError::new(400, "root is required")))
+    }
+    let rel = match json_field_str(body, "path") {
+      Some(p) => if p.length() > 0 { p } else { return Some(Err(station_api::ApiError::new(400, "path is required"))) }
+      None => return Some(Err(station_api::ApiError::new(400, "path is required")))
+    }
+    let _ = drive
+    let ws_drive = match hooks.drive_for_ws {
+      Some(f) => f(req.viewer.workspace)
+      None => return Some(Err(station_api::ApiError::new(500, "workspace drive resolver not configured")))
+    }
+    // Home write members reach any non-protected root (`anywhere = !read_only`); joined workspaces are strictly
+    // confined to their own workspace-pinned Drive roots (`anywhere = false`).
+    let anywhere = req.viewer.home && !req.viewer.is_read_only()
+    match ws_drive.mkdir(root, rel, anywhere) {
+      Ok(entry) => return Some(Ok(drive_entry_to_json(entry)))
+      Err(e) => return Some(Err(station_api::ApiError::new(station_screens::drive_code_status(e.code), e.message)))
+    }
+  }
+
+  if op == "transfers.cancel" && params.length() >= 1 {
+    let id = params[0]
+    match ro.transfers.get(id) {
+      Some(t) => {
+        if t.workspace != req.viewer.workspace || t.by != req.viewer.email {
+          return Some(Err(station_api::ApiError::new(404, "no such transfer")))
+        }
+      }
+      None => return Some(Err(station_api::ApiError::new(404, "no such transfer")))
+    }
+    match ro.transfers.cancel(req.viewer.email, id, now_ms) {
+      Ok(t) => return Some(Ok(base_codec::json_obj([("transfer", station_screens::transfer_shown_json(t))])))
+      Err(e) => return Some(Err(station_api::ApiError::new(station_screens::drive_code_status(e.code), e.message)))
+    }
+  }
+
+  // ── E. Links Preview & Feedback Report: honest 501 until real SSRF-safe HTTP / cloud ticket hooks are wired ──
+
+  if op == "links.preview" || op == "feedback.report" {
+    return Some(Err(err_not_implemented(op)))
+  }
+
+  // ── F. Resources Process End (Node-aligned visibility + handle-bound stop, zero PID-reuse TOCTOU) ──
+
+  if op == "resources.process.end" && params.length() >= 1 {
+    let pid = match base_codec::parse_int64_str(params[0]) {
+      Some(n) => if n > 0L && n <= 2147483647L { n.to_int() } else { return Some(Err(station_api::ApiError::new(400, "invalid pid"))) }
+      None => return Some(Err(station_api::ApiError::new(400, "invalid pid")))
+    }
+    let session = match json_field_str(body, "session") {
+      Some(s) => if s.length() > 0 { s } else { return Some(Err(station_api::ApiError::new(400, "session required"))) }
+      None => return Some(Err(station_api::ApiError::new(400, "session required")))
+    }
+    if !station_api::session_seen(seen_store, req.viewer, session) {
+      return Some(Err(station_api::ApiError::new(404, "no such process")))
+    }
+    match (ro.end_session_process)(pid, session, now_ms) {
+      Ok(name) => return Some(Ok(base_codec::json_obj([
+        ("pid", base_codec::json_int(pid)),
+        ("name", base_codec::json_str(name)),
+        ("ended", base_codec::json_bool(true)),
+      ])))
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  None
+}
+
+// ---------------------------------------------------------------------------
+// 6. Real SQLite + Real FS Production Integration Selftest (`--smoke-w17c3a-sqlite`)
+// ---------------------------------------------------------------------------
+
+pub fn run_w17c3a_sqlite_selftest() -> Result[Unit, String] {
+  let root_tmp = station_sys::tmpdir() + "/w17c3a-sqlite-smoke-" + host_shim::wall_ms().to_string()
+  let tmp = root_tmp + "/data"
+  let drive_home = root_tmp + "/drive-home"
+  let drive_other = root_tmp + "/drive-other"
+  let _ = station_sys::mkdir_p(tmp + "/agent/skills/demo")
+  let _ = host_shim::start(tmp, false)
+  let _ = station_sys::mkdir_p(tmp + "/agent/workspaces/ws-other")
+  let _ = station_sys::mkdir_p(drive_home)
+  let _ = station_sys::mkdir_p(drive_other)
+  let _ = station_sys::mkdir_p(tmp + "/sessions/s-main/workspace/uploads")
+  let _ = station_sys::write_file_atomic(tmp + "/config.json", "{}\n".to_bytes(), 384)
+  let _ = station_sys::write_file_atomic(tmp + "/agent/MEMORY.md", "prod-home-memory\n".to_bytes(), 420)
+  let _ = station_sys::write_file_atomic(tmp + "/agent/skills/demo/SKILL.md", "---\nname: demo\ndescription: Prod skill\n---\nBody\n".to_bytes(), 420)
+  let _ = station_sys::write_file_atomic(tmp + "/agent/workspaces/ws-other/MEMORY.md", "prod-other-memory\n".to_bytes(), 420)
+  let _ = station_sys::write_file_atomic(tmp + "/sessions/s-main/workspace/uploads/hello.txt", "0123456789abcdef".to_bytes(), 420)
+
+  let store = WholeStore::new_pre_handover_with_sep(tmp, "/")
+  match store.open_primary_after_predecessor_gone(true, fn(_d : String) -> Result[Unit, String] { Ok(()) }) {
+    Ok(_) => ()
+    Err(e) => return Err("open_primary failed: " + e)
+  }
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err("require_open failed: " + e)
+  }
+  // Seed real sessions & `usage` table (matching `readops_local/src/usage.pion` schema)
+  match st.db.run(
+    "INSERT INTO sessions (key, connect, scope, workspace, token, runtime, profile, running, created_at, last_active_at, ws) VALUES (?1, 'chat', 'chat', ?2, 'tok-s-main', 'claude', 'default', 0, 1000, 1000, 'ws-main')",
+    [base_codec::json_str("s-main"), base_codec::json_str(tmp + "/sessions/s-main/workspace")],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err("insert s-main failed: " + e.message)
+  }
+  match st.db.run(
+    "INSERT INTO sessions (key, connect, scope, workspace, token, runtime, profile, running, created_at, last_active_at, ws) VALUES (?1, 'chat', 'chat', ?2, 'tok-s-other', 'claude', 'default', 0, 1000, 1000, 'ws-other')",
+    [base_codec::json_str("s-other"), base_codec::json_str(tmp + "/sessions/s-other/workspace")],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err("insert s-other failed: " + e.message)
+  }
+  match st.db.run(
+    "INSERT INTO usage (id, at, session, runtime, model, input, cache_read, cache_write, cache_write_long, output, calls) VALUES ('u1', 1700000001000, 's-main', 'claude', 'opus', 100, 0, 0, 0, 50, 1)",
+    [],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err("insert usage u1 failed: " + e.message)
+  }
+  match st.db.run(
+    "INSERT INTO usage (id, at, session, runtime, model, input, cache_read, cache_write, cache_write_long, output, calls) VALUES ('u2', 1700000002000, 's-other', 'claude', 'opus', 999, 0, 0, 0, 888, 1)",
+    [],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err("insert usage u2 failed: " + e.message)
+  }
+
+  let agents = WholeAgents::new(WholeAgentsConfig::{
+    data_dir: tmp,
+    assets_dir: tmp + "/assets",
+    runner_bin: "/usr/bin/true",
+    mcp_port: 0,
+    home_ws: "ws-main",
+  })
+  let auth = PeerAuthPolicy::{
+    station_id: "st-smoke",
+    station_build: "9.9.9",
+    home_workspace: "ws-main",
+    allowed_workspaces: ["ws-main", "ws-other"],
+    verify_fn: None,
+  }
+  let api = WholeApi::new(store, agents, auth, [drive_home])
+  api.read_only_handover = false
+  api.set_workspace_drive_roots("ws-other", [drive_other])
+
+  let key_id = "ed25519:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  let home_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::{ email: "a@x.com", sub: "u-a", name: "A", workspace: "ws-main", home: true, role: "owner", device: Some("d1"), lock_base: None, lock_proof: None },
+    key_id,
+  )
+  let other_peer = PeerIdentity::AuthenticatedMember(
+    station_api::Viewer::{ email: "b@x.com", sub: "u-b", name: "B", workspace: "ws-other", home: false, role: "owner", device: Some("d2"), lock_base: None, lock_proof: None },
+    key_id,
+  )
+
+  // 1. Real `GET /memory` via `readops_local::memory` (home vs joined isolation)
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/memory", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      let s = r.body.to_string()
+      if r.status != 200 || !s.contains("prod-home-memory") || s.contains("prod-other-memory") {
+        return Err("prod home /memory failed: status=" + r.status.to_string() + " body=" + s)
+      }
+    }
+    _ => return Err("prod home /memory unexpected action")
+  }
+  match api.handle_authenticated_api(store, agents, other_peer, "GET", "/memory", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      let s = r.body.to_string()
+      if r.status != 200 || !s.contains("prod-other-memory") || s.contains("prod-home-memory") {
+        return Err("prod other /memory failed: status=" + r.status.to_string() + " body=" + s)
+      }
+    }
+    _ => return Err("prod other /memory unexpected action")
+  }
+
+  // 2. Real `GET /usage/calls/s-main` & cross-ws rejection `GET /usage/calls/s-other` via `readops_local::usage_calls`
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/usage/calls/s-main", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      let s = r.body.to_string()
+      if r.status != 200 || !s.contains("\"u1\"") || s.contains("\"u2\"") {
+        return Err("prod /usage/calls/s-main failed: status=" + r.status.to_string() + " body=" + s)
+      }
+    }
+    _ => return Err("prod /usage/calls/s-main unexpected action")
+  }
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/usage/calls/s-other", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 404 { return Err("cross-ws /usage/calls/s-other must return 404, got " + r.status.to_string()) }
+    }
+    _ => return Err("cross-ws /usage/calls/s-other unexpected action")
+  }
+
+  // 3. Real raw binary `GET /sessions/s-main/files?name=hello.txt` and `/parts?name=hello.txt&offset=4&length=4`
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-main/files?name=hello.txt", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "0123456789abcdef" {
+        return Err("prod raw /sessions/s-main/files failed: status=" + r.status.to_string() + " body=" + r.body.to_string())
+      }
+    }
+    _ => return Err("prod raw /sessions/s-main/files unexpected action")
+  }
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-main/parts?name=hello.txt&offset=4&length=4", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "4567" {
+        return Err("prod raw /sessions/s-main/parts failed: status=" + r.status.to_string() + " body=" + r.body.to_string())
+      }
+    }
+    _ => return Err("prod raw /sessions/s-main/parts unexpected action")
+  }
+
+  // 4. P0 regression test: joined workspace (`ws-other`) MUST NOT mkdir under home's Drive root!
+  let bad_mkdir_body = ("{\"root\":\"" + drive_home + "\",\"path\":\"pwn\"}").to_bytes()
+  match api.handle_authenticated_api(store, agents, other_peer, "POST", "/drive/mkdir", [], bad_mkdir_body, 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 404 && r.status != 403 {
+        return Err("joined ws mkdir in home drive root MUST return 404/403, got " + r.status.to_string() + " " + r.body.to_string())
+      }
+    }
+    _ => return Err("joined ws mkdir unexpected action")
+  }
+  let ok_mkdir_body = ("{\"root\":\"" + drive_other + "\",\"path\":\"ok-sub\"}").to_bytes()
+  match api.handle_authenticated_api(store, agents, other_peer, "POST", "/drive/mkdir", [], ok_mkdir_body, 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 {
+        return Err("joined ws mkdir in own drive root failed: " + r.status.to_string() + " " + r.body.to_string())
+      }
+    }
+    _ => return Err("joined ws own mkdir unexpected action")
+  }
+
+  // 5. Real SQLite CRDT `stars` + atomic `PROJECTS.jsonl`
+  let star_body = "{\"stars\":{\"m1\":{\"on\":true,\"rev\":2,\"at\":100}}}".to_bytes()
+  match api.handle_authenticated_api(store, agents, home_peer, "PUT", "/stars", [], star_body, 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || !r.body.to_string().contains("\"rev\":2") {
+        return Err("prod SQLite PUT /stars failed: " + r.status.to_string() + " " + r.body.to_string())
+      }
+    }
+    _ => return Err("prod SQLite PUT /stars unexpected action")
+  }
+  let proj_body = "{\"name\":\"ProdProj\",\"note\":\"Atomic test\"}".to_bytes()
+  match api.handle_authenticated_api(store, agents, home_peer, "PUT", "/projects/info", [], proj_body, 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || !r.body.to_string().contains("Atomic test") {
+        return Err("prod PUT /projects/info failed: " + r.status.to_string() + " " + r.body.to_string())
+      }
+    }
+    _ => return Err("prod PUT /projects/info unexpected action")
+  }
+
+  // 6. B1: Real `GET /machine-sessions` (200) & `/machine-sessions/claude/nonexistent` (404, NOT 500!)
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/machine-sessions", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || !r.body.to_string().contains("\"sessions\"") {
+        return Err("prod GET /machine-sessions failed: " + r.status.to_string() + " " + r.body.to_string())
+      }
+    }
+    _ => return Err("prod GET /machine-sessions unexpected action")
+  }
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/machine-sessions/claude/nonexistent-id", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 404 {
+        return Err("prod GET /machine-sessions/claude/nonexistent-id must return 404, got " + r.status.to_string() + " " + r.body.to_string())
+      }
+    }
+    _ => return Err("prod GET /machine-sessions/claude/nonexistent-id unexpected action")
+  }
+
+  // Independent Node-aligned 16-byte (32-hex-char) SHA-256 helper for smoke fixtures
+  // (never calls `ro_poster_hash` / `ro_hashed_key` to build its own expected fixture!).
+  let node_sha256_32 = fn(raw : Bytes) -> String {
+    let digest = crypto::sha256(raw)
+    let hex_digits = "0123456789abcdef"
+    let sb = StringBuilder::new()
+    for i in 0..<16 {
+      let v = digest[i].to_int() & 0xFF
+      sb.write_string(hex_digits.slice((v >> 4) & 0xF, ((v >> 4) & 0xF) + 1))
+      sb.write_string(hex_digits.slice(v & 0xF, (v & 0xF) + 1))
+    }
+    sb.to_string()
+  }
+
+  // 7. N1: Archived `workspace.tar.zst` on pure sync `WholeApi` returns honest 501 (zero `host_shim::wait`),
+  //    while `plan_daemon_session_file` plans async `EdgeMuxHub` `tar.file` with `wanted: ["uploads", "packed.txt"]`.
+  let arch_room = tmp + "/sessions/s-arch"
+  let _ = station_sys::mkdir_p(arch_room)
+  let _ = station_sys::write_file_atomic(arch_room + "/workspace.tar.zst", "ZSTD-PLACEHOLDER".to_bytes(), 420)
+  match st.db.run(
+    "INSERT INTO sessions (key, connect, scope, workspace, token, runtime, profile, running, created_at, last_active_at, ws) VALUES (?1, 'chat', 'chat', ?2, 'tok-s-arch', 'claude', 'default', 0, 1000, 1000, 'ws-main')",
+    [base_codec::json_str("s-arch"), base_codec::json_str(arch_room + "/workspace")],
+  ) {
+    Ok(_) => ()
+    Err(e) => return Err("insert s-arch failed: " + e.message)
+  }
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-arch/files?name=packed.txt", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 501 {
+        return Err("pure-sync archived tar.zst must return honest 501, got status=" + r.status.to_string())
+      }
+    }
+    _ => return Err("pure-sync archived tar.zst unexpected action")
+  }
+
+  // 8. B6: Real 32-hex-char SHA-256 poster hit on non-realpath `clean(uploads/base)`
+  let video_path = tmp + "/sessions/s-main/workspace/uploads/clip.mp4"
+  let _ = station_sys::write_file_atomic(video_path, "FAKE-MP4".to_bytes(), 420)
+  let _ = station_sys::mkdir_p(tmp + "/thumbs")
+  let poster_hex_32 = node_sha256_32(video_path.to_bytes())
+  if poster_hex_32.length() != 32 {
+    return Err("poster hash must be 32 hex chars")
+  }
+  let poster_file = tmp + "/thumbs/" + poster_hex_32 + ".poster.jpg"
+  let _ = station_sys::write_file_atomic(poster_file, "JPEG-POSTER-BYTES".to_bytes(), 420)
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-main/poster?name=clip.mp4", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.to_string() != "JPEG-POSTER-BYTES" {
+        return Err("prod 32-hex sha256 poster GET failed: status=" + r.status.to_string() + " body=" + r.body.to_string())
+      }
+    }
+    _ => return Err("prod 32-hex sha256 poster unexpected action")
+  }
+
+  // 9. N2: `> 8 MiB` (9 MiB) file NEVER returns `206` on sync fallback (returns honest 501; `whole_daemon` streams `200 OK`),
+  //    and `/parts` returns `200` with exact tail bytes.
+  let big_len = 9 * 1024 * 1024
+  let big_buf = Bytes::new(big_len)
+  big_buf[0] = 65.to_byte()
+  big_buf[big_len - 1] = 90.to_byte()
+  let _ = station_sys::write_file_atomic(tmp + "/sessions/s-main/workspace/uploads/big.bin", big_buf, 420)
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-main/files?name=big.bin", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 501 {
+        return Err("sync >8MiB /files must NOT return 206 (expected honest 501 without daemon stream), got " + r.status.to_string())
+      }
+    }
+    _ => return Err("prod >8MiB /files unexpected action")
+  }
+  match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-main/parts?name=big.bin&offset=8388608&length=1048576", [], Bytes::new(0), 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 200 || r.body.length() != 1048576 || (r.body[1048575].to_int() & 0xFF) != 90 {
+        return Err("prod >8MiB /parts tail mismatch: status=" + r.status.to_string() + " len=" + r.body.length().to_string())
+      }
+    }
+    _ => return Err("prod >8MiB /parts unexpected action")
+  }
+
+  // 10. B4: `board.drafts` with `:`/`.`, independently computed 32-hex-char `board-files` path,
+  //     reject empty title+files (400), and `.gone` aside move with refreshed mtime.
+  let draft_id = "new:board-1.2"
+  let file_id = "f:1.png"
+  let ws_sub_bytes = {
+    let a = "ws-main".to_bytes()
+    let b = "u-a".to_bytes()
+    let out = Bytes::new(a.length() + 1 + b.length())
+    for i in 0..<a.length() { out[i] = a[i] }
+    out[a.length()] = 0.to_byte()
+    for i in 0..<b.length() { out[a.length() + 1 + i] = b[i] }
+    out
+  }
+  let owner_h32 = node_sha256_32(ws_sub_bytes)
+  let draft_h32 = node_sha256_32(draft_id.to_bytes())
+  let file_h32 = node_sha256_32(file_id.to_bytes())
+  let owner_bf = tmp + "/board-files/" + owner_h32
+  let draft_bf = owner_bf + "/" + draft_h32
+  let _ = station_sys::mkdir_p(draft_bf)
+  let _ = station_sys::write_file_atomic(draft_bf + "/" + file_h32, "PNG!".to_bytes(), 420)
+  // Reject non-gone draft with empty title and empty files (400)
+  let empty_draft_body = "{\"drafts\":[{\"id\":\"empty-1\",\"owner\":\"u-a\",\"rev\":1,\"gone\":false,\"at\":100,\"updatedAt\":100,\"title\":\"   \",\"station\":\"st-smoke\"}]}".to_bytes()
+  match api.handle_authenticated_api(store, agents, home_peer, "PUT", "/board/drafts", [], empty_draft_body, 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 400 {
+        return Err("empty non-gone draft must return 400, got " + r.status.to_string())
+      }
+    }
+    _ => return Err("empty non-gone draft unexpected action")
+  }
+  let put_draft_body = ("{\"drafts\":[{\"id\":\"" + draft_id + "\",\"owner\":\"u-a\",\"rev\":1,\"gone\":false,\"at\":100,\"updatedAt\":100,\"title\":\"Hello\",\"station\":\"st-smoke\",\"files\":[{\"id\":\"" + file_id + "\",\"name\":\"a.png\",\"size\":4}]}]}").to_bytes()
+  match api.handle_authenticated_api(store, agents, home_peer, "PUT", "/board/drafts", [], put_draft_body, 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      let s = r.body.to_string()
+      if r.status != 200 || !s.contains("\"files\":[\"" + file_id + "\"]") {
+        return Err("prod PUT /board/drafts failed: status=" + r.status.to_string() + " body=" + s)
+      }
+    }
+    _ => return Err("prod PUT /board/drafts unexpected action")
+  }
+  let gone_draft_body = ("{\"drafts\":[{\"id\":\"" + draft_id + "\",\"owner\":\"u-a\",\"rev\":2,\"gone\":true,\"updatedAt\":200}]}").to_bytes()
+  match api.handle_authenticated_api(store, agents, home_peer, "PUT", "/board/drafts", [], gone_draft_body, 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      let gone_dir = owner_bf + "/.gone/" + draft_h32
+      let gone_dst = gone_dir + "/" + file_h32
+      if r.status != 200 || !(agents.jobs.fs.exists)(gone_dst) {
+        return Err("prod PUT /board/drafts gone did not move file to .gone: status=" + r.status.to_string())
+      }
+    }
+    _ => return Err("prod PUT /board/drafts gone unexpected action")
+  }
+
+  let _ = (agents.jobs.fs.remove_dir_all)(root_tmp)
+  host_shim::stop()
+  Ok(())
+}

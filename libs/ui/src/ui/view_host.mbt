@@ -6829,7 +6829,7 @@ fn Ctx::back_taker(self : Ctx, brought? : Bool = true) -> BackHeld? {
             1 => Moved(x, t)
             2 => LetGo(x, t)
             3 => CalledOff
-            _ => Back
+            _ => @view.BackStep::Back
           }
           tree.back_step(id, step, t) |> ignore
           back_progress.val = -1.0
@@ -6918,7 +6918,7 @@ fn Ctx::forward_taker(self : Ctx, brought? : Bool = true) -> BackHeld? {
             1 => Moved(x, t)
             2 => LetGo(x, t)
             3 => CalledOff
-            _ => Back
+            _ => @view.BackStep::Back
           }
           tree.forward_step(id, step, t) |> ignore
         },
@@ -6926,7 +6926,7 @@ fn Ctx::forward_taker(self : Ctx, brought? : Bool = true) -> BackHeld? {
         w,
         owner: Some(id),
         tree: true,
-        done: fn(_x, t, _p) { tree.forward_step(id, Back, t) |> ignore },
+        done: fn(_x, t, _p) { tree.forward_step(id, @view.BackStep::Back, t) |> ignore },
       })
     }
     None => None
@@ -7347,7 +7347,7 @@ fn tree_said_action(id : Int, action : Action) -> Bool {
         }
         // (the focus to it, as Tab would give it, at the moment it is asked, where a screen reader may give it then (read
         // out, able to take it; nothing of the old frame's modal over it): else the focus where it was)
-        Focus if free => {
+        @view.Action::Focus if free => {
           tree.event(view_moment(), fn() {
             if tree.focus_asked_takes(nid) {
               g().focus_moved(id, visible=true)
@@ -7473,7 +7473,7 @@ fn Ctx::semantics_spliced(self : Ctx, tree : @view.Tree) -> Array[SemNode] {
         // (what can be done to it, of what it said or would: Activate where a press does something, Focus where it can take the focus)
         let actions : Array[Action] = if !sn.disabled && tree.presses_do(sn.id) { [Activate] } else { [] }
         if tree.can_focus(sn.id) {
-          actions.push(Focus)
+          actions.push(@view.Action::Focus)
         }
         out.push({
           id: tree_said_id(sn.id),

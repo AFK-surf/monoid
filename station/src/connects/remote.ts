@@ -365,6 +365,7 @@ export class RemoteSurface implements ChatSurface {
 /// run here). Files a remote chat posts are kept in `uploads` until they are posted (or for the process's life at most);
 /// none is kept there before `cleared` (what a process before left there taken away).
 export function answerCall(surface: (connect: Known, workspace: string | undefined) => ChatSurface | undefined | Promise<ChatSurface | undefined>, uploads: string, cleared: Promise<void> = Promise.resolve()) {
+  const downloadFlights = new Map<string, Promise<Uint8Array>>();
   return async (_peer: string, request: Json, workspace?: string): Promise<Json> => {
     const op = typeof request?.op === "string" ? request.op : "";
     const known = knownIn(request?.connect);
@@ -402,7 +403,22 @@ export function answerCall(surface: (connect: Known, workspace: string | undefin
       }
     }
     if (op === "download") {
-      const bytes = await chat.download!(args[0]);
+      const file = args[0] as InboundFile;
+      if (file?.url?.startsWith("secret:") === true) {
+        const bytes = await chat.download!(file);
+        return withBytes({ size: bytes.length }, oneBytes(Buffer.from(bytes)));
+      }
+      const flightKey = `${workspace ?? ""}\0${known!.origin}\0${known!.id}\0${String(file?.id ?? "")}\0${String(file?.url ?? "")}`;
+      let pending = downloadFlights.get(flightKey);
+      if (pending === undefined) {
+        pending = Promise.resolve().then(() => chat.download!(file));
+        downloadFlights.set(flightKey, pending);
+        const cleanup = () => {
+          if (downloadFlights.get(flightKey) === pending) downloadFlights.delete(flightKey);
+        };
+        void pending.then(cleanup, cleanup);
+      }
+      const bytes = await pending;
       return withBytes({ size: bytes.length }, oneBytes(Buffer.from(bytes)));
     }
     if (op === "api") {

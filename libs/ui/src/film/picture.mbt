@@ -208,96 +208,100 @@ fn picture_impl(
     theme?,
     transitions_only?,
   )
-  defer { t.end_run(host) }
-  t.set_frame_period(1000.0 / fps.to_double())
-  let mut ran = false
-  if prepare != "" {
-    ran = true
-    let logs = t.drive(prepare, max~)
-    if !drive_passed(logs) {
-      for l in logs {
-        if l.has_prefix("DRIVE") {
-          say(l)
+  // (the run ends on every way out of it, early ones too)
+  let ok = (fn() -> Bool {
+    t.set_frame_period(1000.0 / fps.to_double())
+    let mut ran = false
+    if prepare != "" {
+      ran = true
+      let logs = t.drive(prepare, max~)
+      if !drive_passed(logs) {
+        for l in logs {
+          if l.has_prefix("DRIVE") {
+            say(l)
+          }
+        }
+        say("picture: scene preparation did not pass")
+        return false
+      }
+    }
+    if script != "" {
+      ran = true
+      match frame {
+        Some(k) => {
+          let (reached, logs) = t.film_frame(script, k, max~)
+          if !reached {
+            for l in logs {
+              if l.has_prefix("DRIVE") {
+                say(l)
+              }
+            }
+            say("picture: scene did not reach frame \{k}")
+            return false
+          }
+        }
+        None => {
+          let logs = t.drive(script, max~)
+          if !drive_passed(logs) {
+            for l in logs {
+              if l.has_prefix("DRIVE") {
+                say(l)
+              }
+            }
+            say("picture: scene steps did not pass")
+            return false
+          }
         }
       }
-      say("picture: scene preparation did not pass")
+    }
+    if !ran && (inset || arg("MBUI_FONT_SCALE") != "" || arg("MBUI_APP_SAID") != "") {
+      // These settings take effect on the next frame, even when there is no preparation script.
+      t.draw()
+    }
+    if at > 0.0 {
+      t.run_for_exact(at)
+    }
+    // Check the captured frame explicitly so a bad corner reports why and returns false instead of aborting the process.
+    if corners_held {
+      let faults = t.corner_faults()
+      if !corner_faults_ok(faults) {
+        if faults.is_empty() {
+          say("picture: the expected corner faults were not found")
+        }
+        for fault in faults {
+          say("picture: \{fault}")
+        }
+        return false
+      }
+    }
+    if !scene_drawable(t, "picture", false) {
       return false
     }
-  }
-  if script != "" {
-    ran = true
-    match frame {
-      Some(k) => {
-        let (reached, logs) = t.film_frame(script, k, max~)
-        if !reached {
-          for l in logs {
-            if l.has_prefix("DRIVE") {
-              say(l)
-            }
-          }
-          say("picture: scene did not reach frame \{k}")
-          return false
-        }
-      }
-      None => {
-        let logs = t.drive(script, max~)
-        if !drive_passed(logs) {
-          for l in logs {
-            if l.has_prefix("DRIVE") {
-              say(l)
-            }
-          }
-          say("picture: scene steps did not pass")
-          return false
-        }
-      }
+    let buf = Ref(FixedArray::make(0, 0.0))
+    let (n, (r, g, b)) = host_frame(t, buf)
+    let times = FixedArray::make(2, 0.0)
+    draw_timed(buf.val, n, r, g, b, [(0.0, 0.0, -1.0, -1.0)], times)
+    let saved = if transparent { snapshot_transparent(path) } else { snapshot(path) }
+    if !saved {
+      say("picture: could not write \{path}")
+      return false
     }
-  }
-  if !ran && (inset || arg("MBUI_FONT_SCALE") != "" || arg("MBUI_APP_SAID") != "") {
-    // These settings take effect on the next frame, even when there is no preparation script.
-    t.draw()
-  }
-  if at > 0.0 {
-    t.run_for_exact(at)
-  }
-  // Check the captured frame explicitly so a bad corner reports why and returns false instead of aborting the process.
-  if corners_held {
-    let faults = t.corner_faults()
-    if !corner_faults_ok(faults) {
-      if faults.is_empty() {
-        say("picture: the expected corner faults were not found")
-      }
+    say("picture: \{path} (\{(w * scale).round().to_int()} × \{(h * scale).round().to_int()})")
+    // Every rule the frame drawn is held to (Tester::audit: room, squeeze, spacing, corners, contrast, words outgrown),
+    // said after it is written, whatever the picture accepts: a picture made for people is looked at by the agent that
+    // made it with what the rules find in it, never by eye alone (still.fail's user, 2026-11-14: a message's words on its
+    // file's card at 0 apart, shown and passed). MBUI_RULES=0 says none.
+    if arg("MBUI_RULES") != "0" {
+      let faults = t.audit()
       for fault in faults {
-        say("picture: \{fault}")
+        say("rules: \{fault}")
       }
-      return false
+      say("rules: \{faults.length()} found")
     }
-  }
-  if !scene_drawable(t, "picture", false) {
-    return false
-  }
-  let buf = Ref(FixedArray::make(0, 0.0))
-  let (n, (r, g, b)) = host_frame(t, buf)
-  let times = FixedArray::make(2, 0.0)
-  draw_timed(buf.val, n, r, g, b, [(0.0, 0.0, -1.0, -1.0)], times)
-  let saved = if transparent { snapshot_transparent(path) } else { snapshot(path) }
-  if !saved {
-    say("picture: could not write \{path}")
-    return false
-  }
-  say("picture: \{path} (\{(w * scale).round().to_int()} × \{(h * scale).round().to_int()})")
-  // Every rule the frame drawn is held to (Tester::audit: room, squeeze, spacing, corners, contrast, words outgrown),
-  // said after it is written, whatever the picture accepts: a picture made for people is looked at by the agent that
-  // made it with what the rules find in it, never by eye alone (still.fail's user, 2026-11-14: a message's words on its
-  // file's card at 0 apart, shown and passed). MBUI_RULES=0 says none.
-  if arg("MBUI_RULES") != "0" {
-    let faults = t.audit()
-    for fault in faults {
-      say("rules: \{fault}")
-    }
-    say("rules: \{faults.length()} found")
-  }
-  true
+    true
+  })()
+  t.end_run(host)
+  ok
 }
 
 ///|

@@ -523,7 +523,7 @@ fn a11y_actions(actions : Array[Action]) -> String {
         Expand => "e"
         Collapse => "c"
         Dismiss => "x"
-        Focus => "f"
+        @view.Action::Focus => "f"
         SetText(_) => "t"
       },
     )
@@ -829,7 +829,7 @@ fn Ctx::a11y_tree_pass(self : Ctx, tree : @view.Tree, full : Bool, out : Array[A
         // take the focus)
         let actions : Array[Action] = if !e.disabled && e.presses { [Activate] } else { [] }
         if e.focus {
-          actions.push(Focus)
+          actions.push(@view.Action::Focus)
         }
         {
           id: n,
@@ -908,7 +908,7 @@ fn a11y_took(json : String) -> Unit {
     "expand" => Some(Expand)
     "collapse" => Some(Collapse)
     "dismiss" => Some(Dismiss)
-    "focus" => Some(Focus)
+    "focus" => Some(@view.Action::Focus)
     "set_text" =>
       match m.get("text") {
         Some(String(t)) => Some(SetText(t))
