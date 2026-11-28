@@ -13,7 +13,7 @@ import { log } from "../ops/log.ts";
 import type { Attachment } from "../store/store.ts";
 import { type ChatEvent, type ChatMessage, type Handler, type InboundFile, type Member, type ModelChoice, type Person, type Place, type ThreadRef, isNotice, matchesProposalNotice, splitForSlack } from "../sessions/chat.ts";
 import { type CardEnd, endedWords } from "../connects/card-ends.ts";
-import { type Stands, type Words, answerOf, answeredBlocks, endedBlocks, loginBlocks, loginCodeOf, loginEnteredBlocks, markdown, questionBlocks, standsBlock, standsText } from "./cards.ts";
+import { type Stands, type Words, answerOf, answeredBlocks, endedBlocks, loginBlocks, loginCodeOf, loginEnteredBlocks, markdownBlocks, questionBlocks, standsBlock, standsText } from "./cards.ts";
 import { NEW_CHAT_COMMAND } from "./apps.ts";
 import { modelOptions, modelValue, newChatBlocks, newChatView, submittedChat } from "./new-chat.ts";
 import { ThreadStatus } from "./status.ts";
@@ -478,7 +478,7 @@ export class SlackSurface extends ConnectedSurface {
       if (Array.from(message).length <= QUESTION_CHARS) [asking, parts] = [message, []];
       else asking = parts.pop() ?? "";
     }
-    for (const part of parts) await send(part, [markdown(part)]);
+    for (const part of parts) await send(part, markdownBlocks(part));
     if (question) {
       const before = first;
       const blocks =
@@ -836,17 +836,18 @@ export class SlackSurface extends ConnectedSurface {
     const parts = splitForSlack(message, 3500).filter((t) => t !== "");
     let root = "";
     for (const part of parts) {
+      const blocks = markdownBlocks(part);
       const params: Params = [
         ["channel", channel],
         ["text", part],
-        ["blocks", JSON.stringify([markdown(part)])],
+        ["blocks", JSON.stringify(blocks)],
         ["unfurl_links", "false"],
       ];
       if (root !== "") params.push(["thread_ts", root]);
       const posted = await this.client.api("chat.postMessage", params, this.botToken);
       if (root === "") root = text(posted?.ts);
       if (root === "") throw new Error("slack chat.postMessage gave no ts");
-      this.heard(channel, root, text(posted?.ts) || root, { text: part, blocks: [markdown(part)] });
+      this.heard(channel, root, text(posted?.ts) || root, { text: part, blocks });
     }
     if (root === "") throw new Error("nothing to post");
     return { thread: { channel, threadTs: root }, ts: root };
@@ -856,7 +857,7 @@ export class SlackSurface extends ConnectedSurface {
   async edit(thread: ThreadRef, ts: string, message: string): Promise<boolean> {
     if (splitForSlack(message, 3500).length > 1) return false;
     const key = `${thread.channel}/${thread.threadTs}`;
-    const said: Said = { text: message, blocks: [markdown(message)] };
+    const said: Said = { text: message, blocks: markdownBlocks(message) };
     const stands = this.stands.get(key);
     const under = stands?.ts === ts && stands.mine !== null ? stands.block : null;
     await this.update(thread.channel, ts, message, under !== null ? [...said.blocks, under] : said.blocks);
