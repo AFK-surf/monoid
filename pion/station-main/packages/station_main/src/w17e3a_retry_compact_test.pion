@@ -331,7 +331,7 @@ test "w17e3a-r2: localized station notices, Codex thread/turn correlation, cap_p
 
   // P1-5: SessionActor::is_active() distinguishes queued work from active execution
   let cap_actor = station_sessions::SessionActor::new("s-cap-1", "claude")
-  cap_actor.queue.push(station_sessions::ActorWork::Prompt("queued while cap_paused"))
+  cap_actor.enqueue(station_sessions::ActorWork::Prompt("queued while cap_paused"))
   if cap_actor.is_active() {
     panic("idle actor with queued prompt must NOT be is_active()")
   }
@@ -340,7 +340,7 @@ test "w17e3a-r2: localized station notices, Codex thread/turn correlation, cap_p
   }
   // P2-2: ActorWork::Resume preserves kind="resume" and internal=true when pumped from queue
   let res_actor = station_sessions::SessionActor::new("s-res-1", "claude")
-  res_actor.queue.push(station_sessions::ActorWork::Resume(station_drivers::GO_ON_AFTER_FAILED))
+  res_actor.enqueue(station_sessions::ActorWork::Resume(station_drivers::GO_ON_AFTER_FAILED))
   res_actor.pump_next_prompt()
   if res_actor.started_prompts.length() != 1
   || !res_actor.started_prompts_internal[0]
@@ -406,25 +406,25 @@ test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction li
     panic("cold Claude compact instructions must never be empty")
   }
 
-  // R4 Item 2 & R5 P1-1: Handover carry state round-trips queued prompts idempotently by stable ID!
-  // Importing the SAME snapshot TWICE (launcher carry + disk file) MUST restore each message ONCE,
-  // while two distinct human messages with IDENTICAL text MUST BOTH be preserved!
+  // R4 Item 2 & R5 P1-1 & R7 Item 1: Handover carry state round-trips queued prompts + exact `handed` tokens idempotently!
   let mgr1 = LiveRunnerManager::new()
   mgr1.pending_prompts.push(CarriedHandoverPrompt::{
-    id: "chat:compact-ho-1:1",
+    id: "chat:compact-ho-1:100-aaaa1111-1",
     session_key: "chat:compact-ho-1",
     runtime: "claude",
     text: "same text",
     is_internal: false,
     kind: "prompt",
+    handed: [(701L, 101L, false)],
   })
   mgr1.pending_prompts.push(CarriedHandoverPrompt::{
-    id: "chat:compact-ho-1:2",
+    id: "chat:compact-ho-1:100-aaaa1111-2",
     session_key: "chat:compact-ho-1",
     runtime: "claude",
     text: "same text",
     is_internal: false,
     kind: "prompt",
+    handed: [(701L, 102L, false)],
   })
   if !mgr1.has_handover_carry_state() {
     panic("has_handover_carry_state must be true when pending_prompts is non-empty")
@@ -435,32 +435,35 @@ test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction li
   // Second import of the EXACT same snapshot (dual-path carry + disk) must be strictly idempotent!
   mgr2.import_handover_state_json(exported)
   if mgr2.pending_prompts.length() != 2
-  || mgr2.pending_prompts[0].id != "chat:compact-ho-1:1"
-  || mgr2.pending_prompts[1].id != "chat:compact-ho-1:2"
-  || mgr2.pending_prompts[0].text != "same text"
-  || mgr2.pending_prompts[1].text != "same text" {
-    panic("idempotent double-import must preserve both distinct identical-text messages exactly once, got " + mgr2.pending_prompts.length().to_string())
+  || mgr2.pending_prompts[0].id != "chat:compact-ho-1:100-aaaa1111-1"
+  || mgr2.pending_prompts[1].id != "chat:compact-ho-1:100-aaaa1111-2"
+  || mgr2.pending_prompts[0].handed.length() != 1
+  || mgr2.pending_prompts[0].handed[0] != (701L, 101L, false)
+  || mgr2.pending_prompts[1].handed.length() != 1
+  || mgr2.pending_prompts[1].handed[0] != (701L, 102L, false) {
+    panic("idempotent double-import must preserve both distinct identical-text messages and their exact handed tokens")
   }
 
-  // R6 P1-2: Pre-commit durable snapshot: if 2nd session DB commit fails, `persist_snapshot_fn`
-  // ALREADY persisted BOTH sessions' queued prompts AND BOTH actor queues remain 100% intact,
-  // so a subsequent restart from the persisted snapshot recovers BOTH inputs!
+  // R6/R7 P1-2: Pre-commit durable snapshot + Phase 0 writeback of `cid`!
   let mgr3 = LiveRunnerManager::new()
   let a1 = station_sessions::SessionActor::new("s-ho-1", "claude")
   let a2 = station_sessions::SessionActor::new("s-ho-2", "claude")
   let _ = a1.begin_compaction("compact:1", "claude", 1000L)
-  let _ = a1.submit_input("keep-me-session-1")
+  let _ = a1.submit_input("keep-me-session-1", handed=[(701L, 50L, false)])
   let _ = a2.begin_compaction("compact:1", "claude", 1000L)
-  let _ = a2.submit_input("keep-me-session-2")
+  let _ = a2.submit_input("keep-me-session-2", handed=[(701L, 51L, false)])
   let mut persisted_snap : Option[base_codec::Json] = None
   match mgr3.carry_compacting_actors_two_phase(
     [("s-ho-1", a1), ("s-ho-2", a2)],
     fn(k : String, _a : station_sessions::SessionActor) -> Result[Unit, String] {
       if k == "s-ho-2" { Err("simulated SQLite busy") } else { Ok(()) }
     },
-    persist_snapshot_fn=fn() -> Unit {
+    persist_snapshot_fn=fn() -> Result[Unit, String] {
       persisted_snap = Some(mgr3.export_handover_state_json())
+      Ok(())
     },
+    wall_ms=1700000001000L,
+    nonce="abcd1234",
   ) {
     Err(_) => ()
     Ok(_) => panic("expected Err when 2nd session DB commit fails")
@@ -468,37 +471,117 @@ test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction li
   if a1.queue.length() != 1 || a2.queue.length() != 1 {
     panic("two-phase handover failure must NOT clear actor queues")
   }
+  // Phase 0 MUST have written `cid` back to `q.meta.carried_id` so retrying handover does not duplicate!
+  if a1.queue[0].meta.carried_id is None || a2.queue[0].meta.carried_id is None {
+    panic("Phase 0 must write allocated cid back to actor queue meta.carried_id")
+  }
   match persisted_snap {
     Some(snap_j) => {
       let mgr_rec = LiveRunnerManager::new()
       mgr_rec.import_handover_state_json(snap_j)
-      if mgr_rec.pending_prompts.length() != 2 {
-        panic("persisted pre-commit snapshot must recover both sessions' inputs, got " + mgr_rec.pending_prompts.length().to_string())
+      if mgr_rec.pending_prompts.length() != 2
+      || mgr_rec.pending_prompts[0].handed.length() != 1
+      || mgr_rec.pending_prompts[0].handed[0] != (701L, 50L, false) {
+        panic("persisted pre-commit snapshot must recover both sessions' inputs and exact handed tokens")
       }
     }
     None => panic("persist_snapshot_fn must run BEFORE fallible SQLite commits")
   }
 
-  // R6 P1-1: Exact HandedToken binding on Prompt A, queued Prompt B, and Steer C!
+  // R7 Item 4: Phase 0 disk write failure MUST abort IMMEDIATELY before invoking `commit_fn`!
+  let mgr_disk_fail = LiveRunnerManager::new()
+  let af = station_sessions::SessionActor::new("s-disk-fail", "claude")
+  let _ = af.begin_compaction("compact:1", "claude", 1000L)
+  let _ = af.submit_input("must-not-run-commit")
+  let mut commit_called = 0
+  match mgr_disk_fail.carry_compacting_actors_two_phase(
+    [("s-disk-fail", af)],
+    fn(_k : String, _a : station_sessions::SessionActor) -> Result[Unit, String] {
+      commit_called = commit_called + 1
+      Ok(())
+    },
+    persist_snapshot_fn=fn() -> Result[Unit, String] { Err("ENOSPC: disk full") },
+    wall_ms=1700000002000L,
+    nonce="deadbeef",
+  ) {
+    Err(e) => if !e.contains("ENOSPC") { panic("expected ENOSPC error, got " + e) }
+    Ok(_) => panic("Phase 0 disk failure must abort handover")
+  }
+  if commit_called != 0 || af.queue.length() != 1 {
+    panic("Phase 0 disk failure must abort BEFORE calling commit_fn or clearing queue")
+  }
+
+  // R7 Item 3: Consecutive 2-generation handover across two managers MUST keep generation 2's new input!
+  let gen1 = LiveRunnerManager::new()
+  let ag1 = station_sessions::SessionActor::new("s-gen", "claude")
+  let _ = ag1.begin_compaction("compact:1", "claude", 1000L)
+  let _ = ag1.submit_input("gen1-msg", handed=[(701L, 1L, false)])
+  let _ = gen1.carry_compacting_actors_two_phase([("s-gen", ag1)], fn(_, _) { Ok(()) }, wall_ms=1000L, nonce="11111111")
+  let gen1_snap = gen1.export_handover_state_json()
+  let gen2 = LiveRunnerManager::new()
+  gen2.import_handover_state_json(gen1_snap)
+  let _ = gen2.confirm_carried_prompt_ids([gen1.pending_prompts[0].id])
+  // Now in generation 2, a new compaction queues a new prompt -> distinct (wall_ms, nonce) -> NEVER collides with gen1!
+  let ag2 = station_sessions::SessionActor::new("s-gen", "claude")
+  let _ = ag2.begin_compaction("compact:2", "claude", 2000L)
+  let _ = ag2.submit_input("gen2-msg", handed=[(701L, 2L, false)])
+  let _ = gen2.carry_compacting_actors_two_phase([("s-gen", ag2)], fn(_, _) { Ok(()) }, wall_ms=2000L, nonce="22222222")
+  if gen2.pending_prompts.length() != 1 || gen2.pending_prompts[0].text != "gen2-msg" {
+    panic("generation 2 handover must keep its new prompt without colliding with generation 1 id")
+  }
+
+  // R6/R7 Item 1 & 2: Exact HandedToken binding on Prompt A, queued Prompt B, Steer C,
+  // AND zero drift across `drain_barriers`, `stop_with_pending`, and `check_steer_silent`!
   let ab_actor = station_sessions::SessionActor::new("s-ab-1", "claude")
   let _ = ab_actor.begin_compaction("compact:1", "claude", 1000L)
+  let _ = ab_actor.enqueue_barrier()
   let _ = ab_actor.submit_input("msg-A", handed=[(701L, 1L, false)])
+  let _ = ab_actor.enqueue_barrier()
   let _ = ab_actor.submit_input("msg-B", handed=[(701L, 2L, false)])
+  let drained = ab_actor.drain_barriers()
+  if drained.length() != 2
+  || ab_actor.queue.length() != 2
+  || ab_actor.queue[0].meta.handed[0] != (701L, 1L, false)
+  || ab_actor.queue[1].meta.handed[0] != (701L, 2L, false) {
+    panic("drain_barriers must preserve exact QueuedWork work+meta alignment")
+  }
   let _ = ab_actor.finish_compaction(true, None, 1010L)
-  // Only A started (`started_prompts_meta[0]` has ONLY (701, 1)); B remains queued with (701, 2)!
-  if ab_actor.started_prompts.length() != 1
-  || ab_actor.started_prompts_meta.length() != 1
-  || ab_actor.started_prompts_meta[0].handed.length() != 1
-  || ab_actor.started_prompts_meta[0].handed[0] != (701L, 1L, false) {
-    panic("started prompt A must carry ONLY A's exact handed token (701, 1)")
+  if ab_actor.started_entries.length() != 1
+  || ab_actor.started_entries[0].meta.handed[0] != (701L, 1L, false)
+  || ab_actor.queue.length() != 1
+  || ab_actor.queue[0].meta.handed[0] != (701L, 2L, false) {
+    panic("started prompt A must carry (701, 1) while queued prompt B retains (701, 2)")
   }
-  if ab_actor.queue.length() != 1
-  || ab_actor.queue_meta.length() != 1
-  || ab_actor.queue_meta[0].handed.length() != 1
-  || ab_actor.queue_meta[0].handed[0] != (701L, 2L, false) {
-    panic("queued prompt B must retain ONLY B's exact handed token (701, 2)")
+  // `stop_with_pending` clears prompts/steers while keeping non-prompt work with its exact meta!
+  let stop_actor = station_sessions::SessionActor::new("s-stop-meta", "claude")
+  stop_actor.begin_start()
+  let _ = stop_actor.submit_input("drop-p", handed=[(701L, 30L, false)])
+  stop_actor.push_queue_with_meta(
+    station_sessions::ActorWork::InternalPrompt("keep-int"),
+    station_sessions::WorkDeliveryMeta::{ handed: [(701L, 31L, true)], carried_id: Some("cid-int") },
+  )
+  let sres = stop_actor.stop_with_pending(true, false)
+  if sres.cleared_queued != 1
+  || stop_actor.queue.length() != 1
+  || stop_actor.queue[0].meta.handed[0] != (701L, 31L, true)
+  || stop_actor.queue[0].meta.carried_id != Some("cid-int") {
+    panic("stop_with_pending must keep remaining work+meta aligned")
   }
-  // Steer C while Running carries exact handed token (701, 3) through `pop_next_with_meta` -> `WriteCommitMeta`!
+  // `check_steer_silent` drops only silence steers while keeping pre-existing steer's exact handed token!
+  let silent_actor = station_sessions::SessionActor::new("s-silent-meta", "claude")
+  let _ = silent_actor.submit_input("running-turn", handed=[(701L, 40L, false)])
+  let _ = silent_actor.submit_input("pre-steer", handed=[(701L, 41L, false)])
+  silent_actor.on_mid_wait_steered(1000L)
+  let _ = silent_actor.submit_input("during-silence", handed=[(701L, 42L, false)])
+  match silent_actor.check_steer_silent(1000L + station_sessions::STEER_SILENT_MS + 1L, false) {
+    station_sessions::SteerSilentOutcome::EndHung(_) => ()
+    _ => panic("expected EndHung")
+  }
+  if silent_actor.queue.length() != 1
+  || silent_actor.queue[0].meta.handed[0] != (701L, 41L, false) {
+    panic("check_steer_silent must preserve pre-existing steer with its exact handed token (701, 41)")
+  }
+  // Steer C while Running carries exact handed token (701, 11) through `pop_next_with_meta` -> `WriteCommitMeta`!
   let steer_actor = station_sessions::SessionActor::new("s-steer-1", "claude")
   let _ = steer_actor.submit_input("turn-1", handed=[(701L, 10L, false)])
   match steer_actor.submit_input("steer-C", handed=[(701L, 11L, false)]) {
@@ -515,10 +598,9 @@ test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction li
     _ => panic("expected Steer with metadata")
   }
 
-  // R6 P1-3: `restore_carried_pending_prompts_into_hub` preserves `pending_prompts` until `UNIX_WRITE` confirms!
-  // If the new daemon dies before `UNIX_WRITE` (e.g. while old runner is still draining), restarting again
-  // from the still-intact snapshot recovers the prompt; once `confirm_carried_prompt_ids` runs, it is removed
-  // and re-importing the old snapshot remains strictly idempotent!
+  // R6/R7 P1-3 & Item 5: `restore_carried_pending_prompts_into_hub` preserves `handed` + keeps `pending_prompts`
+  // until `UNIX_WRITE` + SQLite `mark_handed_delivered` BOTH succeed; transient SQLite failure queues
+  // `pending_db_acks` and clears `pending_prompts` ONLY when retry succeeds!
   let hub_new = station_sessions::SessionHub::new()
   let mgr_new = LiveRunnerManager::new()
   mgr_new.import_handover_state_json(exported)
@@ -527,22 +609,36 @@ test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction li
   if r_cnt1 != 2 || r_cnt2 != 0 {
     panic("restore_carried_pending_prompts_into_hub must restore once and be idempotent")
   }
-  // Before UNIX_WRITE confirmation, `pending_prompts` is STILL intact (survives crash during draining)!
+  match hub_new.actors.get("chat:compact-ho-1") {
+    Some(ra) => if ra.started_entries.length() != 1 || ra.started_entries[0].meta.handed[0] != (701L, 101L, false) {
+      panic("restored prompt must preserve exact handed token (701, 101)")
+    }
+    None => panic("expected restored actor")
+  }
   if mgr_new.pending_prompts.length() != 2 {
-    panic("pending_prompts must NOT be cleared before UNIX_WRITE confirmation")
+    panic("pending_prompts must NOT be cleared before UNIX_WRITE + SQLite confirmation")
   }
-  let snap_before_ack = mgr_new.export_handover_state_json()
-  let mgr_after_crash = LiveRunnerManager::new()
-  mgr_after_crash.import_handover_state_json(snap_before_ack)
-  if mgr_after_crash.pending_prompts.length() != 2 {
-    panic("restarting before UNIX_WRITE confirmation must still recover both prompts")
+  // Simulate UNIX_WRITE Ok + transient SQLite failure -> deferred to `pending_db_acks`, `pending_prompts` STILL intact!
+  let mut persist_calls = 0
+  let ok_first = mgr_new.commit_written_delivery_with(
+    "chat:compact-ho-1",
+    WriteCommitMeta::{ handed: [(701L, 101L, false)], carried_ids: ["chat:compact-ho-1:100-aaaa1111-1"] },
+    5000L,
+    fn(_, _, _) { Err("SQLITE_BUSY") },
+    fn() { persist_calls = persist_calls + 1 },
+  )
+  if ok_first || mgr_new.pending_db_acks.length() != 1 || mgr_new.pending_prompts.length() != 2 || persist_calls != 0 {
+    panic("transient SQLite failure must defer to pending_db_acks without clearing pending_prompts")
   }
-  // After UNIX_WRITE confirms ID 1, only ID 2 remains; after ID 2 confirms, 0 remain, and stale re-import is ignored!
-  let rem1 = mgr_new.confirm_carried_prompt_ids(["chat:compact-ho-1:1"])
-  if rem1 != 1 || mgr_new.pending_prompts.length() != 1 || mgr_new.pending_prompts[0].id != "chat:compact-ho-1:2" {
-    panic("confirming prompt 1 must leave only prompt 2")
+  // Retry on tick succeeds -> `pending_db_acks` drained, prompt 1 removed from `pending_prompts`, disk synced!
+  let settled = mgr_new.retry_pending_db_acks_with(
+    fn(_, _, _) { Ok(()) },
+    fn() { persist_calls = persist_calls + 1 },
+  )
+  if settled != 1 || mgr_new.pending_db_acks.length() != 0 || mgr_new.pending_prompts.length() != 1 || persist_calls != 1 {
+    panic("retry_pending_db_acks_with must settle ack, remove confirmed prompt, and persist snapshot")
   }
-  let rem2 = mgr_new.confirm_carried_prompt_ids(["chat:compact-ho-1:2"])
+  let rem2 = mgr_new.confirm_carried_prompt_ids(["chat:compact-ho-1:100-aaaa1111-2"])
   if rem2 != 1 || mgr_new.pending_prompts.length() != 0 {
     panic("confirming prompt 2 must empty pending_prompts")
   }

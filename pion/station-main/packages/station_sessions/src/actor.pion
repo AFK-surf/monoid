@@ -43,11 +43,25 @@ pub enum TurnEndAction {
 /// `(thread, n, apart)` SQLite `deliveries`/`letter_deliveries` tokens + optional handover carry id.
 pub struct WorkDeliveryMeta {
   pub handed : Array[(Int64, Int64, Bool)]
-  pub carried_id : Option[String]
+  pub mut carried_id : Option[String]
 }
 
 pub fn WorkDeliveryMeta::empty() -> WorkDeliveryMeta {
   WorkDeliveryMeta::{ handed: [], carried_id: None }
+}
+
+/// Single atomic queue element binding `ActorWork` with its exact `WorkDeliveryMeta` (zero parallel-array drift!).
+pub struct QueuedWork {
+  pub work : ActorWork
+  pub meta : WorkDeliveryMeta
+}
+
+/// Single atomic started-prompt record binding prompt payload, flags, and exact `WorkDeliveryMeta`.
+pub struct StartedPromptEntry {
+  pub text : String
+  pub is_internal : Bool
+  pub kind : String
+  pub meta : WorkDeliveryMeta
 }
 
 /// An item queued on a session's serial actor queue.
@@ -293,9 +307,7 @@ pub struct SessionActor {
   pub mut posted_in_turn : Bool
   pub mut posted_after_terminal : Bool
   pub mut declared : TurnDeclared
-  pub mut queue : Array[ActorWork]
-  /// Parallel 1:1 delivery metadata for `queue` (padded with `WorkDeliveryMeta::empty()` if shorter).
-  pub mut queue_meta : Array[WorkDeliveryMeta]
+  pub mut queue : Array[QueuedWork]
   /// Typed internal notices queued for the next turn (separate from `queue` so they never
   /// head-of-line block human `ActorWork::Steer` during an active `Running` turn).
   pub mut pending_internal_notices : Array[String]
@@ -305,7 +317,7 @@ pub struct SessionActor {
   pub mut started_prompts : Array[String]
   pub mut started_prompts_internal : Array[Bool]
   pub mut started_prompts_kind : Array[String]
-  pub mut started_prompts_meta : Array[WorkDeliveryMeta]
+  pub mut started_entries : Array[StartedPromptEntry]
   /// Tool calls begun and not ended since the turn started (or since a mid-wait steer cleared them, `36bef9f96a`).
   pub mut open_tools : Array[String]
   /// Deadline timestamp when a mid-wait-steered silent turn is ended as hung (`36bef9f96a`).
@@ -339,7 +351,6 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
     posted_after_terminal: false,
     declared: TurnDeclared::None,
     queue: [],
-    queue_meta: [],
     pending_internal_notices: [],
     next_barrier_id: 1,
     completed_barriers: [],
@@ -347,7 +358,7 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
     started_prompts: [],
     started_prompts_internal: [],
     started_prompts_kind: [],
-    started_prompts_meta: [],
+    started_entries: [],
     open_tools: [],
     steer_silent_due_at: None,
     last_live_event_at: None,
@@ -412,11 +423,7 @@ pub fn SessionActor::push_queue_with_meta(
   item : ActorWork,
   meta : WorkDeliveryMeta,
 ) -> Unit {
-  while self.queue_meta.length() < self.queue.length() {
-    self.queue_meta.push(WorkDeliveryMeta::empty())
-  }
-  self.queue.push(item)
-  self.queue_meta.push(meta)
+  self.queue.push(QueuedWork::{ work: item, meta: meta })
 }
 
 /// Enqueues a work item on the serial actor queue.
@@ -438,20 +445,12 @@ pub fn SessionActor::pop_next_with_meta(self : SessionActor) -> Option[(ActorWor
     return None
   }
   let first = self.queue[0]
-  let meta = if self.queue_meta.length() > 0 { self.queue_meta[0] } else { WorkDeliveryMeta::empty() }
-  let rest : Array[ActorWork] = []
+  let rest : Array[QueuedWork] = []
   for i in 1..<self.queue.length() {
     rest.push(self.queue[i])
   }
   self.queue = rest
-  if self.queue_meta.length() > 0 {
-    let rest_meta : Array[WorkDeliveryMeta] = []
-    for i in 1..<self.queue_meta.length() {
-      rest_meta.push(self.queue_meta[i])
-    }
-    self.queue_meta = rest_meta
-  }
-  Some((first, meta))
+  Some((first.work, first.meta))
 }
 
 /// Pops the next queued work item in strict FIFO order.
@@ -460,6 +459,43 @@ pub fn SessionActor::pop_next(self : SessionActor) -> Option[ActorWork] {
     Some((item, _)) => Some(item)
     None => None
   }
+}
+
+/// Pops the head `StartedPromptEntry` in strict FIFO order (keeping compatibility mirrors in sync).
+pub fn SessionActor::pop_started_prompt(self : SessionActor) -> Option[StartedPromptEntry] {
+  if self.started_entries.length() == 0 {
+    return None
+  }
+  let first = self.started_entries[0]
+  let rest : Array[StartedPromptEntry] = []
+  for i in 1..<self.started_entries.length() {
+    rest.push(self.started_entries[i])
+  }
+  self.started_entries = rest
+  if self.started_prompts.length() > 0 {
+    let rp : Array[String] = []
+    for i in 1..<self.started_prompts.length() { rp.push(self.started_prompts[i]) }
+    self.started_prompts = rp
+  }
+  if self.started_prompts_internal.length() > 0 {
+    let ri : Array[Bool] = []
+    for i in 1..<self.started_prompts_internal.length() { ri.push(self.started_prompts_internal[i]) }
+    self.started_prompts_internal = ri
+  }
+  if self.started_prompts_kind.length() > 0 {
+    let rk : Array[String] = []
+    for i in 1..<self.started_prompts_kind.length() { rk.push(self.started_prompts_kind[i]) }
+    self.started_prompts_kind = rk
+  }
+  Some(first)
+}
+
+/// Clears all started prompt entries and compatibility mirrors atomically.
+pub fn SessionActor::clear_started_prompts(self : SessionActor) -> Unit {
+  self.started_entries.clear()
+  self.started_prompts.clear()
+  self.started_prompts_internal.clear()
+  self.started_prompts_kind.clear()
 }
 
 fn SessionActor::start_prompt_now(
@@ -483,7 +519,7 @@ fn SessionActor::start_prompt_now(
   self.started_prompts.push(text)
   self.started_prompts_internal.push(is_internal)
   self.started_prompts_kind.push(kind)
-  self.started_prompts_meta.push(meta)
+  self.started_entries.push(StartedPromptEntry::{ text: text, is_internal: is_internal, kind: kind, meta: meta })
 }
 
 /// Starts an internal `kind = "resume"` turn (used by `hub.session.retry`; never forges user input).
@@ -648,7 +684,7 @@ pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
     return
   }
   while self.queue.length() > 0 {
-    match self.queue[0] {
+    match self.queue[0].work {
       ActorWork::Barrier(id) => {
         let _ = self.pop_next_with_meta()
         self.completed_barriers.push(id)
@@ -799,15 +835,16 @@ pub fn SessionActor::evict(self : SessionActor) -> Bool {
 
 /// Drains all currently queued barriers and records their ids as completed.
 pub fn SessionActor::drain_barriers(self : SessionActor) -> Array[Int] {
-  let remaining : Array[ActorWork] = []
+  let remaining : Array[QueuedWork] = []
   let done : Array[Int] = []
   for i in 0..<self.queue.length() {
-    match self.queue[i] {
+    let q = self.queue[i]
+    match q.work {
       ActorWork::Barrier(id) => {
         self.completed_barriers.push(id)
         done.push(id)
       }
-      other => remaining.push(other)
+      _ => remaining.push(q)
     }
   }
   self.queue = remaining
@@ -846,14 +883,15 @@ pub fn SessionActor::stop_with_pending(
           post_stopped_notice: false,
         }
       }
-      let remaining : Array[ActorWork] = []
+      let remaining : Array[QueuedWork] = []
       let mut cleared = 0
       for i in 0..<self.queue.length() {
-        match self.queue[i] {
+        let q = self.queue[i]
+        match q.work {
           ActorWork::Prompt(_) => cleared = cleared + 1
           ActorWork::Deliver(_) => cleared = cleared + 1
           ActorWork::Steer(_) => cleared = cleared + 1
-          other => remaining.push(other)
+          _ => remaining.push(q)
         }
       }
       self.queue = remaining
@@ -964,7 +1002,7 @@ pub fn SessionActor::check_steer_silent(
   }
   let mut qi = self.queue.length() - 1
   while qi >= 0 {
-    match self.queue[qi] {
+    match self.queue[qi].work {
       ActorWork::Steer(s) => {
         match drop_counts.get(s) {
           Some(c) => {
@@ -980,7 +1018,7 @@ pub fn SessionActor::check_steer_silent(
     }
     qi = qi - 1
   }
-  let kept_q : Array[ActorWork] = []
+  let kept_q : Array[QueuedWork] = []
   for i in 0..<self.queue.length() {
     if keep_flags[i] {
       kept_q.push(self.queue[i])

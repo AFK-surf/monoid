@@ -888,7 +888,7 @@ test "w17b2_actor_stop_before_turn_and_steer_silent_hung" {
   expect(notified[0], "on_turn_ended callback notified")
   expect(!b.has_process, "process cleared on hung end")
   expect(
-    b.queue.length() == 1 && match b.queue[0] { ActorWork::Steer(s) => s == "pre-existing steer", _ => false },
+    b.queue.length() == 1 && match b.queue[0].work { ActorWork::Steer(s) => s == "pre-existing steer", _ => false },
     "pre-existing steer queued before silence deadline preserved",
   )
 }

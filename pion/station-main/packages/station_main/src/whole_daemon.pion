@@ -1286,7 +1286,7 @@ fn handle_connect_inbound_event_local(
               }
               for si in 0..<active_sessions.length() {
                 let actor = core.agents.hub.ensure_actor(active_sessions[si], meta.runtime)
-                let _ = actor.submit_input(m.text)
+                let _ = actor.submit_input(m.text, handed=[(tid, n, false)])
               }
               emit_thread_sse_event(core, meta.ws, tid, n, "message", "person", m.user, m.text, now_ms)
             }

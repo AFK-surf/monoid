@@ -1146,7 +1146,7 @@ test "w17d1 R4: Running Vault notice never HoL-blocks human Steer, browser mode 
   if !(route is station_sessions::InputRoute::Steer) {
     panic("expected human steer while Running")
   }
-  match actor.queue[0] {
+  match actor.queue[0].work {
     station_sessions::ActorWork::Steer(s) => if s != "urgent human steer" { panic("steer text mismatch") }
     _ => panic("human Steer must be at queue[0] with zero HoL blocking!")
   }

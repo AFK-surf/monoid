@@ -1913,6 +1913,17 @@ pub struct CarriedHandoverPrompt {
   pub text : String
   pub is_internal : Bool
   pub kind : String
+  pub handed : Array[(Int64, Int64, Bool)]
+}
+
+/// Retryable SQLite delivery-ack record created when `LIVE_RUNNER_TOK_UNIX_WRITE` succeeded
+/// (bytes already written to runner) but `Store::mark_handed_delivered` returned a transient error.
+/// Retried on `LiveRunnerManager::tick`; `confirm_carried_prompt_ids` runs ONLY after DB succeeds!
+pub struct PendingDbAck {
+  pub session_key : String
+  pub handed : Array[(Int64, Int64, Bool)]
+  pub carried_ids : Array[String]
+  pub wall_ms : Int64
 }
 
 /// Manages all live `stillfail-runner` child processes and active agent turns for `whole_daemon`.
@@ -1927,6 +1938,7 @@ pub struct LiveRunnerManager {
   pending_end_turns : Map[String, ManagerPendingEndTurn]
   pending_compact_write : Map[String, String]
   pending_prompts : Array[CarriedHandoverPrompt]
+  pending_db_acks : Array[PendingDbAck]
   carried_prompt_ids : Map[String, Bool]
   restored_prompt_ids : Map[String, Bool]
   draining_stopping_ids : Map[String, Bool]
@@ -1949,6 +1961,7 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     pending_end_turns: Map::new(),
     pending_compact_write: Map::new(),
     pending_prompts: [],
+    pending_db_acks: [],
     carried_prompt_ids: Map::new(),
     restored_prompt_ids: Map::new(),
     draining_stopping_ids: Map::new(),
@@ -2998,6 +3011,106 @@ pub fn LiveRunnerManager::confirm_carried_prompt_ids(
   removed
 }
 
+/// R7 Item 5: Commits a confirmed `UNIX_WRITE` batch's `handed` tokens and `carried_ids`.
+/// If `mark_fn` fails (transient SQLite error), defers `(handed, carried_ids)` to `self.pending_db_acks`
+/// without calling `confirm_carried_prompt_ids` (and NEVER re-sending the prompt!).
+pub fn LiveRunnerManager::commit_written_delivery_with(
+  self : LiveRunnerManager,
+  session_key : String,
+  finished_commit : WriteCommitMeta,
+  wall_ms : Int64,
+  mark_fn : (String, Array[(Int64, Int64, Bool)], Int64) -> Result[Unit, String],
+  persist_fn : () -> Unit,
+) -> Bool {
+  if finished_commit.handed.length() > 0 {
+    match mark_fn(session_key, finished_commit.handed, wall_ms) {
+      Ok(_) => {
+        if finished_commit.carried_ids.length() > 0 {
+          let removed = self.confirm_carried_prompt_ids(finished_commit.carried_ids)
+          if removed > 0 {
+            persist_fn()
+          }
+        }
+        true
+      }
+      Err(_) => {
+        self.pending_db_acks.push(PendingDbAck::{
+          session_key: session_key,
+          handed: finished_commit.handed,
+          carried_ids: finished_commit.carried_ids,
+          wall_ms: wall_ms,
+        })
+        false
+      }
+    }
+  } else {
+    if finished_commit.carried_ids.length() > 0 {
+      let removed = self.confirm_carried_prompt_ids(finished_commit.carried_ids)
+      if removed > 0 {
+        persist_fn()
+      }
+    }
+    true
+  }
+}
+
+/// R7 Item 5: Retries deferred `pending_db_acks` on `tick()` / `prepare_handover()`;
+/// removes each entry and calls `confirm_carried_prompt_ids` ONLY once SQLite succeeds!
+pub fn LiveRunnerManager::retry_pending_db_acks_with(
+  self : LiveRunnerManager,
+  mark_fn : (String, Array[(Int64, Int64, Bool)], Int64) -> Result[Unit, String],
+  persist_fn : () -> Unit,
+) -> Int {
+  if self.pending_db_acks.length() == 0 {
+    return 0
+  }
+  let remaining : Array[PendingDbAck] = []
+  let mut settled = 0
+  let mut need_persist = false
+  for i in 0..<self.pending_db_acks.length() {
+    let ack = self.pending_db_acks[i]
+    match mark_fn(ack.session_key, ack.handed, ack.wall_ms) {
+      Ok(_) => {
+        settled = settled + 1
+        if ack.carried_ids.length() > 0 {
+          if self.confirm_carried_prompt_ids(ack.carried_ids) > 0 {
+            need_persist = true
+          }
+        }
+      }
+      Err(_) => remaining.push(ack)
+    }
+  }
+  self.pending_db_acks.clear()
+  for i in 0..<remaining.length() {
+    self.pending_db_acks.push(remaining[i])
+  }
+  if need_persist {
+    persist_fn()
+  }
+  settled
+}
+
+fn live_runner_mark_handed_in_store(
+  core : station_whole::WholeCore,
+  session_key : String,
+  handed : Array[(Int64, Int64, Bool)],
+  wall_ms : Int64,
+) -> Result[Unit, String] {
+  let tokens : Array[station_store::HandedToken] = []
+  for i in 0..<handed.length() {
+    let (th, n, apart) = handed[i]
+    tokens.push(station_store::HandedToken::{ thread: th, n: n, apart: apart })
+  }
+  match core.store.require_open() {
+    Ok(st_db) => match st_db.mark_handed_delivered(session_key, tokens, wall_ms) {
+      Ok(_) => Ok(())
+      Err(e) => Err(e.message)
+    }
+    Err(e) => Err(e)
+  }
+}
+
 fn live_runner_on_write_done(
   mgr : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -3006,29 +3119,17 @@ fn live_runner_on_write_done(
   sock_id : Int64,
   wall_ms : Int64,
 ) -> Unit {
-  // R6 P1-1 & P1-3: Commit ONLY the exact `handed` tokens and `carried_ids` of the write batch
-  // whose `LIVE_RUNNER_TOK_UNIX_WRITE` JUST succeeded!
+  // R6/R7: Commit ONLY the exact `handed` tokens and `carried_ids` of the write batch
+  // whose `LIVE_RUNNER_TOK_UNIX_WRITE` JUST succeeded; defer to `pending_db_acks` on transient DB error!
   let finished_commit = sess.write_inflight_commit
   sess.write_inflight_commit = WriteCommitMeta::empty()
-  if finished_commit.handed.length() > 0 {
-    let tokens : Array[station_store::HandedToken] = []
-    for i in 0..<finished_commit.handed.length() {
-      let (th, n, apart) = finished_commit.handed[i]
-      tokens.push(station_store::HandedToken::{ thread: th, n: n, apart: apart })
-    }
-    match core.store.require_open() {
-      Ok(st_db) => {
-        let _ = st_db.mark_handed_delivered(sess.session_key, tokens, wall_ms)
-      }
-      Err(_) => ()
-    }
-  }
-  if finished_commit.carried_ids.length() > 0 {
-    let removed = mgr.confirm_carried_prompt_ids(finished_commit.carried_ids)
-    if removed > 0 {
-      let _ = mgr.sync_handover_state_with_ctx(ctx)
-    }
-  }
+  let _ = mgr.commit_written_delivery_with(
+    sess.session_key,
+    finished_commit,
+    wall_ms,
+    fn(sk, h, w) { live_runner_mark_handed_in_store(core, sk, h, w) },
+    fn() { let _ = mgr.sync_handover_state_with_ctx(ctx) },
+  )
   if sess.write_queue.length() == 0 {
     sess.write_inflight = false
     sess.write_inflight_bytes = 0
@@ -3839,7 +3940,7 @@ fn live_runner_commit_end_turn(
               Some(rem) => {
                 actor.phase = station_sessions::ActorPhase::Idle
                 actor.has_process = false
-                actor.queue.push(station_sessions::ActorWork::InternalPrompt(rem))
+                actor.enqueue(station_sessions::ActorWork::InternalPrompt(rem))
                 actor.pump_next_prompt()
               }
               None => {
@@ -3858,9 +3959,16 @@ fn live_runner_commit_end_turn(
               let _ = actor.steered_during_silence.pop()
             }
             actor.running_history.push(false)
-            // Re-queue any steers that could not be delivered before failure.
+            // Re-queue any steers that could not be delivered before failure (preserving exact `WorkDeliveryMeta`!).
             while sess.pending_steers.length() > 0 {
               let s0 = sess.pending_steers[0]
+              let m0 = if sess.pending_steer_metas.length() > 0 {
+                let cm = sess.pending_steer_metas[0]
+                let cid_opt = if cm.carried_ids.length() > 0 { Some(cm.carried_ids[0]) } else { None }
+                station_sessions::WorkDeliveryMeta::{ handed: cm.handed, carried_id: cid_opt }
+              } else {
+                station_sessions::WorkDeliveryMeta::empty()
+              }
               let rest : Array[String] = []
               for si in 1..<sess.pending_steers.length() {
                 rest.push(sess.pending_steers[si])
@@ -3871,7 +3979,19 @@ fn live_runner_commit_end_turn(
               for si in 0..<rest.length() {
                 sess.pending_steers.push(rest[si])
               }
-              actor.queue.push(station_sessions::ActorWork::Prompt(s0))
+              if sess.pending_steer_metas.length() > 0 {
+                let rest_m : Array[WriteCommitMeta] = []
+                for si in 1..<sess.pending_steer_metas.length() {
+                  rest_m.push(sess.pending_steer_metas[si])
+                }
+                while sess.pending_steer_metas.length() > 0 {
+                  let _ = sess.pending_steer_metas.pop()
+                }
+                for si in 0..<rest_m.length() {
+                  sess.pending_steer_metas.push(rest_m[si])
+                }
+              }
+              actor.push_queue_with_meta(station_sessions::ActorWork::Prompt(s0), m0)
             }
             actor.pump_next_prompt()
           }
@@ -4038,7 +4158,11 @@ fn live_runner_commit_manager_pending_end_turn(
             actor.running_history.push(false)
             if pend.was_completed {
               match pend.reprompt_reminder {
-                Some(rem) => actor.queue.push(station_sessions::ActorWork::InternalPrompt(rem))
+                Some(rem) =>
+                actor.push_queue_with_meta(
+                  station_sessions::ActorWork::InternalPrompt(rem),
+                  station_sessions::WorkDeliveryMeta::empty(),
+                )
                 None => ()
               }
             }
@@ -5330,47 +5454,12 @@ pub fn LiveRunnerManager::pump(
       None => ()
     }
 
-    // 1. Drain any pending `started_prompts` (FIFO, with structured `is_internal`, `kind`, & exact `WorkDeliveryMeta`).
-    if actor.started_prompts.length() > 0 {
-      let prompt_text = actor.started_prompts[0]
-      let is_internal = if actor.started_prompts_internal.length() > 0 {
-        actor.started_prompts_internal[0]
-      } else {
-        false
+    // 1. Drain any pending `started_entries` (FIFO, atomic `StartedPromptEntry` with exact `WorkDeliveryMeta`).
+    match actor.pop_started_prompt() {
+      Some(se) => {
+        self.dispatch_prompt(ctx, core, cfg_raw, key, actor, se.text, se.is_internal, now_ms, wall_ms, turn_kind=se.kind, delivery_meta=se.meta)
       }
-      let turn_kind = if actor.started_prompts_kind.length() > 0 {
-        actor.started_prompts_kind[0]
-      } else {
-        "prompt"
-      }
-      let delivery_meta = if actor.started_prompts_meta.length() > 0 {
-        actor.started_prompts_meta[0]
-      } else {
-        station_sessions::WorkDeliveryMeta::empty()
-      }
-      let rest : Array[String] = []
-      for pi in 1..<actor.started_prompts.length() {
-        rest.push(actor.started_prompts[pi])
-      }
-      actor.started_prompts = rest
-      let rest_int : Array[Bool] = []
-      for pi in 1..<actor.started_prompts_internal.length() {
-        rest_int.push(actor.started_prompts_internal[pi])
-      }
-      actor.started_prompts_internal = rest_int
-      let rest_kind : Array[String] = []
-      for pi in 1..<actor.started_prompts_kind.length() {
-        rest_kind.push(actor.started_prompts_kind[pi])
-      }
-      actor.started_prompts_kind = rest_kind
-      if actor.started_prompts_meta.length() > 0 {
-        let rest_meta : Array[station_sessions::WorkDeliveryMeta] = []
-        for pi in 1..<actor.started_prompts_meta.length() {
-          rest_meta.push(actor.started_prompts_meta[pi])
-        }
-        actor.started_prompts_meta = rest_meta
-      }
-      self.dispatch_prompt(ctx, core, cfg_raw, key, actor, prompt_text, is_internal, now_ms, wall_ms, turn_kind=turn_kind, delivery_meta=delivery_meta)
+      None => ()
     }
 
     // 2. Drain `ActorWork::Steer` from `actor.queue` while running.
@@ -5378,7 +5467,7 @@ pub fn LiveRunnerManager::pump(
       station_sessions::ActorPhase::Running => {
         let mut steered = true
         while steered && actor.queue.length() > 0 {
-          match actor.queue[0] {
+          match actor.queue[0].work {
             station_sessions::ActorWork::Steer(steer_text) => {
               let steer_meta = match actor.pop_next_with_meta() {
                 Some((_, m)) => m
@@ -5455,13 +5544,13 @@ pub fn LiveRunnerManager::pump(
                   }
                   LiveRunnerPhase::Stopping(_, _, _, _)
                   | LiveRunnerPhase::Exited => {
-                    // P1-2: Never drop a steer when runner already exited/stopping; re-queue as Prompt!
-                    actor.queue.push(station_sessions::ActorWork::Prompt(steer_text))
+                    // P1-2: Never drop a steer when runner already exited/stopping; re-queue as Prompt with exact meta!
+                    actor.push_queue_with_meta(station_sessions::ActorWork::Prompt(steer_text), steer_meta)
                     steered = false
                   }
                 }
                 None => {
-                  actor.queue.push(station_sessions::ActorWork::Prompt(steer_text))
+                  actor.push_queue_with_meta(station_sessions::ActorWork::Prompt(steer_text), steer_meta)
                   steered = false
                 }
               }
@@ -8095,6 +8184,11 @@ pub fn LiveRunnerManager::tick(
       _ => ()
     }
   }
+  // R7 Item 5: Retry any deferred `pending_db_acks` (from transient SQLite errors after `UNIX_WRITE`).
+  let _ = self.retry_pending_db_acks_with(
+    fn(sk, h, w) { live_runner_mark_handed_in_store(core, sk, h, w) },
+    fn() { let _ = self.sync_handover_state_with_ctx(ctx) },
+  )
   // P1-2: Fail-open compaction deadline sweep across all actors.
   // Reclaims any stuck runner FIRST (moving it to `draining` so late Claude `result` / Codex
   // `turn/completed` frames are strictly isolated and NEVER end the next queued human turn!).
@@ -8170,6 +8264,7 @@ pub fn LiveRunnerManager::has_handover_carry_state(self : LiveRunnerManager) -> 
   self.pending_end_turns.length() > 0
   || self.draining_stopping_ids.length() > 0
   || self.pending_prompts.length() > 0
+  || self.pending_db_acks.length() > 0
 }
 
 pub fn LiveRunnerManager::export_handover_state_json(self : LiveRunnerManager) -> base_codec::Json {
@@ -8243,6 +8338,14 @@ pub fn LiveRunnerManager::export_handover_state_json(self : LiveRunnerManager) -
       None => ()
     }
   }
+  let encode_handed_arr = fn(hs : Array[(Int64, Int64, Bool)]) -> base_codec::Json {
+    let out : Array[base_codec::Json] = []
+    for hi in 0..<hs.length() {
+      let (th, n, apart) = hs[hi]
+      out.push(base_codec::json_arr([sql_db::int64_to_json(th), sql_db::int64_to_json(n), base_codec::json_bool(apart)]))
+    }
+    base_codec::json_arr(out)
+  }
   let p_prompts : Array[base_codec::Json] = []
   for pi in 0..<self.pending_prompts.length() {
     let cp = self.pending_prompts[pi]
@@ -8254,6 +8357,23 @@ pub fn LiveRunnerManager::export_handover_state_json(self : LiveRunnerManager) -
         ("text", base_codec::json_str(cp.text)),
         ("isInternal", base_codec::json_bool(cp.is_internal)),
         ("kind", base_codec::json_str(cp.kind)),
+        ("handed", encode_handed_arr(cp.handed)),
+      ]),
+    )
+  }
+  let p_acks : Array[base_codec::Json] = []
+  for ai in 0..<self.pending_db_acks.length() {
+    let ack = self.pending_db_acks[ai]
+    let cids_j : Array[base_codec::Json] = []
+    for ci in 0..<ack.carried_ids.length() {
+      cids_j.push(base_codec::json_str(ack.carried_ids[ci]))
+    }
+    p_acks.push(
+      base_codec::json_obj([
+        ("sessionKey", base_codec::json_str(ack.session_key)),
+        ("handed", encode_handed_arr(ack.handed)),
+        ("carriedIds", base_codec::json_arr(cids_j)),
+        ("wallMs", sql_db::int64_to_json(ack.wall_ms)),
       ]),
     )
   }
@@ -8262,6 +8382,7 @@ pub fn LiveRunnerManager::export_handover_state_json(self : LiveRunnerManager) -
     ("drainingStoppingIds", base_codec::json_arr(d_ids)),
     ("drainingStopSessions", base_codec::json_obj(d_sess_fields)),
     ("pendingPrompts", base_codec::json_arr(p_prompts)),
+    ("pendingDbAcks", base_codec::json_arr(p_acks)),
   ])
 }
 
@@ -8359,6 +8480,28 @@ pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j
     }
     _ => ()
   }
+  let decode_handed_arr = fn(o : base_codec::Json, k : String) -> Array[(Int64, Int64, Bool)] {
+    let out : Array[(Int64, Int64, Bool)] = []
+    match base_codec::json_get(o, k) {
+      Some(base_codec::Json::Arr(harr)) => {
+        for hi in 0..<harr.length() {
+          match harr[hi] {
+            base_codec::Json::Arr(tup) if tup.length() >= 3 => {
+              match (tup[0], tup[1], tup[2]) {
+                (base_codec::Json::Num(th, _), base_codec::Json::Num(n, _), base_codec::Json::Bool(apart)) => {
+                  out.push((th.to_int64(), n.to_int64(), apart))
+                }
+                _ => ()
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    out
+  }
   match base_codec::json_get(j, "pendingPrompts") {
     Some(base_codec::Json::Arr(arr)) => {
       for i in 0..<arr.length() {
@@ -8394,6 +8537,38 @@ pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j
           text: txt,
           is_internal: match get_opt_bool(item, "isInternal") { Some(b) => b; None => false },
           kind: kind,
+          handed: decode_handed_arr(item, "handed"),
+        })
+      }
+    }
+    _ => ()
+  }
+  match base_codec::json_get(j, "pendingDbAcks") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        let item = arr[i]
+        let skey = get_str(item, "sessionKey")
+        let hs = decode_handed_arr(item, "handed")
+        if skey.length() == 0 || hs.length() == 0 {
+          continue
+        }
+        let cids : Array[String] = []
+        match base_codec::json_get(item, "carriedIds") {
+          Some(base_codec::Json::Arr(carr)) => {
+            for ci in 0..<carr.length() {
+              match carr[ci] {
+                base_codec::Json::Str(s) if s.length() > 0 => cids.push(s)
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        self.pending_db_acks.push(PendingDbAck::{
+          session_key: skey,
+          handed: hs,
+          carried_ids: cids,
+          wall_ms: match get_opt_i64(item, "wallMs") { Some(w) => w; None => 0L },
         })
       }
     }
@@ -8401,11 +8576,23 @@ pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j
   }
 }
 
-/// R6 P1-2: Two-phase lossless handover compaction carry with durable pre-commit snapshot:
+/// Formats a cross-process unique `CarriedHandoverPrompt.id`: `"<session_key>:<wall_ms>-<nonce>-<seq>"`
+/// so consecutive handovers across generations NEVER collide on `:1` in `carried_prompt_ids`!
+pub fn make_carry_prompt_id(
+  session_key : String,
+  wall_ms : Int64,
+  nonce : String,
+  seq : Int,
+) -> String {
+  session_key + ":" + wall_ms.to_string() + "-" + nonce + "-" + seq.to_string()
+}
+
+/// R7 Items 1, 3, 4: Two-phase lossless handover compaction carry with durable pre-commit snapshot:
 /// - Phase 0 (BEFORE any fallible SQLite write!) non-destructively snapshots all compacting
-///   actors' `started_prompts` + `queue` into `self.pending_prompts` with stable unique IDs and
-///   invokes `persist_snapshot_fn()` so the recovery file on disk ALREADY holds every queued
-///   input even if Phase 1 fails!
+///   actors' `started_entries` + `queue` into `self.pending_prompts` with cross-process unique IDs
+///   (writing each newly allocated `cid` back to `entry.meta.carried_id` so retries reuse the same
+///   ID!) and preserves full `handed` tokens, then calls `persist_snapshot_fn() -> Result[Unit, String]`.
+///   If disk persistence fails, aborts immediately BEFORE touching any SQLite state or runner!
 /// - Phase 1 runs `commit_fn(akey, actor)` for ALL compacting actors WITHOUT clearing any actor
 ///   queue. If any DB commit fails, returns `Err(...)` while BOTH actor queues AND the persisted
 ///   `pending_prompts` snapshot remain 100% intact for recovery!
@@ -8414,22 +8601,22 @@ pub fn LiveRunnerManager::carry_compacting_actors_two_phase(
   self : LiveRunnerManager,
   compacting : Array[(String, station_sessions::SessionActor)],
   commit_fn : (String, station_sessions::SessionActor) -> Result[Unit, String],
-  persist_snapshot_fn~ : () -> Unit = fn() { () },
+  persist_snapshot_fn~ : () -> Result[Unit, String] = fn() { Ok(()) },
+  wall_ms~ : Int64 = 0L,
+  nonce~ : String = "00000000",
 ) -> Result[Unit, String] {
   // Phase 0: Non-destructively snapshot all queued/started prompts BEFORE any fallible SQLite write!
   for ci in 0..<compacting.length() {
     let (akey, actor) = compacting[ci]
-    for pi in 0..<actor.started_prompts.length() {
-      let txt = actor.started_prompts[pi]
-      let is_int = if pi < actor.started_prompts_internal.length() { actor.started_prompts_internal[pi] } else { false }
-      let kind = if pi < actor.started_prompts_kind.length() { actor.started_prompts_kind[pi] } else { "prompt" }
-      if txt.length() > 0 {
-        let existing_cid = if pi < actor.started_prompts_meta.length() { actor.started_prompts_meta[pi].carried_id } else { None }
-        let cid = match existing_cid {
+    for pi in 0..<actor.started_entries.length() {
+      let se = actor.started_entries[pi]
+      if se.text.length() > 0 {
+        let cid = match se.meta.carried_id {
           Some(id) if id.length() > 0 => id
           _ => {
-            let id = akey + ":" + self.next_prompt_carry_seq.to_string()
+            let id = make_carry_prompt_id(akey, wall_ms, nonce, self.next_prompt_carry_seq)
             self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
+            se.meta.carried_id = Some(id)
             id
           }
         }
@@ -8439,24 +8626,26 @@ pub fn LiveRunnerManager::carry_compacting_actors_two_phase(
             id: cid,
             session_key: akey,
             runtime: actor.runtime,
-            text: txt,
-            is_internal: is_int,
-            kind: kind,
+            text: se.text,
+            is_internal: se.is_internal,
+            kind: se.kind,
+            handed: se.meta.handed,
           })
         }
       }
     }
     for qi in 0..<actor.queue.length() {
-      let existing_cid = if qi < actor.queue_meta.length() { actor.queue_meta[qi].carried_id } else { None }
+      let q = actor.queue[qi]
       let push_q = fn(txt : String, is_int : Bool, kind : String) -> Unit {
         if txt.length() == 0 {
           return
         }
-        let cid = match existing_cid {
+        let cid = match q.meta.carried_id {
           Some(id) if id.length() > 0 => id
           _ => {
-            let id = akey + ":" + self.next_prompt_carry_seq.to_string()
+            let id = make_carry_prompt_id(akey, wall_ms, nonce, self.next_prompt_carry_seq)
             self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
+            q.meta.carried_id = Some(id)
             id
           }
         }
@@ -8469,10 +8658,11 @@ pub fn LiveRunnerManager::carry_compacting_actors_two_phase(
             text: txt,
             is_internal: is_int,
             kind: kind,
+            handed: q.meta.handed,
           })
         }
       }
-      match actor.queue[qi] {
+      match q.work {
         station_sessions::ActorWork::Prompt(txt) => push_q(txt, false, "prompt")
         station_sessions::ActorWork::InternalPrompt(txt) => push_q(txt, true, "prompt")
         station_sessions::ActorWork::Resume(txt) => push_q(txt, true, "resume")
@@ -8481,7 +8671,10 @@ pub fn LiveRunnerManager::carry_compacting_actors_two_phase(
     }
   }
   if self.pending_prompts.length() > 0 {
-    persist_snapshot_fn()
+    match persist_snapshot_fn() {
+      Ok(_) => ()
+      Err(e) => return Err("handover pre-commit snapshot write failed: " + e)
+    }
   }
   // Phase 1: Commit all SQLite terminations — NEVER clear any actor queue until ALL succeed!
   for ci in 0..<compacting.length() {
@@ -8494,21 +8687,16 @@ pub fn LiveRunnerManager::carry_compacting_actors_two_phase(
   // Phase 2: All SQLite commits succeeded; now safely clear the retiring daemon's actor queues.
   for ci in 0..<compacting.length() {
     let (_akey, actor) = compacting[ci]
-    actor.started_prompts.clear()
-    actor.started_prompts_internal.clear()
-    actor.started_prompts_kind.clear()
-    actor.started_prompts_meta.clear()
+    actor.clear_started_prompts()
     actor.queue.clear()
-    actor.queue_meta.clear()
     actor.phase = station_sessions::ActorPhase::Idle
   }
   Ok(())
 }
 
-/// R6 P1-3: Re-submits queued inputs carried across `SIGUSR2` handover into their session actors
-/// with their stable `carried_id` attached, WITHOUT clearing `self.pending_prompts` or overwriting
-/// the durable disk file! Each entry is removed & persisted ONLY when `LIVE_RUNNER_TOK_UNIX_WRITE`
-/// confirms the bytes were written to the runner socket.
+/// R6/R7: Re-submits queued inputs carried across `SIGUSR2` handover into their session actors
+/// with their stable `carried_id` AND exact `handed` tokens preserved, WITHOUT clearing
+/// `self.pending_prompts` or overwriting the durable disk file!
 pub fn LiveRunnerManager::restore_carried_pending_prompts_into_hub(
   self : LiveRunnerManager,
   hub : station_sessions::SessionHub,
@@ -8521,7 +8709,7 @@ pub fn LiveRunnerManager::restore_carried_pending_prompts_into_hub(
     }
     self.restored_prompt_ids.set(cp.id, true)
     let actor = hub.ensure_actor(cp.session_key, cp.runtime)
-    let meta = station_sessions::WorkDeliveryMeta::{ handed: [], carried_id: Some(cp.id) }
+    let meta = station_sessions::WorkDeliveryMeta::{ handed: cp.handed, carried_id: Some(cp.id) }
     if cp.kind == "resume" {
       actor.push_queue_with_meta(station_sessions::ActorWork::Resume(cp.text), meta)
     } else if cp.is_internal {
@@ -8584,6 +8772,26 @@ pub fn LiveRunnerManager::prepare_handover(
       None => ()
     }
   }
+  // R7 Item 5: Flush any deferred `pending_db_acks` before exporting handover snapshot.
+  let _ = self.retry_pending_db_acks_with(
+    fn(sk, h, w) { live_runner_mark_handed_in_store(core, sk, h, w) },
+    fn() { let _ = self.sync_handover_state_with_ctx(ctx) },
+  )
+  let ho_nonce = match station_sys::random_bytes(4) {
+    Ok(rb) => {
+      let hex_digits = "0123456789abcdef"
+      let sb = StringBuilder::new()
+      for bi in 0..<rb.length() {
+        let b = rb[bi].to_int()
+        let hi = (b >> 4) & 15
+        let lo = b & 15
+        sb.write_string(hex_digits.slice(hi, hi + 1))
+        sb.write_string(hex_digits.slice(lo, lo + 1))
+      }
+      sb.to_string()
+    }
+    Err(_) => ctx.self_pid.to_string()
+  }
   match self.carry_compacting_actors_two_phase(
     compacting,
     fn(akey : String, actor : station_sessions::SessionActor) -> Result[Unit, String] {
@@ -8612,9 +8820,11 @@ pub fn LiveRunnerManager::prepare_handover(
         Err(e) => Err("handover compaction finalize failed for " + akey + ": " + e)
       }
     },
-    persist_snapshot_fn=fn() -> Unit {
-      let _ = self.sync_handover_state_with_ctx(ctx)
+    persist_snapshot_fn=fn() -> Result[Unit, String] {
+      self.sync_handover_state_with_ctx(ctx)
     },
+    wall_ms=wall_ms,
+    nonce=ho_nonce,
   ) {
     Ok(_) => ()
     Err(e) => return Err(e)

@@ -3061,7 +3061,7 @@ fn WholeAgents::build_domain_handlers(
         Ok((n, _)) => {
           // Open actor with target's REAL runtime from SQLite (never hardcoded "claude").
           let actor = self.hub.ensure_actor(target, target_row.runtime)
-          let _ = actor.submit_input(body_text)
+          let _ = actor.submit_input(body_text, handed=[(tid, n, false)])
           return station_tools::text_reply(
             base_codec::json_stringify(
               base_codec::json_obj([
