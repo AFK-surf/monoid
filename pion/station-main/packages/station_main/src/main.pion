@@ -321,9 +321,76 @@ fn run_smoke_runner(runner_bin : String) -> Int {
     }
   }
   let spawn_pid = child.pid
-  let spawn_start_ms = match station_sys::proc_start_time_ms(spawn_pid) {
-    Some(t) => if t > 0L { t } else { host_shim::wall_ms() }
-    None => host_shim::wall_ms()
+  let spawn_os_start_ms = match station_sys::proc_start_time_ms(spawn_pid) {
+    Some(t) => if t > 0L { t } else { 0L }
+    None => 0L
+  }
+  let spawn_boot_id = station_sys::boot_id()
+  let spawn_start_ticks = station_sys::proc_start_ticks(spawn_pid)
+  let real_ops = station_ops::OpsFs::{
+    ..station_ops::MemFs::new().ops(),
+    read_bytes: fn(p : String) -> Result[Bytes, station_ops::FsErr] {
+      match station_sys::read_file_strict(p) {
+        Ok(b) => Ok(b)
+        Err(_) => Err(station_ops::FsErr::NotFound)
+      }
+    },
+  }
+  let stop_via_sock = fn(sock_path : String, sig : String) -> Bool {
+    if sock_path.length() == 0 {
+      return false
+    }
+    let mut sid : Int64 = -1L
+    let mut opened = false
+    let _ = mux.call_async_raw(
+      builders_core::MuxToken::Tagged(1, 10, 0L),
+      "unix.open",
+      base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(sock_path))])),
+      None,
+    )
+    let d1 = host_shim::now_ms() + 3000L
+    while host_shim::now_ms() < d1 && !opened {
+      match host_shim::wait(50L) {
+        Some(host_shim::HostEvent::ShellDone(d)) => {
+          match builders_core::decode_shell_done(d) {
+            Ok((Some(v), _)) => match base_codec::json_get(v, "id") {
+              Some(base_codec::Json::Num(n, _)) => sid = n.to_int64()
+              _ => ()
+            }
+            _ => ()
+          }
+          opened = true
+        }
+        _ => ()
+      }
+    }
+    if sid < 0L {
+      return false
+    }
+    let payload = station_drivers::encode_runner_attach()
+    + station_drivers::encode_runner_signal(sig, true)
+    + station_drivers::encode_runner_done()
+    let _ = mux.call_async_raw(
+      builders_core::MuxToken::Tagged(1, 11, sid),
+      "tcp.write",
+      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+      Some(payload.to_bytes()),
+    )
+    let d2 = host_shim::now_ms() + 4000L
+    let mut gone = false
+    while host_shim::now_ms() < d2 && !gone {
+      let _ = host_shim::wait(50L)
+      if station_sys::proc_kill_is_esrch(station_sys::proc_kill(spawn_pid, station_sys::SIG_PROBE, false)) {
+        gone = true
+      }
+    }
+    let _ = mux.call_async_raw(
+      builders_core::MuxToken::Tagged(1, 12, sid),
+      "tcp.close",
+      base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+      None,
+    )
+    gone
   }
   let mut out_buf = Bytes::new(0)
   let mut ready_opt : Option[station_drivers::RunnerInfo] = None
@@ -353,11 +420,23 @@ fn run_smoke_runner(runner_bin : String) -> Int {
     Some(ri) => {
       if ri.runner_pid != spawn_pid {
         fail_msg = "child.pid (" + spawn_pid.to_string() + ") != ready.runner_pid (" + ri.runner_pid.to_string() + ") — POSIX fork occurred!"
+        let _ = stop_via_sock(ri.socket, "TERM")
       } else {
         rinfo_opt = Some(ri)
       }
     }
-    None => fail_msg = "timed out waiting for stillfail-runner ready line"
+    None => {
+      fail_msg = "timed out waiting for stillfail-runner ready line"
+      // R23 P2: Before `child.close()`, prefer verified `<rid>.sock` stop, else handle-bound `child.kill(TERM, false)`.
+      let stopped = match probe_runner_file(real_ops, root, "/", rid) {
+        RunnerFileProbe::Live(pinfo) | RunnerFileProbe::Uncertain(_, Some(pinfo)) =>
+        if pinfo.runner_pid == spawn_pid { stop_via_sock(pinfo.socket, "TERM") } else { false }
+        _ => false
+      }
+      if !stopped {
+        let _ = child.kill(station_sys::SIG_TERM, false)
+      }
+    }
   }
   // Close bootstrap handle (handover detach) and verify runner stays alive at the EXACT same PID!
   let _ = child.close()
@@ -366,15 +445,6 @@ fn run_smoke_runner(runner_bin : String) -> Int {
       fail_msg = "runner died after child.close()"
     }
   }
-  let real_ops = station_ops::OpsFs::{
-    ..station_ops::MemFs::new().ops(),
-    read_bytes: fn(p : String) -> Result[Bytes, station_ops::FsErr] {
-      match station_sys::read_file_strict(p) {
-        Ok(b) => Ok(b)
-        Err(_) => Err(station_ops::FsErr::NotFound)
-      }
-    },
-  }
   if fail_msg.length() == 0 {
     match probe_runner_file(real_ops, root, "/", rid) {
       RunnerFileProbe::Live(pinfo) => {
@@ -382,71 +452,24 @@ fn run_smoke_runner(runner_bin : String) -> Int {
           fail_msg = "probed metadata runner_pid mismatch"
         } else {
           let mgr = LiveRunnerManager::new()
-          let spawn_key = "spawn:" + rid + ":" + spawn_pid.to_string() + ":" + spawn_start_ms.to_string()
+          let spawn_key = match encode_spawn_stop_key_pure(rid, spawn_pid, spawn_os_start_ms, spawn_boot_id, spawn_start_ticks) {
+            Some(sk) => sk
+            None => ""
+          }
           mgr.record_draining_stop_marker(spawn_key, "s-smoke-runner")
           let iid = station_whole::WholeAgents::runner_instance_id(pinfo.id, pinfo.runner_pid, pinfo.started_at)
           if !mgr.is_draining_stop_target(iid, pinfo.id, pinfo.runner_pid, pinfo.started_at) {
             fail_msg = "is_draining_stop_target did not match spawn: marker"
           } else {
             // Connect over `<rid>.sock`, send `attach` + `signal TERM group:true` + `done`!
-            let mut open_sid : Int64 = -1L
-            let mut open_done = false
-            let _ = mux.call_async_raw(
-              builders_core::MuxToken::Tagged(1, 1, 0L),
-              "unix.open",
-              base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(pinfo.socket))])),
-              None,
-            )
-            let conn_deadline = host_shim::now_ms() + 5000L
-            while host_shim::now_ms() < conn_deadline && !open_done {
-              match host_shim::wait(50L) {
-                Some(host_shim::HostEvent::ShellDone(d)) => {
-                  match builders_core::decode_shell_done(d) {
-                    Ok((Some(v), _)) => match base_codec::json_get(v, "id") {
-                      Some(base_codec::Json::Num(n, _)) => open_sid = n.to_int64()
-                      _ => ()
-                    }
-                    _ => ()
-                  }
-                  open_done = true
-                }
-                _ => ()
-              }
-            }
-            if open_sid < 0L {
-              fail_msg = "unix.open failed on " + pinfo.socket
-            } else {
-              let stop_payload = station_drivers::encode_runner_attach()
-              + station_drivers::encode_runner_signal("TERM", true)
-              + station_drivers::encode_runner_done()
-              let _ = mux.call_async_raw(
-                builders_core::MuxToken::Tagged(1, 2, open_sid),
-                "tcp.write",
-                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(open_sid))])),
-                Some(stop_payload.to_bytes()),
-              )
-              // Wait for runner to exit via real OS ESRCH!
-              let exit_deadline = host_shim::now_ms() + 8000L
-              let mut esrch_seen = false
-              while host_shim::now_ms() < exit_deadline && !esrch_seen {
-                let _ = host_shim::wait(50L)
-                if station_sys::proc_kill_is_esrch(station_sys::proc_kill(spawn_pid, station_sys::SIG_PROBE, false)) {
-                  esrch_seen = true
-                }
-              }
-              let _ = mux.call_async_raw(
-                builders_core::MuxToken::Tagged(1, 3, open_sid),
-                "tcp.close",
-                base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(open_sid))])),
-                None,
-              )
-              if !esrch_seen {
-                let _ = station_sys::proc_kill(spawn_pid, station_sys::SIG_KILL, true)
-                fail_msg = "runner did not exit after attach+TERM+done"
-              } else if !mgr.sweep_draining_stop_markers(host_shim::wall_ms())
-              || mgr.has_pending_draining_stop_for_session("s-smoke-runner") {
-                fail_msg = "sweep_draining_stop_markers did not clear marker after real OS ESRCH"
-              }
+            let esrch_seen = stop_via_sock(pinfo.socket, "TERM")
+            if !esrch_seen {
+              // R23 P2: Escalate over verified `<rid>.sock` (`KILL group:true`), NEVER bare-PID `proc_kill`!
+              let _ = stop_via_sock(pinfo.socket, "KILL")
+              fail_msg = "runner did not exit after attach+TERM+done"
+            } else if !mgr.sweep_draining_stop_markers(host_shim::wall_ms())
+            || mgr.has_pending_draining_stop_for_session("s-smoke-runner") {
+              fail_msg = "sweep_draining_stop_markers did not clear marker after real OS ESRCH"
             }
           }
         }
@@ -455,7 +478,10 @@ fn run_smoke_runner(runner_bin : String) -> Int {
     }
   }
   if fail_msg.length() > 0 {
-    let _ = station_sys::proc_kill(spawn_pid, station_sys::SIG_KILL, true)
+    match rinfo_opt {
+      Some(ri) => { let _ = stop_via_sock(ri.socket, "KILL") }
+      None => ()
+    }
   }
   match rinfo_opt {
     Some(ri) => { let _ = station_sys::unlink(ri.socket) }

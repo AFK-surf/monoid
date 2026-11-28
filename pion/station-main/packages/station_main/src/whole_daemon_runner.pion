@@ -1741,7 +1741,9 @@ struct LiveRunnerSession {
   runtime_str : String
   runner_id : String
   spawn_pid : Int
-  spawn_start_ms : Int64
+  spawn_os_start_ms : Int64
+  spawn_boot_id : Option[String]
+  spawn_start_ticks : Option[Int64]
   is_acp : Bool
   is_codex : Bool
   is_adopted : Bool
@@ -1912,24 +1914,238 @@ fn parse_i64_decimal(s : String) -> Option[Int64] {
   Some(acc)
 }
 
-/// R21: Parses a `Spawning`-phase exact OS stop key `"spawn:<rid>:<pid>:<spawn_start_ms>"`.
-pub fn parse_spawn_stop_key(key : String) -> Option[(String, Int, Int64)] {
+/// R23: 3-state OS kernel process identity verdict shared by startup adoption (`is_draining_stop_target`
+/// / `find_draining_stop_session`), `tick()` Step 0b, and `sweep_draining_stop_markers`.
+pub enum SpawnIdentityVerdict {
+  ConfirmedSame
+  ConfirmedDeadOrReused
+  Unknown
+}
+
+/// R23: Pure 3-state OS kernel identity verification for `spawn:` markers:
+/// - `pid <= 1` or `ESRCH` (`-3`) -> `ConfirmedDeadOrReused`
+/// - `kill_rc != 0` (e.g. `EPERM = -1`) -> `Unknown`
+/// - Linux (`boot_id + start_ticks`): exact equality -> `ConfirmedSame`, mismatch -> `ConfirmedDeadOrReused`,
+///   unreadable current `boot_id`/`start_ticks` -> `Unknown`
+/// - macOS / Windows (`expected_os_start_ms > 0`): `|actual_ms - expected_os_start_ms| <= 100L` ->
+///   `ConfirmedSame`, else `ConfirmedDeadOrReused` (`None` or `<= 0` -> `Unknown`)
+/// - No kernel baseline (`expected_os_start_ms <= 0` and no `(boot_id, start_ticks)`) -> `Unknown`.
+pub fn verify_spawn_os_identity_with(
+  pid : Int,
+  expected_os_start_ms : Int64,
+  expected_boot_opt : Option[String],
+  expected_ticks_opt : Option[Int64],
+  kill_rc : Int,
+  cur_boot_opt : Option[String],
+  cur_ticks_opt : Option[Int64],
+  cur_start_ms_opt : Option[Int64],
+) -> SpawnIdentityVerdict {
+  if pid <= 1 || station_sys::proc_kill_is_esrch(kill_rc) {
+    return SpawnIdentityVerdict::ConfirmedDeadOrReused
+  }
+  if kill_rc != 0 {
+    return SpawnIdentityVerdict::Unknown
+  }
+  match (expected_boot_opt, expected_ticks_opt) {
+    (Some(exp_boot), Some(exp_ticks)) => {
+      if exp_boot.length() > 0 && exp_ticks >= 0L {
+        match (cur_boot_opt, cur_ticks_opt) {
+          (Some(cur_boot), Some(cur_ticks)) => {
+            if cur_boot == exp_boot && cur_ticks == exp_ticks {
+              return SpawnIdentityVerdict::ConfirmedSame
+            }
+            return SpawnIdentityVerdict::ConfirmedDeadOrReused
+          }
+          _ => return SpawnIdentityVerdict::Unknown
+        }
+      }
+    }
+    _ => ()
+  }
+  if expected_os_start_ms <= 0L {
+    return SpawnIdentityVerdict::Unknown
+  }
+  match cur_start_ms_opt {
+    Some(actual_ms) => {
+      if actual_ms <= 0L {
+        return SpawnIdentityVerdict::Unknown
+      }
+      let diff = if actual_ms >= expected_os_start_ms {
+        actual_ms - expected_os_start_ms
+      } else {
+        expected_os_start_ms - actual_ms
+      }
+      if diff <= 100L {
+        SpawnIdentityVerdict::ConfirmedSame
+      } else {
+        SpawnIdentityVerdict::ConfirmedDeadOrReused
+      }
+    }
+    None => SpawnIdentityVerdict::Unknown
+  }
+}
+
+fn verify_spawn_os_identity(
+  pid : Int,
+  expected_os_start_ms : Int64,
+  expected_boot_opt : Option[String],
+  expected_ticks_opt : Option[Int64],
+) -> SpawnIdentityVerdict {
+  if pid <= 1 {
+    return SpawnIdentityVerdict::ConfirmedDeadOrReused
+  }
+  let rc = station_sys::proc_kill(pid, 0, false)
+  if station_sys::proc_kill_is_esrch(rc) {
+    return SpawnIdentityVerdict::ConfirmedDeadOrReused
+  }
+  if rc != 0 {
+    return SpawnIdentityVerdict::Unknown
+  }
+  let has_linux_id = match (expected_boot_opt, expected_ticks_opt) {
+    (Some(b), Some(t)) => b.length() > 0 && t >= 0L
+    _ => false
+  }
+  let cur_boot = if has_linux_id { station_sys::boot_id() } else { None }
+  let cur_ticks = if has_linux_id { station_sys::proc_start_ticks(pid) } else { None }
+  let cur_start_ms = if has_linux_id { None } else { station_sys::proc_start_time_ms(pid) }
+  verify_spawn_os_identity_with(
+    pid,
+    expected_os_start_ms,
+    expected_boot_opt,
+    expected_ticks_opt,
+    rc,
+    cur_boot,
+    cur_ticks,
+    cur_start_ms,
+  )
+}
+
+/// R23: Encodes a `Spawning`-phase stop marker with real OS kernel identity (NEVER `wall_ms`!):
+/// - Linux (`boot_id` + `start_ticks`): `"spawn:<rid>:<pid>:<os_start_ms>:<ticks>@<boot_id>"`
+/// - macOS / Windows (`os_start_ms > 0`): `"spawn:<rid>:<pid>:<os_start_ms>"`
+/// - No kernel baseline: `"spawn:<rid>:<pid>:0"` (only cleared on `ESRCH`, never matches reused PID).
+pub fn encode_spawn_stop_key_pure(
+  rid : String,
+  pid : Int,
+  os_start_ms : Int64,
+  boot_opt : Option[String],
+  ticks_opt : Option[Int64],
+) -> Option[String] {
+  if rid.length() == 0 || pid <= 1 {
+    return None
+  }
+  let st = if os_start_ms > 0L { os_start_ms } else { 0L }
+  match (boot_opt, ticks_opt) {
+    (Some(b), Some(t)) => if b.length() > 0 && t >= 0L {
+      return Some("spawn:" + rid + ":" + pid.to_string() + ":" + st.to_string() + ":" + t.to_string() + "@" + b)
+    }
+    _ => ()
+  }
+  if st > 0L {
+    return Some("spawn:" + rid + ":" + pid.to_string() + ":" + st.to_string())
+  }
+  Some("spawn:" + rid + ":" + pid.to_string() + ":0")
+}
+
+fn encode_spawn_stop_key_for_session(s : LiveRunnerSession) -> Option[String] {
+  if s.runner_id.length() == 0 || s.spawn_pid <= 1 {
+    return None
+  }
+  let has_baseline = s.spawn_os_start_ms > 0L || match (s.spawn_boot_id, s.spawn_start_ticks) {
+    (Some(b), Some(t)) => b.length() > 0 && t >= 0L
+    _ => false
+  }
+  if !has_baseline && station_sys::proc_kill_is_esrch(station_sys::proc_kill(s.spawn_pid, 0, false)) {
+    return None
+  }
+  encode_spawn_stop_key_pure(s.runner_id, s.spawn_pid, s.spawn_os_start_ms, s.spawn_boot_id, s.spawn_start_ticks)
+}
+
+/// R21/R23: Parses a `Spawning`-phase exact OS stop key:
+/// - `"spawn:<rid>:<pid>:<os_start_ms>:<ticks>@<boot_id>"` (Linux)
+/// - `"spawn:<rid>:<pid>:<os_start_ms>"` (macOS/Win or `:0` no-baseline fallback)
+pub fn parse_spawn_stop_key(key : String) -> Option[(String, Int, Int64, Option[String], Option[Int64])] {
   if !key.starts_with("spawn:") {
     return None
   }
   let rest = key.slice(6, key.length())
-  match parse_runner_instance_id_full(rest) {
-    Some((rid, pid, st)) => if pid > 1 && st > 0L { Some((rid, pid, st)) } else { None }
-    None => None
+  let bs = rest.to_bytes()
+  let mut at_idx = -1
+  let mut i = bs.length() - 1
+  while i >= 0 {
+    if bs[i].to_int() == 64 {
+      at_idx = i
+      break
+    }
+    i = i - 1
+  }
+  if at_idx >= 0 {
+    let boot_id = rest.slice(at_idx + 1, rest.length())
+    if boot_id.length() == 0 {
+      return None
+    }
+    let left = rest.slice(0, at_idx)
+    let lbs = left.to_bytes()
+    let mut c3 = -1
+    let mut c2 = -1
+    let mut c1 = -1
+    let mut j = lbs.length() - 1
+    while j >= 0 {
+      if lbs[j].to_int() == 58 {
+        if c3 < 0 {
+          c3 = j
+        } else if c2 < 0 {
+          c2 = j
+        } else {
+          c1 = j
+          break
+        }
+      }
+      j = j - 1
+    }
+    if c1 <= 0 || c2 <= c1 + 1 || c3 <= c2 + 1 || c3 + 1 >= left.length() {
+      return None
+    }
+    let rid = left.slice(0, c1)
+    let pid_s = left.slice(c1 + 1, c2)
+    let os_ms_s = left.slice(c2 + 1, c3)
+    let ticks_s = left.slice(c3 + 1, left.length())
+    match (parse_i64_decimal(pid_s), parse_i64_decimal(os_ms_s), parse_i64_decimal(ticks_s)) {
+      (Some(pid_i64), Some(os_ms), Some(ticks)) =>
+      if rid.length() > 0 && pid_i64 > 1L && os_ms >= 0L && ticks >= 0L {
+        Some((rid, pid_i64.to_int(), os_ms, Some(boot_id), Some(ticks)))
+      } else {
+        None
+      }
+      _ => None
+    }
+  } else {
+    match parse_runner_instance_id_full(rest) {
+      Some((rid, pid, os_ms)) =>
+      if pid > 1 && os_ms >= 0L {
+        Some((rid, pid, os_ms, None, None))
+      } else {
+        None
+      }
+      None => None
+    }
   }
 }
 
-fn match_spawn_stop_key(key : String, runner_id : String, runner_pid : Int, started_at : Int64) -> Bool {
-  if runner_id.length() == 0 || runner_pid <= 1 || started_at <= 0L {
+fn match_spawn_stop_key(
+  key : String,
+  runner_id : String,
+  runner_pid : Int,
+  verify_spawn_id : (Int, Int64, Option[String], Option[Int64]) -> SpawnIdentityVerdict,
+) -> Bool {
+  if runner_id.length() == 0 || runner_pid <= 1 {
     return false
   }
   match parse_spawn_stop_key(key) {
-    Some((rid, pid, spawn_start_ms)) => rid == runner_id && pid == runner_pid && started_at >= spawn_start_ms - 5000L
+    Some((rid, pid, os_start_ms, boot_opt, ticks_opt)) =>
+    rid == runner_id
+    && pid == runner_pid
+    && (verify_spawn_id(pid, os_start_ms, boot_opt, ticks_opt) is SpawnIdentityVerdict::ConfirmedSame)
     None => false
   }
 }
@@ -1939,20 +2155,21 @@ fn match_spawn_stop_key_for_clear(key : String, runner_id : String, runner_pid :
     return false
   }
   match parse_spawn_stop_key(key) {
-    Some((rid, pid, _)) => rid == runner_id && pid == runner_pid
+    Some((rid, pid, _, _, _)) => rid == runner_id && pid == runner_pid
     None => false
   }
 }
 
-/// R21/R22: Read-only check whether `(inst_id, runner_id, runner_pid, started_at)` matches a predecessor
-/// draining/stopping runner (exact `inst_id`, or `Spawning` `"spawn:<rid>:<pid>:<spawn_start_ms>"`
-/// matched by exact `runner_id` + exact OS `runner_pid` + `started_at >= spawn_start_ms - 5s`).
+/// R21/R22/R23: Read-only check whether `(inst_id, runner_id, runner_pid, started_at)` matches a
+/// predecessor draining/stopping runner (exact `inst_id`, or `Spawning` `spawn:` marker positively
+/// verified as `SpawnIdentityVerdict::ConfirmedSame` via real OS kernel identity).
 pub fn LiveRunnerManager::is_draining_stop_target(
   self : LiveRunnerManager,
   inst_id : String,
   runner_id : String,
   runner_pid : Int,
   started_at : Int64,
+  verify_spawn_id~ : (Int, Int64, Option[String], Option[Int64]) -> SpawnIdentityVerdict = verify_spawn_os_identity,
 ) -> Bool {
   if self.draining_stopping_ids.contains(inst_id) {
     return true
@@ -1960,7 +2177,7 @@ pub fn LiveRunnerManager::is_draining_stop_target(
   if runner_id.length() > 0 && runner_pid > 1 && started_at > 0L {
     let keys = self.draining_stopping_ids.keys()
     for i in 0..<keys.length() {
-      if match_spawn_stop_key(keys[i], runner_id, runner_pid, started_at) {
+      if match_spawn_stop_key(keys[i], runner_id, runner_pid, verify_spawn_id) {
         return true
       }
     }
@@ -1982,14 +2199,15 @@ pub fn LiveRunnerManager::record_draining_stop_marker(
   }
 }
 
-/// R16/R21/R22: Looks up the `session_key` associated with a draining/stopping marker (exact `inst_id`
-/// or exact `"spawn:<runner_id>:<runner_pid>:<spawn_start_ms>"` with `started_at >= spawn_start_ms - 5s`).
+/// R16/R21/R22/R23: Looks up the `session_key` associated with a draining/stopping marker (exact
+/// `inst_id` or `spawn:` marker positively verified as `SpawnIdentityVerdict::ConfirmedSame`).
 pub fn LiveRunnerManager::find_draining_stop_session(
   self : LiveRunnerManager,
   inst_id : String,
   runner_id : String,
   runner_pid : Int,
   started_at : Int64,
+  verify_spawn_id~ : (Int, Int64, Option[String], Option[Int64]) -> SpawnIdentityVerdict = verify_spawn_os_identity,
 ) -> Option[String] {
   match self.draining_stop_sessions.get(inst_id) {
     Some(sk) => if sk.length() > 0 { return Some(sk) }
@@ -1999,7 +2217,7 @@ pub fn LiveRunnerManager::find_draining_stop_session(
     let keys = self.draining_stopping_ids.keys()
     for i in 0..<keys.length() {
       let k = keys[i]
-      if match_spawn_stop_key(k, runner_id, runner_pid, started_at) {
+      if match_spawn_stop_key(k, runner_id, runner_pid, verify_spawn_id) {
         match self.draining_stop_sessions.get(k) {
           Some(sk) => if sk.length() > 0 { return Some(sk) }
           None => ()
@@ -2208,32 +2426,33 @@ fn LiveRunnerManager::has_runner_id_tracked(self : LiveRunnerManager, runner_id 
   false
 }
 
-/// R21: Unified OS-verified stop-marker sweep (ZERO 30s `ENOENT` heuristic!).
-/// Every stop marker — whether `spawn:<rid>:<pid>:<spawn_start_ms>` or exact `<rid>:<pid>:<started_at>` —
-/// carries an exact OS `(pid, ref_start_ms)` and is removed ONLY when `check_pid_dead(pid, ref_start_ms)`
-/// confirms the OS process is dead (`ESRCH`) or the PID was reused (`actual > ref_start_ms + STARTED_SLACK_MS`).
+/// R21/R23: Unified OS-verified stop-marker sweep (ZERO 30s `ENOENT` heuristic!).
+/// - `spawn:` markers are removed ONLY when `verify_spawn_id(...)` returns `ConfirmedDeadOrReused`
+///   (`ESRCH`, Linux `boot_id`/`start_ticks` mismatch, or macOS/Win `|actual - expected| > 100ms`).
+/// - Exact `<rid>:<pid>:<started_at>` markers are removed ONLY when `check_pid_dead(pid, started_at)`
+///   confirms `ESRCH` or PID reuse.
 pub fn LiveRunnerManager::sweep_draining_stop_markers(
   self : LiveRunnerManager,
   _wall_ms : Int64,
   check_pid_dead~ : (Int, Int64) -> Bool = live_runner_pid_confirmed_dead,
+  verify_spawn_id~ : (Int, Int64, Option[String], Option[Int64]) -> SpawnIdentityVerdict = verify_spawn_os_identity,
 ) -> Bool {
   let keys = self.draining_stopping_ids.keys()
   let mut removed = false
   for i in 0..<keys.length() {
     let k = keys[i]
-    let pid_start_opt = match parse_spawn_stop_key(k) {
-      Some((_, pid, st)) => Some((pid, st))
-      None => parse_runner_instance_id_pid_start(k)
-    }
-    match pid_start_opt {
-      Some((pid, ref_start_ms)) => {
-        if check_pid_dead(pid, ref_start_ms) {
-          self.draining_stopping_ids.remove(k)
-          self.draining_stop_sessions.remove(k)
-          removed = true
-        }
+    let dead = match parse_spawn_stop_key(k) {
+      Some((_, pid, os_start_ms, boot_opt, ticks_opt)) =>
+      verify_spawn_id(pid, os_start_ms, boot_opt, ticks_opt) is SpawnIdentityVerdict::ConfirmedDeadOrReused
+      None => match parse_runner_instance_id_pid_start(k) {
+        Some((pid, ref_start_ms)) => check_pid_dead(pid, ref_start_ms)
+        None => false
       }
-      None => ()
+    }
+    if dead {
+      self.draining_stopping_ids.remove(k)
+      self.draining_stop_sessions.remove(k)
+      removed = true
     }
   }
   removed
@@ -3863,7 +4082,9 @@ pub fn LiveRunnerManager::adopt_live_runner(
     runtime_str: eff_runtime_str,
     runner_id: rinfo.id,
     spawn_pid: rinfo.runner_pid,
-    spawn_start_ms: rinfo.started_at,
+    spawn_os_start_ms: rinfo.started_at,
+    spawn_boot_id: None,
+    spawn_start_ticks: None,
     is_acp: is_acp,
     is_codex: is_codex,
     is_adopted: true,
@@ -4582,10 +4803,12 @@ fn LiveRunnerManager::dispatch_prompt(
       let is_acp = is_acp_runtime(rt_kind)
       // timer: bounded deadline for stillfail-runner to report ready (30s)
       let deadline = now_ms + LIVE_RUNNER_READY_MS
-      let spawn_start_ms = match station_sys::proc_start_time_ms(child.pid) {
-        Some(t) => if t > 0L { t } else { wall_ms }
-        None => wall_ms
+      let spawn_os_start_ms = match station_sys::proc_start_time_ms(child.pid) {
+        Some(t) => if t > 0L { t } else { 0L }
+        None => 0L
       }
+      let spawn_boot_id = station_sys::boot_id()
+      let spawn_start_ticks = station_sys::proc_start_ticks(child.pid)
       let sess = LiveRunnerSession::{
         conn_id: cid,
         session_key: session_key,
@@ -4598,7 +4821,9 @@ fn LiveRunnerManager::dispatch_prompt(
         runtime_str: row.runtime,
         runner_id: rid,
         spawn_pid: child.pid,
-        spawn_start_ms: spawn_start_ms,
+        spawn_os_start_ms: spawn_os_start_ms,
+        spawn_boot_id: spawn_boot_id,
+        spawn_start_ticks: spawn_start_ticks,
         is_acp: is_acp,
         is_codex: is_codex,
         is_adopted: false,
@@ -4764,6 +4989,7 @@ pub fn LiveRunnerManager::handle_sys_event(
               let err_str = bytes_to_str_local(err_buf, err_buf.length())
               let detail = if err_str.trim().length() > 0 { err_str.trim() } else { out_str.trim() }
               ctx.log("[live-runner] runner failed to start for " + skey + ": " + detail)
+              sess.runner_exited = true
               sess.phase = LiveRunnerPhase::Exited
               if is_draining {
                 self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=true)
@@ -5584,14 +5810,6 @@ fn LiveRunnerManager::reclaim_session(
   }
 }
 
-/// R22: Handle-bound kill for `Spawning` `stillfail-runner`: tries process-group kill first,
-/// falling back to single-process handle kill if `setsid()` has not yet executed (ESRCH on -pgid).
-fn kill_spawn_child(child : station_sys::ChildProcess, sig : Int) -> Unit {
-  if child.kill(sig, true) != 0 {
-    let _ = child.kill(sig, false)
-  }
-}
-
 /// Periodic tick enforcing draining `Stopping` escalation (5s TERM -> 1s KILL flush -> strict fallback),
 /// spawn timeouts, `OwnProcessStopGuard`, `AcpTurnGuard`, `check_steer_silent`, deferred
 /// `pending_end_turn` SQLite retries, archived/deleted reclamation, and warm idle runner eviction.
@@ -5607,23 +5825,23 @@ pub fn LiveRunnerManager::tick(
     let _ = self.sync_handover_state_with_ctx(ctx)
   }
 
-  // 0b. R21/R22 Per-marker single-file probe & OS-identity stop (ZERO 30s `ENOENT` expiry, ZERO bare-PID kill!):
-  // Both `spawn:<rid>:<pid>:<spawn_start_ms>` and exact `<rid>:<pid>:<started_at>` carry an exact OS
-  // `(pid, ref_start_ms)`. Whenever `<runners>/<rid>.json` publishes with matching `(rid, pid)` and
-  // valid start-time identity (and PID has not been reused), adopt into `draining` (`attach + TERM`).
+  // 0b. R21/R22/R23 Per-marker single-file probe & positive OS-identity stop (ZERO 30s `ENOENT` expiry, ZERO bare-PID kill!):
+  // For `spawn:` markers, require `verify_spawn_os_identity(...) is SpawnIdentityVerdict::ConfirmedSame`
+  // before probing `<runners>/<rid>.json` and adopting into `draining` (`attach + TERM`).
   if self.draining_stopping_ids.length() > 0 && core.store.require_open() is Ok(_) {
     let stop_keys = self.draining_stopping_ids.keys()
     let late_cfg = live_config_raw(core, ctx.cfg_raw)
     for ski in 0..<stop_keys.length() {
       let k = stop_keys[ski]
       match parse_spawn_stop_key(k) {
-        Some((rid, pid, spawn_start_ms)) => {
-          if !self.has_runner_id_tracked(rid) && !live_runner_pid_confirmed_dead(pid, spawn_start_ms) {
+        Some((rid, pid, os_start_ms, boot_opt, ticks_opt)) => {
+          if !self.has_runner_id_tracked(rid)
+          && (verify_spawn_os_identity(pid, os_start_ms, boot_opt, ticks_opt) is SpawnIdentityVerdict::ConfirmedSame) {
             match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, rid) {
               RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
                 if rinfo.id == rid
                 && rinfo.runner_pid == pid
-                && rinfo.started_at >= spawn_start_ms - 5000L
+                && rinfo.started_at > 0L
                 && rinfo.socket.length() > 0 {
                   let iid = station_whole::WholeAgents::runner_instance_id(rinfo.id, rinfo.runner_pid, rinfo.started_at)
                   let skey_opt = match self.find_draining_stop_session(iid, rinfo.id, rinfo.runner_pid, rinfo.started_at) {
@@ -5746,16 +5964,50 @@ pub fn LiveRunnerManager::tick(
           }
         }
       }
-      LiveRunnerPhase::Spawning(ev_id, child, _, _, deadline) => {
-        if now_ms >= deadline {
-          kill_spawn_child(child, station_sys::SIG_KILL)
-          let _ = child.close()
-          self.by_spawn_ev.remove(ev_id)
-          dsess.phase = LiveRunnerPhase::Exited
+      LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, deadline) => {
+        // R23 P1-2: NEVER blindly kill `stillfail-runner` (which would orphan its child agent process group)!
+        // One-shot timeout (`deadline > 0L`): mark stopping, persist `spawn:` marker, adopt via `<rid>.sock`
+        // if `<rid>.json` already published & `ConfirmedSame`, else keep holding `child` & `by_spawn_ev`
+        // (`deadline = 0L`) until `{ready}` or `ProcStdoutEof`.
+        if deadline > 0L && now_ms >= deadline {
+          dsess.stopping = true
           if dsess.current_turn_id is Some(_) {
             live_runner_finish_turn(self, ctx, core, dsess, "aborted", None, now_ms, wall_ms)
           }
-          self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=false)
+          match core.agents.hub.actors.get(dsess.session_key) {
+            Some(actor) => actor.has_process = false
+            None => ()
+          }
+          match encode_spawn_stop_key_for_session(dsess) {
+            Some(sk) => {
+              self.record_draining_stop_marker(sk, dsess.session_key)
+              let _ = self.sync_handover_state_with_ctx(ctx)
+            }
+            None => ()
+          }
+          let mut adopted_for_stop = false
+          if verify_spawn_os_identity(dsess.spawn_pid, dsess.spawn_os_start_ms, dsess.spawn_boot_id, dsess.spawn_start_ticks) is SpawnIdentityVerdict::ConfirmedSame {
+            match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, dsess.runner_id) {
+              RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
+                if rinfo.id == dsess.runner_id
+                && rinfo.runner_pid == dsess.spawn_pid
+                && rinfo.started_at > 0L
+                && rinfo.socket.length() > 0 {
+                  let _ = child.close()
+                  self.by_spawn_ev.remove(ev_id)
+                  dsess.phase = LiveRunnerPhase::Exited
+                  self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=false)
+                  let late_cfg = live_config_raw(core, ctx.cfg_raw)
+                  let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, dsess.session_key, now_ms, wall_ms)
+                  adopted_for_stop = true
+                }
+              }
+              _ => ()
+            }
+          }
+          if !adopted_for_stop {
+            dsess.phase = LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, 0L)
+          }
         }
       }
       LiveRunnerPhase::Exited => self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=dsess.runner_exited)
@@ -5796,17 +6048,48 @@ pub fn LiveRunnerManager::tick(
       LiveRunnerPhase::Stopping(_, _, _, _) => {
         self.move_to_draining(skey, sess)
       }
-      LiveRunnerPhase::Spawning(ev_id, child, _, _, deadline) => {
-        if now_ms >= deadline {
-          ctx.log("[live-runner] runner spawn timed out for " + skey)
-          kill_spawn_child(child, station_sys::SIG_KILL)
-          let _ = child.close()
-          self.by_spawn_ev.remove(ev_id)
-          self.by_conn_id.remove(sess.conn_id)
-          sess.phase = LiveRunnerPhase::Exited
+      LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, deadline) => {
+        // R23 P1-2: NEVER blindly kill `stillfail-runner` on 30s spawn timeout!
+        // Fail the turn, persist `spawn:` marker, adopt via `<rid>.sock` if published & `ConfirmedSame`,
+        // otherwise move into `draining` holding `child` & `by_spawn_ev` (`deadline = 0L`) until `{ready}` or EOF.
+        if deadline > 0L && now_ms >= deadline {
+          ctx.log("[live-runner] runner spawn timed out for " + skey + "; moving to draining without blind kill")
+          sess.stopping = true
           let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
           actor.has_process = false
           live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start within 30s"), now_ms, wall_ms)
+          match encode_spawn_stop_key_for_session(sess) {
+            Some(sk) => {
+              self.record_draining_stop_marker(sk, skey)
+              let _ = self.sync_handover_state_with_ctx(ctx)
+            }
+            None => ()
+          }
+          let mut adopted_for_stop = false
+          if verify_spawn_os_identity(sess.spawn_pid, sess.spawn_os_start_ms, sess.spawn_boot_id, sess.spawn_start_ticks) is SpawnIdentityVerdict::ConfirmedSame {
+            match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, sess.runner_id) {
+              RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
+                if rinfo.id == sess.runner_id
+                && rinfo.runner_pid == sess.spawn_pid
+                && rinfo.started_at > 0L
+                && rinfo.socket.length() > 0 {
+                  let _ = child.close()
+                  self.by_spawn_ev.remove(ev_id)
+                  self.by_conn_id.remove(sess.conn_id)
+                  self.sessions.remove(skey)
+                  sess.phase = LiveRunnerPhase::Exited
+                  let late_cfg = live_config_raw(core, ctx.cfg_raw)
+                  let _ = self.adopt_live_runner(ctx, core, late_cfg, rinfo, skey, now_ms, wall_ms)
+                  adopted_for_stop = true
+                }
+              }
+              _ => ()
+            }
+          }
+          if !adopted_for_stop {
+            sess.phase = LiveRunnerPhase::Spawning(ev_id, child, out_buf, err_buf, 0L)
+            self.move_to_draining(skey, sess)
+          }
         }
       }
       LiveRunnerPhase::AcpInit(_, sock_id)
@@ -6104,11 +6387,9 @@ pub fn LiveRunnerManager::prepare_handover(
       }
       None => match s.adopted_instance_id {
         Some(iid) => self.record_draining_stop_marker(iid, s.session_key)
-        None => if s.runner_id.length() > 0 && s.spawn_pid > 1 && s.spawn_start_ms > 0L {
-          self.record_draining_stop_marker(
-            "spawn:" + s.runner_id + ":" + s.spawn_pid.to_string() + ":" + s.spawn_start_ms.to_string(),
-            s.session_key,
-          )
+        None => match encode_spawn_stop_key_for_session(s) {
+          Some(sk) => self.record_draining_stop_marker(sk, s.session_key)
+          None => ()
         }
       }
     }
@@ -6342,8 +6623,10 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
   }
   let mut need_flush = false
   let to_close : Array[(Int, Int64)] = []
+  let spawning_stops : Map[Int, String] = Map::new()
   let term_only_payload = station_drivers::encode_runner_signal("TERM", true)
   let term_and_done_payload = term_only_payload + station_drivers::encode_runner_done()
+  let mut persisted_spawn_marker = false
   for i in 0..<all_sess.length() {
     let sess = all_sess[i]
     let has_uncommitted_turn = !(sess.current_turn_id is None) || !(sess.pending_end_turn is None)
@@ -6354,7 +6637,36 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
     let _ = sess.agy_tracker.on_dispose()
     match sess.phase {
       LiveRunnerPhase::Spawning(ev_id, child, _, _, _) => {
-        kill_spawn_child(child, station_sys::SIG_TERM)
+        // R23 P1-2: NEVER blindly kill `stillfail-runner` on shutdown!
+        // Persist `spawn:` marker so any restart stops it cleanly, probe `<rid>.json` & if published
+        // + `ConfirmedSame` send `attach + signal TERM group:true (+ done)` over `<rid>.sock`, then close handle.
+        match encode_spawn_stop_key_for_session(sess) {
+          Some(sk) => {
+            self.record_draining_stop_marker(sk, sess.session_key)
+            persisted_spawn_marker = true
+          }
+          None => ()
+        }
+        if verify_spawn_os_identity(sess.spawn_pid, sess.spawn_os_start_ms, sess.spawn_boot_id, sess.spawn_start_ticks) is SpawnIdentityVerdict::ConfirmedSame {
+          match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, sess.runner_id) {
+            RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
+              if rinfo.id == sess.runner_id
+              && rinfo.runner_pid == sess.spawn_pid
+              && rinfo.started_at > 0L
+              && rinfo.socket.length() > 0 {
+                let _ = ctx.mux_role.call_async_raw(
+                  builders_core::MuxToken::Tagged(sess.conn_id, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
+                  "unix.open",
+                  base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
+                  None,
+                )
+                spawning_stops.set(sess.conn_id, station_drivers::encode_runner_attach() + stop_payload)
+                need_flush = true
+              }
+            }
+            _ => ()
+          }
+        }
         let _ = child.close()
         self.by_spawn_ev.remove(ev_id)
       }
@@ -6375,6 +6687,9 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
     }
     sess.phase = LiveRunnerPhase::Exited
   }
+  if persisted_spawn_marker {
+    let _ = self.sync_handover_state_with_ctx(ctx)
+  }
   if need_flush {
     let deadline = host_shim::now_ms() + 150L
     for _ in 0..<8 {
@@ -6382,6 +6697,38 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
         break
       }
       let _ = ctx.edge_hub.pump_one(20L)
+      if spawning_stops.length() > 0 {
+        let _ = ctx.edge_hub.drain_deferred_done(fn(tok, d) -> Bool {
+          match tok {
+            builders_core::MuxToken::Tagged(cid, kind, _) => {
+              if kind == LIVE_RUNNER_TOK_UNIX_OPEN {
+                match spawning_stops.get(cid) {
+                  Some(payload) => {
+                    spawning_stops.remove(cid)
+                    match builders_core::decode_shell_done(d) {
+                      Ok((Some(v), _)) => match base_codec::json_get(v, "id") {
+                        Some(base_codec::Json::Num(n, _)) => {
+                          let sid = n.to_int64()
+                          if sid >= 0L {
+                            live_runner_send_sock_raw(ctx, cid, sid, payload)
+                            to_close.push((cid, sid))
+                          }
+                        }
+                        _ => ()
+                      }
+                      _ => ()
+                    }
+                    return true
+                  }
+                  None => ()
+                }
+              }
+              false
+            }
+            _ => false
+          }
+        })
+      }
     }
     for ci in 0..<to_close.length() {
       let (cid, sid) = to_close[ci]

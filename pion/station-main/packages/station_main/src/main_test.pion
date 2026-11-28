@@ -1975,34 +1975,107 @@ test "W17C-1 R12..R21 whole-live-runners.json persists across crash/restart & ex
     Err(_) => panic("missing handover state file for successor 1")
   }
   assert_true(mgr2.has_pending_draining_stop_for_session("s-r12"), "spawn: marker gates pump for s-r12")
+  let verify_same_t0 = fn(p : Int, os_ms : Int64, b : Option[String], tk : Option[Int64]) -> SpawnIdentityVerdict {
+    verify_spawn_os_identity_with(p, os_ms, b, tk, 0, Some("boot-a"), Some(12345L), Some(t0))
+  }
   assert_true(
     !mgr2.sweep_draining_stop_markers(
       t0 + 45000L,
       check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(t0)) },
+      verify_spawn_id=verify_same_t0,
     ),
-    "R21 Test 1: ENOENT at +45s must NEVER clear spawn: marker while PID 4321 is alive",
+    "R21/R23 Test 1: ENOENT at +45s must NEVER clear spawn: marker while PID 4321 is ConfirmedSame",
   )
   assert_true(mgr2.has_pending_draining_stop_for_session("s-r12"), "s-r12 still gated at +45s")
-  // Metadata publishes late at +45s with exact PID 4321 -> matches; different PID 9999 or stale startedAt -> does NOT match!
+  // Metadata publishes late at +45s with exact PID 4321 -> matches ONLY when OS identity is ConfirmedSame!
   let late_iid = "r-spawn-r21:4321:" + (t0 + 45000L).to_string()
-  assert_true(mgr2.is_draining_stop_target(late_iid, "r-spawn-r21", 4321, t0 + 45000L), "matches exact (rid, pid=4321, startedAt>=t0-5s) even at +45s")
-  assert_true(!mgr2.is_draining_stop_target("r-spawn-r21:9999:" + (t0 + 45000L).to_string(), "r-spawn-r21", 9999, t0 + 45000L), "different PID 9999 must NOT match")
-  assert_true(!mgr2.is_draining_stop_target("r-spawn-r21:4321:" + (t0 - 10000L).to_string(), "r-spawn-r21", 4321, t0 - 10000L), "R22: stale metadata (startedAt < spawn_start_ms - 5s) must NOT match spawn:")
-  match mgr2.find_draining_stop_session(late_iid, "r-spawn-r21", 4321, t0 + 45000L) {
+  assert_true(
+    mgr2.is_draining_stop_target(late_iid, "r-spawn-r21", 4321, t0 + 45000L, verify_spawn_id=verify_same_t0),
+    "matches exact (rid, pid=4321) when OS identity is ConfirmedSame even at +45s",
+  )
+  assert_true(
+    !mgr2.is_draining_stop_target("r-spawn-r21:9999:" + (t0 + 45000L).to_string(), "r-spawn-r21", 9999, t0 + 45000L, verify_spawn_id=verify_same_t0),
+    "different PID 9999 must NOT match",
+  )
+  // R23: PID reuse (even 1s later!) MUST return false on is_draining_stop_target AND be cleared by sweep!
+  let verify_reused_1s = fn(p : Int, os_ms : Int64, b : Option[String], tk : Option[Int64]) -> SpawnIdentityVerdict {
+    verify_spawn_os_identity_with(p, os_ms, b, tk, 0, Some("boot-a"), Some(12346L), Some(t0 + 1000L))
+  }
+  let verify_unknown = fn(p : Int, os_ms : Int64, b : Option[String], tk : Option[Int64]) -> SpawnIdentityVerdict {
+    verify_spawn_os_identity_with(p, os_ms, b, tk, 0, None, None, None)
+  }
+  assert_true(
+    !mgr2.is_draining_stop_target(late_iid, "r-spawn-r21", 4321, t0 + 1000L, verify_spawn_id=verify_reused_1s),
+    "R23: reused PID (+1s later!) must NEVER match is_draining_stop_target",
+  )
+  assert_true(
+    !mgr2.is_draining_stop_target(late_iid, "r-spawn-r21", 4321, t0 + 1000L, verify_spawn_id=verify_unknown),
+    "R23: Unknown OS identity must NEVER match is_draining_stop_target",
+  )
+  match mgr2.find_draining_stop_session(late_iid, "r-spawn-r21", 4321, t0 + 45000L, verify_spawn_id=verify_same_t0) {
     Some(sk) => assert_str_eq(sk, "s-r12")
     None => panic("expected s-r12 from find_draining_stop_session")
   }
-  // R22: PID reuse (`actual > spawn_start_ms + STARTED_SLACK_MS`) clears spawn: marker via sweep!
+  // R23: Linux boot_id + start_ticks encode/parse/verify & PID reuse (ticks off by 1)
+  let linux_key = match encode_spawn_stop_key_pure("r-lx", 4399, t0, Some("boot-xyz"), Some(98765L)) {
+    Some(k) => k
+    None => panic("expected linux spawn key")
+  }
+  assert_str_eq(linux_key, "spawn:r-lx:4399:" + t0.to_string() + ":98765@boot-xyz")
+  assert_true(
+    verify_spawn_os_identity_with(4399, t0, Some("boot-xyz"), Some(98765L), 0, Some("boot-xyz"), Some(98765L), None)
+    is SpawnIdentityVerdict::ConfirmedSame,
+    "R23: Linux exact (boot_id, start_ticks) -> ConfirmedSame",
+  )
+  assert_true(
+    verify_spawn_os_identity_with(4399, t0, Some("boot-xyz"), Some(98765L), 0, Some("boot-xyz"), Some(98766L), None)
+    is SpawnIdentityVerdict::ConfirmedDeadOrReused,
+    "R23: Linux start_ticks off by 1 -> ConfirmedDeadOrReused",
+  )
+  assert_true(
+    verify_spawn_os_identity_with(4399, t0, Some("boot-xyz"), Some(98765L), 0, Some("boot-other"), Some(98765L), None)
+    is SpawnIdentityVerdict::ConfirmedDeadOrReused,
+    "R23: Linux boot_id changed -> ConfirmedDeadOrReused",
+  )
+  assert_true(
+    verify_spawn_os_identity_with(4399, t0, Some("boot-xyz"), Some(98765L), 0, Some("boot-xyz"), None, None)
+    is SpawnIdentityVerdict::Unknown,
+    "R23: Linux unreadable start_ticks -> Unknown",
+  )
+  assert_true(
+    verify_spawn_os_identity_with(4399, t0, None, None, 0, None, None, Some(t0 + 100L))
+    is SpawnIdentityVerdict::ConfirmedSame,
+    "R23: macOS/Win |actual - expected| == 100ms -> ConfirmedSame",
+  )
+  assert_true(
+    verify_spawn_os_identity_with(4399, t0, None, None, 0, None, None, Some(t0 + 101L))
+    is SpawnIdentityVerdict::ConfirmedDeadOrReused,
+    "R23: macOS/Win |actual - expected| == 101ms -> ConfirmedDeadOrReused",
+  )
+  assert_true(
+    verify_spawn_os_identity_with(4399, 0L, None, None, 0, None, None, Some(t0))
+    is SpawnIdentityVerdict::Unknown,
+    "R23: no kernel baseline (0L) while alive -> Unknown",
+  )
   let mgr_reuse = LiveRunnerManager::new()
-  mgr_reuse.record_draining_stop_marker("spawn:r-reuse:4399:" + t0.to_string(), "s-reuse")
+  mgr_reuse.record_draining_stop_marker(linux_key, "s-reuse")
+  assert_true(
+    !mgr_reuse.sweep_draining_stop_markers(
+      t0 + 1000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, None) },
+      verify_spawn_id=verify_unknown,
+    ),
+    "R23: Unknown verdict must NEVER clear spawn: marker in sweep",
+  )
   assert_true(
     mgr_reuse.sweep_draining_stop_markers(
-      t0 + 120000L,
-      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(t0 + station_drivers::STARTED_SLACK_MS + 1000L)) },
+      t0 + 1000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(t0 + 1000L)) },
+      verify_spawn_id=verify_reused_1s,
     ),
-    "R22: PID reuse triggers sweep_draining_stop_markers cleanup",
+    "R23: PID reuse (1s later / ticks mismatch) triggers sweep_draining_stop_markers cleanup",
   )
-  assert_true(!mgr_reuse.has_pending_draining_stop_for_session("s-reuse"), "R22: PID reuse unblocks session")
+  assert_true(!mgr_reuse.has_pending_draining_stop_for_session("s-reuse"), "R23: PID reuse unblocks session")
   // Because `is_draining_stop_target` is read-only, file stays on disk until confirmed exit!
   assert_true(mgr2.sync_handover_state_file(ops, 1002, "/").is_ok(), "sync keeps file on disk")
   assert_true(ops.read_text(ho_file).is_ok(), "file must remain on disk before runner Exit")
@@ -2016,7 +2089,7 @@ test "W17C-1 R12..R21 whole-live-runners.json persists across crash/restart & ex
   assert_true(mgr2.sync_handover_state_file(ops, 1003, "/").is_ok(), "sync after drain")
   assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked once truly drained")
 
-  // 4. R21 Test 2: Process crashes before publishing metadata -> ESRCH (-3) clears immediately (no 30s wait!)
+  // 4. R21/R23 Test 2: Process crashes before publishing metadata -> ESRCH (-3) clears immediately (no 30s wait!)
   // while EPERM (-1) and unknown start_time (None) NEVER clear!
   let mgr4 = LiveRunnerManager::new()
   mgr4.set_handover_state_path(ho_file)
@@ -2026,6 +2099,7 @@ test "W17C-1 R12..R21 whole-live-runners.json persists across crash/restart & ex
     !mgr4.sweep_draining_stop_markers(
       t0 + 1000L,
       check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, -1, None) },
+      verify_spawn_id=fn(p, os_ms, b, tk) { verify_spawn_os_identity_with(p, os_ms, b, tk, -1, None, None, None) },
     ),
     "EPERM (-1) must NEVER clear spawn: marker",
   )
@@ -2033,6 +2107,7 @@ test "W17C-1 R12..R21 whole-live-runners.json persists across crash/restart & ex
     !mgr4.sweep_draining_stop_markers(
       t0 + 1000L,
       check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, None) },
+      verify_spawn_id=verify_unknown,
     ),
     "alive + None start_time must NEVER clear spawn: marker",
   )
@@ -2040,8 +2115,9 @@ test "W17C-1 R12..R21 whole-live-runners.json persists across crash/restart & ex
     mgr4.sweep_draining_stop_markers(
       t0 + 1000L,
       check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, -3, None) },
+      verify_spawn_id=fn(p, os_ms, b, tk) { verify_spawn_os_identity_with(p, os_ms, b, tk, -3, None, None, None) },
     ),
-    "R21 Test 2: ESRCH (-3) clears crashed spawn: marker immediately without waiting 30s",
+    "R21/R23 Test 2: ESRCH (-3) clears crashed spawn: marker immediately without waiting 30s",
   )
   assert_true(!mgr4.has_pending_draining_stop_for_session("s-crash"), "s-crash unblocked immediately on ESRCH")
 
@@ -2171,7 +2247,9 @@ test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_d
     runtime_str: "claude",
     runner_id: "r-eof",
     spawn_pid: 888,
-    spawn_start_ms: 1700000002000L,
+    spawn_os_start_ms: 1700000002000L,
+    spawn_boot_id: None,
+    spawn_start_ticks: None,
     is_acp: false,
     is_codex: false,
     is_adopted: true,
