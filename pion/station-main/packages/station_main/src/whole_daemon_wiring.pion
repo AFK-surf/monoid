@@ -784,9 +784,10 @@ pub fn wire_whole_core_runtime_hooks(
     browser_available: fn() -> Bool {
       browser.running_count() > 0 || core.api.screens.browser_available
     },
-    wake_browser_target: base_ports.wake_browser_target,
-    ensure_session_browser: base_ports.ensure_session_browser,
+    wake_browser_target: None,
+    ensure_session_browser: None,
     stop_session_browser: fn(sess : String) -> Bool { browser.stop_session(sess) },
+    async_signin_driver_available: fn() -> Bool { false },
     has_live_session_tab: fn(session : String, tab : String) -> Bool {
       let tabs = browser.tabs.of_session(session)
       for i in 0..<tabs.length() {
@@ -796,7 +797,7 @@ pub fn wire_whole_core_runtime_hooks(
       }
       false
     },
-    signin_form_for: base_ports.signin_form_for,
+    step_async_signin_fill: None,
     computer_act: base_ports.computer_act,
     helper_permissions: base_ports.helper_permissions,
     phone_send_file: base_ports.phone_send_file,

@@ -3123,16 +3123,19 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(wsResp.status, 200, `GET /workspaces failed: ${wsResp.body.toString()}`);
   assert.ok(wsResp.body.toString().includes(ws), `GET /workspaces missing ${ws}: ${wsResp.body.toString()}`);
 
-  // 4. Wave 17D-3 + 17E-2B: Live Admin/1 `screens.browser.open` (503 noBrowser / 400 bad scheme),
-  // `signins.{fill,deny}` (409 signin_refused on unknown ask), `links.preview` + `feedback.report`,
+  // 4. Wave 17D-3 + 17E-2B: Live Admin/1 `screens.browser.open` (503 noBrowser / 400 bad scheme & control chars),
+  // `signins.fill` (honest 501 before touching plaintext while async CDP driver is unwired),
+  // `signins.deny` (409 signin_refused on unknown ask), `links.preview` + `feedback.report`,
   // plus honest 501 for remaining deferred ops.
   const brwBad = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "file:///etc/passwd" })));
   assert.equal(brwBad.status, 400, `POST /screens/browser dangerous scheme must return 400, got ${brwBad.status}`);
+  const brwCtrl = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "https://example.com\n" })));
+  assert.equal(brwCtrl.status, 400, `POST /screens/browser control char must return 400, got ${brwCtrl.status}`);
   const brwOpen = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "https://example.com/w17d3" })));
   assert.equal(brwOpen.status, 503, `POST /screens/browser without browser must return 503 noBrowser, got ${brwOpen.status}`);
 
   const siFill = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/fill", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ code: "123456" })));
-  assert.equal(siFill.status, 409, `signins.fill unknown ask must return 409 signin_refused, got ${siFill.status}`);
+  assert.equal(siFill.status, 501, `signins.fill without async CDP driver must return honest 501 before touching plaintext, got ${siFill.status}`);
   const siDeny = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/deny", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(siDeny.status, 409, `signins.deny unknown ask must return 409 signin_refused, got ${siDeny.status}`);
 
@@ -3154,6 +3157,91 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(retryMiss.status, 501, `hub.session.retry must return honest 501 until Wave 17E, got ${retryMiss.status}`);
   const compactMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/compact", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(compactMiss.status, 501, `hub.session.compact must return honest 501 until Wave 17E, got ${compactMiss.status}`);
+
+  // 5. Wave 17E-2B R2 real-SQLite production verification:
+  //    (a) `devices(id, ws, body)` insert -> MCP `device_list` sees it -> SQLite delete -> `device_list` removes it
+  //    (b) `POST /sessions/<key>/archive` closes OPEN `signin_asks` to `ended` while preserving unknown JSON fields
+  const createSess = await adminCall(
+    conn,
+    "POST",
+    "/sessions",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ key: "sess-w17e2b-r2", title: "W17E2B R2", text: "init" })),
+  );
+  assert.ok(createSess.status === 200 || createSess.status === 201, `POST /sessions failed: ${createSess.status} ${createSess.body.toString()}`);
+
+  const mcpJsonPath = join(data, "run/mcp.json");
+  const mcpInfo = JSON.parse(readFileSync(mcpJsonPath, "utf8")) as { port?: number };
+  const mcpPort = Number(mcpInfo.port);
+  assert.ok(Number.isFinite(mcpPort) && mcpPort > 0, `expected valid mcp port in ${mcpJsonPath}: ${JSON.stringify(mcpInfo)}`);
+  const dbRw = new DatabaseSync(join(data, "stillfail.db"));
+  try {
+    const tokRow = dbRw.prepare("SELECT token FROM sessions WHERE key = ?").get("sess-w17e2b-r2") as { token: string } | undefined;
+    assert.ok(tokRow?.token, "expected bearer token for sess-w17e2b-r2");
+    dbRw.exec(`CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, ws TEXT NOT NULL, body TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS devices_by_ws ON devices (ws);`);
+    const devBody = JSON.stringify({
+      id: "aabb112233445566",
+      ws,
+      name: "Lab Bench Box",
+      kind: "tcp",
+      target: "10.9.8.7:2222",
+      owner: "u-owner",
+      owner_email: "owner@example.com",
+      owner_name: "Owner",
+      at: Math.floor(Date.now() / 1000),
+    });
+    dbRw.prepare("INSERT INTO devices (id, ws, body) VALUES (?, ?, ?)").run("aabb112233445566", ws, devBody);
+
+    const callMcp = (toolName: string, args: Record<string, unknown>) =>
+      httpCall(
+        mcpPort,
+        "POST",
+        "/mcp",
+        {
+          "content-type": "application/json",
+          authorization: `Bearer ${tokRow!.token}`,
+          host: `127.0.0.1:${mcpPort}`,
+        },
+        JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: toolName, arguments: args } }),
+      );
+
+    const list1 = await callMcp("device_list", {});
+    assert.equal(list1.status, 200, list1.body);
+    assert.ok(list1.body.includes("Lab Bench Box"), `device_list must read real devices(id,ws,body): ${list1.body}`);
+
+    dbRw.prepare("DELETE FROM devices WHERE id = ? AND ws = ?").run("aabb112233445566", ws);
+    const list2 = await callMcp("device_list", {});
+    assert.equal(list2.status, 200, list2.body);
+    assert.ok(!list2.body.includes("Lab Bench Box"), `device_list must diff-delete removed device immediately: ${list2.body}`);
+
+    const askBody = JSON.stringify({
+      id: "g_r2_arch1",
+      session: "sess-w17e2b-r2",
+      owner: "owner@example.com",
+      site: "github.com",
+      tab: "tab-1",
+      at: Math.floor(Date.now() / 1000),
+      status: "pending",
+      customSurvive: "keep-r2-field",
+    });
+    dbRw.prepare("INSERT INTO signin_asks (id, session, owner, status, body) VALUES (?, ?, ?, ?, ?)").run("g_r2_arch1", "sess-w17e2b-r2", "owner@example.com", "pending", askBody);
+  } finally {
+    dbRw.close();
+  }
+
+  const archR2 = await adminCall(conn, "POST", "/sessions/sess-w17e2b-r2/archive");
+  assert.equal(archR2.status, 200, `POST /sessions/sess-w17e2b-r2/archive failed: ${archR2.status} ${archR2.body.toString()}`);
+
+  const dbCheckR2 = new DatabaseSync(join(data, "stillfail.db"), { readOnly: true });
+  try {
+    const row = dbCheckR2.prepare("SELECT status, body FROM signin_asks WHERE id = ?").get("g_r2_arch1") as { status: string; body: string } | undefined;
+    assert.ok(row, "expected g_r2_arch1 in signin_asks");
+    assert.equal(row!.status, "ended", `archive_session must close open signin_asks to 'ended', got ${row!.status}`);
+    assert.ok(row!.body.includes("keep-r2-field"), `archive_session must preserve unknown JSON fields in signin_asks.body: ${row!.body}`);
+  } finally {
+    dbCheckR2.close();
+  }
 
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });

@@ -229,18 +229,22 @@ pub fn wired_station_tools() -> Array[station_tools::ToolDecl] {
   out
 }
 
-/// Dynamic tool declarations for this `WholeAgents` instance: base SQLite tools plus only the
-/// domain overrides (`device`, `screen`, `browser`, `sign_in`) genuinely attached to this instance.
+/// Dynamic tool declarations for this `WholeAgents` instance: base SQLite tools plus ONLY the
+/// extra tools explicitly backed by live production handlers (`wired_extra_tool_names`).
 pub fn WholeAgents::wired_tools(self : WholeAgents) -> Array[station_tools::ToolDecl] {
   let all = station_tools::station_tools()
   let out : Array[station_tools::ToolDecl] = []
   for i in 0..<all.length() {
     let n = all[i].name
-    let ok = is_wired_mcp_tool(n)
-    || (self.device_tool_override.is_some() && (n == "device_list" || n == "device_use" || n == "device_control" || n == "adb_devices" || n == "phone_use" || n == "phone_send"))
-    || (self.screen_tool_override.is_some() && (n == "screen" || n == "computer" || n == "permissions"))
-    || (self.browser_tool_override.is_some() && n == "browser")
-    || (self.signin_tool_override.is_some() && n == "sign_in")
+    let mut ok = is_wired_mcp_tool(n)
+    if !ok {
+      for j in 0..<self.wired_extra_tool_names.length() {
+        if self.wired_extra_tool_names[j] == n {
+          ok = true
+          break
+        }
+      }
+    }
     if ok {
       out.push(all[i])
     }
@@ -274,6 +278,8 @@ pub struct WholeAgents {
   pub mut screen_tool_override : Option[(String, String, base_codec::Json) -> station_tools::ToolReply]
   pub mut browser_tool_override : Option[(String, String, base_codec::Json) -> station_tools::ToolReply]
   pub mut signin_tool_override : Option[(String, String, base_codec::Json) -> station_tools::ToolReply]
+  pub mut wired_extra_tool_names : Array[String]
+  pub mut on_session_archived_dsb : Option[(String, Array[String], Int64) -> Unit]
 }
 
 /// Pure dependency-injected `WholeAgents` constructor (no OS FFI references).
@@ -316,6 +322,8 @@ pub fn WholeAgents::new_with_deps(
     screen_tool_override: None,
     browser_tool_override: None,
     signin_tool_override: None,
+    wired_extra_tool_names: [],
+    on_session_archived_dsb: None,
   }
 }
 
@@ -820,15 +828,15 @@ pub fn WholeAgents::archive_session(
     Err(e) => return Err(e)
   }
   // Atomically archive the session (and owned conversation members), persist token revocation,
-  // and revoke persistent Vault state (`vault_grants`, `vault_cross_listings`, pending `vault_requests`)
-  // inside ONE single SQLite transaction (1:1 Node `secrets.ts:393,402-418`).
-  let archived_entries = match st.tx(fn(t : sql_db::Db) -> Result[Array[(String, Array[String])], sql_db::SqlError] {
+  // revoke persistent Vault state (`vault_grants`, `vault_cross_listings`, pending `vault_requests`),
+  // and end all open `signin_asks` (`card_outbox` close=true) inside ONE single SQLite transaction.
+  let archived_entries = match st.tx(fn(t : sql_db::Db) -> Result[Array[(String, Array[String], Array[String])], sql_db::SqlError] {
     let outcome = match station_store::archive_session(t, key, now_ms, by) {
       Ok(o) => o
       Err(e) => return Err(e)
     }
     let keys : Array[String] = if outcome.sessions.length() > 0 { outcome.sessions } else { [key] }
-    let entries : Array[(String, Array[String])] = []
+    let entries : Array[(String, Array[String], Array[String])] = []
     for i in 0..<keys.length() {
       let sk = keys[i]
       let marker = self.generate_revoked_marker(sk)
@@ -843,7 +851,11 @@ pub fn WholeAgents::archive_session(
         Ok(ids) => ids
         Err(e) => return Err(e)
       }
-      entries.push((sk, dropped_ids))
+      let ended_signins = match end_signin_asks_for_archived_session_tx(t, sk) {
+        Ok(ids) => ids
+        Err(e) => return Err(e)
+      }
+      entries.push((sk, dropped_ids, ended_signins))
     }
     Ok(entries)
   }) {
@@ -851,9 +863,13 @@ pub fn WholeAgents::archive_session(
     Err(e) => return Err("archive_session failed: " + e.message)
   }
   for i in 0..<archived_entries.length() {
-    let (sk, dropped_ids) = archived_entries[i]
+    let (sk, dropped_ids, ended_signins) = archived_entries[i]
     let _ = self.revoke_session_token(sk)
     purge_vault_mem_for_archived_session(whole_store, sk, dropped_ids)
+    match self.on_session_archived_dsb {
+      Some(f) => f(sk, ended_signins, now_ms)
+      None => ()
+    }
     match self.hub.actors.get(sk) {
       Some(a) => {
         let _ = a.evict()

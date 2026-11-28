@@ -1,23 +1,36 @@
-// Wave 17E-2B: Production wiring for:
-// 1. `DomainHandlers.device` (`device_list`, `device_use`, `device_control`, `adb_devices`, `phone_use`, `phone_send`)
-//    with strict workspace & owner-approval isolation (rig devices & lent phones never pass unapproved).
-// 2. `DomainHandlers.screen` (`screen`, `computer`, `permissions`) over `station_screens::ScreenHub`
-//    with human-control precedence and non-blocking platform permission checks.
-// 3. `DomainHandlers.browser` (`browser` MCP tool) + `screens.browser.open` HTTP endpoint with
-//    Node-aligned `normalize_browser_url` (`localhost:3000` allowed, empty -> `about:blank`,
-//    dangerous schemes blocked), `503 station.screen.noBrowser` when unavailable, real CDP target wake,
-//    and rollback of `UserTabsState` + `ScreenHub` on wake failure.
-// 4. `signins.{self,deny,fill}` HTTP endpoints + `sign_in` MCP tool over `SignInStorePort`
-//    (real SQLite `signin_asks` + `card_outbox` + `drain_card_outbox_once` + `enqueue_internal_notice`
-//    in production, deterministic `in_memory()` port for pure-Pion `pionc test` without C FFI):
-//    preserving all unknown JSON fields, 24h expiry & archived-session checks, fail-closed refusal
-//    before holding plaintext passwords when browser/tab is absent, async origin-bound CDP autofill
-//    state machine, 15-minute `HELD_MS` TTL, and zero plaintext credential leakage.
-//
-// Invariants:
-// - Zero `host_shim::wait`, zero `await_call`, zero blocking loops on the main event loop.
-// - All SQLite transactions go through `sql_db::Db::tx` (zero raw transaction SQL).
-// - Zero fake 200 responses: unattached backends return explicit errors / 503 / 409.
+// Wave 17E-2B R2: Production wiring for:
+// 1. `DomainHandlers.device`:
+//    - `device_list` & `device_control` (non-blocking JSON actions) synced 1:1 from real SQLite
+//      `devices(id, ws, body)` table (`station/src/devices/registry.ts`) with error propagation and
+//      immediate diff-deletion of removed devices, strict workspace isolation & rig owner approval.
+//    - `adb_devices` honest guidance.
+//    - `device_use`, `phone_use`, `phone_send`, and `device_control stream_audio` return explicit
+//      honest unwired errors until per-chat 127.0.0.1 device door, approval card posting, and
+//      non-blocking file transfer land (ZERO fake 127.0.0.1 ports, ZERO fake approval claims,
+//      ZERO synchronous file reads on the main loop).
+// 2. `DomainHandlers.screen`:
+//    - `screen` (`list`, `take_control`, `watch_only`, `disconnect`, `disconnect_all`) over
+//      `ScreenHub` hiding private `user_tab: true` screens (`station.screen.userOnly`).
+//    - `computer` enforces human-control precedence and returns honest errors when no live capture
+//      backend is attached; `permissions` is non-blocking across platforms.
+// 3. `DomainHandlers.browser` + `screens.browser.open`:
+//    - `normalize_open_browser_url` rejects ASCII control chars BEFORE `trim()`, maps empty ->
+//      `about:blank`, allows `localhost:3000`, blocks dangerous schemes (`file://`/`javascript:`/`data:` etc.),
+//      and threads the single validated URL through wake & `UserTabsState` without double `address_or_search`.
+//    - No browser available -> `503 station.screen.noBrowser`; browser available without async CDP
+//      wake channel -> honest `501`; wake failure restores any prior sleeping screen instead of deleting it.
+// 4. `signins.{self,deny,fill}` + `sign_in` MCP tool:
+//    - `signins.fill` checks `async_signin_driver_available()` BEFORE touching any plaintext password
+//      (returns honest `501` when no real async CDP driver is wired; never stores plaintext in RAM
+//      and never uses a fake synchronous `drive_signin_form` loop on `on_tick`).
+//    - `signins.self` & `signins.deny` preserve ALL unknown JSON fields in `signin_asks.body`,
+//      check workspace/owner/archive/24h expiry, enqueue `card_outbox` + `drain_card_outbox_once`
+//      (`closed_cards` + append `kind='edit'` + SSE) and `SessionActor::enqueue_internal_notice`.
+//    - `WholeAgents::archive_session` atomically ends all OPEN `signin_asks` (`status='ended'`,
+//      `card_outbox` close=true) inside the same SQLite transaction and purges in-memory state.
+//    - `sign_in` MCP inserts the card message + `signin_asks` row inside ONE atomic SQLite tx +
+//      emits `"thread"` SSE, checks `is_public_suffix` and `vault.held`, and gives honest `done` text.
+// 5. `WholeAgents::wired_tools` only advertises tools backed by live production backends.
 
 import "base_codec"
 import "sql_db"
@@ -38,13 +51,28 @@ pub let SIGNIN_FIELD_MAX_LEN : Int = 4096
 // 1. URL Normalization for `screens.browser.open` (1:1 Node `url.ts` + `user-tabs.ts`)
 // ---------------------------------------------------------------------------
 
+fn dsb_has_ascii_ctrl(s : String) -> Bool {
+  let raw = s.to_bytes()
+  for i in 0..<raw.length() {
+    let b = raw[i].to_int() & 0xFF
+    if b < 0x20 || b == 0x7F {
+      return true
+    }
+  }
+  false
+}
+
 /// Normalize `url` for `screens.browser.open`:
-/// - Empty/whitespace opens `about:blank` (`station_browser::BLANK_PAGE`).
+/// - Rejects any ASCII control characters (`< 0x20` or `0x7F`, e.g. `\n`, `\r`, `\t`, `\0`) BEFORE `trim()`.
+/// - Empty/space-only opens `about:blank` (`station_browser::BLANK_PAGE`).
 /// - Non-empty URLs follow `station_browser::normalize_browser_url` (1:1 Node `normalizeBrowserUrl`):
 ///   allows `http://`, `https://`, and bare hosts including `localhost:3000`, `127.0.0.1:8080`,
 ///   `mail.proton.me`; strictly rejects `file://`, `javascript:`, `data:`, `chrome://`, `about:`,
-///   `mailto:`, userinfo `@`, and control characters.
+///   `mailto:`, userinfo `@`.
 pub fn normalize_open_browser_url(raw : String) -> Result[String, String] {
+  if dsb_has_ascii_ctrl(raw) {
+    return Err("station.screen.badUrl")
+  }
   let trimmed = raw.trim()
   if trimmed.length() == 0 {
     return Ok(station_browser::BLANK_PAGE)
@@ -123,7 +151,7 @@ fn dsb_arg_num(args : base_codec::Json, key : String) -> Option[Double] {
 }
 
 // ---------------------------------------------------------------------------
-// 2. Sign-In Body Patching & Storage Port (pure-DI + production SQLite)
+// 2. Sign-In Body Patching, Archive-Tx Cleanup, & Storage Port
 // ---------------------------------------------------------------------------
 
 pub fn ensure_signin_asks_schema(db : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
@@ -207,6 +235,77 @@ pub fn signin_outcome_json(body : base_codec::Json) -> base_codec::Json {
   base_codec::json_obj(fields)
 }
 
+/// Atomically end all OPEN `signin_asks` for an archived session inside the caller's
+/// `archive_session` SQLite transaction (preserving unknown JSON fields and enqueuing
+/// `card_outbox` `close=true` outcomes). Missing `signin_asks` table is cleanly ignored.
+pub fn end_signin_asks_for_archived_session_tx(
+  txdb : sql_db::Db,
+  session_key : String,
+) -> Result[Array[String], sql_db::SqlError] {
+  let ended_ids : Array[String] = []
+  let rows = match txdb.all(
+    "SELECT id, body FROM signin_asks WHERE session = ?1 AND status IN ('pending','filling','code','person','left')",
+    [base_codec::json_str(session_key)],
+  ) {
+    Ok(rs) => rs
+    Err(e) => {
+      if e.message.contains("no such table") {
+        return Ok(ended_ids)
+      }
+      return Err(e)
+    }
+  }
+  for i in 0..<rows.length() {
+    let id = match rows[i].get("id") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let raw = match rows[i].get("body") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    if id.length() == 0 {
+      continue
+    }
+    let next_body = match patch_signin_ask_body(raw, "ended", None, true, None, None) {
+      Ok(nb) => nb
+      Err(_) => base_codec::json_obj([("id", base_codec::json_str(id)), ("status", base_codec::json_str("ended"))])
+    }
+    let updated = match txdb.run(
+      "UPDATE signin_asks SET status = 'ended', body = ?1 WHERE id = ?2 AND status IN ('pending','filling','code','person','left')",
+      [base_codec::json_str(base_codec::json_stringify(next_body)), base_codec::json_str(id)],
+    ) {
+      Ok(n) => n
+      Err(e) => return Err(e)
+    }
+    if updated > 0 {
+      ended_ids.push(id)
+      let tid_opt : Option[Int64] = match base_codec::json_get(next_body, "thread") {
+        Some(base_codec::Json::Num(d, _)) => Some(d.to_int64())
+        _ => None
+      }
+      let cts_opt = json_field_str(next_body, "cardTs")
+      match (tid_opt, cts_opt) {
+        (Some(tid), Some(cts)) if tid > 0L && cts.length() > 0 => {
+          match station_store::install_card_outbox(txdb) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+          match station_store::enqueue_card_outcome(
+            txdb,
+            tid,
+            cts,
+            session_key,
+            "signin",
+            true,
+            base_codec::json_stringify(signin_outcome_json(next_body)),
+            dedup=true,
+          ) {
+            Ok(_) => ()
+            Err(e) => return Err(e)
+          }
+        }
+        _ => ()
+      }
+    }
+  }
+  Ok(ended_ids)
+}
+
 /// Session metadata needed by Wave 17E-2B handlers without binding directly to SQLite FFI in unit tests.
 pub struct DsbSessionInfo {
   pub ws : String
@@ -221,12 +320,15 @@ pub struct DsbSessionInfo {
 /// Storage & notification port for Wave 17E-2B (`sqlite()` in production, `in_memory()` in unit tests).
 pub struct DsbStorePort {
   pub get_session_info : (String) -> Result[Option[DsbSessionInfo], String]
-  pub sync_ws_devices : (String, DevicesOsRuntime, Map[String, Bool]) -> Unit
+  /// Sync workspace devices from authoritative storage (returns Err on SQL failure, diff-deletes removed devices).
+  pub sync_ws_devices : (String, DevicesOsRuntime, Map[String, Bool]) -> Result[Unit, String]
   pub get_signin_ask : (String) -> Result[Option[(String, String)], String]
   pub list_open_signin_asks : (String) -> Result[Array[(String, String)], String]
   pub insert_signin_ask : (String, String, String, String, String, Int64, String, String, String, Int64) -> Result[Unit, String]
   pub settle_signin_ask : (String, base_codec::Json, Bool, Int64) -> Result[Unit, String]
   pub notify_session_internal : (String, String, Int64) -> Unit
+  /// Optional Vault browser-grant lookup for `sign_in` (`signin.ts:255-260`).
+  pub vault_held_browser : (String, String, Int64) -> Option[String]
 }
 
 pub struct DsbMemStoreState {
@@ -235,6 +337,7 @@ pub struct DsbMemStoreState {
   pub card_edits : Array[(Int64, String, String, Bool)] // (thread, card_ts, outcome_json, close)
   pub closed_cards : Array[(Int64, String)] // (thread, card_ts)
   pub notices : Array[(String, String)] // (session, text)
+  pub vault_held : Map[String, String] // (session + "\x00" + site) -> message
 }
 
 pub fn DsbMemStoreState::new() -> DsbMemStoreState {
@@ -244,6 +347,7 @@ pub fn DsbMemStoreState::new() -> DsbMemStoreState {
     card_edits: [],
     closed_cards: [],
     notices: [],
+    vault_held: Map::new(),
   }
 }
 
@@ -257,7 +361,9 @@ pub fn DsbStorePort::in_memory(
     get_session_info: fn(session : String) -> Result[Option[DsbSessionInfo], String] {
       Ok(mem.sessions.get(session))
     },
-    sync_ws_devices: fn(_ws : String, _devices : DevicesOsRuntime, _rig_ids : Map[String, Bool]) -> Unit { () },
+    sync_ws_devices: fn(_ws : String, _devices : DevicesOsRuntime, _rig_ids : Map[String, Bool]) -> Result[Unit, String] {
+      Ok(())
+    },
     get_signin_ask: fn(id : String) -> Result[Option[(String, String)], String] {
       match mem.asks.get(id) {
         Some((_, st_s, raw)) => Ok(Some((st_s, raw)))
@@ -329,11 +435,15 @@ pub fn DsbStorePort::in_memory(
         _ => ()
       }
     },
+    vault_held_browser: fn(session : String, site : String, _now_ms : Int64) -> Option[String] {
+      mem.vault_held.get(session + "\x00" + site)
+    },
   }
 }
 
 /// Production SQLite `DsbStorePort` backed by `WholeStore`, `card_outbox`, `drain_card_outbox_once`,
-/// and `deliver_vault_decision_own_notice` (`SessionActor::enqueue_internal_notice`).
+/// atomic `insert_message` + `INSERT INTO signin_asks` + `"thread"` SSE push, and
+/// `deliver_vault_decision_own_notice` (`SessionActor::enqueue_internal_notice`).
 pub fn DsbStorePort::sqlite(
   whole_store : WholeStore,
   agents : WholeAgents,
@@ -381,10 +491,10 @@ pub fn DsbStorePort::sqlite(
         chat_addr: addr_opt,
       }))
     },
-    sync_ws_devices: fn(ws : String, devices : DevicesOsRuntime, rig_ids : Map[String, Bool]) -> Unit {
+    sync_ws_devices: fn(ws : String, devices : DevicesOsRuntime, rig_ids : Map[String, Bool]) -> Result[Unit, String] {
       match whole_store.require_open() {
         Ok(st) => sync_workspace_devices_from_sqlite(st, devices, rig_ids, ws)
-        Err(_) => ()
+        Err(e) => Err(e)
       }
     },
     get_signin_ask: fn(id : String) -> Result[Option[(String, String)], String] {
@@ -461,12 +571,13 @@ pub fn DsbStorePort::sqlite(
         proposal: None,
         at: now_ms,
       }
-      match st.insert_message(msg) {
-        Ok(_) => ()
-        Err(e) => return Err("sign_in card post failed: " + e.message)
-      }
-      match st.db.tx(fn(txdb : sql_db::Db) -> Result[Int, sql_db::SqlError] {
-        txdb.run(
+      // Single atomic SQLite transaction: card message + `signin_asks` row commit or roll back together!
+      let inserted_n : Int64 = match st.db.tx(fn(txdb : sql_db::Db) -> Result[Int64, sql_db::SqlError] {
+        let (msg_n, _) = match st.insert_message(msg) {
+          Ok(pair) => pair
+          Err(e) => return Err(e)
+        }
+        let _ = match txdb.run(
           "INSERT INTO signin_asks (id, session, owner, status, body) VALUES (?1, ?2, ?3, ?4, ?5)",
           [
             base_codec::json_str(id),
@@ -475,11 +586,57 @@ pub fn DsbStorePort::sqlite(
             base_codec::json_str(status),
             base_codec::json_str(raw_body),
           ],
-        )
+        ) {
+          Ok(n) => n
+          Err(e) => return Err(e)
+        }
+        Ok(msg_n)
       }) {
-        Ok(_) => Ok(())
-        Err(e) => Err(e.message)
+        Ok(n) => n
+        Err(e) => return Err("sign_in atomic persist failed: " + e.message)
       }
+      // Emit `"thread"` SSE event so live clients immediately render the new sign-in card
+      let card_parsed = match base_codec::json_parse(card_json) {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => base_codec::json_obj([])
+      }
+      let entry_j = base_codec::json_obj([
+        ("thread", sql_db::int64_to_json(tid)),
+        ("n", sql_db::int64_to_json(inserted_n)),
+        ("kind", base_codec::json_str("message")),
+        ("ts", base_codec::json_str(card_ts)),
+        ("authorKind", base_codec::json_str("agent")),
+        ("author", base_codec::json_str(session)),
+        ("text", base_codec::json_str(text)),
+        ("card", card_parsed),
+        ("at", sql_db::int64_to_json(now_ms)),
+      ])
+      let ev_target = station_api::EventTarget::{
+        lang: None,
+        viewer: None,
+        device: None,
+        email: None,
+        workspace: None,
+        subs: None,
+        read_only: None,
+        managers: None,
+        vault: None,
+        sees_ws: None,
+        sees_session: Some(session),
+        sees_thread: Some(tid.to_int()),
+        sees_job: None,
+      }
+      let _ = events.emit(
+        "thread",
+        base_codec::json_obj([
+          ("thread", sql_db::int64_to_json(tid)),
+          ("entries", base_codec::json_arr([entry_j])),
+        ]),
+        ev_target,
+        now_ms,
+        None,
+      )
+      Ok(())
     },
     settle_signin_ask: fn(
       id : String,
@@ -501,6 +658,21 @@ pub fn DsbStorePort::sqlite(
     },
     notify_session_internal: fn(session : String, notice : String, now_ms : Int64) -> Unit {
       deliver_vault_decision_own_notice(agents, whole_store, events, hooks, session, notice, now_ms)
+    },
+    vault_held_browser: fn(session : String, site : String, now_ms : Int64) -> Option[String] {
+      let now_sec = now_ms / 1000L
+      let active = whole_store.vault_grants.list_for_session(session, now_sec)
+      for i in 0..<active.length() {
+        let g = active[i]
+        if g.mode.as_str() == "browser" {
+          for j in 0..<g.hosts.length() {
+            if station_browser::same_site_host(site, g.hosts[j]) {
+              return Some("This chat already holds an active browser sign-in grant (" + g.id + ") for " + site + ".")
+            }
+          }
+        }
+      }
+      None
     },
   }
 }
@@ -539,30 +711,34 @@ pub struct DeviceScreenBrowserPorts {
   pub door_url : () -> Option[String]
   pub screen_base_url : () -> Option[String]
   pub browser_available : () -> Bool
-  /// Non-blocking CDP target creation for `screens.browser.open(url, key)`.
-  /// Returns `Ok(target_id)` on success or `Err(ApiError)` on failure (triggers rollback).
-  pub wake_browser_target : (String, String) -> Result[String, station_api::ApiError]
-  /// Optional real Chrome/Farview launcher for `browser` MCP tool `endpoint`.
-  pub ensure_session_browser : (String) -> Result[station_browser::BrowserStatus, String]
-  /// Optional stop hook for `browser` MCP tool `stop` (avoids pulling `station_sys` FFI into pure unit tests).
+  /// Whether a real non-blocking async CDP target creation channel is wired (`None` -> honest 501 when browser is available).
+  pub wake_browser_target : Option[(String, String) -> Result[String, station_api::ApiError]]
+  /// Optional real Chrome/Farview launcher for `browser` MCP tool `endpoint` (`None` -> honest unwired error).
+  pub ensure_session_browser : Option[(String) -> Result[station_browser::BrowserStatus, String]]
+  /// Optional stop hook for `browser` MCP tool `stop`.
   pub stop_session_browser : (String) -> Bool
+  /// Whether a real non-blocking async CDP autofill driver is wired (`false` -> `signins.fill` returns honest 501 BEFORE touching plaintext!).
+  pub async_signin_driver_available : () -> Bool
   /// Check if `session` currently has an attached live browser tab `tab_id` for origin-bound autofill.
   pub has_live_session_tab : (String, String) -> Bool
-  /// Build an origin-bound `SignInFormPort` for `(session, tab_id)` if live, else `None`.
-  pub signin_form_for : (String, String) -> Option[station_browser::SignInFormPort]
-  /// Optional non-blocking `computer` backend (capture/input/tree). `None` -> honest refusal.
+  /// Non-blocking single-step async autofill poller: returns `None` while still in flight, or
+  /// `Some(Driven)` when settled (ZERO synchronous `drive_signin_form` polling!).
+  pub step_async_signin_fill : Option[(PendingSigninFill, HeldSigninCreds) -> Option[station_browser::Driven]]
+  /// Optional non-blocking `computer` backend (capture/input/tree). `None` -> honest refusal & not advertised in `wired_tools`.
   pub computer_act : Option[(String, String, String, base_codec::Json) -> Result[station_tools::ToolReply, String]]
-  /// Optional non-blocking macOS helper permissions reader/requester.
+  /// Optional non-blocking macOS helper permissions reader/requester. `None` -> not advertised in `wired_tools`.
   pub helper_permissions : Option[(Option[String]) -> Result[String, String]]
-  /// Optional `phone_send` transport hook `(session, path, staged_name) -> Result[String, String]`.
+  /// Optional non-blocking `phone_send` transport hook `(session, path, staged_name) -> Result[String, String]`.
   pub phone_send_file : Option[(String, String, String) -> Result[String, String]]
   /// Rig-device approval check `(ws, session, device_id) -> Bool`.
   pub rig_device_approved : (String, String, String) -> Bool
-  /// Filesystem port for `device_control` (`stream_audio` lstat) & `phone_send` existence check.
+  /// Filesystem port for `device_control`.
   pub device_fs : DeviceFsPort
 }
 
-/// Pure dependency-injected ports (zero OS/SQLite FFI) for deterministic unit tests.
+/// Pure dependency-injected ports (zero OS/SQLite FFI) matching production defaults:
+/// all unimplemented async backends (`wake_browser_target`, `ensure_session_browser`,
+/// `step_async_signin_fill`, `computer_act`, `helper_permissions`, `phone_send_file`) are `None`.
 pub fn DeviceScreenBrowserPorts::in_memory() -> DeviceScreenBrowserPorts {
   let seq : Array[Int] = [1]
   DeviceScreenBrowserPorts::{
@@ -581,15 +757,12 @@ pub fn DeviceScreenBrowserPorts::in_memory() -> DeviceScreenBrowserPorts {
     door_url: fn() -> Option[String] { Some("http://127.0.0.1:39123/mcp") },
     screen_base_url: fn() -> Option[String] { None },
     browser_available: fn() -> Bool { false },
-    wake_browser_target: fn(_url : String, _key : String) -> Result[String, station_api::ApiError] {
-      Err(station_api::ApiError::new(503, station_ops::tr(station_ops::Lang::En, "station.screen.noBrowser")))
-    },
-    ensure_session_browser: fn(_session : String) -> Result[station_browser::BrowserStatus, String] {
-      Err("no browser binary is available on this station")
-    },
+    wake_browser_target: None,
+    ensure_session_browser: None,
     stop_session_browser: fn(_session : String) -> Bool { false },
+    async_signin_driver_available: fn() -> Bool { false },
     has_live_session_tab: fn(_session : String, _tab : String) -> Bool { false },
-    signin_form_for: fn(_session : String, _tab : String) -> Option[station_browser::SignInFormPort] { None },
+    step_async_signin_fill: None,
     computer_act: None,
     helper_permissions: None,
     phone_send_file: None,
@@ -636,10 +809,8 @@ pub struct DeviceScreenBrowserRuntime {
   pub ports : DeviceScreenBrowserPorts
   /// In-memory held credentials by `ask_id` (15-min `SIGNIN_HELD_MS` TTL, zero SQLite persistence).
   held_creds : Map[String, HeldSigninCreds]
-  /// Non-blocking async CDP fill queue pumped from `tick(now_ms)`.
+  /// Non-blocking async CDP fill queue pumped from `tick_with_port(now_ms)`.
   pending_fills : Array[PendingSigninFill]
-  /// Local open-device port allocations `(session + "\x00" + device_id) -> port`.
-  held_device_ports : Map[String, Int]
   /// Rig-scoped devices loaded from SQLite (`(ws + "\x00" + device_id) -> true`) requiring owner approval.
   pub rig_device_ids : Map[String, Bool]
 }
@@ -657,7 +828,6 @@ pub fn DeviceScreenBrowserRuntime::new(
     ports: ports,
     held_creds: Map::new(),
     pending_fills: [],
-    held_device_ports: Map::new(),
     rig_device_ids: Map::new(),
   }
 }
@@ -704,13 +874,17 @@ pub fn DeviceScreenBrowserRuntime::purge_expired_creds(self : DeviceScreenBrowse
   dropped
 }
 
-/// Purge all in-memory credentials and end open `signin_asks` for an archived session.
-pub fn DeviceScreenBrowserRuntime::on_session_archived_with_port(
+/// Purge all in-memory credentials, pending fills, and phone grants for an archived session
+/// (called by `WholeAgents::archive_session` immediately after the SQLite transaction commits).
+pub fn DeviceScreenBrowserRuntime::purge_mem_for_archived_session(
   self : DeviceScreenBrowserRuntime,
-  store_port : DsbStorePort,
   session_key : String,
+  ended_ask_ids : Array[String],
   now_ms : Int64,
-) -> Int {
+) -> Unit {
+  for i in 0..<ended_ask_ids.length() {
+    self.forget_held_cred(ended_ask_ids[i])
+  }
   let kept_fills : Array[PendingSigninFill] = []
   for i in 0..<self.pending_fills.length() {
     if self.pending_fills[i].session != session_key {
@@ -721,33 +895,33 @@ pub fn DeviceScreenBrowserRuntime::on_session_archived_with_port(
   }
   while self.pending_fills.length() > 0 { let _ = self.pending_fills.pop() }
   for i in 0..<kept_fills.length() { self.pending_fills.push(kept_fills[i]) }
-
   let _ = self.devices.phone_grants.release(session_key, now_ms)
-  let dp_prefix = session_key + "\x00"
-  let dp_keys = self.held_device_ports.keys()
-  for i in 0..<dp_keys.length() {
-    if dp_keys[i].starts_with(dp_prefix) {
-      self.held_device_ports.remove(dp_keys[i])
-    }
-  }
+}
 
+/// Pure-DI archive helper for tests & callers without SQLite tx wrapper.
+pub fn DeviceScreenBrowserRuntime::on_session_archived_with_port(
+  self : DeviceScreenBrowserRuntime,
+  store_port : DsbStorePort,
+  session_key : String,
+  now_ms : Int64,
+) -> Int {
   let rows = match (store_port.list_open_signin_asks)(session_key) {
     Ok(rs) => rs
-    Err(_) => return 0
+    Err(_) => []
   }
-  let mut ended = 0
+  let ended_ids : Array[String] = []
   for i in 0..<rows.length() {
     let (id, raw) = rows[i]
-    self.forget_held_cred(id)
     match patch_signin_ask_body(raw, "ended", None, true, None, None) {
       Ok(next_body) => {
         let _ = (store_port.settle_signin_ask)(id, next_body, true, now_ms)
-        ended = ended + 1
+        ended_ids.push(id)
       }
       Err(_) => ()
     }
   }
-  ended
+  self.purge_mem_for_archived_session(session_key, ended_ids, now_ms)
+  ended_ids.length()
 }
 
 /// Clear all sensitive credentials in memory on station shutdown.
@@ -757,11 +931,10 @@ pub fn DeviceScreenBrowserRuntime::shutdown(self : DeviceScreenBrowserRuntime) -
     self.forget_held_cred(keys[i])
   }
   while self.pending_fills.length() > 0 { let _ = self.pending_fills.pop() }
-  self.held_device_ports.clear()
 }
 
 // ---------------------------------------------------------------------------
-// 3. `screens.browser.open` Real Async Wake + Rollback
+// 3. `screens.browser.open` Real Async Wake + Sleeping-Tab Rollback + Honest 501/503
 // ---------------------------------------------------------------------------
 
 pub fn DeviceScreenBrowserRuntime::open_browser_screen(
@@ -778,6 +951,10 @@ pub fn DeviceScreenBrowserRuntime::open_browser_screen(
   if !(self.ports.browser_available)() {
     return Err(station_api::ApiError::new(503, station_ops::tr(lang, "station.screen.noBrowser")))
   }
+  let wake_fn = match self.ports.wake_browser_target {
+    Some(f) => f
+    None => return Err(station_api::ApiError::new(501, "screens.browser.open async CDP target creation is not yet wired on Pion station"))
+  }
   let key = match tab_id_opt {
     Some(id) => id
     None => "u_" + (self.ports.random_hex)(6)
@@ -785,6 +962,14 @@ pub fn DeviceScreenBrowserRuntime::open_browser_screen(
   let screen_id = "browser:" + key
   if self.screens.get(screen_id) is Some(_) && !self.browser.user_tabs.is_sleeping(key) {
     return Ok(screen_id)
+  }
+  // Preserve any prior sleeping screen so a wake failure restores it instead of deleting it!
+  let prev_screen = self.screens.get(screen_id)
+  let restore_screen = fn() -> Unit {
+    match prev_screen {
+      Some(old_src) => self.screens.add(old_src)
+      None => { let _ = self.screens.remove(screen_id) }
+    }
   }
   let site_opt = station_browser::site_of_browser_url(resolved_url)
   let src = station_screens::RegisteredSource::{
@@ -812,21 +997,24 @@ pub fn DeviceScreenBrowserRuntime::open_browser_screen(
     workspace: None,
   }
   self.screens.add(src)
-  let target_id = match (self.ports.wake_browser_target)(resolved_url, key) {
+  let target_id = match wake_fn(resolved_url, key) {
     Ok(tid) if tid.trim().length() > 0 => tid.trim()
     Ok(_) => {
-      let _ = self.screens.remove(screen_id)
+      restore_screen()
       return Err(station_api::ApiError::new(502, "browser target wake returned empty targetId"))
     }
     Err(e) => {
-      let _ = self.screens.remove(screen_id)
+      restore_screen()
       return Err(e)
     }
   }
-  match self.browser.user_tabs.open_new(key, resolved_url, target_id, now_ms) {
+  // Pass `""` for `about:blank` so `UserTabsState::open_new` stores `BLANK_PAGE` directly
+  // without passing `"about:blank"` through `address_or_search`!
+  let tab_url_arg = if resolved_url == station_browser::BLANK_PAGE { "" } else { resolved_url }
+  match self.browser.user_tabs.open_new(key, tab_url_arg, target_id, now_ms) {
     Ok(sid) => Ok(sid)
     Err(err_key) => {
-      let _ = self.screens.remove(screen_id)
+      restore_screen()
       Err(station_api::ApiError::new(400, station_ops::tr(lang, err_key)))
     }
   }
@@ -929,11 +1117,9 @@ fn load_and_authorize_signin_ask(
     Ok(None) => return Err(signin_refused_err("no such sign-in"))
     Err(e) => return Err(station_api::ApiError::new(503, e))
   }
-  // Strict workspace isolation
   if sinfo.ws != viewer_ws {
     return Err(signin_refused_err("no such sign-in"))
   }
-  // Archived session check
   if sinfo.archived {
     if is_open_signin_status(status) {
       rt.forget_held_cred(ask_id)
@@ -944,15 +1130,12 @@ fn load_and_authorize_signin_ask(
     }
     return Err(signin_refused_err("the sign-in is ended already"))
   }
-  // Owner check
   if owner != dsb_ascii_lower(viewer_email) {
     return Err(signin_refused_err("only the person the chat's agent works for signs it in"))
   }
-  // Open status check
   if !is_open_signin_status(status) {
     return Err(signin_refused_err("the sign-in is " + status + " already"))
   }
-  // 24h expiry check (1:1 Node `PENDING_SECS = 86400`)
   let at_sec : Int64 = match base_codec::json_get(body_j, "at") {
     Some(base_codec::Json::Num(d, _)) => d.to_int64()
     _ => 0L
@@ -987,6 +1170,13 @@ pub fn DeviceScreenBrowserRuntime::handle_signins_op_with_port(
 
   if op != "signins.self" && op != "signins.deny" && op != "signins.fill" {
     return Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
+  }
+
+  // P0-1 FAIL-CLOSED GUARD BEFORE TOUCHING ANY PLAINTEXT CREDENTIALS:
+  // If no real async CDP autofill driver is wired on this station, return honest 501 immediately
+  // without reading, logging, or holding `username`/`password`/`code`!
+  if op == "signins.fill" && (!(self.ports.async_signin_driver_available)() || self.ports.step_async_signin_fill is None) {
+    return Err(station_api::ApiError::new(501, "signins.fill async CDP autofill driver is not yet wired on Pion station"))
   }
 
   let (ask_j, raw_body) = match load_and_authorize_signin_ask(
@@ -1029,10 +1219,6 @@ pub fn DeviceScreenBrowserRuntime::handle_signins_op_with_port(
       Ok(_) => ()
       Err(e) => return Err(station_api::ApiError::new(500, e))
     }
-    let keep_note = match base_codec::json_get(next_b, "keep") {
-      Some(base_codec::Json::Bool(false)) => ""
-      _ => ", which keeps the sign-in in their vault as they chose on the card"
-    }
     let notice = owner +
     " says they signed in to " +
     site +
@@ -1044,9 +1230,7 @@ pub fn DeviceScreenBrowserRuntime::handle_signins_op_with_port(
     tab +
     "): then call sign_in {site: \"" +
     site +
-    "\", done: true, name: \"…\", about: \"…\"}" +
-    keep_note +
-    "; if a step is left that only they can take (a confirmation by mail, a new device's check), sign_in {site: \"" +
+    "\", done: true, name: \"…\", about: \"…\"}; if a step is left that only they can take (a confirmation by mail, a new device's check), sign_in {site: \"" +
     site +
     "\", stuck: \"what is left\"}, in their language."
     (store_port.notify_session_internal)(session_key, notice, now_ms)
@@ -1068,9 +1252,13 @@ pub fn DeviceScreenBrowserRuntime::handle_signins_op_with_port(
     return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
   }
 
-  // `signins.fill`
+  // `signins.fill` (only reached when a real non-blocking async CDP driver IS wired)
   if cur_status == "filling" {
     return Err(signin_refused_err("the sign-in is being filled"))
+  }
+  // Check browser/tab live BEFORE extracting/storing plaintext credentials
+  if !(self.ports.browser_available)() || !(self.ports.has_live_session_tab)(session_key, tab) {
+    return Err(signin_refused_err("this chat's browser tab is not available for autofill"))
   }
   let extract_field = fn(k : String) -> Option[String] {
     match base_codec::json_get(body, k) {
@@ -1084,20 +1272,11 @@ pub fn DeviceScreenBrowserRuntime::handle_signins_op_with_port(
   if u_opt is None && p_opt is None && c_opt is None {
     return Err(signin_refused_err("nothing to fill: give username, password or code"))
   }
-
-  // FAIL-CLOSED SECURITY CHECK BEFORE HOLDING ANY PLAINTEXT CREDENTIAL IN MEMORY:
-  // If no browser is available or this session's browser tab is not attached/live,
-  // refuse immediately (never store plaintext password in memory and never return 200 stuck!).
-  if !(self.ports.browser_available)() || !(self.ports.has_live_session_tab)(session_key, tab) {
-    return Err(signin_refused_err("this chat's browser tab is not available for autofill"))
-  }
-
   let keep_opt : Option[Bool] = match base_codec::json_get(body, "keep") {
     Some(base_codec::Json::Bool(k)) => Some(k)
     _ => None
   }
 
-  // Merge into RAM-only `held_creds` with 15-minute TTL (never written to SQLite/logs/responses).
   let held = match self.held_creds.get(ask_id) {
     Some(existing) => existing
     None => HeldSigninCreds::{
@@ -1146,10 +1325,10 @@ pub fn DeviceScreenBrowserRuntime::handle_signins_op_with_port(
   Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
 }
 
-/// Non-blocking tick driven by `whole_daemon.pion`'s event loop (pure `DsbStorePort`):
+/// Non-blocking tick driven by `whole_daemon.pion`'s event loop:
 /// 1. Purges expired RAM-only `held_creds` (15-min `SIGNIN_HELD_MS` TTL).
-/// 2. Advances queued async CDP origin-bound autofill jobs and settles `signin_asks` +
-///    `card_outbox` + `SessionActor::enqueue_internal_notice`.
+/// 2. Re-verifies each queued fill's session is not archived, then steps the non-blocking
+///    async CDP autofill driver (`step_async_signin_fill`).
 pub fn DeviceScreenBrowserRuntime::tick_with_port(
   self : DeviceScreenBrowserRuntime,
   store_port : DsbStorePort,
@@ -1159,18 +1338,35 @@ pub fn DeviceScreenBrowserRuntime::tick_with_port(
   if self.pending_fills.length() == 0 {
     return 0
   }
+  let step_fn = match self.ports.step_async_signin_fill {
+    Some(f) => f
+    None => {
+      // No async driver wired: drop all pending fills & held creds cleanly
+      for i in 0..<self.pending_fills.length() {
+        self.forget_held_cred(self.pending_fills[i].ask_id)
+      }
+      while self.pending_fills.length() > 0 { let _ = self.pending_fills.pop() }
+      return 0
+    }
+  }
+
   let batch : Array[PendingSigninFill] = []
   for i in 0..<self.pending_fills.length() {
     batch.push(self.pending_fills[i])
   }
   while self.pending_fills.length() > 0 { let _ = self.pending_fills.pop() }
 
-  let mut driven_count = 0
+  let mut settled_count = 0
   for i in 0..<batch.length() {
     let job = batch[i]
     let held = match self.held_creds.get(job.ask_id) {
       Some(h) => h
       None => continue
+    }
+    // Re-verify session is still live & unarchived before stepping
+    let sess_ok = match (store_port.get_session_info)(job.session) {
+      Ok(Some(si)) => !si.archived
+      _ => false
     }
     let (cur_status, raw_body) = match (store_port.get_signin_ask)(job.ask_id) {
       Ok(Some(pair)) => pair
@@ -1179,75 +1375,75 @@ pub fn DeviceScreenBrowserRuntime::tick_with_port(
         continue
       }
     }
+    if !sess_ok {
+      self.forget_held_cred(job.ask_id)
+      if is_open_signin_status(cur_status) {
+        match patch_signin_ask_body(raw_body, "ended", None, true, None, None) {
+          Ok(nb) => { let _ = (store_port.settle_signin_ask)(job.ask_id, nb, true, now_ms) }
+          Err(_) => ()
+        }
+      }
+      continue
+    }
     if cur_status != "filling" {
       continue
     }
-    let form_opt = (self.ports.signin_form_for)(job.session, job.tab)
-    let outcome : station_browser::Driven = match form_opt {
-      None => station_browser::Driven::Person(station_browser::DrivenWhy::Stuck)
-      Some(form) => {
-        let vals = station_browser::FormValues::{
-          username: held.username,
-          password: held.password,
-          code: held.code,
-        }
-        station_browser::drive_signin_form(form, job.site, vals, held.used, fn(_ms : Int64) -> Unit { () })
+    match step_fn(job, held) {
+      None => {
+        // Still in flight asynchronously: keep in queue for next tick
+        self.pending_fills.push(job)
       }
-    }
-    held.expires_at_ms = now_ms + SIGNIN_HELD_MS
-    driven_count = driven_count + 1
-    match outcome {
-      station_browser::Driven::Code => {
-        match patch_signin_ask_body(raw_body, "code", None, true, None, None) {
-          Ok(nb) => { let _ = (store_port.settle_signin_ask)(job.ask_id, nb, false, now_ms) }
-          Err(_) => ()
-        }
-      }
-      station_browser::Driven::Person(why) => {
-        let why_str = match why {
-          station_browser::DrivenWhy::Blocked => "blocked"
-          station_browser::DrivenWhy::Refused => "refused"
-          station_browser::DrivenWhy::Stuck => "stuck"
-          station_browser::DrivenWhy::Elsewhere => "elsewhere"
-        }
-        match patch_signin_ask_body(raw_body, "person", Some(why_str), false, None, None) {
-          Ok(nb) => { let _ = (store_port.settle_signin_ask)(job.ask_id, nb, false, now_ms) }
-          Err(_) => ()
-        }
-      }
-      station_browser::Driven::Left => {
-        match patch_signin_ask_body(raw_body, "left", None, true, None, None) {
-          Ok(nb) => {
-            let _ = (store_port.settle_signin_ask)(job.ask_id, nb, false, now_ms)
-            let keep_note = match base_codec::json_get(nb, "keep") {
-              Some(base_codec::Json::Bool(false)) => ""
-              _ => ", which keeps the sign-in in their vault as they chose on the card"
+      Some(outcome) => {
+        held.expires_at_ms = now_ms + SIGNIN_HELD_MS
+        settled_count = settled_count + 1
+        match outcome {
+          station_browser::Driven::Code => {
+            match patch_signin_ask_body(raw_body, "code", None, true, None, None) {
+              Ok(nb) => { let _ = (store_port.settle_signin_ask)(job.ask_id, nb, false, now_ms) }
+              Err(_) => ()
             }
-            let notice = "The sign-in form of " +
-            job.site +
-            " on tab " +
-            job.tab +
-            " was filled from " +
-            job.owner +
-            "'s password manager and sent, and the page has left its sign-in. Look whether " +
-            job.site +
-            " is signed in now (tab " +
-            job.tab +
-            "): then call sign_in {site: \"" +
-            job.site +
-            "\", done: true, name: \"…\", about: \"…\"}" +
-            keep_note +
-            "; if a step is left that only they can take (a confirmation by mail, a new device's check), sign_in {site: \"" +
-            job.site +
-            "\", stuck: \"what is left\"}, in their language."
-            (store_port.notify_session_internal)(job.session, notice, now_ms)
           }
-          Err(_) => ()
+          station_browser::Driven::Person(why) => {
+            let why_str = match why {
+              station_browser::DrivenWhy::Blocked => "blocked"
+              station_browser::DrivenWhy::Refused => "refused"
+              station_browser::DrivenWhy::Stuck => "stuck"
+              station_browser::DrivenWhy::Elsewhere => "elsewhere"
+            }
+            match patch_signin_ask_body(raw_body, "person", Some(why_str), false, None, None) {
+              Ok(nb) => { let _ = (store_port.settle_signin_ask)(job.ask_id, nb, false, now_ms) }
+              Err(_) => ()
+            }
+          }
+          station_browser::Driven::Left => {
+            match patch_signin_ask_body(raw_body, "left", None, true, None, None) {
+              Ok(nb) => {
+                let _ = (store_port.settle_signin_ask)(job.ask_id, nb, false, now_ms)
+                let notice = "The sign-in form of " +
+                job.site +
+                " on tab " +
+                job.tab +
+                " was filled from " +
+                job.owner +
+                "'s password manager and sent, and the page has left its sign-in. Look whether " +
+                job.site +
+                " is signed in now (tab " +
+                job.tab +
+                "): then call sign_in {site: \"" +
+                job.site +
+                "\", done: true, name: \"…\", about: \"…\"}; if a step is left that only they can take (a confirmation by mail, a new device's check), sign_in {site: \"" +
+                job.site +
+                "\", stuck: \"what is left\"}, in their language."
+                (store_port.notify_session_internal)(job.session, notice, now_ms)
+              }
+              Err(_) => ()
+            }
+          }
         }
       }
     }
   }
-  driven_count
+  settled_count
 }
 
 /// Production SQLite convenience wrapper for `whole_daemon.pion`'s `on_tick`.
@@ -1283,6 +1479,9 @@ pub fn DeviceScreenBrowserRuntime::handle_signin_mcp_tool_with_port(
       if !s.contains(".") {
         return station_tools::error_reply("site is the site's host, e.g. github.com")
       }
+      if station_browser::is_public_suffix(s) {
+        return station_tools::error_reply(s + " is a public suffix, not a specific site (use a full site host such as app." + s + ")")
+      }
       s
     }
     Err(e) => return station_tools::error_reply(e)
@@ -1308,6 +1507,7 @@ pub fn DeviceScreenBrowserRuntime::handle_signin_mcp_tool_with_port(
 
   let is_cancel = dsb_arg_bool(args, "cancel") == Some(true)
   let is_done = dsb_arg_bool(args, "done") == Some(true)
+  let is_again = dsb_arg_bool(args, "again") == Some(true)
   let stuck_opt = dsb_arg_raw_str(args, "stuck")
   let now_sec = now_ms / 1000L
 
@@ -1352,7 +1552,7 @@ pub fn DeviceScreenBrowserRuntime::handle_signin_mcp_tool_with_port(
         if keep_false {
           return station_tools::text_reply("Signed in to " + site + ". " + oowner + " chose not to keep it in their vault: it lasts as long as this chat's browser does.")
         }
-        return station_tools::text_reply("Signed in to " + site + ".")
+        return station_tools::text_reply("Signed in to " + site + " (not saved to vault: vault keep is not wired yet).")
       }
       match stuck_opt {
         Some(what) => {
@@ -1391,6 +1591,14 @@ pub fn DeviceScreenBrowserRuntime::handle_signin_mcp_tool_with_port(
   let reason = match dsb_arg_str(args, "reason") {
     Some(r) => r
     None => return station_tools::error_reply("reason is required: why you need to be signed in, for the person, in the language they use")
+  }
+  if !is_again {
+    match (store_port.vault_held_browser)(session, site, now_ms) {
+      Some(held_msg) => {
+        return station_tools::text_reply(held_msg + " If the site still asks you to sign in there, call sign_in again with again: true.")
+      }
+      None => ()
+    }
   }
   let sinfo = match (store_port.get_session_info)(session) {
     Ok(Some(si)) => si
@@ -1502,93 +1710,128 @@ pub fn DeviceScreenBrowserRuntime::handle_signin_mcp_tool_with_port(
     site +
     " (sign-in " +
     ask_id +
-    "): the card in your chat signs in on tab " +
+    "): the card in your chat lets them sign in on tab " +
     tab.id +
-    " from their own password manager, the station typing it in; you never see it. You are told here when the page has left its sign-in: then look, and say so with sign_in {site: \"" +
+    ". You are told here when the page has left its sign-in: then look, and say so with sign_in {site: \"" +
     site +
     "\", done: true, name: \"…\", about: \"…\"}, or stuck: \"what is left\".",
   )
 }
 
 // ---------------------------------------------------------------------------
-// 6. `DomainHandlers.device` (`device_list`, `device_use`, `device_control`, `adb_devices`, `phone_use`, `phone_send`)
+// 6. `DomainHandlers.device` (real `devices(id, ws, body)` sync + diff-delete + honest refusals)
 // ---------------------------------------------------------------------------
 
-fn sync_workspace_devices_from_sqlite(
+/// Sync workspace devices 1:1 from real SQLite `devices(id, ws, body)` (`station/src/devices/registry.ts:13-38`,
+/// `whole_daemon.pion:1912`), propagating SQL errors and diff-deleting removed devices immediately.
+pub fn sync_workspace_devices_from_sqlite(
   st : station_store::Store,
   devices : DevicesOsRuntime,
   rig_device_ids : Map[String, Bool],
   ws : String,
-) -> Unit {
+) -> Result[Unit, String] {
   let has_tbl = match st.db.first(
     "SELECT 1 AS ok FROM sqlite_master WHERE type='table' AND name='devices' LIMIT 1",
     [],
   ) {
     Ok(Some(_)) => true
-    _ => false
+    Ok(None) => false
+    Err(e) => return Err(e.message)
   }
   if !has_tbl {
-    return
+    return Ok(())
   }
   let rows = match st.db.all(
-    "SELECT id, name, kind, target, baud, rig_in, protocols, owner_sub, owner_email, owner_name FROM devices WHERE ws = ?1",
+    "SELECT id, body FROM devices WHERE ws = ?1 ORDER BY rowid LIMIT 200",
     [base_codec::json_str(ws)],
   ) {
     Ok(rs) => rs
-    Err(_) => return
+    Err(e) => return Err(e.message)
   }
+  let seen_ids : Map[String, Bool] = Map::new()
   for i in 0..<rows.length() {
-    let r = rows[i]
-    let id = match r.get("id") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-    let name = match r.get("name") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-    let kind_s = match r.get("kind") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-    let target = match r.get("target") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-    if id.length() == 0 || name.length() == 0 || target.length() == 0 { continue }
+    let row_id = match rows[i].get("id") { Some(base_codec::Json::Str(s)) => s.trim(), _ => "" }
+    let body_str = match rows[i].get("body") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+    let j = match base_codec::json_parse(body_str) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => base_codec::Json::Obj(fs)
+      _ => continue
+    }
+    let id = match json_field_str(j, "id") { Some(s) if s.trim().length() > 0 => s.trim(), _ => row_id }
+    let name = match json_field_str(j, "name") { Some(s) => s.trim(), None => "" }
+    let kind_s = match json_field_str(j, "kind") { Some(s) => s.trim(), None => "" }
+    let target = match json_field_str(j, "target") { Some(s) => s.trim(), None => "" }
+    if id.length() == 0 || name.length() == 0 || target.length() == 0 {
+      continue
+    }
     let kind = match station_devices::parse_device_kind(kind_s) {
       Some(k) => k
       None => continue
     }
-    let baud : Option[Int] = match r.get("baud") { Some(base_codec::Json::Num(d, _)) => Some(d.to_int()), _ => None }
-    let rig_in = match r.get("rig_in") { Some(base_codec::Json::Num(d, _)) if d.to_int() != 0 => true, _ => false }
-    if rig_in {
-      rig_device_ids.set(ws + "\x00" + id, true)
-    }
-    let owner_sub = match r.get("owner_sub") { Some(base_codec::Json::Str(s)) => s, _ => "u-owner" }
-    let owner_email = match r.get("owner_email") { Some(base_codec::Json::Str(s)) => s, _ => "owner@local" }
-    let owner_name = match r.get("owner_name") { Some(base_codec::Json::Str(s)) => s, _ => "Owner" }
-    let protocols : Array[String] = []
-    match r.get("protocols") {
-      Some(base_codec::Json::Str(ps)) => match base_codec::json_parse(ps) {
-        base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
-          for j in 0..<xs.length() {
-            match xs[j] { base_codec::Json::Str(p) => protocols.push(p), _ => () }
-          }
-        }
-        _ => ()
+    seen_ids.set(id, true)
+    let baud : Option[Int] = match base_codec::json_get(j, "baud") { Some(base_codec::Json::Num(d, _)) => Some(d.to_int()), _ => None }
+    let model : Option[String] = match json_field_str(j, "model") { Some(s) if s.length() > 0 => Some(s), _ => None }
+    let paired : Option[Bool] = match base_codec::json_get(j, "paired") { Some(base_codec::Json::Bool(b)) => Some(b), _ => None }
+    let rig_in = match base_codec::json_get(j, "rig_in") {
+      Some(base_codec::Json::Bool(true)) => true
+      Some(base_codec::Json::Num(d, _)) if d.to_int() != 0 => true
+      _ => match base_codec::json_get(j, "rigIn") {
+        Some(base_codec::Json::Bool(true)) => true
+        _ => false
       }
-      _ => ()
     }
-    let prot_opt = if protocols.length() > 0 { Some(protocols) } else { None }
-    if devices.registry.get(ws, id) is None {
-      let _ = devices.registry.add(
-        ws,
-        owner_sub,
-        owner_email,
-        owner_name,
-        station_devices::DeviceSpec::{
-          id: id,
-          name: name,
-          kind: kind,
-          target: target,
-          baud: baud,
-          model: None,
-          protocols: prot_opt,
-          paired: None,
-        },
-        0L,
-      )
+    let rk = ws + "\x00" + id
+    if rig_in {
+      rig_device_ids.set(rk, true)
+    } else {
+      rig_device_ids.remove(rk)
+    }
+    let owner_sub = match json_field_str(j, "owner") {
+      Some(s) if s.length() > 0 => s
+      _ => match json_field_str(j, "ownerSub") { Some(s) => s, None => "u-owner" }
+    }
+    let owner_email = match json_field_str(j, "owner_email") {
+      Some(s) if s.length() > 0 => s
+      _ => match json_field_str(j, "ownerEmail") { Some(s) => s, None => "owner@local" }
+    }
+    let owner_name = match json_field_str(j, "owner_name") {
+      Some(s) if s.length() > 0 => s
+      _ => match json_field_str(j, "ownerName") { Some(s) => s, None => "Owner" }
+    }
+    let at_secs : Int64 = match base_codec::json_get(j, "at") { Some(base_codec::Json::Num(d, _)) => d.to_int64(), _ => 0L }
+    let protocols : Option[Array[String]] = match base_codec::json_get(j, "protocols") {
+      Some(base_codec::Json::Arr(xs)) => {
+        let ps : Array[String] = []
+        for k in 0..<xs.length() {
+          match xs[k] { base_codec::Json::Str(p) => ps.push(p), _ => () }
+        }
+        Some(ps)
+      }
+      _ => None
+    }
+    let spec = station_devices::DeviceSpec::{
+      id: id,
+      name: name,
+      kind: kind,
+      target: target,
+      baud: baud,
+      model: model,
+      protocols: protocols,
+      paired: paired,
+    }
+    // Always replace with latest spec from SQLite so edits/rebinds take effect immediately
+    let _ = devices.registry.remove(ws, id)
+    let _ = devices.registry.add(ws, owner_sub, owner_email, owner_name, spec, at_secs)
+  }
+  // Diff-delete any devices removed from SQLite so revocations take effect immediately!
+  let existing = devices.registry.of(ws)
+  for i in 0..<existing.length() {
+    let eid = existing[i].device.id
+    if !seen_ids.contains(eid) {
+      let _ = devices.registry.remove(ws, eid)
+      rig_device_ids.remove(ws + "\x00" + eid)
     }
   }
+  Ok(())
 }
 
 fn is_rig_device(rig_device_ids : Map[String, Bool], ws : String, dev_id : String) -> Bool {
@@ -1621,23 +1864,6 @@ fn device_entry_json(
   base_codec::json_obj(fs)
 }
 
-fn device_reached_text(d : station_devices::DeviceSpec, port : Int) -> String {
-  match d.kind {
-    station_devices::DeviceKind::Adb =>
-    d.name + " is reached here through the adb server of the machine it is on: `adb -P " + port.to_string() + " -s " + d.target + " …` (-P on every adb command; never adb kill-server on it). Only this chat's processes connect."
-    station_devices::DeviceKind::Serial => {
-      let baud = match d.baud { Some(b) => b, None => 115200 }
-      d.name + " (serial " + d.target + ", " + baud.to_string() + " baud, set raw there) is at 127.0.0.1:" + port.to_string() + ": its bytes both ways, e.g. `socat - TCP:127.0.0.1:" + port.to_string() + "` or a socket in a script. Only this chat's processes connect."
-    }
-    station_devices::DeviceKind::AirPlay =>
-    d.name + " (AirPlay " + d.target + ") is at http://127.0.0.1:" + port.to_string() + ": use `device_control` for standard actions, or POST JSON `{\"action\":\"…\",\"args\":{…}}` to http://127.0.0.1:" + port.to_string() + "/action (GET /status, POST /stream-audio). Only this chat's processes connect."
-    station_devices::DeviceKind::AndroidTv =>
-    d.name + " (Android TV " + d.target + ") is at http://127.0.0.1:" + port.to_string() + ": use `device_control` for remote/apps/screenshot, or POST JSON `{\"action\":\"…\",\"args\":{…}}` to http://127.0.0.1:" + port.to_string() + "/action (GET /status, POST /screenshot). Only this chat's processes connect."
-    station_devices::DeviceKind::Tcp =>
-    d.name + " (" + d.target + ") is at 127.0.0.1:" + port.to_string() + ": connect to it there as you would to " + d.target + " (http://127.0.0.1:" + port.to_string() + "/, ssh -p " + port.to_string() + " …). Only this chat's processes connect."
-  }
-}
-
 pub fn DeviceScreenBrowserRuntime::handle_device_tool_with_port(
   self : DeviceScreenBrowserRuntime,
   store_port : DsbStorePort,
@@ -1645,7 +1871,7 @@ pub fn DeviceScreenBrowserRuntime::handle_device_tool_with_port(
   session : String,
   tool : String,
   args : base_codec::Json,
-  now_ms : Int64,
+  _now_ms : Int64,
 ) -> station_tools::ToolReply {
   let sinfo = match (store_port.get_session_info)(session) {
     Ok(Some(si)) => si
@@ -1653,7 +1879,10 @@ pub fn DeviceScreenBrowserRuntime::handle_device_tool_with_port(
     Err(e) => return station_tools::error_reply(e)
   }
   let caller_ws = sinfo.ws
-  (store_port.sync_ws_devices)(caller_ws, self.devices, self.rig_device_ids)
+  match (store_port.sync_ws_devices)(caller_ws, self.devices, self.rig_device_ids) {
+    Ok(_) => ()
+    Err(e) => return station_tools::error_reply("devices sync failed: " + e)
+  }
 
   if tool == "device_list" {
     let items : Array[base_codec::Json] = []
@@ -1675,82 +1904,22 @@ pub fn DeviceScreenBrowserRuntime::handle_device_tool_with_port(
     )
   }
 
-  if tool == "phone_use" || (tool == "device_use" && (dsb_arg_str(args, "device") is None || match dsb_arg_str(args, "device") { Some(d) => d.contains("@"), None => false })) {
-    if dsb_arg_bool(args, "done") == Some(true) {
-      let ended = self.devices.phone_grants.release(session, now_ms)
-      if ended.length() == 0 {
-        return station_tools::text_reply("This chat holds no phone grant or request: nothing to hand back.")
-      }
-      let parts : Array[String] = []
-      for i in 0..<ended.length() {
-        parts.push(ended[i].id + " (" + ended[i].owner + "'s phone)")
-      }
-      return station_tools::text_reply("Handed back: " + dsb_join(parts, ", ") + ". adb no longer reaches it; ask with phone_use again if you need it later.")
-    }
-    let owner = match dsb_arg_str(args, "device") {
-      Some(email) if email.contains("@") => dsb_ascii_lower(email)
-      _ => match sinfo.creator {
-        Some(c) if c.trim().length() > 0 => dsb_ascii_lower(c.trim())
-        _ => return station_tools::error_reply("No one started this chat: specify the phone owner's email.")
-      }
-    }
-    let reason = match dsb_arg_str(args, "reason") { Some(r) => r, None => "" }
-    match self.devices.phone_grants.ask(session, session, caller_ws, owner, reason, now_ms) {
-      Err(e) => return station_tools::error_reply(e)
-      Ok(req) => {
-        if req.status == station_devices::PhoneGrantStatus::Granted {
-          return station_tools::text_reply(station_devices::phone_reached([], None, None))
-        }
-        return station_tools::text_reply(station_devices::grant_said(req))
-      }
-    }
-  }
-
+  // P0-2: Honest unwired refusals for `device_use`, `phone_use`, and `phone_send` until
+  // per-chat 127.0.0.1 door listener, real approval cards, and async transfer are wired.
   if tool == "device_use" {
-    let dev_q = match dsb_arg_str(args, "device") { Some(d) => d, None => "" }
-    if dsb_arg_bool(args, "done") == Some(true) {
-      let mut released = 0
-      let prefix = session + "\x00"
-      let ks = self.held_device_ports.keys()
-      for i in 0..<ks.length() {
-        if ks[i].starts_with(prefix) {
-          let did = ks[i].slice(prefix.length(), ks[i].length())
-          if dev_q.length() == 0 || did == dev_q {
-            self.held_device_ports.remove(ks[i])
-            released = released + 1
-          }
-        }
-      }
-      if released == 0 {
-        return station_tools::text_reply("This chat holds no device port: nothing to hand back.")
-      }
-      return station_tools::text_reply("Handed back " + released.to_string() + " device(s) and closed local port(s).")
-    }
-    let kept = match self.devices.registry.find_by_name_or_id(caller_ws, dev_q) {
-      Ok(k) => k
-      Err(e) => return station_tools::error_reply(e)
-    }
-    if is_rig_device(self.rig_device_ids, caller_ws, kept.device.id) && !(self.ports.rig_device_approved)(caller_ws, session, kept.device.id) {
-      return station_tools::error_reply(
-        kept.device.name + " is on a tasks-only station (rig) and requires owner approval before this chat may use it.",
-      )
-    }
-    match self.devices.reach_device_os(caller_ws, kept.device.id) {
-      Err((_, e)) => return station_tools::error_reply(e)
-      Ok(target) => {
-        let port = match target {
-          DeviceTunnelTarget::TcpDial(_, p) => p
-          _ => 0
-        }
-        if port > 0 {
-          self.held_device_ports.set(session + "\x00" + kept.device.id, port)
-          return station_tools::text_reply(device_reached_text(kept.device, port))
-        }
-        return station_tools::text_reply(
-          kept.device.name + " (" + kept.device.kind.as_str() + " " + kept.device.target + ") is ready on this station; use device_control for AirPlay/Android TV actions.",
-        )
-      }
-    }
+    return station_tools::error_reply(
+      "device_use is not yet wired on Pion station (per-chat 127.0.0.1 device door and owner approval cards are pending).",
+    )
+  }
+  if tool == "phone_use" {
+    return station_tools::error_reply(
+      "phone_use is not yet wired on Pion station (owner approval card and per-chat adb door are pending).",
+    )
+  }
+  if tool == "phone_send" {
+    return station_tools::error_reply(
+      "phone_send is not yet wired on Pion station (async phone file transfer is pending).",
+    )
   }
 
   if tool == "device_control" {
@@ -1761,6 +1930,12 @@ pub fn DeviceScreenBrowserRuntime::handle_device_tool_with_port(
     let action = match dsb_arg_str(args, "action") {
       Some(a) => a
       None => return station_tools::error_reply("action is required.")
+    }
+    // P0-2: Never perform synchronous audio file reads on the main event loop!
+    if action == "stream_audio" {
+      return station_tools::error_reply(
+        "device_control stream_audio is not yet wired asynchronously on Pion station.",
+      )
     }
     let kept = match self.devices.registry.find_by_name_or_id(caller_ws, dev_q) {
       Ok(k) => k
@@ -1775,33 +1950,9 @@ pub fn DeviceScreenBrowserRuntime::handle_device_tool_with_port(
       Some(base_codec::Json::Obj(fs)) => Some(base_codec::Json::Obj(fs))
       _ => None
     }
-    let audio_path = dsb_arg_str(args, "audio_path")
-    match self.devices.control_device_with_fs(self.ports.device_fs, caller_ws, sinfo.workspace_dir, kept.device.id, action, action_args, audio_path) {
+    match self.devices.control_device_with_fs(self.ports.device_fs, caller_ws, sinfo.workspace_dir, kept.device.id, action, action_args, None) {
       Ok(res) => return station_tools::text_reply(res)
       Err(e) => return station_tools::error_reply(e)
-    }
-  }
-
-  if tool == "phone_send" {
-    let held = self.devices.phone_grants.held(session, now_ms)
-    if held.length() == 0 {
-      return station_tools::error_reply("This chat holds no phone grant: ask for the phone with phone_use first.")
-    }
-    let path = match dsb_arg_str(args, "path") {
-      Some(p) => p
-      None => return station_tools::error_reply("path is required: a local file path on this machine.")
-    }
-    let _ = match (self.ports.device_fs.stat_size)(path) {
-      Ok(sz) => sz
-      Err(e) => return station_tools::error_reply("phone_send cannot stat file: " + e)
-    }
-    let staged = station_devices::stage_upload_name((self.ports.random_hex)(8), path)
-    match self.ports.phone_send_file {
-      Some(f) => match f(session, path, staged) {
-        Ok(remote_path) => return station_tools::text_reply(remote_path)
-        Err(e) => return station_tools::error_reply(e)
-      }
-      None => return station_tools::error_reply("Granted, but the phone is not lent to this station right now: call phone_use to see why.")
     }
   }
 
@@ -2097,7 +2248,10 @@ pub fn DeviceScreenBrowserRuntime::handle_browser_tool(
     endpoint: fn(sess : String) -> Result[station_browser::BrowserStatus, String] {
       match self.browser.status_of(sess) {
         Ok(st) if st.running => Ok(st)
-        _ => (self.ports.ensure_session_browser)(sess)
+        _ => match self.ports.ensure_session_browser {
+          Some(f) => f(sess)
+          None => Err("browser endpoint launch is not yet wired on Pion station")
+        }
       }
     },
     tabs: fn(sess : String) -> Array[station_browser::TabInfo] {
@@ -2124,6 +2278,26 @@ pub fn DeviceScreenBrowserRuntime::handle_browser_tool(
 // 9. Attach All Wave 17E-2B Handlers onto `WholeAgents` & `WholeApi`
 // ---------------------------------------------------------------------------
 
+/// Compute the honest list of extra MCP tool names backed by live handlers in `rt`.
+/// Unwired backends (`device_use`, `phone_use`, `phone_send`, `computer`, `permissions`, `browser`)
+/// are NOT advertised until their live OS/door/CDP backends are wired!
+pub fn DeviceScreenBrowserRuntime::honest_wired_tool_names(self : DeviceScreenBrowserRuntime) -> Array[String] {
+  let names : Array[String] = ["device_list", "device_control", "adb_devices", "screen", "sign_in"]
+  if self.ports.computer_act is Some(_) {
+    names.push("computer")
+  }
+  if self.ports.helper_permissions is Some(_) {
+    names.push("permissions")
+  }
+  if self.ports.ensure_session_browser is Some(_) {
+    names.push("browser")
+  }
+  if self.ports.phone_send_file is Some(_) {
+    names.push("phone_send")
+  }
+  names
+}
+
 /// Pure-DI wiring helper (used by both production `wire_device_screen_browser_runtime` and unit tests).
 pub fn wire_device_screen_browser_with_port(
   rt : DeviceScreenBrowserRuntime,
@@ -2144,6 +2318,10 @@ pub fn wire_device_screen_browser_with_port(
   })
   agents.signin_tool_override = Some(fn(session : String, _tool : String, args : base_codec::Json) -> station_tools::ToolReply {
     rt.handle_signin_mcp_tool_with_port(store_port, session, args, now_ms_fn())
+  })
+  agents.wired_extra_tool_names = rt.honest_wired_tool_names()
+  agents.on_session_archived_dsb = Some(fn(sk : String, ended_ids : Array[String], now_ms : Int64) -> Unit {
+    rt.purge_mem_for_archived_session(sk, ended_ids, now_ms)
   })
   hooks.on_screens_browser_open = Some(fn(url : String, tab_id : Option[String]) -> Result[String, station_api::ApiError] {
     rt.open_browser_screen(url, tab_id, station_ops::Lang::En, now_ms_fn())
