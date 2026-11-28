@@ -39,6 +39,17 @@ pub enum TurnEndAction {
   EndUndeclared
 }
 
+/// Exact delivery metadata attached to a queued/started prompt or steer:
+/// `(thread, n, apart)` SQLite `deliveries`/`letter_deliveries` tokens + optional handover carry id.
+pub struct WorkDeliveryMeta {
+  pub handed : Array[(Int64, Int64, Bool)]
+  pub carried_id : Option[String]
+}
+
+pub fn WorkDeliveryMeta::empty() -> WorkDeliveryMeta {
+  WorkDeliveryMeta::{ handed: [], carried_id: None }
+}
+
 /// An item queued on a session's serial actor queue.
 pub enum ActorWork {
   Prompt(String)
@@ -283,6 +294,8 @@ pub struct SessionActor {
   pub mut posted_after_terminal : Bool
   pub mut declared : TurnDeclared
   pub mut queue : Array[ActorWork]
+  /// Parallel 1:1 delivery metadata for `queue` (padded with `WorkDeliveryMeta::empty()` if shorter).
+  pub mut queue_meta : Array[WorkDeliveryMeta]
   /// Typed internal notices queued for the next turn (separate from `queue` so they never
   /// head-of-line block human `ActorWork::Steer` during an active `Running` turn).
   pub mut pending_internal_notices : Array[String]
@@ -292,6 +305,7 @@ pub struct SessionActor {
   pub mut started_prompts : Array[String]
   pub mut started_prompts_internal : Array[Bool]
   pub mut started_prompts_kind : Array[String]
+  pub mut started_prompts_meta : Array[WorkDeliveryMeta]
   /// Tool calls begun and not ended since the turn started (or since a mid-wait steer cleared them, `36bef9f96a`).
   pub mut open_tools : Array[String]
   /// Deadline timestamp when a mid-wait-steered silent turn is ended as hung (`36bef9f96a`).
@@ -325,6 +339,7 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
     posted_after_terminal: false,
     declared: TurnDeclared::None,
     queue: [],
+    queue_meta: [],
     pending_internal_notices: [],
     next_barrier_id: 1,
     completed_barriers: [],
@@ -332,6 +347,7 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
     started_prompts: [],
     started_prompts_internal: [],
     started_prompts_kind: [],
+    started_prompts_meta: [],
     open_tools: [],
     steer_silent_due_at: None,
     last_live_event_at: None,
@@ -390,31 +406,60 @@ pub fn SessionActor::next_generation(self : SessionActor) -> Int {
   self.generation
 }
 
+/// Enqueues a work item with exact delivery metadata on the serial actor queue.
+pub fn SessionActor::push_queue_with_meta(
+  self : SessionActor,
+  item : ActorWork,
+  meta : WorkDeliveryMeta,
+) -> Unit {
+  while self.queue_meta.length() < self.queue.length() {
+    self.queue_meta.push(WorkDeliveryMeta::empty())
+  }
+  self.queue.push(item)
+  self.queue_meta.push(meta)
+}
+
 /// Enqueues a work item on the serial actor queue.
 pub fn SessionActor::enqueue(self : SessionActor, item : ActorWork) -> Unit {
-  self.queue.push(item)
+  self.push_queue_with_meta(item, WorkDeliveryMeta::empty())
 }
 
 /// Enqueues a flush barrier and returns its barrier id.
 pub fn SessionActor::enqueue_barrier(self : SessionActor) -> Int {
   let id = self.next_barrier_id
   self.next_barrier_id = self.next_barrier_id + 1
-  self.queue.push(ActorWork::Barrier(id))
+  self.push_queue_with_meta(ActorWork::Barrier(id), WorkDeliveryMeta::empty())
   id
 }
 
-/// Pops the next queued work item in strict FIFO order.
-pub fn SessionActor::pop_next(self : SessionActor) -> Option[ActorWork] {
+/// Pops the next queued work item and its exact delivery metadata in strict FIFO order.
+pub fn SessionActor::pop_next_with_meta(self : SessionActor) -> Option[(ActorWork, WorkDeliveryMeta)] {
   if self.queue.length() == 0 {
     return None
   }
   let first = self.queue[0]
+  let meta = if self.queue_meta.length() > 0 { self.queue_meta[0] } else { WorkDeliveryMeta::empty() }
   let rest : Array[ActorWork] = []
   for i in 1..<self.queue.length() {
     rest.push(self.queue[i])
   }
   self.queue = rest
-  Some(first)
+  if self.queue_meta.length() > 0 {
+    let rest_meta : Array[WorkDeliveryMeta] = []
+    for i in 1..<self.queue_meta.length() {
+      rest_meta.push(self.queue_meta[i])
+    }
+    self.queue_meta = rest_meta
+  }
+  Some((first, meta))
+}
+
+/// Pops the next queued work item in strict FIFO order.
+pub fn SessionActor::pop_next(self : SessionActor) -> Option[ActorWork] {
+  match self.pop_next_with_meta() {
+    Some((item, _)) => Some(item)
+    None => None
+  }
 }
 
 fn SessionActor::start_prompt_now(
@@ -422,6 +467,7 @@ fn SessionActor::start_prompt_now(
   text : String,
   is_internal~ : Bool = false,
   kind~ : String = "prompt",
+  meta~ : WorkDeliveryMeta = WorkDeliveryMeta::empty(),
 ) -> Unit {
   self.phase = ActorPhase::Running
   self.idle_since_ms = None
@@ -437,6 +483,7 @@ fn SessionActor::start_prompt_now(
   self.started_prompts.push(text)
   self.started_prompts_internal.push(is_internal)
   self.started_prompts_kind.push(kind)
+  self.started_prompts_meta.push(meta)
 }
 
 /// Starts an internal `kind = "resume"` turn (used by `hub.session.retry`; never forges user input).
@@ -543,19 +590,25 @@ pub fn SessionActor::check_compaction_timeout(
 /// - Idle with queued work -> enqueues behind existing work, pumps FIFO head, returns `Queue`
 /// - Running -> steers active turn (`Steer`)
 /// - Starting/Stopping/Closed -> enqueues on serial queue (`Queue`)
-pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRoute {
+pub fn SessionActor::submit_input(
+  self : SessionActor,
+  text : String,
+  handed~ : Array[(Int64, Int64, Bool)] = [],
+  carried_id~ : Option[String] = None,
+) -> InputRoute {
+  let meta = WorkDeliveryMeta::{ handed: handed, carried_id: carried_id }
   if self.compacting || self.pending_compaction is Some(_) {
-    self.queue.push(ActorWork::Prompt(text))
+    self.push_queue_with_meta(ActorWork::Prompt(text), meta)
     return InputRoute::Queue
   }
   let route = route_input(self.phase)
   match route {
     InputRoute::StartPrompt => {
       if self.queue.length() == 0 {
-        self.start_prompt_now(text)
+        self.start_prompt_now(text, meta=meta)
         InputRoute::StartPrompt
       } else {
-        self.queue.push(ActorWork::Prompt(text))
+        self.push_queue_with_meta(ActorWork::Prompt(text), meta)
         self.pump_next_prompt()
         InputRoute::Queue
       }
@@ -564,11 +617,11 @@ pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRo
       if !(self.steer_silent_due_at is None) {
         self.steered_during_silence.push(text)
       }
-      self.queue.push(ActorWork::Steer(text))
+      self.push_queue_with_meta(ActorWork::Steer(text), meta)
       InputRoute::Steer
     }
     InputRoute::Queue => {
-      self.queue.push(ActorWork::Prompt(text))
+      self.push_queue_with_meta(ActorWork::Prompt(text), meta)
       InputRoute::Queue
     }
   }
@@ -597,32 +650,32 @@ pub fn SessionActor::pump_next_prompt(self : SessionActor) -> Unit {
   while self.queue.length() > 0 {
     match self.queue[0] {
       ActorWork::Barrier(id) => {
-        let _ = self.pop_next()
+        let _ = self.pop_next_with_meta()
         self.completed_barriers.push(id)
       }
       ActorWork::Prompt(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=false)
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=false, meta=meta)
         return
       }
       ActorWork::InternalPrompt(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=true)
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=true, meta=meta)
         return
       }
       ActorWork::Resume(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=true, kind="resume")
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=true, kind="resume", meta=meta)
         return
       }
       ActorWork::Deliver(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=false)
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=false, meta=meta)
         return
       }
       ActorWork::Steer(text) => {
-        let _ = self.pop_next()
-        self.start_prompt_now(text, is_internal=false)
+        let meta = match self.pop_next_with_meta() { Some((_, m)) => m; None => WorkDeliveryMeta::empty() }
+        self.start_prompt_now(text, is_internal=false, meta=meta)
         return
       }
       _ => return

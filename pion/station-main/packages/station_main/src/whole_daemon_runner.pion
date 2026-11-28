@@ -1787,6 +1787,50 @@ enum LiveRunnerPhase {
   Exited
 }
 
+/// Exact delivery commit metadata bound to an outbound runner socket write batch (R6 P1-1..3):
+/// - `handed`: exact `(thread, n, apart)` SQLite delivery tokens (`deliveries` / `letter_deliveries`)
+/// - `carried_ids`: exact `CarriedHandoverPrompt.id` entries carried across `SIGUSR2` handover
+/// Committed ONLY when `LIVE_RUNNER_TOK_UNIX_WRITE` confirms the bytes were written to the socket!
+pub struct WriteCommitMeta {
+  pub handed : Array[(Int64, Int64, Bool)]
+  pub carried_ids : Array[String]
+}
+
+pub fn WriteCommitMeta::empty() -> WriteCommitMeta {
+  WriteCommitMeta::{ handed: [], carried_ids: [] }
+}
+
+pub fn WriteCommitMeta::from_delivery_meta(m : station_sessions::WorkDeliveryMeta) -> WriteCommitMeta {
+  let cids : Array[String] = []
+  match m.carried_id {
+    Some(id) if id.length() > 0 => cids.push(id)
+    _ => ()
+  }
+  WriteCommitMeta::{ handed: m.handed, carried_ids: cids }
+}
+
+pub fn WriteCommitMeta::is_empty(self : WriteCommitMeta) -> Bool {
+  self.handed.length() == 0 && self.carried_ids.length() == 0
+}
+
+pub fn WriteCommitMeta::merge(a : WriteCommitMeta, b : WriteCommitMeta) -> WriteCommitMeta {
+  let hs : Array[(Int64, Int64, Bool)] = []
+  for i in 0..<a.handed.length() {
+    hs.push(a.handed[i])
+  }
+  for i in 0..<b.handed.length() {
+    hs.push(b.handed[i])
+  }
+  let cs : Array[String] = []
+  for i in 0..<a.carried_ids.length() {
+    cs.push(a.carried_ids[i])
+  }
+  for i in 0..<b.carried_ids.length() {
+    cs.push(b.carried_ids[i])
+  }
+  WriteCommitMeta::{ handed: hs, carried_ids: cs }
+}
+
 struct LiveRunnerSession {
   conn_id : Int
   session_key : String
@@ -1809,7 +1853,9 @@ struct LiveRunnerSession {
   mut adopted_db_initialized : Bool
   mut phase : LiveRunnerPhase
   mut pending_prompt : Option[String]
+  mut pending_prompt_meta : Option[WriteCommitMeta]
   pending_steers : Array[String]
+  pending_steer_metas : Array[WriteCommitMeta]
   mut runtime_session_id : Option[String]
   mut current_turn_id : Option[String]
   mut turn_started_at : Int64
@@ -1839,7 +1885,9 @@ struct LiveRunnerSession {
   mut attached : Bool
   mut write_inflight : Bool
   mut write_inflight_bytes : Int
+  mut write_inflight_commit : WriteCommitMeta
   write_queue : Array[String]
+  write_queue_commits : Array[WriteCommitMeta]
   mut write_queue_bytes : Int
   mut codex_active_turn_id : Option[String]
   mut dropping_oversized_out_line : Bool
@@ -1880,6 +1928,7 @@ pub struct LiveRunnerManager {
   pending_compact_write : Map[String, String]
   pending_prompts : Array[CarriedHandoverPrompt]
   carried_prompt_ids : Map[String, Bool]
+  restored_prompt_ids : Map[String, Bool]
   draining_stopping_ids : Map[String, Bool]
   draining_stop_sessions : Map[String, String]
   mut handover_state_path : Option[String]
@@ -1901,6 +1950,7 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     pending_compact_write: Map::new(),
     pending_prompts: [],
     carried_prompt_ids: Map::new(),
+    restored_prompt_ids: Map::new(),
     draining_stopping_ids: Map::new(),
     draining_stop_sessions: Map::new(),
     handover_state_path: None,
@@ -2882,7 +2932,15 @@ fn live_runner_send_sock_raw(ctx : DaemonCtx, conn_id : Int, sock_id : Int64, pa
 
 /// Strictly FIFO-serialized per-socket write queue with total cap
 /// `write_inflight_bytes + write_queue_bytes + plen <= 4 MiB` (R5 Invariant 2).
-fn live_runner_send_sess(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id : Int64, payload : String) -> Bool {
+/// Optional `commit` binds exact `(thread, n, apart)` delivery tokens and handover `carried_id`s
+/// to this write batch so they are settled ONLY when `LIVE_RUNNER_TOK_UNIX_WRITE` succeeds!
+fn live_runner_send_sess(
+  ctx : DaemonCtx,
+  sess : LiveRunnerSession,
+  sock_id : Int64,
+  payload : String,
+  commit~ : Option[WriteCommitMeta] = None,
+) -> Bool {
   if sock_id < 0L || sess.close_after_write {
     return false
   }
@@ -2891,18 +2949,86 @@ fn live_runner_send_sess(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id : In
     ctx.log("[live-runner] total in-flight + queued write exceeded 4 MiB cap for " + sess.session_key)
     return false
   }
+  let cmeta = match commit {
+    Some(m) => m
+    None => WriteCommitMeta::empty()
+  }
   if sess.write_inflight {
     sess.write_queue.push(payload)
+    sess.write_queue_commits.push(cmeta)
     sess.write_queue_bytes = sess.write_queue_bytes + plen
     return true
   }
   sess.write_inflight = true
   sess.write_inflight_bytes = plen
+  sess.write_inflight_commit = cmeta
   let _ = live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, payload)
   true
 }
 
-fn live_runner_on_write_done(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id : Int64) -> Unit {
+/// Removes confirmed `carried_ids` from `self.pending_prompts` (keeping `carried_prompt_ids`
+/// intact so re-reading a stale snapshot remains idempotent!). Returns number removed.
+pub fn LiveRunnerManager::confirm_carried_prompt_ids(
+  self : LiveRunnerManager,
+  confirmed_ids : Array[String],
+) -> Int {
+  if confirmed_ids.length() == 0 || self.pending_prompts.length() == 0 {
+    return 0
+  }
+  let done_set : Map[String, Bool] = Map::new()
+  for i in 0..<confirmed_ids.length() {
+    done_set.set(confirmed_ids[i], true)
+  }
+  let kept : Array[CarriedHandoverPrompt] = []
+  let mut removed = 0
+  for i in 0..<self.pending_prompts.length() {
+    let cp = self.pending_prompts[i]
+    if done_set.get(cp.id) is Some(true) {
+      removed = removed + 1
+    } else {
+      kept.push(cp)
+    }
+  }
+  if removed > 0 {
+    self.pending_prompts.clear()
+    for i in 0..<kept.length() {
+      self.pending_prompts.push(kept[i])
+    }
+  }
+  removed
+}
+
+fn live_runner_on_write_done(
+  mgr : LiveRunnerManager,
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  sess : LiveRunnerSession,
+  sock_id : Int64,
+  wall_ms : Int64,
+) -> Unit {
+  // R6 P1-1 & P1-3: Commit ONLY the exact `handed` tokens and `carried_ids` of the write batch
+  // whose `LIVE_RUNNER_TOK_UNIX_WRITE` JUST succeeded!
+  let finished_commit = sess.write_inflight_commit
+  sess.write_inflight_commit = WriteCommitMeta::empty()
+  if finished_commit.handed.length() > 0 {
+    let tokens : Array[station_store::HandedToken] = []
+    for i in 0..<finished_commit.handed.length() {
+      let (th, n, apart) = finished_commit.handed[i]
+      tokens.push(station_store::HandedToken::{ thread: th, n: n, apart: apart })
+    }
+    match core.store.require_open() {
+      Ok(st_db) => {
+        let _ = st_db.mark_handed_delivered(sess.session_key, tokens, wall_ms)
+      }
+      Err(_) => ()
+    }
+  }
+  if finished_commit.carried_ids.length() > 0 {
+    let removed = mgr.confirm_carried_prompt_ids(finished_commit.carried_ids)
+    if removed > 0 {
+      let _ = mgr.sync_handover_state_with_ctx(ctx)
+    }
+  }
   if sess.write_queue.length() == 0 {
     sess.write_inflight = false
     sess.write_inflight_bytes = 0
@@ -2917,9 +3043,16 @@ fn live_runner_on_write_done(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id 
   for i in 0..<sess.write_queue.length() {
     sb.write_string(sess.write_queue[i])
   }
+  let mut next_commit = WriteCommitMeta::empty()
+  for i in 0..<sess.write_queue_commits.length() {
+    next_commit = WriteCommitMeta::merge(next_commit, sess.write_queue_commits[i])
+  }
   let next_bytes = sess.write_queue_bytes
   while sess.write_queue.length() > 0 {
     let _ = sess.write_queue.pop()
+  }
+  while sess.write_queue_commits.length() > 0 {
+    let _ = sess.write_queue_commits.pop()
   }
   sess.write_queue_bytes = 0
   if sock_id < 0L {
@@ -2929,6 +3062,7 @@ fn live_runner_on_write_done(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id 
   }
   sess.write_inflight = true
   sess.write_inflight_bytes = next_bytes
+  sess.write_inflight_commit = next_commit
   let _ = live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, sb.to_string())
 }
 
@@ -4004,35 +4138,20 @@ fn live_runner_flush_ready(
     Some(text) => {
       let next_seq = sess.prompt_seq + 1
       let frame = encode_runtime_prompt(sess.runtime_kind, text, rsid, next_seq)
-      // Abstraction 2 / R8 P1-4: Only consume `pending_prompt` AFTER `live_runner_send_sess` returns true,
-      // and mark `prompt_write_pending = true` until `live_runner_on_write_done` flushes the socket!
-      if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
+      // Abstraction 2 / R8 P1-4 / R6 P1-1: Bind exact `pending_prompt_meta` (`handed` + `carried_id`)
+      // to this socket write batch so `deliveries` and `pending_prompts` are committed ONLY when
+      // `LIVE_RUNNER_TOK_UNIX_WRITE` succeeds (zero time-watermark heuristics!).
+      if !live_runner_send_sess(
+        ctx,
+        sess,
+        sock_id,
+        station_drivers::encode_runner_write(frame),
+        commit=sess.pending_prompt_meta,
+      ) {
         return false
       }
-      // R5 P1-2: Settle SQLite `deliveries` up to this turn's start watermark once the prompt is
-      // actually written to the runner socket (preserving `delivered_at IS NULL` for any newer
-      // human message arriving after `turn_started_at` so `has_pending` stays exact!).
-      match core.store.require_open() {
-        Ok(st_db) => {
-          let deliv_now = host_shim::wall_ms()
-          let watermark = if sess.turn_started_at > 0L { sess.turn_started_at } else { deliv_now }
-          let _ = st_db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
-            match t.run(
-              "UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL AND EXISTS (SELECT 1 FROM entries e WHERE e.thread = deliveries.thread AND e.n = deliveries.n AND e.at <= ?3)",
-              [
-                base_codec::json_str(sess.session_key),
-                sql_db::int64_to_json(deliv_now),
-                sql_db::int64_to_json(watermark),
-              ],
-            ) {
-              Err(e) => Err(e)
-              Ok(_) => Ok(())
-            }
-          })
-        }
-        Err(_) => ()
-      }
       sess.pending_prompt = None
+      sess.pending_prompt_meta = None
       sess.prompt_write_pending = true
       sess.adopted_passive_only = false
       sess.prompt_seq = next_seq
@@ -4053,9 +4172,14 @@ fn live_runner_flush_ready(
       }
     }
     let first = sess.pending_steers[0]
+    let steer_commit : Option[WriteCommitMeta] = if sess.pending_steer_metas.length() > 0 {
+      Some(sess.pending_steer_metas[0])
+    } else {
+      None
+    }
     let next_seq = sess.prompt_seq + 1
     let frame = encode_runtime_steer(sess.runtime_kind, first, rsid, next_seq, turn_id=sess.codex_active_turn_id)
-    if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
+    if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame), commit=steer_commit) {
       return false
     }
     sess.prompt_seq = next_seq
@@ -4068,6 +4192,18 @@ fn live_runner_flush_ready(
     }
     for i in 0..<rest.length() {
       sess.pending_steers.push(rest[i])
+    }
+    if sess.pending_steer_metas.length() > 0 {
+      let rest_m : Array[WriteCommitMeta] = []
+      for i in 1..<sess.pending_steer_metas.length() {
+        rest_m.push(sess.pending_steer_metas[i])
+      }
+      while sess.pending_steer_metas.length() > 0 {
+        let _ = sess.pending_steer_metas.pop()
+      }
+      for i in 0..<rest_m.length() {
+        sess.pending_steer_metas.push(rest_m[i])
+      }
     }
   }
   true
@@ -5070,7 +5206,9 @@ pub fn LiveRunnerManager::adopt_live_runner_outcome(
     adopted_db_initialized: false,
     phase: LiveRunnerPhase::Connecting(rinfo),
     pending_prompt: None,
+    pending_prompt_meta: None,
     pending_steers: [],
+    pending_steer_metas: [],
     runtime_session_id: rt_sid_opt,
     current_turn_id: open_turn_id,
     turn_started_at: open_turn_started,
@@ -5100,7 +5238,9 @@ pub fn LiveRunnerManager::adopt_live_runner_outcome(
     attached: false,
     write_inflight: false,
     write_inflight_bytes: 0,
+    write_inflight_commit: WriteCommitMeta::empty(),
     write_queue: [],
+    write_queue_commits: [],
     write_queue_bytes: 0,
     codex_active_turn_id: restored_codex_tid,
     dropping_oversized_out_line: false,
@@ -5190,7 +5330,7 @@ pub fn LiveRunnerManager::pump(
       None => ()
     }
 
-    // 1. Drain any pending `started_prompts` (FIFO, with structured `is_internal` & `kind` flags).
+    // 1. Drain any pending `started_prompts` (FIFO, with structured `is_internal`, `kind`, & exact `WorkDeliveryMeta`).
     if actor.started_prompts.length() > 0 {
       let prompt_text = actor.started_prompts[0]
       let is_internal = if actor.started_prompts_internal.length() > 0 {
@@ -5202,6 +5342,11 @@ pub fn LiveRunnerManager::pump(
         actor.started_prompts_kind[0]
       } else {
         "prompt"
+      }
+      let delivery_meta = if actor.started_prompts_meta.length() > 0 {
+        actor.started_prompts_meta[0]
+      } else {
+        station_sessions::WorkDeliveryMeta::empty()
       }
       let rest : Array[String] = []
       for pi in 1..<actor.started_prompts.length() {
@@ -5218,7 +5363,14 @@ pub fn LiveRunnerManager::pump(
         rest_kind.push(actor.started_prompts_kind[pi])
       }
       actor.started_prompts_kind = rest_kind
-      self.dispatch_prompt(ctx, core, cfg_raw, key, actor, prompt_text, is_internal, now_ms, wall_ms, turn_kind=turn_kind)
+      if actor.started_prompts_meta.length() > 0 {
+        let rest_meta : Array[station_sessions::WorkDeliveryMeta] = []
+        for pi in 1..<actor.started_prompts_meta.length() {
+          rest_meta.push(actor.started_prompts_meta[pi])
+        }
+        actor.started_prompts_meta = rest_meta
+      }
+      self.dispatch_prompt(ctx, core, cfg_raw, key, actor, prompt_text, is_internal, now_ms, wall_ms, turn_kind=turn_kind, delivery_meta=delivery_meta)
     }
 
     // 2. Drain `ActorWork::Steer` from `actor.queue` while running.
@@ -5228,7 +5380,11 @@ pub fn LiveRunnerManager::pump(
         while steered && actor.queue.length() > 0 {
           match actor.queue[0] {
             station_sessions::ActorWork::Steer(steer_text) => {
-              let _ = actor.pop_next()
+              let steer_meta = match actor.pop_next_with_meta() {
+                Some((_, m)) => m
+                None => station_sessions::WorkDeliveryMeta::empty()
+              }
+              let steer_commit = WriteCommitMeta::from_delivery_meta(steer_meta)
               // R7 P1-3: Re-verify live launch policy AND `(profile_id, runtime_str, cwd)` identity BEFORE steer!
               let steer_policy_ok = match self.sessions.get(key) {
                 Some(cur_s) => live_runner_verify_session_policy(ctx, core, cfg_raw, cur_s)
@@ -5261,6 +5417,7 @@ pub fn LiveRunnerManager::pump(
                     if codex_missing_tid {
                       sess.adopted_passive_only = false
                       sess.pending_steers.push(wrapped_steer)
+                      sess.pending_steer_metas.push(steer_commit)
                     } else {
                       sess.adopted_passive_only = false
                       sess.prompt_seq = sess.prompt_seq + 1
@@ -5275,12 +5432,12 @@ pub fn LiveRunnerManager::pump(
                         sess.prompt_seq,
                         turn_id=sess.codex_active_turn_id,
                       )
-                      if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
+                      if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame), commit=Some(steer_commit)) {
                         live_runner_close_sock(ctx, sess.conn_id, sock_id)
                         sess.phase = LiveRunnerPhase::Exited
                         self.by_conn_id.remove(sess.conn_id)
                         actor.has_process = false
-                        actor.queue.push(station_sessions::ActorWork::Prompt(steer_text))
+                        actor.push_queue_with_meta(station_sessions::ActorWork::Prompt(steer_text), steer_meta)
                         if sess.current_turn_id is Some(_) {
                           live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner write queue overflow"), now_ms, wall_ms)
                         }
@@ -5294,6 +5451,7 @@ pub fn LiveRunnerManager::pump(
                   | LiveRunnerPhase::CodexInit(_, _)
                   | LiveRunnerPhase::CodexOpening(_, _) => {
                     sess.pending_steers.push(wrapped_steer)
+                    sess.pending_steer_metas.push(steer_commit)
                   }
                   LiveRunnerPhase::Stopping(_, _, _, _)
                   | LiveRunnerPhase::Exited => {
@@ -5414,6 +5572,7 @@ fn LiveRunnerManager::dispatch_prompt(
   now_ms : Int64,
   wall_ms : Int64,
   turn_kind~ : String = "prompt",
+  delivery_meta~ : station_sessions::WorkDeliveryMeta = station_sessions::WorkDeliveryMeta::empty(),
 ) -> Unit {
   let st = match core.store.require_open() {
     Ok(s) => s
@@ -5607,13 +5766,13 @@ fn LiveRunnerManager::dispatch_prompt(
         ctx.log("[live-runner] live policy drifted, unverified, or stopping for " + session_key + "; moving stale runner to draining")
         self.reclaim_session(ctx, core, session_key, existing, now_ms)
         // Re-queue prompt so it starts cleanly AFTER the old instance finishes draining!
-        // P2: Preserve `ActorWork::Resume` so a retried turn never degrades into `kind = 'prompt'`.
+        // P2: Preserve `ActorWork::Resume` AND exact `WorkDeliveryMeta` (`handed` + `carried_id`)!
         if turn_kind == "resume" {
-          actor.queue.push(station_sessions::ActorWork::Resume(prompt_text))
+          actor.push_queue_with_meta(station_sessions::ActorWork::Resume(prompt_text), delivery_meta)
         } else if is_internal_prompt {
-          actor.queue.push(station_sessions::ActorWork::InternalPrompt(prompt_text))
+          actor.push_queue_with_meta(station_sessions::ActorWork::InternalPrompt(prompt_text), delivery_meta)
         } else {
-          actor.queue.push(station_sessions::ActorWork::Prompt(prompt_text))
+          actor.push_queue_with_meta(station_sessions::ActorWork::Prompt(prompt_text), delivery_meta)
         }
         actor.phase = station_sessions::ActorPhase::Idle
         actor.pump_next_prompt()
@@ -5639,6 +5798,7 @@ fn LiveRunnerManager::dispatch_prompt(
             existing.turn_started_at = wall_ms
             existing.turn_start_out_offset = existing.acked_out
             existing.pending_prompt = Some(enveloped_prompt)
+            existing.pending_prompt_meta = Some(WriteCommitMeta::from_delivery_meta(delivery_meta))
             actor.has_process = true
             if !live_runner_flush_ready(self, ctx, core, live_cfg, existing, sock_id, now_ms) {
               if !existing.stopping {
@@ -5670,6 +5830,7 @@ fn LiveRunnerManager::dispatch_prompt(
             existing.turn_started_at = wall_ms
             existing.turn_start_out_offset = existing.acked_out
             existing.pending_prompt = Some(enveloped_prompt)
+            existing.pending_prompt_meta = Some(WriteCommitMeta::from_delivery_meta(delivery_meta))
             return
           }
           LiveRunnerPhase::Stopping(_, _, _, _)
@@ -5851,7 +6012,9 @@ fn LiveRunnerManager::dispatch_prompt(
         adopted_db_initialized: false,
         phase: LiveRunnerPhase::Spawning(ev_id, child, Bytes::new(0), Bytes::new(0), deadline),
         pending_prompt: Some(final_prompt),
+        pending_prompt_meta: Some(WriteCommitMeta::from_delivery_meta(delivery_meta)),
         pending_steers: [],
+        pending_steer_metas: [],
         runtime_session_id: rt_sid_opt,
         current_turn_id: Some(turn_id),
         turn_started_at: wall_ms,
@@ -5881,7 +6044,9 @@ fn LiveRunnerManager::dispatch_prompt(
         attached: false,
         write_inflight: false,
         write_inflight_bytes: 0,
+        write_inflight_commit: WriteCommitMeta::empty(),
         write_queue: [],
+        write_queue_commits: [],
         write_queue_bytes: 0,
         codex_active_turn_id: None,
         dropping_oversized_out_line: false,
@@ -6177,13 +6342,18 @@ pub fn LiveRunnerManager::handle_role_done(
       if kind == LIVE_RUNNER_TOK_UNIX_WRITE {
         let cur_sock = live_runner_sock_of(sess.phase)
         match builders_core::decode_shell_done(d) {
-          Ok(_) => live_runner_on_write_done(ctx, sess, cur_sock)
+          Ok(_) => live_runner_on_write_done(self, ctx, core, sess, cur_sock, wall_ms)
           Err(e) => {
             ctx.log("[live-runner] unix write failed for " + skey + ": " + e.message)
+            // R6 P1-1: Drop unconfirmed write commits WITHOUT marking `delivered_at` or removing `pending_prompts`!
             sess.write_inflight = false
             sess.write_inflight_bytes = 0
+            sess.write_inflight_commit = WriteCommitMeta::empty()
             while sess.write_queue.length() > 0 {
               let _ = sess.write_queue.pop()
+            }
+            while sess.write_queue_commits.length() > 0 {
+              let _ = sess.write_queue_commits.pop()
             }
             sess.write_queue_bytes = 0
             live_runner_close_sock(ctx, conn_id, cur_sock)
@@ -7465,7 +7635,9 @@ pub fn LiveRunnerManager::compact_session(
         adopted_db_initialized: false,
         phase: LiveRunnerPhase::Spawning(ev_id, child, Bytes::new(0), Bytes::new(0), deadline),
         pending_prompt: None,
+        pending_prompt_meta: None,
         pending_steers: [],
+        pending_steer_metas: [],
         runtime_session_id: Some(rsid),
         current_turn_id: None,
         turn_started_at: 0L,
@@ -7495,7 +7667,9 @@ pub fn LiveRunnerManager::compact_session(
         attached: false,
         write_inflight: false,
         write_inflight_bytes: 0,
+        write_inflight_commit: WriteCommitMeta::empty(),
         write_queue: [],
+        write_queue_commits: [],
         write_queue_bytes: 0,
         codex_active_turn_id: None,
         dropping_oversized_out_line: false,
@@ -8227,26 +8401,22 @@ pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j
   }
 }
 
-/// R5 P1-3: Two-phase lossless handover compaction carry:
-/// - Phase 1 runs `commit_fn(akey, actor)` for ALL compacting actors WITHOUT clearing ANY actor's
-///   `started_prompts` or `queue`. If any DB commit fails, returns `Err(...)` with every actor's
-///   queued input 100% intact!
-/// - Phase 2 (only after ALL Phase 1 commits succeed) drains `started_prompts` + `queue` into
-///   `self.pending_prompts` with stable unique IDs.
+/// R6 P1-2: Two-phase lossless handover compaction carry with durable pre-commit snapshot:
+/// - Phase 0 (BEFORE any fallible SQLite write!) non-destructively snapshots all compacting
+///   actors' `started_prompts` + `queue` into `self.pending_prompts` with stable unique IDs and
+///   invokes `persist_snapshot_fn()` so the recovery file on disk ALREADY holds every queued
+///   input even if Phase 1 fails!
+/// - Phase 1 runs `commit_fn(akey, actor)` for ALL compacting actors WITHOUT clearing any actor
+///   queue. If any DB commit fails, returns `Err(...)` while BOTH actor queues AND the persisted
+///   `pending_prompts` snapshot remain 100% intact for recovery!
+/// - Phase 2 (only after ALL Phase 1 commits succeed) clears the compacting actors' queues.
 pub fn LiveRunnerManager::carry_compacting_actors_two_phase(
   self : LiveRunnerManager,
   compacting : Array[(String, station_sessions::SessionActor)],
   commit_fn : (String, station_sessions::SessionActor) -> Result[Unit, String],
+  persist_snapshot_fn~ : () -> Unit = fn() { () },
 ) -> Result[Unit, String] {
-  // Phase 1: Commit all SQLite terminations first — NEVER clear any actor queue until all succeed!
-  for ci in 0..<compacting.length() {
-    let (akey, actor) = compacting[ci]
-    match commit_fn(akey, actor) {
-      Ok(_) => ()
-      Err(e) => return Err(e)
-    }
-  }
-  // Phase 2: All SQLite commits succeeded; now safely drain queues into `self.pending_prompts`.
+  // Phase 0: Non-destructively snapshot all queued/started prompts BEFORE any fallible SQLite write!
   for ci in 0..<compacting.length() {
     let (akey, actor) = compacting[ci]
     for pi in 0..<actor.started_prompts.length() {
@@ -8254,53 +8424,119 @@ pub fn LiveRunnerManager::carry_compacting_actors_two_phase(
       let is_int = if pi < actor.started_prompts_internal.length() { actor.started_prompts_internal[pi] } else { false }
       let kind = if pi < actor.started_prompts_kind.length() { actor.started_prompts_kind[pi] } else { "prompt" }
       if txt.length() > 0 {
-        let cid = akey + ":" + self.next_prompt_carry_seq.to_string()
-        self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
-        self.carried_prompt_ids.set(cid, true)
-        self.pending_prompts.push(CarriedHandoverPrompt::{
-          id: cid,
-          session_key: akey,
-          runtime: actor.runtime,
-          text: txt,
-          is_internal: is_int,
-          kind: kind,
-        })
+        let existing_cid = if pi < actor.started_prompts_meta.length() { actor.started_prompts_meta[pi].carried_id } else { None }
+        let cid = match existing_cid {
+          Some(id) if id.length() > 0 => id
+          _ => {
+            let id = akey + ":" + self.next_prompt_carry_seq.to_string()
+            self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
+            id
+          }
+        }
+        if !(self.carried_prompt_ids.get(cid) is Some(true)) {
+          self.carried_prompt_ids.set(cid, true)
+          self.pending_prompts.push(CarriedHandoverPrompt::{
+            id: cid,
+            session_key: akey,
+            runtime: actor.runtime,
+            text: txt,
+            is_internal: is_int,
+            kind: kind,
+          })
+        }
       }
     }
-    actor.started_prompts.clear()
-    actor.started_prompts_internal.clear()
-    actor.started_prompts_kind.clear()
     for qi in 0..<actor.queue.length() {
+      let existing_cid = if qi < actor.queue_meta.length() { actor.queue_meta[qi].carried_id } else { None }
+      let push_q = fn(txt : String, is_int : Bool, kind : String) -> Unit {
+        if txt.length() == 0 {
+          return
+        }
+        let cid = match existing_cid {
+          Some(id) if id.length() > 0 => id
+          _ => {
+            let id = akey + ":" + self.next_prompt_carry_seq.to_string()
+            self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
+            id
+          }
+        }
+        if !(self.carried_prompt_ids.get(cid) is Some(true)) {
+          self.carried_prompt_ids.set(cid, true)
+          self.pending_prompts.push(CarriedHandoverPrompt::{
+            id: cid,
+            session_key: akey,
+            runtime: actor.runtime,
+            text: txt,
+            is_internal: is_int,
+            kind: kind,
+          })
+        }
+      }
       match actor.queue[qi] {
-        station_sessions::ActorWork::Prompt(txt) => if txt.length() > 0 {
-          let cid = akey + ":" + self.next_prompt_carry_seq.to_string()
-          self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
-          self.carried_prompt_ids.set(cid, true)
-          self.pending_prompts.push(CarriedHandoverPrompt::{ id: cid, session_key: akey, runtime: actor.runtime, text: txt, is_internal: false, kind: "prompt" })
-        }
-        station_sessions::ActorWork::InternalPrompt(txt) => if txt.length() > 0 {
-          let cid = akey + ":" + self.next_prompt_carry_seq.to_string()
-          self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
-          self.carried_prompt_ids.set(cid, true)
-          self.pending_prompts.push(CarriedHandoverPrompt::{ id: cid, session_key: akey, runtime: actor.runtime, text: txt, is_internal: true, kind: "prompt" })
-        }
-        station_sessions::ActorWork::Resume(txt) => if txt.length() > 0 {
-          let cid = akey + ":" + self.next_prompt_carry_seq.to_string()
-          self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
-          self.carried_prompt_ids.set(cid, true)
-          self.pending_prompts.push(CarriedHandoverPrompt::{ id: cid, session_key: akey, runtime: actor.runtime, text: txt, is_internal: true, kind: "resume" })
-        }
+        station_sessions::ActorWork::Prompt(txt) => push_q(txt, false, "prompt")
+        station_sessions::ActorWork::InternalPrompt(txt) => push_q(txt, true, "prompt")
+        station_sessions::ActorWork::Resume(txt) => push_q(txt, true, "resume")
         _ => ()
       }
     }
+  }
+  if self.pending_prompts.length() > 0 {
+    persist_snapshot_fn()
+  }
+  // Phase 1: Commit all SQLite terminations — NEVER clear any actor queue until ALL succeed!
+  for ci in 0..<compacting.length() {
+    let (akey, actor) = compacting[ci]
+    match commit_fn(akey, actor) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // Phase 2: All SQLite commits succeeded; now safely clear the retiring daemon's actor queues.
+  for ci in 0..<compacting.length() {
+    let (_akey, actor) = compacting[ci]
+    actor.started_prompts.clear()
+    actor.started_prompts_internal.clear()
+    actor.started_prompts_kind.clear()
+    actor.started_prompts_meta.clear()
     actor.queue.clear()
+    actor.queue_meta.clear()
     actor.phase = station_sessions::ActorPhase::Idle
   }
   Ok(())
 }
 
-/// R4 Item 2: Re-submits queued inputs carried across `SIGUSR2` handover from interrupted
-/// compactions into their session actors and pumps dispatch immediately on the new daemon.
+/// R6 P1-3: Re-submits queued inputs carried across `SIGUSR2` handover into their session actors
+/// with their stable `carried_id` attached, WITHOUT clearing `self.pending_prompts` or overwriting
+/// the durable disk file! Each entry is removed & persisted ONLY when `LIVE_RUNNER_TOK_UNIX_WRITE`
+/// confirms the bytes were written to the runner socket.
+pub fn LiveRunnerManager::restore_carried_pending_prompts_into_hub(
+  self : LiveRunnerManager,
+  hub : station_sessions::SessionHub,
+) -> Int {
+  let mut restored = 0
+  for i in 0..<self.pending_prompts.length() {
+    let cp = self.pending_prompts[i]
+    if self.restored_prompt_ids.get(cp.id) is Some(true) {
+      continue
+    }
+    self.restored_prompt_ids.set(cp.id, true)
+    let actor = hub.ensure_actor(cp.session_key, cp.runtime)
+    let meta = station_sessions::WorkDeliveryMeta::{ handed: [], carried_id: Some(cp.id) }
+    if cp.kind == "resume" {
+      actor.push_queue_with_meta(station_sessions::ActorWork::Resume(cp.text), meta)
+    } else if cp.is_internal {
+      actor.push_queue_with_meta(station_sessions::ActorWork::InternalPrompt(cp.text), meta)
+    } else {
+      actor.push_queue_with_meta(station_sessions::ActorWork::Prompt(cp.text), meta)
+    }
+    if actor.phase is station_sessions::ActorPhase::Idle && !actor.compacting {
+      actor.pump_next_prompt()
+    }
+    restored = restored + 1
+  }
+  restored
+}
+
 pub fn LiveRunnerManager::restore_carried_pending_prompts(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -8312,27 +8548,10 @@ pub fn LiveRunnerManager::restore_carried_pending_prompts(
   if self.pending_prompts.length() == 0 {
     return
   }
-  let carried : Array[CarriedHandoverPrompt] = []
-  for i in 0..<self.pending_prompts.length() {
-    carried.push(self.pending_prompts[i])
+  let restored = self.restore_carried_pending_prompts_into_hub(core.agents.hub)
+  if restored > 0 {
+    self.pump(ctx, core, cfg_raw, now_ms, wall_ms)
   }
-  self.pending_prompts.clear()
-  for i in 0..<carried.length() {
-    let cp = carried[i]
-    let actor = core.agents.hub.ensure_actor(cp.session_key, cp.runtime)
-    if cp.kind == "resume" {
-      actor.queue.push(station_sessions::ActorWork::Resume(cp.text))
-    } else if cp.is_internal {
-      actor.queue.push(station_sessions::ActorWork::InternalPrompt(cp.text))
-    } else {
-      actor.queue.push(station_sessions::ActorWork::Prompt(cp.text))
-    }
-    if actor.phase is station_sessions::ActorPhase::Idle && !actor.compacting {
-      actor.pump_next_prompt()
-    }
-  }
-  self.pump(ctx, core, cfg_raw, now_ms, wall_ms)
-  let _ = self.sync_handover_state_with_ctx(ctx)
 }
 
 /// R11 P1-1: Prepare live runners for handover BEFORE snapshot export:
@@ -8365,32 +8584,38 @@ pub fn LiveRunnerManager::prepare_handover(
       None => ()
     }
   }
-  match self.carry_compacting_actors_two_phase(compacting, fn(akey : String, actor : station_sessions::SessionActor) -> Result[Unit, String] {
-    let mut ws = core.config.home_workspace
-    match self.sessions.get(akey) {
-      Some(csess) => {
-        ws = csess.ws
-        self.reclaim_session(ctx, core, akey, csess, ho_now_ms)
+  match self.carry_compacting_actors_two_phase(
+    compacting,
+    fn(akey : String, actor : station_sessions::SessionActor) -> Result[Unit, String] {
+      let mut ws = core.config.home_workspace
+      match self.sessions.get(akey) {
+        Some(csess) => {
+          ws = csess.ws
+          self.reclaim_session(ctx, core, akey, csess, ho_now_ms)
+        }
+        None => ()
       }
-      None => ()
-    }
-    match live_runner_finish_compaction_checked(
-      self,
-      ctx,
-      core,
-      None,
-      akey,
-      ws,
-      actor.runtime,
-      false,
-      Some("interrupted by restart"),
-      ho_now_ms,
-      wall_ms,
-    ) {
-      Ok(_) => Ok(())
-      Err(e) => Err("handover compaction finalize failed for " + akey + ": " + e)
-    }
-  }) {
+      match live_runner_finish_compaction_checked(
+        self,
+        ctx,
+        core,
+        None,
+        akey,
+        ws,
+        actor.runtime,
+        false,
+        Some("interrupted by restart"),
+        ho_now_ms,
+        wall_ms,
+      ) {
+        Ok(_) => Ok(())
+        Err(e) => Err("handover compaction finalize failed for " + akey + ": " + e)
+      }
+    },
+    persist_snapshot_fn=fn() -> Unit {
+      let _ = self.sync_handover_state_with_ctx(ctx)
+    },
+  ) {
     Ok(_) => ()
     Err(e) => return Err(e)
   }

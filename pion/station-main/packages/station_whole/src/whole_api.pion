@@ -1700,7 +1700,7 @@ pub fn WholeApi::new(
                   station_sessions::ThreadAcceptAction::RecordOnlyNoFiles => ()
                   _ => {
                     let actor = agents.hub.ensure_actor(sk, row.runtime)
-                    let _ = actor.submit_input(text)
+                    let _ = actor.submit_input(text, handed=[(tid, n, false)])
                     woken = woken + 1
                   }
                 }
