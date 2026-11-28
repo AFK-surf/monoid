@@ -816,6 +816,7 @@ pub fn WholeAgents::archive_session(
     Ok(ks) => ks
     Err(e) => return Err("archive_session failed: " + e.message)
   }
+  let mut vault_cleanup_err : Option[String] = None
   for i in 0..<archived_keys.length() {
     let sk = archived_keys[i]
     let _ = self.revoke_session_token(sk)
@@ -823,7 +824,10 @@ pub fn WholeAgents::archive_session(
     // revoke in-memory grants, clear cross-workspace listings, expire pending requests,
     // and drop ephemeral boxes / unsaved fields for the archived session.
     let _ = whole_store.vault_grants.revoke_session(sk)
-    let _ = expire_vault_state_for_archived_session(whole_store, sk, now_ms / 1000L)
+    match expire_vault_state_for_archived_session(whole_store, sk, now_ms / 1000L) {
+      Ok(_) => ()
+      Err(e) => if vault_cleanup_err is None { vault_cleanup_err = Some(e) }
+    }
     match self.hub.actors.get(sk) {
       Some(a) => {
         let _ = a.evict()
@@ -831,7 +835,10 @@ pub fn WholeAgents::archive_session(
       None => ()
     }
   }
-  Ok(())
+  match vault_cleanup_err {
+    Some(e) => Err("archive_session vault cleanup failed: " + e)
+    None => Ok(())
+  }
 }
 
 /// Delete a session from SQLite first, then revoke its MCP token and remove its actor in memory.
@@ -3529,13 +3536,11 @@ fn WholeAgents::build_domain_handlers(
     station_tools::error_reply("unsupported project_manage action: " + action)
   }
 
-  let secret_handler = build_secret_mcp_handler(whole_store, home_ws, fn() -> Int64 { now_ms })
-
   station_tools::DomainHandlers::{
     chat: chat_handler,
     job: job_handler,
     remote: base.remote,
-    secret: secret_handler,
+    secret: base.secret,
     device: base.device,
     screen: base.screen,
     browser: base.browser,

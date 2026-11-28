@@ -2586,7 +2586,9 @@ pub fn VaultPlainStorePort::production(whole_store : WholeStore) -> VaultPlainSt
     list_pending: fn(ws : String) -> Result[Array[base_codec::Json], station_api::ApiError] {
       let st = match whole_store.require_open() { Ok(s) => s, Err(e) => return Err(station_api::ApiError::new(503, e)) }
       match ensure_vault_plain_schema_once(whole_store, st.db) { Ok(_) => (), Err(e) => return Err(e) }
-      match st.db.all("SELECT body FROM vault_requests WHERE ws = ?1 AND status = 'pending' ORDER BY id LIMIT 200", [base_codec::json_str(ws)]) {
+      // Fetch all pending rows for `ws` without a pre-filter LIMIT so other users' old pending
+      // requests cannot shadow the viewer's own requests before authorization filtering.
+      match st.db.all("SELECT body FROM vault_requests WHERE ws = ?1 AND status = 'pending' ORDER BY id", [base_codec::json_str(ws)]) {
         Ok(rows) => {
           let out : Array[base_codec::Json] = []
           for i in 0..<rows.length() {
@@ -2867,8 +2869,12 @@ fn dispatch_vault_requests_and_plain_op(
       let live = !sess_ended && (r_at + 86400L > now_sec) && recoverable
       if !live {
         if r_id.length() > 0 {
-          match (vd.get_request)(ws, r_id) {
-            Ok(Some(row)) if row.status == "pending" => {
+          let row_opt = match (vd.get_request)(ws, r_id) {
+            Ok(r) => r
+            Err(e) => return Some(Err(e))
+          }
+          match row_opt {
+            Some(row) if row.status == "pending" => {
               let expired_body = json_obj_set(row.body, "status", Some(base_codec::json_str("expired")))
               let outcome = base_codec::json_obj([("status", base_codec::json_str("expired"))])
               match (vd.settle_request_tx)(
@@ -2891,7 +2897,8 @@ fn dispatch_vault_requests_and_plain_op(
                   let _ = whole_store.vault_grants.revoke(row.id)
                   vd_emit_request_event(events, expired_body, now_ms)
                 }
-                _ => ()
+                Ok(false) => ()
+                Err(e) => return Some(Err(e))
               }
             }
             _ => ()
@@ -2900,7 +2907,9 @@ fn dispatch_vault_requests_and_plain_op(
         continue
       }
       if viewer_can_see_vault_req(r_json, ws, req.viewer, whole_store, is_locked) {
-        visible.push(r_json)
+        if visible.length() < 200 {
+          visible.push(r_json)
+        }
       }
     }
     return Some(Ok(base_codec::json_obj([("requests", base_codec::json_arr(visible))])))

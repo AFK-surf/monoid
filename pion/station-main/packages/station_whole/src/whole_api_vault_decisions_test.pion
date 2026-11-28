@@ -1008,10 +1008,13 @@ test "w17d1 R2: GrantStore host parity, session ownership/archive checks, handov
     panic("archived session grant must be auto-revoked")
   }
 
-  // 3. P1-2: Handover `Carried.{boxes, held}` roundtrip + `once` grant `uses` max-merge (1:1 `keeper.ts:337-349`)
+  // 3. P1-2 / R3: Handover Node `{ keeper: { boxes, held }, unsaved }` envelope + `ws`/`vault`/`item`/`runOn`/`sig`/`until` + `once` grant `uses` max-merge
   let store1 = WholeStore::new_pre_handover_with_sep("/tmp/w17d1-ho1", "/")
   let box_priv = vd_test_seed(42)
   store1.vault_boxes.set("r_ho_1", box_priv)
+  let u_fm : Map[String, String] = Map::new()
+  u_fm.set("value", "unsaved_secret_1")
+  store1.vault_unsaved.set("r_unsaved_1", u_fm)
   let fm3 : Map[String, String] = Map::new()
   fm3.set("value", "tok_once_789")
   let g_once = station_vault::GrantRecord::{
@@ -1028,7 +1031,37 @@ test "w17d1 R2: GrantStore host parity, session ownership/archive checks, handov
     revoked: false,
   }
   match store1.register_vault_grant(g_once, now_sec) { Ok(_) => (), Err(e) => panic(e) }
+  store1.vault_held_meta.set(
+    "r_ho_once",
+    (
+      base_codec::json_obj([
+        ("id", base_codec::json_str("r_ho_once")),
+        ("ws", base_codec::json_str("ws-ho")),
+        ("vault", base_codec::json_str("v-ho")),
+        ("item", base_codec::json_str("i-ho")),
+        ("session", base_codec::json_str("s-ho")),
+        ("runOn", base_codec::json_obj([("name", base_codec::json_str("tokyo"))])),
+      ]),
+      base_codec::json_obj([
+        ("v", base_codec::json_int(1)),
+        ("ws", base_codec::json_str("ws-ho")),
+        ("request", base_codec::json_str("r_ho_once")),
+        ("vault", base_codec::json_str("v-ho")),
+        ("item", base_codec::json_str("i-ho")),
+        ("mode", base_codec::json_str("env")),
+        ("scope", base_codec::json_str("once")),
+        ("hosts", base_codec::json_arr([])),
+        ("exp", base_codec::json_int64(now_sec + 3600L)),
+        ("at", base_codec::json_int64(now_sec)),
+        ("sig", base_codec::json_obj([("key", base_codec::json_str("ed25519:aa")), ("sig", base_codec::json_str("bb"))])),
+      ]),
+      Some(now_sec + 3600L),
+    ),
+  )
   let carried_j = store1.export_vault_carried_json()
+  if base_codec::json_get(carried_j, "keeper") is None || base_codec::json_get(carried_j, "unsaved") is None {
+    panic("export_vault_carried_json must use Node { keeper, unsaved } envelope")
+  }
   let store2 = WholeStore::new_pre_handover_with_sep("/tmp/w17d1-ho2", "/")
   // Pre-seed store2 with same once grant at uses=0 to verify max-merge raises uses to 1!
   let g_once_zero = station_vault::GrantRecord::{
@@ -1050,9 +1083,19 @@ test "w17d1 R2: GrantStore host parity, session ownership/archive checks, handov
     Some(b) => if crypto::bytes_to_hex(b) != crypto::bytes_to_hex(box_priv) { panic("box priv mismatch after handover") }
     None => panic("missing box priv after handover")
   }
+  if !store2.vault_unsaved.contains("r_unsaved_1") {
+    panic("missing unsaved entry after handover")
+  }
   match store2.vault_grants.get_record("r_ho_once") {
     Some(g) => if g.uses != 1 { panic("once grant uses must merge to max(0, 1) = 1, got " + g.uses.to_string()) }
     None => panic("missing once grant after handover")
+  }
+  // Verify re-exporting from fresh store3 preserves `runOn` & `sig`
+  let store3 = WholeStore::new_pre_handover_with_sep("/tmp/w17d1-ho3", "/")
+  store3.import_vault_carried_json(carried_j, now_sec)
+  let re_exported = base_codec::json_stringify(store3.export_vault_carried_json())
+  if !re_exported.contains("\"runOn\"") || !re_exported.contains("\"sig\"") || !re_exported.contains("\"ws-ho\"") {
+    panic("handover roundtrip must preserve runOn, sig, and ws: " + re_exported)
   }
 
   // 4. P1-5: `vault.requests.get` expires requests older than 24h (86400s)

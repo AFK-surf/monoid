@@ -8651,12 +8651,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         Some(st) => {
           match base_codec::json_get(carried, "vault") {
             Some(vj) => st.core.store.import_vault_carried_json(vj, host_shim::wall_ms() / 1000L)
-            None => {
-              // Also accept top-level Node `Carried` shape `{ boxes, held }` directly if forwarded.
-              if !(base_codec::json_get(carried, "boxes") is None) || !(base_codec::json_get(carried, "held") is None) {
-                st.core.store.import_vault_carried_json(carried, host_shim::wall_ms() / 1000L)
-              }
-            }
+            None => ()
           }
           match base_codec::json_get(carried, "liveRunnerHandover") {
             Some(lr_j) => {
@@ -8701,7 +8696,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               let body = base_codec::json_stringify(snap.to_json())
               match station_ops::write_private(ctx.ops_fs, ho_path, body.to_bytes(), ctx.self_pid, 1, sep=ctx.sep) {
                 Ok(_) => {
-                  if st.core.store.vault_boxes.keys().length() > 0 || st.core.store.vault_grants.len() > 0 {
+                  if st.core.store.vault_boxes.keys().length() > 0 ||
+                  st.core.store.vault_grants.len() > 0 ||
+                  st.core.store.vault_unsaved.keys().length() > 0 {
                     let vj = st.core.store.export_vault_carried_json()
                     ctx.carry(base_codec::json_obj([("vault", vj)]))
                   }
