@@ -9,6 +9,14 @@
 // approval of keeping a sign-in in the vault is asked at the moment the core says it is signed in.
 
 ///|
+/// Named key for an indexed sign-in choice row in `message_signin_node`.
+#derive(Eq, Hash)
+priv struct SigninChoiceKey {
+  idx : Int
+  id : String
+}
+
+///|
 /// A sign-in's ask with nothing in it (what a sign-in's reads where its message says none: the card going as another
 /// comes).
 // kept across runs: a value (no field of it changes)
@@ -321,7 +329,7 @@ fn signin_foot_node(v : @view.View, core : @settings.Core, station : String, ask
             }
             col.box(fn(list) {
               @sf.style_node(list, fn() { signin_typed.then(@sf.over_foot_reach(@sf.button_height())) })
-              list.each(choices, fn(p) { (p.0, p.1.id) }, fn(r, item) {
+              list.each(choices, fn(p) { ({ idx: p.0, id: p.1.id } : SigninChoiceKey) }, fn(r, item) {
                 let words = fn() {
                   let l = item.get().1
                   if l.username == "" { l.title } else { l.title + " · " + l.username }

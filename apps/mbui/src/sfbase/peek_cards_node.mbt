@@ -21,6 +21,14 @@ pub(all) enum PeekFact {
 }
 
 ///|
+/// Named key for an indexed `PeekFact` row in `peek_change_node`.
+#derive(Eq, Hash)
+priv struct PeekFactKey {
+  idx : Int
+  fact : PeekFact
+}
+
+///|
 /// A page's tile (a web link's card for no pull request nor issue) in `parent`: its icon in its thumb (`icon`: a site's
 /// icon's image's key; "" none, GitHub's mark where `github`, else the globe), its `title` over where it goes (`url`);
 /// its picture over it where `picture` names one (its image's key, "" none), as wide as the card; its foot, `copy` at
@@ -156,8 +164,8 @@ pub fn peek_change_node(
         // (what the copy at the line's end leaves of it, from none, its facts wrapping in that: not as wide as they all
         // are in a line)
         fs.wraps(Is(Some(@ui.Space::S2.px()))).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-        fs.each(fn() { facts().mapi(fn(i, f) { (i, f) }) }, fn(f) { f }, fn(cell, item) {
-          peek_fact_node(cell, item.untracked().1)
+        fs.each(fn() { facts().mapi(fn(i, f) { ({ idx: i, fact: f } : PeekFactKey) }) }, fn(f) { f }, fn(cell, item) {
+          peek_fact_node(cell, item.untracked().fact)
         })
       })
       |> ignore

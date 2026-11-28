@@ -283,6 +283,14 @@ priv struct PicLine {
 }
 
 ///|
+/// Named key for a `PicLine` row in `pic_models`.
+#derive(Eq, Hash)
+priv struct PicLineKey {
+  kind : Int
+  model : Int
+}
+
+///|
 /// The models but the one said large, one line each (its name, its tokens and cost at the line's end in ink), past where
 /// the dots are: the first kind's under it; then each other kind a line as its ring's key (its colour's dot, its name,
 /// its accounts dimmer), its models under it; none where there is one kind of one model. One model's tokens are not
@@ -305,7 +313,7 @@ fn pic_models(c : Pen, spent : () -> Array[Json]) -> Unit {
     out
   }
   c.show(fn() { lines().length() > 0 }, style=pic_models_box, fn(c) {
-    c.each(lines, fn(l) { (l.kind, l.model) }, style_of=fn(l) { if l.model < 0 { pic_other } else { pic_model } }, fn(
+    c.each(lines, fn(l) { ({ kind: l.kind, model: l.model } : PicLineKey) }, style_of=fn(l) { if l.model < 0 { pic_other } else { pic_model } }, fn(
       c,
       l,
     ) {
