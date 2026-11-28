@@ -3123,14 +3123,18 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(wsResp.status, 200, `GET /workspaces failed: ${wsResp.body.toString()}`);
   assert.ok(wsResp.body.toString().includes(ws), `GET /workspaces missing ${ws}: ${wsResp.body.toString()}`);
 
-  // 4. Wave 17D-3: Live Admin/1 `links.preview` + `feedback.report`, plus honest 501 for ops deferred to Wave 17E
+  // 4. Wave 17D-3 + 17E-2B: Live Admin/1 `screens.browser.open` (503 noBrowser / 400 bad scheme),
+  // `signins.{fill,deny}` (409 signin_refused on unknown ask), `links.preview` + `feedback.report`,
+  // plus honest 501 for remaining deferred ops.
+  const brwBad = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "file:///etc/passwd" })));
+  assert.equal(brwBad.status, 400, `POST /screens/browser dangerous scheme must return 400, got ${brwBad.status}`);
   const brwOpen = await adminCall(conn, "POST", "/screens/browser", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ url: "https://example.com/w17d3" })));
-  assert.equal(brwOpen.status, 501, `POST /screens/browser must return honest 501, got ${brwOpen.status}`);
+  assert.equal(brwOpen.status, 503, `POST /screens/browser without browser must return 503 noBrowser, got ${brwOpen.status}`);
 
   const siFill = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/fill", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ code: "123456" })));
-  assert.equal(siFill.status, 501, `signins.fill must return honest 501, got ${siFill.status}`);
+  assert.equal(siFill.status, 409, `signins.fill unknown ask must return 409 signin_refused, got ${siFill.status}`);
   const siDeny = await adminCall(conn, "POST", "/browser/sign-ins/nonexistent/deny", { "content-type": "application/json" }, Buffer.from("{}"));
-  assert.equal(siDeny.status, 501, `signins.deny must return honest 501 until Wave 17E, got ${siDeny.status}`);
+  assert.equal(siDeny.status, 409, `signins.deny unknown ask must return 409 signin_refused, got ${siDeny.status}`);
 
   const lpSsrf = await adminCall(conn, "GET", "/link-preview?url=http%3A%2F%2F169.254.169.254%2Flatest%2Fmeta-data%2F");
   assert.equal(lpSsrf.status, 200, `links.preview SSRF must return 200 kind:none, got ${lpSsrf.status}`);
