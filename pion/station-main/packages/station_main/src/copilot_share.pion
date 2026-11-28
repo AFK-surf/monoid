@@ -1,0 +1,204 @@
+// The authenticated mesh route supplies the peer and workspace. Only the matching
+// locally owned subscription can exchange a GitHub sign-in for an expiring lease.
+fn copilot_json_file(read : (String) -> Option[String], path : String) -> base_codec::Json {
+  match read(path) {
+    Some(s) => match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(v) => v
+      _ => base_codec::Json::Null
+    }
+    None => base_codec::Json::Null
+  }
+}
+
+fn copilot_list_has(v : Option[base_codec::Json], item : String) -> Bool {
+  match v {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        match items[i] { base_codec::Json::Str(s) => if s == item { return true }, _ => () }
+      }
+    }
+    _ => ()
+  }
+  false
+}
+
+fn copilot_host_login(
+  fs : station_jobs::FsPort, dir : String, home_ws : String, auto_peers : Map[String, Bool],
+  peer : String, ws : String, id : String,
+) -> Result[String, String] {
+  let raw = copilot_json_file(fs.read_file, dir + "/config.json")
+  let profiles = match base_codec::json_get(raw, "profiles") {
+    Some(base_codec::Json::Arr(ps)) => ps
+    _ => return Err("Copilot share unavailable")
+  }
+  if peer == "" || ws == "" || id == "" { return Err("Copilot share unavailable") }
+  for i in 0..<profiles.length() {
+    let p = profiles[i]
+    let share = match base_codec::json_get(p, "share") { Some(s) => s, None => { continue } }
+    if json_str_field(share, "id") != id { continue }
+    let access = match base_codec::json_get(p, "access") { Some(a) => a, None => { continue } }
+    if json_str_field(p, "runtime") != "copilot" || json_str_field(access, "kind") != "subscription" ||
+    !json_bool_field(p, "enabled", true) || json_bool_field(share, "borrowed") ||
+    (ws != home_ws && copilot_list_has(base_codec::json_get(p, "withheld"), ws)) {
+      return Err("Copilot share unavailable")
+    }
+    let allow = base_codec::json_get(share, "allow")
+    let explicit = copilot_list_has(allow, peer)
+    if !explicit {
+      if json_bool_field(share, "allowAuto") {
+        if auto_peers.get(peer) != Some(true) { return Err("Copilot share unavailable") }
+      } else {
+        match allow {
+          None => ()
+          Some(base_codec::Json::Null) => ()
+          _ => return Err("Copilot share unavailable")
+        }
+      }
+    }
+    let key = json_str_field(access, "key").trim()
+    if key.starts_with("gho_") || key.starts_with("ghu_") || key.starts_with("github_pat_") { return Ok(key) }
+    match base_codec::json_get(p, "env") {
+      Some(env) => {
+        let login = json_str_field(env, "COPILOT_GITHUB_TOKEN").trim()
+        if login != "" { return Ok(login) }
+      }
+      None => ()
+    }
+    let local_id = json_str_field(p, "id")
+    if local_id == "" { return Err("Copilot share unavailable") }
+    let home = json_str_field(p, "home", "homes/" + local_id)
+    let resolved = if nodepath::is_absolute(fs.sep, home) { home } else { nodepath::join(fs.sep, [dir, home]) }
+    match (fs.read_file)(nodepath::join(fs.sep, [resolved, "copilot", "github-token"])) {
+      Some(token) => if token.trim() != "" { return Ok(token.trim()) }
+      None => ()
+    }
+    return Err("Sign in to Copilot on the host station")
+  }
+  Err("Copilot share unavailable")
+}
+
+// Accept only HTTPS issuer origins without ports, paths, userinfo or query parameters.
+fn copilot_api_origin(api : String) -> Bool {
+  if !api.starts_with("https://") { return false }
+  let domain = jscase::lower(api.slice(8, api.length()))
+  if domain != "githubcopilot.com" && !domain.ends_with(".githubcopilot.com") { return false }
+  let bytes = domain.to_bytes()
+  let mut label = 0
+  for i in 0..<bytes.length() {
+    let b = bytes[i].to_int()
+    if b == 46 {
+      if label == 0 { return false }
+      label = 0
+    } else {
+      if !(b >= 97 && b <= 122 || b >= 48 && b <= 57 || b == 45) { return false }
+      label = label + 1
+    }
+  }
+  label > 0
+}
+
+fn copilot_exchange_response(body : base_codec::Json, rejected : String, now : Int64) -> Result[base_codec::Json, String] {
+  let token = json_str_field(body, "token")
+  let seconds = json_int64_field(body, "expires_at")
+  let api = match base_codec::json_get(body, "endpoints") {
+    Some(endpoints) => json_str_field(endpoints, "api")
+    None => ""
+  }
+  if token == "" || token == rejected || seconds <= now / 1000L || seconds > 9007199254740L || !copilot_api_origin(api) {
+    return Err("GitHub returned an invalid or expired Copilot credential")
+  }
+  Ok(base_codec::json_obj([("token", base_codec::json_str(token)), ("expiresAt", base_codec::json_int64(seconds * 1000L)), ("api", base_codec::json_str(api))]))
+}
+
+struct CopilotRecipient {
+  peer : String
+  ws : String
+  share : String
+  login_hash : String
+  expires_at : Int64
+}
+
+struct CopilotHostRequest {
+  peer : String
+  ws : String
+  share : String
+  login_hash : String
+  rejected : String
+  sid : Int64
+  v2 : Bool
+  front : Bool
+}
+
+fn copilot_current_login(ctx : DaemonCtx, st : WholeRuntimeState, peer : String, ws : String, id : String) -> Result[String, String] {
+  let core = st.core
+  let roster = build_cloud_roster(ctx.cloud, (host_shim::wall_ms() / 1000L).to_double(), ctx.cloud.peers_current)
+  if core.shut_down || !core.ready || !roster.peers_current || roster.rig_in(ws) { return Err("Copilot share unavailable") }
+  match roster.membership(ws) {
+    Some(m) => if !station_mesh::CloudRoster::has_peer(m, peer) { return Err("Copilot share unavailable") }
+    None => return Err("Copilot share unavailable")
+  }
+  copilot_host_login(core.agents.jobs.fs, core.config.data_dir, core.config.home_workspace, st.copilot.auto_peers, peer, ws, id)
+}
+
+fn copilot_host_lease(ctx : DaemonCtx, st : WholeRuntimeState, auth : PeerAuthInfo, sid : Int64, v2 : Bool, front : Bool) -> Unit {
+  let id = json_str_field(auth.env.request, "id")
+  let login = match copilot_current_login(ctx, st, auth.remote_id, auth.env.workspace, id) {
+    Ok(t) => t
+    Err(e) => { ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(e, v2), None, v2, front); return }
+  }
+  let n = st.copilot.next_request
+  st.copilot.next_request = n + 1
+  st.copilot.host_requests.set(n, CopilotHostRequest::{peer: auth.remote_id, ws: auth.env.workspace, share: id, login_hash: crypto::sha256_hex(login.to_bytes()), rejected: json_str_field(auth.env.request, "rejected"), sid: sid, v2: v2, front: front})
+  let opts = station_http::FetchOptions::{ ..station_http::FetchOptions::get("https://api.github.com/copilot_internal/v2/token"),
+    redirect: "manual", timeout_ms: Some(15000L), headers: [("authorization", "Bearer " + login), ("accept", "application/json"), ("user-agent", "still.fail")] }
+  let _ = station_http::HttpClient::new(ctx.mux_role).fetch_async(n, opts)
+}
+
+fn copilot_host_done(ctx : DaemonCtx, st : WholeRuntimeState, n : Int, done : host_shim::ShellDone) -> Bool {
+  let op = match st.copilot.host_requests.get(n) { Some(a) => a, None => return false }
+  st.copilot.host_requests.remove(n)
+  let result : Result[base_codec::Json, String] = match (copilot_current_login(ctx, st, op.peer, op.ws, op.share), station_http::decode_fetch_done(done)) {
+    (Ok(login), Ok(reply)) => if crypto::sha256_hex(login.to_bytes()) != op.login_hash || reply.status != 200 || reply.redirected || reply.body.length() > 65536 {
+      Err("Copilot share changed or GitHub refused the exchange")
+    } else {
+      match base_codec::json_parse(reply.body_text()) {
+        base_codec::JsonParseResult::Ok(body) => copilot_exchange_response(body, op.rejected, host_shim::wall_ms())
+        _ => Err("Invalid Copilot credential response")
+      }
+    }
+    _ => Err("Copilot share unavailable")
+  }
+  let bytes = match result {
+    Ok(lease) => {
+      st.copilot.recipients.set(op.peer + "/" + op.share + "/" + op.ws, CopilotRecipient::{peer: op.peer, ws: op.ws, share: op.share, login_hash: op.login_hash, expires_at: json_int64_field(lease, "expiresAt")})
+      station_mesh::encode_peer_answer_ok(lease, false, op.v2)
+    }
+    Err(e) => station_mesh::encode_peer_answer_err(e, op.v2)
+  }
+  ctx.reply_peer_rpc(op.sid, bytes, None, op.v2, op.front)
+  true
+}
+
+fn copilot_recheck_recipients(ctx : DaemonCtx, st : WholeRuntimeState) -> Unit {
+  for k in st.copilot.recipients.keys() {
+    let r = match st.copilot.recipients.get(k) { Some(r) => r, None => { continue } }
+    if r.expires_at <= host_shim::wall_ms() { st.copilot.recipients.remove(k); continue }
+    match copilot_current_login(ctx, st, r.peer, r.ws, r.share) {
+      Ok(login) => if crypto::sha256_hex(login.to_bytes()) == r.login_hash { continue }
+      _ => ()
+    }
+    ctx.enqueue_tell(r.peer, r.ws, base_codec::json_obj([("method", base_codec::json_str("share.copilotInvalidate")), ("id", base_codec::json_str(r.share))]))
+    st.copilot.recipients.remove(k)
+  }
+}
+
+// Keep remote refusals distinct from local transport errors.
+fn copilot_mesh_reply(raw : String) -> Result[base_codec::Json, String] {
+  match base_codec::json_parse(raw.trim()) {
+    base_codec::JsonParseResult::Ok(j) => {
+      if base_codec::json_get(j, "error").is_some() { return Err("Copilot host refused the lease") }
+      match base_codec::json_get(j, "result") { Some(v) => Ok(v), None => Err("Invalid Copilot lease reply") }
+    }
+    _ => Err("Invalid Copilot lease reply")
+  }
+}

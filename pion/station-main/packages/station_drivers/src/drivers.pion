@@ -864,6 +864,8 @@ pub fn build_cursor_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Strin
 pub fn copilot_scrubbed() -> Array[String] {
   [
     "COPILOT_HOME",
+    "COPILOT_API_URL",
+    "GITHUB_COPILOT_API_TOKEN",
     "COPILOT_GITHUB_TOKEN",
     "GH_TOKEN",
     "GITHUB_TOKEN",
@@ -930,9 +932,13 @@ pub fn build_copilot_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Stri
     Some(s) => s
     None => return Err("copilot: @microsoft/copilot-sdk is not installed")
   }
-  let token = match opts.copilot_token {
-    Some(t) => if str_trim(t) != "" { str_trim(t) } else { return Err("GitHub Copilot is not signed in on this profile") }
-    None => return Err("GitHub Copilot is not signed in on this profile")
+  let token = if opts.profile.borrowed {
+    ""
+  } else {
+    match opts.copilot_token {
+      Some(t) => if str_trim(t) != "" { str_trim(t) } else { return Err("GitHub Copilot is not signed in on this profile") }
+      None => return Err("GitHub Copilot is not signed in on this profile")
+    }
   }
   let bridge = nodepath::join(opts.sep, [opts.assets_dir, "copilot-bridge.mjs"])
   let chome = nodepath::join(opts.sep, [opts.profile.home, "copilot"])
@@ -944,8 +950,14 @@ pub fn build_copilot_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Stri
     ),
   )
   env = env_delete(env, "COPILOT_GITHUB_TOKEN")
+  env = env_delete(env, "COPILOT_API_URL")
+  env = env_delete(env, "GITHUB_COPILOT_API_TOKEN")
+  if opts.profile.borrowed {
+    for name in copilot_scrubbed() { env = env_delete(env, name) }
+  } else {
+    env = env_set(env, "STILLFAIL_COPILOT_TOKEN", token)
+  }
   env = env_set(env, "STILLFAIL_COPILOT_SDK", sdk)
-  env = env_set(env, "STILLFAIL_COPILOT_TOKEN", token)
   env = env_set(env, MCP_TOKEN_VAR, opts.mcp_token)
   env = env_set(env, "STILLFAIL_PEER_HTTP", peer_http_base(opts.mcp_url))
 
@@ -961,6 +973,9 @@ pub fn build_copilot_launch(opts : OpenOptions) -> Result[DriverLaunchSpec, Stri
     ("sessions", json_str(sessions)),
     ("silent", silent_obj),
   ]
+  if opts.profile.borrowed {
+    open_entries.push(("borrowed", json_obj([("key", json_str(opts.key)), ("profile", json_str(opts.profile.id))])))
+  }
   match opts.resume {
     Some(r) => open_entries.push(("resume", json_str(r)))
     None => ()

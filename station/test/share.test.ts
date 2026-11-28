@@ -1599,7 +1599,11 @@ test("Copilot reuses its in-memory grant while the host is offline and evicts it
   assert.equal(one.token, "expiring");
   assert.equal(exchanges, 1);
   all.delete(A);
-  assert.deepEqual(await borrower.sharing.lendCopilot(copy), one, "a normal request makes no host RPC");
+  const invalidate = { method: "share.copilotInvalidate", id: copy.share.id };
+  await borrower.sharing.handle("c".repeat(64), invalidate);
+  assert.deepEqual(await borrower.sharing.lendCopilot(copy), one, "another peer cannot evict a grant");
+  await borrower.sharing.handle(A, invalidate);
+  await assert.rejects(borrower.sharing.lendCopilot(copy), "the issuer evicted the grant while offline");
   all.set(A, host);
   await host.sharing.shareProfile("max", false, null);
   await settle(host, borrower);

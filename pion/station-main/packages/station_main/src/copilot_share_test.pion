@@ -1,0 +1,68 @@
+fn test_copilot_grant(token : String, expiry : Int64) -> base_codec::Json {
+  base_codec::json_obj([
+    ("token", base_codec::json_str(token)),
+    ("expiresAt", base_codec::json_int64(expiry)),
+    ("api", base_codec::json_str("https://api.individual.githubcopilot.com")),
+  ])
+}
+
+test "Copilot grants renew during the final minute, survive only link loss, and discard rejected credentials" {
+  let g = CopilotGrant::new(1L)
+  let one = test_copilot_grant("issued", 90000L)
+  g.renewed("host", Ok(one), 0L)
+  assert_true(g.reusable("", 29999L).is_some(), "ordinary call reuses the grant")
+  assert_true(g.reusable("", 30000L).is_none(), "start renewal in the last minute")
+  let offline = Err("peer RPC share.copilotLease to host failed after retries")
+  g.renewed("host", offline, 89999L)
+  assert_true(g.lease.is_some(), "offline and not expired")
+  g.renewed("host", offline, 90000L)
+  assert_true(g.lease.is_none(), "expired while offline")
+  g.renewed("host", Ok(one), 0L)
+  let _ = g.reusable("issued", 1L)
+  g.renewed("host", offline, 2L)
+  assert_true(g.lease.is_none(), "a refused token cannot be used offline")
+  g.renewed("host", Ok(one), 3L)
+  assert_true(g.lease.is_none(), "host returned refused token")
+  g.renewed("host", Ok(test_copilot_grant("renewed", 180000L)), 4L)
+  assert_true(g.reusable("issued", 5L).is_some(), "late rejection for old token")
+  g.renewed("host", copilot_mesh_reply("{\"error\":\"peer RPC share.copilotLease to host failed after retries\"}"), 6L)
+  assert_true(g.lease.is_none(), "remote denial never permits offline fallback")
+}
+
+test "Copilot ignores late renewal after withdrawal and rejects foreign API origins" {
+  let door = CopilotDoorState::new()
+  let grant = CopilotGrant::new(1L)
+  door.grants.set("host/share/home", grant)
+  door.forget("other", "share")
+  assert_true(grant.valid, "only the issuer can invalidate")
+  door.forget("host", "share")
+  grant.renewed("host", Ok(test_copilot_grant("late", 3600000L)), 0L)
+  assert_true(grant.lease.is_none() && !door.grants.contains("host/share/home"), "in-flight reply discarded")
+  for origin in ["http://api.githubcopilot.com", "https://evil/githubcopilot.com", "https://evil@api.githubcopilot.com", "https://api.githubcopilot.com.evil", "https://a..githubcopilot.com"] {
+    assert_true(!copilot_api_origin(origin), "foreign or malformed issuer")
+  }
+  let answer = copilot_mesh_reply("{\"result\":{\"token\":\"short\"}}")
+  match answer { Ok(v) => assert_true(json_str_field(v, "token") == "short", "wire result"), Err(e) => panic(e) }
+}
+
+test "Copilot host enforces the subscription allow list, workspace and current account" {
+  let files : Map[String, String] = Map::new()
+  let fs = station_jobs::FsPort::{ ..test_noop_fs(), read_file: fn(path : String) -> Option[String] { files.get(path) } }
+  let auto : Map[String, Bool] = Map::new()
+  let put = fn(share : String, more : String) -> Unit {
+    files.set("/d/config.json", "{\"profiles\":[{\"id\":\"p\",\"runtime\":\"copilot\",\"access\":{\"kind\":\"subscription\"},\"share\":"+share+more+"}]}")
+  }
+  files.set("/d/homes/p/copilot/github-token", "test-login")
+  put("{\"id\":\"s\",\"allow\":[\"mac\"]}", ",\"withheld\":[\"other\"]")
+  assert_true(copilot_host_login(fs, "/d", "home", auto, "mac", "home", "s").is_ok(), "allowed borrower")
+  assert_true(copilot_host_login(fs, "/d", "home", auto, "third", "home", "s").is_err(), "different peer")
+  assert_true(copilot_host_login(fs, "/d", "home", auto, "mac", "other", "s").is_err(), "withheld workspace")
+  put("{\"id\":\"s\",\"allowAuto\":true}", "")
+  assert_true(copilot_host_login(fs, "/d", "home", auto, "mac", "home", "s").is_err(), "auto peer not yet heard")
+  auto.set("mac", true)
+  assert_true(copilot_host_login(fs, "/d", "home", auto, "mac", "home", "s").is_ok(), "confirmed auto peer")
+  put("{\"id\":\"s\",\"borrowed\":true}", "")
+  assert_true(copilot_host_login(fs, "/d", "home", auto, "mac", "home", "s").is_err(), "no onward lending")
+  put("null", "")
+  assert_true(copilot_host_login(fs, "/d", "home", auto, "mac", "home", "s").is_err(), "host withdrew the share")
+}

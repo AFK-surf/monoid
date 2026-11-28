@@ -1692,9 +1692,16 @@ pub fn WholeAgents::build_driver_launch_spec(
   model : Option[String] = None,
   effort : Option[String] = None,
 ) -> Result[station_drivers::DriverLaunchSpec, String] {
+  let mut sdk : Option[String] = None
   if profile.borrowed {
     match runtime {
-      station_drivers::RuntimeKind::Copilot => return Err("Use the Node station engine to borrow a Copilot subscription.")
+      station_drivers::RuntimeKind::Copilot => {
+        let root = self.config.data_dir + "/runtimes/copilot/"
+        for prefix in ["lib/node_modules/", "node_modules/"] {
+          let dir = root + prefix + "@microsoft/copilot-sdk"
+          if (self.jobs.fs.stat)(dir + "/package.json").is_some() { sdk = Some(dir); break }
+        }
+      }
       _ => ()
     }
   }
@@ -1712,6 +1719,7 @@ pub fn WholeAgents::build_driver_launch_spec(
     self.config.data_dir,
     self.config.assets_dir,
     self.config.runner_bin,
+    sdk_dir=sdk,
     instructions=instructions,
     resume=resume,
     model=model,

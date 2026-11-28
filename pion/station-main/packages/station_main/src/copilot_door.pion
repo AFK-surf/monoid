@@ -1,0 +1,278 @@
+// The SDK sends model requests to the session-bound loopback door. The station
+// holds the expiring credential and streams provider responses back to the SDK.
+import "station_sessions"
+
+struct CopilotBorrow {
+  host : String
+  share : String
+  ws : String
+  version : Int64
+}
+
+struct CopilotRequest {
+  req : station_http::HttpRequest
+  gen : Int64
+  key : String
+  profile : String
+  path : String
+  source : CopilotBorrow
+  mut used : String
+  mut retried : Bool
+}
+
+struct CopilotGrant {
+  mut lease : Option[base_codec::Json]
+  mut rejected : String
+  mut pending : Bool
+  mut valid : Bool
+  waiters : Array[CopilotRequest]
+  version : Int64
+}
+
+fn CopilotGrant::new(version : Int64) -> CopilotGrant {
+  CopilotGrant::{ lease: None, rejected: "", pending: false, valid: true, waiters: [], version: version }
+}
+
+fn CopilotGrant::reusable(self : CopilotGrant, refused : String, now : Int64) -> Option[base_codec::Json] {
+  match self.lease {
+    Some(lease) => {
+      if refused != "" && refused == json_str_field(lease, "token") {
+        self.lease = None
+        self.rejected = refused
+      } else if json_int64_field(lease, "expiresAt") > now + 60000L { return Some(lease) }
+    }
+    None => if refused != "" && self.rejected == "" { self.rejected = refused }
+  }
+  None
+}
+
+fn CopilotGrant::renewed(self : CopilotGrant, host : String, answer : Result[base_codec::Json, String], now : Int64) -> Unit {
+  if !self.valid { self.lease = None; return }
+  match answer {
+    Ok(v) => {
+      let token = json_str_field(v, "token")
+      if token != "" && self.rejected != token && json_int64_field(v, "expiresAt") > now && copilot_api_origin(json_str_field(v, "api")) {
+        self.lease = Some(v)
+        self.rejected = ""
+      } else { self.lease = None }
+    }
+    Err(e) => {
+      let transport = "peer RPC share.copilotLease to " + host
+      if e != transport + " failed after retries" && e != transport + " failed after send (no auto-retry)" {
+        self.lease = None
+      } else {
+        match self.lease { Some(v) => if json_int64_field(v, "expiresAt") <= now { self.lease = None }, None => () }
+      }
+    }
+  }
+}
+
+struct CopilotDoorState {
+  host_requests : Map[Int, CopilotHostRequest]
+  recipients : Map[String, CopilotRecipient]
+  auto_peers : Map[String, Bool]
+  grants : Map[String, CopilotGrant]
+  queued : Array[CopilotRequest]
+  opening : Map[Int, CopilotRequest]
+  streaming : Map[Int, CopilotRequest]
+  mut next_request : Int
+}
+
+fn CopilotDoorState::new() -> CopilotDoorState {
+  CopilotDoorState::{ host_requests: Map::new(), recipients: Map::new(), auto_peers: Map::new(), grants: Map::new(), queued: [], opening: Map::new(), streaming: Map::new(), next_request: 0 }
+}
+
+fn CopilotDoorState::forget(self : CopilotDoorState, host : String, share : String) -> Unit {
+  let prefix = host + "/" + share + "/"
+  for key in self.grants.keys() {
+    if key.starts_with(prefix) {
+      match self.grants.get(key) { Some(g) => g.valid = false, None => () }
+      self.grants.remove(key)
+    }
+  }
+}
+
+fn copilot_source(ctx : DaemonCtx, core : station_whole::WholeCore, key : String, profile : String, auth : String) -> Option[CopilotBorrow] {
+  if !core.ready || core.shut_down || key == "" || profile == "" || !ctx.cloud.peers_current { return None }
+  let store = match core.store.require_open() { Ok(s) => s, _ => return None }
+  let row = match store.get_session(key) { Ok(Some(r)) => r, _ => return None }
+  if row.archived_at.is_some() || row.runtime != "copilot" || row.profile != profile || row.token == "" { return None }
+  let expected = "Bearer " + crypto::hmac_sha256_hex(row.token.to_bytes(), ("copilot-api\x00" + profile).to_bytes())
+  if !station_whole::ct_eq_str(auth, expected) { return None }
+  let ws = match row.ws { Some(w) => w, None => core.config.home_workspace }
+  let roster = build_cloud_roster(ctx.cloud, (host_shim::wall_ms() / 1000L).to_double(), ctx.cloud.peers_current)
+  if roster.rig_in(ws) { return None }
+  let membership = match roster.membership(ws) { Some(m) => m, None => return None }
+  let fs = core.agents.jobs.fs
+  let dir = core.config.data_dir
+  let raw = copilot_json_file(fs.read_file, dir + "/config.json")
+  let ps = match base_codec::json_get(raw, "profiles") { Some(base_codec::Json::Arr(a)) => a, _ => return None }
+  for i in 0..<ps.length() {
+    let p = ps[i]
+    if json_str_field(p, "id") != profile { continue }
+    let share = match base_codec::json_get(p, "share") { Some(s) => s, None => return None }
+    let access = match base_codec::json_get(p, "access") { Some(a) => a, None => return None }
+    let id = json_str_field(share, "id")
+    let host = json_str_field(share, "host")
+    if id == "" || !station_mesh::CloudRoster::has_peer(membership, host) ||
+    json_str_field(p, "runtime") != "copilot" || json_str_field(access, "kind") != "subscription" ||
+    !json_bool_field(p, "enabled", true) || !json_bool_field(share, "borrowed") ||
+    !copilot_list_has(base_codec::json_get(share, "workspaces"), ws) ||
+    (ws != core.config.home_workspace && copilot_list_has(base_codec::json_get(p, "withheld"), ws)) { return None }
+    let state = copilot_json_file(fs.read_file, dir + "/share/state.json")
+    let borrowed = match base_codec::json_get(state, "borrowed") { Some(b) => b, None => return None }
+    let had = match base_codec::json_get(borrowed, id) { Some(h) => h, None => return None }
+    if json_str_field(had, "host") != host || json_bool_field(had, "stale") || json_str_field(had, "kind") != "profile" { return None }
+    return Some(CopilotBorrow::{host: host, share: id, ws: ws, version: json_int64_field(had, "version")})
+  }
+  None
+}
+
+fn copilot_accept(ctx : DaemonCtx, core : station_whole::WholeCore, server : station_http::HttpServer, door : CopilotDoorState, req : station_http::HttpRequest) -> station_http::HandlerAction {
+  let denied = station_http::HandlerAction::Respond(station_http::HttpResponse::text(403, "Copilot share unavailable"))
+  let parts = req.path.split("/")
+  if parts.length() < 5 || req.method != "GET" && req.method != "POST" { return denied }
+  let key = station_sessions::percent_decode(parts[2])
+  let profile = station_sessions::percent_decode(parts[3])
+  let auth = match req.header("authorization") { Some(a) => a, None => return denied }
+  let src = match copilot_source(ctx, core, key, profile, auth) { Some(s) => s, None => return denied }
+  if !req.raw_target.starts_with("/copilot-api/") { return denied }
+  let offset = "/copilot-api/".length() + parts[2].length() + 1 + parts[3].length()
+  let path = req.raw_target.slice(offset, req.raw_target.length())
+  if !path.starts_with("/") || path.starts_with("//") { return denied }
+  let gen = match server.connection_generation(req.conn_id) { Some(g) => g, None => return denied }
+  door.queued.push(CopilotRequest::{req: req, gen: gen, key: key, profile: profile, path: path, source: src, used: "", retried: false})
+  station_http::HandlerAction::Defer
+}
+
+fn copilot_same_source(ctx : DaemonCtx, st : WholeRuntimeState, op : CopilotRequest) -> Bool {
+  let auth = match op.req.header("authorization") { Some(a) => a, None => return false }
+  if st.mcp_srv.connection_generation(op.req.conn_id) != Some(op.gen) { return false }
+  match copilot_source(ctx, st.core, op.key, op.profile, auth) {
+    Some(s) => s.share == op.source.share && s.host == op.source.host && s.version == op.source.version && s.ws == op.source.ws
+    None => false
+  }
+}
+
+fn copilot_error(st : WholeRuntimeState, op : CopilotRequest) -> Unit {
+  if st.mcp_srv.connection_generation(op.req.conn_id) == Some(op.gen) {
+    let _ = st.mcp_srv.respond_with_callbacks(op.req.conn_id, station_http::HandlerAction::Respond(station_http::HttpResponse::text(503, "Copilot sharing unavailable. Check the host station and its sign-in.")), st.mcp_cb)
+  }
+}
+
+fn copilot_header(name : String) -> Bool {
+  let k = jscase::lower(name)
+  k != "host" && k != "authorization" && k != "proxy-authorization" && k != "forwarded" &&
+  k != "cookie" && k != "set-cookie" && k != "connection" && k != "content-length" &&
+  k != "transfer-encoding" && k != "upgrade"
+}
+
+fn copilot_forward(ctx : DaemonCtx, st : WholeRuntimeState, op : CopilotRequest, lease : base_codec::Json) -> Unit {
+  if !copilot_same_source(ctx, st, op) { copilot_error(st, op); return }
+  let token = json_str_field(lease, "token")
+  let api = json_str_field(lease, "api")
+  if token == "" || !copilot_api_origin(api) || json_int64_field(lease, "expiresAt") <= host_shim::wall_ms() { copilot_error(st, op); return }
+  let headers : Array[(String, String)] = [("authorization", "Bearer " + token)]
+  for h in op.req.headers { if copilot_header(h.name) { headers.push((h.name, h.value)) } }
+  let opts = station_http::FetchOptions::{ ..station_http::FetchOptions::get(api + op.path), method: op.req.method,
+    headers: headers, body: if op.req.method == "POST" { Some(op.req.body) } else { None }, timeout_ms: Some(300000L), redirect: "manual" }
+  let id = st.copilot.next_request
+  st.copilot.next_request = id + 1
+  op.used = token
+  st.copilot.opening.set(id, op)
+  let client = station_http::HttpClient::new(ctx.mux_role)
+  let _ = client.stream_open_async(id, opts)
+}
+
+fn copilot_borrow_for_request(ctx : DaemonCtx, st : WholeRuntimeState, op : CopilotRequest) -> Unit {
+  if !copilot_same_source(ctx, st, op) { copilot_error(st, op); return }
+  let key = op.source.host + "/" + op.source.share + "/" + op.source.ws
+  let grant = match st.copilot.grants.get(key) {
+    Some(g) => if g.version == op.source.version { g } else { g.valid = false; CopilotGrant::new(op.source.version) }
+    None => CopilotGrant::new(op.source.version)
+  }
+  st.copilot.grants.set(key, grant)
+  match grant.reusable(op.used, host_shim::wall_ms()) {
+    Some(lease) => { copilot_forward(ctx, st, op, lease); return }
+    None => ()
+  }
+  grant.waiters.push(op)
+  if grant.pending { return }
+  grant.pending = true
+  let req = base_codec::json_obj([("method", base_codec::json_str("share.copilotLease")), ("id", base_codec::json_str(op.source.share)), ("rejected", base_codec::json_str(grant.rejected))])
+  ctx.ask_peer_rpc(op.source.host, op.source.ws, req, fn(answer : Result[base_codec::Json, String]) -> Unit {
+    grant.pending = false
+    let now = host_shim::wall_ms()
+    grant.renewed(op.source.host, answer, now)
+    while grant.waiters.length() > 0 {
+      match grant.waiters.pop() {
+        Some(waiter) => match grant.lease {
+          Some(lease) => if grant.valid && json_int64_field(lease, "expiresAt") > now { copilot_forward(ctx, st, waiter, lease) } else { copilot_error(st, waiter) }
+          None => copilot_error(st, waiter)
+        }
+        None => ()
+      }
+    }
+  })
+}
+
+fn copilot_start_queued(ctx : DaemonCtx, st : WholeRuntimeState) -> Unit {
+  while st.copilot.queued.length() > 0 {
+    match st.copilot.queued.pop() { Some(op) => copilot_borrow_for_request(ctx, st, op), None => () }
+  }
+}
+
+fn copilot_stream_done(ctx : DaemonCtx, st : WholeRuntimeState, tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Bool {
+  let (id, kind) = match tok { builders_core::MuxToken::Tagged(i, k, _) => (i, k), _ => return false }
+  let client = station_http::HttpClient::new(ctx.mux_role)
+  if kind == station_http::CLIENT_TOK_FETCH { return copilot_host_done(ctx, st, id, done) }
+  if kind == station_http::CLIENT_TOK_STREAM_CLOSE { return true }
+  if kind == station_http::CLIENT_TOK_STREAM_OPEN {
+    let op = match st.copilot.opening.get(id) { Some(o) => o, None => return false }
+    st.copilot.opening.remove(id)
+    let head = match station_http::decode_stream_open_done(done) {
+      Ok(h) => h
+      Err(_) => { copilot_error(st, op); return true }
+    }
+    if !copilot_same_source(ctx, st, op) || head.redirected || (head.status >= 300 && head.status < 400) {
+      let _ = client.stream_close_async(head.id)
+      copilot_error(st, op)
+      return true
+    }
+    if head.status == 401 {
+      if !op.retried && op.req.body.length() <= 1048576 {
+        let _ = client.stream_close_async(head.id)
+        op.retried = true
+        copilot_borrow_for_request(ctx, st, op)
+        return true
+      }
+      let key = op.source.host + "/" + op.source.share + "/" + op.source.ws
+      match st.copilot.grants.get(key) {
+        Some(g) => match g.lease { Some(v) => if json_str_field(v, "token") == op.used { g.rejected = op.used; g.lease = None }, None => () }
+        None => ()
+      }
+    }
+    let headers : Array[http1::Header] = []
+    for h in head.headers { let (name, value) = h; if copilot_header(name) { headers.push(http1::Header::new(name, value)) } }
+    if st.mcp_srv.respond_with_callbacks(op.req.conn_id, station_http::HandlerAction::StartChunked(head.status, headers), st.mcp_cb) {
+      st.copilot.streaming.set(head.id, op)
+      let _ = client.stream_read_async(head.id, Some(120000L))
+    } else { let _ = client.stream_close_async(head.id) }
+    return true
+  }
+  if kind != station_http::CLIENT_TOK_STREAM_READ { return false }
+  let op = match st.copilot.streaming.get(id) { Some(o) => o, None => return false }
+  if st.mcp_srv.connection_generation(op.req.conn_id) == Some(op.gen) {
+    match station_http::decode_stream_read_done(done) {
+      Ok(station_http::StreamChunk::Data(bytes)) => if st.mcp_srv.send_chunk(op.req.conn_id, bytes) {
+        let _ = client.stream_read_async(id, Some(120000L))
+        return true
+      }
+      Ok(station_http::StreamChunk::End) => { let _ = st.mcp_srv.finish_chunked_with_callbacks(op.req.conn_id, [], st.mcp_cb) }
+      Err(_) => st.mcp_srv.abort_response(op.req.conn_id, op.gen, st.mcp_cb)
+    }
+  }
+  let _ = client.stream_close_async(id)
+  st.copilot.streaming.remove(id)
+  true
+}

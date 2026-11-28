@@ -1393,6 +1393,10 @@ export class Sharing {
   async handle(peer: string, request: Json, workspace?: string): Promise<Json> {
     const method = String(request?.method ?? "");
     const id = String(request?.id ?? "");
+    if (method === "share.copilotInvalidate") {
+      if (this.readState().borrowed[id]?.host === peer) this.borrowedCopilot.forget(id);
+      return { heard: true };
+    }
     if (method === "share.changed") {
       // (one this station is handing over as it is told: heard once the hand-over is done here, so a word of the new
       // host's, its share undone as the login came home, is not heard by the station that still hosts it, then lost)

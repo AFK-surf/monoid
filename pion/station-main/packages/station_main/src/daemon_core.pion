@@ -3536,13 +3536,15 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                           let reply_str = bytes_to_str_local(ob.reply_buf, ob.reply_buf.length())
                           let (should_retry, until_opt) = if read_err {
                             (true, None)
+                          } else if ob.method == "share.copilotLease" && ob.on_ask_done.is_some() {
+                            (false, None)
                           } else {
                             parse_tell_reply(reply_str)
                           }
                           if !should_retry {
                             (hooks.on_outbound_reply)(ctx, ob.method, ob.ref_id, until_opt)
                             match ob.on_ask_done {
-                              Some(cb) => cb(parse_ask_reply(reply_str))
+                              Some(cb) => if ob.method == "share.copilotLease" { cb(copilot_mesh_reply(reply_str)) } else { cb(parse_ask_reply(reply_str)) }
                               None => ()
                             }
                           }
@@ -4365,13 +4367,15 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                         let reply_str = bytes_to_str_local(fs.payload_buf, fs.payload_buf.length())
                                         let (should_retry, until_opt) = if stream_failed {
                                           (true, None)
+                                        } else if ob.method == "share.copilotLease" && ob.on_ask_done.is_some() {
+                                          (false, None)
                                         } else {
                                           parse_tell_reply(reply_str)
                                         }
                                         if !should_retry {
                                           (hooks.on_outbound_reply)(ctx, ob.method, ob.ref_id, until_opt)
                                           match ob.on_ask_done {
-                                            Some(cb) => cb(parse_ask_reply(reply_str))
+                                            Some(cb) => if ob.method == "share.copilotLease" { cb(copilot_mesh_reply(reply_str)) } else { cb(parse_ask_reply(reply_str)) }
                                             None => ()
                                           }
                                         }
