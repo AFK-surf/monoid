@@ -85,6 +85,9 @@ let RUNNER_TOK_UNIX_READ : Int = 5102
 let RUNNER_TOK_UNIX_WRITE : Int = 5103
 let RUNNER_TOK_UNIX_CLOSE : Int = 5104
 
+// `mux_role` token for async `tar.file` archived session upload extraction (Wave 17C-3A R4 N1).
+let SESSION_TOK_TAR_FILE : Int = 5201
+
 struct AdoptedRunnerConn {
   runner_id : String
   instance_id : String
@@ -127,6 +130,13 @@ struct DriveDownloadStreamState {
   mut remaining : Int64
 }
 
+struct SessionFileDownloadState {
+  path : String
+  mut cur_offset : Int64
+  mut remaining : Int64
+  unlink_on_done : Bool
+}
+
 struct AdminBodySendingState {
   body : Bytes
   mut offset : Int
@@ -145,6 +155,8 @@ enum AdminStreamMode {
   ReadingBody(AdminReqHead, Bytes)
   StreamingDriveUpload(DriveUploadStreamState)
   DriveDownloading(DriveDownloadStreamState)
+  SessionFileDownloading(SessionFileDownloadState)
+  WaitingArchiveExtract(station_whole::SessionArchiveExtractSpec)
   SendingBody(AdminBodySendingState)
   SseStreaming(Int)
   Done
@@ -3557,6 +3569,96 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
   }
 
+  // Pump AT MOST 1 x 64 KiB chunk per call for `GET /sessions/:key/(files|parts|open?raw=1)`
+  // (200 OK full Content-Length streaming with constant ~64 KiB memory, zero OOM, never 206).
+  let pump_session_file_download_chunk = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+    dl : SessionFileDownloadState,
+  ) -> Unit {
+    if dl.remaining <= 0L {
+      if dl.unlink_on_done {
+        let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+      }
+      ctx.finish_peer_http(astream.sid)
+      astream.mode = AdminStreamMode::Done
+      return
+    }
+    if ctx.peer_http_write_queued_bytes(astream.sid) > PEER_HTTP_WRITE_LOW_WATER {
+      return
+    }
+    let take = if dl.remaining > WHOLE_DRIVE_READ_CHUNK.to_int64() {
+      WHOLE_DRIVE_READ_CHUNK
+    } else {
+      dl.remaining.to_int()
+    }
+    match (st.core.agents.jobs.fs.read_range)(dl.path, dl.cur_offset, take.to_int64()) {
+      Some(cb) => {
+        if cb.length() == 0 {
+          if dl.unlink_on_done {
+            let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+          }
+          ctx.finish_peer_http(astream.sid)
+          astream.mode = AdminStreamMode::Done
+          return
+        }
+        dl.cur_offset = dl.cur_offset + cb.length().to_int64()
+        dl.remaining = dl.remaining - cb.length().to_int64()
+        ctx.write_peer_http_chunk(astream.sid, cb)
+        if dl.remaining <= 0L {
+          if dl.unlink_on_done {
+            let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+          }
+          ctx.finish_peer_http(astream.sid)
+          astream.mode = AdminStreamMode::Done
+        }
+      }
+      None => {
+        if dl.unlink_on_done {
+          let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+        }
+        ctx.close_peer_http(astream.sid)
+        astream.mode = AdminStreamMode::Done
+      }
+    }
+  }
+
+  let start_session_file_stream = fn(
+    ctx : DaemonCtx,
+    st : WholeRuntimeState,
+    astream : AdminStreamState,
+    spec : station_whole::SessionFileStreamSpec,
+  ) -> Unit {
+    let ct = if spec.content_type.length() > 0 { spec.content_type } else { "application/octet-stream" }
+    let hdrs : Array[http1::Header] = [
+      http1::Header::new("content-type", ct),
+      http1::Header::new("cache-control", "private, max-age=3600"),
+      http1::Header::new("content-length", spec.send_length.to_string()),
+      http1::Header::new(station_api::BUILD_HEADER, st.core.config.station_build),
+    ]
+    for i in 0..<spec.extra_headers.length() {
+      hdrs.push(spec.extra_headers[i])
+    }
+    ctx.write_peer_http_chunk(astream.sid, encode_admin_head_line(200, hdrs, Some(spec.send_length)))
+    if spec.send_length <= 0L {
+      if spec.unlink_on_done {
+        let _ = (st.core.agents.jobs.fs.remove_file)(spec.path)
+      }
+      ctx.finish_peer_http(astream.sid)
+      astream.mode = AdminStreamMode::Done
+      return
+    }
+    let dl = SessionFileDownloadState::{
+      path: spec.path,
+      cur_offset: spec.start_offset,
+      remaining: spec.send_length,
+      unlink_on_done: spec.unlink_on_done,
+    }
+    astream.mode = AdminStreamMode::SessionFileDownloading(dl)
+    pump_session_file_download_chunk(ctx, st, astream, dl)
+  }
+
   let dispatch_admin_request = fn(
     ctx : DaemonCtx,
     st : WholeRuntimeState,
@@ -3680,6 +3782,74 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           astream.mode = AdminStreamMode::Done
           return
         }
+      }
+    }
+
+    // Backpressured 64 KiB `200 OK` streaming for > 8 MiB `GET /sessions/:key/(files|open?raw=1)`
+    // and async `EdgeMuxHub` `tar.file` extraction for archived `workspace.tar.zst` uploads.
+    if head.method == "GET" && norm_path.starts_with("/sessions/") {
+      match st.core.api.session_plan_fn {
+        Some(plan_fn) => {
+          match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+            Some(old_resp) => {
+              send_admin_resp_and_finish(ctx, astream.sid, old_resp)
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            None => ()
+          }
+          match peer_id {
+            station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
+              let (s_path, s_qraw, s_q) = station_http::parse_request_target(norm_raw)
+              let probe_req = station_http::HttpRequest::{
+                conn_id: 0,
+                method: head.method,
+                raw_target: norm_raw,
+                path: s_path,
+                query_raw: s_qraw,
+                query: s_q,
+                version: http1::Version::Http11,
+                headers: head.headers,
+                body: Bytes::new(0),
+                peer: "",
+                raw_head: Bytes::new(0),
+              }
+              match plan_fn(probe_req, v, astream.sid) {
+                station_whole::SessionFilePlan::NotMatched => ()
+                station_whole::SessionFilePlan::ImmediateError(resp) => {
+                  send_admin_resp_and_finish(ctx, astream.sid, resp)
+                  astream.mode = AdminStreamMode::Done
+                  return
+                }
+                station_whole::SessionFilePlan::StreamFile(spec) => {
+                  start_session_file_stream(ctx, st, astream, spec)
+                  return
+                }
+                station_whole::SessionFilePlan::ExtractArchive(spec) => {
+                  astream.mode = AdminStreamMode::WaitingArchiveExtract(spec)
+                  let wanted_j : Array[base_codec::Json] = []
+                  for wi in 0..<spec.wanted.length() {
+                    wanted_j.push(base_codec::json_str(spec.wanted[wi]))
+                  }
+                  let tar_args = base_codec::json_obj([
+                    ("path", base_codec::json_str(spec.archive_path)),
+                    ("wanted", base_codec::json_arr(wanted_j)),
+                    ("out", base_codec::json_str(spec.out_path)),
+                  ])
+                  let _ = ctx.mux_role.call_async_raw(
+                    builders_core::MuxToken::Tagged(0, SESSION_TOK_TAR_FILE, astream.sid),
+                    "tar.file",
+                    base_codec::json_stringify(tar_args),
+                    None,
+                  )
+                  return
+                }
+              }
+            }
+            _ => ()
+          }
+        }
+        None => ()
       }
     }
 
@@ -4000,6 +4170,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       AdminStreamMode::Done
       | AdminStreamMode::SseStreaming(_)
       | AdminStreamMode::DriveDownloading(_)
+      | AdminStreamMode::SessionFileDownloading(_)
+      | AdminStreamMode::WaitingArchiveExtract(_)
       | AdminStreamMode::SendingBody(_) => {
         astream.rx_buf = Bytes::new(0)
         return Ok(())
@@ -4779,6 +4951,68 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
   ) -> Unit {
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
+        // Async `tar.file` archived session upload completion (Wave 17C-3A R4 N1).
+        if kind == SESSION_TOK_TAR_FILE {
+          match st.admin_streams.get(sid) {
+            None => ()
+            Some(astream) => match astream.mode {
+              AdminStreamMode::WaitingArchiveExtract(spec) => {
+                let mut found_ok = false
+                match builders_core::decode_shell_done(d) {
+                  Ok((Some(v), _)) => {
+                    match base_codec::json_get(v, "found") {
+                      Some(base_codec::Json::Bool(true)) => found_ok = true
+                      _ => ()
+                    }
+                  }
+                  _ => ()
+                }
+                if !found_ok {
+                  let _ = (st.core.agents.jobs.fs.remove_file)(spec.out_path)
+                  send_admin_resp_and_finish(ctx, sid, station_api::json_error(404, "station.files.notFound"))
+                  astream.mode = AdminStreamMode::Done
+                  return
+                }
+                match (st.core.agents.jobs.fs.stat)(spec.out_path) {
+                  Some(fst) => {
+                    let total_sz = fst.size
+                    let start_off = if spec.is_parts {
+                      if spec.offset > total_sz { total_sz } else { spec.offset }
+                    } else {
+                      0L
+                    }
+                    let avail = if total_sz > start_off { total_sz - start_off } else { 0L }
+                    let send_len = if spec.is_parts {
+                      if spec.length < avail { spec.length } else { avail }
+                    } else {
+                      total_sz
+                    }
+                    start_session_file_stream(
+                      ctx,
+                      st,
+                      astream,
+                      station_whole::SessionFileStreamSpec::{
+                        path: spec.out_path,
+                        total_size: total_sz,
+                        content_type: spec.content_type,
+                        extra_headers: [http1::Header::new("stillfail-total", total_sz.to_string())],
+                        start_offset: start_off,
+                        send_length: send_len,
+                        unlink_on_done: true,
+                      },
+                    )
+                  }
+                  None => {
+                    send_admin_resp_and_finish(ctx, sid, station_api::json_error(404, "station.files.notFound"))
+                    astream.mode = AdminStreamMode::Done
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+          return
+        }
         // Adopted `stillfail-runner` Unix socket completions (`unix.open` / `unix.read` / `unix.write` / `unix.close`).
         if kind == RUNNER_TOK_UNIX_OPEN {
           match st.adopted_runners.get(owner_id) {
@@ -7132,6 +7366,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 AdminStreamMode::Done
                 | AdminStreamMode::SseStreaming(_)
                 | AdminStreamMode::DriveDownloading(_)
+                | AdminStreamMode::SessionFileDownloading(_)
+                | AdminStreamMode::WaitingArchiveExtract(_)
                 | AdminStreamMode::SendingBody(_) => {
                   return Ok(())
                 }
@@ -7262,6 +7498,16 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   let _ = st.core.api.events.disconnect(cid)
                   false
                 }
+                AdminStreamMode::SessionFileDownloading(dl) => {
+                  if dl.unlink_on_done {
+                    let _ = (st.core.agents.jobs.fs.remove_file)(dl.path)
+                  }
+                  false
+                }
+                AdminStreamMode::WaitingArchiveExtract(spec) => {
+                  let _ = (st.core.agents.jobs.fs.remove_file)(spec.out_path)
+                  false
+                }
                 _ => false
               }
               if !is_ctrl {
@@ -7293,6 +7539,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               match astream.mode {
                 AdminStreamMode::DriveDownloading(dl) => {
                   pump_drive_download_chunk(ctx, st, astream, dl)
+                }
+                AdminStreamMode::SessionFileDownloading(dl) => {
+                  pump_session_file_download_chunk(ctx, st, astream, dl)
                 }
                 AdminStreamMode::SendingBody(bs) => {
                   pump_admin_body_chunk(ctx, astream, bs)

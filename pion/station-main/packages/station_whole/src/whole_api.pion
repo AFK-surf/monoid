@@ -1000,6 +1000,7 @@ pub struct WholeApi {
   pub mut waiting_tracker_factory : Option[(String) -> station_api::WaitingTracker]
   pub transfers : station_screens::TransfersManager
   pub mut session_binary_fn : Option[(station_http::HttpRequest, station_api::Viewer) -> Option[station_http::HttpResponse]]
+  pub mut session_plan_fn : Option[(station_http::HttpRequest, station_api::Viewer, Int64) -> SessionFilePlan]
   request_now_cell : Array[Int64]
 }
 
@@ -1042,6 +1043,7 @@ pub fn WholeApi::new_with_ports(
     waiting_tracker_factory: None,
     transfers: station_screens::TransfersManager::new(fn(n : Int) -> Bytes { Bytes::new(n) }),
     session_binary_fn: None,
+    session_plan_fn: None,
     request_now_cell: [0L],
   }
 }
@@ -2093,6 +2095,9 @@ pub fn WholeApi::new(
     transfers: shared_transfers,
     session_binary_fn: Some(fn(hreq : station_http::HttpRequest, v : station_api::Viewer) -> Option[station_http::HttpResponse] {
       handle_session_binary_get(hreq, v, seen_store, agents, thumb_port, auth_policy.station_build, runtime_port)
+    }),
+    session_plan_fn: Some(fn(hreq : station_http::HttpRequest, v : station_api::Viewer, sid : Int64) -> SessionFilePlan {
+      plan_daemon_session_file(hreq, v, seen_store, agents, runtime_port, sid)
     }),
     request_now_cell: request_now_cell,
   }

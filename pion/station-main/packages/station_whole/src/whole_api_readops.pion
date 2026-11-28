@@ -1,4 +1,4 @@
-// Wave 17C-3A R3: Production HTTP ReadOps, Raw Binary Session File Serving, CRDT Records,
+// Wave 17C-3A R4: Production HTTP ReadOps, Raw Binary Session File Serving, CRDT Records,
 // Projects Info (atomic PROJECTS.jsonl), Drive mkdir (workspace-scoped), Shared Transfers,
 // and Handle-Bound Resource Process Stopping.
 //
@@ -6,11 +6,10 @@
 // - ReadOps (`memory`, `usage`, `usage.calls`, `machineSessions`, `machineSession`,
 //   `session.timeline`, `session.peek`/`open` place resolution) delegate 1:1 to the real
 //   read-only `pion/station/packages/{readops_core,readops_local,readops_usage}` engines.
-// - Sync read boundaries: `readops_*` SQLite/local reads and single-file `tar --zstd -xOf`
-//   archived upload extraction (via `station_sys::proc_spawn` with 8 MiB / 10 s cap) are
-//   strictly bounded; session file endpoints (`files`, `parts`, `poster`, `open`) never
-//   `read_bytes` a file larger than `SESSION_FILE_STREAMED_MAX` (8 MiB), using `fs.read_range`
-//   and `206 Partial Content` + `Content-Range` + `stillfail-total` for large files.
+// - Zero nested `host_shim::wait` loops: archived `workspace.tar.zst` extraction is handled
+//   asynchronously in `whole_daemon` via `EdgeMuxHub` (`ctx.mux_role.call_async_raw("tar.file", ...)`),
+//   and `> 8 MiB` `files`/`open?raw=1` responses stream `200 OK` in 64 KiB backpressured chunks
+//   via `whole_daemon`'s `AdminStreamMode` channel (constant ~64 KiB memory, never `206`).
 // - ZERO fake 200 stubs: any op whose underlying live runner / outbound SSRF-safe HTTP /
 //   cloud feedback / cross-station peer fan-out is not wired returns honest `501 Not Implemented`.
 
@@ -200,8 +199,8 @@ fn ro_is_valid_draft_id(s : String) -> Bool {
   true
 }
 
-// Aligned 1:1 with `station/src/sessions/board-drafts.ts:32`:
-// `createHash("sha256").update(parts.join("\0")).digest("hex").slice(0, 16)`.
+// Aligned 1:1 with `station/src/sessions/board-drafts.ts:41`:
+// `createHash("sha256").update(parts.join("\0")).digest().subarray(0, 16).toString("hex")` (32 hex chars).
 fn ro_hashed_key(parts : Array[String]) -> String {
   let buf : Array[Byte] = []
   for i in 0..<parts.length() {
@@ -217,92 +216,16 @@ fn ro_hashed_key(parts : Array[String]) -> String {
   for i in 0..<buf.length() {
     raw[i] = buf[i]
   }
-  crypto::sha256_hex(raw).slice(0, 16)
+  crypto::sha256_hex(raw).slice(0, 32)
 }
 
 // Aligned 1:1 with `station/src/drive/thumbs.ts:29` + `posters.ts:37`:
-// `createHash("sha256").update(filePath).digest("hex").slice(0, 16)`.
+// `createHash("sha256").update(cleanPath).digest().subarray(0, 16).toString("hex")` (32 hex chars).
 fn ro_poster_hash(file_path : String) -> String {
-  crypto::sha256_hex(file_path.to_bytes()).slice(0, 16)
+  crypto::sha256_hex(file_path.to_bytes()).slice(0, 32)
 }
 
 let SESSION_FILE_STREAMED_MAX : Int64 = 8L * 1024L * 1024L
-
-fn ro_extract_tar_zst_file(archive_path : String, rel : String, max_bytes : Int) -> Option[Bytes] {
-  let is_darwin = station_sys::os_name() == "darwin"
-  let args : Array[String] = if is_darwin {
-    ["-xOf", archive_path, rel]
-  } else {
-    ["--zstd", "-xOf", archive_path, rel]
-  }
-  let opts = station_sys::SpawnOptions::{
-    program: "tar",
-    args: args,
-    env: None,
-    cwd: nodepath::dirname("/", archive_path),
-    new_pgid: true,
-    strip_malloc_space_efficient: true,
-    pipe_stdin: false,
-    pipe_stdout: true,
-    pipe_stderr: true,
-  }
-  let ev_id : Int64 = 0x7A737401L
-  let child = match station_sys::proc_spawn(ev_id, opts) {
-    Ok(c) => c
-    Err(_) => return None
-  }
-  let out_buf : Array[Byte] = []
-  let mut exited = false
-  let mut exit_code = -1
-  let mut stdout_eof = false
-  let mut stderr_eof = false
-  let mut overflowed = false
-  // timer: bounded single-file tar.zst extraction
-  let deadline = host_shim::now_ms() + 10000L
-  while !(exited && stdout_eof && stderr_eof) {
-    let rem = deadline - host_shim::now_ms()
-    if rem <= 0L || overflowed {
-      let _ = child.kill(station_sys::SIG_KILL, true)
-      let _ = child.close()
-      return None
-    }
-    let step = if rem < 100L { rem } else { 100L }
-    match host_shim::wait(step) {
-      Some(host_shim::HostEvent::Sys(id, payload)) => {
-        if id == ev_id {
-          match station_sys::decode_sys_event(payload) {
-            Some(station_sys::SysEvent::ProcStdout(b)) => {
-              if out_buf.length() + b.length() > max_bytes {
-                overflowed = true
-              } else {
-                for i in 0..<b.length() {
-                  out_buf.push(b[i])
-                }
-              }
-            }
-            Some(station_sys::SysEvent::ProcStdoutEof) => stdout_eof = true
-            Some(station_sys::SysEvent::ProcStderrEof) => stderr_eof = true
-            Some(station_sys::SysEvent::ProcExit(st)) => {
-              exited = true
-              exit_code = st.code
-            }
-            _ => ()
-          }
-        }
-      }
-      _ => ()
-    }
-  }
-  let _ = child.close()
-  if exit_code != 0 || overflowed {
-    return None
-  }
-  let res = Bytes::new(out_buf.length())
-  for i in 0..<out_buf.length() {
-    res[i] = out_buf[i]
-  }
-  Some(res)
-}
 
 fn ro_ascii_lower(s : String) -> String {
   let b = s.to_bytes()
@@ -1039,17 +962,20 @@ pub fn ReadOpsPort::production(
           if (agents.jobs.fs.exists)(dst) {
             let _ = (agents.jobs.fs.remove_dir_all)(dst)
           }
-          let _ = station_sys::rename(src, dst)
+          if station_sys::rename(src, dst) {
+            // Refresh `.gone/<h(draftId)>` directory mtime to `now` so upkeep (`GONE_FILES_MS`)
+            // counts from when the draft became gone rather than when it was first created.
+            let touch = nodepath::join(sep, [dst, ".mtime-touch"])
+            if station_sys::write_file_atomic(touch, Bytes::new(0), 384) {
+              let _ = (agents.jobs.fs.remove_file)(touch)
+            }
+          }
         }
       }
     },
-    read_archived_upload: fn(room : String, rel : String) -> Option[Bytes] {
-      let archive_path = nodepath::join(sep, [room, "workspace.tar.zst"])
-      if !(agents.jobs.fs.exists)(archive_path) {
-        return None
-      }
-      ro_extract_tar_zst_file(archive_path, rel, SESSION_FILE_STREAMED_MAX.to_int())
-    },
+    // Production archived upload extraction runs asynchronously in `whole_daemon` via
+    // `EdgeMuxHub` (`ctx.mux_role.call_async_raw("tar.file", ...)`), never via sync `host_shim::wait`.
+    read_archived_upload: fn(_room : String, _rel : String) -> Option[Bytes] { None },
   }
 }
 
@@ -1092,6 +1018,171 @@ fn binary_http_ok(
   binary_http_status(200, content_type, body, build_ver, extra)
 }
 
+// Daemon streaming / async archive extraction plan returned to `whole_daemon`
+// so large (> 8 MiB) session files stream `200 OK` in 64 KiB backpressured chunks
+// and archived `workspace.tar.zst` uploads extract asynchronously over `EdgeMuxHub` (`tar.file`).
+pub struct SessionFileStreamSpec {
+  pub path : String
+  pub total_size : Int64
+  pub content_type : String
+  pub extra_headers : Array[http1::Header]
+  pub start_offset : Int64
+  pub send_length : Int64
+  pub unlink_on_done : Bool
+}
+
+pub struct SessionArchiveExtractSpec {
+  pub archive_path : String
+  pub wanted : Array[String]
+  pub out_path : String
+  pub content_type : String
+  pub is_parts : Bool
+  pub offset : Int64
+  pub length : Int64
+}
+
+pub enum SessionFilePlan {
+  NotMatched
+  ImmediateError(station_http::HttpResponse)
+  StreamFile(SessionFileStreamSpec)
+  ExtractArchive(SessionArchiveExtractSpec)
+}
+
+pub fn plan_daemon_session_file(
+  http_req : station_http::HttpRequest,
+  viewer : station_api::Viewer,
+  seen_store : station_api::SeenStore,
+  agents : WholeAgents,
+  port : WholeApiRuntimePort,
+  stream_sid : Int64,
+) -> SessionFilePlan {
+  if http_req.method != "GET" {
+    return SessionFilePlan::NotMatched
+  }
+  let segs = station_api::split_segments(http_req.path)
+  if segs.length() < 3 || segs[0] != "sessions" {
+    return SessionFilePlan::NotMatched
+  }
+  let key = station_api::segment_decode(segs[1])
+  let act = station_api::segment_decode(segs[2])
+  if act != "files" && act != "parts" && act != "open" {
+    return SessionFilePlan::NotMatched
+  }
+  if !station_api::session_seen(seen_store, viewer, key) {
+    return SessionFilePlan::NotMatched
+  }
+  let fs = agents.jobs.fs
+  let ro = port.readops
+  let api_req = station_api::ApiRequest::from_http(http_req, viewer)
+
+  if act == "open" {
+    if http_req.query_get("raw") != Some("1") {
+      return SessionFilePlan::NotMatched
+    }
+    if http_req.query_get("offset").is_some() || http_req.query_get("length").is_some() {
+      return SessionFilePlan::NotMatched
+    }
+    let rel_path = match http_req.query_get("path") { Some(p) => p, None => "" }
+    let found = match (ro.resolve_session_place)(api_req, key, rel_path) {
+      Ok(p) => p
+      Err(_) => return SessionFilePlan::NotMatched
+    }
+    if found.dir {
+      return SessionFilePlan::NotMatched
+    }
+    let have_sig = found.mtime.to_string() + ":" + found.size.to_string()
+    if http_req.query_get("have") == Some(have_sig) {
+      return SessionFilePlan::NotMatched
+    }
+    if found.size <= SESSION_FILE_STREAMED_MAX {
+      return SessionFilePlan::NotMatched
+    }
+    let extra : Array[http1::Header] = [
+      http1::Header::{ name: "stillfail-name", value: ro_uri_encode_component(found.name) },
+      http1::Header::{ name: "stillfail-path", value: ro_uri_encode_component(found.path) },
+      http1::Header::{ name: "stillfail-mtime", value: found.mtime.to_string() },
+      http1::Header::{ name: "stillfail-total", value: found.size.to_string() },
+    ]
+    return SessionFilePlan::StreamFile(SessionFileStreamSpec::{
+      path: found.path,
+      total_size: found.size,
+      content_type: found.content_type,
+      extra_headers: extra,
+      start_offset: 0L,
+      send_length: found.size,
+      unlink_on_done: false,
+    })
+  }
+
+  // `files` or `parts`
+  if act == "files" && (http_req.query_get("thumb") == Some("1") || http_req.query_get("thumb") == Some("2")) {
+    return SessionFilePlan::NotMatched
+  }
+  let ws_info = match (ro.session_workspace)(key) {
+    Ok(Some(info)) => info
+    _ => return SessionFilePlan::NotMatched
+  }
+  let raw_name = match http_req.query_get("name") { Some(n) => n, None => "" }
+  let file_path = match ro_resolve_upload_path(fs, ws_info.workspace, raw_name) {
+    Ok(p) => p
+    Err(_) => return SessionFilePlan::NotMatched
+  }
+  let mime = ro_mime_of(file_path)
+  let base_name = nodepath::basename(fs.sep, file_path)
+  match (fs.stat)(file_path) {
+    Some(st) => {
+      if st.is_file() {
+        if act == "files" && st.size > SESSION_FILE_STREAMED_MAX {
+          return SessionFilePlan::StreamFile(SessionFileStreamSpec::{
+            path: file_path,
+            total_size: st.size,
+            content_type: mime,
+            extra_headers: [http1::Header::{ name: "stillfail-total", value: st.size.to_string() }],
+            start_offset: 0L,
+            send_length: st.size,
+            unlink_on_done: false,
+          })
+        }
+        return SessionFilePlan::NotMatched
+      }
+    }
+    None => ()
+  }
+  // Not on disk: check `<room>/workspace.tar.zst` for async `tar.file` extraction via `EdgeMuxHub`.
+  let room = nodepath::dirname(fs.sep, ro_strip_trailing_sep(ws_info.workspace, fs.sep))
+  let archive_path = nodepath::join(fs.sep, [room, "workspace.tar.zst"])
+  if !(fs.exists)(archive_path) {
+    return SessionFilePlan::NotMatched
+  }
+  let mut part_off : Int64 = 0L
+  let mut part_len : Int64 = 8L * 1024L * 1024L
+  if act == "parts" {
+    let max_part : Int64 = 8L * 1024L * 1024L
+    part_off = match ro_parse_i64_param(api_req, "offset") {
+      Ok(Some(v)) => if v < 0L { return SessionFilePlan::ImmediateError(station_api::json_error(400, "invalid offset or length")) } else { v }
+      Ok(None) => 0L
+      Err(_) => return SessionFilePlan::ImmediateError(station_api::json_error(400, "invalid offset or length"))
+    }
+    part_len = match ro_parse_i64_param(api_req, "length") {
+      Ok(Some(v)) => if v < 0L || v > max_part { return SessionFilePlan::ImmediateError(station_api::json_error(400, "invalid offset or length")) } else { v }
+      Ok(None) => max_part
+      Err(_) => return SessionFilePlan::ImmediateError(station_api::json_error(400, "invalid offset or length"))
+    }
+  }
+  let tmp_dir = nodepath::join(fs.sep, [agents.config.data_dir, "tmp"])
+  let _ = (fs.mkdir_p)(tmp_dir)
+  let out_path = nodepath::join(fs.sep, [tmp_dir, "tar-extract-" + stream_sid.to_string() + "-" + (fs.now_ms)().to_string() + ".bin"])
+  SessionFilePlan::ExtractArchive(SessionArchiveExtractSpec::{
+    archive_path: archive_path,
+    wanted: ["uploads", base_name],
+    out_path: out_path,
+    content_type: mime,
+    is_parts: act == "parts",
+    offset: part_off,
+    length: part_len,
+  })
+}
+
 fn binary_http_bounded_file(
   fs : station_jobs::FsPort,
   file_path : String,
@@ -1101,21 +1192,9 @@ fn binary_http_bounded_file(
   extra : Array[http1::Header],
 ) -> station_http::HttpResponse {
   if total_size > SESSION_FILE_STREAMED_MAX {
-    let chunk = match (fs.read_range)(file_path, 0L, SESSION_FILE_STREAMED_MAX) {
-      Some(b) => b
-      None => return station_api::json_error(500, "failed to read file")
-    }
-    let end_pos = if chunk.length() > 0 { chunk.length().to_int64() - 1L } else { 0L }
-    let hdrs : Array[http1::Header] = []
-    for i in 0..<extra.length() {
-      hdrs.push(extra[i])
-    }
-    hdrs.push(http1::Header::{
-      name: "content-range",
-      value: "bytes 0-" + end_pos.to_string() + "/" + total_size.to_string(),
-    })
-    hdrs.push(http1::Header::{ name: "stillfail-total", value: total_size.to_string() })
-    return binary_http_status(206, content_type, chunk, build_ver, hdrs)
+    // Never return `206` for non-Range whole-file requests (`client/core-ts` requires `200 OK`)
+    // and never `read_bytes` > 8 MiB into memory; `whole_daemon` streams > 8 MiB files as `200 OK`.
+    return station_api::json_error(501, "streaming >8MiB session files requires daemon streaming channel")
   }
   let bytes = if total_size == 0L {
     Bytes::new(0)
@@ -1261,7 +1340,11 @@ pub fn handle_session_binary_get(
     if !ro_is_video_name(base_name) {
       return Some(station_api::json_error(404, "no poster"))
     }
-    let poster_path = nodepath::join(fs.sep, [data_dir, "thumbs", ro_poster_hash(file_path) + ".poster.jpg"])
+    // Hash the clean non-realpath `<workspace>/uploads/<base>` (aligned 1:1 with
+    // `station/src/drive/thumbs.ts:29` + `posters.ts:37`, avoiding macOS `/var` -> `/private/var` mismatch).
+    let clean_uploads = ro_strip_trailing_sep(nodepath::join(fs.sep, [ws_info.workspace, "uploads"]), fs.sep)
+    let clean_upload_path = nodepath::join(fs.sep, [clean_uploads, base_name])
+    let poster_path = nodepath::join(fs.sep, [data_dir, "thumbs", ro_poster_hash(clean_upload_path) + ".poster.jpg"])
     match (fs.stat)(poster_path) {
       Some(pst) => {
         if pst.is_file() && pst.size <= SESSION_FILE_STREAMED_MAX {
@@ -1274,7 +1357,8 @@ pub fn handle_session_binary_get(
   }
 
   if !on_disk {
-    // Archived workspace fallback: check `<parent(workspace)>/workspace.tar.zst`
+    // Archived workspace fallback: in-memory test stub if provided; otherwise if `workspace.tar.zst`
+    // exists on disk without `whole_daemon` async `EdgeMuxHub` context, return honest `501`.
     let room = nodepath::dirname(fs.sep, ro_strip_trailing_sep(ws_info.workspace, fs.sep))
     match (ro.read_archived_upload)(room, "uploads/" + base_name) {
       Some(ab) => {
@@ -1297,7 +1381,13 @@ pub fn handle_session_binary_get(
         }
         return Some(binary_http_ok(mime, ab, build_ver, []))
       }
-      None => return Some(station_api::json_error(404, "station.files.notFound"))
+      None => {
+        let archive_path = nodepath::join(fs.sep, [room, "workspace.tar.zst"])
+        if (fs.exists)(archive_path) {
+          return Some(station_api::json_error(501, "archived upload extraction requires daemon async EdgeMuxHub"))
+        }
+        return Some(station_api::json_error(404, "station.files.notFound"))
+      }
     }
   }
 
@@ -1968,7 +2058,7 @@ fn parse_draft_record(raw : base_codec::Json) -> Result[station_replica::DraftRe
     None => return Err(station_api::ApiError::new(400, "draft: id is required"))
   }
   let owner = match json_field_str(raw, "owner") {
-    Some(s) => if s.length() > 0 && s.length() <= 200 { s } else { return Err(station_api::ApiError::new(400, "draft: owner is required")) }
+    Some(s) => if s.length() > 0 && s.length() <= 320 { s } else { return Err(station_api::ApiError::new(400, "draft: owner is required")) }
     None => return Err(station_api::ApiError::new(400, "draft: owner is required"))
   }
   let rev = match ro_json_int_field(raw, "rev") {
@@ -2035,6 +2125,7 @@ fn parse_draft_record(raw : base_codec::Json) -> Result[station_replica::DraftRe
     None => ()
     Some(_) => return Err(station_api::ApiError::new(400, "draft: stationName must be a string"))
   }
+  let mut clean_files_count = 0
   match base_codec::json_get(raw, "files") {
     Some(base_codec::Json::Arr(xs)) => {
       if xs.length() > 20 {
@@ -2072,6 +2163,7 @@ fn parse_draft_record(raw : base_codec::Json) -> Result[station_replica::DraftRe
           ("size", base_codec::json_int64(fsize)),
         ]))
       }
+      clean_files_count = clean_files.length()
       if clean_files.length() > 0 {
         live_fields.push(("files", base_codec::json_arr(clean_files)))
       }
@@ -2079,6 +2171,9 @@ fn parse_draft_record(raw : base_codec::Json) -> Result[station_replica::DraftRe
     Some(base_codec::Json::Null) => ()
     None => ()
     Some(_) => return Err(station_api::ApiError::new(400, "draft: files must be an array"))
+  }
+  if raw_title.length() == 0 && clean_files_count == 0 {
+    return Err(station_api::ApiError::new(400, "draft: title or files is required"))
   }
   let normalized = base_codec::json_obj(live_fields)
   Ok(station_replica::DraftRecord::{
@@ -2880,12 +2975,25 @@ pub fn run_w17c3a_sqlite_selftest() -> Result[Unit, String] {
     _ => return Err("prod GET /machine-sessions/claude/nonexistent-id unexpected action")
   }
 
-  // 7. B2: Real `workspace.tar.zst` archived upload extraction via `station_sys::proc_spawn`
+  // Independent Node-aligned 16-byte (32-hex-char) SHA-256 helper for smoke fixtures
+  // (never calls `ro_poster_hash` / `ro_hashed_key` to build its own expected fixture!).
+  let node_sha256_32 = fn(raw : Bytes) -> String {
+    let digest = crypto::sha256(raw)
+    let hex_digits = "0123456789abcdef"
+    let sb = StringBuilder::new()
+    for i in 0..<16 {
+      let v = digest[i].to_int() & 0xFF
+      sb.write_string(hex_digits.slice((v >> 4) & 0xF, ((v >> 4) & 0xF) + 1))
+      sb.write_string(hex_digits.slice(v & 0xF, (v & 0xF) + 1))
+    }
+    sb.to_string()
+  }
+
+  // 7. N1: Archived `workspace.tar.zst` on pure sync `WholeApi` returns honest 501 (zero `host_shim::wait`),
+  //    while `plan_daemon_session_file` plans async `EdgeMuxHub` `tar.file` with `wanted: ["uploads", "packed.txt"]`.
   let arch_room = tmp + "/sessions/s-arch"
-  let arch_stage = root_tmp + "/arch-stage"
   let _ = station_sys::mkdir_p(arch_room)
-  let _ = station_sys::mkdir_p(arch_stage + "/uploads")
-  let _ = station_sys::write_file_atomic(arch_stage + "/uploads/packed.txt", "ARCHIVED-ZSTD-PAYLOAD".to_bytes(), 420)
+  let _ = station_sys::write_file_atomic(arch_room + "/workspace.tar.zst", "ZSTD-PLACEHOLDER".to_bytes(), 420)
   match st.db.run(
     "INSERT INTO sessions (key, connect, scope, workspace, token, runtime, profile, running, created_at, last_active_at, ws) VALUES (?1, 'chat', 'chat', ?2, 'tok-s-arch', 'claude', 'default', 0, 1000, 1000, 'ws-main')",
     [base_codec::json_str("s-arch"), base_codec::json_str(arch_room + "/workspace")],
@@ -2893,69 +3001,36 @@ pub fn run_w17c3a_sqlite_selftest() -> Result[Unit, String] {
     Ok(_) => ()
     Err(e) => return Err("insert s-arch failed: " + e.message)
   }
-  let tar_create_args : Array[String] = if station_sys::os_name() == "darwin" {
-    ["--zstd", "-cf", arch_room + "/workspace.tar.zst", "-C", arch_stage, "uploads/packed.txt"]
-  } else {
-    ["--zstd", "-cf", arch_room + "/workspace.tar.zst", "-C", arch_stage, "uploads/packed.txt"]
-  }
-  let mk_opts = station_sys::SpawnOptions::{
-    program: "tar",
-    args: tar_create_args,
-    env: None,
-    cwd: arch_stage,
-    new_pgid: true,
-    strip_malloc_space_efficient: true,
-    pipe_stdin: false,
-    pipe_stdout: true,
-    pipe_stderr: true,
-  }
-  match station_sys::proc_spawn(0x7A737402L, mk_opts) {
-    Ok(child) => {
-      let mut done = false
-      let deadline = host_shim::now_ms() + 10000L
-      while !done && host_shim::now_ms() < deadline {
-        match host_shim::wait(100L) {
-          Some(host_shim::HostEvent::Sys(id, payload)) => {
-            if id == 0x7A737402L {
-              match station_sys::decode_sys_event(payload) {
-                Some(station_sys::SysEvent::ProcExit(_)) => done = true
-                _ => ()
-              }
-            }
-          }
-          _ => ()
-        }
-      }
-      let _ = child.close()
-    }
-    Err(e) => return Err("spawn tar --zstd -cf failed: " + e)
-  }
   match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-arch/files?name=packed.txt", [], Bytes::new(0), 1700000005000L) {
     station_http::HandlerAction::Respond(r) => {
-      if r.status != 200 || r.body.to_string() != "ARCHIVED-ZSTD-PAYLOAD" {
-        return Err("prod archived tar.zst GET failed: status=" + r.status.to_string() + " body=" + r.body.to_string())
+      if r.status != 501 {
+        return Err("pure-sync archived tar.zst must return honest 501, got status=" + r.status.to_string())
       }
     }
-    _ => return Err("prod archived tar.zst unexpected action")
+    _ => return Err("pure-sync archived tar.zst unexpected action")
   }
 
-  // 8. B6: Real sha256-hashed video poster hit (`<data>/thumbs/<sha256(file_path)[0..16]>.poster.jpg`)
+  // 8. B6: Real 32-hex-char SHA-256 poster hit on non-realpath `clean(uploads/base)`
   let video_path = tmp + "/sessions/s-main/workspace/uploads/clip.mp4"
   let _ = station_sys::write_file_atomic(video_path, "FAKE-MP4".to_bytes(), 420)
-  let real_video_path = match (agents.jobs.fs.realpath)(video_path) { Some(p) => p, None => video_path }
   let _ = station_sys::mkdir_p(tmp + "/thumbs")
-  let poster_file = tmp + "/thumbs/" + ro_poster_hash(real_video_path) + ".poster.jpg"
+  let poster_hex_32 = node_sha256_32(video_path.to_bytes())
+  if poster_hex_32.length() != 32 {
+    return Err("poster hash must be 32 hex chars")
+  }
+  let poster_file = tmp + "/thumbs/" + poster_hex_32 + ".poster.jpg"
   let _ = station_sys::write_file_atomic(poster_file, "JPEG-POSTER-BYTES".to_bytes(), 420)
   match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-main/poster?name=clip.mp4", [], Bytes::new(0), 1700000005000L) {
     station_http::HandlerAction::Respond(r) => {
       if r.status != 200 || r.body.to_string() != "JPEG-POSTER-BYTES" {
-        return Err("prod sha256 poster GET failed: status=" + r.status.to_string() + " body=" + r.body.to_string())
+        return Err("prod 32-hex sha256 poster GET failed: status=" + r.status.to_string() + " body=" + r.body.to_string())
       }
     }
-    _ => return Err("prod sha256 poster unexpected action")
+    _ => return Err("prod 32-hex sha256 poster unexpected action")
   }
 
-  // 9. B5: Bounded `> 8 MiB` (9 MiB) file read returns `206` with 8 MiB body + `stillfail-total: 9437184`
+  // 9. N2: `> 8 MiB` (9 MiB) file NEVER returns `206` on sync fallback (returns honest 501; `whole_daemon` streams `200 OK`),
+  //    and `/parts` returns `200` with exact tail bytes.
   let big_len = 9 * 1024 * 1024
   let big_buf = Bytes::new(big_len)
   big_buf[0] = 65.to_byte()
@@ -2963,8 +3038,8 @@ pub fn run_w17c3a_sqlite_selftest() -> Result[Unit, String] {
   let _ = station_sys::write_file_atomic(tmp + "/sessions/s-main/workspace/uploads/big.bin", big_buf, 420)
   match api.handle_authenticated_api(store, agents, home_peer, "GET", "/sessions/s-main/files?name=big.bin", [], Bytes::new(0), 1700000005000L) {
     station_http::HandlerAction::Respond(r) => {
-      if r.status != 206 || r.body.length() != 8 * 1024 * 1024 {
-        return Err("prod >8MiB /files must return 206 with 8MiB chunk, got status=" + r.status.to_string() + " len=" + r.body.length().to_string())
+      if r.status != 501 {
+        return Err("sync >8MiB /files must NOT return 206 (expected honest 501 without daemon stream), got " + r.status.to_string())
       }
     }
     _ => return Err("prod >8MiB /files unexpected action")
@@ -2978,13 +3053,36 @@ pub fn run_w17c3a_sqlite_selftest() -> Result[Unit, String] {
     _ => return Err("prod >8MiB /parts unexpected action")
   }
 
-  // 10. B4: `board.drafts` with `:`/`.`, real kept `files` on disk, and `.gone` aside on delete
+  // 10. B4: `board.drafts` with `:`/`.`, independently computed 32-hex-char `board-files` path,
+  //     reject empty title+files (400), and `.gone` aside move with refreshed mtime.
   let draft_id = "new:board-1.2"
   let file_id = "f:1.png"
-  let owner_bf = tmp + "/board-files/" + ro_hashed_key(["ws-main", "u-a"])
-  let draft_bf = owner_bf + "/" + ro_hashed_key([draft_id])
+  let ws_sub_bytes = {
+    let a = "ws-main".to_bytes()
+    let b = "u-a".to_bytes()
+    let out = Bytes::new(a.length() + 1 + b.length())
+    for i in 0..<a.length() { out[i] = a[i] }
+    out[a.length()] = 0.to_byte()
+    for i in 0..<b.length() { out[a.length() + 1 + i] = b[i] }
+    out
+  }
+  let owner_h32 = node_sha256_32(ws_sub_bytes)
+  let draft_h32 = node_sha256_32(draft_id.to_bytes())
+  let file_h32 = node_sha256_32(file_id.to_bytes())
+  let owner_bf = tmp + "/board-files/" + owner_h32
+  let draft_bf = owner_bf + "/" + draft_h32
   let _ = station_sys::mkdir_p(draft_bf)
-  let _ = station_sys::write_file_atomic(draft_bf + "/" + ro_hashed_key([file_id]), "PNG!".to_bytes(), 420)
+  let _ = station_sys::write_file_atomic(draft_bf + "/" + file_h32, "PNG!".to_bytes(), 420)
+  // Reject non-gone draft with empty title and empty files (400)
+  let empty_draft_body = "{\"drafts\":[{\"id\":\"empty-1\",\"owner\":\"u-a\",\"rev\":1,\"gone\":false,\"at\":100,\"updatedAt\":100,\"title\":\"   \",\"station\":\"st-smoke\"}]}".to_bytes()
+  match api.handle_authenticated_api(store, agents, home_peer, "PUT", "/board/drafts", [], empty_draft_body, 1700000005000L) {
+    station_http::HandlerAction::Respond(r) => {
+      if r.status != 400 {
+        return Err("empty non-gone draft must return 400, got " + r.status.to_string())
+      }
+    }
+    _ => return Err("empty non-gone draft unexpected action")
+  }
   let put_draft_body = ("{\"drafts\":[{\"id\":\"" + draft_id + "\",\"owner\":\"u-a\",\"rev\":1,\"gone\":false,\"at\":100,\"updatedAt\":100,\"title\":\"Hello\",\"station\":\"st-smoke\",\"files\":[{\"id\":\"" + file_id + "\",\"name\":\"a.png\",\"size\":4}]}]}").to_bytes()
   match api.handle_authenticated_api(store, agents, home_peer, "PUT", "/board/drafts", [], put_draft_body, 1700000005000L) {
     station_http::HandlerAction::Respond(r) => {
@@ -2998,7 +3096,8 @@ pub fn run_w17c3a_sqlite_selftest() -> Result[Unit, String] {
   let gone_draft_body = ("{\"drafts\":[{\"id\":\"" + draft_id + "\",\"owner\":\"u-a\",\"rev\":2,\"gone\":true,\"updatedAt\":200}]}").to_bytes()
   match api.handle_authenticated_api(store, agents, home_peer, "PUT", "/board/drafts", [], gone_draft_body, 1700000005000L) {
     station_http::HandlerAction::Respond(r) => {
-      let gone_dst = owner_bf + "/.gone/" + ro_hashed_key([draft_id]) + "/" + ro_hashed_key([file_id])
+      let gone_dir = owner_bf + "/.gone/" + draft_h32
+      let gone_dst = gone_dir + "/" + file_h32
       if r.status != 200 || !(agents.jobs.fs.exists)(gone_dst) {
         return Err("prod PUT /board/drafts gone did not move file to .gone: status=" + r.status.to_string())
       }

@@ -1,0 +1,110 @@
+// Wave 17C-3A R4 N1 regression test:
+// Async `EdgeMuxHub` `tar.file` extraction suspends the admin stream without blocking
+// or dropping concurrent unrelated `ShellDone` or `Sys` events (0 drops), then routes
+// the `tar.file` completion to `SESSION_TOK_TAR_FILE`.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "station_whole"
+
+test "w17c3a R4 N1: async tar.file on EdgeMuxHub delivers concurrent unrelated ShellDone and Sys with 0 drops" {
+  let submitted_ops : Array[(Int64, String, String)] = []
+  let fake_transport = builders_core::MuxTransport::{
+    call_async: fn(id : Int64, op : String, args : String, _bytes : Option[Bytes]) -> Unit {
+      submitted_ops.push((id, op, args))
+    },
+    call_sync: fn(_op : String, _args : String) -> String { "{}" },
+    write_stdout_line: fn(_s : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _b : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { 1700000000000L },
+    wall_ms: fn() -> Int64 { 1700000000000L },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] { None },
+  }
+  let hub = station_whole::EdgeMuxHub::from_transport(fake_transport)
+  let mut unrelated_done_seen = false
+  let mut unrelated_sys_seen = false
+  let mut tar_file_done_seen = false
+  let mut tar_file_size : Int64 = 0L
+
+  hub.set_router(fn(tok : builders_core::MuxToken, done : host_shim::ShellDone) -> Bool {
+    match tok {
+      builders_core::MuxToken::Tagged(owner, kind, sid) => {
+        if kind == RUNNER_TOK_UNIX_READ && owner == 7 && sid == 99L {
+          unrelated_done_seen = true
+          return true
+        }
+        if kind == SESSION_TOK_TAR_FILE && sid == 42L {
+          match builders_core::decode_shell_done(done) {
+            Ok((Some(v), _)) => {
+              match base_codec::json_get(v, "found") {
+                Some(base_codec::Json::Bool(true)) => {
+                  tar_file_done_seen = true
+                  match base_codec::json_get(v, "size") {
+                    Some(base_codec::Json::Num(n, _)) => tar_file_size = n.to_int64()
+                    _ => ()
+                  }
+                }
+                _ => ()
+              }
+            }
+            _ => ()
+          }
+          return true
+        }
+        false
+      }
+      _ => false
+    }
+  })
+  hub.set_sys_router(fn(ev_id : Int64, _payload : Bytes) -> Bool {
+    if ev_id == 777L {
+      unrelated_sys_seen = true
+      return true
+    }
+    false
+  })
+
+  // 1. Issue async `tar.file` (archived upload extract) + an unrelated in-flight `tcp.read`
+  let tar_args = base_codec::json_stringify(base_codec::json_obj([
+    ("path", base_codec::json_str("/tmp/room/workspace.tar.zst")),
+    ("wanted", base_codec::json_arr([base_codec::json_str("uploads"), base_codec::json_str("packed.bin")])),
+    ("out", base_codec::json_str("/tmp/out.bin")),
+  ]))
+  let tar_call_id = hub.call_async_raw(builders_core::MuxToken::Tagged(0, SESSION_TOK_TAR_FILE, 42L), "tar.file", tar_args, None)
+  let runner_call_id = hub.call_async_raw(builders_core::MuxToken::Tagged(7, RUNNER_TOK_UNIX_READ, 99L), "tcp.read", "{\"id\":99}", None)
+
+  // 2. While `tar.file` is suspended, deliver an unrelated `ShellDone` AND an unrelated `Sys` event.
+  //    Neither may be swallowed or dropped!
+  hub.deliver_host_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+    id: runner_call_id,
+    json: "{\"eof\":false}",
+    bytes: Some("ping".to_bytes()),
+    error: "",
+  }))
+  hub.deliver_host_event(host_shim::HostEvent::Sys(777L, "sys-ev".to_bytes()))
+
+  if !unrelated_done_seen {
+    panic("unrelated ShellDone was lost while tar.file was suspended")
+  }
+  if !unrelated_sys_seen {
+    panic("unrelated Sys event was lost while tar.file was suspended")
+  }
+  if tar_file_done_seen {
+    panic("tar.file should still be pending before its ShellDone arrives")
+  }
+
+  // 3. Now `tar.file` finishes -> routed to `SESSION_TOK_TAR_FILE` with `found: true, size: 12345`
+  hub.deliver_host_event(host_shim::HostEvent::ShellDone(host_shim::ShellDone::{
+    id: tar_call_id,
+    json: "{\"found\":true,\"size\":12345}",
+    bytes: None,
+    error: "",
+  }))
+  if !tar_file_done_seen || tar_file_size != 12345L {
+    panic("tar.file completion was not routed properly")
+  }
+  if hub.deferred_done_dropped_count() != 0L || hub.deferred_sys_dropped_count() != 0L {
+    panic("EdgeMuxHub dropped events during async tar.file")
+  }
+}
