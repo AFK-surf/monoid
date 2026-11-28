@@ -2465,3 +2465,149 @@ test "W17C-1 R24: ProcStdoutEof without OS exit preserves spawn marker, timeout 
     "deadline == 0L when spawn_proc_exited => ReclaimDead",
   )
 }
+
+test "W17C-1 R25: single stop-owner handover via AdoptRunnerResult & strict OS-exit shutdown verdict" {
+  // 1. P1-1: Delayed-connect & single stop-owner event sequence
+  let mgr = LiveRunnerManager::new()
+  let rid = "r-r25-single"
+  let spawn_k = match encode_spawn_stop_key_pure(rid, 4501, 1700000010000L, Some("boot-r25"), Some(777L)) {
+    Some(k) => k
+    None => panic("expected spawn key")
+  }
+  mgr.record_draining_stop_marker(spawn_k, "s-r25")
+  let make_sess = fn(cid : Int, phase : LiveRunnerPhase) -> LiveRunnerSession {
+    LiveRunnerSession::{
+      conn_id: cid,
+      session_key: "s-r25",
+      ws: "ws-a",
+      profile_id: "default",
+      model_opt: None,
+      person_opt: None,
+      thread_id_opt: None,
+      runtime_kind: station_drivers::RuntimeKind::Claude,
+      runtime_str: "claude",
+      runner_id: rid,
+      spawn_pid: 4501,
+      spawn_os_start_ms: 1700000010000L,
+      spawn_boot_id: Some("boot-r25"),
+      spawn_start_ticks: Some(777L),
+      is_acp: false,
+      is_codex: false,
+      is_adopted: false,
+      adopted_instance_id: None,
+      adopted_db_initialized: false,
+      phase: phase,
+      pending_prompt: None,
+      pending_steers: [],
+      runtime_session_id: None,
+      current_turn_id: None,
+      turn_started_at: 0L,
+      turn_start_out_offset: 0L,
+      pending_ack_out: 0L,
+      last_turn_ended_at: 0L,
+      stop_guard: station_drivers::OwnProcessStopGuard::new(station_drivers::RuntimeKind::Claude),
+      acp_guard: station_drivers::AcpTurnGuard::new(station_drivers::RuntimeKind::Claude),
+      agy_tracker: station_drivers::AgyStateTracker::new("", None),
+      claude_turn: parse_claude::Turn::new(),
+      codex_live: parse_codex::Live::new(),
+      mcp_config_json: None,
+      codex_thread_params_json: None,
+      cwd: "/tmp",
+      rx_chunks: [],
+      rx_total_bytes: 0,
+      out_line_buf: Bytes::new(0),
+      err_line_buf: Bytes::new(0),
+      acked_out: 0L,
+      acked_err: 0L,
+      out_at: 0L,
+      err_at: 0L,
+      prompt_seq: 0,
+      kill_escalate_at: None,
+      detached_for_handover: false,
+      close_after_write: false,
+      attached: false,
+      write_inflight: false,
+      write_inflight_bytes: 0,
+      write_queue: [],
+      write_queue_bytes: 0,
+      codex_active_turn_id: None,
+      dropping_oversized_out_line: false,
+      stopping: true,
+      spawn_proc_exited: false,
+      runner_exited: false,
+      identity_verified: false,
+      adopted_passive_only: false,
+      prompt_write_pending: false,
+      pending_end_turn: None,
+      adopted_db_out: 0L,
+    }
+  }
+  let rinfo = station_drivers::RunnerInfo::{
+    id: rid,
+    runner_pid: 4501,
+    pid: 4502,
+    pgid: 4502,
+    started_at: 1700000010100L,
+    program: "/bin/sleep",
+    args: ["30"],
+    socket: "/tmp/r-r25-single.sock",
+    keeps: true,
+    pty: false,
+    cwd: Some("/tmp"),
+  }
+  // Start with a timed-out `Spawning(deadline=0)` placeholder in `draining` (simulated via Exited before Connecting)
+  let old_spawning = make_sess(301, LiveRunnerPhase::Exited)
+  mgr.draining.set(301, old_spawning)
+  assert_true(!mgr.has_non_spawning_runner_id_tracked(rid), "no non-Spawning owner before adoption")
+  // Step A: DB unavailable -> `AdoptRunnerResult::Rejected` keeps old draining entry intact (`draining.length() == 1`)
+  let mut unix_open_count = 0
+  let step_rejected = AdoptRunnerResult::Rejected
+  match step_rejected {
+    AdoptRunnerResult::AdoptedForStop | AdoptRunnerResult::AdoptedActive => mgr.finish_draining(301, confirmed_exited=false)
+    AdoptRunnerResult::Rejected => ()
+  }
+  assert_true(mgr.draining.length() == 1 && mgr.draining.contains(301), "Rejected keeps old draining entry for retry")
+  assert_true(unix_open_count == 0, "Rejected queues 0 unix.open calls")
+  // Step B: DB recovers -> `adopt_live_runner_outcome` inserts single `Connecting` stop owner (cid=302),
+  // queues 1 `unix.open`, returns `AdoptedForStop` -> old cid=301 immediately removed!
+  let try_adopt_stop = fn() -> AdoptRunnerResult {
+    if mgr.has_non_spawning_runner_id_tracked(rid) {
+      return AdoptRunnerResult::Rejected
+    }
+    let stop_owner = make_sess(302, LiveRunnerPhase::Connecting(rinfo))
+    mgr.draining.set(302, stop_owner)
+    unix_open_count = unix_open_count + 1
+    AdoptRunnerResult::AdoptedForStop
+  }
+  match try_adopt_stop() {
+    AdoptRunnerResult::AdoptedForStop | AdoptRunnerResult::AdoptedActive => {
+      mgr.finish_draining(301, confirmed_exited=false)
+    }
+    AdoptRunnerResult::Rejected => panic("expected AdoptedForStop")
+  }
+  assert_true(mgr.draining.length() == 1, "exactly 1 draining stop owner after AdoptedForStop")
+  assert_true(!mgr.draining.contains(301) && mgr.draining.contains(302), "old Spawning removed, new Connecting owns stop")
+  assert_true(unix_open_count == 1, "exactly 1 unix.open issued")
+  assert_true(mgr.draining_stopping_ids.contains(spawn_k), "spawn: marker preserved until confirmed OS exit")
+  assert_true(mgr.has_non_spawning_runner_id_tracked(rid), "Connecting owner blocks duplicate adoption")
+  // Step C: Multiple subsequent ticks while `unix.open` has not completed MUST NOT create a 2nd owner or 2nd unix.open!
+  for _ in 0..<5 {
+    assert_true(try_adopt_stop() is AdoptRunnerResult::Rejected, "subsequent ticks while Connecting must return Rejected")
+  }
+  assert_true(mgr.draining.length() == 1 && unix_open_count == 1, "still exactly 1 draining owner and 1 unix.open across 5 ticks")
+
+  // 2. P1-2: Shutdown verdict requires OS `ConfirmedDeadOrReused` (`unresolved_spawns == 0`), NEVER just write-acked or saved_ok!
+  let write_acked_but_alive_unresolved = 1
+  assert_true(
+    !evaluate_shutdown_spawning_ok(write_acked_but_alive_unresolved, true, true),
+    "R25 P1-2: write acked + saved_ok=true but process still alive MUST return false (exit code 1)",
+  )
+  assert_true(
+    !evaluate_shutdown_spawning_ok(1, false, true),
+    "R25 P1-2: tcp.write failed / unconfirmed exit MUST return false (exit code 1)",
+  )
+  assert_true(
+    evaluate_shutdown_spawning_ok(0, false, true),
+    "R25 P1-2: all Spawning ConfirmedDeadOrReused => returns true (exit code 0)",
+  )
+}

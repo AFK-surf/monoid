@@ -1955,8 +1955,19 @@ pub fn decide_draining_spawning_tick(
   }
 }
 
-/// R24 P1-3: Full shutdown succeeds iff zero `Spawning` runners remain unresolved (neither confirmed
-/// exited nor stopped via `<rid>.sock`) AND any unconfirmed stop markers were durably persisted.
+/// R25 P1-1: 3-state outcome for `adopt_live_runner_outcome`:
+/// - `AdoptedActive`: adopted into `self.sessions` as an authorized live runner;
+/// - `AdoptedForStop`: adopted into `self.draining` to stop via `<rid>.sock` (`attach + TERM`);
+/// - `Rejected`: not adopted (duplicate live owner, missing/closed DB, or `unix.open` queue failure).
+pub enum AdoptRunnerResult {
+  AdoptedActive
+  AdoptedForStop
+  Rejected
+}
+
+/// R24 P1-3 / R25 P1-2: Full shutdown succeeds iff zero `Spawning` runners remain unconfirmed dead
+/// (`unresolved_spawning_count == 0`, i.e., every `Spawning` runner reached `ConfirmedDeadOrReused`)
+/// AND any remaining unconfirmed stop markers were durably persisted.
 pub fn evaluate_shutdown_spawning_ok(
   unresolved_spawning_count : Int,
   has_unconfirmed_markers : Bool,
@@ -2483,6 +2494,35 @@ fn LiveRunnerManager::has_runner_id_tracked(self : LiveRunnerManager, runner_id 
   false
 }
 
+/// R25 P1-1: Returns true if any non-`Spawning`, non-`Exited` session in `sessions` or `draining`
+/// already owns `runner_id` (prevents duplicate socket/stop owners for the same runner instance).
+pub fn LiveRunnerManager::has_non_spawning_runner_id_tracked(self : LiveRunnerManager, runner_id : String) -> Bool {
+  if runner_id.length() == 0 {
+    return false
+  }
+  let is_active_owner = fn(p : LiveRunnerPhase) -> Bool {
+    match p {
+      LiveRunnerPhase::Spawning(_, _, _, _, _) | LiveRunnerPhase::Exited => false
+      _ => true
+    }
+  }
+  let skeys = self.sessions.keys()
+  for i in 0..<skeys.length() {
+    match self.sessions.get(skeys[i]) {
+      Some(s) => if s.runner_id == runner_id && is_active_owner(s.phase) { return true }
+      None => ()
+    }
+  }
+  let dcids = self.draining.keys()
+  for i in 0..<dcids.length() {
+    match self.draining.get(dcids[i]) {
+      Some(ds) => if ds.runner_id == runner_id && is_active_owner(ds.phase) { return true }
+      None => ()
+    }
+  }
+  false
+}
+
 /// R21/R23: Unified OS-verified stop-marker sweep (ZERO 30s `ENOENT` heuristic!).
 /// - `spawn:` markers are removed ONLY when `verify_spawn_id(...)` returns `ConfirmedDeadOrReused`
 ///   (`ESRCH`, Linux `boot_id`/`start_ticks` mismatch, or macOS/Win `|actual - expected| > 100ms`).
@@ -2740,16 +2780,17 @@ fn live_runner_info_of(phase : LiveRunnerPhase) -> Option[station_drivers::Runne
   }
 }
 
-fn live_runner_send_sock_raw(ctx : DaemonCtx, conn_id : Int, sock_id : Int64, payload : String) -> Unit {
+fn live_runner_send_sock_raw(ctx : DaemonCtx, conn_id : Int, sock_id : Int64, payload : String) -> Bool {
   if sock_id < 0L {
-    return
+    return false
   }
-  let _ = ctx.mux_role.call_async_raw(
+  let call_id = ctx.mux_role.call_async_raw(
     builders_core::MuxToken::Tagged(conn_id, LIVE_RUNNER_TOK_UNIX_WRITE, sock_id),
     "tcp.write",
     base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
     Some(payload.to_bytes()),
   )
+  call_id > 0L
 }
 
 /// Strictly FIFO-serialized per-socket write queue with total cap
@@ -2770,7 +2811,7 @@ fn live_runner_send_sess(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id : In
   }
   sess.write_inflight = true
   sess.write_inflight_bytes = plen
-  live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, payload)
+  let _ = live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, payload)
   true
 }
 
@@ -2801,7 +2842,7 @@ fn live_runner_on_write_done(ctx : DaemonCtx, sess : LiveRunnerSession, sock_id 
   }
   sess.write_inflight = true
   sess.write_inflight_bytes = next_bytes
-  live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, sb.to_string())
+  let _ = live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, sb.to_string())
 }
 
 fn live_runner_close_sock(ctx : DaemonCtx, conn_id : Int, sock_id : Int64) -> Unit {
@@ -3944,7 +3985,8 @@ fn query_persisted_runtime_session_id(
 /// after verifying real-time launch policy (`resolve_session_launch_policy`). If authorization was
 /// revoked or the session is archived, connects and sends `signal TERM group:true` + `done` so
 /// `stillfail-runner` cleanly tears down its own process group without adopting it as authorized.
-pub fn LiveRunnerManager::adopt_live_runner(
+/// R25 P1-1: Returns 3-state `AdoptRunnerResult` and enforces single non-`Spawning` owner per `rinfo.id`.
+pub fn LiveRunnerManager::adopt_live_runner_outcome(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
@@ -3953,17 +3995,17 @@ pub fn LiveRunnerManager::adopt_live_runner(
   session_key : String,
   now_ms : Int64,
   wall_ms : Int64,
-) -> Bool {
-  if rinfo.socket.length() == 0 {
-    return false
+) -> AdoptRunnerResult {
+  if rinfo.socket.length() == 0 || self.has_non_spawning_runner_id_tracked(rinfo.id) {
+    return AdoptRunnerResult::Rejected
   }
   let st = match core.store.require_open() {
     Ok(s) => s
-    Err(_) => return false
+    Err(_) => return AdoptRunnerResult::Rejected
   }
   let row = match st.get_session(session_key) {
     Ok(Some(r)) => r
-    _ => return false
+    _ => return AdoptRunnerResult::Rejected
   }
   let rt_kind = match station_drivers::runtime_kind_from_str(row.runtime) {
     Some(k) => k
@@ -4209,14 +4251,41 @@ pub fn LiveRunnerManager::adopt_live_runner(
       }
     }
   }
-  let _ = ctx.mux_role.call_async_raw(
+  let open_call_id = ctx.mux_role.call_async_raw(
     builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
     "unix.open",
     base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
     None,
   )
+  if open_call_id <= 0L {
+    if unauthorized_stop {
+      self.draining.remove(cid)
+    } else {
+      self.sessions.remove(session_key)
+      self.by_conn_id.remove(cid)
+    }
+    return AdoptRunnerResult::Rejected
+  }
   ctx.log("[live-runner] adopting live runner " + rinfo.id + " (pid=" + rinfo.runner_pid.to_string() + ", stop=" + unauthorized_stop.to_string() + ") for " + session_key)
-  !unauthorized_stop
+  if unauthorized_stop {
+    AdoptRunnerResult::AdoptedForStop
+  } else {
+    AdoptRunnerResult::AdoptedActive
+  }
+}
+
+pub fn LiveRunnerManager::adopt_live_runner(
+  self : LiveRunnerManager,
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  cfg_raw : base_codec::Json,
+  rinfo : station_drivers::RunnerInfo,
+  session_key : String,
+  now_ms : Int64,
+  wall_ms : Int64,
+) -> Bool {
+  self.adopt_live_runner_outcome(ctx, core, cfg_raw, rinfo, session_key, now_ms, wall_ms)
+  is AdoptRunnerResult::AdoptedActive
 }
 
 /// Pumps `actor.started_prompts` and active `ActorWork::Steer` items across all Hub actors,
@@ -6009,13 +6078,15 @@ fn LiveRunnerManager::handle_draining_spawn_timeout(
         && rinfo.started_at > 0L
         && rinfo.socket.length() > 0 {
           let late_cfg = live_config_raw(core, ctx.cfg_raw)
-          let adopted = self.adopt_live_runner(ctx, core, late_cfg, rinfo, dsess.session_key, now_ms, wall_ms)
-          if adopted {
-            let _ = child.close()
-            self.by_spawn_ev.remove(ev_id)
-            dsess.phase = LiveRunnerPhase::Exited
-            self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=false)
-            adopted_for_stop = true
+          match self.adopt_live_runner_outcome(ctx, core, late_cfg, rinfo, dsess.session_key, now_ms, wall_ms) {
+            AdoptRunnerResult::AdoptedForStop | AdoptRunnerResult::AdoptedActive => {
+              let _ = child.close()
+              self.by_spawn_ev.remove(ev_id)
+              dsess.phase = LiveRunnerPhase::Exited
+              self.finish_draining(cid, ctx_opt=Some(ctx), confirmed_exited=false)
+              adopted_for_stop = true
+            }
+            AdoptRunnerResult::Rejected => ()
           }
         }
       }
@@ -6807,8 +6878,9 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
     let _ = sess.agy_tracker.on_dispose()
     match sess.phase {
       LiveRunnerPhase::Spawning(ev_id, child, _, _, _) => {
-        // R24 P1-3: Persist `spawn:` marker first, keep `child` open during bounded 2s wait for
-        // `<rid>.json` publication or confirmed exit, and stop via verified `<rid>.sock` (NEVER blind kill!).
+        // R24/R25 P1-2: `Spawning` is always pre-delivery, so send `attach + TERM group:true + done`
+        // once `<rid>.json` publishes so `stillfail-runner` terminates its child process group and exits
+        // immediately, and confirm exit via `ConfirmedDeadOrReused` within the 2s shutdown window.
         match encode_spawn_stop_key_for_session(sess) {
           Some(sk) => {
             self.record_draining_stop_marker(sk, sess.session_key)
@@ -6816,7 +6888,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
           }
           None => ()
         }
-        pending_spawns.push((sess, ev_id, child, station_drivers::encode_runner_attach() + stop_payload))
+        pending_spawns.push((sess, ev_id, child, station_drivers::encode_runner_attach() + term_and_done_payload))
       }
       LiveRunnerPhase::Connecting(info) => {
         safe_kill_runner_info(info)
@@ -6828,7 +6900,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
       | LiveRunnerPhase::CodexOpening(_, sock_id)
       | LiveRunnerPhase::Ready(_, sock_id)
       | LiveRunnerPhase::Stopping(_, sock_id, _, _) => {
-        live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, stop_payload)
+        let _ = live_runner_send_sock_raw(ctx, sess.conn_id, sock_id, stop_payload)
         need_flush = true
         to_close.push((sess.conn_id, sock_id))
         sess.phase = LiveRunnerPhase::Exited
@@ -6840,16 +6912,17 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
     let _ = self.sync_handover_state_with_ctx(ctx)
   }
   let spawn_open_inflight : Map[Int, String] = Map::new()
-  let spawn_socket_sent : Map[Int, Bool] = Map::new()
+  let spawn_write_inflight : Map[Int, Int64] = Map::new()
+  let spawn_write_acked : Map[Int, Bool] = Map::new()
   let spawn_confirmed_dead : Map[Int, Bool] = Map::new()
   if pending_spawns.length() > 0 {
-    // timer: bounded 2s wait for Spawning runners to publish <rid>.sock or exit on full shutdown
+    // timer: bounded 2s wait for Spawning runners to publish <rid>.sock, ack TERM+done, and confirm OS exit
     let spawn_deadline = host_shim::now_ms() + 2000L
     while true {
       for pi in 0..<pending_spawns.length() {
         let (psess, _, _, attach_payload) = pending_spawns[pi]
         let cid = psess.conn_id
-        if spawn_confirmed_dead.contains(cid) || spawn_socket_sent.contains(cid) || spawn_open_inflight.contains(cid) {
+        if spawn_confirmed_dead.contains(cid) {
           continue
         }
         match verify_spawn_os_identity(psess.spawn_pid, psess.spawn_os_start_ms, psess.spawn_boot_id, psess.spawn_start_ticks) {
@@ -6858,44 +6931,47 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
             let _ = self.clear_draining_stop_target(None, psess.runner_id, psess.spawn_pid)
           }
           SpawnIdentityVerdict::ConfirmedSame => {
-            match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, psess.runner_id) {
-              RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
-                if rinfo.id == psess.runner_id
-                && rinfo.runner_pid == psess.spawn_pid
-                && rinfo.started_at > 0L
-                && rinfo.socket.length() > 0 {
-                  let _ = ctx.mux_role.call_async_raw(
-                    builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
-                    "unix.open",
-                    base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
-                    None,
-                  )
-                  spawn_open_inflight.set(cid, attach_payload)
+            if !spawn_open_inflight.contains(cid) && !spawn_write_inflight.contains(cid) && !spawn_write_acked.contains(cid) {
+              match probe_runner_file(ctx.ops_fs, ctx.data, ctx.sep, psess.runner_id) {
+                RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
+                  if rinfo.id == psess.runner_id
+                  && rinfo.runner_pid == psess.spawn_pid
+                  && rinfo.started_at > 0L
+                  && rinfo.socket.length() > 0 {
+                    let call_id = ctx.mux_role.call_async_raw(
+                      builders_core::MuxToken::Tagged(cid, LIVE_RUNNER_TOK_UNIX_OPEN, 0L),
+                      "unix.open",
+                      base_codec::json_stringify(base_codec::json_obj([("path", base_codec::json_str(rinfo.socket))])),
+                      None,
+                    )
+                    if call_id > 0L {
+                      spawn_open_inflight.set(cid, attach_payload)
+                    }
+                  }
                 }
+                _ => ()
               }
-              _ => ()
             }
           }
           SpawnIdentityVerdict::Unknown => ()
         }
       }
-      let mut all_resolved = true
+      let mut all_dead = true
       for pi in 0..<pending_spawns.length() {
         let (psess, _, _, _) = pending_spawns[pi]
-        let cid = psess.conn_id
-        if !spawn_confirmed_dead.contains(cid) && !spawn_socket_sent.contains(cid) {
-          all_resolved = false
+        if !spawn_confirmed_dead.contains(psess.conn_id) {
+          all_dead = false
           break
         }
       }
-      if all_resolved && spawn_open_inflight.length() == 0 {
+      if all_dead {
         break
       }
       if host_shim::now_ms() >= spawn_deadline {
         break
       }
       let _ = ctx.edge_hub.pump_one(20L)
-      if spawn_open_inflight.length() > 0 {
+      if spawn_open_inflight.length() > 0 || spawn_write_inflight.length() > 0 {
         let _ = ctx.edge_hub.drain_deferred_done(fn(tok, d) -> Bool {
           match tok {
             builders_core::MuxToken::Tagged(cid, kind, _) => {
@@ -6908,15 +6984,30 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
                         Some(base_codec::Json::Num(n, _)) => {
                           let sid = n.to_int64()
                           if sid >= 0L {
-                            live_runner_send_sock_raw(ctx, cid, sid, payload)
-                            spawn_socket_sent.set(cid, true)
-                            to_close.push((cid, sid))
-                            need_flush = true
+                            if live_runner_send_sock_raw(ctx, cid, sid, payload) {
+                              spawn_write_inflight.set(cid, sid)
+                              to_close.push((cid, sid))
+                              need_flush = true
+                            } else {
+                              live_runner_close_sock(ctx, cid, sid)
+                            }
                           }
                         }
                         _ => ()
                       }
                       _ => ()
+                    }
+                    return true
+                  }
+                  None => ()
+                }
+              } else if kind == LIVE_RUNNER_TOK_UNIX_WRITE {
+                match spawn_write_inflight.get(cid) {
+                  Some(sid) => {
+                    spawn_write_inflight.remove(cid)
+                    match builders_core::decode_shell_done(d) {
+                      Ok(_) => spawn_write_acked.set(cid, true)
+                      Err(_) => live_runner_close_sock(ctx, cid, sid)
                     }
                     return true
                   }
@@ -6954,8 +7045,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
   let mut unresolved_spawns = 0
   for pi in 0..<pending_spawns.length() {
     let (psess, _, _, _) = pending_spawns[pi]
-    let cid = psess.conn_id
-    if !spawn_confirmed_dead.contains(cid) && !spawn_socket_sent.contains(cid) {
+    if !spawn_confirmed_dead.contains(psess.conn_id) {
       unresolved_spawns = unresolved_spawns + 1
     }
   }
