@@ -394,8 +394,151 @@ pub fn shared_account_lock_for_dir(dir_key : String) -> effect::Semaphore {
   }
 }
 
+/// SQLite `meta` key persisted inside an account's `<sub_db>` when a confirmed 401 refresh hits
+/// cross-process `.accounts.lock` contention, so the rejected `(session, refresh)` tuple survives
+/// `mb_core_stop()` / process restart without needing `.accounts.lock`.
+pub let META_REJECTED_TUPLES_KEY : String = "membership:rejected_tuples"
+
+let MAX_REJECTED_TUPLES : Int = 8
+
+pub fn parse_rejected_tuples(raw : String) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let item = xs[i]
+        let sid = match base_codec::json_get(item, "session") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        let rtok = match base_codec::json_get(item, "refresh") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        if sid.length() > 0 || rtok.length() > 0 {
+          out.push((sid, rtok))
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+pub fn serialize_rejected_tuples(tuples : Array[(String, String)]) -> String {
+  let arr : Array[base_codec::Json] = []
+  let start = if tuples.length() > MAX_REJECTED_TUPLES {
+    tuples.length() - MAX_REJECTED_TUPLES
+  } else {
+    0
+  }
+  for i in start..<tuples.length() {
+    let (sid, rtok) = tuples[i]
+    arr.push(base_codec::json_obj([
+      ("session", base_codec::json_str(sid)),
+      ("refresh", base_codec::json_str(rtok)),
+    ]))
+  }
+  base_codec::json_stringify(base_codec::json_arr(arr))
+}
+
+/// Check whether `(session, refresh)` was already persisted as Cloud-rejected (401) in `db`.
+pub fn is_tuple_rejected_in_db(db : sql::Sql, session : String, refresh : String) -> Bool {
+  if session.length() == 0 && refresh.length() == 0 {
+    return false
+  }
+  match store::get_meta(db, META_REJECTED_TUPLES_KEY) {
+    sql::SqlResult::Ok(Some(raw)) => {
+      let tuples = parse_rejected_tuples(raw)
+      for i in 0..<tuples.length() {
+        let (sid, rtok) = tuples[i]
+        if sid == session && rtok == refresh {
+          return true
+        }
+      }
+      false
+    }
+    _ => false
+  }
+}
+
+/// Synchronously persist a confirmed Cloud-rejected `(session, refresh)` tuple into `db`'s `meta`
+/// table (0ms local SQLite write, requires NO `.accounts.lock`, survives stop/restart).
+pub fn record_rejected_tuple_in_db(
+  db : sql::Sql,
+  session : String,
+  refresh : String,
+) -> Result[Unit, String] {
+  if session.length() == 0 && refresh.length() == 0 {
+    return Ok(())
+  }
+  let existing : Array[(String, String)] = match store::get_meta(db, META_REJECTED_TUPLES_KEY) {
+    sql::SqlResult::Ok(Some(raw)) => parse_rejected_tuples(raw)
+    _ => []
+  }
+  for i in 0..<existing.length() {
+    let (sid, rtok) = existing[i]
+    if sid == session && rtok == refresh {
+      return Ok(())
+    }
+  }
+  existing.push((session, refresh))
+  match store::put_meta(db, META_REJECTED_TUPLES_KEY, serialize_rejected_tuples(existing)) {
+    sql::SqlResult::Ok(_) => Ok(())
+    sql::SqlResult::Err(e) => Err(e.to_string())
+  }
+}
+
+/// Clear stale rejected-tuple records from `db` once a newer valid session/token is activated.
+pub fn clear_rejected_tuples_in_db(db : sql::Sql) -> Result[Unit, String] {
+  match store::delete_meta(db, META_REJECTED_TUPLES_KEY) {
+    sql::SqlResult::Ok(_) => Ok(())
+    sql::SqlResult::Err(e) => Err(e.to_string())
+  }
+}
+
+/// Result of the atomic publication-boundary disk re-verification before installing a staged DB.
+pub enum PublicationCheckResult {
+  Publish(views::StoredAccount, String, Array[views::StoredAccount], Map[String, String])
+  RetryLater(String)
+  EmptyDisk
+  Superseded(views::StoredAccount, String)
+}
+
+/// Re-verify latest disk `accounts` right at the publication boundary BEFORE installing a staged
+/// account DB: guarantees a candidate deleted or replaced during async staging is NEVER published!
+pub fn verify_publication_candidate(
+  disk_read : HostStorageRead,
+  staged_sub : String,
+  staged_session : String,
+  staged_refresh : String,
+) -> PublicationCheckResult {
+  match disk_read {
+    HostStorageRead::ReadError(reason) => PublicationCheckResult::RetryLater(reason)
+    HostStorageRead::Absent => PublicationCheckResult::EmptyDisk
+    HostStorageRead::Found(doc) => {
+      let disk_sessions = parse_stored_account_sessions(doc)
+      match parse_stored_accounts_strict(doc) {
+        None => PublicationCheckResult::RetryLater("accounts disk invalid json")
+        Some(disk_list) => {
+          if disk_list.length() == 0 {
+            return PublicationCheckResult::EmptyDisk
+          }
+          let cur = disk_list[0]
+          let cur_sid = match disk_sessions.get(cur.sub) { Some(s) => s; None => "" }
+          if cur.sub == staged_sub && cur_sid == staged_session && cur.refresh == staged_refresh {
+            PublicationCheckResult::Publish(cur, cur_sid, disk_list, disk_sessions)
+          } else {
+            PublicationCheckResult::Superseded(cur, cur_sid)
+          }
+        }
+      }
+    }
+  }
+}
+
 enum PendingAccountReconcile {
-  Remove401(String, String, String, Int, String)
+  Remove401(String, String, String, Option[(String, String)], Int, String)
   Commit200(String, String, String, RefreshedTokens)
 }
 
@@ -405,56 +548,90 @@ pub struct AccountRefreshCoordinator {
   pending_reconcile : Map[String, PendingAccountReconcile]
   reconcile_gen : Map[String, Int]
   reconcile_running : Map[String, Bool]
+  reconcile_fibers : Map[String, effect::Fiber[Unit]]
+  mut rt : Option[effect::Runtime]
   mut stopped : Bool
   mut acquire_ext_lock_k : Option[((Result[Int64, String]) -> Unit) -> Unit]
+  mut try_acquire_ext_lock_now : Option[() -> Result[Int64, String]]
   mut release_ext_lock : Option[(Int64) -> Unit]
-  mut on_pending_401_gate : Option[(String, String, String) -> Unit]
+  mut on_401_quarantine : Option[(String, String, String, Option[(String, String)]) -> Unit]
+  mut on_pending_200_update : Option[(String, String, String, RefreshedTokens) -> Unit]
 }
 
-pub fn AccountRefreshCoordinator::new() -> AccountRefreshCoordinator {
+pub fn AccountRefreshCoordinator::new(
+  rt : Option[effect::Runtime] = None,
+) -> AccountRefreshCoordinator {
   AccountRefreshCoordinator::{
     lock: effect::Semaphore::new(1),
     in_flight: Map::new(),
     pending_reconcile: Map::new(),
     reconcile_gen: Map::new(),
     reconcile_running: Map::new(),
+    reconcile_fibers: Map::new(),
+    rt: rt,
     stopped: false,
     acquire_ext_lock_k: None,
+    try_acquire_ext_lock_now: None,
     release_ext_lock: None,
-    on_pending_401_gate: None,
+    on_401_quarantine: None,
+    on_pending_200_update: None,
   }
 }
 
 /// Create an `AccountRefreshCoordinator` backed by the shared storage-directory write lock
 /// so multiple runtimes or concurrent login/refresh paths on the same `data_dir` strictly
 /// serialize all `accounts` disk CAS operations.
-pub fn AccountRefreshCoordinator::for_storage_dir(dir_key : String) -> AccountRefreshCoordinator {
+pub fn AccountRefreshCoordinator::for_storage_dir(
+  dir_key : String,
+  rt : Option[effect::Runtime] = None,
+) -> AccountRefreshCoordinator {
   AccountRefreshCoordinator::{
     lock: shared_account_lock_for_dir(dir_key),
     in_flight: Map::new(),
     pending_reconcile: Map::new(),
     reconcile_gen: Map::new(),
     reconcile_running: Map::new(),
+    reconcile_fibers: Map::new(),
+    rt: rt,
     stopped: false,
     acquire_ext_lock_k: None,
+    try_acquire_ext_lock_now: None,
     release_ext_lock: None,
-    on_pending_401_gate: None,
+    on_401_quarantine: None,
+    on_pending_200_update: None,
   }
 }
 
-/// Register a callback fired IMMEDIATELY when a confirmed 401 refresh encounters lock/disk
-/// contention (`accounts lock busy`), closing the active session's read gate BEFORE the
-/// coalesced background CAS reconcile acquires the lock.
-pub fn AccountRefreshCoordinator::set_on_pending_401_gate(
+/// Register a callback fired IMMEDIATELY (0ms, before any lock-wait sleep) when a confirmed 401
+/// refresh encounters lock/disk contention: persists the rejected tuple(s) to `<sub_db>` `meta`
+/// and transitions the runtime cleanly to `UnauthMemory`.
+pub fn AccountRefreshCoordinator::set_on_401_quarantine(
   self : AccountRefreshCoordinator,
-  cb : (String, String, String) -> Unit,
+  cb : (String, String, String, Option[(String, String)]) -> Unit,
 ) -> Unit {
-  self.on_pending_401_gate = Some(cb)
+  self.on_401_quarantine = Some(cb)
 }
 
-/// Stop any queued background CAS reconcile retries (called on `pion_core_runtime_stop`).
+/// Register a callback fired immediately when a 200 token rotation encounters lock/disk contention,
+/// updating active in-memory credentials while `Commit200` retries disk persistence in the background.
+pub fn AccountRefreshCoordinator::set_on_pending_200_update(
+  self : AccountRefreshCoordinator,
+  cb : (String, String, String, RefreshedTokens) -> Unit,
+) -> Unit {
+  self.on_pending_200_update = Some(cb)
+}
+
+/// Stop and immediately interrupt any sleeping background CAS reconcile fibers (called on `pion_core_runtime_stop`).
 pub fn AccountRefreshCoordinator::stop(self : AccountRefreshCoordinator) -> Unit {
   self.stopped = true
+  let fkeys = self.reconcile_fibers.keys()
+  for i in 0..<fkeys.length() {
+    match self.reconcile_fibers.get(fkeys[i]) {
+      Some(fib) => fib.interrupt()
+      None => ()
+    }
+  }
+  self.reconcile_fibers.clear()
   self.pending_reconcile.clear()
   self.reconcile_gen.clear()
   self.reconcile_running.clear()
@@ -464,26 +641,70 @@ pub fn AccountRefreshCoordinator::has_pending_reconcile(self : AccountRefreshCoo
   self.pending_reconcile.get(sub).is_some()
 }
 
-/// Attach an optional cross-process file-lock pair (`flock` / `LockFileEx`) acquired inside the
-/// in-process semaphore around every `accounts` read-modify-write CAS critical section and
-/// unconditionally released on all exit paths.
+/// Enqueue a background CAS removal for an already-persisted Cloud-rejected `(sub, orig_sid, orig_ref)`
+/// tuple discovered during startup or recovery.
+pub fn AccountRefreshCoordinator::enqueue_rejected_removal(
+  self : AccountRefreshCoordinator,
+  host : AccountRefreshHost,
+  sub : String,
+  orig_sid : String,
+  orig_ref : String,
+  alt_orig : Option[(String, String)] = None,
+) -> Unit {
+  self.schedule_reconcile(
+    host,
+    sub,
+    PendingAccountReconcile::Remove401(sub, orig_sid, orig_ref, alt_orig, 401, "persisted_rejected_session"),
+  )
+}
+
+/// Attach an optional cross-process file-lock pair (`flock` / `LockFileEx`) acquired around every
+/// `accounts` read-modify-write CAS critical section and unconditionally released on all exit paths.
+/// Pass `try_acquire_now` for 0ms single-shot non-blocking acquisition (used by 401 immediate
+/// quarantine and background reconcile retries so they never block 3s on lock contention).
 pub fn AccountRefreshCoordinator::set_external_file_lock(
   self : AccountRefreshCoordinator,
   acquire_k : ((Result[Int64, String]) -> Unit) -> Unit,
   release : (Int64) -> Unit,
+  try_acquire_now : Option[() -> Result[Int64, String]] = None,
 ) -> Unit {
   self.acquire_ext_lock_k = Some(acquire_k)
   self.release_ext_lock = Some(release)
+  self.try_acquire_ext_lock_now = try_acquire_now
 }
 
-fn AccountRefreshCoordinator::with_accounts_locks_k[T](
+fn AccountRefreshCoordinator::with_accounts_locks_impl_k[T](
   self : AccountRefreshCoordinator,
+  immediate_only : Bool,
   body : ((effect::Exit[T]) -> Unit) -> Unit,
   on_lock_err : (String) -> T,
   k : (effect::Exit[T]) -> Unit,
 ) -> Unit {
-  let acq_opt = self.acquire_ext_lock_k
   let rel_opt = self.release_ext_lock
+  if immediate_only {
+    match self.try_acquire_ext_lock_now {
+      Some(try_now) => {
+        match try_now() {
+          Err(msg) => {
+            k(effect::Exit::Succeeded(on_lock_err(msg)))
+            return
+          }
+          Ok(fd) => {
+            body(fn(ex : effect::Exit[T]) -> Unit {
+              match rel_opt {
+                Some(rel) => rel(fd)
+                None => ()
+              }
+              k(ex)
+            })
+            return
+          }
+        }
+      }
+      None => ()
+    }
+  }
+  let acq_opt = self.acquire_ext_lock_k
   self.lock.with_permit_k(
     fn(lk : (effect::Exit[T]) -> Unit) -> Unit {
       match acq_opt {
@@ -504,6 +725,15 @@ fn AccountRefreshCoordinator::with_accounts_locks_k[T](
     },
     k,
   )
+}
+
+fn AccountRefreshCoordinator::with_accounts_locks_k[T](
+  self : AccountRefreshCoordinator,
+  body : ((effect::Exit[T]) -> Unit) -> Unit,
+  on_lock_err : (String) -> T,
+  k : (effect::Exit[T]) -> Unit,
+) -> Unit {
+  self.with_accounts_locks_impl_k(false, body, on_lock_err, k)
 }
 
 fn ma_effect_err_msg(e : effect::EffectError) -> String {
@@ -723,6 +953,49 @@ fn reconcile_backoff_ms(attempt : Int) -> Int {
   }
 }
 
+fn tuple_matches_alt(
+  alt : Option[(String, String)],
+  sid : String,
+  rtok : String,
+) -> Bool {
+  match alt {
+    Some((asid, aref)) => sid == asid && rtok == aref
+    None => false
+  }
+}
+
+fn AccountRefreshCoordinator::is_superseded_by_pending_commit200(
+  self : AccountRefreshCoordinator,
+  sub : String,
+  sid : String,
+  rtok : String,
+) -> Bool {
+  match self.pending_reconcile.get(sub) {
+    Some(PendingAccountReconcile::Commit200(_, c_sid, c_ref, c_toks)) => {
+      sid == c_sid && rtok == c_ref && c_toks.refresh != rtok
+    }
+    _ => false
+  }
+}
+
+fn AccountRefreshCoordinator::pending_commit200_alt_tuple(
+  self : AccountRefreshCoordinator,
+  sub : String,
+  sid : String,
+  rtok : String,
+) -> Option[(String, String)] {
+  match self.pending_reconcile.get(sub) {
+    Some(PendingAccountReconcile::Commit200(_, c_sid, c_ref, c_toks)) => {
+      if sid == c_sid && rtok == c_toks.refresh {
+        Some((c_sid, c_ref))
+      } else {
+        None
+      }
+    }
+    _ => None
+  }
+}
+
 fn AccountRefreshCoordinator::schedule_reconcile(
   self : AccountRefreshCoordinator,
   host : AccountRefreshHost,
@@ -732,23 +1005,45 @@ fn AccountRefreshCoordinator::schedule_reconcile(
   if self.stopped || sub.length() == 0 {
     return
   }
+  // Protect pending `Commit200` against being overwritten by a stale `Remove401` for the old token!
+  let effective_task = match (self.pending_reconcile.get(sub), task) {
+    (
+      Some(PendingAccountReconcile::Commit200(_, c_sid, c_ref, c_toks)),
+      PendingAccountReconcile::Remove401(rsub, rsid, rref, alt_opt, st, msg),
+    ) => {
+      if rsid == c_sid && rref == c_ref && c_toks.refresh != rref {
+        return
+      }
+      if rsid == c_sid && rref == c_toks.refresh {
+        PendingAccountReconcile::Remove401(rsub, rsid, rref, Some((c_sid, c_ref)), st, msg)
+      } else {
+        PendingAccountReconcile::Remove401(rsub, rsid, rref, alt_opt, st, msg)
+      }
+    }
+    _ => task
+  }
   let next_gen = match self.reconcile_gen.get(sub) {
     Some(g) => g + 1
     None => 1
   }
   self.reconcile_gen.set(sub, next_gen)
-  self.pending_reconcile.set(sub, task)
+  self.pending_reconcile.set(sub, effective_task)
   match self.reconcile_running.get(sub) {
     Some(true) => return
     _ => ()
   }
   self.reconcile_running.set(sub, true)
-  let _ = effect::runtime().fork_quiet_named(
+  let target_rt = match self.rt {
+    Some(r) => r
+    None => effect::runtime()
+  }
+  let fib = target_rt.fork_quiet_named(
     "accounts-reconcile:" + sub,
     fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
       self.run_reconcile_step_k(host, sub, 0, fk)
     },
   )
+  self.reconcile_fibers.set(sub, fib)
 }
 
 fn AccountRefreshCoordinator::run_reconcile_step_k(
@@ -758,8 +1053,9 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
   attempt : Int,
   done_k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
-  if self.stopped || attempt >= 32 {
+  if self.stopped {
     self.reconcile_running.remove(sub)
+    self.reconcile_fibers.remove(sub)
     self.pending_reconcile.remove(sub)
     done_k(effect::Exit::Succeeded(()))
     return
@@ -771,12 +1067,14 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
       effect::Exit::Succeeded(_) => ()
       _ => {
         self.reconcile_running.remove(sub)
+        self.reconcile_fibers.remove(sub)
         done_k(effect::Exit::Succeeded(()))
         return
       }
     }
     if self.stopped {
       self.reconcile_running.remove(sub)
+      self.reconcile_fibers.remove(sub)
       self.pending_reconcile.remove(sub)
       done_k(effect::Exit::Succeeded(()))
       return
@@ -785,6 +1083,7 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
       Some(t) => t
       None => {
         self.reconcile_running.remove(sub)
+        self.reconcile_fibers.remove(sub)
         done_k(effect::Exit::Succeeded(()))
         return
       }
@@ -799,21 +1098,39 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
     let on_adopt = host.on_adopt_or_update
     let on_inval = host.on_invalidated
     // Result: `(retry_needed : Bool, post_lock_action)`
-    self.with_accounts_locks_k(
+    // Uses `immediate_only = true` so lock contention never sleeps 3s inside this backoff loop.
+    self.with_accounts_locks_impl_k(
+      true,
       fn(clk : (effect::Exit[(Bool, RefreshPostLockAction)]) -> Unit) -> Unit {
-        let (orig_sid_mem, orig_ref_mem) = match task {
-          PendingAccountReconcile::Remove401(_, sid, rtok, _, _) => (sid, rtok)
-          PendingAccountReconcile::Commit200(_, sid, rtok, _) => (sid, rtok)
-        }
-        match get_mem(sub) {
-          None => {
-            clk(effect::Exit::Succeeded((false, RefreshPostLockAction::None)))
-            return
+        match task {
+          PendingAccountReconcile::Commit200(_, orig_sid, orig_ref, tokens) => {
+            match get_mem(sub) {
+              None => {
+                clk(effect::Exit::Succeeded((false, RefreshPostLockAction::None)))
+                return
+              }
+              Some((mem_sid, mem_ref)) => {
+                let matches_orig = mem_sid == orig_sid && mem_ref == orig_ref
+                let matches_rotated = mem_sid == orig_sid && mem_ref == tokens.refresh
+                if !matches_orig && !matches_rotated {
+                  clk(effect::Exit::Succeeded((false, RefreshPostLockAction::None)))
+                  return
+                }
+              }
+            }
           }
-          Some((mem_sid, mem_ref)) => {
-            if mem_sid != orig_sid_mem || mem_ref != orig_ref_mem {
-              clk(effect::Exit::Succeeded((false, RefreshPostLockAction::None)))
-              return
+          PendingAccountReconcile::Remove401(_, orig_sid, orig_ref, alt_orig, _, _) => {
+            // Note: runtime may ALREADY have transitioned to `UnauthMemory` (`get_mem(sub) == None`);
+            // ONLY abort as stale if memory holds a DIFFERENT newer tuple for `sub`!
+            match get_mem(sub) {
+              Some((mem_sid, mem_ref)) => {
+                let matches_orig = mem_sid == orig_sid && mem_ref == orig_ref
+                if !matches_orig && !tuple_matches_alt(alt_orig, mem_sid, mem_ref) {
+                  clk(effect::Exit::Succeeded((false, RefreshPostLockAction::None)))
+                  return
+                }
+              }
+              None => ()
             }
           }
         }
@@ -832,7 +1149,7 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
                 Some(disk_list) => {
                   let idx = find_stored_idx(disk_list, sub)
                   match task {
-                    PendingAccountReconcile::Remove401(rsub, orig_sid, orig_ref, _, _) => {
+                    PendingAccountReconcile::Remove401(rsub, orig_sid, orig_ref, alt_orig, _, _) => {
                       if idx < 0 {
                         disk_sessions.remove(rsub)
                         clk(effect::Exit::Succeeded((false, RefreshPostLockAction::Invalidate(rsub, orig_sid, orig_ref, disk_list, disk_sessions))))
@@ -840,7 +1157,9 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
                       }
                       let cur = disk_list[idx]
                       let disk_sid = match disk_sessions.get(rsub) { Some(s) => s; None => "" }
-                      if disk_sid != orig_sid || cur.refresh != orig_ref {
+                      let disk_matches_rejected = (disk_sid == orig_sid && cur.refresh == orig_ref) ||
+                      tuple_matches_alt(alt_orig, disk_sid, cur.refresh)
+                      if !disk_matches_rejected {
                         // Competing process wrote a newer valid session/token: preserve disk & adopt!
                         clk(effect::Exit::Succeeded((false, RefreshPostLockAction::Adopt(cur, disk_sid, disk_list, disk_sessions))))
                         return
@@ -867,8 +1186,13 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
                       }
                       let cur = disk_list[idx]
                       let disk_sid = match disk_sessions.get(rsub) { Some(s) => s; None => "" }
-                      if disk_sid != orig_sid || cur.refresh != orig_ref {
-                        // Competing process already rotated/re-logged in: adopt newer disk session!
+                      if disk_sid != orig_sid {
+                        // Session changed on disk: adopt newer disk session!
+                        clk(effect::Exit::Succeeded((false, RefreshPostLockAction::Adopt(cur, disk_sid, disk_list, disk_sessions))))
+                        return
+                      }
+                      if cur.refresh != orig_ref {
+                        // Competing process already rotated (or our token already landed): adopt newer disk entry!
                         clk(effect::Exit::Succeeded((false, RefreshPostLockAction::Adopt(cur, disk_sid, disk_list, disk_sessions))))
                         return
                       }
@@ -924,6 +1248,7 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
               if cur_gen == task_gen {
                 self.pending_reconcile.remove(sub)
                 self.reconcile_running.remove(sub)
+                self.reconcile_fibers.remove(sub)
               }
               match act {
                 RefreshPostLockAction::None => ()
@@ -939,6 +1264,7 @@ fn AccountRefreshCoordinator::run_reconcile_step_k(
           }
           _ => {
             self.reconcile_running.remove(sub)
+            self.reconcile_fibers.remove(sub)
             done_k(effect::Exit::Succeeded(()))
           }
         }
@@ -1097,8 +1423,11 @@ pub fn AccountRefreshCoordinator::refresh_k(
                     finish_all(AccountRefreshOutcome::Transient(msg))
                   }
                   effect::Exit::Succeeded(Ok(tokens)) => {
-                    // Phase 3A: 200 Write-Back Disk CAS (`accounts.ts:581-626`); release lock BEFORE `on_adopt`!
-                    self.with_accounts_locks_k(
+                    // Phase 3A: 200 Write-Back Disk CAS (`accounts.ts:581-626`) with 0ms non-blocking
+                    // `immediate_only = true`; if contended, advances active memory immediately and
+                    // persists via coalesced background `Commit200` CAS reconcile!
+                    self.with_accounts_locks_impl_k(
+                      true,
                       fn(clk : (effect::Exit[(AccountRefreshOutcome, RefreshPostLockAction)]) -> Unit) -> Unit {
                         match get_mem(sub) {
                           None => {
@@ -1184,10 +1513,15 @@ pub fn AccountRefreshCoordinator::refresh_k(
                             run_post_lock(act)
                             match o {
                               AccountRefreshOutcome::Transient(_) => {
-                                // 200 rotated tokens hit lock/disk contention: preserve rotated tokens
-                                // via coalesced background CAS reconcile retry!
+                                // 200 rotated tokens hit lock/disk contention: immediately advance
+                                // active in-memory credentials and preserve rotated tokens via
+                                // coalesced background CAS reconcile retry!
                                 match get_mem(sub) {
                                   Some((mem_sid, mem_ref)) => if mem_sid == expected_session && mem_ref == eff_refresh {
+                                    match self.on_pending_200_update {
+                                      Some(upd_fn) => upd_fn(sub, expected_session, eff_refresh, tokens)
+                                      None => ()
+                                    }
                                     self.schedule_reconcile(
                                       host,
                                       sub,
@@ -1208,8 +1542,17 @@ pub fn AccountRefreshCoordinator::refresh_k(
                     )
                   }
                   effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(status, msg))) => {
-                    // Phase 3B: 401 Removal Disk CAS (`accounts.ts:628-692`); release lock BEFORE `on_inval`!
-                    self.with_accounts_locks_k(
+                    // Guard against stale 401 from an OLD token already superseded by a pending `Commit200`!
+                    if self.is_superseded_by_pending_commit200(sub, expected_session, eff_refresh) {
+                      finish_all(AccountRefreshOutcome::Stale("superseded_by_pending_commit200"))
+                      return
+                    }
+                    let alt_orig = self.pending_commit200_alt_tuple(sub, expected_session, eff_refresh)
+                    // Phase 3B: 401 Removal Disk CAS (`accounts.ts:628-692`) using 0ms non-blocking
+                    // `immediate_only = true` so lock contention NEVER creates a multi-second cached
+                    // read window! Lock is strictly released BEFORE `on_inval` / `on_adopt`!
+                    self.with_accounts_locks_impl_k(
+                      true,
                       fn(clk : (effect::Exit[(AccountRefreshOutcome, RefreshPostLockAction)]) -> Unit) -> Unit {
                         match get_mem(sub) {
                           None => {
@@ -1217,7 +1560,8 @@ pub fn AccountRefreshCoordinator::refresh_k(
                             return
                           }
                           Some((mem_sid, mem_ref)) => {
-                            if mem_sid != expected_session || mem_ref != eff_refresh {
+                            let matches_cur = mem_sid == expected_session && mem_ref == eff_refresh
+                            if !matches_cur && !tuple_matches_alt(alt_orig, mem_sid, mem_ref) {
                               clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_401"), RefreshPostLockAction::None)))
                               return
                             }
@@ -1247,7 +1591,9 @@ pub fn AccountRefreshCoordinator::refresh_k(
                                   }
                                   let cur = disk_list[idx]
                                   let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
-                                  if disk_sid != expected_session || cur.refresh != eff_refresh {
+                                  let disk_matches_rejected = (disk_sid == expected_session && cur.refresh == eff_refresh) ||
+                                  tuple_matches_alt(alt_orig, disk_sid, cur.refresh)
+                                  if !disk_matches_rejected {
                                     clk(effect::Exit::Succeeded((AccountRefreshOutcome::Stale("stale_401"), RefreshPostLockAction::None)))
                                     return
                                   }
@@ -1283,20 +1629,27 @@ pub fn AccountRefreshCoordinator::refresh_k(
                             run_post_lock(act)
                             match o {
                               AccountRefreshOutcome::Transient(_) => {
-                                // 401 removal hit lock/disk contention: immediately close the active
-                                // read gate (fail-closed, 0 cached reads leak) AND schedule a
-                                // coalesced background CAS reconcile once the lock clears!
+                                if self.is_superseded_by_pending_commit200(sub, expected_session, eff_refresh) {
+                                  finish_all(AccountRefreshOutcome::Stale("superseded_by_pending_commit200"))
+                                  return
+                                }
+                                // 401 removal hit lock/disk contention at 0ms: immediately persist
+                                // rejected tuple(s) + transition to `UnauthMemory` via `on_401_quarantine`
+                                // AND schedule coalesced background CAS reconcile once the lock clears!
                                 match get_mem(sub) {
-                                  Some((mem_sid, mem_ref)) => if mem_sid == expected_session && mem_ref == eff_refresh {
-                                    match self.on_pending_401_gate {
-                                      Some(gate_fn) => gate_fn(sub, expected_session, eff_refresh)
-                                      None => ()
+                                  Some((mem_sid, mem_ref)) => {
+                                    let matches_cur = mem_sid == expected_session && mem_ref == eff_refresh
+                                    if matches_cur || tuple_matches_alt(alt_orig, mem_sid, mem_ref) {
+                                      match self.on_401_quarantine {
+                                        Some(qfn) => qfn(sub, expected_session, eff_refresh, alt_orig)
+                                        None => ()
+                                      }
+                                      self.schedule_reconcile(
+                                        host,
+                                        sub,
+                                        PendingAccountReconcile::Remove401(sub, expected_session, eff_refresh, alt_orig, status, msg),
+                                      )
                                     }
-                                    self.schedule_reconcile(
-                                      host,
-                                      sub,
-                                      PendingAccountReconcile::Remove401(sub, expected_session, eff_refresh, status, msg),
-                                    )
                                   }
                                   None => ()
                                 }

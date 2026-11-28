@@ -167,21 +167,20 @@ int main(int argc, char **argv) {
         }
         return 3; // I/O error
     }
-    // Self-exec child mode holding `<dir>/.accounts.lock` for `hold_ms`, writing 'R' to stdout once locked.
-    if (argc >= 4 && strcmp(argv[1], "--lock-hold") == 0) {
+    // Self-exec child mode holding `<dir>/.accounts.lock` behind a deterministic dual-pipe barrier:
+    // writes 'L' to stdout once locked, then blocks reading stdin until parent writes 'R' (or closes).
+    if (argc >= 3 && strcmp(argv[1], "--lock-hold-barrier") == 0) {
         const char *hold_dir = argv[2];
-        int hold_ms = atoi(argv[3]);
         int64_t tx = pion_core_accounts_tx_try_begin(hold_dir, (int64_t)strlen(hold_dir));
         if (tx < 1) {
             return 4;
         }
-        char ready = 'R';
-        ssize_t wr = write(STDOUT_FILENO, &ready, 1);
+        char locked = 'L';
+        ssize_t wr = write(STDOUT_FILENO, &locked, 1);
         (void)wr;
-        struct timespec req;
-        req.tv_sec = hold_ms / 1000;
-        req.tv_nsec = (long)(hold_ms % 1000) * 1000000L;
-        (void)nanosleep(&req, NULL);
+        char rel = 0;
+        ssize_t rd = read(STDIN_FILENO, &rel, 1);
+        (void)rd;
         pion_core_accounts_tx_end(tx);
         return 0;
     }
@@ -747,33 +746,64 @@ int main(int argc, char **argv) {
         printf("[core_runtime_e2e] accounts_tx exec cross-process flock + stale tx_id immunity OK\n");
     }
 
-    // 7c. Startup `accounts lock busy` (> 500ms) MUST stay fail-closed during contention and then
-    //     automatically recover async once the competing process releases `.accounts.lock`!
+    // 7c. Deterministic dual-pipe barrier test for startup `accounts lock busy`:
+    //     1) Child holds `.accounts.lock` and signals 'L' on ready_pipe, then blocks on release_pipe.
+    //     2) Parent starts core and BEFORE releasing lock asserts `accounts` is `[]` and private
+    //        `settings.get("theme")` is gated (no `"light"` leak!).
+    //     3) Parent also calls `auth.begin` + `auth.cancel` WHILE lock is held (Codex P1-5: MUST NOT
+    //        cancel startup recovery because startup tracks `active_account_gen`, not `login_gen`!).
+    //     4) Parent writes 'R' to release_pipe -> asserts core asynchronously recovers `alice@still.fail`
+    //        and automatically installs `account-u-e2e.db` (`settings.get("theme") == "light"`)!
     {
-        int pfd[2];
-        assert(pipe(pfd) == 0);
+        int ready_pipe[2];
+        int release_pipe[2];
+        assert(pipe(ready_pipe) == 0);
+        assert(pipe(release_pipe) == 0);
         pid_t holder = fork();
         assert(holder >= 0);
         if (holder == 0) {
-            close(pfd[0]);
-            dup2(pfd[1], STDOUT_FILENO);
-            close(pfd[1]);
-            execl(argv[0], argv[0], "--lock-hold", data_dir, "700", (char *)NULL);
+            close(ready_pipe[0]);
+            close(release_pipe[1]);
+            dup2(ready_pipe[1], STDOUT_FILENO);
+            dup2(release_pipe[0], STDIN_FILENO);
+            close(ready_pipe[1]);
+            close(release_pipe[0]);
+            execl(argv[0], argv[0], "--lock-hold-barrier", data_dir, (char *)NULL);
             _exit(127);
         }
-        close(pfd[1]);
-        char ready = 0;
-        assert(read(pfd[0], &ready, 1) == 1 && ready == 'R');
-        close(pfd[0]);
+        close(ready_pipe[1]);
+        close(release_pipe[0]);
+        char locked = 0;
+        assert(read(ready_pipe[0], &locked, 1) == 1 && locked == 'L');
+        close(ready_pipe[0]);
 
-        // Start core WHILE separate process holds `.accounts.lock` for 700ms (> 500ms startup wait)!
+        // Start core WHILE separate process holds `.accounts.lock` indefinitely behind barrier!
         atomic_store(&g_ctx.stopped, 0);
         mb_core_start(data_dir, "http://127.0.0.1:9", 1, on_host_message, &g_ctx);
         m = wait_for_msg_index(&g_ctx, next_idx++);
         assert(strstr(m->json, "\"id\":0") != NULL && strstr(m->json, "\"auth\":{") != NULL);
 
-        // Subscribe `accounts` immediately: during contention it is empty, then async recovery MUST push `alice@still.fail`!
+        // BEFORE releasing lock: assert `accounts` sub is empty `[]` AND private `theme` is blocked!
         send_json("{\"id\":62,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}");
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":62") != NULL && strstr(m->json, "\"value\":[]") != NULL);
+
+        send_json("{\"id\":620,\"call\":\"settings.get\",\"params\":{\"key\":\"theme\"}}");
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":620") != NULL && strstr(m->json, "\"value\":\"light\"") == NULL);
+
+        // Call `auth.begin` + `auth.cancel` WHILE lock is still held: MUST NOT kill startup recovery!
+        send_json("{\"id\":621,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":621") != NULL && strstr(m->json, "\"state\":\"") != NULL);
+        send_json("{\"id\":622,\"call\":\"auth.cancel\",\"params\":{}}");
+        m = wait_for_msg_index(&g_ctx, next_idx++);
+        assert(strstr(m->json, "\"id\":622") != NULL && strstr(m->json, "\"ok\":") != NULL);
+
+        // Release barrier and wait for child to drop `.accounts.lock`!
+        char rel = 'R';
+        assert(write(release_pipe[1], &rel, 1) == 1);
+        close(release_pipe[1]);
         int hst = 0;
         assert(waitpid(holder, &hst, 0) == holder && WIFEXITED(hst) && WEXITSTATUS(hst) == 0);
 
@@ -800,7 +830,7 @@ int main(int argc, char **argv) {
         }
         assert(found_theme == 1);
         mb_core_stop();
-        printf("[core_runtime_e2e] startup lock-busy async recovery + account DB auto-install OK\n");
+        printf("[core_runtime_e2e] startup lock-busy dual-pipe barrier + auth.begin/cancel survival + auto-install OK\n");
     }
 
     // 8. Corrupt `device/auth` MUST NOT be overwritten (protects TS `capRev:*` records!),

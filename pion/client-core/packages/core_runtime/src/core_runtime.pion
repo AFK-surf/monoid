@@ -44,6 +44,17 @@ struct RuntimeSub {
   mut last_val : Option[base_codec::Json]
 }
 
+enum AccountLifecycleState {
+  UnauthMemory
+  Active(String, String, String)
+}
+
+struct DesiredMeshStation {
+  workspace : String
+  peer_id : String
+  relays : Array[String]
+}
+
 struct RuntimeSession {
   dir : String
   sh : shell::Shell
@@ -60,16 +71,24 @@ struct RuntimeSession {
   kept_order : Array[String]
   md_stores : Map[String, store::MdStore]
   mesh_transports : Map[String, sync::MeshStationTransport]
+  desired_mesh_stations : Map[String, DesiredMeshStation]
   mut cloud : Option[sync::CloudSync]
   mut origin : String
+  mut lifecycle : AccountLifecycleState
+  mut active_account_gen : Int64
   mut session_gen : Int64
   mut login_gen : Int64
   mut bearer_gen : Int64
   mut accounts_init_pending : Bool
+  mut startup_activate_sibling : Bool
+  mut quarantined_sub : String
+  mut lifecycle_reconciling : Bool
+  mut lifecycle_fiber : Option[effect::Fiber[Unit]]
   mut stopped : Bool
   mut reconcile_requeue_pending : Bool
   mut device_conn_seq : Int64
   mut live_sync_enabled : Bool
+  mut desired_live_sync : Bool
   mut device_app : String
   mut device_locale : String
 }
@@ -402,151 +421,326 @@ fn read_accounts_atomic_sync(dir : String) -> StartupAccountsRead {
   res
 }
 
-/// Background async startup reconciliation when initial `<dir>/accounts` read hit `BusyOrError`:
-/// Retries with bounded exponential backoff (`100ms..2000ms`), exits cleanly on `pion_core_runtime_stop()`
-/// or if a manual login superseded `init_login_gen`, and on discovering persisted accounts installs
-/// `account-<sanitized_sub>.db`, `auth_store`, `CloudSync` + `/v1/events` WS, and emits `auth.bump_all()`.
-fn retry_startup_accounts_init_k(
+fn runtime_attach_mesh_station(
   sess : RuntimeSession,
-  init_login_gen : Int64,
+  target_ws : String,
+  target_st : String,
+  peer_id : String,
+  relays : Array[String],
+) -> Unit {
+  let core_ref = sess.core
+  let get_cred = fn(dev_id : String, fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+    if !core_ref.can_read_workspace(target_ws) {
+      ck(effect::Exit::Failed(effect::EffectError::Custom("workspace access revoked")))
+      return
+    }
+    if fresh {
+      let _ = core_ref.membership.bump_cred_epoch(target_ws)
+    } else {
+      match core_ref.membership.get_valid_static_credential(target_ws) {
+        Some(sc) => {
+          ck(effect::Exit::Succeeded(sc))
+          return
+        }
+        None => ()
+      }
+    }
+    let captured_epoch = core_ref.membership.cred_epoch_of(target_ws)
+    match sess.cloud {
+      Some(cs) => cs.fetch_member_credential_k(
+        target_ws,
+        dev_id,
+        pion_core_wall_now_ms() / 1000.to_int64(),
+        fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+          if core_ref.membership.cred_epoch_of(target_ws) != captured_epoch || !core_ref.can_read_workspace(target_ws) {
+            ck(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+            return
+          }
+          match ex {
+            effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
+            effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+            effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+          }
+        },
+        fresh=fresh,
+      )
+      None => ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
+    }
+  }
+  let cfg = sync::MeshStationConfig::new(
+    target_ws,
+    peer_id,
+    relays,
+    get_cred,
+    get_lock_carry=Some(fn() -> sync::MeshLockCarry {
+      sync::mesh_lock_carry_for_core(core_ref, workspace=target_ws)
+    }),
+  )
+  match sess.mesh_transports.get(target_st) {
+    Some(old_ctrl) => {
+      sess.core.detach_station_transport(target_st)
+      old_ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+    }
+    None => ()
+  }
+  let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
+  sess.mesh_transports.set(target_st, ctrl)
+  sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
+}
+
+/// Synchronous, non-yielding full hydration & publication transition (`UnauthMemory` -> `Active`):
+/// Installs `<sub_db>` (hydrating `MembershipAuthority`, `pending_purges`, `person_lock`, and
+/// persisted workspace pinned lock roots), updates `auth_store`/`viewer`, rebinds `CloudSync` +
+/// `/v1/events` WS, restores station transports & frame delivery, and emits `auth.bump_all()` as
+/// the very last step.
+fn runtime_publish_active_account_now(
+  sess : RuntimeSession,
+  active : views::StoredAccount,
+  active_session : String,
+  all_accts : Array[views::StoredAccount],
+  all_sessions : Map[String, String],
+  staged_opt : Option[StagedAccountDb],
+) -> Result[Unit, String] {
+  sess.accounts_init_pending = false
+  sess.startup_activate_sibling = false
+  let prev_quarantined = sess.quarantined_sub
+  sess.quarantined_sub = ""
+  if prev_quarantined.length() > 0 && prev_quarantined != active.sub {
+    sess.desired_mesh_stations.clear()
+    sess.desired_live_sync = false
+  }
+  sess.active_account_gen += 1L
+  let _ = bump_runtime_session_gen(sess)
+  sess.bearer_gen += 1L
+  match runtime_install_staged_db_now(sess, active.sub, staged_opt) {
+    Err(msg) => return Err(msg)
+    Ok(_) => ()
+  }
+  sess.lifecycle = AccountLifecycleState::Active(active.sub, active_session, active.refresh)
+  sess.core.membership.clear_session_invalidated()
+  sess.core.membership.set_unauthenticated(false)
+  sync_mem_accounts_from_list(sess, all_accts, all_sessions)
+  sess.core.set_viewer(active.email, sub=active.sub, role="owner")
+  let _ = store::put_account_doc(
+    sess.db,
+    "accounts",
+    base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+  )
+  if active.access.length() > 0 && sess.origin.length() > 0 {
+    let cs = match sess.cloud {
+      Some(existing) => {
+        existing.switch_db(sess.db)
+        let _ = existing.bind_account_context(active.sub, session=active_session)
+        existing.set_origin_and_token("", active.access)
+        existing
+      }
+      None => {
+        let created = sync::CloudSync::new(
+          sess.sh,
+          sess.db,
+          sess.origin,
+          token=active.access,
+          bound_sub=active.sub,
+          bound_session=active_session,
+        )
+        wire_live_cloud_sync(sess, created, active.sub, active_session)
+        sess.cloud = Some(created)
+        created
+      }
+    }
+    if cs.origin().length() > 0 {
+      cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+    }
+  }
+  // Restore loopback HTTP & desired mesh station transports + frame delivery!
+  if is_loopback_http_url(sess.origin) {
+    let http_tr = sync::shell_http_transport(sess.sh, sess.origin)
+    sess.core.events.set_transport(http_tr)
+    sess.core.sync.set_transport(http_tr)
+  }
+  let dkeys = sess.desired_mesh_stations.keys()
+  for i in 0..<dkeys.length() {
+    let st_addr = dkeys[i]
+    match sess.desired_mesh_stations.get(st_addr) {
+      Some(dm) => {
+        if sess.core.can_read_workspace(dm.workspace) {
+          runtime_attach_mesh_station(sess, dm.workspace, st_addr, dm.peer_id, dm.relays)
+        }
+      }
+      None => ()
+    }
+  }
+  if sess.desired_live_sync && (sess.mesh_transports.keys().length() > 0 || is_loopback_http_url(sess.origin)) {
+    sess.live_sync_enabled = true
+    sess.core.start()
+  }
+  let _ = sess.core.auth.bump_all()
+  emit_topic_refresh(sess, "accounts")
+  emit_topic_refresh(sess, "workspaces")
+  emit_topic_refresh(sess, "workspace")
+  emit_topic_refresh(sess, "stations")
+  emit_topic_refresh(sess, "chats")
+  emit_topic_refresh(sess, "notify")
+  emit_topic_refresh(sess, "lock")
+  Ok(())
+}
+
+/// Schedule the unified `AccountLifecycle` disk-to-active reconciliation pipeline.
+/// Guarded strictly by `sess.active_account_gen` (NEVER cancelled by `auth.begin` / `auth.cancel`!).
+fn runtime_schedule_lifecycle_reconcile(sess : RuntimeSession) -> Unit {
+  if sess.stopped || sess.lifecycle_reconciling {
+    return
+  }
+  sess.lifecycle_reconciling = true
+  let captured_active_gen = sess.active_account_gen
+  let fib = sess.core.rt.fork_quiet_named(
+    "account-lifecycle-reconcile",
+    fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+      runtime_reconcile_from_disk_k(sess, captured_active_gen, 0, fn(ex : effect::Exit[Unit]) -> Unit {
+        sess.lifecycle_reconciling = false
+        sess.lifecycle_fiber = None
+        fk(ex)
+      })
+    },
+  )
+  sess.lifecycle_fiber = Some(fib)
+}
+
+/// Unified asynchronous activation pipeline (`UnauthMemory` -> `Active`):
+/// 1. 0ms non-blocking `try_begin` read of `<dir>/accounts` (exponential backoff `100ms..2000ms`
+///    with NO silent abandon cap; exits cleanly on `sess.stopped` or committed `active_account_gen` advance).
+/// 2. Stage candidate `<a0.sub>.db`, rejecting any tuple found in `meta("membership:rejected_tuples")`
+///    (immediately closing the DB and enqueuing background CAS removal!).
+/// 3. Atomic publication-boundary re-verification via 0ms `try_begin` BEFORE installing the staged DB
+///    (if disk changed or emptied during async staging, discards staged DB and re-converges!).
+/// 4. Synchronous non-yielding `runtime_publish_active_account_now` (full hydration + lock roots + transports).
+fn runtime_reconcile_from_disk_k(
+  sess : RuntimeSession,
+  captured_active_gen : Int64,
   attempt : Int,
   done_k : (effect::Exit[Unit]) -> Unit,
 ) -> Unit {
-  if sess.stopped || !sess.accounts_init_pending || sess.login_gen != init_login_gen || attempt >= 60 {
+  if sess.stopped || sess.active_account_gen != captured_active_gen {
     done_k(effect::Exit::Succeeded(()))
     return
   }
-  let delay = startup_init_backoff_ms(attempt)
-  // timer: retry after a failure, with a backoff
-  effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
-    match sex {
-      effect::Exit::Succeeded(_) => ()
-      _ => {
+  let schedule_retry = fn(next_attempt : Int) -> Unit {
+    let delay = startup_init_backoff_ms(next_attempt)
+    // timer: retry after a failure, with a backoff
+    effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
+      match sex {
+        effect::Exit::Succeeded(_) => {
+          runtime_reconcile_from_disk_k(sess, captured_active_gen, next_attempt + 1, done_k)
+        }
+        _ => done_k(effect::Exit::Succeeded(()))
+      }
+    })
+  }
+  let bs = sess.dir.to_bytes()
+  let tx_id = pion_core_accounts_tx_try_begin(bytes_data_ptr(bs), bs.length().to_int64())
+  let _ = bs.length()
+  if tx_id <= 0L {
+    schedule_retry(attempt)
+    return
+  }
+  let rd = accounts_tx_read_state(tx_id)
+  pion_core_accounts_tx_end(tx_id)
+  match rd {
+    sync::HostStorageRead::ReadError(_) => {
+      schedule_retry(attempt)
+    }
+    sync::HostStorageRead::Absent => {
+      sess.accounts_init_pending = false
+      sess.startup_activate_sibling = false
+      sess.quarantined_sub = ""
+      done_k(effect::Exit::Succeeded(()))
+    }
+    sync::HostStorageRead::Found(j) => {
+      let accts = parse_stored_accounts(j)
+      if accts.length() == 0 {
+        sess.accounts_init_pending = false
+        sess.startup_activate_sibling = false
+        sess.quarantined_sub = ""
         done_k(effect::Exit::Succeeded(()))
         return
       }
-    }
-    if sess.stopped || !sess.accounts_init_pending || sess.login_gen != init_login_gen {
-      done_k(effect::Exit::Succeeded(()))
-      return
-    }
-    let bs = sess.dir.to_bytes()
-    let tx_id = pion_core_accounts_tx_try_begin(bytes_data_ptr(bs), bs.length().to_int64())
-    let _ = bs.length()
-    if tx_id <= 0L {
-      retry_startup_accounts_init_k(sess, init_login_gen, attempt + 1, done_k)
-      return
-    }
-    let rd = accounts_tx_read_state(tx_id)
-    pion_core_accounts_tx_end(tx_id)
-    match rd {
-      sync::HostStorageRead::ReadError(_) => {
-        retry_startup_accounts_init_k(sess, init_login_gen, attempt + 1, done_k)
-      }
-      sync::HostStorageRead::Absent => {
-        sess.accounts_init_pending = false
-        done_k(effect::Exit::Succeeded(()))
-      }
-      sync::HostStorageRead::Found(j) => {
-        let accts = parse_stored_accounts(j)
-        if accts.length() == 0 {
-          sess.accounts_init_pending = false
-          done_k(effect::Exit::Succeeded(()))
-          return
-        }
-        let a0 = accts[0]
-        let stored_list : Array[views::StoredAccount] = []
-        let sessions_map : Map[String, String] = Map::new()
-        for i in 0..<accts.length() {
-          let ai = accts[i]
-          if ai.session.length() > 0 {
-            sessions_map.set(ai.sub, ai.session)
-          }
-          stored_list.push(views::StoredAccount::{
-            sub: ai.sub,
-            email: ai.email,
-            name: ai.name,
-            picture: ai.picture,
-            access: ai.access,
-            refresh: ai.refresh,
-            access_expires: ai.access_expires,
-          })
-        }
-        runtime_stage_account_db_k(sess, a0.sub, fn(stage_res : Result[Option[StagedAccountDb], String]) -> Unit {
+      let a0 = accts[0]
+      runtime_stage_account_db_k(
+        sess,
+        a0.sub,
+        check_rejected=Some((a0.session, a0.refresh)),
+        fn(stage_res : StageAccountDbResult) -> Unit {
           match stage_res {
-            Err(_) => {
-              if !sess.stopped && sess.accounts_init_pending && sess.login_gen == init_login_gen {
-                retry_startup_accounts_init_k(sess, init_login_gen, attempt + 1, done_k)
+            StageAccountDbResult::Failed(_) => {
+              if !sess.stopped && sess.active_account_gen == captured_active_gen {
+                schedule_retry(attempt)
               } else {
                 done_k(effect::Exit::Succeeded(()))
               }
             }
-            Ok(staged_opt) => {
-              if sess.stopped || !sess.accounts_init_pending || sess.login_gen != init_login_gen {
+            StageAccountDbResult::RejectedTuple => {
+              // Candidate `(a0.session, a0.refresh)` was already persisted as Cloud-401 rejected in
+              // `<a0.sub>.db` `meta`: keep `UnauthMemory` closed and enqueue background CAS removal!
+              if !sess.stopped && sess.active_account_gen == captured_active_gen {
+                sess.startup_activate_sibling = true
+                let host = runtime_make_refresh_host(sess, a0.sub, sess.session_gen, false, sess.origin)
+                sess.refresh_coord.enqueue_rejected_removal(host, a0.sub, a0.session, a0.refresh)
+              }
+              done_k(effect::Exit::Succeeded(()))
+            }
+            StageAccountDbResult::Staged(staged_opt) => {
+              if sess.stopped || sess.active_account_gen != captured_active_gen {
                 close_staged_db(staged_opt)
                 done_k(effect::Exit::Succeeded(()))
                 return
               }
-              sess.accounts_init_pending = false
-              sess.login_gen += 1L
-              let _ = bump_runtime_session_gen(sess)
-              sess.bearer_gen += 1L
-              match runtime_install_staged_db_now(sess, a0.sub, staged_opt) {
-                Err(_) => {
+              // Step 3: Atomic publication-boundary re-verification BEFORE opening read gate!
+              let bs2 = sess.dir.to_bytes()
+              let tx2 = pion_core_accounts_tx_try_begin(bytes_data_ptr(bs2), bs2.length().to_int64())
+              let _ = bs2.length()
+              if tx2 <= 0L {
+                close_staged_db(staged_opt)
+                schedule_retry(attempt)
+                return
+              }
+              let rd2 = accounts_tx_read_state(tx2)
+              pion_core_accounts_tx_end(tx2)
+              match sync::verify_publication_candidate(rd2, a0.sub, a0.session, a0.refresh) {
+                sync::PublicationCheckResult::RetryLater(_) => {
+                  close_staged_db(staged_opt)
+                  schedule_retry(attempt)
+                }
+                sync::PublicationCheckResult::EmptyDisk => {
+                  close_staged_db(staged_opt)
+                  sess.accounts_init_pending = false
+                  sess.startup_activate_sibling = false
+                  sess.quarantined_sub = ""
                   done_k(effect::Exit::Succeeded(()))
-                  return
                 }
-                Ok(_) => ()
-              }
-              sess.core.membership.clear_session_invalidated()
-              sess.core.membership.set_unauthenticated(false)
-              sync_mem_accounts_from_list(sess, stored_list, sessions_map)
-              sess.core.set_viewer(a0.email, sub=a0.sub, role="owner")
-              let _ = store::put_account_doc(
-                sess.db,
-                "accounts",
-                base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
-              )
-              if a0.access.length() > 0 && sess.origin.length() > 0 {
-                let cs = match sess.cloud {
-                  Some(existing) => {
-                    existing.switch_db(sess.db)
-                    let _ = existing.bind_account_context(a0.sub, session=a0.session)
-                    existing.set_origin_and_token("", a0.access)
-                    existing
-                  }
-                  None => {
-                    let created = sync::CloudSync::new(
-                      sess.sh,
-                      sess.db,
-                      sess.origin,
-                      token=a0.access,
-                      bound_sub=a0.sub,
-                      bound_session=a0.session,
-                    )
-                    wire_live_cloud_sync(sess, created, a0.sub, a0.session)
-                    sess.cloud = Some(created)
-                    created
-                  }
+                sync::PublicationCheckResult::Superseded(_, _) => {
+                  // Disk `accounts[0]` changed during async staging: discard stale staged DB and
+                  // immediately converge to the latest disk state!
+                  close_staged_db(staged_opt)
+                  runtime_reconcile_from_disk_k(sess, captured_active_gen, 0, done_k)
                 }
-                if cs.origin().length() > 0 {
-                  cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+                sync::PublicationCheckResult::Publish(cur_active, cur_sid, latest_list, latest_sids) => {
+                  let _ = runtime_publish_active_account_now(
+                    sess,
+                    cur_active,
+                    cur_sid,
+                    latest_list,
+                    latest_sids,
+                    staged_opt,
+                  )
+                  done_k(effect::Exit::Succeeded(()))
                 }
               }
-              let _ = sess.core.auth.bump_all()
-              emit_topic_refresh(sess, "accounts")
-              emit_topic_refresh(sess, "workspaces")
-              emit_topic_refresh(sess, "workspace")
-              emit_topic_refresh(sess, "stations")
-              emit_topic_refresh(sess, "chats")
-              emit_topic_refresh(sess, "notify")
-              done_k(effect::Exit::Succeeded(()))
             }
           }
-        })
-      }
+        },
+      )
     }
-  })
+  }
 }
 
 /// Non-blocking lock acquisition + single synchronous non-yielding `<dir>/accounts` atomic commit
@@ -1187,24 +1381,31 @@ fn clear_runtime_ephemeral_caches(sess : RuntimeSession) -> Unit {
   }
 }
 
-/// Stage candidate `account-<sanitized_sub>.db` (open + migrate) and asynchronously load host
-/// `device/pending_purges/<sanitized_sub>` + `person_lock` BEFORE writing `accounts` to disk!
-/// If opening or migrating the DB fails, returns `Err` with 0 disk writes to `accounts`.
+enum StageAccountDbResult {
+  Staged(Option[StagedAccountDb])
+  RejectedTuple
+  Failed(String)
+}
+
+/// Stage candidate `account-<sanitized_sub>.db` (open + migrate), verify `meta("membership:rejected_tuples")`,
+/// and asynchronously load host `device/pending_purges/<sanitized_sub>` + `person_lock` BEFORE installing!
+/// If the candidate tuple hits a persisted Cloud-401 rejection, immediately closes the DB and returns `RejectedTuple`.
 fn runtime_stage_account_db_k(
   sess : RuntimeSession,
   subject : String,
-  k : (Result[Option[StagedAccountDb], String]) -> Unit,
+  k : (StageAccountDbResult) -> Unit,
+  check_rejected : Option[(String, String)] = None,
 ) -> Unit {
   if subject.length() == 0 {
-    k(Err("account_sub_mismatch: empty subject"))
+    k(StageAccountDbResult::Failed("account_sub_mismatch: empty subject"))
     return
   }
   match sess.core.db_account_sub {
     Some(existing) => {
       if existing != subject {
-        k(Err("account_sub_mismatch: expected " + existing + ", got " + subject))
+        k(StageAccountDbResult::Failed("account_sub_mismatch: expected " + existing + ", got " + subject))
       } else {
-        k(Ok(None))
+        k(StageAccountDbResult::Staged(None))
       }
       return
     }
@@ -1214,8 +1415,21 @@ fn runtime_stage_account_db_k(
   let new_db = match open_and_migrate_account_db(sess.sh, db_name) {
     Ok(d) => d
     Err(e) => {
-      k(Err(e))
+      k(StageAccountDbResult::Failed(e))
       return
+    }
+  }
+  match check_rejected {
+    Some((cand_sid, cand_ref)) => {
+      if sync::is_tuple_rejected_in_db(new_db, cand_sid, cand_ref) {
+        new_db.close()
+        k(StageAccountDbResult::RejectedTuple)
+        return
+      }
+      let _ = sync::clear_rejected_tuples_in_db(new_db)
+    }
+    None => {
+      let _ = sync::clear_rejected_tuples_in_db(new_db)
     }
   }
   let sub_host_key = sync::host_pending_purges_key_for_sub(subject)
@@ -1225,7 +1439,7 @@ fn runtime_stage_account_db_k(
         sync::HostStorageRead::Found(pj) => Some(pj)
         _ => None
       }
-      k(Ok(Some(StagedAccountDb::{
+      k(StageAccountDbResult::Staged(Some(StagedAccountDb::{
         new_db: new_db,
         host_purges_read: host_purges_read,
         host_purges_shared: is_shared,
@@ -1327,13 +1541,22 @@ fn runtime_install_staged_db_now(
         None => ()
       }
       if sess.core.workspace == "ws-default" {
-        match store::list_workspaces(new_db) {
-          sql::SqlResult::Ok(ws_rows) => {
-            if ws_rows.length() > 0 {
-              sess.core.switch_workspace(ws_rows[0].id)
+        let mut target_ws = match sess.prefs.get("workspace") {
+          Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "" }
+          _ => ""
+        }
+        if target_ws.length() == 0 {
+          match store::list_workspaces(new_db) {
+            sql::SqlResult::Ok(ws_rows) => {
+              if ws_rows.length() > 0 {
+                target_ws = ws_rows[0].id
+              }
             }
+            sql::SqlResult::Err(_) => ()
           }
-          sql::SqlResult::Err(_) => ()
+        }
+        if target_ws.length() > 0 {
+          sess.core.switch_workspace(target_ws)
         }
       }
       old_db.close()
@@ -1343,13 +1566,22 @@ fn runtime_install_staged_db_now(
 }
 
 /// Immediately tear down the signed-in account context and switch ALL runtime + core DB holders
-/// back to a fresh unauthenticated `:memory:` DB (used when permanent 401 refresh removes the last
-/// account). Ensures 0 cached data or outbound frame leakage without waiting for process restart,
-/// and allows a fresh same-process `auth.complete` sign-in with any account afterwards.
-fn runtime_switch_to_unauth_memory_db(sess : RuntimeSession) -> Unit {
+/// back to a fresh unauthenticated `:memory:` DB (`AccountLifecycleState::UnauthMemory`).
+/// Ensures 0 cached data or outbound frame leakage without waiting for process restart,
+/// and guarantees any future re-activation runs full DB/lock/transport hydration.
+fn runtime_switch_to_unauth_memory_db(
+  sess : RuntimeSession,
+  clear_desired_stations : Bool = true,
+) -> Unit {
+  sess.lifecycle = AccountLifecycleState::UnauthMemory
+  sess.active_account_gen += 1L
   sess.login_gen += 1L
   let _ = bump_runtime_session_gen(sess)
   sess.bearer_gen += 1L
+  if clear_desired_stations {
+    sess.desired_mesh_stations.clear()
+    sess.desired_live_sync = false
+  }
   match sess.cloud {
     Some(cs) => {
       cs.clear_all_credentials()
@@ -1551,44 +1783,14 @@ fn wire_live_cloud_sync(
   )
 }
 
-/// Shared production OAuth token refresh path aligned 1:1 with TS `accounts.ts:299, 398-419, 581-606, 641-681`:
-/// - Uses `sess.refresh_coord` (`AccountRefreshCoordinator`) with pure async `storage.get`/`storage.set`.
-/// - Pre-request `#adoptStored` reads disk BEFORE sending `POST /v1/auth/refresh`.
-/// - 200 write-back & 401 removal both use serialized bidirectional disk CAS conditioned on `(sub, session, refresh)`.
-/// - Preserves all sibling accounts; NEVER installs a sibling account's token into active `sess.cloud`!
-/// - NEVER bumps station `cred_epoch`.
-fn runtime_refresh_account_token(
+fn runtime_make_refresh_host(
   sess : RuntimeSession,
-  sub : String,
-  on_done : (Result[String, String]) -> Unit,
-) -> Unit {
-  let req_origin = match sess.cloud {
-    Some(c) => c.origin()
-    None => sess.origin
-  }
-  if req_origin.length() == 0 {
-    on_done(Err("missing cloud origin"))
-    return
-  }
-  let mut refresh_tok = ""
-  for i in 0..<sess.core.auth_store.accounts.length() {
-    if sess.core.auth_store.accounts[i].sub == sub {
-      refresh_tok = sess.core.auth_store.accounts[i].refresh
-      break
-    }
-  }
-  if refresh_tok.length() == 0 {
-    on_done(Err("missing refresh token"))
-    return
-  }
-  let expected_session = match sess.core.account_sessions.get(sub) {
-    Some(s) => s
-    None => ""
-  }
-  let active_db_sub = sess.core.membership.effective_sub()
-  let is_active_account = active_db_sub.length() > 0 && sub == active_db_sub
-  let req_session_gen = sess.session_gen
-  let host = sync::AccountRefreshHost::{
+  _sub : String,
+  req_session_gen : Int64,
+  is_active_account : Bool,
+  req_origin : String,
+) -> sync::AccountRefreshHost {
+  sync::AccountRefreshHost::{
     read_accounts_k: fn(rk : (sync::HostStorageRead) -> Unit) -> Unit {
       let tid = sess.accounts_tx_id[0]
       if tid <= 0L {
@@ -1626,44 +1828,47 @@ fn runtime_refresh_account_token(
       all_accts : Array[views::StoredAccount],
       all_sessions : Map[String, String],
     ) -> Unit {
-      sync_mem_accounts_from_list(sess, all_accts, all_sessions)
-      let _ = store::put_account_doc(
-        sess.db,
-        "accounts",
-        base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
-      )
-      // ONLY install rotated token into live `sess.cloud` when `sub` is the active DB account!
-      if updated.sub == sess.core.membership.effective_sub() && updated.access.length() > 0 {
-        let was_gated = sess.core.membership.is_session_invalidated()
-        sess.bearer_gen += 1L
-        if was_gated {
-          // Recover from pending-401 lockout when background CAS reconcile discovered a newer
-          // peer-rotated/re-logged-in session for the SAME active subject on disk!
-          sess.core.membership.clear_session_invalidated()
-          sess.core.membership.set_unauthenticated(false)
-        }
-        match sess.cloud {
-          Some(cs) => {
-            if was_gated && new_sid.length() > 0 {
-              let _ = cs.bind_account_context(updated.sub, session=new_sid)
-            }
-            cs.set_origin_and_token("", updated.access)
-            if was_gated && cs.origin().length() > 0 {
-              cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+      match sess.lifecycle {
+        AccountLifecycleState::Active(cur_sub, _, _) => {
+          sync_mem_accounts_from_list(sess, all_accts, all_sessions)
+          let _ = store::put_account_doc(
+            sess.db,
+            "accounts",
+            base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+          )
+          // ONLY install rotated token into live `sess.cloud` when `sub` is the active DB account!
+          if updated.sub == cur_sub && updated.access.length() > 0 {
+            sess.lifecycle = AccountLifecycleState::Active(cur_sub, new_sid, updated.refresh)
+            sess.active_account_gen += 1L
+            sess.bearer_gen += 1L
+            match sess.cloud {
+              Some(cs) => {
+                if new_sid.length() > 0 {
+                  let _ = cs.bind_account_context(updated.sub, session=new_sid)
+                }
+                cs.set_origin_and_token("", updated.access)
+              }
+              None => ()
             }
           }
-          None => ()
+          emit_topic_refresh(sess, "accounts")
         }
-        if was_gated {
-          let _ = sess.core.auth.bump_all()
-          emit_topic_refresh(sess, "workspaces")
-          emit_topic_refresh(sess, "workspace")
-          emit_topic_refresh(sess, "stations")
-          emit_topic_refresh(sess, "chats")
-          emit_topic_refresh(sess, "notify")
+        AccountLifecycleState::UnauthMemory => {
+          // NEVER lift the read gate in-place without full DB/lock/transport hydration!
+          // Route peer takeover or recovery through the single unified activation pipeline.
+          if updated.sub == sess.quarantined_sub || sess.startup_activate_sibling || sess.accounts_init_pending {
+            runtime_schedule_lifecycle_reconcile(sess)
+          } else {
+            sync_mem_accounts_from_list(sess, all_accts, all_sessions)
+            let _ = store::put_account_doc(
+              sess.db,
+              "accounts",
+              base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+            )
+            emit_topic_refresh(sess, "accounts")
+          }
         }
       }
-      emit_topic_refresh(sess, "accounts")
     },
     on_invalidated: fn(
       inv_sub : String,
@@ -1672,43 +1877,107 @@ fn runtime_refresh_account_token(
       remaining_accts : Array[views::StoredAccount],
       remaining_sessions : Map[String, String],
     ) -> Unit {
-      let was_active_sub = inv_sub == sess.core.membership.effective_sub()
-      let exp_sid_opt : Option[String] = if inv_sid.length() > 0 { Some(inv_sid) } else { None }
-      let invalidated = sess.core.invalidate_session(
-        inv_sub,
-        expected_session=exp_sid_opt,
-        expected_refresh=Some(inv_ref),
-        persist_accounts=false,
-      )
-      sync_mem_accounts_from_list(sess, remaining_accts, remaining_sessions)
-      if invalidated && (was_active_sub || remaining_accts.length() == 0) {
-        // Active account (or last account) permanently invalidated on 401:
-        // ALWAYS switch ALL holders back to a clean unauthenticated `:memory:` DB
-        // even when sibling accounts remain, so 0 cached data / `notify` rows can leak
-        // AND the user can immediately sign in as a sibling or re-login without `account_sub_mismatch`!
-        runtime_switch_to_unauth_memory_db(sess)
-        let _ = store::put_account_doc(
-          sess.db,
-          "accounts",
-          base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
-        )
-        emit_topic_refresh(sess, "accounts")
-        emit_topic_refresh(sess, "workspaces")
-        emit_topic_refresh(sess, "workspace")
-        emit_topic_refresh(sess, "stations")
-        emit_topic_refresh(sess, "chats")
-        emit_topic_refresh(sess, "notify")
-      } else if invalidated {
-        let _ = store::put_account_doc(
-          sess.db,
-          "accounts",
-          base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
-        )
-        emit_topic_refresh(sess, "accounts")
+      match sess.lifecycle {
+        AccountLifecycleState::Active(cur_sub, _, _) => {
+          let was_active_sub = inv_sub == cur_sub
+          let exp_sid_opt : Option[String] = if inv_sid.length() > 0 { Some(inv_sid) } else { None }
+          let invalidated = sess.core.invalidate_session(
+            inv_sub,
+            expected_session=exp_sid_opt,
+            expected_refresh=Some(inv_ref),
+            persist_accounts=false,
+          )
+          sync_mem_accounts_from_list(sess, remaining_accts, remaining_sessions)
+          if invalidated && (was_active_sub || remaining_accts.length() == 0) {
+            runtime_switch_to_unauth_memory_db(sess, clear_desired_stations=true)
+            let _ = store::put_account_doc(
+              sess.db,
+              "accounts",
+              base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+            )
+            emit_topic_refresh(sess, "accounts")
+            emit_topic_refresh(sess, "workspaces")
+            emit_topic_refresh(sess, "workspace")
+            emit_topic_refresh(sess, "stations")
+            emit_topic_refresh(sess, "chats")
+            emit_topic_refresh(sess, "notify")
+            emit_topic_refresh(sess, "lock")
+          } else if invalidated {
+            let _ = store::put_account_doc(
+              sess.db,
+              "accounts",
+              base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+            )
+            emit_topic_refresh(sess, "accounts")
+          }
+        }
+        AccountLifecycleState::UnauthMemory => {
+          // Already isolated in `UnauthMemory` (from immediate 401 quarantine or startup rejected-tuple guard):
+          // update remaining accounts; if startup rejected-tuple cleanup left a valid sibling, activate it!
+          let should_activate_sibling = sess.startup_activate_sibling && remaining_accts.length() > 0
+          if sess.quarantined_sub == inv_sub {
+            sess.quarantined_sub = ""
+            sess.desired_mesh_stations.clear()
+            sess.desired_live_sync = false
+          }
+          sync_mem_accounts_from_list(sess, remaining_accts, remaining_sessions)
+          let _ = store::put_account_doc(
+            sess.db,
+            "accounts",
+            base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+          )
+          emit_topic_refresh(sess, "accounts")
+          if should_activate_sibling {
+            runtime_schedule_lifecycle_reconcile(sess)
+          } else {
+            sess.startup_activate_sibling = false
+          }
+        }
       }
     },
     now_ms: fn() -> Int64 { pion_core_wall_now_ms() },
   }
+}
+
+/// Shared production OAuth token refresh path aligned 1:1 with TS `accounts.ts:299, 398-419, 581-606, 641-681`:
+/// - Uses `sess.refresh_coord` (`AccountRefreshCoordinator`) with atomic C `<dir>/accounts` transactions.
+/// - Pre-request `#adoptStored` reads disk BEFORE sending `POST /v1/auth/refresh`.
+/// - 200 write-back & 401 removal both use 0ms single-shot non-blocking disk CAS (`immediate_only`),
+///   with immediate 401 quarantine (`meta("membership:rejected_tuples")` + `UnauthMemory`) on contention.
+/// - Preserves all sibling accounts; NEVER installs a sibling account's token into active `sess.cloud`!
+/// - NEVER bumps station `cred_epoch`.
+fn runtime_refresh_account_token(
+  sess : RuntimeSession,
+  sub : String,
+  on_done : (Result[String, String]) -> Unit,
+) -> Unit {
+  let req_origin = match sess.cloud {
+    Some(c) => c.origin()
+    None => sess.origin
+  }
+  if req_origin.length() == 0 {
+    on_done(Err("missing cloud origin"))
+    return
+  }
+  let mut refresh_tok = ""
+  for i in 0..<sess.core.auth_store.accounts.length() {
+    if sess.core.auth_store.accounts[i].sub == sub {
+      refresh_tok = sess.core.auth_store.accounts[i].refresh
+      break
+    }
+  }
+  if refresh_tok.length() == 0 {
+    on_done(Err("missing refresh token"))
+    return
+  }
+  let expected_session = match sess.core.account_sessions.get(sub) {
+    Some(s) => s
+    None => ""
+  }
+  let active_db_sub = sess.core.membership.effective_sub()
+  let is_active_account = active_db_sub.length() > 0 && sub == active_db_sub
+  let req_session_gen = sess.session_gen
+  let host = runtime_make_refresh_host(sess, sub, req_session_gen, is_active_account, req_origin)
   let _ = sess.core.rt.fork_quiet_named("auth-refresh:" + sub, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
     sess.refresh_coord.refresh_k(host, sub, expected_session, refresh_tok, fn(outcome : sync::AccountRefreshOutcome) -> Unit {
       match outcome {
@@ -2040,17 +2309,40 @@ pub extern "C" fn pion_core_runtime_start(
     }
     None => ()
   }
-  // Account-owned DB lifecycle (Invariant 1):
+  // Account-owned DB lifecycle (Invariant 1 + Persistent Rejected-Tuple Check):
   // - When signed out (`accounts` empty), NEVER open or touch `default.db`: open an isolated
-  //   ephemeral `:memory:` DB with `unauthenticated = true` (0 leakage of any prior account data).
-  // - When signed in, open `account-<sanitized_sub>.db` directly.
-  let is_unauth = accounts.length() == 0
-  let db_name = if is_unauth {
-    ":memory:"
+  //   ephemeral `:memory:` DB (`AccountLifecycleState::UnauthMemory`).
+  // - When signed in, open `account-<sanitized_sub>.db` and check `meta("membership:rejected_tuples")`
+  //   BEFORE hydrating: if the disk tuple was already Cloud-401 rejected before a stop/restart,
+  //   immediately close `<sub_db>`, stay in `UnauthMemory`, and enqueue background CAS removal!
+  let mut startup_rejected_tuple : Option[(String, String, String)] = None
+  let mut startup_activate_sibling = false
+  let mut is_unauth = accounts.length() == 0
+  let mut db_res : Result[sql::Sql, String] = if is_unauth {
+    open_and_migrate_account_db(sh, ":memory:")
   } else {
-    encode_account_db_name(accounts[0].sub)
+    open_and_migrate_account_db(sh, encode_account_db_name(accounts[0].sub))
   }
-  let db = match open_and_migrate_account_db(sh, db_name) {
+  if !is_unauth {
+    match db_res {
+      Ok(cand_db) => {
+        let a0 = accounts[0]
+        if sync::is_tuple_rejected_in_db(cand_db, a0.session, a0.refresh) {
+          log_runtime_warn("startup account tuple already rejected (401); keeping unauth gate and scheduling disk cleanup")
+          cand_db.close()
+          startup_rejected_tuple = Some((a0.sub, a0.session, a0.refresh))
+          startup_activate_sibling = true
+          is_unauth = true
+          accounts.clear()
+          db_res = open_and_migrate_account_db(sh, ":memory:")
+        } else {
+          let _ = sync::clear_rejected_tuples_in_db(cand_db)
+        }
+      }
+      Err(_) => ()
+    }
+  }
+  let db = match db_res {
     Ok(d) => d
     Err(msg) => {
       emit_fatal(msg)
@@ -2351,9 +2643,9 @@ pub extern "C" fn pion_core_runtime_start(
   }
   // Per-session `AccountRefreshCoordinator` backed by synchronous atomic C transactions
   // (`pion_core_accounts_tx_*`): NEVER shares cross-session `effect::Semaphore`, NEVER holds
-  // a mutex or OS file lock across async yields, and NEVER deadlocks across `mb_core_stop()`/restart!
+  // a mutex or OS file lock across async yields, and uses 0ms `try_acquire_now` for 401/reconcile!
   let accounts_tx_id : Array[Int64] = [0L]
-  let refresh_coord = sync::AccountRefreshCoordinator::new()
+  let refresh_coord = sync::AccountRefreshCoordinator::new(rt=Some(rt))
   refresh_coord.set_external_file_lock(
     fn(lk : (Result[Int64, String]) -> Unit) -> Unit {
       acquire_accounts_tx_retry_k(dir, 0, fn(res : Result[Int64, String]) -> Unit {
@@ -2372,7 +2664,25 @@ pub extern "C" fn pion_core_runtime_start(
       }
       pion_core_accounts_tx_end(tid)
     },
+    try_acquire_now=Some(fn() -> Result[Int64, String] {
+      let bs = dir.to_bytes()
+      let tid = pion_core_accounts_tx_try_begin(bytes_data_ptr(bs), bs.length().to_int64())
+      let _ = bs.length()
+      if tid >= 1L {
+        accounts_tx_id[0] = tid
+        Ok(tid)
+      } else if tid == 0L {
+        Err("accounts lock busy")
+      } else {
+        Err("accounts lock/tx I/O error")
+      }
+    }),
   )
+  let init_lifecycle = if is_unauth {
+    AccountLifecycleState::UnauthMemory
+  } else {
+    AccountLifecycleState::Active(accounts[0].sub, accounts[0].session, accounts[0].refresh)
+  }
   let sess = RuntimeSession::{
     dir: dir,
     sh: sh,
@@ -2389,16 +2699,24 @@ pub extern "C" fn pion_core_runtime_start(
     kept_order: [],
     md_stores: Map::new(),
     mesh_transports: Map::new(),
+    desired_mesh_stations: Map::new(),
     cloud: cloud_opt,
     origin: origin,
+    lifecycle: init_lifecycle,
+    active_account_gen: 1L,
     session_gen: 1L,
     login_gen: 1L,
     bearer_gen: 1L,
     accounts_init_pending: accounts_init_pending,
+    startup_activate_sibling: startup_activate_sibling,
+    quarantined_sub: "",
+    lifecycle_reconciling: false,
+    lifecycle_fiber: None,
     stopped: false,
     reconcile_requeue_pending: false,
     device_conn_seq: device_conn_seq,
     live_sync_enabled: false,
+    desired_live_sync: false,
     device_app: "desktop",
     device_locale: "",
   }
@@ -2556,38 +2874,116 @@ pub extern "C" fn pion_core_runtime_start(
     }
     None => ()
   }
-  refresh_coord.set_on_pending_401_gate(fn(inv_sub : String, _sid : String, _ref : String) -> Unit {
-    if inv_sub == sess.core.membership.effective_sub() {
-      // Immediately close the active session's read gate on confirmed 401 even while waiting
-      // for `<dir>/.accounts.lock` so 0 cached reads can leak during lock contention!
-      sess.core.membership.mark_session_invalidated()
-      sess.core.clear_account_scoped_runtime_state()
-      clear_runtime_ephemeral_caches(sess)
-      sess.live_sync_enabled = false
-      match sess.cloud {
-        Some(cs) => {
-          cs.clear_all_credentials()
-          cs.clear_token()
-          cs.stop()
+  // Immediate 0ms 401 quarantine on lock contention:
+  // 1. Synchronously persist rejected tuple(s) into `<sub_db>` `meta("membership:rejected_tuples")` (0ms, no `.accounts.lock`!).
+  // 2. Immediately transition the runtime to `AccountLifecycleState::UnauthMemory` (unmounting `<sub_db>`!).
+  // Any subsequent recovery (e.g. peer session rotation) goes through the unified full-hydration pipeline!
+  refresh_coord.set_on_401_quarantine(fn(
+    inv_sub : String,
+    inv_sid : String,
+    inv_ref : String,
+    alt_orig : Option[(String, String)],
+  ) -> Unit {
+    match sess.lifecycle {
+      AccountLifecycleState::Active(cur_sub, cur_sid, cur_ref) => {
+        let matches_cur = inv_sub == cur_sub && inv_sid == cur_sid && inv_ref == cur_ref
+        let matches_alt = match alt_orig {
+          Some((asid, aref)) => inv_sub == cur_sub && asid == cur_sid && aref == cur_ref
+          None => false
         }
-        None => ()
+        if matches_cur || matches_alt {
+          let _ = sync::record_rejected_tuple_in_db(sess.db, inv_sid, inv_ref)
+          match alt_orig {
+            Some((asid, aref)) => { let _ = sync::record_rejected_tuple_in_db(sess.db, asid, aref) }
+            None => ()
+          }
+          sess.quarantined_sub = inv_sub
+          runtime_switch_to_unauth_memory_db(sess, clear_desired_stations=false)
+          emit_topic_refresh(sess, "accounts")
+          emit_topic_refresh(sess, "workspaces")
+          emit_topic_refresh(sess, "workspace")
+          emit_topic_refresh(sess, "stations")
+          emit_topic_refresh(sess, "chats")
+          emit_topic_refresh(sess, "notify")
+          emit_topic_refresh(sess, "lock")
+        }
       }
-      let _ = sess.core.auth.bump_all()
-      emit_topic_refresh(sess, "workspaces")
-      emit_topic_refresh(sess, "workspace")
-      emit_topic_refresh(sess, "stations")
-      emit_topic_refresh(sess, "chats")
-      emit_topic_refresh(sess, "notify")
+      AccountLifecycleState::UnauthMemory => ()
+    }
+  })
+  // Immediate active-memory update when 200 rotation hits lock contention (protects active bearer
+  // and ensures stale 401 for the old refresh token cannot overwrite pending `Commit200`!).
+  refresh_coord.set_on_pending_200_update(fn(
+    upd_sub : String,
+    upd_sid : String,
+    _old_ref : String,
+    tokens : sync::RefreshedTokens,
+  ) -> Unit {
+    for i in 0..<sess.core.auth_store.accounts.length() {
+      if sess.core.auth_store.accounts[i].sub == upd_sub {
+        let cur = sess.core.auth_store.accounts[i]
+        let next_name = match tokens.name {
+          Some(nm) => if nm.length() > 0 { nm } else { cur.name }
+          None => cur.name
+        }
+        sess.core.auth_store.accounts[i] = views::StoredAccount::{
+          sub: cur.sub,
+          email: cur.email,
+          name: next_name,
+          picture: cur.picture,
+          access: tokens.access,
+          refresh: tokens.refresh,
+          access_expires: tokens.access_expires,
+        }
+        break
+      }
+    }
+    for i in 0..<sess.accounts.length() {
+      if sess.accounts[i].sub == upd_sub {
+        let cur = sess.accounts[i]
+        let next_name = match tokens.name {
+          Some(nm) => if nm.length() > 0 { nm } else { cur.name }
+          None => cur.name
+        }
+        sess.accounts[i] = AccountInfo::{
+          sub: cur.sub,
+          email: cur.email,
+          name: next_name,
+          picture: cur.picture,
+          access: tokens.access,
+          refresh: tokens.refresh,
+          access_expires: tokens.access_expires,
+          session: cur.session,
+        }
+        break
+      }
+    }
+    match sess.lifecycle {
+      AccountLifecycleState::Active(cur_sub, cur_sid, _) => {
+        if cur_sub == upd_sub && cur_sid == upd_sid {
+          sess.lifecycle = AccountLifecycleState::Active(cur_sub, cur_sid, tokens.refresh)
+          sess.bearer_gen += 1L
+          match sess.cloud {
+            Some(cs) => if tokens.access.length() > 0 { cs.set_origin_and_token("", tokens.access) }
+            None => ()
+          }
+        }
+      }
+      AccountLifecycleState::UnauthMemory => ()
     }
   })
   g_session[0] = Some(sess)
   // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
   let _ = core.emit_auth_handshake()
+  match startup_rejected_tuple {
+    Some((rsub, rsid, rref)) => {
+      let host = runtime_make_refresh_host(sess, rsub, sess.session_gen, false, sess.origin)
+      sess.refresh_coord.enqueue_rejected_removal(host, rsub, rsid, rref)
+    }
+    None => ()
+  }
   if sess.accounts_init_pending {
-    let init_login_gen = sess.login_gen
-    let _ = sess.core.rt.fork_quiet_named("startup-accounts-init", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-      retry_startup_accounts_init_k(sess, init_login_gen, 0, fk)
-    })
+    runtime_schedule_lifecycle_reconcile(sess)
   }
   1
 }
@@ -2958,9 +3354,9 @@ fn finish_verified_auth_complete_k(
     None => ()
   }
   // Step 1: Stage fallible DB open/migration + async host purge reads BEFORE touching disk `accounts`!
-  runtime_stage_account_db_k(sess, new_stored.sub, fn(stage_res : Result[Option[StagedAccountDb], String]) -> Unit {
+  runtime_stage_account_db_k(sess, new_stored.sub, fn(stage_res : StageAccountDbResult) -> Unit {
     let staged_opt = match stage_res {
-      Err(msg) => {
+      StageAccountDbResult::Failed(msg) => {
         let err_code = if msg.starts_with("account_sub_mismatch") { "account_sub_mismatch" } else { "sql_error" }
         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: err_code, message: msg })
         let (out_j, out_b) = protocol::encode_core_event(ev)
@@ -2968,7 +3364,14 @@ fn finish_verified_auth_complete_k(
         done()
         return
       }
-      Ok(s) => s
+      StageAccountDbResult::RejectedTuple => {
+        let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "login_failed", message: "session rejected" })
+        let (out_j, out_b) = protocol::encode_core_event(ev)
+        emit_wire(out_j, payload=out_b)
+        done()
+        return
+      }
+      StageAccountDbResult::Staged(s) => s
     }
     if sess.login_gen != req_login_gen {
       close_staged_db(staged_opt)
@@ -3009,6 +3412,22 @@ fn finish_verified_auth_complete_k(
         Ok((all_accts, all_sessions)) => {
           // Step 3: Commit runtime state atomically BEFORE firing auth boundary!
           sess.login_gen += 1L
+          sess.active_account_gen += 1L
+          sess.accounts_init_pending = false
+          sess.startup_activate_sibling = false
+          if sess.quarantined_sub.length() > 0 && sess.quarantined_sub != new_stored.sub {
+            sess.desired_mesh_stations.clear()
+            sess.desired_live_sync = false
+          }
+          sess.quarantined_sub = ""
+          match sess.lifecycle_fiber {
+            Some(fib) => {
+              fib.interrupt()
+              sess.lifecycle_fiber = None
+              sess.lifecycle_reconciling = false
+            }
+            None => ()
+          }
           let _ = bump_runtime_session_gen(sess)
           sess.bearer_gen += 1L
           match runtime_install_staged_db_now(sess, new_stored.sub, staged_opt) {
@@ -3022,6 +3441,7 @@ fn finish_verified_auth_complete_k(
             }
             Ok(_) => ()
           }
+          sess.lifecycle = AccountLifecycleState::Active(new_stored.sub, session_id, new_stored.refresh)
           sess.core.membership.clear_session_invalidated()
           sess.core.membership.set_unauthenticated(false)
           sync_mem_accounts_from_list(sess, all_accts, all_sessions)
@@ -3701,65 +4121,12 @@ pub extern "C" fn pion_core_runtime_send(
                   // Only arms at initial `cred_epoch == 1`; NEVER re-arms stale static creds after epoch advance!
                   sess.core.membership.set_static_credential(target_ws, static_cred)
                 }
-                let cloud_ref = sess.cloud
-                let core_ref = sess.core
-                let get_cred = fn(dev_id : String, fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
-                  if !core_ref.can_read_workspace(target_ws) {
-                    ck(effect::Exit::Failed(effect::EffectError::Custom("workspace access revoked")))
-                    return
-                  }
-                  if fresh {
-                    let _ = core_ref.membership.bump_cred_epoch(target_ws)
-                  } else {
-                    match core_ref.membership.get_valid_static_credential(target_ws) {
-                      Some(sc) => {
-                        ck(effect::Exit::Succeeded(sc))
-                        return
-                      }
-                      None => ()
-                    }
-                  }
-                  let captured_epoch = core_ref.membership.cred_epoch_of(target_ws)
-                  match cloud_ref {
-                    Some(cs) => cs.fetch_member_credential_k(
-                      target_ws,
-                      dev_id,
-                      pion_core_wall_now_ms() / 1000.to_int64(),
-                      fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
-                        if core_ref.membership.cred_epoch_of(target_ws) != captured_epoch || !core_ref.can_read_workspace(target_ws) {
-                          ck(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
-                          return
-                        }
-                        match ex {
-                          effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
-                          effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
-                          effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
-                        }
-                      },
-                      fresh=fresh,
-                    )
-                    None => ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
-                  }
-                }
-                let cfg = sync::MeshStationConfig::new(
-                  target_ws,
-                  peer_id,
-                  relays,
-                  get_cred,
-                  get_lock_carry=Some(fn() -> sync::MeshLockCarry {
-                    sync::mesh_lock_carry_for_core(core_ref, workspace=target_ws)
-                  }),
-                )
-                match sess.mesh_transports.get(target_st) {
-                  Some(old_ctrl) => {
-                    sess.core.detach_station_transport(target_st)
-                    old_ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
-                  }
-                  None => ()
-                }
-                let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
-                sess.mesh_transports.set(target_st, ctrl)
-                sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
+                sess.desired_mesh_stations.set(target_st, DesiredMeshStation::{
+                  workspace: target_ws,
+                  peer_id: peer_id,
+                  relays: relays,
+                })
+                runtime_attach_mesh_station(sess, target_ws, target_st, peer_id, relays)
                 mode = "mesh"
               }
               None => {
@@ -3771,6 +4138,7 @@ pub extern "C" fn pion_core_runtime_send(
                 }
               }
             }
+            sess.desired_live_sync = true
             if !sess.live_sync_enabled {
               sess.live_sync_enabled = true
               sess.core.start()
@@ -3792,6 +4160,8 @@ pub extern "C" fn pion_core_runtime_send(
             }
             let target_st = sess.core.membership.canonicalize(raw_target_st, fallback_ws=sess.core.workspace)
             let lookup_st = if sess.mesh_transports.get(target_st).is_some() { target_st } else { raw_target_st }
+            sess.desired_mesh_stations.remove(lookup_st)
+            sess.desired_mesh_stations.remove(target_st)
             match sess.mesh_transports.get(lookup_st) {
               Some(ctrl) => {
                 sess.core.detach_station_transport(lookup_st)
@@ -3899,9 +4269,21 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
     Some(sess) => {
       sess.stopped = true
       sess.accounts_init_pending = false
+      sess.startup_activate_sibling = false
+      sess.quarantined_sub = ""
+      match sess.lifecycle_fiber {
+        Some(fib) => {
+          fib.interrupt()
+          sess.lifecycle_fiber = None
+          sess.lifecycle_reconciling = false
+        }
+        None => ()
+      }
       sess.refresh_coord.stop()
       let _ = bump_runtime_session_gen(sess)
       sess.live_sync_enabled = false
+      sess.desired_live_sync = false
+      sess.desired_mesh_stations.clear()
       let mkeys = sess.mesh_transports.keys()
       for i in 0..<mkeys.length() {
         let st = mkeys[i]

@@ -2078,7 +2078,7 @@ test "Slice 2B-1 R7: refresh 401/200 lock-busy immediate gate and background CAS
     },
     fn(_h : Int64) -> Unit {},
   )
-  coord_a.set_on_pending_401_gate(fn(gsub : String, _gsid : String, _gref : String) -> Unit {
+  coord_a.set_on_401_quarantine(fn(gsub : String, _gsid : String, _gref : String, _alt : Option[(String, String)]) -> Unit {
     if gsub == "u-a" {
       gate_fired_a[0] = true
       core_a.membership.mark_session_invalidated()
@@ -2152,7 +2152,7 @@ test "Slice 2B-1 R7: refresh 401/200 lock-busy immediate gate and background CAS
     },
     fn(_h : Int64) -> Unit {},
   )
-  coord_b.set_on_pending_401_gate(fn(_s, _sid, _ref) -> Unit { gated_b[0] = true })
+  coord_b.set_on_401_quarantine(fn(_s, _sid, _ref, _alt) -> Unit { gated_b[0] = true })
   let host_b = AccountRefreshHost::{
     read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_b[0])) },
     write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
@@ -2240,4 +2240,360 @@ test "Slice 2B-1 R7: refresh 401/200 lock-busy immediate gate and background CAS
     None => panic("valid disk after 200 reconcile")
   }
   debug_assert(disk_after_c.length() == 1 && disk_after_c[0].refresh == "ref-rot-200", "rotated refresh persisted to disk")
+}
+
+// ── Test 14 (R8): Unified AccountLifecycle state machine regressions (Codex P1-1..P1-5 + Opus P2-1) ──
+
+test "Slice 2B-1 R8: full hydration lock root & transport recovery, rejected tuples meta, publication boundary, and Commit200 vs stale 401" {
+  let rt = effect::Runtime::new()
+
+  // 1. Codex P1-1: Workspace with persisted pinned lock root -> 401 lock-busy quarantine switches to
+  //    `UnauthMemory` (`switch_to_unauthenticated_db`) -> peer rotation adopt runs unified full
+  //    hydration (`switch_account_db` + `restore_lock_state`) -> `lock.status` reports `locked: true`,
+  //    pinned root `G_good` is preserved, forged `G_evil` is REJECTED, and station transports + frame delivery recover!
+  let (_, acct_db) = make_sim_db(rt)
+  let (_, mem_db) = make_sim_db(rt)
+  let core = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-1", rt, acct_db, core_offline_transport(), fn() -> Unit {})
+  let _ = core.set_db_account_sub("u-alice")
+  let _ = core.commit_cloud_me(mt_make_me("u-alice", "alice@still.fail", [(ULID_WS1, "W1", "owner")]), req_seq=1L)
+  let _ = core.membership.bind_station_checked(ULID_WS1, "st-1")
+  let owner_seed = make_seed(77)
+  let owner_key = ed25519_key_id(owner_seed)
+  let owner_dev_id = hex_64("7")
+  let gen_unsigned = form::Json::Obj([
+    ("v", form::Json::Num(1.0)),
+    ("ws", form::Json::Str(ULID_WS1)),
+    ("seq", form::Json::Num(0.0)),
+    ("prev", form::Json::Null),
+    ("at", form::Json::Num(1700000000.0)),
+    ("kind", form::Json::Str("genesis")),
+    (
+      "body",
+      form::Json::Obj([
+        ("owner", form::Json::Str("u-alice")),
+        ("origins", form::Json::Arr([form::Json::Str("https://app.still.fail")])),
+        ("rp_id", form::Json::Str("still.fail")),
+        ("cloud_keys", form::Json::Obj([])),
+        (
+          "members",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("sub", form::Json::Str("u-alice")),
+              ("email", form::Json::Str("alice@still.fail")),
+              ("role", form::Json::Str("owner")),
+            ]),
+          ]),
+        ),
+        (
+          "devices",
+          form::Json::Arr([
+            form::Json::Obj([
+              ("id", form::Json::Str(owner_dev_id)),
+              ("sub", form::Json::Str("u-alice")),
+              ("kind", form::Json::Str("app")),
+              ("label", form::Json::Str("Mac")),
+              ("sign_key", form::Json::Str(owner_key)),
+            ]),
+          ]),
+        ),
+        ("passkeys", form::Json::Arr([])),
+        ("stations", form::Json::Arr([])),
+        ("gateways", form::Json::Arr([])),
+      ]),
+    ),
+  ])
+  let gen_signed = match sign_lock_entry(owner_seed, gen_unsigned) {
+    Ok(e) => e
+    Err(why) => panic("sign genesis failed: " + why)
+  }
+  let genesis_good = match lock::entry_hash(gen_signed, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("entry_hash failed")
+  }
+  match core.apply_lock_chain([gen_signed], genesis_good) {
+    Ok(_) => ()
+    Err(e) => panic("apply_lock_chain failed: " + e)
+  }
+  match core.lock_root {
+    Some(r) => debug_assert(r == genesis_good, "lock root initially pinned to G_good")
+    None => panic("expected pinned lock root")
+  }
+  let ls_before = mt_expect_ok_json(mt_call(core, 10L, "lock.status", base_codec::json_obj([])), "lock.status before 401")
+  let ls_before_s = base_codec::json_stringify(ls_before)
+  debug_assert(ls_before_s.contains("\"locked\":true") && ls_before_s.contains(genesis_good), "lock.status reports locked:true + root before 401")
+
+  // Simulate 401 lock-busy quarantine: persist rejected tuple to `acct_db` `meta`, switch to `UnauthMemory` (`mem_db`)!
+  match record_rejected_tuple_in_db(acct_db, "sid-1", "ref-1") {
+    Ok(_) => ()
+    Err(e) => panic("record_rejected_tuple_in_db failed: " + e)
+  }
+  debug_assert(is_tuple_rejected_in_db(acct_db, "sid-1", "ref-1"), "rejected tuple persisted in SQLite meta")
+  debug_assert(!is_tuple_rejected_in_db(acct_db, "sid-2", "ref-2"), "newer peer tuple NOT marked rejected")
+  core.switch_to_unauthenticated_db(mem_db)
+  debug_assert(core.membership.is_unauthenticated(), "UnauthMemory closes read gate")
+  debug_assert(core.db_account_sub.is_none(), "UnauthMemory unbinds db_account_sub")
+  debug_assert(core.lock_root.is_none(), "UnauthMemory unmounted old DB lock root")
+
+  // Simulate peer rotation takeover: unified full hydration re-attaches `acct_db`, clears stale rejected meta,
+  // switches back to `ULID_WS1` (restoring pinned lock root!), re-attaches transport, and delivers frames!
+  let _ = clear_rejected_tuples_in_db(acct_db)
+  debug_assert(!is_tuple_rejected_in_db(acct_db, "sid-1", "ref-1"), "clear_rejected_tuples_in_db cleared old records")
+  match core.switch_account_db(acct_db, "u-alice") {
+    Ok(_) => ()
+    Err(e) => panic("full hydration switch_account_db failed: " + e)
+  }
+  core.switch_workspace(ULID_WS1)
+  let _ = core.membership.bind_station_checked(ULID_WS1, "st-1")
+  match core.lock_root {
+    Some(r) => debug_assert(r == genesis_good, "full hydration MUST restore persisted pinned lock root G_good")
+    None => panic("pinned lock root lost after recovery!")
+  }
+  let ls_after = mt_expect_ok_json(mt_call(core, 11L, "lock.status", base_codec::json_obj([])), "lock.status after recovery")
+  debug_assert(base_codec::json_stringify(ls_after).contains("\"locked\":true"), "lock.status MUST still report locked:true after peer recovery")
+  // Attempt to forge/replace lock root with `G_evil` MUST be rejected with `LockRejected`!
+  core.pin_lock_root("genesis_evil_forged_root_9999")
+  let drained_lock = core.drain_frame()
+  let mut saw_lock_rejected = false
+  for i in 0..<drained_lock.length() {
+    match drained_lock[i] {
+      CoreEvent::LockRejected(ws, _) => if ws == ULID_WS1 { saw_lock_rejected = true }
+      _ => ()
+    }
+  }
+  debug_assert(saw_lock_rejected, "forged G_evil MUST be rejected after full hydration recovery")
+  match core.lock_root {
+    Some(r) => debug_assert(r == genesis_good, "pinned root MUST remain G_good after forged attempt")
+    None => panic("lock_root unexpectedly cleared")
+  }
+  // Station transport + frame delivery resume cleanly after recovery:
+  core.attach_station_transport(ULID_WS1 + "/st-1", core_offline_transport(), workspace=ULID_WS1)
+  core.outbox.tell(CoreEvent::EntryAdded(
+    ULID_WS1 + "/st-1",
+    99,
+    store::Entry::{
+      n: 1, kind: "message", author_kind: "person", author: "alice",
+      text: "POST_RECOVERY_DELIVERED_FRAME", notice: None, files: 0, letter: false,
+    },
+    None,
+  ))
+  let drained_post = core.drain_frame()
+  let mut saw_post_frame = false
+  for i in 0..<drained_post.length() {
+    match drained_post[i] {
+      CoreEvent::EntryAdded(_, _, ent, _) => if ent.text == "POST_RECOVERY_DELIVERED_FRAME" { saw_post_frame = true }
+      _ => ()
+    }
+  }
+  debug_assert(saw_post_frame, "station frame delivery MUST work cleanly after full hydration recovery")
+
+  // 2. Codex P1-4: Atomic publication-boundary verification (`verify_publication_candidate`):
+  //    Peer deletes or replaces `accounts[0]` during async staging -> staged candidate rejected!
+  let a_alice = views::StoredAccount::{
+    sub: "u-alice", email: "alice@still.fail", name: "Alice", picture: "",
+    access: "acc-a", refresh: "ref-a", access_expires: 999999L,
+  }
+  let a_bob = views::StoredAccount::{
+    sub: "u-bob", email: "bob@still.fail", name: "Bob", picture: "",
+    access: "acc-b", refresh: "ref-b", access_expires: 999999L,
+  }
+  let s_a : Map[String, String] = Map::new()
+  s_a.set("u-alice", "sid-a")
+  let s_b : Map[String, String] = Map::new()
+  s_b.set("u-bob", "sid-b")
+
+  // (a) Exact match -> Publish
+  match verify_publication_candidate(
+    HostStorageRead::Found(serialize_stored_accounts([a_alice], sessions=Some(s_a))),
+    "u-alice",
+    "sid-a",
+    "ref-a",
+  ) {
+    PublicationCheckResult::Publish(cur, sid, _, _) => debug_assert(cur.sub == "u-alice" && sid == "sid-a", "matching candidate publishes")
+    _ => panic("expected Publish on matching disk candidate")
+  }
+  // (b) Peer deleted account (`[]` or `Absent`) during staging -> EmptyDisk (discard staged DB!)
+  match verify_publication_candidate(
+    HostStorageRead::Found(serialize_stored_accounts([])),
+    "u-alice",
+    "sid-a",
+    "ref-a",
+  ) {
+    PublicationCheckResult::EmptyDisk => ()
+    _ => panic("expected EmptyDisk when peer deleted account during staging")
+  }
+  // (c) Peer replaced `accounts[0]` with `u-bob` during staging -> Superseded(u-bob) (discard staged u-alice DB!)
+  match verify_publication_candidate(
+    HostStorageRead::Found(serialize_stored_accounts([a_bob], sessions=Some(s_b))),
+    "u-alice",
+    "sid-a",
+    "ref-a",
+  ) {
+    PublicationCheckResult::Superseded(next_a, next_sid) => debug_assert(next_a.sub == "u-bob" && next_sid == "sid-b", "replaced candidate returns Superseded(u-bob)")
+    _ => panic("expected Superseded when peer replaced accounts[0] during staging")
+  }
+  // (d) ReadError -> RetryLater
+  match verify_publication_candidate(HostStorageRead::ReadError("io_busy"), "u-alice", "sid-a", "ref-a") {
+    PublicationCheckResult::RetryLater(_) => ()
+    _ => panic("expected RetryLater on ReadError")
+  }
+
+  // 3. Opus R7 P2-1: `Commit200` pending under lock contention + stale `Remove401` for OLD token:
+  //    (a) Stale 401 for `(sid-old, ref-old)` MUST be ignored (NEVER overwrite `Commit200`, NEVER quarantine/sign out!),
+  //        and once lock releases `Commit200` commits `ref-new-200` to disk!
+  let acct_p2 = views::StoredAccount::{
+    sub: "u-p2", email: "p2@still.fail", name: "P2", picture: "",
+    access: "acc-old", refresh: "ref-old", access_expires: 100L,
+  }
+  let s_p2 : Map[String, String] = Map::new()
+  s_p2.set("u-p2", "sid-old")
+  let disk_p2 : Array[base_codec::Json] = [serialize_stored_accounts([acct_p2], sessions=Some(s_p2))]
+  let mem_ref_p2 : Array[String] = ["ref-old"]
+  let lock_busy_p2 : Array[Bool] = [false]
+  let http_mode_p2 : Array[Int] = [0] // 0 -> 200 rotated, 1 -> stale 401 on ref-old
+  let quarantined_p2 : Array[Bool] = [false]
+  let inval_p2 : Array[Bool] = [false]
+  let adopted_p2 : Array[String] = [""]
+
+  let coord_p2 = AccountRefreshCoordinator::new()
+  coord_p2.set_external_file_lock(
+    fn(ak : (Result[Int64, String]) -> Unit) -> Unit {
+      if lock_busy_p2[0] { ak(Err("accounts lock busy")) } else { ak(Ok(10L)) }
+    },
+    fn(_h : Int64) -> Unit {},
+    try_acquire_now=Some(fn() -> Result[Int64, String] {
+      if lock_busy_p2[0] { Err("accounts lock busy") } else { Ok(10L) }
+    }),
+  )
+  coord_p2.set_on_pending_200_update(fn(_sub, _sid, _old_ref, toks) -> Unit {
+    mem_ref_p2[0] = toks.refresh
+  })
+  coord_p2.set_on_401_quarantine(fn(_sub, _sid, _ref, _alt) -> Unit {
+    quarantined_p2[0] = true
+  })
+  let host_p2 = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_p2[0])) },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      disk_p2[0] = doc
+      wk(Ok(()))
+    },
+    do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      lock_busy_p2[0] = true
+      if http_mode_p2[0] == 0 {
+        hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+          access: "acc-new-200",
+          refresh: "ref-new-200",
+          access_expires: 999999L,
+          name: None,
+        })))
+      } else {
+        hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
+      }
+    },
+    get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sid-old", mem_ref_p2[0])) },
+    on_adopt_or_update: fn(u, _sid, _all, _ss) -> Unit { adopted_p2[0] = u.refresh },
+    on_invalidated: fn(_sub, _sid, _ref, _rem, _ss) -> Unit { inval_p2[0] = true },
+    now_ms: fn() -> Int64 { 200000L },
+  }
+  // Step 3a: 200 refresh hits lock contention -> advances memory to `ref-new-200` and queues `Commit200`!
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_p2.refresh_k(host_p2, "u-p2", "sid-old", "ref-old", fn(_o) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(mem_ref_p2[0] == "ref-new-200" && coord_p2.has_pending_reconcile("u-p2"), "Commit200 queued and active memory advanced")
+
+  // Step 3b: While lock is STILL busy, enqueue a stale `Remove401` for OLD `(sid-old, ref-old)`:
+  // MUST be silently dropped (neither quarantining nor overwriting `Commit200`)!
+  coord_p2.enqueue_rejected_removal(host_p2, "u-p2", "sid-old", "ref-old")
+  debug_assert(!quarantined_p2[0] && !inval_p2[0], "stale Remove401 for old token MUST NOT quarantine or invalidate")
+
+  // Release lock and advance clock: `Commit200` persists `ref-new-200` to disk and adopts cleanly!
+  lock_busy_p2[0] = false
+  let _ = rt.advance(150)
+  debug_assert(!inval_p2[0] && adopted_p2[0] == "ref-new-200", "Commit200 persisted rotated token without false logout")
+  let disk_after_p2 = match parse_stored_accounts_strict(disk_p2[0]) {
+    Some(xs) => xs
+    None => panic("valid disk after Commit200")
+  }
+  debug_assert(disk_after_p2.length() == 1 && disk_after_p2[0].refresh == "ref-new-200", "disk holds ref-new-200")
+
+  // Step 3c: When `Commit200` is pending (disk still holds `ref-old`, memory holds `ref-new-200`) and a
+  // 401 arrives for the NEW rotated token `ref-new-200`: MUST upgrade to `Remove401` matching BOTH
+  // `(sid-old, ref-new-200)` AND un-flushed disk `(sid-old, ref-old)`, persist both via `on_401_quarantine`,
+  // and delete `u-p2` from disk once lock releases!
+  let disk_p3 : Array[base_codec::Json] = [serialize_stored_accounts([acct_p2], sessions=Some(s_p2))]
+  let mem_ref_p3 : Array[String] = ["ref-old"]
+  let lock_busy_p3 : Array[Bool] = [false]
+  let saw_alt_p3 : Array[Bool] = [false]
+  let inval_p3 : Array[Bool] = [false]
+  let http_step_p3 : Array[Int] = [0]
+  let coord_p3 = AccountRefreshCoordinator::new()
+  coord_p3.set_external_file_lock(
+    fn(ak : (Result[Int64, String]) -> Unit) -> Unit {
+      if lock_busy_p3[0] { ak(Err("accounts lock busy")) } else { ak(Ok(11L)) }
+    },
+    fn(_h : Int64) -> Unit {},
+    try_acquire_now=Some(fn() -> Result[Int64, String] {
+      if lock_busy_p3[0] { Err("accounts lock busy") } else { Ok(11L) }
+    }),
+  )
+  coord_p3.set_on_pending_200_update(fn(_sub, _sid, _old_ref, toks) -> Unit {
+    mem_ref_p3[0] = toks.refresh
+  })
+  coord_p3.set_on_401_quarantine(fn(_sub, _sid, rref, alt) -> Unit {
+    match alt {
+      Some((asid, aref)) => if rref == "ref-new-200" && asid == "sid-old" && aref == "ref-old" {
+        saw_alt_p3[0] = true
+      }
+      None => ()
+    }
+  })
+  let host_p3 = AccountRefreshHost::{
+    read_accounts_k: fn(rk : (HostStorageRead) -> Unit) -> Unit { rk(HostStorageRead::Found(disk_p3[0])) },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      disk_p3[0] = doc
+      wk(Ok(()))
+    },
+    do_refresh_http_k: fn(_rtok : String, _now : Int64, hk : (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit {
+      http_step_p3[0] += 1
+      lock_busy_p3[0] = true
+      if http_step_p3[0] == 1 {
+        hk(effect::Exit::Succeeded(Ok(RefreshedTokens::{
+          access: "acc-new-200",
+          refresh: "ref-new-200",
+          access_expires: 999999L,
+          name: None,
+        })))
+      } else {
+        hk(effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(401, "invalid_grant"))))
+      }
+    },
+    get_mem_tuple: fn(_sub : String) -> Option[(String, String)] { Some(("sid-old", mem_ref_p3[0])) },
+    on_adopt_or_update: fn(_u, _sid, _all, _ss) -> Unit {},
+    on_invalidated: fn(_sub, _sid, _ref, _rem, _ss) -> Unit { inval_p3[0] = true },
+    now_ms: fn() -> Int64 { 200000L },
+  }
+  let _ = rt.fork(fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    coord_p3.refresh_k(host_p3, "u-p2", "sid-old", "ref-old", fn(_o) -> Unit {
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  // Now trigger 401 for the NEW rotated token `ref-new-200` (Phase 1 sees disk `ref-old` -> wait:
+  // simulate direct `enqueue_rejected_removal` upgrade AND direct Phase 3B with `alt_orig`!):
+  // Set `lock_busy_p3 = false` for Phase 1? No, disk has `ref-old`, so Phase 1 adopts disk `ref-old`
+  // unless we test `enqueue_rejected_removal` + `on_401_quarantine` directly on `ref-new-200`!
+  // Actually let's set disk to `ref-new-200`? No, disk STILL has un-flushed `ref-old` — that's the exact
+  // case where `enqueue_rejected_removal("u-p2", "sid-old", "ref-new-200")` upgrades `Commit200` to
+  // `Remove401(..., alt_orig=Some(("sid-old", "ref-old")))` so disk `ref-old` IS matched and deleted!
+  coord_p3.enqueue_rejected_removal(host_p3, "u-p2", "sid-old", "ref-new-200")
+  lock_busy_p3[0] = false
+  let _ = rt.advance(150)
+  debug_assert(inval_p3[0], "upgraded Remove401 on rotated token MUST delete un-flushed disk entry")
+  let disk_after_p3 = match parse_stored_accounts_strict(disk_p3[0]) {
+    Some(xs) => xs
+    None => panic("valid disk after upgraded Remove401")
+  }
+  debug_assert(disk_after_p3.length() == 0, "u-p2 removed from disk after rotated-token 401 upgrade")
 }

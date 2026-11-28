@@ -32,12 +32,21 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
 #include "core_api.h"
 
 extern void mb_core_attach_pion_runtime(void);
+extern int64_t pion_core_accounts_tx_try_begin(const char *dir, int64_t dir_len);
+extern void pion_core_accounts_tx_end(int64_t tx_id);
+
+static int64_t mono_ms_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000LL + (int64_t)(ts.tv_nsec / 1000000LL);
+}
 
 #define MAX_MSGS 256
 #define WS1_ID "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -139,6 +148,9 @@ typedef struct fake_server {
     char pending_sse_event[1024];
     int slow_token_entered;
     int slow_token_release;
+    int slow_refresh_hold;
+    int slow_refresh_entered;
+    int slow_refresh_release;
     _Atomic int drop_ws2_in_me;
     _Atomic int got_me;
     _Atomic int got_ws;
@@ -321,6 +333,15 @@ static void *handle_client_thread(void *arg) {
         assert(strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL ||
                strstr(body, "\"refresh_token\":\"ref-bob-1\"") != NULL);
         atomic_fetch_add(&g_srv.got_auth_refresh, 1);
+        pthread_mutex_lock(&g_srv.mu);
+        if (g_srv.slow_refresh_hold) {
+            g_srv.slow_refresh_entered = 1;
+            pthread_cond_broadcast(&g_srv.cv);
+            while (!g_srv.slow_refresh_release && !g_srv.shutdown) {
+                pthread_cond_wait(&g_srv.cv, &g_srv.mu);
+            }
+        }
+        pthread_mutex_unlock(&g_srv.mu);
         send_http_json(fd, 401, "Unauthorized", "{\"error\":\"invalid_grant\"}");
         close(fd);
         return NULL;
@@ -449,7 +470,22 @@ static void stop_fake_server(void) {
     pthread_join(g_srv.thread, NULL);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    if (argc >= 3 && strcmp(argv[1], "--lock-hold-barrier") == 0) {
+        const char *hold_dir = argv[2];
+        int64_t tx = pion_core_accounts_tx_try_begin(hold_dir, (int64_t)strlen(hold_dir));
+        if (tx < 1) {
+            return 4;
+        }
+        char locked = 'L';
+        ssize_t wr = write(STDOUT_FILENO, &locked, 1);
+        (void)wr;
+        char rel = 0;
+        ssize_t rd = read(STDIN_FILENO, &rel, 1);
+        (void)rd;
+        pion_core_accounts_tx_end(tx);
+        return 0;
+    }
     signal(SIGPIPE, SIG_IGN);
     memset(&g_host, 0, sizeof(g_host));
     pthread_mutex_init(&g_host.mu, NULL);
@@ -939,6 +975,140 @@ int main(void) {
         send_json("{\"id\":508,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
         wait_for_matching_msg(&g_host, "\"id\":508,", "persisted-alice-draft", 10);
         printf("[live_net_e2e] Phase 8 PASSED (active [A,B] ordering + same-account cancel preservation + restart account-A.db)\n");
+    }
+
+    // ── PHASE 9 (R8 Codex P1-2 + P1-3): Real cross-process `.accounts.lock` contention during 401:
+    //    1) Zero-wait immediate quarantine (< 1s, no 3.06s read window) BEFORE lock releases!
+    //    2) Stop core BEFORE lock releases (interruptible sleep, < 1s stop) -> peer releases lock
+    //       without modifying `accounts` -> restart core MUST refuse opening rejected `u-live` DB,
+    //       automatically CAS-delete `u-live` from disk, and activate sibling `u-bob`! ──
+    printf("[live_net_e2e] Phase 9: 0ms 401 lock-busy quarantine + persistent rejected_tuples across stop/restart\n");
+    {
+        atomic_store(&g_host.stopped, 1);
+        mb_core_stop();
+        assert(atomic_load(&g_host.post_stop_count) == 0);
+
+        char accts_path[256];
+        snprintf(accts_path, sizeof(accts_path), "%s/accounts", data_dir);
+        FILE *af = fopen(accts_path, "w");
+        assert(af != NULL);
+        fputs("[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
+              "\"access\":\"acc-exchanged-42\",\"refresh\":\"ref-exchanged-42\",\"access_expires\":1900000000,"
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R8A\"},"
+              "{\"sub\":\"u-bob\",\"email\":\"bob@still.fail\",\"name\":\"Bob\",\"picture\":\"\","
+              "\"access\":\"acc-bob-1\",\"refresh\":\"ref-bob-1\",\"access_expires\":1900000000,"
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5R8B\"}]", af);
+        fclose(af);
+
+        reset_host_ctx(&g_host);
+        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        // Confirm Alice's private draft is readable BEFORE 401:
+        send_json("{\"id\":600,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":600,", "persisted-alice-draft", 10);
+
+        // Hold HTTP 401 response in flight so we deterministically lock `.accounts.lock` in another process
+        // AFTER Phase 1 succeeds and BEFORE Phase 3B runs!
+        pthread_mutex_lock(&g_srv.mu);
+        g_srv.slow_refresh_hold = 1;
+        g_srv.slow_refresh_entered = 0;
+        g_srv.slow_refresh_release = 0;
+        pthread_mutex_unlock(&g_srv.mu);
+
+        send_json("{\"id\":601,\"call\":\"auth.refresh\",\"params\":{}}");
+        pthread_mutex_lock(&g_srv.mu);
+        while (!g_srv.slow_refresh_entered) {
+            pthread_cond_wait(&g_srv.cv, &g_srv.mu);
+        }
+        pthread_mutex_unlock(&g_srv.mu);
+
+        // Fork & exec child holding `.accounts.lock` behind dual-pipe barrier:
+        int ready_pipe[2];
+        int release_pipe[2];
+        assert(pipe(ready_pipe) == 0);
+        assert(pipe(release_pipe) == 0);
+        pid_t holder = fork();
+        assert(holder >= 0);
+        if (holder == 0) {
+            close(ready_pipe[0]);
+            close(release_pipe[1]);
+            dup2(ready_pipe[1], STDOUT_FILENO);
+            dup2(release_pipe[0], STDIN_FILENO);
+            close(ready_pipe[1]);
+            close(release_pipe[0]);
+            execl(argv[0], argv[0], "--lock-hold-barrier", data_dir, (char *)NULL);
+            _exit(127);
+        }
+        close(ready_pipe[1]);
+        close(release_pipe[0]);
+        char locked = 0;
+        assert(read(ready_pipe[0], &locked, 1) == 1 && locked == 'L');
+        close(ready_pipe[0]);
+
+        // Release HTTP 401 response while child STILL holds `.accounts.lock`!
+        int64_t t0 = mono_ms_now();
+        pthread_mutex_lock(&g_srv.mu);
+        g_srv.slow_refresh_release = 1;
+        pthread_cond_broadcast(&g_srv.cv);
+        pthread_mutex_unlock(&g_srv.mu);
+
+        wait_for_matching_msg(&g_host, "\"id\":601,", "\"error\"", 10);
+        int64_t q_ms = mono_ms_now() - t0;
+        printf("[live_net_e2e] Phase 9 401 lock-busy quarantine latency = %lld ms\n", (long long)q_ms);
+        assert(q_ms < 1000); // Proves 0ms single-shot try_begin (NEVER 3.06s retry sleep)!
+
+        // WHILE child STILL holds `.accounts.lock`: assert read gate is ALREADY closed (`UnauthMemory`)!
+        send_json("{\"id\":602,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":602,", "\"ok\":null", 10);
+        send_json("{\"id\":603,\"call\":\"workspaces.list\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":603,", "\"workspaces\":[]", 10);
+        send_json("{\"id\":604,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+        char *m_gated_draft = wait_for_matching_msg(&g_host, "\"id\":604,", NULL, 10);
+        assert(strstr(m_gated_draft, "persisted-alice-draft") == NULL);
+
+        // Stop core BEFORE child releases `.accounts.lock`: MUST NOT hang 2s on backoff sleep!
+        int64_t ts0 = mono_ms_now();
+        atomic_store(&g_host.stopped, 1);
+        mb_core_stop();
+        int64_t stop_ms = mono_ms_now() - ts0;
+        printf("[live_net_e2e] Phase 9 stop-while-reconciling latency = %lld ms\n", (long long)stop_ms);
+        assert(stop_ms < 1000);
+        assert(atomic_load(&g_host.post_stop_count) == 0);
+
+        // Release child lock WITHOUT changing disk `accounts` (disk STILL has rejected Alice at index 0!):
+        char rel = 'R';
+        assert(write(release_pipe[1], &rel, 1) == 1);
+        close(release_pipe[1]);
+        int hst = 0;
+        assert(waitpid(holder, &hst, 0) == holder && WIFEXITED(hst) && WEXITSTATUS(hst) == 0);
+
+        pthread_mutex_lock(&g_srv.mu);
+        g_srv.slow_refresh_hold = 0;
+        pthread_mutex_unlock(&g_srv.mu);
+
+        // Cold restart: rejected Alice tuple in `account-u-live.db` `meta` MUST prevent opening Alice,
+        // CAS-remove Alice from disk `accounts`, and automatically activate sibling Bob (`bob@still.fail`)!
+        reset_host_ctx(&g_host);
+        mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+        wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+        send_json("{\"id\":605,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}");
+        char *m_bob_active = wait_for_matching_msg(&g_host, "\"id\":605,", "bob@still.fail", 10);
+        assert(strstr(m_bob_active, "alice@still.fail") == NULL);
+
+        // Alice's private draft MUST NEVER leak after restart (Bob's DB is active, Alice was removed)!
+        send_json("{\"id\":606,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+        char *m_post_draft = wait_for_matching_msg(&g_host, "\"id\":606,", NULL, 10);
+        assert(strstr(m_post_draft, "persisted-alice-draft") == NULL);
+
+        // Verify disk `accounts` now has ONLY `u-bob` (`u-live` removed by background CAS)!
+        af = fopen(accts_path, "r");
+        assert(af != NULL);
+        char abuf[2048];
+        size_t an = fread(abuf, 1, sizeof(abuf) - 1, af);
+        fclose(af);
+        abuf[an] = '\0';
+        assert(strstr(abuf, "\"sub\":\"u-live\"") == NULL && strstr(abuf, "\"sub\":\"u-bob\"") != NULL);
+        printf("[live_net_e2e] Phase 9 PASSED (0ms 401 quarantine + rejected_tuples survival + sibling Bob activation)\n");
     }
 
     atomic_store(&g_host.stopped, 1);
