@@ -111,6 +111,7 @@ export const TOPIC_SHAPES: Record<string, Ty> = {
   linkPreview: { opt: "LinkPreview" },
   filePeek: { opt: "FilePeek" },
   messagePeek: { opt: "MessagePeek" },
+  chatPeek: { opt: "ChatItem" },
   machineLogin: { opt: "MachineLoginShown" },
   machineLoginScreen: { opt: "MachineLoginScreen" },
   prefs: "PrefsView",

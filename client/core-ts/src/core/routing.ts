@@ -52,7 +52,7 @@ const PENDING = "new:";
 /// each is that session's (`#madeTo`), the page's own topic all along. `chat` and what is made of it (`chatJobs`,
 /// `chatSubchats`, `imageNear`) follow the key themselves (views.ts `pendingThread`); a topic of `TOPICS` named by `session` is one of
 /// the two (test/made-key.test.ts).
-export const OF_A_SESSION = new Set(["chatRow", "chatFeedback"]);
+export const OF_A_SESSION = new Set(["chatRow", "chatPeek", "chatFeedback"]);
 export const SESSION_FOLLOWS_KEY = new Set(["chat", "chatJobs", "chatSubchats", "imageNear"]);
 
 export class Router implements Source {

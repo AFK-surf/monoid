@@ -278,9 +278,10 @@ pub fn viewer_chat_rows(db : @sql.Db, host : @host.Host, data : String, sep : St
   let known = Known::of(host, data, sep, ask)
   let sessions = keys_arg(args.value("sessions")).unwrap_or([])
   let threads = match args.value("threads") { Some(Array(t)) => t; _ => [] }
+  let archived = match args.value("archived") { Some(True) => true; _ => false }
   let scope = scope_of(db, sessions, threads)
   {
-    "rows": Json::array(viewer_chats(db, known, args.value("viewer").unwrap_or(Json::null()), args.value("words").unwrap_or(Json::null()), false, Some(scope))),
+    "rows": Json::array(viewer_chats(db, known, args.value("viewer").unwrap_or(Json::null()), args.value("words").unwrap_or(Json::null()), archived, Some(scope))),
     "scope": Json::array(scope.rows.map(Json::string)),
   }
 }

@@ -1,5 +1,5 @@
 ///|
-test "topic_policy_gen covers all 125 protocol topics and rejects unknown names" {
+test "topic_policy_gen covers all 126 protocol topics and rejects unknown names" {
   let all_topics : Array[String] = [
     "accounts", "workspaces", "workspace", "link", "overview", "sessions", "session", "live", "host", "memory",
     "presets", "profilePace", "stationMove", "net", "way", "threads", "thread", "letters", "chatRows", "slackApp",
@@ -8,7 +8,7 @@ test "topic_policy_gen covers all 125 protocol topics and rejects unknown names"
     "station", "stationPart", "profiles", "profile", "profilesOverview", "connects", "connect", "connectCandidates",
     "chat", "history", "agentCard", "stationNet", "stationDiag", "status", "notices", "connection", "draft",
     "composer", "notify", "chatSearch", "archivedRows", "archive", "search", "stationSearch", "linkPreview",
-    "filePeek", "messagePeek", "newChat", "preset", "otherPresets", "boardDrafts", "shareIn", "pick", "chatJobs",
+    "filePeek", "messagePeek", "chatPeek", "newChat", "preset", "otherPresets", "boardDrafts", "shareIn", "pick", "chatJobs",
     "chatLetters", "chatFeedback", "chatThings", "chatOutline", "chatSubchats", "imageNear", "longJobs",
     "stationUsage", "stationRates", "usage", "agentRates", "fleet", "railCard", "stationUpdates", "settings",
     "stationResources", "resources", "job", "drive", "drivePlace", "prefs", "doing", "adbShare", "adbCard", "rigs",
@@ -17,7 +17,7 @@ test "topic_policy_gen covers all 125 protocol topics and rejects unknown names"
     "memberships", "screens", "terminals", "screenCard", "terminalCard", "lockDraft", "lockPrompts", "vaults",
     "vaultItems", "driveTransfers", "driveBrowse", "filesTabs", "downloads", "vaultUses",
   ]
-  assert_eq(all_topics.length(), 125)
+  assert_eq(all_topics.length(), 126)
   let empty = Json::object({})
   for name in all_topics {
     assert_true(topic_policy_known(name, empty))

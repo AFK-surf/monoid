@@ -355,9 +355,9 @@ export function scopeOfJobNames(s: Store, keys: string[]): Scope {
 
 /// The sidebar items of `viewer` a change of `sessions` and `threads` can touch (`scopeOf`), as the whole sidebar has
 /// them, and the ids of those that can be touched (one not among the items now is gone from the sidebar).
-export function chatRows(station: Store, viewer: Viewer, sessions: string[], threads: number[]): Json {
+export function chatRows(station: Store, viewer: Viewer, sessions: string[], threads: number[], archived = false): Json {
   const scope = scopeOf(apiOf(station).store, sessions, threads);
-  return { rows: chats(station, viewer, false, scope), scope: [...scope.rows] };
+  return { rows: chats(station, viewer, archived, scope), scope: [...scope.rows] };
 }
 
 /// GET /chats?shared=1: the chat list as the station makes it for everyone (`sharedChats`), the rows the viewer sees; of

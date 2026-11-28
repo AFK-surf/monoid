@@ -36,7 +36,7 @@ fn topic_policy_param_str(params : Json, key : String) -> String? {
 }
 
 ///|
-/// Whether topic `name` is one of the 125 protocol topics in `client/core-ts/src/protocol.ts`.
+/// Whether topic `name` is one of the 126 protocol topics in `client/core-ts/src/protocol.ts`.
 #warnings("-unused_value") // verified by sfbase/topic_policy_wbtest.mbt
 fn topic_policy_known(name : String, _params : Json) -> Bool {
   match name {
@@ -104,6 +104,7 @@ fn topic_policy_known(name : String, _params : Json) -> Bool {
     "linkPreview" => true
     "filePeek" => true
     "messagePeek" => true
+    "chatPeek" => true
     "newChat" => true
     "preset" => true
     "otherPresets" => true

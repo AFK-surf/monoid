@@ -164,6 +164,7 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   "filePeek picture": { topic: "filePeek", station, key, path: PEEKS.picture },
   "filePeek text": { topic: "filePeek", station, key, path: PEEKS.text },
   "messagePeek": { topic: "messagePeek", station, thread: PEEKS.message.thread, seq: PEEKS.message.seq },
+  "chatPeek": { topic: "chatPeek", station, session: key },
   "job": { topic: "job", station, id: "job-maple-3" },
   // (the person's drafts of 待派发, as the device carries them: views/board-drafts.ts; last, so that it moves none of
   // the others' times on the rig's clock)

@@ -2470,6 +2470,8 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     "projects" | "project" | "tags" => fx_projects_topic(name, params)
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
+    // (one chat's row on demand, active or archived, for a link's hover card: peeks_chat_node.mbt)
+    "chatPeek" => fixture_chat_row(f, params)
     "fleet" => Some(fixture_fleet(f))
     "agentRates" => Some({
       "title": "实时输出速度",

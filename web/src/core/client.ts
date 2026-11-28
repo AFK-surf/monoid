@@ -35,6 +35,8 @@ export type Topic =
   | { topic: "filePeek"; station: string; key: string; path: string; line?: number }
   // One message of a chat a link names, read as its card shows (what was read last shows meanwhile).
   | { topic: "messagePeek"; station: string; thread: number; seq: number }
+  // One chat's row (active or archived) a link names, read on demand as its card shows.
+  | { topic: "chatPeek"; station: string; session: string }
   | { topic: "threads"; station: string }
   | { topic: "slackApp"; station: string; connect: string }
   // A station's background jobs still up, each with the chat it is in.

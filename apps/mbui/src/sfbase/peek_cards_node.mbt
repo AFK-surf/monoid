@@ -638,8 +638,9 @@ pub fn peek_chat_head_node(
 }
 
 ///|
-/// Where a chat is, in `parent` while `shows`: its station's mark (11, muted: `emoji`, `icon`) where `elsewhere`, 4 from
-/// `words` (its station's name, that the link is its agent's execution history), one line, cut.
+/// Where a chat is, in `parent` while `shows`: optional muted archived pill (`archived`, `archived_words`), its
+/// station's mark (11, muted: `emoji`, `icon`) where `elsewhere` with `words` (its station's name), and optional
+/// `history_words` (that the link is its agent's execution history), laid out with `gap=S2` and no mid-dot joins.
 pub fn peek_chat_where_node(
   parent : @view.View,
   shows : () -> Bool,
@@ -647,17 +648,28 @@ pub fn peek_chat_where_node(
   emoji : () -> String,
   icon : () -> String,
   words : () -> String,
+  archived? : () -> Bool = fn() { false },
+  archived_words? : () -> String = fn() { "" },
+  history? : () -> Bool = fn() { false },
+  history_words? : () -> String = fn() { "" },
 ) -> Unit {
   parent.show(shows, fn(m) {
     @sf.style_node(m, fn() { peek_meta })
-    m.box(fn(w) {
+    m.show(archived, fn(p) {
+      peek_state_pill_node(p, fn() { "archived" }, fn() { None }, archived_words, own=true)
+    })
+    m.show(fn() { elsewhere() || words() != "" }, fn(w) {
       @sf.style_node(w, fn() { peek_chat_where }, in_row=true)
       w.show(elsewhere, fn(s) {
         station_mark_at_node(s, fn() { "" }, emoji, icon, Inline)
       })
-      @sf.words_node(w, words, fn() { peek_meta_words }) |> ignore
+      w.show(fn() { words() != "" }, fn(t) {
+        @sf.words_node(t, words, fn() { peek_meta_words }) |> ignore
+      })
     })
-    |> ignore
+    m.show(history, fn(h) {
+      @sf.words_node(h, history_words, fn() { peek_meta_words }) |> ignore
+    })
   })
 }
 
@@ -973,9 +985,9 @@ let peek_state_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, 
 let peek_chat_title : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
 
 ///|
-/// Where a chat is: its station's mark (a line's: station_mark_at_node) 4 from its name, then that it is the history, one line.
+/// Where a chat is: its station's mark (a line's: station_mark_at_node) 4 from its name, one line, cut where needed.
 // kept across runs: a value (no field of it changes)
-let peek_chat_where : @ui.Style = @ui.css("row gap=S1 align=ACenter clip=true").then(@ui.style(w=@sf.grow))
+let peek_chat_where : @ui.Style = @ui.css("row w=Cut gap=S1 align=ACenter clip=true")
 
 ///|
 /// What it says (excerpt): the card's words, three lines at most.

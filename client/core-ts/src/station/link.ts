@@ -70,6 +70,11 @@ export const FILE_PEEKS_KEPT = 30;
 export const MESSAGE_PEEK_KEY = "messagePeek\n";
 export const messagePeekKey = (thread: number, seq: number) => `${MESSAGE_PEEK_KEY}${thread}\n${seq}`;
 export const MESSAGE_PEEKS_KEPT = 30;
+/// One chat's row (archived or unlisted), as the station answered GET /chats?archived=1&session=… for it last (the
+/// `chatPeek` topic), in the link's memory: the latest few kept.
+export const CHAT_PEEK_KEY = "chatPeek\n";
+export const chatPeekKey = (session: string) => `${CHAT_PEEK_KEY}${session}`;
+export const CHAT_PEEKS_KEPT = 30;
 /// A station's streams carry a keepalive every 25 s; one silent this long is on a link that is gone.
 export const STREAM_IDLE_MS = 40_000;
 /// A stream silent past one keepalive (and a little) may be on a link that is gone.
@@ -481,7 +486,7 @@ export class Links {
     };
     const memory = new Memory(
       keeper,
-      [[LOG_KEY, LOGS_KEPT], [LINK_PREVIEW_KEY, LINK_PREVIEWS_KEPT], [FILE_PEEK_KEY, FILE_PEEKS_KEPT], [MESSAGE_PEEK_KEY, MESSAGE_PEEKS_KEPT]],
+      [[LOG_KEY, LOGS_KEPT], [LINK_PREVIEW_KEY, LINK_PREVIEWS_KEPT], [FILE_PEEK_KEY, FILE_PEEKS_KEPT], [MESSAGE_PEEK_KEY, MESSAGE_PEEKS_KEPT], [CHAT_PEEK_KEY, CHAT_PEEKS_KEPT]],
       [PRESETS, LOG_KEY],
     );
     const link = new Link(address, addr, scoped, memory);

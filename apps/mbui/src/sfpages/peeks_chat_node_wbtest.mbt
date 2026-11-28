@@ -9,7 +9,12 @@
 /// The source the card reads: the fixture's, the message its link names as `said` says it (its value, its error), the
 /// core's reading of links never answered where `parsed` is false, a chat's whole row (`chatRow`) never answered where
 /// `whole` is false.
-fn pc_src(said : (Json?, Json?), parsed : Bool, whole~ : Bool = true) -> Source {
+fn pc_src(
+  said : (Json?, Json?),
+  parsed : Bool,
+  whole~ : Bool = true,
+  peek~ : (Json?, Json?) = (Some(Json::null()), None),
+) -> Source {
   @sfbase.reset()
   @sf.set_words(@sfbase.fill)
   // (what the core said of each link, asked again in each: chats_named is kept across runs)
@@ -22,6 +27,9 @@ fn pc_src(said : (Json?, Json?), parsed : Bool, whole~ : Bool = true) -> Source 
       pc_asked.push(name)
       if name == "messagePeek" {
         let (value, error) = said
+        { value, error, version: if value is None && error is None { 0 } else { 1 } }
+      } else if name == "chatPeek" {
+        let (value, error) = peek
         { value, error, version: if value is None && error is None { 0 } else { 1 } }
       } else if name == "chatRow" && !whole {
         { value: None, error: None, version: 0 }
@@ -76,8 +84,10 @@ fn pc_new(
   said : (Json?, Json?),
   parsed : Bool,
   whole : Bool,
+  peek~ : (Json?, Json?) = (Some(Json::null()), None),
+  link_label~ : String = "",
 ) -> @ui.Tester {
-  let src = pc_src(said, parsed, whole~)
+  let src = pc_src(said, parsed, whole~, peek~)
   let t = @ui.Tester::new(
     fn(c) {
       @sf.begin(c) |> ignore
@@ -89,7 +99,7 @@ fn pc_new(
         @sf.style_node(f, fn() { pf_frame })
         f.box(fn(inner) {
           @sf.style_node(inner, fn() { pf_inner })
-          chat_card_node(inner, src, "pc-node", here, fn() { href }, fn() { linked })
+          chat_card_node(inner, src, "pc-node", here, fn() { href }, fn() { linked }, link_label=fn() { link_label })
         })
         |> ignore
       })
@@ -177,11 +187,64 @@ test "a chat's card says the chat the workspace's list does not show (one anothe
 }
 
 ///|
-test "a chat's card of another workspace's chat says only that it is not in the list, asking nothing of its row" {
+test "a chat's card of another workspace's chat says it is in another workspace, asking nothing of its row or chatPeek" {
   let href = "https://app.still.fail/o/ws2/st1/s-c2"
-  let t = pc_new("ws1/st1", href, None, (None, None), true, true)
-  assert_true(pc_says(t, @sf.t("web-main.chatRef.previewGone")), msg="\{Repr(pc_words(t))}")
-  assert_false(pc_asked.contains("chatRow") || pc_asked.contains("chats"), msg="\{Repr(pc_asked)}")
+  let t = pc_new("ws1/st1", href, None, (None, None), true, true, link_label="其他工作区对话")
+  assert_true(pc_says(t, "其他工作区对话"), msg="\{Repr(pc_words(t))}")
+  assert_true(pc_says(t, @sf.t("web-main.chatRef.previewOtherWorkspace")), msg="\{Repr(pc_words(t))}")
+  assert_false(pc_asked.contains("chatRow") || pc_asked.contains("chatPeek") || pc_asked.contains("chats"), msg="\{Repr(pc_asked)}")
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "archived chat resolved via chatPeek shows full preview with archived pill, ago, summary, and ?message=" {
+  let archived_row : Json = {
+    "id": "s-arch",
+    "session": "s-arch",
+    "thread": 42,
+    "title": "Opus 代码评审：AFK-surf/invar PR #146",
+    "agents": [{ "runtime": "claude", "agentText": "Claude Code · Opus 5.5" }],
+    "last": { "seq": 9, "preview": "已完成全量 diff 与逐帧复核，无阻断问题。" },
+    "unread": false,
+    "station": "ws1/st1",
+    "stationName": "Maple",
+    "archived": true,
+    "time": { "lastActiveAt": { "ago": "2 小时前", "full": "11/28 08:00" } },
+  }
+  let href = "https://app.still.fail/o/ws1/st1/s-arch"
+  let t = pc_new("ws1/st1", href, None, (None, None), true, true, peek=(Some(archived_row), None))
+  assert_true(pc_asked.contains("chatPeek"), msg="\{Repr(pc_asked)}")
+  assert_true(pc_says(t, "Opus 代码评审：AFK-surf/invar PR #146"), msg="\{Repr(pc_words(t))}")
+  assert_true(pc_says(t, "已归档"), msg="\{Repr(pc_words(t))}")
+  assert_true(pc_says(t, "2 小时前"), msg="\{Repr(pc_words(t))}")
+  assert_true(pc_says(t, "已完成全量 diff 与逐帧复核"), msg="\{Repr(pc_words(t))}")
+  assert_eq(t.audit(), [])
+
+  // With ?message=2, shows the targeted message via messagePeek using the archived row's thread.
+  let said = (Some(@sffixture.fixture_message_peek()), None)
+  let t_msg = pc_new("ws1/st1", href + "?message=2", None, said, true, true, peek=(Some(archived_row), None))
+  assert_true(pc_says(t_msg, "已归档"), msg="\{Repr(pc_words(t_msg))}")
+  assert_true(pc_says(t_msg, "列表按天分组做好了"), msg="\{Repr(pc_words(t_msg))}")
+  assert_eq(t_msg.audit(), [])
+}
+
+///|
+test "unavailable chat card shows station offline error, deleted reason with link title, and bare URL note" {
+  let href = "https://app.still.fail/o/ws1/st1/s-nope"
+  let err : Json = { "code": "offline", "message": "Maple 离线" }
+  let t_off = pc_new("ws1/st1", href, None, (None, None), true, true, peek=(None, Some(err)), link_label="离线站的归档对话")
+  assert_true(pc_says(t_off, "离线站的归档对话"), msg="\{Repr(pc_words(t_off))}")
+  assert_true(pc_says(t_off, "Maple 离线"), msg="\{Repr(pc_words(t_off))}")
+  assert_eq(t_off.audit(), [])
+
+  let t_gone = pc_new("ws1/st1", href, None, (None, None), true, true, peek=(Some(Json::null()), None), link_label="已删除的子会话")
+  assert_true(pc_says(t_gone, "已删除的子会话"), msg="\{Repr(pc_words(t_gone))}")
+  assert_true(pc_says(t_gone, @sf.t("web-main.chatRef.previewGone")), msg="\{Repr(pc_words(t_gone))}")
+  assert_eq(t_gone.audit(), [])
+
+  let t_bare = pc_new("ws1/st1", href, None, (None, None), true, true, peek=(Some(Json::null()), None))
+  assert_true(pc_says(t_bare, @sf.t("web-main.chatRef.previewGone")), msg="\{Repr(pc_words(t_bare))}")
+  assert_eq(t_bare.audit(), [])
 }
 
 ///|

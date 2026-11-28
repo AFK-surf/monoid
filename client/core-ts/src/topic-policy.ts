@@ -173,6 +173,7 @@ export const TOPIC_POLICY: Record<TopicName, TopicPolicy> = {
   linkPreview: LIVE,
   filePeek: LIVE,
   messagePeek: LIVE,
+  chatPeek: LIVE,
   newChat: LIVE,
   preset: LIVE,
   otherPresets: viewKeptPolicy(8),
