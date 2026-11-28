@@ -213,6 +213,13 @@ extern "C" fn sts_create_excl_open_under_nofollow(root : Ptr, rel : Ptr, mode : 
 extern "C" fn sts_file_pwrite(handle : Int64, data : Ptr, len : Int64, offset : Int64) -> Int
 extern "C" fn sts_file_rw_close(handle : Int64) -> Int
 extern "C" fn sts_file_fsync_close_async(event_id : Int64, handle : Int64) -> Int
+extern "C" fn sts_file_fsync_publish_noreplace_async(
+  event_id : Int64,
+  handle : Int64,
+  root : Ptr,
+  part_rel : Ptr,
+  dst_rel : Ptr,
+) -> Int
 extern "C" fn sts_exec_replace(program : Ptr, argv_nul : Ptr, argv_len : Int64) -> Int
 extern "C" fn sts_utimes_now(path : Ptr) -> Int
 extern "C" fn sts_utimes_dir_children_now(dir_path : Ptr) -> Int
@@ -1265,6 +1272,29 @@ pub fn file_rw_close(handle : Int64) -> Bool {
 /// detached worker thread, and emit `SysEvent::FsyncDone(rc)` (`rc == 0` ok) on `event_id`.
 pub fn file_fsync_close_async(event_id : Int64, handle : Int64) -> Bool {
   sts_file_fsync_close_async(event_id, handle) != 0
+}
+
+/// Take ownership of an open writable `.part` handle, run `fsync` + identity-verified atomic
+/// no-replace publish (`part_rel` -> `dst_rel` under `root`) + close on a bounded detached worker thread,
+/// and emit `SysEvent::FsyncDone(rc)` (`0` ok, `-7` EEXIST, `-5` symlink/replaced staging, `-1` IO error).
+pub fn file_fsync_publish_noreplace_async(
+  event_id : Int64,
+  handle : Int64,
+  root : String,
+  part_rel : String,
+  dst_rel : String,
+) -> Bool {
+  let ok = sts_file_fsync_publish_noreplace_async(
+    event_id,
+    handle,
+    root.as_cstr(),
+    part_rel.as_cstr(),
+    dst_rel.as_cstr(),
+  )
+  let _ = root.length()
+  let _ = part_rel.length()
+  let _ = dst_rel.length()
+  ok != 0
 }
 
 /// Exclusively create a new regular file under `root` (`O_CREAT|O_EXCL|O_NOFOLLOW` / `CREATE_NEW`),

@@ -3257,7 +3257,7 @@ int64_t sts_create_excl_open_under_nofollow(const char *root, const char *rel, i
         return -1;
     }
     HANDLE h = CreateFileW(
-        w, GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        w, GENERIC_WRITE | FILE_READ_ATTRIBUTES | DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     DWORD gle = GetLastError();
     free(w);
@@ -3376,7 +3376,7 @@ int32_t sts_create_excl_under_nofollow(const char *root, const char *rel, int32_
         return -1;
     }
     HANDLE h = CreateFileW(
-        w, GENERIC_WRITE | FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        w, GENERIC_WRITE | FILE_READ_ATTRIBUTES | DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
         NULL, CREATE_NEW, FILE_FLAG_OPEN_REPARSE_POINT, NULL);
     DWORD gle = GetLastError();
     free(w);
@@ -11768,21 +11768,105 @@ typedef struct {
 #else
     posix_file_ro_t *f;
 #endif
+    int do_publish;
+    char *root;
+    char *part_rel;
+    char *dst_rel;
 } sts_fsync_task_t;
 
 static void sts_fsync_run_task(sts_fsync_task_t *task) {
     int32_t rc = 0;
 #ifdef _WIN32
-    if (!FlushFileBuffers(task->f->h)) rc = -1;
-    if (!CloseHandle(task->f->h)) rc = -1;
+    if (!FlushFileBuffers(task->f->h)) {
+        rc = -1;
+    } else if (task->do_publish) {
+        HANDLE dst_parents[128];
+        size_t n_dst = 0;
+        char *dst_full = sts_win_walk_lock_parents(task->root, task->dst_rel, 1, dst_parents, 128, &n_dst);
+        if (dst_full == NULL) {
+            rc = -5;
+        } else {
+            wchar_t *wdst = utf8_to_wide(dst_full);
+            free(dst_full);
+            if (wdst == NULL) {
+                rc = -1;
+            } else {
+                size_t wlen = wcslen(wdst);
+                size_t buf_sz = sizeof(FILE_RENAME_INFO) + (wlen + 1) * sizeof(wchar_t);
+                FILE_RENAME_INFO *fri = (FILE_RENAME_INFO *)calloc(1, buf_sz);
+                if (fri == NULL) {
+                    rc = -1;
+                } else {
+                    fri->ReplaceIfExists = FALSE;
+                    fri->RootDirectory = NULL;
+                    fri->FileNameLength = (DWORD)(wlen * sizeof(wchar_t));
+                    memcpy(fri->FileName, wdst, (wlen + 1) * sizeof(wchar_t));
+                    if (!SetFileInformationByHandle(task->f->h, FileRenameInfo, fri, (DWORD)buf_sz)) {
+                        DWORD gle = GetLastError();
+                        if (gle == ERROR_ALREADY_EXISTS || gle == ERROR_FILE_EXISTS) rc = -7;
+                        else if (gle == ERROR_FILE_NOT_FOUND || gle == ERROR_PATH_NOT_FOUND) rc = -2;
+                        else rc = -1;
+                    }
+                    free(fri);
+                }
+                free(wdst);
+            }
+            sts_win_close_handles(dst_parents, n_dst);
+        }
+    }
+    if (!CloseHandle(task->f->h) && rc == 0) rc = -1;
     free(task->f);
 #else
     int frc;
     do {
         frc = fsync(task->f->fd);
     } while (frc < 0 && errno == EINTR);
-    if (frc != 0) rc = -1;
-    if (close(task->f->fd) != 0) rc = -1;
+    if (frc != 0) {
+        rc = -1;
+    } else if (task->do_publish) {
+        struct stat fd_st;
+        if (fstat(task->f->fd, &fd_st) != 0 || !S_ISREG(fd_st.st_mode)) {
+            rc = -5;
+        } else {
+            char src_leaf[512], dst_leaf[512];
+            int src_dirfd = sts_open_dir_nofollow_walk(task->root, task->part_rel, 0, src_leaf, sizeof(src_leaf));
+            if (src_dirfd < 0) {
+                rc = -5;
+            } else {
+                int dst_dirfd = sts_open_dir_nofollow_walk(task->root, task->dst_rel, 1, dst_leaf, sizeof(dst_leaf));
+                if (dst_dirfd < 0) {
+                    close(src_dirfd);
+                    rc = -5;
+                } else {
+                    // Verify `part_rel` still refers to the EXACT same open inode (st_dev, st_ino) as `fd`.
+                    struct stat path_st;
+                    if (fstatat(src_dirfd, src_leaf, &path_st, AT_SYMLINK_NOFOLLOW) != 0 ||
+                        !S_ISREG(path_st.st_mode) ||
+                        path_st.st_dev != fd_st.st_dev ||
+                        path_st.st_ino != fd_st.st_ino) {
+                        rc = -5;
+                    } else if (linkat(src_dirfd, src_leaf, dst_dirfd, dst_leaf, 0) != 0) {
+                        int se = errno;
+                        if (se == EEXIST) rc = -7;
+                        else if (se == ENOENT) rc = -2;
+                        else if (se == ELOOP) rc = -5;
+                        else rc = -1;
+                    } else {
+                        // Only unlink `part_rel` if it still points to the same inode.
+                        struct stat after_st;
+                        if (fstatat(src_dirfd, src_leaf, &after_st, AT_SYMLINK_NOFOLLOW) == 0 &&
+                            after_st.st_dev == fd_st.st_dev &&
+                            after_st.st_ino == fd_st.st_ino) {
+                            (void)unlinkat(src_dirfd, src_leaf, 0);
+                        }
+                    }
+                    close(dst_dirfd);
+                }
+                close(src_dirfd);
+            }
+        }
+    }
+    if (close(task->f->fd) != 0 && rc == 0) rc = -1;
     free(task->f);
 #endif
     uint8_t payload[5];
@@ -11793,6 +11877,9 @@ static void sts_fsync_run_task(sts_fsync_task_t *task) {
     payload[3] = (uint8_t)((u >> 16) & 0xFFu);
     payload[4] = (uint8_t)((u >> 24) & 0xFFu);
     sth_push_sys(task->event_id, payload, 5);
+    free(task->root);
+    free(task->part_rel);
+    free(task->dst_rel);
     free(task);
     atomic_fetch_sub(&g_sts_fsync_inflight, 1);
 }
@@ -11811,8 +11898,18 @@ static void *sts_fsync_worker_posix(void *arg) {
 }
 #endif
 
-int32_t sts_file_fsync_close_async(uint64_t event_id, int64_t handle) {
+static int32_t sts_file_fsync_spawn_impl(
+    uint64_t event_id,
+    int64_t handle,
+    int do_publish,
+    const char *root,
+    const char *part_rel,
+    const char *dst_rel) {
     if (handle <= 0) return 0;
+    if (do_publish && (root == NULL || part_rel == NULL || dst_rel == NULL ||
+                       root[0] == '\0' || part_rel[0] == '\0' || dst_rel[0] == '\0')) {
+        return 0;
+    }
     // Atomically remove the RW handle from the table so no further writes/closes can race with the worker.
 #ifdef _WIN32
     win_file_ro_t *f = (win_file_ro_t *)ht_take(STS_HK_FILE_RW, handle);
@@ -11844,6 +11941,26 @@ int32_t sts_file_fsync_close_async(uint64_t event_id, int64_t handle) {
     }
     task->event_id = event_id;
     task->f = f;
+    task->do_publish = do_publish;
+    if (do_publish) {
+        task->root = sts_strdup(root);
+        task->part_rel = sts_strdup(part_rel);
+        task->dst_rel = sts_strdup(dst_rel);
+        if (task->root == NULL || task->part_rel == NULL || task->dst_rel == NULL) {
+            free(task->root);
+            free(task->part_rel);
+            free(task->dst_rel);
+            free(task);
+#ifdef _WIN32
+            CloseHandle(f->h);
+#else
+            close(f->fd);
+#endif
+            free(f);
+            atomic_fetch_sub(&g_sts_fsync_inflight, 1);
+            return 0;
+        }
+    }
     sts_detached_begin();
 #ifdef _WIN32
     HANDLE th = CreateThread(NULL, 0, sts_fsync_worker_win, task, 0, NULL);
@@ -11851,6 +11968,9 @@ int32_t sts_file_fsync_close_async(uint64_t event_id, int64_t handle) {
         sts_detached_end();
         CloseHandle(f->h);
         free(f);
+        free(task->root);
+        free(task->part_rel);
+        free(task->dst_rel);
         free(task);
         atomic_fetch_sub(&g_sts_fsync_inflight, 1);
         return 0;
@@ -11868,12 +11988,28 @@ int32_t sts_file_fsync_close_async(uint64_t event_id, int64_t handle) {
         sts_detached_end();
         close(f->fd);
         free(f);
+        free(task->root);
+        free(task->part_rel);
+        free(task->dst_rel);
         free(task);
         atomic_fetch_sub(&g_sts_fsync_inflight, 1);
         return 0;
     }
     return 1;
 #endif
+}
+
+int32_t sts_file_fsync_close_async(uint64_t event_id, int64_t handle) {
+    return sts_file_fsync_spawn_impl(event_id, handle, 0, NULL, NULL, NULL);
+}
+
+int32_t sts_file_fsync_publish_noreplace_async(
+    uint64_t event_id,
+    int64_t handle,
+    const char *root,
+    const char *part_rel,
+    const char *dst_rel) {
+    return sts_file_fsync_spawn_impl(event_id, handle, 1, root, part_rel, dst_rel);
 }
 
 #include "station_js_lower.h"

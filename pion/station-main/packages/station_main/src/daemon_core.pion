@@ -1380,8 +1380,8 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
   let pending_front_by_conn : Map[Int64, Array[Int64]] = Map::new()
   let front_out_by_stream : Map[Int64, Int64] = Map::new()
   let front_out_by_sock : Map[Int64, Int64] = Map::new()
-  let front_early_out_socks : Map[Int64, Int64] = Map::new()
-  let front_cancelled_out_streams : Map[Int64, Bool] = Map::new()
+  let front_early_out_socks : Map[Int64, (Int64, Int64)] = Map::new()
+  let front_cancelled_out_streams : Map[Int64, Int64] = Map::new()
 
   // Single process-wide `EdgeMuxHub` owning `host_shim::wait`, driving all four non-overlapping
   // tagged `ShellMux` instances via `edge_hub.as_mux_transport()` with zero `HostEvent::Sys` loss.
@@ -2498,11 +2498,11 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
       Some(fsid) => {
         front_out_by_stream.remove(fsid)
         match front_early_out_socks.get(fsid) {
-          Some(early_sock) => {
+          Some((early_sock, _)) => {
             front_early_out_socks.remove(fsid)
             front_close_sock(early_sock)
           }
-          None => if sock_opt is None { front_cancelled_out_streams.set(fsid, true) }
+          None => if sock_opt is None { front_cancelled_out_streams.set(fsid, host_shim::now_ms()) }
         }
       }
       None => ()
@@ -2882,43 +2882,47 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
         match active_outbounds.get(oid) {
           Some(ob) => {
             if now - ob.started_at_ms >= TELL_SLOT_TIMEOUT_MS {
-              active_outbounds.remove(oid)
-              match ob.conn_id {
-                Some(cid) => {
-                  if mesh_ep_id is Some(_) {
-                    call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
-                  } else if front_ctrl_id is Some(_) {
-                    front_send_ask(
-                      "conn.close",
-                      [("conn", base_codec::json_int64(cid)), ("code", base_codec::json_int(0)), ("reason", base_codec::json_str("timeout"))],
-                      "out_close",
-                      0L,
-                    )
-                  }
+              if mesh_ep_id is Some(_) {
+                active_outbounds.remove(oid)
+                match ob.conn_id {
+                  Some(cid) => call_envelope(mux_mesh, 0, MESH_TOK_OUT_CLOSE, oid, mesh_door::direct_conn_close(cid, 0, ""))
+                  None => ()
                 }
-                None => ()
-              }
-              match ob.stream_id {
-                Some(fsid) => {
-                  front_out_by_stream.remove(fsid)
-                  front_early_out_socks.remove(fsid)
+              } else if front_ctrl_id is Some(_) {
+                // Share the exact same front cancel/timeout cleanup path (closes sock, conn.close, tracks late stream).
+                match ob.sock_id {
+                  Some(sid) => front_streams.remove(sid)
+                  None => ()
                 }
-                None => ()
-              }
-              match ob.sock_id {
-                Some(sid) => {
-                  front_out_by_sock.remove(sid)
-                  front_streams.remove(sid)
-                  let _ = mux_mesh.call_async_raw(
-                    builders_core::MuxToken::Tagged(0, FRONT_TOK_STREAM_END, sid),
-                    "tcp.close",
-                    base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
-                    None,
-                  )
-                }
-                None => ()
+                front_close_cancelled_outbound(oid, ob, ob.stream_id, ob.sock_id)
+              } else {
+                active_outbounds.remove(oid)
               }
               requeue_outbound(ob)
+            }
+          }
+          None => ()
+        }
+      }
+
+      // Bounded 30s sweep for late-cancelled front streams and orphan early outbound sockets.
+      let fcs_ks = front_cancelled_out_streams.keys()
+      for fi in 0..<fcs_ks.length() {
+        let fsid = fcs_ks[fi]
+        match front_cancelled_out_streams.get(fsid) {
+          Some(ts) => if now - ts >= 30000L { front_cancelled_out_streams.remove(fsid) }
+          None => ()
+        }
+      }
+      let eos_ks = front_early_out_socks.keys()
+      for ei in 0..<eos_ks.length() {
+        let fsid = eos_ks[ei]
+        match front_early_out_socks.get(fsid) {
+          Some((esock, ts)) => {
+            if now - ts >= 30000L {
+              front_early_out_socks.remove(fsid)
+              front_streams.remove(esock)
+              front_close_sock(esock)
             }
           }
           None => ()
@@ -4162,7 +4166,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                         } else {
                                           ob.stream_id = Some(fsid)
                                           match front_early_out_socks.get(fsid) {
-                                            Some(early_sock) => {
+                                            Some((early_sock, _)) => {
                                               front_early_out_socks.remove(fsid)
                                               front_send_or_cancel_outbound(oid, ob, fsid, early_sock)
                                             }
@@ -4372,7 +4376,7 @@ pub fn run_daemon(argv : Array[String], hooks : DaemonRoleHooks) -> Int {
                                       }
                                     }
                                   }
-                                  None => front_early_out_socks.set(fs.stream_id, sock_id)
+                                  None => front_early_out_socks.set(fs.stream_id, (sock_id, host_shim::now_ms()))
                                 }
                               }
                             }

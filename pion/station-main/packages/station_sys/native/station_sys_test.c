@@ -2632,6 +2632,53 @@ int main(void) {
         assert(sts_file_close(roh) == 1);
         assert(sts_unlink_under_nofollow(rdir, "sub/streamed.txt") == 0);
 
+        /* R5 P1-3: identity-bound fsync+publish_noreplace_async + concurrent staging replacement rejection */
+        int64_t rwh2 = sts_create_excl_open_under_nofollow(rdir, "sub/idpub.part", 0600, &rw_err);
+        assert(rwh2 > 0 && rw_err == 0);
+        assert(sts_file_pwrite(rwh2, c1, 6, 0) == 0);
+        assert(sts_file_pwrite(rwh2, c2, 5, 6) == 0);
+        assert(sts_file_fsync_publish_noreplace_async(999102ULL, rwh2, rdir, "sub/idpub.part", "sub/idpub_final.txt") == 1);
+        int pub_rc = -999;
+        fdl = sth_now_ms() + 3000;
+        while (pub_rc == -999 && sth_now_ms() < fdl) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &ev_len);
+            if (ev != NULL) {
+                if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_FSYNC_DONE) {
+                    pub_rc = (int32_t)((uint32_t)ev[10] | ((uint32_t)ev[11] << 8) | ((uint32_t)ev[12] << 16) | ((uint32_t)ev[13] << 24));
+                }
+                sth_free(ev);
+            }
+        }
+        assert(pub_rc == 0);
+        assert(sts_unlink_under_nofollow(rdir, "sub/idpub.part") == -2);
+        assert(sts_unlink_under_nofollow(rdir, "sub/idpub_final.txt") == 0);
+
+        /* Concurrent replacement attack: replace sub/race.part with a different inode before publish -> MUST reject with -5! */
+        int64_t rwh3 = sts_create_excl_open_under_nofollow(rdir, "sub/race.part", 0600, &rw_err);
+        assert(rwh3 > 0 && rw_err == 0);
+        assert(sts_file_pwrite(rwh3, c1, 6, 0) == 0);
+        assert(sts_unlink_under_nofollow(rdir, "sub/race.part") == 0);
+        char race_imposter[512];
+        snprintf(race_imposter, sizeof(race_imposter), "%s/sub/race.part", rdir);
+        write_file_str(race_imposter, "IMPOSTER");
+        assert(sts_file_fsync_publish_noreplace_async(999103ULL, rwh3, rdir, "sub/race.part", "sub/race_dst.txt") == 1);
+        int race_rc = -999;
+        fdl = sth_now_ms() + 3000;
+        while (race_rc == -999 && sth_now_ms() < fdl) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &ev_len);
+            if (ev != NULL) {
+                if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_FSYNC_DONE) {
+                    race_rc = (int32_t)((uint32_t)ev[10] | ((uint32_t)ev[11] << 8) | ((uint32_t)ev[12] << 16) | ((uint32_t)ev[13] << 24));
+                }
+                sth_free(ev);
+            }
+        }
+        assert(race_rc == -5);
+        assert(sts_unlink_under_nofollow(rdir, "sub/race_dst.txt") == -2);
+        assert(sts_unlink_under_nofollow(rdir, "sub/race.part") == 0);
+
         char subdir[256];
         snprintf(subdir, sizeof(subdir), "%s/sub", rdir);
         assert(rmdir(subdir) == 0);

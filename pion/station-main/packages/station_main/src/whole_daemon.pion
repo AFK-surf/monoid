@@ -7258,6 +7258,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
       let mcp_pending = station_whole::McpPendingTable::new()
       let remote_outbox = station_whole::RemoteTaskOutbox::new(ctx.data, core.agents.jobs.fs)
+      remote_outbox.load_pending_closes(host_shim::now_ms())
       let mcp_defer_capture = station_whole::DeferredMcpCapture::new()
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
       mcp_srv.set_conn_closed_hook(
@@ -9212,6 +9213,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.logins.tick(now)
           flush_deferred_mcp_starts(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, st.remote_outbox)
           sweep_expired_mcp_pending(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, now)
+          dispatch_pending_session_closes(ctx, st.remote_outbox, now)
           let _ = st.browser.tick(now)
           let _ = st.dsb.tick(st.core.store, st.core.agents, st.core.api.events, st.core.api.hooks, wall)
           let _ = st.connects.tick(now)

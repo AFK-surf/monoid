@@ -2691,13 +2691,25 @@ pub struct RemoteOutgoingTask {
   pub name : String
 }
 
-/// Tracks outgoing remote tasks (by 64-hex `push_ref`) and per-session remote peer usage
-/// (for `session.close` on archive), persisted under `<data>/remote/{outgoing,used}/` via `FsPort`.
+pub struct PendingSessionClose {
+  pub session : String
+  pub peers : Array[(String, String)]
+  pub mut next_retry_mono_ms : Int64
+  pub mut attempts : Int
+}
+
+/// Tracks outgoing remote tasks (by 64-hex `push_ref`), per-session remote peer usage
+/// (merged across restarts), and persistent `closing` retries (`session.close` on archive),
+/// persisted under `<data>/remote/{outgoing,used,closing}/` via `FsPort`.
 pub struct RemoteTaskOutbox {
   data_dir : String
   fs : station_jobs::FsPort
   outgoing : Map[String, RemoteOutgoingTask]
+  inflight_gets : Map[String, Bool]
   used_peers : Map[String, Array[(String, String)]]
+  used_loaded : Map[String, Bool]
+  closing : Map[String, PendingSessionClose]
+  closing_inflight : Map[String, Bool]
 }
 
 pub fn RemoteTaskOutbox::new(data_dir : String, fs : station_jobs::FsPort) -> RemoteTaskOutbox {
@@ -2705,7 +2717,11 @@ pub fn RemoteTaskOutbox::new(data_dir : String, fs : station_jobs::FsPort) -> Re
     data_dir: data_dir,
     fs: fs,
     outgoing: Map::new(),
+    inflight_gets: Map::new(),
     used_peers: Map::new(),
+    used_loaded: Map::new(),
+    closing: Map::new(),
+    closing_inflight: Map::new(),
   }
 }
 
@@ -2716,6 +2732,65 @@ fn outbox_outgoing_path(self : RemoteTaskOutbox, push_ref : String) -> String {
 fn outbox_used_path(self : RemoteTaskOutbox, session : String) -> String {
   let h = crypto::sha256_hex(session.to_bytes())
   nodepath::join(self.fs.sep, [self.data_dir, "remote", "used", h + ".json"])
+}
+
+fn outbox_closing_path(self : RemoteTaskOutbox, session : String) -> String {
+  let h = crypto::sha256_hex(session.to_bytes())
+  nodepath::join(self.fs.sep, [self.data_dir, "remote", "closing", h + ".json"])
+}
+
+fn read_peer_pairs_from_disk(fs : station_jobs::FsPort, path : String) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  match (fs.read_bytes)(path) {
+    Some(raw) => {
+      match base_codec::json_parse(raw.to_string()) {
+        base_codec::JsonParseResult::Ok(base_codec::Json::Arr(items)) => {
+          for i in 0..<items.length() {
+            let w = rs_arg_trim(items[i], "workspace")
+            let p = rs_arg_trim(items[i], "peer")
+            if w.length() > 0 && p.length() > 0 {
+              out.push((w, p))
+            }
+          }
+        }
+        _ => ()
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+fn write_closing_entry_to_disk(self : RemoteTaskOutbox, entry : PendingSessionClose) -> Unit {
+  if self.data_dir.length() == 0 {
+    return
+  }
+  let dir = nodepath::join(self.fs.sep, [self.data_dir, "remote", "closing"])
+  let _ = (self.fs.mkdir_p)(dir)
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<entry.peers.length() {
+    let (w, p) = entry.peers[i]
+    arr.push(base_codec::json_obj([("workspace", base_codec::json_str(w)), ("peer", base_codec::json_str(p))]))
+  }
+  let body = base_codec::json_stringify(
+    base_codec::json_obj([
+      ("session", base_codec::json_str(entry.session)),
+      ("peers", base_codec::json_arr(arr)),
+    ]),
+  )
+  let _ = (self.fs.write_bytes)(outbox_closing_path(self, entry.session), body.to_bytes())
+}
+
+pub fn RemoteTaskOutbox::mark_task_get_inflight(self : RemoteTaskOutbox, push_ref : String) -> Bool {
+  if self.inflight_gets.contains(push_ref) {
+    return false
+  }
+  self.inflight_gets.set(push_ref, true)
+  true
+}
+
+pub fn RemoteTaskOutbox::clear_task_get_inflight(self : RemoteTaskOutbox, push_ref : String) -> Unit {
+  let _ = self.inflight_gets.remove(push_ref)
 }
 
 pub fn RemoteTaskOutbox::record_outgoing(self : RemoteTaskOutbox, rec : RemoteOutgoingTask) -> Unit {
@@ -2784,14 +2859,72 @@ pub fn RemoteTaskOutbox::lookup_outgoing(self : RemoteTaskOutbox, push_ref : Str
 
 pub fn RemoteTaskOutbox::unfollow(self : RemoteTaskOutbox, push_ref : String) -> Unit {
   let _ = self.outgoing.remove(push_ref)
+  let _ = self.inflight_gets.remove(push_ref)
   if self.data_dir.length() > 0 && station_jobs::is_hex64(push_ref) {
     let _ = (self.fs.remove_file)(outbox_outgoing_path(self, push_ref))
+  }
+}
+
+pub fn RemoteTaskOutbox::unfollow_session(self : RemoteTaskOutbox, session : String) -> Unit {
+  let ks = self.outgoing.keys()
+  let drop : Array[String] = []
+  for i in 0..<ks.length() {
+    match self.outgoing.get(ks[i]) {
+      Some(rec) => if rec.session == session { drop.push(ks[i]) }
+      None => ()
+    }
+  }
+  for i in 0..<drop.length() {
+    self.unfollow(drop[i])
+  }
+  if self.data_dir.length() > 0 {
+    let dir = nodepath::join(self.fs.sep, [self.data_dir, "remote", "outgoing"])
+    match (self.fs.read_dir)(dir) {
+      Some(names) => {
+        for i in 0..<names.length() {
+          let fname = names[i]
+          if fname.ends_with(".json") && fname.length() == 69 {
+            let pref = rs_str_slice_bytes(fname, 0, 64)
+            match self.lookup_outgoing(pref) {
+              Some(rec) => if rec.session == session { self.unfollow(pref) }
+              None => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
   }
 }
 
 pub fn RemoteTaskOutbox::record_use(self : RemoteTaskOutbox, workspace : String, session : String, peer_id : String) -> Unit {
   if workspace.length() == 0 || session.length() == 0 || peer_id.length() == 0 {
     return
+  }
+  // Load and merge any historical peers persisted on disk before this process started (prevents restart overwrite).
+  if !self.used_loaded.contains(session) {
+    self.used_loaded.set(session, true)
+    if self.data_dir.length() > 0 {
+      let disk_pairs = read_peer_pairs_from_disk(self.fs, outbox_used_path(self, session))
+      let cur0 = match self.used_peers.get(session) {
+        Some(xs) => xs
+        None => []
+      }
+      for i in 0..<disk_pairs.length() {
+        let (dw, dp) = disk_pairs[i]
+        let mut exists = false
+        for j in 0..<cur0.length() {
+          if cur0[j].0 == dw && cur0[j].1 == dp {
+            exists = true
+            break
+          }
+        }
+        if !exists {
+          cur0.push((dw, dp))
+        }
+      }
+      self.used_peers.set(session, cur0)
+    }
   }
   let cur = match self.used_peers.get(session) {
     Some(xs) => xs
@@ -2817,59 +2950,282 @@ pub fn RemoteTaskOutbox::record_use(self : RemoteTaskOutbox, workspace : String,
   }
 }
 
-pub fn RemoteTaskOutbox::take_used_peers(self : RemoteTaskOutbox, session : String) -> Array[(String, String)] {
-  let out : Array[(String, String)] = []
+/// Begin persistent `session.close` for an archived session:
+/// 1) clears outgoing task tracking for `session`,
+/// 2) merges `used` (mem + disk) and any existing `closing` peers,
+/// 3) persists `closing/<hash>.json` BEFORE deleting `used/<hash>.json` or sending RPCs.
+pub fn RemoteTaskOutbox::begin_session_close(
+  self : RemoteTaskOutbox,
+  session : String,
+  now_mono_ms : Int64,
+) -> Array[(String, String)] {
+  self.unfollow_session(session)
+  let merged : Array[(String, String)] = []
   let seen : Map[String, Bool] = Map::new()
+  let add_pair = fn(w : String, p : String) -> Unit {
+    let k = w + "\n" + p
+    if w.length() > 0 && p.length() > 0 && !seen.contains(k) {
+      seen.set(k, true)
+      merged.push((w, p))
+    }
+  }
+  match self.closing.get(session) {
+    Some(existing) => {
+      for i in 0..<existing.peers.length() {
+        add_pair(existing.peers[i].0, existing.peers[i].1)
+      }
+    }
+    None => ()
+  }
   match self.used_peers.get(session) {
     Some(xs) => {
       let _ = self.used_peers.remove(session)
+      let _ = self.used_loaded.remove(session)
       for i in 0..<xs.length() {
-        let (w, p) = xs[i]
-        let k = w + "\n" + p
-        if !seen.contains(k) {
-          seen.set(k, true)
-          out.push((w, p))
-        }
+        add_pair(xs[i].0, xs[i].1)
       }
     }
     None => ()
   }
   if self.data_dir.length() > 0 {
-    let pth = outbox_used_path(self, session)
-    match (self.fs.read_bytes)(pth) {
-      Some(raw) => {
-        match base_codec::json_parse(raw.to_string()) {
-          base_codec::JsonParseResult::Ok(base_codec::Json::Arr(items)) => {
-            for i in 0..<items.length() {
-              let w = rs_arg_trim(items[i], "workspace")
-              let p = rs_arg_trim(items[i], "peer")
-              let k = w + "\n" + p
-              if w.length() > 0 && p.length() > 0 && !seen.contains(k) {
-                seen.set(k, true)
-                out.push((w, p))
+    let disk_used = read_peer_pairs_from_disk(self.fs, outbox_used_path(self, session))
+    for i in 0..<disk_used.length() {
+      add_pair(disk_used[i].0, disk_used[i].1)
+    }
+  }
+  if merged.length() == 0 {
+    return []
+  }
+  let entry = PendingSessionClose::{
+    session: session,
+    peers: merged,
+    next_retry_mono_ms: now_mono_ms,
+    attempts: 0,
+  }
+  write_closing_entry_to_disk(self, entry)
+  self.closing.set(session, entry)
+  if self.data_dir.length() > 0 {
+    let _ = (self.fs.remove_file)(outbox_used_path(self, session))
+  }
+  merged
+}
+
+/// Reload any persisted `closing/*.json` records from disk on daemon startup so retries survive restart.
+pub fn RemoteTaskOutbox::load_pending_closes(self : RemoteTaskOutbox, now_mono_ms : Int64) -> Unit {
+  if self.data_dir.length() == 0 {
+    return
+  }
+  let dir = nodepath::join(self.fs.sep, [self.data_dir, "remote", "closing"])
+  match (self.fs.read_dir)(dir) {
+    Some(names) => {
+      for i in 0..<names.length() {
+        let fname = names[i]
+        if !fname.ends_with(".json") {
+          continue
+        }
+        let pth = nodepath::join(self.fs.sep, [dir, fname])
+        match (self.fs.read_bytes)(pth) {
+          Some(raw) => {
+            match base_codec::json_parse(raw.to_string()) {
+              base_codec::JsonParseResult::Ok(j) => {
+                let sess = rs_arg_trim(j, "session")
+                let peers : Array[(String, String)] = []
+                match base_codec::json_get(j, "peers") {
+                  Some(base_codec::Json::Arr(xs)) => {
+                    for k in 0..<xs.length() {
+                      let w = rs_arg_trim(xs[k], "workspace")
+                      let p = rs_arg_trim(xs[k], "peer")
+                      if w.length() > 0 && p.length() > 0 {
+                        peers.push((w, p))
+                      }
+                    }
+                  }
+                  _ => ()
+                }
+                if sess.length() > 0 && peers.length() > 0 {
+                  self.closing.set(
+                    sess,
+                    PendingSessionClose::{
+                      session: sess,
+                      peers: peers,
+                      next_retry_mono_ms: now_mono_ms,
+                      attempts: 0,
+                    },
+                  )
+                }
               }
+              _ => ()
             }
           }
-          _ => ()
+          None => ()
+        }
+      }
+    }
+    None => ()
+  }
+}
+
+fn close_inflight_key(session : String, workspace : String, peer_id : String) -> String {
+  session + "\n" + workspace + "\n" + peer_id
+}
+
+pub fn RemoteTaskOutbox::due_session_closes(
+  self : RemoteTaskOutbox,
+  now_mono_ms : Int64,
+) -> Array[(String, String, String)] {
+  let out : Array[(String, String, String)] = []
+  let ks = self.closing.keys()
+  for i in 0..<ks.length() {
+    match self.closing.get(ks[i]) {
+      Some(entry) => {
+        if now_mono_ms >= entry.next_retry_mono_ms {
+          for j in 0..<entry.peers.length() {
+            let (w, p) = entry.peers[j]
+            let ik = close_inflight_key(entry.session, w, p)
+            if !self.closing_inflight.contains(ik) {
+              self.closing_inflight.set(ik, true)
+              out.push((entry.session, w, p))
+            }
+          }
         }
       }
       None => ()
     }
-    let _ = (self.fs.remove_file)(pth)
   }
   out
 }
 
-/// Format the session notification delivered when a remote `station_task` finishes (`task.changed`).
+pub fn RemoteTaskOutbox::mark_session_close_done(
+  self : RemoteTaskOutbox,
+  session : String,
+  workspace : String,
+  peer_id : String,
+) -> Unit {
+  let _ = self.closing_inflight.remove(close_inflight_key(session, workspace, peer_id))
+  match self.closing.get(session) {
+    Some(entry) => {
+      let rem : Array[(String, String)] = []
+      for i in 0..<entry.peers.length() {
+        let (w, p) = entry.peers[i]
+        if !(w == workspace && p == peer_id) {
+          rem.push((w, p))
+        }
+      }
+      if rem.length() == 0 {
+        let _ = self.closing.remove(session)
+        if self.data_dir.length() > 0 {
+          let _ = (self.fs.remove_file)(outbox_closing_path(self, session))
+        }
+      } else {
+        let updated = PendingSessionClose::{
+          session: entry.session,
+          peers: rem,
+          next_retry_mono_ms: entry.next_retry_mono_ms,
+          attempts: entry.attempts,
+        }
+        self.closing.set(session, updated)
+        write_closing_entry_to_disk(self, updated)
+      }
+    }
+    None => ()
+  }
+}
+
+pub fn RemoteTaskOutbox::mark_session_close_retry(
+  self : RemoteTaskOutbox,
+  session : String,
+  workspace : String,
+  peer_id : String,
+  now_mono_ms : Int64,
+) -> Unit {
+  let _ = self.closing_inflight.remove(close_inflight_key(session, workspace, peer_id))
+  match self.closing.get(session) {
+    Some(entry) => {
+      entry.attempts = entry.attempts + 1
+      let backoff = if entry.attempts <= 1 {
+        5000L
+      } else if entry.attempts == 2 {
+        15000L
+      } else if entry.attempts == 3 {
+        30000L
+      } else {
+        60000L
+      }
+      entry.next_retry_mono_ms = now_mono_ms + backoff
+    }
+    None => ()
+  }
+}
+
+pub fn RemoteTaskOutbox::pending_close_count(self : RemoteTaskOutbox) -> Int {
+  self.closing.length()
+}
+
+/// Parse real rig/target `task.get` reply `{ key, job: { state, exitCode }, log, notices }`.
+pub fn parse_remote_task_get_outcome(ans : base_codec::Json) -> (String, Option[Int], Array[String]) {
+  let job_opt = base_codec::json_get(ans, "job")
+  let state = match job_opt {
+    Some(job) => {
+      let s = rs_arg_trim(job, "state")
+      if s.length() > 0 { s } else { rs_arg_trim(ans, "state") }
+    }
+    None => rs_arg_trim(ans, "state")
+  }
+  let exit_code : Option[Int] = match job_opt {
+    Some(job) => {
+      match rs_arg_int(job, "exitCode") {
+        Ok(Some(c)) => Some(c)
+        _ => match rs_arg_int(ans, "exitCode") {
+          Ok(Some(c)) => Some(c)
+          _ => None
+        }
+      }
+    }
+    None => match rs_arg_int(ans, "exitCode") {
+      Ok(Some(c)) => Some(c)
+      _ => None
+    }
+  }
+  let notices : Array[String] = []
+  match base_codec::json_get(ans, "notices") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => {
+            let t = s.trim()
+            if t.length() > 0 {
+              notices.push(t)
+            }
+          }
+          obj => {
+            let t = rs_arg_trim(obj, "text")
+            if t.length() > 0 {
+              notices.push(t)
+            }
+          }
+        }
+      }
+    }
+    _ => ()
+  }
+  (state, exit_code, notices)
+}
+
+/// Format the internal agent notification delivered when a remote `station_task` finishes (`task.changed`).
 pub fn format_remote_task_changed_notice(
   rec : RemoteOutgoingTask,
   state : String,
   exit_code : Option[Int],
+  notices : Array[String] = [],
 ) -> String {
   let label = if rec.name.length() > 0 { rec.name + " (" + rec.key + ")" } else { rec.key }
   let detail = match exit_code {
     Some(c) => state + " (exit " + c.to_string() + ")"
     None => state
   }
-  "Remote task " + label + " on " + rec.peer_name + " " + detail + "."
+  let mut msg = "Remote task " + label + " on " + rec.peer_name + " " + detail + "."
+  for i in 0..<notices.length() {
+    msg = msg + "\n" + notices[i]
+  }
+  msg
 }

@@ -97,7 +97,38 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
         None => None
       }
     },
-    read_dir: fn(_p : String) -> Option[Array[String]] { Some([]) },
+    read_dir: fn(dir : String) -> Option[Array[String]] {
+      let prefix = if dir.ends_with("/") { dir } else { dir + "/" }
+      let plen = prefix.to_bytes().length()
+      let out : Array[String] = []
+      let seen : Map[String, Bool] = Map::new()
+      let ks = files.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        if k.starts_with(prefix) {
+          let kb = k.to_bytes()
+          let mut end = kb.length()
+          for j in plen..<kb.length() {
+            if kb[j] == 47.to_byte() {
+              end = j
+              break
+            }
+          }
+          if end > plen {
+            let name_b = Bytes::new(end - plen)
+            for j in plen..<end {
+              name_b[j - plen] = kb[j]
+            }
+            let name = name_b.to_string()
+            if !seen.contains(name) {
+              seen.set(name, true)
+              out.push(name)
+            }
+          }
+        }
+      }
+      Some(out)
+    },
     read_file: fn(p : String) -> Option[String] {
       match files.get(p) {
         Some(b) => Some(b.to_string())

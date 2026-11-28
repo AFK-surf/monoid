@@ -361,11 +361,20 @@ int32_t sts_resolve_host_all_async(
 //   returning a writable handle for `sts_file_pwrite` / `sts_file_rw_close` / `sts_file_fsync_close_async`.
 // - `sts_file_fsync_close_async`: takes ownership of the writable handle, runs `fsync`/`FlushFileBuffers` + close on a
 //   bounded detached worker thread, and emits `STS_EV_FSYNC_DONE` (`[61][rc:i32 le]`, rc=0 ok, -1 error).
+// - `sts_file_fsync_publish_noreplace_async`: takes ownership of the writable handle, runs `fsync` + identity-verified
+//   no-replace atomic publish (`part_rel` -> `dst_rel` under `root`) + close on a bounded detached worker thread,
+//   and emits `STS_EV_FSYNC_DONE` (`[61][rc:i32 le]`, rc=0 ok, -7 EEXIST, -5 symlink/replaced-staging, -1 error).
 int64_t sts_open_ro_under_nofollow(const char *root, const char *rel, int64_t *out_size, int32_t *out_err);
 int64_t sts_create_excl_open_under_nofollow(const char *root, const char *rel, int32_t mode, int32_t *out_err);
 int32_t sts_file_pwrite(int64_t handle, const uint8_t *data, int64_t len, int64_t offset);
 int32_t sts_file_rw_close(int64_t handle);
 int32_t sts_file_fsync_close_async(uint64_t event_id, int64_t handle);
+int32_t sts_file_fsync_publish_noreplace_async(
+    uint64_t event_id,
+    int64_t handle,
+    const char *root,
+    const char *part_rel,
+    const char *dst_rel);
 
 // Replace the current process in-place:
 // - POSIX: `execv(program, argv)` preserving PID, PGID, signal mask, and inherited FDs (e.g. launcher 3/4/5).
