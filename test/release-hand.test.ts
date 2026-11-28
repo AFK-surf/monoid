@@ -375,16 +375,35 @@ fi
   assert.equal(existsSync(join(bucket, stagedKey.replaceAll("/", "_"))), true, "staged archive kept for rerun");
   assert.equal(existsSync(join(bucket, handKey.replaceAll("/", "_"))), true, "handover tar kept for rerun");
 
-  // Attempt 2 (--failed rerun): unhand and release-put both still succeed without 404, then final --drop cleans all.
+  // Attempt 2 (--failed rerun): unhand and release-put both still succeed without 404, including multiple directories
+  // appended into the same STILLFAIL_STAGED_LIST, and a directory with no staged files creates no list file.
+  const plainDir = join(tmp, "plain");
+  mkdirSync(plainDir);
+  writeFileSync(join(plainDir, "station.json"), '{"build":2}');
+  const emptyList = join(tmp, "empty-staged-keys");
+  result = run({ STILLFAIL_STAGED_LIST: emptyList }, plainDir);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(emptyList), false, "no staged files creates no list file");
+
+  const extra = join(tmp, "extra");
+  mkdirSync(join(extra, "beta"), { recursive: true });
+  writeFileSync(join(extra, "beta/stillfail-station-darwin-arm64.tar.gz"), "mac-archive");
+  result = run({}, "--stage", extra);
+  assert.equal(result.status, 0, result.stderr);
+  const extraStagedKey = readFileSync(join(extra, "beta/stillfail-station-darwin-arm64.tar.gz.staged"), "utf8").trim();
+
   const list2 = join(tmp, "staged-keys-2");
   const dir2 = join(tmp, "attempt-2");
   result = run({}, "--unhand", dir2, handKey);
   assert.equal(result.status, 0, result.stderr);
-  result = run({ STILLFAIL_STAGED_LIST: list2 }, dir2);
+  result = run({ STILLFAIL_STAGED_LIST: list2 }, dir2, extra);
   assert.equal(result.status, 0, result.stderr);
-  const dropKeys = [handKey, ...readFileSync(list2, "utf8").trim().split("\n").filter(Boolean)];
+  const listedKeys = readFileSync(list2, "utf8").trim().split("\n").filter(Boolean);
+  assert.deepEqual(listedKeys, [stagedKey, extraStagedKey]);
+  const dropKeys = [handKey, ...listedKeys];
   result = run({}, "--drop", ...dropKeys);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(join(bucket, stagedKey.replaceAll("/", "_"))), false);
+  assert.equal(existsSync(join(bucket, extraStagedKey.replaceAll("/", "_"))), false);
   assert.equal(existsSync(join(bucket, handKey.replaceAll("/", "_"))), false);
 });

@@ -244,7 +244,9 @@ for dir in "$@"; do
   done
 done
 if [ -n "${STILLFAIL_STAGED_LIST:-}" ]; then
-  for key in $staged; do printf '%s\n' "$key" >> "$STILLFAIL_STAGED_LIST"; done
+  for key in $staged; do
+    printf '%s\n' "$key" >> "$STILLFAIL_STAGED_LIST" || echo "recording $key in $STILLFAIL_STAGED_LIST failed: scripts/release-prune.ts deletes it in two days" >&2
+  done
 else
   for key in $staged; do drop "$key" || echo "deleting $key failed: scripts/release-prune.ts deletes it in two days" >&2; done
 fi

@@ -2283,14 +2283,14 @@ jobs:
           key: mbui-mac-icon-beta-${{ hashFiles('apps/mbui/scripts/mac-icon.swift') }}
       - if: github.ref == 'refs/heads/main'
         run: bash scripts/git-history.sh main
-      # Leave 30 s before JOB_END, which already leaves 5 s before the job timeout.
-      # Bundle + upload now take 18-20 s (140875637141, 140884789818) and post-success cache saves are guarded below
-      # (14 s for STORE_KEY, 20 s for MOON_KEY); on a cut build upload is skipped and stop + both cache saves + cleanup
-      # take ~21 s (140889373930 was cut at 975/1015 units with reserve=42 and exited 25 s before 5 m).
+      # Leave 40 s before JOB_END (computed after Set up job, so ~2-3 s before the 5 m job timeout).
+      # Unavoidable post-success tail (bundle + upload + cache-key + post + Complete job) reaches 33-39 s on slow
+      # runners (140884789818, 136144444377); Moon's build now checks `left` before hashing stillfail.c (~2-4 s saved
+      # on tight runs), and STORE_KEY / MOON_KEY saves are guarded below (14 s / 20 s) so a tight success still ships.
       - name: Finish the Mac app build
         id: finish
         run: |
-          reserve=30
+          reserve=40
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash .github/mac-release-prebuild.sh wait || {
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
@@ -2407,6 +2407,10 @@ jobs:
         run: |
           c=apps/mbui/_build/native/release/build/stillfail/stillfail/stillfail.c
           [ -s "$c" ] || { echo "moonc had not made the app's C: moon's build not kept"; exit 0; }
+          # (check remaining time before hashing the ~100 MB C file, saving 2-4 s on tight runs where the save will be
+          # skipped anyway; its save takes ~16 s: 4 to make ready, 8 to upload, post steps 2-4, main 136452385742)
+          left=$(( JOB_END - $(date +%s) ))
+          [ "$left" -ge 20 ] || { echo "moon's build not kept: ${left} s left"; exit 0; }
           # (keyed by whether the app was linked too: a cut build's _build, of that C and no stillfail.exe, matched the
           # key of the whole one after it, which was not saved, and every run after restored the cut one and linked the
           # app again, ~61 s, main 45294094905. The state goes into the hash, not after it: cache-prune's kind_of takes a
@@ -2418,11 +2422,6 @@ jobs:
           # (one the same as restored not saved: said before the .mbc are taken out, 9 s that carried main 45268661113
           # past its five minutes with nothing to save)
           [ "$key" != "${{ steps.moon.outputs.cache-matched-key }}" ] || { echo "moon's build unchanged ($key)"; exit 0; }
-          # (its save takes ~16 s, 4 to make ready, 8 to upload, the post steps 2-4, as preview.yml's ios moon-room: main
-          # 136452385742 began it with 8 s left, its app already handed over, and was cut at 300 s, desktop skipped;
-          # and the .mbc taken out first)
-          left=$(( JOB_END - $(date +%s) ))
-          [ "$left" -ge 20 ] || { echo "moon's build not kept: ${left} s left"; exit 0; }
           find apps/mbui/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
           echo "MOON_KEY=$key" >> "$GITHUB_ENV"
       - if: always() && github.ref == 'refs/heads/main' && env.MOON_KEY != '' && env.MOON_KEY != steps.moon.outputs.cache-matched-key
@@ -3027,10 +3026,11 @@ jobs:
         name: Put the releases (their files, then their feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          STILLFAIL_STAGED_LIST: ${{ runner.temp }}/staged-keys
         run: |
-          rm -f "$STILLFAIL_STAGED_LIST"
-          sh scripts/release-put.sh "$RUNNER_TEMP/release"
+          staged_list="$RUNNER_TEMP/staged-keys"
+          rm -f "$staged_list"
+          echo "STILLFAIL_STAGED_LIST=$staged_list" >> "$GITHUB_ENV"
+          STILLFAIL_STAGED_LIST="$staged_list" sh scripts/release-put.sh "$RUNNER_TEMP/release"
       # monoid's cloud reads its own account's bucket, and answers for still.fail too once CLOUD_MOVED is on: the same
       # changelog put there (before, its /v1/changelog was empty, the apps' 更新日志 with it, 2026-11-13). Both side by
       # side, each with its own account's token. Put before telling the clouds so stations and apps woken by
@@ -3053,18 +3053,19 @@ jobs:
       - name: Tell the clouds the releases are out (their stations and apps read their feeds then)
         if: ${{ !cancelled() && steps.put-releases.outcome == 'success' }}
         run: sh scripts/release-told.sh https://app.still.fail
-      # Drop staged handovers and station archives only once put and every sibling release/delta job succeeded: when a
+      # Drop staged handovers and station archives only once put and every sibling release job succeeded: when a
       # sibling (e.g. desktop-build) fails on attempt 1, attempt 1's put publishes the other parts without deleting
-      # their staged/hand-*.tar objects, so a `--failed` rerun of the missing part does not 404 in `--unhand` (main
-      # 46115801267, 2026-11-28). Unrerun staged objects are still pruned after 2 days by scripts/release-prune.ts.
+      # their staged/hand-*.tar objects, so a `--failed` rerun of HEAD's run does not 404 in `--unhand` (main
+      # 46115801267, 2026-11-28; as .github/AGENTS.md notes, never rerun an already-superseded main run). Unrerun
+      # staged objects are still pruned after 2 days by scripts/release-prune.ts.
       - name: Drop staged handovers
-        if: ${{ success() && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result) && contains(fromJSON('["success","skipped"]'), needs.deltas-station.result) && contains(fromJSON('["success","skipped"]'), needs.deltas-android.result) && contains(fromJSON('["success","skipped"]'), needs.deltas-desktop.result) && contains(fromJSON('["success","skipped"]'), needs.deltas-desktop-win.result) }}
+        if: ${{ success() && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-build.result) && contains(fromJSON('["success","skipped"]'), needs.desktop.result) && contains(fromJSON('["success","skipped"]'), needs.desktop-win.result) }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           HANDED: ${{ needs.station.outputs.hand }} ${{ needs.android.outputs.hand }} ${{ needs.desktop.outputs.hand }}
         run: |
           keys="$HANDED"
-          [ ! -f "$RUNNER_TEMP/staged-keys" ] || keys="$keys $(tr '\n' ' ' < "$RUNNER_TEMP/staged-keys")"
+          [ -z "${STILLFAIL_STAGED_LIST:-}" ] || [ ! -f "$STILLFAIL_STAGED_LIST" ] || keys="$keys $(tr '\n' ' ' < "$STILLFAIL_STAGED_LIST")"
           # shellcheck disable=SC2086 # names, one word each
           [ -z "$(echo $keys)" ] || sh scripts/release-put.sh --drop $keys
 
