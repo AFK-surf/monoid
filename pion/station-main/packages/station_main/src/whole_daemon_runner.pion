@@ -6962,6 +6962,12 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   // Step 1: Unified turn commit + stop-marker recording + close any pre-existing unverified sockets
   for i in 0..<all_sess.length() {
     let sess = all_sess[i]
+    // R30 P1-1: Close any pre-existing unverified socket BEFORE committing turns so neither
+    // `commit_turn_fn` nor any downstream path can ever write to an unverified handle.
+    let pre_sock_id = live_runner_sock_of(sess.phase)
+    if pre_sock_id >= 0L {
+      close_sock(pre_sock_id)
+    }
     let committed_ok = commit_turn_fn(sess)
     let turn_committed = committed_ok
     && sess.current_turn_id is None
@@ -7020,14 +7026,12 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           confirmed_dead: false,
         })
       }
-      LiveRunnerPhase::AcpInit(info, sock_id)
-      | LiveRunnerPhase::AcpOpening(info, sock_id)
-      | LiveRunnerPhase::CodexInit(info, sock_id)
-      | LiveRunnerPhase::CodexOpening(info, sock_id)
-      | LiveRunnerPhase::Ready(info, sock_id)
-      | LiveRunnerPhase::Stopping(info, sock_id, _, _) => {
-        // R29 P1-1: Close pre-existing unverified socket immediately; send stop ONLY via kernel-verified path!
-        close_sock(sock_id)
+      LiveRunnerPhase::AcpInit(info, _)
+      | LiveRunnerPhase::AcpOpening(info, _)
+      | LiveRunnerPhase::CodexInit(info, _)
+      | LiveRunnerPhase::CodexOpening(info, _)
+      | LiveRunnerPhase::Ready(info, _)
+      | LiveRunnerPhase::Stopping(info, _, _, _) => {
         let iid = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
         self.record_draining_stop_marker(iid, sess.session_key)
         records.push(ShutdownRunnerRecord::{
@@ -7108,7 +7112,14 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
               }
               match verify_disk_match(rec) {
                 Some(sock_path) => {
-                  let step_ms = if rem_ms < 200L { rem_ms.to_int() } else { 200 }
+                  // R30 P1-2: Recompute remaining budget AFTER `verify_disk_match` disk I/O and immediately
+                  // before `runner_sock_send_verified_fn` so disk probe latency can never overrun deadline.
+                  let rem_send = shutdown_deadline - now_ms_fn()
+                  if rem_send <= 0L {
+                    budget_exhausted = true
+                    break
+                  }
+                  let step_ms = if rem_send < 200L { rem_send.to_int() } else { 200 }
                   let rc = runner_sock_send_verified_fn(sock_path, rec.expected_pid, rec.attach_payload.to_bytes(), step_ms)
                   if rc == 0 {
                     rec.term_sent = true
@@ -7196,6 +7207,94 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   all_ok
 }
 
+/// R30 P1-1: Pure SQLite-only commit for `PendingEndTurn` during station shutdown.
+/// Executes ONLY the SQLite `endTurn` + `sessions.running = 0` transaction; ZERO socket writes,
+/// ZERO `sess.phase` mutation, ZERO actor pumping. On success clears `sess.current_turn_id` and
+/// `sess.pending_end_turn` and returns `true`; on failure leaves `sess.pending_end_turn` intact
+/// and returns `false` so the caller preserves it durably.
+fn commit_pending_end_turn_db_only(
+  core : station_whole::WholeCore,
+  sess : LiveRunnerSession,
+  pend : PendingEndTurn,
+  log_fn~ : (String) -> Unit = fn(_m) {},
+) -> Bool {
+  match core.store.require_open() {
+    Ok(st) => {
+      let decl_j = match pend.declared_str {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let det_j = match pend.detail {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let need_j = match pend.need_opt {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let wsec_j = match pend.wait_secs_opt {
+        Some(n) => base_codec::json_int(n)
+        None => base_codec::json_null()
+      }
+      let wfor_j = match pend.wait_for_opt {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let wwatch_j = match pend.wait_watch_opt {
+        Some(b) => base_codec::json_int(if b { 1 } else { 0 })
+        None => base_codec::json_null()
+      }
+      match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+        match pend.turn_id {
+          Some(tid) => {
+            match t.run(
+              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9 WHERE id = ?1",
+              [
+                base_codec::json_str(tid),
+                sql_db::int64_to_json(pend.wall_ms),
+                base_codec::json_str(pend.outcome),
+                det_j,
+                decl_j,
+                need_j,
+                wsec_j,
+                wfor_j,
+                wwatch_j,
+              ],
+            ) {
+              Err(e) => return Err(e)
+              Ok(_) => ()
+            }
+          }
+          None => ()
+        }
+        match t.run(
+          "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
+          [base_codec::json_str(sess.session_key), sql_db::int64_to_json(pend.wall_ms)],
+        ) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
+        Ok(())
+      }) {
+        Ok(_) => {
+          sess.current_turn_id = None
+          sess.pending_end_turn = None
+          core.agents.codex_active_turns.remove(sess.session_key)
+          true
+        }
+        Err(e) => {
+          log_fn("[live-runner] shutdown pending endTurn SQLite tx failed for " + sess.session_key + ": " + e.message)
+          false
+        }
+      }
+    }
+    Err(e) => {
+      log_fn("[live-runner] shutdown pending endTurn store unavailable for " + sess.session_key + ": " + e)
+      false
+    }
+  }
+}
+
 pub fn LiveRunnerManager::stop_all_on_shutdown(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -7205,8 +7304,7 @@ pub fn LiveRunnerManager::stop_all_on_shutdown(
   let commit_turn_fn = fn(sess : LiveRunnerSession) -> Bool {
     match sess.pending_end_turn {
       Some(pend) => {
-        live_runner_commit_end_turn(self, ctx, core, sess, pend)
-        if sess.pending_end_turn is Some(_) {
+        if !commit_pending_end_turn_db_only(core, sess, pend, log_fn=fn(m) { ctx.log(m) }) {
           self.preserve_pending_end_turn(sess, ctx_opt=Some(ctx))
           return false
         }

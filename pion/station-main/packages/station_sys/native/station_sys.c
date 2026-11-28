@@ -10285,6 +10285,130 @@ int32_t sts_exec_replace(
 #endif
 }
 
+#ifdef _WIN32
+typedef struct win_verified_send_ctx {
+    volatile LONG refs;
+    volatile LONG cancelled;
+    volatile LONG result;
+    CRITICAL_SECTION lock;
+    wchar_t *wpath;
+    uint8_t *buf;
+    int64_t len;
+    int32_t expected_pid;
+    ULONGLONG deadline_ms;
+    HANDLE h;
+    HANDLE io_ev;
+    HANDLE done_ev;
+    OVERLAPPED ov;
+} win_verified_send_ctx_t;
+
+static void win_verified_send_ctx_release(win_verified_send_ctx_t *ctx) {
+    if (InterlockedDecrement(&ctx->refs) == 0) {
+        if (ctx->io_ev != NULL) {
+            CloseHandle(ctx->io_ev);
+        }
+        if (ctx->done_ev != NULL) {
+            CloseHandle(ctx->done_ev);
+        }
+        DeleteCriticalSection(&ctx->lock);
+        free(ctx->wpath);
+        free(ctx->buf);
+        free(ctx);
+    }
+}
+
+static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
+    win_verified_send_ctx_t *ctx = (win_verified_send_ctx_t *)arg;
+    LONG rc = -1;
+    if (InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
+        goto done;
+    }
+    HANDLE h = CreateFileW(
+        ctx->wpath,
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_OVERLAPPED,
+        NULL);
+    if (h == INVALID_HANDLE_VALUE) {
+        goto done;
+    }
+    EnterCriticalSection(&ctx->lock);
+    if (InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
+        LeaveCriticalSection(&ctx->lock);
+        CloseHandle(h);
+        goto done;
+    }
+    ctx->h = h;
+    LeaveCriticalSection(&ctx->lock);
+
+    ULONG server_pid = 0;
+    if (!GetNamedPipeServerProcessId(h, &server_pid) || (int32_t)server_pid != ctx->expected_pid) {
+        rc = -2;
+        goto close_h;
+    }
+
+    int64_t off = 0;
+    while (off < ctx->len) {
+        if (InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
+            rc = -1;
+            goto close_h;
+        }
+        ULONGLONG now_ms = GetTickCount64();
+        if (now_ms >= ctx->deadline_ms) {
+            rc = -1;
+            goto close_h;
+        }
+        ULONGLONG rem64 = ctx->deadline_ms - now_ms;
+        DWORD rem = (rem64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (DWORD)rem64;
+        DWORD chunk = (ctx->len - off > 65536) ? 65536U : (DWORD)(ctx->len - off);
+        (void)ResetEvent(ctx->io_ev);
+        ZeroMemory(&ctx->ov, sizeof(ctx->ov));
+        ctx->ov.hEvent = ctx->io_ev;
+        DWORD written = 0;
+        BOOL ok = WriteFile(h, ctx->buf + off, chunk, &written, &ctx->ov);
+        if (!ok) {
+            if (GetLastError() != ERROR_IO_PENDING) {
+                rc = -1;
+                goto close_h;
+            }
+            DWORD wrc = WaitForSingleObject(ctx->io_ev, rem);
+            if (wrc != WAIT_OBJECT_0 || InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
+                (void)CancelIoEx(h, &ctx->ov);
+                DWORD dummy = 0;
+                (void)GetOverlappedResult(h, &ctx->ov, &dummy, TRUE);
+                rc = -1;
+                goto close_h;
+            }
+            if (!GetOverlappedResult(h, &ctx->ov, &written, FALSE) || written == 0) {
+                rc = -1;
+                goto close_h;
+            }
+        } else if (written == 0) {
+            rc = -1;
+            goto close_h;
+        }
+        off += (int64_t)written;
+    }
+    rc = 0;
+
+close_h:
+    EnterCriticalSection(&ctx->lock);
+    HANDLE to_close = ctx->h;
+    ctx->h = INVALID_HANDLE_VALUE;
+    LeaveCriticalSection(&ctx->lock);
+    if (to_close != INVALID_HANDLE_VALUE) {
+        CloseHandle(to_close);
+    }
+done:
+    InterlockedExchange(&ctx->result, rc);
+    (void)SetEvent(ctx->done_ev);
+    win_verified_send_ctx_release(ctx);
+    return 0;
+}
+#endif
+
 int32_t sts_runner_sock_send_verified(
     const char *sock_path,
     int32_t expected_pid,
@@ -10298,81 +10422,67 @@ int32_t sts_runner_sock_send_verified(
         timeout_ms = 200;
     }
 #ifdef _WIN32
+    ULONGLONG start_ms = GetTickCount64();
+    ULONGLONG deadline_ms = start_ms + (ULONGLONG)timeout_ms;
     wchar_t *wpath = utf8_to_wide(sock_path);
     if (wpath == NULL) {
         return -1;
     }
-    HANDLE h = CreateFileW(
-        wpath,
-        GENERIC_READ | GENERIC_WRITE,
-        0,
-        NULL,
-        OPEN_EXISTING,
-        FILE_FLAG_OVERLAPPED,
-        NULL);
-    free(wpath);
-    if (h == INVALID_HANDLE_VALUE) {
+    uint8_t *buf = (uint8_t *)malloc((size_t)len);
+    if (buf == NULL) {
+        free(wpath);
         return -1;
     }
-    ULONG server_pid = 0;
-    if (!GetNamedPipeServerProcessId(h, &server_pid) || (int32_t)server_pid != expected_pid) {
-        CloseHandle(h);
-        return -2;
-    }
-    HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (ev == NULL) {
-        CloseHandle(h);
+    memcpy(buf, data, (size_t)len);
+    win_verified_send_ctx_t *ctx = (win_verified_send_ctx_t *)calloc(1, sizeof(*ctx));
+    if (ctx == NULL) {
+        free(buf);
+        free(wpath);
         return -1;
     }
-    ULONGLONG start_ms = GetTickCount64();
-    ULONGLONG deadline_ms = start_ms + (ULONGLONG)timeout_ms;
-    int64_t off = 0;
-    while (off < len) {
-        ULONGLONG now_ms = GetTickCount64();
-        if (now_ms >= deadline_ms) {
-            CloseHandle(ev);
-            CloseHandle(h);
-            return -1;
-        }
-        ULONGLONG rem64 = deadline_ms - now_ms;
-        DWORD rem = (rem64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (DWORD)rem64;
-        DWORD chunk = (len - off > 65536) ? 65536U : (DWORD)(len - off);
-        (void)ResetEvent(ev);
-        OVERLAPPED ov;
-        ZeroMemory(&ov, sizeof(ov));
-        ov.hEvent = ev;
-        DWORD written = 0;
-        BOOL ok = WriteFile(h, data + off, chunk, &written, &ov);
-        if (!ok) {
-            if (GetLastError() != ERROR_IO_PENDING) {
-                CloseHandle(ev);
-                CloseHandle(h);
-                return -1;
-            }
-            DWORD wrc = WaitForSingleObject(ev, rem);
-            if (wrc != WAIT_OBJECT_0) {
-                (void)CancelIoEx(h, &ov);
-                DWORD dummy = 0;
-                (void)GetOverlappedResult(h, &ov, &dummy, TRUE);
-                CloseHandle(ev);
-                CloseHandle(h);
-                return -1;
-            }
-            if (!GetOverlappedResult(h, &ov, &written, FALSE) || written == 0) {
-                CloseHandle(ev);
-                CloseHandle(h);
-                return -1;
-            }
-        } else if (written == 0) {
-            CloseHandle(ev);
-            CloseHandle(h);
-            return -1;
-        }
-        off += (int64_t)written;
+    ctx->refs = 2; /* 1 for caller, 1 for worker */
+    ctx->cancelled = 0;
+    ctx->result = -1;
+    InitializeCriticalSection(&ctx->lock);
+    ctx->wpath = wpath;
+    ctx->buf = buf;
+    ctx->len = len;
+    ctx->expected_pid = expected_pid;
+    ctx->deadline_ms = deadline_ms;
+    ctx->h = INVALID_HANDLE_VALUE;
+    ctx->io_ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    ctx->done_ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (ctx->io_ev == NULL || ctx->done_ev == NULL) {
+        ctx->refs = 1;
+        win_verified_send_ctx_release(ctx);
+        return -1;
     }
-    CloseHandle(ev);
-    CloseHandle(h);
-    return 0;
+    HANDLE th = CreateThread(NULL, 0, win_verified_send_worker, ctx, 0, NULL);
+    if (th == NULL) {
+        ctx->refs = 1;
+        win_verified_send_ctx_release(ctx);
+        return -1;
+    }
+    CloseHandle(th);
+
+    ULONGLONG now_ms = GetTickCount64();
+    DWORD rem = (now_ms >= deadline_ms)
+        ? 0U
+        : (DWORD)((deadline_ms - now_ms > 0xFFFFFFFFULL) ? 0xFFFFFFFFULL : (deadline_ms - now_ms));
+    DWORD wrc = WaitForSingleObject(ctx->done_ev, rem);
+    if (wrc == WAIT_OBJECT_0) {
+        int32_t rc = (int32_t)InterlockedCompareExchange(&ctx->result, 0, 0);
+        win_verified_send_ctx_release(ctx);
+        return rc;
+    }
+    InterlockedExchange(&ctx->cancelled, 1);
+    EnterCriticalSection(&ctx->lock);
+    if (ctx->h != INVALID_HANDLE_VALUE) {
+        (void)CancelIoEx(ctx->h, NULL);
+    }
+    LeaveCriticalSection(&ctx->lock);
+    win_verified_send_ctx_release(ctx);
+    return -1;
 #else
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
