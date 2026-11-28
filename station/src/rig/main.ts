@@ -18,7 +18,7 @@ import { accept } from "../mesh/accept.ts";
 import { lanAddrs } from "../mesh/lan.ts";
 import { applyNetwork, keptRunning } from "../mesh/mesh.ts";
 import { bindStation } from "../mesh/native.ts";
-import { PEER_ALPN, PEER_BYTES_ALPN, peerCall, servePeer } from "../mesh/peer.ts";
+import { PEER_ALPN, PEER_BYTES_ALPN, STOPPING, peerCall, servePeer } from "../mesh/peer.ts";
 import { DeviceRefused, PEER_HTTP_ALPN, rigAllowed, serveHttp } from "../mesh/peer-http.ts";
 import { fileRecoverStore, keepRelays, wantedRelays } from "../mesh/relays.ts";
 import { congestionOf } from "../mesh/settings.ts";
@@ -327,7 +327,8 @@ export const RigMeshLive = Layer.effectDiscard(
                 device: (peer, workspace, session, device, probe) => rig.current === null ? Promise.reject(new DeviceRefused(503, "the rig is starting")) : rig.current.device(peer, workspace, session, device, probe),
               })
             : servePeer(conn, cloud, peers),
-        closing: "rig stopping",
+        // (the station's words: a station asking it reads them as its process stopping or handing over, `PeerStopped`)
+        closing: STOPPING,
       });
       // (as the station's does, mesh.ts: an endpoint that gives no more connections while the rig runs is bound again)
       return yield* Effect.fail(new Error("rig mesh endpoint accept ended"));

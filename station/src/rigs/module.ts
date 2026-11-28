@@ -61,8 +61,6 @@ const describedOf = (answer: Json): Described | null => {
   return r !== null && typeof r === "object" && typeof r.owner === "string" && Array.isArray(r.grants) ? (r as Described) : null;
 };
 
-/// Drops stale out-of-order rig snapshots (`rig.hello`, `rig.describe`, `rig.changed`) that arrive over concurrent
-/// streams after a newer `rig.grant` or `rig.changed` from the same rig process, or from a superseded previous process.
 /// What only reads a rig and changes nothing there: asked again as it was, a repeat is the same.
 const READS = new Set(["rig.describe", "rig.proof", "rig.log"]);
 
@@ -81,6 +79,8 @@ export async function askRig(ask: (rig: string, request: Json) => Promise<Json>,
   }
 }
 
+/// Drops stale out-of-order rig snapshots (`rig.hello`, `rig.describe`, `rig.changed`) that arrive over concurrent
+/// streams after a newer `rig.grant` or `rig.changed` from the same rig process, or from a superseded previous process.
 export class RigSnapshotOrder {
   readonly #seen = new Map<string, { boot: string; rev: number; retired: string[] }>();
 
