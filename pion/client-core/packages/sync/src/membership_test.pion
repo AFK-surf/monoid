@@ -2285,52 +2285,13 @@ test "Slice 2B-1 R11: 200 write-error preserves R1, 401 write-error closes gate,
   debug_assert(saw_ws2_frame, "station transport & frame delivery restored on ULID_WS2 after re-login")
 }
 
-// ── Test 14 (R12): Single-owner rejected_tuple fallback, inactive sibling 401 ReadError preservation,
+// ── Test 14 (R12/R14): Inactive sibling 401 ReadError preservation,
 //    unbound `:memory:` account.switch rejection, and default station rebind across account switches ──
 
-test "Slice 2B-1 R12: rejected_tuple fail-closed + self-heal, inactive 401 ReadError preserves active sibling, unbound account.switch rejected, and default station rebind" {
+test "Slice 2B-1 R12: inactive 401 ReadError preserves active sibling, unbound account.switch rejected, and default station rebind" {
   let rt = effect::Runtime::new()
 
-  // 1. P1-1: Single-owner `meta("membership:rejected_tuple")` record / strict fail-closed check / login self-heal!
-  let (_, rdb) = make_sim_db(rt)
-  match check_rejected_tuple_in_db(rdb, "sid-1", "ref-1") {
-    RejectedTupleCheck::Allowed => ()
-    _ => panic("absent rejected_tuple must be Allowed")
-  }
-  match record_rejected_tuple_in_db(rdb, "sid-1", "ref-1") {
-    Ok(_) => ()
-    Err(e) => panic("record_rejected_tuple_in_db failed: " + e)
-  }
-  match check_rejected_tuple_in_db(rdb, "sid-1", "ref-1") {
-    RejectedTupleCheck::Rejected => ()
-    _ => panic("matching tuple must be Rejected")
-  }
-  match check_rejected_tuple_in_db(rdb, "sid-2", "ref-2") {
-    RejectedTupleCheck::Allowed => ()
-    _ => panic("newer tuple must be Allowed")
-  }
-  // Corrupt JSON / non-object / bad field types MUST return Unreadable (fail-closed!),
-  // and `clear_rejected_tuple_in_db` (called on fresh verified login) MUST self-heal it!
-  let _ = store::put_meta(rdb, META_REJECTED_TUPLE_KEY, "{corrupt-json")
-  match check_rejected_tuple_in_db(rdb, "sid-2", "ref-2") {
-    RejectedTupleCheck::Unreadable(_) => ()
-    _ => panic("corrupt rejected_tuple json must fail closed with Unreadable")
-  }
-  let _ = store::put_meta(rdb, META_REJECTED_TUPLE_KEY, "{\"session\":123,\"refresh\":\"ref-1\"}")
-  match check_rejected_tuple_in_db(rdb, "sid-2", "ref-2") {
-    RejectedTupleCheck::Unreadable(_) => ()
-    _ => panic("invalid field types in rejected_tuple must fail closed with Unreadable")
-  }
-  match clear_rejected_tuple_in_db(rdb) {
-    Ok(_) => ()
-    Err(e) => panic("clear_rejected_tuple_in_db failed: " + e)
-  }
-  match check_rejected_tuple_in_db(rdb, "sid-1", "ref-1") {
-    RejectedTupleCheck::Allowed => ()
-    _ => panic("fresh login clear_rejected_tuple_in_db must self-heal")
-  }
-
-  // 2. P1-2: Active Alice + inactive sibling Bob -> Bob gets 401 while disk returns `ReadError` (and corrupt JSON):
+  // 1. P1-2: Active Alice + inactive sibling Bob -> Bob gets 401 while disk returns `ReadError` (and corrupt JSON):
   //    `on_invalidated` MUST receive `None` (NEVER `Some([])`!), keeping Alice's active DB & read gate 100% intact!
   let (_, alice_db) = make_sim_db(rt)
   let acore = ClientCore::new(ULID_WS1, ULID_WS1 + "/st-alice", rt, alice_db, core_offline_transport(), fn() -> Unit {})
@@ -2426,9 +2387,9 @@ test "Slice 2B-1 R12: rejected_tuple fail-closed + self-heal, inactive 401 ReadE
   debug_assert(acore.station == "st-local" && acore.events.station == "st-local" && acore.sync.station == "st-local" && acore.md_store.station == "st-local" && acore.local_outbox.station == "st-local", "Bob login MUST NOT leak Alice's st-alice")
 }
 
-// ── Test 15 (R13): Verified login rebind_default_station restores pinned lock root (P1-1) & positive lease helpers (P1-2) ──
+// ── Test 15 (R13/R14): Verified login rebind_default_station restores pinned Ed25519 lock root ──
 
-test "Slice 2B-1 R13: rebind_default_station hydrates persisted Ed25519 lock root and rejects forged lock, plus positive lease helpers" {
+test "Slice 2B-1 R13: rebind_default_station hydrates persisted Ed25519 lock root and rejects forged lock" {
   let rt = effect::Runtime::new()
 
   // 1. Codex P1-1: Pre-locked non-default workspace `ULID_WS1` -> 401 unauth `:memory:` (`ws-default`) ->
@@ -2528,26 +2489,4 @@ test "Slice 2B-1 R13: rebind_default_station hydrates persisted Ed25519 lock roo
     Some(r) => debug_assert(r == genesis_good, "pinned root stays G_good after forged attempt")
     None => panic("lock_root cleared")
   }
-
-  // 2. Codex P1-2: Positive lease meta (`arm_lease_in_db` / `is_lease_armed_in_db`) & JSON matcher:
-  let (_, ldb) = make_sim_db(rt)
-  match is_lease_armed_in_db(ldb) {
-    Ok(false) => ()
-    _ => panic("fresh DB lease_armed must be Ok(false)")
-  }
-  match arm_lease_in_db(ldb) {
-    Ok(_) => ()
-    Err(e) => panic("arm_lease_in_db failed: " + e)
-  }
-  match is_lease_armed_in_db(ldb) {
-    Ok(true) => ()
-    _ => panic("armed DB lease_armed must be Ok(true)")
-  }
-  let _ = store::put_meta(ldb, META_LEASE_ARMED_KEY, "corrupt")
-  debug_assert(is_lease_armed_in_db(ldb).is_err(), "corrupt lease_armed meta MUST fail closed with Err")
-  let lease_raw = base_codec::json_stringify(format_lease_json("sid-1", "ref-1"))
-  debug_assert(check_lease_json_matches(lease_raw, "sid-1", "ref-1"), "exact lease matches")
-  debug_assert(!check_lease_json_matches(lease_raw, "sid-2", "ref-1"), "mismatched session rejected")
-  debug_assert(!check_lease_json_matches(lease_raw, "sid-1", "ref-2"), "mismatched refresh rejected")
-  debug_assert(!check_lease_json_matches("{bad", "sid-1", "ref-1"), "corrupt lease json rejected")
 }
