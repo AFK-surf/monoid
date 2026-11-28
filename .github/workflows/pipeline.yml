@@ -552,7 +552,9 @@ jobs:
       id-token: write # the branch job can stage its native archives in R2
     steps:
       # (when the job is cut, for the build's own limit on GitHub's runner and the reader's units saved after it)
-      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      - run: |
+          echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+          [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-mac
@@ -644,7 +646,9 @@ jobs:
       id-token: write # the branch job can stage its native archives in R2
     steps:
       # (when the job is cut, for the build's own limit on GitHub's runner and the reader's units saved after it)
-      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      - run: |
+          echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+          [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-mac
@@ -740,7 +744,9 @@ jobs:
       contents: write # the release native-artifacts' assets, on main only
       id-token: write # the branch job can stage its native archives in R2
     steps:
-      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      - run: |
+          echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+          [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-mac
@@ -804,7 +810,9 @@ jobs:
       contents: write # the release native-artifacts' assets, on main only
       id-token: write # the branch job can stage its native archives in R2
     steps:
-      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+      - run: |
+          echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
+          [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-mac
@@ -1164,6 +1172,8 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }} # read-only API fallback if the public release download fails
     steps:
+      - if: runner.environment != 'self-hosted'
+        run: sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "${{ (github.ref != 'refs/heads/main' || vars.MINI1 == 'off') && 'blob:none' || '' }}" }
       - if: runner.environment == 'self-hosted'
@@ -1478,6 +1488,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" }
       - uses: ./.github/actions/setup
@@ -1829,6 +1840,7 @@ jobs:
     environment: production
     timeout-minutes: 5
     steps:
+      - run: sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # the release's number is the commits in the history
       - uses: ./.github/actions/setup
@@ -2017,7 +2029,9 @@ jobs:
     env:
       MBUI_FRESH: 1
     steps:
-      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
+      - run: |
+          sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
+          git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
       - run: bash scripts/git-history.sh
       - uses: ./.github/actions/setup
@@ -2055,6 +2069,7 @@ jobs:
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
           echo "MBC_STORE=$RUNNER_TEMP/ci-live/mbc-store" >> "$GITHUB_ENV"
           echo "HBC_CACHE=$RUNNER_TEMP/ci-live/hbc" >> "$GITHUB_ENV"
+          sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
@@ -2466,7 +2481,9 @@ jobs:
       MBUI_CACHE: ${{ github.workspace }}/.ci/release
       MBUI_MAC_FROM: ${{ github.workspace }}/.ci/mac-unsigned/youdid.wtf.app
     steps:
-      - run: git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
+      - run: |
+          sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
+          git config --global http.lowSpeedLimit 1024 && git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
       - run: bash scripts/git-history.sh
       # (Node alone: signing, release-desktop.sh --out and release-put.sh through Cloudflare's API install no packages)

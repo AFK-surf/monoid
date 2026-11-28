@@ -216,6 +216,7 @@ jobs:
       MBUI_FRESH: 1
       HANDED: ${{ needs.desktop-build.outputs.hand }}
     steps:
+      - run: sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
       - uses: ./.github/actions/setup
@@ -456,6 +457,7 @@ jobs:
     env:
       MBUI_FRESH: 1
     steps:
+      - run: sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
       - uses: ./.github/actions/setup
@@ -715,6 +717,7 @@ jobs:
     outputs:
       hand: ${{ steps.hand.outputs.key }}
     steps:
+      - run: sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
       - uses: actions/checkout@v5
         with: { ref: '${{ needs.plan.outputs.sha }}', fetch-depth: 0, filter: "blob:none" } # the release's number is the commits in the history
       - uses: ./.github/actions/setup

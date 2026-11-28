@@ -521,6 +521,7 @@ jobs:
       - name: The job's end, its compiler and iOS's SDK 27.1 or later
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 8 ))" >> "$GITHUB_ENV"
+          [ "${RUNNER_ENVIRONMENT:-}" != github-hosted ] || sudo -n sysctl -w net.inet.tcp.keepinit=15000 || true
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
           set -o pipefail
