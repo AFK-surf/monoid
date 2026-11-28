@@ -226,12 +226,32 @@ fn parse_managed_mcp_entries(raw_cfg : base_codec::Json) -> Array[(String, stati
   out
 }
 
-fn managed_mcp_view_json(entries : Array[(String, station_tools::ManagedServerConfig)]) -> base_codec::Json {
+fn managed_mcp_view_json(
+  entries : Array[(String, station_tools::ManagedServerConfig)],
+  hooks : WholeApiRuntimeHooks,
+) -> base_codec::Json {
+  let live_states : Array[(String, station_tools::ManagedServerRuntime)] = match hooks.on_mcp_view {
+    Some(f) => f()
+    None => []
+  }
   let out : Array[base_codec::Json] = []
   for i in 0..<entries.length() {
     let (name, cfg) = entries[i]
-    let status = if cfg.enabled { "connecting" } else { "disabled" }
-    let rt = station_tools::ManagedServerRuntime::{ status: status, tools: [], error: None }
+    let mut rt_opt : Option[station_tools::ManagedServerRuntime] = None
+    for li in 0..<live_states.length() {
+      if live_states[li].0 == name {
+        rt_opt = Some(live_states[li].1)
+        break
+      }
+    }
+    let rt = match rt_opt {
+      Some(r) => r
+      None => station_tools::ManagedServerRuntime::{
+        status: if cfg.enabled { "connecting" } else { "disabled" },
+        tools: [],
+        error: None,
+      }
+    }
     out.push(station_tools::mask_server_view(name, cfg, rt))
   }
   base_codec::json_arr(out)
@@ -248,7 +268,7 @@ fn dispatch_mcp_servers_op(
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
   if op == "mcpServers.get" {
     let entries = parse_managed_mcp_entries(read_config_raw(cfg_opt))
-    return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries))])))
+    return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries, hooks))])))
   }
   if op == "mcpServers.put" {
     if !req.viewer.manages_station() {
@@ -282,7 +302,7 @@ fn dispatch_mcp_servers_op(
           None => ()
         }
         hooks_notify_overview(hooks, "mcpServers")
-        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(final_entries))])))
+        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(final_entries, hooks))])))
       }
       Err(e) => return Some(Err(e))
     }
@@ -296,7 +316,7 @@ fn dispatch_mcp_servers_op(
         f(None)
         hooks_notify_overview(hooks, "mcpServers")
         let entries = parse_managed_mcp_entries(read_config_raw(cfg_opt))
-        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries))])))
+        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries, hooks))])))
       }
       None => return Some(Err(err_not_implemented(op)))
     }
@@ -321,7 +341,7 @@ fn dispatch_mcp_servers_op(
         }
         f(Some(name))
         hooks_notify_overview(hooks, "mcpServers")
-        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries))])))
+        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries, hooks))])))
       }
       None => return Some(Err(err_not_implemented(op)))
     }
@@ -930,7 +950,13 @@ fn dispatch_accounts_op(
     }
   }
 
-  // All remaining unbacked `accounts.*` ops (`createKeyed`, `createMachine`, `pace`, `resetQuota`, `quota`, `login*`) return honest 501.
+  // Wave 17D-2 live `accounts.profiles.*` ops
+  match dispatch_live_accounts_op(op, req, params, body, agents, cfg_opt, cfg_open_err, hooks, now_ms) {
+    Some(r) => return Some(r)
+    None => ()
+  }
+
+  // All remaining unbacked `accounts.*` ops return honest 501.
   Some(Err(err_not_implemented(op)))
 }
 
@@ -1798,6 +1824,7 @@ fn dispatch_settings_and_copies_op(
   op : String,
   req : station_api::ApiRequest,
   body : base_codec::Json,
+  agents : WholeAgents,
   cfg_opt : Option[station_ops::ConfigFile],
   cfg_open_err : Option[station_ops::ConfigError],
   hooks : WholeApiRuntimeHooks,
@@ -2039,9 +2066,9 @@ fn dispatch_settings_and_copies_op(
     return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.retire.off"))))
   }
 
-  // `copies.restore`, `copies.s3.test`, `xshare.hosts.put` stay honest 501 until real executors are wired.
+  // Wave 17D-2 `copies.restore`, `copies.s3.test`, `xshare.hosts.put`
   if op == "copies.restore" || op == "copies.s3.test" || op == "xshare.hosts.put" {
-    return Some(Err(err_not_implemented(op)))
+    return dispatch_live_copies_xshare_op(op, req, body, agents, cfg_opt, hooks)
   }
 
   None
@@ -2971,7 +2998,7 @@ pub fn dispatch_admin_ops(
     Some(r) => return Some(r)
     None => ()
   }
-  match dispatch_settings_and_copies_op(op, req, body, cfg_opt, cfg_open_err, hooks, port) {
+  match dispatch_settings_and_copies_op(op, req, body, agents, cfg_opt, cfg_open_err, hooks, port) {
     Some(r) => return Some(r)
     None => ()
   }

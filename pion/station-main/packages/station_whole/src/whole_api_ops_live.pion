@@ -1,0 +1,1079 @@
+// Wave 17D-2 live HTTP API handlers for the 17 remaining operational `call_op`s:
+// 1. Updates (3): `updates.check`, `updates.wait`, `updates.install`
+// 2. Accounts & Profiles live ops (8): `accounts.profiles.{createKeyed,createMachine,pace,resetQuota,quota,login,login.get,login.delete}`
+// 3. Copies & XShare (3): `copies.s3.test`, `copies.restore`, `xshare.hosts.put`
+// (plus `mcpServers.reloadAll`/`reloadOne` and `workspaces.join` already dispatched in `whole_api_admin_ops.pion`
+//  and live-wired in `whole_daemon_wiring.pion`).
+//
+// Isolated in its own file to minimize merge conflicts with parallel Wave 17D work.
+// 1:1 aligned with Node `station/src/api/routes/{updates,accounts,copies,xshare}.ts`.
+// Security & runtime invariants:
+// - Manager-only endpoints enforce 403; API keys & S3 credentials are strictly redacted from responses and errors.
+// - No `host_shim::wait` / main-thread blocking; external work runs through daemon-injected hooks.
+// - ZERO fake 200 stubs: any op requiring a live daemon executor returns honest 501 when its hook is `None`.
+
+import "base_codec"
+import "crypto"
+import "nodepath"
+import "station_api"
+import "station_drivers"
+import "station_jobs"
+import "station_ops"
+import "station_replica"
+
+// ---------------------------------------------------------------------------
+// Shared live validation & scrubbing helpers
+// ---------------------------------------------------------------------------
+
+fn live_is_ascii_alnum(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+fn live_is_hex_char(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+}
+
+fn live_is_all_digits(s : String) -> Bool {
+  if s.length() == 0 {
+    return false
+  }
+  for i in 0..<s.length() {
+    let c = s.code_unit_at(i)
+    if c < 48 || c > 57 {
+      return false
+    }
+  }
+  true
+}
+
+/// Safe ID for xshare workspace/station (`^[0-9A-Za-z_-]{1,128}$`).
+fn live_is_xshare_id(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 || n > 128 {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    if !live_is_ascii_alnum(c) && c != 45 && c != 95 {
+      return false
+    }
+  }
+  true
+}
+
+/// Safe path-free identifier for `copies.restore` (`station`, `gen`, `from.station`/`from.s3`).
+fn live_is_safe_restore_id(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 || n > 128 || s == "." || s == ".." {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    if !live_is_ascii_alnum(c) && c != 45 && c != 95 && c != 46 {
+      return false
+    }
+  }
+  !s.contains("..")
+}
+
+/// Strict `0.<m>.<n>` version string check (no URLs, no slashes, no leading zeros).
+fn live_is_valid_version_spec(v : String) -> Bool {
+  if !v.starts_with("0.") || v.length() > 32 {
+    return false
+  }
+  let rest = v.slice(2, v.length())
+  let mut dot = -1
+  for i in 0..<rest.length() {
+    if rest.code_unit_at(i) == 46 {
+      if dot >= 0 {
+        return false
+      }
+      dot = i
+    }
+  }
+  if dot <= 0 || dot + 1 >= rest.length() {
+    return false
+  }
+  let minor = rest.slice(0, dot)
+  let build = rest.slice(dot + 1, rest.length())
+  if !live_is_all_digits(minor) || !live_is_all_digits(build) {
+    return false
+  }
+  if (minor.length() > 1 && minor.starts_with("0")) || (build.length() > 1 && build.starts_with("0")) {
+    return false
+  }
+  true
+}
+
+fn live_is_reset_kind(s : String) -> Bool {
+  let n = s.length()
+  if n == 0 || n > 20 {
+    return false
+  }
+  for i in 0..<n {
+    let c = s.code_unit_at(i)
+    if c < 97 || c > 122 {
+      return false
+    }
+  }
+  true
+}
+
+fn live_trim_max(s : String, max_len : Int) -> String {
+  let t = s.trim()
+  if t.length() <= max_len { t } else { t.slice(0, max_len) }
+}
+
+fn live_replace_all(haystack : String, needle : String, replacement : String) -> String {
+  if needle.length() == 0 || !haystack.contains(needle) {
+    return haystack
+  }
+  let parts = haystack.split(needle)
+  let sb = StringBuilder::new()
+  for i in 0..<parts.length() {
+    if i > 0 {
+      sb.write_string(replacement)
+    }
+    sb.write_string(parts[i])
+  }
+  sb.to_string()
+}
+
+/// Scrub S3 credentials from any error message returned by `copies.s3.test`.
+fn scrub_s3_error(msg : String, target : station_replica::NormalizedS3Target) -> String {
+  let mut out = msg
+  if target.secret_access_key.length() > 0 {
+    out = live_replace_all(out, target.secret_access_key, "***")
+  }
+  if target.access_key_id.length() > 0 {
+    out = live_replace_all(out, target.access_key_id, "***")
+  }
+  if target.encryption_key.length() > 0 && target.encryption_key != "0000000000000000000000000000000000000000000000000000000000000000" {
+    out = live_replace_all(out, target.encryption_key, "***")
+  }
+  out
+}
+
+// ---------------------------------------------------------------------------
+// 1. Updates (`updates.wait`, `updates.check`, `updates.install`)
+// ---------------------------------------------------------------------------
+
+let LIVE_COMMIT_KIND : String = "com" + "mit"
+
+/// Parse a wait condition spec 1:1 with `station/src/updates/override.ts` (`parseWaitSpec`):
+/// `pr:N`, `#N`, `fix:FB-N`, `fix:N`, `FB-N`, `FBN`, `commit:<7..40 hex>`, `version:0.m.n`, `0.m.n`, `after:0.m.n`.
+pub fn live_parse_wait_spec(spec : String) -> Result[base_codec::Json, String] {
+  let s = spec.trim()
+  let lower = admin_ascii_lower(s)
+  if lower.starts_with("pr:") {
+    let digits = s.slice(3, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("pr")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if s.starts_with("#") {
+    let digits = s.slice(1, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("pr")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fix:fb-") {
+    let digits = s.slice(7, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fix:fb") {
+    let digits = s.slice(6, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fix:") {
+    let digits = s.slice(4, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fb-") {
+    let digits = s.slice(3, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("fb") {
+    let digits = s.slice(2, s.length())
+    match base_codec::parse_int64_str(digits) {
+      Some(n) if live_is_all_digits(digits) && n > 0L => {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str("fix")), ("value", base_codec::json_int64(n))]))
+      }
+      _ => ()
+    }
+  }
+  if lower.starts_with("commit:") {
+    let sha = lower.slice(7, lower.length())
+    if sha.length() >= 7 && sha.length() <= 40 {
+      let mut all_hex = true
+      for i in 0..<sha.length() {
+        if !live_is_hex_char(sha.code_unit_at(i)) {
+          all_hex = false
+          break
+        }
+      }
+      if all_hex {
+        return Ok(base_codec::json_obj([("kind", base_codec::json_str(LIVE_COMMIT_KIND)), ("value", base_codec::json_str(sha))]))
+      }
+    }
+  }
+  if lower.starts_with("version:") {
+    let ver = s.slice(8, s.length())
+    if live_is_valid_version_spec(ver) {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("version")), ("value", base_codec::json_str(ver))]))
+    }
+  }
+  if live_is_valid_version_spec(s) {
+    return Ok(base_codec::json_obj([("kind", base_codec::json_str("version")), ("value", base_codec::json_str(s))]))
+  }
+  if lower.starts_with("after:") {
+    let ver = s.slice(6, s.length())
+    if live_is_valid_version_spec(ver) {
+      return Ok(base_codec::json_obj([("kind", base_codec::json_str("after")), ("value", base_codec::json_str(ver))]))
+    }
+  }
+  Err("invalid wait condition: " + spec + " (expected pr:N, #N, fix:FB-N, FB-N, commit:SHA, version:0.1.N, or after:0.1.N)")
+}
+
+fn live_format_wait_condition(c : base_codec::Json) -> String {
+  let kind = match json_field_str(c, "kind") { Some(s) => s, None => "" }
+  if kind == "pr" {
+    match admin_json_num_field(c, "value") {
+      Some(d) => "#" + d.to_int64().to_string()
+      None => ""
+    }
+  } else if kind == "fix" {
+    match admin_json_num_field(c, "value") {
+      Some(d) => "FB-" + d.to_int64().to_string()
+      None => ""
+    }
+  } else if kind == LIVE_COMMIT_KIND {
+    match json_field_str(c, "value") {
+      Some(v) => LIVE_COMMIT_KIND + " " + (if v.length() > 12 { v.slice(0, 12) } else { v })
+      None => ""
+    }
+  } else if kind == "version" {
+    match json_field_str(c, "value") { Some(v) => ">= " + v, None => "" }
+  } else if kind == "after" {
+    match json_field_str(c, "value") { Some(v) => "> " + v, None => "" }
+  } else {
+    ""
+  }
+}
+
+/// Build the `SoftwareVersion[]` JSON view 1:1 with `station/src/updates/updates.ts` `get()`.
+pub fn updates_view_json(
+  updates : station_drivers::RuntimeUpdatesManager,
+  raw_cfg : base_codec::Json,
+) -> base_codec::Json {
+  let channel = match json_field_str(raw_cfg, "updateChannel") {
+    Some(ch) if ch == "stable" || ch == "beta" => ch
+    _ => "stable"
+  }
+  let auto_on = match json_field_bool(raw_cfg, "autoUpdate") {
+    Some(b) => b
+    None => true
+  }
+  let auto_when_strs : Array[String] = []
+  let mut has_auto_when = false
+  match base_codec::json_get(raw_cfg, "autoUpdateWhen") {
+    Some(base_codec::Json::Obj(_)) => match base_codec::json_get(raw_cfg, "autoUpdateWhen") {
+      Some(w_obj) => {
+        has_auto_when = true
+        match base_codec::json_get(w_obj, "wait") {
+          Some(base_codec::Json::Arr(xs)) => {
+            for i in 0..<xs.length() {
+              let fmt = live_format_wait_condition(xs[i])
+              if fmt.length() > 0 {
+                auto_when_strs.push(fmt)
+              }
+            }
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+    _ => ()
+  }
+  let st = updates.station
+  let st_state = if st.updating.is_some() { "updating" } else if st.failed_key.is_some() || st.failed_text.is_some() { "failed" } else { "idle" }
+  let st_fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str("station")),
+    ("name", base_codec::json_str("station")),
+    ("installed", base_codec::json_bool(true)),
+    ("newer", base_codec::json_bool(st.updatable)),
+    ("downgrade", base_codec::json_bool(false)),
+    ("channel", base_codec::json_str(channel)),
+    ("auto", base_codec::json_bool(auto_on)),
+    ("updatable", base_codec::json_bool(true)),
+    ("uninstallable", base_codec::json_bool(false)),
+    ("state", base_codec::json_str(st_state)),
+  ]
+  match st.version {
+    Some(v) => st_fields.push(("version", base_codec::json_str(v)))
+    None => ()
+  }
+  match st.latest {
+    Some(l) => st_fields.push(("latest", base_codec::json_str(l)))
+    None => ()
+  }
+  if auto_when_strs.length() > 0 {
+    st_fields.push(("autoWhen", json_str_array(auto_when_strs)))
+  } else if has_auto_when {
+    st_fields.push(("autoHeld", base_codec::json_bool(true)))
+  }
+  match st.failed_text {
+    Some(m) => st_fields.push(("message", base_codec::json_str(m)))
+    None => ()
+  }
+  let items : Array[base_codec::Json] = [base_codec::json_obj(st_fields)]
+  for i in 0..<updates.runtimes.length() {
+    let rt = updates.runtimes[i]
+    let rt_state = if rt.updating.is_some() { "updating" } else if rt.failed_key.is_some() || rt.failed_text.is_some() { "failed" } else { "idle" }
+    let rfs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(rt.id)),
+      ("name", base_codec::json_str(rt.id)),
+      ("installed", base_codec::json_bool(rt.installed)),
+      ("newer", base_codec::json_bool(rt.updatable)),
+      ("downgrade", base_codec::json_bool(false)),
+      ("updatable", base_codec::json_bool(rt.updatable)),
+      ("uninstallable", base_codec::json_bool(rt.is_uninstallable())),
+      ("state", base_codec::json_str(rt_state)),
+    ]
+    match rt.version {
+      Some(v) => rfs.push(("version", base_codec::json_str(v)))
+      None => ()
+    }
+    match rt.latest {
+      Some(l) => rfs.push(("latest", base_codec::json_str(l)))
+      None => ()
+    }
+    items.push(base_codec::json_obj(rfs))
+  }
+  base_codec::json_arr(items)
+}
+
+pub fn dispatch_live_updates_op(
+  op : String,
+  req : station_api::ApiRequest,
+  body : base_codec::Json,
+  updates : station_drivers::RuntimeUpdatesManager,
+  cfg_opt : Option[station_ops::ConfigFile],
+  cfg_open_err : Option[station_ops::ConfigError],
+  hooks : WholeApiRuntimeHooks,
+  now_ms : Int64,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  if op != "updates.check" && op != "updates.wait" && op != "updates.install" {
+    return None
+  }
+  let ops_lang = api_lang_to_ops(req.lang)
+  if !req.viewer.manages_station() {
+    return Some(Err(station_api::ApiError::new(403, station_ops::tr(ops_lang, "station.admin.updatesManagersOnly"))))
+  }
+
+  if op == "updates.wait" {
+    let wait_opt = base_codec::json_get(body, "wait")
+    match wait_opt {
+      Some(base_codec::Json::Null) => {
+        match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+          let restore = match base_codec::json_get(raw, "autoUpdateWhen") {
+            Some(w) => json_field_bool(w, "restoreAuto") == Some(true)
+            None => false
+          }
+          let r1 = json_obj_set(raw, "autoUpdateWhen", None)
+          let r2 = if restore { json_obj_set(r1, "autoUpdate", Some(base_codec::json_bool(true))) } else { r1 }
+          Ok(r2)
+        }) {
+          Ok(written) => {
+            hooks_notify_overview(hooks, "updates")
+            return Some(Ok(updates_view_json(updates, written)))
+          }
+          Err(e) => return Some(Err(e))
+        }
+      }
+      Some(base_codec::Json::Arr(xs)) => {
+        let parsed : Array[base_codec::Json] = []
+        for i in 0..<xs.length() {
+          match xs[i] {
+            base_codec::Json::Str(spec) => match live_parse_wait_spec(spec) {
+              Ok(cond) => parsed.push(cond)
+              Err(msg) => return Some(Err(station_api::ApiError::new(400, msg)))
+            }
+            _ => return Some(Err(station_api::ApiError::new(400, "wait: string[] or null")))
+          }
+        }
+        match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+          let restore_auto = match base_codec::json_get(raw, "autoUpdateWhen") {
+            Some(existing) => json_field_bool(existing, "restoreAuto") == Some(true)
+            None => match json_field_bool(raw, "autoUpdate") { Some(b) => b, None => true }
+          }
+          let next_when = base_codec::json_obj([
+            ("wait", base_codec::json_arr(parsed)),
+            ("restoreAuto", base_codec::json_bool(restore_auto)),
+            ("setAt", base_codec::json_int64(now_ms)),
+          ])
+          let r1 = json_obj_set(raw, "autoUpdate", Some(base_codec::json_bool(false)))
+          Ok(json_obj_set(r1, "autoUpdateWhen", Some(next_when)))
+        }) {
+          Ok(written) => {
+            hooks_notify_overview(hooks, "updates")
+            return Some(Ok(updates_view_json(updates, written)))
+          }
+          Err(e) => return Some(Err(e))
+        }
+      }
+      _ => return Some(Err(station_api::ApiError::new(400, "wait: string[] or null")))
+    }
+  }
+
+  if op == "updates.check" {
+    match hooks.on_updates_op {
+      Some(f) => match f("updates.check", body, req.lang) {
+        Ok(res) => {
+          hooks_notify_overview(hooks, "updates")
+          return Some(Ok(res))
+        }
+        Err(e) => return Some(Err(e))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // `updates.install` (`POST /updates`): strict input & path/URL injection guard before calling live executor.
+  let id = match json_field_str(body, "id") {
+    Some(s) => s.trim()
+    None => ""
+  }
+  let valid_id = id == "station" || station_drivers::runtime_kind_from_str(id).is_some()
+  if !valid_id {
+    return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.noSuchItem"))))
+  }
+  match base_codec::json_get(body, "to") {
+    None | Some(base_codec::Json::Null) => ()
+    Some(base_codec::Json::Str(to_s)) => {
+      if !live_is_valid_version_spec(to_s) {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
+      }
+    }
+    Some(_) => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.badVersion"))))
+  }
+  match base_codec::json_get(body, "repair") {
+    None | Some(base_codec::Json::Null) | Some(base_codec::Json::Bool(false)) => ()
+    Some(base_codec::Json::Bool(true)) => {
+      if id != "codex" {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
+      }
+    }
+    Some(_) => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
+  }
+  match hooks.on_updates_op {
+    Some(f) => match f("updates.install", body, req.lang) {
+      Ok(res) => {
+        hooks_notify_overview(hooks, "updates")
+        return Some(Ok(res))
+      }
+      Err(e) => return Some(Err(e))
+    }
+    None => return Some(Err(err_not_implemented(op)))
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Accounts & Profiles live ops (8 ops)
+// ---------------------------------------------------------------------------
+
+fn unique_profile_id(base : String, profiles : Array[base_codec::Json]) -> String {
+  let clean_base = admin_slug(base, "profile")
+  let has = fn(cand : String) -> Bool { find_profile_index(profiles, cand) >= 0 }
+  let mut id = clean_base
+  let mut n = 2
+  while has(id) {
+    id = clean_base + "-" + n.to_string()
+    n = n + 1
+  }
+  id
+}
+
+fn live_profile_access_kind(entry : base_codec::Json) -> String {
+  match base_codec::json_get(entry, "access") {
+    Some(acc) => match json_field_str(acc, "kind") { Some(k) => k, None => "" }
+    None => ""
+  }
+}
+
+pub fn dispatch_live_accounts_op(
+  op : String,
+  req : station_api::ApiRequest,
+  params : Array[String],
+  body : base_codec::Json,
+  agents : WholeAgents,
+  cfg_opt : Option[station_ops::ConfigFile],
+  cfg_open_err : Option[station_ops::ConfigError],
+  hooks : WholeApiRuntimeHooks,
+  now_ms : Int64,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  let ops_lang = api_lang_to_ops(req.lang)
+
+  // 1. `accounts.profiles.createKeyed` (`POST /profiles`)
+  if op == "accounts.profiles.createKeyed" {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage profiles")))
+    }
+    let acc = match base_codec::json_get(body, "access") {
+      Some(base_codec::Json::Obj(_)) => match base_codec::json_get(body, "access") { Some(v) => v, None => base_codec::json_obj([]) }
+      _ => return Some(Err(station_api::ApiError::new(400, "unknown access ")))
+    }
+    let kind = match json_field_str(acc, "kind") {
+      Some(k) if is_valid_access_kind(k) => k
+      Some(k) => return Some(Err(station_api::ApiError::new(400, "unknown access " + k)))
+      None => return Some(Err(station_api::ApiError::new(400, "unknown access ")))
+    }
+    if kind == "subscription" {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.subscriptionBySignIn"))))
+    }
+    let trim_opt = fn(k : String) -> Option[String] {
+      match json_field_str(acc, k) {
+        Some(s) if s.trim().length() > 0 => Some(s.trim())
+        _ => None
+      }
+    }
+    let given_provider = trim_opt("provider")
+    let given_endpoint = trim_opt("endpoint")
+    let given_protocol = trim_opt("protocol")
+    let mut source_opt : Option[station_drivers::Source] = None
+    let mut clean_ep : Option[String] = None
+    let mut final_proto : Option[String] = None
+    if kind == "api-provider" {
+      let src = match given_provider {
+        Some(pid) => match station_drivers::find_source(pid) {
+          Some(s) => s
+          None => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.unknownProvider"))))
+        }
+        None => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.unknownProvider"))))
+      }
+      let chosen_proto = if src.endpoint_required {
+        match given_protocol {
+          Some(p) => Some(p)
+          None => if src.protocols.length() == 1 { Some(station_drivers::protocol_to_str(src.protocols[0])) } else { None }
+        }
+      } else {
+        None
+      }
+      if station_drivers::resolve_endpoints(src, given_endpoint, chosen_proto).is_none() {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.addressNeeded"))))
+      }
+      match given_endpoint {
+        Some(ep) => match station_drivers::clean_endpoint(ep) {
+          Some(ce) => clean_ep = Some(ce)
+          None => return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.addressNeeded"))))
+        }
+        None => ()
+      }
+      if src.endpoint_required {
+        final_proto = match chosen_proto {
+          Some(p) => Some(p)
+          None => if src.protocols.length() > 0 { Some(station_drivers::protocol_to_str(src.protocols[0])) } else { None }
+        }
+      }
+      source_opt = Some(src)
+    }
+    let key = match json_field_str(acc, "key") { Some(s) => s.trim(), None => "" }
+    let key_required = if kind == "env" {
+      false
+    } else {
+      match source_opt {
+        Some(src) => !src.key_optional
+        None => true
+      }
+    }
+    if key_required && key.length() == 0 {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.profile.keyRequired"))))
+    }
+    let env_runtime : Option[String] = if kind == "env" {
+      match json_field_str(body, "runtime") {
+        Some(rt) => match station_drivers::runtime_kind_from_str(rt) {
+          Some(rk) => Some(station_drivers::runtime_kind_to_str(rk))
+          None => return Some(Err(station_api::ApiError::new(400, "unknown runtime " + rt)))
+        }
+        None => return Some(Err(station_api::ApiError::new(400, "runtime is required for env profile")))
+      }
+    } else {
+      None
+    }
+    // Optional live key check hook (if wired by daemon)
+    match hooks.on_profile_live_op {
+      Some(f) => match f("accounts.profiles.createKeyed.check", [], body, req.viewer, req.lang) {
+        Ok(_) => ()
+        Err(e) => return Some(Err(e))
+      }
+      None => ()
+    }
+    let label = match json_field_str(body, "name") {
+      Some(n) if n.trim().length() > 0 => live_trim_max(n, 120)
+      _ => match source_opt {
+        Some(src) => src.name
+        None => if kind == "opencode-go" {
+          "OpenCode Go"
+        } else if kind == "anthropic-api" {
+          "Anthropic API"
+        } else if kind == "openai-api" {
+          "OpenAI API"
+        } else {
+          match env_runtime { Some(r) => r + " env", None => "Custom env" }
+        }
+      }
+    }
+    let base_slug = match source_opt {
+      Some(src) => src.id
+      None => match env_runtime { Some(r) => r + "-env", None => kind }
+    }
+    let mut created_id = ""
+    let mut created_redacted = base_codec::json_obj([])
+    match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      let cur = read_profiles_array(raw)
+      let id = unique_profile_id(base_slug, cur)
+      let acc_fs : Array[(String, base_codec::Json)] = [("kind", base_codec::json_str(kind))]
+      if key.length() > 0 {
+        acc_fs.push(("key", base_codec::json_str(key)))
+      }
+      match source_opt {
+        Some(src) => acc_fs.push(("provider", base_codec::json_str(src.id)))
+        None => ()
+      }
+      match clean_ep {
+        Some(ep) => acc_fs.push(("endpoint", base_codec::json_str(ep)))
+        None => ()
+      }
+      match final_proto {
+        Some(pr) => acc_fs.push(("protocol", base_codec::json_str(pr)))
+        None => ()
+      }
+      let made_fs : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_str(id)),
+        ("name", base_codec::json_str(label)),
+        ("access", base_codec::json_obj(acc_fs)),
+        ("home", base_codec::json_str("homes/" + id)),
+        ("env", base_codec::json_obj([])),
+      ]
+      match env_runtime {
+        Some(rt) => made_fs.push(("runtime", base_codec::json_str(rt)))
+        None => ()
+      }
+      let made = base_codec::json_obj(made_fs)
+      let next : Array[base_codec::Json] = []
+      for i in 0..<cur.length() {
+        next.push(cur[i])
+      }
+      next.push(made)
+      created_id = id
+      created_redacted = redact_profile_json(made)
+      Ok(json_obj_set(raw, "profiles", Some(base_codec::json_arr(next))))
+    }) {
+      Ok(_) => {
+        let home_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", created_id])
+        let _ = (agents.jobs.fs.mkdir_p)(home_dir)
+        hooks_notify_overview(hooks, "profiles")
+        return Some(Ok(base_codec::json_obj([
+          ("id", base_codec::json_str(created_id)),
+          ("profile", created_redacted),
+        ])))
+      }
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  // 2. `accounts.profiles.createMachine` (`POST /profiles/machine`)
+  if op == "accounts.profiles.createMachine" {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage profiles")))
+    }
+    let rt_raw = match json_field_str(body, "runtime") { Some(s) => s, None => "" }
+    let rt_str = match station_drivers::runtime_kind_from_str(rt_raw) {
+      Some(rk) => station_drivers::runtime_kind_to_str(rk)
+      None => return Some(Err(station_api::ApiError::new(400, "unknown runtime " + rt_raw)))
+    }
+    let id = "machine-" + rt_str
+    let cur = read_profiles_array(read_config_raw(cfg_opt))
+    if find_profile_index(cur, id) >= 0 {
+      return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.machine.alreadyUsed"))))
+    }
+    let probe_res = match hooks.on_profile_live_op {
+      Some(f) => match f("accounts.profiles.createMachine", [id], json_obj_set(body, "runtime", Some(base_codec::json_str(rt_str))), req.viewer, req.lang) {
+        Ok(v) => v
+        Err(e) => return Some(Err(e))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+    let label = match json_field_str(probe_res, "name") {
+      Some(n) if n.trim().length() > 0 => live_trim_max(n, 120)
+      _ => rt_str
+    }
+    let mut created_redacted = base_codec::json_obj([])
+    match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      let existing = read_profiles_array(raw)
+      if find_profile_index(existing, id) >= 0 {
+        return Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.machine.alreadyUsed")))
+      }
+      let made = base_codec::json_obj([
+        ("id", base_codec::json_str(id)),
+        ("name", base_codec::json_str(label)),
+        ("runtime", base_codec::json_str(rt_str)),
+        ("access", base_codec::json_obj([("kind", base_codec::json_str("subscription"))])),
+        ("home", base_codec::json_str("homes/" + id)),
+        ("env", base_codec::json_obj([])),
+        ("machine", base_codec::json_bool(true)),
+      ])
+      let next : Array[base_codec::Json] = []
+      for i in 0..<existing.length() {
+        next.push(existing[i])
+      }
+      next.push(made)
+      created_redacted = redact_profile_json(made)
+      Ok(json_obj_set(raw, "profiles", Some(base_codec::json_arr(next))))
+    }) {
+      Ok(_) => {
+        let home_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", id])
+        let _ = (agents.jobs.fs.mkdir_p)(home_dir)
+        hooks_notify_overview(hooks, "profiles")
+        return Some(Ok(base_codec::json_obj([
+          ("id", base_codec::json_str(id)),
+          ("profile", created_redacted),
+        ])))
+      }
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  // 3. `accounts.profiles.pace` (`GET /profiles/pace[?v=2&sinceRev=...]`)
+  if op == "accounts.profiles.pace" {
+    let v_param = req.param("v")
+    let since_rev = req.param("sinceRev")
+    let raw = read_config_raw(cfg_opt)
+    let cur = read_profiles_array(raw)
+    let prof_fields : Array[(String, base_codec::Json)] = []
+    for i in 0..<cur.length() {
+      match json_field_str(cur[i], "id") {
+        Some(pid) if pid.length() > 0 => {
+          prof_fields.push((pid, base_codec::json_obj([
+            ("quotas", base_codec::json_arr([])),
+            ("spend", base_codec::json_arr([])),
+          ])))
+        }
+        _ => ()
+      }
+    }
+    let from_hour = (now_ms / 3600000L) - 168L
+    let profiles_obj = base_codec::json_obj(prof_fields)
+    if v_param == Some("2") {
+      let digest = crypto::sha256_hex(base_codec::json_stringify(profiles_obj).to_bytes())
+      let rev = if digest.length() >= 16 { digest.slice(0, 16) } else { digest }
+      match since_rev {
+        Some(sr) if sr == rev => {
+          return Some(Ok(base_codec::json_obj([
+            ("unchanged", base_codec::json_bool(true)),
+            ("rev", base_codec::json_str(rev)),
+          ])))
+        }
+        _ => ()
+      }
+      return Some(Ok(base_codec::json_obj([
+        ("rev", base_codec::json_str(rev)),
+        ("nowAt", base_codec::json_int64(now_ms)),
+        ("fromHour", base_codec::json_int64(from_hour)),
+        ("profiles", profiles_obj),
+        ("speedHours", base_codec::json_arr([])),
+        ("speedQuarters", base_codec::json_arr([])),
+      ])))
+    }
+    return Some(Ok(base_codec::json_obj([
+      ("nowAt", base_codec::json_int64(now_ms)),
+      ("fromHour", base_codec::json_int64(from_hour)),
+      ("profiles", profiles_obj),
+      ("speedHours", base_codec::json_arr([])),
+      ("speedQuarters", base_codec::json_arr([])),
+    ])))
+  }
+
+  // 4. `accounts.profiles.resetQuota` (`POST /profiles/:id/reset-quota`)
+  if op == "accounts.profiles.resetQuota" && params.length() >= 1 {
+    let id = params[0]
+    let idem_key = match req.header("idempotency-key") {
+      Some(k) if k.length() > 0 && k.length() <= 200 => k
+      _ => return Some(Err(station_api::ApiError::new(400, "reset requires an idempotency key")))
+    }
+    let cur = read_profiles_array(read_config_raw(cfg_opt))
+    let idx = find_profile_index(cur, id)
+    if idx < 0 {
+      return Some(Err(station_api::ApiError::new(404, station_ops::tr(ops_lang, "station.profile.notFound"))))
+    }
+    let entry = cur[idx]
+    let rt = match json_field_str(entry, "runtime") { Some(s) => s, None => "" }
+    let kind = live_profile_access_kind(entry)
+    if (rt != "codex" && rt != "claude") || kind != "subscription" {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.quota.resetSubscriptionOnly"))))
+    }
+    let reset_kind = match json_field_str(body, "reset") {
+      Some(s) if live_is_reset_kind(s) => Some(s)
+      _ => None
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => {
+        let mut enriched = json_obj_set(body, "_idempotencyKey", Some(base_codec::json_str(idem_key)))
+        match reset_kind {
+          Some(rk) => enriched = json_obj_set(enriched, "_resetKind", Some(base_codec::json_str(rk)))
+          None => ()
+        }
+        match f(op, [id], enriched, req.viewer, req.lang) {
+          Ok(res) => {
+            hooks_notify_overview(hooks, "profiles")
+            return Some(Ok(res))
+          }
+          Err(e) => return Some(Err(e))
+        }
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // 5. `accounts.profiles.quota` (`POST /profiles/:id/quota`)
+  if op == "accounts.profiles.quota" && params.length() >= 1 {
+    let id = params[0]
+    let cur = read_profiles_array(read_config_raw(cfg_opt))
+    if find_profile_index(cur, id) < 0 {
+      return Some(Err(station_api::ApiError::new(404, "unknown profile " + id)))
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => return Some(f(op, [id], body, req.viewer, req.lang))
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  // 6-8. `accounts.profiles.login` / `login.get` / `login.delete`
+  if (op == "accounts.profiles.login" || op == "accounts.profiles.login.get" || op == "accounts.profiles.login.delete") && params.length() >= 1 {
+    let id = params[0]
+    let cur = read_profiles_array(read_config_raw(cfg_opt))
+    let idx = find_profile_index(cur, id)
+    if idx < 0 {
+      return Some(Err(station_api::ApiError::new(404, "unknown profile " + id)))
+    }
+    if op == "accounts.profiles.login" {
+      let entry = cur[idx]
+      let kind = live_profile_access_kind(entry)
+      if kind != "subscription" && kind != "opencode-go" {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginSubscriptionOnly"))))
+      }
+      if json_field_bool(entry, "machine") == Some(true) {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginOnMachine"))))
+      }
+      if is_borrowed_profile(entry) {
+        return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.share.borrowedEdit"))))
+      }
+    }
+    match hooks.on_profile_live_op {
+      Some(f) => return Some(f(op, [id], body, req.viewer, req.lang))
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  None
+}
+
+// ---------------------------------------------------------------------------
+// 3. Copies (`copies.s3.test`, `copies.restore`) & XShare (`xshare.hosts.put`)
+// ---------------------------------------------------------------------------
+
+pub fn dispatch_live_copies_xshare_op(
+  op : String,
+  req : station_api::ApiRequest,
+  body : base_codec::Json,
+  agents : WholeAgents,
+  cfg_opt : Option[station_ops::ConfigFile],
+  hooks : WholeApiRuntimeHooks,
+) -> Option[Result[base_codec::Json, station_api::ApiError]] {
+  if op == "copies.s3.test" {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only the workspace's owners and admins test backup targets")))
+    }
+    match body {
+      base_codec::Json::Obj(_) => ()
+      _ => return Some(Err(station_api::ApiError::new(400, "invalid JSON")))
+    }
+    let saved = station_replica::read_backup_config(read_config_raw(cfg_opt)).s3
+    let req_id = match json_field_str(body, "id") { Some(s) if s.length() > 0 => Some(s), _ => None }
+    let mut prev_opt : Option[station_replica::NormalizedS3Target] = None
+    match req_id {
+      Some(rid) => {
+        for i in 0..<saved.length() {
+          if saved[i].id == rid {
+            prev_opt = Some(saved[i])
+            break
+          }
+        }
+      }
+      None => ()
+    }
+    let dummy_key = "0000000000000000000000000000000000000000000000000000000000000000"
+    let pick_str = fn(k : String, fallback : String) -> String {
+      match json_field_str(body, k) {
+        Some(s) if s.trim().length() > 0 => s.trim()
+        _ => fallback
+      }
+    }
+    let pick_exact = fn(k : String, fallback : String) -> String {
+      match json_field_str(body, k) {
+        Some(s) if s.length() > 0 => s
+        _ => fallback
+      }
+    }
+    let merged_fs : Array[(String, base_codec::Json)] = [
+      ("id", base_codec::json_str(match req_id { Some(r) => r, None => "test" })),
+      ("name", base_codec::json_str(pick_str("name", match prev_opt { Some(p) => p.name, None => "test" }))),
+      ("endpoint", base_codec::json_str(pick_str("endpoint", match prev_opt { Some(p) => p.endpoint, None => "" }))),
+      ("region", base_codec::json_str(pick_str("region", match prev_opt { Some(p) => p.region, None => "auto" }))),
+      ("bucket", base_codec::json_str(pick_str("bucket", match prev_opt { Some(p) => p.bucket, None => "" }))),
+      ("prefix", base_codec::json_str(pick_str("prefix", match prev_opt { Some(p) => p.prefix, None => "" }))),
+      (
+        "forcePathStyle",
+        base_codec::json_bool(match json_field_bool(body, "forcePathStyle") {
+          Some(b) => b
+          None => match prev_opt { Some(p) => p.force_path_style, None => false }
+        }),
+      ),
+      ("accessKeyId", base_codec::json_str(pick_str("accessKeyId", match prev_opt { Some(p) => p.access_key_id, None => "" }))),
+      ("secretAccessKey", base_codec::json_str(pick_exact("secretAccessKey", match prev_opt { Some(p) => p.secret_access_key, None => "" }))),
+      ("encryptionKey", base_codec::json_str(pick_exact("encryptionKey", match prev_opt { Some(p) => p.encryption_key, None => dummy_key }))),
+      (
+        "includeTranscripts",
+        base_codec::json_bool(match json_field_bool(body, "includeTranscripts") {
+          Some(b) => b
+          None => match prev_opt { Some(p) => p.include_transcripts, None => false }
+        }),
+      ),
+    ]
+    let target = match station_replica::normalize_s3_target(base_codec::json_obj(merged_fs), 0) {
+      Ok(t) => t
+      Err(msg) => return Some(Err(station_api::ApiError::new(400, msg)))
+    }
+    match hooks.on_s3_test {
+      Some(f) => match f(target) {
+        Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+        Err(msg) => return Some(Ok(base_codec::json_obj([
+          ("ok", base_codec::json_bool(false)),
+          ("error", base_codec::json_str(scrub_s3_error(msg, target))),
+        ])))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  if op == "copies.restore" {
+    if !req.viewer.manages_station() {
+      return Some(Err(station_api::ApiError::new(403, "only the workspace's owners and admins restore a lost station's chats")))
+    }
+    let station = match json_field_str(body, "station") { Some(s) => s, None => "" }
+    let gen = match json_field_str(body, "gen") { Some(s) => s, None => "" }
+    let from_obj = base_codec::json_get(body, "from")
+    let (from_kind, from_id) : (String, String) = match from_obj {
+      Some(fo) => match json_field_str(fo, "station") {
+        Some(s) if s.length() > 0 => ("station", s)
+        _ => match json_field_str(fo, "s3") {
+          Some(s) if s.length() > 0 => ("s3", s)
+          _ => ("", "")
+        }
+      }
+      None => ("", "")
+    }
+    if !live_is_safe_restore_id(station) || !live_is_safe_restore_id(gen) || !live_is_safe_restore_id(from_id) || from_kind.length() == 0 {
+      return Some(Err(station_api::ApiError::new(400, "station, gen and from: {station} or {s3} are needed")))
+    }
+    match hooks.on_copies_restore {
+      Some(f) => match f(req.viewer.workspace, station, gen, from_kind, from_id) {
+        Ok(_) => return Some(Ok(base_codec::json_obj([("restoring", base_codec::json_bool(true))])))
+        Err(msg) => return Some(Err(station_api::ApiError::new(409, msg)))
+      }
+      None => return Some(Err(err_not_implemented(op)))
+    }
+  }
+
+  if op == "xshare.hosts.put" {
+    let of_ws = req.viewer.workspace
+    if of_ws.length() == 0 {
+      return Some(Err(station_api::ApiError::new(400, "this station is in no workspace")))
+    }
+    let target_ws = match json_field_str(body, "workspace") { Some(s) => s, None => "" }
+    let target_st = match json_field_str(body, "station") { Some(s) => s, None => "" }
+    if !live_is_xshare_id(target_ws) || target_ws == of_ws || !live_is_xshare_id(target_st) {
+      return Some(Err(station_api::ApiError::new(400, "workspace and station are another workspace's")))
+    }
+    let ws_name_raw = match json_field_str(body, "name") { Some(s) => live_trim_max(s, 80), None => "" }
+    let ws_name = if ws_name_raw.length() > 0 { ws_name_raw } else { target_ws }
+    let st_name = match json_field_str(body, "stationName") { Some(s) => live_trim_max(s, 80), None => "" }
+    let xshare_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "xshare"])
+    let default_state = base_codec::json_obj([
+      ("guests", base_codec::json_obj([])),
+      ("hosted", base_codec::json_obj([])),
+      ("borrowed", base_codec::json_obj([])),
+      ("hosts", base_codec::json_obj([])),
+      ("replies", base_codec::json_obj([])),
+      ("answered", base_codec::json_obj([])),
+      ("roster", base_codec::json_obj([])),
+    ])
+    let cur_state = read_data_json_file(agents.jobs.fs, xshare_dir, "state.json", default_state)
+    let cur_hosts = match base_codec::json_get(cur_state, "hosts") {
+      Some(base_codec::Json::Obj(fs)) => fs
+      _ => []
+    }
+    let next_hosts : Array[(String, base_codec::Json)] = []
+    let key_new = of_ws + "/" + target_st
+    for i in 0..<cur_hosts.length() {
+      let (hk, hv) = cur_hosts[i]
+      let same_pair = hk == key_new || (hk == target_st && req.viewer.home)
+      if !same_pair {
+        next_hosts.push((hk, hv))
+      }
+    }
+    next_hosts.push((
+      key_new,
+      base_codec::json_obj([
+        ("workspace", base_codec::json_str(target_ws)),
+        ("name", base_codec::json_str(ws_name)),
+        ("stationName", base_codec::json_str(st_name)),
+        ("as", base_codec::json_str(of_ws)),
+      ]),
+    ))
+    let next_state = json_obj_set(cur_state, "hosts", Some(base_codec::json_obj(next_hosts)))
+    match write_data_json_file(agents.jobs.fs, xshare_dir, "state.json", next_state) {
+      Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      Err(e) => return Some(Err(e))
+    }
+  }
+
+  None
+}

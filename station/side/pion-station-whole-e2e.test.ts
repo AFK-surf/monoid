@@ -2998,7 +2998,7 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const unknownVaultItems = await adminCall(conn, "GET", "/vault/items?vault=nonexistent");
   assert.equal(unknownVaultItems.status, 404, `GET /vault/items?vault=nonexistent expected 404, got ${unknownVaultItems.status}: ${unknownVaultItems.body.toString()}`);
 
-  // 1b. Routes implemented in W17C-3A (#9161) & W17C-3B (#9162) return 200
+  // 1b. Routes implemented in W17C-3A (#9161), W17C-3B (#9162), and W17D-2 return 200
   for (const [m, p, body] of [
     ["GET", "/vault/uses", undefined],
     ["GET", "/vault/plain", undefined],
@@ -3007,15 +3007,24 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     ["GET", "/memory", undefined],
     ["GET", "/mcp-servers", undefined],
     ["PUT", "/mcp-servers", JSON.stringify({ servers: {} })],
+    ["POST", "/mcp-servers/reload", "{}"],
+    ["POST", "/updates/check", "{}"],
+    ["POST", "/updates/wait", JSON.stringify({ wait: ["pr:9145"] })],
+    ["POST", "/updates/wait", JSON.stringify({ wait: null })],
+    ["GET", "/profiles/pace?v=2", undefined],
+    ["PUT", "/xshare/hosts", JSON.stringify({ workspace: "ws-partner", name: "Partner", station: "st-partner", stationName: "Box" })],
   ] as const) {
     const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 200, `${m} ${p} expected 200, got ${resp.status}: ${resp.body.toString()}`);
   }
 
+  // Invalid `POST /updates` input returns 400 (strictly validated; never 501 or fake 200!)
+  const badUpdateResp = await adminCall(conn, "POST", "/updates", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(badUpdateResp.status, 400, `POST /updates {} expected 400, got ${badUpdateResp.status}: ${badUpdateResp.body.toString()}`);
+
   // Unimplemented / unported partial ops return honest 501 (ZERO fake 200 stubs!)
   for (const [m, p, body] of [
-    ["POST", "/updates", "{}"],
-    ["POST", "/updates/check", "{}"],
+    ["GET", "/link-preview?url=https://example.com", undefined],
   ] as const) {
     const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 501, `${m} ${p} expected honest 501, got ${resp.status}: ${resp.body.toString()}`);

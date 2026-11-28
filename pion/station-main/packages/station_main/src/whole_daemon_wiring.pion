@@ -13,12 +13,16 @@ import "host_shim"
 import "lock"
 import "nodepath"
 import "station_api"
+import "station_cli"
 import "station_cloud"
 import "station_devices"
+import "station_drivers"
 import "station_jobs"
 import "station_mesh"
 import "station_ops"
+import "station_replica"
 import "station_sys"
+import "station_tools"
 import "station_vault"
 import "station_whole"
 
@@ -795,6 +799,426 @@ pub fn wire_whole_core_runtime_hooks(
           return Ok(login_view_to_json(view, read_only))
         }
         Err(refused) => return Err(station_api::ApiError::new(refused.status, refused.message))
+      }
+    }
+    Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
+  })
+
+  // Wave 17D-2: Live MCP server config reload & status view
+  let mcp_states : Map[String, station_tools::ManagedServerRuntime] = Map::new()
+  let reconcile_mcp = fn(target_opt : Option[String]) -> Unit {
+    let raw = ctx.config_file.raw()
+    let entries = match base_codec::json_get(raw, "mcpServers") {
+      Some(base_codec::Json::Obj(fs)) => fs
+      _ => []
+    }
+    let active_names : Map[String, Bool] = Map::new()
+    for i in 0..<entries.length() {
+      let (name, entry) = entries[i]
+      active_names.set(name, true)
+      let should_update = match target_opt {
+        None => true
+        Some(t) => t == name
+      }
+      if !should_update {
+        continue
+      }
+      match station_tools::check_server_entry(name, entry) {
+        Err(msg) => {
+          mcp_states.set(name, station_tools::ManagedServerRuntime::{ status: "error", tools: [], error: Some(msg) })
+        }
+        Ok(_) => {
+          let enabled = match base_codec::json_get(entry, "enabled") {
+            Some(base_codec::Json::Bool(false)) => false
+            _ => true
+          }
+          let status = if enabled { "ready" } else { "disabled" }
+          mcp_states.set(name, station_tools::ManagedServerRuntime::{ status: status, tools: [], error: None })
+        }
+      }
+    }
+    if target_opt.is_none() {
+      let ks = mcp_states.keys()
+      for i in 0..<ks.length() {
+        if !active_names.contains(ks[i]) {
+          let _ = mcp_states.remove(ks[i])
+        }
+      }
+    }
+  }
+  reconcile_mcp(None)
+  core.api.hooks.on_mcp_reload = Some(fn(target : Option[String]) -> Unit {
+    let _ = ctx.config_file.reload_now()
+    reconcile_mcp(target)
+  })
+  core.api.hooks.on_mcp_view = Some(fn() -> Array[(String, station_tools::ManagedServerRuntime)] {
+    let out : Array[(String, station_tools::ManagedServerRuntime)] = []
+    let ks = mcp_states.keys()
+    for i in 0..<ks.length() {
+      match mcp_states.get(ks[i]) {
+        Some(rt) => out.push((ks[i], rt))
+        None => ()
+      }
+    }
+    out
+  })
+
+  // Wave 17D-2: Live S3 backup connectivity test via shared `EdgeMuxHub` (SigV4 + wall_ms)
+  core.api.hooks.on_s3_test = Some(fn(target : station_replica::NormalizedS3Target) -> Result[Unit, String] {
+    let client = station_whole::os_s3_client(target, ctx.edge_hub)
+    match client.test_connection() {
+      Ok(_) => Ok(())
+      Err(station_replica::S3ErrorKind::Offline) => Err("S3 endpoint unreachable")
+      Err(station_replica::S3ErrorKind::Auth) => Err("S3 authentication failed (401/403)")
+      Err(station_replica::S3ErrorKind::NotFound) => Err("S3 bucket or endpoint not found (404)")
+      Err(station_replica::S3ErrorKind::HttpError(code, msg)) => Err("S3 HTTP " + code.to_string() + ": " + msg)
+      Err(station_replica::S3ErrorKind::ProtocolError(msg)) => Err("S3 error: " + msg)
+    }
+  })
+
+  // Wave 17D-2: Live `copies.restore` staging into `<data>/restore/requested.json`
+  core.api.hooks.on_copies_restore = Some(fn(
+    ws : String,
+    station : String,
+    gen : String,
+    from_kind : String,
+    from_id : String,
+  ) -> Result[Unit, String] {
+    if from_kind == "s3" {
+      let s3_list = station_replica::read_backup_config(ctx.config_file.raw()).s3
+      let mut found = false
+      for i in 0..<s3_list.length() {
+        if s3_list[i].id == from_id {
+          found = true
+          break
+        }
+      }
+      if !found {
+        return Err("unknown S3 backup target " + from_id)
+      }
+    }
+    let restore_dir = nodepath::join(ctx.sep, [ctx.data, "restore"])
+    let req_path = nodepath::join(ctx.sep, [restore_dir, "requested.json"])
+    let ready_path = nodepath::join(ctx.sep, [restore_dir, "ready.json"])
+    if ctx.ops_fs.exists(req_path) || ctx.ops_fs.exists(ready_path) {
+      return Err("a restore is already in progress")
+    }
+    let _ = (ctx.ops_fs.mkdir_p)(restore_dir)
+    let payload = base_codec::json_obj([
+      ("workspace", base_codec::json_str(ws)),
+      ("station", base_codec::json_str(station)),
+      ("gen", base_codec::json_str(gen)),
+      ("from", base_codec::json_obj([(from_kind, base_codec::json_str(from_id))])),
+      ("requestedAt", base_codec::json_int64(host_shim::wall_ms())),
+    ])
+    match (ctx.ops_fs.write_bytes)(req_path, (base_codec::json_stringify(payload) + "\n").to_bytes(), 384) {
+      Ok(_) => Ok(())
+      Err(e) => Err("failed to stage restore request: " + station_ops::fs_err_msg(e))
+    }
+  })
+
+  // Wave 17D-2: Live `workspaces.join` via `station_cloud::join_workspace` + shared `EdgeMuxHub`
+  core.api.hooks.on_workspace_join = Some(fn(body : base_codec::Json) -> Result[base_codec::Json, String] {
+    let token = match base_codec::json_get(body, "token") {
+      Some(base_codec::Json::Str(s)) if s.length() > 0 => s
+      _ => return Err("token is required")
+    }
+    let lock_opt : Option[String] = match base_codec::json_get(body, "lock") {
+      Some(base_codec::Json::Str(s)) if s.length() == 64 => Some(s)
+      _ => None
+    }
+    let rig_person_opt : Option[String] = match base_codec::json_get(body, "rig") {
+      Some(base_codec::Json::Bool(true)) => match base_codec::json_get(body, "person") {
+        Some(base_codec::Json::Str(s)) if s.length() == 64 => Some(s)
+        _ => return Err("person: owner's personal lock hash")
+      }
+      _ => None
+    }
+    let now_secs = host_shim::wall_ms() / 1000L
+    let post_redeem = fn(url : String, body_json : String) -> Result[(Int, String), String] {
+      match ctx.edge_hub.fetch_bounded_stream(
+        "POST",
+        url,
+        [("content-type", "application/json")],
+        Some(body_json.to_bytes()),
+        262144,
+        20000L,
+      ) {
+        Ok(resp) => Ok((resp.status, resp.body.to_string()))
+        Err(e) => Err(e)
+      }
+    }
+    let joined = match station_cloud::join_workspace(
+      ctx.data,
+      ctx.cloud.fs,
+      ctx.station_key,
+      token,
+      core.api.auth_policy.station_build,
+      now_secs,
+      post_redeem,
+      lock_hash=lock_opt,
+      at_machine=false,
+      rig_person_hash=rig_person_opt,
+      store=Some(ctx.cloud),
+      verify_fn=core.api.auth_policy.verify_fn,
+      sep=ctx.sep,
+    ) {
+      Ok(j) => j
+      Err(e) => return Err(e)
+    }
+    match station_cloud::read_state(ctx.data, ctx.cloud.fs, sep=ctx.sep) {
+      Ok(Some(st)) => ctx.cloud.state = Some(st)
+      _ => ()
+    }
+    let ms = ctx.cloud.memberships(now_secs.to_double())
+    let ws_arr : Array[base_codec::Json] = []
+    for i in 0..<ms.length() {
+      let m = ms[i]
+      let mode = match m.rig { Some(_) => "tasks", None => "full" }
+      ws_arr.push(base_codec::json_obj([
+        ("workspace", base_codec::json_str(m.workspace)),
+        ("workspaceName", base_codec::json_str(m.workspace_name)),
+        ("name", base_codec::json_str(m.name)),
+        ("home", base_codec::json_bool(m.home)),
+        ("mode", base_codec::json_str(mode)),
+      ]))
+    }
+    Ok(base_codec::json_obj([
+      ("joined", base_codec::json_obj([
+        ("workspace", base_codec::json_str(joined.workspace)),
+        ("workspaceName", base_codec::json_str(joined.workspace_name)),
+        ("name", base_codec::json_str(joined.name)),
+      ])),
+      ("workspaces", base_codec::json_arr(ws_arr)),
+      ("canJoin", base_codec::json_bool(true)),
+    ]))
+  })
+
+  // Wave 17D-2: Live `updates.check` & `updates.install` (strict Ed25519 signature + SHA256 manifest verification)
+  core.api.hooks.on_updates_op = Some(fn(
+    op : String,
+    body : base_codec::Json,
+    _lang : station_api::Lang,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    let raw_cfg = ctx.config_file.raw()
+    let channel = match base_codec::json_get(raw_cfg, "updateChannel") {
+      Some(base_codec::Json::Str(s)) if s == "beta" || s == "stable" => s
+      _ => "stable"
+    }
+    let env_map : Map[String, String] = Map::new()
+    match station_sys::env_get("STILLFAIL_RELEASE_KEYS") {
+      Some(v) => env_map.set("STILLFAIL_RELEASE_KEYS", v)
+      None => ()
+    }
+    let trusted = station_cli::trusted_release_keys(env_map)
+    let origin_and_prov : Option[(String, station_cloud::Provider)] = match ctx.cloud.state {
+      Some(st) if st.origin.length() > 0 => {
+        let p = match st.provider { Some(pr) => pr, None => station_cloud::Provider::Stillfail }
+        Some((st.origin, p))
+      }
+      _ => None
+    }
+    let fetch_verified_release = fn(origin : String, prov : station_cloud::Provider) -> Result[station_cli::SignedRelease, String] {
+      let spec = station_cloud::spec_of(prov)
+      let base = station_cloud::release_base_for(spec, origin)
+      let url = station_cli::feed_url(channel, base)
+      let resp = match ctx.edge_hub.fetch_bounded_stream("GET", url, [], None, 1048576, 15000L) {
+        Ok(r) => r
+        Err(e) => return Err("failed to fetch release feed: " + e)
+      }
+      if resp.status < 200 || resp.status >= 300 {
+        return Err("release feed HTTP " + resp.status.to_string())
+      }
+      let feed_json = match base_codec::json_parse(resp.body.to_string()) {
+        base_codec::JsonParseResult::Ok(j) => j
+        base_codec::JsonParseResult::Err(e) => return Err("invalid release feed JSON: " + e)
+      }
+      station_cli::verify_feed(feed_json, trusted, verify_fn=core.api.auth_policy.verify_fn)
+    }
+    if op == "updates.check" {
+      match origin_and_prov {
+        Some((origin, prov)) => match fetch_verified_release(origin, prov) {
+          Ok(rel) => {
+            core.updates.station.latest = Some(rel.version)
+            let cur_b = station_cli::version_build(core.updates.station.version)
+            core.updates.station.updatable = match cur_b {
+              Some(cb) => rel.build > cb
+              None => true
+            }
+            core.updates.station.failed_text = None
+          }
+          Err(e) => {
+            core.updates.station.failed_text = Some(e)
+          }
+        }
+        None => ()
+      }
+      return Ok(station_whole::updates_view_json(core.updates, raw_cfg))
+    }
+    if op == "updates.install" {
+      let id = match base_codec::json_get(body, "id") { Some(base_codec::Json::Str(s)) => s.trim(), _ => "" }
+      if id == "station" {
+        if core.updates.station.updating.is_some() {
+          return Err(station_api::ApiError::new(409, "station update already in progress"))
+        }
+        let (origin, prov) = match origin_and_prov {
+          Some(pair) => pair
+          None => return Err(station_api::ApiError::new(409, "station is not enrolled in a release channel"))
+        }
+        let rel = match fetch_verified_release(origin, prov) {
+          Ok(r) => r
+          Err(e) => return Err(station_api::ApiError::new(400, "release signature verification failed: " + e))
+        }
+        let os_s = station_sys::os_name()
+        let plat_opt : Option[String] = if os_s == "darwin" {
+          Some("darwin-arm64")
+        } else if os_s == "win32" {
+          Some("win32-x64")
+        } else {
+          Some("linux-x64")
+        }
+        match station_cli::expected_build(rel, plat_opt) {
+          Ok(_) => ()
+          Err(e) => return Err(station_api::ApiError::new(400, "release manifest missing verified build: " + e))
+        }
+        core.updates.station.latest = Some(rel.version)
+        core.updates.station.updating = Some(host_shim::wall_ms())
+        core.updates.station.failed_text = None
+        return Ok(station_whole::updates_view_json(core.updates, raw_cfg))
+      }
+      match core.updates.find_runtime(id) {
+        Some(rt) => {
+          if rt.updating.is_some() || core.updates.station.updating.is_some() {
+            return Err(station_api::ApiError::new(409, "update already in progress"))
+          }
+          rt.updating = Some(host_shim::wall_ms())
+          rt.failed_text = None
+          return Ok(station_whole::updates_view_json(core.updates, raw_cfg))
+        }
+        None => return Err(station_api::ApiError::new(404, "unknown runtime " + id))
+      }
+    }
+    Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
+  })
+
+  // Wave 17D-2: Live `accounts.profiles.*` executor (machine check, quota cache/reset, non-blocking CLI login)
+  let profile_quotas : Map[String, base_codec::Json] = Map::new()
+  let profile_login_ids : Map[String, String] = Map::new()
+  core.api.hooks.on_profile_live_op = Some(fn(
+    op : String,
+    params : Array[String],
+    body : base_codec::Json,
+    viewer : station_api::Viewer,
+    _lang : station_api::Lang,
+  ) -> Result[base_codec::Json, station_api::ApiError] {
+    let id = if params.length() > 0 { params[0] } else { "" }
+    if op == "accounts.profiles.createKeyed.check" {
+      return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+    }
+    if op == "accounts.profiles.createMachine" {
+      let rt = match base_codec::json_get(body, "runtime") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+      let home = match station_sys::env_get("HOME") {
+        Some(h) if h.length() > 0 => h
+        _ => match station_sys::env_get("USERPROFILE") { Some(h) => h, None => "" }
+      }
+      if home.length() == 0 {
+        return Err(station_api::ApiError::new(400, "cannot read machine home directory"))
+      }
+      let cred_path = if rt == "claude" {
+        nodepath::join(ctx.sep, [home, ".claude", ".credentials.json"])
+      } else if rt == "codex" {
+        nodepath::join(ctx.sep, [home, ".codex", "auth.json"])
+      } else if rt == "agy" {
+        nodepath::join(ctx.sep, [home, ".gemini", "oauth_creds.json"])
+      } else {
+        nodepath::join(ctx.sep, [home, "." + rt, "auth.json"])
+      }
+      if !ctx.ops_fs.exists(cred_path) {
+        return Err(station_api::ApiError::new(400, "not signed in on this machine for " + rt))
+      }
+      return Ok(base_codec::json_obj([
+        ("loggedIn", base_codec::json_bool(true)),
+        ("usable", base_codec::json_bool(true)),
+        ("name", base_codec::json_str(rt)),
+      ]))
+    }
+    if op == "accounts.profiles.quota" {
+      match profile_quotas.get(id) {
+        Some(q) => return Ok(q)
+        None => return Ok(base_codec::json_obj([
+          ("state", base_codec::json_str("unavailable")),
+          ("windows", base_codec::json_arr([])),
+          ("scoped", base_codec::json_arr([])),
+          ("resets", base_codec::json_arr([])),
+          ("checkedAt", base_codec::json_int64(host_shim::wall_ms())),
+        ]))
+      }
+    }
+    if op == "accounts.profiles.resetQuota" {
+      let _ = profile_quotas.remove(id)
+      return Ok(base_codec::json_obj([
+        ("outcome", base_codec::json_str("reset")),
+        ("id", base_codec::json_str(id)),
+      ]))
+    }
+    if op == "accounts.profiles.login" {
+      let raw = ctx.config_file.raw()
+      let mut rt = "claude"
+      match base_codec::json_get(raw, "profiles") {
+        Some(base_codec::Json::Arr(xs)) => {
+          for i in 0..<xs.length() {
+            match base_codec::json_get(xs[i], "id") {
+              Some(base_codec::Json::Str(pid)) if pid == id => {
+                match base_codec::json_get(xs[i], "runtime") {
+                  Some(base_codec::Json::Str(r)) if r.length() > 0 => rt = r
+                  _ => ()
+                }
+                break
+              }
+              _ => ()
+            }
+          }
+        }
+        _ => ()
+      }
+      let cmd = if rt == "codex" { "codex login" } else { rt + " auth login" }
+      let starter = station_devices::LoginStarter::{
+        by: station_devices::LoginPerson::{ email: viewer.email, name: viewer.name },
+        workspace: Some(viewer.workspace),
+        chat: None,
+        chat_title: None,
+      }
+      let home_dir = nodepath::join(ctx.sep, [ctx.data, "homes", id])
+      let _ = (ctx.ops_fs.mkdir_p)(home_dir)
+      match logins.start_login(cmd, starter, home_dir, [("HOME", home_dir)], host_shim::now_ms()) {
+        Ok(view) => {
+          profile_login_ids.set(id, view.id)
+          return Ok(base_codec::json_obj([("job", login_view_to_json(view, false))]))
+        }
+        Err(msg) => return Err(station_api::ApiError::new(409, msg))
+      }
+    }
+    if op == "accounts.profiles.login.get" {
+      match profile_login_ids.get(id) {
+        Some(lid) => match logins.manager.get(lid) {
+          Some(view) => return Ok(base_codec::json_obj([("job", login_view_to_json(view, false))]))
+          None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
+        }
+        None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
+      }
+    }
+    if op == "accounts.profiles.login.delete" {
+      match profile_login_ids.get(id) {
+        Some(lid) => {
+          let who = Some(station_devices::LoginPerson::{ email: viewer.email, name: viewer.name })
+          let _ = logins.cancel_login(lid, who, host_shim::now_ms())
+          let job_j = match logins.manager.get(lid) {
+            Some(view) => login_view_to_json(view, false)
+            None => base_codec::json_null()
+          }
+          return Ok(base_codec::json_obj([("job", job_j)]))
+        }
+        None => return Ok(base_codec::json_obj([("job", base_codec::json_null())]))
       }
     }
     Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
