@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2cc9a6279](https://github.com/AFK-surf/monoid/commit/2cc9a627904b345c85a1191d94d48af05f20cf35) fix(ui,mbui): align iOS 27 sheet grabber, modal ti | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.61 | 127.18 |
 | [cba4de5f0](https://github.com/AFK-surf/monoid/commit/cba4de5f05ca9a62bf03454d1637dd6f03937070) refactor(mbui): hoist invariant reads out of iter  | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.61 | 127.18 |
 | [f92fad1dc](https://github.com/AFK-surf/monoid/commit/f92fad1dc2a9440d7fa5fcd025153adba15080ec) feat(station-main): wire live stillfail-runner tur | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.81 | 116.86 |
 | [06568399d](https://github.com/AFK-surf/monoid/commit/06568399dea9bf9ddb45fc4ea64f1b7520be2459) fix(ci): keep staged handovers for put reruns and  | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.05 | 103.81 | 116.86 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9f8ee9e1b](https://github.com/AFK-surf/monoid/commit/9f8ee9e1b0cc0680164851296dc809f48c377dd2) feat(station-devices): complete native AirPlay and | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
 | [b44646346](https://github.com/AFK-surf/monoid/commit/b446463460865f387224e063ceb812b5ce23f69a) fix(station): preserve switched runtime across in- | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
 | [da61bcfd1](https://github.com/AFK-surf/monoid/commit/da61bcfd1d96ab60ef09d9311d6ae22a8be43f46) fix(core,mbui): resync auth on pre-started native  | 2.73 | 3.7 | 15.35 | 38.48 | 59.45 | 33.72 | 68.98 | 104.04 | 108.14 |
-| [f2cbbc500](https://github.com/AFK-surf/monoid/commit/f2cbbc500973e13b912a42e92a8783687714f097) fix(station): wake sessions queued by the account  | 2.73 | 3.69 | 15.34 | 38.46 | 59.4 | 33.71 | 68.95 | 103.56 | 130.28 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [2cc9a6279](https://github.com/AFK-surf/monoid/commit/2cc9a627904b345c85a1191d94d48af05f20cf35) fix(ui,mbui): align iOS 27 sheet grabber, modal ti | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.79 |
 | [cba4de5f0](https://github.com/AFK-surf/monoid/commit/cba4de5f05ca9a62bf03454d1637dd6f03937070) refactor(mbui): hoist invariant reads out of iter  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.95 |
 | [f92fad1dc](https://github.com/AFK-surf/monoid/commit/f92fad1dc2a9440d7fa5fcd025153adba15080ec) feat(station-main): wire live stillfail-runner tur | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
 | [06568399d](https://github.com/AFK-surf/monoid/commit/06568399dea9bf9ddb45fc4ea64f1b7520be2459) fix(ci): keep staged handovers for put reruns and  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.87 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9f8ee9e1b](https://github.com/AFK-surf/monoid/commit/9f8ee9e1b0cc0680164851296dc809f48c377dd2) feat(station-devices): complete native AirPlay and | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 58.75 |
 | [b44646346](https://github.com/AFK-surf/monoid/commit/b446463460865f387224e063ceb812b5ce23f69a) fix(station): preserve switched runtime across in- | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.66 |
 | [da61bcfd1](https://github.com/AFK-surf/monoid/commit/da61bcfd1d96ab60ef09d9311d6ae22a8be43f46) fix(core,mbui): resync auth on pre-started native  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.71 |
-| [f2cbbc500](https://github.com/AFK-surf/monoid/commit/f2cbbc500973e13b912a42e92a8783687714f097) fix(station): wake sessions queued by the account  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.64 |
