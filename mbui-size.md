@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b87c497ea](https://github.com/AFK-surf/monoid/commit/b87c497ea9240be77e404ac03ec66fe6457d8365) refactor(mbui): use named key structs for the last | 2.74 | 3.71 | 15.39 | 38.51 | 59.55 | 33.75 | 69.03 | 103.65 | 122.94 |
 | [2ad497b3a](https://github.com/AFK-surf/monoid/commit/2ad497b3a3ed3000712abba3bb4293702f546b8b) feat(pion-core): add account DB lifecycle, non-ree | 2.74 | 3.71 | 15.39 | 38.51 | 59.53 | 33.75 | 69.03 | 103.65 | 122.94 |
 | [a6465c140](https://github.com/AFK-surf/monoid/commit/a6465c140f77b23adc174d21dcb75c3ffa02e42c) perf(ui): skip look-only withins passes and time t | 2.74 | 3.71 | 15.39 | 38.51 | 59.53 | 33.75 | 69.03 | 103.65 | 122.94 |
 | [7841c1f72](https://github.com/AFK-surf/monoid/commit/7841c1f721767c6012292e73d48c2ead4af27370) test(station): bind mesh port 0 in retire harness  | 2.74 | 3.71 | 15.39 | 38.51 | 59.53 | 33.75 | 69.03 | 103.65 | 125.47 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3a31c8796](https://github.com/AFK-surf/monoid/commit/3a31c8796523bf1ee9d4c22cf80bfcd88c01757f) feat(mbui): scrollable share stage preview and pro | 2.73 | 3.69 | 15.34 | 38.46 | 59.4 | 33.71 | 68.95 | 103.56 | 130.28 |
 | [258f2f96e](https://github.com/AFK-surf/monoid/commit/258f2f96e4cc82a91fdc578190efb53113224bb5) feat(station-main): enable roles:rig,whole cutover | 2.73 | 3.69 | 15.34 | 38.46 | 59.4 | 33.71 | 68.95 | 103.56 | 130.28 |
 | [4c56e21bb](https://github.com/AFK-surf/monoid/commit/4c56e21bb0e0a81d9dbdf39a1dbdc76d1d9bd3da) chore(station): enforce pion/station-main sync gua | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
-| [7f2cea20e](https://github.com/AFK-surf/monoid/commit/7f2cea20e10288114056b9331748c6d14497f522) fix(mbui): pin sidebar layout and window position  | 2.73 | 3.69 | 15.33 | 38.46 | 59.39 | 33.7 | 68.93 | 103.4 | 139.55 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b87c497ea](https://github.com/AFK-surf/monoid/commit/b87c497ea9240be77e404ac03ec66fe6457d8365) refactor(mbui): use named key structs for the last | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.82 |
 | [2ad497b3a](https://github.com/AFK-surf/monoid/commit/2ad497b3a3ed3000712abba3bb4293702f546b8b) feat(pion-core): add account DB lifecycle, non-ree | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.82 |
 | [a6465c140](https://github.com/AFK-surf/monoid/commit/a6465c140f77b23adc174d21dcb75c3ffa02e42c) perf(ui): skip look-only withins passes and time t | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.82 |
 | [7841c1f72](https://github.com/AFK-surf/monoid/commit/7841c1f721767c6012292e73d48c2ead4af27370) test(station): bind mesh port 0 in retire harness  | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3a31c8796](https://github.com/AFK-surf/monoid/commit/3a31c8796523bf1ee9d4c22cf80bfcd88c01757f) feat(mbui): scrollable share stage preview and pro | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.97 |
 | [258f2f96e](https://github.com/AFK-surf/monoid/commit/258f2f96e4cc82a91fdc578190efb53113224bb5) feat(station-main): enable roles:rig,whole cutover | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.69 |
 | [4c56e21bb](https://github.com/AFK-surf/monoid/commit/4c56e21bb0e0a81d9dbdf39a1dbdc76d1d9bd3da) chore(station): enforce pion/station-main sync gua | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.72 |
-| [7f2cea20e](https://github.com/AFK-surf/monoid/commit/7f2cea20e10288114056b9331748c6d14497f522) fix(mbui): pin sidebar layout and window position  | 0.59 | 0.78 | 3.03 | 4.06 | 7.53 | 2.23 | 6.31 | 57.79 |
