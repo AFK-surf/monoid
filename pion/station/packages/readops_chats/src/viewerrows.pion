@@ -604,6 +604,10 @@ pub fn viewer_chat_rows(
     Some(base_codec::Json::Arr(t)) => t
     _ => []
   }
+  let archived = match readops_core::json_val(args, "archived") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
   let chat_scope = match scope_of(db, sessions, threads) {
     Ok(sc) => sc
     Err(e) => return Err(e)
@@ -613,7 +617,7 @@ pub fn viewer_chat_rows(
     known,
     readops_core::json_val_or_null(args, "viewer"),
     readops_core::json_val_or_null(args, "words"),
-    false,
+    archived,
     Some(chat_scope),
   ) {
     Ok(rs) => rs

@@ -1877,6 +1877,39 @@ function peeks(now: number): [Topic, unknown][] {
     [{ topic: "filePeek", station: at, key, path: PEEKS.picture }, { path: `/Users/maple/.stillfail/sessions/chat/${key}/workspace/${PEEKS.picture}`, name: "bench-full.png", size: 256 * 1024, mtime: now - HOUR, type: "image/png", kind: "image", image: { type: "image/png", data: noise(256 * 1024, 3) } }],
     [{ topic: "filePeek", station: at, key, path: PEEKS.text }, { path: `/Users/maple/src/app/${PEEKS.text}`, name: "views.ts", size: 212_331, mtime: now - 2 * HOUR, type: "text/plain", kind: "text", lines: { start: 1, text: Array.from({ length: 12 }, (_, i) => `${"  ".repeat(i % 4)}${pick(LINES, i)}`.slice(0, 240) + (i % 3 === 0 ? "…" : "")) } }],
     [{ topic: "messagePeek", station: at, thread: PEEKS.message.thread, seq: PEEKS.message.seq }, { entries: [{ thread: PEEKS.message.thread, n: PEEKS.message.seq, kind: "message", ts: `${PEEKS.message.thread}.${PEEKS.message.seq}`, authorKind: "agent", author: keyOf(0, 12), authorName: null, text: LONG.join("\n\n"), at: now - 5 * HOUR }], end: true }],
+    [{ topic: "chatPeek", station: at, session: key }, {
+      id: key,
+      session: key,
+      thread: PEEKS.message.thread,
+      title: "Opus 代码评审：列表行高首帧优化 PR #5244",
+      agents: [{ runtime: "claude", agentText: "Claude Code · Opus 5.5" }],
+      last: { seq: PEEKS.message.seq, by: { mine: false }, preview: "结论 列表掉帧的根因是每一帧都在重新测量行高，已修复并补齐基准。" },
+      unread: false,
+      station: at,
+      stationName: "Maple",
+      archived: true,
+      lastActiveAt: now - 5 * HOUR,
+      people: [{ id: PEOPLE[0].email, email: PEOPLE[0].email, shown: { name: PEOPLE[0].name, mine: true } }],
+      tags: ["ui"],
+      xshare: { to: [OTHER_WORKSPACE.id], write: false },
+      foundMarks: [{ from: 0, to: 2 }],
+      decision: {
+        seq: PEEKS.message.seq,
+        title: "确认归档",
+        options: [{ label: "归档" }],
+        card: {
+          type: "options",
+          options: [{ label: "归档" }],
+          vaultAsk: {
+            name: "stripe",
+            reason: "测试调用",
+            mode: "proxy",
+            hosts: ["api.stripe.com"],
+            saveTargets: [{ id: "personal", name: "个人" }],
+          },
+        },
+      },
+    }],
   ];
 }
 

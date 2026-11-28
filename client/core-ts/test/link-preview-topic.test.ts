@@ -299,3 +299,59 @@ test("a_file_peeks_picture_goes_out_as_a_token_and_comes_as_its_bytes_beside_a_c
   assert.notEqual(other.image.picture, shown.image.picture);
   core.close();
 });
+
+test("chatPeek reads archived chat on demand, falls back to /sessions on older stations, and reports gone or offline", async () => {
+  const archivedRow = {
+    id: "arch-1",
+    session: "arch-1",
+    thread: 42,
+    title: "Opus 代码评审：PR #146",
+    agents: [{ key: "arch-1", runtime: "claude", model: "claude-opus-5-5", process: "cold", pending: 0, lastTurn: { ending: "all_done", done: "评审完成，无阻断问题" } }],
+    last: { seq: 9, authorKind: "agent", author: "arch-1", authorName: "Opus", text: "评审完成，建议直接合入", createdAt: 1_000 },
+    unread: false,
+    lastActiveAt: 1_000,
+    archived: { at: 2_000, by: "manual", alone: false },
+  };
+  const legacyDetail = {
+    session: { key: "legacy-1", title: "老站归档对话", runtime: "claude", model: "claude-opus-5-5", process: "cold", pending: 0, lastActiveAt: 1_500, archivedAt: 2_500, archivedBy: "manual" },
+    threads: [{ id: 77, surface: "chat", channel: "CHAT", threadTs: "1.1", title: "老站归档对话", createdAt: 1_000, hiddenAt: 2_500, lastMessage: { seq: 3, authorKind: "person", author: "a@x.com", authorName: "Ada", text: "老站最后一条消息", createdAt: 1_500 } }],
+    turns: [],
+    jobs: [],
+  };
+  const said: Record<string, unknown> = {
+    ...base(),
+    "GET /chats?archived=1&session=arch-1": { rows: [archivedRow], scope: ["arch-1"] },
+    "GET /chats?archived=1&session=legacy-1": { rows: [], scope: [] },
+    "GET /sessions/legacy-1?turns=0&jobs=now": legacyDetail,
+    "GET /chats?archived=1&session=gone-1": { rows: [], scope: [] },
+    "GET /sessions/gone-1?turns=0&jobs=now": status(404, { error: "unknown session gone-1" }),
+  };
+  const { core, host } = await started(said);
+  const ui = core.connect();
+  const values = new Map<number, unknown>();
+
+  subscribe(core, ui, 1, { topic: "chatPeek", station: S, session: "arch-1" });
+  subscribe(core, ui, 2, { topic: "chatPeek", station: S, session: "legacy-1" });
+  subscribe(core, ui, 3, { topic: "chatPeek", station: S, session: "gone-1" });
+  await host.time.pass(500, 10);
+  apply(host, values);
+
+  const got = v(values, 1);
+  assert.equal(got.id, "arch-1");
+  assert.equal(got.title, "Opus 代码评审：PR #146");
+  assert.equal(got.archived, true);
+  assert.equal(got.thread, 42);
+  assert.equal(got.last.preview, "评审完成，建议直接合入");
+  assert.equal(typeof got.time.lastActiveAt.ago, "string");
+
+  const leg = v(values, 2);
+  assert.equal(leg.id, "legacy-1");
+  assert.equal(leg.title, "老站归档对话");
+  assert.equal(leg.archived, true);
+  assert.equal(leg.thread, 77);
+  assert.equal(leg.last.preview, "老站最后一条消息");
+  assert.equal(typeof leg.time.lastActiveAt.ago, "string");
+
+  assert.equal(values.get(3), null, "404 session resolves to null");
+  core.close();
+});

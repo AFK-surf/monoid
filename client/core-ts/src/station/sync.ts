@@ -32,7 +32,7 @@ import { digest } from "../digest.ts";
 import { logged } from "../log-lines.ts";
 import { type Channel, Channels } from "../channels/channels.ts";
 import { ENTRIES, LETTERS, PAGE, TRANSCRIPT, TRANSCRIPT_PAGE, entriesOf, heldIn, lettersOf, transcriptOf } from "./channel-kinds.ts";
-import { type HistoryRead, type Link, Links, type LiveView, LOG_KEY, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
+import { type HistoryRead, type Link, Links, type LiveView, LOG_KEY, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, chatPeekKey, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import { concat, readAll, replyHeader, type StationWire } from "./wire.ts";
 import { SseParser } from "../sse.ts";
 import * as logins from "./machine-logins.ts";
@@ -1232,6 +1232,66 @@ export class StationsSync {
   /// its card shows it (cardShown).
   messagePeekShown(address: string, thread: number, seq: number): void {
     this.#cardShown(address, { topic: "messagePeek", station: address, thread, seq }, `/threads/${thread}/entries?from=${seq}&to=${seq}`, messagePeekKey(thread, seq));
+  }
+
+  /// One chat's row (archived or unlisted) a link names (`chatPeek` topic), read on demand as its hover card shows:
+  /// tries `GET /chats?archived=1&session=<key>` (or `thread=<id>` for numeric / `t:<id>` keys), falling back on older
+  /// stations that ignore `archived=1` to `GET /sessions/<key>?turns=0&jobs=now`.
+  chatPeekShown(address: string, session: string): void {
+    const topic: Topic = { topic: "chatPeek", station: address, session };
+    const key = topicKey(topic);
+    const kept = chatPeekKey(session);
+    const ws = ofAddress(address);
+    const startGen = this.#core.store.authGen.workspaceAuthGen(ws);
+    this.#enqueue(address, key, Priority.shown, Effect.gen({ self: this }, function* () {
+      const link = this.#links.get(address);
+      if (!link || !this.reachable(address)) return;
+      const threadMatch = /^(?:t:)?(\d+)$/.exec(session);
+      const path = threadMatch
+        ? `/chats?archived=1&thread=${threadMatch[1]}`
+        : `/chats?archived=1&session=${encode(session)}`;
+      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", path, null, { quiet: true }));
+      if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
+      if (answer._tag === "Success") {
+        const rows = Array.isArray(get(answer.success, "rows")) ? (get(answer.success, "rows") as Record<string, any>[]) : [];
+        const matched = rows.find((r) => isObject(r) && (r.id === session || r.session === session || (threadMatch !== null && String(r.thread) === threadMatch[1]))) ?? rows[0];
+        if (isObject(matched)) {
+          link.errors.delete(key);
+          link.memory.set(kept, { row: matched, archived: Boolean(matched.archived) });
+          this.onChange(address, "log", key);
+          return;
+        }
+        // Empty rows: either the chat doesn't exist, or an older station ignored `archived=1` on scoped `/chats`.
+        if (threadMatch === null) {
+          const fallback = yield* Effect.result(this.requests.call(link.addr, "GET", `/sessions/${encode(session)}?turns=0&jobs=now`, null, { quiet: true }));
+          if (this.#core.store.authGen.workspaceAuthGen(ws) !== startGen) return;
+          if (fallback._tag === "Success") {
+            const synthesized = chatRowFromSession(fallback.success, session);
+            link.errors.delete(key);
+            link.memory.set(kept, synthesized !== null ? { row: synthesized, archived: Boolean(synthesized.archived) } : { row: null, archived: false });
+            this.onChange(address, "log", key);
+            return;
+          }
+          if (fallback.failure.status === 404) {
+            link.errors.delete(key);
+            link.memory.set(kept, { row: null, archived: false });
+            this.onChange(address, "log", key);
+            return;
+          }
+          if (fallback.failure.status !== undefined && !link.memory.has(kept)) {
+            link.errors.set(key, fallback.failure);
+            this.onChange(address, "errors", key);
+          }
+          return;
+        }
+        link.errors.delete(key);
+        link.memory.set(kept, { row: null, archived: false });
+        this.onChange(address, "log", key);
+      } else if (answer.failure.status !== undefined && !link.memory.has(kept)) {
+        link.errors.set(key, answer.failure);
+        this.onChange(address, "errors", key);
+      }
+    }));
   }
 
   /// What a link in a message is, for its card (`topic`, the station's `path`), read each time the card shows it (a pull
@@ -3867,4 +3927,72 @@ export class StationsSync {
   static scope = Scope;
   static exit = Exit;
   static join = join;
+}
+
+/// Synthesizes a minimal raw chat row from `GET /sessions/<key>?turns=0&jobs=now` when an older station ignores
+/// `archived=1` on scoped `GET /chats?archived=1&session=<key>`, so archived hover previews work without upgrading.
+function chatRowFromSession(detail: unknown, fallbackKey: string): Record<string, any> | null {
+  if (!isObject(detail) || !isObject(detail.session)) return null;
+  const s = detail.session as Record<string, any>;
+  const id = typeof s.key === "string" && s.key !== "" ? s.key : fallbackKey;
+  const threads = Array.isArray(detail.threads) ? (detail.threads as Record<string, any>[]) : [];
+  const own = threads.find((t) => isObject(t) && (t.surface === "chat" || t.surface === "stillfail" || t.surface === "ember")) ?? threads[0];
+  const lm = isObject(own?.lastMessage) ? (own.lastMessage as Record<string, any>) : null;
+  let last: Record<string, any> | null = null;
+  if (lm !== null) {
+    const text0 = typeof lm.text === "string" ? lm.text.trim() : "";
+    const quotedOnly = text0 === "" && Array.isArray(lm.quotes) && lm.quotes.length > 0;
+    last = {
+      seq: typeof lm.seq === "number" ? lm.seq : 0,
+      authorKind: lm.authorKind ?? "agent",
+      author: lm.author ?? id,
+      authorName: lm.authorName ?? "",
+      text: typeof lm.text === "string" ? text0.slice(0, 200) : null,
+      createdAt: typeof lm.createdAt === "number" ? lm.createdAt : 0,
+      ...(quotedOnly ? { quotedOnly: true } : {}),
+    };
+  }
+  const named = isObject(own)
+    ? { thread: own, firstText: typeof own.firstText === "string" ? own.firstText : null, channelName: typeof own.channelName === "string" ? own.channelName : null }
+    : undefined;
+  const title = typeof own?.title === "string" && own.title.trim() !== ""
+    ? own.title.trim()
+    : typeof own?.autoTitle === "string" && own.autoTitle.trim() !== ""
+      ? own.autoTitle.trim()
+      : typeof s.title === "string" && s.title.trim() !== ""
+        ? s.title.trim()
+        : "";
+  const lastActiveAt = Math.max(
+    typeof s.lastActiveAt === "number" ? s.lastActiveAt : 0,
+    typeof lm?.createdAt === "number" ? lm.createdAt : 0,
+    typeof own?.createdAt === "number" ? own.createdAt : 0,
+  );
+  const archived = (s.archivedAt !== null && s.archivedAt !== undefined)
+    ? { at: s.archivedAt, by: s.archivedBy ?? "manual", alone: false }
+    : (own?.hiddenAt !== null && own?.hiddenAt !== undefined)
+      ? { at: own.hiddenAt, by: own.hiddenBy ?? "manual", alone: false }
+      : undefined;
+  const agent = {
+    key: id,
+    runtime: typeof s.runtime === "string" ? s.runtime : "claude",
+    model: s.model ?? null,
+    effort: s.effort ?? null,
+    process: typeof s.process === "string" ? s.process : "cold",
+    pending: typeof s.pending === "number" ? s.pending : 0,
+    lastTurn: s.lastTurn ?? null,
+  };
+  return {
+    id,
+    session: id,
+    ...(typeof own?.id === "number" ? { thread: own.id } : {}),
+    title,
+    ...(named !== undefined ? { named } : {}),
+    agents: [agent],
+    last,
+    unread: false,
+    lastActiveAt,
+    ...(archived !== undefined ? { archived } : {}),
+    ...(own?.creator !== undefined ? { creator: own.creator } : s.creator !== undefined ? { creator: s.creator } : {}),
+    ...(Array.isArray(own?.people) ? { people: own.people } : {}),
+  };
 }

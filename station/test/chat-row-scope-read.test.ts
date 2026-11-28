@@ -199,6 +199,15 @@ test("the jobs up are listed with their own chats, not every job and chat the st
       const open = ops.openJobs!(reader, { viewer, lang: "zh" }) as any[];
       assert.deepEqual(open.map((j) => [j.id, j.chat?.id, j.chat?.archived]), [["j1", "k", false], ["j2", "old", true]]);
       for (const table of ["jobs", "sessions", "threads"]) assert.ok((counts[table] ?? 0) < 30, `${table}: ${counts[table]} rows read`);
+      // Scoped archived chatRows returns the archived row when archived=true and omits it when archived is omitted/false.
+      store.setThreadHidden(gone.id, true, MANUAL);
+      const activeScoped = ops.chatRows!(reader, { viewer, sessions: ["old"], threads: [] }) as any;
+      assert.deepEqual(activeScoped.rows, []);
+      const archivedScoped = ops.chatRows!(reader, { viewer, sessions: ["old"], threads: [], archived: true }) as any;
+      assert.equal(archivedScoped.rows.length, 1);
+      assert.equal(archivedScoped.rows[0].id, "old");
+      assert.equal(archivedScoped.rows[0].thread, gone.id);
+      assert.ok(archivedScoped.rows[0].archived);
     } finally {
       db.close();
     }

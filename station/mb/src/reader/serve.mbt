@@ -953,7 +953,11 @@ fn chats_read(pairs : Array[(String, String)], viewer : Json) -> (String, Json)?
     .filter(p => p.0 == "thread" && digits(p.1))
     .map(p => Json::number(parse_double(p.1)))
   let sessions = all("session")
-  let scoped : Json = { "viewer": viewer, "sessions": Json::array(sessions), "threads": Json::array(threads) }
+  let scoped_fields : Map[String, Json] = { "viewer": viewer, "sessions": Json::array(sessions), "threads": Json::array(threads) }
+  if param("archived") == Some("1") {
+    scoped_fields["archived"] = Json::boolean(true)
+  }
+  let scoped : Json = Json::object(scoped_fields)
   if param("marks") == Some("1") {
     let scope : Json = if some {
       { "sessions": Json::array(sessions), "threads": Json::array(threads) }

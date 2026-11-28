@@ -1149,6 +1149,31 @@ test("sidebar answers read only chats that can have a card answer", async () => 
   } finally { await r.close(); }
 });
 
+test("GET /chats?archived=1&session=<key> reads a single archived row without changing default GET /chats?session=<key>", async () => {
+  const r = rig();
+  try {
+    const made = (await r.ask("POST", "/sessions", { runtime: "claude", title: "Archived Peek Target" }))[1] as any;
+    r.store.insertMessage(newMessage(made.thread.id, "m1", "person", viewer.email, "Final archived note"));
+    await r.ask("POST", `/sessions/${encodeURIComponent(made.key)}/archive`, {});
+    const [activeStatus, activeBody] = await r.ask("GET", `/chats?session=${encodeURIComponent(made.key)}`);
+    assert.equal(activeStatus, 200);
+    assert.deepEqual((activeBody as any).rows, []);
+    const [archivedStatus, archivedBody] = await r.ask("GET", `/chats?archived=1&session=${encodeURIComponent(made.key)}`);
+    assert.equal(archivedStatus, 200);
+    const rows = (archivedBody as any).rows as any[];
+    assert.equal(rows.length, 1);
+    assert.equal(rows[0].id, made.key);
+    assert.equal(rows[0].thread, made.thread.id);
+    assert.ok(rows[0].archived);
+    assert.equal(rows[0].last?.text, "Final archived note");
+    assert.ok(typeof rows[0].lastActiveAt === "number");
+    const [byThreadStatus, byThreadBody] = await r.ask("GET", `/chats?archived=1&thread=${made.thread.id}`);
+    assert.equal(byThreadStatus, 200);
+    assert.equal((byThreadBody as any).rows.length, 1);
+    assert.equal((byThreadBody as any).rows[0].id, made.key);
+  } finally { await r.close(); }
+});
+
 test("the cards answered in some chats are those the whole station's say, read by their cards", async () => {
   const r = rig();
   try {

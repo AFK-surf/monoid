@@ -9,7 +9,12 @@ const chatsOf = (r: Request) => ({ viewer: r.viewer, archived: param(r, "archive
 /// `session=<key>&thread=<id>`, repeated: only the items a change of those can touch (read/views.ts `chatRows`), and the
 /// ids of those (one not among the items now is gone from the list), for a device that makes its rows itself.
 const all = (r: Request, name: string) => r.query.filter(([k]) => k === name).map(([, v]) => v);
-const scoped = (r: Request) => ({ viewer: r.viewer, sessions: all(r, "session"), threads: all(r, "thread").filter((id) => /^\d+$/.test(id)).map(Number) });
+const scoped = (r: Request) => ({
+  viewer: r.viewer,
+  sessions: all(r, "session"),
+  threads: all(r, "thread").filter((id) => /^\d+$/.test(id)).map(Number),
+  ...(param(r, "archived") === "1" ? { archived: true } : {}),
+});
 
 export const routes = ({ read }: Tools): Route[] => [
   {

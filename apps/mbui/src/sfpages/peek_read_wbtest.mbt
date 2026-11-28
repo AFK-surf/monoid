@@ -186,6 +186,70 @@ test "a link to a chat alone reads no message; one archived or gone says so" {
 }
 
 ///|
+test "archived chat link holds chatPeek only when chatRow misses, and releases it on leave" {
+  @sfbase.reset()
+  let held : Array[String] = []
+  let left : Array[String] = []
+  let made = @sffixture.fixture("rich-chat")
+  let archived_row : Json = {
+    "id": "s-arch",
+    "session": "s-arch",
+    "thread": 42,
+    "title": "归档子会话",
+    "agents": [{ "runtime": "claude", "agentText": "Claude Code · Opus 5.5" }],
+    "last": { "seq": 1, "preview": "已完成归档评审" },
+    "unread": false,
+    "station": "ws1/st1",
+    "stationName": "Maple",
+    "archived": true,
+    "time": { "lastActiveAt": { "ago": "3 小时前", "full": "11/28 07:00" } },
+  }
+  let src : Source = {
+    ..made,
+    topic_read: fn(name, params) {
+      if (name == "chatRow" || name == "chatPeek") && !held.contains(name) {
+        held.push(name)
+      }
+      if name == "chatPeek" {
+        { value: Some(archived_row), error: None, version: 1 }
+      } else {
+        made.topic(name, params).get().snapshot()
+      }
+    },
+    leave: fn(name, _, __reason) {
+      if !left.contains(name) { left.push(name) }
+      if __reason is @sfbase.TopicLeave::Owned(__stop) { __stop(); return }
+    },
+    release: fn(name, _) {
+      if !left.contains(name) { left.push(name) }
+    },
+  }
+  let open = @signals.signal(true)
+  let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=800.0, h=800.0, native=Mouse, pointing=Mouse)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(@sf.ui_theme_now)
+    root.box(fn(col) {
+      col.pad(Is(40.0)) |> ignore
+      col.show(fn() { open.get() }, at_once=true, fn(card) {
+        chat_card_node(card, src, "arch-scope", "ws1/st1", fn() { "https://app.still.fail/o/ws1/st1/s-arch" }, fn() { None })
+      })
+    })
+    |> ignore
+  })
+  t.draw()
+  t.draw()
+  assert_true(held.contains("chatRow") && held.contains("chatPeek"), msg="\{Repr(held)}")
+  assert_true(t.find("归档子会话") is Some(_))
+  assert_true(t.find(@sf.t("android-chat.search.archived")) is Some(_))
+  assert_true(t.find("已完成归档评审") is Some(_))
+  open.set(false)
+  t.run_for(@ui.move_most_ms)
+  @sfbase.let_go(src, "arch-scope")
+  @ui.run_let_go()
+  assert_true(left.contains("chatPeek"), msg="\{Repr(left)}")
+}
+
+///|
 test "a file is read on every entry, including while its card is still open" {
   @sfbase.reset()
   let reads = Ref(0)

@@ -1271,15 +1271,35 @@ pub fn WholeApi::new(
         project: req.param("project"),
         offset: offset,
       }
+      let want_session = req.param("session")
+      let want_thread = match req.param("thread") {
+        Some(s) => base_codec::parse_int64_str(s)
+        None => None
+      }
       match st.search_chat_threads(Some(req.viewer.workspace), Some(home_ws_str), q, filter, limit) {
         Ok((threads, total)) => {
           let items : Array[base_codec::Json] = []
           for i in 0..<threads.length() {
-            items.push(thread_row_to_json(threads[i]))
+            let t = threads[i]
+            let keep_session = match want_session {
+              Some(sk) => match t.home { Some(h) => h == sk, None => false }
+              None => true
+            }
+            let keep_thread = match want_thread {
+              Some(tid) => t.id == tid
+              None => true
+            }
+            if keep_session && keep_thread {
+              items.push(thread_row_to_json(t))
+            }
+          }
+          let out_total = match (want_session, want_thread) {
+            (None, None) => total
+            _ => items.length()
           }
           return Ok(
             base_codec::json_obj([
-              ("total", base_codec::json_int(total)),
+              ("total", base_codec::json_int(out_total)),
               ("chats", base_codec::json_arr(items)),
             ]),
           )

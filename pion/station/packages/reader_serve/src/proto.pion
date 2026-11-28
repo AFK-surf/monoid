@@ -498,11 +498,15 @@ pub fn chats_read(
       }
     }
   }
-  let scoped = base_codec::json_obj([
+  let scoped_fields : Array[(String, base_codec::Json)] = [
     ("viewer", viewer),
     ("sessions", base_codec::json_arr(sessions)),
     ("threads", base_codec::json_arr(threads)),
-  ])
+  ]
+  if param_is(pairs, "archived", "1") {
+    scoped_fields.push(("archived", base_codec::json_bool(true)))
+  }
+  let scoped = base_codec::json_obj(scoped_fields)
   if param_is(pairs, "marks", "1") {
     let scope_val = if some {
       base_codec::json_obj([

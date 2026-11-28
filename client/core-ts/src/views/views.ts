@@ -5,7 +5,7 @@
 import { Effect } from "effect";
 import { work } from "../work.ts";
 import type { Inner } from "../core.ts";
-import type { Data } from "../data.ts";
+import { inWords, type Data } from "../data.ts";
 import type { ChatFound, Derive, HeadRow } from "../db/account.ts";
 import { KEPT, type ListRow } from "../db/kept.ts";
 import { CHAT_READS } from "../db/chat-reads.ts";
@@ -3673,6 +3673,33 @@ export class Views implements Owner {
     if (raw === undefined || this.local.beingArchived(station, raw)) return { ok: null };
     const row = this.#wholeOf(s, stations.length > 1, this.local.asChanging(station, raw));
     return { ok: row === null ? null : this.#unsentRow(station, row, undefined, raw) };
+  }
+
+  /// One chat's row whole (`chatPeek`), made from a local SQLite record or an on-demand station read (`raw`, active or
+  /// archived): conforms to `ChatItem`, with `archived: true` when archived and `lastActiveAt` kept so `present.ts`
+  /// `times()` produces `time.lastActiveAt.ago`.
+  peekChatRow(station: string, raw: J, archived: boolean): J | null {
+    if (!isObject(raw)) return null;
+    const stations = this.#stationsOr(ofAddress(station));
+    if (stations === undefined || !Array.isArray(stations)) return null;
+    const s = stations.find((x) => x.address === station);
+    if (s === undefined) return null;
+    const worded = inWords(raw) as J;
+    const isArchived = archived || Boolean(worded.archived);
+    const row = this.#wholeOf(s, stations.length > 1, worded);
+    if (row === null) return null;
+    if (isArchived) {
+      const out: J = { ...row, archived: true };
+      delete out.swipeArchive;
+      delete out.swipeAsk;
+      return out;
+    }
+    if (row.archived !== undefined) {
+      const out: J = { ...row };
+      delete out.archived;
+      return out;
+    }
+    return row;
   }
 
   /// A record's row whole (#wholeRow), made with what the list's are (#chats) and what only it reads besides: the menu's

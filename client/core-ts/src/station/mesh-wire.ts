@@ -74,6 +74,7 @@ const ACTIVE_STATION_TOPICS = new Set([
   "stationSearch",
   "filePeek",
   "messagePeek",
+  "chatPeek",
 ]);
 
 export function unconfirmed(why: CoreError): CoreError {

@@ -24,7 +24,7 @@ import { screenCard, screensChanged, screensView } from "../screens.ts";
 import { terminalCard, terminalsChanged, terminalsView } from "../terminals.ts";
 import { isStationAuthor } from "../titles.ts";
 import { down, downWords, isLetter, members } from "../views/views.ts";
-import { type Link, MEMORY, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
+import { type Link, MEMORY, chatPeekKey, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import * as logins from "./machine-logins.ts";
 import { laterSleep } from "../runtime.ts";
 import { timed } from "../spent.ts";
@@ -68,7 +68,7 @@ export function packetsSince(was: LinkNet["packets"], now: LinkNet["packets"]): 
   return { sent: now.sent - was.sent, lost: now.lost - was.lost };
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "hostLive", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "hostLive", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek", "chatPeek"]);
 
 const u64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -83,7 +83,7 @@ export function placeKey(station: string, thread: number): string {
 }
 
 /// The station topics made from how its link is (up, down, why): made again as it changes.
-const LINKED = new Set(["link", "live", "stationRates", "screens", "terminals", "screenCard", "terminalCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
+const LINKED = new Set(["link", "live", "stationRates", "screens", "terminals", "screenCard", "terminalCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "chatPeek", "job", "machineLogins", "machineLogin"]);
 
 export class StationTopics implements Owner {
   readonly #core: Inner;
@@ -274,6 +274,13 @@ export class StationTopics implements Owner {
     if (topic.topic === "filePeek") this.#sync.filePeekShown(station, topic.key as string, topic.path as string, typeof topic.line === "number" ? topic.line : null);
     // One message of a chat a link names: read each time its card shows, the same.
     if (topic.topic === "messagePeek") this.#sync.messagePeekShown(station, topic.thread as number, topic.seq as number);
+    // One chat's row (archived or unlisted) a link names: read on demand when missing locally or online for freshness.
+    if (topic.topic === "chatPeek") {
+      const session = topic.session as string;
+      if (this.#core.data.chatNamed(station, session) === undefined || this.#sync.link(station)?.state.state === "online") {
+        this.#sync.chatPeekShown(station, session);
+      }
+    }
     if (topic.topic === "live") {
       if (this.#sync.isSparing(station)) this.#sync.channels.bring(transcriptOf(station, topic.key as string), Priority.shown, "latest");
       this.#sync.openEvents(station, false);
@@ -478,6 +485,22 @@ export class StationTopics implements Owner {
           : filePeekKey(topic.key as string, topic.path as string, typeof topic.line === "number" ? topic.line : null);
         const v = link?.memory.get(kept);
         if (v !== undefined) return { ok: v };
+        if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
+        return error ? { err: error } : undefined;
+      }
+      case "chatPeek": {
+        const session = topic.session as string;
+        const v = link?.memory.get(chatPeekKey(session));
+        if (isObject(v) && "row" in v) {
+          if (v.row === null) return { ok: null };
+          const shaped = this.#core.views.peekChatRow(station, v.row, v.archived === true);
+          return { ok: shaped };
+        }
+        const local = this.#core.data.chatNamed(station, session);
+        if (local !== undefined) {
+          const shaped = this.#core.views.peekChatRow(station, local.row, local.archived);
+          if (shaped !== null) return { ok: shaped };
+        }
         if (link && down(link.state)) return { err: new CoreError("offline", downWords(link.state, this.#core.views.stationName(station))) };
         return error ? { err: error } : undefined;
       }

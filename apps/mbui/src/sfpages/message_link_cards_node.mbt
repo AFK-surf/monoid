@@ -125,9 +125,21 @@ fn file_link_card(
 }
 
 ///|
+/// Display title extracted from a chat link's visible text: strips a leading `@` and ignores bare URLs.
+fn chat_link_label(words : String) -> String {
+  let s = words.trim().to_owned()
+  let clean = if s.has_prefix("@") { s.exact_view(start=1).trim().to_owned() } else { s }
+  if clean == "" || clean.has_prefix("http://") || clean.has_prefix("https://") {
+    ""
+  } else {
+    clean
+  }
+}
+
+///|
 /// A chat's card (chat_peek's) of link `l` to `href`, read in a chat of station `here` (`linked`, the chat as its
 /// message says it): the chat it names asked of the core as the pointer comes onto it, and its whole row held from
-/// then where it is of this workspace.
+/// then where it is of this workspace (falling back to `chatPeek` in the same scope when absent from the active list).
 fn chat_link_card(l : @sf.LinkOf, src : Source, here : String, href : String, linked : LinkedChat?) -> @sf.LinkCard {
   peek_cards.val = peek_cards.val + 1
   let scope = "chat-peek-node/" + peek_cards.val.to_string()
@@ -148,7 +160,32 @@ fn chat_link_card(l : @sf.LinkOf, src : Source, here : String, href : String, li
       }
     },
   )
+  // (pre-warm `chatPeek` during hover dwell once `chatRow` confirms the chat isn't in the active list)
+  l.node.reacts(
+    fn() {
+      guard (l.pointed)() else { return None }
+      match chats_named.get(here + "\u{1}" + href) {
+        Some(Named::Chat(station, key, _, _)) if peek_ours(here, station) =>
+          match peek_row(src.topic("chatRow", @sfbase.whole_params(station, key)).get()) {
+            Some(None) => Some((station, key))
+            _ => None
+          }
+        _ => None
+      }
+    },
+    fn(p) {
+      match p {
+        Some((station, key)) => @sfbase.hold(src, scope, "chatPeek", @sfbase.whole_params(station, key)) |> ignore
+        None => ()
+      }
+    },
+  )
   l.node.reacts(l.reading, at_start=false, fn(on) { if !on { @sfbase.let_go(src, scope) } })
   l.node.owns(fn() { @sfbase.let_go(src, scope) }) |> ignore
-  { tile: false, body: fn(b) { chat_card_node(b, src, scope, here, fn() { href }, fn() { linked }) } }
+  {
+    tile: false,
+    body: fn(b) {
+      chat_card_node(b, src, scope, here, fn() { href }, fn() { linked }, link_label=fn() { chat_link_label((l.words)()) })
+    },
+  }
 }

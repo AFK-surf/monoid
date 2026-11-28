@@ -3040,7 +3040,7 @@ export class Data {
 /// the same object here too (`wordedRows`), frozen, and so taken as written (account.ts `setChats`). Any other is worded
 /// anew.
 const wordedRows = new WeakMap<object, { words: Words; row: unknown }>();
-function inWords(row: unknown): unknown {
+export function inWords(row: unknown): unknown {
   if (!isObject(row)) return row;
   const words = rowWords();
   if (!Object.isFrozen(row)) return worded(row as Record<string, any>, words);

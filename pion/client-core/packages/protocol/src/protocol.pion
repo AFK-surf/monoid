@@ -383,6 +383,9 @@ fn topic_spec_fields(name : String) -> Option[Array[(String, ParamKind, ParamHow
       ("seq", ParamKind::PU64, ParamHow::HReq),
     ])
   }
+  if name == "chatPeek" {
+    return Some([("station", req_s.0, req_s.1), ("session", req_s.0, req_s.1)])
+  }
   if name == "preset" {
     return Some([("scope", req_s.0, req_s.1), ("id", req_s.0, req_s.1)])
   }
@@ -589,7 +592,7 @@ pub fn topic_station(t : Topic) -> Option[String] {
   n == "drive" || n == "screens" || n == "terminals" || n == "screenCard" || n == "terminalCard" ||
   n == "machineLogins" || n == "machineLogin" || n == "machineLoginScreen" || n == "stationSearch" ||
   n == "memory" || n == "presets" || n == "profilePace" || n == "stationMove" ||
-  n == "linkPreview" || n == "filePeek" || n == "messagePeek"
+  n == "linkPreview" || n == "filePeek" || n == "messagePeek" || n == "chatPeek"
   if !is_st {
     return None
   }
