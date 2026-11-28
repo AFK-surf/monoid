@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1a791d516](https://github.com/AFK-surf/monoid/commit/1a791d51619dbc30ebff68c78cd08978abf94ae2) refactor(mbui): simplify iterators and hoist invar | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.56 | 131.04 |
 | [9368eec17](https://github.com/AFK-surf/monoid/commit/9368eec174e3e7a53231e0aba467e354630ad070) chore(scripts): give scripts/side.sh move suite de | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.61 | 112.34 |
 | [3ff199971](https://github.com/AFK-surf/monoid/commit/3ff19997143a331df663142bccbc2546744c5327) refactor(mbui): hoist invariant reads and simplify | 2.74 | 3.72 | 15.43 | 38.52 | 59.56 | 33.77 | 69.06 | 103.74 | 118.11 |
 | [94a5b9728](https://github.com/AFK-surf/monoid/commit/94a5b97280aa7ec730e3db48e0df1841d3c73767) perf(core): replace byte flatMap spreads with Uint | 2.74 | 3.72 | 15.43 | 38.52 | 59.57 | 33.77 | 69.06 | 103.6 | 135.11 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [527dadfe2](https://github.com/AFK-surf/monoid/commit/527dadfe2b7f452c3f6cd04c4a8891ebb3362ada) refactor(ui): drop defer and inferred closure type | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.89 | 133.3 |
 | [eb8640e16](https://github.com/AFK-surf/monoid/commit/eb8640e1621fb1bf208ce0da5bea70ed05b8bc9f) feat(station): wire Wave 17C-3A ReadOps, CRDT reco | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.86 | 134.86 |
 | [439eb89e1](https://github.com/AFK-surf/monoid/commit/439eb89e193662fcccc755821cc07dff97273fef) feat(station-pion): wire Wave 17C-3B admin setting | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.86 | 134.86 |
-| [9c220ed9b](https://github.com/AFK-surf/monoid/commit/9c220ed9b2b5fb4b3120d15b67fdbd95a221dc6f) refactor(ui): name kit and controls keys and types | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.86 | 134.86 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1a791d516](https://github.com/AFK-surf/monoid/commit/1a791d51619dbc30ebff68c78cd08978abf94ae2) refactor(mbui): simplify iterators and hoist invar | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.46 |
 | [9368eec17](https://github.com/AFK-surf/monoid/commit/9368eec174e3e7a53231e0aba467e354630ad070) chore(scripts): give scripts/side.sh move suite de | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
 | [3ff199971](https://github.com/AFK-surf/monoid/commit/3ff19997143a331df663142bccbc2546744c5327) refactor(mbui): hoist invariant reads and simplify | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.74 |
 | [94a5b9728](https://github.com/AFK-surf/monoid/commit/94a5b97280aa7ec730e3db48e0df1841d3c73767) perf(core): replace byte flatMap spreads with Uint | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.89 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [527dadfe2](https://github.com/AFK-surf/monoid/commit/527dadfe2b7f452c3f6cd04c4a8891ebb3362ada) refactor(ui): drop defer and inferred closure type | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.87 |
 | [eb8640e16](https://github.com/AFK-surf/monoid/commit/eb8640e1621fb1bf208ce0da5bea70ed05b8bc9f) feat(station): wire Wave 17C-3A ReadOps, CRDT reco | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.84 |
 | [439eb89e1](https://github.com/AFK-surf/monoid/commit/439eb89e193662fcccc755821cc07dff97273fef) feat(station-pion): wire Wave 17C-3B admin setting | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.85 |
-| [9c220ed9b](https://github.com/AFK-surf/monoid/commit/9c220ed9b2b5fb4b3120d15b67fdbd95a221dc6f) refactor(ui): name kit and controls keys and types | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.69 |
