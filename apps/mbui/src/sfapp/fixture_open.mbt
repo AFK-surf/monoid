@@ -824,7 +824,7 @@ pub fn open_mode(mode : String) -> Unit {
     // mode's, a page made once as nodes reading it then)
     app.nav.rise(NewChat)
   } else if mode == "home-bars" {
-    bar.open_panel(true, at=0.0)
+    bar_open_wanted.val = true
   } else if mode == "place" {
     app.nav.replace(Files)
   } else if mode == "archived" {

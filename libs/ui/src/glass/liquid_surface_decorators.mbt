@@ -601,3 +601,42 @@ pub fn liquid_tab_lens_surface_decorate(
     None => v
   }
 }
+
+///|
+/// `liquid_tab_bar_surface_decorate`'s, the glass on its way to the bar's menu as far as `glass_spec` says third
+/// (`liquid_tab_bar_menu_glass`'s share): the press `spot`, the capillary `merge`, the menu's share, read once per
+/// evaluation inside the binding.
+pub fn liquid_tab_bar_menu_surface_decorate(
+  v : @view.View,
+  glass_spec : () -> ((Double, Double)?, Double, Double),
+  share_when_unmerged? : Bool = false,
+  solid_edge? : () -> (Double, Int64) = liquid_solid_edge,
+) -> @view.View {
+  v
+  .glass(
+    By(fn() {
+      let (spot, merge, share) = glass_spec()
+      let g = liquid_tab_bar_menu_glass(share, spot~, merge~)
+      Some(if share_when_unmerged && !(merge > 0.0) { g.sharing() } else { g })
+    }),
+  )
+  .edge(By(fn() { if v.glass_solid() { solid_edge() } else { (0.0, clear) } }))
+}
+
+///|
+/// `liquid_tab_lens_surface_decorate`'s with the lens that magnifies nothing itself (`liquid_tab_lens_still_glass`).
+pub fn liquid_tab_lens_still_surface_decorate(
+  v : @view.View,
+  press : () -> Double,
+  solid? : () -> Int64,
+) -> @view.View {
+  v.glass(
+    By(fn() {
+      let s = match solid {
+        Some(f) => f()
+        None => clear
+      }
+      Some(liquid_tab_lens_still_glass(press(), solid=s))
+    }),
+  )
+}

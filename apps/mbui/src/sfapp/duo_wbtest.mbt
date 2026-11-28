@@ -472,6 +472,66 @@ test "an iPhone Duo folded: the bell and complete chat menu in the system column
 }
 
 ///|
+/// The system's bar's tabs as handed (its second group's items), and the tab among them with a menu (the last slot's:
+/// 更多), with its rows.
+fn native_tabs(t : @ui.Tester) -> (Array[Json], Json, Array[Json]) raise {
+  guard @json.parse(t.nav_said()) is Object(bar) else { fail("no bar") }
+  guard bar.get("groups") is Some(Array(groups)) else { fail("no groups") }
+  let tabs = items(Some(groups[1]), "items")
+  let with_menu = tabs.filter(fn(i) { items(Some(i), "menu").length() > 0 })
+  if with_menu.length() != 1 {
+    fail("\{with_menu.length()} tabs with a menu: \{t.nav_said()}")
+  }
+  (tabs, with_menu[0], items(Some(with_menu[0]), "menu"))
+}
+
+///|
+test "an iPhone Duo: the bar's first three places a tab each, the rest the rows of the next tab's menu (each with its dot), that tab the menu's place shown last" {
+  let t = native_chat(951.0, 669.0, true, side=84.0)
+  let tap = fn(id : String) {
+    t.post(@hostapi.system_channel, "{\"nav\":\"\{id}\"}")
+    t.run_for(@ui.move_most_ms)
+  }
+  let selected = fn() -> String raise {
+    guard @json.parse(t.nav_said()) is Object(bar) else { fail("no bar") }
+    text(Some(Json::object(bar)), "selected")
+  }
+  let (tabs, more, rows) = native_tabs(t)
+  // (the three fixed tabs, then the menu's: the tab the first of its rows till another is shown)
+  assert_eq([0, 1, 2, 3].map(fn(i) { text(Some(tabs[i]), "id") }), [
+    "place/chats",
+    "place/files",
+    "place/stations",
+    text(Some(rows[0]), "id"),
+  ])
+  assert_eq(text(Some(more), "id"), text(Some(rows[0]), "id"))
+  assert_eq(text(Some(more), "title"), text(Some(rows[0]), "title"))
+  assert_true(rows.length() >= 2, msg=t.nav_said())
+  for r in rows {
+    assert_true(text(Some(r), "id").has_prefix("place/"), msg=t.nav_said())
+    assert_true(text(Some(r), "title") != "", msg=t.nav_said())
+    // (no fixed tab's place among the rows; every row says whether a dot is beside it, and whether it is shown)
+    assert_false(["place/chats", "place/files", "place/stations"].contains(text(Some(r), "id")))
+    assert_true(field(Some(r), "dot") is Some(True | False), msg=t.nav_said())
+    assert_true(field(Some(r), "checked") is Some(False), msg=t.nav_said())
+  }
+  assert_eq(selected(), "place/chats")
+  // (the menu's last row chosen: its place shown, the tab standing for it and lit, its row ticked alone)
+  let last = text(Some(rows[rows.length() - 1]), "id")
+  tap(last)
+  let (_, more, rows) = native_tabs(t)
+  assert_eq(text(Some(more), "id"), last)
+  assert_eq(selected(), last)
+  assert_eq(rows.filter(fn(r) { field(Some(r), "checked") is Some(True) }).map(fn(r) { text(Some(r), "id") }), [last])
+  // (a fixed tab chosen: the last tab still stands for the place shown from its menu last, no row ticked)
+  tap("place/files")
+  let (_, more, rows) = native_tabs(t)
+  assert_eq(text(Some(more), "id"), last)
+  assert_eq(selected(), "place/files")
+  assert_eq(rows.filter(fn(r) { field(Some(r), "checked") is Some(True) }).length(), 0)
+}
+
+///|
 test "an iPhone Duo: a tab left in one workspace and come back to in another shows the other's, not the chat open in the first" {
   let t = native_chat(951.0, 669.0, true, side=84.0)
   let tap = fn(id : String) {

@@ -130,7 +130,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // comes over Home the bar's parts that go with it (its holder going down, the notch closing, the ball fading, the
   // places dimming) are bindings worked out again, each part only as its own ways are told: phone again 38 more
   // bindings, the same at 60, 120, 24 and 7; before it 144)
-  "phone again": (4, 3, 62, 0, 183),
+  // (8 bindings more on a phone, 2026-11-28: the bottom bar's overflow menu morph, single-element lens/indicator and
+  // per-slot lens zoom bindings on Home when a chat opens over it; made/let_go/laid/measured all within prior bar;
+  // before it 183)
+  "phone again": (4, 3, 62, 0, 191),
   // (+4 made, +8 laid, +8 bindings, 2026-11-20: #7607's new chat choreography and #7608's hover grounds on the page
   // made as nodes)
   // (+5 made, +44 laid, +4 bindings, -19 measured, 2026-11-20: #7833's desktop side tab strip (sf.tab_strip_node) holds

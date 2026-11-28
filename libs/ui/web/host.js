@@ -1518,7 +1518,52 @@
       }
       vec3 refractColor;
       if (isModernDrop) {
-        if (abs(v_pad.z) > 0.001 && snellSLip > 0.15 && pressAmt > 0.001) {
+        // A tab's lens (role 4) asked for more than the micro-dispersion (chroma over 0.04, whole at 0.16) bends what is
+        // under it as the system's lifted lens does (iOS 27.0's, measured at 3x over isolated lines and grey ramps under
+        // it, the bar's own glass taken away, the lens 70 pt tall; all of it here in the lens's own scale, rimHs). Each
+        // point shows the ground further out by rimN: a quarter sine from the edge (a little inward in the outermost
+        // 1.4 pt, 3.82 pt out by 5.4 pt in), then 5.6 (1 - depth / 36) ^ 2.2 down to nothing at the middle; along the
+        // outline's normal turned three tenths of the way to the line from the lens's middle (rimNv: the system's
+        // ovalized gradient). In the outer 13.55 pt it is taken seven times over along the edge (1.778 pt apart, each
+        // 0.19 pt further out than the last): the three on one side are blue's and green's, the three on the other
+        // green's and red's, the middle one mostly green's, so a stroke is parted into yellow, pink, its own dark, violet
+        // and cyan copies; the middle sample takes over inward (rimM, a line in the depth). Only inside the lens's outline
+        // (rimW); what is drawn about it is as it was. At 0.04 and under, and for every other droplet, as before to the bit.
+        float rimS = isRoleTab ? clamp((abs(v_pad.z) - 0.04) / 0.12, 0.0, 1.0) * droplet : 0.0;
+        float rimW = (rimS > 0.0 && pressAmt > 0.001 && d < 0.25) ? 1.0 - smoothstep(-0.25, 0.25, d) : 0.0;
+        if (rimW > 0.0) {
+          float rimHs = halfMinor / 35.0;
+          float rimD = inward / rimHs;
+          float rimN = min(3.82 * sin(1.5708 * clamp((rimD - 1.4) / 4.0, -0.35, 1.0)), 5.6 * pow(max(1.0 - rimD / 36.0, 0.0), 2.2));
+          float rimM = clamp(0.0805 * rimD - 0.091, 0.0, 1.0);
+          #if MB_LIQUID_SINGLE
+          vec2 rimLo = v_rect.xy;
+          vec2 rimHi = v_rect.xy + v_rect.zw;
+          #else
+          vec2 rimLo = u_gb.xy;
+          vec2 rimHi = u_gb.zw;
+          #endif
+          vec2 rimOut = p - (rimLo + rimHi) * 0.5;
+          float rimOutL = length(rimOut);
+          vec2 rimNv = rimOutL > 0.001 ? normalize(mix(surfaceNormal, rimOut / rimOutL, 0.3)) : surfaceNormal;
+          vec2 rimT = vec2(rimNv.y, -rimNv.x);
+          vec2 rimQ0 = p + rimNv * (rimN * rimHs);
+          vec3 rimMid = backdrop(mix(sampleBase + disp, rimQ0, rimS));
+          refractColor = rimMid;
+          if (rimM < 1.0) {
+            vec3 rimAcc = rimMid * vec3(0.056, 0.400, 0.056);
+            for (int rk = 1; rk <= 3; rk++) {
+              float fk = float(rk);
+              float wg = rk == 1 ? 0.205 : (rk == 2 ? 0.095 : 0.0);
+              float wo = rk == 1 ? 0.147 : (rk == 2 ? 0.315 : 0.482);
+              vec2 rimQa = p + rimNv * ((rimN + 0.19 * fk) * rimHs) + rimT * (fk * 1.778 * rimHs);
+              vec2 rimQb = p + rimNv * ((rimN - 0.19 * fk) * rimHs) - rimT * (fk * 1.778 * rimHs);
+              rimAcc += backdrop(mix(sampleBase + disp, rimQa, rimS)) * vec3(wo, wg, 0.0) + backdrop(mix(sampleBase + disp, rimQb, rimS)) * vec3(0.0, wg, wo);
+            }
+            refractColor = mix(rimAcc, rimMid, rimM);
+          }
+          if (rimW < 1.0) refractColor = mix(backdrop(sampleBase + disp), refractColor, rimW);
+        } else if (abs(v_pad.z) > 0.001 && snellSLip > 0.15 && pressAmt > 0.001) {
           float dispR = mb_droplet_snell(inward, rawAmount, halfMinor, dropRole, 1.47).x * shortening;
           float dispB = mb_droplet_snell(inward, rawAmount, halfMinor, dropRole, 1.58).x * shortening;
           float caW = smoothstep(0.15, 1.20, snellSLip) * clamp(abs(v_pad.z) / 0.04, 0.0, 1.0) * droplet;

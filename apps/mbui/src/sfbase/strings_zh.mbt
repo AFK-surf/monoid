@@ -334,6 +334,8 @@ let zh : Map[String, String] = {
   "android-misc.adb.hour": "一小时后自动停止",
   "android-misc.adb.title": "共享调试",
   "android-misc.bar.action.files": "添加文件夹",
+  "android-misc.bar.menu": "更多页面",
+  "android-misc.bar.more": "更多：{name}",
   "android-misc.bar.place.archive": "已归档",
   "android-misc.bar.place.chats": "对话",
   "android-misc.bar.place.connects": "连接",

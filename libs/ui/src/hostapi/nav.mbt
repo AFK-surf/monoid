@@ -8,8 +8,8 @@
 ///|
 /// An item: a place to go or an action (`id`), its words and its icon (`icon`: an icon's shapes as still.fail's icon
 /// data has them, a 24 grid's strokes, sf's icon_data; none: its words' first letter), a dot over it (`dot`), set off in
-/// the accent (`prominent`: the one action most wanted); with `menu`, a menu of others (id, words, checked, icon as `icon` is; id "-": a line between rows) opened from
-/// it instead.
+/// the accent (`prominent`: the one action most wanted); with `menu`, a menu of others (id, words, checked, icon as
+/// `icon` is, a dot beside it; id "-": a line between rows) opened from it instead.
 #derive(Eq)
 pub(all) struct NavItem {
   id : String
@@ -17,7 +17,7 @@ pub(all) struct NavItem {
   icon : String
   dot : Bool
   prominent : Bool
-  menu : Array[(String, String, Bool, String)]
+  menu : Array[(String, String, Bool, String, Bool)]
 }
 
 ///|
@@ -63,7 +63,13 @@ pub(all) struct NavBar {
 ///|
 fn nav_item_json(i : NavItem) -> Json {
   let menu : Array[Json] = i.menu.map(fn(m) {
-    { "id": Json::string(m.0), "title": Json::string(m.1), "checked": Json::boolean(m.2), "icon": Json::string(m.3) }
+    {
+      "id": Json::string(m.0),
+      "title": Json::string(m.1),
+      "checked": Json::boolean(m.2),
+      "icon": Json::string(m.3),
+      "dot": Json::boolean(m.4),
+    }
   })
   {
     "id": Json::string(i.id),

@@ -316,3 +316,26 @@ pub fn scroll_edge_fill_decorate(
 ) -> @view.View {
   @glass.liquid_scroll_edge_fill_decorate(fill, ground, active~)
 }
+
+///|
+/// `tab_bar_surface_decorate`'s, the bar's glass on its way to its menu as far as `glass_spec` says third
+/// (`@glass.liquid_tab_bar_menu_surface_decorate`): the press `spot`, the capillary `merge`, the menu's share.
+pub fn tab_bar_menu_surface_decorate(
+  v : @view.View,
+  glass_spec : () -> ((Double, Double)?, Double, Double),
+  share_when_unmerged? : Bool = false,
+) -> @view.View {
+  @glass.liquid_tab_bar_menu_surface_decorate(
+    v,
+    glass_spec,
+    share_when_unmerged~,
+    solid_edge=fn() { (control_edge_w, panel_edge()) },
+  )
+}
+
+///|
+/// The bottom bar's lens that magnifies nothing itself (`@glass.liquid_tab_lens_still_surface_decorate`): `v` drawn
+/// in the held lens's glass as far as `press()` lifts it, its solid ground the theme's raised.
+pub fn tab_lens_still_surface_decorate(v : @view.View, press : () -> Double) -> @view.View {
+  @glass.liquid_tab_lens_still_surface_decorate(v, press, solid=fn() { theme().p.raised })
+}

@@ -338,6 +338,8 @@ let en : Map[String, String] = {
   "android-misc.adb.hour": "Stops after an hour",
   "android-misc.adb.title": "Debug sharing",
   "android-misc.bar.action.files": "Add folder",
+  "android-misc.bar.menu": "More pages",
+  "android-misc.bar.more": "More: {name}",
   "android-misc.bar.place.archive": "Archived",
   "android-misc.bar.place.chats": "Chats",
   "android-misc.bar.place.connects": "Connects",

@@ -9,7 +9,7 @@ test "native_workspace_placed preserves native_floating during bare overlays and
     icon: "badge:336699ff,M",
     dot: false,
     prominent: true,
-    menu: [("r1", "All", true, "i1"), ("r2", "Mine", false, "i2")],
+    menu: [("r1", "All", true, "i1", false), ("r2", "Mine", false, "i2", false)],
   }
   let base : @hostapi.NavFloating = { item, x: 12.0, y: 16.0, w: 120.0, h: 36.0, blocked: false }
   let same : @hostapi.NavFloating = {
@@ -19,7 +19,7 @@ test "native_workspace_placed preserves native_floating during bare overlays and
       icon: "badge:336699ff,M",
       dot: false,
       prominent: true,
-      menu: [("r1", "All", true, "i1"), ("r2", "Mine", false, "i2")],
+      menu: [("r1", "All", true, "i1", false), ("r2", "Mine", false, "i2", false)],
     },
     x: 12.0,
     y: 16.0,

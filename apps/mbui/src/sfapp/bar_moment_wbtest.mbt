@@ -73,6 +73,20 @@ fn bar_at_rest() -> (@ui.Tester, Double) {
 }
 
 ///|
+/// bar_at_rest's with the bar's places four, each a slot of its own and no menu (the bars kept one bar of four): for
+/// what is held of the ball across all four slots.
+fn bar_four_at_rest() -> (@ui.Tester, Double) {
+  let t = tester("home")
+  bars_picked.set(Some(([["chats", "files", "profiles", "stations"]], 0)))
+  t.draw()
+  let rest = bar_rest()
+  if rest > t.time() {
+    t.run_for(rest - t.time())
+  }
+  (t, t.time())
+}
+
+///|
 /// How lit place `key` of the bar is at `now` (1 lit, 0 not; -1 never told).
 fn bar_lit(key : String, now : Double) -> Double {
   match bar.tints.get("bar:" + key) {
@@ -160,35 +174,6 @@ test "bar: its places put in another order between frames, the place shown the s
 }
 
 ///|
-/// The ball across riding toward 100 from 0, set out at the tester's moment; read at `ahead` first (a frame drawn
-/// ahead of the logic) where given, then sent to 50 at 5 ms before the ride's end: where it is then and its way's start.
-fn ride_then_sent(ahead : Bool) -> (Double, Double, Double) {
-  bar_reset()
-  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0)
-  t.draw()
-  let s = spr(0.0, 300.0, ball_damping(300.0), "test/ride")
-  let at0 = t.time()
-  let swap : Swap = { i: 0, n: 0, from: 1.0, key: None, sets: [[]], cur: 0, alpha: 1.0, drop: 0.0, lit: {}, ends: 0.0 }
-  let from : RideFrom = { swap, j: 0, w: 346.0, row_top: 0.0, o_to: 0.0, o_end: 0.0, k_to: 0.0, k_end: 0.0, up_to: 0.0, up_end: 0.0 }
-  s.ride_on(300.0, fn(_t) { 100.0 }, at0, from, at=at0)
-  let end = s.end()
-  if ahead {
-    ignore(s.at(end + 5.0))
-  }
-  let then = s.value_at(end - 5.0)
-  s.go(50.0, 300.0, ball_damping(300.0), at=end - 5.0)
-  (then, s.x, s.set_at - (end - 5.0))
-}
-
-///|
-test "bar: a ride read ahead past its end, then sent elsewhere at an earlier moment: from where the ride was then, as unread" {
-  let unread = ride_then_sent(false)
-  let ahead = ride_then_sent(true)
-  assert_eq(ahead, unread)
-  assert_eq(unread.0, unread.1)
-}
-
-///|
 /// The bar told, on the chats in a window 466 wide, the system's bars `right` wide down its right side.
 fn bar_width_beside(t : @ui.Tester, right : Int) -> Double {
   t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":\{right}}}")
@@ -206,42 +191,6 @@ test "bar: told the width of the box it is laid out in, the system's bar down th
   assert_eq((beside, none), (466.0 - 84.0 - 44.0, 466.0 - 44.0))
   // (and laid out so: where the ball is, the place shown's, by that width)
   assert_eq(bar.width, none)
-}
-
-///|
-/// The bar's panel drawn up by a finger from its first place, each event of the host's at its own time from `t0` (down
-/// at 10, moving up 64 by 160, let go at 170), frames drawn at each of `frames` (none at all between some) and at 400:
-/// where the panel is and whether it is open, the ball, and what the bars are.
-fn bar_drawn_up(frames : Array[Double]) -> (Double, Double, Bool, Double, Double) {
-  let (t, t0) = bar_at_rest()
-  let (xs, y) = bar_places_at()
-  let events = [(0, 10.0, 0.0)]
-  for i in 1..=15 {
-    events.push((1, 10.0 + i.to_double() * 10.0, -64.0 * i.to_double() / 15.0))
-  }
-  events.push((2, 170.0, -64.0))
-  let mut f = 0
-  for e in events {
-    let (kind, at, dy) = e
-    while f < frames.length() && frames[f] <= at {
-      t.frame_at(t0 + frames[f])
-      f = f + 1
-    }
-    t.advance(t0 + at - t.time())
-    t.touch_at(kind, xs[0], y + dy, t0 + at)
-  }
-  t.frame_at(t0 + 400.0)
-  (bar.o.value_at(t0 + 400.0), bar.o.to, bar.mode.get(), bar.ball_x.at(t0 + 400.0).0, bar.ball_y.at(t0 + 400.0).0)
-}
-
-///|
-test "bar: drawn up by a finger, each event at its own moment: the same at a moment whichever frames came between, or none" {
-  let none = bar_drawn_up([])
-  let each = bar_drawn_up([15.0, 35.0, 55.0, 75.0, 95.0, 115.0, 135.0, 155.0, 175.0, 250.0])
-  let few = bar_drawn_up([100.0])
-  assert_eq((each, few), (none, none))
-  // (drawn up: open)
-  assert_true(none.2, msg="\{Repr(none)}")
 }
 
 ///|
@@ -292,124 +241,13 @@ fn bar_felt(x0 : Double, y0 : Double, x1 : Double, y1 : Double) -> Array[@ui.Hap
 }
 
 ///|
-test "bar: felt as a finger takes the ball across, a tick at each place it gets to; drawn up, a click as the panel snaps open, nothing as it is let go" {
+test "bar: felt as a finger takes the ball across, a tick at each place it gets to; held still or drawn up over its own place, nothing" {
   let (xs, y) = bar_places_at()
   assert_eq(bar_felt(xs[0], y, xs[2], y), [@ui.TextHandleMove, @ui.TextHandleMove])
-  // (within the slop for longer than a hold: the ball taken as a held finger takes it, felt so, no tick)
-  assert_eq(bar_felt(xs[0], y, xs[0] + 10.0, y), [@ui.LongPress])
-  assert_eq(bar_felt(xs[0], y, xs[0], y - 64.0), [@ui.ContextClick])
-}
-
-///|
-/// The bar's panel's top in the window and its track's top in it (the bar's geometry as it was told), the panel closed
-/// or open.
-fn bar_panel_at() -> (Double, Double) {
-  let l = bar_laid(bar.told.unwrap())
-  (844.0 - 22.0 - l.panel, l.row_top)
-}
-
-///|
-test "bar: the panel closed, a tap above the bar's glass (in its panel's room, nothing drawn there) is the page's under it" {
-  let (t, _) = bar_at_rest()
-  let (top, row_top) = bar_panel_at()
-  t.tap(100.0, top + row_top / 2.0)
-  t.run_for(@ui.move_most_ms)
-  assert_eq(app.nav.depth(), 2)
-}
-
-///|
-test "bar: the panel drawn up and open, a tap on its row over the middle of the bar is the row's there: that bar chosen" {
-  let (t, _) = bar_at_rest()
-  let (xs, y) = bar_places_at()
-  t.drag(xs[0], y, xs[0], y - 64.0, steps=20)
-  t.run_for(bar.o.end() - t.time())
-  assert_true(bar.mode.get() && bar.k_at(t.time()) <= 0.9)
-  let (top, row_top) = bar_panel_at()
-  let before = bars_picked.get().map(fn(b) { b.1 })
-  t.tap_once(195.0, top + row_top - 14.0)
-  t.run_for(bar.o.end() + 50.0 - t.time())
-  assert_true(bars_picked.get().map(fn(b) { b.1 }) != before)
-}
-
-///|
-test "bar: the panel drawn up and open, a finger down on the page above it: the panel closed then, the page taking nothing" {
-  let (t, _) = bar_at_rest()
-  let (xs, y) = bar_places_at()
-  t.drag(xs[0], y, xs[0], y - 64.0, steps=20)
-  t.run_for(bar.o.end() - t.time())
-  assert_true(bar.mode.get())
-  t.tap(100.0, 200.0)
-  t.run_for(@ui.move_most_ms)
-  assert_eq((bar.mode.get(), app.nav.depth()), (false, 1))
-}
-
-///|
-/// The bar's panel drawn up and open, then a finger down on the page above it at `t1`, told `late` after it came, frames
-/// drawn at each of `frames` after it, let go at 50: whether the panel was closed as the finger came down, before any
-/// frame; where it is at 120 and where it goes; whether it is open; how deep the page's stack is.
-fn bar_caught(frames : Array[Double], late : Double) -> (Bool, Double, Double, Bool, Int) {
-  let (t, _) = bar_at_rest()
-  let (xs, y) = bar_places_at()
-  t.drag(xs[0], y, xs[0], y - 64.0, steps=20)
-  t.run_for(bar.o.end() - t.time())
-  let t1 = t.time() + between_frames_ms
-  t.advance(between_frames_ms + late)
-  t.touch_at(0, 100.0, 200.0, t1)
-  let shut = !bar.mode.get()
-  for f in frames {
-    t.frame_at(t1 + f)
-  }
-  t.advance(t1 + 50.0 - t.time())
-  t.touch_at(2, 100.0, 200.0, t1 + 50.0)
-  t.frame_at(t1 + 400.0)
-  (shut, bar.o.value_at(t1 + 120.0), bar.o.to, bar.mode.get(), app.nav.depth())
-}
-
-///|
-test "bar: the panel open, a finger down on the page above it: closed at the finger's moment, before any frame, the same whichever frames came or however late it was told; the page taking nothing" {
-  let none = bar_caught([], 0.0)
-  let each = bar_caught([5.0, 15.0, 25.0, 35.0, 45.0], 0.0)
-  let late = bar_caught([40.0], 30.0)
-  assert_eq((each, late), (none, none))
-  assert_eq((none.0, none.2, none.3, none.4), (true, 0.0, false, 1))
-}
-
-///|
-/// The panel drawn up and let go on the other bar's row (that bar chosen, landing), then a finger down on the bar
-/// `early` before it lands, held, drawn up a step each frame's worth (`bar_step_ms`) for a second and let go on the row
-/// again: whether the bar chosen changed again (the finger the bar's once it has landed, from where it is then).
-fn bar_pressed_landing(early : Double) -> Bool {
-  let (t, _) = bar_at_rest()
-  let (xs, y) = bar_places_at()
-  t.drag(xs[0], y, xs[0], y - 64.0, steps=60)
-  let chosen = bars_picked.get()
-  let land = bar.o.end()
-  let down = land - early
-  t.advance(down - t.time())
-  t.touch_at(0, xs[0], y, down)
-  for i in 1..=bar_steps {
-    let at = down + bar_step_ms * i.to_double()
-    t.advance(at - t.time())
-    t.touch_at(1, xs[0], y - 64.0 * i.to_double() / bar_steps.to_double(), at)
-  }
-  t.advance(bar_step_ms)
-  t.touch_at(2, xs[0], y - 64.0, t.time())
-  t.run_for(bar.o.end() + 50.0 - t.time())
-  bars_picked.get() != chosen
-}
-
-///|
-/// A finger drawing the bar up as the runs do: a move each frame's worth of time, a second's worth of them.
-let bar_step_ms : Double = 1000.0 / 60.0
-
-///|
-let bar_steps : Int = 60
-
-///|
-test "bar: a bar chosen landing, a finger put down on it before it has landed and held: the bar's once it has, drawn up from there and let go on a row, that bar chosen" {
-  // (down before it has landed by a couple of frames, and after)
-  assert_true(bar_pressed_landing(2.0 * bar_step_ms))
-  assert_true(bar_pressed_landing(-2.0 * bar_step_ms))
+  // (within the slop for longer than a hold: the ball taken as a held finger takes it, the lens over it; nothing felt,
+  // as Comma's bar, whose lens lifts unfelt)
+  assert_eq(bar_felt(xs[0], y, xs[0] + 10.0, y), [])
+  assert_eq(bar_felt(xs[0], y, xs[0], y - 64.0), [])
 }
 
 ///|
@@ -417,183 +255,8 @@ test "bar: a bar chosen landing, a finger put down on it before it has landed an
 let between_frames_ms : Double = 10.0
 
 ///|
-test "bar: a ride set out days before what it rides on rests (a change caught up late): worked out over its last seconds only, landing the same" {
-  bar_reset()
-  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0)
-  t.draw()
-  let swap : Swap = { i: 0, n: 0, from: 1.0, key: None, sets: [[]], cur: 0, alpha: 1.0, drop: 0.0, lit: {}, ends: 0.0 }
-  let from : RideFrom = { swap, j: 0, w: 346.0, row_top: 0.0, o_to: 0.0, o_end: 0.0, k_to: 0.0, k_end: 0.0, up_to: 0.0, up_end: 0.0 }
-  // (the iPhone's frames' clock four days after it started; the ride told at its first moment)
-  let still = 4.0 * 86400000.0
-  let anchor = fn(t : Double) { if t < still - 300.0 { 40.0 } else { 100.0 } }
-  let r = Ride::new(0.0, 0.0, 0.0, 300.0, ball_damping(300.0), ball_rest_within, anchor, still, from)
-  assert_true(r.legs.length() < 1000, msg="\{r.legs.length()} legs")
-  assert_eq(r.to, 100.0)
-  assert_true((r.at(r.end).0 - 100.0).abs() < 0.000001)
-  assert_true((r.at(still - 400.0).0 - 40.0).abs() < 0.01, msg="\{Repr(r.at(still - 400.0))}")
-}
-
-///|
-test "bar: a ride set out long before what it rides on rests, off its steps from the late moment, is sent elsewhere at the step it would have been" {
-  bar_reset()
-  let t = @ui.Tester::new(fn(_c) {  }, w=390.0, h=844.0)
-  t.draw()
-  let swap : Swap = { i: 0, n: 0, from: 1.0, key: None, sets: [[]], cur: 0, alpha: 1.0, drop: 0.0, lit: {}, ends: 0.0 }
-  let from : RideFrom = { swap, j: 0, w: 346.0, row_top: 0.0, o_to: 0.0, o_end: 0.0, k_to: 0.0, k_end: 0.0, up_to: 0.0, up_end: 0.0 }
-  // (still - 10 s is 1 ms past one of its 16 ms steps from 0; where it is sent changes 8 ms before still, between two)
-  let still = 20001.0
-  let anchor = fn(t : Double) { if t < still - 8.0 { 40.0 } else { 100.0 } }
-  let k = 300.0
-  let c = ball_damping(k)
-  let r = Ride::new(0.0, 0.0, 0.0, k, c, ball_rest_within, anchor, still, from)
-  // the whole way, step by step from 0
-  let ratio = c / (2.0 * k.sqrt())
-  let legs = [(0.0, 0.0, 0.0, anchor(0.0))]
-  let mut s = 0.0
-  let mut x = 0.0
-  let mut v = 0.0
-  let mut to = anchor(0.0)
-  while s < still {
-    let (d, vel) = @motion.spring_at(ratio, k, x - to, v, ride_step_ms / 1000.0)
-    x = to + d
-    v = vel
-    s = s + ride_step_ms
-    to = anchor(dmin(s, still))
-    legs.push((s, x, v, to))
-  }
-  let end = s + @motion.spring_duration(ratio, k, x - to, v, ball_rest_within)
-  assert_true((r.end - end).abs() < 0.000001, msg="ends \{r.end}, the whole way \{end}")
-  let whole : Ride = { legs, k, ratio, to, end, from }
-  for at in [still - 9.0, still - 1.0, still + 9.0, still + 40.0, still + 200.0] {
-    let (a, _) = r.at(at)
-    let (b, _) = whole.at(at)
-    assert_true((a - b).abs() < 0.000001, msg="at \{at}: \{a}, the whole way \{b}")
-  }
-}
-
-///|
-/// A tap at `t1` (down, up `tap_held_ms` later) at (`x`, `y`), frames drawn at `t1 +` each of `frames` (after it is let
-/// go, the clock going on; none at all between some), then one at `t1 + 3000`: how long the bar chosen still had to land
-/// as the tap was let go, the place it lands with then (its swap's key; None when none lands), where the ball was sent
-/// then, the place shown at the end, where the ball is then and where it goes, and how long after the tap its way ended.
-fn bar_tap_landing(
-  t : @ui.Tester,
-  t1 : Double,
-  x : Double,
-  y : Double,
-  frames : Array[Double],
-) -> (Double, String??, Double, String?, Double, Double, Double) {
-  t.advance(t1 - t.time())
-  t.touch_at(0, x, y, t1)
-  let up = t1 + tap_held_ms
-  t.advance(up - t.time())
-  t.touch_at(2, x, y, up)
-  let left = bar_landed() - up
-  let key = bar.swap_at(up).map(fn(s) { s.key })
-  let sent = bar.ball_x.to + 22.0
-  for f in frames {
-    if f <= tap_held_ms {
-      @halt.saying("a frame at \{f} ms, before the tap was let go")
-    }
-    t.frame_at(t1 + f)
-  }
-  t.frame_at(t1 + 3000.0)
-  (left, key, sent, bar.told.unwrap().active, bar.ball_x.at(t.time()).0 + 22.0, bar.ball_x.to + 22.0, bar.ball_x.end() - t1)
-}
-
-///|
 /// How long a tap's finger is down.
 let tap_held_ms : Double = 30.0
-
-///|
-/// Frames drawn between, each way: none, each frame's worth, a few.
-let landing_frames : Array[Array[Double]] = [
-  [],
-  Array::makei(120, fn(i) { 32.0 + i.to_double() * bar_step_ms }),
-  [40.0, 700.0, 1500.0],
-]
-
-///|
-/// The panel drawn up from the bar's last place and let go on the other bar's row (that bar chosen, its last place with
-/// it, landing), then its first place tapped `after` ms later, frames drawn at `frames` (bar_tap_landing). The bar is
-/// where it goes from its first frame (BarModel::jump), so the panel is drawn up at once.
-fn bar_tapped_landing(after : Double, frames : Array[Double]) -> (Double, String??, Double, String?, Double, Double, Double) {
-  let t = tester("home")
-  let (xs, y) = bar_places_at()
-  t.drag(xs[3], y, xs[3], y - 64.0, steps=60)
-  bar_tap_landing(t, t.time() + after, xs[0], y, frames)
-}
-
-///|
-/// Where the bar's first place is in the window as the bar now goes (its notch where it is sent), across.
-fn bar_first_now() -> Double {
-  let told = bar.told.unwrap()
-  22.0 + bar_centres(told.width, bar.k_end(), told.sets[told.cur].length())[0]
-}
-
-///|
-test "bar: a bar chosen landing, another of its places tapped before it has landed: the ball sent to that place then, there after it has landed, whichever frames came between" {
-  let src = fixture("home")
-  let (sets, cur) = bars_in(src, workspace_in_view(src).0.unwrap().id)
-  let first = sets[if cur == 0 { 1 } else { 0 }][0]
-  for after in [between_frames_ms, 50.0, 300.0] {
-    let one = bar_tapped_landing(after, landing_frames[0])
-    for frames in landing_frames {
-      assert_eq(bar_tapped_landing(after, frames), one)
-    }
-    let (left, key, sent, active, x, to, end) = one
-    assert_true(left > 0.0 && end < 3000.0, msg="after \{after}: \{Repr(one)}")
-    assert_eq(active, Some(first))
-    assert_eq(key, Some(Some(first)))
-    // (that bar's first place where it is as the bar has landed, its action's room as that place has it)
-    let x0 = bar_first_now()
-    assert_true((sent - x0).abs() < 0.5, msg="after \{after}: sent to \{sent}")
-    assert_true((x - x0).abs() < 0.5 && (to - x0).abs() < 0.5, msg="after \{after}: ball at \{x}, going to \{to}")
-  }
-}
-
-///|
-/// The bars [chats, files, profiles, stations] and [stations, archive], on Station (the last place), the panel drawn up
-/// and open, then the other bar's row tapped between its places (that bar chosen without a place) at `t1`, frames drawn
-/// at `frames` (bar_tap_landing). Gone to Station and the panel drawn up, the bar is put where each goes at once
-/// (BarModel::jump, as on its first frame), not waited for.
-fn bar_chosen_bare(frames : Array[Double]) -> (Double, String??, Double, String?, Double, Double, Double) {
-  let t = tester("home")
-  bars_picked.set(Some(([["chats", "files", "profiles", "stations"], ["stations", "archive"]], 0)))
-  if !@sfbase.go_place("stations") {
-    @halt.saying("not gone to stations")
-  }
-  t.draw()
-  bar.jump()
-  let (xs, y) = bar_places_at()
-  t.drag(xs[3], y, xs[3], y - 64.0, steps=20)
-  t.draw()
-  bar.jump()
-  t.draw()
-  if !bar.mode.get() {
-    @halt.saying("the panel not open")
-  }
-  let (top, _) = bar_panel_at()
-  // (in from the bar's left end, past its places: the capsule's edge, no place's)
-  bar_tap_landing(t, t.time() + between_frames_ms, 22.0 + tab_edge / 2.0, top + over + bar_row / 2.0, frames)
-}
-
-///|
-test "bar: a bar chosen without a place, the place shown in it elsewhere: the ball sent to where that bar has it as it is chosen, there after it has landed, whichever frames came between" {
-  let one = bar_chosen_bare(landing_frames[0])
-  for frames in landing_frames {
-    assert_eq(bar_chosen_bare(frames), one)
-  }
-  let (left, key, sent, active, x, to, end) = one
-  assert_true(left > 0.0 && end < 3000.0, msg="\{Repr(one)}")
-  // (chosen between its places: no place with it)
-  assert_eq(key, Some(None))
-  assert_eq((active, bars_picked.get().map(fn(b) { b.1 })), (Some("stations"), Some(1)))
-  // (Station first in that bar)
-  let x0 = bar_first_now()
-  assert_true((sent - x0).abs() < 0.5, msg="sent to \{sent}")
-  assert_true((x - x0).abs() < 0.5 && (to - x0).abs() < 0.5, msg="ball at \{x}, going to \{to}")
-}
 
 ///|
 /// First line where two drawlists differ, for diagnostics; empty when identical.
@@ -671,7 +334,7 @@ test "bar: switching system theme light <-> dark or accent while mounted updates
 }
 
 ///|
-test "bar: pressed bottom tab lens (slot 7 == -64.16) emits soft raised shadow in light and zero outer shadow in dark" {
+test "bar: pressed bottom tab lens (slot 7 == -64.0) emits soft raised shadow in light and zero outer shadow in dark" {
   for dark in [false, true] {
     new_run()
     let src = fixture(if dark { "home-dark" } else { "home" })
@@ -694,12 +357,12 @@ test "bar: pressed bottom tab lens (slot 7 == -64.16) emits soft raised shadow i
     let mut saw_lens = false
     let mut lens_rect = (0.0, 0.0, 0.0, 0.0)
     for inst in t.drawn_instances() {
-      if inst[5] == 6.0 && (inst[7] - -64.16).abs() < 0.01 {
+      if inst[5] == 6.0 && (inst[7] - -64.0).abs() < 0.01 {
         saw_lens = true
         lens_rect = (inst[0], inst[1], inst[2], inst[3])
       }
     }
-    assert_true(saw_lens, msg="dark=\{dark}: pressed bottom tab must emit clear lens with slot 7 == -64.16 (role 4, 1.16x zoom)")
+    assert_true(saw_lens, msg="dark=\{dark}: pressed bottom tab must emit clear lens with slot 7 == -64.0 (role 4, no zoom of its own)")
     let pressed_shadows = t.drawn_shadows()
     assert_true(
       pressed_shadows.iter().any(fn(s) {
@@ -755,7 +418,7 @@ test "bar: light tab lens outer shadow scales sigma, dy, and effective alpha con
   let base_alpha = (expected.color & 0xFFL).to_double() / 255.0
   let (xs, y) = bar_places_at()
   // Trigger cross-tab tap in light mode so held lifts 0 -> 1 and settles back 1 -> 0
-  t.tap(xs[3], y)
+  t.tap(xs[2], y)
   let mut saw_mid_shadow = false
   let mut max_sigma = 0.0
   let mut max_dy = 0.0
@@ -846,4 +509,216 @@ test "bar: light tab lens outer shadow scales sigma, dy, and effective alpha con
     !settled_shadows.iter().any(fn(s) { s.6 == expected.color }),
     msg="settled light tab bar must leave zero outer lens shadows",
   )
+}
+
+// ── the menu's glass (Comma Android's TabMenuMorphTest.kt, by the same numbers: a bar 50 high, a menu of five rows) ──
+
+///|
+/// The menu's glass from `t0` till it rests, sampled each 120th of a second: (seconds on, its height, its pinch).
+fn morph_path(t0 : Double) -> Array[(Double, Double, Double)] {
+  let menu = bar_menu
+  let path = []
+  let ends = menu.morph_ends()
+  let mut i = 1
+  while t0 + i.to_double() * 1000.0 / 120.0 <= ends + 1000.0 / 120.0 && i < 360 {
+    let t = t0 + i.to_double() * 1000.0 / 120.0
+    path.push(((t - t0) / 1000.0, menu.height_at(t), menu.pinch.value_at(t)))
+    i = i + 1
+  }
+  path
+}
+
+///|
+/// The menu's glass as at the start, a menu of five rows (256 high over a bar of 50).
+fn morph_new() -> BarMenu {
+  bar_menu.reset()
+  bar_menu.rows = 5
+  bar_menu
+}
+
+///|
+test "bar menu glass: opening grows the bar into the menu with a little spring past it, and settles there; its pinch draws the bar in by a fifth at once and lets it out without passing its length" {
+  let menu = morph_new()
+  let full = menu.full()
+  assert_eq(full, 256.0)
+  menu.morph_open(1000.0)
+  let path = morph_path(1000.0)
+  let ends = menu.morph_ends()
+  assert_eq((menu.height_at(ends), menu.progress_at(ends), menu.major_at(ends)), (full, 1.0, 1.0))
+  let highest = path.fold(init=0.0, fn(a, p) { dmax(a, p.1) })
+  assert_true(highest > full + 2.0 && highest < full + 12.0, msg="it springs a little past the menu: \{highest}")
+  let near = path.iter().find_first(fn(p) { p.1 >= full - 1.0 }).unwrap()
+  assert_true(near.0 < 0.25, msg="nearly there within a quarter of a second: \{near.0}")
+  let mut peak = path[0]
+  for p in path {
+    if p.2 > peak.2 {
+      peak = p
+    }
+  }
+  assert_true((peak.2 - pinch_open).abs() < 0.015, msg="the pinch peaks at a fifth: \{peak.2}")
+  assert_true((peak.0 - 0.08).abs() < 0.012, msg="about 80 ms in: \{peak.0}")
+  assert_true(path.iter().all(fn(p) { p.2 >= 0.0 }), msg="never wider than the bar")
+  bar_menu.reset()
+}
+
+///|
+test "bar menu glass: closing folds the menu back to the bar without dipping under it, pinched on the way; a glass still drawn in is not struck as hard again" {
+  let menu = morph_new()
+  menu.h.put(menu.full())
+  menu.morph_close(1000.0)
+  let path = morph_path(1000.0)
+  let ends = menu.morph_ends()
+  assert_eq((menu.height_at(ends), menu.pinch.value_at(ends)), (bar_track, 0.0))
+  let lowest = path.fold(init=1000.0, fn(a, p) { dmin(a, p.1) })
+  assert_true(lowest > bar_track - 1.0, msg="it does not dip visibly under the bar: \{lowest}")
+  let most = path.fold(init=0.0, fn(a, p) { dmax(a, p.2) })
+  assert_true((most - pinch_close).abs() < 0.015, msg="\{most}")
+  // struck open, then closed at the height of the opening pinch
+  let menu = morph_new()
+  menu.morph_open(1000.0)
+  let at = 1000.0 + 10.0 * 1000.0 / 120.0
+  let drawn_in = menu.pinch.value_at(at)
+  assert_true(drawn_in >= pinch_close, msg="already past what a close draws it in: \{drawn_in}")
+  menu.morph_close(at)
+  let later = morph_path(at).fold(init=0.0, fn(a, p) { dmax(a, p.2) })
+  assert_true(later <= drawn_in + 0.000001, msg="it only lets out from there: \{later} from \{drawn_in}")
+  bar_menu.reset()
+}
+
+///|
+test "bar menu glass: a close during the opening turns the glass round from where it is, at the speed it has" {
+  let menu = morph_new()
+  menu.morph_open(1000.0)
+  let at = 1000.0 + 8.0 * 1000.0 / 120.0
+  let (turned, speed) = menu.h.at(at)
+  assert_true(turned > bar_track + 20.0 && turned < menu.full() && speed > 0.0, msg="\{turned} \{speed}")
+  menu.morph_close(at)
+  assert_eq(menu.h.at(at), (turned, speed))
+  assert_true(menu.height_at(at + 1000.0 / 120.0) > turned, msg="still on its way up for a moment")
+  assert_eq(menu.height_at(menu.morph_ends()), bar_track)
+  bar_menu.reset()
+}
+
+///|
+test "bar menu glass: the tab row has gone before the rows are whole, and the glass is never empty; a glyph is zoomed only where the lens is over it" {
+  assert_eq((tabs_opacity(0.0), tabs_opacity(0.6), rows_opacity(0.2), rows_opacity(0.9)), (1.0, 0.0, 0.0, 1.0))
+  for step in 0..=20 {
+    let p = step.to_double() / 20.0
+    assert_true(tabs_opacity(p) + rows_opacity(p) > 0.3, msg="\{p}")
+  }
+  // (TabBarGeometryTest.kt: under the lens the whole zoom, past half a glyph beyond its edge none, in between smoothly)
+  assert_eq(lens_glyph_zoom(0.0, 92.0, 1.0), lens_zoom)
+  assert_eq(lens_glyph_zoom(46.0 + glyph_half, 92.0, 1.0), 1.0)
+  assert_eq(lens_glyph_zoom(-200.0, 92.0, 1.0), 1.0)
+  assert_eq(lens_glyph_zoom(0.0, 92.0, 0.0), 1.0)
+  let edge = lens_glyph_zoom(46.0, 92.0, 1.0)
+  assert_true((edge - (1.0 + (lens_zoom - 1.0) / 2.0)).abs() < 0.000001, msg="\{edge}")
+  // (rows under a finger: a little to either side still picks, off the menu nothing)
+  assert_eq(
+    (bar_row_at(100.0, 8.0 + 48.0 * 2.0 + 1.0, 286.0, 5), bar_row_at(-20.0, 30.0, 286.0, 5), bar_row_at(-30.0, 30.0, 286.0, 5), bar_row_at(100.0, -1.0, 286.0, 5), bar_row_at(100.0, 255.0, 286.0, 5)),
+    (2, 0, -1, -1, 4),
+  )
+}
+
+///|
+/// The bar's menu at `t0 + 400` with a finger down on the last slot at `t0 + 10`, up over the rows by `t0 + 200` and
+/// still there, frames drawn at `t0 +` each of `frames` between (none at all between some): the glass's height and
+/// pinch, where the indicator is and how much of it shows, the bottom row's rise and the top row's, how much of the tab
+/// row shows.
+fn menu_at_moment(frames : Array[Double]) -> (Double, Double, Double, Double, Double, Double, Double, Double) {
+  let (t, t0) = bar_at_rest()
+  let (xs, y) = bar_places_at()
+  let (rx, rys) = menu_rows_at(5)
+  let events = [(0, 10.0, xs[3], y)]
+  for i in 1..=10 {
+    let f = i.to_double() / 10.0
+    events.push((1, 100.0 + i.to_double() * 10.0, xs[3] + (rx - xs[3]) * f, y + (rys[2] - y) * f))
+  }
+  let mut f = 0
+  for e in events {
+    let (kind, at, x, ey) = e
+    while f < frames.length() && frames[f] <= at {
+      t.frame_at(t0 + frames[f])
+      f = f + 1
+    }
+    t.advance(t0 + at - t.time())
+    t.touch_at(kind, x, ey, t0 + at)
+  }
+  while f < frames.length() {
+    t.frame_at(t0 + frames[f])
+    f = f + 1
+  }
+  t.frame_at(t0 + 400.0)
+  let menu = bar_menu
+  let now = t0 + 400.0
+  let laid = bar_laid(bar.told.unwrap())
+  let ind = menu.ind_at(now, bar_capsule_w(laid.w, bar.k_at(now)), bar_rest_selection(laid, laid.more_slot(), bar.k_at(now)))
+  let out = (
+    menu.height_at(now),
+    menu.pinch.value_at(now),
+    ind.t,
+    ind.alpha,
+    menu.row_at(4, now).0,
+    menu.row_at(0, now).1,
+    menu.tabs_shown_at(now),
+    menu.hovered_row.to_double(),
+  )
+  t.touch_at(3, rx, rys[2], t0 + 410.0)
+  out
+}
+
+///|
+test "bar menu: opened by a finger that goes on up to a row, each event at its own moment: the same at a moment whichever frames came between, or none" {
+  let none = menu_at_moment([])
+  let each = menu_at_moment(Array::makei(23, fn(i) { 15.0 + i.to_double() * 1000.0 / 60.0 }))
+  let few = menu_at_moment([150.0, 333.0])
+  assert_eq((each, few), (none, none))
+  // (open, the finger on the third row, the indicator eased on to it)
+  assert_true(none.0 > 250.0 && none.7 == 2.0 && none.3 > 0.9 && none.6 == 0.0, msg="\{Repr(none)}")
+}
+
+///|
+test "bar menu: the lens a finger dragged to the last slot is what the indicator starts as: the same shape as the menu opens, clear, and grey by a third of the glass's growth" {
+  let (t, t0) = bar_at_rest()
+  let (xs, y) = bar_places_at()
+  t.advance(between_frames_ms)
+  t.touch_at(0, xs[2], y, t0 + between_frames_ms)
+  for i in 1..=20 {
+    let at = t0 + 300.0 + i.to_double() * 10.0
+    t.advance(at - t.time())
+    t.touch_at(1, xs[2] + (xs[3] - xs[2]) * i.to_double() / 20.0, y, at)
+  }
+  // (resting on the last slot from here: the menu once it has rested there 0.3 s, a moment of the bar's own; the lens
+  // as it was a ms before)
+  let l = bar_laid(bar.told.unwrap())
+  let mut lens = bar_ball_shown_at(l, t.time())
+  let mut lift = bar.lift_at(t.time())
+  let mut steps = 0
+  while !bar_menu.open.get() && steps < 400 {
+    lens = bar_ball_shown_at(l, t.time())
+    lift = bar.lift_at(t.time())
+    t.frame_at(t.time() + 1.0)
+    steps = steps + 1
+  }
+  let now = t.time()
+  let rested = now - (t0 + 500.0)
+  assert_true(bar_menu.open.get() && bar_menu.tracking, msg="open as the finger has rested, the finger its")
+  assert_true(rested > menu_dwell_ms - 40.0 && rested <= menu_dwell_ms + 1.0, msg="rested \{rested} ms")
+  assert_true(lift > 0.99, msg="lifted \{lift}")
+  let (lcx, _, lsw, lsh) = lens
+  let (x, top, w, h, grey, clear) = bar_ind_shown_at(l, now)
+  assert_true(
+    (x + w / 2.0 - lcx).abs() < 0.2 && (w - lsw).abs() < 0.2 && (h - lsh).abs() < 0.2 && (top + h / 2.0 - (l.row_top + bar_track / 2.0)).abs() < 0.2,
+    msg="the indicator (\{x}, \{top}, \{w}, \{h}) starts as the lens (\{lcx}, \{lsw}, \{lsh})",
+  )
+  assert_true(grey < 0.01 && clear > 0.99 && bar_menu.carry > 0.99, msg="clear at first: grey \{grey} clear \{clear}")
+  assert_eq(bar.pill_alpha_at(now), 0.0)
+  // (grey by 35 % of the glass's growth, the lens gone)
+  let mut at = now
+  while bar_menu.progress_at(at) < lens_to_grey {
+    at = at + 1.0
+  }
+  let (_, _, _, _, grey, clear) = bar_ind_shown_at(l, at)
+  assert_true(grey > 0.99 && clear < 0.01, msg="grey \{grey} clear \{clear} at \{bar_menu.progress_at(at)}")
+  t.touch_at(3, xs[3], y, at)
 }

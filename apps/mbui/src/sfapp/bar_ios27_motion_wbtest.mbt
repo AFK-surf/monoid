@@ -63,9 +63,6 @@ let ios27_fast_flick_step_ms : Double = 10.0
 let ios27_fast_flick_steps : Array[Int] = [1, 2, 3, 4]
 
 ///|
-let ios27_panel_pull_steps : Array[Int] = [1, 2, 3, 4, 5, 6]
-
-///|
 let ios27_touch_rates_hz : Array[Int] = [60, 120, 240]
 
 ///|
@@ -79,7 +76,7 @@ let ios27_flick_steps : Array[Int] = [1, 2, 3, 4, 5, 6]
 
 ///|
 test "bar ios27: leftmost <-> rightmost cross-tab taps stay strictly inside capsule with <= 2.5pt overshoot, clear tap droplet, no bar lift, and zero layout" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let laid = bar_laid_now()
   assert_eq(laid.items.length(), 4)
   // Ensure rightmost tab has no action (k: 1 -> 0) and leftmost ("chats") has action (k: 0 -> 1)
@@ -94,12 +91,13 @@ test "bar ios27: leftmost <-> rightmost cross-tab taps stay strictly inside caps
   let mut s = t0
   while s <= end_right {
     let a = bar_ball_at(s)
-    let (cx, _, sw, _) = bar_ball_frame(a, bar_laid_now(), false)
+    let (cx, _, sw, _) = bar_ball_frame(a, bar_laid_now())
     let cap_w = bar_cur_capsule_w(bar_laid_now().w, a.k, a.collapse)
     let left = cx - sw / 2.0
     let right = cx + sw / 2.0
     assert_true(
-      left >= 0.0 && right <= cap_w + 0.01,
+      // (flat, the selection stays inside the capsule; lifted into its lens it overhangs the bar's end as the lens does)
+      (a.held > 0.001 && left >= -24.0 && right <= cap_w + 24.0) || (left >= 0.0 && right <= cap_w + 0.01),
       msg="L->R at +\{s - t0}ms: pill [\{left}, \{right}] overflowed [0, \{cap_w}]",
     )
     let over = bar.ball_x.at(s).0 - goal_right
@@ -110,7 +108,6 @@ test "bar ios27: leftmost <-> rightmost cross-tab taps stay strictly inside caps
     if tl > peak_tap_lens_right {
       peak_tap_lens_right = tl
     }
-    assert_true(bar.up.value_at(s).abs() < 0.001, msg="L->R tap must not lift bar: up=\{bar.up.value_at(s)}")
     s = s + ios27_sample_ms
   }
   assert_true(max_overshoot_right <= 2.5, msg="L->R overshoot \{max_overshoot_right}pt > 2.5pt")
@@ -136,12 +133,13 @@ test "bar ios27: leftmost <-> rightmost cross-tab taps stay strictly inside caps
   let mut u = t1
   while u <= end_left {
     let a = bar_ball_at(u)
-    let (cx, _, sw, _) = bar_ball_frame(a, bar_laid_now(), false)
+    let (cx, _, sw, _) = bar_ball_frame(a, bar_laid_now())
     let cap_w = bar_cur_capsule_w(bar_laid_now().w, a.k, a.collapse)
     let left = cx - sw / 2.0
     let right = cx + sw / 2.0
     assert_true(
-      left >= 0.0 && right <= cap_w + 0.01,
+      // (flat, the selection stays inside the capsule; lifted into its lens it overhangs the bar's end as the lens does)
+      (a.held > 0.001 && left >= -24.0 && right <= cap_w + 24.0) || (left >= 0.0 && right <= cap_w + 0.01),
       msg="R->L at +\{u - t1}ms: pill [\{left}, \{right}] overflowed [0, \{cap_w}]",
     )
     let over = goal_left - bar.ball_x.at(u).0
@@ -152,7 +150,6 @@ test "bar ios27: leftmost <-> rightmost cross-tab taps stay strictly inside caps
     if tl > peak_tap_lens_left {
       peak_tap_lens_left = tl
     }
-    assert_true(bar.up.value_at(u).abs() < 0.001, msg="R->L tap must not lift bar: up=\{bar.up.value_at(u)}")
     u = u + ios27_sample_ms
   }
   assert_true(max_overshoot_left <= 2.5, msg="R->L overshoot \{max_overshoot_left}pt > 2.5pt")
@@ -170,7 +167,7 @@ test "bar ios27: leftmost <-> rightmost cross-tab taps stay strictly inside caps
 
 ///|
 test "bar ios27: high-velocity fling to rightmost tab stays inside capsule and holds lens until landing" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   let items = bar_laid_now().items
   // Start from index 1, fling rapidly toward index 3
@@ -190,12 +187,13 @@ test "bar ios27: high-velocity fling to rightmost tab stays inside capsule and h
   let mut s = let_go
   while s <= end_t {
     let a = bar_ball_at(s)
-    let (cx, _, sw, _) = bar_ball_frame(a, bar_laid_now(), false)
+    let (cx, _, sw, _) = bar_ball_frame(a, bar_laid_now())
     let cap_w = bar_cur_capsule_w(bar_laid_now().w, a.k, a.collapse)
     let left = cx - sw / 2.0
     let right = cx + sw / 2.0
     assert_true(
-      left >= 0.0 && right <= cap_w + 0.01,
+      // (flat, the selection stays inside the capsule; lifted into its lens it overhangs the bar's end as the lens does)
+      (a.held > 0.001 && left >= -24.0 && right <= cap_w + 24.0) || (left >= 0.0 && right <= cap_w + 0.01),
       msg="fling at +\{s - let_go}ms: pill [\{left}, \{right}] overflowed [0, \{cap_w}]",
     )
     s = s + ios27_sample_ms
@@ -206,7 +204,7 @@ test "bar ios27: high-velocity fling to rightmost tab stays inside capsule and h
 
 ///|
 test "bar ios27: continuous horizontal drag has no midpoint jump, caps past-edge rubber band at 12pt, and fires haptic ticks" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   let laid = bar_laid_now()
   let final_cs = bar_centres(laid.w, bar.k_end(), laid.items.length())
@@ -237,7 +235,7 @@ test "bar ios27: continuous horizontal drag has no midpoint jump, caps past-edge
 
 ///|
 fn ios27_tap_sample(period : Double?) -> (Double, Double, Double, Double) {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   t.tap(xs[3], y)
   let t0 = t.time()
@@ -271,7 +269,7 @@ test "bar ios27: tap flight cx, sx, sy, and tap-lens held are strictly FPS-invar
 
 ///|
 test "bar ios27: releasing past-edge rubber-band drag keeps lens frame C0-continuous with <= 0.01pt jump" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   t.press_at(xs[0], y)
   t.run_for(bar_hold_ms)
@@ -280,11 +278,11 @@ test "bar ios27: releasing past-edge rubber-band drag keeps lens frame C0-contin
   to_bar_rest(t)
   let laid = bar_laid_now()
   let release_t = t.time()
-  let (cx0, _, sw0, _) = bar_ball_frame(bar_ball_at(release_t), laid, true)
+  let (cx0, _, sw0, _) = bar_ball_frame(bar_ball_at(release_t), laid)
   let left0 = cx0 - sw0 / 2.0
   let right0 = cx0 + sw0 / 2.0
   t.touch_at(2, xs[3] + 60.0, y, release_t)
-  let (cx1, _, sw1, _) = bar_ball_frame(bar_ball_at(release_t), laid, true)
+  let (cx1, _, sw1, _) = bar_ball_frame(bar_ball_at(release_t), laid)
   let left1 = cx1 - sw1 / 2.0
   let right1 = cx1 + sw1 / 2.0
   assert_true(
@@ -297,7 +295,7 @@ test "bar ios27: releasing past-edge rubber-band drag keeps lens frame C0-contin
 ///|
 test "bar ios27: reduced_motion suppresses tap droplet/held lift, and glass_solid keeps pill uninflated with no lens glass" {
   // 1. Reduced motion: cross-tab tap immediately snaps with zero tap_lens and zero ball_held
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   t.set_reduce_motion(true)
   t.draw()
@@ -309,7 +307,7 @@ test "bar ios27: reduced_motion suppresses tap droplet/held lift, and glass_soli
   assert_eq(bar.ball_held_at(t0 + ios27_probe_ms), 0.0)
   t.set_reduce_motion(false)
   // 2. glass_solid: solid pill does not inflate on tap or hold, and no clear lens glass instance is emitted
-  let (ts, _) = bar_at_rest()
+  let (ts, _) = bar_four_at_rest()
   @ui.set_glass_solid(Some(true))
   ts.draw()
   let (xs2, y2) = bar_places_at()
@@ -321,7 +319,7 @@ test "bar ios27: reduced_motion suppresses tap droplet/held lift, and glass_soli
   let a = bar_ball_at(ts.time())
   let iw = bar_item_w(laid.w, a.k, laid.items.length())
   let pw = iw + 2.0 * (tab_edge - pill_inset)
-  let (_, _, sw, sh) = bar_ball_frame(a, laid, false, solid=true)
+  let (_, _, sw, sh) = bar_ball_frame(a, laid)
   assert_true(
     (sw - pw).abs() <= 0.01 && (sh - pill_h).abs() <= 0.01,
     msg="glass_solid pill inflated during hold: got (\{sw}, \{sh}), expected (\{pw}, \{pill_h})",
@@ -357,7 +355,7 @@ test "bar ios27: reduced_motion suppresses tap droplet/held lift, and glass_soli
 
 ///|
 test "bar ios27: tap_lens ends at rest and programmatic tab switch triggers no droplet or pending tap leak" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   // Cross-tab tap 0 -> 3 and settle
   t.tap(xs[3], y)
@@ -380,8 +378,8 @@ test "bar ios27: tap_lens ends at rest and programmatic tab switch triggers no d
 }
 
 ///|
-test "bar ios27: cross-tab tap 0 -> 3 exhibits biphasic jelly stretch -> landing squish -> exact rest with laid == 0 and role 4 1.16x zoom" {
-  let (t, _) = bar_at_rest()
+test "bar ios27: cross-tab tap 0 -> 3 exhibits biphasic jelly stretch -> landing squish -> exact rest with laid == 0 and a role 4 lens that magnifies nothing itself" {
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   t.tap(xs[3], y)
   let t0 = t.time()
@@ -414,13 +412,14 @@ test "bar ios27: cross-tab tap 0 -> 3 exhibits biphasic jelly stretch -> landing
   assert_true(max_sx >= 1.10 && min_sy <= 0.86, msg="mid-flight stretch too weak: max_sx=\{max_sx}, min_sy=\{min_sy}")
   assert_true(min_sx <= 0.90 && max_sy >= 1.10, msg="landing squish too weak: min_sx=\{min_sx}, max_sy=\{max_sy}")
   assert_true(squish_peak_t > stretch_peak_t, msg="squish (\{squish_peak_t}) must follow stretch (\{stretch_peak_t})")
-  // Verify live Role 4 lens emits zoom > 1.10 during flight and zero relayout across animation
+  // Verify the live Role 4 lens is drawn during flight, magnifying nothing itself (the bar zooms each glyph in place
+  // as the lens comes over it: slot 7 == -64.0), and zero relayout across animation
   t.tree_frames_from_now()
   t.run_for(ios27_lens_check_ms)
-  let saw_zoomed_lens = t.drawn_instances().iter().any(fn(inst) {
-    inst[5] == 6.0 && inst[7] < -64.10 && inst[7] > -64.20
+  let saw_still_lens = t.drawn_instances().iter().any(fn(inst) {
+    inst[5] == 6.0 && inst[7] < -63.99 && inst[7] > -64.01
   })
-  assert_true(saw_zoomed_lens, msg="mid-flight tap lens must emit Role 4 optical zoom near -64.16")
+  assert_true(saw_still_lens, msg="mid-flight tap lens must emit the Role 4 lens with no optical zoom (-64.0)")
   for f in t.tree_frames() {
     assert_eq(f.laid, 0, msg="cross-tab tap jelly caused relayout: \{Repr(f)}")
   }
@@ -432,7 +431,7 @@ test "bar ios27: cross-tab tap 0 -> 3 exhibits biphasic jelly stretch -> landing
 
 ///|
 test "bar ios27: slow drag accel/decel jelly and +60pt right-edge wall squish bounce back C0-continuously" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   t.press_at(xs[0], y)
   t.run_for(bar_hold_ms)
@@ -496,7 +495,7 @@ test "bar ios27: slow drag accel/decel jelly and +60pt right-edge wall squish bo
 
 ///|
 test "bar ios27: quick flick (100ms release) obeys lensHangTime = 220ms before unlifting" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   t.press_at(xs[0], y)
   let mut lift_t = -1.0
@@ -520,7 +519,7 @@ test "bar ios27: quick flick (100ms release) obeys lensHangTime = 220ms before u
 
 ///|
 test "bar ios27: rapid repeated taps and mid-flight drag takeover stay exact C0-continuous with zero phantom impulse" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   // Rapid tap 0 -> 3, interrupted 25ms later (before flex_launch 40ms delay fires!) by tap back to 1
   t.tap(xs[3], y)
@@ -565,7 +564,7 @@ test "bar ios27: rapid repeated taps and mid-flight drag takeover stay exact C0-
 
 ///|
 test "bar ios27: re-tapping during active flex_brake transfers residual oscillation into flex_decay without freezing" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   // Tap 0 -> 3 and advance to +300ms when flex_brake is actively negative
   t.tap(xs[3], y)
@@ -595,7 +594,7 @@ test "bar ios27: re-tapping during active flex_brake transfers residual oscillat
 
 ///|
 test "bar ios27: 40ms ultra-fast flick continues lifting to >= 0.75 during lensHangTime before smoothly unlifting" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   t.press_at(xs[0], y)
   let mut lift_t = -1.0
@@ -623,7 +622,7 @@ test "bar ios27: 40ms ultra-fast flick continues lifting to >= 0.75 during lensH
 
 ///|
 fn ios27_drag_peaks_at_hz(hz : Int) -> (Double, Double) {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   let t_press = t.time()
   t.touch_at(0, xs[0], y, t_press)
@@ -684,7 +683,7 @@ test "bar ios27: slow drag stretch and sudden-stop squish are invariant across 6
 
 ///|
 test "bar ios27: pausing 1000ms after drag decays residual velocity so gentle release triggers no brake squish" {
-  let (t, _) = bar_at_rest()
+  let (t, _) = bar_four_at_rest()
   let (xs, y) = bar_places_at()
   t.press_at(xs[0], y)
   // Drag out to xs[2] and back to xs[0] so high drag velocity is recorded without changing the active tab's notch
@@ -716,27 +715,4 @@ test "bar ios27: pausing 1000ms after drag decays residual velocity so gentle re
   }
   assert_true(min_brake > -0.01, msg="paused gentle release triggered unwanted flex_brake: min=\{min_brake}")
   to_bar_rest(t)
-}
-
-///|
-test "bar ios27: pulling multi-bar panel up from past-edge drag releases flex_wall cleanly" {
-  let (t, _) = bar_at_rest()
-  let (xs, y) = bar_places_at()
-  t.press_at(xs[0], y)
-  t.run_for(bar_hold_ms)
-  t.frame()
-  t.move_to(xs[3] + 60.0, y)
-  t.run_for(ios27_wall_hold_ms)
-  assert_true(bar.flex_wall.target() < -0.05, msg="expected negative wall flex before panel pull")
-  // Pull straight up to engage multi-bar panel (`m.holds = true`)
-  for step in ios27_panel_pull_steps {
-    let py = y - 64.0 * step.to_double() / 6.0
-    t.move_to(xs[3] + 60.0, py)
-    t.run_for(ios27_step_ms)
-  }
-  assert_true(bar.holds, msg="panel pull must engage m.holds")
-  assert_eq(bar.flex_wall.target(), 0.0, msg="panel pull must release flex_wall target back to 0.0")
-  t.release(xs[3] + 60.0, y - 64.0)
-  to_bar_rest(t)
-  assert_true(bar.flex_wall.value_at(t.time()).abs() < 0.001)
 }

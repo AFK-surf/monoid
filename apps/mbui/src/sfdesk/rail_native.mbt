@@ -236,7 +236,7 @@ fn bar_action(
     Some(d) => d
     None => @sf.icon_path(icon)
   }
-  let menu : Array[(String, String, Bool, String)] = []
+  let menu : Array[(String, String, Bool, String, Bool)] = []
   match rows {
     Some(rows) => {
       let mut n = 0
@@ -245,11 +245,11 @@ fn bar_action(
           Some(item) => {
             let rid = key + "/" + n.to_string()
             n += 1
-            menu.push((rid, item.label, item.chosen == Some(true), @sf.icon_path(item.icon)))
+            menu.push((rid, item.label, item.chosen == Some(true), @sf.icon_path(item.icon), false))
             nav_rows_was[rid] = item.select
           }
           // (a line between groups: after a row only, as the page's menu draws it)
-          None => if menu.length() > 0 && menu[menu.length() - 1].0 != "-" { menu.push(("-", "", false, "")) }
+          None => if menu.length() > 0 && menu[menu.length() - 1].0 != "-" { menu.push(("-", "", false, "", false)) }
         }
       }
       // (no line closing the menu)
@@ -690,32 +690,48 @@ let native_bell_up : Double = 156.0
 
 ///|
 /// The column of the system's glass, the Duo's shape in mind (its right thumb at the inner screen's right edge, low): at
-/// its top the card in use's own (the chats' list's filter, the page's actions: `card`), then 对话 and 文件 and 更多 (the
-/// other places, the settings, the workspaces), and at its foot what is most wanted, where the thumb rests: 待处理 and
-/// 新建对话 (on the accent's glass). The place lit chosen (更多 for one in it).
+/// its top the card in use's own (the chats' list's filter, the page's actions: `card`), then the bar's places (three a
+/// tab each, the rest the menu of a last tab that stands for the one of them shown last: native_slots), the settings, and
+/// at its foot what is most wanted, where the thumb rests: 待处理 and 新建对话 (on the accent's glass). The place lit
+/// chosen (the last tab for one of its menu's).
 fn rail_nav(src : Source, w : Workspace, _all : Array[Workspace], card : Array[@hostapi.NavItem]) -> @hostapi.NavBar {
-  let places = native_places(src, w.id)
+  let slots = native_slots(src, w.id)
   let lit = lit_place()
+  let shown = native_place_shown(slots.flat)
   let item = fn(id : String, title : String, icon : String) -> @hostapi.NavItem {
     { id, title, icon: @sf.icon_path(icon), dot: false, prominent: false, menu: [] }
   }
-  // the bar's places (对话, 文件, Station by default: native_places), 待处理 (the chats that want the viewer), 我的 (the
-  // settings, the other places' pages in them)
-  let tabs : Array[@hostapi.NavItem] = []
-  for p in places {
+  let place_item = fn(p : String) -> @hostapi.NavItem {
     if p == "stations" {
       // (its icon the stations at a glance, as the rail's: online ones lit, a dot while one fails)
       let glance = stations_at_glance(src, w.id).0
-      tabs.push({
+      {
         ..item("place/stations", rail_label(src, "stations"), "stations"),
         icon: @sf.station_glyph_icon(glance),
         dot: glance.failing > 0,
-      })
+      }
     } else {
       // (密钥 is no place of the rail's: its words the bar's)
       let title = if p == "vault" { @sf.t("android-misc.bar.place.vault") } else { rail_label(src, p) }
-      tabs.push(item("place/" + p, title, @sfbase.place_icon(p)))
+      item("place/" + p, title, @sfbase.place_icon(p))
     }
+  }
+  // the bar's places as the phone's own bar lays them out (native_slots: 对话, 文件, Station by default, a tab each; the
+  // rest the last tab's menu, that tab the menu's place it stands for), 待处理 (the chats that want the viewer), 我的
+  // (the settings, the other places' pages in them)
+  let tabs : Array[@hostapi.NavItem] = []
+  for p in slots.fixed {
+    tabs.push(place_item(p))
+  }
+  if !slots.menu.is_empty() {
+    // (the host knows the tab by its menu: every place of the menu a row, in their order, the one shown ticked)
+    tabs.push({
+      ..place_item(slots.more),
+      menu: slots.menu.map(fn(p) {
+        let row = place_item(p)
+        (row.id, row.title, shown == p, row.icon, row.dot)
+      }),
+    })
   }
   // Workspace selection lives at the list heading; settings remains a separate action.
   let at = if @sf.native_side() { "act/" } else { "lead/" }
@@ -723,7 +739,7 @@ fn rail_nav(src : Source, w : Workspace, _all : Array[Workspace], card : Array[@
   // (待处理 a popover over the page, as the bell's: pressed, never chosen; in the column down the side, upright at the
   // bar's lead, left of the top, on the status bar's row: the user 2026-10-27)
   tabs.push({ ..item(at + "attention", rail_label(src, "attention"), "bell"), dot: bell_lit(src, w) })
-  let selected = tab_of_place(places, lit)
+  let selected = tab_of_place(slots.slots(), lit)
   let t = @sf.theme()
   let new_item : @hostapi.NavItem = {
     id: "new",
@@ -754,24 +770,36 @@ fn rail_nav(src : Source, w : Workspace, _all : Array[Workspace], card : Array[@
 }
 
 ///|
-/// The places the system's tabs hold, in their order: this device's bar for the workspace (下方栏, @sfbase.bars_in: one
-/// bar, the one in view), 文件 left out of the one it starts with where the rail has none (as before the bar could be
-/// set), none twice.
-fn native_places(src : Source, ws : String) -> Array[String] {
-  let (sets, cur) = @sfbase.bars_in(src, ws)
-  let raw = sets.get(cur).unwrap_or([])
+/// The places the system's tabs hold, laid out as the phone's own bar lays its out (@sfbase.bar_slots: this device's
+/// bars for the workspace, 下方栏, every place of them in their order; the first three a tab each, the rest the last
+/// tab's menu, that tab the one of them shown now or last), 文件 left out of the ones it starts with where the rail has
+/// none (as before the bar could be set).
+fn native_slots(src : Source, ws : String) -> @sfbase.BarSlots {
+  let all = @sfbase.bar_slots(src, ws, None).flat
   let prefs = src.topic("prefs", {}).get().value
   let set = @sfbase.bars_picked.get() is Some(_) || field(field(prefs, "barsBy"), ws) is Some(Object(_))
-  let out : Array[String] = []
-  for p in raw {
+  let flat : Array[String] = []
+  for p in all {
     if p == "files" && !set && !rail_items(src, ws).contains("files") {
       continue
     }
-    if !out.contains(p) {
-      out.push(p)
-    }
+    flat.push(p)
   }
-  out
+  @sfbase.bar_slots_of(flat, ws, Some(native_place_shown(flat)))
+}
+
+///|
+/// The place of `places` shown now (lit_place's; any of the chats' lists the chats', 已归档's own page 已归档 where the
+/// bar has it): the one tab_of_place lights, the one the last tab stands for where it is of its menu.
+fn native_place_shown(places : Array[String]) -> String {
+  let lit = lit_place()
+  if lit == "chats" && places.contains("archive") && app.nav.pages().contains(Archived) {
+    return "archive"
+  }
+  match lit {
+    "chats" | "mine" | "watching" | "hidden" | "archive" => "chats"
+    p => p
+  }
 }
 
 ///|
@@ -809,7 +837,7 @@ fn tab_kept_key(ws : String, tab : String) -> String {
 fn native_frame(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspace]) -> Unit {
   nav_want.val = Some((src, w, all))
   // (read so: this island built again as the bar's places change, the tabs handed anew: rail_nav)
-  native_places(src, w.id) |> ignore
+  native_slots(src, w.id) |> ignore
   column_short.set(@sf.native_side() && c.window_size().0 < column_short_below)
   // (the host says the screen's corner only where it lays out the tabs, ios_nav.h mb_host_window_corner; said once the
   // window is on the screen, what was kept before it is drawn anew, its corners its own then)
@@ -840,7 +868,8 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
     }
     // (a tab left keeps what it showed, given back as it is chosen again; the one shown chosen again changes nothing,
     // as the system's tab apps have it: the user, 2026-10-26)
-    let now = tab_of_place(native_places(src, w.id), lit_place())
+    let slots = native_slots(src, w.id)
+    let now = tab_of_place(slots.slots(), lit_place())
     if (id.has_prefix("place/") || id == "settings") && id != now {
       if now.has_prefix("place/") {
         tabs_kept[tab_kept_key(w.id, now)] = app.nav.pages()
@@ -900,6 +929,10 @@ fn rail_native_taps(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
       rail_go(c, src, w, id[5:].to_owned())
     } else if id.has_prefix("place/") {
       let place = id[6:].to_owned()
+      // (a row of the last tab's menu: the place that tab stands for from now, on the phone's own bar too)
+      if slots.menu.contains(place) {
+        @sfbase.bar_more_shown(w.id, place)
+      }
       match tabs_kept.get(tab_kept_key(w.id, id)) {
         // (its stack as it was left: the chat open in it, the list it showed)
         Some(pages) if pages.length() > 0 => {

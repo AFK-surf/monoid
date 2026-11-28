@@ -85,6 +85,135 @@ pub fn bars_in(src : Source, ws : String) -> (Array[Array[String]], Int) {
 }
 
 ///|
+/// The places of the bars as kept (`sets`), in their order, none twice: the phone's one bar's slots, then its menu's
+/// rows (bar_slots).
+pub fn bars_flat(sets : Array[Array[String]]) -> Array[String] {
+  let flat : Array[String] = []
+  for set in sets {
+    for p in set {
+      if !flat.contains(p) {
+        flat.push(p)
+      }
+    }
+  }
+  flat
+}
+
+///|
+/// How many slots a bar has: with more places than that, its last slot stands for the rest (its menu: More).
+pub let bar_slots_most : Int = 4
+
+///|
+/// A workspace's bar as the phone's own bar (sfapp's bar.mbt) and the system's tab bar (sfdesk's rail_native.mbt) both
+/// lay its places out: `flat`, every place of the bars kept, in their order, none twice; `fixed`, those with a slot
+/// each (all of `flat` where it has `bar_slots_most` or fewer, else all but the last slot's worth of them); `menu`, the
+/// places of the last slot's menu, in their order (none: every place has its slot); `more`, the menu's place the last
+/// slot stands for now ("" with no menu): the place shown where it is one of the menu's, else the one last shown
+/// from the menu in this workspace (bar_more_shown), else the menu's first.
+#derive(Eq)
+pub(all) struct BarSlots {
+  flat : Array[String]
+  fixed : Array[String]
+  menu : Array[String]
+  more : String
+}
+
+///|
+/// The places drawn on the bar, a slot each: `fixed`, then, with a menu, the place its slot stands for.
+pub fn BarSlots::slots(self : BarSlots) -> Array[String] {
+  if self.menu.is_empty() {
+    self.fixed
+  } else {
+    let slots = self.fixed.copy()
+    slots.push(self.more)
+    slots
+  }
+}
+
+///|
+/// The menu page each workspace's last slot stands for: the one last shown from it, kept for this run.
+// kept across runs: emptied as a run begins (bar_more_reset)
+let bar_more_kept : Map[String, String] = Map([])
+
+///|
+/// Told as bar_more_kept changes: what reads it reads again.
+// kept across runs: a count whose changes alone are read
+let bar_more_said : @signals.Signal[Int] = @signals.signal(0, same=fn(a, b) { a == b })
+
+///|
+/// A place of the menu shown in workspace `ws` (picked in the menu of either bar, or come to another way): what the
+/// last slot stands for there from now, till another of the menu's is shown.
+pub fn bar_more_shown(ws : String, place : String) -> Unit {
+  if bar_more_kept.get(ws) != Some(place) {
+    bar_more_kept[ws] = place
+    bar_more_said.set(bar_more_said.untracked() + 1)
+  }
+}
+
+///|
+/// As at the start (tests).
+pub fn bar_more_reset() -> Unit {
+  bar_more_kept.clear()
+  bar_more_said.set(0)
+}
+
+///|
+/// The menu's places of `flat`: those past the bar's own slots, where there are more places than slots.
+pub fn bar_menu_of(flat : Array[String]) -> Array[String] {
+  if flat.length() <= bar_slots_most {
+    []
+  } else {
+    flat[bar_slots_most - 1:].to_owned()
+  }
+}
+
+///|
+/// bar_slots' of the places `flat` (the bars kept, flattened), `active` the place shown.
+pub fn bar_slots_of(flat : Array[String], ws : String, active : String?) -> BarSlots {
+  let menu = bar_menu_of(flat)
+  if menu.is_empty() {
+    return { flat, fixed: flat, menu, more: "" }
+  }
+  let fixed = flat[0:bar_slots_most - 1].to_owned()
+  let more = match active {
+    Some(a) if menu.contains(a) => a
+    _ => {
+      bar_more_said.get() |> ignore
+      match bar_more_kept.get(ws) {
+        Some(k) if menu.contains(k) => k
+        _ => menu[0]
+      }
+    }
+  }
+  { flat, fixed, menu, more }
+}
+
+///|
+/// Every place of workspace `ws`'s bars, in their order, none twice. An iPhone Duo whose bar was never set has its
+/// three (native_default_bar) and, after them, the other places the bars start with (default_bars_for): its menu's.
+fn bar_flat_in(src : Source, ws : String) -> Array[String] {
+  let flat = bars_flat(bars_in(src, ws).0)
+  if @sf.native_on() && bars_picked.get() is None {
+    let prefs = src.topic("prefs", {}).get().value
+    if !(field(field(prefs, "barsBy"), ws) is Some(Object(_))) {
+      for p in bars_flat(default_bars_for(@signals.untracked(fn() { (src.asks_terminals)() })).0) {
+        if !flat.contains(p) {
+          flat.push(p)
+        }
+      }
+    }
+  }
+  flat
+}
+
+///|
+/// Workspace `ws`'s bar as it is laid out, `active` the place shown (none: no place of the bars): read again as the
+/// bars kept change (the prefs' `barsBy`, bars_picked) and as another of the menu's places is shown (bar_more_shown).
+pub fn bar_slots(src : Source, ws : String, active : String?) -> BarSlots {
+  bar_slots_of(bar_flat_in(src, ws), ws, active)
+}
+
+///|
 /// Another bar in view (AppState.setBars): shown at once, kept whole as the workspace's (`prefs.set {barsBy}`).
 pub fn set_bars(src : Source, ws : String, sets : Array[Array[String]], cur : Int) -> Unit {
   bars_picked.set(Some((sets, cur)))
@@ -182,6 +311,23 @@ let ahead_bar : Ahead = { of: "", scope: "" }
 ///|
 // kept across runs: put back as a run begins (ahead_reset)
 let ahead_press : Ahead = { of: "", scope: "" }
+
+///|
+/// Those of the bar's menu, while it is open.
+// kept across runs: put back as a run begins (ahead_reset)
+let ahead_menu : Ahead = { of: "", scope: "" }
+
+///|
+/// The places of the bar's menu while it is open (none: shut): what they open on is asked from the moment it opens, as
+/// the bar's own slots' is while the bar is there, so a row picked a moment later finds it answered.
+// kept across runs: put back as a run begins (ahead_reset)
+let places_menu_now : @signals.Signal[Array[String]] = @signals.signal([], same=fn(a, b) { a == b })
+
+///|
+/// The bar's menu opened on `places` (none: it closed).
+pub fn places_menu_open(places : Array[String]) -> Unit {
+  places_menu_now.set(places)
+}
 
 ///|
 /// The place whose tab a finger went down on last ("" none, or let go of): what it opens on is asked from then, so its
@@ -299,8 +445,9 @@ pub fn places_ahead_node(v : @view.View, src : Source, bar : () -> String?) -> U
       guard @signals.untracked(fn() { (src.reads_ahead)() }) else { return None }
       match bar() {
         Some(ws) => {
-          let (sets, cur) = bars_in(src, ws)
-          Some((ws, if cur >= 0 && cur < sets.length() { sets[cur] } else { [] }))
+          // (the bar's slots: the first places kept, in their order; the rest are its menu's, sfapp's bar_menu.mbt)
+          let flat = bar_flat_in(src, ws)
+          Some((ws, if flat.length() > bar_slots_most { flat[0:bar_slots_most].to_owned() } else { flat }))
         }
         None => None
       }
@@ -309,6 +456,23 @@ pub fn places_ahead_node(v : @view.View, src : Source, bar : () -> String?) -> U
       match want {
         Some((ws, places)) => ahead_bar.hold_places(src, ws, "ahead/" + ws, places, false)
         None => ahead_bar.release(src)
+      }
+    },
+  )
+  // (the bar's menu's places, while it is open)
+  v.reacts(
+    fn() {
+      guard @signals.untracked(fn() { (src.reads_ahead)() }) else { return None }
+      let places = places_menu_now.get()
+      match bar() {
+        Some(ws) if !places.is_empty() => Some((ws, places))
+        _ => None
+      }
+    },
+    fn(want) {
+      match want {
+        Some((ws, places)) => ahead_menu.hold_places(src, ws, "ahead-menu/" + ws, places, false)
+        None => ahead_menu.release(src)
       }
     },
   )
@@ -352,15 +516,17 @@ pub fn places_ahead_node(v : @view.View, src : Source, bar : () -> String?) -> U
 ///|
 /// Whether what the places open on is held ahead of them now (places_ahead_node).
 pub fn places_ahead_open() -> Bool {
-  ahead_bar.scope != "" || ahead_press.scope != ""
+  ahead_bar.scope != "" || ahead_press.scope != "" || ahead_menu.scope != ""
 }
 
 ///|
 fn ahead_reset() -> Unit {
-  for a in [ahead_bar, ahead_press] {
+  for a in [ahead_bar, ahead_press, ahead_menu] {
     a.of = ""
     a.scope = ""
   }
+  places_menu_now.set([])
+  bar_more_reset()
   place_pressed_now.set("")
   place_press_ends.set(-1.0)
 }

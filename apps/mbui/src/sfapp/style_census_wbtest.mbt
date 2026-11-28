@@ -111,12 +111,14 @@ test "styles: how many values of each kind the app's screens use" {
   // One fewer text style once the compact grouped stations list reuses standard row title/meta typography: text 30 to 29.
   // One fewer once Appearance swaps its glass frost slider for a three-way material choice: radius 23 to 22.
   // One fewer spacing value once switch_node drops small (26x16) and its 9pt horizontal touch padding: space 22 to 21.
+  // One fewer once the bottom bar's last slot opens the bar's own glass as its menu, the panel of its other bars gone:
+  // color 87 to 86.
   inspect(counts.to_string(), content=(
     #|text 29
     #|weight 4
     #|space 21
     #|radius 22
-    #|color 87
+    #|color 86
     #|
 
 
