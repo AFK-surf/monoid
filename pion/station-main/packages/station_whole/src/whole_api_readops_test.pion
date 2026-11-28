@@ -1,0 +1,687 @@
+// Wave 17C-3A comprehensive functional & security boundary unit tests:
+// - All 12 ReadOps (`memory`, `resources`, `usage`, `usage.calls`, `machineSessions`, `machineSession`,
+//   `session.timeline`, `session.files`, `session.parts`, `session.poster`, `session.peek`, `session.open`)
+// - CRDT preference/collaboration records (`stars`, `progress`, `presetProjects`, `board.drafts`) with `rev` monotonicity
+// - Projects (`projects.info.put` + `PROJECTS.jsonl`, `projects.rename`, `projects.merge`)
+// - Hub (`hub.session.retry`, `hub.session.compact`)
+// - Drive (`drive.mkdir.post`) & Transfers (`transfers.cancel`)
+// - Links (`links.preview` SSRF guard), Feedback (`feedback.report` scrubbing), Resources (`resources.process.end` manager + PID start_time guard)
+
+import "base64"
+import "base_codec"
+import "station_api"
+import "station_drivers"
+import "station_jobs"
+import "station_ops"
+import "station_screens"
+import "station_vault"
+
+fn make_w17c3a_fixture(
+  fs_override : Option[station_jobs::FsPort] = None,
+  ro_override : Option[ReadOpsPort] = None,
+  drive_override : Option[station_screens::Drive] = None,
+  adopted_lines : Array[String] = [],
+) -> (WholeApi, WholeApiRuntimePort, station_api::EventsHub, station_jobs::FsPort) {
+  let seen = station_api::SeenStore::{
+    session_exists: fn(k : String) -> Bool { k == "s-main" || k == "s-other" || k == "s-archived" || k == "s-running" },
+    session_ws: fn(k : String) -> Option[Option[String]] {
+      if k == "s-main" || k == "s-archived" || k == "s-running" {
+        Some(Some("ws-main"))
+      } else if k == "s-other" {
+        Some(Some("ws-other"))
+      } else {
+        None
+      }
+    },
+    thread_exists: fn(tid : Int) -> Bool { tid == 10 || tid == 20 },
+    thread_sessions: fn(tid : Int) -> Array[String] {
+      if tid == 10 { ["s-main"] } else if tid == 20 { ["s-other"] } else { [] }
+    },
+    job_session: fn(_id : String) -> Option[String] { None },
+    handed_to: fn(_k : String) -> Option[station_api::HandedRecord] { None },
+  }
+  let mem_fs = station_ops::MemFs::new()
+  let _ = mem_fs.put_text("/tmp/w17c3a/config.json", "{}", 384)
+  let cfg_file = match station_ops::ConfigFile::open(mem_fs.ops(), "/tmp/w17c3a", sep="/") {
+    Ok(c) => c
+    Err(_) => panic("ConfigFile::open failed")
+  }
+  let store = WholeStore::new_pre_handover_with_sep("/tmp/w17c3a", "/")
+  store.vault_store = Some(station_vault::VaultStore::in_memory())
+  let job_fs = match fs_override {
+    Some(f) => f
+    None => mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  }
+  let agents_cfg = WholeAgentsConfig::{
+    data_dir: "/tmp/w17c3a",
+    assets_dir: "/tmp/w17c3a/assets",
+    runner_bin: "/usr/bin/true",
+    mcp_port: 0,
+    home_ws: "ws-main",
+  }
+  let agents = WholeAgents::new_with_deps(
+    agents_cfg,
+    job_fs,
+    wc_noop_proc_backend(),
+    fn(n : Int) -> Result[Bytes, String] {
+      let b = Bytes::new(n)
+      for i in 0..<n { b[i] = (i % 251 + 1).to_byte() }
+      Ok(b)
+    },
+  )
+  let updates = station_drivers::RuntimeUpdatesManager::new()
+  let auth_policy = PeerAuthPolicy::{
+    station_id: "st-w17c3a",
+    station_build: "9.9.9",
+    home_workspace: "ws-main",
+    allowed_workspaces: ["ws-main", "ws-other"],
+    verify_fn: None,
+  }
+  let drive = match drive_override {
+    Some(d) => d
+    None => {
+      let dfs = station_screens::MemDriveFs::new()
+      let _ = (dfs.fs().mkdir_p)("/tmp/w17c3a/drive-root")
+      station_screens::Drive::new(
+        dfs.fs(),
+        ["/tmp/w17c3a/drive-root"],
+        ["/tmp/w17c3a/data"],
+        false,
+        "/tmp/w17c3a/trash",
+        station_screens::TrashKind::Freedesktop,
+      )
+    }
+  }
+  let screens = station_screens::ScreenHub::new()
+  let events = station_api::EventsHub::with_visibility(
+    "st-w17c3a",
+    station_api::EventKeeps::default(),
+    Some(seen),
+    None,
+  )
+  let hooks = WholeApiRuntimeHooks::new()
+  hooks.read_only_handover_cell[0] = false
+  let base_port = WholeApiRuntimePort::in_memory()
+  let base_ro = match ro_override {
+    Some(r) => r
+    None => ReadOpsPort::{
+      ..ReadOpsPort::in_memory(),
+      session_workspace: fn(k : String) -> Result[Option[SessionWorkspaceInfo], station_api::ApiError] {
+        if k == "s-main" {
+          Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-main", runtime: "claude", cwd: None, archived: false, running: false }))
+        } else if k == "s-other" {
+          Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-other", runtime: "claude", cwd: None, archived: false, running: false }))
+        } else if k == "s-archived" {
+          Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-archived", runtime: "claude", cwd: None, archived: true, running: false }))
+        } else if k == "s-running" {
+          Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-running", runtime: "claude", cwd: None, archived: false, running: true }))
+        } else {
+          Ok(None)
+        }
+      },
+    }
+  }
+  let port = WholeApiRuntimePort::{
+    ..base_port,
+    read_adopted_output: fn(_k : String) -> Array[String] { adopted_lines },
+    readops: base_ro,
+  }
+  let di_host = station_api::ApiHost::{
+    read_op: fn(op : String, req : station_api::ApiRequest, args : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      match dispatch_extra_read_op(op, req, args, agents, seen, port) {
+        Some(res) => res
+        None => Err(station_api::ApiError::new(404, "unsupported read op: " + op))
+      }
+    },
+    call: fn(op : String, req : station_api::ApiRequest, params : Array[String], body : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      match dispatch_extra_call_op(
+        op, req, params, body, store, agents, auth_policy, seen, drive, screens, events, updates,
+        Some(cfg_file), None, hooks, port, 1700000000000L,
+      ) {
+        Some(res) => res
+        None => Err(station_api::ApiError::new(404, "unsupported api op: " + op))
+      }
+    },
+    overview: fn(_v, _l) { Ok(base_codec::json_obj([])) },
+    host_sample: fn(_l) { Ok(base_codec::json_obj([])) },
+    search: fn(_q, _a, _k, _lim, _off, _arch) { Ok(station_api::SearchResult::{ groups: [], building: false }) },
+    events: Some(events),
+    usage_reading_all: fn() { false },
+    session_exists: seen.session_exists,
+    held_sessions: fn() { [] },
+    dev_enabled: false,
+  }
+  let api = WholeApi::new_with_ports(
+    auth_policy, drive, ["/tmp/w17c3a/drive-root"], None, screens, events, seen, di_host,
+  )
+  api.read_only_handover = false
+  (api, port, events, job_fs)
+}
+
+test "w17c3a readops: memory workspace isolation, resources cross-ws folding, usage & machineSessions gates" {
+  let base_fs = mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  let _ = (base_fs.mkdir_p)("/tmp/w17c3a/agent/skills/demo")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/agent/MEMORY.md", "home-secret-memory")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/agent/skills/demo/SKILL.md", "---\nname: demo\ndescription: Home skill\n---\n# Demo\n")
+  let _ = (base_fs.mkdir_p)("/tmp/w17c3a/agent/workspaces/ws-other/skills/other")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/agent/workspaces/ws-other/MEMORY.md", "other-ws-memory")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/agent/workspaces/ws-other/skills/other/SKILL.md", "---\nname: other\ndescription: Other skill\n---\n")
+  let fs = station_jobs::FsPort::{
+    ..base_fs,
+    read_dir: fn(p : String) -> Option[Array[String]] {
+      if p == "/tmp/w17c3a/agent/skills" {
+        Some(["demo"])
+      } else if p == "/tmp/w17c3a/agent/workspaces/ws-other/skills" {
+        Some(["other"])
+      } else {
+        (base_fs.read_dir)(p)
+      }
+    },
+  }
+
+  let ro = ReadOpsPort::{
+    ..ReadOpsPort::in_memory(),
+    resource_snapshot: fn() -> base_codec::Json {
+      base_codec::json_obj([
+        ("at", base_codec::json_int64(1700000000000L)),
+        ("everyMs", base_codec::json_int(5000)),
+        ("counted", base_codec::json_bool(true)),
+        ("net", base_codec::json_bool(false)),
+        ("disk", base_codec::json_bool(false)),
+        ("total", base_codec::json_obj([("cpu", base_codec::json_num(2.0)), ("memory", base_codec::json_int(300))])),
+        ("groups", base_codec::json_arr([
+          base_codec::json_obj([
+            ("key", base_codec::json_str("chat:s-main")),
+            ("kind", base_codec::json_str("chat")),
+            ("session", base_codec::json_str("s-main")),
+            ("cpu", base_codec::json_num(1.0)),
+            ("memory", base_codec::json_int(100)),
+            ("processes", base_codec::json_arr([base_codec::json_obj([("pid", base_codec::json_int(101)), ("endable", base_codec::json_bool(true))])])),
+          ]),
+          base_codec::json_obj([
+            ("key", base_codec::json_str("chat:s-other")),
+            ("kind", base_codec::json_str("chat")),
+            ("session", base_codec::json_str("s-other")),
+            ("cpu", base_codec::json_num(1.0)),
+            ("memory", base_codec::json_int(200)),
+            ("processes", base_codec::json_arr([base_codec::json_obj([("pid", base_codec::json_int(202)), ("endable", base_codec::json_bool(true))])])),
+          ]),
+        ])),
+        ("history", base_codec::json_arr([])),
+      ])
+    },
+    list_machine_sessions: fn() -> Result[Array[MachineSessionSummary], station_api::ApiError] {
+      Ok([MachineSessionSummary::{ runtime: "claude", id: "ms-1", title: "Local Term", cwd: "/work", updated_at: 100L, session: None }])
+    },
+    get_machine_session: fn(rt : String, id : String, _lim : Int) -> Result[Option[MachineSessionDetail], station_api::ApiError] {
+      if rt == "claude" && id == "ms-1" {
+        Ok(Some(MachineSessionDetail::{
+          summary: MachineSessionSummary::{ runtime: "claude", id: "ms-1", title: "Local Term", cwd: "/work", updated_at: 100L, session: None },
+          said: [(true, "hello", Some(10L)), (false, "world", Some(20L))],
+        }))
+      } else {
+        Ok(None)
+      }
+    },
+  }
+  let (api, _, _, _) = make_w17c3a_fixture(fs_override=Some(fs), ro_override=Some(ro))
+  let home_owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  let joined_owner = make_test_viewer("j@example.com", "u-joined", "ws-other", false, "owner")
+
+  // 1. `memory` strictly isolates home vs joined workspace
+  match (api.admin.host.read_op)("memory", make_test_api_req_as("GET", "/memory", home_owner), base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if !s.contains("home-secret-memory") || s.contains("other-ws-memory") || !s.contains("Home skill") {
+        panic("home memory mismatch: " + s)
+      }
+    }
+    Err(e) => panic("home memory failed: " + e.message)
+  }
+  match (api.admin.host.read_op)("memory", make_test_api_req_as("GET", "/memory", joined_owner), base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if !s.contains("other-ws-memory") || s.contains("home-secret-memory") {
+        panic("joined memory leaked home memory: " + s)
+      }
+    }
+    Err(e) => panic("joined memory failed: " + e.message)
+  }
+
+  // 2. `resources` folds cross-ws `chat:s-other` into `agents` with `endable: false`
+  match (api.admin.host.read_op)("resources", make_test_api_req_as("GET", "/resources", home_owner), base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("chat:s-other") || !s.contains("\"key\":\"agents\"") || !s.contains("\"endable\":false") {
+        panic("resources failed to fold cross-ws chat into non-endable agents: " + s)
+      }
+    }
+    Err(e) => panic("resources failed: " + e.message)
+  }
+
+  // 3. `usage` validates historyFrom/historyTo & `usage.calls` rejects cross-ws session with 404
+  match (api.admin.host.read_op)("usage", make_test_api_req_as("GET", "/usage?historyFrom=60000", home_owner), base_codec::json_obj([])) {
+    Err(e) => if e.status != 400 { panic("unpaired historyFrom must return 400") }
+    Ok(_) => panic("unpaired historyFrom must be rejected")
+  }
+  match (api.admin.host.read_op)("usage.calls", make_test_api_req_as("GET", "/usage/calls/s-other", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-other"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws usage.calls must return 404") }
+    Ok(_) => panic("cross-ws usage.calls must be rejected")
+  }
+  match (api.admin.host.read_op)("usage.calls", make_test_api_req_as("GET", "/usage/calls/s-main", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Ok(res) => if base_codec::json_get(res, "rows").is_none() { panic("usage.calls missing rows") }
+    Err(e) => panic("usage.calls failed: " + e.message)
+  }
+
+  // 4. `machineSessions` & `machineSession`: home allowed, joined 403, traversal 400
+  match (api.admin.host.read_op)("machineSessions", make_test_api_req_as("GET", "/machine-sessions", joined_owner), base_codec::json_obj([])) {
+    Err(e) => if e.status != 403 { panic("joined machineSessions must return 403") }
+    Ok(_) => panic("joined machineSessions must be rejected")
+  }
+  match (api.admin.host.read_op)("machineSession", make_test_api_req_as("GET", "/machine-sessions/claude/ms-1", home_owner), base_codec::json_obj([("runtime", base_codec::json_str("claude")), ("id", base_codec::json_str("ms-1"))])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if !s.contains("Local Term") || !s.contains("hello") { panic("machineSession mismatch: " + s) }
+    }
+    Err(e) => panic("machineSession failed: " + e.message)
+  }
+  match (api.admin.host.read_op)("machineSession", make_test_api_req_as("GET", "/machine-sessions/claude/..%2Fetc", home_owner), base_codec::json_obj([("runtime", base_codec::json_str("claude")), ("id", base_codec::json_str("../etc"))])) {
+    Err(e) => if e.status != 400 { panic("traversal machineSession id must return 400") }
+    Ok(_) => panic("traversal machineSession id must be rejected")
+  }
+}
+
+test "w17c3a readops: session.timeline/files/parts/poster/peek/open functional + cross-ws + traversal + symlink escape" {
+  let base_fs = mem_job_fs_port(fn() -> Int64 { 1700000000000L })
+  let _ = (base_fs.mkdir_p)("/tmp/w17c3a/sessions/s-main/uploads")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/sessions/s-main/uploads/hello.txt", "0123456789abcdef")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/sessions/s-main/uploads/clip.mp4", "fake-mp4-bytes")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/sessions/s-main/notes.md", "line1\nline2\nline3\n")
+  let _ = (base_fs.write_file)("/tmp/w17c3a/sessions/s-main/uploads/evil-link", "secret")
+  // Wrap `lstat` & `realpath` to simulate a symlink escaping outside workspace.
+  let fs = station_jobs::FsPort::{
+    ..base_fs,
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      if p.ends_with("evil-link") {
+        Some(station_jobs::FsStat::{ kind: "link", size: 6L, executable: false, mode: 420, mtime_ms: 1L, dev: 1L, ino: 1L })
+      } else {
+        (base_fs.lstat)(p)
+      }
+    },
+    realpath: fn(p : String) -> Option[String] {
+      if p.ends_with("evil-link") {
+        Some("/etc/passwd")
+      } else {
+        Some(p)
+      }
+    },
+  }
+  let (api, _, _, _) = make_w17c3a_fixture(fs_override=Some(fs), adopted_lines=["e0", "e1", "e2"])
+  let home_owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+
+  // 1. `session.timeline`
+  match (api.admin.host.read_op)("session.timeline", make_test_api_req_as("GET", "/sessions/s-main/timeline?limit=2", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Ok(res) => {
+      if ro_json_int_field(res, "start") != Some(1) || ro_json_int_field(res, "end") != Some(3) {
+        panic("session.timeline window mismatch: " + base_codec::json_stringify(res))
+      }
+    }
+    Err(e) => panic("session.timeline failed: " + e.message)
+  }
+  match (api.admin.host.read_op)("session.timeline", make_test_api_req_as("GET", "/sessions/s-other/timeline", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-other"))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws session.timeline must return 404") }
+    Ok(_) => panic("cross-ws session.timeline must be rejected")
+  }
+
+  // 2. `session.files` & `session.parts` & symlink/traversal rejection
+  match (api.admin.host.read_op)("session.files", make_test_api_req_as("GET", "/sessions/s-main/files?name=hello.txt", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Ok(res) => {
+      if json_field_str(res, "bytes") != Some(base64::encode("0123456789abcdef".to_bytes())) {
+        panic("session.files bytes mismatch")
+      }
+    }
+    Err(e) => panic("session.files failed: " + e.message)
+  }
+  match (api.admin.host.read_op)("session.parts", make_test_api_req_as("GET", "/sessions/s-main/parts?name=hello.txt&offset=4&length=4", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Ok(res) => {
+      if json_field_str(res, "bytes") != Some(base64::encode("4567".to_bytes())) {
+        panic("session.parts slice mismatch: " + base_codec::json_stringify(res))
+      }
+    }
+    Err(e) => panic("session.parts failed: " + e.message)
+  }
+  match (api.admin.host.read_op)("session.files", make_test_api_req_as("GET", "/sessions/s-main/files?name=evil-link", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Err(e) => if e.status != 403 { panic("symlink escape in session.files must return 403, got " + e.status.to_string()) }
+    Ok(_) => panic("symlink escape in session.files must be rejected")
+  }
+  match (api.admin.host.read_op)("session.files", make_test_api_req_as("GET", "/sessions/s-main/files?name=../notes.md", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Err(e) => if e.status != 404 { panic("traversal in session.files must return 404") }
+    Ok(_) => panic("traversal in session.files must be rejected")
+  }
+
+  // 3. `session.poster`: 404 when no poster generated yet
+  match (api.admin.host.read_op)("session.poster", make_test_api_req_as("GET", "/sessions/s-main/poster?name=clip.mp4", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Err(e) => if e.status != 404 { panic("missing poster must return 404") }
+    Ok(_) => panic("missing poster must return 404")
+  }
+
+  // 4. `session.peek` & `session.open`: text, dir, traversal rejection
+  match (api.admin.host.read_op)("session.peek", make_test_api_req_as("GET", "/sessions/s-main/peek?path=notes.md&line=2", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Ok(res) => {
+      if json_field_str(res, "kind") != Some("text") { panic("session.peek expected text kind") }
+    }
+    Err(e) => panic("session.peek failed: " + e.message)
+  }
+  match (api.admin.host.read_op)("session.open", make_test_api_req_as("GET", "/sessions/s-main/open?path=notes.md", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Ok(res) => {
+      if json_field_str(res, "bytes") != Some(base64::encode("line1\nline2\nline3\n".to_bytes())) {
+        panic("session.open bytes mismatch")
+      }
+    }
+    Err(e) => panic("session.open failed: " + e.message)
+  }
+  match (api.admin.host.read_op)("session.open", make_test_api_req_as("GET", "/sessions/s-main/open?path=../../etc/passwd", home_owner), base_codec::json_obj([("key", base_codec::json_str("s-main"))])) {
+    Err(e) => if e.status != 400 { panic("traversal in session.open must return 400") }
+    Ok(_) => panic("traversal in session.open must be rejected")
+  }
+}
+
+test "w17c3a CRDT records: stars, progress, presetProjects, board.drafts rev-monotonic merge & isolation" {
+  let (api, _, _, _) = make_w17c3a_fixture()
+  let alice = make_test_viewer("alice@example.com", "u-alice", "ws-main", true, "owner")
+  let bob = make_test_viewer("bob@example.com", "u-bob", "ws-main", true, "member")
+
+  // 1. `stars`: higher rev wins; older rev cannot regress; per-(ws, sub) isolated
+  let s1 = base_codec::json_obj([("stars", base_codec::json_obj([
+    ("m1", base_codec::json_obj([("on", base_codec::json_bool(true)), ("rev", base_codec::json_int(2)), ("at", base_codec::json_int(100))])),
+  ]))])
+  let _ = (api.admin.host.call)("stars.PUT", make_test_api_req_as("PUT", "/stars", alice), [], s1)
+  // Stale rev=1 trying to overwrite m1=false must NOT win; new key m2 merges in
+  let s2 = base_codec::json_obj([("stars", base_codec::json_obj([
+    ("m1", base_codec::json_obj([("on", base_codec::json_bool(false)), ("rev", base_codec::json_int(1)), ("at", base_codec::json_int(999))])),
+    ("m2", base_codec::json_obj([("on", base_codec::json_bool(true)), ("rev", base_codec::json_int(1)), ("at", base_codec::json_int(200))])),
+  ]))])
+  match (api.admin.host.call)("stars.PUT", make_test_api_req_as("PUT", "/stars", alice), [], s2) {
+    Ok(res) => {
+      let st = match base_codec::json_get(res, "stars") { Some(v) => v, None => panic("missing stars") }
+      let m1 = match base_codec::json_get(st, "m1") { Some(v) => v, None => panic("missing m1") }
+      if json_field_bool(m1, "on") != Some(true) || ro_json_int_field(m1, "rev") != Some(2) {
+        panic("stars CRDT regressed on stale rev: " + base_codec::json_stringify(res))
+      }
+      if base_codec::json_get(st, "m2").is_none() { panic("stars CRDT dropped new key m2") }
+    }
+    Err(e) => panic("stars.PUT failed: " + e.message)
+  }
+  // Bob's stars remain empty
+  match (api.admin.host.call)("stars.GET", make_test_api_req_as("GET", "/stars", bob), [], base_codec::json_obj([])) {
+    Ok(res) => if base_codec::json_stringify(res).contains("m1") { panic("stars leaked across users") }
+    Err(e) => panic("bob stars.GET failed: " + e.message)
+  }
+
+  // 2. `progress`: validation + rev monotonicity
+  let p_bad = base_codec::json_obj([("progress", base_codec::json_obj([("minutes", base_codec::json_int(1)), ("strength", base_codec::json_str("remind")), ("rev", base_codec::json_int(1)), ("at", base_codec::json_int(10))]))])
+  match (api.admin.host.call)("progress.PUT", make_test_api_req_as("PUT", "/progress", alice), [], p_bad) {
+    Err(e) => if e.status != 400 { panic("invalid progress minutes must return 400") }
+    Ok(_) => panic("invalid progress minutes must be rejected")
+  }
+  let p_v2 = base_codec::json_obj([("progress", base_codec::json_obj([("minutes", base_codec::json_int(30)), ("strength", base_codec::json_str("require")), ("rev", base_codec::json_int(2)), ("at", base_codec::json_int(20))]))])
+  let _ = (api.admin.host.call)("progress.PUT", make_test_api_req_as("PUT", "/progress", alice), [], p_v2)
+  let p_v1 = base_codec::json_obj([("progress", base_codec::json_obj([("minutes", base_codec::json_int(15)), ("strength", base_codec::json_str("remind")), ("rev", base_codec::json_int(1)), ("at", base_codec::json_int(99))]))])
+  match (api.admin.host.call)("progress.PUT", make_test_api_req_as("PUT", "/progress", alice), [], p_v1) {
+    Ok(res) => {
+      let pr = match base_codec::json_get(res, "progress") { Some(v) => v, None => panic("missing progress") }
+      if ro_json_int_field(pr, "rev") != Some(2) || ro_json_int_field(pr, "minutes") != Some(30) {
+        panic("progress CRDT regressed on stale rev: " + base_codec::json_stringify(res))
+      }
+    }
+    Err(e) => panic("progress.PUT failed: " + e.message)
+  }
+
+  // 3. `presetProjects`: rev monotonicity + validation
+  let pp2 = base_codec::json_obj([("presetProjects", base_codec::json_obj([
+    ("pr_1", base_codec::json_obj([("project", base_codec::json_str("Monoid")), ("rev", base_codec::json_int(3)), ("at", base_codec::json_int(100))])),
+  ]))])
+  let _ = (api.admin.host.call)("presetProjects.PUT", make_test_api_req_as("PUT", "/preset-projects", alice), [], pp2)
+  let pp1 = base_codec::json_obj([("presetProjects", base_codec::json_obj([
+    ("pr_1", base_codec::json_obj([("project", base_codec::json_str("OldProj")), ("rev", base_codec::json_int(1)), ("at", base_codec::json_int(500))])),
+  ]))])
+  match (api.admin.host.call)("presetProjects.PUT", make_test_api_req_as("PUT", "/preset-projects", alice), [], pp1) {
+    Ok(res) => {
+      let m = match base_codec::json_get(res, "presetProjects") { Some(v) => v, None => panic("missing presetProjects") }
+      let e = match base_codec::json_get(m, "pr_1") { Some(v) => v, None => panic("missing pr_1") }
+      if json_field_str(e, "project") != Some("Monoid") || ro_json_int_field(e, "rev") != Some(3) {
+        panic("presetProjects CRDT regressed on stale rev: " + base_codec::json_stringify(res))
+      }
+    }
+    Err(e) => panic("presetProjects.PUT failed: " + e.message)
+  }
+
+  // 4. `board.drafts`: rejects foreign owner spoofing + rev monotonicity
+  let spoof = base_codec::json_obj([("drafts", base_codec::json_arr([
+    base_codec::json_obj([("id", base_codec::json_str("d1")), ("owner", base_codec::json_str("u-bob")), ("rev", base_codec::json_int(1)), ("gone", base_codec::json_bool(false)), ("at", base_codec::json_int(1)), ("updatedAt", base_codec::json_int(1)), ("title", base_codec::json_str("Spoof"))]),
+  ]))])
+  match (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", alice), [], spoof) {
+    Err(e) => if e.status != 400 { panic("spoofed draft owner must return 400") }
+    Ok(_) => panic("spoofed draft owner must be rejected")
+  }
+  let d_v2 = base_codec::json_obj([("drafts", base_codec::json_arr([
+    base_codec::json_obj([("id", base_codec::json_str("d1")), ("owner", base_codec::json_str("u-alice")), ("rev", base_codec::json_int(2)), ("gone", base_codec::json_bool(false)), ("at", base_codec::json_int(10)), ("updatedAt", base_codec::json_int(20)), ("title", base_codec::json_str("V2"))]),
+  ]))])
+  let _ = (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", alice), [], d_v2)
+  let d_v1 = base_codec::json_obj([("drafts", base_codec::json_arr([
+    base_codec::json_obj([("id", base_codec::json_str("d1")), ("owner", base_codec::json_str("u-alice")), ("rev", base_codec::json_int(1)), ("gone", base_codec::json_bool(false)), ("at", base_codec::json_int(10)), ("updatedAt", base_codec::json_int(99)), ("title", base_codec::json_str("StaleV1"))]),
+  ]))])
+  match (api.admin.host.call)("board.drafts.PUT", make_test_api_req_as("PUT", "/board/drafts", alice), [], d_v1) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if !s.contains("V2") || s.contains("StaleV1") {
+        panic("board.drafts CRDT regressed on stale rev: " + s)
+      }
+    }
+    Err(e) => panic("board.drafts.PUT failed: " + e.message)
+  }
+}
+
+test "w17c3a projects, hub retry/compact, drive mkdir, transfers cancel, links SSRF, feedback report, resources process end" {
+  let mut killed_pid = 0
+  let ro = ReadOpsPort::{
+    ..ReadOpsPort::in_memory(),
+    session_workspace: fn(k : String) -> Result[Option[SessionWorkspaceInfo], station_api::ApiError] {
+      if k == "s-main" {
+        Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-main", runtime: "claude", cwd: None, archived: false, running: false }))
+      } else if k == "s-archived" {
+        Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-archived", runtime: "claude", cwd: None, archived: true, running: false }))
+      } else if k == "s-running" {
+        Ok(Some(SessionWorkspaceInfo::{ workspace: "/tmp/w17c3a/sessions/s-running", runtime: "claude", cwd: None, archived: false, running: true }))
+      } else {
+        Ok(None)
+      }
+    },
+    lookup_feedback_notice: fn(tid : Int64, n : Int) -> Result[Option[station_api::NoticeReportInput], station_api::ApiError] {
+      if tid == 10L && n == 3 {
+        Ok(Some(station_api::NoticeReportInput::{
+          thread_id: 10,
+          thread_channel: "CHAT",
+          thread_ts: "100",
+          entry_n: 3,
+          entry_text: "⚠️ agent crashed in /home/secretuser/repo",
+          entry_at_ms: 1700000000000L,
+          session_key: Some("s-main"),
+          session_ws: Some("ws-main"),
+          session_runtime: Some("claude"),
+          session_profile: Some("default"),
+          session_model: Some("opus"),
+          turn_detail: None,
+          viewer_name: "",
+          viewer_email: "",
+          os: "linux",
+          arch: "x64",
+          log_tail: Some("2026-11-28 ERROR agents::claude s-main failed at /home/secretuser/repo/a.ts"),
+          home: "/home/secretuser",
+        }))
+      } else {
+        Ok(None)
+      }
+    },
+    tracked_process: fn(pid : Int, session : String) -> Option[TrackedProcessInfo] {
+      if pid == 4242 && session == "s-main" {
+        Some(TrackedProcessInfo::{ pid: 4242, session: "s-main", name: "build-job", start_time_ms: 500000L })
+      } else if pid == 9999 && session == "s-main" {
+        Some(TrackedProcessInfo::{ pid: 9999, session: "s-main", name: "reused-job", start_time_ms: 100000L })
+      } else {
+        None
+      }
+    },
+    live_proc_start_ms: fn(pid : Int) -> Option[Int64] {
+      if pid == 4242 { Some(500100L) } else if pid == 9999 { Some(900000L) } else { None }
+    },
+    end_tracked_process: fn(pid : Int, _start_ms : Int64) -> Result[Unit, station_api::ApiError] {
+      killed_pid = pid
+      Ok(())
+    },
+  }
+  let (api, port, _, fs) = make_w17c3a_fixture(ro_override=Some(ro))
+  let home_owner = make_test_viewer("owner@example.com", "u-owner", "ws-main", true, "owner")
+  let member = make_test_viewer("m@example.com", "u-member", "ws-main", true, "member")
+
+  // 1. `projects.info.put` + `PROJECTS.jsonl` + `projects.rename` + `projects.merge`
+  match (api.admin.host.call)("projects.info.put", make_test_api_req_as("PUT", "/projects/info", home_owner), [], base_codec::json_obj([
+    ("name", base_codec::json_str("Alpha")),
+    ("note", base_codec::json_str("Alpha notes")),
+    ("refs", base_codec::json_arr([base_codec::json_str("https://github.com/AFK-surf/monoid")])),
+  ])) {
+    Ok(res) => if !base_codec::json_stringify(res).contains("Alpha notes") { panic("projects.info.put missing note") }
+    Err(e) => panic("projects.info.put failed: " + e.message)
+  }
+  match (fs.read_file)("/tmp/w17c3a/agent/PROJECTS.jsonl") {
+    Some(txt) => if !txt.contains("Alpha") { panic("PROJECTS.jsonl not written") }
+    None => panic("PROJECTS.jsonl missing on disk")
+  }
+  match (api.admin.host.call)("projects.rename", make_test_api_req_as("POST", "/projects/rename", home_owner), [], base_codec::json_obj([
+    ("from", base_codec::json_str("Alpha")),
+    ("to", base_codec::json_str("Beta")),
+  ])) {
+    Ok(res) => if json_field_str(res, "to") != Some("Beta") { panic("projects.rename mismatch") }
+    Err(e) => panic("projects.rename failed: " + e.message)
+  }
+  match (api.admin.host.call)("projects.merge", make_test_api_req_as("POST", "/projects/merge", home_owner), [], base_codec::json_obj([
+    ("from", base_codec::json_str("Beta")),
+    ("to", base_codec::json_str("Beta")),
+  ])) {
+    Err(e) => if e.status != 400 { panic("self-merge must return 400") }
+    Ok(_) => panic("self-merge must be rejected")
+  }
+
+  // 2. `hub.session.retry` & `hub.session.compact`
+  match (api.admin.host.call)("hub.session.retry", make_test_api_req_as("POST", "/sessions/s-other/retry", home_owner), ["s-other"], base_codec::json_obj([("thread", base_codec::json_int(10)), ("seq", base_codec::json_int(1))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws retry must return 404") }
+    Ok(_) => panic("cross-ws retry must be rejected")
+  }
+  match (api.admin.host.call)("hub.session.retry", make_test_api_req_as("POST", "/sessions/s-archived/retry", home_owner), ["s-archived"], base_codec::json_obj([("thread", base_codec::json_int(10)), ("seq", base_codec::json_int(1))])) {
+    Err(e) => if e.status != 409 { panic("archived retry must return 409") }
+    Ok(_) => panic("archived retry must be rejected")
+  }
+  match (api.admin.host.call)("hub.session.retry", make_test_api_req_as("POST", "/sessions/s-main/retry", home_owner), ["s-main"], base_codec::json_obj([("thread", base_codec::json_int(10)), ("seq", base_codec::json_int(2))])) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("retry expected ok:true") }
+    Err(e) => panic("retry failed: " + e.message)
+  }
+  match (api.admin.host.call)("hub.session.compact", make_test_api_req_as("POST", "/sessions/s-running/compact", home_owner), ["s-running"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 409 { panic("running compact must return 409") }
+    Ok(_) => panic("running compact must be rejected")
+  }
+  match (api.admin.host.call)("hub.session.compact", make_test_api_req_as("POST", "/sessions/s-main/compact", home_owner), ["s-main"], base_codec::json_obj([])) {
+    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("compact expected ok:true") }
+    Err(e) => panic("compact failed: " + e.message)
+  }
+
+  // 3. `drive.mkdir.post`: inside pinned root succeeds; outside root / traversal rejected
+  match (api.admin.host.call)("drive.mkdir.post", make_test_api_req_as("POST", "/drive/mkdir", home_owner), [], base_codec::json_obj([
+    ("root", base_codec::json_str("/tmp/w17c3a/drive-root")),
+    ("path", base_codec::json_str("sub/newdir")),
+  ])) {
+    Ok(res) => if json_field_bool(res, "dir") != Some(true) { panic("drive.mkdir expected dir:true") }
+    Err(e) => panic("drive.mkdir failed: " + e.message)
+  }
+  match (api.admin.host.call)("drive.mkdir.post", make_test_api_req_as("POST", "/drive/mkdir", home_owner), [], base_codec::json_obj([
+    ("root", base_codec::json_str("/tmp/w17c3a/drive-root")),
+    ("path", base_codec::json_str("../../etc/pwn")),
+  ])) {
+    Err(e) => if e.status != 400 && e.status != 403 { panic("drive.mkdir traversal must fail 400/403, got " + e.status.to_string()) }
+    Ok(_) => panic("drive.mkdir traversal must be rejected")
+  }
+
+  // 4. `transfers.cancel`: owner cancels own transfer; another user gets 404
+  let t = match port.readops.transfers.start(
+    "owner@example.com", "ws-main", true, true, false,
+    station_screens::TransferFrom::{ station: None, station_name: None, grant: None, root: "/tmp/w17c3a/drive-root", path: "", names: ["a.txt"] },
+    station_screens::TransferTo::{ root: "/tmp/w17c3a/drive-root", path: "sub" },
+    Map::new(), 1700000000000L,
+  ) {
+    Ok(tr) => tr
+    Err(e) => panic("transfers.start failed: " + e.message)
+  }
+  match (api.admin.host.call)("transfers.cancel", make_test_api_req_as("POST", "/drive/transfers/" + t.id + "/cancel", member), [t.id], base_codec::json_obj([])) {
+    Err(e) => if e.status != 404 { panic("other user cancelling transfer must return 404") }
+    Ok(_) => panic("other user cancelling transfer must be rejected")
+  }
+  match (api.admin.host.call)("transfers.cancel", make_test_api_req_as("POST", "/drive/transfers/" + t.id + "/cancel", home_owner), [t.id], base_codec::json_obj([])) {
+    Ok(res) => if !base_codec::json_stringify(res).contains("cancelled") { panic("transfers.cancel expected cancelled state") }
+    Err(e) => panic("transfers.cancel failed: " + e.message)
+  }
+
+  // 5. `links.preview`: SSRF blocking on loopback, private, metadata IP; public URL allowed
+  let ssrf_urls : Array[String] = [
+    "http://127.0.0.1/admin",
+    "http://localhost:8080/",
+    "http://169.254.169.254/latest/meta-data/",
+    "http://10.0.0.1/internal",
+    "http://[::1]/secret",
+  ]
+  for i in 0..<ssrf_urls.length() {
+    match (api.admin.host.call)("links.preview", make_test_api_req_as("GET", "/link-preview", home_owner), [], base_codec::json_obj([("url", base_codec::json_str(ssrf_urls[i]))])) {
+      Err(e) => if e.status != 403 { panic("SSRF URL must return 403: " + ssrf_urls[i]) }
+      Ok(_) => panic("SSRF URL must be blocked: " + ssrf_urls[i])
+    }
+  }
+  match (api.admin.host.call)("links.preview", make_test_api_req_as("GET", "/link-preview", home_owner), [], base_codec::json_obj([("url", base_codec::json_str("https://example.com/docs"))])) {
+    Ok(res) => if json_field_str(res, "kind") != Some("none") { panic("public links.preview mismatch") }
+    Err(e) => panic("public links.preview failed: " + e.message)
+  }
+
+  // 6. `feedback.report`: cross-ws 404 + home-path scrubbing
+  match (api.admin.host.call)("feedback.report", make_test_api_req_as("POST", "/threads/20/report", home_owner), ["20"], base_codec::json_obj([("n", base_codec::json_int(1))])) {
+    Err(e) => if e.status != 404 { panic("cross-ws feedback.report must return 404") }
+    Ok(_) => panic("cross-ws feedback.report must be rejected")
+  }
+  match (api.admin.host.call)("feedback.report", make_test_api_req_as("POST", "/threads/10/report", home_owner), ["10"], base_codec::json_obj([("n", base_codec::json_int(3))])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("/home/secretuser/repo/a.ts") || !s.contains("~/repo/a.ts") {
+        panic("feedback.report failed to scrub home path in logs: " + s)
+      }
+    }
+    Err(e) => panic("feedback.report failed: " + e.message)
+  }
+
+  // 7. `resources.process.end`: non-manager 403, untracked PID 409, PID reuse start_time mismatch 409, valid tracked PID 200
+  match (api.admin.host.call)("resources.process.end", make_test_api_req_as("POST", "/resources/processes/4242/end", member), ["4242"], base_codec::json_obj([("session", base_codec::json_str("s-main"))])) {
+    Err(e) => if e.status != 403 { panic("non-manager resources.process.end must return 403") }
+    Ok(_) => panic("non-manager resources.process.end must be rejected")
+  }
+  match (api.admin.host.call)("resources.process.end", make_test_api_req_as("POST", "/resources/processes/1234/end", home_owner), ["1234"], base_codec::json_obj([("session", base_codec::json_str("s-main"))])) {
+    Err(e) => if e.status != 409 { panic("untracked PID must return 409") }
+    Ok(_) => panic("untracked PID must be rejected")
+  }
+  match (api.admin.host.call)("resources.process.end", make_test_api_req_as("POST", "/resources/processes/9999/end", home_owner), ["9999"], base_codec::json_obj([("session", base_codec::json_str("s-main"))])) {
+    Err(e) => if e.status != 409 { panic("PID start_time mismatch must return 409") }
+    Ok(_) => panic("PID start_time mismatch must be rejected")
+  }
+  match (api.admin.host.call)("resources.process.end", make_test_api_req_as("POST", "/resources/processes/4242/end", home_owner), ["4242"], base_codec::json_obj([("session", base_codec::json_str("s-main"))])) {
+    Ok(res) => {
+      if killed_pid != 4242 || json_field_bool(res, "ended") != Some(true) {
+        panic("resources.process.end did not terminate tracked PID 4242")
+      }
+    }
+    Err(e) => panic("resources.process.end failed: " + e.message)
+  }
+}

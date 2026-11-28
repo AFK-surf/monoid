@@ -3,6 +3,7 @@ name = "station_whole"
 version = "0.1.0"
 
 [dependencies]
+base64 = { workspace = true }
 base_codec = { workspace = true }
 builders_core = { workspace = true }
 crypto = { workspace = true }

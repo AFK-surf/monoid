@@ -200,27 +200,7 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
   let (_, _, api, _, _, _) = make_mem_whole_api_fixture()
   let req = make_test_api_req("POST", "/test")
 
-  let unimplemented_read_ops : Array[String] = [
-    "resources",
-    "usage",
-    "usage.calls",
-    "machineSessions",
-    "machineSession",
-    "session.timeline",
-    "session.files",
-    "session.parts",
-    "session.poster",
-    "session.peek",
-    "session.open",
-  ]
-  for i in 0..<unimplemented_read_ops.length() {
-    let op = unimplemented_read_ops[i]
-    match (api.admin.host.read_op)(op, req, base_codec::json_obj([("key", base_codec::json_str("s1"))])) {
-      Err(e) => if e.status != 501 { panic("expected 501 for read_op " + op + ", got " + e.status.to_string()) }
-      Ok(_) => panic("unimplemented read_op returned fake 200: " + op)
-    }
-  }
-
+  // All read_ops are now wired (zero 501 read_ops remain in Wave 17C-3A).
   let unimplemented_call_ops : Array[String] = [
     "updates.install",
     "updates.check",
@@ -229,8 +209,6 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
     "workspaces.join",
     "copies.restore",
     "copies.s3.test",
-    "drive.mkdir.post",
-    "transfers.cancel",
     "xshare.hosts.put",
     "accounts.profiles.createKeyed",
     "accounts.profiles.createMachine",
@@ -242,16 +220,7 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
     "accounts.profiles.login.delete",
     "mcpServers.reloadAll",
     "mcpServers.reloadOne",
-    "stars.GET",
-    "stars.PUT",
-    "progress.GET",
-    "progress.PUT",
-    "presetProjects.GET",
-    "board.drafts.PUT",
-    "resources.process.end",
     "screens.browser.open",
-    "links.preview",
-    "feedback.report",
     "signins.fill",
     "logins.machine.list",
     "hub.session.stop",
@@ -311,10 +280,14 @@ test "wave17c2 R4: vault structured JSON errors, ConfigFile::try_update atomic a
     Ok(_) => panic("expected 409")
   }
 
-  // 3. `memory` returns honest 501 until `readops_local` `{global, skills}` contract is wired
+  // 3. `memory` is now wired in Wave 17C-3A (`{global: {path, text}, skills: [...]}`)
   match (api.admin.host.read_op)("memory", make_test_api_req_as("GET", "/memory", alice), base_codec::json_obj([])) {
-    Err(e) => if e.status != 501 { panic("memory must return honest 501, got " + e.status.to_string()) }
-    Ok(_) => panic("memory must return honest 501")
+    Ok(res) => {
+      if base_codec::json_get(res, "global").is_none() || base_codec::json_get(res, "skills").is_none() {
+        panic("memory must return {global, skills}")
+      }
+    }
+    Err(e) => panic("memory failed: " + e.message)
   }
 
   // 4. `ConfigFile::try_update` aborts atomically on Err without writing disk or firing listeners,
