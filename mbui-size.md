@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [23c599a29](https://github.com/AFK-surf/monoid/commit/23c599a293d3ef84bd3c3a34f272d1dbfd2a4606) fix(mesh): filter benchmarking IPs from lookup and | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.03 | 103.88 | 134.72 |
 | [9c79d355d](https://github.com/AFK-surf/monoid/commit/9c79d355d73ecce1dbbef8d649c8aaaa4700430b) chore(mbui): replace 5 cross-pkg iter().any/search | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 104.06 | 138.98 |
 | [b1ff26ba8](https://github.com/AFK-surf/monoid/commit/b1ff26ba84e7b3c2b2f8922a7d0d9949062d2af8) ci(station): eliminate SQLite fsync storms in 13 t | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.89 | 133.3 |
 | [527dadfe2](https://github.com/AFK-surf/monoid/commit/527dadfe2b7f452c3f6cd04c4a8891ebb3362ada) refactor(ui): drop defer and inferred closure type | 2.74 | 3.71 | 15.38 | 38.5 | 59.52 | 33.75 | 69.01 | 103.89 | 133.3 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0ef14d118](https://github.com/AFK-surf/monoid/commit/0ef14d1188dd4ea47d13845a074bbc6532c7ec42) fix(station): await in-flight stateDir removal acr | 2.73 | 3.69 | 15.31 | 38.44 | 59.31 | 33.68 | 68.88 | 103.68 | 134.43 |
 | [ea9ed02cb](https://github.com/AFK-surf/monoid/commit/ea9ed02cb073cd8425848a6c9e62387b97015213) fix(mbui): open the model panel at its foot and ke | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.64 | 68.76 | 103.47 | 133.05 |
 | [1f8e7b096](https://github.com/AFK-surf/monoid/commit/1f8e7b0965b35bf1c8c48739c2a43e437c92a2d1) feat(ui,mbui): add DataTable and fixed-header wide | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.63 | 68.73 | 103.7 | 131.87 |
-| [c1f8f8ff5](https://github.com/AFK-surf/monoid/commit/c1f8f8ff5a7b143832b0b2a674f18675296345f3) fix(ui): align dialog/sheet heads, iOS 27 38pt geo | 2.72 | 3.68 | 15.27 | 38.39 | 59.16 | 33.63 | 68.73 | 103.7 | 131.87 |
 
 ## Minimal framework baseline (`libs/ui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [23c599a29](https://github.com/AFK-surf/monoid/commit/23c599a293d3ef84bd3c3a34f272d1dbfd2a4606) fix(mesh): filter benchmarking IPs from lookup and | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.9 |
 | [9c79d355d](https://github.com/AFK-surf/monoid/commit/9c79d355d73ecce1dbbef8d649c8aaaa4700430b) chore(mbui): replace 5 cross-pkg iter().any/search | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.67 |
 | [b1ff26ba8](https://github.com/AFK-surf/monoid/commit/b1ff26ba84e7b3c2b2f8922a7d0d9949062d2af8) ci(station): eliminate SQLite fsync storms in 13 t | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
 | [527dadfe2](https://github.com/AFK-surf/monoid/commit/527dadfe2b7f452c3f6cd04c4a8891ebb3362ada) refactor(ui): drop defer and inferred closure type | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.87 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0ef14d118](https://github.com/AFK-surf/monoid/commit/0ef14d1188dd4ea47d13845a074bbc6532c7ec42) fix(station): await in-flight stateDir removal acr | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.64 |
 | [ea9ed02cb](https://github.com/AFK-surf/monoid/commit/ea9ed02cb073cd8425848a6c9e62387b97015213) fix(mbui): open the model panel at its foot and ke | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.56 |
 | [1f8e7b096](https://github.com/AFK-surf/monoid/commit/1f8e7b0965b35bf1c8c48739c2a43e437c92a2d1) feat(ui,mbui): add DataTable and fixed-header wide | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.75 |
-| [c1f8f8ff5](https://github.com/AFK-surf/monoid/commit/c1f8f8ff5a7b143832b0b2a674f18675296345f3) fix(ui): align dialog/sheet heads, iOS 27 38pt geo | 0.59 | 0.78 | 3.03 | 4.06 | 7.54 | 2.23 | 6.31 | 57.62 |
