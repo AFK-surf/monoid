@@ -4,7 +4,8 @@
 // allocation-free bilinear/bicubic sampling, and direct scanline fast paths for integer-translate
 // nearest-neighbor pixmap blits (`Gather`).
 // Invariant: module-level scratch buffers (`highp_r`..`highp_wy`) rely on single-threaded,
-// non-reentrant execution of `highp_start_generic` and every stage writing all lanes/channels it reads.
+// non-reentrant execution of `highp_start_generic` (same as `lowp.mbt`). Lanes `>= p.tail` are
+// never stored to `dst` and no stage reads across lanes except `MaskU8`, which zeros `>= p.tail`.
 
 ///|
 let highp_r : FixedArray[Float] = FixedArray::make(8, 0.0)
@@ -200,6 +201,82 @@ fn highp_start_generic(
 }
 
 ///|
+fn highp_fill_const_run(
+  sdata : FixedArray[Byte],
+  so : Int,
+  ddata : FixedArray[Byte],
+  do_start : Int,
+  count : Int,
+  has_scale : Bool,
+  cov : Float,
+  cov_finite_unit : Bool,
+  mode : Int,
+) -> Unit {
+  let inv255 : Float = 1.0 / 255.0
+  let s0 = sdata[so].to_int()
+  let s1 = sdata[so + 1].to_int()
+  let s2 = sdata[so + 2].to_int()
+  let s3 = sdata[so + 3].to_int()
+  let mut do_ = do_start
+  let do_end = do_ + count * 4
+  if !has_scale {
+    if mode == 0 || s3 == 255 {
+      let b0 = sdata[so]
+      let b1 = sdata[so + 1]
+      let b2 = sdata[so + 2]
+      let b3 = sdata[so + 3]
+      while do_ < do_end {
+        ddata[do_] = b0
+        ddata[do_ + 1] = b1
+        ddata[do_ + 2] = b2
+        ddata[do_ + 3] = b3
+        do_ += 4
+      }
+    } else if s3 != 0 || s0 != 0 || s1 != 0 || s2 != 0 {
+      let sr = fi(s0) * inv255
+      let sg = fi(s1) * inv255
+      let sb = fi(s2) * inv255
+      let sa = fi(s3) * inv255
+      let ia : Float = 1.0 - sa
+      while do_ < do_end {
+        ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
+        ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
+        ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
+        ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
+        do_ += 4
+      }
+    }
+  } else {
+    let sr = (fi(s0) * inv255) * cov
+    let sg = (fi(s1) * inv255) * cov
+    let sb = (fi(s2) * inv255) * cov
+    let sa = (fi(s3) * inv255) * cov
+    if mode == 0 {
+      let b0 = unnorm(sr).to_byte()
+      let b1 = unnorm(sg).to_byte()
+      let b2 = unnorm(sb).to_byte()
+      let b3 = unnorm(sa).to_byte()
+      while do_ < do_end {
+        ddata[do_] = b0
+        ddata[do_ + 1] = b1
+        ddata[do_ + 2] = b2
+        ddata[do_ + 3] = b3
+        do_ += 4
+      }
+    } else if !(cov_finite_unit && s3 == 0 && s0 == 0 && s1 == 0 && s2 == 0) {
+      let ia : Float = 1.0 - sa
+      while do_ < do_end {
+        ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
+        ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
+        ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
+        ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
+        do_ += 4
+      }
+    }
+  }
+}
+
+///|
 /// Direct scanline blit for `SeedShader -> [int-translate StTransform] -> Gather -> [Scale1Float] -> (Store | SourceOverRgba)`.
 /// `mode == 0` is `Store`; `mode == 1` is `SourceOverRgba`.
 /// Caller must ensure `!physical_equal(src.data, dst.data)` and `src.width/height > 0`.
@@ -234,68 +311,17 @@ fn highp_blit_gather_translate(
     // Left clamped prefix (sx == 0)
     let left_end = if x_in_lo < rend { x_in_lo } else { rend }
     if rx < left_end {
-      let so = src_row * 4
-      let s0 = sdata[so].to_int()
-      let s1 = sdata[so + 1].to_int()
-      let s2 = sdata[so + 2].to_int()
-      let s3 = sdata[so + 3].to_int()
-      let mut do_ = dst.offset_at(rx, y) * 4
-      let do_end = do_ + (left_end - rx) * 4
-      if !has_scale {
-        if mode == 0 || s3 == 255 {
-          let b0 = sdata[so]
-          let b1 = sdata[so + 1]
-          let b2 = sdata[so + 2]
-          let b3 = sdata[so + 3]
-          while do_ < do_end {
-            ddata[do_] = b0
-            ddata[do_ + 1] = b1
-            ddata[do_ + 2] = b2
-            ddata[do_ + 3] = b3
-            do_ += 4
-          }
-        } else if s3 != 0 || s0 != 0 || s1 != 0 || s2 != 0 {
-          let sr = fi(s0) * inv255
-          let sg = fi(s1) * inv255
-          let sb = fi(s2) * inv255
-          let sa = fi(s3) * inv255
-          let ia : Float = 1.0 - sa
-          while do_ < do_end {
-            ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
-            ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
-            ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
-            ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
-            do_ += 4
-          }
-        }
-      } else {
-        let sr = (fi(s0) * inv255) * cov
-        let sg = (fi(s1) * inv255) * cov
-        let sb = (fi(s2) * inv255) * cov
-        let sa = (fi(s3) * inv255) * cov
-        if mode == 0 {
-          let b0 = unnorm(sr).to_byte()
-          let b1 = unnorm(sg).to_byte()
-          let b2 = unnorm(sb).to_byte()
-          let b3 = unnorm(sa).to_byte()
-          while do_ < do_end {
-            ddata[do_] = b0
-            ddata[do_ + 1] = b1
-            ddata[do_ + 2] = b2
-            ddata[do_ + 3] = b3
-            do_ += 4
-          }
-        } else if !(cov_finite_unit && s3 == 0 && s0 == 0 && s1 == 0 && s2 == 0) {
-          let ia : Float = 1.0 - sa
-          while do_ < do_end {
-            ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
-            ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
-            ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
-            ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
-            do_ += 4
-          }
-        }
-      }
+      highp_fill_const_run(
+        sdata,
+        src_row * 4,
+        ddata,
+        dst.offset_at(rx, y) * 4,
+        left_end - rx,
+        has_scale,
+        cov,
+        cov_finite_unit,
+        mode,
+      )
     }
     // Unclamped interior (sx == x + itx)
     if x_in_lo < x_in_hi {
@@ -389,68 +415,17 @@ fn highp_blit_gather_translate(
     // Right clamped suffix (sx == sw - 1)
     let right_start = if x_in_hi > rx { x_in_hi } else { rx }
     if right_start < rend {
-      let so = (src_row + sw - 1) * 4
-      let s0 = sdata[so].to_int()
-      let s1 = sdata[so + 1].to_int()
-      let s2 = sdata[so + 2].to_int()
-      let s3 = sdata[so + 3].to_int()
-      let mut do_ = dst.offset_at(right_start, y) * 4
-      let do_end = do_ + (rend - right_start) * 4
-      if !has_scale {
-        if mode == 0 || s3 == 255 {
-          let b0 = sdata[so]
-          let b1 = sdata[so + 1]
-          let b2 = sdata[so + 2]
-          let b3 = sdata[so + 3]
-          while do_ < do_end {
-            ddata[do_] = b0
-            ddata[do_ + 1] = b1
-            ddata[do_ + 2] = b2
-            ddata[do_ + 3] = b3
-            do_ += 4
-          }
-        } else if s3 != 0 || s0 != 0 || s1 != 0 || s2 != 0 {
-          let sr = fi(s0) * inv255
-          let sg = fi(s1) * inv255
-          let sb = fi(s2) * inv255
-          let sa = fi(s3) * inv255
-          let ia : Float = 1.0 - sa
-          while do_ < do_end {
-            ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
-            ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
-            ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
-            ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
-            do_ += 4
-          }
-        }
-      } else {
-        let sr = (fi(s0) * inv255) * cov
-        let sg = (fi(s1) * inv255) * cov
-        let sb = (fi(s2) * inv255) * cov
-        let sa = (fi(s3) * inv255) * cov
-        if mode == 0 {
-          let b0 = unnorm(sr).to_byte()
-          let b1 = unnorm(sg).to_byte()
-          let b2 = unnorm(sb).to_byte()
-          let b3 = unnorm(sa).to_byte()
-          while do_ < do_end {
-            ddata[do_] = b0
-            ddata[do_ + 1] = b1
-            ddata[do_ + 2] = b2
-            ddata[do_ + 3] = b3
-            do_ += 4
-          }
-        } else if !(cov_finite_unit && s3 == 0 && s0 == 0 && s1 == 0 && s2 == 0) {
-          let ia : Float = 1.0 - sa
-          while do_ < do_end {
-            ddata[do_] = unnorm(fi(ddata[do_].to_int()) * inv255 * ia + sr).to_byte()
-            ddata[do_ + 1] = unnorm(fi(ddata[do_ + 1].to_int()) * inv255 * ia + sg).to_byte()
-            ddata[do_ + 2] = unnorm(fi(ddata[do_ + 2].to_int()) * inv255 * ia + sb).to_byte()
-            ddata[do_ + 3] = unnorm(fi(ddata[do_ + 3].to_int()) * inv255 * ia + sa).to_byte()
-            do_ += 4
-          }
-        }
-      }
+      highp_fill_const_run(
+        sdata,
+        (src_row + sw - 1) * 4,
+        ddata,
+        dst.offset_at(right_start, y) * 4,
+        rend - right_start,
+        has_scale,
+        cov,
+        cov_finite_unit,
+        mode,
+      )
     }
     y += 1
   }

@@ -403,7 +403,65 @@ test "Pixmap::apply_mask direct loop matches DestinationIn lowp math byte-for-by
 }
 
 ///|
-test "Pixmap::draw_pixmap fast path matches fill_rect pattern pipeline byte-for-byte" {
+test "highp gather-translate edge cases: subpixmap offset/stride, non-unit cov, 1x1/1xN/Nx1 src" {
+  // Non-zero SubPixmap offset and real_width != width
+  let src = Pixmap::new(9, 5).unwrap()
+  fill_pattern_pixmap(src)
+  let backing_fast = Pixmap::new(30, 14).unwrap()
+  let backing_ref = Pixmap::new(30, 14).unwrap()
+  fill_pattern_pixmap(backing_fast)
+  fill_pattern_pixmap(backing_ref)
+  let sub_rect = IntRect::from_xywh(4, 3, 19, 8).unwrap()
+  let sub_fast = backing_fast.subpixmap(sub_rect).unwrap()
+  let sub_ref = backing_ref.subpixmap(sub_rect).unwrap()
+  let blit_rect = ScreenIntRect::from_xywh(1, 1, 17, 6).unwrap()
+  let covs : Array[Float] = [
+    0.55,
+    -0.5,
+    1.75,
+    Float::reinterpret_from_uint(0x7fc00000U), // NaN
+  ]
+  for cov in covs {
+    for stages in [
+      [SeedShader, StTransform, Gather, Scale1Float, Store],
+      [SeedShader, StTransform, Gather, Scale1Float, SourceOverRgba],
+    ] {
+      let ctx = Context::new()
+      ctx.transform = Transform::from_translate(-3.0, -2.0)
+      ctx.current_coverage = cov
+      highp_start(stages, blit_rect, aa_mask_none, mask_none, ctx, src, sub_fast)
+      highp_start_generic(stages, blit_rect, aa_mask_none, mask_none, ctx, src, sub_ref)
+      assert_bytes_eq(backing_fast.data, backing_ref.data)
+    }
+  }
+
+  // 1x1, 1x5, 5x1 sources
+  for dims in [(1, 1), (1, 5), (5, 1)] {
+    let (sw, sh) = dims
+    let s = Pixmap::new(sw, sh).unwrap()
+    fill_pattern_pixmap(s)
+    let df = Pixmap::new(11, 7).unwrap()
+    let dr = Pixmap::new(11, 7).unwrap()
+    fill_pattern_pixmap(df)
+    fill_pattern_pixmap(dr)
+    let ctx = Context::new()
+    ctx.transform = Transform::from_translate(-2.0, -1.0)
+    ctx.current_coverage = 0.65
+    let r = ScreenIntRect::from_xywh(0, 0, 11, 7).unwrap()
+    for stages in [
+      [SeedShader, StTransform, Gather, Store],
+      [SeedShader, StTransform, Gather, SourceOverRgba],
+      [SeedShader, StTransform, Gather, Scale1Float, SourceOverRgba],
+    ] {
+      highp_start(stages, r, aa_mask_none, mask_none, ctx, s, df.as_subpixmap())
+      highp_start_generic(stages, r, aa_mask_none, mask_none, ctx, s, dr.as_subpixmap())
+      assert_bytes_eq(df.data, dr.data)
+    }
+  }
+}
+
+///|
+test "Pixmap::draw_pixmap fast path matches generic highp pipeline byte-for-byte" {
   let src = Pixmap::new(17, 9).unwrap()
   fill_pattern_pixmap(src)
   for i in 0..<17 {
@@ -425,15 +483,27 @@ test "Pixmap::draw_pixmap fast path matches fill_rect pattern pipeline byte-for-
         fill_pattern_pixmap(dst_ref)
         let pp : PixmapPaint = { opacity, blend_mode: mode, quality: Bilinear }
         dst_fast.draw_pixmap(ox, oy, src, pp, Transform::identity(), None)
-        let rect = src.size().to_int_rect(ox, oy).to_rect()
-        let p : Paint = {
-          shader: Pattern::new(src, Pad, Bilinear, opacity, Transform::from_translate(fi(ox), fi(oy))),
-          blend_mode: mode,
-          anti_alias: false,
-          force_hq_pipeline: false,
-          colorspace: Linear,
+        // Independent reference: build stages explicitly and invoke highp_start_generic directly
+        let pb = RasterPipelineBuilder::new()
+        let patt = Pattern::new(src, Pad, Bilinear, opacity, Transform::from_translate(fi(ox), fi(oy)))
+        assert_true(patt.push_stages(Linear, pb))
+        if mode == SourceOver {
+          pb.push(SourceOverRgba)
+        } else {
+          pb.push(Store)
         }
-        dst_ref.fill_rect(rect, p, Transform::identity(), None)
+        let rp = pb.compile()
+        assert_true(!rp.low)
+        let src_rect = src.size().to_int_rect(ox, oy)
+        let dst_bounds = dst_ref.size().to_screen_int_rect(0, 0).to_int_rect()
+        match src_rect.intersect(dst_bounds) {
+          Some(ir) =>
+            match ir.to_screen_int_rect() {
+              Some(sr) => highp_start_generic(rp.stages, sr, aa_mask_none, mask_none, rp.ctx, src, dst_ref.as_subpixmap())
+              None => ()
+            }
+          None => ()
+        }
         assert_bytes_eq(dst_fast.data, dst_ref.data)
       }
     }
@@ -441,19 +511,133 @@ test "Pixmap::draw_pixmap fast path matches fill_rect pattern pipeline byte-for-
 }
 
 ///|
-test "highp bilinear and bicubic sampling across Pad, Repeat, Reflect" {
-  let src = Pixmap::new(8, 8).unwrap()
+/// Reference allocating bilinear (n=2) / bicubic (n=4) sampler matching original implementation.
+fn ref_sampler(
+  src : Pixmap,
+  ctx : Context,
+  n : Int,
+  r : FixedArray[Float],
+  g : FixedArray[Float],
+  b : FixedArray[Float],
+  a : FixedArray[Float],
+) -> Unit {
+  let cx = FixedArray::makei(8, fn(i) { r[i] })
+  let cy = FixedArray::makei(8, fn(i) { g[i] })
+  let wx = Array::makei(n, fn(_) { FixedArray::make(8, (0.0 : Float)) })
+  let wy = Array::makei(n, fn(_) { FixedArray::make(8, (0.0 : Float)) })
+  for i in 0..<8 {
+    let fx = (cx[i] + 0.5) - lfloor(cx[i] + 0.5)
+    let fy = (cy[i] + 0.5) - lfloor(cy[i] + 0.5)
+    if n == 2 {
+      wx[0][i] = 1.0 - fx
+      wx[1][i] = fx
+      wy[0][i] = 1.0 - fy
+      wy[1][i] = fy
+    } else {
+      wx[0][i] = bicubic_far(1.0 - fx)
+      wx[1][i] = bicubic_near(1.0 - fx)
+      wx[2][i] = bicubic_near(fx)
+      wx[3][i] = bicubic_far(fx)
+      wy[0][i] = bicubic_far(1.0 - fy)
+      wy[1][i] = bicubic_near(1.0 - fy)
+      wy[2][i] = bicubic_near(fy)
+      wy[3][i] = bicubic_far(fy)
+    }
+  }
+  for i in 0..<8 {
+    r[i] = 0.0
+    g[i] = 0.0
+    b[i] = 0.0
+    a[i] = 0.0
+  }
+  let start : Float = if n == 2 { -0.5 } else { -1.5 }
+  let ys = FixedArray::makei(8, fn(i) { cy[i] + start })
+  let w_ulp = ulp_sub(fi(src.width))
+  let h_ulp = ulp_sub(fi(src.height))
+  let inv255 : Float = 1.0 / 255.0
+  for j in 0..<n {
+    let xs = FixedArray::makei(8, fn(i) { cx[i] + start })
+    for k in 0..<n {
+      for i in 0..<8 {
+        let tx = tile(xs[i], ctx.sampler_spread, fi(src.width), ctx.sampler_inv_width)
+        let ty = tile(ys[i], ctx.sampler_spread, fi(src.height), ctx.sampler_inv_height)
+        let x = smin(smax(tx, 0.0), w_ulp)
+        let y = smin(smax(ty, 0.0), h_ulp)
+        let o = (trunc_int(y) * src.width + trunc_int(x)) * 4
+        let w = wx[k][i] * wy[j][i]
+        r[i] = w * (fi(src.data[o].to_int()) * inv255) + r[i]
+        g[i] = w * (fi(src.data[o + 1].to_int()) * inv255) + g[i]
+        b[i] = w * (fi(src.data[o + 2].to_int()) * inv255) + b[i]
+        a[i] = w * (fi(src.data[o + 3].to_int()) * inv255) + a[i]
+        xs[i] = xs[i] + 1.0
+      }
+    }
+    for i in 0..<8 {
+      ys[i] = ys[i] + 1.0
+    }
+  }
+}
+
+///|
+test "highp allocation-free sampler matches reference bit-for-bit across Pad/Repeat/Reflect and tails" {
+  let src = Pixmap::new(8, 7).unwrap()
   fill_pattern_pixmap(src)
   let spreads : Array[SpreadMode] = [Pad, Repeat, Reflect]
-  let qualities : Array[FilterQuality] = [Bilinear, Bicubic]
+  let ts = Transform::from_scale(1.7, 1.3).post_rotate(15.0).invert().unwrap()
+  let pm = Pixmap::new(19, 13).unwrap()
   for spread in spreads {
-    for q in qualities {
-      let dst = Pixmap::new(19, 13).unwrap()
-      let paint = Paint::default()
-      paint.shader = Pattern::new(src, spread, q, 0.85, Transform::from_scale(1.7, 1.3).post_rotate(15.0))
-      let r = Rect::from_xywh(1.0, 1.0, 17.0, 11.0).unwrap()
-      dst.fill_rect(r, paint, Transform::identity(), None)
-      assert_true(dst.pixel(9, 6).unwrap().a > 0)
+    for n in [2, 4] {
+      for tail in [1, 3, 5, 8] {
+        let ctx = Context::new()
+        ctx.sampler_spread = spread
+        ctx.sampler_inv_width = 1.0 / fi(src.width)
+        ctx.sampler_inv_height = 1.0 / fi(src.height)
+        ctx.transform = ts
+        let r = FixedArray::make(8, (0.0 : Float))
+        let g = FixedArray::make(8, (0.0 : Float))
+        let b = FixedArray::make(8, (0.0 : Float))
+        let a = FixedArray::make(8, (0.0 : Float))
+        let rr = FixedArray::make(8, (0.0 : Float))
+        let rg = FixedArray::make(8, (0.0 : Float))
+        let rb = FixedArray::make(8, (0.0 : Float))
+        let ra = FixedArray::make(8, (0.0 : Float))
+        for i in 0..<8 {
+          let sx = fi(3 + i) + 0.5
+          let sy = fi(5) + 0.5
+          let tx = sx * ts.sx + (sy * ts.kx + ts.tx)
+          let ty = sx * ts.ky + (sy * ts.sy + ts.ty)
+          r[i] = tx
+          g[i] = ty
+          rr[i] = tx
+          rg[i] = ty
+        }
+        let p : HighP = {
+          r,
+          g,
+          b,
+          a,
+          dr: FixedArray::make(8, 0.0),
+          dg: FixedArray::make(8, 0.0),
+          db: FixedArray::make(8, 0.0),
+          da: FixedArray::make(8, 0.0),
+          tail,
+          dx: 3,
+          dy: 5,
+          ctx,
+          mask_ctx: mask_none,
+          aa_mask_ctx: aa_mask_none,
+          src,
+          dst: pm.as_subpixmap(),
+        }
+        p.sampler(n)
+        ref_sampler(src, ctx, n, rr, rg, rb, ra)
+        for i in 0..<tail {
+          assert_eq(p.r[i].reinterpret_as_uint(), rr[i].reinterpret_as_uint())
+          assert_eq(p.g[i].reinterpret_as_uint(), rg[i].reinterpret_as_uint())
+          assert_eq(p.b[i].reinterpret_as_uint(), rb[i].reinterpret_as_uint())
+          assert_eq(p.a[i].reinterpret_as_uint(), ra[i].reinterpret_as_uint())
+        }
+      }
     }
   }
 }

@@ -56,6 +56,18 @@ fn push_stage_opt(p : RasterPipelineBuilder, s : Stage?) -> Unit {
 }
 
 ///|
+fn RasterPipelineBlitter::new_shader_builder(self : RasterPipelineBlitter) -> (RasterPipelineBuilder, ColorSpace) {
+  let cs = self.paint.colorspace
+  let p = RasterPipelineBuilder::new()
+  p.force_hq_pipeline = self.paint.force_hq_pipeline
+  ignore(self.paint.shader.push_stages(cs, p))
+  if self.mask is Some(_) {
+    p.push(MaskU8)
+  }
+  (p, cs)
+}
+
+///|
 fn RasterPipelineBlitter::get_anti_h_rp(self : RasterPipelineBlitter) -> RasterPipeline {
   match self.blit_anti_h_rp {
     Some(rp) => rp
@@ -68,13 +80,7 @@ fn RasterPipelineBlitter::get_anti_h_rp(self : RasterPipelineBlitter) -> RasterP
         p.push(StoreU8)
         p.compile()
       } else {
-        let cs = self.paint.colorspace
-        let p = RasterPipelineBuilder::new()
-        p.force_hq_pipeline = self.paint.force_hq_pipeline
-        ignore(self.paint.shader.push_stages(cs, p))
-        if self.mask is Some(_) {
-          p.push(MaskU8)
-        }
+        let (p, cs) = self.new_shader_builder()
         if self.blend_mode.should_pre_scale_coverage() {
           p.push(Scale1Float)
           p.push(LoadDestination)
@@ -107,13 +113,7 @@ fn RasterPipelineBlitter::get_rect_rp(self : RasterPipelineBlitter) -> RasterPip
         p.push(StoreU8)
         p.compile()
       } else {
-        let cs = self.paint.colorspace
-        let p = RasterPipelineBuilder::new()
-        p.force_hq_pipeline = self.paint.force_hq_pipeline
-        ignore(self.paint.shader.push_stages(cs, p))
-        if self.mask is Some(_) {
-          p.push(MaskU8)
-        }
+        let (p, cs) = self.new_shader_builder()
         if self.blend_mode == SourceOver && self.mask is None {
           push_stage_opt(p, cs.compress_stage())
           p.push(SourceOverRgba)
@@ -152,13 +152,7 @@ fn RasterPipelineBlitter::get_mask_rp(self : RasterPipelineBlitter) -> RasterPip
         p.push(StoreU8)
         p.compile()
       } else {
-        let cs = self.paint.colorspace
-        let p = RasterPipelineBuilder::new()
-        p.force_hq_pipeline = self.paint.force_hq_pipeline
-        ignore(self.paint.shader.push_stages(cs, p))
-        if self.mask is Some(_) {
-          p.push(MaskU8)
-        }
+        let (p, cs) = self.new_shader_builder()
         if self.blend_mode.should_pre_scale_coverage() {
           p.push(ScaleU8)
           p.push(LoadDestination)
