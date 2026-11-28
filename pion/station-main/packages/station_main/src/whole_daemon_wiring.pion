@@ -744,6 +744,7 @@ pub fn wire_whole_core_runtime_hooks(
   logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
   seen_members : Map[String, Map[String, Map[String, SeenMember]]],
+  managed_mcp : Option[station_whole::ManagedMcpRuntime] = None,
 ) -> Unit {
   let _ = browser
   core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
@@ -846,12 +847,62 @@ pub fn wire_whole_core_runtime_hooks(
     }
   })
 
-  // Wave 17D-2 R7: Deferred Wave 17E ops (`updates.install`, `updates.wait`, `workspaces.join`,
-  // `mcpServers.reload*`, `accounts.profiles.{login*,pace,quota,resetQuota}`, `copies.restore`,
-  // `xshare.hosts.put`) remain honest 501 (hooks stay `None`).
-  // Network-bound live ops (`updates.check`, `copies.s3.test`, keyed profile check) are intercepted
-  // non-blockingly in `whole_daemon_live_ops.pion` via `AdminStreamMode::WaitingAsyncOp`.
-  core.api.hooks.on_mcp_reload = None
+  // Wave 17E-4A: Managed MCP runtime wiring (`mcpServers.reloadAll/One`, live views, `mcp_servers` tool & cards).
+  match managed_mcp {
+    Some(mmcp) => {
+      core.api.hooks.on_mcp_reload = Some(fn(name_opt : Option[String]) -> Unit {
+        mmcp.reload(live_config_raw(core, ctx.cfg_raw), name_opt, host_shim::now_ms())
+      })
+      core.api.hooks.on_mcp_sync = Some(fn() -> Unit {
+        mmcp.sync_config(live_config_raw(core, ctx.cfg_raw), host_shim::now_ms())
+      })
+      core.api.hooks.mcp_servers_view = Some(fn() -> Array[base_codec::Json] {
+        mmcp.view(live_config_raw(core, ctx.cfg_raw))
+      })
+      core.api.hooks.mcp_servers_overview = Some(fn() -> Array[station_api::McpServerOverviewInput] {
+        mmcp.overview_inputs(live_config_raw(core, ctx.cfg_raw))
+      })
+      core.api.hooks.on_mcp_card_notify = Some(fn(skey : String, notice : String) -> Unit {
+        station_whole::deliver_vault_decision_own_notice(
+          core.agents,
+          core.store,
+          core.api.events,
+          core.api.hooks,
+          skey,
+          notice,
+          host_shim::wall_ms(),
+        )
+      })
+      core.agents.dynamic_tools_fn = fn() -> Array[station_tools::ToolDecl] {
+        mmcp.exposed_tool_decls()
+      }
+      core.agents.managed_mcp_config_raw_fn = fn() -> base_codec::Json {
+        live_config_raw(core, ctx.cfg_raw)
+      }
+      core.agents.managed_mcp_view_fn = Some(fn() -> Array[base_codec::Json] {
+        mmcp.view(live_config_raw(core, ctx.cfg_raw))
+      })
+      core.agents.on_mcp_card_posted = Some(fn(tid : Int64) -> Unit {
+        let _ = core.api.events.emit(
+          "thread",
+          base_codec::json_obj([("thread", base_codec::json_int64(tid))]),
+          station_api::EventTarget::everyone(),
+          host_shim::wall_ms(),
+          None,
+        )
+      })
+      mmcp.io.on_status_changed = fn() -> Unit {
+        core.api.events.overview_changed("mcpServers")
+      }
+    }
+    None => {
+      core.api.hooks.on_mcp_reload = None
+      core.api.hooks.on_mcp_sync = None
+      core.api.hooks.mcp_servers_view = None
+      core.api.hooks.mcp_servers_overview = None
+      core.api.hooks.on_mcp_card_notify = None
+    }
+  }
   core.api.hooks.on_s3_test = None
   core.api.hooks.on_workspace_join = None
   core.api.hooks.on_updates_op = None

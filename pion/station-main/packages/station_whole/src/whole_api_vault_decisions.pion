@@ -3386,6 +3386,8 @@ pub fn run_vault_decisions_sqlite_selftest() -> Result[Unit, String] {
     get_widget_state: port.get_widget_state,
     put_widget_state: port.put_widget_state,
     put_archive_policy: port.put_archive_policy,
+    get_entry_card: port.get_entry_card,
+    close_card_atomic: port.close_card_atomic,
     vault_plain: vp,
     readops: port.readops,
     vault_decisions: vd,

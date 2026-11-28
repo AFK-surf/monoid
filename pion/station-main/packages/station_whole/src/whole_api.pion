@@ -196,6 +196,7 @@ pub fn build_overview_with_counts(
   warm_sess : Int,
   viewer : station_api::Viewer,
   lang : station_api::Lang,
+  mcp_servers_in : Array[station_api::McpServerOverviewInput] = [],
 ) -> base_codec::Json {
   let raw_cfg = read_config_raw(cfg_opt)
   let raw_profiles = read_profiles_array(raw_cfg)
@@ -241,7 +242,7 @@ pub fn build_overview_with_counts(
     built_at: base_in.built_at,
     connects: base_in.connects,
     profiles: profile_inputs,
-    mcp_servers: base_in.mcp_servers,
+    mcp_servers: mcp_servers_in,
     backup_s3: base_in.backup_s3,
     agent_env: base_in.agent_env,
     total_sessions: total_sess,
@@ -303,7 +304,10 @@ fn build_whole_overview(
     }
     Err(_) => ()
   }
-  let _ = hooks
+  let mcp_servers_in = match hooks.mcp_servers_overview {
+    Some(f) => f()
+    None => []
+  }
   Ok(build_overview_with_counts(
     station_id_str,
     home_ws_str,
@@ -315,6 +319,7 @@ fn build_whole_overview(
     warm_sess,
     viewer,
     lang,
+    mcp_servers_in=mcp_servers_in,
   ))
 }
 

@@ -1842,6 +1842,7 @@ struct WholeRuntimeState {
   logins : station_whole::LoginsOsRuntime
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
+  managed_mcp : station_whole::ManagedMcpRuntime
   upkeep : AsyncUpkeepRunner
   connect_meta : Map[String, ConnectMeta]
   remote_connects : Map[String, RemoteConnectRecord]
@@ -5919,6 +5920,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     if st.live_runners.handle_role_done(ctx, st.core, tok, d, host_shim::now_ms(), host_shim::wall_ms()) {
       return
     }
+    if st.managed_mcp.handle_role_done(tok, d, host_shim::now_ms()) {
+      return
+    }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
         // Wave 17D-2 R6: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
@@ -7251,6 +7255,22 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         ])
       })
 
+      // Wave 17E-4A: Non-blocking Managed MCP runtime (stdio via station_sys + HTTP/SSE via ctx.mux_role).
+      let managed_mcp_io = station_whole::ManagedMcpIo::production(ctx.mux_role, ctx.edge_hub)
+      let managed_mcp = station_whole::ManagedMcpRuntime::new(managed_mcp_io)
+      managed_mcp.io.on_deferred_mcp_reply = fn(conn_id : Int, status : Int, body : String) -> Unit {
+        match state_opt {
+          Some(st) => {
+            let _ = st.mcp_srv.respond_with_callbacks(
+              conn_id,
+              station_http::HandlerAction::Respond(station_http::HttpResponse::json(status, body)),
+              st.mcp_cb,
+            )
+          }
+          None => ()
+        }
+      }
+
       // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
@@ -7263,6 +7283,99 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let host_hdr = req.header("host")
           let origin_hdr = req.header("origin")
           let auth_hdr = req.header("authorization")
+          // Wave 17E-4A: Non-blocking deferred dispatch for exposed managed MCP `tools/call`
+          // strictly AFTER ready + local-origin + Bearer auth + call-guard checks.
+          if core.ready && req.method == "POST" && req.path == "/mcp" {
+            if station_tools::check_local_origin(host_hdr, origin_hdr, [core.agents.config.mcp_port]).is_none() {
+              let bearer = station_tools::extract_bearer_token(auth_hdr)
+              let auth_sess = if bearer.length() > 0 { core.agents.resolve_token_ct(bearer) } else { None }
+              match auth_sess {
+                Some(session_key) => match base_codec::json_parse(req_body) {
+                  base_codec::JsonParseResult::Ok(j) => {
+                    let mname = match base_codec::json_get(j, "method") {
+                      Some(base_codec::Json::Str(s)) => s
+                      _ => ""
+                    }
+                    if mname == "tools/call" {
+                      match (base_codec::json_get(j, "id"), base_codec::json_get(j, "params")) {
+                        (Some(rpc_id_v), Some(p)) => {
+                          let mut tname = match base_codec::json_get(p, "name") {
+                            Some(base_codec::Json::Str(s)) => s
+                            _ => ""
+                          }
+                          let mut targs = match base_codec::json_get(p, "arguments") {
+                            Some(base_codec::Json::Obj(f)) => base_codec::json_obj(f)
+                            _ => base_codec::json_obj([])
+                          }
+                          // Support `station_tool` indirect forwarding to exposed managed MCP tools.
+                          if tname == station_tools::INDIRECT_TOOL {
+                            match (base_codec::json_get(targs, "name"), base_codec::json_get(targs, "arguments")) {
+                              (Some(base_codec::Json::Str(inner_name)), Some(base_codec::Json::Obj(inner_args))) => {
+                                if managed_mcp.lookup_exposed_tool(inner_name).is_some() {
+                                  tname = inner_name
+                                  targs = base_codec::json_obj(inner_args)
+                                }
+                              }
+                              _ => ()
+                            }
+                          }
+                          if managed_mcp.lookup_exposed_tool(tname).is_some() {
+                            let call_ctx = station_tools::CallContext::{
+                              session: session_key,
+                              unbound_reason: if core.agents.bound_to_workspace { None } else { Some(station_tools::UNBOUND_REFUSAL) },
+                            }
+                            match station_tools::check_call_guard(call_ctx, tname, true, targs) {
+                              Some(refusal) => {
+                                let err_rpc = base_codec::json_obj([
+                                  ("jsonrpc", base_codec::json_str("2.0")),
+                                  ("id", rpc_id_v),
+                                  ("result", base_codec::json_obj([
+                                    ("isError", base_codec::json_bool(true)),
+                                    ("content", base_codec::json_arr([
+                                      base_codec::json_obj([("type", base_codec::json_str("text")), ("text", base_codec::json_str(refusal))]),
+                                    ])),
+                                  ])),
+                                ])
+                                return station_http::HandlerAction::Respond(
+                                  station_http::HttpResponse::json(200, base_codec::json_stringify(err_rpc)),
+                                )
+                              }
+                              None => ()
+                            }
+                            let prev_h = core.agents.mcp.heard(session_key)
+                            core.agents.mcp.heard_by.set(session_key, prev_h + 1)
+                            match managed_mcp.start_tool_call(tname, targs, req.conn_id, rpc_id_v, None, host_shim::now_ms(), None) {
+                              Ok(_) => return station_http::HandlerAction::Defer
+                              Err(err_reply) => {
+                                let c_arr : Array[base_codec::Json] = []
+                                for ci in 0..<err_reply.content.length() {
+                                  c_arr.push(station_tools::content_item_to_json(err_reply.content[ci]))
+                                }
+                                let err_rpc = base_codec::json_obj([
+                                  ("jsonrpc", base_codec::json_str("2.0")),
+                                  ("id", rpc_id_v),
+                                  ("result", base_codec::json_obj([
+                                    ("isError", base_codec::json_bool(true)),
+                                    ("content", base_codec::json_arr(c_arr)),
+                                  ])),
+                                ])
+                                return station_http::HandlerAction::Respond(
+                                  station_http::HttpResponse::json(200, base_codec::json_stringify(err_rpc)),
+                                )
+                              }
+                            }
+                          }
+                        }
+                        _ => ()
+                      }
+                    }
+                  }
+                  _ => ()
+                }
+                None => ()
+              }
+            }
+          }
           // Inspect `tools/call` for `chat_post` / `chat_state` so we can validate Feishu `reply_to`
           // strictly AFTER ready + local-origin + Bearer auth (no unauthenticated probing oracle),
           // and forward outbound posts/cards/status-lines to local or remote external connects.
@@ -7677,7 +7790,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       live_runners_cell[0] = Some(live_runners)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
-      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
+      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members, managed_mcp=Some(managed_mcp))
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
@@ -7687,6 +7800,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         logins: logins,
         browser: browser,
         connects: connects,
+        managed_mcp: managed_mcp,
         upkeep: upkeep,
         connect_meta: connect_meta,
         remote_connects: remote_connects,
@@ -7923,6 +8037,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 home_ws,
               )
               load_connects_from_config(ctx.cfg_raw, st.connects, st.connect_meta, home_ws)
+              st.managed_mcp.start(live_config_raw(st.core, ctx.cfg_raw), host_shim::now_ms())
               let enabled_in_cfg = enabled_external_connects_in_config(ctx.cfg_raw).length()
               // Refresh edge status closure flag after `ReplicaOsRuntime::before_store` succeeds.
               let bs_ok = st.replica_before_store_ok
@@ -9057,6 +9172,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             _ => ()
           }
           let now_sys = host_shim::now_ms()
+          if st.managed_mcp.handle_sys_event(ev_id, sev, now_sys) {
+            return
+          }
           if st.devices.handle_sys_event(ev_id, sev, now_sys) {
             return
           }
@@ -9165,6 +9283,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           st.live_runners.tick(ctx, st.core, now, wall)
           st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), now, wall)
+          let _ = st.managed_mcp.tick(now)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)
@@ -9550,7 +9669,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           st.rig_put_streams.clear()
           st.mcp_srv.close_with_callbacks(st.mcp_cb)
 
-          // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
+          // Cleanly stop all Wave 16C/17E edge OS adapters with zero orphan processes / leaked FDs.
+          st.managed_mcp.shutdown(host_shim::now_ms())
+          let _ = st.managed_mcp.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
           st.connects.stop()
           st.upkeep.shutdown()
           st.browser.stop_all()

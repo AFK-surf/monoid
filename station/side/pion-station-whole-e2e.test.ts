@@ -3071,10 +3071,14 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     await new Promise<void>((resolve) => slowS3.close(() => resolve()));
   }
 
+  // Wave 17E-4A: `mcpServers.reloadAll` returns 200 and `mcpServers.reloadOne` returns 404 for unknown server
+  const reloadAllResp = await adminCall(conn, "POST", "/mcp-servers/reload", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(reloadAllResp.status, 200, `POST /mcp-servers/reload expected 200, got ${reloadAllResp.status}: ${reloadAllResp.body.toString()}`);
+  const reloadMissResp = await adminCall(conn, "POST", "/mcp-servers/s1/reload", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(reloadMissResp.status, 404, `POST /mcp-servers/s1/reload unknown expected 404, got ${reloadMissResp.status}: ${reloadMissResp.body.toString()}`);
+
   // Unimplemented / deferred Wave 17E ops return honest 501 (ZERO fake 200 stubs!)
   for (const [m, p, body] of [
-    ["POST", "/mcp-servers/reload", "{}"],
-    ["POST", "/mcp-servers/s1/reload", "{}"],
     ["GET", "/profiles/pace?v=2", undefined],
     ["POST", "/profiles/p1/quota", "{}"],
     ["POST", "/profiles/p1/reset-quota", "{}"],
@@ -3154,4 +3158,247 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("W17E4A: live Managed MCP runtime (stdio + HTTP discovery, reloadAll/reloadOne, non-blocking /mcp tools/call vs GET /status, zero stdio orphans)", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = mkdtempSync(join(tmpdir(), "stillfail-w17e4a-e2e-"));
+  dirs.push(base);
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  // 1. Mock stdio MCP server script (writes its PID to file so we verify zero orphans after daemon stop)
+  const stdioPidFile = join(base, "mock-stdio.pid");
+  const stdioScript = join(base, "mock-stdio-mcp.mjs");
+  writeFileSync(
+    stdioScript,
+    `import { writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
+writeFileSync(${JSON.stringify(stdioPidFile)}, String(process.pid));
+const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
+const send = (obj) => process.stdout.write(JSON.stringify(obj) + "\\n");
+rl.on("line", (line) => {
+  if (!line.trim()) return;
+  let msg;
+  try { msg = JSON.parse(line); } catch { return; }
+  if (msg.method === "initialize") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "mock-stdio", version: "1.0.0" } } });
+  } else if (msg.method === "tools/list") {
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [
+      { name: "stdio_echo", description: "Echo via stdio", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+      { name: "stdio_slow", description: "Slow stdio op", inputSchema: { type: "object", properties: { tag: { type: "string" } } } }
+    ] } });
+  } else if (msg.method === "tools/call") {
+    const name = msg.params?.name;
+    const args = msg.params?.arguments ?? {};
+    if (name === "stdio_slow") {
+      setTimeout(() => {
+        send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "stdio-slow:" + String(args.tag ?? "") }] } });
+      }, 900);
+    } else {
+      send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "stdio-echo:" + String(args.text ?? "") }] } });
+    }
+  }
+});
+`,
+  );
+
+  // 2. Mock Streamable HTTP MCP server
+  let httpDeleteCalled = false;
+  const httpMcp = createHttpServer((req, res) => {
+    if (req.method === "DELETE") {
+      httpDeleteCalled = true;
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(c));
+    req.on("end", () => {
+      if (req.headers["x-api-key"] !== "secret-http-key-999") {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: "missing api key" }));
+        return;
+      }
+      const raw = Buffer.concat(chunks).toString("utf8");
+      let msg: any = {};
+      try { msg = JSON.parse(raw); } catch {}
+      if (msg.method === "notifications/initialized") {
+        res.writeHead(202, { "mcp-session-id": "mock-http-sess-1" });
+        res.end();
+        return;
+      }
+      if (msg.method === "initialize") {
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "mock-http-sess-1" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { protocolVersion: "2025-06-18", capabilities: { tools: {} }, serverInfo: { name: "mock-http", version: "1.0.0" } } }));
+        return;
+      }
+      if (msg.method === "tools/list") {
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "mock-http-sess-1" });
+        res.end(JSON.stringify({
+          jsonrpc: "2.0",
+          id: msg.id,
+          result: {
+            tools: [
+              { name: "http_echo", description: "Echo via HTTP", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+              { name: "http_slow", description: "Slow HTTP op", inputSchema: { type: "object", properties: { tag: { type: "string" } } } },
+            ],
+          },
+        }));
+        return;
+      }
+      if (msg.method === "tools/call") {
+        const name = msg.params?.name;
+        const args = msg.params?.arguments ?? {};
+        if (name === "http_slow") {
+          setTimeout(() => {
+            res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "mock-http-sess-1" });
+            res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "http-slow:" + String(args.tag ?? "") }] } }));
+          }, 900);
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "mock-http-sess-1" });
+        res.end(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: "http-echo:" + String(args.text ?? "") }] } }));
+        return;
+      }
+      res.writeHead(400);
+      res.end();
+    });
+  });
+  servers.push(httpMcp);
+  await new Promise<void>((resolve) => httpMcp.listen(0, "127.0.0.1", () => resolve()));
+  const httpMcpPort = (httpMcp.address() as { port: number }).port;
+
+  // 3. Boot real Pion Whole daemon
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner);
+
+  const ws = "ws-w17e4a";
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
+
+  const wd = startWholeDaemon(bin, data);
+  await until("w17e4a daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("w17e4a mesh bound", () => wd.meshAddr());
+  const mcpMsg = await until("w17e4a mcp port announced", () => wd.messages.find((m) => typeof m.port === "number" && m.port > 0));
+  const mcpPort = Number(mcpMsg.port);
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+
+  // Create a session to obtain a valid /mcp Bearer token
+  const sessRes = await adminCall(
+    conn,
+    "POST",
+    "/sessions",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ key: "sess-w17e4a-1", runtime: "claude", title: "W17E4A Test" })),
+  );
+  assert.equal(sessRes.status, 200, `POST /sessions failed: ${sessRes.body.toString()}`);
+  const dbCheck = new DatabaseSync(join(data, "stillfail.db"), { readOnly: true });
+  const tokRow = dbCheck.prepare("SELECT token FROM sessions WHERE key = ?").get("sess-w17e4a-1") as { token: string } | undefined;
+  dbCheck.close();
+  assert.ok(tokRow && /^[0-9a-f]{64}$/.test(tokRow.token), "missing session MCP token");
+  const bearerToken = tokRow!.token;
+
+  // 4. Register mock stdio + mock HTTP MCP servers via PUT /mcp-servers
+  const putResp = await adminCall(
+    conn,
+    "PUT",
+    "/mcp-servers",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({
+      servers: {
+        "mock-stdio": {
+          command: process.execPath,
+          args: [stdioScript],
+          env: { STDIO_SECRET: "stdio_secret_value_9999" },
+        },
+        "mock-http": {
+          type: "http",
+          url: `http://alice:superpass_url_secret@127.0.0.1:${httpMcpPort}/mcp`,
+          headers: { "x-api-key": "secret-http-key-999" },
+        },
+      },
+    })),
+  );
+  assert.equal(putResp.status, 200, `PUT /mcp-servers failed: ${putResp.body.toString()}`);
+  const putStr = putResp.body.toString("utf8");
+  assert.ok(!putStr.includes("stdio_secret_value_9999"), "PUT /mcp-servers leaked env secret");
+  assert.ok(!putStr.includes("superpass_url_secret"), "PUT /mcp-servers leaked URL userinfo");
+  assert.ok(!putStr.includes("secret-http-key-999"), "PUT /mcp-servers leaked header secret");
+
+  // Trigger explicit reloadAll + reloadOne
+  const rAll = await adminCall(conn, "POST", "/mcp-servers/reload", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(rAll.status, 200, `POST /mcp-servers/reload failed: ${rAll.body.toString()}`);
+  const rOne = await adminCall(conn, "POST", "/mcp-servers/mock-http/reload", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(rOne.status, 200, `POST /mcp-servers/mock-http/reload failed: ${rOne.body.toString()}`);
+
+  // Wait until both servers reach `ready` with their discovered tools
+  await until("both mock-stdio and mock-http ready", async () => {
+    const g = await adminCall(conn, "GET", "/mcp-servers");
+    if (g.status !== 200) return false;
+    const body = JSON.parse(g.body.toString("utf8"));
+    const sStdio = body.servers?.find((s: any) => s.name === "mock-stdio");
+    const sHttp = body.servers?.find((s: any) => s.name === "mock-http");
+    return sStdio?.status === "ready" && sHttp?.status === "ready" && sStdio.toolCount === 2 && sHttp.toolCount === 2;
+  }, 15_000);
+
+  const stdioPid = Number(readFileSync(stdioPidFile, "utf8").trim());
+  assert.ok(stdioPid > 0 && isAlive(stdioPid), `mock stdio process ${stdioPid} should be alive`);
+  extraPids.push(stdioPid);
+
+  // 5. Verify tools appear in real `/mcp` `tools/list`
+  const mcpPost = (payload: Record<string, unknown>) =>
+    httpCall(
+      mcpPort,
+      "POST",
+      "/mcp",
+      { "content-type": "application/json", authorization: `Bearer ${bearerToken}`, host: `127.0.0.1:${mcpPort}` },
+      JSON.stringify(payload),
+    );
+
+  const listResp = await mcpPost({ jsonrpc: "2.0", id: 1, method: "tools/list", params: {} });
+  assert.equal(listResp.status, 200, listResp.body);
+  const listedNames: string[] = (JSON.parse(listResp.body).result?.tools ?? []).map((t: any) => t.name);
+  for (const want of ["mcp_servers", "mock-stdio__stdio_echo", "mock-stdio__stdio_slow", "mock-http__http_echo", "mock-http__http_slow"]) {
+    assert.ok(listedNames.includes(want), `tools/list missing ${want}; got ${JSON.stringify(listedNames)}`);
+  }
+
+  // 6. Concurrent non-blocking check: slow stdio + slow HTTP tools/call vs concurrent GET /status
+  const t0 = Date.now();
+  const slowStdioP = mcpPost({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "mock-stdio__stdio_slow", arguments: { tag: "s1" } } });
+  const slowHttpP = mcpPost({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "mock-http__http_slow", arguments: { tag: "h1" } } });
+  await new Promise((r) => setTimeout(r, 100));
+  const statusWhileBusy = await adminCall(conn, "GET", "/status");
+  const statusElapsed = Date.now() - t0;
+  assert.equal(statusWhileBusy.status, 200, `concurrent GET /status failed: ${statusWhileBusy.body.toString()}`);
+  assert.ok(statusElapsed < 600, `GET /status was blocked by slow MCP tools/call! elapsed=${statusElapsed}ms`);
+
+  const [stdioCallRes, httpCallRes] = await Promise.all([slowStdioP, slowHttpP]);
+  assert.equal(stdioCallRes.status, 200, stdioCallRes.body);
+  assert.equal(httpCallRes.status, 200, httpCallRes.body);
+  assert.ok(stdioCallRes.body.includes("stdio-slow:s1"), `unexpected stdio_slow reply: ${stdioCallRes.body}`);
+  assert.ok(httpCallRes.body.includes("http-slow:h1"), `unexpected http_slow reply: ${httpCallRes.body}`);
+
+  // 7. Verify `mcp_servers` tool `list` returns redacted view
+  const mcpToolList = await mcpPost({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "mcp_servers", arguments: { action: "list" } } });
+  assert.equal(mcpToolList.status, 200, mcpToolList.body);
+  assert.ok(mcpToolList.body.includes("mock-stdio") && mcpToolList.body.includes("mock-http"), mcpToolList.body);
+  assert.ok(!mcpToolList.body.includes("superpass_url_secret") && !mcpToolList.body.includes("secret-http-key-999"), "mcp_servers list leaked secret");
+
+  // 8. Clean shutdown must terminate mock stdio child process group (zero orphans)
+  await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+  await until("mock stdio child process exited on shutdown", () => !isAlive(stdioPid), 5_000);
+  assert.equal(isAlive(stdioPid), false, `mock stdio child PID ${stdioPid} survived daemon shutdown!`);
+  void httpDeleteCalled;
 });

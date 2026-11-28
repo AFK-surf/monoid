@@ -204,6 +204,7 @@ pub fn wired_mcp_tool_names() -> Array[String] {
     "job_log",
     "job_stop",
     "project_manage",
+    "mcp_servers",
   ]
 }
 
@@ -236,8 +237,13 @@ pub struct WholeAgents {
   pub hub : station_sessions::SessionHub
   pub drivers : DriversRuntime
   pub mcp : station_tools::McpServer
+  pub mcp_asks : station_tools::ManagedMcpAsks
   pub jobs : station_jobs::JobManager
   pub mut bound_to_workspace : Bool
+  pub mut dynamic_tools_fn : () -> Array[station_tools::ToolDecl]
+  pub mut managed_mcp_config_raw_fn : () -> base_codec::Json
+  pub mut managed_mcp_view_fn : Option[() -> Array[base_codec::Json]]
+  pub mut on_mcp_card_posted : Option[(Int64) -> Unit]
   pub adopted_session_by_runner_id : Map[String, String]
   pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
   pub active_adopted_instances : Map[String, Bool]
@@ -269,13 +275,35 @@ pub fn WholeAgents::new_with_deps(
     fn(_job_id : String, _text : String) -> Unit { () },
     fn(_rec : station_jobs::JobRecord) -> Unit { () },
   )
+  let mcp_asks = station_tools::ManagedMcpAsks::new_with_rng(fn(n_bytes : Int) -> String {
+    match rng(n_bytes) {
+      Ok(raw) => {
+        let hex_digits = "0123456789abcdef"
+        let sb = StringBuilder::new()
+        for i in 0..<raw.length() {
+          let b = raw[i].to_int() & 0xFF
+          let hi = (b >> 4) & 0x0F
+          let lo = b & 0x0F
+          sb.write_string(hex_digits.slice(hi, hi + 1))
+          sb.write_string(hex_digits.slice(lo, lo + 1))
+        }
+        sb.to_string()
+      }
+      Err(_) => "000000000000"
+    }
+  })
   WholeAgents::{
     config: config,
     hub: station_sessions::SessionHub::new(),
     drivers: DriversRuntime::new([]),
     mcp: station_tools::McpServer::new(),
+    mcp_asks: mcp_asks,
     jobs: jobs,
     bound_to_workspace: true,
+    dynamic_tools_fn: fn() -> Array[station_tools::ToolDecl] { [] },
+    managed_mcp_config_raw_fn: fn() -> base_codec::Json { base_codec::json_obj([]) },
+    managed_mcp_view_fn: None,
+    on_mcp_card_posted: None,
     adopted_session_by_runner_id: Map::new(),
     adopted_runner_exits: Map::new(),
     active_adopted_instances: Map::new(),
@@ -3532,6 +3560,77 @@ fn WholeAgents::build_domain_handlers(
     station_tools::error_reply("unsupported project_manage action: " + action)
   }
 
+  let managed_mcp_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    if tool == "mcp_servers" {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return station_tools::error_reply(e)
+      }
+      let ws_opt : Option[String] = match st.get_session(session) {
+        Ok(Some(row)) => match row.ws {
+          Some(w) if w.length() > 0 => Some(w)
+          _ => if self.config.home_ws.length() > 0 { Some(self.config.home_ws) } else { None }
+        }
+        _ => if self.config.home_ws.length() > 0 { Some(self.config.home_ws) } else { None }
+      }
+      let raw_cfg = (self.managed_mcp_config_raw_fn)()
+      let current_cfg = parse_managed_mcp_entries(raw_cfg)
+      let views : Array[base_codec::Json] = match self.managed_mcp_view_fn {
+        Some(vf) => vf()
+        None => {
+          let out : Array[base_codec::Json] = []
+          for i in 0..<current_cfg.length() {
+            let (name, scfg) = current_cfg[i]
+            let status = if scfg.enabled { "connecting" } else { "disabled" }
+            let rt = station_tools::ManagedServerRuntime::{ status: status, tools: [], error: None }
+            out.push(station_tools::mask_server_view(name, scfg, rt))
+          }
+          out
+        }
+      }
+      let post_card = fn(sess : String, text : String, card : base_codec::Json) -> Option[(Int, String)] {
+        let home_ws = self.config.home_ws
+        let c_ws = match ws_opt { Some(w) => w, None => home_ws }
+        let tid = match resolve_scoped_thread_id(st, sess, None, c_ws, home_ws) {
+          Ok(id) => id
+          Err(_) => return None
+        }
+        let ts = "mcp-card-" + now_ms.to_string() + "-" + self.mcp_asks.seq.to_string()
+        let msg = station_store::NewMessage::{
+          thread: tid,
+          ts: Some(ts),
+          author_kind: "agent",
+          author: sess,
+          agent_identity: None,
+          text: Some(text),
+          attachments: None,
+          quotes: None,
+          declared: None,
+          client: None,
+          card: Some(base_codec::json_stringify(card)),
+          options: None,
+          proposal: None,
+          at: now_ms,
+        }
+        match st.insert_message(msg) {
+          Ok(_) => {
+            match self.on_mcp_card_posted {
+              Some(cb) => cb(tid)
+              None => ()
+            }
+            Some((tid.to_int(), ts))
+          }
+          Err(_) => None
+        }
+      }
+      match self.mcp_asks.tool(session, ws_opt, args, current_cfg, views, post_card) {
+        Ok(res) => return station_tools::text_reply(base_codec::json_stringify(res))
+        Err(e) => return station_tools::error_reply(e)
+      }
+    }
+    (base.managed_mcp)(session, tool, args)
+  }
+
   station_tools::DomainHandlers::{
     chat: chat_handler,
     job: job_handler,
@@ -3542,7 +3641,7 @@ fn WholeAgents::build_domain_handlers(
     browser: base.browser,
     project: project_handler,
     search: search_handler,
-    managed_mcp: base.managed_mcp,
+    managed_mcp: managed_mcp_handler,
     system: base.system,
   }
 }
@@ -3588,7 +3687,7 @@ pub fn WholeAgents::handle_mcp_http_with_handlers(
       }
     },
     static_tools: fn() -> Array[station_tools::ToolDecl] { wired_station_tools() },
-    dynamic_tools: fn(_session : String) -> Array[station_tools::ToolDecl] { [] },
+    dynamic_tools: fn(_session : String) -> Array[station_tools::ToolDecl] { (self.dynamic_tools_fn)() },
     listing_of: fn(session : String) -> Option[station_tools::Listing] {
       let rt = match self.session_runtimes.get(session) {
         Some(r) => r

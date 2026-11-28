@@ -1,0 +1,2230 @@
+// Wave 17E-4A: Non-blocking Managed MCP runtime (stdio, Streamable HTTP, and Legacy HTTP+SSE).
+// 1:1 aligned with Node `station/src/tools/managed-mcp.ts` and `station/src/tools/managed-mcp-client.ts`.
+// - ZERO `await_call` / ZERO `host_shim::wait` on any HTTP/MCP path.
+// - Disjoint `station_sys` event_id range: `[12 << 32, 13 << 32)` (`51539607552L ..< 55834574848L`).
+// - Disjoint `MuxToken::Tagged` kinds on `ctx.mux_role`: `5300..5309`.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "station_api"
+import "station_http"
+import "station_sys"
+import "station_tools"
+
+/// Disjoint `station_sys` event_id segment for Managed MCP stdio child processes (`[12 << 32, 13 << 32)`).
+pub let MANAGED_MCP_EVENT_BASE : Int64 = 51539607552L
+pub let MANAGED_MCP_EVENT_END : Int64 = 55834574848L
+
+/// Strict half-open interval check for Managed MCP `station_sys` events.
+pub fn is_managed_mcp_event(ev_id : Int64) -> Bool {
+  ev_id >= MANAGED_MCP_EVENT_BASE && ev_id < MANAGED_MCP_EVENT_END
+}
+
+/// Disjoint `MuxToken::Tagged` kinds on `ctx.mux_role` (`5300..5309`).
+pub let MANAGED_MCP_TOK_HTTP_OPEN : Int = 5300
+pub let MANAGED_MCP_TOK_HTTP_READ : Int = 5301
+pub let MANAGED_MCP_TOK_SSE_OPEN : Int = 5302
+pub let MANAGED_MCP_TOK_SSE_READ : Int = 5303
+pub let MANAGED_MCP_TOK_SSE_POST_OPEN : Int = 5304
+pub let MANAGED_MCP_TOK_SSE_POST_READ : Int = 5305
+pub let MANAGED_MCP_TOK_CALL_OPEN : Int = 5306
+pub let MANAGED_MCP_TOK_CALL_READ : Int = 5307
+pub let MANAGED_MCP_TOK_NOTIFY_OPEN : Int = 5308
+pub let MANAGED_MCP_TOK_DELETE_OPEN : Int = 5309
+
+pub fn is_managed_mcp_mux_kind(kind : Int) -> Bool {
+  kind >= MANAGED_MCP_TOK_HTTP_OPEN && kind <= MANAGED_MCP_TOK_DELETE_OPEN
+}
+
+pub let MANAGED_MCP_HANDSHAKE_TIMEOUT_MS : Int64 = 30000L
+pub let MANAGED_MCP_CALL_TIMEOUT_MS : Int64 = 900000L
+pub let MANAGED_MCP_STDIO_GRACE_MS : Int64 = 3000L
+pub let MANAGED_MCP_MAX_FRAME_BYTES : Int = 4194304
+pub let MANAGED_MCP_MAX_STDERR_BYTES : Int = 4096
+pub let MANAGED_MCP_STABLE_RUN_MS : Int64 = 60000L
+pub let MANAGED_MCP_SHORT_CRASH_MS : Int64 = 10000L
+pub let MANAGED_MCP_MAX_FAILURES : Int = 5
+pub let MANAGED_MCP_PROTOCOL_VERSION : String = "2025-06-18"
+
+fn managed_mcp_backoff_ms(failures : Int) -> Int64 {
+  if failures <= 1 {
+    1000L
+  } else if failures == 2 {
+    2000L
+  } else if failures == 3 {
+    4000L
+  } else if failures == 4 {
+    8000L
+  } else if failures == 5 {
+    16000L
+  } else {
+    30000L
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pure protocol helpers: SSE parser, URL resolver, JSON-RPC parsers
+// ---------------------------------------------------------------------------
+
+pub struct UpstreamTool {
+  pub name : String
+  pub description : String
+  pub input_schema : base_codec::Json
+}
+
+pub struct ExposedManagedTool {
+  pub server : String
+  pub original_name : String
+  pub exported_name : String
+  pub decl : station_tools::ToolDecl
+}
+
+pub struct SseFrameParser {
+  pub mut buf : String
+  pub mut event_name : String
+  pub mut data_lines : Array[String]
+}
+
+pub fn SseFrameParser::new() -> SseFrameParser {
+  SseFrameParser::{ buf: "", event_name: "message", data_lines: [] }
+}
+
+pub fn SseFrameParser::reset(self : SseFrameParser) -> Unit {
+  self.buf = ""
+  self.event_name = "message"
+  self.data_lines = []
+}
+
+fn sse_flush_event(self : SseFrameParser) -> Option[(String, String)] {
+  if self.data_lines.length() == 0 {
+    self.event_name = "message"
+    return None
+  }
+  let sb = StringBuilder::new()
+  for i in 0..<self.data_lines.length() {
+    if i > 0 {
+      sb.write_byte(10 as Byte)
+    }
+    sb.write_string(self.data_lines[i])
+  }
+  let ev = self.event_name
+  self.event_name = "message"
+  self.data_lines = []
+  Some((ev, sb.to_string()))
+}
+
+/// Feed UTF-8 bytes into the SSE frame parser; returns complete `(event, data)` pairs or Err on >4 MiB frame.
+pub fn SseFrameParser::feed(self : SseFrameParser, chunk : Bytes) -> Result[Array[(String, String)], String] {
+  if chunk.length() > 0 {
+    self.buf = self.buf + chunk.to_string()
+  }
+  if self.buf.to_bytes().length() > MANAGED_MCP_MAX_FRAME_BYTES {
+    return Err("SSE frame exceeded 4 MiB limit")
+  }
+  let out : Array[(String, String)] = []
+  let mut start = 0
+  let n = self.buf.length()
+  let mut i = 0
+  while i < n {
+    if self.buf.code_unit_at(i) == 10 {
+      let mut end = i
+      if end > start && self.buf.code_unit_at(end - 1) == 13 {
+        end = end - 1
+      }
+      let line = self.buf.slice(start, end)
+      start = i + 1
+      if line.length() == 0 {
+        match sse_flush_event(self) {
+          Some(pair) => out.push(pair)
+          None => ()
+        }
+      } else if line.starts_with(":") {
+        ()
+      } else if line.starts_with("event:") {
+        self.event_name = line.slice(6, line.length()).trim()
+      } else if line.starts_with("data:") {
+        let rest = line.slice(5, line.length())
+        if rest.starts_with(" ") {
+          self.data_lines.push(rest.slice(1, rest.length()))
+        } else {
+          self.data_lines.push(rest)
+        }
+      }
+    }
+    i = i + 1
+  }
+  if start > 0 {
+    self.buf = self.buf.slice(start, n)
+  }
+  Ok(out)
+}
+
+pub fn SseFrameParser::finish(self : SseFrameParser) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  if self.buf.length() > 0 {
+    let mut line = self.buf
+    if line.ends_with("\r") {
+      line = line.slice(0, line.length() - 1)
+    }
+    self.buf = ""
+    if line.starts_with("event:") {
+      self.event_name = line.slice(6, line.length()).trim()
+    } else if line.starts_with("data:") {
+      let rest = line.slice(5, line.length())
+      if rest.starts_with(" ") {
+        self.data_lines.push(rest.slice(1, rest.length()))
+      } else {
+        self.data_lines.push(rest)
+      }
+    }
+  }
+  match sse_flush_event(self) {
+    Some(pair) => out.push(pair)
+    None => ()
+  }
+  out
+}
+
+/// Resolve an SSE `endpoint` event path against the base URL (matching `new URL(data, baseUrl)`).
+pub fn resolve_sse_endpoint_url(base_url : String, raw_endpoint : String) -> Result[String, String] {
+  let ep = raw_endpoint.trim()
+  if ep.length() == 0 {
+    return Err("empty SSE endpoint")
+  }
+  let ep_l = admin_ascii_lower(ep)
+  if ep_l.starts_with("http://") || ep_l.starts_with("https://") {
+    return Ok(ep)
+  }
+  // Extract origin (`scheme://authority`) from `base_url`.
+  let base_t = base_url.trim()
+  let mut scheme_end = -1
+  for i in 0..<base_t.length() {
+    if i + 2 < base_t.length() && base_t.code_unit_at(i) == 58 && base_t.code_unit_at(i + 1) == 47 && base_t.code_unit_at(i + 2) == 47 {
+      scheme_end = i + 3
+      break
+    }
+  }
+  if scheme_end < 0 {
+    return Err("invalid base URL")
+  }
+  let mut auth_end = base_t.length()
+  for i in scheme_end..<base_t.length() {
+    let c = base_t.code_unit_at(i)
+    if c == 47 || c == 63 || c == 35 {
+      auth_end = i
+      break
+    }
+  }
+  let origin = base_t.slice(0, auth_end)
+  if ep.starts_with("/") {
+    return Ok(origin + ep)
+  }
+  // Relative path against base_url directory.
+  let mut path_end = base_t.length()
+  for i in auth_end..<base_t.length() {
+    let c = base_t.code_unit_at(i)
+    if c == 63 || c == 35 {
+      path_end = i
+      break
+    }
+  }
+  let base_path = base_t.slice(auth_end, path_end)
+  let mut last_slash = -1
+  for i in 0..<base_path.length() {
+    if base_path.code_unit_at(i) == 47 {
+      last_slash = i
+    }
+  }
+  let dir = if last_slash >= 0 { base_path.slice(0, last_slash + 1) } else { "/" }
+  Ok(origin + dir + ep)
+}
+
+fn normalize_tool_schema(schema_opt : Option[base_codec::Json]) -> base_codec::Json {
+  match schema_opt {
+    Some(base_codec::Json::Obj(fields)) => {
+      if base_codec::json_obj_get(fields, "type").is_some() {
+        base_codec::json_obj(fields)
+      } else {
+        let out : Array[(String, base_codec::Json)] = [("type", base_codec::json_str("object"))]
+        for i in 0..<fields.length() {
+          out.push(fields[i])
+        }
+        base_codec::json_obj(out)
+      }
+    }
+    _ => base_codec::json_obj([("type", base_codec::json_str("object")), ("properties", base_codec::json_obj([]))])
+  }
+}
+
+pub fn parse_upstream_tools_result(result : base_codec::Json) -> (Array[UpstreamTool], Option[String]) {
+  let tools : Array[UpstreamTool] = []
+  match base_codec::json_get(result, "tools") {
+    Some(base_codec::Json::Arr(items)) => {
+      for i in 0..<items.length() {
+        let item = items[i]
+        let name = match base_codec::json_get(item, "name") {
+          Some(base_codec::Json::Str(s)) if s.trim().length() > 0 => s
+          _ => continue
+        }
+        let desc = match base_codec::json_get(item, "description") {
+          Some(base_codec::Json::Str(s)) => s
+          _ => ""
+        }
+        let schema = normalize_tool_schema(base_codec::json_get(item, "inputSchema"))
+        tools.push(UpstreamTool::{ name: name, description: desc, input_schema: schema })
+      }
+    }
+    _ => ()
+  }
+  let next_cursor = match base_codec::json_get(result, "nextCursor") {
+    Some(base_codec::Json::Str(s)) if s.length() > 0 => Some(s)
+    _ => None
+  }
+  (tools, next_cursor)
+}
+
+pub fn parse_upstream_call_result(result : base_codec::Json) -> station_tools::ToolReply {
+  let items : Array[station_tools::ContentItem] = []
+  match base_codec::json_get(result, "content") {
+    Some(base_codec::Json::Arr(arr)) => {
+      for i in 0..<arr.length() {
+        match arr[i] {
+          base_codec::Json::Obj(_) => items.push(station_tools::content_item_from_json(arr[i]))
+          _ => ()
+        }
+      }
+    }
+    _ => {
+      let txt = match result {
+        base_codec::Json::Null => ""
+        other => base_codec::json_stringify(other)
+      }
+      items.push(station_tools::ContentItem::Text(txt))
+    }
+  }
+  let is_err = match base_codec::json_get(result, "isError") {
+    Some(base_codec::Json::Bool(true)) => true
+    _ => false
+  }
+  let truncated = station_tools::truncate_content(items, station_tools::MAX_RESULT_BYTES)
+  station_tools::ToolReply::{ content: truncated, is_error: is_err, ends_turn: false }
+}
+
+fn concat_byte_chunks(chunks : Array[Bytes], total : Int) -> Bytes {
+  if total <= 0 || chunks.length() == 0 {
+    return Bytes::new(0)
+  }
+  if chunks.length() == 1 {
+    return chunks[0]
+  }
+  let out = Bytes::new(total)
+  let mut off = 0
+  for i in 0..<chunks.length() {
+    let c = chunks[i]
+    for j in 0..<c.length() {
+      out[off] = c[j]
+      off = off + 1
+    }
+  }
+  out
+}
+
+fn header_get_ci(headers : Array[(String, String)], name : String) -> Option[String] {
+  let target = admin_ascii_lower(name)
+  for i in 0..<headers.length() {
+    if admin_ascii_lower(headers[i].0) == target {
+      return Some(headers[i].1)
+    }
+  }
+  None
+}
+
+fn clip_err_str(msg : String, max_len : Int) -> String {
+  let clean = station_tools::redact_error_urls(msg)
+  if clean.length() <= max_len { clean } else { clean.slice(0, max_len) }
+}
+
+fn build_jsonrpc_request(id : Int, method_name : String, params : base_codec::Json) -> String {
+  base_codec::json_stringify(base_codec::json_obj([
+    ("jsonrpc", base_codec::json_str("2.0")),
+    ("id", base_codec::json_int(id)),
+    ("method", base_codec::json_str(method_name)),
+    ("params", params),
+  ]))
+}
+
+fn build_jsonrpc_notify(method_name : String, params : base_codec::Json) -> String {
+  base_codec::json_stringify(base_codec::json_obj([
+    ("jsonrpc", base_codec::json_str("2.0")),
+    ("method", base_codec::json_str(method_name)),
+    ("params", params),
+  ]))
+}
+
+fn build_mcp_stream_open_args(
+  method_name : String,
+  url : String,
+  headers : Array[(String, String)],
+  timeout_ms : Int64,
+) -> String {
+  let hdr_arr : Array[base_codec::Json] = []
+  for i in 0..<headers.length() {
+    hdr_arr.push(base_codec::json_arr([
+      base_codec::json_str(headers[i].0),
+      base_codec::json_str(headers[i].1),
+    ]))
+  }
+  base_codec::json_stringify(base_codec::json_obj([
+    ("method", base_codec::json_str(method_name)),
+    ("url", base_codec::json_str(url)),
+    ("headers", base_codec::json_arr(hdr_arr)),
+    ("timeoutMs", base_codec::json_int64(timeout_ms)),
+  ]))
+}
+
+fn encode_mcp_tool_rpc_reply(
+  req_id : base_codec::Json,
+  reply : station_tools::ToolReply,
+  ended_meta : Option[base_codec::Json],
+) -> String {
+  let content_arr : Array[base_codec::Json] = []
+  for i in 0..<reply.content.length() {
+    content_arr.push(station_tools::content_item_to_json(reply.content[i]))
+  }
+  let res_fields : Array[(String, base_codec::Json)] = [("content", base_codec::json_arr(content_arr))]
+  if reply.is_error {
+    res_fields.push(("isError", base_codec::json_bool(true)))
+  } else if reply.ends_turn {
+    match ended_meta {
+      Some(m) => res_fields.push(("_meta", m))
+      None => ()
+    }
+  }
+  base_codec::json_stringify(base_codec::json_obj([
+    ("jsonrpc", base_codec::json_str("2.0")),
+    ("id", req_id),
+    ("result", base_codec::json_obj(res_fields)),
+  ]))
+}
+
+// ---------------------------------------------------------------------------
+// Injectable IO port (OS/Mux in production, deterministic mock in unit tests)
+// ---------------------------------------------------------------------------
+
+pub struct ManagedMcpIo {
+  pub spawn_proc : (Int64, station_sys::SpawnOptions) -> Result[station_sys::ChildProcess, String]
+  pub write_stdin : (station_sys::ChildProcess, Bytes) -> Bool
+  pub close_stdin : (station_sys::ChildProcess) -> Bool
+  pub kill_proc : (station_sys::ChildProcess, Int, Bool) -> Int
+  pub close_proc : (station_sys::ChildProcess) -> Bool
+  pub stream_open : (builders_core::MuxToken, String, Option[Bytes]) -> Int64
+  pub stream_read : (builders_core::MuxToken, Int, Int) -> Int64
+  pub stream_close : (Int) -> Unit
+  pub base_env : () -> Array[(String, String)]
+  pub mut on_status_changed : () -> Unit
+  pub mut on_deferred_mcp_reply : (Int, Int, String) -> Unit
+}
+
+pub fn ManagedMcpIo::production(
+  mux_role : builders_core::ShellMux,
+  edge_hub : EdgeMuxHub,
+) -> ManagedMcpIo {
+  ManagedMcpIo::{
+    spawn_proc: station_sys::proc_spawn,
+    write_stdin: fn(c : station_sys::ChildProcess, d : Bytes) -> Bool { c.write_stdin(d) },
+    close_stdin: fn(c : station_sys::ChildProcess) -> Bool { c.close_stdin() },
+    kill_proc: fn(c : station_sys::ChildProcess, sig : Int, group : Bool) -> Int { c.kill(sig, group) },
+    close_proc: fn(c : station_sys::ChildProcess) -> Bool { c.close() },
+    stream_open: fn(tok : builders_core::MuxToken, args : String, body : Option[Bytes]) -> Int64 {
+      mux_role.call_async_raw(tok, "stream.open", args, body)
+    },
+    stream_read: fn(tok : builders_core::MuxToken, stream_id : Int, stall_ms : Int) -> Int64 {
+      let args = base_codec::json_stringify(base_codec::json_obj([
+        ("id", base_codec::json_int(stream_id)),
+        ("stallMs", base_codec::json_int(stall_ms)),
+      ]))
+      mux_role.call_async_raw(tok, "stream.read", args, None)
+    },
+    stream_close: fn(stream_id : Int) -> Unit {
+      if stream_id > 0 {
+        let _ = edge_hub.call_async_discard("stream.close", "{\"id\":" + stream_id.to_string() + "}", None)
+      }
+    },
+    base_env: fn() -> Array[(String, String)] {
+      let raw = station_sys::env_all()
+      let out : Array[(String, String)] = []
+      for i in 0..<raw.length() {
+        let entry = raw[i]
+        let mut eq = -1
+        for k in 0..<entry.length() {
+          if entry.code_unit_at(k) == 61 {
+            eq = k
+            break
+          }
+        }
+        if eq > 0 {
+          out.push((entry.slice(0, eq), entry.slice(eq + 1, entry.length())))
+        }
+      }
+      out
+    },
+    on_status_changed: fn() -> Unit {},
+    on_deferred_mcp_reply: fn(_conn_id : Int, _status : Int, _body : String) -> Unit {},
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Managed MCP Runtime State Machine
+// ---------------------------------------------------------------------------
+
+enum ServerPhase {
+  Idle
+  SseOpening(Int64)
+  Initializing(Int, Int64)
+  ListingTools(Int, Int, Array[UpstreamTool], Int64)
+  Ready
+  RefreshingTools(Int, Int, Array[UpstreamTool], Int64)
+  Reconnecting
+}
+
+struct PendingStdioKill {
+  child : station_sys::ChildProcess
+  event_id : Int64
+  deadline_ms : Int64
+  mut killed_hard : Bool
+}
+
+struct ManagedServerState {
+  id : Int
+  name : String
+  mut config_key : String
+  mut cfg : station_tools::ManagedServerConfig
+  mut status : String
+  mut tools : Array[UpstreamTool]
+  mut error : Option[String]
+  mut failures : Int
+  mut connected_at : Option[Int64]
+  mut retry_at : Option[Int64]
+  mut generation : Int
+  mut next_rpc_id : Int
+  mut phase : ServerPhase
+  // Stdio transport fields
+  mut child : Option[station_sys::ChildProcess]
+  mut event_id : Int64
+  mut stdout_buf : Bytes
+  mut stderr_buf : String
+  // Remote HTTP / SSE transport fields
+  mut session_id : Option[String]
+  mut sse_endpoint : Option[String]
+  mut sse_stream_id : Option[Int]
+  sse_parser : SseFrameParser
+  mut handshake_stream_id : Option[Int]
+  mut handshake_status : Int
+  mut handshake_ct : String
+  mut handshake_chunks : Array[Bytes]
+  mut handshake_total : Int
+  handshake_sse : SseFrameParser
+  mut sse_post_streams : Map[Int64, Int]
+}
+
+struct PendingToolCall {
+  call_id : Int64
+  server_id : Int
+  server_name : String
+  server_gen : Int
+  rpc_id : Int
+  deadline_ms : Int64
+  http_conn_id : Int
+  mcp_req_id : base_codec::Json
+  ended_meta : Option[base_codec::Json]
+  on_done : Option[(station_tools::ToolReply) -> Unit]
+  // For Streamable HTTP `tools/call`:
+  mut stream_id : Option[Int]
+  mut http_status : Int
+  mut http_ct : String
+  mut http_chunks : Array[Bytes]
+  mut http_total : Int
+  http_sse : SseFrameParser
+}
+
+pub struct ManagedMcpRuntime {
+  pub io : ManagedMcpIo
+  mut running : Bool
+  mut closed : Bool
+  mut next_server_id : Int
+  mut next_event_id : Int64
+  mut next_call_id : Int64
+  servers : Map[String, ManagedServerState]
+  servers_by_id : Map[Int, ManagedServerState]
+  server_by_ev : Map[Int64, String]
+  pending_calls : Map[Int64, PendingToolCall]
+  pending_kills : Map[Int64, PendingStdioKill]
+  mut exposed : Array[ExposedManagedTool]
+}
+
+pub fn ManagedMcpRuntime::new(io : ManagedMcpIo) -> ManagedMcpRuntime {
+  ManagedMcpRuntime::{
+    io: io,
+    running: false,
+    closed: false,
+    next_server_id: 1,
+    next_event_id: MANAGED_MCP_EVENT_BASE,
+    next_call_id: 1L,
+    servers: Map::new(),
+    servers_by_id: Map::new(),
+    server_by_ev: Map::new(),
+    pending_calls: Map::new(),
+    pending_kills: Map::new(),
+    exposed: [],
+  }
+}
+
+fn ManagedMcpRuntime::alloc_event_id(self : ManagedMcpRuntime) -> Int64 {
+  let id = self.next_event_id
+  self.next_event_id = self.next_event_id + 1L
+  if self.next_event_id >= MANAGED_MCP_EVENT_END {
+    self.next_event_id = MANAGED_MCP_EVENT_BASE
+  }
+  id
+}
+
+fn ManagedMcpRuntime::alloc_call_id(self : ManagedMcpRuntime) -> Int64 {
+  let id = self.next_call_id
+  self.next_call_id = self.next_call_id + 1L
+  id
+}
+
+fn ManagedMcpRuntime::make_server_state(
+  self : ManagedMcpRuntime,
+  name : String,
+  cfg : station_tools::ManagedServerConfig,
+) -> ManagedServerState {
+  let sid = self.next_server_id
+  self.next_server_id = self.next_server_id + 1
+  let key = station_tools::canonical_json(station_tools::server_config_to_json(cfg))
+  ManagedServerState::{
+    id: sid,
+    name: name,
+    config_key: key,
+    cfg: cfg,
+    status: if cfg.enabled { "stopped" } else { "disabled" },
+    tools: [],
+    error: None,
+    failures: 0,
+    connected_at: None,
+    retry_at: None,
+    generation: 0,
+    next_rpc_id: 1,
+    phase: ServerPhase::Idle,
+    child: None,
+    event_id: 0L,
+    stdout_buf: Bytes::new(0),
+    stderr_buf: "",
+    session_id: None,
+    sse_endpoint: None,
+    sse_stream_id: None,
+    sse_parser: SseFrameParser::new(),
+    handshake_stream_id: None,
+    handshake_status: 0,
+    handshake_ct: "",
+    handshake_chunks: [],
+    handshake_total: 0,
+    handshake_sse: SseFrameParser::new(),
+    sse_post_streams: Map::new(),
+  }
+}
+
+fn server_remote_headers(s : ManagedServerState, for_sse_get : Bool) -> Array[(String, String)] {
+  let out : Array[(String, String)] = []
+  if for_sse_get {
+    out.push(("accept", "text/event-stream"))
+  } else {
+    out.push(("accept", "application/json, text/event-stream"))
+    out.push(("content-type", "application/json"))
+  }
+  for i in 0..<s.cfg.headers.length() {
+    out.push(s.cfg.headers[i])
+  }
+  if !for_sse_get {
+    match s.session_id {
+      Some(sid) if sid.length() > 0 => out.push(("mcp-session-id", sid))
+      _ => ()
+    }
+  }
+  out
+}
+
+fn ManagedMcpRuntime::settle_call(
+  self : ManagedMcpRuntime,
+  call : PendingToolCall,
+  reply : station_tools::ToolReply,
+) -> Unit {
+  self.pending_calls.remove(call.call_id)
+  match call.stream_id {
+    Some(sid) => {
+      (self.io.stream_close)(sid)
+      call.stream_id = None
+    }
+    None => ()
+  }
+  match call.on_done {
+    Some(cb) => cb(reply)
+    None => ()
+  }
+  if call.http_conn_id > 0 {
+    let body = encode_mcp_tool_rpc_reply(call.mcp_req_id, reply, call.ended_meta)
+    (self.io.on_deferred_mcp_reply)(call.http_conn_id, 200, body)
+  }
+}
+
+fn ManagedMcpRuntime::fail_server_calls(self : ManagedMcpRuntime, server_name : String, err_msg : String) -> Unit {
+  let clean = clip_err_str(err_msg, 500)
+  let keys = self.pending_calls.keys()
+  for i in 0..<keys.length() {
+    match self.pending_calls.get(keys[i]) {
+      Some(call) if call.server_name == server_name => {
+        self.settle_call(call, station_tools::error_reply(clean))
+      }
+      _ => ()
+    }
+  }
+}
+
+fn ManagedMcpRuntime::teardown_server(
+  self : ManagedMcpRuntime,
+  s : ManagedServerState,
+  now_ms : Int64,
+  send_delete : Bool,
+) -> Unit {
+  s.generation = s.generation + 1
+  s.retry_at = None
+  s.connected_at = None
+  s.tools = []
+  s.phase = ServerPhase::Idle
+  self.fail_server_calls(s.name, "MCP server " + s.name + " closed")
+
+  // Close HTTP/SSE in-flight streams
+  match s.handshake_stream_id {
+    Some(sid) => {
+      (self.io.stream_close)(sid)
+      s.handshake_stream_id = None
+    }
+    None => ()
+  }
+  s.handshake_chunks = []
+  s.handshake_total = 0
+  s.handshake_sse.reset()
+
+  match s.sse_stream_id {
+    Some(sid) => {
+      (self.io.stream_close)(sid)
+      s.sse_stream_id = None
+    }
+    None => ()
+  }
+  s.sse_parser.reset()
+  s.sse_endpoint = None
+
+  let post_keys = s.sse_post_streams.keys()
+  for i in 0..<post_keys.length() {
+    match s.sse_post_streams.get(post_keys[i]) {
+      Some(sid) => (self.io.stream_close)(sid)
+      None => ()
+    }
+  }
+  s.sse_post_streams.clear()
+
+  if send_delete {
+    match s.cfg.transport {
+      station_tools::ManagedTransport::Http => match s.session_id {
+        Some(sid) if sid.length() > 0 => {
+          let hdrs : Array[(String, String)] = []
+          for i in 0..<s.cfg.headers.length() {
+            hdrs.push(s.cfg.headers[i])
+          }
+          hdrs.push(("mcp-session-id", sid))
+          let args = build_mcp_stream_open_args("DELETE", s.cfg.url, hdrs, 5000L)
+          let _ = (self.io.stream_open)(
+            builders_core::MuxToken::Tagged(s.id, MANAGED_MCP_TOK_DELETE_OPEN, s.generation.to_int64()),
+            args,
+            None,
+          )
+        }
+        _ => ()
+      }
+      _ => ()
+    }
+  }
+  s.session_id = None
+
+  // Terminate stdio child process group cleanly (close stdin + SIGTERM + grace deadline -> SIGKILL)
+  if s.event_id > 0L {
+    self.server_by_ev.remove(s.event_id)
+  }
+  match s.child {
+    Some(ch) => {
+      let ev_id = s.event_id
+      s.child = None
+      s.event_id = 0L
+      s.stdout_buf = Bytes::new(0)
+      let _ = (self.io.close_stdin)(ch)
+      let _ = (self.io.kill_proc)(ch, station_sys::SIG_TERM, true)
+      self.pending_kills.set(ev_id, PendingStdioKill::{
+        child: ch,
+        event_id: ev_id,
+        deadline_ms: now_ms + MANAGED_MCP_STDIO_GRACE_MS,
+        killed_hard: false,
+      })
+    }
+    None => {
+      s.event_id = 0L
+      s.stdout_buf = Bytes::new(0)
+    }
+  }
+}
+
+fn ManagedMcpRuntime::rebuild_exposed(self : ManagedMcpRuntime) -> Unit {
+  let names = self.servers.keys()
+  // Sort server names ascending (1:1 with Node `rebuildExposed`).
+  let mut i = 1
+  while i < names.length() {
+    let key = names[i]
+    let mut j = i - 1
+    while j >= 0 && names[j] > key {
+      names[j + 1] = names[j]
+      j = j - 1
+    }
+    names[j + 1] = key
+    i = i + 1
+  }
+  let out : Array[ExposedManagedTool] = []
+  for si in 0..<names.length() {
+    let sname = names[si]
+    match self.servers.get(sname) {
+      Some(s) if s.status == "ready" && s.tools.length() > 0 => {
+        let orig_names : Array[String] = []
+        for ti in 0..<s.tools.length() {
+          orig_names.push(s.tools[ti].name)
+        }
+        let mapped = station_tools::exported_tool_names(sname, orig_names)
+        for ti in 0..<s.tools.length() {
+          let ut = s.tools[ti]
+          let exported = if ti < mapped.length() { mapped[ti].1 } else { sname + "__" + ut.name }
+          let desc = if ut.description.length() > 0 {
+            "[" + sname + "] " + ut.description
+          } else {
+            "[" + sname + "] " + ut.name
+          }
+          let decl = station_tools::ToolDecl::{
+            name: exported,
+            description: desc,
+            input_schema: ut.input_schema,
+            outward: true,
+          }
+          out.push(ExposedManagedTool::{
+            server: sname,
+            original_name: ut.name,
+            exported_name: exported,
+            decl: decl,
+          })
+        }
+      }
+      _ => ()
+    }
+  }
+  self.exposed = out
+}
+
+fn ManagedMcpRuntime::on_unexpected_failure(
+  self : ManagedMcpRuntime,
+  s : ManagedServerState,
+  gen : Int,
+  err_msg : String,
+  now_ms : Int64,
+) -> Unit {
+  if s.generation != gen || self.closed || !self.running {
+    return
+  }
+  let uptime = match s.connected_at {
+    Some(ca) => now_ms - ca
+    None => 0L
+  }
+  if s.connected_at.is_some() && uptime >= MANAGED_MCP_STABLE_RUN_MS {
+    s.failures = 0
+  }
+  self.teardown_server(s, now_ms, false)
+  s.error = Some(clip_err_str(err_msg, 500))
+  s.failures = s.failures + 1
+  let short_lived = uptime < MANAGED_MCP_SHORT_CRASH_MS
+  if s.failures >= MANAGED_MCP_MAX_FAILURES && short_lived {
+    s.status = "failed"
+    s.phase = ServerPhase::Idle
+    s.retry_at = None
+  } else {
+    let delay = managed_mcp_backoff_ms(s.failures)
+    s.status = "reconnecting"
+    s.phase = ServerPhase::Reconnecting
+    s.retry_at = Some(now_ms + delay)
+  }
+  self.rebuild_exposed()
+  (self.io.on_status_changed)()
+}
+
+fn ManagedMcpRuntime::send_stdio_line(self : ManagedMcpRuntime, s : ManagedServerState, line : String) -> Bool {
+  match s.child {
+    Some(ch) => (self.io.write_stdin)(ch, (line + "\n").to_bytes())
+    None => false
+  }
+}
+
+fn ManagedMcpRuntime::send_remote_post(
+  self : ManagedMcpRuntime,
+  s : ManagedServerState,
+  tok_kind : Int,
+  tag : Int64,
+  body : String,
+  timeout_ms : Int64,
+) -> Unit {
+  let url = match s.cfg.transport {
+    station_tools::ManagedTransport::Sse => match s.sse_endpoint {
+      Some(ep) => ep
+      None => s.cfg.url
+    }
+    _ => s.cfg.url
+  }
+  let args = build_mcp_stream_open_args("POST", url, server_remote_headers(s, false), timeout_ms)
+  let _ = (self.io.stream_open)(
+    builders_core::MuxToken::Tagged(s.id, tok_kind, tag),
+    args,
+    Some(body.to_bytes()),
+  )
+}
+
+fn ManagedMcpRuntime::start_initialize(self : ManagedMcpRuntime, s : ManagedServerState, now_ms : Int64) -> Unit {
+  let rpc_id = s.next_rpc_id
+  s.next_rpc_id = s.next_rpc_id + 1
+  let params = base_codec::json_obj([
+    ("protocolVersion", base_codec::json_str(MANAGED_MCP_PROTOCOL_VERSION)),
+    ("capabilities", base_codec::json_obj([])),
+    ("clientInfo", base_codec::json_obj([
+      ("name", base_codec::json_str("still.fail")),
+      ("version", base_codec::json_str("0.0.0")),
+    ])),
+  ])
+  let payload = build_jsonrpc_request(rpc_id, "initialize", params)
+  s.phase = ServerPhase::Initializing(rpc_id, now_ms + MANAGED_MCP_HANDSHAKE_TIMEOUT_MS)
+  match s.cfg.transport {
+    station_tools::ManagedTransport::Stdio => {
+      if !self.send_stdio_line(s, payload) {
+        self.on_unexpected_failure(s, s.generation, "failed to write initialize to stdio server " + s.name, now_ms)
+      }
+    }
+    station_tools::ManagedTransport::Http => {
+      s.handshake_chunks = []
+      s.handshake_total = 0
+      s.handshake_sse.reset()
+      self.send_remote_post(s, MANAGED_MCP_TOK_HTTP_OPEN, s.generation.to_int64(), payload, MANAGED_MCP_HANDSHAKE_TIMEOUT_MS)
+    }
+    station_tools::ManagedTransport::Sse => {
+      let post_id = self.alloc_call_id()
+      self.send_remote_post(s, MANAGED_MCP_TOK_SSE_POST_OPEN, post_id, payload, MANAGED_MCP_HANDSHAKE_TIMEOUT_MS)
+    }
+  }
+}
+
+fn ManagedMcpRuntime::send_initialized_notification(self : ManagedMcpRuntime, s : ManagedServerState) -> Unit {
+  let payload = build_jsonrpc_notify("notifications/initialized", base_codec::json_obj([]))
+  match s.cfg.transport {
+    station_tools::ManagedTransport::Stdio => {
+      let _ = self.send_stdio_line(s, payload)
+    }
+    station_tools::ManagedTransport::Http | station_tools::ManagedTransport::Sse => {
+      self.send_remote_post(s, MANAGED_MCP_TOK_NOTIFY_OPEN, s.generation.to_int64(), payload, MANAGED_MCP_HANDSHAKE_TIMEOUT_MS)
+    }
+  }
+}
+
+fn ManagedMcpRuntime::start_list_tools(
+  self : ManagedMcpRuntime,
+  s : ManagedServerState,
+  cursor_opt : Option[String],
+  page : Int,
+  acc : Array[UpstreamTool],
+  is_refresh : Bool,
+  now_ms : Int64,
+) -> Unit {
+  let rpc_id = s.next_rpc_id
+  s.next_rpc_id = s.next_rpc_id + 1
+  let params = match cursor_opt {
+    Some(c) => base_codec::json_obj([("cursor", base_codec::json_str(c))])
+    None => base_codec::json_obj([])
+  }
+  let payload = build_jsonrpc_request(rpc_id, "tools/list", params)
+  let deadline = now_ms + MANAGED_MCP_HANDSHAKE_TIMEOUT_MS
+  s.phase = if is_refresh {
+    ServerPhase::RefreshingTools(rpc_id, page, acc, deadline)
+  } else {
+    ServerPhase::ListingTools(rpc_id, page, acc, deadline)
+  }
+  match s.cfg.transport {
+    station_tools::ManagedTransport::Stdio => {
+      if !self.send_stdio_line(s, payload) {
+        if !is_refresh {
+          self.on_unexpected_failure(s, s.generation, "failed to write tools/list to stdio server " + s.name, now_ms)
+        } else {
+          s.phase = ServerPhase::Ready
+        }
+      }
+    }
+    station_tools::ManagedTransport::Http => {
+      s.handshake_chunks = []
+      s.handshake_total = 0
+      s.handshake_sse.reset()
+      self.send_remote_post(s, MANAGED_MCP_TOK_HTTP_OPEN, s.generation.to_int64(), payload, MANAGED_MCP_HANDSHAKE_TIMEOUT_MS)
+    }
+    station_tools::ManagedTransport::Sse => {
+      let post_id = self.alloc_call_id()
+      self.send_remote_post(s, MANAGED_MCP_TOK_SSE_POST_OPEN, post_id, payload, MANAGED_MCP_HANDSHAKE_TIMEOUT_MS)
+    }
+  }
+}
+
+fn ManagedMcpRuntime::connect_server(self : ManagedMcpRuntime, s : ManagedServerState, now_ms : Int64) -> Unit {
+  if !self.running || self.closed || !s.cfg.enabled {
+    return
+  }
+  let gen = s.generation + 1
+  s.generation = gen
+  s.retry_at = None
+  s.status = "connecting"
+  s.error = None
+  s.stderr_buf = ""
+  s.stdout_buf = Bytes::new(0)
+  (self.io.on_status_changed)()
+
+  match s.cfg.transport {
+    station_tools::ManagedTransport::Stdio => {
+      let ev_id = self.alloc_event_id()
+      // Merge base OS env with server-configured env overrides.
+      let merged : Map[String, String] = Map::new()
+      let base = (self.io.base_env)()
+      for i in 0..<base.length() {
+        merged.set(base[i].0, base[i].1)
+      }
+      for i in 0..<s.cfg.env.length() {
+        merged.set(s.cfg.env[i].0, s.cfg.env[i].1)
+      }
+      let env_list : Array[String] = []
+      let eks = merged.keys()
+      for i in 0..<eks.length() {
+        match merged.get(eks[i]) {
+          Some(v) => env_list.push(eks[i] + "=" + v)
+          None => ()
+        }
+      }
+      let opts = station_sys::SpawnOptions::{
+        program: s.cfg.command,
+        args: s.cfg.args,
+        env: Some(env_list),
+        cwd: "",
+        new_pgid: true,
+        strip_malloc_space_efficient: false,
+        pipe_stdin: true,
+        pipe_stdout: true,
+        pipe_stderr: true,
+      }
+      match (self.io.spawn_proc)(ev_id, opts) {
+        Err(err_msg) => {
+          self.on_unexpected_failure(s, gen, "failed to start " + s.cfg.command + ": " + err_msg, now_ms)
+        }
+        Ok(ch) => {
+          s.child = Some(ch)
+          s.event_id = ev_id
+          self.server_by_ev.set(ev_id, s.name)
+          self.start_initialize(s, now_ms)
+        }
+      }
+    }
+    station_tools::ManagedTransport::Http => {
+      self.start_initialize(s, now_ms)
+    }
+    station_tools::ManagedTransport::Sse => {
+      s.phase = ServerPhase::SseOpening(now_ms + MANAGED_MCP_HANDSHAKE_TIMEOUT_MS)
+      s.sse_parser.reset()
+      s.sse_endpoint = None
+      let args = build_mcp_stream_open_args("GET", s.cfg.url, server_remote_headers(s, true), MANAGED_MCP_HANDSHAKE_TIMEOUT_MS)
+      let _ = (self.io.stream_open)(
+        builders_core::MuxToken::Tagged(s.id, MANAGED_MCP_TOK_SSE_OPEN, gen.to_int64()),
+        args,
+        None,
+      )
+    }
+  }
+}
+
+fn ManagedMcpRuntime::restart_server(self : ManagedMcpRuntime, s : ManagedServerState, now_ms : Int64) -> Unit {
+  self.teardown_server(s, now_ms, true)
+  if self.running && !self.closed && s.cfg.enabled {
+    self.connect_server(s, now_ms)
+  }
+}
+
+fn ManagedMcpRuntime::handle_jsonrpc_message(
+  self : ManagedMcpRuntime,
+  s : ManagedServerState,
+  gen : Int,
+  raw_json : String,
+  now_ms : Int64,
+) -> Unit {
+  if s.generation != gen || self.closed {
+    return
+  }
+  let msg = match base_codec::json_parse(raw_json) {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(_) => return
+  }
+  match msg {
+    base_codec::Json::Obj(_) => ()
+    _ => return
+  }
+  // Notification: `notifications/tools/list_changed`
+  match base_codec::json_get(msg, "method") {
+    Some(base_codec::Json::Str(m)) if m == "notifications/tools/list_changed" => {
+      match s.phase {
+        ServerPhase::Ready => self.start_list_tools(s, None, 0, [], true, now_ms)
+        _ => ()
+      }
+      return
+    }
+    _ => ()
+  }
+  // Response with numeric `id`
+  let rpc_id = match base_codec::json_get(msg, "id") {
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => return
+  }
+  let rpc_err_opt : Option[String] = match base_codec::json_get(msg, "error") {
+    Some(base_codec::Json::Null) | None => None
+    Some(err_v) => match base_codec::json_get(err_v, "message") {
+      Some(base_codec::Json::Str(m)) => Some(m)
+      _ => Some(base_codec::json_stringify(err_v))
+    }
+  }
+  let result_val = match base_codec::json_get(msg, "result") {
+    Some(r) => r
+    None => base_codec::json_null()
+  }
+
+  // 1. Check if this matches the server's handshake / tools-list phase
+  match s.phase {
+    ServerPhase::Initializing(want_id, _) if want_id == rpc_id => {
+      match rpc_err_opt {
+        Some(em) => {
+          self.on_unexpected_failure(s, gen, em, now_ms)
+          return
+        }
+        None => ()
+      }
+      self.send_initialized_notification(s)
+      self.start_list_tools(s, None, 0, [], false, now_ms)
+      return
+    }
+    ServerPhase::ListingTools(want_id, page, acc, _) if want_id == rpc_id => {
+      match rpc_err_opt {
+        Some(em) => {
+          self.on_unexpected_failure(s, gen, em, now_ms)
+          return
+        }
+        None => ()
+      }
+      let (page_tools, next_cursor) = parse_upstream_tools_result(result_val)
+      for i in 0..<page_tools.length() {
+        if acc.length() >= station_tools::MOST_TOOLS_PER_SERVER {
+          break
+        }
+        acc.push(page_tools[i])
+      }
+      if acc.length() < station_tools::MOST_TOOLS_PER_SERVER && page + 1 < 16 {
+        match next_cursor {
+          Some(cur) => {
+            self.start_list_tools(s, Some(cur), page + 1, acc, false, now_ms)
+            return
+          }
+          None => ()
+        }
+      }
+      s.tools = acc
+      s.status = "ready"
+      s.error = None
+      s.connected_at = Some(now_ms)
+      s.phase = ServerPhase::Ready
+      self.rebuild_exposed()
+      (self.io.on_status_changed)()
+      return
+    }
+    ServerPhase::RefreshingTools(want_id, page, acc, _) if want_id == rpc_id => {
+      match rpc_err_opt {
+        Some(_) => {
+          s.phase = ServerPhase::Ready
+          return
+        }
+        None => ()
+      }
+      let (page_tools, next_cursor) = parse_upstream_tools_result(result_val)
+      for i in 0..<page_tools.length() {
+        if acc.length() >= station_tools::MOST_TOOLS_PER_SERVER {
+          break
+        }
+        acc.push(page_tools[i])
+      }
+      if acc.length() < station_tools::MOST_TOOLS_PER_SERVER && page + 1 < 16 {
+        match next_cursor {
+          Some(cur) => {
+            self.start_list_tools(s, Some(cur), page + 1, acc, true, now_ms)
+            return
+          }
+          None => ()
+        }
+      }
+      s.tools = acc
+      s.phase = ServerPhase::Ready
+      self.rebuild_exposed()
+      (self.io.on_status_changed)()
+      return
+    }
+    _ => ()
+  }
+
+  // 2. Otherwise match pending `tools/call` for this server & rpc_id
+  let keys = self.pending_calls.keys()
+  for i in 0..<keys.length() {
+    match self.pending_calls.get(keys[i]) {
+      Some(call) if call.server_id == s.id && call.server_gen == gen && call.rpc_id == rpc_id => {
+        match rpc_err_opt {
+          Some(em) => self.settle_call(call, station_tools::error_reply(clip_err_str(em, 500)))
+          None => self.settle_call(call, parse_upstream_call_result(result_val))
+        }
+        return
+      }
+      _ => ()
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public Lifecycle & Config Sync API
+// ---------------------------------------------------------------------------
+
+pub fn ManagedMcpRuntime::start(self : ManagedMcpRuntime, raw_cfg : base_codec::Json, now_ms : Int64) -> Unit {
+  if self.closed {
+    return
+  }
+  self.running = true
+  self.sync_config(raw_cfg, now_ms)
+}
+
+pub fn ManagedMcpRuntime::sync_config(self : ManagedMcpRuntime, raw_cfg : base_codec::Json, now_ms : Int64) -> Unit {
+  if self.closed {
+    return
+  }
+  let entries = parse_managed_mcp_entries(raw_cfg)
+  let cfg_map : Map[String, station_tools::ManagedServerConfig] = Map::new()
+  for i in 0..<entries.length() {
+    cfg_map.set(entries[i].0, entries[i].1)
+  }
+
+  // 1. Stop & remove deleted servers.
+  let existing_names = self.servers.keys()
+  for i in 0..<existing_names.length() {
+    let name = existing_names[i]
+    if cfg_map.get(name).is_none() {
+      match self.servers.get(name) {
+        Some(s) => {
+          self.servers.remove(name)
+          self.servers_by_id.remove(s.id)
+          self.teardown_server(s, now_ms, true)
+        }
+        None => ()
+      }
+    }
+  }
+
+  // 2. Add or update configured servers.
+  for i in 0..<entries.length() {
+    let (name, scfg) = entries[i]
+    let ckey = station_tools::canonical_json(station_tools::server_config_to_json(scfg))
+    match self.servers.get(name) {
+      None => {
+        let created = self.make_server_state(name, scfg)
+        self.servers.set(name, created)
+        self.servers_by_id.set(created.id, created)
+        if self.running && scfg.enabled {
+          self.connect_server(created, now_ms)
+        }
+      }
+      Some(existing) => {
+        if existing.config_key != ckey {
+          existing.cfg = scfg
+          existing.config_key = ckey
+          existing.failures = 0
+          existing.error = None
+          if !scfg.enabled {
+            self.teardown_server(existing, now_ms, true)
+            existing.status = "disabled"
+          } else if self.running {
+            self.restart_server(existing, now_ms)
+          } else {
+            self.teardown_server(existing, now_ms, true)
+            existing.status = "stopped"
+          }
+        } else if self.running && scfg.enabled && existing.status == "stopped" {
+          self.connect_server(existing, now_ms)
+        }
+      }
+    }
+  }
+  self.rebuild_exposed()
+  (self.io.on_status_changed)()
+}
+
+/// Manually reconnect one server (or all enabled servers), resetting circuit-breaker state.
+/// Synchronously marks targets as `connecting` before initiating async handshakes (1:1 with Node `reload`).
+pub fn ManagedMcpRuntime::reload(
+  self : ManagedMcpRuntime,
+  raw_cfg : base_codec::Json,
+  name_opt : Option[String],
+  now_ms : Int64,
+) -> Unit {
+  if self.closed {
+    return
+  }
+  // Ensure server entries match latest config before reloading.
+  let entries = parse_managed_mcp_entries(raw_cfg)
+  for i in 0..<entries.length() {
+    let (name, scfg) = entries[i]
+    let matches_target = match name_opt {
+      Some(want) => want == name
+      None => true
+    }
+    if !matches_target || !scfg.enabled {
+      continue
+    }
+    match self.servers.get(name) {
+      Some(existing) => {
+        existing.cfg = scfg
+        existing.config_key = station_tools::canonical_json(station_tools::server_config_to_json(scfg))
+        existing.failures = 0
+        existing.error = None
+        if self.running {
+          self.restart_server(existing, now_ms)
+        } else {
+          existing.status = "connecting"
+        }
+      }
+      None => {
+        let created = self.make_server_state(name, scfg)
+        self.servers.set(name, created)
+        self.servers_by_id.set(created.id, created)
+        if self.running {
+          self.connect_server(created, now_ms)
+        } else {
+          created.status = "connecting"
+        }
+      }
+    }
+  }
+  self.rebuild_exposed()
+  (self.io.on_status_changed)()
+}
+
+/// Masked config + live status views for `GET /mcp-servers`, `PUT /mcp-servers`, `mcp_servers list`.
+pub fn ManagedMcpRuntime::view(self : ManagedMcpRuntime, raw_cfg : base_codec::Json) -> Array[base_codec::Json] {
+  let entries = parse_managed_mcp_entries(raw_cfg)
+  // Sort by server name ascending (1:1 with Node `view()`).
+  let mut i = 1
+  while i < entries.length() {
+    let key = entries[i]
+    let mut j = i - 1
+    while j >= 0 && entries[j].0 > key.0 {
+      entries[j + 1] = entries[j]
+      j = j - 1
+    }
+    entries[j + 1] = key
+    i = i + 1
+  }
+  let out : Array[base_codec::Json] = []
+  for k in 0..<entries.length() {
+    let (name, scfg) = entries[k]
+    let rt = match self.servers.get(name) {
+      Some(live) => {
+        let tnames : Array[String] = []
+        for ti in 0..<live.tools.length() {
+          tnames.push(live.tools[ti].name)
+        }
+        station_tools::ManagedServerRuntime::{ status: live.status, tools: tnames, error: live.error }
+      }
+      None => {
+        let st = if !scfg.enabled {
+          "disabled"
+        } else if self.running {
+          "connecting"
+        } else {
+          "stopped"
+        }
+        station_tools::ManagedServerRuntime::{ status: st, tools: [], error: None }
+      }
+    }
+    out.push(station_tools::mask_server_view(name, scfg, rt))
+  }
+  out
+}
+
+/// Overview inputs for `GET /overview` (`mcpServers`).
+pub fn ManagedMcpRuntime::overview_inputs(
+  self : ManagedMcpRuntime,
+  raw_cfg : base_codec::Json,
+) -> Array[station_api::McpServerOverviewInput] {
+  let entries = parse_managed_mcp_entries(raw_cfg)
+  let out : Array[station_api::McpServerOverviewInput] = []
+  for i in 0..<entries.length() {
+    let (name, scfg) = entries[i]
+    let (status, tcount) = match self.servers.get(name) {
+      Some(live) => (live.status, live.tools.length())
+      None => (if !scfg.enabled { "disabled" } else if self.running { "connecting" } else { "stopped" }, 0)
+    }
+    let (t_str, cmd_opt, url_opt) = match scfg.transport {
+      station_tools::ManagedTransport::Stdio => ("stdio", Some(scfg.command), None)
+      station_tools::ManagedTransport::Http => ("http", None, Some(station_tools::redact_url_userinfo(scfg.url)))
+      station_tools::ManagedTransport::Sse => ("sse", None, Some(station_tools::redact_url_userinfo(scfg.url)))
+    }
+    out.push(station_api::McpServerOverviewInput::{
+      name: name,
+      transport: t_str,
+      enabled: scfg.enabled,
+      status: status,
+      command: cmd_opt,
+      url: url_opt,
+      env: scfg.env,
+      headers: scfg.headers,
+      tool_count: tcount,
+    })
+  }
+  out
+}
+
+/// Exposed `ToolDecl`s injected into `/mcp` `tools/list`.
+pub fn ManagedMcpRuntime::exposed_tool_decls(self : ManagedMcpRuntime) -> Array[station_tools::ToolDecl] {
+  let out : Array[station_tools::ToolDecl] = []
+  for i in 0..<self.exposed.length() {
+    out.push(self.exposed[i].decl)
+  }
+  out
+}
+
+pub fn ManagedMcpRuntime::lookup_exposed_tool(self : ManagedMcpRuntime, exported_name : String) -> Option[(String, String)] {
+  for i in 0..<self.exposed.length() {
+    if self.exposed[i].exported_name == exported_name {
+      return Some((self.exposed[i].server, self.exposed[i].original_name))
+    }
+  }
+  None
+}
+
+/// Start an asynchronous `tools/call` to a ready managed MCP server.
+/// Returns `Ok(call_id)` when dispatched asynchronously (caller returns `HandlerAction::Defer`),
+/// or `Err(ToolReply)` when the server is unavailable/not ready.
+pub fn ManagedMcpRuntime::start_tool_call(
+  self : ManagedMcpRuntime,
+  exported_name : String,
+  args : base_codec::Json,
+  http_conn_id : Int,
+  mcp_req_id : base_codec::Json,
+  ended_meta : Option[base_codec::Json],
+  now_ms : Int64,
+  on_done : Option[(station_tools::ToolReply) -> Unit],
+) -> Result[Int64, station_tools::ToolReply] {
+  let (server_name, orig_name) = match self.lookup_exposed_tool(exported_name) {
+    Some(pair) => pair
+    None => return Err(station_tools::error_reply("unknown managed MCP tool: " + exported_name))
+  }
+  let s = match self.servers.get(server_name) {
+    Some(st) if st.status == "ready" => st
+    Some(st) => {
+      return Err(station_tools::error_reply("MCP server " + server_name + " is not available right now (" + st.status + ")."))
+    }
+    None => {
+      return Err(station_tools::error_reply("MCP server " + server_name + " is not available right now (removed)."))
+    }
+  }
+  let call_id = self.alloc_call_id()
+  let rpc_id = s.next_rpc_id
+  s.next_rpc_id = s.next_rpc_id + 1
+  let call = PendingToolCall::{
+    call_id: call_id,
+    server_id: s.id,
+    server_name: server_name,
+    server_gen: s.generation,
+    rpc_id: rpc_id,
+    deadline_ms: now_ms + MANAGED_MCP_CALL_TIMEOUT_MS,
+    http_conn_id: http_conn_id,
+    mcp_req_id: mcp_req_id,
+    ended_meta: ended_meta,
+    on_done: on_done,
+    stream_id: None,
+    http_status: 0,
+    http_ct: "",
+    http_chunks: [],
+    http_total: 0,
+    http_sse: SseFrameParser::new(),
+  }
+  let payload = build_jsonrpc_request(
+    rpc_id,
+    "tools/call",
+    base_codec::json_obj([
+      ("name", base_codec::json_str(orig_name)),
+      ("arguments", args),
+    ]),
+  )
+  match s.cfg.transport {
+    station_tools::ManagedTransport::Stdio => {
+      if !self.send_stdio_line(s, payload) {
+        return Err(station_tools::error_reply("MCP server " + server_name + " stdin is not writable"))
+      }
+      self.pending_calls.set(call_id, call)
+      Ok(call_id)
+    }
+    station_tools::ManagedTransport::Http => {
+      self.pending_calls.set(call_id, call)
+      let open_args = build_mcp_stream_open_args("POST", s.cfg.url, server_remote_headers(s, false), MANAGED_MCP_CALL_TIMEOUT_MS)
+      let _ = (self.io.stream_open)(
+        builders_core::MuxToken::Tagged(s.id, MANAGED_MCP_TOK_CALL_OPEN, call_id),
+        open_args,
+        Some(payload.to_bytes()),
+      )
+      Ok(call_id)
+    }
+    station_tools::ManagedTransport::Sse => {
+      if s.sse_endpoint.is_none() {
+        return Err(station_tools::error_reply("SSE server " + server_name + " has no endpoint"))
+      }
+      self.pending_calls.set(call_id, call)
+      self.send_remote_post(s, MANAGED_MCP_TOK_SSE_POST_OPEN, call_id, payload, MANAGED_MCP_CALL_TIMEOUT_MS)
+      Ok(call_id)
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Event Dispatch: `station_sys` (Stdio) & `ctx.mux_role` (HTTP / SSE)
+// ---------------------------------------------------------------------------
+
+/// Handle one `station_sys::SysEvent`. Returns `true` iff `ev_id` falls in `[MANAGED_MCP_EVENT_BASE, MANAGED_MCP_EVENT_END)`.
+pub fn ManagedMcpRuntime::handle_sys_event(
+  self : ManagedMcpRuntime,
+  ev_id : Int64,
+  ev : station_sys::SysEvent,
+  now_ms : Int64,
+) -> Bool {
+  if !is_managed_mcp_event(ev_id) {
+    return false
+  }
+  // Check if this event belongs to a child currently being torn down.
+  match self.pending_kills.get(ev_id) {
+    Some(pk) => {
+      match ev {
+        station_sys::SysEvent::ProcExit(_) => {
+          self.pending_kills.remove(ev_id)
+          let _ = (self.io.close_proc)(pk.child)
+        }
+        _ => ()
+      }
+      return true
+    }
+    None => ()
+  }
+  let sname = match self.server_by_ev.get(ev_id) {
+    Some(n) => n
+    None => return true
+  }
+  let s = match self.servers.get(sname) {
+    Some(st) if st.event_id == ev_id => st
+    _ => return true
+  }
+  let gen = s.generation
+  match ev {
+    station_sys::SysEvent::ProcStdout(chunk) => {
+      if chunk.length() == 0 {
+        return true
+      }
+      let combined = if s.stdout_buf.length() == 0 {
+        chunk
+      } else {
+        concat_byte_chunks([s.stdout_buf, chunk], s.stdout_buf.length() + chunk.length())
+      }
+      if combined.length() > MANAGED_MCP_MAX_FRAME_BYTES {
+        self.on_unexpected_failure(s, gen, "stdio server " + s.name + ": stdout line exceeded 4 MiB limit", now_ms)
+        return true
+      }
+      let mut start = 0
+      let mut i = 0
+      let n = combined.length()
+      while i < n {
+        if (combined[i].to_int() & 0xFF) == 10 {
+          let line_len = i - start
+          let line_bytes = Bytes::new(line_len)
+          for k in 0..<line_len {
+            line_bytes[k] = combined[start + k]
+          }
+          start = i + 1
+          let line = line_bytes.to_string().trim()
+          if line.length() > 0 {
+            self.handle_jsonrpc_message(s, gen, line, now_ms)
+            if s.generation != gen {
+              return true
+            }
+          }
+        }
+        i = i + 1
+      }
+      let rem_len = n - start
+      if rem_len == 0 {
+        s.stdout_buf = Bytes::new(0)
+      } else {
+        let rem = Bytes::new(rem_len)
+        for k in 0..<rem_len {
+          rem[k] = combined[start + k]
+        }
+        s.stdout_buf = rem
+      }
+    }
+    station_sys::SysEvent::ProcStderr(chunk) => {
+      if chunk.length() > 0 {
+        s.stderr_buf = s.stderr_buf + chunk.to_string()
+        if s.stderr_buf.length() > MANAGED_MCP_MAX_STDERR_BYTES {
+          s.stderr_buf = s.stderr_buf.slice(s.stderr_buf.length() - MANAGED_MCP_MAX_STDERR_BYTES, s.stderr_buf.length())
+        }
+      }
+    }
+    station_sys::SysEvent::ProcExit(status) => {
+      let detail = s.stderr_buf.trim()
+      let why = if status.signal != 0 && status.signal_name.length() > 0 {
+        "killed by " + status.signal_name
+      } else {
+        "exited with code " + status.code.to_string()
+      }
+      let full_err = if detail.length() > 0 {
+        let tail = if detail.length() > 300 { detail.slice(detail.length() - 300, detail.length()) } else { detail }
+        why + ": " + tail
+      } else {
+        why
+      }
+      // Child has already exited; close handle cleanly without sending signals.
+      self.server_by_ev.remove(ev_id)
+      match s.child {
+        Some(ch) => {
+          s.child = None
+          s.event_id = 0L
+          let _ = (self.io.close_proc)(ch)
+        }
+        None => ()
+      }
+      self.on_unexpected_failure(s, gen, full_err, now_ms)
+    }
+    _ => ()
+  }
+  true
+}
+
+fn ManagedMcpRuntime::finish_http_handshake_body(
+  self : ManagedMcpRuntime,
+  s : ManagedServerState,
+  gen : Int,
+  now_ms : Int64,
+) -> Unit {
+  if s.generation != gen || self.closed {
+    return
+  }
+  let full = concat_byte_chunks(s.handshake_chunks, s.handshake_total)
+  s.handshake_chunks = []
+  s.handshake_total = 0
+  if s.handshake_status < 200 || s.handshake_status >= 300 {
+    let snippet = full.to_string()
+    let clipped = if snippet.length() > 300 { snippet.slice(0, 300) } else { snippet }
+    let em = if clipped.length() > 0 {
+      "HTTP " + s.handshake_status.to_string() + ": " + clipped
+    } else {
+      "HTTP " + s.handshake_status.to_string()
+    }
+    self.on_unexpected_failure(s, gen, em, now_ms)
+    return
+  }
+  if admin_ascii_lower(s.handshake_ct).contains("text/event-stream") {
+    match s.handshake_sse.feed(full) {
+      Err(e) => {
+        self.on_unexpected_failure(s, gen, e, now_ms)
+        return
+      }
+      Ok(evs) => {
+        for i in 0..<evs.length() {
+          self.handle_jsonrpc_message(s, gen, evs[i].1, now_ms)
+          if s.generation != gen {
+            return
+          }
+        }
+      }
+    }
+    let tail = s.handshake_sse.finish()
+    for i in 0..<tail.length() {
+      self.handle_jsonrpc_message(s, gen, tail[i].1, now_ms)
+      if s.generation != gen {
+        return
+      }
+    }
+  } else {
+    self.handle_jsonrpc_message(s, gen, full.to_string(), now_ms)
+  }
+}
+
+fn ManagedMcpRuntime::finish_http_call_body(
+  self : ManagedMcpRuntime,
+  call : PendingToolCall,
+) -> Unit {
+  let full = concat_byte_chunks(call.http_chunks, call.http_total)
+  call.http_chunks = []
+  call.http_total = 0
+  if call.http_status < 200 || call.http_status >= 300 {
+    let snippet = full.to_string()
+    let clipped = if snippet.length() > 300 { snippet.slice(0, 300) } else { snippet }
+    let em = if clipped.length() > 0 {
+      "HTTP " + call.http_status.to_string() + ": " + clipped
+    } else {
+      "HTTP " + call.http_status.to_string()
+    }
+    self.settle_call(call, station_tools::error_reply(clip_err_str(em, 500)))
+    return
+  }
+  if admin_ascii_lower(call.http_ct).contains("text/event-stream") {
+    let mut matched : Option[base_codec::Json] = None
+    match call.http_sse.feed(full) {
+      Err(e) => {
+        self.settle_call(call, station_tools::error_reply(clip_err_str(e, 500)))
+        return
+      }
+      Ok(evs) => {
+        for i in 0..<evs.length() {
+          match base_codec::json_parse(evs[i].1) {
+            base_codec::JsonParseResult::Ok(m) => {
+              match base_codec::json_get(m, "id") {
+                Some(base_codec::Json::Num(n, _)) if n.to_int() == call.rpc_id => matched = Some(m)
+                _ => ()
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+    }
+    let tail = call.http_sse.finish()
+    for i in 0..<tail.length() {
+      match base_codec::json_parse(tail[i].1) {
+        base_codec::JsonParseResult::Ok(m) => {
+          match base_codec::json_get(m, "id") {
+            Some(base_codec::Json::Num(n, _)) if n.to_int() == call.rpc_id => matched = Some(m)
+            _ => ()
+          }
+        }
+        _ => ()
+      }
+    }
+    match matched {
+      None => self.settle_call(call, station_tools::error_reply("no JSON-RPC response for id " + call.rpc_id.to_string() + " in SSE stream"))
+      Some(m) => match base_codec::json_get(m, "error") {
+        Some(err_v) if !(err_v is base_codec::Json::Null) => {
+          let em = match base_codec::json_get(err_v, "message") {
+            Some(base_codec::Json::Str(ms)) => ms
+            _ => base_codec::json_stringify(err_v)
+          }
+          self.settle_call(call, station_tools::error_reply(clip_err_str(em, 500)))
+        }
+        _ => {
+          let rv = match base_codec::json_get(m, "result") { Some(r) => r, None => base_codec::json_null() }
+          self.settle_call(call, parse_upstream_call_result(rv))
+        }
+      }
+    }
+  } else {
+    match base_codec::json_parse(full.to_string()) {
+      base_codec::JsonParseResult::Err(_) => {
+        self.settle_call(call, station_tools::error_reply("invalid JSON response from MCP server " + call.server_name))
+      }
+      base_codec::JsonParseResult::Ok(m) => match base_codec::json_get(m, "error") {
+        Some(err_v) if !(err_v is base_codec::Json::Null) => {
+          let em = match base_codec::json_get(err_v, "message") {
+            Some(base_codec::Json::Str(ms)) => ms
+            _ => base_codec::json_stringify(err_v)
+          }
+          self.settle_call(call, station_tools::error_reply(clip_err_str(em, 500)))
+        }
+        _ => {
+          let rv = match base_codec::json_get(m, "result") { Some(r) => r, None => base_codec::json_null() }
+          self.settle_call(call, parse_upstream_call_result(rv))
+        }
+      }
+    }
+  }
+}
+
+fn close_orphaned_mcp_open(io : ManagedMcpIo, done : host_shim::ShellDone) -> Unit {
+  match station_http::decode_stream_open_done(done) {
+    Ok(h) if h.id > 0 => (io.stream_close)(h.id)
+    _ => ()
+  }
+}
+
+/// Handle one `ctx.mux_role` completion. Returns `true` iff token kind is in `5300..5309`.
+pub fn ManagedMcpRuntime::handle_role_done(
+  self : ManagedMcpRuntime,
+  tok : builders_core::MuxToken,
+  done : host_shim::ShellDone,
+  now_ms : Int64,
+) -> Bool {
+  let (server_id, kind, tag) = match tok {
+    builders_core::MuxToken::Tagged(a, b, c) => (a, b, c)
+    _ => return false
+  }
+  if !is_managed_mcp_mux_kind(kind) {
+    return false
+  }
+
+  // Fire-and-forget notifications & DELETE session cleanup: always close opened stream immediately.
+  if kind == MANAGED_MCP_TOK_NOTIFY_OPEN || kind == MANAGED_MCP_TOK_DELETE_OPEN {
+    close_orphaned_mcp_open(self.io, done)
+    return true
+  }
+
+  // Streamable HTTP `tools/call` completion
+  if kind == MANAGED_MCP_TOK_CALL_OPEN || kind == MANAGED_MCP_TOK_CALL_READ {
+    let call = match self.pending_calls.get(tag) {
+      Some(c) => c
+      None => {
+        if kind == MANAGED_MCP_TOK_CALL_OPEN {
+          close_orphaned_mcp_open(self.io, done)
+        }
+        return true
+      }
+    }
+    if kind == MANAGED_MCP_TOK_CALL_OPEN {
+      match station_http::decode_stream_open_done(done) {
+        Err(e) => self.settle_call(call, station_tools::error_reply(clip_err_str(e.message, 500)))
+        Ok(head) => {
+          match self.servers_by_id.get(call.server_id) {
+            Some(s) if s.generation == call.server_gen => match header_get_ci(head.headers, "mcp-session-id") {
+              Some(sid) if sid.length() > 0 => s.session_id = Some(sid)
+              _ => ()
+            }
+            _ => ()
+          }
+          call.stream_id = Some(head.id)
+          call.http_status = head.status
+          call.http_ct = match header_get_ci(head.headers, "content-type") { Some(ct) => ct, None => "" }
+          let rem = call.deadline_ms - now_ms
+          let stall = if rem <= 0L { 1 } else if rem > 60000L { 60000 } else { rem.to_int() }
+          let _ = (self.io.stream_read)(
+            builders_core::MuxToken::Tagged(server_id, MANAGED_MCP_TOK_CALL_READ, tag),
+            head.id,
+            stall,
+          )
+        }
+      }
+      return true
+    }
+    // MANAGED_MCP_TOK_CALL_READ
+    match station_http::decode_stream_read_done(done) {
+      Err(e) => self.settle_call(call, station_tools::error_reply(clip_err_str(e.message, 500)))
+      Ok(station_http::StreamChunk::End) => {
+        match call.stream_id {
+          Some(sid) => {
+            (self.io.stream_close)(sid)
+            call.stream_id = None
+          }
+          None => ()
+        }
+        self.finish_http_call_body(call)
+      }
+      Ok(station_http::StreamChunk::Data(data)) => {
+        if data.length() > 0 {
+          if call.http_total + data.length() > MANAGED_MCP_MAX_FRAME_BYTES {
+            self.settle_call(call, station_tools::error_reply("MCP HTTP response exceeded 4 MiB limit"))
+            return true
+          }
+          call.http_chunks.push(data)
+          call.http_total = call.http_total + data.length()
+        }
+        match call.stream_id {
+          Some(sid) => {
+            let rem = call.deadline_ms - now_ms
+            if rem <= 0L {
+              self.settle_call(call, station_tools::error_reply("timed out"))
+              return true
+            }
+            let stall = if rem > 60000L { 60000 } else { rem.to_int() }
+            let _ = (self.io.stream_read)(
+              builders_core::MuxToken::Tagged(server_id, MANAGED_MCP_TOK_CALL_READ, tag),
+              sid,
+              stall,
+            )
+          }
+          None => ()
+        }
+      }
+    }
+    return true
+  }
+
+  let s = match self.servers_by_id.get(server_id) {
+    Some(st) => st
+    None => {
+      if kind == MANAGED_MCP_TOK_HTTP_OPEN || kind == MANAGED_MCP_TOK_SSE_OPEN || kind == MANAGED_MCP_TOK_SSE_POST_OPEN {
+        close_orphaned_mcp_open(self.io, done)
+      }
+      return true
+    }
+  }
+
+  // Streamable HTTP handshake / tools/list
+  if kind == MANAGED_MCP_TOK_HTTP_OPEN || kind == MANAGED_MCP_TOK_HTTP_READ {
+    let gen = tag.to_int()
+    if s.generation != gen || self.closed {
+      if kind == MANAGED_MCP_TOK_HTTP_OPEN {
+        close_orphaned_mcp_open(self.io, done)
+      }
+      return true
+    }
+    if kind == MANAGED_MCP_TOK_HTTP_OPEN {
+      match station_http::decode_stream_open_done(done) {
+        Err(e) => self.on_unexpected_failure(s, gen, e.message, now_ms)
+        Ok(head) => {
+          match header_get_ci(head.headers, "mcp-session-id") {
+            Some(sid) if sid.length() > 0 => s.session_id = Some(sid)
+            _ => ()
+          }
+          s.handshake_stream_id = Some(head.id)
+          s.handshake_status = head.status
+          s.handshake_ct = match header_get_ci(head.headers, "content-type") { Some(ct) => ct, None => "" }
+          let _ = (self.io.stream_read)(
+            builders_core::MuxToken::Tagged(s.id, MANAGED_MCP_TOK_HTTP_READ, tag),
+            head.id,
+            MANAGED_MCP_HANDSHAKE_TIMEOUT_MS.to_int(),
+          )
+        }
+      }
+      return true
+    }
+    // MANAGED_MCP_TOK_HTTP_READ
+    match station_http::decode_stream_read_done(done) {
+      Err(e) => {
+        match s.handshake_stream_id {
+          Some(sid) => {
+            (self.io.stream_close)(sid)
+            s.handshake_stream_id = None
+          }
+          None => ()
+        }
+        self.on_unexpected_failure(s, gen, e.message, now_ms)
+      }
+      Ok(station_http::StreamChunk::End) => {
+        match s.handshake_stream_id {
+          Some(sid) => {
+            (self.io.stream_close)(sid)
+            s.handshake_stream_id = None
+          }
+          None => ()
+        }
+        self.finish_http_handshake_body(s, gen, now_ms)
+      }
+      Ok(station_http::StreamChunk::Data(data)) => {
+        if data.length() > 0 {
+          if s.handshake_total + data.length() > MANAGED_MCP_MAX_FRAME_BYTES {
+            self.on_unexpected_failure(s, gen, "MCP HTTP handshake response exceeded 4 MiB limit", now_ms)
+            return true
+          }
+          s.handshake_chunks.push(data)
+          s.handshake_total = s.handshake_total + data.length()
+        }
+        match s.handshake_stream_id {
+          Some(sid) => {
+            let _ = (self.io.stream_read)(
+              builders_core::MuxToken::Tagged(s.id, MANAGED_MCP_TOK_HTTP_READ, tag),
+              sid,
+              MANAGED_MCP_HANDSHAKE_TIMEOUT_MS.to_int(),
+            )
+          }
+          None => ()
+        }
+      }
+    }
+    return true
+  }
+
+  // Legacy SSE GET event stream
+  if kind == MANAGED_MCP_TOK_SSE_OPEN || kind == MANAGED_MCP_TOK_SSE_READ {
+    let gen = tag.to_int()
+    if s.generation != gen || self.closed {
+      if kind == MANAGED_MCP_TOK_SSE_OPEN {
+        close_orphaned_mcp_open(self.io, done)
+      }
+      return true
+    }
+    if kind == MANAGED_MCP_TOK_SSE_OPEN {
+      match station_http::decode_stream_open_done(done) {
+        Err(e) => self.on_unexpected_failure(s, gen, e.message, now_ms)
+        Ok(head) => {
+          if head.status < 200 || head.status >= 300 {
+            (self.io.stream_close)(head.id)
+            self.on_unexpected_failure(s, gen, "SSE connect failed: HTTP " + head.status.to_string(), now_ms)
+            return true
+          }
+          s.sse_stream_id = Some(head.id)
+          let _ = (self.io.stream_read)(
+            builders_core::MuxToken::Tagged(s.id, MANAGED_MCP_TOK_SSE_READ, tag),
+            head.id,
+            60000,
+          )
+        }
+      }
+      return true
+    }
+    // MANAGED_MCP_TOK_SSE_READ
+    match station_http::decode_stream_read_done(done) {
+      Err(e) => self.on_unexpected_failure(s, gen, e.message, now_ms)
+      Ok(station_http::StreamChunk::End) => {
+        self.on_unexpected_failure(s, gen, "SSE stream closed by server", now_ms)
+      }
+      Ok(station_http::StreamChunk::Data(data)) => {
+        match s.sse_parser.feed(data) {
+          Err(e) => {
+            self.on_unexpected_failure(s, gen, e, now_ms)
+            return true
+          }
+          Ok(evs) => {
+            for i in 0..<evs.length() {
+              let (ev_name, ev_data) = evs[i]
+              if ev_name == "endpoint" {
+                match resolve_sse_endpoint_url(s.cfg.url, ev_data) {
+                  Err(e) => {
+                    self.on_unexpected_failure(s, gen, e, now_ms)
+                    return true
+                  }
+                  Ok(resolved) => {
+                    s.sse_endpoint = Some(resolved)
+                    match s.phase {
+                      ServerPhase::SseOpening(_) => self.start_initialize(s, now_ms)
+                      _ => ()
+                    }
+                  }
+                }
+              } else {
+                self.handle_jsonrpc_message(s, gen, ev_data, now_ms)
+              }
+              if s.generation != gen {
+                return true
+              }
+            }
+          }
+        }
+        match s.sse_stream_id {
+          Some(sid) if s.generation == gen => {
+            let _ = (self.io.stream_read)(
+              builders_core::MuxToken::Tagged(s.id, MANAGED_MCP_TOK_SSE_READ, tag),
+              sid,
+              60000,
+            )
+          }
+          _ => ()
+        }
+      }
+    }
+    return true
+  }
+
+  // Legacy SSE POST response (status check + immediately close stream handle)
+  if kind == MANAGED_MCP_TOK_SSE_POST_OPEN || kind == MANAGED_MCP_TOK_SSE_POST_READ {
+    if kind == MANAGED_MCP_TOK_SSE_POST_OPEN {
+      match station_http::decode_stream_open_done(done) {
+        Err(e) => {
+          match self.pending_calls.get(tag) {
+            Some(call) => self.settle_call(call, station_tools::error_reply(clip_err_str(e.message, 500)))
+            None => ()
+          }
+        }
+        Ok(head) => {
+          (self.io.stream_close)(head.id)
+          if head.status < 200 || head.status >= 300 {
+            match self.pending_calls.get(tag) {
+              Some(call) => self.settle_call(call, station_tools::error_reply("HTTP " + head.status.to_string() + " from " + s.name))
+              None => ()
+            }
+          }
+        }
+      }
+      return true
+    }
+    return true
+  }
+
+  true
+}
+
+// ---------------------------------------------------------------------------
+// Monotonic Tick (Deadlines, Backoff Reconnect, Stdio SIGTERM->SIGKILL Grace)
+// ---------------------------------------------------------------------------
+
+pub fn ManagedMcpRuntime::tick(self : ManagedMcpRuntime, now_ms : Int64) -> Int {
+  let mut finalized_kills = 0
+  // 1. Escalate stdio SIGTERM -> SIGKILL after grace period
+  let kill_keys = self.pending_kills.keys()
+  for i in 0..<kill_keys.length() {
+    match self.pending_kills.get(kill_keys[i]) {
+      Some(pk) if now_ms >= pk.deadline_ms => {
+        self.pending_kills.remove(kill_keys[i])
+        if !pk.killed_hard {
+          pk.killed_hard = true
+          let _ = (self.io.kill_proc)(pk.child, station_sys::SIG_KILL, true)
+        }
+        let _ = (self.io.close_proc)(pk.child)
+        finalized_kills = finalized_kills + 1
+      }
+      _ => ()
+    }
+  }
+
+  if self.closed {
+    return finalized_kills
+  }
+
+  // 2. Enforce pending `tools/call` deadlines
+  let call_keys = self.pending_calls.keys()
+  for i in 0..<call_keys.length() {
+    match self.pending_calls.get(call_keys[i]) {
+      Some(call) if now_ms >= call.deadline_ms => {
+        self.settle_call(call, station_tools::error_reply("MCP tool call timed out"))
+      }
+      _ => ()
+    }
+  }
+
+  // 3. Enforce server handshake deadlines & backoff reconnect timers
+  let snames = self.servers.keys()
+  for i in 0..<snames.length() {
+    match self.servers.get(snames[i]) {
+      Some(s) => {
+        let gen = s.generation
+        match s.phase {
+          ServerPhase::SseOpening(dl) if now_ms >= dl => {
+            self.on_unexpected_failure(s, gen, "timed out waiting for SSE endpoint", now_ms)
+          }
+          ServerPhase::Initializing(_, dl) if now_ms >= dl => {
+            self.on_unexpected_failure(s, gen, "timed out during initialize", now_ms)
+          }
+          ServerPhase::ListingTools(_, _, _, dl) if now_ms >= dl => {
+            self.on_unexpected_failure(s, gen, "timed out during tools/list", now_ms)
+          }
+          ServerPhase::RefreshingTools(_, _, _, dl) if now_ms >= dl => {
+            s.phase = ServerPhase::Ready
+          }
+          ServerPhase::Reconnecting => match s.retry_at {
+            Some(at) if now_ms >= at && self.running && s.cfg.enabled => {
+              s.retry_at = None
+              self.connect_server(s, now_ms)
+            }
+            _ => ()
+          }
+          _ => ()
+        }
+      }
+      None => ()
+    }
+  }
+  finalized_kills
+}
+
+// ---------------------------------------------------------------------------
+// Clean Shutdown & Orphan Process Drain
+// ---------------------------------------------------------------------------
+
+pub fn ManagedMcpRuntime::shutdown(self : ManagedMcpRuntime, now_ms : Int64) -> Unit {
+  if self.closed {
+    return
+  }
+  self.closed = true
+  self.running = false
+  let snames = self.servers.keys()
+  for i in 0..<snames.length() {
+    match self.servers.get(snames[i]) {
+      Some(s) => {
+        self.teardown_server(s, now_ms, true)
+        s.status = "stopped"
+      }
+      None => ()
+    }
+  }
+  // Fail any remaining pending calls (defensive)
+  let ckeys = self.pending_calls.keys()
+  for i in 0..<ckeys.length() {
+    match self.pending_calls.get(ckeys[i]) {
+      Some(call) => self.settle_call(call, station_tools::error_reply("station shutting down"))
+      None => ()
+    }
+  }
+  self.servers.clear()
+  self.servers_by_id.clear()
+  self.server_by_ev.clear()
+  self.exposed = []
+}
+
+/// Drain pending stdio process kills up to `max_ms`, escalating any survivors to `SIGKILL` + `close`.
+pub fn ManagedMcpRuntime::drain_kills_with_hub(
+  self : ManagedMcpRuntime,
+  hub : EdgeMuxHub,
+  max_ms : Int64 = 500L,
+) -> Int {
+  let mut finalized = 0
+  let start = host_shim::now_ms()
+  let limit = start + (if max_ms > 0L { max_ms } else { 1L })
+  while self.pending_kills.length() > 0 && host_shim::now_ms() < limit {
+    let _ = hub.pump_one(20L)
+    let now = host_shim::now_ms()
+    let _ = hub.drain_deferred_sys(fn(ev_id : Int64, payload : Bytes) -> Bool {
+      if is_managed_mcp_event(ev_id) {
+        match station_sys::decode_sys_event(payload) {
+          Some(sev) => self.handle_sys_event(ev_id, sev, now)
+          None => true
+        }
+      } else {
+        false
+      }
+    })
+    finalized = finalized + self.tick(now)
+  }
+  let rem = self.pending_kills.keys()
+  for i in 0..<rem.length() {
+    match self.pending_kills.get(rem[i]) {
+      Some(pk) => {
+        self.pending_kills.remove(rem[i])
+        if !pk.killed_hard {
+          pk.killed_hard = true
+          let _ = (self.io.kill_proc)(pk.child, station_sys::SIG_KILL, true)
+        }
+        let _ = (self.io.close_proc)(pk.child)
+        finalized = finalized + 1
+      }
+      None => ()
+    }
+  }
+  finalized
+}
+
+pub fn ManagedMcpRuntime::active_count(self : ManagedMcpRuntime) -> Int {
+  self.servers.length() + self.pending_calls.length() + self.pending_kills.length()
+}

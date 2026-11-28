@@ -46,7 +46,7 @@ pub fn classify_tool_domain(name : String) -> ToolDomain {
     ToolDomain::Project
   } else if name == "search" || name == "skill_read" {
     ToolDomain::Search
-  } else if name == "mcp_servers" {
+  } else if name == "mcp_servers" || name.contains("__") {
     ToolDomain::ManagedMcp
   } else {
     ToolDomain::System

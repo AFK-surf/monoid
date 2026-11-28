@@ -40,6 +40,10 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_overview_dirty : Option[(String) -> Unit]
   pub mut on_drive_roots_changed : Option[(String, Array[String]) -> Unit]
   pub mut on_mcp_reload : Option[(Option[String]) -> Unit]
+  pub mut on_mcp_sync : Option[() -> Unit]
+  pub mut mcp_servers_view : Option[() -> Array[base_codec::Json]]
+  pub mut mcp_servers_overview : Option[() -> Array[station_api::McpServerOverviewInput]]
+  pub mut on_mcp_card_notify : Option[(String, String) -> Unit]
   pub mut on_s3_test : Option[(station_replica::NormalizedS3Target) -> Result[Unit, String]]
   pub mut on_updates_op : Option[(String, base_codec::Json, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut is_update_override_present : Option[() -> Bool]
@@ -68,6 +72,10 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_overview_dirty: None,
     on_drive_roots_changed: None,
     on_mcp_reload: None,
+    on_mcp_sync: None,
+    mcp_servers_view: None,
+    mcp_servers_overview: None,
+    on_mcp_card_notify: None,
     on_s3_test: None,
     on_updates_op: None,
     is_update_override_present: None,
@@ -137,6 +145,8 @@ pub struct WholeApiRuntimePort {
   pub get_widget_state : (String, String) -> Result[base_codec::Json, station_api::ApiError]
   pub put_widget_state : (String, String, base_codec::Json, Int64) -> Result[Unit, station_api::ApiError]
   pub put_archive_policy : (Option[String], String, String, String, Int64) -> Result[Unit, station_api::ApiError]
+  pub get_entry_card : (Int64, Int64) -> Result[Option[(String, Option[base_codec::Json])], station_api::ApiError]
+  pub close_card_atomic : (Int64, Int64, String, Int64) -> Result[Bool, station_api::ApiError]
   pub vault_plain : VaultPlainStorePort
   pub readops : ReadOpsPort
   pub vault_decisions : VaultDecisionsPort
@@ -149,6 +159,7 @@ pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
   let drafts_mem : Map[String, base_codec::Json] = Map::new()
   let widgets_mem : Map[String, base_codec::Json] = Map::new()
   let policy_mem : Map[String, String] = Map::new()
+  let closed_cards_mem : Map[String, Bool] = Map::new()
   let rng_counter : Array[Int] = [1]
   let vp = VaultPlainStorePort::in_memory()
   let vd = VaultDecisionsPort::in_memory(vp)
@@ -253,6 +264,17 @@ pub fn WholeApiRuntimePort::in_memory() -> WholeApiRuntimePort {
       let k = match ws_opt { Some(w) => w, None => "__home__" }
       policy_mem.set(k, policy)
       Ok(())
+    },
+    get_entry_card: fn(_tid : Int64, _n : Int64) -> Result[Option[(String, Option[base_codec::Json])], station_api::ApiError] {
+      Ok(Some(("", None)))
+    },
+    close_card_atomic: fn(tid : Int64, n : Int64, _viewer : String, _now : Int64) -> Result[Bool, station_api::ApiError] {
+      let k = tid.to_string() + ":" + n.to_string()
+      if closed_cards_mem.get(k).is_some() {
+        return Ok(false)
+      }
+      closed_cards_mem.set(k, true)
+      Ok(true)
     },
     vault_plain: vp,
     readops: ReadOpsPort::in_memory(),
@@ -689,6 +711,56 @@ pub fn WholeApiRuntimePort::production(
         ],
       ) {
         Ok(_) => Ok(())
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    get_entry_card: fn(tid : Int64, entry_n : Int64) -> Result[Option[(String, Option[base_codec::Json])], station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      match st.db.first(
+        "SELECT ts, card FROM entries WHERE thread = ?1 AND n = ?2 LIMIT 1",
+        [sql_db::int64_to_json(tid), sql_db::int64_to_json(entry_n)],
+      ) {
+        Ok(Some(row)) => {
+          let entry_ts = match row.get("ts") { Some(base_codec::Json::Str(s)) => s, _ => "" }
+          let card_opt : Option[base_codec::Json] = match row.get("card") {
+            Some(base_codec::Json::Str(cs)) if cs.length() > 0 => match base_codec::json_parse(cs) {
+              base_codec::JsonParseResult::Ok(j) => Some(j)
+              _ => None
+            }
+            _ => None
+          }
+          Ok(Some((entry_ts, card_opt)))
+        }
+        Ok(None) => Ok(None)
+        Err(e) => Err(station_api::ApiError::new(500, e.message))
+      }
+    },
+    close_card_atomic: fn(tid : Int64, entry_n : Int64, viewer : String, now_ms : Int64) -> Result[Bool, station_api::ApiError] {
+      let st = match whole_store.require_open() {
+        Ok(s) => s
+        Err(e) => return Err(station_api::ApiError::new(503, e))
+      }
+      match st.db.first(
+        "SELECT 1 AS ok FROM closed_cards WHERE thread = ?1 AND n = ?2 LIMIT 1",
+        [sql_db::int64_to_json(tid), sql_db::int64_to_json(entry_n)],
+      ) {
+        Ok(Some(_)) => return Ok(false)
+        Ok(None) => ()
+        Err(e) => return Err(station_api::ApiError::new(500, e.message))
+      }
+      match st.db.run(
+        "INSERT OR IGNORE INTO closed_cards (thread, n, viewer, at) VALUES (?1, ?2, ?3, ?4)",
+        [
+          sql_db::int64_to_json(tid),
+          sql_db::int64_to_json(entry_n),
+          base_codec::json_str(viewer),
+          sql_db::int64_to_json(now_ms),
+        ],
+      ) {
+        Ok(_) => Ok(true)
         Err(e) => Err(station_api::ApiError::new(500, e.message))
       }
     },
@@ -1953,6 +2025,126 @@ pub fn dispatch_extra_call_op(
     let title = match json_field_str(body, "title") { Some(s) => s, None => "" }
     (port.set_thread_title)(tid, title)
     return Some(Ok(base_codec::json_obj([("thread", base_codec::json_int64(tid)), ("title", base_codec::json_str(title))])))
+  }
+  if op == "marks.thread.closed-card" && params.length() >= 1 {
+    if hooks.read_only_handover_cell[0] {
+      return Some(Err(station_api::ApiError::new(403, "station is in read-only handover mode")))
+    }
+    let tid = match base_codec::parse_int64_str(params[0]) {
+      Some(n) => n
+      None => return Some(Err(station_api::ApiError::new(404, "unknown thread " + params[0])))
+    }
+    if !station_api::thread_seen(seen_store, req.viewer, tid.to_int()) {
+      return Some(Err(station_api::ApiError::new(404, "unknown thread " + params[0])))
+    }
+    let entry_n = match base_codec::json_get(body, "n") {
+      Some(base_codec::Json::Num(d, _)) => {
+        let ni = d.to_int64()
+        if ni > 0L && ni.to_double() == d { ni } else { return Some(Err(station_api::ApiError::new(400, "n must be a positive integer"))) }
+      }
+      _ => return Some(Err(station_api::ApiError::new(400, "n must be a positive integer")))
+    }
+    let option = match json_field_str(body, "option") {
+      Some(s) if s.trim().length() > 0 => s.trim()
+      _ => return Some(Err(station_api::ApiError::new(400, "option is required")))
+    }
+    let (entry_ts, card_opt) = match (port.get_entry_card)(tid, entry_n) {
+      Ok(Some(pair)) => pair
+      Ok(None) => return Some(Err(station_api::ApiError::new(404, "entry not found")))
+      Err(e) => return Some(Err(e))
+    }
+    let mcp_ask_id_opt : Option[String] = match card_opt {
+      Some(cj) => match base_codec::json_get(cj, "mcpServer") {
+        Some(ms) => match base_codec::json_get(ms, "ask") {
+          Some(base_codec::Json::Str(aid)) if aid.length() > 0 => Some(aid)
+          _ => None
+        }
+        None => None
+      }
+      None => None
+    }
+    match mcp_ask_id_opt {
+      Some(ask_id) => {
+        match agents.mcp_asks.may_decide(req.viewer.role, Some(req.viewer.workspace), ask_id, tid.to_int(), entry_ts) {
+          Some(why) => return Some(Err(station_api::ApiError::new(403, why)))
+          None => ()
+        }
+      }
+      None => ()
+    }
+    // Atomically mark card closed (409 if already closed).
+    match (port.close_card_atomic)(tid, entry_n, req.viewer.email, now_ms) {
+      Ok(true) => ()
+      Ok(false) => return Some(Err(station_api::ApiError::new(409, "card already closed")))
+      Err(e) => return Some(Err(e))
+    }
+    let deliver_notice = fn(sess : String, notice : String) -> Unit {
+      match hooks.on_mcp_card_notify {
+        Some(cb) => cb(sess, notice)
+        None => match hooks.on_vault_decision_notify {
+          Some(vcb) => vcb(sess, notice)
+          None => ()
+        }
+      }
+    }
+    match mcp_ask_id_opt {
+      Some(ask_id) => {
+        let cur_cfg = parse_managed_mcp_entries(read_config_raw(cfg_opt))
+        match agents.mcp_asks.choose(req.viewer.email, ask_id, option, tid.to_int(), entry_ts, cur_cfg) {
+          station_tools::McpChoiceOutcome::Ignored => ()
+          station_tools::McpChoiceOutcome::Declined(sess, notice) => deliver_notice(sess, notice)
+          station_tools::McpChoiceOutcome::ApplyFailed(sess, notice) => deliver_notice(sess, notice)
+          station_tools::McpChoiceOutcome::ApprovedReload(sess, name_opt, notice) => {
+            match hooks.on_mcp_reload {
+              Some(f) => f(name_opt)
+              None => ()
+            }
+            hooks_notify_overview(hooks, "mcpServers")
+            deliver_notice(sess, notice)
+          }
+          station_tools::McpChoiceOutcome::ApprovedPatch(sess, next_entries, notice) => {
+            match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+              if next_entries.length() == 0 {
+                Ok(json_obj_set(raw, "mcpServers", None))
+              } else {
+                let fields : Array[(String, base_codec::Json)] = []
+                for i in 0..<next_entries.length() {
+                  fields.push((next_entries[i].0, station_tools::server_config_to_json(next_entries[i].1)))
+                }
+                Ok(json_obj_set(raw, "mcpServers", Some(base_codec::json_obj(fields))))
+              }
+            }) {
+              Ok(_) => {
+                match hooks.on_mcp_sync {
+                  Some(sf) => sf()
+                  None => match hooks.on_mcp_reload {
+                    Some(rf) => rf(None)
+                    None => ()
+                  }
+                }
+                hooks_notify_overview(hooks, "mcpServers")
+                deliver_notice(sess, notice)
+              }
+              Err(e) => deliver_notice(sess, "applying approved MCP server change failed: " + e.message)
+            }
+          }
+        }
+      }
+      None => ()
+    }
+    let _ = events.emit(
+      "thread",
+      base_codec::json_obj([("thread", base_codec::json_int64(tid))]),
+      station_api::EventTarget::everyone(),
+      now_ms,
+      None,
+    )
+    return Some(Ok(base_codec::json_obj([
+      ("closedCard", base_codec::json_obj([
+        ("thread", base_codec::json_int64(tid)),
+        ("n", base_codec::json_int64(entry_n)),
+      ])),
+    ])))
   }
 
   // 7. Presets (`<agentHome(ws)>/presets.json` read-modify-write) & Shared SQLite Preference Tables

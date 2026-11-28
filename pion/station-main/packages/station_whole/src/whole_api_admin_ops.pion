@@ -237,6 +237,16 @@ fn managed_mcp_view_json(entries : Array[(String, station_tools::ManagedServerCo
   base_codec::json_arr(out)
 }
 
+fn live_mcp_servers_view_json(
+  hooks : WholeApiRuntimeHooks,
+  entries : Array[(String, station_tools::ManagedServerConfig)],
+) -> base_codec::Json {
+  match hooks.mcp_servers_view {
+    Some(f) => base_codec::json_arr(f())
+    None => managed_mcp_view_json(entries)
+  }
+}
+
 fn dispatch_mcp_servers_op(
   op : String,
   req : station_api::ApiRequest,
@@ -248,7 +258,7 @@ fn dispatch_mcp_servers_op(
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
   if op == "mcpServers.get" {
     let entries = parse_managed_mcp_entries(read_config_raw(cfg_opt))
-    return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries))])))
+    return Some(Ok(base_codec::json_obj([("servers", live_mcp_servers_view_json(hooks, entries))])))
   }
   if op == "mcpServers.put" {
     if !req.viewer.manages_station() {
@@ -277,12 +287,15 @@ fn dispatch_mcp_servers_op(
       }
     }) {
       Ok(_) => {
-        match hooks.on_mcp_reload {
-          Some(f) => f(None)
-          None => ()
+        match hooks.on_mcp_sync {
+          Some(sf) => sf()
+          None => match hooks.on_mcp_reload {
+            Some(f) => f(None)
+            None => ()
+          }
         }
         hooks_notify_overview(hooks, "mcpServers")
-        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(final_entries))])))
+        return Some(Ok(base_codec::json_obj([("servers", live_mcp_servers_view_json(hooks, final_entries))])))
       }
       Err(e) => return Some(Err(e))
     }
@@ -291,12 +304,15 @@ fn dispatch_mcp_servers_op(
     if !req.viewer.manages_station() {
       return Some(Err(station_api::ApiError::new(403, "Only workspace owners and admins can reload MCP servers.")))
     }
+    if hooks.read_only_handover_cell[0] {
+      return Some(Err(station_api::ApiError::new(403, "station is in read-only handover mode")))
+    }
     match hooks.on_mcp_reload {
       Some(f) => {
         f(None)
         hooks_notify_overview(hooks, "mcpServers")
         let entries = parse_managed_mcp_entries(read_config_raw(cfg_opt))
-        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries))])))
+        return Some(Ok(base_codec::json_obj([("servers", live_mcp_servers_view_json(hooks, entries))])))
       }
       None => return Some(Err(err_not_implemented(op)))
     }
@@ -304,6 +320,9 @@ fn dispatch_mcp_servers_op(
   if op == "mcpServers.reloadOne" {
     if !req.viewer.manages_station() {
       return Some(Err(station_api::ApiError::new(403, "Only workspace owners and admins can reload MCP servers.")))
+    }
+    if hooks.read_only_handover_cell[0] {
+      return Some(Err(station_api::ApiError::new(403, "station is in read-only handover mode")))
     }
     let name = if params.length() > 0 { params[0] } else { "" }
     match hooks.on_mcp_reload {
@@ -321,7 +340,7 @@ fn dispatch_mcp_servers_op(
         }
         f(Some(name))
         hooks_notify_overview(hooks, "mcpServers")
-        return Some(Ok(base_codec::json_obj([("servers", managed_mcp_view_json(entries))])))
+        return Some(Ok(base_codec::json_obj([("servers", live_mcp_servers_view_json(hooks, entries))])))
       }
       None => return Some(Err(err_not_implemented(op)))
     }
