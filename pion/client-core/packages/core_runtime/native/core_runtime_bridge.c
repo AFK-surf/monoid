@@ -546,7 +546,11 @@ int32_t pion_core_sidecar_read(const char *dir, int64_t dir_len, const char *nam
         return -1;
     }
 #ifdef _WIN32
-    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    wchar_t wpath[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096) <= 0) {
+        return -1;
+    }
+    HANDLE h = CreateFileW(wpath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                            NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         DWORD err = GetLastError();
@@ -690,7 +694,17 @@ int32_t pion_core_sidecar_write_atomic(
         return -1;
     }
 #ifdef _WIN32
-    HANDLE h = CreateFileA(tmp_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    wchar_t wdir[4096];
+    wchar_t wtmp[4096];
+    wchar_t wdst[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, dir_copy, -1, wdir, 4096) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, tmp_path, -1, wtmp, 4096) <= 0 ||
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, final_path, -1, wdst, 4096) <= 0) {
+        return -1;
+    }
+    (void)CreateDirectoryW(wdir, NULL);
+    (void)DeleteFileW(wtmp);
+    HANDLE h = CreateFileW(wtmp, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h == INVALID_HANDLE_VALUE) {
         return -1;
     }
@@ -699,15 +713,19 @@ int32_t pion_core_sidecar_write_atomic(
         DWORD wrote = 0;
         if (!WriteFile(h, bytes + off, (DWORD)((size_t)len - off), &wrote, NULL) || wrote == 0) {
             CloseHandle(h);
-            DeleteFileA(tmp_path);
+            (void)DeleteFileW(wtmp);
             return -1;
         }
         off += (size_t)wrote;
     }
-    (void)FlushFileBuffers(h);
+    if (!FlushFileBuffers(h)) {
+        CloseHandle(h);
+        (void)DeleteFileW(wtmp);
+        return -1;
+    }
     CloseHandle(h);
-    if (!MoveFileExA(tmp_path, final_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-        DeleteFileA(tmp_path);
+    if (!MoveFileExW(wtmp, wdst, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        (void)DeleteFileW(wtmp);
         return -1;
     }
     return 0;
@@ -765,7 +783,11 @@ int32_t pion_core_sidecar_remove(const char *dir, int64_t dir_len, const char *n
         return -1;
     }
 #ifdef _WIN32
-    if (DeleteFileA(path)) {
+    wchar_t wpath[4096];
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096) <= 0) {
+        return -1;
+    }
+    if (DeleteFileW(wpath)) {
         return 0;
     }
     DWORD err = GetLastError();

@@ -930,7 +930,7 @@ fn runtime_reconcile_from_disk_k(
                   pion_core_accounts_tx_end(tx2)
                   match act_res {
                     Ok(post_act) => runtime_activate_post_lock(sess, post_act)
-                    Err(_) => ()
+                    Err(_) => close_staged_db(staged_opt)
                   }
                   done_k(effect::Exit::Succeeded(()))
                 }
@@ -3647,8 +3647,7 @@ fn finish_verified_auth_complete_k(
       new_stored,
       session_id,
       fn(all_accts : Array[views::StoredAccount], all_sessions : Map[String, String]) -> Result[PendingPostLockActivation, String] {
-        installed_under_lock[0] = true
-        runtime_activate_under_lock(
+        let act_res = runtime_activate_under_lock(
           sess,
           new_stored,
           session_id,
@@ -3660,6 +3659,11 @@ fn finish_verified_auth_complete_k(
           true,
           return_to=Some(return_to),
         )
+        match act_res {
+          Ok(_) => installed_under_lock[0] = true
+          Err(_) => ()
+        }
+        act_res
       },
       fn(ures : Result[PendingPostLockActivation, String]) -> Unit {
         match ures {
