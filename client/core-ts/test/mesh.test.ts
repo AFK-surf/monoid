@@ -16,7 +16,7 @@ import { HEDGE } from "../src/host.ts";
 import { loadAddon, nodeIroh } from "../src/hosts/node-iroh.ts";
 import { holdLanguage, t } from "../src/i18n.ts";
 import type { BindOptions, Iroh, IrohConnection } from "../src/iroh.ts";
-import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, IDLE_HOT_RELAYS, IDLE_TICK_MS, KEEP_WAYS, LAN, MAIN_RECOVER_MS, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REBIND_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
+import { onARelay, ONTO_MAX_MS, ADDRESSES_KEY, BULK_SLOW_BPS, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIRECT, DIRECT_HOLD_MAX_MS, EXPLORE_MS, fencedOf, HANDSHAKE_RESCUE_COOLDOWN_MS, HEDGE_FLOOR_MS, HEDGE_MAX_MS, HOT_RELAYS, HOT_SETTLE_MS, IDLE_HOT_RELAYS, IDLE_TICK_MS, KEEP_WAYS, LAN, MAIN_RECOVER_MS, Mesh, MIN_STAY_MS, PING_TIMEOUT_MS, PROBE_MS, RACE_GRACE_MS, REBIND_MS, REDIAL_MAIN_MS, RENEW_MS, RETIRE_MS, SPEED_CRAWL_MIN_BYTES, SPEED_FRESH_MS, SPEED_KEPT_MS, SPEED_MIN_BYTES, SPEED_SAID_MS, SPEED_SLOW_KEPT_MS, SPEED_SLOW_MIN_BYTES, SPEED_SLOW_MIN_MS, TAILNET, TICK_MS, type CredentialSource, type Link } from "../src/mesh.ts";
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { keptFirst } from "../src/station/calls.ts";
@@ -5508,6 +5508,210 @@ sim("explore_skips_in_flight_pinned_dials_and_adopt_dedups_healthy_twins", async
     assert.ok(ways.some((w) => w.link.pinned !== null && sameRelay(w.link.pinned, c)), "newly added relay c must be explored and adopted");
   } finally {
     await s.run(mesh.close(), 20_000);
+    await st.close();
+  }
+});
+
+const ALPN_CONFLICT = "aborted by peer: the cryptographic handshake failed: error 120: peer doesn't support any known protocol";
+const CERT_CONFLICT = "the cryptographic handshake failed: error 48: invalid peer certificate: UnknownIssuer";
+
+for (const [label, message] of [
+  ["alpn_120", ALPN_CONFLICT],
+  ["cert_48", CERT_CONFLICT],
+] as const) {
+  for (const mode of ["cold_mdns", "warm_straight"] as const) {
+    sim(`handshake_conflict_${label}_rescues_via_single_relay_in_first_opening_${mode}`, async (s) => {
+      const relay = s.relay("https://only.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+      const st = await s.stationOn(relay, []);
+      st.lan = ["192.168.1.100:58339"];
+      const pinnedConnects: string[] = [];
+      const baseIroh = s.net.iroh();
+      const trackingIroh: Iroh = {
+        bind: (opts) =>
+          Effect.map(baseIroh.bind(opts), (ep) => ({
+            ...ep,
+            connect: (addr, alpn, additional, givenUp) => {
+              if (opts.relayOnly) pinnedConnects.push(opts.relayUrls[0] ?? "");
+              return ep.connect(addr, alpn, additional, givenUp);
+            },
+          })),
+      };
+      const mesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh, lookup: mode === "cold_mdns" }, [relay]));
+      try {
+        const id = `w/${st.id()}`;
+        if (mode === "warm_straight") {
+          const initial = await s.run(mesh.link(id, grants("ok", { n: 0 })), 20_000);
+          await s.until(() => initial.lan.length > 0, 5_000);
+          mesh.dropLink(id);
+          pinnedConnects.length = 0;
+        }
+        s.net.handshakeConflict = { message, delayMs: 1 };
+        const started = s.time.now();
+        const link = await s.run(mesh.link(id, grants("ok", { n: 0 })), 20_000);
+        assert.equal(link.usable(), true);
+        assert.ok(link.pinned !== null && sameRelay(link.pinned, relay), `expected single-relay rescue on ${relay}, got pinned=${link.pinned}`);
+        assert.equal(pinnedConnects.length, 1, `expected exactly 1 pinned rescue dial, got ${pinnedConnects.length}`);
+        assert.ok(s.time.now() - started < CONNECT_TIMEOUT_MS, "rescue must succeed within the first opening round");
+        assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+        const diag = mesh.diag(id);
+        assert.ok(diag !== null && diag.attempts.length === 2, `expected main failure + relay ok in diag, got ${JSON.stringify(diag)}`);
+        assert.equal(diag.attempts[0]!.outcome, "error");
+        assert.equal(diag.attempts[1]!.outcome, "ok");
+
+        // Once the collision clears, periodic explore brings main back and retires the pinned rescue relay.
+        s.net.handshakeConflict = null;
+        await s.time.pass(EXPLORE_MS + 10_000);
+        assert.equal(mesh.current(id)?.pinned, null, "expected main link to take back over after collision clears");
+      } finally {
+        await s.run(mesh.close(), 20_000);
+        await st.close();
+      }
+    });
+  }
+}
+
+sim("handshake_conflict_rescue_prefers_custom_relay_over_primary_and_tries_only_one", async (s) => {
+  const primary = s.relay("https://primary.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const customA = s.relay("https://custom-a.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const customB = s.relay("https://custom-b.relay.test/", { device: { ms: 30 }, station: { ms: 30 } });
+  const st = await s.stationOn(primary, [customA, customB]);
+  const pinnedConnects: string[] = [];
+  const baseIroh = s.net.iroh();
+  const trackingIroh: Iroh = {
+    bind: (opts) =>
+      Effect.map(baseIroh.bind(opts), (ep) => ({
+        ...ep,
+        connect: (addr, alpn, additional, givenUp) => {
+          if (opts.relayOnly) pinnedConnects.push(opts.relayUrls[0] ?? "");
+          return ep.connect(addr, alpn, additional, givenUp);
+        },
+      })),
+  };
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh, lookup: true }, [primary]));
+  try {
+    const id = `w/${st.id()}`;
+    s.net.handshakeConflict = { message: ALPN_CONFLICT, delayMs: 1 };
+    const link = await s.run(mesh.link(id, grants("ok", { n: 0 }), [customA, customB]), 20_000);
+    assert.equal(link.usable(), true);
+    assert.equal(pinnedConnects.length, 1, `must try at most 1 pinned relay, tried: ${pinnedConnects.join(", ")}`);
+    assert.ok(!sameRelay(pinnedConnects[0]!, primary), `must prefer custom relay over primary, picked ${pinnedConnects[0]}`);
+    assert.ok(sameRelay(pinnedConnects[0]!, customA) || sameRelay(pinnedConnects[0]!, customB));
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await st.close();
+  }
+});
+
+sim("handshake_conflict_rescue_cools_down_when_relay_also_conflicts_and_preserves_main_cause", async (s) => {
+  const primary = s.relay("https://primary.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const custom = s.relay("https://custom.relay.test/", { device: { ms: 25 }, station: { ms: 25 } });
+  const st = await s.stationOn(primary, [custom]);
+  const pinnedConnects: string[] = [];
+  const baseIroh = s.net.iroh();
+  const trackingIroh: Iroh = {
+    bind: (opts) =>
+      Effect.map(baseIroh.bind(opts), (ep) => ({
+        ...ep,
+        connect: (addr, alpn, additional, givenUp) => {
+          if (opts.relayOnly) pinnedConnects.push(opts.relayUrls[0] ?? "");
+          return ep.connect(addr, alpn, additional, givenUp);
+        },
+      })),
+  };
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh, lookup: true }, [primary]));
+  try {
+    const id = `w/${st.id()}`;
+    s.net.handshakeConflict = { message: ALPN_CONFLICT, delayMs: 1, allPaths: true };
+    const err1 = await s.run(mesh.link(id, grants("ok", { n: 0 }), [custom]), 20_000).then(
+      () => null,
+      (e) => e as CoreError,
+    );
+    assert.ok(err1 !== null);
+    assert.equal(err1.cause, ALPN_CONFLICT);
+    assert.equal(pinnedConnects.length, 1, "genuine peer conflict must pay at most 1 pinned rescue attempt");
+
+    // Retrying during the 4-minute cooldown must NOT fire another pinned rescue.
+    await s.time.pass(30_000);
+    const err2 = await s.run(mesh.link(id, grants("ok", { n: 0 }), [custom]), 20_000).then(
+      () => null,
+      (e) => e as CoreError,
+    );
+    assert.ok(err2 !== null);
+    assert.equal(pinnedConnects.length, 1, "must stay cooled down during cooldown window");
+
+    // Once cooldown expires and the collision is only on direct paths, rescue works again.
+    await s.time.pass(HANDSHAKE_RESCUE_COOLDOWN_MS);
+    s.net.handshakeConflict = { message: ALPN_CONFLICT, delayMs: 1 };
+    const link = await s.run(mesh.link(id, grants("ok", { n: 0 }), [custom]), 20_000);
+    assert.equal(link.usable(), true);
+    assert.equal(pinnedConnects.length, 2, "must allow a single rescue again after cooldown");
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await st.close();
+  }
+});
+
+sim("non_handshake_conflict_errors_and_relay_only_never_trigger_handshake_rescue", async (s) => {
+  const relay = s.relay("https://only.relay.test/", { device: { ms: 20 }, station: { ms: 20 } });
+  const st = await s.stationOn(relay, []);
+  const pinnedConnects: string[] = [];
+  const baseIroh = s.net.iroh();
+  const trackingIroh: Iroh = {
+    bind: (opts) =>
+      Effect.map(baseIroh.bind(opts), (ep) => ({
+        ...ep,
+        connect: (addr, alpn, additional, givenUp) => {
+          if (opts.relayOnly) pinnedConnects.push(opts.relayUrls[0] ?? "");
+          return ep.connect(addr, alpn, additional, givenUp);
+        },
+      })),
+  };
+  const mesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh, lookup: true }, [relay]));
+  const relayOnlyMesh = await s.run(Mesh.make({ ...env(s), iroh: trackingIroh, lookup: true, relayOnly: true }, [relay]));
+  try {
+    const id = `w/${st.id()}`;
+    // 1. Server refused: zero pinned rescue.
+    st.refused(1);
+    const refusedErr = await s.run(mesh.link(id, grants("ok", { n: 0 })), 20_000).then(() => null, (e) => e as CoreError);
+    assert.ok(refusedErr !== null);
+    assert.equal(pinnedConnects.length, 0, "server refused must not trigger handshake rescue");
+
+    // 2. Non-crypto error string (and bare certificate word without crypto handshake prefix): zero pinned rescue.
+    for (const msg of ["network is unreachable", "error 48: certificate expired", "dial failed"]) {
+      s.net.handshakeConflict = { message: msg, delayMs: 1 };
+      const err = await s.run(mesh.link(id, grants("ok", { n: 0 })), 20_000).then(() => null, (e) => e as CoreError);
+      assert.ok(err !== null);
+      assert.equal(pinnedConnects.length, 0, `message "${msg}" must not trigger handshake rescue`);
+    }
+
+    // 3. Offline / unanswered timeout without straight addresses: zero pinned rescue.
+    s.net.handshakeConflict = null;
+    st.unanswered(1);
+    const timeoutErr = await s.run(mesh.link(id, grants("ok", { n: 0 })), 30_000).then(() => null, (e) => e as CoreError);
+    assert.ok(timeoutErr !== null);
+    assert.equal(pinnedConnects.length, 0, "unanswered timeout with no straight addrs must not trigger handshake rescue");
+
+    // 4. Credential refusal happens after openBi: zero pinned rescue.
+    const badLink = await s.run(mesh.link(id, grants("bad", { n: 0 })), 20_000);
+    const credErr = await request(s, badLink, head("/admin/api/overview")).then(() => null, (e) => e as CoreError);
+    assert.equal(credErr?.code, "credential_refused");
+    assert.equal(pinnedConnects.length, 0, "post-handshake credential refusal must not trigger handshake rescue");
+    mesh.dropLink(id);
+
+    // 5. All relays disabled: zero pinned rescue.
+    s.net.handshakeConflict = { message: ALPN_CONFLICT, delayMs: 1 };
+    const offErr = await s.run(mesh.link(id, grants("ok", { n: 0 }), undefined, ["ours"]), 20_000).then(() => null, (e) => e as CoreError);
+    assert.ok(offErr !== null);
+    assert.equal(pinnedConnects.length, 0, "all relays disabled must not trigger handshake rescue");
+
+    // 6. Relay-only mesh: main already has no IP transports, so handshake conflict must not rescue.
+    s.net.handshakeConflict = { message: ALPN_CONFLICT, delayMs: 1, allPaths: true };
+    const roErr = await s.run(relayOnlyMesh.link(id, grants("ok", { n: 0 })), 20_000).then(() => null, (e) => e as CoreError);
+    assert.ok(roErr !== null);
+    assert.equal(pinnedConnects.length, 1, "relay-only main connects once on its own relayOnly endpoint without extra rescue");
+  } finally {
+    await s.run(mesh.close(), 20_000);
+    await s.run(relayOnlyMesh.close(), 20_000);
     await st.close();
   }
 });

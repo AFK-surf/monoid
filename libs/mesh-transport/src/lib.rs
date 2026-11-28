@@ -15,6 +15,7 @@ pub mod selection;
 pub mod enrollment;
 
 pub mod announcement;
+pub use announcement::is_benchmarking_ip;
 
 #[cfg(feature = "native")]
 pub mod directory;

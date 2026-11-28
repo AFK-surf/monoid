@@ -912,6 +912,12 @@ export class SimEndpoint {
     // Addresses that reach it one way only (`SimNet.oneWay`): the station answers on the way it heard first, and its
     // answers are lost.
     if (this.net.oneWay && !this.relayOnly && there.direct && ips.length > 0) return NEVER;
+    const conflict = this.net.handshakeConflict;
+    if (conflict !== null && (conflict.allPaths || (!this.relayOnly && (ips.length > 0 || this.lookup)))) {
+      await this.net.sleep(conflict.delayMs ?? 1);
+      if (dial.givenUp || this.#closed) return NEVER;
+      throw new Error(conflict.message);
+    }
     let allKnownServers: string[] = [];
     if (this.relayOnly || !there.direct || ips.length === 0 || (this.net.away && (addr.ips?.length ?? 0) > 0)) {
       const rawTold = [...(addr.relays ?? []), ...(known?.relays ?? []), ...this.relays].map(href);
@@ -1212,6 +1218,11 @@ export class SimNet {
   /// mirrored networking, saying the addresses of the Windows machine the device is on): a handshake dialled at them is
   /// never answered, and a connection open does not move to them.
   oneWay = false;
+  /// An IP or mDNS candidate collides with a wrong endpoint and aborts the QUIC handshake fast (for example
+  /// `error 120` ALPN mismatch or `error 48: invalid peer certificate`). Non-`relayOnly` endpoints that dial with
+  /// direct IPs or address lookup fail with this error after `delayMs` (default 1 ms); `relayOnly` pinned endpoints
+  /// are unaffected unless `allPaths` is true.
+  handshakeConflict: { message: string; delayMs?: number; allPaths?: boolean } | null = null;
   /// Every dial, in order: whom to, and whether at addresses it was given.
   readonly tries: { to: string; ips: boolean }[] = [];
   /// Dials whose handshake is still going: neither done nor given up (`SimEndpoint.connect`).

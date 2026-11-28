@@ -60,6 +60,8 @@ export const KEEP_WAYS = 3;
 export const EXPLORE_MS = 5 * 60_000;
 /// How long a relay whose pinned endpoint timed out without ever connecting is skipped across stations (< EXPLORE_MS).
 export const DEAD_RELAY_MS = 4 * 60_000;
+/// Cooldown after a single-relay rescue for a main handshake conflict also fails.
+export const HANDSHAKE_RESCUE_COOLDOWN_MS = DEAD_RELAY_MS;
 /// Pings a way needs answered before it is compared with another.
 export const MIN_SAMPLES = 3;
 /// Ticks in a row a way must be clearly better than the one requests go on before they move to it.
@@ -176,6 +178,24 @@ class OpeningTimeout extends CoreError {
     super("mesh", noAnswer());
     this.connected = connected;
     this.frozen = frozen;
+  }
+}
+/// Whether a native QUIC/TLS `endpoint.connect` error indicates the handshake hit a peer with a different ALPN
+/// (`error 120`) or peer identity certificate (`invalid peer certificate`). Narrowly scoped so offline timeouts,
+/// `server refused`, socket/network errors, and post-handshake credential/lock refusals never trigger relay rescue.
+function isHandshakeConflictMessage(message: string): boolean {
+  if (!message.includes("the cryptographic handshake failed:")) return false;
+  return (
+    message.includes("error 120:") ||
+    message.includes("peer doesn't support any known protocol") ||
+    message.includes("invalid peer certificate")
+  );
+}
+/// A `connect` attempt aborted by a cryptographic handshake conflict (ALPN or peer identity mismatch).
+class HandshakeConflict extends CoreError {
+  constructor(message: string) {
+    super("mesh", t("core-logic.mesh.unreached"));
+    this.cause = message;
   }
 }
 /// A connection that failed under the transport (refused, reset, lost on the way): said to people as where it failed
@@ -1068,6 +1088,10 @@ export class Mesh {
   readonly #atDialling = new Set<string>();
   /// By address: the addresses a dial on the main endpoint was given when it went unanswered (`#dialAll`).
   readonly #unansweredAt = new Map<string, string>();
+  /// By address: monotonic deadline until which a single-relay rescue after a main handshake conflict is cooled down.
+  readonly #handshakeRescueCooldown = new Map<string, number>();
+  /// In-flight single-relay handshake rescues keyed by `${addr}\0${netGen}` so concurrent openings never stack rescues.
+  readonly #handshakeRescuing = new Set<string>();
   /// The addresses whose one connection on the main endpoint was let go unanswered (`#choose`): the next dial goes on
   /// each relay's own endpoint beside it (`#dialAll`).
   readonly #lostMain = new Set<string>();
@@ -1771,6 +1795,7 @@ export class Mesh {
     this.entryTargets = targets;
     this.#deadRelays.clear();
     this.#deadRelayFails.clear();
+    this.#handshakeRescueCooldown.clear();
     this.#relaxAllState();
     if (rebind) this.#env.runner.fork(Effect.asVoid(this.#rebind(true)));
     else if (!sameRoutes) {
@@ -1879,6 +1904,7 @@ export class Mesh {
     }
     if (!changed) return;
     if (!wasMainOn && this.#mainOn(addr)) this.#mainDialledAt.set(addr, this.now());
+    this.#handshakeRescueCooldown.delete(addr);
     this.#relaxStationState(endpointId(addr));
     const cur = this.current(addr);
     const curOff = cur !== null && cur.usable() && this.#wayOff(addr, cur);
@@ -2562,7 +2588,10 @@ export class Mesh {
         opening.controls = link._tag === "Success" && winnerControl !== null ? [winnerControl] : [];
         opening.result = link._tag === "Success" ? { ok: link.success } : { err: link.failure, unanswered };
         if (link._tag === "Success") {
-          if (link.success.pinned === null) self.#unansweredAt.delete(addr);
+          if (link.success.pinned === null) {
+            self.#unansweredAt.delete(addr);
+            self.#handshakeRescueCooldown.delete(addr);
+          }
           self.#adopt(addr, link.success);
           commitDial(winnerControl ?? undefined);
         }
@@ -2780,11 +2809,73 @@ export class Mesh {
         // 0.4 s (2026-11-09).
         const lost = this.#lostMain.delete(addr);
         if (!unanswered && !lost) {
-          if (control === undefined) return dial;
-          return Effect.raceFirst(
-            dial,
-            Effect.andThen(Deferred.await(control.cancelSignal), Effect.fail(unreached({ message: "dial cancelled" }))),
-          );
+          const withCancelMain = (effect: Effect.Effect<Link, CoreError>): Effect.Effect<Link, CoreError> =>
+            control === undefined
+              ? effect
+              : Effect.raceFirst(
+                  effect,
+                  Effect.andThen(Deferred.await(control.cancelSignal), Effect.fail(unreached({ message: "dial cancelled" }))),
+                );
+          const self = this;
+          const dialStarted = this.now();
+          const dialNetGen = this.#netGen;
+          const roundDeadline = dialStarted + ONTO_MAX_MS + CONNECT_TIMEOUT_MS;
+          const mainHasIp =
+            this.#env.relayOnly !== true &&
+            (straight.length > 0 ||
+              (this.#env.lookup === true && this.relays.length > 0) ||
+              this.#known.some((a) => a.id === endpointId(addr) && (a.ips?.length ?? 0) > 0));
+          return Effect.gen(function* () {
+            const first = yield* Effect.result(withCancelMain(dial));
+            if (first._tag === "Success") return first.success;
+            const err = first.failure;
+            const rescueKey = `${addr}\0${dialNetGen}`;
+            const remainingMs = roundDeadline - self.now();
+            if (
+              !(err instanceof HandshakeConflict) ||
+              !mainHasIp ||
+              self.#closed ||
+              control?.cancelled ||
+              self.#netGen !== dialNetGen ||
+              !self.#mainOn(addr) ||
+              remainingMs <= 0 ||
+              self.#handshakeRescuing.has(rescueKey) ||
+              (self.#handshakeRescueCooldown.get(addr) ?? -Infinity) > self.now()
+            ) {
+              return yield* Effect.fail(err);
+            }
+            const rescueRelay = self.#pickHandshakeRescueRelay(addr);
+            if (rescueRelay === null) return yield* Effect.fail(err);
+            self.#handshakeRescuing.add(rescueKey);
+            const rescueResult = yield* Effect.ensuring(
+              Effect.result(
+                withCancelMain(
+                  Effect.raceFirst(
+                    self.#dialPinned(addr, rescueRelay, credentials, fresh, ctx, onDone),
+                    Effect.andThen(Effect.sleep(remainingMs), Effect.fail(new OpeningTimeout(false))), // timer: caps single-relay handshake rescue to the opening deadline
+                  ),
+                ),
+              ),
+              Effect.sync(() => {
+                self.#handshakeRescuing.delete(rescueKey);
+              }),
+            );
+            if (rescueResult._tag === "Success") {
+              if (control?.cancelled || self.#closed || self.#wayOff(addr, rescueResult.success)) {
+                rescueResult.success.close();
+                if (self.#dialing === 0) self.#env.runner.fork(self.#letGo());
+                return yield* Effect.fail(control?.cancelled ? unreached({ message: "dial cancelled" }) : err);
+              }
+              self.#rescued.add(addr);
+              self.#mainDialledAt.set(addr, self.now());
+              return rescueResult.success;
+            }
+            if (!control?.cancelled && !self.#closed && self.#netGen === dialNetGen) {
+              self.#handshakeRescueCooldown.set(addr, self.now() + HANDSHAKE_RESCUE_COOLDOWN_MS);
+            }
+            if (self.#dialing === 0) self.#env.runner.fork(self.#letGo());
+            return yield* Effect.fail(err);
+          });
         }
         this.#rescued.add(addr);
         this.#mainDialledAt.set(addr, this.now());
@@ -2999,6 +3090,38 @@ export class Mesh {
     return ways.filter((r) => own === undefined || !sameRelay(own, r));
   }
 
+  /// Picks at most one allowed, non-dead relay for a single-relay rescue after a main handshake conflict: prefers
+  /// non-primary relays over the primary relay to spare official relay quota, and within each tier prefers
+  /// a relay already reported connected.
+  #pickHandshakeRescueRelay(addr: string): string | null {
+    const candidates = this.#filterDeadRelays(this.#waysFor(addr), true);
+    if (candidates.length === 0) return null;
+    const connected = new Set<string>();
+    for (const s of this.#endpoint.relayStatus()) {
+      if (s.connected) {
+        connected.add(relayKey(s.url));
+        if (s.access) connected.add(relayKey(s.access));
+      }
+    }
+    const own = this.relays[0];
+    const rank = (r: string) => {
+      const isOwn = own !== undefined && sameRelay(own, r) ? 1 : 0;
+      const isUp = connected.has(relayKey(r)) ? 0 : 1;
+      return isOwn * 2 + isUp;
+    };
+    let best = candidates[0]!;
+    let bestRank = rank(best);
+    for (let i = 1; i < candidates.length; i++) {
+      const r = candidates[i]!;
+      const k = rank(r);
+      if (k < bestRank) {
+        best = r;
+        bestRank = k;
+      }
+    }
+    return best;
+  }
+
   #isDeadRelay(relay: string): boolean {
     const key = relayKey(relay);
     const until = this.#deadRelays.get(key);
@@ -3144,6 +3267,7 @@ export class Mesh {
       this.#env.runner.fork(this.#letGo());
       return;
     }
+    if (link.pinned === null) this.#handshakeRescueCooldown.delete(addr);
     const ways = this.#live(addr);
     if (ways.some((w) => w.link === link)) return;
     const cur = this.current(addr);
@@ -3873,6 +3997,7 @@ export class Mesh {
       if (link === null || !link.usable()) return yield* Effect.fail(meshError(t("core-logic.mesh.not_connected")));
       this.#deadRelays.clear();
     this.#deadRelayFails.clear();
+      this.#handshakeRescueCooldown.clear();
       yield* this.#explore(addr, link.credentials);
       for (let i = 0; i <= MIN_SAMPLES; i++) yield* this.#sample(addr);
       this.#choose(addr, "asked");
@@ -3973,6 +4098,7 @@ export class Mesh {
           this.#deadRelays.clear();
           this.#deadRelayFails.clear();
           this.#unansweredAt.clear();
+          this.#handshakeRescueCooldown.clear();
         }
         // On another network now, perhaps the station's: its LAN addresses are worth a try again.
         this.#tried.clear();
@@ -4365,7 +4491,12 @@ function open(
             }
             connection = r.success;
           }
-          Deferred.doneUnsafe(dialled, r._tag === "Success" ? Effect.succeed(r.success) : Effect.fail(unreached(r.failure)));
+          Deferred.doneUnsafe(
+            dialled,
+            r._tag === "Success"
+              ? Effect.succeed(r.success)
+              : Effect.fail(isHandshakeConflictMessage(r.failure.message) ? new HandshakeConflict(r.failure.message) : unreached(r.failure)),
+          );
         }),
       );
       const had = Effect.ensuring(

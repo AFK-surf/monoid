@@ -215,25 +215,32 @@ impl<L: AddressLookup> AddressLookup for Unmade<L> {
     }
 }
 
-/// Strips relay URLs outside `allowed` from DHT/mDNS address lookup responses while keeping IP and custom transports.
+/// Strips relay URLs outside `allowed` (when present) and RFC 2544 benchmarking IPs (`198.18.0.0/15`) on both
+/// publish and resolve across address lookups while keeping other IP and custom transports.
 #[derive(Debug)]
-struct FilteredLookup<B>(Arc<StdRwLock<BTreeSet<RelayUrl>>>, B);
+struct FilteredLookup<B>(Option<Arc<StdRwLock<BTreeSet<RelayUrl>>>>, B);
 
 #[derive(Debug)]
-struct Filtered<L>(Arc<StdRwLock<BTreeSet<RelayUrl>>>, L);
+struct Filtered<L>(Option<Arc<StdRwLock<BTreeSet<RelayUrl>>>>, L);
 
-fn filter_lookup_item(item: AddressLookupItem, allowed: &BTreeSet<RelayUrl>) -> AddressLookupItem {
-    let provenance = item.provenance();
-    let last_updated = item.last_updated();
-    let old = item.endpoint_info();
-    let addrs = old.data.addrs().filter(|a| match a {
-        iroh::TransportAddr::Relay(url) => allowed.contains(url),
+fn filter_endpoint_data(old: &EndpointData, allowed: Option<&BTreeSet<RelayUrl>>) -> EndpointData {
+    let addrs = old.addrs().filter(|a| match a {
+        iroh::TransportAddr::Relay(url) => allowed.is_none_or(|set| set.contains(url)),
+        iroh::TransportAddr::Ip(sock) => !mesh_transport::is_benchmarking_ip(sock.ip()),
         _ => true,
     }).cloned();
     let mut data = EndpointData::new(addrs.collect());
-    if let Some(user_data) = old.data.user_data() {
+    if let Some(user_data) = old.user_data() {
         data = data.with_user_data(user_data.clone());
     }
+    data
+}
+
+fn filter_lookup_item(item: AddressLookupItem, allowed: Option<&BTreeSet<RelayUrl>>) -> AddressLookupItem {
+    let provenance = item.provenance();
+    let last_updated = item.last_updated();
+    let old = item.endpoint_info();
+    let data = filter_endpoint_data(&old.data, allowed);
     let info = iroh::address_lookup::EndpointInfo::from_parts(old.endpoint_id, data);
     AddressLookupItem::new(info, provenance, last_updated)
 }
@@ -246,14 +253,20 @@ impl<B: AddressLookupBuilder> AddressLookupBuilder for FilteredLookup<B> {
 
 impl<L: AddressLookup> AddressLookup for Filtered<L> {
     fn publish(&self, data: &EndpointData) {
-        self.1.publish(data);
+        let filtered = filter_endpoint_data(data, None);
+        self.1.publish(&filtered);
     }
 
     fn resolve(&self, endpoint_id: EndpointId) -> Option<BoxStream<Result<AddressLookupItem, AddressLookupError>>> {
         let allowed = self.0.clone();
         self.1.resolve(endpoint_id).map(|stream| {
             use n0_future::StreamExt;
-            Box::pin(stream.map(move |res| res.map(|item| filter_lookup_item(item, &allowed.read().unwrap())))) as BoxStream<_>
+            Box::pin(stream.map(move |res| {
+                res.map(|item| {
+                    let guard = allowed.as_ref().map(|a| a.read().unwrap());
+                    filter_lookup_item(item, guard.as_deref())
+                })
+            })) as BoxStream<_>
         })
     }
 }
@@ -316,21 +329,14 @@ async fn bind_with(options: Options, #[allow(unused_variables)] insecure: bool) 
     if lookup_active {
         let mdns = Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE).advertise(false));
         let dht_lookup = with_dht.then(|| Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).no_publish()));
-        if let Some(allowed) = lookup_relays.clone() {
-            builder = builder.address_lookup(FilteredLookup(allowed.clone(), mdns));
-            if let Some(dht_lookup) = dht_lookup {
-                builder = builder.address_lookup(FilteredLookup(allowed, dht_lookup));
-            }
-        } else {
-            builder = builder.address_lookup(mdns);
-            if let Some(dht_lookup) = dht_lookup {
-                builder = builder.address_lookup(dht_lookup);
-            }
+        builder = builder.address_lookup(FilteredLookup(lookup_relays.clone(), mdns));
+        if let Some(dht_lookup) = dht_lookup {
+            builder = builder.address_lookup(FilteredLookup(lookup_relays.clone(), dht_lookup));
         }
     } else if options.discovery.unwrap_or(true) {
-        builder = builder.address_lookup(Optional("mDNS", iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE)));
+        builder = builder.address_lookup(Optional("mDNS", FilteredLookup(None, iroh_mdns_address_lookup::MdnsAddressLookup::builder().service_name(MDNS_SERVICE))));
         if with_dht {
-            builder = builder.address_lookup(Optional("the DHT", iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key)));
+            builder = builder.address_lookup(Optional("the DHT", FilteredLookup(None, iroh_mainline_address_lookup::DhtAddressLookup::builder().dht_builder(dht()).secret_key(key))));
         }
     }
     Ok(Endpoint { inner: builder.bind().await.map_err(failed)?, mesh, keepers: Arc::default(), homes: StdMutex::new(relays.clone()), bound: relays, held: Arc::default(), accepted: Arc::default(), lookup_relays })
@@ -1658,7 +1664,7 @@ mod tests {
         let item = Item::new(info, "dht", None);
 
         let allowed = Arc::new(StdRwLock::new(BTreeSet::from([allowed_relay.clone()])));
-        let filtered = Filtered(allowed.clone(), FakeLookup(item));
+        let filtered = Filtered(Some(allowed.clone()), FakeLookup(item));
 
         let first = filtered.resolve(peer_id).unwrap().next().await.unwrap().unwrap();
         let addrs: Vec<_> = first.endpoint_info().data.addrs().cloned().collect();
@@ -1674,6 +1680,81 @@ mod tests {
         assert!(addrs2.contains(&iroh::TransportAddr::Relay(allowed_relay)));
         assert!(addrs2.contains(&iroh::TransportAddr::Relay(dynamic_entry)));
         assert!(!addrs2.contains(&iroh::TransportAddr::Relay(stale_dht)));
+    }
+
+    #[tokio::test]
+    async fn filtered_lookup_strips_benchmarking_ips_on_publish_and_resolve() {
+        use iroh::address_lookup::{AddressLookup, EndpointData, EndpointInfo, Item, UserData};
+        use n0_future::StreamExt;
+
+        #[derive(Debug)]
+        struct RecordingLookup {
+            published: Arc<StdMutex<Option<EndpointData>>>,
+            item: Item,
+        }
+        impl AddressLookup for RecordingLookup {
+            fn publish(&self, data: &EndpointData) {
+                *self.published.lock().unwrap() = Some(data.clone());
+            }
+            fn resolve(&self, _endpoint_id: EndpointId) -> Option<BoxStream<Result<Item, AddressLookupError>>> {
+                Some(Box::pin(n0_future::stream::iter([Ok(self.item.clone())])))
+            }
+        }
+
+        let peer_id = SecretKey::from_bytes(&[10; 32]).public();
+        let lan: std::net::SocketAddr = "192.168.1.100:58339".parse().unwrap();
+        let local_station: std::net::SocketAddr = "192.168.1.106:58126".parse().unwrap();
+        let tailscale: std::net::SocketAddr = "100.64.0.1:58339".parse().unwrap();
+        let loopback: std::net::SocketAddr = "127.0.0.1:58339".parse().unwrap();
+        let fake_v4: std::net::SocketAddr = "198.18.0.0:58339".parse().unwrap();
+        let fake_v6: std::net::SocketAddr = "[::ffff:198.19.0.1]:58339".parse().unwrap();
+        let relay = relay_url("https://relay-a.example.test/").unwrap();
+        let user_data: UserData = "stillfail-test".parse().unwrap();
+
+        let data = EndpointData::new(vec![
+            iroh::TransportAddr::Ip(lan),
+            iroh::TransportAddr::Ip(local_station),
+            iroh::TransportAddr::Ip(tailscale),
+            iroh::TransportAddr::Ip(loopback),
+            iroh::TransportAddr::Ip(fake_v4),
+            iroh::TransportAddr::Ip(fake_v6),
+            iroh::TransportAddr::Relay(relay.clone()),
+        ])
+        .with_user_data(user_data.clone());
+        let item = Item::new(EndpointInfo::from_parts(peer_id, data.clone()), "mdns", Some(42));
+        let published = Arc::new(StdMutex::new(None));
+
+        let bare = Filtered(None, RecordingLookup { published: published.clone(), item: item.clone() });
+        bare.publish(&data);
+        let pub_data = published.lock().unwrap().clone().expect("publish recorded");
+        assert_eq!(pub_data.user_data(), Some(&user_data));
+        let pub_addrs: Vec<_> = pub_data.addrs().cloned().collect();
+        assert!(pub_addrs.contains(&iroh::TransportAddr::Ip(lan)));
+        assert!(pub_addrs.contains(&iroh::TransportAddr::Ip(local_station)));
+        assert!(pub_addrs.contains(&iroh::TransportAddr::Ip(tailscale)));
+        assert!(pub_addrs.contains(&iroh::TransportAddr::Ip(loopback)));
+        assert!(pub_addrs.contains(&iroh::TransportAddr::Relay(relay.clone())));
+        assert!(!pub_addrs.contains(&iroh::TransportAddr::Ip(fake_v4)));
+        assert!(!pub_addrs.contains(&iroh::TransportAddr::Ip(fake_v6)));
+
+        let resolved = bare.resolve(peer_id).unwrap().next().await.unwrap().unwrap();
+        assert_eq!(resolved.provenance(), "mdns");
+        assert_eq!(resolved.last_updated(), Some(42));
+        assert_eq!(resolved.endpoint_info().data.user_data(), Some(&user_data));
+        let res_addrs: Vec<_> = resolved.endpoint_info().data.addrs().cloned().collect();
+        assert!(res_addrs.contains(&iroh::TransportAddr::Ip(lan)));
+        assert!(res_addrs.contains(&iroh::TransportAddr::Relay(relay.clone())));
+        assert!(!res_addrs.contains(&iroh::TransportAddr::Ip(fake_v4)));
+        assert!(!res_addrs.contains(&iroh::TransportAddr::Ip(fake_v6)));
+
+        let empty = Arc::new(StdRwLock::new(BTreeSet::new()));
+        let strict = Filtered(Some(empty), RecordingLookup { published: Arc::new(StdMutex::new(None)), item });
+        let strict_res = strict.resolve(peer_id).unwrap().next().await.unwrap().unwrap();
+        let strict_addrs: Vec<_> = strict_res.endpoint_info().data.addrs().cloned().collect();
+        assert!(strict_addrs.contains(&iroh::TransportAddr::Ip(lan)));
+        assert!(!strict_addrs.contains(&iroh::TransportAddr::Relay(relay)));
+        assert!(!strict_addrs.contains(&iroh::TransportAddr::Ip(fake_v4)));
+        assert!(!strict_addrs.contains(&iroh::TransportAddr::Ip(fake_v6)));
     }
 
     #[cfg(target_vendor = "apple")]

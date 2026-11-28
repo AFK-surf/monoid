@@ -9,6 +9,18 @@ const LIMIT: usize = 16 * 1024;
 const MAX_SAFE: u64 = 9_007_199_254_740_991;
 pub const MAX_UNDERLAY_ADDRS: usize = 8;
 
+/// Whether `ip` falls in RFC 2544 benchmarking space (`198.18.0.0/15`, including IPv4-mapped IPv6),
+/// which local proxy TUN adapters commonly assign for fake-IP routing and which collides across hosts.
+pub fn is_benchmarking_ip(ip: IpAddr) -> bool {
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => {
+            let [a, b, _, _] = v4.octets();
+            a == 198 && (b & 0xfe) == 18
+        }
+        IpAddr::V6(_) => false,
+    }
+}
+
 fn ipv4_tier(ip: Ipv4Addr) -> u8 {
     let [a, b, _, _] = ip.octets();
     if ip.is_link_local() || ip.is_loopback() || ip.is_unspecified() {
@@ -17,7 +29,7 @@ fn ipv4_tier(ip: Ipv4Addr) -> u8 {
     if ip.is_private() || (a == 100 && (b & 0xc0) == 64) {
         return 3;
     }
-    if ip.is_multicast() || ip.is_broadcast() || ip.is_documentation() || a == 0 {
+    if ip.is_multicast() || ip.is_broadcast() || ip.is_documentation() || a == 0 || (a == 198 && (b & 0xfe) == 18) {
         return 4;
     }
     1
@@ -53,16 +65,22 @@ fn underlay_key(addr: &TransportAddr) -> String {
     }
 }
 
-/// Bounds a local endpoint's underlay addresses to `MAX_UNDERLAY_ADDRS` while preserving
-/// smaller sets as-is and leaving non-underlay entries untouched for validation to reject.
+/// Bounds a local endpoint's underlay addresses to `MAX_UNDERLAY_ADDRS`, stripping RFC 2544 benchmarking
+/// IPs (`198.18.0.0/15`), while preserving smaller clean sets as-is and leaving non-underlay entries
+/// untouched for validation to reject.
 pub fn bounded_address(address: EndpointAddr) -> EndpointAddr {
-    if address.addrs.len() <= MAX_UNDERLAY_ADDRS
-        || address.addrs.iter().any(|a| !matches!(a, TransportAddr::Ip(_) | TransportAddr::Relay(_)))
-    {
+    if address.addrs.iter().any(|a| !matches!(a, TransportAddr::Ip(_) | TransportAddr::Relay(_))) {
         return address;
     }
-    let mut ranked: Vec<(u8, String, TransportAddr)> = address
+    let filtered: Vec<TransportAddr> = address
         .addrs
+        .into_iter()
+        .filter(|a| !matches!(a, TransportAddr::Ip(sock) if is_benchmarking_ip(sock.ip())))
+        .collect();
+    if filtered.len() <= MAX_UNDERLAY_ADDRS {
+        return EndpointAddr::new(address.id).with_addrs(filtered);
+    }
+    let mut ranked: Vec<(u8, String, TransportAddr)> = filtered
         .into_iter()
         .map(|a| (underlay_tier(&a), underlay_key(&a), a))
         .collect();
@@ -212,5 +230,65 @@ mod tests {
             address: kept,
         };
         assert!(SignedAnnouncement::sign(&key, scope, 1, descriptor).is_err());
+    }
+    #[test]
+    fn benchmarking_ip_predicate_matches_rfc2544_and_mapped_v6_only() {
+        for blocked in [
+            "198.18.0.0",
+            "198.18.0.1",
+            "198.19.255.255",
+            "::ffff:198.18.0.0",
+            "::ffff:198.19.255.255",
+        ] {
+            assert!(is_benchmarking_ip(blocked.parse().unwrap()), "expected blocked: {blocked}");
+        }
+        for allowed in [
+            "198.17.255.255",
+            "198.20.0.0",
+            "192.168.1.106",
+            "10.0.0.1",
+            "172.16.0.1",
+            "100.64.0.1",
+            "100.127.255.254",
+            "127.0.0.1",
+            "169.254.1.1",
+            "1.1.1.1",
+            "::1",
+            "::ffff:192.168.1.100",
+            "fe80::1",
+            "fd00::1",
+            "2001:4860:4860::8888",
+        ] {
+            assert!(!is_benchmarking_ip(allowed.parse().unwrap()), "expected allowed: {allowed}");
+        }
+    }
+    #[test]
+    fn bounded_address_strips_benchmarking_ips_in_small_and_large_sets() {
+        let id = SecretKey::from([92; 32]).public();
+        let lan = TransportAddr::Ip("192.168.1.100:58339".parse().unwrap());
+        let tailscale = TransportAddr::Ip("100.64.0.2:58339".parse().unwrap());
+        let relay = TransportAddr::Relay("https://relay-a.example".parse().unwrap());
+        let fake_v4 = TransportAddr::Ip("198.18.0.0:58339".parse().unwrap());
+        let fake_v6 = TransportAddr::Ip("[::ffff:198.19.0.1]:58339".parse().unwrap());
+
+        let small = EndpointAddr::new(id).with_addrs([lan.clone(), fake_v4.clone(), fake_v6.clone(), relay.clone()]);
+        let small_out = bounded_address(small);
+        assert!(small_out.addrs.contains(&lan));
+        assert!(small_out.addrs.contains(&relay));
+        assert!(!small_out.addrs.contains(&fake_v4));
+        assert!(!small_out.addrs.contains(&fake_v6));
+
+        let mut large_addrs: Vec<TransportAddr> = (1..=7)
+            .map(|i| TransportAddr::Ip(format!("192.168.1.{i}:58339").parse().unwrap()))
+            .collect();
+        large_addrs.push(tailscale.clone());
+        large_addrs.push(fake_v4.clone());
+        large_addrs.push(fake_v6.clone());
+        let large_out = bounded_address(EndpointAddr::new(id).with_addrs(large_addrs));
+        assert_eq!(large_out.addrs.len(), MAX_UNDERLAY_ADDRS);
+        assert!(large_out.addrs.contains(&tailscale));
+        assert!(!large_out.addrs.contains(&fake_v4));
+        assert!(!large_out.addrs.contains(&fake_v6));
+        assert_eq!(ipv4_tier("198.18.0.0".parse().unwrap()), 4);
     }
 }
