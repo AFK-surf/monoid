@@ -257,7 +257,7 @@ export async function launch(data: string, app: string, env: Record<string, stri
   };
   const meshPort = () => {
     let port: number | null = null;
-    for (const m of err.matchAll(/mesh listening\b[^\n]*\bsockets=\[[^\]]*"127\.0\.0\.1:(\d+)"/g)) {
+    for (const m of err.matchAll(/mesh listening\b[^\n]*?\bsockets=[^\n]*?"127\.0\.0\.1:(\d+)"/g)) {
       port = Number(m[1]);
     }
     return port;
