@@ -2441,7 +2441,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"$inject":{"id":"steer:i1","takeOver":true,"text":"and this"}}
     ),
     (
-      #|[{"type":"kept","line":{"type":"assistant","text":"working"}},{"type":"kept","line":{"type":"user","text":"and this","steered":true}}]
+      #|[{"type":"kept","line":{"type":"assistant","text":"working"}},{"type":"kept","line":{"type":"user","text":"and this","steered":true}},{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
     ),
     (
       #|false
@@ -2450,7 +2450,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"steer:i1","steering":["prompt:p2"]}
     ),
     (
-      #|{"live":{"open":["said:4/text"],"said":"said:4/text","n":4,"phase":"responding"},"said":null,"calls":[],"saidLast":"working","children":[],"loading":false,"session":"s-agy"}
+      #|{"live":{"open":["said:4/text"],"said":"said:4/text","n":4,"phase":"requesting"},"said":null,"calls":[],"saidLast":"working","children":[],"loading":false,"session":"s-agy"}
     ),
   ),
   (
@@ -2458,7 +2458,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"s-agy","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":" more"}}}}
     ),
     (
-      #|[{"type":"live","event":{"kind":"delta","id":"said:4/text","field":"text","text":" more"}}]
+      #|[{"type":"live","event":{"kind":"phase","phase":"responding"}},{"type":"live","event":{"kind":"delta","id":"said:4/text","field":"text","text":" more"}}]
     ),
     (
       #|false
@@ -7082,7 +7082,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"$inject":{"id":"steer:b2","takeOver":true,"text":"second question"}}
     ),
     (
-      #|[{"type":"kept","line":{"type":"assistant","text":"waiting"}},{"type":"kept","line":{"type":"user","text":"second question","steered":true}}]
+      #|[{"type":"kept","line":{"type":"assistant","text":"waiting"}},{"type":"kept","line":{"type":"user","text":"second question","steered":true}},{"type":"live","event":{"kind":"phase","phase":"requesting"}}]
     ),
     (
       #|false
@@ -7091,7 +7091,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"steer:b2","steering":["prompt:b1"]}
     ),
     (
-      #|{"live":{"open":["call:bg1","said:2/text"],"said":"said:2/text","n":2,"phase":"responding","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"waiting","children":[],"loading":false,"session":"s-agy-bg"}
+      #|{"live":{"open":["call:bg1","said:2/text"],"said":"said:2/text","n":2,"phase":"requesting","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"waiting","children":[],"loading":false,"session":"s-agy-bg"}
     ),
   ),
   (
@@ -7108,7 +7108,7 @@ let steps_said : Array[(String, String, String, String, String)] = [
       #|{"busy":true,"aborting":false,"owner":"steer:b2","steering":[]}
     ),
     (
-      #|{"live":{"open":["call:bg1","said:2/text"],"said":"said:2/text","n":2,"phase":"responding","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"waiting","children":[],"loading":false,"session":"s-agy-bg"}
+      #|{"live":{"open":["call:bg1","said:2/text"],"said":"said:2/text","n":2,"phase":"requesting","background":["call:bg1"]},"said":null,"calls":[["bg1",{"name":"sleep 60","input":{},"startedAt":1700000000000}]],"saidLast":"waiting","children":[],"loading":false,"session":"s-agy-bg"}
     ),
   ),
   (

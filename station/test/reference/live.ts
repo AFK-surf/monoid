@@ -343,6 +343,12 @@ export class LiveFromAcp {
     return out;
   }
 
+  /// A prompt taken over the running turn: the turn is with the model again, said even where it already was.
+  takenOver(): LiveEvent[] {
+    this.phase = null;
+    return this.prompted();
+  }
+
   /// The call that started last of those still running (what a subagent spawned now was spawned by).
   openCall(): string | undefined {
     return [...this.open].filter((id) => id.startsWith("call:")).at(-1);
@@ -1030,6 +1036,8 @@ export class AcpReference {
       this.turn.owner = id;
     } else add(id);
     this.user(text, true, events);
+    // (taken over, the prompt is read now: the actor counts what it steered as read)
+    if (takeOver) for (const event of this.live.takenOver()) events.push(live(event));
     return events;
   }
 
