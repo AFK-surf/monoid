@@ -567,26 +567,66 @@ test "wave17c3b R3: connects.put allowlist strips group.key/top-level secrets, p
     Err(e) => if e.status != 400 { panic("invalid station must return 400") }
     Ok(_) => panic("invalid station must fail")
   }
-  // Valid partial edit preserves bind.cwd and disk secrets, while allowlist projection hides group.key & top-level secrets
-  let patch = base_codec::json_obj([("enabled", base_codec::json_bool(false))])
-  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/grp-1", owner), ["grp-1"], patch) {
+  // Valid partial edit preserves bind.cwd and disk secrets, while allowlist projection hides group.key & top-level secrets;
+  // HTTP request body MUST NOT be able to set or overwrite `bind.cwd` (even for regular members).
+  let member = w3b_member("ws-main")
+  let cwd_attack = base_codec::json_obj([
+    ("enabled", base_codec::json_bool(false)),
+    ("bind", base_codec::json_obj([
+      ("runtime", base_codec::json_str("claude")),
+      ("cwd", base_codec::json_str("/")),
+    ])),
+  ])
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/grp-1", member), ["grp-1"], cwd_attack) {
     Ok(res) => {
       let s = base_codec::json_stringify(res)
       if s.contains("ed25519-private-seed-secret") || s.contains("legacy-top-token") || s.contains("deadbeef") {
         panic("connect response leaked secret fields: " + s)
       }
       if !s.contains("pub123") || !s.contains("/repo/work") {
-        panic("connect response missing publicKey or bind.cwd: " + s)
+        panic("connect response missing publicKey or preserved bind.cwd: " + s)
+      }
+      if s.contains("\"cwd\":\"/\"") {
+        panic("connects.put allowed HTTP body to overwrite bind.cwd: " + s)
       }
     }
     Err(e) => panic("connects.put failed: " + e.message)
   }
-  // Verify secrets & bind.cwd are preserved on disk
+  // Verify secrets & original bind.cwd are preserved on disk and "/" was never written
   match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
     Ok(b) => {
       let saved = b.to_string()
       if !saved.contains("ed25519-private-seed-secret") || !saved.contains("legacy-top-token") || !saved.contains("/repo/work") {
         panic("connects.put lost preserved disk fields: " + saved)
+      }
+      if saved.contains("\"cwd\": \"/\"") {
+        panic("connects.put wrote attacker bind.cwd to disk: " + saved)
+      }
+    }
+    Err(_) => panic("read config failed")
+  }
+  // New connect created by member with bind.cwd="/" MUST NOT persist cwd
+  let new_conn = base_codec::json_obj([
+    ("kind", base_codec::json_str("comma")),
+    ("bind", base_codec::json_obj([
+      ("runtime", base_codec::json_str("claude")),
+      ("cwd", base_codec::json_str("/")),
+    ])),
+  ])
+  match (api.admin.host.call)("connects.put", make_test_api_req_as("PUT", "/connects/new-c", member), ["new-c"], new_conn) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("\"cwd\"") {
+        panic("new connect accepted bind.cwd from HTTP body: " + s)
+      }
+    }
+    Err(e) => panic("new connect put failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => {
+      let saved = b.to_string()
+      if saved.contains("\"cwd\": \"/\"") {
+        panic("new connect persisted bind.cwd=\"/\" to disk: " + saved)
       }
     }
     Err(_) => panic("read config failed")
@@ -717,11 +757,13 @@ test "wave17c3b R3: vault.requests lock/owner boundary & cross-uses projection" 
     "granted",
     base_codec::json_obj([
       ("id", base_codec::json_str("req-real-cross")),
+      ("vault", base_codec::json_str("v-real")),
       ("owner", base_codec::json_str("owner@example.com")),
       ("item", base_codec::json_str("i_1")),
       ("cross", base_codec::json_obj([
         ("workspace", base_codec::json_str("ws-src")),
-        ("vault", base_codec::json_str("v_src")),
+        ("workspaceName", base_codec::json_str("Src")),
+        ("vaultName", base_codec::json_str("MyVault")),
       ])),
     ]),
   )
@@ -731,7 +773,7 @@ test "wave17c3b R3: vault.requests lock/owner boundary & cross-uses projection" 
       if s.contains("req-null-cross") {
         panic("cross: null must be excluded: " + s)
       }
-      if !s.contains("\"request\":\"req-real-cross\"") || !s.contains("\"sourceWorkspace\":\"ws-src\"") || !s.contains("\"sourceVault\":\"v_src\"") {
+      if !s.contains("\"request\":\"req-real-cross\"") || !s.contains("\"sourceWorkspace\":\"ws-src\"") || !s.contains("\"sourceVault\":\"v-real\"") {
         panic("cross-uses missing projected fields: " + s)
       }
     }
@@ -756,8 +798,8 @@ test "wave17c3b R3: MCP URL normalization and arbitrary-delimiter redaction" {
     }
     Err(e) => panic("mcpServers.get failed: " + e.message)
   }
-  let redacted = station_tools::redact_error_urls("bad url \"https://u:p@host.example/x\" and (http://a:b@other.example)")
-  if redacted.contains("u:p@") || redacted.contains("a:b@") {
+  let redacted = station_tools::redact_error_urls("bad url \"https://u:p,1;2%20+x@host.example/x\" and (http://a:b@other.example)")
+  if redacted.contains("u:p") || redacted.contains("a:b@") {
     panic("redact_error_urls leaked userinfo in delimited URLs: " + redacted)
   }
   if !redacted.contains("\"https://host.example/x\"") || !redacted.contains("(http://other.example)") {

@@ -125,6 +125,7 @@ int32_t sts_proc_close(int64_t handle);
 int32_t sts_proc_kill(int32_t pid, int32_t sig, int32_t group);
 int64_t sts_proc_start_time_ms(int32_t pid);
 int64_t sts_proc_start_ticks(int32_t pid);
+int32_t sts_proc_ppid(void);
 void *sts_proc_cmdline(int32_t pid, int64_t *out_len);
 void *sts_boot_id(int64_t *out_len);
 

@@ -1280,7 +1280,15 @@ fn upsert_connect_in_config(
     }
     let model_opt = keep_bind_str("model")
     let effort_opt = keep_bind_str("effort")
-    let cwd_opt = keep_bind_str("cwd")
+    // Security invariant (`connects.ts:271-276`): NEVER read `bind.cwd` from the HTTP request body;
+    // only preserve an existing station-configured `cwd` verbatim from disk `old_bind`.
+    let cwd_opt : Option[String] = match old_bind {
+      Some(ob) => match json_field_str(ob, "cwd") {
+        Some(s) if s.length() > 0 => Some(s)
+        _ => None
+      }
+      None => None
+    }
     let old_profiles : Option[Array[String]] = match old_bind {
       Some(ob) => match extract_station_list(base_codec::json_get(ob, "profiles")) {
         Some(xs) => Some(xs)
@@ -2289,9 +2297,12 @@ fn filter_and_project_cross_uses(
       Some(s) => s
       None => match json_field_str(cross_obj, "sourceWorkspace") { Some(s) => s, None => "" }
     }
-    let src_vault = match json_field_str(cross_obj, "vault") {
-      Some(s) => s
-      None => match json_field_str(cross_obj, "sourceVault") { Some(s) => s, None => "" }
+    let src_vault = match json_field_str(r, "vault") {
+      Some(s) if s.length() > 0 => s
+      _ => match json_field_str(cross_obj, "sourceVault") {
+        Some(s) if s.length() > 0 => s
+        _ => match json_field_str(cross_obj, "vault") { Some(s) => s, None => "" }
+      }
     }
     let base = project_vault_use(r)
     let projected = json_obj_set(

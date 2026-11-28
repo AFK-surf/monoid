@@ -840,7 +840,10 @@ pub fn redact_url_userinfo(raw_url : String) -> String {
 }
 
 fn is_url_authority_stop(c : Int) -> Bool {
-  c <= 32 || c == 47 || c == 63 || c == 35 || c == 92 || c == 34 || c == 39 || c == 41 || c == 93 || c == 125 || c == 44 || c == 59 || c == 62
+  // End authority only at whitespace/C0, path/query/fragment delimiters (`/`, `?`, `#`, `\`),
+  // quotes (`"`, `'`), or closing brackets (`)`, `]`, `}`, `>`), never truncating RFC 3986
+  // userinfo punctuation such as `:`, `.`, `-`, `+`, `%`, `,`, `;`.
+  c <= 32 || c == 47 || c == 63 || c == 35 || c == 92 || c == 34 || c == 39 || c == 41 || c == 93 || c == 125 || c == 62
 }
 
 /// Scan any error string for `://...userinfo@...` across arbitrary delimiters (quotes, parens, commas, etc.)

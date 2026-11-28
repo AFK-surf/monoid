@@ -1842,6 +1842,10 @@ int64_t sts_proc_start_ticks(int32_t pid) {
     return -1;
 }
 
+int32_t sts_proc_ppid(void) {
+    return 0;
+}
+
 void *sts_proc_cmdline(int32_t pid, int64_t *out_len) {
     (void)pid;
     if (out_len != NULL) *out_len = 0;
@@ -6272,6 +6276,10 @@ int64_t sts_proc_start_time_ms(int32_t pid) {
     if (btime == 0) return -1;
     return (int64_t)(btime * 1000ULL + (starttime * 1000ULL) / (unsigned long long)clk);
 #endif
+}
+
+int32_t sts_proc_ppid(void) {
+    return (int32_t)getppid();
 }
 
 void *sts_proc_cmdline(int32_t pid, int64_t *out_len) {

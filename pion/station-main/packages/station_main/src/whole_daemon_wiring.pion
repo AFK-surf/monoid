@@ -627,7 +627,9 @@ pub fn trigger_hot_handover_restart(
 }
 
 fn is_unix_launcher_pid(pid : Int) -> Bool {
-  if pid <= 0 {
+  // Kernel-backed proof that `pid` is this daemon's live direct parent launcher (rules out stale
+  // `station.json` PIDs and PID reuse) AND its cmdline/executable contains `stillfail-station`.
+  if pid <= 1 || pid != station_sys::proc_ppid() {
     return false
   }
   // Zero-wait synchronous check via `station_sys::proc_cmdline` (Linux `/proc/<pid>/cmdline`,
