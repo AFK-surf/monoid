@@ -2517,10 +2517,69 @@ fn startup_dir_sync_retry_step(
         fk(effect::Exit::Succeeded(()))
         return
       }
+      // Codex P1-1: Synchronously re-verify `<dir>` fsync durability AND `<dir>/accounts` head tuple
+      // right before installing `staged_opt` so any concurrent `-2` rollback or disk change during
+      // async DB staging aborts publish without clearing `accounts_dir_sync_needed`!
+      if sync_accounts_dir(sess.dir) != 0 {
+        close_staged_db(staged_opt)
+        startup_dir_sync_retry_step(sess, start_account_gen, next_delay, fk)
+        return
+      }
+      let rechecked_doc = match read_accounts_file_state(sess.dir) {
+        sync::HostStorageRead::Found(j) => filter_rejected_tuples_from_doc(sess.rejected_tuples_in_memory, j)
+        sync::HostStorageRead::Absent => {
+          close_staged_db(staged_opt)
+          sess.startup_sync_pending = false
+          sess.startup_sync_fiber = None
+          fk(effect::Exit::Succeeded(()))
+          return
+        }
+        sync::HostStorageRead::ReadError(_) => {
+          close_staged_db(staged_opt)
+          startup_dir_sync_retry_step(sess, start_account_gen, next_delay, fk)
+          return
+        }
+      }
+      let rechecked = parse_stored_accounts(rechecked_doc)
+      if rechecked.length() == 0 {
+        close_staged_db(staged_opt)
+        sess.startup_sync_pending = false
+        sess.startup_sync_fiber = None
+        fk(effect::Exit::Succeeded(()))
+        return
+      }
+      let r0 = rechecked[0]
+      if r0.sub != a0.sub || r0.session != a0.session || r0.refresh != a0.refresh {
+        close_staged_db(staged_opt)
+        startup_dir_sync_retry_step(sess, start_account_gen, next_delay, fk)
+        return
+      }
       match staged_opt {
         Some(st) => {
           let new_db = st.new_db
           let _ = store::put_account_doc(new_db, "conn_seq", sess.device_conn_seq.to_string())
+          // Codex P2-1: Seed empty per-account `prefs` from device prefs (skipping `"workspace"`).
+          match store::get_device_prefs(new_db) {
+            sql::SqlResult::Ok(base_codec::Json::Obj(existing_fs)) => {
+              if existing_fs.length() == 0 && sess.prefs.keys().length() > 0 {
+                let seed_pairs : Array[(String, base_codec::Json)] = []
+                let pks = sess.prefs.keys()
+                for i in 0..<pks.length() {
+                  if pks[i] == "workspace" {
+                    continue
+                  }
+                  match sess.prefs.get(pks[i]) {
+                    Some(v) => seed_pairs.push((pks[i], v))
+                    None => ()
+                  }
+                }
+                if seed_pairs.length() > 0 {
+                  let _ = store::put_account_doc(new_db, "prefs", base_codec::json_stringify(base_codec::json_obj(seed_pairs)))
+                }
+              }
+            }
+            _ => ()
+          }
           match store::get_device_prefs(new_db) {
             sql::SqlResult::Ok(pj) => match base_codec::json_get(pj, "lang") {
               Some(base_codec::Json::Str(s)) => { sess.core.lang = if s == "en" { "en" } else { "zh" } }
@@ -2532,7 +2591,7 @@ fn startup_dir_sync_retry_step(
           let old_db = sess.db
           match sess.core.switch_account_db(
             new_db,
-            a0.sub,
+            r0.sub,
             host_purges_shared=st.host_purges_shared,
             host_purges_read=Some(st.host_purges_read),
             emit_auth_boundary=false,
@@ -2547,7 +2606,7 @@ fn startup_dir_sync_retry_step(
           sess.db = new_db
           old_db.close()
           match st.person_lock_opt {
-            Some(pjson) => { let _ = sess.core.load_person_lock_json(pjson, a0.sub) }
+            Some(pjson) => { let _ = sess.core.load_person_lock_json(pjson, r0.sub) }
             None => ()
           }
           let target_ws = resolve_account_default_workspace(new_db, sess.prefs, core_opt=Some(sess.core))
@@ -2564,8 +2623,8 @@ fn startup_dir_sync_retry_step(
       sess.bearer_gen += 1L
       let stored_list : Array[views::StoredAccount] = []
       let sessions_map : Map[String, String] = Map::new()
-      for i in 0..<recovered.length() {
-        let ai = recovered[i]
+      for i in 0..<rechecked.length() {
+        let ai = rechecked[i]
         stored_list.push(views::StoredAccount::{
           sub: ai.sub,
           email: ai.email,
@@ -2584,18 +2643,18 @@ fn startup_dir_sync_retry_step(
         Some(r) => if sync::is_valid_workspace_role(r) { r } else { "member" }
         None => "member"
       }
-      sess.core.set_viewer(a0.email, sub=a0.sub, role=verified_role)
+      sess.core.set_viewer(r0.email, sub=r0.sub, role=verified_role)
       let _ = store::put_account_doc(
         sess.db,
         "accounts",
         base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
       )
-      if a0.access.length() > 0 && sess.origin.length() > 0 {
+      if r0.access.length() > 0 && sess.origin.length() > 0 {
         let cs = match sess.cloud {
           Some(existing) => {
             existing.switch_db(sess.db)
-            let _ = existing.bind_account_context(a0.sub, session=a0.session)
-            existing.set_origin_and_token("", a0.access)
+            let _ = existing.bind_account_context(r0.sub, session=r0.session)
+            existing.set_origin_and_token("", r0.access)
             existing
           }
           None => {
@@ -2603,11 +2662,11 @@ fn startup_dir_sync_retry_step(
               sess.sh,
               sess.db,
               sess.origin,
-              token=a0.access,
-              bound_sub=a0.sub,
-              bound_session=a0.session,
+              token=r0.access,
+              bound_sub=r0.sub,
+              bound_session=r0.session,
             )
-            wire_live_cloud_sync(sess, created, a0.sub, a0.session)
+            wire_live_cloud_sync(sess, created, r0.sub, r0.session)
             sess.cloud = Some(created)
             created
           }

@@ -1205,9 +1205,12 @@ int main(void) {
         send_json(rb_comp);
         wait_for_matching_msg(&g_host, "\"id\":7064,", "\"storage_error\"", 10);
 
-        // P1-4 E2E: Clear transient dir fsync failure WITHOUT restarting this running core instance!
-        // The in-instance backoff retry fiber MUST automatically mount Alice and restore `account.doc("me")`,
-        // `workspaces.list`, and `persisted-alice-draft`!
+        // P1-4 + P2-1 E2E: Persist a device pref (`appearance=dark`) before recovery, then clear
+        // transient dir fsync failure WITHOUT restarting this running core instance!
+        // The in-instance backoff retry fiber MUST automatically mount Alice, seed device prefs
+        // (skipping `workspace`), and restore `account.doc("me")`, `workspaces.list`, and `persisted-alice-draft`!
+        send_json("{\"id\":70645,\"call\":\"prefs.set\",\"params\":{\"appearance\":\"dark\"}}");
+        wait_for_matching_msg(&g_host, "\"id\":70645,", "\"ok\":", 10);
         send_json("{\"id\":7065,\"subscribe\":{\"topic\":\"accounts\"},\"keyed\":true}");
         wait_for_matching_msg(&g_host, "\"id\":7065,", "\"value\":[]", 10);
         pion_core_test_set_fail_dir_fsync(0);
@@ -1219,6 +1222,8 @@ int main(void) {
         wait_for_matching_msg(&g_host, "\"id\":7067,", "persisted-alice-draft", 10);
         send_json("{\"id\":7068,\"call\":\"workspaces.list\",\"params\":{}}");
         wait_for_matching_msg(&g_host, "\"id\":7068,", WS1_ID, 10);
+        send_json("{\"id\":7069,\"subscribe\":{\"topic\":\"prefs\"},\"keyed\":true}");
+        wait_for_matching_msg(&g_host, "\"id\":7069,", "\"appearance\":\"dark\"", 10);
 
         // Persist `workspace = WS1_ID` pref on the recovered Alice instance, then restart with `serve_ws1_lock = 1`
         // to pin real Ed25519 genesis on `WS1_ID` via `GET /lock`, then 401 -> `:memory:` -> real verified

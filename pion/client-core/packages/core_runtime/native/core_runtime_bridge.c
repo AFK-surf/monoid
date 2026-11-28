@@ -171,11 +171,6 @@ static int fsync_dir_strict(const char *dir_path) {
     }
     int rc = fsync_fd_strict(dfd);
     int saved = errno;
-    if (rc != 0 && (saved == EINVAL || saved == ENOTSUP || saved == EOPNOTSUPP)) {
-        // Filesystems such as FUSE / NFS may not support directory fsync: treat unsupported
-        // operation errnos as a no-op while failing hard on real I/O errors (`EIO`, `EROFS`, etc.).
-        rc = 0;
-    }
     if (close(dfd) != 0 && rc == 0) {
         return -1;
     }
