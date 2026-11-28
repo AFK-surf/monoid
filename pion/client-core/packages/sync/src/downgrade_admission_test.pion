@@ -1860,6 +1860,111 @@ test "2B-2.14: lock_unconfirmed/lock_station bounded catchup (<=4 tries), in-fli
     h3.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
   })
   let _ = h3.rt.run_ready()
+
+  // Part D (R6): Real `station/src/mesh/serve.ts:150-161` refusal wire body:
+  // `{ error, code: "lock_unconfirmed", lock: { seq, hash, genesis }, entries: [...], person: [{ genesis, entries: [...] }] }`
+  // 1. First refusal with NEW signed `entries` + `person` absorbs both, increments `lock_gen`, and immediately redials!
+  // 2. Subsequent refusals carrying the EXACT SAME already-absorbed `entries` + `person` MUST NOT increment `lock_gen`
+  //    or trigger a 0ms infinite redial loop — they run bounded 4-try catchup and stop cleanly!
+  let kit = da_make_lock_kit(DA_WS1)
+  let ws_genesis_codec = form_to_codec(kit.genesis)
+  let p_seed = da_seed_bytes(0x77)
+  let p_key = ed25519_key_id(p_seed)
+  let p_dev_hex = hex_64("d")
+  let p_unsigned = base_codec::json_obj([
+    ("v", base_codec::json_int(1)),
+    ("ws", base_codec::json_str("person:sub-alice")),
+    ("seq", base_codec::json_int(0)),
+    ("prev", base_codec::json_null()),
+    ("at", base_codec::json_int(1790000100)),
+    ("kind", base_codec::json_str("genesis")),
+    (
+      "body",
+      base_codec::json_obj([
+        ("sub", base_codec::json_str("sub-alice")),
+        (
+          "device",
+          base_codec::json_obj([
+            ("key", base_codec::json_str(p_key)),
+            ("id", base_codec::json_str(p_dev_hex)),
+            ("label", base_codec::json_str("Alice Personal Mac")),
+          ]),
+        ),
+      ]),
+    ),
+  ])
+  let p_signed_form = match sign_lock_entry(p_seed, codec_to_form(p_unsigned)) {
+    Ok(e) => e
+    Err(e) => panic("sign person genesis failed: " + e)
+  }
+  let p_genesis_hash = match lock::entry_hash(p_signed_form, native_lock_crypto()) {
+    Ok(h) => h
+    Err(_) => panic("person genesis hash failed")
+  }
+  let p_signed_codec = form_to_codec(p_signed_form)
+  let real_refusal_extra = "\"lock\":{\"seq\":0,\"hash\":\"" +
+  kit.genesis_hash +
+  "\",\"genesis\":\"" +
+  kit.genesis_hash +
+  "\"},\"entries\":[" +
+  base_codec::json_stringify(ws_genesis_codec) +
+  "],\"person\":[{\"genesis\":\"" +
+  p_genesis_hash +
+  "\",\"entries\":[" +
+  base_codec::json_stringify(p_signed_codec) +
+  "]}]"
+
+  let h4 = make_r4_mesh_harness(true)
+  h4.reject_code[0] = "lock_unconfirmed"
+  h4.reject_extra_json[0] = real_refusal_extra
+  let _ = h4.core.commit_cloud_me(mt_make_me("sub-alice", "alice@still.fail", [(DA_WS1, "Core", "member")]), req_seq=2L)
+  h4.core.attach_mesh_station_transport(DA_ST1, h4.ctrl, workspace=DA_WS1)
+  let gen_before = h4.ctrl.lock_gen()
+  h4.core.start()
+  let _ = h4.rt.run_ready()
+
+  // Dial #1 absorbed BOTH real top-level `entries` AND `person:[{genesis, entries}]`, bumped `lock_gen`,
+  // and immediately triggered Dial #2; Dial #2 received the EXACT SAME body -> NO `lock_gen` bump -> NO 0ms spin!
+  match h4.core.current_lock() {
+    Some(st) => debug_assert(st.genesis == kit.genesis_hash, "real serve.ts top-level entries absorbed into workspace lock")
+    None => panic("expected workspace lock to be absorbed from top-level entries")
+  }
+  debug_assert(h4.core.person_lock_kept_entries().length() == 1, "real serve.ts person:[{genesis, entries}] absorbed")
+  let gen_after_absorb = h4.ctrl.lock_gen()
+  debug_assert(gen_after_absorb > gen_before, "fresh refusal evidence incremented lock_gen")
+  debug_assert(h4.dial_count[0] == 2, "Dial #1 immediate redialed Dial #2, and duplicate Dial #2 did NOT spin 0ms loop")
+
+  // Calling `absorb_mesh_admission_lock` again with identical evidence MUST return false & keep `lock_gen` unchanged!
+  let dup_raw = match base_codec::json_parse("{\"ok\":false,\"code\":\"lock_unconfirmed\",\"error\":\"lock refused\"," + real_refusal_extra + "}") {
+    base_codec::JsonParseResult::Ok(j) => j
+    base_codec::JsonParseResult::Err(e) => panic(e)
+  }
+  debug_assert(!h4.core.absorb_mesh_admission_lock(DA_WS1, parse_mesh_admission(dup_raw)), "duplicate refusal returns advanced=false")
+  debug_assert(h4.ctrl.lock_gen() == gen_after_absorb, "duplicate refusal did NOT increment lock_gen")
+
+  // Exhaust 4 bounded catchup retries under the duplicate refusal body: `lock_gen` MUST stay flat and stop cleanly!
+  h4.rt.advance(1500)
+  let _ = h4.rt.run_ready()
+  h4.rt.advance(3000)
+  let _ = h4.rt.run_ready()
+  h4.rt.advance(4500)
+  let _ = h4.rt.run_ready()
+  h4.rt.advance(6000)
+  let _ = h4.rt.run_ready()
+  debug_assert(h4.dial_count[0] == 6, "exact 4 bounded catchup retries after Dial #2 (2 + 4 = 6)")
+  debug_assert(h4.ctrl.lock_gen() == gen_after_absorb, "lock_gen stayed completely flat across 4 duplicate refusals")
+  debug_assert(h4.ctrl.is_admission_blocked_by_lock(), "cleanly blocked after 4 bounded catchup tries")
+  for _ in 0..<12 {
+    h4.rt.advance(5000)
+    let _ = h4.rt.run_ready()
+  }
+  debug_assert(h4.dial_count[0] == 6, "0 extra dials over 60s after duplicate-evidence block")
+
+  h4.core.stop()
+  let _ = h4.rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    h4.ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit { k(effect::Exit::Succeeded(())) })
+  })
+  let _ = h4.rt.run_ready()
 }
 
 test "2B-2.15: Transactional jobs single-writer state machine (in-flight snapshot + post-cut SSE replay, 4-view parity, and tx rollback atomicity)" {
@@ -2060,4 +2165,129 @@ test "2B-2.15: Transactional jobs single-writer state machine (in-flight snapsho
     Some(ov) => debug_assert(ov == 0, "cold-boot/post-reset empty snapshot reconciled stale SQLite open=1 row to open=0")
     None => panic("expected closed job-C row in SQLite")
   }
+
+  // 8. (R6) Journal overflow auto-refetch: if > 4096 SSE job ops commit while `/jobs?chats=0` is
+  //    in-flight, `apply_jobs_at_cut` returns `jobs_sse_journal_overflow`, `end_jobs_snapshot` clears
+  //    the overflowed journal, and `SyncScheduler` automatically carries all waiting callers into a
+  //    fresh single-flight round that commits and confirms `jobs:<st>` & `chatJobs:<st>/7`!
+  pending_jobs_req.clear()
+  let mut ovf_jobs_ok = false
+  let mut ovf_t7_ok = false
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => ovf_jobs_ok = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(7, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      match ex { effect::Exit::Succeeded(_) => ovf_t7_ok = true; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_jobs_req.length() == 1, "overflow round #1 in-flight")
+
+  // Pump 4097 committed SSE job ops in one batch to trigger `JOBS_SSE_JOURNAL_MAX = 4096` overflow!
+  let flood_batch : Array[wire::Event] = []
+  for fi in 0..<4097 {
+    flood_batch.push(wire::Event::{
+      id: Some("fl-" + fi.to_string()),
+      name: "job",
+      data: "{\"id\":\"job-ovf\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"ovf\",\"command\":\"o\",\"startedAt\":3000}",
+    })
+  }
+  match core.events.process_sse_chunk_with_cap(flood_batch, None) {
+    Ok(true) => ()
+    _ => panic("expected overflow flood SSE batch Ok(true)")
+  }
+  // Deliver round #1 snapshot inside a runtime fiber (matching real Shell/Mesh I/O delivery) ->
+  // overflows -> auto-kicks off fresh round #2 carrying both waiters!
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+    k(effect::Exit::Succeeded(()))
+  })
+  let _ = rt.run_ready()
+  debug_assert(!ovf_jobs_ok && !ovf_t7_ok, "waiters carried into fresh retry round instead of failing prematurely")
+  debug_assert(pending_jobs_req.length() == 2, "journal overflow automatically initiated fresh single-flight round #2")
+  // Deliver round #2 snapshot -> commits cleanly and settles both carried waiters!
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    (pending_jobs_req[1])(effect::Exit::Succeeded(HttpReply::{
+      status: 200,
+      headers: [],
+      body: "[{\"id\":\"job-ovf\",\"session\":\"sess-admin-1\",\"state\":\"running\",\"name\":\"ovf\",\"command\":\"o\",\"startedAt\":3000}]".to_bytes(),
+    }))
+    k(effect::Exit::Succeeded(()))
+  })
+  let _ = rt.run_ready()
+  debug_assert(ovf_jobs_ok && ovf_t7_ok, "overflow retry round #2 succeeded and settled both carried waiters")
+  debug_assert(core.events.open_jobs().length() == 1 && core.events.open_jobs()[0].id == "job-ovf", "fresh round #2 committed job-ovf")
+
+  // 9. (R6) `bump_epoch` and `set_transport` waiter retirement: every waiter in BOTH `jobs_waiters`
+  //    AND `jobs_next_waiters` MUST be settled EXACTLY ONCE with `Failed("transport_epoch_changed")`,
+  //    and late responses from the retired round NEVER double-invoke any callback!
+  pending_jobs_req.clear()
+  let mut w1_calls = 0
+  let mut w1_reason = ""
+  let mut w2_calls = 0
+  let mut w2_reason = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      w1_calls += 1
+      match ex { effect::Exit::Failed(effect::EffectError::Custom(m)) => w1_reason = m; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  debug_assert(pending_jobs_req.length() == 1, "retirement test round #1 in-flight")
+  // Advance cred_epoch so 2nd waiter queues into `jobs_next_waiters`!
+  let _ = core.membership.bump_cred_epoch(DA_WS1)
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(19, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      w2_calls += 1
+      match ex { effect::Exit::Failed(effect::EffectError::Custom(m)) => w2_reason = m; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  // `bump_epoch` MUST retire BOTH active and next-round waiters exactly once!
+  core.sync.bump_epoch()
+  let _ = rt.run_ready()
+  debug_assert(w1_calls == 1 && w1_reason == "transport_epoch_changed", "bump_epoch settled active jobs_waiter exactly once")
+  debug_assert(w2_calls == 1 && w2_reason == "transport_epoch_changed", "bump_epoch settled jobs_next_waiter exactly once")
+  // Late HTTP response for retired round MUST NOT double-invoke callbacks!
+  (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+  let _ = rt.run_ready()
+  debug_assert(w1_calls == 1 && w2_calls == 1, "late retired round reply did NOT double-invoke waiters")
+
+  // Repeat for `set_transport`: both active and next-round waiters settled exactly once!
+  pending_jobs_req.clear()
+  let mut s1_calls = 0
+  let mut s1_reason = ""
+  let mut s2_calls = 0
+  let mut s2_reason = ""
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_jobs_k(effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      s1_calls += 1
+      match ex { effect::Exit::Failed(effect::EffectError::Custom(m)) => s1_reason = m; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  let _ = core.membership.bump_cred_epoch(DA_WS1)
+  let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
+    core.sync.fetch_chat_jobs_k(23, effect::priority_shown(), fn(ex : effect::Exit[Int]) -> Unit {
+      s2_calls += 1
+      match ex { effect::Exit::Failed(effect::EffectError::Custom(m)) => s2_reason = m; _ => () }
+      k(effect::Exit::Succeeded(()))
+    })
+  })
+  let _ = rt.run_ready()
+  core.sync.set_transport(tr)
+  let _ = rt.run_ready()
+  debug_assert(s1_calls == 1 && s1_reason == "transport_epoch_changed", "set_transport settled active jobs_waiter exactly once")
+  debug_assert(s2_calls == 1 && s2_reason == "transport_epoch_changed", "set_transport settled jobs_next_waiter exactly once")
+  (pending_jobs_req[0])(effect::Exit::Succeeded(HttpReply::{ status: 200, headers: [], body: "[]".to_bytes() }))
+  let _ = rt.run_ready()
+  debug_assert(s1_calls == 1 && s2_calls == 1, "late set_transport retired reply did NOT double-invoke waiters")
 }

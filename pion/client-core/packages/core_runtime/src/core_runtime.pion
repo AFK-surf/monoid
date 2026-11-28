@@ -69,8 +69,9 @@ struct RuntimeSession {
   mesh_transports : Map[String, sync::MeshStationTransport]
   desired_mesh_stations : Map[String, DesiredMeshStation]
   inflight_ws_confirm : Map[String, Bool]
-  ws_confirm_401_count : Map[String, Int]
-  ws_confirm_401_bearer_gen : Map[String, Int64]
+  ws_confirm_401_rotated_count : Map[String, Int]
+  ws_confirm_401_inflight_gen : Map[String, Int64]
+  ws_confirm_401_transient_count : Map[String, Int]
   rejected_tuples_in_memory : Map[String, (String, String)]
   mut cloud : Option[sync::CloudSync]
   mut origin : String
@@ -1157,8 +1158,7 @@ fn clear_runtime_ephemeral_caches(sess : RuntimeSession) -> Unit {
   }
   sess.mesh_transports.clear()
   sess.inflight_ws_confirm.clear()
-  sess.ws_confirm_401_count.clear()
-  sess.ws_confirm_401_bearer_gen.clear()
+  clear_all_ws_confirm_401_state(sess)
   let mdks = sess.md_stores.keys()
   for i in 0..<mdks.length() {
     match sess.md_stores.get(mdks[i]) {
@@ -1370,10 +1370,21 @@ fn strip_trailing_slash_rt(s : String) -> String {
   s.slice(0, end)
 }
 
+fn clear_ws_confirm_401_state(sess : RuntimeSession, ws_id : String) -> Unit {
+  sess.ws_confirm_401_rotated_count.remove(ws_id)
+  sess.ws_confirm_401_inflight_gen.remove(ws_id)
+  sess.ws_confirm_401_transient_count.remove(ws_id)
+}
+
+fn clear_all_ws_confirm_401_state(sess : RuntimeSession) -> Unit {
+  sess.ws_confirm_401_rotated_count.clear()
+  sess.ws_confirm_401_inflight_gen.clear()
+  sess.ws_confirm_401_transient_count.clear()
+}
+
 fn bump_runtime_session_gen(sess : RuntimeSession) -> Int64 {
   sess.session_gen += 1L
-  sess.ws_confirm_401_count.clear()
-  sess.ws_confirm_401_bearer_gen.clear()
+  clear_all_ws_confirm_401_state(sess)
   match sess.cloud {
     Some(cs) => { let _ = cs.bump_session_gen() }
     None => ()
@@ -1411,6 +1422,82 @@ fn needs_workspace_cloud_confirm(sess : RuntimeSession, ws_id : String) -> Bool 
   sess.core.membership.has_pending_auth_confirm(ws_id) &&
   (!sess.core.can_read_confirmed_key(ws_id, "workspace:" + ws_id) ||
     !sess.core.can_read_confirmed_key(ws_id, "stations:" + ws_id))
+}
+
+/// Handle HTTP 401 on `/v1/workspaces/<ws>` with live `bearer_gen` gating, per-bearer in-flight
+/// deduplication, separate budgets for post-rotation persistent 401s (max 2 rotations) vs transient
+/// OAuth refresh failures (max 2 bounded backoff retries, never locking out the current bearer).
+fn handle_workspace_confirm_401(
+  sess : RuntimeSession,
+  ws_id : String,
+  orig_bearer_gen : Int64,
+  orig_session_gen : Int64,
+) -> Unit {
+  if sess.stopped || sess.session_gen != orig_session_gen || sess.core.membership.is_session_invalidated() {
+    return
+  }
+  // Stale 401 from an older bearer MUST NOT consume the current bearer's budget or trigger refresh!
+  if orig_bearer_gen != sess.bearer_gen {
+    return
+  }
+  match sess.ws_confirm_401_inflight_gen.get(ws_id) {
+    Some(g) => if g == orig_bearer_gen { return }
+    None => ()
+  }
+  let rotated_cnt = match sess.ws_confirm_401_rotated_count.get(ws_id) { Some(c) => c; None => 0 }
+  if rotated_cnt >= 2 {
+    return
+  }
+  let sub_now = sess.core.membership.effective_sub()
+  if sub_now.length() == 0 {
+    return
+  }
+  sess.ws_confirm_401_inflight_gen.set(ws_id, orig_bearer_gen)
+  runtime_refresh_account_token(sess, sub_now, fn(res : Result[String, String]) -> Unit {
+    match sess.ws_confirm_401_inflight_gen.get(ws_id) {
+      Some(g) => if g == orig_bearer_gen { sess.ws_confirm_401_inflight_gen.remove(ws_id) }
+      None => ()
+    }
+    if sess.stopped || sess.session_gen != orig_session_gen || sess.core.membership.is_session_invalidated() {
+      return
+    }
+    match res {
+      Ok(_) => {
+        sess.ws_confirm_401_transient_count.remove(ws_id)
+        if sess.bearer_gen != orig_bearer_gen {
+          let cur_rot = match sess.ws_confirm_401_rotated_count.get(ws_id) { Some(c) => c; None => 0 }
+          sess.ws_confirm_401_rotated_count.set(ws_id, cur_rot + 1)
+        }
+      }
+      Err(_) => {
+        // Transient refresh failure (bearer did NOT rotate): NEVER increment rotated circuit-breaker
+        // or permanently lock out `orig_bearer_gen`; schedule bounded backoff retry (<= 2 tries).
+        let t_cnt = match sess.ws_confirm_401_transient_count.get(ws_id) { Some(c) => c; None => 0 }
+        if t_cnt < 2 && sess.bearer_gen == orig_bearer_gen && needs_workspace_cloud_confirm(sess, ws_id) {
+          sess.ws_confirm_401_transient_count.set(ws_id, t_cnt + 1)
+          let delay_ms = if t_cnt == 0 { 150 } else { 400 }
+          let _ = sess.core.rt.fork_quiet_named("ws-401-retry:" + ws_id, fn(rfk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            // timer: retry after a failure, with a backoff
+            effect::sleep_k(delay_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+              match sex {
+                effect::Exit::Interrupted => rfk(effect::Exit::Interrupted)
+                _ => {
+                  if !sess.stopped &&
+                    sess.session_gen == orig_session_gen &&
+                    !sess.core.membership.is_session_invalidated() &&
+                    sess.bearer_gen == orig_bearer_gen &&
+                    needs_workspace_cloud_confirm(sess, ws_id) {
+                    trigger_workspace_confirm_fetch(sess, ws_id)
+                  }
+                  rfk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          })
+        }
+      }
+    }
+  })
 }
 
 /// Deduplicated `/v1/workspaces/<ws>` refresh helper keyed on `(session_gen, ws, base_seq, cred_epoch, bearer_gen)`:
@@ -1452,8 +1539,7 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
               effect::Exit::Succeeded(Ok(cws)) => {
                 match sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=captured_cred_epoch) {
                   Ok(true) => {
-                    sess.ws_confirm_401_count.remove(ws_id)
-                    sess.ws_confirm_401_bearer_gen.remove(ws_id)
+                    clear_ws_confirm_401_state(sess, ws_id)
                     emit_topic_refresh(sess, "workspace")
                     emit_topic_refresh(sess, "stations")
                   }
@@ -1471,16 +1557,7 @@ fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Uni
                 if herr.status == 403 || herr.status == 404 {
                   cs.trigger_me_reconcile()
                 } else if herr.status == 401 {
-                  let prev_gen = match sess.ws_confirm_401_bearer_gen.get(ws_id) { Some(g) => g; None => -1L }
-                  let prev_cnt = match sess.ws_confirm_401_count.get(ws_id) { Some(c) => c; None => 0 }
-                  if prev_gen != orig_bearer_gen && prev_cnt < 2 {
-                    sess.ws_confirm_401_bearer_gen.set(ws_id, orig_bearer_gen)
-                    sess.ws_confirm_401_count.set(ws_id, prev_cnt + 1)
-                    let sub_now = sess.core.membership.effective_sub()
-                    if sub_now.length() > 0 {
-                      runtime_refresh_account_token(sess, sub_now, fn(_ : Result[String, String]) -> Unit {})
-                    }
-                  }
+                  handle_workspace_confirm_401(sess, ws_id, orig_bearer_gen, orig_gen)
                 }
               }
               _ => ()
@@ -2473,8 +2550,9 @@ pub extern "C" fn pion_core_runtime_start(
     mesh_transports: Map::new(),
     desired_mesh_stations: Map::new(),
     inflight_ws_confirm: Map::new(),
-    ws_confirm_401_count: Map::new(),
-    ws_confirm_401_bearer_gen: Map::new(),
+    ws_confirm_401_rotated_count: Map::new(),
+    ws_confirm_401_inflight_gen: Map::new(),
+    ws_confirm_401_transient_count: Map::new(),
     rejected_tuples_in_memory: Map::new(),
     cloud: cloud_opt,
     origin: origin,
@@ -3193,6 +3271,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
               Some(wid) => {
                 let ws_seq = sess.core.membership.next_cloud_seq()
                 let ws_cred_ep = sess.core.membership.cred_epoch_of(wid)
+                let ws_bearer_gen = sess.bearer_gen
                 sync::fetch_workspace_structured_k(
                   sess.sh,
                   cs.origin(),
@@ -3218,7 +3297,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                           // Reconcile via `/v1/me` on 403/404; NEVER directly call `drop_workspace`!
                           cs.trigger_me_reconcile()
                         } else if herr.status == 401 {
-                          runtime_refresh_account_token(sess, me.sub, fn(_ : Result[String, String]) -> Unit {})
+                          handle_workspace_confirm_401(sess, wid, ws_bearer_gen, req_session_gen)
                         }
                         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: herr.message })
                         let (out_j, out_b) = protocol::encode_core_event(ev)
@@ -3249,6 +3328,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                             emit_topic_refresh(sess, "workspaces")
                           }
                           Ok(true) => {
+                            clear_ws_confirm_401_state(sess, ws.id)
                             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
                               ("sub", base_codec::json_str(me.sub)),
                               ("email", base_codec::json_str(me.email)),
@@ -4418,8 +4498,7 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
       }
       sess.mesh_transports.clear()
   sess.inflight_ws_confirm.clear()
-  sess.ws_confirm_401_count.clear()
-  sess.ws_confirm_401_bearer_gen.clear()
+  clear_all_ws_confirm_401_state(sess)
       match sess.cloud {
         Some(cs) => cs.stop()
         None => ()

@@ -21,6 +21,7 @@ pub struct SyncScheduler {
   mut lock_refresh_running : Bool
   mut jobs_fetch_inflight : Bool
   mut jobs_refetch_needed : Bool
+  mut jobs_overflow_retries : Int
   mut jobs_inflight_epoch : Int64
   mut jobs_inflight_cred_epoch : Int64
   jobs_waiters : Array[(Option[Int], (effect::Exit[Int]) -> Unit)]
@@ -58,6 +59,7 @@ pub fn SyncScheduler::new(
     lock_refresh_running: false,
     jobs_fetch_inflight: false,
     jobs_refetch_needed: false,
+    jobs_overflow_retries: 0,
     jobs_inflight_epoch: 0L,
     jobs_inflight_cred_epoch: 0L,
     jobs_waiters: [],
@@ -253,6 +255,30 @@ pub fn SyncScheduler::completed_tasks(self : SyncScheduler) -> Array[String] {
   self.completed_order
 }
 
+let JOBS_OVERFLOW_MAX_RETRIES : Int = 2
+
+/// Retire all pending single-flight jobs waiters across both the active and next-round queues,
+/// resetting single-flight state FIRST and settling every waiter callback EXACTLY ONCE so no
+/// caller fiber or `inflight_confirm_refresh` entry ever leaks on `bump_epoch`/`set_transport`.
+fn SyncScheduler::retire_jobs_waiters(self : SyncScheduler, reason : String) -> Unit {
+  let retired : Array[(Option[Int], (effect::Exit[Int]) -> Unit)] = []
+  for i in 0..<self.jobs_waiters.length() {
+    retired.push(self.jobs_waiters[i])
+  }
+  for i in 0..<self.jobs_next_waiters.length() {
+    retired.push(self.jobs_next_waiters[i])
+  }
+  self.jobs_waiters.clear()
+  self.jobs_next_waiters.clear()
+  self.jobs_fetch_inflight = false
+  self.jobs_refetch_needed = false
+  self.jobs_overflow_retries = 0
+  let ex : effect::Exit[Int] = effect::Exit::Failed(effect::EffectError::Custom(reason))
+  for i in 0..<retired.length() {
+    (retired[i].1)(ex)
+  }
+}
+
 /// Bump the transport epoch so any in-flight reads from a prior transport are discarded
 /// and any pending stale-refresh / lock-refresh retries stop immediately.
 pub fn SyncScheduler::bump_epoch(self : SyncScheduler) -> Unit {
@@ -260,10 +286,7 @@ pub fn SyncScheduler::bump_epoch(self : SyncScheduler) -> Unit {
   self.pending_refresh.clear()
   self.pending_lock_refresh = false
   self.lock_refresh_running = false
-  self.jobs_fetch_inflight = false
-  self.jobs_refetch_needed = false
-  self.jobs_waiters.clear()
-  self.jobs_next_waiters.clear()
+  self.retire_jobs_waiters("transport_epoch_changed")
 }
 
 /// Swap the underlying `StationTransport` for all scheduled sync reads (`GET /chats`, `GET /lock`, etc.).
@@ -277,11 +300,8 @@ pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTra
   self.pending_refresh.clear()
   self.pending_lock_refresh = false
   self.lock_refresh_running = false
-  self.jobs_fetch_inflight = false
-  self.jobs_refetch_needed = false
-  self.jobs_waiters.clear()
-  self.jobs_next_waiters.clear()
   self.transport = transport
+  self.retire_jobs_waiters("transport_epoch_changed")
 }
 
 let MAX_LOCK_RETRY_ATTEMPTS : Int = 5
@@ -1288,28 +1308,29 @@ fn SyncScheduler::run_single_flight_jobs_k(
       }
       self.jobs_waiters.clear()
       self.jobs_fetch_inflight = false
-    }
-    match confirmed_meta {
-      Some((cap_gen, suid, sadm, sacct)) => {
-        self.notify_resource_confirmed("jobs:" + self.station, cap_gen, suid, sadm, sacct)
-        let seen_th : Map[Int, Bool] = Map::new()
-        for i in 0..<cur_waiters.length() {
-          match cur_waiters[i].0 {
-            Some(th) => if seen_th.get(th).is_none() {
-              seen_th.set(th, true)
-              self.notify_resource_confirmed(
-                "chatJobs:" + self.station + "/" + th.to_string(),
-                cap_gen,
-                suid,
-                sadm,
-                sacct,
-              )
+      self.jobs_overflow_retries = 0
+      match confirmed_meta {
+        Some((cap_gen, suid, sadm, sacct)) => {
+          self.notify_resource_confirmed("jobs:" + self.station, cap_gen, suid, sadm, sacct)
+          let seen_th : Map[Int, Bool] = Map::new()
+          for i in 0..<cur_waiters.length() {
+            match cur_waiters[i].0 {
+              Some(th) => if seen_th.get(th).is_none() {
+                seen_th.set(th, true)
+                self.notify_resource_confirmed(
+                  "chatJobs:" + self.station + "/" + th.to_string(),
+                  cap_gen,
+                  suid,
+                  sadm,
+                  sacct,
+                )
+              }
+              None => ()
             }
-            None => ()
           }
         }
+        None => ()
       }
-      None => ()
     }
     for i in 0..<cur_waiters.length() {
       (cur_waiters[i].1)(ex)
@@ -1501,6 +1522,33 @@ fn SyncScheduler::run_single_flight_jobs_k(
             return
           }
           self.pending_refresh.remove(key)
+          finish_round(ex, None)
+        }
+        effect::Exit::Failed(effect::EffectError::Custom(msg)) => {
+          self.pending_refresh.remove(key)
+          if msg.contains("jobs_sse_journal_overflow") &&
+          self.transport_epoch == enqueue_epoch &&
+          self.jobs_overflow_retries < JOBS_OVERFLOW_MAX_RETRIES {
+            self.jobs_overflow_retries += 1
+            // Carry all waiting callers into a fresh single-flight round (now that `end_jobs_snapshot`
+            // cleared the overflowed SSE journal) up to `JOBS_OVERFLOW_MAX_RETRIES` times.
+            let carried : Array[(Option[Int], (effect::Exit[Int]) -> Unit)] = []
+            for i in 0..<self.jobs_waiters.length() {
+              carried.push(self.jobs_waiters[i])
+            }
+            for i in 0..<self.jobs_next_waiters.length() {
+              carried.push(self.jobs_next_waiters[i])
+            }
+            self.jobs_waiters.clear()
+            self.jobs_next_waiters.clear()
+            for i in 0..<carried.length() {
+              self.jobs_waiters.push(carried[i])
+            }
+            self.jobs_refetch_needed = false
+            self.jobs_fetch_inflight = true
+            self.run_single_flight_jobs_k(priority, allow_cred_retry)
+            return
+          }
           finish_round(ex, None)
         }
         other => {

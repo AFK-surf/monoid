@@ -581,6 +581,12 @@ pub fn MeshStationTransport::is_lock_refusal(self : MeshStationTransport) -> Boo
   }
 }
 
+/// Current lock-change generation counter (incremented only when lock state actually advances or
+/// Cloud workspace detail confirms, waking lock-blocked stations without spinning on duplicate refusals).
+pub fn MeshStationTransport::lock_gen(self : MeshStationTransport) -> Int64 {
+  self.lock_gen
+}
+
 /// Whether the admission reconnect driver stopped because the station refused with a lock error
 /// after exhausting bounded catchup retries under the same `lock_gen`.
 pub fn MeshStationTransport::is_admission_blocked_by_lock(self : MeshStationTransport) -> Bool {
@@ -687,15 +693,15 @@ pub fn MeshStationTransport::ensure_admitted_for_epoch(
         fk(effect::Exit::Succeeded(()))
         return
       }
+      if self.lock_gen != dial_lock_gen {
+        // Lock advanced while dial was in-flight (or via `on_admission` signed evidence):
+        // NEVER block — immediately redial with the updated lock state!
+        self.lock_catchup_tries = 0
+        self.admission_blocked_by_lock = false
+        step(500, fk)
+        return
+      }
       if self.is_lock_refusal() {
-        if self.lock_gen != dial_lock_gen {
-          // Lock advanced while dial was in-flight (or via `on_admission` signed evidence):
-          // NEVER block — immediately redial with the updated lock state!
-          self.lock_catchup_tries = 0
-          self.admission_blocked_by_lock = false
-          step(500, fk)
-          return
-        }
         if self.lock_catchup_tries < LOCK_BEHIND_TRIES {
           self.lock_catchup_tries += 1
           let catchup_ms = 1500 * self.lock_catchup_tries

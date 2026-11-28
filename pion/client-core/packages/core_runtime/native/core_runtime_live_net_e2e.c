@@ -150,6 +150,12 @@ typedef struct fake_server {
     int slow_refresh_hold;
     int slow_refresh_entered;
     int slow_refresh_release;
+    int ws1_401_gate_enabled;
+    int ws1_401_budget;
+    int refresh_gate_enabled;
+    int refresh_budget;
+    char ws1_expected_bearer[64];
+    _Atomic int refresh_fail_500_remaining;
     _Atomic int drop_ws2_in_me;
     _Atomic int serve_ws1_lock;
     _Atomic int ws1_downgrade_member;
@@ -168,6 +174,23 @@ typedef struct fake_server {
 } fake_server_t;
 
 static fake_server_t g_srv;
+
+static void wait_srv_atomic_ge(const _Atomic int *counter, int target, int timeout_sec) {
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeout_sec;
+    pthread_mutex_lock(&g_srv.mu);
+    while (atomic_load(counter) < target && !g_srv.shutdown) {
+        int rc = pthread_cond_timedwait(&g_srv.cv, &g_srv.mu, &deadline);
+        if (rc == ETIMEDOUT && atomic_load(counter) < target) {
+            fprintf(stderr, "[live_net_e2e] TIMEOUT waiting for server counter >= %d (got %d)\n",
+                    target, atomic_load(counter));
+            pthread_mutex_unlock(&g_srv.mu);
+            abort();
+        }
+    }
+    pthread_mutex_unlock(&g_srv.mu);
+}
 
 static void write_all_fd(int fd, const char *buf, size_t len) {
     size_t off = 0;
@@ -266,19 +289,42 @@ static void *handle_client_thread(void *arg) {
     if (strncmp(buf, "GET /v1/workspaces/" WS1_ID " ", 46) == 0) {
         atomic_fetch_add(&g_srv.got_ws, 1);
         if (atomic_load(&g_srv.ws1_always_401)) {
+            pthread_mutex_lock(&g_srv.mu);
             atomic_fetch_add(&g_srv.got_ws1_401, 1);
+            pthread_cond_broadcast(&g_srv.cv);
+            while (g_srv.ws1_401_gate_enabled && g_srv.ws1_401_budget <= 0 && !g_srv.shutdown) {
+                pthread_cond_wait(&g_srv.cv, &g_srv.mu);
+            }
+            if (g_srv.ws1_401_gate_enabled && g_srv.ws1_401_budget > 0) {
+                g_srv.ws1_401_budget -= 1;
+            }
+            pthread_mutex_unlock(&g_srv.mu);
             send_http_json(fd, 401, "Unauthorized", "{\"error\":\"persistent_401\"}");
             close(fd);
             return NULL;
         }
         if (atomic_load(&g_srv.ws1_require_rotated_token)) {
-            if (strstr(buf, "Bearer acc-rotated-99") == NULL) {
+            pthread_mutex_lock(&g_srv.mu);
+            char expected_hdr[96];
+            if (g_srv.ws1_expected_bearer[0] != '\0') {
+                snprintf(expected_hdr, sizeof(expected_hdr), "Bearer %s", g_srv.ws1_expected_bearer);
+            } else {
+                snprintf(expected_hdr, sizeof(expected_hdr), "Bearer acc-rotated-99");
+            }
+            pthread_mutex_unlock(&g_srv.mu);
+            if (strstr(buf, expected_hdr) == NULL) {
+                pthread_mutex_lock(&g_srv.mu);
                 atomic_fetch_add(&g_srv.got_ws1_401, 1);
+                pthread_cond_broadcast(&g_srv.cv);
+                pthread_mutex_unlock(&g_srv.mu);
                 send_http_json(fd, 401, "Unauthorized", "{\"error\":\"token_expired\"}");
                 close(fd);
                 return NULL;
             }
+            pthread_mutex_lock(&g_srv.mu);
             atomic_fetch_add(&g_srv.got_ws1_rotated_ok, 1);
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
             send_http_json(
                 fd,
                 200,
@@ -369,8 +415,9 @@ static void *handle_client_thread(void *arg) {
         assert(strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL ||
                strstr(body, "\"refresh_token\":\"ref-bob-1\"") != NULL ||
                strstr(body, "\"refresh_token\":\"ref-rotated-") != NULL);
-        atomic_fetch_add(&g_srv.got_auth_refresh, 1);
         pthread_mutex_lock(&g_srv.mu);
+        atomic_fetch_add(&g_srv.got_auth_refresh, 1);
+        pthread_cond_broadcast(&g_srv.cv);
         if (g_srv.slow_refresh_hold) {
             g_srv.slow_refresh_entered = 1;
             pthread_cond_broadcast(&g_srv.cv);
@@ -378,7 +425,21 @@ static void *handle_client_thread(void *arg) {
                 pthread_cond_wait(&g_srv.cv, &g_srv.mu);
             }
         }
+        while (g_srv.refresh_gate_enabled && g_srv.refresh_budget <= 0 && !g_srv.shutdown) {
+            pthread_cond_wait(&g_srv.cv, &g_srv.mu);
+        }
+        if (g_srv.refresh_gate_enabled && g_srv.refresh_budget > 0) {
+            g_srv.refresh_budget -= 1;
+        }
         pthread_mutex_unlock(&g_srv.mu);
+        int fail500 = atomic_load(&g_srv.refresh_fail_500_remaining);
+        while (fail500 > 0) {
+            if (atomic_compare_exchange_weak(&g_srv.refresh_fail_500_remaining, &fail500, fail500 - 1)) {
+                send_http_json(fd, 500, "Internal Server Error", "{\"error\":\"transient_refresh_500\"}");
+                close(fd);
+                return NULL;
+            }
+        }
         if (atomic_load(&g_srv.allow_refresh_rotate) &&
             (strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL ||
              strstr(body, "\"refresh_token\":\"ref-rotated-") != NULL)) {
@@ -1430,24 +1491,118 @@ int main(void) {
         assert(atomic_load(&g_srv.got_ws1_rotated_ok) >= 1);
         printf("[live_net_e2e] Phase 11 PASSED (401 -> bearer refresh -> requeue_pending_cloud_confirmations confirmed workspace & stations)\n");
 
-        // Phase 11b (R5 Opus P2-2): Persistent 401 -> refresh -> 401 circuit breaker MUST stop after <= 2
-        // consecutive refreshes and NEVER spin an unbounded tight refresh loop!
-        int refreshes_before_cb = atomic_load(&g_srv.got_auth_refresh);
-        atomic_store(&g_srv.ws1_downgrade_member, 0);
-        atomic_store(&g_srv.ws1_require_rotated_token, 0);
-        atomic_store(&g_srv.ws1_always_401, 0);
-        // Upgrade back to owner, then downgrade to member again with persistent 401 on `/v1/workspaces/WS1_ID`!
-        send_json("{\"id\":805,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
-        wait_for_matching_msg(&g_host, "\"id\":805,", "\"ok\":{", 10);
-        atomic_store(&g_srv.ws1_downgrade_member, 1);
-        atomic_store(&g_srv.ws1_always_401, 1);
-        send_json("{\"id\":806,\"call\":\"cloud.sync\",\"params\":{}}");
-        wait_for_matching_msg(&g_host, "\"id\":806,", "persistent_401 (401)", 10);
-        struct timespec ts_wait = { 0, 400000000L };
-        nanosleep(&ts_wait, NULL);
-        int refreshes_after_cb = atomic_load(&g_srv.got_auth_refresh) - refreshes_before_cb;
-        assert(refreshes_after_cb >= 1 && refreshes_after_cb <= 2);
-        printf("[live_net_e2e] Phase 11b PASSED (persistent 401->refresh->401 circuit breaker bounded at %d refreshes)\n", refreshes_after_cb);
+        // Phase 11b-1 (R6 Codex P1-3): Transient HTTP 500 on `POST /v1/auth/refresh` MUST NOT
+        // permanently lock out the current `bearer_gen` or consume the rotated-401 budget; bounded
+        // backoff retry self-heals on the 2nd refresh (200) and confirms `workspace` & `stations`!
+        {
+            atomic_store(&g_srv.ws1_downgrade_member, 0);
+            atomic_store(&g_srv.ws1_require_rotated_token, 0);
+            atomic_store(&g_srv.ws1_always_401, 0);
+            send_json("{\"id\":8050,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+            wait_for_matching_msg(&g_host, "\"id\":8050,", "\"ok\":{", 10);
+
+            int ws401_base_500 = atomic_load(&g_srv.got_ws1_401);
+            int ref_base_500 = atomic_load(&g_srv.got_auth_refresh);
+            int rot_ok_base = atomic_load(&g_srv.got_ws1_rotated_ok);
+            int next_seq = atomic_load(&g_srv.refresh_rotate_seq) + 1;
+            pthread_mutex_lock(&g_srv.mu);
+            snprintf(g_srv.ws1_expected_bearer, sizeof(g_srv.ws1_expected_bearer), "acc-rotated-%d", 99 + next_seq);
+            g_srv.refresh_gate_enabled = 1;
+            g_srv.refresh_budget = 0;
+            pthread_mutex_unlock(&g_srv.mu);
+            atomic_store(&g_srv.refresh_fail_500_remaining, 1);
+            atomic_store(&g_srv.ws1_downgrade_member, 1);
+            atomic_store(&g_srv.ws1_require_rotated_token, 1);
+
+            send_json("{\"id\":8051,\"call\":\"cloud.sync\",\"params\":{}}");
+            wait_for_matching_msg(&g_host, "\"id\":8051,", "token_expired (401)", 10);
+            // Hold Refresh #1 until BOTH initial 401s have arrived and deduped, then release the transient 500
+            // so Refresh #2 MUST come strictly from the bounded backoff self-heal timer!
+            wait_srv_atomic_ge(&g_srv.got_ws1_401, ws401_base_500 + 2, 10);
+            wait_srv_atomic_ge(&g_srv.got_auth_refresh, ref_base_500 + 1, 10);
+            pthread_mutex_lock(&g_srv.mu);
+            g_srv.refresh_gate_enabled = 0;
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
+
+            // Deterministically wait for bounded backoff recovery (#2 -> 200) -> confirmed!
+            wait_srv_atomic_ge(&g_srv.got_auth_refresh, ref_base_500 + 2, 10);
+            wait_srv_atomic_ge(&g_srv.got_ws1_rotated_ok, rot_ok_base + 1, 10);
+            assert(atomic_load(&g_srv.got_auth_refresh) - ref_base_500 == 2);
+            printf("[live_net_e2e] Phase 11b-1 PASSED (transient refresh 500 -> bounded backoff self-heal -> rotated 200 confirmed)\n");
+        }
+
+        // Phase 11b-2 (R6 Codex P2 + Opus P2-2): Deterministically latch-stepped persistent
+        // 401 -> refresh -> 401 circuit breaker MUST stop at EXACTLY 2 refreshes (ZERO `nanosleep`)!
+        {
+            atomic_store(&g_srv.ws1_downgrade_member, 0);
+            atomic_store(&g_srv.ws1_require_rotated_token, 0);
+            atomic_store(&g_srv.ws1_always_401, 0);
+            atomic_store(&g_srv.refresh_fail_500_remaining, 0);
+            send_json("{\"id\":805,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+            wait_for_matching_msg(&g_host, "\"id\":805,", "\"ok\":{", 10);
+
+            int ws401_base = atomic_load(&g_srv.got_ws1_401);
+            int ref_base = atomic_load(&g_srv.got_auth_refresh);
+            pthread_mutex_lock(&g_srv.mu);
+            g_srv.ws1_401_gate_enabled = 1;
+            g_srv.ws1_401_budget = 0;
+            g_srv.refresh_gate_enabled = 1;
+            g_srv.refresh_budget = 0;
+            pthread_mutex_unlock(&g_srv.mu);
+
+            atomic_store(&g_srv.ws1_downgrade_member, 1);
+            atomic_store(&g_srv.ws1_always_401, 1);
+            send_json("{\"id\":806,\"call\":\"cloud.sync\",\"params\":{}}");
+
+            // Step 1: `cloud.sync({})` triggers both `on_workspace_refresh` and `cloud.sync` detail fetches
+            // on the SAME initial `bearer_gen`; wait for both 401s at the latch and release them ->
+            // concurrent 401s on the same `bearer_gen` MUST deduplicate into Refresh #1!
+            wait_srv_atomic_ge(&g_srv.got_ws1_401, ws401_base + 2, 10);
+            pthread_mutex_lock(&g_srv.mu);
+            g_srv.ws1_401_budget += 2;
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
+            wait_for_matching_msg(&g_host, "\"id\":806,", "persistent_401 (401)", 10);
+
+            wait_srv_atomic_ge(&g_srv.got_auth_refresh, ref_base + 1, 10);
+            pthread_mutex_lock(&g_srv.mu);
+            g_srv.refresh_budget += 1;
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
+
+            // Step 2: Refresh #1 rotated bearer (`rotated_count = 1`) and requeued `/v1/workspaces/WS1_ID`;
+            // release that 401 -> triggers Refresh #2!
+            wait_srv_atomic_ge(&g_srv.got_ws1_401, ws401_base + 3, 10);
+            pthread_mutex_lock(&g_srv.mu);
+            g_srv.ws1_401_budget += 1;
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
+
+            wait_srv_atomic_ge(&g_srv.got_auth_refresh, ref_base + 2, 10);
+            pthread_mutex_lock(&g_srv.mu);
+            g_srv.refresh_budget += 1;
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
+
+            // Step 3: Refresh #2 rotated bearer (`rotated_count = 2`) and requeued `/v1/workspaces/WS1_ID`;
+            // release that terminal 401 (circuit breaker trips!) and disable latches.
+            wait_srv_atomic_ge(&g_srv.got_ws1_401, ws401_base + 4, 10);
+            pthread_mutex_lock(&g_srv.mu);
+            g_srv.ws1_401_gate_enabled = 0;
+            g_srv.refresh_gate_enabled = 0;
+            pthread_cond_broadcast(&g_srv.cv);
+            pthread_mutex_unlock(&g_srv.mu);
+
+            // Deterministic barrier: send a fresh `cloud.sync({ workspace: WS1_ID })` under persistent 401
+            // and wait for its `"id":807` 401 error response on the wire, proving the core processed
+            // both the terminal 401 and this probe 401 WITHOUT triggering a 3rd refresh!
+            send_json("{\"id\":807,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+            wait_for_matching_msg(&g_host, "\"id\":807,", "persistent_401 (401)", 10);
+            int refreshes_after_cb = atomic_load(&g_srv.got_auth_refresh) - ref_base;
+            assert(refreshes_after_cb == 2);
+            printf("[live_net_e2e] Phase 11b-2 PASSED (deterministic latch-stepped persistent 401 circuit breaker converged at EXACTLY %d refreshes)\n", refreshes_after_cb);
+        }
     }
 
     atomic_store(&g_host.stopped, 1);

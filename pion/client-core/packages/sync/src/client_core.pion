@@ -2310,11 +2310,48 @@ fn ClientCore::has_paused_station_in_workspace(self : ClientCore, ws : String) -
   false
 }
 
+fn ClientCore::workspace_lock_change_sig(self : ClientCore, ws : String) -> String {
+  let target_ws = if ws.length() > 0 { ws } else { self.workspace }
+  let (st_opt, kept) = if target_ws == self.workspace {
+    if self.lock_read_pending {
+      self.restore_lock_state()
+    }
+    (self.lock_state, self.lock_kept_entries)
+  } else {
+    match self.get_or_restore_extra_lock(target_ws) {
+      Ok(sl) => (sl.lock_state, sl.lock_kept_entries)
+      Err(_) => (None, [])
+    }
+  }
+  let c = native_lock_crypto()
+  let sb = StringBuilder::new()
+  match st_opt {
+    Some(st) => {
+      sb.write_string(st.genesis)
+      sb.write_string("|")
+      sb.write_string(st.head)
+      sb.write_string("|")
+      sb.write_string(st.seq.to_int().to_string())
+    }
+    None => sb.write_string("none")
+  }
+  sb.write_string("|")
+  for i in 0..<kept.length() {
+    if i > 0 {
+      sb.write_string(",")
+    }
+    sb.write_string(lock_entry_hash(kept[i], c))
+  }
+  sb.to_string()
+}
+
 /// Absorb signed workspace lock `entries` and/or personal `person` lock evidence carried by a
-/// station `lock_unconfirmed` / `lock_station` refusal (`MeshAdmission.raw`), routing strictly
-/// through existing signature verification (`handle_lock_event_for_workspace` / `load_person_lock_json`).
-/// Returns `true` if either workspace or personal lock state advanced (which also increments `lock_gen`
-/// via `wake_paused_stations_on_lock_change`).
+/// station `lock_unconfirmed` / `lock_station` refusal (`MeshAdmission.raw`, aligned with
+/// `station/src/mesh/serve.ts:150-161`: `{ error, code, lock: { seq, hash, genesis } | null,
+/// entries?: Entry[], person?: Array<{ genesis, entries }> }`), routing strictly through existing
+/// signature verification (`handle_lock_event_for_workspace` / `load_person_lock_json_inner`).
+/// Returns `true` ONLY if either workspace or personal lock state actually changed (preventing
+/// duplicate refusals from incrementing `lock_gen` or triggering a 0ms redial loop).
 pub fn ClientCore::absorb_mesh_admission_lock(
   self : ClientCore,
   ws : String,
@@ -2328,20 +2365,38 @@ pub fn ClientCore::absorb_mesh_admission_lock(
     return false
   }
   let mut advanced = false
-  let ws_payload_opt : Option[base_codec::Json] = match base_codec::json_get(adm.raw, "lock") {
-    Some(lk) => match base_codec::json_get(lk, "entries") {
-      Some(base_codec::Json::Arr(xs)) => if xs.length() > 0 { Some(lk) } else { None }
-      _ => None
+  // Real `serve.ts:161` places workspace `entries` at top level while `lock` is `{ seq, hash, genesis }`.
+  // Check top-level `entries` FIRST; fall back to `lock.entries` only when top-level `entries` is absent/empty.
+  let ws_payload_opt : Option[base_codec::Json] = match base_codec::json_get(adm.raw, "entries") {
+    Some(base_codec::Json::Arr(xs)) =>
+    if xs.length() > 0 {
+      Some(adm.raw)
+    } else {
+      match base_codec::json_get(adm.raw, "lock") {
+        Some(lk) => match base_codec::json_get(lk, "entries") {
+          Some(base_codec::Json::Arr(lxs)) => if lxs.length() > 0 { Some(lk) } else { None }
+          _ => None
+        }
+        None => None
+      }
     }
-    None => match base_codec::json_get(adm.raw, "entries") {
-      Some(base_codec::Json::Arr(xs)) => if xs.length() > 0 { Some(adm.raw) } else { None }
-      _ => None
+    _ => match base_codec::json_get(adm.raw, "lock") {
+      Some(lk) => match base_codec::json_get(lk, "entries") {
+        Some(base_codec::Json::Arr(lxs)) => if lxs.length() > 0 { Some(lk) } else { None }
+        _ => None
+      }
+      None => None
     }
   }
   match ws_payload_opt {
     Some(lp) => {
+      let sig_before = self.workspace_lock_change_sig(ws)
       match self.handle_lock_event_for_workspace(ws, lp) {
-        Ok(_) => { advanced = true }
+        Ok(_) => {
+          if self.workspace_lock_change_sig(ws) != sig_before {
+            advanced = true
+          }
+        }
         Err(_) => ()
       }
     }
@@ -2360,8 +2415,11 @@ pub fn ClientCore::absorb_mesh_admission_lock(
   match person_opt {
     Some(p_arr) => {
       let sub = self.membership.effective_sub()
-      if sub.length() > 0 && self.load_person_lock_json(p_arr, sub) {
-        advanced = true
+      if sub.length() > 0 {
+        let (_, changed) = self.load_person_lock_json_inner(p_arr, sub)
+        if changed {
+          advanced = true
+        }
       }
     }
     None => ()
@@ -5867,6 +5925,159 @@ pub fn ClientCore::lock_kept_aside(self : ClientCore) -> Array[form::Json] {
   self.lock_kept_aside
 }
 
+fn person_lock_entries_fingerprint(entries : Array[base_codec::Json], c : lock::Crypto) -> String {
+  let sb = StringBuilder::new()
+  for i in 0..<entries.length() {
+    if i > 0 {
+      sb.write_string(",")
+    }
+    let h = lock_entry_hash(codec_to_form(entries[i]), c)
+    if h.length() > 0 {
+      sb.write_string(h)
+    } else {
+      sb.write_string(base_codec::json_stringify(entries[i]))
+    }
+  }
+  sb.to_string()
+}
+
+fn validate_person_lock_entries_one(
+  xs : Array[base_codec::Json],
+  sub : String,
+  expected_genesis : Option[String],
+  c : lock::Crypto,
+) -> Option[(String, Array[base_codec::Json])] {
+  if xs.length() == 0 {
+    return None
+  }
+  let form_entries : Array[form::Json] = []
+  for i in 0..<xs.length() {
+    form_entries.push(codec_to_form(xs[i]))
+  }
+  match expected_genesis {
+    Some(g) => {
+      if g.length() > 0 {
+        match verify_person_lock(form_entries, sub, g) {
+          Ok(vp) => {
+            let out : Array[base_codec::Json] = []
+            for i in 0..<vp.chain.entries.length() {
+              out.push(form_to_codec(vp.chain.entries[i]))
+            }
+            if out.length() > 0 {
+              return Some((g, out))
+            }
+            return None
+          }
+          Err(_) => return None
+        }
+      }
+    }
+    None => ()
+  }
+  match lock::fold_person(form_entries, sub, c) {
+    Ok(_) => {
+      let g = lock_entry_hash(form_entries[0], c)
+      Some((g, xs))
+    }
+    Err(_) => None
+  }
+}
+
+/// Validate and store the viewer's personal lock chain (`personal-lock-<hex(sub)>` flat entry array
+/// OR real `station/src/mesh/serve.ts:150-151` `[{ genesis, entries }, ...]` chain array) via
+/// `lock::fold_person` / `verify_person_lock`.
+/// Returns `(valid, changed)` and wakes paused stations ONLY when the stored canonical chain actually changes.
+fn ClientCore::load_person_lock_json_inner(
+  self : ClientCore,
+  raw : base_codec::Json,
+  sub : String,
+) -> (Bool, Bool) {
+  if sub.length() == 0 {
+    return (false, false)
+  }
+  let xs = match raw {
+    base_codec::Json::Arr(arr) => arr
+    _ => return (false, false)
+  }
+  if xs.length() == 0 {
+    return (false, false)
+  }
+  let c = native_lock_crypto()
+  let cur_genesis = if self.person_lock_entries.length() > 0 {
+    lock_entry_hash(codec_to_form(self.person_lock_entries[0]), c)
+  } else {
+    ""
+  }
+  // Detect real `serve.ts:150-151` chain-object array `[{ genesis?, entries: [...] }, ...]`.
+  let mut is_chain_obj_array = false
+  for i in 0..<xs.length() {
+    match base_codec::json_get(xs[i], "entries") {
+      Some(base_codec::Json::Arr(_)) => {
+        is_chain_obj_array = true
+        break
+      }
+      _ => ()
+    }
+  }
+  let candidate_opt : Option[Array[base_codec::Json]] = if is_chain_obj_array {
+    let mut best_g = ""
+    let mut best_entries : Option[Array[base_codec::Json]] = None
+    for i in 0..<xs.length() {
+      let item = xs[i]
+      let item_entries = match base_codec::json_get(item, "entries") {
+        Some(base_codec::Json::Arr(es)) => es
+        _ => continue
+      }
+      let g_opt = proto_str(item, "genesis")
+      match validate_person_lock_entries_one(item_entries, sub, g_opt, c) {
+        Some((vg, ventries)) => {
+          let take = match best_entries {
+            None => true
+            Some(prev) =>
+            if ventries.length() > prev.length() {
+              true
+            } else if ventries.length() == prev.length() {
+              if cur_genesis.length() > 0 && vg == cur_genesis && best_g != cur_genesis {
+                true
+              } else if cur_genesis.length() > 0 && best_g == cur_genesis && vg != cur_genesis {
+                false
+              } else {
+                vg < best_g
+              }
+            } else {
+              false
+            }
+          }
+          if take {
+            best_g = vg
+            best_entries = Some(ventries)
+          }
+        }
+        None => ()
+      }
+    }
+    best_entries
+  } else {
+    match validate_person_lock_entries_one(xs, sub, None, c) {
+      Some((_, ventries)) => Some(ventries)
+      None => None
+    }
+  }
+  match candidate_opt {
+    None => (false, false)
+    Some(validated) => {
+      let prev_fp = person_lock_entries_fingerprint(self.person_lock_entries, c)
+      let next_fp = person_lock_entries_fingerprint(validated, c)
+      if prev_fp == next_fp {
+        return (true, false)
+      }
+      self.person_lock_entries = validated
+      self.wake_paused_stations_on_lock_change("")
+      (true, true)
+    }
+  }
+}
+
 /// Validate and store the viewer's personal lock chain (`personal-lock-<hex(sub)>`) via `lock::fold_person`.
 /// Rejects malformed or cryptographically invalid chains without overwriting existing state.
 pub fn ClientCore::load_person_lock_json(
@@ -5874,29 +6085,7 @@ pub fn ClientCore::load_person_lock_json(
   raw : base_codec::Json,
   sub : String,
 ) -> Bool {
-  if sub.length() == 0 {
-    return false
-  }
-  match raw {
-    base_codec::Json::Arr(xs) => {
-      if xs.length() == 0 {
-        return false
-      }
-      let form_entries : Array[form::Json] = []
-      for i in 0..<xs.length() {
-        form_entries.push(codec_to_form(xs[i]))
-      }
-      match lock::fold_person(form_entries, sub, native_lock_crypto()) {
-        Ok(_) => {
-          self.person_lock_entries = xs
-          self.wake_paused_stations_on_lock_change("")
-          true
-        }
-        Err(_) => false
-      }
-    }
-    _ => false
-  }
+  self.load_person_lock_json_inner(raw, sub).0
 }
 
 /// Return the validated personal lock chain entries kept for `hello.lock.person`.
@@ -6315,7 +6504,14 @@ fn ClientCore::apply_lock_chain_for_workspace(
         v.state.seq,
         v.state.members.length(),
       ))
-      self.wake_paused_stations_on_lock_change(target_ws)
+      let prev_head = match cur_state {
+        Some(st) => st.head
+        None => ""
+      }
+      let ws_chain_changed = cur_state.is_none() || prev_head != v.state.head || !active_same
+      if ws_chain_changed {
+        self.wake_paused_stations_on_lock_change(target_ws)
+      }
       Ok(v)
     }
   }
@@ -6436,7 +6632,10 @@ fn ClientCore::handle_lock_event_for_workspace(
   }
   let head_genesis : Option[String] = match base_codec::json_get(payload, "head") {
     Some(hj) => proto_str(hj, "genesis")
-    None => None
+    None => match base_codec::json_get(payload, "lock") {
+      Some(lj) => proto_str(lj, "genesis")
+      None => None
+    }
   }
   let existing_root = if target_ws == self.workspace {
     if self.lock_read_pending {
