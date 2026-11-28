@@ -28,8 +28,6 @@ pub let LIVE_RUNNER_TOK_UNIX_OPEN : Int = 9001
 pub let LIVE_RUNNER_TOK_UNIX_READ : Int = 9002
 pub let LIVE_RUNNER_TOK_UNIX_WRITE : Int = 9003
 pub let LIVE_RUNNER_TOK_UNIX_CLOSE : Int = 9004
-pub let LIVE_RUNNER_TOK_SHUTDOWN_OPEN : Int = 9005
-pub let LIVE_RUNNER_TOK_SHUTDOWN_WRITE : Int = 9006
 
 /// Maximum time `stillfail-runner` has to print its `{"ready":true,...}` JSON line (30 s, 1:1 with `runner.ts`).
 pub let LIVE_RUNNER_READY_MS : Int64 = 30000L
@@ -6888,7 +6886,6 @@ pub fn LiveRunnerManager::detach_all_for_handover(
 /// - Runners with an active or uncommitted turn omit `done` so runner logs remain intact for recovery.
 struct ShutdownRunnerRecord {
   sess : LiveRunnerSession
-  existing_sock_id : Int64
   socket_opt : Option[String]
   info_opt : Option[station_drivers::RunnerInfo]
   child_opt : Option[station_sys::ChildProcess]
@@ -6898,24 +6895,24 @@ struct ShutdownRunnerRecord {
   expected_os_start_ms : Int64
   expected_boot_id : Option[String]
   expected_start_ticks : Option[Int64]
-  stop_payload : String
   attach_payload : String
   mut turn_committed : Bool
   mut term_sent : Bool
   mut confirmed_dead : Bool
 }
 
-/// R28 P1-1 & P1-2: Unified full-shutdown state machine covering ALL non-`Exited` runner phases
+/// R28/R29: Single-path unified full-shutdown state machine covering ALL non-`Exited` runner phases
 /// (`Spawning`, `Connecting`, `AcpInit`, `AcpOpening`, `CodexInit`, `CodexOpening`, `Ready`, `Stopping`):
 /// 1. Commits/aborts open or pending turns via `commit_turn_fn` BEFORE deciding `done` vs `term_only`;
 ///    on failure omits `done`, preserves `pending_end_turns`, and returns `false`.
-/// 2. Records stop markers for EVERY phase (`spawn:` or exact `inst_id`) and persists them.
-/// 3. Existing sockets (`existing_sock_id >= 0L`) write via `edge_hub` checking `ShellDone` (`Err` closes
-///    socket and falls back to kernel-verified reconnect); fresh/reconnected shutdown sends use
+/// 2. Records stop markers for EVERY phase (`spawn:` or exact `inst_id`), persists them, and closes
+///    any pre-existing unverified sockets immediately (ZERO unverified `tcp.write`!).
+/// 3. In a single bounded `max_wait_ms` (2000ms) loop with strict remaining-budget clamping on every
+///    I/O call: verifies 3-state OS identity (`Unknown` writes 0 bytes across ALL phases!), re-checks
+///    `<rid>.json`, and sends `attach + signal TERM group:true (+ done)` ONLY via kernel-verified
 ///    `runner_sock_send_verified_fn` (`SO_PEERCRED` / `LOCAL_PEERPID` / `GetNamedPipeServerProcessId`).
-/// 4. Enforces unified 3-state `verify_spawn_id` (`Unknown` NEVER connects or writes), waits up to
-///    `max_wait_ms` (2000ms) for EVERY runner to confirm OS exit, and returns `true` iff zero runners
-///    remain unconfirmed dead, zero uncommitted turns remain, and any remaining markers persisted.
+/// 4. Returns `true` iff EVERY runner is OS-confirmed exited, zero uncommitted turns remain, and any
+///    remaining markers were durably persisted.
 pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   self : LiveRunnerManager,
   edge_hub : station_whole::EdgeMuxHub,
@@ -6933,6 +6930,15 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
   max_wait_ms~ : Int64 = 2000L,
 ) -> Bool {
   edge_hub.clear_router()
+  let close_sock = fn(sid : Int64) -> Unit {
+    if sid >= 0L {
+      let _ = edge_hub.call_async_discard(
+        "tcp.close",
+        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
+        None,
+      )
+    }
+  }
   let all_sess : Array[LiveRunnerSession] = []
   let keys = self.sessions.keys()
   for i in 0..<keys.length() {
@@ -6949,13 +6955,11 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
     }
   }
   let records : Array[ShutdownRunnerRecord] = []
-  let to_close : Array[Int64] = []
-  let existing_write_inflight : Map[Int, Int64] = Map::new()
   let term_only_payload = station_drivers::encode_runner_signal("TERM", true)
   let term_and_done_payload = term_only_payload + station_drivers::encode_runner_done()
   let mut any_uncommitted_turn = false
 
-  // Step 1: Unified turn commit + stop-marker recording + initial existing-socket dispatch
+  // Step 1: Unified turn commit + stop-marker recording + close any pre-existing unverified sockets
   for i in 0..<all_sess.length() {
     let sess = all_sess[i]
     let committed_ok = commit_turn_fn(sess)
@@ -6981,7 +6985,6 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
         }
         records.push(ShutdownRunnerRecord::{
           sess: sess,
-          existing_sock_id: -1L,
           socket_opt: None,
           info_opt: None,
           child_opt: Some(child),
@@ -6991,7 +6994,6 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           expected_os_start_ms: sess.spawn_os_start_ms,
           expected_boot_id: sess.spawn_boot_id,
           expected_start_ticks: sess.spawn_start_ticks,
-          stop_payload: stop_payload,
           attach_payload: attach_payload,
           turn_committed: turn_committed,
           term_sent: false,
@@ -7003,7 +7005,6 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
         self.record_draining_stop_marker(iid, sess.session_key)
         records.push(ShutdownRunnerRecord::{
           sess: sess,
-          existing_sock_id: -1L,
           socket_opt: Some(info.socket),
           info_opt: Some(info),
           child_opt: None,
@@ -7013,7 +7014,6 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           expected_os_start_ms: sess.spawn_os_start_ms,
           expected_boot_id: sess.spawn_boot_id,
           expected_start_ticks: sess.spawn_start_ticks,
-          stop_payload: stop_payload,
           attach_payload: attach_payload,
           turn_committed: turn_committed,
           term_sent: false,
@@ -7026,21 +7026,12 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
       | LiveRunnerPhase::CodexOpening(info, sock_id)
       | LiveRunnerPhase::Ready(info, sock_id)
       | LiveRunnerPhase::Stopping(info, sock_id, _, _) => {
+        // R29 P1-1: Close pre-existing unverified socket immediately; send stop ONLY via kernel-verified path!
+        close_sock(sock_id)
         let iid = station_whole::WholeAgents::runner_instance_id(info.id, info.runner_pid, info.started_at)
         self.record_draining_stop_marker(iid, sess.session_key)
-        if sock_id >= 0L {
-          let _ = edge_hub.call_async_raw(
-            builders_core::MuxToken::Tagged(sess.conn_id, LIVE_RUNNER_TOK_SHUTDOWN_WRITE, sock_id),
-            "tcp.write",
-            base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sock_id))])),
-            Some(stop_payload.to_bytes()),
-          )
-          existing_write_inflight.set(sess.conn_id, sock_id)
-          to_close.push(sock_id)
-        }
         records.push(ShutdownRunnerRecord::{
           sess: sess,
-          existing_sock_id: sock_id,
           socket_opt: Some(info.socket),
           info_opt: Some(info),
           child_opt: None,
@@ -7050,7 +7041,6 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           expected_os_start_ms: sess.spawn_os_start_ms,
           expected_boot_id: sess.spawn_boot_id,
           expected_start_ticks: sess.spawn_start_ticks,
-          stop_payload: stop_payload,
           attach_payload: attach_payload,
           turn_committed: turn_committed,
           term_sent: false,
@@ -7063,15 +7053,6 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
     let _ = self.sync_handover_state_file(ops_fs, self_pid, sep, log_fn=log_fn)
   }
 
-  let close_sock = fn(sid : Int64) -> Unit {
-    if sid >= 0L {
-      let _ = edge_hub.call_async_discard(
-        "tcp.close",
-        base_codec::json_stringify(base_codec::json_obj([("id", base_codec::json_int64(sid))])),
-        None,
-      )
-    }
-  }
   let verify_disk_match = fn(rec : ShutdownRunnerRecord) -> Option[String] {
     match probe_runner_fn(ops_fs, data, sep, rec.sess.runner_id) {
       RunnerFileProbe::Live(rinfo) | RunnerFileProbe::Uncertain(_, Some(rinfo)) => {
@@ -7096,17 +7077,18 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
     }
   }
 
-  // Step 2: Unified bounded 2000ms loop (0ms overhead when `records.length() == 0`)
+  // Step 2: Single unified bounded loop (0ms overhead when `records.length() == 0`),
+  // clamping every I/O timeout strictly to remaining global budget (`shutdown_deadline - now`).
   if records.length() > 0 {
-    // timer: bounded 2s wait for all active/spawning/connecting runners to confirm OS exit on full shutdown
+    // timer: bounded 2s wait for all runners to pass kernel-verified stop and confirm OS exit on full shutdown
     let shutdown_deadline = now_ms_fn() + max_wait_ms
-    while true {
+    let mut budget_exhausted = false
+    while !budget_exhausted {
       for ri in 0..<records.length() {
         let rec = records[ri]
         if rec.confirmed_dead {
           continue
         }
-        let cid = rec.sess.conn_id
         match verify_spawn_id(rec.expected_pid, rec.expected_os_start_ms, rec.expected_boot_id, rec.expected_start_ticks) {
           SpawnIdentityVerdict::ConfirmedDeadOrReused => {
             rec.confirmed_dead = true
@@ -7118,10 +7100,16 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           }
           SpawnIdentityVerdict::Unknown => ()
           SpawnIdentityVerdict::ConfirmedSame => {
-            if !rec.term_sent && !existing_write_inflight.contains(cid) {
+            if !rec.term_sent {
+              let rem_ms = shutdown_deadline - now_ms_fn()
+              if rem_ms <= 0L {
+                budget_exhausted = true
+                break
+              }
               match verify_disk_match(rec) {
                 Some(sock_path) => {
-                  let rc = runner_sock_send_verified_fn(sock_path, rec.expected_pid, rec.attach_payload.to_bytes(), 200)
+                  let step_ms = if rem_ms < 200L { rem_ms.to_int() } else { 200 }
+                  let rc = runner_sock_send_verified_fn(sock_path, rec.expected_pid, rec.attach_payload.to_bytes(), step_ms)
                   if rc == 0 {
                     rec.term_sent = true
                   } else if rc == -2 {
@@ -7140,6 +7128,9 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
           }
         }
       }
+      if budget_exhausted {
+        break
+      }
       let mut all_dead = true
       for ri in 0..<records.length() {
         if !records[ri].confirmed_dead {
@@ -7150,47 +7141,15 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
       if all_dead {
         break
       }
-      if now_ms_fn() >= shutdown_deadline {
+      let rem_pump = shutdown_deadline - now_ms_fn()
+      if rem_pump <= 0L {
         break
       }
-      let _ = edge_hub.pump_one(20L)
-      if existing_write_inflight.length() > 0 {
-        let _ = edge_hub.drain_deferred_done(fn(tok, d) -> Bool {
-          match tok {
-            builders_core::MuxToken::Tagged(cid, kind, _) => {
-              if kind == LIVE_RUNNER_TOK_SHUTDOWN_WRITE {
-                match existing_write_inflight.get(cid) {
-                  Some(sid) => {
-                    existing_write_inflight.remove(cid)
-                    match builders_core::decode_shell_done(d) {
-                      Ok(_) => {
-                        for ri in 0..<records.length() {
-                          if records[ri].sess.conn_id == cid {
-                            records[ri].term_sent = true
-                            break
-                          }
-                        }
-                      }
-                      Err(_) => {
-                        // Never swallow existing-socket write errors: close failed socket and keep `term_sent = false`
-                        // so subsequent iterations may reconnect via kernel-verified `runner_sock_send_verified_fn`.
-                        close_sock(sid)
-                      }
-                    }
-                    return true
-                  }
-                  None => ()
-                }
-              }
-              false
-            }
-            _ => false
-          }
-        })
-      }
+      let wait_ms = if rem_pump < 20L { rem_pump } else { 20L }
+      let _ = edge_hub.pump_one(wait_ms)
     }
 
-    // Step 3: Close all bootstrap child handles and existing sockets
+    // Step 3: Close all bootstrap child handles and mark Exited
     for ri in 0..<records.length() {
       let rec = records[ri]
       match rec.child_opt {
@@ -7201,9 +7160,6 @@ pub fn LiveRunnerManager::stop_all_on_shutdown_with(
         None => ()
       }
       rec.sess.phase = LiveRunnerPhase::Exited
-    }
-    for ci in 0..<to_close.length() {
-      close_sock(to_close[ci])
     }
   }
 

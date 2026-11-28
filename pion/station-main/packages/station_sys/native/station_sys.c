@@ -10298,12 +10298,18 @@ int32_t sts_runner_sock_send_verified(
         timeout_ms = 200;
     }
 #ifdef _WIN32
-    (void)timeout_ms;
     wchar_t *wpath = utf8_to_wide(sock_path);
     if (wpath == NULL) {
         return -1;
     }
-    HANDLE h = CreateFileW(wpath, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
+    HANDLE h = CreateFileW(
+        wpath,
+        GENERIC_READ | GENERIC_WRITE,
+        0,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_OVERLAPPED,
+        NULL);
     free(wpath);
     if (h == INVALID_HANDLE_VALUE) {
         return -1;
@@ -10313,17 +10319,58 @@ int32_t sts_runner_sock_send_verified(
         CloseHandle(h);
         return -2;
     }
+    HANDLE ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (ev == NULL) {
+        CloseHandle(h);
+        return -1;
+    }
+    ULONGLONG start_ms = GetTickCount64();
+    ULONGLONG deadline_ms = start_ms + (ULONGLONG)timeout_ms;
     int64_t off = 0;
     while (off < len) {
+        ULONGLONG now_ms = GetTickCount64();
+        if (now_ms >= deadline_ms) {
+            CloseHandle(ev);
+            CloseHandle(h);
+            return -1;
+        }
+        ULONGLONG rem64 = deadline_ms - now_ms;
+        DWORD rem = (rem64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (DWORD)rem64;
         DWORD chunk = (len - off > 65536) ? 65536U : (DWORD)(len - off);
+        (void)ResetEvent(ev);
+        OVERLAPPED ov;
+        ZeroMemory(&ov, sizeof(ov));
+        ov.hEvent = ev;
         DWORD written = 0;
-        if (!WriteFile(h, data + off, chunk, &written, NULL) || written == 0) {
+        BOOL ok = WriteFile(h, data + off, chunk, &written, &ov);
+        if (!ok) {
+            if (GetLastError() != ERROR_IO_PENDING) {
+                CloseHandle(ev);
+                CloseHandle(h);
+                return -1;
+            }
+            DWORD wrc = WaitForSingleObject(ev, rem);
+            if (wrc != WAIT_OBJECT_0) {
+                (void)CancelIoEx(h, &ov);
+                DWORD dummy = 0;
+                (void)GetOverlappedResult(h, &ov, &dummy, TRUE);
+                CloseHandle(ev);
+                CloseHandle(h);
+                return -1;
+            }
+            if (!GetOverlappedResult(h, &ov, &written, FALSE) || written == 0) {
+                CloseHandle(ev);
+                CloseHandle(h);
+                return -1;
+            }
+        } else if (written == 0) {
+            CloseHandle(ev);
             CloseHandle(h);
             return -1;
         }
         off += (int64_t)written;
     }
-    (void)FlushFileBuffers(h);
+    CloseHandle(ev);
     CloseHandle(h);
     return 0;
 #else
