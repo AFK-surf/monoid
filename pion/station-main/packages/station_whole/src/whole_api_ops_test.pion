@@ -202,12 +202,17 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
 
   // All read_ops are now wired (zero 501 read_ops remain in Wave 17C-3A).
   // Ops gated on daemon runtime hooks return honest 501 when unhooked in pure DI fixtures;
-  // pure config/file ops (`updates.wait`, `accounts.profiles.createKeyed`, `accounts.profiles.pace`,
-  // `xshare.hosts.put`) are wired unconditionally in Wave 17D-2 (`whole_api_ops_live.pion`).
+  // the 7 ops awaiting Wave 17E runtimes (`mcpServers.reload*`, `accounts.profiles.{pace,quota,resetQuota}`,
+  // `copies.restore`, `xshare.hosts.put`) also return honest 501 everywhere.
   let unimplemented_call_ops : Array[String] = [
     "updates.check",
     "network.station.restart",
     "workspaces.join",
+    "copies.restore",
+    "xshare.hosts.put",
+    "accounts.profiles.pace",
+    "accounts.profiles.resetQuota",
+    "accounts.profiles.quota",
     "mcpServers.reloadAll",
     "mcpServers.reloadOne",
     "screens.browser.open",

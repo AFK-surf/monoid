@@ -1,19 +1,18 @@
-// Wave 17D-2 live HTTP API handlers for the 17 remaining operational `call_op`s:
-// 1. Updates (3): `updates.check`, `updates.wait`, `updates.install`
-// 2. Accounts & Profiles live ops (8): `accounts.profiles.{createKeyed,createMachine,pace,resetQuota,quota,login,login.get,login.delete}`
-// 3. Copies & XShare (3): `copies.s3.test`, `copies.restore`, `xshare.hosts.put`
-// (plus `mcpServers.reloadAll`/`reloadOne` and `workspaces.join` already dispatched in `whole_api_admin_ops.pion`
-//  and live-wired in `whole_daemon_wiring.pion`).
+// Wave 17D-2 R2 live HTTP API handlers for the 10 production-backed `call_op`s:
+// 1. Updates (3): `updates.wait`, `updates.check`, `updates.install`
+// 2. Accounts & Profiles (5): `accounts.profiles.createKeyed`, `accounts.profiles.createMachine`,
+//    `accounts.profiles.login`, `accounts.profiles.login.get`, `accounts.profiles.login.delete`
+// 3. Copies S3 Test (1): `copies.s3.test`
+// 4. Workspaces Join (1): `workspaces.join` (dispatched in `whole_api_admin_ops.pion` + non-blocking daemon handler)
 //
-// Isolated in its own file to minimize merge conflicts with parallel Wave 17D work.
-// 1:1 aligned with Node `station/src/api/routes/{updates,accounts,copies,xshare}.ts`.
-// Security & runtime invariants:
-// - Manager-only endpoints enforce 403; API keys & S3 credentials are strictly redacted from responses and errors.
-// - No `host_shim::wait` / main-thread blocking; external work runs through daemon-injected hooks.
-// - ZERO fake 200 stubs: any op requiring a live daemon executor returns honest 501 when its hook is `None`.
+// ZERO fake 200 stubs:
+// - The 7 ops awaiting Wave 17E runtimes (`mcpServers.reloadAll/One`, `accounts.profiles.quota/resetQuota/pace`,
+//   `copies.restore`, `xshare.hosts.put`) remain honest 501.
+// - All network-bound ops (`updates.check`, `updates.install`, `copies.s3.test`, `workspaces.join`, keyed profile
+//   validation) run non-blockingly in `whole_daemon_live_ops.pion` via `AdminStreamMode::WaitingAsyncOp`
+//   (zero `await_call` / zero `host_shim::wait`), and return honest 501 in unhooked pure DI fixtures.
 
 import "base_codec"
-import "crypto"
 import "nodepath"
 import "station_api"
 import "station_drivers"
@@ -22,12 +21,8 @@ import "station_ops"
 import "station_replica"
 
 // ---------------------------------------------------------------------------
-// Shared live validation & scrubbing helpers
+// Shared validation & scrubbing helpers
 // ---------------------------------------------------------------------------
-
-fn live_is_ascii_alnum(c : Int) -> Bool {
-  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
-}
 
 fn live_is_hex_char(c : Int) -> Bool {
   (c >= 48 && c <= 57) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
@@ -46,38 +41,8 @@ fn live_is_all_digits(s : String) -> Bool {
   true
 }
 
-/// Safe ID for xshare workspace/station (`^[0-9A-Za-z_-]{1,128}$`).
-fn live_is_xshare_id(s : String) -> Bool {
-  let n = s.length()
-  if n == 0 || n > 128 {
-    return false
-  }
-  for i in 0..<n {
-    let c = s.code_unit_at(i)
-    if !live_is_ascii_alnum(c) && c != 45 && c != 95 {
-      return false
-    }
-  }
-  true
-}
-
-/// Safe path-free identifier for `copies.restore` (`station`, `gen`, `from.station`/`from.s3`).
-fn live_is_safe_restore_id(s : String) -> Bool {
-  let n = s.length()
-  if n == 0 || n > 128 || s == "." || s == ".." {
-    return false
-  }
-  for i in 0..<n {
-    let c = s.code_unit_at(i)
-    if !live_is_ascii_alnum(c) && c != 45 && c != 95 && c != 46 {
-      return false
-    }
-  }
-  !s.contains("..")
-}
-
 /// Strict `0.<m>.<n>` version string check (no URLs, no slashes, no leading zeros).
-fn live_is_valid_version_spec(v : String) -> Bool {
+pub fn live_is_valid_version_spec(v : String) -> Bool {
   if !v.starts_with("0.") || v.length() > 32 {
     return false
   }
@@ -105,20 +70,6 @@ fn live_is_valid_version_spec(v : String) -> Bool {
   true
 }
 
-fn live_is_reset_kind(s : String) -> Bool {
-  let n = s.length()
-  if n == 0 || n > 20 {
-    return false
-  }
-  for i in 0..<n {
-    let c = s.code_unit_at(i)
-    if c < 97 || c > 122 {
-      return false
-    }
-  }
-  true
-}
-
 fn live_trim_max(s : String, max_len : Int) -> String {
   let t = s.trim()
   if t.length() <= max_len { t } else { t.slice(0, max_len) }
@@ -139,8 +90,17 @@ fn live_replace_all(haystack : String, needle : String, replacement : String) ->
   sb.to_string()
 }
 
+/// Normalize an S3 endpoint for strict cross-endpoint equality comparison (trim + strip trailing `/`).
+fn live_norm_s3_endpoint(raw : String) -> String {
+  let mut s = raw.trim()
+  while s.length() > 0 && s.ends_with("/") {
+    s = s.slice(0, s.length() - 1)
+  }
+  admin_ascii_lower(s)
+}
+
 /// Scrub S3 credentials from any error message returned by `copies.s3.test`.
-fn scrub_s3_error(msg : String, target : station_replica::NormalizedS3Target) -> String {
+pub fn scrub_s3_error(msg : String, target : station_replica::NormalizedS3Target) -> String {
   let mut out = msg
   if target.secret_access_key.length() > 0 {
     out = live_replace_all(out, target.secret_access_key, "***")
@@ -154,14 +114,108 @@ fn scrub_s3_error(msg : String, target : station_replica::NormalizedS3Target) ->
   out
 }
 
+/// Shared S3 test target builder with strict cross-endpoint credential-theft protection:
+/// if the caller supplies a different `endpoint` or `bucket` than the saved target `prev`,
+/// saved `accessKeyId`/`secretAccessKey` are NEVER reused (prevents exfiltrating secrets to an attacker host).
+pub fn prepare_s3_test_target(
+  body : base_codec::Json,
+  raw_cfg : base_codec::Json,
+) -> Result[station_replica::NormalizedS3Target, station_api::ApiError] {
+  match body {
+    base_codec::Json::Obj(_) => ()
+    _ => return Err(station_api::ApiError::new(400, "invalid JSON"))
+  }
+  let saved = station_replica::read_backup_config(raw_cfg).s3
+  let req_id = match json_field_str(body, "id") { Some(s) if s.length() > 0 => Some(s), _ => None }
+  let mut prev_opt : Option[station_replica::NormalizedS3Target] = None
+  match req_id {
+    Some(rid) => {
+      for i in 0..<saved.length() {
+        if saved[i].id == rid {
+          prev_opt = Some(saved[i])
+          break
+        }
+      }
+    }
+    None => ()
+  }
+  // Security invariant: never forward saved credentials to a different endpoint or bucket!
+  let mut reuse_saved_creds = true
+  match prev_opt {
+    Some(prev) => {
+      match json_field_str(body, "endpoint") {
+        Some(ep) if ep.trim().length() > 0 => {
+          if live_norm_s3_endpoint(ep) != live_norm_s3_endpoint(prev.endpoint) {
+            reuse_saved_creds = false
+          }
+        }
+        _ => ()
+      }
+      match json_field_str(body, "bucket") {
+        Some(bk) if bk.trim().length() > 0 => {
+          if bk.trim() != prev.bucket {
+            reuse_saved_creds = false
+          }
+        }
+        _ => ()
+      }
+    }
+    None => reuse_saved_creds = false
+  }
+  let dummy_key = "0000000000000000000000000000000000000000000000000000000000000000"
+  let pick_str = fn(k : String, fallback : String) -> String {
+    match json_field_str(body, k) {
+      Some(s) if s.trim().length() > 0 => s.trim()
+      _ => fallback
+    }
+  }
+  let pick_exact = fn(k : String, fallback : String) -> String {
+    match json_field_str(body, k) {
+      Some(s) if s.length() > 0 => s
+      _ => fallback
+    }
+  }
+  let fallback_ak = if reuse_saved_creds { match prev_opt { Some(p) => p.access_key_id, None => "" } } else { "" }
+  let fallback_sk = if reuse_saved_creds { match prev_opt { Some(p) => p.secret_access_key, None => "" } } else { "" }
+  let fallback_ek = if reuse_saved_creds { match prev_opt { Some(p) => p.encryption_key, None => dummy_key } } else { dummy_key }
+  let merged_fs : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(match req_id { Some(r) => r, None => "test" })),
+    ("name", base_codec::json_str(pick_str("name", match prev_opt { Some(p) => p.name, None => "test" }))),
+    ("endpoint", base_codec::json_str(pick_str("endpoint", match prev_opt { Some(p) => p.endpoint, None => "" }))),
+    ("region", base_codec::json_str(pick_str("region", match prev_opt { Some(p) => p.region, None => "auto" }))),
+    ("bucket", base_codec::json_str(pick_str("bucket", match prev_opt { Some(p) => p.bucket, None => "" }))),
+    ("prefix", base_codec::json_str(pick_str("prefix", match prev_opt { Some(p) => p.prefix, None => "" }))),
+    (
+      "forcePathStyle",
+      base_codec::json_bool(match json_field_bool(body, "forcePathStyle") {
+        Some(b) => b
+        None => match prev_opt { Some(p) => p.force_path_style, None => false }
+      }),
+    ),
+    ("accessKeyId", base_codec::json_str(pick_str("accessKeyId", fallback_ak))),
+    ("secretAccessKey", base_codec::json_str(pick_exact("secretAccessKey", fallback_sk))),
+    ("encryptionKey", base_codec::json_str(pick_exact("encryptionKey", fallback_ek))),
+    (
+      "includeTranscripts",
+      base_codec::json_bool(match json_field_bool(body, "includeTranscripts") {
+        Some(b) => b
+        None => match prev_opt { Some(p) => p.include_transcripts, None => false }
+      }),
+    ),
+  ]
+  match station_replica::normalize_s3_target(base_codec::json_obj(merged_fs), 0) {
+    Ok(t) => Ok(t)
+    Err(msg) => Err(station_api::ApiError::new(400, msg))
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 1. Updates (`updates.wait`, `updates.check`, `updates.install`)
 // ---------------------------------------------------------------------------
 
 let LIVE_COMMIT_KIND : String = "com" + "mit"
 
-/// Parse a wait condition spec 1:1 with `station/src/updates/override.ts` (`parseWaitSpec`):
-/// `pr:N`, `#N`, `fix:FB-N`, `fix:N`, `FB-N`, `FBN`, `commit:<7..40 hex>`, `version:0.m.n`, `0.m.n`, `after:0.m.n`.
+/// Parse a wait condition spec 1:1 with `station/src/updates/override.ts` (`parseWaitSpec`).
 pub fn live_parse_wait_spec(spec : String) -> Result[base_codec::Json, String] {
   let s = spec.trim()
   let lower = admin_ascii_lower(s)
@@ -296,9 +350,11 @@ pub fn updates_view_json(
     Some(ch) if ch == "stable" || ch == "beta" => ch
     _ => "stable"
   }
+  // 1:1 with `station/src/updates/updates.ts:448` & `station_cli/src/update.pion:1020`:
+  // default `autoUpdate` when omitted is `false` (never silently force `true`).
   let auto_on = match json_field_bool(raw_cfg, "autoUpdate") {
     Some(b) => b
-    None => true
+    None => false
   }
   let auto_when_strs : Array[String] = []
   let mut has_auto_when = false
@@ -375,6 +431,14 @@ pub fn updates_view_json(
       Some(l) => rfs.push(("latest", base_codec::json_str(l)))
       None => ()
     }
+    match rt.at {
+      Some(p) => rfs.push(("at", base_codec::json_str(p)))
+      None => ()
+    }
+    match rt.failed_text {
+      Some(m) => rfs.push(("message", base_codec::json_str(m)))
+      None => ()
+    }
     items.push(base_codec::json_obj(rfs))
   }
   base_codec::json_arr(items)
@@ -389,6 +453,7 @@ pub fn dispatch_live_updates_op(
   cfg_open_err : Option[station_ops::ConfigError],
   hooks : WholeApiRuntimeHooks,
   now_ms : Int64,
+  override_present : Bool = false,
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
   if op != "updates.check" && op != "updates.wait" && op != "updates.install" {
     return None
@@ -403,13 +468,15 @@ pub fn dispatch_live_updates_op(
     match wait_opt {
       Some(base_codec::Json::Null) => {
         match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
-          let restore = match base_codec::json_get(raw, "autoUpdateWhen") {
-            Some(w) => json_field_bool(w, "restoreAuto") == Some(true)
-            None => false
+          match base_codec::json_get(raw, "autoUpdateWhen") {
+            None | Some(base_codec::Json::Null) => Ok(raw)
+            Some(existing) => {
+              let restore = !override_present && json_field_bool(existing, "restoreAuto") == Some(true)
+              let r1 = json_obj_set(raw, "autoUpdateWhen", None)
+              let r2 = if restore { json_obj_set(r1, "autoUpdate", Some(base_codec::json_bool(true))) } else { r1 }
+              Ok(r2)
+            }
           }
-          let r1 = json_obj_set(raw, "autoUpdateWhen", None)
-          let r2 = if restore { json_obj_set(r1, "autoUpdate", Some(base_codec::json_bool(true))) } else { r1 }
-          Ok(r2)
         }) {
           Ok(written) => {
             hooks_notify_overview(hooks, "updates")
@@ -430,17 +497,21 @@ pub fn dispatch_live_updates_op(
           }
         }
         match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+          // 1:1 with `station_cli::set_wait_config` & `updates.ts:906`: default `autoUpdate` is `false` when unset!
           let restore_auto = match base_codec::json_get(raw, "autoUpdateWhen") {
             Some(existing) => json_field_bool(existing, "restoreAuto") == Some(true)
-            None => match json_field_bool(raw, "autoUpdate") { Some(b) => b, None => true }
+            None => match json_field_bool(raw, "autoUpdate") { Some(b) => b, None => false }
           }
-          let next_when = base_codec::json_obj([
+          let when_fs : Array[(String, base_codec::Json)] = [
             ("wait", base_codec::json_arr(parsed)),
             ("restoreAuto", base_codec::json_bool(restore_auto)),
             ("setAt", base_codec::json_int64(now_ms)),
-          ])
+          ]
+          if override_present {
+            when_fs.push(("forOverride", base_codec::json_bool(true)))
+          }
           let r1 = json_obj_set(raw, "autoUpdate", Some(base_codec::json_bool(false)))
-          Ok(json_obj_set(r1, "autoUpdateWhen", Some(next_when)))
+          Ok(json_obj_set(r1, "autoUpdateWhen", Some(base_codec::json_obj(when_fs))))
         }) {
           Ok(written) => {
             hooks_notify_overview(hooks, "updates")
@@ -506,10 +577,11 @@ pub fn dispatch_live_updates_op(
 }
 
 // ---------------------------------------------------------------------------
-// 2. Accounts & Profiles live ops (8 ops)
+// 2. Accounts & Profiles live ops (5 ops: createKeyed, createMachine, login/get/delete)
+//    Note: `pace`, `quota`, `resetQuota` stay honest 501 until Wave 17E.
 // ---------------------------------------------------------------------------
 
-fn unique_profile_id(base : String, profiles : Array[base_codec::Json]) -> String {
+pub fn unique_profile_id(base : String, profiles : Array[base_codec::Json]) -> String {
   let clean_base = admin_slug(base, "profile")
   let has = fn(cand : String) -> Bool { find_profile_index(profiles, cand) >= 0 }
   let mut id = clean_base
@@ -528,6 +600,36 @@ fn live_profile_access_kind(entry : base_codec::Json) -> String {
   }
 }
 
+fn live_profile_visible_in_ws(entry : base_codec::Json, ws : String) -> Bool {
+  match base_codec::json_get(entry, "withheld") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(w) if w == ws => return false
+          _ => ()
+        }
+      }
+      true
+    }
+    _ => true
+  }
+}
+
+/// Runtimes that have a real interactive CLI login command (`station/src/accounts/profiles.ts:170-179`).
+pub fn live_supports_cli_login(rt : String) -> Bool {
+  rt == "claude" || rt == "codex" || rt == "grok" || rt == "devin" || rt == "agy"
+}
+
+fn live_overview_payload(hooks : WholeApiRuntimeHooks, viewer : station_api::Viewer, lang : station_api::Lang) -> base_codec::Json {
+  match hooks.overview_for {
+    Some(f) => match f(viewer, lang) {
+      Ok(v) => v
+      Err(_) => base_codec::json_obj([])
+    }
+    None => base_codec::json_obj([])
+  }
+}
+
 pub fn dispatch_live_accounts_op(
   op : String,
   req : station_api::ApiRequest,
@@ -537,7 +639,7 @@ pub fn dispatch_live_accounts_op(
   cfg_opt : Option[station_ops::ConfigFile],
   cfg_open_err : Option[station_ops::ConfigError],
   hooks : WholeApiRuntimeHooks,
-  now_ms : Int64,
+  _now_ms : Int64,
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
   let ops_lang = api_lang_to_ops(req.lang)
 
@@ -627,13 +729,16 @@ pub fn dispatch_live_accounts_op(
     } else {
       None
     }
-    // Optional live key check hook (if wired by daemon)
-    match hooks.on_profile_live_op {
-      Some(f) => match f("accounts.profiles.createKeyed.check", [], body, req.viewer, req.lang) {
-        Ok(_) => ()
-        Err(e) => return Some(Err(e))
+    // Live key verification is mandatory for keyed profiles (honest 501 if check hook is not wired;
+    // returns 400 `station.profile.checkFailed` without writing config.json on bad key).
+    if key_required {
+      match hooks.on_profile_live_op {
+        Some(f) => match f("accounts.profiles.createKeyed.check", [], body, req.viewer, req.lang) {
+          Ok(_) => ()
+          Err(e) => return Some(Err(e))
+        }
+        None => return Some(Err(err_not_implemented(op)))
       }
-      None => ()
     }
     let label = match json_field_str(body, "name") {
       Some(n) if n.trim().length() > 0 => live_trim_max(n, 120)
@@ -654,11 +759,23 @@ pub fn dispatch_live_accounts_op(
       Some(src) => src.id
       None => match env_runtime { Some(r) => r + "-env", None => kind }
     }
+    let cur_before = read_profiles_array(read_config_raw(cfg_opt))
+    let planned_id = unique_profile_id(base_slug, cur_before)
+    let home_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", planned_id])
+    // Never swallow home directory creation failure!
+    if !(agents.jobs.fs.mkdir_p)(home_dir) {
+      return Some(Err(station_api::ApiError::new(500, "failed to create profile home directory")))
+    }
     let mut created_id = ""
-    let mut created_redacted = base_codec::json_obj([])
     match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
       let cur = read_profiles_array(raw)
       let id = unique_profile_id(base_slug, cur)
+      if id != planned_id {
+        let alt_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", id])
+        if !(agents.jobs.fs.mkdir_p)(alt_dir) {
+          return Err(station_api::ApiError::new(500, "failed to create profile home directory"))
+        }
+      }
       let acc_fs : Array[(String, base_codec::Json)] = [("kind", base_codec::json_str(kind))]
       if key.length() > 0 {
         acc_fs.push(("key", base_codec::json_str(key)))
@@ -693,16 +810,14 @@ pub fn dispatch_live_accounts_op(
       }
       next.push(made)
       created_id = id
-      created_redacted = redact_profile_json(made)
       Ok(json_obj_set(raw, "profiles", Some(base_codec::json_arr(next))))
     }) {
       Ok(_) => {
-        let home_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", created_id])
-        let _ = (agents.jobs.fs.mkdir_p)(home_dir)
         hooks_notify_overview(hooks, "profiles")
+        // 1:1 with Node `station/src/api/routes/accounts.ts:86`: `{ id, overview }` (never leaks API key).
         return Some(Ok(base_codec::json_obj([
           ("id", base_codec::json_str(created_id)),
-          ("profile", created_redacted),
+          ("overview", live_overview_payload(hooks, req.viewer, req.lang)),
         ])))
       }
       Err(e) => return Some(Err(e))
@@ -719,6 +834,9 @@ pub fn dispatch_live_accounts_op(
       Some(rk) => station_drivers::runtime_kind_to_str(rk)
       None => return Some(Err(station_api::ApiError::new(400, "unknown runtime " + rt_raw)))
     }
+    if rt_str != "claude" && rt_str != "codex" {
+      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.machine.notSignedIn"))))
+    }
     let id = "machine-" + rt_str
     let cur = read_profiles_array(read_config_raw(cfg_opt))
     if find_profile_index(cur, id) >= 0 {
@@ -731,11 +849,18 @@ pub fn dispatch_live_accounts_op(
       }
       None => return Some(Err(err_not_implemented(op)))
     }
-    let label = match json_field_str(probe_res, "name") {
-      Some(n) if n.trim().length() > 0 => live_trim_max(n, 120)
-      _ => rt_str
+    let default_name = if rt_str == "claude" { "Claude Code" } else { "Codex" }
+    let label = match json_field_str(probe_res, "email") {
+      Some(em) if em.trim().length() > 0 => live_trim_max(em, 120)
+      _ => match json_field_str(probe_res, "name") {
+        Some(n) if n.trim().length() > 0 => live_trim_max(n, 120)
+        _ => default_name
+      }
     }
-    let mut created_redacted = base_codec::json_obj([])
+    let home_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", id])
+    if !(agents.jobs.fs.mkdir_p)(home_dir) {
+      return Some(Err(station_api::ApiError::new(500, "failed to create profile home directory")))
+    }
     match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
       let existing = read_profiles_array(raw)
       if find_profile_index(existing, id) >= 0 {
@@ -755,138 +880,38 @@ pub fn dispatch_live_accounts_op(
         next.push(existing[i])
       }
       next.push(made)
-      created_redacted = redact_profile_json(made)
       Ok(json_obj_set(raw, "profiles", Some(base_codec::json_arr(next))))
     }) {
       Ok(_) => {
-        let home_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "homes", id])
-        let _ = (agents.jobs.fs.mkdir_p)(home_dir)
         hooks_notify_overview(hooks, "profiles")
+        // 1:1 with Node `station/src/api/routes/accounts.ts:79`: `{ id, overview }`.
         return Some(Ok(base_codec::json_obj([
           ("id", base_codec::json_str(id)),
-          ("profile", created_redacted),
+          ("overview", live_overview_payload(hooks, req.viewer, req.lang)),
         ])))
       }
       Err(e) => return Some(Err(e))
     }
   }
 
-  // 3. `accounts.profiles.pace` (`GET /profiles/pace[?v=2&sinceRev=...]`)
-  if op == "accounts.profiles.pace" {
-    let v_param = req.param("v")
-    let since_rev = req.param("sinceRev")
-    let raw = read_config_raw(cfg_opt)
-    let cur = read_profiles_array(raw)
-    let prof_fields : Array[(String, base_codec::Json)] = []
-    for i in 0..<cur.length() {
-      match json_field_str(cur[i], "id") {
-        Some(pid) if pid.length() > 0 => {
-          prof_fields.push((pid, base_codec::json_obj([
-            ("quotas", base_codec::json_arr([])),
-            ("spend", base_codec::json_arr([])),
-          ])))
-        }
-        _ => ()
-      }
-    }
-    let from_hour = (now_ms / 3600000L) - 168L
-    let profiles_obj = base_codec::json_obj(prof_fields)
-    if v_param == Some("2") {
-      let digest = crypto::sha256_hex(base_codec::json_stringify(profiles_obj).to_bytes())
-      let rev = if digest.length() >= 16 { digest.slice(0, 16) } else { digest }
-      match since_rev {
-        Some(sr) if sr == rev => {
-          return Some(Ok(base_codec::json_obj([
-            ("unchanged", base_codec::json_bool(true)),
-            ("rev", base_codec::json_str(rev)),
-          ])))
-        }
-        _ => ()
-      }
-      return Some(Ok(base_codec::json_obj([
-        ("rev", base_codec::json_str(rev)),
-        ("nowAt", base_codec::json_int64(now_ms)),
-        ("fromHour", base_codec::json_int64(from_hour)),
-        ("profiles", profiles_obj),
-        ("speedHours", base_codec::json_arr([])),
-        ("speedQuarters", base_codec::json_arr([])),
-      ])))
-    }
-    return Some(Ok(base_codec::json_obj([
-      ("nowAt", base_codec::json_int64(now_ms)),
-      ("fromHour", base_codec::json_int64(from_hour)),
-      ("profiles", profiles_obj),
-      ("speedHours", base_codec::json_arr([])),
-      ("speedQuarters", base_codec::json_arr([])),
-    ])))
-  }
-
-  // 4. `accounts.profiles.resetQuota` (`POST /profiles/:id/reset-quota`)
-  if op == "accounts.profiles.resetQuota" && params.length() >= 1 {
+  // 3-5. `accounts.profiles.login` / `login.get` / `login.delete` (strict ws + read-only isolation)
+  if (op == "accounts.profiles.login" || op == "accounts.profiles.login.get" || op == "accounts.profiles.login.delete") && params.length() >= 1 {
     let id = params[0]
-    let idem_key = match req.header("idempotency-key") {
-      Some(k) if k.length() > 0 && k.length() <= 200 => k
-      _ => return Some(Err(station_api::ApiError::new(400, "reset requires an idempotency key")))
+    let read_only = admin_is_read_only(req.viewer)
+    if (op == "accounts.profiles.login" || op == "accounts.profiles.login.delete") && read_only {
+      return Some(Err(station_api::ApiError::new(403, "read-only members cannot start or cancel profile logins")))
     }
     let cur = read_profiles_array(read_config_raw(cfg_opt))
     let idx = find_profile_index(cur, id)
-    if idx < 0 {
-      return Some(Err(station_api::ApiError::new(404, station_ops::tr(ops_lang, "station.profile.notFound"))))
+    if idx < 0 || !live_profile_visible_in_ws(cur[idx], req.viewer.workspace) {
+      return Some(Err(station_api::ApiError::new(404, "unknown profile " + id)))
     }
     let entry = cur[idx]
     let rt = match json_field_str(entry, "runtime") { Some(s) => s, None => "" }
-    let kind = live_profile_access_kind(entry)
-    if (rt != "codex" && rt != "claude") || kind != "subscription" {
-      return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.quota.resetSubscriptionOnly"))))
-    }
-    let reset_kind = match json_field_str(body, "reset") {
-      Some(s) if live_is_reset_kind(s) => Some(s)
-      _ => None
-    }
-    match hooks.on_profile_live_op {
-      Some(f) => {
-        let mut enriched = json_obj_set(body, "_idempotencyKey", Some(base_codec::json_str(idem_key)))
-        match reset_kind {
-          Some(rk) => enriched = json_obj_set(enriched, "_resetKind", Some(base_codec::json_str(rk)))
-          None => ()
-        }
-        match f(op, [id], enriched, req.viewer, req.lang) {
-          Ok(res) => {
-            hooks_notify_overview(hooks, "profiles")
-            return Some(Ok(res))
-          }
-          Err(e) => return Some(Err(e))
-        }
-      }
-      None => return Some(Err(err_not_implemented(op)))
-    }
-  }
-
-  // 5. `accounts.profiles.quota` (`POST /profiles/:id/quota`)
-  if op == "accounts.profiles.quota" && params.length() >= 1 {
-    let id = params[0]
-    let cur = read_profiles_array(read_config_raw(cfg_opt))
-    if find_profile_index(cur, id) < 0 {
-      return Some(Err(station_api::ApiError::new(404, "unknown profile " + id)))
-    }
-    match hooks.on_profile_live_op {
-      Some(f) => return Some(f(op, [id], body, req.viewer, req.lang))
-      None => return Some(Err(err_not_implemented(op)))
-    }
-  }
-
-  // 6-8. `accounts.profiles.login` / `login.get` / `login.delete`
-  if (op == "accounts.profiles.login" || op == "accounts.profiles.login.get" || op == "accounts.profiles.login.delete") && params.length() >= 1 {
-    let id = params[0]
-    let cur = read_profiles_array(read_config_raw(cfg_opt))
-    let idx = find_profile_index(cur, id)
-    if idx < 0 {
-      return Some(Err(station_api::ApiError::new(404, "unknown profile " + id)))
-    }
+    let prof_home = match json_field_str(entry, "home") { Some(s) => s, None => "" }
     if op == "accounts.profiles.login" {
-      let entry = cur[idx]
       let kind = live_profile_access_kind(entry)
-      if kind != "subscription" && kind != "opencode-go" {
+      if kind != "subscription" {
         return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginSubscriptionOnly"))))
       }
       if json_field_bool(entry, "machine") == Some(true) {
@@ -895,9 +920,37 @@ pub fn dispatch_live_accounts_op(
       if is_borrowed_profile(entry) {
         return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.share.borrowedEdit"))))
       }
+      if !live_supports_cli_login(rt) {
+        return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.admin.loginSubscriptionOnly"))))
+      }
     }
     match hooks.on_profile_live_op {
-      Some(f) => return Some(f(op, [id], body, req.viewer, req.lang))
+      Some(f) => {
+        let enriched = json_obj_set(
+          json_obj_set(
+            json_obj_set(
+              json_obj_set(body, "_viewerReadOnly", Some(base_codec::json_bool(read_only))),
+              "_viewerWorkspace",
+              Some(base_codec::json_str(req.viewer.workspace)),
+            ),
+            "_profileRuntime",
+            Some(base_codec::json_str(rt)),
+          ),
+          "_profileHome",
+          Some(base_codec::json_str(prof_home)),
+        )
+        let res = f(op, [id], enriched, req.viewer, req.lang)
+        if op == "accounts.profiles.login.get" && read_only {
+          match res {
+            Ok(v) => {
+              let redacted = json_obj_set(json_obj_set(v, "url", None), "code", None)
+              return Some(Ok(redacted))
+            }
+            Err(e) => return Some(Err(e))
+          }
+        }
+        return Some(res)
+      }
       None => return Some(Err(err_not_implemented(op)))
     }
   }
@@ -906,174 +959,34 @@ pub fn dispatch_live_accounts_op(
 }
 
 // ---------------------------------------------------------------------------
-// 3. Copies (`copies.s3.test`, `copies.restore`) & XShare (`xshare.hosts.put`)
+// 3. `copies.s3.test` (cross-endpoint credential guard + secret-scrubbed error)
 // ---------------------------------------------------------------------------
 
-pub fn dispatch_live_copies_xshare_op(
+pub fn dispatch_live_copies_s3_test_op(
   op : String,
   req : station_api::ApiRequest,
   body : base_codec::Json,
-  agents : WholeAgents,
   cfg_opt : Option[station_ops::ConfigFile],
   hooks : WholeApiRuntimeHooks,
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
-  if op == "copies.s3.test" {
-    if !req.viewer.manages_station() {
-      return Some(Err(station_api::ApiError::new(403, "only the workspace's owners and admins test backup targets")))
-    }
-    match body {
-      base_codec::Json::Obj(_) => ()
-      _ => return Some(Err(station_api::ApiError::new(400, "invalid JSON")))
-    }
-    let saved = station_replica::read_backup_config(read_config_raw(cfg_opt)).s3
-    let req_id = match json_field_str(body, "id") { Some(s) if s.length() > 0 => Some(s), _ => None }
-    let mut prev_opt : Option[station_replica::NormalizedS3Target] = None
-    match req_id {
-      Some(rid) => {
-        for i in 0..<saved.length() {
-          if saved[i].id == rid {
-            prev_opt = Some(saved[i])
-            break
-          }
-        }
-      }
-      None => ()
-    }
-    let dummy_key = "0000000000000000000000000000000000000000000000000000000000000000"
-    let pick_str = fn(k : String, fallback : String) -> String {
-      match json_field_str(body, k) {
-        Some(s) if s.trim().length() > 0 => s.trim()
-        _ => fallback
-      }
-    }
-    let pick_exact = fn(k : String, fallback : String) -> String {
-      match json_field_str(body, k) {
-        Some(s) if s.length() > 0 => s
-        _ => fallback
-      }
-    }
-    let merged_fs : Array[(String, base_codec::Json)] = [
-      ("id", base_codec::json_str(match req_id { Some(r) => r, None => "test" })),
-      ("name", base_codec::json_str(pick_str("name", match prev_opt { Some(p) => p.name, None => "test" }))),
-      ("endpoint", base_codec::json_str(pick_str("endpoint", match prev_opt { Some(p) => p.endpoint, None => "" }))),
-      ("region", base_codec::json_str(pick_str("region", match prev_opt { Some(p) => p.region, None => "auto" }))),
-      ("bucket", base_codec::json_str(pick_str("bucket", match prev_opt { Some(p) => p.bucket, None => "" }))),
-      ("prefix", base_codec::json_str(pick_str("prefix", match prev_opt { Some(p) => p.prefix, None => "" }))),
-      (
-        "forcePathStyle",
-        base_codec::json_bool(match json_field_bool(body, "forcePathStyle") {
-          Some(b) => b
-          None => match prev_opt { Some(p) => p.force_path_style, None => false }
-        }),
-      ),
-      ("accessKeyId", base_codec::json_str(pick_str("accessKeyId", match prev_opt { Some(p) => p.access_key_id, None => "" }))),
-      ("secretAccessKey", base_codec::json_str(pick_exact("secretAccessKey", match prev_opt { Some(p) => p.secret_access_key, None => "" }))),
-      ("encryptionKey", base_codec::json_str(pick_exact("encryptionKey", match prev_opt { Some(p) => p.encryption_key, None => dummy_key }))),
-      (
-        "includeTranscripts",
-        base_codec::json_bool(match json_field_bool(body, "includeTranscripts") {
-          Some(b) => b
-          None => match prev_opt { Some(p) => p.include_transcripts, None => false }
-        }),
-      ),
-    ]
-    let target = match station_replica::normalize_s3_target(base_codec::json_obj(merged_fs), 0) {
-      Ok(t) => t
-      Err(msg) => return Some(Err(station_api::ApiError::new(400, msg)))
-    }
-    match hooks.on_s3_test {
-      Some(f) => match f(target) {
-        Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-        Err(msg) => return Some(Ok(base_codec::json_obj([
-          ("ok", base_codec::json_bool(false)),
-          ("error", base_codec::json_str(scrub_s3_error(msg, target))),
-        ])))
-      }
-      None => return Some(Err(err_not_implemented(op)))
-    }
+  if op != "copies.s3.test" {
+    return None
   }
-
-  if op == "copies.restore" {
-    if !req.viewer.manages_station() {
-      return Some(Err(station_api::ApiError::new(403, "only the workspace's owners and admins restore a lost station's chats")))
-    }
-    let station = match json_field_str(body, "station") { Some(s) => s, None => "" }
-    let gen = match json_field_str(body, "gen") { Some(s) => s, None => "" }
-    let from_obj = base_codec::json_get(body, "from")
-    let (from_kind, from_id) : (String, String) = match from_obj {
-      Some(fo) => match json_field_str(fo, "station") {
-        Some(s) if s.length() > 0 => ("station", s)
-        _ => match json_field_str(fo, "s3") {
-          Some(s) if s.length() > 0 => ("s3", s)
-          _ => ("", "")
-        }
-      }
-      None => ("", "")
-    }
-    if !live_is_safe_restore_id(station) || !live_is_safe_restore_id(gen) || !live_is_safe_restore_id(from_id) || from_kind.length() == 0 {
-      return Some(Err(station_api::ApiError::new(400, "station, gen and from: {station} or {s3} are needed")))
-    }
-    match hooks.on_copies_restore {
-      Some(f) => match f(req.viewer.workspace, station, gen, from_kind, from_id) {
-        Ok(_) => return Some(Ok(base_codec::json_obj([("restoring", base_codec::json_bool(true))])))
-        Err(msg) => return Some(Err(station_api::ApiError::new(409, msg)))
-      }
-      None => return Some(Err(err_not_implemented(op)))
-    }
+  if !req.viewer.manages_station() {
+    return Some(Err(station_api::ApiError::new(403, "only the workspace's owners and admins test backup targets")))
   }
-
-  if op == "xshare.hosts.put" {
-    let of_ws = req.viewer.workspace
-    if of_ws.length() == 0 {
-      return Some(Err(station_api::ApiError::new(400, "this station is in no workspace")))
-    }
-    let target_ws = match json_field_str(body, "workspace") { Some(s) => s, None => "" }
-    let target_st = match json_field_str(body, "station") { Some(s) => s, None => "" }
-    if !live_is_xshare_id(target_ws) || target_ws == of_ws || !live_is_xshare_id(target_st) {
-      return Some(Err(station_api::ApiError::new(400, "workspace and station are another workspace's")))
-    }
-    let ws_name_raw = match json_field_str(body, "name") { Some(s) => live_trim_max(s, 80), None => "" }
-    let ws_name = if ws_name_raw.length() > 0 { ws_name_raw } else { target_ws }
-    let st_name = match json_field_str(body, "stationName") { Some(s) => live_trim_max(s, 80), None => "" }
-    let xshare_dir = nodepath::join(agents.jobs.fs.sep, [agents.config.data_dir, "xshare"])
-    let default_state = base_codec::json_obj([
-      ("guests", base_codec::json_obj([])),
-      ("hosted", base_codec::json_obj([])),
-      ("borrowed", base_codec::json_obj([])),
-      ("hosts", base_codec::json_obj([])),
-      ("replies", base_codec::json_obj([])),
-      ("answered", base_codec::json_obj([])),
-      ("roster", base_codec::json_obj([])),
-    ])
-    let cur_state = read_data_json_file(agents.jobs.fs, xshare_dir, "state.json", default_state)
-    let cur_hosts = match base_codec::json_get(cur_state, "hosts") {
-      Some(base_codec::Json::Obj(fs)) => fs
-      _ => []
-    }
-    let next_hosts : Array[(String, base_codec::Json)] = []
-    let key_new = of_ws + "/" + target_st
-    for i in 0..<cur_hosts.length() {
-      let (hk, hv) = cur_hosts[i]
-      let same_pair = hk == key_new || (hk == target_st && req.viewer.home)
-      if !same_pair {
-        next_hosts.push((hk, hv))
-      }
-    }
-    next_hosts.push((
-      key_new,
-      base_codec::json_obj([
-        ("workspace", base_codec::json_str(target_ws)),
-        ("name", base_codec::json_str(ws_name)),
-        ("stationName", base_codec::json_str(st_name)),
-        ("as", base_codec::json_str(of_ws)),
-      ]),
-    ))
-    let next_state = json_obj_set(cur_state, "hosts", Some(base_codec::json_obj(next_hosts)))
-    match write_data_json_file(agents.jobs.fs, xshare_dir, "state.json", next_state) {
-      Ok(_) => return Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
-      Err(e) => return Some(Err(e))
-    }
+  let target = match prepare_s3_test_target(body, read_config_raw(cfg_opt)) {
+    Ok(t) => t
+    Err(e) => return Some(Err(e))
   }
-
-  None
+  match hooks.on_s3_test {
+    Some(f) => match f(target) {
+      Ok(_) => Some(Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))])))
+      Err(msg) => Some(Ok(base_codec::json_obj([
+        ("ok", base_codec::json_bool(false)),
+        ("error", base_codec::json_str(scrub_s3_error(msg, target))),
+      ])))
+    }
+    None => Some(Err(err_not_implemented(op)))
+  }
 }

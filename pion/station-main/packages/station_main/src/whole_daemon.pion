@@ -158,6 +158,7 @@ enum AdminStreamMode {
   DriveDownloading(DriveDownloadStreamState)
   SessionFileDownloading(SessionFileDownloadState)
   WaitingArchiveExtract(station_whole::SessionArchiveExtractSpec)
+  WaitingAsyncOp(AsyncAdminHttpState)
   SendingBody(AdminBodySendingState)
   SseStreaming(Int)
   Done
@@ -1805,6 +1806,7 @@ struct WholeRuntimeState {
   browser : station_whole::BrowserOsManager
   connects : station_whole::ConnectsOsRuntime
   upkeep : AsyncUpkeepRunner
+  update_procs : LiveUpdateProcManager
   connect_meta : Map[String, ConnectMeta]
   remote_connects : Map[String, RemoteConnectRecord]
   remote_connects_path : String
@@ -4455,6 +4457,51 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       None => ()
     }
 
+    // Wave 17D-2 R2: Non-blocking async interception for network/subprocess-bound live ops
+    // (`updates.check`, `updates.install`, `copies.s3.test`, `workspaces.join`, `accounts.profiles.createKeyed`).
+    match peer_id {
+      station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
+        let mut req_lang = station_api::Lang::En
+        for hi in 0..<head.headers.length() {
+          if station_http::ascii_eq_ci(head.headers[hi].name, "accept-language") {
+            let lv = head.headers[hi].value.trim()
+            if lv.starts_with("zh") || lv.starts_with("ZH") || lv.starts_with("Zh") {
+              req_lang = station_api::Lang::Zh
+            }
+          }
+        }
+        let is_live_async_route = head.method == "POST"
+        && (norm_path == "/updates/check"
+          || norm_path == "/updates"
+          || norm_path == "/copies/s3/test"
+          || norm_path == "/workspaces/join"
+          || norm_path == "/profiles")
+        if is_live_async_route {
+          match check_oldest_core_fast(st, head.method, head.path, head.headers) {
+            Some(old_resp) => {
+              send_admin_resp_and_finish(ctx, astream.sid, old_resp)
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            None => ()
+          }
+          match try_intercept_async_admin_op(ctx, st, astream.sid, head.method, norm_path, body, v, req_lang) {
+            Some(Ok(async_st)) => {
+              astream.mode = AdminStreamMode::WaitingAsyncOp(async_st)
+              return
+            }
+            Some(Err(resp)) => {
+              send_admin_resp_and_finish(ctx, astream.sid, resp)
+              astream.mode = AdminStreamMode::Done
+              return
+            }
+            None => ()
+          }
+        }
+      }
+      _ => ()
+    }
+
     let action = st.core.handle_peer_http(peer_id, head.method, head.path, head.headers, body, now_w)
     match action {
       station_http::HandlerAction::Respond(resp) => {
@@ -4782,6 +4829,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       | AdminStreamMode::DriveDownloading(_)
       | AdminStreamMode::SessionFileDownloading(_)
       | AdminStreamMode::WaitingArchiveExtract(_)
+      | AdminStreamMode::WaitingAsyncOp(_)
       | AdminStreamMode::SendingBody(_) => {
         astream.rx_buf = Bytes::new(0)
         return Ok(())
@@ -5564,6 +5612,25 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
+        // Wave 17D-2 R2: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
+        if kind == LIVE_OP_TOK_HTTP_OPEN || kind == LIVE_OP_TOK_HTTP_READ {
+          match st.admin_streams.get(sid) {
+            None => ()
+            Some(astream) => match astream.mode {
+              AdminStreamMode::WaitingAsyncOp(async_st) => {
+                match step_async_admin_http_done(ctx, st, kind, async_st, d) {
+                  Some(resp) => {
+                    send_admin_resp_and_finish(ctx, sid, resp)
+                    astream.mode = AdminStreamMode::Done
+                  }
+                  None => ()
+                }
+              }
+              _ => ()
+            }
+          }
+          return
+        }
         // Async `tar.file` archived session upload completion (Wave 17C-3A R4 N1).
         if kind == SESSION_TOK_TAR_FILE {
           match st.admin_streams.get(sid) {
@@ -7076,6 +7143,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         browser: browser,
         connects: connects,
         upkeep: upkeep,
+        update_procs: LiveUpdateProcManager::new(),
         connect_meta: connect_meta,
         remote_connects: remote_connects,
         remote_connects_path: remote_connects_path,
@@ -8098,6 +8166,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 | AdminStreamMode::DriveDownloading(_)
                 | AdminStreamMode::SessionFileDownloading(_)
                 | AdminStreamMode::WaitingArchiveExtract(_)
+                | AdminStreamMode::WaitingAsyncOp(_)
                 | AdminStreamMode::SendingBody(_) => {
                   return Ok(())
                 }
@@ -8238,6 +8307,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                   let _ = (st.core.agents.jobs.fs.remove_file)(spec.out_path)
                   false
                 }
+                AdminStreamMode::WaitingAsyncOp(async_st) => {
+                  cancel_async_admin_op(ctx, async_st)
+                  false
+                }
                 _ => false
               }
               if !is_ctrl {
@@ -8351,6 +8424,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.upkeep.handle_sys_event(ev_id, sev) {
             return
           }
+          if st.update_procs.handle_sys_event(ev_id, sev, st.core.updates, fn() {
+            st.core.api.events.overview_changed("updates")
+          }) {
+            return
+          }
           if st.terminals.handle_sys_event(ev_id, sev, now_sys) {
             return
           }
@@ -8414,6 +8492,27 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             }
           }
           st.upkeep.tick(now, clones_active)
+          st.update_procs.tick(now, st.core.updates, fn() {
+            st.core.api.events.overview_changed("updates")
+          })
+          // Enforce per-request deadlines on any in-flight `WaitingAsyncOp` streams.
+          let async_sids = st.admin_streams.keys()
+          for asi in 0..<async_sids.length() {
+            let asid = async_sids[asi]
+            match st.admin_streams.get(asid) {
+              Some(astream) => match astream.mode {
+                AdminStreamMode::WaitingAsyncOp(async_st) => {
+                  if now >= async_st.deadline_ms {
+                    cancel_async_admin_op(ctx, async_st)
+                    send_admin_resp_and_finish(ctx, asid, station_api::json_error(504, "request timed out"))
+                    astream.mode = AdminStreamMode::Done
+                  }
+                }
+                _ => ()
+              }
+              None => ()
+            }
+          }
           st.live_runners.tick(ctx, st.core, now, wall)
           st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), now, wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
@@ -8790,6 +8889,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
           st.connects.stop()
           st.upkeep.shutdown()
+          st.update_procs.shutdown(st.core.updates)
           st.browser.stop_all()
           let _ = st.browser.drain_kills_with_hub(max_ms=500L)
           st.terminals.stop_all()

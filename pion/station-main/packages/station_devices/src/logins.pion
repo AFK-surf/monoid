@@ -979,6 +979,50 @@ pub fn LoginsManager::start(
   Ok(self.shown_entry(entry))
 }
 
+/// Start an isolated login run that NEVER deduplicates across profiles/workspaces by command words.
+/// Each call allocates a fresh unique `login_id` so concurrent logins for two profiles of the same
+/// runtime never collide or overwrite each other's process entry.
+pub fn LoginsManager::start_isolated(
+  self : LoginsManager,
+  command_line : String,
+  starter : LoginStarter,
+  by_code_line : Option[String],
+  paste_on_open : Bool,
+  now_ms : Int64,
+) -> Result[LoginView, LoginRefused] {
+  let words = match command_words(command_line) {
+    Some(w) => match validate_command_words(w) {
+      Ok(v) => v
+      Err(e) => return Err(e)
+    }
+    None => return Err(LoginRefused::{ status: 400, message: "bad command" })
+  }
+  let by_code : Option[Array[String]] = match by_code_line {
+    Some(line) => match command_words(line) {
+      Some(w) => match validate_command_words(w) {
+        Ok(v) => Some(v)
+        Err(e) => return Err(e)
+      }
+      None => return Err(LoginRefused::{ status: 400, message: "bad byCode command" })
+    }
+    None => None
+  }
+  let id = "plogin-" + now_ms.to_string() + "-" + self.next_id.to_string()
+  self.next_id = self.next_id + 1
+  let run = LoginRun::new(id, words, now_ms)
+  let entry = LoginEntry::{
+    run,
+    starter,
+    done_by: None,
+    again: None,
+    from: None,
+    by_code,
+    paste_on_open,
+  }
+  self.entries.push(entry)
+  Ok(self.shown_entry(entry))
+}
+
 pub fn LoginsManager::get_run(self : LoginsManager, id : String) -> Option[LoginRun] {
   let mut i = 0
   while i < self.entries.length() {

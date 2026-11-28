@@ -1,16 +1,16 @@
-// Wave 17D-2 comprehensive unit tests for the 17 live `call_op`s:
-// 1. Updates (3): `updates.check`, `updates.wait`, `updates.install` (manager 403, wait spec parsing, path/URL injection 400, unhooked 501, hooked 200)
-// 2. Accounts & Profiles (8): `createKeyed` (validation, atomic persist, key redaction), `createMachine` (403/400/409/501/200),
-//    `pace` (v1/v2/unchanged), `resetQuota` (idempotency-key/404/400/501/200), `quota` (404/501/200), `login`/`login.get`/`login.delete` (404/400/409/501/200)
-// 3. MCP Servers hot reload (2): `mcpServers.reloadAll`, `mcpServers.reloadOne` (live `on_mcp_view` + `on_mcp_reload`)
-// 4. Workspaces / Copies / XShare (4): `workspaces.join`, `copies.s3.test` (merge + secret scrubbing), `copies.restore` (path traversal 400), `xshare.hosts.put`
+// Wave 17D-2 R2 comprehensive unit tests for the 10 live `call_op`s and honest 501 for the 7 withdrawn ops:
+// 1. Updates (3): `updates.wait` (default autoUpdate=false, override preservation, spec parsing), `updates.check`, `updates.install`
+// 2. Accounts & Profiles (5): `createKeyed` ({ id, overview }, mandatory key check, mkdir_p fail, key redaction),
+//    `createMachine` ({ id, overview }, 403/400/409/501/200), `login` / `login.get` / `login.delete`
+//    (read-only 403 & URL/code redaction, withheld 404, unsupported runtime 400, borrowed 409)
+// 3. Copies / Workspaces (2): `copies.s3.test` (cross-endpoint/bucket secret non-reuse + secret scrubbing), `workspaces.join`
+// 4. Honest 501 for the 7 withdrawn ops (deferred to Wave 17E):
+//    `mcpServers.reloadAll`, `mcpServers.reloadOne`, `accounts.profiles.quota`,
+//    `accounts.profiles.resetQuota`, `accounts.profiles.pace`, `copies.restore`, `xshare.hosts.put`.
 
 import "base_codec"
-import "http1"
 import "station_api"
-import "station_http"
 import "station_replica"
-import "station_tools"
 
 fn w17d2_owner(ws : String) -> station_api::Viewer {
   make_test_viewer("owner@example.com", "u-owner", ws, ws == "ws-main", "owner")
@@ -20,7 +20,11 @@ fn w17d2_member(ws : String) -> station_api::Viewer {
   make_test_viewer("member@example.com", "u-member", ws, ws == "ws-main", "member")
 }
 
-test "wave17d2: updates.wait, updates.check, updates.install (403, wait spec parsing, injection guard, unhooked 501, hooked 200)" {
+fn w17d2_readonly(ws : String) -> station_api::Viewer {
+  make_test_viewer("ro@example.com", "u-ro", ws, ws == "ws-main", "viewer")
+}
+
+test "wave17d2 r2: updates.wait (default autoUpdate=false, override preserved, spec parsing), updates.check, updates.install" {
   let (_, _, api, updates, mem_fs, hooks) = make_mem_whole_api_fixture()
   let owner = w17d2_owner("ws-main")
   let member = w17d2_member("ws-main")
@@ -33,7 +37,7 @@ test "wave17d2: updates.wait, updates.check, updates.install (403, wait spec par
     }
   }
 
-  // 2. `updates.wait`: valid specs persist `autoUpdateWhen` and pause `autoUpdate`; invalid spec -> 400; `null` restores `autoUpdate`
+  // 2. `updates.wait`: valid specs persist `autoUpdateWhen`; invalid spec -> 400; `null` restores default `autoUpdate=false` (does NOT force true!)
   let wait_body = base_codec::json_obj([
     ("wait", base_codec::json_arr([
       base_codec::json_str("pr:9145"),
@@ -56,7 +60,7 @@ test "wave17d2: updates.wait, updates.check, updates.install (403, wait spec par
   match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
     Ok(b) => {
       let txt = b.to_string()
-      if !txt.contains("autoUpdateWhen") || !txt.contains("\"autoUpdate\": false") {
+      if !txt.contains("autoUpdateWhen") {
         panic("updates.wait did not persist autoUpdateWhen: " + txt)
       }
     }
@@ -67,7 +71,7 @@ test "wave17d2: updates.wait, updates.check, updates.install (403, wait spec par
     Err(e) => if e.status != 400 { panic("invalid wait condition must return 400") }
     Ok(_) => panic("invalid wait condition must fail")
   }
-  // Clear wait with `null` -> removes `autoUpdateWhen` and restores `autoUpdate: true`
+  // Clear wait with `null` when `autoUpdate` was not explicitly enabled -> MUST NOT write `"autoUpdate": true`!
   match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], base_codec::json_obj([("wait", base_codec::json_null())])) {
     Ok(_) => ()
     Err(e) => panic("updates.wait null failed: " + e.message)
@@ -75,8 +79,28 @@ test "wave17d2: updates.wait, updates.check, updates.install (403, wait spec par
   match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
     Ok(b) => {
       let txt = b.to_string()
+      if txt.contains("autoUpdateWhen") || txt.contains("\"autoUpdate\": true") {
+        panic("updates.wait null must NOT force autoUpdate: true when default was false: " + txt)
+      }
+    }
+    Err(_) => panic("config.json missing")
+  }
+
+  // When `autoUpdate: true` WAS explicitly configured, setting wait pauses it and clearing wait restores `true`
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", "{\"autoUpdate\":true}", 384)
+  match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], base_codec::json_obj([("wait", base_codec::json_arr([base_codec::json_str("pr:9176")]))])) {
+    Ok(_) => ()
+    Err(e) => panic("updates.wait with autoUpdate=true failed: " + e.message)
+  }
+  match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], base_codec::json_obj([("wait", base_codec::json_null())])) {
+    Ok(_) => ()
+    Err(e) => panic("updates.wait clear with autoUpdate=true failed: " + e.message)
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => {
+      let txt = b.to_string()
       if txt.contains("autoUpdateWhen") || !txt.contains("\"autoUpdate\": true") {
-        panic("updates.wait null did not restore autoUpdate: " + txt)
+        panic("updates.wait clear did not preserve explicit autoUpdate: true: " + txt)
       }
     }
     Err(_) => panic("config.json missing")
@@ -122,12 +146,22 @@ test "wave17d2: updates.wait, updates.check, updates.install (403, wait spec par
   }
 }
 
-test "wave17d2: accounts.profiles 8 live ops (createKeyed, createMachine, pace, resetQuota, quota, login/get/delete)" {
+test "wave17d2 r2: accounts.profiles 5 live ops (createKeyed, createMachine, login/get/delete) + 3 withdrawn 501s" {
   let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
   let owner = w17d2_owner("ws-main")
   let member = w17d2_member("ws-main")
+  let ro = w17d2_readonly("ws-main")
 
-  // 1. `createKeyed`: non-manager 403, subscription 400, missing key 400, unknown provider 400, valid persists & redacts key!
+  // 1. Withdrawn ops MUST return honest 501
+  for op in ["accounts.profiles.quota", "accounts.profiles.resetQuota", "accounts.profiles.pace"] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles", owner), ["p1"], base_codec::json_obj([])) {
+      Err(e) => if e.status != 501 { panic("withdrawn " + op + " must return 501, got " + e.status.to_string()) }
+      Ok(_) => panic("withdrawn " + op + " returned fake 200")
+    }
+  }
+
+  // 2. `createKeyed`: non-manager 403, subscription 400, unknown provider 400, unhooked key check 501,
+  //    bad key check 400 (no config write!), valid key check returns `{ id, overview }` with key redacted!
   match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", member), [], base_codec::json_obj([])) {
     Err(e) => if e.status != 403 { panic("non-manager createKeyed must return 403") }
     Ok(_) => panic("non-manager createKeyed must fail")
@@ -147,39 +181,59 @@ test "wave17d2: accounts.profiles 8 live ops (createKeyed, createMachine, pace, 
       ("key", base_codec::json_str("sk-live-super-secret-key-98765")),
     ])),
   ])
+  // Unhooked key verification MUST fail with 501 (never skip verification!)
+  match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", owner), [], create_body) {
+    Err(e) => if e.status != 501 { panic("unhooked createKeyed must return 501") }
+    Ok(_) => panic("unhooked createKeyed skipped key verification")
+  }
+  // Failed key verification returns 400 and does NOT write config.json
+  hooks.on_profile_live_op = Some(fn(op : String, _ps : Array[String], _b : base_codec::Json, _v : station_api::Viewer, _l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+    if op == "accounts.profiles.createKeyed.check" {
+      return Err(station_api::ApiError::new(400, "invalid API key"))
+    }
+    Err(station_api::ApiError::new(501, "not wired"))
+  })
+  match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", owner), [], create_body) {
+    Err(e) => if e.status != 400 { panic("bad key createKeyed must return 400") }
+    Ok(_) => panic("bad key createKeyed must fail")
+  }
+  match (mem_fs.ops().read_bytes)("/tmp/w17c2-api-test/config.json") {
+    Ok(b) => if b.to_string().contains("sk-live-super-secret-key-98765") { panic("bad key must NOT be persisted to config.json") }
+    Err(_) => ()
+  }
+  // Passing key verification persists & returns `{ id, overview }` with key redacted
+  hooks.overview_for = Some(fn(_v, _l) -> Result[base_codec::Json, station_api::ApiError] {
+    Ok(base_codec::json_obj([("profiles", base_codec::json_arr([base_codec::json_obj([("id", base_codec::json_str("openai")), ("hasKey", base_codec::json_bool(true))])]))]))
+  })
+  hooks.on_profile_live_op = Some(fn(op : String, ps : Array[String], _b : base_codec::Json, _v : station_api::Viewer, _l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
+    if op == "accounts.profiles.createKeyed.check" {
+      return Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+    }
+    if op == "accounts.profiles.createMachine" {
+      return Ok(base_codec::json_obj([("name", base_codec::json_str("alice@claude.ai"))]))
+    }
+    Ok(base_codec::json_obj([
+      ("op", base_codec::json_str(op)),
+      ("id", base_codec::json_str(if ps.length() > 0 { ps[0] } else { "" })),
+      ("status", base_codec::json_str("pending")),
+      ("url", base_codec::json_str("https://auth.example.com/secret-token")),
+      ("code", base_codec::json_str("ABCD-1234")),
+    ]))
+  })
   match (api.admin.host.call)("accounts.profiles.createKeyed", make_test_api_req_as("POST", "/profiles", owner), [], create_body) {
     Ok(res) => {
       let s = base_codec::json_stringify(res)
       if s.contains("sk-live-super-secret-key-98765") {
         panic("createKeyed leaked plaintext API key: " + s)
       }
-      if !s.contains("\"id\":\"openai\"") || !s.contains("\"hasKey\":true") {
-        panic("createKeyed response missing id/hasKey: " + s)
+      if json_field_str(res, "id") != Some("openai") || base_codec::json_get(res, "overview") is None {
+        panic("createKeyed response must be { id, overview }: " + s)
       }
     }
     Err(e) => panic("createKeyed failed: " + e.message)
   }
 
-  // 2. `pace`: v1 & v2 & unchanged rev
-  match (api.admin.host.call)("accounts.profiles.pace", make_test_api_req_as("GET", "/profiles/pace", member), [], base_codec::json_obj([])) {
-    Ok(res) => {
-      let s = base_codec::json_stringify(res)
-      if !s.contains("\"openai\"") || !s.contains("\"fromHour\"") {
-        panic("pace v1 missing profile or fromHour: " + s)
-      }
-    }
-    Err(e) => panic("pace v1 failed: " + e.message)
-  }
-  let rev = match (api.admin.host.call)("accounts.profiles.pace", make_test_api_req_as("GET", "/profiles/pace?v=2", member), [], base_codec::json_obj([])) {
-    Ok(res) => match json_field_str(res, "rev") { Some(r) if r.length() > 0 => r, _ => panic("pace v2 missing rev") }
-    Err(e) => panic("pace v2 failed: " + e.message)
-  }
-  match (api.admin.host.call)("accounts.profiles.pace", make_test_api_req_as("GET", "/profiles/pace?v=2&sinceRev=" + rev, member), [], base_codec::json_obj([])) {
-    Ok(res) => if json_field_bool(res, "unchanged") != Some(true) { panic("pace v2 unchanged expected") }
-    Err(e) => panic("pace v2 unchanged failed: " + e.message)
-  }
-
-  // 3. `createMachine`: 403 non-manager, 400 unknown runtime, 501 unhooked, 200 hooked, 409 duplicate
+  // 3. `createMachine`: 403 non-manager, 400 unknown runtime, 200 `{ id, overview }`, 409 duplicate
   match (api.admin.host.call)("accounts.profiles.createMachine", make_test_api_req_as("POST", "/profiles/machine", member), [], base_codec::json_obj([("runtime", base_codec::json_str("claude"))])) {
     Err(e) => if e.status != 403 { panic("non-manager createMachine must return 403") }
     Ok(_) => panic("non-manager createMachine must fail")
@@ -189,53 +243,42 @@ test "wave17d2: accounts.profiles 8 live ops (createKeyed, createMachine, pace, 
     Ok(_) => panic("unknown runtime must fail")
   }
   match (api.admin.host.call)("accounts.profiles.createMachine", make_test_api_req_as("POST", "/profiles/machine", owner), [], base_codec::json_obj([("runtime", base_codec::json_str("claude"))])) {
-    Err(e) => if e.status != 501 { panic("unhooked createMachine must return 501") }
-    Ok(_) => panic("unhooked createMachine returned fake 200")
+    Ok(res) => {
+      if json_field_str(res, "id") != Some("machine-claude") || base_codec::json_get(res, "overview") is None {
+        panic("createMachine must return { id, overview }: " + base_codec::json_stringify(res))
+      }
+    }
+    Err(e) => panic("hooked createMachine failed: " + e.message)
+  }
+  match (api.admin.host.call)("accounts.profiles.createMachine", make_test_api_req_as("POST", "/profiles/machine", owner), [], base_codec::json_obj([("runtime", base_codec::json_str("claude"))])) {
+    Err(e) => if e.status != 409 { panic("duplicate createMachine must return 409") }
+    Ok(_) => panic("expected 409")
   }
 
-  // Seed a subscription profile and a borrowed subscription profile for quota/resetQuota/login tests
-  let seed = "{\"profiles\":[{\"id\":\"sub-claude\",\"name\":\"Claude Sub\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"}},{\"id\":\"bor-claude\",\"name\":\"Borrowed\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"sharedFrom\":\"st-other\"},{\"id\":\"keyed-p\",\"name\":\"Keyed\",\"runtime\":\"claude\",\"access\":{\"kind\":\"anthropic-api\",\"key\":\"sk-ant-1\"}}]}"
+  // 4. `login` / `login.get` / `login.delete`: withheld 404, read-only 403 on POST/DELETE, URL/code redacted on GET, borrowed 409, keyed 400
+  let seed = "{\"profiles\":[{\"id\":\"sub-claude\",\"name\":\"Claude Sub\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"}},{\"id\":\"withheld-p\",\"name\":\"Hidden\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"withheld\":[\"ws-main\"]},{\"id\":\"bor-claude\",\"name\":\"Borrowed\",\"runtime\":\"claude\",\"access\":{\"kind\":\"subscription\"},\"sharedFrom\":\"st-other\"},{\"id\":\"keyed-p\",\"name\":\"Keyed\",\"runtime\":\"claude\",\"access\":{\"kind\":\"anthropic-api\",\"key\":\"sk-ant-1\"}}]}"
   let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", seed, 384)
 
-  // 4. `resetQuota`: missing idempotency key 400, unknown profile 404, non-subscription 400, unhooked 501
-  match (api.admin.host.call)("accounts.profiles.resetQuota", make_test_api_req_as("POST", "/profiles/sub-claude/reset-quota", owner), ["sub-claude"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 400 { panic("missing idempotency-key must return 400") }
-    Ok(_) => panic("missing idempotency-key must fail")
+  match (api.admin.host.call)("accounts.profiles.login", make_test_api_req_as("POST", "/profiles/withheld-p/login", owner), ["withheld-p"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 404 { panic("withheld profile login must return 404") }
+    Ok(_) => panic("expected 404 for withheld profile")
   }
-  let (norm_p, norm_qr, norm_q) = station_http::parse_request_target("/profiles/sub-claude/reset-quota")
-  let req_idem = station_api::ApiRequest::from_http(
-    station_http::HttpRequest::{
-      conn_id: 0,
-      method: "POST",
-      raw_target: "/profiles/sub-claude/reset-quota",
-      path: norm_p,
-      query_raw: norm_qr,
-      query: norm_q,
-      version: http1::Version::Http11,
-      headers: [http1::Header::{ name: "idempotency-key", value: "idem-1" }],
-      body: Bytes::new(0),
-      peer: "",
-      raw_head: Bytes::new(0),
-    },
-    owner,
-  )
-  match (api.admin.host.call)("accounts.profiles.resetQuota", req_idem, ["nope"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 404 { panic("unknown profile resetQuota must return 404") }
-    Ok(_) => panic("expected 404")
+  match (api.admin.host.call)("accounts.profiles.login", make_test_api_req_as("POST", "/profiles/sub-claude/login", ro), ["sub-claude"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 403 { panic("read-only login POST must return 403") }
+    Ok(_) => panic("expected 403")
   }
-  match (api.admin.host.call)("accounts.profiles.resetQuota", req_idem, ["keyed-p"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 400 { panic("non-subscription resetQuota must return 400") }
-    Ok(_) => panic("expected 400")
+  match (api.admin.host.call)("accounts.profiles.login.delete", make_test_api_req_as("DELETE", "/profiles/sub-claude/login", ro), ["sub-claude"], base_codec::json_obj([])) {
+    Err(e) => if e.status != 403 { panic("read-only login DELETE must return 403") }
+    Ok(_) => panic("expected 403")
   }
-  match (api.admin.host.call)("accounts.profiles.resetQuota", req_idem, ["sub-claude"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 501 { panic("unhooked resetQuota must return 501") }
-    Ok(_) => panic("expected 501")
-  }
-
-  // 5. `quota`, `login`, `login.get`, `login.delete`: 404/400/409/501 unhooked, then 200 hooked
-  match (api.admin.host.call)("accounts.profiles.quota", make_test_api_req_as("POST", "/profiles/nope/quota", owner), ["nope"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 404 { panic("unknown profile quota must return 404") }
-    Ok(_) => panic("expected 404")
+  match (api.admin.host.call)("accounts.profiles.login.get", make_test_api_req_as("GET", "/profiles/sub-claude/login", ro), ["sub-claude"], base_codec::json_obj([])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("secret-token") || s.contains("ABCD-1234") {
+        panic("read-only login.get MUST redact url/code: " + s)
+      }
+    }
+    Err(e) => panic("read-only login.get failed: " + e.message)
   }
   match (api.admin.host.call)("accounts.profiles.login", make_test_api_req_as("POST", "/profiles/keyed-p/login", owner), ["keyed-p"], base_codec::json_obj([])) {
     Err(e) => if e.status != 400 { panic("keyed profile login must return 400") }
@@ -245,35 +288,6 @@ test "wave17d2: accounts.profiles 8 live ops (createKeyed, createMachine, pace, 
     Err(e) => if e.status != 409 { panic("borrowed profile login must return 409") }
     Ok(_) => panic("expected 409")
   }
-  match (api.admin.host.call)("accounts.profiles.login", make_test_api_req_as("POST", "/profiles/sub-claude/login", owner), ["sub-claude"], base_codec::json_obj([])) {
-    Err(e) => if e.status != 501 { panic("unhooked login must return 501") }
-    Ok(_) => panic("expected 501")
-  }
-
-  // Wire `on_profile_live_op` and verify all live ops succeed
-  hooks.on_profile_live_op = Some(fn(op : String, ps : Array[String], _b : base_codec::Json, _v : station_api::Viewer, _l : station_api::Lang) -> Result[base_codec::Json, station_api::ApiError] {
-    if op == "accounts.profiles.createMachine" {
-      return Ok(base_codec::json_obj([("name", base_codec::json_str("alice@claude.ai"))]))
-    }
-    Ok(base_codec::json_obj([("op", base_codec::json_str(op)), ("id", base_codec::json_str(if ps.length() > 0 { ps[0] } else { "" }))]))
-  })
-  match (api.admin.host.call)("accounts.profiles.createMachine", make_test_api_req_as("POST", "/profiles/machine", owner), [], base_codec::json_obj([("runtime", base_codec::json_str("claude"))])) {
-    Ok(res) => if json_field_str(res, "id") != Some("machine-claude") { panic("expected machine-claude") }
-    Err(e) => panic("hooked createMachine failed: " + e.message)
-  }
-  // Duplicate machine profile -> 409
-  match (api.admin.host.call)("accounts.profiles.createMachine", make_test_api_req_as("POST", "/profiles/machine", owner), [], base_codec::json_obj([("runtime", base_codec::json_str("claude"))])) {
-    Err(e) => if e.status != 409 { panic("duplicate createMachine must return 409") }
-    Ok(_) => panic("expected 409")
-  }
-  match (api.admin.host.call)("accounts.profiles.resetQuota", req_idem, ["sub-claude"], base_codec::json_obj([])) {
-    Ok(_) => ()
-    Err(e) => panic("hooked resetQuota failed: " + e.message)
-  }
-  match (api.admin.host.call)("accounts.profiles.quota", make_test_api_req_as("POST", "/profiles/sub-claude/quota", owner), ["sub-claude"], base_codec::json_obj([])) {
-    Ok(_) => ()
-    Err(e) => panic("hooked quota failed: " + e.message)
-  }
   for op in ["accounts.profiles.login", "accounts.profiles.login.get", "accounts.profiles.login.delete"] {
     match (api.admin.host.call)(op, make_test_api_req_as("POST", "/profiles/sub-claude/login", owner), ["sub-claude"], base_codec::json_obj([])) {
       Ok(_) => ()
@@ -282,101 +296,62 @@ test "wave17d2: accounts.profiles 8 live ops (createKeyed, createMachine, pace, 
   }
 }
 
-test "wave17d2: copies.s3.test (merge + secret scrub), copies.restore (traversal 400), xshare.hosts.put, and mcpServers live view" {
-  let (_, agents, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
+test "wave17d2 r2: copies.s3.test (no cross-endpoint secret reuse + secret scrub) and 4 withdrawn admin 501s" {
+  let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
   let owner = w17d2_owner("ws-main")
   let member = w17d2_member("ws-main")
 
-  // 1. `copies.s3.test`: 403 non-manager, 400 invalid endpoint, 501 unhooked, 200 hooked with secret scrubbing on error
+  // 1. Withdrawn admin ops MUST return honest 501
+  for op in ["mcpServers.reloadAll", "mcpServers.reloadOne", "copies.restore", "xshare.hosts.put"] {
+    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/admin", owner), ["s1"], base_codec::json_obj([])) {
+      Err(e) => if e.status != 501 { panic("withdrawn " + op + " must return 501, got " + e.status.to_string()) }
+      Ok(_) => panic("withdrawn " + op + " returned fake 200")
+    }
+  }
+
+  // 2. `copies.s3.test`: 403 non-manager, 400 invalid endpoint, cross-endpoint/bucket MUST NOT reuse saved secret!
   match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", member), [], base_codec::json_obj([])) {
     Err(e) => if e.status != 403 { panic("non-manager copies.s3.test must return 403") }
     Ok(_) => panic("expected 403")
   }
-  match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", owner), [], base_codec::json_obj([("endpoint", base_codec::json_str("ftp://evil.test")), ("bucket", base_codec::json_str("b"))])) {
-    Err(e) => if e.status != 400 { panic("invalid s3 endpoint must return 400") }
-    Ok(_) => panic("expected 400")
-  }
-  let valid_s3 = base_codec::json_obj([
-    ("endpoint", base_codec::json_str("https://s3.example.com")),
-    ("bucket", base_codec::json_str("my-bucket")),
-    ("accessKeyId", base_codec::json_str("AKIA_SECRET_ID_1")),
-    ("secretAccessKey", base_codec::json_str("SUPER_SECRET_S3_VALUE_999")),
-  ])
-  match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", owner), [], valid_s3) {
-    Err(e) => if e.status != 501 { panic("unhooked copies.s3.test must return 501") }
-    Ok(_) => panic("expected 501")
-  }
+  let saved_cfg = "{\"backup\":{\"s3\":[{\"id\":\"r2\",\"name\":\"R2\",\"endpoint\":\"https://s3.trusted.example\",\"bucket\":\"trusted-bkt\",\"accessKeyId\":\"SAVED_KEY_ID\",\"secretAccessKey\":\"SAVED_SUPER_SECRET\",\"encryptionKey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}]}}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", saved_cfg, 384)
+
+  // Attacker supplies saved `id: "r2"` with a DIFFERENT endpoint -> MUST NOT inherit SAVED_KEY_ID/SAVED_SUPER_SECRET!
+  let mut observed_secret = ""
   hooks.on_s3_test = Some(fn(t : station_replica::NormalizedS3Target) -> Result[Unit, String] {
+    observed_secret = t.secret_access_key
     Err("auth failed for " + t.access_key_id + " / " + t.secret_access_key)
   })
-  match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", owner), [], valid_s3) {
+  let cross_ep = base_codec::json_obj([
+    ("id", base_codec::json_str("r2")),
+    ("endpoint", base_codec::json_str("https://attacker.example")),
+    ("bucket", base_codec::json_str("trusted-bkt")),
+  ])
+  match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", owner), [], cross_ep) {
+    Err(e) => if e.status != 400 { panic("cross-endpoint without explicit creds must fail 400, got " + e.status.to_string()) }
+    Ok(_) => panic("cross-endpoint S3 test MUST NOT reuse saved credentials")
+  }
+  if observed_secret == "SAVED_SUPER_SECRET" {
+    panic("saved S3 secret was leaked to attacker endpoint!")
+  }
+
+  // Same endpoint+bucket with saved `id: "r2"` MAY reuse saved creds, and error MUST scrub them
+  let same_ep = base_codec::json_obj([
+    ("id", base_codec::json_str("r2")),
+    ("endpoint", base_codec::json_str("https://s3.trusted.example")),
+    ("bucket", base_codec::json_str("trusted-bkt")),
+  ])
+  match (api.admin.host.call)("copies.s3.test", make_test_api_req_as("POST", "/copies/s3/test", owner), [], same_ep) {
     Ok(res) => {
       let s = base_codec::json_stringify(res)
-      if s.contains("SUPER_SECRET_S3_VALUE_999") || s.contains("AKIA_SECRET_ID_1") {
+      if s.contains("SAVED_SUPER_SECRET") || s.contains("SAVED_KEY_ID") {
         panic("copies.s3.test leaked S3 credentials in error: " + s)
       }
       if json_field_bool(res, "ok") != Some(false) {
         panic("expected ok: false")
       }
     }
-    Err(e) => panic("copies.s3.test hooked error failed: " + e.message)
-  }
-
-  // 2. `copies.restore`: 403 non-manager, 400 traversal, 501 unhooked, 200 hooked
-  match (api.admin.host.call)("copies.restore", make_test_api_req_as("POST", "/copies/restore", member), [], base_codec::json_obj([])) {
-    Err(e) => if e.status != 403 { panic("non-manager copies.restore must return 403") }
-    Ok(_) => panic("expected 403")
-  }
-  match (api.admin.host.call)("copies.restore", make_test_api_req_as("POST", "/copies/restore", owner), [], base_codec::json_obj([("station", base_codec::json_str("../etc")), ("gen", base_codec::json_str("g1")), ("from", base_codec::json_obj([("s3", base_codec::json_str("r2"))]))])) {
-    Err(e) => if e.status != 400 { panic("path traversal in copies.restore must return 400") }
-    Ok(_) => panic("expected 400")
-  }
-  let valid_restore = base_codec::json_obj([
-    ("station", base_codec::json_str("st-lost-1")),
-    ("gen", base_codec::json_str("gen-42")),
-    ("from", base_codec::json_obj([("s3", base_codec::json_str("r2-main"))])),
-  ])
-  match (api.admin.host.call)("copies.restore", make_test_api_req_as("POST", "/copies/restore", owner), [], valid_restore) {
-    Err(e) => if e.status != 501 { panic("unhooked copies.restore must return 501") }
-    Ok(_) => panic("expected 501")
-  }
-  hooks.on_copies_restore = Some(fn(_ws, _st, _gen, _fk, _fid) -> Result[Unit, String] { Ok(()) })
-  match (api.admin.host.call)("copies.restore", make_test_api_req_as("POST", "/copies/restore", owner), [], valid_restore) {
-    Ok(res) => if json_field_bool(res, "restoring") != Some(true) { panic("expected restoring: true") }
-    Err(e) => panic("hooked copies.restore failed: " + e.message)
-  }
-
-  // 3. `xshare.hosts.put`: same-workspace rejected 400, bad id rejected 400, valid member persists to `<data>/xshare/state.json`
-  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([("workspace", base_codec::json_str("ws-main")), ("station", base_codec::json_str("st-remote"))])) {
-    Err(e) => if e.status != 400 { panic("same-workspace xshare.hosts.put must return 400") }
-    Ok(_) => panic("expected 400")
-  }
-  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([("workspace", base_codec::json_str("ws-partner")), ("name", base_codec::json_str("Partner WS")), ("station", base_codec::json_str("st-partner-1")), ("stationName", base_codec::json_str("Partner Box"))])) {
-    Ok(res) => if json_field_bool(res, "ok") != Some(true) { panic("expected ok: true") }
-    Err(e) => panic("xshare.hosts.put failed: " + e.message)
-  }
-  match (agents.jobs.fs.read_file)("/tmp/w17c2-api-test/xshare/state.json") {
-    Some(txt) => {
-      if !txt.contains("ws-main/st-partner-1") || !txt.contains("Partner WS") {
-        panic("xshare state.json missing persisted host: " + txt)
-      }
-    }
-    None => panic("xshare state.json not written")
-  }
-
-  // 4. `mcpServers.reloadAll` reflects live `on_mcp_view` status ("ready")
-  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", "{\"mcpServers\":{\"s1\":{\"command\":\"echo\"}}}", 384)
-  hooks.on_mcp_reload = Some(fn(_n : Option[String]) -> Unit { () })
-  hooks.on_mcp_view = Some(fn() -> Array[(String, station_tools::ManagedServerRuntime)] {
-    [("s1", station_tools::ManagedServerRuntime::{ status: "ready", tools: ["ping"], error: None })]
-  })
-  match (api.admin.host.call)("mcpServers.reloadAll", make_test_api_req_as("POST", "/mcp-servers/reload", owner), [], base_codec::json_obj([])) {
-    Ok(res) => {
-      let s = base_codec::json_stringify(res)
-      if !s.contains("\"status\":\"ready\"") || !s.contains("ping") {
-        panic("mcpServers.reloadAll did not return live runtime status: " + s)
-      }
-    }
-    Err(e) => panic("mcpServers.reloadAll failed: " + e.message)
+    Err(e) => panic("same-endpoint copies.s3.test failed: " + e.message)
   }
 }

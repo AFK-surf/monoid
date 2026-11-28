@@ -2998,7 +2998,7 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const unknownVaultItems = await adminCall(conn, "GET", "/vault/items?vault=nonexistent");
   assert.equal(unknownVaultItems.status, 404, `GET /vault/items?vault=nonexistent expected 404, got ${unknownVaultItems.status}: ${unknownVaultItems.body.toString()}`);
 
-  // 1b. Routes implemented in W17C-3A (#9161), W17C-3B (#9162), and W17D-2 return 200
+  // 1b. Routes implemented in W17C-3A (#9161), W17C-3B (#9162), and W17D-2 R2 return 200
   for (const [m, p, body] of [
     ["GET", "/vault/uses", undefined],
     ["GET", "/vault/plain", undefined],
@@ -3007,26 +3007,78 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     ["GET", "/memory", undefined],
     ["GET", "/mcp-servers", undefined],
     ["PUT", "/mcp-servers", JSON.stringify({ servers: {} })],
-    ["POST", "/mcp-servers/reload", "{}"],
-    ["POST", "/updates/check", "{}"],
     ["POST", "/updates/wait", JSON.stringify({ wait: ["pr:9145"] })],
     ["POST", "/updates/wait", JSON.stringify({ wait: null })],
-    ["GET", "/profiles/pace?v=2", undefined],
-    ["PUT", "/xshare/hosts", JSON.stringify({ workspace: "ws-partner", name: "Partner", station: "st-partner", stationName: "Box" })],
   ] as const) {
-    const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
+    const hdrs: Record<string, string> = { "content-type": "application/json" };
+    if (p.endsWith("/reset-quota")) hdrs["idempotency-key"] = "test-idem-1";
+    const resp = await adminCall(conn, m, p, hdrs, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 200, `${m} ${p} expected 200, got ${resp.status}: ${resp.body.toString()}`);
   }
+  // `updates.wait` with `null` must NOT force `autoUpdate: true` when default was false
+  const cfgAfterWait = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+  assert.notEqual(cfgAfterWait.autoUpdate, true, "clearing updates.wait must not force autoUpdate=true");
+
+  // `POST /updates/check` when unenrolled (no cloud url configured) returns 404 (aligned with Node updates.ts)
+  const checkUnenrolled = await adminCall(conn, "POST", "/updates/check", { "content-type": "application/json" }, Buffer.from("{}"));
+  assert.equal(checkUnenrolled.status, 404, `POST /updates/check unenrolled expected 404, got ${checkUnenrolled.status}: ${checkUnenrolled.body.toString()}`);
 
   // Invalid `POST /updates` input returns 400 (strictly validated; never 501 or fake 200!)
   const badUpdateResp = await adminCall(conn, "POST", "/updates", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(badUpdateResp.status, 400, `POST /updates {} expected 400, got ${badUpdateResp.status}: ${badUpdateResp.body.toString()}`);
 
-  // Unimplemented / unported partial ops return honest 501 (ZERO fake 200 stubs!)
+  // Non-blocking concurrency check: a slow external `POST /copies/s3/test` MUST NOT block concurrent `GET /status`!
+  const slowS3 = createHttpServer((_req, res) => {
+    setTimeout(() => {
+      res.writeHead(403, { "content-type": "application/xml" });
+      res.end("<Error><Code>AccessDenied</Code><Message>AKIA_LEAK_GUARD</Message></Error>");
+    }, 1200);
+  });
+  await new Promise<void>((resolve) => slowS3.listen(0, "127.0.0.1", () => resolve()));
+  const slowS3Port = (slowS3.address() as { port: number }).port;
+  try {
+    const t0 = Date.now();
+    const slowPromise = adminCall(
+      conn,
+      "POST",
+      "/copies/s3/test",
+      { "content-type": "application/json" },
+      Buffer.from(JSON.stringify({
+        endpoint: `http://127.0.0.1:${slowS3Port}`,
+        bucket: "test-bkt",
+        accessKeyId: "AKIA_TEST_1",
+        secretAccessKey: "SECRET_TEST_1",
+      })),
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    const concurrentStatus = await adminCall(conn, "GET", "/status");
+    const elapsedStatus = Date.now() - t0;
+    assert.equal(concurrentStatus.status, 200, `concurrent GET /status failed: ${concurrentStatus.body.toString()}`);
+    assert.ok(elapsedStatus < 900, `GET /status was blocked by slow copies.s3.test! elapsed=${elapsedStatus}ms`);
+    const slowResp = await slowPromise;
+    assert.equal(slowResp.status, 200, `POST /copies/s3/test expected 200 ok:false, got ${slowResp.status}: ${slowResp.body.toString()}`);
+    const slowJson = JSON.parse(slowResp.body.toString("utf8"));
+    assert.equal(slowJson.ok, false);
+    assert.ok(!slowResp.body.toString("utf8").includes("AKIA_LEAK_GUARD"), "copies.s3.test must not echo raw upstream XML");
+    assert.ok(!slowResp.body.toString("utf8").includes("SECRET_TEST_1"), "copies.s3.test must not leak secretAccessKey");
+  } finally {
+    await new Promise<void>((resolve) => slowS3.close(() => resolve()));
+  }
+
+  // Unimplemented / deferred Wave 17E ops return honest 501 (ZERO fake 200 stubs!)
   for (const [m, p, body] of [
     ["GET", "/link-preview?url=https://example.com", undefined],
+    ["POST", "/mcp-servers/reload", "{}"],
+    ["POST", "/mcp-servers/s1/reload", "{}"],
+    ["GET", "/profiles/pace?v=2", undefined],
+    ["POST", "/profiles/p1/quota", "{}"],
+    ["POST", "/profiles/p1/reset-quota", "{}"],
+    ["POST", "/copies/restore", JSON.stringify({ station: "st-1", gen: "g1", from: { s3: "r2" } })],
+    ["PUT", "/xshare/hosts", JSON.stringify({ workspace: "ws-partner", name: "Partner", station: "st-partner", stationName: "Box" })],
   ] as const) {
-    const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
+    const hdrs: Record<string, string> = { "content-type": "application/json" };
+    if (p.endsWith("/reset-quota")) hdrs["idempotency-key"] = "test-idem-1";
+    const resp = await adminCall(conn, m, p, hdrs, body !== undefined ? Buffer.from(body) : undefined);
     assert.equal(resp.status, 501, `${m} ${p} expected honest 501, got ${resp.status}: ${resp.body.toString()}`);
   }
 

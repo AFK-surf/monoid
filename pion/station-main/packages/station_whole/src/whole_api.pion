@@ -274,6 +274,19 @@ pub struct PeerAuthPolicy {
   pub verify_fn : Option[(String, Bytes, Bytes, Bytes) -> Bool]
 }
 
+/// Dynamically admit a newly joined workspace into `allowed_workspaces` without restarting the station.
+pub fn PeerAuthPolicy::add_workspace(self : PeerAuthPolicy, ws : String) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  for i in 0..<self.allowed_workspaces.length() {
+    if self.allowed_workspaces[i] == ws {
+      return
+    }
+  }
+  self.allowed_workspaces.push(ws)
+}
+
 fn ws_allowed(allowed : Array[String], ws : String) -> Bool {
   if ws.length() == 0 {
     return false
