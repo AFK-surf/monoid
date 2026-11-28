@@ -3081,7 +3081,6 @@ fn live_runner_finish_turn(
   sess.last_turn_ended_at = now_ms
 
   let actor = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
-  actor.compacting = false
   // Check whether this is an in-turn Reprompt on a STILL-READY runner (turn does NOT end yet)
   // vs a real turn end that MUST durably commit SQLite `endTurn` BEFORE advancing actor/ACK!
   let mut reprompt_reminder : Option[String] = None
@@ -3214,29 +3213,8 @@ fn live_runner_commit_end_turn(
       match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
         match pend.turn_id {
           Some(tid) => {
-            // Bind `about_thread` & `about_n` when a turn ends failed or unanswered so Pion's own
-            // `hub.session.retry` gate can verify the exact failure notice entry `(thread, seq)`.
-            let mut about_t_j = base_codec::json_null()
-            let mut about_n_j = base_codec::json_null()
-            if pend.outcome == "failed" || (pend.outcome == "completed" && pend.declared_str is None) {
-              match t.first(
-                "SELECT tr.thread AS th, e.n AS en FROM turns tr JOIN entries e ON e.thread = tr.thread WHERE tr.id = ?1 AND e.author_kind = 'station' ORDER BY e.n DESC LIMIT 1",
-                [base_codec::json_str(tid)],
-              ) {
-                Ok(Some(erow)) => {
-                  match (erow.get("th"), erow.get("en")) {
-                    (Some(base_codec::Json::Num(thv, _)), Some(base_codec::Json::Num(nv, _))) => {
-                      about_t_j = sql_db::int64_to_json(thv.to_int64())
-                      about_n_j = sql_db::int64_to_json(nv.to_int64())
-                    }
-                    _ => ()
-                  }
-                }
-                _ => ()
-              }
-            }
             match t.run(
-              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9, about_thread = COALESCE(about_thread, ?10), about_n = COALESCE(about_n, ?11) WHERE id = ?1",
+              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9 WHERE id = ?1",
               [
                 base_codec::json_str(tid),
                 sql_db::int64_to_json(pend.wall_ms),
@@ -3247,8 +3225,6 @@ fn live_runner_commit_end_turn(
                 wsec_j,
                 wfor_j,
                 wwatch_j,
-                about_t_j,
-                about_n_j,
               ],
             ) {
               Err(e) => return Err(e)
@@ -3305,7 +3281,6 @@ fn live_runner_commit_end_turn(
           // 3. Advance actor state & pump next queued prompt (single decision: when reprompt
           //    budget is exhausted, finalize Idle cleanly without re-entering Reprompt!).
           let actor = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
-          actor.compacting = false
           if pend.was_completed {
             match pend.reprompt_reminder {
               Some(rem) => {
@@ -3420,27 +3395,8 @@ fn live_runner_commit_manager_pending_end_turn(
             if already_ended {
               return Ok(true)
             }
-            let mut about_t_j = base_codec::json_null()
-            let mut about_n_j = base_codec::json_null()
-            if pend.outcome == "failed" || (pend.outcome == "completed" && pend.declared_str is None) {
-              match t.first(
-                "SELECT tr.thread AS th, e.n AS en FROM turns tr JOIN entries e ON e.thread = tr.thread WHERE tr.id = ?1 AND e.author_kind = 'station' ORDER BY e.n DESC LIMIT 1",
-                [base_codec::json_str(tid)],
-              ) {
-                Ok(Some(erow)) => {
-                  match (erow.get("th"), erow.get("en")) {
-                    (Some(base_codec::Json::Num(thv, _)), Some(base_codec::Json::Num(nv, _))) => {
-                      about_t_j = sql_db::int64_to_json(thv.to_int64())
-                      about_n_j = sql_db::int64_to_json(nv.to_int64())
-                    }
-                    _ => ()
-                  }
-                }
-                _ => ()
-              }
-            }
             match t.run(
-              "INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, declared, need, wait_seconds, wait_for, wait_watch, profile, person, thread, about_thread, about_n) VALUES (?1, ?2, 'prompt', ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15) ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, outcome = excluded.outcome, detail = excluded.detail, declared = excluded.declared, need = excluded.need, wait_seconds = excluded.wait_seconds, wait_for = excluded.wait_for, wait_watch = excluded.wait_watch, about_thread = COALESCE(turns.about_thread, excluded.about_thread), about_n = COALESCE(turns.about_n, excluded.about_n) WHERE turns.ended_at IS NULL",
+              "INSERT INTO turns (id, session_key, kind, started_at, ended_at, outcome, detail, declared, need, wait_seconds, wait_for, wait_watch, profile, person, thread) VALUES (?1, ?2, 'prompt', ?3, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13) ON CONFLICT(id) DO UPDATE SET ended_at = excluded.ended_at, outcome = excluded.outcome, detail = excluded.detail, declared = excluded.declared, need = excluded.need, wait_seconds = excluded.wait_seconds, wait_for = excluded.wait_for, wait_watch = excluded.wait_watch WHERE turns.ended_at IS NULL",
               [
                 base_codec::json_str(tid),
                 base_codec::json_str(mpend.session_key),
@@ -3455,8 +3411,6 @@ fn live_runner_commit_manager_pending_end_turn(
                 base_codec::json_str(mpend.profile_id),
                 person_j,
                 thread_j,
-                about_t_j,
-                about_n_j,
               ],
             ) {
               Err(e) => return Err(e)
@@ -6017,235 +5971,6 @@ pub fn LiveRunnerManager::handle_role_done(
   }
 }
 
-/// Retries a failed turn referenced by a failure notice `(thread_id, seq)` through `LiveRunnerManager`
-/// and the live session policy gate (1:1 with `station/src/sessions/hub.ts::retryFailed`).
-pub fn LiveRunnerManager::retry_failed_session(
-  self : LiveRunnerManager,
-  ctx : DaemonCtx,
-  core : station_whole::WholeCore,
-  cfg_raw : base_codec::Json,
-  session_key : String,
-  thread_id : Int64,
-  seq : Int64,
-  now_ms : Int64,
-  wall_ms : Int64,
-) -> Result[Unit, station_api::ApiError] {
-  if core.agents.hub.is_held() {
-    return Err(station_api::ApiError::new(503, "station is currently held"))
-  }
-  let st = match core.store.require_open() {
-    Ok(s) => s
-    Err(e) => return Err(station_api::ApiError::new(503, e))
-  }
-  let srow = match st.get_session(session_key) {
-    Ok(Some(r)) => r
-    Ok(None) => return Err(station_api::ApiError::new(404, "unknown session " + session_key))
-    Err(e) => return Err(station_api::ApiError::new(500, e.message))
-  }
-  if srow.archived_at.is_some() {
-    return Err(station_api::ApiError::new(409, "session is archived"))
-  }
-  if self.has_draining_session(session_key) || self.has_pending_draining_stop_for_session(session_key) {
-    return Err(station_api::ApiError::new(409, "session is stopping; retry once it finishes"))
-  }
-  // Verify thread membership and failure notice entry `(thread_id, seq)`.
-  match st.db.first(
-    "SELECT 1 AS ok FROM thread_sessions WHERE thread = ?1 AND session = ?2 AND left_at IS NULL LIMIT 1",
-    [sql_db::int64_to_json(thread_id), base_codec::json_str(session_key)],
-  ) {
-    Ok(Some(_)) => ()
-    _ => return Err(station_api::ApiError::new(404, "session is not in thread " + thread_id.to_string()))
-  }
-  match st.db.first(
-    "SELECT author_kind, text FROM entries WHERE thread = ?1 AND n = ?2 LIMIT 1",
-    [sql_db::int64_to_json(thread_id), sql_db::int64_to_json(seq)],
-  ) {
-    Ok(Some(row)) => {
-      let ak = match row.get("author_kind") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-      let txt = match row.get("text") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-      if !station_api::is_failure_notice_entry(ak, txt) {
-        return Err(station_api::ApiError::new(409, "entry is not a failure notice"))
-      }
-    }
-    _ => return Err(station_api::ApiError::new(404, "unknown failure notice"))
-  }
-  // Verify target notice `(thread_id, seq)` matches THIS session's latest retryable turn
-  // (1:1 with `station/mb/src/reader/actor_run.mbt:158-197`: `failedAgain` || `givenUp` || `cutOffByRestart` || `session_cap`).
-  // Never retry errors that require human intervention (auth, spent/quota, refused).
-  let recovery_prompt = match st.db.first(
-    "SELECT outcome, declared, detail, about_thread, about_n FROM turns WHERE session_key = ?1 ORDER BY started_at DESC LIMIT 1",
-    [base_codec::json_str(session_key)],
-  ) {
-    Ok(Some(trow)) => {
-      let outc = match trow.get("outcome") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-      let decl = match trow.get("declared") { Some(base_codec::Json::Str(s)) => s.trim(), _ => "" }
-      let det = match trow.get("detail") { Some(base_codec::Json::Str(s)) => s.trim(), _ => "" }
-      let at_id = match trow.get("about_thread") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => -1L }
-      let an_seq = match trow.get("about_n") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => -1L }
-      if at_id != thread_id || an_seq != seq {
-        return Err(station_api::ApiError::new(409, "failure notice is no longer the latest retryable turn for this session"))
-      }
-      let cut_off_by_restart = outc == "failed" && (det == "interrupted: restart" || det.starts_with("restart"))
-      let cap_paused = outc == "failed" && det == "other: session_cap"
-      let failed_again = outc == "failed" &&
-      decl.length() == 0 &&
-      (det.starts_with("network:") || det.starts_with("model:") || det.starts_with("other:") || det.starts_with("exited:"))
-      let given_up = outc == "completed" && decl.length() == 0
-      if !cut_off_by_restart && !cap_paused && !failed_again && !given_up {
-        return Err(station_api::ApiError::new(409, "last turn is not retryable (requires human action or already resolved)"))
-      }
-      if cut_off_by_restart {
-        station_drivers::RESUME_AFTER_RESTART
-      } else if given_up {
-        station_drivers::GO_ON_AFTER_UNANSWERED
-      } else {
-        station_drivers::GO_ON_AFTER_FAILED
-      }
-    }
-    Ok(None) => return Err(station_api::ApiError::new(409, "no failed turn to retry for this session"))
-    Err(e) => return Err(station_api::ApiError::new(500, e.message))
-  }
-  let actor = core.agents.hub.ensure_actor(session_key, srow.runtime)
-  if actor.is_busy() || srow.running {
-    return Err(station_api::ApiError::new(409, "session is already running"))
-  }
-  // Verify live policy gate before enqueueing the retry turn.
-  match self.sessions.get(session_key) {
-    Some(cur_s) => {
-      if !live_runner_verify_session_policy(ctx, core, cfg_raw, cur_s) {
-        self.reclaim_session(ctx, core, session_key, cur_s, now_ms)
-        return Err(station_api::ApiError::new(409, "session policy or profile changed; runner reclaimed"))
-      }
-    }
-    None => ()
-  }
-  actor.start_failed = false
-  // Enqueue using canonical `station_drivers` recovery instructions (`ActorWork::InternalPrompt`).
-  actor.enqueue(station_sessions::ActorWork::InternalPrompt(recovery_prompt))
-  actor.pump_next_prompt()
-  let _ = st.db.run(
-    "UPDATE sessions SET last_active_at = ?1 WHERE key = ?2",
-    [sql_db::int64_to_json(wall_ms), base_codec::json_str(session_key)],
-  )
-  self.pump(ctx, core, cfg_raw, now_ms, wall_ms)
-  Ok(())
-}
-
-/// Triggers manual context compaction for an idle session, routing to the target runtime
-/// driver (`claude` `/compact` or `codex` `thread/compact/start`) via `LiveRunnerManager`.
-pub fn LiveRunnerManager::compact_session(
-  self : LiveRunnerManager,
-  ctx : DaemonCtx,
-  core : station_whole::WholeCore,
-  cfg_raw : base_codec::Json,
-  session_key : String,
-  now_ms : Int64,
-  wall_ms : Int64,
-) -> Result[Unit, station_api::ApiError] {
-  if core.agents.hub.is_held() {
-    return Err(station_api::ApiError::new(503, "station is currently held"))
-  }
-  let st = match core.store.require_open() {
-    Ok(s) => s
-    Err(e) => return Err(station_api::ApiError::new(503, e))
-  }
-  let srow = match st.get_session(session_key) {
-    Ok(Some(r)) => r
-    Ok(None) => return Err(station_api::ApiError::new(404, "unknown session " + session_key))
-    Err(e) => return Err(station_api::ApiError::new(500, e.message))
-  }
-  if srow.archived_at.is_some() {
-    return Err(station_api::ApiError::new(409, "session is archived"))
-  }
-  if self.has_draining_session(session_key) || self.has_pending_draining_stop_for_session(session_key) {
-    return Err(station_api::ApiError::new(409, "session is stopping; wait before compacting"))
-  }
-  let actor = core.agents.hub.ensure_actor(session_key, srow.runtime)
-  if actor.is_busy() || srow.running {
-    return Err(station_api::ApiError::new(409, "session is running; wait for the turn to finish before compacting"))
-  }
-  let rkind = match station_drivers::runtime_kind_from_str(srow.runtime) {
-    Some(k) => k
-    None => return Err(station_api::ApiError::new(409, "unsupported runtime: " + srow.runtime))
-  }
-  let rsid = match st.db.first(
-    "SELECT runtime_session_id FROM sessions WHERE key = ?1 LIMIT 1",
-    [base_codec::json_str(session_key)],
-  ) {
-    Ok(Some(r)) => match r.get("runtime_session_id") {
-      Some(base_codec::Json::Str(s)) => s.trim()
-      _ => ""
-    }
-    _ => ""
-  }
-  if rsid.length() == 0 {
-    return Err(station_api::ApiError::new(409, "station.context.empty"))
-  }
-  match rkind {
-    station_drivers::RuntimeKind::Claude => {
-      actor.compacting = true
-      match self.sessions.get(session_key) {
-        Some(sess) => match sess.phase {
-          LiveRunnerPhase::Ready(_, sock_id) => {
-            if !live_runner_verify_session_policy(ctx, core, cfg_raw, sess) {
-              actor.compacting = false
-              self.reclaim_session(ctx, core, session_key, sess, now_ms)
-              return Err(station_api::ApiError::new(409, "session policy or profile changed; runner reclaimed"))
-            }
-            sess.prompt_seq = sess.prompt_seq + 1
-            let frame = encode_runtime_prompt(station_drivers::RuntimeKind::Claude, "/compact", rsid, sess.prompt_seq)
-            if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
-              actor.compacting = false
-              return Err(station_api::ApiError::new(500, "failed to send compact command to runner"))
-            }
-            sess.current_turn_id = Some("compact-" + sess.prompt_seq.to_string())
-            actor.phase = station_sessions::ActorPhase::Running
-            return Ok(())
-          }
-          _ => ()
-        }
-        None => ()
-      }
-      actor.enqueue(station_sessions::ActorWork::InternalPrompt("/compact"))
-      actor.pump_next_prompt()
-      self.pump(ctx, core, cfg_raw, now_ms, wall_ms)
-      Ok(())
-    }
-    station_drivers::RuntimeKind::Codex => {
-      // Codex app-server requires an active live runner for `thread/compact/start`;
-      // never send literal "/compact" as a user prompt to a cold Codex session.
-      match self.sessions.get(session_key) {
-        Some(sess) => match sess.phase {
-          LiveRunnerPhase::Ready(_, sock_id) => {
-            if !live_runner_verify_session_policy(ctx, core, cfg_raw, sess) {
-              self.reclaim_session(ctx, core, session_key, sess, now_ms)
-              return Err(station_api::ApiError::new(409, "session policy or profile changed; runner reclaimed"))
-            }
-            actor.compacting = true
-            sess.prompt_seq = sess.prompt_seq + 1
-            let frame = base_codec::json_stringify(base_codec::json_obj([
-              ("jsonrpc", base_codec::json_str("2.0")),
-              ("id", base_codec::json_str("compact:" + sess.prompt_seq.to_string())),
-              ("method", base_codec::json_str("thread/compact/start")),
-              ("params", base_codec::json_obj([("threadId", base_codec::json_str(rsid))])),
-            ])) + "\n"
-            if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
-              actor.compacting = false
-              return Err(station_api::ApiError::new(500, "failed to send thread/compact/start to codex runner"))
-            }
-            sess.current_turn_id = Some("compact-" + sess.prompt_seq.to_string())
-            actor.phase = station_sessions::ActorPhase::Running
-            Ok(())
-          }
-          _ => Err(station_api::ApiError::new(409, "codex runner is not ready for compaction"))
-        }
-        None => Err(station_api::ApiError::new(409, "codex runner is not active; start a turn before compacting"))
-      }
-    }
-    _ => Err(station_api::ApiError::new(409, "compact is not supported for runtime " + srow.runtime))
-  }
-}
-
 /// Cooperatively stops (or force-kills on second stop) an active session turn.
 pub fn LiveRunnerManager::stop_session(
   self : LiveRunnerManager,
@@ -7586,29 +7311,8 @@ fn commit_pending_end_turn_db_only(
       match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
         match pend.turn_id {
           Some(tid) => {
-            // Bind `about_thread` & `about_n` when a turn ends failed or unanswered so Pion's own
-            // `hub.session.retry` gate can verify the exact failure notice entry `(thread, seq)`.
-            let mut about_t_j = base_codec::json_null()
-            let mut about_n_j = base_codec::json_null()
-            if pend.outcome == "failed" || (pend.outcome == "completed" && pend.declared_str is None) {
-              match t.first(
-                "SELECT tr.thread AS th, e.n AS en FROM turns tr JOIN entries e ON e.thread = tr.thread WHERE tr.id = ?1 AND e.author_kind = 'station' ORDER BY e.n DESC LIMIT 1",
-                [base_codec::json_str(tid)],
-              ) {
-                Ok(Some(erow)) => {
-                  match (erow.get("th"), erow.get("en")) {
-                    (Some(base_codec::Json::Num(thv, _)), Some(base_codec::Json::Num(nv, _))) => {
-                      about_t_j = sql_db::int64_to_json(thv.to_int64())
-                      about_n_j = sql_db::int64_to_json(nv.to_int64())
-                    }
-                    _ => ()
-                  }
-                }
-                _ => ()
-              }
-            }
             match t.run(
-              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9, about_thread = COALESCE(about_thread, ?10), about_n = COALESCE(about_n, ?11) WHERE id = ?1",
+              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9 WHERE id = ?1",
               [
                 base_codec::json_str(tid),
                 sql_db::int64_to_json(pend.wall_ms),
@@ -7619,8 +7323,6 @@ fn commit_pending_end_turn_db_only(
                 wsec_j,
                 wfor_j,
                 wwatch_j,
-                about_t_j,
-                about_n_j,
               ],
             ) {
               Err(e) => return Err(e)

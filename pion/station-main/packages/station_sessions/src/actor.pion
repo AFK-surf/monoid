@@ -252,10 +252,10 @@ pub fn SessionActor::new(key : String, runtime : String) -> SessionActor {
   }
 }
 
-/// Returns true if the actor is currently busy (starting, running, stopping, compacting, or has queued work).
+/// Returns true if the actor is currently busy (starting, running, stopping, or has queued work).
 pub fn SessionActor::is_busy(self : SessionActor) -> Bool {
   match self.phase {
-    ActorPhase::Idle => self.queue.length() > 0 || self.in_flight_start || self.compacting
+    ActorPhase::Idle => self.queue.length() > 0 || self.in_flight_start
     ActorPhase::Closed => false
     _ => true
   }
@@ -333,12 +333,6 @@ fn SessionActor::start_prompt_now(self : SessionActor, text : String, is_interna
 /// - Running -> steers active turn (`Steer`)
 /// - Starting/Stopping/Closed -> enqueues on serial queue (`Queue`)
 pub fn SessionActor::submit_input(self : SessionActor, text : String) -> InputRoute {
-  // Never start or steer user input into a session that is currently compacting:
-  // queue it in strict FIFO order until compaction completes.
-  if self.compacting {
-    self.queue.push(ActorWork::Prompt(text))
-    return InputRoute::Queue
-  }
   let route = route_input(self.phase)
   match route {
     InputRoute::StartPrompt => {

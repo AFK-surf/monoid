@@ -4635,34 +4635,23 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 return
               }
             }
-            // Enforce provider feedback spec + stable channel gate BEFORE any DB or log read!
+            // Enforce provider feedback spec + real installed CHANNEL gate BEFORE any DB read
+            // (1:1 with `station/src/updates/versions.ts:48-64`: config `updateChannel` ?? `<app>/CHANNEL` ?? `"stable"`).
             let provider_fb = match ctx.cloud.provider() {
               station_cloud::Provider::Stillfail => station_cloud::stillfail_spec().feedback
               station_cloud::Provider::Comma => station_cloud::comma_spec().feedback
             }
-            let upd_ch = match base_codec::json_get(live_config_raw(st.core, ctx.cfg_raw), "updateChannel") {
-              Some(base_codec::Json::Str(s)) if s.length() > 0 => s
-              _ => "stable"
+            let installed_ch : Option[String] = match ctx.args.app {
+              Some(app_dir) if app_dir.length() > 0 => station_ops::station_channel(ctx.ops_fs, app_dir, ctx.sep)
+              _ => None
             }
+            let upd_ch = station_whole::resolve_feedback_channel(live_config_raw(st.core, ctx.cfg_raw), installed_ch)
             if !provider_fb || upd_ch != "stable" {
               send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, "feedback reporting is only enabled on stable still.fail stations"))
               astream.mode = AdminStreamMode::Done
               return
             }
-            // Bounded small log tail (<= 64 KiB) to avoid stalling event loop; filtered & scrubbed inside `prepare_feedback_notice_report`.
-            let log_path = nodepath::join(ctx.sep, [ctx.data, "stillfail.log"])
-            let log_tail : Option[String] = match (st.core.agents.jobs.fs.stat)(log_path) {
-              Some(fst) if fst.size > 0L => {
-                let tail_max = 65536L
-                let off = if fst.size > tail_max { fst.size - tail_max } else { 0L }
-                let len = fst.size - off
-                match (st.core.agents.jobs.fs.read_range)(log_path, off, len) {
-                  Some(b) => Some(b.to_string())
-                  None => None
-                }
-              }
-              _ => None
-            }
+            // Submit strictly whitelisted scrubbed structured diagnostic metadata (no synchronous main-loop `stillfail.log` read or unverified free-text logs).
             match station_whole::prepare_feedback_notice_report(
               st.core.store,
               tid,
@@ -4671,7 +4660,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               station_sys::os_name(),
               station_sys::arch_name(),
               station_sys::homedir(),
-              log_tail,
+              None,
             ) {
               Err(e) => {
                 send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(e.status, e.message))
@@ -7576,7 +7565,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       live_runners_cell[0] = Some(live_runners)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
-      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members, live_runners=Some(live_runners))
+      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
@@ -8216,48 +8205,6 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
                 }
                 return
               }
-            }
-          }
-
-          // Cross-station project rename/merge peer RPC (`thread.classify` with `{ rename: { from, to, action, opId, renamedAt, wallAt, originSeq } }`).
-          if method == "thread.classify" {
-            if ctx.cloud.rig_in(ws).is_some() {
-              ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err("rig does not manage workspace projects", v2_bytes), None, v2_bytes, is_front)
-              return
-            }
-            match base_codec::json_get(req, "rename") {
-              Some(ren_j) => {
-                let r_from = match base_codec::json_get(ren_j, "from") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let r_to = match base_codec::json_get(ren_j, "to") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let r_act = match base_codec::json_get(ren_j, "action") { Some(base_codec::Json::Str(s)) if s == "merge" => "merge", _ => "rename" }
-                let r_op_id = match base_codec::json_get(ren_j, "opId") { Some(base_codec::Json::Str(s)) => s, _ => "" }
-                let r_at = match base_codec::json_get(ren_j, "renamedAt") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => now_w }
-                let r_wall = match base_codec::json_get(ren_j, "wallAt") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => now_w }
-                let r_oseq = match base_codec::json_get(ren_j, "originSeq") { Some(base_codec::Json::Num(n, _)) => n.to_int64(), _ => 0L }
-                match station_whole::apply_incoming_project_rename_peer(
-                  st.core.store,
-                  st.core.config.home_workspace,
-                  st.core.api.events,
-                  ws,
-                  r_act,
-                  r_from,
-                  r_to,
-                  r_op_id,
-                  r_at,
-                  r_wall,
-                  r_oseq,
-                  now_w,
-                ) {
-                  Ok(res_j) => {
-                    ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
-                  }
-                  Err(e) => {
-                    ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_err(e.message, v2_bytes), None, v2_bytes, is_front)
-                  }
-                }
-                return
-              }
-              None => ()
             }
           }
 
