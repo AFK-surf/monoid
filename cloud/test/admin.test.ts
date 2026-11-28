@@ -653,3 +653,68 @@ test("with Cloudflare Access, an operator blocks neither their own account nor t
     await h.close();
   }
 });
+
+test("parallel Directory RPCs on /v1/me, /v1/admin/relays/list, and /v1/admin/users return full state and note operators", async () => {
+  const relayUrl = "https://203.0.113.7";
+  const h = await harness({ relayUrls: relayUrl, relayNames: { [relayUrl]: "Test Relay" } });
+  try {
+    const aliceTokens = await h.login("alice");
+    const bobTokens = await h.login("bob");
+    const alice = h.as(aliceTokens);
+    const aliceAdmin = h.as(aliceTokens, "admin");
+    const bobAdmin = h.as(bobTokens, "admin");
+
+    const ws = (await (await alice("POST", "/v1/workspaces", { name: "Ops Lab" })).json()) as { id: string };
+    assert.equal((await alice("POST", `/v1/workspaces/${ws.id}/invitations`, { role: "member", email: "bob@example.test" })).status, 200);
+    assert.equal((await aliceAdmin("POST", "/v1/admin/pending", { email: "pending@example.test", beta: true })).status, 200);
+
+    const bobMe = (await (await bobAdmin("GET", "/v1/me")).json()) as {
+      operator?: boolean;
+      console?: boolean;
+      invitations: { workspace_name: string }[];
+    };
+    assert.equal(bobMe.operator, false);
+    assert.equal(bobMe.console, true);
+    assert.equal(bobMe.invitations.length, 1);
+
+    const aliceMainMe = (await (await alice("GET", "/v1/me")).json()) as {
+      operator?: boolean;
+      console?: boolean;
+      user: { email: string };
+      workspaces: { id: string }[];
+    };
+    assert.equal(aliceMainMe.operator, false);
+    assert.equal("console" in aliceMainMe, false);
+    assert.equal(aliceMainMe.user.email, "alice@example.test");
+    assert.ok(aliceMainMe.workspaces.some((w) => w.id === ws.id));
+
+    const events = await listen(h, aliceTokens.access_token, "admin");
+    const aliceConsoleMe = (await (await aliceAdmin("GET", "/v1/me")).json()) as {
+      operator?: boolean;
+      console?: boolean;
+    };
+    assert.equal(aliceConsoleMe.operator, true);
+    assert.equal(aliceConsoleMe.console, true);
+    await (await h.object("DIRECTORY", "primary")).tellAdmins({ type: "relays" });
+    assert.ok((await events.take()).some((e) => e.includes('"relays"')));
+
+    const relaysListed = (await (await aliceAdmin("POST", "/v1/admin/relays/list", {})).json()) as {
+      relays: { url: string; name: string }[];
+      mesh: unknown[];
+    };
+    assert.equal(relaysListed.relays.length, 1);
+    assert.equal(relaysListed.relays[0]!.url, relayUrl);
+    assert.equal(relaysListed.relays[0]!.name, "Test Relay");
+    assert.ok(Array.isArray(relaysListed.mesh));
+
+    const usersListed = (await (await aliceAdmin("GET", "/v1/admin/users")).json()) as {
+      users: { email: string }[];
+      pending: { email: string }[];
+    };
+    assert.ok(usersListed.users.some((u) => u.email === "alice@example.test"));
+    assert.ok(usersListed.users.some((u) => u.email === "bob@example.test"));
+    assert.ok(usersListed.pending.some((p) => p.email === "pending@example.test"));
+  } finally {
+    await h.close();
+  }
+});

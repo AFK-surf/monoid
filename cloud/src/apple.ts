@@ -92,7 +92,10 @@ export async function appleIdentity(env: Env, code: string, nonce: string, name:
       redirect_uri: `${origin}/v1/auth/apple/callback`,
     }),
   });
-  if (!response.ok) throw new Error("apple_exchange_failed");
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => {});
+    throw new Error("apple_exchange_failed");
+  }
   const tokens = (await response.json()) as { id_token?: unknown; refresh_token?: unknown };
   if (typeof tokens.id_token !== "string" || !tokens.id_token) throw new Error("apple_identity_missing");
 
@@ -143,6 +146,7 @@ export async function revokeAppleToken(env: Env, token: string): Promise<void> {
       token_type_hint: "refresh_token",
     }),
   });
+  await response.body?.cancel().catch(() => {});
   if (!response.ok) throw new Error(`apple_revoke_failed_${response.status}`);
 }
 

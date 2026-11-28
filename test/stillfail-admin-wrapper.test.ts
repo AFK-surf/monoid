@@ -429,6 +429,17 @@ test("bin/stillfail.ps1's admin branch takes Node's admin CLI before the reader,
   assert.doesNotMatch(block, /-(notin|ne|eq) '(node|moonbit)'/, "the engine is matched by case, as bin/stillfail does");
 });
 
+test("bin/stillfail.ps1 guards every trailing argument slice so short invocations never pass $null", () => {
+  const ps1 = readFileSync(join(root, "bin", "stillfail.ps1"), "utf8");
+  assert.doesNotMatch(ps1, /\$a\[\d+\.\.\(\$a\.Count\)\]/, "no unguarded slice ending at $a.Count");
+  for (const needle of [
+    "if ($a.Count -gt 1) { $a[1..($a.Count - 1)]",
+    "if ($a.Count -gt 2) { $a[2..($a.Count - 1)]",
+  ]) {
+    assert.ok(ps1.includes(needle), `expected guarded slice: ${needle}`);
+  }
+});
+
 const onWindows = process.platform === "win32";
 
 // A PowerShell literal: single-quoted, its quotes doubled.

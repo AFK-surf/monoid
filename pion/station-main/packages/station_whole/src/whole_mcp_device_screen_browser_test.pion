@@ -1,0 +1,827 @@
+// Wave 17E-2B comprehensive pure-DI tests (zero C FFI) for:
+// - `DomainHandlers.device` (workspace isolation, honest unwired refusals for device_use/phone_use/phone_send/stream_audio)
+// - `DomainHandlers.screen` (`screen`, `computer` human-control precedence, `permissions`)
+// - `DomainHandlers.browser` + `screens.browser.open` (localhost:3000, empty -> about:blank,
+//   dangerous schemes & control chars blocked, 503 noBrowser, 501 unwired wake, sleeping-tab restore on wake failure)
+// - `signins.{self,deny,fill}` + `sign_in` MCP tool (production-port 501 before plaintext, unknown JSON field preservation,
+//   24h expiry, archived session closure, `closed_cards` + append-edit, `SessionActor::enqueue_internal_notice`
+//   non-blocking Steer, isPublicSuffix, vault_held check, honest `done` text, 15-min `HELD_MS` TTL, zero plaintext leakage)
+// - `WholeAgents::wired_tools` only advertising live-backed tools.
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "station_api"
+import "station_browser"
+import "station_devices"
+import "station_jobs"
+import "station_screens"
+import "station_sessions"
+import "station_tools"
+
+fn dsb_reply_text(r : station_tools::ToolReply) -> String {
+  if r.content.length() == 0 {
+    return ""
+  }
+  match r.content[0] {
+    station_tools::ContentItem::Text(s) => s
+    _ => ""
+  }
+}
+
+fn make_dsb_mem_browser(now_cell : Array[Int64]) -> BrowserOsManager {
+  let transport = builders_core::MuxTransport::{
+    call_async: fn(_id : Int64, _op : String, _j : String, _p : Option[Bytes]) -> Unit {},
+    call_sync: fn(_op : String, _j : String) -> String { "{}" },
+    write_stdout_line: fn(_l : String) -> Bool { true },
+    write_stdout_frame: fn(_h : Array[(String, base_codec::Json)], _p : Bytes) -> Bool { true },
+    now_ms: fn() -> Int64 { now_cell[0] },
+    wall_ms: fn() -> Int64 { now_cell[0] },
+    wait: fn(_ms : Int64) -> Option[host_shim::HostEvent] { None },
+  }
+  let hub = EdgeMuxHub::from_transport(transport)
+  let hold_hub = station_browser::AgentHoldHubPort::{
+    people_views: fn(_sid : String) -> Array[station_browser::ScreenWatcherView] { [] },
+    has_taken_view: fn(_sid : String) -> Bool { false },
+    yield_to_agent: fn(_sid : String, _agent : String) -> Int { 0 },
+    join_agent: fn(_sid : String, _agent : String) -> Int { 0 },
+    leave_agent: fn(_sid : String, _tok : Int) -> Unit {},
+  }
+  BrowserOsManager::new(
+    hub,
+    hold_hub,
+    fn(s : String) -> String { s },
+    fn(cid : String) -> Option[String] {
+      if cid == "ctx-card" { Some("s-card") } else { None }
+    },
+  )
+}
+
+fn make_dsb_mem_fixture(
+  now_ms : Int64,
+) -> (
+  Array[Int64],
+  WholeStore,
+  WholeAgents,
+  WholeApi,
+  WholeApiRuntimeHooks,
+  DevicesOsRuntime,
+  BrowserOsManager,
+  DsbMemStoreState,
+  DsbStorePort,
+) {
+  let now_cell : Array[Int64] = [now_ms]
+  let (store, agents, api, _, _, hooks) = make_mem_whole_api_fixture()
+  let devices = DevicesOsRuntime::new(now_fn=fn() -> Int64 { now_cell[0] })
+  let browser = make_dsb_mem_browser(now_cell)
+  let mem = DsbMemStoreState::new()
+  let store_port = DsbStorePort::in_memory(mem, agents)
+  (now_cell, store, agents, api, hooks, devices, browser, mem, store_port)
+}
+
+test "w17e2b: screens.browser.open URL policy, control chars, 503 noBrowser, 501 unwired, sleeping-tab restore, and success" {
+  let (now_cell, _, agents, api, hooks, devices, browser, _, store_port) = make_dsb_mem_fixture(1_700_000_000_000L)
+  let avail_cell : Array[Bool] = [false]
+  let fail_wake_cell : Array[Bool] = [false]
+  let wake_urls : Array[String] = []
+  let base_ports = DeviceScreenBrowserPorts::in_memory()
+
+  // First test production-shaped unwired wake_browser_target (None) when browser_available is true -> 501 (NOT 503)
+  let unwired_ports = DeviceScreenBrowserPorts::{
+    ..base_ports,
+    browser_available: fn() -> Bool { true },
+    wake_browser_target: None,
+  }
+  let rt_unwired = DeviceScreenBrowserRuntime::new(devices, browser, api.screens, unwired_ports)
+  wire_device_screen_browser_with_port(rt_unwired, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+  let alice = make_test_viewer("alice@example.com", "u-alice", "ws-main", true, "owner")
+  let req = make_test_api_req_as("POST", "/screens/browser", alice)
+  match (api.admin.host.call)(
+    "screens.browser.open",
+    req,
+    [],
+    base_codec::json_obj([("url", base_codec::json_str("https://example.com"))]),
+  ) {
+    Err(e) => if e.status != 501 { panic("expected honest 501 when wake_browser_target is None, got " + e.status.to_string()) }
+    Ok(_) => panic("expected 501 when wake_browser_target is None")
+  }
+
+  // Now wire a mock async wake_browser_target to test URL policy, 503, rollback/restore, and success
+  let ports = DeviceScreenBrowserPorts::{
+    ..base_ports,
+    random_hex: fn(_n : Int) -> String { "aabbccddeeff" },
+    browser_available: fn() -> Bool { avail_cell[0] },
+    wake_browser_target: Some(fn(url : String, _key : String) -> Result[String, station_api::ApiError] {
+      wake_urls.push(url)
+      if fail_wake_cell[0] {
+        return Err(station_api::ApiError::new(502, "cdp target creation failed"))
+      }
+      Ok("tgt-" + wake_urls.length().to_string())
+    }),
+  }
+  let rt = DeviceScreenBrowserRuntime::new(devices, browser, api.screens, ports)
+  wire_device_screen_browser_with_port(rt, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+
+  // 1. Dangerous schemes AND control characters (before trim) strictly blocked with 400
+  let bad_urls : Array[String] = [
+    "file:///etc/passwd",
+    "javascript:alert(1)",
+    "data:text/html,<h1>x</h1>",
+    "chrome://settings",
+    "mailto:alice@example.com",
+    "https://example.com\n",
+    "\thttps://example.com",
+  ]
+  for i in 0..<bad_urls.length() {
+    match (api.admin.host.call)(
+      "screens.browser.open",
+      req,
+      [],
+      base_codec::json_obj([("url", base_codec::json_str(bad_urls[i]))]),
+    ) {
+      Err(e) => if e.status != 400 { panic("expected 400 for " + bad_urls[i] + ", got " + e.status.to_string()) }
+      Ok(_) => panic("dangerous/control-char URL must be rejected: " + bad_urls[i])
+    }
+  }
+
+  // 2. No browser available -> 503 station.screen.noBrowser (even for valid localhost:3000)
+  match (api.admin.host.call)(
+    "screens.browser.open",
+    req,
+    [],
+    base_codec::json_obj([("url", base_codec::json_str("localhost:3000"))]),
+  ) {
+    Err(e) => if e.status != 503 { panic("expected 503 noBrowser, got " + e.status.to_string()) }
+    Ok(_) => panic("expected 503 when no browser available")
+  }
+
+  // 3. Wake failure on new tab -> rolls back ScreenHub + UserTabsState (zero phantom screen!)
+  avail_cell[0] = true
+  fail_wake_cell[0] = true
+  match (api.admin.host.call)(
+    "screens.browser.open",
+    req,
+    [],
+    base_codec::json_obj([("url", base_codec::json_str("localhost:3000")), ("id", base_codec::json_str("u_112233445566"))]),
+  ) {
+    Err(e) => if e.status != 502 { panic("expected 502 on wake failure, got " + e.status.to_string()) }
+    Ok(_) => panic("expected error on wake failure")
+  }
+  if api.screens.get("browser:u_112233445566").is_some() {
+    panic("ScreenHub leaked phantom screen after wake failure")
+  }
+  if !browser.user_tabs.is_sleeping("u_112233445566") {
+    panic("UserTabsState leaked live tab after wake failure")
+  }
+
+  // 3b. Wake failure on an existing sleeping tab -> restores the sleeping tab instead of deleting it!
+  let sleeping_src = station_screens::RegisteredSource::{
+    ..station_screens::RegisteredSource::desktop("browser:u_001122334455", "Old Sleeping Tab", 1280, 800),
+    kind: station_screens::ScreenKind::Browser,
+    user_tab: true,
+    sleeping: true,
+  }
+  api.screens.add(sleeping_src)
+  match (api.admin.host.call)(
+    "screens.browser.open",
+    req,
+    [],
+    base_codec::json_obj([("url", base_codec::json_str("https://example.com")), ("id", base_codec::json_str("u_001122334455"))]),
+  ) {
+    Err(e) => if e.status != 502 { panic("expected 502 on sleeping tab wake failure") }
+    Ok(_) => panic("expected wake failure")
+  }
+  match api.screens.get("browser:u_001122334455") {
+    Some(restored) => if !restored.sleeping || restored.title != "Old Sleeping Tab" {
+      panic("expected original sleeping tab to be restored on wake failure")
+    }
+    None => panic("sleeping tab was deleted instead of restored on wake failure!")
+  }
+
+  // 4. localhost:3000 succeeds -> normalized to http://localhost:3000/
+  fail_wake_cell[0] = false
+  match (api.admin.host.call)(
+    "screens.browser.open",
+    req,
+    [],
+    base_codec::json_obj([("url", base_codec::json_str("localhost:3000")), ("id", base_codec::json_str("u_112233445566"))]),
+  ) {
+    Ok(j) => {
+      if json_field_str(j, "screen") != Some("browser:u_112233445566") {
+        panic("unexpected screen id for localhost:3000")
+      }
+    }
+    Err(e) => panic("localhost:3000 should succeed: " + e.message)
+  }
+  if wake_urls[wake_urls.length() - 1] != "http://localhost:3000/" {
+    panic("expected http://localhost:3000/, got " + wake_urls[wake_urls.length() - 1])
+  }
+
+  // 5. Empty URL -> opens about:blank (without double rewrite)
+  match (api.admin.host.call)(
+    "screens.browser.open",
+    req,
+    [],
+    base_codec::json_obj([("url", base_codec::json_str("")), ("id", base_codec::json_str("u_abcdef012345"))]),
+  ) {
+    Ok(j) => {
+      if json_field_str(j, "screen") != Some("browser:u_abcdef012345") {
+        panic("unexpected screen id for empty URL")
+      }
+    }
+    Err(e) => panic("empty URL should open about:blank: " + e.message)
+  }
+  if wake_urls[wake_urls.length() - 1] != "about:blank" {
+    panic("expected about:blank, got " + wake_urls[wake_urls.length() - 1])
+  }
+
+  // 6. Sleeping tab wake success rebinds `UserTabsState` to the new target (no longer sleeping!)
+  let slept = browser.user_tabs.tick_idle(now_cell[0] + 999_999_999L)
+  if slept.length() == 0 || !browser.user_tabs.is_sleeping("u_112233445566") {
+    panic("expected u_112233445566 to sleep after idle timeout")
+  }
+  match (api.admin.host.call)(
+    "screens.browser.open",
+    req,
+    [],
+    base_codec::json_obj([("url", base_codec::json_str("https://example.com/woke")), ("id", base_codec::json_str("u_112233445566"))]),
+  ) {
+    Ok(_) => ()
+    Err(e) => panic("waking sleeping tab should succeed: " + e.message)
+  }
+  if browser.user_tabs.is_sleeping("u_112233445566") {
+    panic("sleeping tab MUST be rebound to the new target after wake success!")
+  }
+}
+
+test "w17e2b: DomainHandlers.device workspace isolation and honest unwired refusals (zero fake ports)" {
+  let (now_cell, store, agents, api, hooks, devices, browser, mem, store_port) = make_dsb_mem_fixture(1_700_000_000_000L)
+  mem.sessions.set("s-main", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(10L),
+    chat_addr: Some("CHAT/10"),
+  })
+
+  let _ = devices.registry.add(
+    "ws-main",
+    "u-alice",
+    "alice@example.com",
+    "Alice",
+    station_devices::DeviceSpec::{
+      id: "1111111111111111",
+      name: "Lab Router",
+      kind: station_devices::DeviceKind::Tcp,
+      target: "10.0.0.5:8080",
+      baud: None,
+      model: None,
+      protocols: None,
+      paired: None,
+    },
+    100L,
+  )
+  let _ = devices.registry.add(
+    "ws-other",
+    "u-bob",
+    "bob@example.com",
+    "Bob",
+    station_devices::DeviceSpec::{
+      id: "3333333333333333",
+      name: "Other WS Secret",
+      kind: station_devices::DeviceKind::Tcp,
+      target: "10.0.0.9:22",
+      baud: None,
+      model: None,
+      protocols: None,
+      paired: None,
+    },
+    100L,
+  )
+
+  let rt = DeviceScreenBrowserRuntime::new(devices, browser, api.screens, DeviceScreenBrowserPorts::in_memory())
+  wire_device_screen_browser_with_port(rt, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+  let base_h = station_tools::default_domain_handlers()
+  let handlers = station_tools::DomainHandlers::{
+    ..base_h,
+    device: match agents.device_tool_override { Some(f) => f, None => base_h.device },
+  }
+  let _ = store
+
+  // 1. Cross-workspace isolation
+  let list_r = (handlers.device)("s-main", "device_list", base_codec::json_obj([]))
+  if list_r.is_error { panic("device_list failed: " + dsb_reply_text(list_r)) }
+  if !dsb_reply_text(list_r).contains("Lab Router") {
+    panic("expected Lab Router in device_list")
+  }
+  if dsb_reply_text(list_r).contains("Other WS Secret") || dsb_reply_text(list_r).contains("3333333333333333") {
+    panic("cross-workspace device leaked into device_list!")
+  }
+
+  // 2. Honest unwired refusals: zero fake 127.0.0.1:<port>, zero fake approval cards, zero sync file reads
+  let du = (handlers.device)("s-main", "device_use", base_codec::json_obj([("device", base_codec::json_str("1111111111111111"))]))
+  if !du.is_error || dsb_reply_text(du).contains("127.0.0.1:") {
+    panic("device_use must honestly refuse instead of forging a local door port, got: " + dsb_reply_text(du))
+  }
+  let pu = (handlers.device)("s-main", "phone_use", base_codec::json_obj([("reason", base_codec::json_str("test"))]))
+  if !pu.is_error || dsb_reply_text(pu).contains("waits for them to approve") {
+    panic("phone_use must honestly refuse until approval cards are wired, got: " + dsb_reply_text(pu))
+  }
+  let ps = (handlers.device)("s-main", "phone_send", base_codec::json_obj([("path", base_codec::json_str("/tmp/a.apk"))]))
+  if !ps.is_error {
+    panic("phone_send must honestly refuse until wired")
+  }
+  let sa = (handlers.device)(
+    "s-main",
+    "device_control",
+    base_codec::json_obj([
+      ("device", base_codec::json_str("1111111111111111")),
+      ("action", base_codec::json_str("stream_audio")),
+      ("path", base_codec::json_str("/tmp/a.wav")),
+    ]),
+  )
+  if !sa.is_error || !dsb_reply_text(sa).contains("not yet wired") {
+    panic("device_control stream_audio must honestly refuse instead of blocking main loop, got: " + dsb_reply_text(sa))
+  }
+
+  // 3. `wired_tools` ONLY advertises live-backed production tools (`device_list`, `screen`),
+  //    strictly omitting unwired `device_control`, `adb_devices`, `sign_in`, `computer`, `permissions`, `browser`, `device_use`, `phone_use`, `phone_send`!
+  let wired = agents.wired_tools()
+  let mut has_device_list = false
+  let mut has_screen = false
+  for i in 0..<wired.length() {
+    let tname = wired[i].name
+    if tname == "device_list" { has_device_list = true }
+    if tname == "screen" { has_screen = true }
+    if tname == "device_control"
+    || tname == "adb_devices"
+    || tname == "sign_in"
+    || tname == "computer"
+    || tname == "permissions"
+    || tname == "browser"
+    || tname == "device_use"
+    || tname == "phone_use"
+    || tname == "phone_send" {
+      panic("unwired tool falsely advertised in wired_tools: " + tname)
+    }
+  }
+  if !has_device_list || !has_screen {
+    panic("expected device_list and screen in wired_tools")
+  }
+}
+
+test "w17e2b: DomainHandlers.screen hides user tabs, enforces human control, and browser MCP reports honest unwired status" {
+  let (now_cell, store, agents, api, hooks, devices, browser, mem, store_port) = make_dsb_mem_fixture(1_700_000_000_000L)
+  mem.sessions.set("s-main", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(20L),
+    chat_addr: Some("CHAT/20"),
+  })
+
+  api.screens.add(station_screens::RegisteredSource::desktop("desktop", "Mac Desktop", 1920, 1080))
+  api.screens.add(station_screens::RegisteredSource::{
+    ..station_screens::RegisteredSource::desktop("browser:u_secret", "Private Tab", 1280, 800),
+    kind: station_screens::ScreenKind::Browser,
+    user_tab: true,
+  })
+  let _ = api.screens.join("desktop", station_screens::JoinParams::human("Alice", true, "dev-1", true), now_cell[0])
+
+  let rt = DeviceScreenBrowserRuntime::new(devices, browser, api.screens, DeviceScreenBrowserPorts::in_memory())
+  wire_device_screen_browser_with_port(rt, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+  let base_h = station_tools::default_domain_handlers()
+  let handlers = station_tools::DomainHandlers::{
+    ..base_h,
+    screen: match agents.screen_tool_override { Some(f) => f, None => base_h.screen },
+    browser: match agents.browser_tool_override { Some(f) => f, None => base_h.browser },
+  }
+  let _ = store
+
+  // 1. `screen` lists desktop and hides private user_tab
+  let listed = (handlers.screen)("s-main", "screen", base_codec::json_obj([]))
+  if listed.is_error || !dsb_reply_text(listed).contains("desktop") || dsb_reply_text(listed).contains("u_secret") {
+    panic("screen list mismatch: " + dsb_reply_text(listed))
+  }
+  // 2. Requesting user_tab directly returns userOnly error
+  let user_only = (handlers.screen)("s-main", "screen", base_codec::json_obj([("id", base_codec::json_str("browser:u_secret"))]))
+  if !user_only.is_error {
+    panic("screen must refuse user_tab")
+  }
+  // 3. `computer` click refused while Alice is controlling desktop
+  let click_refused = (handlers.screen)(
+    "s-main",
+    "computer",
+    base_codec::json_obj([
+      ("screen", base_codec::json_str("desktop")),
+      ("action", base_codec::json_str("click")),
+      ("x", base_codec::json_int(100)),
+      ("y", base_codec::json_int(200)),
+    ]),
+  )
+  if !click_refused.is_error || !dsb_reply_text(click_refused).contains("Alice") || !dsb_reply_text(click_refused).contains("controlling") {
+    panic("computer must refuse input while human controls screen, got: " + dsb_reply_text(click_refused))
+  }
+  // 4. `permissions` on Linux returns non-Mac guidance without blocking
+  let perms = (handlers.screen)("s-main", "permissions", base_codec::json_obj([]))
+  if perms.is_error || !dsb_reply_text(perms).contains("not a Mac") {
+    panic("permissions on linux mismatch: " + dsb_reply_text(perms))
+  }
+  // 5. `browser` tool status works cleanly, and `navigate` when ensure_session_browser=None reports honest unwired error (NOT "no browser binary")
+  let bstatus = (handlers.browser)("s-main", "browser", base_codec::json_obj([("action", base_codec::json_str("status"))]))
+  if bstatus.is_error || !dsb_reply_text(bstatus).contains("Not running") {
+    panic("browser status mismatch: " + dsb_reply_text(bstatus))
+  }
+  let bnav = (handlers.browser)(
+    "s-main",
+    "browser",
+    base_codec::json_obj([("action", base_codec::json_str("endpoint"))]),
+  )
+  if !bnav.is_error || !dsb_reply_text(bnav).contains("not yet wired") || dsb_reply_text(bnav).contains("no browser binary") {
+    panic("browser endpoint unwired message mismatch: " + dsb_reply_text(bnav))
+  }
+}
+
+test "w17e2b: signins.{self,deny,fill} production-port 501 before plaintext, unknown fields, archive cleanup, sign_in checks, TTL & zero leak" {
+  let base_ms : Int64 = 1_700_000_000_000L
+  let (now_cell, _, agents, api, hooks, devices, browser, mem, store_port) = make_dsb_mem_fixture(base_ms)
+  mem.sessions.set("s-1", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(500L),
+    chat_addr: Some("CHAT/ts-500"),
+  })
+
+  let seeded_body = base_codec::json_obj([
+    ("id", base_codec::json_str("g_ask1")),
+    ("session", base_codec::json_str("s-1")),
+    ("chat", base_codec::json_str("CHAT/ts-500")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("site", base_codec::json_str("github.com")),
+    ("tab", base_codec::json_str("tab-gh")),
+    ("reason", base_codec::json_str("check PR")),
+    ("at", base_codec::json_int64(base_ms / 1000L)),
+    ("status", base_codec::json_str("pending")),
+    ("thread", base_codec::json_int64(500L)),
+    ("cardTs", base_codec::json_str("card-1")),
+    ("said", base_codec::json_str("keep-me-said")),
+    ("save", base_codec::json_str("req-save-99")),
+    ("kept", base_codec::json_str("pending")),
+    ("customExtra", base_codec::json_str("preserve-me-123")),
+  ])
+  mem.asks.set("g_ask1", ("s-1", "pending", base_codec::json_stringify(seeded_body)))
+
+  let secret_pw = "S3cr3t!Pass#2026"
+  let alice = make_test_viewer("alice@example.com", "u-alice", "ws-main", true, "owner")
+  let alice_other_ws = make_test_viewer("alice@example.com", "u-alice", "ws-other", true, "owner")
+  let req_alice = make_test_api_req_as("POST", "/browser/sign-ins/g_ask1/fill", alice)
+
+  // 0. PRODUCTION-PORT CHECK: when async_signin_driver_available() == false (production default),
+  // EVEN IF browser & tab are live, `signins.fill` MUST return honest 501 BEFORE touching plaintext!
+  let prod_ports = DeviceScreenBrowserPorts::{
+    ..DeviceScreenBrowserPorts::in_memory(),
+    browser_available: fn() -> Bool { true },
+    has_live_session_tab: fn(_s : String, _t : String) -> Bool { true },
+    async_signin_driver_available: fn() -> Bool { false },
+    step_async_signin_fill: None,
+  }
+  let rt_prod = DeviceScreenBrowserRuntime::new(devices, browser, api.screens, prod_ports)
+  wire_device_screen_browser_with_port(rt_prod, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+  // P1-2: HTTP route preflight MUST return 501 BEFORE `json_input` parses the body (even with invalid JSON!)
+  let bad_json_req = station_api::ApiRequest::{
+    ..req_alice,
+    body: "{not valid json".to_bytes(),
+  }
+  match station_api::dispatch_integration_route(bad_json_req, ["browser", "sign-ins", "g_ask1", "fill"], api.admin.host) {
+    Some(rr) => if rr.response.status != 501 {
+      panic("expected HTTP 501 preflight before json_input on malformed body, got " + rr.response.status.to_string())
+    }
+    None => panic("expected integration route match for POST /browser/sign-ins/g_ask1/fill")
+  }
+  match (api.admin.host.call)(
+    "signins.fill",
+    req_alice,
+    ["g_ask1"],
+    base_codec::json_obj([("username", base_codec::json_str("alice")), ("password", base_codec::json_str(secret_pw))]),
+  ) {
+    Err(e) => if e.status != 501 { panic("expected 501 when async CDP driver unavailable, got " + e.status.to_string()) }
+    Ok(_) => panic("signins.fill MUST refuse with 501 when async CDP driver is not wired!")
+  }
+  if rt_prod.held_cred_count() != 0 || rt_prod.pending_fill_count() != 0 {
+    panic("CRITICAL: plaintext password was stored despite missing async CDP driver!")
+  }
+
+  // Now wire a mock non-blocking async driver (`step_async_signin_fill`) to test the full async fill lifecycle
+  let browser_avail : Array[Bool] = [false]
+  let tab_live : Array[Bool] = [false]
+  let filled_pw_seen : Array[Bool] = [false]
+
+  let base_ports = DeviceScreenBrowserPorts::in_memory()
+  let ports = DeviceScreenBrowserPorts::{
+    ..base_ports,
+    browser_available: fn() -> Bool { browser_avail[0] },
+    has_live_session_tab: fn(s : String, t : String) -> Bool { s == "s-1" && t == "tab-gh" && tab_live[0] },
+    async_signin_driver_available: fn() -> Bool { true },
+    step_async_signin_fill: Some(fn(job : PendingSigninFill, creds : HeldSigninCreds) -> Option[station_browser::Driven] {
+      if job.site == "github.com" && creds.password == Some(secret_pw) {
+        filled_pw_seen[0] = true
+        return Some(station_browser::Driven::Left)
+      }
+      None
+    }),
+  }
+  let rt = DeviceScreenBrowserRuntime::new(devices, browser, api.screens, ports)
+  wire_device_screen_browser_with_port(rt, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+
+  // 1. Cross-workspace request rejected (409)
+  match (api.admin.host.call)(
+    "signins.fill",
+    make_test_api_req_as("POST", "/browser/sign-ins/g_ask1/fill", alice_other_ws),
+    ["g_ask1"],
+    base_codec::json_obj([("password", base_codec::json_str(secret_pw))]),
+  ) {
+    Err(e) => if e.status != 409 { panic("expected 409 for cross-ws signin") }
+    Ok(_) => panic("cross-ws signin must be rejected")
+  }
+
+  // 2. FAIL-CLOSED BEFORE HOLDING PLAINTEXT PASSWORD when browser/tab is unavailable!
+  match (api.admin.host.call)(
+    "signins.fill",
+    req_alice,
+    ["g_ask1"],
+    base_codec::json_obj([("username", base_codec::json_str("alice")), ("password", base_codec::json_str(secret_pw))]),
+  ) {
+    Err(e) => if e.status != 409 { panic("expected 409 when browser unavailable, got " + e.status.to_string()) }
+    Ok(_) => panic("signins.fill must refuse before storing plaintext password when browser unavailable")
+  }
+  if rt.held_cred_count() != 0 {
+    panic("plaintext password MUST NOT be stored in memory on fail-closed refusal!")
+  }
+
+  // 3. With live browser & tab, `signins.fill` accepts, queues async drive, and `tick_with_port` drives it to `left`
+  browser_avail[0] = true
+  tab_live[0] = true
+  let actor = agents.hub.ensure_actor("s-1", "claude")
+  let _ = actor.submit_input("human initial")
+  match (api.admin.host.call)(
+    "signins.fill",
+    req_alice,
+    ["g_ask1"],
+    base_codec::json_obj([
+      ("username", base_codec::json_str("alice")),
+      ("password", base_codec::json_str(secret_pw)),
+      ("keep", base_codec::json_bool(true)),
+    ]),
+  ) {
+    Ok(_) => ()
+    Err(e) => panic("signins.fill with live tab should succeed: " + e.message)
+  }
+  if rt.held_cred_count() != 1 || rt.pending_fill_count() != 1 {
+    panic("expected 1 held cred and 1 pending fill")
+  }
+  let driven = rt.tick_with_port(store_port, now_cell[0] + 100L)
+  if driven != 1 || !filled_pw_seen[0] {
+    panic("expected async CDP autofill to run and type password")
+  }
+
+  // 4. Verify `signin_asks.body` preserved ALL unknown/existing fields AND zero plaintext password leaked!
+  let (st_after, body_after) = match mem.asks.get("g_ask1") {
+    Some((_, s, b)) => (s, b)
+    None => panic("missing g_ask1 after fill")
+  }
+  if st_after != "left" {
+    panic("expected status='left' after form left login, got " + st_after)
+  }
+  if body_after.contains(secret_pw) {
+    panic("CRITICAL: plaintext password leaked into signin_asks!")
+  }
+  if !body_after.contains("keep-me-said")
+  || !body_after.contains("req-save-99")
+  || !body_after.contains("preserve-me-123")
+  || !body_after.contains("\"keep\":true") {
+    panic("signin_asks.body lost preserved fields: " + body_after)
+  }
+
+  // 5. Verify internal notice was queued on `pending_internal_notices` (NOT blocking Running human Steer!)
+  if actor.pending_internal_notices.length() == 0 {
+    panic("expected internal notice enqueued on SessionActor::pending_internal_notices")
+  }
+  let steer_res = actor.submit_input("urgent human steer")
+  if !(steer_res is station_sessions::InputRoute::Steer) {
+    panic("human Steer must not be blocked by internal notice")
+  }
+
+  // 6. Verify 15-minute `SIGNIN_HELD_MS` TTL purges in-memory credentials automatically
+  let _ = rt.tick_with_port(store_port, now_cell[0] + 100L + SIGNIN_HELD_MS + 1L)
+  if rt.held_cred_count() != 0 {
+    panic("15-min HELD_MS TTL did not purge in-memory credentials")
+  }
+
+  // 7. `signins.deny` closes card (`closed_cards` + card_edits) and emits zero plaintext
+  match (api.admin.host.call)(
+    "signins.deny",
+    make_test_api_req_as("POST", "/browser/sign-ins/g_ask1/deny", alice),
+    ["g_ask1"],
+    base_codec::json_obj([]),
+  ) {
+    Ok(_) => ()
+    Err(e) => panic("signins.deny failed: " + e.message)
+  }
+  if mem.closed_cards.length() != 1 || mem.closed_cards[0].0 != 500L || mem.closed_cards[0].1 != "card-1" {
+    panic("expected closed_cards entry for (500, card-1)")
+  }
+  for i in 0..<mem.card_edits.length() {
+    if mem.card_edits[i].2.contains(secret_pw) {
+      panic("CRITICAL: plaintext password leaked into card_edits!")
+    }
+  }
+  for i in 0..<mem.notices.length() {
+    if mem.notices[i].1.contains(secret_pw) {
+      panic("CRITICAL: plaintext password leaked into notices!")
+    }
+  }
+
+  // 8. 24h expiry check on a pending ask
+  let expired_at_sec = (base_ms / 1000L) - SIGNIN_PENDING_SECS - 10L
+  let exp_body = base_codec::json_obj([
+    ("id", base_codec::json_str("g_exp1")),
+    ("session", base_codec::json_str("s-1")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("site", base_codec::json_str("github.com")),
+    ("tab", base_codec::json_str("tab-gh")),
+    ("at", base_codec::json_int64(expired_at_sec)),
+    ("status", base_codec::json_str("pending")),
+  ])
+  mem.asks.set("g_exp1", ("s-1", "pending", base_codec::json_stringify(exp_body)))
+  match (api.admin.host.call)(
+    "signins.self",
+    make_test_api_req_as("POST", "/browser/sign-ins/g_exp1/self", alice),
+    ["g_exp1"],
+    base_codec::json_obj([("done", base_codec::json_bool(false))]),
+  ) {
+    Err(e) => if e.status != 409 || !e.message.contains("day undecided") {
+      panic("expected 409 expired error, got " + e.message)
+    }
+    Ok(_) => panic("expired signin ask must be rejected")
+  }
+
+  // 9. `sign_in` MCP tool: isPublicSuffix, vault_held short-circuit, honest `done` wording, and session archive cleanup
+  let sign_in_h = match agents.signin_tool_override {
+    Some(f) => f
+    None => panic("missing signin_tool_override")
+  }
+  let ps_err = sign_in_h("s-1", "sign_in", base_codec::json_obj([("site", base_codec::json_str("co.uk"))]))
+  if !ps_err.is_error || !dsb_reply_text(ps_err).contains("public suffix") {
+    panic("isPublicSuffix('co.uk') must be rejected, got: " + dsb_reply_text(ps_err))
+  }
+  mem.vault_held.set("s-1\x00github.com", "already signed into github.com via vault")
+  let held_r = sign_in_h(
+    "s-1",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("github.com")), ("reason", base_codec::json_str("open PR"))]),
+  )
+  if held_r.is_error || !dsb_reply_text(held_r).contains("already signed into github.com") {
+    panic("vault_held_browser should short-circuit sign_in, got: " + dsb_reply_text(held_r))
+  }
+  // Seed an open ask for github.com, then mark `done: true` and verify honest wording (no false vault-save claim)
+  let done_body = base_codec::json_obj([
+    ("id", base_codec::json_str("g_done1")),
+    ("session", base_codec::json_str("s-1")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("site", base_codec::json_str("github.com")),
+    ("tab", base_codec::json_str("tab-gh")),
+    ("at", base_codec::json_int64(base_ms / 1000L)),
+    ("status", base_codec::json_str("left")),
+    ("keep", base_codec::json_bool(true)),
+  ])
+  mem.asks.set("g_done1", ("s-1", "left", base_codec::json_stringify(done_body)))
+  let done_r = sign_in_h(
+    "s-1",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("github.com")), ("done", base_codec::json_bool(true))]),
+  )
+  if done_r.is_error || !dsb_reply_text(done_r).contains("vault keep is not wired yet") {
+    panic("sign_in done must be honest about vault keep, got: " + dsb_reply_text(done_r))
+  }
+
+  // 10. Archiving a session closes all open `signin_asks` to `ended` and purges memory
+  let open_body = base_codec::json_obj([
+    ("id", base_codec::json_str("g_open_arch")),
+    ("session", base_codec::json_str("s-1")),
+    ("owner", base_codec::json_str("alice@example.com")),
+    ("site", base_codec::json_str("linear.app")),
+    ("tab", base_codec::json_str("tab-lin")),
+    ("at", base_codec::json_int64(base_ms / 1000L)),
+    ("status", base_codec::json_str("pending")),
+    ("thread", base_codec::json_int64(500L)),
+    ("cardTs", base_codec::json_str("card-arch")),
+    ("extraKeep", base_codec::json_str("survives-archive")),
+  ])
+  mem.asks.set("g_open_arch", ("s-1", "pending", base_codec::json_stringify(open_body)))
+  rt.on_session_archived_with_port(store_port, "s-1", now_cell[0] + 200L)
+  match mem.asks.get("g_open_arch") {
+    Some((_, st_arch, b_arch)) => {
+      if st_arch != "ended" || !b_arch.contains("survives-archive") {
+        panic("archive must end open signin_ask while preserving unknown fields: " + st_arch + " / " + b_arch)
+      }
+    }
+    None => panic("missing g_open_arch")
+  }
+
+  // 11. P1-1 + P1-3 + P1-4: `sign_in` card creation checks:
+  //     (a) external channel / missing chat_addr refused (no "CHAT/0" fallback)
+  //     (b) `CARD_OCCUPIED` refused without overwriting
+  //     (c) `"thread"` SSE payload uses `"id"` (not `"thread"`) + `"entries"`
+  //     (d) card options omit password-manager option when `async_signin_driver_available == false`
+  browser.tabs.on_target_created(station_browser::TargetSnapshot::{
+    target_id: "tab-c1",
+    target_type: "page",
+    title: "Sign in",
+    url: "https://gitlab.com/login",
+    attached: true,
+    opener_id: None,
+    browser_context_id: Some("ctx-card"),
+  })
+  mem.sessions.set("s-card", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(777L),
+    chat_addr: None,
+  })
+  let no_addr_r = sign_in_h(
+    "s-card",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("gitlab.com")), ("reason", base_codec::json_str("test"))]),
+  )
+  if !no_addr_r.is_error || !dsb_reply_text(no_addr_r).contains("no active chat address") {
+    panic("missing chat_addr must be refused (no CHAT/0 fallback), got: " + dsb_reply_text(no_addr_r))
+  }
+  mem.sessions.set("s-card", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(777L),
+    chat_addr: Some("C12345/1700.1"),
+  })
+  let ext_ch_r = sign_in_h(
+    "s-card",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("gitlab.com")), ("reason", base_codec::json_str("test"))]),
+  )
+  if !ext_ch_r.is_error || !dsb_reply_text(ext_ch_r).contains("external chat channel") {
+    panic("external chat channel must be honestly refused, got: " + dsb_reply_text(ext_ch_r))
+  }
+  mem.sessions.set("s-card", DsbSessionInfo::{
+    ws: "ws-main",
+    creator: Some("alice@example.com"),
+    workspace_dir: "/tmp",
+    archived: false,
+    runtime: "claude",
+    thread_id: Some(777L),
+    chat_addr: Some("CHAT/ts-777"),
+  })
+  mem.open_card_threads.set(777L, true)
+  let occ_r = sign_in_h(
+    "s-card",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("gitlab.com")), ("reason", base_codec::json_str("test"))]),
+  )
+  if !occ_r.is_error || !dsb_reply_text(occ_r).contains("CARD_OCCUPIED") {
+    panic("CARD_OCCUPIED must refuse without overwriting, got: " + dsb_reply_text(occ_r))
+  }
+  mem.open_card_threads.remove(777L)
+  // Wire production-default (no async autofill driver) and post a card: assert SSE has `"id": 777` and no password-manager option!
+  wire_device_screen_browser_with_port(rt_prod, store_port, agents, hooks, "st-1", fn() -> Int64 { now_cell[0] })
+  let prod_signin_h = match agents.signin_tool_override { Some(f) => f, None => panic("missing prod signin") }
+  let ok_card = prod_signin_h(
+    "s-card",
+    "sign_in",
+    base_codec::json_obj([("site", base_codec::json_str("gitlab.com")), ("reason", base_codec::json_str("pull repo"))]),
+  )
+  if ok_card.is_error {
+    panic("expected sign_in card to post cleanly, got: " + dsb_reply_text(ok_card))
+  }
+  if mem.thread_sse_events.length() == 0 {
+    panic("expected thread SSE event on sign_in card post")
+  }
+  let sse_j = mem.thread_sse_events[mem.thread_sse_events.length() - 1]
+  let sse_s = base_codec::json_stringify(sse_j)
+  if base_codec::json_get(sse_j, "id") is None || base_codec::json_get(sse_j, "entries") is None {
+    panic("P1-1: thread SSE payload MUST have 'id' and 'entries', got: " + sse_s)
+  }
+  if sse_s.contains("用密码管理器登录") || !sse_s.contains("在画面中登录") {
+    panic("P1-3: card options MUST omit password-manager option when async autofill driver is unwired: " + sse_s)
+  }
+}

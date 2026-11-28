@@ -508,7 +508,7 @@ until mkdir "$lock_dir" 2>/dev/null; do
   waited=$((waited + 1))
 done
 echo $$ > "$lock_dir/pid"
-trap 'rm -rf "$tmp" "$lock_dir"' EXIT
+trap 'rm -rf "$tmp" "$lock_dir" "$app.new"' EXIT
 
 # Already on this release, and running as its service would: nothing to do (unless locally replaced).
 if [ -n "$pid" ] && [ ! -f "$app/OVERRIDE" ] && [ -f "$app/VERSION" ] && cmp -s "$tmp/stillfail/VERSION" "$app/VERSION" && same_service; then
@@ -520,9 +520,25 @@ fi
 swapped=""
 swap_app() {
   mkdir -p "$data"
-  rm -rf "$app.old"
-  [ -d "$app" ] && mv "$app" "$app.old"
-  mv "$tmp/stillfail" "$app"
+  rm -rf "$app.old" "$app.new"
+  # Stage on $data's filesystem before moving $app aside: when $tmp is on another mount (e.g.
+  # tmpfs /tmp vs btrfs /data), mv falls back to a multi-second recursive copy; staging into
+  # $app.new first keeps $app live until both same-filesystem renames complete immediately.
+  if ! mv "$tmp/stillfail" "$app.new"; then
+    rm -rf "$app.new"
+    return 1
+  fi
+  if [ -d "$app" ]; then
+    if ! mv "$app" "$app.old"; then
+      rm -rf "$app.new"
+      return 1
+    fi
+  fi
+  if ! mv "$app.new" "$app"; then
+    [ -d "$app.old" ] && [ ! -e "$app" ] && mv "$app.old" "$app"
+    rm -rf "$app.new"
+    return 1
+  fi
   swapped=yes
 }
 

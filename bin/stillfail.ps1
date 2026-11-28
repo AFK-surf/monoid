@@ -111,11 +111,11 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     if ($a.Count -eq 2 -and $a[1] -eq '--purge') { Uninstall $true }
     [Console]::Error.WriteLine('usage: stillfail uninstall [--purge]'); exit 2
   }
-  { $a[0] -eq 'start' } { Run (@('run', '--app', $here, '--data', $data) + $a[1..($a.Count)]) }
+  { $a[0] -eq 'start' } { Run (@('run', '--app', $here, '--data', $data) + $(if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() })) }
   { $a[0] -eq 'status' -or $_ -eq 'station status' } { Run @('status', '--data', $data) }
   'station id' { Run @('id', '--data', $data) }
   { $_ -eq 'lock status' -or $_ -eq 'lock reset' } { Run (@('lock', $a[1]) + $(if ($a.Count -gt 2) { $a[2..($a.Count - 1)] } else { @() }) + @('--data', $data)) }
-  { $_ -like 'station enroll*' } { Run (@('enroll') + $a[2..($a.Count)] + @('--data', $data)) }
+  { $_ -like 'station enroll*' } { Run (@('enroll') + $(if ($a.Count -gt 2) { $a[2..($a.Count - 1)] } else { @() }) + @('--data', $data)) }
   { $a[0] -eq 'replace' } {
     $rest = if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() }
     $app = $here
@@ -282,7 +282,8 @@ switch ("$($a[0]) $($a[1])".Trim()) {
     # installer ends what runs from the release, which it is.
     if ($a.Count -gt 2 -or ($a.Count -eq 2 -and $a[1] -notin '--beta', '--stable')) { [Console]::Error.WriteLine('usage: stillfail update [--beta|--stable]'); exit 2 }
     if (-not (Test-Path -LiteralPath $station)) { [Console]::Error.WriteLine("stillfail update: $here is not an installed release (no $station)"); exit 1 }
-    $plan = & $station update @($a[1..($a.Count)] | Where-Object { $_ }) --app $here --data $data
+    $updateArgs = @(if ($a.Count -gt 1) { $a[1..($a.Count - 1)] } else { @() })
+    $plan = & $station update @updateArgs --app $here --data $data
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     $script = $null
     foreach ($line in @($plan)) {

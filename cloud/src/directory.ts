@@ -85,7 +85,7 @@ export class Directory extends DurableObject<Env> {
       inviteCodes: () => this.inviteCodes(),
       keepCounts: (force) => this.#admin.keepCounts(force),
       changed: (workspace, list, also, only) => this.#workspaces.changed(workspace, list, also, only),
-      view: (sub, id) => this.#workspaces.view(sub, id),
+      view: (sub, id, kept) => this.#workspaces.view(sub, id, kept),
       removeWorkspace: (id) => this.#workspaces.remove(id),
       standard: (sub) => this.#workspaces.standard(sub),
       memberCap: (workspace) => this.#workspaces.memberCap(workspace),

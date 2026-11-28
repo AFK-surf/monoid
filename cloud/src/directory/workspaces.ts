@@ -5,7 +5,7 @@ import { publicOrigins } from "../compat";
 import { MAX_RELAYS, parseRelays, relays, relayUrls, sameUrl, waysOf } from "../relays";
 import type { AccountEvent, AddedView, InvitationView, MeView, MemberView, Role, ViewTold, WorkspaceSummary, WorkspaceView } from "../types";
 import type { DirectoryDb, DirectoryHost } from "./db";
-import { LIST, MANAGERS, PLANS, ROLES, SHOWN_PICTURE, cleanEmoji, cleanIcon, cleanName, cleanPicture, fail, marks, offOf, viewTold, type AlikeView, type Plan } from "./types";
+import { LIST, MANAGERS, PLANS, ROLES, SHOWN_PICTURE, cleanEmoji, cleanIcon, cleanName, cleanPicture, fail, marks, offOf, viewTold, type AlikeView, type ChangedView, type Plan } from "./types";
 
 // ── workspaces, accounts, sign-in, and view diffs ───────────────────────
 
@@ -22,14 +22,14 @@ export class DirectoryWorkspaces {
    * A workspace changed: its members (and `also`) are told, with `workspaces`
    * too when what their lists show changed (a name, a role, a count).
    */
-  changed(workspace: string, list: boolean, also: Iterable<string> = [], only: "lock" | "requests" | null = null): void {
+  changed(workspace: string, list: boolean, also: Iterable<string> = [], only: "lock" | "requests" | null = null): ChangedView | null {
     for (const station of this.#db.stationsIn(workspace)) this.#host.sendState(station);
     // (its lock moving on, or its requests to be let in, are nothing the console lists)
     if (only === null) this.#host.adminChanged("workspaces");
     if (only !== null) {
       const said = only === "lock" ? { lock: { head: this.#host.lockHead(workspace), locked: this.#host.locked(workspace) } } : { requests: true as const };
       this.#host.tell([...this.#db.members(workspace), ...also], { type: "workspace", id: workspace, ...said });
-      return;
+      return null;
     }
     // Each member is told what changed of the view and of their entry of the list (`#told`), so their devices read
     // neither again: every device of every member read both whole at each change (the locks' end to end, 2026-11-15:
@@ -40,8 +40,10 @@ export class DirectoryWorkspaces {
     const subs = this.#db.members(workspace);
     const plain: AccountEvent = { type: "workspace", id: workspace };
     const groups = new Map<string, { subs: string[]; events: AccountEvent[] }>();
+    let kept: ChangedView | null = null;
     try {
       const told = this.#told(workspace);
+      kept = told ? { now: told.now, rev: told.rev[1] } : null;
       const roles = new Map((told?.now.members ?? []).map((m) => [m.sub, m.role]));
       const before = new Map((told?.before?.members ?? []).map((m) => [m.sub, m.role]));
       const into = (key: string, sub: string, events: () => AccountEvent[]) => {
@@ -66,25 +68,28 @@ export class DirectoryWorkspaces {
       console.warn(`told: ${workspace}'s view as last told not read (${error instanceof Error ? error.message : String(error)}); its members told plainly, told anew from now`);
       groups.clear();
       groups.set("plain", { subs, events: [...(list ? [LIST] : []), plain] });
-      this.#toldAnew(workspace);
+      kept = this.#toldAnew(workspace);
     }
     const others = [...new Set(also)].filter((sub) => !subs.includes(sub));
     if (others.length > 0) groups.set("others", { subs: others, events: [...(list ? [LIST] : []), plain] });
     for (const { subs: targetSubs, events } of groups.values()) this.#host.tell(targetSubs, ...events);
+    return kept;
   }
 
   /** A workspace's view as last told let go of, and kept again as it is now at a version above the one let go of and
    * this second's thousandths (`#told`); where even that fails, none kept, the next change beginning it. */
-  #toldAnew(workspace: string): void {
+  #toldAnew(workspace: string): ChangedView | null {
     try {
       const was = this.#db.one("SELECT rev FROM told WHERE workspace = ?", workspace);
       this.#db.run("DELETE FROM told WHERE workspace = ?", workspace);
       const now = this.#alike(workspace);
-      if (!now) return;
+      if (!now) return null;
       const rev = Math.max(nowSeconds() * 1000, typeof was?.rev === "number" ? was.rev + 1 : 0);
       this.#db.run("INSERT INTO told (workspace, rev, view) VALUES (?, ?, ?)", workspace, rev, JSON.stringify(now));
+      return { now, rev };
     } catch (error) {
       console.warn(`told: ${workspace}'s view not kept anew (${error instanceof Error ? error.message : String(error)})`);
+      return null;
     }
   }
 
@@ -99,7 +104,9 @@ export class DirectoryWorkspaces {
     const stations = this.#db.stationViews(id).map(({ workspace: _, ...station }) => station);
     const invitations = this.#db.rows("SELECT id, role, email, created_by, expires_at FROM invitations WHERE workspace = ? AND expires_at > ? ORDER BY expires_at", id, nowSeconds()) as unknown as InvitationView[];
     const added = this.#db.rows("SELECT email, role, added_by, added_at FROM added WHERE workspace = ? ORDER BY added_at", id) as unknown as AddedView[];
-    return { id, name: w.name as string, ...marks(w.emoji, w.icon), created_at: w.created_at as number, members, stations, rigs: this.#db.rigViews(id), invitations, added, relays: parseRelays(w.relays), ...offOf(w.ways_off), ways: waysOf(this.#db.relays(this.#host.meshRelays()), parseRelays(w.relays), parseRelays(w.ways_off)), lock: this.#host.lockHead(id), ...(this.#host.locked(id) ? { locked: true } : {}) };
+    const ownRelays = parseRelays(w.relays);
+    const waysOff = parseRelays(w.ways_off);
+    return { id, name: w.name as string, ...marks(w.emoji, w.icon), created_at: w.created_at as number, members, stations, rigs: this.#db.rigViews(id), invitations, added, relays: ownRelays, ...(waysOff.length > 0 ? { ways_off: waysOff } : {}), ways: waysOf(this.#db.relays(this.#host.meshRelays()), ownRelays, waysOff), lock: this.#host.lockHead(id), ...(this.#host.locked(id) ? { locked: true } : {}) };
   }
 
   /**
@@ -421,12 +428,12 @@ export class DirectoryWorkspaces {
   }
 
   /** A workspace as the caller sees it (what its changes answer with: called within them, it is not counted again). */
-  view(sub: string, id: string): WorkspaceView {
+  view(sub: string, id: string, kept?: ChangedView | null): WorkspaceView {
     const role = this.#db.role(sub, id);
-    const { rigs, invitations, added, ...alike } = this.#alike(id)!;
-    const told = this.#db.one("SELECT rev FROM told WHERE workspace = ?", id);
+    const { rigs, invitations, added, ...alike } = kept?.now ?? this.#alike(id)!;
+    const rev = kept?.rev ?? (this.#db.one("SELECT rev FROM told WHERE workspace = ?", id)?.rev as number | undefined);
     const manager = MANAGERS.includes(role);
-    return { ...(told ? { rev: told.rev as number } : {}), ...alike, role, ...(rigs.length ? { rigs } : {}), invitations: manager ? invitations : [], added: manager ? added : [], lock_requests: this.#host.lockRequestCount(id, sub, role) };
+    return { ...(rev !== undefined ? { rev } : {}), ...alike, role, ...(rigs.length ? { rigs } : {}), invitations: manager ? invitations : [], added: manager ? added : [], lock_requests: this.#host.lockRequestCount(id, sub, role) };
   }
 
   /**
@@ -451,17 +458,16 @@ export class DirectoryWorkspaces {
     // A relay of its own taken away is no longer among those turned off either; if none of its relays would stay on,
     // still.fail's come back on.
     const off = parseRelays(this.#db.one("SELECT ways_off FROM workspaces WHERE id = ?", id)?.ways_off);
-    const ways = waysOf(this.#db.relays(this.#host.meshRelays()), list, []).map((w) => sameUrl(w.id));
+    const ways = waysOf(currentRelays, list, []).map((w) => sameUrl(w.id));
     const filtered = off.filter((o) => o === "ours" || ways.includes(sameUrl(o)));
-    const kept = waysOf(this.#db.relays(this.#host.meshRelays()), list, filtered).some((w) => w.kind === "relay" && w.on)
+    const kept = waysOf(currentRelays, list, filtered).some((w) => w.kind === "relay" && w.on)
       ? filtered
       : filtered.filter((o) => o !== "ours" && !ours.includes(sameUrl(o)));
     this.#db.ctx.storage.transactionSync(() => {
       this.#db.run("UPDATE workspaces SET relays = ? WHERE id = ?", list.length ? JSON.stringify(list) : null, id);
       this.#db.run("UPDATE workspaces SET ways_off = ?, ways_at = ?, ways_station = '' WHERE id = ?", kept.length ? JSON.stringify(kept) : null, clock.now(), id);
     });
-    this.changed(id, true);
-    return this.view(sub, id);
+    return this.view(sub, id, this.changed(id, true));
   }
 
   /**
@@ -484,14 +490,13 @@ export class DirectoryWorkspaces {
       off = nowOff.filter((o) => o !== "ours" && !ours.includes(sameUrl(o)));
       if (!on) off.push("ours");
     } else {
-      const ways = waysOf(this.#db.relays(this.#host.meshRelays()), own, nowOff);
+      const ways = waysOf(currentRelays, own, nowOff);
       const target = ways.find((w) => sameUrl(w.id) === sameUrl(way as string)) ?? fail(400, "invalid_way");
       off = ways.filter((w) => (w === target ? !on : !w.on)).map((w) => w.id);
     }
-    if (!waysOf(this.#db.relays(this.#host.meshRelays()), own, off).some((w) => w.kind === "relay" && w.on)) fail(409, "last_relay");
+    if (!waysOf(currentRelays, own, off).some((w) => w.kind === "relay" && w.on)) fail(409, "last_relay");
     this.#db.run("UPDATE workspaces SET ways_off = ?, ways_at = ?, ways_station = '' WHERE id = ?", off.length ? JSON.stringify(off) : null, clock.now(), id);
-    this.changed(id, true);
-    return this.view(sub, id);
+    return this.view(sub, id, this.changed(id, true));
   }
 
   /** Fails unless the caller manages the workspace, or owns the named rig (before a picture it sends is kept: api.ts). */
@@ -515,8 +520,7 @@ export class DirectoryWorkspaces {
     if (emoji !== undefined) this.#db.run("UPDATE workspaces SET emoji = ? WHERE id = ?", emoji, id);
     if (icon !== undefined) this.#db.run("UPDATE workspaces SET icon = ? WHERE id = ?", icon, id);
     // Invitations show the name; the switchers, the mark.
-    this.changed(id, true, name !== undefined ? this.#db.invitees(id) : []);
-    return this.view(sub, id);
+    return this.view(sub, id, this.changed(id, true, name !== undefined ? this.#db.invitees(id) : []));
   }
 
   async deleteWorkspace(sub: string, id: string): Promise<void> {

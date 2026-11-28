@@ -1841,6 +1841,7 @@ struct WholeRuntimeState {
   terminals : station_whole::TerminalsOsRuntime
   logins : station_whole::LoginsOsRuntime
   browser : station_whole::BrowserOsManager
+  dsb : station_whole::DeviceScreenBrowserRuntime
   connects : station_whole::ConnectsOsRuntime
   upkeep : AsyncUpkeepRunner
   connect_meta : Map[String, ConnectMeta]
@@ -7695,7 +7696,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       live_runners_cell[0] = Some(live_runners)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
-      wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
+      let dsb = wire_whole_core_runtime_hooks(ctx, core, devices, logins, browser, seen_members)
       let ways_store = build_daemon_ways_store(ctx)
       let move_sched = build_daemon_move_scheduler(core)
       wire_daemon_mcp_remote_system(ctx, core, logins, ways_store, move_sched, mcp_defer_capture, remote_outbox)
@@ -7707,6 +7708,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         terminals: terminals,
         logins: logins,
         browser: browser,
+        dsb: dsb,
         connects: connects,
         upkeep: upkeep,
         connect_meta: connect_meta,
@@ -9211,6 +9213,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           flush_deferred_mcp_starts(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, st.remote_outbox)
           sweep_expired_mcp_pending(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, now)
           let _ = st.browser.tick(now)
+          let _ = st.dsb.tick(st.core.store, st.core.agents, st.core.api.events, st.core.api.hooks, wall)
           let _ = st.connects.tick(now)
           // `#8886`: poll `PeerChangeNotifier` and `CommaUnreadRetry` due retries.
           let comma_due = st.connects.comma_poll_unread_due(wall)
@@ -9592,6 +9595,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           // Cleanly stop all 4 Wave 16C edge OS adapters with zero orphan processes / leaked FDs.
           st.connects.stop()
           st.upkeep.shutdown()
+          st.dsb.shutdown()
           st.browser.stop_all()
           let _ = st.browser.drain_kills_with_hub(max_ms=500L)
           st.terminals.stop_all()

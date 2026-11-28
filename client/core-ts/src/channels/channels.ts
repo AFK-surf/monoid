@@ -241,9 +241,10 @@ export class Channels {
       const top = this.#unsure.delete(keyOf(c)) && !this.#held.letGo(c) ? (this.#held.span(c)?.max ?? null) : null;
       const read: fill.Read | null = top !== null ? { after: top } : this.next(c);
       if (read === null) return;
-      const before = this.#held.numbers(c).length;
+      const before = top !== null ? 0 : this.#held.numbers(c).length;
       const revision = this.#held.revision?.(c);
-      this.#took(c, read, yield* Effect.result(this.#reach.read(c.station, c.kind.path(c.id, read), { quiet: true })), revision);
+      const outcome = this.#tookResult(c, read, yield* Effect.result(this.#reach.read(c.station, c.kind.path(c.id, read), { quiet: true })), revision);
+      if (outcome.stale || !outcome.ok) return;
       // More to bring: asked again, behind what is more urgent. Not after a read that brought nothing new (its station
       // does not have what is asked: asked again, it would answer the same), but for the asking of what came after.
       const brought = top !== null || this.#held.numbers(c).length > before;
@@ -252,23 +253,23 @@ export class Channels {
   }
 
   /// A read made in the background, as the station answered it: its items put, and the channel going as far as it
-  /// says. How many items came.
-  #took(c: Channel, read: fill.Read, answer: Answered, revision: number | undefined): number {
+  /// says. How many items came, whether it succeeded, and whether the channel revision changed while reading.
+  #tookResult(c: Channel, read: fill.Read, answer: Answered, revision: number | undefined): { count: number; ok: boolean; stale: boolean } {
     if (revision !== this.#held.revision?.(c)) {
       this.bring(c, Priority.background, "latest");
-      return 0;
+      return { count: 0, ok: false, stale: true };
     }
     const nothing = this.#held.span(c) === null;
     if (answer._tag === "Failure") {
       this.#reach.answered(c, answer.failure, nothing);
-      return 0;
+      return { count: 0, ok: false, stale: false };
     }
     this.#reach.answered(c, null, nothing, answer.success);
     const items = c.kind.items(answer.success, read);
     this.#put(c, items);
     const last = c.kind.last(answer.success);
     if (last !== null && last > this.#held.head(c)) this.goesTo(c, last);
-    return items.length;
+    return { count: items.length, ok: true, stale: false };
   }
 
   /// A channel's next read as one of a batch of reads (a station's history swept in the background): its path, and what
@@ -277,7 +278,7 @@ export class Channels {
     const read = this.next(c);
     if (read === null) return null;
     const revision = this.#held.revision?.(c);
-    return { path: c.kind.path(c.id, read), took: (answer) => this.#took(c, read, answer, revision) };
+    return { path: c.kind.path(c.id, read), took: (answer) => this.#tookResult(c, read, answer, revision).count };
   }
 
   /// A push says the channel goes to `n` (its station's notice, through still.fail cloud, while the station's stream may

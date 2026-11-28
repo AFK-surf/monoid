@@ -741,11 +741,11 @@ fn login_view_to_json(raw_item : station_devices::LoginView, read_only : Bool) -
 pub fn wire_whole_core_runtime_hooks(
   ctx : DaemonCtx,
   core : station_whole::WholeCore,
+  devices : station_whole::DevicesOsRuntime,
   logins : station_whole::LoginsOsRuntime,
   browser : station_whole::BrowserOsManager,
   seen_members : Map[String, Map[String, Map[String, SeenMember]]],
-) -> Unit {
-  let _ = browser
+) -> station_whole::DeviceScreenBrowserRuntime {
   core.api.hooks.lock_of = Some(fn(ws : String) -> Option[lock::LockState] {
     let now_s = host_shim::wall_ms().to_double() / 1000.0
     let _ = prune_expired_seen_members(seen_members, now_s)
@@ -772,9 +772,55 @@ pub fn wire_whole_core_runtime_hooks(
       fn(pid : Int) -> Int { station_sys::proc_kill(pid, station_sys::SIG_USR2, false) },
     )
   })
-  // `on_screens_browser_open` and `on_signins_op` remain None (honest 501) until real Chrome/CDP/ScreenHub & SignInFormPort flows are wired end-to-end.
-  core.api.hooks.on_screens_browser_open = None
-  core.api.hooks.on_signins_op = None
+  let base_ports = station_whole::DeviceScreenBrowserPorts::default_os()
+  let dsb_ports = station_whole::DeviceScreenBrowserPorts::{
+    os_name: base_ports.os_name,
+    random_hex: base_ports.random_hex,
+    door_url: fn() -> Option[String] {
+      let p = core.agents.config.mcp_port
+      if p > 0 { Some("http://127.0.0.1:" + p.to_string() + "/mcp") } else { None }
+    },
+    screen_base_url: base_ports.screen_base_url,
+    browser_available: fn() -> Bool {
+      browser.running_count() > 0 || core.api.screens.browser_available
+    },
+    wake_browser_target: None,
+    ensure_session_browser: None,
+    stop_session_browser: fn(sess : String) -> Bool { browser.stop_session(sess) },
+    async_signin_driver_available: fn() -> Bool { false },
+    has_live_session_tab: fn(session : String, tab : String) -> Bool {
+      let tabs = browser.tabs.of_session(session)
+      for i in 0..<tabs.length() {
+        if tabs[i].id == tab {
+          return true
+        }
+      }
+      false
+    },
+    step_async_signin_fill: None,
+    computer_act: base_ports.computer_act,
+    helper_permissions: base_ports.helper_permissions,
+    phone_send_file: base_ports.phone_send_file,
+    device_control_available: fn() -> Bool { false },
+    rig_device_approved: fn(ws : String, session : String, dev_id : String) -> Bool {
+      core.rig.grants.device_refusal(ws, ctx.station_key.id, session, dev_id, false) is None
+    },
+    device_fs: base_ports.device_fs,
+  }
+  let dsb = station_whole::DeviceScreenBrowserRuntime::new(
+    devices,
+    browser,
+    core.api.screens,
+    dsb_ports,
+  )
+  station_whole::wire_device_screen_browser_runtime(
+    dsb,
+    core.store,
+    core.agents,
+    core.api,
+    ctx.station_key.id,
+    host_shim::wall_ms,
+  )
   core.api.hooks.on_vault_decision_notify = Some(fn(session_key : String, notice : String) -> Unit {
     station_whole::deliver_vault_decision_own_notice(
       core.agents,
@@ -1009,6 +1055,7 @@ pub fn wire_whole_core_runtime_hooks(
     }
     Err(station_api::ApiError::new(501, op + " is not yet implemented on Pion station"))
   })
+  dsb
 }
 
 // ---------------------------------------------------------------------------

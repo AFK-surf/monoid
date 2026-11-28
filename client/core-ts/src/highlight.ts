@@ -638,18 +638,25 @@ function css(code: string, s: Uint8Array): void {
   const n = code.length;
   let i = 0;
   let depth = 0;
+  let delimPos = -1;
+  let delimInBlock = false;
   while (i < n) {
     const c = code[i]!;
     const cc = code.charCodeAt(i);
     // Inside a rule's braces, and not in a nested selector (a word followed by `{`).
-    const inBlock = depth > 0 && (() => {
-      for (let k = i; k < n; k++) {
-        const x = code[k];
-        if (x === ";" || x === "}") return true;
-        if (x === "{") return false;
+    let inBlock = false;
+    if (depth > 0) {
+      if (i > delimPos) {
+        delimPos = n;
+        delimInBlock = true;
+        for (let k = i; k < n; k++) {
+          const x = code[k];
+          if (x === ";" || x === "}") { delimPos = k; delimInBlock = true; break; }
+          if (x === "{") { delimPos = k; delimInBlock = false; break; }
+        }
       }
-      return true;
-    })();
+      inBlock = delimInBlock;
+    }
     if (code.startsWith("/*", i)) {
       const close = code.indexOf("*/", i + 2);
       const e = close < 0 ? n : close + 2;

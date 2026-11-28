@@ -1332,3 +1332,79 @@ test("GET /v1/changelog with ttl=0 direct R2 path returns strong ETag, Vary, and
     await h.close();
   }
 });
+
+test("markFixed prefilters untold reports and feedbackOf batches replies, author names, and delivery updates", async () => {
+  const h = await harness();
+  try {
+    const { id: home, station, aliceTokens } = await workspace(h);
+    const bobTokens = await h.login("bob");
+    const alice = h.as(aliceTokens);
+    const bob = h.as(bobTokens);
+    const admin = h.as(aliceTokens, "admin");
+    await alice("POST", `/v1/workspaces/${home}/invitations`, { role: "member", email: "bob@example.test" });
+    const inv = ((await (await bob("GET", "/v1/me")).json()) as any).invitations[0];
+    assert.equal((await bob("POST", `/v1/invitations/${inv.id}/accept`)).status, 200);
+
+    await send(h, station, report({ key: "k1", title: "first report", context: { session: "chat:c-1", thread: "CHAT/1.1", workspace: home } }));
+    await send(h, station, report({ key: "k2", title: "second report", context: { session: "chat:c-2", workspace: home } }));
+    await send(h, station, report({ key: "k3", title: "third report", context: { session: "chat:c-3", workspace: home } }));
+
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    const staleChangelog = Array.from({ length: 120 }, (_, i) => ({
+      version: 1000 + i,
+      commit: `c${i}`,
+      at: i + 1,
+      text: [`noise ${i}`],
+      fixes: [100 + i],
+      parts: ["web"],
+    }));
+    await bucket.put("changelog.json", JSON.stringify([
+      { version: 1340, commit: "a", at: 200, text: ["v1340"], fixes: [1, 2], parts: ["web"] },
+      { version: 1350, commit: "b", at: 201, text: ["v1350"], fixes: [1], parts: ["station"] },
+      ...staleChangelog,
+    ]));
+    await bucket.put("station.json", JSON.stringify({ version: "0.1.1355", build: 1355 }));
+
+    const firstFixed = await fixed(h, station);
+    assert.deepEqual(firstFixed.map((f) => [f.number, f.version]), [[1, 1350]]);
+    // Mark #1 told via fixedFor ack, while #2 remains untold for now.
+    assert.deepEqual(await fixed(h, station, [firstFixed[0].id]), []);
+
+    await bucket.put("changelog.json", JSON.stringify([
+      { version: 1360, commit: "c", at: 202, text: ["v1360"], fixes: [1, 2], parts: ["station", "desktop"] },
+    ]));
+    const afterListed = ((await (await admin("GET", "/v1/admin/feedback")).json()) as any).feedback as any[];
+    const byNum = new Map(afterListed.map((f) => [f.number as number, f]));
+    assert.equal(byNum.get(1)!.fixed_in, 1350, "already told report stays at 1350");
+    assert.equal(byNum.get(2)!.fixed_in, 1360, "untold report advances to highest fix version");
+    assert.equal(byNum.get(3)!.fixed_in, null);
+
+    const fb1 = byNum.get(1)!.id as string;
+    const fb2 = byNum.get(2)!.id as string;
+    assert.equal((await teamReply(h, fb1, "team one")).status, 201);
+    assert.equal((await alice("POST", `/v1/workspaces/${home}/feedback/${fb1}/reply`, { text: "alice one" })).status, 200);
+    assert.equal((await answer(h, station, { number: 1, text: "agent one", session: "chat:c-1" })).status, 201);
+    assert.equal((await teamReply(h, fb2, "team two")).status, 201);
+    assert.equal((await bob("POST", `/v1/workspaces/${home}/feedback/${fb2}/reply`, { text: "bob two" })).status, 200);
+
+    const shown = ((await (await alice("GET", `/v1/workspaces/${home}/feedback`)).json()) as any).feedback as any[];
+    assert.deepEqual(shown.map((f) => f.number), [2, 1], "only reports with team replies appear");
+    assert.deepEqual(shown[0].replies.map((r: any) => [r.from, r.name, r.text]), [
+      ["team", "", "team two"],
+      ["person", "Name of bob", "bob two"],
+    ]);
+    assert.deepEqual(shown[1].replies.map((r: any) => [r.from, r.name, r.text]), [
+      ["team", "", "team one"],
+      ["person", "Name of alice", "alice one"],
+      ["agent", "", "agent one"],
+    ]);
+
+    const updatedAdmin = ((await (await admin("GET", "/v1/admin/feedback")).json()) as any).feedback as any[];
+    for (const num of [1, 2]) {
+      const f = updatedAdmin.find((x) => x.number === num);
+      assert.equal(f.replies[0].delivery, "delivered", `report #${num} team reply marked delivered`);
+    }
+  } finally {
+    await h.close();
+  }
+});

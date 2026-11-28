@@ -239,6 +239,7 @@ async function handle(request: Request, env: Env): Promise<Response> {
       const own = await serveRelease(request, env.RELEASES, release, type);
       // (a cloud whose bucket holds its own apps' alone: the station's from still.fail's, install.ts sharedRelease)
       if (own.status !== 404 || !env.RELEASES_UPSTREAM || !sharedRelease(release)) return own;
+      await own.body?.cancel().catch(() => {});
       return upstreamRelease(request, env.RELEASES_UPSTREAM, release);
     }
     // The apps' latest builds at links that stay (the site's download buttons; under /releases/, which cloud's routes send here).

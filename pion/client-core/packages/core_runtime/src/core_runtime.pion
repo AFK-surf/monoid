@@ -68,6 +68,11 @@ struct RuntimeSession {
   md_stores : Map[String, store::MdStore]
   mesh_transports : Map[String, sync::MeshStationTransport]
   desired_mesh_stations : Map[String, DesiredMeshStation]
+  inflight_ws_confirm : Map[String, Bool]
+  pending_live_ws_replay_seq : Map[String, Int64]
+  ws_confirm_401_rotated_count : Map[String, Int]
+  ws_confirm_401_inflight_gen : Map[String, Int64]
+  ws_confirm_401_transient_count : Map[String, Int]
   rejected_tuples_in_memory : Map[String, (String, String)]
   mut cloud : Option[sync::CloudSync]
   mut origin : String
@@ -477,6 +482,33 @@ fn read_accounts_file_sync(dir : String) -> Array[AccountInfo] {
   }
 }
 
+fn drive_mesh_admission(
+  sess : RuntimeSession,
+  ws : String,
+  st : String,
+  ctrl : sync::MeshStationTransport,
+  req_session_gen : Int64,
+) -> Unit {
+  if sess.stopped || sess.session_gen != req_session_gen || !sess.live_sync_enabled || !sess.core.can_read_workspace(ws) {
+    return
+  }
+  let req_ep = match sess.core.membership.required_cred_epoch_of(ws) {
+    Some(ep) => ep
+    None => sess.core.membership.cred_epoch_of(ws)
+  }
+  ctrl.ensure_admitted_for_epoch(
+    sess.core.rt,
+    req_ep,
+    fn() -> Bool {
+      !sess.stopped &&
+      sess.session_gen == req_session_gen &&
+      sess.live_sync_enabled &&
+      sess.core.can_read_workspace(ws) &&
+      sess.mesh_transports.get(st).is_some()
+    },
+  )
+}
+
 fn runtime_attach_mesh_station(
   sess : RuntimeSession,
   target_ws : String,
@@ -528,8 +560,19 @@ fn runtime_attach_mesh_station(
     peer_id,
     relays,
     get_cred,
+    on_admission=Some(fn(adm : sync::MeshAdmission) -> Unit {
+      if core_ref.absorb_mesh_admission_lock(target_ws, adm) {
+        emit_topic_refresh(sess, "lock")
+      }
+    }),
     get_lock_carry=Some(fn() -> sync::MeshLockCarry {
       sync::mesh_lock_carry_for_core(core_ref, workspace=target_ws)
+    }),
+    get_cred_epoch=Some(fn() -> Int64 {
+      core_ref.membership.cred_epoch_of(target_ws)
+    }),
+    on_admitted_epoch=Some(fn(ep : Int64) -> Unit {
+      core_ref.on_station_admitted_cred_epoch(target_st, ep)
     }),
   )
   match sess.mesh_transports.get(target_st) {
@@ -541,7 +584,13 @@ fn runtime_attach_mesh_station(
   }
   let (ctrl, tr) = sync::shell_mesh_transport(sess.sh, cfg)
   sess.mesh_transports.set(target_st, ctrl)
-  sess.core.attach_station_transport(target_st, tr, workspace=target_ws)
+  sess.core.attach_station_transport(
+    target_st,
+    tr,
+    workspace=target_ws,
+    admitted_cred_epoch_getter=Some(fn() -> Int64 { ctrl.live_admitted_cred_epoch() }),
+    serving_link_getter=Some(fn() -> (Int, Int64) { ctrl.live_link_identity() }),
+  )
 }
 
 fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
@@ -558,6 +607,7 @@ fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
     let mut refresh_stations = false
     let mut refresh_marks = false
     let mut refresh_lock = false
+    let mut refresh_jobs = false
     let changed_chat_keys : Array[(String, String)] = []
     let mut all_chats_dirty = false
     for i in 0..<evs.length() {
@@ -612,6 +662,9 @@ fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
             _ => { all_chats_dirty = true }
           }
         }
+        sync::CoreEvent::JobChanged(_, _, _) => {
+          refresh_jobs = true
+        }
         sync::CoreEvent::LockUpdated(_, _, _, _) => {
           refresh_lock = true
         }
@@ -641,6 +694,12 @@ fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
     if refresh_lock {
       emit_topic_refresh(sess, "lock")
       emit_topic_refresh(sess, "vaults")
+    }
+    if refresh_jobs {
+      emit_topic_refresh(sess, "chatJobs")
+      emit_topic_refresh(sess, "longJobs")
+      emit_topic_refresh(sess, "fleet")
+      emit_topic_refresh(sess, "railCard")
     }
     flush_session_md_stores(sess)
   }
@@ -1099,6 +1158,8 @@ fn clear_runtime_ephemeral_caches(sess : RuntimeSession) -> Unit {
     }
   }
   sess.mesh_transports.clear()
+  sess.inflight_ws_confirm.clear()
+  clear_all_ws_confirm_401_state(sess)
   let mdks = sess.md_stores.keys()
   for i in 0..<mdks.length() {
     match sess.md_stores.get(mdks[i]) {
@@ -1310,8 +1371,69 @@ fn strip_trailing_slash_rt(s : String) -> String {
   s.slice(0, end)
 }
 
+fn ws_confirm_401_key(ws_id : String, boundary_id : Int64) -> String {
+  ws_id + "|" + boundary_id.to_string()
+}
+
+fn clear_ws_confirm_401_counters(sess : RuntimeSession, ws_id : String) -> Unit {
+  let prefix = ws_id + "|"
+  let rks = sess.ws_confirm_401_rotated_count.keys()
+  for i in 0..<rks.length() {
+    if rks[i].starts_with(prefix) {
+      sess.ws_confirm_401_rotated_count.remove(rks[i])
+    }
+  }
+  let iks = sess.ws_confirm_401_inflight_gen.keys()
+  for i in 0..<iks.length() {
+    if iks[i].starts_with(prefix) {
+      sess.ws_confirm_401_inflight_gen.remove(iks[i])
+    }
+  }
+  let tks = sess.ws_confirm_401_transient_count.keys()
+  for i in 0..<tks.length() {
+    if tks[i].starts_with(prefix) {
+      sess.ws_confirm_401_transient_count.remove(tks[i])
+    }
+  }
+}
+
+fn record_live_ws_replay(sess : RuntimeSession, ws_id : String, req_seq : Int64) -> Unit {
+  let prev = match sess.pending_live_ws_replay_seq.get(ws_id) {
+    Some(s) => s
+    None => 0L
+  }
+  let next = if req_seq > prev { req_seq } else { prev }
+  sess.pending_live_ws_replay_seq.set(ws_id, next)
+}
+
+fn clear_ws_confirm_401_state(
+  sess : RuntimeSession,
+  ws_id : String,
+  committed_req_seq : Int64 = -1L,
+) -> Unit {
+  clear_ws_confirm_401_counters(sess, ws_id)
+  if committed_req_seq < 0L {
+    sess.pending_live_ws_replay_seq.remove(ws_id)
+  } else {
+    match sess.pending_live_ws_replay_seq.get(ws_id) {
+      Some(pending_seq) => if committed_req_seq >= pending_seq {
+        sess.pending_live_ws_replay_seq.remove(ws_id)
+      }
+      None => ()
+    }
+  }
+}
+
+fn clear_all_ws_confirm_401_state(sess : RuntimeSession) -> Unit {
+  sess.pending_live_ws_replay_seq.clear()
+  sess.ws_confirm_401_rotated_count.clear()
+  sess.ws_confirm_401_inflight_gen.clear()
+  sess.ws_confirm_401_transient_count.clear()
+}
+
 fn bump_runtime_session_gen(sess : RuntimeSession) -> Int64 {
   sess.session_gen += 1L
+  clear_all_ws_confirm_401_state(sess)
   match sess.cloud {
     Some(cs) => { let _ = cs.bump_session_gen() }
     None => ()
@@ -1336,6 +1458,285 @@ fn schedule_deferred_me_reconcile(sess : RuntimeSession, cs : sync::CloudSync) -
   })
 }
 
+fn ws_confirm_base_seq(sess : RuntimeSession, ws_id : String) -> Int64 {
+  let cseq = sess.core.membership.cloud_commit_seq()
+  let wseq = sess.core.membership.ws_commit_seq_of(ws_id)
+  if cseq > wseq { cseq } else { wseq }
+}
+
+fn needs_workspace_cloud_confirm(sess : RuntimeSession, ws_id : String) -> Bool {
+  !sess.stopped &&
+  !sess.core.membership.is_session_invalidated() &&
+  sess.core.can_read_workspace(ws_id) &&
+  sess.core.membership.has_pending_auth_confirm(ws_id) &&
+  (!sess.core.can_read_confirmed_key(ws_id, "workspace:" + ws_id) ||
+    !sess.core.can_read_confirmed_key(ws_id, "stations:" + ws_id))
+}
+
+/// Hand off any still-live workspace detail replay demand (`pending_live_ws_replay_seq` or
+/// unconfirmed `PendingAuthConfirm`) to the workspace's CURRENT boundary using the live bearer
+/// (deduplicated by `dkey`), without touching or consuming current boundary budgets or
+/// prematurely erasing `pending_live_ws_replay_seq` on a stale/retired event.
+fn hand_off_live_ws_replay_to_current_boundary(sess : RuntimeSession, ws_id : String) -> Unit {
+  if sess.stopped || sess.core.membership.is_session_invalidated() {
+    return
+  }
+  if !sess.core.can_read_workspace(ws_id) {
+    sess.pending_live_ws_replay_seq.remove(ws_id)
+    return
+  }
+  let has_demand = sess.pending_live_ws_replay_seq.get(ws_id).is_some() ||
+    needs_workspace_cloud_confirm(sess, ws_id)
+  if !has_demand {
+    return
+  }
+  trigger_workspace_confirm_fetch(sess, ws_id)
+}
+
+/// Single Cloud `/v1/workspaces/<ws>` 401 coordinator across ALL 3 fetch entrypoints
+/// (`trigger_workspace_confirm_fetch`, `cloud.sync`, and live `CloudSync` WS refreshes).
+/// Keyed on immutable `(ws_id, PendingAuthConfirm.boundary_seq)` (unaffected by mesh `fresh`
+/// `bump_cred_epoch`), gated on live `bearer_gen`, deduplicated per-bearer in-flight, and split
+/// between post-rotation persistent 401 budget (max 2 rotations/boundary) vs transient refresh
+/// failure backoff (max 2 bounded retries, never locking out the current bearer).
+/// Any live workspace detail 401 monotonically records `max(prev, req_seq)` into
+/// `pending_live_ws_replay_seq[ws_id]` and keeps it live until a `commit_cloud_workspace` with
+/// `committed_req_seq >= pending_seq` succeeds (`Ok(true)`) or circuit-breaker / session reset clears it.
+fn handle_workspace_confirm_401(
+  sess : RuntimeSession,
+  ws_id : String,
+  orig_boundary_id : Int64,
+  orig_bearer_gen : Int64,
+  orig_session_gen : Int64,
+  req_seq : Int64,
+) -> Unit {
+  if sess.stopped || sess.session_gen != orig_session_gen || sess.core.membership.is_session_invalidated() {
+    return
+  }
+  if !sess.core.can_read_workspace(ws_id) {
+    sess.pending_live_ws_replay_seq.remove(ws_id)
+    return
+  }
+  let cur_boundary_id = sess.core.membership.pending_auth_boundary_id(ws_id)
+  // Late 401 from an older bearer OR same-bearer 401 crossing a live boundary change (e.g. role
+  // upgrade `boundary_1 -> 0L` or newer downgrade): NEVER consume `cur_boundary_id`'s budget;
+  // record `req_seq` and hand off once to `cur_boundary_id` (deduped by `dkey`).
+  if orig_bearer_gen != sess.bearer_gen || cur_boundary_id != orig_boundary_id {
+    record_live_ws_replay(sess, ws_id, req_seq)
+    hand_off_live_ws_replay_to_current_boundary(sess, ws_id)
+    return
+  }
+  let bkey = ws_confirm_401_key(ws_id, orig_boundary_id)
+  match sess.ws_confirm_401_inflight_gen.get(bkey) {
+    Some(g) => if g == orig_bearer_gen {
+      record_live_ws_replay(sess, ws_id, req_seq)
+      return
+    }
+    None => ()
+  }
+  let rotated_cnt = match sess.ws_confirm_401_rotated_count.get(bkey) { Some(c) => c; None => 0 }
+  if rotated_cnt >= 2 {
+    sess.pending_live_ws_replay_seq.remove(ws_id)
+    return
+  }
+  let sub_now = sess.core.membership.effective_sub()
+  if sub_now.length() == 0 {
+    return
+  }
+  record_live_ws_replay(sess, ws_id, req_seq)
+  sess.ws_confirm_401_inflight_gen.set(bkey, orig_bearer_gen)
+  runtime_refresh_account_token(sess, sub_now, fn(res : Result[String, String]) -> Unit {
+    match sess.ws_confirm_401_inflight_gen.get(bkey) {
+      Some(g) => if g == orig_bearer_gen { sess.ws_confirm_401_inflight_gen.remove(bkey) }
+      None => ()
+    }
+    if sess.stopped ||
+      sess.session_gen != orig_session_gen ||
+      sess.core.membership.is_session_invalidated() {
+      return
+    }
+    if sess.core.membership.pending_auth_boundary_id(ws_id) != orig_boundary_id {
+      hand_off_live_ws_replay_to_current_boundary(sess, ws_id)
+      return
+    }
+    match res {
+      Ok(_) => {
+        sess.ws_confirm_401_transient_count.remove(bkey)
+        if sess.bearer_gen != orig_bearer_gen {
+          let cur_rot = match sess.ws_confirm_401_rotated_count.get(bkey) { Some(c) => c; None => 0 }
+          sess.ws_confirm_401_rotated_count.set(bkey, cur_rot + 1)
+        }
+      }
+      Err(_) => {
+        // Transient refresh failure (bearer did NOT rotate): NEVER increment rotated circuit-breaker
+        // or permanently lock out `orig_bearer_gen`; schedule bounded backoff retry (<= 2 tries).
+        let t_cnt = match sess.ws_confirm_401_transient_count.get(bkey) { Some(c) => c; None => 0 }
+        let want_retry = needs_workspace_cloud_confirm(sess, ws_id) ||
+          sess.pending_live_ws_replay_seq.get(ws_id).is_some()
+        if t_cnt < 2 && sess.bearer_gen == orig_bearer_gen && want_retry {
+          sess.ws_confirm_401_transient_count.set(bkey, t_cnt + 1)
+          let delay_ms = if t_cnt == 0 { 150 } else { 400 }
+          let _ = sess.core.rt.fork_quiet_named("ws-401-retry:" + ws_id, fn(rfk : (effect::Exit[Unit]) -> Unit) -> Unit {
+            // timer: retry after a failure, with a backoff
+            effect::sleep_k(delay_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+              match sex {
+                effect::Exit::Interrupted => rfk(effect::Exit::Interrupted)
+                _ => {
+                  if !sess.stopped &&
+                    sess.session_gen == orig_session_gen &&
+                    !sess.core.membership.is_session_invalidated() {
+                    if sess.core.membership.pending_auth_boundary_id(ws_id) != orig_boundary_id {
+                      hand_off_live_ws_replay_to_current_boundary(sess, ws_id)
+                    } else {
+                      let still_want = needs_workspace_cloud_confirm(sess, ws_id) ||
+                        sess.pending_live_ws_replay_seq.get(ws_id).is_some()
+                      if sess.bearer_gen == orig_bearer_gen && still_want {
+                        trigger_workspace_confirm_fetch(sess, ws_id)
+                      }
+                    }
+                  }
+                  rfk(effect::Exit::Succeeded(()))
+                }
+              }
+            })
+          })
+        }
+      }
+    }
+  })
+}
+
+/// Deduplicated `/v1/workspaces/<ws>` refresh helper keyed on `(session_gen, ws, base_seq, cred_epoch, bearer_gen)`:
+/// guarantees that an in-flight detail response rejected with `Ok(false)` (e.g. because a same-role
+/// `/v1/me` advanced `ws_commit_seq` mid-flight) or a 401 followed by OAuth bearer rotation never
+/// strands `PendingAuthConfirm` Cloud confirmation or live detail replays.
+fn trigger_workspace_confirm_fetch(sess : RuntimeSession, ws_id : String) -> Unit {
+  if sess.stopped || sess.core.membership.is_session_invalidated() {
+    return
+  }
+  match sess.cloud {
+    None => ()
+    Some(cs) => {
+      let base_seq = ws_confirm_base_seq(sess, ws_id)
+      let captured_cred_epoch = sess.core.membership.cred_epoch_of(ws_id)
+      let captured_boundary_id = sess.core.membership.pending_auth_boundary_id(ws_id)
+      let orig_gen = sess.session_gen
+      let orig_bearer_gen = sess.bearer_gen
+      let dkey = orig_gen.to_string() + "|" + ws_id + "|" + base_seq.to_string() + "|" + captured_cred_epoch.to_string() + "|" + orig_bearer_gen.to_string()
+      if sess.inflight_ws_confirm.get(dkey).is_some() {
+        return
+      }
+      sess.inflight_ws_confirm.set(dkey, true)
+      let req_seq = sess.core.membership.next_cloud_seq()
+      let orig_sub = cs.bound_sub()
+      let orig_session = cs.bound_session()
+      let _ = sess.core.rt.fork_quiet_named("ws-refresh:" + ws_id, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+        sync::fetch_workspace_structured_k(
+          sess.sh,
+          cs.origin(),
+          cs.token(),
+          ws_id,
+          fn(ex : effect::Exit[Result[sync::CloudWorkspace, sync::CloudHttpError]]) -> Unit {
+            sess.inflight_ws_confirm.remove(dkey)
+            if sess.session_gen != orig_gen || cs.bound_sub() != orig_sub || cs.bound_session() != orig_session {
+              fk(effect::Exit::Succeeded(()))
+              return
+            }
+            match ex {
+              effect::Exit::Succeeded(Ok(cws)) => {
+                match sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=captured_cred_epoch) {
+                  Ok(true) => {
+                    clear_ws_confirm_401_state(sess, ws_id, committed_req_seq=req_seq)
+                    emit_topic_refresh(sess, "workspace")
+                    emit_topic_refresh(sess, "stations")
+                  }
+                  Ok(false) => {
+                    if (needs_workspace_cloud_confirm(sess, ws_id) ||
+                        sess.pending_live_ws_replay_seq.get(ws_id).is_some()) &&
+                      (ws_confirm_base_seq(sess, ws_id) > base_seq ||
+                        sess.core.membership.cred_epoch_of(ws_id) > captured_cred_epoch) {
+                      trigger_workspace_confirm_fetch(sess, ws_id)
+                    }
+                  }
+                  _ => ()
+                }
+              }
+              effect::Exit::Succeeded(Err(herr)) => {
+                if herr.status == 403 || herr.status == 404 {
+                  cs.trigger_me_reconcile()
+                } else if herr.status == 401 {
+                  handle_workspace_confirm_401(sess, ws_id, captured_boundary_id, orig_bearer_gen, orig_gen, req_seq)
+                }
+              }
+              _ => ()
+            }
+            fk(effect::Exit::Succeeded(()))
+          },
+        )
+      })
+    }
+  }
+}
+
+/// Re-queue any Cloud `/v1/me` or `/v1/workspaces/<ws>` confirmations still pending after a
+/// bearer token rotation/adoption (even if `/v1/events` WebSocket stayed open with no new WS event).
+fn requeue_pending_cloud_confirmations(sess : RuntimeSession) -> Unit {
+  if sess.stopped || sess.core.membership.is_unauthenticated() || sess.core.membership.is_session_invalidated() {
+    return
+  }
+  let cs = match sess.cloud {
+    Some(c) => c
+    None => return
+  }
+  let candidate_ws : Array[String] = []
+  let seen : Map[String, Bool] = Map::new()
+  let add_ws = fn(wid : String) -> Unit {
+    if wid.length() > 0 && seen.get(wid).is_none() {
+      seen.set(wid, true)
+      candidate_ws.push(wid)
+    }
+  }
+  add_ws(sess.core.workspace)
+  let known = sess.core.membership.known_workspaces()
+  for i in 0..<known.length() {
+    add_ws(known[i])
+  }
+  match store::list_workspaces(sess.db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        add_ws(rows[i].id)
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  let mut any_pending = false
+  let replayed : Map[String, Bool] = Map::new()
+  for i in 0..<candidate_ws.length() {
+    let wid = candidate_ws[i]
+    if sess.core.membership.has_pending_auth_confirm(wid) {
+      any_pending = true
+    }
+    if needs_workspace_cloud_confirm(sess, wid) {
+      replayed.set(wid, true)
+      trigger_workspace_confirm_fetch(sess, wid)
+    }
+  }
+  // Keep `pending_live_ws_replay_seq` alive across dispatch so a mid-replay `/v1/me` fence (`Ok(false)`)
+  // or an older in-flight commit (`committed_req_seq < pending_seq`) never retires the newer replay demand!
+  let live_ks = sess.pending_live_ws_replay_seq.keys()
+  for i in 0..<live_ks.length() {
+    let wid = live_ks[i]
+    if wid.length() == 0 || !sess.core.can_read_workspace(wid) {
+      sess.pending_live_ws_replay_seq.remove(wid)
+    } else if replayed.get(wid).is_none() {
+      trigger_workspace_confirm_fetch(sess, wid)
+    }
+  }
+  if any_pending {
+    cs.trigger_me_reconcile()
+  }
+}
+
 /// Bind and wire production commit hooks + dynamic `/v1/events` WebSocket on live `sess.cloud`
 /// for the active DB account `(sub, session)`. Refuses cross-account binding with 0 side effects.
 fn wire_live_cloud_sync(
@@ -1352,6 +1753,9 @@ fn wire_live_cloud_sync(
   })
   cs.set_seq_provider(fn() -> Int64 {
     sess.core.membership.next_cloud_seq()
+  })
+  cs.set_has_pending_auth_confirm_getter(fn(ws : String) -> Bool {
+    sess.core.membership.has_pending_auth_confirm(ws)
   })
   cs.set_commit_hooks(
     on_me_fetched=Some(fn(me : sync::CloudMe, req_seq : Int64) -> Unit {
@@ -1371,16 +1775,22 @@ fn wire_live_cloud_sync(
         _ => ()
       }
     }),
-    on_workspace_fetched=Some(fn(ws : sync::CloudWorkspace, req_seq : Int64) -> Unit {
+    on_workspace_fetched_with_epoch=Some(fn(ws : sync::CloudWorkspace, req_seq : Int64, cap_ep : Int64) -> Unit {
       if sess.core.membership.is_session_invalidated() {
         return
       }
-      match sess.core.commit_cloud_workspace(ws, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
+      match sess.core.commit_cloud_workspace(ws, req_seq=req_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=cap_ep) {
         Ok(true) => {
+          clear_ws_confirm_401_state(sess, ws.id, committed_req_seq=req_seq)
           emit_topic_refresh(sess, "workspaces")
           emit_topic_refresh(sess, "workspace")
           emit_topic_refresh(sess, "stations")
           emit_topic_refresh(sess, "chats")
+        }
+        Ok(false) => {
+          if needs_workspace_cloud_confirm(sess, ws.id) || sess.pending_live_ws_replay_seq.get(ws.id).is_some() {
+            trigger_workspace_confirm_fetch(sess, ws.id)
+          }
         }
         Err(msg) => if msg == "reentrant_membership_commit" {
           schedule_deferred_me_reconcile(sess, cs)
@@ -1394,6 +1804,13 @@ fn wire_live_cloud_sync(
         runtime_refresh_account_token(sess, active_sub, fn(_ : Result[String, String]) -> Unit {})
       }
     }),
+    on_workspace_unauthorized=Some(fn(wid : String, b_id : Int64, b_gen : Int64, r_seq : Int64, _herr : sync::CloudHttpError) -> Unit {
+      handle_workspace_confirm_401(sess, wid, b_id, b_gen, sess.session_gen, r_seq)
+    }),
+  )
+  cs.set_workspace_auth_context_getters(
+    fn() -> Int64 { sess.bearer_gen },
+    fn(wid : String) -> Int64 { sess.core.membership.pending_auth_boundary_id(wid) },
   )
 }
 
@@ -1470,6 +1887,7 @@ fn runtime_make_refresh_host(
               let _ = cs.bind_account_context(updated.sub, session=new_sid)
             }
             cs.set_origin_and_token("", updated.access)
+            requeue_pending_cloud_confirmations(sess)
           }
           None => ()
         }
@@ -1671,7 +2089,7 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
         if prefix.length() > 0 && !r.address.starts_with(prefix) {
           continue
         }
-        if !sess.core.can_read_station(r.address) {
+        if !sess.core.can_read_station_key(r.address, "chats:" + r.address) {
           continue
         }
         let doc = match base_codec::json_parse(r.json) {
@@ -1691,7 +2109,7 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
     for i in 0..<cloud_sts.length() {
       let cs = cloud_sts[i]
       let addr = sync::canonical_station(ws_scope, cs.id)
-      if !sess.core.can_read_station(addr) {
+      if addr.length() == 0 || !sess.core.can_read_station_key(addr, "chats:" + addr) {
         continue
       }
       seen.set(addr, true)
@@ -2260,6 +2678,11 @@ pub extern "C" fn pion_core_runtime_start(
     md_stores: Map::new(),
     mesh_transports: Map::new(),
     desired_mesh_stations: Map::new(),
+    inflight_ws_confirm: Map::new(),
+    pending_live_ws_replay_seq: Map::new(),
+    ws_confirm_401_rotated_count: Map::new(),
+    ws_confirm_401_inflight_gen: Map::new(),
+    ws_confirm_401_transient_count: Map::new(),
     rejected_tuples_in_memory: Map::new(),
     cloud: cloud_opt,
     origin: origin,
@@ -2283,6 +2706,56 @@ pub extern "C" fn pion_core_runtime_start(
   })
   core.set_on_runtime_boundary(fn(ev : sync::AuthBoundaryEvent) -> Unit {
     handle_runtime_auth_boundary(sess, ev)
+  })
+  core.set_extra_subs_provider(fn() -> Array[protocol::Topic] {
+    let out : Array[protocol::Topic] = []
+    for i in 0..<sess.runtime_subs.length() {
+      out.push(sess.runtime_subs[i].topic)
+    }
+    out
+  })
+  core.set_on_auth_key_confirmed(fn(ws : String, key : String) -> Unit {
+    if key.starts_with("workspace:") {
+      if ws.length() > 0 {
+        clear_ws_confirm_401_counters(sess, ws)
+      }
+      emit_topic_refresh(sess, "workspace")
+      emit_topic_refresh(sess, "settings")
+      emit_topic_refresh(sess, "vaults")
+      emit_topic_refresh(sess, "vaultItems")
+      emit_topic_refresh(sess, "vaultSecrets")
+      emit_topic_refresh(sess, "fleet")
+      emit_topic_refresh(sess, "usage")
+      emit_topic_refresh(sess, "railCard")
+    } else if key.starts_with("stations:") {
+      emit_topic_refresh(sess, "stations")
+    } else if key.starts_with("chats:") {
+      emit_topic_refresh(sess, "chats")
+      emit_topic_refresh(sess, "chatRow")
+      emit_topic_refresh(sess, "chat")
+      emit_topic_refresh(sess, "chatJobs")
+      emit_topic_refresh(sess, "longJobs")
+      emit_topic_refresh(sess, "archive")
+      emit_topic_refresh(sess, "search")
+      emit_topic_refresh(sess, "chatSearch")
+      emit_topic_refresh(sess, "workspaceMarks")
+      emit_topic_refresh(sess, "fleet")
+      emit_topic_refresh(sess, "usage")
+      emit_topic_refresh(sess, "railCard")
+      emit_topic_refresh(sess, "settings")
+    } else if key.starts_with("chat:") {
+      emit_topic_refresh(sess, "chat")
+      emit_topic_refresh(sess, "chatOutline")
+    } else if key.starts_with("chatJobs:") {
+      emit_topic_refresh(sess, "chatJobs")
+      emit_topic_refresh(sess, "longJobs")
+      emit_topic_refresh(sess, "fleet")
+      emit_topic_refresh(sess, "railCard")
+    } else if key.starts_with("jobs:") {
+      emit_topic_refresh(sess, "longJobs")
+      emit_topic_refresh(sess, "fleet")
+      emit_topic_refresh(sess, "railCard")
+    }
   })
   core.set_on_session_invalidated(fn(_sub : String) -> Unit {
     let _ = bump_runtime_session_gen(sess)
@@ -2317,10 +2790,10 @@ pub extern "C" fn pion_core_runtime_start(
           if sess.core.membership.station_workspace(st, fallback_ws=sess.core.workspace) == ws {
             match sess.mesh_transports.get(st) {
               Some(ctrl) => {
+                let req_session_gen = sess.session_gen
                 let dev_id = match ctrl.device_id() { Some(d) => d; None => "" }
-                if dev_id.length() > 0 {
+                if dev_id.length() > 0 && ctrl.link().is_some() {
                   let captured_epoch = sess.core.membership.cred_epoch_of(ws)
-                  let req_session_gen = sess.session_gen
                   let _ = sess.core.rt.fork_quiet_named("cred-refresh:" + st, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
                     cs.fetch_member_credential_k(
                       ws,
@@ -2329,31 +2802,41 @@ pub extern "C" fn pion_core_runtime_start(
                       fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
                         if sess.session_gen != req_session_gen || sess.core.membership.cred_epoch_of(ws) != captured_epoch || !sess.core.can_read_workspace(ws) {
                           ctrl.drop_link(reason="cred_epoch_changed")
+                          drive_mesh_admission(sess, ws, st, ctrl, req_session_gen)
                           fk(effect::Exit::Succeeded(()))
                           return
                         }
                         match ex {
                           effect::Exit::Succeeded(mc) => {
-                            ctrl.refresh_credential_k(mc.credential, fn(rex : effect::Exit[sync::MeshAdmission]) -> Unit {
-                              if sess.session_gen != req_session_gen || sess.core.membership.cred_epoch_of(ws) != captured_epoch || !sess.core.can_read_workspace(ws) {
-                                ctrl.drop_link(reason="cred_epoch_changed")
-                                fk(effect::Exit::Succeeded(()))
-                                return
-                              }
-                              match rex {
-                                effect::Exit::Succeeded(_) => {
-                                  match sess.core.station_sync(st) {
-                                    Some(sy) => sy.bump_epoch()
-                                    None => ()
+                            ctrl.refresh_credential_k(
+                              mc.credential,
+                              fn(rex : effect::Exit[sync::MeshAdmission]) -> Unit {
+                                if sess.session_gen != req_session_gen || sess.core.membership.cred_epoch_of(ws) != captured_epoch || !sess.core.can_read_workspace(ws) {
+                                  ctrl.drop_link(reason="cred_epoch_changed")
+                                  drive_mesh_admission(sess, ws, st, ctrl, req_session_gen)
+                                  fk(effect::Exit::Succeeded(()))
+                                  return
+                                }
+                                match rex {
+                                  effect::Exit::Succeeded(adm) => {
+                                    if adm.error_code.is_some() || adm.lock_unconfirmed {
+                                      ctrl.drop_link(reason="cred_refresh_unadmitted")
+                                      drive_mesh_admission(sess, ws, st, ctrl, req_session_gen)
+                                    }
+                                  }
+                                  _ => {
+                                    ctrl.drop_link(reason="cred_refresh")
+                                    drive_mesh_admission(sess, ws, st, ctrl, req_session_gen)
                                   }
                                 }
-                                _ => ctrl.drop_link(reason="cred_refresh")
-                              }
-                              fk(effect::Exit::Succeeded(()))
-                            })
+                                fk(effect::Exit::Succeeded(()))
+                              },
+                              cred_epoch=Some(captured_epoch),
+                            )
                           }
                           _ => {
                             ctrl.drop_link(reason="cred_refresh_failed")
+                            drive_mesh_admission(sess, ws, st, ctrl, req_session_gen)
                             fk(effect::Exit::Succeeded(()))
                           }
                         }
@@ -2363,6 +2846,7 @@ pub extern "C" fn pion_core_runtime_start(
                   })
                 } else {
                   ctrl.drop_link(reason="cred_refresh")
+                  drive_mesh_admission(sess, ws, st, ctrl, req_session_gen)
                 }
               }
               None => ()
@@ -2374,51 +2858,27 @@ pub extern "C" fn pion_core_runtime_start(
     }
   })
   core.set_on_workspace_refresh(fn(ws : String) -> Unit {
-    match sess.cloud {
-      Some(cs) => {
-        let req_seq = sess.core.membership.next_cloud_seq()
-        let orig_sub = cs.bound_sub()
-        let orig_session = cs.bound_session()
-        let orig_gen = sess.session_gen
-        let _ = sess.core.rt.fork_quiet_named("ws-refresh:" + ws, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-          sync::fetch_workspace_structured_k(
-            sess.sh,
-            cs.origin(),
-            cs.token(),
-            ws,
-            fn(ex : effect::Exit[Result[sync::CloudWorkspace, sync::CloudHttpError]]) -> Unit {
-              if sess.session_gen != orig_gen || cs.bound_sub() != orig_sub || cs.bound_session() != orig_session {
-                fk(effect::Exit::Succeeded(()))
-                return
-              }
-              match ex {
-                effect::Exit::Succeeded(Ok(cws)) => {
-                  match sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
-                    Ok(true) => {
-                      emit_topic_refresh(sess, "workspace")
-                      emit_topic_refresh(sess, "stations")
-                    }
-                    _ => ()
-                  }
-                }
-                effect::Exit::Succeeded(Err(herr)) => {
-                  if herr.status == 403 || herr.status == 404 {
-                    cs.trigger_me_reconcile()
-                  } else if herr.status == 401 {
-                    let sub_now = sess.core.membership.effective_sub()
-                    if sub_now.length() > 0 {
-                      runtime_refresh_account_token(sess, sub_now, fn(_ : Result[String, String]) -> Unit {})
-                    }
-                  }
-                }
-                _ => ()
-              }
-              fk(effect::Exit::Succeeded(()))
-            },
-          )
-        })
+    trigger_workspace_confirm_fetch(sess, ws)
+  })
+  core.set_on_station_admission_needed(fn(st : String) -> Unit {
+    match sess.mesh_transports.get(st) {
+      Some(ctrl) => {
+        let ws = sess.core.membership.station_workspace(st, fallback_ws=sess.core.workspace)
+        drive_mesh_admission(sess, ws, st, ctrl, sess.session_gen)
       }
       None => ()
+    }
+  })
+  core.set_on_workspace_lock_changed(fn(ws : String) -> Unit {
+    let mkeys = sess.mesh_transports.keys()
+    for i in 0..<mkeys.length() {
+      let st = mkeys[i]
+      if ws.length() == 0 || sess.core.membership.station_workspace(st, fallback_ws=sess.core.workspace) == ws {
+        match sess.mesh_transports.get(st) {
+          Some(ctrl) => ctrl.clear_lock_admission_block()
+          None => ()
+        }
+      }
     }
   })
   // Wire production CloudSync commit hooks, monotonic seq provider, cred_epoch guard, and
@@ -2943,6 +3403,9 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
               }
               Some(wid) => {
                 let ws_seq = sess.core.membership.next_cloud_seq()
+                let ws_cred_ep = sess.core.membership.cred_epoch_of(wid)
+                let ws_boundary_id = sess.core.membership.pending_auth_boundary_id(wid)
+                let ws_bearer_gen = sess.bearer_gen
                 sync::fetch_workspace_structured_k(
                   sess.sh,
                   cs.origin(),
@@ -2968,14 +3431,14 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                           // Reconcile via `/v1/me` on 403/404; NEVER directly call `drop_workspace`!
                           cs.trigger_me_reconcile()
                         } else if herr.status == 401 {
-                          runtime_refresh_account_token(sess, me.sub, fn(_ : Result[String, String]) -> Unit {})
+                          handle_workspace_confirm_401(sess, wid, ws_boundary_id, ws_bearer_gen, req_session_gen, ws_seq)
                         }
                         let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: herr.message })
                         let (out_j, out_b) = protocol::encode_core_event(ev)
                         emit_wire(out_j, payload=out_b)
                       }
                       effect::Exit::Succeeded(Ok(ws)) => {
-                        match sess.core.commit_cloud_workspace(ws, req_seq=ws_seq, now_ms=pion_core_wall_now_ms()) {
+                        match sess.core.commit_cloud_workspace(ws, req_seq=ws_seq, now_ms=pion_core_wall_now_ms(), captured_cred_epoch=ws_cred_ep) {
                           Err(msg) => {
                             let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: msg })
                             let (out_j, out_b) = protocol::encode_core_event(ev)
@@ -2983,6 +3446,9 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                           }
                           Ok(false) => {
                             // Explicitly treat rejected/stale workspace commit as stale without returning rejected metadata!
+                            if needs_workspace_cloud_confirm(sess, ws.id) || sess.pending_live_ws_replay_seq.get(ws.id).is_some() {
+                              trigger_workspace_confirm_fetch(sess, ws.id)
+                            }
                             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
                               ("sub", base_codec::json_str(me.sub)),
                               ("email", base_codec::json_str(me.email)),
@@ -2996,6 +3462,7 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
                             emit_topic_refresh(sess, "workspaces")
                           }
                           Ok(true) => {
+                            clear_ws_confirm_401_state(sess, ws.id, committed_req_seq=ws_seq)
                             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
                               ("sub", base_codec::json_str(me.sub)),
                               ("email", base_codec::json_str(me.email)),
@@ -3502,6 +3969,12 @@ fn evaluate_runtime_topic(
       _ => 0
     }
     let briefs = station_briefs_live(sess, ws_scope)
+    if ws_scope.length() > 0 && sess.core.membership.has_pending_auth_confirm(ws_scope) {
+      sess.core.ensure_confirmed_workspace_stations_refresh(ws_scope, key_prefix="chats:")
+      if briefs.length() == 0 {
+        return Some(protocol::CoreEvent::Waiting(id))
+      }
+    }
     match views::project_chats(
       sess.db,
       ws_scope,
@@ -3544,8 +4017,16 @@ fn evaluate_runtime_topic(
       Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "chat_selector_mismatch", message: msg }))
     }
     let (resolved_st, resolved_th, chat_meta) = resolve_thread_and_chat_meta(sess, consistent_st, consistent_th, consistent_sess)
-    // Authorize BOTH input AND final moved destination!
+    // Authorize BOTH input AND final moved destination + PendingAuthConfirm gate!
     if !sess.core.can_read_station(st) || !sess.core.can_read_station(resolved_st) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
+    let chat_confirm_key = match resolved_th {
+      Some(th) => "chat:" + resolved_st + "/" + th.to_string()
+      None => "chats:" + resolved_st
+    }
+    if !sess.core.can_read_station_key(resolved_st, chat_confirm_key) {
+      sess.core.ensure_confirmed_station_refresh(resolved_st, chat_confirm_key, thread=resolved_th)
       return Some(protocol::CoreEvent::Waiting(id))
     }
     let compact = match topic.param("compact") {
@@ -3595,6 +4076,9 @@ fn evaluate_runtime_topic(
     if sess.core.membership.is_unauthenticated() || sess.core.membership.is_session_invalidated() || (ws_scope.length() > 0 && !sess.core.can_read_workspace(ws_scope)) {
       return Some(protocol::CoreEvent::Value(id, base_codec::json_arr([]), None))
     }
+    if ws_scope.length() > 0 && !sess.core.can_read_confirmed_key(ws_scope, "stations:" + ws_scope) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
     let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
     let overview_by_addr : Map[String, base_codec::Json] = Map::new()
     let overview_addrs : Array[String] = []
@@ -3605,7 +4089,8 @@ fn evaluate_runtime_topic(
           if prefix.length() > 0 && !r.address.starts_with(prefix) {
             continue
           }
-          if !sess.core.can_read_station(r.address) {
+          let st_ws = sess.core.membership.station_workspace(r.address, fallback_ws=sess.core.workspace)
+          if !sess.core.can_read_station(r.address) || (st_ws.length() > 0 && !sess.core.can_read_confirmed_key(st_ws, "stations:" + st_ws)) {
             continue
           }
           let doc = match base_codec::json_parse(r.json) {
@@ -4146,6 +4631,8 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
         }
       }
       sess.mesh_transports.clear()
+  sess.inflight_ws_confirm.clear()
+  clear_all_ws_confirm_401_state(sess)
       match sess.cloud {
         Some(cs) => cs.stop()
         None => ()

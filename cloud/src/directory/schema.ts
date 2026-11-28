@@ -8,10 +8,13 @@ export function initSchema(db: DirectoryDb, runMigrations: { freePlan(): void; s
   db.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS users (sub TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', picture TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, last_seen INTEGER, admitted TEXT, beta INTEGER);
       CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS workspaces_by_creator ON workspaces (created_by);
       CREATE TABLE IF NOT EXISTS told (workspace TEXT PRIMARY KEY, rev INTEGER NOT NULL, view TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS members (workspace TEXT NOT NULL, sub TEXT NOT NULL, role TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (workspace, sub));
       CREATE INDEX IF NOT EXISTS members_by_user ON members (sub);
       CREATE TABLE IF NOT EXISTS invitations (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL, email TEXT, created_by TEXT NOT NULL, expires_at INTEGER NOT NULL);
+      CREATE INDEX IF NOT EXISTS invitations_by_email ON invitations (email, expires_at);
+      CREATE INDEX IF NOT EXISTS invitations_by_workspace ON invitations (workspace, expires_at);
       CREATE TABLE IF NOT EXISTS stations (id TEXT PRIMARY KEY, last_seen INTEGER, version TEXT);
       CREATE TABLE IF NOT EXISTS station_members (workspace TEXT NOT NULL, station TEXT NOT NULL, name TEXT NOT NULL, emoji TEXT, icon TEXT, enrolled_at INTEGER NOT NULL, enrolled_by TEXT NOT NULL, PRIMARY KEY (workspace, station));
       CREATE INDEX IF NOT EXISTS station_members_by_station ON station_members (station, enrolled_at);
@@ -30,6 +33,7 @@ export function initSchema(db: DirectoryDb, runMigrations: { freePlan(): void; s
       CREATE TABLE IF NOT EXISTS feedback (id TEXT PRIMARY KEY, number INTEGER NOT NULL UNIQUE, key TEXT NOT NULL, channel TEXT NOT NULL, sender TEXT NOT NULL, station TEXT, workspace TEXT, account TEXT, title TEXT NOT NULL, body TEXT NOT NULL, area TEXT NOT NULL, reporter TEXT NOT NULL DEFAULT '', context TEXT, logs TEXT, status TEXT NOT NULL DEFAULT 'new', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE UNIQUE INDEX IF NOT EXISTS feedback_by_key ON feedback (sender, key);
       CREATE INDEX IF NOT EXISTS feedback_by_sender ON feedback (sender, created_at);
+      CREATE INDEX IF NOT EXISTS feedback_by_station ON feedback (station, number);
       CREATE TABLE IF NOT EXISTS feedback_replies (id TEXT PRIMARY KEY, feedback TEXT NOT NULL, author TEXT NOT NULL, by TEXT NOT NULL DEFAULT '', text TEXT NOT NULL, created_at INTEGER NOT NULL, delivered_at INTEGER);
       CREATE INDEX IF NOT EXISTS feedback_replies_by_feedback ON feedback_replies (feedback, created_at);
       CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY, at INTEGER NOT NULL);

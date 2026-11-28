@@ -1390,3 +1390,77 @@ test("stillfail uninstall of a data directory of its own takes away whichever pr
     m.done();
   }
 });
+
+test("swap_app stages the unpacked release into app.new on the data filesystem before moving app aside, and rolls back on failure", () => {
+  const m = machine("linux");
+  const data = join(m.home, ".stillfail");
+  const app = join(data, "app");
+  const realMv = execFileSync("sh", ["-c", "command -v mv"], { encoding: "utf8" }).trim();
+  const mvLog = join(m.root, "mv.log");
+  const installMvWrapper = (extra = "") => {
+    writeFileSync(
+      join(m.root, "stub", "mv"),
+      `#!/bin/sh
+pion=0
+[ -f "${app}/station/stillfail-pion" ] && pion=1
+echo "$1|$2|pion=$pion" >> "${mvLog}"
+${extra}
+exec "${realMv}" "$@"
+`,
+      { mode: 0o755 },
+    );
+  };
+  try {
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.still.fail"}');
+    assert.equal(m.run().status, 0, "initial install");
+    writeFileSync(join(app, "VERSION"), "old\n");
+    mkdirSync(join(app, "station"), { recursive: true });
+    writeFileSync(join(app, "station", "stillfail-pion"), "bin");
+
+    // 1. Happy path: cross-FS move from $tmp goes to $app.new while $app/station/stillfail-pion stays live;
+    //    only same-directory renames touch $app.
+    installMvWrapper();
+    const ok = m.run();
+    assert.equal(ok.status, 0, ok.out);
+    const calls = readFileSync(mvLog, "utf8").trim().split("\n");
+    assert.equal(calls.length, 3, calls.join("\n"));
+    assert.match(calls[0]!, new RegExp(`/stillfail\\|${app}\\.new\\|pion=1$`));
+    assert.equal(calls[1], `${app}|${app}.old|pion=1`);
+    assert.equal(calls[2], `${app}.new|${app}|pion=0`);
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "new\n");
+    assert.ok(!existsSync(`${app}.new`) && !existsSync(`${app}.old`));
+
+    // 2. Staging failure (e.g. ENOSPC copying from $tmp to $app.new): leaves $app intact and cleans $app.new.
+    writeFileSync(join(app, "VERSION"), "old\n");
+    mkdirSync(join(app, "station"), { recursive: true });
+    writeFileSync(join(app, "station", "stillfail-pion"), "bin");
+    writeFileSync(mvLog, "");
+    installMvWrapper(`case "$2" in "${app}.new") mkdir -p "$2" && touch "$2/partial"; exit 1 ;; esac`);
+    const stageFail = m.run();
+    assert.notEqual(stageFail.status, 0, "staging failure must fail the install");
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "old\n", "existing app untouched");
+    assert.ok(existsSync(join(app, "station", "stillfail-pion")));
+    assert.ok(!existsSync(`${app}.new`), "partial app.new cleaned up");
+
+    // 3. Failure moving $app aside ($app -> $app.old): aborts before moving $app.new into $app/app.new.
+    writeFileSync(mvLog, "");
+    installMvWrapper(`if [ "$1" = "${app}" ] && [ "$2" = "${app}.old" ]; then exit 1; fi`);
+    const backupFail = m.run();
+    assert.notEqual(backupFail.status, 0, "backup rename failure must fail the install");
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "old\n", "existing app untouched");
+    assert.ok(!existsSync(join(app, "app.new")), "must not nest app.new inside existing app");
+    assert.ok(!existsSync(`${app}.new`) && !existsSync(`${app}.old`));
+
+    // 4. Final rename failure ($app.new -> $app): restores $app.old back to $app and cleans $app.new.
+    writeFileSync(mvLog, "");
+    installMvWrapper(`if [ "$1" = "${app}.new" ] && [ "$2" = "${app}" ]; then exit 1; fi`);
+    const swapFail = m.run();
+    assert.notEqual(swapFail.status, 0, "swap failure must fail the install");
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "old\n", "previous app restored from app.old");
+    assert.ok(existsSync(join(app, "station", "stillfail-pion")));
+    assert.ok(!existsSync(`${app}.new`) && !existsSync(`${app}.old`));
+  } finally {
+    m.done();
+  }
+});

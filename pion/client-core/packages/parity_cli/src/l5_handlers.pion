@@ -692,7 +692,7 @@ pub fn handle_l5_op(op : String, args : base_codec::Json, _sess : ParityCoreSess
         effect::sleep_k(delay, fn(sex : effect::Exit[Unit]) -> Unit {
           match sex {
             effect::Exit::Interrupted => k(effect::Exit::Interrupted)
-            _ => k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: "{\"entries\":[]}".to_bytes() }))
+            _ => k(effect::Exit::Succeeded(sync::HttpReply::{ status: 200, headers: [], body: "{\"last\":0,\"entries\":[]}".to_bytes() }))
           }
         })
       },

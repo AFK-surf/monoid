@@ -156,7 +156,7 @@ local $SIG{ALRM} = sub { exit 0 }; alarm 3; my $b; sysread($s, $b, 1);' "$sock" 
     if [ -L "$data" ]; then there=$(readlink "$data"); case "$there" in /?*) rm -rf "$there" ;; esac; fi
     rm -rf "$data"
   else
-    rm -rf "$data/app" "$data/app.old" "$data/app.failed" "$data/app.before-replace" "$data/node" "$data/helper" "$data/run" "$data/stillfail.pid"
+    rm -rf "$data/app" "$data/app.old" "$data/app.new" "$data/app.failed" "$data/app.before-replace" "$data/node" "$data/helper" "$data/run" "$data/stillfail.pid"
     [ ! -d "$data" ] || : > "$data/uninstalled"
   fi
   if [ -n "$purge" ]; then echo "stillfail: uninstalled, $data removed"; else echo "stillfail: uninstalled; chats, memory and secrets kept in $data"; fi
@@ -448,7 +448,7 @@ PLAN
     waited=$((waited + 1))
   done
   echo $$ > "$lock_dir/pid"
-  trap 'rm -rf "$tmp" "$lock_dir" "${STILLFAIL_REPLACE_COPY:-}"' EXIT
+  trap 'rm -rf "$tmp" "$lock_dir" "$app.new" "${STILLFAIL_REPLACE_COPY:-}"' EXIT
 
   station_json="$data/run/station.json"
   said() { sed -n "s/.*\"$1\": *\([0-9]*\).*/\1/p" "$station_json" 2>/dev/null | head -1; }
@@ -514,9 +514,22 @@ PLAN
   fi
 
   started=$(said startedAt)
-  rm -rf "$app.old"
-  [ -d "$app" ] && mv "$app" "$app.old"
-  mv "$tmp/stage" "$app"
+  rm -rf "$app.old" "$app.new"
+  if ! mv "$tmp/stage" "$app.new"; then
+    rm -rf "$app.new"
+    exit 1
+  fi
+  if [ -d "$app" ]; then
+    if ! mv "$app" "$app.old"; then
+      rm -rf "$app.new"
+      exit 1
+    fi
+  fi
+  if ! mv "$app.new" "$app"; then
+    [ -d "$app.old" ] && [ ! -e "$app" ] && mv "$app.old" "$app"
+    rm -rf "$app.new"
+    exit 1
+  fi
 
   # Write autoUpdateWhen (pausing autoUpdate) BEFORE handover so even an older hotfix bundle boots paused.
   cfg_file="${STILLFAIL_CONFIG:-$data/config.json}"

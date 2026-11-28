@@ -210,6 +210,9 @@ export function cleanPicture(value: unknown, origins: string[]): string | null {
 /** What a workspace's view says alike to every member (directory.ts `#alike`), as kept to be told against. */
 export type AlikeView = Omit<WorkspaceView, "role" | "rev" | "rigs" | "lock_requests"> & { rigs: RigView[] };
 
+/** Updated alike snapshot and told revision returned by `changed()` so callers can reuse them in `view()`. */
+export type ChangedView = { now: AlikeView; rev: number };
+
 /** A view's lists, each by the key of its entries (what a device patches by). */
 const KEYED = { members: "sub", stations: "id", rigs: "id", invitations: "id", added: "email" } as const;
 

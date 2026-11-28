@@ -4662,9 +4662,16 @@ export class Views implements Owner {
     const whom = this.#peopleOf(station, agents);
     const { scope, viewer, members_, bots } = whom;
     const waiting = agents.reduce((max, a) => Math.max(max, u64(get(a.session, "pending")) ?? 0), 0);
-    const peopleSeqs = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [m.seq as number] : []));
+    const peopleSeqs: number[] = [];
+    const written: [number, string, string][] = [];
+    for (const m of said) {
+      if (m.authorKind !== "person") continue;
+      const seq = u64(m.seq);
+      if (seq === null) continue;
+      peopleSeqs.push(seq);
+      written.push([seq, str(m.text) ?? "", filesNamed(m.attachments)]);
+    }
     const waits = peopleSeqs.slice(Math.max(peopleSeqs.length - waiting, 0));
-    const written = said.filter((m) => m.authorKind === "person").flatMap((m) => (u64(m.seq) !== null ? [[m.seq as number, str(m.text) ?? "", filesNamed(m.attachments)] as [number, string, string]] : []));
     let messages = timed("chat.shown", () => this.#shown(station, thread, agents, said, waits, whom));
     // The station binds a capacity retry, and a failed turn, to the notice that announced it. Only that notice offers
     // cancelling the retry, or trying again, and only while that agent still stands there: an old notice must never
@@ -4695,7 +4702,9 @@ export class Views implements Owner {
     // A sent message leaves the outbox as its own entry (or anything later) arrives; before the station answered
     // with its seq, it is the viewer's first message since it was sent with the same words.
     const newest = u64(page.last);
-    const mine = written.filter(([seq]) => messages.some((m) => m.seq === seq && m.mine === true));
+    const mineSeqs = new Set<number>();
+    for (const m of messages) if (m.mine === true && typeof m.seq === "number") mineSeqs.add(m.seq);
+    const mine = written.filter(([seq]) => mineSeqs.has(seq));
     let past = 0;
     const list = this.local.outbox(station, id).map((m) => ({ ...m }));
     const kept: J[] = [];
