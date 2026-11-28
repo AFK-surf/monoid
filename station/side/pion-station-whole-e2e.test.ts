@@ -2986,7 +2986,7 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const unknownVaultItems = await adminCall(conn, "GET", "/vault/items?vault=nonexistent");
   assert.equal(unknownVaultItems.status, 404, `GET /vault/items?vault=nonexistent expected 404, got ${unknownVaultItems.status}: ${unknownVaultItems.body.toString()}`);
 
-  // Unimplemented / unported partial ops return honest 501 (ZERO fake 200 stubs!)
+  // 1b. Routes implemented in W17C-3A (#9161) & W17C-3B (#9162) return 200
   for (const [m, p, body] of [
     ["GET", "/vault/uses", undefined],
     ["GET", "/vault/plain", undefined],
@@ -2995,6 +2995,13 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     ["GET", "/memory", undefined],
     ["GET", "/mcp-servers", undefined],
     ["PUT", "/mcp-servers", JSON.stringify({ servers: {} })],
+  ] as const) {
+    const resp = await adminCall(conn, m, p, { "content-type": "application/json" }, body !== undefined ? Buffer.from(body) : undefined);
+    assert.equal(resp.status, 200, `${m} ${p} expected 200, got ${resp.status}: ${resp.body.toString()}`);
+  }
+
+  // Unimplemented / unported partial ops return honest 501 (ZERO fake 200 stubs!)
+  for (const [m, p, body] of [
     ["POST", "/updates", "{}"],
     ["POST", "/updates/check", "{}"],
   ] as const) {
