@@ -1,0 +1,944 @@
+// Wave 17E-4B durable project rename/merge persistence, CSPRNG UUID v4 `opId`,
+// atomic `PROJECTS.jsonl` consumer/updater, and partial-outcome cache guard
+// (1:1 with `station/src/store/store.ts`, `station/src/projects/info.ts`,
+// `station/src/sessions/projects.ts`, and `station/src/api/routes/projects.ts`).
+
+import "base_codec"
+import "nodepath"
+import "sql_db"
+import "station_api"
+import "station_ops"
+import "station_sys"
+
+/// Generate a true RFC 4122 UUID v4 from CSPRNG bytes (`station_sys::random_bytes`).
+/// NEVER falls back to deterministic, counter-based, or timestamp-based IDs!
+pub fn generate_csprng_uuid_v4(rng : (Int) -> Result[Bytes, String]) -> Result[String, String] {
+  let raw = match rng(16) {
+    Ok(b) => b
+    Err(e) => return Err("CSPRNG random_bytes failed: " + e)
+  }
+  if raw.length() < 16 {
+    return Err("CSPRNG returned fewer than 16 bytes")
+  }
+  let buf = Bytes::new(16)
+  for i in 0..<16 {
+    buf[i] = raw[i]
+  }
+  buf[6] = ((buf[6].to_int() & 0x0F) | 0x40).to_byte()
+  buf[8] = ((buf[8].to_int() & 0x3F) | 0x80).to_byte()
+  let hex = "0123456789abcdef"
+  let sb = StringBuilder::new()
+  for i in 0..<16 {
+    if i == 4 || i == 6 || i == 8 || i == 10 {
+      sb.write_string("-")
+    }
+    let v = buf[i].to_int() & 0xFF
+    let hi = (v >> 4) & 0x0F
+    let lo = v & 0x0F
+    sb.write_string(hex.slice(hi, hi + 1))
+    sb.write_string(hex.slice(lo, lo + 1))
+  }
+  Ok(sb.to_string())
+}
+
+pub fn generate_project_op_id() -> Result[String, String] {
+  generate_csprng_uuid_v4(station_sys::random_bytes)
+}
+
+/// Returns true if a rename/merge result has any partial/degraded outcome (`infoError`,
+/// `rosterError`, or any peer with status other than `"ok"` / `"rig"`).
+/// Partial outcomes MUST NEVER be written into `AdminApi`'s permanent success idempotency cache!
+pub fn is_partial_rename_result(
+  info_error : Option[String],
+  roster_error : Option[String],
+  peer_statuses : Array[String],
+) -> Bool {
+  if info_error.is_some() || roster_error.is_some() {
+    return true
+  }
+  for i in 0..<peer_statuses.length() {
+    let st = peer_statuses[i]
+    if st != "ok" && st != "rig" {
+      return true
+    }
+  }
+  false
+}
+
+pub struct DurableProjectRenameRow {
+  pub seq : Int64
+  pub workspace : String
+  pub action : String
+  pub from_name : String
+  pub to_name : String
+  pub renamed_at : Int64
+  pub wall_at : Int64
+  pub origin_seq : Int64
+  pub op_key : Option[String]
+  pub op_id : Option[String]
+  pub pending_peers : Array[String]
+  pub pending_roster : Bool
+  pub pending_info_state : Int
+  pub local_updated : Int
+  pub remote_updated : Bool
+}
+
+pub struct EffectiveWatermark {
+  pub at : Int64
+  pub wall_at : Int64
+  pub origin_seq : Int64
+  pub seq : Int64
+}
+
+pub struct CommitLocalRenameResult {
+  pub seq : Int64
+  pub origin_seq : Int64
+  pub already_applied : Bool
+  pub updated : Int
+  pub skipped_locked : Int
+  pub updated_thread_ids : Array[Int64]
+  pub preset_notifies : Array[(String, String)]
+}
+
+fn dur_row_str(row : Map[String, base_codec::Json], key : String) -> String {
+  match row.get(key) {
+    Some(base_codec::Json::Str(s)) => s
+    _ => ""
+  }
+}
+
+fn dur_row_opt_str(row : Map[String, base_codec::Json], key : String) -> Option[String] {
+  match row.get(key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn dur_row_i64(row : Map[String, base_codec::Json], key : String) -> Int64 {
+  match row.get(key) {
+    Some(base_codec::Json::Num(n, raw)) => match base_codec::parse_int64_str(raw) {
+      Some(v) => v
+      None => n.to_int64()
+    }
+    _ => 0L
+  }
+}
+
+fn dur_parse_str_arr(raw : String) -> Array[String] {
+  let out : Array[String] = []
+  match base_codec::json_parse(raw) {
+    base_codec::JsonParseResult::Ok(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        match xs[i] {
+          base_codec::Json::Str(s) => out.push(s)
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+fn dur_encode_str_arr(xs : Array[String]) -> String {
+  let arr : Array[base_codec::Json] = []
+  for i in 0..<xs.length() {
+    arr.push(base_codec::json_str(xs[i]))
+  }
+  base_codec::json_stringify(base_codec::json_arr(arr))
+}
+
+fn parse_durable_rename_row(row : Map[String, base_codec::Json]) -> DurableProjectRenameRow {
+  let seq = dur_row_i64(row, "seq")
+  let renamed_at = dur_row_i64(row, "renamed_at")
+  let raw_wall = dur_row_i64(row, "wall_at")
+  let raw_origin = dur_row_i64(row, "origin_seq")
+  let raw_info = dur_row_i64(row, "pending_info").to_int()
+  let pending_info_state = if raw_info == 1 || raw_info == 2 || raw_info == 3 { raw_info } else { 0 }
+  let action_raw = dur_row_str(row, "action")
+  DurableProjectRenameRow::{
+    seq: seq,
+    workspace: dur_row_str(row, "workspace"),
+    action: if action_raw == "merge" { "merge" } else { "rename" },
+    from_name: dur_row_str(row, "from_name"),
+    to_name: dur_row_str(row, "to_name"),
+    renamed_at: renamed_at,
+    wall_at: if raw_wall > 0L { raw_wall } else { renamed_at },
+    origin_seq: if raw_origin > 0L { raw_origin } else { seq },
+    op_key: dur_row_opt_str(row, "op_key"),
+    op_id: dur_row_opt_str(row, "op_id"),
+    pending_peers: dur_parse_str_arr(dur_row_str(row, "pending_peers")),
+    pending_roster: dur_row_i64(row, "pending_roster") == 1L,
+    pending_info_state: pending_info_state,
+    local_updated: dur_row_i64(row, "local_updated").to_int(),
+    remote_updated: dur_row_i64(row, "remote_updated") == 1L,
+  }
+}
+
+fn dur_ws_cond_and_args(ws : String, home : String) -> (String, Array[base_codec::Json]) {
+  let is_home = ws.length() == 0 || home.length() == 0 || ws == home
+  if is_home {
+    if home.length() > 0 {
+      ("(s.ws IS NULL OR s.ws = ?)", [base_codec::json_str(home)])
+    } else {
+      ("s.ws IS NULL", [])
+    }
+  } else {
+    ("s.ws = ?", [base_codec::json_str(ws)])
+  }
+}
+
+pub fn list_project_rename_events_sql(
+  store : WholeStore,
+  ws : String,
+) -> Array[station_api::ProjectRenameEventMeta] {
+  let out : Array[station_api::ProjectRenameEventMeta] = []
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return out
+  }
+  match st.db.all(
+    "SELECT seq, from_name, to_name, renamed_at, wall_at, origin_seq, op_id FROM project_rename_events WHERE workspace = ?1 ORDER BY renamed_at ASC, origin_seq ASC, seq ASC",
+    [base_codec::json_str(ws)],
+  ) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        let seq = dur_row_i64(r, "seq")
+        let renamed_at = dur_row_i64(r, "renamed_at")
+        let raw_wall = dur_row_i64(r, "wall_at")
+        let raw_origin = dur_row_i64(r, "origin_seq")
+        out.push(station_api::ProjectRenameEventMeta::{
+          seq: seq,
+          from: dur_row_str(r, "from_name"),
+          to: dur_row_str(r, "to_name"),
+          renamed_at: renamed_at,
+          wall_at: if raw_wall > 0L { raw_wall } else { renamed_at },
+          origin_seq: if raw_origin > 0L { raw_origin } else { seq },
+          op_id: dur_row_opt_str(r, "op_id"),
+        })
+      }
+    }
+    Err(_) => ()
+  }
+  out
+}
+
+pub fn find_project_rename_by_op_key_sql(
+  store : WholeStore,
+  ws : String,
+  op_key : String,
+) -> Option[DurableProjectRenameRow] {
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return None
+  }
+  match st.db.first(
+    "SELECT e.seq, e.workspace, e.action, e.from_name, e.to_name, e.renamed_at, e.wall_at, e.origin_seq, e.op_key, e.op_id, e.pending_peers, e.pending_roster, e.pending_info, e.local_updated, e.remote_updated" +
+    " FROM project_rename_op_keys k JOIN project_rename_events e ON e.seq = k.event_seq WHERE k.workspace = ?1 AND k.op_key = ?2",
+    [base_codec::json_str(ws), base_codec::json_str(op_key)],
+  ) {
+    Ok(Some(r)) => return Some(parse_durable_rename_row(r))
+    _ => ()
+  }
+  match st.db.first(
+    "SELECT seq, workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info, local_updated, remote_updated" +
+    " FROM project_rename_events WHERE workspace = ?1 AND op_key = ?2",
+    [base_codec::json_str(ws), base_codec::json_str(op_key)],
+  ) {
+    Ok(Some(r)) => Some(parse_durable_rename_row(r))
+    _ => None
+  }
+}
+
+pub fn find_unfinished_project_rename_sql(
+  store : WholeStore,
+  ws : String,
+  action : String,
+  from_name : String,
+  to_name : String,
+) -> Option[DurableProjectRenameRow] {
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return None
+  }
+  match st.db.first(
+    "SELECT seq, workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info, local_updated, remote_updated" +
+    " FROM project_rename_events WHERE workspace = ?1 AND action = ?2 AND from_name = ?3 AND to_name = ?4" +
+    " AND (pending_peers != '[]' OR pending_roster = 1 OR pending_info != 0) ORDER BY seq DESC LIMIT 1",
+    [
+      base_codec::json_str(ws),
+      base_codec::json_str(action),
+      base_codec::json_str(from_name),
+      base_codec::json_str(to_name),
+    ],
+  ) {
+    Ok(Some(r)) => Some(parse_durable_rename_row(r))
+    _ => None
+  }
+}
+
+pub fn list_unfinished_project_renames_sql(store : WholeStore) -> Array[DurableProjectRenameRow] {
+  let out : Array[DurableProjectRenameRow] = []
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return out
+  }
+  match st.db.all(
+    "SELECT seq, workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info, local_updated, remote_updated" +
+    " FROM project_rename_events WHERE pending_peers != '[]' OR pending_roster = 1 OR pending_info != 0 ORDER BY seq ASC",
+    [],
+  ) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        out.push(parse_durable_rename_row(rows[i]))
+      }
+    }
+    Err(_) => ()
+  }
+  out
+}
+
+pub fn get_project_rename_event_sql(store : WholeStore, seq : Int64) -> Option[DurableProjectRenameRow] {
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return None
+  }
+  match st.db.first(
+    "SELECT seq, workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info, local_updated, remote_updated" +
+    " FROM project_rename_events WHERE seq = ?1",
+    [sql_db::int64_to_json(seq)],
+  ) {
+    Ok(Some(r)) => Some(parse_durable_rename_row(r))
+    _ => None
+  }
+}
+
+pub fn has_pending_project_target_sql(store : WholeStore, ws : String, to_name : String) -> Bool {
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  match st.db.first(
+    "SELECT 1 AS ok FROM project_rename_events WHERE workspace = ?1 AND to_name = ?2 AND (pending_peers != '[]' OR pending_roster = 1 OR pending_info != 0) LIMIT 1",
+    [base_codec::json_str(ws), base_codec::json_str(to_name)],
+  ) {
+    Ok(Some(_)) => true
+    _ => false
+  }
+}
+
+pub fn has_unfinished_rename_from_sql(
+  store : WholeStore,
+  ws : String,
+  from_name : String,
+  exclude_to : String,
+) -> Bool {
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  match st.db.first(
+    "SELECT 1 AS ok FROM project_rename_events WHERE workspace = ?1 AND from_name = ?2 AND to_name != ?3 AND (pending_peers != '[]' OR pending_roster = 1 OR pending_info = 1) LIMIT 1",
+    [base_codec::json_str(ws), base_codec::json_str(from_name), base_codec::json_str(exclude_to)],
+  ) {
+    Ok(Some(_)) => true
+    _ => false
+  }
+}
+
+pub fn max_project_rename_at_sql(store : WholeStore, ws : String) -> Int64 {
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return 0L
+  }
+  match st.db.first("SELECT MAX(renamed_at) AS m FROM project_rename_events WHERE workspace = ?1", [base_codec::json_str(ws)]) {
+    Ok(Some(r)) => dur_row_i64(r, "m")
+    _ => 0L
+  }
+}
+
+pub fn bind_project_rename_op_key_sql(store : WholeStore, ws : String, op_key : String, seq : Int64) -> Unit {
+  match store.require_open() {
+    Ok(st) => {
+      let _ = st.db.run(
+        "INSERT OR IGNORE INTO project_rename_op_keys (workspace, op_key, event_seq) VALUES (?1, ?2, ?3)",
+        [base_codec::json_str(ws), base_codec::json_str(op_key), sql_db::int64_to_json(seq)],
+      )
+    }
+    Err(_) => ()
+  }
+}
+
+pub fn list_pending_rename_info_op_ids_sql(store : WholeStore, ws : String) -> Array[String] {
+  let out : Array[String] = []
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return out
+  }
+  match st.db.all(
+    "SELECT op_id FROM project_rename_events WHERE workspace = ?1 AND pending_info = 1 AND op_id IS NOT NULL",
+    [base_codec::json_str(ws)],
+  ) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        let id = dur_row_str(rows[i], "op_id").trim()
+        if id.length() > 0 {
+          out.push(id)
+        }
+      }
+    }
+    Err(_) => ()
+  }
+  out
+}
+
+pub fn mark_rename_info_state_sql(store : WholeStore, seq : Int64, state : Int) -> Unit {
+  match store.require_open() {
+    Ok(st) => {
+      let _ = st.db.run(
+        "UPDATE project_rename_events SET pending_info = ?1 WHERE seq = ?2",
+        [base_codec::json_int(state), sql_db::int64_to_json(seq)],
+      )
+    }
+    Err(_) => ()
+  }
+}
+
+pub fn claim_rename_roster_result_sql(
+  store : WholeStore,
+  seq : Int64,
+  initial_peers : Array[String],
+) -> Bool {
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  match st.db.tx(fn(txdb : sql_db::Db) -> Result[Bool, sql_db::SqlError] {
+    match txdb.first("SELECT pending_roster FROM project_rename_events WHERE seq = ?1", [sql_db::int64_to_json(seq)]) {
+      Ok(Some(r)) => {
+        if dur_row_i64(r, "pending_roster") != 1L {
+          return Ok(false)
+        }
+        match txdb.run(
+          "UPDATE project_rename_events SET pending_roster = 0, pending_peers = ?1 WHERE seq = ?2 AND pending_roster = 1",
+          [base_codec::json_str(dur_encode_str_arr(initial_peers)), sql_db::int64_to_json(seq)],
+        ) {
+          Ok(_) => Ok(true)
+          Err(e) => Err(e)
+        }
+      }
+      Ok(None) => Ok(false)
+      Err(e) => Err(e)
+    }
+  }) {
+    Ok(b) => b
+    Err(_) => false
+  }
+}
+
+pub fn mark_rename_peers_resolved_sql(
+  store : WholeStore,
+  seq : Int64,
+  resolved_peer_ids : Array[String],
+  any_remote_updated : Bool,
+) -> Unit {
+  if resolved_peer_ids.length() == 0 && !any_remote_updated {
+    return
+  }
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return
+  }
+  let _ = st.db.tx(fn(txdb : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+    let r = match txdb.first(
+      "SELECT pending_peers, pending_info, remote_updated FROM project_rename_events WHERE seq = ?1",
+      [sql_db::int64_to_json(seq)],
+    ) {
+      Ok(Some(row)) => row
+      Ok(None) => return Ok(())
+      Err(e) => return Err(e)
+    }
+    let current = dur_parse_str_arr(dur_row_str(r, "pending_peers"))
+    let next_peers : Array[String] = []
+    for i in 0..<current.length() {
+      let mut is_res = false
+      for j in 0..<resolved_peer_ids.length() {
+        if resolved_peer_ids[j] == current[i] {
+          is_res = true
+          break
+        }
+      }
+      if !is_res {
+        next_peers.push(current[i])
+      }
+    }
+    let cur_info = dur_row_i64(r, "pending_info").to_int()
+    let next_info = if any_remote_updated && (cur_info == 0 || cur_info == 2) { 3 } else { cur_info }
+    let cur_remote = dur_row_i64(r, "remote_updated").to_int()
+    let next_remote = if any_remote_updated { 1 } else { cur_remote }
+    if next_peers.length() != current.length() || next_info != cur_info || next_remote != cur_remote {
+      match txdb.run(
+        "UPDATE project_rename_events SET pending_peers = ?1, pending_info = ?2, remote_updated = ?3 WHERE seq = ?4",
+        [
+          base_codec::json_str(dur_encode_str_arr(next_peers)),
+          base_codec::json_int(next_info),
+          base_codec::json_int(next_remote),
+          sql_db::int64_to_json(seq),
+        ],
+      ) {
+        Ok(_) => Ok(())
+        Err(e) => Err(e)
+      }
+    } else {
+      Ok(())
+    }
+  })
+}
+
+pub fn has_active_project_in_workspace_sql(
+  store : WholeStore,
+  ws : String,
+  home : String,
+  project_name : String,
+) -> Bool {
+  let norm = match station_api::normalize_project_name(project_name) {
+    Ok(s) if s.length() > 0 => s
+    _ => return false
+  }
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let (ws_cond, ws_args) = dur_ws_cond_and_args(ws, home)
+  let args : Array[base_codec::Json] = [base_codec::json_str(norm)]
+  for i in 0..<ws_args.length() {
+    args.push(ws_args[i])
+  }
+  let sql =
+  "SELECT 1 AS ok FROM threads t WHERE t.project = ? AND t.project IS NOT NULL AND t.project != ''" +
+  " AND EXISTS (SELECT 1 FROM thread_sessions m JOIN sessions s ON s.key = m.session WHERE m.thread = t.id AND " +
+  ws_cond +
+  ") LIMIT 1"
+  match st.db.first(sql, args) {
+    Ok(Some(_)) => true
+    _ => false
+  }
+}
+
+pub fn workspace_project_names_sql(
+  store : WholeStore,
+  ws : String,
+  home : String,
+  limit : Int,
+) -> Array[(String, Int)] {
+  let out : Array[(String, Int)] = []
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(_) => return out
+  }
+  let (ws_cond, ws_args) = dur_ws_cond_and_args(ws, home)
+  let args : Array[base_codec::Json] = []
+  for i in 0..<ws_args.length() {
+    args.push(ws_args[i])
+  }
+  args.push(base_codec::json_int(limit))
+  let sql =
+  "SELECT t.project AS name, COUNT(*) AS cnt FROM threads t WHERE t.project IS NOT NULL AND t.project != ''" +
+  " AND EXISTS (SELECT 1 FROM thread_sessions m JOIN sessions s ON s.key = m.session WHERE m.thread = t.id AND " +
+  ws_cond +
+  ") GROUP BY t.project ORDER BY cnt DESC, name ASC LIMIT ?"
+  match st.db.all(sql, args) {
+    Ok(rows) => {
+      for i in 0..<rows.length() {
+        let name = dur_row_str(rows[i], "name")
+        let cnt = dur_row_i64(rows[i], "cnt").to_int()
+        if name.length() > 0 {
+          out.push((name, cnt))
+        }
+      }
+    }
+    Err(_) => ()
+  }
+  out
+}
+
+/// Atomically records `project_rename_events` (with `op_id` dedup & `origin_seq`), rewrites local
+/// workspace `threads` (`from -> effective_to`), and updates `local_updated` inside ONE SQLite
+/// transaction (`sql_db::Db::tx`). Matches `station/src/store/store.ts` `commitLocalProjectRenameAtomic`.
+pub fn commit_local_project_rename_atomic_sql(
+  store : WholeStore,
+  ws : String,
+  home : String,
+  action : String,
+  from_raw : String,
+  to_raw : String,
+  effective_to_raw : String,
+  renamed_at : Int64,
+  wall_at : Int64,
+  origin_seq_opt : Option[Int64],
+  op_key : Option[String],
+  op_id : Option[String],
+  pending_peers : Array[String],
+  pending_roster : Bool,
+  pending_info : Bool,
+) -> Result[CommitLocalRenameResult, String] {
+  let from = match station_api::normalize_project_name(from_raw) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let to = match station_api::normalize_project_name(to_raw) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let effective_to = match station_api::normalize_project_name(effective_to_raw) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let st = match store.require_open() {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let ws_key = if ws.length() > 0 { ws } else { home }
+  let is_home = ws.length() == 0 || home.length() == 0 || ws == home
+  let (ws_cond, ws_args) = dur_ws_cond_and_args(ws, home)
+
+  let tx_res = st.db.tx(fn(txdb : sql_db::Db) -> Result[CommitLocalRenameResult, sql_db::SqlError] {
+    match op_id {
+      Some(oid) if oid.length() > 0 => {
+        match txdb.first(
+          "SELECT seq, origin_seq, local_updated FROM project_rename_events WHERE workspace = ?1 AND op_id = ?2",
+          [base_codec::json_str(ws_key), base_codec::json_str(oid)],
+        ) {
+          Ok(Some(dup)) => {
+            let dseq = dur_row_i64(dup, "seq")
+            let dorig = dur_row_i64(dup, "origin_seq")
+            return Ok(CommitLocalRenameResult::{
+              seq: dseq,
+              origin_seq: if dorig > 0L { dorig } else { dseq },
+              already_applied: true,
+              updated: dur_row_i64(dup, "local_updated").to_int(),
+              skipped_locked: 0,
+              updated_thread_ids: [],
+              preset_notifies: [],
+            })
+          }
+          Ok(None) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      _ => ()
+    }
+
+    let eff_wall = if wall_at > 0L { wall_at } else { renamed_at }
+    let init_origin = match origin_seq_opt { Some(v) => v, None => 0L }
+    let op_key_j = match op_key { Some(k) => base_codec::json_str(k), None => base_codec::Json::Null }
+    let op_id_j = match op_id { Some(id) => base_codec::json_str(id), None => base_codec::Json::Null }
+
+    match txdb.run(
+      "INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info)" +
+      " VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+      [
+        base_codec::json_str(ws_key),
+        base_codec::json_str(action),
+        base_codec::json_str(from),
+        base_codec::json_str(to),
+        sql_db::int64_to_json(renamed_at),
+        sql_db::int64_to_json(eff_wall),
+        sql_db::int64_to_json(init_origin),
+        op_key_j,
+        op_id_j,
+        base_codec::json_str(dur_encode_str_arr(pending_peers)),
+        base_codec::json_int(if pending_roster { 1 } else { 0 }),
+        base_codec::json_int(if pending_info { 1 } else { 0 }),
+      ],
+    ) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+
+    let seq = match txdb.first("SELECT last_insert_rowid() AS seq", []) {
+      Ok(Some(r)) => dur_row_i64(r, "seq")
+      Ok(None) => 0L
+      Err(e) => return Err(e)
+    }
+    let origin_seq = match origin_seq_opt { Some(v) => v, None => seq }
+    if origin_seq_opt.is_none() && seq > 0L {
+      match txdb.run(
+        "UPDATE project_rename_events SET origin_seq = ?1 WHERE seq = ?1",
+        [sql_db::int64_to_json(seq)],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+    match op_key {
+      Some(ok_s) if seq > 0L => {
+        match txdb.run(
+          "INSERT OR IGNORE INTO project_rename_op_keys (workspace, op_key, event_seq) VALUES (?1, ?2, ?3)",
+          [base_codec::json_str(ws_key), base_codec::json_str(ok_s), sql_db::int64_to_json(seq)],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+      _ => ()
+    }
+    if is_home && ws_key.length() > 0 {
+      match txdb.run(
+        "INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_key, op_id, pending_peers, pending_roster, pending_info)" +
+        " VALUES ('', ?1, ?2, ?3, ?4, ?5, ?6, NULL, NULL, '[]', 0, 0)",
+        [
+          base_codec::json_str(action),
+          base_codec::json_str(from),
+          base_codec::json_str(to),
+          sql_db::int64_to_json(renamed_at),
+          sql_db::int64_to_json(eff_wall),
+          sql_db::int64_to_json(origin_seq),
+        ],
+      ) {
+        Ok(_) => ()
+        Err(e) => return Err(e)
+      }
+    }
+
+    let updated_tids : Array[Int64] = []
+    if from != effective_to {
+      let mut last_id = 0L
+      while true {
+        let q_args : Array[base_codec::Json] = [base_codec::json_str(from), sql_db::int64_to_json(last_id)]
+        for wi in 0..<ws_args.length() {
+          q_args.push(ws_args[wi])
+        }
+        let rows = match txdb.all(
+          "SELECT t.id FROM threads t WHERE t.project = ? AND t.project IS NOT NULL AND t.project != '' AND t.id > ?" +
+          " AND EXISTS (SELECT 1 FROM thread_sessions m JOIN sessions s ON s.key = m.session WHERE m.thread = t.id AND " +
+          ws_cond +
+          ") ORDER BY t.id LIMIT 500",
+          q_args,
+        ) {
+          Ok(rs) => rs
+          Err(e) => return Err(e)
+        }
+        if rows.length() == 0 {
+          break
+        }
+        for ri in 0..<rows.length() {
+          let tid = dur_row_i64(rows[ri], "id")
+          last_id = tid
+          match txdb.run(
+            "UPDATE threads SET project = ?1 WHERE id = ?2",
+            [base_codec::json_str(effective_to), sql_db::int64_to_json(tid)],
+          ) {
+            Ok(_) => updated_tids.push(tid)
+            Err(e) => return Err(e)
+          }
+        }
+      }
+      if updated_tids.length() > 0 && seq > 0L {
+        match txdb.run(
+          "UPDATE project_rename_events SET local_updated = ?1 WHERE seq = ?2",
+          [base_codec::json_int(updated_tids.length()), sql_db::int64_to_json(seq)],
+        ) {
+          Ok(_) => ()
+          Err(e) => return Err(e)
+        }
+      }
+    }
+
+    Ok(CommitLocalRenameResult::{
+      seq: seq,
+      origin_seq: origin_seq,
+      already_applied: false,
+      updated: updated_tids.length(),
+      skipped_locked: 0,
+      updated_thread_ids: updated_tids,
+      preset_notifies: [],
+    })
+  })
+  match tx_res {
+    Ok(r) => Ok(r)
+    Err(e) => Err(e.message)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Workspace-scoped `PROJECTS.jsonl` file consumer & atomic writer
+// ---------------------------------------------------------------------------
+
+pub fn workspace_projects_jsonl_path(
+  agent_home : String,
+  ws : String,
+  home : String,
+  sep : String,
+) -> String {
+  let dir = if ws.length() == 0 || ws == home {
+    agent_home
+  } else {
+    nodepath::join(sep, [agent_home, "workspaces", ws])
+  }
+  nodepath::join(sep, [dir, station_api::PROJECTS_INFO_FILE])
+}
+
+fn projects_file_target_mode(ops_fs : station_ops::OpsFs, path : String) -> Int {
+  match (ops_fs.stat)(path) {
+    Ok(st) => {
+      let perm = st.mode & 511 // 0o777
+      if (perm & 63) == 0 { perm } else { 420 } // preserve 0600 private mode, else 0644
+    }
+    Err(_) => 420
+  }
+}
+
+pub fn read_projects_jsonl_for_ws(
+  ops_fs : station_ops::OpsFs,
+  agent_home : String,
+  ws : String,
+  home : String,
+  sep : String,
+  skip_private : Bool,
+) -> Result[station_api::ParsedProjectsJsonl, String] {
+  let path = workspace_projects_jsonl_path(agent_home, ws, home, sep)
+  match (ops_fs.stat)(path) {
+    Err(_) => {
+      return Ok(station_api::ParsedProjectsJsonl::{
+        entries: [],
+        tombstones: [],
+        tombstone_op_ids: [],
+        preserved_raw_lines: [],
+      })
+    }
+    Ok(st) => {
+      if skip_private && ((st.mode & 63) == 0) {
+        return Ok(station_api::ParsedProjectsJsonl::{
+          entries: [],
+          tombstones: [],
+          tombstone_op_ids: [],
+          preserved_raw_lines: [],
+        })
+      }
+      if st.size > station_api::PROJECTS_INFO_MAX_BYTES.to_int64() {
+        return Err("PROJECTS.jsonl exceeds maximum size")
+      }
+    }
+  }
+  let text = match ops_fs.read_text(path) {
+    Ok(t) => t
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  if text.to_bytes().length() > station_api::PROJECTS_INFO_MAX_BYTES {
+    return Err("PROJECTS.jsonl exceeds maximum size")
+  }
+  station_api::parse_projects_jsonl(text, false)
+}
+
+fn write_projects_jsonl_file_atomic(
+  ops_fs : station_ops::OpsFs,
+  path : String,
+  sep : String,
+  parsed : station_api::ParsedProjectsJsonl,
+  keep_op_ids : Option[Array[String]],
+) -> Result[Unit, String] {
+  let text = match station_api::serialize_projects_jsonl_with_keep(parsed, keep_op_ids) {
+    Ok(t) => t
+    Err(e) => return Err(e)
+  }
+  let parent = nodepath::dirname(sep, path)
+  match (ops_fs.mkdir_p)(parent) {
+    Ok(_) => ()
+    Err(e) => return Err(station_ops::fs_err_msg(e))
+  }
+  let mode = projects_file_target_mode(ops_fs, path)
+  if station_sys::write_file_atomic(path, text.to_bytes(), mode) {
+    Ok(())
+  } else {
+    Err("atomic write failed for " + path)
+  }
+}
+
+pub fn apply_rename_project_info_file(
+  ops_fs : station_ops::OpsFs,
+  agent_home : String,
+  ws : String,
+  home : String,
+  sep : String,
+  from_raw : String,
+  to_raw : String,
+  renamed_at : Int64,
+  create_if_missing : Bool,
+  op_id : Option[String],
+  keep_op_ids : Option[Array[String]],
+) -> Result[station_api::RenameProjectInfoResult, String] {
+  let path = workspace_projects_jsonl_path(agent_home, ws, home, sep)
+  let parsed = match read_projects_jsonl_for_ws(ops_fs, agent_home, ws, home, sep, false) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let res = match station_api::rename_project_info_doc(parsed, from_raw, to_raw, renamed_at, create_if_missing, op_id, keep_op_ids) {
+    Ok(r) => r
+    Err(e) => return Err(e)
+  }
+  if res.changed {
+    match write_projects_jsonl_file_atomic(ops_fs, path, sep, res.doc, keep_op_ids) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(res)
+}
+
+pub fn apply_ensure_project_registered_file(
+  ops_fs : station_ops::OpsFs,
+  agent_home : String,
+  ws : String,
+  home : String,
+  sep : String,
+  name_raw : String,
+  now : Int64,
+  keep_op_ids : Option[Array[String]],
+) -> Result[Bool, String] {
+  let path = workspace_projects_jsonl_path(agent_home, ws, home, sep)
+  let parsed = match read_projects_jsonl_for_ws(ops_fs, agent_home, ws, home, sep, false) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let (next_doc, changed) = match station_api::ensure_project_registered_doc(parsed, name_raw, now, keep_op_ids) {
+    Ok(v) => v
+    Err(e) => return Err(e)
+  }
+  if changed {
+    match write_projects_jsonl_file_atomic(ops_fs, path, sep, next_doc, keep_op_ids) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(changed)
+}
+
+pub fn apply_prune_applied_op_ids_file(
+  ops_fs : station_ops::OpsFs,
+  agent_home : String,
+  ws : String,
+  home : String,
+  sep : String,
+  op_ids : Array[String],
+  keep_op_ids : Option[Array[String]],
+) -> Result[Bool, String] {
+  let path = workspace_projects_jsonl_path(agent_home, ws, home, sep)
+  match (ops_fs.stat)(path) {
+    Err(_) => return Ok(false)
+    Ok(_) => ()
+  }
+  let parsed = match read_projects_jsonl_for_ws(ops_fs, agent_home, ws, home, sep, false) {
+    Ok(p) => p
+    Err(e) => return Err(e)
+  }
+  let (next_doc, changed) = station_api::prune_applied_op_ids_doc(parsed, op_ids, keep_op_ids)
+  if changed {
+    match write_projects_jsonl_file_atomic(ops_fs, path, sep, next_doc, keep_op_ids) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  Ok(changed)
+}

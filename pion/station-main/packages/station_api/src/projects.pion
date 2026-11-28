@@ -980,3 +980,558 @@ pub fn serialize_projects_jsonl_with_keep(
   }
   Ok(text)
 }
+
+// ---------------------------------------------------------------------------
+// Causal rename chain (`forward_resolve_target`) & `PROJECTS.jsonl` rename/register/prune
+// ---------------------------------------------------------------------------
+
+pub struct ProjectRenameEventMeta {
+  pub seq : Int64
+  pub from : String
+  pub to : String
+  pub renamed_at : Int64
+  pub wall_at : Int64
+  pub origin_seq : Int64
+  pub op_id : Option[String]
+}
+
+pub struct ForwardResolveResult {
+  pub target : String
+  pub advanced : Bool
+  pub at : Int64
+  pub wall_at : Int64
+  pub origin_seq : Int64
+  pub seq : Int64
+}
+
+/// Forward-resolves `start_name` through causal rename events `(renamed_at, origin_seq, seq)`
+/// 1:1 with `station/src/sessions/projects.ts` `forwardResolveTarget`.
+pub fn forward_resolve_target(
+  events : Array[ProjectRenameEventMeta],
+  start_name : String,
+  start_at : Int64,
+  start_origin_seq : Int64,
+  self_op_id : Option[String],
+  start_wall_at : Int64,
+) -> ForwardResolveResult {
+  let mut cur = start_name
+  let mut cur_at = start_at
+  let mut cur_wall_at = start_wall_at
+  let mut cur_origin_seq = start_origin_seq
+  let mut cur_seq = 0L
+  let mut advanced = false
+  if cur.length() == 0 {
+    return ForwardResolveResult::{
+      target: cur,
+      advanced: false,
+      at: cur_at,
+      wall_at: cur_wall_at,
+      origin_seq: cur_origin_seq,
+      seq: cur_seq,
+    }
+  }
+  let mut i = 0
+  while i < events.length() {
+    let ev = events[i]
+    let skip_self = match (self_op_id, ev.op_id) {
+      (Some(s), Some(e)) => s == e
+      _ => false
+    }
+    if !skip_self && ev.from == cur && (ev.renamed_at > cur_at || (ev.renamed_at == cur_at && ev.origin_seq > cur_origin_seq)) {
+      cur = ev.to
+      cur_at = ev.renamed_at
+      cur_wall_at = if ev.wall_at > 0L { ev.wall_at } else { ev.renamed_at }
+      cur_origin_seq = ev.origin_seq
+      cur_seq = ev.seq
+      advanced = true
+      if cur.length() == 0 {
+        break
+      }
+    }
+    i = i + 1
+  }
+  ForwardResolveResult::{
+    target: cur,
+    advanced: advanced,
+    at: cur_at,
+    wall_at: cur_wall_at,
+    origin_seq: cur_origin_seq,
+    seq: cur_seq,
+  }
+}
+
+fn max_entry_ts(e : ProjectInfoEntry) -> Option[Int64] {
+  let mut m : Option[Int64] = None
+  m = max_opt_i64(m, e.updated_at)
+  m = max_opt_i64(m, e.note_at)
+  m = max_opt_i64(m, e.refs_at)
+  m = max_opt_i64(m, e.note_cleared_at)
+  m = max_opt_i64(m, e.refs_cleared_at)
+  let mut i = 0
+  while i < e.ref_ats.length() {
+    m = max_opt_i64(m, Some(e.ref_ats[i].1))
+    i = i + 1
+  }
+  m
+}
+
+fn clone_tombstones(list : Array[(String, Int64)]) -> Array[(String, Int64)] {
+  let out : Array[(String, Int64)] = []
+  let mut i = 0
+  while i < list.length() {
+    out.push(list[i])
+    i = i + 1
+  }
+  out
+}
+
+fn clone_tombstone_op_ids(list : Array[(String, Array[String])]) -> Array[(String, Array[String])] {
+  let out : Array[(String, Array[String])] = []
+  let mut i = 0
+  while i < list.length() {
+    let ops : Array[String] = []
+    let src = list[i].1
+    let mut j = 0
+    while j < src.length() {
+      ops.push(src[j])
+      j = j + 1
+    }
+    out.push((list[i].0, ops))
+    i = i + 1
+  }
+  out
+}
+
+fn remove_named_op_ids(list : Array[(String, Array[String])], name : String) -> Array[(String, Array[String])] {
+  let out : Array[(String, Array[String])] = []
+  let mut i = 0
+  while i < list.length() {
+    if list[i].0 != name {
+      out.push(list[i])
+    }
+    i = i + 1
+  }
+  out
+}
+
+fn append_all_str(dst : Array[String], src : Array[String]) -> Unit {
+  let mut i = 0
+  while i < src.length() {
+    dst.push(src[i])
+    i = i + 1
+  }
+}
+
+pub struct RenameProjectInfoResult {
+  pub doc : ParsedProjectsJsonl
+  pub changed : Bool
+  pub already_applied : Bool
+}
+
+/// Pure 1:1 port of `renameProjectInfo` (`station/src/projects/info.ts:927-1043`):
+/// atomically renames/merges `from_raw` -> `to_raw`, checks & records `op_id` receipts,
+/// writes deletion tombstone for `from`, and pins `keep_op_ids`.
+pub fn rename_project_info_doc(
+  parsed : ParsedProjectsJsonl,
+  from_raw : String,
+  to_raw : String,
+  now : Int64,
+  create_if_missing : Bool,
+  op_id : Option[String],
+  keep_op_ids : Option[Array[String]],
+) -> Result[RenameProjectInfoResult, String] {
+  let from = match normalize_project_name(from_raw) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let to = match normalize_project_name(to_raw) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  if from.length() == 0 {
+    return Err("source project name is required")
+  }
+  let clean_op_id : Option[String] = match op_id {
+    Some(s) if s.trim().length() > 0 => Some(s.trim())
+    _ => None
+  }
+  // Check whether `op_id` is already recorded on any live entry or tombstone.
+  match clean_op_id {
+    Some(oid) => {
+      let mut ei = 0
+      while ei < parsed.entries.length() {
+        if contains_str(parsed.entries[ei].applied_op_ids, oid) {
+          return Ok(RenameProjectInfoResult::{ doc: parsed, changed: false, already_applied: true })
+        }
+        ei = ei + 1
+      }
+      let mut ti = 0
+      while ti < parsed.tombstone_op_ids.length() {
+        if contains_str(parsed.tombstone_op_ids[ti].1, oid) {
+          return Ok(RenameProjectInfoResult::{ doc: parsed, changed: false, already_applied: true })
+        }
+        ti = ti + 1
+      }
+    }
+    None => ()
+  }
+
+  let mut src_idx = -1
+  let mut dst_idx = -1
+  let mut i = 0
+  while i < parsed.entries.length() {
+    if parsed.entries[i].name == from {
+      src_idx = i
+    }
+    if parsed.entries[i].name == to {
+      dst_idx = i
+    }
+    i = i + 1
+  }
+
+  let tombstones = clone_tombstones(parsed.tombstones)
+  let mut tombstone_op_ids = clone_tombstone_op_ids(parsed.tombstone_op_ids)
+
+  if src_idx < 0 {
+    if !create_if_missing || to.length() == 0 || dst_idx >= 0 {
+      return Ok(RenameProjectInfoResult::{ doc: parsed, changed: false, already_applied: false })
+    }
+    let prev_del = find_watermark(tombstones, to)
+    let next_at = match prev_del {
+      Some(d) => if now <= d { d + 1L } else { now }
+      None => now
+    }
+    let op_acc : Array[String] = []
+    append_all_str(op_acc, find_named_op_ids(tombstone_op_ids, to))
+    match clean_op_id {
+      Some(oid) => op_acc.push(oid)
+      None => ()
+    }
+    let next_ops = cap_op_ids(op_acc, keep_op_ids)
+    tombstone_op_ids = remove_named_op_ids(tombstone_op_ids, to)
+    let next_entries : Array[ProjectInfoEntry] = []
+    let mut j = 0
+    while j < parsed.entries.length() {
+      next_entries.push(parsed.entries[j])
+      j = j + 1
+    }
+    next_entries.push(ProjectInfoEntry::{
+      name: to,
+      note: None,
+      note_at: None,
+      refs: [],
+      refs_at: None,
+      ref_ats: [],
+      updated_at: Some(next_at),
+      note_cleared_at: None,
+      refs_cleared_at: None,
+      applied_op_ids: next_ops,
+    })
+    return Ok(RenameProjectInfoResult::{
+      doc: ParsedProjectsJsonl::{
+        entries: next_entries,
+        tombstones: tombstones,
+        tombstone_op_ids: tombstone_op_ids,
+        preserved_raw_lines: parsed.preserved_raw_lines,
+      },
+      changed: true,
+      already_applied: false,
+    })
+  }
+
+  let src = parsed.entries[src_idx]
+  let src_max = max_entry_ts(src)
+  let from_del = match max_opt_i64(max_opt_i64(Some(now), src_max), find_watermark(tombstones, from)) {
+    Some(v) => v
+    None => now
+  }
+  update_max_watermark(tombstones, from, from_del)
+
+  let next_entries : Array[ProjectInfoEntry] = []
+  let mut k = 0
+  while k < parsed.entries.length() {
+    if k != src_idx && (to.length() == 0 || k != dst_idx) {
+      next_entries.push(parsed.entries[k])
+    }
+    k = k + 1
+  }
+
+  if to.length() > 0 {
+    let prev_del_to = find_watermark(tombstones, to)
+    let dst_opt : Option[ProjectInfoEntry] = if dst_idx >= 0 { Some(parsed.entries[dst_idx]) } else { None }
+    let dst_max = match dst_opt {
+      Some(d) => max_entry_ts(d)
+      None => None
+    }
+    let mut next_at = now
+    match src_max {
+      Some(v) => if v + 1L > next_at { next_at = v + 1L }
+      None => ()
+    }
+    match dst_max {
+      Some(v) => if v + 1L > next_at { next_at = v + 1L }
+      None => ()
+    }
+    match prev_del_to {
+      Some(v) => if v + 1L > next_at { next_at = v + 1L }
+      None => ()
+    }
+    let op_acc : Array[String] = []
+    match dst_opt {
+      Some(d) => append_all_str(op_acc, d.applied_op_ids)
+      None => ()
+    }
+    append_all_str(op_acc, src.applied_op_ids)
+    append_all_str(op_acc, find_named_op_ids(tombstone_op_ids, from))
+    append_all_str(op_acc, find_named_op_ids(tombstone_op_ids, to))
+    match clean_op_id {
+      Some(oid) => op_acc.push(oid)
+      None => ()
+    }
+    let next_ops = cap_op_ids(op_acc, keep_op_ids)
+    tombstone_op_ids = remove_named_op_ids(tombstone_op_ids, from)
+    tombstone_op_ids = remove_named_op_ids(tombstone_op_ids, to)
+
+    match dst_opt {
+      None => {
+        let moved_note_at = match src.note {
+          Some(_) => Some(next_at)
+          None => None
+        }
+        let moved_ref_ats : Array[(String, Int64)] = []
+        let mut ri = 0
+        while ri < src.refs.length() {
+          moved_ref_ats.push((src.refs[ri], next_at))
+          ri = ri + 1
+        }
+        next_entries.push(ProjectInfoEntry::{
+          name: to,
+          note: src.note,
+          note_at: moved_note_at,
+          refs: src.refs,
+          refs_at: if src.refs.length() > 0 { Some(next_at) } else { None },
+          ref_ats: moved_ref_ats,
+          updated_at: Some(next_at),
+          note_cleared_at: src.note_cleared_at,
+          refs_cleared_at: src.refs_cleared_at,
+          applied_op_ids: next_ops,
+        })
+      }
+      Some(dst) => {
+        let merged_note : Option[String] = match (dst.note, src.note) {
+          (Some(dn), Some(sn)) => {
+            if dn == sn {
+              Some(dn)
+            } else {
+              let joined = dn + "\n" + sn
+              if utf16_len(joined) > MAX_PROJECT_NOTE {
+                Some(utf16_truncate(joined, MAX_PROJECT_NOTE))
+              } else {
+                Some(joined)
+              }
+            }
+          }
+          (Some(dn), None) => Some(dn)
+          (None, Some(sn)) => Some(sn)
+          (None, None) => None
+        }
+        let combined_refs : Array[String] = []
+        append_all_str(combined_refs, dst.refs)
+        append_all_str(combined_refs, src.refs)
+        let norm_refs = match normalize_project_refs(combined_refs, false) {
+          Ok(rs) => rs
+          Err(_) => []
+        }
+        let merged_ref_ats : Array[(String, Int64)] = []
+        let mut ri = 0
+        while ri < norm_refs.length() {
+          merged_ref_ats.push((norm_refs[ri], next_at))
+          ri = ri + 1
+        }
+        next_entries.push(ProjectInfoEntry::{
+          name: to,
+          note: merged_note,
+          note_at: match merged_note { Some(_) => Some(next_at), None => None },
+          refs: norm_refs,
+          refs_at: if norm_refs.length() > 0 { Some(next_at) } else { None },
+          ref_ats: merged_ref_ats,
+          updated_at: Some(next_at),
+          note_cleared_at: max_opt_i64(dst.note_cleared_at, src.note_cleared_at),
+          refs_cleared_at: max_opt_i64(dst.refs_cleared_at, src.refs_cleared_at),
+          applied_op_ids: next_ops,
+        })
+      }
+    }
+  } else {
+    let op_acc : Array[String] = []
+    append_all_str(op_acc, find_named_op_ids(tombstone_op_ids, from))
+    append_all_str(op_acc, src.applied_op_ids)
+    match clean_op_id {
+      Some(oid) => op_acc.push(oid)
+      None => ()
+    }
+    let next_ops = cap_op_ids(op_acc, keep_op_ids)
+    if next_ops.length() > 0 {
+      tombstone_op_ids = remove_named_op_ids(tombstone_op_ids, from)
+      tombstone_op_ids.push((from, next_ops))
+    }
+  }
+
+  Ok(RenameProjectInfoResult::{
+    doc: ParsedProjectsJsonl::{
+      entries: next_entries,
+      tombstones: tombstones,
+      tombstone_op_ids: tombstone_op_ids,
+      preserved_raw_lines: parsed.preserved_raw_lines,
+    },
+    changed: true,
+    already_applied: false,
+  })
+}
+
+/// Ensures `name_raw` exists in `ParsedProjectsJsonl`; no-op if already present.
+pub fn ensure_project_registered_doc(
+  parsed : ParsedProjectsJsonl,
+  name_raw : String,
+  now : Int64,
+  keep_op_ids : Option[Array[String]],
+) -> Result[(ParsedProjectsJsonl, Bool), String] {
+  let name = match normalize_project_name(name_raw) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  if name.length() == 0 {
+    return Err("project name is required")
+  }
+  let mut i = 0
+  while i < parsed.entries.length() {
+    if parsed.entries[i].name == name {
+      return Ok((parsed, false))
+    }
+    i = i + 1
+  }
+  let tombstones = clone_tombstones(parsed.tombstones)
+  let mut tombstone_op_ids = clone_tombstone_op_ids(parsed.tombstone_op_ids)
+  let prev_del = find_watermark(tombstones, name)
+  let write_at = match prev_del {
+    Some(d) => if now <= d { d + 1L } else { now }
+    None => now
+  }
+  let carried = cap_op_ids(find_named_op_ids(tombstone_op_ids, name), keep_op_ids)
+  tombstone_op_ids = remove_named_op_ids(tombstone_op_ids, name)
+  let next_entries : Array[ProjectInfoEntry] = []
+  let mut j = 0
+  while j < parsed.entries.length() {
+    next_entries.push(parsed.entries[j])
+    j = j + 1
+  }
+  next_entries.push(ProjectInfoEntry::{
+    name: name,
+    note: None,
+    note_at: None,
+    refs: [],
+    refs_at: None,
+    ref_ats: [],
+    updated_at: Some(write_at),
+    note_cleared_at: None,
+    refs_cleared_at: None,
+    applied_op_ids: carried,
+  })
+  Ok((
+    ParsedProjectsJsonl::{
+      entries: next_entries,
+      tombstones: tombstones,
+      tombstone_op_ids: tombstone_op_ids,
+      preserved_raw_lines: parsed.preserved_raw_lines,
+    },
+    true,
+  ))
+}
+
+/// Removes confirmed `op_ids` from `applied_op_ids` across all entries and tombstones unless pinned in `keep_op_ids`.
+pub fn prune_applied_op_ids_doc(
+  parsed : ParsedProjectsJsonl,
+  op_ids : Array[String],
+  keep_op_ids : Option[Array[String]],
+) -> (ParsedProjectsJsonl, Bool) {
+  let drop : Array[String] = []
+  let mut i = 0
+  while i < op_ids.length() {
+    let s = op_ids[i].trim()
+    let pinned = match keep_op_ids {
+      Some(ks) => contains_str(ks, s)
+      None => false
+    }
+    if s.length() > 0 && !pinned && !contains_str(drop, s) {
+      drop.push(s)
+    }
+    i = i + 1
+  }
+  if drop.length() == 0 {
+    return (parsed, false)
+  }
+  let mut changed = false
+  let next_entries : Array[ProjectInfoEntry] = []
+  let mut ei = 0
+  while ei < parsed.entries.length() {
+    let e = parsed.entries[ei]
+    let kept : Array[String] = []
+    let mut oi = 0
+    while oi < e.applied_op_ids.length() {
+      if !contains_str(drop, e.applied_op_ids[oi]) {
+        kept.push(e.applied_op_ids[oi])
+      }
+      oi = oi + 1
+    }
+    if kept.length() != e.applied_op_ids.length() {
+      changed = true
+      next_entries.push(ProjectInfoEntry::{
+        name: e.name,
+        note: e.note,
+        note_at: e.note_at,
+        refs: e.refs,
+        refs_at: e.refs_at,
+        ref_ats: e.ref_ats,
+        updated_at: e.updated_at,
+        note_cleared_at: e.note_cleared_at,
+        refs_cleared_at: e.refs_cleared_at,
+        applied_op_ids: kept,
+      })
+    } else {
+      next_entries.push(e)
+    }
+    ei = ei + 1
+  }
+  let next_tomb_ops : Array[(String, Array[String])] = []
+  let mut ti = 0
+  while ti < parsed.tombstone_op_ids.length() {
+    let (name, cur) = parsed.tombstone_op_ids[ti]
+    let kept : Array[String] = []
+    let mut oi = 0
+    while oi < cur.length() {
+      if !contains_str(drop, cur[oi]) {
+        kept.push(cur[oi])
+      }
+      oi = oi + 1
+    }
+    if kept.length() != cur.length() {
+      changed = true
+    }
+    if kept.length() > 0 {
+      next_tomb_ops.push((name, kept))
+    }
+    ti = ti + 1
+  }
+  if !changed {
+    return (parsed, false)
+  }
+  (
+    ParsedProjectsJsonl::{
+      entries: next_entries,
+      tombstones: parsed.tombstones,
+      tombstone_op_ids: next_tomb_ops,
+      preserved_raw_lines: parsed.preserved_raw_lines,
+    },
+    true,
+  )
+}

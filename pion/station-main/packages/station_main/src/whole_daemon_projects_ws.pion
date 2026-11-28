@@ -1,0 +1,1679 @@
+// Wave 17E-4B:
+// 1. Durable async `workspaces.join` (`DurableJoinTx` owned by `WholeRuntimeState`, decoupled from
+//    single HTTP connection/stream lifecycle; client disconnect or HTTP timeout does NOT interrupt
+//    in-flight cloud redemption or `cloud.json` atomic 0600 commit).
+// 2. Durable async `projects.rename` & `projects.merge` (CSPRNG UUID v4 `opId`, atomic SQLite +
+//    `PROJECTS.jsonl` consumer with `forward_resolve_target`, durable continuation runner on
+//    startup/retry, partial-outcome `noCache` guard against `AdminApi` permanent success cache,
+//    and non-blocking `ctx.ask_peer_rpc` fan-out).
+// 3. Inbound peer RPC handlers (`projects.names` and `thread.classify` with `rename`).
+
+import "base_codec"
+import "builders_core"
+import "host_shim"
+import "nodepath"
+import "station_api"
+import "station_cloud"
+import "station_http"
+import "station_ops"
+import "station_sys"
+import "station_whole"
+
+/// Pre-allocated disjoint `station_sys` event ID range for Wave 17E-4B (`[13 << 32, 14 << 32)`).
+pub let PROJECTS_WS_EVENT_BASE : Int64 = 55834574848L
+pub let PROJECTS_WS_EVENT_END : Int64 = 60129542144L
+
+/// Pre-allocated disjoint `MuxToken::Tagged` kinds (`5310..5319`) on `ctx.mux_role`.
+pub let JOIN_TOK_HTTP_OPEN : Int = 5310
+pub let JOIN_TOK_HTTP_READ : Int = 5311
+
+// ---------------------------------------------------------------------------
+// Shared JSON & SSE helpers
+// ---------------------------------------------------------------------------
+
+fn pw_json_str(obj : base_codec::Json, key : String) -> Option[String] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Str(s)) => Some(s)
+    _ => None
+  }
+}
+
+fn pw_json_bool(obj : base_codec::Json, key : String) -> Option[Bool] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Bool(b)) => Some(b)
+    _ => None
+  }
+}
+
+fn pw_json_i64(obj : base_codec::Json, key : String) -> Option[Int64] {
+  match base_codec::json_get(obj, key) {
+    Some(base_codec::Json::Num(n, raw)) => match base_codec::parse_int64_str(raw) {
+      Some(v) => Some(v)
+      None => Some(n.to_int64())
+    }
+    _ => None
+  }
+}
+
+fn pw_agent_home(ctx : DaemonCtx, _st : WholeRuntimeState) -> String {
+  nodepath::join(ctx.sep, [ctx.data, "agent"])
+}
+
+fn pw_home_ws(ctx : DaemonCtx, st : WholeRuntimeState) -> String {
+  match ctx.cloud.home() {
+    Some(h) if h.length() > 0 => h
+    _ => st.core.api.auth_policy.home_workspace
+  }
+}
+
+fn pw_emit_projects_sse(st : WholeRuntimeState, ws : String, now_ms : Int64) -> Unit {
+  let target = station_api::EventTarget::{
+    lang: None,
+    viewer: None,
+    device: None,
+    email: None,
+    workspace: Some(ws),
+    subs: None,
+    read_only: None,
+    managers: None,
+    vault: None,
+    sees_ws: Some(Some(ws)),
+    sees_session: None,
+    sees_thread: None,
+    sees_job: None,
+  }
+  let _ = st.core.api.events.emit(
+    "projects",
+    base_codec::json_obj([("workspace", base_codec::json_str(ws))]),
+    target,
+    now_ms,
+    Some("projects:" + ws),
+  )
+}
+
+fn pw_emit_thread_sse(st : WholeRuntimeState, tid : Int64, now_ms : Int64) -> Unit {
+  let target = station_api::EventTarget::{
+    lang: None,
+    viewer: None,
+    device: None,
+    email: None,
+    workspace: None,
+    subs: None,
+    read_only: None,
+    managers: None,
+    vault: None,
+    sees_ws: None,
+    sees_session: None,
+    sees_thread: Some(tid.to_int()),
+    sees_job: None,
+  }
+  let _ = st.core.api.events.emit(
+    "thread",
+    base_codec::json_obj([("thread", base_codec::json_int64(tid))]),
+    target,
+    now_ms,
+    Some("thread:" + tid.to_string()),
+  )
+}
+
+/// Build the 1:1 `GET /workspaces` / `POST /workspaces/join` workspace list view
+/// matching `station/src/api/routes/workspaces.ts:14-21`.
+pub fn workspaces_view_json(
+  ctx : DaemonCtx,
+  viewer : station_api::Viewer,
+  now_s : Double,
+) -> base_codec::Json {
+  let memberships = ctx.cloud.memberships(now_s)
+  let arr : Array[base_codec::Json] = []
+  let can_manage = viewer.manages_station()
+  for i in 0..<memberships.length() {
+    let m = memberships[i]
+    if can_manage || m.workspace == viewer.workspace {
+      let mode = match m.rig {
+        Some(_) => "tasks"
+        None => "full"
+      }
+      arr.push(base_codec::json_obj([
+        ("id", base_codec::json_str(m.workspace)),
+        ("workspace", base_codec::json_str(m.workspace)),
+        ("workspaceName", base_codec::json_str(m.workspace_name)),
+        ("name", base_codec::json_str(m.name)),
+        ("home", base_codec::json_bool(m.home)),
+        ("mode", base_codec::json_str(mode)),
+      ]))
+    }
+  }
+  base_codec::json_obj([
+    ("workspaces", base_codec::json_arr(arr)),
+    ("canJoin", base_codec::json_bool(can_manage)),
+  ])
+}
+
+// ---------------------------------------------------------------------------
+// 1. Durable Async `workspaces.join` Transaction Owner (`WholeRuntimeState.durable_joins`)
+// ---------------------------------------------------------------------------
+
+pub struct DurableJoinTx {
+  pub join_id : Int64
+  pub mut waiter_sid : Option[Int64]
+  pub conn_id : Int64
+  pub viewer : station_api::Viewer
+  pub lang : station_api::Lang
+  pub method_name : String
+  pub norm_path : String
+  pub prep : station_cloud::PreparedJoinRequest
+  pub mut body_idx : Int
+  pub lock_hash : Option[String]
+  pub rig_person_hash : Option[String]
+  pub mut stream_id : Option[Int]
+  pub mut status : Int
+  pub body_chunks : Array[Bytes]
+  pub mut total_bytes : Int
+  pub max_bytes : Int
+  pub deadline_ms : Int64
+  pub mut idem_claim : Option[(String, String)]
+}
+
+fn start_join_http_attempt(ctx : DaemonCtx, tx : DurableJoinTx) -> Unit {
+  let body_str = if tx.body_idx < tx.prep.bodies.length() { tx.prep.bodies[tx.body_idx] } else { "{}" }
+  let rem = tx.deadline_ms - host_shim::now_ms()
+  let timeout = if rem > 1000L { rem } else { 1000L }
+  let _ = ctx.mux_role.call_async_raw(
+    builders_core::MuxToken::Tagged(0, JOIN_TOK_HTTP_OPEN, tx.join_id),
+    "stream.open",
+    live_build_stream_open_args("POST", tx.prep.url, [("content-type", "application/json")], timeout),
+    Some(body_str.to_bytes()),
+  )
+}
+
+/// Detach an HTTP waiter from an in-flight `DurableJoinTx` on client disconnect or HTTP timeout.
+/// The durable transaction CONTINUES running to completion so `cloud.json` and `AdminApi`
+/// idempotency never end up half-applied after a one-time token was already redeemed!
+pub fn detach_durable_join_waiter(st : WholeRuntimeState, join_id : Int64) -> Unit {
+  match st.durable_joins.get(join_id) {
+    Some(tx) => {
+      tx.waiter_sid = None
+    }
+    None => ()
+  }
+}
+
+fn finish_durable_join_tx(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  tx : DurableJoinTx,
+  resp : station_http::HttpResponse,
+  cache_idem : Bool,
+  send_resp : (DaemonCtx, Int64, station_http::HttpResponse) -> Unit,
+) -> Unit {
+  match tx.stream_id {
+    Some(id) => {
+      let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+      tx.stream_id = None
+    }
+    None => ()
+  }
+  match tx.idem_claim {
+    Some((slot_key, idem_key)) => {
+      if cache_idem {
+        st.core.api.admin.complete_async_idempotency(
+          slot_key,
+          idem_key,
+          tx.viewer,
+          tx.method_name,
+          tx.norm_path,
+          resp,
+          host_shim::wall_ms(),
+        )
+      } else {
+        st.core.api.admin.abort_async_idempotency(slot_key)
+      }
+      tx.idem_claim = None
+    }
+    None => ()
+  }
+  st.durable_joins.remove(tx.join_id)
+  match tx.waiter_sid {
+    Some(sid) => {
+      tx.waiter_sid = None
+      match st.admin_streams.get(sid) {
+        Some(astream) => {
+          astream.mode = AdminStreamMode::Done
+          send_resp(ctx, sid, resp)
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+}
+
+fn apply_durable_join_reload(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  joined_ws : String,
+  became_home : Bool,
+) -> Unit {
+  let _ = ctx.cloud.reload()
+  if became_home {
+    st.core.api.auth_policy.set_home_workspace(joined_ws)
+  } else {
+    st.core.api.auth_policy.add_workspace(joined_ws)
+  }
+  // Ensure every membership from reloaded `cloud.json` is admitted in `auth_policy`.
+  let ms = ctx.cloud.memberships((host_shim::wall_ms() / 1000L).to_double())
+  for i in 0..<ms.length() {
+    st.core.api.auth_policy.add_workspace(ms[i].workspace)
+  }
+  st.core.api.events.overview_changed("workspaces")
+}
+
+/// Start a durable, non-blocking `POST /workspaces/join` transaction.
+pub fn start_durable_workspace_join(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  sid : Int64,
+  conn_id : Int64,
+  method_name : String,
+  norm_path : String,
+  body_bytes : Bytes,
+  viewer : station_api::Viewer,
+  lang : station_api::Lang,
+  idem_claim : Option[(String, String)],
+) -> Result[AsyncAdminHttpState, station_http::HttpResponse] {
+  if !viewer.manages_station() {
+    return Err(station_api::json_error(403, "only the owners and admins of this station's workspaces add it to another workspace"))
+  }
+  let raw_s = body_bytes.to_string().trim()
+  let body = if raw_s.length() == 0 {
+    base_codec::json_obj([])
+  } else {
+    match base_codec::json_parse(raw_s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      base_codec::JsonParseResult::Err(_) => return Err(station_api::json_error(400, "invalid JSON"))
+    }
+  }
+  let token = match pw_json_str(body, "token") {
+    Some(t) if t.length() > 0 => t
+    _ => return Err(station_api::json_error(400, "token is required"))
+  }
+  let lock_hash : Option[String] = match base_codec::json_get(body, "lock") {
+    None | Some(base_codec::Json::Null) => None
+    Some(base_codec::Json::Str(lh)) if live_is_hex64(lh) => Some(lh)
+    _ => return Err(station_api::json_error(400, "lock: a lock's hash"))
+  }
+  let rig_person_hash : Option[String] = if pw_json_bool(body, "rig") == Some(true) {
+    match pw_json_str(body, "person") {
+      Some(ph) if live_is_hex64(ph) => Some(ph)
+      _ => return Err(station_api::json_error(400, "person: owner's personal lock hash"))
+    }
+  } else {
+    None
+  }
+  // Single-flight guard: serialize `cloud.json` mutations across concurrent join requests.
+  if st.durable_joins.keys().length() > 0 {
+    return Err(station_api::json_error(409, "another workspace join is already in progress"))
+  }
+  let now_s = host_shim::wall_ms() / 1000L
+  let ver = match st.core.updates.station.version {
+    Some(v) if v.length() > 0 => v
+    _ => "0.1." + st.core.api.auth_policy.station_build
+  }
+  let prep = match station_cloud::prepare_join_workspace(
+    ctx.data,
+    ctx.cloud.fs,
+    ctx.station_key,
+    token,
+    ver,
+    now_s,
+    lock_hash=lock_hash,
+    rig_person_hash=rig_person_hash,
+    store=Some(ctx.cloud),
+    verify_fn=st.core.api.auth_policy.verify_fn,
+    sep=ctx.sep,
+  ) {
+    Ok(p) => p
+    Err(e) => return Err(station_api::json_error(409, e))
+  }
+  let join_id = st.next_durable_op_id
+  st.next_durable_op_id = st.next_durable_op_id + 1L
+  let now_mono = host_shim::now_ms()
+  let tx = DurableJoinTx::{
+    join_id: join_id,
+    waiter_sid: Some(sid),
+    conn_id: conn_id,
+    viewer: viewer,
+    lang: lang,
+    method_name: method_name,
+    norm_path: norm_path,
+    prep: prep,
+    body_idx: 0,
+    lock_hash: lock_hash,
+    rig_person_hash: rig_person_hash,
+    stream_id: None,
+    status: 0,
+    body_chunks: [],
+    total_bytes: 0,
+    max_bytes: 262144,
+    deadline_ms: now_mono + 20000L,
+    idem_claim: idem_claim,
+  }
+  st.durable_joins.set(join_id, tx)
+  start_join_http_attempt(ctx, tx)
+  Ok(AsyncAdminHttpState::{
+    sid: sid,
+    conn_id: conn_id,
+    method_name: method_name,
+    norm_path: norm_path,
+    op: AsyncAdminOpKind::WorkspaceJoin(join_id),
+    viewer: viewer,
+    lang: lang,
+    stream_id: None,
+    status: 0,
+    body_chunks: [],
+    total_bytes: 0,
+    max_bytes: 0,
+    deadline_ms: now_mono + 20000L,
+    idem_claim: None,
+  })
+}
+
+/// Drive `JOIN_TOK_HTTP_OPEN` / `JOIN_TOK_HTTP_READ` completions for a `DurableJoinTx`.
+pub fn step_durable_join_http_done(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  kind : Int,
+  join_id : Int64,
+  d : host_shim::ShellDone,
+  send_resp : (DaemonCtx, Int64, station_http::HttpResponse) -> Unit,
+) -> Unit {
+  let tx = match st.durable_joins.get(join_id) {
+    Some(t) => t
+    None => {
+      if kind == JOIN_TOK_HTTP_OPEN {
+        close_orphaned_async_stream_open(ctx, d)
+      }
+      return
+    }
+  }
+  if kind == JOIN_TOK_HTTP_OPEN {
+    match station_http::decode_stream_open_done(d) {
+      Err(e) => {
+        finish_durable_join_tx(ctx, st, tx, station_api::json_error(409, "join request failed: " + e.message), false, send_resp)
+        return
+      }
+      Ok(head) => {
+        tx.stream_id = Some(head.id)
+        tx.status = head.status
+        tx.body_chunks.clear()
+        tx.total_bytes = 0
+        let rem = tx.deadline_ms - host_shim::now_ms()
+        if rem <= 0L {
+          finish_durable_join_tx(ctx, st, tx, station_api::json_error(504, "join request timed out"), false, send_resp)
+          return
+        }
+        let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
+        let read_args = base_codec::json_stringify(base_codec::json_obj([
+          ("id", base_codec::json_int(head.id)),
+          ("stallMs", base_codec::json_int(stall)),
+        ]))
+        let _ = ctx.mux_role.call_async_raw(
+          builders_core::MuxToken::Tagged(0, JOIN_TOK_HTTP_READ, tx.join_id),
+          "stream.read",
+          read_args,
+          None,
+        )
+        return
+      }
+    }
+  }
+  if kind == JOIN_TOK_HTTP_READ {
+    match station_http::decode_stream_read_done(d) {
+      Err(e) => {
+        finish_durable_join_tx(ctx, st, tx, station_api::json_error(409, "join response read failed: " + e.message), false, send_resp)
+        return
+      }
+      Ok(chunk) => {
+        match chunk {
+          station_http::StreamChunk::End => {
+            match tx.stream_id {
+              Some(id) => {
+                let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+                tx.stream_id = None
+              }
+              None => ()
+            }
+            let body_text = live_concat_chunks(tx.body_chunks, tx.total_bytes).to_string()
+            // Multi-prefix fallback on 401 `invalid_signature` (1:1 with `station/src/cli.ts:228-234`).
+            if tx.status == 401 && tx.body_idx + 1 < tx.prep.bodies.length() {
+              let mut is_bad_sig = false
+              match base_codec::json_parse(body_text) {
+                base_codec::JsonParseResult::Ok(j) => {
+                  if pw_json_str(j, "error") == Some("invalid_signature") {
+                    is_bad_sig = true
+                  }
+                }
+                _ => ()
+              }
+              if is_bad_sig {
+                tx.body_idx = tx.body_idx + 1
+                start_join_http_attempt(ctx, tx)
+                return
+              }
+            }
+            let now_s = host_shim::wall_ms() / 1000L
+            match station_cloud::apply_join_workspace_response(
+              ctx.data,
+              ctx.cloud.fs,
+              tx.prep,
+              tx.status,
+              body_text,
+              now_s,
+              lock_hash=tx.lock_hash,
+              at_machine=false,
+              rig_person_hash=tx.rig_person_hash,
+              sep=ctx.sep,
+            ) {
+              Ok(jr) => {
+                apply_durable_join_reload(ctx, st, jr.workspace, jr.became_home)
+                let view_j = workspaces_view_json(ctx, tx.viewer, now_s.to_double())
+                let joined_j = base_codec::json_obj([
+                  ("workspace", base_codec::json_str(jr.workspace)),
+                  ("workspaceName", base_codec::json_str(jr.workspace_name)),
+                  ("name", base_codec::json_str(jr.name)),
+                ])
+                let out_fields : Array[(String, base_codec::Json)] = [("joined", joined_j)]
+                match view_j {
+                  base_codec::Json::Obj(fs) => {
+                    for fi in 0..<fs.length() {
+                      out_fields.push(fs[fi])
+                    }
+                  }
+                  _ => ()
+                }
+                finish_durable_join_tx(ctx, st, tx, station_api::json_ok(base_codec::json_obj(out_fields)), true, send_resp)
+              }
+              Err(msg) => {
+                // KeptLock: station DID join and updated `cloud.json`, so reload & notify before returning 409!
+                if msg.contains("keeps another security mode record") {
+                  let _ = ctx.cloud.reload()
+                  let ms = ctx.cloud.memberships(now_s.to_double())
+                  for i in 0..<ms.length() {
+                    st.core.api.auth_policy.add_workspace(ms[i].workspace)
+                  }
+                  st.core.api.events.overview_changed("workspaces")
+                  finish_durable_join_tx(ctx, st, tx, station_api::json_error(409, msg), true, send_resp)
+                } else {
+                  let err_msg = if tx.status >= 400 && tx.status < 600 && !msg.contains("cannot add a station") {
+                    controlled_join_error_message(tx.status)
+                  } else {
+                    msg
+                  }
+                  finish_durable_join_tx(ctx, st, tx, station_api::json_error(409, err_msg), false, send_resp)
+                }
+              }
+            }
+            return
+          }
+          station_http::StreamChunk::Data(data) => {
+            if data.length() > 0 {
+              if tx.total_bytes + data.length() > tx.max_bytes {
+                finish_durable_join_tx(ctx, st, tx, station_api::json_error(409, "join response body exceeded limit"), false, send_resp)
+                return
+              }
+              tx.body_chunks.push(data)
+              tx.total_bytes = tx.total_bytes + data.length()
+            }
+          }
+        }
+        let rem = tx.deadline_ms - host_shim::now_ms()
+        if rem <= 0L {
+          finish_durable_join_tx(ctx, st, tx, station_api::json_error(504, "join request timed out"), false, send_resp)
+          return
+        }
+        let stream_id = match tx.stream_id {
+          Some(id) => id
+          None => {
+            finish_durable_join_tx(ctx, st, tx, station_api::json_error(409, "join stream closed"), false, send_resp)
+            return
+          }
+        }
+        let stall = if rem > 2147483647L { 2147483647 } else { rem.to_int() }
+        let read_args = base_codec::json_stringify(base_codec::json_obj([
+          ("id", base_codec::json_int(stream_id)),
+          ("stallMs", base_codec::json_int(stall)),
+        ]))
+        let _ = ctx.mux_role.call_async_raw(
+          builders_core::MuxToken::Tagged(0, JOIN_TOK_HTTP_READ, tx.join_id),
+          "stream.read",
+          read_args,
+          None,
+        )
+      }
+    }
+  }
+}
+
+/// Tick all in-flight durable join transactions (even those whose HTTP waiter detached).
+pub fn tick_durable_joins(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  now_mono : Int64,
+  send_resp : (DaemonCtx, Int64, station_http::HttpResponse) -> Unit,
+) -> Unit {
+  let ids = st.durable_joins.keys()
+  for i in 0..<ids.length() {
+    let jid = ids[i]
+    match st.durable_joins.get(jid) {
+      Some(tx) if now_mono >= tx.deadline_ms => {
+        finish_durable_join_tx(ctx, st, tx, station_api::json_error(504, "join request timed out"), false, send_resp)
+      }
+      _ => ()
+    }
+  }
+}
+
+/// Cleanly close any open join streams on daemon shutdown.
+pub fn shutdown_durable_joins(ctx : DaemonCtx, st : WholeRuntimeState) -> Unit {
+  let ids = st.durable_joins.keys()
+  for i in 0..<ids.length() {
+    let jid = ids[i]
+    match st.durable_joins.get(jid) {
+      Some(tx) => {
+        match tx.stream_id {
+          Some(id) => {
+            let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
+            tx.stream_id = None
+          }
+          None => ()
+        }
+        match tx.idem_claim {
+          Some((slot_key, _)) => {
+            st.core.api.admin.abort_async_idempotency(slot_key)
+            tx.idem_claim = None
+          }
+          None => ()
+        }
+        st.durable_joins.remove(jid)
+      }
+      None => ()
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 2. Durable Async `projects.rename` & `projects.merge` + Continuation Runner
+// ---------------------------------------------------------------------------
+
+struct PeerStationTarget {
+  id : String
+  name : String
+  online : Bool
+}
+
+fn full_peer_stations_for_ws(ctx : DaemonCtx, ws : String) -> Array[PeerStationTarget] {
+  let out : Array[PeerStationTarget] = []
+  let state = match ctx.cloud.state {
+    Some(s) => s
+    None => return out
+  }
+  let self_id = ctx.station_key.id
+  let peers : Array[base_codec::Json] = if ws == state.workspace || ws.length() == 0 {
+    state.peers
+  } else {
+    let mut found : Array[base_codec::Json] = []
+    for i in 0..<state.joined.length() {
+      if state.joined[i].workspace == ws {
+        found = state.joined[i].peers
+        break
+      }
+    }
+    found
+  }
+  for i in 0..<peers.length() {
+    let p = peers[i]
+    let pid = match pw_json_str(p, "id") { Some(s) => s, None => "" }
+    let pname = match pw_json_str(p, "name") { Some(s) => s, None => "" }
+    let online = match pw_json_bool(p, "online") { Some(b) => b, None => false }
+    let mode = match pw_json_str(p, "mode") { Some(s) => s, None => "" }
+    let has_rig = match base_codec::json_get(p, "rig") {
+      None | Some(base_codec::Json::Null) => false
+      _ => true
+    }
+    if pid.length() > 0 && pid != self_id && !has_rig && mode != "tasks" && mode != "rig" {
+      out.push(PeerStationTarget::{ id: pid, name: pname, online: online })
+    }
+  }
+  out
+}
+
+pub struct DurableProjectOp {
+  pub op_num : Int64
+  pub mut waiter_sid : Option[Int64]
+  pub viewer : station_api::Viewer
+  pub ws : String
+  pub action : String
+  pub from_name : String
+  pub to_name : String
+  pub op_key : Option[String]
+  pub method_name : String
+  pub norm_path : String
+  pub mut idem_claim : Option[(String, String)]
+  pub mut event_seq : Int64
+  pub mut origin_seq : Int64
+  pub mut op_id : String
+  pub mut renamed_at : Int64
+  pub mut wall_at : Int64
+  pub mut is_continuation : Bool
+  pub mut local_updated : Int
+  pub mut local_skipped_locked : Int
+  pub mut phase1_info_error : Option[String]
+  pub mut roster_error : Option[String]
+  pub mut remaining_rpcs : Int
+  pub peer_results : Array[base_codec::Json]
+  pub peer_statuses : Array[String]
+  pub resolved_peer_ids : Array[String]
+  pub mut any_remote_updated : Bool
+  pub deadline_ms : Int64
+}
+
+pub fn detach_durable_project_op_waiter(st : WholeRuntimeState, op_num : Int64) -> Unit {
+  match st.durable_project_ops.get(op_num) {
+    Some(op) => {
+      op.waiter_sid = None
+    }
+    None => ()
+  }
+}
+
+/// Enforce monotonic deadline on in-flight `DurableProjectOp` peer fan-outs so hung peers
+/// finalize cleanly as partial failures (never entering `AdminApi` permanent success cache).
+pub fn tick_durable_project_ops(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  now_mono : Int64,
+  send_resp : (DaemonCtx, Int64, station_http::HttpResponse) -> Unit,
+) -> Unit {
+  let ids = st.durable_project_ops.keys()
+  for i in 0..<ids.length() {
+    let op_num = ids[i]
+    match st.durable_project_ops.get(op_num) {
+      Some(op) if now_mono >= op.deadline_ms => {
+        if op.roster_error.is_none() {
+          op.roster_error = Some("peer rename fan-out timed out")
+        }
+        let _ = finalize_project_rename_op(ctx, st, op, send_resp)
+      }
+      _ => ()
+    }
+  }
+}
+
+fn project_has_entry_in_jsonl(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  ws : String,
+  name : String,
+  skip_private : Bool,
+) -> Bool {
+  let agent_home = pw_agent_home(ctx, st)
+  let home = pw_home_ws(ctx, st)
+  match station_whole::read_projects_jsonl_for_ws(ctx.ops_fs, agent_home, ws, home, ctx.sep, skip_private) {
+    Ok(parsed) => {
+      for i in 0..<parsed.entries.length() {
+        if parsed.entries[i].name == name {
+          return true
+        }
+      }
+      false
+    }
+    Err(_) => false
+  }
+}
+
+fn is_known_project_locally(ctx : DaemonCtx, st : WholeRuntimeState, ws : String, name : String) -> Bool {
+  if name.length() == 0 {
+    return true
+  }
+  let home = pw_home_ws(ctx, st)
+  if station_whole::has_active_project_in_workspace_sql(st.core.store, ws, home, name) {
+    return true
+  }
+  project_has_entry_in_jsonl(ctx, st, ws, name, false)
+}
+
+fn build_rename_result_json(
+  action : String,
+  from_name : String,
+  to_name : String,
+  local_updated : Int,
+  local_skipped_locked : Int,
+  info_error : Option[String],
+  roster_error : Option[String],
+  peers : Array[base_codec::Json],
+) -> base_codec::Json {
+  let fields : Array[(String, base_codec::Json)] = [
+    ("action", base_codec::json_str(action)),
+    ("from", base_codec::json_str(from_name)),
+    ("to", base_codec::json_str(to_name)),
+    (
+      "local",
+      base_codec::json_obj([
+        ("updated", base_codec::json_int(local_updated)),
+        ("skippedLocked", base_codec::json_int(local_skipped_locked)),
+      ]),
+    ),
+  ]
+  match info_error {
+    Some(e) => fields.push(("infoError", base_codec::json_str(e)))
+    None => ()
+  }
+  match roster_error {
+    Some(e) => fields.push(("rosterError", base_codec::json_str(e)))
+    None => ()
+  }
+  fields.push(("peers", base_codec::json_arr(peers)))
+  base_codec::json_obj(fields)
+}
+
+fn finalize_project_rename_op(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  op : DurableProjectOp,
+  send_resp : (DaemonCtx, Int64, station_http::HttpResponse) -> Unit,
+) -> station_http::HttpResponse {
+  let store = st.core.store
+  let agent_home = pw_agent_home(ctx, st)
+  let home = pw_home_ws(ctx, st)
+  let now_ms = host_shim::wall_ms()
+
+  station_whole::mark_rename_peers_resolved_sql(store, op.event_seq, op.resolved_peer_ids, op.any_remote_updated)
+
+  let mut info_error = op.phase1_info_error
+  match station_whole::get_project_rename_event_sql(store, op.event_seq) {
+    Some(latest) => {
+      if latest.pending_info_state == 1 && op.is_continuation {
+        let events = station_whole::list_project_rename_events_sql(store, op.ws)
+        let eff_to = station_api::forward_resolve_target(
+          events,
+          op.to_name,
+          op.renamed_at,
+          op.origin_seq,
+          Some(op.op_id),
+          op.wall_at,
+        ).target
+        let had_any = op.local_updated > 0 || latest.local_updated > 0 || latest.remote_updated || op.any_remote_updated
+        let keep_ops = station_whole::list_pending_rename_info_op_ids_sql(store, op.ws)
+        match station_whole::apply_rename_project_info_file(
+          ctx.ops_fs,
+          agent_home,
+          op.ws,
+          home,
+          ctx.sep,
+          op.from_name,
+          eff_to,
+          op.renamed_at,
+          had_any,
+          Some(op.op_id),
+          Some(keep_ops),
+        ) {
+          Ok(ires) => {
+            if ires.changed {
+              pw_emit_projects_sse(st, op.ws, now_ms)
+            }
+            let next_st = if ires.already_applied || ires.changed || had_any || (latest.pending_peers.length() == 0 && !latest.pending_roster) {
+              0
+            } else {
+              2
+            }
+            station_whole::mark_rename_info_state_sql(store, op.event_seq, next_st)
+            let keep_after = station_whole::list_pending_rename_info_op_ids_sql(store, op.ws)
+            let _ = station_whole::apply_prune_applied_op_ids_file(
+              ctx.ops_fs,
+              agent_home,
+              op.ws,
+              home,
+              ctx.sep,
+              [op.op_id],
+              Some(keep_after),
+            )
+          }
+          Err(e) => info_error = Some(e)
+        }
+      } else if latest.pending_info_state == 3 {
+        let events = station_whole::list_project_rename_events_sql(store, op.ws)
+        let eff_to = station_api::forward_resolve_target(
+          events,
+          op.to_name,
+          op.renamed_at,
+          op.origin_seq,
+          Some(op.op_id),
+          op.wall_at,
+        ).target
+        if eff_to.length() > 0 {
+          let keep_ops = station_whole::list_pending_rename_info_op_ids_sql(store, op.ws)
+          match station_whole::apply_ensure_project_registered_file(
+            ctx.ops_fs,
+            agent_home,
+            op.ws,
+            home,
+            ctx.sep,
+            eff_to,
+            op.renamed_at,
+            Some(keep_ops),
+          ) {
+            Ok(changed) => {
+              if changed {
+                pw_emit_projects_sse(st, op.ws, now_ms)
+              }
+              station_whole::mark_rename_info_state_sql(store, op.event_seq, 0)
+            }
+            Err(e) => info_error = Some(e)
+          }
+        } else {
+          station_whole::mark_rename_info_state_sql(store, op.event_seq, 0)
+        }
+      } else if latest.pending_info_state == 2 && latest.pending_peers.length() == 0 && !latest.pending_roster {
+        station_whole::mark_rename_info_state_sql(store, op.event_seq, 0)
+      }
+    }
+    None => ()
+  }
+
+  pw_emit_projects_sse(st, op.ws, now_ms)
+  let res_json = build_rename_result_json(
+    op.action,
+    op.from_name,
+    op.to_name,
+    op.local_updated,
+    op.local_skipped_locked,
+    info_error,
+    op.roster_error,
+    op.peer_results,
+  )
+  let resp = station_api::json_ok(res_json)
+  // Partial failure MUST NEVER be cached in `AdminApi` permanent success idempotency cache!
+  let is_partial = station_whole::is_partial_rename_result(info_error, op.roster_error, op.peer_statuses)
+  match op.idem_claim {
+    Some((slot_key, idem_key)) => {
+      if is_partial {
+        st.core.api.admin.abort_async_idempotency(slot_key)
+      } else {
+        st.core.api.admin.complete_async_idempotency(
+          slot_key,
+          idem_key,
+          op.viewer,
+          op.method_name,
+          op.norm_path,
+          resp,
+          now_ms,
+        )
+      }
+      op.idem_claim = None
+    }
+    None => ()
+  }
+  st.durable_project_ops.remove(op.op_num)
+  match op.waiter_sid {
+    Some(sid) => {
+      op.waiter_sid = None
+      match st.admin_streams.get(sid) {
+        Some(astream) => {
+          astream.mode = AdminStreamMode::Done
+          send_resp(ctx, sid, resp)
+        }
+        None => ()
+      }
+    }
+    None => ()
+  }
+  resp
+}
+
+/// Start durable `POST /projects/rename` or `POST /projects/merge`.
+/// Owns `idem_claim` completely (completes on clean success/4xx, aborts on `no_cache` or partial failure).
+/// Returns `Ok(async_st)` when peer RPC fan-out is in flight (zero blocking), or `Err(resp)` when
+/// completed synchronously (or rejected with 4xx/5xx).
+pub fn start_durable_project_rename_or_merge(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  sid : Int64,
+  conn_id : Int64,
+  method_name : String,
+  norm_path : String,
+  body_bytes : Bytes,
+  viewer : station_api::Viewer,
+  lang : station_api::Lang,
+  idem_claim : Option[(String, String)],
+  raw_idem_key : Option[String],
+  send_resp : (DaemonCtx, Int64, station_http::HttpResponse) -> Unit,
+) -> Result[AsyncAdminHttpState, station_http::HttpResponse] {
+  let finish_sync = fn(resp : station_http::HttpResponse, no_cache : Bool) -> Result[AsyncAdminHttpState, station_http::HttpResponse] {
+    match idem_claim {
+      Some((slot_key, idem_key)) => {
+        if no_cache {
+          st.core.api.admin.abort_async_idempotency(slot_key)
+        } else {
+          st.core.api.admin.complete_async_idempotency(
+            slot_key,
+            idem_key,
+            viewer,
+            method_name,
+            norm_path,
+            resp,
+            host_shim::wall_ms(),
+          )
+        }
+      }
+      None => ()
+    }
+    Err(resp)
+  }
+  let ws = viewer.workspace.trim()
+  if ws.length() == 0 {
+    return finish_sync(station_api::json_error(400, "workspace is required"), false)
+  }
+  if !viewer.manages_station() {
+    return finish_sync(station_api::json_error(403, "only workspace owners and admins can rename or merge projects"), false)
+  }
+  if ctx.cloud.rig_in(ws).is_some() {
+    return finish_sync(station_api::json_error(403, "a rig does not manage workspace projects"), false)
+  }
+  if body_bytes.length() > 262144 {
+    return finish_sync(station_api::json_error(413, "request too large"), false)
+  }
+  let raw_s = body_bytes.to_string().trim()
+  let body = if raw_s.length() == 0 {
+    base_codec::json_obj([])
+  } else {
+    match base_codec::json_parse(raw_s) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+      _ => return finish_sync(station_api::json_error(400, "invalid JSON body"), false)
+    }
+  }
+  let action = if norm_path == "/projects/merge" { "merge" } else { "rename" }
+  let raw_from = match pw_json_str(body, "from") {
+    Some(s) => s
+    None => return finish_sync(station_api::json_error(400, "from and to must be strings"), false)
+  }
+  let raw_to = match pw_json_str(body, "to") {
+    Some(s) => s
+    None => return finish_sync(station_api::json_error(400, "from and to must be strings"), false)
+  }
+  let from_name = match station_api::normalize_project_name(raw_from) {
+    Ok(s) if s.length() > 0 => s
+    Ok(_) => return finish_sync(station_api::json_error(400, "from is required"), false)
+    Err(e) => return finish_sync(station_api::json_error(400, e), false)
+  }
+  let to_name = match station_api::normalize_project_name(raw_to) {
+    Ok(s) => {
+      if action == "rename" && s.length() == 0 {
+        return finish_sync(station_api::json_error(400, "to is required for rename"), false)
+      }
+      s
+    }
+    Err(e) => return finish_sync(station_api::json_error(400, e), false)
+  }
+  if from_name == to_name {
+    return finish_sync(station_api::json_error(400, "from and to must differ"), false)
+  }
+
+  let store = st.core.store
+  let home = pw_home_ws(ctx, st)
+  let agent_home = pw_agent_home(ctx, st)
+  let actor_id = if viewer.sub.length() > 0 { viewer.sub } else { viewer.email }
+  let op_key : Option[String] = match raw_idem_key {
+    Some(rk) if rk.trim().length() > 0 => Some(actor_id + "\u{0}" + action + "\u{0}" + rk.trim())
+    _ => None
+  }
+
+  let existing_by_op : Option[station_whole::DurableProjectRenameRow] = match op_key {
+    Some(ok_s) => station_whole::find_project_rename_by_op_key_sql(store, ws, ok_s)
+    None => None
+  }
+  match existing_by_op {
+    Some(ex) => {
+      if ex.action != action || ex.from_name != from_name || ex.to_name != to_name {
+        return finish_sync(station_api::json_error(409, "idempotency key already used for a different project rename/merge"), false)
+      }
+      if ex.pending_peers.length() == 0 && !ex.pending_roster && ex.pending_info_state == 0 {
+        let done_json = build_rename_result_json(action, ex.from_name, ex.to_name, 0, 0, None, None, [])
+        return finish_sync(station_api::json_ok(done_json), false)
+      }
+    }
+    None => ()
+  }
+
+  let unfinished : Option[station_whole::DurableProjectRenameRow] = match existing_by_op {
+    Some(ex) => Some(ex)
+    None => station_whole::find_unfinished_project_rename_sql(store, ws, action, from_name, to_name)
+  }
+  let is_continuation = unfinished.is_some()
+
+  if !is_continuation && station_whole::has_unfinished_rename_from_sql(store, ws, from_name, to_name) {
+    return finish_sync(
+      station_api::json_error(
+        409,
+        "previous rename/merge from \"" + from_name + "\" still has pending work; retry it to completion before renaming \"" + from_name + "\" again",
+      ),
+      true,
+    )
+  }
+
+  let all_peers = full_peer_stations_for_ws(ctx, ws)
+
+  if !is_continuation {
+    if !is_known_project_locally(ctx, st, ws, from_name) {
+      return finish_sync(
+        station_api::json_error(
+          404,
+          "unknown project \"" + from_name + "\": pick an existing project",
+        ),
+        false,
+      )
+    }
+    if action == "merge" && to_name.length() > 0 && !is_known_project_locally(ctx, st, ws, to_name) {
+      return finish_sync(
+        station_api::json_error(
+          404,
+          "unknown project \"" + to_name + "\": pick an existing project",
+        ),
+        false,
+      )
+    }
+    if action == "rename" {
+      if station_whole::has_pending_project_target_sql(store, ws, to_name) {
+        return finish_sync(
+          station_api::json_error(409, "project \"" + to_name + "\" is already targeted by an unfinished rename/merge"),
+          true,
+        )
+      }
+      if is_known_project_locally(ctx, st, ws, to_name) {
+        return finish_sync(
+          station_api::json_error(409, "project \"" + to_name + "\" already exists; use merge instead"),
+          false,
+        )
+      }
+    }
+  }
+
+  // Phase 1: atomic local SQLite commit + local PROJECTS.jsonl update
+  let mut event_seq = 0L
+  let mut origin_seq = 0L
+  let mut op_id = ""
+  let mut renamed_at = 0L
+  let mut wall_at = 0L
+  let mut local_updated = 0
+  let mut local_skipped_locked = 0
+  let mut pending_peer_ids : Array[String] = []
+  let mut phase1_info_error : Option[String] = None
+  let now_ms = host_shim::wall_ms()
+
+  match unfinished {
+    Some(un) => {
+      match op_key {
+        Some(ok_s) if existing_by_op.is_none() => station_whole::bind_project_rename_op_key_sql(store, ws, ok_s, un.seq)
+        _ => ()
+      }
+      event_seq = un.seq
+      origin_seq = un.origin_seq
+      op_id = match un.op_id {
+        Some(id) if id.length() > 0 => id
+        _ => match station_whole::generate_project_op_id() {
+          Ok(id) => id
+          Err(e) => return finish_sync(station_api::json_error(500, e), true)
+        }
+      }
+      renamed_at = un.renamed_at
+      wall_at = un.wall_at
+      pending_peer_ids = un.pending_peers
+    }
+    None => {
+      op_id = match station_whole::generate_project_op_id() {
+        Ok(id) => id
+        Err(e) => return finish_sync(station_api::json_error(500, e), true)
+      }
+      wall_at = now_ms
+      let last_at = station_whole::max_project_rename_at_sql(store, ws)
+      renamed_at = if wall_at > last_at { wall_at } else { last_at + 1L }
+      for pi in 0..<all_peers.length() {
+        pending_peer_ids.push(all_peers[pi].id)
+      }
+      let committed = match station_whole::commit_local_project_rename_atomic_sql(
+        store,
+        ws,
+        home,
+        action,
+        from_name,
+        to_name,
+        to_name,
+        renamed_at,
+        wall_at,
+        None,
+        op_key,
+        Some(op_id),
+        pending_peer_ids,
+        false,
+        true,
+      ) {
+        Ok(c) => c
+        Err(e) => return finish_sync(station_api::json_error(500, e), true)
+      }
+      event_seq = committed.seq
+      origin_seq = committed.origin_seq
+      local_updated = committed.updated
+      local_skipped_locked = committed.skipped_locked
+      for ti in 0..<committed.updated_thread_ids.length() {
+        pw_emit_thread_sse(st, committed.updated_thread_ids[ti], now_ms)
+      }
+      // Execute Phase 1 local PROJECTS.jsonl migration synchronously (pure local disk I/O).
+      let keep_ops = station_whole::list_pending_rename_info_op_ids_sql(store, ws)
+      match station_whole::apply_rename_project_info_file(
+        ctx.ops_fs,
+        agent_home,
+        ws,
+        home,
+        ctx.sep,
+        from_name,
+        to_name,
+        renamed_at,
+        local_updated > 0,
+        Some(op_id),
+        Some(keep_ops),
+      ) {
+        Ok(ires) => {
+          if ires.changed {
+            pw_emit_projects_sse(st, ws, now_ms)
+          }
+          let next_st = if ires.already_applied || ires.changed || local_updated > 0 || pending_peer_ids.length() == 0 {
+            0
+          } else {
+            2
+          }
+          station_whole::mark_rename_info_state_sql(store, event_seq, next_st)
+          let keep_after = station_whole::list_pending_rename_info_op_ids_sql(store, ws)
+          let _ = station_whole::apply_prune_applied_op_ids_file(
+            ctx.ops_fs,
+            agent_home,
+            ws,
+            home,
+            ctx.sep,
+            [op_id],
+            Some(keep_after),
+          )
+        }
+        Err(e) => phase1_info_error = Some(e)
+      }
+    }
+  }
+
+  let op_num = st.next_durable_op_id
+  st.next_durable_op_id = st.next_durable_op_id + 1L
+  let op = DurableProjectOp::{
+    op_num: op_num,
+    waiter_sid: Some(sid),
+    viewer: viewer,
+    ws: ws,
+    action: action,
+    from_name: from_name,
+    to_name: to_name,
+    op_key: op_key,
+    method_name: method_name,
+    norm_path: norm_path,
+    idem_claim: idem_claim,
+    event_seq: event_seq,
+    origin_seq: origin_seq,
+    op_id: op_id,
+    renamed_at: renamed_at,
+    wall_at: wall_at,
+    is_continuation: is_continuation,
+    local_updated: local_updated,
+    local_skipped_locked: local_skipped_locked,
+    phase1_info_error: phase1_info_error,
+    roster_error: None,
+    remaining_rpcs: 0,
+    peer_results: [],
+    peer_statuses: [],
+    resolved_peer_ids: [],
+    any_remote_updated: false,
+    deadline_ms: host_shim::now_ms() + 30000L,
+  }
+
+  // Phase 2: classify target peers into offline vs online for non-blocking `ctx.ask_peer_rpc` fan-out.
+  let online_targets : Array[PeerStationTarget] = []
+  for pi in 0..<pending_peer_ids.length() {
+    let pid = pending_peer_ids[pi]
+    let mut found : Option[PeerStationTarget] = None
+    for ai in 0..<all_peers.length() {
+      if all_peers[ai].id == pid {
+        found = Some(all_peers[ai])
+        break
+      }
+    }
+    let target = match found {
+      Some(t) => t
+      None => PeerStationTarget::{ id: pid, name: "", online: false }
+    }
+    if !target.online {
+      let pfs : Array[(String, base_codec::Json)] = [
+        ("station", base_codec::json_str(target.id)),
+        ("status", base_codec::json_str("offline")),
+      ]
+      if target.name.length() > 0 {
+        pfs.push(("name", base_codec::json_str(target.name)))
+      }
+      op.peer_results.push(base_codec::json_obj(pfs))
+      op.peer_statuses.push("offline")
+      if action == "merge" {
+        op.resolved_peer_ids.push(target.id)
+      }
+    } else {
+      online_targets.push(target)
+    }
+  }
+
+  if online_targets.length() == 0 {
+    // No online peers to await -> finalize immediately without blocking!
+    op.waiter_sid = None
+    let resp = finalize_project_rename_op(ctx, st, op, send_resp)
+    // `finalize_project_rename_op` already handled idempotency (completed or aborted on partial failure).
+    return Err(resp)
+  }
+
+  op.remaining_rpcs = online_targets.length()
+  st.durable_project_ops.set(op_num, op)
+  let rpc_req = base_codec::json_obj([
+    ("method", base_codec::json_str("thread.classify")),
+    (
+      "rename",
+      base_codec::json_obj([
+        ("from", base_codec::json_str(from_name)),
+        ("to", base_codec::json_str(to_name)),
+        ("action", base_codec::json_str(action)),
+        ("opId", base_codec::json_str(op_id)),
+        ("renamedAt", base_codec::json_int64(renamed_at)),
+        ("wallAt", base_codec::json_int64(wall_at)),
+        ("originSeq", base_codec::json_int64(origin_seq)),
+      ]),
+    ),
+  ])
+
+  for oi in 0..<online_targets.length() {
+    let target = online_targets[oi]
+    ctx.ask_peer_rpc(target.id, ws, rpc_req, fn(res : Result[base_codec::Json, String]) -> Unit {
+      match st.durable_project_ops.get(op_num) {
+        None => ()
+        Some(cur) => {
+          match res {
+            Ok(ans) => {
+              let upd = match pw_json_i64(ans, "updated") { Some(v) => v.to_int(), None => 0 }
+              let skp = match pw_json_i64(ans, "skippedLocked") { Some(v) => v.to_int(), None => 0 }
+              if upd > 0 {
+                cur.any_remote_updated = true
+              }
+              let pfs : Array[(String, base_codec::Json)] = [
+                ("station", base_codec::json_str(target.id)),
+                ("status", base_codec::json_str("ok")),
+                ("updated", base_codec::json_int(upd)),
+                ("skippedLocked", base_codec::json_int(skp)),
+              ]
+              if target.name.length() > 0 {
+                pfs.push(("name", base_codec::json_str(target.name)))
+              }
+              cur.peer_results.push(base_codec::json_obj(pfs))
+              cur.peer_statuses.push("ok")
+              cur.resolved_peer_ids.push(target.id)
+            }
+            Err(msg) => {
+              let lower = wd_ascii_lower(msg)
+              let status_s = if lower.contains("a rig does not") {
+                cur.resolved_peer_ids.push(target.id)
+                "rig"
+              } else if lower.contains("unknown peer method") || lower.contains("unsupported") {
+                cur.resolved_peer_ids.push(target.id)
+                "unsupported"
+              } else if lower.contains("offline") || lower.contains("not connected") || lower.contains("unreachable") {
+                if cur.action == "merge" {
+                  cur.resolved_peer_ids.push(target.id)
+                }
+                "offline"
+              } else {
+                "error"
+              }
+              let pfs : Array[(String, base_codec::Json)] = [
+                ("station", base_codec::json_str(target.id)),
+                ("status", base_codec::json_str(status_s)),
+                ("error", base_codec::json_str(msg)),
+              ]
+              if target.name.length() > 0 {
+                pfs.push(("name", base_codec::json_str(target.name)))
+              }
+              cur.peer_results.push(base_codec::json_obj(pfs))
+              cur.peer_statuses.push(status_s)
+            }
+          }
+          cur.remaining_rpcs = cur.remaining_rpcs - 1
+          if cur.remaining_rpcs <= 0 {
+            let _ = finalize_project_rename_op(ctx, st, cur, send_resp)
+          }
+        }
+      }
+    })
+  }
+
+  Ok(AsyncAdminHttpState::{
+    sid: sid,
+    conn_id: conn_id,
+    method_name: method_name,
+    norm_path: norm_path,
+    op: AsyncAdminOpKind::ProjectRenameMerge(op_num),
+    viewer: viewer,
+    lang: lang,
+    stream_id: None,
+    status: 0,
+    body_chunks: [],
+    total_bytes: 0,
+    max_bytes: 0,
+    deadline_ms: host_shim::now_ms() + 30000L,
+    idem_claim: None,
+  })
+}
+
+/// Durable continuation runner: executed on startup (after store opens) and on cloud peer updates
+/// to converge any unfinished `project_rename_events` (`pending_info != 0` or `pending_peers != '[]'`).
+pub fn run_pending_project_rename_continuations(ctx : DaemonCtx, st : WholeRuntimeState) -> Unit {
+  if st.core.api.read_only_handover {
+    return
+  }
+  let store = st.core.store
+  let unfinished = station_whole::list_unfinished_project_renames_sql(store)
+  if unfinished.length() == 0 {
+    return
+  }
+  let agent_home = pw_agent_home(ctx, st)
+  let home = pw_home_ws(ctx, st)
+  let now_ms = host_shim::wall_ms()
+
+  for i in 0..<unfinished.length() {
+    let ev = unfinished[i]
+    let ws = ev.workspace
+    if ev.pending_info_state == 1 {
+      let events = station_whole::list_project_rename_events_sql(store, ws)
+      let eff_to = station_api::forward_resolve_target(
+        events,
+        ev.to_name,
+        ev.renamed_at,
+        ev.origin_seq,
+        ev.op_id,
+        ev.wall_at,
+      ).target
+      let had_any = ev.local_updated > 0 || ev.remote_updated
+      let keep_ops = station_whole::list_pending_rename_info_op_ids_sql(store, ws)
+      match station_whole::apply_rename_project_info_file(
+        ctx.ops_fs,
+        agent_home,
+        ws,
+        home,
+        ctx.sep,
+        ev.from_name,
+        eff_to,
+        ev.renamed_at,
+        had_any,
+        ev.op_id,
+        Some(keep_ops),
+      ) {
+        Ok(ires) => {
+          if ires.changed {
+            pw_emit_projects_sse(st, ws, now_ms)
+          }
+          let next_st = if ires.already_applied || ires.changed || had_any || (ev.pending_peers.length() == 0 && !ev.pending_roster) {
+            0
+          } else {
+            2
+          }
+          station_whole::mark_rename_info_state_sql(store, ev.seq, next_st)
+          match ev.op_id {
+            Some(oid) => {
+              let keep_after = station_whole::list_pending_rename_info_op_ids_sql(store, ws)
+              let _ = station_whole::apply_prune_applied_op_ids_file(
+                ctx.ops_fs,
+                agent_home,
+                ws,
+                home,
+                ctx.sep,
+                [oid],
+                Some(keep_after),
+              )
+            }
+            None => ()
+          }
+        }
+        Err(_) => ()
+      }
+    } else if ev.pending_info_state == 3 {
+      let events = station_whole::list_project_rename_events_sql(store, ws)
+      let eff_to = station_api::forward_resolve_target(
+        events,
+        ev.to_name,
+        ev.renamed_at,
+        ev.origin_seq,
+        ev.op_id,
+        ev.wall_at,
+      ).target
+      if eff_to.length() > 0 {
+        let keep_ops = station_whole::list_pending_rename_info_op_ids_sql(store, ws)
+        match station_whole::apply_ensure_project_registered_file(
+          ctx.ops_fs,
+          agent_home,
+          ws,
+          home,
+          ctx.sep,
+          eff_to,
+          ev.renamed_at,
+          Some(keep_ops),
+        ) {
+          Ok(changed) => {
+            if changed {
+              pw_emit_projects_sse(st, ws, now_ms)
+            }
+            station_whole::mark_rename_info_state_sql(store, ev.seq, 0)
+          }
+          Err(_) => ()
+        }
+      } else {
+        station_whole::mark_rename_info_state_sql(store, ev.seq, 0)
+      }
+    } else if ev.pending_info_state == 2 && ev.pending_peers.length() == 0 && !ev.pending_roster {
+      station_whole::mark_rename_info_state_sql(store, ev.seq, 0)
+    }
+
+    // Fan out any remaining pending peers that are currently online.
+    if ev.pending_peers.length() > 0 {
+      let all_peers = full_peer_stations_for_ws(ctx, ws)
+      let oid_str = match ev.op_id { Some(s) => s, None => "" }
+      let rpc_req = base_codec::json_obj([
+        ("method", base_codec::json_str("thread.classify")),
+        (
+          "rename",
+          base_codec::json_obj([
+            ("from", base_codec::json_str(ev.from_name)),
+            ("to", base_codec::json_str(ev.to_name)),
+            ("action", base_codec::json_str(ev.action)),
+            ("opId", base_codec::json_str(oid_str)),
+            ("renamedAt", base_codec::json_int64(ev.renamed_at)),
+            ("wallAt", base_codec::json_int64(ev.wall_at)),
+            ("originSeq", base_codec::json_int64(ev.origin_seq)),
+          ]),
+        ),
+      ])
+      for pi in 0..<ev.pending_peers.length() {
+        let pid = ev.pending_peers[pi]
+        let mut is_online = false
+        for ai in 0..<all_peers.length() {
+          if all_peers[ai].id == pid && all_peers[ai].online {
+            is_online = true
+            break
+          }
+        }
+        if is_online {
+          let seq_cap = ev.seq
+          ctx.ask_peer_rpc(pid, ws, rpc_req, fn(res : Result[base_codec::Json, String]) -> Unit {
+            match res {
+              Ok(ans) => {
+                let upd = match pw_json_i64(ans, "updated") { Some(v) => v.to_int(), None => 0 }
+                station_whole::mark_rename_peers_resolved_sql(st.core.store, seq_cap, [pid], upd > 0)
+              }
+              Err(msg) => {
+                let lower = wd_ascii_lower(msg)
+                if lower.contains("a rig does not") || lower.contains("unknown peer method") || lower.contains("unsupported") {
+                  station_whole::mark_rename_peers_resolved_sql(st.core.store, seq_cap, [pid], false)
+                }
+              }
+            }
+          })
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 3. Inbound Peer RPC Handlers (`projects.names` & `thread.classify` rename)
+// ---------------------------------------------------------------------------
+
+pub fn handle_peer_projects_names(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  ws : String,
+  req : base_codec::Json,
+) -> Result[base_codec::Json, String] {
+  let home = pw_home_ws(ctx, st)
+  let eff_ws = if ws.length() > 0 { ws } else { home }
+  if ctx.cloud.rig_in(eff_ws).is_some() {
+    return Err("a rig does not answer projects.names")
+  }
+  match pw_json_str(req, "check") {
+    Some(raw_check) if raw_check.trim().length() > 0 => {
+      let norm = match station_api::normalize_project_name(raw_check) {
+        Ok(s) if s.length() > 0 => s
+        _ => return Ok(base_codec::json_obj([("exists", base_codec::json_bool(false))]))
+      }
+      if station_whole::has_active_project_in_workspace_sql(st.core.store, eff_ws, home, norm) {
+        return Ok(base_codec::json_obj([("exists", base_codec::json_bool(true))]))
+      }
+      let has_info = project_has_entry_in_jsonl(ctx, st, eff_ws, norm, true)
+      return Ok(base_codec::json_obj([("exists", base_codec::json_bool(has_info))]))
+    }
+    _ => ()
+  }
+  let local = station_whole::workspace_project_names_sql(st.core.store, eff_ws, home, 200)
+  let by_name : Map[String, Int] = Map::new()
+  for i in 0..<local.length() {
+    by_name.set(local[i].0, local[i].1)
+  }
+  let agent_home = pw_agent_home(ctx, st)
+  match station_whole::read_projects_jsonl_for_ws(ctx.ops_fs, agent_home, eff_ws, home, ctx.sep, true) {
+    Ok(parsed) => {
+      for i in 0..<parsed.entries.length() {
+        let name = parsed.entries[i].name
+        if by_name.get(name).is_none() {
+          by_name.set(name, 0)
+        }
+      }
+    }
+    Err(_) => ()
+  }
+  let p_arr : Array[base_codec::Json] = []
+  let ks = by_name.keys()
+  for i in 0..<ks.length() {
+    let k = ks[i]
+    let c = match by_name.get(k) { Some(v) => v, None => 0 }
+    p_arr.push(base_codec::json_obj([
+      ("name", base_codec::json_str(k)),
+      ("count", base_codec::json_int(c)),
+    ]))
+  }
+  Ok(base_codec::json_obj([
+    ("projects", base_codec::json_arr(p_arr)),
+    ("tags", base_codec::json_arr([])),
+  ]))
+}
+
+pub fn handle_peer_thread_classify_rename(
+  ctx : DaemonCtx,
+  st : WholeRuntimeState,
+  ws : String,
+  req : base_codec::Json,
+) -> Result[base_codec::Json, String] {
+  let home = pw_home_ws(ctx, st)
+  let eff_ws = if ws.length() > 0 { ws } else { home }
+  if ctx.cloud.rig_in(eff_ws).is_some() {
+    return Err("a rig does not answer thread.classify")
+  }
+  if st.core.api.read_only_handover {
+    return Err("this station is in read-only handover mode")
+  }
+  let ren = match base_codec::json_get(req, "rename") {
+    Some(base_codec::Json::Obj(fs)) => base_codec::json_obj(fs)
+    _ => return Err("unsupported thread.classify payload")
+  }
+  let raw_from = match pw_json_str(ren, "from") {
+    Some(s) => s
+    None => return Err("rename.from and rename.to must be strings")
+  }
+  let raw_to = match pw_json_str(ren, "to") {
+    Some(s) => s
+    None => return Err("rename.from and rename.to must be strings")
+  }
+  let from_name = match station_api::normalize_project_name(raw_from) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let to_name = match station_api::normalize_project_name(raw_to) {
+    Ok(s) => s
+    Err(e) => return Err(e)
+  }
+  let action = match pw_json_str(ren, "action") {
+    Some("merge") => "merge"
+    _ => "rename"
+  }
+  let op_id : Option[String] = match pw_json_str(ren, "opId") {
+    Some(s) if s.trim().length() > 0 => Some(s.trim())
+    _ => None
+  }
+  let now_ms = host_shim::wall_ms()
+  let renamed_at = match pw_json_i64(ren, "renamedAt") { Some(v) if v > 0L => v, _ => now_ms }
+  let wall_at = match pw_json_i64(ren, "wallAt") { Some(v) if v > 0L => v, _ => renamed_at }
+  let origin_seq = match pw_json_i64(ren, "originSeq") { Some(v) => v, None => 0L }
+
+  let events = station_whole::list_project_rename_events_sql(st.core.store, eff_ws)
+  let resolved = station_api::forward_resolve_target(events, to_name, renamed_at, origin_seq, op_id, wall_at)
+  let committed = match station_whole::commit_local_project_rename_atomic_sql(
+    st.core.store,
+    eff_ws,
+    home,
+    action,
+    from_name,
+    to_name,
+    resolved.target,
+    renamed_at,
+    wall_at,
+    Some(origin_seq),
+    None,
+    op_id,
+    [],
+    false,
+    false,
+  ) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  for ti in 0..<committed.updated_thread_ids.length() {
+    pw_emit_thread_sse(st, committed.updated_thread_ids[ti], now_ms)
+  }
+  pw_emit_projects_sse(st, eff_ws, now_ms)
+  Ok(base_codec::json_obj([
+    ("updated", base_codec::json_int(committed.updated)),
+    ("skippedLocked", base_codec::json_int(committed.skipped_locked)),
+  ]))
+}

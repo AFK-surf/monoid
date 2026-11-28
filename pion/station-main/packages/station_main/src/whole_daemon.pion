@@ -1870,6 +1870,9 @@ struct WholeRuntimeState {
   mut handover_exported : Bool
   mut becoming_rig : Bool
   mut next_upkeep_ms : Int64
+  durable_joins : Map[Int64, DurableJoinTx]
+  durable_project_ops : Map[Int64, DurableProjectOp]
+  mut next_durable_op_id : Int64
 }
 
 fn devices_table_exists_sql(db : sql_db::Db) -> Bool {
@@ -4511,7 +4514,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         let is_live_async_route = head.method == "POST"
         && (norm_path == "/updates/check"
           || norm_path == "/copies/s3/test"
-          || norm_path == "/profiles")
+          || norm_path == "/profiles"
+          || norm_path == "/workspaces/join"
+          || norm_path == "/projects/rename"
+          || norm_path == "/projects/merge")
         if is_live_async_route {
           match check_oldest_core_fast(st, head.method, head.path, head.headers) {
             Some(old_resp) => {
@@ -4552,6 +4558,43 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               astream.mode = AdminStreamMode::Done
               send_admin_resp_and_finish(ctx, astream.sid, conf_resp)
               return
+            }
+          }
+          if norm_path == "/workspaces/join" {
+            match start_durable_workspace_join(ctx, st, astream.sid, astream.conn_id, head.method, norm_path, body, v, req_lang, idem_claim) {
+              Ok(async_st) => {
+                astream.mode = AdminStreamMode::WaitingAsyncOp(async_st)
+                return
+              }
+              Err(resp) => {
+                match idem_claim {
+                  Some((sk, _)) => st.core.api.admin.abort_async_idempotency(sk)
+                  None => ()
+                }
+                astream.mode = AdminStreamMode::Done
+                send_admin_resp_and_finish(ctx, astream.sid, resp)
+                return
+              }
+            }
+          }
+          if norm_path == "/projects/rename" || norm_path == "/projects/merge" {
+            let mut raw_ik : Option[String] = None
+            for hi in 0..<head.headers.length() {
+              if station_http::ascii_eq_ci(head.headers[hi].name, "idempotency-key") {
+                raw_ik = Some(head.headers[hi].value)
+                break
+              }
+            }
+            match start_durable_project_rename_or_merge(ctx, st, astream.sid, astream.conn_id, head.method, norm_path, body, v, req_lang, idem_claim, raw_ik, send_admin_resp_and_finish) {
+              Ok(async_st) => {
+                astream.mode = AdminStreamMode::WaitingAsyncOp(async_st)
+                return
+              }
+              Err(resp) => {
+                astream.mode = AdminStreamMode::Done
+                send_admin_resp_and_finish(ctx, astream.sid, resp)
+                return
+              }
             }
           }
           match try_intercept_async_admin_op(ctx, st, astream.sid, astream.conn_id, head.method, norm_path, body, v, req_lang, idem_claim) {
@@ -5922,6 +5965,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
+        // Wave 17E-4B: durable async `workspaces.join` HTTP completion (`5310..5311`).
+        if kind == JOIN_TOK_HTTP_OPEN || kind == JOIN_TOK_HTTP_READ {
+          step_durable_join_http_done(ctx, st, kind, sid, d, send_admin_resp_and_finish)
+          return
+        }
         // Wave 17D-2 R6: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
         // - Sets `Done` BEFORE `send_admin_resp_and_finish` so >64 KiB backpressured `SendingBody` is preserved!
         // - If `stream.open` arrives with no active op, decodes and immediately `stream.close`s.
@@ -7717,6 +7765,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         becoming_rig: false,
         // timer: periodic jobs and remote upkeep (10m)
         next_upkeep_ms: now0 + WHOLE_UPKEEP_EVERY_MS,
+        durable_joins: Map::new(),
+        durable_project_ops: Map::new(),
+        next_durable_op_id: 1L,
       })
       Ok(())
     },
@@ -7915,6 +7966,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           ) {
             Ok(_) => {
               st.replica.after_store(home_ws, ctx.station_key.id, host_shim::wall_ms())
+              run_pending_project_rename_continuations(ctx, st)
               // Load persisted cross-station `remote-connects.json` and start all enabled local external
               // connects (Slack / Feishu / Comma / Group) directly onto `WholeCore` `Hub`!
               load_remote_connects_file(
@@ -8090,6 +8142,34 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               }
               _ => {
                 let err_b = station_mesh::encode_peer_answer_err("streaming route requires stillfail/admin/1", v2_bytes)
+                ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
+              }
+            }
+            return
+          }
+
+          // Wave 17E-4B: peer RPCs `projects.names` & `thread.classify` (rename/merge).
+          if method == "projects.names" {
+            match handle_peer_projects_names(ctx, st, ws, req) {
+              Ok(res_j) => {
+                let reply_b = station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes)
+                ctx.reply_peer_rpc(sid, reply_b, None, v2_bytes, is_front)
+              }
+              Err(msg) => {
+                let err_b = station_mesh::encode_peer_answer_err(msg, v2_bytes)
+                ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
+              }
+            }
+            return
+          }
+          if method == "thread.classify" && base_codec::json_get(req, "rename").is_some() {
+            match handle_peer_thread_classify_rename(ctx, st, ws, req) {
+              Ok(res_j) => {
+                let reply_b = station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes)
+                ctx.reply_peer_rpc(sid, reply_b, None, v2_bytes, is_front)
+              }
+              Err(msg) => {
+                let err_b = station_mesh::encode_peer_answer_err(msg, v2_bytes)
                 ctx.reply_peer_rpc(sid, err_b, None, v2_bytes, is_front)
               }
             }
@@ -9165,6 +9245,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               None => ()
             }
           }
+          tick_durable_joins(ctx, st, now, send_admin_resp_and_finish)
+          tick_durable_project_ops(ctx, st, now, send_admin_resp_and_finish)
           st.live_runners.tick(ctx, st.core, now, wall)
           st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), now, wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
@@ -9381,6 +9463,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if !connected {
             return
           }
+          run_pending_project_rename_continuations(ctx, st)
           if ctx.cloud.is_rig_only(now_s) && !st.becoming_rig {
             st.becoming_rig = true
             ctx.log("station became rig-only: triggering handover to rig process")
@@ -9510,6 +9593,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             ctx.close_peer_http(sid)
             st.admin_streams.remove(sid)
           }
+          shutdown_durable_joins(ctx, st)
           let ps_keys = st.proxy_streams.keys()
           for pi in 0..<ps_keys.length() {
             let sid = ps_keys[pi]

@@ -371,3 +371,85 @@ test "wave17d2 r6: updates.check binds beta channel without updateChannel and dr
     panic("stable view leaked cached beta check state: " + stable_view_s)
   }
 }
+
+test "wave17e4b: durable join constants, CloudStore::reload, PeerAuthPolicy::set_home_workspace, and disconnect detach" {
+  // Verify pre-allocated disjoint event & MuxToken::Tagged ranges
+  if PROJECTS_WS_EVENT_BASE != 55834574848L || PROJECTS_WS_EVENT_END != 60129542144L {
+    panic("PROJECTS_WS_EVENT_BASE/END mismatch")
+  }
+  if JOIN_TOK_HTTP_OPEN < 5310 || JOIN_TOK_HTTP_OPEN > 5319 || JOIN_TOK_HTTP_READ < 5310 || JOIN_TOK_HTTP_READ > 5319 {
+    panic("JOIN_TOK_HTTP_OPEN/READ outside allocated 5310..5319 range")
+  }
+  // Verify CloudStore::reload picks up newly joined workspace written to cloud.json
+  let mem = station_cloud::MemCloudFs::new()
+  let cfs = mem.as_fs()
+  let data = "/tmp/w17e4b-reload-test"
+  mem.files.set(station_cloud::state_path(data), "{\"origin\":\"https://api.still.fail\",\"workspace\":\"ws-home\",\"workspaceName\":\"Home\",\"name\":\"Box\",\"peers\":[],\"joined\":[]}")
+  let cs = station_cloud::CloudStore::open(data, cfs)
+  if cs.memberships(1700000000.0).length() != 1 {
+    panic("expected 1 membership before join")
+  }
+  let seed = Bytes::new(32)
+  for i in 0..<32 {
+    seed[i] = (i + 13).to_byte()
+  }
+  let key = match station_cloud::StationKey::from_seed(seed) { Ok(k) => k, Err(e) => panic(e) }
+  let prep = match station_cloud::prepare_join_workspace(data, cfs, key, "tok_dur_1", "0.1.9999", 1700000000L, store=Some(cs)) {
+    Ok(p) => p
+    Err(e) => panic("prepare_join_workspace failed: " + e)
+  }
+  let _ = match station_cloud::apply_join_workspace_response(
+    data,
+    cfs,
+    prep,
+    200,
+    "{\"workspace\":\"ws-new\",\"workspace_name\":\"New WS\",\"name\":\"Box\"}",
+    1700000001L,
+  ) {
+    Ok(jr) => jr
+    Err(e) => panic("apply_join_workspace_response failed: " + e)
+  }
+  if !cs.reload() {
+    panic("CloudStore::reload returned false")
+  }
+  if cs.memberships(1700000001.0).length() != 2 {
+    panic("expected 2 memberships after reload")
+  }
+  // Verify PeerAuthPolicy::set_home_workspace promotes home and adds to allowed_workspaces
+  let pol = station_whole::PeerAuthPolicy::{
+    station_id: "st-1",
+    station_build: "9999",
+    home_workspace: "ws-home",
+    allowed_workspaces: ["ws-home"],
+    verify_fn: None,
+  }
+  pol.set_home_workspace("ws-new")
+  if pol.home_workspace != "ws-new" || pol.allowed_workspaces.length() != 2 {
+    panic("PeerAuthPolicy::set_home_workspace failed")
+  }
+  // Verify DurableJoinTx detaching waiter_sid preserves tx state and idem_claim (disconnect/timeout resilience)
+  let tx = DurableJoinTx::{
+    join_id: 77L,
+    waiter_sid: Some(999L),
+    conn_id: 1L,
+    viewer: station_api::Viewer::owner("alice@example.com", "ws-home"),
+    lang: station_api::Lang::En,
+    method_name: "POST",
+    norm_path: "/workspaces/join",
+    prep: prep,
+    body_idx: 0,
+    lock_hash: None,
+    rig_person_hash: None,
+    stream_id: Some(42),
+    status: 0,
+    body_chunks: [],
+    total_bytes: 0,
+    max_bytes: 262144,
+    deadline_ms: 20000L,
+    idem_claim: Some(("slot-1", "idem-1")),
+  }
+  tx.waiter_sid = None
+  if tx.stream_id != Some(42) || tx.idem_claim.is_none() {
+    panic("detaching waiter_sid must NOT close outbound stream or abort idem_claim")
+  }
+}

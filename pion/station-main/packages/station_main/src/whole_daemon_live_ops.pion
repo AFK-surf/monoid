@@ -47,6 +47,8 @@ pub enum AsyncAdminOpKind {
   UpdatesCheck(String)
   CopiesS3Test(station_replica::NormalizedS3Target)
   ProfileCreateKeyed(String, Option[String], Option[String], Option[String], String, Option[String], String, String, Bool)
+  WorkspaceJoin(Int64)
+  ProjectRenameMerge(Int64)
 }
 
 pub struct AsyncAdminHttpState {
@@ -443,6 +445,19 @@ fn start_async_http_stream(
 /// Close any open `stream.open` handle and abort any in-flight idempotency claim when an admin stream
 /// disconnects, times out, or shuts down.
 pub fn cancel_async_admin_op(ctx : DaemonCtx, st : WholeRuntimeState, state : AsyncAdminHttpState) -> Unit {
+  // Durable transactions (`WorkspaceJoin` / `ProjectRenameMerge`) are owned by `WholeRuntimeState`
+  // and MUST continue running to completion even if the HTTP client disconnects or times out!
+  match state.op {
+    AsyncAdminOpKind::WorkspaceJoin(join_id) => {
+      detach_durable_join_waiter(st, join_id)
+      return
+    }
+    AsyncAdminOpKind::ProjectRenameMerge(op_num) => {
+      detach_durable_project_op_waiter(st, op_num)
+      return
+    }
+    _ => ()
+  }
   match state.stream_id {
     Some(id) => {
       let _ = ctx.edge_hub.call_async_discard("stream.close", "{\"id\":" + id.to_string() + "}", None)
@@ -942,6 +957,10 @@ fn complete_async_admin_op(
           None => station_api::json_error(500, station_ops::config_err_msg(e))
         }
       }
+    }
+
+    AsyncAdminOpKind::WorkspaceJoin(_) | AsyncAdminOpKind::ProjectRenameMerge(_) => {
+      station_api::json_error(500, "unexpected durable op completion on generic HTTP stream")
     }
   }
   finish_idem_claim(st, state, resp)

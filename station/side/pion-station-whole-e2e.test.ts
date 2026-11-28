@@ -3084,7 +3084,6 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
     ["POST", "/profiles/p1/login-code", JSON.stringify({ code: "123456" })],
     ["POST", "/copies/restore", JSON.stringify({ station: "st-1", gen: "g1", from: { s3: "r2" } })],
     ["PUT", "/xshare/hosts", JSON.stringify({ workspace: "ws-partner", name: "Partner", station: "st-partner", stationName: "Box" })],
-    ["POST", "/workspaces/join", JSON.stringify({ token: "tok-1" })],
   ] as const) {
     const hdrs: Record<string, string> = { "content-type": "application/json" };
     if (p.endsWith("/reset-quota")) hdrs["idempotency-key"] = "test-idem-1";
@@ -3153,7 +3152,7 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(fbWrap.status, 400, `feedback.report 64-bit wraparound thread id must return 400, got ${fbWrap.status}`);
 
   const projRen = await adminCall(conn, "POST", "/projects/rename", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ from: "OldW17D3", to: "NewW17D3" })));
-  assert.equal(projRen.status, 501, `POST /projects/rename must return honest 501 until Wave 17E, got ${projRen.status}`);
+  assert.equal(projRen.status, 404, `POST /projects/rename unknown project must return 404, got ${projRen.status}`);
 
   const retryMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/retry", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: 1, seq: 1 })));
   assert.equal(retryMiss.status, 501, `hub.session.retry must return honest 501 until Wave 17E, got ${retryMiss.status}`);
@@ -3284,4 +3283,243 @@ CREATE INDEX IF NOT EXISTS devices_by_ws ON devices (ws);`);
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
+});
+
+test("W17E-4B: durable projects.rename/merge (with restart recovery), non-blocking workspaces.join on slow cloud, and tools.access roundtrip", { skip: process.platform === "win32" }, async () => {
+  const addon = resolveMeshAddon();
+  const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
+  const base = mkdtempSync(join(tmpdir(), "stillfail-w17e4b-e2e-"));
+  dirs.push(base);
+  const data = join(base, "data");
+  const drive = join(base, "drive");
+  mkdirSync(drive, { recursive: true });
+
+  const stSeed = randomBytes(32);
+  const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  const stationId = probe.id();
+  await probe.close();
+
+  const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epOwner);
+
+  // Slow mock cloud server for POST /v1/stations/join (900ms delay)
+  let joinHits = 0;
+  let lastJoinBody: Record<string, unknown> | null = null;
+  const mockCloud = createHttpServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (c) => chunks.push(Buffer.from(c)));
+    req.on("end", () => {
+      if (req.method === "POST" && req.url === "/v1/stations/join") {
+        joinHits++;
+        try {
+          lastJoinBody = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+        } catch {}
+        setTimeout(() => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({
+            workspace: "ws-joined-e2e",
+            workspace_name: "Joined E2E",
+            name: "E2E Box",
+          }));
+        }, 900);
+        return;
+      }
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not_found" }));
+    });
+  });
+  servers.push(mockCloud);
+  await new Promise<void>((resolve) => mockCloud.listen(0, "127.0.0.1", () => resolve()));
+  const cloudPort = (mockCloud.address() as { port: number }).port;
+
+  const ws = "ws-w17e4b";
+  seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, `http://127.0.0.1:${cloudPort}`);
+
+  const wd = startWholeDaemon(bin, data);
+  await until("w17e4b daemon ready", () => wd.messages.find((m) => m.ready === true));
+  const meshAddr = await until("w17e4b mesh bound", () => wd.meshAddr());
+
+  const jwtOwner = signMemberJwt({ ws, device: epOwner.id(), sub: "u-owner", email: "owner@example.com", name: "Owner", role: "owner" });
+  const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
+  assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
+
+  // 1. tools.access.put + tools.access.get roundtrip
+  const taGet0 = await adminCall(conn, "GET", "/tools/access");
+  assert.equal(taGet0.status, 200, `GET /tools/access failed: ${taGet0.body.toString()}`);
+  const taJson0 = JSON.parse(taGet0.body.toString("utf8"));
+  assert.equal(taJson0.access, "off");
+  assert.ok(Array.isArray(taJson0.read_ops) && taJson0.read_ops.includes("fs.read"), `missing read_ops: ${taGet0.body.toString()}`);
+
+  const taPut = await adminCall(
+    conn,
+    "PUT",
+    "/tools/access",
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ access: "read" })),
+  );
+  assert.equal(taPut.status, 200, `PUT /tools/access failed: ${taPut.body.toString()}`);
+  assert.equal(JSON.parse(taPut.body.toString("utf8")).access, "read");
+
+  const taGet1 = await adminCall(conn, "GET", "/tools/access");
+  assert.equal(taGet1.status, 200);
+  assert.equal(JSON.parse(taGet1.body.toString("utf8")).access, "read");
+  const cfgAfterTools = JSON.parse(readFileSync(join(data, "config.json"), "utf8"));
+  assert.equal(cfgAfterTools.tools?.access, "read");
+
+  // 2. Non-blocking workspaces.join on slow mock cloud server + concurrent GET /status 200
+  const t0 = Date.now();
+  const joinPromise = adminCall(
+    conn,
+    "POST",
+    "/workspaces/join",
+    { "content-type": "application/json", "idempotency-key": "w17e4b-join-1" },
+    Buffer.from(JSON.stringify({ token: "tok-e2e-join-1" })),
+  );
+  await new Promise((r) => setTimeout(r, 100));
+  const statusConcurrent = await adminCall(conn, "GET", "/status");
+  const statusElapsed = Date.now() - t0;
+  assert.equal(statusConcurrent.status, 200, `concurrent GET /status failed: ${statusConcurrent.body.toString()}`);
+  assert.ok(statusElapsed < 700, `GET /status was blocked by slow workspaces.join! elapsed=${statusElapsed}ms`);
+
+  const joinResp = await joinPromise;
+  const joinTotal = Date.now() - t0;
+  assert.ok(joinTotal >= 750, `workspaces.join returned too early (${joinTotal}ms)`);
+  assert.equal(joinResp.status, 200, `POST /workspaces/join failed: ${joinResp.body.toString()}`);
+  const joinJson = JSON.parse(joinResp.body.toString("utf8"));
+  assert.equal(joinJson.joined?.workspace, "ws-joined-e2e");
+  assert.equal(joinHits, 1);
+  assert.equal(lastJoinBody?.locks, true, "workspaces.join MUST send locks:true");
+  assert.equal(lastJoinBody?.token, "tok-e2e-join-1");
+
+  // Verify mesh/cloud.json updated atomically with 0600 mode and original home workspace preserved
+  const cloudJsonPath = join(data, "mesh", "cloud.json");
+  assert.equal(statSync(cloudJsonPath).mode & 0o077, 0, "cloud.json MUST remain 0600 private");
+  const cloudDisk = JSON.parse(readFileSync(cloudJsonPath, "utf8"));
+  assert.equal(cloudDisk.workspace, ws, "original home workspace must be preserved");
+  assert.ok(cloudDisk.joined?.some((j: { workspace: string }) => j.workspace === "ws-joined-e2e"), "ws-joined-e2e missing in cloud.json");
+
+  // Idempotency replay returns cached 200 without hitting cloud again
+  const joinReplay = await adminCall(
+    conn,
+    "POST",
+    "/workspaces/join",
+    { "content-type": "application/json", "idempotency-key": "w17e4b-join-1" },
+    Buffer.from(JSON.stringify({ token: "tok-e2e-join-1" })),
+  );
+  assert.equal(joinReplay.status, 200);
+  assert.equal(joinHits, 1, "idempotency replay must not hit cloud server twice");
+
+  // GET /workspaces reflects newly joined workspace without restart
+  const wsListAfter = await adminCall(conn, "GET", "/workspaces");
+  assert.equal(wsListAfter.status, 200);
+  assert.ok(wsListAfter.body.toString("utf8").includes("ws-joined-e2e"), `GET /workspaces missing joined ws: ${wsListAfter.body.toString()}`);
+
+  // 3. Durable projects.rename + projects.merge on real SQLite sessions/threads + PROJECTS.jsonl
+  const create1 = await adminCall(conn, "POST", "/sessions", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ prompt: "hello alpha" })));
+  assert.equal(create1.status, 200, `POST /sessions 1 failed: ${create1.body.toString()}`);
+  const tid1 = JSON.parse(create1.body.toString("utf8")).thread as number;
+
+  const create2 = await adminCall(conn, "POST", "/sessions", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ prompt: "hello target" })));
+  assert.equal(create2.status, 200, `POST /sessions 2 failed: ${create2.body.toString()}`);
+  const tid2 = JSON.parse(create2.body.toString("utf8")).thread as number;
+
+  const cls1 = await adminCall(conn, "PUT", `/threads/${tid1}/classification`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ project: "ProjAlpha" })));
+  assert.equal(cls1.status, 200, `PUT classification 1 failed: ${cls1.body.toString()}`);
+  const cls2 = await adminCall(conn, "PUT", `/threads/${tid2}/classification`, { "content-type": "application/json" }, Buffer.from(JSON.stringify({ project: "ProjTarget" })));
+  assert.equal(cls2.status, 200, `PUT classification 2 failed: ${cls2.body.toString()}`);
+
+  const info1 = await adminCall(conn, "PUT", "/projects/info", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ name: "ProjAlpha", note: "Alpha note" })));
+  assert.equal(info1.status, 200);
+  const info2 = await adminCall(conn, "PUT", "/projects/info", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ name: "ProjTarget", note: "Target note" })));
+  assert.equal(info2.status, 200);
+
+  // Rename ProjAlpha -> ProjBeta
+  const renResp = await adminCall(
+    conn,
+    "POST",
+    "/projects/rename",
+    { "content-type": "application/json", "idempotency-key": "ren-1" },
+    Buffer.from(JSON.stringify({ from: "ProjAlpha", to: "ProjBeta" })),
+  );
+  assert.equal(renResp.status, 200, `POST /projects/rename failed: ${renResp.body.toString()}`);
+  const renJson = JSON.parse(renResp.body.toString("utf8"));
+  assert.equal(renJson.action, "rename");
+  assert.equal(renJson.from, "ProjAlpha");
+  assert.equal(renJson.to, "ProjBeta");
+  assert.equal(renJson.local.updated, 1);
+
+  // Merge ProjBeta -> ProjTarget
+  const mergeResp = await adminCall(
+    conn,
+    "POST",
+    "/projects/merge",
+    { "content-type": "application/json", "idempotency-key": "merge-1" },
+    Buffer.from(JSON.stringify({ from: "ProjBeta", to: "ProjTarget" })),
+  );
+  assert.equal(mergeResp.status, 200, `POST /projects/merge failed: ${mergeResp.body.toString()}`);
+  const mergeJson = JSON.parse(mergeResp.body.toString("utf8"));
+  assert.equal(mergeJson.action, "merge");
+  assert.equal(mergeJson.local.updated, 1);
+
+  const infoAfterMerge = await adminCall(conn, "GET", "/projects/info");
+  assert.equal(infoAfterMerge.status, 200);
+  const infoAfterJson = JSON.parse(infoAfterMerge.body.toString("utf8")) as {
+    projects: { name: string; count: number; note?: string }[];
+  };
+  assert.equal(infoAfterJson.projects.find((p) => p.name === "ProjAlpha"), undefined);
+  assert.equal(infoAfterJson.projects.find((p) => p.name === "ProjBeta"), undefined);
+  const targetEntry = infoAfterJson.projects.find((p) => p.name === "ProjTarget");
+  assert.ok(targetEntry !== undefined, `ProjTarget missing: ${infoAfterMerge.body.toString()}`);
+  assert.equal(targetEntry.count, 2);
+  assert.ok(String(targetEntry.note ?? "").includes("Alpha note"), `merged note missing Alpha note: ${infoAfterMerge.body.toString()}`);
+  assert.ok(String(targetEntry.note ?? "").includes("Target note"), `merged note missing Target note: ${infoAfterMerge.body.toString()}`);
+
+  await conn.close(0, "done");
+  wd.sendCtrl({ op: "stop" });
+  assert.equal(await wd.waitExit(), 0, wd.stderr());
+
+  // 4. Restart continuation recovery: verify CSPRNG UUID v4 op_id in SQLite + simulate crash with pending_info=1
+  const dbPath = join(data, "stillfail.db");
+  const db = new DatabaseSync(dbPath);
+  const opRows = db.prepare("SELECT op_id FROM project_rename_events WHERE workspace = ? AND op_id IS NOT NULL").all(ws) as { op_id: string }[];
+  assert.ok(opRows.length >= 2, `expected >= 2 rename/merge op_ids, got ${opRows.length}`);
+  for (const r of opRows) {
+    assert.match(r.op_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/, `op_id must be CSPRNG UUID v4, got ${r.op_id}`);
+  }
+  assert.notEqual(opRows[0]!.op_id, opRows[1]!.op_id, "CSPRNG op_ids must be distinct");
+
+  // Simulate crash right after SQLite commit before PROJECTS.jsonl update (`pending_info = 1`)
+  const crashOpId = "11111111-2222-4333-8444-555555555555";
+  db.prepare(
+    "INSERT INTO project_rename_events (workspace, action, from_name, to_name, renamed_at, wall_at, origin_seq, op_id, pending_peers, pending_roster, pending_info, local_updated) VALUES (?, 'rename', 'ProjTarget', 'ProjRecovered', ?, ?, 99, ?, '[]', 0, 1, 2)",
+  ).run(ws, Date.now() + 1000, Date.now() + 1000, crashOpId);
+  db.close();
+
+  // Restart daemon -> durable continuation runner MUST converge PROJECTS.jsonl & clear pending_info=0!
+  const wd2 = startWholeDaemon(bin, data);
+  await until("w17e4b restarted daemon ready", () => wd2.messages.find((m) => m.ready === true));
+  const meshAddr2 = await until("w17e4b restarted mesh bound", () => wd2.meshAddr());
+  const { conn: conn2, helloReply: hello2 } = await openAdminConn(epOwner, stationId, meshAddr2, jwtOwner);
+  assert.equal(hello2?.ok, true, JSON.stringify(hello2));
+
+  const infoRecovered = await adminCall(conn2, "GET", "/projects/info");
+  assert.equal(infoRecovered.status, 200);
+  const recJson = JSON.parse(infoRecovered.body.toString("utf8")) as {
+    projects: { name: string; count: number; note?: string }[];
+  };
+  const recEntry = recJson.projects.find((p) => p.name === "ProjRecovered");
+  assert.ok(recEntry !== undefined, `ProjRecovered missing after restart recovery: ${infoRecovered.body.toString()}`);
+  assert.ok(String(recEntry.note ?? "").includes("Alpha note"), `recovered note missing Alpha note: ${infoRecovered.body.toString()}`);
+  const jsonlAfterRecovery = readFileSync(join(data, "agent", "PROJECTS.jsonl"), "utf8");
+  assert.ok(jsonlAfterRecovery.includes("\"ProjRecovered\""), `PROJECTS.jsonl missing ProjRecovered: ${jsonlAfterRecovery}`);
+  assert.ok(jsonlAfterRecovery.includes("\"deleted\":true"), `PROJECTS.jsonl missing tombstone for ProjTarget: ${jsonlAfterRecovery}`);
+
+  await conn2.close(0, "done");
+  wd2.sendCtrl({ op: "stop" });
+  assert.equal(await wd2.waitExit(), 0, wd2.stderr());
+
+  const dbAfter = new DatabaseSync(dbPath);
+  const pendingRow = dbAfter.prepare("SELECT pending_info FROM project_rename_events WHERE op_id = ?").get(crashOpId) as { pending_info: number } | undefined;
+  dbAfter.close();
+  assert.equal(pendingRow?.pending_info, 0, `continuation runner must clear pending_info=0, got ${pendingRow?.pending_info}`);
 });
