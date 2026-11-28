@@ -10286,31 +10286,41 @@ int32_t sts_exec_replace(
 }
 
 #ifdef _WIN32
+#define WIN_VS_INIT 0L
+#define WIN_VS_SUBMITTING 1L
+#define WIN_VS_CANCELLED 2L
+
 typedef struct win_verified_send_ctx {
     volatile LONG refs;
-    volatile LONG cancelled;
+    volatile LONG state;
     volatile LONG result;
-    CRITICAL_SECTION lock;
     wchar_t *wpath;
     uint8_t *buf;
     int64_t len;
     int32_t expected_pid;
     ULONGLONG deadline_ms;
-    HANDLE h;
+    PVOID volatile h;
     HANDLE io_ev;
+    HANDLE cancel_ev;
     HANDLE done_ev;
     OVERLAPPED ov;
 } win_verified_send_ctx_t;
 
 static void win_verified_send_ctx_release(win_verified_send_ctx_t *ctx) {
     if (InterlockedDecrement(&ctx->refs) == 0) {
+        HANDLE h = (HANDLE)ctx->h;
+        if (h != NULL && h != INVALID_HANDLE_VALUE) {
+            CloseHandle(h);
+        }
         if (ctx->io_ev != NULL) {
             CloseHandle(ctx->io_ev);
+        }
+        if (ctx->cancel_ev != NULL) {
+            CloseHandle(ctx->cancel_ev);
         }
         if (ctx->done_ev != NULL) {
             CloseHandle(ctx->done_ev);
         }
-        DeleteCriticalSection(&ctx->lock);
         free(ctx->wpath);
         free(ctx->buf);
         free(ctx);
@@ -10320,7 +10330,8 @@ static void win_verified_send_ctx_release(win_verified_send_ctx_t *ctx) {
 static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
     win_verified_send_ctx_t *ctx = (win_verified_send_ctx_t *)arg;
     LONG rc = -1;
-    if (InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
+    if (InterlockedCompareExchange(&ctx->state, WIN_VS_INIT, WIN_VS_INIT) == WIN_VS_CANCELLED
+        || GetTickCount64() >= ctx->deadline_ms) {
         goto done;
     }
     HANDLE h = CreateFileW(
@@ -10334,82 +10345,69 @@ static DWORD WINAPI win_verified_send_worker(LPVOID arg) {
     if (h == INVALID_HANDLE_VALUE) {
         goto done;
     }
-    EnterCriticalSection(&ctx->lock);
-    if (ctx->cancelled != 0 || GetTickCount64() >= ctx->deadline_ms) {
-        LeaveCriticalSection(&ctx->lock);
-        CloseHandle(h);
-        goto done;
-    }
-    ctx->h = h;
-    LeaveCriticalSection(&ctx->lock);
-
     ULONG server_pid = 0;
     if (!GetNamedPipeServerProcessId(h, &server_pid) || (int32_t)server_pid != ctx->expected_pid) {
+        CloseHandle(h);
         rc = -2;
-        goto close_h;
+        goto done;
     }
+    /* Publish handle; owned by refcount and closed only when refs drops to 0. */
+    (void)InterlockedExchangePointer(&ctx->h, (PVOID)h);
 
     int64_t off = 0;
     while (off < ctx->len) {
+        if (InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_INIT) != WIN_VS_INIT) {
+            rc = -1;
+            goto done;
+        }
+        ULONGLONG now_ms = GetTickCount64();
+        if (now_ms >= ctx->deadline_ms) {
+            rc = -1;
+            goto done;
+        }
+        ULONGLONG rem64 = ctx->deadline_ms - now_ms;
+        DWORD rem = (rem64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (DWORD)rem64;
         DWORD chunk = (ctx->len - off > 65536) ? 65536U : (DWORD)(ctx->len - off);
         (void)ResetEvent(ctx->io_ev);
         ZeroMemory(&ctx->ov, sizeof(ctx->ov));
         ctx->ov.hEvent = ctx->io_ev;
         DWORD written = 0;
-        BOOL ok = FALSE;
-        DWORD werr = 0;
-        ULONGLONG rem64 = 0;
-        /* R31 P1-1: Serialize cancellation/deadline check with non-blocking overlapped WriteFile
-           submission under ctx->lock so caller timeout + CancelIoEx(ctx->h, NULL) has a total
-           order with every IRP submission (never submits after cancel; never misses an IRP). */
-        EnterCriticalSection(&ctx->lock);
-        ULONGLONG now_ms = GetTickCount64();
-        if (ctx->cancelled != 0 || now_ms >= ctx->deadline_ms) {
-            LeaveCriticalSection(&ctx->lock);
-            rc = -1;
-            goto close_h;
-        }
-        rem64 = ctx->deadline_ms - now_ms;
-        ok = WriteFile(h, ctx->buf + off, chunk, &written, &ctx->ov);
-        werr = ok ? 0U : GetLastError();
-        LeaveCriticalSection(&ctx->lock);
-
+        BOOL ok = WriteFile(h, ctx->buf + off, chunk, &written, &ctx->ov);
         if (!ok) {
-            if (werr != ERROR_IO_PENDING) {
+            if (GetLastError() != ERROR_IO_PENDING) {
                 rc = -1;
-                goto close_h;
+                goto done;
             }
-            DWORD rem = (rem64 > 0xFFFFFFFFULL) ? 0xFFFFFFFFU : (DWORD)rem64;
-            DWORD wrc = WaitForSingleObject(ctx->io_ev, rem);
-            if (wrc != WAIT_OBJECT_0 || InterlockedCompareExchange(&ctx->cancelled, 0, 0) != 0) {
+            HANDLE waits[2] = { ctx->io_ev, ctx->cancel_ev };
+            DWORD wrc = WaitForMultipleObjects(2, waits, FALSE, rem);
+            if (wrc != WAIT_OBJECT_0
+                || InterlockedCompareExchange(&ctx->state, WIN_VS_SUBMITTING, WIN_VS_SUBMITTING) == WIN_VS_CANCELLED) {
                 (void)CancelIoEx(h, &ctx->ov);
                 DWORD dummy = 0;
                 (void)GetOverlappedResult(h, &ctx->ov, &dummy, TRUE);
                 rc = -1;
-                goto close_h;
+                goto done;
             }
             if (!GetOverlappedResult(h, &ctx->ov, &written, FALSE) || written == 0) {
                 rc = -1;
-                goto close_h;
+                goto done;
             }
         } else if (written == 0) {
             rc = -1;
-            goto close_h;
+            goto done;
         }
         off += (int64_t)written;
+        if (off < ctx->len) {
+            if (InterlockedCompareExchange(&ctx->state, WIN_VS_INIT, WIN_VS_SUBMITTING) != WIN_VS_SUBMITTING) {
+                rc = -1;
+                goto done;
+            }
+        }
     }
     rc = 0;
 
-close_h:
-    EnterCriticalSection(&ctx->lock);
-    HANDLE to_close = ctx->h;
-    ctx->h = INVALID_HANDLE_VALUE;
-    LeaveCriticalSection(&ctx->lock);
-    if (to_close != INVALID_HANDLE_VALUE) {
-        CloseHandle(to_close);
-    }
 done:
-    InterlockedExchange(&ctx->result, rc);
+    (void)InterlockedExchange(&ctx->result, rc);
     (void)SetEvent(ctx->done_ev);
     win_verified_send_ctx_release(ctx);
     return 0;
@@ -10448,18 +10446,18 @@ int32_t sts_runner_sock_send_verified(
         return -1;
     }
     ctx->refs = 2; /* 1 for caller, 1 for worker */
-    ctx->cancelled = 0;
+    ctx->state = WIN_VS_INIT;
     ctx->result = -1;
-    InitializeCriticalSection(&ctx->lock);
     ctx->wpath = wpath;
     ctx->buf = buf;
     ctx->len = len;
     ctx->expected_pid = expected_pid;
     ctx->deadline_ms = deadline_ms;
-    ctx->h = INVALID_HANDLE_VALUE;
+    ctx->h = NULL;
     ctx->io_ev = CreateEventW(NULL, TRUE, FALSE, NULL);
+    ctx->cancel_ev = CreateEventW(NULL, TRUE, FALSE, NULL);
     ctx->done_ev = CreateEventW(NULL, TRUE, FALSE, NULL);
-    if (ctx->io_ev == NULL || ctx->done_ev == NULL) {
+    if (ctx->io_ev == NULL || ctx->cancel_ev == NULL || ctx->done_ev == NULL) {
         ctx->refs = 1;
         win_verified_send_ctx_release(ctx);
         return -1;
@@ -10482,12 +10480,13 @@ int32_t sts_runner_sock_send_verified(
         win_verified_send_ctx_release(ctx);
         return rc;
     }
-    EnterCriticalSection(&ctx->lock);
-    InterlockedExchange(&ctx->cancelled, 1);
-    if (ctx->h != INVALID_HANDLE_VALUE) {
-        (void)CancelIoEx(ctx->h, NULL);
+    /* Wait-free timeout cancellation: never blocks on worker state or handle close. */
+    (void)InterlockedExchange(&ctx->state, WIN_VS_CANCELLED);
+    (void)SetEvent(ctx->cancel_ev);
+    HANDLE ch = (HANDLE)InterlockedCompareExchangePointer(&ctx->h, NULL, NULL);
+    if (ch != NULL && ch != INVALID_HANDLE_VALUE) {
+        (void)CancelIoEx(ch, NULL);
     }
-    LeaveCriticalSection(&ctx->lock);
     win_verified_send_ctx_release(ctx);
     return -1;
 #else
