@@ -568,6 +568,87 @@ pub fn AccountRefreshCoordinator::upsert_account_cas_k(
   )
 }
 
+/// Asynchronous CAS rollback of a just-persisted `(sub, expected_session, expected_refresh)` entry
+/// when an in-flight `auth.complete` is cancelled or superseded by a newer `auth.begin`/`auth.cancel`
+/// while `write_accounts_k` was in flight:
+/// - Acquires both in-process dir lock and cross-process file lock.
+/// - Re-reads latest disk `accounts`; removes `sub` ONLY if BOTH `disk_sessions[sub] == expected_session`
+///   AND `disk_list[idx].refresh == expected_refresh` so a newer login/rotation for `sub` is NEVER clobbered.
+/// - Preserves all sibling accounts verbatim.
+pub fn AccountRefreshCoordinator::rollback_account_cas_k(
+  self : AccountRefreshCoordinator,
+  read_accounts_k : ((HostStorageRead) -> Unit) -> Unit,
+  write_accounts_k : (base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit,
+  sub : String,
+  expected_session : String,
+  expected_refresh : String,
+  k : (Result[Bool, String]) -> Unit,
+) -> Unit {
+  if sub.length() == 0 {
+    k(Ok(false))
+    return
+  }
+  self.with_accounts_locks_k(
+    fn(lk : (effect::Exit[Result[Bool, String]]) -> Unit) -> Unit {
+      read_accounts_k(fn(rd : HostStorageRead) -> Unit {
+        match rd {
+          HostStorageRead::ReadError(reason) => {
+            lk(effect::Exit::Succeeded(Err("accounts disk read failed: " + reason)))
+          }
+          HostStorageRead::Absent => {
+            lk(effect::Exit::Succeeded(Ok(false)))
+          }
+          HostStorageRead::Found(doc) => {
+            let disk_sessions = parse_stored_account_sessions(doc)
+            match parse_stored_accounts_strict(doc) {
+              None => {
+                lk(effect::Exit::Succeeded(Err("accounts disk invalid json")))
+              }
+              Some(disk_list) => {
+                let idx = find_stored_idx(disk_list, sub)
+                if idx < 0 {
+                  lk(effect::Exit::Succeeded(Ok(false)))
+                  return
+                }
+                let cur = disk_list[idx]
+                let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
+                if disk_sid != expected_session || cur.refresh != expected_refresh {
+                  lk(effect::Exit::Succeeded(Ok(false)))
+                  return
+                }
+                let next_list : Array[views::StoredAccount] = []
+                for i in 0..<disk_list.length() {
+                  if i != idx {
+                    next_list.push(disk_list[i])
+                  }
+                }
+                disk_sessions.remove(sub)
+                let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
+                write_accounts_k(encoded, fn(wres : Result[Unit, String]) -> Unit {
+                  match wres {
+                    Ok(_) => lk(effect::Exit::Succeeded(Ok(true)))
+                    Err(e) => lk(effect::Exit::Succeeded(Err(e)))
+                  }
+                })
+              }
+            }
+          }
+        }
+      })
+    },
+    fn(lock_err : String) -> Result[Bool, String] {
+      Err(lock_err)
+    },
+    fn(ex : effect::Exit[Result[Bool, String]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(r) => k(r)
+        effect::Exit::Failed(e) => k(Err(ma_effect_err_msg(e)))
+        effect::Exit::Interrupted => k(Err("interrupted"))
+      }
+    },
+  )
+}
+
 /// Run the complete TS `accounts.ts`-aligned refresh flow for `(sub, expected_session, expected_refresh)`.
 pub fn AccountRefreshCoordinator::refresh_k(
   self : AccountRefreshCoordinator,

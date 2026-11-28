@@ -598,12 +598,14 @@ fn notice_kind_enabled_rtv(kinds : NotifyKindsInput, kind : String, in_front : B
 
 /// Project `notify` topic (`NotifyView`, `shapes/prefs.ts` & `client/core-ts/src/attention.ts`):
 /// reads real workspaces from SQLite `workspace` table, computes per-workspace `on` vs `muted`,
+/// filters both `workspaces` and `muted` (and `show`) by `allow_workspace` when provided,
 /// and filters `show` notices according to `on`, `kinds`, `muted`, `in_front`, and `preview`.
 pub fn project_notify(
   db : sql::Sql,
   state : NotifyStateInput,
   pending_notices : Array[NoticeItemInput],
   lang : String = "zh",
+  allow_workspace : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   let ws_rows = match store::list_workspaces(db) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
@@ -612,6 +614,13 @@ pub fn project_notify(
   let ws_out : Array[base_codec::Json] = []
   for i in 0..<ws_rows.length() {
     let r = ws_rows[i]
+    let ws_ok = match allow_workspace {
+      Some(pred) => pred(r.id)
+      None => true
+    }
+    if !ws_ok {
+      continue
+    }
     let j = parse_json_or_null(r.json)
     let nm = match j_opt_str(j, "name") {
       Some(s) => if s.length() > 0 { s } else { r.id }
@@ -629,13 +638,27 @@ pub fn project_notify(
 
   let muted_j : Array[base_codec::Json] = []
   for i in 0..<state.muted.length() {
-    muted_j.push(base_codec::json_str(state.muted[i]))
+    let wid = state.muted[i]
+    let wid_ok = match allow_workspace {
+      Some(pred) => pred(wid)
+      None => true
+    }
+    if wid_ok {
+      muted_j.push(base_codec::json_str(wid))
+    }
   }
 
   let show_out : Array[base_codec::Json] = []
   if state.on {
     for i in 0..<pending_notices.length() {
       let n = pending_notices[i]
+      let n_ok = match allow_workspace {
+        Some(pred) => pred(n.workspace)
+        None => true
+      }
+      if !n_ok {
+        continue
+      }
       if str_in_rtv(state.muted, n.workspace) {
         continue
       }

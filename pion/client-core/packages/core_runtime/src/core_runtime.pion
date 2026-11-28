@@ -20,6 +20,7 @@ extern "C" fn pion_core_utc_offset_min(ms : Int64) -> Int
 extern "C" fn pion_core_log_warn(msg : Ptr, len : Int64) -> Unit
 extern "C" fn pion_core_dir_lock_try(dir : Ptr, dir_len : Int64) -> Int64
 extern "C" fn pion_core_dir_lock_release(handle : Int64) -> Unit
+extern "C" fn pion_core_dir_lock_release_all() -> Unit
 
 struct AccountInfo {
   sub : String
@@ -335,6 +336,10 @@ fn drain_and_emit(sess : RuntimeSession) -> Option[Int64] {
     for i in 0..<evs.length() {
       if sess.core.account_epoch != captured_epoch || sess.core.membership.is_unauthenticated() || sess.core.membership.is_session_invalidated() {
         break
+      }
+      let ev_st = sync::core_event_station(evs[i])
+      if ev_st.length() > 0 && !sess.core.can_read_station(ev_st) {
+        continue
       }
       match evs[i] {
         sync::CoreEvent::ConnectionChanged(st, state) => {
@@ -1340,39 +1345,23 @@ fn runtime_refresh_account_token(
         persist_accounts=false,
       )
       sync_mem_accounts_from_list(sess, remaining_accts, remaining_sessions)
-      if invalidated && remaining_accts.length() == 0 {
-        // Last account removed: immediately switch ALL holders back to a clean unauthenticated `:memory:` DB
-        // so 0 cached data can leak even BEFORE process restart, and allow fresh same-process sign-in!
+      if invalidated && (was_active_sub || remaining_accts.length() == 0) {
+        // Active account (or last account) permanently invalidated on 401:
+        // ALWAYS switch ALL holders back to a clean unauthenticated `:memory:` DB
+        // even when sibling accounts remain, so 0 cached data / `notify` rows can leak
+        // AND the user can immediately sign in as a sibling or re-login without `account_sub_mismatch`!
         runtime_switch_to_unauth_memory_db(sess)
-        emit_topic_refresh(sess, "accounts")
-        emit_topic_refresh(sess, "workspaces")
-        emit_topic_refresh(sess, "workspace")
-        emit_topic_refresh(sess, "stations")
-        emit_topic_refresh(sess, "chats")
-      } else if invalidated && was_active_sub {
         let _ = store::put_account_doc(
           sess.db,
           "accounts",
           base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
         )
-        sess.login_gen += 1L
-        let _ = bump_runtime_session_gen(sess)
-        sess.bearer_gen += 1L
-        sess.live_sync_enabled = false
-        clear_runtime_ephemeral_caches(sess)
-        match sess.cloud {
-          Some(cs) => {
-            cs.clear_all_credentials()
-            cs.clear_token()
-            cs.stop()
-          }
-          None => ()
-        }
         emit_topic_refresh(sess, "accounts")
         emit_topic_refresh(sess, "workspaces")
         emit_topic_refresh(sess, "workspace")
         emit_topic_refresh(sess, "stations")
         emit_topic_refresh(sess, "chats")
+        emit_topic_refresh(sess, "notify")
       } else if invalidated {
         let _ = store::put_account_doc(
           sess.db,
@@ -2624,7 +2613,20 @@ fn finish_verified_auth_complete_k(
               })
               let (out_j, out_b) = protocol::encode_core_event(ev)
               emit_wire(out_j, payload=out_b)
-              done()
+              // Async CAS rollback of the just-persisted `(sub, session_id, refresh)` entry
+              // so disk and memory cannot split if `auth.cancel` / `auth.begin` raced with `storage.set`!
+              sess.refresh_coord.rollback_account_cas_k(
+                fn(rk : (sync::HostStorageRead) -> Unit) -> Unit {
+                  read_storage_json_state_k(sess.sh, "accounts", rk)
+                },
+                fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+                  write_storage_json_k(sess.sh, "accounts", doc, wk)
+                },
+                new_stored.sub,
+                session_id,
+                new_stored.refresh,
+                fn(_ : Result[Bool, String]) -> Unit { done() },
+              )
               return
             }
             // Step 3: Commit runtime state atomically BEFORE firing auth boundary!
@@ -2697,6 +2699,7 @@ fn finish_verified_auth_complete_k(
             emit_wire(out_j, payload=out_b)
             emit_topic_refresh(sess, "accounts")
             emit_topic_refresh(sess, "workspaces")
+            emit_topic_refresh(sess, "notify")
             done()
           }
         }
@@ -3199,6 +3202,11 @@ pub extern "C" fn pion_core_runtime_send(
           }
         }
         protocol::CoreRequest::Call(id, call_name, params, _) => {
+          if call_name == "auth.begin" || call_name == "auth.cancel" {
+            // Unify `login_gen` lifecycle: every new `auth.begin` or `auth.cancel` immediately
+            // invalidates any in-flight `auth.complete` (token exchange, DB staging, or accounts write)!
+            sess.login_gen += 1L
+          }
           if call_name == "cloud.sync" {
             handle_cloud_sync_call(sess, id, params)
             let _ = drain_and_emit(sess)
@@ -3549,4 +3557,5 @@ pub extern "C" fn pion_core_runtime_stop() -> Unit {
     }
     None => ()
   }
+  pion_core_dir_lock_release_all()
 }

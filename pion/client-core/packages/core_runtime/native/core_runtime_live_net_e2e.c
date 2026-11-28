@@ -137,6 +137,8 @@ typedef struct fake_server {
     int shutdown;
     int sse_push_ready;
     char pending_sse_event[1024];
+    int slow_token_entered;
+    int slow_token_release;
     _Atomic int drop_ws2_in_me;
     _Atomic int got_me;
     _Atomic int got_ws;
@@ -268,7 +270,21 @@ static void *handle_client_thread(void *arg) {
         assert(strstr(body, "\"code_verifier\":\"") != NULL);
         assert(strstr(body, "\"redirect_uri\":\"stillfail://auth/callback\"") != NULL);
         atomic_fetch_add(&g_srv.got_auth_token, 1);
-        if (strstr(body, "\"code\":\"live_oauth_code_bob\"") != NULL) {
+        if (strstr(body, "\"code\":\"live_oauth_code_slow_cancel\"") != NULL) {
+            pthread_mutex_lock(&g_srv.mu);
+            g_srv.slow_token_entered = 1;
+            pthread_cond_broadcast(&g_srv.cv);
+            while (!g_srv.slow_token_release && !g_srv.shutdown) {
+                pthread_cond_wait(&g_srv.cv, &g_srv.mu);
+            }
+            pthread_mutex_unlock(&g_srv.mu);
+            send_http_json(
+                fd,
+                200,
+                "OK",
+                "{\"access_token\":\"acc-slow-1\",\"refresh_token\":\"ref-slow-1\","
+                "\"subject\":\"u-slow\",\"email\":\"slow@still.fail\",\"name\":\"Slow\",\"expires_at\":1900000000}");
+        } else if (strstr(body, "\"code\":\"live_oauth_code_bob\"") != NULL) {
             send_http_json(
                 fd,
                 200,
@@ -595,9 +611,12 @@ int main(void) {
     char *m_thread_back = wait_for_matching_msg(&g_host, "\"id\":204,", "hello over real rust shell", 10);
     printf("[live_net_e2e] Phase 4 persisted chat -> %s\n", m_thread_back);
 
-    // Register a private download for Alice before Phase 5 401 logout to verify 0 download registry leakage to Bob!
+    // Register a private download + muted workspace preference for Alice before Phase 5 401 logout
+    // to verify 0 download/notify/outbox leakage to Bob!
     send_json("{\"id\":2041,\"call\":\"download.join\",\"params\":{\"reader\":\"dl-alice-live\",\"fileKey\":\"alice-private-doc.pdf\",\"name\":\"alice-private-doc.pdf\",\"start\":0,\"end\":4096}}");
     wait_for_matching_msg(&g_host, "\"id\":2041,", "\"ok\"", 10);
+    send_json("{\"id\":2042,\"call\":\"notify.set\",\"params\":{\"muted\":[\"" WS1_ID "\"]}}");
+    wait_for_matching_msg(&g_host, "\"id\":2042,", "\"ok\"", 10);
 
     // ── PHASE 5: Permanent 401 refresh removes the last account — immediate unauth `:memory:` switch BEFORE restart! ──
     printf("[live_net_e2e] Phase 5: triggering permanent 401 auth.refresh\n");
@@ -621,6 +640,10 @@ int main(void) {
     send_json("{\"id\":211,\"subscribe\":{\"topic\":\"downloads\"},\"keyed\":true}");
     char *m_immed_dl = wait_for_matching_msg(&g_host, "\"id\":211,", "\"value\"", 10);
     assert(strstr(m_immed_dl, "alice-private-doc.pdf") == NULL);
+    send_json("{\"id\":2111,\"subscribe\":{\"topic\":\"notify\"},\"keyed\":true}");
+    char *m_immed_notify = wait_for_matching_msg(&g_host, "\"id\":2111,", "\"value\"", 10);
+    assert(strstr(m_immed_notify, "\"workspaces\":[]") != NULL && strstr(m_immed_notify, "\"muted\":[]") != NULL);
+    assert(strstr(m_immed_notify, WS1_ID) == NULL && strstr(m_immed_notify, "Live Workspace") == NULL);
 
     // Same-process direct switch to Bob right after Alice's 401 logout (WITHOUT restarting):
     // Verify 0 Alice downloads and 0 Alice outbound entry frames leak to Bob!
@@ -645,6 +668,9 @@ int main(void) {
     send_json("{\"id\":214,\"subscribe\":{\"topic\":\"downloads\"},\"keyed\":true}");
     char *m_bob_dl = wait_for_matching_msg(&g_host, "\"id\":214,", "\"value\"", 10);
     assert(strstr(m_bob_dl, "alice-private-doc.pdf") == NULL);
+    send_json("{\"id\":2141,\"subscribe\":{\"topic\":\"notify\"},\"keyed\":true}");
+    char *m_bob_notify = wait_for_matching_msg(&g_host, "\"id\":2141,", "\"value\"", 10);
+    assert(strstr(m_bob_notify, "\"muted\":[]") != NULL && strstr(m_bob_notify, WS1_ID) == NULL);
     // Log Bob back out with 401 before Phase 6 unauthenticated restart!
     send_json("{\"id\":215,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-bob\"}}");
     wait_for_matching_msg(&g_host, "\"id\":215,", "\"error\"", 10);
@@ -671,6 +697,55 @@ int main(void) {
     send_json("{\"id\":303,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
     wait_for_matching_msg(&g_host, "\"id\":303,", "unauthenticated", 10);
     assert(!file_exists(default_db_path));
+
+    // Phase 6b (R4 Item 2): In-flight `auth.complete` interrupted by `auth.cancel` MUST NOT install login!
+    {
+        char slow_db_path[256];
+        snprintf(slow_db_path, sizeof(slow_db_path), "%s/databases/account-u-slow.db", data_dir);
+        pthread_mutex_lock(&g_srv.mu);
+        g_srv.slow_token_entered = 0;
+        g_srv.slow_token_release = 0;
+        pthread_mutex_unlock(&g_srv.mu);
+
+        send_json("{\"id\":304,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
+        char *m_slow_b = wait_for_matching_msg(&g_host, "\"id\":304,", "\"state\":\"", 10);
+        const char *ssp = strstr(m_slow_b, "\"state\":\"");
+        assert(ssp != NULL);
+        ssp += 9;
+        char slow_state[128];
+        size_t ssi = 0;
+        while (ssp[ssi] != '\0' && ssp[ssi] != '"' && ssi + 1 < sizeof(slow_state)) {
+            slow_state[ssi] = ssp[ssi];
+            ssi++;
+        }
+        slow_state[ssi] = '\0';
+        char slow_complete[512];
+        snprintf(slow_complete, sizeof(slow_complete),
+                 "{\"id\":305,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_slow_cancel\"}}",
+                 slow_state);
+        send_json(slow_complete);
+
+        // Wait until the real HTTP server has received `/v1/auth/token`, then send `auth.cancel` while in flight!
+        pthread_mutex_lock(&g_srv.mu);
+        while (!g_srv.slow_token_entered) {
+            pthread_cond_wait(&g_srv.cv, &g_srv.mu);
+        }
+        pthread_mutex_unlock(&g_srv.mu);
+
+        send_json("{\"id\":306,\"call\":\"auth.cancel\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":306,", "\"ok\":", 10);
+
+        pthread_mutex_lock(&g_srv.mu);
+        g_srv.slow_token_release = 1;
+        pthread_cond_broadcast(&g_srv.cv);
+        pthread_mutex_unlock(&g_srv.mu);
+
+        char *m_slow_err = wait_for_matching_msg(&g_host, "\"id\":305,", "login_expired", 10);
+        printf("[live_net_e2e] Phase 6b in-flight auth.cancel -> %s\n", m_slow_err);
+        assert(!file_exists(slow_db_path));
+        send_json("{\"id\":307,\"call\":\"workspaces.list\",\"params\":{}}");
+        wait_for_matching_msg(&g_host, "\"id\":307,", "\"workspaces\":[]", 10);
+    }
 
     // ── PHASE 7: Same-process sign-in with ANOTHER account (`u-bob`) -> 401 logout -> same-process re-login as `u-live`! ──
     printf("[live_net_e2e] Phase 7: same-process account switch via 401 logout + re-login\n");

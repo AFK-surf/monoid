@@ -1544,6 +1544,18 @@ pub fn ClientCore::clear_account_scoped_runtime_state(self : ClientCore) -> Unit
   self.status_downs.clear()
   self.status_db_notes.clear()
   self.notices_held.clear()
+  self.notify_on = true
+  self.notify_asked = false
+  self.notify_push = true
+  self.notify_preview = true
+  self.notify_muted.clear()
+  self.notify_kinds = views::NotifyKindsInput::{
+    wait: true,
+    failed: true,
+    done: "away",
+    message: true,
+    billed: true,
+  }
   self.lock_pairing_prompts.clear()
   self.vault_key_asks.clear()
   self.lock_pending.items.clear()
@@ -1631,7 +1643,7 @@ pub fn ClientCore::switch_account_db(
     Err(msg) => return Err(msg)
     Ok(_) => ()
   }
-  let _ = self.retry_pending_purges()
+  let _ = self.retry_pending_purges(emit_boundary=emit_auth_boundary)
   self.restore_lock_state()
   self.restore_notify_state()
   if emit_auth_boundary {
@@ -2099,7 +2111,13 @@ fn ClientCore::purge_workspace_memory(self : ClientCore, ws : String, stations :
 /// Internal synchronous single-tx `drop_workspace` executed ONLY while `in_commit_guard` is held.
 /// Zero host I/O! Atomically commits ALL DDL deletes + `revoked` + cleared `pending_purges` +
 /// `completed_purge_gen` + `station_bindings` inside ONE `Burst::in_tx` transaction.
-fn ClientCore::drop_workspace_locked(self : ClientCore, ws : String) -> Result[Array[String], String] {
+/// Pass `emit_boundary=false` during staged DB installation so internal `auth` generations advance
+/// silently until the final `auth.bump_all()` publishes the single consistent boundary.
+fn ClientCore::drop_workspace_locked(
+  self : ClientCore,
+  ws : String,
+  emit_boundary : Bool = true,
+) -> Result[Array[String], String] {
   let stations = self.collect_stations_to_purge(ws)
   let snap = self.membership.snapshot_for_tx()
   let op_gen = self.membership.latch_purge(ws, stations)
@@ -2108,7 +2126,7 @@ fn ClientCore::drop_workspace_locked(self : ClientCore, ws : String) -> Result[A
   self.purge_workspace_memory(ws, stations)
   let _ = self.membership.bump_cred_epoch(ws)
   self.membership.clear_role(ws)
-  let _ = self.auth.bump_workspace_and_vault(ws)
+  let _ = self.auth.bump_workspace_and_vault(ws, emit=emit_boundary)
 
   let opt_tables = match detect_existing_optional_tables(self.db) {
     sql::SqlResult::Ok(ts) => ts
@@ -2162,7 +2180,11 @@ fn ClientCore::drop_workspace_locked(self : ClientCore, ws : String) -> Result[A
 ///   `station_bindings` in ONE SQLite `Burst::in_tx` transaction.
 /// - ONLY AFTER releasing the guard: enqueues non-blocking async host mirror (`device/pending_purges/<sub >`)
 ///   and fires `on_workspace_dropped`.
-pub fn ClientCore::drop_workspace(self : ClientCore, ws : String) -> Result[Unit, String] {
+pub fn ClientCore::drop_workspace(
+  self : ClientCore,
+  ws : String,
+  emit_boundary : Bool = true,
+) -> Result[Unit, String] {
   if ws.length() == 0 {
     return Ok(())
   }
@@ -2171,7 +2193,7 @@ pub fn ClientCore::drop_workspace(self : ClientCore, ws : String) -> Result[Unit
     Ok(_) => ()
   }
   let stations_hint = self.collect_stations_to_purge(ws)
-  let res = self.drop_workspace_locked(ws)
+  let res = self.drop_workspace_locked(ws, emit_boundary=emit_boundary)
   self.membership.leave_commit_guard()
   // Asynchronous host mirror & runtime callbacks run strictly OUTSIDE the commit critical section!
   self.membership.enqueue_host_pending_purges_sync()
@@ -2194,12 +2216,15 @@ pub fn ClientCore::drop_workspace(self : ClientCore, ws : String) -> Result[Unit
 }
 
 /// Retry all persisted `(account_sub, ws)` pending purges on startup or before Cloud sync.
-pub fn ClientCore::retry_pending_purges(self : ClientCore) -> Result[Int, String] {
+pub fn ClientCore::retry_pending_purges(
+  self : ClientCore,
+  emit_boundary : Bool = true,
+) -> Result[Int, String] {
   let pending = self.membership.pending_purge_workspaces()
   let mut cleared = 0
   let mut first_err : Option[String] = None
   for i in 0..<pending.length() {
-    match self.drop_workspace(pending[i]) {
+    match self.drop_workspace(pending[i], emit_boundary=emit_boundary) {
       Ok(_) => { cleared += 1 }
       Err(msg) => {
         if first_err.is_none() {
@@ -3933,13 +3958,41 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     return Some(protocol::CoreEvent::Value(id, j, None))
   }
   if topic.name == "notify" {
+    if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() {
+      let empty_state = views::NotifyStateInput::{
+        on: self.notify_on,
+        asked: self.notify_asked,
+        push: self.notify_push,
+        kinds: self.notify_kinds,
+        preview: self.notify_preview,
+        muted: [],
+        permission: self.notify_permission,
+        in_front: self.notify_in_front,
+      }
+      match views::project_notify(
+        self.db,
+        empty_state,
+        [],
+        lang=self.lang,
+        allow_workspace=Some(fn(_w : String) -> Bool { false }),
+      ) {
+        sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
+        sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
+      }
+    }
     let filt_notices : Array[views::NoticeItemInput] = []
     for i in 0..<self.notices_held.length() {
       if self.can_read_workspace(self.notices_held[i].workspace) {
         filt_notices.push(self.notices_held[i])
       }
     }
-    match views::project_notify(self.db, self.current_notify_state(), filt_notices, lang=self.lang) {
+    match views::project_notify(
+      self.db,
+      self.current_notify_state(),
+      filt_notices,
+      lang=self.lang,
+      allow_workspace=Some(fn(w : String) -> Bool { self.can_read_workspace(w) }),
+    ) {
       sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Value(id, j, None))
       sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
     }
@@ -4033,8 +4086,9 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
       self.chat_row_dest_ws.remove(id)
     }
     // Authorize BOTH source station AND moved destination station!
+    // Emit `Value(Json::Null)` (not `Waiting`) so `client.mbt` immediately clears any previously held row.
     if !self.can_read_station(st) || !self.can_read_station(final_st) {
-      return Some(protocol::CoreEvent::Waiting(id))
+      return Some(protocol::CoreEvent::Value(id, base_codec::json_null(), None))
     }
     let briefs = self.station_briefs_for_scope(dest_ws)
     match views::project_chat_row(
@@ -5185,13 +5239,23 @@ fn ClientCore::handle_lock_event_for_workspace(
 }
 
 /// Drain strongly typed `CoreEvent`s for the UI render thread (zero serialization).
-/// Never emits queued events while unauthenticated or session-invalidated.
+/// Never emits queued events while unauthenticated, session-invalidated, or for any
+/// station/workspace whose authorization was revoked before delivery.
 pub fn ClientCore::drain_frame(self : ClientCore, most : Option[Int] = None) -> Array[CoreEvent] {
   if self.membership.is_unauthenticated() || self.membership.is_session_invalidated() {
     self.outbox.clear()
     return []
   }
-  self.outbox.take(most=most)
+  let raw = self.outbox.take(most=most)
+  let out : Array[CoreEvent] = []
+  for i in 0..<raw.length() {
+    let ev = raw[i]
+    let st = core_event_station(ev)
+    if st.length() == 0 || self.can_read_station(st) {
+      out.push(ev)
+    }
+  }
+  out
 }
 
 // ── Thin JSON `core_api.h` protocol adapter ──
@@ -6605,7 +6669,19 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
           ("muted", base_codec::json_arr(muted_j)),
         ])
         let _ = store::put_account_doc(self.db, "notify", base_codec::json_stringify(persist_j))
-        match views::project_notify(self.db, self.current_notify_state(), self.notices_held, lang=self.lang) {
+        let filt_notices : Array[views::NoticeItemInput] = []
+        for i in 0..<self.notices_held.length() {
+          if self.can_read_workspace(self.notices_held[i].workspace) {
+            filt_notices.push(self.notices_held[i])
+          }
+        }
+        match views::project_notify(
+          self.db,
+          self.current_notify_state(),
+          filt_notices,
+          lang=self.lang,
+          allow_workspace=Some(fn(w : String) -> Bool { self.can_read_workspace(w) }),
+        ) {
           sql::SqlResult::Ok(j) => return Some(protocol::CoreEvent::Ok(id, j, None))
           sql::SqlResult::Err(e) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "sql_error", message: e.to_string() }))
         }

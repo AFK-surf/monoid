@@ -643,7 +643,22 @@ int main(void) {
     assert(strstr(m->json, "\"id\":59") != NULL && strstr(m->json, "\"error\"") != NULL);
     assert(strstr(m->json, "UNVERIFIED_XSS_LEAK") == NULL);
 
-    mb_core_stop();
+    // 7a. Stop-time managed dir-lock leak guard: acquire dir lock while core is running WITHOUT
+    //     calling release, trigger `mb_core_stop()`, and assert next `pion_core_dir_lock_try`
+    //     immediately succeeds (plus safe idempotent release of old leaked_fd)!
+    {
+        int64_t dlen = (int64_t)strlen(data_dir);
+        int64_t leaked_fd = pion_core_dir_lock_try(data_dir, dlen);
+        assert(leaked_fd >= 0);
+        assert(pion_core_dir_lock_try(data_dir, dlen) == -1);
+        mb_core_stop();
+        int64_t reacq_fd = pion_core_dir_lock_try(data_dir, dlen);
+        assert(reacq_fd >= 0);
+        pion_core_dir_lock_release(leaked_fd); // safe no-op (already removed on stop, must not close reacq_fd!)
+        assert(pion_core_dir_lock_try(data_dir, dlen) == -1); // reacq_fd still held!
+        pion_core_dir_lock_release(reacq_fd);
+        printf("[core_runtime_e2e] stop-time dir_lock_release_all leak guard OK\n");
+    }
 
     // 7b. Cross-process `fork()` + dual-fd mutual exclusion check on `pion_core_dir_lock_try` / `release`!
     {

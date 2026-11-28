@@ -28,6 +28,31 @@
 // - returns handle/fd >= 0 on success
 // - returns -1 if currently held by another process or open file description (contended)
 // - returns -2 on I/O or invalid path error
+// All open handles are tracked in a mutex-protected registry so `pion_core_dir_lock_release_all()`
+// unconditionally releases every held handle during `mb_core_stop()` / `pion_core_runtime_stop()`
+// even if an in-flight Pion continuation was dropped mid-operation.
+#define MAX_OPEN_DIR_LOCKS 32
+static pthread_mutex_t g_dir_lock_mu = PTHREAD_MUTEX_INITIALIZER;
+static int64_t g_open_dir_locks[MAX_OPEN_DIR_LOCKS];
+static int g_open_dir_lock_count = 0;
+
+static void dir_lock_close_raw(int64_t handle) {
+    if (handle < 0) {
+        return;
+    }
+#ifdef _WIN32
+    HANDLE h = (HANDLE)(intptr_t)handle;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof(ov));
+    (void)UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
+    (void)CloseHandle(h);
+#else
+    int fd = (int)handle;
+    (void)flock(fd, LOCK_UN);
+    (void)close(fd);
+#endif
+}
+
 int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len) {
     if (dir == NULL || dir_len <= 0 || dir_len > 3800) {
         return -2;
@@ -40,9 +65,15 @@ int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len) {
     }
     static const char suffix[] = ".accounts.lock";
     memcpy(path + pos, suffix, sizeof(suffix));
+    int64_t handle = -2;
 #ifdef _WIN32
-    HANDLE h = CreateFileA(
-        path,
+    wchar_t wpath[4096];
+    int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, 4096);
+    if (wlen <= 0) {
+        return -2;
+    }
+    HANDLE h = CreateFileW(
+        wpath,
         GENERIC_READ | GENERIC_WRITE,
         FILE_SHARE_READ | FILE_SHARE_WRITE,
         NULL,
@@ -59,7 +90,7 @@ int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len) {
         CloseHandle(h);
         return (err == ERROR_LOCK_VIOLATION) ? -1 : -2;
     }
-    return (int64_t)(intptr_t)h;
+    handle = (int64_t)(intptr_t)h;
 #else
     int fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, 0600);
     if (fd < 0) {
@@ -70,25 +101,51 @@ int64_t pion_core_dir_lock_try(const char *dir, int64_t dir_len) {
         close(fd);
         return (e == EWOULDBLOCK || e == EAGAIN) ? -1 : -2;
     }
-    return (int64_t)fd;
+    handle = (int64_t)fd;
 #endif
+    pthread_mutex_lock(&g_dir_lock_mu);
+    if (g_open_dir_lock_count >= MAX_OPEN_DIR_LOCKS) {
+        pthread_mutex_unlock(&g_dir_lock_mu);
+        dir_lock_close_raw(handle);
+        return -2;
+    }
+    g_open_dir_locks[g_open_dir_lock_count++] = handle;
+    pthread_mutex_unlock(&g_dir_lock_mu);
+    return handle;
 }
 
 void pion_core_dir_lock_release(int64_t handle) {
     if (handle < 0) {
         return;
     }
-#ifdef _WIN32
-    HANDLE h = (HANDLE)(intptr_t)handle;
-    OVERLAPPED ov;
-    memset(&ov, 0, sizeof(ov));
-    (void)UnlockFileEx(h, 0, MAXDWORD, MAXDWORD, &ov);
-    (void)CloseHandle(h);
-#else
-    int fd = (int)handle;
-    (void)flock(fd, LOCK_UN);
-    (void)close(fd);
-#endif
+    int found = 0;
+    pthread_mutex_lock(&g_dir_lock_mu);
+    for (int i = 0; i < g_open_dir_lock_count; i++) {
+        if (g_open_dir_locks[i] == handle) {
+            g_open_dir_locks[i] = g_open_dir_locks[--g_open_dir_lock_count];
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_dir_lock_mu);
+    if (found) {
+        dir_lock_close_raw(handle);
+    }
+}
+
+void pion_core_dir_lock_release_all(void) {
+    int64_t to_close[MAX_OPEN_DIR_LOCKS];
+    int n = 0;
+    pthread_mutex_lock(&g_dir_lock_mu);
+    n = g_open_dir_lock_count;
+    for (int i = 0; i < n; i++) {
+        to_close[i] = g_open_dir_locks[i];
+    }
+    g_open_dir_lock_count = 0;
+    pthread_mutex_unlock(&g_dir_lock_mu);
+    for (int i = 0; i < n; i++) {
+        dir_lock_close_raw(to_close[i]);
+    }
 }
 
 void pion_core_log_warn(const char *msg, int64_t len) {
@@ -261,6 +318,7 @@ static void bridge_on_stop(void *user_ctx) {
     bsh_on_say(NULL, NULL);
     bsh_on_wake(NULL, NULL);
     pion_core_runtime_stop();
+    pion_core_dir_lock_release_all();
 }
 
 static int bridge_on_screen_ack(double call, double ts, void *user_ctx) {

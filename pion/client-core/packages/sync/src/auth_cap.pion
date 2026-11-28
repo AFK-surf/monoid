@@ -424,9 +424,12 @@ pub fn AuthGenTracker::bump_vault(
 
 /// Atomically advance BOTH `authGen(ws)` and `vaultGen(ws)` in a single boundary notification
 /// (used on member/device lock security-boundary transitions).
+/// Pass `emit=false` when advancing internal generations during staged DB installation before
+/// the final `bump_all()` publishes the authoritative boundary.
 pub fn AuthGenTracker::bump_workspace_and_vault(
   self : AuthGenTracker,
   ws : String,
+  emit : Bool = true,
 ) -> (Int, Int) {
   let next_ag = self.workspace_auth_gen(ws) + 1
   self.ws_gens.set(ws, next_ag)
@@ -452,7 +455,9 @@ pub fn AuthGenTracker::bump_workspace_and_vault(
       self.vault_item_gens.set(vks[i], next_vg)
     }
   }
-  self.notify(AuthBoundaryEvent::WorkspaceAndVault(ws, next_ag, next_vg))
+  if emit {
+    self.notify(AuthBoundaryEvent::WorkspaceAndVault(ws, next_ag, next_vg))
+  }
   (next_ag, next_vg)
 }
 
