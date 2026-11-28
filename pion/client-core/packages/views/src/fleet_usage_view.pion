@@ -150,38 +150,48 @@ pub fn project_usage(
   now_ms : Int64,
   days_asked : Int = 7,
   split : Option[String] = None,
+  include_workspace_doc : Bool = true,
+  allow_station : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   let days = if days_asked < 1 { 1 } else if days_asked > 30 { 30 } else { days_asked }
   let rows_all : Array[base_codec::Json] = []
 
   // Collect usage rows from station docs (`kind = "usage"`).
-  match store::list_stations(db, kind="usage") {
-    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-    sql::SqlResult::Ok(st_rows) => {
-      let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
-      for i in 0..<st_rows.length() {
-        let r = st_rows[i]
-        if prefix.length() > 0 && !r.address.starts_with(prefix) {
-          continue
-        }
-        let doc = parse_json_or_null(r.json)
-        let rs = j_arr(doc, "rows")
-        for j in 0..<rs.length() {
-          rows_all.push(rs[j])
+  if include_workspace_doc || allow_station.is_some() {
+    match store::list_stations(db, kind="usage") {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(st_rows) => {
+        let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
+        for i in 0..<st_rows.length() {
+          let r = st_rows[i]
+          if prefix.length() > 0 && !r.address.starts_with(prefix) {
+            continue
+          }
+          match allow_station {
+            Some(pred) => if !pred(r.address) { continue }
+            None => ()
+          }
+          let doc = parse_json_or_null(r.json)
+          let rs = j_arr(doc, "rows")
+          for j in 0..<rs.length() {
+            rows_all.push(rs[j])
+          }
         }
       }
     }
   }
   // Also collect optional workspace-level cached usage doc (`account_doc` `"usage:" + ws_scope`).
-  match store::get_account_doc(db, "usage:" + ws_scope) {
-    sql::SqlResult::Ok(Some(raw)) => {
-      let doc = parse_json_or_null(raw)
-      let rs = j_arr(doc, "rows")
-      for j in 0..<rs.length() {
-        rows_all.push(rs[j])
+  if include_workspace_doc && ws_scope.length() > 0 {
+    match store::get_account_doc(db, "usage:" + ws_scope) {
+      sql::SqlResult::Ok(Some(raw)) => {
+        let doc = parse_json_or_null(raw)
+        let rs = j_arr(doc, "rows")
+        for j in 0..<rs.length() {
+          rows_all.push(rs[j])
+        }
       }
+      _ => ()
     }
-    _ => ()
   }
 
   let mut total_cost = 0.0
@@ -370,8 +380,18 @@ pub fn project_fleet(
   now_ms : Int64,
   running_chats : Int = 0,
   open_jobs : Array[base_codec::Json] = [],
+  include_workspace_doc : Bool = true,
+  allow_station : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
-  let usage = match project_usage(db, ws_scope, briefs, now_ms, days_asked=7) {
+  let usage = match project_usage(
+    db,
+    ws_scope,
+    briefs,
+    now_ms,
+    days_asked=7,
+    include_workspace_doc=include_workspace_doc,
+    allow_station=allow_station,
+  ) {
     sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
     sql::SqlResult::Ok(u) => u
   }
@@ -558,9 +578,19 @@ pub fn project_rail_card(
   running : Int,
   marks : ViewerMarks,
   now_ms : Int64,
+  include_workspace_doc : Bool = true,
+  allow_station : Option[(String) -> Bool] = None,
 ) -> sql::SqlResult[base_codec::Json] {
   if place == "usage" {
-    let u = match project_usage(db, ws_scope, briefs, now_ms, days_asked=7) {
+    let u = match project_usage(
+      db,
+      ws_scope,
+      briefs,
+      now_ms,
+      days_asked=7,
+      include_workspace_doc=include_workspace_doc,
+      allow_station=allow_station,
+    ) {
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(v) => v
     }

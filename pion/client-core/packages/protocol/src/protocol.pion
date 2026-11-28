@@ -1038,7 +1038,7 @@ struct KeptSub {
 }
 
 pub struct Slice1Router {
-  pub db : sql::Sql
+  pub mut db : sql::Sql
   pub md_store : store::MdStore
   pub workspace : String
   subs : Map[Int64, ActiveSub]
@@ -1071,6 +1071,25 @@ pub fn Slice1Router::set_topic_evaluator(
   eval : (Int64, Topic) -> Option[CoreEvent],
 ) -> Unit {
   self.topic_evaluator = Some(eval)
+}
+
+/// Switch backing SQLite handle atomically (e.g. first sign-in from unauthenticated DB to `<sub_db>`),
+/// clearing kept caches and active subscription snapshots so no state carries across databases.
+pub fn Slice1Router::switch_db(self : Slice1Router, new_db : sql::Sql) -> Unit {
+  self.db = new_db
+  self.kept.clear()
+  self.kept_order.clear()
+  self.kept_by_token.clear()
+  self.kept_token_order.clear()
+  for i in 0..<self.sub_ids.length() {
+    match self.subs.get(self.sub_ids[i]) {
+      Some(sub) => {
+        sub.last_value = None
+        sub.last_token = None
+      }
+      None => ()
+    }
+  }
 }
 
 pub fn Slice1Router::active_sub(self : Slice1Router, id : Int64) -> Option[String] {

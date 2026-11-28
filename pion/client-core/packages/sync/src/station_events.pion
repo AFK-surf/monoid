@@ -678,7 +678,7 @@ pub struct JobStatus {
 pub struct StationEvents {
   pub workspace : String
   pub station : String
-  pub db : sql::Sql
+  pub mut db : sql::Sql
   pub outbox : outbox::FrameOutbox[CoreEvent]
   pub mut transport : StationTransport
   pub mut viewer_email : String
@@ -1763,35 +1763,152 @@ fn patch_chats_for_thread_bool_in_burst(
   sql::SqlResult::Ok(changed)
 }
 
-/// Ingest an initial snapshot (`chats`, `threads`, `entries`, `sessions`, `jobs`) in a single `sql::Burst` transaction
-/// and emit coalesced `CoreEvent` notifications to `FrameOutbox`.
-pub fn StationEvents::apply_snapshot(self : StationEvents, snapshot : base_codec::Json) -> sql::SqlResult[Int] {
-  let changed_chats : Array[String] = []
+/// Switch backing SQLite handle atomically, stopping streams and clearing cached state.
+pub fn StationEvents::switch_db(self : StationEvents, new_db : sql::Sql) -> Unit {
+  self.stop()
+  self.reset_state()
+  self.db = new_db
+}
+
+/// Validate that a `GET /chats` snapshot payload is either a top-level JSON array `[...]`
+/// (`station/mb/src/readops/viewerrows.mbt:249`) OR an object containing a `"chats"` array.
+pub fn is_valid_chats_snapshot_payload(snapshot : base_codec::Json) -> Bool {
+  match snapshot {
+    base_codec::Json::Arr(_) => true
+    base_codec::Json::Obj(_) => match base_codec::json_get(snapshot, "chats") {
+      Some(base_codec::Json::Arr(_)) => true
+      _ => false
+    }
+    _ => false
+  }
+}
+
+/// Strictly validate a `GET /threads/<id>/entries` payload aligned with `station/mb/src/readops/entries.mbt:370-392`.
+pub fn is_valid_thread_entries_payload(payload : base_codec::Json, expected_thread : Int) -> Bool {
+  match payload {
+    base_codec::Json::Obj(_) => ()
+    _ => return false
+  }
+  let entries = match base_codec::json_get(payload, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => return false
+  }
+  for i in 0..<entries.length() {
+    let item = entries[i]
+    match item {
+      base_codec::Json::Obj(_) => ()
+      _ => return false
+    }
+    match base_codec::json_get(item, "thread") {
+      None | Some(base_codec::Json::Null) => ()
+      Some(base_codec::Json::Num(n, _)) => if n.to_int() != expected_thread {
+        return false
+      }
+      _ => return false
+    }
+  }
+  true
+}
+
+/// Apply a validated `GET /threads/<expected_thread>/entries` `{last, entries}` response in a single
+/// `sql::Burst` transaction, storing every entry under `expected_thread` and emitting `EntryAdded`.
+pub fn StationEvents::apply_thread_entries(
+  self : StationEvents,
+  expected_thread : Int,
+  payload : base_codec::Json,
+) -> sql::SqlResult[Int] {
+  if !is_valid_thread_entries_payload(payload, expected_thread) {
+    return sql::SqlResult::Err(shell::ShellError::{ message: "malformed_thread_entries" })
+  }
+  let entries = match base_codec::json_get(payload, "entries") {
+    Some(base_codec::Json::Arr(xs)) => xs
+    _ => []
+  }
   let added_entries : Array[(Int, store::Entry, Option[String])] = []
-  let snap_events : Array[CoreEvent] = []
   let burst = sql::Burst::new(self.db)
   let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
     let mut count = 0
-    match base_codec::json_get(snapshot, "chats") {
-      Some(base_codec::Json::Arr(chats)) => {
-        for i in 0..<chats.length() {
-          match upsert_chat_in_burst(b, self.station, chats[i]) {
-            sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
-            sql::SqlResult::Ok(cid) => {
-              changed_chats.push(cid)
-              count += 1
-              match j_opt_str(chats[i], "clientKey") {
-                Some(ck) => {
-                  let cb = self.on_chat_client_key
-                  cb(b, cid, ck)
-                }
-                None => ()
+    for i in 0..<entries.length() {
+      let item = entries[i]
+      let n = j_int(item, "n")
+      let raw = base_codec::json_stringify(item)
+      match b.run(sql_entry_put(), params=[
+        base_codec::json_str(self.station),
+        base_codec::json_int(expected_thread),
+        base_codec::json_int(n),
+        base_codec::json_str(raw),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => {
+          let ck = match j_opt_str(item, "clientKey") {
+            Some(k) => Some(k)
+            None => j_opt_str(item, "idem")
+          }
+          match ck {
+            Some(key) => {
+              let cb = self.on_entry_client_key
+              cb(b, expected_thread, n, key)
+            }
+            None => ()
+          }
+          added_entries.push((expected_thread, store::Entry::of_json(n, item), ck))
+          count += 1
+        }
+      }
+    }
+    sql::SqlResult::Ok(count)
+  })
+  match res {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(count) => {
+      for i in 0..<added_entries.length() {
+        let (th, entry, ck) = added_entries[i]
+        self.outbox.tell(CoreEvent::EntryAdded(self.station, th, entry, ck))
+      }
+      sql::SqlResult::Ok(count)
+    }
+  }
+}
+
+/// Ingest an initial or refreshed snapshot (`GET /chats` top-level JSON array `[...]` matching
+/// `station/mb/src/readops/viewerrows.mbt:249`, OR `{chats, threads, entries, sessions, jobs}`
+/// object wrapper) in a single `sql::Burst` transaction and emit coalesced `CoreEvent` notifications.
+pub fn StationEvents::apply_snapshot(
+  self : StationEvents,
+  snapshot : base_codec::Json,
+) -> sql::SqlResult[Int] {
+  let changed_chats : Array[String] = []
+  let added_entries : Array[(Int, store::Entry, Option[String])] = []
+  let snap_events : Array[CoreEvent] = []
+  let (has_chats_arr, chats_arr) : (Bool, Array[base_codec::Json]) = match snapshot {
+    base_codec::Json::Arr(xs) => (true, xs)
+    base_codec::Json::Obj(_) => match base_codec::json_get(snapshot, "chats") {
+      Some(base_codec::Json::Arr(xs)) => (true, xs)
+      _ => (false, [])
+    }
+    _ => (false, [])
+  }
+  let burst = sql::Burst::new(self.db)
+  let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
+    let mut count = 0
+    if has_chats_arr {
+      for i in 0..<chats_arr.length() {
+        let item = chats_arr[i]
+        match upsert_chat_in_burst(b, self.station, item) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(cid) => {
+            changed_chats.push(cid)
+            count += 1
+            match j_opt_str(item, "clientKey") {
+              Some(ck) => {
+                let cb = self.on_chat_client_key
+                cb(b, cid, ck)
               }
+              None => ()
             }
           }
         }
       }
-      _ => ()
     }
     match base_codec::json_get(snapshot, "threads") {
       Some(base_codec::Json::Arr(threads)) => {

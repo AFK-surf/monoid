@@ -21,6 +21,7 @@ pub struct SyncScheduler {
   mut focused_thread : Option[Int]
   mut idle_preempted_count : Int
   mut completed_order : Array[String]
+  mut cred_epoch_getter : Option[() -> Int64]
 }
 
 pub fn SyncScheduler::new(
@@ -45,12 +46,28 @@ pub fn SyncScheduler::new(
     focused_thread: None,
     idle_preempted_count: 0,
     completed_order: [],
+    cred_epoch_getter: None,
   }
 }
 
 /// Bind an `AuthGenTracker` so non-lock station reads run through fail-open `guarded_read_k`.
 pub fn SyncScheduler::set_auth_tracker(self : SyncScheduler, tracker : AuthGenTracker) -> Unit {
   self.auth = Some(tracker)
+}
+
+pub fn SyncScheduler::set_cred_epoch_getter(self : SyncScheduler, getter : () -> Int64) -> Unit {
+  self.cred_epoch_getter = Some(getter)
+}
+
+pub fn SyncScheduler::transport_epoch(self : SyncScheduler) -> Int64 {
+  self.transport_epoch
+}
+
+fn SyncScheduler::current_cred_epoch(self : SyncScheduler) -> Int64 {
+  match self.cred_epoch_getter {
+    Some(g) => g()
+    None => 1L
+  }
 }
 
 fn SyncScheduler::task_key(self : SyncScheduler, resource : String) -> String {
@@ -383,6 +400,7 @@ pub fn SyncScheduler::fetch_marks_k(
   k : (effect::Exit[Array[String]]) -> Unit,
   sessions : Array[String] = [],
   threads : Array[Int] = [],
+  allow_cred_retry : Bool = true,
 ) -> Unit {
   let is_whole = sessions.length() == 0 && threads.length() == 0
   let key = self.task_key(if is_whole { "marks:whole" } else { "marks:scoped" })
@@ -400,93 +418,126 @@ pub fn SyncScheduler::fetch_marks_k(
   }
   let req_path = path_sb.to_string()
   let enqueue_epoch = self.transport_epoch
+  let initial_cred_epoch = self.current_cred_epoch()
+  let lane_key = key + "@" + enqueue_epoch.to_string() + ":" + initial_cred_epoch.to_string()
   self.lane.run_k(
-    key,
+    lane_key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Array[String]]) -> Unit) -> Unit {
-      if self.transport_epoch != enqueue_epoch {
-        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
-        return
-      }
-      let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      let mut run_attempt : (Int64, Int) -> Unit = fn(_ep : Int64, _left : Int) -> Unit {}
+      run_attempt = fn(enqueue_cred_epoch : Int64, retries_left : Int) -> Unit {
+        let on_attempt_done = fn(ex : effect::Exit[Array[String]]) -> Unit {
+          match ex {
+            effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")) => {
+              if retries_left > 0 && self.transport_epoch == enqueue_epoch {
+                run_attempt(self.current_cred_epoch(), retries_left - 1)
+                return
+              }
+              tk(ex)
+            }
+            _ => tk(ex)
+          }
+        }
         if self.transport_epoch != enqueue_epoch {
-          fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
           return
         }
-        let req_fn = self.transport.request_k
-        req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        if self.current_cred_epoch() != enqueue_cred_epoch {
+          on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+          return
+        }
+        let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
           if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
             return
           }
-          match ex {
-            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
-            effect::Exit::Succeeded(reply) => {
-              if reply.status < 200 || reply.status >= 300 {
-                fk(effect::Exit::Failed(effect::EffectError::Custom("marks fetch status " + reply.status.to_string())))
-                return
-              }
-              match base_codec::json_parse(bytes_to_str(reply.body)) {
-                base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-                base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
+          if self.current_cred_epoch() != enqueue_cred_epoch {
+            fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+            return
+          }
+          let req_fn = self.transport.request_k
+          req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+            if self.transport_epoch != enqueue_epoch {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+              return
+            }
+            if self.current_cred_epoch() != enqueue_cred_epoch {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+              return
+            }
+            match ex {
+              effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(reply) => {
+                if reply.status < 200 || reply.status >= 300 {
+                  fk(effect::Exit::Failed(effect::EffectError::Custom("marks fetch status " + reply.status.to_string())))
+                  return
+                }
+                match base_codec::json_parse(bytes_to_str(reply.body)) {
+                  base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                  base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
+                }
               }
             }
+          })
+        }
+        let apply_json = fn(j : base_codec::Json) -> Result[Array[String], String] {
+          if self.transport_epoch != enqueue_epoch {
+            return Err("transport_epoch_changed")
           }
-        })
-      }
-      let apply_json = fn(j : base_codec::Json) -> Result[Array[String], String] {
-        if self.transport_epoch != enqueue_epoch {
-          return Err("transport_epoch_changed")
-        }
-        match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
-          sql::SqlResult::Err(e) => Err(e.to_string())
-          sql::SqlResult::Ok(affected) => {
-            self.pending_refresh.remove(key)
-            self.completed_order.push("marks")
-            Ok(affected)
+          if self.current_cred_epoch() != enqueue_cred_epoch {
+            return Err("cred_epoch_changed")
           }
-        }
-      }
-      match self.auth {
-        Some(tracker) => {
-          guarded_read_k(
-            tracker,
-            self.workspace,
-            fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-              do_fetch_io(io_done)
-            },
-            fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Array[String], String] {
-              apply_json(j)
-            },
-            tk,
-            on_exhausted_stale=Some(fn() -> Unit {
-              if self.transport_epoch == enqueue_epoch {
-                self.pending_refresh.set(key, true)
-              }
-            }),
-          )
-        }
-        None =>
-        do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
-          match ex {
-            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-            effect::Exit::Succeeded(j) =>
-            match apply_json(j) {
-              Ok(affected) => tk(effect::Exit::Succeeded(affected))
-              Err(msg) => tk(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+          match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
+            sql::SqlResult::Err(e) => Err(e.to_string())
+            sql::SqlResult::Ok(affected) => {
+              self.pending_refresh.remove(key)
+              self.completed_order.push("marks")
+              Ok(affected)
             }
           }
-        })
+        }
+        match self.auth {
+          Some(tracker) => {
+            guarded_read_k(
+              tracker,
+              self.workspace,
+              fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                do_fetch_io(io_done)
+              },
+              fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Array[String], String] {
+                apply_json(j)
+              },
+              on_attempt_done,
+              on_exhausted_stale=Some(fn() -> Unit {
+                if self.transport_epoch == enqueue_epoch {
+                  self.pending_refresh.set(key, true)
+                }
+              }),
+            )
+          }
+          None =>
+          do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Interrupted => on_attempt_done(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => on_attempt_done(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(j) =>
+              match apply_json(j) {
+                Ok(affected) => on_attempt_done(effect::Exit::Succeeded(affected))
+                Err(msg) => on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+              }
+            }
+          })
+        }
       }
+      run_attempt(initial_cred_epoch, if allow_cred_retry { 1 } else { 0 })
     },
     fn(ex : effect::Exit[Array[String]]) -> Unit {
       match ex {
         effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
           if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
             self.pending_refresh.remove(key)
-            self.fetch_marks_k(priority, k, sessions=sessions, threads=threads)
+            self.fetch_marks_k(priority, k, sessions=sessions, threads=threads, allow_cred_retry=allow_cred_retry)
             return
           }
           self.pending_refresh.remove(key)
@@ -502,100 +553,139 @@ pub fn SyncScheduler::fetch_marks_k(
 }
 
 /// Schedule a snapshot fetch (`GET /chats`) at `priority_shown()` (or `priority_focused()`).
+/// Validates top-level JSON array `[...]` or `{chats: [...]}` before committing and fail-open
+/// reschedules once on `cred_epoch_changed` (while `transport_epoch` is unchanged).
 pub fn SyncScheduler::fetch_snapshot_k(
   self : SyncScheduler,
   priority : Int,
   k : (effect::Exit[Int]) -> Unit,
+  allow_cred_retry : Bool = true,
 ) -> Unit {
   let key = self.task_key("snapshot")
   let enqueue_epoch = self.transport_epoch
+  let initial_cred_epoch = self.current_cred_epoch()
+  let lane_key = key + "@" + enqueue_epoch.to_string() + ":" + initial_cred_epoch.to_string()
   self.lane.run_k(
-    key,
+    lane_key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
-      if self.transport_epoch != enqueue_epoch {
-        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
-        return
-      }
-      let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      let mut run_attempt : (Int64, Int) -> Unit = fn(_ep : Int64, _left : Int) -> Unit {}
+      run_attempt = fn(enqueue_cred_epoch : Int64, retries_left : Int) -> Unit {
+        let on_attempt_done = fn(ex : effect::Exit[Int]) -> Unit {
+          match ex {
+            effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")) => {
+              if retries_left > 0 && self.transport_epoch == enqueue_epoch {
+                run_attempt(self.current_cred_epoch(), retries_left - 1)
+                return
+              }
+              tk(ex)
+            }
+            _ => tk(ex)
+          }
+        }
         if self.transport_epoch != enqueue_epoch {
-          fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
           return
         }
-        let req_fn = self.transport.request_k
-        req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        if self.current_cred_epoch() != enqueue_cred_epoch {
+          on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+          return
+        }
+        let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
           if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
             return
           }
-          match ex {
-            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
-            effect::Exit::Succeeded(reply) => {
-              if reply.status < 200 || reply.status >= 300 {
-                fk(effect::Exit::Failed(effect::EffectError::Custom("snapshot status " + reply.status.to_string())))
-                return
-              }
-              match base_codec::json_parse(bytes_to_str(reply.body)) {
-                base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-                base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
+          if self.current_cred_epoch() != enqueue_cred_epoch {
+            fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+            return
+          }
+          let req_fn = self.transport.request_k
+          req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+            if self.transport_epoch != enqueue_epoch {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+              return
+            }
+            if self.current_cred_epoch() != enqueue_cred_epoch {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+              return
+            }
+            match ex {
+              effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(reply) => {
+                if reply.status < 200 || reply.status >= 300 {
+                  fk(effect::Exit::Failed(effect::EffectError::Custom("snapshot status " + reply.status.to_string())))
+                  return
+                }
+                match base_codec::json_parse(bytes_to_str(reply.body)) {
+                  base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                  base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
+                }
               }
             }
+          })
+        }
+        let apply_json = fn(j : base_codec::Json) -> Result[Int, String] {
+          if self.transport_epoch != enqueue_epoch {
+            return Err("transport_epoch_changed")
           }
-        })
-      }
-      let apply_json = fn(j : base_codec::Json) -> Result[Int, String] {
-        if self.transport_epoch != enqueue_epoch {
-          return Err("transport_epoch_changed")
-        }
-        match self.events.apply_snapshot(j) {
-          sql::SqlResult::Err(e) => Err(e.to_string())
-          sql::SqlResult::Ok(n) => {
-            self.pending_refresh.remove(key)
-            self.completed_order.push("snapshot")
-            Ok(n)
+          if self.current_cred_epoch() != enqueue_cred_epoch {
+            return Err("cred_epoch_changed")
           }
-        }
-      }
-      match self.auth {
-        Some(tracker) => {
-          guarded_read_k(
-            tracker,
-            self.workspace,
-            fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-              do_fetch_io(io_done)
-            },
-            fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
-              apply_json(j)
-            },
-            tk,
-            on_exhausted_stale=Some(fn() -> Unit {
-              if self.transport_epoch == enqueue_epoch {
-                self.pending_refresh.set(key, true)
-              }
-            }),
-          )
-        }
-        None =>
-        do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
-          match ex {
-            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-            effect::Exit::Succeeded(j) =>
-            match apply_json(j) {
-              Ok(n) => tk(effect::Exit::Succeeded(n))
-              Err(msg) => tk(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+          if !is_valid_chats_snapshot_payload(j) {
+            return Err("malformed_chats_snapshot")
+          }
+          match self.events.apply_snapshot(j) {
+            sql::SqlResult::Err(e) => Err(e.to_string())
+            sql::SqlResult::Ok(n) => {
+              self.pending_refresh.remove(key)
+              self.completed_order.push("snapshot")
+              Ok(n)
             }
           }
-        })
+        }
+        match self.auth {
+          Some(tracker) => {
+            guarded_read_k(
+              tracker,
+              self.workspace,
+              fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                do_fetch_io(io_done)
+              },
+              fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+                apply_json(j)
+              },
+              on_attempt_done,
+              on_exhausted_stale=Some(fn() -> Unit {
+                if self.transport_epoch == enqueue_epoch {
+                  self.pending_refresh.set(key, true)
+                }
+              }),
+            )
+          }
+          None =>
+          do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Interrupted => on_attempt_done(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => on_attempt_done(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(j) =>
+              match apply_json(j) {
+                Ok(n) => on_attempt_done(effect::Exit::Succeeded(n))
+                Err(msg) => on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+              }
+            }
+          })
+        }
       }
+      run_attempt(initial_cred_epoch, if allow_cred_retry { 1 } else { 0 })
     },
     fn(ex : effect::Exit[Int]) -> Unit {
       match ex {
         effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
           if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
             self.pending_refresh.remove(key)
-            self.fetch_snapshot_k(priority, k)
+            self.fetch_snapshot_k(priority, k, allow_cred_retry=allow_cred_retry)
             return
           }
           self.pending_refresh.remove(key)
@@ -618,6 +708,7 @@ pub fn SyncScheduler::fetch_thread_k(
   priority : Int,
   is_foreground : Bool,
   k : (effect::Exit[Int]) -> Unit,
+  allow_cred_retry : Bool = true,
 ) -> Unit {
   let key = self.task_key("thread:" + thread.to_string())
   let end_fg = if is_foreground {
@@ -626,87 +717,123 @@ pub fn SyncScheduler::fetch_thread_k(
     None
   }
   let enqueue_epoch = self.transport_epoch
+  let initial_cred_epoch = self.current_cred_epoch()
+  let lane_key = key + "@" + enqueue_epoch.to_string() + ":" + initial_cred_epoch.to_string()
   self.lane.run_k(
-    key,
+    lane_key,
     priority,
     fn(_preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
-      if self.transport_epoch != enqueue_epoch {
-        tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
-        return
-      }
-      let path = "/threads/" + thread.to_string() + "/entries"
-      let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+      let mut run_attempt : (Int64, Int) -> Unit = fn(_ep : Int64, _left : Int) -> Unit {}
+      run_attempt = fn(enqueue_cred_epoch : Int64, retries_left : Int) -> Unit {
+        let on_attempt_done = fn(ex : effect::Exit[Int]) -> Unit {
+          match ex {
+            effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")) => {
+              if retries_left > 0 && self.transport_epoch == enqueue_epoch {
+                run_attempt(self.current_cred_epoch(), retries_left - 1)
+                return
+              }
+              tk(ex)
+            }
+            _ => tk(ex)
+          }
+        }
         if self.transport_epoch != enqueue_epoch {
-          fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+          on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
           return
         }
-        let req_fn = self.transport.request_k
-        req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+        if self.current_cred_epoch() != enqueue_cred_epoch {
+          on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+          return
+        }
+        let path = "/threads/" + thread.to_string() + "/entries"
+        let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
           if self.transport_epoch != enqueue_epoch {
             fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
             return
           }
-          match ex {
-            effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
-            effect::Exit::Succeeded(reply) => {
-              if reply.status < 200 || reply.status >= 300 {
-                fk(effect::Exit::Failed(effect::EffectError::Custom("thread fetch status " + reply.status.to_string())))
-                return
-              }
-              match base_codec::json_parse(bytes_to_str(reply.body)) {
-                base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
-                base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
+          if self.current_cred_epoch() != enqueue_cred_epoch {
+            fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+            return
+          }
+          let req_fn = self.transport.request_k
+          req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
+            if self.transport_epoch != enqueue_epoch {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+              return
+            }
+            if self.current_cred_epoch() != enqueue_cred_epoch {
+              fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+              return
+            }
+            match ex {
+              effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => fk(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(reply) => {
+                if reply.status < 200 || reply.status >= 300 {
+                  fk(effect::Exit::Failed(effect::EffectError::Custom("thread fetch status " + reply.status.to_string())))
+                  return
+                }
+                match base_codec::json_parse(bytes_to_str(reply.body)) {
+                  base_codec::JsonParseResult::Err(e) => fk(effect::Exit::Failed(effect::EffectError::Custom(e)))
+                  base_codec::JsonParseResult::Ok(j) => fk(effect::Exit::Succeeded(j))
+                }
               }
             }
+          })
+        }
+        let apply_json = fn(j : base_codec::Json) -> Result[Int, String] {
+          if self.transport_epoch != enqueue_epoch {
+            return Err("transport_epoch_changed")
           }
-        })
-      }
-      let apply_json = fn(j : base_codec::Json) -> Result[Int, String] {
-        if self.transport_epoch != enqueue_epoch {
-          return Err("transport_epoch_changed")
-        }
-        match self.events.apply_snapshot(j) {
-          sql::SqlResult::Err(e) => Err(e.to_string())
-          sql::SqlResult::Ok(n) => {
-            self.pending_refresh.remove(key)
-            self.completed_order.push("thread:" + thread.to_string())
-            Ok(n)
+          if self.current_cred_epoch() != enqueue_cred_epoch {
+            return Err("cred_epoch_changed")
           }
-        }
-      }
-      match self.auth {
-        Some(tracker) => {
-          guarded_read_k(
-            tracker,
-            self.workspace,
-            fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
-              do_fetch_io(io_done)
-            },
-            fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
-              apply_json(j)
-            },
-            tk,
-            on_exhausted_stale=Some(fn() -> Unit {
-              if self.transport_epoch == enqueue_epoch {
-                self.pending_refresh.set(key, true)
-              }
-            }),
-          )
-        }
-        None =>
-        do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
-          match ex {
-            effect::Exit::Interrupted => tk(effect::Exit::Interrupted)
-            effect::Exit::Failed(e) => tk(effect::Exit::Failed(e))
-            effect::Exit::Succeeded(j) =>
-            match apply_json(j) {
-              Ok(n) => tk(effect::Exit::Succeeded(n))
-              Err(msg) => tk(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+          if !is_valid_thread_entries_payload(j, thread) {
+            return Err("malformed_thread_entries")
+          }
+          match self.events.apply_thread_entries(thread, j) {
+            sql::SqlResult::Err(e) => Err(e.to_string())
+            sql::SqlResult::Ok(n) => {
+              self.pending_refresh.remove(key)
+              self.completed_order.push("thread:" + thread.to_string())
+              Ok(n)
             }
           }
-        })
+        }
+        match self.auth {
+          Some(tracker) => {
+            guarded_read_k(
+              tracker,
+              self.workspace,
+              fn(_cap : WorkspaceCapability, io_done : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
+                do_fetch_io(io_done)
+              },
+              fn(_cap : WorkspaceCapability, j : base_codec::Json) -> Result[Int, String] {
+                apply_json(j)
+              },
+              on_attempt_done,
+              on_exhausted_stale=Some(fn() -> Unit {
+                if self.transport_epoch == enqueue_epoch {
+                  self.pending_refresh.set(key, true)
+                }
+              }),
+            )
+          }
+          None =>
+          do_fetch_io(fn(ex : effect::Exit[base_codec::Json]) -> Unit {
+            match ex {
+              effect::Exit::Interrupted => on_attempt_done(effect::Exit::Interrupted)
+              effect::Exit::Failed(e) => on_attempt_done(effect::Exit::Failed(e))
+              effect::Exit::Succeeded(j) =>
+              match apply_json(j) {
+                Ok(n) => on_attempt_done(effect::Exit::Succeeded(n))
+                Err(msg) => on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom(msg)))
+              }
+            }
+          })
+        }
       }
+      run_attempt(initial_cred_epoch, if allow_cred_retry { 1 } else { 0 })
     },
     fn(ex : effect::Exit[Int]) -> Unit {
       match end_fg {
@@ -717,7 +844,7 @@ pub fn SyncScheduler::fetch_thread_k(
         effect::Exit::Failed(effect::EffectError::Custom("auth_stale")) => {
           if self.pending_refresh.get(key).is_some() && self.transport_epoch == enqueue_epoch {
             self.pending_refresh.remove(key)
-            self.fetch_thread_k(thread, priority, false, k)
+            self.fetch_thread_k(thread, priority, false, k, allow_cred_retry=allow_cred_retry)
             return
           }
           self.pending_refresh.remove(key)
@@ -741,12 +868,17 @@ pub fn SyncScheduler::prefetch_idle_k(
 ) -> Unit {
   let key = self.task_key("idle:" + thread.to_string())
   let enqueue_epoch = self.transport_epoch
+  let enqueue_cred_epoch = self.current_cred_epoch()
   self.lane.run_k(
     key,
     effect::priority_idle(),
     fn(preempt : effect::Preempt, tk : (effect::Exit[Int]) -> Unit) -> Unit {
       if self.transport_epoch != enqueue_epoch {
         tk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
+        return
+      }
+      if self.current_cred_epoch() != enqueue_cred_epoch {
+        tk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
         return
       }
       if preempt.is_preempted() {
@@ -809,6 +941,9 @@ pub fn SyncScheduler::prefetch_idle_k(
       let apply_idle = fn(j : base_codec::Json) -> Result[Int, String] {
         if self.transport_epoch != enqueue_epoch {
           return Err("transport_epoch_changed")
+        }
+        if self.current_cred_epoch() != enqueue_cred_epoch {
+          return Err("cred_epoch_changed")
         }
         match self.events.apply_snapshot(j) {
           sql::SqlResult::Err(e) => Err(e.to_string())

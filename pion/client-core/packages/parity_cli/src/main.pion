@@ -6,6 +6,7 @@
 import "base_codec"
 import "form"
 import "protocol"
+import "sync"
 import "views"
 
 fn get_str(j : base_codec::Json, key : String) -> String {
@@ -461,6 +462,89 @@ fn handle_op(op : String, args : base_codec::Json, sess : ParityCoreSession, wor
       get_str(args, "cloud"),
     )
     return ok_resp(opt_str_json(res))
+  }
+  if op == "membership.dropSqlPlan" {
+    let ws = get_str(args, "workspace")
+    let stations = get_str_arr(args, "stations")
+    let opt_tables = get_str_arr(args, "optionalTables")
+    let plan = sync::drop_workspace_sql_plan(ws, stations, optional_tables=opt_tables)
+    let out : Array[base_codec::Json] = []
+    for i in 0..<plan.length() {
+      let (stmt, params) = plan[i]
+      out.push(base_codec::json_obj([
+        ("sql", base_codec::json_str(stmt)),
+        ("params", base_codec::json_arr(params)),
+      ]))
+    }
+    return ok_resp(base_codec::json_arr(out))
+  }
+  if op == "membership.serializeAccounts" {
+    let arr = get_arr(args, "accounts")
+    let list : Array[views::StoredAccount] = []
+    let sessions : Map[String, String] = Map::new()
+    for i in 0..<arr.length() {
+      let a = arr[i]
+      let exp : Int64 = match base_codec::json_get(a, "access_expires") {
+        Some(base_codec::Json::Num(n, repr)) => if repr.length() > 0 && !repr.contains(".") {
+          match base_codec::parse_int64_str(repr) { Some(v) => v; None => n.to_int64() }
+        } else { n.to_int64() }
+        _ => 0L
+      }
+      let sub = get_str(a, "sub")
+      match get_opt_str(a, "session") {
+        Some(sid) => if sid.length() > 0 { sessions.set(sub, sid) }
+        None => ()
+      }
+      list.push(views::StoredAccount::{
+        sub: sub,
+        email: get_str(a, "email"),
+        name: get_str(a, "name"),
+        picture: get_str(a, "picture"),
+        access: get_str(a, "access"),
+        refresh: get_str(a, "refresh"),
+        access_expires: exp,
+      })
+    }
+    let sess_opt : Option[Map[String, String]] = if sessions.keys().length() > 0 { Some(sessions) } else { None }
+    return ok_resp(sync::serialize_stored_accounts(list, sessions=sess_opt))
+  }
+  if op == "membership.generateUlid" {
+    let now_ms : Int64 = match base_codec::json_get(args, "nowMs") {
+      Some(base_codec::Json::Num(n, repr)) => if repr.length() > 0 && !repr.contains(".") {
+        match base_codec::parse_int64_str(repr) { Some(v) => v; None => n.to_int64() }
+      } else { n.to_int64() }
+      _ => 0L
+    }
+    let rand = match get_hex_bytes(args, "randHex") { Some(b) => b; None => Bytes::new(16) }
+    let u = sync::generate_ulid(now_ms, rand)
+    return ok_resp(base_codec::json_obj([
+      ("ulid", base_codec::json_str(u)),
+      ("valid", base_codec::json_bool(sync::is_valid_ulid(u))),
+    ]))
+  }
+  if op == "membership.parseCloudMeStrict" {
+    match sync::parse_cloud_me_strict(get_json(args, "payload")) {
+      Ok(me) => return ok_resp(base_codec::json_obj([
+        ("ok", base_codec::json_bool(true)),
+        ("workspaceCount", base_codec::json_int(me.workspaces.length())),
+      ]))
+      Err(msg) => return ok_resp(base_codec::json_obj([
+        ("ok", base_codec::json_bool(false)),
+        ("error", base_codec::json_str(msg)),
+      ]))
+    }
+  }
+  if op == "membership.parseCloudWorkspaceStrict" {
+    match sync::parse_cloud_workspace_strict(get_json(args, "payload"), get_str(args, "requestedWs")) {
+      Ok(ws) => return ok_resp(base_codec::json_obj([
+        ("ok", base_codec::json_bool(true)),
+        ("id", base_codec::json_str(ws.id)),
+      ]))
+      Err(msg) => return ok_resp(base_codec::json_obj([
+        ("ok", base_codec::json_bool(false)),
+        ("error", base_codec::json_str(msg)),
+      ]))
+    }
   }
 
   err_resp("unknown op: " + op)

@@ -70,7 +70,7 @@ struct ComposerState {
 let COMPOSER_MAX_STATES : Int = 64
 
 pub struct ComposerManager {
-  db : sql::Sql
+  mut db : sql::Sql
   states : Map[String, ComposerState]
   state_order : Array[String]
   mut seq : Int
@@ -82,6 +82,39 @@ pub fn ComposerManager::new(db : sql::Sql) -> ComposerManager {
     states: Map::new(),
     state_order: [],
     seq: 1,
+  }
+}
+
+/// Switch backing SQLite handle atomically, discarding cached composer states from the prior DB.
+pub fn ComposerManager::switch_db(self : ComposerManager, new_db : sql::Sql) -> Unit {
+  self.states.clear()
+  self.state_order.clear()
+  self.db = new_db
+}
+
+/// Remove all cached in-memory composer states belonging to `station` (`drop_workspace`).
+pub fn ComposerManager::clear_station(self : ComposerManager, station : String) -> Unit {
+  if station.length() == 0 {
+    return
+  }
+  let pref = station + ":"
+  let pref_slash = station + "/"
+  let next_order : Array[String] = []
+  for i in 0..<self.state_order.length() {
+    let k = self.state_order[i]
+    let matches = match draft_at_key(k) {
+      Some((st, _)) => st == station
+      None => k.starts_with(pref) || k.starts_with(pref_slash) || k == station
+    }
+    if matches {
+      self.states.remove(k)
+    } else {
+      next_order.push(k)
+    }
+  }
+  self.state_order.clear()
+  for i in 0..<next_order.length() {
+    self.state_order.push(next_order[i])
   }
 }
 

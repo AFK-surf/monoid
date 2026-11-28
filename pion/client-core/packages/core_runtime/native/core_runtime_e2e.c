@@ -143,6 +143,56 @@ int main(void) {
 
     char data_dir[128];
     snprintf(data_dir, sizeof(data_dir), "/tmp/pion_core_runtime_e2e_%ld", (long)time(NULL));
+    assert(mkdir(data_dir, 0755) == 0);
+
+    // 0a. Cold boot on completely empty `data_dir` (unauthenticated):
+    // verify `account.doc("me")` is null, `workspaces.list` is [], `chat.draft` returns `unauthenticated`,
+    // and `default.db` is NEVER created on disk!
+    {
+        char unauth_dir[160];
+        snprintf(unauth_dir, sizeof(unauth_dir), "%s_unauth", data_dir);
+        mb_core_start(unauth_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
+        int uidx = 0;
+        recorded_msg_t *um = wait_for_msg_index(&g_ctx, uidx++);
+        assert(strstr(um->json, "\"id\":0") != NULL);
+        send_json("{\"id\":901,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}");
+        um = wait_for_msg_index(&g_ctx, uidx++);
+        printf("[core_runtime_e2e] unauth account.doc(me) -> %s\n", um->json);
+        assert(strstr(um->json, "\"id\":901") != NULL && strstr(um->json, "\"ok\":null") != NULL);
+        send_json("{\"id\":902,\"call\":\"workspaces.list\",\"params\":{}}");
+        um = wait_for_msg_index(&g_ctx, uidx++);
+        printf("[core_runtime_e2e] unauth workspaces.list -> %s\n", um->json);
+        assert(strstr(um->json, "\"id\":902") != NULL && strstr(um->json, "\"workspaces\":[]") != NULL);
+        send_json("{\"id\":903,\"call\":\"chat.draft\",\"params\":{\"chat\":\"c-1\",\"text\":\"nope\"}}");
+        um = wait_for_msg_index(&g_ctx, uidx++);
+        printf("[core_runtime_e2e] unauth chat.draft -> %s\n", um->json);
+        assert(strstr(um->json, "\"id\":903") != NULL && strstr(um->json, "unauthenticated") != NULL);
+        mb_core_stop();
+        char def_db_path[256];
+        snprintf(def_db_path, sizeof(def_db_path), "%s/databases/default.db", unauth_dir);
+        struct stat st_def;
+        assert(stat(def_db_path, &st_def) != 0);
+        // Reset recorded messages for the main authenticated E2E run.
+        pthread_mutex_lock(&g_ctx.mu);
+        for (int i = 0; i < g_ctx.count; i++) {
+            free(g_ctx.msgs[i].json);
+            free(g_ctx.msgs[i].bytes);
+        }
+        g_ctx.count = 0;
+        pthread_mutex_unlock(&g_ctx.mu);
+    }
+
+    // Seed signed-in TS `StoredAccount` (`accounts` file) for the main authenticated E2E run.
+    {
+        char acct_path[256];
+        snprintf(acct_path, sizeof(acct_path), "%s/accounts", data_dir);
+        FILE *af = fopen(acct_path, "w");
+        assert(af != NULL);
+        fputs("[{\"sub\":\"u-e2e\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"picture\":\"\","
+              "\"access\":\"tok-e2e\",\"refresh\":\"ref-e2e\",\"access_expires\":1900000000,"
+              "\"session\":\"01ARZ3NDEKTSV4RRFFQ69G5FAV\"}]", af);
+        fclose(af);
+    }
 
     printf("[core_runtime_e2e] starting mb_core_start at %s\n", data_dir);
     mb_core_start(data_dir, "https://app.still.fail", 1, on_host_message, &g_ctx);
@@ -476,37 +526,6 @@ int main(void) {
     assert(strstr(m->json, "\"id\":56") != NULL && strstr(m->json, "\"pending\":true") != NULL && strstr(m->json, "\"messages\":[]") != NULL);
     send_json("{\"id\":56,\"unsubscribe\":true}");
 
-    send_json("{\"id\":57,\"call\":\"auth.begin\",\"params\":{}}");
-    m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #57 auth.begin -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":57") != NULL && strstr(m->json, "\"verifier\"") == NULL);
-    const char *st_pos = strstr(m->json, "\"state\":\"");
-    assert(st_pos != NULL);
-    st_pos += 9;
-    char auth_state[128];
-    size_t si = 0;
-    while (st_pos[si] != '\0' && st_pos[si] != '"' && si + 1 < sizeof(auth_state)) {
-        auth_state[si] = st_pos[si];
-        si++;
-    }
-    auth_state[si] = '\0';
-    assert(si > 0);
-    char auth_complete_req[384];
-    snprintf(auth_complete_req, sizeof(auth_complete_req),
-             "{\"id\":58,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=e2e_secret_code_99\"}}",
-             auth_state);
-    send_json(auth_complete_req);
-    m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #58 auth.complete {query} -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":58") != NULL && strstr(m->json, "\"ok\":true") != NULL);
-    assert(strstr(m->json, "e2e_secret_code_99") == NULL && strstr(m->json, "verifier") == NULL);
-
-    send_json("{\"id\":59,\"call\":\"auth.complete\",\"params\":{\"query\":\"?error=access_denied&error_description=UNVERIFIED_XSS_LEAK\"}}");
-    m = wait_for_msg_index(&g_ctx, next_idx++);
-    printf("[core_runtime_e2e] #59 auth.complete error query -> %s\n", m->json);
-    assert(strstr(m->json, "\"id\":59") != NULL && strstr(m->json, "\"error\"") != NULL);
-    assert(strstr(m->json, "UNVERIFIED_XSS_LEAK") == NULL);
-
     // 6. Binary payload round-trip + screen_ack / screen_input / route_media
     static const uint8_t bin[4] = {'P', 'I', 'O', 'N'};
     static const char echo_req[] = "{\"id\":30,\"call\":\"echo.bytes\",\"params\":{\"ok\":true}}";
@@ -577,6 +596,39 @@ int main(void) {
     printf("[core_runtime_e2e] #42 subscribe prefs after restart -> %s\n", m->json);
     assert(strstr(m->json, "\"id\":42") != NULL && strstr(m->json, conn2_kv) != NULL && strstr(m->json, "\"authGen\"") == NULL);
     send_json("{\"id\":42,\"unsubscribe\":true}");
+
+    // Offline OAuth begin / pre-exchanged complete / error-query non-leakage checks
+    // (real pure-`query` `/v1/auth/token` exchange + full DB switch is exercised in `core_runtime_live_net_e2e.c`).
+    send_json("{\"id\":57,\"call\":\"auth.begin\",\"params\":{}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #57 auth.begin -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":57") != NULL && strstr(m->json, "\"verifier\"") == NULL);
+    const char *st_pos = strstr(m->json, "\"state\":\"");
+    assert(st_pos != NULL);
+    st_pos += 9;
+    char auth_state[128];
+    size_t si = 0;
+    while (st_pos[si] != '\0' && st_pos[si] != '"' && si + 1 < sizeof(auth_state)) {
+        auth_state[si] = st_pos[si];
+        si++;
+    }
+    auth_state[si] = '\0';
+    assert(si > 0);
+    char auth_complete_req[512];
+    snprintf(auth_complete_req, sizeof(auth_complete_req),
+             "{\"id\":58,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=e2e_secret_code_99\",\"sub\":\"u-e2e\",\"email\":\"alice@still.fail\"}}",
+             auth_state);
+    send_json(auth_complete_req);
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #58 auth.complete {query} -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":58") != NULL && strstr(m->json, "\"ok\":true") != NULL);
+    assert(strstr(m->json, "e2e_secret_code_99") == NULL && strstr(m->json, "verifier") == NULL);
+
+    send_json("{\"id\":59,\"call\":\"auth.complete\",\"params\":{\"query\":\"?error=access_denied&error_description=UNVERIFIED_XSS_LEAK\"}}");
+    m = wait_for_msg_index(&g_ctx, next_idx++);
+    printf("[core_runtime_e2e] #59 auth.complete error query -> %s\n", m->json);
+    assert(strstr(m->json, "\"id\":59") != NULL && strstr(m->json, "\"error\"") != NULL);
+    assert(strstr(m->json, "UNVERIFIED_XSS_LEAK") == NULL);
 
     mb_core_stop();
 

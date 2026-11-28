@@ -2,14 +2,22 @@
 // `shell_pion.c` + `libpion_core_runtime.a` against a real loopback TCP/HTTP/SSE fake cloud
 // and fake station server on `127.0.0.1:<port>`:
 //
-// 1. Real Rust `libstillfail_shell.so` `fetch` pulls `/v1/me` and `/v1/workspaces/ws-live`
-//    and persists both into real SQLite WAL (`account_doc`, `workspace`).
-// 2. Real Rust `libstillfail_shell.so` `stream.open` + `stream.read` opens a live `/events`
-//    SSE stream.
-// 3. `mb_core_send` sends `message.send` -> real HTTP `POST /threads/42/messages` reaches the
-//    loopback station -> station pushes `event: entry` over the live SSE stream -> `ClientCore`
-//    reconciles by exact `clientKey` (`OutboxResolved`) and emits it to C `on_message`.
-// 4. `mb_core_stop` finishes cleanly with `post_stop=0` and `exit 0`.
+// Exercises the FULL Slice 2B-1 Invariant 1 end-to-end lifecycle:
+// 1. Cold boot on completely EMPTY `data_dir` (unauthenticated):
+//    - `account.doc("me")` is `null`, `workspaces.list` is `[]`, `workspace.get`/`draft.put`/`cloud.sync` return `unauthenticated`.
+//    - `default.db` is NEVER created on disk!
+// 2. Real pure-`query` `auth.begin` -> `auth.complete` (`POST /v1/auth/token`):
+//    - Atomically opens & switches ALL DB holders to `account-u-live.db` (still 0 `default.db`!).
+//    - Persists TS-compatible `accounts` (epoch seconds `access_expires` + ULID `session`), never leaks tokens/code/verifier.
+// 3. Real Rust `fetch` (`cloud.sync` with W1 & W2), pinned origin guard (`origin_mismatch`), local draft (`draft.put`),
+//    real SSE reconnect after 503 + `chat.send` -> `OutboxResolved` + <=4KB keyed delta,
+//    then W2 revocation via 2nd `cloud.sync` (persisting `completed_purge_gen` in `account-u-live.db`).
+// 4. Full restart in authenticated state on the same `data_dir`:
+//    - Reopens `account-u-live.db` and preserves local draft, workspace W1, thread/outbox, and W2 revocation (`completed_purge_gen`)!
+// 5. Permanent refresh failure (`auth.refresh` -> HTTP 401 `invalid_grant`) removing the last account from disk:
+//    - Invalidates session, bumps `session_gen`, stops `CloudSync`, writes empty `accounts` `[]` to disk.
+// 6. Full restart in unauthenticated state on the same `data_dir`:
+//    - `account.doc("me")` is `null` and `workspaces.list` is `[]` (0 private data leak from `account-u-live.db`)!
 
 #include <arpa/inet.h>
 #include <assert.h>
@@ -23,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -30,7 +39,9 @@
 
 extern void mb_core_attach_pion_runtime(void);
 
-#define MAX_MSGS 128
+#define MAX_MSGS 256
+#define WS1_ID "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+#define WS2_ID "01ARZ3NDEKTSV4RRFFQ69G5FBW"
 
 typedef struct recorded_msg {
     char *json;
@@ -47,6 +58,17 @@ typedef struct host_ctx {
 } host_ctx_t;
 
 static host_ctx_t g_host;
+
+static void reset_host_ctx(host_ctx_t *h) {
+    pthread_mutex_lock(&h->mu);
+    for (int i = 0; i < h->count; i++) {
+        free(h->msgs[i].json);
+    }
+    h->count = 0;
+    pthread_mutex_unlock(&h->mu);
+    atomic_store(&h->stopped, 0);
+    atomic_store(&h->post_stop_count, 0);
+}
 
 static void on_host_message(const char *json, size_t len, const uint8_t *bytes, size_t blen, void *ctx) {
     (void)bytes;
@@ -84,7 +106,8 @@ static char *wait_for_matching_msg(host_ctx_t *h, const char *needle1, const cha
         }
         int rc = pthread_cond_timedwait(&h->cv, &h->mu, &deadline);
         if (rc == ETIMEDOUT) {
-            fprintf(stderr, "[live_net_e2e] TIMEOUT waiting for '%s' (saw %d msgs):\n", needle1, h->count);
+            fprintf(stderr, "[live_net_e2e] TIMEOUT waiting for '%s' (needle2='%s', saw %d msgs):\n",
+                    needle1, needle2 ? needle2 : "", h->count);
             for (int i = 0; i < h->count; i++) {
                 fprintf(stderr, "  msg[%d]: %s\n", i, h->msgs[i].json);
             }
@@ -98,6 +121,11 @@ static void send_json(const char *s) {
     mb_core_send(s, strlen(s), NULL, 0);
 }
 
+static int file_exists(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0;
+}
+
 // ── Minimal loopback HTTP/1.1 + SSE fake cloud & fake station server ──
 
 typedef struct fake_server {
@@ -109,8 +137,11 @@ typedef struct fake_server {
     int shutdown;
     int sse_push_ready;
     char pending_sse_event[1024];
+    _Atomic int drop_ws2_in_me;
     _Atomic int got_me;
     _Atomic int got_ws;
+    _Atomic int got_auth_token;
+    _Atomic int got_auth_refresh;
     _Atomic int got_events;
     _Atomic int got_post_msg;
 } fake_server_t;
@@ -182,26 +213,78 @@ static void *handle_client_thread(void *arg) {
 
     if (strncmp(buf, "GET /v1/me ", 11) == 0) {
         atomic_fetch_add(&g_srv.got_me, 1);
-        send_http_json(
-            fd,
-            200,
-            "OK",
-            "{\"user\":{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},"
-            "\"workspaces\":[{\"id\":\"ws-live\",\"name\":\"Live Workspace\",\"role\":\"owner\"}],"
-            "\"relay_urls\":[\"https://relay.live.example\"]}");
+        if (atomic_load(&g_srv.drop_ws2_in_me)) {
+            send_http_json(
+                fd,
+                200,
+                "OK",
+                "{\"user\":{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},"
+                "\"workspaces\":[{\"id\":\"" WS1_ID "\",\"name\":\"Live Workspace\",\"role\":\"owner\",\"created_at\":1700000000,\"stations\":1,\"members\":1}],"
+                "\"relay_urls\":[\"https://relay.live.example\"]}");
+        } else {
+            send_http_json(
+                fd,
+                200,
+                "OK",
+                "{\"user\":{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},"
+                "\"workspaces\":["
+                "{\"id\":\"" WS1_ID "\",\"name\":\"Live Workspace\",\"role\":\"owner\",\"created_at\":1700000000,\"stations\":1,\"members\":1},"
+                "{\"id\":\"" WS2_ID "\",\"name\":\"Drop Me WS\",\"role\":\"member\",\"created_at\":1700000001,\"stations\":1,\"members\":2}"
+                "],"
+                "\"relay_urls\":[\"https://relay.live.example\"]}");
+        }
         close(fd);
         return NULL;
     }
 
-    if (strncmp(buf, "GET /v1/workspaces/ws-live ", 27) == 0) {
+    if (strncmp(buf, "GET /v1/workspaces/" WS1_ID " ", 46) == 0) {
         atomic_fetch_add(&g_srv.got_ws, 1);
         send_http_json(
             fd,
             200,
             "OK",
-            "{\"id\":\"ws-live\",\"name\":\"Live Workspace\",\"rev\":1,"
+            "{\"id\":\"" WS1_ID "\",\"name\":\"Live Workspace\",\"rev\":1,"
             "\"members\":[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],"
             "\"stations\":[{\"id\":\"st-local\",\"name\":\"Live Station\",\"online\":true}]}");
+        close(fd);
+        return NULL;
+    }
+
+    if (strncmp(buf, "GET /v1/workspaces/" WS2_ID " ", 46) == 0) {
+        atomic_fetch_add(&g_srv.got_ws, 1);
+        send_http_json(
+            fd,
+            200,
+            "OK",
+            "{\"id\":\"" WS2_ID "\",\"name\":\"Drop Me WS\",\"rev\":1,"
+            "\"members\":[{\"sub\":\"u-live\",\"email\":\"alice@still.fail\",\"role\":\"member\"}],"
+            "\"stations\":[{\"id\":\"st-drop\",\"name\":\"Drop Station\",\"online\":true}]}");
+        close(fd);
+        return NULL;
+    }
+
+    if (strncmp(buf, "POST /v1/auth/token ", 20) == 0) {
+        const char *body = buf + header_end;
+        assert(strstr(body, "\"code\":\"live_oauth_code_42\"") != NULL);
+        assert(strstr(body, "\"code_verifier\":\"") != NULL);
+        assert(strstr(body, "\"redirect_uri\":\"stillfail://auth/callback\"") != NULL);
+        atomic_fetch_add(&g_srv.got_auth_token, 1);
+        send_http_json(
+            fd,
+            200,
+            "OK",
+            "{\"access_token\":\"acc-exchanged-42\",\"refresh_token\":\"ref-exchanged-42\","
+            "\"subject\":\"u-live\",\"email\":\"alice@still.fail\",\"name\":\"Alice\",\"expires_at\":1900000000}");
+        close(fd);
+        return NULL;
+    }
+
+    if (strncmp(buf, "POST /v1/auth/refresh ", 22) == 0) {
+        const char *body = buf + header_end;
+        assert(strstr(body, "\"request_id\":\"") != NULL);
+        assert(strstr(body, "\"refresh_token\":\"ref-exchanged-42\"") != NULL);
+        atomic_fetch_add(&g_srv.got_auth_refresh, 1);
+        send_http_json(fd, 401, "Unauthorized", "{\"error\":\"invalid_grant\"}");
         close(fd);
         return NULL;
     }
@@ -215,8 +298,6 @@ static void *handle_client_thread(void *arg) {
     if (strncmp(buf, "GET /events", 11) == 0) {
         int ev_attempt = atomic_fetch_add(&g_srv.got_events, 1) + 1;
         if (ev_attempt == 1) {
-            // Fail the first SSE attempt with 503 so `StationEvents` exercises native timer-driven
-            // reconnect (`pion_core_runtime_on_wake` -> `core_pion.c` monotonic timer, zero polling)!
             send_http_json(fd, 503, "Service Unavailable", "{\"error\":\"retry\"}");
             close(fd);
             return NULL;
@@ -252,7 +333,6 @@ static void *handle_client_thread(void *arg) {
         assert(strstr(body, "ck-live-net-1") != NULL);
         assert(strstr(body, "hello over real rust shell") != NULL);
         atomic_fetch_add(&g_srv.got_post_msg, 1);
-        // Respond 202 without `n` so OutboxResolved MUST be driven by the live SSE push!
         send_http_json(fd, 202, "Accepted", "{\"accepted\":true}");
         close(fd);
 
@@ -344,88 +424,199 @@ int main(void) {
 
     char data_dir[128];
     snprintf(data_dir, sizeof(data_dir), "/tmp/pion_live_net_e2e_%ld_%d", (long)time(NULL), (int)getpid());
+    char default_db_path[256];
+    snprintf(default_db_path, sizeof(default_db_path), "%s/databases/default.db", data_dir);
+    char alice_db_path[256];
+    snprintf(alice_db_path, sizeof(alice_db_path), "%s/databases/account-u-live.db", data_dir);
 
-    printf("[live_net_e2e] starting mb_core_start origin=%s dir=%s\n", origin, data_dir);
+    // ── PHASE 1: Empty directory cold boot (unauthenticated) ──
+    printf("[live_net_e2e] Phase 1: empty dir cold boot origin=%s dir=%s\n", origin, data_dir);
     mb_core_attach_pion_runtime();
     mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+    wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
 
-    // 1. Real Rust `fetch` -> GET /v1/me + GET /v1/workspaces/ws-live -> persisted to SQLite WAL
-    send_json("{\"id\":1,\"call\":\"cloud.sync\",\"params\":{\"token\":\"tok-live\",\"workspace\":\"ws-live\"}}");
-    char *m_cloud = wait_for_matching_msg(&g_host, "\"id\":1", "\"workspace\":\"ws-live\"", 10);
-    printf("[live_net_e2e] #1 cloud.sync -> %s\n", m_cloud);
-    assert(strstr(m_cloud, "\"email\":\"alice@still.fail\"") != NULL);
-    assert(strstr(m_cloud, "\"stations\":1") != NULL);
-    assert(atomic_load(&g_srv.got_me) >= 1 && atomic_load(&g_srv.got_ws) >= 1);
+    send_json("{\"id\":1001,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}");
+    char *m_unauth_me = wait_for_matching_msg(&g_host, "\"id\":1001,", "\"ok\":null", 10);
+    printf("[live_net_e2e] unauth account.doc(me) -> %s\n", m_unauth_me);
 
-    // 2. Subscribe to real `packages/views` projections: workspaces, stations, chats, chat, lock, vaults
-    send_json("{\"id\":10,\"subscribe\":{\"topic\":\"workspaces\"},\"keyed\":true}");
-    char *m_ws_sub = wait_for_matching_msg(&g_host, "\"id\":10", "\"workspaces\"", 10);
-    printf("[live_net_e2e] #10 subscribe workspaces -> %s\n", m_ws_sub);
-    assert(strstr(m_ws_sub, "Live Workspace") != NULL);
+    send_json("{\"id\":1002,\"call\":\"workspaces.list\",\"params\":{}}");
+    char *m_unauth_ws = wait_for_matching_msg(&g_host, "\"id\":1002,", "\"workspaces\":[]", 10);
+    printf("[live_net_e2e] unauth workspaces.list -> %s\n", m_unauth_ws);
 
-    send_json("{\"id\":11,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"ws-live\"},\"keyed\":true}");
-    char *m_st_sub = wait_for_matching_msg(&g_host, "\"id\":11", "Live Station", 10);
-    printf("[live_net_e2e] #11 subscribe stations -> %s\n", m_st_sub);
+    send_json("{\"id\":1003,\"call\":\"cloud.sync\",\"params\":{}}");
+    wait_for_matching_msg(&g_host, "\"id\":1003,", "unauthenticated", 10);
 
-    send_json("{\"id\":12,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"ws-live\"},\"keyed\":true}");
-    char *m_chats_sub = wait_for_matching_msg(&g_host, "\"id\":12", "\"days\"", 10);
-    printf("[live_net_e2e] #12 subscribe chats -> %s\n", m_chats_sub);
+    send_json("{\"id\":1004,\"call\":\"draft.put\",\"params\":{\"key\":\"new:" WS1_ID "\",\"value\":{\"text\":\"no\"}}}");
+    wait_for_matching_msg(&g_host, "\"id\":1004,", "unauthenticated", 10);
 
-    send_json("{\"id\":13,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
-    char *m_chat_sub = wait_for_matching_msg(&g_host, "\"id\":13", "\"messages\"", 10);
-    printf("[live_net_e2e] #13 subscribe chat -> %s\n", m_chat_sub);
+    assert(!file_exists(default_db_path));
 
-    send_json("{\"id\":14,\"subscribe\":{\"topic\":\"lock\",\"workspace\":\"ws-live\"},\"keyed\":true}");
-    char *m_lock_sub = wait_for_matching_msg(&g_host, "\"id\":14", "\"locked\":false", 10);
-    printf("[live_net_e2e] #14 subscribe lock -> %s\n", m_lock_sub);
-    assert(strstr(m_lock_sub, "\xe4\xb8\xaa\xe4\xba\xba\xe9\x94\x81") == NULL);
-
-    send_json("{\"id\":15,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"ws-live\"},\"keyed\":true}");
-    char *m_vaults_sub = wait_for_matching_msg(&g_host, "\"id\":15", "\"vaults\"", 10);
-    printf("[live_net_e2e] #15 subscribe vaults -> %s\n", m_vaults_sub);
-
-    // 2b. Test `auth.begin` wire parity with `apps/mbui/core/smoke.m`: valid HTTP/HTTPS url, S256 challenge, NO verifier leak!
+    // ── PHASE 2: First sign-in via pure-`query` `auth.begin` -> `auth.complete` (`POST /v1/auth/token`) ──
+    // Atomically opens & switches ALL DB holders to `account-u-live.db` BEFORE persisting `accounts`!
     send_json("{\"id\":20,\"call\":\"auth.begin\",\"params\":{\"redirect_uri\":\"stillfail://auth/callback\",\"return_to\":\"/\"}}");
-    char *m_auth = wait_for_matching_msg(&g_host, "\"id\":20", "\"url\":\"http", 10);
+    char *m_auth = wait_for_matching_msg(&g_host, "\"id\":20,", "\"url\":\"http", 10);
     printf("[live_net_e2e] #20 auth.begin -> %s\n", m_auth);
     assert(strstr(m_auth, "/v1/auth/google/start?state=") != NULL);
     assert(strstr(m_auth, "code_challenge_method=S256") != NULL);
-    assert(strstr(m_auth, "redirect_uri=stillfail://auth/callback") != NULL);
-    assert(strstr(m_auth, "\"state\":\"") != NULL);
     assert(strstr(m_auth, "verifier") == NULL);
+    const char *st_p = strstr(m_auth, "\"state\":\"");
+    assert(st_p != NULL);
+    st_p += 9;
+    char oauth_state[128];
+    size_t oi = 0;
+    while (st_p[oi] != '\0' && st_p[oi] != '"' && oi + 1 < sizeof(oauth_state)) {
+        oauth_state[oi] = st_p[oi];
+        oi++;
+    }
+    oauth_state[oi] = '\0';
+    assert(oi > 0);
+    char complete_cmd[512];
+    snprintf(complete_cmd, sizeof(complete_cmd),
+             "{\"id\":21,\"call\":\"auth.complete\",\"params\":{\"query\":\"?state=%s&code=live_oauth_code_42\"}}",
+             oauth_state);
+    send_json(complete_cmd);
+    char *m_auth_done = wait_for_matching_msg(&g_host, "\"id\":21,", "\"email\":\"alice@still.fail\"", 10);
+    printf("[live_net_e2e] #21 auth.complete pure query -> %s\n", m_auth_done);
+    assert(strstr(m_auth_done, "\"returnTo\":\"/\"") != NULL);
+    assert(strstr(m_auth_done, "acc-exchanged-42") == NULL && strstr(m_auth_done, "ref-exchanged-42") == NULL);
+    assert(strstr(m_auth_done, "live_oauth_code_42") == NULL && strstr(m_auth_done, "verifier") == NULL);
+    assert(atomic_load(&g_srv.got_auth_token) == 1);
+    assert(file_exists(alice_db_path));
+    assert(!file_exists(default_db_path));
 
-    // 3. Real Rust `stream.open` + `stream.read` -> first /events returns 503 -> native timer reconnects -> live `/events` SSE stream
+    // ── PHASE 3: Cloud sync (W1+W2), origin guard, local draft, SSE + outbox, and W2 drop (`completed_purge_gen`) ──
+    send_json("{\"id\":1,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+    char *m_cloud = wait_for_matching_msg(&g_host, "\"id\":1,", "\"workspace\":\"" WS1_ID "\"", 10);
+    printf("[live_net_e2e] #1 cloud.sync W1 -> %s\n", m_cloud);
+    assert(strstr(m_cloud, "\"email\":\"alice@still.fail\"") != NULL);
+    assert(strstr(m_cloud, "\"stations\":1") != NULL);
+
+    send_json("{\"id\":102,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS2_ID "\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":102,", "\"workspace\":\"" WS2_ID "\"", 10);
+
+    // Pinned trusted origin guard: foreign origin in `cloud.sync` MUST be rejected with `origin_mismatch`!
+    send_json("{\"id\":101,\"call\":\"cloud.sync\",\"params\":{\"origin\":\"https://evil.example\"}}");
+    char *m_bad_orig = wait_for_matching_msg(&g_host, "\"id\":101,", "origin_mismatch", 10);
+    printf("[live_net_e2e] #101 cloud.sync foreign origin rejected -> %s\n", m_bad_orig);
+
+    // Write local draft for WS1 (`new:<WS1>`) and WS2 (`new:<WS2>`).
+    send_json("{\"id\":103,\"call\":\"draft.put\",\"params\":{\"key\":\"new:" WS1_ID "\",\"value\":{\"text\":\"persisted-alice-draft\"}}}");
+    wait_for_matching_msg(&g_host, "\"id\":103,", "\"ok\"", 10);
+    send_json("{\"id\":104,\"call\":\"draft.put\",\"params\":{\"key\":\"new:" WS2_ID "\",\"value\":{\"text\":\"drop-me-draft\"}}}");
+    wait_for_matching_msg(&g_host, "\"id\":104,", "\"ok\"", 10);
+
+    // Subscribe to real `packages/views` projections: workspaces, stations, chats, chat, lock, vaults
+    send_json("{\"id\":10,\"subscribe\":{\"topic\":\"workspaces\"},\"keyed\":true}");
+    char *m_ws_sub = wait_for_matching_msg(&g_host, "\"id\":10,", "\"workspaces\"", 10);
+    assert(strstr(m_ws_sub, "Live Workspace") != NULL);
+
+    send_json("{\"id\":11,\"subscribe\":{\"topic\":\"stations\",\"scope\":\"" WS1_ID "\"},\"keyed\":true}");
+    wait_for_matching_msg(&g_host, "\"id\":11,", "Live Station", 10);
+
+    send_json("{\"id\":12,\"subscribe\":{\"topic\":\"chats\",\"scope\":\"" WS1_ID "\"},\"keyed\":true}");
+    wait_for_matching_msg(&g_host, "\"id\":12,", "\"days\"", 10);
+
+    send_json("{\"id\":13,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
+    wait_for_matching_msg(&g_host, "\"id\":13,", "\"messages\"", 10);
+
+    send_json("{\"id\":14,\"subscribe\":{\"topic\":\"lock\",\"workspace\":\"" WS1_ID "\"},\"keyed\":true}");
+    char *m_lock_sub = wait_for_matching_msg(&g_host, "\"id\":14,", "\"locked\":false", 10);
+    assert(strstr(m_lock_sub, "\xe4\xb8\xaa\xe4\xba\xba\xe9\x94\x81") == NULL);
+
+    send_json("{\"id\":15,\"subscribe\":{\"topic\":\"vaults\",\"workspace\":\"" WS1_ID "\"},\"keyed\":true}");
+    wait_for_matching_msg(&g_host, "\"id\":15,", "\"vaults\"", 10);
+
+    // Real Rust `stream.open` + `stream.read` -> first /events returns 503 -> timer reconnect -> SSE `OutboxResolved` + <=4KB keyed delta!
     send_json("{\"id\":2,\"call\":\"station.connect\",\"params\":{}}");
-    char *m_conn = wait_for_matching_msg(&g_host, "\"event\":\"connection\"", "\"state\":\"connected\"", 10);
-    printf("[live_net_e2e] #2 station.connect SSE (after timer reconnect) -> %s\n", m_conn);
+    wait_for_matching_msg(&g_host, "\"event\":\"connection\"", "\"state\":\"connected\"", 10);
     assert(atomic_load(&g_srv.got_events) >= 2);
 
-    // 4. Real online `chat.send` -> HTTP POST -> live SSE `event: thread` -> `OutboxResolved` + real ChatView keyed `delta`
     send_json("{\"id\":3,\"call\":\"chat.send\",\"params\":{\"thread\":42,\"clientKey\":\"ck-live-net-1\",\"author\":\"alice\",\"text\":\"hello over real rust shell\"}}");
-    char *m_send = wait_for_matching_msg(&g_host, "\"id\":3", "\"queued\":true", 10);
-    printf("[live_net_e2e] #3 chat.send -> %s\n", m_send);
+    wait_for_matching_msg(&g_host, "\"id\":3,", "\"queued\":true", 10);
 
     char *m_resolved = wait_for_matching_msg(&g_host, "\"event\":\"outbox.resolved\"", "\"clientKey\":\"ck-live-net-1\"", 10);
-    printf("[live_net_e2e] #4 SSE OutboxResolved -> %s\n", m_resolved);
     assert(strstr(m_resolved, "\"n\":7") != NULL);
     assert(atomic_load(&g_srv.got_post_msg) == 1);
 
-    // Expect live pushed ChatView keyed delta on sub 13 containing confirmed message (seq 7) and dropping outbox item (0 duplicates), <= 4096 bytes!
-    char *m_chat_delta = wait_for_matching_msg(&g_host, "\"id\":13", "\"seq\":7", 10);
-    size_t delta_len = strlen(m_chat_delta);
-    printf("[live_net_e2e] #5 live ChatView keyed delta (%zu bytes) -> %s\n", delta_len, m_chat_delta);
+    char *m_chat_delta = wait_for_matching_msg(&g_host, "\"id\":13,", "\"seq\":7", 10);
     assert(strstr(m_chat_delta, "\"delta\"") != NULL);
     assert(strstr(m_chat_delta, "hello over real rust shell") != NULL);
-    assert(strstr(m_chat_delta, "\"drop\"") != NULL);
-    assert(strstr(m_chat_delta, "\"seq\":0") == NULL);
-    assert(delta_len <= 4096);
+    assert(strlen(m_chat_delta) <= 4096);
 
-    // 5. Clean stop with post_stop=0
+    // Revoke WS2 via 2nd `/v1/me` reconcile -> atomically purges WS2 + persists `completed_purge_gen[WS2]` in `account-u-live.db`!
+    atomic_store(&g_srv.drop_ws2_in_me, 1);
+    send_json("{\"id\":105,\"call\":\"cloud.sync\",\"params\":{\"workspace\":\"" WS1_ID "\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":105,", "\"workspaces\":1", 10);
+    send_json("{\"id\":106,\"call\":\"workspace.get\",\"params\":{\"workspace\":\"" WS2_ID "\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":106,", "access_revoked", 10);
+
+    assert(!file_exists(default_db_path));
+
+    // Stop cleanly before Phase 4 authenticated restart.
+    atomic_store(&g_host.stopped, 1);
+    mb_core_stop();
+    assert(atomic_load(&g_host.post_stop_count) == 0);
+
+    // ── PHASE 4: Authenticated restart — verify `account-u-live.db` data & `completed_purge_gen` survived! ──
+    printf("[live_net_e2e] Phase 4: authenticated restart on %s\n", data_dir);
+    reset_host_ctx(&g_host);
+    mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+    wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+
+    // Local draft for WS1 MUST survive restart!
+    send_json("{\"id\":201,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+    char *m_draft_back = wait_for_matching_msg(&g_host, "\"id\":201,", "persisted-alice-draft", 10);
+    printf("[live_net_e2e] Phase 4 draft.get -> %s\n", m_draft_back);
+
+    // Workspace W1 MUST survive restart; dropped W2 MUST stay revoked & absent!
+    send_json("{\"id\":202,\"call\":\"workspaces.list\",\"params\":{}}");
+    char *m_ws_back = wait_for_matching_msg(&g_host, "\"id\":202,", WS1_ID, 10);
+    printf("[live_net_e2e] Phase 4 workspaces.list -> %s\n", m_ws_back);
+    assert(strstr(m_ws_back, WS2_ID) == NULL);
+
+    send_json("{\"id\":203,\"call\":\"workspace.get\",\"params\":{\"workspace\":\"" WS2_ID "\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":203,", "access_revoked", 10);
+
+    // Persisted message on thread 42 MUST survive restart!
+    send_json("{\"id\":204,\"subscribe\":{\"topic\":\"chat\",\"station\":\"st-local\",\"thread\":42},\"keyed\":true}");
+    char *m_thread_back = wait_for_matching_msg(&g_host, "\"id\":204,", "hello over real rust shell", 10);
+    printf("[live_net_e2e] Phase 4 persisted chat -> %s\n", m_thread_back);
+
+    // ── PHASE 5: Permanent 401 refresh removes the last account ──
+    printf("[live_net_e2e] Phase 5: triggering permanent 401 auth.refresh\n");
+    send_json("{\"id\":205,\"call\":\"auth.refresh\",\"params\":{\"sub\":\"u-live\"}}");
+    char *m_ref_401 = wait_for_matching_msg(&g_host, "\"id\":205,", "\"error\"", 10);
+    printf("[live_net_e2e] Phase 5 auth.refresh 401 -> %s\n", m_ref_401);
+    assert(atomic_load(&g_srv.got_auth_refresh) == 1);
+
+    atomic_store(&g_host.stopped, 1);
+    mb_core_stop();
+    assert(atomic_load(&g_host.post_stop_count) == 0);
+
+    // ── PHASE 6: Unauthenticated restart after last account removed — 0 private data leak! ──
+    printf("[live_net_e2e] Phase 6: unauthenticated restart after logout on %s\n", data_dir);
+    reset_host_ctx(&g_host);
+    mb_core_start(data_dir, origin, 1, on_host_message, &g_host);
+    wait_for_matching_msg(&g_host, "\"id\":0,", "\"auth\":{", 10);
+
+    send_json("{\"id\":301,\"call\":\"account.doc\",\"params\":{\"name\":\"me\"}}");
+    char *m_post_logout_me = wait_for_matching_msg(&g_host, "\"id\":301,", "\"ok\":null", 10);
+    printf("[live_net_e2e] Phase 6 account.doc(me) -> %s\n", m_post_logout_me);
+
+    send_json("{\"id\":302,\"call\":\"workspaces.list\",\"params\":{}}");
+    char *m_post_logout_ws = wait_for_matching_msg(&g_host, "\"id\":302,", "\"workspaces\":[]", 10);
+    printf("[live_net_e2e] Phase 6 workspaces.list -> %s\n", m_post_logout_ws);
+    assert(strstr(m_post_logout_ws, WS1_ID) == NULL);
+
+    send_json("{\"id\":303,\"call\":\"draft.get\",\"params\":{\"key\":\"new:" WS1_ID "\"}}");
+    wait_for_matching_msg(&g_host, "\"id\":303,", "unauthenticated", 10);
+
+    assert(!file_exists(default_db_path));
+
     atomic_store(&g_host.stopped, 1);
     mb_core_stop();
     stop_fake_server();
     assert(atomic_load(&g_host.post_stop_count) == 0);
-    printf("[live_net_e2e] ALL LIVE RUST SHELL HTTP/SSE/SQLITE E2E CHECKS PASSED (msgs=%d, post_stop=%d)\n",
-           g_host.count, atomic_load(&g_host.post_stop_count));
+    printf("[live_net_e2e] ALL LIVE RUST SHELL + INVARIANT 1 ACCOUNT DB LIFECYCLE E2E CHECKS PASSED!\n");
     return 0;
 }

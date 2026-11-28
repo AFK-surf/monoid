@@ -24,6 +24,10 @@ struct AccountInfo {
   email : String
   name : String
   picture : String
+  access : String
+  refresh : String
+  access_expires : Int64
+  session : String
 }
 
 struct RuntimeSub {
@@ -35,8 +39,9 @@ struct RuntimeSub {
 
 struct RuntimeSession {
   sh : shell::Shell
-  db : sql::Sql
+  mut db : sql::Sql
   core : sync::ClientCore
+  refresh_coord : sync::AccountRefreshCoordinator
   accounts : Array[AccountInfo]
   prefs : Map[String, base_codec::Json]
   station_online : Map[String, Bool]
@@ -48,6 +53,8 @@ struct RuntimeSession {
   mesh_transports : Map[String, sync::MeshStationTransport]
   mut cloud : Option[sync::CloudSync]
   mut origin : String
+  mut session_gen : Int64
+  mut device_conn_seq : Int64
   mut live_sync_enabled : Bool
   mut device_app : String
   mut device_locale : String
@@ -597,8 +604,352 @@ fn write_storage_json(sh : shell::Shell, key : String, doc : base_codec::Json) -
   }
 }
 
+/// Pure non-blocking async read of one JSON document from host storage (`storage.get`),
+/// NEVER pumping `shell_native::drain_until`.
+fn read_storage_json_state_k(
+  sh : shell::Shell,
+  key : String,
+  k : (sync::HostStorageRead) -> Unit,
+) -> Unit {
+  sh.call_k(
+    "storage.get",
+    base_codec::json_obj([("key", base_codec::json_str(key))]),
+    fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(ans) => {
+          match base_codec::json_get(ans.json, "none") {
+            Some(base_codec::Json::Bool(true)) => k(sync::HostStorageRead::Absent)
+            _ => match ans.bytes {
+              Some(bs) => {
+                if bs.length() == 0 {
+                  k(sync::HostStorageRead::ReadError("empty storage payload for " + key))
+                } else {
+                  match base_codec::json_parse(bytes_to_str(bs)) {
+                    base_codec::JsonParseResult::Ok(j) => k(sync::HostStorageRead::Found(j))
+                    base_codec::JsonParseResult::Err(e) => k(sync::HostStorageRead::ReadError("corrupt storage json for " + key + ": " + e))
+                  }
+                }
+              }
+              None => k(sync::HostStorageRead::ReadError("storage.get returned neither bytes nor none for " + key))
+            }
+          }
+        }
+        effect::Exit::Failed(e) => k(sync::HostStorageRead::ReadError("storage.get failed for " + key + ": " + effect_err_msg(e)))
+        effect::Exit::Interrupted => k(sync::HostStorageRead::ReadError("storage.get interrupted for " + key))
+      }
+    },
+  )
+}
+
+/// Pure non-blocking async write of one JSON document to host storage (`storage.set`),
+/// NEVER pumping `shell_native::drain_until`.
+fn write_storage_json_k(
+  sh : shell::Shell,
+  key : String,
+  doc : base_codec::Json,
+  k : (Result[Unit, String]) -> Unit,
+) -> Unit {
+  let payload = base_codec::json_stringify(doc).to_bytes()
+  sh.call_k(
+    "storage.set",
+    base_codec::json_obj([("key", base_codec::json_str(key))]),
+    bytes=Some(payload),
+    fn(ex : effect::Exit[shell::Answer]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(_) => k(Ok(()))
+        effect::Exit::Failed(e) => k(Err("storage.set failed for key " + key + ": " + effect_err_msg(e)))
+        effect::Exit::Interrupted => k(Err("storage.set interrupted for key " + key))
+      }
+    },
+  )
+}
+
+/// Open and run all required schema migrations / covering indexes on an account DB (`:memory:` or `account-<sub>`).
+fn open_and_migrate_account_db(sh : shell::Shell, db_name : String) -> Result[sql::Sql, String] {
+  let acct = match store::open_account_db(sh, db_name) {
+    sql::SqlResult::Ok(a) => a
+    sql::SqlResult::Err(e) => return Err("open_account_db failed: " + e.to_string())
+  }
+  match store::ensure_md_kept(acct.db) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      acct.db.close()
+      return Err("ensure_md_kept failed: " + e.to_string())
+    }
+  }
+  match store::ensure_kept(acct.db) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      acct.db.close()
+      return Err("ensure_kept failed: " + e.to_string())
+    }
+  }
+  match store::ensure_moved(acct.db) {
+    sql::SqlResult::Ok(_) => ()
+    sql::SqlResult::Err(e) => {
+      acct.db.close()
+      return Err("ensure_moved failed: " + e.to_string())
+    }
+  }
+  // Ensure derived `chat` columns (`hidden`, `led`, `watched`) and covering `chat_recent` index exist.
+  match acct.db.all("PRAGMA table_info(chat)") {
+    sql::SqlResult::Ok(cols) => {
+      let mut has_hidden = false
+      let mut has_led = false
+      let mut has_watched = false
+      for i in 0..<cols.length() {
+        let cname = sql::col_text(cols[i], 1)
+        if cname == "hidden" {
+          has_hidden = true
+        } else if cname == "led" {
+          has_led = true
+        } else if cname == "watched" {
+          has_watched = true
+        }
+      }
+      if !has_hidden {
+        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+      }
+      if !has_led {
+        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN led INTEGER NOT NULL DEFAULT 0")
+      }
+      if !has_watched {
+        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN watched INTEGER NOT NULL DEFAULT 0")
+      }
+      match acct.db.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_recent'") {
+        sql::SqlResult::Ok(idx_rows) => {
+          if idx_rows.length() > 0 {
+            let idx_sql = sql::col_text(idx_rows[0], 0)
+            if !idx_sql.contains("WHERE archived = 0") {
+              let _ = acct.db.exec("DROP INDEX chat_recent")
+            }
+          }
+        }
+        sql::SqlResult::Err(_) => ()
+      }
+      let _ = acct.db.exec(
+        "CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;\n" +
+        "CREATE INDEX IF NOT EXISTS chat_client ON chat (station, client_key) WHERE client_key IS NOT NULL;\n" +
+        "CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);\n" +
+        "DROP INDEX IF EXISTS chat_marked;"
+      )
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  Ok(acct.db)
+}
+
+fn sync_mem_accounts_from_list(
+  sess : RuntimeSession,
+  list : Array[views::StoredAccount],
+  sessions : Map[String, String],
+) -> Unit {
+  sess.core.auth_store.accounts.clear()
+  sess.core.account_sessions.clear()
+  sess.accounts.clear()
+  for i in 0..<list.length() {
+    let a = list[i]
+    let sid = match sessions.get(a.sub) { Some(s) => s; None => "" }
+    if sid.length() > 0 {
+      sess.core.account_sessions.set(a.sub, sid)
+    }
+    sess.core.auth_store.register_account(a)
+    sess.accounts.push(AccountInfo::{
+      sub: a.sub,
+      email: a.email,
+      name: a.name,
+      picture: a.picture,
+      access: a.access,
+      refresh: a.refresh,
+      access_expires: a.access_expires,
+      session: sid,
+    })
+  }
+}
+
+/// Synchronously apply an atomic switch from the unauthenticated `:memory:` DB to `subject`'s
+/// dedicated on-disk SQLite DB (`account-<sanitized_sub>.db`), swapping ALL DB holders.
+/// Refuses switching if already bound to a different `sub` (`account_sub_mismatch`).
+fn runtime_switch_to_account_db_now(
+  sess : RuntimeSession,
+  subject : String,
+  host_purges_opt : Option[base_codec::Json],
+  host_purges_shared : Bool,
+  person_lock_opt : Option[base_codec::Json],
+) -> Result[Unit, String] {
+  if subject.length() == 0 {
+    return Err("account_sub_mismatch: empty subject")
+  }
+  match sess.core.db_account_sub {
+    Some(existing) => {
+      if existing != subject {
+        return Err("account_sub_mismatch: expected " + existing + ", got " + subject)
+      }
+      sess.core.membership.set_unauthenticated(false)
+      sess.core.membership.clear_session_invalidated()
+      return Ok(())
+    }
+    None => ()
+  }
+  let db_name = encode_account_db_name(subject)
+  let new_db = match open_and_migrate_account_db(sess.sh, db_name) {
+    Ok(d) => d
+    Err(e) => return Err(e)
+  }
+  let _ = store::put_account_doc(new_db, "conn_seq", sess.device_conn_seq.to_string())
+  // Seed SQLite `account_doc("prefs")` from host `device/prefs` if empty in the account DB.
+  match store::get_device_prefs(new_db) {
+    sql::SqlResult::Ok(base_codec::Json::Obj(existing_fs)) => {
+      if existing_fs.length() == 0 && sess.prefs.keys().length() > 0 {
+        let seed_pairs : Array[(String, base_codec::Json)] = []
+        let pks = sess.prefs.keys()
+        for i in 0..<pks.length() {
+          match sess.prefs.get(pks[i]) {
+            Some(v) => seed_pairs.push((pks[i], v))
+            None => ()
+          }
+        }
+        let _ = store::put_account_doc(new_db, "prefs", base_codec::json_stringify(base_codec::json_obj(seed_pairs)))
+      }
+    }
+    _ => ()
+  }
+  match store::get_device_prefs(new_db) {
+    sql::SqlResult::Ok(pj) => match base_codec::json_get(pj, "lang") {
+      Some(base_codec::Json::Str(s)) => { sess.core.lang = if s == "en" { "en" } else { "zh" } }
+      _ => ()
+    }
+    _ => ()
+  }
+  // Close any stale runtime mesh transports & per-station md_stores from unauth context.
+  let mkeys = sess.mesh_transports.keys()
+  for i in 0..<mkeys.length() {
+    match sess.mesh_transports.get(mkeys[i]) {
+      Some(ctrl) => ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+      None => ()
+    }
+  }
+  sess.mesh_transports.clear()
+  let mdks = sess.md_stores.keys()
+  for i in 0..<mdks.length() {
+    match sess.md_stores.get(mdks[i]) {
+      Some(ms) => ms.clear()
+      None => ()
+    }
+  }
+  sess.md_stores.clear()
+  sess.station_online.clear()
+  kept_purge_where(sess, fn(_ : protocol::Topic) -> Bool { true })
+
+  let old_db = sess.db
+  match sess.core.switch_account_db(
+    new_db,
+    subject,
+    host_purges_doc=host_purges_opt,
+    host_purges_shared=host_purges_shared,
+  ) {
+    Err(e) => {
+      new_db.close()
+      return Err(e)
+    }
+    Ok(_) => ()
+  }
+  sess.db = new_db
+  match sess.cloud {
+    Some(cs) => cs.switch_db(new_db)
+    None => ()
+  }
+  match person_lock_opt {
+    Some(pjson) => { let _ = sess.core.load_person_lock_json(pjson, subject) }
+    None => ()
+  }
+  if sess.core.workspace == "ws-default" {
+    match store::list_workspaces(new_db) {
+      sql::SqlResult::Ok(ws_rows) => {
+        if ws_rows.length() > 0 {
+          sess.core.switch_workspace(ws_rows[0].id)
+        }
+      }
+      sql::SqlResult::Err(_) => ()
+    }
+  }
+  old_db.close()
+  Ok(())
+}
+
+/// Non-blocking async preparation for transitioning from unauthenticated `:memory:` to `subject`'s
+/// dedicated on-disk SQLite DB: reads per-account `device/pending_purges/<sub >` + `person_lock`
+/// asynchronously via `sh.call_k`, then atomically swaps all DB holders.
+fn runtime_prepare_account_db_k(
+  sess : RuntimeSession,
+  subject : String,
+  k : (Result[Unit, String]) -> Unit,
+) -> Unit {
+  match sess.core.db_account_sub {
+    Some(existing) => {
+      if existing != subject {
+        k(Err("account_sub_mismatch: expected " + existing + ", got " + subject))
+      } else {
+        sess.core.membership.set_unauthenticated(false)
+        sess.core.membership.clear_session_invalidated()
+        k(Ok(()))
+      }
+      return
+    }
+    None => ()
+  }
+  let sub_host_key = sync::host_pending_purges_key_for_sub(subject)
+  let finish_with_purges = fn(host_purges_opt : Option[base_codec::Json], is_shared : Bool) -> Unit {
+    read_storage_json_state_k(sess.sh, sync::person_lock_storage_key(subject), fn(prd : sync::HostStorageRead) -> Unit {
+      let person_lock_opt = match prd {
+        sync::HostStorageRead::Found(pj) => Some(pj)
+        _ => None
+      }
+      k(runtime_switch_to_account_db_now(sess, subject, host_purges_opt, is_shared, person_lock_opt))
+    })
+  }
+  read_storage_json_state_k(sess.sh, sub_host_key, fn(rd : sync::HostStorageRead) -> Unit {
+    match rd {
+      sync::HostStorageRead::Found(j) => finish_with_purges(Some(j), false)
+      sync::HostStorageRead::Absent => {
+        read_storage_json_state_k(sess.sh, sync::HOST_PENDING_PURGES_KEY, fn(srd : sync::HostStorageRead) -> Unit {
+          match srd {
+            sync::HostStorageRead::Found(sj) => finish_with_purges(Some(sj), true)
+            _ => finish_with_purges(None, false)
+          }
+        })
+      }
+      sync::HostStorageRead::ReadError(reason) => {
+        log_runtime_warn("per-account pending purges unreadable (" + reason + "); falling back to SQLite meta")
+        finish_with_purges(None, false)
+      }
+    }
+  })
+}
+
 fn parse_stored_accounts(raw : base_codec::Json) -> Array[AccountInfo] {
   let out : Array[AccountInfo] = []
+  let sessions = sync::parse_stored_account_sessions(raw)
+  match sync::parse_stored_accounts_strict(raw) {
+    Some(strict_list) => {
+      for i in 0..<strict_list.length() {
+        let a = strict_list[i]
+        let sid = match sessions.get(a.sub) { Some(s) => s; None => "" }
+        out.push(AccountInfo::{
+          sub: a.sub,
+          email: a.email,
+          name: a.name,
+          picture: a.picture,
+          access: a.access,
+          refresh: a.refresh,
+          access_expires: a.access_expires,
+          session: sid,
+        })
+      }
+      return out
+    }
+    None => ()
+  }
   match raw {
     base_codec::Json::Arr(xs) => {
       for i in 0..<xs.length() {
@@ -613,24 +964,244 @@ fn parse_stored_accounts(raw : base_codec::Json) -> Array[AccountInfo] {
         if sub.length() == 0 {
           continue
         }
-        let email = match opt_str_param(a, "email") {
-          Some(s) => s
-          None => ""
+        let email = match opt_str_param(a, "email") { Some(s) => s; None => "" }
+        let name = match opt_str_param(a, "name") { Some(s) => s; None => email }
+        let picture = match opt_str_param(a, "picture") { Some(s) => s; None => "" }
+        let access = match opt_str_param(a, "access") { Some(s) => s; None => "" }
+        let refresh = match opt_str_param(a, "refresh") { Some(s) => s; None => "" }
+        let exp : Int64 = match base_codec::json_get(a, "access_expires") {
+          Some(base_codec::Json::Num(n, repr)) => if repr.length() > 0 && !repr.contains(".") {
+            match base_codec::parse_int64_str(repr) { Some(v) => v; None => n.to_int64() }
+          } else { n.to_int64() }
+          _ => 0L
         }
-        let name = match opt_str_param(a, "name") {
-          Some(s) => s
-          None => email
-        }
-        let picture = match opt_str_param(a, "picture") {
-          Some(s) => s
-          None => ""
-        }
-        out.push(AccountInfo::{ sub: sub, email: email, name: name, picture: picture })
+        let sid = match opt_str_param(a, "session") { Some(s) => s; None => "" }
+        out.push(AccountInfo::{
+          sub: sub,
+          email: email,
+          name: name,
+          picture: picture,
+          access: access,
+          refresh: refresh,
+          access_expires: exp,
+          session: sid,
+        })
       }
     }
     _ => ()
   }
   out
+}
+
+/// Convert runtime `StorageRead` to `sync::HostStorageRead` preserving strict `Absent` vs `ReadError`.
+fn to_host_storage_read(sr : StorageRead) -> sync::HostStorageRead {
+  match sr {
+    StorageRead::Found(j) => sync::HostStorageRead::Found(j)
+    StorageRead::Absent => sync::HostStorageRead::Absent
+    StorageRead::ReadError(m) => sync::HostStorageRead::ReadError(m)
+  }
+}
+
+fn strip_trailing_slash_rt(s : String) -> String {
+  let mut end = s.length()
+  while end > 0 && s.slice(end - 1, end) == "/" {
+    end -= 1
+  }
+  s.slice(0, end)
+}
+
+fn bump_runtime_session_gen(sess : RuntimeSession) -> Int64 {
+  sess.session_gen += 1L
+  match sess.cloud {
+    Some(cs) => { let _ = cs.bump_session_gen() }
+    None => ()
+  }
+  sess.session_gen
+}
+
+/// Bind and wire production commit hooks + dynamic `/v1/events` WebSocket on live `sess.cloud`
+/// for the active DB account `(sub, session)`. Refuses cross-account binding with 0 side effects.
+fn wire_live_cloud_sync(
+  sess : RuntimeSession,
+  cs : sync::CloudSync,
+  sub : String,
+  session_id : String,
+) -> Unit {
+  if sub.length() > 0 {
+    let _ = cs.bind_account_context(sub, session=session_id)
+  }
+  cs.set_cred_epoch_getter(fn(ws : String) -> Int64 {
+    sess.core.membership.cred_epoch_of(ws)
+  })
+  cs.set_seq_provider(fn() -> Int64 {
+    sess.core.membership.next_cloud_seq()
+  })
+  cs.set_commit_hooks(
+    on_me_fetched=Some(fn(me : sync::CloudMe, req_seq : Int64) -> Unit {
+      if sess.core.membership.is_session_invalidated() {
+        return
+      }
+      match sess.core.commit_cloud_me(me, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
+        Ok(true) => {
+          emit_topic_refresh(sess, "workspaces")
+          emit_topic_refresh(sess, "workspace")
+          emit_topic_refresh(sess, "stations")
+          emit_topic_refresh(sess, "chats")
+        }
+        _ => ()
+      }
+    }),
+    on_workspace_fetched=Some(fn(ws : sync::CloudWorkspace, req_seq : Int64) -> Unit {
+      if sess.core.membership.is_session_invalidated() {
+        return
+      }
+      match sess.core.commit_cloud_workspace(ws, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
+        Ok(true) => {
+          emit_topic_refresh(sess, "workspace")
+          emit_topic_refresh(sess, "stations")
+          emit_topic_refresh(sess, "chats")
+        }
+        _ => ()
+      }
+    }),
+    on_unauthorized_err=Some(fn(_herr : sync::CloudHttpError) -> Unit {
+      let active_sub = sess.core.membership.effective_sub()
+      if active_sub.length() > 0 {
+        runtime_refresh_account_token(sess, active_sub, fn(_ : Result[String, String]) -> Unit {})
+      }
+    }),
+  )
+}
+
+/// Shared production OAuth token refresh path aligned 1:1 with TS `accounts.ts:299, 398-419, 581-606, 641-681`:
+/// - Uses `sess.refresh_coord` (`AccountRefreshCoordinator`) with pure async `storage.get`/`storage.set`.
+/// - Pre-request `#adoptStored` reads disk BEFORE sending `POST /v1/auth/refresh`.
+/// - 200 write-back & 401 removal both use serialized bidirectional disk CAS conditioned on `(sub, session, refresh)`.
+/// - Preserves all sibling accounts; NEVER installs a sibling account's token into active `sess.cloud`!
+/// - NEVER bumps station `cred_epoch`.
+fn runtime_refresh_account_token(
+  sess : RuntimeSession,
+  sub : String,
+  on_done : (Result[String, String]) -> Unit,
+) -> Unit {
+  let req_origin = match sess.cloud {
+    Some(c) => c.origin()
+    None => sess.origin
+  }
+  if req_origin.length() == 0 {
+    on_done(Err("missing cloud origin"))
+    return
+  }
+  let mut refresh_tok = ""
+  for i in 0..<sess.core.auth_store.accounts.length() {
+    if sess.core.auth_store.accounts[i].sub == sub {
+      refresh_tok = sess.core.auth_store.accounts[i].refresh
+      break
+    }
+  }
+  if refresh_tok.length() == 0 {
+    on_done(Err("missing refresh token"))
+    return
+  }
+  let expected_session = match sess.core.account_sessions.get(sub) {
+    Some(s) => s
+    None => ""
+  }
+  let active_db_sub = sess.core.membership.effective_sub()
+  let is_active_account = active_db_sub.length() > 0 && sub == active_db_sub
+  let req_session_gen = sess.session_gen
+  let host = sync::AccountRefreshHost::{
+    read_accounts_k: fn(rk : (sync::HostStorageRead) -> Unit) -> Unit {
+      read_storage_json_state_k(sess.sh, "accounts", rk)
+    },
+    write_accounts_k: fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+      write_storage_json_k(sess.sh, "accounts", doc, wk)
+    },
+    do_refresh_http_k: fn(rtok : String, now_ms : Int64, hk : (effect::Exit[Result[sync::RefreshedTokens, sync::RefreshTokenError]]) -> Unit) -> Unit {
+      sync::refresh_token_k(sess.sh, req_origin, rtok, now_ms, hk)
+    },
+    get_mem_tuple: fn(target_sub : String) -> Option[(String, String)] {
+      if is_active_account && sess.session_gen != req_session_gen {
+        return None
+      }
+      for i in 0..<sess.core.auth_store.accounts.length() {
+        if sess.core.auth_store.accounts[i].sub == target_sub {
+          let sid = match sess.core.account_sessions.get(target_sub) { Some(s) => s; None => "" }
+          return Some((sid, sess.core.auth_store.accounts[i].refresh))
+        }
+      }
+      None
+    },
+    on_adopt_or_update: fn(
+      updated : views::StoredAccount,
+      _sid : String,
+      all_accts : Array[views::StoredAccount],
+      all_sessions : Map[String, String],
+    ) -> Unit {
+      sync_mem_accounts_from_list(sess, all_accts, all_sessions)
+      let _ = store::put_account_doc(
+        sess.db,
+        "accounts",
+        base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+      )
+      // ONLY install rotated token into live `sess.cloud` when `sub` is the active DB account!
+      if updated.sub == sess.core.membership.effective_sub() && updated.access.length() > 0 {
+        match sess.cloud {
+          Some(cs) => cs.set_origin_and_token("", updated.access)
+          None => ()
+        }
+      }
+      emit_topic_refresh(sess, "accounts")
+    },
+    on_invalidated: fn(
+      inv_sub : String,
+      inv_sid : String,
+      inv_ref : String,
+      remaining_accts : Array[views::StoredAccount],
+      remaining_sessions : Map[String, String],
+    ) -> Unit {
+      let exp_sid_opt : Option[String] = if inv_sid.length() > 0 { Some(inv_sid) } else { None }
+      let invalidated = sess.core.invalidate_session(
+        inv_sub,
+        expected_session=exp_sid_opt,
+        expected_refresh=Some(inv_ref),
+        persist_accounts=false,
+      )
+      sync_mem_accounts_from_list(sess, remaining_accts, remaining_sessions)
+      let _ = store::put_account_doc(
+        sess.db,
+        "accounts",
+        base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+      )
+      if invalidated && inv_sub == sess.core.membership.effective_sub() {
+        let _ = bump_runtime_session_gen(sess)
+        match sess.cloud {
+          Some(cs) => {
+            cs.clear_all_credentials()
+            cs.clear_token()
+            cs.stop()
+          }
+          None => ()
+        }
+        emit_topic_refresh(sess, "accounts")
+        emit_topic_refresh(sess, "workspaces")
+      } else if invalidated {
+        emit_topic_refresh(sess, "accounts")
+      }
+    },
+    now_ms: fn() -> Int64 { pion_core_wall_now_ms() },
+  }
+  let _ = sess.core.rt.fork_quiet_named("auth-refresh:" + sub, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sess.refresh_coord.refresh_k(host, sub, expected_session, refresh_tok, fn(outcome : sync::AccountRefreshOutcome) -> Unit {
+      match outcome {
+        sync::AccountRefreshOutcome::Ok(access, _) => on_done(Ok(access))
+        sync::AccountRefreshOutcome::InvalidSession(_, msg, _) => on_done(Err(msg))
+        sync::AccountRefreshOutcome::Stale(msg) => on_done(Err(msg))
+        sync::AccountRefreshOutcome::Transient(msg) => on_done(Err(msg))
+      }
+      fk(effect::Exit::Succeeded(()))
+    })
+  })
 }
 
 fn sess_lang(sess : RuntimeSession) -> String {
@@ -662,6 +1233,9 @@ fn is_station_online(sess : RuntimeSession, addr : String) -> Bool {
 
 fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views::StationBrief] {
   let out : Array[views::StationBrief] = []
+  if ws_scope.length() > 0 && !sess.core.can_read_workspace(ws_scope) {
+    return out
+  }
   let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
   let lang = sess_lang(sess)
   let overview_by_addr : Map[String, base_codec::Json] = Map::new()
@@ -670,8 +1244,11 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
     sql::SqlResult::Ok(rows) => {
       for i in 0..<rows.length() {
         let r = rows[i]
-        // Strict workspace isolation: never leak stations from another workspace (Red-Team Gate #9).
+        // Strict workspace isolation + unified MembershipAuthority O(1) read gate.
         if prefix.length() > 0 && !r.address.starts_with(prefix) {
+          continue
+        }
+        if !sess.core.can_read_station(r.address) {
           continue
         }
         let doc = match base_codec::json_parse(r.json) {
@@ -690,7 +1267,10 @@ fn station_briefs_live(sess : RuntimeSession, ws_scope : String) -> Array[views:
     let cloud_sts = sync::list_workspace_stations(sess.db, ws_scope)
     for i in 0..<cloud_sts.length() {
       let cs = cloud_sts[i]
-      let addr = ws_scope + "/" + cs.id
+      let addr = sync::canonical_station(ws_scope, cs.id)
+      if !sess.core.can_read_station(addr) {
+        continue
+      }
       seen.set(addr, true)
       let doc = match overview_by_addr.get(addr) {
         Some(d) => d
@@ -918,92 +1498,29 @@ pub extern "C" fn pion_core_runtime_start(
     }
     None => ()
   }
-  let db_name = if accounts.length() > 0 {
-    encode_account_db_name(accounts[0].sub)
+  // Account-owned DB lifecycle (Invariant 1):
+  // - When signed out (`accounts` empty), NEVER open or touch `default.db`: open an isolated
+  //   ephemeral `:memory:` DB with `unauthenticated = true` (0 leakage of any prior account data).
+  // - When signed in, open `account-<sanitized_sub>.db` directly.
+  let is_unauth = accounts.length() == 0
+  let db_name = if is_unauth {
+    ":memory:"
   } else {
-    "default"
+    encode_account_db_name(accounts[0].sub)
   }
-  let acct = match store::open_account_db(sh, db_name) {
-    sql::SqlResult::Ok(a) => a
-    sql::SqlResult::Err(e) => {
-      emit_fatal("open_account_db failed: " + e.to_string())
+  let db = match open_and_migrate_account_db(sh, db_name) {
+    Ok(d) => d
+    Err(msg) => {
+      emit_fatal(msg)
       return 0
     }
-  }
-  match store::ensure_md_kept(acct.db) {
-    sql::SqlResult::Ok(_) => ()
-    sql::SqlResult::Err(e) => {
-      emit_fatal("ensure_md_kept failed: " + e.to_string())
-      return 0
-    }
-  }
-  match store::ensure_kept(acct.db) {
-    sql::SqlResult::Ok(_) => ()
-    sql::SqlResult::Err(e) => {
-      emit_fatal("ensure_kept failed: " + e.to_string())
-      return 0
-    }
-  }
-  match store::ensure_moved(acct.db) {
-    sql::SqlResult::Ok(_) => ()
-    sql::SqlResult::Err(e) => {
-      emit_fatal("ensure_moved failed: " + e.to_string())
-      return 0
-    }
-  }
-  // Ensure derived `chat` columns (`hidden`, `led`, `watched`) and covering `chat_recent` index exist.
-  match acct.db.all("PRAGMA table_info(chat)") {
-    sql::SqlResult::Ok(cols) => {
-      let mut has_hidden = false
-      let mut has_led = false
-      let mut has_watched = false
-      for i in 0..<cols.length() {
-        let cname = sql::col_text(cols[i], 1)
-        if cname == "hidden" {
-          has_hidden = true
-        } else if cname == "led" {
-          has_led = true
-        } else if cname == "watched" {
-          has_watched = true
-        }
-      }
-      if !has_hidden {
-        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
-      }
-      if !has_led {
-        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN led INTEGER NOT NULL DEFAULT 0")
-      }
-      if !has_watched {
-        let _ = acct.db.exec("ALTER TABLE chat ADD COLUMN watched INTEGER NOT NULL DEFAULT 0")
-      }
-      // Align with `client/core-ts/src/db/schema.ts:482-496`: only rebuild `chat_recent` if it lacks `WHERE archived = 0`,
-      // and ensure covering partial `chat_marks` replaces legacy `chat_marked`.
-      match acct.db.all("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'chat_recent'") {
-        sql::SqlResult::Ok(idx_rows) => {
-          if idx_rows.length() > 0 {
-            let idx_sql = sql::col_text(idx_rows[0], 0)
-            if !idx_sql.contains("WHERE archived = 0") {
-              let _ = acct.db.exec("DROP INDEX chat_recent")
-            }
-          }
-        }
-        sql::SqlResult::Err(_) => ()
-      }
-      let _ = acct.db.exec(
-        "CREATE INDEX IF NOT EXISTS chat_recent ON chat (archived, pinned_at DESC, last_active DESC, station, ord, id, mine, hidden, led, watched, thread, session) WHERE archived = 0;\n" +
-        "CREATE INDEX IF NOT EXISTS chat_client ON chat (station, client_key) WHERE client_key IS NOT NULL;\n" +
-        "CREATE INDEX IF NOT EXISTS chat_marks ON chat (station, archived, id, tone, asks) WHERE archived = 0 AND (tone IS NOT NULL OR asks = 1);\n" +
-        "DROP INDEX IF EXISTS chat_marked;"
-      )
-    }
-    sql::SqlResult::Err(_) => ()
   }
   let mut default_ws = match prefs_map.get("workspace") {
     Some(base_codec::Json::Str(s)) => if s.length() > 0 { s } else { "" }
     _ => ""
   }
   if default_ws.length() == 0 {
-    match store::list_workspaces(acct.db) {
+    match store::list_workspaces(db) {
       sql::SqlResult::Ok(ws_rows) => {
         if ws_rows.length() > 0 {
           default_ws = ws_rows[0].id
@@ -1016,11 +1533,11 @@ pub extern "C" fn pion_core_runtime_start(
     default_ws = "ws-default"
   }
   let mut default_st = "st-local"
-  let cloud_default_sts = sync::list_workspace_stations(acct.db, default_ws)
+  let cloud_default_sts = sync::list_workspace_stations(db, default_ws)
   if cloud_default_sts.length() > 0 {
     default_st = default_ws + "/" + cloud_default_sts[0].id
   } else {
-    match store::list_stations(acct.db, kind="overview") {
+    match store::list_stations(db, kind="overview") {
       sql::SqlResult::Ok(st_rows) => {
         let prefix = default_ws + "/"
         for i in 0..<st_rows.length() {
@@ -1041,8 +1558,18 @@ pub extern "C" fn pion_core_runtime_start(
   } else {
     offline_transport()
   }
+  let active_access = if accounts.length() > 0 { accounts[0].access } else { "" }
+  let active_sub = if accounts.length() > 0 { accounts[0].sub } else { "" }
+  let active_session = if accounts.length() > 0 { accounts[0].session } else { "" }
   let cloud_opt : Option[sync::CloudSync] = if origin.length() > 0 {
-    Some(sync::CloudSync::new(sh, acct.db, origin))
+    Some(sync::CloudSync::new(
+      sh,
+      db,
+      origin,
+      token=active_access,
+      bound_sub=active_sub,
+      bound_session=active_session,
+    ))
   } else {
     None
   }
@@ -1096,7 +1623,7 @@ pub extern "C" fn pion_core_runtime_start(
   if legacy_conn > storage_device_conn {
     storage_device_conn = legacy_conn
   }
-  let db_conn : Int64 = match store::get_account_doc(acct.db, "conn_seq") {
+  let db_conn : Int64 = match store::get_account_doc(db, "conn_seq") {
     sql::SqlResult::Ok(Some(raw)) => store::parse_conn_seq_raw(raw)
     _ => 0L
   }
@@ -1114,7 +1641,7 @@ pub extern "C" fn pion_core_runtime_start(
       let err_msg = "connection sequence exhausted; restart the app to continue"
       g_last_conn_seq_persist_err[0] = Some(err_msg)
       log_runtime_warn(err_msg)
-      acct.db.close()
+      db.close()
       shell_native::stop()
       emit_fatal(err_msg)
       return 0
@@ -1174,7 +1701,7 @@ pub extern "C" fn pion_core_runtime_start(
   }
   g_last_device_conn_seq[0] = device_conn_seq
   g_last_conn_seq_persist_err[0] = persist_err
-  match store::put_account_doc(acct.db, "conn_seq", device_conn_seq.to_string()) {
+  match store::put_account_doc(db, "conn_seq", device_conn_seq.to_string()) {
     sql::SqlResult::Ok(_) => ()
     sql::SqlResult::Err(e) => {
       let err_msg = "conn_seq sqlite mirror failed: " + e.to_string()
@@ -1186,14 +1713,14 @@ pub extern "C" fn pion_core_runtime_start(
     default_ws,
     default_st,
     rt,
-    acct.db,
+    db,
     transport,
     fn() -> Unit {},
     conn_seq=Some(device_conn_seq),
   )
   core.utc_offset_min = pion_core_utc_offset_min(pion_core_wall_now_ms())
   // Seed SQLite `account_doc("prefs")` from host `device/prefs` on first boot if SQLite prefs are empty.
-  match store::get_device_prefs(acct.db) {
+  match store::get_device_prefs(db) {
     sql::SqlResult::Ok(base_codec::Json::Obj(existing_fs)) => {
       if existing_fs.length() == 0 && prefs_map.keys().length() > 0 {
         let seed_pairs : Array[(String, base_codec::Json)] = []
@@ -1204,12 +1731,12 @@ pub extern "C" fn pion_core_runtime_start(
             None => ()
           }
         }
-        let _ = store::put_account_doc(acct.db, "prefs", base_codec::json_stringify(base_codec::json_obj(seed_pairs)))
+        let _ = store::put_account_doc(db, "prefs", base_codec::json_stringify(base_codec::json_obj(seed_pairs)))
       }
     }
     _ => ()
   }
-  match store::get_device_prefs(acct.db) {
+  match store::get_device_prefs(db) {
     sql::SqlResult::Ok(pj) => match base_codec::json_get(pj, "lang") {
       Some(base_codec::Json::Str(s)) => { core.lang = if s == "en" { "en" } else { "zh" } }
       _ => ()
@@ -1219,12 +1746,40 @@ pub extern "C" fn pion_core_runtime_start(
   core.set_on_prefs_saved(fn(next_prefs : base_codec::Json) -> Result[Unit, String] {
     write_storage_json(sh, "device/prefs", base_codec::json_obj([("device", next_prefs)]))
   })
+  core.set_on_accounts_persisted(fn(accounts_doc : base_codec::Json) -> Result[Unit, String] {
+    write_storage_json(sh, "accounts", accounts_doc)
+  })
+  core.membership.set_host_pending_purges_reader(fn(key : String) -> sync::HostStorageRead {
+    to_host_storage_read(read_storage_json_state(sh, key))
+  })
+  // Non-blocking single-in-flight async host purge mirror (Invariant 2: ZERO `drain_until` in commits!).
+  core.membership.set_host_pending_purges_async_writer(fn(
+    key : String,
+    doc : base_codec::Json,
+    done : (Result[Unit, String]) -> Unit,
+  ) -> Unit {
+    write_storage_json_k(sh, key, doc, done)
+  })
   if origin.length() > 0 {
     core.set_cloud_origin(origin)
   }
-  if accounts.length() > 0 {
+  if is_unauth {
+    core.membership.set_unauthenticated(true)
+  } else {
     let a0 = accounts[0]
-    core.set_db_account_sub(a0.sub)
+    let sub_host_key = sync::host_pending_purges_key_for_sub(a0.sub)
+    let (host_purges_opt, host_purges_shared) : (Option[base_codec::Json], Bool) = match read_storage_json_state(sh, sub_host_key) {
+      StorageRead::Found(j) => (Some(j), false)
+      StorageRead::Absent => match read_storage_json_state(sh, sync::HOST_PENDING_PURGES_KEY) {
+        StorageRead::Found(sj) => (Some(sj), true)
+        _ => (None, false)
+      }
+      StorageRead::ReadError(reason) => {
+        log_runtime_warn("per-account pending purges unreadable (" + reason + "); falling back to SQLite meta")
+        (None, false)
+      }
+    }
+    let _ = core.set_db_account_sub(a0.sub, host_purges_doc=host_purges_opt, host_purges_shared=host_purges_shared)
     core.set_viewer(a0.email, sub=a0.sub, role="owner")
     match read_storage_json(sh, sync::person_lock_storage_key(a0.sub)) {
       Some(pjson) => {
@@ -1234,21 +1789,27 @@ pub extern "C" fn pion_core_runtime_start(
     }
     for i in 0..<accounts.length() {
       let ai = accounts[i]
+      if ai.session.length() > 0 {
+        core.account_sessions.set(ai.sub, ai.session)
+      }
       core.auth_store.register_account(views::StoredAccount::{
         sub: ai.sub,
         email: ai.email,
         name: ai.name,
         picture: ai.picture,
-        access: "",
-        refresh: "",
-        access_expires: 0.to_int64(),
+        access: ai.access,
+        refresh: ai.refresh,
+        access_expires: ai.access_expires,
       })
     }
+    // Retry any persisted `(account_sub, ws)` pending purges on startup before serving views.
+    let _ = core.retry_pending_purges()
   }
   let sess = RuntimeSession::{
     sh: sh,
-    db: acct.db,
+    db: db,
     core: core,
+    refresh_coord: sync::AccountRefreshCoordinator::new(),
     accounts: accounts,
     prefs: prefs_map,
     station_online: Map::new(),
@@ -1260,6 +1821,8 @@ pub extern "C" fn pion_core_runtime_start(
     mesh_transports: Map::new(),
     cloud: cloud_opt,
     origin: origin,
+    session_gen: 1L,
+    device_conn_seq: device_conn_seq,
     live_sync_enabled: false,
     device_app: "desktop",
     device_locale: "",
@@ -1270,6 +1833,154 @@ pub extern "C" fn pion_core_runtime_start(
   core.set_on_runtime_boundary(fn(ev : sync::AuthBoundaryEvent) -> Unit {
     handle_runtime_auth_boundary(sess, ev)
   })
+  core.set_on_session_invalidated(fn(_sub : String) -> Unit {
+    let _ = bump_runtime_session_gen(sess)
+  })
+  core.set_on_workspace_dropped(fn(_ws : String, stations : Array[String]) -> Unit {
+    for i in 0..<stations.length() {
+      let st = stations[i]
+      match sess.mesh_transports.get(st) {
+        Some(ctrl) => {
+          sess.mesh_transports.remove(st)
+          ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
+        }
+        None => ()
+      }
+      match sess.md_stores.get(st) {
+        Some(ms) => {
+          ms.clear()
+          sess.md_stores.remove(st)
+        }
+        None => ()
+      }
+      sess.station_online.remove(st)
+    }
+  })
+  core.set_on_credential_refresh(fn(ws : String) -> Unit {
+    match sess.cloud {
+      Some(cs) => {
+        cs.invalidate_workspace_credential(ws)
+        let mkeys = sess.mesh_transports.keys()
+        for i in 0..<mkeys.length() {
+          let st = mkeys[i]
+          if sess.core.membership.station_workspace(st, fallback_ws=sess.core.workspace) == ws {
+            match sess.mesh_transports.get(st) {
+              Some(ctrl) => {
+                let dev_id = match ctrl.device_id() { Some(d) => d; None => "" }
+                if dev_id.length() > 0 {
+                  let captured_epoch = sess.core.membership.cred_epoch_of(ws)
+                  let req_session_gen = sess.session_gen
+                  let _ = sess.core.rt.fork_quiet_named("cred-refresh:" + st, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+                    cs.fetch_member_credential_k(
+                      ws,
+                      dev_id,
+                      pion_core_wall_now_ms() / 1000L,
+                      fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+                        if sess.session_gen != req_session_gen || sess.core.membership.cred_epoch_of(ws) != captured_epoch || !sess.core.can_read_workspace(ws) {
+                          ctrl.drop_link(reason="cred_epoch_changed")
+                          fk(effect::Exit::Succeeded(()))
+                          return
+                        }
+                        match ex {
+                          effect::Exit::Succeeded(mc) => {
+                            ctrl.refresh_credential_k(mc.credential, fn(rex : effect::Exit[sync::MeshAdmission]) -> Unit {
+                              if sess.session_gen != req_session_gen || sess.core.membership.cred_epoch_of(ws) != captured_epoch || !sess.core.can_read_workspace(ws) {
+                                ctrl.drop_link(reason="cred_epoch_changed")
+                                fk(effect::Exit::Succeeded(()))
+                                return
+                              }
+                              match rex {
+                                effect::Exit::Succeeded(_) => {
+                                  match sess.core.station_sync(st) {
+                                    Some(sy) => sy.bump_epoch()
+                                    None => ()
+                                  }
+                                }
+                                _ => ctrl.drop_link(reason="cred_refresh")
+                              }
+                              fk(effect::Exit::Succeeded(()))
+                            })
+                          }
+                          _ => {
+                            ctrl.drop_link(reason="cred_refresh_failed")
+                            fk(effect::Exit::Succeeded(()))
+                          }
+                        }
+                      },
+                      fresh=true,
+                    )
+                  })
+                } else {
+                  ctrl.drop_link(reason="cred_refresh")
+                }
+              }
+              None => ()
+            }
+          }
+        }
+      }
+      None => ()
+    }
+  })
+  core.set_on_workspace_refresh(fn(ws : String) -> Unit {
+    match sess.cloud {
+      Some(cs) => {
+        let req_seq = sess.core.membership.next_cloud_seq()
+        let orig_sub = cs.bound_sub()
+        let orig_session = cs.bound_session()
+        let orig_gen = sess.session_gen
+        let _ = sess.core.rt.fork_quiet_named("ws-refresh:" + ws, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+          sync::fetch_workspace_structured_k(
+            sess.sh,
+            cs.origin(),
+            cs.token(),
+            ws,
+            fn(ex : effect::Exit[Result[sync::CloudWorkspace, sync::CloudHttpError]]) -> Unit {
+              if sess.session_gen != orig_gen || cs.bound_sub() != orig_sub || cs.bound_session() != orig_session {
+                fk(effect::Exit::Succeeded(()))
+                return
+              }
+              match ex {
+                effect::Exit::Succeeded(Ok(cws)) => {
+                  match sess.core.commit_cloud_workspace(cws, req_seq=req_seq, now_ms=pion_core_wall_now_ms()) {
+                    Ok(true) => {
+                      emit_topic_refresh(sess, "workspace")
+                      emit_topic_refresh(sess, "stations")
+                    }
+                    _ => ()
+                  }
+                }
+                effect::Exit::Succeeded(Err(herr)) => {
+                  if herr.status == 403 || herr.status == 404 {
+                    cs.trigger_me_reconcile()
+                  } else if herr.status == 401 {
+                    let sub_now = sess.core.membership.effective_sub()
+                    if sub_now.length() > 0 {
+                      runtime_refresh_account_token(sess, sub_now, fn(_ : Result[String, String]) -> Unit {})
+                    }
+                  }
+                }
+                _ => ()
+              }
+              fk(effect::Exit::Succeeded(()))
+            },
+          )
+        })
+      }
+      None => ()
+    }
+  })
+  // Wire production CloudSync commit hooks, monotonic seq provider, cred_epoch guard, and
+  // dynamic-token `/v1/events` WebSocket consumption when signed in with an access token.
+  match sess.cloud {
+    Some(cs) => {
+      wire_live_cloud_sync(sess, cs, active_sub, active_session)
+      if !is_unauth && active_access.length() > 0 {
+        cs.start_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+      }
+    }
+    None => ()
+  }
   g_session[0] = Some(sess)
   // Emit authoritative startup handshake `{"id": 0, "auth": {"conn": N, ...}}` via host sink.
   let _ = core.emit_auth_handshake()
@@ -1316,13 +2027,51 @@ fn affected_topic_for_call(call_name : String) -> Option[String] {
 }
 
 fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec::Json) -> Unit {
-  let req_origin = match opt_str_param(params, "origin") {
-    Some(o) => o
-    None => sess.origin
+  if sess.core.membership.is_unauthenticated() {
+    let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+      code: "unauthenticated",
+      message: "account not signed in",
+    })
+    let (out_j, out_b) = protocol::encode_core_event(ev)
+    emit_wire(out_j, payload=out_b)
+    return
   }
-  let token = match opt_str_param(params, "token") {
+  let trusted_origin = if sess.origin.length() > 0 {
+    sess.origin
+  } else {
+    match sess.cloud {
+      Some(c) => c.origin()
+      None => ""
+    }
+  }
+  let param_origin = match opt_str_param(params, "origin") {
+    Some(o) => o
+    None => ""
+  }
+  // Pin trusted cloud origin: NEVER transmit this account's access_token to a different origin
+  // or replace live `sess.origin` / `sess.cloud.origin`!
+  if param_origin.length() > 0 && trusted_origin.length() > 0 &&
+  strip_trailing_slash_rt(param_origin) != strip_trailing_slash_rt(trusted_origin) {
+    let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+      code: "origin_mismatch",
+      message: "origin_mismatch: cloud origin is pinned to " + trusted_origin,
+    })
+    let (out_j, out_b) = protocol::encode_core_event(ev)
+    emit_wire(out_j, payload=out_b)
+    return
+  }
+  let req_origin = if trusted_origin.length() > 0 { trusted_origin } else { param_origin }
+  let candidate_token = match opt_str_param(params, "token") {
     Some(t) => t
     None => ""
+  }
+  let eff_token = if candidate_token.length() > 0 {
+    candidate_token
+  } else {
+    match sess.cloud {
+      Some(c) => c.token()
+      None => ""
+    }
   }
   let want_ws = opt_str_param(params, "workspace")
   if req_origin.length() == 0 {
@@ -1331,84 +2080,367 @@ fn handle_cloud_sync_call(sess : RuntimeSession, id : Int64, params : base_codec
     emit_wire(out_j, payload=out_b)
     return
   }
-  let cs = match sess.cloud {
-    Some(existing) => {
-      existing.set_origin_and_token(req_origin, token)
-      existing
-    }
-    None => {
-      let created = sync::CloudSync::new(sess.sh, sess.db, req_origin, token=token)
-      sess.cloud = Some(created)
-      created
-    }
-  }
+  // NEVER mutate live `sess.cloud` origin/token BEFORE verifying `me.sub == db_account_sub`!
+  // Capture `req_session_gen` BEFORE async I/O so any invalidate/stop/replace drops stale callbacks!
+  let me_seq = sess.core.membership.next_cloud_seq()
+  let req_session_gen = sess.session_gen
   let _ = sess.core.rt.fork_quiet_named("runtime:cloud.sync", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
-    cs.fetch_me_k(fn(ex : effect::Exit[sync::CloudMe]) -> Unit {
-      match ex {
-        effect::Exit::Failed(e) => {
-          let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
+    sync::fetch_me_structured_k(
+      sess.sh,
+      req_origin,
+      eff_token,
+      fn(ex : effect::Exit[Result[sync::CloudMe, sync::CloudHttpError]]) -> Unit {
+        if sess.session_gen != req_session_gen || sess.core.membership.is_session_invalidated() {
+          let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "session_invalidated", message: "session invalidated during cloud.sync" })
           let (out_j, out_b) = protocol::encode_core_event(ev)
           emit_wire(out_j, payload=out_b)
           fk(effect::Exit::Succeeded(()))
+          return
         }
-        effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
-        effect::Exit::Succeeded(me) => {
-          let viewer_role = if me.workspaces.length() > 0 && me.workspaces[0].role.length() > 0 {
-            me.workspaces[0].role
-          } else {
-            "member"
+        match ex {
+          effect::Exit::Failed(e) => {
+            let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
+            let (out_j, out_b) = protocol::encode_core_event(ev)
+            emit_wire(out_j, payload=out_b)
+            fk(effect::Exit::Succeeded(()))
           }
-          sess.core.set_viewer(me.email, sub=me.sub, role=viewer_role)
-          let ws_target : Option[String] = match want_ws {
-            Some(w) => Some(w)
-            None => if me.workspaces.length() > 0 { Some(me.workspaces[0].id) } else { None }
+          effect::Exit::Interrupted => fk(effect::Exit::Interrupted)
+          effect::Exit::Succeeded(Err(herr)) => {
+            let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: herr.message })
+            let (out_j, out_b) = protocol::encode_core_event(ev)
+            emit_wire(out_j, payload=out_b)
+            fk(effect::Exit::Succeeded(()))
           }
-          match ws_target {
-            None => {
-              let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
-                ("sub", base_codec::json_str(me.sub)),
-                ("email", base_codec::json_str(me.email)),
-                ("workspaces", base_codec::json_int(me.workspaces.length())),
-                ("relays", base_codec::json_int(me.relays.length())),
-              ]), None)
-              let (out_j, out_b) = protocol::encode_core_event(ok_ev)
-              emit_wire(out_j, payload=out_b)
-              fk(effect::Exit::Succeeded(()))
-            }
-            Some(wid) => {
-              cs.fetch_workspace_k(wid, fn(wex : effect::Exit[sync::CloudWorkspace]) -> Unit {
-                match wex {
-                  effect::Exit::Failed(e) => {
-                    let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
-                    let (out_j, out_b) = protocol::encode_core_event(ev)
-                    emit_wire(out_j, payload=out_b)
-                  }
-                  effect::Exit::Interrupted => ()
-                  effect::Exit::Succeeded(ws) => {
-                    let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
-                      ("sub", base_codec::json_str(me.sub)),
-                      ("email", base_codec::json_str(me.email)),
-                      ("workspaces", base_codec::json_int(me.workspaces.length())),
-                      ("relays", base_codec::json_int(me.relays.length())),
-                      ("workspace", base_codec::json_str(ws.id)),
-                      ("members", base_codec::json_int(ws.members.length())),
-                      ("stations", base_codec::json_int(ws.stations.length())),
-                    ]), None)
-                    let (out_j, out_b) = protocol::encode_core_event(ok_ev)
-                    emit_wire(out_j, payload=out_b)
-                    emit_topic_refresh(sess, "workspaces")
-                    emit_topic_refresh(sess, "workspace")
-                    emit_topic_refresh(sess, "stations")
-                    emit_topic_refresh(sess, "chats")
-                  }
-                }
+          effect::Exit::Succeeded(Ok(me)) => {
+            match sess.core.commit_cloud_me(me, req_seq=me_seq, now_ms=pion_core_wall_now_ms()) {
+              Err(msg) => {
+                // `account_sub_mismatch` or commit failure: live `sess.cloud` remains 100% untouched!
+                let err_code = if msg.starts_with("account_sub_mismatch") { "account_sub_mismatch" } else { "cloud_error" }
+                let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: err_code, message: msg })
+                let (out_j, out_b) = protocol::encode_core_event(ev)
+                emit_wire(out_j, payload=out_b)
                 fk(effect::Exit::Succeeded(()))
-              })
+                return
+              }
+              Ok(false) => {
+                // Stale `/v1/me` discarded: suppress ALL side effects (live `sess.cloud`, viewer, topics untouched).
+                let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([("stale", base_codec::json_bool(true))]), None)
+                let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                emit_wire(out_j, payload=out_b)
+                fk(effect::Exit::Succeeded(()))
+                return
+              }
+              Ok(true) => ()
+            }
+            // Verified `me.sub == db_account_sub`: now safely bind/update live `sess.cloud` (keeping pinned origin)!
+            let sess_sid = match sess.core.account_sessions.get(me.sub) { Some(s) => s; None => "" }
+            let cs = match sess.cloud {
+              Some(existing) => {
+                let _ = existing.bind_account_context(me.sub, session=sess_sid)
+                existing.set_origin_and_token("", eff_token)
+                existing
+              }
+              None => {
+                let created = sync::CloudSync::new(
+                  sess.sh,
+                  sess.db,
+                  req_origin,
+                  token=eff_token,
+                  bound_sub=me.sub,
+                  bound_session=sess_sid,
+                )
+                wire_live_cloud_sync(sess, created, me.sub, sess_sid)
+                sess.cloud = Some(created)
+                created
+              }
+            }
+            if eff_token.length() > 0 && !cs.is_events_ws_running() {
+              cs.start_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+            }
+            let viewer_role = if me.workspaces.length() > 0 && me.workspaces[0].role.length() > 0 {
+              me.workspaces[0].role
+            } else {
+              "member"
+            }
+            sess.core.set_viewer(me.email, sub=me.sub, role=viewer_role)
+            let ws_target : Option[String] = match want_ws {
+              Some(w) => Some(w)
+              None => if me.workspaces.length() > 0 { Some(me.workspaces[0].id) } else { None }
+            }
+            match ws_target {
+              None => {
+                let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+                  ("sub", base_codec::json_str(me.sub)),
+                  ("email", base_codec::json_str(me.email)),
+                  ("workspaces", base_codec::json_int(me.workspaces.length())),
+                  ("relays", base_codec::json_int(me.relays.length())),
+                ]), None)
+                let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                emit_wire(out_j, payload=out_b)
+                emit_topic_refresh(sess, "workspaces")
+                fk(effect::Exit::Succeeded(()))
+              }
+              Some(wid) => {
+                let ws_seq = sess.core.membership.next_cloud_seq()
+                cs.fetch_workspace_k(
+                  wid,
+                  fn(wex : effect::Exit[sync::CloudWorkspace]) -> Unit {
+                    if sess.session_gen != req_session_gen || sess.core.membership.is_session_invalidated() {
+                      let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "session_invalidated", message: "session invalidated during cloud.sync" })
+                      let (out_j, out_b) = protocol::encode_core_event(ev)
+                      emit_wire(out_j, payload=out_b)
+                      fk(effect::Exit::Succeeded(()))
+                      return
+                    }
+                    match wex {
+                      effect::Exit::Failed(e) => {
+                        let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: effect_err_msg(e) })
+                        let (out_j, out_b) = protocol::encode_core_event(ev)
+                        emit_wire(out_j, payload=out_b)
+                      }
+                      effect::Exit::Interrupted => ()
+                      effect::Exit::Succeeded(ws) => {
+                        match sess.core.commit_cloud_workspace(ws, req_seq=ws_seq, now_ms=pion_core_wall_now_ms()) {
+                          Err(msg) => {
+                            let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "cloud_error", message: msg })
+                            let (out_j, out_b) = protocol::encode_core_event(ev)
+                            emit_wire(out_j, payload=out_b)
+                          }
+                          Ok(false) => {
+                            // Explicitly treat rejected/stale workspace commit as stale without returning rejected metadata!
+                            let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+                              ("sub", base_codec::json_str(me.sub)),
+                              ("email", base_codec::json_str(me.email)),
+                              ("workspaces", base_codec::json_int(me.workspaces.length())),
+                              ("relays", base_codec::json_int(me.relays.length())),
+                              ("workspace", base_codec::json_str(ws.id)),
+                              ("stale", base_codec::json_bool(true)),
+                            ]), None)
+                            let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                            emit_wire(out_j, payload=out_b)
+                            emit_topic_refresh(sess, "workspaces")
+                          }
+                          Ok(true) => {
+                            let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+                              ("sub", base_codec::json_str(me.sub)),
+                              ("email", base_codec::json_str(me.email)),
+                              ("workspaces", base_codec::json_int(me.workspaces.length())),
+                              ("relays", base_codec::json_int(me.relays.length())),
+                              ("workspace", base_codec::json_str(ws.id)),
+                              ("members", base_codec::json_int(ws.members.length())),
+                              ("stations", base_codec::json_int(ws.stations.length())),
+                            ]), None)
+                            let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                            emit_wire(out_j, payload=out_b)
+                            emit_topic_refresh(sess, "workspaces")
+                            emit_topic_refresh(sess, "workspace")
+                            emit_topic_refresh(sess, "stations")
+                            emit_topic_refresh(sess, "chats")
+                          }
+                        }
+                      }
+                    }
+                    fk(effect::Exit::Succeeded(()))
+                  },
+                  persist=false,
+                )
+              }
             }
           }
         }
-      }
+      },
+    )
+  })
+}
+
+/// Complete a pure-`query` OAuth PKCE callback (`apps/mbui/src/sfcore/signin.mbt:432` &
+/// `client/core-ts/src/accounts.ts:230-252`): exchanges `(code, code_verifier, redirect_uri)`
+/// via `POST <origin>/v1/auth/token`, validates `subject` against immutable `db_account_sub`,
+/// persists `accounts` (epoch seconds + ULID `session`), clears `session_invalidated`, binds
+/// live `CloudSync` & starts `/v1/events` WebSocket, and returns `{ account, returnTo }`.
+fn handle_auth_complete_query_call(sess : RuntimeSession, id : Int64, query : String) -> Unit {
+  let outcome = sess.core.login_flow.complete_oauth_query(query)
+  if !outcome.ok {
+    let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+      code: outcome.error_code,
+      message: outcome.recovery_hint,
     })
+    let (out_j, out_b) = protocol::encode_core_event(ev)
+    emit_wire(out_j, payload=out_b)
+    return
+  }
+  let req_origin = if sess.origin.length() > 0 { sess.origin } else { sess.core.cloud_origin }
+  if outcome.code.length() == 0 || req_origin.length() == 0 {
+    let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+      code: "login_expired",
+      message: "登录已过期，请重新登录",
+    })
+    let (out_j, out_b) = protocol::encode_core_event(ev)
+    emit_wire(out_j, payload=out_b)
+    return
+  }
+  let req_session_gen = sess.session_gen
+  let _ = sess.core.rt.fork_quiet_named("runtime:auth.complete", fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    sync::exchange_auth_code_k(
+      sess.sh,
+      req_origin,
+      outcome.code,
+      outcome.verifier,
+      outcome.redirect_uri,
+      fn(ex : effect::Exit[Result[sync::AuthTokenExchange, sync::CloudHttpError]]) -> Unit {
+        if sess.session_gen != req_session_gen {
+          let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+            code: "login_expired",
+            message: "登录已过期，请重新登录",
+          })
+          let (out_j, out_b) = protocol::encode_core_event(ev)
+          emit_wire(out_j, payload=out_b)
+          fk(effect::Exit::Succeeded(()))
+          return
+        }
+        match ex {
+          effect::Exit::Succeeded(Ok(tok)) => {
+            // Invariant 1: Enforce immutable account/DB binding & switch from `:memory:` to
+            // `account-<sanitized_sub>.db` FIRST BEFORE persisting `accounts`, publishing login,
+            // or starting `CloudSync` + `/v1/events` WebSocket!
+            match sess.core.db_account_sub {
+              Some(existing) => if existing != tok.subject {
+                let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+                  code: "account_sub_mismatch",
+                  message: "account_sub_mismatch: expected " + existing + ", got " + tok.subject,
+                })
+                let (out_j, out_b) = protocol::encode_core_event(ev)
+                emit_wire(out_j, payload=out_b)
+                fk(effect::Exit::Succeeded(()))
+                return
+              }
+              None => ()
+            }
+            runtime_prepare_account_db_k(sess, tok.subject, fn(db_res : Result[Unit, String]) -> Unit {
+              if sess.session_gen != req_session_gen {
+                let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+                  code: "login_expired",
+                  message: "登录已过期，请重新登录",
+                })
+                let (out_j, out_b) = protocol::encode_core_event(ev)
+                emit_wire(out_j, payload=out_b)
+                fk(effect::Exit::Succeeded(()))
+                return
+              }
+              match db_res {
+                Err(msg) => {
+                  let err_code = if msg.starts_with("account_sub_mismatch") { "account_sub_mismatch" } else { "sql_error" }
+                  let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: err_code, message: msg })
+                  let (out_j, out_b) = protocol::encode_core_event(ev)
+                  emit_wire(out_j, payload=out_b)
+                  fk(effect::Exit::Succeeded(()))
+                  return
+                }
+                Ok(_) => ()
+              }
+              let session_id = sync::generate_ulid(pion_core_wall_now_ms(), sess.sh.random(16))
+              let eff_name = if tok.name.length() > 0 { tok.name } else { tok.email }
+              let new_stored = views::StoredAccount::{
+                sub: tok.subject,
+                email: tok.email,
+                name: eff_name,
+                picture: tok.picture,
+                access: tok.access_token,
+                refresh: tok.refresh_token,
+                access_expires: tok.expires_at,
+              }
+              sess.refresh_coord.upsert_account_cas_k(
+                fn(rk : (sync::HostStorageRead) -> Unit) -> Unit {
+                  read_storage_json_state_k(sess.sh, "accounts", rk)
+                },
+                fn(doc : base_codec::Json, wk : (Result[Unit, String]) -> Unit) -> Unit {
+                  write_storage_json_k(sess.sh, "accounts", doc, wk)
+                },
+                new_stored,
+                session_id,
+                fn(ures : Result[(Array[views::StoredAccount], Map[String, String]), String]) -> Unit {
+                  match ures {
+                    Err(msg) => {
+                      let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+                        code: "storage_error",
+                        message: msg,
+                      })
+                      let (out_j, out_b) = protocol::encode_core_event(ev)
+                      emit_wire(out_j, payload=out_b)
+                      fk(effect::Exit::Succeeded(()))
+                      return
+                    }
+                    Ok((all_accts, all_sessions)) => {
+                      let _ = bump_runtime_session_gen(sess)
+                      sess.core.membership.clear_session_invalidated()
+                      sess.core.membership.set_unauthenticated(false)
+                      sync_mem_accounts_from_list(sess, all_accts, all_sessions)
+                      sess.core.set_viewer(tok.email, sub=tok.subject)
+                      sess.core.login_flow.mark_completed(tok.subject, outcome.return_to)
+                      let _ = store::put_account_doc(
+                        sess.db,
+                        "accounts",
+                        base_codec::json_stringify(views::project_accounts_topic(sess.core.auth_store)),
+                      )
+                      let cs = match sess.cloud {
+                        Some(existing) => {
+                          let _ = existing.bind_account_context(tok.subject, session=session_id)
+                          existing.set_origin_and_token("", tok.access_token)
+                          existing
+                        }
+                        None => {
+                          let created = sync::CloudSync::new(
+                            sess.sh,
+                            sess.db,
+                            req_origin,
+                            token=tok.access_token,
+                            bound_sub=tok.subject,
+                            bound_session=session_id,
+                          )
+                          wire_live_cloud_sync(sess, created, tok.subject, session_id)
+                          sess.cloud = Some(created)
+                          created
+                        }
+                      }
+                      if cs.origin().length() > 0 {
+                        cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+                      }
+                      // NEVER expose `access_token`, `refresh_token`, `code`, or `verifier`!
+                      let account_view = base_codec::json_obj([
+                        ("sub", base_codec::json_str(tok.subject)),
+                        ("email", base_codec::json_str(tok.email)),
+                        ("name", base_codec::json_str(eff_name)),
+                        ("picture", base_codec::json_str(tok.picture)),
+                      ])
+                      let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
+                        ("ok", base_codec::json_bool(true)),
+                        ("account", account_view),
+                        ("returnTo", base_codec::json_str(outcome.return_to)),
+                      ]), None)
+                      let (out_j, out_b) = protocol::encode_core_event(ok_ev)
+                      emit_wire(out_j, payload=out_b)
+                      emit_topic_refresh(sess, "accounts")
+                      emit_topic_refresh(sess, "workspaces")
+                      fk(effect::Exit::Succeeded(()))
+                    }
+                  }
+                },
+              )
+            })
+            return
+          }
+          _ => {
+            let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+              code: "login_expired",
+              message: "登录已过期，请重新登录",
+            })
+            let (out_j, out_b) = protocol::encode_core_event(ev)
+            emit_wire(out_j, payload=out_b)
+          }
+        }
+        fk(effect::Exit::Succeeded(()))
+      },
+    )
   })
 }
 
@@ -1482,11 +2514,19 @@ fn evaluate_runtime_topic(
     if th_param.is_none() && sess_param.is_none() {
       return Some(protocol::CoreEvent::Waiting(id))
     }
+    let (consistent_st, consistent_th, consistent_sess) = match sess.core.resolve_consistent_chat_target(st, th_param, sess_param) {
+      Ok(t) => t
+      Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "chat_selector_mismatch", message: msg }))
+    }
+    let (resolved_st, resolved_th, chat_meta) = resolve_thread_and_chat_meta(sess, consistent_st, consistent_th, consistent_sess)
+    // Authorize BOTH input AND final moved destination!
+    if !sess.core.can_read_station(st) || !sess.core.can_read_station(resolved_st) {
+      return Some(protocol::CoreEvent::Waiting(id))
+    }
     let compact = match topic.param("compact") {
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    let (resolved_st, resolved_th, chat_meta) = resolve_thread_and_chat_meta(sess, st, th_param, sess_param)
     let online = is_station_online(sess, resolved_st)
     let ws_of_st = match resolved_st.index_of("/") {
       idx if idx > 0 => resolved_st.slice(0, idx)
@@ -1500,17 +2540,12 @@ fn evaluate_runtime_topic(
         break
       }
     }
-    let rows_lim = sess.core.chat_sub_window_rows_for(id, resolved_st, resolved_th, sess_param)
-    // Do not anchor `project_chat_by_params` at a persisted `chat.place` (`at` / `at_offset`) in Part 1:
-    // `views/chat_view.pion` currently hardcodes `newer: false` and Pion has not yet implemented
-    // `chat.newer` / `chat.latest` window extension, so opening mid-thread would hide newer tail
-    // messages with no way to load them. Wire place-anchored opening together with live `newer`
-    // computation and `chat.newer` / `chat.latest` as one cohesive abstraction in a follow-up PR.
+    let rows_lim = sess.core.chat_sub_window_rows_for(id, resolved_st, resolved_th, consistent_sess)
     match views::project_chat_by_params(
       sess.db,
-      st,
-      th_param,
-      sess_param,
+      resolved_st,
+      resolved_th,
+      consistent_sess,
       compact,
       sess_viewer_email(sess),
       now_ms,
@@ -1532,6 +2567,9 @@ fn evaluate_runtime_topic(
       Some(base_codec::Json::Str(s)) => s
       _ => sess.core.workspace
     }
+    if sess.core.membership.is_unauthenticated() || sess.core.membership.is_session_invalidated() || (ws_scope.length() > 0 && !sess.core.can_read_workspace(ws_scope)) {
+      return Some(protocol::CoreEvent::Value(id, base_codec::json_arr([]), None))
+    }
     let prefix = if ws_scope.length() > 0 { ws_scope + "/" } else { "" }
     let overview_by_addr : Map[String, base_codec::Json] = Map::new()
     let overview_addrs : Array[String] = []
@@ -1540,6 +2578,9 @@ fn evaluate_runtime_topic(
         for i in 0..<rows.length() {
           let r = rows[i]
           if prefix.length() > 0 && !r.address.starts_with(prefix) {
+            continue
+          }
+          if !sess.core.can_read_station(r.address) {
             continue
           }
           let doc = match base_codec::json_parse(r.json) {
@@ -1593,7 +2634,10 @@ fn evaluate_runtime_topic(
       let cloud_sts = sync::list_workspace_stations(sess.db, ws_scope)
       for i in 0..<cloud_sts.length() {
         let cs = cloud_sts[i]
-        let addr = ws_scope + "/" + cs.id
+        let addr = sync::canonical_station(ws_scope, cs.id)
+        if addr.length() == 0 || !sess.core.can_read_station(addr) {
+          continue
+        }
         seen.set(addr, true)
         let doc = match overview_by_addr.get(addr) { Some(d) => d; None => base_codec::json_null() }
         push_station_item(addr, cs.id, cs.name, doc)
@@ -1784,8 +2828,81 @@ pub extern "C" fn pion_core_runtime_send(
             let _ = drain_and_emit(sess)
             return
           }
+          if call_name == "auth.complete" {
+            let pre_sub = match opt_str_param(params, "sub") { Some(s) => s; None => "" }
+            let pre_email = match opt_str_param(params, "email") { Some(s) => s; None => "" }
+            let has_pre_sub = pre_sub.length() > 0
+            let has_pre_acc = match opt_str_param(params, "access") { Some(s) => s.length() > 0; None => false }
+            match opt_str_param(params, "query") {
+              Some(q) => if q.length() > 0 && !has_pre_sub && !has_pre_acc {
+                handle_auth_complete_query_call(sess, id, q)
+                let _ = drain_and_emit(sess)
+                return
+              }
+              None => ()
+            }
+            // Direct-param `auth.complete`: atomically switch from `:memory:` to `account-<sub>.db`
+            // BEFORE `sess.core.handle_request` persists `accounts` or writes into `sess.db`!
+            if has_pre_sub && pre_email.length() > 0 {
+              match sess.core.db_account_sub {
+                Some(existing) => if existing != pre_sub {
+                  let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+                    code: "account_sub_mismatch",
+                    message: "account_sub_mismatch: expected " + existing + ", got " + pre_sub,
+                  })
+                  let (out_j, out_b) = protocol::encode_core_event(ev)
+                  emit_wire(out_j, payload=out_b)
+                  return
+                }
+                None => {
+                  let sub_host_key = sync::host_pending_purges_key_for_sub(pre_sub)
+                  let (hp_opt, hp_shared) : (Option[base_codec::Json], Bool) = match read_storage_json_state(sess.sh, sub_host_key) {
+                    StorageRead::Found(j) => (Some(j), false)
+                    StorageRead::Absent => match read_storage_json_state(sess.sh, sync::HOST_PENDING_PURGES_KEY) {
+                      StorageRead::Found(sj) => (Some(sj), true)
+                      _ => (None, false)
+                    }
+                    StorageRead::ReadError(_) => (None, false)
+                  }
+                  let pl_opt = read_storage_json(sess.sh, sync::person_lock_storage_key(pre_sub))
+                  match runtime_switch_to_account_db_now(sess, pre_sub, hp_opt, hp_shared, pl_opt) {
+                    Err(msg) => {
+                      let err_code = if msg.starts_with("account_sub_mismatch") { "account_sub_mismatch" } else { "sql_error" }
+                      let ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: err_code, message: msg })
+                      let (out_j, out_b) = protocol::encode_core_event(ev)
+                      emit_wire(out_j, payload=out_b)
+                      return
+                    }
+                    Ok(_) => ()
+                  }
+                }
+              }
+            }
+          }
+          if call_name == "auth.refresh" {
+            let sub = match opt_str_param(params, "sub") {
+              Some(s) => if s.length() > 0 { s } else { sess_viewer_sub(sess) }
+              None => sess_viewer_sub(sess)
+            }
+            if sub.length() == 0 {
+              let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "bad_params", message: "missing sub" })
+              let (out_j, out_b) = protocol::encode_core_event(err_ev)
+              emit_wire(out_j, payload=out_b)
+              return
+            }
+            runtime_refresh_account_token(sess, sub, fn(res : Result[String, String]) -> Unit {
+              let ev = match res {
+                Ok(_) => protocol::CoreEvent::Ok(id, base_codec::json_obj([("ok", base_codec::json_bool(true))]), None)
+                Err(msg) => protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "auth_error", message: msg })
+              }
+              let (out_j, out_b) = protocol::encode_core_event(ev)
+              emit_wire(out_j, payload=out_b)
+            })
+            let _ = drain_and_emit(sess)
+            return
+          }
           if call_name == "station.connect" {
-            let target_st = match opt_str_param(params, "station") {
+            let raw_target_st = match opt_str_param(params, "station") {
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
               None => sess.core.station
             }
@@ -1796,9 +2913,32 @@ pub extern "C" fn pion_core_runtime_send(
             let target_ws = if explicit_ws.length() > 0 {
               explicit_ws
             } else {
-              let pref = sync::station_workspace_prefix(target_st)
-              if pref.length() > 0 { pref } else { sess.core.workspace }
+              sess.core.membership.station_workspace(raw_target_st, fallback_ws=sess.core.workspace)
             }
+            if !sess.core.can_read_workspace(target_ws) {
+              let err_code = if sess.core.membership.is_unauthenticated() { "unauthenticated" } else { "access_revoked" }
+              let err_msg = if sess.core.membership.is_unauthenticated() { "account not signed in" } else { "workspace access revoked" }
+              let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+                code: err_code,
+                message: err_msg,
+              })
+              let (out_j, out_b) = protocol::encode_core_event(err_ev)
+              emit_wire(out_j, payload=out_b)
+              return
+            }
+            let target_st = match sess.core.membership.bind_station_checked(target_ws, raw_target_st) {
+              Ok(canon) => canon
+              Err(msg) => {
+                let err_ev = protocol::CoreEvent::Err(id, protocol::CoreError::{
+                  code: "station_workspace_mismatch",
+                  message: msg,
+                })
+                let (out_j, out_b) = protocol::encode_core_event(err_ev)
+                emit_wire(out_j, payload=out_b)
+                return
+              }
+            }
+            let _ = sess.core.membership.persist_station_bindings(sess.db)
             let peer_opt = match opt_str_param(params, "peerId") {
               Some(p) => if p.length() > 0 { Some(p) } else { None }
               None => match opt_str_param(params, "endpointId") {
@@ -1825,24 +2965,50 @@ pub extern "C" fn pion_core_runtime_send(
                   Some(c) => c
                   None => ""
                 }
+                if static_cred.length() > 0 {
+                  // Only arms at initial `cred_epoch == 1`; NEVER re-arms stale static creds after epoch advance!
+                  sess.core.membership.set_static_credential(target_ws, static_cred)
+                }
                 let cloud_ref = sess.cloud
-                let get_cred = fn(dev_id : String, _fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
-                  if static_cred.length() > 0 {
-                    ck(effect::Exit::Succeeded(static_cred))
+                let core_ref = sess.core
+                let get_cred = fn(dev_id : String, fresh : Bool, ck : (effect::Exit[String]) -> Unit) -> Unit {
+                  if !core_ref.can_read_workspace(target_ws) {
+                    ck(effect::Exit::Failed(effect::EffectError::Custom("workspace access revoked")))
                     return
                   }
-                  match cloud_ref {
-                    Some(cs) => cs.fetch_member_credential_k(target_ws, dev_id, pion_core_wall_now_ms() / 1000.to_int64(), fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
-                      match ex {
-                        effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
-                        effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
-                        effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                  if fresh {
+                    let _ = core_ref.membership.bump_cred_epoch(target_ws)
+                  } else {
+                    match core_ref.membership.get_valid_static_credential(target_ws) {
+                      Some(sc) => {
+                        ck(effect::Exit::Succeeded(sc))
+                        return
                       }
-                    })
+                      None => ()
+                    }
+                  }
+                  let captured_epoch = core_ref.membership.cred_epoch_of(target_ws)
+                  match cloud_ref {
+                    Some(cs) => cs.fetch_member_credential_k(
+                      target_ws,
+                      dev_id,
+                      pion_core_wall_now_ms() / 1000.to_int64(),
+                      fn(ex : effect::Exit[sync::MemberCredential]) -> Unit {
+                        if core_ref.membership.cred_epoch_of(target_ws) != captured_epoch || !core_ref.can_read_workspace(target_ws) {
+                          ck(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
+                          return
+                        }
+                        match ex {
+                          effect::Exit::Succeeded(mc) => ck(effect::Exit::Succeeded(mc.credential))
+                          effect::Exit::Failed(e) => ck(effect::Exit::Failed(e))
+                          effect::Exit::Interrupted => ck(effect::Exit::Interrupted)
+                        }
+                      },
+                      fresh=fresh,
+                    )
                     None => ck(effect::Exit::Failed(effect::EffectError::Custom("missing cloud client for credential")))
                   }
                 }
-                let core_ref = sess.core
                 let cfg = sync::MeshStationConfig::new(
                   target_ws,
                   peer_id,
@@ -1866,6 +3032,9 @@ pub extern "C" fn pion_core_runtime_send(
               }
               None => {
                 if is_loopback_http_url(sess.origin) {
+                  let http_tr = sync::shell_http_transport(sess.sh, sess.origin)
+                  sess.core.events.set_transport(http_tr)
+                  sess.core.sync.set_transport(http_tr)
                   mode = "loopback_http"
                 }
               }
@@ -1885,21 +3054,23 @@ pub extern "C" fn pion_core_runtime_send(
             return
           }
           if call_name == "station.disconnect" {
-            let target_st = match opt_str_param(params, "station") {
+            let raw_target_st = match opt_str_param(params, "station") {
               Some(s) => if s.length() > 0 { s } else { sess.core.station }
               None => sess.core.station
             }
-            match sess.mesh_transports.get(target_st) {
+            let target_st = sess.core.membership.canonicalize(raw_target_st, fallback_ws=sess.core.workspace)
+            let lookup_st = if sess.mesh_transports.get(target_st).is_some() { target_st } else { raw_target_st }
+            match sess.mesh_transports.get(lookup_st) {
               Some(ctrl) => {
-                sess.core.detach_station_transport(target_st)
-                sess.mesh_transports.remove(target_st)
+                sess.core.detach_station_transport(lookup_st)
+                sess.mesh_transports.remove(lookup_st)
                 ctrl.close_k(fn(_ : effect::Exit[Unit]) -> Unit {})
               }
               None => ()
             }
             let ok_ev = protocol::CoreEvent::Ok(id, base_codec::json_obj([
               ("disconnected", base_codec::json_bool(true)),
-              ("station", base_codec::json_str(target_st)),
+              ("station", base_codec::json_str(lookup_st)),
             ]), None)
             let (out_j, out_b) = protocol::encode_core_event(ok_ev)
             emit_wire(out_j, payload=out_b)
@@ -1947,8 +3118,54 @@ pub extern "C" fn pion_core_runtime_send(
         protocol::CoreRequest::Unsubscribe(id, _, _) => sess.core.router.active_sub_topic(id)
         _ => None
       }
+      let auth_complete_info : Option[(String, String, String)] = match req {
+        protocol::CoreRequest::Call(_, call_name, params, _) => if call_name == "auth.complete" {
+          let sub = match opt_str_param(params, "sub") { Some(s) => s; None => "" }
+          let acc = match opt_str_param(params, "access") { Some(s) => s; None => "" }
+          let sid = match opt_str_param(params, "session") { Some(s) => s; None => "" }
+          if sub.length() > 0 && acc.length() > 0 { Some((sub, acc, sid)) } else { None }
+        } else {
+          None
+        }
+        _ => None
+      }
       match sess.core.handle_request(req) {
         Some(ev) => {
+          // If same-account `auth.complete` succeeded with a valid token, immediately update live
+          // `CloudSync` and start/restart `/v1/events` WebSocket (fixes startup-without-token lifecycle!).
+          match (ev, auth_complete_info) {
+            (protocol::CoreEvent::Ok(_, _, _), Some((sub, access, sid))) => {
+              sync_mem_accounts_from_list(sess, sess.core.auth_store.accounts, sess.core.account_sessions)
+              let eff_sub = sess.core.membership.effective_sub()
+              if eff_sub.length() == 0 || eff_sub == sub {
+                let _ = bump_runtime_session_gen(sess)
+                let cs = match sess.cloud {
+                  Some(existing) => {
+                    let _ = existing.bind_account_context(sub, session=sid)
+                    existing.set_origin_and_token("", access)
+                    existing
+                  }
+                  None => {
+                    let created = sync::CloudSync::new(
+                      sess.sh,
+                      sess.db,
+                      sess.origin,
+                      token=access,
+                      bound_sub=sub,
+                      bound_session=sid,
+                    )
+                    wire_live_cloud_sync(sess, created, sub, sid)
+                    sess.cloud = Some(created)
+                    created
+                  }
+                }
+                if cs.origin().length() > 0 {
+                  cs.restart_events_ws(fn(_ev : sync::CloudEvent) -> Unit {})
+                }
+              }
+            }
+            _ => ()
+          }
           let (out_j, out_b) = match sub_topic_opt {
             Some(topic) => sess.core.encode_sub_event(topic, ev)
             None =>
@@ -1994,6 +3211,7 @@ pub extern "C" fn pion_core_runtime_send(
 pub extern "C" fn pion_core_runtime_stop() -> Unit {
   match g_session[0] {
     Some(sess) => {
+      let _ = bump_runtime_session_gen(sess)
       sess.live_sync_enabled = false
       let mkeys = sess.mesh_transports.keys()
       for i in 0..<mkeys.length() {

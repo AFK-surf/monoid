@@ -185,7 +185,7 @@ struct LogUsePending {
 }
 
 pub struct MdStore {
-  pub db : sql::Sql
+  pub mut db : sql::Sql
   pub station : String
   read : Map[String, Option[Kept]]
   puts : Map[String, MdPut]
@@ -235,6 +235,27 @@ fn MdStore::pending_now(self : MdStore) -> Unit {
 
 pub fn MdStore::pending(self : MdStore) -> Bool {
   self.put_order.length() > 0 || self.touch_order.length() > 0 || self.use_order.length() > 0
+}
+
+/// Clear all in-memory read caches and pending write queues (`drop_workspace` / DB switch).
+pub fn MdStore::clear(self : MdStore) -> Unit {
+  self.read.clear()
+  self.puts.clear()
+  self.put_order.clear()
+  self.touches.clear()
+  self.touch_order.clear()
+  self.opened_at.clear()
+  self.uses.clear()
+  self.use_order.clear()
+  self.size = None
+  self.asked_later = false
+}
+
+/// Switch backing SQLite handle atomically, discarding any caches from the previous database.
+pub fn MdStore::switch_db(self : MdStore, new_db : sql::Sql) -> Unit {
+  self.clear()
+  self.kept_there = true
+  self.db = new_db
 }
 
 fn MdStore::kept_one(self : MdStore, key : String) -> Option[Kept] {

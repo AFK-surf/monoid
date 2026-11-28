@@ -102,6 +102,7 @@ test "CloudSync fetch_me, fetch_workspace, and credential caching/refresh" {
   }
   let cs = CloudSync::new(sh, db, "https://cloud.example", token="tok-123")
 
+  let ulid_ws1 = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
   // 1. fetch_me_k
   let mut got_me_email = ""
   let mut got_ws_count = 0
@@ -126,7 +127,7 @@ test "CloudSync fetch_me, fetch_workspace, and credential caching/refresh" {
   sh.answer(
     id0,
     base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
-    bytes=Some("{\"user\":{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},\"workspaces\":[{\"id\":\"ws-1\",\"name\":\"Core\",\"role\":\"owner\"}],\"relay_urls\":[\"https://r1.example\"]}".to_bytes()),
+    bytes=Some(("{\"user\":{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"name\":\"Alice\"},\"workspaces\":[{\"id\":\"" + ulid_ws1 + "\",\"name\":\"Core\",\"role\":\"owner\",\"created_at\":1700000000,\"stations\":1,\"members\":1}],\"relay_urls\":[\"https://r1.example\"]}").to_bytes()),
   )
   let _ = rt.run_ready()
   debug_assert(got_me_email == "alice@still.fail" && got_ws_count == 1 && got_relay_count == 1, "parsed /v1/me")
@@ -136,7 +137,7 @@ test "CloudSync fetch_me, fetch_workspace, and credential caching/refresh" {
   let mut got_station_name = ""
   let mut got_member_count = 0
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    cs.fetch_workspace_k("ws-1", fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+    cs.fetch_workspace_k(ulid_ws1, fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
       match ex {
         effect::Exit::Succeeded(ws) => {
           got_member_count = ws.members.length()
@@ -151,22 +152,22 @@ test "CloudSync fetch_me, fetch_workspace, and credential caching/refresh" {
   })
   let _ = rt.run_ready()
   let (id1, op1, args1) = pending[1]
-  debug_assert(op1 == "fetch" && j_str(args1, "url") == "https://cloud.example/v1/workspaces/ws-1", "GET /v1/workspaces/ws-1")
+  debug_assert(op1 == "fetch" && j_str(args1, "url") == "https://cloud.example/v1/workspaces/" + ulid_ws1, "GET /v1/workspaces/<ulid>")
   sh.answer(
     id1,
     base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
-    bytes=Some("{\"id\":\"ws-1\",\"name\":\"Core\",\"rev\":3,\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"Tokyo\",\"online\":true}]}".to_bytes()),
+    bytes=Some(("{\"id\":\"" + ulid_ws1 + "\",\"name\":\"Core\",\"rev\":3,\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"Tokyo\",\"online\":true}]}").to_bytes()),
   )
   let _ = rt.run_ready()
   debug_assert(got_member_count == 1 && got_station_name == "Tokyo", "parsed workspace")
-  debug_assert(mock_db.workspaces.get("ws-1").is_some(), "persisted workspace ws-1")
+  debug_assert(mock_db.workspaces.get(ulid_ws1).is_some(), "persisted workspace ulid_ws1")
 
   // 3. fetch_member_credential_k caching and expiry refresh
   let mut c1 = ""
   let mut c2 = ""
   let mut c3 = ""
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    cs.fetch_member_credential_k("ws-1", "dev-1", 1000.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
+    cs.fetch_member_credential_k(ulid_ws1, "dev-1", 1000.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
       match ex {
         effect::Exit::Succeeded(c) => c1 = c.credential
         _ => ()
@@ -176,7 +177,7 @@ test "CloudSync fetch_me, fetch_workspace, and credential caching/refresh" {
   })
   let _ = rt.run_ready()
   let (id2, _, args2) = pending[2]
-  debug_assert(j_str(args2, "url") == "https://cloud.example/v1/workspaces/ws-1/credential", "POST credential")
+  debug_assert(j_str(args2, "url") == "https://cloud.example/v1/workspaces/" + ulid_ws1 + "/credential", "POST credential")
   sh.answer(
     id2,
     base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
@@ -187,7 +188,7 @@ test "CloudSync fetch_me, fetch_workspace, and credential caching/refresh" {
 
   // Still valid at now=1500 -> served from cache without network call
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    cs.fetch_member_credential_k("ws-1", "dev-1", 1500.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
+    cs.fetch_member_credential_k(ulid_ws1, "dev-1", 1500.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
       match ex {
         effect::Exit::Succeeded(c) => c2 = c.credential
         _ => ()
@@ -200,7 +201,7 @@ test "CloudSync fetch_me, fetch_workspace, and credential caching/refresh" {
 
   // Near expiry at now=1950 (> 2000 - 60) -> refreshes from cloud
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    cs.fetch_member_credential_k("ws-1", "dev-1", 1950.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
+    cs.fetch_member_credential_k(ulid_ws1, "dev-1", 1950.to_int64(), fn(ex : effect::Exit[MemberCredential]) -> Unit {
       match ex {
         effect::Exit::Succeeded(c) => c3 = c.credential
         _ => ()
@@ -243,9 +244,11 @@ test "CloudSync /v1/events WebSocket event refresh and virtual-clock exponential
   cs.start_events_ws(fn(ev : CloudEvent) -> Unit {
     match ev {
       CloudEvent::WorkspaceChanged(wid, _) => seen_events.push("ws:" + wid)
-      CloudEvent::StationStatusChanged(wid, sid, on) => seen_events.push("st:" + wid + "/" + sid + ":" + on.to_string())
       CloudEvent::WorkspacesChanged(_) => seen_events.push("workspaces")
       CloudEvent::Release => seen_events.push("release")
+      CloudEvent::Relays => seen_events.push("relays")
+      CloudEvent::Admin(_) => seen_events.push("admin")
+      CloudEvent::Feedback(_) => seen_events.push("feedback")
       CloudEvent::Other(t, _) => seen_events.push("other:" + t)
     }
   })
@@ -263,21 +266,31 @@ test "CloudSync /v1/events WebSocket event refresh and virtual-clock exponential
   rt.advance(1)
   debug_assert(calls.length() == 2, "retried ws.open at 1000ms")
 
-  // Second connect succeeds -> enters ws.next loop
+  // Second connect succeeds -> triggers initial `/v1/me` reconcile AND enters ws.next loop
   let (open_id2, _, _) = calls[1]
   sh.answer(open_id2, base_codec::json_obj([("id", base_codec::json_int(55))]))
   let _ = rt.run_ready()
-  debug_assert(calls.length() == 3, "ws.next #1 issued")
-  let (next_id1, next_op1, _) = calls[2]
-  debug_assert(next_op1 == "ws.next", "ws.next")
+  let mut saw_initial_me = false
+  let mut next_id1 = 0.to_int64()
+  for i in 2..<calls.length() {
+    let (cid, cop, cargs) = calls[i]
+    if cop == "fetch" && j_str(cargs, "url") == "http://127.0.0.1:8080/v1/me" {
+      saw_initial_me = true
+    }
+    if cop == "ws.next" {
+      next_id1 = cid
+    }
+  }
+  debug_assert(saw_initial_me && next_id1 > 0.to_int64(), "initial /v1/me reconcile and ws.next #1 issued")
 
   // Deliver workspace event -> triggers automatic GET /v1/workspaces/ws-live refresh
+  let pre_ev_n = calls.length()
   sh.answer(next_id1, base_codec::json_obj([("text", base_codec::json_str("{\"type\":\"workspace\",\"id\":\"ws-live\"}"))]))
   let _ = rt.run_ready()
   debug_assert(seen_events.length() == 1 && seen_events[0] == "ws:ws-live", "received workspace event")
   let mut saw_ws_fetch = false
   let mut next_id2 = 0.to_int64()
-  for i in 3..<calls.length() {
+  for i in pre_ev_n..<calls.length() {
     let (cid, cop, cargs) = calls[i]
     if cop == "fetch" && j_str(cargs, "url") == "http://127.0.0.1:8080/v1/workspaces/ws-live" {
       saw_ws_fetch = true
@@ -686,10 +699,11 @@ test "P0-7: CloudSync fetch_workspace_k never overwrites station overview and pa
     sql::SqlResult::Err(e) => panic(e.to_string())
   }
 
+  let ulid_p07 = "01ARZ3NDEKTSV4RRFFQ69G5FBW"
   // Pre-seed a rich station-owned `overview` document with version/counts/joined/problems.
   let rich_overview = "{\"id\":\"st-1\",\"name\":\"Tokyo Studio\",\"version\":\"0.1.9500\",\"counts\":{\"chats\":42,\"running\":3,\"jobs\":2},\"joined\":true,\"problems\":[{\"code\":\"disk_low\",\"detail\":\"12 GB free\"}]}"
-  let _ = store::upsert_station_doc(db, "ws-1/st-1", "overview", rich_overview, confirmed=Some(1000.to_int64()))
-  match mock_db.station_docs.get("ws-1/st-1:overview") {
+  let _ = store::upsert_station_doc(db, ulid_p07 + "/st-1", "overview", rich_overview, confirmed=Some(1000.to_int64()))
+  match mock_db.station_docs.get(ulid_p07 + "/st-1:overview") {
     Some(before) => debug_assert(before == rich_overview, "pre-seeded station overview present")
     None => debug_assert(false, "expected pre-seeded station overview")
   }
@@ -697,7 +711,7 @@ test "P0-7: CloudSync fetch_workspace_k never overwrites station overview and pa
   let cs = CloudSync::new(sh, db, "https://cloud.example", token="tok-p07")
   let mut got_ws : Option[CloudWorkspace] = None
   let _ = rt.fork(fn(k : (effect::Exit[Unit]) -> Unit) -> Unit {
-    cs.fetch_workspace_k("ws-1", fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
+    cs.fetch_workspace_k(ulid_p07, fn(ex : effect::Exit[CloudWorkspace]) -> Unit {
       match ex {
         effect::Exit::Succeeded(ws) => {
           got_ws = Some(ws)
@@ -710,7 +724,7 @@ test "P0-7: CloudSync fetch_workspace_k never overwrites station overview and pa
   let _ = rt.run_ready()
   debug_assert(pending.length() == 1, "1 fetch_workspace_k pending")
   let (id0, _, _) = pending[0]
-  let cloud_payload = "{\"id\":\"ws-1\",\"name\":\"Core\",\"rev\":9,\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"Tokyo\",\"online\":true,\"endpoint_id\":\"ep-snake-1\",\"relay\":\"https://relay-1.example\",\"ips\":[\"10.0.0.1:443\",\"192.168.1.2:443\"],\"mode\":\"full\",\"emoji\":\"🗼\",\"version\":\"0.1.9500\",\"joined\":true},{\"id\":\"st-2\",\"name\":\"Rig\",\"online\":false,\"endpointId\":\"ep-camel-2\",\"relayUrl\":\"https://relay-2.example\",\"ips\":[\"10.0.0.2:443\"],\"mode\":\"tasks\"}]}"
+  let cloud_payload = "{\"id\":\"" + ulid_p07 + "\",\"name\":\"Core\",\"rev\":9,\"members\":[{\"sub\":\"u1\",\"email\":\"alice@still.fail\",\"role\":\"owner\"}],\"stations\":[{\"id\":\"st-1\",\"name\":\"Tokyo\",\"online\":true,\"endpoint_id\":\"ep-snake-1\",\"relay\":\"https://relay-1.example\",\"ips\":[\"10.0.0.1:443\",\"192.168.1.2:443\"],\"mode\":\"full\",\"emoji\":\"🗼\",\"version\":\"0.1.9500\",\"joined\":true},{\"id\":\"st-2\",\"name\":\"Rig\",\"online\":false,\"endpointId\":\"ep-camel-2\",\"relayUrl\":\"https://relay-2.example\",\"ips\":[\"10.0.0.2:443\"],\"mode\":\"tasks\"}]}"
   sh.answer(
     id0,
     base_codec::json_obj([("status", base_codec::json_int(200)), ("headers", base_codec::json_arr([])), ("redirected", base_codec::json_bool(false))]),
@@ -719,14 +733,14 @@ test "P0-7: CloudSync fetch_workspace_k never overwrites station overview and pa
   let _ = rt.run_ready()
 
   // 1. Station-owned `overview` row MUST remain byte-for-byte identical!
-  match mock_db.station_docs.get("ws-1/st-1:overview") {
+  match mock_db.station_docs.get(ulid_p07 + "/st-1:overview") {
     Some(after) => debug_assert(after == rich_overview, "station overview must NOT be overwritten by CloudSync")
     None => debug_assert(false, "station overview disappeared")
   }
-  debug_assert(mock_db.station_docs.get("ws-1/st-2:overview").is_none(), "CloudSync must not fabricate overview for st-2")
+  debug_assert(mock_db.station_docs.get(ulid_p07 + "/st-2:overview").is_none(), "CloudSync must not fabricate overview for st-2")
 
   // 2. Full raw workspace JSON persisted strictly in `workspace` table.
-  match mock_db.workspaces.get("ws-1") {
+  match mock_db.workspaces.get(ulid_p07) {
     Some(ws_raw) => debug_assert(ws_raw.contains("ep-snake-1") && ws_raw.contains("ep-camel-2"), "workspace raw_json preserved")
     None => debug_assert(false, "expected workspace row")
   }

@@ -1,0 +1,2972 @@
+// Single authoritative `MembershipAuthority` governing:
+// 1. Account-owned DB binding (`account_sub`, `unauthenticated` gate, `session_invalidated`).
+// 2. Non-reentrant serialized membership commit boundary (`in_commit_guard`) + single-in-flight
+//    async host purge mirror queue (`device/pending_purges/<sanitized_sub>`, zero blocking I/O in commits).
+// 3. Real TS DDL single-transaction `drop_workspace` cleanup (all base + `sqlite_master` optional tables,
+//    source-scoped `moved`, `new:<ws>` draft) and monotonic `op_gen` / `completed_purge_gen` reconciliation.
+// 4. Bidirectional monotonic Cloud commit sequencing + merged effective `account_doc("me")` synthesis.
+// 5. Strict `ws/st` station addressing (with permanently quarantined multi-owner bare aliases) and O(1) read gate.
+// 6. TS `accounts.ts:10, 50-69, 299, 398-419, 581-606, 641-681` epoch-second `StoredAccount`,
+//    26-char Crockford Base32 ULID, and serialized pre-request adopt + 200/401 bidirectional disk CAS refresh.
+
+import "base_codec"
+import "effect"
+import "shell"
+import "sql"
+import "store"
+import "views"
+
+pub let META_PENDING_PURGES_KEY : String = "membership:pending_purges"
+pub let META_COMPLETED_PURGE_GEN_KEY : String = "membership:completed_purge_gen"
+pub let META_STATION_BINDINGS_KEY : String = "membership:station_bindings"
+pub let META_REVOKED_WORKSPACES_KEY : String = "membership:revoked_workspaces"
+pub let HOST_PENDING_PURGES_PREFIX : String = "device/pending_purges/"
+pub let HOST_PENDING_PURGES_KEY : String = "device/pending_purges"
+
+let ULID_ALPHABET : String = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+/// Result of reading a host storage document, strictly distinguishing confirmed `Absent`
+/// from `ReadError` (I/O error, timeout, or corrupt JSON) so callers never treat read errors as absent.
+pub enum HostStorageRead {
+  Found(base_codec::Json)
+  Absent
+  ReadError(String)
+}
+
+fn ma_hex_digit(n : Int) -> String {
+  let chars = "0123456789abcdef"
+  chars.slice(n, n + 1)
+}
+
+/// Sanitize an account `sub` into a storage-safe segment keeping `[A-Za-z0-9-]` and escaping
+/// all other UTF-8 bytes as `_xx` (matching `encode_account_db_name` / TS `dbName`).
+pub fn sanitize_account_sub(sub : String) -> String {
+  let bs = sub.to_bytes()
+  let sb = StringBuilder::new()
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int() & 0xFF
+    let ok = (b >= 65 && b <= 90) || (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || b == 45
+    if ok {
+      sb.write_byte(bs[i])
+    } else {
+      sb.write_string("_")
+      sb.write_string(ma_hex_digit((b / 16) % 16))
+      sb.write_string(ma_hex_digit(b % 16))
+    }
+  }
+  sb.to_string()
+}
+
+/// Per-account host storage key (`device/pending_purges/<sanitized_sub>`) isolating each account's
+/// pending purge log and eliminating cross-account RMW races. Returns `""` if `sub` is empty.
+pub fn host_pending_purges_key_for_sub(sub : String) -> String {
+  if sub.length() == 0 {
+    return ""
+  }
+  HOST_PENDING_PURGES_PREFIX + sanitize_account_sub(sub)
+}
+
+/// Validate that a Cloud workspace or station ID is non-empty and contains no `/`, whitespace,
+/// or ASCII control characters (`< 0x20` or `0x7F`).
+pub fn is_valid_cloud_id(s : String) -> Bool {
+  let bs = s.to_bytes()
+  if bs.length() == 0 {
+    return false
+  }
+  for i in 0..<bs.length() {
+    let b = bs[i].to_int() & 0xFF
+    if b <= 0x20 || b == 0x7F || b == 0x2F {
+      return false
+    }
+  }
+  true
+}
+
+/// Strict station address resolver for workspace `ws`:
+/// - Rejects empty `raw_station`.
+/// - If `raw_station` contains `/`, its prefix MUST strictly equal `ws` (when `ws` is non-empty)
+///   and both workspace and station segments must be valid non-empty IDs.
+/// - Otherwise normalizes bare `raw_station` to `<ws>/<raw_station>` when `ws` is non-empty.
+pub fn resolve_station_for_workspace(ws : String, raw_station : String) -> Result[String, String] {
+  if raw_station.length() == 0 {
+    return Err("empty_station")
+  }
+  match raw_station.index_of("/") {
+    idx if idx >= 0 => {
+      let prefix = raw_station.slice(0, idx)
+      let rest = raw_station.slice(idx + 1, raw_station.length())
+      if !is_valid_cloud_id(prefix) || !is_valid_cloud_id(rest) {
+        return Err("invalid_station_address: " + raw_station)
+      }
+      if ws.length() > 0 && prefix != ws {
+        return Err("station_workspace_mismatch: station " + raw_station + " does not belong to workspace " + ws)
+      }
+      Ok(raw_station)
+    }
+    _ => {
+      if !is_valid_cloud_id(raw_station) {
+        return Err("invalid_station_address: " + raw_station)
+      }
+      if ws.length() > 0 {
+        Ok(ws + "/" + raw_station)
+      } else {
+        Ok(raw_station)
+      }
+    }
+  }
+}
+
+/// Canonicalize a station address against workspace `ws`, rejecting cross-workspace prefixes.
+/// Returns `""` if `raw_station` is empty or carries a different workspace prefix.
+pub fn canonical_station(ws : String, raw_station : String) -> String {
+  match resolve_station_for_workspace(ws, raw_station) {
+    Ok(s) => s
+    Err(_) => ""
+  }
+}
+
+/// Extract the bare station id from a canonical `ws/st` or bare `st` string.
+pub fn bare_station_id(raw_station : String) -> String {
+  match raw_station.index_of("/") {
+    idx if idx >= 0 => raw_station.slice(idx + 1, raw_station.length())
+    _ => raw_station
+  }
+}
+
+/// Whether `role` is a valid Cloud workspace membership role (`owner`, `admin`, or `member`).
+pub fn is_valid_workspace_role(role : String) -> Bool {
+  role == "owner" || role == "admin" || role == "member"
+}
+
+/// Numeric privilege rank for Cloud workspace roles (`owner > admin > member`).
+pub fn role_rank(role : String) -> Int {
+  if role == "owner" {
+    3
+  } else if role == "admin" {
+    2
+  } else if role == "member" {
+    1
+  } else {
+    0
+  }
+}
+
+/// Whether transitioning from `old_role` to `new_role` is a privilege downgrade.
+pub fn is_role_downgrade(old_role : String, new_role : String) -> Bool {
+  let old_r = role_rank(old_role)
+  let new_r = role_rank(new_role)
+  old_r > 0 && new_r > 0 && new_r < old_r
+}
+
+/// Whether transitioning from `old_role` to `new_role` is a privilege upgrade.
+pub fn is_role_upgrade(old_role : String, new_role : String) -> Bool {
+  let old_r = role_rank(old_role)
+  let new_r = role_rank(new_role)
+  old_r > 0 && new_r > 0 && new_r > old_r
+}
+
+fn push_unique_str_ma(xs : Array[String], v : String) -> Unit {
+  if v.length() == 0 {
+    return
+  }
+  for i in 0..<xs.length() {
+    if xs[i] == v {
+      return
+    }
+  }
+  xs.push(v)
+}
+
+fn remove_str_ma(xs : Array[String], v : String) -> Unit {
+  let kept : Array[String] = []
+  for i in 0..<xs.length() {
+    if xs[i] != v {
+      kept.push(xs[i])
+    }
+  }
+  xs.clear()
+  for i in 0..<kept.length() {
+    xs.push(kept[i])
+  }
+}
+
+fn contains_str_ma(xs : Array[String], v : String) -> Bool {
+  for i in 0..<xs.length() {
+    if xs[i] == v {
+      return true
+    }
+  }
+  false
+}
+
+/// Generate a valid 26-character Crockford Base32 ULID matching `client/core-ts/src/accounts.ts:711-723`.
+pub fn generate_ulid(now_ms : Int64, rand_bytes : Bytes) -> String {
+  let alpha = ULID_ALPHABET.to_bytes()
+  let mut time = if now_ms >= 0L { now_ms } else { 0L }
+  let ts_chars : Array[Byte] = [
+    48 as Byte, 48 as Byte, 48 as Byte, 48 as Byte, 48 as Byte,
+    48 as Byte, 48 as Byte, 48 as Byte, 48 as Byte, 48 as Byte,
+  ]
+  let mut i = 9
+  while i >= 0 {
+    let rem = (time % 32L).to_int()
+    ts_chars[i] = alpha[rem]
+    time = time / 32L
+    i -= 1
+  }
+  let sb = StringBuilder::new()
+  for j in 0..<10 {
+    sb.write_byte(ts_chars[j])
+  }
+  for j in 0..<16 {
+    let b = if j < rand_bytes.length() { rand_bytes[j].to_int() & 0xFF } else { 0 }
+    sb.write_byte(alpha[b % 32])
+  }
+  sb.to_string()
+}
+
+/// Validate a 26-character Crockford Base32 ULID (`0123456789ABCDEFGHJKMNPQRSTVWXYZ`).
+pub fn is_valid_ulid(s : String) -> Bool {
+  let bs = s.to_bytes()
+  if bs.length() != 26 {
+    return false
+  }
+  let alpha = ULID_ALPHABET.to_bytes()
+  for i in 0..<26 {
+    let c = bs[i]
+    let mut found = false
+    for j in 0..<alpha.length() {
+      if alpha[j] == c {
+        found = true
+        break
+      }
+    }
+    if !found {
+      return false
+    }
+  }
+  true
+}
+
+/// Validate a Cloud workspace ID strictly matching `cloud/src/api.ts:412` (`^[0-9A-HJKMNP-TV-Z]{26}$`).
+pub fn is_valid_cloud_workspace_id(s : String) -> Bool {
+  is_valid_ulid(s)
+}
+
+/// Serialize `StoredAccount` array strictly matching `client/core-ts/src/accounts.ts:10, 50-69`:
+/// MUST write `"access_expires"` (numeric Unix epoch seconds), NEVER `"accessExpires"`,
+/// and preserve optional `"session"` IDs across refreshes.
+pub fn serialize_stored_accounts(
+  accounts : Array[views::StoredAccount],
+  sessions : Option[Map[String, String]] = None,
+) -> base_codec::Json {
+  let out : Array[base_codec::Json] = []
+  for i in 0..<accounts.length() {
+    let a = accounts[i]
+    let fields : Array[(String, base_codec::Json)] = [
+      ("sub", base_codec::json_str(a.sub)),
+      ("email", base_codec::json_str(a.email)),
+      ("name", base_codec::json_str(a.name)),
+      ("picture", base_codec::json_str(a.picture)),
+      ("access", base_codec::json_str(a.access)),
+      ("refresh", base_codec::json_str(a.refresh)),
+      ("access_expires", base_codec::json_int64(a.access_expires)),
+    ]
+    match sessions {
+      Some(smap) => match smap.get(a.sub) {
+        Some(sid) => if sid.length() > 0 { fields.push(("session", base_codec::json_str(sid))) }
+        None => ()
+      }
+      None => ()
+    }
+    out.push(base_codec::json_obj(fields))
+  }
+  base_codec::json_arr(out)
+}
+
+/// Strictly parse persisted `accounts` JSON 1:1 with TS `client/core-ts/src/accounts.ts:50-63` `readStored`.
+/// Returns `None` if `raw` is not an array or ANY element is missing a required string field
+/// (`sub`, `email`, `name`, `picture`, `access`, `refresh`) or numeric `access_expires`.
+pub fn parse_stored_accounts_strict(raw : base_codec::Json) -> Option[Array[views::StoredAccount]] {
+  let xs = match raw {
+    base_codec::Json::Arr(a) => a
+    _ => return None
+  }
+  let out : Array[views::StoredAccount] = []
+  for i in 0..<xs.length() {
+    let item = xs[i]
+    match item {
+      base_codec::Json::Obj(_) => ()
+      _ => return None
+    }
+    let sub = match base_codec::json_get(item, "sub") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let email = match base_codec::json_get(item, "email") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let name = match base_codec::json_get(item, "name") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let picture = match base_codec::json_get(item, "picture") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let access = match base_codec::json_get(item, "access") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let refresh = match base_codec::json_get(item, "refresh") {
+      Some(base_codec::Json::Str(s)) => s
+      _ => return None
+    }
+    let access_expires = match base_codec::json_get(item, "access_expires") {
+      Some(base_codec::Json::Num(n, repr)) => {
+        if repr.length() > 0 && !repr.contains(".") && !repr.contains("e") && !repr.contains("E") {
+          match base_codec::parse_int64_str(repr) {
+            Some(v) => v
+            None => n.to_int64()
+          }
+        } else {
+          n.to_int64()
+        }
+      }
+      _ => return None
+    }
+    match base_codec::json_get(item, "session") {
+      None => ()
+      Some(base_codec::Json::Str(_)) => ()
+      _ => return None
+    }
+    out.push(views::StoredAccount::{
+      sub: sub,
+      email: email,
+      name: name,
+      picture: picture,
+      access: access,
+      refresh: refresh,
+      access_expires: access_expires,
+    })
+  }
+  Some(out)
+}
+
+/// Extract optional per-account `session` IDs (`sub -> session`) from persisted TS `accounts` JSON.
+pub fn parse_stored_account_sessions(raw : base_codec::Json) -> Map[String, String] {
+  let out : Map[String, String] = Map::new()
+  match raw {
+    base_codec::Json::Arr(xs) => {
+      for i in 0..<xs.length() {
+        let item = xs[i]
+        match (base_codec::json_get(item, "sub"), base_codec::json_get(item, "session")) {
+          (Some(base_codec::Json::Str(sub)), Some(base_codec::Json::Str(sid))) => {
+            if sub.length() > 0 && sid.length() > 0 {
+              out.set(sub, sid)
+            }
+          }
+          _ => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+// ── TS `accounts.ts:299, 398-419, 581-606, 641-681` Bidirectional Disk CAS Refresh Coordinator ──
+
+pub enum AccountRefreshOutcome {
+  Ok(String, Bool)
+  InvalidSession(Int, String, Bool)
+  Stale(String)
+  Transient(String)
+}
+
+pub struct AccountRefreshHost {
+  pub read_accounts_k : ((HostStorageRead) -> Unit) -> Unit
+  pub write_accounts_k : (base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit
+  pub do_refresh_http_k : (String, Int64, (effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit) -> Unit
+  pub get_mem_tuple : (String) -> Option[(String, String)]
+  pub on_adopt_or_update : (views::StoredAccount, String, Array[views::StoredAccount], Map[String, String]) -> Unit
+  pub on_invalidated : (String, String, String, Array[views::StoredAccount], Map[String, String]) -> Unit
+  pub now_ms : () -> Int64
+}
+
+/// Serialized per-host coordinator implementing TS `client/core-ts/src/accounts.ts`:
+/// - Serializes all read-modify-write disk commits to `accounts` through one `effect::Semaphore(1)`.
+/// - Deduplicates concurrent refreshes for the same `(sub, session, refresh)` tuple.
+/// - Pre-request `#adoptStored`: reads disk `accounts` BEFORE sending `POST /v1/auth/refresh`;
+///   if another core already rotated tokens for the same session, adopts the disk tuple (returning
+///   immediately with 0 HTTP requests if `access_expires - 60 > now_sec`, or refreshing with the
+///   adopted `refresh` token so the server never sees a revoked reused refresh token!).
+/// - 200 write-back CAS & 401 permanent removal CAS: both re-read latest disk `accounts` inside the
+///   serialized lock, verify `(sub, session, refresh)` still matches, preserve all sibling accounts
+///   verbatim, and abort retryably on `ReadError` without touching disk!
+pub struct AccountRefreshCoordinator {
+  lock : effect::Semaphore
+  in_flight : Map[String, Array[(AccountRefreshOutcome) -> Unit]]
+}
+
+pub fn AccountRefreshCoordinator::new() -> AccountRefreshCoordinator {
+  AccountRefreshCoordinator::{
+    lock: effect::Semaphore::new(1),
+    in_flight: Map::new(),
+  }
+}
+
+fn ma_effect_err_msg(e : effect::EffectError) -> String {
+  match e {
+    effect::EffectError::Custom(m) => m
+    _ => "effect error"
+  }
+}
+
+fn find_stored_idx(xs : Array[views::StoredAccount], sub : String) -> Int {
+  for i in 0..<xs.length() {
+    if xs[i].sub == sub {
+      return i
+    }
+  }
+  -1
+}
+
+/// Serialize a read-modify-write upsert of `account` (`session_id`) into host `accounts`,
+/// preserving all sibling accounts on disk and aborting on `ReadError`.
+pub fn AccountRefreshCoordinator::upsert_account_cas_k(
+  self : AccountRefreshCoordinator,
+  read_accounts_k : ((HostStorageRead) -> Unit) -> Unit,
+  write_accounts_k : (base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit,
+  account : views::StoredAccount,
+  session_id : String,
+  k : (Result[(Array[views::StoredAccount], Map[String, String]), String]) -> Unit,
+) -> Unit {
+  self.lock.with_permit_k(
+    fn(lk : (effect::Exit[Result[(Array[views::StoredAccount], Map[String, String]), String]]) -> Unit) -> Unit {
+      read_accounts_k(fn(rd : HostStorageRead) -> Unit {
+        let (disk_list, disk_sessions) : (Array[views::StoredAccount], Map[String, String]) = match rd {
+          HostStorageRead::ReadError(reason) => {
+            lk(effect::Exit::Succeeded(Err("accounts disk read failed: " + reason)))
+            return
+          }
+          HostStorageRead::Absent => ([], Map::new())
+          HostStorageRead::Found(doc) => match parse_stored_accounts_strict(doc) {
+            None => {
+              lk(effect::Exit::Succeeded(Err("accounts disk invalid json")))
+              return
+            }
+            Some(list) => (list, parse_stored_account_sessions(doc))
+          }
+        }
+        let next_list : Array[views::StoredAccount] = []
+        let mut replaced = false
+        for i in 0..<disk_list.length() {
+          if disk_list[i].sub == account.sub {
+            next_list.push(account)
+            replaced = true
+          } else {
+            next_list.push(disk_list[i])
+          }
+        }
+        if !replaced {
+          next_list.push(account)
+        }
+        if session_id.length() > 0 {
+          disk_sessions.set(account.sub, session_id)
+        }
+        let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
+        write_accounts_k(encoded, fn(wres : Result[Unit, String]) -> Unit {
+          match wres {
+            Ok(_) => lk(effect::Exit::Succeeded(Ok((next_list, disk_sessions))))
+            Err(e) => lk(effect::Exit::Succeeded(Err(e)))
+          }
+        })
+      })
+    },
+    fn(ex : effect::Exit[Result[(Array[views::StoredAccount], Map[String, String]), String]]) -> Unit {
+      match ex {
+        effect::Exit::Succeeded(r) => k(r)
+        effect::Exit::Failed(e) => k(Err(ma_effect_err_msg(e)))
+        effect::Exit::Interrupted => k(Err("interrupted"))
+      }
+    },
+  )
+}
+
+/// Run the complete TS `accounts.ts`-aligned refresh flow for `(sub, expected_session, expected_refresh)`.
+pub fn AccountRefreshCoordinator::refresh_k(
+  self : AccountRefreshCoordinator,
+  host : AccountRefreshHost,
+  sub : String,
+  expected_session : String,
+  expected_refresh : String,
+  k : (AccountRefreshOutcome) -> Unit,
+) -> Unit {
+  if sub.length() == 0 || expected_refresh.length() == 0 {
+    k(AccountRefreshOutcome::Stale("missing sub or refresh token"))
+    return
+  }
+  let flight_key = sub + "\u{01}" + expected_session + "\u{01}" + expected_refresh
+  match self.in_flight.get(flight_key) {
+    Some(waiters) => {
+      waiters.push(k)
+      return
+    }
+    None => {
+      self.in_flight.set(flight_key, [k])
+    }
+  }
+  let finish_all = fn(out : AccountRefreshOutcome) -> Unit {
+    match self.in_flight.get(flight_key) {
+      Some(ws) => {
+        self.in_flight.remove(flight_key)
+        for i in 0..<ws.length() {
+          let cb = ws[i]
+          cb(out)
+        }
+      }
+      None => ()
+    }
+  }
+
+  let get_mem = host.get_mem_tuple
+  let read_disk = host.read_accounts_k
+  let write_disk = host.write_accounts_k
+  let do_http = host.do_refresh_http_k
+  let on_adopt = host.on_adopt_or_update
+  let on_inval = host.on_invalidated
+  let now_fn = host.now_ms
+
+  // Phase 1: Pre-request `#adoptStored` (`accounts.ts:397-422`) under serialized lock.
+  self.lock.with_permit_k(
+    fn(lk : (effect::Exit[Result[(Bool, String), AccountRefreshOutcome]]) -> Unit) -> Unit {
+      match get_mem(sub) {
+        None => {
+          lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("signed_out"))))
+          return
+        }
+        Some((mem_sid, mem_ref)) => {
+          if mem_sid != expected_session || mem_ref != expected_refresh {
+            lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("stale_session"))))
+            return
+          }
+        }
+      }
+      read_disk(fn(rd : HostStorageRead) -> Unit {
+        match get_mem(sub) {
+          None => {
+            lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("signed_out"))))
+            return
+          }
+          Some((mem_sid, mem_ref)) => {
+            if mem_sid != expected_session || mem_ref != expected_refresh {
+              lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("stale_session"))))
+              return
+            }
+          }
+        }
+        match rd {
+          HostStorageRead::ReadError(reason) => {
+            lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Transient("accounts disk read failed: " + reason))))
+          }
+          HostStorageRead::Absent => {
+            lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("signed_out"))))
+          }
+          HostStorageRead::Found(doc) => {
+            let disk_sessions = parse_stored_account_sessions(doc)
+            match parse_stored_accounts_strict(doc) {
+              None => {
+                lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Transient("accounts disk invalid json"))))
+              }
+              Some(disk_list) => {
+                let idx = find_stored_idx(disk_list, sub)
+                if idx < 0 {
+                  lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("signed_out"))))
+                  return
+                }
+                let theirs = disk_list[idx]
+                let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
+                if disk_sid != expected_session {
+                  lk(effect::Exit::Succeeded(Err(AccountRefreshOutcome::Stale("stale_session"))))
+                  return
+                }
+                if theirs.refresh != expected_refresh {
+                  // Another core rotated tokens for the exact same session: adopt immediately!
+                  on_adopt(theirs, disk_sid, disk_list, disk_sessions)
+                  let now_sec = now_fn() / 1000L
+                  if theirs.access_expires - 60L > now_sec && theirs.access.length() > 0 {
+                    lk(effect::Exit::Succeeded(Ok((true, theirs.access))))
+                  } else {
+                    lk(effect::Exit::Succeeded(Ok((false, theirs.refresh))))
+                  }
+                } else {
+                  lk(effect::Exit::Succeeded(Ok((false, expected_refresh))))
+                }
+              }
+            }
+          }
+        }
+      })
+    },
+    fn(pex : effect::Exit[Result[(Bool, String), AccountRefreshOutcome]]) -> Unit {
+      match pex {
+        effect::Exit::Interrupted => { finish_all(AccountRefreshOutcome::Transient("interrupted")) }
+        effect::Exit::Failed(e) => { finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e))) }
+        effect::Exit::Succeeded(Err(out)) => { finish_all(out) }
+        effect::Exit::Succeeded(Ok((true, adopted_access))) => {
+          finish_all(AccountRefreshOutcome::Ok(adopted_access, true))
+        }
+        effect::Exit::Succeeded(Ok((false, eff_refresh))) => {
+          // Phase 2: Send `POST /v1/auth/refresh` OUTSIDE the disk lock.
+          do_http(eff_refresh, now_fn(), fn(hex : effect::Exit[Result[RefreshedTokens, RefreshTokenError]]) -> Unit {
+            match hex {
+              effect::Exit::Interrupted => { finish_all(AccountRefreshOutcome::Transient("interrupted")) }
+              effect::Exit::Failed(e) => { finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e))) }
+              effect::Exit::Succeeded(Err(RefreshTokenError::Transient(msg))) => {
+                finish_all(AccountRefreshOutcome::Transient(msg))
+              }
+              effect::Exit::Succeeded(Ok(tokens)) => {
+                // Phase 3A: 200 Write-Back Disk CAS (`accounts.ts:581-626`) under serialized lock.
+                self.lock.with_permit_k(
+                  fn(clk : (effect::Exit[AccountRefreshOutcome]) -> Unit) -> Unit {
+                    match get_mem(sub) {
+                      None => {
+                        clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("signed_out")))
+                        return
+                      }
+                      Some((mem_sid, mem_ref)) => {
+                        if mem_sid != expected_session || mem_ref != eff_refresh {
+                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_session")))
+                          return
+                        }
+                      }
+                    }
+                    read_disk(fn(rd : HostStorageRead) -> Unit {
+                      match rd {
+                        HostStorageRead::ReadError(reason) => {
+                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk read failed: " + reason)))
+                        }
+                        HostStorageRead::Absent => {
+                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("signed_out")))
+                        }
+                        HostStorageRead::Found(doc) => {
+                          let disk_sessions = parse_stored_account_sessions(doc)
+                          match parse_stored_accounts_strict(doc) {
+                            None => {
+                              clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk invalid json")))
+                            }
+                            Some(disk_list) => {
+                              let idx = find_stored_idx(disk_list, sub)
+                              if idx < 0 {
+                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("signed_out")))
+                                return
+                              }
+                              let cur = disk_list[idx]
+                              let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
+                              if disk_sid != expected_session {
+                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_session")))
+                                return
+                              }
+                              if cur.refresh != eff_refresh {
+                                // Another instance rotated while our HTTP was in flight: adopt without regressing disk!
+                                on_adopt(cur, disk_sid, disk_list, disk_sessions)
+                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Ok(cur.access, true)))
+                                return
+                              }
+                              let next_name = match tokens.name {
+                                Some(nm) => if nm.length() > 0 { nm } else { cur.name }
+                                None => cur.name
+                              }
+                              let updated = views::StoredAccount::{
+                                sub: cur.sub,
+                                email: cur.email,
+                                name: next_name,
+                                picture: cur.picture,
+                                access: tokens.access,
+                                refresh: tokens.refresh,
+                                access_expires: tokens.access_expires,
+                              }
+                              let next_list : Array[views::StoredAccount] = []
+                              for i in 0..<disk_list.length() {
+                                if i == idx {
+                                  next_list.push(updated)
+                                } else {
+                                  next_list.push(disk_list[i])
+                                }
+                              }
+                              let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
+                              write_disk(encoded, fn(_wres : Result[Unit, String]) -> Unit {
+                                // New tokens are already valid in memory even if disk write warned (`accounts.ts:617`).
+                                on_adopt(updated, disk_sid, next_list, disk_sessions)
+                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Ok(updated.access, false)))
+                              })
+                            }
+                          }
+                        }
+                      }
+                    })
+                  },
+                  fn(cex : effect::Exit[AccountRefreshOutcome]) -> Unit {
+                    match cex {
+                      effect::Exit::Succeeded(o) => finish_all(o)
+                      effect::Exit::Failed(e) => finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e)))
+                      effect::Exit::Interrupted => finish_all(AccountRefreshOutcome::Transient("interrupted"))
+                    }
+                  },
+                )
+              }
+              effect::Exit::Succeeded(Err(RefreshTokenError::InvalidSession(status, msg))) => {
+                // Phase 3B: 401 Removal Disk CAS (`accounts.ts:628-692`) under serialized lock.
+                self.lock.with_permit_k(
+                  fn(clk : (effect::Exit[AccountRefreshOutcome]) -> Unit) -> Unit {
+                    match get_mem(sub) {
+                      None => {
+                        clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_401")))
+                        return
+                      }
+                      Some((mem_sid, mem_ref)) => {
+                        if mem_sid != expected_session || mem_ref != eff_refresh {
+                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_401")))
+                          return
+                        }
+                      }
+                    }
+                    read_disk(fn(rd : HostStorageRead) -> Unit {
+                      match rd {
+                        HostStorageRead::ReadError(reason) => {
+                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk read failed: " + reason)))
+                        }
+                        HostStorageRead::Absent => {
+                          // Already removed from disk: invalidate locally without rewriting disk.
+                          on_inval(sub, expected_session, eff_refresh, [], Map::new())
+                          clk(effect::Exit::Succeeded(AccountRefreshOutcome::InvalidSession(status, msg, true)))
+                        }
+                        HostStorageRead::Found(doc) => {
+                          let disk_sessions = parse_stored_account_sessions(doc)
+                          match parse_stored_accounts_strict(doc) {
+                            None => {
+                              clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient("accounts disk invalid json")))
+                            }
+                            Some(disk_list) => {
+                              let idx = find_stored_idx(disk_list, sub)
+                              if idx < 0 {
+                                // Already removed on disk by another instance: invalidate locally without touching disk.
+                                disk_sessions.remove(sub)
+                                on_inval(sub, expected_session, eff_refresh, disk_list, disk_sessions)
+                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::InvalidSession(status, msg, true)))
+                                return
+                              }
+                              let cur = disk_list[idx]
+                              let disk_sid = match disk_sessions.get(sub) { Some(s) => s; None => "" }
+                              if disk_sid != expected_session || cur.refresh != eff_refresh {
+                                // Disk already rotated or re-logged in: do NOT remove `sub` or clobber disk!
+                                clk(effect::Exit::Succeeded(AccountRefreshOutcome::Stale("stale_401")))
+                                return
+                              }
+                              let next_list : Array[views::StoredAccount] = []
+                              for i in 0..<disk_list.length() {
+                                if i != idx {
+                                  next_list.push(disk_list[i])
+                                }
+                              }
+                              disk_sessions.remove(sub)
+                              let encoded = serialize_stored_accounts(next_list, sessions=Some(disk_sessions))
+                              write_disk(encoded, fn(wres : Result[Unit, String]) -> Unit {
+                                match wres {
+                                  Err(we) => clk(effect::Exit::Succeeded(AccountRefreshOutcome::Transient(we)))
+                                  Ok(_) => {
+                                    on_inval(sub, expected_session, eff_refresh, next_list, disk_sessions)
+                                    clk(effect::Exit::Succeeded(AccountRefreshOutcome::InvalidSession(status, msg, true)))
+                                  }
+                                }
+                              })
+                            }
+                          }
+                        }
+                      }
+                    })
+                  },
+                  fn(cex : effect::Exit[AccountRefreshOutcome]) -> Unit {
+                    match cex {
+                      effect::Exit::Succeeded(o) => finish_all(o)
+                      effect::Exit::Failed(e) => finish_all(AccountRefreshOutcome::Transient(ma_effect_err_msg(e)))
+                      effect::Exit::Interrupted => finish_all(AccountRefreshOutcome::Transient("interrupted"))
+                    }
+                  },
+                )
+              }
+            }
+          })
+        }
+      }
+    },
+  )
+}
+
+// ── Real TS DDL `drop_workspace` SQL Plan ──
+
+/// Base station-scoped tables whose station key column is `station` in `schema.pion` / `schema.ts`.
+pub fn drop_workspace_station_tables() -> Array[String] {
+  [
+    "slack_app",
+    "list",
+    "chat",
+    "session",
+    "thread",
+    "thread_member",
+    "entry",
+    "transcript",
+    "job",
+    "outbox",
+    "pending",
+    "first",
+    "changing",
+    "draft",
+    "said",
+  ]
+}
+
+/// Optional / lazily ensured tables (`schema.pion:145-187` and `account.ts:900-916`) that
+/// must be deleted in the same SQLite transaction whenever present in `sqlite_master`.
+pub fn drop_workspace_optional_tables() -> Array[String] {
+  [
+    "md_kept",
+    "log_use",
+    "moved",
+    "shared_sidecar",
+    "shared_meta",
+    "shared_mark",
+    "letter",
+  ]
+}
+
+/// Build the exact SQLite `DELETE` statement plan for `drop_workspace(ws, stations)`,
+/// strictly aligned with `pion/client-core/packages/store/src/schema.pion`,
+/// `client/core-ts/src/db/schema.ts`, and `client/core-ts/src/db/account.ts:895-935`:
+/// - `workspace` (`WHERE id = ?`)
+/// - `workspace_pref` (`WHERE workspace = ?`)
+/// - `account_doc` (`WHERE name = 'usage:' || ?` and `'vaults:' || ?`)
+/// - `draft` workspace-level new-chat draft (`WHERE station = ? AND chat = 'new'`)
+/// - `station` (`WHERE address = ?`, NEVER `station`!)
+/// - All 15 per-station base tables (`WHERE station = ?` and exact `substr(station, ...)` prefix)
+/// - All present optional tables (`md_kept`, `log_use`, `shared_sidecar`, `shared_meta`,
+///   `shared_mark`, `letter`, and `moved` strictly scoped to source `station` owned by `ws` —
+///   NEVER deleting `moved` rows whose source `station` belongs to another workspace!)
+pub fn drop_workspace_sql_plan(
+  ws : String,
+  stations : Array[String],
+  optional_tables : Array[String] = [],
+) -> Array[(String, Array[base_codec::Json])] {
+  let plan : Array[(String, Array[base_codec::Json])] = []
+  if ws.length() == 0 {
+    return plan
+  }
+  let tables = drop_workspace_station_tables()
+  let opt_station_tables : Array[String] = []
+  let mut has_moved = false
+  for i in 0..<optional_tables.length() {
+    let ot = optional_tables[i]
+    if ot == "moved" {
+      has_moved = true
+    } else if ot == "md_kept" || ot == "log_use" || ot == "shared_sidecar" ||
+    ot == "shared_meta" || ot == "shared_mark" || ot == "letter" {
+      push_unique_str_ma(opt_station_tables, ot)
+    }
+  }
+  let prefix = ws + "/"
+  let dedup_stations : Array[String] = []
+  for i in 0..<stations.length() {
+    let s = stations[i]
+    if s.contains("/") {
+      if s.starts_with(prefix) {
+        push_unique_str_ma(dedup_stations, s)
+      }
+    } else {
+      push_unique_str_ma(dedup_stations, s)
+    }
+  }
+  plan.push(("DELETE FROM workspace WHERE id = ?", [base_codec::json_str(ws)]))
+  plan.push(("DELETE FROM workspace_pref WHERE workspace = ?", [base_codec::json_str(ws)]))
+  plan.push(("DELETE FROM account_doc WHERE name = ?", [base_codec::json_str("usage:" + ws)]))
+  plan.push(("DELETE FROM account_doc WHERE name = ?", [base_codec::json_str("vaults:" + ws)]))
+  plan.push(("DELETE FROM draft WHERE station = ? AND chat = 'new'", [base_codec::json_str(ws)]))
+
+  plan.push((
+    "DELETE FROM station WHERE substr(address, 1, length(?)) = ?",
+    [base_codec::json_str(prefix), base_codec::json_str(prefix)],
+  ))
+  for ti in 0..<tables.length() {
+    let tbl = tables[ti]
+    plan.push((
+      "DELETE FROM " + tbl + " WHERE substr(station, 1, length(?)) = ?",
+      [base_codec::json_str(prefix), base_codec::json_str(prefix)],
+    ))
+  }
+  for ti in 0..<opt_station_tables.length() {
+    let tbl = opt_station_tables[ti]
+    plan.push((
+      "DELETE FROM " + tbl + " WHERE substr(station, 1, length(?)) = ?",
+      [base_codec::json_str(prefix), base_codec::json_str(prefix)],
+    ))
+  }
+  if has_moved {
+    // Only delete `moved` rows whose source `station` belongs to `ws`; preserve rows owned by other workspaces.
+    plan.push((
+      "DELETE FROM moved WHERE substr(station, 1, length(?)) = ?",
+      [base_codec::json_str(prefix), base_codec::json_str(prefix)],
+    ))
+  }
+
+  for si in 0..<dedup_stations.length() {
+    let st = dedup_stations[si]
+    plan.push(("DELETE FROM station WHERE address = ?", [base_codec::json_str(st)]))
+    for ti in 0..<tables.length() {
+      let tbl = tables[ti]
+      plan.push(("DELETE FROM " + tbl + " WHERE station = ?", [base_codec::json_str(st)]))
+    }
+    for ti in 0..<opt_station_tables.length() {
+      let tbl = opt_station_tables[ti]
+      plan.push(("DELETE FROM " + tbl + " WHERE station = ?", [base_codec::json_str(st)]))
+    }
+    if has_moved {
+      plan.push(("DELETE FROM moved WHERE station = ?", [base_codec::json_str(st)]))
+    }
+  }
+  plan
+}
+
+/// Detect which optional tables currently exist in `db` via `sqlite_master`.
+/// Propagates SQLite query errors directly upward (NEVER treats query failure as missing tables!).
+pub fn detect_existing_optional_tables(db : sql::Sql) -> sql::SqlResult[Array[String]] {
+  let found : Array[String] = []
+  let allowed = drop_workspace_optional_tables()
+  match db.all("SELECT name FROM sqlite_master WHERE type = 'table'") {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let name = sql::col_text(rows[i], 0)
+        if contains_str_ma(allowed, name) {
+          push_unique_str_ma(found, name)
+        }
+      }
+      sql::SqlResult::Ok(found)
+    }
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+  }
+}
+
+/// Execute a pre-built `drop_workspace_sql_plan` inside an existing `sql::Burst` transaction.
+pub fn run_drop_plan_in_burst(
+  b : sql::Burst,
+  plan : Array[(String, Array[base_codec::Json])],
+) -> sql::SqlResult[Unit] {
+  for i in 0..<plan.length() {
+    let (stmt, params) = plan[i]
+    match b.run(stmt, params=params) {
+      sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+      sql::SqlResult::Ok(_) => ()
+    }
+  }
+  sql::SqlResult::Ok(())
+}
+
+/// Execute `drop_workspace_sql_plan` atomically across ALL base AND existing optional tables
+/// inside ONE single `sql::Burst` transaction.
+pub fn exec_drop_workspace_sql(
+  db : sql::Sql,
+  ws : String,
+  stations : Array[String],
+) -> sql::SqlResult[Unit] {
+  let opt_tables = match detect_existing_optional_tables(db) {
+    sql::SqlResult::Ok(ts) => ts
+    sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+  }
+  let plan = drop_workspace_sql_plan(ws, stations, optional_tables=opt_tables)
+  if plan.length() == 0 {
+    return sql::SqlResult::Ok(())
+  }
+  let burst = sql::Burst::new(db)
+  burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    run_drop_plan_in_burst(b, plan)
+  })
+}
+
+// ── Pending Purge Serialization & Reconciliation ──
+
+/// Single workspace pending-purge record carrying a monotonic `op_gen` so stale host mirrors
+/// (`host.op_gen <= sqlite_meta.completed_purge_gen[ws]`) are discarded on restart instead of
+/// replaying over freshly rejoined workspace data.
+pub struct PendingPurgeEntry {
+  pub op_gen : Int64
+  pub stations : Array[String]
+}
+
+/// Encode `{ "<ws>": ["ws/st1", ...] }` for one account (legacy array helper).
+pub fn encode_account_purges_obj(purges : Map[String, Array[String]]) -> base_codec::Json {
+  let ws_keys = purges.keys()
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<ws_keys.length() {
+    let ws = ws_keys[i]
+    match purges.get(ws) {
+      Some(sts) => {
+        let arr : Array[base_codec::Json] = []
+        for j in 0..<sts.length() {
+          arr.push(base_codec::json_str(sts[j]))
+        }
+        fields.push((ws, base_codec::json_arr(arr)))
+      }
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Encode `{ "<ws>": { "op_gen": N, "stations": ["ws/st1", ...] } }` for one account.
+pub fn encode_account_purge_entries_obj(purges : Map[String, PendingPurgeEntry]) -> base_codec::Json {
+  let ws_keys = purges.keys()
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<ws_keys.length() {
+    let ws = ws_keys[i]
+    match purges.get(ws) {
+      Some(entry) => {
+        let arr : Array[base_codec::Json] = []
+        for j in 0..<entry.stations.length() {
+          arr.push(base_codec::json_str(entry.stations[j]))
+        }
+        fields.push((
+          ws,
+          base_codec::json_obj([
+            ("op_gen", base_codec::json_int64(entry.op_gen)),
+            ("stations", base_codec::json_arr(arr)),
+          ]),
+        ))
+      }
+      None => ()
+    }
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Parse one workspace pending-purge entry:
+/// - New object format `{ "op_gen": N, "stations": ["ws/st1", ...] }` (missing `op_gen` defaults to `0L`).
+/// - Legacy array format `["ws/st1", ...]` (treated as `op_gen = 0L`).
+/// Returns `None` for any other JSON shape (including nested `{ sub: { ws: ... } }` objects).
+pub fn parse_ws_purge_entry(v : base_codec::Json) -> Option[PendingPurgeEntry] {
+  match v {
+    base_codec::Json::Arr(xs) => {
+      let sts : Array[String] = []
+      for j in 0..<xs.length() {
+        match xs[j] {
+          base_codec::Json::Str(s) => push_unique_str_ma(sts, s)
+          _ => ()
+        }
+      }
+      Some(PendingPurgeEntry::{ op_gen: 0L, stations: sts })
+    }
+    base_codec::Json::Obj(_) => match base_codec::json_get(v, "stations") {
+      Some(base_codec::Json::Arr(xs)) => {
+        let sts : Array[String] = []
+        for j in 0..<xs.length() {
+          match xs[j] {
+            base_codec::Json::Str(s) => push_unique_str_ma(sts, s)
+            _ => ()
+          }
+        }
+        let op_gen = match base_codec::json_get(v, "op_gen") {
+          Some(base_codec::Json::Num(n, repr)) => {
+            if repr.length() > 0 && !repr.contains(".") && !repr.contains("e") && !repr.contains("E") {
+              match base_codec::parse_int64_str(repr) {
+                Some(g) => g
+                None => n.to_int64()
+              }
+            } else {
+              n.to_int64()
+            }
+          }
+          _ => 0L
+        }
+        Some(PendingPurgeEntry::{ op_gen: op_gen, stations: sts })
+      }
+      _ => None
+    }
+    _ => None
+  }
+}
+
+/// Parse a flat per-account `{ "<ws>": { "op_gen": N, "stations": [...] } | [...] }` map.
+pub fn extract_flat_ws_purge_entries(doc : base_codec::Json) -> Map[String, PendingPurgeEntry] {
+  let out : Map[String, PendingPurgeEntry] = Map::new()
+  match doc {
+    base_codec::Json::Obj(ws_pairs) => {
+      for i in 0..<ws_pairs.length() {
+        let (ws, entry_v) = ws_pairs[i]
+        if ws.length() == 0 {
+          continue
+        }
+        match parse_ws_purge_entry(entry_v) {
+          Some(entry) => out.set(ws, entry)
+          None => ()
+        }
+      }
+    }
+    _ => ()
+  }
+  out
+}
+
+/// Parse a flat per-account `{ "<ws>": ["ws/st1", ...] }` map (stations-only projection).
+pub fn extract_flat_ws_purges(doc : base_codec::Json) -> Map[String, Array[String]] {
+  let entries = extract_flat_ws_purge_entries(doc)
+  let out : Map[String, Array[String]] = Map::new()
+  let ks = entries.keys()
+  for i in 0..<ks.length() {
+    match entries.get(ks[i]) {
+      Some(e) => out.set(ks[i], e.stations)
+      None => ()
+    }
+  }
+  out
+}
+
+/// Merge one account's pending purges into a multi-account `{ "<sub1>": { "<ws>": [...] } }` document.
+pub fn merge_host_pending_purges(
+  existing_doc : Option[base_codec::Json],
+  account_sub : String,
+  purges : Map[String, Array[String]],
+) -> base_codec::Json {
+  let out_fields : Array[(String, base_codec::Json)] = []
+  match existing_doc {
+    Some(base_codec::Json::Obj(pairs)) => {
+      for i in 0..<pairs.length() {
+        let (k, v) = pairs[i]
+        if k.length() > 0 && k != account_sub {
+          match v {
+            base_codec::Json::Obj(_) => out_fields.push((k, v))
+            _ => ()
+          }
+        }
+      }
+    }
+    _ => ()
+  }
+  if account_sub.length() > 0 && purges.keys().length() > 0 {
+    out_fields.push((account_sub, encode_account_purges_obj(purges)))
+  }
+  base_codec::json_obj(out_fields)
+}
+
+fn encode_meta_pending_purge_entries_doc(
+  account_sub : String,
+  purges : Map[String, PendingPurgeEntry],
+) -> base_codec::Json {
+  if account_sub.length() == 0 || purges.keys().length() == 0 {
+    return base_codec::json_obj([])
+  }
+  base_codec::json_obj([(account_sub, encode_account_purge_entries_obj(purges))])
+}
+
+/// Strictly extract ONLY `account_sub`'s pending purge entries from a shared/meta document
+/// (`device/pending_purges` or SQLite `meta("membership:pending_purges")`).
+/// ONLY accepts the exact outer key `doc[account_sub]`; NEVER guesses flat `{ws: ...}` shapes!
+pub fn extract_account_pending_purge_entries(
+  doc : base_codec::Json,
+  account_sub : String,
+) -> Map[String, PendingPurgeEntry] {
+  let out : Map[String, PendingPurgeEntry] = Map::new()
+  if account_sub.length() == 0 {
+    return out
+  }
+  match doc {
+    base_codec::Json::Obj(_) =>
+    match base_codec::json_get(doc, account_sub) {
+      Some(sub_obj) =>
+      match sub_obj {
+        base_codec::Json::Obj(_) =>
+        if parse_ws_purge_entry(sub_obj).is_some() {
+          out
+        } else {
+          extract_flat_ws_purge_entries(sub_obj)
+        }
+        _ => out
+      }
+      None => out
+    }
+    _ => out
+  }
+}
+
+/// Extract ONLY `account_sub`'s pending purge station lists from `{ "<sub1>": { "<ws>": ... } }`.
+pub fn extract_account_pending_purges(
+  doc : base_codec::Json,
+  account_sub : String,
+) -> Map[String, Array[String]] {
+  let entries = extract_account_pending_purge_entries(doc, account_sub)
+  let out : Map[String, Array[String]] = Map::new()
+  let ks = entries.keys()
+  for i in 0..<ks.length() {
+    match entries.get(ks[i]) {
+      Some(e) => out.set(ks[i], e.stations)
+      None => ()
+    }
+  }
+  out
+}
+
+/// Extract pending purge entries ONLY from a dedicated per-account host storage document
+/// (`device/pending_purges/<sanitized_sub>`): accepts either flat `{ "<ws>": ... }` OR
+/// account-wrapped `{ "<account_sub>": { "<ws>": ... } }` matching `account_sub`.
+fn extract_per_account_host_purge_entries(
+  doc : base_codec::Json,
+  account_sub : String,
+) -> Map[String, PendingPurgeEntry] {
+  if account_sub.length() == 0 {
+    return Map::new()
+  }
+  match doc {
+    base_codec::Json::Obj(_) => {
+      match base_codec::json_get(doc, account_sub) {
+        Some(sub_obj) =>
+        match sub_obj {
+          base_codec::Json::Obj(_) =>
+          if parse_ws_purge_entry(sub_obj).is_none() {
+            return extract_flat_ws_purge_entries(sub_obj)
+          }
+          _ => ()
+        }
+        None => ()
+      }
+      extract_flat_ws_purge_entries(doc)
+    }
+    _ => Map::new()
+  }
+}
+
+// ── Merged Effective `account_doc("me")` Synthesis (Invariant 3) ──
+
+fn merge_workspace_summary_with_detail(
+  me_ws_json : base_codec::Json,
+  detail_json : base_codec::Json,
+  role_override : Option[String],
+) -> base_codec::Json {
+  let base_fields : Array[(String, base_codec::Json)] = match me_ws_json {
+    base_codec::Json::Obj(fs) => fs
+    _ => []
+  }
+  let mut eff_role = match role_override {
+    Some(r) => if is_valid_workspace_role(r) { r } else { "" }
+    None => ""
+  }
+  if eff_role.length() == 0 {
+    let dr = j_str(detail_json, "role")
+    if is_valid_workspace_role(dr) {
+      eff_role = dr
+    }
+  }
+  let det_name = j_str(detail_json, "name")
+  let det_stations_opt : Option[Int] = match base_codec::json_get(detail_json, "stations") {
+    Some(base_codec::Json::Arr(xs)) => Some(xs.length())
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+  let det_members_opt : Option[Int] = match base_codec::json_get(detail_json, "members") {
+    Some(base_codec::Json::Arr(xs)) => Some(xs.length())
+    Some(base_codec::Json::Num(n, _)) => Some(n.to_int())
+    _ => None
+  }
+  let det_emoji = base_codec::json_get(detail_json, "emoji")
+  let det_icon = base_codec::json_get(detail_json, "icon")
+  let det_relays = base_codec::json_get(detail_json, "relays")
+  let det_ways_off = base_codec::json_get(detail_json, "ways_off")
+
+  let out : Array[(String, base_codec::Json)] = []
+  let seen : Map[String, Bool] = Map::new()
+  for i in 0..<base_fields.length() {
+    let (k, v) = base_fields[i]
+    seen.set(k, true)
+    if k == "role" && eff_role.length() > 0 {
+      out.push((k, base_codec::json_str(eff_role)))
+    } else if k == "name" && det_name.length() > 0 {
+      out.push((k, base_codec::json_str(det_name)))
+    } else if k == "stations" {
+      match det_stations_opt {
+        Some(n) => out.push((k, base_codec::json_int(n)))
+        None => out.push((k, v))
+      }
+    } else if k == "members" {
+      match det_members_opt {
+        Some(n) => out.push((k, base_codec::json_int(n)))
+        None => out.push((k, v))
+      }
+    } else if k == "emoji" {
+      match det_emoji {
+        Some(base_codec::Json::Str(e)) => out.push((k, base_codec::json_str(e)))
+        _ => out.push((k, v))
+      }
+    } else if k == "icon" {
+      match det_icon {
+        Some(base_codec::Json::Str(ic)) => out.push((k, base_codec::json_str(ic)))
+        _ => out.push((k, v))
+      }
+    } else if k == "relays" {
+      match det_relays {
+        Some(base_codec::Json::Arr(xs)) => out.push((k, base_codec::json_arr(xs)))
+        _ => out.push((k, v))
+      }
+    } else if k == "ways_off" {
+      match det_ways_off {
+        Some(base_codec::Json::Arr(xs)) => out.push((k, base_codec::json_arr(xs)))
+        _ => out.push((k, v))
+      }
+    } else {
+      out.push((k, v))
+    }
+  }
+  if seen.get("emoji").is_none() {
+    match det_emoji {
+      Some(base_codec::Json::Str(e)) => out.push(("emoji", base_codec::json_str(e)))
+      _ => ()
+    }
+  }
+  if seen.get("icon").is_none() {
+    match det_icon {
+      Some(base_codec::Json::Str(ic)) => out.push(("icon", base_codec::json_str(ic)))
+      _ => ()
+    }
+  }
+  base_codec::json_obj(out)
+}
+
+fn synthesize_workspace_summary_from_detail(
+  wid : String,
+  detail_json : base_codec::Json,
+  role_override : Option[String],
+) -> base_codec::Json {
+  let name = {
+    let dn = j_str(detail_json, "name")
+    if dn.length() > 0 { dn } else { wid }
+  }
+  let role = match role_override {
+    Some(r) => if is_valid_workspace_role(r) { r } else { "member" }
+    None => {
+      let dr = j_str(detail_json, "role")
+      if is_valid_workspace_role(dr) { dr } else { "member" }
+    }
+  }
+  let created_at : Int64 = match j_opt_int64(detail_json, "created_at") {
+    Some(v) => v
+    None => 0L
+  }
+  let stations_n : Int = match base_codec::json_get(detail_json, "stations") {
+    Some(base_codec::Json::Arr(xs)) => xs.length()
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => 0
+  }
+  let members_n : Int = match base_codec::json_get(detail_json, "members") {
+    Some(base_codec::Json::Arr(xs)) => xs.length()
+    Some(base_codec::Json::Num(n, _)) => n.to_int()
+    _ => 0
+  }
+  let fields : Array[(String, base_codec::Json)] = [
+    ("id", base_codec::json_str(wid)),
+    ("name", base_codec::json_str(name)),
+    ("role", base_codec::json_str(role)),
+    ("created_at", base_codec::json_int64(created_at)),
+    ("stations", base_codec::json_int(stations_n)),
+    ("members", base_codec::json_int(members_n)),
+  ]
+  match base_codec::json_get(detail_json, "emoji") {
+    Some(base_codec::Json::Str(e)) => fields.push(("emoji", base_codec::json_str(e)))
+    _ => ()
+  }
+  match base_codec::json_get(detail_json, "icon") {
+    Some(base_codec::Json::Str(ic)) => fields.push(("icon", base_codec::json_str(ic)))
+    _ => ()
+  }
+  match base_codec::json_get(detail_json, "relays") {
+    Some(base_codec::Json::Arr(xs)) => fields.push(("relays", base_codec::json_arr(xs)))
+    _ => ()
+  }
+  match base_codec::json_get(detail_json, "ways_off") {
+    Some(base_codec::Json::Arr(xs)) => fields.push(("ways_off", base_codec::json_arr(xs)))
+    _ => ()
+  }
+  base_codec::json_obj(fields)
+}
+
+/// Synthesize the merged effective `account_doc("me")` JSON so workspaces with a newer
+/// committed detail (`ws_commit_seq[ws] >= req_seq`) keep their newer role/summary AND
+/// surviving newer workspaces not yet present in the older `/v1/me` snapshot are retained.
+pub fn build_merged_effective_me_json(
+  db : sql::Sql,
+  me : CloudMe,
+  membership : MembershipAuthority,
+  req_seq : Int64,
+) -> base_codec::Json {
+  let ws_rows_by_id : Map[String, base_codec::Json] = Map::new()
+  let ws_row_order : Array[String] = []
+  match store::list_workspaces(db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => {
+            ws_rows_by_id.set(r.id, j)
+            ws_row_order.push(r.id)
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  let merged_ws : Array[base_codec::Json] = []
+  let included : Map[String, Bool] = Map::new()
+  match base_codec::json_get(me.raw, "workspaces") {
+    Some(base_codec::Json::Arr(xs)) => {
+      for i in 0..<xs.length() {
+        let item = xs[i]
+        let wid = j_str(item, "id")
+        if wid.length() == 0 {
+          continue
+        }
+        included.set(wid, true)
+        if membership.should_apply_me_workspace(wid, req_seq) {
+          merged_ws.push(item)
+        } else {
+          // Newer `/v1/workspaces/<wid>` already committed: merge its newer role/summary into `me`!
+          let det = match ws_rows_by_id.get(wid) {
+            Some(dj) => dj
+            None => base_codec::json_null()
+          }
+          merged_ws.push(merge_workspace_summary_with_detail(item, det, membership.role_of(wid)))
+        }
+      }
+    }
+    _ => ()
+  }
+  // Preserve any surviving workspace that had a newer detail commit (`!should_apply_me_workspace`)
+  // and was therefore NOT dropped even though it was absent from the older `/v1/me`.
+  for i in 0..<ws_row_order.length() {
+    let wid = ws_row_order[i]
+    if included.get(wid).is_none() &&
+    !membership.should_apply_me_workspace(wid, req_seq) &&
+    membership.is_workspace_readable(wid) {
+      match ws_rows_by_id.get(wid) {
+        Some(dj) => {
+          included.set(wid, true)
+          merged_ws.push(synthesize_workspace_summary_from_detail(wid, dj, membership.role_of(wid)))
+        }
+        None => ()
+      }
+    }
+  }
+  match me.raw {
+    base_codec::Json::Obj(fs) => {
+      let out_fs : Array[(String, base_codec::Json)] = []
+      let mut replaced = false
+      for i in 0..<fs.length() {
+        let (k, v) = fs[i]
+        if k == "workspaces" {
+          out_fs.push((k, base_codec::json_arr(merged_ws)))
+          replaced = true
+        } else {
+          out_fs.push((k, v))
+        }
+      }
+      if !replaced {
+        out_fs.push(("workspaces", base_codec::json_arr(merged_ws)))
+      }
+      base_codec::json_obj(out_fs)
+    }
+    other => other
+  }
+}
+
+// ── Single Authoritative `MembershipAuthority` (Non-Reentrant, Zero Slice 2B-2 State) ──
+
+/// Single authoritative membership, purge-latch, station-binding, read-gate, and
+/// async host-mirror controller owned uniquely by `ClientCore`.
+pub struct MembershipAuthority {
+  pub mut account_sub : String
+  revoked : Map[String, Bool]
+  pending_purges : Map[String, PendingPurgeEntry]
+  completed_purge_gen : Map[String, Int64]
+  station_ws : Map[String, String]
+  ws_stations : Map[String, Array[String]]
+  ws_bare_stations : Map[String, Array[String]]
+  bare_station_owners : Map[String, Array[String]]
+  quarantined_bare_stations : Map[String, Bool]
+  cred_epoch : Map[String, Int64]
+  static_creds : Map[String, (String, Int64)]
+  ws_roles : Map[String, String]
+  mut next_seq : Int64
+  mut cloud_commit_seq : Int64
+  ws_commit_seq : Map[String, Int64]
+  mut unauthenticated : Bool
+  mut session_invalidated : Bool
+  mut in_commit_guard : Bool
+  mut mirror_in_flight : Bool
+  mut mirror_pending_dirty : Bool
+  mut mirror_write_seq : Int64
+  mut mirror_session_gen : Int64
+  mut last_host_persist_warn : Option[String]
+  mut on_host_pending_purges_read : Option[(String) -> HostStorageRead]
+  mut on_host_pending_purges_async_write : Option[(String, base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit]
+}
+
+pub fn MembershipAuthority::new(account_sub : String = "") -> MembershipAuthority {
+  MembershipAuthority::{
+    account_sub: account_sub,
+    revoked: Map::new(),
+    pending_purges: Map::new(),
+    completed_purge_gen: Map::new(),
+    station_ws: Map::new(),
+    ws_stations: Map::new(),
+    ws_bare_stations: Map::new(),
+    bare_station_owners: Map::new(),
+    quarantined_bare_stations: Map::new(),
+    cred_epoch: Map::new(),
+    static_creds: Map::new(),
+    ws_roles: Map::new(),
+    next_seq: 1L,
+    cloud_commit_seq: 0L,
+    ws_commit_seq: Map::new(),
+    unauthenticated: false,
+    session_invalidated: false,
+    in_commit_guard: false,
+    mirror_in_flight: false,
+    mirror_pending_dirty: false,
+    mirror_write_seq: 0L,
+    mirror_session_gen: 1L,
+    last_host_persist_warn: None,
+    on_host_pending_purges_read: None,
+    on_host_pending_purges_async_write: None,
+  }
+}
+
+pub fn MembershipAuthority::effective_sub(self : MembershipAuthority) -> String {
+  self.account_sub
+}
+
+pub fn MembershipAuthority::is_unauthenticated(self : MembershipAuthority) -> Bool {
+  self.unauthenticated
+}
+
+pub fn MembershipAuthority::set_unauthenticated(self : MembershipAuthority, v : Bool) -> Unit {
+  self.unauthenticated = v
+  if v {
+    self.mirror_session_gen += 1L
+    self.mirror_pending_dirty = false
+    self.static_creds.clear()
+  }
+}
+
+/// Reset all per-account SQLite mirrors when atomically switching from the unauthenticated DB
+/// to an account's dedicated SQLite DB on first sign-in.
+pub fn MembershipAuthority::reset_for_db_switch(self : MembershipAuthority) -> Unit {
+  self.account_sub = ""
+  self.revoked.clear()
+  self.pending_purges.clear()
+  self.completed_purge_gen.clear()
+  self.station_ws.clear()
+  self.ws_stations.clear()
+  self.ws_bare_stations.clear()
+  self.bare_station_owners.clear()
+  self.quarantined_bare_stations.clear()
+  self.cred_epoch.clear()
+  self.static_creds.clear()
+  self.ws_roles.clear()
+  self.cloud_commit_seq = 0L
+  self.ws_commit_seq.clear()
+  self.unauthenticated = false
+  self.session_invalidated = false
+  self.mirror_session_gen += 1L
+  self.mirror_pending_dirty = false
+  self.last_host_persist_warn = None
+}
+
+/// Non-reentrant commit guard: every membership mutation (`commit_cloud_me`, `commit_cloud_workspace`,
+/// `drop_workspace`, `retry_pending_purges`) runs synchronously without ever yielding or pumping host I/O.
+pub fn MembershipAuthority::enter_commit_guard(self : MembershipAuthority) -> Result[Unit, String] {
+  if self.in_commit_guard {
+    return Err("reentrant_membership_commit")
+  }
+  self.in_commit_guard = true
+  Ok(())
+}
+
+pub fn MembershipAuthority::leave_commit_guard(self : MembershipAuthority) -> Unit {
+  self.in_commit_guard = false
+}
+
+pub fn MembershipAuthority::is_in_commit_guard(self : MembershipAuthority) -> Bool {
+  self.in_commit_guard
+}
+
+pub fn MembershipAuthority::last_host_persist_warning(self : MembershipAuthority) -> Option[String] {
+  self.last_host_persist_warn
+}
+
+pub fn MembershipAuthority::is_host_mirror_in_flight(self : MembershipAuthority) -> Bool {
+  self.mirror_in_flight
+}
+
+pub fn MembershipAuthority::host_mirror_write_seq(self : MembershipAuthority) -> Int64 {
+  self.mirror_write_seq
+}
+
+/// Register the non-blocking async host mirror writer (`device/pending_purges/<sanitized_sub>`).
+/// Invoked ONLY AFTER SQLite transactions commit and the non-reentrant critical section exits!
+pub fn MembershipAuthority::set_host_pending_purges_async_writer(
+  self : MembershipAuthority,
+  writer : (String, base_codec::Json, (Result[Unit, String]) -> Unit) -> Unit,
+) -> Unit {
+  self.on_host_pending_purges_async_write = Some(writer)
+}
+
+/// Convenience adapter for synchronous test hooks (executes non-reentrantly after critical section exit).
+pub fn MembershipAuthority::set_host_pending_purges_hook(
+  self : MembershipAuthority,
+  hook : (String, base_codec::Json) -> Result[Unit, String],
+) -> Unit {
+  self.on_host_pending_purges_async_write = Some(fn(
+    key : String,
+    doc : base_codec::Json,
+    done : (Result[Unit, String]) -> Unit,
+  ) -> Unit {
+    done(hook(key, doc))
+  })
+}
+
+pub fn MembershipAuthority::set_host_pending_purges_reader(
+  self : MembershipAuthority,
+  reader : (String) -> HostStorageRead,
+) -> Unit {
+  self.on_host_pending_purges_read = Some(reader)
+}
+
+fn MembershipAuthority::flush_next_host_mirror(self : MembershipAuthority) -> Unit {
+  if self.in_commit_guard || self.mirror_in_flight || self.unauthenticated || self.session_invalidated {
+    return
+  }
+  let key = host_pending_purges_key_for_sub(self.account_sub)
+  if key.length() == 0 {
+    return
+  }
+  let writer = match self.on_host_pending_purges_async_write {
+    Some(w) => w
+    None => return
+  }
+  self.mirror_in_flight = true
+  self.mirror_pending_dirty = false
+  let captured_sub = self.account_sub
+  let captured_gen = self.mirror_session_gen
+  let payload = encode_account_purge_entries_obj(self.pending_purges)
+  writer(key, payload, fn(res : Result[Unit, String]) -> Unit {
+    self.mirror_in_flight = false
+    if self.account_sub != captured_sub || self.mirror_session_gen != captured_gen ||
+    self.unauthenticated || self.session_invalidated {
+      self.mirror_pending_dirty = false
+      return
+    }
+    match res {
+      Ok(_) => { self.last_host_persist_warn = None }
+      Err(msg) => { self.last_host_persist_warn = Some(msg) }
+    }
+    if self.mirror_pending_dirty && !self.in_commit_guard {
+      self.flush_next_host_mirror()
+    }
+  })
+}
+
+/// Enqueue a non-blocking, serialized, single-in-flight async host mirror write of the latest
+/// `pending_purges` snapshot (`device/pending_purges/<sanitized_sub>`).
+/// Coalesces rapid mutations so at most one write is in flight and the newest snapshot always wins.
+/// MUST be called ONLY AFTER exiting the non-reentrant commit critical section!
+pub fn MembershipAuthority::enqueue_host_pending_purges_sync(self : MembershipAuthority) -> Unit {
+  if self.in_commit_guard || self.unauthenticated || self.session_invalidated {
+    return
+  }
+  let key = host_pending_purges_key_for_sub(self.account_sub)
+  if key.length() == 0 || self.on_host_pending_purges_async_write.is_none() {
+    return
+  }
+  self.mirror_write_seq += 1L
+  if self.mirror_in_flight {
+    self.mirror_pending_dirty = true
+    return
+  }
+  self.flush_next_host_mirror()
+}
+
+/// Strictly validate and bind `raw_station` to workspace `ws`:
+/// rejects cross-workspace `<other_ws>/<st>` prefixes without mutating any maps.
+/// Multi-owner bare aliases are permanently quarantined (fail-closed).
+pub fn MembershipAuthority::bind_station_checked(
+  self : MembershipAuthority,
+  ws : String,
+  raw_station : String,
+) -> Result[String, String] {
+  let eff_ws = if ws.length() > 0 {
+    ws
+  } else {
+    match raw_station.index_of("/") {
+      idx if idx > 0 => raw_station.slice(0, idx)
+      _ => ""
+    }
+  }
+  let canon = match resolve_station_for_workspace(eff_ws, raw_station) {
+    Ok(c) => c
+    Err(e) => return Err(e)
+  }
+  if eff_ws.length() == 0 {
+    return Ok(canon)
+  }
+  self.station_ws.set(canon, eff_ws)
+  let ws_list = match self.ws_stations.get(eff_ws) {
+    Some(xs) => xs
+    None => {
+      let xs : Array[String] = []
+      self.ws_stations.set(eff_ws, xs)
+      xs
+    }
+  }
+  push_unique_str_ma(ws_list, canon)
+  if !raw_station.contains("/") {
+    let bare_list = match self.ws_bare_stations.get(eff_ws) {
+      Some(xs) => xs
+      None => {
+        let xs : Array[String] = []
+        self.ws_bare_stations.set(eff_ws, xs)
+        xs
+      }
+    }
+    push_unique_str_ma(bare_list, raw_station)
+    let owners = match self.bare_station_owners.get(raw_station) {
+      Some(xs) => xs
+      None => {
+        let xs : Array[String] = []
+        self.bare_station_owners.set(raw_station, xs)
+        xs
+      }
+    }
+    push_unique_str_ma(owners, eff_ws)
+    if owners.length() == 1 && self.quarantined_bare_stations.get(raw_station).is_none() {
+      self.station_ws.set(raw_station, eff_ws)
+    } else {
+      // Multi-owner or previously quarantined bare station: fail closed permanently!
+      self.quarantined_bare_stations.set(raw_station, true)
+      self.station_ws.remove(raw_station)
+    }
+  }
+  Ok(canon)
+}
+
+/// Bind `raw_station` to workspace `ws`, returning `""` (with 0 mutations) on mismatch.
+pub fn MembershipAuthority::bind_station(
+  self : MembershipAuthority,
+  ws : String,
+  raw_station : String,
+) -> String {
+  match self.bind_station_checked(ws, raw_station) {
+    Ok(c) => c
+    Err(_) => ""
+  }
+}
+
+/// Remove all station bindings owned by `ws` after `drop_workspace(ws)` SQLite cleanup succeeds.
+/// Any bare station alias that ever had multiple owners stays permanently quarantined (NEVER
+/// automatically reassigned to a remaining workspace!).
+pub fn MembershipAuthority::unbind_workspace_stations(self : MembershipAuthority, ws : String) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  let prefix = ws + "/"
+  self.ws_stations.remove(ws)
+  self.ws_bare_stations.remove(ws)
+  let sks = self.station_ws.keys()
+  for i in 0..<sks.length() {
+    let k = sks[i]
+    let drop = k.starts_with(prefix) || match self.station_ws.get(k) {
+      Some(owner) => owner == ws
+      None => false
+    }
+    if drop {
+      self.station_ws.remove(k)
+    }
+  }
+  let bks = self.bare_station_owners.keys()
+  for i in 0..<bks.length() {
+    let bare = bks[i]
+    match self.bare_station_owners.get(bare) {
+      Some(owners) => {
+        let was_multi = owners.length() > 1
+        if was_multi {
+          self.quarantined_bare_stations.set(bare, true)
+        }
+        remove_str_ma(owners, ws)
+        if owners.length() == 0 {
+          self.bare_station_owners.remove(bare)
+          self.station_ws.remove(bare)
+        } else if owners.length() == 1 && self.quarantined_bare_stations.get(bare).is_none() {
+          self.station_ws.set(bare, owners[0])
+        } else {
+          // Keep quarantined ambiguous bare alias isolated (fail-closed)!
+          self.station_ws.remove(bare)
+        }
+      }
+      None => ()
+    }
+  }
+}
+
+/// Whether `raw_station` is a bare station alias owned by multiple workspaces or quarantined.
+pub fn MembershipAuthority::is_ambiguous_bare_station(self : MembershipAuthority, raw_station : String) -> Bool {
+  if raw_station.length() == 0 || raw_station.contains("/") {
+    return false
+  }
+  if self.quarantined_bare_stations.get(raw_station).is_some() {
+    return true
+  }
+  match self.bare_station_owners.get(raw_station) {
+    Some(owners) => owners.length() > 1
+    None => false
+  }
+}
+
+/// Resolve the workspace id of `raw_station` in O(1):
+/// - Canonical `ws/st`: returns `ws` in O(1).
+/// - Ambiguous or quarantined bare station: returns `""` (fail-closed!).
+/// - Unambiguous bare station: returns its single bound owner in O(1).
+/// - Unknown bare station: returns `fallback_ws`.
+pub fn MembershipAuthority::station_workspace(
+  self : MembershipAuthority,
+  raw_station : String,
+  fallback_ws : String = "",
+) -> String {
+  if raw_station.length() == 0 {
+    return fallback_ws
+  }
+  match raw_station.index_of("/") {
+    idx if idx > 0 => return raw_station.slice(0, idx)
+    _ => ()
+  }
+  if self.is_ambiguous_bare_station(raw_station) {
+    return ""
+  }
+  match self.station_ws.get(raw_station) {
+    Some(ws) => if ws.length() > 0 { return ws }
+    None => ()
+  }
+  fallback_ws
+}
+
+/// Canonicalize `raw_station` using known station bindings or `fallback_ws`.
+pub fn MembershipAuthority::canonicalize(
+  self : MembershipAuthority,
+  raw_station : String,
+  fallback_ws : String = "",
+) -> String {
+  if raw_station.length() == 0 {
+    return ""
+  }
+  if raw_station.contains("/") {
+    return raw_station
+  }
+  if self.is_ambiguous_bare_station(raw_station) {
+    return ""
+  }
+  let ws = self.station_workspace(raw_station, fallback_ws=fallback_ws)
+  canonical_station(ws, raw_station)
+}
+
+/// Return all canonical `ws/st` stations currently known for `ws` (strictly filtered to `ws/`).
+pub fn MembershipAuthority::canonical_stations_for(
+  self : MembershipAuthority,
+  ws : String,
+) -> Array[String] {
+  let out : Array[String] = []
+  let prefix = ws + "/"
+  match self.ws_stations.get(ws) {
+    Some(xs) => {
+      for i in 0..<xs.length() {
+        if xs[i].starts_with(prefix) {
+          push_unique_str_ma(out, xs[i])
+        }
+      }
+    }
+    None => ()
+  }
+  match self.pending_purges.get(ws) {
+    Some(entry) => {
+      for i in 0..<entry.stations.length() {
+        if entry.stations[i].starts_with(prefix) {
+          push_unique_str_ma(out, entry.stations[i])
+        }
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+/// Whether bare station name `bare` is unambiguously exclusive to `ws` (never quarantined or shared).
+pub fn MembershipAuthority::is_bare_station_exclusive_to(
+  self : MembershipAuthority,
+  ws : String,
+  bare : String,
+) -> Bool {
+  if bare.length() == 0 || bare.contains("/") || self.quarantined_bare_stations.get(bare).is_some() {
+    return false
+  }
+  match self.bare_station_owners.get(bare) {
+    Some(owners) => {
+      let mut has_ws = false
+      for i in 0..<owners.length() {
+        let o = owners[i]
+        if o == ws {
+          has_ws = true
+        } else if self.is_workspace_readable(o) {
+          return false
+        }
+      }
+      has_ws
+    }
+    None => {
+      match self.ws_bare_stations.get(ws) {
+        Some(xs) => contains_str_ma(xs, bare)
+        None => false
+      }
+    }
+  }
+}
+
+/// Collect all station keys to purge for `ws` with strict `ws + "/"` prefix filtering on every
+/// canonical station (defense in depth against cross-workspace deletion).
+pub fn MembershipAuthority::stations_to_purge(
+  self : MembershipAuthority,
+  ws : String,
+  db : Option[sql::Sql] = None,
+) -> Array[String] {
+  let out : Array[String] = []
+  let prefix = ws + "/"
+  match self.ws_stations.get(ws) {
+    Some(xs) => {
+      for i in 0..<xs.length() {
+        if xs[i].starts_with(prefix) {
+          push_unique_str_ma(out, xs[i])
+        }
+      }
+    }
+    None => ()
+  }
+  match self.pending_purges.get(ws) {
+    Some(entry) => {
+      for i in 0..<entry.stations.length() {
+        let s = entry.stations[i]
+        if s.contains("/") {
+          if s.starts_with(prefix) {
+            push_unique_str_ma(out, s)
+          }
+        } else if self.is_bare_station_exclusive_to(ws, s) {
+          push_unique_str_ma(out, s)
+        }
+      }
+    }
+    None => ()
+  }
+  match self.ws_bare_stations.get(ws) {
+    Some(xs) => {
+      for i in 0..<xs.length() {
+        if self.is_bare_station_exclusive_to(ws, xs[i]) {
+          push_unique_str_ma(out, xs[i])
+        }
+      }
+    }
+    None => ()
+  }
+  match db {
+    Some(d) => {
+      let cloud_sts = list_workspace_stations(d, ws)
+      for i in 0..<cloud_sts.length() {
+        match resolve_station_for_workspace(ws, cloud_sts[i].id) {
+          Ok(canon) => if canon.starts_with(prefix) { push_unique_str_ma(out, canon) }
+          Err(_) => ()
+        }
+      }
+    }
+    None => ()
+  }
+  out
+}
+
+fn MembershipAuthority::encode_station_bindings_json(self : MembershipAuthority) -> String {
+  let all_ws : Array[String] = []
+  let cks = self.ws_stations.keys()
+  for i in 0..<cks.length() {
+    push_unique_str_ma(all_ws, cks[i])
+  }
+  let bks = self.ws_bare_stations.keys()
+  for i in 0..<bks.length() {
+    push_unique_str_ma(all_ws, bks[i])
+  }
+  let fields : Array[(String, base_codec::Json)] = []
+  for i in 0..<all_ws.length() {
+    let ws = all_ws[i]
+    let canon_j : Array[base_codec::Json] = []
+    match self.ws_stations.get(ws) {
+      Some(xs) => {
+        for j in 0..<xs.length() {
+          canon_j.push(base_codec::json_str(xs[j]))
+        }
+      }
+      None => ()
+    }
+    let bare_j : Array[base_codec::Json] = []
+    match self.ws_bare_stations.get(ws) {
+      Some(xs) => {
+        for j in 0..<xs.length() {
+          bare_j.push(base_codec::json_str(xs[j]))
+        }
+      }
+      None => ()
+    }
+    fields.push((
+      ws,
+      base_codec::json_obj([
+        ("canonical", base_codec::json_arr(canon_j)),
+        ("bare", base_codec::json_arr(bare_j)),
+      ]),
+    ))
+  }
+  let q_arr : Array[base_codec::Json] = []
+  let qks = self.quarantined_bare_stations.keys()
+  for i in 0..<qks.length() {
+    q_arr.push(base_codec::json_str(qks[i]))
+  }
+  if q_arr.length() > 0 {
+    fields.push(("__quarantined_bare__", base_codec::json_arr(q_arr)))
+  }
+  base_codec::json_stringify(base_codec::json_obj(fields))
+}
+
+fn MembershipAuthority::encode_revoked_json(self : MembershipAuthority) -> String {
+  let arr : Array[base_codec::Json] = []
+  let ks = self.revoked.keys()
+  for i in 0..<ks.length() {
+    match self.revoked.get(ks[i]) {
+      Some(true) => arr.push(base_codec::json_str(ks[i]))
+      _ => ()
+    }
+  }
+  base_codec::json_stringify(base_codec::json_obj([
+    ("sub", base_codec::json_str(self.account_sub)),
+    ("revoked", base_codec::json_arr(arr)),
+  ]))
+}
+
+fn MembershipAuthority::encode_pending_purges_meta_json(self : MembershipAuthority) -> Result[String, String] {
+  let sub = self.account_sub
+  if sub.length() == 0 {
+    return Err("account_sub_unbound")
+  }
+  let doc = encode_meta_pending_purge_entries_doc(sub, self.pending_purges)
+  Ok(base_codec::json_stringify(doc))
+}
+
+fn MembershipAuthority::encode_completed_purge_gen_json(self : MembershipAuthority) -> String {
+  let gen_fields : Array[(String, base_codec::Json)] = []
+  let ks = self.completed_purge_gen.keys()
+  for i in 0..<ks.length() {
+    match self.completed_purge_gen.get(ks[i]) {
+      Some(g) => gen_fields.push((ks[i], base_codec::json_int64(g)))
+      None => ()
+    }
+  }
+  base_codec::json_stringify(base_codec::json_obj([
+    ("sub", base_codec::json_str(self.account_sub)),
+    ("gens", base_codec::json_obj(gen_fields)),
+  ]))
+}
+
+/// Persist `(ws -> { canonical, bare })` bindings + quarantined bare aliases into SQLite `meta`.
+pub fn MembershipAuthority::persist_station_bindings(
+  self : MembershipAuthority,
+  db : sql::Sql,
+) -> sql::SqlResult[Unit] {
+  store::put_meta(db, META_STATION_BINDINGS_KEY, self.encode_station_bindings_json())
+}
+
+/// Persist `(ws -> { canonical, bare })` bindings + quarantined bare aliases inside an existing SQLite `Burst`.
+pub fn MembershipAuthority::persist_station_bindings_in_burst(
+  self : MembershipAuthority,
+  b : sql::Burst,
+) -> sql::SqlResult[Unit] {
+  match b.run(store::sql_meta_put(), params=[
+    base_codec::json_str(META_STATION_BINDINGS_KEY),
+    base_codec::json_str(self.encode_station_bindings_json()),
+  ]) {
+    sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
+    sql::SqlResult::Ok(_) => sql::SqlResult::Ok(())
+  }
+}
+
+/// Snapshot of mutable SQLite-mirrored maps in `MembershipAuthority` for clean rollback on tx failure.
+pub struct MembershipTxSnapshot {
+  revoked : Array[(String, Bool)]
+  pending_purges : Array[(String, PendingPurgeEntry)]
+  completed_purge_gen : Array[(String, Int64)]
+  station_ws : Array[(String, String)]
+  ws_stations : Array[(String, Array[String])]
+  ws_bare_stations : Array[(String, Array[String])]
+  bare_station_owners : Array[(String, Array[String])]
+  quarantined_bare_stations : Array[(String, Bool)]
+}
+
+fn clone_str_arr_ma(xs : Array[String]) -> Array[String] {
+  let out : Array[String] = []
+  for i in 0..<xs.length() {
+    out.push(xs[i])
+  }
+  out
+}
+
+pub fn MembershipAuthority::snapshot_for_tx(self : MembershipAuthority) -> MembershipTxSnapshot {
+  let rev : Array[(String, Bool)] = []
+  let rks = self.revoked.keys()
+  for i in 0..<rks.length() {
+    match self.revoked.get(rks[i]) {
+      Some(v) => rev.push((rks[i], v))
+      None => ()
+    }
+  }
+  let pend : Array[(String, PendingPurgeEntry)] = []
+  let pks = self.pending_purges.keys()
+  for i in 0..<pks.length() {
+    match self.pending_purges.get(pks[i]) {
+      Some(e) => pend.push((pks[i], PendingPurgeEntry::{ op_gen: e.op_gen, stations: clone_str_arr_ma(e.stations) }))
+      None => ()
+    }
+  }
+  let comp : Array[(String, Int64)] = []
+  let cks = self.completed_purge_gen.keys()
+  for i in 0..<cks.length() {
+    match self.completed_purge_gen.get(cks[i]) {
+      Some(g) => comp.push((cks[i], g))
+      None => ()
+    }
+  }
+  let sws : Array[(String, String)] = []
+  let swks = self.station_ws.keys()
+  for i in 0..<swks.length() {
+    match self.station_ws.get(swks[i]) {
+      Some(w) => sws.push((swks[i], w))
+      None => ()
+    }
+  }
+  let wss : Array[(String, Array[String])] = []
+  let wsks = self.ws_stations.keys()
+  for i in 0..<wsks.length() {
+    match self.ws_stations.get(wsks[i]) {
+      Some(xs) => wss.push((wsks[i], clone_str_arr_ma(xs)))
+      None => ()
+    }
+  }
+  let wsbs : Array[(String, Array[String])] = []
+  let wsbks = self.ws_bare_stations.keys()
+  for i in 0..<wsbks.length() {
+    match self.ws_bare_stations.get(wsbks[i]) {
+      Some(xs) => wsbs.push((wsbks[i], clone_str_arr_ma(xs)))
+      None => ()
+    }
+  }
+  let bso : Array[(String, Array[String])] = []
+  let bsoks = self.bare_station_owners.keys()
+  for i in 0..<bsoks.length() {
+    match self.bare_station_owners.get(bsoks[i]) {
+      Some(xs) => bso.push((bsoks[i], clone_str_arr_ma(xs)))
+      None => ()
+    }
+  }
+  let qbs : Array[(String, Bool)] = []
+  let qks = self.quarantined_bare_stations.keys()
+  for i in 0..<qks.length() {
+    match self.quarantined_bare_stations.get(qks[i]) {
+      Some(v) => qbs.push((qks[i], v))
+      None => ()
+    }
+  }
+  MembershipTxSnapshot::{
+    revoked: rev,
+    pending_purges: pend,
+    completed_purge_gen: comp,
+    station_ws: sws,
+    ws_stations: wss,
+    ws_bare_stations: wsbs,
+    bare_station_owners: bso,
+    quarantined_bare_stations: qbs,
+  }
+}
+
+pub fn MembershipAuthority::restore_from_snapshot(
+  self : MembershipAuthority,
+  snap : MembershipTxSnapshot,
+) -> Unit {
+  self.revoked.clear()
+  for i in 0..<snap.revoked.length() {
+    self.revoked.set(snap.revoked[i].0, snap.revoked[i].1)
+  }
+  self.pending_purges.clear()
+  for i in 0..<snap.pending_purges.length() {
+    self.pending_purges.set(snap.pending_purges[i].0, snap.pending_purges[i].1)
+  }
+  self.completed_purge_gen.clear()
+  for i in 0..<snap.completed_purge_gen.length() {
+    self.completed_purge_gen.set(snap.completed_purge_gen[i].0, snap.completed_purge_gen[i].1)
+  }
+  self.station_ws.clear()
+  for i in 0..<snap.station_ws.length() {
+    self.station_ws.set(snap.station_ws[i].0, snap.station_ws[i].1)
+  }
+  self.ws_stations.clear()
+  for i in 0..<snap.ws_stations.length() {
+    self.ws_stations.set(snap.ws_stations[i].0, snap.ws_stations[i].1)
+  }
+  self.ws_bare_stations.clear()
+  for i in 0..<snap.ws_bare_stations.length() {
+    self.ws_bare_stations.set(snap.ws_bare_stations[i].0, snap.ws_bare_stations[i].1)
+  }
+  self.bare_station_owners.clear()
+  for i in 0..<snap.bare_station_owners.length() {
+    self.bare_station_owners.set(snap.bare_station_owners[i].0, snap.bare_station_owners[i].1)
+  }
+  self.quarantined_bare_stations.clear()
+  for i in 0..<snap.quarantined_bare_stations.length() {
+    self.quarantined_bare_stations.set(snap.quarantined_bare_stations[i].0, snap.quarantined_bare_stations[i].1)
+  }
+}
+
+/// Persist `revoked` workspace set into SQLite `meta` (requires bound `account_sub`).
+pub fn MembershipAuthority::persist_revoked_state(
+  self : MembershipAuthority,
+  db : sql::Sql,
+) -> sql::SqlResult[Unit] {
+  store::put_meta(db, META_REVOKED_WORKSPACES_KEY, self.encode_revoked_json())
+}
+
+/// Atomically persist `revoked`, `pending_purges`, `completed_purge_gen`, and optionally
+/// `station_bindings` inside an existing SQLite `Burst` transaction.
+/// Refuses to write flat unbound meta before `account_sub` is bound.
+pub fn MembershipAuthority::persist_meta_state_in_burst(
+  self : MembershipAuthority,
+  b : sql::Burst,
+  include_bindings : Bool = false,
+) -> sql::SqlResult[Unit] {
+  match self.encode_pending_purges_meta_json() {
+    Err(msg) => return sql::SqlResult::Err(shell::ShellError::{ message: msg })
+    Ok(purges_json) => {
+      match b.run(store::sql_meta_put(), params=[
+        base_codec::json_str(META_REVOKED_WORKSPACES_KEY),
+        base_codec::json_str(self.encode_revoked_json()),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      match b.run(store::sql_meta_put(), params=[
+        base_codec::json_str(META_PENDING_PURGES_KEY),
+        base_codec::json_str(purges_json),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      match b.run(store::sql_meta_put(), params=[
+        base_codec::json_str(META_COMPLETED_PURGE_GEN_KEY),
+        base_codec::json_str(self.encode_completed_purge_gen_json()),
+      ]) {
+        sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+        sql::SqlResult::Ok(_) => ()
+      }
+      if include_bindings {
+        match b.run(store::sql_meta_put(), params=[
+          base_codec::json_str(META_STATION_BINDINGS_KEY),
+          base_codec::json_str(self.encode_station_bindings_json()),
+        ]) {
+          sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
+          sql::SqlResult::Ok(_) => ()
+        }
+      }
+      sql::SqlResult::Ok(())
+    }
+  }
+}
+
+/// Persist account-scoped `pending_purges` + `completed_purge_gen` + `revoked` to SQLite `meta`
+/// synchronously in ONE transaction (zero blocking host I/O inside!). Callers invoke
+/// `enqueue_host_pending_purges_sync()` AFTER exiting the commit critical section.
+pub fn MembershipAuthority::persist_pending_purges_sqlite(
+  self : MembershipAuthority,
+  db : sql::Sql,
+) -> Result[Unit, String] {
+  if self.account_sub.length() == 0 {
+    return Err("account_sub_unbound")
+  }
+  let burst = sql::Burst::new(db)
+  match burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Unit] {
+    self.persist_meta_state_in_burst(b)
+  }) {
+    sql::SqlResult::Err(e) => Err("meta pending_purges persist failed: " + e.to_string())
+    sql::SqlResult::Ok(_) => Ok(())
+  }
+}
+
+/// Persist to SQLite and enqueue non-blocking async host mirror (safe only outside commit guard).
+pub fn MembershipAuthority::persist_pending_purges(
+  self : MembershipAuthority,
+  db : sql::Sql,
+) -> Result[Unit, String] {
+  let res = self.persist_pending_purges_sqlite(db)
+  if !self.in_commit_guard {
+    self.enqueue_host_pending_purges_sync()
+  }
+  res
+}
+
+/// Merge parsed pending-purge entries into memory, discarding any entry superseded by
+/// `completed_purge_gen[ws]` (`entry.op_gen <= completed`). Returns `true` iff at least one
+/// stale entry was discarded so callers can scrub stale host mirrors asynchronously.
+fn MembershipAuthority::apply_pending_purge_entries_map(
+  self : MembershipAuthority,
+  mine : Map[String, PendingPurgeEntry],
+) -> Bool {
+  let mut discarded_stale = false
+  let ws_keys = mine.keys()
+  for i in 0..<ws_keys.length() {
+    let ws = ws_keys[i]
+    match mine.get(ws) {
+      Some(entry) => {
+        let is_superseded = match self.completed_purge_gen.get(ws) {
+          Some(comp) => entry.op_gen <= comp
+          None => false
+        }
+        if is_superseded {
+          discarded_stale = true
+          continue
+        }
+        let (prev_gen, merged_sts) = match self.pending_purges.get(ws) {
+          Some(existing) => (existing.op_gen, existing.stations)
+          None => (entry.op_gen, [])
+        }
+        let next_gen = if entry.op_gen > prev_gen { entry.op_gen } else { prev_gen }
+        for j in 0..<entry.stations.length() {
+          match resolve_station_for_workspace(ws, entry.stations[j]) {
+            Ok(_) => {
+              push_unique_str_ma(merged_sts, entry.stations[j])
+              let _ = self.bind_station_checked(ws, entry.stations[j])
+            }
+            Err(_) => ()
+          }
+        }
+        self.pending_purges.set(ws, PendingPurgeEntry::{ op_gen: next_gen, stations: merged_sts })
+        self.revoked.set(ws, true)
+      }
+      None => ()
+    }
+  }
+  discarded_stale
+}
+
+/// Load persisted station bindings (including quarantined bare aliases), `completed_purge_gen`,
+/// pending purges, and revoked latches from SQLite (`meta` + `workspace`) into O(1) memory mirrors.
+/// SQLite `meta("membership:pending_purges")` strictly requires outer key `doc[account_sub]`.
+pub fn MembershipAuthority::load_from_db(self : MembershipAuthority, db : sql::Sql) -> Unit {
+  // 1. Hydrate `(ws -> stations)` from persisted `workspace` rows (with strict prefix validation).
+  match store::list_workspaces(db) {
+    sql::SqlResult::Ok(rows) => {
+      for i in 0..<rows.length() {
+        let r = rows[i]
+        match base_codec::json_parse(r.json) {
+          base_codec::JsonParseResult::Ok(j) => {
+            let role = j_str(j, "role")
+            if is_valid_workspace_role(role) && self.ws_roles.get(r.id).is_none() {
+              self.ws_roles.set(r.id, role)
+            }
+            let parsed = parse_cloud_workspace(r.id, j)
+            for si in 0..<parsed.stations.length() {
+              let _ = self.bind_station_checked(r.id, parsed.stations[si].id)
+            }
+          }
+          base_codec::JsonParseResult::Err(_) => ()
+        }
+      }
+    }
+    sql::SqlResult::Err(_) => ()
+  }
+  // 2. Hydrate persisted station bindings & quarantined bare aliases.
+  match store::get_meta(db, META_STATION_BINDINGS_KEY) {
+    sql::SqlResult::Ok(Some(raw)) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(ws_pairs)) => {
+        match base_codec::json_get(base_codec::Json::Obj(ws_pairs), "__quarantined_bare__") {
+          Some(base_codec::Json::Arr(qxs)) => {
+            for qi in 0..<qxs.length() {
+              match qxs[qi] {
+                base_codec::Json::Str(b) => if b.length() > 0 {
+                  self.quarantined_bare_stations.set(b, true)
+                  self.station_ws.remove(b)
+                }
+                _ => ()
+              }
+            }
+          }
+          _ => ()
+        }
+        for i in 0..<ws_pairs.length() {
+          let (ws, entry_v) = ws_pairs[i]
+          if ws == "__quarantined_bare__" {
+            continue
+          }
+          match base_codec::json_get(entry_v, "canonical") {
+            Some(base_codec::Json::Arr(xs)) => {
+              for j in 0..<xs.length() {
+                match xs[j] {
+                  base_codec::Json::Str(s) => { let _ = self.bind_station_checked(ws, s) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
+          match base_codec::json_get(entry_v, "bare") {
+            Some(base_codec::Json::Arr(xs)) => {
+              for j in 0..<xs.length() {
+                match xs[j] {
+                  base_codec::Json::Str(s) => { let _ = self.bind_station_checked(ws, s) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      _ => ()
+    }
+    _ => ()
+  }
+  // 3. Hydrate `completed_purge_gen` FIRST so subsequent pending-purge reconciliation discards superseded entries!
+  if self.account_sub.length() > 0 {
+    match store::get_meta(db, META_COMPLETED_PURGE_GEN_KEY) {
+      sql::SqlResult::Ok(Some(raw)) =>
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(doc) => {
+          let doc_sub = j_str(doc, "sub")
+          if doc_sub.length() == 0 || doc_sub == self.account_sub {
+            match base_codec::json_get(doc, "gens") {
+              Some(base_codec::Json::Obj(pairs)) => {
+                for i in 0..<pairs.length() {
+                  let (ws, v) = pairs[i]
+                  if ws.length() > 0 {
+                    match v {
+                      base_codec::Json::Num(n, repr) => {
+                        let g = if repr.length() > 0 && !repr.contains(".") {
+                          match base_codec::parse_int64_str(repr) {
+                            Some(pv) => pv
+                            None => n.to_int64()
+                          }
+                        } else {
+                          n.to_int64()
+                        }
+                        match self.completed_purge_gen.get(ws) {
+                          Some(cur) => if g > cur { self.completed_purge_gen.set(ws, g) }
+                          None => self.completed_purge_gen.set(ws, g)
+                        }
+                      }
+                      _ => ()
+                    }
+                  }
+                }
+              }
+              _ => ()
+            }
+          }
+        }
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+      _ => ()
+    }
+  }
+  // 4. Hydrate SQLite `meta` pending_purges (STRICTLY outer key `doc[self.account_sub]`, NEVER flat!).
+  if self.account_sub.length() > 0 {
+    match store::get_meta(db, META_PENDING_PURGES_KEY) {
+      sql::SqlResult::Ok(Some(raw)) =>
+      match base_codec::json_parse(raw) {
+        base_codec::JsonParseResult::Ok(doc) => {
+          let _ = self.apply_pending_purge_entries_map(extract_account_pending_purge_entries(doc, self.account_sub))
+        }
+        base_codec::JsonParseResult::Err(_) => ()
+      }
+      _ => ()
+    }
+  }
+  // 5. Hydrate persisted `revoked` latches (`meta("membership:revoked_workspaces")`).
+  match store::get_meta(db, META_REVOKED_WORKSPACES_KEY) {
+    sql::SqlResult::Ok(Some(raw)) =>
+    match base_codec::json_parse(raw) {
+      base_codec::JsonParseResult::Ok(doc) => {
+        let doc_sub = j_str(doc, "sub")
+        let sub_matches = self.account_sub.length() > 0 && (doc_sub.length() == 0 || doc_sub == self.account_sub)
+        if sub_matches {
+          match base_codec::json_get(doc, "revoked") {
+            Some(base_codec::Json::Arr(xs)) => {
+              for i in 0..<xs.length() {
+                match xs[i] {
+                  base_codec::Json::Str(ws) => if ws.length() > 0 { self.revoked.set(ws, true) }
+                  _ => ()
+                }
+              }
+            }
+            _ => ()
+          }
+        }
+      }
+      base_codec::JsonParseResult::Err(_) => ()
+    }
+    _ => ()
+  }
+}
+
+/// Reconcile a host pending-purges document against `self.completed_purge_gen` strictly by source:
+/// - `is_shared_storage == true` (legacy shared `device/pending_purges`): ONLY accepts `doc[account_sub]`,
+///   NEVER guesses flat `{ws: ...}` shapes!
+/// - `is_shared_storage == false` (dedicated `device/pending_purges/<sanitized_sub>`): accepts flat
+///   `{ws: ...}` or matching `{account_sub: {ws: ...}}`.
+/// Discards any entry with `host.op_gen <= completed_purge_gen[ws]` and asynchronously scrubs stale host mirrors!
+pub fn MembershipAuthority::merge_host_pending_purges_doc(
+  self : MembershipAuthority,
+  doc : base_codec::Json,
+  is_shared_storage : Bool = false,
+) -> Unit {
+  if self.account_sub.length() == 0 {
+    return
+  }
+  let entries = if is_shared_storage {
+    extract_account_pending_purge_entries(doc, self.account_sub)
+  } else {
+    extract_per_account_host_purge_entries(doc, self.account_sub)
+  }
+  let discarded = self.apply_pending_purge_entries_map(entries)
+  if discarded && !self.in_commit_guard {
+    self.enqueue_host_pending_purges_sync()
+  }
+}
+
+/// Read this account's dedicated host pending-purges key (`device/pending_purges/<sanitized_sub>`)
+/// via the registered reader, strictly distinguishing `Absent` from `ReadError`, and falling back
+/// to the legacy shared `device/pending_purges` (strictly keyed by `account_sub`!) only on `Absent`.
+pub fn MembershipAuthority::load_host_pending_purges(self : MembershipAuthority) -> Result[Unit, String] {
+  let key = host_pending_purges_key_for_sub(self.account_sub)
+  if key.length() == 0 {
+    return Err("account_sub_unbound")
+  }
+  match self.on_host_pending_purges_read {
+    Some(reader) => match reader(key) {
+      HostStorageRead::Found(doc) => {
+        self.merge_host_pending_purges_doc(doc, is_shared_storage=false)
+        Ok(())
+      }
+      HostStorageRead::Absent => match reader(HOST_PENDING_PURGES_KEY) {
+        HostStorageRead::Found(shared_doc) => {
+          self.merge_host_pending_purges_doc(shared_doc, is_shared_storage=true)
+          Ok(())
+        }
+        HostStorageRead::Absent => Ok(())
+        HostStorageRead::ReadError(reason) => {
+          self.last_host_persist_warn = Some(reason)
+          Err(reason)
+        }
+      }
+      HostStorageRead::ReadError(reason) => {
+        self.last_host_persist_warn = Some(reason)
+        Err(reason)
+      }
+    }
+    None => Ok(())
+  }
+}
+
+/// Immutably bind this authority (and its SQLite DB handle) to `sub`:
+/// - Rejects empty `sub` with `Err("account_sub_mismatch")`.
+/// - If already bound to a different `sub`, returns `Err("account_sub_mismatch")` with 0 side effects!
+/// - Hydrates SQLite `meta` (including `completed_purge_gen`) FIRST, THEN reconciles host pending
+///   purges so any stale host mirror (`op_gen <= completed_purge_gen[ws]`) is discarded and scrubbed!
+pub fn MembershipAuthority::bind_account_sub(
+  self : MembershipAuthority,
+  sub : String,
+  db : Option[sql::Sql] = None,
+  host_purges_doc : Option[base_codec::Json] = None,
+  host_purges_shared : Bool = false,
+) -> Result[Unit, String] {
+  if sub.length() == 0 {
+    return Err("account_sub_mismatch: empty account sub")
+  }
+  if self.account_sub.length() > 0 && self.account_sub != sub {
+    return Err("account_sub_mismatch: expected " + self.account_sub + ", got " + sub)
+  }
+  self.account_sub = sub
+  self.unauthenticated = false
+  match db {
+    Some(d) => self.load_from_db(d)
+    None => ()
+  }
+  match host_purges_doc {
+    Some(doc) => self.merge_host_pending_purges_doc(doc, is_shared_storage=host_purges_shared)
+    None => { let _ = self.load_host_pending_purges() }
+  }
+  Ok(())
+}
+
+/// Alias for `bind_account_sub` enforcing immutable account/DB binding.
+pub fn MembershipAuthority::set_account_sub(
+  self : MembershipAuthority,
+  sub : String,
+  db : Option[sql::Sql] = None,
+  host_purges_doc : Option[base_codec::Json] = None,
+  host_purges_shared : Bool = false,
+) -> Result[Unit, String] {
+  self.bind_account_sub(sub, db=db, host_purges_doc=host_purges_doc, host_purges_shared=host_purges_shared)
+}
+
+// ── Unified O(1) Read Gate (NEVER queries SQLite!) ──
+
+/// O(1) read gate for workspace `ws`: true iff authenticated, session is valid, AND `ws` is
+/// neither revoked nor awaiting a pending purge.
+pub fn MembershipAuthority::is_workspace_readable(self : MembershipAuthority, ws : String) -> Bool {
+  if self.unauthenticated || self.session_invalidated {
+    return false
+  }
+  if ws.length() == 0 {
+    return true
+  }
+  match self.revoked.get(ws) {
+    Some(true) => return false
+    _ => ()
+  }
+  if self.pending_purges.get(ws).is_some() {
+    return false
+  }
+  true
+}
+
+/// O(1) read gate for station `raw_station` (canonical `ws/st` or unambiguously bound bare `st`).
+/// Fail-closed (`false`) when unauthenticated, session invalidated, or on multi-owner/quarantined bare aliases!
+pub fn MembershipAuthority::is_station_readable(
+  self : MembershipAuthority,
+  raw_station : String,
+  fallback_ws : String = "",
+) -> Bool {
+  if self.unauthenticated || self.session_invalidated {
+    return false
+  }
+  if self.is_ambiguous_bare_station(raw_station) {
+    return false
+  }
+  let ws = self.station_workspace(raw_station, fallback_ws=fallback_ws)
+  if ws.length() == 0 {
+    return true
+  }
+  self.is_workspace_readable(ws)
+}
+
+pub fn MembershipAuthority::is_revoked(self : MembershipAuthority, ws : String) -> Bool {
+  match self.revoked.get(ws) {
+    Some(true) => true
+    _ => false
+  }
+}
+
+pub fn MembershipAuthority::has_pending_purge(self : MembershipAuthority, ws : String) -> Bool {
+  self.pending_purges.get(ws).is_some()
+}
+
+pub fn MembershipAuthority::pending_purge_workspaces(self : MembershipAuthority) -> Array[String] {
+  self.pending_purges.keys()
+}
+
+pub fn MembershipAuthority::completed_purge_gen_of(self : MembershipAuthority, ws : String) -> Option[Int64] {
+  self.completed_purge_gen.get(ws)
+}
+
+pub fn MembershipAuthority::pending_purge_op_gen_of(self : MembershipAuthority, ws : String) -> Option[Int64] {
+  match self.pending_purges.get(ws) {
+    Some(e) => Some(e.op_gen)
+    None => None
+  }
+}
+
+/// Record `ws` as revoked and latched in `pending_purges` with a strictly monotonic `op_gen`
+/// (`max(completed_purge_gen[ws], pending_op_gen) + 1L`). Returns the allocated `op_gen`.
+pub fn MembershipAuthority::latch_purge(
+  self : MembershipAuthority,
+  ws : String,
+  stations : Array[String],
+) -> Int64 {
+  if ws.length() == 0 {
+    return 0L
+  }
+  let comp = match self.completed_purge_gen.get(ws) {
+    Some(g) => g
+    None => 0L
+  }
+  let pend = match self.pending_purges.get(ws) {
+    Some(e) => e.op_gen
+    None => 0L
+  }
+  let base = if comp >= pend { comp } else { pend }
+  let op_gen = base + 1L
+  self.revoked.set(ws, true)
+  let prefix = ws + "/"
+  let copy : Array[String] = []
+  for i in 0..<stations.length() {
+    let s = stations[i]
+    if !s.contains("/") || s.starts_with(prefix) {
+      push_unique_str_ma(copy, s)
+    }
+  }
+  self.pending_purges.set(ws, PendingPurgeEntry::{ op_gen: op_gen, stations: copy })
+  op_gen
+}
+
+/// Restore a previously latched pending purge entry verbatim (used on SQLite tx rollback).
+pub fn MembershipAuthority::restore_pending_purge(
+  self : MembershipAuthority,
+  ws : String,
+  op_gen : Int64,
+  stations : Array[String],
+) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  self.revoked.set(ws, true)
+  self.pending_purges.set(ws, PendingPurgeEntry::{ op_gen: op_gen, stations: stations })
+}
+
+/// Record `completed_purge_gen[ws] = max(prev, op_gen)` and clear `pending_purges[ws]`.
+/// Returns previous `completed_purge_gen[ws]` for rollback on tx error.
+pub fn MembershipAuthority::complete_purge(
+  self : MembershipAuthority,
+  ws : String,
+  op_gen : Int64,
+) -> Option[Int64] {
+  let prev = self.completed_purge_gen.get(ws)
+  let prev_v = match prev {
+    Some(g) => g
+    None => 0L
+  }
+  let next_g = if op_gen > prev_v { op_gen } else if prev.is_none() && op_gen == 0L { 1L } else { prev_v }
+  self.completed_purge_gen.set(ws, next_g)
+  self.pending_purges.remove(ws)
+  prev
+}
+
+/// Record rejoin completion watermark (`completed_purge_gen[ws] >= max(prev, pending_op_gen, 1L)`),
+/// clearing `pending_purges[ws]` and `revoked[ws]`. Returns previous `completed_purge_gen[ws]` for rollback.
+pub fn MembershipAuthority::record_rejoin_completed_gen(self : MembershipAuthority, ws : String) -> Option[Int64] {
+  let prev = self.completed_purge_gen.get(ws)
+  let prev_v = match prev {
+    Some(g) => g
+    None => 0L
+  }
+  let pend_v = match self.pending_purges.get(ws) {
+    Some(e) => e.op_gen
+    None => 0L
+  }
+  let mut next_g = if prev_v >= pend_v { prev_v } else { pend_v }
+  if next_g < 1L {
+    next_g = 1L
+  }
+  self.completed_purge_gen.set(ws, next_g)
+  self.pending_purges.remove(ws)
+  self.revoked.remove(ws)
+  prev
+}
+
+pub fn MembershipAuthority::restore_completed_purge_gen(
+  self : MembershipAuthority,
+  ws : String,
+  prev : Option[Int64],
+) -> Unit {
+  match prev {
+    Some(g) => self.completed_purge_gen.set(ws, g)
+    None => self.completed_purge_gen.remove(ws)
+  }
+}
+
+pub fn MembershipAuthority::clear_pending_purge(self : MembershipAuthority, ws : String) -> Unit {
+  self.pending_purges.remove(ws)
+}
+
+pub fn MembershipAuthority::clear_revoked(self : MembershipAuthority, ws : String) -> Unit {
+  self.revoked.remove(ws)
+}
+
+/// Known active (non-revoked) workspace IDs plus any workspaces with pending purges.
+pub fn MembershipAuthority::known_workspaces(self : MembershipAuthority) -> Array[String] {
+  let out : Array[String] = []
+  let ks1 = self.ws_stations.keys()
+  for i in 0..<ks1.length() { push_unique_str_ma(out, ks1[i]) }
+  let ks2 = self.ws_roles.keys()
+  for i in 0..<ks2.length() { push_unique_str_ma(out, ks2[i]) }
+  let ks3 = self.pending_purges.keys()
+  for i in 0..<ks3.length() { push_unique_str_ma(out, ks3[i]) }
+  let ks4 = self.ws_bare_stations.keys()
+  for i in 0..<ks4.length() { push_unique_str_ma(out, ks4[i]) }
+  out
+}
+
+// ── Role Tracking & Credential Epoch ──
+
+pub fn MembershipAuthority::role_of(self : MembershipAuthority, ws : String) -> Option[String] {
+  self.ws_roles.get(ws)
+}
+
+pub fn MembershipAuthority::set_role(self : MembershipAuthority, ws : String, role : String) -> Unit {
+  if ws.length() > 0 && is_valid_workspace_role(role) {
+    self.ws_roles.set(ws, role)
+  }
+}
+
+pub fn MembershipAuthority::clear_role(self : MembershipAuthority, ws : String) -> Unit {
+  self.ws_roles.remove(ws)
+}
+
+pub fn MembershipAuthority::cred_epoch_of(self : MembershipAuthority, ws : String) -> Int64 {
+  match self.cred_epoch.get(ws) {
+    Some(v) => v
+    None => 1L
+  }
+}
+
+/// Advance `cred_epoch[ws]` and purge any static mesh credential captured under an older epoch.
+/// Called ONLY on role change, `fresh=true`, drop, or rejoin (NEVER on routine Cloud OAuth refresh!).
+pub fn MembershipAuthority::bump_cred_epoch(self : MembershipAuthority, ws : String) -> Int64 {
+  let next = self.cred_epoch_of(ws) + 1L
+  self.cred_epoch.set(ws, next)
+  self.static_creds.remove(ws)
+  next
+}
+
+/// Store a static mesh credential ONLY at initial epoch 1; once `cred_epoch[ws]` has advanced,
+/// static credentials are never re-armed.
+pub fn MembershipAuthority::set_static_credential(
+  self : MembershipAuthority,
+  ws : String,
+  credential : String,
+) -> Unit {
+  if ws.length() == 0 {
+    return
+  }
+  if credential.length() == 0 {
+    self.static_creds.remove(ws)
+    return
+  }
+  let ep = self.cred_epoch_of(ws)
+  if ep > 1L {
+    return
+  }
+  self.static_creds.set(ws, (credential, ep))
+}
+
+pub fn MembershipAuthority::clear_static_credential(self : MembershipAuthority, ws : String) -> Unit {
+  self.static_creds.remove(ws)
+}
+
+/// Return a static mesh credential ONLY if it matches the current `cred_epoch[ws]`.
+pub fn MembershipAuthority::get_valid_static_credential(
+  self : MembershipAuthority,
+  ws : String,
+) -> Option[String] {
+  match self.static_creds.get(ws) {
+    Some((cred, ep)) => if ep == self.cred_epoch_of(ws) && cred.length() > 0 { Some(cred) } else { None }
+    None => None
+  }
+}
+
+// ── Bidirectional Monotonic Cloud Commit Sequencing & Session Invalidation ──
+
+pub fn MembershipAuthority::next_cloud_seq(self : MembershipAuthority) -> Int64 {
+  let s = self.next_seq
+  self.next_seq += 1L
+  s
+}
+
+pub fn MembershipAuthority::cloud_commit_seq(self : MembershipAuthority) -> Int64 {
+  self.cloud_commit_seq
+}
+
+pub fn MembershipAuthority::ws_commit_seq_of(self : MembershipAuthority, ws : String) -> Int64 {
+  match self.ws_commit_seq.get(ws) {
+    Some(v) => v
+    None => 0L
+  }
+}
+
+/// Monotonicity check for `/v1/me` itself: rejects older `/v1/me` snapshots without letting
+/// a newer `/v1/workspaces/B` detail commit cancel `/v1/me`'s removal of workspace A!
+pub fn MembershipAuthority::can_commit_cloud_me(self : MembershipAuthority, req_seq : Int64) -> Bool {
+  req_seq <= 0L || req_seq > self.cloud_commit_seq
+}
+
+/// Per-workspace check inside `commit_cloud_me`: returns true iff `req_seq` is newer than the
+/// latest committed sequence for `ws` (so newer `/v1/workspaces/B` details are preserved while
+/// removed workspace `A` is still dropped).
+pub fn MembershipAuthority::should_apply_me_workspace(
+  self : MembershipAuthority,
+  ws : String,
+  req_seq : Int64,
+) -> Bool {
+  req_seq <= 0L || req_seq > self.ws_commit_seq_of(ws)
+}
+
+/// Sequence guard for `/v1/workspaces/<id>`: rejects responses older than EITHER
+/// `ws_commit_seq[ws]` OR the last committed `/v1/me`.
+pub fn MembershipAuthority::can_commit_workspace(
+  self : MembershipAuthority,
+  ws : String,
+  req_seq : Int64,
+) -> Bool {
+  req_seq <= 0L || (req_seq > self.ws_commit_seq_of(ws) && req_seq >= self.cloud_commit_seq)
+}
+
+pub fn MembershipAuthority::advance_cloud_me_seq(self : MembershipAuthority, req_seq : Int64) -> Unit {
+  if req_seq > self.cloud_commit_seq {
+    self.cloud_commit_seq = req_seq
+  } else if req_seq <= 0L {
+    self.cloud_commit_seq += 1L
+  }
+}
+
+pub fn MembershipAuthority::advance_workspace_seq(
+  self : MembershipAuthority,
+  ws : String,
+  req_seq : Int64,
+) -> Unit {
+  let cur = self.ws_commit_seq_of(ws)
+  let next = if req_seq > cur { req_seq } else if req_seq <= 0L { cur + 1L } else { cur }
+  self.ws_commit_seq.set(ws, next)
+}
+
+pub fn MembershipAuthority::mark_session_invalidated(self : MembershipAuthority) -> Unit {
+  self.session_invalidated = true
+  self.mirror_session_gen += 1L
+  self.mirror_pending_dirty = false
+  self.static_creds.clear()
+}
+
+pub fn MembershipAuthority::clear_session_invalidated(self : MembershipAuthority) -> Unit {
+  self.session_invalidated = false
+}
+
+pub fn MembershipAuthority::is_session_invalidated(self : MembershipAuthority) -> Bool {
+  self.session_invalidated
+}

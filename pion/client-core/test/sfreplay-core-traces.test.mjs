@@ -91,10 +91,12 @@ function findShellLib() {
 
 let buildDir = null;
 let driverBin = null;
+let shellLibDir = null;
 
 before(() => {
   buildDir = fs.mkdtempSync(path.join(os.tmpdir(), "pion-sfreplay-core-"));
   const { lib: shellLib, libsFile: extraLibsFile } = findShellLib();
+  shellLibDir = path.dirname(shellLib);
   let extraLibs = [];
   if (shellLib.endsWith(".a") && process.platform === "darwin") {
     if (extraLibsFile && fs.existsSync(extraLibsFile)) {
@@ -148,13 +150,33 @@ after(() => {
 
 class CoreRuntimeDriver {
   constructor(dataDir, origin) {
-    const libDir = path.join(repoRoot, "client/target/debug");
+    // Seed a signed-in TS StoredAccount so Slice 2B-1 account-owned DB lifecycle opens an authenticated account DB.
+    const accountsPath = path.join(dataDir, "accounts");
+    if (!fs.existsSync(accountsPath)) {
+      fs.writeFileSync(
+        accountsPath,
+        JSON.stringify([
+          {
+            sub: "u-trace",
+            email: "alice@still.fail",
+            name: "Alice",
+            picture: "",
+            access: "tok-trace",
+            refresh: "ref-trace",
+            access_expires: 1900000000,
+            session: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          },
+        ]),
+        "utf8",
+      );
+    }
+    const libDirs = [path.join(repoRoot, "client/target/debug"), ...(shellLibDir ? [shellLibDir] : [])].join(":");
     this.proc = spawn(driverBin, [dataDir, origin], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        DYLD_LIBRARY_PATH: `${libDir}${process.env.DYLD_LIBRARY_PATH ? `:${process.env.DYLD_LIBRARY_PATH}` : ""}`,
-        LD_LIBRARY_PATH: `${libDir}${process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : ""}`,
+        DYLD_LIBRARY_PATH: `${libDirs}${process.env.DYLD_LIBRARY_PATH ? `:${process.env.DYLD_LIBRARY_PATH}` : ""}`,
+        LD_LIBRARY_PATH: `${libDirs}${process.env.LD_LIBRARY_PATH ? `:${process.env.LD_LIBRARY_PATH}` : ""}`,
       },
     });
     this.buf = "";

@@ -55,6 +55,9 @@ struct SimAccountDb {
   log_use : Map[String, Int64]
   md : Map[String, (Int64, String)]
   transcripts : Array[(String, String, Int, String)]
+  moved_rows : Map[String, (String, String, String, Option[Int], Option[Int], Option[Int64], Int)]
+  meta : Map[String, String]
+  mut fail_drop_sql : Bool
   ran : Array[String]
 }
 
@@ -93,6 +96,9 @@ fn SimAccountDb::new(rt : effect::Runtime) -> SimAccountDb {
     log_use: Map::new(),
     md: Map::new(),
     transcripts: [],
+    moved_rows: Map::new(),
+    meta: Map::new(),
+    fail_drop_sql: false,
     ran: [],
   }
   holder.push(db)
@@ -671,8 +677,124 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
         None => ()
       }
     }
+  } else if stmt == store::sql_moved_put() {
+    let st = p_str(p, 0)
+    let sk = p_str(p, 1)
+    self.moved_rows.set(st + ":" + sk, (st, sk, p_str(p, 2), p_opt_int(p, 3), p_opt_int(p, 4), p_opt_int64(p, 5), p_int(p, 6)))
+    changed = 1
+  } else if stmt == store::sql_moved_get() {
+    let k = p_str(p, 0) + ":" + p_str(p, 1)
+    match self.moved_rows.get(k) {
+      Some((_, _, there_st, th, there_th, at, came)) => {
+        let th_j = match th { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let there_j = match there_th { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+        let at_j = match at { Some(v) => base_codec::json_int64(v); None => base_codec::json_null() }
+        rows.push(base_codec::json_arr([
+          base_codec::json_str(there_st),
+          th_j,
+          there_j,
+          at_j,
+          base_codec::json_int(came),
+        ]))
+      }
+      None => ()
+    }
+  } else if stmt == store::sql_moved_by_thread() {
+    let st = p_str(p, 0)
+    let th = p_int(p, 1)
+    let mks = self.moved_rows.keys()
+    for i in 0..<mks.length() {
+      match self.moved_rows.get(mks[i]) {
+        Some((mst, msk, _, mth, _, _, _)) => if mst == st {
+          match mth {
+            Some(v) => if v == th {
+              rows.push(base_codec::json_arr([base_codec::json_str(msk)]))
+              break
+            }
+            None => ()
+          }
+        }
+        None => ()
+      }
+    }
   } else if stmt == store::sql_moved_from() {
-    let _ = p_str(p, 0)
+    let st = p_str(p, 0)
+    let mks = self.moved_rows.keys()
+    for i in 0..<mks.length() {
+      match self.moved_rows.get(mks[i]) {
+        Some((mst, msk, _, _, _, _, _)) => if mst == st {
+          rows.push(base_codec::json_arr([base_codec::json_str(msk)]))
+        }
+        None => ()
+      }
+    }
+  } else if stmt == "SELECT archived, id, thread, session FROM chat WHERE station = ?" {
+    let st = p_str(p, 0)
+    for i in 0..<self.chat_order.length() {
+      match self.chats.get(self.chat_order[i]) {
+        Some(c) => if c.station == st {
+          let th_j = match c.thread { Some(v) => base_codec::json_int(v); None => base_codec::json_null() }
+          let sk_j = match c.session { Some(v) => base_codec::json_str(v); None => base_codec::json_null() }
+          rows.push(base_codec::json_arr([
+            base_codec::json_int(c.archived),
+            base_codec::json_str(c.id),
+            th_j,
+            sk_j,
+          ]))
+        }
+        None => ()
+      }
+    }
+  } else if stmt == "SELECT id FROM thread WHERE station = ?" {
+    let pref = p_str(p, 0) + ":"
+    let tks = self.threads.keys()
+    for i in 0..<tks.length() {
+      if tks[i].starts_with(pref) {
+        let id_s = tks[i].slice(pref.length(), tks[i].length())
+        match base_codec::parse_int64_str(id_s) {
+          Some(v) => rows.push(base_codec::json_arr([base_codec::json_int(v.to_int())]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == "SELECT key FROM session WHERE station = ?" {
+    let pref = p_str(p, 0) + ":"
+    let sks = self.sessions.keys()
+    for i in 0..<sks.length() {
+      if sks[i].starts_with(pref) {
+        rows.push(base_codec::json_arr([base_codec::json_str(sks[i].slice(pref.length(), sks[i].length()))]))
+      }
+    }
+  } else if stmt == "SELECT session, thread FROM thread_member WHERE station = ?" {
+    ()
+  } else if stmt == "SELECT id, session, chat FROM job WHERE station = ?" {
+    let pref = p_str(p, 0) + ":"
+    let jks = self.jobs.keys()
+    for i in 0..<jks.length() {
+      if jks[i].starts_with(pref) {
+        let jid = jks[i].slice(pref.length(), jks[i].length())
+        rows.push(base_codec::json_arr([base_codec::json_str(jid), base_codec::json_null(), base_codec::json_null()]))
+      }
+    }
+  } else if stmt == "SELECT DISTINCT thread FROM entry WHERE station = ?" {
+    let pref = p_str(p, 0) + " "
+    let eks = self.entries.keys()
+    for i in 0..<eks.length() {
+      if eks[i].starts_with(pref) {
+        let id_s = eks[i].slice(pref.length(), eks[i].length())
+        match base_codec::parse_int64_str(id_s) {
+          Some(v) => rows.push(base_codec::json_arr([base_codec::json_int(v.to_int())]))
+          None => ()
+        }
+      }
+    }
+  } else if stmt == "SELECT name FROM sqlite_master WHERE type = 'table'" {
+    rows.push(base_codec::json_arr([base_codec::json_str("moved")]))
+    rows.push(base_codec::json_arr([base_codec::json_str("shared_mark")]))
+    rows.push(base_codec::json_arr([base_codec::json_str("md_kept")]))
+    rows.push(base_codec::json_arr([base_codec::json_str("log_use")]))
+  } else if stmt == "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'md_kept'" {
+    rows.push(base_codec::json_arr([base_codec::json_int(1)]))
   } else if stmt == store::sql_pending_by_station() {
     let st = p_str(p, 0)
     let prefix = st + ":"
@@ -906,6 +1028,248 @@ fn SimAccountDb::answer(self : SimAccountDb, op : String, args : base_codec::Jso
   } else if stmt == "SELECT station, thread, coalesce(sum(length(json)), 0) FROM entry GROUP BY station, thread" ||
   stmt == "SELECT station, session, coalesce(sum(length(json)), 0) FROM transcript GROUP BY station, session" {
     ()
+  } else if stmt == store::sql_meta_get() {
+    match self.meta.get(p_str(p, 0)) {
+      Some(v) => rows.push(base_codec::json_arr([base_codec::json_str(v)]))
+      None => ()
+    }
+  } else if stmt == store::sql_meta_put() {
+    self.meta.set(p_str(p, 0), p_str(p, 1))
+    changed = 1
+  } else if stmt == store::sql_meta_delete() {
+    self.meta.remove(p_str(p, 0))
+    changed = 1
+  } else if stmt == store::sql_workspace_one() {
+    let wid = p_str(p, 0)
+    match self.workspaces.get(wid) {
+      Some((j, conf)) => {
+        let cj = match conf {
+          Some(ts) => base_codec::json_int64(ts)
+          None => base_codec::json_null()
+        }
+        rows.push(base_codec::json_arr([base_codec::json_str(wid), base_codec::json_str(j), cj]))
+      }
+      None => ()
+    }
+  } else if stmt.starts_with("DELETE FROM ") {
+    if self.fail_drop_sql {
+      return shell::AskResult::Err(shell::ShellError::{ message: "simulated sqlite drop_workspace error" })
+    }
+    let matches_st = fn(actual_st : String) -> Bool {
+      if stmt.contains("substr(") {
+        let pref = p_str(p, 0)
+        pref.length() > 0 && actual_st.starts_with(pref)
+      } else {
+        actual_st == p_str(p, 0)
+      }
+    }
+    if stmt == "DELETE FROM workspace WHERE id = ?" {
+      let wid = p_str(p, 0)
+      self.workspaces.remove(wid)
+      let next_ord : Array[String] = []
+      for i in 0..<self.workspace_order.length() {
+        if self.workspace_order[i] != wid { next_ord.push(self.workspace_order[i]) }
+      }
+      self.workspace_order.clear()
+      for i in 0..<next_ord.length() { self.workspace_order.push(next_ord[i]) }
+      changed = 1
+    } else if stmt == "DELETE FROM workspace_pref WHERE workspace = ?" {
+      let wp = p_str(p, 0) + ":"
+      let next_ord : Array[String] = []
+      for i in 0..<self.pref_order.length() {
+        let k = self.pref_order[i]
+        if k.starts_with(wp) {
+          self.prefs.remove(k)
+          changed += 1
+        } else {
+          next_ord.push(k)
+        }
+      }
+      self.pref_order.clear()
+      for i in 0..<next_ord.length() { self.pref_order.push(next_ord[i]) }
+    } else if stmt == "DELETE FROM account_doc WHERE name = ?" {
+      self.account_docs.remove(p_str(p, 0))
+      changed = 1
+    } else if stmt.starts_with("DELETE FROM station WHERE ") {
+      let next_ord : Array[String] = []
+      for i in 0..<self.station_doc_order.length() {
+        let k = self.station_doc_order[i]
+        match self.station_docs.get(k) {
+          Some((addr, _, _, _)) => if matches_st(addr) {
+            self.station_docs.remove(k)
+            changed += 1
+          } else {
+            next_ord.push(k)
+          }
+          None => ()
+        }
+      }
+      self.station_doc_order.clear()
+      for i in 0..<next_ord.length() { self.station_doc_order.push(next_ord[i]) }
+    } else if stmt == "DELETE FROM chat WHERE station = ? AND archived = ? AND id = ?" {
+      let key = p_str(p, 0) + ":" + p_int(p, 1).to_string() + ":" + p_str(p, 2)
+      self.chats.remove(key)
+      let next_ord : Array[String] = []
+      for i in 0..<self.chat_order.length() {
+        if self.chat_order[i] != key { next_ord.push(self.chat_order[i]) }
+      }
+      self.chat_order.clear()
+      for i in 0..<next_ord.length() { self.chat_order.push(next_ord[i]) }
+      changed = 1
+    } else if stmt == "DELETE FROM chat WHERE station = ? AND session = ?" {
+      let st = p_str(p, 0)
+      let sk = p_str(p, 1)
+      let next_ord : Array[String] = []
+      for i in 0..<self.chat_order.length() {
+        let k = self.chat_order[i]
+        match self.chats.get(k) {
+          Some(c) => {
+            let sm = match c.session { Some(s) => s == sk; None => false }
+            if c.station == st && (sm || c.id == sk) {
+              self.chats.remove(k)
+              changed += 1
+            } else {
+              next_ord.push(k)
+            }
+          }
+          None => ()
+        }
+      }
+      self.chat_order.clear()
+      for i in 0..<next_ord.length() { self.chat_order.push(next_ord[i]) }
+    } else if stmt.starts_with("DELETE FROM chat WHERE ") {
+      let next_ord : Array[String] = []
+      for i in 0..<self.chat_order.length() {
+        let k = self.chat_order[i]
+        match self.chats.get(k) {
+          Some(c) => if matches_st(c.station) {
+            self.chats.remove(k)
+            changed += 1
+          } else {
+            next_ord.push(k)
+          }
+          None => ()
+        }
+      }
+      self.chat_order.clear()
+      for i in 0..<next_ord.length() { self.chat_order.push(next_ord[i]) }
+    } else if stmt == "DELETE FROM entry WHERE station = ? AND thread = ?" {
+      self.entries.remove(p_str(p, 0) + " " + p_int(p, 1).to_string())
+      changed = 1
+    } else if stmt.starts_with("DELETE FROM entry WHERE ") {
+      let ks = self.entries.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        let st = match k.index_of(" ") { idx if idx > 0 => k.slice(0, idx); _ => k }
+        if matches_st(st) {
+          self.entries.remove(k)
+          changed += 1
+        }
+      }
+    } else if stmt == "DELETE FROM thread WHERE station = ? AND id = ?" {
+      let k = p_str(p, 0) + ":" + p_int(p, 1).to_string()
+      self.threads.remove(k)
+      self.thread_reads.remove(k)
+      changed = 1
+    } else if stmt.starts_with("DELETE FROM thread WHERE ") {
+      let ks = self.threads.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        let st = match k.index_of(":") { idx if idx > 0 => k.slice(0, idx); _ => k }
+        if matches_st(st) {
+          self.threads.remove(k)
+          self.thread_reads.remove(k)
+          changed += 1
+        }
+      }
+    } else if stmt == "DELETE FROM said WHERE station = ? AND thread = ?" {
+      let st = p_str(p, 0)
+      let th = p_int(p, 1)
+      let kept_s : Array[(String, Int, Int, Int, Int64, String)] = []
+      for i in 0..<self.said.length() {
+        if !(self.said[i].0 == st && self.said[i].1 == th) {
+          kept_s.push(self.said[i])
+        } else {
+          changed += 1
+        }
+      }
+      self.said.clear()
+      for i in 0..<kept_s.length() { self.said.push(kept_s[i]) }
+    } else if stmt == "DELETE FROM draft WHERE station = ? AND chat = 'new'" {
+      self.drafts.remove(p_str(p, 0) + ":new")
+      changed = 1
+    } else if stmt.starts_with("DELETE FROM moved WHERE ") {
+      let mks = self.moved_rows.keys()
+      for i in 0..<mks.length() {
+        match self.moved_rows.get(mks[i]) {
+          Some((mst, _, _, _, _, _, _)) => if matches_st(mst) {
+            self.moved_rows.remove(mks[i])
+            changed += 1
+          }
+          None => ()
+        }
+      }
+    } else if stmt.starts_with("DELETE FROM session WHERE ") {
+      let ks = self.sessions.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        let st = match k.index_of(":") { idx if idx > 0 => k.slice(0, idx); _ => k }
+        if matches_st(st) { self.sessions.remove(k); changed += 1 }
+      }
+    } else if stmt.starts_with("DELETE FROM job WHERE ") {
+      let ks = self.jobs.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        let st = match k.index_of(":") { idx if idx > 0 => k.slice(0, idx); _ => k }
+        if matches_st(st) { self.jobs.remove(k); changed += 1 }
+      }
+    } else if stmt.starts_with("DELETE FROM outbox WHERE ") {
+      let ks = self.outbox_rows.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        let st = match k.index_of(":") { idx if idx > 0 => k.slice(0, idx); _ => k }
+        if matches_st(st) { self.outbox_rows.remove(k); changed += 1 }
+      }
+    } else if stmt.starts_with("DELETE FROM pending WHERE ") {
+      let ks = self.pending_rows.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        let st = match k.index_of(":") { idx if idx > 0 => k.slice(0, idx); _ => k }
+        if matches_st(st) { self.pending_rows.remove(k); changed += 1 }
+      }
+    } else if stmt.starts_with("DELETE FROM changing WHERE ") {
+      let ks = self.changing_rows.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        let st = match k.index_of(":") { idx if idx > 0 => k.slice(0, idx); _ => k }
+        if matches_st(st) { self.changing_rows.remove(k); changed += 1 }
+      }
+    } else if stmt.starts_with("DELETE FROM draft WHERE ") {
+      let ks = self.drafts.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        let st = match k.index_of(":") { idx if idx > 0 => k.slice(0, idx); _ => k }
+        if matches_st(st) { self.drafts.remove(k); changed += 1 }
+      }
+    } else if stmt.starts_with("DELETE FROM said WHERE ") {
+      let kept : Array[(String, Int, Int, Int, Int64, String)] = []
+      for i in 0..<self.said.length() {
+        let row = self.said[i]
+        if matches_st(row.0) { changed += 1 } else { kept.push(row) }
+      }
+      self.said.clear()
+      for i in 0..<kept.length() { self.said.push(kept[i]) }
+    } else if stmt.starts_with("DELETE FROM transcript WHERE ") {
+      let kept : Array[(String, String, Int, String)] = []
+      for i in 0..<self.transcripts.length() {
+        let row = self.transcripts[i]
+        if matches_st(row.0) { changed += 1 } else { kept.push(row) }
+      }
+      self.transcripts.clear()
+      for i in 0..<kept.length() { self.transcripts.push(kept[i]) }
+    } else {
+      changed = 1
+    }
   } else if stmt == "SELECT coalesce(sum(size), 0), count(*) FROM md_kept" {
     let mut total = 0
     let mks = self.md.keys()
