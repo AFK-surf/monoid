@@ -3418,10 +3418,10 @@ pub enum RunnerPidStatus {
   Unknown
 }
 
-/// R20: Unified tri-state runner PID liveness probe:
+/// R20/R21: Unified tri-state runner PID liveness probe:
 /// - `rpid <= 1` or `station_sys::proc_kill_is_esrch(kill_rc)` (`-3`) -> `ConfirmedDead`
-/// - `kill_rc != 0` (POSIX `EPERM` `-1`, Win32 `WAIT_FAILED`/unknown `-1`) -> `Unknown` (NEVER dead!)
-/// - `kill_rc == 0`: PID reused (`actual > started_at + STARTED_SLACK_MS`) -> `ConfirmedDead`, else `Alive`
+/// - `kill_rc != 0` (POSIX `EPERM` `-1`, Win32 `WAIT_FAILED`/unknown `-1`) or `started_at <= 0L` -> `Unknown` (NEVER dead!)
+/// - `kill_rc == 0 && started_at > 0L`: PID reused (`actual > started_at + STARTED_SLACK_MS`) -> `ConfirmedDead`, else `Alive`
 pub fn probe_runner_pid_status(
   rpid : Int,
   started_at : Int64,
@@ -3431,7 +3431,7 @@ pub fn probe_runner_pid_status(
   if rpid <= 1 || station_sys::proc_kill_is_esrch(kill_rc) {
     return RunnerPidStatus::ConfirmedDead
   }
-  if kill_rc != 0 {
+  if kill_rc != 0 || started_at <= 0L {
     return RunnerPidStatus::Unknown
   }
   match os_start_time_ms {
@@ -3526,10 +3526,17 @@ pub fn probe_runner_metadata_file_with(
     _ => pid
   }
   let started_at = match base_codec::json_get(j, "startedAt") {
-    Some(base_codec::Json::Num(n, _)) => n.to_int64()
-    _ => match base_codec::json_get(j, "started_at") {
-      Some(base_codec::Json::Num(n, _)) => n.to_int64()
-      _ => 0L
+    Some(base_codec::Json::Num(n, _)) => {
+      let v = n.to_int64()
+      if n > 0.0 && v > 0L { v } else { return RunnerFileProbe::Uncertain("missing or invalid startedAt in " + fpath, None) }
+    }
+    Some(_) => return RunnerFileProbe::Uncertain("missing or invalid startedAt in " + fpath, None)
+    None => match base_codec::json_get(j, "started_at") {
+      Some(base_codec::Json::Num(n, _)) => {
+        let v = n.to_int64()
+        if n > 0.0 && v > 0L { v } else { return RunnerFileProbe::Uncertain("missing or invalid startedAt in " + fpath, None) }
+      }
+      _ => return RunnerFileProbe::Uncertain("missing or invalid startedAt in " + fpath, None)
     }
   }
   let program = match base_codec::json_get(j, "program") {

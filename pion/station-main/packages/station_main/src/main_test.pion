@@ -1924,15 +1924,17 @@ test "W17C-1 R11 LiveRunnerManager handover carry state round-trip (pending_end_
   }
 }
 
-test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until exit & time-bounded Spawning rid: stop + orphan prune" {
+test "W17C-1 R12..R21 whole-live-runners.json persists across crash/restart & exact spawn:<rid>:<pid>:<start> OS-verified stop markers" {
   let mem = station_ops::MemFs::new()
   let ops = mem.ops()
   let ho_file = "/run/whole-live-runners.json"
+  let t0 : Int64 = 1700000010000L
 
-  // 1. Predecessor writes `whole-live-runners.json` containing uncommitted endTurn + Spawning time-bounded `rid:<id>@<before_ms>`
+  // 1. Predecessor writes `whole-live-runners.json` with uncommitted endTurn + exact `spawn:<rid>:<pid>:<start>`
   let mgr1 = LiveRunnerManager::new()
   mgr1.set_handover_state_path(ho_file)
-  mgr1.draining_stopping_ids.set("rid:r-spawn-r13@1700000010000", true)
+  let spawn_key = "spawn:r-spawn-r21:4321:" + t0.to_string()
+  mgr1.record_draining_stop_marker(spawn_key, "s-r12")
   mgr1.pending_end_turns.set(
     "s-r12",
     ManagerPendingEndTurn::{
@@ -1952,7 +1954,7 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
         wait_secs_opt: None,
         wait_for_opt: None,
         wait_watch_opt: None,
-        wall_ms: 1700000010000L,
+        wall_ms: t0,
         was_completed: false,
         reprompt_reminder: None,
       },
@@ -1961,7 +1963,8 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   assert_true(mgr1.sync_handover_state_file(ops, 1001, "/").is_ok(), "handover state file must be written")
   assert_true(ops.read_text(ho_file).is_ok(), "handover state file exists on disk")
 
-  // 2. Successor 1 loads file, adopts stop target (READ-ONLY check -> marker & file MUST stay on disk before Exit!)
+  // 2. Successor loads file: even at +45s (past 30s!) with metadata still ENOENT, `spawn:` marker is
+  // NEVER cleared while PID 4321 is alive, and matches when metadata finally publishes at +45s!
   let mgr2 = LiveRunnerManager::new()
   mgr2.set_handover_state_path(ho_file)
   match ops.read_text(ho_file) {
@@ -1971,102 +1974,66 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
     }
     Err(_) => panic("missing handover state file for successor 1")
   }
-  // Matches runner started within unified 30s `LIVE_RUNNER_READY_MS` window (incl. +15s late-ready),
-  // rejects newer replacement (> before_ms + 30s)!
+  assert_true(mgr2.has_pending_draining_stop_for_session("s-r12"), "spawn: marker gates pump for s-r12")
   assert_true(
-    mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000015000", "r-spawn-r13", 1700000015000L),
-    "adopt must match Spawning rid@before_ms at +5s",
+    !mgr2.sweep_draining_stop_markers(
+      t0 + 45000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(t0)) },
+    ),
+    "R21 Test 1: ENOENT at +45s must NEVER clear spawn: marker while PID 4321 is alive",
   )
-  assert_true(
-    mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000025000", "r-spawn-r13", 1700000025000L),
-    "adopt must match late-ready Spawning rid@before_ms at +15s (within 30s LIVE_RUNNER_READY_MS)",
-  )
-  assert_true(
-    !mgr2.is_draining_stop_target("r-spawn-r13:9999:1700000045000", "r-spawn-r13", 1700000045000L),
-    "newer replacement runner after 30s window must NOT be killed by Spawning rid@before_ms",
-  )
-  // Because `is_draining_stop_target` is read-only, if successor 1 crashes before `attach/TERM/Exit`,
-  // the marker and file are STILL intact on disk!
+  assert_true(mgr2.has_pending_draining_stop_for_session("s-r12"), "s-r12 still gated at +45s")
+  // Metadata publishes late at +45s with exact PID 4321 -> matches; different PID 9999 -> does NOT match!
+  let late_iid = "r-spawn-r21:4321:" + (t0 + 45000L).to_string()
+  assert_true(mgr2.is_draining_stop_target(late_iid, "r-spawn-r21", 4321), "matches exact (rid, pid=4321) even at +45s")
+  assert_true(!mgr2.is_draining_stop_target("r-spawn-r21:9999:" + (t0 + 45000L).to_string(), "r-spawn-r21", 9999), "different PID 9999 must NOT match")
+  match mgr2.find_draining_stop_session(late_iid, "r-spawn-r21", 4321) {
+    Some(sk) => assert_str_eq(sk, "s-r12")
+    None => panic("expected s-r12 from find_draining_stop_session")
+  }
+  // Because `is_draining_stop_target` is read-only, file stays on disk until confirmed exit!
   assert_true(mgr2.sync_handover_state_file(ops, 1002, "/").is_ok(), "sync keeps file on disk")
   assert_true(ops.read_text(ho_file).is_ok(), "file must remain on disk before runner Exit")
 
-  // 3. Successor 2 restarts from disk, STILL matches the stop target, then clears ONLY on confirmed exit!
-  let mgr3 = LiveRunnerManager::new()
-  mgr3.set_handover_state_path(ho_file)
-  match ops.read_text(ho_file) {
-    Ok(raw) => match base_codec::json_parse(raw) {
-      base_codec::JsonParseResult::Ok(j) => mgr3.import_handover_state_json(j)
-      _ => panic("invalid json")
-    }
-    Err(_) => panic("missing handover state file for successor 2")
-  }
-  assert_true(
-    mgr3.is_draining_stop_target("r-spawn-r13:9999:1700000015000", "r-spawn-r13", 1700000015000L),
-    "successor 2 after crash before Exit must still match stop marker",
-  )
-  // Confirmed exit clears the marker; pending_end_turns still uncommitted -> file still exists!
-  assert_true(
-    mgr3.clear_draining_stop_target(Some("r-spawn-r13:9999:1700000015000"), "r-spawn-r13"),
-    "confirmed exit clears stop marker",
-  )
-  assert_true(mgr3.sync_handover_state_file(ops, 1003, "/").is_ok(), "sync after exit")
-  assert_true(ops.read_text(ho_file).is_ok(), "file must remain while pending_end_turns still uncommitted")
-  // Once pending_end_turns is committed & removed -> file is finally unlinked!
-  mgr3.pending_end_turns.remove("s-r12")
-  assert_true(mgr3.sync_handover_state_file(ops, 1003, "/").is_ok(), "sync after drain")
-  assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file must be unlinked once truly drained")
+  // 3. Confirmed exit clears stop marker; file unlinked once pending_end_turns also committed!
+  assert_true(mgr2.clear_draining_stop_target(Some(late_iid), "r-spawn-r21", 4321), "confirmed exit clears spawn: marker")
+  assert_true(!mgr2.has_pending_draining_stop_for_session("s-r12"), "s-r12 unblocked after confirmed exit")
+  assert_true(mgr2.sync_handover_state_file(ops, 1003, "/").is_ok(), "sync after exit")
+  assert_true(ops.read_text(ho_file).is_ok(), "file remains while pending_end_turns still uncommitted")
+  mgr2.pending_end_turns.remove("s-r12")
+  assert_true(mgr2.sync_handover_state_file(ops, 1003, "/").is_ok(), "sync after drain")
+  assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked once truly drained")
 
-  // 4. R14 Invariant 2: `sweep_draining_stop_markers` keeps `Spawning` rid@t within 30s window,
-  // expires it after `t + 30s`, keeps exact `instance_id` while PID alive, removes it once PID dead!
+  // 4. R21 Test 2: Process crashes before publishing metadata -> ESRCH (-3) clears immediately (no 30s wait!)
+  // while EPERM (-1) and unknown start_time (None) NEVER clear!
   let mgr4 = LiveRunnerManager::new()
   mgr4.set_handover_state_path(ho_file)
-  mgr4.draining_stopping_ids.set("r-old:5000:1700000001000", true)
-  mgr4.draining_stopping_ids.set("rid:r-late@1700000001000", true)
-  assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "write stop markers")
-  // At t + 5s with PID 5000 alive (or start_time unknown -> None) or EPERM (-1): NEITHER marker is removed!
+  let crash_key = "spawn:r-crash:4322:" + t0.to_string()
+  mgr4.record_draining_stop_marker(crash_key, "s-crash")
   assert_true(
     !mgr4.sweep_draining_stop_markers(
-      1700000006000L,
-      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, None) },
-    ),
-    "unknown proc_start_time_ms (None) must NEVER clear exact stop marker",
-  )
-  assert_true(
-    !mgr4.sweep_draining_stop_markers(
-      1700000006000L,
+      t0 + 1000L,
       check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, -1, None) },
     ),
-    "EPERM (-1) must NEVER clear exact stop marker",
+    "EPERM (-1) must NEVER clear spawn: marker",
   )
-  assert_true(mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "unknown/EPERM exact id kept")
-  assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t kept at t+5s")
-  // Once PID 5000 returns ESRCH (-3) at t + 10s: exact id removed, Spawning rid@t STILL kept!
+  assert_true(
+    !mgr4.sweep_draining_stop_markers(
+      t0 + 1000L,
+      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, None) },
+    ),
+    "alive + None start_time must NEVER clear spawn: marker",
+  )
   assert_true(
     mgr4.sweep_draining_stop_markers(
-      1700000011000L,
+      t0 + 1000L,
       check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, -3, None) },
     ),
-    "ESRCH (-3) confirmed-dead exact id swept",
+    "R21 Test 2: ESRCH (-3) clears crashed spawn: marker immediately without waiting 30s",
   )
-  assert_true(!mgr4.draining_stopping_ids.contains("r-old:5000:1700000001000"), "dead exact id removed")
-  assert_true(mgr4.draining_stopping_ids.contains("rid:r-late@1700000001000"), "Spawning rid@t still kept at t+10s")
-  // At t + 31s with per-runner confirmed absent: Spawning rid@t finally expires -> file unlinked!
-  let clear_late : Map[String, Bool] = Map::new()
-  clear_late.set("rid:r-late@1700000001000", true)
-  assert_true(
-    mgr4.sweep_draining_stop_markers(
-      1700000032000L,
-      confirmed_clear_rids=clear_late,
-      check_pid_dead=fn(_p, _s) { true },
-    ),
-    "Spawning rid@t swept at t+31s after per-runner confirmation",
-  )
-  assert_true(!mgr4.has_handover_carry_state(), "all markers swept")
-  assert_true(mgr4.sync_handover_state_file(ops, 1004, "/").is_ok(), "unlink after sweep")
-  assert_true(ops.read_text(ho_file) is Err(station_ops::FsErr::NotFound), "file unlinked after sweep")
+  assert_true(!mgr4.has_pending_draining_stop_for_session("s-crash"), "s-crash unblocked immediately on ESRCH")
 
-  // 5. R15/R16: `should_delete_runner_launch_on_pending_replay`, ESRCH (-3) vs EPERM (-1),
-  // and `draining_stop_sessions` round-trip for late-ready Spawning runners!
+  // 5. R15/R16/R21 guards: `should_delete_runner_launch_on_pending_replay` & tri-state PID death semantics
   assert_true(!should_delete_runner_launch_on_pending_replay(true, false, false, true), "already_ended replay must NOT delete runner_launches")
   assert_true(!should_delete_runner_launch_on_pending_replay(false, true, false, true), "active turn in mem must NOT delete runner_launches")
   assert_true(!should_delete_runner_launch_on_pending_replay(false, false, true, true), "live/draining instance must NOT delete runner_launches")
@@ -2074,69 +2041,17 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
   assert_true(should_delete_runner_launch_on_pending_replay(false, false, false, true), "only newly-committed confirmed-dead untracked instance deletes runner_launches")
   assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, 0, None), "alive + None start_time != dead")
   assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, -1, None), "EPERM (-1) != dead")
-  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, 0, Some(103000L)), "alive + within 5s != dead")
-  assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, 0, Some(106000L)), "alive + >5s skew => PID reused => confirmed dead")
+  assert_true(!live_runner_pid_confirmed_dead_with(5000, 0L, 0, Some(1700000000000L)), "started_at == 0L != dead")
+  assert_true(!live_runner_pid_confirmed_dead_with(5000, 100000L, 0, Some(90000L)), "actual < started_at (slow start) != dead")
+  assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, 0, Some(100000L + station_drivers::STARTED_SLACK_MS + 1L)), "actual > started_at + STARTED_SLACK_MS => PID reused => confirmed dead")
   assert_true(live_runner_pid_confirmed_dead_with(5000, 100000L, -3, None), "ESRCH (-3) => confirmed dead")
 
-  // R16/R17 P1-1/2: Late-ready Spawning runner resolves session_key via `draining_stop_sessions`,
-  // blocks replacement launch via `has_pending_draining_stop_for_session`, and promotes `rid:` -> exact `inst_id`
-  // so it survives past `before_ms + 30s` until confirmed dead/exited!
-  let mgr5 = LiveRunnerManager::new()
-  mgr5.set_handover_state_path(ho_file)
-  mgr5.record_draining_stop_marker("rid:r-late-r16@1700000010000", "s-late-r16")
-  let carried_r16 = mgr5.export_handover_state_json()
-  let mgr6 = LiveRunnerManager::new()
-  mgr6.set_handover_state_path(ho_file)
-  mgr6.import_handover_state_json(carried_r16)
-  assert_true(mgr6.has_pending_draining_stop_for_session("s-late-r16"), "pending stop marker blocks replacement launch for s-late-r16")
-  assert_true(!mgr6.has_pending_draining_stop_for_session("s-other"), "unrelated session is not blocked")
-  let late_inst = "r-late-r16:7777:1700000025000"
-  match mgr6.find_draining_stop_session(late_inst, "r-late-r16", 1700000025000L) {
-    Some(sk) => assert_str_eq(sk, "s-late-r16")
-    None => panic("expected late-ready Spawning runner to resolve session_key from draining_stop_sessions")
-  }
+  // 6. R20/R21 Test 3 & 4: Missing/0/string `startedAt` -> Uncertain (NEVER ConfirmedDead!),
+  // tri-state Win32/POSIX `-1` vs `-3`, and per-runner isolation + directory PermissionDenied!
   assert_true(
-    mgr6.promote_rid_stop_marker(late_inst, "r-late-r16", 1700000025000L, "s-late-r16"),
-    "rid: stop marker promotes into exact inst_id",
+    probe_runner_pid_status(4321, 0L, 0, Some(1700000000000L)) is RunnerPidStatus::Unknown,
+    "R21 Test 3: started_at == 0L MUST return Unknown, NEVER ConfirmedDead",
   )
-  assert_true(!mgr6.draining_stopping_ids.contains("rid:r-late-r16@1700000010000"), "old rid: key removed after promotion")
-  assert_true(mgr6.draining_stopping_ids.contains(late_inst), "exact inst_id recorded after promotion")
-  assert_true(mgr6.has_pending_draining_stop_for_session("s-late-r16"), "promoted exact inst_id still blocks replacement launch")
-  assert_true(mgr6.sync_handover_state_file(ops, 1006, "/").is_ok(), "promoted exact inst_id persisted")
-  // Past before_ms + 30s (at +60s) with PID 7777 still alive: promoted exact inst_id MUST NOT expire!
-  assert_true(
-    !mgr6.sweep_draining_stop_markers(
-      1700000070000L,
-      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(1700000025000L)) },
-    ),
-    "promoted exact inst_id must survive past 30s while PID is alive",
-  )
-  assert_true(mgr6.draining_stopping_ids.contains(late_inst), "promoted exact inst_id still present after +60s")
-  assert_true(mgr6.clear_draining_stop_target(Some(late_inst), "r-late-r16"), "confirmed exit clears promoted inst_id")
-  assert_true(!mgr6.has_pending_draining_stop_for_session("s-late-r16"), "clearing stop marker unblocks replacement launch")
-  assert_true(mgr6.sync_handover_state_file(ops, 1006, "/").is_ok(), "unlink after promoted clear")
-
-  // 6. R18/R20 Case A: Runner started at before_ms+5s, first probe at before_ms+45s (past 30s!) ->
-  // Step 2 matches `started_at <= before_ms + 30s` and promotes to exact inst_id BEFORE Step 3 sweep!
-  let mgr7 = LiveRunnerManager::new()
-  let t0 : Int64 = 1700000100000L
-  mgr7.record_draining_stop_marker("rid:r-r18-a@" + t0.to_string(), "s-r18-a")
-  let r18_a_inst = "r-r18-a:8181:" + (t0 + 5000L).to_string()
-  assert_true(mgr7.is_draining_stop_target(r18_a_inst, "r-r18-a", t0 + 5000L), "R18-A: +5s runner matches even when discovered at +45s")
-  assert_true(mgr7.promote_rid_stop_marker(r18_a_inst, "r-r18-a", t0 + 5000L, "s-r18-a"), "R18-A: promotes before Step 3 sweep")
-  assert_true(
-    !mgr7.sweep_draining_stop_markers(
-      t0 + 45000L,
-      check_pid_dead=fn(p, s) { live_runner_pid_confirmed_dead_with(p, s, 0, Some(t0 + 5000L)) },
-    ),
-    "R18-A: Step 3 at +45s preserves promoted exact inst_id",
-  )
-  assert_true(mgr7.draining_stopping_ids.contains(r18_a_inst), "R18-A: exact inst_id retained")
-  assert_true(mgr7.has_pending_draining_stop_for_session("s-r18-a"), "R18-A: session still gated")
-
-  // 7. R20 Per-runner isolation (anti-cross-session deadlock):
-  // Session A's `r-a.json` is ConfirmedAbsent (ENOENT) while unrelated Session B's `r-b.json` is corrupt JSON.
-  // Past +30s: `r-a` is cleared and unblocks Session A, while `r-b` stays protected and keeps Session B gated!
   let no_rl = fn(_p : String) -> Option[String] { None }
   let kill_ok = fn(_pid : Int) -> Int { 0 }
   let kill_unknown = fn(_pid : Int) -> Int { -1 }
@@ -2148,54 +2063,42 @@ test "W17C-1 R12/R13 whole-live-runners.json persists across crash/restart until
       Err(e) => Err(e)
     }
   }
-  let r20_dir = "/r20-iso/run/runners"
-  assert_true((ops.mkdir_p)(r20_dir).is_ok(), "mkdir r20 iso runners dir")
-  assert_true((ops.write_bytes)(r20_dir + "/r-b.json", "{corrupt".to_bytes(), 384).is_ok(), "write corrupt r-b.json")
-  let probe_a = probe_runner_file_with(ops, "/r20-iso", "/", "r-a", mem_realpath, no_rl, kill_ok, no_start)
-  let probe_b = probe_runner_file_with(ops, "/r20-iso", "/", "r-b", mem_realpath, no_rl, kill_ok, no_start)
-  assert_true(probe_a is RunnerFileProbe::ConfirmedAbsent, "absent r-a.json must be ConfirmedAbsent despite corrupt r-b.json")
-  assert_true(probe_b is RunnerFileProbe::Uncertain(_, None), "corrupt r-b.json must be Uncertain(_, None)")
-  let mgr8 = LiveRunnerManager::new()
-  let key_a = "rid:r-a@" + t0.to_string()
-  let key_b = "rid:r-b@" + t0.to_string()
-  mgr8.record_draining_stop_marker(key_a, "s-a")
-  mgr8.record_draining_stop_marker(key_b, "s-b")
-  let clear_iso : Map[String, Bool] = Map::new()
-  match probe_a {
-    RunnerFileProbe::ConfirmedAbsent | RunnerFileProbe::ConfirmedDead => clear_iso.set(key_a, true)
-    _ => ()
-  }
-  match probe_b {
-    RunnerFileProbe::ConfirmedAbsent | RunnerFileProbe::ConfirmedDead => clear_iso.set(key_b, true)
-    _ => ()
-  }
+  let r21_dir = "/r21-iso/run/runners"
+  assert_true((ops.mkdir_p)(r21_dir).is_ok(), "mkdir r21 runners dir")
+  assert_true((ops.write_bytes)(r21_dir + "/r-missing-ts.json", "{\"id\":\"r-missing-ts\",\"runner\":4321,\"socket\":\"/tmp/s\"}".to_bytes(), 384).is_ok(), "write missing startedAt")
+  assert_true((ops.write_bytes)(r21_dir + "/r-zero-ts.json", "{\"id\":\"r-zero-ts\",\"runner\":4321,\"startedAt\":0,\"socket\":\"/tmp/s\"}".to_bytes(), 384).is_ok(), "write zero startedAt")
+  assert_true((ops.write_bytes)(r21_dir + "/r-str-ts.json", "{\"id\":\"r-str-ts\",\"runner\":4321,\"startedAt\":\"bad\",\"socket\":\"/tmp/s\"}".to_bytes(), 384).is_ok(), "write string startedAt")
+  let r21_good_json = "{\"id\":\"r-good-21\",\"runner\":4321,\"pid\":4322,\"pgid\":4322,\"startedAt\":" + (t0 + 5000L).to_string() + ",\"socket\":\"/tmp/r-good-21.sock\"}"
+  assert_true((ops.write_bytes)(r21_dir + "/r-good-21.json", r21_good_json.to_bytes(), 384).is_ok(), "write r-good-21.json")
   assert_true(
-    mgr8.sweep_draining_stop_markers(t0 + 45000L, confirmed_clear_rids=clear_iso, check_pid_dead=fn(_p, _s) { false }),
-    "R20 isolation: r-a swept at +45s",
+    probe_runner_file_with(ops, "/r21-iso", "/", "r-missing-ts", mem_realpath, no_rl, kill_ok, no_start) is RunnerFileProbe::Uncertain(_, None),
+    "R21 Test 3: missing startedAt MUST return Uncertain(_, None)",
   )
-  assert_true(!mgr8.has_pending_draining_stop_for_session("s-a"), "R20 isolation: Session A unblocked")
-  assert_true(mgr8.has_pending_draining_stop_for_session("s-b"), "R20 isolation: Session B still protected")
-
-  // 8. R20 Tri-state Win32/POSIX `-1` (Unknown) vs `-3` (ESRCH) + directory-level PermissionDenied:
-  let r20_good_json = "{\"id\":\"r-good-20\",\"runner\":4321,\"pid\":4322,\"pgid\":4322,\"startedAt\":" + (t0 + 5000L).to_string() + ",\"socket\":\"/tmp/r-good-20.sock\"}"
-  assert_true((ops.write_bytes)(r20_dir + "/r-good-20.json", r20_good_json.to_bytes(), 384).is_ok(), "write r-good-20.json")
-  let probe_unk = probe_runner_file_with(ops, "/r20-iso", "/", "r-good-20", mem_realpath, no_rl, kill_unknown, no_start)
+  assert_true(
+    probe_runner_file_with(ops, "/r21-iso", "/", "r-zero-ts", mem_realpath, no_rl, kill_ok, no_start) is RunnerFileProbe::Uncertain(_, None),
+    "R21 Test 3: startedAt == 0 MUST return Uncertain(_, None)",
+  )
+  assert_true(
+    probe_runner_file_with(ops, "/r21-iso", "/", "r-str-ts", mem_realpath, no_rl, kill_ok, no_start) is RunnerFileProbe::Uncertain(_, None),
+    "R21 Test 3: string startedAt MUST return Uncertain(_, None)",
+  )
+  let probe_unk = probe_runner_file_with(ops, "/r21-iso", "/", "r-good-21", mem_realpath, no_rl, kill_unknown, no_start)
   match probe_unk {
-    RunnerFileProbe::Uncertain(_, Some(info)) => assert_str_eq(info.id, "r-good-20")
+    RunnerFileProbe::Uncertain(_, Some(info)) => assert_str_eq(info.id, "r-good-21")
     _ => panic("kill_rc == -1 MUST return Uncertain(_, Some(info)), never ConfirmedDead")
   }
-  let probe_dead = probe_runner_file_with(ops, "/r20-iso", "/", "r-good-20", mem_realpath, no_rl, kill_esrch, no_start)
+  let probe_dead = probe_runner_file_with(ops, "/r21-iso", "/", "r-good-21", mem_realpath, no_rl, kill_esrch, no_start)
   assert_true(probe_dead is RunnerFileProbe::ConfirmedDead, "kill_rc == -3 MUST return ConfirmedDead")
-  // Startup directory scan keeps Uncertain(_, Some(info)) runner and marks complete == false!
-  let scan_unk = discover_live_runners_scan_with(ops, "/r20-iso", "/", mem_realpath, no_rl, kill_unknown, no_start)
-  assert_true(!scan_unk.complete, "scan with corrupt file + kill_rc -1 must be incomplete")
-  assert_true(scan_unk.runners.length() == 1 && scan_unk.runners[0].id == "r-good-20", "scan must retain runner with kill_rc == -1")
-  // Directory-level PermissionDenied returns Uncertain(_, None) -> marker preserved!
+  let scan_unk = discover_live_runners_scan_with(ops, "/r21-iso", "/", mem_realpath, no_rl, kill_unknown, no_start)
+  assert_true(!scan_unk.complete, "scan with invalid startedAt + kill_rc -1 must be incomplete")
+  assert_true(scan_unk.runners.length() == 1 && scan_unk.runners[0].id == "r-good-21", "scan must retain valid runner alongside invalid startedAt files")
   let eacces_realpath = fn(_p : String) -> Result[String, station_ops::FsErr] {
     Err(station_ops::FsErr::PermissionDenied("EACCES"))
   }
-  let probe_dir_eacces = probe_runner_file_with(ops, "/r20-iso", "/", "r-a", eacces_realpath, no_rl, kill_ok, no_start)
-  assert_true(probe_dir_eacces is RunnerFileProbe::Uncertain(_, None), "dir PermissionDenied MUST return Uncertain(_, None)")
+  assert_true(
+    probe_runner_file_with(ops, "/r21-iso", "/", "r-absent", eacces_realpath, no_rl, kill_ok, no_start) is RunnerFileProbe::Uncertain(_, None),
+    "dir PermissionDenied MUST return Uncertain(_, None)",
+  )
   let missing_scan = discover_live_runners_scan_with(ops, "/no-such-data", "/", mem_realpath, no_rl, kill_ok, no_start)
   assert_true(missing_scan.complete && missing_scan.runners.length() == 0, "missing runners dir is complete & empty")
 }
@@ -2255,6 +2158,8 @@ test "W17C-1 R14 handover_state_dirty retries on OpsFs unlink failure & finish_d
     runtime_kind: station_drivers::RuntimeKind::Claude,
     runtime_str: "claude",
     runner_id: "r-eof",
+    spawn_pid: 888,
+    spawn_start_ms: 1700000002000L,
     is_acp: false,
     is_codex: false,
     is_adopted: true,
