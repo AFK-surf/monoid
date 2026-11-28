@@ -719,7 +719,8 @@ pub struct StationEvents {
   jobs : Map[String, JobStatus]
   job_order : Array[String]
   mut authoritative_jobs_loaded : Bool
-  authoritative_jobs_raw : Array[base_codec::Json]
+  authoritative_jobs_by_id : Map[String, base_codec::Json]
+  authoritative_jobs_order : Array[String]
   dirty_threads : Map[Int, Bool]
   mut resync_needed : Int
   mut marks_dirty_count : Int
@@ -734,6 +735,7 @@ pub struct StationEvents {
   mut on_thread_dirty : (Int) -> Unit
   mut auth : Option[AuthGenTracker]
   mut admitted_gate : Option[() -> Bool]
+  mut serving_link_getter : Option[() -> (Int, Int64)]
   mut account_epoch_getter : Option[() -> Int64]
   mut paused_for_admission : Bool
   mut stream_epoch : Int64
@@ -766,7 +768,8 @@ pub fn StationEvents::new(
     jobs: Map::new(),
     job_order: [],
     authoritative_jobs_loaded: false,
-    authoritative_jobs_raw: [],
+    authoritative_jobs_by_id: Map::new(),
+    authoritative_jobs_order: [],
     dirty_threads: Map::new(),
     resync_needed: 0,
     marks_dirty_count: 0,
@@ -781,6 +784,7 @@ pub fn StationEvents::new(
     on_thread_dirty: fn(_th : Int) -> Unit {},
     auth: None,
     admitted_gate: None,
+    serving_link_getter: None,
     account_epoch_getter: None,
     paused_for_admission: false,
     stream_epoch: 1L,
@@ -798,6 +802,13 @@ pub fn StationEvents::set_admitted_gate(self : StationEvents, gate : () -> Bool)
   self.admitted_gate = Some(gate)
 }
 
+pub fn StationEvents::set_serving_link_getter(
+  self : StationEvents,
+  getter : Option[() -> (Int, Int64)],
+) -> Unit {
+  self.serving_link_getter = getter
+}
+
 pub fn StationEvents::set_account_epoch_getter(self : StationEvents, getter : () -> Int64) -> Unit {
   self.account_epoch_getter = Some(getter)
 }
@@ -806,6 +817,13 @@ fn StationEvents::current_account_epoch(self : StationEvents) -> Int64 {
   match self.account_epoch_getter {
     Some(g) => g()
     None => 0L
+  }
+}
+
+fn StationEvents::current_serving_link_uid(self : StationEvents) -> Int {
+  match self.serving_link_getter {
+    Some(g) => g().0
+    None => 0
   }
 }
 
@@ -820,10 +838,47 @@ pub fn StationEvents::has_authoritative_jobs(self : StationEvents) -> Bool {
   self.authoritative_jobs_loaded
 }
 
+fn StationEvents::sync_authoritative_job_live(
+  self : StationEvents,
+  jid : String,
+  open : Bool,
+  payload_opt : Option[base_codec::Json],
+) -> Unit {
+  if !self.authoritative_jobs_loaded || jid.length() == 0 {
+    return
+  }
+  if open {
+    match payload_opt {
+      Some(payload) => {
+        if self.authoritative_jobs_by_id.get(jid).is_none() {
+          self.authoritative_jobs_order.push(jid)
+        }
+        self.authoritative_jobs_by_id.set(jid, j_set_field(payload, "station", base_codec::json_str(self.station)))
+      }
+      None => ()
+    }
+  } else {
+    self.authoritative_jobs_by_id.remove(jid)
+    let next_ord : Array[String] = []
+    for i in 0..<self.authoritative_jobs_order.length() {
+      if self.authoritative_jobs_order[i] != jid {
+        next_ord.push(self.authoritative_jobs_order[i])
+      }
+    }
+    self.authoritative_jobs_order.clear()
+    for i in 0..<next_ord.length() {
+      self.authoritative_jobs_order.push(next_ord[i])
+    }
+  }
+}
+
 pub fn StationEvents::authoritative_jobs_snapshot(self : StationEvents) -> Array[base_codec::Json] {
   let out : Array[base_codec::Json] = []
-  for i in 0..<self.authoritative_jobs_raw.length() {
-    out.push(self.authoritative_jobs_raw[i])
+  for i in 0..<self.authoritative_jobs_order.length() {
+    match self.authoritative_jobs_by_id.get(self.authoritative_jobs_order[i]) {
+      Some(j) => out.push(j)
+      None => ()
+    }
   }
   out
 }
@@ -867,7 +922,8 @@ pub fn StationEvents::reset_state(self : StationEvents) -> Unit {
   self.jobs.clear()
   self.job_order.clear()
   self.authoritative_jobs_loaded = false
-  self.authoritative_jobs_raw.clear()
+  self.authoritative_jobs_by_id.clear()
+  self.authoritative_jobs_order.clear()
   self.dirty_threads.clear()
   self.resync_needed = 0
   self.marks_dirty_count = 0
@@ -1966,20 +2022,22 @@ pub fn is_valid_thread_entries_payload(payload : base_codec::Json, expected_thre
   true
 }
 
-/// Strictly validate a `GET /jobs?chats=0` response payload (top-level JSON array of job objects,
-/// or `{ "jobs": [...] }` wrapper of job objects).
+/// Strictly validate a `GET /jobs?chats=0` response payload:
+/// top-level MUST be a JSON array (`[]` is valid), and every element MUST be an object with a
+/// non-empty string `"id"` (rejects malformed non-empty arrays like `[{"foo": 1}]`).
 pub fn is_valid_jobs_payload(payload : base_codec::Json) -> Bool {
   let jobs_arr = match payload {
     base_codec::Json::Arr(xs) => xs
-    base_codec::Json::Obj(_) => match base_codec::json_get(payload, "jobs") {
-      Some(base_codec::Json::Arr(xs)) => xs
-      _ => return false
-    }
     _ => return false
   }
   for i in 0..<jobs_arr.length() {
-    match jobs_arr[i] {
+    let item = jobs_arr[i]
+    match item {
       base_codec::Json::Obj(_) => ()
+      _ => return false
+    }
+    match base_codec::json_get(item, "id") {
+      Some(base_codec::Json::Str(s)) => if s.length() == 0 { return false }
       _ => return false
     }
   }
@@ -1997,15 +2055,12 @@ pub fn StationEvents::apply_jobs(
   }
   let jobs = match payload {
     base_codec::Json::Arr(xs) => xs
-    _ => match base_codec::json_get(payload, "jobs") {
-      Some(base_codec::Json::Arr(xs)) => xs
-      _ => []
-    }
+    _ => []
   }
   let seen_ids : Map[String, Bool] = Map::new()
   let job_events : Array[CoreEvent] = []
   let tracked : Array[JobStatus] = []
-  let next_raw_jobs : Array[base_codec::Json] = []
+  let next_raw_jobs : Array[(String, base_codec::Json)] = []
   let burst = sql::Burst::new(self.db)
   let res = burst.in_tx(fn(b : sql::Burst) -> sql::SqlResult[Int] {
     let mut count = 0
@@ -2039,7 +2094,9 @@ pub fn StationEvents::apply_jobs(
         sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
         sql::SqlResult::Ok(_) => {
           tracked.push(JobStatus::{ id: jid, session: sess, open: open, chat: chat })
-          next_raw_jobs.push(j_set_field(item, "station", base_codec::json_str(self.station)))
+          if open {
+            next_raw_jobs.push((jid, j_set_field(item, "station", base_codec::json_str(self.station))))
+          }
           job_events.push(CoreEvent::JobChanged(self.station, jid, open))
           count += 1
         }
@@ -2071,9 +2128,12 @@ pub fn StationEvents::apply_jobs(
   match res {
     sql::SqlResult::Err(e) => sql::SqlResult::Err(e)
     sql::SqlResult::Ok(count) => {
-      self.authoritative_jobs_raw.clear()
+      self.authoritative_jobs_by_id.clear()
+      self.authoritative_jobs_order.clear()
       for i in 0..<next_raw_jobs.length() {
-        self.authoritative_jobs_raw.push(next_raw_jobs[i])
+        let (jid, raw_j) = next_raw_jobs[i]
+        self.authoritative_jobs_by_id.set(jid, raw_j)
+        self.authoritative_jobs_order.push(jid)
       }
       self.authoritative_jobs_loaded = true
       for i in 0..<tracked.length() {
@@ -2673,8 +2733,9 @@ fn StationEvents::apply_sse_job(
       sql::SqlResult::Ok(_) => ()
     }
   }
+  self.sync_authoritative_job_live(jid, open, Some(payload))
   self.track_job(JobStatus::{ id: jid, session: Some(sess), open: now_open == 1, chat: chat })
-  pending_events.push(CoreEvent::JobChanged(self.station, jid, now_open == 1))
+  pending_events.push(CoreEvent::JobChanged(self.station, jid, open || now_open == 1))
   sql::SqlResult::Ok(1)
 }
 
@@ -2898,6 +2959,7 @@ fn StationEvents::apply_one_sse_event(
     ]) {
       sql::SqlResult::Err(e) => return sql::SqlResult::Err(e)
       sql::SqlResult::Ok(_) => {
+        self.sync_authoritative_job_live(jid, false, None)
         self.jobs.remove(jid)
         pending_events.push(CoreEvent::JobChanged(self.station, jid, false))
         return sql::SqlResult::Ok(1)
@@ -3347,9 +3409,13 @@ fn StationEvents::process_sse_chunk_with_cap(
   self : StationEvents,
   evs : Array[wire::Event],
   stream_cap : Option[WorkspaceCapability],
+  expected_link_uid : Int = 0,
 ) -> Result[Bool, String] {
   let is_stale = fn() -> Bool {
     if !self.is_admitted_for_current_auth() {
+      return true
+    }
+    if expected_link_uid != 0 && self.current_serving_link_uid() != expected_link_uid {
       return true
     }
     match (self.auth, stream_cap) {
@@ -3435,6 +3501,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
   }
   let my_epoch = self.stream_epoch
   let stream_account_epoch = self.current_account_epoch()
+  let stream_link_uid_box : Array[Int] = [self.current_serving_link_uid()]
   let stream_cap : Option[WorkspaceCapability] = match self.auth {
     Some(tracker) => Some(tracker.capture_workspace(self.workspace))
     None => None
@@ -3460,6 +3527,16 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
           let _ = done_sig.succeed(false)
           return
         }
+        let cur_uid = self.current_serving_link_uid()
+        if stream_link_uid_box[0] == 0 && cur_uid != 0 {
+          stream_link_uid_box[0] = cur_uid
+        }
+        if stream_link_uid_box[0] != 0 && cur_uid != stream_link_uid_box[0] {
+          aborted[0] = true
+          self.cancel_active_stream()
+          let _ = done_sig.succeed(true)
+          return
+        }
         if !marked_connected {
           marked_connected = true
           self.attempts = 0
@@ -3469,7 +3546,7 @@ fn StationEvents::stream_loop_k(self : StationEvents, rt : effect::Runtime, k : 
         }
         match parser.feed(chunk) {
           wire::FeedResult::Ok(evs) => {
-            match self.process_sse_chunk_with_cap(evs, stream_cap) {
+            match self.process_sse_chunk_with_cap(evs, stream_cap, expected_link_uid=stream_link_uid_box[0]) {
               Ok(true) => ()
               Ok(false) | Err(_) => {
                 // Immediately cancel the underlying old stream so no further chunks arrive or advance
@@ -3563,6 +3640,7 @@ pub fn StationEvents::set_transport(
     self.stop()
   }
   self.stream_epoch += 1L
+  self.serving_link_getter = None
   self.transport = transport
   self.attempts = 0
   if was_running {

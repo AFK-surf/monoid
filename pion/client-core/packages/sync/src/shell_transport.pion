@@ -470,7 +470,11 @@ pub struct MeshStationTransport {
   mut last_admission : Option[MeshAdmission]
   mut admitted_cred_epoch : Int64
   mut live_link_admitted_epoch : Int64
+  link_admitted_epochs : Map[Int, Int64]
   mut on_admitted_epoch_cb : Option[(Int64) -> Unit]
+  mut admission_drive_fiber : Option[effect::Fiber[Unit]]
+  mut admission_drive_target : Int64
+  mut admission_drive_gen : Int64
   mut closed : Bool
 }
 
@@ -488,7 +492,11 @@ pub fn MeshStationTransport::new(
     last_admission: None,
     admitted_cred_epoch: 0L,
     live_link_admitted_epoch: 0L,
+    link_admitted_epochs: Map::new(),
     on_admitted_epoch_cb: config.on_admitted_epoch,
+    admission_drive_fiber: None,
+    admission_drive_target: 0L,
+    admission_drive_gen: 0L,
     closed: false,
   }
 }
@@ -499,14 +507,36 @@ pub fn MeshStationTransport::admitted_cred_epoch(self : MeshStationTransport) ->
   self.admitted_cred_epoch
 }
 
-/// Credential epoch genuinely admitted on the CURRENT live `active_link` serving requests/SSE.
-/// Starts at `0L` and resets to `0L` on `drop_link`/`close_k` until the new link completes `admitted_k`.
-pub fn MeshStationTransport::live_admitted_cred_epoch(self : MeshStationTransport) -> Int64 {
-  if self.closed || self.active_link.is_none() {
-    0L
-  } else {
-    self.live_link_admitted_epoch
+/// Exact `(link.uid, admitted_cred_epoch)` identity of the CURRENT usable serving `active_link`.
+/// Clears `active_link` / `active_transport` / `live_link_admitted_epoch` immediately if the link is
+/// closed or no longer usable, and strictly looks up `link.uid` in `link_admitted_epochs` (0L if absent).
+pub fn MeshStationTransport::live_link_identity(self : MeshStationTransport) -> (Int, Int64) {
+  if self.closed {
+    return (0, 0L)
   }
+  match self.active_link {
+    None => (0, 0L)
+    Some(link) => {
+      if !link.usable() {
+        self.active_link = None
+        self.active_transport = None
+        self.live_link_admitted_epoch = 0L
+        return (0, 0L)
+      }
+      let ep = match self.link_admitted_epochs.get(link.uid) {
+        Some(v) => v
+        None => 0L
+      }
+      self.live_link_admitted_epoch = ep
+      (link.uid, ep)
+    }
+  }
+}
+
+/// Credential epoch genuinely admitted on the CURRENT live `active_link` serving requests/SSE.
+/// Starts at `0L`, strictly bound to the active `link.uid`, and resets to `0L` when dropped/unusable.
+pub fn MeshStationTransport::live_admitted_cred_epoch(self : MeshStationTransport) -> Int64 {
+  self.live_link_identity().1
 }
 
 /// Register/replace the callback fired whenever a real station admission (`admitted_k`/`exchange_k`) completes.
@@ -524,22 +554,109 @@ fn MeshStationTransport::current_cred_epoch(self : MeshStationTransport) -> Int6
   }
 }
 
-fn MeshStationTransport::advance_admitted_epoch(
+/// Cancel any active scoped admission reconnect driver fiber.
+pub fn MeshStationTransport::cancel_admission_drive(self : MeshStationTransport) -> Unit {
+  self.admission_drive_gen += 1L
+  self.admission_drive_target = 0L
+  match self.admission_drive_fiber {
+    Some(f) => {
+      self.admission_drive_fiber = None
+      f.interrupt()
+    }
+    None => ()
+  }
+}
+
+/// Deduplicated, scoped post-downgrade admission reconnect driver:
+/// dials ONLY `connect_k` -> `Link::admitted_k` (never business reads) until the live serving link
+/// reaches `admitted_cred_epoch >= required_epoch`, using bounded exponential backoff `500ms..15000ms`
+/// ONLY after failure/unadmitted dial, and stopping immediately on admission, `close_k`, or `!can_continue()`.
+pub fn MeshStationTransport::ensure_admitted_for_epoch(
   self : MeshStationTransport,
-  presented_epoch : Int64,
+  rt : effect::Runtime,
+  required_epoch : Int64,
+  can_continue : () -> Bool,
 ) -> Unit {
-  if presented_epoch <= 0L {
+  if self.closed || required_epoch <= 0L || !can_continue() {
     return
   }
-  if presented_epoch > self.live_link_admitted_epoch {
-    self.live_link_admitted_epoch = presented_epoch
+  if self.live_admitted_cred_epoch() >= required_epoch {
+    return
   }
-  if presented_epoch > self.admitted_cred_epoch {
-    self.admitted_cred_epoch = presented_epoch
+  if required_epoch > self.admission_drive_target {
+    self.admission_drive_target = required_epoch
   }
-  match self.on_admitted_epoch_cb {
-    Some(cb) => cb(self.live_link_admitted_epoch)
-    None => ()
+  if self.admission_drive_fiber.is_some() {
+    return
+  }
+  self.admission_drive_gen += 1L
+  let drive_gen = self.admission_drive_gen
+  let mut step : (Int, (effect::Exit[Unit]) -> Unit) -> Unit = fn(_d : Int, _fk : (effect::Exit[Unit]) -> Unit) -> Unit {}
+  step = fn(delay_ms : Int, fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    if self.closed || effect::is_interrupted() || self.admission_drive_gen != drive_gen || !can_continue() {
+      if self.admission_drive_gen == drive_gen {
+        self.admission_drive_fiber = None
+      }
+      fk(effect::Exit::Succeeded(()))
+      return
+    }
+    let target = self.admission_drive_target
+    if target <= 0L || self.live_admitted_cred_epoch() >= target {
+      if self.admission_drive_gen == drive_gen {
+        self.admission_drive_fiber = None
+      }
+      fk(effect::Exit::Succeeded(()))
+      return
+    }
+    if self.active_link.is_some() && self.live_admitted_cred_epoch() < target {
+      self.drop_link(reason="admission_stale")
+    }
+    self.connect_k(fn(cex : effect::Exit[mesh::Link]) -> Unit {
+      if self.closed || effect::is_interrupted() || self.admission_drive_gen != drive_gen || !can_continue() {
+        if self.admission_drive_gen == drive_gen {
+          self.admission_drive_fiber = None
+        }
+        fk(effect::Exit::Succeeded(()))
+        return
+      }
+      let cur_target = self.admission_drive_target
+      if cur_target <= 0L || self.live_admitted_cred_epoch() >= cur_target {
+        if self.admission_drive_gen == drive_gen {
+          self.admission_drive_fiber = None
+        }
+        fk(effect::Exit::Succeeded(()))
+        return
+      }
+      match cex {
+        effect::Exit::Interrupted => {
+          if self.admission_drive_gen == drive_gen {
+            self.admission_drive_fiber = None
+          }
+          fk(effect::Exit::Interrupted)
+        }
+        _ => {
+          let next_delay = if delay_ms * 2 > 15000 { 15000 } else { delay_ms * 2 }
+          // timer: retry after a failure, with a backoff
+          effect::sleep_k(delay_ms, fn(sex : effect::Exit[Unit]) -> Unit {
+            match sex {
+              effect::Exit::Interrupted => {
+                if self.admission_drive_gen == drive_gen {
+                  self.admission_drive_fiber = None
+                }
+                fk(effect::Exit::Interrupted)
+              }
+              _ => step(next_delay, fk)
+            }
+          })
+        }
+      }
+    })
+  }
+  let f = rt.fork_quiet_named("mesh-admit-drive:" + self.config.peer_id, fn(fk : (effect::Exit[Unit]) -> Unit) -> Unit {
+    step(500, fk)
+  })
+  if self.admission_drive_gen == drive_gen && !self.closed && self.live_admitted_cred_epoch() < self.admission_drive_target {
+    self.admission_drive_fiber = Some(f)
   }
 }
 
@@ -666,6 +783,7 @@ pub fn MeshStationTransport::connect_k(
     } else {
       self.active_link = None
       self.active_transport = None
+      self.live_link_admitted_epoch = 0L
     }
     None => ()
   }
@@ -683,6 +801,7 @@ pub fn MeshStationTransport::connect_k(
         } else {
           self.active_link = None
           self.active_transport = None
+          self.live_link_admitted_epoch = 0L
         }
         None => ()
       }
@@ -767,8 +886,35 @@ pub fn MeshStationTransport::connect_k(
                           self.last_admission = Some(adm)
                           self.active_link = Some(link)
                           self.active_transport = Some(StationTransport::from_link(link))
-                          if adm.error_code.is_none() && !adm.lock_unconfirmed && presented_epoch_box[0] > 0L {
-                            self.advance_admitted_epoch(presented_epoch_box[0])
+                          let uid = link.uid
+                          if adm.error_code.is_none() && !adm.lock_unconfirmed {
+                            if presented_epoch_box[0] > 0L {
+                              let prev = match self.link_admitted_epochs.get(uid) { Some(v) => v; None => 0L }
+                              let next_ep = if presented_epoch_box[0] > prev { presented_epoch_box[0] } else { prev }
+                              self.link_admitted_epochs.set(uid, next_ep)
+                              self.live_link_admitted_epoch = next_ep
+                              if next_ep > self.admitted_cred_epoch {
+                                self.admitted_cred_epoch = next_ep
+                              }
+                              match self.on_admitted_epoch_cb {
+                                Some(cb) => cb(next_ep)
+                                None => ()
+                              }
+                            } else {
+                              // Reused underlying link without fresh `get_cred`: strictly look up ONLY
+                              // this exact `link.uid`'s recorded epoch (0L if unknown — NEVER inherit!).
+                              let known_ep = match self.link_admitted_epochs.get(uid) { Some(v) => v; None => 0L }
+                              self.live_link_admitted_epoch = known_ep
+                              if known_ep > 0L {
+                                match self.on_admitted_epoch_cb {
+                                  Some(cb) => cb(known_ep)
+                                  None => ()
+                                }
+                              }
+                            }
+                          } else {
+                            self.link_admitted_epochs.remove(uid)
+                            self.live_link_admitted_epoch = 0L
                           }
                           match self.config.on_admission { Some(cb) => cb(adm); None => () }
                           pk(effect::Exit::Succeeded(link))
@@ -791,7 +937,8 @@ pub fn MeshStationTransport::connect_k(
 }
 
 /// Renew the Cloud member credential on the live control stream via `Link::exchange_k`.
-/// Advances `admitted_cred_epoch = max(cur, presented_epoch)` ONLY after `Link::exchange_k` succeeds.
+/// Advances `link_admitted_epochs[target_uid]` ONLY after `Link::exchange_k` succeeds, and updates
+/// `live_link_admitted_epoch` / callback ONLY if `active_link` still has `uid == target_uid`.
 pub fn MeshStationTransport::refresh_credential_k(
   self : MeshStationTransport,
   credential : String,
@@ -803,12 +950,19 @@ pub fn MeshStationTransport::refresh_credential_k(
     None => self.current_cred_epoch()
   }
   match self.active_link {
-    None => k(effect::Exit::Failed(effect::EffectError::Custom("no active mesh link to refresh")))
+    None => {
+      self.live_link_admitted_epoch = 0L
+      k(effect::Exit::Failed(effect::EffectError::Custom("no active mesh link to refresh")))
+    }
     Some(link) => {
       if !link.usable() {
+        self.active_link = None
+        self.active_transport = None
+        self.live_link_admitted_epoch = 0L
         k(effect::Exit::Failed(effect::EffectError::Custom("active mesh link is not usable")))
         return
       }
+      let target_uid = link.uid
       link.exchange_k(credential, fn(ex : effect::Exit[base_codec::Json]) -> Unit {
         match ex {
           effect::Exit::Interrupted => k(effect::Exit::Interrupted)
@@ -820,7 +974,23 @@ pub fn MeshStationTransport::refresh_credential_k(
             let adm = parse_mesh_admission(ans)
             self.last_admission = Some(adm)
             if adm.error_code.is_none() && !adm.lock_unconfirmed && presented_epoch > 0L {
-              self.advance_admitted_epoch(presented_epoch)
+              let prev = match self.link_admitted_epochs.get(target_uid) { Some(v) => v; None => 0L }
+              let next_ep = if presented_epoch > prev { presented_epoch } else { prev }
+              self.link_admitted_epochs.set(target_uid, next_ep)
+              if next_ep > self.admitted_cred_epoch {
+                self.admitted_cred_epoch = next_ep
+              }
+              let still_current = match self.active_link {
+                Some(cur) => cur.uid == target_uid && cur.usable()
+                None => false
+              }
+              if still_current {
+                self.live_link_admitted_epoch = next_ep
+                match self.on_admitted_epoch_cb {
+                  Some(cb) => cb(next_ep)
+                  None => ()
+                }
+              }
             }
             match self.config.on_admission { Some(cb) => cb(adm); None => () }
             k(effect::Exit::Succeeded(adm))
@@ -836,6 +1006,7 @@ pub fn MeshStationTransport::drop_link(self : MeshStationTransport, reason : Str
   self.live_link_admitted_epoch = 0L
   match self.active_link {
     Some(link) => {
+      self.link_admitted_epochs.remove(link.uid)
       link.close(reason=reason)
       self.active_link = None
     }
@@ -855,6 +1026,8 @@ pub fn MeshStationTransport::close_k(
   reason : String = "closed",
 ) -> Unit {
   self.closed = true
+  self.cancel_admission_drive()
+  self.link_admitted_epochs.clear()
   self.drop_link(reason=reason)
   match self.mesh_inst {
     Some(m) => {

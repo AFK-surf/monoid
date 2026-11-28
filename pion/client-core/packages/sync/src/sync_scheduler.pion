@@ -24,6 +24,7 @@ pub struct SyncScheduler {
   mut completed_order : Array[String]
   mut cred_epoch_getter : Option[() -> Int64]
   mut admitted_cred_epoch_getter : Option[() -> Int64]
+  mut serving_link_getter : Option[() -> (Int, Int64)]
   mut required_cred_epoch_getter : Option[() -> Option[Int64]]
   mut account_epoch_getter : Option[() -> Int64]
   mut on_resource_confirmed : Option[(String, Int64, Int64) -> Unit]
@@ -54,6 +55,7 @@ pub fn SyncScheduler::new(
     completed_order: [],
     cred_epoch_getter: None,
     admitted_cred_epoch_getter: None,
+    serving_link_getter: None,
     required_cred_epoch_getter: None,
     account_epoch_getter: None,
     on_resource_confirmed: None,
@@ -76,6 +78,15 @@ pub fn SyncScheduler::set_admitted_cred_epoch_getter(
   getter : () -> Int64,
 ) -> Unit {
   self.admitted_cred_epoch_getter = Some(getter)
+}
+
+/// Wire a live getter exposing the exact `(link.uid, admitted_cred_epoch)` of the CURRENT serving
+/// link (e.g. `MeshStationTransport::live_link_identity`).
+pub fn SyncScheduler::set_serving_link_getter(
+  self : SyncScheduler,
+  getter : () -> (Int, Int64),
+) -> Unit {
+  self.serving_link_getter = Some(getter)
 }
 
 /// Wire a getter returning `Some(pending.required_cred_epoch)` when `PendingAuthConfirm` is active
@@ -118,14 +129,22 @@ pub fn SyncScheduler::set_on_resource_confirmed(
   self.on_resource_confirmed = Some(cb)
 }
 
+/// Exact `(link.uid, admitted_cred_epoch)` of the CURRENT serving transport link.
+pub fn SyncScheduler::serving_link_identity(self : SyncScheduler) -> (Int, Int64) {
+  match self.serving_link_getter {
+    Some(g) => g()
+    None => match self.admitted_cred_epoch_getter {
+      Some(g) => (0, g())
+      None => (0, self.admitted_cred_epoch)
+    }
+  }
+}
+
 /// Real station-admitted credential epoch of the CURRENT serving transport link.
 /// When a live getter is bound, reads the current serving link's epoch directly without carrying over
 /// stale historical maxima from detached transports or prior accounts!
 pub fn SyncScheduler::admitted_cred_epoch(self : SyncScheduler) -> Int64 {
-  match self.admitted_cred_epoch_getter {
-    Some(g) => g()
-    None => self.admitted_cred_epoch
-  }
+  self.serving_link_identity().1
 }
 
 /// Record a station-admitted credential epoch on the current transport. Returns `true` iff it strictly increased.
@@ -143,21 +162,32 @@ pub fn SyncScheduler::record_admitted_cred_epoch(self : SyncScheduler, epoch : I
 pub fn SyncScheduler::reset_admitted_cred_epoch(self : SyncScheduler) -> Unit {
   self.admitted_cred_epoch = 0L
   self.admitted_cred_epoch_getter = None
+  self.serving_link_getter = None
 }
 
 fn SyncScheduler::is_admitted_for_commit(
   self : SyncScheduler,
+  start_link_uid : Int,
   start_admitted : Int64,
   start_account_epoch : Int64,
 ) -> Bool {
   if self.current_account_epoch() != start_account_epoch {
     return false
   }
+  let (cur_uid, cur_admitted) = self.serving_link_identity()
+  if start_link_uid != 0 && cur_uid != start_link_uid {
+    return false
+  }
   match self.required_cred_epoch_getter {
     None => true
     Some(g) => match g() {
       None => true
-      Some(req_ep) => start_admitted >= req_ep && self.admitted_cred_epoch() >= req_ep
+      Some(req_ep) => {
+        if self.serving_link_getter.is_some() && (start_link_uid == 0 || cur_uid == 0) {
+          return false
+        }
+        start_admitted >= req_ep && cur_admitted >= req_ep
+      }
     }
   }
 }
@@ -166,10 +196,11 @@ fn SyncScheduler::notify_resource_confirmed(
   self : SyncScheduler,
   resource_key : String,
   auth_gen : Int64,
+  start_link_uid : Int,
   start_admitted : Int64,
   start_account_epoch : Int64,
 ) -> Unit {
-  if !self.is_admitted_for_commit(start_admitted, start_account_epoch) {
+  if !self.is_admitted_for_commit(start_link_uid, start_admitted, start_account_epoch) {
     return
   }
   let admitted = self.admitted_cred_epoch()
@@ -226,6 +257,7 @@ pub fn SyncScheduler::set_transport(self : SyncScheduler, transport : StationTra
   self.transport_epoch += 1L
   self.admitted_cred_epoch = 0L
   self.admitted_cred_epoch_getter = None
+  self.serving_link_getter = None
   self.pending_refresh.clear()
   self.pending_lock_refresh = false
   self.lock_refresh_running = false
@@ -570,6 +602,7 @@ pub fn SyncScheduler::fetch_marks_k(
           on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
           return
         }
+        let start_link_uid_box : Array[Int] = [0]
         let start_admitted_box : Array[Int64] = [0L]
         let start_acct_box : Array[Int64] = [0L]
         let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
@@ -581,7 +614,9 @@ pub fn SyncScheduler::fetch_marks_k(
             fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
             return
           }
-          start_admitted_box[0] = self.admitted_cred_epoch()
+          let (suid, sadm) = self.serving_link_identity()
+          start_link_uid_box[0] = suid
+          start_admitted_box[0] = sadm
           start_acct_box[0] = self.current_account_epoch()
           let req_fn = self.transport.request_k
           req_fn("GET", req_path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
@@ -616,7 +651,7 @@ pub fn SyncScheduler::fetch_marks_k(
           if self.current_cred_epoch() != enqueue_cred_epoch {
             return Err("cred_epoch_changed")
           }
-          if !self.is_admitted_for_commit(start_admitted_box[0], start_acct_box[0]) {
+          if !self.is_admitted_for_commit(start_link_uid_box[0], start_admitted_box[0], start_acct_box[0]) {
             return Err("admitted_cred_epoch_stale")
           }
           match self.events.apply_marks_to_db(j, is_whole, scoped_sessions=sessions, scoped_threads=threads) {
@@ -722,6 +757,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
           on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
           return
         }
+        let start_link_uid_box : Array[Int] = [0]
         let start_admitted_box : Array[Int64] = [0L]
         let start_acct_box : Array[Int64] = [0L]
         let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
@@ -733,7 +769,9 @@ pub fn SyncScheduler::fetch_snapshot_k(
             fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
             return
           }
-          start_admitted_box[0] = self.admitted_cred_epoch()
+          let (suid, sadm) = self.serving_link_identity()
+          start_link_uid_box[0] = suid
+          start_admitted_box[0] = sadm
           start_acct_box[0] = self.current_account_epoch()
           let req_fn = self.transport.request_k
           req_fn("GET", "/chats", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
@@ -768,7 +806,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
           if self.current_cred_epoch() != enqueue_cred_epoch {
             return Err("cred_epoch_changed")
           }
-          if !self.is_admitted_for_commit(start_admitted_box[0], start_acct_box[0]) {
+          if !self.is_admitted_for_commit(start_link_uid_box[0], start_admitted_box[0], start_acct_box[0]) {
             return Err("admitted_cred_epoch_stale")
           }
           if !is_valid_chats_snapshot_payload(j) {
@@ -780,7 +818,7 @@ pub fn SyncScheduler::fetch_snapshot_k(
               self.pending_refresh.remove(key)
               self.completed_order.push("snapshot")
               // Confirm ONLY `chats:<station>` — NEVER confirms `chatJobs:<station>/<thread>`!
-              self.notify_resource_confirmed("chats:" + self.station, cap_gen, start_admitted_box[0], start_acct_box[0])
+              self.notify_resource_confirmed("chats:" + self.station, cap_gen, start_link_uid_box[0], start_admitted_box[0], start_acct_box[0])
               Ok(n)
             }
           }
@@ -886,6 +924,7 @@ pub fn SyncScheduler::fetch_thread_k(
           return
         }
         let path = "/threads/" + thread.to_string() + "/entries"
+        let start_link_uid_box : Array[Int] = [0]
         let start_admitted_box : Array[Int64] = [0L]
         let start_acct_box : Array[Int64] = [0L]
         let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
@@ -897,7 +936,9 @@ pub fn SyncScheduler::fetch_thread_k(
             fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
             return
           }
-          start_admitted_box[0] = self.admitted_cred_epoch()
+          let (suid, sadm) = self.serving_link_identity()
+          start_link_uid_box[0] = suid
+          start_admitted_box[0] = sadm
           start_acct_box[0] = self.current_account_epoch()
           let req_fn = self.transport.request_k
           req_fn("GET", path, [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
@@ -932,7 +973,7 @@ pub fn SyncScheduler::fetch_thread_k(
           if self.current_cred_epoch() != enqueue_cred_epoch {
             return Err("cred_epoch_changed")
           }
-          if !self.is_admitted_for_commit(start_admitted_box[0], start_acct_box[0]) {
+          if !self.is_admitted_for_commit(start_link_uid_box[0], start_admitted_box[0], start_acct_box[0]) {
             return Err("admitted_cred_epoch_stale")
           }
           if !is_valid_thread_entries_payload(j, thread) {
@@ -944,7 +985,7 @@ pub fn SyncScheduler::fetch_thread_k(
               self.pending_refresh.remove(key)
               self.completed_order.push("thread:" + thread.to_string())
               // Confirm ONLY `chat:<station>/<thread>` — NEVER confirms `chatJobs:<station>/<thread>`!
-              self.notify_resource_confirmed("chat:" + self.station + "/" + thread.to_string(), cap_gen, start_admitted_box[0], start_acct_box[0])
+              self.notify_resource_confirmed("chat:" + self.station + "/" + thread.to_string(), cap_gen, start_link_uid_box[0], start_admitted_box[0], start_acct_box[0])
               Ok(n)
             }
           }
@@ -1036,6 +1077,7 @@ pub fn SyncScheduler::prefetch_idle_k(
         return
       }
       let path = "/threads/" + thread.to_string() + "/entries"
+      let start_link_uid_box : Array[Int] = [0]
       let start_admitted_box : Array[Int64] = [0L]
       let start_acct_box : Array[Int64] = [0L]
       let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
@@ -1043,7 +1085,9 @@ pub fn SyncScheduler::prefetch_idle_k(
           fk(effect::Exit::Failed(effect::EffectError::Custom("transport_epoch_changed")))
           return
         }
-        start_admitted_box[0] = self.admitted_cred_epoch()
+        let (suid, sadm) = self.serving_link_identity()
+        start_link_uid_box[0] = suid
+        start_admitted_box[0] = sadm
         start_acct_box[0] = self.current_account_epoch()
         let req_fn = self.transport.request_k
         effect::race_first_k(
@@ -1098,7 +1142,7 @@ pub fn SyncScheduler::prefetch_idle_k(
         if self.current_cred_epoch() != enqueue_cred_epoch {
           return Err("cred_epoch_changed")
         }
-        if !self.is_admitted_for_commit(start_admitted_box[0], start_acct_box[0]) {
+        if !self.is_admitted_for_commit(start_link_uid_box[0], start_admitted_box[0], start_acct_box[0]) {
           return Err("admitted_cred_epoch_stale")
         }
         if !is_valid_thread_entries_payload(j, thread) {
@@ -1109,7 +1153,7 @@ pub fn SyncScheduler::prefetch_idle_k(
           sql::SqlResult::Ok(n) => {
             self.pending_refresh.remove(key)
             self.completed_order.push("idle:" + thread.to_string())
-            self.notify_resource_confirmed("chat:" + self.station + "/" + thread.to_string(), cap_gen, start_admitted_box[0], start_acct_box[0])
+            self.notify_resource_confirmed("chat:" + self.station + "/" + thread.to_string(), cap_gen, start_link_uid_box[0], start_admitted_box[0], start_acct_box[0])
             Ok(n)
           }
         }
@@ -1222,6 +1266,7 @@ pub fn SyncScheduler::fetch_jobs_k(
           on_attempt_done(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
           return
         }
+        let start_link_uid_box : Array[Int] = [0]
         let start_admitted_box : Array[Int64] = [0L]
         let start_acct_box : Array[Int64] = [0L]
         let do_fetch_io = fn(fk : (effect::Exit[base_codec::Json]) -> Unit) -> Unit {
@@ -1233,7 +1278,9 @@ pub fn SyncScheduler::fetch_jobs_k(
             fk(effect::Exit::Failed(effect::EffectError::Custom("cred_epoch_changed")))
             return
           }
-          start_admitted_box[0] = self.admitted_cred_epoch()
+          let (suid, sadm) = self.serving_link_identity()
+          start_link_uid_box[0] = suid
+          start_admitted_box[0] = sadm
           start_acct_box[0] = self.current_account_epoch()
           let req_fn = self.transport.request_k
           req_fn("GET", "/jobs?chats=0", [], Bytes::new(0), fn(ex : effect::Exit[HttpReply]) -> Unit {
@@ -1268,7 +1315,7 @@ pub fn SyncScheduler::fetch_jobs_k(
           if self.current_cred_epoch() != enqueue_cred_epoch {
             return Err("cred_epoch_changed")
           }
-          if !self.is_admitted_for_commit(start_admitted_box[0], start_acct_box[0]) {
+          if !self.is_admitted_for_commit(start_link_uid_box[0], start_admitted_box[0], start_acct_box[0]) {
             return Err("admitted_cred_epoch_stale")
           }
           if !is_valid_jobs_payload(j) {
@@ -1279,11 +1326,12 @@ pub fn SyncScheduler::fetch_jobs_k(
             sql::SqlResult::Ok(n) => {
               self.pending_refresh.remove(key)
               self.completed_order.push(res_name)
-              self.notify_resource_confirmed("jobs:" + self.station, cap_gen, start_admitted_box[0], start_acct_box[0])
+              self.notify_resource_confirmed("jobs:" + self.station, cap_gen, start_link_uid_box[0], start_admitted_box[0], start_acct_box[0])
               match target_thread {
                 Some(th) => self.notify_resource_confirmed(
                   "chatJobs:" + self.station + "/" + th.to_string(),
                   cap_gen,
+                  start_link_uid_box[0],
                   start_admitted_box[0],
                   start_acct_box[0],
                 )

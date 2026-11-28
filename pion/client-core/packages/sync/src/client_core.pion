@@ -818,17 +818,22 @@ fn ClientCore::bind_admitted_epoch_getter(
   self : ClientCore,
   station : String,
   sy : SyncScheduler,
+  ev : StationEvents,
   getter_opt : Option[() -> Int64],
+  serving_link_getter : Option[() -> (Int, Int64)],
 ) -> Unit {
   self.station_admitted_epochs.remove(station)
   self.clear_inflight_confirm_for_station(station)
   sy.reset_admitted_cred_epoch()
   match getter_opt {
-    Some(g) => {
-      sy.set_admitted_cred_epoch_getter(g)
-    }
+    Some(g) => sy.set_admitted_cred_epoch_getter(g)
     None => ()
   }
+  match serving_link_getter {
+    Some(lg) => sy.set_serving_link_getter(lg)
+    None => ()
+  }
+  ev.set_serving_link_getter(serving_link_getter)
 }
 
 /// Attach a station-specific `StationTransport` to `local_outbox`, `StationEvents`, and `SyncScheduler`,
@@ -841,6 +846,7 @@ pub fn ClientCore::attach_station_transport(
   transport : StationTransport,
   workspace : String = "",
   admitted_cred_epoch_getter : Option[() -> Int64] = None,
+  serving_link_getter : Option[() -> (Int, Int64)] = None,
 ) -> Unit {
   let target_ws = self.resolve_station_workspace(station, explicit_ws=workspace)
   if !self.membership.is_workspace_readable(target_ws) {
@@ -854,10 +860,11 @@ pub fn ClientCore::attach_station_transport(
   self.auth.ensure_workspace(target_ws)
   self.local_outbox.register_station_transport(station, transport)
   if station == self.station {
+    let was_running = self.events.is_running()
     self.sync.set_transport(transport)
-    self.bind_admitted_epoch_getter(station, self.sync, admitted_cred_epoch_getter)
-    self.events.set_transport(transport, rt=Some(self.rt))
-    if self.live && !self.events.is_running() {
+    self.events.set_transport(transport)
+    self.bind_admitted_epoch_getter(station, self.sync, self.events, admitted_cred_epoch_getter, serving_link_getter)
+    if (self.live || was_running) && !self.events.is_running() {
       self.events.start(self.rt)
     }
   } else {
@@ -866,10 +873,11 @@ pub fn ClientCore::attach_station_transport(
       (Some(ev), Some(sy)) => {
         if ev.workspace == target_ws && sy.workspace == target_ws {
           reuse_existing = true
+          let was_running = ev.is_running()
           sy.set_transport(transport)
-          self.bind_admitted_epoch_getter(station, sy, admitted_cred_epoch_getter)
-          ev.set_transport(transport, rt=Some(self.rt))
-          if self.live && !ev.is_running() {
+          ev.set_transport(transport)
+          self.bind_admitted_epoch_getter(station, sy, ev, admitted_cred_epoch_getter, serving_link_getter)
+          if (self.live || was_running) && !ev.is_running() {
             ev.start(self.rt)
           }
         } else {
@@ -886,7 +894,7 @@ pub fn ClientCore::attach_station_transport(
       ev.viewer_selves = self.events.viewer_selves
       let sy = SyncScheduler::new(target_ws, station, ev, transport)
       self.wire_station_hooks(station, ev, sy)
-      self.bind_admitted_epoch_getter(station, sy, admitted_cred_epoch_getter)
+      self.bind_admitted_epoch_getter(station, sy, ev, admitted_cred_epoch_getter, serving_link_getter)
       self.extra_events.set(station, ev)
       self.extra_sync.set(station, sy)
       if self.live {
@@ -899,8 +907,8 @@ pub fn ClientCore::attach_station_transport(
   }
 }
 
-/// Attach a production `MeshStationTransport`, wiring its live serving-link `live_admitted_cred_epoch`
-/// getter and post-admission downgrade refresh callback end-to-end.
+/// Attach a production `MeshStationTransport`, wiring its exact live serving-link identity
+/// `live_link_identity` getter and post-admission downgrade refresh callback end-to-end.
 pub fn ClientCore::attach_mesh_station_transport(
   self : ClientCore,
   station : String,
@@ -915,6 +923,7 @@ pub fn ClientCore::attach_mesh_station_transport(
     ctrl.transport(),
     workspace=workspace,
     admitted_cred_epoch_getter=Some(fn() -> Int64 { ctrl.live_admitted_cred_epoch() }),
+    serving_link_getter=Some(fn() -> (Int, Int64) { ctrl.live_link_identity() }),
   )
   let ep = ctrl.live_admitted_cred_epoch()
   if ep > 0L {
@@ -1148,13 +1157,7 @@ fn ClientCore::all_active_topics(self : ClientCore) -> Array[protocol::Topic] {
   out
 }
 
-/// Proactively refresh station data after real post-downgrade admission (`admitted_cred_epoch >= required_cred_epoch`):
-/// - Resumes admission-paused SSE stream when live (without duplicating initial `/chats`);
-/// - Refreshes `GET /chats` (`chats:<st>`) via deduped confirmation refresh;
-/// - Scans BOTH `ClientCore` router and native `core_runtime` subscriptions, resolving `(station, session)`
-///   and moved chats to their destination `(dest_station, dest_thread)` for `chat:<st>/<th>`,
-///   independent `chatJobs:<st>/<th>` (`GET /jobs?chats=0`), and `jobs:<st>` (`longJobs`).
-pub fn ClientCore::refresh_station_after_downgrade(self : ClientCore, station : String) -> Unit {
+fn ClientCore::refresh_active_station_topic_keys(self : ClientCore, station : String) -> Unit {
   let sy = match self.station_sync(station) {
     Some(s) => s
     None => return
@@ -1162,14 +1165,7 @@ pub fn ClientCore::refresh_station_after_downgrade(self : ClientCore, station : 
   let ws = sy.workspace
   match self.membership.required_cred_epoch_of(ws) {
     Some(req_ep) => if self.station_admitted_cred_epoch(station) < req_ep { return }
-    None => ()
-  }
-  self.ensure_confirmed_station_refresh(station, "chats:" + station)
-  if self.live {
-    match self.station_events(station) {
-      Some(ev) => ev.resume_after_admission(self.rt)
-      None => ()
-    }
+    None => return
   }
   let chat_threads : Array[Int] = []
   let chat_jobs_threads : Array[Int] = []
@@ -1238,6 +1234,32 @@ pub fn ClientCore::refresh_station_after_downgrade(self : ClientCore, station : 
   if want_station_jobs {
     self.ensure_confirmed_station_refresh(station, "jobs:" + station)
   }
+}
+
+/// Proactively refresh station data after real post-downgrade admission (`admitted_cred_epoch >= required_cred_epoch`):
+/// - Resumes admission-paused SSE stream when live (without duplicating initial `/chats`);
+/// - Refreshes `GET /chats` (`chats:<st>`) via deduped confirmation refresh;
+/// - Scans BOTH `ClientCore` router and native `core_runtime` subscriptions, resolving `(station, session)`
+///   and moved chats to their destination `(dest_station, dest_thread)` for `chat:<st>/<th>`,
+///   independent `chatJobs:<st>/<th>` (`GET /jobs?chats=0`), and `jobs:<st>` (`longJobs`).
+pub fn ClientCore::refresh_station_after_downgrade(self : ClientCore, station : String) -> Unit {
+  let sy = match self.station_sync(station) {
+    Some(s) => s
+    None => return
+  }
+  let ws = sy.workspace
+  match self.membership.required_cred_epoch_of(ws) {
+    Some(req_ep) => if self.station_admitted_cred_epoch(station) < req_ep { return }
+    None => ()
+  }
+  self.ensure_confirmed_station_refresh(station, "chats:" + station)
+  if self.live {
+    match self.station_events(station) {
+      Some(ev) => ev.resume_after_admission(self.rt)
+      None => ()
+    }
+  }
+  self.refresh_active_station_topic_keys(station)
 }
 
 /// Refresh all attached admitted stations of workspace `ws` (used e.g. when exiting Safe Mode while
@@ -2322,7 +2344,8 @@ fn ClientCore::refresh_subs_for_confirmed_key(
     } else if resource_key == "stations:" + ws {
       topic.name == "stations"
     } else if resource_key.starts_with("chats:") {
-      topic.name == "chats" || topic.name == "chatRow" || topic.name == "archive" ||
+      topic.name == "chats" || topic.name == "chatRow" || topic.name == "chat" ||
+      topic.name == "chatJobs" || topic.name == "longJobs" || topic.name == "archive" ||
       topic.name == "search" || topic.name == "chatSearch" || topic.name == "workspaceMarks" ||
       topic.name == "models" || topic.name == "profiles" || topic.name == "profilesOverview" ||
       topic.name == "stationUpdates" || topic.name == "fleet" || topic.name == "usage" ||
@@ -2330,9 +2353,9 @@ fn ClientCore::refresh_subs_for_confirmed_key(
     } else if resource_key.starts_with("chat:") {
       topic.name == "chat"
     } else if resource_key.starts_with("chatJobs:") {
-      topic.name == "chatJobs"
+      topic.name == "chatJobs" || topic.name == "longJobs" || topic.name == "fleet" || topic.name == "railCard"
     } else if resource_key.starts_with("jobs:") {
-      topic.name == "longJobs"
+      topic.name == "longJobs" || topic.name == "fleet" || topic.name == "railCard"
     } else {
       false
     }
@@ -2345,6 +2368,15 @@ fn ClientCore::refresh_subs_for_confirmed_key(
         }
         None => ()
       }
+    }
+  }
+  if resource_key.starts_with("chats:") {
+    // [Opus P1-2 + Codex P1-4] After `/chats` lands and confirms `chats:<st>`, any active
+    // `(station, session)` or moved `chat` / `chatJobs` subscription whose thread was previously
+    // unresolved can now resolve its target thread and trigger deduped confirmation refresh!
+    let st = resource_key.slice(6, resource_key.length())
+    if st.length() > 0 {
+      self.refresh_active_station_topic_keys(st)
     }
   }
   match self.on_auth_key_confirmed {
@@ -3283,6 +3315,17 @@ pub fn ClientCore::commit_cloud_me(
   }
   for i in 0..<existing_ws.length() {
     self.membership.advance_workspace_seq(existing_ws[i], req_seq)
+  }
+  // [Codex P1-3] Any workspace still in `PendingAuthConfirm` with unconfirmed Cloud keys must
+  // trigger a fresh `/v1/workspaces/<ws>` fetch AFTER advancing `ws_commit_seq` so an earlier
+  // in-flight detail response rejected by the newer seq never strands Cloud confirmation.
+  for i in 0..<me.workspaces.length() {
+    let wid = me.workspaces[i].id
+    if self.membership.has_pending_auth_confirm(wid) &&
+    (!self.can_read_confirmed_key(wid, "workspace:" + wid) ||
+      !self.can_read_confirmed_key(wid, "stations:" + wid)) {
+      push_unique_str_cc(ws_refresh_ws, wid)
+    }
   }
 
   match self.membership.role_of(self.workspace) {
@@ -4287,23 +4330,30 @@ fn ClientCore::evaluate_view_topic(self : ClientCore, id : Int64, topic : protoc
     if !self.can_read_station(st) || !self.can_read_station(final_st) {
       return Some(protocol::CoreEvent::Waiting(id))
     }
-    let chat_confirm_key = match final_th {
+    let eff_th = match final_th {
+      Some(t) => Some(t)
+      None => match final_sess {
+        Some(sk) => self.lookup_thread_for_session(final_st, sk)
+        None => None
+      }
+    }
+    let chat_confirm_key = match eff_th {
       Some(th) => "chat:" + final_st + "/" + th.to_string()
       None => "chats:" + final_st
     }
     if !self.can_read_station_key(final_st, chat_confirm_key) {
-      self.ensure_confirmed_station_refresh(final_st, chat_confirm_key, thread=final_th)
+      self.ensure_confirmed_station_refresh(final_st, chat_confirm_key, thread=eff_th)
       return Some(protocol::CoreEvent::Waiting(id))
     }
     let compact = match topic.param("compact") {
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
-    let rows_lim = self.chat_sub_window_rows_for(id, final_st, final_th, final_sess)
+    let rows_lim = self.chat_sub_window_rows_for(id, final_st, eff_th, final_sess)
     match views::project_chat_by_params(
       self.db,
       final_st,
-      final_th,
+      eff_th,
       final_sess,
       compact,
       self.viewer_marks.me,
@@ -6478,19 +6528,26 @@ pub fn ClientCore::handle_request(self : ClientCore, req : protocol::CoreRequest
         }
         let req_th = proto_int(params, "thread")
         let req_sess = proto_str(params, "session")
-        let (final_st, final_th, _) = match self.resolve_consistent_chat_target(req_st, req_th, req_sess) {
+        let (final_st, final_th, final_sess) = match self.resolve_consistent_chat_target(req_st, req_th, req_sess) {
           Ok(t) => t
           Err(msg) => return Some(protocol::CoreEvent::Err(id, protocol::CoreError::{ code: "chat_selector_mismatch", message: msg }))
         }
         if !self.can_read_station(req_st) || !self.can_read_station(final_st) {
           return Some(protocol::CoreEvent::Err(id, self.gate_err()))
         }
-        let open_key = match final_th {
+        let eff_th = match final_th {
+          Some(t) => Some(t)
+          None => match final_sess {
+            Some(sk) => self.lookup_thread_for_session(final_st, sk)
+            None => None
+          }
+        }
+        let open_key = match eff_th {
           Some(th) => "chat:" + final_st + "/" + th.to_string()
           None => "chats:" + final_st
         }
         if !self.can_read_station_key(final_st, open_key) {
-          self.ensure_confirmed_station_refresh(final_st, open_key, thread=final_th)
+          self.ensure_confirmed_station_refresh(final_st, open_key, thread=eff_th)
           return Some(protocol::CoreEvent::Err(id, ClientCore::pending_confirm_err()))
         }
       }
