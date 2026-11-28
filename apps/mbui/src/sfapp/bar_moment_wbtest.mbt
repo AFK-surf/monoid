@@ -264,7 +264,7 @@ fn bar_held_then(lost : Double?) -> (Bool, Bool) {
   }
   for at in [200.0, 300.0, 500.0] {
     t.frame_at(t0 + at)
-    if bar.drag >= 0.0 {
+    if bar.drag is Some(_) {
       lens.val = true
     }
   }
