@@ -930,35 +930,37 @@ fn words_equal(a : Array[String], b : Array[String]) -> Bool {
   true
 }
 
-pub fn LoginsManager::start(
+fn starter_scope_matches(a : LoginStarter, b : LoginStarter) -> Bool {
+  opt_str_eq(a.workspace, b.workspace) && opt_str_eq(a.chat, b.chat)
+}
+
+/// Start a login using pre-tokenized argv words (preserving exact argument boundaries),
+/// deduplicating strictly within the same `(workspace, chat)` scope.
+pub fn LoginsManager::start_words(
   self : LoginsManager,
-  command_line : String,
+  raw_words : Array[String],
   starter : LoginStarter,
-  by_code_line : Option[String],
+  by_code_words : Option[Array[String]],
   paste_on_open : Bool,
   now_ms : Int64,
 ) -> Result[LoginView, LoginRefused] {
-  let words = match command_words(command_line) {
-    Some(w) => match validate_command_words(w) {
-      Ok(v) => v
-      Err(e) => return Err(e)
-    }
-    None => return Err(LoginRefused::{ status: 400, message: "bad command" })
+  let words = match validate_command_words(raw_words) {
+    Ok(v) => v
+    Err(e) => return Err(e)
   }
-  let by_code : Option[Array[String]] = match by_code_line {
-    Some(line) => match command_words(line) {
-      Some(w) => match validate_command_words(w) {
-        Ok(v) => Some(v)
-        Err(e) => return Err(e)
-      }
-      None => return Err(LoginRefused::{ status: 400, message: "bad command" })
+  let by_code : Option[Array[String]] = match by_code_words {
+    Some(w) => match validate_command_words(w) {
+      Ok(v) => Some(v)
+      Err(e) => return Err(e)
     }
     None => None
   }
-  // Dedup active login for the same command.
+  // Dedup active login for the same command strictly within the same `(workspace, chat)` scope.
   let mut i = 0
   while i < self.entries.length() {
-    if self.entries[i].run.active() && words_equal(self.entries[i].run.command, words) {
+    if self.entries[i].run.active()
+    && starter_scope_matches(self.entries[i].starter, starter)
+    && words_equal(self.entries[i].run.command, words) {
       return Ok(self.shown_entry(self.entries[i]))
     }
     i = i + 1
@@ -977,6 +979,28 @@ pub fn LoginsManager::start(
   }
   self.entries.push(entry)
   Ok(self.shown_entry(entry))
+}
+
+pub fn LoginsManager::start(
+  self : LoginsManager,
+  command_line : String,
+  starter : LoginStarter,
+  by_code_line : Option[String],
+  paste_on_open : Bool,
+  now_ms : Int64,
+) -> Result[LoginView, LoginRefused] {
+  let words = match command_words(command_line) {
+    Some(w) => w
+    None => return Err(LoginRefused::{ status: 400, message: "bad command" })
+  }
+  let by_code : Option[Array[String]] = match by_code_line {
+    Some(line) => match command_words(line) {
+      Some(w) => Some(w)
+      None => return Err(LoginRefused::{ status: 400, message: "bad command" })
+    }
+    None => None
+  }
+  self.start_words(words, starter, by_code, paste_on_open, now_ms)
 }
 
 /// Start an isolated login run that NEVER deduplicates across profiles/workspaces by command words.

@@ -1853,6 +1853,8 @@ struct WholeRuntimeState {
   mut replica_before_store_ok : Bool
   mcp_srv : station_http::HttpServer
   mcp_cb : station_http::ServerCallbacks
+  mcp_pending : station_whole::McpPendingTable
+  remote_outbox : station_whole::RemoteTaskOutbox
   serve : station_mesh::ServeEndpoint
   admin_conns : Map[Int64, AdminConnState]
   seen_members : Map[String, Map[String, Map[String, SeenMember]]]
@@ -7254,7 +7256,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
       // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
+      let mcp_pending = station_whole::McpPendingTable::new()
+      let remote_outbox = station_whole::RemoteTaskOutbox::new(ctx.data, core.agents.jobs.fs)
+      let mcp_defer_capture = station_whole::DeferredMcpCapture::new()
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
+      mcp_srv.set_conn_closed_hook(
+        Some(fn(cid : Int) -> Unit { on_mcp_conn_closed(ctx, core.agents.jobs.fs, mcp_pending, cid) }),
+      )
       let mcp_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
         if req.method == "GET" && req.path == "/healthz" {
           return station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok"))
@@ -7471,6 +7479,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               None => ()
             }
           }
+          // Route EVERY `/mcp` call through `McpServer::handle` FIRST (origin, Bearer auth,
+          // JSON-RPC `id`/notification gate, `station_tool` unwrapping, `bump_heard`, `UNBOUND_REFUSAL`).
+          mcp_defer_capture.reset_for_request(req.conn_id, extract_mcp_rpc_id(req_body))
           let mresp = core.handle_mcp_http(
             req.method,
             req.path,
@@ -7480,6 +7491,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             req_body,
             host_shim::wall_ms(),
           )
+          match mcp_defer_capture.take_pending() {
+            Some(intent) => {
+              mcp_pending.enqueue_start(intent)
+              return station_http::HandlerAction::Defer
+            }
+            None => ()
+          }
           // Forward successful `chat_post` (including card-only posts with empty/omitted text!)
           // to local external connects or via `connect.call` peer RPC to the origin station,
           // and apply `#9052` Feishu status-card gating on `chat_post` / `chat_state`.
@@ -7679,6 +7697,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
       let dsb = wire_whole_core_runtime_hooks(ctx, core, devices, logins, browser, seen_members)
+      let ways_store = build_daemon_ways_store(ctx)
+      let move_sched = build_daemon_move_scheduler(core)
+      wire_daemon_mcp_remote_system(ctx, core, logins, ways_store, move_sched, mcp_defer_capture, remote_outbox)
       let upkeep = AsyncUpkeepRunner::new(ctx.data, ctx.sep, core.agents.jobs.fs, host_shim::now_ms())
       state_opt = Some(WholeRuntimeState::{
         core: core,
@@ -7699,6 +7720,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         replica_before_store_ok: false,
         mcp_srv: mcp_srv,
         mcp_cb: mcp_cb,
+        mcp_pending: mcp_pending,
+        remote_outbox: remote_outbox,
         serve: station_mesh::ServeEndpoint::new(),
         admin_conns: Map::new(),
         seen_members: seen_members,
@@ -7915,6 +7938,37 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           ) {
             Ok(_) => {
               st.replica.after_store(home_ws, ctx.station_key.id, host_shim::wall_ms())
+              // Reconcile persisted `closing/*.json` and archived `used/*.json` AFTER `WholeStore` opens primary DB.
+              let archived_keys : Array[String] = match st.core.store.require_open() {
+                Ok(sdb) => match sdb.db.all("SELECT key FROM sessions WHERE archived_at IS NOT NULL", []) {
+                  Ok(rows) => {
+                    let ks : Array[String] = []
+                    for ri in 0..<rows.length() {
+                      match rows[ri].get("key") {
+                        Some(base_codec::Json::Str(k)) => if k.length() > 0 { ks.push(k) }
+                        _ => ()
+                      }
+                    }
+                    ks
+                  }
+                  Err(_) => []
+                }
+                Err(_) => []
+              }
+              st.remote_outbox.load_pending_closes(
+                host_shim::now_ms(),
+                now_wall_ms=host_shim::wall_ms(),
+                is_session_archived=Some(fn(sk : String) -> Bool {
+                  match st.core.store.require_open() {
+                    Ok(sdb) => match sdb.get_session(sk) {
+                      Ok(Some(r)) => r.archived_at is Some(_)
+                      _ => false
+                    }
+                    Err(_) => false
+                  }
+                }),
+                archived_session_keys=archived_keys,
+              )
               // Load persisted cross-station `remote-connects.json` and start all enabled local external
               // connects (Slack / Feishu / Comma / Group) directly onto `WholeCore` `Hub`!
               load_remote_connects_file(
@@ -8364,6 +8418,14 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               st.connects.comma_on_fresh_event(cid)
               let _ = st.connects.comma_on_build_result(cid, 0, false, now_w)
             }
+            let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
+            ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
+            return
+          }
+
+          // Remote `station_task` completion push (`task.changed`): fetch status and notify originating session.
+          if method == "task.changed" {
+            let _ = handle_inbound_task_changed(ctx, st.core, st.remote_outbox, auth.remote_id, ws, req, now_w)
             let res_j = base_codec::json_obj([("ok", base_codec::json_bool(true))])
             ctx.reply_peer_rpc(sid, station_mesh::encode_peer_answer_ok(res_j, false, v2_bytes), None, v2_bytes, is_front)
             return
@@ -8949,6 +9011,11 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             return
           }
           match sev {
+            station_sys::SysEvent::FsyncDone(rc) => {
+              if on_mcp_fsync_done(st.mcp_srv, st.mcp_cb, st.mcp_pending, st.core.agents.jobs.fs, ev_id, rc) {
+                return
+              }
+            }
             station_sys::SysEvent::DnsResolved(rc, ip) => {
               match st.dns_streams.get(ev_id) {
                 Some(sid) => {
@@ -9089,6 +9156,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
             DaemonExtraEvent::SysEvent(_, _) => ()
             DaemonExtraEvent::DoorDone(tok, d) => {
               let _ = st.mcp_srv.handle_done(tok, d, st.mcp_cb)
+              flush_deferred_mcp_starts(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, st.remote_outbox)
             }
             DaemonExtraEvent::RoleDone(tok, d) => {
               handle_proxy_role_done(ctx, st, tok, d)
@@ -9173,6 +9241,10 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.devices.adb_runner.tick(now)
           let _ = st.terminals.tick(now)
           let _ = st.logins.tick(now)
+          flush_deferred_mcp_starts(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, st.remote_outbox)
+          sweep_expired_mcp_pending(ctx, st.core.agents.jobs.fs, st.mcp_srv, st.mcp_cb, st.mcp_pending, now)
+          dispatch_pending_session_closes(ctx, st.remote_outbox, now, wall)
+          dispatch_due_task_get_retries(ctx, st.core, st.remote_outbox, now)
           let _ = st.browser.tick(now)
           let _ = st.dsb.tick(st.core.store, st.core.agents, st.core.api.events, st.core.api.hooks, wall)
           let _ = st.connects.tick(now)
@@ -9561,6 +9633,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           let _ = st.browser.drain_kills_with_hub(max_ms=500L)
           st.terminals.stop_all()
           let _ = st.terminals.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
+          shutdown_mcp_pending(ctx, st.core.agents.jobs.fs, st.mcp_pending)
           st.logins.stop_all(host_shim::now_ms())
           let _ = st.logins.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)
           let _ = st.devices.drain_kills_with_hub(ctx.edge_hub, max_ms=500L)

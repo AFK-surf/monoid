@@ -1,0 +1,874 @@
+// Wave 17E-2A unit tests: all 14 `DomainHandlers.remote` + `DomainHandlers.system` MCP tools,
+// strict workspace isolation, rig grant enforcement, symlink/traversal/no-overwrite path security,
+// zero-fake-success guarantees, and non-blocking async deferred MCP (`McpPendingTable`) lifecycle.
+
+import "base_codec"
+import "station_jobs"
+import "station_replica"
+import "station_rig"
+import "station_tools"
+
+fn rs_assert(cond : Bool, msg : String = "assertion failed") -> Unit {
+  if !cond {
+    panic("whole_mcp_remote_system_test: " + msg)
+  }
+}
+
+fn rs_test_mem_store_port() -> (McpSessionStorePort, Map[String, String]) {
+  let policies : Map[String, String] = Map::new()
+  let port = McpSessionStorePort::{
+    session_exists: fn(s : String) -> Bool { s == "sess-ws1" || s == "sess-ws2" },
+    session_workspace: fn(s : String) -> String {
+      if s == "sess-ws1" {
+        "/tmp/ws1-room"
+      } else if s == "sess-ws2" {
+        "/tmp/ws2-room"
+      } else {
+        ""
+      }
+    },
+    session_chat_title: fn(s : String) -> Option[String] {
+      if s == "sess-ws1" {
+        Some("WS1 Chat")
+      } else if s == "sess-ws2" {
+        Some("WS2 Chat")
+      } else {
+        None
+      }
+    },
+    session_starter: fn(s : String) -> String {
+      if s == "sess-ws1" { "alice@example.com" } else { "bob@example.com" }
+    },
+    // Home workspace uses key "__NULL__" mirroring SQLite `ws IS NULL`.
+    read_archive_policy_raw: fn(ws : String, home : String) -> Option[String] {
+      let key = if ws == home { "__NULL__" } else { ws }
+      policies.get(key)
+    },
+    write_archive_policy_raw: fn(ws : String, home : String, pol_json : String, _author : String, _summary : String, _now : Int64) -> Result[Unit, String] {
+      let key = if ws == home { "__NULL__" } else { ws }
+      policies.set(key, pol_json)
+      Ok(())
+    },
+  }
+  (port, policies)
+}
+
+fn rs_test_fs_with_symlink(now_ms : () -> Int64) -> (station_jobs::FsPort, Map[String, Bytes], Map[String, String]) {
+  let files : Map[String, Bytes] = Map::new()
+  let kinds : Map[String, String] = Map::new()
+  kinds.set("/tmp/ws1-room", "dir")
+  kinds.set("/tmp/ws2-room", "dir")
+  let fs = station_jobs::FsPort::{
+    sep: "/",
+    lstat: fn(p : String) -> Option[station_jobs::FsStat] {
+      match kinds.get(p) {
+        Some(k) => {
+          let sz = match files.get(p) {
+            Some(b) => b.length().to_int64()
+            None => 0L
+          }
+          Some(station_jobs::FsStat::{
+            kind: k,
+            size: sz,
+            mtime_ms: now_ms(),
+            mode: 420,
+            executable: false,
+            dev: 0L,
+            ino: 0L,
+          })
+        }
+        None => match files.get(p) {
+          Some(b) => Some(station_jobs::FsStat::{
+            kind: "file",
+            size: b.length().to_int64(),
+            mtime_ms: now_ms(),
+            mode: 420,
+            executable: false,
+            dev: 0L,
+            ino: 0L,
+          })
+          None => None
+        }
+      }
+    },
+    lstat_err: None,
+    stat: fn(p : String) -> Option[station_jobs::FsStat] {
+      match files.get(p) {
+        Some(b) => Some(station_jobs::FsStat::{
+          kind: "file",
+          size: b.length().to_int64(),
+          mtime_ms: now_ms(),
+          mode: 420,
+          executable: false,
+          dev: 0L,
+          ino: 0L,
+        })
+        None => None
+      }
+    },
+    read_dir: fn(_p : String) -> Option[Array[String]] { Some([]) },
+    read_file: fn(p : String) -> Option[String] {
+      match files.get(p) {
+        Some(b) => Some(b.to_string())
+        None => None
+      }
+    },
+    read_bytes: fn(p : String) -> Option[Bytes] { files.get(p) },
+    read_range: fn(p : String, off : Int64, len : Int64) -> Option[Bytes] {
+      match files.get(p) {
+        Some(b) => {
+          let start = if off < 0L { 0 } else if off.to_int() > b.length() { b.length() } else { off.to_int() }
+          let avail = b.length() - start
+          let take = if len.to_int() < avail { len.to_int() } else { avail }
+          let out = Bytes::new(take)
+          for i in 0..<take {
+            out[i] = b[start + i]
+          }
+          Some(out)
+        }
+        None => None
+      }
+    },
+    write_file: fn(p : String, s : String) -> Bool {
+      files.set(p, s.to_bytes())
+      kinds.set(p, "file")
+      true
+    },
+    write_file_mode: fn(p : String, b : Bytes, _mode : Int, _append : Bool) -> Bool {
+      files.set(p, b)
+      kinds.set(p, "file")
+      true
+    },
+    write_bytes: fn(p : String, b : Bytes) -> Bool {
+      files.set(p, b)
+      kinds.set(p, "file")
+      true
+    },
+    append_file: fn(p : String, s : String) -> Bool {
+      files.set(p, s.to_bytes())
+      kinds.set(p, "file")
+      true
+    },
+    truncate_in_place: fn(p : String) -> Bool {
+      files.set(p, Bytes::new(0))
+      true
+    },
+    rename: fn(a : String, b : String) -> Bool {
+      match files.get(a) {
+        Some(v) => {
+          files.set(b, v)
+          kinds.set(b, "file")
+          let _ = files.remove(a)
+          let _ = kinds.remove(a)
+          true
+        }
+        None => false
+      }
+    },
+    remove_file: fn(p : String) -> Bool {
+      let _ = files.remove(p)
+      let _ = kinds.remove(p)
+      true
+    },
+    rmdir: fn(_p : String) -> Bool { true },
+    remove_dir_all: fn(_p : String) -> Bool { true },
+    mkdir_p: fn(p : String) -> Bool {
+      if !kinds.contains(p) {
+        kinds.set(p, "dir")
+      }
+      true
+    },
+    readlink: fn(_p : String) -> Option[String] { None },
+    realpath: fn(p : String) -> Option[String] { Some(p) },
+    chmod: fn(_p : String, _m : Int) -> Bool { true },
+    exists: fn(p : String) -> Bool { files.contains(p) || kinds.contains(p) },
+    now_ms: now_ms,
+  }
+  (fs, files, kinds)
+}
+
+fn rs_test_peer(id : String, name : String, ws : String, is_self : Bool, mode : String) -> McpStationPeer {
+  McpStationPeer::{
+    id: id,
+    name: name,
+    workspace: ws,
+    is_self: is_self,
+    mode: mode,
+    owner_sub: if mode == "tasks" { "user-owner-1" } else { "" },
+    owner_email: if mode == "tasks" { "owner@example.com" } else { "" },
+    owner_name: if mode == "tasks" { "Owner" } else { "" },
+    rig_open: false,
+    unprotected_why: None,
+    version: Some("0.1.999"),
+    cores: 8,
+    arch: "x86_64",
+    os: "linux",
+    cpu_busy: Some(0.25),
+    load_1m: Some(1.5),
+    free_mem_bytes: Some(8589934592L),
+    free_disk_bytes: Some(107374182400L),
+    running_jobs: 1,
+    relay_ping_ms: Some(12),
+  }
+}
+
+fn rs_reply_text(r : station_tools::ToolReply) -> String {
+  if r.content.length() == 0 {
+    return ""
+  }
+  match r.content[0] {
+    station_tools::ContentItem::Text(t) => t
+    _ => ""
+  }
+}
+
+test "w17e2a wired_mcp_tool_names advertises all 14 remote and system tools" {
+  let names = wired_mcp_tool_names()
+  let expected = [
+    "station_list",
+    "station_task",
+    "station_file",
+    "station_use",
+    "peer_forward",
+    "workspace_limit",
+    "station_version",
+    "login",
+    "relays",
+    "archive_policy",
+    "station_move",
+    "station_retire",
+    "feedback_send",
+    "feedback_reply",
+  ]
+  for i in 0..<expected.length() {
+    let mut found = false
+    for j in 0..<names.length() {
+      if names[j] == expected[i] {
+        found = true
+        break
+      }
+    }
+    rs_assert(found, "missing wired tool: " + expected[i])
+  }
+}
+
+test "w17e2a station_list workspace isolation, rig status, and sandboxes" {
+  let (fs, _, _) = rs_test_fs_with_symlink(fn() -> Int64 { 10000L })
+  let (st, _) = rs_test_mem_store_port()
+  let all_peers = [
+    rs_test_peer("st-self", "self-box", "ws-1", true, "whole"),
+    rs_test_peer("st-peer", "build-1", "ws-1", false, "whole"),
+    rs_test_peer("st-rig", "gpu-rig", "ws-1", false, "tasks"),
+    rs_test_peer("st-other", "secret-ws2", "ws-2", false, "whole"),
+  ]
+  let port = McpRemoteSystemPort::{
+    ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
+    list_stations: fn(_ws : String) -> Array[McpStationPeer] { all_peers },
+    list_sandboxes: fn() -> Array[McpSandboxInfo] {
+      [McpSandboxInfo::{ name: "l4es-1", kind: "l4es", available: true, detail: "ready" }]
+    },
+  }
+  let r1 = handle_remote_domain_tool(port, "/tmp/rs-t1", st, "ws-1", "sess-ws1", "station_list", base_codec::json_obj([]), 10000L)
+  rs_assert(!r1.is_error, "station_list failed")
+  let txt1 = rs_reply_text(r1)
+  rs_assert(txt1.contains("build-1"), "missing build-1")
+  rs_assert(txt1.contains("gpu-rig"), "missing gpu-rig")
+  rs_assert(txt1.contains("l4es-1"), "missing sandbox l4es-1")
+  rs_assert(!txt1.contains("secret-ws2"), "leaked cross-workspace station!")
+
+  let r2 = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t1",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_list",
+    base_codec::json_obj([("station", base_codec::json_str("secret-ws2"))]),
+    10000L,
+  )
+  rs_assert(r2.is_error, "cross-workspace station_list detail must fail")
+}
+
+test "w17e2a station_task and station_use rig grant gating and cross-workspace refusal" {
+  let (fs, _, _) = rs_test_fs_with_symlink(fn() -> Int64 { 20000L })
+  let (st, _) = rs_test_mem_store_port()
+  let rig_reqs = station_rig::RigRequests::new(
+    station_rig::RequestsDeps::{
+      self_station: fn() -> String { "st-self" },
+      now_ms: fn() -> Int64 { 20000L },
+      session_archived: fn(_s : String) -> Bool { false },
+      session_chat: fn(_s : String) -> Option[String] { Some("CHAT/100") },
+      session_starter: fn(_s : String) -> Option[String] { Some("alice@example.com") },
+      chat_title: fn(_s : String, _c : String) -> Option[String] { Some("WS1 Chat") },
+      next_id: fn() -> String { "rr_1" },
+      bring: fn(_r : station_rig::RigRequest) -> Result[Int64, station_rig::BringError] { Ok(999999L) },
+      release_remote: fn(_r : station_rig::RigRequest, _rev) -> Unit { () },
+      notify: fn(_s : String, _t : String) -> Unit { () },
+      told: fn(_r : station_rig::RigRequest) -> Unit { () },
+    },
+  )
+  let dispatched : Array[String] = []
+  let port = McpRemoteSystemPort::{
+    ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
+    list_stations: fn(_ws : String) -> Array[McpStationPeer] {
+      [
+        rs_test_peer("st-self", "self-box", "ws-1", true, "whole"),
+        rs_test_peer("st-rig", "gpu-rig", "ws-1", false, "tasks"),
+        rs_test_peer("st-other", "other-ws-box", "ws-2", false, "whole"),
+      ]
+    },
+    rig_requests: Some(rig_reqs),
+    dispatch_remote_task: fn(_ws : String, _sess : String, target : String, action : String, _args : base_codec::Json) -> Result[base_codec::Json, String] {
+      dispatched.push(target + ":" + action)
+      Ok(base_codec::json_obj([("ok", base_codec::json_bool(true))]))
+    },
+  }
+
+  let cross = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t2",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_task",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("other-ws-box")),
+      ("action", base_codec::json_str("list")),
+    ]),
+    20000L,
+  )
+  rs_assert(cross.is_error, "cross-workspace station_task must fail")
+
+  let ungranted = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t2",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_task",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("gpu-rig")),
+      ("action", base_codec::json_str("prepare")),
+      ("key", base_codec::json_str("k1")),
+      ("command", base_codec::json_str("echo hi")),
+    ]),
+    20000L,
+  )
+  rs_assert(ungranted.is_error, "ungranted rig prepare must fail")
+  rs_assert(rs_reply_text(ungranted).contains("station_use"), "must guide to station_use")
+
+  let asked = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t2",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_use",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("gpu-rig")),
+      ("reason", base_codec::json_str("run GPU build")),
+    ]),
+    20000L,
+  )
+  rs_assert(!asked.is_error, "station_use ask failed")
+  rs_assert(rs_reply_text(asked).contains("rr_1"), "missing request id rr_1")
+
+  let done_r = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t2",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_use",
+    base_codec::json_obj([("station", base_codec::json_str("gpu-rig")), ("done", base_codec::json_bool(true))]),
+    20000L,
+  )
+  rs_assert(!done_r.is_error, "station_use done failed")
+  rs_assert(rs_reply_text(done_r).contains("Handed back"), "expected Handed back")
+}
+
+test "w17e2a station_file rejects traversal, symlinks, overwrite, and cross-workspace" {
+  let (fs, files, kinds) = rs_test_fs_with_symlink(fn() -> Int64 { 30000L })
+  let (st, _) = rs_test_mem_store_port()
+  files.set("/tmp/ws1-room/input.txt", "hello".to_bytes())
+  kinds.set("/tmp/ws1-room/input.txt", "file")
+  files.set("/tmp/ws1-room/existing.out", "old".to_bytes())
+  kinds.set("/tmp/ws1-room/existing.out", "file")
+  kinds.set("/tmp/ws1-room/evil-link", "symlink")
+
+  let port = McpRemoteSystemPort::{
+    ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
+    list_stations: fn(_ws : String) -> Array[McpStationPeer] {
+      [rs_test_peer("st-peer", "build-1", "ws-1", false, "whole")]
+    },
+    dispatch_remote_file: fn(_ws : String, _sess : String, _target : String, _key : String, dir : String, _rp : String, lp : String) -> Result[base_codec::Json, String] {
+      Ok(base_codec::json_obj([("direction", base_codec::json_str(dir)), ("local", base_codec::json_str(lp))]))
+    },
+  }
+
+  let trav = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t3",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_file",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("key", base_codec::json_str("k1")),
+      ("direction", base_codec::json_str("upload")),
+      ("path", base_codec::json_str("in.txt")),
+      ("local", base_codec::json_str("../outside.txt")),
+    ]),
+    30000L,
+  )
+  rs_assert(trav.is_error, "local traversal must fail")
+
+  let abs_out = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t3",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_file",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("key", base_codec::json_str("k1")),
+      ("direction", base_codec::json_str("upload")),
+      ("path", base_codec::json_str("in.txt")),
+      ("local", base_codec::json_str("/etc/passwd")),
+    ]),
+    30000L,
+  )
+  rs_assert(abs_out.is_error, "absolute path outside workspace must fail")
+
+  let sym = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t3",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_file",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("key", base_codec::json_str("k1")),
+      ("direction", base_codec::json_str("upload")),
+      ("path", base_codec::json_str("in.txt")),
+      ("local", base_codec::json_str("evil-link")),
+    ]),
+    30000L,
+  )
+  rs_assert(sym.is_error, "symlink local path must fail")
+
+  let overwrite = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t3",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_file",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("key", base_codec::json_str("k1")),
+      ("direction", base_codec::json_str("download")),
+      ("path", base_codec::json_str("out.bin")),
+      ("local", base_codec::json_str("existing.out")),
+    ]),
+    30000L,
+  )
+  rs_assert(overwrite.is_error, "download overwrite must fail")
+  rs_assert(rs_reply_text(overwrite).contains("never overwrite"), "must mention never overwrite")
+
+  let rtrav = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t3",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_file",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("key", base_codec::json_str("k1")),
+      ("direction", base_codec::json_str("upload")),
+      ("path", base_codec::json_str("../escape.txt")),
+      ("local", base_codec::json_str("input.txt")),
+    ]),
+    30000L,
+  )
+  rs_assert(rtrav.is_error, "remote path traversal must fail")
+
+  let ok_up = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t3",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_file",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("key", base_codec::json_str("k1")),
+      ("direction", base_codec::json_str("upload")),
+      ("path", base_codec::json_str("dir/input.txt")),
+      ("local", base_codec::json_str("input.txt")),
+    ]),
+    30000L,
+  )
+  rs_assert(!ok_up.is_error, "valid upload must succeed")
+
+  let ok_dl = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t3",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_file",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("key", base_codec::json_str("k1")),
+      ("direction", base_codec::json_str("download")),
+      ("path", base_codec::json_str("out.bin")),
+      ("local", base_codec::json_str("fresh.out")),
+    ]),
+    30000L,
+  )
+  rs_assert(!ok_dl.is_error, "valid fresh download must succeed")
+}
+
+test "w17e2a peer_forward and workspace_limit roundtrip" {
+  let (fs, _, _) = rs_test_fs_with_symlink(fn() -> Int64 { 40000L })
+  let (st, _) = rs_test_mem_store_port()
+  let active_fwds : Array[McpPeerForwardEntry] = []
+  let port = McpRemoteSystemPort::{
+    ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
+    list_stations: fn(_ws : String) -> Array[McpStationPeer] {
+      [
+        rs_test_peer("st-self", "self-box", "ws-1", true, "whole"),
+        rs_test_peer("st-peer", "build-1", "ws-1", false, "whole"),
+      ]
+    },
+    forward_list: fn(_sess : String) -> Array[McpPeerForwardEntry] { active_fwds },
+    forward_open: fn(ws : String, sess : String, sid : String, sname : String, rport : Int, lport : Option[Int], job : Option[String]) -> Result[McpPeerForwardEntry, String] {
+      let lp = match lport { Some(p) => p, None => rport }
+      let e = McpPeerForwardEntry::{ local_port: lp, station_id: sid, station_name: sname, remote_port: rport, workspace: ws, session: sess, job: job }
+      active_fwds.push(e)
+      Ok(e)
+    },
+    forward_close: fn(_sess : String, lp : Int) -> Result[McpPeerForwardEntry, String] {
+      for i in 0..<active_fwds.length() {
+        if active_fwds[i].local_port == lp {
+          let e = active_fwds[i]
+          let _ = active_fwds.pop()
+          return Ok(e)
+        }
+      }
+      Err("no forward")
+    },
+  }
+
+  let empty_f = handle_remote_domain_tool(port, "/tmp/rs-t4", st, "ws-1", "sess-ws1", "peer_forward", base_codec::json_obj([]), 40000L)
+  rs_assert(!empty_f.is_error && rs_reply_text(empty_f) == "No forwarded ports.", "expected empty forwards")
+
+  let opened = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t4",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "peer_forward",
+    base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("port", base_codec::json_int(8080)),
+    ]),
+    40000L,
+  )
+  rs_assert(!opened.is_error && rs_reply_text(opened).contains("127.0.0.1:8080"), "expected 127.0.0.1:8080")
+
+  let closed = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t4",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "peer_forward",
+    base_codec::json_obj([("close", base_codec::json_int(8080))]),
+    40000L,
+  )
+  rs_assert(!closed.is_error && rs_reply_text(closed).contains("Closed 8080"), "expected Closed 8080")
+
+  let lim0 = handle_remote_domain_tool(port, "/tmp/rs-t4", st, "ws-1", "sess-ws1", "workspace_limit", base_codec::json_obj([]), 40000L)
+  rs_assert(!lim0.is_error && rs_reply_text(lim0).contains("\"limit_gib\":10"), "expected default 10 GiB")
+
+  let lim1 = handle_remote_domain_tool(
+    port,
+    "/tmp/rs-t4",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "workspace_limit",
+    base_codec::json_obj([("limit_gib", base_codec::json_int(25))]),
+    40000L,
+  )
+  rs_assert(!lim1.is_error && rs_reply_text(lim1).contains("\"limit_gib\":25"), "expected 25 GiB")
+
+  let lim2 = handle_remote_domain_tool(port, "/tmp/rs-t4", st, "ws-1", "sess-ws1", "workspace_limit", base_codec::json_obj([]), 40000L)
+  rs_assert(!lim2.is_error && rs_reply_text(lim2).contains("\"limit_gib\":25"), "expected persisted 25 GiB")
+}
+
+test "w17e2a system tools: station_version, archive_policy, relays, station_move, retire, feedback" {
+  let (fs, _, _) = rs_test_fs_with_symlink(fn() -> Int64 { 50000L })
+  let (st, _) = rs_test_mem_store_port()
+  let chats_mod = station_replica::MoveModule::{
+    id: "chats",
+    needs: [],
+    plan: fn(_ws : String, _to : String) -> Result[Array[station_replica::MoveItem], String] {
+      Ok([
+        station_replica::MoveItem::{
+          module_id: "chats",
+          id: "sess-ws1",
+          label: "WS1 Chat",
+          needs: [],
+          cannot: None,
+          again: false,
+          size: None,
+          leaves: None,
+        },
+      ])
+    },
+    move_item: fn(_i, _t, _w) -> Result[Unit, String] { Err("not wired") },
+    back_item: fn(_i, _f, _w) -> Result[Unit, String] { Err("not wired") },
+    state: fn(_i) -> station_replica::MoveItemStateKind { station_replica::MoveItemStateKind::Here },
+    usable_here: fn(_i) -> Bool { true },
+    usable_there: fn(_i) -> Bool { false },
+    can_lend: fn(_i) -> Bool { false },
+    lend: fn(_i, _t, _f) -> Result[Unit, String] { Err("no") },
+    left: fn(_r) -> Result[Unit, String] { Ok(()) },
+    has_stop: false,
+    stop_item: fn(_i, _w) -> Result[Unit, String] { Ok(()) },
+    resume_item: fn(_i) -> Result[Unit, String] { Ok(()) },
+    abandon: fn() -> Unit { () },
+  }
+  let sched = match station_replica::MoveScheduler::new([chats_mod]) {
+    Ok(s) => s
+    Err(e) => panic(e)
+  }
+  let port = McpRemoteSystemPort::{
+    ..default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    workspace_limit_enabled: true,
+    list_stations: fn(_ws : String) -> Array[McpStationPeer] {
+      [
+        rs_test_peer("st-self", "self-box", "ws-1", true, "whole"),
+        rs_test_peer("st-peer", "build-1", "ws-1", false, "whole"),
+      ]
+    },
+    relays_list: fn(ws : String) -> Result[McpRelaysView, String] {
+      Ok(McpRelaysView::{ workspace: ws, own: [], still_fail: ["https://relay.still.fail"], off: [], mesh: None })
+    },
+    move_scheduler: Some(sched),
+    move_has_executor: false,
+  }
+
+  let vl = handle_system_domain_tool(port, "/tmp/rs-t5", "ws-1", st, "ws-1", "sess-ws1", "station_version", base_codec::json_obj([("action", base_codec::json_str("list"))]), 50000L)
+  rs_assert(!vl.is_error && rs_reply_text(vl).contains("\"engine\":\"pion\"") && rs_reply_text(vl).contains("\"version\":\"0.1.999\""), "station_version list mismatch")
+
+  // station_version wait without updater must honestly error (zero fake update-wait.json)
+  let vw = handle_system_domain_tool(
+    port,
+    "/tmp/rs-t5",
+    "ws-1",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_version",
+    base_codec::json_obj([
+      ("action", base_codec::json_str("wait")),
+      ("until", base_codec::json_arr([base_codec::json_str("pr:9175")])),
+    ]),
+    50000L,
+  )
+  rs_assert(vw.is_error, "station_version wait without updater must honestly error")
+
+  let vu = handle_system_domain_tool(port, "/tmp/rs-t5", "ws-1", st, "ws-1", "sess-ws1", "station_version", base_codec::json_obj([("action", base_codec::json_str("update"))]), 50000L)
+  rs_assert(vu.is_error, "station_version update without updater must error")
+
+  let ap0 = handle_system_domain_tool(port, "/tmp/rs-t5", "ws-1", st, "ws-1", "sess-ws1", "archive_policy", base_codec::json_obj([]), 50000L)
+  rs_assert(!ap0.is_error && rs_reply_text(ap0).contains("answered"), "archive_policy read default failed")
+
+  let ap1 = handle_system_domain_tool(
+    port,
+    "/tmp/rs-t5",
+    "ws-1",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "archive_policy",
+    base_codec::json_obj([("policy", base_codec::json_str("Custom WS1 archive rule."))]),
+    50001L,
+  )
+  rs_assert(!ap1.is_error && rs_reply_text(ap1).contains("Saved"), "archive_policy save failed")
+
+  let ap_ws2 = handle_system_domain_tool(port, "/tmp/rs-t5", "ws-1", st, "ws-2", "sess-ws2", "archive_policy", base_codec::json_obj([]), 50002L)
+  rs_assert(!ap_ws2.is_error && !rs_reply_text(ap_ws2).contains("Custom WS1 archive rule."), "archive_policy leaked across workspace")
+
+  let rl = handle_system_domain_tool(port, "/tmp/rs-t5", "ws-1", st, "ws-1", "sess-ws1", "relays", base_codec::json_obj([("action", base_codec::json_str("list"))]), 50000L)
+  rs_assert(!rl.is_error && rs_reply_text(rl).contains("relay.still.fail"), "relays list failed")
+
+  let re = handle_system_domain_tool(
+    port,
+    "/tmp/rs-t5",
+    "ws-1",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "relays",
+    base_codec::json_obj([("action", base_codec::json_str("enroll")), ("name", base_codec::json_str("r1"))]),
+    50000L,
+  )
+  rs_assert(re.is_error, "relays enroll without backend must error")
+
+  let mp = handle_system_domain_tool(
+    port,
+    "/tmp/rs-t5",
+    "ws-1",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_move",
+    base_codec::json_obj([
+      ("action", base_codec::json_str("plan")),
+      ("to", base_codec::json_str("build-1")),
+    ]),
+    50000L,
+  )
+  rs_assert(!mp.is_error && rs_reply_text(mp).contains("1 items for build-1"), "station_move plan failed")
+
+  let mm = handle_system_domain_tool(
+    port,
+    "/tmp/rs-t5",
+    "ws-1",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "station_move",
+    base_codec::json_obj([
+      ("action", base_codec::json_str("move")),
+      ("to", base_codec::json_str("build-1")),
+      ("module", base_codec::json_str("chats")),
+      ("item", base_codec::json_str("sess-ws1")),
+    ]),
+    50000L,
+  )
+  rs_assert(mm.is_error, "station_move move without executor must error")
+
+  let sr = handle_system_domain_tool(port, "/tmp/rs-t5", "ws-1", st, "ws-1", "sess-ws1", "station_retire", base_codec::json_obj([("action", base_codec::json_str("status"))]), 50000L)
+  rs_assert(sr.is_error, "station_retire must honestly error")
+
+  let fb = handle_system_domain_tool(
+    port,
+    "/tmp/rs-t5",
+    "ws-1",
+    st,
+    "ws-1",
+    "sess-ws1",
+    "feedback_send",
+    base_codec::json_obj([
+      ("to", base_codec::json_str("CHAT/100")),
+      ("title", base_codec::json_str("Bug")),
+      ("body", base_codec::json_str("Details")),
+    ]),
+    50000L,
+  )
+  rs_assert(fb.is_error && rs_reply_text(fb).contains("not connected to still.fail cloud"), "feedback_send without cloud must error")
+}
+
+test "w17e2a async deferred McpPendingTable out-of-order settle, disconnect, and timeout cleanup" {
+  let tbl = McpPendingTable::new()
+  let g1 = tbl.register(101, base_codec::json_int(1), "s1", "ws-1", "station_task", 1000L, timeout_ms=5000L)
+  let g2 = tbl.register(102, base_codec::json_int(2), "s1", "ws-1", "station_file", 1000L, timeout_ms=2000L)
+  let g3 = tbl.register(103, base_codec::json_int(3), "s1", "ws-1", "login", 1000L, timeout_ms=10000L)
+  rs_assert(tbl.count() == 3, "expected 3 pending")
+
+  let closed_req = tbl.on_conn_closed(103)
+  rs_assert(closed_req is Some(_), "expected disconnect cleanup")
+  rs_assert(!tbl.is_active(103, g3), "disconnected req must be inactive")
+  rs_assert(tbl.take_if_active(103, g3) is None, "disconnected req must not settle")
+  rs_assert(tbl.count() == 2, "expected 2 pending")
+
+  tbl.set_ask_id(102, g2, 777L)
+  tbl.set_part_path(102, g2, Some("/tmp/ws1-room/out.part"))
+  let exp = tbl.sweep_expired(3500L)
+  rs_assert(exp.length() == 1 && exp[0].conn_id == 102 && exp[0].ask_id == 777L, "expected conn 102 expired with ask_id")
+  rs_assert(exp[0].part_path == Some("/tmp/ws1-room/out.part"), "expected part_path returned for cleanup")
+  rs_assert(tbl.take_if_active(102, g2) is None, "expired req must not settle")
+  rs_assert(tbl.count() == 1, "expected 1 pending")
+
+  match tbl.take_if_active(101, g1) {
+    Some(p) => {
+      let body = encode_mcp_tool_jsonrpc(p.rpc_id, station_tools::text_reply("{\"ok\":true}"))
+      rs_assert(body.contains("\"jsonrpc\":\"2.0\"") && body.contains("\"id\":1"), "bad jsonrpc encoding")
+    }
+    None => panic("expected pending req 101")
+  }
+  rs_assert(tbl.take_if_active(101, g1) is None, "double settle must be no-op")
+  rs_assert(tbl.count() == 0, "expected 0 pending")
+}
+
+test "w17e2a_r3 WholeAgents live is_workspace_bound triggers UNBOUND_REFUSAL including self station_task" {
+  let fs = mem_job_fs_port(fn() -> Int64 { 1000L })
+  let cfg = WholeAgentsConfig::{
+    data_dir: "/tmp/w17e2a-r3-test",
+    assets_dir: "/tmp/w17e2a-r3-test/assets",
+    runner_bin: "/usr/bin/true",
+    mcp_port: 9999,
+    home_ws: "ws-1",
+  }
+  let agents = WholeAgents::new_with_deps(
+    cfg,
+    fs,
+    wc_noop_proc_backend(),
+    fn(n : Int) -> Result[Bytes, String] {
+      let b = Bytes::new(n)
+      for i in 0..<n {
+        b[i] = (i % 251 + 1).to_byte()
+      }
+      Ok(b)
+    },
+  )
+  let _ = agents.register_adopted_token("sess-live", "tok-live")
+  let mut in_workspace = true
+  agents.is_workspace_bound = Some(fn(_sess : String) -> Bool { in_workspace })
+  let mut remote_called = 0
+  let handlers = station_tools::DomainHandlers::{
+    ..station_tools::default_domain_handlers(),
+    remote: fn(_s : String, _t : String, _a : base_codec::Json) -> station_tools::ToolReply {
+      remote_called = remote_called + 1
+      station_tools::text_reply("{\"tasks\":[]}")
+    },
+  }
+  let body_self = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"station_task\",\"arguments\":{\"station\":\"self\",\"action\":\"list\"}}}"
+  let ok_resp = agents.handle_mcp_http_with_handlers(
+    "POST",
+    "/mcp",
+    Some("127.0.0.1:9999"),
+    None,
+    Some("Bearer tok-live"),
+    body_self,
+    handlers,
+  )
+  rs_assert(ok_resp.status == 200 && remote_called == 1, "bound station should execute station_task")
+  in_workspace = false
+  let ref_resp = agents.handle_mcp_http_with_handlers(
+    "POST",
+    "/mcp",
+    Some("127.0.0.1:9999"),
+    None,
+    Some("Bearer tok-live"),
+    body_self,
+    handlers,
+  )
+  rs_assert(remote_called == 1, "unbound station must NOT execute remote handler")
+  rs_assert(ref_resp.body.contains("isError") && ref_resp.body.contains("Refused:"), "must return UNBOUND_REFUSAL")
+}

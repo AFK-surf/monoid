@@ -1,0 +1,560 @@
+// Wave 17E-2A R2 daemon-level protocol & security tests (`station_main`):
+// 1. `parse_peer_ask_reply`: unpacks `"result"` (incl. file chunk `{ "result": { "data", "eof", "size" } }`),
+//    propagates `"error"`, falls back to legacy `"ok"`.
+// 2. `build_remote_task_rpc_payload`: `task.start` with `spec`, `task.collected` for `release`.
+// 3. `build_remote_login_rpc_payload`: `login.call` with `{ workspace, session, by, chatTitle, args }` (strips `station`).
+// 4. `extract_mcp_rpc_id`: notifications (no `id` / `null`) return `None`.
+// 5. `McpServer::handle`: indirect `station_tool { name: "station_task", arguments }` routing + `UNBOUND_REFUSAL`
+//    + `unprotected` peer interception + `dir`/`back` honest refusal.
+// 6. `LoginsManager::start_words`: preserves raw argv array boundaries and isolates dedup across `(ws, chat)`.
+
+import "base_codec"
+import "station_devices"
+import "station_tools"
+import "station_whole"
+
+fn r2_assert(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("whole_daemon_mcp_rs_test: " + msg)
+  }
+}
+
+test "w17e2a_r2 parse_peer_ask_reply unpacks result before ok and propagates error" {
+  // Real Node & Pion peer RPC response shape: `{"result": {"data": "aGVsbG8=", "eof": true, "size": 5}}`
+  match parse_peer_ask_reply("{\"result\":{\"data\":\"aGVsbG8=\",\"eof\":true,\"size\":5}}") {
+    Ok(v) => {
+      match base_codec::json_get(v, "data") {
+        Some(base_codec::Json::Str(s)) => r2_assert(s == "aGVsbG8=", "must unpack result.data")
+        _ => panic("missing unpacked result.data")
+      }
+      match base_codec::json_get(v, "eof") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("missing unpacked result.eof")
+      }
+    }
+    Err(e) => panic("unexpected err: " + e)
+  }
+  match parse_peer_ask_reply("{\"error\":\"no grant\"}") {
+    Err(e) => r2_assert(e == "no grant", "must propagate error string")
+    Ok(_) => panic("expected Err")
+  }
+  match parse_peer_ask_reply("{\"ok\":{\"legacy\":true}}") {
+    Ok(v) => {
+      match base_codec::json_get(v, "legacy") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("expected legacy ok unpack")
+      }
+    }
+    Err(e) => panic("unexpected err: " + e)
+  }
+}
+
+test "w17e2a_r2 wire payloads: task.start spec, task.collected release, login.call, notification id" {
+  r2_assert(extract_mcp_rpc_id("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}") is None, "notification has no id")
+  r2_assert(extract_mcp_rpc_id("{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\"}") is Some(_), "request has id")
+
+  let start_intent = station_whole::DeferredMcpIntent::{
+    conn_id: 1,
+    rpc_id: base_codec::json_int(1),
+    caller_ws: "ws-1",
+    session: "sess-1",
+    tool: "station_task",
+    peer_id: "peer-1",
+    peer_name: "build-1",
+    action: "start",
+    args: base_codec::json_obj([("station", base_codec::json_str("build-1")), ("action", base_codec::json_str("start")), ("key", base_codec::json_str("k1"))]),
+    ws_root: "",
+    local_rel: "",
+    local_path: "",
+    file_size: 0L,
+    remote_path: "",
+    task_key: "k1",
+    starter_email: "alice@example.com",
+    starter_name: "alice@example.com",
+    chat_title: Some("Build Chat"),
+    prepared_spec: Some(station_whole::PreparedTaskSpec::{ key: "k1", name: "compile", command: "make -j4", screen: false, small: true }),
+  }
+  let prep_intent = station_whole::DeferredMcpIntent::{ ..start_intent, action: "prepare" }
+  let prep_s = base_codec::json_stringify(build_remote_task_rpc_payload(prep_intent))
+  r2_assert(prep_s.contains("\"method\":\"task.prepare\""), "prepare must emit task.prepare")
+  r2_assert(prep_s.contains("\"spec\":{"), "task.prepare must carry spec object")
+  r2_assert(prep_s.contains("\"command\":\"make -j4\""), "task.prepare spec must carry command")
+
+  let start_rpc = build_remote_task_rpc_payload(start_intent)
+  let start_s = base_codec::json_stringify(start_rpc)
+  r2_assert(start_s.contains("\"method\":\"task.start\""), "must emit task.start")
+  r2_assert(start_s.contains("\"spec\":{"), "task.start must carry spec object")
+  r2_assert(start_s.contains("\"command\":\"make -j4\""), "spec must carry command")
+  r2_assert(start_s.contains("\"requestedBy\":\"alice@example.com\""), "spec must carry requestedBy")
+
+  let rel_intent = station_whole::DeferredMcpIntent::{ ..start_intent, action: "release", prepared_spec: None }
+  let rel_s = base_codec::json_stringify(build_remote_task_rpc_payload(rel_intent))
+  r2_assert(rel_s.contains("\"method\":\"task.collected\""), "release must emit task.collected, not task.release")
+
+  let login_intent = station_whole::DeferredMcpIntent::{
+    ..start_intent,
+    tool: "login",
+    action: "call",
+    args: base_codec::json_obj([
+      ("station", base_codec::json_str("build-1")),
+      ("command", base_codec::json_str("gh auth login")),
+    ]),
+  }
+  let login_s = base_codec::json_stringify(build_remote_login_rpc_payload(login_intent))
+  r2_assert(login_s.contains("\"method\":\"login.call\""), "remote login must emit login.call")
+  r2_assert(!login_s.contains("\"station\":\"build-1\""), "login.call args must strip station")
+  r2_assert(login_s.contains("\"chatTitle\":\"Build Chat\""), "login.call must include chatTitle")
+}
+
+test "w17e2a_r2 McpServer indirect station_tool routing, UNBOUND_REFUSAL, and unprotected peer guard" {
+  let cap = station_whole::DeferredMcpCapture::new()
+  let fs = station_whole::mem_job_fs_port(fn() -> Int64 { 1000L })
+  let store_port = station_whole::McpSessionStorePort::{
+    session_exists: fn(_s : String) -> Bool { true },
+    session_workspace: fn(_s : String) -> String { "/tmp/ws1" },
+    session_chat_title: fn(_s : String) -> Option[String] { Some("Chat") },
+    session_starter: fn(_s : String) -> String { "alice@example.com" },
+    read_archive_policy_raw: fn(_ws : String, _h : String) -> Option[String] { None },
+    write_archive_policy_raw: fn(_ws : String, _h : String, _p : String, _a : String, _s : String, _n : Int64) -> Result[Unit, String] { Ok(()) },
+  }
+  let rs_port = station_whole::McpRemoteSystemPort::{
+    ..station_whole::default_mcp_remote_system_port("st-self", "0.1.999", fs),
+    defer_capture: Some(cap),
+    list_stations: fn(_ws : String) -> Array[station_whole::McpStationPeer] {
+      [
+        station_whole::McpStationPeer::{
+          id: "peer-ok",
+          name: "build-ok",
+          workspace: "ws-1",
+          is_self: false,
+          mode: "whole",
+          owner_sub: "",
+          owner_email: "",
+          owner_name: "",
+          rig_open: false,
+          unprotected_why: None,
+          version: None,
+          cores: 4,
+          arch: "x86_64",
+          os: "linux",
+          cpu_busy: None,
+          load_1m: None,
+          free_mem_bytes: None,
+          free_disk_bytes: None,
+          running_jobs: 0,
+          relay_ping_ms: None,
+        },
+        station_whole::McpStationPeer::{
+          id: "peer-unprot",
+          name: "build-unprot",
+          workspace: "ws-1",
+          is_self: false,
+          mode: "whole",
+          owner_sub: "",
+          owner_email: "",
+          owner_name: "",
+          rig_open: false,
+          unprotected_why: Some("unprotected: not on workspace lock"),
+          version: None,
+          cores: 4,
+          arch: "x86_64",
+          os: "linux",
+          cpu_busy: None,
+          load_1m: None,
+          free_mem_bytes: None,
+          free_disk_bytes: None,
+          running_jobs: 0,
+          relay_ping_ms: None,
+        },
+      ]
+    },
+  }
+  let mcp = station_tools::McpServer::new()
+  let make_host = fn(bound : Bool) -> station_tools::ToolsHost {
+    station_tools::ToolsHost::{
+      resolve_token: fn(tok : String) -> Option[String] { if tok == "tok-1" { Some("sess-1") } else { None } },
+      call_context: fn(s : String) -> station_tools::CallContext {
+        station_tools::CallContext::{
+          session: s,
+          unbound_reason: if bound { None } else { Some(station_tools::UNBOUND_REFUSAL) },
+        }
+      },
+      static_tools: fn() -> Array[station_tools::ToolDecl] { station_whole::wired_station_tools() },
+      dynamic_tools: fn(_s : String) -> Array[station_tools::ToolDecl] { [] },
+      listing_of: fn(_s : String) -> Option[station_tools::Listing] { station_tools::listing_for("agy", false) },
+      call_tool: fn(s : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+        let handlers = station_tools::DomainHandlers::{
+          ..station_tools::default_domain_handlers(),
+          remote: fn(sess : String, t : String, a : base_codec::Json) -> station_tools::ToolReply {
+            station_whole::handle_remote_domain_tool(rs_port, "/tmp/data", store_port, "ws-1", sess, t, a, 1000L)
+          },
+        }
+        station_tools::dispatch_tool(handlers, s, tool, args)
+      },
+    }
+  }
+
+  // 1. Indirect `station_tool { name: "station_task", arguments: { station: "build-ok", action: "list" } }` captures deferred intent!
+  let body_indirect = "{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"tools/call\",\"params\":{\"name\":\"station_tool\",\"arguments\":{\"name\":\"station_task\",\"arguments\":{\"station\":\"build-ok\",\"action\":\"list\"}}}}"
+  cap.reset_for_request(99, extract_mcp_rpc_id(body_indirect))
+  let _ = mcp.handle("POST", Some("Bearer tok-1"), body_indirect, make_host(true))
+  match cap.take_pending() {
+    Some(intent) => {
+      r2_assert(intent.conn_id == 99 && intent.tool == "station_task" && intent.peer_id == "peer-ok" && intent.action == "list", "indirect station_tool must capture deferred intent")
+    }
+    None => panic("expected deferred intent from indirect station_tool")
+  }
+
+  // 1b. Remote `station_task prepare` captures a deferred intent with `action == "prepare"` and `prepared_spec` (real cross-station handshake)!
+  let body_prep = "{\"jsonrpc\":\"2.0\",\"id\":44,\"method\":\"tools/call\",\"params\":{\"name\":\"station_task\",\"arguments\":{\"station\":\"build-ok\",\"action\":\"prepare\",\"key\":\"k-prep\",\"command\":\"echo hi\",\"name\":\"hello\"}}}"
+  cap.reset_for_request(102, extract_mcp_rpc_id(body_prep))
+  let _ = mcp.handle("POST", Some("Bearer tok-1"), body_prep, make_host(true))
+  match cap.take_pending() {
+    Some(intent) => {
+      r2_assert(intent.conn_id == 102 && intent.action == "prepare" && intent.task_key == "k-prep", "remote prepare must defer task.prepare RPC")
+      match intent.prepared_spec {
+        Some(sp) => r2_assert(sp.command == "echo hi" && sp.name == "hello", "remote prepare intent must carry prepared_spec")
+        None => panic("expected prepared_spec on remote prepare intent")
+      }
+    }
+    None => panic("expected deferred intent for remote station_task prepare")
+  }
+
+  // 2. When unbound (`bound = false`), `UNBOUND_REFUSAL` blocks BEFORE capturing any deferred intent!
+  cap.reset_for_request(100, extract_mcp_rpc_id(body_indirect))
+  let unbound_rep = mcp.handle("POST", Some("Bearer tok-1"), body_indirect, make_host(false))
+  r2_assert(cap.take_pending() is None, "unbound station must NEVER capture deferred peer RPC")
+  let (_, _, unbound_body) = station_tools::encode_json_reply(unbound_rep)
+  r2_assert(unbound_body.contains("isError"), "unbound station must return tool error")
+
+  // 3. Unprotected peer is blocked BEFORE capturing any deferred intent!
+  let body_unprot = "{\"jsonrpc\":\"2.0\",\"id\":43,\"method\":\"tools/call\",\"params\":{\"name\":\"station_task\",\"arguments\":{\"station\":\"build-unprot\",\"action\":\"list\"}}}"
+  cap.reset_for_request(101, extract_mcp_rpc_id(body_unprot))
+  let unprot_rep = mcp.handle("POST", Some("Bearer tok-1"), body_unprot, make_host(true))
+  r2_assert(cap.take_pending() is None, "unprotected peer must NEVER capture deferred peer RPC")
+  let (_, _, unprot_body) = station_tools::encode_json_reply(unprot_rep)
+  r2_assert(unprot_body.contains("unprotected"), "unprotected refusal must explain why")
+}
+
+test "w17e2a_r2 LoginsManager::start_words preserves argv boundaries and isolates dedup across workspaces" {
+  let mgr = station_devices::LoginsManager::new(None)
+  let s1 = station_devices::LoginStarter::{
+    by: station_devices::LoginPerson::{ email: "a@x", name: "A" },
+    workspace: Some("ws-1"),
+    chat: Some("sess-1"),
+    chat_title: Some("C1"),
+  }
+  let s2 = station_devices::LoginStarter::{
+    by: station_devices::LoginPerson::{ email: "b@x", name: "B" },
+    workspace: Some("ws-2"),
+    chat: Some("sess-2"),
+    chat_title: Some("C2"),
+  }
+  let argv = ["gh", "auth", "login", "--hostname", "my enterprise host"]
+  let v1 = match mgr.start_words(argv, s1, None, false, 1000L) {
+    Ok(v) => v
+    Err(e) => panic("start_words ws1 failed: " + e.message)
+  }
+  r2_assert(v1.command.length() == 5 && v1.command[4] == "my enterprise host", "must preserve argv with spaces")
+
+  // Same workspace + chat deduplicates to same id
+  let v1_dup = match mgr.start_words(argv, s1, None, false, 1001L) {
+    Ok(v) => v
+    Err(e) => panic("start_words dup failed: " + e.message)
+  }
+  r2_assert(v1_dup.id == v1.id, "same (ws, chat) should deduplicate")
+
+  // Different workspace MUST allocate a distinct login id (never leak ws-1 login into ws-2!)
+  let v2 = match mgr.start_words(argv, s2, None, false, 1002L) {
+    Ok(v) => v
+    Err(e) => panic("start_words ws2 failed: " + e.message)
+  }
+  r2_assert(v2.id != v1.id, "different workspace must NOT share login id")
+}
+
+test "w17e2a_r3 McpPendingTable owns upload_fd and dirfd part_location across abort paths" {
+  let tbl = station_whole::McpPendingTable::new()
+  let g1 = tbl.register(10, base_codec::json_int(1), "s1", "ws1", "station_file", 100L)
+  r2_assert(tbl.set_upload_fd(10, g1, Some(42L)), "set_upload_fd active")
+  r2_assert(tbl.get_upload_fd(10, g1) == Some(42L), "get_upload_fd active")
+  r2_assert(!tbl.set_upload_fd(10, g1 + 99L, Some(99L)), "stale generation rejected")
+  match tbl.on_conn_closed(10) {
+    Some(req) => r2_assert(req.upload_fd == Some(42L), "on_conn_closed returns upload_fd for closing")
+    None => panic("expected pending req on disconnect")
+  }
+  r2_assert(tbl.get_upload_fd(10, g1) is None, "closed entry no longer active")
+
+  let g2 = tbl.register(11, base_codec::json_int(2), "s1", "ws1", "station_file", 100L, timeout_ms=50L)
+  tbl.set_part_location(11, g2, Some("/tmp/ws"), Some("sub/a.part"))
+  let exp = tbl.sweep_expired(160L)
+  r2_assert(exp.length() == 1 && exp[0].part_root == Some("/tmp/ws") && exp[0].part_rel == Some("sub/a.part"), "expired returns part_location")
+}
+
+test "w17e2a_r4 dm_json_nonneg_i64 rejects floats, scientific notation, and negatives" {
+  let parse = fn(s : String) -> base_codec::Json {
+    match base_codec::json_parse(s) {
+      base_codec::JsonParseResult::Ok(j) => j
+      _ => panic("bad json")
+    }
+  }
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":0}"), "size") == Some(0L), "0 valid")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":1048576}"), "size") == Some(1048576L), "int valid")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":5.5}"), "size") is None, "float 5.5 must be rejected")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":5.0}"), "size") is None, "float 5.0 must be rejected")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":1e3}"), "size") is None, "scientific 1e3 must be rejected")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":-1}"), "size") is None, "negative -1 must be rejected")
+  r2_assert(dm_json_nonneg_i64(parse("{\"size\":\"5\"}"), "size") is None, "string must be rejected")
+}
+
+test "w17e2a_r4 virtual-clock chunk idle renewal: >120s total succeeds; >120s mid-stall times out with part_fd cleanup" {
+  let tbl = station_whole::McpPendingTable::new()
+  let idle = station_whole::MCP_FILE_CHUNK_IDLE_MS // 120_000 ms
+
+  // (a) 3 slow chunks totaling 240s (> 120s) where each chunk takes 80s (< 120s): MUST succeed.
+  let g_ok = tbl.register(20, base_codec::json_int(1), "s1", "ws1", "station_file", 0L, timeout_ms=idle)
+  r2_assert(tbl.set_part_fd(20, g_ok, Some(55L)), "set part_fd")
+  r2_assert(tbl.sweep_expired(80000L).length() == 0, "alive at 80s")
+  r2_assert(tbl.touch(20, g_ok, 80000L + idle), "chunk 1 renews deadline to 200s")
+  r2_assert(tbl.sweep_expired(160000L).length() == 0, "alive at 160s (>120s total)")
+  r2_assert(tbl.touch(20, g_ok, 160000L + idle), "chunk 2 renews deadline to 280s")
+  r2_assert(tbl.sweep_expired(240000L).length() == 0, "alive at 240s (>2x idle total)")
+  r2_assert(tbl.take_part_fd(20, g_ok) == Some(55L), "EOF hands off part_fd to async fsync")
+  r2_assert(tbl.take_if_active(20, g_ok) is Some(_), "completes cleanly at 240s")
+
+  // (b) Mid-stream stall > 120s after chunk 1: MUST expire and return part_fd + part_location for cleanup.
+  let g_stall = tbl.register(21, base_codec::json_int(2), "s1", "ws1", "station_file", 0L, timeout_ms=idle)
+  r2_assert(tbl.set_part_fd(21, g_stall, Some(77L)), "set stalled part_fd")
+  tbl.set_part_location(21, g_stall, Some("/tmp/ws"), Some("sub/stall.part"))
+  r2_assert(tbl.touch(21, g_stall, 80000L + idle), "chunk 1 renews to 200s")
+  r2_assert(tbl.sweep_expired(199999L).length() == 0, "still alive just before 200s")
+  let expired = tbl.sweep_expired(205000L)
+  r2_assert(expired.length() == 1, "stalled chunk must expire after 120s idle")
+  r2_assert(expired[0].part_fd == Some(77L), "expired entry returns part_fd for close")
+  r2_assert(expired[0].part_root == Some("/tmp/ws") && expired[0].part_rel == Some("sub/stall.part"), "expired entry returns .part for unlink")
+}
+
+test "w17e2a_r4 remote task push ref, task.changed notice, session.close on archive, and dual-path task.prepare" {
+  let fs = station_whole::mem_job_fs_port(fn() -> Int64 { 1000L })
+  let outbox = station_whole::RemoteTaskOutbox::new("/tmp/r4-outbox", fs)
+  let push_ref = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+  // 1. task.start payload carries 64-hex `push` ref
+  let base_intent = station_whole::DeferredMcpIntent::{
+    conn_id: 1,
+    rpc_id: base_codec::json_int(1),
+    caller_ws: "ws-1",
+    session: "sess-r4",
+    tool: "station_task",
+    peer_id: "rig-1",
+    peer_name: "gpu-rig",
+    action: "start",
+    args: base_codec::json_obj([]),
+    ws_root: "",
+    local_rel: "",
+    local_path: "",
+    file_size: 0L,
+    remote_path: "",
+    task_key: "build-job",
+    starter_email: "alice@example.com",
+    starter_name: "alice@example.com",
+    chat_title: None,
+    prepared_spec: Some(station_whole::PreparedTaskSpec::{
+      key: "build-job",
+      name: "compile",
+      command: "make test",
+      screen: false,
+      small: true,
+    }),
+  }
+  let start_s = base_codec::json_stringify(build_remote_task_rpc_payload(base_intent, push_ref=push_ref))
+  r2_assert(start_s.contains("\"method\":\"task.start\"") && start_s.contains("\"push\":\"" + push_ref + "\""), "task.start must carry push ref")
+
+  // 2. Outbox persists outgoing record + real rig wire `{key, job:{state, exitCode}, log, notices}` settles outbox
+  let rec = station_whole::RemoteOutgoingTask::{
+    push_ref: push_ref,
+    workspace: "ws-1",
+    session: "sess-r4",
+    peer_id: "rig-1",
+    peer_name: "gpu-rig",
+    key: "build-job",
+    name: "compile",
+  }
+  outbox.record_outgoing(rec)
+  outbox.record_use("ws-1", "sess-r4", "rig-1")
+  let outbox_reload = station_whole::RemoteTaskOutbox::new("/tmp/r4-outbox", fs)
+  // Restart merge: recording a second peer after restart MUST preserve `rig-1` from disk!
+  outbox_reload.record_use("ws-1", "sess-r4", "rig-2")
+  match outbox_reload.lookup_outgoing(push_ref) {
+    Some(found) => {
+      // R6 P1-1: Push #1 starts task.get #1; Push #2 arrives while #1 is in-flight (sets dirty bit);
+      // #1 returns `running` -> RequeryNow; transitional `stopping` is NOT settled; #2 returns `exited` -> Settled!
+      let running_reply = match base_codec::json_parse("{\"key\":\"build-job\",\"job\":{\"state\":\"running\"},\"log\":\"\",\"notices\":[]}") {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => panic("bad running json")
+      }
+      let stopping_reply = match base_codec::json_parse("{\"key\":\"build-job\",\"job\":{\"state\":\"stopping\"},\"log\":\"\",\"notices\":[]}") {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => panic("bad stopping json")
+      }
+      let wire_reply = match base_codec::json_parse(
+        "{\"key\":\"build-job\",\"job\":{\"state\":\"exited\",\"exitCode\":0},\"log\":\"ok\",\"notices\":[\"all tests passed\"]}",
+      ) {
+        base_codec::JsonParseResult::Ok(j) => j
+        _ => panic("bad wire json")
+      }
+      r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "push #1 marks inflight")
+      r2_assert(!outbox_reload.mark_task_get_inflight(push_ref), "push #2 coalesced & sets dirty bit")
+      let out_running = process_task_changed_get_reply(
+        outbox_reload,
+        push_ref,
+        found,
+        Ok(running_reply),
+        1000L,
+        fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { true },
+      )
+      r2_assert(out_running is TaskChangedOutcome::RequeryNow, "dirty running reply must trigger immediate requery")
+      // Transitional `stopping` must NOT settle!
+      r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "requery marks inflight")
+      let out_stopping = process_task_changed_get_reply(
+        outbox_reload,
+        push_ref,
+        found,
+        Ok(stopping_reply),
+        1000L,
+        fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { true },
+      )
+      r2_assert(out_stopping is TaskChangedOutcome::StillRunning && outbox_reload.lookup_outgoing(push_ref) is Some(_), "stopping must not unfollow")
+      // Transient delivery failure #1 -> 5s backoff; #2 -> 15s backoff; #3 -> 30s backoff!
+      r2_assert(outbox_reload.mark_task_get_inflight(push_ref), "re-mark for delivery test")
+      let failed_deliv1 = process_task_changed_get_reply(
+        outbox_reload,
+        push_ref,
+        found,
+        Ok(wire_reply),
+        1000L,
+        fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { false },
+      )
+      r2_assert(failed_deliv1 is TaskChangedOutcome::RetryLater, "1st failure schedules 5s retry")
+      r2_assert(outbox_reload.due_task_get_retries(5999L).length() == 0, "not due before 5s")
+      let due_r1 = outbox_reload.due_task_get_retries(6000L)
+      r2_assert(due_r1.length() == 1 && due_r1[0].push_ref == push_ref, "1st retry due at +5s")
+      // 2nd consecutive failure -> MUST escalate to 15s (6000 + 15000 = 21000ms), NOT reset to 5s!
+      let failed_deliv2 = process_task_changed_get_reply(
+        outbox_reload,
+        push_ref,
+        found,
+        Err("mesh timeout"),
+        6000L,
+        fn(_r : station_whole::RemoteOutgoingTask, _n : String) -> Bool { true },
+      )
+      r2_assert(failed_deliv2 is TaskChangedOutcome::RetryLater, "2nd failure schedules 15s retry")
+      r2_assert(outbox_reload.due_task_get_retries(20999L).length() == 0, "must NOT fire at +5s; escalates to +15s")
+      let due_r2 = outbox_reload.due_task_get_retries(21000L)
+      r2_assert(due_r2.length() == 1 && due_r2[0].push_ref == push_ref, "2nd retry due at +15s")
+      // Successful internal notice delivery settles and unfollows!
+      let mut delivered_text = ""
+      let ok_deliv = process_task_changed_get_reply(
+        outbox_reload,
+        push_ref,
+        found,
+        Ok(wire_reply),
+        21000L,
+        fn(_r : station_whole::RemoteOutgoingTask, n : String) -> Bool {
+          delivered_text = n
+          true
+        },
+      )
+      r2_assert(ok_deliv is TaskChangedOutcome::Settled, "real rig wire reply must settle")
+      r2_assert(
+        delivered_text.contains("compile (build-job)") &&
+        delivered_text.contains("gpu-rig") &&
+        delivered_text.contains("exit 0") &&
+        delivered_text.contains("all tests passed"),
+        "notice must include job state, exitCode, and notices",
+      )
+      r2_assert(outbox_reload.lookup_outgoing(push_ref) is None, "settled task unfollowed")
+    }
+    None => panic("expected persisted outgoing task lookup")
+  }
+
+  // 3. Archive atomically persists `closing` BEFORE deleting `used` & sending `session.close`;
+  //    failed first attempt retries, survives restart, and respects 7-day / roster pruning;
+  //    startup also reconciles `used/` entries whose session is already archived in SQLite!
+  let pending_peers = outbox_reload.begin_session_close("sess-r4", 1000L, now_wall_ms=100000L)
+  r2_assert(pending_peers.length() == 2, "restart-merged used peers must keep both rig-1 and rig-2")
+  let due1 = outbox_reload.due_session_closes(1000L, now_wall_ms=100000L)
+  r2_assert(due1.length() == 2, "both peers due immediately")
+  let close_s = base_codec::json_stringify(build_session_close_rpc_payload(due1[0].1, "sess-r4"))
+  r2_assert(close_s.contains("\"method\":\"session.close\"") && close_s.contains("\"session\":\"sess-r4\""), "session.close wire payload")
+  // First attempt: rig-1 fails transiently, rig-2 confirms closed:true
+  r2_assert(!settle_session_close_reply(outbox_reload, "sess-r4", "ws-1", "rig-1", Err("queue full"), 1000L), "transient err keeps pending")
+  r2_assert(
+    settle_session_close_reply(
+      outbox_reload,
+      "sess-r4",
+      "ws-1",
+      "rig-2",
+      Ok(base_codec::json_obj([("closed", base_codec::json_bool(true))])),
+      1000L,
+    ),
+    "closed:true removes rig-2",
+  )
+  r2_assert(outbox_reload.pending_close_count() == 1, "rig-1 still pending in closing")
+  // Simulate crash after SQLite archive for `sess-crashed` (still in `used/`, not yet in `closing/`)
+  outbox_reload.record_use("ws-1", "sess-crashed", "rig-3")
+  // Simulate daemon restart: BEFORE store opens (archived list empty), `sess-crashed` stays in `used/`;
+  // AFTER store opens (archived keys known), `load_pending_closes` reconciles `sess-crashed` into `closing/`!
+  let outbox_restart = station_whole::RemoteTaskOutbox::new("/tmp/r4-outbox", fs)
+  outbox_restart.load_pending_closes(20000L, now_wall_ms=120000L, is_session_archived=Some(fn(_s : String) -> Bool { false }))
+  r2_assert(outbox_restart.pending_close_count() == 1, "before store open only existing closing/ loaded")
+  outbox_restart.load_pending_closes(
+    20000L,
+    now_wall_ms=120000L,
+    is_session_archived=Some(fn(s : String) -> Bool { s == "sess-crashed" }),
+    archived_session_keys=["sess-crashed"],
+  )
+  let due2 = outbox_restart.due_session_closes(20000L, now_wall_ms=120000L)
+  r2_assert(due2.length() == 2, "after store open outbox reloads rig-1 and reconciles archived sess-crashed/rig-3")
+  r2_assert(
+    settle_session_close_reply(
+      outbox_restart,
+      "sess-r4",
+      "ws-1",
+      "rig-1",
+      Ok(base_codec::json_obj([("closed", base_codec::json_bool(true))])),
+      20000L,
+    ),
+    "retry closed:true clears rig-1",
+  )
+  // 30-day max age: still retained at 29 days (no cloud roster pruning!), dropped only at >= 30 days!
+  r2_assert(!settle_session_close_reply(outbox_restart, "sess-crashed", "ws-1", "rig-3", Err("offline"), 20000L), "offline retries")
+  let day29 = 120000L + 29L * 24L * 3600L * 1000L
+  let due_29 = outbox_restart.due_session_closes(90000L, now_wall_ms=day29)
+  r2_assert(due_29.length() == 1 && outbox_restart.pending_close_count() == 1, "still retried at 29 days even when cloud is down")
+  r2_assert(!settle_session_close_reply(outbox_restart, "sess-crashed", "ws-1", "rig-3", Err("offline"), 90000L), "offline retries 2")
+  let due3 = outbox_restart.due_session_closes(200000L, now_wall_ms=120000L + station_whole::SESSION_CLOSE_MAX_AGE_MS + 1L)
+  r2_assert(due3.length() == 0 && outbox_restart.pending_close_count() == 0, "30-day cap prunes permanently offline peer")
+
+  // 4. Dual-path `task.prepare`:
+  // (a) Supported target: prepare -> upload -> start succeeds cleanly
+  let prep_intent = station_whole::DeferredMcpIntent::{ ..base_intent, action: "prepare" }
+  let prep_s = base_codec::json_stringify(build_remote_task_rpc_payload(prep_intent))
+  r2_assert(prep_s.contains("\"method\":\"task.prepare\"") && prep_s.contains("\"spec\":{"), "supported target receives task.prepare + spec")
+  match parse_peer_ask_reply("{\"result\":{\"key\":\"build-job\",\"prepared\":true}}") {
+    Ok(v) => {
+      match base_codec::json_get(v, "prepared") {
+        Some(base_codec::Json::Bool(true)) => ()
+        _ => panic("expected prepared:true")
+      }
+    }
+    Err(e) => panic("supported target prepare failed: " + e)
+  }
+  // (b) Pion whole target: unsupported `task.prepare` error is propagated honestly (zero fake success)
+  match parse_peer_ask_reply("{\"error\":\"rig rpc method not wired in WholeCore: task.prepare\"}") {
+    Err(e) => {
+      let err_body = station_whole::encode_mcp_tool_jsonrpc(base_codec::json_int(9), station_tools::error_reply(e))
+      r2_assert(err_body.contains("\"isError\":true") && err_body.contains("task.prepare"), "whole target error must propagate honestly")
+    }
+    Ok(_) => panic("expected Err from unsupported Pion whole target")
+  }
+}

@@ -2549,6 +2549,175 @@ int main(void) {
     assert(sts_selftest_verified_send_cancel() == 0);
     printf("  [PASS] verified_send cancel state machine selftest\n");
 
+    // Wave 17E-2A R3: dirfd-anchored exclusive create, positioned write+fsync, atomic no-replace publish, unlink.
+    {
+        char rdir[128], outside[256], sym_parent[256], existing[256], published[256];
+        make_temp_dir(rdir, sizeof(rdir));
+        snprintf(outside, sizeof(outside), "%s_outside", rdir);
+        assert(mkdir(outside, 0755) == 0);
+        snprintf(sym_parent, sizeof(sym_parent), "%s/symdir", rdir);
+        assert(symlink(outside, sym_parent) == 0);
+
+        assert(sts_create_excl_under_nofollow(rdir, "sub/file.part", 0600) == 0);
+        assert(sts_create_excl_under_nofollow(rdir, "sub/file.part", 0600) == -7);
+        assert(sts_create_excl_under_nofollow(rdir, "symdir/escape.part", 0600) == -5);
+        assert(sts_create_excl_under_nofollow(rdir, "../escape.part", 0600) == -5);
+
+        const uint8_t c1[] = "hello ";
+        const uint8_t c2[] = "world";
+        assert(sts_write_at_under_nofollow(rdir, "sub/file.part", c1, 6, 0, 0) == 0);
+        assert(sts_write_at_under_nofollow(rdir, "sub/file.part", c2, 5, 6, 1) == 0);
+
+        snprintf(existing, sizeof(existing), "%s/sub/existing.txt", rdir);
+        write_file_str(existing, "ORIGINAL");
+        assert(sts_publish_noreplace_under_nofollow(rdir, "sub/file.part", "sub/existing.txt") == -7);
+        int64_t rlen = 0;
+        int32_t rerr = 0;
+        char *orig_read = (char *)sts_read_file_strict(existing, &rlen, &rerr);
+        assert(orig_read != NULL && rerr == 0 && rlen == 8 && memcmp(orig_read, "ORIGINAL", 8) == 0);
+        sts_free(orig_read);
+
+        assert(sts_publish_noreplace_under_nofollow(rdir, "sub/file.part", "symdir/escape.txt") == -5);
+
+        assert(sts_publish_noreplace_under_nofollow(rdir, "sub/file.part", "sub/final.txt") == 0);
+        snprintf(published, sizeof(published), "%s/sub/final.txt", rdir);
+        rlen = 0;
+        rerr = 0;
+        char *fin_read = (char *)sts_read_file_strict(published, &rlen, &rerr);
+        assert(fin_read != NULL && rerr == 0 && rlen == 11 && memcmp(fin_read, "hello world", 11) == 0);
+        sts_free(fin_read);
+        assert(sts_unlink_under_nofollow(rdir, "sub/file.part") == -2);
+
+        assert(sts_unlink_under_nofollow(rdir, "sub/final.txt") == 0);
+        assert(sts_unlink_under_nofollow(rdir, "sub/existing.txt") == 0);
+
+        /* R4 P1-1: single-open streaming handles (open_ro_under_nofollow + create_excl_open + pwrite + async fsync_close) */
+        int32_t rw_err = 0;
+        int64_t rwh = sts_create_excl_open_under_nofollow(rdir, "sub/stream.part", 0600, &rw_err);
+        assert(rwh > 0 && rw_err == 0);
+        assert(sts_create_excl_open_under_nofollow(rdir, "sub/stream.part", 0600, &rw_err) == -1 && rw_err == -7);
+        assert(sts_create_excl_open_under_nofollow(rdir, "symdir/escape.part", 0600, &rw_err) == -1 && rw_err == -5);
+        assert(sts_file_pwrite(rwh, c1, 6, 0) == 0);
+        assert(sts_file_pwrite(rwh, c2, 5, 6) == 0);
+        uint64_t fsync_ev_id = 999101ULL;
+        assert(sts_file_fsync_close_async(fsync_ev_id, rwh) == 1);
+        /* Double-close after async handoff must be a safe no-op */
+        assert(sts_file_rw_close(rwh) == 0);
+        int got_fsync = 0;
+        int64_t fdl = sth_now_ms() + 3000;
+        while (!got_fsync && sth_now_ms() < fdl) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &ev_len);
+            if (ev != NULL) {
+                if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_FSYNC_DONE) {
+                    int32_t frc = (int32_t)((uint32_t)ev[10] | ((uint32_t)ev[11] << 8) | ((uint32_t)ev[12] << 16) | ((uint32_t)ev[13] << 24));
+                    assert(frc == 0);
+                    got_fsync = 1;
+                }
+                sth_free(ev);
+            }
+        }
+        assert(got_fsync == 1);
+        assert(sts_publish_noreplace_under_nofollow(rdir, "sub/stream.part", "sub/streamed.txt") == 0);
+        int64_t ro_sz = 0;
+        int32_t ro_err = 0;
+        int64_t roh = sts_open_ro_under_nofollow(rdir, "sub/streamed.txt", &ro_sz, &ro_err);
+        assert(roh > 0 && ro_err == 0 && ro_sz == 11);
+        assert(sts_open_ro_under_nofollow(rdir, "symdir/streamed.txt", &ro_sz, &ro_err) == -1 && ro_err == -5);
+        int64_t pread_len = 0;
+        int32_t pread_err = 0;
+        char *pread_buf = (char *)sts_file_pread(roh, 0, 11, &pread_len, &pread_err);
+        assert(pread_buf != NULL && pread_err == 0 && pread_len == 11 && memcmp(pread_buf, "hello world", 11) == 0);
+        sts_free(pread_buf);
+        assert(sts_file_close(roh) == 1);
+        assert(sts_unlink_under_nofollow(rdir, "sub/streamed.txt") == 0);
+
+        /* R5 P1-3: identity-bound fsync+publish_noreplace_async + concurrent staging replacement rejection */
+        int64_t rwh2 = sts_create_excl_open_under_nofollow(rdir, "sub/idpub.part", 0600, &rw_err);
+        assert(rwh2 > 0 && rw_err == 0);
+        assert(sts_file_pwrite(rwh2, c1, 6, 0) == 0);
+        assert(sts_file_pwrite(rwh2, c2, 5, 6) == 0);
+        assert(sts_file_fsync_publish_noreplace_async(999102ULL, rwh2, rdir, "sub/idpub.part", "sub/idpub_final.txt") == 1);
+        int pub_rc = -999;
+        fdl = sth_now_ms() + 3000;
+        while (pub_rc == -999 && sth_now_ms() < fdl) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &ev_len);
+            if (ev != NULL) {
+                if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_FSYNC_DONE) {
+                    pub_rc = (int32_t)((uint32_t)ev[10] | ((uint32_t)ev[11] << 8) | ((uint32_t)ev[12] << 16) | ((uint32_t)ev[13] << 24));
+                }
+                sth_free(ev);
+            }
+        }
+        assert(pub_rc == 0);
+        assert(sts_unlink_under_nofollow(rdir, "sub/idpub.part") == -2);
+        assert(sts_unlink_under_nofollow(rdir, "sub/idpub_final.txt") == 0);
+
+        /* Concurrent replacement attack: replace sub/race.part with a different inode before publish.
+         * On Linux, `/proc/self/fd/<fd>` directly links the legitimate open `fd` ("hello ", NEVER "IMPOSTER");
+         * on non-Linux fallback, inode mismatch rejects with -5. In ALL cases "IMPOSTER" is never published! */
+        int64_t rwh3 = sts_create_excl_open_under_nofollow(rdir, "sub/race.part", 0600, &rw_err);
+        assert(rwh3 > 0 && rw_err == 0);
+        assert(sts_file_pwrite(rwh3, c1, 6, 0) == 0);
+        assert(sts_unlink_under_nofollow(rdir, "sub/race.part") == 0);
+        char race_imposter[512];
+        snprintf(race_imposter, sizeof(race_imposter), "%s/sub/race.part", rdir);
+        write_file_str(race_imposter, "IMPOSTER");
+        assert(sts_file_fsync_publish_noreplace_async(999103ULL, rwh3, rdir, "sub/race.part", "sub/race_dst.txt") == 1);
+        int race_rc = -999;
+        fdl = sth_now_ms() + 3000;
+        while (race_rc == -999 && sth_now_ms() < fdl) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(200, &ev_len);
+            if (ev != NULL) {
+                if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_FSYNC_DONE) {
+                    race_rc = (int32_t)((uint32_t)ev[10] | ((uint32_t)ev[11] << 8) | ((uint32_t)ev[12] << 16) | ((uint32_t)ev[13] << 24));
+                }
+                sth_free(ev);
+            }
+        }
+        if (race_rc == 0) {
+            /* Linux /proc/self/fd direct link: MUST have published legitimate "hello " and left imposter untouched */
+            char race_dst[512];
+            snprintf(race_dst, sizeof(race_dst), "%s/sub/race_dst.txt", rdir);
+            rlen = 0;
+            rerr = 0;
+            char *rd = (char *)sts_read_file_strict(race_dst, &rlen, &rerr);
+            assert(rd != NULL && rerr == 0 && rlen == 6 && memcmp(rd, "hello ", 6) == 0);
+            sts_free(rd);
+            assert(sts_unlink_under_nofollow(rdir, "sub/race_dst.txt") == 0);
+        } else {
+            assert(race_rc == -5);
+            assert(sts_unlink_under_nofollow(rdir, "sub/race_dst.txt") == -2);
+        }
+        assert(sts_unlink_under_nofollow(rdir, "sub/race.part") == 0);
+
+        /* R6 P1-3: deterministic atomic cancel gate prevents publish and cleans up .part */
+        assert(sts_selftest_fsync_cancel_gate(rdir) == 0);
+        int cancel_rc = -999;
+        fdl = sth_now_ms() + 1000;
+        while (cancel_rc == -999 && sth_now_ms() < fdl) {
+            int64_t ev_len = 0;
+            uint8_t *ev = (uint8_t *)sth_wait(100, &ev_len);
+            if (ev != NULL) {
+                if (ev_len >= 14 && ev[0] == STH_EV_SYS && ev[9] == STS_EV_FSYNC_DONE) {
+                    cancel_rc = (int32_t)((uint32_t)ev[10] | ((uint32_t)ev[11] << 8) | ((uint32_t)ev[12] << 16) | ((uint32_t)ev[13] << 24));
+                }
+                sth_free(ev);
+            }
+        }
+        assert(cancel_rc == -9);
+
+        char subdir[256];
+        snprintf(subdir, sizeof(subdir), "%s/sub", rdir);
+        assert(rmdir(subdir) == 0);
+        assert(unlink(sym_parent) == 0);
+        assert(rmdir(outside) == 0);
+        assert(rmdir(rdir) == 0);
+        printf("  [PASS] dirfd no-replace atomic publish (O_CREAT|O_EXCL, linkat+unlinkat, symlink/EEXIST guards)\n");
+    }
+
     assert(sts_wait_detached_for_test(5000) == 1);
     drain_queue();
 

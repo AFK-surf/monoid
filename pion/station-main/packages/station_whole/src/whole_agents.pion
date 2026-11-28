@@ -97,7 +97,38 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
         None => None
       }
     },
-    read_dir: fn(_p : String) -> Option[Array[String]] { Some([]) },
+    read_dir: fn(dir : String) -> Option[Array[String]] {
+      let prefix = if dir.ends_with("/") { dir } else { dir + "/" }
+      let plen = prefix.to_bytes().length()
+      let out : Array[String] = []
+      let seen : Map[String, Bool] = Map::new()
+      let ks = files.keys()
+      for i in 0..<ks.length() {
+        let k = ks[i]
+        if k.starts_with(prefix) {
+          let kb = k.to_bytes()
+          let mut end = kb.length()
+          for j in plen..<kb.length() {
+            if kb[j] == 47.to_byte() {
+              end = j
+              break
+            }
+          }
+          if end > plen {
+            let name_b = Bytes::new(end - plen)
+            for j in plen..<end {
+              name_b[j - plen] = kb[j]
+            }
+            let name = name_b.to_string()
+            if !seen.contains(name) {
+              seen.set(name, true)
+              out.push(name)
+            }
+          }
+        }
+      }
+      Some(out)
+    },
     read_file: fn(p : String) -> Option[String] {
       match files.get(p) {
         Some(b) => Some(b.to_string())
@@ -185,7 +216,7 @@ pub fn mem_job_fs_port(now_ms : () -> Int64) -> station_jobs::FsPort {
   }
 }
 
-/// Exact list of base MCP station tools always wired to live SQLite / SessionHub / JobManager.
+/// Exact list of MCP station tools genuinely wired to live SQLite / SessionHub / JobManager / Remote / System / DSB.
 pub fn wired_mcp_tool_names() -> Array[String] {
   [
     "chat_post",
@@ -204,6 +235,22 @@ pub fn wired_mcp_tool_names() -> Array[String] {
     "job_log",
     "job_stop",
     "project_manage",
+    // Wave 17E-2A: DomainHandlers.remote (6)
+    "station_list",
+    "station_task",
+    "station_file",
+    "station_use",
+    "peer_forward",
+    "workspace_limit",
+    // Wave 17E-2A: DomainHandlers.system (8)
+    "station_version",
+    "login",
+    "relays",
+    "archive_policy",
+    "station_move",
+    "station_retire",
+    "feedback_send",
+    "feedback_reply",
   ]
 }
 
@@ -261,11 +308,14 @@ pub struct WholeAgents {
   pub mcp : station_tools::McpServer
   pub jobs : station_jobs::JobManager
   pub mut bound_to_workspace : Bool
+  pub mut is_workspace_bound : Option[(String) -> Bool]
   pub adopted_session_by_runner_id : Map[String, String]
   pub adopted_runner_exits : Map[String, (Option[Int], Option[String])]
   pub active_adopted_instances : Map[String, Bool]
   pub codex_active_turns : Map[String, String]
   pub mut disabled_runtimes : Array[String]
+  pub mut remote_system_port : Option[McpRemoteSystemPort]
+  pub mut on_session_archived : Option[(String) -> Unit]
   mut adopted_db : Option[sql_db::Db]
   mut adopted_db_closed : Bool
   job_fs : station_jobs::FsPort
@@ -305,11 +355,14 @@ pub fn WholeAgents::new_with_deps(
     mcp: station_tools::McpServer::new(),
     jobs: jobs,
     bound_to_workspace: true,
+    is_workspace_bound: None,
     adopted_session_by_runner_id: Map::new(),
     adopted_runner_exits: Map::new(),
     active_adopted_instances: Map::new(),
     codex_active_turns: Map::new(),
     disabled_runtimes: [],
+    remote_system_port: None,
+    on_session_archived: None,
     adopted_db: None,
     adopted_db_closed: false,
     job_fs: fs,
@@ -874,6 +927,10 @@ pub fn WholeAgents::archive_session(
       Some(a) => {
         let _ = a.evict()
       }
+      None => ()
+    }
+    match self.on_session_archived {
+      Some(cb) => cb(sk)
       None => ()
     }
   }
@@ -3575,6 +3632,36 @@ fn WholeAgents::build_domain_handlers(
     station_tools::error_reply("unsupported project_manage action: " + action)
   }
 
+  let rs_port = match self.remote_system_port {
+    Some(p) => p
+    None => default_mcp_remote_system_port("", "", self.job_fs)
+  }
+  let data_dir = self.config.data_dir
+
+  let remote_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
+      Err(e) => return station_tools::error_reply(e)
+    }
+    handle_remote_domain_tool(rs_port, data_dir, McpSessionStorePort::from_sqlite(st), caller_ws, session, tool, args, now_ms)
+  }
+
+  let system_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    let st = match whole_store.require_open() {
+      Ok(s) => s
+      Err(e) => return station_tools::error_reply(e)
+    }
+    let caller_ws = match self.resolve_caller_ws(st, session) {
+      Ok(w) => w
+      Err(e) => return station_tools::error_reply(e)
+    }
+    handle_system_domain_tool(rs_port, data_dir, home_ws, McpSessionStorePort::from_sqlite(st), caller_ws, session, tool, args, now_ms)
+  }
+
   let secret_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
     if tool == "sign_in" {
       match self.signin_tool_override {
@@ -3601,7 +3688,7 @@ fn WholeAgents::build_domain_handlers(
   station_tools::DomainHandlers::{
     chat: chat_handler,
     job: job_handler,
-    remote: base.remote,
+    remote: remote_handler,
     secret: secret_handler,
     device: device_handler,
     screen: screen_handler,
@@ -3609,7 +3696,7 @@ fn WholeAgents::build_domain_handlers(
     project: project_handler,
     search: search_handler,
     managed_mcp: base.managed_mcp,
-    system: base.system,
+    system: system_handler,
   }
 }
 
@@ -3644,9 +3731,13 @@ pub fn WholeAgents::handle_mcp_http_with_handlers(
   let tools_host = station_tools::ToolsHost::{
     resolve_token: fn(tok : String) -> Option[String] { self.resolve_token_ct(tok) },
     call_context: fn(session : String) -> station_tools::CallContext {
+      let bound = match self.is_workspace_bound {
+        Some(f) => f(session)
+        None => self.bound_to_workspace
+      }
       station_tools::CallContext::{
         session: session,
-        unbound_reason: if self.bound_to_workspace {
+        unbound_reason: if bound {
           None
         } else {
           Some(station_tools::UNBOUND_REFUSAL)
