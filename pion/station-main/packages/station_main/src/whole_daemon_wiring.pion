@@ -892,9 +892,10 @@ pub fn wire_whole_core_runtime_hooks(
     }
   })
 
-  // Wave 17D-2 R7: Deferred Wave 17E ops (`updates.install`, `updates.wait`, `workspaces.join`,
-  // `mcpServers.reload*`, `accounts.profiles.{login*,pace,quota,resetQuota}`, `copies.restore`,
-  // `xshare.hosts.put`) remain honest 501 (hooks stay `None`).
+  // Wave 17E-4D: `updates.install` (station), `updates.wait`, `copies.restore`, and `xshare.hosts.put`
+  // are wired live in `whole_daemon.pion` / `whole_daemon_w17e4d.pion`. Remaining deferred Wave 17E ops
+  // (runtime installs/Codex repair, `workspaces.join`, `mcpServers.reload*`, `accounts.profiles.{login*,pace,quota,resetQuota}`)
+  // remain honest 501 (hooks stay `None`).
   // Network-bound live ops (`updates.check`, `copies.s3.test`, keyed profile check) are intercepted
   // non-blockingly in `whole_daemon_live_ops.pion` via `AdminStreamMode::WaitingAsyncOp`.
   core.api.hooks.on_mcp_reload = None

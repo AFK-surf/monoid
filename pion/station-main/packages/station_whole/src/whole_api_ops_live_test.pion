@@ -34,12 +34,19 @@ test "wave17d2 r4: updates.check (403/501/200) and updates.wait / updates.instal
     Ok(_) => panic("non-manager updates.check must fail")
   }
 
-  // 2. Both `updates.install` and `updates.wait` return honest 501 until Wave 17E updater loop lands
-  for op in ["updates.install", "updates.wait"] {
-    match (api.admin.host.call)(op, make_test_api_req_as("POST", "/updates", owner), [], base_codec::json_obj([("id", base_codec::json_str("station"))])) {
-      Err(e) => if e.status != 501 { panic(op + " must return honest 501, got " + e.status.to_string()) }
-      Ok(_) => panic(op + " must not return fake 200")
+  // 2. Unhooked `updates.install` returns honest 501; `updates.wait` validates & persists live!
+  match (api.admin.host.call)("updates.install", make_test_api_req_as("POST", "/updates", owner), [], base_codec::json_obj([("id", base_codec::json_str("station"))])) {
+    Err(e) => if e.status != 501 { panic("unhooked updates.install must return honest 501, got " + e.status.to_string()) }
+    Ok(_) => panic("unhooked updates.install must not return fake 200")
+  }
+  match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], base_codec::json_obj([("wait", base_codec::json_arr([base_codec::json_str("#9001")]))])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if !s.contains("\"#9001\"") {
+        panic("updates.wait did not reflect #9001 in view: " + s)
+      }
     }
+    Err(e) => panic("updates.wait failed: " + e.message)
   }
 
   // 3. Unhooked `updates.check` returns honest 501; hooked returns 200
@@ -204,7 +211,7 @@ test "wave17d2 r3: copies.s3.test (default forcePathStyle=true, full target bind
   let (_, _, api, _, mem_fs, hooks) = make_mem_whole_api_fixture()
   let owner = w17d2_owner("ws-main")
 
-  for op in ["mcpServers.reloadAll", "mcpServers.reloadOne", "copies.restore", "xshare.hosts.put"] {
+  for op in ["mcpServers.reloadAll", "mcpServers.reloadOne"] {
     match (api.admin.host.call)(op, make_test_api_req_as("POST", "/admin", owner), ["s1"], base_codec::json_obj([])) {
       Err(e) => if e.status != 501 { panic("withdrawn " + op + " must return 501, got " + e.status.to_string()) }
       Ok(_) => panic("withdrawn " + op + " returned fake 200")
@@ -267,5 +274,150 @@ test "wave17d2 r3: copies.s3.test (default forcePathStyle=true, full target bind
       }
     }
     Err(e) => panic("exact-match copies.s3.test failed: " + e.message)
+  }
+}
+
+test "wave17e4d: updates.wait, updates.install, copies.restore (202), and xshare.hosts.put permissions, write barrier & validation" {
+  let (store, agents, api, updates, mem_fs, hooks) = make_mem_whole_api_fixture()
+  let owner = w17d2_owner("ws-main")
+  let member = w17d2_member("ws-main")
+
+  // 1. Permission checks (403 for non-manager on updates & copies.restore; member ALLOWED on xshare.hosts.put 1:1 with Node)
+  match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", member), [], base_codec::json_obj([("wait", base_codec::json_null())])) {
+    Err(e) => if e.status != 403 { panic("member updates.wait expected 403, got " + e.status.to_string()) }
+    Ok(_) => panic("member updates.wait must be denied")
+  }
+  match (api.admin.host.call)("updates.install", make_test_api_req_as("POST", "/updates", member), [], base_codec::json_obj([("id", base_codec::json_str("station"))])) {
+    Err(e) => if e.status != 403 { panic("member updates.install expected 403, got " + e.status.to_string()) }
+    Ok(_) => panic("member updates.install must be denied")
+  }
+  match (api.admin.host.call)("copies.restore", make_test_api_req_as("POST", "/copies/restore", member), [], base_codec::json_obj([])) {
+    Err(e) => if e.status != 403 { panic("member copies.restore expected 403, got " + e.status.to_string()) }
+    Ok(_) => panic("member copies.restore must be denied")
+  }
+
+  // 2. Write barrier (`read_only_handover_cell[0] = true`) denies all 4 ops with 403
+  hooks.read_only_handover_cell[0] = true
+  for pair in [
+    ("updates.wait", "/updates/wait"),
+    ("updates.install", "/updates"),
+    ("copies.restore", "/copies/restore"),
+    ("xshare.hosts.put", "/xshare/hosts"),
+  ] {
+    match (api.admin.host.call)(pair.0, make_test_api_req_as("POST", pair.1, owner), [], base_codec::json_obj([])) {
+      Err(e) => if e.status != 403 { panic(pair.0 + " under read_only_handover expected 403, got " + e.status.to_string()) }
+      Ok(_) => panic(pair.0 + " must fail under read_only_handover")
+    }
+  }
+  hooks.read_only_handover_cell[0] = false
+
+  // 3. `updates.wait` respects OVERRIDE protection (does not restore autoUpdate=true while OVERRIDE exists)
+  let mut ov_flag = true
+  hooks.is_update_override_present = Some(fn() -> Bool { ov_flag })
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", "{\"autoUpdate\":true}", 384)
+  match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], base_codec::json_obj([("wait", base_codec::json_arr([base_codec::json_str("FB-100"), base_codec::json_str("version:0.1.9999")]))])) {
+    Ok(_) => ()
+    Err(e) => panic("updates.wait with override failed: " + e.message)
+  }
+  match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", owner), [], base_codec::json_obj([("wait", base_codec::json_null())])) {
+    Ok(res) => {
+      let s = base_codec::json_stringify(res)
+      if s.contains("\"auto\":true") {
+        panic("clearing updates.wait while OVERRIDE is present MUST NOT restore auto=true: " + s)
+      }
+    }
+    Err(e) => panic("updates.wait clear failed: " + e.message)
+  }
+  // `updates.install` rollback (`to`) refused when OVERRIDE is present
+  match (api.admin.host.call)("updates.install", make_test_api_req_as("POST", "/updates", owner), [], base_codec::json_obj([("id", base_codec::json_str("station")), ("to", base_codec::json_str("0.1.100"))])) {
+    Err(e) => if e.status != 400 || !e.message.contains("OVERRIDE") { panic("expected 400 OVERRIDE refusal, got " + e.status.to_string() + ": " + e.message) }
+    Ok(_) => panic("rollback under OVERRIDE must be refused")
+  }
+  ov_flag = false
+  let _ = updates
+
+  // 4. `copies.restore` rejects path traversal & unconfigured S3 target, and returns HTTP 202 when wired
+  match (api.admin.host.call)("copies.restore", make_test_api_req_as("POST", "/copies/restore", owner), [], base_codec::json_obj([
+    ("station", base_codec::json_str("../evil")),
+    ("gen", base_codec::json_str("g1")),
+    ("from", base_codec::json_obj([("s3", base_codec::json_str("r2"))])),
+  ])) {
+    Err(e) => if e.status != 409 { panic("path traversal copies.restore expected 409, got " + e.status.to_string()) }
+    Ok(_) => panic("path traversal copies.restore must fail")
+  }
+  let saved_cfg = "{\"backup\":{\"s3\":[{\"id\":\"r2\",\"name\":\"R2\",\"endpoint\":\"http://127.0.0.1:9000\",\"bucket\":\"bkt\",\"forcePathStyle\":true,\"accessKeyId\":\"AK1\",\"secretAccessKey\":\"SK1\",\"encryptionKey\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}]}}"
+  let _ = mem_fs.put_text("/tmp/w17c2-api-test/config.json", saved_cfg, 384)
+  hooks.on_copies_restore = Some(fn(_ws : String, _o : String, _g : String, _fk : String, _fid : String) -> Result[base_codec::Json, station_api::ApiError] {
+    Ok(base_codec::json_obj([("restoring", base_codec::json_bool(true))]))
+  })
+  api.read_only_handover = false
+  let restore_req = station_api::ApiRequest::{
+    ..make_test_api_req_as("POST", "/copies/restore", owner),
+    body: "{\"station\":\"st-lost\",\"gen\":\"g1\",\"from\":{\"s3\":\"r2\"}}".to_bytes(),
+  }
+  match station_api::dispatch_domain_route(restore_req, ["copies", "restore"], api.admin.host) {
+    Some(rr) => {
+      if rr.response.status != 202 {
+        panic("POST /copies/restore MUST return HTTP 202, got " + rr.response.status.to_string())
+      }
+      if !rr.response.body.to_string().contains("\"restoring\":true") {
+        panic("POST /copies/restore missing restoring:true body: " + rr.response.body.to_string())
+      }
+    }
+    None => panic("POST /copies/restore route not matched")
+  }
+  let _ = store
+
+  // 5. `xshare.hosts.put`: member allowed (1:1 Node), rejects self-workspace & corrupt state.json (fail-closed),
+  // preserves home legacy key, truncates by Unicode code points, writes `0600`, triggers reconciler!
+  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-main")),
+    ("name", base_codec::json_str("Self")),
+    ("station", base_codec::json_str("st-other")),
+  ])) {
+    Err(e) => if e.status != 400 { panic("self-workspace xshare.hosts.put expected 400, got " + e.status.to_string()) }
+    Ok(_) => panic("self-workspace xshare.hosts.put must fail")
+  }
+  let mut reconciled = 0
+  let mut rec_host = ""
+  hooks.on_xshare_reconcile = Some(fn(_ws : String, h : String, _tws : String) -> Unit {
+    reconciled = reconciled + 1
+    rec_host = h
+  })
+  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([
+    ("workspace", base_codec::json_str("ws-partner")),
+    ("name", base_codec::json_str("Partner WS")),
+    ("station", base_codec::json_str("st-partner-1")),
+    ("stationName", base_codec::json_str("Partner Box")),
+  ])) {
+    Ok(res) => {
+      if json_field_bool(res, "ok") != Some(true) || reconciled != 1 || rec_host != "st-partner-1" {
+        panic("member xshare.hosts.put did not succeed or trigger reconciler")
+      }
+      let sp = agents.config.data_dir + "/xshare/state.json"
+      match mem_fs.ops().read_text(sp) {
+        Ok(s) => {
+          if !s.contains("\"ws-main/st-partner-1\"") || !s.contains("\"Partner WS\"") {
+            panic("xshare state.json missing expected host entry: " + s)
+          }
+        }
+        Err(_) => panic("xshare state.json unreadable in MemFs")
+      }
+      match (mem_fs.ops().stat)(sp) {
+        Ok(meta) => if meta.mode != 384 { panic("xshare state.json mode must be 0600 (384), got " + meta.mode.to_string()) }
+        Err(_) => panic("xshare state.json stat failed")
+      }
+      // Fail-closed when existing state.json is corrupt: MUST return 500 and NOT overwrite!
+      let _ = mem_fs.put_text(sp, "{corrupt-json", 384)
+      match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([
+        ("workspace", base_codec::json_str("ws-partner-2")),
+        ("name", base_codec::json_str("P2")),
+        ("station", base_codec::json_str("st-p2")),
+      ])) {
+        Err(e) => if e.status != 500 { panic("corrupt state.json expected 500, got " + e.status.to_string()) }
+        Ok(_) => panic("corrupt state.json must fail closed")
+      }
+    }
+    Err(e) => panic("member xshare.hosts.put failed: " + e.message)
   }
 }

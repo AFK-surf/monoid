@@ -2045,12 +2045,12 @@ fn dispatch_settings_and_copies_op(
     return Some(Err(station_api::ApiError::new(409, station_ops::tr(ops_lang, "station.retire.off"))))
   }
 
-  // Wave 17D-2 R2: `copies.s3.test` wired; `copies.restore` and `xshare.hosts.put` stay honest 501 until Wave 17E.
+  // Wave 17E-4D: `copies.s3.test` and `copies.restore` live handlers (`xshare.hosts.put` handled in `whole_api_ops.pion`).
   if op == "copies.s3.test" {
     return dispatch_live_copies_s3_test_op(op, req, body, cfg_opt, hooks)
   }
-  if op == "copies.restore" || op == "xshare.hosts.put" {
-    return Some(Err(err_not_implemented(op)))
+  if op == "copies.restore" {
+    return dispatch_live_copies_restore_op(op, req, body, cfg_opt, hooks)
   }
 
   None

@@ -206,12 +206,8 @@ test "wave17c2 honest 501 for unimplemented ops (zero fake 200 stubs)" {
   // `copies.restore`, `xshare.hosts.put`) also return honest 501 everywhere.
   let unimplemented_call_ops : Array[String] = [
     "updates.check",
-    "updates.wait",
-    "updates.install",
     "network.station.restart",
     "workspaces.join",
-    "copies.restore",
-    "xshare.hosts.put",
     "accounts.profiles.pace",
     "accounts.profiles.resetQuota",
     "accounts.profiles.quota",
