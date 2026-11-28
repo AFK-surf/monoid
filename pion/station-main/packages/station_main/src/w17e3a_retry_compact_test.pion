@@ -405,12 +405,23 @@ test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction li
     panic("cold Claude compact instructions must never be empty")
   }
 
-  // R4 Item 2: Handover carry state round-trips queued prompts from an interrupted compaction
+  // R4 Item 2 & R5 P1-1: Handover carry state round-trips queued prompts idempotently by stable ID!
+  // Importing the SAME snapshot TWICE (launcher carry + disk file) MUST restore each message ONCE,
+  // while two distinct human messages with IDENTICAL text MUST BOTH be preserved!
   let mgr1 = LiveRunnerManager::new()
   mgr1.pending_prompts.push(CarriedHandoverPrompt::{
+    id: "chat:compact-ho-1:1",
     session_key: "chat:compact-ho-1",
     runtime: "claude",
-    text: "human message queued during compact before SIGUSR2",
+    text: "same text",
+    is_internal: false,
+    kind: "prompt",
+  })
+  mgr1.pending_prompts.push(CarriedHandoverPrompt::{
+    id: "chat:compact-ho-1:2",
+    session_key: "chat:compact-ho-1",
+    runtime: "claude",
+    text: "same text",
     is_internal: false,
     kind: "prompt",
   })
@@ -420,9 +431,45 @@ test "w17e3a-r3: Codex turn/started compaction correlation, PendingCompaction li
   let exported = mgr1.export_handover_state_json()
   let mgr2 = LiveRunnerManager::new()
   mgr2.import_handover_state_json(exported)
-  if mgr2.pending_prompts.length() != 1
-  || mgr2.pending_prompts[0].session_key != "chat:compact-ho-1"
-  || mgr2.pending_prompts[0].text != "human message queued during compact before SIGUSR2" {
-    panic("pending_prompts did not round-trip across handover JSON")
+  // Second import of the EXACT same snapshot (dual-path carry + disk) must be strictly idempotent!
+  mgr2.import_handover_state_json(exported)
+  if mgr2.pending_prompts.length() != 2
+  || mgr2.pending_prompts[0].id != "chat:compact-ho-1:1"
+  || mgr2.pending_prompts[1].id != "chat:compact-ho-1:2"
+  || mgr2.pending_prompts[0].text != "same text"
+  || mgr2.pending_prompts[1].text != "same text" {
+    panic("idempotent double-import must preserve both distinct identical-text messages exactly once, got " + mgr2.pending_prompts.length().to_string())
+  }
+
+  // R5 P1-3(a): Two-phase handover carry: if 2nd session DB commit fails, 1st session's queue MUST remain 100% intact!
+  let mgr3 = LiveRunnerManager::new()
+  let a1 = station_sessions::SessionActor::new("s-ho-1", "claude")
+  let a2 = station_sessions::SessionActor::new("s-ho-2", "claude")
+  let _ = a1.begin_compaction("compact:1", "claude", 1000L)
+  let _ = a1.submit_input("keep-me-session-1")
+  let _ = a2.begin_compaction("compact:1", "claude", 1000L)
+  let _ = a2.submit_input("keep-me-session-2")
+  match mgr3.carry_compacting_actors_two_phase(
+    [("s-ho-1", a1), ("s-ho-2", a2)],
+    fn(k : String, _a : station_sessions::SessionActor) -> Result[Unit, String] {
+      if k == "s-ho-2" { Err("simulated SQLite busy") } else { Ok(()) }
+    },
+  ) {
+    Err(_) => ()
+    Ok(_) => panic("expected Err when 2nd session DB commit fails")
+  }
+  if a1.queue.length() != 1 || a2.queue.length() != 1 || mgr3.pending_prompts.length() != 0 {
+    panic("two-phase handover failure must NOT clear 1st session's queue or partially populate pending_prompts")
+  }
+
+  // R5 P1-3(b): Codex `turn/started` MUST reject missing `threadId` (`None`) and mismatched `threadId`!
+  if codex_turn_started_matches_session(None, Some("th-A")) {
+    panic("Codex turn/started with missing threadId must be rejected")
+  }
+  if codex_turn_started_matches_session(Some("th-B"), Some("th-A")) {
+    panic("Codex turn/started with mismatched threadId must be rejected")
+  }
+  if !codex_turn_started_matches_session(Some("th-A"), Some("th-A")) {
+    panic("Codex turn/started with matching threadId must be accepted")
   }
 }

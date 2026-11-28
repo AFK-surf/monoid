@@ -3494,4 +3494,98 @@ test("W17E-3A: real SQLite about.{thread,seq,ts}, retry (2 failures + ordinary n
   await conn2.close(0, "done");
   wd2.sendCtrl({ op: "stop" });
   assert.equal(await wd2.waitExit(), 0, wd2.stderr());
+  // Clean up Step 7's synthetic mock runner process & metadata before starting daemon 3 for Step 8.
+  try { orphanRunnerProc.kill("SIGKILL"); } catch {}
+  try { mockRunnerSrv.close(); } catch {}
+  try { rmSync(join(runnersDir, `${mockRid}.json`), { force: true }); } catch {}
+  try { rmSync(mockSock, { force: true }); } catch {}
+
+  // 8. R5 P1-2: FULL real human-message -> deliveries settled -> runner fails -> POST /sessions/:key/retry returns 200!
+  const runnerBin = resolveRunnerBinary();
+  const mockBinDir = join(base, "mock-bin");
+  mkdirSync(mockBinDir, { recursive: true });
+  const mockClaudeLog = join(base, "mock-claude.log");
+  const mockClaudePath = join(mockBinDir, "claude");
+  writeFileSync(
+    mockClaudePath,
+    `#!/usr/bin/env bash
+set -euo pipefail
+COUNT_FILE="${join(base, "mock-claude.count")}"
+while IFS= read -r LINE; do
+  [ -z "$LINE" ] && continue
+  N=0
+  if [ -f "$COUNT_FILE" ]; then N=$(cat "$COUNT_FILE"); fi
+  N=$((N + 1))
+  echo "$N" > "$COUNT_FILE"
+  echo "call=$N line=$LINE" >> "${mockClaudeLog}"
+  if [ "$N" -eq 1 ]; then
+    echo '{"type":"result","is_error":true,"result":"model: synthetic transient 502"}'
+  else
+    echo '{"type":"result","is_error":false,"result":"retried cleanly"}'
+  fi
+done
+`,
+    { mode: 0o755 },
+  );
+  chmodSync(mockClaudePath, 0o755);
+
+  const wd3 = startWholeDaemon(bin, data, {
+    STILLFAIL_RUNNER: runnerBin,
+    PATH: `${mockBinDir}:${process.env.PATH ?? ""}`,
+  });
+  await until("w17e3a daemon 3 ready for real deliveries->retry flow", () => wd3.messages.find((m) => m.ready === true));
+  const meshAddr3 = await until("w17e3a daemon 3 mesh bound", () => wd3.meshAddr());
+  const { conn: conn3, helloReply: hello3 } = await openAdminConn(epOwner, stationId, meshAddr3, jwtOwner);
+  assert.equal(hello3?.ok, true, JSON.stringify(hello3));
+
+  const db3 = new DatabaseSync(join(data, "stillfail.db"));
+  db3.exec("PRAGMA busy_timeout = 5000");
+  const flowKey = "chat:w17e3a-real-flow";
+  const flowThread = 705;
+  const now3 = Date.now();
+  db3.prepare(`INSERT INTO sessions (key, connect, scope, runtime, profile, workspace, token, cwd, created_at, last_active_at, running, ws) VALUES (?, 'chat', 'chat', 'claude', 'default', ?, 'tok-flow', ?, ?, ?, 0, ?)`)
+    .run(flowKey, drive, drive, now3, now3, ws);
+  db3.prepare(`INSERT INTO threads (id, surface, channel, thread_ts, title, created_at) VALUES (?, 'web', 'CHAT', ?, 'W17E3A Real Flow', ?)`)
+    .run(flowThread, `${flowThread}.000000`, now3);
+  db3.prepare(`INSERT INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'chat', ?)`)
+    .run(flowThread, flowKey, now3);
+
+  // Send a REAL human message via Admin/1 `POST /threads/:id/messages` (writes `deliveries` with `delivered_at = NULL`)!
+  const sendMsg = await adminCall(
+    conn3,
+    "POST",
+    `/threads/${flowThread}/messages`,
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ text: "hello real flow" })),
+  );
+  assert.equal(sendMsg.status, 200, `POST /threads/${flowThread}/messages failed: ${sendMsg.status} ${sendMsg.body.toString()}`);
+
+  // Wait for mock claude call 1 to receive the prompt, fail with `model: synthetic transient 502`, and settle `deliveries`!
+  const failedTurn = await until("real human turn failed with bound about notice", () => {
+    const r = db3.prepare(`SELECT id, outcome, detail, about_thread, about_n, about_ts FROM turns WHERE session_key = ? AND ended_at IS NOT NULL ORDER BY started_at DESC LIMIT 1`).get(flowKey) as any;
+    return r && r.about_n != null ? r : null;
+  }, 10_000);
+  assert.equal(failedTurn.outcome, "failed", JSON.stringify(failedTurn));
+  const pendingAfterFail = db3.prepare(`SELECT COUNT(*) AS c FROM deliveries WHERE session = ? AND delivered_at IS NULL`).get(flowKey) as any;
+  assert.equal(pendingAfterFail.c, 0, "R5 P1-2: deliveries up to turn watermark MUST be marked delivered once prompt is written to runner");
+
+  // Now click retry (`POST /sessions/:key/retry`) -> MUST return 200 (NOT 409!) and launch mock claude call 2!
+  const retryFlow = await adminCall(
+    conn3,
+    "POST",
+    `/sessions/${encodeURIComponent(flowKey)}/retry`,
+    { "content-type": "application/json" },
+    Buffer.from(JSON.stringify({ thread: failedTurn.about_thread, seq: failedTurn.about_n })),
+  );
+  assert.equal(retryFlow.status, 200, `retry after real human message failure must be 200, got ${retryFlow.status}: ${retryFlow.body.toString()}`);
+  await until("mock claude received retry call 2", () => {
+    try {
+      return readFileSync(mockClaudeLog, "utf8").includes("call=2");
+    } catch { return false; }
+  }, 10_000);
+
+  db3.close();
+  await conn3.close(0, "done");
+  wd3.sendCtrl({ op: "stop" });
+  assert.equal(await wd3.waitExit(), 0, wd3.stderr());
 });

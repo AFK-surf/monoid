@@ -1855,7 +1855,11 @@ struct LiveRunnerSession {
 
 /// Queued prompt carried across a `SIGUSR2` hot handover when an in-flight compaction is
 /// interrupted by `prepare_handover` so human input queued during compaction is never lost.
+/// Each entry carries a stable unique `id` (`"<session_key>:<seq>"`) so dual-path handover
+/// import (launcher `carry` + disk snapshot) is strictly idempotent while preserving two
+/// distinct human messages with identical text.
 pub struct CarriedHandoverPrompt {
+  pub id : String
   pub session_key : String
   pub runtime : String
   pub text : String
@@ -1875,6 +1879,7 @@ pub struct LiveRunnerManager {
   pending_end_turns : Map[String, ManagerPendingEndTurn]
   pending_compact_write : Map[String, String]
   pending_prompts : Array[CarriedHandoverPrompt]
+  carried_prompt_ids : Map[String, Bool]
   draining_stopping_ids : Map[String, Bool]
   draining_stop_sessions : Map[String, String]
   mut handover_state_path : Option[String]
@@ -1883,6 +1888,7 @@ pub struct LiveRunnerManager {
   mut next_conn_id : Int
   mut next_ev_id : Int64
   mut next_turn_seq : Int
+  mut next_prompt_carry_seq : Int
 }
 
 pub fn LiveRunnerManager::new() -> LiveRunnerManager {
@@ -1894,6 +1900,7 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     pending_end_turns: Map::new(),
     pending_compact_write: Map::new(),
     pending_prompts: [],
+    carried_prompt_ids: Map::new(),
     draining_stopping_ids: Map::new(),
     draining_stop_sessions: Map::new(),
     handover_state_path: None,
@@ -1902,6 +1909,7 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     next_conn_id: 1,
     next_ev_id: LIVE_RUNNER_EV_BASE,
     next_turn_seq: 1,
+    next_prompt_carry_seq: 1,
   }
 }
 
@@ -4001,6 +4009,29 @@ fn live_runner_flush_ready(
       if !live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
         return false
       }
+      // R5 P1-2: Settle SQLite `deliveries` up to this turn's start watermark once the prompt is
+      // actually written to the runner socket (preserving `delivered_at IS NULL` for any newer
+      // human message arriving after `turn_started_at` so `has_pending` stays exact!).
+      match core.store.require_open() {
+        Ok(st_db) => {
+          let deliv_now = host_shim::wall_ms()
+          let watermark = if sess.turn_started_at > 0L { sess.turn_started_at } else { deliv_now }
+          let _ = st_db.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+            match t.run(
+              "UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL AND EXISTS (SELECT 1 FROM entries e WHERE e.thread = deliveries.thread AND e.n = deliveries.n AND e.at <= ?3)",
+              [
+                base_codec::json_str(sess.session_key),
+                sql_db::int64_to_json(deliv_now),
+                sql_db::int64_to_json(watermark),
+              ],
+            ) {
+              Err(e) => Err(e)
+              Ok(_) => Ok(())
+            }
+          })
+        }
+        Err(_) => ()
+      }
       sess.pending_prompt = None
       sess.prompt_write_pending = true
       sess.adopted_passive_only = false
@@ -4237,6 +4268,18 @@ pub fn codex_turn_event_matches_session(
   true
 }
 
+/// Strict Codex `turn/started` threadId validation (R5 P1-3):
+/// Requires `threadId` to be PRESENT and EQUAL to `sess_thread_id` (missing `threadId` is rejected!).
+pub fn codex_turn_started_matches_session(
+  ev_thread_id : Option[String],
+  sess_thread_id : Option[String],
+) -> Bool {
+  match (ev_thread_id, sess_thread_id) {
+    (Some(et), Some(st)) => et.length() > 0 && st.length() > 0 && et == st
+    _ => false
+  }
+}
+
 /// Strict Codex compaction terminal-event correlation (P2-2):
 /// Requires `turn/started` to have captured `compact_turn_id` and rejects any `turn/completed`,
 /// `turn/failed`, or `turn/aborted` whose `threadId` or `turn.id` does not match!
@@ -4355,11 +4398,7 @@ fn live_runner_handle_agent_line(
       match parsed_ev {
         ParsedAgentEvent::CodexTurnStarted(tid) => {
           let (ev_th, _) = extract_codex_turn_ids(line)
-          let thread_ok = match (ev_th, sess.runtime_session_id) {
-            (Some(et), Some(st)) => et.length() == 0 || st.length() == 0 || et == st
-            _ => true
-          }
-          if !thread_ok {
+          if !codex_turn_started_matches_session(ev_th, sess.runtime_session_id) {
             return
           }
           sess.codex_active_turn_id = Some(tid)
@@ -8035,6 +8074,7 @@ pub fn LiveRunnerManager::export_handover_state_json(self : LiveRunnerManager) -
     let cp = self.pending_prompts[pi]
     p_prompts.push(
       base_codec::json_obj([
+        ("id", base_codec::json_str(cp.id)),
         ("sessionKey", base_codec::json_str(cp.session_key)),
         ("runtime", base_codec::json_str(cp.runtime)),
         ("text", base_codec::json_str(cp.text)),
@@ -8154,6 +8194,17 @@ pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j
         if skey.length() == 0 || txt.length() == 0 {
           continue
         }
+        let cid = {
+          let raw_id = get_str(item, "id")
+          if raw_id.length() > 0 { raw_id } else { skey + ":" + i.to_string() }
+        }
+        // R5 P1-1: Strictly idempotent import by stable unique `id` so dual-path handover
+        // (launcher `carry` + disk snapshot) never executes the same queued prompt twice,
+        // while two distinct human messages with identical text have distinct `id`s!
+        if self.carried_prompt_ids.get(cid) is Some(true) {
+          continue
+        }
+        self.carried_prompt_ids.set(cid, true)
         let rt = {
           let r = get_str(item, "runtime")
           if r.length() > 0 { r } else { "claude" }
@@ -8163,6 +8214,7 @@ pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j
           if k.length() > 0 { k } else { "prompt" }
         }
         self.pending_prompts.push(CarriedHandoverPrompt::{
+          id: cid,
           session_key: skey,
           runtime: rt,
           text: txt,
@@ -8173,6 +8225,78 @@ pub fn LiveRunnerManager::import_handover_state_json(self : LiveRunnerManager, j
     }
     _ => ()
   }
+}
+
+/// R5 P1-3: Two-phase lossless handover compaction carry:
+/// - Phase 1 runs `commit_fn(akey, actor)` for ALL compacting actors WITHOUT clearing ANY actor's
+///   `started_prompts` or `queue`. If any DB commit fails, returns `Err(...)` with every actor's
+///   queued input 100% intact!
+/// - Phase 2 (only after ALL Phase 1 commits succeed) drains `started_prompts` + `queue` into
+///   `self.pending_prompts` with stable unique IDs.
+pub fn LiveRunnerManager::carry_compacting_actors_two_phase(
+  self : LiveRunnerManager,
+  compacting : Array[(String, station_sessions::SessionActor)],
+  commit_fn : (String, station_sessions::SessionActor) -> Result[Unit, String],
+) -> Result[Unit, String] {
+  // Phase 1: Commit all SQLite terminations first — NEVER clear any actor queue until all succeed!
+  for ci in 0..<compacting.length() {
+    let (akey, actor) = compacting[ci]
+    match commit_fn(akey, actor) {
+      Ok(_) => ()
+      Err(e) => return Err(e)
+    }
+  }
+  // Phase 2: All SQLite commits succeeded; now safely drain queues into `self.pending_prompts`.
+  for ci in 0..<compacting.length() {
+    let (akey, actor) = compacting[ci]
+    for pi in 0..<actor.started_prompts.length() {
+      let txt = actor.started_prompts[pi]
+      let is_int = if pi < actor.started_prompts_internal.length() { actor.started_prompts_internal[pi] } else { false }
+      let kind = if pi < actor.started_prompts_kind.length() { actor.started_prompts_kind[pi] } else { "prompt" }
+      if txt.length() > 0 {
+        let cid = akey + ":" + self.next_prompt_carry_seq.to_string()
+        self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
+        self.carried_prompt_ids.set(cid, true)
+        self.pending_prompts.push(CarriedHandoverPrompt::{
+          id: cid,
+          session_key: akey,
+          runtime: actor.runtime,
+          text: txt,
+          is_internal: is_int,
+          kind: kind,
+        })
+      }
+    }
+    actor.started_prompts.clear()
+    actor.started_prompts_internal.clear()
+    actor.started_prompts_kind.clear()
+    for qi in 0..<actor.queue.length() {
+      match actor.queue[qi] {
+        station_sessions::ActorWork::Prompt(txt) => if txt.length() > 0 {
+          let cid = akey + ":" + self.next_prompt_carry_seq.to_string()
+          self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
+          self.carried_prompt_ids.set(cid, true)
+          self.pending_prompts.push(CarriedHandoverPrompt::{ id: cid, session_key: akey, runtime: actor.runtime, text: txt, is_internal: false, kind: "prompt" })
+        }
+        station_sessions::ActorWork::InternalPrompt(txt) => if txt.length() > 0 {
+          let cid = akey + ":" + self.next_prompt_carry_seq.to_string()
+          self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
+          self.carried_prompt_ids.set(cid, true)
+          self.pending_prompts.push(CarriedHandoverPrompt::{ id: cid, session_key: akey, runtime: actor.runtime, text: txt, is_internal: true, kind: "prompt" })
+        }
+        station_sessions::ActorWork::Resume(txt) => if txt.length() > 0 {
+          let cid = akey + ":" + self.next_prompt_carry_seq.to_string()
+          self.next_prompt_carry_seq = self.next_prompt_carry_seq + 1
+          self.carried_prompt_ids.set(cid, true)
+          self.pending_prompts.push(CarriedHandoverPrompt::{ id: cid, session_key: akey, runtime: actor.runtime, text: txt, is_internal: true, kind: "resume" })
+        }
+        _ => ()
+      }
+    }
+    actor.queue.clear()
+    actor.phase = station_sessions::ActorPhase::Idle
+  }
+  Ok(())
 }
 
 /// R4 Item 2: Re-submits queued inputs carried across `SIGUSR2` handover from interrupted
@@ -8228,78 +8352,47 @@ pub fn LiveRunnerManager::prepare_handover(
   core : station_whole::WholeCore,
   wall_ms : Int64,
 ) -> Result[Unit, String] {
-  // R4 Item 2: Explicitly terminate any in-flight compaction BEFORE snapshot export, check SQLite
-  // commit errors (never silently swallow!), and preserve all queued inputs in `self.pending_prompts`!
+  // R5 P1-3: Two-phase lossless handover compaction finalization!
   let ho_now_ms = host_shim::now_ms()
+  let compacting : Array[(String, station_sessions::SessionActor)] = []
   let compact_keys = core.agents.hub.actors.keys()
   for ci in 0..<compact_keys.length() {
     let akey = compact_keys[ci]
     match core.agents.hub.actors.get(akey) {
-      Some(actor) => {
-        if actor.compacting || actor.pending_compaction is Some(_) {
-          let mut ws = core.config.home_workspace
-          match self.sessions.get(akey) {
-            Some(csess) => {
-              ws = csess.ws
-              self.reclaim_session(ctx, core, akey, csess, ho_now_ms)
-            }
-            None => ()
-          }
-          match live_runner_finish_compaction_checked(
-            self,
-            ctx,
-            core,
-            None,
-            akey,
-            ws,
-            actor.runtime,
-            false,
-            Some("interrupted by restart"),
-            ho_now_ms,
-            wall_ms,
-          ) {
-            Ok(_) => ()
-            Err(e) => return Err("handover compaction finalize failed for " + akey + ": " + e)
-          }
-          // Capture any un-dispatched `started_prompts` + remaining `queue` into `self.pending_prompts`
-          // so the successor daemon dispatches them cleanly after takeover!
-          for pi in 0..<actor.started_prompts.length() {
-            let txt = actor.started_prompts[pi]
-            let is_int = if pi < actor.started_prompts_internal.length() { actor.started_prompts_internal[pi] } else { false }
-            let kind = if pi < actor.started_prompts_kind.length() { actor.started_prompts_kind[pi] } else { "prompt" }
-            if txt.length() > 0 {
-              self.pending_prompts.push(CarriedHandoverPrompt::{
-                session_key: akey,
-                runtime: actor.runtime,
-                text: txt,
-                is_internal: is_int,
-                kind: kind,
-              })
-            }
-          }
-          actor.started_prompts.clear()
-          actor.started_prompts_internal.clear()
-          actor.started_prompts_kind.clear()
-          for qi in 0..<actor.queue.length() {
-            match actor.queue[qi] {
-              station_sessions::ActorWork::Prompt(txt) => if txt.length() > 0 {
-                self.pending_prompts.push(CarriedHandoverPrompt::{ session_key: akey, runtime: actor.runtime, text: txt, is_internal: false, kind: "prompt" })
-              }
-              station_sessions::ActorWork::InternalPrompt(txt) => if txt.length() > 0 {
-                self.pending_prompts.push(CarriedHandoverPrompt::{ session_key: akey, runtime: actor.runtime, text: txt, is_internal: true, kind: "prompt" })
-              }
-              station_sessions::ActorWork::Resume(txt) => if txt.length() > 0 {
-                self.pending_prompts.push(CarriedHandoverPrompt::{ session_key: akey, runtime: actor.runtime, text: txt, is_internal: true, kind: "resume" })
-              }
-              _ => ()
-            }
-          }
-          actor.queue.clear()
-          actor.phase = station_sessions::ActorPhase::Idle
-        }
+      Some(actor) => if actor.compacting || actor.pending_compaction is Some(_) {
+        compacting.push((akey, actor))
       }
       None => ()
     }
+  }
+  match self.carry_compacting_actors_two_phase(compacting, fn(akey : String, actor : station_sessions::SessionActor) -> Result[Unit, String] {
+    let mut ws = core.config.home_workspace
+    match self.sessions.get(akey) {
+      Some(csess) => {
+        ws = csess.ws
+        self.reclaim_session(ctx, core, akey, csess, ho_now_ms)
+      }
+      None => ()
+    }
+    match live_runner_finish_compaction_checked(
+      self,
+      ctx,
+      core,
+      None,
+      akey,
+      ws,
+      actor.runtime,
+      false,
+      Some("interrupted by restart"),
+      ho_now_ms,
+      wall_ms,
+    ) {
+      Ok(_) => Ok(())
+      Err(e) => Err("handover compaction finalize failed for " + akey + ": " + e)
+    }
+  }) {
+    Ok(_) => ()
+    Err(e) => return Err(e)
   }
   let mkeys = self.pending_end_turns.keys()
   for mi in 0..<mkeys.length() {
