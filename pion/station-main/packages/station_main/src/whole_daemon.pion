@@ -1863,6 +1863,7 @@ struct WholeRuntimeState {
   adopted_runners : Map[Int, AdoptedRunnerConn]
   adopted_runner_by_sock : Map[Int64, Int]
   live_runners : LiveRunnerManager
+  secret_runs : SecretRunManager
   mut next_runner_conn_id : Int
   mut carried_handover_failed : Option[String]
   mut mcp_announced : Bool
@@ -5919,6 +5920,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     if st.live_runners.handle_role_done(ctx, st.core, tok, d, host_shim::now_ms(), host_shim::wall_ms()) {
       return
     }
+    if st.secret_runs.handle_role_done(st.mcp_srv, st.mcp_cb, ctx.mux_role, tok, d, host_shim::now_ms(), host_shim::wall_ms()) {
+      return
+    }
     match tok {
       builders_core::MuxToken::Tagged(owner_id, kind, sid) => {
         // Wave 17D-2 R6: non-blocking async HTTP live admin op completion (`stream.open` / `stream.read`).
@@ -7254,6 +7258,8 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       // Bind inherited `mcp_fd` (or `127.0.0.1:0` when `< 0`) BEFORE handover completes so `/mcp`
       // immediately answers `503` (zero internal info leaked) until `open_after_predecessor_gone` succeeds.
       let mcp_srv = station_http::HttpServer::with_defaults(ctx.mux_door)
+      let secret_runs = SecretRunManager::new(ctx.data, ctx.sep)
+      let mcp_cb_cell : Array[Option[station_http::ServerCallbacks]] = [None]
       let mcp_cb = station_http::ServerCallbacks::new(fn(req : station_http::HttpRequest) -> station_http::HandlerAction {
         if req.method == "GET" && req.path == "/healthz" {
           return station_http::HandlerAction::Respond(station_http::HttpResponse::text(200, "ok"))
@@ -7470,6 +7476,122 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               None => ()
             }
           }
+          // Async non-blocking `secret_run` interception (Wave 17E-1): strictly AFTER `core.ready`,
+          // local-origin guard, and Bearer token authentication; returns `HandlerAction::Defer` so
+          // the main event loop stays 100% responsive (`GET /status` immediate 200) while running.
+          if req.method == "POST" && req.path == "/mcp" && core.ready && !core.shut_down {
+            let mut is_secret_run = false
+            let mut sr_args : base_codec::Json = base_codec::json_obj([])
+            let mut sr_rpc_id : base_codec::Json = base_codec::json_null()
+            match base_codec::json_parse(req_body) {
+              base_codec::JsonParseResult::Ok(j) => {
+                let is_tools_call = match base_codec::json_get(j, "method") {
+                  Some(base_codec::Json::Str(s)) => s == "tools/call"
+                  _ => false
+                }
+                if is_tools_call {
+                  match base_codec::json_get(j, "id") {
+                    Some(id_v) => sr_rpc_id = id_v
+                    None => ()
+                  }
+                  match base_codec::json_get(j, "params") {
+                    Some(p) => {
+                      let tname = match base_codec::json_get(p, "name") {
+                        Some(base_codec::Json::Str(s)) => s
+                        _ => ""
+                      }
+                      if tname == "secret_run" {
+                        is_secret_run = true
+                        match base_codec::json_get(p, "arguments") {
+                          Some(a) => sr_args = a
+                          None => ()
+                        }
+                      } else if tname == "station_tool" {
+                        match base_codec::json_get(p, "arguments") {
+                          Some(a) => {
+                            let st_is_sr = match base_codec::json_get(a, "name") {
+                              Some(base_codec::Json::Str(s)) => s == "secret_run"
+                              _ => false
+                            }
+                            if st_is_sr {
+                              match base_codec::json_get(a, "arguments") {
+                                Some(base_codec::Json::Obj(fs)) => {
+                                  is_secret_run = true
+                                  sr_args = base_codec::Json::Obj(fs)
+                                }
+                                _ => ()
+                              }
+                            }
+                          }
+                          None => ()
+                        }
+                      }
+                    }
+                    None => ()
+                  }
+                }
+              }
+              _ => ()
+            }
+            let sr_origin_ok = match origin_hdr {
+              Some(o) => o.trim().length() == 0
+              None => match host_hdr {
+                Some(h) => {
+                  let hl = jscase::lower(h.trim())
+                  hl == "127.0.0.1"
+                  || hl.starts_with("127.0.0.1:")
+                  || hl == "localhost"
+                  || hl.starts_with("localhost:")
+                  || hl == "[::1]"
+                  || hl.starts_with("[::1]:")
+                }
+                None => true
+              }
+            }
+            if is_secret_run && sr_origin_ok {
+              let sr_sess_opt : Option[String] = match auth_hdr {
+                Some(ah) => {
+                  let tr = ah.trim()
+                  if tr.starts_with("Bearer ") || tr.starts_with("bearer ") {
+                    let tok = station_connects::str_slice(tr, 7, tr.to_bytes().length()).trim()
+                    core.agents.resolve_token_ct(tok)
+                  } else {
+                    None
+                  }
+                }
+                None => None
+              }
+              match (sr_sess_opt, mcp_cb_cell[0]) {
+                (Some(sr_sess), Some(cb_ref)) => {
+                  let now_m = host_shim::now_ms()
+                  let wall_m = host_shim::wall_ms()
+                  match station_whole::prepare_secret_run(
+                    core.store,
+                    sr_sess,
+                    core.config.home_workspace,
+                    core.config.station_id,
+                    sr_args,
+                    wall_m,
+                  ) {
+                    Ok(prep) => {
+                      match secret_runs.start_run(mcp_srv, cb_ref, ctx.mux_role, req.conn_id, sr_rpc_id, prep, now_m, wall_m) {
+                        Ok(_) => return station_http::HandlerAction::Defer
+                        Err(e) => {
+                          let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true)
+                          return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
+                        }
+                      }
+                    }
+                    Err(e) => {
+                      let err_json = encode_mcp_tool_rpc_result(sr_rpc_id, e, true)
+                      return station_http::HandlerAction::Respond(station_http::HttpResponse::json(200, err_json))
+                    }
+                  }
+                }
+                _ => ()
+              }
+            }
+          }
           let mresp = core.handle_mcp_http(
             req.method,
             req.path,
@@ -7675,6 +7797,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
 
       let live_runners = LiveRunnerManager::new()
       live_runners_cell[0] = Some(live_runners)
+      mcp_cb_cell[0] = Some(mcp_cb)
       let now0 = host_shim::now_ms()
       let seen_members : Map[String, Map[String, Map[String, SeenMember]]] = Map::new()
       wire_whole_core_runtime_hooks(ctx, core, logins, browser, seen_members)
@@ -7708,6 +7831,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         adopted_runners: Map::new(),
         adopted_runner_by_sock: Map::new(),
         live_runners: live_runners,
+        secret_runs: secret_runs,
         next_runner_conn_id: 1,
         carried_handover_failed: None,
         mcp_announced: false,
@@ -9075,6 +9199,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           if st.live_runners.handle_sys_event(ctx, st.core, ev_id, sev, now_sys, host_shim::wall_ms()) {
             return
           }
+          if st.secret_runs.handle_sys_event(st.mcp_srv, st.mcp_cb, ctx.mux_role, ev_id, sev) {
+            return
+          }
           let _ = st.core.agents.jobs.handle_sys_event(ev_id, sev, host_shim::wall_ms())
         }
         None => ()
@@ -9165,6 +9292,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           }
           st.live_runners.tick(ctx, st.core, now, wall)
           st.live_runners.pump(ctx, st.core, live_config_raw(st.core, ctx.cfg_raw), now, wall)
+          st.secret_runs.tick(now, wall)
           let _ = st.core.agents.jobs.poll_followed(wall)
           let _ = st.core.remote.drain_queue(wall)
           let _ = st.devices.tick_expiry(now, wall)
@@ -9486,6 +9614,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
     on_shutdown: fn(ctx : DaemonCtx) -> Unit {
       match state_opt {
         Some(st) => {
+          st.secret_runs.shutdown(ctx.mux_role)
           let as_keys = st.admin_streams.keys()
           for ai in 0..<as_keys.length() {
             let sid = as_keys[ai]

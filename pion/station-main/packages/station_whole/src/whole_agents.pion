@@ -204,6 +204,14 @@ pub fn wired_mcp_tool_names() -> Array[String] {
     "job_log",
     "job_stop",
     "project_manage",
+    "secret_list",
+    "secret_use",
+    "secret_save",
+    "secret_describe",
+    "secret_delete",
+    "secret_cancel",
+    "secret_reask",
+    "secret_run",
   ]
 }
 
@@ -2153,9 +2161,14 @@ fn WholeAgents::build_domain_handlers(
   self : WholeAgents,
   whole_store : WholeStore,
   now_ms : Int64,
+  vault_deps : Option[VaultMcpDeps] = None,
 ) -> station_tools::DomainHandlers {
   let base = station_tools::default_domain_handlers()
   let home_ws = self.config.home_ws
+  let eff_vault_deps = match vault_deps {
+    Some(d) => d
+    None => VaultMcpDeps::empty()
+  }
 
   let chat_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
     let st = match whole_store.require_open() {
@@ -3532,11 +3545,24 @@ fn WholeAgents::build_domain_handlers(
     station_tools::error_reply("unsupported project_manage action: " + action)
   }
 
+  let secret_handler = fn(session : String, tool : String, args : base_codec::Json) -> station_tools::ToolReply {
+    handle_vault_mcp_tool(
+      whole_store,
+      self.random_bytes_fn,
+      home_ws,
+      eff_vault_deps,
+      session,
+      tool,
+      args,
+      now_ms,
+    )
+  }
+
   station_tools::DomainHandlers::{
     chat: chat_handler,
     job: job_handler,
     remote: base.remote,
-    secret: base.secret,
+    secret: secret_handler,
     device: base.device,
     screen: base.screen,
     browser: base.browser,
@@ -3616,8 +3642,9 @@ pub fn WholeAgents::handle_mcp_http(
   authorization : Option[String],
   body : String,
   now_ms : Int64,
+  vault_deps : Option[VaultMcpDeps] = None,
 ) -> McpHttpResponse {
-  let handlers = self.build_domain_handlers(whole_store, now_ms)
+  let handlers = self.build_domain_handlers(whole_store, now_ms, vault_deps=vault_deps)
   self.handle_mcp_http_with_handlers(
     method,
     path,

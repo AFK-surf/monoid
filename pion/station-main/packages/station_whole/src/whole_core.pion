@@ -1269,6 +1269,13 @@ pub fn WholeCore::handle_mcp_http(
     }
   }
   let eff_now = if now_ms > 0L { now_ms } else { (self.clock_ms)() }
+  let vdeps = VaultMcpDeps::{
+    lock_of: self.api.hooks.lock_of,
+    events: Some(self.api.events),
+    verify_fn: self.api.auth_policy.verify_fn,
+    station_id: self.config.station_id,
+    secret_run_exec: None,
+  }
   self.agents.handle_mcp_http(
     self.store,
     method,
@@ -1278,6 +1285,7 @@ pub fn WholeCore::handle_mcp_http(
     authorization,
     body,
     eff_now,
+    vault_deps=Some(vdeps),
   )
 }
 

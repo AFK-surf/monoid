@@ -1,0 +1,92 @@
+// Wave 17E-1: Pure unit tests for `whole_vault_mcp.pion` (zero SQLite FFI).
+
+import "station_vault"
+
+fn vmcp_assert(cond : Bool, msg : String) -> Unit {
+  if !cond {
+    panic("ASSERT FAILED: " + msg)
+  }
+}
+
+fn vmcp_assert_eq_str(got : String, want : String, label : String) -> Unit {
+  if got != want {
+    panic("ASSERT FAILED (" + label + "): got `" + got + "`, want `" + want + "`")
+  }
+}
+
+test "vault_ulid produces valid 26-char Crockford Base32 IDs" {
+  let mut seq = 1
+  let rng = fn(n : Int) -> Result[Bytes, String] {
+    let b = Bytes::new(n)
+    for i in 0..<n {
+      b[i] = ((seq * 17 + i * 31) & 0xFF) as Byte
+    }
+    seq = seq + 1
+    Ok(b)
+  }
+  let u1 = match vault_ulid(1700000000000L, rng) {
+    Ok(u) => u
+    Err(e) => panic("vault_ulid failed: " + e)
+  }
+  let u2 = match vault_ulid(1700000001000L, rng) {
+    Ok(u) => u
+    Err(e) => panic("vault_ulid failed: " + e)
+  }
+  vmcp_assert(u1.length() == 26, "u1 len 26")
+  vmcp_assert(u2.length() == 26, "u2 len 26")
+  vmcp_assert(u2 > u1, "u2 > u1")
+  vmcp_assert(station_vault::is_vault_id("v_" + u1), "u1 crockford")
+  vmcp_assert(station_vault::is_vault_id("v_" + u2), "u2 crockford")
+  for i in 0..<26 {
+    let c = u1.code_unit_at(i)
+    vmcp_assert(c != 73 && c != 76 && c != 79 && c != 85, "no I/L/O/U")
+  }
+}
+
+test "vault_iso_utc formats unix epoch seconds accurately" {
+  vmcp_assert_eq_str(vault_iso_utc(0L), "1970-01-01T00:00:00.000Z", "epoch 0")
+  vmcp_assert_eq_str(vault_iso_utc(1700000000L), "2023-11-14T22:13:20.000Z", "2023")
+  vmcp_assert_eq_str(vault_iso_utc(1795857074L), "2026-11-28T09:11:14.000Z", "2026")
+}
+
+test "vault_safe_secret_filename rejects path traversal and NUL" {
+  vmcp_assert_eq_str(vault_safe_secret_filename(None), "secret", "none")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("")), "secret", "empty")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some(".")), "secret", "dot")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("..")), "secret", "dotdot")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("../etc/passwd")), "secret", "traversal")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("dir/file.json")), "secret", "slash")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("dir\\file.json")), "secret", "backslash")
+  vmcp_assert_eq_str(vault_safe_secret_filename(Some("kubeconfig.yaml")), "kubeconfig.yaml", "plain name")
+}
+
+test "format_secret_run_output matches Node secrets.ts wording" {
+  vmcp_assert_eq_str(format_secret_run_output(Some(0), None, false, false, "ok"), "exit code 0\nok", "exit 0")
+  vmcp_assert_eq_str(format_secret_run_output(Some(1), None, false, true, "a\n…(cut)…\nb"), "exit code 1 (output cut in the middle)\na\n…(cut)…\nb", "cut")
+  vmcp_assert_eq_str(format_secret_run_output(None, Some("SIGKILL"), true, false, "partial"), "stopped: it ran too long\npartial", "timeout")
+  vmcp_assert_eq_str(format_secret_run_output(None, Some("SIGTERM"), false, false, ""), "ended by SIGTERM\n", "signal")
+}
+
+test "wired_mcp_tool_names includes all 8 vault secret tools" {
+  let names = wired_mcp_tool_names()
+  let required = [
+    "secret_list",
+    "secret_use",
+    "secret_save",
+    "secret_describe",
+    "secret_delete",
+    "secret_cancel",
+    "secret_reask",
+    "secret_run",
+  ]
+  for i in 0..<required.length() {
+    let mut found = false
+    for j in 0..<names.length() {
+      if names[j] == required[i] {
+        found = true
+        break
+      }
+    }
+    vmcp_assert(found, "missing tool " + required[i])
+  }
+}
