@@ -3146,10 +3146,11 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const projRen = await adminCall(conn, "POST", "/projects/rename", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ from: "OldW17D3", to: "NewW17D3" })));
   assert.equal(projRen.status, 501, `POST /projects/rename must return honest 501 until Wave 17E, got ${projRen.status}`);
 
+  // Wave 17E-3A: `hub.session.retry` & `hub.session.compact` are now live on `whole_daemon` (unknown session -> 404, not 501)
   const retryMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/retry", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ thread: 1, seq: 1 })));
-  assert.equal(retryMiss.status, 501, `hub.session.retry must return honest 501 until Wave 17E, got ${retryMiss.status}`);
+  assert.equal(retryMiss.status, 404, `hub.session.retry unknown session must return 404 (live Wave 17E-3A), got ${retryMiss.status}`);
   const compactMiss = await adminCall(conn, "POST", "/sessions/no-such-sess/compact", { "content-type": "application/json" }, Buffer.from("{}"));
-  assert.equal(compactMiss.status, 501, `hub.session.compact must return honest 501 until Wave 17E, got ${compactMiss.status}`);
+  assert.equal(compactMiss.status, 404, `hub.session.compact unknown session must return 404 (live Wave 17E-3A), got ${compactMiss.status}`);
 
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });

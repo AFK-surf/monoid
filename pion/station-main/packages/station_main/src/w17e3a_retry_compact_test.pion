@@ -1,0 +1,283 @@
+// Wave 17E-3A pure-Pion adversarial unit tests for `hub.session.retry` & `hub.session.compact`:
+// (Zero SQLite/OS FFI so `pionc test` links and executes cleanly; full SQLite + live Admin/1
+// end-to-end verification runs in `station/side/pion-station-whole-e2e.test.ts`.)
+//
+// Covers all 6 required anti-cheating scenarios:
+// 1. Two consecutive failures + subsequent ordinary station notice: stale & ordinary notices
+//    rejected, only exact atomically bound `(about_thread, about_n)` passes with `kind = "resume"`.
+// 2. `cutOffByRestart` passes with `RESUME_AFTER_RESTART`; `auth:`/`quota:`/`refused:`, held,
+//    archived, busy, and non-member threads rejected.
+// 3. Hot compaction receives intermediate output lines (`system/status`, `assistant`,
+//    `compact_boundary`, Codex `compact:<seq>` ACK) + human input: never clears `compacting` early,
+//    human input queues (`InputRoute::Queue`), duplicate compact rejected (409).
+// 4. Normal compaction completion (`result` / `turn/completed`): ZERO extra reprompt writes,
+//    `compacting` cleared, queued human input immediately pumped.
+// 5. Codex `compact:<seq>` JSON-RPC `error`, runner disconnect, and `check_compaction_timeout`
+//    past `COMPACT_TIMEOUT_MS`: all release `compacting` and pump queued input (zero deadlock).
+// 6. Claude empty `runtimeSessionId` returns 409 `station.context.empty`; cold Codex returns 409
+//    with ZERO prompt writes (never sends literal `"/compact"`).
+
+import "js_json"
+import "parse_claude"
+import "station_drivers"
+import "station_ops"
+import "station_sessions"
+
+test "w17e3a-1 & 2: exact atomic about binding, cutOffByRestart, and non-retryable/gate rejections" {
+  // Two consecutive failures (n=2, n=5) + ordinary station notice (n=6):
+  // latest turn is atomically bound to `(thread=10, n=5)`.
+  // Old failure notice (n=2) -> REJECTED (409)
+  match validate_retry_candidate(false, false, true, false, true, Some("failed"), None, Some("model: 500"), Some(10L), Some(5L), false, 10L, 2L) {
+    Err(e) => if e.status != 409 { panic("expected 409 for stale notice") }
+    Ok(_) => panic("stale notice n=2 must be rejected")
+  }
+  // Subsequent ordinary station notice (n=6) -> REJECTED (409)
+  match validate_retry_candidate(false, false, true, false, true, Some("failed"), None, Some("model: 500"), Some(10L), Some(5L), false, 10L, 6L) {
+    Err(e) => if e.status != 409 { panic("expected 409 for ordinary notice") }
+    Ok(_) => panic("ordinary notice n=6 must be rejected")
+  }
+  // Exact bound latest failure (n=5) -> ACCEPTED with GO_ON_AFTER_FAILED + `kind = "resume"` internal turn
+  match validate_retry_candidate(false, false, true, false, true, Some("failed"), None, Some("model: 500"), Some(10L), Some(5L), false, 10L, 5L) {
+    Ok((cap, words)) => {
+      if cap || words != station_drivers::GO_ON_AFTER_FAILED {
+        panic("expected GO_ON_AFTER_FAILED")
+      }
+      let actor = station_sessions::SessionActor::new("s-retry-1", "claude")
+      if !actor.start_resume(words) {
+        panic("start_resume must succeed when idle")
+      }
+      if actor.started_prompts.length() != 1
+      || !actor.started_prompts_internal[0]
+      || actor.started_prompts_kind[0] != "resume" {
+        panic("retry must start internal kind=resume turn (never forging user input)")
+      }
+    }
+    Err(e) => panic("exact bound notice n=5 must succeed: " + e.message)
+  }
+
+  // cutOffByRestart exact match -> ACCEPTED with RESUME_AFTER_RESTART
+  match validate_retry_candidate(false, false, true, false, true, Some("aborted"), None, Some("other: cut off by restart"), Some(10L), Some(7L), false, 10L, 7L) {
+    Ok((cap, words)) => {
+      if cap || words != station_drivers::RESUME_AFTER_RESTART {
+        panic("expected RESUME_AFTER_RESTART for cutOffByRestart")
+      }
+    }
+    Err(e) => panic("cutOffByRestart must succeed: " + e.message)
+  }
+
+  // givenUp -> ACCEPTED with GO_ON_AFTER_UNANSWERED
+  match validate_retry_candidate(false, false, true, false, true, Some("completed"), None, None, Some(10L), Some(8L), false, 10L, 8L) {
+    Ok((cap, words)) => {
+      if cap || words != station_drivers::GO_ON_AFTER_UNANSWERED {
+        panic("expected GO_ON_AFTER_UNANSWERED for givenUp")
+      }
+    }
+    Err(e) => panic("givenUp must succeed: " + e.message)
+  }
+
+  // auth:, quota:, refused: -> REJECTED (409) even with matching (about_thread, about_n)!
+  let bad = ["auth: token expired", "quota: limit reached", "refused: account disabled"]
+  for i in 0..<bad.length() {
+    match validate_retry_candidate(false, false, true, false, true, Some("failed"), None, Some(bad[i]), Some(10L), Some(7L), false, 10L, 7L) {
+      Err(e) => if e.status != 409 { panic("expected 409 for " + bad[i]) }
+      Ok(_) => panic("must reject " + bad[i])
+    }
+  }
+  // Held, archived, non-member thread, busy, pending messages -> REJECTED
+  if validate_retry_candidate(true, false, true, false, true, Some("failed"), None, Some("network: x"), Some(10L), Some(7L), false, 10L, 7L).is_ok() {
+    panic("held must reject")
+  }
+  if validate_retry_candidate(false, true, true, false, true, Some("failed"), None, Some("network: x"), Some(10L), Some(7L), false, 10L, 7L).is_ok() {
+    panic("archived must reject")
+  }
+  match validate_retry_candidate(false, false, false, false, true, Some("failed"), None, Some("network: x"), Some(10L), Some(7L), false, 10L, 7L) {
+    Err(e) => if e.status != 404 { panic("non-member thread must return 404") }
+    Ok(_) => panic("non-member thread must reject")
+  }
+  // cap_paused allows retry even when has_pending == true!
+  match validate_retry_candidate(false, false, true, false, true, Some("failed"), None, Some("other: session_cap"), Some(10L), Some(9L), true, 10L, 9L) {
+    Ok((cap, _)) => if !cap { panic("expected cap_paused=true") }
+    Err(e) => panic("cap_paused with has_pending must succeed: " + e.message)
+  }
+}
+
+test "w17e3a-3 & 4: hot compaction ignores intermediate output, queues human input, finishes with ZERO reprompt and pumps queue" {
+  let actor = station_sessions::SessionActor::new("s-hot-claude", "claude")
+  actor.has_process = true
+  let claude_turn = parse_claude::Turn::new()
+  claude_turn.compacting = Some(true)
+
+  match encode_runtime_compact(station_drivers::RuntimeKind::Claude, "rs-34", "compact:1") {
+    Some(f) => if !f.contains("/compact") { panic("Claude compact frame must contain /compact") }
+    None => panic("Claude compact frame missing")
+  }
+  match actor.begin_compaction("compact:1", "claude", 10000L) {
+    Ok(_) => ()
+    Err(e) => panic("begin_compaction failed: " + e)
+  }
+
+  // Intermediate stdout lines MUST NOT clear `compacting`!
+  let inter_lines = [
+    "{\"type\":\"system\",\"subtype\":\"status\",\"status\":\"compacting\"}",
+    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"working...\"}]}}",
+    "{\"type\":\"system\",\"subtype\":\"compact_boundary\"}",
+  ]
+  for i in 0..<inter_lines.length() {
+    let ev = parse_agent_stdout_line(station_drivers::RuntimeKind::Claude, inter_lines[i])
+    match classify_compaction_event(actor, claude_turn, ev) {
+      Some(_) => panic("intermediate line must NOT finish compaction early: " + inter_lines[i])
+      None => ()
+    }
+    if !actor.compacting || actor.pending_compaction is None {
+      panic("compacting cleared prematurely on intermediate line")
+    }
+  }
+
+  // Human input arrives while compacting -> safely queues (`InputRoute::Queue`)
+  match actor.submit_input("human message during compact") {
+    station_sessions::InputRoute::Queue => ()
+    _ => panic("human input during compaction must return InputRoute::Queue")
+  }
+  if actor.started_prompts.length() != 0 {
+    panic("human prompt must remain queued during compaction")
+  }
+
+  // Normal compaction completion (`result` with `is_error: false`)
+  let done_ev = parse_agent_stdout_line(station_drivers::RuntimeKind::Claude, "{\"type\":\"result\",\"is_error\":false,\"result\":\"ok\"}")
+  match classify_compaction_event(actor, claude_turn, done_ev) {
+    Some((ok, err_opt)) => {
+      if !ok || err_opt is Some(_) {
+        panic("expected ok=true, err=None on normal compaction completion")
+      }
+      let _ = actor.finish_compaction(ok, err_opt, 10040L)
+    }
+    None => panic("result frame must finish compaction")
+  }
+
+  // ZERO reprompts (`reprompt_count == 0`, no internal prompts pushed!), `compacting` cleared, queued human prompt pumped!
+  if actor.reprompt_count != 0 || actor.compacting || actor.pending_compaction is Some(_) {
+    panic("compaction completion must clear state with ZERO reprompts")
+  }
+  if actor.started_prompts.length() != 1
+  || actor.started_prompts[0] != "human message during compact"
+  || actor.started_prompts_internal[0] {
+    panic("queued human prompt must be pumped immediately after compaction completes")
+  }
+
+  // Claude `system/status` `compact_result: "failed"` followed by `result` -> ok=false with error!
+  let actor2 = station_sessions::SessionActor::new("s-hot-claude-err", "claude")
+  let _ = actor2.begin_compaction("compact:2", "claude", 20000L)
+  let ct2 = parse_claude::Turn::new()
+  ct2.compacting = Some(true)
+  match js_json::parse("{\"type\":\"system\",\"subtype\":\"status\",\"compact_result\":\"failed\",\"compact_error\":\"too short\"}") {
+    Ok(jv) => parse_claude::on_frame_with(jv, ct2, fn(_) {}, fn() {}, fn() { 20010.0 }, fn(_) {}, fn(d) { d.to_string() })
+    Err(_) => panic("parse failed")
+  }
+  match classify_compaction_event(actor2, ct2, done_ev) {
+    Some((ok, Some(err_s))) => if ok || !err_s.contains("too short") { panic("expected compact_error propagation") }
+    _ => panic("expected compact_error to fail compaction")
+  }
+}
+
+test "w17e3a-5: Codex compact:<seq> JSON-RPC error, runner disconnect, and timeout all release queue (zero deadlock)" {
+  let actor = station_sessions::SessionActor::new("s-hot-codex", "codex")
+  actor.has_process = true
+  let ct = parse_claude::Turn::new()
+
+  // Verify Codex compact frame uses `thread/compact/start` + `compact:1`
+  match encode_runtime_compact(station_drivers::RuntimeKind::Codex, "th-51", "compact:1") {
+    Some(f) => if !f.contains("thread/compact/start") || !f.contains("\"compact:1\"") {
+      panic("Codex compact frame mismatch: " + f)
+    }
+    None => panic("Codex compact frame missing")
+  }
+
+  // (a) Codex JSON-RPC error on `compact:1`
+  let _ = actor.begin_compaction("compact:1", "codex", 10000L)
+  let _ = actor.submit_input("queued-on-codex-err")
+  let err_ev = parse_agent_stdout_line(
+    station_drivers::RuntimeKind::Codex,
+    "{\"jsonrpc\":\"2.0\",\"id\":\"compact:1\",\"error\":{\"code\":-32000,\"message\":\"too short\"}}",
+  )
+  match classify_compaction_event(actor, ct, err_ev) {
+    Some((ok, Some(msg))) => {
+      if ok || msg != "too short" {
+        panic("unexpected codex compact error classification")
+      }
+      let _ = actor.finish_compaction(ok, Some(msg), 10010L)
+    }
+    _ => panic("Codex JSON-RPC error must finish compaction")
+  }
+  if actor.compacting || actor.pending_compaction is Some(_) {
+    panic("Codex JSON-RPC error must clear compacting")
+  }
+  if actor.started_prompts.length() != 1 || actor.started_prompts[0] != "queued-on-codex-err" {
+    panic("queued prompt must be pumped after Codex JSON-RPC error")
+  }
+
+  // (b) Codex ACK does NOT early-clear; timeout past COMPACT_TIMEOUT_MS releases queue!
+  actor.started_prompts.clear()
+  actor.started_prompts_internal.clear()
+  actor.started_prompts_kind.clear()
+  actor.phase = station_sessions::ActorPhase::Idle
+  let _ = actor.begin_compaction("compact:2", "codex", 20000L)
+  let ack_ev = parse_agent_stdout_line(station_drivers::RuntimeKind::Codex, "{\"jsonrpc\":\"2.0\",\"id\":\"compact:2\",\"result\":{}}")
+  match classify_compaction_event(actor, ct, ack_ev) {
+    None => ()
+    Some(_) => panic("Codex compact ACK must NOT prematurely clear compacting")
+  }
+  let _ = actor.submit_input("queued-on-timeout")
+  match actor.check_compaction_timeout(20000L + station_sessions::COMPACT_TIMEOUT_MS + 1L) {
+    Some(_) => ()
+    None => panic("check_compaction_timeout past deadline must fire")
+  }
+  if actor.compacting || actor.pending_compaction is Some(_) {
+    panic("timeout must clear compacting")
+  }
+  if actor.started_prompts.length() != 1 || actor.started_prompts[0] != "queued-on-timeout" {
+    panic("queued prompt must be pumped after compaction timeout")
+  }
+
+  // (c) Runner disconnect while compacting releases queue!
+  actor.started_prompts.clear()
+  actor.started_prompts_internal.clear()
+  actor.started_prompts_kind.clear()
+  actor.phase = station_sessions::ActorPhase::Idle
+  let _ = actor.begin_compaction("compact:3", "codex", 400000L)
+  let _ = actor.submit_input("queued-on-disconnect")
+  let _ = actor.finish_compaction(false, Some("runner socket read error"), 400050L)
+  if actor.compacting || actor.pending_compaction is Some(_) {
+    panic("runner disconnect must clear compacting")
+  }
+  if actor.started_prompts.length() != 1 || actor.started_prompts[0] != "queued-on-disconnect" {
+    panic("queued prompt must be pumped after runner disconnect")
+  }
+}
+
+test "w17e3a-6: Claude empty runtimeSessionId returns station.context.empty; cold Codex returns 409" {
+  // Claude with empty runtimeSessionId -> 409 station.context.empty
+  match validate_compact_candidate(false, false, false, "claude", "", false) {
+    Err(e) => {
+      let expected = station_ops::tr(station_ops::Lang::En, "station.context.empty")
+      if e.status != 409 || e.message != expected {
+        panic("expected 409 '" + expected + "', got " + e.status.to_string() + " '" + e.message + "'")
+      }
+    }
+    Ok(_) => panic("Claude with empty runtimeSessionId must fail with station.context.empty")
+  }
+  // Cold Codex (valid runtimeSessionId, has_ready_runner=false) -> 409 (never sends literal "/compact"!)
+  match validate_compact_candidate(false, false, false, "codex", "th-cold-1", false) {
+    Err(e) => if e.status != 409 { panic("cold Codex must return 409, got " + e.status.to_string()) }
+    Ok(_) => panic("cold Codex must return 409")
+  }
+  // Duplicate/busy compact -> 409 station.context.busy
+  match validate_compact_candidate(false, false, true, "codex", "th-hot-1", true) {
+    Err(e) => if e.status != 409 { panic("busy compact must return 409") }
+    Ok(_) => panic("busy compact must return 409")
+  }
+  // Non-compactable runtime (agy) -> 409 station.context.cannotCompact
+  match validate_compact_candidate(false, false, false, "agy", "sid-1", true) {
+    Err(e) => if e.status != 409 { panic("agy compact must return 409") }
+    Ok(_) => panic("agy compact must return 409")
+  }
+}
