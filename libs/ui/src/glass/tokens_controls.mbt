@@ -455,9 +455,9 @@ pub fn liquid_tab_bar_menu_glass(
 
 ///|
 /// How far a lifted bottom bar's lens bends and disperses what crosses its rim (a role 4 glass's `chroma`): over 0.04
-/// the renderers use the iOS 27 / Comma TabBarLens normal-axis rim refraction (`rimS` in each host's droplet shader,
-/// whole at 0.16), looking gently outward on straight top/bottom runs and inward on round ends with 3-tap normal
-/// dispersion, paleFringe desaturation, subtle end iridescence, and rim inner shadow.
+/// the renderers match iOS 27 native UITabBar lifted lens optics (`rimS` in each host's droplet shader, whole at 0.16):
+/// outward normal refraction around the full rim (shrinking the bar container cleanly inside the lens) with 5-tap
+/// spectral dispersion (R/Y/G/C/B) and subtle rim darkening; tab icons draw above the lens so glyphs never distort.
 pub let tab_lens_dispersion : Double = 0.16
 
 ///|

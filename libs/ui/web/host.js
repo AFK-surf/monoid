@@ -1518,39 +1518,46 @@
       }
       vec3 refractColor;
       if (isModernDrop) {
-        // A tab's lens (role 4) asked for more than the micro-dispersion (chroma over 0.04, whole at 0.16) uses the
-        // iOS 27 / Comma TabBarLens normal-axis rim refraction: straight top/bottom runs look gently outward (-ring)
-        // to keep the bar outline unbroken, while round left/right ends look inward (+sideDepth) so icons passing
-        // under the curved glass wall stretch cleanly without tangential smearing. 3-tap normal dispersion (0.09)
-        // with paleFringe desaturation (0.55), subtle end iridescence (0.018), and rim inner shadow (0.05).
+        // A tab's lens (role 4) asked for more than the micro-dispersion (chroma over 0.04, whole at 0.16) matches
+        // iOS 27 native UITabBar lifted lens optics: outward normal refraction around the full rim (shrinking the
+        // tab bar container cleanly inside the lens and pulling surrounding page content into the curved bevel),
+        // paired with crisp 5-tap spectral dispersion (R/Y/G/C/B) along the refraction normal and subtle rim depth.
+        // Tab icons draw above this lens layer so glyphs never distort at the rim.
         float rimS = isRoleTab ? clamp((abs(v_pad.z) - 0.04) / 0.12, 0.0, 1.0) * droplet : 0.0;
         float rimW = (rimS > 0.0 && pressAmt > 0.001 && d < 0.25) ? 1.0 - smoothstep(-0.25, 0.25, d) : 0.0;
         if (rimW > 0.0) {
-          float rimThick = 2.0 * halfMinor;
-          float rimBand = min(rimThick * 0.30, 18.0) * 1.2;
-          float rimDepth = min(rimThick * 0.375, 22.0);
-          float rimT = clamp(1.0 - inward / max(rimBand, 0.001), 0.0, 1.0);
+          float rimHs = halfMinor / 35.0;
+          float rimD = inward / rimHs;
+          float rimT = clamp(1.0 - rimD / 24.0, 0.0, 1.0);
           vec3 rimC;
           if (rimT <= 0.0) {
             rimC = backdrop(sampleBase);
           } else {
-            float rimTop = smoothstep(0.5, 0.99, surfaceNormal.y * surfaceNormal.y);
-            float rimSide = 0.50 * rimDepth * rimS;
-            float rimRing = 0.12 * rimDepth * rimS;
-            float rimShift = mix(rimSide * rimT * rimT * (2.0 - rimT), -rimRing * rimT * rimT, rimTop);
-            vec2 rimWay = surfaceNormal * (rimShift * shortening);
+            #if MB_LIQUID_SINGLE
+            vec2 rimLo = v_rect.xy;
+            vec2 rimHi = v_rect.xy + v_rect.zw;
+            #else
+            vec2 rimLo = u_gb.xy;
+            vec2 rimHi = u_gb.zw;
+            #endif
+            vec2 rimOut = p - (rimLo + rimHi) * 0.5;
+            float rimOutL = length(rimOut);
+            vec2 rimNv = rimOutL > 0.001 ? normalize(mix(surfaceNormal, rimOut / rimOutL, 0.30)) : surfaceNormal;
+            float rimN = 6.8 * rimT * rimT * smoothstep(0.0, 1.2, rimD + 0.45) * rimS * shortening;
+            vec2 rimWay = rimNv * (rimN * rimHs);
+            // 5-tap spectral dispersion along the outward refraction normal (R outer -> B inner), vivid and crisp
+            vec3 sR = backdrop(sampleBase + rimWay * 1.32);
+            vec3 sY = backdrop(sampleBase + rimWay * 1.16);
+            vec3 sG = backdrop(sampleBase + rimWay * 1.00);
+            vec3 sC = backdrop(sampleBase + rimWay * 0.84);
+            vec3 sB = backdrop(sampleBase + rimWay * 0.68);
             rimC = vec3(
-              backdrop(sampleBase - rimWay * 1.09).r,
-              backdrop(sampleBase - rimWay).g,
-              backdrop(sampleBase - rimWay * 0.91).b
+              sR.r * 0.65 + sY.r * 0.35,
+              sY.g * 0.25 + sG.g * 0.50 + sC.g * 0.25,
+              sC.b * 0.35 + sB.b * 0.65
             );
-            rimC = mix(rimC, vec3((rimC.r + rimC.g + rimC.b) / 3.0), 0.55 * rimT * rimS);
-            float rimBands = rimT * 22.0 + atan(surfaceNormal.y, surfaceNormal.x) * 1.5;
-            vec3 rimFilm = cos(rimBands + vec3(0.0, 2.1, 4.2));
-            float rimIrid = max(rimTop * smoothstep(0.35, 0.55, rimT) * smoothstep(0.15, 0.5, abs(surfaceNormal.x)),
-                                smoothstep(0.82, 0.95, rimT) * abs(surfaceNormal.x));
-            rimC = clamp(rimC + rimFilm * (0.018 * rimS) * rimIrid, 0.0, 1.0);
-            rimC *= 1.0 - 0.05 * rimT * rimT * rimS;
+            // Subtle glass rim darkening for 3D droplet thickness
+            rimC *= 1.0 - 0.045 * rimT * rimT * rimS;
           }
           refractColor = (rimW < 1.0) ? mix(backdrop(sampleBase + disp), rimC, rimW) : rimC;
         } else if (abs(v_pad.z) > 0.001 && snellSLip > 0.15 && pressAmt > 0.001) {

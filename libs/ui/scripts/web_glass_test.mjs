@@ -548,7 +548,7 @@ function runGlassVectorsInPage() {
       const buf = new Float32Array(10 * INST);
       let n = 0;
       rect(buf, n++ * INST, 0, 0, VW, VH, 0, 246 / 255, 244 / 255, 240 / 255, 1, 0);
-      rect(buf, n++ * INST, 109.0, 20.0, 3.0, 40.0, 0, 26 / 255, 26 / 255, 26 / 255, 1, 0);
+      rect(buf, n++ * INST, 121.0, 20.0, 3.0, 40.0, 0, 26 / 255, 26 / 255, 26 / 255, 1, 0);
       const l = n++ * INST;
       rect(buf, l, 35.0, 9.0, 90.0, 62.0, 6, 1, 1, 1, 0, -572 - pass);
       buf[l + 4] = 31.0; buf[l + 6] = 1; buf[l + 7] = -64.0;

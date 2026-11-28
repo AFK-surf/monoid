@@ -481,9 +481,11 @@ fn bar_holder_node(holder : @view.View, src : Source, ws : () -> Workspace?) -> 
   bar_action_anchor.val = Some(disc)
   bar_ball_node(holder)
   bar_indicator_node(holder)
+  // (the lifted lens sits over the bar's glass container and under the tab icons, as iOS 27's UITabBar does:
+  // it shrinks and refracts the bar container and page behind it without distorting the tab glyphs themselves)
+  bar_lens_node(holder)
   bar_rows_node(holder)
   bar_places_node(holder, w, row_top)
-  bar_lens_node(holder)
   bar_dots_node(holder)
 }
 
