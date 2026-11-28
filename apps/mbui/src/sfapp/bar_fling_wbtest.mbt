@@ -34,7 +34,7 @@ fn bar_slid(part : Double, steps : Int) -> (String?, Array[@ui.Haptic], Double) 
 ///|
 test "bar: a quick slide toward the next place let go short of its middle lands on it, the ball going on there, felt once" {
   let (active, felt, least) = bar_slid(0.4, 4)
-  assert_eq((active, felt), (Some(bar.told.unwrap().sets[bar.told.unwrap().cur][1]), [@ui.TextHandleMove]))
+  assert_eq((active, felt), (Some(bar_laid(bar.told.unwrap()).items[1]), [@ui.TextHandleMove]))
   assert_true(least >= -0.001, msg="the ball turned back at \{least} a second")
 }
 
@@ -47,7 +47,7 @@ test "bar: a slow slide the same way, let go short of the next place's middle: b
 ///|
 test "bar: a slide past the next place's middle, let go still there: that place, a tick as the finger got to it" {
   let (active, felt, _) = bar_slid(0.8, 60)
-  assert_eq((active, felt), (Some(bar.told.unwrap().sets[bar.told.unwrap().cur][1]), [@ui.TextHandleMove]))
+  assert_eq((active, felt), (Some(bar_laid(bar.told.unwrap()).items[1]), [@ui.TextHandleMove]))
 }
 
 ///|

@@ -628,14 +628,14 @@ fn workspace_glass_node(r : @view.View, src : Source, workspace : () -> Workspac
 ///|
 /// An icon-only control in the system's glass beside the workspace's button (sidebar_glass's) in `k`: a band's row
 /// square, read out a button named `title()`; its place, its icon and its menu's rows (`menu()`: each its id, its words,
-/// whether it is the one now, its icon) handed to the host as it is read out, by `key` (what rail_native.mbt does as it
+/// whether it is the one now, its icon, whether a dot is beside it) handed to the host as it is read out, by `key` (what rail_native.mbt does as it
 /// is chosen there), let go with it.
 fn sidebar_glass_node(
   k : @view.View,
   key : String,
   title : () -> String,
   icon : String,
-  menu : () -> Array[(String, String, Bool, String)],
+  menu : () -> Array[(String, String, Bool, String, Bool)],
   dot? : () -> Bool = fn() { false },
 ) -> Unit {
   @sf.host_button_anchor_node(k, title, fn(b) {
@@ -669,7 +669,7 @@ fn sidebar_glass_node(
 
 ///|
 /// The filter's menu in the system's glass (filter_button's there): each list it shows, the one `shown` now ticked.
-fn filter_glass_rows(shown : String) -> Array[(String, String, Bool, String)] {
+fn filter_glass_rows(shown : String) -> Array[(String, String, Bool, String, Bool)] {
   let now = if shown == "chats" { "all" } else { shown }
   [
     ("all", "web-main.filter.chats.all"),
@@ -677,7 +677,7 @@ fn filter_glass_rows(shown : String) -> Array[(String, String, Bool, String)] {
     ("watching", "web-main.filter.watching"),
     ("hidden", "web-main.filter.hidden"),
     ("archive", "web-main.filter.archived"),
-  ].map(fn(p) { ("sidebar/filter/" + p.0, @sf.t(p.1), p.0 == now, "") })
+  ].map(fn(p) { ("sidebar/filter/" + p.0, @sf.t(p.1), p.0 == now, "", false) })
 }
 
 ///|

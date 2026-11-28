@@ -138,6 +138,9 @@ pub(all) enum Pace {
 /// params is the run's next of its name, not said to differ.
 let reports : Array[String] = [
   "client.focus", "client.shown", "client.reports", "chat.place", "draft.put", "drive.place", "composer.text", "composer.comment",
+  // (what the app's own main mirrors to the core's traces while reporting is on: how long its first page took, a hang,
+  // a failure, src/stillfail's reports.mbt. A replay's app has no such main and makes none of them)
+  "client.metric", "client.error",
   // (a chats' list's window raised as it is scrolled near its foot: as the frames scrolled it)
   "chats.window",
   // (how many of a chat's last messages it opens on, told before it is asked: a run from before it never told it, and
@@ -236,6 +239,12 @@ pub fn Replay::parse(log : String) -> Replay {
         evs.push({ out: true, msg: o, bytes, wall, has_wall, done: false, at: -1.0, given: -1.0, host: false, kept: -1 })
       }
       (_, Some(i)) => {
+        // (the core's word of its own connection and the generations of what it lets one read (`{ id: 0, auth }`,
+        // Client::take_auth): answers no ask, and a replay is no connection: its client keeps none (`conn_id` 0) and
+        // takes what comes whatever `conn` and `authGen` it carries, a tape's from before them as well. Not given)
+        if i is Object(im) && im.contains("auth") {
+          continue
+        }
         let (wall, has_wall) = match m.get("w") {
           Some(Number(d, ..)) => (d, true)
           _ => (0.0, false)

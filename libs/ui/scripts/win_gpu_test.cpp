@@ -1169,6 +1169,81 @@ static void test_v8_v9_droplet_roi_gates(void) {
     free(pxz_nozoom);
   }
 
+  // V9-Tab-Wide-Dispersion: Role 4 over words' strokes that reach under its top lip. At chroma 0.04 the lip parts the
+  // colours by a hair, as it did; at 0.16 (the bottom bar's lens lifted: tab_lens_dispersion) it is the rim of the system's
+  // lens, the strokes parted into coloured copies along the edge: many times the coloured lip, none of it in the lens's
+  // middle, nothing outside the lens changed, and a stroke's yellow copies to its left, its cyan ones to its right
+  {
+    double tw[20 * MB_INST];
+    uint8_t *pxw[3] = {NULL, NULL, NULL};
+    for (int pass = 0; pass < 3; pass++) {
+      int n = 0;
+      fill_p0_rect(tw, 0, 0, VW, VH, 0, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 1.0, 0);
+      n++;
+      for (int k = 0; k < (pass < 2 ? 12 : 1); k++) {
+        fill_p0_rect(tw + n * MB_INST, pass < 2 ? 45.0 + k * 6.0 : 80.0, 1.5, 1.0, 10.5, 0, 26.0 / 255.0, 26.0 / 255.0, 26.0 / 255.0, 1.0, 0);
+        n++;
+      }
+      double *l = tw + n * MB_INST;
+      fill_p0_rect(l, 35.0, 9.0, 90.0, 62.0, 6, 1.0, 1.0, 1.0, 0.0, -572.0 - pass);
+      n++;
+      l[4] = 31.0; l[6] = 1.0; l[7] = -64.0;
+      l[12] = 1.0; l[13] = 13.5; l[15] = 1.0;
+      l[21] = 13.5; l[22] = pass == 0 ? 0.04 : 0.16;
+      pxw[pass] = render_rgba_pixels_of(tw, n, 246.0 / 255.0, 244.0 / 255.0, 240.0 / 255.0, 3.0, AW3, AH3);
+    }
+    CHECK(pxw[0] != NULL && pxw[1] != NULL && pxw[2] != NULL);
+    if (pxw[0] && pxw[1] && pxw[2]) {
+      // the lip: the lens's top 6 pt (y 9..15 pt), across the strokes (x 42..118 pt); the lens's middle (x 60..100 pt,
+      // y 28..52 pt); outside the lens: over its top (y 0..7 pt)
+      int lip[2] = {0, 0}, mid[2] = {0, 0}, out_diff = 0, mid_diff = 0;
+      for (int pass = 0; pass < 2; pass++) {
+        for (int py = 27; py < 156; py++) {
+          if (py >= 45 && py < 84) continue;
+          int x0 = py < 45 ? 126 : 180, x1 = py < 45 ? 354 : 300;
+          for (int px_x = x0; px_x < x1; px_x++) {
+            uint8_t *c = W_PX(pxw[pass], AW3, px_x, py);
+            int mx = c[0] > c[1] ? (c[0] > c[2] ? c[0] : c[2]) : (c[1] > c[2] ? c[1] : c[2]);
+            int mn = c[0] < c[1] ? (c[0] < c[2] ? c[0] : c[2]) : (c[1] < c[2] ? c[1] : c[2]);
+            if (mx - mn >= 48) (py < 45 ? lip : mid)[pass]++;
+          }
+        }
+      }
+      for (int py = 84; py < 156; py++)
+        for (int px_x = 180; px_x < 300; px_x++)
+          for (int ch = 0; ch < 3; ch++) {
+            int d = abs((int)W_PX(pxw[0], AW3, px_x, py)[ch] - (int)W_PX(pxw[1], AW3, px_x, py)[ch]);
+            if (d > mid_diff) mid_diff = d;
+          }
+      for (int py = 0; py < 21; py++)
+        for (int px_x = 0; px_x < AW3; px_x++)
+          for (int ch = 0; ch < 3; ch++) {
+            int d = abs((int)W_PX(pxw[0], AW3, px_x, py)[ch] - (int)W_PX(pxw[1], AW3, px_x, py)[ch]);
+            if (d > out_diff) out_diff = d;
+          }
+      printf("win_gpu: v9_tab_wide_dispersion lip_coloured=(%d,%d) mid_coloured=(%d,%d) mid_diff=%d out_diff=%d\n",
+             lip[0], lip[1], mid[0], mid[1], mid_diff, out_diff);
+      CHECK(lip[1] >= 150 && lip[1] >= 3 * lip[0] && mid[0] == 0 && mid[1] == 0 && mid_diff <= 2 && out_diff == 0);
+      // the one stroke (the third shot: at x 80..81 pt, the middle of the lens's flat top), 2 to 5 pt under the lip, the
+      // rim's reach to either side of it: its copies with the blue taken out (yellow) are only to its left, those with the red
+      // taken out (cyan) only to its right: the system's order on a top lip
+      int side[4] = {0, 0, 0, 0};
+      for (int py = 33; py < 42; py++)
+        for (int px_x = 222; px_x < 261; px_x++) {
+          uint8_t *c = W_PX(pxw[2], AW3, px_x, py);
+          int yellow = c[2] + 30 <= (c[0] < c[1] ? c[0] : c[1]), cyan = c[0] + 30 <= (c[1] < c[2] ? c[1] : c[2]);
+          side[px_x < 241 ? 0 : 2] += yellow;
+          side[px_x < 241 ? 1 : 3] += cyan;
+        }
+      printf("win_gpu: v9_tab_wide_dispersion sides yellow_left=%d cyan_left=%d yellow_right=%d cyan_right=%d\n", side[0], side[1], side[2],
+             side[3]);
+      CHECK(side[0] >= 20 && side[1] == 0 && side[2] == 0 && side[3] >= 20);
+    }
+    free(pxw[0]);
+    free(pxw[1]);
+    free(pxw[2]);
+  }
+
   // V9a2: Switch ON @ 2x phase-shifted integrated green mass
   {
     const int AW2 = VW * 2, AH2 = VH * 2;

@@ -128,7 +128,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone board": (492, 340, 45),
   "phone board-side": (490, 336, 45),
   "phone home": (800, 535, 52),
-  "phone home-bars": (841, 570, 52),
+  // (2026-11-28: bottom bar 4th slot opens the 5-row glass overflow menu with place labels in place of the icon-only
+  // bar switcher: phone home-bars makes 28 fewer nodes and lays out 32 fewer, measuring 10 more for the menu rows'
+  // labels; Budget-raise: newly displayed menu row labels)
+  "phone home-bars": (813, 538, 62),
   "phone home-jobs": (800, 535, 52),
   "phone home-shared-bell": (800, 535, 52),
   "phone home-sheet": (905, 627, 66),

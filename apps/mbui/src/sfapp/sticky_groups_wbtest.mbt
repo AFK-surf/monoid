@@ -179,8 +179,9 @@ test "small screen (Whole 390x844): persistent bottom-left Liquid Glass group pi
   // Scroll deep into "board"
   sticky_scroll_by(t, 195.0, 400.0, 360.0)
   // Zero bottom stacked headers
+  // (above the tab bar: the bar's last slot, which says whether its menu is open, is no group's head)
   let bot_group_heads = t.semantics().filter(fn(s) {
-    !s.hidden && s.role is Button && s.expanded is Some(_) && s.rect.1 > 700.0
+    !s.hidden && s.role is Button && s.expanded is Some(_) && s.rect.1 > 700.0 && s.rect.1 + s.rect.3 <= 844.0 - 22.0 - bar_track
   })
   assert_eq(bot_group_heads.length(), 0, msg="small screen must have 0 bottom stacked headers")
   // Compact left-aligned Liquid Glass floating pill sits cleanly above the bottom tab bar
@@ -330,13 +331,19 @@ test "small screen shell suppression: modal, board, search, and pushed page supp
   t.run_for(@ui.move_most_ms * 2.0)
   assert_true(sticky_find_floating_pill(t, "board") is Some(_), msg="pill restored after popping back to Home")
 
-  // 4. Bottom bar switcher panel open & toast shown -> suppressed; cleared -> restored
-  bar.mode.set(true)
+  // 4. Bottom bar menu open & toast shown -> suppressed; cleared -> restored
+  @ui.view_tree().unwrap().event(t.time(), fn() {
+    bar.open_menu(false, 0.0, t.time())
+    bar_retell(t.time())
+  })
   t.run_for(@ui.move_most_ms)
-  assert_true(sticky_find_floating_pill(t, "board") is None, msg="pill suppressed while bottom bar panel is open")
-  bar.mode.set(false)
+  assert_true(sticky_find_floating_pill(t, "board") is None, msg="pill suppressed while bottom bar menu is open")
+  @ui.view_tree().unwrap().event(t.time(), fn() {
+    bar.close_menu(t.time())
+    bar_retell(t.time())
+  })
   t.run_for(@ui.move_most_ms)
-  assert_true(sticky_find_floating_pill(t, "board") is Some(_), msg="pill restored after bottom bar panel closes")
+  assert_true(sticky_find_floating_pill(t, "board") is Some(_), msg="pill restored after bottom bar menu closes")
 
   @sfbase.toast_later("已复制链接")
   t.run_for(@motion.presence_in_ms)

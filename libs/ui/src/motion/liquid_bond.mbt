@@ -332,3 +332,40 @@ pub let liquid_wall_flex_in_spring : Spec = spring(ratio=0.70, stiffness=180.0, 
 /// Measured iOS 27.0 edge-wall release bounce-back spring (`zeta=0.62, k=180.0`).
 // kept across runs: a constant value
 pub let liquid_wall_flex_out_spring : Spec = spring(ratio=0.62, stiffness=180.0, threshold=0.001)
+
+///|
+/// A tab bar's glass growing into its overflow menu (response 0.35 s, damping 0.72: a little past the menu's height
+/// and back) and folding back into the bar (response 0.28 s, damping 0.94), the height in points, at rest within 0.03.
+// kept across runs: a constant value
+pub let tab_menu_open_spring : Spec = spring(ratio=0.72, stiffness=322.272797, threshold=0.03)
+
+///|
+// kept across runs: a constant value
+pub let tab_menu_close_spring : Spec = spring(ratio=0.94, stiffness=503.551245, threshold=0.03)
+
+///|
+/// The pinch along the bar that goes with each (response 0.50 s and 0.36 s, critically damped): struck by a speed,
+/// never sent anywhere, so it draws the bar in at once and lets it out without passing its length; a share of the
+/// bar's length, at rest within 0.0001.
+// kept across runs: a constant value
+pub let tab_menu_pinch_open_spring : Spec = spring(ratio=1.0, stiffness=157.913670, threshold=0.0001)
+
+///|
+// kept across runs: a constant value
+pub let tab_menu_pinch_close_spring : Spec = spring(ratio=1.0, stiffness=304.617420, threshold=0.0001)
+
+///|
+/// A row of that menu rising into its place as the menu opens (response 0.38 s, damping 0.58), in points.
+// kept across runs: a constant value
+pub let tab_menu_row_spring : Spec = spring(ratio=0.58, stiffness=273.396244, threshold=0.01)
+
+///|
+/// A tab bar letting its press go once the lens that carried it is taken away (stiffness 520, damping 0.9).
+// kept across runs: a constant value
+pub let tab_press_down_spring : Spec = spring(ratio=0.9, stiffness=520.0, threshold=0.002)
+
+///|
+/// A tab bar's selection showing again under its lens as the lens lands (response 0.40 s, critically damped); it goes
+/// as the lens lifts by `liquid_lens_lift_spring` (response 0.25 s).
+// kept across runs: a constant value
+pub let tab_pill_in_spring : Spec = spring(ratio=1.0, stiffness=246.740110, threshold=0.001)

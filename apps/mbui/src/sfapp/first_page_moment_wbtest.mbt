@@ -291,12 +291,12 @@ test "workspaces arrive after 300ms in Reading while a non-critical first-page t
 
 ///|
 test "A1: bottom bar is hidden and non-interactive while first_page_waits, then appears in the same frame as Home" {
-  // First measure the exact hit point of the Station tab on Small 390x844 at rest.
+  // First measure the exact hit point of the 文件 tab (one of the bar's own slots) on Small 390x844 at rest.
   new_run()
   let ref_src = fixture("home")
   let ref_t = @ui.Tester::new(fn(c) { view(c, ref_src) }, tree=app_tree(ref_src), w=390.0, h=844.0, platform=2)
   ref_t.run_for(@ui.move_most_ms)
-  let (bx, by, bw, bh) = tab_named_at(ref_t, "Station")
+  let (bx, by, bw, bh) = tab_named_at(ref_t, "文件")
   let (tap_x, tap_y) = (bx + bw / 2.0, by + bh / 2.0)
   let bar_drawn_at = fn(t : @ui.Tester) {
     let s = t.sources_at(tap_x, tap_y)
@@ -315,7 +315,7 @@ test "A1: bottom bar is hidden and non-interactive while first_page_waits, then 
   assert_true(@sfbase.first_page_waits.get(), msg="still waiting for first page")
   assert_true(!first_shown.get(), msg="first_shown still false")
   // Bottom bar must not be visible in semantics or drawn output while waiting.
-  let bar_visible_while_waiting = t.semantics().iter().any(fn(s) { !s.hidden && s.label.has_prefix("Station") })
+  let bar_visible_while_waiting = t.semantics().iter().any(fn(s) { !s.hidden && s.label.has_prefix("文件") })
   assert_false(bar_visible_while_waiting, msg="bottom bar must be hidden from semantics while first_page_waits")
   assert_false(bar_drawn_at(t), msg="bottom bar must not be drawn while first_page_waits: \{t.sources_at(tap_x, tap_y)}")
   assert_true(t.find("整理发布清单") is None, msg="Home must be hidden while first_page_waits")
@@ -331,12 +331,12 @@ test "A1: bottom bar is hidden and non-interactive while first_page_waits, then 
   assert_false(@sfbase.first_page_waits.get(), msg="first_page_waits false once answered")
   assert_true(t.find("整理发布清单") is Some(_), msg="Home visible on release frame")
   assert_true(bar_drawn_at(t), msg="bottom bar drawn on the same frame as Home: \{t.sources_at(tap_x, tap_y)}")
-  let bar_visible_now = t.semantics().iter().any(fn(s) { !s.hidden && s.label.has_prefix("Station") })
+  let bar_visible_now = t.semantics().iter().any(fn(s) { !s.hidden && s.label.has_prefix("文件") })
   assert_true(bar_visible_now, msg="bottom bar visible on the same frame as Home")
-  // And now tapping Station switches to the Stations place.
+  // And now tapping 文件 switches to the files' place.
   t.tap(tap_x, tap_y)
   t.frame()
-  assert_true(app.nav.top() == @sfbase.place_page("stations"), msg="bottom bar interactive once shown")
+  assert_true(app.nav.top() == @sfbase.place_page("files"), msg="bottom bar interactive once shown")
 }
 
 ///|

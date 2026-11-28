@@ -1,0 +1,18 @@
+# 小屏, a finger, on `home`'s chats: the bottom bar's last slot and its menu: tapped open (the bar's glass grown into
+# the menu, its rows rising) and folded back by a tap off it, then pressed and the same finger slid up to a row and
+# let go there (that page shown, the indicator landing on the last slot), and the chats tapped again.
+timeout 20000
+until 整理发布清单
+until 今天
+wait 500
+log measure
+tapxy 266 797
+wait 1300
+tapxy 120 300
+wait 1200
+drag 266 797 -124 -151 700
+wait 1500
+tapxy 64 797
+until 整理发布清单
+wait 900
+exit

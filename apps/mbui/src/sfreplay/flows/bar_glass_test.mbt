@@ -1,7 +1,7 @@
 // 50-bar-glass (e2e/traces/bar-glass.trace): the bottom bar, all glass: 文件 tapped and the chats again, the notch's
-// icon swapping between 令 and 文件's ＋ (a short scale and fade); drawn up into the panel and let go on 用量 there:
-// that bar slides down into the bar's place, and 已归档 tapped on it as it lands is 已归档's at once (laid out where
-// it lands from the first frame); the panel again, the chats picked in it.
+// icon swapping between 令 and 文件's ＋ (a short scale and fade); the last slot pressed, the bar's own glass grown
+// into its menu, and 已归档 tapped there as its row has risen: 已归档's page, the menu folding back with its indicator
+// landing on the last slot; the chats tapped on the bar again.
 
 ///|
 test "50-bar-glass" {
@@ -15,17 +15,15 @@ test "50-bar-glass" {
     f.tap("icon:chats")
     f.run_for(@sfapp.icon_swap_ms)
     f.see("端到端测试")
-    f.drag("icon:chats", 100.0, -64.0, steps=bar_draw_steps)
-    // 已归档 tapped where it lands (the first of the four), as the bar chosen comes down
-    f.tap_at(50.0, -50.0)
+    f.tap("icon:chevron-up")
+    f.run_for(@ui.move_most_ms)
+    f.tap("已归档")
     f.see("=已归档")
     f.run_for(@ui.move_most_ms)
-    // the bar chosen lands on its own spring, untouched by a finger: the panel is drawn up again once it has
-    f.run_to(@sfapp.bar_landed)
-    f.drag("icon:chart", -100.0, -64.0, steps=bar_draw_steps)
+    f.tap("icon:chats")
     f.run_for(@sfapp.switch_fade_ms)
     f.see("端到端测试")
-    // the bottom bar's springs and tweens to their declared end (the ball's ride on the bar chosen included)
+    // the bottom bar's springs and tweens to their declared end (its menu folded back included)
     f.run_to(@sfapp.bar_rest)
     f.end()
   })

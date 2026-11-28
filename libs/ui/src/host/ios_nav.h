@@ -283,6 +283,9 @@ static UIImage *nav_letter(NSString *title, CGFloat size) {
   return out;
 }
 
+// The overflow slot's menu: the bar's last slot grown into the places that did not fit (iOS 26 on).
+#include "ios_nav_overflow.h"
+
 // The system's tab bar for the app's places (iOS 18's UITabBarController with UITabs: on an iPhone Duo's inner screen on
 // its side and its outer one, iOS 27.1 lays it down the trailing edge at its foot; upright, across the view's foot), in
 // its own glass, with its own motion; the one action most wanted a tab of its own after them (pinned, iOS 27's prominent tab, set
@@ -334,7 +337,8 @@ static UIImage *nav_letter(NSString *title, CGFloat size) {
 static NSString *const nav_more_id = @"__mbui_more__";
 
 // Popover listing tabs that did not fit in the system tab bar, anchored to our own overflow tab so UIKit's
-// full-screen moreNavigationController never replaces the app's canvas.
+// full-screen moreNavigationController never replaces the app's canvas. Before iOS 26 only (no Liquid Glass there):
+// from iOS 26 the overflow tab grows into its menu in place (ios_nav_overflow.h).
 API_AVAILABLE(ios(18.0))
 @interface MBMorePopoverController : UITableViewController
 @property(nonatomic, copy) NSArray<NSDictionary *> *items;
@@ -441,7 +445,7 @@ API_AVAILABLE(ios(18.0))
 @end
 
 API_AVAILABLE(ios(18.0))
-@interface MBTabs : UITabBarController <UITabBarControllerDelegate, UIPopoverPresentationControllerDelegate>
+@interface MBTabs : UITabBarController <UITabBarControllerDelegate, UIPopoverPresentationControllerDelegate, UIGestureRecognizerDelegate>
 @property(nonatomic, copy) NSString *spec;
 @property(nonatomic, copy) NSString *tabsKey;
 @property(nonatomic, copy) NSString *action;
@@ -493,7 +497,61 @@ API_AVAILABLE(ios(18.0))
 @property(nonatomic) BOOL overflowCheckPending;
 @property(nonatomic) CGRect lastLayoutBounds;
 @property(nonatomic, weak) MBMorePopoverController *morePopover;
+// The overflow slot's menu (an MBOverflowMenu, iOS 26 on) over the system's bar, and what MBTabs (Overflow) keeps for
+// it: the bar's geometry at rest, the finger on the bar, the system's views it put out of sight.
+@property(nonatomic, strong) UIView *overflowMenuView;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UIView *> *moreDots;
+@property(nonatomic, strong) NSPointerArray *hiddenNativeViews;
+@property(nonatomic, strong) NSMapTable<UIView *, NSArray *> *maskedChrome;
+@property(nonatomic) BOOL hasRestingPlatter;
+@property(nonatomic) CGRect restingPlatterFrame;
+@property(nonatomic, copy) NSArray<NSValue *> *restingSlotFrames;
+@property(nonatomic, copy) NSArray<NSDictionary *> *restingSlotArt;
+@property(nonatomic, copy) NSArray<NSDictionary *> *restingBadges;
+@property(nonatomic, copy) NSArray<NSDictionary *> *liveSlotArt;
+@property(nonatomic, copy) NSArray<NSValue *> *liveSlots;
+@property(nonatomic) CGRect liveMoreSlot;
+@property(nonatomic, copy) NSArray<NSDictionary *> *liveBadges;
+@property(nonatomic, copy) NSArray<NSDictionary *> *liveArt;
+@property(nonatomic) CGRect liveLens;
+@property(nonatomic) BOOL restRetryPending;
+@property(nonatomic, weak) UIView *followPlatter;
+@property(nonatomic) CGSize restingPillSize;
+@property(nonatomic) CGFloat restingPillEdgeInset;
+@property(nonatomic, strong) UILongPressGestureRecognizer *morePress;
+@property(nonatomic, strong) UIGestureRecognizer *moreTakeOver;
+@property(nonatomic) BOOL startedOnRegularTab;
+@property(nonatomic) BOOL openedOnTouchDown;
+@property(nonatomic, copy) dispatch_block_t menuDwell;
+@property(nonatomic) CGPoint dwellPoint;
+@property(nonatomic) CGPoint dwellAnchor;
+// The overflow place the overflow slot shows (its icon with a chevron, its title): the one chosen in the menu last,
+// kept here only (the chosen place itself while that is in the menu; the first of the menu's till one was chosen).
+@property(nonatomic, copy) NSString *overflowShownId;
+@property(nonatomic, copy) NSString *moreArtKey;
+// The overflow slot as the app says it (a place carrying a menu of places): the place it stands for, and its menu's.
+@property(nonatomic, copy) NSDictionary *moreSpec;
+@property(nonatomic, copy) NSArray<NSDictionary *> *menuPlaces;
+// The tabs that carry a dot, drawn over the bar (the system's own badge is a far larger disc), and the views that draw
+// them.
+@property(nonatomic, copy) NSSet<NSString *> *dotTabIds;
+@property(nonatomic, strong) CADisplayLink *dotLink;
+@property(nonatomic) CFTimeInterval dotLinkUntil;
+- (void)selectWantedTab;
 @end
+
+#ifdef __IPHONE_26_0
+@interface MBTabs (Overflow)
+- (void)syncOverflowMenu;
+- (void)dismissOverflowMenu;
+- (BOOL)overflowMenuActive;
+- (void)forgetRestingBar;
+- (void)refreshOverflowLayout;
+- (void)openOverflowFromTab;
+- (void)refreshMoreTab;
+- (void)dotsSaid:(NSSet<NSString *> *)tabIds;
+@end
+#endif
 
 static void nav_invalidate_corners(void);
 
@@ -618,6 +676,9 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     MBTabs *s = weakSelf;
     if (!s) return;
     nav_invalidate_corners();
+#ifdef __IPHONE_26_0
+    [s forgetRestingBar];
+#endif
     [s washAction];
     [s scheduleOverflowReconcile];
     dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf washAction]; });
@@ -646,9 +707,16 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   if (!CGRectEqualToRect(self.view.bounds, self.lastLayoutBounds)) {
     self.lastLayoutBounds = self.view.bounds;
     nav_invalidate_corners();
+#ifdef __IPHONE_26_0
+    [self forgetRestingBar];
+    [self dismissOverflowMenu];
+#endif
   }
   [self checkOverflowAfterLayout];
   [self washAction];
+#ifdef __IPHONE_26_0
+  [self refreshOverflowLayout];
+#endif
   UIView *v = the_view;
   CGRect r = CGRectZero;
   if (v && self.action.length && !self.tabBarHidden)
@@ -967,7 +1035,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   NSMutableString *key = [NSMutableString stringWithFormat:@"%d\x1f%@\x1e", bare, bare ? title : @""];
   for (NSDictionary *d in items) {
     [key appendFormat:@"%@\x1f%@\x1f%@\x1f%@\x1f%@", d[@"id"], d[@"icon"], d[@"dot"], d[@"title"], d[@"prominent"]];
-    for (NSDictionary *m in d[@"menu"]) [key appendFormat:@"\x1d%@\x1f%@\x1f%@\x1f%@", m[@"id"], m[@"title"], m[@"checked"], m[@"icon"]];
+    for (NSDictionary *m in d[@"menu"]) [key appendFormat:@"\x1d%@\x1f%@\x1f%@\x1f%@\x1f%@", m[@"id"], m[@"title"], m[@"checked"], m[@"icon"], m[@"dot"]];
     [key appendString:@"\x1e"];
   }
   [key appendFormat:@"%lu", (unsigned long)self.navs.count];
@@ -1169,11 +1237,21 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   return NO;
 }
 - (void)dismissMorePopover {
+#ifdef __IPHONE_26_0
+  [self dismissOverflowMenu];
+#endif
   MBMorePopoverController *pop = self.morePopover;
   if (pop && pop.presentingViewController) [pop dismissViewControllerAnimated:NO completion:nil];
   self.morePopover = nil;
 }
 - (void)toggleMorePopover:(UITab *)tab {
+#ifdef __IPHONE_26_0
+  // (iOS 26 on: the overflow tab grows into its menu where it is)
+  if (@available(iOS 26.0, *)) {
+    [self openOverflowFromTab];
+    return;
+  }
+#endif
   MBMorePopoverController *existing = self.morePopover;
   if (existing && existing.presentingViewController) {
     [existing dismissViewControllerAnimated:YES completion:nil];
@@ -1252,6 +1330,9 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     visible = [places subarrayWithRange:NSMakeRange(0, self.visibleRegularCap)];
     overflow = [places subarrayWithRange:NSMakeRange(self.visibleRegularCap, places.count - self.visibleRegularCap)];
   }
+  // (the app's own overflow slot: its menu's places after any of the bar's own the system had no room for, which
+  // come first; the slot is there whatever fits)
+  if (self.moreSpec) overflow = [overflow arrayByAddingObjectsFromArray:self.menuPlaces ?: @[]];
   NSDictionary *act = self.actSpec;
   UIColor *accent = self.barAccent ?: UIColor.tintColor;
   NSString *key = mb_ios_nav_tabs_key(visible, overflow.count > 0, nav_more_id, act);
@@ -1327,18 +1408,27 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     self.appliedActionInkValid = YES;
   }
   if (!self.icons) self.icons = [NSMutableDictionary dictionary];
+  // (a tab's dot: on the systems with the overflow menu a small dot drawn over the bar, the system's badge before them)
+  NSMutableSet<NSString *> *dotted = [NSMutableSet set];
+  BOOL ownDots = NO;
+#ifdef __IPHONE_26_0
+  if (@available(iOS 26.0, *)) ownDots = YES;
+#endif
   for (UITab *tab in self.tabs) {
     if ([tab.identifier isEqualToString:nav_more_id]) {
-      BOOL anyDot = NO;
+      BOOL anyDot = [self.moreSpec[@"dot"] boolValue];
       for (NSDictionary *d in overflow)
         if ([d[@"dot"] boolValue]) anyDot = YES;
-      NSString *wantBadge = anyDot ? @"" : nil;
+      if (ownDots && anyDot) [dotted addObject:tab.identifier];
+      NSString *wantBadge = anyDot && !ownDots ? @"" : nil;
       if (tab.badgeValue != wantBadge && ![tab.badgeValue isEqualToString:wantBadge]) tab.badgeValue = wantBadge;
       continue;
     }
     for (NSDictionary *t in visible)
       if ([t[@"id"] isEqualToString:tab.identifier]) {
-        NSString *wantBadge = [t[@"dot"] boolValue] ? @"" : nil;
+        BOOL dot = [t[@"dot"] boolValue];
+        if (ownDots && dot) [dotted addObject:tab.identifier];
+        NSString *wantBadge = dot && !ownDots ? @"" : nil;
         if (tab.badgeValue != wantBadge && ![tab.badgeValue isEqualToString:wantBadge]) tab.badgeValue = wantBadge;
         if (![tab.title isEqualToString:t[@"title"]]) tab.title = t[@"title"];
         if (![self.icons[tab.identifier] isEqualToString:t[@"icon"]]) {
@@ -1353,11 +1443,23 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
         }
       }
   }
+#ifdef __IPHONE_26_0
+  [self dotsSaid:dotted];
+#endif
   if (!overflow.count) {
     [self dismissMorePopover];
   } else if (self.morePopover && self.morePopover.presentingViewController) {
     [self.morePopover reloadItems:overflow selectedId:self.selectedPlaceId ink:self.barInk accent:self.barAccent];
   }
+#ifdef __IPHONE_26_0
+  if (tabsChanged) {
+    [self forgetRestingBar];
+    [self dismissOverflowMenu];
+    self.moreArtKey = nil;
+  }
+  [self refreshMoreTab];
+  [self syncOverflowMenu];
+#endif
   return tabsChanged;
 }
 - (void)scheduleOverflowReconcile {
@@ -1467,6 +1569,8 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   [self dismissMorePopover];
   [self floatingItems:@[] ink:UIColor.labelColor inkVal:0 bare:NO];
   self.allPlaces = nil;
+  self.moreSpec = nil;
+  self.menuPlaces = nil;
   self.actSpec = nil;
   self.action = nil;
   self.actionInk = nil;
@@ -1503,6 +1607,7 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
 - (void)apply:(NSDictionary *)b {
   // the places: the items of the groups not folded (the card's own are its page's); the one most wanted apart
   NSMutableArray<NSDictionary *> *places = [NSMutableArray array];
+  NSDictionary *more = nil;  // (the overflow slot the app says, where it says one)
   NSDictionary *act = nil;  // (none: what is pressed is the navigation bar's)
   NSMutableArray<NSDictionary *> *buttons = [NSMutableArray array];
   // (the card in use's own, before the app's own actions, on one glass with 待处理's; the action most wanted apart, last)
@@ -1519,6 +1624,9 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
       // over the page the navigation bar's item)
       if ([d[@"prominent"] boolValue]) act = d;
       else if ([d[@"id"] hasPrefix:@"act/"] || [d[@"id"] hasPrefix:@"lead/"]) [buttons addObject:d];
+      // (a place with a menu of places: the overflow slot as the app says it, itself the place the slot stands for
+      // now, its rows the places in its menu; the places before it are the bar's own, whether or not more would fit)
+      else if (!more && [d[@"id"] hasPrefix:@"place/"] && [d[@"menu"] isKindOfClass:NSArray.class] && [d[@"menu"] count]) more = d;
       else [places addObject:d];
     }
   }
@@ -1526,6 +1634,15 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
     [self applyNone];
     return;
   }
+  self.moreSpec = more;
+  NSMutableArray<NSDictionary *> *menuPlaces = [NSMutableArray array];
+  for (NSDictionary *m in more[@"menu"]) {
+    if (![m isKindOfClass:NSDictionary.class] || ![m[@"id"] isKindOfClass:NSString.class] || [m[@"id"] isEqual:@"-"]) continue;
+    [menuPlaces addObject:@{@"id" : m[@"id"], @"title" : m[@"title"] ?: @"", @"icon" : m[@"icon"] ?: @"", @"dot" : @([m[@"dot"] boolValue])}];
+  }
+  self.menuPlaces = menuPlaces;
+  // (the app says which place the slot stands for: what was shown ahead of its answer is let go)
+  if (more) self.overflowShownId = nil;
   uint64_t inkVal = [b[@"ink"] unsignedLongLongValue];
   uint64_t accentVal = [b[@"chosen_ink"] unsignedLongLongValue];
   BOOL inkChanged = mb_ios_nav_color_changed(self.appliedColorsValid, self.appliedInkVal, inkVal);
@@ -1667,6 +1784,9 @@ static void nav_title(UINavigationItem *item, NSString *title, UIColor *ink) {
   if (!self.choosing && tab.identifier.length) say_system(@{@"nav" : tab.identifier});
 }
 @end
+
+// MBTabs' side of the overflow slot's menu (iOS 26 on).
+#include "ios_nav_overflow_host.h"
 
 
 // No room the app keeps at the trailing edge for its own (the system's tab bar is in the safe area it says).

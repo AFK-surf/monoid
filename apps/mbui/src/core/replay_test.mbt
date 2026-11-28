@@ -316,6 +316,45 @@ test "an ask the run's timing made, dropped with what came for it" {
 }
 
 ///|
+test "what the run's app told the core's traces (client.metric, client.error) holds nothing back from an app that tells none" {
+  let r = @core.Replay::parse((
+    #|{"out":{"id":1,"subscribe":{"topic":"a"},"keyed":true}}
+    #|{"in":{"id":1,"value":1},"w":10}
+    #|{"out":{"id":2,"call":"client.metric","params":{"kind":"first_page","duration_ms":104}}}
+    #|{"out":{"id":3,"call":"client.error","params":{"source":"ui_hang","message":"page=home"}}}
+    #|{"out":{"id":4,"subscribe":{"topic":"b"},"keyed":true}}
+    #|{"in":{"id":4,"value":2},"w":12}
+  ))
+  let c = r.client()
+  let a = c.subscribe("a")
+  assert_eq(r.deliver(), 1)
+  assert_eq(a.value.map(fn(v) { v.stringify() }), Some("1"))
+  // (the run's two tellings not made again: the next ask is answered all the same)
+  let b = c.subscribe("b")
+  assert_eq(r.deliver(), 1)
+  assert_eq(b.value.map(fn(v) { v.stringify() }), Some("2"))
+  assert_eq(r.left(), 0)
+  assert_eq(r.unmade().length(), 0)
+  assert_eq(r.diverged().length(), 0)
+  assert_eq(r.fuzzy().length(), 0)
+}
+
+///|
+test "the core's word of its own connection (auth) is not a message to give: nothing of the run left over it" {
+  let r = @core.Replay::parse((
+    #|{"out":{"id":1,"subscribe":{"topic":"a"},"keyed":true}}
+    #|{"in":{"id":0,"auth":{"conn":1795849413148909,"global":1,"aggregate":1,"vaultGlobal":1,"scopes":{},"vaults":{}}},"w":9}
+    #|{"in":{"id":1,"value":1,"conn":1795849413148909,"authGen":1},"w":10}
+  ))
+  let c = r.client()
+  let a = c.subscribe("a")
+  assert_eq(r.deliver(), 1)
+  assert_eq(a.value.map(fn(v) { v.stringify() }), Some("1"))
+  assert_eq(r.left(), 0)
+  assert_eq(r.unmade().length(), 0)
+}
+
+///|
 test "a watch the run let go of and asked again, both dropped: what came for it before stays, the watch goes on" {
   let r = @core.Replay::parse((
     #|{"out":{"id":1,"subscribe":{"topic":"a"},"keyed":true}}

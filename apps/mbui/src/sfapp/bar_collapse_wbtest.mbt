@@ -101,10 +101,10 @@ test "bar scroll-to-collapse: upward scroll >= 24pt, top return <= 24pt, rubber-
   bar_scroll_note("ws1:chats", 20.0, 500.0, t0 + 70.0)
   assert_false(bar.collapsed)
 
-  // Re-collapse, then opening the panel forces expand
+  // Re-collapse, then opening the menu forces expand
   bar_scroll_note("ws1:chats", 180.0, 500.0, t0 + 80.0)
   assert_true(bar.collapsed)
-  bar.open_panel(true, at=t0 + 90.0)
+  bar.open_menu(false, 0.0, t0 + 90.0)
   assert_false(bar.collapsed)
   assert_eq(bar.collapse_at(t0 + 150.0), 0.0)
 }

@@ -432,3 +432,42 @@ fn ctrl_segmented_compact_lens_glass(p : Double) -> @paint.Glass {
     droplet_role=3,
   )
 }
+
+///|
+/// The bottom tab bar's glass on its way to the menu its last slot opens and back (`share` 0: `liquid_tab_bar_glass`
+/// to the bit; 1: the menu's): only what hides the page so the menu's rows read changes, the backdrop's blur
+/// (1.2 to 14, `liquid_panel_glass`'s) and the tint's weight (40 % to 50 %); the bezel, its refraction, the rim light
+/// and the dispersion stay the bar's all the way, so the edge never goes flat as it grows.
+pub fn liquid_tab_bar_menu_glass(
+  share : Double,
+  spot? : (Double, Double)? = None,
+  merge? : Double = 0.0,
+  solid? : Int64 = clear,
+) -> @paint.Glass {
+  let g = liquid_tab_bar_glass(spot~, merge~, solid~, adaptive=true)
+  let s = clamp(share, 0.0, 1.0)
+  if s <= 0.0 {
+    return g
+  }
+  let a = (103.0 + (128.0 - 103.0) * s).round().to_int64() & 0xFFL
+  { ..g, blur: 1.2 + (14.0 - 1.2) * s, tint: (g.tint & 0xFFFFFF00L) | a }
+}
+
+///|
+/// How far a lifted bottom bar's lens parts the colours of what crosses its lip (a role 4 glass's `chroma`): over 0.04
+/// the renderers draw the rim of the system's lifted lens (iOS 27.0's, measured: `rimS` in each host's droplet shader,
+/// whole at 0.16), its outer 8 pt showing the ground seven times over along the edge, parted into the colours; where
+/// `liquid_tab_lens_glass`'s 0.04 is a hair's fringe.
+pub let tab_lens_dispersion : Double = 0.16
+
+///|
+/// The clear glass a bottom tab bar's selection lifts into (`liquid_tab_lens_glass`'s, role 4) with no magnifying of
+/// its own: the bar zooms each glyph in place as the lens comes over it, so nothing under the lens is moved by it.
+/// `press`: how far it is lifted (its bezel, bending, rim light and dispersion, `tab_lens_dispersion` lifted whole, come
+/// in with it); it is glass by half its lift (`strength`), and at none it draws nothing: flat, it is the selection
+/// under it.
+pub fn liquid_tab_lens_still_glass(press : Double, solid? : Int64 = clear) -> @paint.Glass {
+  let p = clamp(press, 0.0, 1.0)
+  let g = liquid_tab_lens_glass(p, solid~)
+  { ..g, zoom: 1.0, strength: clamp(p / 0.5, 0.0, 1.0), chroma: tab_lens_dispersion * p }
+}

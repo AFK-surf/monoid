@@ -1,0 +1,19 @@
+# 小屏, a finger, on `home`'s chats: the bottom bar's own motions, what each of its frames runs: a tab tapped across the
+# bar (the selection's flight, its lens of a tap) and the chats tapped again, then the lens held and dragged slowly
+# over two tabs and let go there, and the chats tapped again.
+timeout 20000
+until 整理发布清单
+until 今天
+wait 500
+log measure
+tapxy 199 797
+wait 900
+tapxy 64 797
+until 整理发布清单
+wait 900
+drag 64 797 135 0 1500
+wait 900
+tapxy 64 797
+until 整理发布清单
+wait 900
+exit

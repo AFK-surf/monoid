@@ -111,7 +111,11 @@ test "stations: the first list after a wait or an empty list appears in place" {
     }
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
     let (xs, y) = bar_places_at()
+    // (Station's is one of the bar's menu's places here: the last slot, then its row)
     t.tap_once(xs[3], y)
+    t.run_for(@ui.move_most_ms)
+    let (rx, rys) = menu_rows_at(5)
+    t.tap_once(rx, rys[0])
     t.run_for(@ui.move_most_ms)
     t.frame()
     assert_true(app.nav.top() == Place("stations"))
@@ -151,6 +155,9 @@ test "stations: a station added to a list already shown opens its place" {
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   let (xs, y) = bar_places_at()
   t.tap_once(xs[3], y)
+  t.run_for(@ui.move_most_ms)
+  let (rx, rys) = menu_rows_at(5)
+  t.tap_once(rx, rys[0])
   t.run_for(@ui.move_most_ms)
   t.frame()
   let (_, before) = t.drawn_of("Willow").unwrap()
@@ -292,16 +299,19 @@ fn bones_at(t : @ui.Tester, place : String) -> Int {
 test "a place of the bar in view shows what the device holds the first time it is switched to, and each time after" {
   let t = late_phone(place_core_late_ms)
   let bars = [["chats", "files", "profiles", "stations"], ["remote", "archive", "usage", "connects"]]
-  for bar in 0..<bars.length() {
-    // (the other bar brought into view: its places asked ahead in turn)
-    if bar > 0 {
-      @sfbase.bars_picked.set(Some((bars, bar)))
+  for set in 0..<bars.length() {
+    // (the bar's menu opened, the other bar's places its rows: they are asked ahead in turn)
+    if set > 0 {
+      @ui.view_tree().unwrap().event(t.time(), fn() {
+        bar.open_menu(false, 0.0, t.time())
+        bar_retell(t.time())
+      })
       t.draw()
       t.run_for(place_core_late_ms * 3.0)
       assert_true(@sfbase.places_ahead_open())
     }
     for round in 0..<2 {
-      for place in bars[bar] {
+      for place in bars[set] {
         if place == "chats" || place == "usage" || place == "archive" {
           continue
         }
@@ -348,7 +358,8 @@ let place_core_soon_ms : Double = 40.0
 test "用量 and 已归档, asked only as they are shown: from the finger going down on their tab, and what they last had after" {
   let late = place_core_soon_ms
   let t = late_phone(late)
-  @sfbase.bars_picked.set(Some(([["chats", "files", "profiles", "stations"], ["archive", "usage", "connects", "vault"]], 1)))
+  // (用量 and 已归档 each a slot of the bar: four places, no menu)
+  @sfbase.bars_picked.set(Some(([["chats", "usage", "archive", "connects"]], 0)))
   t.draw()
   t.run_for(late * 4.0)
   assert_true(@sfbase.places_ahead_open())

@@ -223,7 +223,7 @@ case "${1:-build}" in
     fi
     [ -z "$ENT" ] || [ $IOS_SDK != iphonesimulator ] || SECT="-Wl,-sectcreate,__TEXT,__entitlements,$ENT"
     "$D/mbc" link --out=$APPDIR/mbui --stamp=$OUT/mbui.mbc-link -- $CC $(cat $OUT/objs.txt) $(cat $OUT/link-flags.txt) -o $APPDIR/mbui -framework UIKit -framework Metal -framework QuartzCore \
-      -framework CoreText -framework CoreGraphics -framework ImageIO -framework Foundation \
+      -framework CoreText -framework CoreGraphics -framework CoreImage -framework ImageIO -framework Foundation \
       -framework AVFoundation -framework CoreMedia -framework CoreVideo -framework WebKit -framework Photos -framework PhotosUI \
       -framework SafariServices -framework UserNotifications -framework Network -framework UniformTypeIdentifiers -framework GameController \
       -lm $SECT $APP_LINK

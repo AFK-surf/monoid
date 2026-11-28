@@ -27,31 +27,35 @@ test "震动 in 外观 turned off: the prefs' haptics off, nothing felt; on agai
 }
 
 ///|
-test "the bottom bar: holding and moving between places is felt once per choice, tapping a different place too" {
+test "the bottom bar: a finger down or held is not felt; each place it moves on to is felt once, lifting there not again; tapping a different place once" {
   for platform in [1, 2] {
     let calls : Array[Made] = []
     let t = wide_tester(calls, w=390.0, h=844.0, platform~)
     t.draw()
     let (xs, y) = bar_places_at()
+    // (the place chosen already: nothing)
     t.tap(xs[0], y)
     assert_eq(t.haptics(), [])
+    // (a finger down, and held till the selection lifts into the lens: nothing)
     t.press_at(xs[0], y)
-    let before_hold = bar_hold_ms / 2.0
-    t.run_for(before_hold)
     assert_eq(t.haptics(), [])
-    t.run_for(bar_hold_ms - before_hold)
+    t.run_for(bar_hold_ms)
     t.frame()
-    assert_eq(t.haptics(), [@ui.LongPress])
+    assert_eq(t.haptics(), [])
+    // (moved on to another place: once, as a detent; moved within it, and lifted there: not again)
     t.move_to(xs[1], y)
-    assert_eq(t.haptics(), [@ui.LongPress, @ui.TextHandleMove])
+    assert_eq(t.haptics(), [@ui.TextHandleMove])
     t.move_to(xs[1] + 2.0, y)
-    assert_eq(t.haptics(), [@ui.LongPress, @ui.TextHandleMove])
+    assert_eq(t.haptics(), [@ui.TextHandleMove])
     t.release(xs[1], y)
     assert_true(app.nav.top() == Files)
-    assert_eq(t.haptics(), [@ui.LongPress, @ui.TextHandleMove])
-    t.tap(xs[0], y)
+    assert_eq(t.haptics(), [@ui.TextHandleMove])
+    // (a tap on a different place: once, as the finger lifts)
+    t.press_at(xs[0], y)
+    assert_eq(t.haptics(), [@ui.TextHandleMove])
+    t.release(xs[0], y)
     assert_true(app.nav.top() == Home)
-    assert_eq(t.haptics(), [@ui.LongPress, @ui.TextHandleMove, @ui.TextHandleMove])
+    assert_eq(t.haptics(), [@ui.TextHandleMove, @ui.TextHandleMove])
   }
 }
 

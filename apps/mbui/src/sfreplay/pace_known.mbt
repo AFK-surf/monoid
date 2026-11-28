@@ -45,7 +45,16 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "share": [7],
   "share-files": [7],
   "share-new-chat": [7],
-  // 2: unsub {"topic":"status"} | strict sub {"topic":"workspace","workspace":…}
+  // 2: sub {"mine":false,"scope":…,"topic":"connects"} | strict unsub {"topic":"lock","workspace":…}
+  // (a place left for another has its own reads let go of in a frame after its page has gone: Home's lock, doing, the
+  // changelog's news, stationUpdates, longJobs and driveTransfers, 262 ms after 文件's tap in bar-glass's strict pass
+  // and 261 ms at 120 a second, asked again as the chats are tapped. At 7 a second (142.86 ms a frame) no such frame
+  // comes before that tap, 341 ms after 文件's in bar-glass and 516 ms in places: Home is back before it was let go,
+  // so it is neither let go of nor asked again, and the next ask is the menu's `connects`, asked as the last slot is
+  // pressed. Traced by each pass's asks with their moments (the replay's own, printed). Both traces recorded again
+  // 2026-11-28 with the bar's menu and every trace switch on, as the app runs: bar-glass's earlier trace, its switches
+  // off, let Home's reads go at the tap itself, whatever the frames. The stack's and the pages' code as it was)
+  "bar-glass": [7],
   "places": [7],
   // 1: - | strict call drive.remove {"path":"照片-082940.jpg",...,"permanent":true}
   // (Menu -> Confirm now slides horizontally inside the same 390pt sheet over move_ms(390)=350ms; the old trace taps
@@ -120,7 +129,6 @@ let frames_unrecorded_known : Array[String] = [
   "appearance-kept",
   "archive-restore",
   "bar-archive",
-  "bar-glass",
   "bar-going-down",
   "chat-audio",
   "chinese-enter",
@@ -145,7 +153,6 @@ let frames_unrecorded_known : Array[String] = [
   "notify-off",
   "offline-retry",
   "pin",
-  "places",
   "reader",
   "send-card-paced",
   "settings-add-station",

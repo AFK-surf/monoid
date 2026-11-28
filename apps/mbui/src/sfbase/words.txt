@@ -327,6 +327,8 @@ android-misc.adb.elsewhere
 android-misc.adb.hour
 android-misc.adb.title
 android-misc.bar.action.files
+android-misc.bar.menu
+android-misc.bar.more
 android-misc.bar.place.archive
 android-misc.bar.place.chats
 android-misc.bar.place.connects

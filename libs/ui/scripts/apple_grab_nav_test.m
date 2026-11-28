@@ -1,4 +1,4 @@
-// src/host/apple_grab.h and src/host/ios_nav_state.h deterministic tests:
+// src/host/apple_grab.h, src/host/ios_nav_state.h and src/host/ios_nav_overflow_state.h deterministic tests:
 //   cc -Wall -Werror -fobjc-arc -I src/host scripts/apple_grab_nav_test.m \
 //     -framework Foundation -framework CoreGraphics -framework CoreVideo -framework ImageIO \
 //     -o out/apple_grab_nav_test && out/apple_grab_nav_test
@@ -10,6 +10,7 @@
 #include <stdio.h>
 #import "apple_grab.h"
 #import "ios_nav_state.h"
+#import "ios_nav_overflow_state.h"
 
 static int failed;
 
@@ -468,10 +469,432 @@ static void test_ios_nav_state(void) {
   CHECK(simPostLayoutWalks == 1);
 }
 
+// ---- the overflow menu's state (ios_nav_overflow_state.h), stepped frame by frame ----
+
+// A bar of three places and the overflow slot, four places in the menu: across the foot (320×62 at 100,880), or down a
+// side (the canvas turned: the bar 244 long, 48 thick).
+static MBOverflow overflow_bar(bool vertical, bool mirrored, bool overflowSelected) {
+  MBOverflow m;
+  mbo_init(&m);
+  m.vertical = vertical;
+  m.mirrored = mirrored;
+  m.barFrame = vertical ? CGRectMake(200, 600, 244, 48) : CGRectMake(100, 880, 320, 62);
+  m.slotCount = 4;
+  m.primaryCount = 3;
+  m.overflowCount = 4;
+  CGFloat step = vertical ? 60 : 78;
+  for (int i = 0; i < 4; i++) {
+    int at = mirrored ? 3 - i : i;
+    m.slots[i] = vertical ? CGRectMake(2 + at * step, 2, step, 44) : CGRectMake(4 + at * step, 4, step, 54);
+  }
+  m.hasPillSize = true;
+  m.pillSize = vertical ? CGSizeMake(58, 44) : CGSizeMake(76, 54);
+  m.anchorSelectedSlot = overflowSelected ? 3 : 0;
+  m.anchorOverflowSelected = overflowSelected;
+  m.activeRow = overflowSelected ? 1 : -1;
+  return m;
+}
+
+typedef struct {
+  int frames, landedOpen, landedShut;
+  double minW, maxW, maxDH, maxDW, maxDAlpha, maxDInd;
+} OverflowRun;
+
+// The morph run to its end at `fps`, the largest step of each thing seen between two frames kept.
+static OverflowRun overflow_run(MBOverflow *m, double *now, double fps) {
+  OverflowRun r = {0};
+  r.minW = 1e9;
+  CGFloat h = m->glassHeight, w = mbo_glass_bounds(m).size.width, a = m->indicatorAlpha;
+  CGRect ind = mbo_indicator_frame(m);
+  while (m->isMorphing && r.frames < 2000) {
+    *now += 1.0 / fps;
+    int s = mbo_step_morph(m, *now);
+    mbo_update_indicator(m, *now);
+    if (s & MBOStepLandedOpen) r.landedOpen++;
+    if (s & MBOStepLandedShut) r.landedShut++;
+    r.frames++;
+    CGFloat nh = m->glassHeight, nw = mbo_glass_bounds(m).size.width;
+    if (nw < r.minW) r.minW = nw;
+    if (nw > r.maxW) r.maxW = nw;
+    if (fabs(nh - h) > r.maxDH) r.maxDH = fabs(nh - h);
+    if (fabs(nw - w) > r.maxDW) r.maxDW = fabs(nw - w);
+    if (m->visible) {
+      CGRect ni = mbo_indicator_frame(m);
+      // (the indicator's place only counts while it shows)
+      if (m->indicatorAlpha > 0.05 && a > 0.05) {
+        double d = fmax(fabs(CGRectGetMidX(ni) - CGRectGetMidX(ind)), fabs(CGRectGetMidY(ni) - CGRectGetMidY(ind)));
+        if (d > r.maxDInd) r.maxDInd = d;
+      }
+      if (fabs(m->indicatorAlpha - a) > r.maxDAlpha) r.maxDAlpha = fabs(m->indicatorAlpha - a);
+      ind = ni;
+      a = m->indicatorAlpha;
+    }
+    h = nh;
+    w = nw;
+  }
+  return r;
+}
+
+static bool rect_near(CGRect a, CGRect b, CGFloat by) {
+  return fabs(a.origin.x - b.origin.x) <= by && fabs(a.origin.y - b.origin.y) <= by && fabs(a.size.width - b.size.width) <= by &&
+         fabs(a.size.height - b.size.height) <= by;
+}
+
+static void test_ios_nav_overflow(void) {
+  // 1. A tap opens it: the first frame is the bar itself, the morph squeezes the bar's length and lands on the menu.
+  {
+    MBOverflow m = overflow_bar(false, false, false);
+    double now = 10;
+    mbo_open(&m, false, false, CGPointZero, false, CGRectZero, 0, 0, now);
+    CHECK(m.visible && m.isOpen && m.isMorphing);
+    CHECK(m.glassHeight == 62 && mbo_glass_bounds(&m).size.width == 320);
+    CHECK(mbo_progress(&m) == 0 && m.tabsShown == 1);
+    // (the chosen place's pill where the system's is, whole; no indicator yet: nothing in the menu is chosen)
+    CHECK(m.pillAlpha == 1 && !m.tabContentHidden && m.indicatorAlpha == 0 && !m.handoffShown);
+    CHECK(rect_near(mbo_morph_pill(&m), CGRectMake(10.0 / 3.0, 4, 76, 54), 0.001));
+    OverflowRun r = overflow_run(&m, &now, 120);
+    CHECK(r.landedOpen == 1 && r.landedShut == 0);
+    CHECK(m.glassHeight == 4 * 48 + 16 && mbo_glass_bounds(&m).size.width == 320);
+    CHECK(r.minW < 320 * 0.88 && r.minW > 320 * 0.78 && r.maxW <= 320.5);
+    CHECK(m.tabsShown < 0.002 && m.pillAlpha < 0.002 && m.tabContentHidden && m.rowsLive);
+    // (no frame of it jumps: at 120 a second the glass grows by less than 16 points a frame, and its squeeze's
+    // impulse pulls its length in by less than 6.5 % of it in one)
+    CHECK(r.maxDH < 16 && r.maxDW < 320 * 0.065);
+    CHECK(r.frames > 40 && r.frames < 120);
+
+    // 2. It closes on the bar exactly, squeezed on the way, and hands back.
+    mbo_close(&m, now);
+    CHECK(!m.isOpen && m.isMorphing && m.visible && !m.tabContentHidden);
+    r = overflow_run(&m, &now, 120);
+    CHECK(r.landedShut == 1 && !m.visible && !m.isMorphing);
+    CHECK(m.glassHeight == 62 && mbo_glass_bounds(&m).size.width == 320 && m.tabsShown == 1);
+    CHECK(r.minW < 320 * 0.90 && r.maxW <= 320.5 && r.maxDH < 16 && r.maxDW < 320 * 0.065);
+  }
+
+  // 3. The same morph at 60 and at 120 frames a second ends the same, as long to within a frame.
+  {
+    MBOverflow a = overflow_bar(false, false, false), b = a;
+    double ta = 5, tb = 5;
+    mbo_open(&a, false, false, CGPointZero, false, CGRectZero, 0, 0, ta);
+    mbo_open(&b, false, false, CGPointZero, false, CGRectZero, 0, 0, tb);
+    overflow_run(&a, &ta, 60);
+    overflow_run(&b, &tb, 120);
+    CHECK(a.glassHeight == b.glassHeight && fabs(a.tabsShown - b.tabsShown) < 0.002);
+    CHECK(fabs((ta - 5) - (tb - 5)) <= 1.0 / 60 + 1e-9);
+  }
+
+  // 4. The chosen place in the menu: the indicator leaves the overflow slot's own pill (the native fill, whole) and
+  // lands on the chosen row whole; closing, it lands back on that slot's pill, never on another slot's, in every pose.
+  for (int pose = 0; pose < 3; pose++) {
+    bool vertical = pose > 0, mirrored = pose == 2;
+    MBOverflow m = overflow_bar(vertical, mirrored, true);
+    double now = 3;
+    CGFloat thick = mbo_thickness(&m);
+    CGRect rest = mbo_resting_pill(&m, 3);
+    CGRect first = mbo_resting_pill(&m, 0);
+    mbo_open(&m, false, false, CGPointZero, false, CGRectZero, 0, 0, now);
+    CHECK(m.tabContentHidden && m.pillAlpha == 0);
+    CHECK(m.indicatorAlpha == 1 && m.indicatorNative == 1);
+    CHECK(rect_near(mbo_indicator_frame(&m), CGRectOffset(rest, 0, m.glassHeight - thick), 0.001));
+    OverflowRun r = overflow_run(&m, &now, 120);
+    CHECK(r.landedOpen == 1);
+    // (the follow's ease done: a few frames at rest)
+    for (int i = 0; i < 60; i++) {
+      now += 1.0 / 120;
+      mbo_update_indicator(&m, now);
+    }
+    CGRect row = mbo_row_frame(&m, 1);
+    // (the indicator's frame is in the bar's room: a menu shorter than the bar starts off the bar's start)
+    CHECK(rect_near(mbo_indicator_frame(&m), mbo_row_in_bar(&m, 1), 0.5));
+    CHECK(m.indicatorAlpha > 0.95 && m.indicatorNative == 0);
+    if (!vertical) CHECK(row.size.width == 320 - 16 && row.size.height == 48);
+    else CHECK(row.size.width == 48 && row.size.height == mbo_side_menu_width - 16);
+    // (inside the glass)
+    CHECK(row.origin.x >= 0 && row.origin.y >= 0 && CGRectGetMaxX(row) <= m.barFrame.size.width &&
+          CGRectGetMaxY(row) <= mbo_menu_frame(&m).size.height);
+    CHECK(r.maxDAlpha < 0.25 && r.maxDInd < 16);
+
+    mbo_close(&m, now);
+    CHECK(m.hasLeg && m.leg.closing && m.leg.intoSelection);
+    // (on the frame before it lands shut, the indicator is the slot's pill, whole, in the native fill)
+    CGRect last = CGRectZero;
+    CGFloat lastAlpha = 0, lastNative = 0, lastHeight = 0;
+    int frames = 0;
+    double maxDInd = 0;
+    CGRect was = mbo_indicator_frame(&m);
+    while (m.isMorphing && frames++ < 2000) {
+      now += 1.0 / 120;
+      int s = mbo_step_morph(&m, now);
+      mbo_update_indicator(&m, now);
+      if (s & MBOStepLandedShut) break;
+      last = mbo_indicator_frame(&m);
+      lastAlpha = m.indicatorAlpha;
+      lastNative = m.indicatorNative;
+      lastHeight = m.glassHeight;
+      double d = fmax(fabs(CGRectGetMidX(last) - CGRectGetMidX(was)), fabs(CGRectGetMidY(last) - CGRectGetMidY(was)));
+      if (d > maxDInd) maxDInd = d;
+      was = last;
+    }
+    CGRect lands = CGRectOffset(rest, 0, lastHeight - thick);
+    CHECK(rect_near(last, lands, 1.0));
+    CHECK(lastAlpha > 0.99 && lastNative > 0.99);
+    CHECK(fabs(CGRectGetMidX(last) - CGRectGetMidX(rest)) < fabs(CGRectGetMidX(last) - CGRectGetMidX(first)));
+    CHECK(maxDInd < 16);
+    CHECK(!m.visible);
+  }
+
+  // 5. The haptic's ticks, the finger step by step. Opened by a finger down on the slot that lets go without moving:
+  // nothing more (the owner's one tick at opening is the only one), the menu stays open.
+  {
+    MBOverflow m = overflow_bar(false, false, false);
+    double now = 1;
+    CGPoint down = CGPointMake(100 + 4 + 3 * 78 + 39, 880 + 31);
+    mbo_open(&m, true, true, down, false, CGRectZero, 0, 0, now);
+    int picked = -1;
+    CHECK(mbo_update_tracking(&m, CGPointMake(down.x + 3, down.y - 4)) == MBOTrackNone);
+    CHECK(mbo_end_tracking(&m, CGPointMake(down.x + 3, down.y - 4), &picked) == MBOTrackNone);
+    CHECK(m.isOpen && picked == -1);
+    overflow_run(&m, &now, 120);
+    CGRect menu = mbo_menu_frame(&m);
+    CGPoint row2 = CGPointMake(260, menu.origin.y + 8 + 48 * 2 + 24);
+    CGPoint row1 = CGPointMake(260, menu.origin.y + 8 + 48 * 1 + 24);
+    // A second finger: one tick as it comes onto a row, none while it stays on it, one for each row it comes onto, none
+    // going off the menu, one coming back; let go on a row, that row is chosen (no tick of its own).
+    CHECK(mbo_begin_tracking(&m, row2) == MBOTrackTick);
+    CHECK(mbo_update_tracking(&m, CGPointMake(row2.x + 10, row2.y + 5)) == MBOTrackNone);
+    CHECK(mbo_update_tracking(&m, row1) == MBOTrackTick);
+    CHECK(mbo_update_tracking(&m, CGPointMake(row1.x, menu.origin.y - 60)) == MBOTrackNone);
+    CHECK(m.hoveredRow == -1);
+    CHECK(mbo_update_tracking(&m, row1) == MBOTrackTick);
+    CHECK(mbo_end_tracking(&m, row1, &picked) == MBOTrackPick && picked == 1);
+    mbo_pick(&m, picked);
+    CHECK(m.activeRow == 1 && m.anchorOverflowSelected && m.anchorSelectedSlot == 3);
+    mbo_close(&m, now);
+    // (closing, the finger does nothing more)
+    CHECK(mbo_update_tracking(&m, row2) == MBOTrackNone);
+    overflow_run(&m, &now, 120);
+    CHECK(!m.visible);
+
+    // Opened by a finger that keeps dragging: nothing till it has left the slot by half the reach, then one tick as it
+    // comes onto a row; let go off the rows, the menu closes.
+    m = overflow_bar(false, false, false);
+    mbo_open(&m, true, true, down, false, CGRectZero, 0, 0, now);
+    CHECK(mbo_update_tracking(&m, CGPointMake(down.x, down.y - 9)) == MBOTrackNone);
+    CHECK(m.hasOpenPoint);
+    CHECK(mbo_update_tracking(&m, CGPointMake(down.x, down.y - 11)) == MBOTrackTick);
+    CHECK(!m.hasOpenPoint && m.hoveredRow == 3 && m.fingerInRows);
+    CHECK(mbo_update_tracking(&m, CGPointMake(down.x, down.y - 20)) == MBOTrackNone);
+    CHECK(mbo_end_tracking(&m, CGPointMake(down.x, menu.origin.y - 80), &picked) == MBOTrackClose);
+  }
+
+  // 6. A row's frame and the row under a point agree, the bar across and down either side.
+  for (int pose = 0; pose < 3; pose++) {
+    MBOverflow m = overflow_bar(pose > 0, pose == 2, false);
+    CGRect menu = mbo_menu_frame(&m);
+    for (int i = 0; i < 4; i++) {
+      CGRect f = mbo_row_frame(&m, i);
+      CGPoint mid = CGPointMake(menu.origin.x + CGRectGetMidX(f), menu.origin.y + CGRectGetMidY(f));
+      CHECK(mbo_row_at(&m, mid) == i);
+    }
+    CHECK(mbo_row_at(&m, CGPointMake(menu.origin.x - 200, menu.origin.y - 200)) == -1);
+  }
+
+  // 7. Opened from a lifted native lens (a drag that rested on the slot): the indicator starts as that lens (clear
+  // glass whole, no grey), turns grey by mbo_lens_to_grey of the growth, and never jumps.
+  {
+    MBOverflow m = overflow_bar(false, false, false);
+    double now = 2;
+    CGRect lens = CGRectMake(4 + 3 * 78 - 9, -6, 96, 74);
+    mbo_open(&m, true, true, CGPointMake(380, 910), true, lens, 1.0, 0, now);
+    CHECK(m.tabContentHidden && m.pillAlpha == 0);
+    CHECK(m.handoffShown && m.handoffAlpha == 1 && m.indicatorGrey == 0 && m.indicatorAlpha == 1);
+    CHECK(rect_near(mbo_indicator_frame(&m), lens, 0.001));
+    CHECK(rect_near(m.handoffFrame, CGRectOffset(lens, 100, 880), 0.001));
+    // (the row it will rest on while the finger has not left the slot: the last one)
+    CHECK(m.openRow == 3);
+    OverflowRun r = overflow_run(&m, &now, 120);
+    CHECK(r.landedOpen == 1 && !m.handoffShown && m.indicatorGrey == 1);
+    CHECK(r.maxDAlpha < 0.25 && r.maxDInd < 16);
+  }
+
+  // 8. Opened again while it closes: the glass goes on from where it is.
+  {
+    MBOverflow m = overflow_bar(false, false, false);
+    double now = 7;
+    mbo_open(&m, false, false, CGPointZero, false, CGRectZero, 0, 0, now);
+    overflow_run(&m, &now, 120);
+    mbo_close(&m, now);
+    for (int i = 0; i < 10; i++) {
+      now += 1.0 / 120;
+      mbo_step_morph(&m, now);
+      mbo_update_indicator(&m, now);
+    }
+    CGFloat h = m.glassHeight, inset = m.glassInset;
+    CHECK(h > 62 && h < 208 && m.isMorphing);
+    mbo_open(&m, false, false, CGPointZero, false, CGRectZero, 0, 0, now);
+    CHECK(m.glassHeight == h && m.glassInset == inset && m.isOpen);
+    OverflowRun r = overflow_run(&m, &now, 120);
+    CHECK(r.landedOpen == 1 && m.glassHeight == 208 && r.maxDH < 16);
+    // Put away at once (the bar laid out anew): nothing left showing.
+    mbo_dismiss(&m);
+    CHECK(!m.visible && !m.isOpen && !m.isMorphing && m.tabsShown == 1 && m.indicatorAlpha == 0);
+  }
+
+  // 9. The rows come in one after another from the last, each fading in over 0.16 s and rising 14 points on a spring
+  // that overshoots; the crossing of the two contents never leaves the glass empty.
+  {
+    MBOverflow m = overflow_bar(false, false, false);
+    m.riseStart = 100;
+    CHECK(mbo_row_shown(&m, 3, 100.045) < 1e-6 && mbo_row_shown(&m, 3, 100.045 + 0.16) > 1 - 1e-6);
+    CHECK(mbo_row_shown(&m, 0, 100.045 + 0.032 * 3) < 1e-6 && mbo_row_shown(&m, 0, 100.045 + 0.032 * 3 + 0.16) > 1 - 1e-6);
+    CHECK(mbo_row_rise_at(&m, 3, 100.04) == 14);
+    double low = 14, was = 0;
+    for (int i = 0; i <= 200; i++) {
+      double t = 100 + i * 0.005;
+      double v = mbo_row_rise_at(&m, 3, t);
+      if (v < low) low = v;
+      double shown = mbo_row_shown(&m, 3, t);
+      CHECK(shown >= was - 1e-9 && shown >= 0 && shown <= 1);
+      was = shown;
+    }
+    CHECK(low < -0.5 && low > -4);
+    CHECK(fabs(mbo_row_rise_at(&m, 3, 101)) < 0.01 && mbo_rows_settled(&m, 101.2) && !mbo_rows_settled(&m, 100.2));
+    for (int i = 0; i <= 100; i++) {
+      double p = i / 100.0;
+      CHECK(mbo_tabs_opacity(p) + mbo_rows_opacity(p) > 0.4);
+    }
+    CHECK(mbo_tabs_opacity(0) == 1 && mbo_rows_opacity(0) == 0 && mbo_tabs_opacity(1) == 0 && mbo_rows_opacity(1) == 1);
+  }
+
+  // 10. The overflow slot's zone for a dragging finger, and a lens's lift and enlargement.
+  {
+    CGRect platter = CGRectMake(100, 880, 320, 62), more = CGRectMake(338, 884, 78, 54);
+    CHECK(mbo_on_more_zone(CGPointMake(340, 900), more, platter, false, false, false));
+    CHECK(mbo_on_more_zone(CGPointMake(500, 870), more, platter, false, false, false));
+    CHECK(!mbo_on_more_zone(CGPointMake(337, 900), more, platter, false, false, false));
+    CHECK(!mbo_on_more_zone(CGPointMake(340, 859), more, platter, false, false, false));
+    CHECK(mbo_on_more_zone(CGPointMake(337, 900), more, platter, false, false, true));
+    CGRect rail = CGRectMake(880, 300, 48, 244), railMore = CGRectMake(882, 482, 44, 60);
+    CHECK(mbo_on_more_zone(CGPointMake(900, 490), railMore, rail, true, true, false));
+    CHECK(!mbo_on_more_zone(CGPointMake(900, 470), railMore, rail, true, true, false));
+    CHECK(!mbo_on_more_zone(CGPointMake(830, 490), railMore, rail, true, true, false));
+    CHECK(mbo_lens_lift(54, 54) == 0 && mbo_lens_lift(74, 54) == 1 && mbo_lens_lift(61.5, 54) == 0.5);
+    CHECK(mbo_lens_zoom(0, 48, 1) == 1.18 && mbo_lens_zoom(48, 48, 1) == 1 && mbo_lens_zoom(0, 48, 0.05) == 1);
+  }
+
+  // 11. Taking over from a pressed bar the system drew larger than at rest (a side bar pressed: wider, longer, standing
+  // past its resting edge): the glass starts exactly on it with the tab row whole, that shape leaves with the tab row
+  // and never comes back, and the menu lands on its own frame.
+  {
+    MBOverflow m = overflow_bar(true, true, false);
+    double now = 4;
+    CGRect live = CGRectMake(200 - 10, 600 - 14, 244 + 42, 48 + 29);  // in the canvas: 10 before, 42 longer, 15 past the outer edge
+    CGRect lens = CGRectMake(-6, -20, 94, 84);
+    mbo_open_live(&m, true, true, CGPointMake(230, 630), true, lens, 1.0, live.size.height, true, live, now);
+    CGRect b = mbo_glass_bounds(&m);
+    CGPoint c = mbo_glass_center(&m);
+    CHECK(rect_near(CGRectMake(c.x - b.size.width / 2, c.y - b.size.height / 2, b.size.width, b.size.height), live, 0.001));
+    CHECK(m.liveShape == 1 && mbo_content_progress(&m) == 0 && mbo_progress(&m) > 0.1);
+    CHECK(mbo_tabs_opacity(mbo_content_progress(&m)) == 1);
+    // (the lens stands where it was handed over, in the canvas)
+    CHECK(rect_near(m.handoffFrame, CGRectOffset(lens, 200, 600), 0.001));
+    CGFloat shape = m.liveShape;
+    int frames = 0;
+    while (m.isMorphing && frames++ < 2000) {
+      now += 1.0 / 120;
+      mbo_step_morph(&m, now);
+      mbo_update_indicator(&m, now);
+      CHECK(m.liveShape <= shape + 1e-9);
+      shape = m.liveShape;
+    }
+    CHECK(m.liveShape == 0 && m.isOpen);
+    b = mbo_glass_bounds(&m);
+    c = mbo_glass_center(&m);
+    CHECK(rect_near(CGRectMake(c.x - b.size.width / 2, c.y - b.size.height / 2, b.size.width, b.size.height), mbo_menu_frame(&m), 0.001));
+    mbo_close(&m, now);
+    OverflowRun r = overflow_run(&m, &now, 120);
+    CHECK(r.landedShut == 1 && m.liveShape == 0 && m.liveP0 == 0 && r.maxW <= 244.5);
+  }
+
+  // 12. More rows than the room: a bar down a side is as long as it is (here room for four of six), the menu across
+  // the foot no taller than it is let. The rows start where the chosen place's row shows; a finger held by an end of
+  // the room scrolls them under it, a tick for each row that comes under it, and stops at the last.
+  {
+    MBOverflow m = overflow_bar(true, true, false);
+    m.barFrame = CGRectMake(200, 600, 212, 48);
+    m.overflowCount = 6;
+    m.activeRow = 5;
+    double now = 9;
+    mbo_open(&m, false, false, CGPointZero, false, CGRectZero, 0, 0, now);
+    CHECK(mbo_rows_room(&m) == 196 && mbo_max_scroll(&m) == 6 * 48 - 196 && m.scroll == mbo_max_scroll(&m));
+    CGRect last = mbo_row_frame(&m, 5), menu = mbo_menu_frame(&m);
+    CHECK(last.origin.x >= mbo_menu_padding - 0.001 && CGRectGetMaxX(last) <= menu.size.width - mbo_menu_padding + 0.001);
+    overflow_run(&m, &now, 120);
+    // (the finger comes onto the row at the far end of the room and stays: the rows scroll back to the first)
+    CGPoint held = CGPointMake(menu.origin.x + menu.size.width - mbo_menu_padding - 10, menu.origin.y + 100);
+    CHECK(mbo_begin_tracking(&m, held) == MBOTrackTick && m.hoveredRow == 2);
+    int ticks = 0, steps = 0;
+    while (m.scroll > 0 && steps++ < 600) ticks += mbo_autoscroll(&m, 1.0 / 120) == MBOTrackTick;
+    CHECK(m.scroll == 0 && ticks == 2 && m.hoveredRow == 0);
+    CHECK(mbo_autoscroll(&m, 1.0 / 120) == MBOTrackNone);
+    int picked = -1;
+    CHECK(mbo_end_tracking(&m, held, &picked) == MBOTrackPick && picked == 0);
+
+    MBOverflow h = overflow_bar(false, false, false);
+    h.overflowCount = 12;
+    h.maxMenuHeight = 400;
+    CHECK(mbo_menu_frame(&h).size.height == 400 && mbo_max_scroll(&h) == 12 * 48 - 384);
+    h.maxMenuHeight = 0;
+    CHECK(mbo_menu_frame(&h).size.height == 12 * 48 + 16 && mbo_max_scroll(&h) == 0);
+  }
+  // 13. Fewer rows than a bar down a side is long: the menu is as long as its rows, at the overflow slot's end of the
+  // bar (either end, as the bar is mirrored). The glass is the whole bar while the tab row shows, comes in to the rows
+  // as the menu stands, and is the whole bar again before the tab row is back; across the foot the menu is the bar's
+  // width whatever its rows.
+  for (int mirrored = 0; mirrored < 2; mirrored++) {
+    MBOverflow m = overflow_bar(true, mirrored, false);
+    m.overflowCount = 2;
+    CGRect menu = mbo_menu_frame(&m);
+    bool atEnd = mbo_more_at_end(&m);
+    CHECK(atEnd == !mirrored && menu.size.width == 2 * 48 + 16 && mbo_max_scroll(&m) == 0);
+    CHECK(fabs((atEnd ? CGRectGetMaxX(menu) : menu.origin.x) - (atEnd ? CGRectGetMaxX(m.barFrame) : m.barFrame.origin.x)) < 0.001);
+    double now = 20;
+    mbo_open(&m, false, false, CGPointZero, false, CGRectZero, 0, 0, now);
+    CHECK(mbo_glass_bounds(&m).size.width == m.barFrame.size.width);
+    for (int i = 0; i < 240 && m.isMorphing; i++) {
+      now += 1.0 / 120;
+      mbo_step_morph(&m, now);
+      // (never shorter than the bar while any of the tab row shows)
+      if (m.tabsShown > 0.001) CHECK(mbo_shrink(&m) == 0);
+    }
+    CGRect glass = mbo_glass_bounds(&m);
+    CGPoint mid = mbo_glass_center(&m);
+    CHECK(!m.isMorphing && fabs(glass.size.width - menu.size.width) < 0.001 && fabs(mid.x - CGRectGetMidX(menu)) < 0.001);
+    // (a row of the menu is where a finger on it finds it, and the indicator on it lies inside the glass)
+    CGRect row = mbo_row_frame(&m, 1);
+    CHECK(mbo_row_at(&m, CGPointMake(menu.origin.x + CGRectGetMidX(row), menu.origin.y + 40)) == 1);
+    CGRect inBar = mbo_row_in_bar(&m, 1);
+    CHECK(fabs(inBar.origin.x - mbo_glass_shift(&m).x - row.origin.x) < 0.001);
+    mbo_close(&m, now);
+    for (int i = 0; i < 240 && m.isMorphing; i++) {
+      now += 1.0 / 120;
+      mbo_step_morph(&m, now);
+      if (m.tabsShown > 0.001) CHECK(mbo_shrink(&m) == 0);
+    }
+    CHECK(!m.isMorphing && mbo_glass_bounds(&m).size.width == m.barFrame.size.width);
+  }
+  {
+    MBOverflow h = overflow_bar(false, false, false);
+    h.overflowCount = 1;
+    CHECK(mbo_menu_frame(&h).size.width == h.barFrame.size.width && mbo_menu_start(&h) == 0);
+  }
+}
+
 int main(void) {
   @autoreleasepool {
     test_apple_grab();
     test_ios_nav_state();
+    test_ios_nav_overflow();
   }
   if (!failed) printf("apple_grab_nav_test: ok\n");
   return failed;
