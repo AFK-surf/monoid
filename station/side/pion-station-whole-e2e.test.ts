@@ -3069,6 +3069,8 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
 
   const fbMiss = await adminCall(conn, "POST", "/threads/99999/report", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ n: 1 })));
   assert.equal(fbMiss.status, 404, `feedback.report unknown thread must return 404 (not 501), got ${fbMiss.status}`);
+  const fbWrap = await adminCall(conn, "POST", "/threads/18446744073709551617/report", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ n: 1 })));
+  assert.equal(fbWrap.status, 400, `feedback.report 64-bit wraparound thread id must return 400, got ${fbWrap.status}`);
 
   const projRen = await adminCall(conn, "POST", "/projects/rename", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ from: "OldW17D3", to: "NewW17D3" })));
   assert.equal(projRen.status, 501, `POST /projects/rename must return honest 501 until Wave 17E, got ${projRen.status}`);

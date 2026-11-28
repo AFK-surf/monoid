@@ -4602,22 +4602,20 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
         }
         match peer_id {
           station_whole::PeerIdentity::AuthenticatedMember(v, _) => {
-            // Cross-workspace visibility gate BEFORE touching threads/entries/turns or logs.
-            match station_api::elsewhere(st.core.api.admin.seen_store, norm_path, v) {
-              Some(hidden_msg) => {
-                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, hidden_msg))
-                astream.mode = AdminStreamMode::Done
-                return
-              }
-              None => ()
-            }
-            let tid = match base_codec::parse_int64_str(trimmed_r) {
-              Some(n) if n > 0L && n <= 2147483647L => n.to_int()
+            // Single bounded uint parse (prevents 64-bit wraparound like "18446744073709551617" -> 1 bypassing `elsewhere`),
+            // followed immediately by fail-closed `thread_seen` workspace visibility check BEFORE touching DB.
+            let tid = match station_api::parse_uint_str(trimmed_r) {
+              Some(n) if n >= 1 => n
               _ => {
-                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, "unknown thread " + trimmed_r))
+                send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "invalid thread id"))
                 astream.mode = AdminStreamMode::Done
                 return
               }
+            }
+            if !station_api::thread_seen(st.core.api.admin.seen_store, v, tid) {
+              send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(404, "unknown thread " + trimmed_r))
+              astream.mode = AdminStreamMode::Done
+              return
             }
             let body_j = match base_codec::json_parse(body.to_string()) {
               base_codec::JsonParseResult::Ok(j) => j
@@ -4628,7 +4626,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               }
             }
             let entry_n = match base_codec::json_get(body_j, "n") {
-              Some(base_codec::Json::Num(d, _)) if d.to_int().to_double() == d && d.to_int() >= 1 => d.to_int()
+              Some(base_codec::Json::Num(d, _)) if d >= 1.0 && d <= 2147483647.0 && d.to_int().to_double() == d => d.to_int()
               _ => {
                 send_admin_resp_and_finish(ctx, astream.sid, station_api::json_error(400, "n must be a positive integer"))
                 astream.mode = AdminStreamMode::Done

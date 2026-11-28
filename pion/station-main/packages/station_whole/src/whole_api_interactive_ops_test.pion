@@ -164,13 +164,19 @@ test "w17d3: links.preview & feedback.report hook dispatch, channel resolution, 
     Ok(_) => panic("upstream 503 must fail")
   }
 
-  // 3. `resolve_feedback_channel` respects installed `CHANNEL` when config omits `updateChannel` (beta install must NOT default to stable!)
+  // 2b. Overflow/wraparound thread id ("18446744073709551617" -> 1 under 64-bit wrap) MUST be rejected with 400!
+  match (api.admin.host.call)("feedback.report", make_test_api_req_as("POST", "/threads/18446744073709551617/report", owner), ["18446744073709551617"], base_codec::json_obj([("n", base_codec::json_int(1))])) {
+    Err(e) => w17d3_assert(e.status == 400, "64-bit wraparound thread id must return 400, got " + e.status.to_string())
+    Ok(_) => panic("64-bit wraparound thread id must be rejected")
+  }
+
+  // 3. `resolve_feedback_channel` trims config `updateChannel` and respects installed `CHANNEL`
   w17d3_assert(resolve_feedback_channel(base_codec::json_obj([]), Some("beta")) == "beta", "beta CHANNEL must not default to stable")
   w17d3_assert(resolve_feedback_channel(base_codec::json_obj([]), Some("stable")) == "stable", "stable CHANNEL must resolve to stable")
   w17d3_assert(resolve_feedback_channel(base_codec::json_obj([]), None) == "stable", "pre-channel install (None) resolves to stable")
   w17d3_assert(
-    resolve_feedback_channel(base_codec::json_obj([("updateChannel", base_codec::json_str("beta"))]), Some("stable")) == "beta",
-    "explicit config updateChannel overrides installed CHANNEL",
+    resolve_feedback_channel(base_codec::json_obj([("updateChannel", base_codec::json_str("  beta \n"))]), Some("stable")) == "beta",
+    "trimmed config updateChannel overrides installed CHANNEL",
   )
   w17d3_assert(
     resolve_feedback_channel(base_codec::json_obj([("updateChannel", base_codec::json_str("stable"))]), Some("beta")) == "stable",
