@@ -559,9 +559,9 @@ test "runner: frames, single-shot adoption, and orphan detection" {
     _ => panic("expected Attached with err")
   }
 
-  let r1 = RunnerInfo::{ id: "claude-chat_1", runner_pid: 100, pid: 101, pgid: 101, started_at: 1000L, program: "claude", args: [], socket: "/tmp/r1.sock", keeps: true, pty: false }
-  let r2 = RunnerInfo::{ id: "codex-p1", runner_pid: 200, pid: 201, pgid: 201, started_at: 1000L, program: "codex", args: [], socket: "/tmp/r2.sock", keeps: true, pty: false }
-  let rt = RunnerInfo::{ id: "term-abc", runner_pid: 300, pid: 301, pgid: 301, started_at: 1000L, program: "bash", args: [], socket: "/tmp/rt.sock", keeps: false, pty: true }
+  let r1 = RunnerInfo::{ id: "claude-chat_1", runner_pid: 100, pid: 101, pgid: 101, started_at: 1000L, program: "claude", args: [], socket: "/tmp/r1.sock", keeps: true, pty: false, cwd: None }
+  let r2 = RunnerInfo::{ id: "codex-p1", runner_pid: 200, pid: 201, pgid: 201, started_at: 1000L, program: "codex", args: [], socket: "/tmp/r2.sock", keeps: true, pty: false, cwd: None }
+  let rt = RunnerInfo::{ id: "term-abc", runner_pid: 300, pid: 301, pgid: 301, started_at: 1000L, program: "bash", args: [], socket: "/tmp/rt.sock", keeps: false, pty: true, cwd: None }
   let machine = RunnerAdoptionMachine::new([r1, r2, rt])
   match machine.adopt_once("claude-chat_1") {
     Ok(()) => ()
@@ -1361,6 +1361,7 @@ test "wave17b3: runner json sentinel removed last and endRunner waits on exiting
     socket: paths.sock,
     keeps: true,
     pty: false,
+    cwd: None,
   }
 
   // Case 1: Stale reused PID (os_start_time_ms > started_at + STARTED_SLACK_MS) returns immediately without waiting

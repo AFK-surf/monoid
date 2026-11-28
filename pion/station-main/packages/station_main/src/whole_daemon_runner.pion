@@ -275,24 +275,79 @@ pub fn resolve_safe_session_cwd(
   Ok(data_dir)
 }
 
-/// Computes the server-owned default session workspace directory strictly from `(data_dir, ws, skey)`.
+/// Computes the server-owned collision-free default session workspace directory strictly from `(data_dir, ws, skey)`.
 pub fn server_session_workspace_dir(
   data_dir : String,
   ws : String,
   session_key : String,
   sep : String,
 ) -> String {
-  let safe_ws = sanitize_path_segment(if ws.length() > 0 { ws } else { "home" })
-  let safe_key = sanitize_path_segment(if session_key.length() > 0 { session_key } else { "session" })
-  nodepath::join(sep, [data_dir, "sessions", safe_ws, safe_key, "workspace"])
+  station_whole::server_session_workspace_dir(data_dir, ws, session_key, sep)
 }
 
-/// Canonical CWD authorization (R6 Invariant 1):
-/// NEVER trusts `row.workspace` as an arbitrary root and NEVER permits `<data_dir>`.
+/// Verifies a pre-existing legacy `row.workspace` ONLY if:
+///   1. It is non-empty, contains no `..`, and canonicalizes strictly inside `<data>/sessions/`,
+///   2. It already exists on disk as a real non-symlink directory, AND
+///   3. SQLite confirms NO other workspace's session points to the same `workspace`.
+pub fn verify_legacy_session_workspace(
+  st_opt : Option[station_store::Store],
+  ops_fs : station_ops::OpsFs,
+  row_workspace : String,
+  data_dir : String,
+  sess_ws : String,
+  home_ws : String,
+  sep : String,
+) -> Option[String] {
+  let trimmed = row_workspace.trim()
+  if trimmed.length() == 0 || path_has_parent_traversal(trimmed) {
+    return None
+  }
+  let sessions_root = nodepath::join(sep, [data_dir, "sessions"])
+  let canon_sessions = match canonicalize_with_existing_ancestor(ops_fs.realpath, sessions_root, sep) {
+    Ok(c) => c
+    Err(_) => return None
+  }
+  let meta = match (ops_fs.lstat)(trimmed) {
+    Ok(m) => m
+    Err(_) => return None
+  }
+  if meta.is_link || !meta.is_dir {
+    return None
+  }
+  let canon_ws = match (ops_fs.realpath)(trimmed) {
+    Ok(c) => c
+    Err(_) => return None
+  }
+  if canon_ws == canon_sessions || !is_path_within_root(canon_ws, canon_sessions, sep) {
+    return None
+  }
+  match st_opt {
+    Some(st) => {
+      let eff_ws = if sess_ws.length() > 0 { sess_ws } else { home_ws }
+      match st.db.first(
+        "SELECT 1 FROM sessions WHERE workspace = ?1 AND COALESCE(NULLIF(ws, ''), ?2) != ?3 LIMIT 1",
+        [
+          base_codec::json_str(trimmed),
+          base_codec::json_str(home_ws),
+          base_codec::json_str(eff_ws),
+        ],
+      ) {
+        Ok(None) => Some(canon_ws)
+        _ => None
+      }
+    }
+    None => None
+  }
+}
+
+/// Canonical CWD authorization (R6/R7 Invariant 1):
+/// NEVER trusts `row.workspace` as an arbitrary root, NEVER permits `<data_dir>`, and NEVER
+/// grants a blind `<data>/sessions/<sanitize(key)>/workspace` legacy exemption.
 /// Allowed roots are strictly:
-///   1. The server-owned directory for THIS `(sess_ws, session_key)` (plus legacy
-///      `<data>/sessions/<safe_key>/workspace` for this exact `session_key`), OR
-///   2. This workspace's own Drive roots (from `parse_drive_roots_for_workspace_pure`).
+///   1. The collision-free server-owned directory for THIS `(sess_ws, session_key)`, OR
+///   2. An explicitly verified existing legacy `row.workspace` (`verified_legacy_ws`, strictly under
+///      `<data>/sessions/`, existing on disk, unreferenced by any other workspace), OR
+///   3. This workspace's own Drive roots (from `parse_drive_roots_for_workspace_pure`).
 pub fn resolve_canonical_session_cwd(
   realpath_fn : (String) -> Result[String, station_ops::FsErr],
   row_cwd : Option[String],
@@ -302,6 +357,7 @@ pub fn resolve_canonical_session_cwd(
   sep : String,
   session_key~ : String = "",
   sess_ws~ : String = "",
+  verified_legacy_ws~ : Option[String] = None,
 ) -> Result[String, String] {
   if session_key.length() == 0 {
     return Err("session_key is required for CWD authorization")
@@ -311,10 +367,23 @@ pub fn resolve_canonical_session_cwd(
     Ok(c) => c
     Err(e) => return Err("cannot canonicalize server session workspace: " + e)
   }
-  let legacy_dir = nodepath::join(sep, [data_dir, "sessions", sanitize_path_segment(session_key), "workspace"])
-  let canon_legacy_opt : Option[String] = match canonicalize_with_existing_ancestor(realpath_fn, legacy_dir, sep) {
+  let sessions_root = nodepath::join(sep, [data_dir, "sessions"])
+  let canon_sessions_opt : Option[String] = match canonicalize_with_existing_ancestor(realpath_fn, sessions_root, sep) {
     Ok(c) => Some(c)
     Err(_) => None
+  }
+  let canon_legacy_opt : Option[String] = match (verified_legacy_ws, canon_sessions_opt) {
+    (Some(v), Some(cs)) => {
+      if v.length() > 0 && !path_has_parent_traversal(v) {
+        match canonicalize_with_existing_ancestor(realpath_fn, v, sep) {
+          Ok(cv) => if cv != cs && is_path_within_root(cv, cs, sep) { Some(cv) } else { None }
+          Err(_) => None
+        }
+      } else {
+        None
+      }
+    }
+    _ => None
   }
   match row_cwd {
     Some(rc) => {
@@ -544,6 +613,10 @@ pub fn parse_runner_ready_line(stdout_text : String) -> Option[station_drivers::
           Some(base_codec::Json::Bool(b)) => b
           _ => false
         }
+        let cwd_opt = match base_codec::json_get(j, "cwd") {
+          Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { Some(s.trim()) } else { None }
+          _ => None
+        }
         if id.length() > 0 && socket.length() > 0 && runner_pid > 0 {
           return Some(station_drivers::RunnerInfo::{
             id: id,
@@ -556,6 +629,7 @@ pub fn parse_runner_ready_line(stdout_text : String) -> Option[station_drivers::
             socket: socket,
             keeps: keeps,
             pty: pty,
+            cwd: cwd_opt,
           })
         }
       }
@@ -1480,6 +1554,7 @@ pub fn resolve_session_launch_policy(
   data_dir : String,
   sep : String,
   env_drive_roots~ : Option[String] = None,
+  verified_legacy_ws~ : Option[String] = None,
 ) -> Result[SessionLaunchPolicy, String] {
   let sess_ws = match row.ws {
     Some(w) => if w.length() > 0 { w } else { home_ws }
@@ -1500,6 +1575,7 @@ pub fn resolve_session_launch_policy(
     sep,
     session_key=row.key,
     sess_ws=sess_ws,
+    verified_legacy_ws=verified_legacy_ws,
   ) {
     Ok(c) => c
     Err(e) => return Err(e)
@@ -1523,6 +1599,13 @@ struct PendingEndTurn {
   wall_ms : Int64
   was_completed : Bool
   reprompt_reminder : Option[String]
+}
+
+struct ManagerPendingEndTurn {
+  session_key : String
+  ws : String
+  runtime_str : String
+  pend : PendingEndTurn
 }
 
 enum LiveRunnerPhase {
@@ -1590,18 +1673,21 @@ struct LiveRunnerSession {
   mut codex_active_turn_id : Option[String]
   mut dropping_oversized_out_line : Bool
   mut stopping : Bool
+  mut runner_exited : Bool
   mut pending_end_turn : Option[PendingEndTurn]
   mut adopted_db_out : Int64
 }
 
 /// Manages all live `stillfail-runner` child processes and active agent turns for `whole_daemon`.
-/// R6 Invariant 2: Runner instances being stopped move into `draining[conn_id]` so old callbacks
-/// NEVER collide with or overwrite a newer session instance.
+/// R6/R7 Invariant 2: Runner instances being stopped move into `draining[conn_id]` so old callbacks
+/// (including `by_spawn_ev -> conn_id`) NEVER collide with or overwrite a newer session instance,
+/// and uncommitted `pending_end_turns` survive draining exit/fallback until SQLite commits.
 pub struct LiveRunnerManager {
   sessions : Map[String, LiveRunnerSession]
   draining : Map[Int, LiveRunnerSession]
   by_conn_id : Map[Int, String]
-  by_spawn_ev : Map[Int64, String]
+  by_spawn_ev : Map[Int64, Int]
+  pending_end_turns : Map[String, ManagerPendingEndTurn]
   reprompt_restarts : Map[String, Int]
   mut next_conn_id : Int
   mut next_ev_id : Int64
@@ -1614,6 +1700,7 @@ pub fn LiveRunnerManager::new() -> LiveRunnerManager {
     draining: Map::new(),
     by_conn_id: Map::new(),
     by_spawn_ev: Map::new(),
+    pending_end_turns: Map::new(),
     reprompt_restarts: Map::new(),
     next_conn_id: 1,
     next_ev_id: LIVE_RUNNER_EV_BASE,
@@ -1666,9 +1753,84 @@ fn LiveRunnerManager::move_to_draining(self : LiveRunnerManager, skey : String, 
   self.draining.set(sess.conn_id, sess)
 }
 
+fn LiveRunnerManager::preserve_pending_end_turn(self : LiveRunnerManager, sess : LiveRunnerSession) -> Unit {
+  match sess.pending_end_turn {
+    Some(pend) => {
+      self.pending_end_turns.set(
+        sess.session_key,
+        ManagerPendingEndTurn::{
+          session_key: sess.session_key,
+          ws: sess.ws,
+          runtime_str: sess.runtime_str,
+          pend: pend,
+        },
+      )
+      sess.pending_end_turn = None
+    }
+    None => ()
+  }
+}
+
 fn LiveRunnerManager::finish_draining(self : LiveRunnerManager, conn_id : Int) -> Unit {
+  match self.draining.get(conn_id) {
+    Some(ds) => self.preserve_pending_end_turn(ds)
+    None => ()
+  }
   self.draining.remove(conn_id)
   self.by_conn_id.remove(conn_id)
+}
+
+/// R7 P1-3: Single real-time policy + `(profile_id, runtime_str, cwd)` identity check shared by
+/// `Running steer`, `live_runner_flush_ready`, and delayed steer flushes.
+fn live_runner_verify_session_policy(
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  cfg_raw : base_codec::Json,
+  sess : LiveRunnerSession,
+) -> Bool {
+  let st_db = match core.store.require_open() {
+    Ok(s) => s
+    Err(_) => return false
+  }
+  let row = match st_db.get_session(sess.session_key) {
+    Ok(Some(r)) => r
+    _ => return false
+  }
+  if row.archived_at is Some(_) {
+    return false
+  }
+  let rt_kind = match station_drivers::runtime_kind_from_str(row.runtime) {
+    Some(k) => k
+    None => station_drivers::RuntimeKind::Claude
+  }
+  let sess_ws = match row.ws {
+    Some(w) => if w.length() > 0 { w } else { core.config.home_workspace }
+    None => core.config.home_workspace
+  }
+  let live_cfg = live_config_raw(core, cfg_raw)
+  let legacy_ws = verify_legacy_session_workspace(
+    Some(st_db),
+    ctx.ops_fs,
+    row.workspace,
+    ctx.data,
+    sess_ws,
+    core.config.home_workspace,
+    ctx.sep,
+  )
+  match resolve_session_launch_policy(
+    live_cfg,
+    ctx.ops_fs.realpath,
+    row,
+    rt_kind,
+    core.config.home_workspace,
+    ctx.data,
+    ctx.sep,
+    env_drive_roots=station_sys::env_get("STILLFAIL_DRIVE_ROOTS"),
+    verified_legacy_ws=legacy_ws,
+  ) {
+    Ok(pol) => sess.profile_id == pol.profile.id && sess.runtime_str == row.runtime && sess.cwd == pol.cwd && !sess.stopping
+    Err(_) => false
+  }
 }
 
 /// Bounded reprompt restart counter persisted on `LiveRunnerManager` (survives runner respawns,
@@ -2038,33 +2200,39 @@ fn live_runner_finish_turn(
       }
       match sess.phase {
         LiveRunnerPhase::Ready(_, sock_id) => {
-          // Same-runner live reprompt: advance actor reprompt counter and send directly.
-          let act = actor.on_turn_ended(false, wall_ms)
-          match act {
-            station_sessions::TurnEndAction::Reprompt(_) => {
-              sess.prompt_seq = sess.prompt_seq + 1
-              let rsid = match sess.runtime_session_id {
-                Some(s) => s
-                None => ""
+          if !sess.runner_exited {
+            // Same-runner live reprompt: advance actor reprompt counter and send directly.
+            let act = actor.on_turn_ended(false, wall_ms)
+            match act {
+              station_sessions::TurnEndAction::Reprompt(_) => {
+                sess.prompt_seq = sess.prompt_seq + 1
+                let rsid = match sess.runtime_session_id {
+                  Some(s) => s
+                  None => ""
+                }
+                let frame = encode_runtime_prompt(sess.runtime_kind, reminder, rsid, sess.prompt_seq)
+                if sess.is_acp {
+                  let _ = sess.acp_guard.on_prompt(now_ms)
+                } else {
+                  sess.stop_guard.busy = true
+                }
+                if live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
+                  return
+                }
+                // Write queue overflow: close socket and fall through to commit failed/ended turn.
+                live_runner_close_sock(ctx, sess.conn_id, sock_id)
+                sess.phase = LiveRunnerPhase::Exited
+                actor.has_process = false
               }
-              let frame = encode_runtime_prompt(sess.runtime_kind, reminder, rsid, sess.prompt_seq)
-              if sess.is_acp {
-                let _ = sess.acp_guard.on_prompt(now_ms)
-              } else {
-                sess.stop_guard.busy = true
-              }
-              if live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_write(frame)) {
-                return
-              }
-              // Write queue overflow: close socket and fall through to commit failed/ended turn.
-              live_runner_close_sock(ctx, sess.conn_id, sock_id)
-              sess.phase = LiveRunnerPhase::Exited
-              actor.has_process = false
+              station_sessions::TurnEndAction::Finish(d) => eff_declared = d
+              station_sessions::TurnEndAction::ForceAllDone => eff_declared = station_sessions::TurnDeclared::AllDone("done")
+              station_sessions::TurnEndAction::ForceNeedHuman => eff_declared = station_sessions::TurnDeclared::NeedHuman("input needed")
+              station_sessions::TurnEndAction::EndUndeclared => eff_declared = station_sessions::TurnDeclared::None
             }
-            station_sessions::TurnEndAction::Finish(d) => eff_declared = d
-            station_sessions::TurnEndAction::ForceAllDone => eff_declared = station_sessions::TurnDeclared::AllDone("done")
-            station_sessions::TurnEndAction::ForceNeedHuman => eff_declared = station_sessions::TurnDeclared::NeedHuman("input needed")
-            station_sessions::TurnEndAction::EndUndeclared => eff_declared = station_sessions::TurnDeclared::None
+          } else if mgr.consume_reprompt_restart_budget(sess.session_key) {
+            reprompt_reminder = Some(reminder)
+          } else {
+            ctx.log("[live-runner] reprompt restart cap (2) reached for " + sess.session_key + "; finishing turn")
           }
         }
         _ => {
@@ -2176,7 +2344,21 @@ fn live_runner_commit_end_turn(
           sess.pending_ack_out = 0L
           sess.turn_start_out_offset = sess.acked_out
           let sock_id = live_runner_sock_of(sess.phase)
-          if sock_id >= 0L && !sess.stopping && !sess.detached_for_handover {
+          if sess.runner_exited {
+            // R7 P1-4: Deferred `done` + socket close now that SQLite `endTurn` committed durably!
+            if sock_id >= 0L && !sess.detached_for_handover {
+              let _ = live_runner_send_sess(ctx, sess, sock_id, station_drivers::encode_runner_done())
+              live_runner_close_sock(ctx, sess.conn_id, sock_id)
+            }
+            sess.phase = LiveRunnerPhase::Exited
+            if mgr.draining.get(sess.conn_id) is Some(_) {
+              mgr.finish_draining(sess.conn_id)
+            } else {
+              mgr.by_conn_id.remove(sess.conn_id)
+              let a_done = core.agents.hub.ensure_actor(sess.session_key, sess.runtime_str)
+              a_done.has_process = false
+            }
+          } else if sock_id >= 0L && !sess.stopping && !sess.detached_for_handover {
             let keep_opt : Option[Int64] = if sess.adopted_instance_id is Some(_) { Some(0L) } else { None }
             let ack_line = station_drivers::encode_runner_ack(sess.acked_out, sess.acked_err, keep_opt)
             let _ = live_runner_send_sess(ctx, sess, sock_id, ack_line)
@@ -2240,12 +2422,116 @@ fn live_runner_commit_end_turn(
   }
 }
 
-fn live_runner_flush_ready(
+/// R7 P1-2: Retries manager-level `PendingEndTurn` entries preserved across draining exit/fallback.
+fn live_runner_commit_manager_pending_end_turn(
+  mgr : LiveRunnerManager,
   ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  mpend : ManagerPendingEndTurn,
+) -> Unit {
+  let pend = mpend.pend
+  match core.store.require_open() {
+    Ok(st) => {
+      let decl_j = match pend.declared_str {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let det_j = match pend.detail {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let need_j = match pend.need_opt {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let wsec_j = match pend.wait_secs_opt {
+        Some(n) => base_codec::json_int(n)
+        None => base_codec::json_null()
+      }
+      let wfor_j = match pend.wait_for_opt {
+        Some(s) => base_codec::json_str(s)
+        None => base_codec::json_null()
+      }
+      let wwatch_j = match pend.wait_watch_opt {
+        Some(b) => base_codec::json_int(if b { 1 } else { 0 })
+        None => base_codec::json_null()
+      }
+      match st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+        match pend.turn_id {
+          Some(tid) => {
+            match t.run(
+              "UPDATE turns SET ended_at = ?2, outcome = ?3, detail = ?4, declared = ?5, need = ?6, wait_seconds = ?7, wait_for = ?8, wait_watch = ?9 WHERE id = ?1",
+              [
+                base_codec::json_str(tid),
+                sql_db::int64_to_json(pend.wall_ms),
+                base_codec::json_str(pend.outcome),
+                det_j,
+                decl_j,
+                need_j,
+                wsec_j,
+                wfor_j,
+                wwatch_j,
+              ],
+            ) {
+              Err(e) => return Err(e)
+              Ok(_) => ()
+            }
+          }
+          None => ()
+        }
+        match t.run(
+          "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
+          [base_codec::json_str(mpend.session_key), sql_db::int64_to_json(pend.wall_ms)],
+        ) {
+          Err(e) => return Err(e)
+          Ok(_) => ()
+        }
+        Ok(())
+      }) {
+        Ok(_) => {
+          mgr.pending_end_turns.remove(mpend.session_key)
+          core.agents.codex_active_turns.remove(mpend.session_key)
+          let actor = core.agents.hub.ensure_actor(mpend.session_key, mpend.runtime_str)
+          actor.phase = station_sessions::ActorPhase::Idle
+          actor.has_process = false
+          actor.open_tools = []
+          actor.steer_silent_due_at = None
+          actor.running_history.push(false)
+          if pend.was_completed {
+            match pend.reprompt_reminder {
+              Some(rem) => actor.queue.push(station_sessions::ActorWork::InternalPrompt(rem))
+              None => ()
+            }
+          }
+          actor.pump_next_prompt()
+          live_runner_emit_session_event(core, mpend.ws, mpend.session_key, false, pend.declared_str, pend.wall_ms)
+        }
+        Err(e) => {
+          ctx.log("[live-runner] manager pending endTurn retry failed for " + mpend.session_key + ": " + e.message)
+        }
+      }
+    }
+    Err(_) => ()
+  }
+}
+
+fn live_runner_flush_ready(
+  mgr : LiveRunnerManager,
+  ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  cfg_raw : base_codec::Json,
   sess : LiveRunnerSession,
   sock_id : Int64,
   now_ms : Int64,
 ) -> Bool {
+  if sess.pending_prompt is Some(_) || sess.pending_steers.length() > 0 {
+    // R7 P1-3: Re-verify live policy & `(profile_id, runtime_str, cwd)` BEFORE writing any queued prompt/steer!
+    if !live_runner_verify_session_policy(ctx, core, cfg_raw, sess) {
+      ctx.log("[live-runner] live policy revoked or drifted before flush for " + sess.session_key + "; reclaiming runner")
+      mgr.reclaim_session(ctx, core, sess.session_key, sess, now_ms)
+      return false
+    }
+  }
   let rsid = match sess.runtime_session_id {
     Some(s) => s
     None => ""
@@ -2527,11 +2813,14 @@ fn live_runner_handle_agent_line(
       match sess.phase {
         LiveRunnerPhase::AcpOpening(info, sock_id) => {
           sess.phase = LiveRunnerPhase::Ready(info, sock_id)
-          if !live_runner_flush_ready(ctx, sess, sock_id, now_ms) {
-            live_runner_close_sock(ctx, sess.conn_id, sock_id)
-            sess.phase = LiveRunnerPhase::Exited
+          if !live_runner_flush_ready(mgr, ctx, core, ctx.cfg_raw, sess, sock_id, now_ms) {
+            if !sess.stopping {
+              live_runner_close_sock(ctx, sess.conn_id, sock_id)
+              sess.phase = LiveRunnerPhase::Exited
+            }
             if sess.current_turn_id is Some(_) {
-              live_runner_finish_turn(mgr, ctx, core, sess, "failed", Some("runner write queue overflow"), now_ms, wall_ms)
+              let reason = if sess.stopping { "live policy revoked or drifted before prompt" } else { "runner write queue overflow" }
+              live_runner_finish_turn(mgr, ctx, core, sess, "failed", Some(reason), now_ms, wall_ms)
             }
           }
         }
@@ -2561,11 +2850,14 @@ fn live_runner_handle_agent_line(
       match sess.phase {
         LiveRunnerPhase::CodexOpening(info, sock_id) => {
           sess.phase = LiveRunnerPhase::Ready(info, sock_id)
-          if !live_runner_flush_ready(ctx, sess, sock_id, now_ms) {
-            live_runner_close_sock(ctx, sess.conn_id, sock_id)
-            sess.phase = LiveRunnerPhase::Exited
+          if !live_runner_flush_ready(mgr, ctx, core, ctx.cfg_raw, sess, sock_id, now_ms) {
+            if !sess.stopping {
+              live_runner_close_sock(ctx, sess.conn_id, sock_id)
+              sess.phase = LiveRunnerPhase::Exited
+            }
             if sess.current_turn_id is Some(_) {
-              live_runner_finish_turn(mgr, ctx, core, sess, "failed", Some("runner write queue overflow"), now_ms, wall_ms)
+              let reason = if sess.stopping { "live policy revoked or drifted before prompt" } else { "runner write queue overflow" }
+              live_runner_finish_turn(mgr, ctx, core, sess, "failed", Some(reason), now_ms, wall_ms)
             }
           }
         }
@@ -2580,11 +2872,14 @@ fn live_runner_handle_agent_line(
         match sess.phase {
           LiveRunnerPhase::Ready(_, sock_id) => {
             if sess.pending_steers.length() > 0 {
-              if !live_runner_flush_ready(ctx, sess, sock_id, now_ms) {
-                live_runner_close_sock(ctx, sess.conn_id, sock_id)
-                sess.phase = LiveRunnerPhase::Exited
+              if !live_runner_flush_ready(mgr, ctx, core, ctx.cfg_raw, sess, sock_id, now_ms) {
+                if !sess.stopping {
+                  live_runner_close_sock(ctx, sess.conn_id, sock_id)
+                  sess.phase = LiveRunnerPhase::Exited
+                }
                 if sess.current_turn_id is Some(_) {
-                  live_runner_finish_turn(mgr, ctx, core, sess, "failed", Some("runner write queue overflow"), now_ms, wall_ms)
+                  let reason = if sess.stopping { "live policy revoked or drifted before steer" } else { "runner write queue overflow" }
+                  live_runner_finish_turn(mgr, ctx, core, sess, "failed", Some(reason), now_ms, wall_ms)
                 }
               }
             }
@@ -2757,33 +3052,72 @@ pub fn LiveRunnerManager::adopt_live_runner(
     Some(w) => if w.length() > 0 { w } else { core.config.home_workspace }
     None => core.config.home_workspace
   }
-  // R5 Invariant 1: Verify real-time launch policy BEFORE adopting live runner!
+  // R5/R7 Invariant 1 & P1-3: Verify real-time launch policy AND runner actual CWD (`info.cwd` or
+  // Linux `/proc/<pid>/cwd`) BEFORE adopting ANY live runner (NEVER skip policy errors for idle!).
   let live_cfg = live_config_raw(core, cfg_raw)
+  let legacy_ws = verify_legacy_session_workspace(
+    Some(st),
+    ctx.ops_fs,
+    row.workspace,
+    ctx.data,
+    sess_ws,
+    core.config.home_workspace,
+    ctx.sep,
+  )
   let policy_res = if row.archived_at is Some(_) {
     Err("session is archived")
   } else {
-    resolve_session_launch_policy(live_cfg, ctx.ops_fs.realpath, row, rt_kind, core.config.home_workspace, ctx.data, ctx.sep, env_drive_roots=station_sys::env_get("STILLFAIL_DRIVE_ROOTS"))
+    resolve_session_launch_policy(
+      live_cfg,
+      ctx.ops_fs.realpath,
+      row,
+      rt_kind,
+      core.config.home_workspace,
+      ctx.data,
+      ctx.sep,
+      env_drive_roots=station_sys::env_get("STILLFAIL_DRIVE_ROOTS"),
+      verified_legacy_ws=legacy_ws,
+    )
+  }
+  let runner_actual_cwd : Option[String] = match rinfo.cwd {
+    Some(rc) => {
+      if rc.trim().length() > 0 {
+        match canonicalize_with_existing_ancestor(ctx.ops_fs.realpath, rc.trim(), ctx.sep) {
+          Ok(c) => Some(c)
+          Err(_) => Some(rc.trim())
+        }
+      } else {
+        None
+      }
+    }
+    None => None
   }
   let mut unauthorized_stop = false
-  let mut eff_cwd = match row.cwd {
-    Some(c) => if c.length() > 0 { c } else { row.workspace }
-    None => row.workspace
+  let mut eff_cwd = match runner_actual_cwd {
+    Some(c) => c
+    None => match row.cwd {
+      Some(c) => if c.length() > 0 { c } else { row.workspace }
+      None => row.workspace
+    }
   }
   match policy_res {
-    Ok(pol) => eff_cwd = pol.cwd
+    Ok(pol) => {
+      match runner_actual_cwd {
+        Some(rcwd) => {
+          if rcwd != pol.cwd {
+            ctx.log("[live-runner] adopt runner cwd mismatch for " + session_key + " (runner=" + rcwd + ", policy=" + pol.cwd + "); stopping runner via socket")
+            unauthorized_stop = true
+            eff_cwd = rcwd
+          } else {
+            eff_cwd = pol.cwd
+          }
+        }
+        None => eff_cwd = pol.cwd
+      }
+    }
     Err(e) => {
-      let has_open_turn = match st.db.first(
-        "SELECT 1 FROM turns WHERE session_key = ?1 AND ended_at IS NULL LIMIT 1",
-        [base_codec::json_str(session_key)],
-      ) {
-        Ok(Some(_)) => true
-        _ => false
-      }
-      let prof_ok = resolve_authorized_profile(live_cfg, row.profile, rt_kind, sess_ws, core.config.home_workspace, ctx.data, ctx.sep).is_ok()
-      if has_open_turn || row.running || row.archived_at is Some(_) || !prof_ok {
-        ctx.log("[live-runner] adopt policy denied for " + session_key + " (" + e + "); will stop runner via socket")
-        unauthorized_stop = true
-      }
+      ctx.log("[live-runner] adopt policy denied for " + session_key + " (" + e + "); will stop runner via socket")
+      unauthorized_stop = true
     }
   }
   if !unauthorized_stop && core.agents.token_for_session(session_key) is None && row.token.length() > 0 {
@@ -2876,6 +3210,7 @@ pub fn LiveRunnerManager::adopt_live_runner(
     codex_active_turn_id: restored_codex_tid,
     dropping_oversized_out_line: false,
     stopping: unauthorized_stop,
+    runner_exited: false,
     pending_end_turn: None,
     adopted_db_out: 0L,
   }
@@ -2926,8 +3261,9 @@ pub fn LiveRunnerManager::pump(
     if actor.archived {
       continue
     }
-    // R6 Invariant 2: NEVER spawn or pump a new instance while an old instance of `key` is still draining!
-    if self.has_draining_session(key) {
+    // R6/R7 Invariant 2: NEVER spawn or pump a new instance while an old instance of `key` is still draining
+    // OR while a manager-level uncommitted `PendingEndTurn` is still retrying!
+    if self.has_draining_session(key) || self.pending_end_turns.get(key) is Some(_) {
       continue
     }
     // R5 Invariant 2: NEVER start a new prompt or steer while an `endTurn` SQLite commit is still pending!
@@ -2967,27 +3303,13 @@ pub fn LiveRunnerManager::pump(
           match actor.queue[0] {
             station_sessions::ActorWork::Steer(steer_text) => {
               let _ = actor.pop_next()
-              // R5 Invariant 1: Re-verify live launch policy BEFORE delivering steer!
-              let live_cfg = live_config_raw(core, cfg_raw)
-              let mut steer_policy_ok = true
-              match core.store.require_open() {
-                Ok(st_db) => match st_db.get_session(key) {
-                  Ok(Some(srow)) => {
-                    let s_rt = match station_drivers::runtime_kind_from_str(srow.runtime) {
-                      Some(k) => k
-                      None => station_drivers::RuntimeKind::Claude
-                    }
-                    if srow.archived_at is Some(_)
-                    || resolve_session_launch_policy(live_cfg, ctx.ops_fs.realpath, srow, s_rt, core.config.home_workspace, ctx.data, ctx.sep, env_drive_roots=station_sys::env_get("STILLFAIL_DRIVE_ROOTS")).is_err() {
-                      steer_policy_ok = false
-                    }
-                  }
-                  _ => steer_policy_ok = false
-                }
-                Err(_) => steer_policy_ok = false
+              // R7 P1-3: Re-verify live launch policy AND `(profile_id, runtime_str, cwd)` identity BEFORE steer!
+              let steer_policy_ok = match self.sessions.get(key) {
+                Some(cur_s) => live_runner_verify_session_policy(ctx, core, cfg_raw, cur_s)
+                None => false
               }
               if !steer_policy_ok {
-                ctx.log("[live-runner] live policy revoked before steer for " + key + "; stopping runner")
+                ctx.log("[live-runner] live policy revoked or drifted before steer for " + key + "; stopping runner")
                 match self.sessions.get(key) {
                   Some(sess) => self.reclaim_session(ctx, core, key, sess, now_ms)
                   None => ()
@@ -3210,10 +3532,19 @@ fn LiveRunnerManager::dispatch_prompt(
     live_runner_emit_session_event(core, sess_ws, session_key, false, None, wall_ms)
   }
 
-  // R5 Invariant 1: Single authoritative live launch policy (live `core.config_file.raw()`,
+  // R5/R7 Invariant 1: Single authoritative live launch policy (live `core.config_file.raw()`,
   // workspace-scoped Drive roots, relative `profile.home`, workspace-isolated `agent_home`,
-  // canonical `realpath` CWD strictly inside session workspace or workspace Drive roots).
+  // canonical `realpath` CWD strictly inside collision-free session workspace, verified legacy ws, or workspace Drive roots).
   let live_cfg = live_config_raw(core, cfg_raw)
+  let legacy_ws = verify_legacy_session_workspace(
+    Some(st),
+    ctx.ops_fs,
+    row.workspace,
+    ctx.data,
+    sess_ws,
+    core.config.home_workspace,
+    ctx.sep,
+  )
   let policy = match resolve_session_launch_policy(
     live_cfg,
     ctx.ops_fs.realpath,
@@ -3223,6 +3554,7 @@ fn LiveRunnerManager::dispatch_prompt(
     ctx.data,
     ctx.sep,
     env_drive_roots=station_sys::env_get("STILLFAIL_DRIVE_ROOTS"),
+    verified_legacy_ws=legacy_ws,
   ) {
     Ok(p) => p
     Err(e) => {
@@ -3275,12 +3607,15 @@ fn LiveRunnerManager::dispatch_prompt(
             existing.turn_start_out_offset = existing.acked_out
             existing.pending_prompt = Some(enveloped_prompt)
             actor.has_process = true
-            if !live_runner_flush_ready(ctx, existing, sock_id, now_ms) {
-              live_runner_close_sock(ctx, existing.conn_id, sock_id)
-              existing.phase = LiveRunnerPhase::Exited
-              self.by_conn_id.remove(existing.conn_id)
+            if !live_runner_flush_ready(self, ctx, core, live_cfg, existing, sock_id, now_ms) {
+              if !existing.stopping {
+                live_runner_close_sock(ctx, existing.conn_id, sock_id)
+                existing.phase = LiveRunnerPhase::Exited
+                self.by_conn_id.remove(existing.conn_id)
+              }
               actor.has_process = false
-              live_runner_finish_turn(self, ctx, core, existing, "failed", Some("runner write queue overflow"), now_ms, wall_ms)
+              let reason = if existing.stopping { "live policy revoked or drifted before prompt" } else { "runner write queue overflow" }
+              live_runner_finish_turn(self, ctx, core, existing, "failed", Some(reason), now_ms, wall_ms)
             }
             return
           }
@@ -3365,7 +3700,7 @@ fn LiveRunnerManager::dispatch_prompt(
     Err(_) => ""
   }
   let projects_on = true
-  let eff_ws_dir = if row.workspace.length() > 0 { row.workspace } else { cwd }
+  let eff_ws_dir = server_session_workspace_dir(ctx.data, sess_ws, session_key, ctx.sep)
   let instr = station_drivers::session_instructions(
     eff_ws_dir,
     row.cwd,
@@ -3476,21 +3811,21 @@ fn LiveRunnerManager::dispatch_prompt(
     pipe_stdout: true,
     pipe_stderr: true,
   }
+  // R7 P1-4: Record `turn_start` in SQLite BEFORE `proc_spawn` so a SQLite failure NEVER leaves
+  // an already-detached `stillfail-runner` process group; if `proc_spawn` fails, `fail_before_spawn`
+  // atomically rolls back `turns.ended_at` + `outcome = 'failed'` + `sessions.running = 0`!
+  match live_runner_record_turn_start(core, turn_id, session_key, profile.id, eff_person, tid_opt, wall_ms) {
+    Err(e) => {
+      fail_before_spawn(e)
+      return
+    }
+    Ok(_) => ()
+  }
   match station_sys::proc_spawn(ev_id, spawn_opts) {
     Err(e) => {
       fail_before_spawn("proc_spawn failed: " + e)
     }
     Ok(child) => {
-      // R6 Invariant 3: `turn_start` SQLite failure MUST abort (no running SSE, terminate spawned runner).
-      match live_runner_record_turn_start(core, turn_id, session_key, profile.id, eff_person, tid_opt, wall_ms) {
-        Err(e) => {
-          let _ = child.kill(station_sys::SIG_TERM, true)
-          let _ = child.close()
-          fail_before_spawn(e)
-          return
-        }
-        Ok(_) => ()
-      }
       live_runner_emit_session_event(core, sess_ws, session_key, true, None, wall_ms)
       let cid = self.next_conn_id
       self.next_conn_id = self.next_conn_id + 1
@@ -3550,12 +3885,13 @@ fn LiveRunnerManager::dispatch_prompt(
         codex_active_turn_id: None,
         dropping_oversized_out_line: false,
         stopping: false,
+        runner_exited: false,
         pending_end_turn: None,
         adopted_db_out: 0L,
       }
       self.sessions.set(session_key, sess)
       self.by_conn_id.set(cid, session_key)
-      self.by_spawn_ev.set(ev_id, session_key)
+      self.by_spawn_ev.set(ev_id, cid)
       actor.has_process = true
       ctx.log("[live-runner] spawned runner " + rid + " (ev=" + ev_id.to_string() + ") for " + session_key)
     }
@@ -3563,6 +3899,7 @@ fn LiveRunnerManager::dispatch_prompt(
 }
 
 /// Handles `SysEvent`s belonging to `stillfail-runner` bootstrap spawns.
+/// R7 P1-2: Routes via `by_spawn_ev -> conn_id` + `lookup_by_conn_id` across BOTH `sessions` and `draining`!
 pub fn LiveRunnerManager::handle_sys_event(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
@@ -3572,12 +3909,12 @@ pub fn LiveRunnerManager::handle_sys_event(
   now_ms : Int64,
   wall_ms : Int64,
 ) -> Bool {
-  let skey = match self.by_spawn_ev.get(ev_id) {
-    Some(k) => k
+  let cid = match self.by_spawn_ev.get(ev_id) {
+    Some(c) => c
     None => return false
   }
-  let sess = match self.sessions.get(skey) {
-    Some(s) => s
+  let (skey, sess, is_draining) = match self.lookup_by_conn_id(cid) {
+    Some(t) => t
     None => {
       self.by_spawn_ev.remove(ev_id)
       return true
@@ -3598,8 +3935,8 @@ pub fn LiveRunnerManager::handle_sys_event(
           let out_str = bytes_to_str_local(next_out, next_out.length())
           match parse_runner_ready_line(out_str) {
             Some(info) => {
-              // R5 Invariant 3: Even when `sess.stopping` is true, ALWAYS open `info.socket` so we
-              // send `{"op":"signal","signal":"TERM","group":true}` + `{"op":"done"}` and let
+              // R5/R7 Invariant 3: Even when `sess.stopping` or `is_draining` is true, ALWAYS open `info.socket`
+              // so we send `{"op":"signal","signal":"TERM","group":true}` + `{"op":"done"}` and let
               // `stillfail-runner` terminate its own child process group (NEVER kill controller first!).
               let _ = child.close()
               self.by_spawn_ev.remove(ev_id)
@@ -3625,7 +3962,11 @@ pub fn LiveRunnerManager::handle_sys_event(
           }
           sess.phase = LiveRunnerPhase::Spawning(cur_ev, child, out_buf, next_err, deadline)
         }
-        station_sys::SysEvent::ProcStdoutEof | station_sys::SysEvent::ProcExit(_) => {
+        station_sys::SysEvent::ProcExit(_) => {
+          // POSIX: ProcExit can arrive BEFORE the stdout pipe reader delivers ProcStdout / ProcStdoutEof!
+          // Keep waiting for `ProcStdout` (`{"ready":true}`) or `ProcStdoutEof` (bounded by 30s deadline).
+        }
+        station_sys::SysEvent::ProcStdoutEof => {
           let _ = child.close()
           self.by_spawn_ev.remove(ev_id)
           let out_str = bytes_to_str_local(out_buf, out_buf.length())
@@ -3644,10 +3985,19 @@ pub fn LiveRunnerManager::handle_sys_event(
               let detail = if err_str.trim().length() > 0 { err_str.trim() } else { out_str.trim() }
               ctx.log("[live-runner] runner failed to start for " + skey + ": " + detail)
               sess.phase = LiveRunnerPhase::Exited
-              self.by_conn_id.remove(sess.conn_id)
-              let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-              actor.has_process = false
-              live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start: " + detail), now_ms, wall_ms)
+              if is_draining {
+                self.finish_draining(cid)
+              } else {
+                self.by_conn_id.remove(sess.conn_id)
+                let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                actor.has_process = false
+              }
+              if sess.current_turn_id is Some(_) {
+                live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner did not start: " + detail), now_ms, wall_ms)
+              }
+              if is_draining {
+                self.preserve_pending_end_turn(sess)
+              }
             }
           }
         }
@@ -3703,19 +4053,20 @@ pub fn LiveRunnerManager::handle_role_done(
             sess.write_queue_bytes = 0
             live_runner_close_sock(ctx, conn_id, cur_sock)
             sess.phase = LiveRunnerPhase::Exited
-            if is_draining {
-              self.finish_draining(conn_id)
-            } else {
-              self.by_conn_id.remove(conn_id)
-              let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-              actor.has_process = false
-            }
             match sess.adopted_instance_id {
               Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
               None => ()
             }
             if sess.current_turn_id is Some(_) {
               live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket write failed: " + e.message), now_ms, wall_ms)
+            }
+            if is_draining {
+              self.finish_draining(conn_id)
+              self.preserve_pending_end_turn(sess)
+            } else {
+              self.by_conn_id.remove(conn_id)
+              let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+              actor.has_process = false
             }
           }
         }
@@ -3805,15 +4156,16 @@ pub fn LiveRunnerManager::handle_role_done(
                   None => ()
                 }
                 sess.phase = LiveRunnerPhase::Exited
+                if sess.current_turn_id is Some(_) {
+                  live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket connect failed: " + e.message), now_ms, wall_ms)
+                }
                 if is_draining {
                   self.finish_draining(conn_id)
+                  self.preserve_pending_end_turn(sess)
                 } else {
                   self.by_conn_id.remove(conn_id)
                   let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
                   actor.has_process = false
-                }
-                if sess.current_turn_id is Some(_) {
-                  live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket connect failed: " + e.message), now_ms, wall_ms)
                 }
               }
               _ => {
@@ -3849,19 +4201,20 @@ pub fn LiveRunnerManager::handle_role_done(
           if chunk.length() == 0 {
             live_runner_close_sock(ctx, conn_id, cur_sock)
             sess.phase = LiveRunnerPhase::Exited
-            if is_draining {
-              self.finish_draining(conn_id)
-            } else {
-              self.by_conn_id.remove(conn_id)
-              let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-              actor.has_process = false
-            }
             match sess.adopted_instance_id {
               Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
               None => ()
             }
             if sess.current_turn_id is Some(_) {
               live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket closed unexpectedly"), now_ms, wall_ms)
+            }
+            if is_draining {
+              self.finish_draining(conn_id)
+              self.preserve_pending_end_turn(sess)
+            } else {
+              self.by_conn_id.remove(conn_id)
+              let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+              actor.has_process = false
             }
             return true
           }
@@ -3892,11 +4245,15 @@ pub fn LiveRunnerManager::handle_role_done(
                   Ok(_) => {
                     pending_adopted_batch = []
                     sess.adopted_db_out = batch_db_out
-                    let target_out = if sess.current_turn_id is Some(_) {
-                      batch_nl_out
-                    } else {
-                      batch_db_out
-                    }
+                    // R7 P1-4: Advance runner `acked_out` on `\n` boundaries (`batch_nl_out`) for all active
+                    // turns and non-`adopted_only` runners; passive `adopted_only` log collectors with no
+                    // active turn (`keep: 0`) ACK `batch_db_out` after durable `adopted-runners.db` commit.
+                    let is_adopted_only = sess.is_adopted
+                    && sess.adopted_instance_id is Some(_)
+                    && sess.current_turn_id is None
+                    && sess.pending_prompt is None
+                    && !sess.stopping
+                    let target_out = if is_adopted_only { batch_db_out } else { batch_nl_out }
                     if target_out > sess.acked_out {
                       sess.acked_out = target_out
                       ack_dirty = true
@@ -4023,9 +4380,13 @@ pub fn LiveRunnerManager::handle_role_done(
                     LiveRunnerPhase::Ready(info, s) => {
                       if sess.is_adopted {
                         // Adopted runner is already initialized; flush any pending prompt/steers directly!
-                        if !live_runner_flush_ready(ctx, sess, s, now_ms) {
-                          fail_close_reason = Some("runner write queue overflow")
-                          exited_now = true
+                        if !live_runner_flush_ready(self, ctx, core, ctx.cfg_raw, sess, s, now_ms) {
+                          if !sess.stopping {
+                            fail_close_reason = Some("runner write queue overflow")
+                            exited_now = true
+                          } else if sess.current_turn_id is Some(_) {
+                            live_runner_finish_turn(self, ctx, core, sess, "failed", Some("live policy revoked or drifted before prompt"), now_ms, wall_ms)
+                          }
                           break
                         }
                       } else if sess.is_acp {
@@ -4033,9 +4394,13 @@ pub fn LiveRunnerManager::handle_role_done(
                       } else if sess.is_codex {
                         live_runner_start_codex_init(ctx, sess, info, s)
                       } else {
-                        if !live_runner_flush_ready(ctx, sess, s, now_ms) {
-                          fail_close_reason = Some("runner write queue overflow")
-                          exited_now = true
+                        if !live_runner_flush_ready(self, ctx, core, ctx.cfg_raw, sess, s, now_ms) {
+                          if !sess.stopping {
+                            fail_close_reason = Some("runner write queue overflow")
+                            exited_now = true
+                          } else if sess.current_turn_id is Some(_) {
+                            live_runner_finish_turn(self, ctx, core, sess, "failed", Some("live policy revoked or drifted before prompt"), now_ms, wall_ms)
+                          }
                           break
                         }
                       }
@@ -4202,18 +4567,11 @@ pub fn LiveRunnerManager::handle_role_done(
                   }
                   _ => ()
                 }
-                // P1: Mark phase Exited & close socket BEFORE `live_runner_finish_turn` so
-                // `Reprompt` can NEVER attempt to write to an exited socket!
-                let _ = live_runner_send_sess(ctx, sess, cur_sock, station_drivers::encode_runner_done())
-                live_runner_close_sock(ctx, conn_id, cur_sock)
-                sess.phase = LiveRunnerPhase::Exited
-                if is_draining {
-                  self.finish_draining(conn_id)
-                } else {
-                  self.by_conn_id.remove(conn_id)
-                  let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-                  actor.has_process = false
-                }
+                // R7 P1-4: Mark `runner_exited = true` and commit `endTurn` FIRST!
+                // Send `{"op":"done"}` & close socket ONLY when `sess.pending_end_turn is None`
+                // (SQLite committed); otherwise keep socket open WITHOUT `done` so `tick()` retries
+                // commit (and sends `done` on success) and any `SIGUSR2` handover can still replay!
+                sess.runner_exited = true
                 if sess.current_turn_id is Some(_) {
                   let (out_str, det_opt) = match outcome_opt {
                     Some(station_drivers::TurnOutcome::Aborted) => ("aborted", None)
@@ -4222,6 +4580,18 @@ pub fn LiveRunnerManager::handle_role_done(
                     None => if code_opt == Some(0) { ("completed", None) } else { ("failed", Some("exited (" + said + ")")) }
                   }
                   live_runner_finish_turn(self, ctx, core, sess, out_str, det_opt, now_ms, wall_ms)
+                }
+                if sess.pending_end_turn is None {
+                  let _ = live_runner_send_sess(ctx, sess, cur_sock, station_drivers::encode_runner_done())
+                  live_runner_close_sock(ctx, conn_id, cur_sock)
+                  sess.phase = LiveRunnerPhase::Exited
+                  if is_draining {
+                    self.finish_draining(conn_id)
+                  } else {
+                    self.by_conn_id.remove(conn_id)
+                    let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+                    actor.has_process = false
+                  }
                 }
                 exited_now = true
                 break
@@ -4291,19 +4661,20 @@ pub fn LiveRunnerManager::handle_role_done(
         _ => {
           live_runner_close_sock(ctx, conn_id, cur_sock)
           sess.phase = LiveRunnerPhase::Exited
-          if is_draining {
-            self.finish_draining(conn_id)
-          } else {
-            self.by_conn_id.remove(conn_id)
-            let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
-            actor.has_process = false
-          }
           match sess.adopted_instance_id {
             Some(inst_id) => core.agents.set_adopted_instance_active(inst_id, false)
             None => ()
           }
           if sess.current_turn_id is Some(_) {
             live_runner_finish_turn(self, ctx, core, sess, "failed", Some("runner socket read error"), now_ms, wall_ms)
+          }
+          if is_draining {
+            self.finish_draining(conn_id)
+            self.preserve_pending_end_turn(sess)
+          } else {
+            self.by_conn_id.remove(conn_id)
+            let actor = core.agents.hub.ensure_actor(skey, sess.runtime_str)
+            actor.has_process = false
           }
         }
       }
@@ -4435,7 +4806,16 @@ pub fn LiveRunnerManager::tick(
   now_ms : Int64,
   wall_ms : Int64,
 ) -> Unit {
-  // 1. Tick all draining instances by exact `conn_id` (R6 Invariant 2).
+  // 0. Retry any manager-level uncommitted `PendingEndTurn` entries preserved across draining exit/fallback (R7 P1-2).
+  let mp_keys = self.pending_end_turns.keys()
+  for mi in 0..<mp_keys.length() {
+    match self.pending_end_turns.get(mp_keys[mi]) {
+      Some(mpend) => live_runner_commit_manager_pending_end_turn(self, ctx, core, mpend)
+      None => ()
+    }
+  }
+
+  // 1. Tick all draining instances by exact `conn_id` (R6/R7 Invariant 2).
   let drain_cids = self.draining.keys()
   for di in 0..<drain_cids.length() {
     let cid = drain_cids[di]
@@ -4455,9 +4835,21 @@ pub fn LiveRunnerManager::tick(
             if dsess.current_turn_id is Some(_) {
               live_runner_finish_turn(self, ctx, core, dsess, "aborted", None, now_ms, wall_ms)
             }
-            let _ = live_runner_send_sess(ctx, dsess, sock_id, station_drivers::encode_runner_signal("KILL", true))
-            // timer: 1s grace for KILL frame flush & runner EOF before strict fallback
-            dsess.phase = LiveRunnerPhase::Stopping(info, sock_id, now_ms + 1000L, true)
+            if live_runner_send_sess(ctx, dsess, sock_id, station_drivers::encode_runner_signal("KILL", true)) {
+              // timer: 1s grace for KILL frame flush & runner EOF before strict fallback
+              dsess.phase = LiveRunnerPhase::Stopping(info, sock_id, now_ms + 1000L, true)
+            } else {
+              // R7 P1-2: KILL send failed (queue full/closed) -> immediate close + strict fallback!
+              ctx.log("[live-runner] KILL send failed for " + dsess.session_key + "; immediate strict fallback")
+              live_runner_close_sock(ctx, cid, sock_id)
+              safe_kill_runner_info(info)
+              dsess.phase = LiveRunnerPhase::Exited
+              self.finish_draining(cid)
+              match core.agents.hub.actors.get(dsess.session_key) {
+                Some(actor) => actor.has_process = false
+                None => ()
+              }
+            }
           } else {
             ctx.log("[live-runner] stopping runner 1s KILL flush expired for " + dsess.session_key + "; strict fallback")
             live_runner_close_sock(ctx, cid, sock_id)
@@ -4477,10 +4869,10 @@ pub fn LiveRunnerManager::tick(
           let _ = child.close()
           self.by_spawn_ev.remove(ev_id)
           dsess.phase = LiveRunnerPhase::Exited
-          self.finish_draining(cid)
           if dsess.current_turn_id is Some(_) {
             live_runner_finish_turn(self, ctx, core, dsess, "aborted", None, now_ms, wall_ms)
           }
+          self.finish_draining(cid)
         }
       }
       LiveRunnerPhase::Exited => self.finish_draining(cid)
@@ -4637,15 +5029,61 @@ pub fn LiveRunnerManager::prepare_handover(
 
 /// Graceful `SIGUSR2` handover detach: closes Unix sockets directly (native `stillfail-runner`
 /// treats socket EOF identically to `leave` and preserves the child process for the next `attach`)!
+/// R7 P1-4: For any session still in pre-delivery handshake (`Spawning`/`Connecting`/`AcpInit`/
+/// `AcpOpening`/`CodexInit`/`CodexOpening`, or `pending_prompt is Some(_)`), gracefully fail-close
+/// its active DB turn + `running=0` so handover never leaves an orphaned `running=1` turn with no input.
 pub fn LiveRunnerManager::detach_all_for_handover(
   self : LiveRunnerManager,
   ctx : DaemonCtx,
+  core : station_whole::WholeCore,
+  wall_ms : Int64,
 ) -> Unit {
   let keys = self.sessions.keys()
   for i in 0..<keys.length() {
     let skey = keys[i]
     match self.sessions.get(skey) {
       Some(sess) => {
+        let pre_delivery = match sess.phase {
+          LiveRunnerPhase::Spawning(_, _, _, _, _)
+          | LiveRunnerPhase::Connecting(_)
+          | LiveRunnerPhase::AcpInit(_, _)
+          | LiveRunnerPhase::AcpOpening(_, _)
+          | LiveRunnerPhase::CodexInit(_, _)
+          | LiveRunnerPhase::CodexOpening(_, _) => true
+          _ => sess.pending_prompt is Some(_)
+        }
+        if pre_delivery && sess.current_turn_id is Some(tid) {
+          match core.store.require_open() {
+            Ok(st) => {
+              let _ = st.tx(fn(t : sql_db::Db) -> Result[Unit, sql_db::SqlError] {
+                match t.run(
+                  "UPDATE turns SET ended_at = ?2, outcome = 'failed', detail = 'handover before prompt delivery' WHERE id = ?1 AND ended_at IS NULL",
+                  [base_codec::json_str(tid), sql_db::int64_to_json(wall_ms)],
+                ) {
+                  Err(e) => return Err(e)
+                  Ok(_) => ()
+                }
+                match t.run(
+                  "UPDATE sessions SET running = 0, last_active_at = ?2 WHERE key = ?1",
+                  [base_codec::json_str(skey), sql_db::int64_to_json(wall_ms)],
+                ) {
+                  Err(e) => return Err(e)
+                  Ok(_) => ()
+                }
+                Ok(())
+              })
+            }
+            Err(_) => ()
+          }
+          match core.agents.hub.actors.get(skey) {
+            Some(actor) => {
+              actor.phase = station_sessions::ActorPhase::Idle
+              actor.has_process = false
+            }
+            None => ()
+          }
+          sess.current_turn_id = None
+        }
         sess.detached_for_handover = true
         sess.stop_guard.on_handover_or_dispose()
         sess.acp_guard.on_handover_or_dispose()

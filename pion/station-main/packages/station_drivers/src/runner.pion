@@ -27,6 +27,7 @@ pub struct RunnerInfo {
   pub socket : String
   pub keeps : Bool
   pub pty : Bool
+  pub cwd : Option[String]
 }
 
 pub enum RunnerFrame {

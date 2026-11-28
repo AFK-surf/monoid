@@ -604,6 +604,29 @@ fn opt_str_json_param(v : Option[String]) -> base_codec::Json {
   }
 }
 
+/// Collision-free server-owned session workspace directory derived strictly from `(data_dir, ws, key)`.
+/// Uses injective length-prefixed `(ws, key)` preimage hashed via SHA-256 (`s-<hash32>`) so no two
+/// distinct `(ws, key)` pairs ever map to the same directory (even if their sanitized segments match).
+pub fn server_session_workspace_dir(
+  data_dir : String,
+  ws : String,
+  session_key : String,
+  sep : String,
+) -> String {
+  let eff_ws = if ws.length() > 0 { ws } else { "home" }
+  let eff_key = if session_key.length() > 0 { session_key } else { "session" }
+  let preimage = eff_ws.to_bytes().length().to_string() + ":" + eff_ws + ":" + eff_key
+  let full_hex = crypto::sha256_hex(preimage.to_bytes())
+  let hb = full_hex.to_bytes()
+  let take = if hb.length() > 32 { 32 } else { hb.length() }
+  let sb = StringBuilder::new()
+  sb.write_string("s-")
+  for i in 0..<take {
+    sb.write_byte(hb[i])
+  }
+  nodepath::join(sep, [data_dir, "sessions", sb.to_string(), "workspace"])
+}
+
 /// Atomically create a session + default thread + membership + initial CSPRNG token (+ optional
 /// initial message) inside ONE SQLite transaction (`Store::tx`), updating in-memory token/actor
 /// tables ONLY after commit. Returns `(mcp_token, thread_id)`.
@@ -638,26 +661,14 @@ pub fn WholeAgents::create_session(
     Some(w) => if w.length() > 0 { Some(w) } else { Some(self.config.home_ws) }
     None => Some(self.config.home_ws)
   }
-  // R6 Invariant 1: `sessions.workspace` is ALWAYS server-owned by `(data_dir, ws, key)`.
+  // R6/R7 Invariant 1: `sessions.workspace` is ALWAYS server-owned & collision-free by `(data_dir, ws, key)`.
   // Any caller-supplied `workspace` path goes ONLY into `sessions.cwd` for live policy validation!
-  let sanitize_seg = fn(raw : String, fallback : String) -> String {
-    let sb = StringBuilder::new()
-    let rb = raw.to_bytes()
-    for i in 0..<rb.length() {
-      let c = rb[i].to_int() & 0xFF
-      let ok = (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c == 45 || c == 95
-      sb.write_byte((if ok { c } else { 95 }) as Byte)
-    }
-    let out = sb.to_string()
-    if out.length() > 0 { out } else { fallback }
+  let eff_ws_str = match effective_ws {
+    Some(w) => w
+    None => self.config.home_ws
   }
-  let eff_ws_seg = match effective_ws {
-    Some(w) => sanitize_seg(w, "home")
-    None => sanitize_seg(self.config.home_ws, "home")
-  }
-  let safe_k = sanitize_seg(key, "session")
   let sep = if self.config.data_dir.contains("\\") { "\\" } else { "/" }
-  let eff_workspace = nodepath::join(sep, [self.config.data_dir, "sessions", eff_ws_seg, safe_k, "workspace"])
+  let eff_workspace = server_session_workspace_dir(self.config.data_dir, eff_ws_str, key, sep)
   let caller_path = workspace.trim()
   let eff_cwd : Option[String] = if caller_path.length() == 0 || caller_path == self.config.data_dir {
     None

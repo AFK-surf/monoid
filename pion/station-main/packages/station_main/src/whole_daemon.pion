@@ -533,6 +533,7 @@ fn handle_slack_interactive_payload(
   envelope_id : String,
   payload : base_codec::Json,
   now_ms : Int64,
+  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json) -> Bool] = None,
 ) -> Bool {
   let get_s = fn(obj : base_codec::Json, k : String) -> String {
     match base_codec::json_get(obj, k) {
@@ -619,7 +620,7 @@ fn handle_slack_interactive_payload(
       },
     },
   )
-  handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms)
+  handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms, on_moved_to=on_moved_to)
 }
 
 pub fn parse_wire_chat_event(ev : base_codec::Json) -> Option[station_connects::ChatEvent] {
@@ -710,6 +711,90 @@ pub fn parse_wire_chat_event(ev : base_codec::Json) -> Option[station_connects::
   None
 }
 
+/// Encodes a `ChatEvent` into the cross-station `connect.event` wire JSON format (inverse of `parse_wire_chat_event`).
+pub fn encode_wire_chat_event(ev : station_connects::ChatEvent) -> base_codec::Json {
+  let encode_msg = fn(m : station_connects::InboundMessage) -> base_codec::Json {
+    let files_j : Array[base_codec::Json] = []
+    for i in 0..<m.files.length() {
+      let f = m.files[i]
+      let ffields : Array[(String, base_codec::Json)] = [
+        ("id", base_codec::json_str(f.id)),
+        ("name", base_codec::json_str(f.name)),
+        ("size", base_codec::json_int64(f.size)),
+      ]
+      match f.url {
+        Some(u) => if u.length() > 0 { ffields.push(("url", base_codec::json_str(u))) }
+        None => ()
+      }
+      files_j.push(base_codec::json_obj(ffields))
+    }
+    let mfields : Array[(String, base_codec::Json)] = [
+      ("channel", base_codec::json_str(m.channel)),
+      ("threadTs", base_codec::json_str(m.thread_ts)),
+      ("ts", base_codec::json_str(m.ts)),
+      ("user", base_codec::json_str(m.user)),
+      ("text", base_codec::json_str(m.text)),
+      ("addressed", base_codec::json_bool(m.addressed)),
+      ("files", base_codec::json_arr(files_j)),
+    ]
+    match m.quoted {
+      Some(q) => if q.length() > 0 { mfields.push(("quoted", base_codec::json_str(q))) }
+      None => ()
+    }
+    base_codec::json_obj(mfields)
+  }
+  match ev {
+    station_connects::ChatEvent::Message(m) => base_codec::json_obj([
+      ("type", base_codec::json_str("message")),
+      ("message", encode_msg(m)),
+    ])
+    station_connects::ChatEvent::OwnNotice(m) => base_codec::json_obj([
+      ("type", base_codec::json_str("ownNotice")),
+      ("message", encode_msg(m)),
+    ])
+    station_connects::ChatEvent::Changed(ch, tts, ts, text) => base_codec::json_obj([
+      ("type", base_codec::json_str("changed")),
+      ("channel", base_codec::json_str(ch)),
+      ("threadTs", base_codec::json_str(tts)),
+      ("ts", base_codec::json_str(ts)),
+      ("text", base_codec::json_str(text)),
+    ])
+    station_connects::ChatEvent::Stop(ch, tts, ts, _) => base_codec::json_obj([
+      ("type", base_codec::json_str("stop")),
+      ("channel", base_codec::json_str(ch)),
+      ("threadTs", base_codec::json_str(tts)),
+      ("ts", base_codec::json_str(ts)),
+    ])
+    station_connects::ChatEvent::LoginCode(ch, tts, lid, code, _) => base_codec::json_obj([
+      ("type", base_codec::json_str("loginCode")),
+      ("channel", base_codec::json_str(ch)),
+      ("threadTs", base_codec::json_str(tts)),
+      ("loginId", base_codec::json_str(lid)),
+      ("code", base_codec::json_str(code)),
+    ])
+  }
+}
+
+fn describe_connect_meta(connect_id : String, meta : ConnectMeta) -> base_codec::Json {
+  let parts = meta.config_surface.split(":")
+  let kind = if parts.length() > 0 && parts[0].length() > 0 { parts[0] } else { "slack" }
+  let team = if parts.length() > 1 && parts[1].length() > 0 { parts[1] } else { connect_id }
+  base_codec::json_obj([
+    ("kind", base_codec::json_str(kind)),
+    ("workspace", base_codec::json_str(meta.ws)),
+    ("team", base_codec::json_str(team)),
+    ("mode", base_codec::json_str(if meta.single { "single-session" } else { "threads" })),
+    ("requireMention", base_codec::json_bool(meta.require_mention)),
+    (
+      "bind",
+      base_codec::json_obj([
+        ("runtime", base_codec::json_str(meta.runtime)),
+        ("profile", base_codec::json_str(meta.profile)),
+      ]),
+    ),
+  ])
+}
+
 fn emit_thread_sse_event(
   core : station_whole::WholeCore,
   ws : String,
@@ -780,6 +865,7 @@ fn handle_connect_inbound_event(
   now_ms : Int64,
   on_stop_session : (String) -> Unit = fn(_s : String) -> Unit { () },
   on_login_code : (String, String) -> Unit = fn(_lid : String, _code : String) -> Unit { () },
+  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json) -> Bool] = None,
 ) -> Bool {
   let meta = match connect_meta.get(connect_id) {
     Some(m) => m
@@ -796,8 +882,18 @@ fn handle_connect_inbound_event(
     station_connects::ChatEvent::Stop(c, t, _, _) => (c, t)
     station_connects::ChatEvent::LoginCode(c, t, _, _, _) => (c, t)
   }
-  // R6 Invariant 4: Query local SQLite `handed_over` directly (never rely on stale in-memory route cache).
-  let routed_elsewhere = query_thread_moved_to(st_db, meta.config_surface, connect_id, ch, tts) is Some(_)
+  // R6/R7 Invariant 4 & P1-5: Query local SQLite `handed_over` directly; when moved to another station,
+  // forward via the shared `connect.event` peer RPC path when `on_moved_to` is provided!
+  let moved_station_opt = query_thread_moved_to(st_db, meta.config_surface, connect_id, ch, tts)
+  match (moved_station_opt, on_moved_to) {
+    (Some(target_station), Some(fwd_fn)) => {
+      if fwd_fn(target_station, meta.ws, describe_connect_meta(connect_id, meta), encode_wire_chat_event(ev)) {
+        return true
+      }
+    }
+    _ => ()
+  }
+  let routed_elsewhere = moved_station_opt is Some(_)
   let existing_tid : Option[Int64] = match st_db.db.first(
     "SELECT id FROM threads WHERE surface = ?1 AND channel = ?2 AND thread_ts = ?3 LIMIT 1",
     [
@@ -897,23 +993,14 @@ fn handle_connect_inbound_event(
               Err(_) => return false
             }
             let sep = if station_sys::os_name() == "win32" { "\\" } else { "/" }
-            let safe_ws = sanitize_path_segment(meta.ws)
-            let safe_cid = sanitize_path_segment(connect_id)
-            let raw_dir_name = if !meta.single {
-              m.channel + "-" + m.thread_ts.replace(".", "-")
-            } else {
-              sess_scope
-            }
-            let dir_name = sanitize_path_segment(raw_dir_name)
-            let sess_ws_dir = match meta.cwd {
-              Some(c) => {
-                if path_has_parent_traversal(c) {
-                  return false
-                }
-                c
+            match meta.cwd {
+              Some(c) => if path_has_parent_traversal(c) {
+                return false
               }
-              None => nodepath::join(sep, [core.config.data_dir, "sessions", safe_ws, safe_cid, dir_name, "workspace"])
+              None => ()
             }
+            // R7 P0-1: Always use shared collision-free `server_session_workspace_dir(data_dir, ws, skey, sep)`.
+            let sess_ws_dir = station_whole::server_session_workspace_dir(core.config.data_dir, meta.ws, default_skey, sep)
             let _ = station_sys::mkdir_p(sess_ws_dir)
             let new_sess = station_store::NewSession::{
               key: default_skey,
@@ -1194,6 +1281,7 @@ fn handle_feishu_card_answer(
   connect_id : String,
   ans : station_connects::FeishuCardAnswer,
   now_ms : Int64,
+  on_moved_to : Option[(String, String, base_codec::Json, base_codec::Json) -> Bool] = None,
 ) -> Bool {
   let tts = if ans.thread_ts.length() > 0 { ans.thread_ts } else { ans.message_id }
   let ts = if ans.event_id.length() > 0 { "card-" + ans.event_id } else { "card-" + now_ms.to_string() }
@@ -1209,7 +1297,7 @@ fn handle_feishu_card_answer(
       quoted: if ans.message_id.length() > 0 { Some(ans.message_id) } else { None },
     },
   )
-  handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms)
+  handle_connect_inbound_event(core, connects, connect_meta, connect_id, ev, now_ms, on_moved_to=on_moved_to)
 }
 
 /// Local attachment chunk reader for Comma `task.read_file` & `comma.read_file`
@@ -3315,6 +3403,10 @@ fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : Strin
       Some(base_codec::Json::Bool(b)) => b
       _ => false
     }
+    let cwd_opt = match base_codec::json_get(j, "cwd") {
+      Some(base_codec::Json::Str(s)) => if s.trim().length() > 0 { Some(s.trim()) } else { None }
+      _ => None
+    }
     let info = station_drivers::RunnerInfo::{
       id: id,
       runner_pid: rpid,
@@ -3326,6 +3418,7 @@ fn discover_live_runners(ops_fs : station_ops::OpsFs, data : String, sep : Strin
       socket: socket,
       keeps: keeps,
       pty: pty,
+      cwd: cwd_opt,
     }
     let alive = rpid > 1 && station_ops::is_pid_alive(rpid)
     let os_start = if alive { station_sys::proc_start_time_ms(rpid) } else { None }
@@ -6089,6 +6182,27 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       let connect_bridge = station_whole::ConnectMuxBridge::with_hub(ctx.edge_hub, ctx.ops_fs)
       let connects_cell : Array[Option[station_whole::ConnectsOsRuntime]] = [None]
       let live_runners_cell : Array[Option[LiveRunnerManager]] = [None]
+      let make_local_moved_fwd = fn(connect_id : String) -> (String, String, base_codec::Json, base_codec::Json) -> Bool {
+        fn(target_station : String, ws : String, desc : base_codec::Json, ev_j : base_codec::Json) -> Bool {
+          if target_station.length() == 0 || target_station == ctx.station_key.id {
+            return false
+          }
+          let fwd_req = base_codec::json_obj([
+            ("method", base_codec::json_str("connect.event")),
+            ("workspace", base_codec::json_str(ws)),
+            ("connect", base_codec::json_str(connect_id)),
+            ("described", desc),
+            ("event", ev_j),
+          ])
+          ctx.ask_peer_rpc(target_station, ws, fwd_req, fn(res : Result[base_codec::Json, String]) -> Unit {
+            match res {
+              Ok(_) => ()
+              Err(e) => ctx.log("[connects] local movedTo forward to " + target_station + " failed: " + e)
+            }
+          })
+          true
+        }
+      }
       let connect_cbs = station_whole::ConnectsCallbacks::{
         on_event: fn(
           connect_id : String,
@@ -6114,19 +6228,37 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
               on_login_code=fn(lid : String, code : String) -> Unit {
                 let _ = logins.send_input(lid, Some(code), None)
               },
+              on_moved_to=Some(make_local_moved_fwd(connect_id)),
             )
             None => false
           }
         },
         on_card_answer: fn(cid : String, ans : station_connects::FeishuCardAnswer) -> Bool {
           match connects_cell[0] {
-            Some(crt) => handle_feishu_card_answer(core, crt, connect_meta, cid, ans, host_shim::wall_ms())
+            Some(crt) => handle_feishu_card_answer(
+              core,
+              crt,
+              connect_meta,
+              cid,
+              ans,
+              host_shim::wall_ms(),
+              on_moved_to=Some(make_local_moved_fwd(cid)),
+            )
             None => false
           }
         },
         on_interactive: fn(cid : String, eid : String, payload : base_codec::Json) -> Bool {
           match connects_cell[0] {
-            Some(crt) => handle_slack_interactive_payload(core, crt, connect_meta, cid, eid, payload, host_shim::wall_ms())
+            Some(crt) => handle_slack_interactive_payload(
+              core,
+              crt,
+              connect_meta,
+              cid,
+              eid,
+              payload,
+              host_shim::wall_ms(),
+              on_moved_to=Some(make_local_moved_fwd(cid)),
+            )
             None => false
           }
         },
@@ -8350,7 +8482,7 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
           // On `SIGUSR2` hot handover: detach job & live runner handles WITHOUT killing running
           // processes so the new daemon adopts them seamlessly. On full shutdown: stop them cleanly.
           if ctx.is_handover_shutdown() {
-            st.live_runners.detach_all_for_handover(ctx)
+            st.live_runners.detach_all_for_handover(ctx, st.core, host_shim::wall_ms())
             st.core.agents.jobs.detach_all_for_handover()
           } else {
             st.live_runners.stop_all_on_shutdown(ctx)

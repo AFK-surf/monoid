@@ -1475,22 +1475,24 @@ test "W17C-1 R4: unified live policy (relative home, runtimes[], ws agent_home, 
   assert_true(workspace_agent_home_path("/data", "../bad", "ws-home", "/").is_err(), "ws traversal refused")
 
   // 3. Canonical CWD via nearest existing ancestor `realpath` (blocks symlink escape & `<data_dir>`!).
+  let own_s1 = server_session_workspace_dir("/data", "ws-home", "s1", "/")
+  let real_own_s1 = own_s1.replace("/data/", "/real/data/")
   let fake_realpath = fn(p : String) -> Result[String, station_ops::FsErr] {
     if p == "/data" { Ok("/real/data") }
     else if p == "/data/sessions" { Ok("/real/data/sessions") }
-    else if p == "/data/sessions/s1/workspace" { Ok("/real/data/sessions/s1/workspace") }
+    else if p == own_s1 { Ok(real_own_s1) }
     else if p == "/data/sessions/other/workspace" { Ok("/real/data/sessions/other/workspace") }
     else if p == "/data/sessions/s1/link-escape" { Ok("/etc") }
     else if p == "/real/home_drive" { Ok("/real/home_drive") }
     else if p == "/real/ws_b_drive" { Ok("/real/ws_b_drive") }
     else { Err(station_ops::FsErr::NotFound) }
   }
-  match resolve_canonical_session_cwd(fake_realpath, Some("/data/sessions/s1/workspace/sub/newdir"), "/data/sessions/s1/workspace", "/data", [], "/", session_key="s1", sess_ws="ws-home") {
-    Ok(c) => assert_str_eq(c, "/real/data/sessions/s1/workspace/sub/newdir")
+  match resolve_canonical_session_cwd(fake_realpath, Some(own_s1 + "/sub/newdir"), own_s1, "/data", [], "/", session_key="s1", sess_ws="ws-home") {
+    Ok(c) => assert_str_eq(c, real_own_s1 + "/sub/newdir")
     Err(e) => panic("expected non-existent child under real ancestor ok: " + e)
   }
   assert_true(
-    resolve_canonical_session_cwd(fake_realpath, Some("/data/sessions/s1/link-escape/child"), "/data/sessions/s1/workspace", "/data", [], "/", session_key="s1", sess_ws="ws-home").is_err(),
+    resolve_canonical_session_cwd(fake_realpath, Some("/data/sessions/s1/link-escape/child"), own_s1, "/data", [], "/", session_key="s1", sess_ws="ws-home").is_err(),
     "symlink escape outside session workspace refused",
   )
 
@@ -1603,4 +1605,80 @@ test "W17C-1 R5: dual-workspace CWD isolation (rejects home drive, data_dir, sti
   assert_true(!mgr.consume_reprompt_restart_budget("chat:c-1"), "3rd undeclared exit stops restarting")
   mgr.reset_reprompt_restart_budget("chat:c-1")
   assert_true(mgr.consume_reprompt_restart_budget("chat:c-1"), "real human prompt resets budget")
+}
+
+test "W17C-1 R7 collision-free session workspace encoding, no blind legacy exemption & wire event roundtrip" {
+  // 1. Distinct `(ws, skey)` pairs whose sanitized forms would collide MUST map to distinct directories!
+  let d1 = server_session_workspace_dir("/data", "ws_a", "k:1", "/")
+  let d2 = server_session_workspace_dir("/data", "ws:a", "k:1", "/")
+  let d3 = server_session_workspace_dir("/data", "ws_a", "k_1", "/")
+  let d4 = server_session_workspace_dir("/data", "ws_a", "k:1", "/")
+  assert_true(d1 != d2, "ws_a vs ws:a must not collide")
+  assert_true(d1 != d3, "k:1 vs k_1 must not collide")
+  assert_true(d2 != d3, "ws:a/k:1 vs ws_a/k_1 must not collide")
+  assert_str_eq(d1, d4)
+  assert_str_eq(d1, station_whole::server_session_workspace_dir("/data", "ws_a", "k:1", "/"))
+
+  // 2. Blind legacy `<data>/sessions/<sanitize(key)>/workspace` MUST be rejected without `verified_legacy_ws`!
+  let fake_realpath = fn(p : String) -> Result[String, station_ops::FsErr] { Ok(p) }
+  let blind_legacy = "/data/sessions/chat_c-1/workspace"
+  assert_true(
+    resolve_canonical_session_cwd(
+      fake_realpath,
+      Some(blind_legacy),
+      blind_legacy,
+      "/data",
+      [],
+      "/",
+      session_key="chat:c-1",
+      sess_ws="ws-b",
+    ).is_err(),
+    "blind legacy dir without verified_legacy_ws must be rejected",
+  )
+  assert_true(
+    resolve_canonical_session_cwd(
+      fake_realpath,
+      Some(blind_legacy),
+      blind_legacy,
+      "/data",
+      [],
+      "/",
+      session_key="chat:c-1",
+      sess_ws="ws-b",
+      verified_legacy_ws=Some(blind_legacy),
+    ).is_ok(),
+    "explicitly verified legacy dir under <data>/sessions/ is allowed",
+  )
+
+  // 3. `encode_wire_chat_event` round-trips cleanly through `parse_wire_chat_event` for local movedTo forwarding!
+  let msg_ev = station_connects::ChatEvent::Message(
+    station_connects::InboundMessage::{
+      channel: "C100",
+      thread_ts: "1700.1",
+      ts: "1700.2",
+      user: "U1",
+      text: "hello moved",
+      addressed: true,
+      files: [],
+      quoted: Some("1700.0"),
+    },
+  )
+  match parse_wire_chat_event(encode_wire_chat_event(msg_ev)) {
+    Some(station_connects::ChatEvent::Message(m)) => {
+      assert_str_eq(m.channel, "C100")
+      assert_str_eq(m.thread_ts, "1700.1")
+      assert_str_eq(m.text, "hello moved")
+      assert_true(m.addressed, "addressed preserved")
+    }
+    _ => panic("expected Message roundtrip")
+  }
+  let stop_ev = station_connects::ChatEvent::Stop("C100", "1700.1", "1700.3", None)
+  match parse_wire_chat_event(encode_wire_chat_event(stop_ev)) {
+    Some(station_connects::ChatEvent::Stop(ch, tts, ts, _)) => {
+      assert_str_eq(ch, "C100")
+      assert_str_eq(tts, "1700.1")
+      assert_str_eq(ts, "1700.3")
+    }
+    _ => panic("expected Stop roundtrip")
+  }
 }

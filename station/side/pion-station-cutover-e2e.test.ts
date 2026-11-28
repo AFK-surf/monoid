@@ -722,7 +722,7 @@ exit 0
   dbBefore.close();
 
   // --- Handover 1: Node -> Pion Whole (`SIGUSR2`) ---
-  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion" }));
+  writeFileSync(join(dataDir, "config.json"), JSON.stringify({ engine: "pion", drive: { roots: [dir] } }));
   launcher.kill("SIGUSR2");
 
   const pionPid = await until(
@@ -1509,6 +1509,7 @@ exit 0
       STILLFAIL_NO_DISCOVERY: "1",
       STILLFAIL_NO_DHT: "1",
       STILLFAIL_MESH_BIND_ADDR: `127.0.0.1:${udpPort}`,
+      STILLFAIL_DRIVE_ROOTS: dir,
     },
     stdio: "ignore",
   });
