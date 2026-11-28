@@ -536,11 +536,13 @@ pub fn dispatch_live_updates_op(
     let wait_opt = base_codec::json_get(body, "wait")
     match wait_opt {
       Some(base_codec::Json::Null) => {
+        let mut restored_auto = false
         match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
           match base_codec::json_get(raw, "autoUpdateWhen") {
             None | Some(base_codec::Json::Null) => Ok(raw)
             Some(existing) => {
               let restore = !override_present && json_field_bool(existing, "restoreAuto") == Some(true)
+              restored_auto = restore
               let r1 = json_obj_set(raw, "autoUpdateWhen", None)
               let r2 = if restore { json_obj_set(r1, "autoUpdate", Some(base_codec::json_bool(true))) } else { r1 }
               Ok(r2)
@@ -549,6 +551,10 @@ pub fn dispatch_live_updates_op(
         }) {
           Ok(written) => {
             hooks_notify_overview(hooks, "updates")
+            match hooks.on_updates_wait_changed {
+              Some(f) => f(restored_auto)
+              None => ()
+            }
             return Some(Ok(updates_view_json(updates, written, resolved_channel=resolved_ch)))
           }
           Err(e) => return Some(Err(e))
@@ -584,6 +590,10 @@ pub fn dispatch_live_updates_op(
         }) {
           Ok(written) => {
             hooks_notify_overview(hooks, "updates")
+            match hooks.on_updates_wait_changed {
+              Some(f) => f(true)
+              None => ()
+            }
             return Some(Ok(updates_view_json(updates, written, resolved_channel=resolved_ch)))
           }
           Err(e) => return Some(Err(e))
@@ -1100,7 +1110,7 @@ pub fn dispatch_live_copies_restore_op(
   op : String,
   req : station_api::ApiRequest,
   body : base_codec::Json,
-  cfg_opt : Option[station_ops::ConfigFile],
+  _cfg_opt : Option[station_ops::ConfigFile],
   hooks : WholeApiRuntimeHooks,
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
   if op != "copies.restore" {
@@ -1116,19 +1126,8 @@ pub fn dispatch_live_copies_restore_op(
     Ok(v) => v
     Err(e) => return Some(Err(e))
   }
-  if from_kind == "s3" {
-    let saved = station_replica::read_backup_config(read_config_raw(cfg_opt)).s3
-    let mut found = false
-    for i in 0..<saved.length() {
-      if saved[i].id == from_id {
-        found = true
-        break
-      }
-    }
-    if !found {
-      return Some(Err(station_api::ApiError::new(409, "S3 target " + from_id + " is not configured")))
-    }
-  }
+  // 1:1 with Node `copies.ts:1781`: unconfigured S3 target is accepted (202) and fails asynchronously
+  // with `reason: "gone"` in `copies.restoring` + SSE so UI renders the exact restore error state.
   match hooks.on_copies_restore {
     Some(f) => match f(req.viewer.workspace, origin, gen, from_kind, from_id) {
       Ok(res) => {
@@ -1168,53 +1167,55 @@ pub fn is_valid_xshare_id(s : String) -> Bool {
   true
 }
 
-fn xshare_trim_max(s : String, max_len : Int) -> String {
+/// Trim and truncate by Unicode code points (1:1 with Node `Array.from(v.trim()).slice(0, max).join("")`),
+/// never splitting UTF-8 multi-byte sequences.
+pub fn xshare_trim_max_codepoints(s : String, max_cps : Int) -> String {
   let t = s.trim()
-  if t.length() <= max_len { t } else { t.slice(0, max_len) }
+  let raw = t.to_bytes()
+  let n = raw.length()
+  let mut i = 0
+  let mut cps = 0
+  while i < n && cps < max_cps {
+    let b = raw[i].to_int() & 0xFF
+    let step = if b < 0x80 {
+      1
+    } else if (b & 0xE0) == 0xC0 {
+      2
+    } else if (b & 0xF0) == 0xE0 {
+      3
+    } else if (b & 0xF8) == 0xF0 {
+      4
+    } else {
+      1
+    }
+    if i + step > n {
+      break
+    }
+    i = i + step
+    cps = cps + 1
+  }
+  if i == n { t } else { raw.slice(0, i).to_string() }
 }
 
-/// Parse and validate `PUT /xshare/hosts` payload:
-/// - Supports single-host Node contract `{ workspace, name, station, stationName }`
-/// - Also supports batch `{ hosts: [{ workspace, name, station, stationName }, ...] }` (1..64 entries).
-pub fn parse_xshare_hosts_put_entries(
+/// Parse and validate `PUT /xshare/hosts` payload 1:1 with Node `station/src/api/routes/xshare.ts:45-53`:
+/// `{ workspace, name, station, stationName }`.
+pub fn parse_xshare_host_put_entry(
   body : base_codec::Json,
   own_ws : String,
-) -> Result[Array[XshareHostPutEntry], station_api::ApiError] {
+) -> Result[XshareHostPutEntry, station_api::ApiError] {
   match body {
     base_codec::Json::Obj(_) => ()
     _ => return Err(station_api::ApiError::new(400, "invalid JSON"))
   }
-  let parse_one = fn(obj : base_codec::Json) -> Result[XshareHostPutEntry, station_api::ApiError] {
-    let ws = match json_field_str(obj, "workspace") { Some(s) => s, None => "" }
-    let st = match json_field_str(obj, "station") { Some(s) => s, None => "" }
-    if !is_valid_xshare_id(ws) || ws == own_ws || !is_valid_xshare_id(st) {
-      return Err(station_api::ApiError::new(400, "workspace and station are another workspace's"))
-    }
-    let raw_name = match json_field_str(obj, "name") { Some(s) => xshare_trim_max(s, 80), None => "" }
-    let name = if raw_name.length() > 0 { raw_name } else { ws }
-    let st_name = match json_field_str(obj, "stationName") { Some(s) => xshare_trim_max(s, 80), None => "" }
-    Ok(XshareHostPutEntry::{ workspace: ws, name: name, station: st, station_name: st_name })
+  let ws = match json_field_str(body, "workspace") { Some(s) => s, None => "" }
+  let st = match json_field_str(body, "station") { Some(s) => s, None => "" }
+  if !is_valid_xshare_id(ws) || ws == own_ws || !is_valid_xshare_id(st) {
+    return Err(station_api::ApiError::new(400, "workspace and station are another workspace's"))
   }
-  match base_codec::json_get(body, "hosts") {
-    Some(base_codec::Json::Arr(xs)) => {
-      if xs.length() == 0 || xs.length() > 64 {
-        return Err(station_api::ApiError::new(400, "hosts: 1 to 64 entries"))
-      }
-      let out : Array[XshareHostPutEntry] = []
-      for i in 0..<xs.length() {
-        match parse_one(xs[i]) {
-          Ok(e) => out.push(e)
-          Err(err) => return Err(err)
-        }
-      }
-      Ok(out)
-    }
-    Some(_) => Err(station_api::ApiError::new(400, "hosts must be an array"))
-    None => match parse_one(body) {
-      Ok(e) => Ok([e])
-      Err(err) => Err(err)
-    }
-  }
+  let raw_name = match json_field_str(body, "name") { Some(s) => xshare_trim_max_codepoints(s, 80), None => "" }
+  let name = if raw_name.length() > 0 { raw_name } else { ws }
+  let st_name = match json_field_str(body, "stationName") { Some(s) => xshare_trim_max_codepoints(s, 80), None => "" }
+  Ok(XshareHostPutEntry::{ workspace: ws, name: name, station: st, station_name: st_name })
 }
 
 fn xshare_ensure_obj_field(raw : base_codec::Json, key : String) -> base_codec::Json {
@@ -1224,14 +1225,16 @@ fn xshare_ensure_obj_field(raw : base_codec::Json, key : String) -> base_codec::
   }
 }
 
-/// Atomically merge trusted host entries into `<data>/xshare/state.json` with `0600` permissions
-/// (`PrivateFile` semantics via `OpsFs`, symlink-checked, preserving all other xshare state sections).
+/// Atomically merge a trusted host entry into `<data>/xshare/state.json` with `0600` permissions.
+/// Fail-closed if an existing `state.json` is unreadable or corrupt JSON (never clobbers existing state).
+/// Legacy unprefixed `<station>` entries default their `as` to `home_ws` (1:1 with Node `asOf`).
 pub fn apply_xshare_hosts_put_with_fs(
   fs : station_ops::OpsFs,
   data_dir : String,
   sep : String,
   own_ws : String,
-  entries : Array[XshareHostPutEntry],
+  home_ws : String,
+  entry : XshareHostPutEntry,
 ) -> Result[Unit, String] {
   if !is_valid_xshare_id(own_ws) {
     return Err("this station is in no workspace")
@@ -1246,39 +1249,47 @@ pub fn apply_xshare_hosts_put_with_fs(
     Err(_) => return Err("failed to create xshare directory")
   }
   let state_path = nodepath::join(sep, [xdir, "state.json"])
+  let mut state_exists = false
   match (fs.lstat)(state_path) {
-    Ok(meta) if meta.is_link => return Err("symlink xshare/state.json rejected")
-    _ => ()
-  }
-  let existing = match fs.read_text(state_path) {
-    Ok(s) => match base_codec::json_parse(s) {
-      base_codec::JsonParseResult::Ok(j) => j
-      base_codec::JsonParseResult::Err(_) => base_codec::json_obj([])
+    Ok(meta) => {
+      if meta.is_link {
+        return Err("symlink xshare/state.json rejected")
+      }
+      state_exists = true
     }
-    Err(_) => base_codec::json_obj([])
+    Err(_) => ()
+  }
+  let existing = if state_exists {
+    let raw_txt = match fs.read_text(state_path) {
+      Ok(s) => s
+      Err(_) => return Err("existing xshare/state.json is unreadable")
+    }
+    match base_codec::json_parse(raw_txt) {
+      base_codec::JsonParseResult::Ok(base_codec::Json::Obj(fs_list)) => base_codec::Json::Obj(fs_list)
+      _ => return Err("existing xshare/state.json is corrupt")
+    }
+  } else {
+    base_codec::json_obj([])
   }
   let mut hosts_obj = xshare_ensure_obj_field(existing, "hosts")
-  for i in 0..<entries.length() {
-    let e = entries[i]
-    // Remove legacy unprefixed `<station>` entry if it belonged to `own_ws` (1:1 with Node `hostOf` + `delete`).
-    match base_codec::json_get(hosts_obj, e.station) {
-      Some(old_h) => {
-        let old_as = match json_field_str(old_h, "as") { Some(a) => a, None => own_ws }
-        if old_as == own_ws {
-          hosts_obj = json_obj_set(hosts_obj, e.station, None)
-        }
+  // Remove legacy unprefixed `<station>` entry ONLY when its effective `as` (`h.as ?? home_ws`) equals `own_ws`!
+  match base_codec::json_get(hosts_obj, entry.station) {
+    Some(old_h) => {
+      let old_as = match json_field_str(old_h, "as") { Some(a) => a, None => home_ws }
+      if old_as == own_ws {
+        hosts_obj = json_obj_set(hosts_obj, entry.station, None)
       }
-      None => ()
     }
-    let key = own_ws + "/" + e.station
-    let host_val = base_codec::json_obj([
-      ("workspace", base_codec::json_str(e.workspace)),
-      ("name", base_codec::json_str(e.name)),
-      ("stationName", base_codec::json_str(e.station_name)),
-      ("as", base_codec::json_str(own_ws)),
-    ])
-    hosts_obj = json_obj_set(hosts_obj, key, Some(host_val))
+    None => ()
   }
+  let key = own_ws + "/" + entry.station
+  let host_val = base_codec::json_obj([
+    ("workspace", base_codec::json_str(entry.workspace)),
+    ("name", base_codec::json_str(entry.name)),
+    ("stationName", base_codec::json_str(entry.station_name)),
+    ("as", base_codec::json_str(own_ws)),
+  ])
+  hosts_obj = json_obj_set(hosts_obj, key, Some(host_val))
   let next_state = base_codec::json_obj([
     ("guests", xshare_ensure_obj_field(existing, "guests")),
     ("hosted", xshare_ensure_obj_field(existing, "hosted")),
@@ -1300,34 +1311,34 @@ pub fn dispatch_live_xshare_hosts_put_op(
   req : station_api::ApiRequest,
   body : base_codec::Json,
   agents : WholeAgents,
+  auth_policy : PeerAuthPolicy,
   cfg_opt : Option[station_ops::ConfigFile],
   hooks : WholeApiRuntimeHooks,
 ) -> Option[Result[base_codec::Json, station_api::ApiError]] {
   if op != "xshare.hosts.put" {
     return None
   }
-  if !req.viewer.manages_station() {
-    return Some(Err(station_api::ApiError::new(403, "only workspace owners and admins can manage trusted xshare hosts")))
-  }
+  // 1:1 with Node `station/src/api/routes/xshare.ts:45`: any member of an enrolled workspace
+  // (non-read-only) may trust an xshare host; `read_only_handover` still blocks writes.
   if hooks.read_only_handover_cell[0] {
     return Some(Err(station_api::ApiError::new(403, "station is in read-only handover mode")))
   }
-  let own_ws = req.viewer.workspace
-  if own_ws.length() == 0 {
+  let own_ws = if req.viewer.home { auth_policy.home_workspace } else { req.viewer.workspace }
+  if own_ws.length() == 0 || !ws_allowed(auth_policy.allowed_workspaces, own_ws) {
     return Some(Err(station_api::ApiError::new(400, "this station is in no workspace")))
   }
-  let entries = match parse_xshare_hosts_put_entries(body, own_ws) {
-    Ok(es) => es
+  let entry = match parse_xshare_host_put_entry(body, own_ws) {
+    Ok(e) => e
     Err(e) => return Some(Err(e))
   }
   let fs = match cfg_opt {
     Some(cf) => cf.fs
     None => return Some(Err(station_api::ApiError::new(500, "station config fs unavailable")))
   }
-  match apply_xshare_hosts_put_with_fs(fs, agents.config.data_dir, agents.jobs.fs.sep, own_ws, entries) {
+  match apply_xshare_hosts_put_with_fs(fs, agents.config.data_dir, agents.jobs.fs.sep, own_ws, auth_policy.home_workspace, entry) {
     Ok(_) => {
       match hooks.on_xshare_reconcile {
-        Some(f) => f()
+        Some(f) => f(own_ws, entry.station, entry.workspace)
         None => ()
       }
       hooks_notify_overview(hooks, "xshare")

@@ -282,7 +282,7 @@ test "wave17e4d: updates.wait, updates.install, copies.restore (202), and xshare
   let owner = w17d2_owner("ws-main")
   let member = w17d2_member("ws-main")
 
-  // 1. Permission checks (403 for non-manager)
+  // 1. Permission checks (403 for non-manager on updates & copies.restore; member ALLOWED on xshare.hosts.put 1:1 with Node)
   match (api.admin.host.call)("updates.wait", make_test_api_req_as("POST", "/updates/wait", member), [], base_codec::json_obj([("wait", base_codec::json_null())])) {
     Err(e) => if e.status != 403 { panic("member updates.wait expected 403, got " + e.status.to_string()) }
     Ok(_) => panic("member updates.wait must be denied")
@@ -294,10 +294,6 @@ test "wave17e4d: updates.wait, updates.install, copies.restore (202), and xshare
   match (api.admin.host.call)("copies.restore", make_test_api_req_as("POST", "/copies/restore", member), [], base_codec::json_obj([])) {
     Err(e) => if e.status != 403 { panic("member copies.restore expected 403, got " + e.status.to_string()) }
     Ok(_) => panic("member copies.restore must be denied")
-  }
-  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([])) {
-    Err(e) => if e.status != 403 { panic("member xshare.hosts.put expected 403, got " + e.status.to_string()) }
-    Ok(_) => panic("member xshare.hosts.put must be denied")
   }
 
   // 2. Write barrier (`read_only_handover_cell[0] = true`) denies all 4 ops with 403
@@ -372,8 +368,9 @@ test "wave17e4d: updates.wait, updates.install, copies.restore (202), and xshare
   }
   let _ = store
 
-  // 5. `xshare.hosts.put` rejects self-workspace & invalid IDs, and atomically writes `0600` state.json + triggers reconcile
-  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", owner), [], base_codec::json_obj([
+  // 5. `xshare.hosts.put`: member allowed (1:1 Node), rejects self-workspace & corrupt state.json (fail-closed),
+  // preserves home legacy key, truncates by Unicode code points, writes `0600`, triggers reconciler!
+  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([
     ("workspace", base_codec::json_str("ws-main")),
     ("name", base_codec::json_str("Self")),
     ("station", base_codec::json_str("st-other")),
@@ -382,16 +379,20 @@ test "wave17e4d: updates.wait, updates.install, copies.restore (202), and xshare
     Ok(_) => panic("self-workspace xshare.hosts.put must fail")
   }
   let mut reconciled = 0
-  hooks.on_xshare_reconcile = Some(fn() -> Unit { reconciled = reconciled + 1 })
-  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", owner), [], base_codec::json_obj([
+  let mut rec_host = ""
+  hooks.on_xshare_reconcile = Some(fn(_ws : String, h : String, _tws : String) -> Unit {
+    reconciled = reconciled + 1
+    rec_host = h
+  })
+  match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([
     ("workspace", base_codec::json_str("ws-partner")),
     ("name", base_codec::json_str("Partner WS")),
     ("station", base_codec::json_str("st-partner-1")),
     ("stationName", base_codec::json_str("Partner Box")),
   ])) {
     Ok(res) => {
-      if json_field_bool(res, "ok") != Some(true) || reconciled != 1 {
-        panic("xshare.hosts.put did not succeed or trigger reconciler")
+      if json_field_bool(res, "ok") != Some(true) || reconciled != 1 || rec_host != "st-partner-1" {
+        panic("member xshare.hosts.put did not succeed or trigger reconciler")
       }
       let sp = agents.config.data_dir + "/xshare/state.json"
       match mem_fs.ops().read_text(sp) {
@@ -406,7 +407,17 @@ test "wave17e4d: updates.wait, updates.install, copies.restore (202), and xshare
         Ok(meta) => if meta.mode != 384 { panic("xshare state.json mode must be 0600 (384), got " + meta.mode.to_string()) }
         Err(_) => panic("xshare state.json stat failed")
       }
+      // Fail-closed when existing state.json is corrupt: MUST return 500 and NOT overwrite!
+      let _ = mem_fs.put_text(sp, "{corrupt-json", 384)
+      match (api.admin.host.call)("xshare.hosts.put", make_test_api_req_as("PUT", "/xshare/hosts", member), [], base_codec::json_obj([
+        ("workspace", base_codec::json_str("ws-partner-2")),
+        ("name", base_codec::json_str("P2")),
+        ("station", base_codec::json_str("st-p2")),
+      ])) {
+        Err(e) => if e.status != 500 { panic("corrupt state.json expected 500, got " + e.status.to_string()) }
+        Ok(_) => panic("corrupt state.json must fail closed")
+      }
     }
-    Err(e) => panic("xshare.hosts.put failed: " + e.message)
+    Err(e) => panic("member xshare.hosts.put failed: " + e.message)
   }
 }

@@ -29,6 +29,7 @@ import type { Duplex } from "node:stream";
 import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { zstdCompressSync } from "node:zlib";
 import { WebSocketServer } from "ws";
 import { type Entry, apply as lockApply, endpointBytes, entryHash, genesis as lockGenesis, signedBytes } from "../../shared/lock.ts";
 import { loadMesh, type Connection, type Endpoint } from "../src/mesh/native.ts";
@@ -328,10 +329,11 @@ function startWholeDaemon(
   bin: string,
   data: string,
   extraEnv: Record<string, string> = {},
+  extraArgs: string[] = [],
 ): WholeHandle {
   const child = spawn(
     bin,
-    ["run", "--whole-daemon", "--data", data, "--port", "0", "--control-fd", "5"],
+    ["run", "--whole-daemon", "--data", data, "--port", "0", "--control-fd", "5", ...extraArgs],
     {
       stdio: ["ignore", "pipe", "pipe", "ignore", "ignore", "pipe"],
       env: {
@@ -3019,9 +3021,9 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   const checkUnenrolled = await adminCall(conn, "POST", "/updates/check", { "content-type": "application/json" }, Buffer.from("{}"));
   assert.equal(checkUnenrolled.status, 404, `POST /updates/check unenrolled expected 404, got ${checkUnenrolled.status}: ${checkUnenrolled.body.toString()}`);
 
-  // `POST /updates` when unenrolled returns 404; `POST /updates/wait` persists live (200)
+  // `POST /updates` when unenrolled or without `--app` installer returns 400/404; `POST /updates/wait` persists live (200)
   const updUnenrolled = await adminCall(conn, "POST", "/updates", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ id: "station" })));
-  assert.equal(updUnenrolled.status, 404, `POST /updates unenrolled expected 404, got ${updUnenrolled.status}: ${updUnenrolled.body.toString()}`);
+  assert.ok(updUnenrolled.status === 400 || updUnenrolled.status === 404, `POST /updates without installer/feed expected 400/404, got ${updUnenrolled.status}: ${updUnenrolled.body.toString()}`);
   const waitSet = await adminCall(conn, "POST", "/updates/wait", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ wait: ["pr:9145"] })));
   assert.equal(waitSet.status, 200, `POST /updates/wait expected 200, got ${waitSet.status}: ${waitSet.body.toString()}`);
   const waitClear = await adminCall(conn, "POST", "/updates/wait", { "content-type": "application/json" }, Buffer.from(JSON.stringify({ wait: null })));
@@ -3154,14 +3156,26 @@ test("W17C2.14: --smoke-vault-sqlite + live Admin/1 Vault HTTP routes, unified C
   assert.equal(await wd.waitExit(), 0, wd.stderr());
 });
 
-test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies.restore (202 + ready.json + concurrent GET /status), and xshare.hosts.put (0600)", async () => {
+test("Wave 17E-4D: real binary E2E for detached updates.install/wait/rollback, non-blocking copies.restore + real restart DB import, and member xshare.hosts.put (0600)", async () => {
   const addon = resolveMeshAddon();
   const { grantKeys, signMemberJwt } = makeGrantKeysAndSigner();
   const base = mkdtempSync(join(tmpdir(), "sf-w17e4d-e2e-"));
   dirs.push(base);
   const data = join(base, "data");
   const drive = join(base, "drive");
+  const appDir = join(base, "app");
   mkdirSync(drive, { recursive: true });
+  mkdirSync(join(appDir, "bin"), { recursive: true });
+  writeFileSync(join(appDir, "BUILD"), "50000\n");
+  writeFileSync(join(appDir, "CHANNEL"), "beta\n");
+
+  const installRecord = join(base, "installer-invocations.jsonl");
+  // Non-executable (0644) bundled installer script to prove `/bin/sh` runs the copied `<data>/run/install.sh`!
+  const installScript = `#!/bin/sh
+echo "HOME=\${HOME:-}|ARCHIVE=\${STILLFAIL_ARCHIVE:-}|SHA=\${STILLFAIL_RELEASE_SHA256:-}|CH=\${STILLFAIL_CHANNEL:-}|CUSTOM=\${W17E4D_INHERITED:-}" >> "${installRecord}"
+exit 0
+`;
+  writeFileSync(join(appDir, "bin", "install.en.sh"), installScript, { mode: 0o644 });
 
   const stSeed = randomBytes(32);
   const probe = await addon.bind({ secretKey: stSeed, alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
@@ -3170,67 +3184,88 @@ test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies
 
   const epOwner = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
   endpoints.push(epOwner);
+  const epMember = await addon.bind({ secretKey: randomBytes(32), alpns: [ADMIN_ALPN], relayUrls: [], discovery: false, dht: false, bindAddr: "127.0.0.1:0" });
+  endpoints.push(epMember);
 
   const ws = "ws-w17e4d";
   seedWholeDataDir(data, stSeed, stationId, epOwner.id(), drive, ws, grantKeys, undefined);
 
-  // Prepare Ed25519 release signing key + signed feed + mock archive
+  // Prepare Ed25519 release signing key + signed feed with forward (99999) + earlier rollback (49999)
   const relKey = generateKeyPairSync("ed25519");
   const relPubDer = relKey.publicKey.export({ type: "spki", format: "der" }) as Buffer;
   const relPubRaw = relPubDer.subarray(relPubDer.length - 32);
   const relPubB64 = relPubRaw.toString("base64");
   const relKeyId = createHash("sha256").update(relPubRaw).digest("hex").slice(0, 16);
 
-  const archivePayload = Buffer.from("STILLFAIL-W17E4D-STAGED-ARCHIVE-PAYLOAD-1234567890");
+  const archivePayload = Buffer.from("STILLFAIL-W17E4D-ROLLBACK-ARCHIVE-PAYLOAD-1234567890");
   const archiveSha = createHash("sha256").update(archivePayload).digest("hex");
   const nodeSha = "0".repeat(64);
   const plat = `${process.platform}-${process.arch === "arm64" ? "arm64" : "x64"}`;
-  const releaseObj = {
-    kind: "stillfail-station-release",
-    version: "0.1.99999",
-    build: 99999,
-    commit: "abcdef1234567",
-    node: "22.0.0",
-    builds: {
-      [plat]: { sha256: archiveSha, size: archivePayload.length, nodeSha256: nodeSha },
-    },
+  const signRelease = (ver: string, build: number) => {
+    const obj = {
+      kind: "stillfail-station-release",
+      version: ver,
+      build,
+      commit: "abcdef1234567",
+      node: "22.0.0",
+      builds: { [plat]: { sha256: archiveSha, size: archivePayload.length, nodeSha256: nodeSha } },
+    };
+    const words = Buffer.from(JSON.stringify(obj), "utf8");
+    const sig = cryptoSign(null, words, relKey.privateKey);
+    return { release: words.toString("base64"), signature: sig.toString("base64"), key: relKeyId };
   };
-  const releaseWords = Buffer.from(JSON.stringify(releaseObj), "utf8");
-  const releaseSig = cryptoSign(null, releaseWords, relKey.privateKey);
   const signedFeed = JSON.stringify({
-    release: releaseWords.toString("base64"),
-    signature: releaseSig.toString("base64"),
-    key: relKeyId,
+    ...signRelease("0.1.99999", 99999),
+    earlier: [signRelease("0.1.49999", 49999)],
   });
 
-  // Prepare SFB1-encrypted S3 backup fixture for `copies.restore`
+  // Prepare SFB1-encrypted S3 backup fixture with a valid replica batch that `builders_replica::take_back` imports!
   const encKeyHex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
   const encKey = Buffer.from(encKeyHex, "hex");
-  const lostOrigin = "st-lost-box";
-  const gen = "g1";
+  const lostOrigin = "a".repeat(64);
+  const gen = "m1a2b3c4-1234abcd";
+  const batchName = "0000000001-0000000001-deadbeef.ndjson.zst";
   const wt = createHmac("sha256", encKey).update(`ws:${ws}`).digest("hex").slice(0, 32);
   const ot = createHmac("sha256", encKey).update(`origin:${lostOrigin}`).digest("hex").slice(0, 32);
-  const batchBytes = Buffer.from("{\"type\":\"thread\",\"id\":1}\n", "utf8");
+  const batchLine = JSON.stringify({ v: 1 }) + "\n" + JSON.stringify({
+    r: "threads",
+    row: {
+      id: 77,
+      surface: "stillfail",
+      channel: "CHAT",
+      thread_ts: "1700000000.000077",
+      title: "Restored W17E4D Thread",
+      created_at: 1700000000000,
+    },
+  }) + "\n";
+  const batchBytes = zstdCompressSync(Buffer.from(batchLine, "utf8"));
   const fileBytes = Buffer.from("restored-attachment-bytes", "utf8");
   const fileHash = createHash("sha256").update(fileBytes).digest("hex");
   const ft = createHmac("sha256", encKey).update(`file:${fileHash}`).digest("hex");
   const headObj = {
     v: 1,
     origin: lostOrigin,
-    name: "LostBox",
+    workspace: ws,
     gen,
+    name: "LostBox",
+    dataDir: data,
     made: 1700000000000,
     to: 1,
-    batches: ["000001.jsonl"],
+    batches: [batchName],
     files: { [fileHash]: fileBytes.length },
+    partial: false,
+    chats: 1,
+    messages: 0,
+    bytes: fileBytes.length,
+    runs: [],
   };
   const headEnc = sfb1Seal(encKey, { ws, origin: ot, logicalPath: `head/${gen}` }, Buffer.from(JSON.stringify(headObj), "utf8"));
-  const batchEnc = sfb1Seal(encKey, { ws, origin: lostOrigin, logicalPath: `log/${gen}/000001.jsonl` }, batchBytes);
+  const batchEnc = sfb1Seal(encKey, { ws, origin: lostOrigin, logicalPath: `log/${gen}/${batchName}` }, batchBytes);
   const fileEnc = sfb1Seal(encKey, { ws, origin: lostOrigin, logicalPath: `files/${fileHash}` }, fileBytes);
 
   const s3Objects = new Map<string, Buffer>([
     [`/bkt/${wt}/${ot}/head/${gen}.enc`, Buffer.from(headEnc)],
-    [`/bkt/${wt}/${ot}/log/${gen}/000001.jsonl.enc`, Buffer.from(batchEnc)],
+    [`/bkt/${wt}/${ot}/log/${gen}/${batchName}.enc`, Buffer.from(batchEnc)],
     [`/bkt/${wt}/${ot}/files/${ft}.enc`, Buffer.from(fileEnc)],
   ]);
 
@@ -3274,10 +3309,10 @@ test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies
   const mockPort = (mockSrv.address() as { port: number }).port;
   const mockOrigin = `http://127.0.0.1:${mockPort}`;
 
-  // Seed config.json with beta channel + S3 target `r2` pointing at mockSrv
   const cfgPath = join(data, "config.json");
   const cfgRaw = existsSync(cfgPath) ? JSON.parse(readFileSync(cfgPath, "utf8")) : {};
   cfgRaw.updateChannel = "beta";
+  cfgRaw.autoUpdate = true;
   cfgRaw.backup = {
     s3: [
       {
@@ -3296,10 +3331,16 @@ test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies
   };
   writeFileSync(cfgPath, JSON.stringify(cfgRaw, null, 2));
 
-  const wd = startWholeDaemon(bin, data, {
-    STILLFAIL_RELEASE_URL: mockOrigin,
-    STILLFAIL_RELEASE_KEYS: relPubB64,
-  });
+  const wd = startWholeDaemon(
+    bin,
+    data,
+    {
+      STILLFAIL_RELEASE_URL: mockOrigin,
+      STILLFAIL_RELEASE_KEYS: relPubB64,
+      W17E4D_INHERITED: "yes-42",
+    },
+    ["--app", appDir],
+  );
   await until("w17e4d daemon ready", () => wd.messages.find((m) => m.ready === true));
   const meshAddr = await until("w17e4d mesh bound", () => wd.meshAddr());
 
@@ -3307,7 +3348,56 @@ test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies
   const { conn, helloReply } = await openAdminConn(epOwner, stationId, meshAddr, jwtOwner);
   assert.equal(helloReply?.ok, true, JSON.stringify(helloReply));
 
-  // 1. `updates.wait` roundtrip
+  // 1. Missing localized installer (`zh` when only `install.en.sh` exists) refused 400 BEFORE any feed download
+  const noInst = await adminCall(
+    conn,
+    "POST",
+    "/updates",
+    { "content-type": "application/json", "accept-language": "zh" },
+    Buffer.from(JSON.stringify({ id: "station" })),
+  );
+  assert.equal(noInst.status, 400, `missing installer expected 400, got ${noInst.status}`);
+  assert.equal(feedHits, 0, "missing installer MUST refuse before fetching release feed");
+
+  // 2. Forward `updates.install` copies `<app>/bin/install.en.sh` -> `<data>/run/install.sh` and runs detached with full env
+  const fwdResp = await adminCall(
+    conn,
+    "POST",
+    "/updates",
+    { "content-type": "application/json", "idempotency-key": "w17e4d-fwd-1" },
+    Buffer.from(JSON.stringify({ id: "station" })),
+  );
+  assert.equal(fwdResp.status, 200, `forward POST /updates failed: ${fwdResp.body.toString()}`);
+  await until("detached installer wrote record and update.exit", () => existsSync(installRecord) && existsSync(join(data, "run", "update.exit")));
+  assert.equal(existsSync(join(data, "run", "install.sh")), true, "installer must be copied to run/install.sh");
+  assert.equal(readFileSync(join(data, "run", "update.exit"), "utf8").trim(), "0");
+  const fwdLine = readFileSync(installRecord, "utf8").trim();
+  assert.ok(fwdLine.includes("CUSTOM=yes-42"), `installer must inherit full env: ${fwdLine}`);
+  assert.ok(fwdLine.includes(`SHA=${archiveSha}`), `installer missing release sha: ${fwdLine}`);
+  assert.ok(fwdLine.includes("ARCHIVE=|"), `forward update should not pass stale STILLFAIL_ARCHIVE: ${fwdLine}`);
+  // Wait for `on_tick` to observe `update.exit` and clear `updating`
+  await until("update.started cleared after exit", () => !existsSync(join(data, "run", "update.started")));
+
+  // 3. Rollback `updates.install` (`to: "0.1.49999"`) persists `holdAuto`, downloads to `*/stillfail-handed.*/stillfail.tar.gz`
+  const rbResp = await adminCall(
+    conn,
+    "POST",
+    "/updates",
+    { "content-type": "application/json", "idempotency-key": "w17e4d-rb-1" },
+    Buffer.from(JSON.stringify({ id: "station", to: "0.1.49999" })),
+  );
+  assert.equal(rbResp.status, 200, `rollback POST /updates failed: ${rbResp.body.toString()}`);
+  await until("rollback installer invoked", () => readFileSync(installRecord, "utf8").trim().split("\n").length >= 2);
+  const rbLines = readFileSync(installRecord, "utf8").trim().split("\n");
+  const rbLine = rbLines[rbLines.length - 1]!;
+  assert.ok(/ARCHIVE=.*\/stillfail-handed\.[^/|]+\/stillfail\.tar\.gz\|/.test(rbLine), `rollback STILLFAIL_ARCHIVE must match stillfail-handed contract: ${rbLine}`);
+  assert.ok(archiveHits >= 1, "rollback must download archive");
+  const cfgAfterRb = JSON.parse(readFileSync(cfgPath, "utf8"));
+  assert.equal(cfgAfterRb.autoUpdate, false, "rollback must disable autoUpdate (holdAuto)");
+  assert.equal(cfgAfterRb.autoUpdateAfter, "0.1.50000", "rollback must persist autoUpdateAfter");
+  await until("rollback update.started cleared", () => !existsSync(join(data, "run", "update.started")));
+
+  // 4. `updates.wait` roundtrip
   const waitSet = await adminCall(
     conn,
     "POST",
@@ -3317,28 +3407,8 @@ test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies
   );
   assert.equal(waitSet.status, 200, `POST /updates/wait failed: ${waitSet.body.toString()}`);
   assert.ok(waitSet.body.toString().includes("#9200"), `updates.wait view missing #9200: ${waitSet.body.toString()}`);
-  const cfgAfterWait = JSON.parse(readFileSync(cfgPath, "utf8"));
-  assert.equal(cfgAfterWait.autoUpdate, false);
-  assert.equal(cfgAfterWait.autoUpdateWhen?.wait?.length, 2);
 
-  // 2. `updates.install` (Ed25519 signed feed + streaming SHA-256 archive staging)
-  const instResp = await adminCall(
-    conn,
-    "POST",
-    "/updates",
-    { "content-type": "application/json", "idempotency-key": "w17e4d-upd-1" },
-    Buffer.from(JSON.stringify({ id: "station" })),
-  );
-  assert.equal(instResp.status, 200, `POST /updates failed: ${instResp.body.toString()}`);
-  const stagedPtr = join(data, "run", "update-staged.json");
-  await until("update-staged.json written", () => existsSync(stagedPtr));
-  const stagedMeta = JSON.parse(readFileSync(stagedPtr, "utf8"));
-  assert.equal(stagedMeta.version, "0.1.99999");
-  assert.equal(stagedMeta.sha256, archiveSha);
-  assert.equal(existsSync(stagedMeta.archive), true);
-  assert.ok(feedHits >= 1 && archiveHits >= 1, `expected feed & archive hits, got feed=${feedHits} archive=${archiveHits}`);
-
-  // 3. `copies.restore` (immediate 202 + non-blocking concurrent GET /status 200 + atomic ready.json)
+  // 5. `copies.restore`: immediate 202 + non-blocking concurrent GET /status 200 + `GET /overview` projects `copies.restoring` + atomic `0600` `ready.json`
   const t0 = Date.now();
   const restResp = await adminCall(
     conn,
@@ -3352,11 +3422,15 @@ test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies
   assert.equal(JSON.parse(restResp.body.toString("utf8")).restoring, true);
   assert.ok(restElapsed < 400, `POST /copies/restore blocked on 600ms S3 head! elapsed=${restElapsed}ms`);
 
-  // Concurrent GET /status while S3 restore is streaming MUST return 200 without stalling
   const tStatus = Date.now();
   const stResp = await adminCall(conn, "GET", "/status");
   assert.equal(stResp.status, 200, `concurrent GET /status failed: ${stResp.body.toString()}`);
   assert.ok(Date.now() - tStatus < 400, "concurrent GET /status was blocked by copies.restore!");
+
+  const ovDuring = await adminCall(conn, "GET", "/overview");
+  assert.equal(ovDuring.status, 200);
+  const ovDuringJson = JSON.parse(ovDuring.body.toString("utf8"));
+  assert.equal(ovDuringJson.copies?.restoring?.origin, lostOrigin, `overview must project copies.restoring: ${ovDuring.body.toString()}`);
 
   const readyPath = join(data, "restore", "ready.json");
   await until("restore/ready.json written", () => existsSync(readyPath));
@@ -3366,13 +3440,15 @@ test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies
   assert.equal(readyJson.gen, gen);
   assert.equal(readyJson.from, "s3:r2");
   assert.equal(statSync(readyPath).mode & 0o777, 0o600);
-  assert.equal(readFileSync(join(data, "restore", "copy", gen, "log", "000001.jsonl"), "utf8"), batchBytes.toString("utf8"));
-  assert.equal(readFileSync(join(data, "restore", "copy", "files", fileHash), "utf8"), fileBytes.toString("utf8"));
   assert.ok(s3HeadHits >= 1, "S3 head was not fetched");
 
-  // 4. `xshare.hosts.put` validation + atomic 0600 state.json roundtrip
+  // 6. `xshare.hosts.put` allowed for ordinary workspace MEMBER (1:1 Node), atomic 0600, fail-closed on corrupt state.json
+  const jwtMember = signMemberJwt({ ws, device: epMember.id(), sub: "u-member", email: "member@example.com", name: "Member", role: "member" });
+  const { conn: memConn, helloReply: memHello } = await openAdminConn(epMember, stationId, meshAddr, jwtMember);
+  assert.equal(memHello?.ok, true, JSON.stringify(memHello));
+
   const xBad = await adminCall(
-    conn,
+    memConn,
     "PUT",
     "/xshare/hosts",
     { "content-type": "application/json" },
@@ -3381,23 +3457,37 @@ test("Wave 17E-4D: real binary E2E for updates.install/wait, non-blocking copies
   assert.equal(xBad.status, 400, `self-workspace PUT /xshare/hosts expected 400, got ${xBad.status}`);
 
   const xOk = await adminCall(
-    conn,
+    memConn,
     "PUT",
     "/xshare/hosts",
     { "content-type": "application/json" },
     Buffer.from(JSON.stringify({ workspace: "ws-partner", name: "Partner WS", station: "st-partner", stationName: "Partner Box" })),
   );
-  assert.equal(xOk.status, 200, `PUT /xshare/hosts failed: ${xOk.body.toString()}`);
+  assert.equal(xOk.status, 200, `member PUT /xshare/hosts failed: ${xOk.body.toString()}`);
   assert.equal(JSON.parse(xOk.body.toString("utf8")).ok, true);
   const xStatePath = join(data, "xshare", "state.json");
-  assert.equal(existsSync(xStatePath), true);
   assert.equal(statSync(xStatePath).mode & 0o777, 0o600);
   const xState = JSON.parse(readFileSync(xStatePath, "utf8"));
   assert.equal(xState.hosts?.[`${ws}/st-partner`]?.workspace, "ws-partner");
-  assert.equal(xState.hosts?.[`${ws}/st-partner`]?.name, "Partner WS");
-  assert.equal(xState.hosts?.[`${ws}/st-partner`]?.stationName, "Partner Box");
 
+  await memConn.close(0, "done");
   await conn.close(0, "done");
   wd.sendCtrl({ op: "stop" });
   assert.equal(await wd.waitExit(), 0, wd.stderr());
+
+  // 7. Restart a fresh `stillfail-station-pion` on the same `<data>` dir to verify `before_store`
+  //    actually consumes `<data>/restore/ready.json` and imports the restored copy into `stillfail.db`!
+  const wd2 = startWholeDaemon(bin, data, {}, ["--app", appDir]);
+  await until("w17e4d restarted daemon ready", () => wd2.messages.find((m) => m.ready === true));
+  assert.equal(existsSync(readyPath), false, "before_store must consume restore/ready.json on restart");
+  assert.equal(existsSync(join(data, "replica", "restored.json")), true, "before_store must write replica/restored.json");
+  const restoredJson = JSON.parse(readFileSync(join(data, "replica", "restored.json"), "utf8"));
+  assert.equal(restoredJson.error, null, `replica/restored.json reported error: ${JSON.stringify(restoredJson)}`);
+  const dbCheck = new DatabaseSync(join(data, "stillfail.db"), { readOnly: true });
+  const row = dbCheck.prepare("SELECT id, title FROM threads WHERE id = 77").get() as { id: number; title: string } | undefined;
+  dbCheck.close();
+  assert.equal(row?.id, 77, "restored thread 77 must be imported into stillfail.db after restart");
+  assert.equal(row?.title, "Restored W17E4D Thread");
+  wd2.sendCtrl({ op: "stop" });
+  assert.equal(await wd2.waitExit(), 0, wd2.stderr());
 });

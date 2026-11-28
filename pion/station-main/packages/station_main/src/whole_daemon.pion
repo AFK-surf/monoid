@@ -7728,6 +7728,9 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       core.api.hooks.resolved_update_channel = Some(fn() -> String {
         resolve_station_update_channel(ctx.config_file.raw(), ctx.ops_fs, ctx.args.app, ctx.sep)
       })
+      core.api.hooks.on_updates_wait_changed = Some(fn(check_after : Bool) -> Unit {
+        w17e4d_trigger_wait_feed_check(ctx, st_made, check_after)
+      })
       core.api.hooks.on_copies_restore = Some(fn(
         ws : String,
         origin : String,
@@ -7737,10 +7740,13 @@ pub fn run_whole_daemon(argv : Array[String]) -> Int {
       ) -> Result[base_codec::Json, station_api::ApiError] {
         start_copies_restore_job(ctx, st_made, ws, origin, gen, from_kind, from_id)
       })
-      core.api.hooks.on_xshare_reconcile = Some(fn() -> Unit {
-        st_made.w17e4d.xshare_reconcile_count = st_made.w17e4d.xshare_reconcile_count + 1L
-        st_made.core.api.events.overview_changed("xshare")
+      core.api.hooks.copies_restoring_json = Some(fn(ws : String) -> Option[base_codec::Json] {
+        w17e4d_copies_overview_json(ctx, st_made, ws)
       })
+      core.api.hooks.on_xshare_reconcile = Some(fn(own_ws : String, host_st : String, target_ws : String) -> Unit {
+        w17e4d_reconcile_xshare_host(ctx, st_made, own_ws, host_st, target_ws)
+      })
+      w17e4d_follow_started_on_boot(ctx, st_made)
       state_opt = Some(st_made)
       Ok(())
     },

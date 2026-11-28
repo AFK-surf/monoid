@@ -622,7 +622,9 @@ pub fn try_intercept_async_admin_op(
       None | Some(base_codec::Json::Null) | Some(base_codec::Json::Bool(false)) => ()
       _ => return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.codexRepairUnavailable"))))
     }
-    if st.core.updates.station.updating.is_some() || st.w17e4d.update_job.is_some() {
+    if st.core.updates.station.updating.is_some()
+    || st.w17e4d.rollback_job.is_some()
+    || st.w17e4d.following_update_at.is_some() {
       return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.alreadyUpdating"))))
     }
     for i in 0..<st.core.updates.runtimes.length() {
@@ -636,6 +638,11 @@ pub fn try_intercept_async_admin_op(
     }
     if ov_meta.is_some() && to_opt.is_some() {
       return Some(Err(station_api::json_error(400, "station has a local OVERRIDE; remove OVERRIDE before rolling back")))
+    }
+    let lang_code = match lang { station_api::Lang::Zh => "zh", station_api::Lang::En => "en" }
+    // Pre-check bundled installer BEFORE any network download (1:1 with Node `release.ts:168-169`).
+    if w17e4d_bundled_installer_path(ctx.ops_fs, ctx.args.app, lang_code, ctx.sep).is_none() {
+      return Some(Err(station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.noInstaller"))))
     }
     if st.core.updates.station.version is None {
       match ctx.args.app {
@@ -922,8 +929,28 @@ fn complete_async_admin_op(
       )
       if applied {
         st.core.api.events.overview_changed("updates")
+        match fetch_res {
+          Ok((status, body_b)) if status >= 200 && status < 300 => {
+            match base_codec::json_parse(body_b.to_string()) {
+              base_codec::JsonParseResult::Ok(feed_j) => {
+                match station_cli::verify_feed(feed_j, live_trusted_release_keys(), verify_fn=st.core.api.auth_policy.verify_fn) {
+                  Ok(rel) => {
+                    let base_u = match w17e4d_release_base_url(station_sys::env_get("STILLFAIL_RELEASE_URL"), ctx.cloud.state) {
+                      Some(b) => b
+                      None => ""
+                    }
+                    w17e4d_reconcile_wait_and_auto(ctx, st, Some((req_ch, base_u, rel)))
+                  }
+                  Err(_) => ()
+                }
+              }
+              _ => ()
+            }
+          }
+          _ => ()
+        }
       }
-      station_api::json_ok(station_whole::updates_view_json(st.core.updates, raw_cfg, resolved_channel=Some(cur_ch)))
+      station_api::json_ok(station_whole::updates_view_json(st.core.updates, ctx.config_file.raw(), resolved_channel=Some(cur_ch)))
     }
 
     AsyncAdminOpKind::UpdatesInstall(req_ch, to_opt, base_url) => {
@@ -1004,18 +1031,42 @@ fn complete_async_admin_op(
           return finish_idem_claim(st, state, station_api::json_error(400, msg))
         }
       }
-      let archive_url = w17e4d_archive_url(base_url, req_ch, rel, build, plat, is_rollback)
       let lang_code = match state.lang { station_api::Lang::Zh => "zh", station_api::Lang::En => "en" }
-      match start_update_archive_job(ctx, st, rel, build, req_ch, base_url, archive_url, lang_code) {
-        Err(msg) => {
+      let installer_src = match w17e4d_bundled_installer_path(ctx.ops_fs, ctx.args.app, lang_code, ctx.sep) {
+        Some(p) => p
+        None => {
           st.core.updates.station.updating = None
-          return finish_idem_claim(st, state, station_api::json_error(500, msg))
+          return finish_idem_claim(st, state, station_api::json_error(400, station_ops::tr(ops_lang, "station.updates.noInstaller")))
         }
-        Ok(_) => {
-          st.core.api.events.overview_changed("updates")
-          let raw_cfg = ctx.config_file.raw()
-          let cur_ch = resolve_station_update_channel(raw_cfg, ctx.ops_fs, ctx.args.app, ctx.sep)
-          station_api::json_ok(station_whole::updates_view_json(st.core.updates, raw_cfg, resolved_channel=Some(cur_ch)))
+      }
+      if is_rollback {
+        let archive_url = w17e4d_archive_url(base_url, req_ch, rel, build, plat, true)
+        let held_left = w17e4d_hold_auto_for_rollback(ctx, st.core.updates.station.version)
+        match start_rollback_archive_job(ctx, st, rel, build, req_ch, base_url, archive_url, installer_src, lang_code, held_left) {
+          Err(msg) => {
+            w17e4d_restore_held_auto(ctx, held_left)
+            st.core.updates.station.updating = None
+            return finish_idem_claim(st, state, station_api::json_error(500, msg))
+          }
+          Ok(_) => {
+            st.core.api.events.overview_changed("updates")
+            let raw_cfg = ctx.config_file.raw()
+            let cur_ch = resolve_station_update_channel(raw_cfg, ctx.ops_fs, ctx.args.app, ctx.sep)
+            station_api::json_ok(station_whole::updates_view_json(st.core.updates, raw_cfg, resolved_channel=Some(cur_ch)))
+          }
+        }
+      } else {
+        // Forward update: launch detached `<data>/run/install.sh` directly (1:1 with Node `updates.ts:1598`).
+        match w17e4d_launch_detached_installer(ctx, st, installer_src, rel, build, req_ch, base_url, lang_code, None) {
+          Err(msg) => {
+            st.core.updates.station.updating = None
+            return finish_idem_claim(st, state, station_api::json_error(500, msg))
+          }
+          Ok(_) => {
+            let raw_cfg = ctx.config_file.raw()
+            let cur_ch = resolve_station_update_channel(raw_cfg, ctx.ops_fs, ctx.args.app, ctx.sep)
+            station_api::json_ok(station_whole::updates_view_json(st.core.updates, raw_cfg, resolved_channel=Some(cur_ch)))
+          }
         }
       }
     }

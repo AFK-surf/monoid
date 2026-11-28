@@ -303,8 +303,7 @@ fn build_whole_overview(
     }
     Err(_) => ()
   }
-  let _ = hooks
-  Ok(build_overview_with_counts(
+  let base_ov = build_overview_with_counts(
     station_id_str,
     home_ws_str,
     viewer_drive_roots,
@@ -315,7 +314,35 @@ fn build_whole_overview(
     warm_sess,
     viewer,
     lang,
-  ))
+  )
+  let ov_out = match hooks.copies_restoring_json {
+    Some(f) => match f(viewer.workspace) {
+      Some(extra_copies) => match base_codec::json_get(base_ov, "copies") {
+        Some(base_codec::Json::Obj(cfs)) => {
+          let merged_cfs : Array[(String, base_codec::Json)] = []
+          for i in 0..<cfs.length() {
+            let k = cfs[i].0
+            if k != "restoring" && k != "restored" {
+              merged_cfs.push(cfs[i])
+            }
+          }
+          match extra_copies {
+            base_codec::Json::Obj(efs) => {
+              for i in 0..<efs.length() {
+                merged_cfs.push(efs[i])
+              }
+            }
+            _ => ()
+          }
+          json_obj_set(base_ov, "copies", Some(base_codec::json_obj(merged_cfs)))
+        }
+        _ => json_obj_set(base_ov, "copies", Some(extra_copies))
+      }
+      None => base_ov
+    }
+    None => base_ov
+  }
+  Ok(ov_out)
 }
 
 /// Authenticated caller identity established by the transport/mesh layer.

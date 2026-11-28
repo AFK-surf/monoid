@@ -42,10 +42,12 @@ pub struct WholeApiRuntimeHooks {
   pub mut on_mcp_reload : Option[(Option[String]) -> Unit]
   pub mut on_s3_test : Option[(station_replica::NormalizedS3Target) -> Result[Unit, String]]
   pub mut on_updates_op : Option[(String, base_codec::Json, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
+  pub mut on_updates_wait_changed : Option[(Bool) -> Unit]
   pub mut is_update_override_present : Option[() -> Bool]
   pub mut resolved_update_channel : Option[() -> String]
   pub mut on_copies_restore : Option[(String, String, String, String, String) -> Result[base_codec::Json, station_api::ApiError]]
-  pub mut on_xshare_reconcile : Option[() -> Unit]
+  pub mut copies_restoring_json : Option[(String) -> Option[base_codec::Json]]
+  pub mut on_xshare_reconcile : Option[(String, String, String) -> Unit]
   pub mut on_profile_live_op : Option[(String, Array[String], base_codec::Json, station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut overview_for : Option[(station_api::Viewer, station_api::Lang) -> Result[base_codec::Json, station_api::ApiError]]
   pub mut on_screens_browser_open : Option[(String, Option[String]) -> Result[String, station_api::ApiError]]
@@ -73,9 +75,11 @@ pub fn WholeApiRuntimeHooks::new() -> WholeApiRuntimeHooks {
     on_mcp_reload: None,
     on_s3_test: None,
     on_updates_op: None,
+    on_updates_wait_changed: None,
     is_update_override_present: None,
     resolved_update_channel: None,
     on_copies_restore: None,
+    copies_restoring_json: None,
     on_xshare_reconcile: None,
     on_profile_live_op: None,
     overview_for: None,
@@ -1438,9 +1442,29 @@ fn dispatch_updates_op(
     if ov_present && enabled {
       return Some(Err(station_api::ApiError::new(400, station_ops::tr(ops_lang, "station.updates.overrideAutoRefused"))))
     }
-    match update_config_key(cfg_opt, cfg_open_err, "autoUpdate", Some(base_codec::json_bool(enabled))) {
+    match update_config_with(cfg_opt, cfg_open_err, fn(raw : base_codec::Json) -> Result[base_codec::Json, station_api::ApiError] {
+      let mut next = json_obj_set(raw, "autoUpdate", Some(base_codec::json_bool(enabled)))
+      if enabled && !ov_present {
+        next = json_obj_set(next, "autoUpdateWhen", None)
+      } else if !enabled && ov_present {
+        match base_codec::json_get(next, "autoUpdateWhen") {
+          Some(base_codec::Json::Obj(_)) => match base_codec::json_get(next, "autoUpdateWhen") {
+            Some(w) if json_field_bool(w, "restoreAuto") == Some(true) => {
+              next = json_obj_set(next, "autoUpdateWhen", Some(json_obj_set(w, "restoreAuto", Some(base_codec::json_bool(false)))))
+            }
+            _ => ()
+          }
+          _ => ()
+        }
+      }
+      Ok(next)
+    }) {
       Ok(_) => {
         hooks_notify_overview(hooks, "updates")
+        match hooks.on_updates_wait_changed {
+          Some(f) => f(enabled)
+          None => ()
+        }
         return Some(Ok(base_codec::json_obj([("auto", base_codec::json_bool(enabled))])))
       }
       Err(e) => return Some(Err(e))
@@ -1753,7 +1777,7 @@ pub fn dispatch_extra_call_op(
     return Some(Err(err_not_implemented(op)))
   }
   if op == "xshare.hosts.put" {
-    return dispatch_live_xshare_hosts_put_op(op, req, body, agents, cfg_opt, hooks)
+    return dispatch_live_xshare_hosts_put_op(op, req, body, agents, auth_policy, cfg_opt, hooks)
   }
   if op == "workspaces.list" {
     let arr : Array[base_codec::Json] = []
